@@ -14,6 +14,13 @@ pub struct GitHubInfo {
 
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
+pub struct OpenPR {
+    pub number: i64,
+    pub branch_name: String,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
 pub struct MergedPR {
     pub number: i64,
     pub title: String,
@@ -226,6 +233,37 @@ pub fn get_merged_prs(
         .collect();
 
     Ok(merged)
+}
+
+/// Fetch all currently open PRs for a repo using the gh CLI.
+/// Returns the PR number and head branch name for each open PR.
+pub fn get_open_prs(owner: &str, repo: &str) -> Result<Vec<OpenPR>, String> {
+    let output = Command::new("gh")
+        .args([
+            "api",
+            &format!("repos/{owner}/{repo}/pulls?state=open&per_page=100"),
+        ])
+        .output()
+        .map_err(|e| format!("Failed to run gh CLI: {e}"))?;
+
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        return Err(format!("gh api failed: {stderr}"));
+    }
+
+    let stdout = String::from_utf8(output.stdout)
+        .map_err(|_| "Invalid UTF-8 in gh output")?;
+
+    let prs: Vec<GitHubPR> = serde_json::from_str(&stdout)
+        .map_err(|e| format!("Failed to parse GitHub response: {e}"))?;
+
+    Ok(prs
+        .into_iter()
+        .map(|pr| OpenPR {
+            number: pr.number,
+            branch_name: pr.head.ref_name,
+        })
+        .collect())
 }
 
 #[cfg(test)]

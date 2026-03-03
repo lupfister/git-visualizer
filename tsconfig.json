@@ -17,5 +17,5 @@
     "noFallthroughCasesInSwitch": true
   },
   "include": ["src", "components", "lib", "types"],
-  "exclude": ["node_modules", "src-tauri", "lib/screenshotter.ts", "lib/builder.ts", "_archive"]
+  "exclude": ["node_modules", "src-tauri", "lib/screenshotter.ts", "lib/builder.ts", "lib/github.ts", "_archive"]
 }

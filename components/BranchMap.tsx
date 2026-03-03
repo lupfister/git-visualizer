@@ -1,7 +1,7 @@
 import React, { useState, useRef, useEffect } from 'react';
 import { invoke } from '@tauri-apps/api/core';
 import { X } from 'lucide-react';
-import { Branch, MergeNode, MergedPR } from '../types';
+import { Branch, DirectCommit, MergeNode, MergedPR, OpenPR } from '../types';
 import { ViewMode } from './BranchMapView';
 
 // ── Layout constants ──────────────────────────────────────────────────────────
@@ -43,6 +43,7 @@ function fmtLabelDate(dateStr: string) {
 interface BranchMapProps {
   branches: Branch[];
   mergeNodes: MergeNode[];
+  directCommits?: DirectCommit[];
   mergedPRs?: MergedPR[];
   defaultBranch: string;
   selectedBranch?: Branch | null;
@@ -54,12 +55,16 @@ interface BranchMapProps {
   view?: ViewMode;
   conflictBranches?: Branch[];
   staleBranches?: Branch[];
+  inactiveErrorBranches?: Branch[];
+  openPRs?: OpenPR[];
   isLoading?: boolean;
+  scrollRequest?: { branch: Branch; seq: number } | null;
 }
 
 export default function BranchMap({
   branches,
   mergeNodes,
+  directCommits = [],
   mergedPRs = [],
   defaultBranch,
   selectedBranch,
@@ -70,7 +75,10 @@ export default function BranchMap({
   view = 'time',
   conflictBranches = [],
   staleBranches = [],
+  inactiveErrorBranches = [],
+  openPRs = [],
   isLoading = false,
+  scrollRequest,
 }: BranchMapProps) {
   const [tooltip, setTooltip] = useState<TooltipData | null>(null);
   const [hoveredBranch, setHoveredBranch] = useState<string | null>(null);
@@ -78,7 +86,11 @@ export default function BranchMap({
   const [hoveredPRCommit, setHoveredPRCommit] = useState<PRCommitHover | null>(null);
   const [prCommits, setPrCommits] = useState<Map<number, string[]>>(new Map());
   const [zoom, setZoom] = useState(1);
-  const [prCommits, setPrCommits] = useState<Map<number, string[]>>(new Map());
+  // WKWebView (Tauri) doesn't fire CSS animations on SVG elements inserted during
+  // the initial paint. Defer animation classes by one rAF so they start post-paint.
+  const [drawReady, setDrawReady] = useState(false);
+  // flashRing: name of branch to pulse, opacity animates via React state (not CSS keyframes — WKWebView reliability)
+  const [flashRing, setFlashRing] = useState<{ name: string; opacity: number } | null>(null);
 
   const scrollRef = useRef<HTMLDivElement>(null);
   const svgRef = useRef<SVGSVGElement>(null);
@@ -92,20 +104,70 @@ export default function BranchMap({
   const [barScrollLeft, setBarScrollLeft] = useState(0);
   const [barScrollMax, setBarScrollMax] = useState(0);
   const [thumbWidth, setThumbWidth] = useState(48);
+  const [scrollbarReady, setScrollbarReady] = useState(false);
   const barRangeRef = useRef<HTMLInputElement>(null);
   const [containerHeight, setContainerHeight] = useState(540);
 
   // PR issues panel state
-  const errorBranches = [...conflictBranches, ...staleBranches];
   const [errorPanelOpen, setErrorPanelOpen] = useState(false);
   const errorPanelRef = useRef<HTMLDivElement>(null);
 
-  // On initial mount, scroll to the right so most recent content is visible
+  // Inactive error branches render grey (no status colors)
+  const inactiveErrorSet = new Set(inactiveErrorBranches.map(b => b.name));
+  const openPRBranchNames = new Set(openPRs.map(p => p.branchName));
+
+  // Trigger draw-in animations when merge nodes first arrive (not on mount),
+  // so the timeline always animates in even when the map view is shown before data loads.
+  const hadDataRef = useRef(false);
+  useEffect(() => {
+    // Reset when data is cleared (new repo selected) so animations retrigger.
+    if (mergeNodes.length === 0) {
+      hadDataRef.current = false;
+      setDrawReady(false);
+      return;
+    }
+    if (hadDataRef.current) return;
+    hadDataRef.current = true;
+
+    // Use a cancelled flag so React StrictMode's cleanup can invalidate the
+    // first invocation's callbacks before the second invocation schedules its own.
+    let cancelled = false;
+    let id1: number, id2: number;
+    id1 = requestAnimationFrame(() => {
+      if (cancelled) return;
+      id2 = requestAnimationFrame(() => {
+        if (cancelled) return;
+        setDrawReady(true);
+      });
+    });
+    return () => {
+      cancelled = true;
+      cancelAnimationFrame(id1);
+      cancelAnimationFrame(id2);
+      // Reset so the re-invocation (StrictMode second mount) can trigger normally.
+      hadDataRef.current = false;
+    };
+  }, [mergeNodes.length]);
+
+  // Scroll to the right when data loads so most recent content is visible.
   useEffect(() => {
     if (scrollRef.current) {
       scrollRef.current.scrollLeft = scrollRef.current.scrollWidth;
     }
   }, [mergeNodes.length]);
+
+  // Reveal the scrollbar after the main draw-in animation completes.
+  // drawReady fires when animations start; 2600ms matches draw-path-main duration.
+  // When drawReady resets (new repo), hide the scrollbar immediately so it
+  // doesn't flash visible before the next animation cycle begins.
+  useEffect(() => {
+    if (!drawReady) {
+      setScrollbarReady(false);
+      return;
+    }
+    const id = setTimeout(() => setScrollbarReady(true), 2600);
+    return () => clearTimeout(id);
+  }, [drawReady]);
 
   // Ctrl+wheel → zoom the timeline
   useEffect(() => {
@@ -198,6 +260,24 @@ export default function BranchMap({
     return () => document.removeEventListener('mousedown', handler);
   }, [errorPanelOpen]);
 
+  // Scroll timeline to the requested branch, then pulse a ring around its fork point.
+  // Uses scrollRequest.seq so the same branch can be re-clicked reliably.
+  useEffect(() => {
+    if (!scrollRequest || !scrollRef.current) return;
+    const { branch } = scrollRequest;
+    const x = branch.divergedFromDate
+      ? timeToX(branch.divergedFromDate)
+      : timeToX(branch.lastCommitDate);
+    const viewWidth = scrollRef.current.clientWidth;
+    scrollRef.current.scrollTo({ left: Math.max(0, x - viewWidth / 2), behavior: 'smooth' });
+    // React-state ring animation (CSS keyframes unreliable on dynamically-inserted SVG in WKWebView)
+    setFlashRing({ name: branch.name, opacity: 1 });
+    const t1 = setTimeout(() => setFlashRing(r => r ? { ...r, opacity: 0 } : null), 500);
+    const t2 = setTimeout(() => setFlashRing(null), 1100);
+    return () => { clearTimeout(t1); clearTimeout(t2); };
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [scrollRequest]);
+
   // ── Separate active vs merged branches ──────────────────────────────────────
   const STATUS_PRIORITY: Record<string, number> = { 'conflict-risk': 0, stale: 1, fresh: 2, unknown: 3 };
   const mergedBranchDates = new Map(mergedPRs.map(pr => [pr.branchName, pr.mergedAt]));
@@ -223,30 +303,23 @@ export default function BranchMap({
     })
     .slice(0, MAX_ACTIVE);
 
-  // ── Animation delays: sort all arcs newest → oldest, stagger after main line ─
-  const MAIN_DRAW_MS = 1400;
-  const STAGGER_MS = 70;
-  const INFO_OFFSET = 600; // ms after arc starts drawing before info fades in
-  const arcDelayMs = new Map<string, number>(
-    [
-      ...mergedPRs.map(pr => ({ key: `pr-${pr.number}`, date: pr.mergedAt })),
-      ...activeBranches.map(b => ({ key: `br-${b.name}`, date: b.lastCommitDate })),
-    ]
-      .sort((a, b) => new Date(b.date).getTime() - new Date(a.date).getTime())
-      .map(({ key }, i) => [key, MAIN_DRAW_MS + i * STAGGER_MS] as [string, number])
-  );
-
-  // ── Animation delays: sort all arcs newest → oldest, stagger after main line ─
+  // ── Animation delays — branches and PRs computed independently ───────────
+  // Keeping them separate means adding mergedPRs (async GitHub data) never
+  // changes branch delays mid-animation, which would restart their CSS animation.
   const MAIN_DRAW_MS = 1400;
   const STAGGER_MS   = 70;
   const INFO_OFFSET  = 600; // ms after arc starts drawing before info fades in
-  const arcDelayMs = new Map<string, number>(
-    [
-      ...displayedMergedPRs.map(pr => ({ key: `pr-${pr.number}`, date: pr.mergedAt })),
-      ...activeBranches.map(b  => ({ key: `br-${b.name}`,        date: b.lastCommitDate })),
-    ]
-      .sort((a, b) => new Date(b.date).getTime() - new Date(a.date).getTime())
-      .map(({ key }, i) => [key, MAIN_DRAW_MS + i * STAGGER_MS] as [string, number])
+
+  const branchDelayMs = new Map<string, number>(
+    [...activeBranches]
+      .sort((a, b) => new Date(b.lastCommitDate).getTime() - new Date(a.lastCommitDate).getTime())
+      .map((b, i) => [b.name, MAIN_DRAW_MS + i * STAGGER_MS] as [string, number])
+  );
+
+  const prDelayMs = new Map<number, number>(
+    [...mergedPRs]
+      .sort((a, b) => new Date(b.mergedAt).getTime() - new Date(a.mergedAt).getTime())
+      .map((pr, i) => [pr.number, MAIN_DRAW_MS + i * STAGGER_MS] as [number, number])
   );
 
 
@@ -276,6 +349,14 @@ export default function BranchMap({
   const nodeTimeSpan = Math.max(lastNodeT - firstNodeT, 1);
   const pxPerMs = (mainEndX - LEFT_PAD) / nodeTimeSpan;
 
+  // When extrapolating dates outside the merge-node range, use a rate capped at
+  // 1 NODE_SPACING per 7 days. This prevents active branches on fast-moving repos
+  // (many PRs merged within hours) from extending far off the right edge.
+  const avgNodeIntervalMs = sortedNodes.length > 1
+    ? nodeTimeSpan / (sortedNodes.length - 1)
+    : 7 * 86400000;
+  const safeExtrapPxPerMs = NODE_SPACING / Math.max(avgNodeIntervalMs, 7 * 86400000);
+
   function timeToX(dateStr: string): number {
     const t = new Date(dateStr).getTime();
     if (sortedNodes.length === 0) return LEFT_PAD;
@@ -290,10 +371,10 @@ export default function BranchMap({
     }
 
     if (t < firstNodeT) {
-      const rawX = LEFT_PAD + (t - firstNodeT) * pxPerMs;
+      const rawX = LEFT_PAD + (t - firstNodeT) * safeExtrapPxPerMs;
       return Math.max(rawX, LEFT_PAD - NODE_SPACING * 2);
     }
-    return mainEndX + (t - lastNodeT) * pxPerMs;
+    return mainEndX + (t - lastNodeT) * safeExtrapPxPerMs;
   }
 
   function branchForkX(b: Branch): number {
@@ -325,21 +406,10 @@ export default function BranchMap({
     laneAssignments.set(b.name, i % laneCount);
   });
 
-  // Dynamic main Y based on container height
-  const mainY = Math.max(440, containerHeight - 120);
-
   function laneY(b: Branch): number {
     const lane = laneAssignments.get(b.name) ?? 0;
     return mainY - LANE_HEIGHT * (lane + 1) - 40;
   }
-
-  // Calculate SVG dimensions
-  const maxBranchTipX = activeBranches.reduce((max, b) => {
-    const fx = branchForkX(b);
-    const tipX = Math.max(timeToX(b.lastCommitDate), fx + CORNER_R + 20);
-    return Math.max(max, tipX + 80);
-  }, mainEndX);
-  const svgWidth = maxBranchTipX + RIGHT_PAD + 80;
 
   // Merged PRs lane layout
   const MERGED_LANE_HEIGHT = 60;
@@ -356,6 +426,7 @@ export default function BranchMap({
           ref={svgRef}
           width={svgWidth}
           height={svgHeight}
+          className={drawReady ? 'timeline-ready' : ''}
           style={{ minWidth: svgWidth, display: 'block' }}
         >
           <defs>
@@ -366,12 +437,11 @@ export default function BranchMap({
 
           {/* ── Main timeline + merge nodes ── */}
           <g style={{ opacity: hoveredPR !== null ? 0.2 : 1, transition: 'opacity 0.15s' }}>
-            <line
-              x1={LEFT_PAD}
-              y1={mainY}
-              x2={mainEndX}
-              y2={mainY}
-              stroke="#a8a29e"
+            {/* Use <path> not <line>: pathLength on <line> is SVG 2 only and unreliable in WKWebView */}
+            <path
+              d={`M ${LEFT_PAD} ${mainY} L ${mainEndX} ${mainY}`}
+              fill="none"
+              stroke="#78716c"
               strokeWidth={1.5}
               pathLength={1}
               className="draw-path-main"
@@ -382,21 +452,51 @@ export default function BranchMap({
               <line
                 x1={mainEndX}
                 y1={mainY}
-                x2={mainEndX + 80}
+                x2={svgWidth - RIGHT_PAD}
                 y2={mainY}
-                stroke="#a8a29e"
+                stroke="#78716c"
                 strokeWidth={1.5}
                 strokeDasharray="6 5"
               />
               <text
-                x={mainEndX + 90}
+                x={svgWidth - RIGHT_PAD + 10}
                 y={mainY + 4}
                 fontSize={12}
-                fill="#e7e5e4"
+                fill="#1c1917"
                 fontWeight={500}
               >
                 {defaultBranch}
               </text>
+
+              {/* Direct commits — small dots between merge nodes */}
+              {directCommits
+                .filter(c => {
+                  const t = new Date(c.date).getTime();
+                  return t >= firstNodeT && t <= lastNodeT;
+                })
+                .map(c => {
+                  const x = timeToX(c.date);
+                  const label = c.message.length > 38 ? c.message.slice(0, 38) + '…' : c.message;
+                  return (
+                    <circle
+                      key={c.fullSha}
+                      cx={x}
+                      cy={mainY}
+                      r={3}
+                      fill="#57534e"
+                      style={{ cursor: 'default' }}
+                      onMouseEnter={() =>
+                        setTooltip({
+                          x,
+                          y: mainY - 16,
+                          lines: [c.sha, label, `@${c.author}`],
+                        })
+                      }
+                      onMouseLeave={() => setTooltip(null)}
+                    />
+                  );
+                })}
+
               {sortedNodes.map((m) => {
                 const x = nodeXByFullSha.get(m.fullSha) ?? timeToX(m.date);
                 const label = m.prNumber ? `PR #${m.prNumber}` : m.sha;
@@ -410,8 +510,8 @@ export default function BranchMap({
                       y={mainY - NODE_SIZE / 2}
                       width={NODE_SIZE}
                       height={NODE_SIZE}
-                      fill="#1c1917"
-                      stroke="#a8a29e"
+                      fill="#fafaf9"
+                      stroke="#78716c"
                       strokeWidth={1.5}
                     />
                     <text
@@ -419,7 +519,7 @@ export default function BranchMap({
                       y={mainY + 20}
                       textAnchor="middle"
                       fontSize={11}
-                      fill="#a8a29e"
+                      fill="#57534e"
                     >
                       {label}
                     </text>
@@ -460,7 +560,7 @@ export default function BranchMap({
             const isHovered = hoveredPR === pr.number;
             const isDimmed = hoveredPR !== null && !isHovered;
             const opacity = isDimmed ? 0.1 : isHovered ? 0.85 : 0.38;
-            const strokeColor = isHovered ? '#a8a29e' : '#78716c';
+            const strokeColor = isHovered ? '#44403c' : '#78716c';
             const strokeWidth = isHovered ? 1.6 : 1.2;
 
             const arcPath = [
@@ -478,15 +578,17 @@ export default function BranchMap({
               forkX + CORNER_R + (arcSpan * (i + 1)) / (commitCount + 1)
             );
 
-            const prDelay = arcDelayMs.get(`pr-${pr.number}`) ?? 0;
+            const prDelay = prDelayMs.get(pr.number) ?? 0;
 
+            const mergedBranch = branches.find(b => b.name === pr.branchName);
             return (
               <g
                 key={pr.number}
                 opacity={opacity}
-                style={{ cursor: 'pointer', transition: 'opacity 0.15s' }}
+                style={{ cursor: mergedBranch ? 'pointer' : 'default', transition: 'opacity 0.15s' }}
                 onMouseEnter={() => setHoveredPR(pr.number)}
                 onMouseLeave={() => { setHoveredPR(null); setHoveredPRCommit(null); }}
+                onClick={() => { if (mergedBranch) onBranchClick?.(mergedBranch); }}
               >
                 {/* Wide invisible stroke for hover */}
                 <path d={arcPath} fill="none" stroke="transparent" strokeWidth={20} />
@@ -505,10 +607,10 @@ export default function BranchMap({
                 <g className="fade-in-info" style={{ '--delay': `${prDelay + INFO_OFFSET}ms` } as React.CSSProperties}>
                   <rect x={forkX - NODE_SIZE / 2} y={mainY - NODE_SIZE / 2}
                     width={NODE_SIZE} height={NODE_SIZE}
-                    fill="#1c1917" stroke={strokeColor} strokeWidth={1} style={{ pointerEvents: 'none' }} />
+                    fill="#fafaf9" stroke={strokeColor} strokeWidth={1} style={{ pointerEvents: 'none' }} />
                   <rect x={effectiveMergeX - NODE_SIZE / 2} y={mainY - NODE_SIZE / 2}
                     width={NODE_SIZE} height={NODE_SIZE}
-                    fill="#1c1917" stroke={strokeColor} strokeWidth={1} style={{ pointerEvents: 'none' }} />
+                    fill="#fafaf9" stroke={strokeColor} strokeWidth={1} style={{ pointerEvents: 'none' }} />
 
                   {/* Commit ticks — interactive with SHA tooltips */}
                   {commitXs.map((cx, ci) => {
@@ -562,7 +664,7 @@ export default function BranchMap({
                   ) : (
                     <circle cx={midX} cy={arcY - 22} r={8} fill="#57534e" />
                   )}
-                  <text x={midX + 14} y={arcY - 18} fontSize={11} fill={isHovered ? '#e7e5e4' : '#a8a29e'}>
+                  <text x={midX + 14} y={arcY - 18} fontSize={11} fill={isHovered ? '#1c1917' : '#57534e'}>
                     {pr.branchName.length > 20 ? pr.branchName.slice(0, 20) + '…' : pr.branchName}
                   </text>
                 </g>
@@ -580,16 +682,22 @@ export default function BranchMap({
               const isSelected = selectedBranch?.name === b.name;
               const isHovered = hoveredBranch === b.name;
               const hasSelection = selectedBranch != null;
+              const isInactiveError = inactiveErrorSet.has(b.name);
+              const hasOpenPR = openPRBranchNames.has(b.name);
+              const daysSinceCommit = (Date.now() - new Date(b.lastCommitDate).getTime()) / 86400000;
+              const showClockIcon = hasOpenPR && daysSinceCommit >= 60;
 
               const color = isSelected
                 ? '#22d3ee'
+                : isInactiveError
+                ? '#78716c'
                 : isConflict
                 ? '#dc2626'
                 : isStale
                 ? '#d97706'
                 : hasSelection
                 ? '#57534e'
-                : '#a8a29e';
+                : '#78716c';
               const strokeWidth = isSelected ? 2.5 : 1.5;
 
               const TRAIL = 80;
@@ -603,7 +711,16 @@ export default function BranchMap({
                 forkX + CORNER_R + (spanWidth * (i + 1)) / (commitCount + 1)
               );
 
-              const brDelay = arcDelayMs.get(`br-${b.name}`) ?? 0;
+              const brDelay = branchDelayMs.get(b.name) ?? 0;
+
+              // If this branch forks directly on a merge node, suppress the fork
+              // labels below the main line — the branch is identified by its arc
+              // label, and stacking more text under the PR node is confusing.
+              const forkOnNode = sortedNodes.some(n =>
+                Math.abs((nodeXByFullSha.get(n.fullSha) ?? timeToX(n.date)) - forkX) < NODE_SIZE
+              );
+              const forkLabelY  = mainY + 20;
+              const statusLabelY = mainY + 34;
 
               return (
                 <g
@@ -611,11 +728,25 @@ export default function BranchMap({
                   className="cursor-pointer"
                   onClick={() => onBranchSelect?.(b)}
                   onDoubleClick={() => onBranchClick?.(b)}
-                  style={{ opacity: hasSelection && !isSelected ? 0.5 : 1 }}
+                  style={{ opacity: isInactiveError ? 0.45 : hasSelection && !isSelected ? 0.5 : 1 }}
                 >
-                  {/* Glow effect for selected branch */}
+                  {/* Flash ring when scrolled-to from error panel */}
+                  {flashRing?.name === b.name && (
+                    <circle
+                      cx={forkX}
+                      cy={mainY}
+                      r={16}
+                      fill="none"
+                      stroke={isConflict ? '#dc2626' : '#d97706'}
+                      strokeWidth={2.5}
+                      opacity={flashRing.opacity}
+                      style={{ transition: 'opacity 0.6s ease-out' }}
+                    />
+                  )}
+                  {/* Glow effect for selected branch — keyed so it never displaces the arc path */}
                   {isSelected && (
                     <path
+                      key="glow"
                       d={curvePath}
                       fill="none"
                       stroke="#22d3ee"
@@ -624,8 +755,10 @@ export default function BranchMap({
                       style={{ filter: 'blur(4px)' }}
                     />
                   )}
-                  {/* Branch path — draws in */}
+                  {/* Branch path — draws in. key="arc" keeps the DOM node stable so the
+                      CSS animation is never restarted when sibling elements change. */}
                   <path
+                    key="arc"
                     d={curvePath}
                     fill="none"
                     stroke={color}
@@ -658,10 +791,12 @@ export default function BranchMap({
                       stroke={color}
                       strokeWidth={strokeWidth}
                     />
-                    {/* Branch name label below main line */}
-                    <text x={forkX} y={mainY + 20} textAnchor="middle" fontSize={10} fill="#78716c">
-                      {b.name.length > 18 ? b.name.slice(0, 18) + '…' : b.name}
-                    </text>
+                    {/* Branch name label below main line — hidden when fork sits on a merge node */}
+                    {!forkOnNode && (
+                      <text x={forkX} y={forkLabelY} textAnchor="middle" fontSize={10} fill="#78716c">
+                        {b.name.length > 18 ? b.name.slice(0, 18) + '…' : b.name}
+                      </text>
+                    )}
 
                     {/* Commit filled squares along branch */}
                     {commitXs.map((cx, ci) => (
@@ -671,7 +806,7 @@ export default function BranchMap({
                         y={y - NODE_SIZE / 2}
                         width={NODE_SIZE}
                         height={NODE_SIZE}
-                        fill={isSelected ? '#22d3ee' : isConflict ? '#dc2626' : isStale ? '#d97706' : '#78716c'}
+                        fill={isSelected ? '#22d3ee' : isInactiveError ? '#78716c' : isConflict ? '#dc2626' : isStale ? '#d97706' : '#78716c'}
                         onMouseEnter={() =>
                           setTooltip({
                             x: cx,
@@ -687,14 +822,14 @@ export default function BranchMap({
                       />
                     ))}
 
-                    {/* Author initial circle */}
-                    <circle cx={forkX} cy={y - 26} r={9} fill={isSelected ? '#0891b2' : '#57534e'} />
+                    {/* Author initial circle — inset 8px from start of horizontal arc */}
+                    <circle cx={forkX + CORNER_R + 8} cy={y - 26} r={9} fill={isSelected ? '#0891b2' : '#57534e'} />
                     <text
-                      x={forkX}
+                      x={forkX + CORNER_R + 8}
                       y={y - 22}
                       textAnchor="middle"
                       fontSize={10}
-                      fill={isSelected ? '#ecfeff' : '#e7e5e4'}
+                      fill={isSelected ? '#ecfeff' : '#ffffff'}
                       fontWeight={500}
                     >
                       {b.lastCommitAuthor?.charAt(0).toUpperCase() || '?'}
@@ -702,11 +837,11 @@ export default function BranchMap({
 
                     {/* Branch name label */}
                     <text
-                      x={forkX + 16}
+                      x={forkX + CORNER_R + 24}
                       y={y - 22}
                       fontSize={isSelected ? 13 : 12}
                       fontWeight={isSelected ? 600 : 400}
-                      fill={isSelected ? '#22d3ee' : isHovered ? '#fafaf9' : color}
+                      fill={isSelected ? '#22d3ee' : isHovered ? '#1c1917' : color}
                       className="select-none"
                       onMouseEnter={() => setHoveredBranch(b.name)}
                       onMouseLeave={() => setHoveredBranch(null)}
@@ -723,19 +858,46 @@ export default function BranchMap({
                     >
                       +{b.commitsAhead}
                     </text>
+
+                    {/* Clock icon for open PR + 60+ day stale commit */}
+                    {showClockIcon && (() => {
+                      const nameLen = Math.min(b.name.length, 22);
+                      const approxNameW = nameLen * 6.5;
+                      const cx = forkX + CORNER_R + 24 + approxNameW + 10;
+                      const cy = y - 22;
+                      return (
+                        <g transform={`translate(${cx}, ${cy})`} style={{ pointerEvents: 'none' }}>
+                          <circle r={5} fill="none" stroke={color} strokeWidth={1.2} />
+                          <line x1={0} y1={-3} x2={0} y2={0} stroke={color} strokeWidth={1.2} strokeLinecap="round" />
+                          <line x1={0} y1={0} x2={2.5} y2={1.5} stroke={color} strokeWidth={1.2} strokeLinecap="round" />
+                        </g>
+                      );
+                    })()}
                   </g>
 
-                    {/* Status labels below main line */}
-                    {isStale && (
-                      <text x={forkX} y={mainY + 34} textAnchor="middle" fontSize={10} fill="#d97706">
-                        stale
-                      </text>
-                    )}
-                    {isConflict && (
-                      <text x={forkX} y={mainY + 34} textAnchor="middle" fontSize={10} fill="#dc2626">
-                        conflict
-                      </text>
-                    )}
+                  {/* Status labels — own fade-in-pill group so they animate independently of fade-in-info */}
+                  {!forkOnNode && !isInactiveError && (isStale || isConflict) && (
+                    <g
+                      className="fade-in-pill"
+                      style={{ '--delay': `${brDelay + INFO_OFFSET}ms`, cursor: 'pointer' } as React.CSSProperties}
+                      onClick={() => onBranchClick?.(b)}
+                    >
+                      {/* Invisible hit area — text alone is too small to click reliably */}
+                      <rect
+                        x={forkX - 22}
+                        y={statusLabelY - 11}
+                        width={44}
+                        height={14}
+                        fill="transparent"
+                      />
+                      {isStale && (
+                        <text x={forkX} y={statusLabelY} textAnchor="middle" fontSize={10} fill="#d97706">stale</text>
+                      )}
+                      {isConflict && (
+                        <text x={forkX} y={statusLabelY} textAnchor="middle" fontSize={10} fill="#dc2626">conflict</text>
+                      )}
+                    </g>
+                  )}
                 </g>
               );
             })}
@@ -796,38 +958,36 @@ export default function BranchMap({
           })()}
         </svg>
 
-        {/* Empty state */}
+        {/* Empty / loading state */}
         {sortedNodes.length === 0 && activeBranches.length === 0 && (
-          <div className="absolute inset-0 flex items-center justify-center text-muted-foreground">
-            No branches or merge commits found
-          </div>
+          isLoading ? (
+            <div className="absolute inset-0 flex items-center justify-center pointer-events-none">
+              <div className="flex items-center gap-1.5">
+                {[0, 1, 2].map(i => (
+                  <span
+                    key={i}
+                    className="w-1.5 h-1.5 rounded-full bg-muted-foreground/40 animate-bounce"
+                    style={{ animationDelay: `${i * 150}ms` }}
+                  />
+                ))}
+              </div>
+            </div>
+          ) : (
+            <div className="absolute inset-0 flex items-center justify-center text-muted-foreground">
+              No branches or merge commits found
+            </div>
+          )
         )}
       </div>
 
-      {/* Fixed bottom chrome: PR issues button + scrollbar + zoom */}
+      {/* Fixed bottom chrome: scrollbar + zoom */}
       <div className="fixed bottom-6 left-6 right-6 flex flex-col gap-2 z-50">
-
-        {/* PR issues button — above scrollbar, right-aligned */}
-        {errorBranches.length > 0 && (
-          <div className="flex justify-end">
-            <button
-              onClick={() => setErrorPanelOpen((o) => !o)}
-              className={`flex items-center gap-1.5 text-xs border rounded-full px-3 py-1 transition-colors ${
-                errorPanelOpen
-                  ? 'text-destructive border-destructive/40 bg-destructive/10'
-                  : 'text-destructive border-destructive/20 bg-destructive/5 hover:bg-destructive/10'
-              }`}
-            >
-              ⚠ {errorBranches.length} PR issue{errorBranches.length !== 1 ? 's' : ''}
-            </button>
-          </div>
-        )}
 
         {/* Scrollbar + zoom row */}
         <div
           className="flex items-center gap-4"
           style={{
-            opacity: isLoading ? 0 : 1,
+            opacity: isLoading || !scrollbarReady ? 0 : 1,
             transition: 'opacity 0.4s ease',
           }}
         >

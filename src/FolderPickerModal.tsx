@@ -23,12 +23,12 @@ export default function FolderPickerModal({ onSelect, onClose }: FolderPickerMod
   const [error, setError] = useState<string | null>(null);
   const [homeDir, setHomeDir] = useState('');
   const [selectedIndex, setSelectedIndex] = useState(0);
+  const [activeIndex, setActiveIndex] = useState(-1);
   const inputRef = useRef<HTMLInputElement>(null);
   const searchTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   const isSearching = query.length >= 2;
 
-  // Initialize on mount
   useEffect(() => {
     invoke<string>('get_home_dir').then((dir) => {
       setHomeDir(dir);
@@ -36,23 +36,18 @@ export default function FolderPickerModal({ onSelect, onClose }: FolderPickerMod
     });
   }, []);
 
-  // Focus input on mount
   useEffect(() => {
     inputRef.current?.focus();
   }, []);
 
-  // Load directory when currentDir changes (only when not searching)
   useEffect(() => {
     if (currentDir && !isSearching) {
       loadDirectory(currentDir);
     }
   }, [currentDir, isSearching]);
 
-  // Debounced search when query changes
   useEffect(() => {
-    if (searchTimeoutRef.current) {
-      clearTimeout(searchTimeoutRef.current);
-    }
+    if (searchTimeoutRef.current) clearTimeout(searchTimeoutRef.current);
 
     if (!query || query.length < 2) {
       setSearchResults([]);
@@ -82,26 +77,20 @@ export default function FolderPickerModal({ onSelect, onClose }: FolderPickerMod
     }, 150);
 
     return () => {
-      if (searchTimeoutRef.current) {
-        clearTimeout(searchTimeoutRef.current);
-      }
+      if (searchTimeoutRef.current) clearTimeout(searchTimeoutRef.current);
     };
   }, [query, currentDir, homeDir]);
 
-  // Reset selection when results change
   useEffect(() => {
-    if (!isSearching) {
-      setSelectedIndex(0);
-    }
+    if (!isSearching) setSelectedIndex(0);
   }, [entries, isSearching]);
 
   async function loadDirectory(path: string) {
     setLoading(true);
     setError(null);
-
+    setActiveIndex(-1);
     try {
       const allEntries = await invoke<DirEntry[]>('list_directory', { path });
-      // Only show directories
       setEntries(allEntries.filter((e) => e.isDir));
     } catch (e) {
       setError(e instanceof Error ? e.message : String(e));
@@ -111,7 +100,6 @@ export default function FolderPickerModal({ onSelect, onClose }: FolderPickerMod
     }
   }
 
-  // Combined list for selection
   const allItems = isSearching ? searchResults : entries;
 
   const navigateTo = useCallback((path: string) => {
@@ -126,31 +114,24 @@ export default function FolderPickerModal({ onSelect, onClose }: FolderPickerMod
   }, [currentDir, navigateTo]);
 
   const navigateHome = useCallback(() => {
-    if (homeDir) {
-      navigateTo(homeDir);
-    }
+    if (homeDir) navigateTo(homeDir);
   }, [homeDir, navigateTo]);
+
+  function openActive() {
+    const item = activeIndex >= 0 ? allItems[activeIndex] : allItems[selectedIndex];
+    if (item) {
+      item.isRepo ? onSelect(item.path) : navigateTo(item.path);
+    } else {
+      onSelect(currentDir);
+    }
+  }
 
   function handleKeyDown(e: React.KeyboardEvent) {
     if (e.key === 'Escape') {
-      if (query) {
-        setQuery('');
-        e.preventDefault();
-      } else {
-        onClose();
-        e.preventDefault();
-      }
+      if (query) { setQuery(''); e.preventDefault(); }
+      else { onClose(); e.preventDefault(); }
     } else if (e.key === 'Enter') {
-      const item = allItems[selectedIndex];
-      if (item) {
-        if (item.isRepo) {
-          onSelect(item.path);
-        } else {
-          navigateTo(item.path);
-        }
-      } else if (!isSearching && entries.length === 0) {
-        onSelect(currentDir);
-      }
+      openActive();
       e.preventDefault();
     } else if (e.key === 'ArrowDown') {
       e.preventDefault();
@@ -163,12 +144,8 @@ export default function FolderPickerModal({ onSelect, onClose }: FolderPickerMod
       navigateUp();
     } else if (e.key === 'ArrowRight' || e.key === 'Tab') {
       const item = allItems[selectedIndex];
-      if (item) {
-        e.preventDefault();
-        navigateTo(item.path);
-      } else if (e.key === 'Tab') {
-        e.preventDefault();
-      }
+      if (item) { e.preventDefault(); navigateTo(item.path); }
+      else if (e.key === 'Tab') e.preventDefault();
     } else if (e.key === 'Backspace' && !query && !isSearching) {
       e.preventDefault();
       navigateUp();
@@ -176,49 +153,34 @@ export default function FolderPickerModal({ onSelect, onClose }: FolderPickerMod
   }
 
   function handleBackdropClick(e: React.MouseEvent) {
-    if (e.target === e.currentTarget) {
-      onClose();
-    }
+    if (e.target === e.currentTarget) onClose();
   }
 
   function formatPath(path: string): string {
-    if (homeDir && path.startsWith(homeDir)) {
-      return '~' + path.slice(homeDir.length);
-    }
+    if (homeDir && path.startsWith(homeDir)) return '~' + path.slice(homeDir.length);
     return path;
   }
 
   function getBreadcrumbs(path: string): { name: string; path: string }[] {
     const parts = path.split('/').filter(Boolean);
     const crumbs: { name: string; path: string }[] = [];
-
     let currentPath = '';
     for (const part of parts) {
       currentPath += '/' + part;
       crumbs.push({ name: part, path: currentPath });
     }
-
     return crumbs;
   }
 
   function highlightMatch(text: string, q: string): React.ReactNode {
     if (!q) return text;
-
-    const textLower = text.toLowerCase();
-    const queryLower = q.toLowerCase();
-    const idx = textLower.indexOf(queryLower);
-
+    const idx = text.toLowerCase().indexOf(q.toLowerCase());
     if (idx === -1) return text;
-
-    const before = text.slice(0, idx);
-    const match = text.slice(idx, idx + q.length);
-    const after = text.slice(idx + q.length);
-
     return (
       <>
-        {before}
-        <mark className="bg-blue-500/30 text-blue-300 rounded px-0.5">{match}</mark>
-        {after}
+        {text.slice(0, idx)}
+        <mark className="bg-primary/20 text-primary rounded px-0.5">{text.slice(idx, idx + q.length)}</mark>
+        {text.slice(idx + q.length)}
       </>
     );
   }
@@ -231,12 +193,12 @@ export default function FolderPickerModal({ onSelect, onClose }: FolderPickerMod
       onClick={handleBackdropClick}
       onKeyDown={(e) => e.key === 'Escape' && onClose()}
     >
-      <div className="bg-stone-800 rounded-xl shadow-2xl w-[520px] max-w-[90vw] max-h-[65vh] flex flex-col overflow-hidden">
+      <div className="bg-card rounded-xl shadow-lg w-[520px] max-w-[90vw] max-h-[65vh] flex flex-col overflow-hidden border border-border">
         {/* Header with breadcrumbs */}
-        <div className="flex items-center gap-2 px-4 py-2.5 border-b border-stone-700">
-          <div className="flex-1 flex items-center gap-0.5 overflow-x-auto scrollbar-hide">
+        <div className="flex items-center gap-2 px-4 py-2.5 border-b border-border">
+          <div className="flex-1 flex items-center gap-0.5 overflow-x-auto">
             <button
-              className="flex items-center p-1.5 hover:bg-stone-700 rounded text-stone-400 hover:text-white"
+              className="flex items-center p-1.5 hover:bg-accent rounded-lg text-muted-foreground hover:text-foreground transition-colors"
               onClick={navigateHome}
               title="Home (~)"
             >
@@ -246,12 +208,12 @@ export default function FolderPickerModal({ onSelect, onClose }: FolderPickerMod
             </button>
             {breadcrumbs.map((crumb, i) => (
               <span key={crumb.path} className="flex items-center">
-                <svg className="w-3 h-3 text-stone-500 mx-0.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                <svg className="w-3 h-3 text-muted-foreground mx-0.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                   <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 5l7 7-7 7" />
                 </svg>
                 <button
-                  className={`px-1.5 py-1 hover:bg-stone-700 rounded text-sm whitespace-nowrap ${
-                    i === breadcrumbs.length - 1 ? 'text-white font-medium' : 'text-stone-400 hover:text-white'
+                  className={`px-1.5 py-1 hover:bg-accent rounded-lg text-sm whitespace-nowrap transition-colors ${
+                    i === breadcrumbs.length - 1 ? 'text-foreground font-medium' : 'text-muted-foreground hover:text-foreground'
                   }`}
                   onClick={() => navigateTo(crumb.path)}
                 >
@@ -261,7 +223,7 @@ export default function FolderPickerModal({ onSelect, onClose }: FolderPickerMod
             ))}
           </div>
           <button
-            className="p-1.5 hover:bg-stone-700 rounded text-stone-400 hover:text-white"
+            className="p-1.5 hover:bg-accent rounded-lg text-muted-foreground hover:text-foreground transition-colors"
             onClick={onClose}
             title="Close (Esc)"
           >
@@ -272,8 +234,8 @@ export default function FolderPickerModal({ onSelect, onClose }: FolderPickerMod
         </div>
 
         {/* Search input */}
-        <div className="flex items-center gap-2 px-4 py-2 border-b border-stone-700">
-          <div className="flex items-center justify-center text-stone-400">
+        <div className="flex items-center gap-2 px-4 py-2 border-b border-border">
+          <div className="flex items-center justify-center text-muted-foreground">
             {searching ? (
               <svg className="w-4 h-4 animate-spin" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                 <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15" />
@@ -287,7 +249,7 @@ export default function FolderPickerModal({ onSelect, onClose }: FolderPickerMod
           <input
             ref={inputRef}
             type="text"
-            className="flex-1 bg-transparent border-none outline-none text-white placeholder-stone-500"
+            className="flex-1 bg-transparent border-none outline-none text-foreground placeholder:text-muted-foreground text-sm"
             placeholder="Search folders..."
             value={query}
             onChange={(e) => setQuery(e.target.value)}
@@ -297,7 +259,7 @@ export default function FolderPickerModal({ onSelect, onClose }: FolderPickerMod
           />
           {query && (
             <button
-              className="p-1 hover:bg-stone-700 rounded text-stone-400 hover:text-white"
+              className="p-1 hover:bg-accent rounded-lg text-muted-foreground hover:text-foreground transition-colors"
               onClick={() => setQuery('')}
               title="Clear"
             >
@@ -311,30 +273,31 @@ export default function FolderPickerModal({ onSelect, onClose }: FolderPickerMod
         {/* Results */}
         <div className="flex-1 overflow-y-auto py-1">
           {loading && !isSearching ? (
-            <div className="py-6 text-center text-stone-400 text-sm">Loading...</div>
+            <div className="py-6 text-center text-muted-foreground text-sm">Loading...</div>
           ) : error && !isSearching ? (
-            <div className="py-6 text-center text-red-400 text-sm">{error}</div>
+            <div className="py-6 text-center text-destructive text-sm">{error}</div>
           ) : (
             <>
               {isSearching ? (
                 searchResults.length > 0 ? (
                   <>
-                    <div className="flex items-center gap-1.5 px-4 py-2 text-xs text-stone-500 uppercase tracking-wider">
-                      <svg className="w-3 h-3" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                    <div className="flex items-center gap-1.5 px-4 py-2">
+                      <svg className="w-3 h-3 text-muted-foreground" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                         <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0z" />
                       </svg>
-                      <span>Results</span>
+                      <span className="text-[10px] uppercase tracking-wide text-muted-foreground font-medium">Results</span>
                     </div>
                     {searchResults.map((entry, i) => (
                       <button
                         key={entry.path}
-                        className={`w-full flex items-center gap-2.5 px-4 py-2 text-left text-sm hover:bg-stone-700/50 ${
-                          i === selectedIndex ? 'bg-stone-700/50' : ''
+                        className={`w-full flex items-center gap-2.5 px-4 py-2 text-left text-sm transition-colors ${
+                          i === activeIndex ? 'bg-primary/10' : i === selectedIndex ? 'bg-accent' : 'hover:bg-accent'
                         }`}
-                        onClick={() => onSelect(entry.path)}
+                        onClick={() => { setActiveIndex(i); setSelectedIndex(i); }}
+                        onDoubleClick={() => openActive()}
                         onMouseEnter={() => setSelectedIndex(i)}
                       >
-                        <svg className={`w-4 h-4 flex-shrink-0 ${entry.isRepo ? 'text-blue-400' : 'text-stone-400'}`} fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                        <svg className={`w-4 h-4 flex-shrink-0 ${entry.isRepo ? 'text-blue-400' : 'text-muted-foreground'}`} fill="none" stroke="currentColor" viewBox="0 0 24 24">
                           {entry.isRepo ? (
                             <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M7 7h.01M7 3h5c.512 0 1.024.195 1.414.586l7 7a2 2 0 010 2.828l-7 7a2 2 0 01-2.828 0l-7-7A1.994 1.994 0 013 12V7a4 4 0 014-4z" />
                           ) : (
@@ -342,63 +305,64 @@ export default function FolderPickerModal({ onSelect, onClose }: FolderPickerMod
                           )}
                         </svg>
                         <div className="flex-1 min-w-0">
-                          <div className="truncate">{highlightMatch(entry.name, query)}</div>
-                          <div className="text-xs text-stone-500 font-mono truncate">
+                          <div className="truncate text-foreground">{highlightMatch(entry.name, query)}</div>
+                          <div className="text-xs text-muted-foreground font-mono truncate">
                             {highlightMatch(formatPath(entry.path), query)}
                           </div>
                         </div>
-                        <svg className="w-3.5 h-3.5 text-stone-500 opacity-0 group-hover:opacity-100" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                        <svg className="w-3.5 h-3.5 text-muted-foreground" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                           <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 5l7 7-7 7" />
                         </svg>
                       </button>
                     ))}
                   </>
                 ) : !searching ? (
-                  <div className="py-6 text-center text-stone-400 text-sm">No matching folders</div>
+                  <div className="py-6 text-center text-muted-foreground text-sm">No matching folders</div>
                 ) : null
               ) : entries.length > 0 ? (
                 entries.map((entry, i) => (
                   <button
                     key={entry.path}
-                    className={`w-full flex items-center gap-2.5 px-4 py-2 text-left text-sm hover:bg-stone-700/50 ${
-                      i === selectedIndex ? 'bg-stone-700/50' : ''
+                    className={`w-full flex items-center gap-2.5 px-4 py-2 text-left text-sm transition-colors ${
+                      i === activeIndex ? 'bg-primary/10' : i === selectedIndex ? 'bg-accent' : 'hover:bg-accent'
                     }`}
-                    onClick={() => (entry.isRepo ? onSelect(entry.path) : navigateTo(entry.path))}
+                    onClick={() => { setActiveIndex(i); setSelectedIndex(i); }}
+                    onDoubleClick={() => openActive()}
                     onMouseEnter={() => setSelectedIndex(i)}
                   >
-                    <svg className={`w-4 h-4 flex-shrink-0 ${entry.isRepo ? 'text-blue-400' : 'text-stone-400'}`} fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                    <svg className={`w-4 h-4 flex-shrink-0 ${entry.isRepo ? 'text-blue-400' : 'text-muted-foreground'}`} fill="none" stroke="currentColor" viewBox="0 0 24 24">
                       {entry.isRepo ? (
                         <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M7 7h.01M7 3h5c.512 0 1.024.195 1.414.586l7 7a2 2 0 010 2.828l-7 7a2 2 0 01-2.828 0l-7-7A1.994 1.994 0 013 12V7a4 4 0 014-4z" />
                       ) : (
                         <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M3 7v10a2 2 0 002 2h14a2 2 0 002-2V9a2 2 0 00-2-2h-6l-2-2H5a2 2 0 00-2 2z" />
                       )}
                     </svg>
-                    <span className="flex-1 truncate">{entry.name}</span>
-                    <svg className="w-3.5 h-3.5 text-stone-500" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                    <span className="flex-1 truncate text-foreground">{entry.name}</span>
+                    <svg className="w-3.5 h-3.5 text-muted-foreground" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                       <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 5l7 7-7 7" />
                     </svg>
                   </button>
                 ))
               ) : !loading ? (
-                <div className="py-6 text-center text-stone-400 text-sm">Empty directory</div>
+                <div className="py-6 text-center text-muted-foreground text-sm">Empty directory</div>
               ) : null}
             </>
           )}
         </div>
 
         {/* Footer */}
-        <div className="flex items-center justify-between px-4 py-2.5 border-t border-stone-700 bg-stone-800/50">
-          <span className="text-xs text-stone-500">
-            <kbd className="px-1.5 py-0.5 bg-stone-700 rounded text-[10px] font-mono mx-0.5">↑↓</kbd> navigate
-            <kbd className="px-1.5 py-0.5 bg-stone-700 rounded text-[10px] font-mono mx-0.5 ml-2">Enter</kbd> open
-            <kbd className="px-1.5 py-0.5 bg-stone-700 rounded text-[10px] font-mono mx-0.5 ml-2">Tab</kbd> drill in
-            <kbd className="px-1.5 py-0.5 bg-stone-700 rounded text-[10px] font-mono mx-0.5 ml-2">←</kbd> back
+        <div className="flex items-center justify-between px-4 py-2.5 border-t border-border bg-card/50">
+          <span className="text-xs text-muted-foreground">
+            <kbd className="px-1.5 py-0.5 bg-muted rounded text-[10px] font-mono mx-0.5">↑↓</kbd> navigate
+            <kbd className="px-1.5 py-0.5 bg-muted rounded text-[10px] font-mono mx-0.5 ml-2">Enter</kbd> open
+            <kbd className="px-1.5 py-0.5 bg-muted rounded text-[10px] font-mono mx-0.5 ml-2">Tab</kbd> drill in
+            <kbd className="px-1.5 py-0.5 bg-muted rounded text-[10px] font-mono mx-0.5 ml-2">←</kbd> back
           </span>
           <button
-            className="px-3 py-1.5 bg-blue-600 hover:bg-blue-500 rounded-md text-sm font-medium truncate max-w-[200px]"
-            onClick={() => onSelect(currentDir)}
+            className="px-3 py-1.5 bg-primary text-primary-foreground hover:opacity-90 rounded-lg text-sm font-medium transition-opacity"
+            onClick={openActive}
           >
-            Open {formatPath(currentDir)}
+            Open
           </button>
         </div>
       </div>

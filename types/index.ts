@@ -21,6 +21,14 @@ export interface Commit {
   date: string;
 }
 
+export interface DirectCommit {
+  fullSha: string;
+  sha: string;
+  message: string;
+  author: string;
+  date: string;
+}
+
 export interface MergeNode {
   sha: string;
   fullSha: string;
@@ -39,6 +47,11 @@ export interface MergedPR {
   mergedAt: string;
   mergeCommitSha: string;
   commitCount: number;
+}
+
+export interface OpenPR {
+  number: number;
+  branchName: string;
 }
 
 export interface GitHubInfo {

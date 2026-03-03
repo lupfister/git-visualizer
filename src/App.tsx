@@ -1,9 +1,11 @@
-import { useState } from 'react';
+import { useState, useEffect, useRef } from 'react';
 import { invoke } from '@tauri-apps/api/core';
+import { ChevronDown, Check } from 'lucide-react';
 import BranchMapView from '../components/BranchMapView';
+import type { ViewMode } from '../components/BranchMapView';
 import DiffViewer from '../components/DiffViewer';
 import FolderPickerModal from './FolderPickerModal';
-import type { Branch, MergeNode, MergedPR, GitHubInfo } from '../types';
+import type { Branch, DirectCommit, MergeNode, MergedPR, OpenPR, GitHubInfo } from '../types';
 
 type View = 'landing' | 'map' | 'diff';
 
@@ -12,23 +14,56 @@ function App() {
   const [repoName, setRepoName] = useState<string>('');
   const [branches, setBranches] = useState<Branch[]>([]);
   const [mergeNodes, setMergeNodes] = useState<MergeNode[]>([]);
+  const [directCommits, setDirectCommits] = useState<DirectCommit[]>([]);
   const [mergedPRs, setMergedPRs] = useState<MergedPR[]>([]);
+  const [openPRs, setOpenPRs] = useState<OpenPR[]>([]);
   const [defaultBranch, setDefaultBranch] = useState<string>('main');
-  const [loading, setLoading] = useState(false);
+  const [loading, setLoading] = useState(false);       // button spinner in landing
+  const [mapLoading, setMapLoading] = useState(false); // canvas skeleton in map
   const [error, setError] = useState<string | null>(null);
   const [view, setView] = useState<View>('landing');
   const [selectedBranch, setSelectedBranch] = useState<Branch | null>(null);
+  const [showErrorPanel, setShowErrorPanel] = useState(false);
+  const [errorPanelTab, setErrorPanelTab] = useState<'active' | 'inactive'>('active');
+  // scrollRequest.seq increments on each click so the same branch re-triggers the effect
+  const [scrollRequest, setScrollRequest] = useState<{ branch: Branch; seq: number } | null>(null);
+  const [mapUiReady, setMapUiReady] = useState(false);
+  const hadMapDataRef = useRef(false);
+  const [mapView, setMapView] = useState<ViewMode>('time');
+  const [viewDropdownOpen, setViewDropdownOpen] = useState(false);
+  const viewDropdownRef = useRef<HTMLDivElement>(null);
   const [githubAvailable, setGithubAvailable] = useState(false);
   const [githubOwner, setGithubOwner] = useState<string | null>(null);
   const [githubRepo, setGithubRepo] = useState<string | null>(null);
 
+  // Pre-warm: screenshot main branch at '/' as soon as active branches load,
+  // so DiffViewer can skip the main-side server start for the common case.
+  const [prewarmedMainShots, setPrewarmedMainShots] = useState<(string | null)[] | null>(null);
+  const prewarmedRef = useRef(false);
+
   async function loadRepo(path: string) {
     setLoading(true);
+    setMapLoading(true);
     setError(null);
+    setBranches([]);
+    setMergeNodes([]);
+    setDirectCommits([]);
+    setRepoPath(path);
+    setRepoName(path.split('/').pop() || '');
+    setView('map');
+
     try {
-      const [info, def, branchList, nodes] = await Promise.all([
+      // Phase 1: fast metadata — show the map shell immediately
+      const [info, def] = await Promise.all([
         invoke<{ name: string; path: string }>('get_repo_info', { repoPath: path }),
         invoke<string>('get_default_branch', { repoPath: path }),
+      ]);
+      setRepoName(info.name);
+      setDefaultBranch(def);
+      setLoading(false); // unblock the landing button
+
+      // Phase 2: heavier git data — timeline skeleton shows while this loads
+      const [branchList, nodes, directResult] = await Promise.all([
         invoke<Branch[]>('get_branches', { repoPath: path }),
         invoke<{ nodes: MergeNode[]; hasMore: boolean }>('get_merge_nodes', {
           repoPath: path,
@@ -36,21 +71,27 @@ function App() {
           page: 0,
           perPage: 100,
         }),
+        invoke<DirectCommit[]>('get_direct_commits', {
+          repoPath: path,
+          branch: 'HEAD',
+          limit: 300,
+        }),
       ]);
-      setRepoName(info.name);
-      setDefaultBranch(def);
       setBranches(branchList);
       setMergeNodes(nodes.nodes);
-      setRepoPath(path);
-      setView('map');
+      setDirectCommits(directResult);
+      setMapLoading(false);
 
-      // Try to fetch GitHub data (non-blocking)
+      // Phase 3: GitHub data (non-blocking)
       fetchGitHubData(path, def);
     } catch (e) {
       console.error('Failed to load repo:', e);
       setError(e instanceof Error ? e.message : String(e));
+      setView('landing');
+      setRepoPath(null);
+      setLoading(false);
+      setMapLoading(false);
     }
-    setLoading(false);
   }
 
   async function fetchGitHubData(path: string, baseBranch: string) {
@@ -61,14 +102,21 @@ function App() {
         setGithubAvailable(true);
         setGithubOwner(ghInfo.owner);
         setGithubRepo(ghInfo.repo);
-        // Fetch merged PRs
-        const prs = await invoke<MergedPR[]>('get_merged_prs', {
-          owner: ghInfo.owner,
-          repo: ghInfo.repo,
-          baseBranch,
-          limit: 50,
-        });
+        // Fetch merged PRs and open PRs in parallel
+        const [prs, open] = await Promise.all([
+          invoke<MergedPR[]>('get_merged_prs', {
+            owner: ghInfo.owner,
+            repo: ghInfo.repo,
+            baseBranch,
+            limit: 50,
+          }),
+          invoke<OpenPR[]>('get_open_prs', {
+            owner: ghInfo.owner,
+            repo: ghInfo.repo,
+          }),
+        ]);
         setMergedPRs(prs);
+        setOpenPRs(open);
       }
     } catch (e) {
       // GitHub data is optional, don't show error to user
@@ -92,17 +140,118 @@ function App() {
     }
   }
 
-  const errorBranches = branches.filter(
-    (b) => b.status === 'conflict-risk' || b.status === 'stale'
+  const openPRBranchNames = new Set(openPRs.map((p) => p.branchName));
+  const ACTIVE_MS = 14 * 86400000;
+  const now = Date.now();
+  const errorBranches = branches.filter((b) => b.status === 'conflict-risk' || b.status === 'stale');
+  const activeErrorBranches = errorBranches.filter(
+    (b) => openPRBranchNames.has(b.name) || now - new Date(b.lastCommitDate).getTime() <= ACTIVE_MS
+  );
+  const inactiveErrorBranches = errorBranches.filter(
+    (b) => !openPRBranchNames.has(b.name) && now - new Date(b.lastCommitDate).getTime() > ACTIVE_MS
   );
 
+  // Mirror BranchMap's scrollbarReady timing so the error pill fades in together.
+  // BranchMap fires drawReady after 2 rAFs (~33ms), then delays scrollbar 2600ms.
+  useEffect(() => {
+    if (mergeNodes.length === 0 || hadMapDataRef.current) return;
+    hadMapDataRef.current = true;
+    setMapUiReady(false);
+    const id = setTimeout(() => setMapUiReady(true), 2650);
+    return () => clearTimeout(id);
+  }, [mergeNodes.length]);
+
+  // Reset when a new repo is loaded
+  useEffect(() => {
+    hadMapDataRef.current = false;
+    setMapUiReady(false);
+    setPrewarmedMainShots(null);
+    prewarmedRef.current = false;
+  }, [repoPath]);
+
+  // Pre-warm: start screenshotting main at '/' as soon as active branches arrive.
+  // Uses port 3495 (separate from DiffViewer's 3491/3492) to avoid conflicts.
+  useEffect(() => {
+    const activeBranches = branches.filter(b => b.commitsAhead > 0);
+    if (!repoPath || !defaultBranch || activeBranches.length === 0) return;
+    if (prewarmedRef.current) return;
+    prewarmedRef.current = true;
+    invoke<string[]>('generate_preview_routes', {
+      repoPath,
+      branch: defaultBranch,
+      port: 3495,
+      paths: ['/'],
+    }).then(shots => {
+      setPrewarmedMainShots(shots.map(s => (s.startsWith('data:') ? s : null)));
+    }).catch(() => { /* silent — DiffViewer will fall back to fresh generation */ });
+  }, [repoPath, defaultBranch, branches.length]);
+
+  useEffect(() => {
+    if (!viewDropdownOpen) return;
+    const handler = (e: MouseEvent) => {
+      if (!viewDropdownRef.current?.contains(e.target as Node)) setViewDropdownOpen(false);
+    };
+    document.addEventListener('mousedown', handler);
+    return () => document.removeEventListener('mousedown', handler);
+  }, [viewDropdownOpen]);
+
+  // ── Cmd+Shift+S: capture screenshots of main timeline + every branch detail ──
+  useEffect(() => {
+    if (!repoPath || branches.length === 0) return;
+    const sleep = (ms: number) => new Promise<void>(r => setTimeout(r, ms));
+    const sanitize = (s: string) => s.replace(/[/\\:*?"<>|]/g, '-');
+
+    async function captureScreenshots() {
+      const homeDir = await invoke<string>('get_home_dir');
+      const outDir = `${homeDir}/Desktop/git-viz-screenshots/${repoName}`;
+      console.log(`📸 Saving screenshots to ${outDir}`);
+
+      // 1. Main timeline
+      setSelectedBranch(null);
+      setView('map');
+      await sleep(800);
+      await invoke('screenshot', { path: `${outDir}/main-timeline.png` });
+      console.log('  ✓ main-timeline.png');
+
+      // 2. Each branch detail page
+      for (const branch of branches) {
+        setSelectedBranch(branch);
+        setView('diff');
+        await sleep(1200); // wait for commits to load
+        await invoke('screenshot', { path: `${outDir}/${sanitize(branch.name)}.png` });
+        console.log(`  ✓ ${sanitize(branch.name)}.png`);
+      }
+
+      // Back to map
+      setSelectedBranch(null);
+      setView('map');
+      console.log(`📸 Done — ${branches.length + 1} screenshots saved to ${outDir}`);
+    }
+
+    const handler = (e: KeyboardEvent) => {
+      if ((e.metaKey || e.ctrlKey) && e.shiftKey && e.key === 'S') {
+        e.preventDefault();
+        captureScreenshots();
+      }
+    };
+    window.addEventListener('keydown', handler);
+    return () => window.removeEventListener('keydown', handler);
+  }, [repoPath, repoName, branches]);
+
   function handleBranchSelect(branch: Branch) {
-    setSelectedBranch((prev) => (prev?.name === branch.name ? null : branch));
+    setSelectedBranch(branch);
+    setView('diff');
   }
 
   function handleBranchClick(branch: Branch) {
     setSelectedBranch(branch);
     setView('diff');
+  }
+
+  function handleFocusOnMap(branch: Branch) {
+    setSelectedBranch(null);
+    setView('map');
+    setScrollRequest(prev => ({ branch, seq: (prev?.seq ?? 0) + 1 }));
   }
 
   function handleViewDiff() {
@@ -112,25 +261,32 @@ function App() {
   }
 
   function handleBackToMap() {
+    setSelectedBranch(null);
     setView('map');
   }
 
   function handleBackToLanding() {
     setRepoPath(null);
     setMergedPRs([]);
+    setOpenPRs([]);
+    setDirectCommits([]);
     setGithubAvailable(false);
     setView('landing');
   }
 
   return (
     <div className="h-screen bg-background text-foreground flex flex-col">
-      {view === 'landing' && (
+      <div className={view !== 'landing' ? 'hidden' : 'contents'}>
         <RepoSelector onSelect={loadRepo} loading={loading} error={error} />
-      )}
+      </div>
 
-      {view === 'map' && repoPath && (
-        <>
-          <header className="flex items-center justify-between px-8 py-5 border-b border-border">
+      {/* Map + Diff share a container — hidden only during landing.
+          Map↔Diff transitions use visibility (not display) so CSS animations don't reset. */}
+      <div className={`flex-1 overflow-hidden relative ${view === 'landing' ? 'hidden' : ''}`}>
+
+        {/* Map view */}
+        <div className={`absolute inset-0 flex flex-col ${view !== 'map' ? 'invisible pointer-events-none' : ''}`}>
+          <header className="flex items-center justify-between px-8 py-5">
             <button
               onClick={handleBackToLanding}
               className="text-muted-foreground hover:text-foreground transition-colors text-sm"
@@ -160,18 +316,112 @@ function App() {
                   </button>
                 </div>
               )}
-              {errorBranches.length > 0 && (
-                <span className="flex items-center gap-1.5 text-sm text-destructive border border-destructive/20 rounded-full px-3 py-1 bg-destructive/5">
-                  ⚠ {errorBranches.length} branch error{errorBranches.length !== 1 ? 's' : ''}
-                </span>
+              {activeErrorBranches.length > 0 && (
+                <button
+                  onClick={() => setShowErrorPanel((o) => !o)}
+                  style={{ opacity: mapUiReady ? 1 : 0, transition: 'opacity 0.4s ease' }}
+                  className={`flex items-center gap-1.5 text-xs border rounded-full px-3 py-1 transition-colors ${
+                    showErrorPanel
+                      ? 'text-destructive border-destructive/40 bg-destructive/10'
+                      : 'text-destructive border-destructive/20 bg-destructive/5 hover:bg-destructive/10'
+                  }`}
+                >
+                  <span className="w-1.5 h-1.5 rounded-full bg-destructive shrink-0" />
+                  {activeErrorBranches.length} active error{activeErrorBranches.length !== 1 ? 's' : ''}
+                </button>
               )}
+
+              {/* View selector */}
+              <div className="relative" ref={viewDropdownRef}>
+                <button
+                  onClick={() => setViewDropdownOpen((o) => !o)}
+                  className="flex items-center gap-1.5 text-xs text-muted-foreground border border-border rounded-full px-3 py-1 bg-card hover:bg-accent transition-colors"
+                >
+                  {mapView === 'time' ? 'By time' : mapView === 'status' ? 'By status' : 'By creator'}
+                  <ChevronDown className="w-3 h-3 shrink-0" />
+                </button>
+                {viewDropdownOpen && (
+                  <div className="absolute right-0 top-full mt-1.5 w-36 bg-card border border-border rounded-xl shadow-lg py-1 z-50">
+                    {(githubAvailable ? (['time', 'status', 'creator'] as ViewMode[]) : (['time', 'status'] as ViewMode[])).map((v) => (
+                      <button
+                        key={v}
+                        onClick={() => { setMapView(v); setViewDropdownOpen(false); }}
+                        className="w-full flex items-center justify-between px-3 py-2 text-xs text-foreground hover:bg-accent transition-colors"
+                      >
+                        {v === 'time' ? 'By time' : v === 'status' ? 'By status' : 'By creator'}
+                        {mapView === v && <Check className="w-3 h-3 shrink-0" />}
+                      </button>
+                    ))}
+                  </div>
+                )}
+              </div>
             </div>
           </header>
+
+          {/* Branch errors floating panel */}
+          {showErrorPanel && (
+            <div className="absolute top-[65px] right-6 z-50 w-80 bg-card border border-border rounded-2xl shadow-lg overflow-hidden">
+              <div className="flex items-center justify-between px-4 py-3 border-b border-border/50">
+                <span className="text-sm font-medium text-foreground">Branch errors</span>
+                <button
+                  onClick={() => { setShowErrorPanel(false); setErrorPanelTab('active'); }}
+                  className="text-muted-foreground hover:text-foreground transition-colors"
+                >
+                  <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
+                  </svg>
+                </button>
+              </div>
+              <div className="flex items-center gap-3 px-4 py-2 border-b border-border/30 bg-muted/30">
+                <button
+                  onClick={() => setErrorPanelTab('active')}
+                  className={`text-xs font-medium transition-colors ${errorPanelTab === 'active' ? 'text-destructive' : 'text-muted-foreground hover:text-foreground'}`}
+                >
+                  {activeErrorBranches.length} active
+                </button>
+                <span className="text-xs text-muted-foreground">·</span>
+                <button
+                  onClick={() => setErrorPanelTab('inactive')}
+                  className={`text-xs font-medium transition-colors ${errorPanelTab === 'inactive' ? 'text-foreground' : 'text-muted-foreground hover:text-foreground'}`}
+                >
+                  {inactiveErrorBranches.length} inactive
+                </button>
+              </div>
+              <div className="overflow-y-auto max-h-64">
+                {(errorPanelTab === 'active' ? activeErrorBranches : inactiveErrorBranches).map((b) => (
+                  <button
+                    key={b.name}
+                    onClick={() => { handleFocusOnMap(b); setShowErrorPanel(false); }}
+                    className="w-full flex items-start gap-3 px-4 py-3 border-b border-border/30 last:border-0 hover:bg-accent transition-colors text-left"
+                  >
+                    <div className="flex-1 min-w-0">
+                      <p className="text-sm text-foreground font-medium truncate">{b.name}</p>
+                      <p className="text-xs text-muted-foreground mt-0.5">
+                        {b.commitsAhead > 0 && `${b.commitsAhead} ahead`}
+                        {b.commitsAhead > 0 && b.commitsBehind > 0 && ', '}
+                        {b.commitsBehind > 0 && `${b.commitsBehind} behind`}
+                      </p>
+                    </div>
+                    <span className={`text-[10px] font-medium uppercase tracking-wide px-2 py-0.5 rounded-full shrink-0 mt-0.5 ${
+                      b.status === 'conflict-risk'
+                        ? 'bg-red-50 text-red-600'
+                        : 'bg-amber-50 text-amber-600'
+                    }`}>
+                      {b.status === 'conflict-risk' ? 'Conflict' : 'Stale'}
+                    </span>
+                  </button>
+                ))}
+              </div>
+            </div>
+          )}
+
           <div className="flex-1 overflow-hidden">
             <BranchMapView
               branches={branches}
               mergeNodes={mergeNodes}
+              directCommits={directCommits}
               mergedPRs={mergedPRs}
+              openPRs={openPRs}
               defaultBranch={defaultBranch}
               selectedBranch={selectedBranch}
               onBranchSelect={handleBranchSelect}
@@ -180,46 +430,124 @@ function App() {
               githubAvailable={githubAvailable}
               githubOwner={githubOwner}
               githubRepo={githubRepo}
+              view={mapView}
+              isLoading={mapLoading}
+              scrollRequest={scrollRequest}
             />
           </div>
-        </>
-      )}
+        </div>
 
-      {view === 'diff' && repoPath && selectedBranch && (
-        <DiffViewer
-          repoPath={repoPath}
-          branch={selectedBranch}
-          defaultBranch={defaultBranch}
-          onBack={handleBackToMap}
-        />
-      )}
+        {/* Diff view */}
+        {repoPath && selectedBranch && (
+          <div className={`absolute inset-0 flex flex-col transition-opacity duration-150 ${view !== 'diff' ? 'opacity-0 pointer-events-none' : 'opacity-100'}`}>
+            <DiffViewer
+              key={selectedBranch.name}
+              repoPath={repoPath}
+              branch={selectedBranch}
+              defaultBranch={defaultBranch}
+              mergedPR={mergedPRs.find(p => p.branchName === selectedBranch.name)}
+              prewarmedMainShots={prewarmedMainShots}
+              onBack={handleBackToMap}
+            />
+          </div>
+        )}
+
+      </div>
     </div>
   );
 }
 
-// Decorative dot circle component
-function DotCircle({ size, left, top }: { size: number; left: string; top: string }) {
-  const r = size / 2;
-  const spacing = 9;
-  const dots: { x: number; y: number; opacity: number }[] = [];
+function InteractiveDotField() {
+  const canvasRef = useRef<HTMLCanvasElement>(null);
+  const mouse = useRef({ x: -9999, y: -9999 });
+  const raf = useRef(0);
+  const dots = useRef<{ x: number; y: number; phase: number }[]>([]);
 
-  for (let x = -r; x <= r; x += spacing) {
-    for (let y = -r; y <= r; y += spacing) {
-      const dist = Math.sqrt(x * x + y * y);
-      if (dist <= r) {
-        dots.push({ x, y, opacity: 1 - (dist / r) * 0.75 });
+  useEffect(() => {
+    const rawCanvas = canvasRef.current;
+    if (!rawCanvas) return;
+    const canvas: HTMLCanvasElement = rawCanvas;
+    const ctx = canvas.getContext('2d')!;
+    const SPACING = 20;
+
+    function buildDots(w: number, h: number) {
+      const arr: { x: number; y: number; phase: number }[] = [];
+      const cols = Math.floor(w / SPACING);
+      const rows = Math.floor(h / SPACING);
+      const ox = (w - cols * SPACING) / 2;
+      const oy = (h - rows * SPACING) / 2;
+      for (let r = 0; r <= rows; r++) {
+        for (let c = 0; c <= cols; c++) {
+          arr.push({ x: ox + c * SPACING, y: oy + r * SPACING, phase: Math.random() * Math.PI * 2 });
+        }
       }
+      dots.current = arr;
     }
-  }
+
+    function resize() {
+      const dpr = window.devicePixelRatio || 1;
+      const w = canvas.offsetWidth;
+      const h = canvas.offsetHeight;
+      canvas.width = w * dpr;
+      canvas.height = h * dpr;
+      ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+      buildDots(w, h);
+    }
+
+    resize();
+    const ro = new ResizeObserver(resize);
+    ro.observe(canvas);
+
+    function draw(t: number) {
+      const w = canvas.offsetWidth;
+      const h = canvas.offsetHeight;
+      ctx.clearRect(0, 0, w, h);
+      const mx = mouse.current.x;
+      const my = mouse.current.y;
+      const INFLUENCE = 160;
+      const MAX_PUSH  = 28;
+
+      for (const d of dots.current) {
+        const pulse = 0.1 + 0.22 * Math.sin(t * 0.0005 + d.phase);
+        const ddx = d.x - mx;
+        const ddy = d.y - my;
+        const dist = Math.sqrt(ddx * ddx + ddy * ddy);
+        const prox = Math.max(0, 1 - dist / INFLUENCE);
+
+        // Repel: push dot away from cursor
+        const force = Math.pow(prox, 2) * MAX_PUSH;
+        const drawX = dist > 0 ? d.x + (ddx / dist) * force : d.x;
+        const drawY = dist > 0 ? d.y + (ddy / dist) * force : d.y;
+
+        const opacity = pulse + prox * 0.4;
+        const r = 1.3 + prox * 1.2;
+
+        ctx.beginPath();
+        ctx.arc(drawX, drawY, r, 0, Math.PI * 2);
+        ctx.fillStyle = `rgba(168, 162, 158, ${opacity})`;
+        ctx.fill();
+      }
+
+      raf.current = requestAnimationFrame(draw);
+    }
+
+    raf.current = requestAnimationFrame(draw);
+    return () => {
+      cancelAnimationFrame(raf.current);
+      ro.disconnect();
+    };
+  }, []);
 
   return (
-    <div className="absolute" style={{ left, top, transform: 'translate(-50%, -50%)' }}>
-      <svg width={size} height={size} viewBox={`${-r} ${-r} ${size} ${size}`}>
-        {dots.map((d, i) => (
-          <circle key={i} cx={d.x} cy={d.y} r={1.3} fill="#57534e" opacity={d.opacity * 0.6} />
-        ))}
-      </svg>
-    </div>
+    <canvas
+      ref={canvasRef}
+      className="w-full h-full"
+      onMouseMove={(e) => {
+        const rect = e.currentTarget.getBoundingClientRect();
+        mouse.current = { x: e.clientX - rect.left, y: e.clientY - rect.top };
+      }}
+      onMouseLeave={() => { mouse.current = { x: -9999, y: -9999 }; }}
+    />
   );
 }
 
@@ -244,21 +572,14 @@ function RepoSelector({
   return (
     <main className="flex h-full overflow-hidden">
       {/* Left decorative panel */}
-      <div className="w-[42%] relative flex-shrink-0 bg-[#111] overflow-hidden">
-        <DotCircle size={320} left="38%" top="34%" />
-        <DotCircle size={280} left="52%" top="68%" />
-        <div
-          className="absolute text-[9px] text-muted-foreground tracking-widest font-mono leading-4"
-          style={{ top: '44%', left: '58%', transform: 'rotate(90deg)', transformOrigin: 'left top' }}
-        >
-          59.9139°N<br />10.7522°E
-        </div>
+      <div className="w-[26%] relative flex-shrink-0 bg-muted overflow-hidden">
+        <InteractiveDotField />
       </div>
 
       {/* Right content panel */}
       <div className="flex-1 flex flex-col justify-center px-16 bg-background">
-        <p className="text-sm text-muted-foreground mb-3 tracking-wide">Git visualizer</p>
-        <h1 className="text-[2.5rem] font-bold leading-[1.15] text-foreground mb-14 max-w-xs">
+        <p className="font-light text-foreground w-[60%]" style={{ fontFamily: 'var(--font-space-grotesk)', fontSize: '48px', lineHeight: 1 }}>Git visualizer</p>
+        <h1 className="font-bold text-foreground mb-14 w-[60%]" style={{ fontFamily: 'var(--font-space-grotesk)', fontSize: '48px', lineHeight: 1.08 }}>
           See what your team is building, without reading a line of code.
         </h1>
 
@@ -267,7 +588,7 @@ function RepoSelector({
         <div className="flex flex-col gap-3 w-64">
           <button
             onClick={() => setShowPicker(true)}
-            className="px-6 py-3 border border-foreground text-foreground text-sm hover:bg-foreground hover:text-background transition-colors text-center"
+            className="px-6 py-3 border border-border bg-card text-foreground text-sm hover:bg-accent transition-colors text-center rounded-2xl"
           >
             Browse for repository
           </button>
@@ -275,29 +596,47 @@ function RepoSelector({
           {!showInput ? (
             <button
               onClick={() => setShowInput(true)}
-              className="px-6 py-3 border border-foreground text-foreground text-sm hover:bg-foreground hover:text-background transition-colors text-center"
+              className="px-6 py-3 border border-border bg-card text-foreground text-sm hover:bg-accent transition-colors text-center rounded-2xl"
             >
               Enter repo path
             </button>
           ) : (
-            <form onSubmit={(e) => { e.preventDefault(); path && onSelect(path); }} className="flex flex-col gap-2">
-              <input
-                autoFocus
-                type="text"
-                value={path}
-                onChange={(e) => setPath(e.target.value)}
-                placeholder="/path/to/repository"
-                className="px-4 py-3 border border-border bg-transparent text-sm text-foreground placeholder-muted-foreground outline-none focus:border-foreground"
-              />
-              {error && <p className="text-xs text-destructive">{error}</p>}
-              <button
-                type="submit"
-                disabled={!path || loading}
-                className="px-6 py-3 bg-foreground text-background text-sm hover:bg-muted-foreground transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
+            <div className="flex flex-col gap-2 animate-pill-expand">
+              <form
+                onSubmit={(e) => { e.preventDefault(); path && onSelect(path); }}
+                className="flex items-center rounded-2xl border border-border bg-card"
               >
-                {loading ? 'Loading...' : 'Open repository →'}
-              </button>
-            </form>
+                {/* Input with left-edge gradient fade for overflow text */}
+                <div className="relative flex-1 min-w-0 overflow-hidden rounded-l-2xl">
+                  <input
+                    autoFocus
+                    type="text"
+                    value={path}
+                    onChange={(e) => setPath(e.target.value)}
+                    placeholder="Enter link"
+                    className="w-full pl-5 pr-2 py-3.5 bg-transparent text-sm text-foreground placeholder:text-muted-foreground outline-none"
+                  />
+                  <div
+                    className="absolute left-0 inset-y-0 w-10 pointer-events-none"
+                    style={{ background: 'linear-gradient(to right, var(--card), transparent)' }}
+                  />
+                </div>
+                <button
+                  type="submit"
+                  disabled={!path || loading}
+                  className="m-1.5 w-10 h-10 rounded-[14px] bg-foreground text-background flex items-center justify-center shrink-0 hover:opacity-80 transition-opacity disabled:opacity-30"
+                >
+                  {loading ? (
+                    <div className="w-3.5 h-3.5 border-2 border-background/30 border-t-background rounded-full animate-spin" />
+                  ) : (
+                    <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2.5} d="M9 5l7 7-7 7" />
+                    </svg>
+                  )}
+                </button>
+              </form>
+              {error && <p className="text-xs text-destructive px-2">{error}</p>}
+            </div>
           )}
         </div>
       </div>

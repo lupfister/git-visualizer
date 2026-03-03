@@ -4,6 +4,54 @@ use std::path::Path;
 
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
+pub struct DirectCommit {
+    pub full_sha: String,
+    pub sha: String,
+    pub message: String,
+    pub author: String,
+    pub date: String,
+}
+
+/// Get direct (non-merge) commits from a branch.
+pub fn get_direct_commits(
+    repo: &Path,
+    branch: &str,
+    limit: u32,
+) -> Result<Vec<DirectCommit>, GitError> {
+    let output = cli::run(
+        repo,
+        &[
+            "log",
+            "--no-merges",
+            &format!("--max-count={}", limit),
+            "--format=%H|%h|%s|%an|%aI",
+            branch,
+        ],
+    )?;
+
+    let commits = output
+        .lines()
+        .filter(|s| !s.is_empty())
+        .filter_map(|line| {
+            let parts: Vec<&str> = line.splitn(5, '|').collect();
+            if parts.len() < 5 {
+                return None;
+            }
+            Some(DirectCommit {
+                full_sha: parts[0].to_string(),
+                sha: parts[1].to_string(),
+                message: parts[2].to_string(),
+                author: parts[3].to_string(),
+                date: parts[4].to_string(),
+            })
+        })
+        .collect();
+
+    Ok(commits)
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
 pub struct MergeNode {
     pub sha: String,
     pub full_sha: String,

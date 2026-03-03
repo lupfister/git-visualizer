@@ -1,8 +1,10 @@
 mod git;
 mod github;
 
-use git::{Branch, MergeNode};
-use github::{GitHubInfo, MergedPR};
+use tauri::Manager;
+
+use git::{Branch, DirectCommit, MergeNode};
+use github::{GitHubInfo, MergedPR, OpenPR};
 use std::path::Path;
 
 #[derive(serde::Serialize)]
@@ -336,12 +338,1073 @@ fn get_merged_prs(
 }
 
 #[tauri::command(rename_all = "camelCase")]
+fn get_open_prs(owner: String, repo: String) -> Result<Vec<OpenPR>, String> {
+    github::get_open_prs(&owner, &repo)
+}
+
+#[tauri::command(rename_all = "camelCase")]
 fn get_pr_commits(
     owner: String,
     repo: String,
     pr_numbers: Vec<i64>,
 ) -> Result<std::collections::HashMap<i64, Vec<String>>, String> {
     github::get_pr_commits(&owner, &repo, &pr_numbers)
+}
+
+#[tauri::command(rename_all = "camelCase")]
+fn get_branch_diff(
+    repo_path: String,
+    branch: String,
+    base_branch: String,
+    merge_commit_sha: Option<String>,
+) -> Result<String, String> {
+    let path = Path::new(&repo_path);
+    let diff = if let Some(sha) = merge_commit_sha {
+        // Historical diff: show what this PR added when it was merged
+        let parent = format!("{}^1", sha);
+        git::cli::run(path, &["diff", &parent, &sha, "--unified=3"])
+            .map_err(|e| e.to_string())?
+    } else {
+        // Current diff: unmerged changes ahead of base branch
+        let range = format!("{}...{}", base_branch, branch);
+        git::cli::run(path, &["diff", &range, "--unified=3"])
+            .map_err(|e| e.to_string())?
+    };
+    const MAX_CHARS: usize = 60_000;
+    if diff.len() > MAX_CHARS {
+        Ok(format!("{}\n\n[diff truncated at {} chars]", &diff[..MAX_CHARS], MAX_CHARS))
+    } else {
+        Ok(diff)
+    }
+}
+
+#[derive(serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CommitInfo {
+    sha: String,
+    message: String,
+    author: String,
+    date: String,
+}
+
+#[tauri::command(rename_all = "camelCase")]
+fn get_branch_commits(
+    repo_path: String,
+    branch: String,
+    base_branch: String,
+    merge_commit_sha: Option<String>,
+) -> Result<Vec<CommitInfo>, String> {
+    let path = Path::new(&repo_path);
+    let range = if let Some(sha) = merge_commit_sha {
+        // Commits that were part of this merged PR
+        format!("{}^1..{}", sha, sha)
+    } else {
+        // Commits on this branch not yet in base
+        format!("{}..{}", base_branch, branch)
+    };
+    let output = git::cli::run(
+        path,
+        &["log", &range, "--format=%H|%h|%s|%an|%aI", "--no-merges"],
+    )
+    .map_err(|e| e.to_string())?;
+
+    let commits = output
+        .lines()
+        .filter(|l| !l.is_empty())
+        .filter_map(|line| {
+            let parts: Vec<&str> = line.splitn(5, '|').collect();
+            if parts.len() < 5 { return None; }
+            Some(CommitInfo {
+                sha: parts[1].to_string(),
+                message: parts[2].to_string(),
+                author: parts[3].to_string(),
+                date: parts[4].to_string(),
+            })
+        })
+        .collect();
+
+    Ok(commits)
+}
+
+#[tauri::command(rename_all = "camelCase")]
+fn get_direct_commits(
+    repo_path: String,
+    branch: String,
+    limit: Option<u32>,
+) -> Result<Vec<DirectCommit>, String> {
+    let path = Path::new(&repo_path);
+    let limit = limit.unwrap_or(200);
+    git::get_direct_commits(path, &branch, limit).map_err(|e| e.to_string())
+}
+
+/// Recent commits on a branch (no base filtering — just git log -N <branch>).
+#[tauri::command(rename_all = "camelCase")]
+fn get_recent_log(
+    repo_path: String,
+    branch: String,
+    limit: Option<u32>,
+) -> Result<Vec<CommitInfo>, String> {
+    let path = Path::new(&repo_path);
+    let limit_str = limit.unwrap_or(20).to_string();
+    let output = git::cli::run(
+        path,
+        &["log", &branch, &format!("--max-count={}", limit_str), "--format=%H|%h|%s|%an|%aI", "--no-merges"],
+    )
+    .map_err(|e| e.to_string())?;
+    let commits = output
+        .lines()
+        .filter(|l| !l.is_empty())
+        .filter_map(|line| {
+            let parts: Vec<&str> = line.splitn(5, '|').collect();
+            if parts.len() < 5 { return None; }
+            Some(CommitInfo {
+                sha: parts[1].to_string(),
+                message: parts[2].to_string(),
+                author: parts[3].to_string(),
+                date: parts[4].to_string(),
+            })
+        })
+        .collect();
+    Ok(commits)
+}
+
+// =============================================================================
+// App Preview Screenshots
+// =============================================================================
+
+/// Extract the first `http://localhost:PORT` URL from a server startup log.
+/// Works for Vite ("Local: http://localhost:5175/") and
+/// Next.js ("- Local: http://localhost:3000").
+fn parse_localhost_url(log: &str) -> Option<String> {
+    let start = log.find("localhost:")?;
+    let after = &log[start + 10..]; // skip "localhost:"
+    let end = after.find(|c: char| !c.is_ascii_digit()).unwrap_or(after.len());
+    let port: u16 = after[..end].parse().ok()?;
+    Some(format!("http://localhost:{port}"))
+}
+
+/// Normalize any naming convention to lowercase alphanumeric only, so that
+/// `DesignOnboarding`, `design-onboarding`, and `design_onboarding` all compare equal.
+fn normalize_name(s: &str) -> String {
+    s.chars()
+        .filter(|c| c.is_alphanumeric())
+        .flat_map(|c| c.to_lowercase())
+        .collect()
+}
+
+/// All page routes that exist in the repo at HEAD (used for fuzzy matching).
+fn all_page_routes(repo_path: &Path) -> Vec<String> {
+    let Ok(output) = git::cli::run(
+        repo_path,
+        &["ls-tree", "-r", "--name-only", "HEAD", "--", "app", "pages"],
+    ) else {
+        return Vec::new();
+    };
+    let mut seen = std::collections::HashSet::new();
+    output
+        .lines()
+        .filter(|l| !l.is_empty())
+        .filter_map(file_to_route)
+        .filter(|r| seen.insert(r.clone()))
+        .collect()
+}
+
+/// For changed files that aren't page files themselves, fuzzy-match their
+/// base name against route path segments.
+///
+/// Example: `components/DesignOnboarding.tsx` → normalize `designonboarding`
+///          → matches route `/design-onboarding` (segment normalizes the same).
+fn fuzzy_matched_routes<'a>(changed_files: &[&str], all_routes: &'a [String]) -> Vec<&'a String> {
+    let mut matched: Vec<&String> = Vec::new();
+    let mut seen = std::collections::HashSet::new();
+
+    for &file in changed_files {
+        if file_to_route(file).is_some() { continue; } // already handled directly
+
+        let base = std::path::Path::new(file)
+            .file_stem()
+            .and_then(|s| s.to_str())
+            .unwrap_or("");
+        if base.len() < 5 { continue; } // skip very short names to avoid noise
+
+        let norm_base = normalize_name(base);
+
+        for route in all_routes {
+            if seen.contains(route.as_str()) { continue; }
+            // Match if any non-empty path segment normalizes to the component name,
+            // or if the component name starts with the segment (e.g. DesignOnboardingPanel → design-onboarding)
+            let hit = route
+                .split('/')
+                .filter(|s| !s.is_empty())
+                .any(|seg| {
+                    let norm_seg = normalize_name(seg);
+                    norm_seg == norm_base
+                        || (norm_seg.len() >= 8 && norm_base.starts_with(&norm_seg))
+                });
+            if hit {
+                seen.insert(route.as_str());
+                matched.push(route);
+            }
+        }
+    }
+    matched
+}
+
+/// Debug: return raw git diff --name-only output so we can see which files changed.
+#[tauri::command(rename_all = "camelCase")]
+fn debug_diff_files(repo_path: String, branch: String, base_branch: String) -> String {
+    let path = Path::new(&repo_path);
+    let range = format!("{}...{}", base_branch, branch);
+    match git::cli::run(path, &["diff", "--name-only", &range]) {
+        Ok(s) => format!("OK: {:?}", s),
+        Err(e) => format!("ERR: {e}"),
+    }
+}
+
+/// For non-page files inside an app route directory, extract the route from
+/// the first non-special path segment under `app/`.
+///
+/// Examples:
+///   app/design-onboarding/DesignOnboardingPanel.tsx  →  /design-onboarding
+///   app/design-onboarding/components/Card.tsx         →  /design-onboarding
+///   app/api/users/route.ts                             →  None (api skipped)
+fn app_dir_to_route(file: &str) -> Option<String> {
+    if file_to_route(file).is_some() { return None; } // already a page file
+    let rest = file.strip_prefix("app/")?;
+    let slash_pos = rest.find('/')?; // must be inside a subdirectory
+    let first_seg = &rest[..slash_pos];
+    // Skip route groups, dynamic segs, parallel routes, private dirs, and api
+    if first_seg.starts_with('(')
+        || first_seg.starts_with('[')
+        || first_seg.starts_with('@')
+        || first_seg.starts_with('_')
+        || first_seg == "api"
+    {
+        return None;
+    }
+    Some(format!("/{first_seg}"))
+}
+
+/// Return the URL paths most likely affected by the branch's diff.
+///
+/// Three-pass detection:
+/// 1. Direct: changed files that ARE page files (app/**/page.tsx, pages/*.tsx).
+/// 2. Directory: non-page files inside app route dirs (app/design-onboarding/X.tsx → /design-onboarding).
+/// 3. Fuzzy: changed component filenames matched against all page routes in
+///    the repo — e.g. `DesignOnboarding.tsx` → `/design-onboarding`.
+#[tauri::command(rename_all = "camelCase")]
+fn get_changed_routes(
+    repo_path: String,
+    branch: String,
+    base_branch: String,
+) -> Result<Vec<String>, String> {
+    let path = Path::new(&repo_path);
+    let output = git::cli::run(
+        path,
+        &["diff", "--name-only", &format!("{}...{}", base_branch, branch)],
+    )
+    .map_err(|e| e.to_string())?;
+
+    let changed_files: Vec<&str> = output.lines().filter(|l| !l.is_empty()).collect();
+
+    let mut seen = std::collections::HashSet::new();
+
+    // Pass 1: direct page file matches
+    let mut routes: Vec<String> = changed_files
+        .iter()
+        .filter_map(|f| file_to_route(f))
+        .filter(|r| seen.insert(r.clone()))
+        .collect();
+
+    // Pass 2: non-page files inside app route directories → extract containing route
+    for &file in &changed_files {
+        if let Some(route) = app_dir_to_route(file) {
+            if seen.insert(route.clone()) {
+                routes.push(route);
+            }
+        }
+    }
+
+    // Pass 3: fuzzy-match non-page filenames against all routes in the repo
+    let all_routes = all_page_routes(path);
+    for r in fuzzy_matched_routes(&changed_files, &all_routes) {
+        if seen.insert(r.clone()) {
+            routes.push(r.clone());
+        }
+    }
+
+    Ok(routes)
+}
+
+/// Map a changed file path to a URL route, or None if not a page file.
+fn file_to_route(file: &str) -> Option<String> {
+    const PAGE_EXTS: &[&str] = &["page.tsx", "page.jsx", "page.ts", "page.js"];
+
+    // Next.js App Router: app/**/page.{tsx,jsx,ts,js}
+    if let Some(rest) = file.strip_prefix("app/") {
+        for &suffix in PAGE_EXTS {
+            if rest == suffix {
+                return Some("/".to_string());
+            }
+            if let Some(route_part) = rest.strip_suffix(&format!("/{suffix}")) {
+                return app_route_to_url(route_part);
+            }
+        }
+    }
+
+    // Next.js Pages Router: pages/**/*.{tsx,jsx,ts,js}
+    if let Some(rest) = file.strip_prefix("pages/") {
+        if rest.starts_with('_') || rest.starts_with("api/") {
+            return None;
+        }
+        for &ext in &[".tsx", ".jsx", ".ts", ".js"] {
+            if let Some(route) = rest.strip_suffix(ext) {
+                if route == "index" {
+                    return Some("/".to_string());
+                }
+                let route = route.strip_suffix("/index").unwrap_or(route);
+                // Skip dynamic segments
+                if route.contains('[') {
+                    return None;
+                }
+                return Some(format!("/{route}"));
+            }
+        }
+    }
+
+    // File-based routing under src/routes/ or app/routes/ (TanStack Router, Remix, SvelteKit, etc.)
+    // e.g. src/routes/design-onboarding.tsx → /design-onboarding
+    let routes_rest = file
+        .strip_prefix("src/routes/")
+        .or_else(|| file.strip_prefix("app/routes/"));
+    if let Some(rest) = routes_rest {
+        // Skip special files: __root, _layout, leading underscores, api routes
+        if rest.starts_with('_') || rest.starts_with("api/") || rest.starts_with("api.") {
+            return None;
+        }
+        const EXTS: &[&str] = &[".tsx", ".jsx", ".ts", ".js", ".svelte", ".vue"];
+        for &ext in EXTS {
+            if let Some(route) = rest.strip_suffix(ext) {
+                let route = route.strip_suffix("/index").unwrap_or(route);
+                let route = route.strip_suffix("/route").unwrap_or(route);
+                let route = route.strip_suffix("/page").unwrap_or(route);
+                if route == "index" || route.is_empty() {
+                    return Some("/".to_string());
+                }
+                // Skip dynamic ($param or [param]) and layout groups
+                if route.contains('$') || route.contains('[') || route.contains('(') {
+                    return None;
+                }
+                return Some(format!("/{route}"));
+            }
+        }
+    }
+
+    None
+}
+
+/// Convert an App Router directory path to a URL, stripping route groups
+/// `(group)` and parallel routes `@slot`, skipping dynamic segments `[id]`.
+fn app_route_to_url(path: &str) -> Option<String> {
+    let segments: Vec<&str> = path
+        .split('/')
+        .filter(|s| {
+            !s.starts_with('(') // route groups
+                && !s.starts_with('@') // parallel routes
+                && !s.starts_with('[') // dynamic segments — skip whole route
+        })
+        .collect();
+
+    // If any dynamic segment was present, the original split had more parts
+    if path.split('/').any(|s| s.starts_with('[')) {
+        return None;
+    }
+
+    if segments.is_empty() {
+        Some("/".to_string())
+    } else {
+        Some(format!("/{}", segments.join("/")))
+    }
+}
+
+/// Screenshot a single path (convenience wrapper around `generate_preview_routes`).
+#[tauri::command(rename_all = "camelCase")]
+async fn generate_preview(repo_path: String, branch: String, port: u16, path: Option<String>) -> Result<String, String> {
+    let paths = vec![path.unwrap_or_else(|| "/".to_string())];
+    let mut results = tauri::async_runtime::spawn_blocking(move || run_previews_blocking(repo_path, branch, port, paths))
+        .await
+        .map_err(|e| format!("Spawn error: {e}"))??;
+    results.pop().filter(|s| !s.is_empty()).ok_or_else(|| "No screenshot generated".to_string())
+}
+
+/// Screenshot multiple paths in a single server startup — one data URL per path.
+/// Empty-string entries indicate a screenshot failure for that specific route.
+#[tauri::command(rename_all = "camelCase")]
+async fn generate_preview_routes(repo_path: String, branch: String, port: u16, paths: Vec<String>) -> Result<Vec<String>, String> {
+    tauri::async_runtime::spawn_blocking(move || run_previews_blocking(repo_path, branch, port, paths))
+        .await
+        .map_err(|e| format!("Spawn error: {e}"))?
+}
+
+/// Node.js script that uses Chrome DevTools Protocol to screenshot a URL.
+///
+/// Unlike `chrome --screenshot` (which fires at the browser `load` event, before
+/// React's useEffect data fetches), this script waits for **network idle** — no
+/// in-flight requests for 2 s — before capturing.  That means the screenshot
+/// shows fully-loaded data, not loading skeletons.
+///
+/// Uses only Node.js built-in modules so it works without npm install.
+const CDP_SCREENSHOT_SCRIPT: &str = r#"
+'use strict';
+const http   = require('http');
+const net    = require('net');
+const crypto = require('crypto');
+const fs     = require('fs');
+const { spawn } = require('child_process');
+
+// urlsJson is a JSON array of full URLs to screenshot in sequence.
+// Screenshots are saved as outDir/0.png, outDir/1.png, …
+const [,, urlsJson, chromePath, outDir, cdpPortStr] = process.argv;
+const urls = JSON.parse(urlsJson);
+const CDP_PORT = parseInt(cdpPortStr, 10);
+
+const userDataDir = require('os').tmpdir() + '/git-viz-chrome-' + CDP_PORT;
+const chrome = spawn(chromePath, [
+  '--headless', '--no-sandbox', '--disable-gpu', '--hide-scrollbars',
+  '--window-size=1440,900', '--disable-extensions', '--disable-default-apps',
+  // Allow any origin to connect via CDP (required in Chrome 112+).
+  '--remote-allow-origins=*',
+  `--user-data-dir=${userDataDir}`,
+  `--remote-debugging-port=${CDP_PORT}`,
+  'about:blank',
+], { stdio: 'ignore' });
+chrome.on('error', err => { process.stderr.write('Chrome error: ' + err.message + '\n'); process.exit(1); });
+
+function sleep(ms) { return new Promise(r => setTimeout(r, ms)); }
+
+function httpGet(url) {
+  return new Promise((resolve, reject) => {
+    http.get(url, res => {
+      let d = ''; res.on('data', c => d += c); res.on('end', () => resolve(d));
+    }).on('error', reject);
+  });
+}
+
+async function waitForTarget(timeout) {
+  const deadline = Date.now() + timeout;
+  while (Date.now() < deadline) {
+    try {
+      const data = await httpGet(`http://localhost:${CDP_PORT}/json/list`);
+      const targets = JSON.parse(data);
+      const page = targets.find(t => t.type === 'page');
+      if (page && page.webSocketDebuggerUrl) return page.webSocketDebuggerUrl;
+    } catch(_) {}
+    await sleep(200);
+  }
+  throw new Error('Timeout waiting for Chrome CDP on port ' + CDP_PORT);
+}
+
+function wsConnect(wsUrl) {
+  return new Promise((resolve, reject) => {
+    const { hostname: host, port, pathname, search } = new URL(wsUrl);
+    const wsPath = pathname + (search || '');
+    const key    = crypto.randomBytes(16).toString('base64');
+    const socket = net.createConnection(parseInt(port, 10), host);
+
+    const handlers = new Map();
+    const listeners = [];
+    let wsOpen = false;
+    let httpBuf = Buffer.alloc(0);
+    let frameBuf = Buffer.alloc(0);
+    let nextId = 1;
+
+    socket.on('connect', () => {
+      socket.write([
+        `GET ${wsPath} HTTP/1.1`, `Host: ${host}:${port}`,
+        'Upgrade: websocket', 'Connection: Upgrade',
+        `Sec-WebSocket-Key: ${key}`, 'Sec-WebSocket-Version: 13',
+        '', '',
+      ].join('\r\n'));
+    });
+
+    socket.on('data', chunk => {
+      if (!wsOpen) {
+        httpBuf = Buffer.concat([httpBuf, chunk]);
+        const sep = httpBuf.indexOf('\r\n\r\n');
+        if (sep !== -1) {
+          const statusLine = httpBuf.slice(0, sep).toString().split('\r\n')[0];
+          if (!statusLine.includes('101')) {
+            return reject(new Error('WebSocket upgrade failed: ' + statusLine));
+          }
+          wsOpen = true;
+          const rest = httpBuf.slice(sep + 4);
+          if (rest.length) processFrames(rest);
+          resolve(ws);
+        }
+        return;
+      }
+      processFrames(chunk);
+    });
+
+    function processFrames(data) {
+      frameBuf = Buffer.concat([frameBuf, data]);
+      while (frameBuf.length >= 2) {
+        const opcode = frameBuf[0] & 0x0f;
+        let len = frameBuf[1] & 0x7f, off = 2;
+        if (len === 126) {
+          if (frameBuf.length < 4) break;
+          len = frameBuf.readUInt16BE(2); off = 4;
+        } else if (len === 127) {
+          if (frameBuf.length < 10) break;
+          len = frameBuf.readUInt32BE(2) * 0x100000000 + frameBuf.readUInt32BE(6); off = 10;
+        }
+        if (frameBuf.length < off + len) break;
+        const payload = frameBuf.slice(off, off + len);
+        frameBuf = frameBuf.slice(off + len);
+        if (opcode === 1) {
+          try {
+            const msg = JSON.parse(payload.toString());
+            if (msg.id != null && handlers.has(msg.id)) {
+              const h = handlers.get(msg.id); handlers.delete(msg.id);
+              msg.error ? h.reject(new Error(JSON.stringify(msg.error))) : h.resolve(msg.result);
+            } else if (msg.method) {
+              listeners.forEach(fn => fn(msg));
+            }
+          } catch(_) {}
+        } else if (opcode === 8) { socket.destroy(); }
+      }
+    }
+
+    function sendFrame(text) {
+      const payload = Buffer.from(text);
+      const mask = crypto.randomBytes(4);
+      let hdr;
+      if (payload.length < 126) {
+        hdr = Buffer.alloc(6); hdr[0] = 0x81; hdr[1] = 0x80 | payload.length; mask.copy(hdr, 2);
+      } else if (payload.length < 65536) {
+        hdr = Buffer.alloc(8); hdr[0] = 0x81; hdr[1] = 0xfe; hdr.writeUInt16BE(payload.length, 2); mask.copy(hdr, 4);
+      } else {
+        hdr = Buffer.alloc(14); hdr[0] = 0x81; hdr[1] = 0xff;
+        hdr.writeUInt32BE(0, 2); hdr.writeUInt32BE(payload.length, 6); mask.copy(hdr, 10);
+      }
+      const masked = Buffer.allocUnsafe(payload.length);
+      for (let i = 0; i < payload.length; i++) masked[i] = payload[i] ^ mask[i % 4];
+      socket.write(Buffer.concat([hdr, masked]));
+    }
+
+    const ws = {
+      send(method, params) {
+        return new Promise((res, rej) => {
+          const id = nextId++;
+          handlers.set(id, { resolve: res, reject: rej });
+          sendFrame(JSON.stringify({ id, method, params: params || {} }));
+          setTimeout(() => {
+            if (handlers.has(id)) { handlers.delete(id); rej(new Error('CDP timeout: ' + method)); }
+          }, 30000);
+        });
+      },
+      on(fn) { listeners.push(fn); },
+      close() { try { socket.destroy(); } catch(_) {} },
+    };
+
+    socket.on('error', err => { if (!wsOpen) reject(err); });
+  });
+}
+
+async function main() {
+  let ws;
+  try {
+    const wsUrl = await waitForTarget(20000);
+    ws = await wsConnect(wsUrl);
+
+    await ws.send('Network.enable', {});
+    await ws.send('Page.enable', {});
+    await ws.send('Emulation.setDeviceMetricsOverride', {
+      width: 1440, height: 900, deviceScaleFactor: 1, mobile: false,
+    });;
+
+    const inFlight = new Set();
+    let lastActivity = Date.now();
+
+    ws.on(msg => {
+      if (msg.method === 'Network.requestWillBeSent') {
+        inFlight.add(msg.params.requestId); lastActivity = Date.now();
+      } else if (msg.method === 'Network.loadingFinished' || msg.method === 'Network.loadingFailed') {
+        inFlight.delete(msg.params.requestId); lastActivity = Date.now();
+      }
+    });
+
+    const IDLE_MS = 2000, MAX_MS = 30000;
+    const { join } = require('path');
+
+    for (let i = 0; i < urls.length; i++) {
+      // Reset network tracking for each new page load
+      inFlight.clear();
+      lastActivity = Date.now();
+
+      await ws.send('Page.navigate', { url: urls[i] });
+      lastActivity = Date.now();
+
+      const started = Date.now();
+      while (Date.now() - started < MAX_MS) {
+        await sleep(250);
+        if (inFlight.size === 0 && Date.now() - lastActivity >= IDLE_MS) break;
+      }
+
+      // Try to click an entry-point button (e.g. "START") to reveal the main content.
+      // Matches buttons/links whose full visible text is a single common CTA word.
+      await sleep(400);
+      const clickResult = await ws.send('Runtime.evaluate', {
+        expression: `(() => {
+          const re = /^\\s*(start|begin|enter|open|launch|go|continue|next|let's go|get started)\\s*$/i;
+          const el = Array.from(document.querySelectorAll('button, a, [role="button"]'))
+            .find(el => re.test(el.textContent));
+          if (el) { el.click(); return el.textContent.trim(); }
+          return null;
+        })()`,
+        returnByValue: true,
+      });
+
+      if (clickResult && clickResult.result && clickResult.result.value != null) {
+        // Wait for post-click navigation + animations to settle
+        await sleep(300);
+        inFlight.clear();
+        lastActivity = Date.now();
+        const postClick = Date.now();
+        while (Date.now() - postClick < 12000) {
+          await sleep(250);
+          if (inFlight.size === 0 && Date.now() - lastActivity >= IDLE_MS) break;
+        }
+        await sleep(1200);
+      } else {
+        await sleep(400);
+      }
+
+      const shot = await ws.send('Page.captureScreenshot', { format: 'png', captureBeyondViewport: true });
+      if (!shot || !shot.data) throw new Error('No screenshot data for URL ' + i);
+
+      fs.writeFileSync(join(outDir, i + '.png'), Buffer.from(shot.data, 'base64'));
+    }
+
+    ws.close(); chrome.kill(); process.exit(0);
+  } catch(err) {
+    process.stderr.write('Error: ' + err.message + '\n');
+    if (ws) try { ws.close(); } catch(_) {}
+    chrome.kill(); process.exit(1);
+  }
+}
+main();
+"#;
+
+/// Blocking core: starts a dev server for `branch`, screenshots each `path` in
+/// sequence via the CDP script, and returns one base64 data URL per path.
+/// Empty strings indicate that a particular screenshot failed.
+fn run_previews_blocking(repo_path: String, branch: String, port: u16, paths: Vec<String>) -> Result<Vec<String>, String> {
+    use std::process::Stdio;
+    use std::time::{Duration, Instant};
+    use base64::Engine;
+
+    let repo = Path::new(&repo_path);
+
+    // Sanitise branch name for the temp directory name
+    let slug: String = branch.chars()
+        .map(|c| if c.is_alphanumeric() || c == '-' || c == '_' { c } else { '-' })
+        .collect();
+    // Include port in the dir name so concurrent calls for the same branch
+    // (e.g. from React StrictMode double-effect) use separate directories.
+    let preview_dir = std::env::temp_dir().join(format!("git-viz-preview-{slug}-{port}"));
+
+    // Always start clean
+    let _ = std::fs::remove_dir_all(&preview_dir);
+    std::fs::create_dir_all(&preview_dir)
+        .map_err(|e| format!("Failed to create preview dir: {e}"))?;
+
+    // ── Extract branch files via git archive ─────────────────────────────────
+    // More reliable than git worktrees (no locking, no registration state).
+    // We buffer to a temp .tar file instead of piping, avoiding macOS pipe
+    // edge cases where tar can exit before git flushes its stdout.
+    let archive_path = std::env::temp_dir().join(format!("git-viz-archive-{port}.tar"));
+    let _ = std::fs::remove_file(&archive_path);
+
+    let arch_out = std::process::Command::new("git")
+        .args(["-C", &repo_path, "archive", "--format=tar", &branch])
+        .output()
+        .map_err(|e| format!("git archive failed to start: {e}"))?;
+
+    if !arch_out.status.success() {
+        let _ = std::fs::remove_dir_all(&preview_dir);
+        return Err(format!(
+            "git archive failed for branch '{}': {}",
+            branch,
+            String::from_utf8_lossy(&arch_out.stderr).trim()
+        ));
+    }
+
+    std::fs::write(&archive_path, &arch_out.stdout)
+        .map_err(|e| format!("Failed to write archive: {e}"))?;
+
+    let tar_out = std::process::Command::new("tar")
+        .args(["-xf", archive_path.to_str().unwrap_or(""), "-C", preview_dir.to_str().unwrap_or("")])
+        .output()
+        .map_err(|e| format!("tar failed to start: {e}"))?;
+
+    let _ = std::fs::remove_file(&archive_path);
+
+    if !tar_out.status.success() {
+        let _ = std::fs::remove_dir_all(&preview_dir);
+        return Err(format!(
+            "tar extraction failed: {}",
+            String::from_utf8_lossy(&tar_out.stderr).trim()
+        ));
+    }
+
+    // Must be a Node.js project
+    if !preview_dir.join("package.json").exists() {
+        let _ = std::fs::remove_dir_all(&preview_dir);
+        return Err("No package.json — not a Node.js project".to_string());
+    }
+
+    // Copy .env files from the real repo into the temp dir.
+    // git archive excludes them (they're gitignored) but the app needs them
+    // to authenticate and load data — without them the app shows loading
+    // skeletons or blank pages indefinitely.
+    for name in &[
+        ".env",
+        ".env.local",
+        ".env.development",
+        ".env.development.local",
+        ".env.production",
+        ".env.production.local",
+    ] {
+        let src = repo.join(name);
+        if src.exists() {
+            let _ = std::fs::copy(&src, preview_dir.join(name));
+        }
+    }
+
+    // Inject a MutationObserver script into index.html that removes the
+    // Vite error overlay element before the screenshot is taken.
+    // We're modifying a temp copy so the real repo is untouched.
+    let index_html_path = preview_dir.join("index.html");
+    if index_html_path.exists() {
+        if let Ok(html) = std::fs::read_to_string(&index_html_path) {
+            let inject = concat!(
+                "<script>",
+                "!function(){",
+                "var mo=new MutationObserver(function(){",
+                "var el=document.querySelector('vite-error-overlay');",
+                "if(el)el.remove();",
+                "});",
+                "document.addEventListener('DOMContentLoaded',function(){",
+                "if(document.body)mo.observe(document.body,{childList:true,subtree:true});",
+                "});",
+                "}();",
+                "</script>"
+            );
+            let patched = if html.contains("</body>") {
+                html.replace("</body>", &format!("{inject}</body>"))
+            } else {
+                format!("{html}{inject}")
+            };
+            let _ = std::fs::write(&index_html_path, patched);
+        }
+    }
+
+    // Detect package manager from lockfile
+    let pm = if preview_dir.join("bun.lockb").exists() { "bun" }
+        else if preview_dir.join("pnpm-lock.yaml").exists() { "pnpm" }
+        else if preview_dir.join("yarn.lock").exists() { "yarn" }
+        else { "npm" };
+
+    // Symlink node_modules from the live repo checkout to skip install
+    let main_modules = repo.join("node_modules");
+    if main_modules.exists() {
+        // Clear Vite's dependency cache before starting the preview server.
+        // Previous parallel preview runs share this cache and can corrupt it.
+        // Vite automatically rebuilds it on next startup — clearing is safe.
+        let _ = std::fs::remove_dir_all(main_modules.join(".vite"));
+
+        let link = preview_dir.join("node_modules");
+        if !link.exists() {
+            let _ = std::os::unix::fs::symlink(&main_modules, &link);
+        }
+    }
+
+    // Launch dev server (PORT env var + --port flag for belt-and-suspenders)
+    let port_str = port.to_string();
+    // npm and bun strip '--' before forwarding to the script.
+    // pnpm does NOT — it passes '--' literally, so 'pnpm run dev -- --port X'
+    // becomes 'vite -- --port X' which vite ignores.  Omit '--' for pnpm.
+    let pm_args: Vec<&str> = match pm {
+        "yarn" => vec!["dev", "--port", &port_str],
+        "pnpm" => vec!["run", "dev", "--port", &port_str],
+        _      => vec!["run", "dev", "--", "--port", &port_str],
+    };
+
+    // Capture BOTH stdout and stderr to a log file.
+    // Next.js writes its "ready on port X" message to stdout, not stderr.
+    let log_path = std::env::temp_dir().join(format!("git-viz-dev-{port}.log"));
+    let (stdout_sink, stderr_sink) = match std::fs::File::create(&log_path) {
+        Ok(f) => {
+            let f2 = f.try_clone().unwrap_or_else(|_| std::fs::File::create("/dev/null").unwrap());
+            (Stdio::from(f), Stdio::from(f2))
+        }
+        Err(_) => (Stdio::null(), Stdio::null()),
+    };
+
+    let mut server = std::process::Command::new(pm)
+        .args(&pm_args)
+        .env("PORT", &port_str)
+        .current_dir(&preview_dir)
+        .stdout(stdout_sink)
+        .stderr(stderr_sink)
+        .spawn()
+        .map_err(|e| {
+            let _ = std::fs::remove_dir_all(&preview_dir);
+            format!("Failed to start dev server ({pm}): {e}")
+        })?;
+
+    // Poll until the server responds.  We try two URLs:
+    // 1. The port we asked for (via --port flag).
+    // 2. Whatever port the server actually logged (fallback for frameworks that
+    //    ignore --port or choose a different port due to conflicts).
+    let requested_url = format!("http://localhost:{port}");
+    let start = Instant::now();
+    let live_url: Option<String> = loop {
+        if start.elapsed() > Duration::from_secs(90) { break None; }
+
+        // Bail early on crash rather than waiting the full 90s
+        if let Ok(Some(_)) = server.try_wait() {
+            let log = std::fs::read_to_string(&log_path).unwrap_or_default();
+            let tail = log.lines().rev().take(15)
+                .collect::<Vec<_>>().into_iter().rev().collect::<Vec<_>>().join("\n");
+            let _ = std::fs::remove_file(&log_path);
+            let _ = std::fs::remove_dir_all(&preview_dir);
+            return Err(format!("Dev server crashed.\nLog:\n{tail}"));
+        }
+
+        std::thread::sleep(Duration::from_millis(500));
+
+        // 1. Check the port we asked for
+        if ureq::get(&requested_url).call().is_ok() {
+            break Some(requested_url.clone());
+        }
+
+        // 2. Parse the log to find what port the server actually chose
+        //    (e.g. Vite prints "Local: http://localhost:5175/")
+        let log = std::fs::read_to_string(&log_path).unwrap_or_default();
+        if let Some(actual) = parse_localhost_url(&log) {
+            if ureq::get(&actual).call().is_ok() {
+                break Some(actual);
+            }
+        }
+    };
+
+    let url = match live_url {
+        Some(u) => u,
+        None => {
+            let _ = server.kill();
+            let log = std::fs::read_to_string(&log_path).unwrap_or_default();
+            let tail = log.lines().rev().take(15)
+                .collect::<Vec<_>>().into_iter().rev().collect::<Vec<_>>().join("\n");
+            let _ = std::fs::remove_file(&log_path);
+            let _ = std::fs::remove_dir_all(&preview_dir);
+            return Err(if tail.is_empty() {
+                format!("Dev server did not respond within 90s (tried port {port})")
+            } else {
+                format!("Dev server timed out. Last log output:\n{tail}")
+            });
+        }
+    };
+    let _ = std::fs::remove_file(&log_path);
+
+    // Locate Chrome
+    let chrome = "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome";
+    if !Path::new(chrome).exists() {
+        let _ = server.kill();
+        let _ = std::fs::remove_dir_all(&preview_dir);
+        return Err("Google Chrome not found — install Chrome to generate previews".to_string());
+    }
+
+    // Locate Node.js — check common macOS install paths
+    let node_bin = [
+        "node",
+        "/usr/local/bin/node",
+        "/opt/homebrew/bin/node",
+        "/usr/bin/node",
+    ]
+    .iter()
+    .find(|&&n| {
+        if n.starts_with('/') {
+            Path::new(n).exists()
+        } else {
+            std::process::Command::new(n)
+                .arg("--version")
+                .stdout(std::process::Stdio::null())
+                .stderr(std::process::Stdio::null())
+                .status()
+                .map(|s| s.success())
+                .unwrap_or(false)
+        }
+    })
+    .copied();
+
+    if node_bin.is_none() {
+        let _ = server.kill();
+        let _ = std::fs::remove_dir_all(&preview_dir);
+        return Err("Node.js not found — install Node.js to generate previews".to_string());
+    }
+    let node_bin = node_bin.unwrap();
+
+    // Build the full URL for each requested path.
+    let nav_paths = if paths.is_empty() { vec!["/".to_string()] } else { paths };
+    let full_urls: Vec<String> = nav_paths.iter().map(|p| {
+        let p = if p.starts_with('/') { p.as_str() } else { "/" };
+        if p == "/" { url.clone() } else { format!("{url}{p}") }
+    }).collect();
+
+    let urls_json = serde_json::to_string(&full_urls)
+        .map_err(|e| format!("JSON error: {e}"))?;
+
+    // Output directory: one PNG per path (0.png, 1.png, …)
+    let out_dir = std::env::temp_dir().join(format!("git-viz-shots-{port}"));
+    let _ = std::fs::remove_dir_all(&out_dir);
+    std::fs::create_dir_all(&out_dir)
+        .map_err(|e| format!("Failed to create output dir: {e}"))?;
+
+    // Write CDP script and invoke it.
+    // The script starts Chrome with --remote-debugging-port, navigates to each
+    // URL in sequence, waits for network idle (2 s quiet), then screenshots.
+    let script_path = std::env::temp_dir().join(format!("git-viz-cdp-{port}.js"));
+    std::fs::write(&script_path, CDP_SCREENSHOT_SCRIPT)
+        .map_err(|e| format!("Failed to write CDP script: {e}"))?;
+
+    // CDP debug port offset: 3491 → 4491, 3492 → 4492
+    let cdp_port = (port + 1000).to_string();
+
+    let node_out = std::process::Command::new(node_bin)
+        .args([
+            script_path.to_str().unwrap_or(""),
+            &urls_json,
+            chrome,
+            out_dir.to_str().unwrap_or(""),
+            &cdp_port,
+        ])
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::piped())
+        .output();
+
+    let _ = std::fs::remove_file(&script_path);
+    let _ = server.kill();
+    let _ = std::fs::remove_dir_all(&preview_dir);
+
+    match node_out {
+        Ok(out) => {
+            let mut results: Vec<String> = Vec::with_capacity(full_urls.len());
+            for i in 0..full_urls.len() {
+                let png = out_dir.join(format!("{i}.png"));
+                if png.exists() {
+                    match std::fs::read(&png) {
+                        Ok(bytes) => {
+                            let _ = std::fs::remove_file(&png);
+                            results.push(format!(
+                                "data:image/png;base64,{}",
+                                base64::engine::general_purpose::STANDARD.encode(&bytes)
+                            ));
+                        }
+                        Err(_) => results.push(String::new()),
+                    }
+                } else {
+                    results.push(String::new());
+                }
+            }
+            let _ = std::fs::remove_dir_all(&out_dir);
+            if results.iter().all(|s| s.is_empty()) {
+                let stderr = String::from_utf8_lossy(&out.stderr);
+                Err(format!("Screenshot failed: {}", stderr.trim()))
+            } else {
+                Ok(results)
+            }
+        }
+        Err(e) => {
+            let _ = std::fs::remove_dir_all(&out_dir);
+            Err(format!("Node.js launch failed: {e}"))
+        }
+    }
+}
+
+/// Capture the main webview window and save as a PNG.
+/// Uses macOS `screencapture -R x,y,w,h` with the window's exact bounds.
+#[tauri::command]
+fn screenshot(app: tauri::AppHandle, path: String) -> Result<(), String> {
+    let win = app
+        .get_webview_window("main")
+        .ok_or_else(|| "main window not found".to_string())?;
+    let pos = win.outer_position().map_err(|e| e.to_string())?;
+    let size = win.outer_size().map_err(|e| e.to_string())?;
+    if let Some(parent) = std::path::Path::new(&path).parent() {
+        std::fs::create_dir_all(parent).map_err(|e| e.to_string())?;
+    }
+    let region = format!("{},{},{},{}", pos.x, pos.y, size.width, size.height);
+    std::process::Command::new("screencapture")
+        .args(["-x", "-R", &region, &path]) // -x = silent, -R = region
+        .status()
+        .map_err(|e| e.to_string())?;
+    Ok(())
+}
+
+#[tauri::command(rename_all = "camelCase")]
+fn summarize_diff(diff: String, api_key: String) -> Result<String, String> {
+    let prompt = format!(
+        "Analyze this git diff and return a plain-English summary grouped by area of the codebase.\n\n\
+         Return ONLY valid JSON, no markdown fences:\n\
+         [\n  {{\n    \"section\": \"Area or component name\",\n    \"changes\": [\n      \
+         {{\"type\": \"add\", \"description\": \"What was added or improved\"}},\n      \
+         {{\"type\": \"remove\", \"description\": \"What was removed or changed\"}}\n    ]\n  }}\n]\n\n\
+         Rules:\n\
+         - Group by feature area, not by file\n\
+         - Keep descriptions under 55 chars\n\
+         - Use \"add\" for additions/improvements, \"remove\" for removals/regressions\n\
+         - Max 6 sections, max 4 changes per section\n\n\
+         Git diff:\n{}",
+        diff
+    );
+    let body = serde_json::json!({
+        "model": "claude-haiku-4-5-20251001",
+        "max_tokens": 1024,
+        "messages": [{ "role": "user", "content": prompt }]
+    });
+    let result = ureq::post("https://api.anthropic.com/v1/messages")
+        .set("Content-Type", "application/json")
+        .set("x-api-key", &api_key)
+        .set("anthropic-version", "2023-06-01")
+        .send_json(&body);
+    match result {
+        Ok(resp) => {
+            let data: serde_json::Value = resp
+                .into_json()
+                .map_err(|e| format!("Failed to parse response: {e}"))?;
+            Ok(data["content"][0]["text"].as_str().unwrap_or("").to_string())
+        }
+        Err(ureq::Error::Status(code, resp)) => {
+            let body: serde_json::Value = resp.into_json().unwrap_or_default();
+            let msg = body["error"]["message"].as_str().unwrap_or("Unknown error");
+            Err(format!("{code}: {msg}"))
+        }
+        Err(e) => Err(format!("Network error: {e}")),
+    }
+}
+
+#[tauri::command]
+fn get_anthropic_key() -> Option<String> {
+    // Compile-time key (set ANTHROPIC_API_KEY when running pnpm tauri build)
+    if let Some(key) = option_env!("ANTHROPIC_API_KEY") {
+        if !key.is_empty() {
+            return Some(key.to_string());
+        }
+    }
+    // Fallback to runtime env var for local development
+    std::env::var("ANTHROPIC_API_KEY").ok()
 }
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
@@ -354,10 +1417,22 @@ pub fn run() {
             get_repo_info,
             get_github_info,
             get_merged_prs,
+            get_open_prs,
             get_pr_commits,
             list_directory,
             search_directories,
             get_home_dir,
+            get_branch_diff,
+            get_branch_commits,
+            get_direct_commits,
+            get_anthropic_key,
+            summarize_diff,
+            screenshot,
+            get_recent_log,
+            generate_preview,
+            generate_preview_routes,
+            get_changed_routes,
+            debug_diff_files,
         ])
         .run(tauri::generate_context!())
         .expect("error running tauri application");
