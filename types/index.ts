@@ -10,6 +10,7 @@ export interface Branch {
   mergeable?: boolean | null;
   status: BranchStatus;
   headSha: string;
+  parentBranch?: string;
   divergedFromSha?: string;
   divergedFromDate?: string;
 }

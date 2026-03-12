@@ -12,6 +12,7 @@ pub struct Branch {
     pub last_commit_author: String,
     pub status: String,
     pub head_sha: String,
+    pub parent_branch: Option<String>,
     pub diverged_from_sha: Option<String>,
     pub diverged_from_date: Option<String>,
 }
@@ -58,18 +59,21 @@ pub fn list_branches(repo: &Path, default_branch: &str) -> Result<Vec<Branch>, G
     // Get all local branches
     let output = cli::run(repo, &["branch", "--format=%(refname:short)"])?;
 
-    let branch_names: Vec<&str> = output
+    let branch_names: Vec<String> = output
         .lines()
         .filter(|s| !s.is_empty() && *s != default_branch)
+        .map(|s| s.to_string())
         .collect();
 
     let mut branches = Vec::new();
 
-    for name in branch_names {
+    for name in &branch_names {
         if let Ok(branch) = get_branch_info(repo, name, default_branch) {
             branches.push(branch);
         }
     }
+
+    infer_branch_parents(repo, &mut branches, default_branch)?;
 
     // Sort by last commit date (most recent first)
     branches.sort_by(|a, b| b.last_commit_date.cmp(&a.last_commit_date));
@@ -106,9 +110,125 @@ fn get_branch_info(repo: &Path, name: &str, default_branch: &str) -> Result<Bran
         last_commit_author,
         status,
         head_sha,
+        parent_branch: None,
         diverged_from_sha,
         diverged_from_date,
     })
+}
+
+#[derive(Clone)]
+struct ParentCandidate {
+    name: String,
+    head_sha: String,
+    last_commit_date: String,
+    is_default: bool,
+}
+
+fn infer_branch_parents(
+    repo: &Path,
+    branches: &mut [Branch],
+    default_branch: &str,
+) -> Result<(), GitError> {
+    if branches.is_empty() {
+        return Ok(());
+    }
+
+    let mut candidates: Vec<ParentCandidate> = branches
+        .iter()
+        .map(|b| ParentCandidate {
+            name: b.name.clone(),
+            head_sha: b.head_sha.clone(),
+            last_commit_date: b.last_commit_date.clone(),
+            is_default: false,
+        })
+        .collect();
+
+    if let Ok(default_head_sha) = get_ref_head_sha(repo, default_branch) {
+        let default_date = get_commit_date(repo, &default_head_sha).unwrap_or_default();
+        candidates.push(ParentCandidate {
+            name: default_branch.to_string(),
+            head_sha: default_head_sha,
+            last_commit_date: default_date,
+            is_default: true,
+        });
+    }
+
+    for branch in branches.iter_mut() {
+        let mut best: Option<(ParentCandidate, i32)> = None;
+
+        for candidate in &candidates {
+            if candidate.name == branch.name {
+                continue;
+            }
+            if candidate.head_sha.is_empty() || branch.head_sha.is_empty() {
+                continue;
+            }
+
+            let ancestor = is_ancestor_head(repo, &candidate.head_sha, &branch.head_sha)?;
+            if !ancestor {
+                continue;
+            }
+
+            let distance = commit_distance(repo, &candidate.head_sha, &branch.head_sha)?;
+            if distance <= 0 {
+                continue;
+            }
+
+            match &best {
+                None => best = Some((candidate.clone(), distance)),
+                Some((best_candidate, best_distance)) => {
+                    let better_distance = distance < *best_distance;
+                    let same_distance = distance == *best_distance;
+                    let newer_candidate = candidate.last_commit_date > best_candidate.last_commit_date;
+                    let prefer_non_default = best_candidate.is_default && !candidate.is_default;
+
+                    if better_distance || (same_distance && (newer_candidate || prefer_non_default)) {
+                        best = Some((candidate.clone(), distance));
+                    }
+                }
+            }
+        }
+
+        let parent_name = if let Some((candidate, _)) = best {
+            Some(candidate.name)
+        } else {
+            candidates
+                .iter()
+                .find(|c| c.is_default)
+                .map(|c| c.name.clone())
+        };
+
+        branch.parent_branch = parent_name.clone();
+
+        if let Some(parent_ref) = parent_name {
+            if let Ok((sha, date)) = get_fork_point(repo, &branch.name, &parent_ref) {
+                branch.diverged_from_sha = sha;
+                branch.diverged_from_date = date;
+            }
+        }
+    }
+
+    Ok(())
+}
+
+fn get_ref_head_sha(repo: &Path, reference: &str) -> Result<String, GitError> {
+    let output = cli::run(repo, &["rev-parse", "--verify", reference])?;
+    Ok(output.trim().to_string())
+}
+
+fn get_commit_date(repo: &Path, reference: &str) -> Result<String, GitError> {
+    let output = cli::run(repo, &["log", "-1", "--format=%aI", reference])?;
+    Ok(output.trim().to_string())
+}
+
+fn is_ancestor_head(repo: &Path, ancestor_sha: &str, descendant_sha: &str) -> Result<bool, GitError> {
+    let output = cli::run(repo, &["merge-base", ancestor_sha, descendant_sha])?;
+    Ok(output.trim() == ancestor_sha)
+}
+
+fn commit_distance(repo: &Path, from_sha: &str, to_sha: &str) -> Result<i32, GitError> {
+    let output = cli::run(repo, &["rev-list", "--count", &format!("{}..{}", from_sha, to_sha)])?;
+    Ok(output.trim().parse::<i32>().unwrap_or(i32::MAX))
 }
 
 fn get_ahead_behind(repo: &Path, branch: &str, base: &str) -> Result<(i32, i32), GitError> {
