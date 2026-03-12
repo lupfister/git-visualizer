@@ -62,6 +62,13 @@ export interface GitHubInfo {
   ghAvailable: boolean;
 }
 
+export interface GitHubAuthStatus {
+  ghAvailable: boolean;
+  authenticated: boolean;
+  username?: string | null;
+  message?: string | null;
+}
+
 export interface ChangedFile {
   filename: string;
   additions: number;

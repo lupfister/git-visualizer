@@ -3,7 +3,7 @@ import { invoke } from '@tauri-apps/api/core';
 import BranchMapView from '../components/BranchMapView';
 import DiffViewer from '../components/DiffViewer';
 import FolderPickerModal from './FolderPickerModal';
-import type { Branch, DirectCommit, MergeNode, MergedPR, OpenPR, GitHubInfo } from '../types';
+import type { Branch, DirectCommit, MergeNode, MergedPR, OpenPR, GitHubInfo, GitHubAuthStatus } from '../types';
 
 type View = 'landing' | 'map' | 'diff';
 
@@ -32,6 +32,9 @@ function App() {
   const [githubAvailable, setGithubAvailable] = useState(false);
   const [githubOwner, setGithubOwner] = useState<string | null>(null);
   const [githubRepo, setGithubRepo] = useState<string | null>(null);
+  const [githubAuthStatus, setGithubAuthStatus] = useState<GitHubAuthStatus | null>(null);
+  const [githubAuthLoading, setGithubAuthLoading] = useState(false);
+  const [githubAuthMessage, setGithubAuthMessage] = useState<string | null>(null);
 
   // Pre-warm: screenshot main branch at '/' as soon as active branches load,
   // so DiffViewer can skip the main-side server start for the common case.
@@ -109,31 +112,59 @@ function App() {
 
   async function fetchGitHubData(path: string, baseBranch: string) {
     try {
+      setGithubAvailable(false);
+      setGithubAuthMessage(null);
       const ghInfo = await invoke<GitHubInfo>('get_github_info', { repoPath: path });
+      setGithubOwner(ghInfo.owner);
+      setGithubRepo(ghInfo.repo);
 
-      if (ghInfo.ghAvailable) {
-        setGithubAvailable(true);
-        setGithubOwner(ghInfo.owner);
-        setGithubRepo(ghInfo.repo);
-        // Fetch merged PRs and open PRs in parallel
-        const [prs, open] = await Promise.all([
-          invoke<MergedPR[]>('get_merged_prs', {
-            owner: ghInfo.owner,
-            repo: ghInfo.repo,
-            baseBranch,
-            limit: 50,
-          }),
-          invoke<OpenPR[]>('get_open_prs', {
-            owner: ghInfo.owner,
-            repo: ghInfo.repo,
-          }),
-        ]);
-        setMergedPRs(prs);
-        setOpenPRs(open);
+      const authStatus = await invoke<GitHubAuthStatus>('get_github_auth_status');
+      setGithubAuthStatus(authStatus);
+      if (!authStatus.ghAvailable || !authStatus.authenticated) {
+        return;
       }
+
+      // Fetch merged PRs and open PRs in parallel
+      const [prs, open] = await Promise.all([
+        invoke<MergedPR[]>('get_merged_prs', {
+          owner: ghInfo.owner,
+          repo: ghInfo.repo,
+          baseBranch,
+          limit: 50,
+        }),
+        invoke<OpenPR[]>('get_open_prs', {
+          owner: ghInfo.owner,
+          repo: ghInfo.repo,
+        }),
+      ]);
+      setMergedPRs(prs);
+      setOpenPRs(open);
+      setGithubAvailable(true);
     } catch (e) {
       // GitHub data is optional, don't show error to user
       console.log('GitHub data not available:', e);
+      setGithubAuthMessage(e instanceof Error ? e.message : String(e));
+      setGithubAvailable(false);
+    }
+  }
+
+  async function handleGitHubAuthSetup() {
+    if (!repoPath) return;
+    setGithubAuthLoading(true);
+    setGithubAuthMessage(null);
+    try {
+      await invoke('authenticate_github');
+      const authStatus = await invoke<GitHubAuthStatus>('get_github_auth_status');
+      setGithubAuthStatus(authStatus);
+      if (authStatus.authenticated) {
+        await fetchGitHubData(repoPath, defaultBranch);
+      } else if (authStatus.message) {
+        setGithubAuthMessage(authStatus.message);
+      }
+    } catch (e) {
+      setGithubAuthMessage(e instanceof Error ? e.message : String(e));
+    } finally {
+      setGithubAuthLoading(false);
     }
   }
 
@@ -150,13 +181,15 @@ function App() {
 
   // Mirror BranchMap's scrollbarReady timing so the error pill fades in together.
   // BranchMap fires drawReady after 2 rAFs (~33ms), then delays scrollbar 2600ms.
+  const hasTimelineData =
+    branches.length > 0 || mergeNodes.length > 0 || directCommits.length > 0;
   useEffect(() => {
-    if (mergeNodes.length === 0 || hadMapDataRef.current) return;
+    if (!hasTimelineData || hadMapDataRef.current) return;
     hadMapDataRef.current = true;
     setMapUiReady(false);
     const id = setTimeout(() => setMapUiReady(true), 2650);
     return () => clearTimeout(id);
-  }, [mergeNodes.length]);
+  }, [hasTimelineData]);
 
   // Reset when a new repo is loaded
   useEffect(() => {
@@ -165,6 +198,9 @@ function App() {
     setPrewarmedMainShots(null);
     prewarmedRef.current = false;
     setAuthSetupLoading(false);
+    setGithubAuthLoading(false);
+    setGithubAuthStatus(null);
+    setGithubAuthMessage(null);
   }, [repoPath]);
 
   // Pre-warm: start screenshotting main at '/' as soon as active branches arrive.
@@ -344,6 +380,25 @@ function App() {
                 >
                   {authSetupLoading ? 'Log in and close Chrome...' : 'Authenticate Preview'}
                 </button>
+              )}
+              {githubAuthStatus?.ghAvailable && !githubAuthStatus.authenticated && (
+                <button
+                  onClick={handleGitHubAuthSetup}
+                  disabled={githubAuthLoading}
+                  className="text-xs text-muted-foreground hover:text-foreground border border-border/50 rounded-full px-3 py-1 transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
+                >
+                  {githubAuthLoading ? 'Connecting GitHub...' : 'Connect GitHub'}
+                </button>
+              )}
+              {githubAuthStatus && !githubAuthStatus.ghAvailable && (
+                <span className="text-xs text-muted-foreground border border-border/50 rounded-full px-3 py-1">
+                  Install `gh` for private PR data
+                </span>
+              )}
+              {githubAuthMessage && (
+                <span className="text-xs text-muted-foreground max-w-64 truncate" title={githubAuthMessage}>
+                  {githubAuthMessage}
+                </span>
               )}
               {activeErrorBranches.length > 0 && (
                 <button
@@ -581,10 +636,32 @@ function RepoSelector({
   const [path, setPath] = useState('');
   const [showPicker, setShowPicker] = useState(false);
   const [showInput, setShowInput] = useState(false);
+  const [inputError, setInputError] = useState<string | null>(null);
 
   function handlePickerSelect(selectedPath: string) {
     setShowPicker(false);
+    setInputError(null);
     onSelect(selectedPath);
+  }
+
+  function handleSubmit(e: React.FormEvent<HTMLFormElement>) {
+    e.preventDefault();
+    const value = path.trim();
+    if (!value) return;
+
+    const looksLikeUrl =
+      value.startsWith('http://') ||
+      value.startsWith('https://') ||
+      value.startsWith('git@') ||
+      value.startsWith('github.com/');
+
+    if (looksLikeUrl) {
+      setInputError('Enter a local repo folder path (for example: /Users/you/code/repo).');
+      return;
+    }
+
+    setInputError(null);
+    onSelect(value);
   }
 
   return (
@@ -621,7 +698,7 @@ function RepoSelector({
           ) : (
             <div className="flex flex-col gap-2 animate-pill-expand">
               <form
-                onSubmit={(e) => { e.preventDefault(); path && onSelect(path); }}
+                onSubmit={handleSubmit}
                 className="flex items-center rounded-2xl border border-border bg-card"
               >
                 {/* Input with left-edge gradient fade for overflow text */}
@@ -630,8 +707,11 @@ function RepoSelector({
                     autoFocus
                     type="text"
                     value={path}
-                    onChange={(e) => setPath(e.target.value)}
-                    placeholder="Enter link"
+                    onChange={(e) => {
+                      setPath(e.target.value);
+                      if (inputError) setInputError(null);
+                    }}
+                    placeholder="Enter local path"
                     className="w-full pl-5 pr-2 py-3.5 bg-transparent text-sm text-foreground placeholder:text-muted-foreground outline-none"
                   />
                   <div
@@ -653,7 +733,8 @@ function RepoSelector({
                   )}
                 </button>
               </form>
-              {error && <p className="text-xs text-destructive px-2">{error}</p>}
+              {inputError && <p className="text-xs text-destructive px-2">{inputError}</p>}
+              {!inputError && error && <p className="text-xs text-destructive px-2">{error}</p>}
             </div>
           )}
         </div>

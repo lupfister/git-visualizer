@@ -14,6 +14,15 @@ pub struct GitHubInfo {
 
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
+pub struct GitHubAuthStatus {
+    pub gh_available: bool,
+    pub authenticated: bool,
+    pub username: Option<String>,
+    pub message: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
 pub struct OpenPR {
     pub number: i64,
     pub branch_name: String,
@@ -113,6 +122,137 @@ pub fn get_github_info(repo_path: &Path) -> Result<GitHubInfo, String> {
         repo,
         gh_available,
     })
+}
+
+/// Check whether `gh` is installed and authenticated for github.com.
+pub fn get_github_auth_status() -> GitHubAuthStatus {
+    let output = Command::new("gh")
+        .args(["auth", "status", "--hostname", "github.com"])
+        .output();
+
+    let output = match output {
+        Ok(out) => out,
+        Err(e) => {
+            return if e.kind() == std::io::ErrorKind::NotFound {
+                GitHubAuthStatus {
+                    gh_available: false,
+                    authenticated: false,
+                    username: None,
+                    message: Some("GitHub CLI (`gh`) is not installed.".to_string()),
+                }
+            } else {
+                GitHubAuthStatus {
+                    gh_available: false,
+                    authenticated: false,
+                    username: None,
+                    message: Some(format!("Failed to run gh CLI: {e}")),
+                }
+            };
+        }
+    };
+
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let combined = format!("{stderr}\n{stdout}");
+    let trimmed = combined.trim();
+
+    if output.status.success() {
+        return GitHubAuthStatus {
+            gh_available: true,
+            authenticated: true,
+            username: extract_gh_username(trimmed),
+            message: None,
+        };
+    }
+
+    GitHubAuthStatus {
+        gh_available: true,
+        authenticated: false,
+        username: None,
+        message: if trimmed.is_empty() {
+            Some("Not authenticated with GitHub.".to_string())
+        } else {
+            Some(trimmed.to_string())
+        },
+    }
+}
+
+/// Start GitHub CLI web authentication flow.
+pub fn authenticate_github() -> Result<(), String> {
+    let status = get_github_auth_status();
+    if !status.gh_available {
+        return Err("GitHub CLI (`gh`) is not installed.".to_string());
+    }
+
+    let output = Command::new("gh")
+        .args([
+            "auth",
+            "login",
+            "--hostname",
+            "github.com",
+            "--web",
+            "--git-protocol",
+            "https",
+            "--scopes",
+            "repo,read:org",
+            "--skip-ssh-key",
+        ])
+        .output()
+        .map_err(|e| format!("Failed to run gh auth login: {e}"))?;
+
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        let msg = format!("{stderr}\n{stdout}").trim().to_string();
+        return Err(if msg.is_empty() {
+            "GitHub authentication failed.".to_string()
+        } else {
+            msg
+        });
+    }
+
+    // If already logged in but missing scopes, this ensures private repo access.
+    let refresh = Command::new("gh")
+        .args([
+            "auth",
+            "refresh",
+            "--hostname",
+            "github.com",
+            "--scopes",
+            "repo,read:org",
+        ])
+        .output();
+
+    if let Ok(out) = refresh {
+        if !out.status.success() {
+            let stderr = String::from_utf8_lossy(&out.stderr);
+            let stdout = String::from_utf8_lossy(&out.stdout);
+            let msg = format!("{stderr}\n{stdout}");
+            if msg.contains("unknown flag") {
+                // Older gh versions may not support `auth refresh`; ignore in that case.
+                return Ok(());
+            }
+            let trimmed = msg.trim();
+            if !trimmed.is_empty() {
+                return Err(trimmed.to_string());
+            }
+        }
+    }
+
+    Ok(())
+}
+
+fn extract_gh_username(status_output: &str) -> Option<String> {
+    for line in status_output.lines() {
+        let trimmed = line.trim();
+        if let Some(rest) = trimmed.strip_prefix("Logged in to github.com as ") {
+            let username = rest.split_whitespace().next().unwrap_or("").trim();
+            if !username.is_empty() {
+                return Some(username.to_string());
+            }
+        }
+    }
+    None
 }
 
 /// Response type for PR commits

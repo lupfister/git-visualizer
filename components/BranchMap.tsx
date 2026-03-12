@@ -128,20 +128,23 @@ export default function BranchMap({
   const barRangeRef = useRef<HTMLInputElement>(null);
   const [containerHeight, setContainerHeight] = useState(540);
 
-  // PR issues panel state
+  // Branch issues panel state
   const [errorPanelOpen, setErrorPanelOpen] = useState(false);
   const errorPanelRef = useRef<HTMLDivElement>(null);
 
   // Inactive error branches render grey (no status colors)
   const inactiveErrorSet = new Set(inactiveErrorBranches.map(b => b.name));
   const openPRBranchNames = new Set(openPRs.map(p => p.branchName));
+  const localBranchCount = branches.filter((b) => b.name !== defaultBranch).length;
+  const hasTimelineSeedData =
+    mergeNodes.length > 0 || directCommits.length > 0 || localBranchCount > 0;
 
-  // Trigger draw-in animations when merge nodes first arrive (not on mount),
+  // Trigger draw-in animations when timeline data first arrives (not on mount),
   // so the timeline always animates in even when the map view is shown before data loads.
   const hadDataRef = useRef(false);
   useEffect(() => {
     // Reset when data is cleared (new repo selected) so animations retrigger.
-    if (mergeNodes.length === 0) {
+    if (!hasTimelineSeedData) {
       hadDataRef.current = false;
       setDrawReady(false);
       return;
@@ -167,14 +170,15 @@ export default function BranchMap({
       // Reset so the re-invocation (StrictMode second mount) can trigger normally.
       hadDataRef.current = false;
     };
-  }, [mergeNodes.length]);
+  }, [hasTimelineSeedData]);
 
   // Scroll to the right when data loads so most recent content is visible.
   useEffect(() => {
+    if (!hasTimelineSeedData) return;
     if (scrollRef.current) {
       scrollRef.current.scrollLeft = scrollRef.current.scrollWidth;
     }
-  }, [mergeNodes.length]);
+  }, [hasTimelineSeedData]);
 
   // Reveal the scrollbar after the main draw-in animation completes.
   // drawReady fires when animations start; 2600ms matches draw-path-main duration.
@@ -296,17 +300,10 @@ export default function BranchMap({
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [scrollRequest]);
 
-  // ── Separate active vs merged branches ──────────────────────────────────────
+  // ── Active branches (branch-first) ─────────────────────────────────────────
   const STATUS_PRIORITY: Record<string, number> = { 'conflict-risk': 0, stale: 1, fresh: 2, unknown: 3 };
-  const mergedBranchDates = new Map(mergedPRs.map(pr => [pr.branchName, pr.mergedAt]));
   const activeBranches = branches
-    .filter(b => {
-      if (b.name === defaultBranch) return false;
-      const mergedAt = mergedBranchDates.get(b.name);
-      if (!mergedAt) return true;
-      // Show if the branch has been updated after the PR was merged (new branch, same name)
-      return new Date(b.lastCommitDate) > new Date(mergedAt);
-    })
+    .filter(b => b.name !== defaultBranch)
     .sort((a, b) => {
       if (view === 'status') {
         const diff = STATUS_PRIORITY[a.status] - STATUS_PRIORITY[b.status];
@@ -339,6 +336,8 @@ export default function BranchMap({
       .sort((a, b) => new Date(b.mergedAt).getTime() - new Date(a.mergedAt).getTime())
       .map((pr, i) => [pr.number, MAIN_DRAW_MS + i * STAGGER_MS] as [number, number])
   );
+  const showMergeTicks = false;
+  const showMergedPROverlays = false;
 
 
   // ── Build a date → X mapping ─────────────────────────────────────────────
@@ -356,25 +355,46 @@ export default function BranchMap({
     (a, b) => new Date(a.date).getTime() - new Date(b.date).getTime()
   );
 
-  type TimelineEvent = { key: string; t: number; kind: 'merge' | 'direct'; fullSha: string };
+  type TimelineEvent = { key: string; t: number; kind: 'merge' | 'direct' | 'branch' };
+  const branchTimelineEvents: TimelineEvent[] = activeBranches.flatMap((b) => {
+    const events: TimelineEvent[] = [
+      {
+        key: `branch:tip:${b.name}`,
+        t: new Date(b.lastCommitDate).getTime(),
+        kind: 'branch',
+      },
+    ];
+    if (b.divergedFromDate) {
+      events.push({
+        key: `branch:fork:${b.name}`,
+        t: new Date(b.divergedFromDate).getTime(),
+        kind: 'branch',
+      });
+    }
+    return events;
+  });
+
   const timelineEvents: TimelineEvent[] = [
     ...sortedNodes.map((m) => ({
       key: `merge:${m.fullSha}`,
       t: new Date(m.date).getTime(),
       kind: 'merge' as const,
-      fullSha: m.fullSha,
     })),
     ...sortedDirectCommits.map((c) => ({
       key: `direct:${c.fullSha}`,
       t: new Date(c.date).getTime(),
       kind: 'direct' as const,
-      fullSha: c.fullSha,
     })),
+    ...branchTimelineEvents,
   ].sort((a, b) => {
     if (a.t !== b.t) return a.t - b.t;
-    // Keep direct dots just before merge ticks when timestamps match.
+    // Keep direct dots first, then branch markers, then merge ticks.
     if (a.kind === b.kind) return a.key.localeCompare(b.key);
-    return a.kind === 'direct' ? -1 : 1;
+    if (a.kind === 'direct') return -1;
+    if (b.kind === 'direct') return 1;
+    if (a.kind === 'branch') return -1;
+    if (b.kind === 'branch') return 1;
+    return 0;
   });
 
   const eventDeltaDays = timelineEvents.slice(1).map((e, i) => {
@@ -439,9 +459,8 @@ export default function BranchMap({
   const timelineTimeSpan = Math.max(lastEventT - firstEventT, 1);
   const eventTimes = timelineEvents.map((e) => e.t);
 
-  // When extrapolating dates outside the merge-node range, use a rate capped at
-  // roughly one average on-canvas event gap per 7 days. This prevents active branches on fast-moving repos
-  // (many PRs merged within hours) from extending far off the right edge.
+  // When extrapolating dates outside the event range, use a rate capped at
+  // roughly one average on-canvas gap per 7 days.
   const avgNodeIntervalMs = timelineEvents.length > 1
     ? timelineTimeSpan / (timelineEvents.length - 1)
     : 7 * 86400000;
@@ -593,7 +612,7 @@ export default function BranchMap({
                 );
               })}
 
-              {(() => {
+              {showMergeTicks && (() => {
                 // Progressive label culling as zoom decreases.
                 // Step 1: decide which content lines to show based on node spacing.
                 //   ≥130px → full (PR#, title, date)
@@ -665,8 +684,8 @@ export default function BranchMap({
             </g>
           </g>
 
-          {/* ── Merged PRs — interactive arcs ── */}
-          {mergedPRs.map((pr, idx) => {
+          {/* ── Merged PR overlays (optional secondary context) ── */}
+          {showMergedPROverlays && mergedPRs.map((pr, idx) => {
             const forkX = timeToX(pr.createdAt);
             const mergeX = timeToX(pr.mergedAt);
             const lane = idx % MERGED_LANES;
@@ -841,9 +860,9 @@ export default function BranchMap({
 
               // If this branch forks directly on a merge node, suppress status pills
               // below the main line so we do not stack labels under dense PR clusters.
-              const forkOnNode = sortedNodes.some(n =>
-                Math.abs((nodeXByFullSha.get(n.fullSha) ?? timeToX(n.date)) - forkX) < NODE_SIZE
-              );
+                  const forkOnNode = showMergeTicks && sortedNodes.some(n =>
+                    Math.abs((nodeXByFullSha.get(n.fullSha) ?? timeToX(n.date)) - forkX) < NODE_SIZE
+                  );
               const statusLabelY = mainY + 34;
 
               return (
@@ -1107,8 +1126,19 @@ export default function BranchMap({
               </div>
             </div>
           ) : (
-            <div className="absolute inset-0 flex items-center justify-center text-muted-foreground">
-              No branches or merge commits found
+            <div className="absolute inset-0 flex items-center justify-center px-6">
+              <div className="bg-card/80 backdrop-blur-sm rounded-2xl border shadow-sm px-5 py-4 text-center max-w-md">
+                <p className="text-sm text-foreground">
+                  {sortedDirectCommits.length > 0
+                    ? 'No non-default branches found to visualize.'
+                    : 'No branches found.'}
+                </p>
+                {sortedDirectCommits.length > 0 && (
+                  <p className="text-xs text-muted-foreground mt-1.5">
+                    Main has commits, but there are no active topic branches yet.
+                  </p>
+                )}
+              </div>
             </div>
           )
         )}
@@ -1160,7 +1190,7 @@ export default function BranchMap({
         </div>
       </div>
 
-      {/* PR issues panel — slides in from right */}
+      {/* Branch issues panel — slides in from right */}
       <div
         ref={errorPanelRef}
         className={`fixed right-4 top-14 bottom-6 w-72 flex flex-col bg-card/90 backdrop-blur-sm rounded-2xl border border-border shadow-lg z-40 transition-all duration-300 ease-in-out ${
@@ -1168,7 +1198,7 @@ export default function BranchMap({
         }`}
       >
         <div className="flex items-center justify-between px-4 py-3 border-b border-border/50 shrink-0">
-          <span className="text-sm font-medium text-foreground">PR issues</span>
+          <span className="text-sm font-medium text-foreground">Branch issues</span>
           <button
             onClick={() => setErrorPanelOpen(false)}
             className="text-muted-foreground hover:text-foreground transition-colors"
@@ -1181,7 +1211,7 @@ export default function BranchMap({
           {conflictBranches.length > 0 && (
             <>
               <p className="text-[10px] uppercase tracking-wide text-muted-foreground font-medium px-4 pt-2 pb-1">
-                Merge conflicts
+                Merge risk
               </p>
               {conflictBranches.map(b => (
                 <div
@@ -1204,7 +1234,7 @@ export default function BranchMap({
           {staleBranches.length > 0 && (
             <>
               <p className="text-[10px] uppercase tracking-wide text-muted-foreground font-medium px-4 pt-3 pb-1">
-                Stale PRs
+                Stale branches
               </p>
               {staleBranches.map(b => (
                 <div

@@ -4,7 +4,7 @@ mod github;
 use tauri::Manager;
 
 use git::{Branch, DirectCommit, MergeNode};
-use github::{GitHubInfo, MergedPR, OpenPR};
+use github::{GitHubAuthStatus, GitHubInfo, MergedPR, OpenPR};
 use std::path::Path;
 
 #[derive(serde::Serialize)]
@@ -324,6 +324,16 @@ fn get_repo_info(repo_path: String) -> Result<RepoInfo, String> {
 fn get_github_info(repo_path: String) -> Result<GitHubInfo, String> {
     let path = Path::new(&repo_path);
     github::get_github_info(path)
+}
+
+#[tauri::command]
+fn get_github_auth_status() -> Result<GitHubAuthStatus, String> {
+    Ok(github::get_github_auth_status())
+}
+
+#[tauri::command]
+fn authenticate_github() -> Result<(), String> {
+    github::authenticate_github()
 }
 
 #[tauri::command(rename_all = "camelCase")]
@@ -1867,6 +1877,8 @@ pub fn run() {
             get_default_branch,
             get_repo_info,
             get_github_info,
+            get_github_auth_status,
+            authenticate_github,
             get_merged_prs,
             get_open_prs,
             get_pr_commits,
