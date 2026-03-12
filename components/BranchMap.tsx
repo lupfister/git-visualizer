@@ -11,7 +11,9 @@ const MIN_BRANCH_SPACING_X = 30;
 const LANE_HEIGHT = 60;
 const NODE_SIZE = 8;
 const CORNER_R = 20;
-const BRANCH_TRAIL = 80;
+const BRANCH_HIT_STROKE_WIDTH = 48;
+const AHEAD_LABEL_OFFSET_X = 10;
+const MAIN_LABEL_OFFSET_X = 10;
 const MAX_ACTIVE = 50;
 const ZOOM_MIN = 0.1;
 const ZOOM_MAX = 1;
@@ -308,7 +310,7 @@ export default function BranchMap({
     setFlashingName(branch.name);
     const t = setTimeout(() => setFlashingName(null), 700);
     return () => clearTimeout(t);
-  // eslint-disable-next-line react-hooks/exhaustive-deps
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [scrollRequest]);
 
   // ── Active branches (branch-first) ─────────────────────────────────────────
@@ -333,8 +335,8 @@ export default function BranchMap({
   // Keeping them separate means adding mergedPRs (async GitHub data) never
   // changes branch delays mid-animation, which would restart their CSS animation.
   const MAIN_DRAW_MS = 1400;
-  const STAGGER_MS   = 70;
-  const INFO_OFFSET  = 600; // ms after arc starts drawing before info fades in
+  const STAGGER_MS = 70;
+  const INFO_OFFSET = 600; // ms after arc starts drawing before info fades in
 
   const branchDelayMs = new Map<string, number>(
     [...activeBranches]
@@ -529,7 +531,7 @@ export default function BranchMap({
   function branchVisualEndX(b: Branch): number {
     const tipX = branchTipX(b);
     const labelWidth = estimateSvgTextWidth(formatCommitsAhead(b.commitsAhead));
-    return tipX + BRANCH_TRAIL + 10 + labelWidth;
+    return tipX + AHEAD_LABEL_OFFSET_X + labelWidth;
   }
 
   // SVG width: extend past mainEndX if any branch tip falls further right
@@ -670,19 +672,10 @@ export default function BranchMap({
               className="draw-path-main"
             />
 
-            {/* Dashed extension, label, and ticks — fade in once the line is drawn */}
+            {/* Main label and ticks — fade in once the line is drawn */}
             <g className="fade-in-info" style={{ '--delay': `${MAIN_DRAW_MS}ms` } as React.CSSProperties}>
-              <line
-                x1={mainEndX}
-                y1={mainY}
-                x2={svgWidth - RIGHT_PAD}
-                y2={mainY}
-                stroke="#78716c"
-                strokeWidth={1.5}
-                strokeDasharray="6 5"
-              />
               <text
-                x={svgWidth - RIGHT_PAD + 10}
+                x={mainEndX + MAIN_LABEL_OFFSET_X}
                 y={mainY + 4}
                 fontSize={12}
                 fill="#1c1917"
@@ -727,9 +720,9 @@ export default function BranchMap({
                 // Step 2: min gap between shown labels = width of the widest line
                 //   being rendered, so labels never overlap their neighbours.
                 const labelSpacing = averageMergeGap;
-                const showTitle  = labelSpacing >= 130;
-                const showDate   = labelSpacing >= 80;
-                const anyLabel   = labelSpacing >= 40;
+                const showTitle = labelSpacing >= 130;
+                const showDate = labelSpacing >= 80;
+                const anyLabel = labelSpacing >= 40;
                 const minLabelGap = showTitle ? 130 : showDate ? 100 : anyLabel ? 55 : Infinity;
 
                 let lastLabelX = -Infinity;
@@ -936,16 +929,16 @@ export default function BranchMap({
               const color = isFocusedError
                 ? focusedErrorColor
                 : isSelected
-                ? '#22d3ee'
-                : isInactiveError
-                ? '#78716c'
-                : isConflict
-                ? '#dc2626'
-                : isStale
-                ? '#d97706'
-                : hasSelection
-                ? '#57534e'
-                : '#78716c';
+                  ? '#22d3ee'
+                  : isInactiveError
+                    ? '#78716c'
+                    : isConflict
+                      ? '#dc2626'
+                      : isStale
+                        ? '#d97706'
+                        : hasSelection
+                          ? '#57534e'
+                          : '#78716c';
               const strokeWidth = isSelected ? 2.5 : isHovered ? 2 : isFocusedError ? 2 : 1.5;
               const strokeColor = isHovered && !isSelected ? '#44403c' : color;
 
@@ -961,8 +954,10 @@ export default function BranchMap({
 
               const commitCount = Math.min(b.commitsAhead, 4);
               const spanWidth = tipX - (forkX + CORNER_R);
+              // Place the final commit marker at the branch tip so the stroke
+              // does not visibly extend past the last shown commit.
               const commitXs = Array.from({ length: commitCount }, (_, i) =>
-                forkX + CORNER_R + (spanWidth * (i + 1)) / (commitCount + 1)
+                forkX + CORNER_R + (spanWidth * (i + 1)) / Math.max(commitCount, 1)
               );
 
               const brDelay = branchDelayMs.get(b.name) ?? 0;
@@ -980,8 +975,28 @@ export default function BranchMap({
                   className="cursor-pointer"
                   onClick={() => onBranchSelect?.(b)}
                   onDoubleClick={() => onBranchClick?.(b)}
+                  onMouseEnter={() => setHoveredBranch(b.name)}
+                  onMouseLeave={() => setHoveredBranch(null)}
                   style={{ opacity: isFocusedError ? 1 : hoveredBranch !== null && !isHovered ? 0.12 : isInactiveError ? 0.45 : hasSelection && !isSelected ? 0.5 : 1, transition: 'opacity 0.15s' }}
                 >
+                  {/* Invisible wide hit target to make hover/click easier on thin SVG strokes */}
+                  <path
+                    d={curvePath}
+                    fill="none"
+                    stroke="transparent"
+                    strokeWidth={BRANCH_HIT_STROKE_WIDTH}
+                    style={{ pointerEvents: 'stroke' }}
+                  />
+                  <line
+                    x1={tipX}
+                    y1={y}
+                    x2={tipX + AHEAD_LABEL_OFFSET_X + 6}
+                    y2={y}
+                    stroke="transparent"
+                    strokeWidth={BRANCH_HIT_STROKE_WIDTH}
+                    style={{ pointerEvents: 'stroke' }}
+                  />
+
                   {/* Glow effect for selected branch — keyed so it never displaces the arc path */}
                   {isSelected && (
                     <path
@@ -1009,18 +1024,6 @@ export default function BranchMap({
 
                   {/* Branch info — fades in as arc draws */}
                   <g className="fade-in-info" style={{ '--delay': `${brDelay + INFO_OFFSET}ms` } as React.CSSProperties}>
-                    {/* Dashed trailing edge */}
-                    <line
-                      x1={tipX}
-                      y1={y}
-                      x2={tipX + BRANCH_TRAIL}
-                      y2={y}
-                      stroke={strokeColor}
-                      strokeWidth={strokeWidth}
-                      strokeDasharray="6 5"
-                      style={{ transition: 'stroke 0.12s ease, stroke-width 0.12s ease' }}
-                    />
-
                     {/* Fork hollow square on parent baseline (or main fallback) */}
                     <rect
                       x={forkX - NODE_SIZE / 2}
@@ -1079,21 +1082,22 @@ export default function BranchMap({
                       fill={isSelected ? '#22d3ee' : isHovered ? '#1c1917' : color}
                       style={{ transition: 'fill 0.12s ease' }}
                       className="select-none"
-                      onMouseEnter={() => setHoveredBranch(b.name)}
-                      onMouseLeave={() => setHoveredBranch(null)}
                     >
                       {b.name.length > 22 ? b.name.slice(0, 22) + '…' : b.name}
                     </text>
 
                     {/* Commits ahead badge */}
-                    <text
-                      x={tipX + BRANCH_TRAIL + 10}
-                      y={y + 4}
-                      fontSize={10}
-                      fill="#78716c"
-                    >
-                      {formatCommitsAhead(b.commitsAhead)}
-                    </text>
+                    {isHovered && (
+                      <text
+                        x={tipX + AHEAD_LABEL_OFFSET_X}
+                        y={y + 4}
+                        fontSize={12}
+                        fill="#1c1917"
+                        fontWeight={500}
+                      >
+                        {formatCommitsAhead(b.commitsAhead)}
+                      </text>
+                    )}
 
                     {/* Clock icon for open PR + 60+ day stale commit */}
                     {showClockIcon && (() => {
@@ -1280,22 +1284,20 @@ export default function BranchMap({
           <div className="flex items-center gap-1 shrink-0 bg-card border border-border rounded-full p-1">
             <button
               onClick={() => setSpacingMode('regular')}
-              className={`px-2.5 py-1 rounded-full text-xs leading-none select-none transition-colors ${
-                spacingMode === 'regular'
-                  ? 'bg-primary/10 text-foreground'
-                  : 'text-muted-foreground hover:text-foreground hover:bg-muted'
-              }`}
+              className={`px-2.5 py-1 rounded-full text-xs leading-none select-none transition-colors ${spacingMode === 'regular'
+                ? 'bg-primary/10 text-foreground'
+                : 'text-muted-foreground hover:text-foreground hover:bg-muted'
+                }`}
               title="Use pure time scaling"
             >
               Time
             </button>
             <button
               onClick={() => setSpacingMode('bounded')}
-              className={`px-2.5 py-1 rounded-full text-xs leading-none select-none transition-colors ${
-                spacingMode === 'bounded'
-                  ? 'bg-primary/10 text-foreground'
-                  : 'text-muted-foreground hover:text-foreground hover:bg-muted'
-              }`}
+              className={`px-2.5 py-1 rounded-full text-xs leading-none select-none transition-colors ${spacingMode === 'bounded'
+                ? 'bg-primary/10 text-foreground'
+                : 'text-muted-foreground hover:text-foreground hover:bg-muted'
+                }`}
               title="Clamp timeline gaps with min/max bounds"
             >
               Bounded
@@ -1326,9 +1328,8 @@ export default function BranchMap({
       {/* Branch issues panel — slides in from right */}
       <div
         ref={errorPanelRef}
-        className={`fixed right-4 top-14 bottom-6 w-72 flex flex-col bg-card/90 backdrop-blur-sm rounded-2xl border border-border shadow-lg z-40 transition-all duration-300 ease-in-out ${
-          errorPanelOpen ? 'translate-x-0 opacity-100' : 'translate-x-[110%] opacity-0 pointer-events-none'
-        }`}
+        className={`fixed right-4 top-14 bottom-6 w-72 flex flex-col bg-card/90 backdrop-blur-sm rounded-2xl border border-border shadow-lg z-40 transition-all duration-300 ease-in-out ${errorPanelOpen ? 'translate-x-0 opacity-100' : 'translate-x-[110%] opacity-0 pointer-events-none'
+          }`}
       >
         <div className="flex items-center justify-between px-4 py-3 border-b border-border/50 shrink-0">
           <span className="text-sm font-medium text-foreground">Branch issues</span>
