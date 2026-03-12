@@ -540,14 +540,14 @@ export default function BranchMap({
   );
   const svgWidth = maxBranchVisualEndX + RIGHT_PAD + 80;
 
-  // Dynamic main Y: positions the main timeline proportional to available height.
-  // 120px reserved below for node labels; minimum 440 so all 5 lanes fit above.
-  const mainY = Math.max(440, containerHeight - 120);
+  // Main baseline sits near the top so branch lanes flow downward.
+  const MAIN_TOP_PAD = 80;
+  const mainY = MAIN_TOP_PAD;
 
-  // ── Assign vertical lanes to avoid overlap (strict upward hierarchy) ─────
+  // ── Assign vertical lanes to avoid overlap (strict downward hierarchy) ───
   // Policy:
-  // 1) If a branch has a visible parent branch, it must render above that parent.
-  // 2) Unrelated branches can shift to higher lanes to satisfy (1).
+  // 1) If a branch has a visible parent branch, it must render below that parent.
+  // 2) Unrelated branches can shift to lower lanes to satisfy (1).
   // 3) Lane occupancy still respects horizontal separation to reduce label overlap.
   const sortedByX = [...activeBranches].sort(
     (a, b) => branchForkX(a) - branchForkX(b)
@@ -606,14 +606,14 @@ export default function BranchMap({
   }
 
   const laneCount = laneLastEndX.length;
-  const availableLaneHeight = Math.max(220, mainY - 80);
+  const availableLaneHeight = Math.max(220, containerHeight - mainY - 80);
   const laneHeight = laneCount > 0
     ? Math.max(34, Math.min(LANE_HEIGHT, Math.floor(availableLaneHeight / laneCount)))
     : LANE_HEIGHT;
 
   function laneY(b: Branch): number {
     const lane = laneAssignments.get(b.name) ?? 0;
-    return mainY - laneHeight * (lane + 1) - 40;
+    return mainY + laneHeight * (lane + 1) + 40;
   }
 
   const laneYByBranch = new Map<string, number>(
@@ -634,7 +634,10 @@ export default function BranchMap({
   // Merged PRs lane layout
   const MERGED_LANE_HEIGHT = 60;
   const MERGED_LANES = 4;
-  const svgHeight = Math.max(mainY + 120, containerHeight);
+  const maxBranchY = laneCount > 0
+    ? mainY + laneHeight * laneCount + 40
+    : mainY;
+  const svgHeight = Math.max(maxBranchY + 120, containerHeight);
 
   return (
     <div className="h-full">
