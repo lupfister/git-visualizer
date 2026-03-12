@@ -381,7 +381,9 @@ fn get_branch_diff(
 #[derive(serde::Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct CommitInfo {
+    full_sha: String,
     sha: String,
+    parent_sha: Option<String>,
     message: String,
     author: String,
     date: String,
@@ -404,7 +406,7 @@ fn get_branch_commits(
     };
     let output = git::cli::run(
         path,
-        &["log", &range, "--format=%H|%h|%s|%an|%aI", "--no-merges"],
+        &["log", &range, "--format=%H|%h|%s|%an|%aI|%P", "--no-merges"],
     )
     .map_err(|e| e.to_string())?;
 
@@ -412,10 +414,16 @@ fn get_branch_commits(
         .lines()
         .filter(|l| !l.is_empty())
         .filter_map(|line| {
-            let parts: Vec<&str> = line.splitn(5, '|').collect();
-            if parts.len() < 5 { return None; }
+            let parts: Vec<&str> = line.splitn(6, '|').collect();
+            if parts.len() < 6 { return None; }
+            let parent_sha = parts[5]
+                .split_whitespace()
+                .next()
+                .map(|p| p.to_string());
             Some(CommitInfo {
+                full_sha: parts[0].to_string(),
                 sha: parts[1].to_string(),
+                parent_sha,
                 message: parts[2].to_string(),
                 author: parts[3].to_string(),
                 date: parts[4].to_string(),
@@ -427,13 +435,30 @@ fn get_branch_commits(
 }
 
 #[tauri::command(rename_all = "camelCase")]
+fn get_commit_diff(
+    repo_path: String,
+    commit_sha: String,
+    base_sha: Option<String>,
+) -> Result<String, String> {
+    let path = Path::new(&repo_path);
+    let base = base_sha.unwrap_or_else(|| format!("{}^1", commit_sha));
+    let diff = git::cli::run(path, &["diff", &base, &commit_sha, "--unified=3"])
+        .map_err(|e| e.to_string())?;
+    const MAX_CHARS: usize = 60_000;
+    if diff.len() > MAX_CHARS {
+        Ok(format!("{}\n\n[diff truncated at {} chars]", &diff[..MAX_CHARS], MAX_CHARS))
+    } else {
+        Ok(diff)
+    }
+}
+
+#[tauri::command(rename_all = "camelCase")]
 fn get_direct_commits(
     repo_path: String,
     branch: String,
     limit: Option<u32>,
 ) -> Result<Vec<DirectCommit>, String> {
     let path = Path::new(&repo_path);
-    let limit = limit.unwrap_or(200);
     git::get_direct_commits(path, &branch, limit).map_err(|e| e.to_string())
 }
 
@@ -458,7 +483,9 @@ fn get_recent_log(
             let parts: Vec<&str> = line.splitn(5, '|').collect();
             if parts.len() < 5 { return None; }
             Some(CommitInfo {
+                full_sha: parts[0].to_string(),
                 sha: parts[1].to_string(),
+                parent_sha: None,
                 message: parts[2].to_string(),
                 author: parts[3].to_string(),
                 date: parts[4].to_string(),
@@ -692,6 +719,58 @@ fn get_changed_routes(
     Ok(routes)
 }
 
+/// Return the URL paths most likely affected by a specific commit.
+/// Defaults to first-parent diff: `commit^1..commit`.
+#[tauri::command(rename_all = "camelCase")]
+fn get_changed_routes_for_commit(
+    repo_path: String,
+    commit_sha: String,
+    base_sha: Option<String>,
+) -> Result<Vec<String>, String> {
+    let path = Path::new(&repo_path);
+    let base = base_sha.unwrap_or_else(|| format!("{}^1", commit_sha));
+    let output = git::cli::run(path, &["diff", "--name-only", &base, &commit_sha])
+        .map_err(|e| e.to_string())?;
+
+    let changed_files: Vec<&str> = output.lines().filter(|l| !l.is_empty()).collect();
+
+    let mut seen = std::collections::HashSet::new();
+
+    // Pass 1: direct page file matches
+    let mut routes: Vec<String> = changed_files
+        .iter()
+        .filter_map(|f| file_to_route(f))
+        .filter(|r| seen.insert(r.clone()))
+        .collect();
+
+    // Pass 2: non-page files inside app route directories → extract containing route
+    for &file in &changed_files {
+        if let Some(route) = app_dir_to_route(file) {
+            if seen.insert(route.clone()) {
+                routes.push(route);
+            }
+        }
+    }
+
+    // Pass 3: fuzzy-match filenames and directory segments against all repo routes.
+    let all_routes = all_page_routes(path);
+    for r in fuzzy_matched_routes(&changed_files, &all_routes) {
+        if seen.insert(r.clone()) {
+            routes.push(r.clone());
+        }
+    }
+
+    if routes.len() > 4 {
+        routes.truncate(4);
+    }
+
+    if routes.is_empty() {
+        return Ok(vec!["/".to_string()]);
+    }
+
+    Ok(routes)
+}
+
 /// Map a changed file path to a URL route, or None if not a page file.
 fn file_to_route(file: &str) -> Option<String> {
     const PAGE_EXTS: &[&str] = &["page.tsx", "page.jsx", "page.ts", "page.js"];
@@ -907,6 +986,11 @@ fn run_open_browser_blocking(repo_path: String, branch: String, port: u16) -> Re
     let mut server = std::process::Command::new(pm)
         .args(&pm_args)
         .env("PORT", &port_str)
+        // Prevent framework dev servers from auto-opening a browser window/tab.
+        .env("BROWSER", "none")
+        .env("NO_OPEN", "1")
+        .env("npm_config_open", "false")
+        .env("npm_config_browser", "none")
         .current_dir(&preview_dir)
         .stdout(stdout_sink)
         .stderr(stderr_sink)
@@ -1488,6 +1572,11 @@ fn run_previews_blocking(repo_path: String, branch: String, port: u16, paths: Ve
     let mut server = std::process::Command::new(pm)
         .args(&pm_args)
         .env("PORT", &port_str)
+        // Prevent framework dev servers from auto-opening a browser window/tab.
+        .env("BROWSER", "none")
+        .env("NO_OPEN", "1")
+        .env("npm_config_open", "false")
+        .env("npm_config_browser", "none")
         .current_dir(&preview_dir)
         .stdout(stdout_sink)
         .stderr(stderr_sink)
@@ -1786,6 +1875,7 @@ pub fn run() {
             get_home_dir,
             get_branch_diff,
             get_branch_commits,
+            get_commit_diff,
             get_direct_commits,
             get_anthropic_key,
             summarize_diff,
@@ -1795,6 +1885,7 @@ pub fn run() {
             generate_preview_routes,
             open_preview_browser,
             get_changed_routes,
+            get_changed_routes_for_commit,
             debug_diff_files,
         ])
         .run(tauri::generate_context!())

@@ -12,8 +12,8 @@ const LANE_HEIGHT = 60;
 const NODE_SIZE = 8;
 const CORNER_R = 20;
 const MAX_ACTIVE = 50;
-const ZOOM_MIN = 0.25;
-const ZOOM_MAX = 4;
+const ZOOM_MIN = 0.1;
+const ZOOM_MAX = 1;
 
 type TooltipData = { x: number; y: number; lines: string[] };
 type PRCommitHover = { x: number; arcY: number; pr: MergedPR; commitIdx: number; total: number };
@@ -105,7 +105,7 @@ export default function BranchMap({
   const [hoveredPRCommit, setHoveredPRCommit] = useState<PRCommitHover | null>(null);
   const [hoveredMergeNode, setHoveredMergeNode] = useState<{ x: number; node: MergeNode } | null>(null);
   const [prCommits, setPrCommits] = useState<Map<number, string[]>>(new Map());
-  const [zoom, setZoom] = useState(1);
+  const [zoom, setZoom] = useState(ZOOM_MIN);
   // WKWebView (Tauri) doesn't fire CSS animations on SVG elements inserted during
   // the initial paint. Defer animation classes by one rAF so they start post-paint.
   const [drawReady, setDrawReady] = useState(false);
@@ -200,7 +200,7 @@ export default function BranchMap({
       const mouseX = e.clientX - rect.left;
       const contentX = el.scrollLeft + mouseX;
       setZoom((prev) => {
-        const delta = e.deltaY > 0 ? -0.1 : 0.1;
+        const delta = e.deltaY > 0 ? -0.05 : 0.05;
         const newZoom = Math.max(
           ZOOM_MIN,
           Math.min(ZOOM_MAX, Math.round((prev + delta) * 100) / 100)
@@ -342,56 +342,139 @@ export default function BranchMap({
 
 
   // ── Build a date → X mapping ─────────────────────────────────────────────
-  const NODE_SPACING = Math.max(MIN_BRANCH_SPACING_X, Math.round(160 * zoom));
+  // Timeline spacing is relative to time, but each adjacent commit gap is clamped
+  // so we never produce unreadably dense clusters or giant deserts.
+  const IDEAL_NODE_SPACING = Math.max(MIN_BRANCH_SPACING_X, Math.round(160 * zoom));
+  const IDEAL_EVENT_GAP = Math.max(8, Math.round(40 * zoom));
+  const MIN_EVENT_GAP = Math.max(4, Math.round(IDEAL_EVENT_GAP * 0.22));
+  const MAX_EVENT_GAP = Math.round(IDEAL_EVENT_GAP * 6.5);
 
   const sortedNodes = [...mergeNodes].sort(
     (a, b) => new Date(a.date).getTime() - new Date(b.date).getTime()
   );
+  const sortedDirectCommits = [...directCommits].sort(
+    (a, b) => new Date(a.date).getTime() - new Date(b.date).getTime()
+  );
 
-  const nodeXByFullSha = new Map<string, number>();
-  sortedNodes.forEach((m, i) => {
-    nodeXByFullSha.set(m.fullSha, LEFT_PAD + i * NODE_SPACING);
+  type TimelineEvent = { key: string; t: number; kind: 'merge' | 'direct'; fullSha: string };
+  const timelineEvents: TimelineEvent[] = [
+    ...sortedNodes.map((m) => ({
+      key: `merge:${m.fullSha}`,
+      t: new Date(m.date).getTime(),
+      kind: 'merge' as const,
+      fullSha: m.fullSha,
+    })),
+    ...sortedDirectCommits.map((c) => ({
+      key: `direct:${c.fullSha}`,
+      t: new Date(c.date).getTime(),
+      kind: 'direct' as const,
+      fullSha: c.fullSha,
+    })),
+  ].sort((a, b) => {
+    if (a.t !== b.t) return a.t - b.t;
+    // Keep direct dots just before merge ticks when timestamps match.
+    if (a.kind === b.kind) return a.key.localeCompare(b.key);
+    return a.kind === 'direct' ? -1 : 1;
   });
 
-  const mainEndX =
-    LEFT_PAD + Math.max(sortedNodes.length - 1, 0) * NODE_SPACING;
+  const eventDeltaDays = timelineEvents.slice(1).map((e, i) => {
+    const prevT = timelineEvents[i].t;
+    return Math.max((e.t - prevT) / 86400000, 0);
+  });
+  // Use rank-based normalization so spacing differences remain visible even when
+  // many timestamp deltas are numerically close.
+  const rankedDeltaInputs = eventDeltaDays.map((d, i) => d + i * 1e-6);
+  const sortedRankedDeltas = [...rankedDeltaInputs].sort((a, b) => a - b);
+  const deltaRankPct = rankedDeltaInputs.map((v) => {
+    if (sortedRankedDeltas.length <= 1) return 0;
+    let lo = 0;
+    let hi = sortedRankedDeltas.length;
+    while (lo < hi) {
+      const mid = (lo + hi) >> 1;
+      if (sortedRankedDeltas[mid] < v) lo = mid + 1;
+      else hi = mid;
+    }
+    return lo / (sortedRankedDeltas.length - 1);
+  });
 
-  const firstNodeT =
-    sortedNodes.length > 0
-      ? new Date(sortedNodes[0].date).getTime()
+  const eventXs: number[] = [];
+  const eventXByKey = new Map<string, number>();
+  if (timelineEvents.length > 0) {
+    eventXs.push(LEFT_PAD);
+    eventXByKey.set(timelineEvents[0].key, LEFT_PAD);
+  }
+  for (let i = 1; i < timelineEvents.length; i++) {
+    // Aggressive spread: curve ranked deltas into a wide min..max gap range.
+    const normalized = deltaRankPct[i - 1] ?? 0;
+    const eased = Math.pow(normalized, 1.35);
+    const gap = MIN_EVENT_GAP + eased * (MAX_EVENT_GAP - MIN_EVENT_GAP);
+    const x = eventXs[i - 1] + gap;
+    eventXs.push(x);
+    eventXByKey.set(timelineEvents[i].key, x);
+  }
+
+  const nodeXByFullSha = new Map<string, number>(
+    sortedNodes.map((m) => [m.fullSha, eventXByKey.get(`merge:${m.fullSha}`) ?? LEFT_PAD])
+  );
+  const directXByFullSha = new Map<string, number>(
+    sortedDirectCommits.map((c) => [c.fullSha, eventXByKey.get(`direct:${c.fullSha}`) ?? LEFT_PAD])
+  );
+
+  const mainEndX = eventXs.length > 0 ? eventXs[eventXs.length - 1] : LEFT_PAD;
+  const averageEventGap = timelineEvents.length > 1
+    ? (mainEndX - LEFT_PAD) / (timelineEvents.length - 1)
+    : IDEAL_EVENT_GAP;
+  const averageMergeGap = sortedNodes.length > 1
+    ? ((nodeXByFullSha.get(sortedNodes[sortedNodes.length - 1].fullSha) ?? LEFT_PAD) - (nodeXByFullSha.get(sortedNodes[0].fullSha) ?? LEFT_PAD)) / (sortedNodes.length - 1)
+    : IDEAL_NODE_SPACING;
+
+  const firstEventT =
+    timelineEvents.length > 0
+      ? timelineEvents[0].t
       : Date.now();
-  const lastNodeT =
-    sortedNodes.length > 1
-      ? new Date(sortedNodes[sortedNodes.length - 1].date).getTime()
-      : firstNodeT + 1;
-  const nodeTimeSpan = Math.max(lastNodeT - firstNodeT, 1);
+  const lastEventT =
+    timelineEvents.length > 1
+      ? timelineEvents[timelineEvents.length - 1].t
+      : firstEventT + 1;
+  const timelineTimeSpan = Math.max(lastEventT - firstEventT, 1);
+  const eventTimes = timelineEvents.map((e) => e.t);
 
   // When extrapolating dates outside the merge-node range, use a rate capped at
-  // 1 NODE_SPACING per 7 days. This prevents active branches on fast-moving repos
+  // roughly one average on-canvas event gap per 7 days. This prevents active branches on fast-moving repos
   // (many PRs merged within hours) from extending far off the right edge.
-  const avgNodeIntervalMs = sortedNodes.length > 1
-    ? nodeTimeSpan / (sortedNodes.length - 1)
+  const avgNodeIntervalMs = timelineEvents.length > 1
+    ? timelineTimeSpan / (timelineEvents.length - 1)
     : 7 * 86400000;
-  const safeExtrapPxPerMs = NODE_SPACING / Math.max(avgNodeIntervalMs, 7 * 86400000);
+  const safeExtrapPxPerMs = averageEventGap / Math.max(avgNodeIntervalMs, 7 * 86400000);
 
   function timeToX(dateStr: string): number {
     const t = new Date(dateStr).getTime();
-    if (sortedNodes.length === 0) return LEFT_PAD;
+    if (timelineEvents.length === 0) return LEFT_PAD;
 
-    for (let i = 0; i < sortedNodes.length - 1; i++) {
-      const tA = new Date(sortedNodes[i].date).getTime();
-      const tB = new Date(sortedNodes[i + 1].date).getTime();
-      if (t >= tA && t <= tB) {
-        const ratio = (t - tA) / (tB - tA);
-        return LEFT_PAD + i * NODE_SPACING + ratio * NODE_SPACING;
-      }
+    let lo = 0;
+    let hi = eventTimes.length;
+    while (lo < hi) {
+      const mid = (lo + hi) >> 1;
+      if (eventTimes[mid] < t) lo = mid + 1;
+      else hi = mid;
     }
 
-    if (t < firstNodeT) {
-      const rawX = LEFT_PAD + (t - firstNodeT) * safeExtrapPxPerMs;
-      return Math.max(rawX, LEFT_PAD - NODE_SPACING * 2);
+    if (lo <= 0) {
+      const rawX = LEFT_PAD + (t - firstEventT) * safeExtrapPxPerMs;
+      return Math.max(rawX, LEFT_PAD - MIN_EVENT_GAP * 2);
     }
-    return mainEndX + (t - lastNodeT) * safeExtrapPxPerMs;
+    if (lo >= eventTimes.length) {
+      return mainEndX + (t - lastEventT) * safeExtrapPxPerMs;
+    }
+
+    const i = lo - 1;
+    const tA = eventTimes[i];
+    const tB = eventTimes[lo];
+    const xA = eventXs[i] ?? LEFT_PAD;
+    const xB = eventXs[lo] ?? xA;
+    if (tB <= tA) return xA;
+    const ratio = (t - tA) / (tB - tA);
+    return xA + ratio * (xB - xA);
   }
 
   function branchForkX(b: Branch): number {
@@ -486,34 +569,29 @@ export default function BranchMap({
               </text>
 
               {/* Direct commits — small dots between merge nodes */}
-              {directCommits
-                .filter(c => {
-                  const t = new Date(c.date).getTime();
-                  return t >= firstNodeT && t <= lastNodeT;
-                })
-                .map(c => {
-                  const x = timeToX(c.date);
-                  const label = c.message.length > 38 ? c.message.slice(0, 38) + '…' : c.message;
-                  return (
-                    <rect
-                      key={c.fullSha}
-                      x={x - 3}
-                      y={mainY - 3}
-                      width={6}
-                      height={6}
-                      fill="#57534e"
-                      style={{ cursor: 'default' }}
-                      onMouseEnter={() =>
-                        setTooltip({
-                          x,
-                          y: mainY - 16,
-                          lines: [c.sha, label, `@${c.author}`],
-                        })
-                      }
-                      onMouseLeave={() => setTooltip(null)}
-                    />
-                  );
-                })}
+              {directCommits.map(c => {
+                const x = directXByFullSha.get(c.fullSha) ?? timeToX(c.date);
+                const label = c.message.length > 38 ? c.message.slice(0, 38) + '…' : c.message;
+                return (
+                  <rect
+                    key={c.fullSha}
+                    x={x - 3}
+                    y={mainY - 3}
+                    width={6}
+                    height={6}
+                    fill="#57534e"
+                    style={{ cursor: 'default' }}
+                    onMouseEnter={() =>
+                      setTooltip({
+                        x,
+                        y: mainY - 16,
+                        lines: [c.sha, label, `@${c.author}`],
+                      })
+                    }
+                    onMouseLeave={() => setTooltip(null)}
+                  />
+                );
+              })}
 
               {(() => {
                 // Progressive label culling as zoom decreases.
@@ -524,9 +602,10 @@ export default function BranchMap({
                 //   <40px  → no labels at all (hover tooltip still works)
                 // Step 2: min gap between shown labels = width of the widest line
                 //   being rendered, so labels never overlap their neighbours.
-                const showTitle  = NODE_SPACING >= 130;
-                const showDate   = NODE_SPACING >= 80;
-                const anyLabel   = NODE_SPACING >= 40;
+                const labelSpacing = averageMergeGap;
+                const showTitle  = labelSpacing >= 130;
+                const showDate   = labelSpacing >= 80;
+                const anyLabel   = labelSpacing >= 40;
                 const minLabelGap = showTitle ? 130 : showDate ? 100 : anyLabel ? 55 : Infinity;
 
                 let lastLabelX = -Infinity;
@@ -760,13 +839,11 @@ export default function BranchMap({
 
               const brDelay = branchDelayMs.get(b.name) ?? 0;
 
-              // If this branch forks directly on a merge node, suppress the fork
-              // labels below the main line — the branch is identified by its arc
-              // label, and stacking more text under the PR node is confusing.
+              // If this branch forks directly on a merge node, suppress status pills
+              // below the main line so we do not stack labels under dense PR clusters.
               const forkOnNode = sortedNodes.some(n =>
                 Math.abs((nodeXByFullSha.get(n.fullSha) ?? timeToX(n.date)) - forkX) < NODE_SIZE
               );
-              const forkLabelY  = mainY + 20;
               const statusLabelY = mainY + 34;
 
               return (
@@ -827,13 +904,6 @@ export default function BranchMap({
                       stroke={color}
                       strokeWidth={strokeWidth}
                     />
-                    {/* Branch name label below main line — hidden when fork sits on a merge node */}
-                    {!forkOnNode && (
-                      <text x={forkX} y={forkLabelY} textAnchor="middle" fontSize={10} fill="#78716c">
-                        {b.name.length > 18 ? b.name.slice(0, 18) + '…' : b.name}
-                      </text>
-                    )}
-
                     {/* Commit filled squares along branch */}
                     {commitXs.map((cx, ci) => (
                       <rect
@@ -1070,7 +1140,7 @@ export default function BranchMap({
           />
           <div className="flex items-center gap-2 shrink-0 bg-card border border-border rounded-full px-3 py-1">
             <button
-              onClick={() => setZoom(z => Math.max(ZOOM_MIN, Math.round((z - 0.25) * 100) / 100))}
+              onClick={() => setZoom(z => Math.max(ZOOM_MIN, Math.round((z - 0.05) * 100) / 100))}
               className="text-sm text-muted-foreground hover:text-foreground transition-colors leading-none select-none"
               title="Zoom out"
             >
@@ -1080,7 +1150,7 @@ export default function BranchMap({
               {Math.round(zoom * 100)}%
             </span>
             <button
-              onClick={() => setZoom(z => Math.min(ZOOM_MAX, Math.round((z + 0.25) * 100) / 100))}
+              onClick={() => setZoom(z => Math.min(ZOOM_MAX, Math.round((z + 0.05) * 100) / 100))}
               className="text-sm text-muted-foreground hover:text-foreground transition-colors leading-none select-none"
               title="Zoom in"
             >

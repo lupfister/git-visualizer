@@ -16,18 +16,30 @@ pub struct DirectCommit {
 pub fn get_direct_commits(
     repo: &Path,
     branch: &str,
-    limit: u32,
+    limit: Option<u32>,
 ) -> Result<Vec<DirectCommit>, GitError> {
-    let output = cli::run(
-        repo,
-        &[
-            "log",
-            "--no-merges",
-            &format!("--max-count={}", limit),
-            "--format=%H|%h|%s|%an|%aI",
-            branch,
-        ],
-    )?;
+    let output = if let Some(limit) = limit {
+        cli::run(
+            repo,
+            &[
+                "log",
+                "--no-merges",
+                &format!("--max-count={}", limit),
+                "--format=%H|%h|%s|%an|%aI",
+                branch,
+            ],
+        )?
+    } else {
+        cli::run(
+            repo,
+            &[
+                "log",
+                "--no-merges",
+                "--format=%H|%h|%s|%an|%aI",
+                branch,
+            ],
+        )?
+    };
 
     let commits = output
         .lines()

@@ -39,6 +39,27 @@ function App() {
   const prewarmedRef = useRef(false);
   const [authSetupLoading, setAuthSetupLoading] = useState(false);
 
+  async function fetchAllMergeNodes(path: string, branch: string): Promise<MergeNode[]> {
+    const perPage = 100;
+    const all: MergeNode[] = [];
+    let page = 0;
+
+    while (true) {
+      const result = await invoke<{ nodes: MergeNode[]; hasMore: boolean }>('get_merge_nodes', {
+        repoPath: path,
+        branch,
+        page,
+        perPage,
+      });
+
+      all.push(...result.nodes);
+      if (!result.hasMore || result.nodes.length === 0) break;
+      page += 1;
+    }
+
+    return all;
+  }
+
   async function loadRepo(path: string) {
     setLoading(true);
     setMapLoading(true);
@@ -63,20 +84,14 @@ function App() {
       // Phase 2: heavier git data — timeline skeleton shows while this loads
       const [branchList, nodes, directResult] = await Promise.all([
         invoke<Branch[]>('get_branches', { repoPath: path }),
-        invoke<{ nodes: MergeNode[]; hasMore: boolean }>('get_merge_nodes', {
-          repoPath: path,
-          branch: 'HEAD',
-          page: 0,
-          perPage: 100,
-        }),
+        fetchAllMergeNodes(path, def),
         invoke<DirectCommit[]>('get_direct_commits', {
           repoPath: path,
-          branch: 'HEAD',
-          limit: 300,
+          branch: def,
         }),
       ]);
       setBranches(branchList);
-      setMergeNodes(nodes.nodes);
+      setMergeNodes(nodes);
       setDirectCommits(directResult);
       setMapLoading(false);
 
@@ -119,22 +134,6 @@ function App() {
     } catch (e) {
       // GitHub data is optional, don't show error to user
       console.log('GitHub data not available:', e);
-    }
-  }
-
-  async function loadMoreNodes() {
-    if (!repoPath) return;
-    const currentPage = Math.floor(mergeNodes.length / 100);
-    try {
-      const result = await invoke<{ nodes: MergeNode[]; hasMore: boolean }>('get_merge_nodes', {
-        repoPath,
-        branch: 'HEAD',
-        page: currentPage,
-        perPage: 100,
-      });
-      setMergeNodes((prev) => [...prev, ...result.nodes]);
-    } catch (e) {
-      console.error('Failed to load more nodes:', e);
     }
   }
 
@@ -445,7 +444,6 @@ function App() {
               selectedBranch={selectedBranch}
               onBranchSelect={handleBranchSelect}
               onBranchClick={handleBranchClick}
-              onLoadMore={loadMoreNodes}
               githubAvailable={githubAvailable}
               githubOwner={githubOwner}
               githubRepo={githubRepo}

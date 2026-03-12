@@ -38,7 +38,6 @@ pub struct MergedPR {
 struct GitHubPR {
     number: i64,
     title: String,
-    state: String,
     merged_at: Option<String>,
     created_at: String,
     merge_commit_sha: Option<String>,

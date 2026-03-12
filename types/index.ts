@@ -15,7 +15,9 @@ export interface Branch {
 }
 
 export interface Commit {
+  fullSha: string;
   sha: string;
+  parentSha?: string | null;
   message: string;
   author: string;
   date: string;
