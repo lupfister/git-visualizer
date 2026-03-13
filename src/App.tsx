@@ -3,7 +3,7 @@ import { invoke } from '@tauri-apps/api/core';
 import BranchMapView from '../components/BranchMapView';
 import DiffViewer from '../components/DiffViewer';
 import FolderPickerModal from './FolderPickerModal';
-import type { Branch, DirectCommit, MergeNode, MergedPR, OpenPR, GitHubInfo, GitHubAuthStatus } from '../types';
+import type { Branch, CheckedOutRef, DirectCommit, MergeNode, MergedPR, OpenPR, GitHubInfo, GitHubAuthStatus } from '../types';
 
 type View = 'landing' | 'map' | 'diff';
 
@@ -16,6 +16,7 @@ function App() {
   const [mergedPRs, setMergedPRs] = useState<MergedPR[]>([]);
   const [openPRs, setOpenPRs] = useState<OpenPR[]>([]);
   const [defaultBranch, setDefaultBranch] = useState<string>('main');
+  const [checkedOutRef, setCheckedOutRef] = useState<CheckedOutRef | null>(null);
   const [loading, setLoading] = useState(false);       // button spinner in landing
   const [mapLoading, setMapLoading] = useState(false); // canvas skeleton in map
   const [error, setError] = useState<string | null>(null);
@@ -76,12 +77,14 @@ function App() {
 
     try {
       // Phase 1: fast metadata — show the map shell immediately
-      const [info, def] = await Promise.all([
+      const [info, def, checkedOut] = await Promise.all([
         invoke<{ name: string; path: string }>('get_repo_info', { repoPath: path }),
         invoke<string>('get_default_branch', { repoPath: path }),
+        invoke<CheckedOutRef>('get_checked_out_ref', { repoPath: path }).catch(() => null),
       ]);
       setRepoName(info.name);
       setDefaultBranch(def);
+      setCheckedOutRef(checkedOut);
       setLoading(false); // unblock the landing button
 
       // Phase 2: heavier git data — timeline skeleton shows while this loads
@@ -201,6 +204,7 @@ function App() {
     setGithubAuthLoading(false);
     setGithubAuthStatus(null);
     setGithubAuthMessage(null);
+    setCheckedOutRef(null);
   }, [repoPath]);
 
   // Pre-warm: start screenshotting main at '/' as soon as active branches arrive.
@@ -506,6 +510,7 @@ function App() {
               isLoading={mapLoading}
               scrollRequest={scrollRequest}
               focusedErrorBranch={focusedErrorBranch}
+              checkedOutRef={checkedOutRef}
             />
           </div>
         </div>

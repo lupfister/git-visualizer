@@ -17,6 +17,13 @@ pub struct Branch {
     pub diverged_from_date: Option<String>,
 }
 
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CheckedOutRef {
+    pub branch_name: Option<String>,
+    pub head_sha: String,
+}
+
 /// Get the default branch name (usually main or master)
 pub fn get_default_branch(repo: &Path) -> Result<String, GitError> {
     // Try to get from origin HEAD
@@ -39,6 +46,23 @@ pub fn get_default_branch(repo: &Path) -> Result<String, GitError> {
 
     // Last resort: use HEAD
     Ok("HEAD".to_string())
+}
+
+/// Get the current checked-out ref (branch name when attached, and HEAD SHA).
+pub fn get_checked_out_ref(repo: &Path) -> Result<CheckedOutRef, GitError> {
+    let branch_raw = cli::run(repo, &["rev-parse", "--abbrev-ref", "HEAD"])?;
+    let branch_name = match branch_raw.trim() {
+        "" | "HEAD" => None,
+        value => Some(value.to_string()),
+    };
+
+    let head_raw = cli::run(repo, &["rev-parse", "HEAD"])?;
+    let head_sha = head_raw.trim().to_string();
+
+    Ok(CheckedOutRef {
+        branch_name,
+        head_sha,
+    })
 }
 
 /// Get repository info (name and path)

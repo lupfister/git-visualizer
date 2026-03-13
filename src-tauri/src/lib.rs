@@ -3,7 +3,7 @@ mod github;
 
 use tauri::Manager;
 
-use git::{Branch, DirectCommit, MergeNode};
+use git::{Branch, CheckedOutRef, DirectCommit, MergeNode};
 use github::{GitHubAuthStatus, GitHubInfo, MergedPR, OpenPR};
 use std::path::Path;
 
@@ -304,6 +304,12 @@ fn get_merge_nodes(
 fn get_default_branch(repo_path: String) -> Result<String, String> {
     let path = Path::new(&repo_path);
     git::get_default_branch(path).map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+fn get_checked_out_ref(repo_path: String) -> Result<CheckedOutRef, String> {
+    let path = Path::new(&repo_path);
+    git::get_checked_out_ref(path).map_err(|e| e.to_string())
 }
 
 #[tauri::command]
@@ -1875,6 +1881,7 @@ pub fn run() {
             get_branches,
             get_merge_nodes,
             get_default_branch,
+            get_checked_out_ref,
             get_repo_info,
             get_github_info,
             get_github_auth_status,

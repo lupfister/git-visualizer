@@ -15,6 +15,11 @@ export interface Branch {
   divergedFromDate?: string;
 }
 
+export interface CheckedOutRef {
+  branchName: string | null;
+  headSha: string;
+}
+
 export interface Commit {
   fullSha: string;
   sha: string;

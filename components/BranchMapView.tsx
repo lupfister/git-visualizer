@@ -1,4 +1,4 @@
-import { Branch, DirectCommit, MergeNode, MergedPR, OpenPR } from '../types';
+import { Branch, CheckedOutRef, DirectCommit, MergeNode, MergedPR, OpenPR } from '../types';
 import BranchMap from './BranchMap';
 import BranchGroupView from './BranchGroupView';
 
@@ -22,6 +22,7 @@ interface Props {
   isLoading?: boolean;
   scrollRequest?: { branch: Branch; seq: number } | null;
   focusedErrorBranch?: Branch | null;
+  checkedOutRef?: CheckedOutRef | null;
 }
 
 export default function BranchMapView({
@@ -41,6 +42,7 @@ export default function BranchMapView({
   isLoading = false,
   scrollRequest,
   focusedErrorBranch,
+  checkedOutRef = null,
 }: Props) {
   // Determine active vs inactive error branches
   const openPRBranchNames = new Set(openPRs.map(p => p.branchName));
@@ -85,6 +87,7 @@ export default function BranchMapView({
             isLoading={isLoading}
             scrollRequest={scrollRequest}
             focusedErrorBranch={focusedErrorBranch}
+            checkedOutRef={checkedOutRef}
           />
         </div>
       ) : (
