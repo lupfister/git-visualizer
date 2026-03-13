@@ -8,6 +8,7 @@ pub struct Branch {
     pub name: String,
     pub commits_ahead: i32,
     pub commits_behind: i32,
+    pub created_date: Option<String>,
     pub last_commit_date: String,
     pub last_commit_author: String,
     pub status: String,
@@ -130,6 +131,7 @@ fn get_branch_info(repo: &Path, name: &str, default_branch: &str) -> Result<Bran
         name: name.to_string(),
         commits_ahead,
         commits_behind,
+        created_date: None,
         last_commit_date,
         last_commit_author,
         status,
@@ -230,6 +232,16 @@ fn infer_branch_parents(
                 branch.diverged_from_date = date;
             }
         }
+
+        let created_from_reflog = get_branch_reflog_created_date(repo, &branch.name).ok().flatten();
+        let created_from_unique_commit = branch
+            .parent_branch
+            .as_deref()
+            .and_then(|parent| get_first_unique_commit_date(repo, parent, &branch.name).ok().flatten());
+        branch.created_date = created_from_reflog
+            .or(created_from_unique_commit)
+            .or_else(|| branch.diverged_from_date.clone())
+            .or_else(|| Some(branch.last_commit_date.clone()));
     }
 
     Ok(())
@@ -280,6 +292,59 @@ fn get_fork_point(repo: &Path, branch: &str, base: &str) -> Result<(Option<Strin
     let date = date_output.trim().to_string();
 
     Ok((Some(sha.to_string()), Some(date)))
+}
+
+fn get_first_unique_commit_date(repo: &Path, base: &str, branch: &str) -> Result<Option<String>, GitError> {
+    let output = cli::run(
+        repo,
+        &["log", "--reverse", "--format=%aI", &format!("{}..{}", base, branch)],
+    )?;
+
+    Ok(output
+        .lines()
+        .map(str::trim)
+        .find(|line| !line.is_empty())
+        .map(|line| line.to_string()))
+}
+
+fn get_branch_reflog_created_date(repo: &Path, branch: &str) -> Result<Option<String>, GitError> {
+    let ref_name = format!("refs/heads/{}", branch);
+    let output = cli::run(
+        repo,
+        &["reflog", "show", "--date=iso-strict", "--format=%gd", &ref_name],
+    )?;
+
+    let selector = output
+        .lines()
+        .map(str::trim)
+        .filter(|line| !line.is_empty())
+        .last();
+
+    let Some(selector) = selector else {
+        return Ok(None);
+    };
+
+    let Some(start) = selector.rfind("@{") else {
+        return Ok(None);
+    };
+
+    let tail = &selector[start + 2..];
+    let Some(end) = tail.rfind('}') else {
+        return Ok(None);
+    };
+
+    let raw_date = tail[..end].trim();
+    Ok(normalize_git_date(raw_date))
+}
+
+fn normalize_git_date(value: &str) -> Option<String> {
+    if let Ok(dt) = chrono::DateTime::parse_from_rfc3339(value) {
+        return Some(dt.to_rfc3339());
+    }
+    if let Ok(dt) = chrono::DateTime::parse_from_str(value, "%Y-%m-%d %H:%M:%S %z") {
+        return Some(dt.to_rfc3339());
+    }
+    None
 }
 
 fn calculate_status(commits_behind: i32, last_commit_date: &str) -> String {

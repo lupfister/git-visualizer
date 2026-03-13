@@ -208,6 +208,20 @@ body {
   animation-delay: var(--delay, 0ms);
   animation-play-state: paused;
 }
+@keyframes main-stale-tail-glow {
+  0%, 100% {
+    filter: drop-shadow(0 0 0 color-mix(in srgb, var(--muted-foreground) 0%, transparent));
+    opacity: 0.88;
+  }
+  50% {
+    filter: drop-shadow(0 0 4px color-mix(in srgb, var(--muted-foreground) 55%, transparent));
+    opacity: 1;
+  }
+}
+.main-stale-tail-glow {
+  animation: main-stale-tail-glow 2.8s ease-in-out infinite;
+  animation-play-state: paused;
+}
 
 /* Parent class added after first two frames — starts all animations together */
 .timeline-ready .draw-path-main,
@@ -216,12 +230,20 @@ body {
 .timeline-ready .fade-in-pill {
   animation-play-state: running;
 }
+.timeline-ready .main-stale-tail-glow {
+  animation-play-state: running;
+}
 
 @media (prefers-reduced-motion: reduce) {
   .draw-path-main { animation: none; stroke-dashoffset: 0; }
   .draw-path-arc  { animation: none; stroke-dashoffset: 0; }
   .fade-in-info   { animation: none; opacity: 1; }
   .fade-in-pill   { animation: none; opacity: 1; }
+  .main-stale-tail-glow {
+    animation: none;
+    filter: drop-shadow(0 0 1px color-mix(in srgb, var(--muted-foreground) 35%, transparent));
+    opacity: 0.95;
+  }
 }
 
 /* ── Landing page input pill entrance ───────────────────────────────────── */
@@ -253,4 +275,33 @@ body {
 }
 .animate-error-panel-out {
   animation: error-panel-out 0.1s ease-in both;
+}
+
+/* Checked-out halo pulse */
+@keyframes checked-out-halo-pulse {
+  0% {
+    opacity: 0.24;
+    transform: scale(0.92);
+  }
+  50% {
+    opacity: 0.36;
+    transform: scale(1.22);
+  }
+  100% {
+    opacity: 0.24;
+    transform: scale(0.92);
+  }
+}
+.checked-out-halo-pulse {
+  transform-box: fill-box;
+  transform-origin: center;
+  animation: checked-out-halo-pulse 1.6s ease-in-out infinite;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .checked-out-halo-pulse {
+    animation: none;
+    opacity: 0.3;
+    transform: scale(1);
+  }
 }

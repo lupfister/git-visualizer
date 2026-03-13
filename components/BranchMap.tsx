@@ -814,6 +814,13 @@ export default function BranchMap({
   );
 
   const mainEndX = eventXs.length > 0 ? eventXs[eventXs.length - 1] : leftPad;
+  const mainCommitXs = [
+    ...sortedNodes.map((m) => nodeXByFullSha.get(m.fullSha) ?? leftPad),
+    ...sortedDirectCommits.map((c) => directXByFullSha.get(c.fullSha) ?? leftPad),
+  ];
+  const latestMainCommitX = mainCommitXs.length > 0 ? Math.max(...mainCommitXs) : mainEndX;
+  const mainActiveEndX = Math.min(mainEndX, latestMainCommitX);
+  const hasMainStaleTail = mainEndX - mainActiveEndX > 0.5;
   const averageEventGap = timelineEvents.length > 1
     ? (mainEndX - leftPad) / (timelineEvents.length - 1)
     : IDEAL_EVENT_GAP;
@@ -857,6 +864,15 @@ export default function BranchMap({
     return xA + ratio * (xB - xA);
   }
 
+  function branchCreatedDate(b: Branch): string {
+    return b.createdDate ?? b.divergedFromDate ?? b.lastCommitDate;
+  }
+
+  function branchCreatedMs(b: Branch): number {
+    const t = new Date(branchCreatedDate(b)).getTime();
+    return Number.isFinite(t) ? t : Number.POSITIVE_INFINITY;
+  }
+
   function branchForkX(b: Branch): number {
     if (b.divergedFromDate) return timeToX(b.divergedFromDate);
     return timeToX(b.lastCommitDate);
@@ -891,9 +907,14 @@ export default function BranchMap({
   // 1) If a branch has a visible parent branch, it must render below that parent.
   // 2) Unrelated branches can shift to lower lanes to satisfy (1).
   // 3) Lane occupancy still respects horizontal separation to reduce label overlap.
-  const sortedByX = [...activeBranches].sort(
-    (a, b) => branchForkX(a) - branchForkX(b)
-  );
+  const sortedByX = [...activeBranches].sort((a, b) => {
+    // Allocate older branches first so they stay on higher lanes.
+    const createdDiff = branchCreatedMs(a) - branchCreatedMs(b);
+    if (createdDiff !== 0) return createdDiff;
+    const forkDiff = branchForkX(a) - branchForkX(b);
+    if (forkDiff !== 0) return forkDiff;
+    return a.name.localeCompare(b.name);
+  });
   const branchByName = new Map(activeBranches.map((b) => [b.name, b]));
 
   const BRANCH_LANE_MIN_SEPARATION_X = Math.max(20, 40 * effectiveTimeScale);
@@ -1104,7 +1125,6 @@ export default function BranchMap({
 
   const zoomCompensation = 1 / Math.max(zoom, 0.0001);
   const scaledNodeSize = NODE_SIZE * zoomCompensation;
-  const scaledNodeRadius = 2 * zoomCompensation;
   const scaledHoverHitSize = 20 * zoomCompensation;
   const scaledBranchHitStrokeWidth = BRANCH_HIT_STROKE_WIDTH * zoomCompensation;
 
@@ -1150,13 +1170,25 @@ export default function BranchMap({
           <g style={{ opacity: hoveredPR !== null || hoveredBranch !== null ? 0.2 : 1, transition: 'opacity 0.15s' }}>
             {/* Use <path> not <line>: pathLength on <line> is SVG 2 only and unreliable in WKWebView */}
             <path
-              d={`M ${leftPad} ${mainY} L ${mainEndX} ${mainY}`}
+              d={`M ${leftPad} ${mainY} L ${mainActiveEndX} ${mainY}`}
               fill="none"
               stroke="#78716c"
               strokeWidth={1.5 * zoomCompensation}
               pathLength={1}
               className="draw-path-main"
             />
+            {hasMainStaleTail && (
+              <g className="main-stale-tail-glow">
+                <path
+                  d={`M ${mainActiveEndX} ${mainY} L ${mainEndX} ${mainY}`}
+                  fill="none"
+                  stroke="#a8a29e"
+                  strokeWidth={1.5 * zoomCompensation}
+                  pathLength={1}
+                  className="draw-path-main"
+                />
+              </g>
+            )}
 
             {/* Main label and ticks — fade in once the line is drawn */}
             <g className="fade-in-info" style={{ '--delay': `${MAIN_DRAW_MS}ms` } as React.CSSProperties}>
@@ -1170,18 +1202,16 @@ export default function BranchMap({
                 {defaultBranch}
               </text>
 
-              {/* Direct commits — render with the same filled-square commit block shape as branch lanes */}
+              {/* Direct commits */}
               {directCommits.map(c => {
                 const x = directXByFullSha.get(c.fullSha) ?? timeToX(c.date);
                 const label = c.message.length > 38 ? c.message.slice(0, 38) + '…' : c.message;
                 return (
-                  <rect
+                  <circle
                     key={c.fullSha}
-                    x={x - scaledNodeSize / 2}
-                    y={mainY - scaledNodeSize / 2}
-                    width={scaledNodeSize}
-                    height={scaledNodeSize}
-                    rx={scaledNodeRadius}
+                    cx={x}
+                    cy={mainY}
+                    r={scaledNodeSize / 2}
                     fill="#78716c"
                     style={{ cursor: 'pointer' }}
                     onMouseEnter={() =>
@@ -1223,12 +1253,10 @@ export default function BranchMap({
                   return (
                     <g key={m.fullSha}>
                       {/* Visible tick — pointer-events off so hit rect handles hover */}
-                      <rect
-                        x={x - scaledNodeSize / 2}
-                        y={mainY - scaledNodeSize / 2}
-                        width={scaledNodeSize}
-                        height={scaledNodeSize}
-                        rx={scaledNodeRadius}
+                      <circle
+                        cx={x}
+                        cy={mainY}
+                        r={scaledNodeSize / 2}
                         fill={isHovered ? '#44403c' : '#78716c'}
                         style={{ pointerEvents: 'none', transition: 'fill 0.1s' }}
                       />
@@ -1327,12 +1355,24 @@ export default function BranchMap({
 
                 {/* Arc info — fades in as arc draws */}
                 <g className="fade-in-info" style={{ '--delay': `${prDelay + INFO_OFFSET}ms` } as React.CSSProperties}>
-                  <rect x={forkX - scaledNodeSize / 2} y={mainY - scaledNodeSize / 2}
-                    width={scaledNodeSize} height={scaledNodeSize} rx={scaledNodeRadius}
-                    fill="#fafaf9" stroke={isFocusedPR ? focusedPRColor : strokeColor} strokeWidth={(isFocusedPR ? 1.5 : 1) * zoomCompensation} style={{ pointerEvents: 'none' }} />
-                  <rect x={effectiveMergeX - scaledNodeSize / 2} y={mainY - scaledNodeSize / 2}
-                    width={scaledNodeSize} height={scaledNodeSize} rx={scaledNodeRadius}
-                    fill="#fafaf9" stroke={isFocusedPR ? focusedPRColor : strokeColor} strokeWidth={(isFocusedPR ? 1.5 : 1) * zoomCompensation} style={{ pointerEvents: 'none' }} />
+                  <circle
+                    cx={forkX}
+                    cy={mainY}
+                    r={scaledNodeSize / 2}
+                    fill="#fafaf9"
+                    stroke={isFocusedPR ? focusedPRColor : strokeColor}
+                    strokeWidth={(isFocusedPR ? 1.5 : 1) * zoomCompensation}
+                    style={{ pointerEvents: 'none' }}
+                  />
+                  <circle
+                    cx={effectiveMergeX}
+                    cy={mainY}
+                    r={scaledNodeSize / 2}
+                    fill="#fafaf9"
+                    stroke={isFocusedPR ? focusedPRColor : strokeColor}
+                    strokeWidth={(isFocusedPR ? 1.5 : 1) * zoomCompensation}
+                    style={{ pointerEvents: 'none' }}
+                  />
 
                   {/* Commit ticks — interactive with SHA tooltips */}
                   {commitXs.map((cx, ci) => {
@@ -1344,12 +1384,10 @@ export default function BranchMap({
                     return (
                       <g key={ci}>
                         {/* Visible tick */}
-                        <rect
-                          x={cx - tickSize / 2}
-                          y={arcY - tickSize / 2}
-                          width={tickSize}
-                          height={tickSize}
-                          rx={1.5 * zoomCompensation}
+                        <circle
+                          cx={cx}
+                          cy={arcY}
+                          r={tickSize / 2}
                           fill={isFocusedPR ? focusedPRColor : isHovered ? '#a8a29e' : '#78716c'}
                           style={{ pointerEvents: 'none', transition: 'fill 0.1s ease' }}
                         />
@@ -1508,26 +1546,22 @@ export default function BranchMap({
 
                   {/* Branch info — fades in as arc draws */}
                   <g className="fade-in-info" style={{ '--delay': `${brDelay + INFO_OFFSET}ms` } as React.CSSProperties}>
-                    {/* Fork hollow square on parent baseline (or main fallback) */}
-                    <rect
-                      x={forkX - scaledNodeSize / 2}
-                      y={startY - scaledNodeSize / 2}
-                      width={scaledNodeSize}
-                      height={scaledNodeSize}
-                      rx={scaledNodeRadius}
+                    {/* Fork marker on parent baseline (or main fallback) */}
+                    <circle
+                      cx={forkX}
+                      cy={startY}
+                      r={scaledNodeSize / 2}
                       fill={isSelected ? '#22d3ee' : isFocusedError ? color : '#1c1917'}
                       stroke={color}
                       strokeWidth={strokeWidth * zoomCompensation}
                     />
-                    {/* Commit filled squares along branch */}
+                    {/* Commit markers along branch */}
                     {commitXs.map((cx, ci) => (
-                      <rect
+                      <circle
                         key={ci}
-                        x={cx - scaledNodeSize / 2}
-                        y={y - scaledNodeSize / 2}
-                        width={scaledNodeSize}
-                        height={scaledNodeSize}
-                        rx={scaledNodeRadius}
+                        cx={cx}
+                        cy={y}
+                        r={scaledNodeSize / 2}
                         fill={color}
                         onMouseEnter={() =>
                           setTooltip({
@@ -1634,22 +1668,17 @@ export default function BranchMap({
           {checkedOutIndicatorLocal && (
             <g style={{ pointerEvents: 'none' }}>
               <circle
+                className="checked-out-halo-pulse"
                 cx={checkedOutIndicatorLocal.x}
                 cy={checkedOutIndicatorLocal.y}
-                r={11 * zoomCompensation}
-                fill="none"
-                stroke="#22d3ee"
-                strokeWidth={1.5 * zoomCompensation}
-                strokeDasharray={`${3 * zoomCompensation} ${3 * zoomCompensation}`}
-                opacity={0.95}
+                r={12 * zoomCompensation}
+                fill="#93c5fd"
               />
               <circle
                 cx={checkedOutIndicatorLocal.x}
                 cy={checkedOutIndicatorLocal.y}
-                r={4.5 * zoomCompensation}
-                fill="#22d3ee"
-                stroke="#ecfeff"
-                strokeWidth={1 * zoomCompensation}
+                r={7 * zoomCompensation}
+                fill="#2563eb"
               />
             </g>
           )}

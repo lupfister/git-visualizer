@@ -51,7 +51,7 @@ function ComparisonRow({
           {route}
         </span>
       )}
-      <div className="flex gap-4">
+      <div className="flex flex-col gap-4 lg:flex-row">
         <PreviewPanel title={beforeTitle} src={beforeSrc} loading={beforeLoading} error={beforeError} />
         <PreviewPanel title={afterTitle} src={afterSrc} loading={afterLoading} error={afterError} />
       </div>

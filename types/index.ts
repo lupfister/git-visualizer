@@ -4,6 +4,7 @@ export interface Branch {
   name: string;
   commitsAhead: number;
   commitsBehind: number;
+  createdDate?: string;
   lastCommitDate: string;
   lastCommitAuthor: string;
   lastCommitAuthorAvatar?: string;

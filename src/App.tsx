@@ -335,7 +335,7 @@ function App() {
   }
 
   return (
-    <div className="h-screen bg-background text-foreground flex flex-col">
+    <div className="h-screen min-h-0 bg-background text-foreground flex flex-col">
       <div className={view !== 'landing' ? 'hidden' : 'contents'}>
         <RepoSelector onSelect={loadRepo} loading={loading} error={error} />
       </div>
@@ -346,17 +346,19 @@ function App() {
 
         {/* Map view */}
         <div className={`absolute inset-0 flex flex-col ${view !== 'map' ? 'invisible pointer-events-none' : ''}`}>
-          <header className="flex items-center justify-between px-8 py-5">
-            <button
-              onClick={handleBackToLanding}
-              className="text-muted-foreground hover:text-foreground transition-colors text-sm"
-            >
-              ← Back
-            </button>
-            <h1 className="text-base font-medium text-foreground absolute left-1/2 -translate-x-1/2">
-              {repoName}
-            </h1>
-            <div className="flex items-center gap-3">
+          <header className="px-4 py-3 md:px-8 md:py-5">
+            <div className="flex items-center justify-between gap-3">
+              <button
+                onClick={handleBackToLanding}
+                className="text-muted-foreground hover:text-foreground transition-colors text-sm shrink-0"
+              >
+                ← Back
+              </button>
+              <h1 className="text-sm md:text-base font-medium text-foreground truncate">
+                {repoName}
+              </h1>
+            </div>
+            <div className="mt-3 flex flex-wrap items-center gap-2">
               {selectedBranch && (
                 <div className="flex items-center gap-2">
                   <span className="text-sm text-cyan-400 border border-cyan-800 rounded-full px-3 py-1 bg-cyan-950/50">
@@ -418,13 +420,12 @@ function App() {
                   {activeErrorBranches.length} active error{activeErrorBranches.length !== 1 ? 's' : ''}
                 </button>
               )}
-
             </div>
           </header>
 
           {/* Branch errors floating panel */}
           {showErrorPanel && (
-            <div className={`absolute top-[65px] right-6 z-50 w-80 bg-card border border-border rounded-2xl shadow-lg overflow-hidden ${errorPanelClosing ? 'animate-error-panel-out' : 'animate-error-panel-in'}`}>
+            <div className={`absolute top-[96px] right-4 z-50 w-[calc(100%-2rem)] max-w-80 bg-card border border-border rounded-2xl shadow-lg overflow-hidden ${errorPanelClosing ? 'animate-error-panel-out' : 'animate-error-panel-in'}`}>
               <div className="flex items-center justify-between px-4 py-3 border-b border-border/50">
                 <span className="text-sm font-medium text-foreground">Branch errors</span>
                 <button
@@ -670,22 +671,22 @@ function RepoSelector({
   }
 
   return (
-    <main className="flex h-full overflow-hidden">
+    <main className="flex h-full overflow-hidden flex-col md:flex-row">
       {/* Left decorative panel */}
-      <div className="w-[26%] relative flex-shrink-0 bg-muted overflow-hidden">
+      <div className="h-28 md:h-auto md:w-[26%] relative flex-shrink-0 bg-muted overflow-hidden">
         <InteractiveDotField />
       </div>
 
       {/* Right content panel */}
-      <div className="flex-1 flex flex-col justify-center px-16 bg-background">
-        <p className="font-light text-foreground w-[60%]" style={{ fontFamily: 'var(--font-space-grotesk)', fontSize: '48px', lineHeight: 1 }}>Git visualizer</p>
-        <h1 className="font-bold text-foreground mb-14 w-[60%]" style={{ fontFamily: 'var(--font-space-grotesk)', fontSize: '48px', lineHeight: 1.08 }}>
+      <div className="flex-1 flex flex-col justify-center px-6 py-8 md:px-16 bg-background min-h-0">
+        <p className="font-light text-foreground max-w-md text-3xl md:text-5xl leading-none" style={{ fontFamily: 'var(--font-space-grotesk)' }}>Git visualizer</p>
+        <h1 className="font-bold text-foreground mb-8 md:mb-14 max-w-md text-3xl md:text-5xl leading-tight" style={{ fontFamily: 'var(--font-space-grotesk)' }}>
           See what your team is building, without reading a line of code.
         </h1>
 
         <p className="text-sm text-muted-foreground mb-4">Get started</p>
 
-        <div className="flex flex-col gap-3 w-64">
+        <div className="flex flex-col gap-3 w-full max-w-xs">
           <button
             onClick={() => setShowPicker(true)}
             className="px-6 py-3 border border-border bg-card text-foreground text-sm hover:bg-accent transition-colors text-center rounded-2xl"

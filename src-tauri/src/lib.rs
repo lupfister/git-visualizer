@@ -1,7 +1,11 @@
 mod git;
 mod github;
 
-use tauri::Manager;
+use tauri::{
+    menu::{MenuBuilder, MenuItemBuilder},
+    tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent},
+    Manager, WindowEvent,
+};
 
 use git::{Branch, CheckedOutRef, DirectCommit, MergeNode};
 use github::{GitHubAuthStatus, GitHubInfo, MergedPR, OpenPR};
@@ -1874,9 +1878,99 @@ fn get_anthropic_key() -> Option<String> {
     std::env::var("ANTHROPIC_API_KEY").ok()
 }
 
+const TRAY_TOGGLE_ID: &str = "toggle-window";
+const TRAY_QUIT_ID: &str = "quit-app";
+
+fn show_main_window(app: &tauri::AppHandle) {
+    if let Some(window) = app.get_webview_window("main") {
+        let _ = window.show();
+        let _ = window.unminimize();
+        let _ = window.set_focus();
+    }
+}
+
+fn hide_main_window(app: &tauri::AppHandle) {
+    if let Some(window) = app.get_webview_window("main") {
+        let _ = window.hide();
+    }
+}
+
+fn toggle_main_window(app: &tauri::AppHandle) {
+    if let Some(window) = app.get_webview_window("main") {
+        if window.is_visible().unwrap_or(false) {
+            let _ = window.hide();
+        } else {
+            show_main_window(app);
+        }
+    }
+}
+
+fn create_tray_icon(app: &tauri::AppHandle) -> Result<(), tauri::Error> {
+    let toggle_item = MenuItemBuilder::with_id(TRAY_TOGGLE_ID, "Show / Hide Git Visualizer")
+        .build(app)?;
+    let quit_item = MenuItemBuilder::with_id(TRAY_QUIT_ID, "Quit").build(app)?;
+
+    let menu = MenuBuilder::new(app)
+        .item(&toggle_item)
+        .separator()
+        .item(&quit_item)
+        .build()?;
+
+    let mut tray_builder = TrayIconBuilder::with_id("git-visualizer-tray")
+        .menu(&menu)
+        .show_menu_on_left_click(false)
+        .tooltip("Git Visualizer")
+        .on_menu_event(|app, event| match event.id().as_ref() {
+            TRAY_TOGGLE_ID => toggle_main_window(app),
+            TRAY_QUIT_ID => app.exit(0),
+            _ => {}
+        })
+        .on_tray_icon_event(|tray, event| {
+            if let TrayIconEvent::Click {
+                button: MouseButton::Left,
+                button_state: MouseButtonState::Up,
+                ..
+            } = event
+            {
+                toggle_main_window(tray.app_handle());
+            }
+        });
+
+    if let Some(icon) = app.default_window_icon() {
+        tray_builder = tray_builder.icon(icon.clone());
+    }
+
+    let _ = tray_builder.build(app)?;
+    Ok(())
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
+        .setup(|app| {
+            #[cfg(target_os = "macos")]
+            app.set_activation_policy(tauri::ActivationPolicy::Accessory);
+
+            create_tray_icon(app.handle())?;
+            hide_main_window(app.handle());
+            Ok(())
+        })
+        .on_window_event(|window, event| {
+            if window.label() != "main" {
+                return;
+            }
+
+            match event {
+                WindowEvent::CloseRequested { api, .. } => {
+                    api.prevent_close();
+                    let _ = window.hide();
+                }
+                WindowEvent::Focused(false) => {
+                    let _ = window.hide();
+                }
+                _ => {}
+            }
+        })
         .invoke_handler(tauri::generate_handler![
             get_branches,
             get_merge_nodes,
