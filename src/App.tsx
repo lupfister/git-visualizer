@@ -3,7 +3,7 @@ import { invoke } from '@tauri-apps/api/core';
 import BranchMapView from '../components/BranchMapView';
 import DiffViewer from '../components/DiffViewer';
 import FolderPickerModal from './FolderPickerModal';
-import type { Branch, CheckedOutRef, DirectCommit, MergeNode, MergedPR, OpenPR, GitHubInfo, GitHubAuthStatus } from '../types';
+import type { Branch, BranchCommitPreview, BranchPromptMeta, BranchPromptMarker, CheckedOutRef, Commit, DirectCommit, GitHubAuthStatus, GitHubInfo, MergeNode, MergedPR, OpenPR } from '../types';
 
 type View = 'landing' | 'map' | 'diff';
 
@@ -36,6 +36,8 @@ function App() {
   const [githubAuthStatus, setGithubAuthStatus] = useState<GitHubAuthStatus | null>(null);
   const [githubAuthLoading, setGithubAuthLoading] = useState(false);
   const [githubAuthMessage, setGithubAuthMessage] = useState<string | null>(null);
+  const [branchPromptMeta, setBranchPromptMeta] = useState<Record<string, BranchPromptMeta>>({});
+  const [branchCommitPreviews, setBranchCommitPreviews] = useState<Record<string, BranchCommitPreview[]>>({});
 
   // Pre-warm: screenshot main branch at '/' as soon as active branches load,
   // so DiffViewer can skip the main-side server start for the common case.
@@ -200,12 +202,99 @@ function App() {
     setMapUiReady(false);
     setPrewarmedMainShots(null);
     prewarmedRef.current = false;
+    setBranchPromptMeta({});
+    setBranchCommitPreviews({});
     setAuthSetupLoading(false);
     setGithubAuthLoading(false);
     setGithubAuthStatus(null);
     setGithubAuthMessage(null);
     setCheckedOutRef(null);
   }, [repoPath]);
+
+  useEffect(() => {
+    if (!repoPath || !defaultBranch) {
+      setBranchPromptMeta({});
+      setBranchCommitPreviews({});
+      return;
+    }
+
+    const activeBranches = branches.filter(b => b.name !== defaultBranch && b.commitsAhead > 0);
+    if (activeBranches.length === 0) {
+      setBranchPromptMeta({});
+      setBranchCommitPreviews({});
+      return;
+    }
+
+    let cancelled = false;
+    async function loadPromptMeta() {
+      const results = await Promise.all(
+        activeBranches.map(async (branch) => {
+          try {
+            const commits = await invoke<Commit[]>('get_branch_commits', {
+              repoPath,
+              branch: branch.name,
+              baseBranch: defaultBranch,
+            });
+
+            const prompts = commits
+              .flatMap(c => c.agentPrompts ?? [])
+              .sort((a, b) => new Date(b.timestamp).getTime() - new Date(a.timestamp).getTime());
+            const previews: BranchCommitPreview[] = commits
+              .map((c) => ({
+                fullSha: c.fullSha,
+                sha: c.sha,
+                message: c.message,
+                author: c.author,
+                date: c.date,
+              }))
+              .slice(0, 12);
+
+            if (prompts.length === 0) {
+              return [branch.name, { promptMeta: null, previews }] as const;
+            }
+
+            const latest = prompts[0];
+            const markers: BranchPromptMarker[] = [...prompts]
+              .sort((a, b) => new Date(a.timestamp).getTime() - new Date(b.timestamp).getTime())
+              .slice(-12)
+              .map(p => ({
+                id: p.id,
+                agent: p.agent,
+                prompt: p.prompt,
+                timestamp: p.timestamp,
+              }));
+            return [branch.name, {
+              promptMeta: {
+                count: prompts.length,
+                latestPrompt: latest.prompt,
+                latestAgent: latest.agent,
+                latestTimestamp: latest.timestamp,
+                markers,
+              },
+              previews,
+            }] as const;
+          } catch {
+            return [branch.name, { promptMeta: null, previews: [] }] as const;
+          }
+        }),
+      );
+
+      if (cancelled) return;
+      const nextPromptMeta: Record<string, BranchPromptMeta> = {};
+      const nextCommitPreviews: Record<string, BranchCommitPreview[]> = {};
+      for (const [branchName, data] of results) {
+        if (data.promptMeta) nextPromptMeta[branchName] = data.promptMeta;
+        if (data.previews.length > 0) nextCommitPreviews[branchName] = [...data.previews];
+      }
+      setBranchPromptMeta(nextPromptMeta);
+      setBranchCommitPreviews(nextCommitPreviews);
+    }
+
+    loadPromptMeta();
+    return () => {
+      cancelled = true;
+    };
+  }, [repoPath, defaultBranch, branches]);
 
   // Pre-warm: start screenshotting main at '/' as soon as active branches arrive.
   // Uses port 3495 (separate from DiffViewer's 3491/3492) to avoid conflicts.
@@ -330,6 +419,8 @@ function App() {
     setMergedPRs([]);
     setOpenPRs([]);
     setDirectCommits([]);
+    setBranchPromptMeta({});
+    setBranchCommitPreviews({});
     setGithubAvailable(false);
     setView('landing');
   }
@@ -507,6 +598,8 @@ function App() {
               githubAvailable={githubAvailable}
               githubOwner={githubOwner}
               githubRepo={githubRepo}
+              branchPromptMeta={branchPromptMeta}
+              branchCommitPreviews={branchCommitPreviews}
               view="time"
               isLoading={mapLoading}
               scrollRequest={scrollRequest}

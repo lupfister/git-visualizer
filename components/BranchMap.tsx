@@ -1,7 +1,7 @@
 import React, { useState, useRef, useEffect } from 'react';
 import { invoke } from '@tauri-apps/api/core';
 import { X } from 'lucide-react';
-import { Branch, CheckedOutRef, DirectCommit, MergeNode, MergedPR, OpenPR } from '../types';
+import { Branch, BranchCommitPreview, BranchPromptMeta, CheckedOutRef, DirectCommit, MergeNode, MergedPR, OpenPR } from '../types';
 import { ViewMode } from './BranchMapView';
 
 // ── Layout constants ──────────────────────────────────────────────────────────
@@ -31,6 +31,8 @@ const TIME_SCALE_MIN = 0.5;
 const TIME_SCALE_MAX = 3;
 const TIME_SCALE_STEP = 0.05;
 const TIME_SCALE_DEFAULT = 0.5;
+const PROMPT_MARKER_MAX = 10;
+const PROMPT_MARKER_MIN_GAP = 16;
 
 type TooltipData = {
   x: number;
@@ -101,6 +103,11 @@ function estimateSvgTextWidth(text: string, fontSize = 10): number {
   return Math.ceil(text.length * fontSize * 0.56);
 }
 
+function truncatePrompt(text: string, max = 90): string {
+  if (text.length <= max) return text;
+  return `${text.slice(0, max)}…`;
+}
+
 interface BranchMapProps {
   branches: Branch[];
   mergeNodes: MergeNode[];
@@ -113,6 +120,8 @@ interface BranchMapProps {
   onLoadMore?: () => void;
   githubOwner?: string | null;
   githubRepo?: string | null;
+  branchPromptMeta?: Record<string, BranchPromptMeta>;
+  branchCommitPreviews?: Record<string, BranchCommitPreview[]>;
   view?: ViewMode;
   conflictBranches?: Branch[];
   staleBranches?: Branch[];
@@ -135,6 +144,8 @@ export default function BranchMap({
   onBranchClick,
   githubOwner,
   githubRepo,
+  branchPromptMeta = {},
+  branchCommitPreviews = {},
   view = 'time',
   conflictBranches = [],
   staleBranches = [],
@@ -1218,7 +1229,7 @@ export default function BranchMap({
                       setTooltip({
                         x,
                         y: mainY - 16 * zoomCompensation,
-                        lines: [c.sha, label, `@${c.author}`],
+                        lines: [c.sha, label, `@${c.author} · ${fmtTooltipDate(c.date)}`],
                         avatarFallback: c.author?.charAt(0).toUpperCase() || '?',
                       })
                     }
@@ -1474,13 +1485,39 @@ export default function BranchMap({
                 curvePath = `M ${forkX} ${startY} L ${forkX} ${y - cornerR} Q ${forkX} ${y} ${forkX + cornerR} ${y} L ${tipX} ${y}`;
               }
 
-              const commitCount = Math.min(b.commitsAhead, 4);
+              const branchCommits = branchCommitPreviews[b.name] ?? [];
+              const commitCount = Math.min(
+                branchCommits.length > 0 ? branchCommits.length : b.commitsAhead,
+                4
+              );
               const spanWidth = tipX - (forkX + cornerR);
               // Place the final commit marker at the branch tip so the stroke
               // does not visibly extend past the last shown commit.
               const commitXs = Array.from({ length: commitCount }, (_, i) =>
                 forkX + cornerR + (spanWidth * (i + 1)) / Math.max(commitCount, 1)
               );
+              const displayedCommits =
+                branchCommits.length > 0 ? [...branchCommits.slice(0, commitCount)].reverse() : [];
+              const promptMarkersRaw = branchPromptMeta[b.name]?.markers ?? [];
+              const minPromptX = forkX + cornerR + 8;
+              const maxPromptX = tipX - 8;
+              const promptTargets = maxPromptX > minPromptX
+                ? promptMarkersRaw
+                    .slice(-PROMPT_MARKER_MAX)
+                    .map(marker => ({
+                      ...marker,
+                      targetX: Math.min(maxPromptX, Math.max(minPromptX, timeToX(marker.timestamp))),
+                    }))
+                    .sort((a, b) => a.targetX - b.targetX)
+                : [];
+              const promptMarkers = promptTargets.reduce<Array<{ x: number; marker: typeof promptTargets[number] }>>((acc, marker) => {
+                const prev = acc[acc.length - 1];
+                const x = prev
+                  ? Math.min(maxPromptX, Math.max(marker.targetX, prev.x + PROMPT_MARKER_MIN_GAP))
+                  : marker.targetX;
+                if (x <= maxPromptX) acc.push({ x, marker });
+                return acc;
+              }, []);
 
               const brDelay = branchDelayMs.get(b.name) ?? 0;
 
@@ -1556,29 +1593,115 @@ export default function BranchMap({
                       strokeWidth={strokeWidth * zoomCompensation}
                     />
                     {/* Commit markers along branch */}
-                    {commitXs.map((cx, ci) => (
-                      <circle
-                        key={ci}
-                        cx={cx}
-                        cy={y}
-                        r={scaledNodeSize / 2}
-                        fill={color}
-                        onMouseEnter={() =>
-                          setTooltip({
-                            x: cx,
-                            y: y - 16 * zoomCompensation,
-                            lines: [
-                              `Commit ${b.headSha?.slice(0, 7) ?? '-------'}`,
-                              `@${b.lastCommitAuthor}`,
-                              fmtTooltipDate(b.lastCommitDate),
-                            ],
-                            avatarUrl: b.lastCommitAuthorAvatar,
-                            avatarFallback: b.lastCommitAuthor?.charAt(0).toUpperCase() || '?',
-                          })
-                        }
-                        onMouseLeave={() => setTooltip(null)}
-                      />
-                    ))} 
+                    {commitXs.map((cx, ci) => {
+                      const commit = displayedCommits[ci];
+                      const tooltipAuthor = commit?.author ?? b.lastCommitAuthor;
+                      const tooltipDate = commit?.date ?? b.lastCommitDate;
+                      const tooltipSha = commit?.sha ?? b.headSha?.slice(0, 7) ?? '-------';
+                      const tooltipMessage = commit?.message;
+                      const showBranchAvatar = !!(
+                        commit &&
+                        b.lastCommitAuthorAvatar &&
+                        commit.author === b.lastCommitAuthor
+                      );
+
+                      return (
+                        <circle
+                          key={ci}
+                          cx={cx}
+                          cy={y}
+                          r={scaledNodeSize / 2}
+                          fill={color}
+                          onMouseEnter={() =>
+                            setTooltip({
+                              x: cx,
+                              y: y - 16 * zoomCompensation,
+                              lines: [
+                                `Commit ${tooltipSha}`,
+                                tooltipMessage ? tooltipMessage : `@${tooltipAuthor}`,
+                                `@${tooltipAuthor} · ${fmtTooltipDate(tooltipDate)}`,
+                              ],
+                              avatarUrl: showBranchAvatar ? b.lastCommitAuthorAvatar : undefined,
+                              avatarFallback: tooltipAuthor?.charAt(0).toUpperCase() || '?',
+                            })
+                          }
+                          onMouseLeave={() => setTooltip(null)}
+                        />
+                      );
+                    })}
+                    {promptMarkers.map(({ x: cx, marker }) => {
+                      const markerCy = y;
+                      const circleR = 4.8 * zoomCompensation;
+                      const tabW = 4.2 * zoomCompensation;
+                      const tabH = 3.8 * zoomCompensation;
+                      const tabX = cx - circleR - tabW * 0.55;
+                      const tabY = markerCy + circleR * 0.2;
+                      const hitSize = scaledHoverHitSize;
+                      return (
+                        <g key={marker.id}>
+                          <circle
+                            cx={cx}
+                            cy={markerCy}
+                            r={circleR}
+                            fill="#ecfeff"
+                            stroke="#0891b2"
+                            strokeWidth={1.2 * zoomCompensation}
+                            style={{ pointerEvents: 'none' }}
+                          />
+                          <rect
+                            x={tabX}
+                            y={tabY}
+                            width={tabW}
+                            height={tabH}
+                            rx={0.8 * zoomCompensation}
+                            fill="#ecfeff"
+                            stroke="#0891b2"
+                            strokeWidth={1.2 * zoomCompensation}
+                            style={{ pointerEvents: 'none' }}
+                          />
+                          <line
+                            x1={cx - 2.4 * zoomCompensation}
+                            y1={markerCy - 0.7 * zoomCompensation}
+                            x2={cx + 2.4 * zoomCompensation}
+                            y2={markerCy - 0.7 * zoomCompensation}
+                            stroke="#0e7490"
+                            strokeWidth={0.9 * zoomCompensation}
+                            strokeLinecap="round"
+                            style={{ pointerEvents: 'none' }}
+                          />
+                          <line
+                            x1={cx - 2.4 * zoomCompensation}
+                            y1={markerCy + 1.2 * zoomCompensation}
+                            x2={cx + 1.7 * zoomCompensation}
+                            y2={markerCy + 1.2 * zoomCompensation}
+                            stroke="#0e7490"
+                            strokeWidth={0.85 * zoomCompensation}
+                            strokeLinecap="round"
+                            style={{ pointerEvents: 'none' }}
+                          />
+                          <rect
+                            x={cx - hitSize / 2}
+                            y={markerCy - hitSize / 2}
+                            width={hitSize}
+                            height={hitSize}
+                            fill="transparent"
+                            style={{ cursor: 'pointer' }}
+                            onMouseEnter={() =>
+                              setTooltip({
+                                x: cx,
+                                y: markerCy - 18 * zoomCompensation,
+                                lines: [
+                                  truncatePrompt(marker.prompt, 52),
+                                  marker.agent,
+                                  fmtTooltipDate(marker.timestamp),
+                                ],
+                              })
+                            }
+                            onMouseLeave={() => setTooltip(null)}
+                          />
+                        </g>
+                      );
+                    })}
 
                   </g>
 
@@ -1619,7 +1742,7 @@ export default function BranchMap({
             const title = m.prTitle ?? '';
             const hasTitle = title.length > 0;
             const TW = 220;
-            const TH = hasTitle ? 44 : 30;
+            const TH = hasTitle ? 58 : 44;
             const tx = x - TW / 2;
             const ty = mainY - TH - 14;
             return (
@@ -1627,14 +1750,15 @@ export default function BranchMap({
                 <rect x={tx} y={ty} width={TW} height={TH} rx={8}
                   fill="#ffffff" stroke="#e7e5e0" strokeWidth={1}
                   filter="url(#tick-shadow)" />
-                <text x={tx + 10} y={ty + 14} fontSize={10} fontWeight={600} fill="#1c1917">
-                  {label}{hasTitle ? ` · ${title.slice(0, 30)}${title.length > 30 ? '…' : ''}` : ''}
-                </text>
+                <text x={tx + 10} y={ty + 14} fontSize={10} fontWeight={600} fill="#1c1917">{label}</text>
                 {hasTitle && (
                   <text x={tx + 10} y={ty + 30} fontSize={10} fill="#a8a29e">
-                    {fmtLabelDate(m.date)}
+                    {title.slice(0, 34)}{title.length > 34 ? '…' : ''}
                   </text>
                 )}
+                <text x={tx + 10} y={hasTitle ? ty + 46 : ty + 30} fontSize={10} fill="#a8a29e">
+                  {fmtLabelDate(m.date)}
+                </text>
               </g>
             );
           })()}

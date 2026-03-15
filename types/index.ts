@@ -28,6 +28,40 @@ export interface Commit {
   message: string;
   author: string;
   date: string;
+  promptWindowStart?: string | null;
+  promptWindowEnd?: string | null;
+  agentPrompts?: AgentPrompt[];
+}
+
+export interface BranchCommitPreview {
+  fullSha: string;
+  sha: string;
+  message: string;
+  author: string;
+  date: string;
+}
+
+export interface AgentPrompt {
+  id: string;
+  agent: string;
+  prompt: string;
+  timestamp: string;
+  source: string;
+}
+
+export interface BranchPromptMarker {
+  id: string;
+  agent: string;
+  prompt: string;
+  timestamp: string;
+}
+
+export interface BranchPromptMeta {
+  count: number;
+  latestPrompt?: string;
+  latestAgent?: string;
+  latestTimestamp?: string;
+  markers?: BranchPromptMarker[];
 }
 
 export interface DirectCommit {

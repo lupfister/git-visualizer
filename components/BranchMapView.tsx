@@ -1,4 +1,4 @@
-import { Branch, CheckedOutRef, DirectCommit, MergeNode, MergedPR, OpenPR } from '../types';
+import { Branch, BranchCommitPreview, BranchPromptMeta, CheckedOutRef, DirectCommit, MergeNode, MergedPR, OpenPR } from '../types';
 import BranchMap from './BranchMap';
 import BranchGroupView from './BranchGroupView';
 
@@ -18,6 +18,8 @@ interface Props {
   githubAvailable?: boolean;
   githubOwner?: string | null;
   githubRepo?: string | null;
+  branchPromptMeta?: Record<string, BranchPromptMeta>;
+  branchCommitPreviews?: Record<string, BranchCommitPreview[]>;
   view?: ViewMode;
   isLoading?: boolean;
   scrollRequest?: { branch: Branch; seq: number } | null;
@@ -38,6 +40,8 @@ export default function BranchMapView({
   onLoadMore,
   githubOwner,
   githubRepo,
+  branchPromptMeta = {},
+  branchCommitPreviews = {},
   view = 'time',
   isLoading = false,
   scrollRequest,
@@ -80,6 +84,8 @@ export default function BranchMapView({
             onLoadMore={onLoadMore}
             githubOwner={githubOwner}
             githubRepo={githubRepo}
+            branchPromptMeta={branchPromptMeta}
+            branchCommitPreviews={branchCommitPreviews}
             view={view}
             conflictBranches={conflictBranches}
             staleBranches={staleBranches}

@@ -11,6 +11,15 @@ function timeAgo(dateStr: string) {
   return new Date(dateStr).toLocaleDateString('en-US', { month: 'short', day: 'numeric' });
 }
 
+function promptTime(dateStr: string) {
+  return new Date(dateStr).toLocaleString('en-US', {
+    month: 'short',
+    day: 'numeric',
+    hour: 'numeric',
+    minute: '2-digit',
+  });
+}
+
 interface SummaryChange {
   type: 'add' | 'remove';
   description: string;
@@ -426,6 +435,7 @@ export default function DiffViewer({
       <div className="space-y-2">
         {commits.map(c => {
           const isSelected = currentCommit?.fullSha === c.fullSha;
+          const promptCount = c.agentPrompts?.length ?? 0;
           return (
             <button
               key={c.fullSha}
@@ -438,9 +448,48 @@ export default function DiffViewer({
               </div>
               <p className="text-sm text-foreground leading-snug line-clamp-2">{c.message}</p>
               <p className="text-xs text-muted-foreground mt-1">@{c.author}</p>
+              {promptCount > 0 && (
+                <p className="text-[10px] uppercase tracking-wide text-muted-foreground font-medium mt-1.5">
+                  {promptCount} agent prompt{promptCount === 1 ? '' : 's'}
+                </p>
+              )}
             </button>
           );
         })}
+      </div>
+    );
+  };
+
+  const renderAgentPrompts = () => {
+    const prompts = currentCommit?.agentPrompts ?? [];
+    if (!currentCommit) {
+      return <p className="text-xs text-muted-foreground italic">No commit selected</p>;
+    }
+
+    if (prompts.length === 0) {
+      return (
+        <p className="text-xs text-muted-foreground italic">
+          No agent prompts captured between this commit and its parent
+        </p>
+      );
+    }
+
+    return (
+      <div className="space-y-2.5">
+        {prompts.map(prompt => (
+          <div key={prompt.id} className="rounded-lg border border-border/60 bg-muted/30 p-3">
+            <div className="flex items-center justify-between gap-2 mb-1.5">
+              <span className="text-[10px] uppercase tracking-wide text-muted-foreground font-medium">
+                {prompt.agent}
+              </span>
+              <span className="text-xs text-muted-foreground">{promptTime(prompt.timestamp)}</span>
+            </div>
+            <p className="text-sm text-foreground leading-snug whitespace-pre-wrap line-clamp-4">
+              {prompt.prompt}
+            </p>
+            <p className="text-[10px] text-muted-foreground mt-1">{prompt.source}</p>
+          </div>
+        ))}
       </div>
     );
   };
@@ -485,9 +534,17 @@ export default function DiffViewer({
             )}
           </div>
 
-          <div className="px-4 py-4 border-b border-border/60 max-h-[38%] overflow-y-auto">
+          <div className="px-4 py-4 border-b border-border/60 max-h-[28%] overflow-y-auto">
             <p className="text-sm font-medium text-foreground mb-3">Summary</p>
             {renderSummary()}
+          </div>
+
+          <div className="px-4 py-4 border-b border-border/60 max-h-[34%] overflow-y-auto">
+            <div className="flex items-center justify-between mb-3">
+              <p className="text-sm font-medium text-foreground">Agent prompts</p>
+              <span className="text-xs text-muted-foreground">{currentCommit?.agentPrompts?.length ?? 0}</span>
+            </div>
+            {renderAgentPrompts()}
           </div>
 
           <div className="px-4 py-4 flex-1 min-h-0 overflow-y-auto">
