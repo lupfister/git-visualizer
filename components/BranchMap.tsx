@@ -32,8 +32,6 @@ const TIME_SCALE_MAX = 3;
 const TIME_SCALE_STEP = 0.05;
 const TIME_SCALE_DEFAULT = 0.5;
 const PROMPT_MARKER_MAX = 10;
-const COMMIT_MARKER_MIN_GAP = 8;
-const PROMPT_MARKER_MIN_GAP = 12;
 
 type TooltipData = {
   x: number;
@@ -109,81 +107,14 @@ function truncatePrompt(text: string, max = 90): string {
   return `${text.slice(0, max)}…`;
 }
 
-function parseTimestampMs(value: string): number | null {
-  const ms = new Date(value).getTime();
-  return Number.isFinite(ms) ? ms : null;
-}
-
-function clampNumber(value: number, min: number, max: number): number {
-  return Math.min(Math.max(value, min), max);
-}
-
-function placeXCoordinates(candidates: number[], minX: number, maxX: number, minGap: number): number[] {
-  if (candidates.length === 0) return [];
-  if (candidates.length === 1) return [clampNumber(candidates[0], minX, maxX)];
-
-  const safeGap = Math.max(minGap, 0);
-  const span = Math.max(maxX - minX, 0);
-  if (span <= 0) {
-    return Array.from({ length: candidates.length }, () => minX);
-  }
-
-  if (safeGap * (candidates.length - 1) > span) {
-    return Array.from({ length: candidates.length }, (_, i) =>
-      minX + (span * i) / (candidates.length - 1)
-    );
-  }
-
-  const placed = candidates.map((x) => clampNumber(x, minX, maxX));
-  for (let i = 1; i < placed.length; i += 1) {
-    placed[i] = Math.max(placed[i], placed[i - 1] + safeGap);
-  }
-
-  if (placed[placed.length - 1] > maxX) {
-    placed[placed.length - 1] = maxX;
-    for (let i = placed.length - 2; i >= 0; i -= 1) {
-      placed[i] = Math.min(placed[i], placed[i + 1] - safeGap);
-    }
-    if (placed[0] < minX) {
-      placed[0] = minX;
-      for (let i = 1; i < placed.length; i += 1) {
-        placed[i] = Math.max(placed[i], placed[i - 1] + safeGap);
-      }
-    }
-  }
-
-  return placed.map((x) => clampNumber(x, minX, maxX));
-}
-
-function placeItemsByTime<T>(
-  items: T[],
-  getTimestamp: (item: T) => string,
-  timeToX: (value: string) => number,
-  minX: number,
-  maxX: number,
-  minGap: number
-): Array<{ item: T; x: number }> {
+function placeItemsEvenly<T>(items: T[], minX: number, maxX: number): Array<{ item: T; x: number }> {
   if (items.length === 0) return [];
-
-  const sorted = [...items].sort((a, b) => {
-    const aTime = parseTimestampMs(getTimestamp(a));
-    const bTime = parseTimestampMs(getTimestamp(b));
-    if (aTime != null && bTime != null && aTime !== bTime) return aTime - bTime;
-    if (aTime != null && bTime == null) return -1;
-    if (aTime == null && bTime != null) return 1;
-    return 0;
-  });
-
-  const fallbackStep = sorted.length > 1 ? (maxX - minX) / (sorted.length - 1) : 0;
-  const candidates = sorted.map((item, index) => {
-    const ts = getTimestamp(item);
-    const parsed = parseTimestampMs(ts);
-    if (parsed == null) return minX + index * fallbackStep;
-    return timeToX(ts);
-  });
-  const placed = placeXCoordinates(candidates, minX, maxX, minGap);
-
-  return sorted.map((item, index) => ({ item, x: placed[index] ?? minX }));
+  if (items.length === 1) return [{ item: items[0], x: maxX }];
+  const span = Math.max(0, maxX - minX);
+  return items.map((item, index) => ({
+    item,
+    x: minX + (span * index) / (items.length - 1),
+  }));
 }
 
 interface BranchMapProps {
@@ -200,6 +131,7 @@ interface BranchMapProps {
   githubRepo?: string | null;
   branchPromptMeta?: Record<string, BranchPromptMeta>;
   branchCommitPreviews?: Record<string, BranchCommitPreview[]>;
+  branchUniqueAheadCounts?: Record<string, number>;
   view?: ViewMode;
   conflictBranches?: Branch[];
   staleBranches?: Branch[];
@@ -224,6 +156,7 @@ export default function BranchMap({
   githubRepo,
   branchPromptMeta = {},
   branchCommitPreviews = {},
+  branchUniqueAheadCounts = {},
   view = 'time',
   conflictBranches = [],
   staleBranches = [],
@@ -783,8 +716,10 @@ export default function BranchMap({
   const cornerR = CORNER_R;
 
   // ── Build a date → X mapping ─────────────────────────────────────────────
-  // Timeline spacing can run in pure time mode or in bounded mode where each
-  // adjacent gap is clamped to avoid unreadable clusters/deserts.
+  // Simple and deterministic timeline mapping:
+  // - `regular`: true time-proportional spacing.
+  // - `bounded`: time-aware spacing with per-gap clamping.
+  // Both modes preserve chronology and use the same anchor timestamps.
   const IDEAL_NODE_SPACING = Math.max(MIN_BRANCH_SPACING_X, 160 * effectiveTimeScale);
   const IDEAL_EVENT_GAP = Math.max(8, 40 * effectiveTimeScale);
   const MIN_EVENT_GAP = Math.max(4, IDEAL_EVENT_GAP * 0.22);
@@ -839,70 +774,90 @@ export default function BranchMap({
     return 0;
   });
 
-  const firstEventT =
-    timelineEvents.length > 0
-      ? timelineEvents[0].t
-      : Date.now();
-  const lastEventT =
-    timelineEvents.length > 1
-      ? timelineEvents[timelineEvents.length - 1].t
-      : firstEventT + 1;
-  const timelineTimeSpan = Math.max(lastEventT - firstEventT, 1);
-  const eventTimes = timelineEvents.map((e) => e.t);
-  const avgEventIntervalMs = timelineEvents.length > 1
-    ? timelineTimeSpan / (timelineEvents.length - 1)
-    : 7 * 86400000;
-  const regularPxPerMs = IDEAL_EVENT_GAP / Math.max(avgEventIntervalMs, 1);
+  const branchCommitAnchorTimes = activeBranches.flatMap((b) =>
+    (branchCommitPreviews[b.name] ?? [])
+      .map((c) => new Date(c.date).getTime())
+      .filter(Number.isFinite)
+  );
+  const promptAnchorTimes = activeBranches.flatMap((b) =>
+    (branchPromptMeta[b.name]?.markers ?? [])
+      .map((m) => new Date(m.timestamp).getTime())
+      .filter(Number.isFinite)
+  );
+  const allAnchorTimes = Array.from(
+    new Set<number>([
+      ...timelineEvents.map((e) => e.t).filter(Number.isFinite),
+      ...branchCommitAnchorTimes,
+      ...promptAnchorTimes,
+    ])
+  ).sort((a, b) => a - b);
 
-  const eventDeltaDays = timelineEvents.slice(1).map((e, i) => {
-    const prevT = timelineEvents[i].t;
-    return Math.max((e.t - prevT) / 86400000, 0);
-  });
-  // Use rank-based normalization so spacing differences remain visible even when
-  // many timestamp deltas are numerically close.
-  const rankedDeltaInputs = eventDeltaDays.map((d, i) => d + i * 1e-6);
-  const sortedRankedDeltas = [...rankedDeltaInputs].sort((a, b) => a - b);
-  const deltaRankPct = rankedDeltaInputs.map((v) => {
-    if (sortedRankedDeltas.length <= 1) return 0;
+  const DAY_MS = 86400000;
+  const firstEventT = allAnchorTimes.length > 0 ? allAnchorTimes[0] : Date.now();
+  const lastEventT = allAnchorTimes.length > 1 ? allAnchorTimes[allAnchorTimes.length - 1] : firstEventT + 1;
+  const timelineTimeSpan = Math.max(lastEventT - firstEventT, 1);
+  const avgAnchorIntervalMs = allAnchorTimes.length > 1
+    ? timelineTimeSpan / (allAnchorTimes.length - 1)
+    : 7 * DAY_MS;
+  const regularPxPerMs = IDEAL_EVENT_GAP / Math.max(avgAnchorIntervalMs, 1);
+
+  const anchorXs: number[] = [];
+  if (allAnchorTimes.length > 0) {
+    anchorXs.push(leftPad);
+    for (let i = 1; i < allAnchorTimes.length; i += 1) {
+      if (effectiveSpacingMode === 'regular') {
+        anchorXs.push(leftPad + (allAnchorTimes[i] - firstEventT) * regularPxPerMs);
+      } else {
+        const deltaMs = Math.max(1, allAnchorTimes[i] - allAnchorTimes[i - 1]);
+        const scaledGap = IDEAL_EVENT_GAP * (deltaMs / Math.max(avgAnchorIntervalMs, 1));
+        const boundedGap = Math.max(MIN_EVENT_GAP, Math.min(MAX_EVENT_GAP, scaledGap));
+        anchorXs.push(anchorXs[i - 1] + boundedGap);
+      }
+    }
+  }
+
+  const averageEventGap = anchorXs.length > 1
+    ? (anchorXs[anchorXs.length - 1] - leftPad) / (anchorXs.length - 1)
+    : IDEAL_EVENT_GAP;
+  const safeExtrapPxPerMs = effectiveSpacingMode === 'regular'
+    ? regularPxPerMs
+    : averageEventGap / Math.max(avgAnchorIntervalMs, 7 * DAY_MS);
+
+  function xForTimestamp(t: number): number {
+    if (!Number.isFinite(t) || allAnchorTimes.length === 0) return leftPad;
     let lo = 0;
-    let hi = sortedRankedDeltas.length;
+    let hi = allAnchorTimes.length;
     while (lo < hi) {
       const mid = (lo + hi) >> 1;
-      if (sortedRankedDeltas[mid] < v) lo = mid + 1;
+      if (allAnchorTimes[mid] < t) lo = mid + 1;
       else hi = mid;
     }
-    return lo / (sortedRankedDeltas.length - 1);
-  });
-
-  const eventXs: number[] = [];
-  const eventXByKey = new Map<string, number>();
-  if (timelineEvents.length > 0) {
-    eventXs.push(leftPad);
-    eventXByKey.set(timelineEvents[0].key, leftPad);
-  }
-  for (let i = 1; i < timelineEvents.length; i++) {
-    let x: number;
-    if (effectiveSpacingMode === 'regular') {
-      x = leftPad + (timelineEvents[i].t - firstEventT) * regularPxPerMs;
-    } else {
-      // Aggressive spread: curve ranked deltas into a wide min..max gap range.
-      const normalized = deltaRankPct[i - 1] ?? 0;
-      const eased = Math.pow(normalized, 1.35);
-      const gap = MIN_EVENT_GAP + eased * (MAX_EVENT_GAP - MIN_EVENT_GAP);
-      x = eventXs[i - 1] + gap;
+    if (lo <= 0) {
+      const rawX = leftPad + (t - firstEventT) * safeExtrapPxPerMs;
+      return Math.max(rawX, leftPad - MIN_EVENT_GAP * 2);
     }
-    eventXs.push(x);
-    eventXByKey.set(timelineEvents[i].key, x);
+    if (lo >= allAnchorTimes.length) {
+      const endX = anchorXs[anchorXs.length - 1] ?? leftPad;
+      return endX + (t - lastEventT) * safeExtrapPxPerMs;
+    }
+    const i = lo - 1;
+    const tA = allAnchorTimes[i];
+    const tB = allAnchorTimes[lo];
+    const xA = anchorXs[i] ?? leftPad;
+    const xB = anchorXs[lo] ?? xA;
+    if (tB <= tA) return xA;
+    const ratio = (t - tA) / (tB - tA);
+    return xA + ratio * (xB - xA);
   }
 
   const nodeXByFullSha = new Map<string, number>(
-    sortedNodes.map((m) => [m.fullSha, eventXByKey.get(`merge:${m.fullSha}`) ?? leftPad])
+    sortedNodes.map((m) => [m.fullSha, xForTimestamp(new Date(m.date).getTime())])
   );
   const directXByFullSha = new Map<string, number>(
-    sortedDirectCommits.map((c) => [c.fullSha, eventXByKey.get(`direct:${c.fullSha}`) ?? leftPad])
+    sortedDirectCommits.map((c) => [c.fullSha, xForTimestamp(new Date(c.date).getTime())])
   );
 
-  const mainEndX = eventXs.length > 0 ? eventXs[eventXs.length - 1] : leftPad;
+  const mainEndX = allAnchorTimes.length > 0 ? xForTimestamp(lastEventT) : leftPad;
   const mainCommitXs = [
     ...sortedNodes.map((m) => nodeXByFullSha.get(m.fullSha) ?? leftPad),
     ...sortedDirectCommits.map((c) => directXByFullSha.get(c.fullSha) ?? leftPad),
@@ -910,47 +865,12 @@ export default function BranchMap({
   const latestMainCommitX = mainCommitXs.length > 0 ? Math.max(...mainCommitXs) : mainEndX;
   const mainActiveEndX = Math.min(mainEndX, latestMainCommitX);
   const hasMainStaleTail = mainEndX - mainActiveEndX > 0.5;
-  const averageEventGap = timelineEvents.length > 1
-    ? (mainEndX - leftPad) / (timelineEvents.length - 1)
-    : IDEAL_EVENT_GAP;
   const averageMergeGap = sortedNodes.length > 1
     ? ((nodeXByFullSha.get(sortedNodes[sortedNodes.length - 1].fullSha) ?? leftPad) - (nodeXByFullSha.get(sortedNodes[0].fullSha) ?? leftPad)) / (sortedNodes.length - 1)
     : IDEAL_NODE_SPACING;
 
-  // Extrapolation uses true time-rate in regular mode and a capped synthetic
-  // rate in bounded mode so off-range dates remain legible.
-  const safeExtrapPxPerMs = effectiveSpacingMode === 'regular'
-    ? regularPxPerMs
-    : averageEventGap / Math.max(avgEventIntervalMs, 7 * 86400000);
-
   function timeToX(dateStr: string): number {
-    const t = new Date(dateStr).getTime();
-    if (timelineEvents.length === 0) return leftPad;
-
-    let lo = 0;
-    let hi = eventTimes.length;
-    while (lo < hi) {
-      const mid = (lo + hi) >> 1;
-      if (eventTimes[mid] < t) lo = mid + 1;
-      else hi = mid;
-    }
-
-    if (lo <= 0) {
-      const rawX = leftPad + (t - firstEventT) * safeExtrapPxPerMs;
-      return Math.max(rawX, leftPad - MIN_EVENT_GAP * 2);
-    }
-    if (lo >= eventTimes.length) {
-      return mainEndX + (t - lastEventT) * safeExtrapPxPerMs;
-    }
-
-    const i = lo - 1;
-    const tA = eventTimes[i];
-    const tB = eventTimes[lo];
-    const xA = eventXs[i] ?? leftPad;
-    const xB = eventXs[lo] ?? xA;
-    if (tB <= tA) return xA;
-    const ratio = (t - tA) / (tB - tA);
-    return xA + ratio * (xB - xA);
+    return xForTimestamp(new Date(dateStr).getTime());
   }
 
   function branchCreatedDate(b: Branch): string {
@@ -974,6 +894,9 @@ export default function BranchMap({
   }
 
   function branchAheadCount(b: Branch): number {
+    if (Object.prototype.hasOwnProperty.call(branchUniqueAheadCounts, b.name)) {
+      return branchUniqueAheadCounts[b.name] ?? 0;
+    }
     const previews = branchCommitPreviews[b.name];
     if (previews != null) return previews.length;
     return b.commitsAhead;
@@ -1571,47 +1494,28 @@ export default function BranchMap({
 
               const branchCommits = branchCommitPreviews[b.name] ?? [];
               const hasPreviewData = Object.prototype.hasOwnProperty.call(branchCommitPreviews, b.name);
-              const commitCount = Math.min(
-                hasPreviewData ? branchCommits.length : b.commitsAhead,
-                4
-              );
+              const commitCount = hasPreviewData ? branchCommits.length : b.commitsAhead;
               const displayedCommits =
                 hasPreviewData ? [...branchCommits.slice(0, commitCount)].reverse() : [];
               const minCommitX = forkX + cornerR + 6;
-              const maxCommitX = tipX - 2;
-              const fallbackCommitSpan = Math.max(maxCommitX - minCommitX, 0);
-              const commitDots = hasPreviewData && displayedCommits.length > 0 && maxCommitX > minCommitX
-                ? placeItemsByTime(
-                    displayedCommits,
-                    (commit) => commit.date,
-                    timeToX,
-                    minCommitX,
-                    maxCommitX,
-                    COMMIT_MARKER_MIN_GAP
-                  ).map((entry) => ({ x: entry.x, commit: entry.item }))
-                : Array.from({ length: commitCount }, (_, i) => ({
-                    x: minCommitX + (fallbackCommitSpan * (i + 1)) / Math.max(commitCount, 1),
-                    commit: displayedCommits[i],
-                  }));
+              const maxCommitX = Math.max(minCommitX, tipX - 2);
+              const commitItems: Array<BranchCommitPreview | undefined> = hasPreviewData
+                ? displayedCommits
+                : Array.from({ length: commitCount }, () => undefined);
+              const commitDots = placeItemsEvenly(commitItems, minCommitX, maxCommitX).map((entry) => ({
+                x: entry.x,
+                commit: entry.item,
+              }));
               const promptMarkersRaw = branchPromptMeta[b.name]?.markers ?? [];
               const minPromptX = minCommitX;
               const maxPromptX = maxCommitX;
               const promptSeeds = [...promptMarkersRaw]
                 .sort((a, b) => new Date(a.timestamp).getTime() - new Date(b.timestamp).getTime())
                 .slice(-PROMPT_MARKER_MAX);
-              const promptMarkers = maxPromptX > minPromptX && promptSeeds.length > 0
-                ? placeItemsByTime(
-                    promptSeeds,
-                    (marker) => marker.timestamp,
-                    timeToX,
-                    minPromptX,
-                    maxPromptX,
-                    PROMPT_MARKER_MIN_GAP
-                  ).map((entry) => ({
-                    x: entry.x,
-                    marker: entry.item,
-                  }))
-                : [];
+              const promptMarkers = placeItemsEvenly(promptSeeds, minPromptX, maxPromptX).map((entry) => ({
+                x: entry.x,
+                marker: entry.item,
+              }));
 
               const brDelay = branchDelayMs.get(b.name) ?? 0;
 
@@ -1688,6 +1592,7 @@ export default function BranchMap({
                     />
                     {/* Commit markers along branch */}
                     {commitDots.map(({ x: cx, commit }, ci) => {
+                      const isBranchCreatedEvent = commit?.kind === 'branch-created';
                       const tooltipAuthor = commit?.author ?? b.lastCommitAuthor;
                       const tooltipDate = commit?.date ?? b.lastCommitDate;
                       const tooltipSha = commit?.sha ?? b.headSha?.slice(0, 7) ?? '-------';
@@ -1710,7 +1615,7 @@ export default function BranchMap({
                               x: cx,
                               y: y - 16 * zoomCompensation,
                               lines: [
-                                `Commit ${tooltipSha}`,
+                                isBranchCreatedEvent ? 'Branch created' : `Commit ${tooltipSha}`,
                                 tooltipMessage ? tooltipMessage : `@${tooltipAuthor}`,
                                 `@${tooltipAuthor} · ${fmtTooltipDate(tooltipDate)}`,
                               ],

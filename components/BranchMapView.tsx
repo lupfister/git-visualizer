@@ -20,6 +20,7 @@ interface Props {
   githubRepo?: string | null;
   branchPromptMeta?: Record<string, BranchPromptMeta>;
   branchCommitPreviews?: Record<string, BranchCommitPreview[]>;
+  branchUniqueAheadCounts?: Record<string, number>;
   view?: ViewMode;
   isLoading?: boolean;
   scrollRequest?: { branch: Branch; seq: number } | null;
@@ -42,6 +43,7 @@ export default function BranchMapView({
   githubRepo,
   branchPromptMeta = {},
   branchCommitPreviews = {},
+  branchUniqueAheadCounts = {},
   view = 'time',
   isLoading = false,
   scrollRequest,
@@ -86,6 +88,7 @@ export default function BranchMapView({
             githubRepo={githubRepo}
             branchPromptMeta={branchPromptMeta}
             branchCommitPreviews={branchCommitPreviews}
+            branchUniqueAheadCounts={branchUniqueAheadCounts}
             view={view}
             conflictBranches={conflictBranches}
             staleBranches={staleBranches}

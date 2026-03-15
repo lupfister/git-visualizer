@@ -39,6 +39,7 @@ export interface BranchCommitPreview {
   message: string;
   author: string;
   date: string;
+  kind?: 'commit' | 'branch-created';
 }
 
 export interface AgentPrompt {

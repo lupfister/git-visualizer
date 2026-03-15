@@ -38,6 +38,7 @@ function App() {
   const [githubAuthMessage, setGithubAuthMessage] = useState<string | null>(null);
   const [branchPromptMeta, setBranchPromptMeta] = useState<Record<string, BranchPromptMeta>>({});
   const [branchCommitPreviews, setBranchCommitPreviews] = useState<Record<string, BranchCommitPreview[]>>({});
+  const [branchUniqueAheadCounts, setBranchUniqueAheadCounts] = useState<Record<string, number>>({});
 
   // Pre-warm: screenshot main branch at '/' as soon as active branches load,
   // so DiffViewer can skip the main-side server start for the common case.
@@ -204,6 +205,7 @@ function App() {
     prewarmedRef.current = false;
     setBranchPromptMeta({});
     setBranchCommitPreviews({});
+    setBranchUniqueAheadCounts({});
     setAuthSetupLoading(false);
     setGithubAuthLoading(false);
     setGithubAuthStatus(null);
@@ -215,6 +217,7 @@ function App() {
     if (!repoPath || !defaultBranch) {
       setBranchPromptMeta({});
       setBranchCommitPreviews({});
+      setBranchUniqueAheadCounts({});
       return;
     }
 
@@ -222,6 +225,7 @@ function App() {
     if (activeBranches.length === 0) {
       setBranchPromptMeta({});
       setBranchCommitPreviews({});
+      setBranchUniqueAheadCounts({});
       return;
     }
 
@@ -239,17 +243,30 @@ function App() {
             const prompts = commits
               .flatMap(c => c.agentPrompts ?? [])
               .sort((a, b) => new Date(b.timestamp).getTime() - new Date(a.timestamp).getTime());
-            const previews: BranchCommitPreview[] = commits
+            const commitPreviews: BranchCommitPreview[] = commits
               .map((c) => ({
                 fullSha: c.fullSha,
                 sha: c.sha,
                 message: c.message,
                 author: c.author,
                 date: c.date,
+                kind: 'commit',
               }));
+            const branchCreatedAt = branch.createdDate ?? branch.divergedFromDate ?? branch.lastCommitDate;
+            const branchCreatedSha = branch.divergedFromSha?.slice(0, 7) ?? branch.headSha.slice(0, 7);
+            const branchCreationPreview: BranchCommitPreview = {
+              fullSha: `branch-created:${branch.name}:${branchCreatedAt}`,
+              sha: branchCreatedSha || 'created',
+              message: `Branch created: ${branch.name}`,
+              author: branch.lastCommitAuthor || 'Unknown',
+              date: branchCreatedAt,
+              kind: 'branch-created',
+            };
+            const previews: BranchCommitPreview[] = [...commitPreviews, branchCreationPreview];
+            const uniqueCount = previews.length;
 
             if (prompts.length === 0) {
-              return [branch.name, { promptMeta: null, previews }] as const;
+              return [branch.name, { promptMeta: null, previews, uniqueCount }] as const;
             }
 
             const latest = prompts[0];
@@ -271,9 +288,24 @@ function App() {
                 markers,
               },
               previews,
+              uniqueCount,
             }] as const;
           } catch {
-            return [branch.name, { promptMeta: null, previews: [] }] as const;
+            const branchCreatedAt = branch.createdDate ?? branch.divergedFromDate ?? branch.lastCommitDate;
+            const branchCreatedSha = branch.divergedFromSha?.slice(0, 7) ?? branch.headSha.slice(0, 7);
+            const branchCreationPreview: BranchCommitPreview = {
+              fullSha: `branch-created:${branch.name}:${branchCreatedAt}`,
+              sha: branchCreatedSha || 'created',
+              message: `Branch created: ${branch.name}`,
+              author: branch.lastCommitAuthor || 'Unknown',
+              date: branchCreatedAt,
+              kind: 'branch-created',
+            };
+            return [branch.name, {
+              promptMeta: null,
+              previews: [branchCreationPreview],
+              uniqueCount: 1,
+            }] as const;
           }
         }),
       );
@@ -281,56 +313,18 @@ function App() {
       if (cancelled) return;
       const nextPromptMeta: Record<string, BranchPromptMeta> = {};
       const nextCommitPreviews: Record<string, BranchCommitPreview[]> = {};
+      const nextUniqueAheadCounts: Record<string, number> = {};
       for (const [branchName, data] of results) {
         if (data.promptMeta) nextPromptMeta[branchName] = data.promptMeta;
-      }
-
-      // Make commit previews branch-exclusive so the same SHA does not appear
-      // on multiple lanes in the branch map.
-      const resultByBranch = new Map(results.map(([branchName, data]) => [branchName, data]));
-      const activeByName = new Map(activeBranches.map((branch) => [branch.name, branch]));
-      const depthCache = new Map<string, number>();
-      function branchDepth(name: string): number {
-        const cached = depthCache.get(name);
-        if (cached != null) return cached;
-        let depth = 0;
-        let cursor = activeByName.get(name);
-        const seen = new Set<string>();
-        while (
-          cursor?.parentBranch &&
-          cursor.parentBranch !== defaultBranch &&
-          activeByName.has(cursor.parentBranch) &&
-          !seen.has(cursor.parentBranch)
-        ) {
-          depth += 1;
-          seen.add(cursor.parentBranch);
-          cursor = activeByName.get(cursor.parentBranch);
-        }
-        depthCache.set(name, depth);
-        return depth;
-      }
-
-      const ownershipOrder = [...activeBranches].sort((a, b) => {
-        const depthDiff = branchDepth(b.name) - branchDepth(a.name);
-        if (depthDiff !== 0) return depthDiff;
-        const timeDiff = new Date(b.lastCommitDate).getTime() - new Date(a.lastCommitDate).getTime();
-        if (timeDiff !== 0) return timeDiff;
-        return a.name.localeCompare(b.name);
-      });
-
-      const claimedShas = new Set<string>();
-      for (const branch of ownershipOrder) {
-        const previews = resultByBranch.get(branch.name)?.previews ?? [];
-        const uniquePreviews = previews.filter((preview) => {
-          if (claimedShas.has(preview.fullSha)) return false;
-          claimedShas.add(preview.fullSha);
-          return true;
-        });
-        nextCommitPreviews[branch.name] = uniquePreviews;
+        // Keep empty arrays too so the renderer knows this branch has loaded
+        // and should show 0 unique commits relative to its selected base.
+        nextCommitPreviews[branchName] = [...data.previews];
+        nextUniqueAheadCounts[branchName] = data.uniqueCount;
       }
 
       setBranchPromptMeta(nextPromptMeta);
       setBranchCommitPreviews(nextCommitPreviews);
+      setBranchUniqueAheadCounts(nextUniqueAheadCounts);
     }
 
     loadPromptMeta();
@@ -464,6 +458,7 @@ function App() {
     setDirectCommits([]);
     setBranchPromptMeta({});
     setBranchCommitPreviews({});
+    setBranchUniqueAheadCounts({});
     setGithubAvailable(false);
     setView('landing');
   }
@@ -643,6 +638,7 @@ function App() {
               githubRepo={githubRepo}
               branchPromptMeta={branchPromptMeta}
               branchCommitPreviews={branchCommitPreviews}
+              branchUniqueAheadCounts={branchUniqueAheadCounts}
               view="time"
               isLoading={mapLoading}
               scrollRequest={scrollRequest}

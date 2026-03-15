@@ -975,7 +975,7 @@ fn get_branch_commits(
     };
     let output = git::cli::run(
         path,
-        &["log", &range, "--format=%H|%h|%s|%an|%aI|%P", "--no-merges"],
+        &["log", &range, "--format=%H|%h|%s|%an|%aI|%P"],
     )
     .map_err(|e| e.to_string())?;
 
@@ -1121,7 +1121,7 @@ fn get_recent_log(
     let limit_str = limit.unwrap_or(20).to_string();
     let output = git::cli::run(
         path,
-        &["log", &branch, &format!("--max-count={}", limit_str), "--format=%H|%h|%s|%an|%aI", "--no-merges"],
+        &["log", &branch, &format!("--max-count={}", limit_str), "--format=%H|%h|%s|%an|%aI"],
     )
     .map_err(|e| e.to_string())?;
     let commits = output
