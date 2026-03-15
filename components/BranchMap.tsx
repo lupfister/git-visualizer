@@ -32,6 +32,8 @@ const TIME_SCALE_MAX = 3;
 const TIME_SCALE_STEP = 0.05;
 const TIME_SCALE_DEFAULT = 0.5;
 const PROMPT_MARKER_MAX = 10;
+const COMMIT_MARKER_MIN_GAP = 8;
+const PROMPT_MARKER_MIN_GAP = 12;
 
 type TooltipData = {
   x: number;
@@ -105,6 +107,83 @@ function estimateSvgTextWidth(text: string, fontSize = 10): number {
 function truncatePrompt(text: string, max = 90): string {
   if (text.length <= max) return text;
   return `${text.slice(0, max)}…`;
+}
+
+function parseTimestampMs(value: string): number | null {
+  const ms = new Date(value).getTime();
+  return Number.isFinite(ms) ? ms : null;
+}
+
+function clampNumber(value: number, min: number, max: number): number {
+  return Math.min(Math.max(value, min), max);
+}
+
+function placeXCoordinates(candidates: number[], minX: number, maxX: number, minGap: number): number[] {
+  if (candidates.length === 0) return [];
+  if (candidates.length === 1) return [clampNumber(candidates[0], minX, maxX)];
+
+  const safeGap = Math.max(minGap, 0);
+  const span = Math.max(maxX - minX, 0);
+  if (span <= 0) {
+    return Array.from({ length: candidates.length }, () => minX);
+  }
+
+  if (safeGap * (candidates.length - 1) > span) {
+    return Array.from({ length: candidates.length }, (_, i) =>
+      minX + (span * i) / (candidates.length - 1)
+    );
+  }
+
+  const placed = candidates.map((x) => clampNumber(x, minX, maxX));
+  for (let i = 1; i < placed.length; i += 1) {
+    placed[i] = Math.max(placed[i], placed[i - 1] + safeGap);
+  }
+
+  if (placed[placed.length - 1] > maxX) {
+    placed[placed.length - 1] = maxX;
+    for (let i = placed.length - 2; i >= 0; i -= 1) {
+      placed[i] = Math.min(placed[i], placed[i + 1] - safeGap);
+    }
+    if (placed[0] < minX) {
+      placed[0] = minX;
+      for (let i = 1; i < placed.length; i += 1) {
+        placed[i] = Math.max(placed[i], placed[i - 1] + safeGap);
+      }
+    }
+  }
+
+  return placed.map((x) => clampNumber(x, minX, maxX));
+}
+
+function placeItemsByTime<T>(
+  items: T[],
+  getTimestamp: (item: T) => string,
+  timeToX: (value: string) => number,
+  minX: number,
+  maxX: number,
+  minGap: number
+): Array<{ item: T; x: number }> {
+  if (items.length === 0) return [];
+
+  const sorted = [...items].sort((a, b) => {
+    const aTime = parseTimestampMs(getTimestamp(a));
+    const bTime = parseTimestampMs(getTimestamp(b));
+    if (aTime != null && bTime != null && aTime !== bTime) return aTime - bTime;
+    if (aTime != null && bTime == null) return -1;
+    if (aTime == null && bTime != null) return 1;
+    return 0;
+  });
+
+  const fallbackStep = sorted.length > 1 ? (maxX - minX) / (sorted.length - 1) : 0;
+  const candidates = sorted.map((item, index) => {
+    const ts = getTimestamp(item);
+    const parsed = parseTimestampMs(ts);
+    if (parsed == null) return minX + index * fallbackStep;
+    return timeToX(ts);
+  });
+  const placed = placeXCoordinates(candidates, minX, maxX, minGap);
+
+  return sorted.map((item, index) => ({ item, x: placed[index] ?? minX }));
 }
 
 interface BranchMapProps {
@@ -1496,26 +1575,42 @@ export default function BranchMap({
                 hasPreviewData ? branchCommits.length : b.commitsAhead,
                 4
               );
-              const spanWidth = tipX - (forkX + cornerR);
-              // Place the final commit marker at the branch tip so the stroke
-              // does not visibly extend past the last shown commit.
-              const commitXs = Array.from({ length: commitCount }, (_, i) =>
-                forkX + cornerR + (spanWidth * (i + 1)) / Math.max(commitCount, 1)
-              );
               const displayedCommits =
                 hasPreviewData ? [...branchCommits.slice(0, commitCount)].reverse() : [];
+              const minCommitX = forkX + cornerR + 6;
+              const maxCommitX = tipX - 2;
+              const fallbackCommitSpan = Math.max(maxCommitX - minCommitX, 0);
+              const commitDots = hasPreviewData && displayedCommits.length > 0 && maxCommitX > minCommitX
+                ? placeItemsByTime(
+                    displayedCommits,
+                    (commit) => commit.date,
+                    timeToX,
+                    minCommitX,
+                    maxCommitX,
+                    COMMIT_MARKER_MIN_GAP
+                  ).map((entry) => ({ x: entry.x, commit: entry.item }))
+                : Array.from({ length: commitCount }, (_, i) => ({
+                    x: minCommitX + (fallbackCommitSpan * (i + 1)) / Math.max(commitCount, 1),
+                    commit: displayedCommits[i],
+                  }));
               const promptMarkersRaw = branchPromptMeta[b.name]?.markers ?? [];
-              const minPromptX = forkX + cornerR + 8;
-              const maxPromptX = tipX - 8;
-              const promptSeeds = promptMarkersRaw.slice(-PROMPT_MARKER_MAX);
+              const minPromptX = minCommitX;
+              const maxPromptX = maxCommitX;
+              const promptSeeds = [...promptMarkersRaw]
+                .sort((a, b) => new Date(a.timestamp).getTime() - new Date(b.timestamp).getTime())
+                .slice(-PROMPT_MARKER_MAX);
               const promptMarkers = maxPromptX > minPromptX && promptSeeds.length > 0
-                ? promptSeeds.map((marker, index) => {
-                    const ratio = promptSeeds.length === 1 ? 1 : index / (promptSeeds.length - 1);
-                    return {
-                      x: minPromptX + (maxPromptX - minPromptX) * ratio,
-                      marker,
-                    };
-                  })
+                ? placeItemsByTime(
+                    promptSeeds,
+                    (marker) => marker.timestamp,
+                    timeToX,
+                    minPromptX,
+                    maxPromptX,
+                    PROMPT_MARKER_MIN_GAP
+                  ).map((entry) => ({
+                    x: entry.x,
+                    marker: entry.item,
+                  }))
                 : [];
 
               const brDelay = branchDelayMs.get(b.name) ?? 0;
@@ -1592,8 +1687,7 @@ export default function BranchMap({
                       strokeWidth={strokeWidth * zoomCompensation}
                     />
                     {/* Commit markers along branch */}
-                    {commitXs.map((cx, ci) => {
-                      const commit = displayedCommits[ci];
+                    {commitDots.map(({ x: cx, commit }, ci) => {
                       const tooltipAuthor = commit?.author ?? b.lastCommitAuthor;
                       const tooltipDate = commit?.date ?? b.lastCommitDate;
                       const tooltipSha = commit?.sha ?? b.headSha?.slice(0, 7) ?? '-------';
