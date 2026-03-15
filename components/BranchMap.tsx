@@ -43,6 +43,7 @@ type TooltipData = {
 type PRCommitHover = { x: number; arcY: number; pr: MergedPR; commitIdx: number; total: number };
 type SpacingMode = 'regular' | 'bounded';
 type ClampMode = 'hard' | 'soft';
+type OrientationMode = 'vertical' | 'horizontal';
 
 function smoothValueTo(
   start: number,
@@ -176,6 +177,8 @@ export default function BranchMap({
   const [zoom, setZoom] = useState(ZOOM_DEFAULT);
   const [timeScale, setTimeScale] = useState(TIME_SCALE_DEFAULT);
   const [spacingMode, setSpacingMode] = useState<SpacingMode>('bounded');
+  const [orientation, setOrientation] = useState<OrientationMode>('vertical');
+  const isHorizontal = orientation === 'horizontal';
   const effectiveTimeScale = timeScale;
   const effectiveSpacingMode: SpacingMode = spacingMode;
   // WKWebView (Tauri) doesn't fire CSS animations on SVG elements inserted during
@@ -535,31 +538,6 @@ export default function BranchMap({
     return () => ro.disconnect();
   }, []);
 
-  // Sync bottom chrome scrollbar to camera state.
-  useEffect(() => {
-    const safeZoom = Math.max(zoom, 0.0001);
-    const visibleWorldHeight = viewportSize.height / safeZoom;
-    const max = Math.max(0, canvasHeight - visibleWorldHeight);
-    const topWorld = Math.max(0, Math.min(max, -pan.y / safeZoom));
-    setBarScrollLeft(topWorld);
-    setBarScrollMax(max);
-
-    const rangeEl = barRangeRef.current;
-    if (rangeEl && rangeEl.offsetWidth > 0) {
-      const ratio = canvasHeight > 0 ? visibleWorldHeight / canvasHeight : 1;
-      setThumbWidth(Math.max(24, Math.round(rangeEl.offsetWidth * ratio)));
-    }
-  }, [
-    pan.y,
-    zoom,
-    viewportSize.height,
-    branches,
-    mergeNodes,
-    directCommits,
-    effectiveTimeScale,
-    effectiveSpacingMode,
-  ]);
-
   // Space+drag (or middle mouse drag) panning, interrupting all inertial motion.
   useEffect(() => {
     if (!isPanning) return;
@@ -616,6 +594,10 @@ export default function BranchMap({
   useEffect(() => {
     isPanningRef.current = isPanning;
   }, [isPanning]);
+
+  useEffect(() => {
+    hasAutoCenteredRef.current = false;
+  }, [orientation]);
 
   function handleCanvasMouseDown(e: React.MouseEvent<HTMLDivElement>) {
     const target = e.target as Element | null;
@@ -906,7 +888,7 @@ export default function BranchMap({
     return tipX + AHEAD_LABEL_OFFSET_X + estimateSvgTextWidth(formatCommitsAhead(branchAheadCount(b)));
   }
 
-  // Time axis is vertical: newest at top, oldest at bottom.
+  // Canonical (logical) layout uses vertical time; orientation projection swaps axes when needed.
   const MAIN_LEFT_PAD = 80;
   const MAIN_TOP_PAD = 80;
   const mainX = MAIN_LEFT_PAD;
@@ -923,6 +905,16 @@ export default function BranchMap({
   const mainEndY = timeCoordToY(mainEndX); // newest anchor on main
   const mainActiveEndY = timeCoordToY(mainActiveEndX);
   const hasMainStaleTailY = Math.abs(mainActiveEndY - mainEndY) > 0.5;
+  const logicalTimelineHeight = Math.max(mainStartY + 120, containerHeight);
+
+  function projectPoint(x: number, y: number): { x: number; y: number } {
+    return isHorizontal ? { x: logicalTimelineHeight - y, y: x } : { x, y };
+  }
+
+  function pathCoord(x: number, y: number): string {
+    const projected = projectPoint(x, y);
+    return `${projected.x} ${projected.y}`;
+  }
 
   // ── Assign branch lanes while preserving parent -> child ordering ─────────
   // Policy:
@@ -1025,16 +1017,53 @@ export default function BranchMap({
     const labelWidth = estimateSvgTextWidth(formatCommitsAhead(branchAheadCount(b)));
     return Math.max(max, lanePosX + AHEAD_LABEL_OFFSET_X + labelWidth);
   }, mainX + MAIN_LABEL_OFFSET_X + estimateSvgTextWidth(defaultBranch));
-  const svgWidth = maxBranchVisualEndX + rightPad + 80;
+  const logicalSvgWidth = maxBranchVisualEndX + rightPad + 80;
 
   // Merged PRs lane layout
   const MERGED_LANE_HEIGHT = 60;
   const MERGED_LANES = 4;
-  const svgHeight = Math.max(mainStartY + 120, containerHeight);
+  const logicalSvgHeight = logicalTimelineHeight;
+  const svgWidth = isHorizontal ? logicalSvgHeight : logicalSvgWidth;
+  const svgHeight = isHorizontal ? logicalSvgWidth : logicalSvgHeight;
   const canvasWidth = svgWidth + CANVAS_PAD_X * 2;
   const canvasHeight = svgHeight + CANVAS_PAD_Y * 2;
   const graphOffsetX = (canvasWidth - svgWidth) / 2;
   const graphOffsetY = (canvasHeight - svgHeight) / 2;
+
+  // Sync bottom chrome scrollbar to camera state.
+  useEffect(() => {
+    const safeZoom = Math.max(zoom, 0.0001);
+    const visibleWorldSpan = isHorizontal
+      ? viewportSize.width / safeZoom
+      : viewportSize.height / safeZoom;
+    const axisCanvasSize = isHorizontal ? canvasWidth : canvasHeight;
+    const max = Math.max(0, axisCanvasSize - visibleWorldSpan);
+    const axisPan = isHorizontal ? pan.x : pan.y;
+    const axisWorldStart = Math.max(0, Math.min(max, -axisPan / safeZoom));
+    setBarScrollLeft(axisWorldStart);
+    setBarScrollMax(max);
+
+    const rangeEl = barRangeRef.current;
+    if (rangeEl && rangeEl.offsetWidth > 0) {
+      const ratio = axisCanvasSize > 0 ? visibleWorldSpan / axisCanvasSize : 1;
+      setThumbWidth(Math.max(24, Math.round(rangeEl.offsetWidth * ratio)));
+    }
+  }, [
+    pan.x,
+    pan.y,
+    zoom,
+    viewportSize.width,
+    viewportSize.height,
+    branches,
+    mergeNodes,
+    directCommits,
+    effectiveTimeScale,
+    effectiveSpacingMode,
+    isHorizontal,
+    canvasWidth,
+    canvasHeight,
+  ]);
+
   const checkedOutBranchName = checkedOutRef?.branchName ?? null;
   const checkedOutHeadSha = checkedOutRef?.headSha ?? null;
   const checkedOutIndicatorLocal = (() => {
@@ -1074,8 +1103,8 @@ export default function BranchMap({
   })();
   const checkedOutAnchor = checkedOutIndicatorLocal
     ? {
-      x: graphOffsetX + checkedOutIndicatorLocal.x,
-      y: graphOffsetY + checkedOutIndicatorLocal.y,
+      x: graphOffsetX + projectPoint(checkedOutIndicatorLocal.x, checkedOutIndicatorLocal.y).x,
+      y: graphOffsetY + projectPoint(checkedOutIndicatorLocal.x, checkedOutIndicatorLocal.y).y,
     }
     : null;
 
@@ -1118,28 +1147,43 @@ export default function BranchMap({
   // Scroll timeline to the requested branch. Set flashingName briefly so the arc
   // starts bright red, then CSS stroke transition fades it to the settled lighter red.
   useEffect(() => {
-    if (!scrollRequest || viewportSize.height <= 0) return;
+    if (!scrollRequest) return;
+    if (isHorizontal ? viewportSize.width <= 0 : viewportSize.height <= 0) return;
     const { branch } = scrollRequest;
     const focusTime = branch.divergedFromDate
       ? timeToX(branch.divergedFromDate)
       : timeToX(branch.lastCommitDate);
-    const y = timeCoordToY(focusTime);
-    const targetWorldTop = Math.max(
+    const focusLaneX = laneXByBranch.get(branch.name) ?? mainX;
+    const projected = projectPoint(focusLaneX, timeCoordToY(focusTime));
+    const viewportSpan = isHorizontal ? viewportSize.width : viewportSize.height;
+    const graphOffset = isHorizontal ? graphOffsetX : graphOffsetY;
+    const axisCanvasSize = isHorizontal ? canvasWidth : canvasHeight;
+    const axisCoord = isHorizontal ? projected.x : projected.y;
+    const targetWorldStart = Math.max(
       0,
-      graphOffsetY + y - viewportSize.height / (2 * zoomRef.current)
+      Math.min(axisCanvasSize, graphOffset + axisCoord - viewportSpan / (2 * zoomRef.current))
     );
-    const clampedTargetPan = clampPan({
-      x: targetPanRef.current.x,
-      y: -targetWorldTop * zoomRef.current,
-    }, zoomRef.current, 'hard');
+    const clampedTargetPan = clampPan(
+      isHorizontal
+        ? { x: -targetWorldStart * zoomRef.current, y: targetPanRef.current.y }
+        : { x: targetPanRef.current.x, y: -targetWorldStart * zoomRef.current },
+      zoomRef.current,
+      'hard'
+    );
 
     focusScrollCancelRef.current?.();
     focusScrollCancelRef.current = smoothValueTo(
-      panRef.current.y,
-      clampedTargetPan.y,
+      isHorizontal ? panRef.current.x : panRef.current.y,
+      isHorizontal ? clampedTargetPan.x : clampedTargetPan.y,
       600,
       (value) => {
-        const next = clampPan({ x: targetPanRef.current.x, y: value }, zoomRef.current, 'hard');
+        const next = clampPan(
+          isHorizontal
+            ? { x: value, y: targetPanRef.current.y }
+            : { x: targetPanRef.current.x, y: value },
+          zoomRef.current,
+          'hard'
+        );
         applyCamera(next, zoomRef.current);
       }
     );
@@ -1151,7 +1195,16 @@ export default function BranchMap({
       focusScrollCancelRef.current = null;
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [scrollRequest, viewportSize.height, graphOffsetY]);
+  }, [
+    scrollRequest,
+    viewportSize.width,
+    viewportSize.height,
+    graphOffsetX,
+    graphOffsetY,
+    canvasWidth,
+    canvasHeight,
+    isHorizontal,
+  ]);
 
   const zoomCompensation = 1 / Math.max(zoom, 0.0001);
   const scaledNodeSize = NODE_SIZE * zoomCompensation;
@@ -1200,7 +1253,7 @@ export default function BranchMap({
           <g style={{ opacity: hoveredPR !== null || hoveredBranch !== null ? 0.2 : 1, transition: 'opacity 0.15s' }}>
             {/* Use <path> not <line>: pathLength on <line> is SVG 2 only and unreliable in WKWebView */}
             <path
-              d={`M ${mainX} ${mainStartY} L ${mainX} ${mainActiveEndY}`}
+              d={`M ${pathCoord(mainX, mainStartY)} L ${pathCoord(mainX, mainActiveEndY)}`}
               fill="none"
               stroke="#78716c"
               strokeWidth={1.5 * zoomCompensation}
@@ -1210,7 +1263,7 @@ export default function BranchMap({
             {hasMainStaleTailY && (
               <g className="main-stale-tail-glow">
                 <path
-                  d={`M ${mainX} ${mainActiveEndY} L ${mainX} ${mainEndY}`}
+                  d={`M ${pathCoord(mainX, mainActiveEndY)} L ${pathCoord(mainX, mainEndY)}`}
                   fill="none"
                   stroke="#a8a29e"
                   strokeWidth={1.5 * zoomCompensation}
@@ -1222,33 +1275,39 @@ export default function BranchMap({
 
             {/* Main label and ticks — fade in once the line is drawn */}
             <g className="fade-in-info" style={{ '--delay': `${MAIN_DRAW_MS}ms` } as React.CSSProperties}>
-              <text
-                x={mainX + MAIN_LABEL_OFFSET_X}
-                y={mainEndY + 4}
-                fontSize={12}
-                fill="#1c1917"
-                fontWeight={500}
-              >
-                {defaultBranch}
-              </text>
+              {(() => {
+                const labelPoint = projectPoint(mainX + MAIN_LABEL_OFFSET_X, mainEndY + 4);
+                return (
+                  <text
+                    x={labelPoint.x}
+                    y={labelPoint.y}
+                    fontSize={12}
+                    fill="#1c1917"
+                    fontWeight={500}
+                  >
+                    {defaultBranch}
+                  </text>
+                );
+              })()}
 
               {/* Direct commits */}
               {directCommits.map(c => {
                 const timeCoordX = directXByFullSha.get(c.fullSha) ?? timeToX(c.date);
                 const y = timeCoordToY(timeCoordX);
+                const markerPoint = projectPoint(mainX, y);
                 const label = c.message.length > 38 ? c.message.slice(0, 38) + '…' : c.message;
                 return (
                   <circle
                     key={c.fullSha}
-                    cx={mainX}
-                    cy={y}
+                    cx={markerPoint.x}
+                    cy={markerPoint.y}
                     r={scaledNodeSize / 2}
                     fill="#78716c"
                     style={{ cursor: 'pointer' }}
                     onMouseEnter={() =>
                       setTooltip({
-                        x: mainX + 14 * zoomCompensation,
-                        y,
+                        x: markerPoint.x + 14 * zoomCompensation,
+                        y: markerPoint.y,
                         lines: [c.sha, label, `@${c.author} · ${fmtTooltipDate(c.date)}`],
                         avatarFallback: c.author?.charAt(0).toUpperCase() || '?',
                       })
@@ -1503,11 +1562,11 @@ export default function BranchMap({
               const turnY = forkY + cornerDir * cornerR;
               let curvePath: string;
               if (startX === lanePosX) {
-                curvePath = `M ${lanePosX} ${forkY} L ${lanePosX} ${tipY}`;
+                curvePath = `M ${pathCoord(lanePosX, forkY)} L ${pathCoord(lanePosX, tipY)}`;
               } else if (startX < lanePosX) {
-                curvePath = `M ${startX} ${forkY} L ${lanePosX - cornerR} ${forkY} Q ${lanePosX} ${forkY} ${lanePosX} ${turnY} L ${lanePosX} ${tipY}`;
+                curvePath = `M ${pathCoord(startX, forkY)} L ${pathCoord(lanePosX - cornerR, forkY)} Q ${pathCoord(lanePosX, forkY)} ${pathCoord(lanePosX, turnY)} L ${pathCoord(lanePosX, tipY)}`;
               } else {
-                curvePath = `M ${startX} ${forkY} L ${lanePosX + cornerR} ${forkY} Q ${lanePosX} ${forkY} ${lanePosX} ${turnY} L ${lanePosX} ${tipY}`;
+                curvePath = `M ${pathCoord(startX, forkY)} L ${pathCoord(lanePosX + cornerR, forkY)} Q ${pathCoord(lanePosX, forkY)} ${pathCoord(lanePosX, turnY)} L ${pathCoord(lanePosX, tipY)}`;
               }
 
               const branchCommits = branchCommitPreviews[b.name] ?? [];
@@ -1544,6 +1603,7 @@ export default function BranchMap({
               );
               const statusLabelX = lanePosX;
               const statusLabelY = forkY + 16;
+              const statusLabelPoint = projectPoint(statusLabelX, statusLabelY);
 
               return (
                 <g
@@ -1564,10 +1624,10 @@ export default function BranchMap({
                     style={{ pointerEvents: 'stroke' }}
                   />
                   <line
-                    x1={lanePosX}
-                    y1={tipY}
-                    x2={lanePosX + AHEAD_LABEL_OFFSET_X + 6}
-                    y2={tipY}
+                    x1={projectPoint(lanePosX, tipY).x}
+                    y1={projectPoint(lanePosX, tipY).y}
+                    x2={projectPoint(lanePosX + AHEAD_LABEL_OFFSET_X + 6, tipY).x}
+                    y2={projectPoint(lanePosX + AHEAD_LABEL_OFFSET_X + 6, tipY).y}
                     stroke="transparent"
                     strokeWidth={scaledBranchHitStrokeWidth}
                     style={{ pointerEvents: 'stroke' }}
@@ -1602,8 +1662,8 @@ export default function BranchMap({
                   <g className="fade-in-info" style={{ '--delay': `${brDelay + INFO_OFFSET}ms` } as React.CSSProperties}>
                     {/* Fork marker on parent baseline (or main fallback) */}
                     <circle
-                      cx={startX}
-                      cy={forkY}
+                      cx={projectPoint(startX, forkY).x}
+                      cy={projectPoint(startX, forkY).y}
                       r={scaledNodeSize / 2}
                       fill={isSelected ? '#22d3ee' : isFocusedError ? color : '#1c1917'}
                       stroke={color}
@@ -1625,14 +1685,14 @@ export default function BranchMap({
                       return (
                         <circle
                           key={ci}
-                          cx={lanePosX}
-                          cy={commitY}
+                          cx={projectPoint(lanePosX, commitY).x}
+                          cy={projectPoint(lanePosX, commitY).y}
                           r={scaledNodeSize / 2}
                           fill={color}
                           onMouseEnter={() =>
                             setTooltip({
-                              x: lanePosX + 14 * zoomCompensation,
-                              y: commitY,
+                              x: projectPoint(lanePosX, commitY).x + 14 * zoomCompensation,
+                              y: projectPoint(lanePosX, commitY).y,
                               lines: [
                                 isBranchCreatedEvent ? 'Branch created' : `Commit ${tooltipSha}`,
                                 tooltipMessage ? tooltipMessage : `@${tooltipAuthor}`,
@@ -1648,17 +1708,21 @@ export default function BranchMap({
                     })}
                     {promptMarkers.map(({ y: markerY, marker }) => {
                       const markerCy = markerY;
+                      const markerPoint = projectPoint(lanePosX, markerCy);
                       const circleR = 4.8 * zoomCompensation;
                       const tabW = 4.2 * zoomCompensation;
                       const tabH = 3.8 * zoomCompensation;
                       const tabX = lanePosX - circleR - tabW * 0.55;
                       const tabY = markerCy + circleR * 0.2;
+                      const tabPoint = projectPoint(tabX, tabY);
+                      const tabWidth = isHorizontal ? tabH : tabW;
+                      const tabHeight = isHorizontal ? tabW : tabH;
                       const hitSize = scaledHoverHitSize;
                       return (
                         <g key={marker.id}>
                           <circle
-                            cx={lanePosX}
-                            cy={markerCy}
+                            cx={markerPoint.x}
+                            cy={markerPoint.y}
                             r={circleR}
                             fill="#ecfeff"
                             stroke="#0891b2"
@@ -1666,10 +1730,10 @@ export default function BranchMap({
                             style={{ pointerEvents: 'none' }}
                           />
                           <rect
-                            x={tabX}
-                            y={tabY}
-                            width={tabW}
-                            height={tabH}
+                            x={tabPoint.x}
+                            y={tabPoint.y}
+                            width={tabWidth}
+                            height={tabHeight}
                             rx={0.8 * zoomCompensation}
                             fill="#ecfeff"
                             stroke="#0891b2"
@@ -1677,36 +1741,36 @@ export default function BranchMap({
                             style={{ pointerEvents: 'none' }}
                           />
                           <line
-                            x1={lanePosX - 2.4 * zoomCompensation}
-                            y1={markerCy - 0.7 * zoomCompensation}
-                            x2={lanePosX + 2.4 * zoomCompensation}
-                            y2={markerCy - 0.7 * zoomCompensation}
+                            x1={projectPoint(lanePosX - 2.4 * zoomCompensation, markerCy - 0.7 * zoomCompensation).x}
+                            y1={projectPoint(lanePosX - 2.4 * zoomCompensation, markerCy - 0.7 * zoomCompensation).y}
+                            x2={projectPoint(lanePosX + 2.4 * zoomCompensation, markerCy - 0.7 * zoomCompensation).x}
+                            y2={projectPoint(lanePosX + 2.4 * zoomCompensation, markerCy - 0.7 * zoomCompensation).y}
                             stroke="#0e7490"
                             strokeWidth={0.9 * zoomCompensation}
                             strokeLinecap="round"
                             style={{ pointerEvents: 'none' }}
                           />
                           <line
-                            x1={lanePosX - 2.4 * zoomCompensation}
-                            y1={markerCy + 1.2 * zoomCompensation}
-                            x2={lanePosX + 1.7 * zoomCompensation}
-                            y2={markerCy + 1.2 * zoomCompensation}
+                            x1={projectPoint(lanePosX - 2.4 * zoomCompensation, markerCy + 1.2 * zoomCompensation).x}
+                            y1={projectPoint(lanePosX - 2.4 * zoomCompensation, markerCy + 1.2 * zoomCompensation).y}
+                            x2={projectPoint(lanePosX + 1.7 * zoomCompensation, markerCy + 1.2 * zoomCompensation).x}
+                            y2={projectPoint(lanePosX + 1.7 * zoomCompensation, markerCy + 1.2 * zoomCompensation).y}
                             stroke="#0e7490"
                             strokeWidth={0.85 * zoomCompensation}
                             strokeLinecap="round"
                             style={{ pointerEvents: 'none' }}
                           />
                           <rect
-                            x={lanePosX - hitSize / 2}
-                            y={markerCy - hitSize / 2}
+                            x={markerPoint.x - hitSize / 2}
+                            y={markerPoint.y - hitSize / 2}
                             width={hitSize}
                             height={hitSize}
                             fill="transparent"
                             style={{ cursor: 'pointer' }}
                             onMouseEnter={() =>
                               setTooltip({
-                                x: lanePosX + 14 * zoomCompensation,
-                                y: markerCy,
+                                x: markerPoint.x + 14 * zoomCompensation,
+                                y: markerPoint.y,
                                 lines: [
                                   truncatePrompt(marker.prompt, 52),
                                   marker.agent,
@@ -1731,17 +1795,17 @@ export default function BranchMap({
                     >
                       {/* Invisible hit area — text alone is too small to click reliably */}
                       <rect
-                        x={statusLabelX - 22 * zoomCompensation}
-                        y={statusLabelY - 11 * zoomCompensation}
+                        x={statusLabelPoint.x - 22 * zoomCompensation}
+                        y={statusLabelPoint.y - 11 * zoomCompensation}
                         width={44 * zoomCompensation}
                         height={14 * zoomCompensation}
                         fill="transparent"
                       />
                       {isStale && (
-                        <text x={statusLabelX} y={statusLabelY} textAnchor="middle" fontSize={10} fill="#d97706">stale</text>
+                        <text x={statusLabelPoint.x} y={statusLabelPoint.y} textAnchor="middle" fontSize={10} fill="#d97706">stale</text>
                       )}
                       {isConflict && (
-                        <text x={statusLabelX} y={statusLabelY} textAnchor="middle" fontSize={10} fill="#dc2626">conflict</text>
+                        <text x={statusLabelPoint.x} y={statusLabelPoint.y} textAnchor="middle" fontSize={10} fill="#dc2626">conflict</text>
                       )}
                     </g>
                   )}
@@ -1806,23 +1870,26 @@ export default function BranchMap({
           })()}
 
           {/* Checked-out commit marker */}
-          {checkedOutIndicatorLocal && (
-            <g style={{ pointerEvents: 'none' }}>
-              <circle
-                className="checked-out-halo-pulse"
-                cx={checkedOutIndicatorLocal.x}
-                cy={checkedOutIndicatorLocal.y}
-                r={12 * zoomCompensation}
-                fill="#93c5fd"
-              />
-              <circle
-                cx={checkedOutIndicatorLocal.x}
-                cy={checkedOutIndicatorLocal.y}
-                r={7 * zoomCompensation}
-                fill="#2563eb"
-              />
-            </g>
-          )}
+          {checkedOutIndicatorLocal && (() => {
+            const markerPoint = projectPoint(checkedOutIndicatorLocal.x, checkedOutIndicatorLocal.y);
+            return (
+              <g style={{ pointerEvents: 'none' }}>
+                <circle
+                  className="checked-out-halo-pulse"
+                  cx={markerPoint.x}
+                  cy={markerPoint.y}
+                  r={12 * zoomCompensation}
+                  fill="#93c5fd"
+                />
+                <circle
+                  cx={markerPoint.x}
+                  cy={markerPoint.y}
+                  r={7 * zoomCompensation}
+                  fill="#2563eb"
+                />
+              </g>
+            );
+          })()}
         </svg>
         </div>
 
@@ -1871,10 +1938,12 @@ export default function BranchMap({
           const nameOpacity = preserveName ? 1 : 1 - zoomHideStrength;
           const nameBlurPx = preserveName ? 0 : zoomHideStrength * 4;
 
-          const nameWorldX = lanePosX;
-          const nameWorldY = forkY;
-          const hoverBadgeWorldX = lanePosX;
-          const hoverBadgeWorldY = tipY;
+          const nameWorld = projectPoint(lanePosX, forkY);
+          const hoverBadgeWorld = projectPoint(lanePosX, tipY);
+          const nameWorldX = nameWorld.x;
+          const nameWorldY = nameWorld.y;
+          const hoverBadgeWorldX = hoverBadgeWorld.x;
+          const hoverBadgeWorldY = hoverBadgeWorld.y;
           const nameDx = 10;
           const nameDy = -6;
           const hoverBadgeDx = AHEAD_LABEL_OFFSET_X;
@@ -1882,8 +1951,9 @@ export default function BranchMap({
 
           const nameLen = Math.min(b.name.length, 22);
           const approxNameW = nameLen * 6.5;
-          const clockWorldX = nameWorldX + approxNameW + 10;
-          const clockWorldY = nameWorldY;
+          const clockWorld = projectPoint(lanePosX + approxNameW + 10, forkY);
+          const clockWorldX = clockWorld.x;
+          const clockWorldY = clockWorld.y;
 
           const nameInitialX = Math.round(pan.x + (graphOffsetX + nameWorldX) * zoom + nameDx);
           const nameInitialY = Math.round(pan.y + (graphOffsetY + nameWorldY) * zoom + nameDy);
@@ -2071,15 +2141,37 @@ export default function BranchMap({
             value={barScrollLeft}
             style={{ ['--thumb-w' as string]: `${thumbWidth}px` }}
             onChange={(e) => {
-              const nextWorldTop = Number(e.target.value);
+              const nextWorldStart = Number(e.target.value);
               const nextPan = clampPan({
-                x: targetPanRef.current.x,
-                y: -nextWorldTop * zoomRef.current,
+                x: isHorizontal ? -nextWorldStart * zoomRef.current : targetPanRef.current.x,
+                y: isHorizontal ? targetPanRef.current.y : -nextWorldStart * zoomRef.current,
               }, zoomRef.current, 'hard');
               applyCamera(nextPan, zoomRef.current, true);
             }}
             className="bottom-scroll-range flex-1"
           />
+          <div className="flex items-center gap-1 shrink-0 bg-card border border-border rounded-full p-1">
+            <button
+              onClick={() => setOrientation('vertical')}
+              className={`px-2.5 py-1 rounded-full text-xs leading-none select-none transition-colors ${orientation === 'vertical'
+                ? 'bg-primary/10 text-foreground'
+                : 'text-muted-foreground hover:text-foreground hover:bg-muted'
+                }`}
+              title="Timeline runs top to bottom"
+            >
+              Vertical
+            </button>
+            <button
+              onClick={() => setOrientation('horizontal')}
+              className={`px-2.5 py-1 rounded-full text-xs leading-none select-none transition-colors ${orientation === 'horizontal'
+                ? 'bg-primary/10 text-foreground'
+                : 'text-muted-foreground hover:text-foreground hover:bg-muted'
+                }`}
+              title="Timeline runs left to right"
+            >
+              Horizontal
+            </button>
+          </div>
           <div className="flex items-center gap-1 shrink-0 bg-card border border-border rounded-full p-1">
             <button
               onClick={() => setSpacingMode('regular')}
@@ -2112,7 +2204,7 @@ export default function BranchMap({
               value={timeScale}
               onChange={(e) => setTimeScale(Number(e.target.value))}
               className="timeline-scale-range w-24"
-              title="Vertical time scaling"
+              title={`${orientation === 'vertical' ? 'Vertical' : 'Horizontal'} time scaling`}
             />
             <span className="text-xs text-muted-foreground w-10 text-right tabular-nums select-none">
               {effectiveTimeScale.toFixed(2)}x
