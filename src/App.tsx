@@ -234,10 +234,14 @@ function App() {
       const results = await Promise.all(
         activeBranches.map(async (branch) => {
           try {
+            const comparisonBase =
+              branch.parentBranch && branch.parentBranch !== branch.name
+                ? branch.parentBranch
+                : defaultBranch;
             const commits = await invoke<Commit[]>('get_branch_commits', {
               repoPath,
               branch: branch.name,
-              baseBranch: defaultBranch,
+              baseBranch: comparisonBase,
             });
 
             const prompts = commits
