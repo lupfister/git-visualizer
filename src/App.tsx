@@ -246,8 +246,7 @@ function App() {
                 message: c.message,
                 author: c.author,
                 date: c.date,
-              }))
-              .slice(0, 12);
+              }));
 
             if (prompts.length === 0) {
               return [branch.name, { promptMeta: null, previews }] as const;
@@ -284,8 +283,52 @@ function App() {
       const nextCommitPreviews: Record<string, BranchCommitPreview[]> = {};
       for (const [branchName, data] of results) {
         if (data.promptMeta) nextPromptMeta[branchName] = data.promptMeta;
-        if (data.previews.length > 0) nextCommitPreviews[branchName] = [...data.previews];
       }
+
+      // Make commit previews branch-exclusive so the same SHA does not appear
+      // on multiple lanes in the branch map.
+      const resultByBranch = new Map(results.map(([branchName, data]) => [branchName, data]));
+      const activeByName = new Map(activeBranches.map((branch) => [branch.name, branch]));
+      const depthCache = new Map<string, number>();
+      function branchDepth(name: string): number {
+        const cached = depthCache.get(name);
+        if (cached != null) return cached;
+        let depth = 0;
+        let cursor = activeByName.get(name);
+        const seen = new Set<string>();
+        while (
+          cursor?.parentBranch &&
+          cursor.parentBranch !== defaultBranch &&
+          activeByName.has(cursor.parentBranch) &&
+          !seen.has(cursor.parentBranch)
+        ) {
+          depth += 1;
+          seen.add(cursor.parentBranch);
+          cursor = activeByName.get(cursor.parentBranch);
+        }
+        depthCache.set(name, depth);
+        return depth;
+      }
+
+      const ownershipOrder = [...activeBranches].sort((a, b) => {
+        const depthDiff = branchDepth(b.name) - branchDepth(a.name);
+        if (depthDiff !== 0) return depthDiff;
+        const timeDiff = new Date(b.lastCommitDate).getTime() - new Date(a.lastCommitDate).getTime();
+        if (timeDiff !== 0) return timeDiff;
+        return a.name.localeCompare(b.name);
+      });
+
+      const claimedShas = new Set<string>();
+      for (const branch of ownershipOrder) {
+        const previews = resultByBranch.get(branch.name)?.previews ?? [];
+        const uniquePreviews = previews.filter((preview) => {
+          if (claimedShas.has(preview.fullSha)) return false;
+          claimedShas.add(preview.fullSha);
+          return true;
+        });
+        nextCommitPreviews[branch.name] = uniquePreviews;
+      }
+
       setBranchPromptMeta(nextPromptMeta);
       setBranchCommitPreviews(nextCommitPreviews);
     }

@@ -32,7 +32,6 @@ const TIME_SCALE_MAX = 3;
 const TIME_SCALE_STEP = 0.05;
 const TIME_SCALE_DEFAULT = 0.5;
 const PROMPT_MARKER_MAX = 10;
-const PROMPT_MARKER_MIN_GAP = 16;
 
 type TooltipData = {
   x: number;
@@ -895,9 +894,15 @@ export default function BranchMap({
     return Math.max(lastCommitX, forkX + cornerR + 20);
   }
 
+  function branchAheadCount(b: Branch): number {
+    const previews = branchCommitPreviews[b.name];
+    if (previews != null) return previews.length;
+    return b.commitsAhead;
+  }
+
   function branchVisualEndX(b: Branch): number {
     const tipX = branchTipX(b);
-    const labelWidth = estimateSvgTextWidth(formatCommitsAhead(b.commitsAhead));
+    const labelWidth = estimateSvgTextWidth(formatCommitsAhead(branchAheadCount(b)));
     return tipX + AHEAD_LABEL_OFFSET_X + labelWidth;
   }
 
@@ -1486,8 +1491,9 @@ export default function BranchMap({
               }
 
               const branchCommits = branchCommitPreviews[b.name] ?? [];
+              const hasPreviewData = Object.prototype.hasOwnProperty.call(branchCommitPreviews, b.name);
               const commitCount = Math.min(
-                branchCommits.length > 0 ? branchCommits.length : b.commitsAhead,
+                hasPreviewData ? branchCommits.length : b.commitsAhead,
                 4
               );
               const spanWidth = tipX - (forkX + cornerR);
@@ -1497,27 +1503,20 @@ export default function BranchMap({
                 forkX + cornerR + (spanWidth * (i + 1)) / Math.max(commitCount, 1)
               );
               const displayedCommits =
-                branchCommits.length > 0 ? [...branchCommits.slice(0, commitCount)].reverse() : [];
+                hasPreviewData ? [...branchCommits.slice(0, commitCount)].reverse() : [];
               const promptMarkersRaw = branchPromptMeta[b.name]?.markers ?? [];
               const minPromptX = forkX + cornerR + 8;
               const maxPromptX = tipX - 8;
-              const promptTargets = maxPromptX > minPromptX
-                ? promptMarkersRaw
-                    .slice(-PROMPT_MARKER_MAX)
-                    .map(marker => ({
-                      ...marker,
-                      targetX: Math.min(maxPromptX, Math.max(minPromptX, timeToX(marker.timestamp))),
-                    }))
-                    .sort((a, b) => a.targetX - b.targetX)
+              const promptSeeds = promptMarkersRaw.slice(-PROMPT_MARKER_MAX);
+              const promptMarkers = maxPromptX > minPromptX && promptSeeds.length > 0
+                ? promptSeeds.map((marker, index) => {
+                    const ratio = promptSeeds.length === 1 ? 1 : index / (promptSeeds.length - 1);
+                    return {
+                      x: minPromptX + (maxPromptX - minPromptX) * ratio,
+                      marker,
+                    };
+                  })
                 : [];
-              const promptMarkers = promptTargets.reduce<Array<{ x: number; marker: typeof promptTargets[number] }>>((acc, marker) => {
-                const prev = acc[acc.length - 1];
-                const x = prev
-                  ? Math.min(maxPromptX, Math.max(marker.targetX, prev.x + PROMPT_MARKER_MIN_GAP))
-                  : marker.targetX;
-                if (x <= maxPromptX) acc.push({ x, marker });
-                return acc;
-              }, []);
 
               const brDelay = branchDelayMs.get(b.name) ?? 0;
 
@@ -1921,7 +1920,7 @@ export default function BranchMap({
                   data-dy={hoverBadgeDy}
                   data-snap-pixel="1"
                 >
-                  {formatCommitsAhead(b.commitsAhead)}
+                  {formatCommitsAhead(branchAheadCount(b))}
                 </div>
               )}
 
