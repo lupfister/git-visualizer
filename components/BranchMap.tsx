@@ -171,7 +171,7 @@ export default function BranchMap({
   const [hoveredBranch, setHoveredBranch] = useState<string | null>(null);
   const [hoveredPR, setHoveredPR] = useState<number | null>(null);
   const [hoveredPRCommit, setHoveredPRCommit] = useState<PRCommitHover | null>(null);
-  const [hoveredMergeNode, setHoveredMergeNode] = useState<{ x: number; node: MergeNode } | null>(null);
+  const [hoveredMergeNode, setHoveredMergeNode] = useState<{ y: number; node: MergeNode } | null>(null);
   const [prCommits, setPrCommits] = useState<Map<number, string[]>>(new Map());
   const [zoom, setZoom] = useState(ZOOM_DEFAULT);
   const [timeScale, setTimeScale] = useState(TIME_SCALE_DEFAULT);
@@ -538,21 +538,21 @@ export default function BranchMap({
   // Sync bottom chrome scrollbar to camera state.
   useEffect(() => {
     const safeZoom = Math.max(zoom, 0.0001);
-    const visibleWorldWidth = viewportSize.width / safeZoom;
-    const max = Math.max(0, canvasWidth - visibleWorldWidth);
-    const leftWorld = Math.max(0, Math.min(max, -pan.x / safeZoom));
-    setBarScrollLeft(leftWorld);
+    const visibleWorldHeight = viewportSize.height / safeZoom;
+    const max = Math.max(0, canvasHeight - visibleWorldHeight);
+    const topWorld = Math.max(0, Math.min(max, -pan.y / safeZoom));
+    setBarScrollLeft(topWorld);
     setBarScrollMax(max);
 
     const rangeEl = barRangeRef.current;
     if (rangeEl && rangeEl.offsetWidth > 0) {
-      const ratio = canvasWidth > 0 ? visibleWorldWidth / canvasWidth : 1;
+      const ratio = canvasHeight > 0 ? visibleWorldHeight / canvasHeight : 1;
       setThumbWidth(Math.max(24, Math.round(rangeEl.offsetWidth * ratio)));
     }
   }, [
-    pan.x,
+    pan.y,
     zoom,
-    viewportSize.width,
+    viewportSize.height,
     branches,
     mergeNodes,
     directCommits,
@@ -864,7 +864,6 @@ export default function BranchMap({
   ];
   const latestMainCommitX = mainCommitXs.length > 0 ? Math.max(...mainCommitXs) : mainEndX;
   const mainActiveEndX = Math.min(mainEndX, latestMainCommitX);
-  const hasMainStaleTail = mainEndX - mainActiveEndX > 0.5;
   const averageMergeGap = sortedNodes.length > 1
     ? ((nodeXByFullSha.get(sortedNodes[sortedNodes.length - 1].fullSha) ?? leftPad) - (nodeXByFullSha.get(sortedNodes[0].fullSha) ?? leftPad)) / (sortedNodes.length - 1)
     : IDEAL_NODE_SPACING;
@@ -902,31 +901,36 @@ export default function BranchMap({
     return b.commitsAhead;
   }
 
-  function branchVisualEndX(b: Branch): number {
+  function branchVisualEndTimeX(b: Branch): number {
     const tipX = branchTipX(b);
-    const labelWidth = estimateSvgTextWidth(formatCommitsAhead(branchAheadCount(b)));
-    return tipX + AHEAD_LABEL_OFFSET_X + labelWidth;
+    return tipX + AHEAD_LABEL_OFFSET_X + estimateSvgTextWidth(formatCommitsAhead(branchAheadCount(b)));
   }
 
-  // SVG width: extend past mainEndX if any branch tip falls further right
-  // (e.g. a fresh branch with no commits sits at today's date, past the last PR).
-  const maxBranchVisualEndX = activeBranches.reduce(
-    (max, b) => Math.max(max, branchVisualEndX(b)),
+  // Time axis is vertical: newest at top, oldest at bottom.
+  const MAIN_LEFT_PAD = 80;
+  const MAIN_TOP_PAD = 80;
+  const mainX = MAIN_LEFT_PAD;
+  const timelineMinX = leftPad;
+  const timelineMaxX = activeBranches.reduce(
+    (max, b) => Math.max(max, branchTipX(b)),
     mainEndX
   );
-  const svgWidth = maxBranchVisualEndX + rightPad + 80;
+  const timelineSpanY = Math.max(220, timelineMaxX - timelineMinX);
+  const mainStartY = MAIN_TOP_PAD + timelineSpanY; // oldest
+  function timeCoordToY(timeCoordX: number): number {
+    return mainStartY - (timeCoordX - timelineMinX);
+  }
+  const mainEndY = timeCoordToY(mainEndX); // newest anchor on main
+  const mainActiveEndY = timeCoordToY(mainActiveEndX);
+  const hasMainStaleTailY = Math.abs(mainActiveEndY - mainEndY) > 0.5;
 
-  // Main baseline sits near the top so branch lanes flow downward.
-  const MAIN_TOP_PAD = 80;
-  const mainY = MAIN_TOP_PAD;
-
-  // ── Assign vertical lanes to avoid overlap (strict downward hierarchy) ───
+  // ── Assign branch lanes while preserving parent -> child ordering ─────────
   // Policy:
-  // 1) If a branch has a visible parent branch, it must render below that parent.
-  // 2) Unrelated branches can shift to lower lanes to satisfy (1).
-  // 3) Lane occupancy still respects horizontal separation to reduce label overlap.
+  // 1) If a branch has a visible parent branch, it must render to the right of that parent.
+  // 2) Unrelated branches can shift rightward to satisfy (1).
+  // 3) Lane occupancy still respects time separation to reduce label overlap.
   const sortedByX = [...activeBranches].sort((a, b) => {
-    // Allocate older branches first so they stay on higher lanes.
+    // Allocate older branches first so they stay on earlier lanes.
     const createdDiff = branchCreatedMs(a) - branchCreatedMs(b);
     if (createdDiff !== 0) return createdDiff;
     const forkDiff = branchForkX(a) - branchForkX(b);
@@ -970,7 +974,7 @@ export default function BranchMap({
       if (!parentAssigned) continue;
 
       const minLane = parentVisible ? (laneAssignments.get(parentName!) ?? 0) + 1 : 0;
-      const lane = allocateLane(minLane, branchForkX(b), branchVisualEndX(b));
+      const lane = allocateLane(minLane, branchForkX(b), branchVisualEndTimeX(b));
       laneAssignments.set(b.name, lane);
       pending.splice(i, 1);
       i -= 1;
@@ -980,46 +984,53 @@ export default function BranchMap({
     if (!progressed) {
       // Cycle or missing parent assignment edge-case fallback.
       const b = pending.shift()!;
-      const lane = allocateLane(0, branchForkX(b), branchVisualEndX(b));
+      const lane = allocateLane(0, branchForkX(b), branchVisualEndTimeX(b));
       laneAssignments.set(b.name, lane);
     }
     guard += 1;
   }
 
   const laneCount = laneLastEndX.length;
-  const availableLaneHeight = Math.max(220, containerHeight - mainY - 80);
-  const laneHeightBase = laneCount > 0
-    ? Math.max(34, Math.min(LANE_HEIGHT, availableLaneHeight / laneCount))
+  const availableLaneWidth = Math.max(
+    220,
+    Math.max(viewportSize.width, 800) - mainX - rightPad - 60
+  );
+  const laneWidthBase = laneCount > 0
+    ? Math.max(34, Math.min(LANE_HEIGHT, availableLaneWidth / laneCount))
     : LANE_HEIGHT;
-  const laneHeight = laneHeightBase;
+  const laneWidth = laneWidthBase;
 
-  function laneY(b: Branch): number {
+  function laneX(b: Branch): number {
     const lane = laneAssignments.get(b.name) ?? 0;
-    return mainY + laneHeight * (lane + 1) + 40;
+    return mainX + laneWidth * (lane + 1) + 40;
   }
 
-  const laneYByBranch = new Map<string, number>(
-    activeBranches.map((b) => [b.name, laneY(b)])
+  const laneXByBranch = new Map<string, number>(
+    activeBranches.map((b) => [b.name, laneX(b)])
   );
 
-  function branchStartY(b: Branch): number {
+  function branchStartX(b: Branch): number {
     const parent = b.parentBranch;
     if (parent && parent !== defaultBranch) {
-      const parentY = laneYByBranch.get(parent);
-      if (typeof parentY === 'number') {
-        return parentY;
+      const parentX = laneXByBranch.get(parent);
+      if (typeof parentX === 'number') {
+        return parentX;
       }
     }
-    return mainY;
+    return mainX;
   }
+
+  const maxBranchVisualEndX = activeBranches.reduce((max, b) => {
+    const lanePosX = laneXByBranch.get(b.name) ?? mainX;
+    const labelWidth = estimateSvgTextWidth(formatCommitsAhead(branchAheadCount(b)));
+    return Math.max(max, lanePosX + AHEAD_LABEL_OFFSET_X + labelWidth);
+  }, mainX + MAIN_LABEL_OFFSET_X + estimateSvgTextWidth(defaultBranch));
+  const svgWidth = maxBranchVisualEndX + rightPad + 80;
 
   // Merged PRs lane layout
   const MERGED_LANE_HEIGHT = 60;
   const MERGED_LANES = 4;
-  const maxBranchY = laneCount > 0
-    ? mainY + laneHeight * laneCount + 40
-    : mainY;
-  const svgHeight = Math.max(maxBranchY + 120, containerHeight);
+  const svgHeight = Math.max(mainStartY + 120, containerHeight);
   const canvasWidth = svgWidth + CANVAS_PAD_X * 2;
   const canvasHeight = svgHeight + CANVAS_PAD_Y * 2;
   const graphOffsetX = (canvasWidth - svgWidth) / 2;
@@ -1031,8 +1042,8 @@ export default function BranchMap({
       const branch = activeBranches.find((b) => b.name === checkedOutBranchName);
       if (branch) {
         return {
-          x: branchTipX(branch),
-          y: laneYByBranch.get(branch.name) ?? mainY,
+          x: laneXByBranch.get(branch.name) ?? mainX,
+          y: timeCoordToY(branchTipX(branch)),
         };
       }
     }
@@ -1040,23 +1051,23 @@ export default function BranchMap({
     if (checkedOutHeadSha) {
       const directX = directXByFullSha.get(checkedOutHeadSha);
       if (typeof directX === 'number') {
-        return { x: directX, y: mainY };
+        return { x: mainX, y: timeCoordToY(directX) };
       }
       const mergeX = nodeXByFullSha.get(checkedOutHeadSha);
       if (typeof mergeX === 'number') {
-        return { x: mergeX, y: mainY };
+        return { x: mainX, y: timeCoordToY(mergeX) };
       }
       const branchBySha = activeBranches.find((b) => b.headSha === checkedOutHeadSha);
       if (branchBySha) {
         return {
-          x: branchTipX(branchBySha),
-          y: laneYByBranch.get(branchBySha.name) ?? mainY,
+          x: laneXByBranch.get(branchBySha.name) ?? mainX,
+          y: timeCoordToY(branchTipX(branchBySha)),
         };
       }
     }
 
     if (checkedOutBranchName === defaultBranch) {
-      return { x: mainEndX, y: mainY };
+      return { x: mainX, y: mainEndY };
     }
 
     return null;
@@ -1107,27 +1118,28 @@ export default function BranchMap({
   // Scroll timeline to the requested branch. Set flashingName briefly so the arc
   // starts bright red, then CSS stroke transition fades it to the settled lighter red.
   useEffect(() => {
-    if (!scrollRequest || viewportSize.width <= 0) return;
+    if (!scrollRequest || viewportSize.height <= 0) return;
     const { branch } = scrollRequest;
-    const x = branch.divergedFromDate
+    const focusTime = branch.divergedFromDate
       ? timeToX(branch.divergedFromDate)
       : timeToX(branch.lastCommitDate);
-    const targetWorldLeft = Math.max(
+    const y = timeCoordToY(focusTime);
+    const targetWorldTop = Math.max(
       0,
-      graphOffsetX + x - viewportSize.width / (2 * zoomRef.current)
+      graphOffsetY + y - viewportSize.height / (2 * zoomRef.current)
     );
     const clampedTargetPan = clampPan({
-      x: -targetWorldLeft * zoomRef.current,
-      y: targetPanRef.current.y,
+      x: targetPanRef.current.x,
+      y: -targetWorldTop * zoomRef.current,
     }, zoomRef.current, 'hard');
 
     focusScrollCancelRef.current?.();
     focusScrollCancelRef.current = smoothValueTo(
-      panRef.current.x,
-      clampedTargetPan.x,
+      panRef.current.y,
+      clampedTargetPan.y,
       600,
       (value) => {
-        const next = clampPan({ x: value, y: targetPanRef.current.y }, zoomRef.current, 'hard');
+        const next = clampPan({ x: targetPanRef.current.x, y: value }, zoomRef.current, 'hard');
         applyCamera(next, zoomRef.current);
       }
     );
@@ -1139,7 +1151,7 @@ export default function BranchMap({
       focusScrollCancelRef.current = null;
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [scrollRequest, viewportSize.width, graphOffsetX]);
+  }, [scrollRequest, viewportSize.height, graphOffsetY]);
 
   const zoomCompensation = 1 / Math.max(zoom, 0.0001);
   const scaledNodeSize = NODE_SIZE * zoomCompensation;
@@ -1188,17 +1200,17 @@ export default function BranchMap({
           <g style={{ opacity: hoveredPR !== null || hoveredBranch !== null ? 0.2 : 1, transition: 'opacity 0.15s' }}>
             {/* Use <path> not <line>: pathLength on <line> is SVG 2 only and unreliable in WKWebView */}
             <path
-              d={`M ${leftPad} ${mainY} L ${mainActiveEndX} ${mainY}`}
+              d={`M ${mainX} ${mainStartY} L ${mainX} ${mainActiveEndY}`}
               fill="none"
               stroke="#78716c"
               strokeWidth={1.5 * zoomCompensation}
               pathLength={1}
               className="draw-path-main"
             />
-            {hasMainStaleTail && (
+            {hasMainStaleTailY && (
               <g className="main-stale-tail-glow">
                 <path
-                  d={`M ${mainActiveEndX} ${mainY} L ${mainEndX} ${mainY}`}
+                  d={`M ${mainX} ${mainActiveEndY} L ${mainX} ${mainEndY}`}
                   fill="none"
                   stroke="#a8a29e"
                   strokeWidth={1.5 * zoomCompensation}
@@ -1211,8 +1223,8 @@ export default function BranchMap({
             {/* Main label and ticks — fade in once the line is drawn */}
             <g className="fade-in-info" style={{ '--delay': `${MAIN_DRAW_MS}ms` } as React.CSSProperties}>
               <text
-                x={mainEndX + MAIN_LABEL_OFFSET_X}
-                y={mainY + 4}
+                x={mainX + MAIN_LABEL_OFFSET_X}
+                y={mainEndY + 4}
                 fontSize={12}
                 fill="#1c1917"
                 fontWeight={500}
@@ -1222,20 +1234,21 @@ export default function BranchMap({
 
               {/* Direct commits */}
               {directCommits.map(c => {
-                const x = directXByFullSha.get(c.fullSha) ?? timeToX(c.date);
+                const timeCoordX = directXByFullSha.get(c.fullSha) ?? timeToX(c.date);
+                const y = timeCoordToY(timeCoordX);
                 const label = c.message.length > 38 ? c.message.slice(0, 38) + '…' : c.message;
                 return (
                   <circle
                     key={c.fullSha}
-                    cx={x}
-                    cy={mainY}
+                    cx={mainX}
+                    cy={y}
                     r={scaledNodeSize / 2}
                     fill="#78716c"
                     style={{ cursor: 'pointer' }}
                     onMouseEnter={() =>
                       setTooltip({
-                        x,
-                        y: mainY - 16 * zoomCompensation,
+                        x: mainX + 14 * zoomCompensation,
+                        y,
                         lines: [c.sha, label, `@${c.author} · ${fmtTooltipDate(c.date)}`],
                         avatarFallback: c.author?.charAt(0).toUpperCase() || '?',
                       })
@@ -1260,11 +1273,12 @@ export default function BranchMap({
                 const anyLabel = labelSpacing >= 40;
                 const minLabelGap = showTitle ? 130 : showDate ? 100 : anyLabel ? 55 : Infinity;
 
-                let lastLabelX = -Infinity;
+                let lastLabelY = Number.POSITIVE_INFINITY;
                 return sortedNodes.map((m) => {
-                  const x = nodeXByFullSha.get(m.fullSha) ?? timeToX(m.date);
-                  const showLabel = anyLabel && x - lastLabelX >= minLabelGap;
-                  if (showLabel) lastLabelX = x;
+                  const timeCoordX = nodeXByFullSha.get(m.fullSha) ?? timeToX(m.date);
+                  const y = timeCoordToY(timeCoordX);
+                  const showLabel = anyLabel && lastLabelY - y >= minLabelGap;
+                  if (showLabel) lastLabelY = y;
                   const label = m.prNumber ? `PR #${m.prNumber}` : m.sha.slice(0, 7);
                   const isHovered = hoveredMergeNode?.node.fullSha === m.fullSha;
                   const hitSize = scaledHoverHitSize;
@@ -1272,35 +1286,35 @@ export default function BranchMap({
                     <g key={m.fullSha}>
                       {/* Visible tick — pointer-events off so hit rect handles hover */}
                       <circle
-                        cx={x}
-                        cy={mainY}
+                        cx={mainX}
+                        cy={y}
                         r={scaledNodeSize / 2}
                         fill={isHovered ? '#44403c' : '#78716c'}
                         style={{ pointerEvents: 'none', transition: 'fill 0.1s' }}
                       />
                       {/* Transparent hit area for hover — rendered on top */}
                       <rect
-                        x={x - hitSize / 2}
-                        y={mainY - hitSize / 2}
+                        x={mainX - hitSize / 2}
+                        y={y - hitSize / 2}
                         width={hitSize}
                         height={hitSize}
                         fill="transparent"
                         style={{ cursor: 'default' }}
-                        onMouseEnter={() => setHoveredMergeNode({ x, node: m })}
+                        onMouseEnter={() => setHoveredMergeNode({ y, node: m })}
                         onMouseLeave={() => setHoveredMergeNode(null)}
                       />
                       {showLabel && (
                         <>
-                          <text x={x} y={mainY + 20} textAnchor="middle" fontSize={12} fill="#57534e">
+                          <text x={mainX + 14} y={y + 4} textAnchor="start" fontSize={12} fill="#57534e">
                             {label}
                           </text>
                           {showTitle && (
-                            <text x={x} y={mainY + 32} textAnchor="middle" fontSize={10} fill="#78716c">
+                            <text x={mainX + 14} y={y + 16} textAnchor="start" fontSize={10} fill="#78716c">
                               {(m.prTitle ?? '').slice(0, 22) + ((m.prTitle?.length ?? 0) > 22 ? '…' : '')}
                             </text>
                           )}
                           {showDate && (
-                            <text x={x} y={showTitle ? mainY + 44 : mainY + 32} textAnchor="middle" fontSize={10} fill="#78716c">
+                            <text x={mainX + 14} y={showTitle ? y + 28 : y + 16} textAnchor="start" fontSize={10} fill="#78716c">
                               {fmtLabelDate(m.date)}
                             </text>
                           )}
@@ -1315,13 +1329,13 @@ export default function BranchMap({
 
           {/* ── Merged PR overlays (optional secondary context) ── */}
           {showMergedPROverlays && mergedPRs.map((pr, idx) => {
-            const forkX = timeToX(pr.createdAt);
-            const mergeX = timeToX(pr.mergedAt);
+            const forkY = timeCoordToY(timeToX(pr.createdAt));
+            const mergeY = timeCoordToY(timeToX(pr.mergedAt));
             const lane = idx % MERGED_LANES;
-            const arcY = mainY - MERGED_LANE_HEIGHT * (lane + 1);
+            const arcX = mainX - MERGED_LANE_HEIGHT * (lane + 1);
             const shas = prCommits.get(pr.number);
             const commitCount = Math.min(shas?.length ?? pr.commitCount ?? 1, 12);
-            const effectiveMergeX = Math.max(mergeX, forkX + cornerR * 2 + 20);
+            const effectiveMergeY = Math.min(mergeY, forkY - cornerR * 2 - 20);
 
             const isHovered = hoveredPR === pr.number;
             const isDimmed = (hoveredPR !== null && !isHovered) || hoveredBranch !== null;
@@ -1331,18 +1345,18 @@ export default function BranchMap({
             const strokeWidth = isHovered ? 1.6 : 1.2;
 
             const arcPath = [
-              `M ${forkX} ${mainY}`,
-              `L ${forkX} ${arcY + cornerR}`,
-              `Q ${forkX} ${arcY} ${forkX + cornerR} ${arcY}`,
-              `L ${effectiveMergeX - cornerR} ${arcY}`,
-              `Q ${effectiveMergeX} ${arcY} ${effectiveMergeX} ${arcY + cornerR}`,
-              `L ${effectiveMergeX} ${mainY}`,
+              `M ${mainX} ${forkY}`,
+              `L ${arcX + cornerR} ${forkY}`,
+              `Q ${arcX} ${forkY} ${arcX} ${forkY - cornerR}`,
+              `L ${arcX} ${effectiveMergeY + cornerR}`,
+              `Q ${arcX} ${effectiveMergeY} ${arcX + cornerR} ${effectiveMergeY}`,
+              `L ${mainX} ${effectiveMergeY}`,
             ].join(' ');
 
-            const midX = (forkX + effectiveMergeX) / 2;
-            const arcSpan = effectiveMergeX - forkX - cornerR * 2;
-            const commitXs = Array.from({ length: commitCount }, (_, i) =>
-              forkX + cornerR + (arcSpan * (i + 1)) / (commitCount + 1)
+            const midY = (forkY + effectiveMergeY) / 2;
+            const arcSpan = forkY - effectiveMergeY - cornerR * 2;
+            const commitYs = Array.from({ length: commitCount }, (_, i) =>
+              forkY - cornerR - (arcSpan * (i + 1)) / (commitCount + 1)
             );
 
             const prDelay = prDelayMs.get(pr.number) ?? 0;
@@ -1374,8 +1388,8 @@ export default function BranchMap({
                 {/* Arc info — fades in as arc draws */}
                 <g className="fade-in-info" style={{ '--delay': `${prDelay + INFO_OFFSET}ms` } as React.CSSProperties}>
                   <circle
-                    cx={forkX}
-                    cy={mainY}
+                    cx={mainX}
+                    cy={forkY}
                     r={scaledNodeSize / 2}
                     fill="#fafaf9"
                     stroke={isFocusedPR ? focusedPRColor : strokeColor}
@@ -1383,8 +1397,8 @@ export default function BranchMap({
                     style={{ pointerEvents: 'none' }}
                   />
                   <circle
-                    cx={effectiveMergeX}
-                    cy={mainY}
+                    cx={mainX}
+                    cy={effectiveMergeY}
                     r={scaledNodeSize / 2}
                     fill="#fafaf9"
                     stroke={isFocusedPR ? focusedPRColor : strokeColor}
@@ -1393,7 +1407,7 @@ export default function BranchMap({
                   />
 
                   {/* Commit ticks — interactive with SHA tooltips */}
-                  {commitXs.map((cx, ci) => {
+                  {commitYs.map((cy, ci) => {
                     const isTickHovered = isHovered &&
                       hoveredPRCommit?.pr.number === pr.number &&
                       hoveredPRCommit?.commitIdx === ci;
@@ -1403,23 +1417,23 @@ export default function BranchMap({
                       <g key={ci}>
                         {/* Visible tick */}
                         <circle
-                          cx={cx}
-                          cy={arcY}
+                          cx={arcX}
+                          cy={cy}
                           r={tickSize / 2}
                           fill={isFocusedPR ? focusedPRColor : isHovered ? '#a8a29e' : '#78716c'}
                           style={{ pointerEvents: 'none', transition: 'fill 0.1s ease' }}
                         />
                         {/* Invisible hit area */}
                         <rect
-                          x={cx - hitSize / 2}
-                          y={arcY - hitSize / 2}
+                          x={arcX - hitSize / 2}
+                          y={cy - hitSize / 2}
                           width={hitSize}
                           height={hitSize}
                           fill="transparent"
                           style={{ cursor: 'crosshair' }}
                           onMouseEnter={(e) => {
                             e.stopPropagation();
-                            setHoveredPRCommit({ x: cx, arcY, pr, commitIdx: ci, total: commitCount });
+                            setHoveredPRCommit({ x: arcX, arcY: cy, pr, commitIdx: ci, total: commitCount });
                           }}
                           onMouseLeave={(e) => {
                             e.stopPropagation();
@@ -1434,16 +1448,16 @@ export default function BranchMap({
                   {pr.authorAvatar ? (
                     <image
                       href={pr.authorAvatar}
-                      x={midX - 10 * zoomCompensation}
-                      y={arcY - 32 * zoomCompensation}
+                      x={arcX - 9 * zoomCompensation}
+                      y={midY - 10 * zoomCompensation}
                       width={18 * zoomCompensation}
                       height={18 * zoomCompensation}
                       style={{ clipPath: `circle(${9 * zoomCompensation}px at ${9 * zoomCompensation}px ${9 * zoomCompensation}px)` }}
                     />
                   ) : (
-                    <circle cx={midX} cy={arcY - 22 * zoomCompensation} r={8 * zoomCompensation} fill="#57534e" />
+                    <circle cx={arcX} cy={midY} r={8 * zoomCompensation} fill="#57534e" />
                   )}
-                  <text x={midX + 14} y={arcY - 18} fontSize={12} fill={isHovered ? '#1c1917' : '#57534e'}>
+                  <text x={arcX + 12} y={midY + 4} fontSize={12} fill={isHovered ? '#1c1917' : '#57534e'}>
                     {pr.branchName.length > 20 ? pr.branchName.slice(0, 20) + '…' : pr.branchName}
                   </text>
                 </g>
@@ -1454,9 +1468,10 @@ export default function BranchMap({
           {/* ── Active branches ── */}
           <g style={{ opacity: hoveredPR !== null ? 0.2 : 1, transition: 'opacity 0.15s' }}>
             {activeBranches.map((b) => {
-              const forkX = branchForkX(b);
-              const y = laneY(b);
-              const startY = branchStartY(b);
+              const forkTimeX = branchForkX(b);
+              const forkY = timeCoordToY(forkTimeX);
+              const lanePosX = laneX(b);
+              const startX = branchStartX(b);
               const isConflict = b.status === 'conflict-risk';
               const isStale = b.status === 'stale';
               const isSelected = selectedBranch?.name === b.name;
@@ -1482,14 +1497,17 @@ export default function BranchMap({
               const strokeWidth = isSelected ? 2.5 : isHovered ? 2 : isFocusedError ? 2 : 1.5;
               const strokeColor = isHovered && !isSelected ? '#44403c' : color;
 
-              const tipX = branchTipX(b);
+              const tipTimeX = branchTipX(b);
+              const tipY = timeCoordToY(tipTimeX);
+              const cornerDir = tipY <= forkY ? -1 : 1;
+              const turnY = forkY + cornerDir * cornerR;
               let curvePath: string;
-              if (startY === y) {
-                curvePath = `M ${forkX} ${y} L ${tipX} ${y}`;
-              } else if (startY > y) {
-                curvePath = `M ${forkX} ${startY} L ${forkX} ${y + cornerR} Q ${forkX} ${y} ${forkX + cornerR} ${y} L ${tipX} ${y}`;
+              if (startX === lanePosX) {
+                curvePath = `M ${lanePosX} ${forkY} L ${lanePosX} ${tipY}`;
+              } else if (startX < lanePosX) {
+                curvePath = `M ${startX} ${forkY} L ${lanePosX - cornerR} ${forkY} Q ${lanePosX} ${forkY} ${lanePosX} ${turnY} L ${lanePosX} ${tipY}`;
               } else {
-                curvePath = `M ${forkX} ${startY} L ${forkX} ${y - cornerR} Q ${forkX} ${y} ${forkX + cornerR} ${y} L ${tipX} ${y}`;
+                curvePath = `M ${startX} ${forkY} L ${lanePosX + cornerR} ${forkY} Q ${lanePosX} ${forkY} ${lanePosX} ${turnY} L ${lanePosX} ${tipY}`;
               }
 
               const branchCommits = branchCommitPreviews[b.name] ?? [];
@@ -1497,23 +1515,23 @@ export default function BranchMap({
               const commitCount = hasPreviewData ? branchCommits.length : b.commitsAhead;
               const displayedCommits =
                 hasPreviewData ? [...branchCommits.slice(0, commitCount)].reverse() : [];
-              const minCommitX = forkX + cornerR + 6;
-              const maxCommitX = Math.max(minCommitX, tipX - 2);
+              const minCommitTimeX = forkTimeX + cornerR + 6;
+              const maxCommitTimeX = Math.max(minCommitTimeX, tipTimeX - 2);
               const commitItems: Array<BranchCommitPreview | undefined> = hasPreviewData
                 ? displayedCommits
                 : Array.from({ length: commitCount }, () => undefined);
-              const commitDots = placeItemsEvenly(commitItems, minCommitX, maxCommitX).map((entry) => ({
-                x: entry.x,
+              const commitDots = placeItemsEvenly(commitItems, minCommitTimeX, maxCommitTimeX).map((entry) => ({
+                y: timeCoordToY(entry.x),
                 commit: entry.item,
               }));
               const promptMarkersRaw = branchPromptMeta[b.name]?.markers ?? [];
-              const minPromptX = minCommitX;
-              const maxPromptX = maxCommitX;
+              const minPromptX = minCommitTimeX;
+              const maxPromptX = maxCommitTimeX;
               const promptSeeds = [...promptMarkersRaw]
                 .sort((a, b) => new Date(a.timestamp).getTime() - new Date(b.timestamp).getTime())
                 .slice(-PROMPT_MARKER_MAX);
               const promptMarkers = placeItemsEvenly(promptSeeds, minPromptX, maxPromptX).map((entry) => ({
-                x: entry.x,
+                y: timeCoordToY(entry.x),
                 marker: entry.item,
               }));
 
@@ -1522,9 +1540,10 @@ export default function BranchMap({
               // If this branch forks directly on a merge node, suppress status pills
               // below the baseline so labels don't stack under dense marker clusters.
               const forkOnNode = showMergeTicks && sortedNodes.some((n) =>
-                Math.abs((nodeXByFullSha.get(n.fullSha) ?? timeToX(n.date)) - forkX) < scaledNodeSize
+                Math.abs((nodeXByFullSha.get(n.fullSha) ?? timeToX(n.date)) - forkTimeX) < scaledNodeSize
               );
-              const statusLabelY = startY + 34;
+              const statusLabelX = lanePosX;
+              const statusLabelY = forkY + 16;
 
               return (
                 <g
@@ -1545,10 +1564,10 @@ export default function BranchMap({
                     style={{ pointerEvents: 'stroke' }}
                   />
                   <line
-                    x1={tipX}
-                    y1={y}
-                    x2={tipX + AHEAD_LABEL_OFFSET_X + 6}
-                    y2={y}
+                    x1={lanePosX}
+                    y1={tipY}
+                    x2={lanePosX + AHEAD_LABEL_OFFSET_X + 6}
+                    y2={tipY}
                     stroke="transparent"
                     strokeWidth={scaledBranchHitStrokeWidth}
                     style={{ pointerEvents: 'stroke' }}
@@ -1583,15 +1602,15 @@ export default function BranchMap({
                   <g className="fade-in-info" style={{ '--delay': `${brDelay + INFO_OFFSET}ms` } as React.CSSProperties}>
                     {/* Fork marker on parent baseline (or main fallback) */}
                     <circle
-                      cx={forkX}
-                      cy={startY}
+                      cx={startX}
+                      cy={forkY}
                       r={scaledNodeSize / 2}
                       fill={isSelected ? '#22d3ee' : isFocusedError ? color : '#1c1917'}
                       stroke={color}
                       strokeWidth={strokeWidth * zoomCompensation}
                     />
                     {/* Commit markers along branch */}
-                    {commitDots.map(({ x: cx, commit }, ci) => {
+                    {commitDots.map(({ y: commitY, commit }, ci) => {
                       const isBranchCreatedEvent = commit?.kind === 'branch-created';
                       const tooltipAuthor = commit?.author ?? b.lastCommitAuthor;
                       const tooltipDate = commit?.date ?? b.lastCommitDate;
@@ -1606,14 +1625,14 @@ export default function BranchMap({
                       return (
                         <circle
                           key={ci}
-                          cx={cx}
-                          cy={y}
+                          cx={lanePosX}
+                          cy={commitY}
                           r={scaledNodeSize / 2}
                           fill={color}
                           onMouseEnter={() =>
                             setTooltip({
-                              x: cx,
-                              y: y - 16 * zoomCompensation,
+                              x: lanePosX + 14 * zoomCompensation,
+                              y: commitY,
                               lines: [
                                 isBranchCreatedEvent ? 'Branch created' : `Commit ${tooltipSha}`,
                                 tooltipMessage ? tooltipMessage : `@${tooltipAuthor}`,
@@ -1627,18 +1646,18 @@ export default function BranchMap({
                         />
                       );
                     })}
-                    {promptMarkers.map(({ x: cx, marker }) => {
-                      const markerCy = y;
+                    {promptMarkers.map(({ y: markerY, marker }) => {
+                      const markerCy = markerY;
                       const circleR = 4.8 * zoomCompensation;
                       const tabW = 4.2 * zoomCompensation;
                       const tabH = 3.8 * zoomCompensation;
-                      const tabX = cx - circleR - tabW * 0.55;
+                      const tabX = lanePosX - circleR - tabW * 0.55;
                       const tabY = markerCy + circleR * 0.2;
                       const hitSize = scaledHoverHitSize;
                       return (
                         <g key={marker.id}>
                           <circle
-                            cx={cx}
+                            cx={lanePosX}
                             cy={markerCy}
                             r={circleR}
                             fill="#ecfeff"
@@ -1658,9 +1677,9 @@ export default function BranchMap({
                             style={{ pointerEvents: 'none' }}
                           />
                           <line
-                            x1={cx - 2.4 * zoomCompensation}
+                            x1={lanePosX - 2.4 * zoomCompensation}
                             y1={markerCy - 0.7 * zoomCompensation}
-                            x2={cx + 2.4 * zoomCompensation}
+                            x2={lanePosX + 2.4 * zoomCompensation}
                             y2={markerCy - 0.7 * zoomCompensation}
                             stroke="#0e7490"
                             strokeWidth={0.9 * zoomCompensation}
@@ -1668,9 +1687,9 @@ export default function BranchMap({
                             style={{ pointerEvents: 'none' }}
                           />
                           <line
-                            x1={cx - 2.4 * zoomCompensation}
+                            x1={lanePosX - 2.4 * zoomCompensation}
                             y1={markerCy + 1.2 * zoomCompensation}
-                            x2={cx + 1.7 * zoomCompensation}
+                            x2={lanePosX + 1.7 * zoomCompensation}
                             y2={markerCy + 1.2 * zoomCompensation}
                             stroke="#0e7490"
                             strokeWidth={0.85 * zoomCompensation}
@@ -1678,7 +1697,7 @@ export default function BranchMap({
                             style={{ pointerEvents: 'none' }}
                           />
                           <rect
-                            x={cx - hitSize / 2}
+                            x={lanePosX - hitSize / 2}
                             y={markerCy - hitSize / 2}
                             width={hitSize}
                             height={hitSize}
@@ -1686,8 +1705,8 @@ export default function BranchMap({
                             style={{ cursor: 'pointer' }}
                             onMouseEnter={() =>
                               setTooltip({
-                                x: cx,
-                                y: markerCy - 18 * zoomCompensation,
+                                x: lanePosX + 14 * zoomCompensation,
+                                y: markerCy,
                                 lines: [
                                   truncatePrompt(marker.prompt, 52),
                                   marker.agent,
@@ -1712,17 +1731,17 @@ export default function BranchMap({
                     >
                       {/* Invisible hit area — text alone is too small to click reliably */}
                       <rect
-                        x={forkX - 22 * zoomCompensation}
+                        x={statusLabelX - 22 * zoomCompensation}
                         y={statusLabelY - 11 * zoomCompensation}
                         width={44 * zoomCompensation}
                         height={14 * zoomCompensation}
                         fill="transparent"
                       />
                       {isStale && (
-                        <text x={forkX} y={statusLabelY} textAnchor="middle" fontSize={10} fill="#d97706">stale</text>
+                        <text x={statusLabelX} y={statusLabelY} textAnchor="middle" fontSize={10} fill="#d97706">stale</text>
                       )}
                       {isConflict && (
-                        <text x={forkX} y={statusLabelY} textAnchor="middle" fontSize={10} fill="#dc2626">conflict</text>
+                        <text x={statusLabelX} y={statusLabelY} textAnchor="middle" fontSize={10} fill="#dc2626">conflict</text>
                       )}
                     </g>
                   )}
@@ -1735,14 +1754,14 @@ export default function BranchMap({
 
           {/* Tooltip for main-line merge nodes — shown above the tick */}
           {hoveredMergeNode && (() => {
-            const { x, node: m } = hoveredMergeNode;
+            const { y, node: m } = hoveredMergeNode;
             const label = m.prNumber ? `PR #${m.prNumber}` : m.sha.slice(0, 7);
             const title = m.prTitle ?? '';
             const hasTitle = title.length > 0;
             const TW = 220;
             const TH = hasTitle ? 58 : 44;
-            const tx = x - TW / 2;
-            const ty = mainY - TH - 14;
+            const tx = mainX + 14;
+            const ty = y - TH / 2;
             return (
               <g style={{ pointerEvents: 'none' }}>
                 <rect x={tx} y={ty} width={TW} height={TH} rx={8}
@@ -1810,9 +1829,9 @@ export default function BranchMap({
         {/* Fixed-size branch labels/icons outside camera scaling. */}
         <div ref={labelsLayerRef} className="absolute inset-0 pointer-events-none z-20">
         {activeBranches.map((b) => {
-          const forkX = branchForkX(b);
-          const tipX = branchTipX(b);
-          const y = laneY(b);
+          const forkY = timeCoordToY(branchForkX(b));
+          const tipY = timeCoordToY(branchTipX(b));
+          const lanePosX = laneX(b);
           const isConflict = b.status === 'conflict-risk';
           const isStale = b.status === 'stale';
           const isSelected = selectedBranch?.name === b.name;
@@ -1852,14 +1871,14 @@ export default function BranchMap({
           const nameOpacity = preserveName ? 1 : 1 - zoomHideStrength;
           const nameBlurPx = preserveName ? 0 : zoomHideStrength * 4;
 
-          const nameWorldX = forkX;
-          const nameWorldY = y;
-          const hoverBadgeWorldX = tipX;
-          const hoverBadgeWorldY = y;
-          const nameDx = cornerR;
-          const nameDy = -32;
+          const nameWorldX = lanePosX;
+          const nameWorldY = forkY;
+          const hoverBadgeWorldX = lanePosX;
+          const hoverBadgeWorldY = tipY;
+          const nameDx = 10;
+          const nameDy = -6;
           const hoverBadgeDx = AHEAD_LABEL_OFFSET_X;
-          const hoverBadgeDy = -6;
+          const hoverBadgeDy = -4;
 
           const nameLen = Math.min(b.name.length, 22);
           const approxNameW = nameLen * 6.5;
@@ -2052,10 +2071,10 @@ export default function BranchMap({
             value={barScrollLeft}
             style={{ ['--thumb-w' as string]: `${thumbWidth}px` }}
             onChange={(e) => {
-              const nextWorldLeft = Number(e.target.value);
+              const nextWorldTop = Number(e.target.value);
               const nextPan = clampPan({
-                x: -nextWorldLeft * zoomRef.current,
-                y: targetPanRef.current.y,
+                x: targetPanRef.current.x,
+                y: -nextWorldTop * zoomRef.current,
               }, zoomRef.current, 'hard');
               applyCamera(nextPan, zoomRef.current, true);
             }}
@@ -2093,7 +2112,7 @@ export default function BranchMap({
               value={timeScale}
               onChange={(e) => setTimeScale(Number(e.target.value))}
               className="timeline-scale-range w-24"
-              title="Horizontal time scaling"
+              title="Vertical time scaling"
             />
             <span className="text-xs text-muted-foreground w-10 text-right tabular-nums select-none">
               {effectiveTimeScale.toFixed(2)}x
