@@ -32,6 +32,7 @@ const TIME_SCALE_MAX = 3;
 const TIME_SCALE_STEP = 0.05;
 const TIME_SCALE_DEFAULT = 0.5;
 const PROMPT_MARKER_MAX = 10;
+const LOCAL_UNPUSHED_GRAY = '#a8a29e';
 
 type TooltipData = {
   x: number;
@@ -136,7 +137,6 @@ interface BranchMapProps {
   view?: ViewMode;
   conflictBranches?: Branch[];
   staleBranches?: Branch[];
-  inactiveErrorBranches?: Branch[];
   openPRs?: OpenPR[];
   isLoading?: boolean;
   scrollRequest?: { branch: Branch; seq: number } | null;
@@ -161,7 +161,6 @@ export default function BranchMap({
   view = 'time',
   conflictBranches = [],
   staleBranches = [],
-  inactiveErrorBranches = [],
   openPRs = [],
   isLoading = false,
   scrollRequest,
@@ -224,8 +223,6 @@ export default function BranchMap({
   const [errorPanelOpen, setErrorPanelOpen] = useState(false);
   const errorPanelRef = useRef<HTMLDivElement>(null);
 
-  // Inactive error branches render grey (no status colors)
-  const inactiveErrorSet = new Set(inactiveErrorBranches.map(b => b.name));
   const openPRBranchNames = new Set(openPRs.map(p => p.branchName));
   const localBranchCount = branches.filter((b) => b.name !== defaultBranch).length;
   const hasTimelineSeedData =
@@ -1532,29 +1529,25 @@ export default function BranchMap({
               const lanePosX = laneX(b);
               const startX = branchStartX(b);
               const isConflict = b.status === 'conflict-risk';
-              const isStale = b.status === 'stale';
               const isSelected = selectedBranch?.name === b.name;
               const isHovered = hoveredBranch === b.name;
               const hasSelection = selectedBranch != null;
-              const isInactiveError = inactiveErrorSet.has(b.name);
+              const isLocalBranch = b.remoteSyncStatus !== 'on-github';
 
               const isFocusedError = focusedErrorBranch?.name === b.name;
               const focusedErrorColor = b.status === 'conflict-risk' ? '#dc2626' : '#d97706';
+              const neutralColor = hasSelection ? '#57534e' : '#78716c';
               const color = isFocusedError
                 ? focusedErrorColor
                 : isSelected
                   ? '#22d3ee'
-                  : isInactiveError
-                    ? '#78716c'
+                  : isLocalBranch
+                    ? neutralColor
                     : isConflict
                       ? '#dc2626'
-                      : isStale
-                        ? '#d97706'
-                        : hasSelection
-                          ? '#57534e'
-                          : '#78716c';
+                      : neutralColor;
               const strokeWidth = isSelected ? 2.5 : isHovered ? 2 : isFocusedError ? 2 : 1.5;
-              const strokeColor = isHovered && !isSelected ? '#44403c' : color;
+              const defaultStrokeColor = isHovered && !isSelected ? '#44403c' : color;
 
               const tipTimeX = branchTipX(b);
               const tipY = timeCoordToY(tipTimeX);
@@ -1583,6 +1576,53 @@ export default function BranchMap({
                 y: timeCoordToY(entry.x),
                 commit: entry.item,
               }));
+              const realCommitDotIndices = commitItems.reduce<number[]>((acc, item, index) => {
+                if (item?.kind !== 'branch-created') acc.push(index);
+                return acc;
+              }, []);
+              const targetLocalCommitCount = isLocalBranch
+                ? (
+                  b.remoteSyncStatus === 'local-only'
+                    ? realCommitDotIndices.length
+                    : b.unpushedCommits
+                )
+                : 0;
+              const boundedLocalCommitCount = Math.max(
+                0,
+                Math.min(targetLocalCommitCount, realCommitDotIndices.length),
+              );
+              const localCommitDotIndices = new Set(
+                realCommitDotIndices.slice(realCommitDotIndices.length - boundedLocalCommitCount),
+              );
+              const allBranchCommitsAreLocal =
+                realCommitDotIndices.length > 0 &&
+                boundedLocalCommitCount === realCommitDotIndices.length;
+              const firstLocalDotIndex = localCommitDotIndices.size > 0
+                ? Math.min(...Array.from(localCommitDotIndices))
+                : null;
+              const firstLocalCommitY = firstLocalDotIndex != null
+                ? commitDots[firstLocalDotIndex]?.y
+                : undefined;
+              const previousCommittedIndex = firstLocalDotIndex != null
+                ? (() => {
+                  const prior = realCommitDotIndices.filter((idx) => idx < firstLocalDotIndex);
+                  return prior.length > 0 ? prior[prior.length - 1] : undefined;
+                })()
+                : undefined;
+              const localSegmentStartY =
+                !allBranchCommitsAreLocal &&
+                firstLocalCommitY != null &&
+                previousCommittedIndex != null
+                  ? (
+                    (firstLocalCommitY + (commitDots[previousCommittedIndex]?.y ?? firstLocalCommitY)) / 2
+                  )
+                  : undefined;
+              const fullBranchShouldUseLocalGray =
+                isLocalBranch && (allBranchCommitsAreLocal || realCommitDotIndices.length === 0);
+              const strokeColor =
+                fullBranchShouldUseLocalGray && !isFocusedError && !isSelected && !isHovered
+                  ? LOCAL_UNPUSHED_GRAY
+                  : defaultStrokeColor;
               const promptMarkersRaw = branchPromptMeta[b.name]?.markers ?? [];
               const minPromptX = minCommitTimeX;
               const maxPromptX = maxCommitTimeX;
@@ -1613,7 +1653,7 @@ export default function BranchMap({
                   onDoubleClick={() => onBranchClick?.(b)}
                   onMouseEnter={() => setHoveredBranch(b.name)}
                   onMouseLeave={() => setHoveredBranch(null)}
-                  style={{ opacity: isFocusedError ? 1 : hoveredBranch !== null && !isHovered ? 0.12 : isInactiveError ? 0.45 : hasSelection && !isSelected ? 0.5 : 1, transition: 'opacity 0.15s' }}
+                  style={{ opacity: isFocusedError ? 1 : hoveredBranch !== null && !isHovered ? 0.12 : hasSelection && !isSelected ? 0.5 : 1, transition: 'opacity 0.15s' }}
                 >
                   {/* Invisible wide hit target to make hover/click easier on thin SVG strokes */}
                   <path
@@ -1657,6 +1697,17 @@ export default function BranchMap({
                     className="draw-path-arc"
                     style={{ '--delay': `${brDelay}ms`, transition: 'stroke 0.12s ease' } as React.CSSProperties}
                   />
+                  {!fullBranchShouldUseLocalGray && localSegmentStartY != null && (
+                    <path
+                      d={`M ${pathCoord(lanePosX, localSegmentStartY)} L ${pathCoord(lanePosX, tipY)}`}
+                      fill="none"
+                      stroke={isHovered && !isSelected ? '#78716c' : LOCAL_UNPUSHED_GRAY}
+                      strokeWidth={strokeWidth * zoomCompensation}
+                      pathLength={1}
+                      className="draw-path-arc"
+                      style={{ '--delay': `${brDelay}ms` } as React.CSSProperties}
+                    />
+                  )}
 
                   {/* Branch info — fades in as arc draws */}
                   <g className="fade-in-info" style={{ '--delay': `${brDelay + INFO_OFFSET}ms` } as React.CSSProperties}>
@@ -1665,8 +1716,8 @@ export default function BranchMap({
                       cx={projectPoint(startX, forkY).x}
                       cy={projectPoint(startX, forkY).y}
                       r={scaledNodeSize / 2}
-                      fill={isSelected ? '#22d3ee' : isFocusedError ? color : '#1c1917'}
-                      stroke={color}
+                      fill={isSelected ? '#22d3ee' : isFocusedError ? color : fullBranchShouldUseLocalGray ? LOCAL_UNPUSHED_GRAY : '#1c1917'}
+                      stroke={fullBranchShouldUseLocalGray ? LOCAL_UNPUSHED_GRAY : color}
                       strokeWidth={strokeWidth * zoomCompensation}
                     />
                     {/* Commit markers along branch */}
@@ -1688,7 +1739,11 @@ export default function BranchMap({
                           cx={projectPoint(lanePosX, commitY).x}
                           cy={projectPoint(lanePosX, commitY).y}
                           r={scaledNodeSize / 2}
-                          fill={color}
+                          fill={
+                            fullBranchShouldUseLocalGray || localCommitDotIndices.has(ci)
+                              ? LOCAL_UNPUSHED_GRAY
+                              : color
+                          }
                           onMouseEnter={() =>
                             setTooltip({
                               x: projectPoint(lanePosX, commitY).x + 14 * zoomCompensation,
@@ -1787,7 +1842,7 @@ export default function BranchMap({
                   </g>
 
                   {/* Status labels — own fade-in-pill group so they animate independently of fade-in-info */}
-                  {!forkOnNode && !isInactiveError && (isStale || isConflict) && (
+                  {!forkOnNode && !isLocalBranch && isConflict && (
                     <g
                       className="fade-in-pill"
                       style={{ '--delay': `${brDelay + INFO_OFFSET}ms`, cursor: 'pointer' } as React.CSSProperties}
@@ -1801,9 +1856,6 @@ export default function BranchMap({
                         height={14 * zoomCompensation}
                         fill="transparent"
                       />
-                      {isStale && (
-                        <text x={statusLabelPoint.x} y={statusLabelPoint.y} textAnchor="middle" fontSize={10} fill="#d97706">stale</text>
-                      )}
                       {isConflict && (
                         <text x={statusLabelPoint.x} y={statusLabelPoint.y} textAnchor="middle" fontSize={10} fill="#dc2626">conflict</text>
                       )}
@@ -1900,11 +1952,10 @@ export default function BranchMap({
           const tipY = timeCoordToY(branchTipX(b));
           const lanePosX = laneX(b);
           const isConflict = b.status === 'conflict-risk';
-          const isStale = b.status === 'stale';
           const isSelected = selectedBranch?.name === b.name;
           const isHovered = hoveredBranch === b.name;
           const hasSelection = selectedBranch != null;
-          const isInactiveError = inactiveErrorSet.has(b.name);
+          const isLocalBranch = b.remoteSyncStatus !== 'on-github';
           const hasOpenPR = openPRBranchNames.has(b.name);
           const daysSinceCommit = (Date.now() - new Date(b.lastCommitDate).getTime()) / 86400000;
           const showClockIcon = hasOpenPR && daysSinceCommit >= 60;
@@ -1915,28 +1966,24 @@ export default function BranchMap({
             ? focusedErrorColor
             : isSelected
               ? '#22d3ee'
-              : isInactiveError
-                ? '#78716c'
+              : isLocalBranch
+                ? LOCAL_UNPUSHED_GRAY
                 : isConflict
                   ? '#dc2626'
-                  : isStale
-                    ? '#d97706'
-                    : hasSelection
-                      ? '#57534e'
-                      : '#78716c';
+                  : hasSelection
+                    ? '#57534e'
+                    : '#78716c';
 
           const baseOpacity =
             isFocusedError ? 1
               : hoveredBranch !== null && !isHovered ? 0.12
-                : isInactiveError ? 0.45
-                  : hasSelection && !isSelected ? 0.5
-                    : 1;
+                : hasSelection && !isSelected ? 0.5
+                  : 1;
           const groupOpacity = hoveredPR !== null ? 0.2 : 1;
           const overlayOpacity = baseOpacity * groupOpacity;
           const zoomHideStrength = zoom <= 1 ? 1 : 0;
-          const preserveName = isHovered;
-          const nameOpacity = preserveName ? 1 : 1 - zoomHideStrength;
-          const nameBlurPx = preserveName ? 0 : zoomHideStrength * 4;
+          const nameOpacity = isHorizontal ? 1 : (isHovered ? 1 : 0);
+          const nameBlurPx = isHorizontal ? 0 : (isHovered ? 0 : zoomHideStrength * 4);
 
           const nameWorld = projectPoint(lanePosX, forkY);
           const hoverBadgeWorld = projectPoint(lanePosX, tipY);
@@ -1944,8 +1991,8 @@ export default function BranchMap({
           const nameWorldY = nameWorld.y;
           const hoverBadgeWorldX = hoverBadgeWorld.x;
           const hoverBadgeWorldY = hoverBadgeWorld.y;
-          const nameDx = 10;
-          const nameDy = -6;
+          const nameDx = isHorizontal ? 12 : 10;
+          const nameDy = isHorizontal ? -21 : -6;
           const hoverBadgeDx = AHEAD_LABEL_OFFSET_X;
           const hoverBadgeDy = -4;
 

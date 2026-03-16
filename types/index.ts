@@ -1,4 +1,5 @@
 export type BranchStatus = 'fresh' | 'stale' | 'conflict-risk' | 'unknown';
+export type RemoteSyncStatus = 'local-only' | 'unpushed' | 'on-github';
 
 export interface Branch {
   name: string;
@@ -10,6 +11,8 @@ export interface Branch {
   lastCommitAuthorAvatar?: string;
   mergeable?: boolean | null;
   status: BranchStatus;
+  remoteSyncStatus: RemoteSyncStatus;
+  unpushedCommits: number;
   headSha: string;
   parentBranch?: string;
   divergedFromSha?: string;

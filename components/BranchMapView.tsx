@@ -65,10 +65,6 @@ export default function BranchMapView({
   const staleBranches = branches
     .filter(b => b.status === 'stale' && isBranchActive(b))
     .sort((a, b) => new Date(b.lastCommitDate).getTime() - new Date(a.lastCommitDate).getTime());
-  // Inactive error branches render grey (like merged branches)
-  const inactiveErrorBranches = branches
-    .filter(b => (b.status === 'conflict-risk' || b.status === 'stale') && !isBranchActive(b));
-
   return (
     <div className="h-full flex flex-col">
       {view === 'time' ? (
@@ -92,7 +88,6 @@ export default function BranchMapView({
             view={view}
             conflictBranches={conflictBranches}
             staleBranches={staleBranches}
-            inactiveErrorBranches={inactiveErrorBranches}
             isLoading={isLoading}
             scrollRequest={scrollRequest}
             focusedErrorBranch={focusedErrorBranch}
