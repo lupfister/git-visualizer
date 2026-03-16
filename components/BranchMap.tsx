@@ -1619,6 +1619,8 @@ export default function BranchMap({
                   : undefined;
               const fullBranchShouldUseLocalGray =
                 isLocalBranch && (allBranchCommitsAreLocal || realCommitDotIndices.length === 0);
+              // Keep dotted local segments visually consistent in screen pixels regardless of path length.
+              const localSegmentDashPattern = `${0.1 * zoomCompensation} ${6 * zoomCompensation}`;
               const strokeColor =
                 fullBranchShouldUseLocalGray && !isFocusedError && !isSelected && !isHovered
                   ? LOCAL_UNPUSHED_GRAY
@@ -1693,9 +1695,15 @@ export default function BranchMap({
                     fill="none"
                     stroke={strokeColor}
                     strokeWidth={strokeWidth * zoomCompensation}
-                    pathLength={1}
+                    pathLength={fullBranchShouldUseLocalGray ? undefined : 1}
                     className="draw-path-arc"
-                    style={{ '--delay': `${brDelay}ms`, transition: 'stroke 0.12s ease' } as React.CSSProperties}
+                    style={{
+                      '--delay': `${brDelay}ms`,
+                      transition: 'stroke 0.12s ease',
+                      ...(fullBranchShouldUseLocalGray
+                        ? { strokeDasharray: localSegmentDashPattern, strokeLinecap: 'round' }
+                        : {}),
+                    } as React.CSSProperties}
                   />
                   {!fullBranchShouldUseLocalGray && localSegmentStartY != null && (
                     <path
@@ -1703,9 +1711,12 @@ export default function BranchMap({
                       fill="none"
                       stroke={isHovered && !isSelected ? '#78716c' : LOCAL_UNPUSHED_GRAY}
                       strokeWidth={strokeWidth * zoomCompensation}
-                      pathLength={1}
                       className="draw-path-arc"
-                      style={{ '--delay': `${brDelay}ms` } as React.CSSProperties}
+                      style={{
+                        '--delay': `${brDelay}ms`,
+                        strokeDasharray: localSegmentDashPattern,
+                        strokeLinecap: 'round',
+                      } as React.CSSProperties}
                     />
                   )}
 
