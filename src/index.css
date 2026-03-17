@@ -254,6 +254,9 @@ body {
   animation: none;
   opacity: 1;
 }
+.timeline-static .main-stale-tail-glow {
+  animation: none;
+}
 
 @media (prefers-reduced-motion: reduce) {
   .draw-path-main { animation: none; stroke-dashoffset: 0; }

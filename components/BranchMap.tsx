@@ -209,6 +209,8 @@ export default function BranchMap({
   const isPanningRef = useRef(false);
   const [spaceHeld, setSpaceHeld] = useState(false);
   const spacePressedRef = useRef(false);
+  const drawReadyRef = useRef(drawReady);
+  const animationsLockedRef = useRef(animationsLocked);
   const focusScrollCancelRef = useRef<(() => void) | null>(null);
   const hasAutoCenteredRef = useRef(false);
 
@@ -272,6 +274,14 @@ export default function BranchMap({
   }, [zoom]);
 
   useEffect(() => {
+    drawReadyRef.current = drawReady;
+  }, [drawReady]);
+
+  useEffect(() => {
+    animationsLockedRef.current = animationsLocked;
+  }, [animationsLocked]);
+
+  useEffect(() => {
     panRef.current = pan;
     if (!isPanning) {
       targetPanRef.current = pan;
@@ -323,6 +333,12 @@ export default function BranchMap({
     syncUiState(forceUiSync);
   }
 
+  function lockAnimationsIfReady() {
+    if (!drawReadyRef.current || animationsLockedRef.current) return;
+    animationsLockedRef.current = true;
+    setAnimationsLocked(true);
+  }
+
   function stopPanSmoothing() {
     if (panUiSyncTimeoutRef.current !== null) {
       clearTimeout(panUiSyncTimeoutRef.current);
@@ -361,6 +377,7 @@ export default function BranchMap({
   }
 
   function applyZoomAt(point: { x: number; y: number }, nextZoom: number, forceUiSync = false): boolean {
+    lockAnimationsIfReady();
     if (!Number.isFinite(nextZoom)) return false;
     const currentZoom = zoomRef.current;
     nextZoom = Math.max(ZOOM_MIN, Math.min(ZOOM_MAX, nextZoom));
@@ -439,6 +456,7 @@ export default function BranchMap({
     if (!el) return;
     const onWheel = (e: WheelEvent) => {
       e.preventDefault();
+      lockAnimationsIfReady();
       focusScrollCancelRef.current?.();
       focusScrollCancelRef.current = null;
 
@@ -465,6 +483,7 @@ export default function BranchMap({
     const onGestureStart = (evt: Event) => {
       const e = evt as Event & { scale?: number; clientX?: number; clientY?: number };
       e.preventDefault();
+      lockAnimationsIfReady();
       stopWheelInertia();
       stopPanSmoothing();
       gestureZoomBaseRef.current = zoomRef.current;
@@ -602,6 +621,7 @@ export default function BranchMap({
       (e.button === 0 && (spacePressedRef.current || clickedBackground));
     if (!canPan || !scrollRef.current) return;
     e.preventDefault();
+    lockAnimationsIfReady();
     focusScrollCancelRef.current?.();
     focusScrollCancelRef.current = null;
     stopZoomAnimation(false);
@@ -1204,8 +1224,9 @@ export default function BranchMap({
     isHorizontal,
   ]);
 
-  const scaledNodeSize = NODE_SIZE;
-  const scaledHoverHitSize = 20;
+  const iconZoomCompensation = 1 / Math.max(renderCameraScale.x, 0.0001);
+  const scaledNodeSize = NODE_SIZE * iconZoomCompensation;
+  const scaledHoverHitSize = 20 * iconZoomCompensation;
   const scaledBranchHitStrokeWidth = BRANCH_HIT_STROKE_WIDTH;
 
   return (
@@ -1484,7 +1505,7 @@ export default function BranchMap({
                     const isTickHovered = isHovered &&
                       hoveredPRCommit?.pr.number === pr.number &&
                       hoveredPRCommit?.commitIdx === ci;
-                    const tickSize = (isTickHovered ? NODE_SIZE + 3 : NODE_SIZE - 2);
+                    const tickSize = (isTickHovered ? NODE_SIZE + 3 : NODE_SIZE - 2) * iconZoomCompensation;
                     const hitSize = scaledHoverHitSize;
                     return (
                       <g key={ci}>
@@ -1524,14 +1545,14 @@ export default function BranchMap({
                     <image
                      
                       href={pr.authorAvatar}
-                      x={arcX - 9}
-                      y={midY - 10}
-                      width={18}
-                      height={18}
-                      style={{ clipPath: `circle(${9}px at ${9}px ${9}px)` }}
+                      x={arcX - 9 * iconZoomCompensation}
+                      y={midY - 10 * iconZoomCompensation}
+                      width={18 * iconZoomCompensation}
+                      height={18 * iconZoomCompensation}
+                      style={{ clipPath: `circle(${9 * iconZoomCompensation}px at ${9 * iconZoomCompensation}px ${9 * iconZoomCompensation}px)` }}
                     />
                   ) : (
-                    <circle cx={arcX} cy={midY} r={8} fill="#57534e" />
+                    <circle cx={arcX} cy={midY} r={8 * iconZoomCompensation} fill="#57534e" />
                   )}
                   <text x={arcX + 12} y={midY + 4} fontSize={12} fill={isHovered ? '#1c1917' : '#57534e'}>
                     {pr.branchName.length > 20 ? pr.branchName.slice(0, 20) + '…' : pr.branchName}
@@ -1815,9 +1836,9 @@ export default function BranchMap({
                     {promptMarkers.map(({ y: markerY, marker }) => {
                       const markerCy = markerY;
                       const markerPoint = projectPoint(lanePosX, markerCy);
-                      const circleR = 4.8;
-                      const tabW = 4.2;
-                      const tabH = 3.8;
+                      const circleR = 4.8 * iconZoomCompensation;
+                      const tabW = 4.2 * iconZoomCompensation;
+                      const tabH = 3.8 * iconZoomCompensation;
                       const tabX = lanePosX - circleR - tabW * 0.55;
                       const tabY = markerCy + circleR * 0.2;
                       const tabPoint = projectPoint(tabX, tabY);
@@ -1842,7 +1863,7 @@ export default function BranchMap({
                             y={tabPoint.y}
                             width={tabWidth}
                             height={tabHeight}
-                            rx={0.8}
+                            rx={0.8 * iconZoomCompensation}
                             fill="#ecfeff"
                             stroke="#0891b2"
                             strokeWidth={1.2}
@@ -1850,10 +1871,10 @@ export default function BranchMap({
                           />
                           <line
                            
-                            x1={projectPoint(lanePosX - 2.4, markerCy - 0.7).x}
-                            y1={projectPoint(lanePosX - 2.4, markerCy - 0.7).y}
-                            x2={projectPoint(lanePosX + 2.4, markerCy - 0.7).x}
-                            y2={projectPoint(lanePosX + 2.4, markerCy - 0.7).y}
+                            x1={projectPoint(lanePosX - 2.4 * iconZoomCompensation, markerCy - 0.7 * iconZoomCompensation).x}
+                            y1={projectPoint(lanePosX - 2.4 * iconZoomCompensation, markerCy - 0.7 * iconZoomCompensation).y}
+                            x2={projectPoint(lanePosX + 2.4 * iconZoomCompensation, markerCy - 0.7 * iconZoomCompensation).x}
+                            y2={projectPoint(lanePosX + 2.4 * iconZoomCompensation, markerCy - 0.7 * iconZoomCompensation).y}
                             stroke="#0e7490"
                             strokeWidth={0.9}
                             strokeLinecap="round"
@@ -1861,10 +1882,10 @@ export default function BranchMap({
                           />
                           <line
                            
-                            x1={projectPoint(lanePosX - 2.4, markerCy + 1.2).x}
-                            y1={projectPoint(lanePosX - 2.4, markerCy + 1.2).y}
-                            x2={projectPoint(lanePosX + 1.7, markerCy + 1.2).x}
-                            y2={projectPoint(lanePosX + 1.7, markerCy + 1.2).y}
+                            x1={projectPoint(lanePosX - 2.4 * iconZoomCompensation, markerCy + 1.2 * iconZoomCompensation).x}
+                            y1={projectPoint(lanePosX - 2.4 * iconZoomCompensation, markerCy + 1.2 * iconZoomCompensation).y}
+                            x2={projectPoint(lanePosX + 1.7 * iconZoomCompensation, markerCy + 1.2 * iconZoomCompensation).x}
+                            y2={projectPoint(lanePosX + 1.7 * iconZoomCompensation, markerCy + 1.2 * iconZoomCompensation).y}
                             stroke="#0e7490"
                             strokeWidth={0.85}
                             strokeLinecap="round"
@@ -1925,9 +1946,9 @@ export default function BranchMap({
                     )}
                     {showClockIcon && (
                       <g style={{ pointerEvents: 'none' }}>
-                        <circle cx={clockPoint.x} cy={clockPoint.y} r={4.2} stroke={color} strokeWidth={1.2} fill="none" />
-                        <line x1={clockPoint.x} y1={clockPoint.y - 2.9} x2={clockPoint.x} y2={clockPoint.y} stroke={color} strokeWidth={1.2} strokeLinecap="round" />
-                        <line x1={clockPoint.x} y1={clockPoint.y} x2={clockPoint.x + 2.3} y2={clockPoint.y + 1.5} stroke={color} strokeWidth={1.2} strokeLinecap="round" />
+                        <circle cx={clockPoint.x} cy={clockPoint.y} r={4.2 * iconZoomCompensation} stroke={color} strokeWidth={1.2} fill="none" />
+                        <line x1={clockPoint.x} y1={clockPoint.y - 2.9 * iconZoomCompensation} x2={clockPoint.x} y2={clockPoint.y} stroke={color} strokeWidth={1.2} strokeLinecap="round" />
+                        <line x1={clockPoint.x} y1={clockPoint.y} x2={clockPoint.x + 2.3 * iconZoomCompensation} y2={clockPoint.y + 1.5 * iconZoomCompensation} stroke={color} strokeWidth={1.2} strokeLinecap="round" />
                       </g>
                     )}
                   </g>
@@ -2019,19 +2040,19 @@ export default function BranchMap({
             return (
               <g style={{ pointerEvents: 'none' }}>
                 <g>
-                  <circle
-                    className="checked-out-halo-pulse"
-                    cx={markerPoint.x}
-                    cy={markerPoint.y}
-                    r={12}
-                    fill="#93c5fd"
-                  />
-                  <circle
-                    cx={markerPoint.x}
-                    cy={markerPoint.y}
-                    r={7}
-                    fill="#2563eb"
-                  />
+                    <circle
+                      className="checked-out-halo-pulse"
+                      cx={markerPoint.x}
+                      cy={markerPoint.y}
+                      r={12 * iconZoomCompensation}
+                      fill="#93c5fd"
+                    />
+                    <circle
+                      cx={markerPoint.x}
+                      cy={markerPoint.y}
+                      r={7 * iconZoomCompensation}
+                      fill="#2563eb"
+                    />
                 </g>
               </g>
             );
