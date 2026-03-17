@@ -82,6 +82,7 @@ export interface MergeNode {
   prNumber: number | null;
   prTitle: string | null;
   date: string;
+  parentShas: string[];
 }
 
 export interface MergedPR {

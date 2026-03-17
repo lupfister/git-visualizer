@@ -23,6 +23,7 @@ pub fn get_direct_commits(
             repo,
             &[
                 "log",
+                "--first-parent",
                 &format!("--max-count={}", limit),
                 "--format=%H|%h|%s|%an|%aI",
                 branch,
@@ -33,6 +34,7 @@ pub fn get_direct_commits(
             repo,
             &[
                 "log",
+                "--first-parent",
                 "--format=%H|%h|%s|%an|%aI",
                 branch,
             ],
@@ -68,6 +70,7 @@ pub struct MergeNode {
     pub pr_number: Option<i32>,
     pub pr_title: Option<String>,
     pub date: String,
+    pub parent_shas: Vec<String>,
 }
 
 /// Get merge commits from a branch (commits with 2+ parents)
@@ -88,7 +91,7 @@ pub fn get_merge_commits(
             "--merges",
             &format!("--max-count={}", limit),
             &format!("--skip={}", skip),
-            "--format=%H|%h|%s|%aI",
+            "--format=%H|%h|%s|%aI|%P",
             branch,
         ],
     )?;
@@ -109,8 +112,8 @@ pub fn get_merge_commits(
 }
 
 fn parse_merge_commit(line: &str) -> Option<MergeNode> {
-    let parts: Vec<&str> = line.splitn(4, '|').collect();
-    if parts.len() < 4 {
+    let parts: Vec<&str> = line.splitn(5, '|').collect();
+    if parts.len() < 5 {
         return None;
     }
 
@@ -118,6 +121,10 @@ fn parse_merge_commit(line: &str) -> Option<MergeNode> {
     let sha = parts[1].to_string();
     let subject = parts[2];
     let date = parts[3].to_string();
+    let parent_shas = parts[4]
+        .split_whitespace()
+        .map(|sha| sha.to_string())
+        .collect::<Vec<String>>();
 
     // Parse PR number from commit message
     // Common formats:
@@ -131,6 +138,7 @@ fn parse_merge_commit(line: &str) -> Option<MergeNode> {
         pr_number,
         pr_title,
         date,
+        parent_shas,
     })
 }
 

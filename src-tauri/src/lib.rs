@@ -967,8 +967,8 @@ fn get_branch_commits(
 ) -> Result<Vec<CommitInfo>, String> {
     let path = Path::new(&repo_path);
     let range = if let Some(sha) = merge_commit_sha {
-        // Commits that were part of this merged PR
-        format!("{}^1..{}", sha, sha)
+        // Commits that were part of this merged branch side (exclude merge commit itself).
+        format!("{}^1..{}^2", sha, sha)
     } else {
         // Commits on this branch not yet in base
         format!("{}..{}", base_branch, branch)

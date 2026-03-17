@@ -794,6 +794,15 @@ export default function BranchMap({
   const sortedNodes = [...mergeNodes].sort(
     (a, b) => new Date(a.date).getTime() - new Date(b.date).getTime()
   );
+  const mergeNodeByMergedHeadSha = new Map<string, MergeNode>();
+  for (const node of sortedNodes) {
+    const mergedParents = node.parentShas?.slice(1) ?? [];
+    for (const parentSha of mergedParents) {
+      if (parentSha && !mergeNodeByMergedHeadSha.has(parentSha)) {
+        mergeNodeByMergedHeadSha.set(parentSha, node);
+      }
+    }
+  }
   const sortedDirectCommits = [...directCommits].sort(
     (a, b) => new Date(a.date).getTime() - new Date(b.date).getTime()
   );
@@ -948,7 +957,19 @@ export default function BranchMap({
   }
 
   function branchForkX(b: Branch): number {
+    const hasNonDefaultParent =
+      !!b.parentBranch && b.parentBranch !== b.name && b.parentBranch !== defaultBranch;
+
+    // For stacked branches, fork should snap to the parent divergence commit
+    // so child lanes originate exactly from parent tips (no floating gap).
+    if (hasNonDefaultParent && b.divergedFromDate) return timeToX(b.divergedFromDate);
+
+    // For branches merged back to default, merge-base against default can drift
+    // to the branch head; keep original branch creation anchor in that case.
+    if (b.commitsAhead === 0 && b.createdDate) return timeToX(b.createdDate);
+
     if (b.divergedFromDate) return timeToX(b.divergedFromDate);
+    if (b.createdDate) return timeToX(b.createdDate);
     return timeToX(b.lastCommitDate);
   }
 
@@ -956,6 +977,10 @@ export default function BranchMap({
     const forkX = branchForkX(b);
     const lastCommitX = timeToX(b.lastCommitDate);
     return Math.max(lastCommitX, forkX + cornerR + 20);
+  }
+
+  function branchHeadCommitX(b: Branch): number {
+    return timeToX(b.lastCommitDate);
   }
 
   function branchAheadCount(b: Branch): number {
@@ -1708,11 +1733,28 @@ export default function BranchMap({
           {/* ── Active branches ── */}
           <g style={{ opacity: hoveredPR !== null ? 0.2 : 1, transition: 'opacity 0.15s' }}>
             {activeBranches.map((b) => {
-              const forkTimeX = branchForkX(b);
+              const rawForkTimeX = branchForkX(b);
+              const parentName = b.parentBranch;
+              const parentBranch =
+                parentName && parentName !== defaultBranch
+                  ? branchByName.get(parentName)
+                  : undefined;
+              const parentHeadTimeX = parentBranch ? branchHeadCommitX(parentBranch) : null;
+              const forksFromParentHead = !!(
+                parentBranch &&
+                b.divergedFromSha &&
+                b.divergedFromSha === parentBranch.headSha
+              );
+              const forkTimeX =
+                forksFromParentHead && parentHeadTimeX != null
+                  ? parentHeadTimeX
+                  : rawForkTimeX;
               const forkY = timeCoordToY(forkTimeX);
               const lanePosX = laneX(b);
               const startX = branchStartX(b);
-              const isConflict = b.status === 'conflict-risk';
+              const aheadCount = branchAheadCount(b);
+              const isMergedBranch = b.commitsAhead === 0;
+              const isConflict = b.status === 'conflict-risk' && !isMergedBranch;
               const isSelected = selectedBranch?.name === b.name;
               const isHovered = hoveredBranch === b.name;
               const hasSelection = selectedBranch != null;
@@ -1733,10 +1775,33 @@ export default function BranchMap({
               const strokeWidth = isSelected ? 2.5 : isHovered ? 2 : isFocusedError ? 2 : 1.5;
               const defaultStrokeColor = isHovered && !isSelected ? '#44403c' : color;
 
-              const tipTimeX = branchTipX(b);
+              const mergeNodeForBranch = isMergedBranch
+                ? mergeNodeByMergedHeadSha.get(b.headSha)
+                : undefined;
+              const mergeNodeTimeX = mergeNodeForBranch
+                ? (nodeXByFullSha.get(mergeNodeForBranch.fullSha) ?? timeToX(mergeNodeForBranch.date))
+                : null;
+              const baseTipTimeX = branchTipX(b);
+              const tipTimeX = mergeNodeTimeX != null ? Math.max(baseTipTimeX, mergeNodeTimeX) : baseTipTimeX;
               const tipY = timeCoordToY(tipTimeX);
               const cornerDir = tipY <= forkY ? -1 : 1;
               const turnY = forkY + cornerDir * cornerR;
+              const mergeTargetX = mainX;
+              const mergeTargetY = mergeNodeTimeX != null ? timeCoordToY(mergeNodeTimeX) : null;
+              const hasMergeBackConnector =
+                mergeTargetY != null && Math.abs(lanePosX - mergeTargetX) > 0.5;
+              const mergeBackPath = (() => {
+                if (!hasMergeBackConnector || mergeTargetY == null) return null;
+                const horizontalDir = mergeTargetX >= lanePosX ? 1 : -1;
+                const verticalDelta = mergeTargetY - tipY;
+                if (Math.abs(verticalDelta) < 0.5) {
+                  return `M ${pathCoord(lanePosX, tipY)} L ${pathCoord(mergeTargetX, mergeTargetY)}`;
+                }
+                const cornerYOffset = Math.min(cornerR, Math.abs(verticalDelta));
+                const preTurnY = mergeTargetY - Math.sign(verticalDelta) * cornerYOffset;
+                const cornerX = lanePosX + horizontalDir * cornerR;
+                return `M ${pathCoord(lanePosX, tipY)} L ${pathCoord(lanePosX, preTurnY)} Q ${pathCoord(lanePosX, mergeTargetY)} ${pathCoord(cornerX, mergeTargetY)} L ${pathCoord(mergeTargetX, mergeTargetY)}`;
+              })();
               let curvePath: string;
               if (startX === lanePosX) {
                 curvePath = `M ${pathCoord(lanePosX, forkY)} L ${pathCoord(lanePosX, tipY)}`;
@@ -1755,11 +1820,11 @@ export default function BranchMap({
                 )
                 : [];
               const minCommitTimeX = forkTimeX + cornerR + 6;
-              const maxCommitTimeX = Math.max(minCommitTimeX, tipTimeX - 2);
+              const maxCommitTimeX = Math.max(minCommitTimeX, tipTimeX);
               const commitItems: Array<BranchCommitPreview | undefined> = hasPreviewData
                 ? displayedCommits
                 : Array.from({ length: commitCount }, () => undefined);
-              const commitDots = hasPreviewData
+              let commitDots = hasPreviewData
                 ? commitItems.map((commit) => {
                   const rawX = timeToX(commit?.date ?? b.lastCommitDate);
                   const x = Math.max(minCommitTimeX, Math.min(maxCommitTimeX, rawX));
@@ -1773,6 +1838,18 @@ export default function BranchMap({
                 if (item?.kind !== 'branch-created') acc.push(index);
                 return acc;
               }, []);
+              if (realCommitDotIndices.length > 0) {
+                const headCommitIndex = hasPreviewData
+                  ? commitItems.findIndex((item) => item?.fullSha === b.headSha)
+                  : -1;
+                const anchorIndex = headCommitIndex >= 0
+                  ? headCommitIndex
+                  : realCommitDotIndices[realCommitDotIndices.length - 1];
+                const anchor = commitDots[anchorIndex];
+                if (anchor) {
+                  commitDots[anchorIndex] = { ...anchor, y: tipY };
+                }
+              }
               const targetLocalCommitCount = isLocalBranch
                 ? (
                   b.remoteSyncStatus === 'local-only'
@@ -1865,7 +1942,7 @@ export default function BranchMap({
               const hasOpenPR = openPRBranchNames.has(b.name);
               const daysSinceCommit = (Date.now() - new Date(b.lastCommitDate).getTime()) / 86400000;
               const showClockIcon = hasOpenPR && daysSinceCommit >= 60;
-              const aheadLabelText = formatCommitsAhead(branchAheadCount(b));
+              const aheadLabelText = formatCommitsAhead(aheadCount);
               const aheadLabelWidth = estimateSvgTextWidth(aheadLabelText, 12);
               const nameAnchor = projectPoint(lanePosX, forkY);
               const nameDx = isHorizontal ? 12 : 10;
@@ -1943,6 +2020,19 @@ export default function BranchMap({
                         : {}),
                     } as React.CSSProperties}
                   />
+                  {mergeBackPath && (
+                    <path
+                      d={mergeBackPath}
+                      fill="none"
+                      stroke={strokeColor}
+                      strokeWidth={Math.max(1, strokeWidth - 0.2)}
+                      className={drawPathArcClass}
+                      style={{
+                        '--delay': `${brDelay}ms`,
+                        transition: 'stroke 0.12s ease',
+                      } as React.CSSProperties}
+                    />
+                  )}
                   {!fullBranchShouldUseLocalGray && localSegmentStartY != null && (
                     <path
                       d={`M ${pathCoord(lanePosX, localSegmentStartY)} L ${pathCoord(lanePosX, tipY)}`}
@@ -1960,22 +2050,13 @@ export default function BranchMap({
 
                   {/* Branch info — fades in as arc draws */}
                   <g className={fadeInInfoClass} style={{ '--delay': `${brDelay + INFO_OFFSET}ms` } as React.CSSProperties}>
-                    {/* Fork marker on parent baseline (or main fallback) */}
-                    <circle
-                     
-                      className="branch-map-icon-fixed"
-                      cx={projectPoint(startX, forkY).x}
-                      cy={projectPoint(startX, forkY).y}
-                      r={scaledNodeSize / 2}
-                      fill={isSelected ? '#22d3ee' : isFocusedError ? color : fullBranchShouldUseLocalGray ? LOCAL_UNPUSHED_GRAY : '#1c1917'}
-                      stroke={fullBranchShouldUseLocalGray ? LOCAL_UNPUSHED_GRAY : color}
-                      strokeWidth={strokeWidth}
-                    />
                     {/* Commit markers along branch */}
                     {commitDotClusters.map((cluster) => {
                       const count = cluster.entries.length;
                       const firstEntry = cluster.entries[0];
                       const lastEntry = cluster.entries[count - 1];
+                      const anchorX = lastEntry.x;
+                      const anchorY = lastEntry.y;
                       const clusterKey = `commit-clump-${b.name}-${firstEntry.item.index}-${lastEntry.item.index}`;
                       const dotShouldUseLocalGray =
                         fullBranchShouldUseLocalGray ||
@@ -1999,14 +2080,14 @@ export default function BranchMap({
                           <circle
                             key={clusterKey}
                             className="branch-map-icon-fixed"
-                            cx={cluster.x}
-                            cy={cluster.y}
+                            cx={anchorX}
+                            cy={anchorY}
                             r={scaledNodeSize / 2}
                             fill={dotFill}
                             onMouseEnter={() =>
                               setTooltip({
-                                x: cluster.x + 14,
-                                y: cluster.y,
+                                x: anchorX + 14,
+                                y: anchorY,
                                 lines: [
                                   isBranchCreatedEvent ? 'Branch created' : `Commit ${tooltipSha}`,
                                   tooltipMessage ? tooltipMessage : `@${tooltipAuthor}`,
@@ -2032,15 +2113,15 @@ export default function BranchMap({
                         <g key={clusterKey}>
                           <circle
                             className="branch-map-icon-fixed"
-                            cx={cluster.x}
-                            cy={cluster.y}
+                            cx={anchorX}
+                            cy={anchorY}
                             r={scaledNodeSize / 2 + CLUMP_SIZE_BOOST_PX}
                             fill={dotFill}
                             style={{ cursor: 'pointer' }}
                             onMouseEnter={() =>
                               setTooltip({
-                                x: cluster.x + 14,
-                                y: cluster.y,
+                                x: anchorX + 14,
+                                y: anchorY,
                                 lines: [`${count} commits`, `on ${b.name}`, dateRangeLabel],
                                 avatarFallback: latestAuthor?.charAt(0).toUpperCase() || '?',
                               })
@@ -2049,15 +2130,15 @@ export default function BranchMap({
                           />
                           <text
                             className="branch-map-icon-fixed"
-                            x={cluster.x}
-                            y={cluster.y + 2.5}
+                            x={anchorX}
+                            y={anchorY + 2.5}
                             textAnchor="middle"
                             fontSize={count >= 10 ? 6.5 : 8}
                             fill="#fafaf9"
                             fontWeight={600}
                             style={{
                               pointerEvents: 'none',
-                              transformOrigin: `${cluster.x}px ${cluster.y}px`,
+                              transformOrigin: `${anchorX}px ${anchorY}px`,
                             }}
                           >
                             {clumpCountLabel(count)}
@@ -2069,10 +2150,12 @@ export default function BranchMap({
                       const count = cluster.entries.length;
                       const firstEntry = cluster.entries[0];
                       const lastEntry = cluster.entries[count - 1];
+                      const anchorX = lastEntry.x;
+                      const anchorY = lastEntry.y;
                       const clusterKey = `prompt-clump-${firstEntry.item.marker.id}-${lastEntry.item.marker.id}`;
                       const markerPath = promptMarkerPath(
-                        cluster.x,
-                        cluster.y,
+                        anchorX,
+                        anchorY,
                         count > 1 ? scaledNodeSize + CLUMP_SIZE_BOOST_PX * 2 : scaledNodeSize
                       );
                       const hitSize = scaledHoverHitSize;
@@ -2090,16 +2173,16 @@ export default function BranchMap({
                               style={{ pointerEvents: 'none' }}
                             />
                             <rect
-                              x={cluster.x - hitSize / 2}
-                              y={cluster.y - hitSize / 2}
+                              x={anchorX - hitSize / 2}
+                              y={anchorY - hitSize / 2}
                               width={hitSize}
                               height={hitSize}
                               fill="transparent"
                               style={{ cursor: 'pointer' }}
                               onMouseEnter={() =>
                                 setTooltip({
-                                  x: cluster.x + 14,
-                                  y: cluster.y,
+                                  x: anchorX + 14,
+                                  y: anchorY,
                                   lines: [
                                     truncatePrompt(marker.prompt, 52),
                                     marker.agent,
@@ -2131,30 +2214,30 @@ export default function BranchMap({
                             style={{ pointerEvents: 'none' }}
                           />
                           <text
-                            x={cluster.x}
-                            y={cluster.y + 2.4}
+                            x={anchorX}
+                            y={anchorY + 2.4}
                             textAnchor="middle"
                             fontSize={count >= 10 ? 6.2 : 8}
                             fill="#14b8a6"
                             fontWeight={700}
                             style={{
                               pointerEvents: 'none',
-                              transformOrigin: `${cluster.x}px ${cluster.y}px`,
+                              transformOrigin: `${anchorX}px ${anchorY}px`,
                             }}
                           >
                             {clumpCountLabel(count)}
                           </text>
                           <rect
-                            x={cluster.x - hitSize / 2}
-                            y={cluster.y - hitSize / 2}
+                            x={anchorX - hitSize / 2}
+                            y={anchorY - hitSize / 2}
                             width={hitSize}
                             height={hitSize}
                             fill="transparent"
                             style={{ cursor: 'pointer' }}
                             onMouseEnter={() =>
                               setTooltip({
-                                x: cluster.x + 14,
-                                y: cluster.y,
+                                x: anchorX + 14,
+                                y: anchorY,
                                 lines: [`${count} comments`, latestPrompt, dateRangeLabel],
                               })
                             }

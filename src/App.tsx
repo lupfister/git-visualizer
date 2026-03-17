@@ -221,7 +221,17 @@ function App() {
       return;
     }
 
-    const activeBranches = branches.filter(b => b.name !== defaultBranch && b.commitsAhead > 0);
+    const mergeNodeByMergedHeadSha = new Map<string, MergeNode>();
+    for (const node of mergeNodes) {
+      const mergedParents = node.parentShas?.slice(1) ?? [];
+      for (const parentSha of mergedParents) {
+        if (parentSha && !mergeNodeByMergedHeadSha.has(parentSha)) {
+          mergeNodeByMergedHeadSha.set(parentSha, node);
+        }
+      }
+    }
+
+    const activeBranches = branches.filter((b) => b.name !== defaultBranch);
     if (activeBranches.length === 0) {
       setBranchPromptMeta({});
       setBranchCommitPreviews({});
@@ -234,20 +244,51 @@ function App() {
       const results = await Promise.all(
         activeBranches.map(async (branch) => {
           try {
+            const branchCreatedAt = branch.createdDate ?? branch.divergedFromDate ?? branch.lastCommitDate;
+            const branchCreatedAtMs = new Date(branchCreatedAt).getTime();
             const comparisonBase =
               branch.parentBranch && branch.parentBranch !== branch.name
                 ? branch.parentBranch
                 : defaultBranch;
+            const mergeNode = mergeNodeByMergedHeadSha.get(branch.headSha);
+            const parentIsDefault =
+              !branch.parentBranch ||
+              branch.parentBranch === branch.name ||
+              branch.parentBranch === defaultBranch;
+            const shouldUseMergeRange = branch.commitsAhead === 0 && parentIsDefault;
+            const mergeCommitSha = shouldUseMergeRange ? mergeNode?.fullSha : undefined;
             const commits = await invoke<Commit[]>('get_branch_commits', {
               repoPath,
               branch: branch.name,
               baseBranch: comparisonBase,
+              mergeCommitSha,
             });
+            let historyCommits = mergeCommitSha
+              ? commits.filter((c) => c.fullSha !== mergeCommitSha)
+              : commits;
 
-            const prompts = commits
+            if (
+              historyCommits.length === 0 &&
+              branch.commitsAhead === 0 &&
+              Number.isFinite(branchCreatedAtMs)
+            ) {
+              // Branch is already merged into main; recover historical branch commits
+              // from first-parent log bounded by branch creation time.
+              const recent = await invoke<Commit[]>('get_recent_log', {
+                repoPath,
+                branch: branch.name,
+                limit: 200,
+              });
+              historyCommits = recent.filter((c) => {
+                const commitMs = new Date(c.date).getTime();
+                return Number.isFinite(commitMs) && commitMs >= branchCreatedAtMs;
+              });
+            }
+
+            const prompts = historyCommits
               .flatMap(c => c.agentPrompts ?? [])
               .sort((a, b) => new Date(b.timestamp).getTime() - new Date(a.timestamp).getTime());
-            const commitPreviews: BranchCommitPreview[] = commits
+            const commitPreviews: BranchCommitPreview[] = historyCommits
               .map((c) => ({
                 fullSha: c.fullSha,
                 sha: c.sha,
@@ -256,7 +297,6 @@ function App() {
                 date: c.date,
                 kind: 'commit',
               }));
-            const branchCreatedAt = branch.createdDate ?? branch.divergedFromDate ?? branch.lastCommitDate;
             const branchCreatedSha = branch.divergedFromSha?.slice(0, 7) ?? branch.headSha.slice(0, 7);
             const branchCreationPreview: BranchCommitPreview = {
               fullSha: `branch-created:${branch.name}:${branchCreatedAt}`,
@@ -267,7 +307,7 @@ function App() {
               kind: 'branch-created',
             };
             const previews: BranchCommitPreview[] = [...commitPreviews, branchCreationPreview];
-            const uniqueCount = previews.length;
+            const uniqueCount = branch.commitsAhead > 0 ? previews.length : null;
 
             if (prompts.length === 0) {
               return [branch.name, { promptMeta: null, previews, uniqueCount }] as const;
@@ -308,7 +348,7 @@ function App() {
             return [branch.name, {
               promptMeta: null,
               previews: [branchCreationPreview],
-              uniqueCount: 1,
+              uniqueCount: branch.commitsAhead > 0 ? 1 : null,
             }] as const;
           }
         }),
@@ -323,7 +363,9 @@ function App() {
         // Keep empty arrays too so the renderer knows this branch has loaded
         // and should show 0 unique commits relative to its selected base.
         nextCommitPreviews[branchName] = [...data.previews];
-        nextUniqueAheadCounts[branchName] = data.uniqueCount;
+        if (data.uniqueCount != null) {
+          nextUniqueAheadCounts[branchName] = data.uniqueCount;
+        }
       }
 
       setBranchPromptMeta(nextPromptMeta);
@@ -335,7 +377,7 @@ function App() {
     return () => {
       cancelled = true;
     };
-  }, [repoPath, defaultBranch, branches]);
+  }, [repoPath, defaultBranch, branches, mergeNodes]);
 
   // Pre-warm: start screenshotting main at '/' as soon as active branches arrive.
   // Uses port 3495 (separate from DiffViewer's 3491/3492) to avoid conflicts.

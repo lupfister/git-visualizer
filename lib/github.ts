@@ -300,6 +300,7 @@ export async function fetchMainMergeNodes(
         prNumber: prMatch ? parseInt(prMatch[1]) : null,
         prTitle: titleLine,
         date: c.commit.author.date,
+        parentShas: c.parents.map((p) => p.sha),
       };
     });
 
