@@ -83,6 +83,24 @@ body {
   display: none; /* Chrome / Safari */
 }
 
+/* Keep graph strokes and symbol sizing visually stable while camera scales. */
+.branch-map-svg path,
+.branch-map-svg line,
+.branch-map-svg polyline,
+.branch-map-svg polygon {
+  vector-effect: non-scaling-stroke;
+}
+
+.branch-map-svg {
+  --icon-inv-scale: 1;
+}
+
+.branch-map-icon-fixed {
+  transform-box: fill-box;
+  transform-origin: center;
+  transform: scale(var(--icon-inv-scale));
+}
+
 /* ── Bottom chrome: custom range-input scrollbar ─────────────────────────── */
 .bottom-scroll-range {
   -webkit-appearance: none;
@@ -128,6 +146,47 @@ body {
   border: none;
 }
 
+/* ── Horizontal time-scale slider ────────────────────────────────────────── */
+.timeline-scale-range {
+  -webkit-appearance: none;
+  appearance: none;
+  height: 4px;
+  background: var(--muted);
+  border-radius: 999px;
+  outline: none;
+}
+.timeline-scale-range::-webkit-slider-runnable-track {
+  height: 4px;
+  background: var(--muted);
+  border-radius: 999px;
+}
+.timeline-scale-range::-webkit-slider-thumb {
+  -webkit-appearance: none;
+  appearance: none;
+  width: 12px;
+  height: 12px;
+  margin-top: -4px;
+  border-radius: 999px;
+  background: color-mix(in srgb, var(--foreground) 75%, var(--card));
+  transition: background 0.15s;
+}
+.timeline-scale-range:hover::-webkit-slider-thumb {
+  background: var(--foreground);
+}
+.timeline-scale-range::-moz-range-track {
+  height: 4px;
+  background: var(--muted);
+  border-radius: 999px;
+  border: none;
+}
+.timeline-scale-range::-moz-range-thumb {
+  width: 12px;
+  height: 12px;
+  border-radius: 999px;
+  border: none;
+  background: color-mix(in srgb, var(--foreground) 75%, var(--card));
+}
+
 /* ── Timeline entrance animations ────────────────────────────────────────── */
 @keyframes draw-path {
   from { stroke-dashoffset: 1; }
@@ -167,6 +226,20 @@ body {
   animation-delay: var(--delay, 0ms);
   animation-play-state: paused;
 }
+@keyframes main-stale-tail-glow {
+  0%, 100% {
+    filter: drop-shadow(0 0 0 color-mix(in srgb, var(--muted-foreground) 0%, transparent));
+    opacity: 0.88;
+  }
+  50% {
+    filter: drop-shadow(0 0 4px color-mix(in srgb, var(--muted-foreground) 55%, transparent));
+    opacity: 1;
+  }
+}
+.main-stale-tail-glow {
+  animation: main-stale-tail-glow 2.8s ease-in-out infinite;
+  animation-play-state: paused;
+}
 
 /* Parent class added after first two frames — starts all animations together */
 .timeline-ready .draw-path-main,
@@ -175,12 +248,36 @@ body {
 .timeline-ready .fade-in-pill {
   animation-play-state: running;
 }
+.timeline-ready .main-stale-tail-glow {
+  animation-play-state: running;
+}
+
+/* After intro has completed, freeze to final visual state so camera zoom/pan
+   cannot accidentally retrigger SVG draw/fade animations on WebKit. */
+.timeline-static .draw-path-main,
+.timeline-static .draw-path-arc {
+  animation: none;
+  stroke-dashoffset: 0;
+}
+.timeline-static .fade-in-info,
+.timeline-static .fade-in-pill {
+  animation: none;
+  opacity: 1;
+}
+.timeline-static .main-stale-tail-glow {
+  animation: none;
+}
 
 @media (prefers-reduced-motion: reduce) {
   .draw-path-main { animation: none; stroke-dashoffset: 0; }
   .draw-path-arc  { animation: none; stroke-dashoffset: 0; }
   .fade-in-info   { animation: none; opacity: 1; }
   .fade-in-pill   { animation: none; opacity: 1; }
+  .main-stale-tail-glow {
+    animation: none;
+    filter: drop-shadow(0 0 1px color-mix(in srgb, var(--muted-foreground) 35%, transparent));
+    opacity: 0.95;
+  }
 }
 
 /* ── Landing page input pill entrance ───────────────────────────────────── */
@@ -212,4 +309,33 @@ body {
 }
 .animate-error-panel-out {
   animation: error-panel-out 0.1s ease-in both;
+}
+
+/* Checked-out halo pulse */
+@keyframes checked-out-halo-pulse {
+  0% {
+    opacity: 0.24;
+    transform: scale(0.92);
+  }
+  50% {
+    opacity: 0.36;
+    transform: scale(1.22);
+  }
+  100% {
+    opacity: 0.24;
+    transform: scale(0.92);
+  }
+}
+.checked-out-halo-pulse {
+  transform-box: fill-box;
+  transform-origin: center;
+  animation: checked-out-halo-pulse 1.6s ease-in-out infinite;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .checked-out-halo-pulse {
+    animation: none;
+    opacity: 0.3;
+    transform: scale(1);
+  }
 }

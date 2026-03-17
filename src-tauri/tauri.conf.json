@@ -13,11 +13,17 @@
     "withGlobalTauri": true,
     "windows": [
       {
+        "label": "main",
         "title": "Git Visualizer",
-        "width": 1400,
-        "height": 900,
+        "width": 520,
+        "height": 760,
+        "minWidth": 460,
+        "minHeight": 620,
         "resizable": true,
-        "fullscreen": false
+        "fullscreen": false,
+        "visible": false,
+        "alwaysOnTop": true,
+        "skipTaskbar": true
       }
     ],
     "security": {

@@ -1,5 +1,6 @@
 import { Branch, BranchStatus } from '../types';
 import { ViewMode } from './BranchMapView';
+import RemoteSyncBadge from './RemoteSyncBadge';
 
 function timeAgo(dateStr: string) {
   const s = (Date.now() - new Date(dateStr).getTime()) / 1000;
@@ -31,6 +32,14 @@ function BranchCard({
         <span
           className="shrink-0 w-2 h-2 rounded-full mt-1"
           style={{ background: accentColor }}
+        />
+      </div>
+
+      <div className="flex items-center gap-2">
+        <RemoteSyncBadge
+          status={branch.remoteSyncStatus}
+          unpushedCommits={branch.unpushedCommits}
+          compact
         />
       </div>
 

@@ -1,11 +1,22 @@
 mod git;
 mod github;
 
-use tauri::Manager;
+use tauri::{
+    menu::{MenuBuilder, MenuItemBuilder},
+    tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent},
+    Manager, WindowEvent,
+};
 
-use git::{Branch, DirectCommit, MergeNode};
+use git::{Branch, CheckedOutRef, DirectCommit, MergeNode};
 use github::{GitHubAuthStatus, GitHubInfo, MergedPR, OpenPR};
-use std::path::Path;
+use chrono::{DateTime, Duration, Utc};
+use std::{
+    collections::{HashMap, HashSet},
+    fs::{self, File},
+    io::{BufRead, BufReader},
+    path::{Path, PathBuf},
+    sync::{Mutex, OnceLock},
+};
 
 #[derive(serde::Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -307,6 +318,12 @@ fn get_default_branch(repo_path: String) -> Result<String, String> {
 }
 
 #[tauri::command]
+fn get_checked_out_ref(repo_path: String) -> Result<CheckedOutRef, String> {
+    let path = Path::new(&repo_path);
+    git::get_checked_out_ref(path).map_err(|e| e.to_string())
+}
+
+#[tauri::command]
 fn get_repo_info(repo_path: String) -> Result<RepoInfo, String> {
     let path = Path::new(&repo_path);
     let (name, full_path) = git::get_repo_info(path).map_err(|e| e.to_string())?;
@@ -397,6 +414,548 @@ pub struct CommitInfo {
     message: String,
     author: String,
     date: String,
+    prompt_window_start: Option<String>,
+    prompt_window_end: Option<String>,
+    agent_prompts: Vec<AgentPrompt>,
+}
+
+#[derive(serde::Serialize, Clone)]
+#[serde(rename_all = "camelCase")]
+pub struct AgentPrompt {
+    id: String,
+    agent: String,
+    prompt: String,
+    timestamp: String,
+    source: String,
+}
+
+#[derive(Clone)]
+struct PromptRecord {
+    id: String,
+    agent: String,
+    prompt: String,
+    timestamp: DateTime<Utc>,
+    source: String,
+}
+
+#[derive(Clone)]
+struct PromptCache {
+    repo_path: String,
+    start: DateTime<Utc>,
+    end: DateTime<Utc>,
+    records: Vec<PromptRecord>,
+    collected_at: DateTime<Utc>,
+}
+
+static PROMPT_CACHE: OnceLock<Mutex<Option<PromptCache>>> = OnceLock::new();
+
+fn parse_iso_to_utc(value: &str) -> Option<DateTime<Utc>> {
+    DateTime::parse_from_rfc3339(value)
+        .ok()
+        .map(|dt| dt.with_timezone(&Utc))
+}
+
+fn normalize_path_for_compare(path: &str) -> String {
+    path.trim()
+        .trim_end_matches('/')
+        .replace('\\', "/")
+        .to_lowercase()
+}
+
+fn paths_match(repo_path: &Path, candidate: &str) -> bool {
+    let repo_norm = normalize_path_for_compare(&repo_path.to_string_lossy());
+    let cand_norm = normalize_path_for_compare(candidate);
+    !repo_norm.is_empty() && !cand_norm.is_empty() && repo_norm == cand_norm
+}
+
+fn extract_tag_text(raw: &str, tag: &str) -> Option<String> {
+    let open = format!("<{tag}>");
+    let close = format!("</{tag}>");
+    let start = raw.find(&open)? + open.len();
+    let rest = &raw[start..];
+    let end_rel = rest.find(&close).unwrap_or(rest.len());
+    Some(rest[..end_rel].trim().to_string())
+}
+
+fn normalize_prompt_text(raw: &str) -> Option<String> {
+    let trimmed = raw.trim();
+    if trimmed.is_empty() {
+        return None;
+    }
+
+    if let Some(query) = extract_tag_text(trimmed, "user_query") {
+        if !query.is_empty() {
+            return normalize_prompt_text(&query);
+        }
+    }
+
+    if trimmed.starts_with("# AGENTS.md instructions for ")
+        || trimmed.starts_with("<environment_context>")
+        || trimmed.starts_with("<INSTRUCTIONS>")
+    {
+        return None;
+    }
+
+    if trimmed.starts_with("<attached_files>") {
+        return None;
+    }
+
+    let normalized = trimmed.replace("\r\n", "\n").replace('\r', "\n");
+    let collapsed = normalized.trim();
+    if collapsed.is_empty() {
+        return None;
+    }
+
+    if collapsed.starts_with("@/") && collapsed.contains("/terminals/") {
+        return Some("Shared terminal selection".to_string());
+    }
+
+    const MAX_PROMPT_CHARS: usize = 4000;
+    if collapsed.len() > MAX_PROMPT_CHARS {
+        let mut truncated = collapsed[..MAX_PROMPT_CHARS].to_string();
+        truncated.push_str("…");
+        return Some(truncated);
+    }
+
+    Some(collapsed.to_string())
+}
+
+fn extract_text_chunks(content: &serde_json::Value) -> Vec<String> {
+    let mut chunks = Vec::new();
+
+    if let Some(arr) = content.as_array() {
+        for item in arr {
+            if let Some(text) = item.get("text").and_then(|v| v.as_str()) {
+                chunks.push(text.to_string());
+            }
+            if let Some(inner) = item.get("content") {
+                chunks.extend(extract_text_chunks(inner));
+            }
+        }
+        return chunks;
+    }
+
+    if let Some(text) = content.as_str() {
+        chunks.push(text.to_string());
+    }
+
+    chunks
+}
+
+fn insert_prompt(
+    out: &mut Vec<PromptRecord>,
+    seen: &mut HashSet<String>,
+    agent: &str,
+    source: &str,
+    timestamp: DateTime<Utc>,
+    prompt: String,
+) {
+    let dedupe_key = format!("{agent}|{}|{prompt}", timestamp.to_rfc3339());
+    if !seen.insert(dedupe_key) {
+        return;
+    }
+
+    let id = format!(
+        "{}-{}-{}",
+        agent.to_lowercase().replace(' ', "-"),
+        timestamp.timestamp_millis(),
+        out.len() + 1
+    );
+
+    out.push(PromptRecord {
+        id,
+        agent: agent.to_string(),
+        prompt,
+        timestamp,
+        source: source.to_string(),
+    });
+}
+
+fn parse_generic_timestamp(value: &serde_json::Value) -> Option<DateTime<Utc>> {
+    for key in ["timestamp", "time", "createdAt", "created_at", "updatedAt", "updated_at"] {
+        if let Some(ts) = value.get(key).and_then(|v| v.as_str()) {
+            if let Some(parsed) = parse_iso_to_utc(ts) {
+                return Some(parsed);
+            }
+        }
+    }
+    None
+}
+
+fn collect_jsonl_files(root: &Path, out: &mut Vec<PathBuf>) {
+    if !root.exists() {
+        return;
+    }
+
+    let mut stack = vec![root.to_path_buf()];
+    while let Some(dir) = stack.pop() {
+        let Ok(entries) = fs::read_dir(&dir) else { continue };
+        for entry in entries.flatten() {
+            let path = entry.path();
+            if path.is_dir() {
+                stack.push(path);
+            } else if path.extension().is_some_and(|ext| ext == "jsonl") {
+                out.push(path);
+            }
+        }
+    }
+}
+
+fn collect_codex_prompts(
+    repo_path: &Path,
+    start: DateTime<Utc>,
+    end: DateTime<Utc>,
+    out: &mut Vec<PromptRecord>,
+    seen: &mut HashSet<String>,
+) {
+    let Some(home) = dirs::home_dir() else { return };
+    let roots = [home.join(".codex/sessions"), home.join(".codex/archived_sessions")];
+
+    let mut files = Vec::new();
+    for root in roots {
+        collect_jsonl_files(&root, &mut files);
+    }
+
+    for path in files {
+        let Ok(file) = File::open(&path) else { continue };
+        let reader = BufReader::new(file);
+        let mut matches_repo = false;
+        let source = path
+            .file_name()
+            .and_then(|n| n.to_str())
+            .unwrap_or("codex-session")
+            .to_string();
+
+        for line in reader.lines().map_while(Result::ok) {
+            let Ok(value) = serde_json::from_str::<serde_json::Value>(&line) else { continue };
+            let event_type = value.get("type").and_then(|v| v.as_str()).unwrap_or_default();
+
+            if event_type == "session_meta" {
+                let cwd = value
+                    .pointer("/payload/cwd")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or_default();
+                matches_repo = paths_match(repo_path, cwd);
+                continue;
+            }
+
+            if !matches_repo {
+                continue;
+            }
+
+            if event_type == "response_item"
+                && value.pointer("/payload/type").and_then(|v| v.as_str()) == Some("message")
+                && value.pointer("/payload/role").and_then(|v| v.as_str()) == Some("user")
+            {
+                let timestamp = value
+                    .get("timestamp")
+                    .and_then(|v| v.as_str())
+                    .and_then(parse_iso_to_utc);
+                let Some(ts) = timestamp else { continue };
+                if ts < start || ts > end {
+                    continue;
+                }
+
+                let content = value.pointer("/payload/content").unwrap_or(&serde_json::Value::Null);
+                for chunk in extract_text_chunks(content) {
+                    if let Some(prompt) = normalize_prompt_text(&chunk) {
+                        insert_prompt(out, seen, "Codex", &source, ts, prompt);
+                    }
+                }
+            }
+        }
+    }
+}
+
+fn collect_claude_prompts(
+    repo_path: &Path,
+    start: DateTime<Utc>,
+    end: DateTime<Utc>,
+    out: &mut Vec<PromptRecord>,
+    seen: &mut HashSet<String>,
+) {
+    let Some(home) = dirs::home_dir() else { return };
+    let projects_root = home.join(".claude/projects");
+    let Ok(project_dirs) = fs::read_dir(projects_root) else { return };
+
+    for dir_entry in project_dirs.flatten() {
+        let project_dir = dir_entry.path();
+        if !project_dir.is_dir() {
+            continue;
+        }
+
+        let index_path = project_dir.join("sessions-index.json");
+        if !index_path.exists() {
+            continue;
+        }
+
+        let Ok(index_raw) = fs::read_to_string(&index_path) else { continue };
+        let Ok(index_json) = serde_json::from_str::<serde_json::Value>(&index_raw) else { continue };
+        let Some(entries) = index_json.get("entries").and_then(|v| v.as_array()) else { continue };
+
+        for entry in entries {
+            let project_path = entry
+                .get("projectPath")
+                .and_then(|v| v.as_str())
+                .unwrap_or_default();
+            if !paths_match(repo_path, project_path) {
+                continue;
+            }
+
+            let Some(full_path) = entry.get("fullPath").and_then(|v| v.as_str()) else { continue };
+            let session_path = Path::new(full_path);
+            let Ok(file) = File::open(session_path) else { continue };
+            let reader = BufReader::new(file);
+            let source = session_path
+                .file_name()
+                .and_then(|n| n.to_str())
+                .unwrap_or("claude-session")
+                .to_string();
+
+            for line in reader.lines().map_while(Result::ok) {
+                let Ok(value) = serde_json::from_str::<serde_json::Value>(&line) else { continue };
+                let is_user = value.get("type").and_then(|v| v.as_str()) == Some("user")
+                    && value.pointer("/message/role").and_then(|v| v.as_str()) == Some("user");
+                if !is_user {
+                    continue;
+                }
+
+                let cwd = value.get("cwd").and_then(|v| v.as_str()).unwrap_or_default();
+                if !cwd.is_empty() && !paths_match(repo_path, cwd) {
+                    continue;
+                }
+
+                let timestamp = value
+                    .get("timestamp")
+                    .and_then(|v| v.as_str())
+                    .and_then(parse_iso_to_utc);
+                let Some(ts) = timestamp else { continue };
+                if ts < start || ts > end {
+                    continue;
+                }
+
+                let content = value.pointer("/message/content").unwrap_or(&serde_json::Value::Null);
+                for chunk in extract_text_chunks(content) {
+                    if let Some(prompt) = normalize_prompt_text(&chunk) {
+                        insert_prompt(out, seen, "Claude Code", &source, ts, prompt);
+                    }
+                }
+            }
+        }
+    }
+}
+
+fn cursor_project_dir_name(path: &Path) -> String {
+    path.to_string_lossy()
+        .trim_start_matches('/')
+        .replace('/', "-")
+}
+
+fn collect_cursor_prompts(
+    repo_path: &Path,
+    start: DateTime<Utc>,
+    end: DateTime<Utc>,
+    out: &mut Vec<PromptRecord>,
+    seen: &mut HashSet<String>,
+) {
+    let Some(home) = dirs::home_dir() else { return };
+    let projects_root = home.join(".cursor/projects");
+    let Ok(project_dirs) = fs::read_dir(&projects_root) else { return };
+
+    let canonical_repo = fs::canonicalize(repo_path).unwrap_or_else(|_| repo_path.to_path_buf());
+    let mut candidates = HashSet::new();
+    candidates.insert(cursor_project_dir_name(repo_path));
+    candidates.insert(cursor_project_dir_name(&canonical_repo));
+    let repo_leaf = repo_path
+        .file_name()
+        .and_then(|n| n.to_str())
+        .unwrap_or_default()
+        .to_lowercase();
+
+    for dir_entry in project_dirs.flatten() {
+        let project_dir = dir_entry.path();
+        if !project_dir.is_dir() {
+            continue;
+        }
+        let Some(project_name) = project_dir.file_name().and_then(|n| n.to_str()) else { continue };
+        let project_name_lc = project_name.to_lowercase();
+        let maybe_matches_leaf = !repo_leaf.is_empty() && project_name_lc.contains(&repo_leaf);
+        if !candidates.contains(project_name) && !maybe_matches_leaf {
+            continue;
+        }
+
+        let transcript_root = project_dir.join("agent-transcripts");
+        let mut files = Vec::new();
+        collect_jsonl_files(&transcript_root, &mut files);
+
+        for path in files {
+            let file_meta = fs::metadata(&path).ok();
+            let modified = file_meta
+                .and_then(|m| m.modified().ok())
+                .map(DateTime::<Utc>::from)
+                .unwrap_or(end);
+
+            // Cursor transcript lines currently do not include message timestamps.
+            // We anchor prompts to file mtime and spread entries backward.
+            let Ok(file) = File::open(&path) else { continue };
+            let reader = BufReader::new(file);
+            let source = path
+                .file_name()
+                .and_then(|n| n.to_str())
+                .unwrap_or("cursor-session")
+                .to_string();
+
+            let mut prompts = Vec::new();
+            for line in reader.lines().map_while(Result::ok) {
+                let Ok(value) = serde_json::from_str::<serde_json::Value>(&line) else { continue };
+                if value.get("role").and_then(|v| v.as_str()) != Some("user") {
+                    continue;
+                }
+                let content = value.pointer("/message/content").unwrap_or(&serde_json::Value::Null);
+                for chunk in extract_text_chunks(content) {
+                    if let Some(prompt) = normalize_prompt_text(&chunk) {
+                        prompts.push(prompt);
+                    }
+                }
+            }
+
+            let total = prompts.len();
+            if total == 0 {
+                continue;
+            }
+
+            for (idx, prompt) in prompts.into_iter().enumerate() {
+                let offset = (total.saturating_sub(idx + 1) as i64) * 30;
+                let ts = modified - Duration::seconds(offset);
+                if ts < start || ts > end {
+                    continue;
+                }
+                insert_prompt(out, seen, "Cursor", &source, ts, prompt);
+            }
+        }
+    }
+}
+
+fn collect_generic_jsonl_prompts(
+    repo_path: &Path,
+    start: DateTime<Utc>,
+    end: DateTime<Utc>,
+    out: &mut Vec<PromptRecord>,
+    seen: &mut HashSet<String>,
+) {
+    let mut roots = vec![
+        repo_path.join("agent-transcripts"),
+        repo_path.join(".agent-transcripts"),
+        repo_path.join(".ai-transcripts"),
+    ];
+
+    if let Ok(extra) = std::env::var("AGENT_TRANSCRIPT_PATHS") {
+        for segment in extra.split(':') {
+            if !segment.trim().is_empty() {
+                roots.push(PathBuf::from(segment.trim()));
+            }
+        }
+    }
+
+    for root in roots {
+        let mut files = Vec::new();
+        collect_jsonl_files(&root, &mut files);
+        for path in files {
+            let Ok(file) = File::open(&path) else { continue };
+            let reader = BufReader::new(file);
+            let source = path
+                .file_name()
+                .and_then(|n| n.to_str())
+                .unwrap_or("transcript")
+                .to_string();
+
+            for line in reader.lines().map_while(Result::ok) {
+                let Ok(value) = serde_json::from_str::<serde_json::Value>(&line) else { continue };
+
+                let role = value.get("role").and_then(|v| v.as_str())
+                    .or_else(|| value.pointer("/message/role").and_then(|v| v.as_str()))
+                    .or_else(|| value.pointer("/payload/role").and_then(|v| v.as_str()));
+                if role != Some("user") {
+                    continue;
+                }
+
+                if let Some(cwd) = value.get("cwd").and_then(|v| v.as_str()) {
+                    if !cwd.is_empty() && !paths_match(repo_path, cwd) {
+                        continue;
+                    }
+                }
+
+                let timestamp = parse_generic_timestamp(&value).or_else(|| {
+                    fs::metadata(&path)
+                        .ok()
+                        .and_then(|m| m.modified().ok())
+                        .map(DateTime::<Utc>::from)
+                });
+                let Some(ts) = timestamp else { continue };
+                if ts < start || ts > end {
+                    continue;
+                }
+
+                let content = value
+                    .pointer("/message/content")
+                    .or_else(|| value.pointer("/payload/content"))
+                    .or_else(|| value.get("content"))
+                    .unwrap_or(&serde_json::Value::Null);
+
+                for chunk in extract_text_chunks(content) {
+                    if let Some(prompt) = normalize_prompt_text(&chunk) {
+                        insert_prompt(out, seen, "Agent", &source, ts, prompt);
+                    }
+                }
+            }
+        }
+    }
+}
+
+fn collect_agent_prompts_for_repo(
+    repo_path: &Path,
+    start: DateTime<Utc>,
+    end: DateTime<Utc>,
+) -> Vec<PromptRecord> {
+    let repo_key = normalize_path_for_compare(&repo_path.to_string_lossy());
+    let cache_cell = PROMPT_CACHE.get_or_init(|| Mutex::new(None));
+
+    if let Ok(cache_guard) = cache_cell.lock() {
+        if let Some(cache) = cache_guard.as_ref() {
+            let cache_is_fresh = Utc::now() - cache.collected_at <= Duration::minutes(3);
+            let range_inside_cache = start >= cache.start && end <= cache.end;
+            if cache.repo_path == repo_key && cache_is_fresh && range_inside_cache {
+                return cache
+                    .records
+                    .iter()
+                    .filter(|record| record.timestamp >= start && record.timestamp <= end)
+                    .cloned()
+                    .collect();
+            }
+        }
+    }
+
+    let mut records = Vec::new();
+    let mut seen = HashSet::new();
+
+    collect_codex_prompts(repo_path, start, end, &mut records, &mut seen);
+    collect_claude_prompts(repo_path, start, end, &mut records, &mut seen);
+    collect_cursor_prompts(repo_path, start, end, &mut records, &mut seen);
+    collect_generic_jsonl_prompts(repo_path, start, end, &mut records, &mut seen);
+
+    records.sort_by(|a, b| a.timestamp.cmp(&b.timestamp));
+
+    if let Ok(mut cache_guard) = cache_cell.lock() {
+        *cache_guard = Some(PromptCache {
+            repo_path: repo_key,
+            start,
+            end,
+            records: records.clone(),
+            collected_at: Utc::now(),
+        });
+    }
+
+    records
 }
 
 #[tauri::command(rename_all = "camelCase")]
@@ -416,11 +975,11 @@ fn get_branch_commits(
     };
     let output = git::cli::run(
         path,
-        &["log", &range, "--format=%H|%h|%s|%an|%aI|%P", "--no-merges"],
+        &["log", &range, "--format=%H|%h|%s|%an|%aI|%P"],
     )
     .map_err(|e| e.to_string())?;
 
-    let commits = output
+    let mut commits: Vec<CommitInfo> = output
         .lines()
         .filter(|l| !l.is_empty())
         .filter_map(|line| {
@@ -437,9 +996,88 @@ fn get_branch_commits(
                 message: parts[2].to_string(),
                 author: parts[3].to_string(),
                 date: parts[4].to_string(),
+                prompt_window_start: None,
+                prompt_window_end: None,
+                agent_prompts: Vec::new(),
             })
         })
         .collect();
+
+    if commits.is_empty() {
+        return Ok(commits);
+    }
+
+    let mut parent_dates: HashMap<String, DateTime<Utc>> = HashMap::new();
+    for commit in &commits {
+        let Some(parent_sha) = &commit.parent_sha else { continue };
+        if parent_dates.contains_key(parent_sha) {
+            continue;
+        }
+        let Ok(parent_date_raw) = git::cli::run(path, &["log", "-1", "--format=%aI", parent_sha]) else {
+            continue;
+        };
+        let parsed = parse_iso_to_utc(parent_date_raw.trim());
+        if let Some(parent_date) = parsed {
+            parent_dates.insert(parent_sha.clone(), parent_date);
+        }
+    }
+
+    let mut windows: Vec<(Option<DateTime<Utc>>, Option<DateTime<Utc>>)> = Vec::with_capacity(commits.len());
+    let mut global_start: Option<DateTime<Utc>> = None;
+    let mut global_end: Option<DateTime<Utc>> = None;
+
+    for commit in &commits {
+        let end_dt = parse_iso_to_utc(&commit.date);
+        let start_dt = commit
+            .parent_sha
+            .as_ref()
+            .and_then(|sha| parent_dates.get(sha).copied());
+
+        if let Some(end_ts) = end_dt {
+            let bounded_start = start_dt.unwrap_or(end_ts - Duration::hours(12));
+            global_start = Some(global_start.map_or(bounded_start, |cur| cur.min(bounded_start)));
+            global_end = Some(global_end.map_or(end_ts, |cur| cur.max(end_ts)));
+        }
+
+        windows.push((start_dt, end_dt));
+    }
+
+    let prompts = if let (Some(start), Some(end)) = (global_start, global_end) {
+        collect_agent_prompts_for_repo(path, start, end)
+    } else {
+        Vec::new()
+    };
+
+    for (idx, commit) in commits.iter_mut().enumerate() {
+        let (start_dt, end_dt) = windows[idx];
+        commit.prompt_window_start = start_dt.map(|dt| dt.to_rfc3339());
+        commit.prompt_window_end = end_dt.map(|dt| dt.to_rfc3339());
+
+        let Some(end_ts) = end_dt else { continue };
+
+        let mut matched: Vec<AgentPrompt> = prompts
+            .iter()
+            .filter(|record| {
+                let in_upper = record.timestamp <= end_ts;
+                let in_lower = start_dt.map_or(true, |start_ts| record.timestamp > start_ts);
+                in_upper && in_lower
+            })
+            .map(|record| AgentPrompt {
+                id: record.id.clone(),
+                agent: record.agent.clone(),
+                prompt: record.prompt.clone(),
+                timestamp: record.timestamp.to_rfc3339(),
+                source: record.source.clone(),
+            })
+            .collect();
+
+        const MAX_PROMPTS_PER_COMMIT: usize = 40;
+        if matched.len() > MAX_PROMPTS_PER_COMMIT {
+            let to_drop = matched.len() - MAX_PROMPTS_PER_COMMIT;
+            matched.drain(0..to_drop);
+        }
+        commit.agent_prompts = matched;
+    }
 
     Ok(commits)
 }
@@ -483,7 +1121,7 @@ fn get_recent_log(
     let limit_str = limit.unwrap_or(20).to_string();
     let output = git::cli::run(
         path,
-        &["log", &branch, &format!("--max-count={}", limit_str), "--format=%H|%h|%s|%an|%aI", "--no-merges"],
+        &["log", &branch, &format!("--max-count={}", limit_str), "--format=%H|%h|%s|%an|%aI"],
     )
     .map_err(|e| e.to_string())?;
     let commits = output
@@ -499,6 +1137,9 @@ fn get_recent_log(
                 message: parts[2].to_string(),
                 author: parts[3].to_string(),
                 date: parts[4].to_string(),
+                prompt_window_start: None,
+                prompt_window_end: None,
+                agent_prompts: Vec::new(),
             })
         })
         .collect();
@@ -1868,13 +2509,104 @@ fn get_anthropic_key() -> Option<String> {
     std::env::var("ANTHROPIC_API_KEY").ok()
 }
 
+const TRAY_TOGGLE_ID: &str = "toggle-window";
+const TRAY_QUIT_ID: &str = "quit-app";
+
+fn show_main_window(app: &tauri::AppHandle) {
+    if let Some(window) = app.get_webview_window("main") {
+        let _ = window.show();
+        let _ = window.unminimize();
+        let _ = window.set_focus();
+    }
+}
+
+fn hide_main_window(app: &tauri::AppHandle) {
+    if let Some(window) = app.get_webview_window("main") {
+        let _ = window.hide();
+    }
+}
+
+fn toggle_main_window(app: &tauri::AppHandle) {
+    if let Some(window) = app.get_webview_window("main") {
+        if window.is_visible().unwrap_or(false) {
+            let _ = window.hide();
+        } else {
+            show_main_window(app);
+        }
+    }
+}
+
+fn create_tray_icon(app: &tauri::AppHandle) -> Result<(), tauri::Error> {
+    let toggle_item = MenuItemBuilder::with_id(TRAY_TOGGLE_ID, "Show / Hide Git Visualizer")
+        .build(app)?;
+    let quit_item = MenuItemBuilder::with_id(TRAY_QUIT_ID, "Quit").build(app)?;
+
+    let menu = MenuBuilder::new(app)
+        .item(&toggle_item)
+        .separator()
+        .item(&quit_item)
+        .build()?;
+
+    let mut tray_builder = TrayIconBuilder::with_id("git-visualizer-tray")
+        .menu(&menu)
+        .show_menu_on_left_click(false)
+        .tooltip("Git Visualizer")
+        .on_menu_event(|app, event| match event.id().as_ref() {
+            TRAY_TOGGLE_ID => toggle_main_window(app),
+            TRAY_QUIT_ID => app.exit(0),
+            _ => {}
+        })
+        .on_tray_icon_event(|tray, event| {
+            if let TrayIconEvent::Click {
+                button: MouseButton::Left,
+                button_state: MouseButtonState::Up,
+                ..
+            } = event
+            {
+                toggle_main_window(tray.app_handle());
+            }
+        });
+
+    if let Some(icon) = app.default_window_icon() {
+        tray_builder = tray_builder.icon(icon.clone());
+    }
+
+    let _ = tray_builder.build(app)?;
+    Ok(())
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
+        .setup(|app| {
+            #[cfg(target_os = "macos")]
+            app.set_activation_policy(tauri::ActivationPolicy::Accessory);
+
+            create_tray_icon(app.handle())?;
+            hide_main_window(app.handle());
+            Ok(())
+        })
+        .on_window_event(|window, event| {
+            if window.label() != "main" {
+                return;
+            }
+
+            match event {
+                WindowEvent::CloseRequested { api, .. } => {
+                    api.prevent_close();
+                    let _ = window.hide();
+                }
+                WindowEvent::Focused(false) => {
+                    let _ = window.hide();
+                }
+                _ => {}
+            }
+        })
         .invoke_handler(tauri::generate_handler![
             get_branches,
             get_merge_nodes,
             get_default_branch,
+            get_checked_out_ref,
             get_repo_info,
             get_github_info,
             get_github_auth_status,

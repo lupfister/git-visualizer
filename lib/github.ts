@@ -88,6 +88,8 @@ export async function fetchBranches(
           lastCommitAuthorAvatar,
           mergeable: null,
           status: 'fresh' as BranchStatus,
+          remoteSyncStatus: 'on-github' as const,
+          unpushedCommits: 0,
           headSha,
         };
       }
@@ -107,6 +109,8 @@ export async function fetchBranches(
             lastCommitAuthorAvatar,
             mergeable: null,
             status: staleness(lastCommitDate),
+            remoteSyncStatus: 'on-github' as const,
+            unpushedCommits: 0,
             headSha,
           };
         }
@@ -133,6 +137,8 @@ export async function fetchBranches(
           lastCommitAuthorAvatar,
           mergeable,
           status,
+          remoteSyncStatus: 'on-github' as const,
+          unpushedCommits: 0,
           divergedFromSha,
           divergedFromDate,
           headSha,
@@ -147,6 +153,8 @@ export async function fetchBranches(
           lastCommitAuthorAvatar,
           mergeable: null,
           status: 'unknown' as BranchStatus,
+          remoteSyncStatus: 'on-github' as const,
+          unpushedCommits: 0,
           headSha,
         };
       }

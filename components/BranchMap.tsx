@@ -1,42 +1,88 @@
 import React, { useState, useRef, useEffect } from 'react';
 import { invoke } from '@tauri-apps/api/core';
 import { X } from 'lucide-react';
-import { Branch, DirectCommit, MergeNode, MergedPR, OpenPR } from '../types';
+import { Branch, BranchCommitPreview, BranchPromptMeta, CheckedOutRef, DirectCommit, MergeNode, MergedPR, OpenPR } from '../types';
 import { ViewMode } from './BranchMapView';
 
 // ── Layout constants ──────────────────────────────────────────────────────────
 const LEFT_PAD = 60;
 const RIGHT_PAD = 160;
 const MIN_BRANCH_SPACING_X = 30;
-const LANE_HEIGHT = 60;
-const NODE_SIZE = 8;
+const LANE_HEIGHT = 120;
+const NODE_SIZE = 14;
 const CORNER_R = 20;
 const BRANCH_HIT_STROKE_WIDTH = 48;
 const AHEAD_LABEL_OFFSET_X = 10;
 const MAIN_LABEL_OFFSET_X = 10;
 const MAX_ACTIVE = 50;
-const ZOOM_MIN = 0.1;
-const ZOOM_MAX = 1;
+const ZOOM_MIN = 0.2;
+const ZOOM_MAX = 2;
+const ZOOM_DEFAULT = 1;
+const ZOOM_WHEEL_EXP_SENSITIVITY = 0.0025;
+const ZOOM_WHEEL_DELTA_MAX_PX = 180;
+const CAMERA_UI_SYNC_MS = 24;
+const CANVAS_PAD_X = 240;
+const CANVAS_PAD_Y = 140;
+const TIME_SCALE_MIN = 0.5;
+const TIME_SCALE_MAX = 3;
+const TIME_SCALE_STEP = 0.05;
+const TIME_SCALE_DEFAULT = 0.5;
+const PROMPT_MARKER_MAX = 10;
+const LOCAL_UNPUSHED_GRAY = '#a8a29e';
+const CLUMP_DISTANCE_PX = 16;
+const CLUMP_COUNT_MAX = 99;
+const CLUMP_SIZE_BOOST_PX = 0.5;
 
-type TooltipData = { x: number; y: number; lines: string[] };
+type TooltipData = {
+  x: number;
+  y: number;
+  lines: string[];
+  avatarUrl?: string;
+  avatarFallback?: string;
+};
 type PRCommitHover = { x: number; arcY: number; pr: MergedPR; commitIdx: number; total: number };
 type SpacingMode = 'regular' | 'bounded';
+type ClampMode = 'hard' | 'soft';
+type OrientationMode = 'vertical' | 'horizontal';
+type MarkerEntry<T> = { x: number; y: number; item: T };
+type MarkerCluster<T> = { x: number; y: number; entries: MarkerEntry<T>[] };
 
-function smoothScrollTo(el: HTMLElement, targetLeft: number, durationMs: number) {
-  const startLeft = el.scrollLeft;
-  const delta = targetLeft - startLeft;
-  if (Math.abs(delta) < 1) return;
+function getCameraScale(zoomValue: number, _horizontal: boolean): { x: number; y: number } {
+  return { x: zoomValue, y: zoomValue };
+}
+
+function normalizeWheelDeltaPx(delta: number, deltaMode: number, pageSizePx: number): number {
+  if (deltaMode === WheelEvent.DOM_DELTA_LINE) return delta * 16;
+  if (deltaMode === WheelEvent.DOM_DELTA_PAGE) return delta * Math.max(pageSizePx, 1);
+  return delta;
+}
+
+function smoothValueTo(
+  start: number,
+  target: number,
+  durationMs: number,
+  onFrame: (value: number) => void
+): () => void {
+  const delta = target - start;
+  if (Math.abs(delta) < 1) return () => undefined;
   const startTime = performance.now();
+  let rafId = 0;
+  let cancelled = false;
   function easeInOutCubic(t: number) {
     return t < 0.5 ? 4 * t * t * t : 1 - Math.pow(-2 * t + 2, 3) / 2;
   }
   function step(now: number) {
+    if (cancelled) return;
     const elapsed = now - startTime;
     const t = Math.min(1, elapsed / durationMs);
-    el.scrollLeft = startLeft + delta * easeInOutCubic(t);
-    if (t < 1) requestAnimationFrame(step);
+    onFrame(start + delta * easeInOutCubic(t));
+    if (t < 1) rafId = requestAnimationFrame(step);
   }
-  requestAnimationFrame(step);
+  rafId = requestAnimationFrame(step);
+  return () => {
+    cancelled = true;
+    cancelAnimationFrame(rafId);
+  };
 }
 
 function fmtRelativeDate(dateStr: string): string {
@@ -69,6 +115,81 @@ function estimateSvgTextWidth(text: string, fontSize = 10): number {
   return Math.ceil(text.length * fontSize * 0.56);
 }
 
+function truncatePrompt(text: string, max = 90): string {
+  if (text.length <= max) return text;
+  return `${text.slice(0, max)}…`;
+}
+
+function clusterMarkersByDistance<T>(
+  entries: MarkerEntry<T>[],
+  maxGap: number
+): MarkerCluster<T>[] {
+  if (entries.length === 0) return [];
+  if (maxGap <= 0) {
+    return entries.map((entry) => ({
+      x: entry.x,
+      y: entry.y,
+      entries: [entry],
+    }));
+  }
+
+  const clusters: MarkerCluster<T>[] = [];
+  let current: MarkerEntry<T>[] = [entries[0]];
+
+  function flush() {
+    const totalX = current.reduce((sum, entry) => sum + entry.x, 0);
+    const totalY = current.reduce((sum, entry) => sum + entry.y, 0);
+    clusters.push({
+      x: totalX / current.length,
+      y: totalY / current.length,
+      entries: current,
+    });
+  }
+
+  for (let i = 1; i < entries.length; i += 1) {
+    const prev = current[current.length - 1];
+    const next = entries[i];
+    const distance = Math.hypot(next.x - prev.x, next.y - prev.y);
+    if (distance <= maxGap) {
+      current.push(next);
+    } else {
+      flush();
+      current = [next];
+    }
+  }
+  flush();
+  return clusters;
+}
+
+function clumpCountLabel(count: number): string {
+  return count > CLUMP_COUNT_MAX ? `${CLUMP_COUNT_MAX}+` : String(count);
+}
+
+function promptMarkerPath(centerX: number, centerY: number, size: number): string {
+  const markerX = centerX - size / 2;
+  const markerY = centerY - size / 2;
+  const markerRadius = size / 2;
+  const markerBottom = markerY + size;
+  return [
+    `M ${markerX} ${markerY + markerRadius}`,
+    `A ${markerRadius} ${markerRadius} 0 0 1 ${markerX + markerRadius} ${markerY}`,
+    `A ${markerRadius} ${markerRadius} 0 0 1 ${markerX + size} ${markerY + markerRadius}`,
+    `A ${markerRadius} ${markerRadius} 0 0 1 ${markerX + markerRadius} ${markerBottom}`,
+    `H ${markerX}`,
+    'Z',
+  ].join(' ');
+}
+
+function placeItemsEvenly<T>(items: T[], minX: number, maxX: number): Array<{ item: T; x: number }> {
+  if (items.length === 0) return [];
+  if (items.length === 1) return [{ item: items[0], x: maxX }];
+  const span = Math.max(0, maxX - minX);
+  return items.map((item, index) => ({
+    item,
+    x: minX + (span * index) / (items.length - 1),
+  }));
+}
+
 interface BranchMapProps {
   branches: Branch[];
   mergeNodes: MergeNode[];
@@ -81,14 +202,17 @@ interface BranchMapProps {
   onLoadMore?: () => void;
   githubOwner?: string | null;
   githubRepo?: string | null;
+  branchPromptMeta?: Record<string, BranchPromptMeta>;
+  branchCommitPreviews?: Record<string, BranchCommitPreview[]>;
+  branchUniqueAheadCounts?: Record<string, number>;
   view?: ViewMode;
   conflictBranches?: Branch[];
   staleBranches?: Branch[];
-  inactiveErrorBranches?: Branch[];
   openPRs?: OpenPR[];
   isLoading?: boolean;
   scrollRequest?: { branch: Branch; seq: number } | null;
   focusedErrorBranch?: Branch | null;
+  checkedOutRef?: CheckedOutRef | null;
 }
 
 export default function BranchMap({
@@ -102,36 +226,62 @@ export default function BranchMap({
   onBranchClick,
   githubOwner,
   githubRepo,
+  branchPromptMeta = {},
+  branchCommitPreviews = {},
+  branchUniqueAheadCounts = {},
   view = 'time',
   conflictBranches = [],
   staleBranches = [],
-  inactiveErrorBranches = [],
   openPRs = [],
   isLoading = false,
   scrollRequest,
   focusedErrorBranch,
+  checkedOutRef = null,
 }: BranchMapProps) {
   const [tooltip, setTooltip] = useState<TooltipData | null>(null);
   const [hoveredBranch, setHoveredBranch] = useState<string | null>(null);
   const [hoveredPR, setHoveredPR] = useState<number | null>(null);
   const [hoveredPRCommit, setHoveredPRCommit] = useState<PRCommitHover | null>(null);
-  const [hoveredMergeNode, setHoveredMergeNode] = useState<{ x: number; node: MergeNode } | null>(null);
+  const [hoveredMergeNode, setHoveredMergeNode] = useState<{ y: number; node: MergeNode } | null>(null);
   const [prCommits, setPrCommits] = useState<Map<number, string[]>>(new Map());
-  const [zoom, setZoom] = useState(ZOOM_MIN);
+  const [zoom, setZoom] = useState(ZOOM_DEFAULT);
+  const [timeScale, setTimeScale] = useState(TIME_SCALE_DEFAULT);
   const [spacingMode, setSpacingMode] = useState<SpacingMode>('bounded');
+  const [orientation, setOrientation] = useState<OrientationMode>('vertical');
+  const isHorizontal = orientation === 'horizontal';
+  const effectiveTimeScale = timeScale;
+  const effectiveSpacingMode: SpacingMode = spacingMode;
   // WKWebView (Tauri) doesn't fire CSS animations on SVG elements inserted during
   // the initial paint. Defer animation classes by one rAF so they start post-paint.
   const [drawReady, setDrawReady] = useState(false);
+  const [animationsLocked, setAnimationsLocked] = useState(false);
   // flashingName: branch in "bright" phase right after focus (clears after 700ms, triggering CSS stroke transition to lighter red)
   const [_flashingName, setFlashingName] = useState<string | null>(null);
 
   const scrollRef = useRef<HTMLDivElement>(null);
+  const cameraRef = useRef<HTMLDivElement>(null);
   const svgRef = useRef<SVGSVGElement>(null);
-  const zoomScrollAnchor = useRef<{
-    contentX: number;
-    mouseX: number;
-    oldZoom: number;
-  } | null>(null);
+  const zoomLayerRef = useRef<SVGGElement>(null);
+  const zoomRef = useRef(zoom);
+  const zoomStateRef = useRef(zoom);
+  const panUiSyncTimeoutRef = useRef<number | null>(null);
+  const zoomUiSyncTimeoutRef = useRef<number | null>(null);
+  const gestureZoomBaseRef = useRef(zoomRef.current);
+  const gesturePointRef = useRef<{ x: number; y: number } | null>(null);
+  const graphOffsetRef = useRef({ x: 0, y: 0 });
+  const panStartRef = useRef({ x: 0, y: 0, panX: 0, panY: 0 });
+  const [pan, setPan] = useState({ x: 0, y: 0 });
+  const panRef = useRef(pan);
+  const targetPanRef = useRef(pan);
+  const lastUiSyncRef = useRef(0);
+  const [isPanning, setIsPanning] = useState(false);
+  const isPanningRef = useRef(false);
+  const [spaceHeld, setSpaceHeld] = useState(false);
+  const spacePressedRef = useRef(false);
+  const drawReadyRef = useRef(drawReady);
+  const animationsLockedRef = useRef(animationsLocked);
+  const focusScrollCancelRef = useRef<(() => void) | null>(null);
+  const hasAutoCenteredRef = useRef(false);
 
   // Bottom chrome scrollbar state
   const [barScrollLeft, setBarScrollLeft] = useState(0);
@@ -139,14 +289,14 @@ export default function BranchMap({
   const [thumbWidth, setThumbWidth] = useState(48);
   const [scrollbarReady, setScrollbarReady] = useState(false);
   const barRangeRef = useRef<HTMLInputElement>(null);
+  const [viewportSize, setViewportSize] = useState({ width: 0, height: 0 });
   const [containerHeight, setContainerHeight] = useState(540);
+  const renderCameraScale = getCameraScale(zoom, isHorizontal);
 
   // Branch issues panel state
   const [errorPanelOpen, setErrorPanelOpen] = useState(false);
   const errorPanelRef = useRef<HTMLDivElement>(null);
 
-  // Inactive error branches render grey (no status colors)
-  const inactiveErrorSet = new Set(inactiveErrorBranches.map(b => b.name));
   const openPRBranchNames = new Set(openPRs.map(p => p.branchName));
   const localBranchCount = branches.filter((b) => b.name !== defaultBranch).length;
   const hasTimelineSeedData =
@@ -160,6 +310,7 @@ export default function BranchMap({
     if (!hasTimelineSeedData) {
       hadDataRef.current = false;
       setDrawReady(false);
+      setAnimationsLocked(false);
       return;
     }
     if (hadDataRef.current) return;
@@ -185,13 +336,163 @@ export default function BranchMap({
     };
   }, [hasTimelineSeedData]);
 
-  // Scroll to the right when data loads so most recent content is visible.
   useEffect(() => {
-    if (!hasTimelineSeedData) return;
-    if (scrollRef.current) {
-      scrollRef.current.scrollLeft = scrollRef.current.scrollWidth;
+    zoomRef.current = zoom;
+    zoomStateRef.current = zoom;
+    paintCamera(panRef.current, zoomRef.current);
+  }, [zoom]);
+
+  useEffect(() => {
+    drawReadyRef.current = drawReady;
+  }, [drawReady]);
+
+  useEffect(() => {
+    animationsLockedRef.current = animationsLocked;
+    setTimelineStaticClass(animationsLocked);
+  }, [animationsLocked]);
+
+  useEffect(() => {
+    panRef.current = pan;
+    if (!isPanning) {
+      targetPanRef.current = pan;
     }
-  }, [hasTimelineSeedData]);
+    paintCamera(panRef.current, zoomRef.current);
+  }, [pan, isPanning]);
+
+  function clampPan(
+    next: { x: number; y: number },
+    _zoomValue = zoomRef.current,
+    _mode: ClampMode = 'soft'
+  ) {
+    return next;
+  }
+
+  function paintCamera(nextPan = panRef.current, _nextZoom = zoomRef.current) {
+    const el = cameraRef.current;
+    if (!el) return;
+    const cameraScale = getCameraScale(_nextZoom, isHorizontal);
+    el.style.transform = `translate3d(${nextPan.x}px, ${nextPan.y}px, 0)`;
+    const svg = svgRef.current;
+    if (svg) {
+      const inv = 1 / Math.max(cameraScale.x, 0.0001);
+      svg.style.setProperty('--icon-inv-scale', String(inv));
+    }
+    const zoomLayer = zoomLayerRef.current;
+    if (zoomLayer) {
+      zoomLayer.setAttribute('transform', `scale(${cameraScale.x} ${cameraScale.y})`);
+    }
+  }
+
+  function setTimelineStaticClass(locked: boolean) {
+    const svg = svgRef.current;
+    if (!svg) return;
+    if (locked) {
+      svg.classList.add('timeline-static');
+    } else {
+      svg.classList.remove('timeline-static');
+    }
+  }
+
+  function syncUiState(force = false) {
+    if (!force) return;
+    const now = performance.now();
+    if (now - lastUiSyncRef.current < CAMERA_UI_SYNC_MS) return;
+    lastUiSyncRef.current = now;
+    if (Math.abs(zoomRef.current - zoomStateRef.current) > 0.0001) {
+      zoomStateRef.current = zoomRef.current;
+      setZoom(zoomRef.current);
+    }
+    const nextPan = panRef.current;
+    setPan((prev) => (
+      Math.abs(prev.x - nextPan.x) < 0.1 && Math.abs(prev.y - nextPan.y) < 0.1
+        ? prev
+        : nextPan
+    ));
+  }
+
+  function applyCamera(nextPan: { x: number; y: number }, nextZoom = zoomRef.current, forceUiSync = false) {
+    panRef.current = nextPan;
+    targetPanRef.current = nextPan;
+    zoomRef.current = nextZoom;
+    paintCamera(nextPan, nextZoom);
+    syncUiState(forceUiSync);
+  }
+
+  function lockAnimationsIfReady() {
+    if (!drawReadyRef.current || animationsLockedRef.current) return;
+    animationsLockedRef.current = true;
+    // Synchronously lock before camera transform changes to avoid WebKit replaying intro animations.
+    setTimelineStaticClass(true);
+    setAnimationsLocked(true);
+  }
+
+  function stopPanSmoothing() {
+    if (panUiSyncTimeoutRef.current !== null) {
+      clearTimeout(panUiSyncTimeoutRef.current);
+      panUiSyncTimeoutRef.current = null;
+    }
+  }
+
+  function stopWheelInertia() {
+    stopPanSmoothing();
+  }
+
+  function schedulePanUiSync() {
+    if (panUiSyncTimeoutRef.current !== null) {
+      clearTimeout(panUiSyncTimeoutRef.current);
+    }
+    panUiSyncTimeoutRef.current = window.setTimeout(() => {
+      panUiSyncTimeoutRef.current = null;
+      syncUiState(true);
+    }, 70);
+  }
+
+  function scheduleZoomUiSync() {
+    if (zoomUiSyncTimeoutRef.current !== null) {
+      clearTimeout(zoomUiSyncTimeoutRef.current);
+    }
+    zoomUiSyncTimeoutRef.current = window.setTimeout(() => {
+      zoomUiSyncTimeoutRef.current = null;
+      syncUiState(true);
+    }, 90);
+  }
+
+  function stopZoomAnimation(forceUiSync = true) {
+    if (zoomUiSyncTimeoutRef.current !== null) {
+      clearTimeout(zoomUiSyncTimeoutRef.current);
+      zoomUiSyncTimeoutRef.current = null;
+    }
+    if (forceUiSync) {
+      syncUiState(true);
+    }
+  }
+
+  function applyZoomAt(point: { x: number; y: number }, nextZoom: number, forceUiSync = false): boolean {
+    lockAnimationsIfReady();
+    if (!Number.isFinite(nextZoom)) return false;
+    const currentZoom = zoomRef.current;
+    nextZoom = Math.max(ZOOM_MIN, Math.min(ZOOM_MAX, nextZoom));
+    if (nextZoom === currentZoom) return false;
+
+    const currentPan = panRef.current;
+    const graphOffset = graphOffsetRef.current;
+    const currentScale = getCameraScale(currentZoom, isHorizontal);
+    const nextScale = getCameraScale(nextZoom, isHorizontal);
+    const worldX = (point.x - currentPan.x - graphOffset.x) / Math.max(currentScale.x, 0.0001);
+    const worldY = (point.y - currentPan.y - graphOffset.y) / Math.max(currentScale.y, 0.0001);
+    const nextPan = clampPan(
+      {
+        x: point.x - graphOffset.x - worldX * nextScale.x,
+        y: point.y - graphOffset.y - worldY * nextScale.y,
+      },
+      nextZoom,
+      'soft'
+    );
+
+    stopPanSmoothing();
+    applyCamera(nextPan, nextZoom, forceUiSync);
+    return true;
+  }
 
   // Reveal the scrollbar after the main draw-in animation completes.
   // drawReady fires when animations start; 2600ms matches draw-path-main duration.
@@ -206,68 +507,208 @@ export default function BranchMap({
     return () => clearTimeout(id);
   }, [drawReady]);
 
-  // Ctrl+wheel → zoom the timeline
+  // In WebKit, repeated ancestor transform updates can occasionally restart SVG
+  // stroke-dash animations. Lock them to final state right after initial intro.
+  useEffect(() => {
+    if (!drawReady) {
+      setAnimationsLocked(false);
+      return;
+    }
+    const id = setTimeout(() => setAnimationsLocked(true), 2800);
+    return () => clearTimeout(id);
+  }, [drawReady]);
+
+  // Wheel behavior:
+  // - Ctrl/Cmd + wheel: direct cursor-anchored zoom
+  // - plain wheel: inertial pan in both axes
   useEffect(() => {
     const el = scrollRef.current;
     if (!el) return;
     const onWheel = (e: WheelEvent) => {
-      if (!e.ctrlKey && !e.metaKey) return;
       e.preventDefault();
-      const rect = el.getBoundingClientRect();
-      const mouseX = e.clientX - rect.left;
-      const contentX = el.scrollLeft + mouseX;
-      setZoom((prev) => {
-        const delta = e.deltaY > 0 ? -0.05 : 0.05;
-        const newZoom = Math.max(
-          ZOOM_MIN,
-          Math.min(ZOOM_MAX, Math.round((prev + delta) * 100) / 100)
-        );
-        zoomScrollAnchor.current = { contentX, mouseX, oldZoom: prev };
-        return newZoom;
-      });
+      lockAnimationsIfReady();
+      focusScrollCancelRef.current?.();
+      focusScrollCancelRef.current = null;
+
+      if (e.ctrlKey || e.metaKey) {
+        stopWheelInertia();
+        stopPanSmoothing();
+        const rect = el.getBoundingClientRect();
+        const point = { x: e.clientX - rect.left, y: e.clientY - rect.top };
+        const pixelDeltaY = normalizeWheelDeltaPx(e.deltaY, e.deltaMode, el.clientHeight);
+        const clampedDeltaY = Math.max(-ZOOM_WHEEL_DELTA_MAX_PX, Math.min(ZOOM_WHEEL_DELTA_MAX_PX, pixelDeltaY));
+        const zoomFactor = Math.exp(-clampedDeltaY * ZOOM_WHEEL_EXP_SENSITIVITY);
+        if (!Number.isFinite(zoomFactor) || Math.abs(zoomFactor - 1) < 0.0001) return;
+        applyZoomAt(point, zoomRef.current * zoomFactor);
+        scheduleZoomUiSync();
+        return;
+      }
+
+      stopZoomAnimation(false);
+      const nextPan = clampPan({
+        x: panRef.current.x - e.deltaX,
+        y: panRef.current.y - e.deltaY,
+      }, zoomRef.current, 'soft');
+      applyCamera(nextPan, zoomRef.current);
+      schedulePanUiSync();
     };
+
+    const onGestureStart = (evt: Event) => {
+      const e = evt as Event & { scale?: number; clientX?: number; clientY?: number };
+      e.preventDefault();
+      lockAnimationsIfReady();
+      stopWheelInertia();
+      stopPanSmoothing();
+      gestureZoomBaseRef.current = zoomRef.current;
+      const rect = el.getBoundingClientRect();
+      gesturePointRef.current = {
+        x: (e.clientX ?? (rect.left + rect.width / 2)) - rect.left,
+        y: (e.clientY ?? (rect.top + rect.height / 2)) - rect.top,
+      };
+    };
+
+    const onGestureChange = (evt: Event) => {
+      const e = evt as Event & { scale?: number };
+      e.preventDefault();
+      const point = gesturePointRef.current;
+      const scale = e.scale;
+      if (!point || scale == null || !Number.isFinite(scale)) return;
+      applyZoomAt(point, gestureZoomBaseRef.current * scale);
+    };
+
+    const onGestureEnd = (evt: Event) => {
+      evt.preventDefault();
+      gesturePointRef.current = null;
+      syncUiState(true);
+    };
+
     el.addEventListener('wheel', onWheel, { passive: false });
-    return () => el.removeEventListener('wheel', onWheel);
+    el.addEventListener('gesturestart', onGestureStart as EventListener, { passive: false });
+    el.addEventListener('gesturechange', onGestureChange as EventListener, { passive: false });
+    el.addEventListener('gestureend', onGestureEnd as EventListener, { passive: false });
+    return () => {
+      el.removeEventListener('wheel', onWheel);
+      el.removeEventListener('gesturestart', onGestureStart as EventListener);
+      el.removeEventListener('gesturechange', onGestureChange as EventListener);
+      el.removeEventListener('gestureend', onGestureEnd as EventListener);
+    };
   }, []);
 
-  // Preserve scroll anchor after zoom
+  // Keep wheel inertia and RAF loops cleaned up.
   useEffect(() => {
-    const anchor = zoomScrollAnchor.current;
-    if (!anchor) return;
-    zoomScrollAnchor.current = null;
-    requestAnimationFrame(() => {
-      if (scrollRef.current) {
-        const scaledX =
-          LEFT_PAD + (anchor.contentX - LEFT_PAD) * (zoom / anchor.oldZoom);
-        scrollRef.current.scrollLeft = scaledX - anchor.mouseX;
-      }
-    });
-  }, [zoom]);
+    return () => {
+      focusScrollCancelRef.current?.();
+      focusScrollCancelRef.current = null;
+      stopZoomAnimation();
+      stopWheelInertia();
+      stopPanSmoothing();
+    };
+  }, []);
 
-  // Sync bottom chrome scrollbar + track container height
+  // Track viewport size for camera clamping + layout.
   useEffect(() => {
     const el = scrollRef.current;
     if (!el) return;
-    const syncBar = () => {
-      const max = Math.max(0, el.scrollWidth - el.clientWidth);
-      setBarScrollLeft(el.scrollLeft);
-      setBarScrollMax(max);
-      if (el.clientHeight > 0) setContainerHeight(el.clientHeight);
-      const rangeEl = barRangeRef.current;
-      if (rangeEl && rangeEl.offsetWidth > 0) {
-        const ratio = el.scrollWidth > 0 ? el.clientWidth / el.scrollWidth : 1;
-        setThumbWidth(Math.max(24, Math.round(rangeEl.offsetWidth * ratio)));
+    const updateSize = () => {
+      const rect = el.getBoundingClientRect();
+      setViewportSize({ width: rect.width, height: rect.height });
+      if (rect.height > 0) setContainerHeight(rect.height);
+    };
+    updateSize();
+    const ro = new ResizeObserver(updateSize);
+    ro.observe(el);
+    return () => ro.disconnect();
+  }, []);
+
+  // Space+drag (or middle mouse drag) panning, interrupting all inertial motion.
+  useEffect(() => {
+    if (!isPanning) return;
+    const onMove = (e: MouseEvent) => {
+      const dx = e.clientX - panStartRef.current.x;
+      const dy = e.clientY - panStartRef.current.y;
+      const nextPan = clampPan({
+        x: panStartRef.current.panX + dx,
+        y: panStartRef.current.panY + dy,
+      }, zoomRef.current, 'soft');
+      applyCamera(nextPan, zoomRef.current);
+    };
+    const onUp = () => {
+      isPanningRef.current = false;
+      setIsPanning(false);
+      syncUiState(true);
+    };
+    window.addEventListener('mousemove', onMove);
+    window.addEventListener('mouseup', onUp);
+    return () => {
+      window.removeEventListener('mousemove', onMove);
+      window.removeEventListener('mouseup', onUp);
+    };
+  }, [isPanning]);
+
+  useEffect(() => {
+    const isEditable = (el: EventTarget | null) => {
+      if (!(el instanceof Element)) return false;
+      if (el instanceof HTMLInputElement || el instanceof HTMLTextAreaElement) return true;
+      return (el as HTMLElement).isContentEditable;
+    };
+    const onKeyDown = (e: KeyboardEvent) => {
+      if (e.code !== 'Space' || isEditable(e.target)) return;
+      e.preventDefault();
+      spacePressedRef.current = true;
+      setSpaceHeld(true);
+    };
+    const onKeyUp = (e: KeyboardEvent) => {
+      if (e.code !== 'Space') return;
+      spacePressedRef.current = false;
+      setSpaceHeld(false);
+      if (isPanningRef.current) {
+        isPanningRef.current = false;
+        setIsPanning(false);
+        syncUiState(true);
       }
     };
-    el.addEventListener('scroll', syncBar, { passive: true });
-    const ro = new ResizeObserver(syncBar);
-    ro.observe(el);
-    syncBar();
+    window.addEventListener('keydown', onKeyDown);
+    window.addEventListener('keyup', onKeyUp);
     return () => {
-      el.removeEventListener('scroll', syncBar);
-      ro.disconnect();
+      window.removeEventListener('keydown', onKeyDown);
+      window.removeEventListener('keyup', onKeyUp);
     };
   }, []);
+
+  useEffect(() => {
+    isPanningRef.current = isPanning;
+  }, [isPanning]);
+
+  useEffect(() => {
+    hasAutoCenteredRef.current = false;
+  }, [orientation]);
+
+  function handleCanvasMouseDown(e: React.MouseEvent<HTMLDivElement>) {
+    const target = e.target as Element | null;
+    const clickedBackground =
+      target === scrollRef.current ||
+      target === svgRef.current ||
+      !!(target instanceof HTMLDivElement && target.parentElement === scrollRef.current);
+    const canPan =
+      e.button === 1 ||
+      (e.button === 0 && (spacePressedRef.current || clickedBackground));
+    if (!canPan || !scrollRef.current) return;
+    e.preventDefault();
+    lockAnimationsIfReady();
+    focusScrollCancelRef.current?.();
+    focusScrollCancelRef.current = null;
+    stopZoomAnimation(false);
+    stopWheelInertia();
+    targetPanRef.current = panRef.current;
+    panStartRef.current = {
+      x: e.clientX,
+      y: e.clientY,
+      panX: targetPanRef.current.x,
+      panY: targetPanRef.current.y,
+    };
+    isPanningRef.current = true;
+    setIsPanning(true);
+  }
 
   // Fetch real commit SHAs for merged PRs
   useEffect(() => {
@@ -296,22 +737,6 @@ export default function BranchMap({
     document.addEventListener('mousedown', handler);
     return () => document.removeEventListener('mousedown', handler);
   }, [errorPanelOpen]);
-
-  // Scroll timeline to the requested branch. Set flashingName briefly so the arc
-  // starts bright red, then CSS stroke transition fades it to the settled lighter red.
-  useEffect(() => {
-    if (!scrollRequest || !scrollRef.current) return;
-    const { branch } = scrollRequest;
-    const x = branch.divergedFromDate
-      ? timeToX(branch.divergedFromDate)
-      : timeToX(branch.lastCommitDate);
-    const viewWidth = scrollRef.current.clientWidth;
-    smoothScrollTo(scrollRef.current, Math.max(0, x - viewWidth / 2), 600);
-    setFlashingName(branch.name);
-    const t = setTimeout(() => setFlashingName(null), 700);
-    return () => clearTimeout(t);
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [scrollRequest]);
 
   // ── Active branches (branch-first) ─────────────────────────────────────────
   const STATUS_PRIORITY: Record<string, number> = { 'conflict-risk': 0, stale: 1, fresh: 2, unknown: 3 };
@@ -352,14 +777,19 @@ export default function BranchMap({
   const showMergeTicks = false;
   const showMergedPROverlays = false;
 
+  const leftPad = LEFT_PAD;
+  const rightPad = RIGHT_PAD;
+  const cornerR = CORNER_R;
 
   // ── Build a date → X mapping ─────────────────────────────────────────────
-  // Timeline spacing can run in pure time mode or in bounded mode where each
-  // adjacent gap is clamped to avoid unreadable clusters/deserts.
-  const IDEAL_NODE_SPACING = Math.max(MIN_BRANCH_SPACING_X, Math.round(160 * zoom));
-  const IDEAL_EVENT_GAP = Math.max(8, Math.round(40 * zoom));
-  const MIN_EVENT_GAP = Math.max(4, Math.round(IDEAL_EVENT_GAP * 0.22));
-  const MAX_EVENT_GAP = Math.round(IDEAL_EVENT_GAP * 6.5);
+  // Simple and deterministic timeline mapping:
+  // - `regular`: true time-proportional spacing.
+  // - `bounded`: time-aware spacing with per-gap clamping.
+  // Both modes preserve chronology and use the same anchor timestamps.
+  const IDEAL_NODE_SPACING = Math.max(MIN_BRANCH_SPACING_X, 160 * effectiveTimeScale);
+  const IDEAL_EVENT_GAP = Math.max(8, 40 * effectiveTimeScale);
+  const MIN_EVENT_GAP = Math.max(4, IDEAL_EVENT_GAP * 0.22);
+  const MAX_EVENT_GAP = IDEAL_EVENT_GAP * 6.5;
 
   const sortedNodes = [...mergeNodes].sort(
     (a, b) => new Date(a.date).getTime() - new Date(b.date).getTime()
@@ -410,111 +840,111 @@ export default function BranchMap({
     return 0;
   });
 
-  const firstEventT =
-    timelineEvents.length > 0
-      ? timelineEvents[0].t
-      : Date.now();
-  const lastEventT =
-    timelineEvents.length > 1
-      ? timelineEvents[timelineEvents.length - 1].t
-      : firstEventT + 1;
+  const branchCommitAnchorTimes = activeBranches.flatMap((b) =>
+    (branchCommitPreviews[b.name] ?? [])
+      .map((c) => new Date(c.date).getTime())
+      .filter(Number.isFinite)
+  );
+  const promptAnchorTimes = activeBranches.flatMap((b) =>
+    (branchPromptMeta[b.name]?.markers ?? [])
+      .map((m) => new Date(m.timestamp).getTime())
+      .filter(Number.isFinite)
+  );
+  const allAnchorTimes = Array.from(
+    new Set<number>([
+      ...timelineEvents.map((e) => e.t).filter(Number.isFinite),
+      ...branchCommitAnchorTimes,
+      ...promptAnchorTimes,
+    ])
+  ).sort((a, b) => a - b);
+
+  const DAY_MS = 86400000;
+  const firstEventT = allAnchorTimes.length > 0 ? allAnchorTimes[0] : Date.now();
+  const lastEventT = allAnchorTimes.length > 1 ? allAnchorTimes[allAnchorTimes.length - 1] : firstEventT + 1;
   const timelineTimeSpan = Math.max(lastEventT - firstEventT, 1);
-  const eventTimes = timelineEvents.map((e) => e.t);
-  const avgEventIntervalMs = timelineEvents.length > 1
-    ? timelineTimeSpan / (timelineEvents.length - 1)
-    : 7 * 86400000;
-  const regularPxPerMs = IDEAL_EVENT_GAP / Math.max(avgEventIntervalMs, 1);
+  const avgAnchorIntervalMs = allAnchorTimes.length > 1
+    ? timelineTimeSpan / (allAnchorTimes.length - 1)
+    : 7 * DAY_MS;
+  const regularPxPerMs = IDEAL_EVENT_GAP / Math.max(avgAnchorIntervalMs, 1);
 
-  const eventDeltaDays = timelineEvents.slice(1).map((e, i) => {
-    const prevT = timelineEvents[i].t;
-    return Math.max((e.t - prevT) / 86400000, 0);
-  });
-  // Use rank-based normalization so spacing differences remain visible even when
-  // many timestamp deltas are numerically close.
-  const rankedDeltaInputs = eventDeltaDays.map((d, i) => d + i * 1e-6);
-  const sortedRankedDeltas = [...rankedDeltaInputs].sort((a, b) => a - b);
-  const deltaRankPct = rankedDeltaInputs.map((v) => {
-    if (sortedRankedDeltas.length <= 1) return 0;
-    let lo = 0;
-    let hi = sortedRankedDeltas.length;
-    while (lo < hi) {
-      const mid = (lo + hi) >> 1;
-      if (sortedRankedDeltas[mid] < v) lo = mid + 1;
-      else hi = mid;
+  const anchorXs: number[] = [];
+  if (allAnchorTimes.length > 0) {
+    anchorXs.push(leftPad);
+    for (let i = 1; i < allAnchorTimes.length; i += 1) {
+      if (effectiveSpacingMode === 'regular') {
+        anchorXs.push(leftPad + (allAnchorTimes[i] - firstEventT) * regularPxPerMs);
+      } else {
+        const deltaMs = Math.max(1, allAnchorTimes[i] - allAnchorTimes[i - 1]);
+        const scaledGap = IDEAL_EVENT_GAP * (deltaMs / Math.max(avgAnchorIntervalMs, 1));
+        const boundedGap = Math.max(MIN_EVENT_GAP, Math.min(MAX_EVENT_GAP, scaledGap));
+        anchorXs.push(anchorXs[i - 1] + boundedGap);
+      }
     }
-    return lo / (sortedRankedDeltas.length - 1);
-  });
-
-  const eventXs: number[] = [];
-  const eventXByKey = new Map<string, number>();
-  if (timelineEvents.length > 0) {
-    eventXs.push(LEFT_PAD);
-    eventXByKey.set(timelineEvents[0].key, LEFT_PAD);
-  }
-  for (let i = 1; i < timelineEvents.length; i++) {
-    let x: number;
-    if (spacingMode === 'regular') {
-      x = LEFT_PAD + (timelineEvents[i].t - firstEventT) * regularPxPerMs;
-    } else {
-      // Aggressive spread: curve ranked deltas into a wide min..max gap range.
-      const normalized = deltaRankPct[i - 1] ?? 0;
-      const eased = Math.pow(normalized, 1.35);
-      const gap = MIN_EVENT_GAP + eased * (MAX_EVENT_GAP - MIN_EVENT_GAP);
-      x = eventXs[i - 1] + gap;
-    }
-    eventXs.push(x);
-    eventXByKey.set(timelineEvents[i].key, x);
   }
 
-  const nodeXByFullSha = new Map<string, number>(
-    sortedNodes.map((m) => [m.fullSha, eventXByKey.get(`merge:${m.fullSha}`) ?? LEFT_PAD])
-  );
-  const directXByFullSha = new Map<string, number>(
-    sortedDirectCommits.map((c) => [c.fullSha, eventXByKey.get(`direct:${c.fullSha}`) ?? LEFT_PAD])
-  );
-
-  const mainEndX = eventXs.length > 0 ? eventXs[eventXs.length - 1] : LEFT_PAD;
-  const averageEventGap = timelineEvents.length > 1
-    ? (mainEndX - LEFT_PAD) / (timelineEvents.length - 1)
+  const averageEventGap = anchorXs.length > 1
+    ? (anchorXs[anchorXs.length - 1] - leftPad) / (anchorXs.length - 1)
     : IDEAL_EVENT_GAP;
-  const averageMergeGap = sortedNodes.length > 1
-    ? ((nodeXByFullSha.get(sortedNodes[sortedNodes.length - 1].fullSha) ?? LEFT_PAD) - (nodeXByFullSha.get(sortedNodes[0].fullSha) ?? LEFT_PAD)) / (sortedNodes.length - 1)
-    : IDEAL_NODE_SPACING;
-
-  // Extrapolation uses true time-rate in regular mode and a capped synthetic
-  // rate in bounded mode so off-range dates remain legible.
-  const safeExtrapPxPerMs = spacingMode === 'regular'
+  const safeExtrapPxPerMs = effectiveSpacingMode === 'regular'
     ? regularPxPerMs
-    : averageEventGap / Math.max(avgEventIntervalMs, 7 * 86400000);
+    : averageEventGap / Math.max(avgAnchorIntervalMs, 7 * DAY_MS);
 
-  function timeToX(dateStr: string): number {
-    const t = new Date(dateStr).getTime();
-    if (timelineEvents.length === 0) return LEFT_PAD;
-
+  function xForTimestamp(t: number): number {
+    if (!Number.isFinite(t) || allAnchorTimes.length === 0) return leftPad;
     let lo = 0;
-    let hi = eventTimes.length;
+    let hi = allAnchorTimes.length;
     while (lo < hi) {
       const mid = (lo + hi) >> 1;
-      if (eventTimes[mid] < t) lo = mid + 1;
+      if (allAnchorTimes[mid] < t) lo = mid + 1;
       else hi = mid;
     }
-
     if (lo <= 0) {
-      const rawX = LEFT_PAD + (t - firstEventT) * safeExtrapPxPerMs;
-      return Math.max(rawX, LEFT_PAD - MIN_EVENT_GAP * 2);
+      const rawX = leftPad + (t - firstEventT) * safeExtrapPxPerMs;
+      return Math.max(rawX, leftPad - MIN_EVENT_GAP * 2);
     }
-    if (lo >= eventTimes.length) {
-      return mainEndX + (t - lastEventT) * safeExtrapPxPerMs;
+    if (lo >= allAnchorTimes.length) {
+      const endX = anchorXs[anchorXs.length - 1] ?? leftPad;
+      return endX + (t - lastEventT) * safeExtrapPxPerMs;
     }
-
     const i = lo - 1;
-    const tA = eventTimes[i];
-    const tB = eventTimes[lo];
-    const xA = eventXs[i] ?? LEFT_PAD;
-    const xB = eventXs[lo] ?? xA;
+    const tA = allAnchorTimes[i];
+    const tB = allAnchorTimes[lo];
+    const xA = anchorXs[i] ?? leftPad;
+    const xB = anchorXs[lo] ?? xA;
     if (tB <= tA) return xA;
     const ratio = (t - tA) / (tB - tA);
     return xA + ratio * (xB - xA);
+  }
+
+  const nodeXByFullSha = new Map<string, number>(
+    sortedNodes.map((m) => [m.fullSha, xForTimestamp(new Date(m.date).getTime())])
+  );
+  const directXByFullSha = new Map<string, number>(
+    sortedDirectCommits.map((c) => [c.fullSha, xForTimestamp(new Date(c.date).getTime())])
+  );
+
+  const mainEndX = allAnchorTimes.length > 0 ? xForTimestamp(lastEventT) : leftPad;
+  const mainCommitXs = [
+    ...sortedNodes.map((m) => nodeXByFullSha.get(m.fullSha) ?? leftPad),
+    ...sortedDirectCommits.map((c) => directXByFullSha.get(c.fullSha) ?? leftPad),
+  ];
+  const latestMainCommitX = mainCommitXs.length > 0 ? Math.max(...mainCommitXs) : mainEndX;
+  const mainActiveEndX = Math.min(mainEndX, latestMainCommitX);
+  const averageMergeGap = sortedNodes.length > 1
+    ? ((nodeXByFullSha.get(sortedNodes[sortedNodes.length - 1].fullSha) ?? leftPad) - (nodeXByFullSha.get(sortedNodes[0].fullSha) ?? leftPad)) / (sortedNodes.length - 1)
+    : IDEAL_NODE_SPACING;
+
+  function timeToX(dateStr: string): number {
+    return xForTimestamp(new Date(dateStr).getTime());
+  }
+
+  function branchCreatedDate(b: Branch): string {
+    return b.createdDate ?? b.divergedFromDate ?? b.lastCommitDate;
+  }
+
+  function branchCreatedMs(b: Branch): number {
+    const t = new Date(branchCreatedDate(b)).getTime();
+    return Number.isFinite(t) ? t : Number.POSITIVE_INFINITY;
   }
 
   function branchForkX(b: Branch): number {
@@ -525,38 +955,67 @@ export default function BranchMap({
   function branchTipX(b: Branch): number {
     const forkX = branchForkX(b);
     const lastCommitX = timeToX(b.lastCommitDate);
-    return Math.max(lastCommitX, forkX + CORNER_R + 20);
+    return Math.max(lastCommitX, forkX + cornerR + 20);
   }
 
-  function branchVisualEndX(b: Branch): number {
+  function branchAheadCount(b: Branch): number {
+    if (Object.prototype.hasOwnProperty.call(branchUniqueAheadCounts, b.name)) {
+      return branchUniqueAheadCounts[b.name] ?? 0;
+    }
+    const previews = branchCommitPreviews[b.name];
+    if (previews != null) return previews.length;
+    return b.commitsAhead;
+  }
+
+  function branchVisualEndTimeX(b: Branch): number {
     const tipX = branchTipX(b);
-    const labelWidth = estimateSvgTextWidth(formatCommitsAhead(b.commitsAhead));
-    return tipX + AHEAD_LABEL_OFFSET_X + labelWidth;
+    return tipX + AHEAD_LABEL_OFFSET_X + estimateSvgTextWidth(formatCommitsAhead(branchAheadCount(b)));
   }
 
-  // SVG width: extend past mainEndX if any branch tip falls further right
-  // (e.g. a fresh branch with no commits sits at today's date, past the last PR).
-  const maxBranchVisualEndX = activeBranches.reduce(
-    (max, b) => Math.max(max, branchVisualEndX(b)),
+  // Canonical (logical) layout uses vertical time; orientation projection swaps axes when needed.
+  const MAIN_LEFT_PAD = 80;
+  const MAIN_TOP_PAD = 80;
+  const mainX = MAIN_LEFT_PAD;
+  const timelineMinX = leftPad;
+  const timelineMaxX = activeBranches.reduce(
+    (max, b) => Math.max(max, branchTipX(b)),
     mainEndX
   );
-  const svgWidth = maxBranchVisualEndX + RIGHT_PAD + 80;
+  const timelineSpanY = Math.max(220, timelineMaxX - timelineMinX);
+  const mainStartY = MAIN_TOP_PAD + timelineSpanY; // oldest
+  function timeCoordToY(timeCoordX: number): number {
+    return mainStartY - (timeCoordX - timelineMinX);
+  }
+  const mainEndY = timeCoordToY(mainEndX); // newest anchor on main
+  const mainActiveEndY = timeCoordToY(mainActiveEndX);
+  const hasMainStaleTailY = Math.abs(mainActiveEndY - mainEndY) > 0.5;
+  const logicalTimelineHeight = Math.max(mainStartY + 120, containerHeight);
 
-  // Main baseline sits near the top so branch lanes flow downward.
-  const MAIN_TOP_PAD = 80;
-  const mainY = MAIN_TOP_PAD;
+  function projectPoint(x: number, y: number): { x: number; y: number } {
+    return isHorizontal ? { x: logicalTimelineHeight - y, y: x } : { x, y };
+  }
 
-  // ── Assign vertical lanes to avoid overlap (strict downward hierarchy) ───
+  function pathCoord(x: number, y: number): string {
+    const projected = projectPoint(x, y);
+    return `${projected.x} ${projected.y}`;
+  }
+
+  // ── Assign branch lanes while preserving parent -> child ordering ─────────
   // Policy:
-  // 1) If a branch has a visible parent branch, it must render below that parent.
-  // 2) Unrelated branches can shift to lower lanes to satisfy (1).
-  // 3) Lane occupancy still respects horizontal separation to reduce label overlap.
-  const sortedByX = [...activeBranches].sort(
-    (a, b) => branchForkX(a) - branchForkX(b)
-  );
+  // 1) If a branch has a visible parent branch, it must render to the right of that parent.
+  // 2) Unrelated branches can shift rightward to satisfy (1).
+  // 3) Lane occupancy still respects time separation to reduce label overlap.
+  const sortedByX = [...activeBranches].sort((a, b) => {
+    // Allocate older branches first so they stay on earlier lanes.
+    const createdDiff = branchCreatedMs(a) - branchCreatedMs(b);
+    if (createdDiff !== 0) return createdDiff;
+    const forkDiff = branchForkX(a) - branchForkX(b);
+    if (forkDiff !== 0) return forkDiff;
+    return a.name.localeCompare(b.name);
+  });
   const branchByName = new Map(activeBranches.map((b) => [b.name, b]));
 
-  const BRANCH_LANE_MIN_SEPARATION_X = Math.max(20, Math.round(40 * zoom));
+  const BRANCH_LANE_MIN_SEPARATION_X = Math.max(20, 40 * effectiveTimeScale);
   const laneAssignments = new Map<string, number>();
   const laneLastEndX: number[] = [];
 
@@ -591,7 +1050,7 @@ export default function BranchMap({
       if (!parentAssigned) continue;
 
       const minLane = parentVisible ? (laneAssignments.get(parentName!) ?? 0) + 1 : 0;
-      const lane = allocateLane(minLane, branchForkX(b), branchVisualEndX(b));
+      const lane = allocateLane(minLane, branchForkX(b), branchVisualEndTimeX(b));
       laneAssignments.set(b.name, lane);
       pending.splice(i, 1);
       i -= 1;
@@ -601,58 +1060,286 @@ export default function BranchMap({
     if (!progressed) {
       // Cycle or missing parent assignment edge-case fallback.
       const b = pending.shift()!;
-      const lane = allocateLane(0, branchForkX(b), branchVisualEndX(b));
+      const lane = allocateLane(0, branchForkX(b), branchVisualEndTimeX(b));
       laneAssignments.set(b.name, lane);
     }
     guard += 1;
   }
 
-  const laneCount = laneLastEndX.length;
-  const availableLaneHeight = Math.max(220, containerHeight - mainY - 80);
-  const laneHeight = laneCount > 0
-    ? Math.max(34, Math.min(LANE_HEIGHT, Math.floor(availableLaneHeight / laneCount)))
-    : LANE_HEIGHT;
+  const laneWidth = LANE_HEIGHT;
 
-  function laneY(b: Branch): number {
+  function laneX(b: Branch): number {
     const lane = laneAssignments.get(b.name) ?? 0;
-    return mainY + laneHeight * (lane + 1) + 40;
+    return mainX + laneWidth * (lane + 1) + 40;
   }
 
-  const laneYByBranch = new Map<string, number>(
-    activeBranches.map((b) => [b.name, laneY(b)])
+  const laneXByBranch = new Map<string, number>(
+    activeBranches.map((b) => [b.name, laneX(b)])
   );
 
-  function branchStartY(b: Branch): number {
+  function branchStartX(b: Branch): number {
     const parent = b.parentBranch;
     if (parent && parent !== defaultBranch) {
-      const parentY = laneYByBranch.get(parent);
-      if (typeof parentY === 'number') {
-        return parentY;
+      const parentX = laneXByBranch.get(parent);
+      if (typeof parentX === 'number') {
+        return parentX;
       }
     }
-    return mainY;
+    return mainX;
   }
+
+  const maxBranchVisualEndX = activeBranches.reduce((max, b) => {
+    const lanePosX = laneXByBranch.get(b.name) ?? mainX;
+    const labelWidth = estimateSvgTextWidth(formatCommitsAhead(branchAheadCount(b)));
+    return Math.max(max, lanePosX + AHEAD_LABEL_OFFSET_X + labelWidth);
+  }, mainX + MAIN_LABEL_OFFSET_X + estimateSvgTextWidth(defaultBranch));
+  const logicalSvgWidth = maxBranchVisualEndX + rightPad + 80;
 
   // Merged PRs lane layout
   const MERGED_LANE_HEIGHT = 60;
   const MERGED_LANES = 4;
-  const maxBranchY = laneCount > 0
-    ? mainY + laneHeight * laneCount + 40
-    : mainY;
-  const svgHeight = Math.max(maxBranchY + 120, containerHeight);
+  const logicalSvgHeight = logicalTimelineHeight;
+  const svgWidth = isHorizontal ? logicalSvgHeight : logicalSvgWidth;
+  const svgHeight = isHorizontal ? logicalSvgWidth : logicalSvgHeight;
+  const canvasWidth = svgWidth + CANVAS_PAD_X * 2;
+  const canvasHeight = svgHeight + CANVAS_PAD_Y * 2;
+  const graphOffsetX = (canvasWidth - svgWidth) / 2;
+  const graphOffsetY = (canvasHeight - svgHeight) / 2;
+  graphOffsetRef.current = { x: graphOffsetX, y: graphOffsetY };
+
+  // Sync bottom chrome scrollbar to camera state.
+  useEffect(() => {
+    const axisScale = isHorizontal ? renderCameraScale.x : renderCameraScale.y;
+    const safeScale = Math.max(axisScale, 0.0001);
+    const visibleWorldSpan = isHorizontal
+      ? viewportSize.width / safeScale
+      : viewportSize.height / safeScale;
+    const axisSvgSize = isHorizontal ? svgWidth : svgHeight;
+    const max = Math.max(0, axisSvgSize - visibleWorldSpan);
+    const axisPan = isHorizontal ? pan.x : pan.y;
+    const axisGraphOffset = isHorizontal ? graphOffsetX : graphOffsetY;
+    const axisWorldStart = Math.max(0, Math.min(max, (-axisPan - axisGraphOffset) / safeScale));
+    setBarScrollLeft(axisWorldStart);
+    setBarScrollMax(max);
+
+    const rangeEl = barRangeRef.current;
+    if (rangeEl && rangeEl.offsetWidth > 0) {
+      const ratio = axisSvgSize > 0 ? visibleWorldSpan / axisSvgSize : 1;
+      setThumbWidth(Math.max(24, Math.round(rangeEl.offsetWidth * ratio)));
+    }
+  }, [
+    pan.x,
+    pan.y,
+    viewportSize.width,
+    viewportSize.height,
+    branches,
+    mergeNodes,
+    directCommits,
+    effectiveTimeScale,
+    effectiveSpacingMode,
+    isHorizontal,
+    canvasWidth,
+    canvasHeight,
+    renderCameraScale.x,
+    renderCameraScale.y,
+  ]);
+
+  const checkedOutBranchName = checkedOutRef?.branchName ?? null;
+  const checkedOutHeadSha = checkedOutRef?.headSha ?? null;
+  const checkedOutIndicatorLocal = (() => {
+    if (checkedOutBranchName && checkedOutBranchName !== defaultBranch) {
+      const branch = activeBranches.find((b) => b.name === checkedOutBranchName);
+      if (branch) {
+        return {
+          x: laneXByBranch.get(branch.name) ?? mainX,
+          y: timeCoordToY(branchTipX(branch)),
+        };
+      }
+    }
+
+    if (checkedOutHeadSha) {
+      const directX = directXByFullSha.get(checkedOutHeadSha);
+      if (typeof directX === 'number') {
+        return { x: mainX, y: timeCoordToY(directX) };
+      }
+      const mergeX = nodeXByFullSha.get(checkedOutHeadSha);
+      if (typeof mergeX === 'number') {
+        return { x: mainX, y: timeCoordToY(mergeX) };
+      }
+      const branchBySha = activeBranches.find((b) => b.headSha === checkedOutHeadSha);
+      if (branchBySha) {
+        return {
+          x: laneXByBranch.get(branchBySha.name) ?? mainX,
+          y: timeCoordToY(branchTipX(branchBySha)),
+        };
+      }
+    }
+
+    if (checkedOutBranchName === defaultBranch) {
+      return { x: mainX, y: mainEndY };
+    }
+
+    return null;
+  })();
+  const checkedOutAnchor = checkedOutIndicatorLocal
+    ? {
+      x: projectPoint(checkedOutIndicatorLocal.x, checkedOutIndicatorLocal.y).x,
+      y: projectPoint(checkedOutIndicatorLocal.x, checkedOutIndicatorLocal.y).y,
+    }
+    : null;
+
+  // Center the checked-out commit in the viewport when data first appears.
+  useEffect(() => {
+    if (!hasTimelineSeedData) {
+      hasAutoCenteredRef.current = false;
+      return;
+    }
+    if (hasAutoCenteredRef.current || viewportSize.width <= 0 || viewportSize.height <= 0) return;
+    const zoomValue = zoomRef.current;
+    const fallbackCenter = {
+      x: svgWidth / 2,
+      y: svgHeight / 2,
+    };
+    const target = checkedOutAnchor ?? fallbackCenter;
+    const scale = getCameraScale(zoomValue, isHorizontal);
+    const nextPan = clampPan(
+      {
+        x: viewportSize.width / 2 - graphOffsetX - target.x * scale.x,
+        y: viewportSize.height / 2 - graphOffsetY - target.y * scale.y,
+      },
+      zoomValue,
+      'hard'
+    );
+    applyCamera(nextPan, zoomValue, true);
+    hasAutoCenteredRef.current = true;
+  }, [
+    hasTimelineSeedData,
+    viewportSize.width,
+    viewportSize.height,
+    graphOffsetX,
+    graphOffsetY,
+    svgWidth,
+    svgHeight,
+    checkedOutAnchor,
+    effectiveTimeScale,
+    effectiveSpacingMode,
+  ]);
+
+  // Scroll timeline to the requested branch. Set flashingName briefly so the arc
+  // starts bright red, then CSS stroke transition fades it to the settled lighter red.
+  useEffect(() => {
+    if (!scrollRequest) return;
+    if (isHorizontal ? viewportSize.width <= 0 : viewportSize.height <= 0) return;
+    const { branch } = scrollRequest;
+    const focusTime = branch.divergedFromDate
+      ? timeToX(branch.divergedFromDate)
+      : timeToX(branch.lastCommitDate);
+    const focusLaneX = laneXByBranch.get(branch.name) ?? mainX;
+    const projected = projectPoint(focusLaneX, timeCoordToY(focusTime));
+    const viewportSpan = isHorizontal ? viewportSize.width : viewportSize.height;
+    const axisGraphOffset = isHorizontal ? graphOffsetX : graphOffsetY;
+    const scalePair = getCameraScale(zoomRef.current, isHorizontal);
+    const axisScale = Math.max(isHorizontal ? scalePair.x : scalePair.y, 0.0001);
+    const axisSvgSize = isHorizontal ? svgWidth : svgHeight;
+    const visibleWorldSpan = viewportSpan / axisScale;
+    const axisCoord = isHorizontal ? projected.x : projected.y;
+    const targetWorldStart = Math.max(
+      0,
+      Math.min(Math.max(0, axisSvgSize - visibleWorldSpan), axisCoord - visibleWorldSpan / 2)
+    );
+    const clampedTargetPan = clampPan(
+      isHorizontal
+        ? { x: -axisGraphOffset - targetWorldStart * axisScale, y: targetPanRef.current.y }
+        : { x: targetPanRef.current.x, y: -axisGraphOffset - targetWorldStart * axisScale },
+      zoomRef.current,
+      'hard'
+    );
+
+    focusScrollCancelRef.current?.();
+    focusScrollCancelRef.current = smoothValueTo(
+      isHorizontal ? panRef.current.x : panRef.current.y,
+      isHorizontal ? clampedTargetPan.x : clampedTargetPan.y,
+      600,
+      (value) => {
+        const next = clampPan(
+          isHorizontal
+            ? { x: value, y: targetPanRef.current.y }
+            : { x: targetPanRef.current.x, y: value },
+          zoomRef.current,
+          'hard'
+        );
+        applyCamera(next, zoomRef.current);
+      }
+    );
+    setFlashingName(branch.name);
+    const t = setTimeout(() => setFlashingName(null), 700);
+    return () => {
+      clearTimeout(t);
+      focusScrollCancelRef.current?.();
+      focusScrollCancelRef.current = null;
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [
+    scrollRequest,
+    viewportSize.width,
+    viewportSize.height,
+    graphOffsetX,
+    graphOffsetY,
+    canvasWidth,
+    canvasHeight,
+    isHorizontal,
+  ]);
+
+  const scaledNodeSize = NODE_SIZE;
+  const scaledHoverHitSize = 20;
+  const scaledBranchHitStrokeWidth = BRANCH_HIT_STROKE_WIDTH;
+  const clumpingEnabled = zoom <= 1;
+  const clumpDistanceWorld = clumpingEnabled
+    ? CLUMP_DISTANCE_PX / Math.max(renderCameraScale.x, 0.0001)
+    : 0;
+  const drawPathMainClass = animationsLocked ? undefined : 'draw-path-main';
+  const drawPathArcClass = animationsLocked ? undefined : 'draw-path-arc';
+  const fadeInInfoClass = animationsLocked ? undefined : 'fade-in-info';
+  const fadeInPillClass = animationsLocked ? undefined : 'fade-in-pill';
 
   return (
     <div className="h-full">
       <div
         ref={scrollRef}
-        className="w-full h-full overflow-x-auto overflow-y-hidden branch-map-scroll relative"
+        onMouseDown={handleCanvasMouseDown}
+        className={`w-full h-full overflow-hidden branch-map-scroll relative select-none touch-none ${isPanning ? 'cursor-grabbing' : spaceHeld ? 'cursor-grab' : 'cursor-default'}`}
       >
+        <div
+          ref={cameraRef}
+          style={{
+            position: 'absolute',
+            left: 0,
+            top: 0,
+            width: canvasWidth,
+            height: canvasHeight,
+            transform: `translate3d(${panRef.current.x}px, ${panRef.current.y}px, 0)`,
+            transformOrigin: 'top left',
+            willChange: 'transform',
+          }}
+        >
         <svg
           ref={svgRef}
           width={svgWidth}
           height={svgHeight}
-          className={drawReady ? 'timeline-ready' : ''}
-          style={{ minWidth: svgWidth, display: 'block' }}
+          className={[
+            'branch-map-svg',
+            drawReady ? 'timeline-ready' : '',
+            animationsLocked ? 'timeline-static' : '',
+          ].filter(Boolean).join(' ')}
+          style={{
+            '--icon-inv-scale': String(1 / Math.max(renderCameraScale.x, 0.0001)),
+            minWidth: svgWidth,
+            display: 'block',
+            position: 'absolute',
+            left: graphOffsetX,
+            top: graphOffsetY,
+            overflow: 'visible',
+          } as React.CSSProperties}
         >
           <defs>
             <filter id="tick-shadow" x="-50%" y="-50%" width="200%" height="200%">
@@ -660,55 +1347,137 @@ export default function BranchMap({
             </filter>
           </defs>
 
+          <g
+            ref={zoomLayerRef}
+            transform={`scale(${renderCameraScale.x} ${renderCameraScale.y})`}
+          >
+
           {/* ── Main timeline + merge nodes ── */}
           <g style={{ opacity: hoveredPR !== null || hoveredBranch !== null ? 0.2 : 1, transition: 'opacity 0.15s' }}>
             {/* Use <path> not <line>: pathLength on <line> is SVG 2 only and unreliable in WKWebView */}
             <path
-              d={`M ${LEFT_PAD} ${mainY} L ${mainEndX} ${mainY}`}
+              d={`M ${pathCoord(mainX, mainStartY)} L ${pathCoord(mainX, mainActiveEndY)}`}
               fill="none"
               stroke="#78716c"
               strokeWidth={1.5}
               pathLength={1}
-              className="draw-path-main"
+              className={drawPathMainClass}
             />
+            {hasMainStaleTailY && (
+              <g className="main-stale-tail-glow">
+                <path
+                  d={`M ${pathCoord(mainX, mainActiveEndY)} L ${pathCoord(mainX, mainEndY)}`}
+                  fill="none"
+                  stroke="#a8a29e"
+                  strokeWidth={1.5}
+                  pathLength={1}
+                  className={drawPathMainClass}
+                />
+              </g>
+            )}
 
             {/* Main label and ticks — fade in once the line is drawn */}
-            <g className="fade-in-info" style={{ '--delay': `${MAIN_DRAW_MS}ms` } as React.CSSProperties}>
-              <text
-                x={mainEndX + MAIN_LABEL_OFFSET_X}
-                y={mainY + 4}
-                fontSize={12}
-                fill="#1c1917"
-                fontWeight={500}
-              >
-                {defaultBranch}
-              </text>
-
-              {/* Direct commits — render with the same filled-square commit block shape as branch lanes */}
-              {directCommits.map(c => {
-                const x = directXByFullSha.get(c.fullSha) ?? timeToX(c.date);
-                const label = c.message.length > 38 ? c.message.slice(0, 38) + '…' : c.message;
+            <g className={fadeInInfoClass} style={{ '--delay': `${MAIN_DRAW_MS}ms` } as React.CSSProperties}>
+              {(() => {
+                const labelPoint = projectPoint(mainX + MAIN_LABEL_OFFSET_X, mainEndY + 4);
                 return (
-                  <rect
-                    key={c.fullSha}
-                    x={x - NODE_SIZE / 2}
-                    y={mainY - NODE_SIZE / 2}
-                    width={NODE_SIZE}
-                    height={NODE_SIZE}
-                    rx={2}
-                    fill="#78716c"
-                    style={{ cursor: 'pointer' }}
-                    onMouseEnter={() =>
-                      setTooltip({
-                        x,
-                        y: mainY - 16,
-                        lines: [c.sha, label, `@${c.author}`],
-                      })
-                    }
-                    onMouseLeave={() => setTooltip(null)}
-                  />
+                  <text
+                    className="branch-map-icon-fixed"
+                    x={labelPoint.x}
+                    y={labelPoint.y}
+                    fontSize={12}
+                    fill="#1c1917"
+                    fontWeight={500}
+                    style={{ transformOrigin: `${labelPoint.x}px ${labelPoint.y}px` }}
+                  >
+                    {defaultBranch}
+                  </text>
                 );
-              })}
+              })()}
+
+              {/* Direct commits */}
+              {(() => {
+                const entries: MarkerEntry<DirectCommit>[] = sortedDirectCommits.map((commit) => {
+                  const timeCoordX = directXByFullSha.get(commit.fullSha) ?? timeToX(commit.date);
+                  const markerPoint = projectPoint(mainX, timeCoordToY(timeCoordX));
+                  return { x: markerPoint.x, y: markerPoint.y, item: commit };
+                });
+                const clusters = clusterMarkersByDistance(entries, clumpDistanceWorld);
+                return clusters.map((cluster) => {
+                  const count = cluster.entries.length;
+                  const first = cluster.entries[0].item;
+                  const last = cluster.entries[count - 1].item;
+                  const countLabel = clumpCountLabel(count);
+
+                  if (count === 1) {
+                    const c = last;
+                    const label = c.message.length > 38 ? c.message.slice(0, 38) + '…' : c.message;
+                    return (
+                      <circle
+                        key={c.fullSha}
+                        className="branch-map-icon-fixed"
+                        cx={cluster.x}
+                        cy={cluster.y}
+                        r={scaledNodeSize / 2}
+                        fill="#78716c"
+                        style={{ cursor: 'pointer' }}
+                        onMouseEnter={() =>
+                          setTooltip({
+                            x: cluster.x + 14,
+                            y: cluster.y,
+                            lines: [c.sha, label, `@${c.author} · ${fmtTooltipDate(c.date)}`],
+                            avatarFallback: c.author?.charAt(0).toUpperCase() || '?',
+                          })
+                        }
+                        onMouseLeave={() => setTooltip(null)}
+                      />
+                    );
+                  }
+
+                  const firstTime = new Date(first.date).getTime();
+                  const lastTime = new Date(last.date).getTime();
+                  const rangeLine = firstTime === lastTime
+                    ? fmtTooltipDate(last.date)
+                    : `${fmtTooltipDate(first.date)} → ${fmtTooltipDate(last.date)}`;
+
+                  return (
+                    <g key={`direct-clump-${first.fullSha}-${last.fullSha}`}>
+                      <circle
+                        className="branch-map-icon-fixed"
+                        cx={cluster.x}
+                        cy={cluster.y}
+                        r={scaledNodeSize / 2 + CLUMP_SIZE_BOOST_PX}
+                        fill="#78716c"
+                        style={{ cursor: 'pointer' }}
+                        onMouseEnter={() =>
+                          setTooltip({
+                            x: cluster.x + 14,
+                            y: cluster.y,
+                            lines: [`${count} commits`, 'main', rangeLine],
+                            avatarFallback: last.author?.charAt(0).toUpperCase() || '?',
+                          })
+                        }
+                        onMouseLeave={() => setTooltip(null)}
+                      />
+                      <text
+                        className="branch-map-icon-fixed"
+                        x={cluster.x}
+                        y={cluster.y + 2.5}
+                        textAnchor="middle"
+                        fontSize={count >= 10 ? 6.5 : 8}
+                        fill="#fafaf9"
+                        fontWeight={600}
+                        style={{
+                          pointerEvents: 'none',
+                          transformOrigin: `${cluster.x}px ${cluster.y}px`,
+                        }}
+                      >
+                        {countLabel}
+                      </text>
+                    </g>
+                  );
+                });
+              })()}
 
               {showMergeTicks && (() => {
                 // Progressive label culling as zoom decreases.
@@ -725,49 +1494,51 @@ export default function BranchMap({
                 const anyLabel = labelSpacing >= 40;
                 const minLabelGap = showTitle ? 130 : showDate ? 100 : anyLabel ? 55 : Infinity;
 
-                let lastLabelX = -Infinity;
+                let lastLabelY = Number.POSITIVE_INFINITY;
                 return sortedNodes.map((m) => {
-                  const x = nodeXByFullSha.get(m.fullSha) ?? timeToX(m.date);
-                  const showLabel = anyLabel && x - lastLabelX >= minLabelGap;
-                  if (showLabel) lastLabelX = x;
+                  const timeCoordX = nodeXByFullSha.get(m.fullSha) ?? timeToX(m.date);
+                  const y = timeCoordToY(timeCoordX);
+                  const showLabel = anyLabel && lastLabelY - y >= minLabelGap;
+                  if (showLabel) lastLabelY = y;
                   const label = m.prNumber ? `PR #${m.prNumber}` : m.sha.slice(0, 7);
                   const isHovered = hoveredMergeNode?.node.fullSha === m.fullSha;
-                  const HIT = 20;
+                  const hitSize = scaledHoverHitSize;
                   return (
                     <g key={m.fullSha}>
                       {/* Visible tick — pointer-events off so hit rect handles hover */}
-                      <rect
-                        x={x - NODE_SIZE / 2}
-                        y={mainY - NODE_SIZE / 2}
-                        width={NODE_SIZE}
-                        height={NODE_SIZE}
-                        rx={2}
+                      <circle
+                       
+                        className="branch-map-icon-fixed"
+                        cx={mainX}
+                        cy={y}
+                        r={scaledNodeSize / 2}
                         fill={isHovered ? '#44403c' : '#78716c'}
                         style={{ pointerEvents: 'none', transition: 'fill 0.1s' }}
                       />
                       {/* Transparent hit area for hover — rendered on top */}
                       <rect
-                        x={x - HIT / 2}
-                        y={mainY - HIT / 2}
-                        width={HIT}
-                        height={HIT}
+                       
+                        x={mainX - hitSize / 2}
+                        y={y - hitSize / 2}
+                        width={hitSize}
+                        height={hitSize}
                         fill="transparent"
                         style={{ cursor: 'default' }}
-                        onMouseEnter={() => setHoveredMergeNode({ x, node: m })}
+                        onMouseEnter={() => setHoveredMergeNode({ y, node: m })}
                         onMouseLeave={() => setHoveredMergeNode(null)}
                       />
                       {showLabel && (
                         <>
-                          <text x={x} y={mainY + 20} textAnchor="middle" fontSize={12} fill="#57534e">
+                          <text x={mainX + 14} y={y + 4} textAnchor="start" fontSize={12} fill="#57534e">
                             {label}
                           </text>
                           {showTitle && (
-                            <text x={x} y={mainY + 32} textAnchor="middle" fontSize={10} fill="#78716c">
+                            <text x={mainX + 14} y={y + 16} textAnchor="start" fontSize={10} fill="#78716c">
                               {(m.prTitle ?? '').slice(0, 22) + ((m.prTitle?.length ?? 0) > 22 ? '…' : '')}
                             </text>
                           )}
                           {showDate && (
-                            <text x={x} y={showTitle ? mainY + 44 : mainY + 32} textAnchor="middle" fontSize={10} fill="#78716c">
+                            <text x={mainX + 14} y={showTitle ? y + 28 : y + 16} textAnchor="start" fontSize={10} fill="#78716c">
                               {fmtLabelDate(m.date)}
                             </text>
                           )}
@@ -782,13 +1553,13 @@ export default function BranchMap({
 
           {/* ── Merged PR overlays (optional secondary context) ── */}
           {showMergedPROverlays && mergedPRs.map((pr, idx) => {
-            const forkX = timeToX(pr.createdAt);
-            const mergeX = timeToX(pr.mergedAt);
+            const forkY = timeCoordToY(timeToX(pr.createdAt));
+            const mergeY = timeCoordToY(timeToX(pr.mergedAt));
             const lane = idx % MERGED_LANES;
-            const arcY = mainY - MERGED_LANE_HEIGHT * (lane + 1);
+            const arcX = mainX - MERGED_LANE_HEIGHT * (lane + 1);
             const shas = prCommits.get(pr.number);
             const commitCount = Math.min(shas?.length ?? pr.commitCount ?? 1, 12);
-            const effectiveMergeX = Math.max(mergeX, forkX + CORNER_R * 2 + 20);
+            const effectiveMergeY = Math.min(mergeY, forkY - cornerR * 2 - 20);
 
             const isHovered = hoveredPR === pr.number;
             const isDimmed = (hoveredPR !== null && !isHovered) || hoveredBranch !== null;
@@ -798,18 +1569,18 @@ export default function BranchMap({
             const strokeWidth = isHovered ? 1.6 : 1.2;
 
             const arcPath = [
-              `M ${forkX} ${mainY}`,
-              `L ${forkX} ${arcY + CORNER_R}`,
-              `Q ${forkX} ${arcY} ${forkX + CORNER_R} ${arcY}`,
-              `L ${effectiveMergeX - CORNER_R} ${arcY}`,
-              `Q ${effectiveMergeX} ${arcY} ${effectiveMergeX} ${arcY + CORNER_R}`,
-              `L ${effectiveMergeX} ${mainY}`,
+              `M ${mainX} ${forkY}`,
+              `L ${arcX + cornerR} ${forkY}`,
+              `Q ${arcX} ${forkY} ${arcX} ${forkY - cornerR}`,
+              `L ${arcX} ${effectiveMergeY + cornerR}`,
+              `Q ${arcX} ${effectiveMergeY} ${arcX + cornerR} ${effectiveMergeY}`,
+              `L ${mainX} ${effectiveMergeY}`,
             ].join(' ');
 
-            const midX = (forkX + effectiveMergeX) / 2;
-            const arcSpan = effectiveMergeX - forkX - CORNER_R * 2;
-            const commitXs = Array.from({ length: commitCount }, (_, i) =>
-              forkX + CORNER_R + (arcSpan * (i + 1)) / (commitCount + 1)
+            const midY = (forkY + effectiveMergeY) / 2;
+            const arcSpan = forkY - effectiveMergeY - cornerR * 2;
+            const commitYs = Array.from({ length: commitCount }, (_, i) =>
+              forkY - cornerR - (arcSpan * (i + 1)) / (commitCount + 1)
             );
 
             const prDelay = prDelayMs.get(pr.number) ?? 0;
@@ -832,51 +1603,68 @@ export default function BranchMap({
                   d={arcPath}
                   fill="none"
                   stroke={isFocusedPR ? focusedPRColor : strokeColor}
-                  strokeWidth={focusedErrorBranch?.name === pr.branchName ? 2 : strokeWidth}
+                  strokeWidth={(focusedErrorBranch?.name === pr.branchName ? 2 : strokeWidth)}
                   pathLength={1}
-                  className="draw-path-arc"
+                  className={drawPathArcClass}
                   style={{ pointerEvents: 'none', '--delay': `${prDelay}ms` } as React.CSSProperties}
                 />
 
                 {/* Arc info — fades in as arc draws */}
-                <g className="fade-in-info" style={{ '--delay': `${prDelay + INFO_OFFSET}ms` } as React.CSSProperties}>
-                  <rect x={forkX - NODE_SIZE / 2} y={mainY - NODE_SIZE / 2}
-                    width={NODE_SIZE} height={NODE_SIZE} rx={2}
-                    fill="#fafaf9" stroke={isFocusedPR ? focusedPRColor : strokeColor} strokeWidth={isFocusedPR ? 1.5 : 1} style={{ pointerEvents: 'none' }} />
-                  <rect x={effectiveMergeX - NODE_SIZE / 2} y={mainY - NODE_SIZE / 2}
-                    width={NODE_SIZE} height={NODE_SIZE} rx={2}
-                    fill="#fafaf9" stroke={isFocusedPR ? focusedPRColor : strokeColor} strokeWidth={isFocusedPR ? 1.5 : 1} style={{ pointerEvents: 'none' }} />
+                <g className={fadeInInfoClass} style={{ '--delay': `${prDelay + INFO_OFFSET}ms` } as React.CSSProperties}>
+                  <circle
+                   
+                    className="branch-map-icon-fixed"
+                    cx={mainX}
+                    cy={forkY}
+                    r={scaledNodeSize / 2}
+                    fill="#fafaf9"
+                    stroke={isFocusedPR ? focusedPRColor : strokeColor}
+                    strokeWidth={(isFocusedPR ? 1.5 : 1)}
+                    style={{ pointerEvents: 'none' }}
+                  />
+                  <circle
+                   
+                    className="branch-map-icon-fixed"
+                    cx={mainX}
+                    cy={effectiveMergeY}
+                    r={scaledNodeSize / 2}
+                    fill="#fafaf9"
+                    stroke={isFocusedPR ? focusedPRColor : strokeColor}
+                    strokeWidth={(isFocusedPR ? 1.5 : 1)}
+                    style={{ pointerEvents: 'none' }}
+                  />
 
                   {/* Commit ticks — interactive with SHA tooltips */}
-                  {commitXs.map((cx, ci) => {
+                  {commitYs.map((cy, ci) => {
                     const isTickHovered = isHovered &&
                       hoveredPRCommit?.pr.number === pr.number &&
                       hoveredPRCommit?.commitIdx === ci;
-                    const tickSize = isTickHovered ? NODE_SIZE + 3 : NODE_SIZE - 2;
-                    const HIT = 20;
+                    const tickSize = (isTickHovered ? NODE_SIZE + 3 : NODE_SIZE - 2);
+                    const hitSize = scaledHoverHitSize;
                     return (
                       <g key={ci}>
                         {/* Visible tick */}
-                        <rect
-                          x={cx - tickSize / 2}
-                          y={arcY - tickSize / 2}
-                          width={tickSize}
-                          height={tickSize}
-                          rx={1.5}
+                        <circle
+                         
+                          className="branch-map-icon-fixed"
+                          cx={arcX}
+                          cy={cy}
+                          r={tickSize / 2}
                           fill={isFocusedPR ? focusedPRColor : isHovered ? '#a8a29e' : '#78716c'}
-                          style={{ pointerEvents: 'none', transition: 'all 0.1s' }}
+                          style={{ pointerEvents: 'none', transition: 'fill 0.1s ease' }}
                         />
                         {/* Invisible hit area */}
                         <rect
-                          x={cx - HIT / 2}
-                          y={arcY - HIT / 2}
-                          width={HIT}
-                          height={HIT}
+                         
+                          x={arcX - hitSize / 2}
+                          y={cy - hitSize / 2}
+                          width={hitSize}
+                          height={hitSize}
                           fill="transparent"
                           style={{ cursor: 'crosshair' }}
                           onMouseEnter={(e) => {
                             e.stopPropagation();
-                            setHoveredPRCommit({ x: cx, arcY, pr, commitIdx: ci, total: commitCount });
+                            setHoveredPRCommit({ x: arcX, arcY: cy, pr, commitIdx: ci, total: commitCount });
                           }}
                           onMouseLeave={(e) => {
                             e.stopPropagation();
@@ -890,17 +1678,26 @@ export default function BranchMap({
                   {/* Author avatar */}
                   {pr.authorAvatar ? (
                     <image
+                     
+                      className="branch-map-icon-fixed"
                       href={pr.authorAvatar}
-                      x={midX - 10}
-                      y={arcY - 32}
+                      x={arcX - 9}
+                      y={midY - 10}
                       width={18}
                       height={18}
                       style={{ clipPath: 'circle(9px at 9px 9px)' }}
                     />
                   ) : (
-                    <circle cx={midX} cy={arcY - 22} r={8} fill="#57534e" />
+                    <circle className="branch-map-icon-fixed" cx={arcX} cy={midY} r={8} fill="#57534e" />
                   )}
-                  <text x={midX + 14} y={arcY - 18} fontSize={12} fill={isHovered ? '#1c1917' : '#57534e'}>
+                  <text
+                    className="branch-map-icon-fixed"
+                    x={arcX + 12}
+                    y={midY + 4}
+                    fontSize={12}
+                    fill={isHovered ? '#1c1917' : '#57534e'}
+                    style={{ transformOrigin: `${arcX + 12}px ${midY + 4}px` }}
+                  >
                     {pr.branchName.length > 20 ? pr.branchName.slice(0, 20) + '…' : pr.branchName}
                   </text>
                 </g>
@@ -911,63 +1708,181 @@ export default function BranchMap({
           {/* ── Active branches ── */}
           <g style={{ opacity: hoveredPR !== null ? 0.2 : 1, transition: 'opacity 0.15s' }}>
             {activeBranches.map((b) => {
-              const forkX = branchForkX(b);
-              const y = laneY(b);
-              const startY = branchStartY(b);
+              const forkTimeX = branchForkX(b);
+              const forkY = timeCoordToY(forkTimeX);
+              const lanePosX = laneX(b);
+              const startX = branchStartX(b);
               const isConflict = b.status === 'conflict-risk';
-              const isStale = b.status === 'stale';
               const isSelected = selectedBranch?.name === b.name;
               const isHovered = hoveredBranch === b.name;
               const hasSelection = selectedBranch != null;
-              const isInactiveError = inactiveErrorSet.has(b.name);
-              const hasOpenPR = openPRBranchNames.has(b.name);
-              const daysSinceCommit = (Date.now() - new Date(b.lastCommitDate).getTime()) / 86400000;
-              const showClockIcon = hasOpenPR && daysSinceCommit >= 60;
+              const isLocalBranch = b.remoteSyncStatus !== 'on-github';
 
               const isFocusedError = focusedErrorBranch?.name === b.name;
               const focusedErrorColor = b.status === 'conflict-risk' ? '#dc2626' : '#d97706';
+              const neutralColor = hasSelection ? '#57534e' : '#78716c';
               const color = isFocusedError
                 ? focusedErrorColor
                 : isSelected
                   ? '#22d3ee'
-                  : isInactiveError
-                    ? '#78716c'
+                  : isLocalBranch
+                    ? neutralColor
                     : isConflict
                       ? '#dc2626'
-                      : isStale
-                        ? '#d97706'
-                        : hasSelection
-                          ? '#57534e'
-                          : '#78716c';
+                      : neutralColor;
               const strokeWidth = isSelected ? 2.5 : isHovered ? 2 : isFocusedError ? 2 : 1.5;
-              const strokeColor = isHovered && !isSelected ? '#44403c' : color;
+              const defaultStrokeColor = isHovered && !isSelected ? '#44403c' : color;
 
-              const tipX = branchTipX(b);
+              const tipTimeX = branchTipX(b);
+              const tipY = timeCoordToY(tipTimeX);
+              const cornerDir = tipY <= forkY ? -1 : 1;
+              const turnY = forkY + cornerDir * cornerR;
               let curvePath: string;
-              if (startY === y) {
-                curvePath = `M ${forkX} ${y} L ${tipX} ${y}`;
-              } else if (startY > y) {
-                curvePath = `M ${forkX} ${startY} L ${forkX} ${y + CORNER_R} Q ${forkX} ${y} ${forkX + CORNER_R} ${y} L ${tipX} ${y}`;
+              if (startX === lanePosX) {
+                curvePath = `M ${pathCoord(lanePosX, forkY)} L ${pathCoord(lanePosX, tipY)}`;
+              } else if (startX < lanePosX) {
+                curvePath = `M ${pathCoord(startX, forkY)} L ${pathCoord(lanePosX - cornerR, forkY)} Q ${pathCoord(lanePosX, forkY)} ${pathCoord(lanePosX, turnY)} L ${pathCoord(lanePosX, tipY)}`;
               } else {
-                curvePath = `M ${forkX} ${startY} L ${forkX} ${y - CORNER_R} Q ${forkX} ${y} ${forkX + CORNER_R} ${y} L ${tipX} ${y}`;
+                curvePath = `M ${pathCoord(startX, forkY)} L ${pathCoord(lanePosX + cornerR, forkY)} Q ${pathCoord(lanePosX, forkY)} ${pathCoord(lanePosX, turnY)} L ${pathCoord(lanePosX, tipY)}`;
               }
 
-              const commitCount = Math.min(b.commitsAhead, 4);
-              const spanWidth = tipX - (forkX + CORNER_R);
-              // Place the final commit marker at the branch tip so the stroke
-              // does not visibly extend past the last shown commit.
-              const commitXs = Array.from({ length: commitCount }, (_, i) =>
-                forkX + CORNER_R + (spanWidth * (i + 1)) / Math.max(commitCount, 1)
+              const branchCommits = branchCommitPreviews[b.name] ?? [];
+              const hasPreviewData = Object.prototype.hasOwnProperty.call(branchCommitPreviews, b.name);
+              const commitCount = hasPreviewData ? branchCommits.length : b.commitsAhead;
+              const displayedCommits = hasPreviewData
+                ? [...branchCommits.slice(0, commitCount)].sort(
+                  (a, b) => new Date(a.date).getTime() - new Date(b.date).getTime()
+                )
+                : [];
+              const minCommitTimeX = forkTimeX + cornerR + 6;
+              const maxCommitTimeX = Math.max(minCommitTimeX, tipTimeX - 2);
+              const commitItems: Array<BranchCommitPreview | undefined> = hasPreviewData
+                ? displayedCommits
+                : Array.from({ length: commitCount }, () => undefined);
+              const commitDots = hasPreviewData
+                ? commitItems.map((commit) => {
+                  const rawX = timeToX(commit?.date ?? b.lastCommitDate);
+                  const x = Math.max(minCommitTimeX, Math.min(maxCommitTimeX, rawX));
+                  return { y: timeCoordToY(x), commit };
+                })
+                : placeItemsEvenly(commitItems, minCommitTimeX, maxCommitTimeX).map((entry) => ({
+                  y: timeCoordToY(entry.x),
+                  commit: entry.item,
+                }));
+              const realCommitDotIndices = commitItems.reduce<number[]>((acc, item, index) => {
+                if (item?.kind !== 'branch-created') acc.push(index);
+                return acc;
+              }, []);
+              const targetLocalCommitCount = isLocalBranch
+                ? (
+                  b.remoteSyncStatus === 'local-only'
+                    ? realCommitDotIndices.length
+                    : b.unpushedCommits
+                )
+                : 0;
+              const boundedLocalCommitCount = Math.max(
+                0,
+                Math.min(targetLocalCommitCount, realCommitDotIndices.length),
               );
+              const localCommitDotIndices = new Set(
+                realCommitDotIndices.slice(realCommitDotIndices.length - boundedLocalCommitCount),
+              );
+              const allBranchCommitsAreLocal =
+                realCommitDotIndices.length > 0 &&
+                boundedLocalCommitCount === realCommitDotIndices.length;
+              const firstLocalDotIndex = localCommitDotIndices.size > 0
+                ? Math.min(...Array.from(localCommitDotIndices))
+                : null;
+              const firstLocalCommitY = firstLocalDotIndex != null
+                ? commitDots[firstLocalDotIndex]?.y
+                : undefined;
+              const previousCommittedIndex = firstLocalDotIndex != null
+                ? (() => {
+                  const prior = realCommitDotIndices.filter((idx) => idx < firstLocalDotIndex);
+                  return prior.length > 0 ? prior[prior.length - 1] : undefined;
+                })()
+                : undefined;
+              const localSegmentStartY =
+                !allBranchCommitsAreLocal &&
+                firstLocalCommitY != null &&
+                previousCommittedIndex != null
+                  ? (
+                    (firstLocalCommitY + (commitDots[previousCommittedIndex]?.y ?? firstLocalCommitY)) / 2
+                  )
+                  : undefined;
+              const fullBranchShouldUseLocalGray =
+                isLocalBranch && (allBranchCommitsAreLocal || realCommitDotIndices.length === 0);
+              const localSegmentDashPattern = `${0.1} ${6}`;
+              const strokeColor =
+                fullBranchShouldUseLocalGray && !isFocusedError && !isSelected && !isHovered
+                  ? LOCAL_UNPUSHED_GRAY
+                  : defaultStrokeColor;
+              const promptMarkersRaw = branchPromptMeta[b.name]?.markers ?? [];
+              const minPromptX = minCommitTimeX;
+              const maxPromptX = maxCommitTimeX;
+              const promptSeeds = [...promptMarkersRaw]
+                .sort((a, b) => new Date(a.timestamp).getTime() - new Date(b.timestamp).getTime())
+                .slice(-PROMPT_MARKER_MAX);
+              const promptMarkers = promptSeeds.map((marker) => {
+                const rawX = timeToX(marker.timestamp);
+                const x = Math.max(minPromptX, Math.min(maxPromptX, rawX));
+                return {
+                  y: timeCoordToY(x),
+                  marker,
+                };
+              });
+              const commitDotEntries: MarkerEntry<{ index: number; commit?: BranchCommitPreview }>[] =
+                commitDots.map(({ y, commit }, index) => {
+                  const point = projectPoint(lanePosX, y);
+                  return {
+                    x: point.x,
+                    y: point.y,
+                    item: { index, commit },
+                  };
+                });
+              const commitDotClusters = clusterMarkersByDistance(commitDotEntries, clumpDistanceWorld);
+              const promptMarkerEntries: MarkerEntry<{ marker: typeof promptMarkers[number]['marker'] }>[] =
+                promptMarkers.map(({ y, marker }) => {
+                  const point = projectPoint(lanePosX, y);
+                  return {
+                    x: point.x,
+                    y: point.y,
+                    item: { marker },
+                  };
+                });
+              const promptMarkerClusters = clusterMarkersByDistance(promptMarkerEntries, clumpDistanceWorld);
 
               const brDelay = branchDelayMs.get(b.name) ?? 0;
 
               // If this branch forks directly on a merge node, suppress status pills
               // below the baseline so labels don't stack under dense marker clusters.
               const forkOnNode = showMergeTicks && sortedNodes.some((n) =>
-                Math.abs((nodeXByFullSha.get(n.fullSha) ?? timeToX(n.date)) - forkX) < NODE_SIZE
+                Math.abs((nodeXByFullSha.get(n.fullSha) ?? timeToX(n.date)) - forkTimeX) < scaledNodeSize
               );
-              const statusLabelY = startY + 34;
+              const statusLabelX = lanePosX;
+              const statusLabelY = forkY + 16;
+              const statusLabelPoint = projectPoint(statusLabelX, statusLabelY);
+              const hasOpenPR = openPRBranchNames.has(b.name);
+              const daysSinceCommit = (Date.now() - new Date(b.lastCommitDate).getTime()) / 86400000;
+              const showClockIcon = hasOpenPR && daysSinceCommit >= 60;
+              const aheadLabelText = formatCommitsAhead(branchAheadCount(b));
+              const aheadLabelWidth = estimateSvgTextWidth(aheadLabelText, 12);
+              const nameAnchor = projectPoint(lanePosX, forkY);
+              const nameDx = isHorizontal ? 12 : 10;
+              const nameDy = isHorizontal ? -13 : -6;
+              const namePoint = { x: nameAnchor.x + nameDx, y: nameAnchor.y + nameDy };
+              const hoverBadgeAnchor = projectPoint(lanePosX, tipY);
+              const hoverBadgePoint = {
+                x: hoverBadgeAnchor.x + AHEAD_LABEL_OFFSET_X,
+                y: hoverBadgeAnchor.y,
+              };
+              const nameLen = Math.min(b.name.length, 22);
+              const approxNameW = nameLen * 6.5;
+              const clockPoint = projectPoint(lanePosX + approxNameW + 10, forkY);
+              const labelsVisible = zoom > 1 || isHovered;
+              const zoomHideStrength = zoom <= 1 ? 1 : 0;
+              const nameOpacity = labelsVisible ? (isHorizontal ? 1 : (isHovered ? 1 : 0)) : 0;
+              const nameBlurPx = isHorizontal ? 0 : (isHovered ? 0 : zoomHideStrength * 4);
 
               return (
                 <g
@@ -977,23 +1892,24 @@ export default function BranchMap({
                   onDoubleClick={() => onBranchClick?.(b)}
                   onMouseEnter={() => setHoveredBranch(b.name)}
                   onMouseLeave={() => setHoveredBranch(null)}
-                  style={{ opacity: isFocusedError ? 1 : hoveredBranch !== null && !isHovered ? 0.12 : isInactiveError ? 0.45 : hasSelection && !isSelected ? 0.5 : 1, transition: 'opacity 0.15s' }}
+                  style={{ opacity: isFocusedError ? 1 : hoveredBranch !== null && !isHovered ? 0.12 : hasSelection && !isSelected ? 0.5 : 1, transition: 'opacity 0.15s' }}
                 >
                   {/* Invisible wide hit target to make hover/click easier on thin SVG strokes */}
                   <path
                     d={curvePath}
                     fill="none"
                     stroke="transparent"
-                    strokeWidth={BRANCH_HIT_STROKE_WIDTH}
+                    strokeWidth={scaledBranchHitStrokeWidth}
                     style={{ pointerEvents: 'stroke' }}
                   />
                   <line
-                    x1={tipX}
-                    y1={y}
-                    x2={tipX + AHEAD_LABEL_OFFSET_X + 6}
-                    y2={y}
+                   
+                    x1={projectPoint(lanePosX, tipY).x}
+                    y1={projectPoint(lanePosX, tipY).y}
+                    x2={projectPoint(lanePosX + AHEAD_LABEL_OFFSET_X + aheadLabelWidth + 10, tipY).x}
+                    y2={projectPoint(lanePosX + AHEAD_LABEL_OFFSET_X + aheadLabelWidth + 10, tipY).y}
                     stroke="transparent"
-                    strokeWidth={BRANCH_HIT_STROKE_WIDTH}
+                    strokeWidth={scaledBranchHitStrokeWidth}
                     style={{ pointerEvents: 'stroke' }}
                   />
 
@@ -1017,124 +1933,297 @@ export default function BranchMap({
                     fill="none"
                     stroke={strokeColor}
                     strokeWidth={strokeWidth}
-                    pathLength={1}
-                    className="draw-path-arc"
-                    style={{ '--delay': `${brDelay}ms`, transition: 'stroke 0.12s ease, stroke-width 0.12s ease' } as React.CSSProperties}
+                    pathLength={fullBranchShouldUseLocalGray ? undefined : 1}
+                    className={drawPathArcClass}
+                    style={{
+                      '--delay': `${brDelay}ms`,
+                      transition: 'stroke 0.12s ease',
+                      ...(fullBranchShouldUseLocalGray
+                        ? { strokeDasharray: localSegmentDashPattern, strokeLinecap: 'round' }
+                        : {}),
+                    } as React.CSSProperties}
                   />
+                  {!fullBranchShouldUseLocalGray && localSegmentStartY != null && (
+                    <path
+                      d={`M ${pathCoord(lanePosX, localSegmentStartY)} L ${pathCoord(lanePosX, tipY)}`}
+                      fill="none"
+                      stroke={isHovered && !isSelected ? '#78716c' : LOCAL_UNPUSHED_GRAY}
+                      strokeWidth={strokeWidth}
+                      className={drawPathArcClass}
+                      style={{
+                        '--delay': `${brDelay}ms`,
+                        strokeDasharray: localSegmentDashPattern,
+                        strokeLinecap: 'round',
+                      } as React.CSSProperties}
+                    />
+                  )}
 
                   {/* Branch info — fades in as arc draws */}
-                  <g className="fade-in-info" style={{ '--delay': `${brDelay + INFO_OFFSET}ms` } as React.CSSProperties}>
-                    {/* Fork hollow square on parent baseline (or main fallback) */}
-                    <rect
-                      x={forkX - NODE_SIZE / 2}
-                      y={startY - NODE_SIZE / 2}
-                      width={NODE_SIZE}
-                      height={NODE_SIZE}
-                      rx={2}
-                      fill={isSelected ? '#22d3ee' : isFocusedError ? color : '#1c1917'}
-                      stroke={color}
+                  <g className={fadeInInfoClass} style={{ '--delay': `${brDelay + INFO_OFFSET}ms` } as React.CSSProperties}>
+                    {/* Fork marker on parent baseline (or main fallback) */}
+                    <circle
+                     
+                      className="branch-map-icon-fixed"
+                      cx={projectPoint(startX, forkY).x}
+                      cy={projectPoint(startX, forkY).y}
+                      r={scaledNodeSize / 2}
+                      fill={isSelected ? '#22d3ee' : isFocusedError ? color : fullBranchShouldUseLocalGray ? LOCAL_UNPUSHED_GRAY : '#1c1917'}
+                      stroke={fullBranchShouldUseLocalGray ? LOCAL_UNPUSHED_GRAY : color}
                       strokeWidth={strokeWidth}
                     />
-                    {/* Commit filled squares along branch */}
-                    {commitXs.map((cx, ci) => (
-                      <rect
-                        key={ci}
-                        x={cx - NODE_SIZE / 2}
-                        y={y - NODE_SIZE / 2}
-                        width={NODE_SIZE}
-                        height={NODE_SIZE}
-                        rx={2}
-                        fill={color}
-                        onMouseEnter={() =>
-                          setTooltip({
-                            x: cx,
-                            y: y - 16,
-                            lines: [
-                              `Commit ${b.headSha?.slice(0, 7) ?? '-------'}`,
-                              `@${b.lastCommitAuthor}`,
-                              fmtTooltipDate(b.lastCommitDate),
-                            ],
-                          })
-                        }
-                        onMouseLeave={() => setTooltip(null)}
-                      />
-                    ))}
+                    {/* Commit markers along branch */}
+                    {commitDotClusters.map((cluster) => {
+                      const count = cluster.entries.length;
+                      const firstEntry = cluster.entries[0];
+                      const lastEntry = cluster.entries[count - 1];
+                      const clusterKey = `commit-clump-${b.name}-${firstEntry.item.index}-${lastEntry.item.index}`;
+                      const dotShouldUseLocalGray =
+                        fullBranchShouldUseLocalGray ||
+                        cluster.entries.every((entry) => localCommitDotIndices.has(entry.item.index));
+                      const dotFill = dotShouldUseLocalGray ? LOCAL_UNPUSHED_GRAY : color;
 
-                    {/* Author initial circle — inset 8px from start of horizontal arc */}
-                    <circle cx={forkX + CORNER_R + 8} cy={y - 26} r={9} fill={isSelected ? '#0891b2' : '#57534e'} />
-                    <text
-                      x={forkX + CORNER_R + 8}
-                      y={y - 22}
-                      textAnchor="middle"
-                      fontSize={10}
-                      fill={isSelected ? '#ecfeff' : '#ffffff'}
-                      fontWeight={500}
-                    >
-                      {b.lastCommitAuthor?.charAt(0).toUpperCase() || '?'}
-                    </text>
+                      if (count === 1) {
+                        const commit = lastEntry.item.commit;
+                        const isBranchCreatedEvent = commit?.kind === 'branch-created';
+                        const tooltipAuthor = commit?.author ?? b.lastCommitAuthor;
+                        const tooltipDate = commit?.date ?? b.lastCommitDate;
+                        const tooltipSha = commit?.sha ?? b.headSha?.slice(0, 7) ?? '-------';
+                        const tooltipMessage = commit?.message;
+                        const showBranchAvatar = !!(
+                          commit &&
+                          b.lastCommitAuthorAvatar &&
+                          commit.author === b.lastCommitAuthor
+                        );
 
-                    {/* Branch name label */}
+                        return (
+                          <circle
+                            key={clusterKey}
+                            className="branch-map-icon-fixed"
+                            cx={cluster.x}
+                            cy={cluster.y}
+                            r={scaledNodeSize / 2}
+                            fill={dotFill}
+                            onMouseEnter={() =>
+                              setTooltip({
+                                x: cluster.x + 14,
+                                y: cluster.y,
+                                lines: [
+                                  isBranchCreatedEvent ? 'Branch created' : `Commit ${tooltipSha}`,
+                                  tooltipMessage ? tooltipMessage : `@${tooltipAuthor}`,
+                                  `@${tooltipAuthor} · ${fmtTooltipDate(tooltipDate)}`,
+                                ],
+                                avatarUrl: showBranchAvatar ? b.lastCommitAuthorAvatar : undefined,
+                                avatarFallback: tooltipAuthor?.charAt(0).toUpperCase() || '?',
+                              })
+                            }
+                            onMouseLeave={() => setTooltip(null)}
+                          />
+                        );
+                      }
+
+                      const firstDate = firstEntry.item.commit?.date ?? b.lastCommitDate;
+                      const lastDate = lastEntry.item.commit?.date ?? b.lastCommitDate;
+                      const dateRangeLabel = new Date(firstDate).getTime() === new Date(lastDate).getTime()
+                        ? fmtTooltipDate(lastDate)
+                        : `${fmtTooltipDate(firstDate)} → ${fmtTooltipDate(lastDate)}`;
+                      const latestAuthor = lastEntry.item.commit?.author ?? b.lastCommitAuthor;
+
+                      return (
+                        <g key={clusterKey}>
+                          <circle
+                            className="branch-map-icon-fixed"
+                            cx={cluster.x}
+                            cy={cluster.y}
+                            r={scaledNodeSize / 2 + CLUMP_SIZE_BOOST_PX}
+                            fill={dotFill}
+                            style={{ cursor: 'pointer' }}
+                            onMouseEnter={() =>
+                              setTooltip({
+                                x: cluster.x + 14,
+                                y: cluster.y,
+                                lines: [`${count} commits`, `on ${b.name}`, dateRangeLabel],
+                                avatarFallback: latestAuthor?.charAt(0).toUpperCase() || '?',
+                              })
+                            }
+                            onMouseLeave={() => setTooltip(null)}
+                          />
+                          <text
+                            className="branch-map-icon-fixed"
+                            x={cluster.x}
+                            y={cluster.y + 2.5}
+                            textAnchor="middle"
+                            fontSize={count >= 10 ? 6.5 : 8}
+                            fill="#fafaf9"
+                            fontWeight={600}
+                            style={{
+                              pointerEvents: 'none',
+                              transformOrigin: `${cluster.x}px ${cluster.y}px`,
+                            }}
+                          >
+                            {clumpCountLabel(count)}
+                          </text>
+                        </g>
+                      );
+                    })}
+                    {promptMarkerClusters.map((cluster) => {
+                      const count = cluster.entries.length;
+                      const firstEntry = cluster.entries[0];
+                      const lastEntry = cluster.entries[count - 1];
+                      const clusterKey = `prompt-clump-${firstEntry.item.marker.id}-${lastEntry.item.marker.id}`;
+                      const markerPath = promptMarkerPath(
+                        cluster.x,
+                        cluster.y,
+                        count > 1 ? scaledNodeSize + CLUMP_SIZE_BOOST_PX * 2 : scaledNodeSize
+                      );
+                      const hitSize = scaledHoverHitSize;
+
+                      if (count === 1) {
+                        const marker = lastEntry.item.marker;
+                        return (
+                          <g key={clusterKey} className="branch-map-icon-fixed">
+                            <path
+                              d={markerPath}
+                              fill="var(--background)"
+                              stroke="#14b8a6"
+                              strokeWidth={1.2}
+                              strokeLinejoin="round"
+                              style={{ pointerEvents: 'none' }}
+                            />
+                            <rect
+                              x={cluster.x - hitSize / 2}
+                              y={cluster.y - hitSize / 2}
+                              width={hitSize}
+                              height={hitSize}
+                              fill="transparent"
+                              style={{ cursor: 'pointer' }}
+                              onMouseEnter={() =>
+                                setTooltip({
+                                  x: cluster.x + 14,
+                                  y: cluster.y,
+                                  lines: [
+                                    truncatePrompt(marker.prompt, 52),
+                                    marker.agent,
+                                    fmtTooltipDate(marker.timestamp),
+                                  ],
+                                })
+                              }
+                              onMouseLeave={() => setTooltip(null)}
+                            />
+                          </g>
+                        );
+                      }
+
+                      const firstDate = firstEntry.item.marker.timestamp;
+                      const lastDate = lastEntry.item.marker.timestamp;
+                      const dateRangeLabel = new Date(firstDate).getTime() === new Date(lastDate).getTime()
+                        ? fmtTooltipDate(lastDate)
+                        : `${fmtTooltipDate(firstDate)} → ${fmtTooltipDate(lastDate)}`;
+                      const latestPrompt = truncatePrompt(lastEntry.item.marker.prompt, 40);
+
+                      return (
+                        <g key={clusterKey} className="branch-map-icon-fixed">
+                          <path
+                            d={markerPath}
+                            fill="var(--background)"
+                            stroke="#14b8a6"
+                            strokeWidth={1.2}
+                            strokeLinejoin="round"
+                            style={{ pointerEvents: 'none' }}
+                          />
+                          <text
+                            x={cluster.x}
+                            y={cluster.y + 2.4}
+                            textAnchor="middle"
+                            fontSize={count >= 10 ? 6.2 : 8}
+                            fill="#14b8a6"
+                            fontWeight={700}
+                            style={{
+                              pointerEvents: 'none',
+                              transformOrigin: `${cluster.x}px ${cluster.y}px`,
+                            }}
+                          >
+                            {clumpCountLabel(count)}
+                          </text>
+                          <rect
+                            x={cluster.x - hitSize / 2}
+                            y={cluster.y - hitSize / 2}
+                            width={hitSize}
+                            height={hitSize}
+                            fill="transparent"
+                            style={{ cursor: 'pointer' }}
+                            onMouseEnter={() =>
+                              setTooltip({
+                                x: cluster.x + 14,
+                                y: cluster.y,
+                                lines: [`${count} comments`, latestPrompt, dateRangeLabel],
+                              })
+                            }
+                            onMouseLeave={() => setTooltip(null)}
+                          />
+                        </g>
+                      );
+                    })}
                     <text
-                      x={forkX + CORNER_R + 24}
-                      y={y - 22}
+                      className="branch-map-icon-fixed"
+                      x={namePoint.x}
+                      y={namePoint.y}
                       fontSize={12}
-                      fontWeight={isSelected ? 600 : 400}
                       fill={isSelected ? '#22d3ee' : isHovered ? '#1c1917' : color}
-                      style={{ transition: 'fill 0.12s ease' }}
-                      className="select-none"
+                      fontWeight={isSelected ? 600 : 400}
+                      opacity={nameOpacity}
+                      style={{
+                        transformOrigin: `${namePoint.x}px ${namePoint.y}px`,
+                        filter: `blur(${nameBlurPx}px)`,
+                        pointerEvents: 'none',
+                        transition: 'fill 0.12s ease, opacity 0.16s ease, filter 0.16s ease',
+                      }}
                     >
                       {b.name.length > 22 ? b.name.slice(0, 22) + '…' : b.name}
                     </text>
-
-                    {/* Commits ahead badge */}
-                    {isHovered && (
+                    {isHovered && labelsVisible && (
                       <text
-                        x={tipX + AHEAD_LABEL_OFFSET_X}
-                        y={y + 4}
+                        className="branch-map-icon-fixed"
+                        x={hoverBadgePoint.x}
+                        y={hoverBadgePoint.y}
+                        dominantBaseline="middle"
                         fontSize={12}
                         fill="#1c1917"
                         fontWeight={500}
+                        style={{
+                          transformOrigin: `${hoverBadgePoint.x}px ${hoverBadgePoint.y}px`,
+                          pointerEvents: 'none',
+                        }}
                       >
-                        {formatCommitsAhead(b.commitsAhead)}
+                        {aheadLabelText}
                       </text>
                     )}
-
-                    {/* Clock icon for open PR + 60+ day stale commit */}
-                    {showClockIcon && (() => {
-                      const nameLen = Math.min(b.name.length, 22);
-                      const approxNameW = nameLen * 6.5;
-                      const cx = forkX + CORNER_R + 24 + approxNameW + 10;
-                      const cy = y - 22;
-                      return (
-                        <g transform={`translate(${cx}, ${cy})`} style={{ pointerEvents: 'none' }}>
-                          <circle r={5} fill="none" stroke={color} strokeWidth={1.2} />
-                          <line x1={0} y1={-3} x2={0} y2={0} stroke={color} strokeWidth={1.2} strokeLinecap="round" />
-                          <line x1={0} y1={0} x2={2.5} y2={1.5} stroke={color} strokeWidth={1.2} strokeLinecap="round" />
-                        </g>
-                      );
-                    })()}
+                    {showClockIcon && (
+                      <g className="branch-map-icon-fixed" style={{ pointerEvents: 'none' }}>
+                        <circle cx={clockPoint.x} cy={clockPoint.y} r={4.2} stroke={color} strokeWidth={1.2} fill="none" />
+                        <line x1={clockPoint.x} y1={clockPoint.y - 2.9} x2={clockPoint.x} y2={clockPoint.y} stroke={color} strokeWidth={1.2} strokeLinecap="round" />
+                        <line x1={clockPoint.x} y1={clockPoint.y} x2={clockPoint.x + 2.3} y2={clockPoint.y + 1.5} stroke={color} strokeWidth={1.2} strokeLinecap="round" />
+                      </g>
+                    )}
                   </g>
 
                   {/* Status labels — own fade-in-pill group so they animate independently of fade-in-info */}
-                  {!forkOnNode && !isInactiveError && (isStale || isConflict) && (
+                  {!forkOnNode && !isLocalBranch && isConflict && (
                     <g
-                      className="fade-in-pill"
+                      className={fadeInPillClass}
                       style={{ '--delay': `${brDelay + INFO_OFFSET}ms`, cursor: 'pointer' } as React.CSSProperties}
                       onClick={() => onBranchClick?.(b)}
                     >
                       {/* Invisible hit area — text alone is too small to click reliably */}
                       <rect
-                        x={forkX - 22}
-                        y={statusLabelY - 11}
+                       
+                        x={statusLabelPoint.x - 22}
+                        y={statusLabelPoint.y - 11}
                         width={44}
                         height={14}
                         fill="transparent"
                       />
-                      {isStale && (
-                        <text x={forkX} y={statusLabelY} textAnchor="middle" fontSize={10} fill="#d97706">stale</text>
-                      )}
                       {isConflict && (
-                        <text x={forkX} y={statusLabelY} textAnchor="middle" fontSize={10} fill="#dc2626">conflict</text>
+                        <text x={statusLabelPoint.x} y={statusLabelPoint.y} textAnchor="middle" fontSize={10} fill="#dc2626">conflict</text>
                       )}
                     </g>
                   )}
@@ -1143,57 +2232,32 @@ export default function BranchMap({
             })}
           </g>
 
-          {/* Tooltip for branch commits */}
-          {tooltip && (
-            <g>
-              <rect
-                x={tooltip.x - 6}
-                y={tooltip.y - 50}
-                width={210}
-                height={62}
-                rx={8}
-                fill="#ffffff"
-                stroke="#e7e5e0"
-                strokeWidth={1}
-                filter="url(#tick-shadow)"
-              />
-              {tooltip.lines.map((line, i) => (
-                <text
-                  key={i}
-                  x={tooltip.x + 4}
-                  y={tooltip.y - 33 + i * 16}
-                  fontSize={10}
-                  fill={i === 0 ? '#dc2626' : '#78716c'}
-                >
-                  {line}
-                </text>
-              ))}
-            </g>
-          )}
+          {/* Branch commit tooltip is rendered as an HTML overlay outside the zoomed camera. */}
 
           {/* Tooltip for main-line merge nodes — shown above the tick */}
           {hoveredMergeNode && (() => {
-            const { x, node: m } = hoveredMergeNode;
+            const { y, node: m } = hoveredMergeNode;
             const label = m.prNumber ? `PR #${m.prNumber}` : m.sha.slice(0, 7);
             const title = m.prTitle ?? '';
             const hasTitle = title.length > 0;
             const TW = 220;
-            const TH = hasTitle ? 44 : 30;
-            const tx = x - TW / 2;
-            const ty = mainY - TH - 14;
+            const TH = hasTitle ? 58 : 44;
+            const tx = mainX + 14;
+            const ty = y - TH / 2;
             return (
               <g style={{ pointerEvents: 'none' }}>
                 <rect x={tx} y={ty} width={TW} height={TH} rx={8}
                   fill="#ffffff" stroke="#e7e5e0" strokeWidth={1}
                   filter="url(#tick-shadow)" />
-                <text x={tx + 10} y={ty + 14} fontSize={10} fontWeight={600} fill="#1c1917">
-                  {label}{hasTitle ? ` · ${title.slice(0, 30)}${title.length > 30 ? '…' : ''}` : ''}
-                </text>
+                <text x={tx + 10} y={ty + 14} fontSize={10} fontWeight={600} fill="#1c1917">{label}</text>
                 {hasTitle && (
                   <text x={tx + 10} y={ty + 30} fontSize={10} fill="#a8a29e">
-                    {fmtLabelDate(m.date)}
+                    {title.slice(0, 34)}{title.length > 34 ? '…' : ''}
                   </text>
                 )}
+                <text x={tx + 10} y={hasTitle ? ty + 46 : ty + 30} fontSize={10} fill="#a8a29e">
+                  {fmtLabelDate(m.date)}
+                </text>
               </g>
             );
           })()}
@@ -1222,7 +2286,80 @@ export default function BranchMap({
               </g>
             );
           })()}
+
+          {/* Checked-out commit marker */}
+          {checkedOutIndicatorLocal && (() => {
+            const markerPoint = projectPoint(checkedOutIndicatorLocal.x, checkedOutIndicatorLocal.y);
+            return (
+              <g style={{ pointerEvents: 'none' }}>
+                <g className="branch-map-icon-fixed">
+                    <circle
+                      className="checked-out-halo-pulse"
+                      cx={markerPoint.x}
+                      cy={markerPoint.y}
+                      r={12}
+                      fill="#93c5fd"
+                    />
+                    <circle
+                      cx={markerPoint.x}
+                      cy={markerPoint.y}
+                      r={7}
+                      fill="#2563eb"
+                    />
+                </g>
+              </g>
+            );
+          })()}
+          </g>
         </svg>
+        </div>
+
+        {/* Fixed-size tooltip layer (not affected by timeline zoom). */}
+        {tooltip && (() => {
+          const [title, subtitle, meta] = tooltip.lines;
+          const avatarFallback = tooltip.avatarFallback || '?';
+          const tooltipW = 228;
+          const tooltipH = 74;
+          const anchorX = pan.x + graphOffsetX + tooltip.x * renderCameraScale.x;
+          const anchorY = pan.y + graphOffsetY + tooltip.y * renderCameraScale.y;
+          const rawLeft = anchorX - tooltipW / 2;
+          const rawTop = anchorY - tooltipH - 10;
+          const maxLeft = Math.max(8, viewportSize.width - tooltipW - 8);
+          const maxTop = Math.max(8, viewportSize.height - tooltipH - 8);
+          const left = Math.min(maxLeft, Math.max(8, rawLeft));
+          const top = Math.min(maxTop, Math.max(8, rawTop));
+
+          return (
+            <div
+              className="absolute z-30 w-[228px] rounded-xl border border-border bg-card shadow-sm overflow-hidden pointer-events-none"
+              style={{ left, top }}
+            >
+              <div className="h-6 px-3 flex items-center bg-muted/80 border-b border-border/70">
+                <p className="text-xs font-medium text-foreground truncate">{title}</p>
+              </div>
+              <div className="px-3 py-2">
+                <div className="flex items-start gap-2">
+                  <span className="h-5 w-5 shrink-0 rounded-full overflow-hidden bg-muted flex items-center justify-center text-[10px] font-medium leading-none text-muted-foreground">
+                    {tooltip.avatarUrl ? (
+                      <img
+                        src={tooltip.avatarUrl}
+                        alt={`${avatarFallback} avatar`}
+                        className="w-full h-full object-cover"
+                        draggable={false}
+                      />
+                    ) : (
+                      avatarFallback
+                    )}
+                  </span>
+                  <div className="min-w-0 space-y-1">
+                    {subtitle && <p className="text-xs text-foreground truncate">{subtitle}</p>}
+                    {meta && <p className="text-xs text-muted-foreground truncate">{meta}</p>}
+                  </div>
+                </div>
+              </div>
+            </div>
+          );
+        })()}
 
         {/* Empty / loading state */}
         {sortedNodes.length === 0 && activeBranches.length === 0 && (
@@ -1277,14 +2414,42 @@ export default function BranchMap({
             value={barScrollLeft}
             style={{ ['--thumb-w' as string]: `${thumbWidth}px` }}
             onChange={(e) => {
-              if (scrollRef.current) scrollRef.current.scrollLeft = Number(e.target.value);
+              const nextWorldStart = Number(e.target.value);
+              const scale = getCameraScale(zoomRef.current, isHorizontal);
+              const nextPan = clampPan({
+                x: isHorizontal ? -graphOffsetX - nextWorldStart * scale.x : targetPanRef.current.x,
+                y: isHorizontal ? targetPanRef.current.y : -graphOffsetY - nextWorldStart * scale.y,
+              }, zoomRef.current, 'hard');
+              applyCamera(nextPan, zoomRef.current, true);
             }}
             className="bottom-scroll-range flex-1"
           />
           <div className="flex items-center gap-1 shrink-0 bg-card border border-border rounded-full p-1">
             <button
+              onClick={() => setOrientation('vertical')}
+              className={`px-2.5 py-1 rounded-full text-xs leading-none select-none transition-colors ${orientation === 'vertical'
+                ? 'bg-primary/10 text-foreground'
+                : 'text-muted-foreground hover:text-foreground hover:bg-muted'
+                }`}
+              title="Timeline runs top to bottom"
+            >
+              Vertical
+            </button>
+            <button
+              onClick={() => setOrientation('horizontal')}
+              className={`px-2.5 py-1 rounded-full text-xs leading-none select-none transition-colors ${orientation === 'horizontal'
+                ? 'bg-primary/10 text-foreground'
+                : 'text-muted-foreground hover:text-foreground hover:bg-muted'
+                }`}
+              title="Timeline runs left to right"
+            >
+              Horizontal
+            </button>
+          </div>
+          <div className="flex items-center gap-1 shrink-0 bg-card border border-border rounded-full p-1">
+            <button
               onClick={() => setSpacingMode('regular')}
-              className={`px-2.5 py-1 rounded-full text-xs leading-none select-none transition-colors ${spacingMode === 'regular'
+              className={`px-2.5 py-1 rounded-full text-xs leading-none select-none transition-colors ${effectiveSpacingMode === 'regular'
                 ? 'bg-primary/10 text-foreground'
                 : 'text-muted-foreground hover:text-foreground hover:bg-muted'
                 }`}
@@ -1294,7 +2459,7 @@ export default function BranchMap({
             </button>
             <button
               onClick={() => setSpacingMode('bounded')}
-              className={`px-2.5 py-1 rounded-full text-xs leading-none select-none transition-colors ${spacingMode === 'bounded'
+              className={`px-2.5 py-1 rounded-full text-xs leading-none select-none transition-colors ${effectiveSpacingMode === 'bounded'
                 ? 'bg-primary/10 text-foreground'
                 : 'text-muted-foreground hover:text-foreground hover:bg-muted'
                 }`}
@@ -1304,8 +2469,34 @@ export default function BranchMap({
             </button>
           </div>
           <div className="flex items-center gap-2 shrink-0 bg-card border border-border rounded-full px-3 py-1">
+            <span className="text-xs text-muted-foreground select-none">Time</span>
+            <input
+              type="range"
+              min={TIME_SCALE_MIN}
+              max={TIME_SCALE_MAX}
+              step={TIME_SCALE_STEP}
+              value={timeScale}
+              onChange={(e) => setTimeScale(Number(e.target.value))}
+              className="timeline-scale-range w-24"
+              title={`${orientation === 'vertical' ? 'Vertical' : 'Horizontal'} time scaling`}
+            />
+            <span className="text-xs text-muted-foreground w-10 text-right tabular-nums select-none">
+              {effectiveTimeScale.toFixed(2)}x
+            </span>
+          </div>
+          <div className="flex items-center gap-2 shrink-0 bg-card border border-border rounded-full px-3 py-1">
             <button
-              onClick={() => setZoom(z => Math.max(ZOOM_MIN, Math.round((z - 0.05) * 100) / 100))}
+              onClick={() => {
+                const el = scrollRef.current;
+                if (!el) return;
+                stopWheelInertia();
+                stopZoomAnimation();
+                applyZoomAt(
+                  { x: el.clientWidth / 2, y: el.clientHeight / 2 },
+                  zoomRef.current * 0.92,
+                  true
+                );
+              }}
               className="text-sm text-muted-foreground hover:text-foreground transition-colors leading-none select-none"
               title="Zoom out"
             >
@@ -1315,7 +2506,17 @@ export default function BranchMap({
               {Math.round(zoom * 100)}%
             </span>
             <button
-              onClick={() => setZoom(z => Math.min(ZOOM_MAX, Math.round((z + 0.05) * 100) / 100))}
+              onClick={() => {
+                const el = scrollRef.current;
+                if (!el) return;
+                stopWheelInertia();
+                stopZoomAnimation();
+                applyZoomAt(
+                  { x: el.clientWidth / 2, y: el.clientHeight / 2 },
+                  zoomRef.current * 1.08,
+                  true
+                );
+              }}
               className="text-sm text-muted-foreground hover:text-foreground transition-colors leading-none select-none"
               title="Zoom in"
             >

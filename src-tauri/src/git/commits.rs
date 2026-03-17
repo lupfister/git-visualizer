@@ -12,7 +12,7 @@ pub struct DirectCommit {
     pub date: String,
 }
 
-/// Get direct (non-merge) commits from a branch.
+/// Get commits from a branch in log order.
 pub fn get_direct_commits(
     repo: &Path,
     branch: &str,
@@ -23,7 +23,6 @@ pub fn get_direct_commits(
             repo,
             &[
                 "log",
-                "--no-merges",
                 &format!("--max-count={}", limit),
                 "--format=%H|%h|%s|%an|%aI",
                 branch,
@@ -34,7 +33,6 @@ pub fn get_direct_commits(
             repo,
             &[
                 "log",
-                "--no-merges",
                 "--format=%H|%h|%s|%an|%aI",
                 branch,
             ],

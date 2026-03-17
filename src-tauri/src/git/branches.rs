@@ -8,13 +8,23 @@ pub struct Branch {
     pub name: String,
     pub commits_ahead: i32,
     pub commits_behind: i32,
+    pub created_date: Option<String>,
     pub last_commit_date: String,
     pub last_commit_author: String,
     pub status: String,
+    pub remote_sync_status: String,
+    pub unpushed_commits: i32,
     pub head_sha: String,
     pub parent_branch: Option<String>,
     pub diverged_from_sha: Option<String>,
     pub diverged_from_date: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CheckedOutRef {
+    pub branch_name: Option<String>,
+    pub head_sha: String,
 }
 
 /// Get the default branch name (usually main or master)
@@ -39,6 +49,23 @@ pub fn get_default_branch(repo: &Path) -> Result<String, GitError> {
 
     // Last resort: use HEAD
     Ok("HEAD".to_string())
+}
+
+/// Get the current checked-out ref (branch name when attached, and HEAD SHA).
+pub fn get_checked_out_ref(repo: &Path) -> Result<CheckedOutRef, GitError> {
+    let branch_raw = cli::run(repo, &["rev-parse", "--abbrev-ref", "HEAD"])?;
+    let branch_name = match branch_raw.trim() {
+        "" | "HEAD" => None,
+        value => Some(value.to_string()),
+    };
+
+    let head_raw = cli::run(repo, &["rev-parse", "HEAD"])?;
+    let head_sha = head_raw.trim().to_string();
+
+    Ok(CheckedOutRef {
+        branch_name,
+        head_sha,
+    })
 }
 
 /// Get repository info (name and path)
@@ -84,6 +111,8 @@ pub fn list_branches(repo: &Path, default_branch: &str) -> Result<Vec<Branch>, G
 fn get_branch_info(repo: &Path, name: &str, default_branch: &str) -> Result<Branch, GitError> {
     // Get ahead/behind counts
     let (commits_ahead, commits_behind) = get_ahead_behind(repo, name, default_branch)?;
+    let (remote_sync_status, unpushed_commits) =
+        get_remote_sync_status(repo, name, commits_ahead);
 
     // Get last commit info: SHA, author, date
     let log_output = cli::run(
@@ -106,9 +135,12 @@ fn get_branch_info(repo: &Path, name: &str, default_branch: &str) -> Result<Bran
         name: name.to_string(),
         commits_ahead,
         commits_behind,
+        created_date: None,
         last_commit_date,
         last_commit_author,
         status,
+        remote_sync_status,
+        unpushed_commits,
         head_sha,
         parent_branch: None,
         diverged_from_sha,
@@ -206,6 +238,16 @@ fn infer_branch_parents(
                 branch.diverged_from_date = date;
             }
         }
+
+        let created_from_reflog = get_branch_reflog_created_date(repo, &branch.name).ok().flatten();
+        let created_from_unique_commit = branch
+            .parent_branch
+            .as_deref()
+            .and_then(|parent| get_first_unique_commit_date(repo, parent, &branch.name).ok().flatten());
+        branch.created_date = created_from_reflog
+            .or(created_from_unique_commit)
+            .or_else(|| branch.diverged_from_date.clone())
+            .or_else(|| Some(branch.last_commit_date.clone()));
     }
 
     Ok(())
@@ -256,6 +298,110 @@ fn get_fork_point(repo: &Path, branch: &str, base: &str) -> Result<(Option<Strin
     let date = date_output.trim().to_string();
 
     Ok((Some(sha.to_string()), Some(date)))
+}
+
+fn get_first_unique_commit_date(repo: &Path, base: &str, branch: &str) -> Result<Option<String>, GitError> {
+    let output = cli::run(
+        repo,
+        &["log", "--reverse", "--format=%aI", &format!("{}..{}", base, branch)],
+    )?;
+
+    Ok(output
+        .lines()
+        .map(str::trim)
+        .find(|line| !line.is_empty())
+        .map(|line| line.to_string()))
+}
+
+fn get_branch_reflog_created_date(repo: &Path, branch: &str) -> Result<Option<String>, GitError> {
+    let ref_name = format!("refs/heads/{}", branch);
+    let output = cli::run(
+        repo,
+        &["reflog", "show", "--date=iso-strict", "--format=%gd", &ref_name],
+    )?;
+
+    let selector = output
+        .lines()
+        .map(str::trim)
+        .filter(|line| !line.is_empty())
+        .last();
+
+    let Some(selector) = selector else {
+        return Ok(None);
+    };
+
+    let Some(start) = selector.rfind("@{") else {
+        return Ok(None);
+    };
+
+    let tail = &selector[start + 2..];
+    let Some(end) = tail.rfind('}') else {
+        return Ok(None);
+    };
+
+    let raw_date = tail[..end].trim();
+    Ok(normalize_git_date(raw_date))
+}
+
+fn get_remote_sync_status(repo: &Path, branch: &str, commits_ahead: i32) -> (String, i32) {
+    let compare_ref = get_branch_upstream(repo, branch).or_else(|| find_remote_branch_ref(repo, branch));
+
+    if let Some(remote_ref) = compare_ref {
+        if let Ok((ahead, _behind)) = get_ahead_behind(repo, branch, &remote_ref) {
+            if ahead > 0 {
+                return ("unpushed".to_string(), ahead);
+            }
+            return ("on-github".to_string(), 0);
+        }
+        return ("on-github".to_string(), 0);
+    }
+
+    ("local-only".to_string(), commits_ahead.max(0))
+}
+
+fn get_branch_upstream(repo: &Path, branch: &str) -> Option<String> {
+    let ref_query = format!("{branch}@{{upstream}}");
+    let output = cli::run(repo, &["rev-parse", "--abbrev-ref", &ref_query]).ok()?;
+    let upstream = output.trim();
+    if upstream.is_empty() {
+        return None;
+    }
+    Some(upstream.to_string())
+}
+
+fn find_remote_branch_ref(repo: &Path, branch: &str) -> Option<String> {
+    let origin_full_ref = format!("refs/remotes/origin/{branch}");
+    if remote_ref_exists(repo, &origin_full_ref) {
+        return Some(format!("origin/{branch}"));
+    }
+
+    let remotes = cli::run(repo, &["remote"]).ok()?;
+    for remote in remotes
+        .lines()
+        .map(str::trim)
+        .filter(|line| !line.is_empty() && *line != "origin")
+    {
+        let full_ref = format!("refs/remotes/{remote}/{branch}");
+        if remote_ref_exists(repo, &full_ref) {
+            return Some(format!("{remote}/{branch}"));
+        }
+    }
+
+    None
+}
+
+fn remote_ref_exists(repo: &Path, full_ref: &str) -> bool {
+    cli::run(repo, &["show-ref", "--verify", "--quiet", full_ref]).is_ok()
+}
+
+fn normalize_git_date(value: &str) -> Option<String> {
+    if let Ok(dt) = chrono::DateTime::parse_from_rfc3339(value) {
+        return Some(dt.to_rfc3339());
+    }
+    if let Ok(dt) = chrono::DateTime::parse_from_str(value, "%Y-%m-%d %H:%M:%S %z") {
+        return Some(dt.to_rfc3339());
+    }
+    None
 }
 
 fn calculate_status(commits_behind: i32, last_commit_date: &str) -> String {

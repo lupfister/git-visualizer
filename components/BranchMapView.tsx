@@ -1,4 +1,4 @@
-import { Branch, DirectCommit, MergeNode, MergedPR, OpenPR } from '../types';
+import { Branch, BranchCommitPreview, BranchPromptMeta, CheckedOutRef, DirectCommit, MergeNode, MergedPR, OpenPR } from '../types';
 import BranchMap from './BranchMap';
 import BranchGroupView from './BranchGroupView';
 
@@ -18,10 +18,14 @@ interface Props {
   githubAvailable?: boolean;
   githubOwner?: string | null;
   githubRepo?: string | null;
+  branchPromptMeta?: Record<string, BranchPromptMeta>;
+  branchCommitPreviews?: Record<string, BranchCommitPreview[]>;
+  branchUniqueAheadCounts?: Record<string, number>;
   view?: ViewMode;
   isLoading?: boolean;
   scrollRequest?: { branch: Branch; seq: number } | null;
   focusedErrorBranch?: Branch | null;
+  checkedOutRef?: CheckedOutRef | null;
 }
 
 export default function BranchMapView({
@@ -37,10 +41,14 @@ export default function BranchMapView({
   onLoadMore,
   githubOwner,
   githubRepo,
+  branchPromptMeta = {},
+  branchCommitPreviews = {},
+  branchUniqueAheadCounts = {},
   view = 'time',
   isLoading = false,
   scrollRequest,
   focusedErrorBranch,
+  checkedOutRef = null,
 }: Props) {
   // Determine active vs inactive error branches
   const openPRBranchNames = new Set(openPRs.map(p => p.branchName));
@@ -57,10 +65,6 @@ export default function BranchMapView({
   const staleBranches = branches
     .filter(b => b.status === 'stale' && isBranchActive(b))
     .sort((a, b) => new Date(b.lastCommitDate).getTime() - new Date(a.lastCommitDate).getTime());
-  // Inactive error branches render grey (like merged branches)
-  const inactiveErrorBranches = branches
-    .filter(b => (b.status === 'conflict-risk' || b.status === 'stale') && !isBranchActive(b));
-
   return (
     <div className="h-full flex flex-col">
       {view === 'time' ? (
@@ -78,13 +82,16 @@ export default function BranchMapView({
             onLoadMore={onLoadMore}
             githubOwner={githubOwner}
             githubRepo={githubRepo}
+            branchPromptMeta={branchPromptMeta}
+            branchCommitPreviews={branchCommitPreviews}
+            branchUniqueAheadCounts={branchUniqueAheadCounts}
             view={view}
             conflictBranches={conflictBranches}
             staleBranches={staleBranches}
-            inactiveErrorBranches={inactiveErrorBranches}
             isLoading={isLoading}
             scrollRequest={scrollRequest}
             focusedErrorBranch={focusedErrorBranch}
+            checkedOutRef={checkedOutRef}
           />
         </div>
       ) : (

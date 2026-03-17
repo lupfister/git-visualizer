@@ -3,7 +3,7 @@ import { invoke } from '@tauri-apps/api/core';
 import BranchMapView from '../components/BranchMapView';
 import DiffViewer from '../components/DiffViewer';
 import FolderPickerModal from './FolderPickerModal';
-import type { Branch, DirectCommit, MergeNode, MergedPR, OpenPR, GitHubInfo, GitHubAuthStatus } from '../types';
+import type { Branch, BranchCommitPreview, BranchPromptMeta, BranchPromptMarker, CheckedOutRef, Commit, DirectCommit, GitHubAuthStatus, GitHubInfo, MergeNode, MergedPR, OpenPR } from '../types';
 
 type View = 'landing' | 'map' | 'diff';
 
@@ -16,6 +16,7 @@ function App() {
   const [mergedPRs, setMergedPRs] = useState<MergedPR[]>([]);
   const [openPRs, setOpenPRs] = useState<OpenPR[]>([]);
   const [defaultBranch, setDefaultBranch] = useState<string>('main');
+  const [checkedOutRef, setCheckedOutRef] = useState<CheckedOutRef | null>(null);
   const [loading, setLoading] = useState(false);       // button spinner in landing
   const [mapLoading, setMapLoading] = useState(false); // canvas skeleton in map
   const [error, setError] = useState<string | null>(null);
@@ -35,6 +36,9 @@ function App() {
   const [githubAuthStatus, setGithubAuthStatus] = useState<GitHubAuthStatus | null>(null);
   const [githubAuthLoading, setGithubAuthLoading] = useState(false);
   const [githubAuthMessage, setGithubAuthMessage] = useState<string | null>(null);
+  const [branchPromptMeta, setBranchPromptMeta] = useState<Record<string, BranchPromptMeta>>({});
+  const [branchCommitPreviews, setBranchCommitPreviews] = useState<Record<string, BranchCommitPreview[]>>({});
+  const [branchUniqueAheadCounts, setBranchUniqueAheadCounts] = useState<Record<string, number>>({});
 
   // Pre-warm: screenshot main branch at '/' as soon as active branches load,
   // so DiffViewer can skip the main-side server start for the common case.
@@ -76,12 +80,14 @@ function App() {
 
     try {
       // Phase 1: fast metadata — show the map shell immediately
-      const [info, def] = await Promise.all([
+      const [info, def, checkedOut] = await Promise.all([
         invoke<{ name: string; path: string }>('get_repo_info', { repoPath: path }),
         invoke<string>('get_default_branch', { repoPath: path }),
+        invoke<CheckedOutRef>('get_checked_out_ref', { repoPath: path }).catch(() => null),
       ]);
       setRepoName(info.name);
       setDefaultBranch(def);
+      setCheckedOutRef(checkedOut);
       setLoading(false); // unblock the landing button
 
       // Phase 2: heavier git data — timeline skeleton shows while this loads
@@ -197,11 +203,139 @@ function App() {
     setMapUiReady(false);
     setPrewarmedMainShots(null);
     prewarmedRef.current = false;
+    setBranchPromptMeta({});
+    setBranchCommitPreviews({});
+    setBranchUniqueAheadCounts({});
     setAuthSetupLoading(false);
     setGithubAuthLoading(false);
     setGithubAuthStatus(null);
     setGithubAuthMessage(null);
+    setCheckedOutRef(null);
   }, [repoPath]);
+
+  useEffect(() => {
+    if (!repoPath || !defaultBranch) {
+      setBranchPromptMeta({});
+      setBranchCommitPreviews({});
+      setBranchUniqueAheadCounts({});
+      return;
+    }
+
+    const activeBranches = branches.filter(b => b.name !== defaultBranch && b.commitsAhead > 0);
+    if (activeBranches.length === 0) {
+      setBranchPromptMeta({});
+      setBranchCommitPreviews({});
+      setBranchUniqueAheadCounts({});
+      return;
+    }
+
+    let cancelled = false;
+    async function loadPromptMeta() {
+      const results = await Promise.all(
+        activeBranches.map(async (branch) => {
+          try {
+            const comparisonBase =
+              branch.parentBranch && branch.parentBranch !== branch.name
+                ? branch.parentBranch
+                : defaultBranch;
+            const commits = await invoke<Commit[]>('get_branch_commits', {
+              repoPath,
+              branch: branch.name,
+              baseBranch: comparisonBase,
+            });
+
+            const prompts = commits
+              .flatMap(c => c.agentPrompts ?? [])
+              .sort((a, b) => new Date(b.timestamp).getTime() - new Date(a.timestamp).getTime());
+            const commitPreviews: BranchCommitPreview[] = commits
+              .map((c) => ({
+                fullSha: c.fullSha,
+                sha: c.sha,
+                message: c.message,
+                author: c.author,
+                date: c.date,
+                kind: 'commit',
+              }));
+            const branchCreatedAt = branch.createdDate ?? branch.divergedFromDate ?? branch.lastCommitDate;
+            const branchCreatedSha = branch.divergedFromSha?.slice(0, 7) ?? branch.headSha.slice(0, 7);
+            const branchCreationPreview: BranchCommitPreview = {
+              fullSha: `branch-created:${branch.name}:${branchCreatedAt}`,
+              sha: branchCreatedSha || 'created',
+              message: `Branch created: ${branch.name}`,
+              author: branch.lastCommitAuthor || 'Unknown',
+              date: branchCreatedAt,
+              kind: 'branch-created',
+            };
+            const previews: BranchCommitPreview[] = [...commitPreviews, branchCreationPreview];
+            const uniqueCount = previews.length;
+
+            if (prompts.length === 0) {
+              return [branch.name, { promptMeta: null, previews, uniqueCount }] as const;
+            }
+
+            const latest = prompts[0];
+            const markers: BranchPromptMarker[] = [...prompts]
+              .sort((a, b) => new Date(a.timestamp).getTime() - new Date(b.timestamp).getTime())
+              .slice(-12)
+              .map(p => ({
+                id: p.id,
+                agent: p.agent,
+                prompt: p.prompt,
+                timestamp: p.timestamp,
+              }));
+            return [branch.name, {
+              promptMeta: {
+                count: prompts.length,
+                latestPrompt: latest.prompt,
+                latestAgent: latest.agent,
+                latestTimestamp: latest.timestamp,
+                markers,
+              },
+              previews,
+              uniqueCount,
+            }] as const;
+          } catch {
+            const branchCreatedAt = branch.createdDate ?? branch.divergedFromDate ?? branch.lastCommitDate;
+            const branchCreatedSha = branch.divergedFromSha?.slice(0, 7) ?? branch.headSha.slice(0, 7);
+            const branchCreationPreview: BranchCommitPreview = {
+              fullSha: `branch-created:${branch.name}:${branchCreatedAt}`,
+              sha: branchCreatedSha || 'created',
+              message: `Branch created: ${branch.name}`,
+              author: branch.lastCommitAuthor || 'Unknown',
+              date: branchCreatedAt,
+              kind: 'branch-created',
+            };
+            return [branch.name, {
+              promptMeta: null,
+              previews: [branchCreationPreview],
+              uniqueCount: 1,
+            }] as const;
+          }
+        }),
+      );
+
+      if (cancelled) return;
+      const nextPromptMeta: Record<string, BranchPromptMeta> = {};
+      const nextCommitPreviews: Record<string, BranchCommitPreview[]> = {};
+      const nextUniqueAheadCounts: Record<string, number> = {};
+      for (const [branchName, data] of results) {
+        if (data.promptMeta) nextPromptMeta[branchName] = data.promptMeta;
+        // Keep empty arrays too so the renderer knows this branch has loaded
+        // and should show 0 unique commits relative to its selected base.
+        nextCommitPreviews[branchName] = [...data.previews];
+        nextUniqueAheadCounts[branchName] = data.uniqueCount;
+      }
+
+      setBranchPromptMeta(nextPromptMeta);
+      setBranchCommitPreviews(nextCommitPreviews);
+      setBranchUniqueAheadCounts(nextUniqueAheadCounts);
+    }
+
+    loadPromptMeta();
+    return () => {
+      cancelled = true;
+    };
+  }, [repoPath, defaultBranch, branches]);
 
   // Pre-warm: start screenshotting main at '/' as soon as active branches arrive.
   // Uses port 3495 (separate from DiffViewer's 3491/3492) to avoid conflicts.
@@ -326,12 +460,15 @@ function App() {
     setMergedPRs([]);
     setOpenPRs([]);
     setDirectCommits([]);
+    setBranchPromptMeta({});
+    setBranchCommitPreviews({});
+    setBranchUniqueAheadCounts({});
     setGithubAvailable(false);
     setView('landing');
   }
 
   return (
-    <div className="h-screen bg-background text-foreground flex flex-col">
+    <div className="h-screen min-h-0 bg-background text-foreground flex flex-col">
       <div className={view !== 'landing' ? 'hidden' : 'contents'}>
         <RepoSelector onSelect={loadRepo} loading={loading} error={error} />
       </div>
@@ -342,17 +479,19 @@ function App() {
 
         {/* Map view */}
         <div className={`absolute inset-0 flex flex-col ${view !== 'map' ? 'invisible pointer-events-none' : ''}`}>
-          <header className="flex items-center justify-between px-8 py-5">
-            <button
-              onClick={handleBackToLanding}
-              className="text-muted-foreground hover:text-foreground transition-colors text-sm"
-            >
-              ← Back
-            </button>
-            <h1 className="text-base font-medium text-foreground absolute left-1/2 -translate-x-1/2">
-              {repoName}
-            </h1>
-            <div className="flex items-center gap-3">
+          <header className="px-4 py-3 md:px-8 md:py-5">
+            <div className="flex items-center justify-between gap-3">
+              <button
+                onClick={handleBackToLanding}
+                className="text-muted-foreground hover:text-foreground transition-colors text-sm shrink-0"
+              >
+                ← Back
+              </button>
+              <h1 className="text-sm md:text-base font-medium text-foreground truncate">
+                {repoName}
+              </h1>
+            </div>
+            <div className="mt-3 flex flex-wrap items-center gap-2">
               {selectedBranch && (
                 <div className="flex items-center gap-2">
                   <span className="text-sm text-cyan-400 border border-cyan-800 rounded-full px-3 py-1 bg-cyan-950/50">
@@ -414,13 +553,12 @@ function App() {
                   {activeErrorBranches.length} active error{activeErrorBranches.length !== 1 ? 's' : ''}
                 </button>
               )}
-
             </div>
           </header>
 
           {/* Branch errors floating panel */}
           {showErrorPanel && (
-            <div className={`absolute top-[65px] right-6 z-50 w-80 bg-card border border-border rounded-2xl shadow-lg overflow-hidden ${errorPanelClosing ? 'animate-error-panel-out' : 'animate-error-panel-in'}`}>
+            <div className={`absolute top-[96px] right-4 z-50 w-[calc(100%-2rem)] max-w-80 bg-card border border-border rounded-2xl shadow-lg overflow-hidden ${errorPanelClosing ? 'animate-error-panel-out' : 'animate-error-panel-in'}`}>
               <div className="flex items-center justify-between px-4 py-3 border-b border-border/50">
                 <span className="text-sm font-medium text-foreground">Branch errors</span>
                 <button
@@ -502,10 +640,14 @@ function App() {
               githubAvailable={githubAvailable}
               githubOwner={githubOwner}
               githubRepo={githubRepo}
+              branchPromptMeta={branchPromptMeta}
+              branchCommitPreviews={branchCommitPreviews}
+              branchUniqueAheadCounts={branchUniqueAheadCounts}
               view="time"
               isLoading={mapLoading}
               scrollRequest={scrollRequest}
               focusedErrorBranch={focusedErrorBranch}
+              checkedOutRef={checkedOutRef}
             />
           </div>
         </div>
@@ -665,22 +807,22 @@ function RepoSelector({
   }
 
   return (
-    <main className="flex h-full overflow-hidden">
+    <main className="flex h-full overflow-hidden flex-col md:flex-row">
       {/* Left decorative panel */}
-      <div className="w-[26%] relative flex-shrink-0 bg-muted overflow-hidden">
+      <div className="h-28 md:h-auto md:w-[26%] relative flex-shrink-0 bg-muted overflow-hidden">
         <InteractiveDotField />
       </div>
 
       {/* Right content panel */}
-      <div className="flex-1 flex flex-col justify-center px-16 bg-background">
-        <p className="font-light text-foreground w-[60%]" style={{ fontFamily: 'var(--font-space-grotesk)', fontSize: '48px', lineHeight: 1 }}>Git visualizer</p>
-        <h1 className="font-bold text-foreground mb-14 w-[60%]" style={{ fontFamily: 'var(--font-space-grotesk)', fontSize: '48px', lineHeight: 1.08 }}>
+      <div className="flex-1 flex flex-col justify-center px-6 py-8 md:px-16 bg-background min-h-0">
+        <p className="font-light text-foreground max-w-md text-3xl md:text-5xl leading-none" style={{ fontFamily: 'var(--font-space-grotesk)' }}>Git visualizer</p>
+        <h1 className="font-bold text-foreground mb-8 md:mb-14 max-w-md text-3xl md:text-5xl leading-tight" style={{ fontFamily: 'var(--font-space-grotesk)' }}>
           See what your team is building, without reading a line of code.
         </h1>
 
         <p className="text-sm text-muted-foreground mb-4">Get started</p>
 
-        <div className="flex flex-col gap-3 w-64">
+        <div className="flex flex-col gap-3 w-full max-w-xs">
           <button
             onClick={() => setShowPicker(true)}
             className="px-6 py-3 border border-border bg-card text-foreground text-sm hover:bg-accent transition-colors text-center rounded-2xl"
