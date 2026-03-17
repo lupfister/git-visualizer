@@ -232,12 +232,6 @@ function App() {
     }
 
     const activeBranches = branches.filter((b) => b.name !== defaultBranch);
-    if (activeBranches.length === 0) {
-      setBranchPromptMeta({});
-      setBranchCommitPreviews({});
-      setBranchUniqueAheadCounts({});
-      return;
-    }
 
     let cancelled = false;
     async function loadPromptMeta() {
@@ -354,6 +348,40 @@ function App() {
         }),
       );
 
+      let mainPromptMeta: BranchPromptMeta | null = null;
+      try {
+        const mainCommits = await invoke<Commit[]>('get_recent_log', {
+          repoPath,
+          branch: defaultBranch,
+          limit: 250,
+          firstParent: false,
+        });
+        const prompts = mainCommits
+          .flatMap((c) => c.agentPrompts ?? [])
+          .sort((a, b) => new Date(b.timestamp).getTime() - new Date(a.timestamp).getTime());
+        if (prompts.length > 0) {
+          const latest = prompts[0];
+          const markers: BranchPromptMarker[] = [...prompts]
+            .sort((a, b) => new Date(a.timestamp).getTime() - new Date(b.timestamp).getTime())
+            .slice(-12)
+            .map((p) => ({
+              id: p.id,
+              agent: p.agent,
+              prompt: p.prompt,
+              timestamp: p.timestamp,
+            }));
+          mainPromptMeta = {
+            count: prompts.length,
+            latestPrompt: latest.prompt,
+            latestAgent: latest.agent,
+            latestTimestamp: latest.timestamp,
+            markers,
+          };
+        }
+      } catch {
+        mainPromptMeta = null;
+      }
+
       if (cancelled) return;
       const nextPromptMeta: Record<string, BranchPromptMeta> = {};
       const nextCommitPreviews: Record<string, BranchCommitPreview[]> = {};
@@ -366,6 +394,9 @@ function App() {
         if (data.uniqueCount != null) {
           nextUniqueAheadCounts[branchName] = data.uniqueCount;
         }
+      }
+      if (mainPromptMeta) {
+        nextPromptMeta[defaultBranch] = mainPromptMeta;
       }
 
       setBranchPromptMeta(nextPromptMeta);

@@ -958,57 +958,13 @@ fn collect_agent_prompts_for_repo(
     records
 }
 
-#[tauri::command(rename_all = "camelCase")]
-fn get_branch_commits(
-    repo_path: String,
-    branch: String,
-    base_branch: String,
-    merge_commit_sha: Option<String>,
-) -> Result<Vec<CommitInfo>, String> {
-    let path = Path::new(&repo_path);
-    let range = if let Some(sha) = merge_commit_sha {
-        // Commits that were part of this merged branch side (exclude merge commit itself).
-        format!("{}^1..{}^2", sha, sha)
-    } else {
-        // Commits on this branch not yet in base
-        format!("{}..{}", base_branch, branch)
-    };
-    let output = git::cli::run(
-        path,
-        &["log", &range, "--format=%H|%h|%s|%an|%aI|%P"],
-    )
-    .map_err(|e| e.to_string())?;
-
-    let mut commits: Vec<CommitInfo> = output
-        .lines()
-        .filter(|l| !l.is_empty())
-        .filter_map(|line| {
-            let parts: Vec<&str> = line.splitn(6, '|').collect();
-            if parts.len() < 6 { return None; }
-            let parent_sha = parts[5]
-                .split_whitespace()
-                .next()
-                .map(|p| p.to_string());
-            Some(CommitInfo {
-                full_sha: parts[0].to_string(),
-                sha: parts[1].to_string(),
-                parent_sha,
-                message: parts[2].to_string(),
-                author: parts[3].to_string(),
-                date: parts[4].to_string(),
-                prompt_window_start: None,
-                prompt_window_end: None,
-                agent_prompts: Vec::new(),
-            })
-        })
-        .collect();
-
+fn hydrate_commit_prompt_windows(path: &Path, commits: &mut [CommitInfo]) {
     if commits.is_empty() {
-        return Ok(commits);
+        return;
     }
 
     let mut parent_dates: HashMap<String, DateTime<Utc>> = HashMap::new();
-    for commit in &commits {
+    for commit in commits.iter() {
         let Some(parent_sha) = &commit.parent_sha else { continue };
         if parent_dates.contains_key(parent_sha) {
             continue;
@@ -1026,7 +982,7 @@ fn get_branch_commits(
     let mut global_start: Option<DateTime<Utc>> = None;
     let mut global_end: Option<DateTime<Utc>> = None;
 
-    for commit in &commits {
+    for commit in commits.iter() {
         let end_dt = parse_iso_to_utc(&commit.date);
         let start_dt = commit
             .parent_sha
@@ -1078,6 +1034,54 @@ fn get_branch_commits(
         }
         commit.agent_prompts = matched;
     }
+}
+
+#[tauri::command(rename_all = "camelCase")]
+fn get_branch_commits(
+    repo_path: String,
+    branch: String,
+    base_branch: String,
+    merge_commit_sha: Option<String>,
+) -> Result<Vec<CommitInfo>, String> {
+    let path = Path::new(&repo_path);
+    let range = if let Some(sha) = merge_commit_sha {
+        // Commits that were part of this merged branch side (exclude merge commit itself).
+        format!("{}^1..{}^2", sha, sha)
+    } else {
+        // Commits on this branch not yet in base
+        format!("{}..{}", base_branch, branch)
+    };
+    let output = git::cli::run(
+        path,
+        &["log", &range, "--format=%H|%h|%s|%an|%aI|%P"],
+    )
+    .map_err(|e| e.to_string())?;
+
+    let mut commits: Vec<CommitInfo> = output
+        .lines()
+        .filter(|l| !l.is_empty())
+        .filter_map(|line| {
+            let parts: Vec<&str> = line.splitn(6, '|').collect();
+            if parts.len() < 6 { return None; }
+            let parent_sha = parts[5]
+                .split_whitespace()
+                .next()
+                .map(|p| p.to_string());
+            Some(CommitInfo {
+                full_sha: parts[0].to_string(),
+                sha: parts[1].to_string(),
+                parent_sha,
+                message: parts[2].to_string(),
+                author: parts[3].to_string(),
+                date: parts[4].to_string(),
+                prompt_window_start: None,
+                prompt_window_end: None,
+                agent_prompts: Vec::new(),
+            })
+        })
+        .collect();
+
+    hydrate_commit_prompt_windows(path, &mut commits);
 
     Ok(commits)
 }
@@ -1116,24 +1120,33 @@ fn get_recent_log(
     repo_path: String,
     branch: String,
     limit: Option<u32>,
+    first_parent: Option<bool>,
 ) -> Result<Vec<CommitInfo>, String> {
     let path = Path::new(&repo_path);
     let limit_str = limit.unwrap_or(20).to_string();
-    let output = git::cli::run(
-        path,
-        &["log", &branch, &format!("--max-count={}", limit_str), "--format=%H|%h|%s|%an|%aI"],
-    )
-    .map_err(|e| e.to_string())?;
-    let commits = output
+    let mut args: Vec<String> = vec!["log".to_string()];
+    if first_parent.unwrap_or(true) {
+        args.push("--first-parent".to_string());
+    }
+    args.push(branch);
+    args.push(format!("--max-count={}", limit_str));
+    args.push("--format=%H|%h|%s|%an|%aI|%P".to_string());
+    let arg_refs: Vec<&str> = args.iter().map(|s| s.as_str()).collect();
+    let output = git::cli::run(path, &arg_refs).map_err(|e| e.to_string())?;
+    let mut commits: Vec<CommitInfo> = output
         .lines()
         .filter(|l| !l.is_empty())
         .filter_map(|line| {
-            let parts: Vec<&str> = line.splitn(5, '|').collect();
-            if parts.len() < 5 { return None; }
+            let parts: Vec<&str> = line.splitn(6, '|').collect();
+            if parts.len() < 6 { return None; }
+            let parent_sha = parts[5]
+                .split_whitespace()
+                .next()
+                .map(|p| p.to_string());
             Some(CommitInfo {
                 full_sha: parts[0].to_string(),
                 sha: parts[1].to_string(),
-                parent_sha: None,
+                parent_sha,
                 message: parts[2].to_string(),
                 author: parts[3].to_string(),
                 date: parts[4].to_string(),
@@ -1143,6 +1156,7 @@ fn get_recent_log(
             })
         })
         .collect();
+    hydrate_commit_prompt_windows(path, &mut commits);
     Ok(commits)
 }
 

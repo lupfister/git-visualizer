@@ -173,16 +173,24 @@ export default function DiffViewer({
     async function loadCommits() {
       setCommitsLoading(true);
       try {
-        const mergeCommitSha = branch.commitsAhead === 0 && mergedPR?.mergeCommitSha
-          ? mergedPR.mergeCommitSha
-          : undefined;
-
-        const result = await invoke<Commit[]>('get_branch_commits', {
-          repoPath,
-          branch: branch.name,
-          baseBranch: defaultBranch,
-          mergeCommitSha,
-        });
+        const result = branch.name === defaultBranch
+          ? await invoke<Commit[]>('get_recent_log', {
+              repoPath,
+              branch: defaultBranch,
+              limit: 250,
+              firstParent: false,
+            })
+          : await (async () => {
+              const mergeCommitSha = branch.commitsAhead === 0 && mergedPR?.mergeCommitSha
+                ? mergedPR.mergeCommitSha
+                : undefined;
+              return invoke<Commit[]>('get_branch_commits', {
+                repoPath,
+                branch: branch.name,
+                baseBranch: defaultBranch,
+                mergeCommitSha,
+              });
+            })();
 
         setCommits(result);
         setSelectedCommitSha(prev => {

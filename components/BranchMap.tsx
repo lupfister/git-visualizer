@@ -161,6 +161,49 @@ function clusterMarkersByDistance<T>(
   return clusters;
 }
 
+function clusterDirectCommitsWithAnchors(
+  entries: MarkerEntry<DirectCommit>[],
+  maxGap: number,
+  protectedShas: Set<string>
+): MarkerCluster<DirectCommit>[] {
+  if (entries.length === 0) return [];
+  if (maxGap <= 0) {
+    return entries.map((entry) => ({ x: entry.x, y: entry.y, entries: [entry] }));
+  }
+
+  const clusters: MarkerCluster<DirectCommit>[] = [];
+  let current: MarkerEntry<DirectCommit>[] = [entries[0]];
+
+  function flush() {
+    const totalX = current.reduce((sum, entry) => sum + entry.x, 0);
+    const totalY = current.reduce((sum, entry) => sum + entry.y, 0);
+    clusters.push({
+      x: totalX / current.length,
+      y: totalY / current.length,
+      entries: current,
+    });
+  }
+
+  function isProtected(entry: MarkerEntry<DirectCommit>): boolean {
+    return protectedShas.has(entry.item.fullSha);
+  }
+
+  for (let i = 1; i < entries.length; i += 1) {
+    const prev = current[current.length - 1];
+    const next = entries[i];
+    const distance = Math.hypot(next.x - prev.x, next.y - prev.y);
+    const forceBreak = isProtected(prev) || isProtected(next);
+    if (!forceBreak && distance <= maxGap) {
+      current.push(next);
+    } else {
+      flush();
+      current = [next];
+    }
+  }
+  flush();
+  return clusters;
+}
+
 function clumpCountLabel(count: number): string {
   return count > CLUMP_COUNT_MAX ? `${CLUMP_COUNT_MAX}+` : String(count);
 }
@@ -859,11 +902,15 @@ export default function BranchMap({
       .map((m) => new Date(m.timestamp).getTime())
       .filter(Number.isFinite)
   );
+  const mainPromptAnchorTimes = (branchPromptMeta[defaultBranch]?.markers ?? [])
+    .map((m) => new Date(m.timestamp).getTime())
+    .filter(Number.isFinite);
   const allAnchorTimes = Array.from(
     new Set<number>([
       ...timelineEvents.map((e) => e.t).filter(Number.isFinite),
       ...branchCommitAnchorTimes,
       ...promptAnchorTimes,
+      ...mainPromptAnchorTimes,
     ])
   ).sort((a, b) => a - b);
 
@@ -947,6 +994,22 @@ export default function BranchMap({
     return xForTimestamp(new Date(dateStr).getTime());
   }
 
+  const mainCommitXBySha = new Map<string, number>([
+    ...sortedDirectCommits.map((c) => [c.fullSha, directXByFullSha.get(c.fullSha) ?? timeToX(c.date)] as [string, number]),
+    ...sortedNodes.map((m) => [m.fullSha, nodeXByFullSha.get(m.fullSha) ?? timeToX(m.date)] as [string, number]),
+  ]);
+
+  function commitXForSha(sha?: string): number | null {
+    if (!sha) return null;
+    const exact = mainCommitXBySha.get(sha);
+    if (typeof exact === 'number') return exact;
+    const direct = sortedDirectCommits.find((c) => c.fullSha.startsWith(sha));
+    if (direct) return directXByFullSha.get(direct.fullSha) ?? timeToX(direct.date);
+    const merge = sortedNodes.find((m) => m.fullSha.startsWith(sha));
+    if (merge) return nodeXByFullSha.get(merge.fullSha) ?? timeToX(merge.date);
+    return null;
+  }
+
   function branchCreatedDate(b: Branch): string {
     return b.createdDate ?? b.divergedFromDate ?? b.lastCommitDate;
   }
@@ -959,6 +1022,12 @@ export default function BranchMap({
   function branchForkX(b: Branch): number {
     const hasNonDefaultParent =
       !!b.parentBranch && b.parentBranch !== b.name && b.parentBranch !== defaultBranch;
+    const isParentDefault = !hasNonDefaultParent;
+
+    if (isParentDefault) {
+      const anchoredMainForkX = commitXForSha(b.createdFromSha) ?? commitXForSha(b.divergedFromSha);
+      if (anchoredMainForkX != null) return anchoredMainForkX;
+    }
 
     // For stacked branches, fork should snap to the parent divergence commit
     // so child lanes originate exactly from parent tips (no floating gap).
@@ -1100,6 +1169,12 @@ export default function BranchMap({
 
   const laneXByBranch = new Map<string, number>(
     activeBranches.map((b) => [b.name, laneX(b)])
+  );
+
+  const protectedMainForkShas = new Set<string>(
+    activeBranches
+      .filter((b) => !b.parentBranch || b.parentBranch === b.name || b.parentBranch === defaultBranch)
+      .flatMap((b) => [b.createdFromSha, b.divergedFromSha].filter((sha): sha is string => !!sha))
   );
 
   function branchStartX(b: Branch): number {
@@ -1427,7 +1502,7 @@ export default function BranchMap({
                   const markerPoint = projectPoint(mainX, timeCoordToY(timeCoordX));
                   return { x: markerPoint.x, y: markerPoint.y, item: commit };
                 });
-                const clusters = clusterMarkersByDistance(entries, clumpDistanceWorld);
+                const clusters = clusterDirectCommitsWithAnchors(entries, clumpDistanceWorld, protectedMainForkShas);
                 return clusters.map((cluster) => {
                   const count = cluster.entries.length;
                   const first = cluster.entries[0].item;
@@ -1499,6 +1574,117 @@ export default function BranchMap({
                       >
                         {countLabel}
                       </text>
+                    </g>
+                  );
+                });
+              })()}
+              {(() => {
+                const mainPromptMarkers = [...(branchPromptMeta[defaultBranch]?.markers ?? [])]
+                  .sort((a, b) => new Date(a.timestamp).getTime() - new Date(b.timestamp).getTime())
+                  .slice(-PROMPT_MARKER_MAX);
+                const promptEntries: MarkerEntry<{ marker: typeof mainPromptMarkers[number] }>[] =
+                  mainPromptMarkers.map((marker) => {
+                    const markerPoint = projectPoint(mainX, timeCoordToY(timeToX(marker.timestamp)));
+                    return { x: markerPoint.x, y: markerPoint.y, item: { marker } };
+                  });
+                const clusters = clusterMarkersByDistance(promptEntries, clumpDistanceWorld);
+                return clusters.map((cluster) => {
+                  const count = cluster.entries.length;
+                  const firstEntry = cluster.entries[0];
+                  const lastEntry = cluster.entries[count - 1];
+                  const anchorX = lastEntry.x;
+                  const anchorY = lastEntry.y;
+                  const clusterKey = `main-prompt-clump-${firstEntry.item.marker.id}-${lastEntry.item.marker.id}`;
+                  const markerPath = promptMarkerPath(
+                    anchorX,
+                    anchorY,
+                    count > 1 ? scaledNodeSize + CLUMP_SIZE_BOOST_PX * 2 : scaledNodeSize
+                  );
+                  const hitSize = scaledHoverHitSize;
+
+                  if (count === 1) {
+                    const marker = lastEntry.item.marker;
+                    return (
+                      <g key={clusterKey} className="branch-map-icon-fixed">
+                        <path
+                          d={markerPath}
+                          fill="var(--background)"
+                          stroke="#14b8a6"
+                          strokeWidth={1.2}
+                          strokeLinejoin="round"
+                          style={{ pointerEvents: 'none' }}
+                        />
+                        <rect
+                          x={anchorX - hitSize / 2}
+                          y={anchorY - hitSize / 2}
+                          width={hitSize}
+                          height={hitSize}
+                          fill="transparent"
+                          style={{ cursor: 'pointer' }}
+                          onMouseEnter={() =>
+                            setTooltip({
+                              x: anchorX + 14,
+                              y: anchorY,
+                              lines: [
+                                truncatePrompt(marker.prompt, 52),
+                                marker.agent,
+                                fmtTooltipDate(marker.timestamp),
+                              ],
+                            })
+                          }
+                          onMouseLeave={() => setTooltip(null)}
+                        />
+                      </g>
+                    );
+                  }
+
+                  const firstDate = firstEntry.item.marker.timestamp;
+                  const lastDate = lastEntry.item.marker.timestamp;
+                  const dateRangeLabel = new Date(firstDate).getTime() === new Date(lastDate).getTime()
+                    ? fmtTooltipDate(lastDate)
+                    : `${fmtTooltipDate(firstDate)} → ${fmtTooltipDate(lastDate)}`;
+                  const latestPrompt = truncatePrompt(lastEntry.item.marker.prompt, 40);
+
+                  return (
+                    <g key={clusterKey} className="branch-map-icon-fixed">
+                      <path
+                        d={markerPath}
+                        fill="var(--background)"
+                        stroke="#14b8a6"
+                        strokeWidth={1.2}
+                        strokeLinejoin="round"
+                        style={{ pointerEvents: 'none' }}
+                      />
+                      <text
+                        x={anchorX}
+                        y={anchorY + 2.4}
+                        textAnchor="middle"
+                        fontSize={count >= 10 ? 6.2 : 8}
+                        fill="#14b8a6"
+                        fontWeight={700}
+                        style={{
+                          pointerEvents: 'none',
+                          transformOrigin: `${anchorX}px ${anchorY}px`,
+                        }}
+                      >
+                        {clumpCountLabel(count)}
+                      </text>
+                      <rect
+                        x={anchorX - hitSize / 2}
+                        y={anchorY - hitSize / 2}
+                        width={hitSize}
+                        height={hitSize}
+                        fill="transparent"
+                        style={{ cursor: 'pointer' }}
+                        onMouseEnter={() =>
+                          setTooltip({
+                            x: anchorX + 14,
+                            y: anchorY,
+                            lines: [`${count} prompts`, latestPrompt, dateRangeLabel],
+                          })
+                        }
+                        onMouseLeave={() => setTooltip(null)}
+                      />
                     </g>
                   );
                 });
@@ -2238,7 +2424,7 @@ export default function BranchMap({
                               setTooltip({
                                 x: anchorX + 14,
                                 y: anchorY,
-                                lines: [`${count} comments`, latestPrompt, dateRangeLabel],
+                                lines: [`${count} prompts`, latestPrompt, dateRangeLabel],
                               })
                             }
                             onMouseLeave={() => setTooltip(null)}

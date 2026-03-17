@@ -8,6 +8,7 @@ pub struct Branch {
     pub name: String,
     pub commits_ahead: i32,
     pub commits_behind: i32,
+    pub created_from_sha: Option<String>,
     pub created_date: Option<String>,
     pub last_commit_date: String,
     pub last_commit_author: String,
@@ -135,6 +136,7 @@ fn get_branch_info(repo: &Path, name: &str, default_branch: &str) -> Result<Bran
         name: name.to_string(),
         commits_ahead,
         commits_behind,
+        created_from_sha: None,
         created_date: None,
         last_commit_date,
         last_commit_author,
@@ -239,12 +241,15 @@ fn infer_branch_parents(
             }
         }
 
-        let created_from_reflog = get_branch_reflog_created_date(repo, &branch.name).ok().flatten();
+        let created_from_reflog = get_branch_reflog_created_entry(repo, &branch.name).ok().flatten();
+        let created_from_reflog_sha = created_from_reflog.as_ref().map(|(sha, _)| sha.clone());
+        let created_from_reflog_date = created_from_reflog.as_ref().map(|(_, date)| date.clone());
         let created_from_unique_commit = branch
             .parent_branch
             .as_deref()
             .and_then(|parent| get_first_unique_commit_date(repo, parent, &branch.name).ok().flatten());
-        branch.created_date = created_from_reflog
+        branch.created_from_sha = created_from_reflog_sha.or_else(|| branch.diverged_from_sha.clone());
+        branch.created_date = created_from_reflog_date
             .or(created_from_unique_commit)
             .or_else(|| branch.diverged_from_date.clone())
             .or_else(|| Some(branch.last_commit_date.clone()));
@@ -313,22 +318,29 @@ fn get_first_unique_commit_date(repo: &Path, base: &str, branch: &str) -> Result
         .map(|line| line.to_string()))
 }
 
-fn get_branch_reflog_created_date(repo: &Path, branch: &str) -> Result<Option<String>, GitError> {
+fn get_branch_reflog_created_entry(repo: &Path, branch: &str) -> Result<Option<(String, String)>, GitError> {
     let ref_name = format!("refs/heads/{}", branch);
     let output = cli::run(
         repo,
-        &["reflog", "show", "--date=iso-strict", "--format=%gd", &ref_name],
+        &["reflog", "show", "--date=iso-strict", "--format=%H|%gd", &ref_name],
     )?;
 
-    let selector = output
+    let entry = output
         .lines()
         .map(str::trim)
         .filter(|line| !line.is_empty())
         .last();
 
-    let Some(selector) = selector else {
+    let Some(entry) = entry else {
         return Ok(None);
     };
+
+    let mut parts = entry.splitn(2, '|');
+    let sha = parts.next().map(str::trim).unwrap_or("");
+    let selector = parts.next().map(str::trim).unwrap_or("");
+    if sha.is_empty() || selector.is_empty() {
+        return Ok(None);
+    }
 
     let Some(start) = selector.rfind("@{") else {
         return Ok(None);
@@ -340,7 +352,10 @@ fn get_branch_reflog_created_date(repo: &Path, branch: &str) -> Result<Option<St
     };
 
     let raw_date = tail[..end].trim();
-    Ok(normalize_git_date(raw_date))
+    let Some(date) = normalize_git_date(raw_date) else {
+        return Ok(None);
+    };
+    Ok(Some((sha.to_string(), date)))
 }
 
 fn get_remote_sync_status(repo: &Path, branch: &str, commits_ahead: i32) -> (String, i32) {
