@@ -91,6 +91,16 @@ body {
   vector-effect: non-scaling-stroke;
 }
 
+.branch-map-svg {
+  --icon-inv-scale: 1;
+}
+
+.branch-map-icon-fixed {
+  transform-box: fill-box;
+  transform-origin: center;
+  transform: scale(var(--icon-inv-scale));
+}
+
 /* ── Bottom chrome: custom range-input scrollbar ─────────────────────────── */
 .bottom-scroll-range {
   -webkit-appearance: none;
