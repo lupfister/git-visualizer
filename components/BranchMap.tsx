@@ -9,7 +9,7 @@ const LEFT_PAD = 60;
 const RIGHT_PAD = 160;
 const MIN_BRANCH_SPACING_X = 30;
 const LANE_HEIGHT = 60;
-const NODE_SIZE = 8;
+const NODE_SIZE = 10;
 const CORNER_R = 20;
 const BRANCH_HIT_STROKE_WIDTH = 48;
 const AHEAD_LABEL_OFFSET_X = 10;
@@ -28,6 +28,7 @@ const TIME_SCALE_MAX = 3;
 const TIME_SCALE_STEP = 0.05;
 const TIME_SCALE_DEFAULT = 0.5;
 const PROMPT_MARKER_MAX = 10;
+const PROMPT_ICON_SCALE = 1.2;
 const LOCAL_UNPUSHED_GRAY = '#a8a29e';
 
 type TooltipData = {
@@ -283,6 +284,7 @@ export default function BranchMap({
 
   useEffect(() => {
     animationsLockedRef.current = animationsLocked;
+    setTimelineStaticClass(animationsLocked);
   }, [animationsLocked]);
 
   useEffect(() => {
@@ -317,6 +319,16 @@ export default function BranchMap({
     }
   }
 
+  function setTimelineStaticClass(locked: boolean) {
+    const svg = svgRef.current;
+    if (!svg) return;
+    if (locked) {
+      svg.classList.add('timeline-static');
+    } else {
+      svg.classList.remove('timeline-static');
+    }
+  }
+
   function syncUiState(force = false) {
     if (!force) return;
     const now = performance.now();
@@ -345,6 +357,8 @@ export default function BranchMap({
   function lockAnimationsIfReady() {
     if (!drawReadyRef.current || animationsLockedRef.current) return;
     animationsLockedRef.current = true;
+    // Synchronously lock before camera transform changes to avoid WebKit replaying intro animations.
+    setTimelineStaticClass(true);
     setAnimationsLocked(true);
   }
 
@@ -1223,6 +1237,11 @@ export default function BranchMap({
   const scaledNodeSize = NODE_SIZE;
   const scaledHoverHitSize = 20;
   const scaledBranchHitStrokeWidth = BRANCH_HIT_STROKE_WIDTH;
+  const inverseCameraScale = 1 / Math.max(renderCameraScale.x, 0.0001);
+  const drawPathMainClass = animationsLocked ? undefined : 'draw-path-main';
+  const drawPathArcClass = animationsLocked ? undefined : 'draw-path-arc';
+  const fadeInInfoClass = animationsLocked ? undefined : 'fade-in-info';
+  const fadeInPillClass = animationsLocked ? undefined : 'fade-in-pill';
 
   return (
     <div className="h-full">
@@ -1283,7 +1302,7 @@ export default function BranchMap({
               stroke="#78716c"
               strokeWidth={1.5}
               pathLength={1}
-              className="draw-path-main"
+              className={drawPathMainClass}
             />
             {hasMainStaleTailY && (
               <g className="main-stale-tail-glow">
@@ -1293,20 +1312,20 @@ export default function BranchMap({
                   stroke="#a8a29e"
                   strokeWidth={1.5}
                   pathLength={1}
-                  className="draw-path-main"
+                  className={drawPathMainClass}
                 />
               </g>
             )}
 
             {/* Main label and ticks — fade in once the line is drawn */}
-            <g className="fade-in-info" style={{ '--delay': `${MAIN_DRAW_MS}ms` } as React.CSSProperties}>
+            <g className={fadeInInfoClass} style={{ '--delay': `${MAIN_DRAW_MS}ms` } as React.CSSProperties}>
               {(() => {
                 const labelPoint = projectPoint(mainX + MAIN_LABEL_OFFSET_X, mainEndY + 4);
                 return (
                   <text
-                   
-                    x={labelPoint.x}
-                    y={labelPoint.y}
+                    x={0}
+                    y={0}
+                    transform={`translate(${labelPoint.x} ${labelPoint.y}) scale(${inverseCameraScale})`}
                     fontSize={12}
                     fill="#1c1917"
                     fontWeight={500}
@@ -1471,12 +1490,12 @@ export default function BranchMap({
                   stroke={isFocusedPR ? focusedPRColor : strokeColor}
                   strokeWidth={(focusedErrorBranch?.name === pr.branchName ? 2 : strokeWidth)}
                   pathLength={1}
-                  className="draw-path-arc"
+                  className={drawPathArcClass}
                   style={{ pointerEvents: 'none', '--delay': `${prDelay}ms` } as React.CSSProperties}
                 />
 
                 {/* Arc info — fades in as arc draws */}
-                <g className="fade-in-info" style={{ '--delay': `${prDelay + INFO_OFFSET}ms` } as React.CSSProperties}>
+                <g className={fadeInInfoClass} style={{ '--delay': `${prDelay + INFO_OFFSET}ms` } as React.CSSProperties}>
                   <circle
                    
                     className="branch-map-icon-fixed"
@@ -1556,7 +1575,13 @@ export default function BranchMap({
                   ) : (
                     <circle className="branch-map-icon-fixed" cx={arcX} cy={midY} r={8} fill="#57534e" />
                   )}
-                  <text x={arcX + 12} y={midY + 4} fontSize={12} fill={isHovered ? '#1c1917' : '#57534e'}>
+                  <text
+                    x={0}
+                    y={0}
+                    transform={`translate(${arcX + 12} ${midY + 4}) scale(${inverseCameraScale})`}
+                    fontSize={12}
+                    fill={isHovered ? '#1c1917' : '#57534e'}
+                  >
                     {pr.branchName.length > 20 ? pr.branchName.slice(0, 20) + '…' : pr.branchName}
                   </text>
                 </g>
@@ -1770,7 +1795,7 @@ export default function BranchMap({
                     stroke={strokeColor}
                     strokeWidth={strokeWidth}
                     pathLength={fullBranchShouldUseLocalGray ? undefined : 1}
-                    className="draw-path-arc"
+                    className={drawPathArcClass}
                     style={{
                       '--delay': `${brDelay}ms`,
                       transition: 'stroke 0.12s ease',
@@ -1785,7 +1810,7 @@ export default function BranchMap({
                       fill="none"
                       stroke={isHovered && !isSelected ? '#78716c' : LOCAL_UNPUSHED_GRAY}
                       strokeWidth={strokeWidth}
-                      className="draw-path-arc"
+                      className={drawPathArcClass}
                       style={{
                         '--delay': `${brDelay}ms`,
                         strokeDasharray: localSegmentDashPattern,
@@ -1795,7 +1820,7 @@ export default function BranchMap({
                   )}
 
                   {/* Branch info — fades in as arc draws */}
-                  <g className="fade-in-info" style={{ '--delay': `${brDelay + INFO_OFFSET}ms` } as React.CSSProperties}>
+                  <g className={fadeInInfoClass} style={{ '--delay': `${brDelay + INFO_OFFSET}ms` } as React.CSSProperties}>
                     {/* Fork marker on parent baseline (or main fallback) */}
                     <circle
                      
@@ -1853,9 +1878,9 @@ export default function BranchMap({
                     {promptMarkers.map(({ y: markerY, marker }) => {
                       const markerCy = markerY;
                       const markerPoint = projectPoint(lanePosX, markerCy);
-                      const circleR = 4.8;
-                      const tabW = 4.2;
-                      const tabH = 3.8;
+                      const circleR = 4.8 * PROMPT_ICON_SCALE;
+                      const tabW = 4.2 * PROMPT_ICON_SCALE;
+                      const tabH = 3.8 * PROMPT_ICON_SCALE;
                       const tabX = lanePosX - circleR - tabW * 0.55;
                       const tabY = markerCy + circleR * 0.2;
                       const tabPoint = projectPoint(tabX, tabY);
@@ -1888,10 +1913,10 @@ export default function BranchMap({
                           />
                           <line
                            
-                            x1={projectPoint(lanePosX - 2.4, markerCy - 0.7).x}
-                            y1={projectPoint(lanePosX - 2.4, markerCy - 0.7).y}
-                            x2={projectPoint(lanePosX + 2.4, markerCy - 0.7).x}
-                            y2={projectPoint(lanePosX + 2.4, markerCy - 0.7).y}
+                            x1={projectPoint(lanePosX - 2.4 * PROMPT_ICON_SCALE, markerCy - 0.7 * PROMPT_ICON_SCALE).x}
+                            y1={projectPoint(lanePosX - 2.4 * PROMPT_ICON_SCALE, markerCy - 0.7 * PROMPT_ICON_SCALE).y}
+                            x2={projectPoint(lanePosX + 2.4 * PROMPT_ICON_SCALE, markerCy - 0.7 * PROMPT_ICON_SCALE).x}
+                            y2={projectPoint(lanePosX + 2.4 * PROMPT_ICON_SCALE, markerCy - 0.7 * PROMPT_ICON_SCALE).y}
                             stroke="#0e7490"
                             strokeWidth={0.9}
                             strokeLinecap="round"
@@ -1899,10 +1924,10 @@ export default function BranchMap({
                           />
                           <line
                            
-                            x1={projectPoint(lanePosX - 2.4, markerCy + 1.2).x}
-                            y1={projectPoint(lanePosX - 2.4, markerCy + 1.2).y}
-                            x2={projectPoint(lanePosX + 1.7, markerCy + 1.2).x}
-                            y2={projectPoint(lanePosX + 1.7, markerCy + 1.2).y}
+                            x1={projectPoint(lanePosX - 2.4 * PROMPT_ICON_SCALE, markerCy + 1.2 * PROMPT_ICON_SCALE).x}
+                            y1={projectPoint(lanePosX - 2.4 * PROMPT_ICON_SCALE, markerCy + 1.2 * PROMPT_ICON_SCALE).y}
+                            x2={projectPoint(lanePosX + 1.7 * PROMPT_ICON_SCALE, markerCy + 1.2 * PROMPT_ICON_SCALE).x}
+                            y2={projectPoint(lanePosX + 1.7 * PROMPT_ICON_SCALE, markerCy + 1.2 * PROMPT_ICON_SCALE).y}
                             stroke="#0e7490"
                             strokeWidth={0.85}
                             strokeLinecap="round"
@@ -1933,9 +1958,9 @@ export default function BranchMap({
                       );
                     })}
                     <text
-                     
-                      x={namePoint.x}
-                      y={namePoint.y}
+                      x={0}
+                      y={0}
+                      transform={`translate(${namePoint.x} ${namePoint.y}) scale(${inverseCameraScale})`}
                       fontSize={12}
                       fill={isSelected ? '#22d3ee' : isHovered ? '#1c1917' : color}
                       fontWeight={isSelected ? 600 : 400}
@@ -1950,9 +1975,9 @@ export default function BranchMap({
                     </text>
                     {isHovered && (
                       <text
-                       
-                        x={hoverBadgePoint.x}
-                        y={hoverBadgePoint.y}
+                        x={0}
+                        y={0}
+                        transform={`translate(${hoverBadgePoint.x} ${hoverBadgePoint.y}) scale(${inverseCameraScale})`}
                         fontSize={12}
                         fill="#1c1917"
                         fontWeight={500}
@@ -1973,7 +1998,7 @@ export default function BranchMap({
                   {/* Status labels — own fade-in-pill group so they animate independently of fade-in-info */}
                   {!forkOnNode && !isLocalBranch && isConflict && (
                     <g
-                      className="fade-in-pill"
+                      className={fadeInPillClass}
                       style={{ '--delay': `${brDelay + INFO_OFFSET}ms`, cursor: 'pointer' } as React.CSSProperties}
                       onClick={() => onBranchClick?.(b)}
                     >
