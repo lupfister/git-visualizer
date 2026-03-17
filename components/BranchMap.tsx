@@ -28,7 +28,6 @@ const TIME_SCALE_MAX = 3;
 const TIME_SCALE_STEP = 0.05;
 const TIME_SCALE_DEFAULT = 0.5;
 const PROMPT_MARKER_MAX = 10;
-const PROMPT_ICON_SCALE = 1.2;
 const LOCAL_UNPUSHED_GRAY = '#a8a29e';
 
 type TooltipData = {
@@ -1880,59 +1879,28 @@ export default function BranchMap({
                     {promptMarkers.map(({ y: markerY, marker }) => {
                       const markerCy = markerY;
                       const markerPoint = projectPoint(lanePosX, markerCy);
-                      const circleR = 4.8 * PROMPT_ICON_SCALE;
-                      const tabW = 4.2 * PROMPT_ICON_SCALE;
-                      const tabH = 3.8 * PROMPT_ICON_SCALE;
-                      const tabX = lanePosX - circleR - tabW * 0.55;
-                      const tabY = markerCy + circleR * 0.2;
-                      const tabPoint = projectPoint(tabX, tabY);
-                      const tabWidth = isHorizontal ? tabH : tabW;
-                      const tabHeight = isHorizontal ? tabW : tabH;
+                      const markerSize = scaledNodeSize;
+                      const markerX = markerPoint.x - markerSize / 2;
+                      const markerYTop = markerPoint.y - markerSize / 2;
+                      const markerRadius = markerSize / 2;
+                      const markerBottom = markerYTop + markerSize;
+                      const markerPath = [
+                        `M ${markerX} ${markerYTop + markerRadius}`,
+                        `A ${markerRadius} ${markerRadius} 0 0 1 ${markerX + markerRadius} ${markerYTop}`,
+                        `A ${markerRadius} ${markerRadius} 0 0 1 ${markerX + markerSize} ${markerYTop + markerRadius}`,
+                        `A ${markerRadius} ${markerRadius} 0 0 1 ${markerX + markerRadius} ${markerBottom}`,
+                        `H ${markerX}`,
+                        'Z',
+                      ].join(' ');
                       const hitSize = scaledHoverHitSize;
                       return (
                         <g key={marker.id} className="branch-map-icon-fixed">
-                          <circle
-                           
-                            cx={markerPoint.x}
-                            cy={markerPoint.y}
-                            r={circleR}
-                            fill="#ecfeff"
-                            stroke="#0891b2"
+                          <path
+                            d={markerPath}
+                            fill="var(--background)"
+                            stroke="#14b8a6"
                             strokeWidth={1.2}
-                            style={{ pointerEvents: 'none' }}
-                          />
-                          <rect
-                           
-                            x={tabPoint.x}
-                            y={tabPoint.y}
-                            width={tabWidth}
-                            height={tabHeight}
-                            rx={0.8}
-                            fill="#ecfeff"
-                            stroke="#0891b2"
-                            strokeWidth={1.2}
-                            style={{ pointerEvents: 'none' }}
-                          />
-                          <line
-                           
-                            x1={projectPoint(lanePosX - 2.4 * PROMPT_ICON_SCALE, markerCy - 0.7 * PROMPT_ICON_SCALE).x}
-                            y1={projectPoint(lanePosX - 2.4 * PROMPT_ICON_SCALE, markerCy - 0.7 * PROMPT_ICON_SCALE).y}
-                            x2={projectPoint(lanePosX + 2.4 * PROMPT_ICON_SCALE, markerCy - 0.7 * PROMPT_ICON_SCALE).x}
-                            y2={projectPoint(lanePosX + 2.4 * PROMPT_ICON_SCALE, markerCy - 0.7 * PROMPT_ICON_SCALE).y}
-                            stroke="#0e7490"
-                            strokeWidth={0.9}
-                            strokeLinecap="round"
-                            style={{ pointerEvents: 'none' }}
-                          />
-                          <line
-                           
-                            x1={projectPoint(lanePosX - 2.4 * PROMPT_ICON_SCALE, markerCy + 1.2 * PROMPT_ICON_SCALE).x}
-                            y1={projectPoint(lanePosX - 2.4 * PROMPT_ICON_SCALE, markerCy + 1.2 * PROMPT_ICON_SCALE).y}
-                            x2={projectPoint(lanePosX + 1.7 * PROMPT_ICON_SCALE, markerCy + 1.2 * PROMPT_ICON_SCALE).x}
-                            y2={projectPoint(lanePosX + 1.7 * PROMPT_ICON_SCALE, markerCy + 1.2 * PROMPT_ICON_SCALE).y}
-                            stroke="#0e7490"
-                            strokeWidth={0.85}
-                            strokeLinecap="round"
+                            strokeLinejoin="round"
                             style={{ pointerEvents: 'none' }}
                           />
                           <rect
