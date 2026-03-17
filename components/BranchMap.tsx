@@ -1237,7 +1237,6 @@ export default function BranchMap({
   const scaledNodeSize = NODE_SIZE;
   const scaledHoverHitSize = 20;
   const scaledBranchHitStrokeWidth = BRANCH_HIT_STROKE_WIDTH;
-  const inverseCameraScale = 1 / Math.max(renderCameraScale.x, 0.0001);
   const drawPathMainClass = animationsLocked ? undefined : 'draw-path-main';
   const drawPathArcClass = animationsLocked ? undefined : 'draw-path-arc';
   const fadeInInfoClass = animationsLocked ? undefined : 'fade-in-info';
@@ -1323,12 +1322,13 @@ export default function BranchMap({
                 const labelPoint = projectPoint(mainX + MAIN_LABEL_OFFSET_X, mainEndY + 4);
                 return (
                   <text
-                    x={0}
-                    y={0}
-                    transform={`translate(${labelPoint.x} ${labelPoint.y}) scale(${inverseCameraScale})`}
+                    className="branch-map-icon-fixed"
+                    x={labelPoint.x}
+                    y={labelPoint.y}
                     fontSize={12}
                     fill="#1c1917"
                     fontWeight={500}
+                    style={{ transformOrigin: `${labelPoint.x}px ${labelPoint.y}px` }}
                   >
                     {defaultBranch}
                   </text>
@@ -1576,11 +1576,12 @@ export default function BranchMap({
                     <circle className="branch-map-icon-fixed" cx={arcX} cy={midY} r={8} fill="#57534e" />
                   )}
                   <text
-                    x={0}
-                    y={0}
-                    transform={`translate(${arcX + 12} ${midY + 4}) scale(${inverseCameraScale})`}
+                    className="branch-map-icon-fixed"
+                    x={arcX + 12}
+                    y={midY + 4}
                     fontSize={12}
                     fill={isHovered ? '#1c1917' : '#57534e'}
+                    style={{ transformOrigin: `${arcX + 12}px ${midY + 4}px` }}
                   >
                     {pr.branchName.length > 20 ? pr.branchName.slice(0, 20) + '…' : pr.branchName}
                   </text>
@@ -1731,18 +1732,19 @@ export default function BranchMap({
               const showClockIcon = hasOpenPR && daysSinceCommit >= 60;
               const nameAnchor = projectPoint(lanePosX, forkY);
               const nameDx = isHorizontal ? 12 : 10;
-              const nameDy = isHorizontal ? -21 : -6;
+              const nameDy = isHorizontal ? -13 : -6;
               const namePoint = { x: nameAnchor.x + nameDx, y: nameAnchor.y + nameDy };
               const hoverBadgeAnchor = projectPoint(lanePosX, tipY);
               const hoverBadgePoint = {
                 x: hoverBadgeAnchor.x + AHEAD_LABEL_OFFSET_X,
-                y: hoverBadgeAnchor.y - 4,
+                y: hoverBadgeAnchor.y,
               };
               const nameLen = Math.min(b.name.length, 22);
               const approxNameW = nameLen * 6.5;
               const clockPoint = projectPoint(lanePosX + approxNameW + 10, forkY);
+              const labelsVisible = zoom > 1;
               const zoomHideStrength = zoom <= 1 ? 1 : 0;
-              const nameOpacity = isHorizontal ? 1 : (isHovered ? 1 : 0);
+              const nameOpacity = labelsVisible ? (isHorizontal ? 1 : (isHovered ? 1 : 0)) : 0;
               const nameBlurPx = isHorizontal ? 0 : (isHovered ? 0 : zoomHideStrength * 4);
 
               return (
@@ -1958,14 +1960,15 @@ export default function BranchMap({
                       );
                     })}
                     <text
-                      x={0}
-                      y={0}
-                      transform={`translate(${namePoint.x} ${namePoint.y}) scale(${inverseCameraScale})`}
+                      className="branch-map-icon-fixed"
+                      x={namePoint.x}
+                      y={namePoint.y}
                       fontSize={12}
                       fill={isSelected ? '#22d3ee' : isHovered ? '#1c1917' : color}
                       fontWeight={isSelected ? 600 : 400}
                       opacity={nameOpacity}
                       style={{
+                        transformOrigin: `${namePoint.x}px ${namePoint.y}px`,
                         filter: `blur(${nameBlurPx}px)`,
                         pointerEvents: 'none',
                         transition: 'fill 0.12s ease, opacity 0.16s ease, filter 0.16s ease',
@@ -1973,15 +1976,19 @@ export default function BranchMap({
                     >
                       {b.name.length > 22 ? b.name.slice(0, 22) + '…' : b.name}
                     </text>
-                    {isHovered && (
+                    {isHovered && labelsVisible && (
                       <text
-                        x={0}
-                        y={0}
-                        transform={`translate(${hoverBadgePoint.x} ${hoverBadgePoint.y}) scale(${inverseCameraScale})`}
+                        className="branch-map-icon-fixed"
+                        x={hoverBadgePoint.x}
+                        y={hoverBadgePoint.y}
+                        dominantBaseline="middle"
                         fontSize={12}
                         fill="#1c1917"
                         fontWeight={500}
-                        style={{ pointerEvents: 'none' }}
+                        style={{
+                          transformOrigin: `${hoverBadgePoint.x}px ${hoverBadgePoint.y}px`,
+                          pointerEvents: 'none',
+                        }}
                       >
                         {formatCommitsAhead(branchAheadCount(b))}
                       </text>
