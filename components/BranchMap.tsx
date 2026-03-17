@@ -20,7 +20,6 @@ const ZOOM_MAX = 2;
 const ZOOM_DEFAULT = 1;
 const ZOOM_SENSITIVITY = 0.0065;
 const ZOOM_DELTA_CLAMP = 0.22;
-const ZOOM_LAYOUT_STRETCH = 0.85;
 const CAMERA_UI_SYNC_MS = 24;
 const CANVAS_PAD_X = 240;
 const CANVAS_PAD_Y = 140;
@@ -43,13 +42,8 @@ type SpacingMode = 'regular' | 'bounded';
 type ClampMode = 'hard' | 'soft';
 type OrientationMode = 'vertical' | 'horizontal';
 
-function zoomToLayoutStretch(zoomValue: number): number {
-  return Math.max(0.5, Math.min(2.4, 1 + (zoomValue - 1) * ZOOM_LAYOUT_STRETCH));
-}
-
-function getCameraScale(zoomValue: number, horizontal: boolean): { x: number; y: number } {
-  const stretch = zoomToLayoutStretch(zoomValue);
-  return horizontal ? { x: stretch, y: 1 } : { x: 1, y: stretch };
+function getCameraScale(zoomValue: number, _horizontal: boolean): { x: number; y: number } {
+  return { x: zoomValue, y: zoomValue };
 }
 
 function smoothValueTo(
@@ -196,6 +190,7 @@ export default function BranchMap({
   const scrollRef = useRef<HTMLDivElement>(null);
   const cameraRef = useRef<HTMLDivElement>(null);
   const svgRef = useRef<SVGSVGElement>(null);
+  const zoomLayerRef = useRef<SVGGElement>(null);
   const zoomRef = useRef(zoom);
   const zoomStateRef = useRef(zoom);
   const panUiSyncTimeoutRef = useRef<number | null>(null);
@@ -296,11 +291,10 @@ export default function BranchMap({
     const el = cameraRef.current;
     if (!el) return;
     const cameraScale = getCameraScale(_nextZoom, isHorizontal);
-    el.style.transform = `translate3d(${nextPan.x}px, ${nextPan.y}px, 0) scale(${cameraScale.x}, ${cameraScale.y})`;
-    const svgEl = svgRef.current;
-    if (svgEl) {
-      svgEl.style.setProperty('--inv-sx', `${1 / Math.max(cameraScale.x, 0.0001)}`);
-      svgEl.style.setProperty('--inv-sy', `${1 / Math.max(cameraScale.y, 0.0001)}`);
+    el.style.transform = `translate3d(${nextPan.x}px, ${nextPan.y}px, 0)`;
+    const zoomLayer = zoomLayerRef.current;
+    if (zoomLayer) {
+      zoomLayer.setAttribute('transform', `scale(${cameraScale.x} ${cameraScale.y})`);
     }
   }
 
@@ -375,12 +369,12 @@ export default function BranchMap({
     const currentPan = panRef.current;
     const currentScale = getCameraScale(currentZoom, isHorizontal);
     const nextScale = getCameraScale(nextZoom, isHorizontal);
-    const worldX = (point.x - currentPan.x) / Math.max(currentScale.x, 0.0001) - graphOffsetX;
-    const worldY = (point.y - currentPan.y) / Math.max(currentScale.y, 0.0001) - graphOffsetY;
+    const worldX = (point.x - currentPan.x - graphOffsetX) / Math.max(currentScale.x, 0.0001);
+    const worldY = (point.y - currentPan.y - graphOffsetY) / Math.max(currentScale.y, 0.0001);
     const nextPan = clampPan(
       {
-        x: point.x - (graphOffsetX + worldX) * nextScale.x,
-        y: point.y - (graphOffsetY + worldY) * nextScale.y,
+        x: point.x - graphOffsetX - worldX * nextScale.x,
+        y: point.y - graphOffsetY - worldY * nextScale.y,
       },
       nextZoom,
       'soft'
@@ -1038,7 +1032,7 @@ export default function BranchMap({
     const max = Math.max(0, axisSvgSize - visibleWorldSpan);
     const axisPan = isHorizontal ? pan.x : pan.y;
     const axisGraphOffset = isHorizontal ? graphOffsetX : graphOffsetY;
-    const axisWorldStart = Math.max(0, Math.min(max, (-axisPan) / safeScale - axisGraphOffset));
+    const axisWorldStart = Math.max(0, Math.min(max, (-axisPan - axisGraphOffset) / safeScale));
     setBarScrollLeft(axisWorldStart);
     setBarScrollMax(max);
 
@@ -1124,8 +1118,8 @@ export default function BranchMap({
     const scale = getCameraScale(zoomValue, isHorizontal);
     const nextPan = clampPan(
       {
-        x: viewportSize.width / 2 - (graphOffsetX + target.x) * scale.x,
-        y: viewportSize.height / 2 - (graphOffsetY + target.y) * scale.y,
+        x: viewportSize.width / 2 - graphOffsetX - target.x * scale.x,
+        y: viewportSize.height / 2 - graphOffsetY - target.y * scale.y,
       },
       zoomValue,
       'hard'
@@ -1169,8 +1163,8 @@ export default function BranchMap({
     );
     const clampedTargetPan = clampPan(
       isHorizontal
-        ? { x: -(axisGraphOffset + targetWorldStart) * axisScale, y: targetPanRef.current.y }
-        : { x: targetPanRef.current.x, y: -(axisGraphOffset + targetWorldStart) * axisScale },
+        ? { x: -axisGraphOffset - targetWorldStart * axisScale, y: targetPanRef.current.y }
+        : { x: targetPanRef.current.x, y: -axisGraphOffset - targetWorldStart * axisScale },
       zoomRef.current,
       'hard'
     );
@@ -1229,7 +1223,7 @@ export default function BranchMap({
             top: 0,
             width: canvasWidth,
             height: canvasHeight,
-            transform: `translate3d(${panRef.current.x}px, ${panRef.current.y}px, 0) scale(${renderCameraScale.x}, ${renderCameraScale.y})`,
+            transform: `translate3d(${panRef.current.x}px, ${panRef.current.y}px, 0)`,
             transformOrigin: 'top left',
             willChange: 'transform',
           }}
@@ -1257,6 +1251,11 @@ export default function BranchMap({
               <feDropShadow dx="0" dy="2" stdDeviation="6" floodColor="#000" floodOpacity="0.08" />
             </filter>
           </defs>
+
+          <g
+            ref={zoomLayerRef}
+            transform={`scale(${renderCameraScale.x} ${renderCameraScale.y})`}
+          >
 
           {/* ── Main timeline + merge nodes ── */}
           <g style={{ opacity: hoveredPR !== null || hoveredBranch !== null ? 0.2 : 1, transition: 'opacity 0.15s' }}>
@@ -1288,7 +1287,7 @@ export default function BranchMap({
                 const labelPoint = projectPoint(mainX + MAIN_LABEL_OFFSET_X, mainEndY + 4);
                 return (
                   <text
-                    className="zoom-invariant"
+                   
                     x={labelPoint.x}
                     y={labelPoint.y}
                     fontSize={12}
@@ -1308,7 +1307,7 @@ export default function BranchMap({
                 const label = c.message.length > 38 ? c.message.slice(0, 38) + '…' : c.message;
                 return (
                   <circle
-                    className="zoom-invariant"
+                   
                     key={c.fullSha}
                     cx={markerPoint.x}
                     cy={markerPoint.y}
@@ -1356,7 +1355,7 @@ export default function BranchMap({
                     <g key={m.fullSha}>
                       {/* Visible tick — pointer-events off so hit rect handles hover */}
                       <circle
-                        className="zoom-invariant"
+                       
                         cx={mainX}
                         cy={y}
                         r={scaledNodeSize / 2}
@@ -1365,7 +1364,7 @@ export default function BranchMap({
                       />
                       {/* Transparent hit area for hover — rendered on top */}
                       <rect
-                        className="zoom-invariant"
+                       
                         x={mainX - hitSize / 2}
                         y={y - hitSize / 2}
                         width={hitSize}
@@ -1377,16 +1376,16 @@ export default function BranchMap({
                       />
                       {showLabel && (
                         <>
-                          <text className="zoom-invariant" x={mainX + 14} y={y + 4} textAnchor="start" fontSize={12} fill="#57534e">
+                          <text x={mainX + 14} y={y + 4} textAnchor="start" fontSize={12} fill="#57534e">
                             {label}
                           </text>
                           {showTitle && (
-                            <text className="zoom-invariant" x={mainX + 14} y={y + 16} textAnchor="start" fontSize={10} fill="#78716c">
+                            <text x={mainX + 14} y={y + 16} textAnchor="start" fontSize={10} fill="#78716c">
                               {(m.prTitle ?? '').slice(0, 22) + ((m.prTitle?.length ?? 0) > 22 ? '…' : '')}
                             </text>
                           )}
                           {showDate && (
-                            <text className="zoom-invariant" x={mainX + 14} y={showTitle ? y + 28 : y + 16} textAnchor="start" fontSize={10} fill="#78716c">
+                            <text x={mainX + 14} y={showTitle ? y + 28 : y + 16} textAnchor="start" fontSize={10} fill="#78716c">
                               {fmtLabelDate(m.date)}
                             </text>
                           )}
@@ -1460,7 +1459,7 @@ export default function BranchMap({
                 {/* Arc info — fades in as arc draws */}
                 <g className="fade-in-info" style={{ '--delay': `${prDelay + INFO_OFFSET}ms` } as React.CSSProperties}>
                   <circle
-                    className="zoom-invariant"
+                   
                     cx={mainX}
                     cy={forkY}
                     r={scaledNodeSize / 2}
@@ -1470,7 +1469,7 @@ export default function BranchMap({
                     style={{ pointerEvents: 'none' }}
                   />
                   <circle
-                    className="zoom-invariant"
+                   
                     cx={mainX}
                     cy={effectiveMergeY}
                     r={scaledNodeSize / 2}
@@ -1491,7 +1490,7 @@ export default function BranchMap({
                       <g key={ci}>
                         {/* Visible tick */}
                         <circle
-                          className="zoom-invariant"
+                         
                           cx={arcX}
                           cy={cy}
                           r={tickSize / 2}
@@ -1500,7 +1499,7 @@ export default function BranchMap({
                         />
                         {/* Invisible hit area */}
                         <rect
-                          className="zoom-invariant"
+                         
                           x={arcX - hitSize / 2}
                           y={cy - hitSize / 2}
                           width={hitSize}
@@ -1523,7 +1522,7 @@ export default function BranchMap({
                   {/* Author avatar */}
                   {pr.authorAvatar ? (
                     <image
-                      className="zoom-invariant"
+                     
                       href={pr.authorAvatar}
                       x={arcX - 9}
                       y={midY - 10}
@@ -1532,9 +1531,9 @@ export default function BranchMap({
                       style={{ clipPath: `circle(${9}px at ${9}px ${9}px)` }}
                     />
                   ) : (
-                    <circle className="zoom-invariant" cx={arcX} cy={midY} r={8} fill="#57534e" />
+                    <circle cx={arcX} cy={midY} r={8} fill="#57534e" />
                   )}
-                  <text className="zoom-invariant" x={arcX + 12} y={midY + 4} fontSize={12} fill={isHovered ? '#1c1917' : '#57534e'}>
+                  <text x={arcX + 12} y={midY + 4} fontSize={12} fill={isHovered ? '#1c1917' : '#57534e'}>
                     {pr.branchName.length > 20 ? pr.branchName.slice(0, 20) + '…' : pr.branchName}
                   </text>
                 </g>
@@ -1704,7 +1703,7 @@ export default function BranchMap({
                     style={{ pointerEvents: 'stroke' }}
                   />
                   <line
-                    className="zoom-invariant"
+                   
                     x1={projectPoint(lanePosX, tipY).x}
                     y1={projectPoint(lanePosX, tipY).y}
                     x2={projectPoint(lanePosX + AHEAD_LABEL_OFFSET_X + 6, tipY).x}
@@ -1763,7 +1762,7 @@ export default function BranchMap({
                   <g className="fade-in-info" style={{ '--delay': `${brDelay + INFO_OFFSET}ms` } as React.CSSProperties}>
                     {/* Fork marker on parent baseline (or main fallback) */}
                     <circle
-                      className="zoom-invariant"
+                     
                       cx={projectPoint(startX, forkY).x}
                       cy={projectPoint(startX, forkY).y}
                       r={scaledNodeSize / 2}
@@ -1786,7 +1785,7 @@ export default function BranchMap({
 
                       return (
                         <circle
-                          className="zoom-invariant"
+                         
                           key={ci}
                           cx={projectPoint(lanePosX, commitY).x}
                           cy={projectPoint(lanePosX, commitY).y}
@@ -1828,7 +1827,7 @@ export default function BranchMap({
                       return (
                         <g key={marker.id}>
                           <circle
-                            className="zoom-invariant"
+                           
                             cx={markerPoint.x}
                             cy={markerPoint.y}
                             r={circleR}
@@ -1838,7 +1837,7 @@ export default function BranchMap({
                             style={{ pointerEvents: 'none' }}
                           />
                           <rect
-                            className="zoom-invariant"
+                           
                             x={tabPoint.x}
                             y={tabPoint.y}
                             width={tabWidth}
@@ -1850,7 +1849,7 @@ export default function BranchMap({
                             style={{ pointerEvents: 'none' }}
                           />
                           <line
-                            className="zoom-invariant"
+                           
                             x1={projectPoint(lanePosX - 2.4, markerCy - 0.7).x}
                             y1={projectPoint(lanePosX - 2.4, markerCy - 0.7).y}
                             x2={projectPoint(lanePosX + 2.4, markerCy - 0.7).x}
@@ -1861,7 +1860,7 @@ export default function BranchMap({
                             style={{ pointerEvents: 'none' }}
                           />
                           <line
-                            className="zoom-invariant"
+                           
                             x1={projectPoint(lanePosX - 2.4, markerCy + 1.2).x}
                             y1={projectPoint(lanePosX - 2.4, markerCy + 1.2).y}
                             x2={projectPoint(lanePosX + 1.7, markerCy + 1.2).x}
@@ -1872,7 +1871,7 @@ export default function BranchMap({
                             style={{ pointerEvents: 'none' }}
                           />
                           <rect
-                            className="zoom-invariant"
+                           
                             x={markerPoint.x - hitSize / 2}
                             y={markerPoint.y - hitSize / 2}
                             width={hitSize}
@@ -1896,7 +1895,7 @@ export default function BranchMap({
                       );
                     })}
                     <text
-                      className="zoom-invariant"
+                     
                       x={namePoint.x}
                       y={namePoint.y}
                       fontSize={12}
@@ -1913,7 +1912,7 @@ export default function BranchMap({
                     </text>
                     {isHovered && (
                       <text
-                        className="zoom-invariant"
+                       
                         x={hoverBadgePoint.x}
                         y={hoverBadgePoint.y}
                         fontSize={12}
@@ -1925,7 +1924,7 @@ export default function BranchMap({
                       </text>
                     )}
                     {showClockIcon && (
-                      <g className="zoom-invariant" style={{ pointerEvents: 'none' }}>
+                      <g style={{ pointerEvents: 'none' }}>
                         <circle cx={clockPoint.x} cy={clockPoint.y} r={4.2} stroke={color} strokeWidth={1.2} fill="none" />
                         <line x1={clockPoint.x} y1={clockPoint.y - 2.9} x2={clockPoint.x} y2={clockPoint.y} stroke={color} strokeWidth={1.2} strokeLinecap="round" />
                         <line x1={clockPoint.x} y1={clockPoint.y} x2={clockPoint.x + 2.3} y2={clockPoint.y + 1.5} stroke={color} strokeWidth={1.2} strokeLinecap="round" />
@@ -1942,7 +1941,7 @@ export default function BranchMap({
                     >
                       {/* Invisible hit area — text alone is too small to click reliably */}
                       <rect
-                        className="zoom-invariant"
+                       
                         x={statusLabelPoint.x - 22}
                         y={statusLabelPoint.y - 11}
                         width={44}
@@ -1950,7 +1949,7 @@ export default function BranchMap({
                         fill="transparent"
                       />
                       {isConflict && (
-                        <text className="zoom-invariant" x={statusLabelPoint.x} y={statusLabelPoint.y} textAnchor="middle" fontSize={10} fill="#dc2626">conflict</text>
+                        <text x={statusLabelPoint.x} y={statusLabelPoint.y} textAnchor="middle" fontSize={10} fill="#dc2626">conflict</text>
                       )}
                     </g>
                   )}
@@ -1973,16 +1972,16 @@ export default function BranchMap({
             const ty = y - TH / 2;
             return (
               <g style={{ pointerEvents: 'none' }}>
-                <rect className="zoom-invariant" x={tx} y={ty} width={TW} height={TH} rx={8}
+                <rect x={tx} y={ty} width={TW} height={TH} rx={8}
                   fill="#ffffff" stroke="#e7e5e0" strokeWidth={1}
                   filter="url(#tick-shadow)" />
-                <text className="zoom-invariant" x={tx + 10} y={ty + 14} fontSize={10} fontWeight={600} fill="#1c1917">{label}</text>
+                <text x={tx + 10} y={ty + 14} fontSize={10} fontWeight={600} fill="#1c1917">{label}</text>
                 {hasTitle && (
-                  <text className="zoom-invariant" x={tx + 10} y={ty + 30} fontSize={10} fill="#a8a29e">
+                  <text x={tx + 10} y={ty + 30} fontSize={10} fill="#a8a29e">
                     {title.slice(0, 34)}{title.length > 34 ? '…' : ''}
                   </text>
                 )}
-                <text className="zoom-invariant" x={tx + 10} y={hasTitle ? ty + 46 : ty + 30} fontSize={10} fill="#a8a29e">
+                <text x={tx + 10} y={hasTitle ? ty + 46 : ty + 30} fontSize={10} fill="#a8a29e">
                   {fmtLabelDate(m.date)}
                 </text>
               </g>
@@ -1998,16 +1997,16 @@ export default function BranchMap({
             const ty = arcY + 14;
             return (
               <g style={{ pointerEvents: 'none' }}>
-                <rect className="zoom-invariant" x={tx} y={ty} width={TW} height={60} rx={8}
+                <rect x={tx} y={ty} width={TW} height={60} rx={8}
                   fill="#ffffff" stroke="#e7e5e0" strokeWidth={1}
                   filter="url(#tick-shadow)" />
-                <text className="zoom-invariant" x={tx + 10} y={ty + 17} fontSize={10} fontWeight={600} fill="#1c1917">
+                <text x={tx + 10} y={ty + 17} fontSize={10} fontWeight={600} fill="#1c1917">
                   {sha ?? `commit ${commitIdx + 1}`}
                 </text>
-                <text className="zoom-invariant" x={tx + 10} y={ty + 32} fontSize={10} fill="#78716c">
+                <text x={tx + 10} y={ty + 32} fontSize={10} fill="#78716c">
                   PR #{pr.number} · {pr.branchName.length > 22 ? pr.branchName.slice(0, 22) + '…' : pr.branchName}
                 </text>
-                <text className="zoom-invariant" x={tx + 10} y={ty + 47} fontSize={10} fill="#a8a29e">
+                <text x={tx + 10} y={ty + 47} fontSize={10} fill="#a8a29e">
                   @{pr.authorLogin} · merged {fmtLabelDate(pr.mergedAt)}
                 </text>
               </g>
@@ -2019,7 +2018,7 @@ export default function BranchMap({
             const markerPoint = projectPoint(checkedOutIndicatorLocal.x, checkedOutIndicatorLocal.y);
             return (
               <g style={{ pointerEvents: 'none' }}>
-                <g className="zoom-invariant">
+                <g>
                   <circle
                     className="checked-out-halo-pulse"
                     cx={markerPoint.x}
@@ -2037,6 +2036,7 @@ export default function BranchMap({
               </g>
             );
           })()}
+          </g>
         </svg>
         </div>
 
@@ -2046,8 +2046,8 @@ export default function BranchMap({
           const avatarFallback = tooltip.avatarFallback || '?';
           const tooltipW = 228;
           const tooltipH = 74;
-          const anchorX = pan.x + (graphOffsetX + tooltip.x) * renderCameraScale.x;
-          const anchorY = pan.y + (graphOffsetY + tooltip.y) * renderCameraScale.y;
+          const anchorX = pan.x + graphOffsetX + tooltip.x * renderCameraScale.x;
+          const anchorY = pan.y + graphOffsetY + tooltip.y * renderCameraScale.y;
           const rawLeft = anchorX - tooltipW / 2;
           const rawTop = anchorY - tooltipH - 10;
           const maxLeft = Math.max(8, viewportSize.width - tooltipW - 8);
@@ -2143,8 +2143,8 @@ export default function BranchMap({
               const nextWorldStart = Number(e.target.value);
               const scale = getCameraScale(zoomRef.current, isHorizontal);
               const nextPan = clampPan({
-                x: isHorizontal ? -(graphOffsetX + nextWorldStart) * scale.x : targetPanRef.current.x,
-                y: isHorizontal ? targetPanRef.current.y : -(graphOffsetY + nextWorldStart) * scale.y,
+                x: isHorizontal ? -graphOffsetX - nextWorldStart * scale.x : targetPanRef.current.x,
+                y: isHorizontal ? targetPanRef.current.y : -graphOffsetY - nextWorldStart * scale.y,
               }, zoomRef.current, 'hard');
               applyCamera(nextPan, zoomRef.current, true);
             }}
