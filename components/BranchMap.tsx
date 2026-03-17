@@ -8,8 +8,8 @@ import { ViewMode } from './BranchMapView';
 const LEFT_PAD = 60;
 const RIGHT_PAD = 160;
 const MIN_BRANCH_SPACING_X = 30;
-const LANE_HEIGHT = 60;
-const NODE_SIZE = 10;
+const LANE_HEIGHT = 120;
+const NODE_SIZE = 14;
 const CORNER_R = 20;
 const BRANCH_HIT_STROKE_WIDTH = 48;
 const AHEAD_LABEL_OFFSET_X = 10;
@@ -29,6 +29,9 @@ const TIME_SCALE_STEP = 0.05;
 const TIME_SCALE_DEFAULT = 0.5;
 const PROMPT_MARKER_MAX = 10;
 const LOCAL_UNPUSHED_GRAY = '#a8a29e';
+const CLUMP_DISTANCE_PX = 16;
+const CLUMP_COUNT_MAX = 99;
+const CLUMP_SIZE_BOOST_PX = 0.5;
 
 type TooltipData = {
   x: number;
@@ -41,6 +44,8 @@ type PRCommitHover = { x: number; arcY: number; pr: MergedPR; commitIdx: number;
 type SpacingMode = 'regular' | 'bounded';
 type ClampMode = 'hard' | 'soft';
 type OrientationMode = 'vertical' | 'horizontal';
+type MarkerEntry<T> = { x: number; y: number; item: T };
+type MarkerCluster<T> = { x: number; y: number; entries: MarkerEntry<T>[] };
 
 function getCameraScale(zoomValue: number, _horizontal: boolean): { x: number; y: number } {
   return { x: zoomValue, y: zoomValue };
@@ -113,6 +118,66 @@ function estimateSvgTextWidth(text: string, fontSize = 10): number {
 function truncatePrompt(text: string, max = 90): string {
   if (text.length <= max) return text;
   return `${text.slice(0, max)}…`;
+}
+
+function clusterMarkersByDistance<T>(
+  entries: MarkerEntry<T>[],
+  maxGap: number
+): MarkerCluster<T>[] {
+  if (entries.length === 0) return [];
+  if (maxGap <= 0) {
+    return entries.map((entry) => ({
+      x: entry.x,
+      y: entry.y,
+      entries: [entry],
+    }));
+  }
+
+  const clusters: MarkerCluster<T>[] = [];
+  let current: MarkerEntry<T>[] = [entries[0]];
+
+  function flush() {
+    const totalX = current.reduce((sum, entry) => sum + entry.x, 0);
+    const totalY = current.reduce((sum, entry) => sum + entry.y, 0);
+    clusters.push({
+      x: totalX / current.length,
+      y: totalY / current.length,
+      entries: current,
+    });
+  }
+
+  for (let i = 1; i < entries.length; i += 1) {
+    const prev = current[current.length - 1];
+    const next = entries[i];
+    const distance = Math.hypot(next.x - prev.x, next.y - prev.y);
+    if (distance <= maxGap) {
+      current.push(next);
+    } else {
+      flush();
+      current = [next];
+    }
+  }
+  flush();
+  return clusters;
+}
+
+function clumpCountLabel(count: number): string {
+  return count > CLUMP_COUNT_MAX ? `${CLUMP_COUNT_MAX}+` : String(count);
+}
+
+function promptMarkerPath(centerX: number, centerY: number, size: number): string {
+  const markerX = centerX - size / 2;
+  const markerY = centerY - size / 2;
+  const markerRadius = size / 2;
+  const markerBottom = markerY + size;
+  return [
+    `M ${markerX} ${markerY + markerRadius}`,
+    `A ${markerRadius} ${markerRadius} 0 0 1 ${markerX + markerRadius} ${markerY}`,
+    `A ${markerRadius} ${markerRadius} 0 0 1 ${markerX + size} ${markerY + markerRadius}`,
+    `A ${markerRadius} ${markerRadius} 0 0 1 ${markerX + markerRadius} ${markerBottom}`,
+    `H ${markerX}`,
+    'Z',
+  ].join(' ');
 }
 
 function placeItemsEvenly<T>(items: T[], minX: number, maxX: number): Array<{ item: T; x: number }> {
@@ -1001,15 +1066,7 @@ export default function BranchMap({
     guard += 1;
   }
 
-  const laneCount = laneLastEndX.length;
-  const availableLaneWidth = Math.max(
-    220,
-    Math.max(viewportSize.width, 800) - mainX - rightPad - 60
-  );
-  const laneWidthBase = laneCount > 0
-    ? Math.max(34, Math.min(LANE_HEIGHT, availableLaneWidth / laneCount))
-    : LANE_HEIGHT;
-  const laneWidth = laneWidthBase;
+  const laneWidth = LANE_HEIGHT;
 
   function laneX(b: Branch): number {
     const lane = laneAssignments.get(b.name) ?? 0;
@@ -1236,6 +1293,10 @@ export default function BranchMap({
   const scaledNodeSize = NODE_SIZE;
   const scaledHoverHitSize = 20;
   const scaledBranchHitStrokeWidth = BRANCH_HIT_STROKE_WIDTH;
+  const clumpingEnabled = zoom <= 1;
+  const clumpDistanceWorld = clumpingEnabled
+    ? CLUMP_DISTANCE_PX / Math.max(renderCameraScale.x, 0.0001)
+    : 0;
   const drawPathMainClass = animationsLocked ? undefined : 'draw-path-main';
   const drawPathArcClass = animationsLocked ? undefined : 'draw-path-arc';
   const fadeInInfoClass = animationsLocked ? undefined : 'fade-in-info';
@@ -1335,33 +1396,88 @@ export default function BranchMap({
               })()}
 
               {/* Direct commits */}
-              {directCommits.map(c => {
-                const timeCoordX = directXByFullSha.get(c.fullSha) ?? timeToX(c.date);
-                const y = timeCoordToY(timeCoordX);
-                const markerPoint = projectPoint(mainX, y);
-                const label = c.message.length > 38 ? c.message.slice(0, 38) + '…' : c.message;
-                return (
-                  <circle
-                   
-                    key={c.fullSha}
-                    className="branch-map-icon-fixed"
-                    cx={markerPoint.x}
-                    cy={markerPoint.y}
-                    r={scaledNodeSize / 2}
-                    fill="#78716c"
-                    style={{ cursor: 'pointer' }}
-                    onMouseEnter={() =>
-                      setTooltip({
-                        x: markerPoint.x + 14,
-                        y: markerPoint.y,
-                        lines: [c.sha, label, `@${c.author} · ${fmtTooltipDate(c.date)}`],
-                        avatarFallback: c.author?.charAt(0).toUpperCase() || '?',
-                      })
-                    }
-                    onMouseLeave={() => setTooltip(null)}
-                  />
-                );
-              })}
+              {(() => {
+                const entries: MarkerEntry<DirectCommit>[] = sortedDirectCommits.map((commit) => {
+                  const timeCoordX = directXByFullSha.get(commit.fullSha) ?? timeToX(commit.date);
+                  const markerPoint = projectPoint(mainX, timeCoordToY(timeCoordX));
+                  return { x: markerPoint.x, y: markerPoint.y, item: commit };
+                });
+                const clusters = clusterMarkersByDistance(entries, clumpDistanceWorld);
+                return clusters.map((cluster) => {
+                  const count = cluster.entries.length;
+                  const first = cluster.entries[0].item;
+                  const last = cluster.entries[count - 1].item;
+                  const countLabel = clumpCountLabel(count);
+
+                  if (count === 1) {
+                    const c = last;
+                    const label = c.message.length > 38 ? c.message.slice(0, 38) + '…' : c.message;
+                    return (
+                      <circle
+                        key={c.fullSha}
+                        className="branch-map-icon-fixed"
+                        cx={cluster.x}
+                        cy={cluster.y}
+                        r={scaledNodeSize / 2}
+                        fill="#78716c"
+                        style={{ cursor: 'pointer' }}
+                        onMouseEnter={() =>
+                          setTooltip({
+                            x: cluster.x + 14,
+                            y: cluster.y,
+                            lines: [c.sha, label, `@${c.author} · ${fmtTooltipDate(c.date)}`],
+                            avatarFallback: c.author?.charAt(0).toUpperCase() || '?',
+                          })
+                        }
+                        onMouseLeave={() => setTooltip(null)}
+                      />
+                    );
+                  }
+
+                  const firstTime = new Date(first.date).getTime();
+                  const lastTime = new Date(last.date).getTime();
+                  const rangeLine = firstTime === lastTime
+                    ? fmtTooltipDate(last.date)
+                    : `${fmtTooltipDate(first.date)} → ${fmtTooltipDate(last.date)}`;
+
+                  return (
+                    <g key={`direct-clump-${first.fullSha}-${last.fullSha}`}>
+                      <circle
+                        className="branch-map-icon-fixed"
+                        cx={cluster.x}
+                        cy={cluster.y}
+                        r={scaledNodeSize / 2 + CLUMP_SIZE_BOOST_PX}
+                        fill="#78716c"
+                        style={{ cursor: 'pointer' }}
+                        onMouseEnter={() =>
+                          setTooltip({
+                            x: cluster.x + 14,
+                            y: cluster.y,
+                            lines: [`${count} commits`, 'main', rangeLine],
+                            avatarFallback: last.author?.charAt(0).toUpperCase() || '?',
+                          })
+                        }
+                        onMouseLeave={() => setTooltip(null)}
+                      />
+                      <text
+                        className="branch-map-icon-fixed"
+                        x={cluster.x}
+                        y={cluster.y + 2.5}
+                        textAnchor="middle"
+                        fontSize={count >= 10 ? 6.5 : 8}
+                        fill="#fafaf9"
+                        fontWeight={600}
+                        style={{
+                          pointerEvents: 'none',
+                          transformOrigin: `${cluster.x}px ${cluster.y}px`,
+                        }}
+                      >
+                        {countLabel}
+                      </text>
+                    </g>
+                  );
+                });
+              })()}
 
               {showMergeTicks && (() => {
                 // Progressive label culling as zoom decreases.
@@ -1715,6 +1831,26 @@ export default function BranchMap({
                   marker,
                 };
               });
+              const commitDotEntries: MarkerEntry<{ index: number; commit?: BranchCommitPreview }>[] =
+                commitDots.map(({ y, commit }, index) => {
+                  const point = projectPoint(lanePosX, y);
+                  return {
+                    x: point.x,
+                    y: point.y,
+                    item: { index, commit },
+                  };
+                });
+              const commitDotClusters = clusterMarkersByDistance(commitDotEntries, clumpDistanceWorld);
+              const promptMarkerEntries: MarkerEntry<{ marker: typeof promptMarkers[number]['marker'] }>[] =
+                promptMarkers.map(({ y, marker }) => {
+                  const point = projectPoint(lanePosX, y);
+                  return {
+                    x: point.x,
+                    y: point.y,
+                    item: { marker },
+                  };
+                });
+              const promptMarkerClusters = clusterMarkersByDistance(promptMarkerEntries, clumpDistanceWorld);
 
               const brDelay = branchDelayMs.get(b.name) ?? 0;
 
@@ -1729,6 +1865,8 @@ export default function BranchMap({
               const hasOpenPR = openPRBranchNames.has(b.name);
               const daysSinceCommit = (Date.now() - new Date(b.lastCommitDate).getTime()) / 86400000;
               const showClockIcon = hasOpenPR && daysSinceCommit >= 60;
+              const aheadLabelText = formatCommitsAhead(branchAheadCount(b));
+              const aheadLabelWidth = estimateSvgTextWidth(aheadLabelText, 12);
               const nameAnchor = projectPoint(lanePosX, forkY);
               const nameDx = isHorizontal ? 12 : 10;
               const nameDy = isHorizontal ? -13 : -6;
@@ -1741,7 +1879,7 @@ export default function BranchMap({
               const nameLen = Math.min(b.name.length, 22);
               const approxNameW = nameLen * 6.5;
               const clockPoint = projectPoint(lanePosX + approxNameW + 10, forkY);
-              const labelsVisible = zoom > 1;
+              const labelsVisible = zoom > 1 || isHovered;
               const zoomHideStrength = zoom <= 1 ? 1 : 0;
               const nameOpacity = labelsVisible ? (isHorizontal ? 1 : (isHovered ? 1 : 0)) : 0;
               const nameBlurPx = isHorizontal ? 0 : (isHovered ? 0 : zoomHideStrength * 4);
@@ -1768,8 +1906,8 @@ export default function BranchMap({
                    
                     x1={projectPoint(lanePosX, tipY).x}
                     y1={projectPoint(lanePosX, tipY).y}
-                    x2={projectPoint(lanePosX + AHEAD_LABEL_OFFSET_X + 6, tipY).x}
-                    y2={projectPoint(lanePosX + AHEAD_LABEL_OFFSET_X + 6, tipY).y}
+                    x2={projectPoint(lanePosX + AHEAD_LABEL_OFFSET_X + aheadLabelWidth + 10, tipY).x}
+                    y2={projectPoint(lanePosX + AHEAD_LABEL_OFFSET_X + aheadLabelWidth + 10, tipY).y}
                     stroke="transparent"
                     strokeWidth={scaledBranchHitStrokeWidth}
                     style={{ pointerEvents: 'stroke' }}
@@ -1834,67 +1972,156 @@ export default function BranchMap({
                       strokeWidth={strokeWidth}
                     />
                     {/* Commit markers along branch */}
-                    {commitDots.map(({ y: commitY, commit }, ci) => {
-                      const isBranchCreatedEvent = commit?.kind === 'branch-created';
-                      const tooltipAuthor = commit?.author ?? b.lastCommitAuthor;
-                      const tooltipDate = commit?.date ?? b.lastCommitDate;
-                      const tooltipSha = commit?.sha ?? b.headSha?.slice(0, 7) ?? '-------';
-                      const tooltipMessage = commit?.message;
-                      const showBranchAvatar = !!(
-                        commit &&
-                        b.lastCommitAuthorAvatar &&
-                        commit.author === b.lastCommitAuthor
-                      );
+                    {commitDotClusters.map((cluster) => {
+                      const count = cluster.entries.length;
+                      const firstEntry = cluster.entries[0];
+                      const lastEntry = cluster.entries[count - 1];
+                      const clusterKey = `commit-clump-${b.name}-${firstEntry.item.index}-${lastEntry.item.index}`;
+                      const dotShouldUseLocalGray =
+                        fullBranchShouldUseLocalGray ||
+                        cluster.entries.every((entry) => localCommitDotIndices.has(entry.item.index));
+                      const dotFill = dotShouldUseLocalGray ? LOCAL_UNPUSHED_GRAY : color;
+
+                      if (count === 1) {
+                        const commit = lastEntry.item.commit;
+                        const isBranchCreatedEvent = commit?.kind === 'branch-created';
+                        const tooltipAuthor = commit?.author ?? b.lastCommitAuthor;
+                        const tooltipDate = commit?.date ?? b.lastCommitDate;
+                        const tooltipSha = commit?.sha ?? b.headSha?.slice(0, 7) ?? '-------';
+                        const tooltipMessage = commit?.message;
+                        const showBranchAvatar = !!(
+                          commit &&
+                          b.lastCommitAuthorAvatar &&
+                          commit.author === b.lastCommitAuthor
+                        );
+
+                        return (
+                          <circle
+                            key={clusterKey}
+                            className="branch-map-icon-fixed"
+                            cx={cluster.x}
+                            cy={cluster.y}
+                            r={scaledNodeSize / 2}
+                            fill={dotFill}
+                            onMouseEnter={() =>
+                              setTooltip({
+                                x: cluster.x + 14,
+                                y: cluster.y,
+                                lines: [
+                                  isBranchCreatedEvent ? 'Branch created' : `Commit ${tooltipSha}`,
+                                  tooltipMessage ? tooltipMessage : `@${tooltipAuthor}`,
+                                  `@${tooltipAuthor} · ${fmtTooltipDate(tooltipDate)}`,
+                                ],
+                                avatarUrl: showBranchAvatar ? b.lastCommitAuthorAvatar : undefined,
+                                avatarFallback: tooltipAuthor?.charAt(0).toUpperCase() || '?',
+                              })
+                            }
+                            onMouseLeave={() => setTooltip(null)}
+                          />
+                        );
+                      }
+
+                      const firstDate = firstEntry.item.commit?.date ?? b.lastCommitDate;
+                      const lastDate = lastEntry.item.commit?.date ?? b.lastCommitDate;
+                      const dateRangeLabel = new Date(firstDate).getTime() === new Date(lastDate).getTime()
+                        ? fmtTooltipDate(lastDate)
+                        : `${fmtTooltipDate(firstDate)} → ${fmtTooltipDate(lastDate)}`;
+                      const latestAuthor = lastEntry.item.commit?.author ?? b.lastCommitAuthor;
 
                       return (
-                        <circle
-                         
-                          key={ci}
-                          className="branch-map-icon-fixed"
-                          cx={projectPoint(lanePosX, commitY).x}
-                          cy={projectPoint(lanePosX, commitY).y}
-                          r={scaledNodeSize / 2}
-                          fill={
-                            fullBranchShouldUseLocalGray || localCommitDotIndices.has(ci)
-                              ? LOCAL_UNPUSHED_GRAY
-                              : color
-                          }
-                          onMouseEnter={() =>
-                            setTooltip({
-                              x: projectPoint(lanePosX, commitY).x + 14,
-                              y: projectPoint(lanePosX, commitY).y,
-                              lines: [
-                                isBranchCreatedEvent ? 'Branch created' : `Commit ${tooltipSha}`,
-                                tooltipMessage ? tooltipMessage : `@${tooltipAuthor}`,
-                                `@${tooltipAuthor} · ${fmtTooltipDate(tooltipDate)}`,
-                              ],
-                              avatarUrl: showBranchAvatar ? b.lastCommitAuthorAvatar : undefined,
-                              avatarFallback: tooltipAuthor?.charAt(0).toUpperCase() || '?',
-                            })
-                          }
-                          onMouseLeave={() => setTooltip(null)}
-                        />
+                        <g key={clusterKey}>
+                          <circle
+                            className="branch-map-icon-fixed"
+                            cx={cluster.x}
+                            cy={cluster.y}
+                            r={scaledNodeSize / 2 + CLUMP_SIZE_BOOST_PX}
+                            fill={dotFill}
+                            style={{ cursor: 'pointer' }}
+                            onMouseEnter={() =>
+                              setTooltip({
+                                x: cluster.x + 14,
+                                y: cluster.y,
+                                lines: [`${count} commits`, `on ${b.name}`, dateRangeLabel],
+                                avatarFallback: latestAuthor?.charAt(0).toUpperCase() || '?',
+                              })
+                            }
+                            onMouseLeave={() => setTooltip(null)}
+                          />
+                          <text
+                            className="branch-map-icon-fixed"
+                            x={cluster.x}
+                            y={cluster.y + 2.5}
+                            textAnchor="middle"
+                            fontSize={count >= 10 ? 6.5 : 8}
+                            fill="#fafaf9"
+                            fontWeight={600}
+                            style={{
+                              pointerEvents: 'none',
+                              transformOrigin: `${cluster.x}px ${cluster.y}px`,
+                            }}
+                          >
+                            {clumpCountLabel(count)}
+                          </text>
+                        </g>
                       );
                     })}
-                    {promptMarkers.map(({ y: markerY, marker }) => {
-                      const markerCy = markerY;
-                      const markerPoint = projectPoint(lanePosX, markerCy);
-                      const markerSize = scaledNodeSize;
-                      const markerX = markerPoint.x - markerSize / 2;
-                      const markerYTop = markerPoint.y - markerSize / 2;
-                      const markerRadius = markerSize / 2;
-                      const markerBottom = markerYTop + markerSize;
-                      const markerPath = [
-                        `M ${markerX} ${markerYTop + markerRadius}`,
-                        `A ${markerRadius} ${markerRadius} 0 0 1 ${markerX + markerRadius} ${markerYTop}`,
-                        `A ${markerRadius} ${markerRadius} 0 0 1 ${markerX + markerSize} ${markerYTop + markerRadius}`,
-                        `A ${markerRadius} ${markerRadius} 0 0 1 ${markerX + markerRadius} ${markerBottom}`,
-                        `H ${markerX}`,
-                        'Z',
-                      ].join(' ');
+                    {promptMarkerClusters.map((cluster) => {
+                      const count = cluster.entries.length;
+                      const firstEntry = cluster.entries[0];
+                      const lastEntry = cluster.entries[count - 1];
+                      const clusterKey = `prompt-clump-${firstEntry.item.marker.id}-${lastEntry.item.marker.id}`;
+                      const markerPath = promptMarkerPath(
+                        cluster.x,
+                        cluster.y,
+                        count > 1 ? scaledNodeSize + CLUMP_SIZE_BOOST_PX * 2 : scaledNodeSize
+                      );
                       const hitSize = scaledHoverHitSize;
+
+                      if (count === 1) {
+                        const marker = lastEntry.item.marker;
+                        return (
+                          <g key={clusterKey} className="branch-map-icon-fixed">
+                            <path
+                              d={markerPath}
+                              fill="var(--background)"
+                              stroke="#14b8a6"
+                              strokeWidth={1.2}
+                              strokeLinejoin="round"
+                              style={{ pointerEvents: 'none' }}
+                            />
+                            <rect
+                              x={cluster.x - hitSize / 2}
+                              y={cluster.y - hitSize / 2}
+                              width={hitSize}
+                              height={hitSize}
+                              fill="transparent"
+                              style={{ cursor: 'pointer' }}
+                              onMouseEnter={() =>
+                                setTooltip({
+                                  x: cluster.x + 14,
+                                  y: cluster.y,
+                                  lines: [
+                                    truncatePrompt(marker.prompt, 52),
+                                    marker.agent,
+                                    fmtTooltipDate(marker.timestamp),
+                                  ],
+                                })
+                              }
+                              onMouseLeave={() => setTooltip(null)}
+                            />
+                          </g>
+                        );
+                      }
+
+                      const firstDate = firstEntry.item.marker.timestamp;
+                      const lastDate = lastEntry.item.marker.timestamp;
+                      const dateRangeLabel = new Date(firstDate).getTime() === new Date(lastDate).getTime()
+                        ? fmtTooltipDate(lastDate)
+                        : `${fmtTooltipDate(firstDate)} → ${fmtTooltipDate(lastDate)}`;
+                      const latestPrompt = truncatePrompt(lastEntry.item.marker.prompt, 40);
+
                       return (
-                        <g key={marker.id} className="branch-map-icon-fixed">
+                        <g key={clusterKey} className="branch-map-icon-fixed">
                           <path
                             d={markerPath}
                             fill="var(--background)"
@@ -1903,23 +2130,32 @@ export default function BranchMap({
                             strokeLinejoin="round"
                             style={{ pointerEvents: 'none' }}
                           />
+                          <text
+                            x={cluster.x}
+                            y={cluster.y + 2.4}
+                            textAnchor="middle"
+                            fontSize={count >= 10 ? 6.2 : 8}
+                            fill="#14b8a6"
+                            fontWeight={700}
+                            style={{
+                              pointerEvents: 'none',
+                              transformOrigin: `${cluster.x}px ${cluster.y}px`,
+                            }}
+                          >
+                            {clumpCountLabel(count)}
+                          </text>
                           <rect
-                           
-                            x={markerPoint.x - hitSize / 2}
-                            y={markerPoint.y - hitSize / 2}
+                            x={cluster.x - hitSize / 2}
+                            y={cluster.y - hitSize / 2}
                             width={hitSize}
                             height={hitSize}
                             fill="transparent"
                             style={{ cursor: 'pointer' }}
                             onMouseEnter={() =>
                               setTooltip({
-                                x: markerPoint.x + 14,
-                                y: markerPoint.y,
-                                lines: [
-                                  truncatePrompt(marker.prompt, 52),
-                                  marker.agent,
-                                  fmtTooltipDate(marker.timestamp),
-                                ],
+                                x: cluster.x + 14,
+                                y: cluster.y,
+                                lines: [`${count} comments`, latestPrompt, dateRangeLabel],
                               })
                             }
                             onMouseLeave={() => setTooltip(null)}
@@ -1958,7 +2194,7 @@ export default function BranchMap({
                           pointerEvents: 'none',
                         }}
                       >
-                        {formatCommitsAhead(branchAheadCount(b))}
+                        {aheadLabelText}
                       </text>
                     )}
                     {showClockIcon && (
