@@ -19,7 +19,7 @@ const ZOOM_DEFAULT = 1;
 const ZOOM_WHEEL_EXP_SENSITIVITY = 0.0025;
 const ZOOM_WHEEL_DELTA_MAX_PX = 180;
 const CAMERA_UI_SYNC_MS = 24;
-const CAMERA_UI_SYNC_IMMEDIATE_MS = 16;
+const ZOOM_UI_SYNC_IDLE_MS = 90;
 const CANVAS_PAD_X = 240;
 const CANVAS_PAD_Y = 140;
 const TIME_SCALE_MIN = 0.5;
@@ -35,9 +35,11 @@ const CLUMP_SIZE_BOOST_PX = 0.5;
 const CLUMP_START_ZOOM = 1.15;
 const CLUMP_FULL_ZOOM = 0.72;
 const CLUMP_ANIMATION_MS = 180;
-const PROMPT_TRACK_OFFSET_PX = 16;
+const CLUMP_ZOOM_INTERACTION_WINDOW_MS = 120;
 const CLUMP_MAX_ENTRIES_TOUCH = 2;
 const CLUMP_MAX_ENTRIES_FULL = 10;
+const CLUMP_STRUCTURAL_PRIORITY = 5;
+const CLUMP_SECONDARY_PRIORITY = 1.5;
 
 type TooltipData = {
   x: number;
@@ -50,9 +52,22 @@ type PRCommitHover = { x: number; arcY: number; pr: MergedPR; commitIdx: number;
 type SpacingMode = 'regular' | 'bounded';
 type ClampMode = 'hard' | 'soft';
 type OrientationMode = 'vertical' | 'horizontal';
+type ZoomUiSyncMode = 'none' | 'deferred' | 'immediate';
 type MarkerEntry<T> = { x: number; y: number; item: T };
 type MarkerCluster<T> = { x: number; y: number; entries: MarkerEntry<T>[] };
 type AnchorPoint = { x: number; y: number };
+type ClumpAnchorState = {
+  x: number;
+  y: number;
+  targetX: number;
+  targetY: number;
+  lastSeenRender: number;
+};
+type ClumpMemberAnchorState = {
+  x: number;
+  y: number;
+  lastSeenRender: number;
+};
 type ClusterOptions<T> = {
   shouldBreak?: (prev: MarkerEntry<T>, next: MarkerEntry<T>) => boolean;
   anchorPriority?: (entry: MarkerEntry<T>) => number;
@@ -143,6 +158,20 @@ function estimateSvgTextWidth(text: string, fontSize = 10): number {
 function truncatePrompt(text: string, max = 90): string {
   if (text.length <= max) return text;
   return `${text.slice(0, max)}…`;
+}
+
+function sampleEvenlyByOrder<T>(items: T[], maxCount: number): T[] {
+  if (items.length <= maxCount) return [...items];
+  if (maxCount <= 1) return [items[items.length - 1]];
+  const sampled: T[] = [];
+  let lastIndex = -1;
+  for (let i = 0; i < maxCount; i += 1) {
+    const idx = Math.round((i * (items.length - 1)) / (maxCount - 1));
+    if (idx === lastIndex) continue;
+    sampled.push(items[idx]);
+    lastIndex = idx;
+  }
+  return sampled;
 }
 
 function clusterMarkersByDistance<T>(
@@ -292,17 +321,13 @@ function clusterDirectCommitsWithAnchors(
   protectedShas: Set<string>,
   preferredAnchors: AnchorPoint[] = [],
   maxEntriesPerCluster?: number,
-  entryPriority?: (entry: MarkerEntry<DirectCommit>) => number,
-  entryShouldBreak?: (entry: MarkerEntry<DirectCommit>) => boolean
+  entryPriority?: (entry: MarkerEntry<DirectCommit>) => number
 ): MarkerCluster<DirectCommit>[] {
   function isProtected(entry: MarkerEntry<DirectCommit>): boolean {
     return protectedShas.has(entry.item.fullSha);
   }
 
   return clusterMarkersByDistance(entries, maxGap, {
-    shouldBreak: (prev, next) =>
-      (entryShouldBreak?.(prev) ?? false) ||
-      (entryShouldBreak?.(next) ?? false),
     anchorPriority: (entry) => (isProtected(entry) ? 3 : 0) + (entryPriority?.(entry) ?? 0),
     preferredAnchors,
     maxEntriesPerCluster,
@@ -413,23 +438,19 @@ export default function BranchMap({
   const zoomLayerRef = useRef<SVGGElement>(null);
   const zoomRef = useRef(zoom);
   const zoomStateRef = useRef(zoom);
+  const lastContinuousZoomTsRef = useRef(0);
   const panUiSyncTimeoutRef = useRef<number | null>(null);
   const zoomUiSyncTimeoutRef = useRef<number | null>(null);
+  const cameraPaintRafRef = useRef<number | null>(null);
+  const pendingCameraRef = useRef<{ pan: { x: number; y: number }; zoom: number } | null>(null);
   const clumpZoomCancelRef = useRef<(() => void) | null>(null);
   const clumpZoomRef = useRef(ZOOM_DEFAULT);
   const [, setClumpAnimationTick] = useState(0);
-  const clumpAnchorStateRef = useRef<Map<string, {
-    x: number;
-    y: number;
-    targetX: number;
-    targetY: number;
-    lastSeenRender: number;
-  }>>(new Map());
-  const clumpMemberPrevPositionRef = useRef<Map<string, AnchorPoint>>(new Map());
+  const clumpAnchorStateRef = useRef<Map<string, ClumpAnchorState>>(new Map());
+  const clumpMemberAnchorStateRef = useRef<Map<string, ClumpMemberAnchorState>>(new Map());
   const clumpRenderCounterRef = useRef(0);
   clumpRenderCounterRef.current += 1;
   const clumpRenderId = clumpRenderCounterRef.current;
-  const nextClumpMemberPositions = new Map<string, AnchorPoint>();
   const gestureZoomBaseRef = useRef(zoomRef.current);
   const gesturePointRef = useRef<{ x: number; y: number } | null>(null);
   const graphOffsetRef = useRef({ x: 0, y: 0 });
@@ -505,6 +526,13 @@ export default function BranchMap({
   useEffect(() => {
     clumpZoomCancelRef.current?.();
     const start = clumpZoomRef.current;
+    const inContinuousZoomWindow =
+      performance.now() - lastContinuousZoomTsRef.current < CLUMP_ZOOM_INTERACTION_WINDOW_MS;
+    if (inContinuousZoomWindow) {
+      clumpZoomRef.current = zoom;
+      setAnimatedClumpZoom(zoom);
+      return;
+    }
     if (Math.abs(start - zoom) < 0.0001) {
       clumpZoomRef.current = zoom;
       setAnimatedClumpZoom(zoom);
@@ -529,30 +557,32 @@ export default function BranchMap({
   function resolveAnimatedClumpAnchor(
     clusterKey: string,
     target: AnchorPoint,
-    memberKeys: string[]
+    memberKeys: readonly string[]
   ): AnchorPoint {
     const clumpAnchorStates = clumpAnchorStateRef.current;
+    const clumpMemberAnchorStates = clumpMemberAnchorStateRef.current;
     let state = clumpAnchorStates.get(clusterKey);
     if (!state) {
-      let startX = target.x;
-      let startY = target.y;
-      let hits = 0;
-      let totalX = 0;
-      let totalY = 0;
+      let seedX = 0;
+      let seedY = 0;
+      let matchedMembers = 0;
       for (const memberKey of memberKeys) {
-        const prevPos = clumpMemberPrevPositionRef.current.get(memberKey);
-        if (!prevPos) continue;
-        totalX += prevPos.x;
-        totalY += prevPos.y;
-        hits += 1;
+        const memberState = clumpMemberAnchorStates.get(memberKey);
+        if (!memberState) continue;
+        seedX += memberState.x;
+        seedY += memberState.y;
+        matchedMembers += 1;
       }
-      if (hits > 0) {
-        startX = totalX / hits;
-        startY = totalY / hits;
+      if (matchedMembers > 0) {
+        seedX /= matchedMembers;
+        seedY /= matchedMembers;
+      } else {
+        seedX = target.x;
+        seedY = target.y;
       }
       state = {
-        x: startX,
-        y: startY,
+        x: seedX,
+        y: seedY,
         targetX: target.x,
         targetY: target.y,
         lastSeenRender: clumpRenderId,
@@ -564,18 +594,27 @@ export default function BranchMap({
       state.lastSeenRender = clumpRenderId;
     }
     for (const memberKey of memberKeys) {
-      nextClumpMemberPositions.set(memberKey, { x: state.x, y: state.y });
+      clumpMemberAnchorStates.set(memberKey, {
+        x: state.x,
+        y: state.y,
+        lastSeenRender: clumpRenderId,
+      });
     }
     return { x: state.x, y: state.y };
   }
 
   useEffect(() => {
-    clumpMemberPrevPositionRef.current = nextClumpMemberPositions;
     const clumpAnchorStates = clumpAnchorStateRef.current;
+    const clumpMemberAnchorStates = clumpMemberAnchorStateRef.current;
 
     for (const [key, state] of clumpAnchorStates.entries()) {
       if (state.lastSeenRender !== clumpRenderId) {
         clumpAnchorStates.delete(key);
+      }
+    }
+    for (const [key, state] of clumpMemberAnchorStates.entries()) {
+      if (state.lastSeenRender !== clumpRenderId) {
+        clumpMemberAnchorStates.delete(key);
       }
     }
 
@@ -660,6 +699,29 @@ export default function BranchMap({
     }
   }
 
+  function flushCameraPaint() {
+    const pending = pendingCameraRef.current;
+    if (!pending) return;
+    pendingCameraRef.current = null;
+    paintCamera(pending.pan, pending.zoom);
+  }
+
+  function scheduleCameraPaint() {
+    if (cameraPaintRafRef.current !== null) return;
+    cameraPaintRafRef.current = requestAnimationFrame(() => {
+      cameraPaintRafRef.current = null;
+      flushCameraPaint();
+    });
+  }
+
+  function stopCameraPaint() {
+    if (cameraPaintRafRef.current !== null) {
+      cancelAnimationFrame(cameraPaintRafRef.current);
+      cameraPaintRafRef.current = null;
+    }
+    flushCameraPaint();
+  }
+
   function setTimelineStaticClass(locked: boolean) {
     const svg = svgRef.current;
     if (!svg) return;
@@ -673,8 +735,10 @@ export default function BranchMap({
   function syncUiState(force = false, immediate = false) {
     if (!force) return;
     const now = performance.now();
-    const minInterval = immediate ? CAMERA_UI_SYNC_IMMEDIATE_MS : CAMERA_UI_SYNC_MS;
-    if (now - lastUiSyncRef.current < minInterval) return;
+    if (!immediate) {
+      const minInterval = CAMERA_UI_SYNC_MS;
+      if (now - lastUiSyncRef.current < minInterval) return;
+    }
     lastUiSyncRef.current = now;
     if (Math.abs(zoomRef.current - zoomStateRef.current) > 0.0001) {
       zoomStateRef.current = zoomRef.current;
@@ -697,7 +761,12 @@ export default function BranchMap({
     panRef.current = nextPan;
     targetPanRef.current = nextPan;
     zoomRef.current = nextZoom;
-    paintCamera(nextPan, nextZoom);
+    pendingCameraRef.current = { pan: nextPan, zoom: nextZoom };
+    if (immediateUiSync) {
+      stopCameraPaint();
+    } else {
+      scheduleCameraPaint();
+    }
     syncUiState(forceUiSync, immediateUiSync);
   }
 
@@ -736,15 +805,44 @@ export default function BranchMap({
       zoomUiSyncTimeoutRef.current = null;
     }
     if (forceUiSync) {
-      syncUiState(true);
+      syncUiState(true, true);
     }
   }
 
-  function applyZoomAt(point: { x: number; y: number }, nextZoom: number, forceUiSync = false): boolean {
+  function scheduleZoomUiSync(immediate = false) {
+    if (immediate) {
+      if (zoomUiSyncTimeoutRef.current !== null) {
+        clearTimeout(zoomUiSyncTimeoutRef.current);
+        zoomUiSyncTimeoutRef.current = null;
+      }
+      syncUiState(true, true);
+      return;
+    }
+    if (zoomUiSyncTimeoutRef.current !== null) {
+      clearTimeout(zoomUiSyncTimeoutRef.current);
+    }
+    zoomUiSyncTimeoutRef.current = window.setTimeout(() => {
+      zoomUiSyncTimeoutRef.current = null;
+      syncUiState(true, true);
+    }, ZOOM_UI_SYNC_IDLE_MS);
+  }
+
+  function flushPendingZoomUiSync() {
+    if (zoomUiSyncTimeoutRef.current === null) return;
+    clearTimeout(zoomUiSyncTimeoutRef.current);
+    zoomUiSyncTimeoutRef.current = null;
+    syncUiState(true, true);
+  }
+
+  function applyZoomAt(
+    point: { x: number; y: number },
+    nextZoom: number,
+    uiSyncMode: ZoomUiSyncMode = 'none'
+  ): boolean {
     lockAnimationsIfReady();
     if (!Number.isFinite(nextZoom) || nextZoom <= 0) return false;
     const currentZoom = zoomRef.current;
-    if (nextZoom === currentZoom) return false;
+    if (Math.abs(nextZoom - currentZoom) < 0.0001) return false;
 
     const currentPan = panRef.current;
     const graphOffset = graphOffsetRef.current;
@@ -762,8 +860,17 @@ export default function BranchMap({
     );
 
     stopPanSmoothing();
-    // Keep React state in lockstep with wheel/pinch zoom to avoid label lag.
-    applyCamera(nextPan, nextZoom, forceUiSync, forceUiSync);
+    if (uiSyncMode === 'deferred') {
+      lastContinuousZoomTsRef.current = performance.now();
+    }
+    if (uiSyncMode === 'immediate') {
+      applyCamera(nextPan, nextZoom, true, true);
+      return true;
+    }
+    applyCamera(nextPan, nextZoom);
+    if (uiSyncMode === 'deferred') {
+      scheduleZoomUiSync();
+    }
     return true;
   }
 
@@ -806,17 +913,18 @@ export default function BranchMap({
       if (e.ctrlKey || e.metaKey) {
         stopWheelInertia();
         stopPanSmoothing();
+        setTooltip(null);
         const rect = el.getBoundingClientRect();
         const point = { x: e.clientX - rect.left, y: e.clientY - rect.top };
         const pixelDeltaY = normalizeWheelDeltaPx(e.deltaY, e.deltaMode, el.clientHeight);
         const clampedDeltaY = Math.max(-ZOOM_WHEEL_DELTA_MAX_PX, Math.min(ZOOM_WHEEL_DELTA_MAX_PX, pixelDeltaY));
         const zoomFactor = Math.exp(-clampedDeltaY * ZOOM_WHEEL_EXP_SENSITIVITY);
         if (!Number.isFinite(zoomFactor) || Math.abs(zoomFactor - 1) < 0.0001) return;
-        applyZoomAt(point, zoomRef.current * zoomFactor, true);
+        applyZoomAt(point, zoomRef.current * zoomFactor, 'deferred');
         return;
       }
 
-      stopZoomAnimation(false);
+      flushPendingZoomUiSync();
       const nextPan = clampPan({
         x: panRef.current.x - e.deltaX,
         y: panRef.current.y - e.deltaY,
@@ -831,6 +939,7 @@ export default function BranchMap({
       lockAnimationsIfReady();
       stopWheelInertia();
       stopPanSmoothing();
+      setTooltip(null);
       gestureZoomBaseRef.current = zoomRef.current;
       const rect = el.getBoundingClientRect();
       gesturePointRef.current = {
@@ -845,13 +954,13 @@ export default function BranchMap({
       const point = gesturePointRef.current;
       const scale = e.scale;
       if (!point || scale == null || !Number.isFinite(scale)) return;
-      applyZoomAt(point, gestureZoomBaseRef.current * scale, true);
+      applyZoomAt(point, gestureZoomBaseRef.current * scale, 'deferred');
     };
 
     const onGestureEnd = (evt: Event) => {
       evt.preventDefault();
       gesturePointRef.current = null;
-      syncUiState(true);
+      scheduleZoomUiSync(true);
     };
 
     el.addEventListener('wheel', onWheel, { passive: false });
@@ -871,6 +980,7 @@ export default function BranchMap({
     return () => {
       focusScrollCancelRef.current?.();
       focusScrollCancelRef.current = null;
+      stopCameraPaint();
       stopZoomAnimation();
       stopWheelInertia();
       stopPanSmoothing();
@@ -939,7 +1049,7 @@ export default function BranchMap({
           applyZoomAt(
             { x: el.clientWidth / 2, y: el.clientHeight / 2 },
             zoomRef.current * (isZoomIn ? 1.08 : 0.92),
-            true
+            'immediate'
           );
           return;
         }
@@ -990,7 +1100,7 @@ export default function BranchMap({
     lockAnimationsIfReady();
     focusScrollCancelRef.current?.();
     focusScrollCancelRef.current = null;
-    stopZoomAnimation(false);
+    flushPendingZoomUiSync();
     stopWheelInertia();
     targetPanRef.current = panRef.current;
     panStartRef.current = {
@@ -1307,7 +1417,7 @@ export default function BranchMap({
       return branchUniqueAheadCounts[b.name] ?? 0;
     }
     const previews = branchCommitPreviews[b.name];
-    if (previews != null) return previews.length;
+    if (previews != null) return previews.filter((preview) => preview.kind !== 'branch-created').length;
     return b.commitsAhead;
   }
 
@@ -1666,20 +1776,6 @@ export default function BranchMap({
   const scaledBranchHitStrokeWidth = BRANCH_HIT_STROKE_WIDTH;
   const worldUnitsPerScreenPx = 1 / Math.max(renderCameraScale.x, 0.0001);
   const worldPx = (px: number) => px * worldUnitsPerScreenPx;
-  const promptTrackOffsetWorld = worldPx(PROMPT_TRACK_OFFSET_PX);
-  const promptTrackOffsetProjected = (() => {
-    const base = projectPoint(0, 0);
-    const shifted = projectPoint(0, promptTrackOffsetWorld);
-    return {
-      x: shifted.x - base.x,
-      y: shifted.y - base.y,
-    };
-  })();
-  const shiftPromptAnchor = (anchor: AnchorPoint): AnchorPoint => ({
-    x: anchor.x + promptTrackOffsetProjected.x,
-    y: anchor.y + promptTrackOffsetProjected.y,
-  });
-  const mainPromptClumpAnchors = mainClumpAnchors.map(shiftPromptAnchor);
   const clumpProgress = clumpProgressForZoom(animatedClumpZoom);
   const clumpDistanceWorld =
     worldPx(CLUMP_TOUCH_DISTANCE_PX) +
@@ -1798,14 +1894,24 @@ export default function BranchMap({
                 const mainEndCommitAnchor = entries.length > 0
                   ? [{ x: entries[entries.length - 1].x, y: entries[entries.length - 1].y }]
                   : [];
-                const mainDirectClumpAnchors = [
-                  ...mainClumpAnchors,
+                const mainStructuralCommitAnchors = [...mainClumpAnchors];
+                const mainSecondaryCommitAnchors = [
                   ...mainInitialCommitAnchor,
                   ...mainEndCommitAnchor,
                 ];
-                const requiredMainEntryIndices = selectEntryIndicesForAnchors(entries, mainDirectClumpAnchors);
-                const requiredMainEntryShas = new Set(
-                  Array.from(requiredMainEntryIndices)
+                const mainDirectClumpAnchors = [
+                  ...mainStructuralCommitAnchors,
+                  ...mainSecondaryCommitAnchors,
+                ];
+                const structuralMainEntryIndices = selectEntryIndicesForAnchors(entries, mainStructuralCommitAnchors);
+                const secondaryMainEntryIndices = selectEntryIndicesForAnchors(entries, mainSecondaryCommitAnchors);
+                const structuralMainEntryShas = new Set(
+                  Array.from(structuralMainEntryIndices)
+                    .map((idx) => entries[idx]?.item.fullSha)
+                    .filter((sha): sha is string => typeof sha === 'string')
+                );
+                const secondaryMainEntryShas = new Set(
+                  Array.from(secondaryMainEntryIndices)
                     .map((idx) => entries[idx]?.item.fullSha)
                     .filter((sha): sha is string => typeof sha === 'string')
                 );
@@ -1819,7 +1925,8 @@ export default function BranchMap({
                   firstMainCommitSha
                     ? (entry) =>
                       (entry.item.fullSha === firstMainCommitSha ? 1.25 : 0) +
-                      (requiredMainEntryShas.has(entry.item.fullSha) ? 2 : 0)
+                      (secondaryMainEntryShas.has(entry.item.fullSha) ? CLUMP_SECONDARY_PRIORITY : 0) +
+                      (structuralMainEntryShas.has(entry.item.fullSha) ? CLUMP_STRUCTURAL_PRIORITY : 0)
                     : undefined
                 );
                 return clusters.map((cluster) => {
@@ -1828,10 +1935,11 @@ export default function BranchMap({
                   const last = cluster.entries[count - 1].item;
                   const countLabel = clumpCountLabel(count);
                   const clusterKey = `direct-clump-${first.fullSha}-${last.fullSha}`;
+                  const memberKeys = cluster.entries.map((entry) => `direct:${entry.item.fullSha}`);
                   const animatedAnchor = resolveAnimatedClumpAnchor(
                     clusterKey,
                     { x: cluster.x, y: cluster.y },
-                    cluster.entries.map((entry) => `main-direct:${entry.item.fullSha}`)
+                    memberKeys
                   );
                   const anchorX = animatedAnchor.x;
                   const anchorY = animatedAnchor.y;
@@ -1887,18 +1995,14 @@ export default function BranchMap({
                         onMouseLeave={() => setTooltip(null)}
                       />
                       <text
-                        className="branch-map-icon-fixed"
                         x={anchorX}
                         y={anchorY}
-                        dy="0.32em"
                         textAnchor="middle"
-                        fontSize={count >= 10 ? 6.5 : 8}
+                        dominantBaseline="middle"
+                        fontSize={worldPx(count >= 10 ? 6.5 : 8)}
                         fill="#fafaf9"
                         fontWeight={600}
-                        style={{
-                          pointerEvents: 'none',
-                          transformOrigin: `${anchorX}px ${anchorY}px`,
-                        }}
+                        style={{ pointerEvents: 'none' }}
                       >
                         {countLabel}
                       </text>
@@ -1907,49 +2011,57 @@ export default function BranchMap({
                 });
               })()}
               {(() => {
-                const mainPromptMarkers = [...(branchPromptMeta[defaultBranch]?.markers ?? [])]
-                  .sort((a, b) => new Date(a.timestamp).getTime() - new Date(b.timestamp).getTime())
-                  .slice(-PROMPT_MARKER_MAX);
-                const promptEntries: MarkerEntry<{ marker: typeof mainPromptMarkers[number] }>[] =
-                  mainPromptMarkers.map((marker) => {
+                const mainPromptMarkers = sampleEvenlyByOrder(
+                  [...(branchPromptMeta[defaultBranch]?.markers ?? [])]
+                    .sort((a, b) => new Date(a.timestamp).getTime() - new Date(b.timestamp).getTime()),
+                  PROMPT_MARKER_MAX
+                );
+                const promptEntries: MarkerEntry<{ marker: typeof mainPromptMarkers[number]; index: number }>[] =
+                  mainPromptMarkers.map((marker, markerIndex) => {
                     const markerPoint = projectPoint(
                       mainX,
-                      timeCoordToY(timeToX(marker.timestamp)) + promptTrackOffsetWorld
+                      timeCoordToY(timeToX(marker.timestamp))
                     );
-                    return { x: markerPoint.x, y: markerPoint.y, item: { marker } };
+                    return {
+                      x: markerPoint.x,
+                      y: markerPoint.y,
+                      item: { marker, index: markerIndex },
+                    };
                   });
+                const promptAnchors = promptEntries.map((entry) => ({ x: entry.x, y: entry.y }));
                 const clusters = clusterMarkersByDistance(promptEntries, clumpDistanceWorld, {
-                  preferredAnchors: mainPromptClumpAnchors,
+                  preferredAnchors: promptAnchors,
                   maxEntriesPerCluster: clumpMaxEntries,
                 });
                 return clusters.map((cluster) => {
                   const count = cluster.entries.length;
                   const firstEntry = cluster.entries[0];
                   const lastEntry = cluster.entries[count - 1];
-                  const clusterKey = `main-prompt-clump-${firstEntry.item.marker.id}-${lastEntry.item.marker.id}`;
+                  const clusterKey = `main-prompt-clump-${defaultBranch}-${firstEntry.item.index}-${lastEntry.item.index}`;
+                  const memberKeys = cluster.entries.map((entry) => `prompt:${defaultBranch}:slot-${entry.item.index}`);
                   const animatedAnchor = resolveAnimatedClumpAnchor(
                     clusterKey,
                     { x: cluster.x, y: cluster.y },
-                    cluster.entries.map((entry) => `main-prompt:${entry.item.marker.id}`)
+                    memberKeys
                   );
                   const anchorX = animatedAnchor.x;
                   const anchorY = animatedAnchor.y;
-                  const markerPath = promptMarkerPath(
-                    anchorX,
-                    anchorY,
+                  const markerSize = worldPx(
                     count > 1 ? scaledNodeSize + CLUMP_SIZE_BOOST_PX * 2 : scaledNodeSize
                   );
-                  const hitSize = scaledHoverHitSize;
+                  const markerPath = promptMarkerPath(anchorX, anchorY, markerSize);
+                  const hitSize = worldPx(scaledHoverHitSize);
+                  const markerStrokeWidth = worldPx(1.2);
 
                   if (count === 1) {
                     const marker = lastEntry.item.marker;
                     return (
-                      <g key={clusterKey} className="branch-map-icon-fixed">
+                      <g key={clusterKey}>
                         <path
                           d={markerPath}
                           fill="var(--background)"
                           stroke="#14b8a6"
-                          strokeWidth={1.2}
+                          strokeWidth={markerStrokeWidth}
                           strokeLinejoin="round"
                           style={{ pointerEvents: 'none' }}
                         />
@@ -1987,26 +2099,24 @@ export default function BranchMap({
                   return (
                     <g key={clusterKey}>
                       <path
-                        className="branch-map-icon-fixed"
                         d={markerPath}
                         fill="var(--background)"
                         stroke="#14b8a6"
-                        strokeWidth={1.2}
+                        strokeWidth={markerStrokeWidth}
                         strokeLinejoin="round"
                         style={{ pointerEvents: 'none' }}
                       />
                       <text
-                        className="branch-map-icon-fixed"
                         x={anchorX}
                         y={anchorY}
-                        dy="0.32em"
                         textAnchor="middle"
-                        fontSize={count >= 10 ? 6.2 : 8}
+                        dominantBaseline="middle"
+                        fontSize={worldPx(count >= 10 ? 6.2 : 8)}
                         fill="#14b8a6"
                         fontWeight={700}
                         style={{
                           pointerEvents: 'none',
-                          transformOrigin: `${anchorX}px ${anchorY}px`,
+                          fontVariantNumeric: 'tabular-nums',
                         }}
                       >
                         {clumpCountLabel(count)}
@@ -2429,9 +2539,11 @@ export default function BranchMap({
               const promptMarkersRaw = branchPromptMeta[b.name]?.markers ?? [];
               const minPromptX = minCommitTimeX;
               const maxPromptX = maxCommitTimeX;
-              const promptSeeds = [...promptMarkersRaw]
-                .sort((a, b) => new Date(a.timestamp).getTime() - new Date(b.timestamp).getTime())
-                .slice(-PROMPT_MARKER_MAX);
+              const promptSeeds = sampleEvenlyByOrder(
+                [...promptMarkersRaw]
+                  .sort((a, b) => new Date(a.timestamp).getTime() - new Date(b.timestamp).getTime()),
+                PROMPT_MARKER_MAX
+              );
               const promptMarkers = promptSeeds.map((marker) => {
                 const rawX = timeToX(marker.timestamp);
                 const x = Math.max(minPromptX, Math.min(maxPromptX, rawX));
@@ -2458,33 +2570,47 @@ export default function BranchMap({
                 branchEndDotIndex != null && commitDotEntries[branchEndDotIndex]
                   ? [{ x: commitDotEntries[branchEndDotIndex].x, y: commitDotEntries[branchEndDotIndex].y }]
                   : [];
-              const branchClumpAnchors = [
+              const branchStructuralCommitAnchors = [
                 ...branchOutAnchors,
                 ...branchMergeAnchors,
+              ];
+              const branchSecondaryCommitAnchors = [
                 ...branchStartCommitAnchor,
                 ...branchEndCommitAnchor,
               ];
-              const requiredBranchEntryIndices = selectEntryIndicesForAnchors(
+              const branchClumpAnchors = [
+                ...branchStructuralCommitAnchors,
+                ...branchSecondaryCommitAnchors,
+              ];
+              const structuralBranchEntryIndices = selectEntryIndicesForAnchors(
                 commitDotEntries,
-                branchClumpAnchors
+                branchStructuralCommitAnchors
+              );
+              const secondaryBranchEntryIndices = selectEntryIndicesForAnchors(
+                commitDotEntries,
+                branchSecondaryCommitAnchors
               );
               const commitDotClusters = clusterMarkersByDistance(commitDotEntries, clumpDistanceWorld, {
                 preferredAnchors: branchClumpAnchors,
                 maxEntriesPerCluster: clumpMaxEntries,
                 anchorPriority: (entry) =>
-                  (requiredBranchEntryIndices.has(entry.item.index) ? 3 : 0) +
-                  (entry.item.index === 0 ? 1.25 : 0),
+                  (entry.item.index === 0 ? 1.25 : 0) +
+                  (secondaryBranchEntryIndices.has(entry.item.index) ? CLUMP_SECONDARY_PRIORITY : 0) +
+                  (structuralBranchEntryIndices.has(entry.item.index) ? CLUMP_STRUCTURAL_PRIORITY : 0),
               });
-              const promptBranchAnchors = branchClumpAnchors.map(shiftPromptAnchor);
-              const promptMarkerEntries: MarkerEntry<{ marker: typeof promptMarkers[number]['marker'] }>[] =
-                promptMarkers.map(({ y, marker }) => {
-                  const point = projectPoint(lanePosX, y + promptTrackOffsetWorld);
+              const promptMarkerEntries: MarkerEntry<{ marker: typeof promptMarkers[number]['marker']; index: number }>[] =
+                promptMarkers.map(({ y, marker }, markerIndex) => {
+                  const point = projectPoint(lanePosX, y);
                   return {
                     x: point.x,
                     y: point.y,
-                    item: { marker },
+                    item: {
+                      marker,
+                      index: markerIndex,
+                    },
                   };
                 });
+              const promptBranchAnchors = promptMarkerEntries.map((entry) => ({ x: entry.x, y: entry.y }));
               const promptMarkerClusters = clusterMarkersByDistance(promptMarkerEntries, clumpDistanceWorld, {
                 preferredAnchors: promptBranchAnchors,
                 maxEntriesPerCluster: clumpMaxEntries,
@@ -2611,19 +2737,23 @@ export default function BranchMap({
                   <g className={fadeInInfoClass} style={{ '--delay': `${brDelay + INFO_OFFSET}ms` } as React.CSSProperties}>
                     {/* Commit markers along branch */}
                     {commitDotClusters.map((cluster) => {
-                      const count = cluster.entries.length;
+                      const realCommitEntries = cluster.entries.filter(
+                        (entry) => entry.item.commit?.kind !== 'branch-created'
+                      );
+                      const count = realCommitEntries.length;
                       const firstEntry = cluster.entries[0];
-                      const lastEntry = cluster.entries[count - 1];
+                      const lastEntry = cluster.entries[cluster.entries.length - 1];
                       const clusterKey = `commit-clump-${b.name}-${firstEntry.item.index}-${lastEntry.item.index}`;
+                      const memberKeys = cluster.entries.map((entry) => {
+                        const commitSha = entry.item.commit?.fullSha;
+                        return commitSha
+                          ? `branch-commit:${b.name}:${commitSha}`
+                          : `branch-commit:${b.name}:slot-${entry.item.index}`;
+                      });
                       const animatedAnchor = resolveAnimatedClumpAnchor(
                         clusterKey,
                         { x: cluster.x, y: cluster.y },
-                        cluster.entries.map((entry) => {
-                          const commitSha = entry.item.commit?.fullSha;
-                          return commitSha
-                            ? `branch-commit:${b.name}:${commitSha}`
-                            : `branch-commit:${b.name}:idx:${entry.item.index}`;
-                        })
+                        memberKeys
                       );
                       const anchorX = animatedAnchor.x;
                       const anchorY = animatedAnchor.y;
@@ -2632,8 +2762,9 @@ export default function BranchMap({
                         cluster.entries.every((entry) => localCommitDotIndices.has(entry.item.index));
                       const dotFill = dotShouldUseLocalGray ? LOCAL_UNPUSHED_GRAY : color;
 
-                      if (count === 1) {
-                        const commit = lastEntry.item.commit;
+                      if (count <= 1) {
+                        const commitEntry = realCommitEntries[0] ?? lastEntry;
+                        const commit = commitEntry.item.commit;
                         const isBranchCreatedEvent = commit?.kind === 'branch-created';
                         const tooltipAuthor = commit?.author ?? b.lastCommitAuthor;
                         const tooltipDate = commit?.date ?? b.lastCommitDate;
@@ -2671,12 +2802,14 @@ export default function BranchMap({
                         );
                       }
 
-                      const firstDate = firstEntry.item.commit?.date ?? b.lastCommitDate;
-                      const lastDate = lastEntry.item.commit?.date ?? b.lastCommitDate;
+                      const firstRealEntry = realCommitEntries[0] ?? firstEntry;
+                      const lastRealEntry = realCommitEntries[realCommitEntries.length - 1] ?? lastEntry;
+                      const firstDate = firstRealEntry.item.commit?.date ?? b.lastCommitDate;
+                      const lastDate = lastRealEntry.item.commit?.date ?? b.lastCommitDate;
                       const dateRangeLabel = new Date(firstDate).getTime() === new Date(lastDate).getTime()
                         ? fmtTooltipDate(lastDate)
                         : `${fmtTooltipDate(firstDate)} → ${fmtTooltipDate(lastDate)}`;
-                      const latestAuthor = lastEntry.item.commit?.author ?? b.lastCommitAuthor;
+                      const latestAuthor = lastRealEntry.item.commit?.author ?? b.lastCommitAuthor;
 
                       return (
                         <g key={clusterKey}>
@@ -2698,18 +2831,14 @@ export default function BranchMap({
                             onMouseLeave={() => setTooltip(null)}
                           />
                           <text
-                            className="branch-map-icon-fixed"
                             x={anchorX}
                             y={anchorY}
-                            dy="0.32em"
                             textAnchor="middle"
-                            fontSize={count >= 10 ? 6.5 : 8}
+                            dominantBaseline="middle"
+                            fontSize={worldPx(count >= 10 ? 6.5 : 8)}
                             fill="#fafaf9"
                             fontWeight={600}
-                            style={{
-                              pointerEvents: 'none',
-                              transformOrigin: `${anchorX}px ${anchorY}px`,
-                            }}
+                            style={{ pointerEvents: 'none' }}
                           >
                             {clumpCountLabel(count)}
                           </text>
@@ -2720,30 +2849,31 @@ export default function BranchMap({
                       const count = cluster.entries.length;
                       const firstEntry = cluster.entries[0];
                       const lastEntry = cluster.entries[count - 1];
-                      const clusterKey = `prompt-clump-${firstEntry.item.marker.id}-${lastEntry.item.marker.id}`;
+                      const clusterKey = `prompt-clump-${b.name}-${firstEntry.item.index}-${lastEntry.item.index}`;
+                      const memberKeys = cluster.entries.map((entry) => `prompt:${b.name}:slot-${entry.item.index}`);
                       const animatedAnchor = resolveAnimatedClumpAnchor(
                         clusterKey,
                         { x: cluster.x, y: cluster.y },
-                        cluster.entries.map((entry) => `branch-prompt:${b.name}:${entry.item.marker.id}`)
+                        memberKeys
                       );
                       const anchorX = animatedAnchor.x;
                       const anchorY = animatedAnchor.y;
-                      const markerPath = promptMarkerPath(
-                        anchorX,
-                        anchorY,
+                      const markerSize = worldPx(
                         count > 1 ? scaledNodeSize + CLUMP_SIZE_BOOST_PX * 2 : scaledNodeSize
                       );
-                      const hitSize = scaledHoverHitSize;
+                      const markerPath = promptMarkerPath(anchorX, anchorY, markerSize);
+                      const hitSize = worldPx(scaledHoverHitSize);
+                      const markerStrokeWidth = worldPx(1.2);
 
                       if (count === 1) {
                         const marker = lastEntry.item.marker;
                         return (
-                          <g key={clusterKey} className="branch-map-icon-fixed">
+                          <g key={clusterKey}>
                             <path
                               d={markerPath}
                               fill="var(--background)"
                               stroke="#14b8a6"
-                              strokeWidth={1.2}
+                              strokeWidth={markerStrokeWidth}
                               strokeLinejoin="round"
                               style={{ pointerEvents: 'none' }}
                             />
@@ -2781,26 +2911,24 @@ export default function BranchMap({
                       return (
                         <g key={clusterKey}>
                           <path
-                            className="branch-map-icon-fixed"
                             d={markerPath}
                             fill="var(--background)"
                             stroke="#14b8a6"
-                            strokeWidth={1.2}
+                            strokeWidth={markerStrokeWidth}
                             strokeLinejoin="round"
                             style={{ pointerEvents: 'none' }}
                           />
                           <text
-                            className="branch-map-icon-fixed"
                             x={anchorX}
                             y={anchorY}
-                            dy="0.32em"
                             textAnchor="middle"
-                            fontSize={count >= 10 ? 6.2 : 8}
+                            dominantBaseline="middle"
+                            fontSize={worldPx(count >= 10 ? 6.2 : 8)}
                             fill="#14b8a6"
                             fontWeight={700}
                             style={{
                               pointerEvents: 'none',
-                              transformOrigin: `${anchorX}px ${anchorY}px`,
+                              fontVariantNumeric: 'tabular-nums',
                             }}
                           >
                             {clumpCountLabel(count)}
