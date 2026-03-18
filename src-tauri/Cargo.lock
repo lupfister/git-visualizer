@@ -1024,7 +1024,10 @@ version = "0.1.0"
 dependencies = [
  "base64 0.22.1",
  "chrono",
+ "core-graphics",
  "dirs",
+ "objc2",
+ "objc2-app-kit",
  "serde",
  "serde_json",
  "tauri",

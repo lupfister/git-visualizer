@@ -4,7 +4,7 @@ mod github;
 use tauri::{
     menu::{MenuBuilder, MenuItemBuilder},
     tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent},
-    Manager, WindowEvent,
+    Emitter, Manager, PhysicalPosition, Position, Rect, Size, WindowEvent,
 };
 
 use git::{Branch, CheckedOutRef, DirectCommit, MergeNode};
@@ -15,8 +15,22 @@ use std::{
     fs::{self, File},
     io::{BufRead, BufReader},
     path::{Path, PathBuf},
-    sync::{Mutex, OnceLock},
+    sync::{
+        atomic::{AtomicU64, Ordering},
+        Mutex, OnceLock,
+    },
+    time::Duration as StdDuration,
 };
+
+#[cfg(target_os = "macos")]
+use core_graphics::{
+    event::{CGEvent, CGEventTapLocation},
+    event_source::{CGEventSource, CGEventSourceStateID},
+};
+#[cfg(target_os = "macos")]
+use objc2::MainThreadMarker;
+#[cfg(target_os = "macos")]
+use objc2_app_kit::{NSApplication, NSWindow};
 
 #[derive(serde::Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -2525,29 +2539,221 @@ fn get_anthropic_key() -> Option<String> {
 
 const TRAY_TOGGLE_ID: &str = "toggle-window";
 const TRAY_QUIT_ID: &str = "quit-app";
+const POPOVER_OFFSET_Y: i32 = 0;
+const POPOVER_WIDTH: f64 = 460.0;
+const POPOVER_HEIGHT: f64 = 620.0;
+const POPOVER_FADE_OUT_MS: u64 = 85;
+static MAIN_WINDOW_LOCKED_POS: OnceLock<Mutex<Option<(i32, i32)>>> = OnceLock::new();
+static MAIN_WINDOW_HIDE_SEQ: OnceLock<AtomicU64> = OnceLock::new();
 
-fn show_main_window(app: &tauri::AppHandle) {
+fn main_window_locked_pos() -> &'static Mutex<Option<(i32, i32)>> {
+    MAIN_WINDOW_LOCKED_POS.get_or_init(|| Mutex::new(None))
+}
+
+fn main_window_hide_seq() -> &'static AtomicU64 {
+    MAIN_WINDOW_HIDE_SEQ.get_or_init(|| AtomicU64::new(0))
+}
+
+fn bump_main_window_hide_seq() -> u64 {
+    main_window_hide_seq().fetch_add(1, Ordering::SeqCst) + 1
+}
+
+fn set_locked_main_position(x: i32, y: i32) {
+    if let Ok(mut pos) = main_window_locked_pos().lock() {
+        *pos = Some((x, y));
+    }
+}
+
+fn get_locked_main_position() -> Option<(i32, i32)> {
+    main_window_locked_pos()
+        .lock()
+        .ok()
+        .and_then(|pos| *pos)
+}
+
+fn set_menu_bar_mode(app: &tauri::AppHandle) {
+    #[cfg(target_os = "macos")]
+    {
+        let _ = app.set_dock_visibility(false);
+        let _ = app.set_activation_policy(tauri::ActivationPolicy::Accessory);
+    }
+}
+
+fn activate_popover_open_mode(app: &tauri::AppHandle) {
+    #[cfg(target_os = "macos")]
+    {
+        let _ = app.run_on_main_thread(|| {
+            if let Some(mtm) = MainThreadMarker::new() {
+                let ns_app = NSApplication::sharedApplication(mtm);
+                ns_app.activate();
+                #[allow(deprecated)]
+                ns_app.activateIgnoringOtherApps(true);
+            }
+        });
+    }
+}
+
+fn dismiss_other_menu_bar_popovers() {
+    #[cfg(target_os = "macos")]
+    {
+        // Ask any currently open status-item popovers to close (e.g. other menubar apps)
+        // before opening ours, without switching activation policy to Regular.
+        if let Ok(source) = CGEventSource::new(CGEventSourceStateID::CombinedSessionState) {
+            if let Ok(esc_down) = CGEvent::new_keyboard_event(source.clone(), 53, true) {
+                esc_down.post(CGEventTapLocation::HID);
+            }
+            if let Ok(esc_up) = CGEvent::new_keyboard_event(source, 53, false) {
+                esc_up.post(CGEventTapLocation::HID);
+            }
+        }
+    }
+}
+
+fn nudge_popover_open_mode(app: &tauri::AppHandle) {
+    let app_handle = app.clone();
+    std::thread::spawn(move || {
+        std::thread::sleep(StdDuration::from_millis(24));
+        activate_popover_open_mode(&app_handle);
+    });
+}
+
+fn configure_main_popover_window(window: &tauri::WebviewWindow) {
+    #[cfg(target_os = "macos")]
+    {
+        let _ = window.with_webview(|webview| unsafe {
+            let ns_window: &NSWindow = &*webview.ns_window().cast();
+            ns_window.setHidesOnDeactivate(true);
+        });
+    }
+}
+
+fn set_desktop_mode(app: &tauri::AppHandle) {
+    #[cfg(target_os = "macos")]
+    {
+        let _ = app.set_activation_policy(tauri::ActivationPolicy::Regular);
+        let _ = app.set_dock_visibility(true);
+    }
+}
+
+fn rect_to_physical(rect: Rect) -> (f64, f64, f64, f64) {
+    let (x, y) = match rect.position {
+        Position::Physical(pos) => (pos.x as f64, pos.y as f64),
+        Position::Logical(pos) => (pos.x, pos.y),
+    };
+    let (w, h) = match rect.size {
+        Size::Physical(size) => (size.width as f64, size.height as f64),
+        Size::Logical(size) => (size.width, size.height),
+    };
+    (x, y, w, h)
+}
+
+fn anchor_main_window(window: &tauri::WebviewWindow, tray_rect: Rect) {
+    let (tray_x, tray_y, tray_w, tray_h) = rect_to_physical(tray_rect);
+    let window_size = window.outer_size().ok();
+    let popover_w = window_size.map(|s| s.width as f64).unwrap_or(POPOVER_WIDTH);
+    let popover_h = window_size.map(|s| s.height as f64).unwrap_or(POPOVER_HEIGHT);
+
+    let icon_center_x = tray_x + tray_w / 2.0;
+    let mut x = icon_center_x - popover_w / 2.0;
+    let mut y = tray_y + tray_h + f64::from(POPOVER_OFFSET_Y);
+
+    if let Ok(Some(monitor)) = window.monitor_from_point(icon_center_x, tray_y + tray_h / 2.0) {
+        let work = monitor.work_area();
+        let min_x = work.position.x as f64;
+        let max_x = min_x + work.size.width as f64 - popover_w;
+        if max_x >= min_x {
+            x = x.clamp(min_x, max_x);
+        }
+
+        let min_y = work.position.y as f64;
+        let max_y = min_y + work.size.height as f64 - popover_h;
+        if max_y >= min_y {
+            y = y.clamp(min_y, max_y);
+        }
+    }
+
+    let anchored_x = x.round() as i32;
+    let anchored_y = y.round() as i32;
+    set_locked_main_position(anchored_x, anchored_y);
+    let _ = window.set_position(Position::Physical(PhysicalPosition::new(
+        anchored_x,
+        anchored_y,
+    )));
+}
+
+fn reapply_locked_main_position(window: &tauri::WebviewWindow) {
+    if let Some((x, y)) = get_locked_main_position() {
+        let _ = window.set_position(Position::Physical(PhysicalPosition::new(x, y)));
+    }
+}
+
+fn show_main_window(app: &tauri::AppHandle, tray_rect: Option<Rect>) {
     if let Some(window) = app.get_webview_window("main") {
+        bump_main_window_hide_seq();
+        dismiss_other_menu_bar_popovers();
+        if let Some(rect) = tray_rect {
+            anchor_main_window(&window, rect);
+        } else {
+            reapply_locked_main_position(&window);
+        }
+        let _ = window.set_focusable(true);
+        let _ = window.emit("popover://open", ());
         let _ = window.show();
         let _ = window.unminimize();
         let _ = window.set_focus();
+        // Activate after the window is visible/focused so other menu bar popovers
+        // get dismissed without switching to Regular activation policy.
+        activate_popover_open_mode(app);
+        nudge_popover_open_mode(app);
     }
 }
 
 fn hide_main_window(app: &tauri::AppHandle) {
     if let Some(window) = app.get_webview_window("main") {
+        let seq = bump_main_window_hide_seq();
+        let _ = window.emit("popover://closing", ());
+        let app_handle = app.clone();
+        std::thread::spawn(move || {
+            std::thread::sleep(StdDuration::from_millis(POPOVER_FADE_OUT_MS));
+            if main_window_hide_seq().load(Ordering::SeqCst) != seq {
+                return;
+            }
+            if let Some(window) = app_handle.get_webview_window("main") {
+                let _ = window.hide();
+            }
+        });
+    }
+}
+
+fn hide_full_window(app: &tauri::AppHandle) {
+    if let Some(window) = app.get_webview_window("main-full") {
         let _ = window.hide();
     }
 }
 
-fn toggle_main_window(app: &tauri::AppHandle) {
+fn toggle_main_window(app: &tauri::AppHandle, tray_rect: Option<Rect>) {
     if let Some(window) = app.get_webview_window("main") {
         if window.is_visible().unwrap_or(false) {
-            let _ = window.hide();
+            hide_main_window(app);
         } else {
-            show_main_window(app);
+            show_main_window(app, tray_rect);
         }
     }
+}
+
+#[tauri::command]
+fn open_full_app_window(app: tauri::AppHandle) -> Result<(), String> {
+    let full = app
+        .get_webview_window("main-full")
+        .ok_or_else(|| "Full app window not found".to_string())?;
+
+    set_desktop_mode(&app);
+    hide_main_window(&app);
+
+    let _ = full.show();
+    let _ = full.unminimize();
+    let _ = full.set_focus();
+    Ok(())
 }
 
 fn create_tray_icon(app: &tauri::AppHandle) -> Result<(), tauri::Error> {
@@ -2566,7 +2772,7 @@ fn create_tray_icon(app: &tauri::AppHandle) -> Result<(), tauri::Error> {
         .show_menu_on_left_click(false)
         .tooltip("Git Visualizer")
         .on_menu_event(|app, event| match event.id().as_ref() {
-            TRAY_TOGGLE_ID => toggle_main_window(app),
+            TRAY_TOGGLE_ID => toggle_main_window(app, None),
             TRAY_QUIT_ID => app.exit(0),
             _ => {}
         })
@@ -2574,10 +2780,11 @@ fn create_tray_icon(app: &tauri::AppHandle) -> Result<(), tauri::Error> {
             if let TrayIconEvent::Click {
                 button: MouseButton::Left,
                 button_state: MouseButtonState::Up,
+                rect,
                 ..
             } = event
             {
-                toggle_main_window(tray.app_handle());
+                toggle_main_window(tray.app_handle(), Some(rect));
             }
         });
 
@@ -2593,25 +2800,42 @@ fn create_tray_icon(app: &tauri::AppHandle) -> Result<(), tauri::Error> {
 pub fn run() {
     tauri::Builder::default()
         .setup(|app| {
-            #[cfg(target_os = "macos")]
-            app.set_activation_policy(tauri::ActivationPolicy::Accessory);
-
             create_tray_icon(app.handle())?;
+            set_menu_bar_mode(app.handle());
+            if let Some(window) = app.get_webview_window("main") {
+                configure_main_popover_window(&window);
+            }
             hide_main_window(app.handle());
+            hide_full_window(app.handle());
             Ok(())
         })
         .on_window_event(|window, event| {
-            if window.label() != "main" {
-                return;
-            }
-
-            match event {
-                WindowEvent::CloseRequested { api, .. } => {
-                    api.prevent_close();
-                    let _ = window.hide();
-                }
-                WindowEvent::Focused(false) => {
-                    let _ = window.hide();
+            match window.label() {
+                "main" => match event {
+                    WindowEvent::CloseRequested { api, .. } => {
+                        api.prevent_close();
+                        hide_main_window(&window.app_handle());
+                    }
+                    WindowEvent::Focused(false) => {
+                        hide_main_window(&window.app_handle());
+                    }
+                    WindowEvent::Moved(position) => {
+                        if let Some((x, y)) = get_locked_main_position() {
+                            if position.x != x || position.y != y {
+                                let _ = window.set_position(Position::Physical(
+                                    PhysicalPosition::new(x, y),
+                                ));
+                            }
+                        }
+                    }
+                    _ => {}
+                },
+                "main-full" => {
+                    if let WindowEvent::CloseRequested { api, .. } = event {
+                        api.prevent_close();
+                        let _ = window.hide();
+                        set_menu_bar_mode(&window.app_handle());
+                    }
                 }
                 _ => {}
             }
@@ -2645,6 +2869,7 @@ pub fn run() {
             get_changed_routes,
             get_changed_routes_for_commit,
             debug_diff_files,
+            open_full_app_window,
         ])
         .run(tauri::generate_context!())
         .expect("error running tauri application");

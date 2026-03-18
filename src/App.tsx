@@ -1,5 +1,6 @@
 import { useState, useEffect, useRef } from 'react';
 import { invoke } from '@tauri-apps/api/core';
+import { getCurrentWindow } from '@tauri-apps/api/window';
 import BranchMapView from '../components/BranchMapView';
 import DiffViewer from '../components/DiffViewer';
 import FolderPickerModal from './FolderPickerModal';
@@ -45,6 +46,66 @@ function App() {
   const [prewarmedMainShots, setPrewarmedMainShots] = useState<(string | null)[] | null>(null);
   const prewarmedRef = useRef(false);
   const [authSetupLoading, setAuthSetupLoading] = useState(false);
+  const [isPopoverWindow, setIsPopoverWindow] = useState(false);
+  const [popoverOpen, setPopoverOpen] = useState(false);
+  const [popoverClosing, setPopoverClosing] = useState(false);
+
+  useEffect(() => {
+    try {
+      setIsPopoverWindow(getCurrentWindow().label === 'main');
+    } catch {
+      setIsPopoverWindow(false);
+    }
+  }, []);
+
+  useEffect(() => {
+    if (isPopoverWindow) {
+      document.body.classList.add('popover-window');
+      document.documentElement.classList.add('popover-window');
+    } else {
+      document.body.classList.remove('popover-window');
+      document.documentElement.classList.remove('popover-window');
+    }
+
+    return () => {
+      document.body.classList.remove('popover-window');
+      document.documentElement.classList.remove('popover-window');
+    };
+  }, [isPopoverWindow]);
+
+  useEffect(() => {
+    if (!isPopoverWindow) return;
+
+    let mounted = true;
+    let unlistenOpen: (() => void) | null = null;
+    let unlistenClosing: (() => void) | null = null;
+
+    const setupPopoverListeners = async () => {
+      try {
+        const current = getCurrentWindow();
+        unlistenOpen = await current.listen('popover://open', () => {
+          if (!mounted) return;
+          setPopoverClosing(false);
+          setPopoverOpen(true);
+        });
+        unlistenClosing = await current.listen('popover://closing', () => {
+          if (!mounted) return;
+          setPopoverClosing(true);
+          setPopoverOpen(false);
+        });
+      } catch {
+        // No-op fallback: if listeners fail, visibility still works without animation.
+      }
+    };
+
+    void setupPopoverListeners();
+
+    return () => {
+      mounted = false;
+      if (unlistenOpen) unlistenOpen();
+      if (unlistenClosing) unlistenClosing();
+    };
+  }, [isPopoverWindow]);
 
   async function fetchAllMergeNodes(path: string, branch: string): Promise<MergeNode[]> {
     const perPage = 100;
@@ -540,11 +601,28 @@ function App() {
     setView('landing');
   }
 
+  async function handleOpenFullApp() {
+    try {
+      await invoke('open_full_app_window');
+    } catch (e) {
+      console.error('Failed to open full app window:', e);
+    }
+  }
+
   return (
-    <div className="h-screen min-h-0 bg-background text-foreground flex flex-col">
-      <div className={view !== 'landing' ? 'hidden' : 'contents'}>
-        <RepoSelector onSelect={loadRepo} loading={loading} error={error} />
-      </div>
+    <div className={`h-screen min-h-0 text-foreground flex flex-col relative ${isPopoverWindow ? 'bg-transparent' : 'bg-background'}`}>
+      <div className={`h-full min-h-0 flex flex-col relative ${isPopoverWindow ? `overflow-hidden popover-continuous-60 bg-background [will-change:opacity] ${popoverClosing ? 'transition-opacity duration-100 ease-out' : 'transition-none'} ${popoverOpen ? 'opacity-100' : 'opacity-0'}` : ''}`}>
+      <button
+        onClick={handleOpenFullApp}
+        className="absolute top-3 right-3 z-[80] rounded-lg border border-border bg-card px-3 py-1.5 text-xs font-medium text-foreground hover:bg-accent transition-colors"
+      >
+        Open app
+      </button>
+      {view === 'landing' && (
+        <div>
+          <RepoSelector onSelect={loadRepo} loading={loading} error={error} />
+        </div>
+      )}
 
       {/* Map + Diff share a container — hidden only during landing.
           Map↔Diff transitions use visibility (not display) so CSS animations don't reset. */}
@@ -741,6 +819,7 @@ function App() {
         )}
 
       </div>
+      </div>
     </div>
   );
 }
@@ -848,15 +927,81 @@ function RepoSelector({
   loading: boolean;
   error: string | null;
 }) {
+  const RECENT_REPOS_STORAGE_KEY = 'git-visualizer:recent-repositories';
+  const MAX_RECENT_REPOS = 6;
+
+  type RecentRepo = {
+    path: string;
+    name: string;
+    lastOpenedAt: number;
+  };
+
   const [path, setPath] = useState('');
   const [showPicker, setShowPicker] = useState(false);
   const [showInput, setShowInput] = useState(false);
   const [inputError, setInputError] = useState<string | null>(null);
+  const [recentRepos, setRecentRepos] = useState<RecentRepo[]>([]);
+
+  useEffect(() => {
+    try {
+      const raw = localStorage.getItem(RECENT_REPOS_STORAGE_KEY);
+      if (!raw) return;
+      const parsed = JSON.parse(raw) as RecentRepo[];
+      if (!Array.isArray(parsed)) return;
+      const sanitized = parsed
+        .filter((repo): repo is RecentRepo => {
+          return (
+            typeof repo === 'object' &&
+            repo !== null &&
+            typeof repo.path === 'string' &&
+            typeof repo.name === 'string' &&
+            typeof repo.lastOpenedAt === 'number'
+          );
+        })
+        .slice(0, MAX_RECENT_REPOS);
+      setRecentRepos(sanitized);
+    } catch {
+      setRecentRepos([]);
+    }
+  }, []);
+
+  function normalizePath(value: string) {
+    if (value === '/') return value;
+    return value.replace(/\/+$/, '');
+  }
+
+  function persistRecentRepo(repoPath: string) {
+    const normalizedPath = normalizePath(repoPath.trim());
+    if (!normalizedPath) return;
+
+    const name = normalizedPath.split('/').pop() || normalizedPath;
+    const nextRepo: RecentRepo = {
+      path: normalizedPath,
+      name,
+      lastOpenedAt: Date.now(),
+    };
+
+    setRecentRepos((prev) => {
+      const next = [nextRepo, ...prev.filter((repo) => repo.path !== normalizedPath)].slice(0, MAX_RECENT_REPOS);
+      try {
+        localStorage.setItem(RECENT_REPOS_STORAGE_KEY, JSON.stringify(next));
+      } catch {
+        // Ignore storage failures and keep in-memory list.
+      }
+      return next;
+    });
+  }
+
+  function openRepo(selectedPath: string) {
+    const normalizedPath = normalizePath(selectedPath);
+    setInputError(null);
+    persistRecentRepo(normalizedPath);
+    onSelect(normalizedPath);
+  }
 
   function handlePickerSelect(selectedPath: string) {
     setShowPicker(false);
-    setInputError(null);
-    onSelect(selectedPath);
+    openRepo(selectedPath);
   }
 
   function handleSubmit(e: React.FormEvent<HTMLFormElement>) {
@@ -875,8 +1020,7 @@ function RepoSelector({
       return;
     }
 
-    setInputError(null);
-    onSelect(value);
+    openRepo(value);
   }
 
   return (
@@ -894,6 +1038,25 @@ function RepoSelector({
         </h1>
 
         <p className="text-sm text-muted-foreground mb-4">Get started</p>
+
+        {recentRepos.length > 0 && (
+          <div className="w-full max-w-xs mb-4">
+            <p className="text-[10px] uppercase tracking-wide text-muted-foreground font-medium mb-2">Recently opened</p>
+            <div className="flex flex-col gap-2">
+              {recentRepos.map((repo) => (
+                <button
+                  key={repo.path}
+                  onClick={() => openRepo(repo.path)}
+                  disabled={loading}
+                  className="w-full rounded-xl border border-border bg-card px-4 py-2.5 text-left hover:bg-muted transition-colors disabled:opacity-60 disabled:cursor-not-allowed"
+                >
+                  <p className="text-sm text-foreground truncate">{repo.name}</p>
+                  <p className="text-xs text-muted-foreground truncate">{repo.path}</p>
+                </button>
+              ))}
+            </div>
+          </div>
+        )}
 
         <div className="flex flex-col gap-3 w-full max-w-xs">
           <button

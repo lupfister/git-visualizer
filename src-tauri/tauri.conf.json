@@ -10,20 +10,44 @@
     "beforeBuildCommand": "pnpm build"
   },
   "app": {
+    "macOSPrivateApi": true,
     "withGlobalTauri": true,
     "windows": [
       {
         "label": "main",
-        "title": "Git Visualizer",
-        "width": 520,
-        "height": 760,
+        "title": "Git Visualizer Popover",
+        "width": 460,
+        "height": 620,
         "minWidth": 460,
         "minHeight": 620,
-        "resizable": true,
+        "maxWidth": 460,
+        "maxHeight": 620,
+        "resizable": false,
+        "maximizable": false,
+        "minimizable": false,
+        "closable": false,
+        "decorations": false,
+        "transparent": true,
+        "shadow": true,
         "fullscreen": false,
         "visible": false,
         "alwaysOnTop": true,
         "skipTaskbar": true
+      },
+      {
+        "label": "main-full",
+        "title": "Git Visualizer",
+        "width": 1400,
+        "height": 900,
+        "minWidth": 960,
+        "minHeight": 640,
+        "resizable": true,
+        "maximizable": true,
+        "minimizable": true,
+        "fullscreen": false,
+        "visible": false,
+        "alwaysOnTop": false,
+        "skipTaskbar": false
       }
     ],
     "security": {
