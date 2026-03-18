@@ -47,8 +47,6 @@ function App() {
   const prewarmedRef = useRef(false);
   const [authSetupLoading, setAuthSetupLoading] = useState(false);
   const [isPopoverWindow, setIsPopoverWindow] = useState(false);
-  const [popoverOpen, setPopoverOpen] = useState(false);
-  const [popoverClosing, setPopoverClosing] = useState(false);
 
   useEffect(() => {
     try {
@@ -70,40 +68,6 @@ function App() {
     return () => {
       document.body.classList.remove('popover-window');
       document.documentElement.classList.remove('popover-window');
-    };
-  }, [isPopoverWindow]);
-
-  useEffect(() => {
-    if (!isPopoverWindow) return;
-
-    let mounted = true;
-    let unlistenOpen: (() => void) | null = null;
-    let unlistenClosing: (() => void) | null = null;
-
-    const setupPopoverListeners = async () => {
-      try {
-        const current = getCurrentWindow();
-        unlistenOpen = await current.listen('popover://open', () => {
-          if (!mounted) return;
-          setPopoverClosing(false);
-          setPopoverOpen(true);
-        });
-        unlistenClosing = await current.listen('popover://closing', () => {
-          if (!mounted) return;
-          setPopoverClosing(true);
-          setPopoverOpen(false);
-        });
-      } catch {
-        // No-op fallback: if listeners fail, visibility still works without animation.
-      }
-    };
-
-    void setupPopoverListeners();
-
-    return () => {
-      mounted = false;
-      if (unlistenOpen) unlistenOpen();
-      if (unlistenClosing) unlistenClosing();
     };
   }, [isPopoverWindow]);
 
@@ -611,7 +575,7 @@ function App() {
 
   return (
     <div className={`h-screen min-h-0 text-foreground flex flex-col relative ${isPopoverWindow ? 'bg-transparent' : 'bg-background'}`}>
-      <div className={`h-full min-h-0 flex flex-col relative ${isPopoverWindow ? `overflow-hidden popover-continuous-60 bg-background [will-change:opacity] ${popoverClosing ? 'transition-opacity duration-100 ease-out' : 'transition-none'} ${popoverOpen ? 'opacity-100' : 'opacity-0'}` : ''}`}>
+      <div className={`h-full min-h-0 flex flex-col relative ${isPopoverWindow ? 'overflow-hidden popover-continuous-60 bg-background' : ''}`}>
       <button
         onClick={handleOpenFullApp}
         className="absolute top-3 right-3 z-[80] rounded-lg border border-border bg-card px-3 py-1.5 text-xs font-medium text-foreground hover:bg-accent transition-colors"

@@ -2543,6 +2543,7 @@ const POPOVER_OFFSET_Y: i32 = 0;
 const POPOVER_WIDTH: f64 = 460.0;
 const POPOVER_HEIGHT: f64 = 620.0;
 const POPOVER_FADE_OUT_MS: u64 = 85;
+const POPOVER_FADE_STEP_MS: u64 = 8;
 static MAIN_WINDOW_LOCKED_POS: OnceLock<Mutex<Option<(i32, i32)>>> = OnceLock::new();
 static MAIN_WINDOW_HIDE_SEQ: OnceLock<AtomicU64> = OnceLock::new();
 
@@ -2569,6 +2570,22 @@ fn get_locked_main_position() -> Option<(i32, i32)> {
         .lock()
         .ok()
         .and_then(|pos| *pos)
+}
+
+fn set_main_window_alpha(window: &tauri::WebviewWindow, alpha: f64) {
+    #[cfg(target_os = "macos")]
+    {
+        let clamped = alpha.clamp(0.0, 1.0);
+        let _ = window.with_webview(move |webview| unsafe {
+            let ns_window: &NSWindow = &*webview.ns_window().cast();
+            ns_window.setAlphaValue(clamped);
+        });
+    }
+    #[cfg(not(target_os = "macos"))]
+    {
+        let _ = window;
+        let _ = alpha;
+    }
 }
 
 fn set_menu_bar_mode(app: &tauri::AppHandle) {
@@ -2690,6 +2707,7 @@ fn reapply_locked_main_position(window: &tauri::WebviewWindow) {
 fn show_main_window(app: &tauri::AppHandle, tray_rect: Option<Rect>) {
     if let Some(window) = app.get_webview_window("main") {
         bump_main_window_hide_seq();
+        set_main_window_alpha(&window, 1.0);
         dismiss_other_menu_bar_popovers();
         if let Some(rect) = tray_rect {
             anchor_main_window(&window, rect);
@@ -2714,12 +2732,29 @@ fn hide_main_window(app: &tauri::AppHandle) {
         let _ = window.emit("popover://closing", ());
         let app_handle = app.clone();
         std::thread::spawn(move || {
-            std::thread::sleep(StdDuration::from_millis(POPOVER_FADE_OUT_MS));
+            let step_ms = POPOVER_FADE_STEP_MS.max(1);
+            let steps = (POPOVER_FADE_OUT_MS / step_ms).max(1);
+            let sleep_ms = (POPOVER_FADE_OUT_MS / steps).max(1);
+
+            for step in 1..=steps {
+                if main_window_hide_seq().load(Ordering::SeqCst) != seq {
+                    return;
+                }
+                let progress = step as f64 / steps as f64;
+                if let Some(window) = app_handle.get_webview_window("main") {
+                    set_main_window_alpha(&window, (1.0 - progress).max(0.0));
+                } else {
+                    return;
+                }
+                std::thread::sleep(StdDuration::from_millis(sleep_ms));
+            }
+
             if main_window_hide_seq().load(Ordering::SeqCst) != seq {
                 return;
             }
             if let Some(window) = app_handle.get_webview_window("main") {
                 let _ = window.hide();
+                set_main_window_alpha(&window, 1.0);
             }
         });
     }
