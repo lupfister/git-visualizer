@@ -19,6 +19,7 @@ const ZOOM_DEFAULT = 1;
 const ZOOM_WHEEL_EXP_SENSITIVITY = 0.0025;
 const ZOOM_WHEEL_DELTA_MAX_PX = 180;
 const CAMERA_UI_SYNC_MS = 24;
+const CAMERA_UI_SYNC_IMMEDIATE_MS = 16;
 const CANVAS_PAD_X = 240;
 const CANVAS_PAD_Y = 140;
 const TIME_SCALE_MIN = 0.5;
@@ -27,12 +28,16 @@ const TIME_SCALE_STEP = 0.05;
 const TIME_SCALE_DEFAULT = 0.5;
 const PROMPT_MARKER_MAX = 10;
 const LOCAL_UNPUSHED_GRAY = '#a8a29e';
-const CLUMP_DISTANCE_PX = 16;
+const CLUMP_DISTANCE_PX = 8;
+const CLUMP_TOUCH_DISTANCE_PX = NODE_SIZE;
 const CLUMP_COUNT_MAX = 99;
 const CLUMP_SIZE_BOOST_PX = 0.5;
-const CLUMP_START_ZOOM = 1.2;
-const CLUMP_FULL_ZOOM = 0.9;
+const CLUMP_START_ZOOM = 1.15;
+const CLUMP_FULL_ZOOM = 0.72;
 const CLUMP_ANIMATION_MS = 180;
+const PROMPT_TRACK_OFFSET_PX = 16;
+const CLUMP_MAX_ENTRIES_TOUCH = 2;
+const CLUMP_MAX_ENTRIES_FULL = 10;
 
 type TooltipData = {
   x: number;
@@ -47,6 +52,13 @@ type ClampMode = 'hard' | 'soft';
 type OrientationMode = 'vertical' | 'horizontal';
 type MarkerEntry<T> = { x: number; y: number; item: T };
 type MarkerCluster<T> = { x: number; y: number; entries: MarkerEntry<T>[] };
+type AnchorPoint = { x: number; y: number };
+type ClusterOptions<T> = {
+  shouldBreak?: (prev: MarkerEntry<T>, next: MarkerEntry<T>) => boolean;
+  anchorPriority?: (entry: MarkerEntry<T>) => number;
+  preferredAnchors?: AnchorPoint[];
+  maxEntriesPerCluster?: number;
+};
 
 function clamp01(value: number): number {
   return Math.max(0, Math.min(1, value));
@@ -135,7 +147,8 @@ function truncatePrompt(text: string, max = 90): string {
 
 function clusterMarkersByDistance<T>(
   entries: MarkerEntry<T>[],
-  maxGap: number
+  maxGap: number,
+  options: ClusterOptions<T> = {}
 ): MarkerCluster<T>[] {
   if (entries.length === 0) return [];
   if (maxGap <= 0) {
@@ -148,13 +161,77 @@ function clusterMarkersByDistance<T>(
 
   const clusters: MarkerCluster<T>[] = [];
   let current: MarkerEntry<T>[] = [entries[0]];
+  const maxEntriesPerCluster =
+    typeof options.maxEntriesPerCluster === 'number' && options.maxEntriesPerCluster > 0
+      ? Math.max(1, Math.floor(options.maxEntriesPerCluster))
+      : Number.POSITIVE_INFINITY;
 
   function flush() {
+    if (current.length === 1) {
+      const only = current[0];
+      clusters.push({
+        x: only.x,
+        y: only.y,
+        entries: current,
+      });
+      return;
+    }
+
     const totalX = current.reduce((sum, entry) => sum + entry.x, 0);
     const totalY = current.reduce((sum, entry) => sum + entry.y, 0);
+    const centroidX = totalX / current.length;
+    const centroidY = totalY / current.length;
+    let anchorX = centroidX;
+    let anchorY = centroidY;
+
+    let usedPriorityAnchor = false;
+    if (options.anchorPriority) {
+      let bestEntry: MarkerEntry<T> | null = null;
+      let bestScore = Number.NEGATIVE_INFINITY;
+      let bestDistance = Number.POSITIVE_INFINITY;
+      for (const entry of current) {
+        const score = options.anchorPriority(entry);
+        if (score <= 0) continue;
+        const distanceToCentroid = Math.hypot(entry.x - centroidX, entry.y - centroidY);
+        if (
+          score > bestScore ||
+          (score === bestScore && distanceToCentroid < bestDistance)
+        ) {
+          bestEntry = entry;
+          bestScore = score;
+          bestDistance = distanceToCentroid;
+        }
+      }
+      if (bestEntry) {
+        anchorX = bestEntry.x;
+        anchorY = bestEntry.y;
+        usedPriorityAnchor = true;
+      }
+    }
+    if (!usedPriorityAnchor && options.preferredAnchors && options.preferredAnchors.length > 0) {
+      const snapDistance = Math.max(1, maxGap * 1.35);
+      let bestAnchor: AnchorPoint | null = null;
+      let bestDistance = Number.POSITIVE_INFINITY;
+      for (const anchor of options.preferredAnchors) {
+        const touchesCluster = current.some(
+          (entry) => Math.hypot(anchor.x - entry.x, anchor.y - entry.y) <= snapDistance
+        );
+        if (!touchesCluster) continue;
+        const distanceToCentroid = Math.hypot(anchor.x - centroidX, anchor.y - centroidY);
+        if (distanceToCentroid < bestDistance) {
+          bestDistance = distanceToCentroid;
+          bestAnchor = anchor;
+        }
+      }
+      if (bestAnchor) {
+        anchorX = bestAnchor.x;
+        anchorY = bestAnchor.y;
+      }
+    }
+
     clusters.push({
-      x: totalX / current.length,
-      y: totalY / current.length,
+      x: anchorX,
+      y: anchorY,
       entries: current,
     });
   }
@@ -163,7 +240,9 @@ function clusterMarkersByDistance<T>(
     const prev = current[current.length - 1];
     const next = entries[i];
     const distance = Math.hypot(next.x - prev.x, next.y - prev.y);
-    if (distance <= maxGap) {
+    const forceBreak = options.shouldBreak?.(prev, next) ?? false;
+    const roomInCluster = current.length < maxEntriesPerCluster;
+    if (!forceBreak && roomInCluster && distance <= maxGap) {
       current.push(next);
     } else {
       flush();
@@ -174,47 +253,60 @@ function clusterMarkersByDistance<T>(
   return clusters;
 }
 
+function selectEntryIndicesForAnchors<T>(
+  entries: MarkerEntry<T>[],
+  anchors: AnchorPoint[]
+): Set<number> {
+  if (entries.length === 0 || anchors.length === 0) return new Set<number>();
+  const chosen = new Set<number>();
+
+  for (const anchor of anchors) {
+    let bestUnusedIndex = -1;
+    let bestUnusedDistance = Number.POSITIVE_INFINITY;
+    let bestAnyIndex = -1;
+    let bestAnyDistance = Number.POSITIVE_INFINITY;
+
+    for (let i = 0; i < entries.length; i += 1) {
+      const entry = entries[i];
+      const distance = Math.hypot(entry.x - anchor.x, entry.y - anchor.y);
+      if (distance < bestAnyDistance) {
+        bestAnyDistance = distance;
+        bestAnyIndex = i;
+      }
+      if (!chosen.has(i) && distance < bestUnusedDistance) {
+        bestUnusedDistance = distance;
+        bestUnusedIndex = i;
+      }
+    }
+
+    const pickedIndex = bestUnusedIndex >= 0 ? bestUnusedIndex : bestAnyIndex;
+    if (pickedIndex >= 0) chosen.add(pickedIndex);
+  }
+
+  return chosen;
+}
+
 function clusterDirectCommitsWithAnchors(
   entries: MarkerEntry<DirectCommit>[],
   maxGap: number,
-  protectedShas: Set<string>
+  protectedShas: Set<string>,
+  preferredAnchors: AnchorPoint[] = [],
+  maxEntriesPerCluster?: number,
+  entryPriority?: (entry: MarkerEntry<DirectCommit>) => number,
+  entryShouldBreak?: (entry: MarkerEntry<DirectCommit>) => boolean
 ): MarkerCluster<DirectCommit>[] {
-  if (entries.length === 0) return [];
-  if (maxGap <= 0) {
-    return entries.map((entry) => ({ x: entry.x, y: entry.y, entries: [entry] }));
-  }
-
-  const clusters: MarkerCluster<DirectCommit>[] = [];
-  let current: MarkerEntry<DirectCommit>[] = [entries[0]];
-
-  function flush() {
-    const totalX = current.reduce((sum, entry) => sum + entry.x, 0);
-    const totalY = current.reduce((sum, entry) => sum + entry.y, 0);
-    clusters.push({
-      x: totalX / current.length,
-      y: totalY / current.length,
-      entries: current,
-    });
-  }
-
   function isProtected(entry: MarkerEntry<DirectCommit>): boolean {
     return protectedShas.has(entry.item.fullSha);
   }
 
-  for (let i = 1; i < entries.length; i += 1) {
-    const prev = current[current.length - 1];
-    const next = entries[i];
-    const distance = Math.hypot(next.x - prev.x, next.y - prev.y);
-    const forceBreak = isProtected(prev) || isProtected(next);
-    if (!forceBreak && distance <= maxGap) {
-      current.push(next);
-    } else {
-      flush();
-      current = [next];
-    }
-  }
-  flush();
-  return clusters;
+  return clusterMarkersByDistance(entries, maxGap, {
+    shouldBreak: (prev, next) =>
+      (entryShouldBreak?.(prev) ?? false) ||
+      (entryShouldBreak?.(next) ?? false),
+    anchorPriority: (entry) => (isProtected(entry) ? 3 : 0) + (entryPriority?.(entry) ?? 0),
+    preferredAnchors,
+    maxEntriesPerCluster,
+  });
 }
 
 function clumpCountLabel(count: number): string {
@@ -325,6 +417,19 @@ export default function BranchMap({
   const zoomUiSyncTimeoutRef = useRef<number | null>(null);
   const clumpZoomCancelRef = useRef<(() => void) | null>(null);
   const clumpZoomRef = useRef(ZOOM_DEFAULT);
+  const [, setClumpAnimationTick] = useState(0);
+  const clumpAnchorStateRef = useRef<Map<string, {
+    x: number;
+    y: number;
+    targetX: number;
+    targetY: number;
+    lastSeenRender: number;
+  }>>(new Map());
+  const clumpMemberPrevPositionRef = useRef<Map<string, AnchorPoint>>(new Map());
+  const clumpRenderCounterRef = useRef(0);
+  clumpRenderCounterRef.current += 1;
+  const clumpRenderId = clumpRenderCounterRef.current;
+  const nextClumpMemberPositions = new Map<string, AnchorPoint>();
   const gestureZoomBaseRef = useRef(zoomRef.current);
   const gesturePointRef = useRef<{ x: number; y: number } | null>(null);
   const graphOffsetRef = useRef({ x: 0, y: 0 });
@@ -342,12 +447,8 @@ export default function BranchMap({
   const focusScrollCancelRef = useRef<(() => void) | null>(null);
   const hasAutoCenteredRef = useRef(false);
 
-  // Bottom chrome scrollbar state
-  const [barScrollLeft, setBarScrollLeft] = useState(0);
-  const [barScrollMax, setBarScrollMax] = useState(0);
-  const [thumbWidth, setThumbWidth] = useState(48);
-  const [scrollbarReady, setScrollbarReady] = useState(false);
-  const barRangeRef = useRef<HTMLInputElement>(null);
+  // Bottom chrome controls visibility state
+  const [controlsReady, setControlsReady] = useState(false);
   const [viewportSize, setViewportSize] = useState({ width: 0, height: 0 });
   const [containerHeight, setContainerHeight] = useState(540);
   const renderCameraScale = getCameraScale(zoom, isHorizontal);
@@ -425,6 +526,99 @@ export default function BranchMap({
     };
   }, [zoom]);
 
+  function resolveAnimatedClumpAnchor(
+    clusterKey: string,
+    target: AnchorPoint,
+    memberKeys: string[]
+  ): AnchorPoint {
+    const clumpAnchorStates = clumpAnchorStateRef.current;
+    let state = clumpAnchorStates.get(clusterKey);
+    if (!state) {
+      let startX = target.x;
+      let startY = target.y;
+      let hits = 0;
+      let totalX = 0;
+      let totalY = 0;
+      for (const memberKey of memberKeys) {
+        const prevPos = clumpMemberPrevPositionRef.current.get(memberKey);
+        if (!prevPos) continue;
+        totalX += prevPos.x;
+        totalY += prevPos.y;
+        hits += 1;
+      }
+      if (hits > 0) {
+        startX = totalX / hits;
+        startY = totalY / hits;
+      }
+      state = {
+        x: startX,
+        y: startY,
+        targetX: target.x,
+        targetY: target.y,
+        lastSeenRender: clumpRenderId,
+      };
+      clumpAnchorStates.set(clusterKey, state);
+    } else {
+      state.targetX = target.x;
+      state.targetY = target.y;
+      state.lastSeenRender = clumpRenderId;
+    }
+    for (const memberKey of memberKeys) {
+      nextClumpMemberPositions.set(memberKey, { x: state.x, y: state.y });
+    }
+    return { x: state.x, y: state.y };
+  }
+
+  useEffect(() => {
+    clumpMemberPrevPositionRef.current = nextClumpMemberPositions;
+    const clumpAnchorStates = clumpAnchorStateRef.current;
+
+    for (const [key, state] of clumpAnchorStates.entries()) {
+      if (state.lastSeenRender !== clumpRenderId) {
+        clumpAnchorStates.delete(key);
+      }
+    }
+
+    const reduceMotion =
+      typeof window !== 'undefined' &&
+      typeof window.matchMedia === 'function' &&
+      window.matchMedia('(prefers-reduced-motion: reduce)').matches;
+
+    let snapped = false;
+    let shouldContinue = false;
+    for (const state of clumpAnchorStates.values()) {
+      const dx = state.targetX - state.x;
+      const dy = state.targetY - state.y;
+      if (Math.abs(dx) <= 0.08 && Math.abs(dy) <= 0.08) {
+        if (state.x !== state.targetX || state.y !== state.targetY) {
+          state.x = state.targetX;
+          state.y = state.targetY;
+          snapped = true;
+        }
+        continue;
+      }
+      if (reduceMotion) {
+        state.x = state.targetX;
+        state.y = state.targetY;
+        snapped = true;
+        continue;
+      }
+      state.x += dx * 0.26;
+      state.y += dy * 0.26;
+      shouldContinue = true;
+    }
+
+    if (snapped) {
+      setClumpAnimationTick((v) => v + 1);
+      return;
+    }
+    if (!shouldContinue) return;
+    const rafId = requestAnimationFrame(() => {
+      setClumpAnimationTick((v) => v + 1);
+    });
+    return () => cancelAnimationFrame(rafId);
+  });
+
   useEffect(() => {
     drawReadyRef.current = drawReady;
   }, [drawReady]);
@@ -476,10 +670,11 @@ export default function BranchMap({
     }
   }
 
-  function syncUiState(force = false) {
+  function syncUiState(force = false, immediate = false) {
     if (!force) return;
     const now = performance.now();
-    if (now - lastUiSyncRef.current < CAMERA_UI_SYNC_MS) return;
+    const minInterval = immediate ? CAMERA_UI_SYNC_IMMEDIATE_MS : CAMERA_UI_SYNC_MS;
+    if (now - lastUiSyncRef.current < minInterval) return;
     lastUiSyncRef.current = now;
     if (Math.abs(zoomRef.current - zoomStateRef.current) > 0.0001) {
       zoomStateRef.current = zoomRef.current;
@@ -493,12 +688,17 @@ export default function BranchMap({
     ));
   }
 
-  function applyCamera(nextPan: { x: number; y: number }, nextZoom = zoomRef.current, forceUiSync = false) {
+  function applyCamera(
+    nextPan: { x: number; y: number },
+    nextZoom = zoomRef.current,
+    forceUiSync = false,
+    immediateUiSync = false
+  ) {
     panRef.current = nextPan;
     targetPanRef.current = nextPan;
     zoomRef.current = nextZoom;
     paintCamera(nextPan, nextZoom);
-    syncUiState(forceUiSync);
+    syncUiState(forceUiSync, immediateUiSync);
   }
 
   function lockAnimationsIfReady() {
@@ -528,16 +728,6 @@ export default function BranchMap({
       panUiSyncTimeoutRef.current = null;
       syncUiState(true);
     }, 70);
-  }
-
-  function scheduleZoomUiSync() {
-    if (zoomUiSyncTimeoutRef.current !== null) {
-      clearTimeout(zoomUiSyncTimeoutRef.current);
-    }
-    zoomUiSyncTimeoutRef.current = window.setTimeout(() => {
-      zoomUiSyncTimeoutRef.current = null;
-      syncUiState(true);
-    }, 90);
   }
 
   function stopZoomAnimation(forceUiSync = true) {
@@ -572,20 +762,21 @@ export default function BranchMap({
     );
 
     stopPanSmoothing();
-    applyCamera(nextPan, nextZoom, forceUiSync);
+    // Keep React state in lockstep with wheel/pinch zoom to avoid label lag.
+    applyCamera(nextPan, nextZoom, forceUiSync, forceUiSync);
     return true;
   }
 
-  // Reveal the scrollbar after the main draw-in animation completes.
+  // Reveal the controls after the main draw-in animation completes.
   // drawReady fires when animations start; 2600ms matches draw-path-main duration.
-  // When drawReady resets (new repo), hide the scrollbar immediately so it
+  // When drawReady resets (new repo), hide controls immediately so they
   // doesn't flash visible before the next animation cycle begins.
   useEffect(() => {
     if (!drawReady) {
-      setScrollbarReady(false);
+      setControlsReady(false);
       return;
     }
-    const id = setTimeout(() => setScrollbarReady(true), 2600);
+    const id = setTimeout(() => setControlsReady(true), 2600);
     return () => clearTimeout(id);
   }, [drawReady]);
 
@@ -621,8 +812,7 @@ export default function BranchMap({
         const clampedDeltaY = Math.max(-ZOOM_WHEEL_DELTA_MAX_PX, Math.min(ZOOM_WHEEL_DELTA_MAX_PX, pixelDeltaY));
         const zoomFactor = Math.exp(-clampedDeltaY * ZOOM_WHEEL_EXP_SENSITIVITY);
         if (!Number.isFinite(zoomFactor) || Math.abs(zoomFactor - 1) < 0.0001) return;
-        applyZoomAt(point, zoomRef.current * zoomFactor);
-        scheduleZoomUiSync();
+        applyZoomAt(point, zoomRef.current * zoomFactor, true);
         return;
       }
 
@@ -655,7 +845,7 @@ export default function BranchMap({
       const point = gesturePointRef.current;
       const scale = e.scale;
       if (!point || scale == null || !Number.isFinite(scale)) return;
-      applyZoomAt(point, gestureZoomBaseRef.current * scale);
+      applyZoomAt(point, gestureZoomBaseRef.current * scale, true);
     };
 
     const onGestureEnd = (evt: Event) => {
@@ -1237,6 +1427,64 @@ export default function BranchMap({
       .flatMap((b) => [b.createdFromSha, b.divergedFromSha].filter((sha): sha is string => !!sha))
   );
 
+  const branchOutAnchorsByBranch = new Map<string, AnchorPoint[]>();
+  const branchMergeAnchorsByBranch = new Map<string, AnchorPoint[]>();
+  const mainBranchOutAnchors: AnchorPoint[] = [];
+  const mainMergeAnchors: AnchorPoint[] = [];
+  const branchOutAnchorSeen = new Set<string>();
+  function pushBranchAnchor(
+    branchName: string,
+    point: AnchorPoint,
+    kind: 'out' | 'merge'
+  ) {
+    const xKey = Math.round(point.x * 10) / 10;
+    const yKey = Math.round(point.y * 10) / 10;
+    const dedupeKey = `${kind}:${branchName}:${xKey}:${yKey}`;
+    if (branchOutAnchorSeen.has(dedupeKey)) return;
+    branchOutAnchorSeen.add(dedupeKey);
+    if (branchName === defaultBranch) {
+      if (kind === 'merge') {
+        mainMergeAnchors.push(point);
+      } else {
+        mainBranchOutAnchors.push(point);
+      }
+      return;
+    }
+    const branchMap = kind === 'merge' ? branchMergeAnchorsByBranch : branchOutAnchorsByBranch;
+    const existing = branchMap.get(branchName) ?? [];
+    existing.push(point);
+    branchMap.set(branchName, existing);
+  }
+  for (const branch of activeBranches) {
+    const forkX = branchForkX(branch);
+    const forkY = timeCoordToY(forkX);
+    const parentName = branch.parentBranch;
+    const hasVisibleNonDefaultParent =
+      !!parentName &&
+      parentName !== defaultBranch &&
+      parentName !== branch.name &&
+      laneXByBranch.has(parentName);
+    if (hasVisibleNonDefaultParent) {
+      const parentLaneX = laneXByBranch.get(parentName!)!;
+      pushBranchAnchor(parentName!, projectPoint(parentLaneX, forkY), 'out');
+    } else {
+      pushBranchAnchor(defaultBranch, projectPoint(mainX, forkY), 'out');
+    }
+  }
+  for (const branch of activeBranches) {
+    const mergeNode = mergeNodeByMergedHeadSha.get(branch.headSha);
+    if (!mergeNode) continue;
+    const mergeTimeX = nodeXByFullSha.get(mergeNode.fullSha) ?? timeToX(mergeNode.date);
+    const mergeY = timeCoordToY(mergeTimeX);
+    const branchLaneX = laneXByBranch.get(branch.name) ?? mainX;
+    pushBranchAnchor(defaultBranch, projectPoint(mainX, mergeY), 'merge');
+    pushBranchAnchor(branch.name, projectPoint(branchLaneX, mergeY), 'merge');
+  }
+  const mainClumpAnchors: AnchorPoint[] = [
+    ...mainBranchOutAnchors,
+    ...mainMergeAnchors,
+  ];
+
   function branchStartX(b: Branch): number {
     const parent = b.parentBranch;
     if (parent && parent !== defaultBranch) {
@@ -1266,43 +1514,6 @@ export default function BranchMap({
   const graphOffsetX = (canvasWidth - svgWidth) / 2;
   const graphOffsetY = (canvasHeight - svgHeight) / 2;
   graphOffsetRef.current = { x: graphOffsetX, y: graphOffsetY };
-
-  // Sync bottom chrome scrollbar to camera state.
-  useEffect(() => {
-    const axisScale = isHorizontal ? renderCameraScale.x : renderCameraScale.y;
-    const safeScale = Math.max(axisScale, 0.0001);
-    const visibleWorldSpan = isHorizontal
-      ? viewportSize.width / safeScale
-      : viewportSize.height / safeScale;
-    const axisSvgSize = isHorizontal ? svgWidth : svgHeight;
-    const max = Math.max(0, axisSvgSize - visibleWorldSpan);
-    const axisPan = isHorizontal ? pan.x : pan.y;
-    const axisGraphOffset = isHorizontal ? graphOffsetX : graphOffsetY;
-    const axisWorldStart = Math.max(0, Math.min(max, (-axisPan - axisGraphOffset) / safeScale));
-    setBarScrollLeft(axisWorldStart);
-    setBarScrollMax(max);
-
-    const rangeEl = barRangeRef.current;
-    if (rangeEl && rangeEl.offsetWidth > 0) {
-      const ratio = axisSvgSize > 0 ? visibleWorldSpan / axisSvgSize : 1;
-      setThumbWidth(Math.max(24, Math.round(rangeEl.offsetWidth * ratio)));
-    }
-  }, [
-    pan.x,
-    pan.y,
-    viewportSize.width,
-    viewportSize.height,
-    branches,
-    mergeNodes,
-    directCommits,
-    effectiveTimeScale,
-    effectiveSpacingMode,
-    isHorizontal,
-    canvasWidth,
-    canvasHeight,
-    renderCameraScale.x,
-    renderCameraScale.y,
-  ]);
 
   const checkedOutBranchName = checkedOutRef?.branchName ?? null;
   const checkedOutHeadSha = checkedOutRef?.headSha ?? null;
@@ -1455,10 +1666,27 @@ export default function BranchMap({
   const scaledBranchHitStrokeWidth = BRANCH_HIT_STROKE_WIDTH;
   const worldUnitsPerScreenPx = 1 / Math.max(renderCameraScale.x, 0.0001);
   const worldPx = (px: number) => px * worldUnitsPerScreenPx;
+  const promptTrackOffsetWorld = worldPx(PROMPT_TRACK_OFFSET_PX);
+  const promptTrackOffsetProjected = (() => {
+    const base = projectPoint(0, 0);
+    const shifted = projectPoint(0, promptTrackOffsetWorld);
+    return {
+      x: shifted.x - base.x,
+      y: shifted.y - base.y,
+    };
+  })();
+  const shiftPromptAnchor = (anchor: AnchorPoint): AnchorPoint => ({
+    x: anchor.x + promptTrackOffsetProjected.x,
+    y: anchor.y + promptTrackOffsetProjected.y,
+  });
+  const mainPromptClumpAnchors = mainClumpAnchors.map(shiftPromptAnchor);
   const clumpProgress = clumpProgressForZoom(animatedClumpZoom);
-  const clumpDistanceWorld = clumpProgress > 0
-    ? (CLUMP_DISTANCE_PX * clumpProgress) / Math.max(renderCameraScale.x, 0.0001)
-    : 0;
+  const clumpDistanceWorld =
+    worldPx(CLUMP_TOUCH_DISTANCE_PX) +
+    worldPx(CLUMP_DISTANCE_PX) * clumpProgress;
+  const clumpMaxEntries =
+    CLUMP_MAX_ENTRIES_TOUCH +
+    Math.round((CLUMP_MAX_ENTRIES_FULL - CLUMP_MAX_ENTRIES_TOUCH) * clumpProgress);
   const drawPathMainClass = animationsLocked ? undefined : 'draw-path-main';
   const drawPathArcClass = animationsLocked ? undefined : 'draw-path-arc';
   const fadeInInfoClass = animationsLocked ? undefined : 'fade-in-info';
@@ -1564,29 +1792,66 @@ export default function BranchMap({
                   const markerPoint = projectPoint(mainX, timeCoordToY(timeCoordX));
                   return { x: markerPoint.x, y: markerPoint.y, item: commit };
                 });
-                const clusters = clusterDirectCommitsWithAnchors(entries, clumpDistanceWorld, protectedMainForkShas);
+                const mainInitialCommitAnchor = entries.length > 0
+                  ? [{ x: entries[0].x, y: entries[0].y }]
+                  : [];
+                const mainEndCommitAnchor = entries.length > 0
+                  ? [{ x: entries[entries.length - 1].x, y: entries[entries.length - 1].y }]
+                  : [];
+                const mainDirectClumpAnchors = [
+                  ...mainClumpAnchors,
+                  ...mainInitialCommitAnchor,
+                  ...mainEndCommitAnchor,
+                ];
+                const requiredMainEntryIndices = selectEntryIndicesForAnchors(entries, mainDirectClumpAnchors);
+                const requiredMainEntryShas = new Set(
+                  Array.from(requiredMainEntryIndices)
+                    .map((idx) => entries[idx]?.item.fullSha)
+                    .filter((sha): sha is string => typeof sha === 'string')
+                );
+                const firstMainCommitSha = entries[0]?.item.fullSha;
+                const clusters = clusterDirectCommitsWithAnchors(
+                  entries,
+                  clumpDistanceWorld,
+                  protectedMainForkShas,
+                  mainDirectClumpAnchors,
+                  clumpMaxEntries,
+                  firstMainCommitSha
+                    ? (entry) =>
+                      (entry.item.fullSha === firstMainCommitSha ? 1.25 : 0) +
+                      (requiredMainEntryShas.has(entry.item.fullSha) ? 2 : 0)
+                    : undefined
+                );
                 return clusters.map((cluster) => {
                   const count = cluster.entries.length;
                   const first = cluster.entries[0].item;
                   const last = cluster.entries[count - 1].item;
                   const countLabel = clumpCountLabel(count);
+                  const clusterKey = `direct-clump-${first.fullSha}-${last.fullSha}`;
+                  const animatedAnchor = resolveAnimatedClumpAnchor(
+                    clusterKey,
+                    { x: cluster.x, y: cluster.y },
+                    cluster.entries.map((entry) => `main-direct:${entry.item.fullSha}`)
+                  );
+                  const anchorX = animatedAnchor.x;
+                  const anchorY = animatedAnchor.y;
 
                   if (count === 1) {
                     const c = last;
                     const label = c.message.length > 38 ? c.message.slice(0, 38) + '…' : c.message;
                     return (
                       <circle
-                        key={c.fullSha}
+                        key={clusterKey}
                         className="branch-map-icon-fixed"
-                        cx={cluster.x}
-                        cy={cluster.y}
+                        cx={anchorX}
+                        cy={anchorY}
                         r={scaledNodeSize / 2}
                         fill="#78716c"
                         style={{ cursor: 'pointer' }}
                         onMouseEnter={() =>
                           setTooltip({
-                            x: cluster.x,
-                            y: cluster.y,
+                            x: anchorX,
+                            y: anchorY,
                             lines: [c.sha, label, `@${c.author} · ${fmtTooltipDate(c.date)}`],
                             avatarFallback: c.author?.charAt(0).toUpperCase() || '?',
                           })
@@ -1603,18 +1868,18 @@ export default function BranchMap({
                     : `${fmtTooltipDate(first.date)} → ${fmtTooltipDate(last.date)}`;
 
                   return (
-                    <g key={`direct-clump-${first.fullSha}-${last.fullSha}`}>
+                    <g key={clusterKey}>
                       <circle
                         className="branch-map-icon-fixed"
-                        cx={cluster.x}
-                        cy={cluster.y}
+                        cx={anchorX}
+                        cy={anchorY}
                         r={scaledNodeSize / 2 + CLUMP_SIZE_BOOST_PX}
                         fill="#78716c"
                         style={{ cursor: 'pointer' }}
                         onMouseEnter={() =>
                           setTooltip({
-                            x: cluster.x,
-                            y: cluster.y,
+                            x: anchorX,
+                            y: anchorY,
                             lines: [`${count} commits`, 'main', rangeLine],
                             avatarFallback: last.author?.charAt(0).toUpperCase() || '?',
                           })
@@ -1623,15 +1888,16 @@ export default function BranchMap({
                       />
                       <text
                         className="branch-map-icon-fixed"
-                        x={cluster.x}
-                        y={cluster.y + 2.5}
+                        x={anchorX}
+                        y={anchorY}
+                        dy="0.32em"
                         textAnchor="middle"
                         fontSize={count >= 10 ? 6.5 : 8}
                         fill="#fafaf9"
                         fontWeight={600}
                         style={{
                           pointerEvents: 'none',
-                          transformOrigin: `${cluster.x}px ${cluster.y}px`,
+                          transformOrigin: `${anchorX}px ${anchorY}px`,
                         }}
                       >
                         {countLabel}
@@ -1646,17 +1912,28 @@ export default function BranchMap({
                   .slice(-PROMPT_MARKER_MAX);
                 const promptEntries: MarkerEntry<{ marker: typeof mainPromptMarkers[number] }>[] =
                   mainPromptMarkers.map((marker) => {
-                    const markerPoint = projectPoint(mainX, timeCoordToY(timeToX(marker.timestamp)));
+                    const markerPoint = projectPoint(
+                      mainX,
+                      timeCoordToY(timeToX(marker.timestamp)) + promptTrackOffsetWorld
+                    );
                     return { x: markerPoint.x, y: markerPoint.y, item: { marker } };
                   });
-                const clusters = clusterMarkersByDistance(promptEntries, clumpDistanceWorld);
+                const clusters = clusterMarkersByDistance(promptEntries, clumpDistanceWorld, {
+                  preferredAnchors: mainPromptClumpAnchors,
+                  maxEntriesPerCluster: clumpMaxEntries,
+                });
                 return clusters.map((cluster) => {
                   const count = cluster.entries.length;
                   const firstEntry = cluster.entries[0];
                   const lastEntry = cluster.entries[count - 1];
-                  const anchorX = cluster.x;
-                  const anchorY = cluster.y;
                   const clusterKey = `main-prompt-clump-${firstEntry.item.marker.id}-${lastEntry.item.marker.id}`;
+                  const animatedAnchor = resolveAnimatedClumpAnchor(
+                    clusterKey,
+                    { x: cluster.x, y: cluster.y },
+                    cluster.entries.map((entry) => `main-prompt:${entry.item.marker.id}`)
+                  );
+                  const anchorX = animatedAnchor.x;
+                  const anchorY = animatedAnchor.y;
                   const markerPath = promptMarkerPath(
                     anchorX,
                     anchorY,
@@ -1708,8 +1985,9 @@ export default function BranchMap({
                   const latestPrompt = truncatePrompt(lastEntry.item.marker.prompt, 40);
 
                   return (
-                    <g key={clusterKey} className="branch-map-icon-fixed">
+                    <g key={clusterKey}>
                       <path
+                        className="branch-map-icon-fixed"
                         d={markerPath}
                         fill="var(--background)"
                         stroke="#14b8a6"
@@ -1718,8 +1996,10 @@ export default function BranchMap({
                         style={{ pointerEvents: 'none' }}
                       />
                       <text
+                        className="branch-map-icon-fixed"
                         x={anchorX}
-                        y={anchorY + 2.4}
+                        y={anchorY}
+                        dy="0.32em"
                         textAnchor="middle"
                         fontSize={count >= 10 ? 6.2 : 8}
                         fill="#14b8a6"
@@ -2086,6 +2366,7 @@ export default function BranchMap({
                 if (item?.kind !== 'branch-created') acc.push(index);
                 return acc;
               }, []);
+              let branchEndDotIndex: number | null = null;
               if (realCommitDotIndices.length > 0) {
                 const headCommitIndex = hasPreviewData
                   ? commitItems.findIndex((item) => item?.fullSha === b.headSha)
@@ -2093,10 +2374,13 @@ export default function BranchMap({
                 const anchorIndex = headCommitIndex >= 0
                   ? headCommitIndex
                   : realCommitDotIndices[realCommitDotIndices.length - 1];
+                branchEndDotIndex = anchorIndex;
                 const anchor = commitDots[anchorIndex];
                 if (anchor) {
                   commitDots[anchorIndex] = { ...anchor, y: tipY };
                 }
+              } else if (commitDots.length > 0) {
+                branchEndDotIndex = commitDots.length - 1;
               }
               const targetLocalCommitCount = isLocalBranch
                 ? (
@@ -2165,17 +2449,46 @@ export default function BranchMap({
                     item: { index, commit },
                   };
                 });
-              const commitDotClusters = clusterMarkersByDistance(commitDotEntries, clumpDistanceWorld);
+              const branchOutAnchors = branchOutAnchorsByBranch.get(b.name) ?? [];
+              const branchMergeAnchors = branchMergeAnchorsByBranch.get(b.name) ?? [];
+              const branchStartCommitAnchor = commitDotEntries.length > 0
+                ? [{ x: commitDotEntries[0].x, y: commitDotEntries[0].y }]
+                : [];
+              const branchEndCommitAnchor =
+                branchEndDotIndex != null && commitDotEntries[branchEndDotIndex]
+                  ? [{ x: commitDotEntries[branchEndDotIndex].x, y: commitDotEntries[branchEndDotIndex].y }]
+                  : [];
+              const branchClumpAnchors = [
+                ...branchOutAnchors,
+                ...branchMergeAnchors,
+                ...branchStartCommitAnchor,
+                ...branchEndCommitAnchor,
+              ];
+              const requiredBranchEntryIndices = selectEntryIndicesForAnchors(
+                commitDotEntries,
+                branchClumpAnchors
+              );
+              const commitDotClusters = clusterMarkersByDistance(commitDotEntries, clumpDistanceWorld, {
+                preferredAnchors: branchClumpAnchors,
+                maxEntriesPerCluster: clumpMaxEntries,
+                anchorPriority: (entry) =>
+                  (requiredBranchEntryIndices.has(entry.item.index) ? 3 : 0) +
+                  (entry.item.index === 0 ? 1.25 : 0),
+              });
+              const promptBranchAnchors = branchClumpAnchors.map(shiftPromptAnchor);
               const promptMarkerEntries: MarkerEntry<{ marker: typeof promptMarkers[number]['marker'] }>[] =
                 promptMarkers.map(({ y, marker }) => {
-                  const point = projectPoint(lanePosX, y);
+                  const point = projectPoint(lanePosX, y + promptTrackOffsetWorld);
                   return {
                     x: point.x,
                     y: point.y,
                     item: { marker },
                   };
                 });
-              const promptMarkerClusters = clusterMarkersByDistance(promptMarkerEntries, clumpDistanceWorld);
+              const promptMarkerClusters = clusterMarkersByDistance(promptMarkerEntries, clumpDistanceWorld, {
+                preferredAnchors: promptBranchAnchors,
+                maxEntriesPerCluster: clumpMaxEntries,
+              });
 
               const brDelay = branchDelayMs.get(b.name) ?? 0;
 
@@ -2193,8 +2506,8 @@ export default function BranchMap({
               const aheadLabelText = formatCommitsAhead(aheadCount);
               const aheadLabelWidth = estimateSvgTextWidth(aheadLabelText, 12);
               const nameAnchor = projectPoint(lanePosX, forkY);
-              const nameDx = isHorizontal ? 12 : 10;
-              const nameDy = isHorizontal ? -13 : -6;
+              const nameDx = isHorizontal ? 24 : 20;
+              const nameDy = isHorizontal ? -20 : -12;
               const namePoint = { x: nameAnchor.x + nameDx, y: nameAnchor.y + nameDy };
               const hoverBadgeAnchor = projectPoint(lanePosX, tipY);
               const hoverBadgePoint = {
@@ -2301,9 +2614,19 @@ export default function BranchMap({
                       const count = cluster.entries.length;
                       const firstEntry = cluster.entries[0];
                       const lastEntry = cluster.entries[count - 1];
-                      const anchorX = cluster.x;
-                      const anchorY = cluster.y;
                       const clusterKey = `commit-clump-${b.name}-${firstEntry.item.index}-${lastEntry.item.index}`;
+                      const animatedAnchor = resolveAnimatedClumpAnchor(
+                        clusterKey,
+                        { x: cluster.x, y: cluster.y },
+                        cluster.entries.map((entry) => {
+                          const commitSha = entry.item.commit?.fullSha;
+                          return commitSha
+                            ? `branch-commit:${b.name}:${commitSha}`
+                            : `branch-commit:${b.name}:idx:${entry.item.index}`;
+                        })
+                      );
+                      const anchorX = animatedAnchor.x;
+                      const anchorY = animatedAnchor.y;
                       const dotShouldUseLocalGray =
                         fullBranchShouldUseLocalGray ||
                         cluster.entries.every((entry) => localCommitDotIndices.has(entry.item.index));
@@ -2377,7 +2700,8 @@ export default function BranchMap({
                           <text
                             className="branch-map-icon-fixed"
                             x={anchorX}
-                            y={anchorY + 2.5}
+                            y={anchorY}
+                            dy="0.32em"
                             textAnchor="middle"
                             fontSize={count >= 10 ? 6.5 : 8}
                             fill="#fafaf9"
@@ -2396,9 +2720,14 @@ export default function BranchMap({
                       const count = cluster.entries.length;
                       const firstEntry = cluster.entries[0];
                       const lastEntry = cluster.entries[count - 1];
-                      const anchorX = cluster.x;
-                      const anchorY = cluster.y;
                       const clusterKey = `prompt-clump-${firstEntry.item.marker.id}-${lastEntry.item.marker.id}`;
+                      const animatedAnchor = resolveAnimatedClumpAnchor(
+                        clusterKey,
+                        { x: cluster.x, y: cluster.y },
+                        cluster.entries.map((entry) => `branch-prompt:${b.name}:${entry.item.marker.id}`)
+                      );
+                      const anchorX = animatedAnchor.x;
+                      const anchorY = animatedAnchor.y;
                       const markerPath = promptMarkerPath(
                         anchorX,
                         anchorY,
@@ -2450,8 +2779,9 @@ export default function BranchMap({
                       const latestPrompt = truncatePrompt(lastEntry.item.marker.prompt, 40);
 
                       return (
-                        <g key={clusterKey} className="branch-map-icon-fixed">
+                        <g key={clusterKey}>
                           <path
+                            className="branch-map-icon-fixed"
                             d={markerPath}
                             fill="var(--background)"
                             stroke="#14b8a6"
@@ -2460,8 +2790,10 @@ export default function BranchMap({
                             style={{ pointerEvents: 'none' }}
                           />
                           <text
+                            className="branch-map-icon-fixed"
                             x={anchorX}
-                            y={anchorY + 2.4}
+                            y={anchorY}
+                            dy="0.32em"
                             textAnchor="middle"
                             fontSize={count >= 10 ? 6.2 : 8}
                             fill="#14b8a6"
@@ -2506,7 +2838,7 @@ export default function BranchMap({
                         transformOrigin: `${namePoint.x}px ${namePoint.y}px`,
                         pointerEvents: 'none',
                         transition: 'fill 0.12s ease, opacity 0.12s ease',
-                      }}
+                      } as React.CSSProperties}
                     >
                       {b.name.length > 22 ? b.name.slice(0, 22) + '…' : b.name}
                     </text>
@@ -2725,36 +3057,18 @@ export default function BranchMap({
         )}
       </div>
 
-      {/* Bottom chrome: scrollbar + zoom — absolute so it stays inside the map
+      {/* Bottom chrome: timeline controls — absolute so it stays inside the map
           container and respects visibility:hidden when the diff view is shown. */}
       <div className="absolute bottom-6 left-6 right-6 flex flex-col gap-2 z-50">
 
-        {/* Scrollbar + zoom row */}
+        {/* Controls row */}
         <div
-          className="flex items-center gap-4"
+          className="flex items-center justify-end gap-4"
           style={{
-            opacity: isLoading || !scrollbarReady ? 0 : 1,
+            opacity: isLoading || !controlsReady ? 0 : 1,
             transition: 'opacity 0.4s ease',
           }}
         >
-          <input
-            ref={barRangeRef}
-            type="range"
-            min={0}
-            max={Math.max(1, barScrollMax)}
-            value={barScrollLeft}
-            style={{ ['--thumb-w' as string]: `${thumbWidth}px` }}
-            onChange={(e) => {
-              const nextWorldStart = Number(e.target.value);
-              const scale = getCameraScale(zoomRef.current, isHorizontal);
-              const nextPan = clampPan({
-                x: isHorizontal ? -graphOffsetX - nextWorldStart * scale.x : targetPanRef.current.x,
-                y: isHorizontal ? targetPanRef.current.y : -graphOffsetY - nextWorldStart * scale.y,
-              }, zoomRef.current, 'hard');
-              applyCamera(nextPan, zoomRef.current, true);
-            }}
-            className="bottom-scroll-range flex-1"
-          />
           <div className="flex items-center gap-1 shrink-0 bg-card border border-border rounded-full p-1">
             <button
               onClick={() => setOrientation('vertical')}
@@ -2792,45 +3106,6 @@ export default function BranchMap({
             <span className="text-xs text-muted-foreground w-10 text-right tabular-nums select-none">
               {effectiveTimeScale.toFixed(2)}x
             </span>
-          </div>
-          <div className="flex items-center gap-2 shrink-0 bg-card border border-border rounded-full px-3 py-1">
-            <button
-              onClick={() => {
-                const el = scrollRef.current;
-                if (!el) return;
-                stopWheelInertia();
-                stopZoomAnimation();
-                applyZoomAt(
-                  { x: el.clientWidth / 2, y: el.clientHeight / 2 },
-                  zoomRef.current * 0.92,
-                  true
-                );
-              }}
-              className="text-sm text-muted-foreground hover:text-foreground transition-colors leading-none select-none"
-              title="Zoom out"
-            >
-              −
-            </button>
-            <span className="text-xs text-muted-foreground w-10 text-center tabular-nums select-none">
-              {Math.round(zoom * 100)}%
-            </span>
-            <button
-              onClick={() => {
-                const el = scrollRef.current;
-                if (!el) return;
-                stopWheelInertia();
-                stopZoomAnimation();
-                applyZoomAt(
-                  { x: el.clientWidth / 2, y: el.clientHeight / 2 },
-                  zoomRef.current * 1.08,
-                  true
-                );
-              }}
-              className="text-sm text-muted-foreground hover:text-foreground transition-colors leading-none select-none"
-              title="Zoom in"
-            >
-              +
-            </button>
           </div>
         </div>
       </div>

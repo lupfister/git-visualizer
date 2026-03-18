@@ -210,8 +210,8 @@ function App() {
     (b) => !openPRBranchNames.has(b.name) && now - new Date(b.lastCommitDate).getTime() > ACTIVE_MS
   );
 
-  // Mirror BranchMap's scrollbarReady timing so the error pill fades in together.
-  // BranchMap fires drawReady after 2 rAFs (~33ms), then delays scrollbar 2600ms.
+  // Mirror BranchMap's controlsReady timing so the error pill fades in together.
+  // BranchMap fires drawReady after 2 rAFs (~33ms), then delays controls 2600ms.
   const hasTimelineData =
     branches.length > 0 || mergeNodes.length > 0 || directCommits.length > 0;
   useEffect(() => {
