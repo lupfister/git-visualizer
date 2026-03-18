@@ -15,8 +15,6 @@ const BRANCH_HIT_STROKE_WIDTH = 48;
 const AHEAD_LABEL_OFFSET_X = 10;
 const MAIN_LABEL_OFFSET_X = 10;
 const MAX_ACTIVE = 50;
-const ZOOM_MIN = 0.2;
-const ZOOM_MAX = 2;
 const ZOOM_DEFAULT = 1;
 const ZOOM_WHEEL_EXP_SENSITIVITY = 0.0025;
 const ZOOM_WHEEL_DELTA_MAX_PX = 180;
@@ -32,6 +30,9 @@ const LOCAL_UNPUSHED_GRAY = '#a8a29e';
 const CLUMP_DISTANCE_PX = 16;
 const CLUMP_COUNT_MAX = 99;
 const CLUMP_SIZE_BOOST_PX = 0.5;
+const CLUMP_START_ZOOM = 1.2;
+const CLUMP_FULL_ZOOM = 0.9;
+const CLUMP_ANIMATION_MS = 180;
 
 type TooltipData = {
   x: number;
@@ -47,6 +48,20 @@ type OrientationMode = 'vertical' | 'horizontal';
 type MarkerEntry<T> = { x: number; y: number; item: T };
 type MarkerCluster<T> = { x: number; y: number; entries: MarkerEntry<T>[] };
 
+function clamp01(value: number): number {
+  return Math.max(0, Math.min(1, value));
+}
+
+function easeInOutCubic(t: number): number {
+  return t < 0.5 ? 4 * t * t * t : 1 - Math.pow(-2 * t + 2, 3) / 2;
+}
+
+function clumpProgressForZoom(zoomValue: number): number {
+  const span = Math.max(CLUMP_START_ZOOM - CLUMP_FULL_ZOOM, 0.0001);
+  const normalized = clamp01((CLUMP_START_ZOOM - zoomValue) / span);
+  return easeInOutCubic(normalized);
+}
+
 function getCameraScale(zoomValue: number, _horizontal: boolean): { x: number; y: number } {
   return { x: zoomValue, y: zoomValue };
 }
@@ -61,16 +76,14 @@ function smoothValueTo(
   start: number,
   target: number,
   durationMs: number,
-  onFrame: (value: number) => void
+  onFrame: (value: number) => void,
+  minDelta = 1
 ): () => void {
   const delta = target - start;
-  if (Math.abs(delta) < 1) return () => undefined;
+  if (Math.abs(delta) < minDelta) return () => undefined;
   const startTime = performance.now();
   let rafId = 0;
   let cancelled = false;
-  function easeInOutCubic(t: number) {
-    return t < 0.5 ? 4 * t * t * t : 1 - Math.pow(-2 * t + 2, 3) / 2;
-  }
   function step(now: number) {
     if (cancelled) return;
     const elapsed = now - startTime;
@@ -288,8 +301,9 @@ export default function BranchMap({
   const [hoveredMergeNode, setHoveredMergeNode] = useState<{ y: number; node: MergeNode } | null>(null);
   const [prCommits, setPrCommits] = useState<Map<number, string[]>>(new Map());
   const [zoom, setZoom] = useState(ZOOM_DEFAULT);
+  const [animatedClumpZoom, setAnimatedClumpZoom] = useState(ZOOM_DEFAULT);
   const [timeScale, setTimeScale] = useState(TIME_SCALE_DEFAULT);
-  const [spacingMode, setSpacingMode] = useState<SpacingMode>('bounded');
+  const [spacingMode] = useState<SpacingMode>('bounded');
   const [orientation, setOrientation] = useState<OrientationMode>('vertical');
   const isHorizontal = orientation === 'horizontal';
   const effectiveTimeScale = timeScale;
@@ -309,6 +323,8 @@ export default function BranchMap({
   const zoomStateRef = useRef(zoom);
   const panUiSyncTimeoutRef = useRef<number | null>(null);
   const zoomUiSyncTimeoutRef = useRef<number | null>(null);
+  const clumpZoomCancelRef = useRef<(() => void) | null>(null);
+  const clumpZoomRef = useRef(ZOOM_DEFAULT);
   const gestureZoomBaseRef = useRef(zoomRef.current);
   const gesturePointRef = useRef<{ x: number; y: number } | null>(null);
   const graphOffsetRef = useRef({ x: 0, y: 0 });
@@ -383,6 +399,30 @@ export default function BranchMap({
     zoomRef.current = zoom;
     zoomStateRef.current = zoom;
     paintCamera(panRef.current, zoomRef.current);
+  }, [zoom]);
+
+  useEffect(() => {
+    clumpZoomCancelRef.current?.();
+    const start = clumpZoomRef.current;
+    if (Math.abs(start - zoom) < 0.0001) {
+      clumpZoomRef.current = zoom;
+      setAnimatedClumpZoom(zoom);
+      return;
+    }
+    clumpZoomCancelRef.current = smoothValueTo(
+      start,
+      zoom,
+      CLUMP_ANIMATION_MS,
+      (value) => {
+        clumpZoomRef.current = value;
+        setAnimatedClumpZoom(value);
+      },
+      0.0001
+    );
+    return () => {
+      clumpZoomCancelRef.current?.();
+      clumpZoomCancelRef.current = null;
+    };
   }, [zoom]);
 
   useEffect(() => {
@@ -512,9 +552,8 @@ export default function BranchMap({
 
   function applyZoomAt(point: { x: number; y: number }, nextZoom: number, forceUiSync = false): boolean {
     lockAnimationsIfReady();
-    if (!Number.isFinite(nextZoom)) return false;
+    if (!Number.isFinite(nextZoom) || nextZoom <= 0) return false;
     const currentZoom = zoomRef.current;
-    nextZoom = Math.max(ZOOM_MIN, Math.min(ZOOM_MAX, nextZoom));
     if (nextZoom === currentZoom) return false;
 
     const currentPan = panRef.current;
@@ -695,7 +734,28 @@ export default function BranchMap({
       return (el as HTMLElement).isContentEditable;
     };
     const onKeyDown = (e: KeyboardEvent) => {
-      if (e.code !== 'Space' || isEditable(e.target)) return;
+      if (isEditable(e.target)) return;
+
+      // Keep zoom shortcuts on the graph camera (unbounded), not browser/webview zoom.
+      if (e.metaKey || e.ctrlKey) {
+        const isZoomIn = e.key === '=' || e.key === '+';
+        const isZoomOut = e.key === '-' || e.key === '_';
+        if (isZoomIn || isZoomOut) {
+          e.preventDefault();
+          const el = scrollRef.current;
+          if (!el) return;
+          stopWheelInertia();
+          stopZoomAnimation();
+          applyZoomAt(
+            { x: el.clientWidth / 2, y: el.clientHeight / 2 },
+            zoomRef.current * (isZoomIn ? 1.08 : 0.92),
+            true
+          );
+          return;
+        }
+      }
+
+      if (e.code !== 'Space') return;
       e.preventDefault();
       spacePressedRef.current = true;
       setSpaceHeld(true);
@@ -1393,9 +1453,11 @@ export default function BranchMap({
   const scaledNodeSize = NODE_SIZE;
   const scaledHoverHitSize = 20;
   const scaledBranchHitStrokeWidth = BRANCH_HIT_STROKE_WIDTH;
-  const clumpingEnabled = zoom <= 1;
-  const clumpDistanceWorld = clumpingEnabled
-    ? CLUMP_DISTANCE_PX / Math.max(renderCameraScale.x, 0.0001)
+  const worldUnitsPerScreenPx = 1 / Math.max(renderCameraScale.x, 0.0001);
+  const worldPx = (px: number) => px * worldUnitsPerScreenPx;
+  const clumpProgress = clumpProgressForZoom(animatedClumpZoom);
+  const clumpDistanceWorld = clumpProgress > 0
+    ? (CLUMP_DISTANCE_PX * clumpProgress) / Math.max(renderCameraScale.x, 0.0001)
     : 0;
   const drawPathMainClass = animationsLocked ? undefined : 'draw-path-main';
   const drawPathArcClass = animationsLocked ? undefined : 'draw-path-arc';
@@ -1479,7 +1541,7 @@ export default function BranchMap({
             {/* Main label and ticks — fade in once the line is drawn */}
             <g className={fadeInInfoClass} style={{ '--delay': `${MAIN_DRAW_MS}ms` } as React.CSSProperties}>
               {(() => {
-                const labelPoint = projectPoint(mainX + MAIN_LABEL_OFFSET_X, mainEndY + 4);
+                const labelPoint = projectPoint(mainX + worldPx(MAIN_LABEL_OFFSET_X), mainEndY + worldPx(4));
                 return (
                   <text
                     className="branch-map-icon-fixed"
@@ -1523,7 +1585,7 @@ export default function BranchMap({
                         style={{ cursor: 'pointer' }}
                         onMouseEnter={() =>
                           setTooltip({
-                            x: cluster.x + 14,
+                            x: cluster.x,
                             y: cluster.y,
                             lines: [c.sha, label, `@${c.author} · ${fmtTooltipDate(c.date)}`],
                             avatarFallback: c.author?.charAt(0).toUpperCase() || '?',
@@ -1551,7 +1613,7 @@ export default function BranchMap({
                         style={{ cursor: 'pointer' }}
                         onMouseEnter={() =>
                           setTooltip({
-                            x: cluster.x + 14,
+                            x: cluster.x,
                             y: cluster.y,
                             lines: [`${count} commits`, 'main', rangeLine],
                             avatarFallback: last.author?.charAt(0).toUpperCase() || '?',
@@ -1592,8 +1654,8 @@ export default function BranchMap({
                   const count = cluster.entries.length;
                   const firstEntry = cluster.entries[0];
                   const lastEntry = cluster.entries[count - 1];
-                  const anchorX = lastEntry.x;
-                  const anchorY = lastEntry.y;
+                  const anchorX = cluster.x;
+                  const anchorY = cluster.y;
                   const clusterKey = `main-prompt-clump-${firstEntry.item.marker.id}-${lastEntry.item.marker.id}`;
                   const markerPath = promptMarkerPath(
                     anchorX,
@@ -1623,7 +1685,7 @@ export default function BranchMap({
                           style={{ cursor: 'pointer' }}
                           onMouseEnter={() =>
                             setTooltip({
-                              x: anchorX + 14,
+                              x: anchorX,
                               y: anchorY,
                               lines: [
                                 truncatePrompt(marker.prompt, 52),
@@ -1678,7 +1740,7 @@ export default function BranchMap({
                         style={{ cursor: 'pointer' }}
                         onMouseEnter={() =>
                           setTooltip({
-                            x: anchorX + 14,
+                            x: anchorX,
                             y: anchorY,
                             lines: [`${count} prompts`, latestPrompt, dateRangeLabel],
                           })
@@ -2143,9 +2205,7 @@ export default function BranchMap({
               const approxNameW = nameLen * 6.5;
               const clockPoint = projectPoint(lanePosX + approxNameW + 10, forkY);
               const labelsVisible = zoom > 1 || isHovered;
-              const zoomHideStrength = zoom <= 1 ? 1 : 0;
               const nameOpacity = labelsVisible ? (isHorizontal ? 1 : (isHovered ? 1 : 0)) : 0;
-              const nameBlurPx = isHorizontal ? 0 : (isHovered ? 0 : zoomHideStrength * 4);
 
               return (
                 <g
@@ -2241,8 +2301,8 @@ export default function BranchMap({
                       const count = cluster.entries.length;
                       const firstEntry = cluster.entries[0];
                       const lastEntry = cluster.entries[count - 1];
-                      const anchorX = lastEntry.x;
-                      const anchorY = lastEntry.y;
+                      const anchorX = cluster.x;
+                      const anchorY = cluster.y;
                       const clusterKey = `commit-clump-${b.name}-${firstEntry.item.index}-${lastEntry.item.index}`;
                       const dotShouldUseLocalGray =
                         fullBranchShouldUseLocalGray ||
@@ -2272,7 +2332,7 @@ export default function BranchMap({
                             fill={dotFill}
                             onMouseEnter={() =>
                               setTooltip({
-                                x: anchorX + 14,
+                                x: anchorX,
                                 y: anchorY,
                                 lines: [
                                   isBranchCreatedEvent ? 'Branch created' : `Commit ${tooltipSha}`,
@@ -2306,7 +2366,7 @@ export default function BranchMap({
                             style={{ cursor: 'pointer' }}
                             onMouseEnter={() =>
                               setTooltip({
-                                x: anchorX + 14,
+                                x: anchorX,
                                 y: anchorY,
                                 lines: [`${count} commits`, `on ${b.name}`, dateRangeLabel],
                                 avatarFallback: latestAuthor?.charAt(0).toUpperCase() || '?',
@@ -2336,8 +2396,8 @@ export default function BranchMap({
                       const count = cluster.entries.length;
                       const firstEntry = cluster.entries[0];
                       const lastEntry = cluster.entries[count - 1];
-                      const anchorX = lastEntry.x;
-                      const anchorY = lastEntry.y;
+                      const anchorX = cluster.x;
+                      const anchorY = cluster.y;
                       const clusterKey = `prompt-clump-${firstEntry.item.marker.id}-${lastEntry.item.marker.id}`;
                       const markerPath = promptMarkerPath(
                         anchorX,
@@ -2367,7 +2427,7 @@ export default function BranchMap({
                               style={{ cursor: 'pointer' }}
                               onMouseEnter={() =>
                                 setTooltip({
-                                  x: anchorX + 14,
+                                  x: anchorX,
                                   y: anchorY,
                                   lines: [
                                     truncatePrompt(marker.prompt, 52),
@@ -2422,7 +2482,7 @@ export default function BranchMap({
                             style={{ cursor: 'pointer' }}
                             onMouseEnter={() =>
                               setTooltip({
-                                x: anchorX + 14,
+                                x: anchorX,
                                 y: anchorY,
                                 lines: [`${count} prompts`, latestPrompt, dateRangeLabel],
                               })
@@ -2436,15 +2496,16 @@ export default function BranchMap({
                       className="branch-map-icon-fixed"
                       x={namePoint.x}
                       y={namePoint.y}
+                      textAnchor="start"
+                      textRendering="geometricPrecision"
                       fontSize={12}
                       fill={isSelected ? '#22d3ee' : isHovered ? '#1c1917' : color}
                       fontWeight={isSelected ? 600 : 400}
                       opacity={nameOpacity}
                       style={{
                         transformOrigin: `${namePoint.x}px ${namePoint.y}px`,
-                        filter: `blur(${nameBlurPx}px)`,
                         pointerEvents: 'none',
-                        transition: 'fill 0.12s ease, opacity 0.16s ease, filter 0.16s ease',
+                        transition: 'fill 0.12s ease, opacity 0.12s ease',
                       }}
                     >
                       {b.name.length > 22 ? b.name.slice(0, 22) + '…' : b.name}
@@ -2455,6 +2516,7 @@ export default function BranchMap({
                         x={hoverBadgePoint.x}
                         y={hoverBadgePoint.y}
                         dominantBaseline="middle"
+                        textRendering="geometricPrecision"
                         fontSize={12}
                         fill="#1c1917"
                         fontWeight={500}
@@ -2713,28 +2775,6 @@ export default function BranchMap({
               title="Timeline runs left to right"
             >
               Horizontal
-            </button>
-          </div>
-          <div className="flex items-center gap-1 shrink-0 bg-card border border-border rounded-full p-1">
-            <button
-              onClick={() => setSpacingMode('regular')}
-              className={`px-2.5 py-1 rounded-full text-xs leading-none select-none transition-colors ${effectiveSpacingMode === 'regular'
-                ? 'bg-primary/10 text-foreground'
-                : 'text-muted-foreground hover:text-foreground hover:bg-muted'
-                }`}
-              title="Use pure time scaling"
-            >
-              Time
-            </button>
-            <button
-              onClick={() => setSpacingMode('bounded')}
-              className={`px-2.5 py-1 rounded-full text-xs leading-none select-none transition-colors ${effectiveSpacingMode === 'bounded'
-                ? 'bg-primary/10 text-foreground'
-                : 'text-muted-foreground hover:text-foreground hover:bg-muted'
-                }`}
-              title="Clamp timeline gaps with min/max bounds"
-            >
-              Bounded
             </button>
           </div>
           <div className="flex items-center gap-2 shrink-0 bg-card border border-border rounded-full px-3 py-1">

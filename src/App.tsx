@@ -595,16 +595,17 @@ function App() {
         {/* Map view */}
         <div className={`absolute inset-0 flex flex-col ${view !== 'map' ? 'invisible pointer-events-none' : ''}`}>
           <header className="px-4 py-3 md:px-8 md:py-5">
-            <div className="flex items-center justify-between gap-3">
+            <div className="grid grid-cols-[1fr_auto_1fr] items-center gap-3">
               <button
                 onClick={handleBackToLanding}
-                className="text-muted-foreground hover:text-foreground transition-colors text-sm shrink-0"
+                className="text-muted-foreground hover:text-foreground transition-colors text-sm shrink-0 justify-self-start"
               >
                 ← Back
               </button>
-              <h1 className="text-sm md:text-base font-medium text-foreground truncate">
+              <h1 className="text-sm md:text-base font-medium text-foreground text-center justify-self-center max-w-[52vw] truncate">
                 {repoName}
               </h1>
+              <div className="justify-self-end" aria-hidden="true" />
             </div>
             <div className="mt-3 flex flex-wrap items-center gap-2">
               {selectedBranch && (
