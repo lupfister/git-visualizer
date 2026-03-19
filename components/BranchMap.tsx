@@ -1955,7 +1955,9 @@ export default function BranchMap({
                         cx={anchorX}
                         cy={anchorY}
                         r={scaledNodeSize / 2}
-                        fill="#78716c"
+                        fill="#57534e"
+                        stroke="var(--background)"
+                        strokeWidth={1.2}
                         style={{ cursor: 'pointer' }}
                         onMouseEnter={() =>
                           setTooltip({
@@ -1977,13 +1979,14 @@ export default function BranchMap({
                     : `${fmtTooltipDate(first.date)} → ${fmtTooltipDate(last.date)}`;
 
                   return (
-                    <g key={clusterKey}>
+                    <g key={clusterKey} className="branch-map-icon-fixed">
                       <circle
-                        className="branch-map-icon-fixed"
                         cx={anchorX}
                         cy={anchorY}
                         r={scaledNodeSize / 2 + CLUMP_SIZE_BOOST_PX}
-                        fill="#78716c"
+                        fill="#57534e"
+                        stroke="var(--background)"
+                        strokeWidth={1.2}
                         style={{ cursor: 'pointer' }}
                         onMouseEnter={() =>
                           setTooltip({
@@ -2000,7 +2003,7 @@ export default function BranchMap({
                         y={anchorY}
                         textAnchor="middle"
                         dominantBaseline="middle"
-                        fontSize={worldPx(count >= 10 ? 6.5 : 8)}
+                        fontSize={count >= 10 ? 6.5 : 8}
                         fill="#fafaf9"
                         fontWeight={600}
                         style={{ pointerEvents: 'none' }}
@@ -2739,6 +2742,56 @@ export default function BranchMap({
 
                   {/* Branch info — fades in as arc draws */}
                   <g className={fadeInInfoClass} style={{ '--delay': `${brDelay + INFO_OFFSET}ms` } as React.CSSProperties}>
+                    {/* Prompt marker visuals render below commit nodes so branch dots stay on top. */}
+                    {promptMarkerClusters.map((cluster) => {
+                      const count = cluster.entries.length;
+                      const firstEntry = cluster.entries[0];
+                      const lastEntry = cluster.entries[count - 1];
+                      const clusterKey = `prompt-clump-${b.name}-${firstEntry.item.index}-${lastEntry.item.index}`;
+                      const memberKeys = cluster.entries.map((entry) => `prompt:${b.name}:slot-${entry.item.index}`);
+                      const animatedAnchor = resolveAnimatedClumpAnchor(
+                        clusterKey,
+                        { x: cluster.x, y: cluster.y },
+                        memberKeys
+                      );
+                      const anchorX = animatedAnchor.x;
+                      const anchorY = animatedAnchor.y;
+                      const markerSize =
+                        count > 1 ? scaledNodeSize + CLUMP_SIZE_BOOST_PX * 2 : scaledNodeSize;
+                      const markerPath = promptMarkerPath(anchorX, anchorY, markerSize);
+                      const markerStrokeWidth = 1.2;
+                      const label = count > 1 ? clumpCountLabel(count) : '';
+                      const labelFontSize = count >= 10 ? 6.2 : 8;
+
+                      return (
+                        <g key={`${clusterKey}-visual`} className="branch-map-icon-fixed" style={{ pointerEvents: 'none' }}>
+                          <path
+                            d={markerPath}
+                            fill="var(--background)"
+                            stroke="#14b8a6"
+                            strokeWidth={markerStrokeWidth}
+                            strokeLinejoin="round"
+                          />
+                          {count > 1 && (
+                            <text
+                              x={anchorX}
+                              y={anchorY}
+                              textAnchor="middle"
+                              dominantBaseline="middle"
+                              fontSize={labelFontSize}
+                              fill="#14b8a6"
+                              fontWeight={700}
+                              style={{
+                                fontVariantNumeric: 'tabular-nums',
+                              }}
+                            >
+                              {label}
+                            </text>
+                          )}
+                        </g>
+                      );
+                    })}
+
                     {/* Commit markers along branch */}
                     {commitDotClusters.map((cluster) => {
                       const realCommitEntries = cluster.entries.filter(
@@ -2764,7 +2817,9 @@ export default function BranchMap({
                       const dotShouldUseLocalGray =
                         fullBranchShouldUseLocalGray ||
                         cluster.entries.every((entry) => localCommitDotIndices.has(entry.item.index));
-                      const dotFill = dotShouldUseLocalGray ? LOCAL_UNPUSHED_GRAY : color;
+                      const dotFill = dotShouldUseLocalGray
+                        ? LOCAL_UNPUSHED_GRAY
+                        : (isSelected ? '#22d3ee' : isConflict ? '#dc2626' : isFocusedError ? focusedErrorColor : '#57534e');
 
                       if (count <= 1) {
                         const commitEntry = realCommitEntries[0] ?? lastEntry;
@@ -2788,6 +2843,8 @@ export default function BranchMap({
                             cy={anchorY}
                             r={scaledNodeSize / 2}
                             fill={dotFill}
+                            stroke="var(--background)"
+                            strokeWidth={1.2}
                             onMouseEnter={() =>
                               setTooltip({
                                 x: anchorX,
@@ -2816,13 +2873,14 @@ export default function BranchMap({
                       const latestAuthor = lastRealEntry.item.commit?.author ?? b.lastCommitAuthor;
 
                       return (
-                        <g key={clusterKey}>
+                        <g key={clusterKey} className="branch-map-icon-fixed">
                           <circle
-                            className="branch-map-icon-fixed"
                             cx={anchorX}
                             cy={anchorY}
                             r={scaledNodeSize / 2 + CLUMP_SIZE_BOOST_PX}
                             fill={dotFill}
+                            stroke="var(--background)"
+                            strokeWidth={1.2}
                             style={{ cursor: 'pointer' }}
                             onMouseEnter={() =>
                               setTooltip({
@@ -2839,7 +2897,7 @@ export default function BranchMap({
                             y={anchorY}
                             textAnchor="middle"
                             dominantBaseline="middle"
-                            fontSize={worldPx(count >= 10 ? 6.5 : 8)}
+                            fontSize={count >= 10 ? 6.5 : 8}
                             fill="#fafaf9"
                             fontWeight={600}
                             style={{ pointerEvents: 'none' }}
@@ -2849,6 +2907,7 @@ export default function BranchMap({
                         </g>
                       );
                     })}
+                    {/* Prompt marker hit areas stay on top so hover remains easy. */}
                     {promptMarkerClusters.map((cluster) => {
                       const count = cluster.entries.length;
                       const firstEntry = cluster.entries[0];
@@ -2862,27 +2921,12 @@ export default function BranchMap({
                       );
                       const anchorX = animatedAnchor.x;
                       const anchorY = animatedAnchor.y;
-                      const markerSize =
-                        count > 1 ? scaledNodeSize + CLUMP_SIZE_BOOST_PX * 2 : scaledNodeSize;
-                      const markerPath = promptMarkerPath(anchorX, anchorY, markerSize);
                       const hitSize = scaledHoverHitSize;
-                      const markerStrokeWidth = 1.2;
-                      const label = count > 1 ? clumpCountLabel(count) : '';
-                      const labelFontSize = count >= 10 ? 6.2 : 8;
 
                       if (count === 1) {
                         const marker = lastEntry.item.marker;
                         return (
-                          <g key={clusterKey}>
-                            <g className="branch-map-icon-fixed" style={{ pointerEvents: 'none' }}>
-                              <path
-                                d={markerPath}
-                                fill="var(--background)"
-                                stroke="#14b8a6"
-                                strokeWidth={markerStrokeWidth}
-                                strokeLinejoin="round"
-                              />
-                            </g>
+                          <g key={`${clusterKey}-hit`}>
                             <rect
                               x={anchorX - hitSize / 2}
                               y={anchorY - hitSize / 2}
@@ -2914,30 +2958,7 @@ export default function BranchMap({
                         : `${fmtTooltipDate(firstDate)} → ${fmtTooltipDate(lastDate)}`;
                       const latestPrompt = truncatePrompt(lastEntry.item.marker.prompt, 40);
                       return (
-                        <g key={clusterKey}>
-                          <g className="branch-map-icon-fixed" style={{ pointerEvents: 'none' }}>
-                            <path
-                              d={markerPath}
-                              fill="var(--background)"
-                              stroke="#14b8a6"
-                              strokeWidth={markerStrokeWidth}
-                              strokeLinejoin="round"
-                            />
-                            <text
-                              x={anchorX}
-                              y={anchorY}
-                              textAnchor="middle"
-                              dominantBaseline="middle"
-                              fontSize={labelFontSize}
-                              fill="#14b8a6"
-                              fontWeight={700}
-                              style={{
-                                fontVariantNumeric: 'tabular-nums',
-                              }}
-                            >
-                              {label}
-                            </text>
-                          </g>
+                        <g key={`${clusterKey}-hit`}>
                           <rect
                             x={anchorX - hitSize / 2}
                             y={anchorY - hitSize / 2}
@@ -3026,6 +3047,432 @@ export default function BranchMap({
                 </g>
               );
             })}
+          </g>
+
+          {/* Global node overlay so commit/prompt nodes always paint above branch lines. */}
+          <g
+            style={{ opacity: hoveredPR !== null ? 0.2 : 1, transition: 'opacity 0.15s', pointerEvents: 'none' }}
+          >
+            {activeBranches.map((b) => {
+              const rawForkTimeX = branchForkX(b);
+              const parentName = b.parentBranch;
+              const parentBranch =
+                parentName && parentName !== defaultBranch
+                  ? branchByName.get(parentName)
+                  : undefined;
+              const parentHeadTimeX = parentBranch ? branchHeadCommitX(parentBranch) : null;
+              const forksFromParentHead = !!(
+                parentBranch &&
+                b.divergedFromSha &&
+                b.divergedFromSha === parentBranch.headSha
+              );
+              const forkTimeX =
+                forksFromParentHead && parentHeadTimeX != null
+                  ? parentHeadTimeX
+                  : rawForkTimeX;
+              const lanePosX = laneX(b);
+              const mergeNodeForBranch = b.commitsAhead === 0
+                ? mergeNodeByMergedHeadSha.get(b.headSha)
+                : undefined;
+              const mergeNodeTimeX = mergeNodeForBranch
+                ? (nodeXByFullSha.get(mergeNodeForBranch.fullSha) ?? timeToX(mergeNodeForBranch.date))
+                : null;
+              const baseTipTimeX = branchTipX(b);
+              const tipTimeX = mergeNodeTimeX != null ? Math.max(baseTipTimeX, mergeNodeTimeX) : baseTipTimeX;
+              const tipY = timeCoordToY(tipTimeX);
+
+              const isMergedBranch = b.commitsAhead === 0;
+              const isConflict = b.status === 'conflict-risk' && !isMergedBranch;
+              const isSelected = selectedBranch?.name === b.name;
+              const isHovered = hoveredBranch === b.name;
+              const hasSelection = selectedBranch != null;
+              const isLocalBranch = b.remoteSyncStatus !== 'on-github';
+              const isFocusedError = focusedErrorBranch?.name === b.name;
+              const focusedErrorColor = b.status === 'conflict-risk' ? '#dc2626' : '#d97706';
+              const branchGroupOpacity =
+                isFocusedError ? 1 : hoveredBranch !== null && !isHovered ? 0.12 : hasSelection && !isSelected ? 0.5 : 1;
+
+              const branchCommits = branchCommitPreviews[b.name] ?? [];
+              const hasPreviewData = Object.prototype.hasOwnProperty.call(branchCommitPreviews, b.name);
+              const commitCount = hasPreviewData ? branchCommits.length : b.commitsAhead;
+              const displayedCommits = hasPreviewData
+                ? [...branchCommits.slice(0, commitCount)].sort(
+                  (a, b) => new Date(a.date).getTime() - new Date(b.date).getTime()
+                )
+                : [];
+              const minCommitTimeX = forkTimeX + cornerR + 6;
+              const maxCommitTimeX = Math.max(minCommitTimeX, tipTimeX);
+              const commitItems: Array<BranchCommitPreview | undefined> = hasPreviewData
+                ? displayedCommits
+                : Array.from({ length: commitCount }, () => undefined);
+              let commitDots = hasPreviewData
+                ? commitItems.map((commit) => {
+                  const rawX = timeToX(commit?.date ?? b.lastCommitDate);
+                  const x = Math.max(minCommitTimeX, Math.min(maxCommitTimeX, rawX));
+                  return { y: timeCoordToY(x), commit };
+                })
+                : placeItemsEvenly(commitItems, minCommitTimeX, maxCommitTimeX).map((entry) => ({
+                  y: timeCoordToY(entry.x),
+                  commit: entry.item,
+                }));
+              const realCommitDotIndices = commitItems.reduce<number[]>((acc, item, index) => {
+                if (item?.kind !== 'branch-created') acc.push(index);
+                return acc;
+              }, []);
+              let branchEndDotIndex: number | null = null;
+              if (realCommitDotIndices.length > 0) {
+                const headCommitIndex = hasPreviewData
+                  ? commitItems.findIndex((item) => item?.fullSha === b.headSha)
+                  : -1;
+                const anchorIndex = headCommitIndex >= 0
+                  ? headCommitIndex
+                  : realCommitDotIndices[realCommitDotIndices.length - 1];
+                branchEndDotIndex = anchorIndex;
+                const anchor = commitDots[anchorIndex];
+                if (anchor) {
+                  commitDots[anchorIndex] = { ...anchor, y: tipY };
+                }
+              } else if (commitDots.length > 0) {
+                branchEndDotIndex = commitDots.length - 1;
+              }
+              const targetLocalCommitCount = isLocalBranch
+                ? (
+                  b.remoteSyncStatus === 'local-only'
+                    ? realCommitDotIndices.length
+                    : b.unpushedCommits
+                )
+                : 0;
+              const boundedLocalCommitCount = Math.max(
+                0,
+                Math.min(targetLocalCommitCount, realCommitDotIndices.length),
+              );
+              const localCommitDotIndices = new Set(
+                realCommitDotIndices.slice(realCommitDotIndices.length - boundedLocalCommitCount),
+              );
+              const allBranchCommitsAreLocal =
+                realCommitDotIndices.length > 0 &&
+                boundedLocalCommitCount === realCommitDotIndices.length;
+              const fullBranchShouldUseLocalGray =
+                isLocalBranch && (allBranchCommitsAreLocal || realCommitDotIndices.length === 0);
+
+              const commitDotEntries: MarkerEntry<{ index: number; commit?: BranchCommitPreview }>[] =
+                commitDots.map(({ y, commit }, index) => {
+                  const point = projectPoint(lanePosX, y);
+                  return {
+                    x: point.x,
+                    y: point.y,
+                    item: { index, commit },
+                  };
+                });
+              const branchOutAnchors = branchOutAnchorsByBranch.get(b.name) ?? [];
+              const branchMergeAnchors = branchMergeAnchorsByBranch.get(b.name) ?? [];
+              const branchStartCommitAnchor = commitDotEntries.length > 0
+                ? [{ x: commitDotEntries[0].x, y: commitDotEntries[0].y }]
+                : [];
+              const branchEndCommitAnchor =
+                branchEndDotIndex != null && commitDotEntries[branchEndDotIndex]
+                  ? [{ x: commitDotEntries[branchEndDotIndex].x, y: commitDotEntries[branchEndDotIndex].y }]
+                  : [];
+              const branchStructuralCommitAnchors = [
+                ...branchOutAnchors,
+                ...branchMergeAnchors,
+              ];
+              const branchSecondaryCommitAnchors = [
+                ...branchStartCommitAnchor,
+                ...branchEndCommitAnchor,
+              ];
+              const branchClumpAnchors = [
+                ...branchStructuralCommitAnchors,
+                ...branchSecondaryCommitAnchors,
+              ];
+              const structuralBranchEntryIndices = selectEntryIndicesForAnchors(
+                commitDotEntries,
+                branchStructuralCommitAnchors
+              );
+              const secondaryBranchEntryIndices = selectEntryIndicesForAnchors(
+                commitDotEntries,
+                branchSecondaryCommitAnchors
+              );
+              const commitDotClusters = clusterMarkersByDistance(commitDotEntries, clumpDistanceWorld, {
+                preferredAnchors: branchClumpAnchors,
+                maxEntriesPerCluster: clumpMaxEntries,
+                anchorPriority: (entry) =>
+                  (entry.item.index === 0 ? 1.25 : 0) +
+                  (secondaryBranchEntryIndices.has(entry.item.index) ? CLUMP_SECONDARY_PRIORITY : 0) +
+                  (structuralBranchEntryIndices.has(entry.item.index) ? CLUMP_STRUCTURAL_PRIORITY : 0),
+              });
+
+              const promptMarkersRaw = branchPromptMeta[b.name]?.markers ?? [];
+              const promptSeeds = sampleEvenlyByOrder(
+                [...promptMarkersRaw]
+                  .sort((a, b) => new Date(a.timestamp).getTime() - new Date(b.timestamp).getTime()),
+                PROMPT_MARKER_MAX
+              );
+              const promptMarkers = promptSeeds.map((marker) => {
+                const rawX = timeToX(marker.timestamp);
+                const x = Math.max(minCommitTimeX, Math.min(maxCommitTimeX, rawX));
+                return {
+                  y: timeCoordToY(x),
+                  marker,
+                };
+              });
+              const promptMarkerEntries: MarkerEntry<{ marker: typeof promptMarkers[number]['marker']; index: number }>[] =
+                promptMarkers.map(({ y, marker }, markerIndex) => {
+                  const point = projectPoint(lanePosX, y);
+                  return {
+                    x: point.x,
+                    y: point.y,
+                    item: {
+                      marker,
+                      index: markerIndex,
+                    },
+                  };
+                });
+              const promptBranchAnchors = promptMarkerEntries.map((entry) => ({ x: entry.x, y: entry.y }));
+              const promptMarkerClusters = clusterMarkersByDistance(promptMarkerEntries, clumpDistanceWorld, {
+                preferredAnchors: promptBranchAnchors,
+                maxEntriesPerCluster: clumpMaxEntries,
+              });
+
+              return (
+                <g key={`node-overlay-${b.name}`} style={{ opacity: branchGroupOpacity }}>
+                  {promptMarkerClusters.map((cluster) => {
+                    const count = cluster.entries.length;
+                    const firstEntry = cluster.entries[0];
+                    const lastEntry = cluster.entries[count - 1];
+                    const clusterKey = `prompt-clump-${b.name}-${firstEntry.item.index}-${lastEntry.item.index}`;
+                    const memberKeys = cluster.entries.map((entry) => `prompt:${b.name}:slot-${entry.item.index}`);
+                    const animatedAnchor = resolveAnimatedClumpAnchor(
+                      clusterKey,
+                      { x: cluster.x, y: cluster.y },
+                      memberKeys
+                    );
+                    const anchorX = animatedAnchor.x;
+                    const anchorY = animatedAnchor.y;
+                    const markerSize =
+                      count > 1 ? scaledNodeSize + CLUMP_SIZE_BOOST_PX * 2 : scaledNodeSize;
+                    const markerPath = promptMarkerPath(anchorX, anchorY, markerSize);
+                    const label = count > 1 ? clumpCountLabel(count) : '';
+                    const labelFontSize = count >= 10 ? 6.2 : 8;
+
+                    return (
+                      <g key={`prompt-overlay-${clusterKey}`} className="branch-map-icon-fixed">
+                        <path
+                          d={markerPath}
+                          fill="var(--background)"
+                          stroke="#14b8a6"
+                          strokeWidth={1.2}
+                          strokeLinejoin="round"
+                        />
+                        {count > 1 && (
+                          <text
+                            x={anchorX}
+                            y={anchorY}
+                            textAnchor="middle"
+                            dominantBaseline="middle"
+                            fontSize={labelFontSize}
+                            fill="#14b8a6"
+                            fontWeight={700}
+                            style={{ fontVariantNumeric: 'tabular-nums' }}
+                          >
+                            {label}
+                          </text>
+                        )}
+                      </g>
+                    );
+                  })}
+                  {commitDotClusters.map((cluster) => {
+                    const realCommitEntries = cluster.entries.filter(
+                      (entry) => entry.item.commit?.kind !== 'branch-created'
+                    );
+                    const count = realCommitEntries.length;
+                    const firstEntry = cluster.entries[0];
+                    const lastEntry = cluster.entries[cluster.entries.length - 1];
+                    const clusterKey = `commit-clump-${b.name}-${firstEntry.item.index}-${lastEntry.item.index}`;
+                    const memberKeys = cluster.entries.map((entry) => {
+                      const commitSha = entry.item.commit?.fullSha;
+                      return commitSha
+                        ? `branch-commit:${b.name}:${commitSha}`
+                        : `branch-commit:${b.name}:slot-${entry.item.index}`;
+                    });
+                    const animatedAnchor = resolveAnimatedClumpAnchor(
+                      clusterKey,
+                      { x: cluster.x, y: cluster.y },
+                      memberKeys
+                    );
+                    const anchorX = animatedAnchor.x;
+                    const anchorY = animatedAnchor.y;
+                    const dotShouldUseLocalGray =
+                      fullBranchShouldUseLocalGray ||
+                      cluster.entries.every((entry) => localCommitDotIndices.has(entry.item.index));
+                    const dotFill = dotShouldUseLocalGray
+                      ? LOCAL_UNPUSHED_GRAY
+                      : (isSelected ? '#22d3ee' : isConflict ? '#dc2626' : isFocusedError ? focusedErrorColor : '#57534e');
+
+                    if (count <= 1) {
+                      return (
+                        <g key={`commit-overlay-${clusterKey}`} className="branch-map-icon-fixed">
+                          <circle
+                            cx={anchorX}
+                            cy={anchorY}
+                            r={scaledNodeSize / 2 + 1.4}
+                            fill="var(--background)"
+                          />
+                          <circle
+                            cx={anchorX}
+                            cy={anchorY}
+                            r={scaledNodeSize / 2}
+                            fill={dotFill}
+                          />
+                        </g>
+                      );
+                    }
+
+                    return (
+                      <g key={`commit-overlay-${clusterKey}`} className="branch-map-icon-fixed">
+                        <circle
+                          cx={anchorX}
+                          cy={anchorY}
+                          r={scaledNodeSize / 2 + CLUMP_SIZE_BOOST_PX + 1.4}
+                          fill="var(--background)"
+                        />
+                        <circle
+                          cx={anchorX}
+                          cy={anchorY}
+                          r={scaledNodeSize / 2 + CLUMP_SIZE_BOOST_PX}
+                          fill={dotFill}
+                        />
+                        <text
+                          x={anchorX}
+                          y={anchorY}
+                          textAnchor="middle"
+                          dominantBaseline="middle"
+                          fontSize={count >= 10 ? 6.5 : 8}
+                          fill="#fafaf9"
+                          fontWeight={600}
+                        >
+                          {clumpCountLabel(count)}
+                        </text>
+                      </g>
+                    );
+                  })}
+                </g>
+              );
+            })}
+          </g>
+
+          {/* Main commit node overlay so branch connectors never render over main clumps. */}
+          <g style={{ opacity: mainTimelineOpacity, transition: 'opacity 0.15s', pointerEvents: 'none' }}>
+            {(() => {
+              const entries: MarkerEntry<DirectCommit>[] = sortedDirectCommits.map((commit) => {
+                const timeCoordX = directXByFullSha.get(commit.fullSha) ?? timeToX(commit.date);
+                const markerPoint = projectPoint(mainX, timeCoordToY(timeCoordX));
+                return { x: markerPoint.x, y: markerPoint.y, item: commit };
+              });
+              const mainInitialCommitAnchor = entries.length > 0
+                ? [{ x: entries[0].x, y: entries[0].y }]
+                : [];
+              const mainEndCommitAnchor = entries.length > 0
+                ? [{ x: entries[entries.length - 1].x, y: entries[entries.length - 1].y }]
+                : [];
+              const mainStructuralCommitAnchors = [...mainClumpAnchors];
+              const mainSecondaryCommitAnchors = [
+                ...mainInitialCommitAnchor,
+                ...mainEndCommitAnchor,
+              ];
+              const mainDirectClumpAnchors = [
+                ...mainStructuralCommitAnchors,
+                ...mainSecondaryCommitAnchors,
+              ];
+              const structuralMainEntryIndices = selectEntryIndicesForAnchors(entries, mainStructuralCommitAnchors);
+              const secondaryMainEntryIndices = selectEntryIndicesForAnchors(entries, mainSecondaryCommitAnchors);
+              const structuralMainEntryShas = new Set(
+                Array.from(structuralMainEntryIndices)
+                  .map((idx) => entries[idx]?.item.fullSha)
+                  .filter((sha): sha is string => typeof sha === 'string')
+              );
+              const secondaryMainEntryShas = new Set(
+                Array.from(secondaryMainEntryIndices)
+                  .map((idx) => entries[idx]?.item.fullSha)
+                  .filter((sha): sha is string => typeof sha === 'string')
+              );
+              const firstMainCommitSha = entries[0]?.item.fullSha;
+              const clusters = clusterDirectCommitsWithAnchors(
+                entries,
+                clumpDistanceWorld,
+                protectedMainForkShas,
+                mainDirectClumpAnchors,
+                clumpMaxEntries,
+                firstMainCommitSha
+                  ? (entry) =>
+                    (entry.item.fullSha === firstMainCommitSha ? 1.25 : 0) +
+                    (secondaryMainEntryShas.has(entry.item.fullSha) ? CLUMP_SECONDARY_PRIORITY : 0) +
+                    (structuralMainEntryShas.has(entry.item.fullSha) ? CLUMP_STRUCTURAL_PRIORITY : 0)
+                  : undefined
+              );
+
+              return clusters.map((cluster) => {
+                const count = cluster.entries.length;
+                const first = cluster.entries[0].item;
+                const last = cluster.entries[count - 1].item;
+                const clusterKey = `direct-clump-${first.fullSha}-${last.fullSha}`;
+                const memberKeys = cluster.entries.map((entry) => `direct:${entry.item.fullSha}`);
+                const animatedAnchor = resolveAnimatedClumpAnchor(
+                  clusterKey,
+                  { x: cluster.x, y: cluster.y },
+                  memberKeys
+                );
+                const anchorX = animatedAnchor.x;
+                const anchorY = animatedAnchor.y;
+
+                if (count === 1) {
+                  return (
+                    <g key={`main-direct-overlay-${clusterKey}`} className="branch-map-icon-fixed">
+                      <circle
+                        cx={anchorX}
+                        cy={anchorY}
+                        r={scaledNodeSize / 2 + 1.4}
+                        fill="var(--background)"
+                      />
+                      <circle
+                        cx={anchorX}
+                        cy={anchorY}
+                        r={scaledNodeSize / 2}
+                        fill="#57534e"
+                      />
+                    </g>
+                  );
+                }
+
+                return (
+                  <g key={`main-direct-overlay-${clusterKey}`} className="branch-map-icon-fixed">
+                    <circle
+                      cx={anchorX}
+                      cy={anchorY}
+                      r={scaledNodeSize / 2 + CLUMP_SIZE_BOOST_PX + 1.4}
+                      fill="var(--background)"
+                    />
+                    <circle
+                      cx={anchorX}
+                      cy={anchorY}
+                      r={scaledNodeSize / 2 + CLUMP_SIZE_BOOST_PX}
+                      fill="#57534e"
+                    />
+                    <text
+                      x={anchorX}
+                      y={anchorY}
+                      textAnchor="middle"
+                      dominantBaseline="middle"
+                      fontSize={count >= 10 ? 6.5 : 8}
+                      fill="#fafaf9"
+                      fontWeight={600}
+                    >
+                      {clumpCountLabel(count)}
+                    </text>
+                  </g>
+                );
+              });
+            })()}
           </g>
 
           {/* Branch commit tooltip is rendered as an HTML overlay outside the zoomed camera. */}
