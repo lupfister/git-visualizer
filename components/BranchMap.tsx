@@ -1787,6 +1787,7 @@ export default function BranchMap({
   const drawPathArcClass = animationsLocked ? undefined : 'draw-path-arc';
   const fadeInInfoClass = animationsLocked ? undefined : 'fade-in-info';
   const fadeInPillClass = animationsLocked ? undefined : 'fade-in-pill';
+  const mainTimelineOpacity = hoveredPR !== null || hoveredBranch !== null ? 0.2 : 1;
 
   return (
     <div className="h-full">
@@ -1839,7 +1840,7 @@ export default function BranchMap({
           >
 
           {/* ── Main timeline + merge nodes ── */}
-          <g style={{ opacity: hoveredPR !== null || hoveredBranch !== null ? 0.2 : 1, transition: 'opacity 0.15s' }}>
+          <g style={{ opacity: mainTimelineOpacity, transition: 'opacity 0.15s' }}>
             {/* Use <path> not <line>: pathLength on <line> is SVG 2 only and unreliable in WKWebView */}
             <path
               d={`M ${pathCoord(mainX, mainStartY)} L ${pathCoord(mainX, mainActiveEndY)}`}
@@ -2046,25 +2047,27 @@ export default function BranchMap({
                   );
                   const anchorX = animatedAnchor.x;
                   const anchorY = animatedAnchor.y;
-                  const markerSize = worldPx(
-                    count > 1 ? scaledNodeSize + CLUMP_SIZE_BOOST_PX * 2 : scaledNodeSize
-                  );
+                  const markerSize =
+                    count > 1 ? scaledNodeSize + CLUMP_SIZE_BOOST_PX * 2 : scaledNodeSize;
                   const markerPath = promptMarkerPath(anchorX, anchorY, markerSize);
-                  const hitSize = worldPx(scaledHoverHitSize);
-                  const markerStrokeWidth = worldPx(1.2);
+                  const hitSize = scaledHoverHitSize;
+                  const markerStrokeWidth = 1.2;
+                  const label = count > 1 ? clumpCountLabel(count) : '';
+                  const labelFontSize = count >= 10 ? 6.2 : 8;
 
                   if (count === 1) {
                     const marker = lastEntry.item.marker;
                     return (
                       <g key={clusterKey}>
-                        <path
-                          d={markerPath}
-                          fill="var(--background)"
-                          stroke="#14b8a6"
-                          strokeWidth={markerStrokeWidth}
-                          strokeLinejoin="round"
-                          style={{ pointerEvents: 'none' }}
-                        />
+                        <g className="branch-map-icon-fixed" style={{ pointerEvents: 'none' }}>
+                          <path
+                            d={markerPath}
+                            fill="var(--background)"
+                            stroke="#14b8a6"
+                            strokeWidth={markerStrokeWidth}
+                            strokeLinejoin="round"
+                          />
+                        </g>
                         <rect
                           x={anchorX - hitSize / 2}
                           y={anchorY - hitSize / 2}
@@ -2095,32 +2098,31 @@ export default function BranchMap({
                     ? fmtTooltipDate(lastDate)
                     : `${fmtTooltipDate(firstDate)} → ${fmtTooltipDate(lastDate)}`;
                   const latestPrompt = truncatePrompt(lastEntry.item.marker.prompt, 40);
-
                   return (
                     <g key={clusterKey}>
-                      <path
-                        d={markerPath}
-                        fill="var(--background)"
-                        stroke="#14b8a6"
-                        strokeWidth={markerStrokeWidth}
-                        strokeLinejoin="round"
-                        style={{ pointerEvents: 'none' }}
-                      />
-                      <text
-                        x={anchorX}
-                        y={anchorY}
-                        textAnchor="middle"
-                        dominantBaseline="middle"
-                        fontSize={worldPx(count >= 10 ? 6.2 : 8)}
-                        fill="#14b8a6"
-                        fontWeight={700}
-                        style={{
-                          pointerEvents: 'none',
-                          fontVariantNumeric: 'tabular-nums',
-                        }}
-                      >
-                        {clumpCountLabel(count)}
-                      </text>
+                      <g className="branch-map-icon-fixed" style={{ pointerEvents: 'none' }}>
+                        <path
+                          d={markerPath}
+                          fill="var(--background)"
+                          stroke="#14b8a6"
+                          strokeWidth={markerStrokeWidth}
+                          strokeLinejoin="round"
+                        />
+                        <text
+                          x={anchorX}
+                          y={anchorY}
+                          textAnchor="middle"
+                          dominantBaseline="middle"
+                          fontSize={labelFontSize}
+                          fill="#14b8a6"
+                          fontWeight={700}
+                          style={{
+                            fontVariantNumeric: 'tabular-nums',
+                          }}
+                        >
+                          {label}
+                        </text>
+                      </g>
                       <rect
                         x={anchorX - hitSize / 2}
                         y={anchorY - hitSize / 2}
@@ -2645,6 +2647,8 @@ export default function BranchMap({
               const clockPoint = projectPoint(lanePosX + approxNameW + 10, forkY);
               const labelsVisible = zoom > 1 || isHovered;
               const nameOpacity = labelsVisible ? (isHorizontal ? 1 : (isHovered ? 1 : 0)) : 0;
+              const branchGroupOpacity =
+                isFocusedError ? 1 : hoveredBranch !== null && !isHovered ? 0.12 : hasSelection && !isSelected ? 0.5 : 1;
 
               return (
                 <g
@@ -2654,7 +2658,7 @@ export default function BranchMap({
                   onDoubleClick={() => onBranchClick?.(b)}
                   onMouseEnter={() => setHoveredBranch(b.name)}
                   onMouseLeave={() => setHoveredBranch(null)}
-                  style={{ opacity: isFocusedError ? 1 : hoveredBranch !== null && !isHovered ? 0.12 : hasSelection && !isSelected ? 0.5 : 1, transition: 'opacity 0.15s' }}
+                  style={{ opacity: branchGroupOpacity, transition: 'opacity 0.15s' }}
                 >
                   {/* Invisible wide hit target to make hover/click easier on thin SVG strokes */}
                   <path
@@ -2858,25 +2862,27 @@ export default function BranchMap({
                       );
                       const anchorX = animatedAnchor.x;
                       const anchorY = animatedAnchor.y;
-                      const markerSize = worldPx(
-                        count > 1 ? scaledNodeSize + CLUMP_SIZE_BOOST_PX * 2 : scaledNodeSize
-                      );
+                      const markerSize =
+                        count > 1 ? scaledNodeSize + CLUMP_SIZE_BOOST_PX * 2 : scaledNodeSize;
                       const markerPath = promptMarkerPath(anchorX, anchorY, markerSize);
-                      const hitSize = worldPx(scaledHoverHitSize);
-                      const markerStrokeWidth = worldPx(1.2);
+                      const hitSize = scaledHoverHitSize;
+                      const markerStrokeWidth = 1.2;
+                      const label = count > 1 ? clumpCountLabel(count) : '';
+                      const labelFontSize = count >= 10 ? 6.2 : 8;
 
                       if (count === 1) {
                         const marker = lastEntry.item.marker;
                         return (
                           <g key={clusterKey}>
-                            <path
-                              d={markerPath}
-                              fill="var(--background)"
-                              stroke="#14b8a6"
-                              strokeWidth={markerStrokeWidth}
-                              strokeLinejoin="round"
-                              style={{ pointerEvents: 'none' }}
-                            />
+                            <g className="branch-map-icon-fixed" style={{ pointerEvents: 'none' }}>
+                              <path
+                                d={markerPath}
+                                fill="var(--background)"
+                                stroke="#14b8a6"
+                                strokeWidth={markerStrokeWidth}
+                                strokeLinejoin="round"
+                              />
+                            </g>
                             <rect
                               x={anchorX - hitSize / 2}
                               y={anchorY - hitSize / 2}
@@ -2907,32 +2913,31 @@ export default function BranchMap({
                         ? fmtTooltipDate(lastDate)
                         : `${fmtTooltipDate(firstDate)} → ${fmtTooltipDate(lastDate)}`;
                       const latestPrompt = truncatePrompt(lastEntry.item.marker.prompt, 40);
-
                       return (
                         <g key={clusterKey}>
-                          <path
-                            d={markerPath}
-                            fill="var(--background)"
-                            stroke="#14b8a6"
-                            strokeWidth={markerStrokeWidth}
-                            strokeLinejoin="round"
-                            style={{ pointerEvents: 'none' }}
-                          />
-                          <text
-                            x={anchorX}
-                            y={anchorY}
-                            textAnchor="middle"
-                            dominantBaseline="middle"
-                            fontSize={worldPx(count >= 10 ? 6.2 : 8)}
-                            fill="#14b8a6"
-                            fontWeight={700}
-                            style={{
-                              pointerEvents: 'none',
-                              fontVariantNumeric: 'tabular-nums',
-                            }}
-                          >
-                            {clumpCountLabel(count)}
-                          </text>
+                          <g className="branch-map-icon-fixed" style={{ pointerEvents: 'none' }}>
+                            <path
+                              d={markerPath}
+                              fill="var(--background)"
+                              stroke="#14b8a6"
+                              strokeWidth={markerStrokeWidth}
+                              strokeLinejoin="round"
+                            />
+                            <text
+                              x={anchorX}
+                              y={anchorY}
+                              textAnchor="middle"
+                              dominantBaseline="middle"
+                              fontSize={labelFontSize}
+                              fill="#14b8a6"
+                              fontWeight={700}
+                              style={{
+                                fontVariantNumeric: 'tabular-nums',
+                              }}
+                            >
+                              {label}
+                            </text>
+                          </g>
                           <rect
                             x={anchorX - hitSize / 2}
                             y={anchorY - hitSize / 2}
