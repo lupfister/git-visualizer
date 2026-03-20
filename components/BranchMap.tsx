@@ -160,6 +160,11 @@ function truncatePrompt(text: string, max = 90): string {
   return `${text.slice(0, max)}…`;
 }
 
+const COMMIT_TOOLTIP_PREVIEW_MAX = 120;
+const COMMIT_CLUSTER_PREVIEW_MAX = 90;
+const PROMPT_TOOLTIP_PREVIEW_MAX = 120;
+const PROMPT_CLUSTER_PREVIEW_MAX = 90;
+
 function sampleEvenlyByOrder<T>(items: T[], maxCount: number): T[] {
   if (items.length <= maxCount) return [...items];
   if (maxCount <= 1) return [items[items.length - 1]];
@@ -1771,11 +1776,12 @@ export default function BranchMap({
     isHorizontal,
   ]);
 
-  const scaledNodeSize = NODE_SIZE;
-  const scaledHoverHitSize = 20;
-  const scaledBranchHitStrokeWidth = BRANCH_HIT_STROKE_WIDTH;
   const worldUnitsPerScreenPx = 1 / Math.max(renderCameraScale.x, 0.0001);
   const worldPx = (px: number) => px * worldUnitsPerScreenPx;
+  const scaledNodeSize = NODE_SIZE;
+  // Keep interaction hit areas consistent in screen pixels across zoom levels.
+  const scaledHoverHitSize = worldPx(20);
+  const scaledBranchHitStrokeWidth = worldPx(BRANCH_HIT_STROKE_WIDTH);
   const clumpProgress = clumpProgressForZoom(animatedClumpZoom);
   const clumpDistanceWorld =
     worldPx(CLUMP_TOUCH_DISTANCE_PX) +
@@ -1947,7 +1953,7 @@ export default function BranchMap({
 
                   if (count === 1) {
                     const c = last;
-                    const label = c.message.length > 38 ? c.message.slice(0, 38) + '…' : c.message;
+                    const label = truncatePrompt(c.message, COMMIT_TOOLTIP_PREVIEW_MAX);
                     return (
                       <circle
                         key={clusterKey}
@@ -1963,7 +1969,7 @@ export default function BranchMap({
                           setTooltip({
                             x: anchorX,
                             y: anchorY,
-                            lines: [c.sha, label, `@${c.author} · ${fmtTooltipDate(c.date)}`],
+                            lines: [`Commit ${c.sha}`, label, `@${c.author} · ${fmtTooltipDate(c.date)}`],
                             avatarFallback: c.author?.charAt(0).toUpperCase() || '?',
                           })
                         }
@@ -1977,6 +1983,9 @@ export default function BranchMap({
                   const rangeLine = firstTime === lastTime
                     ? fmtTooltipDate(last.date)
                     : `${fmtTooltipDate(first.date)} → ${fmtTooltipDate(last.date)}`;
+                  const latestCommitMessage = last.message
+                    ? truncatePrompt(last.message, COMMIT_CLUSTER_PREVIEW_MAX)
+                    : 'on main';
 
                   return (
                     <g key={clusterKey} className="branch-map-icon-fixed">
@@ -1992,7 +2001,7 @@ export default function BranchMap({
                           setTooltip({
                             x: anchorX,
                             y: anchorY,
-                            lines: [`${count} commits`, 'main', rangeLine],
+                            lines: [`${count} commits`, latestCommitMessage, rangeLine],
                             avatarFallback: last.author?.charAt(0).toUpperCase() || '?',
                           })
                         }
@@ -2083,9 +2092,9 @@ export default function BranchMap({
                               x: anchorX,
                               y: anchorY,
                               lines: [
-                                truncatePrompt(marker.prompt, 52),
-                                marker.agent,
-                                fmtTooltipDate(marker.timestamp),
+                                'Prompt',
+                                truncatePrompt(marker.prompt, PROMPT_TOOLTIP_PREVIEW_MAX),
+                                `${marker.agent} · ${fmtTooltipDate(marker.timestamp)}`,
                               ],
                             })
                           }
@@ -2100,7 +2109,7 @@ export default function BranchMap({
                   const dateRangeLabel = new Date(firstDate).getTime() === new Date(lastDate).getTime()
                     ? fmtTooltipDate(lastDate)
                     : `${fmtTooltipDate(firstDate)} → ${fmtTooltipDate(lastDate)}`;
-                  const latestPrompt = truncatePrompt(lastEntry.item.marker.prompt, 40);
+                  const latestPrompt = truncatePrompt(lastEntry.item.marker.prompt, PROMPT_CLUSTER_PREVIEW_MAX);
                   return (
                     <g key={clusterKey}>
                       <g className="branch-map-icon-fixed" style={{ pointerEvents: 'none' }}>
@@ -2851,7 +2860,9 @@ export default function BranchMap({
                                 y: anchorY,
                                 lines: [
                                   isBranchCreatedEvent ? 'Branch created' : `Commit ${tooltipSha}`,
-                                  tooltipMessage ? tooltipMessage : `@${tooltipAuthor}`,
+                                  tooltipMessage
+                                    ? truncatePrompt(tooltipMessage, COMMIT_TOOLTIP_PREVIEW_MAX)
+                                    : `@${tooltipAuthor}`,
                                   `@${tooltipAuthor} · ${fmtTooltipDate(tooltipDate)}`,
                                 ],
                                 avatarUrl: showBranchAvatar ? b.lastCommitAuthorAvatar : undefined,
@@ -2871,6 +2882,9 @@ export default function BranchMap({
                         ? fmtTooltipDate(lastDate)
                         : `${fmtTooltipDate(firstDate)} → ${fmtTooltipDate(lastDate)}`;
                       const latestAuthor = lastRealEntry.item.commit?.author ?? b.lastCommitAuthor;
+                      const latestCommitMessage = lastRealEntry.item.commit?.message
+                        ? truncatePrompt(lastRealEntry.item.commit.message, COMMIT_CLUSTER_PREVIEW_MAX)
+                        : `on ${b.name}`;
 
                       return (
                         <g key={clusterKey} className="branch-map-icon-fixed">
@@ -2886,7 +2900,7 @@ export default function BranchMap({
                               setTooltip({
                                 x: anchorX,
                                 y: anchorY,
-                                lines: [`${count} commits`, `on ${b.name}`, dateRangeLabel],
+                                lines: [`${count} commits`, latestCommitMessage, dateRangeLabel],
                                 avatarFallback: latestAuthor?.charAt(0).toUpperCase() || '?',
                               })
                             }
@@ -2939,9 +2953,9 @@ export default function BranchMap({
                                   x: anchorX,
                                   y: anchorY,
                                   lines: [
-                                    truncatePrompt(marker.prompt, 52),
-                                    marker.agent,
-                                    fmtTooltipDate(marker.timestamp),
+                                    'Prompt',
+                                    truncatePrompt(marker.prompt, PROMPT_TOOLTIP_PREVIEW_MAX),
+                                    `${marker.agent} · ${fmtTooltipDate(marker.timestamp)}`,
                                   ],
                                 })
                               }
@@ -2956,7 +2970,7 @@ export default function BranchMap({
                       const dateRangeLabel = new Date(firstDate).getTime() === new Date(lastDate).getTime()
                         ? fmtTooltipDate(lastDate)
                         : `${fmtTooltipDate(firstDate)} → ${fmtTooltipDate(lastDate)}`;
-                      const latestPrompt = truncatePrompt(lastEntry.item.marker.prompt, 40);
+                      const latestPrompt = truncatePrompt(lastEntry.item.marker.prompt, PROMPT_CLUSTER_PREVIEW_MAX);
                       return (
                         <g key={`${clusterKey}-hit`}>
                           <rect
@@ -3561,12 +3575,24 @@ export default function BranchMap({
         {tooltip && (() => {
           const [title, subtitle, meta] = tooltip.lines;
           const avatarFallback = tooltip.avatarFallback || '?';
-          const tooltipW = 228;
-          const tooltipH = 74;
-          const anchorX = pan.x + graphOffsetX + tooltip.x * renderCameraScale.x;
-          const anchorY = pan.y + graphOffsetY + tooltip.y * renderCameraScale.y;
+          const tooltipW = Math.min(320, Math.max(240, viewportSize.width - 16));
+          // Use live camera refs to avoid tooltip drift when zoom/pan state is throttled.
+          const livePan = panRef.current;
+          const liveCameraScale = getCameraScale(zoomRef.current, isHorizontal);
+          const anchorX = livePan.x + graphOffsetX + tooltip.x * liveCameraScale.x;
+          const anchorY = livePan.y + graphOffsetY + tooltip.y * liveCameraScale.y;
+          const bodyContentW = Math.max(120, tooltipW - 56);
+          const estimatedCharsPerLine = Math.max(18, Math.floor(bodyContentW / 6));
+          const subtitleLines = subtitle ? Math.max(1, Math.ceil(subtitle.length / estimatedCharsPerLine)) : 0;
+          const metaLines = meta ? Math.max(1, Math.ceil(meta.length / estimatedCharsPerLine)) : 0;
+          const tooltipH = Math.min(220, Math.max(96, 46 + (subtitleLines + metaLines) * 16));
           const rawLeft = anchorX - tooltipW / 2;
-          const rawTop = anchorY - tooltipH - 10;
+          const gap = 10;
+          const rawTopAbove = anchorY - tooltipH - gap;
+          const rawTopBelow = anchorY + gap;
+          const canFitAbove = rawTopAbove >= 8;
+          const canFitBelow = rawTopBelow + tooltipH <= viewportSize.height - 8;
+          const rawTop = canFitAbove || !canFitBelow ? rawTopAbove : rawTopBelow;
           const maxLeft = Math.max(8, viewportSize.width - tooltipW - 8);
           const maxTop = Math.max(8, viewportSize.height - tooltipH - 8);
           const left = Math.min(maxLeft, Math.max(8, rawLeft));
@@ -3574,8 +3600,8 @@ export default function BranchMap({
 
           return (
             <div
-              className="absolute z-30 w-[228px] rounded-xl border border-border bg-card shadow-sm overflow-hidden pointer-events-none"
-              style={{ left, top }}
+              className="absolute z-30 rounded-xl border border-border bg-card shadow-sm overflow-hidden pointer-events-none"
+              style={{ left, top, width: tooltipW }}
             >
               <div className="h-6 px-3 flex items-center bg-muted/80 border-b border-border/70">
                 <p className="text-xs font-medium text-foreground truncate">{title}</p>
@@ -3595,8 +3621,12 @@ export default function BranchMap({
                     )}
                   </span>
                   <div className="min-w-0 space-y-1">
-                    {subtitle && <p className="text-xs text-foreground truncate">{subtitle}</p>}
-                    {meta && <p className="text-xs text-muted-foreground truncate">{meta}</p>}
+                    {subtitle && (
+                      <p className="text-xs text-foreground leading-4 whitespace-normal break-words">{subtitle}</p>
+                    )}
+                    {meta && (
+                      <p className="text-xs text-muted-foreground leading-4 whitespace-normal break-words">{meta}</p>
+                    )}
                   </div>
                 </div>
               </div>
