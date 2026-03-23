@@ -26,7 +26,6 @@ const TIME_SCALE_MIN = 0.5;
 const TIME_SCALE_MAX = 3;
 const TIME_SCALE_STEP = 0.05;
 const TIME_SCALE_DEFAULT = 0.5;
-const PROMPT_MARKER_MAX = 10;
 const LOCAL_UNPUSHED_GRAY = '#a8a29e';
 const CLUMP_DISTANCE_PX = 8;
 const CLUMP_TOUCH_DISTANCE_PX = NODE_SIZE;
@@ -164,20 +163,6 @@ const COMMIT_TOOLTIP_PREVIEW_MAX = 120;
 const COMMIT_CLUSTER_PREVIEW_MAX = 90;
 const PROMPT_TOOLTIP_PREVIEW_MAX = 120;
 const PROMPT_CLUSTER_PREVIEW_MAX = 90;
-
-function sampleEvenlyByOrder<T>(items: T[], maxCount: number): T[] {
-  if (items.length <= maxCount) return [...items];
-  if (maxCount <= 1) return [items[items.length - 1]];
-  const sampled: T[] = [];
-  let lastIndex = -1;
-  for (let i = 0; i < maxCount; i += 1) {
-    const idx = Math.round((i * (items.length - 1)) / (maxCount - 1));
-    if (idx === lastIndex) continue;
-    sampled.push(items[idx]);
-    lastIndex = idx;
-  }
-  return sampled;
-}
 
 function clusterMarkersByDistance<T>(
   entries: MarkerEntry<T>[],
@@ -2024,11 +2009,8 @@ export default function BranchMap({
                 });
               })()}
               {(() => {
-                const mainPromptMarkers = sampleEvenlyByOrder(
-                  [...(branchPromptMeta[defaultBranch]?.markers ?? [])]
-                    .sort((a, b) => new Date(a.timestamp).getTime() - new Date(b.timestamp).getTime()),
-                  PROMPT_MARKER_MAX
-                );
+                const mainPromptMarkers = [...(branchPromptMeta[defaultBranch]?.markers ?? [])]
+                  .sort((a, b) => new Date(a.timestamp).getTime() - new Date(b.timestamp).getTime());
                 const promptEntries: MarkerEntry<{ marker: typeof mainPromptMarkers[number]; index: number }>[] =
                   mainPromptMarkers.map((marker, markerIndex) => {
                     const markerPoint = projectPoint(
@@ -2553,11 +2535,8 @@ export default function BranchMap({
               const promptMarkersRaw = branchPromptMeta[b.name]?.markers ?? [];
               const minPromptX = minCommitTimeX;
               const maxPromptX = maxCommitTimeX;
-              const promptSeeds = sampleEvenlyByOrder(
-                [...promptMarkersRaw]
-                  .sort((a, b) => new Date(a.timestamp).getTime() - new Date(b.timestamp).getTime()),
-                PROMPT_MARKER_MAX
-              );
+              const promptSeeds = [...promptMarkersRaw]
+                .sort((a, b) => new Date(a.timestamp).getTime() - new Date(b.timestamp).getTime());
               const promptMarkers = promptSeeds.map((marker) => {
                 const rawX = timeToX(marker.timestamp);
                 const x = Math.max(minPromptX, Math.min(maxPromptX, rawX));
@@ -3217,11 +3196,8 @@ export default function BranchMap({
               });
 
               const promptMarkersRaw = branchPromptMeta[b.name]?.markers ?? [];
-              const promptSeeds = sampleEvenlyByOrder(
-                [...promptMarkersRaw]
-                  .sort((a, b) => new Date(a.timestamp).getTime() - new Date(b.timestamp).getTime()),
-                PROMPT_MARKER_MAX
-              );
+              const promptSeeds = [...promptMarkersRaw]
+                .sort((a, b) => new Date(a.timestamp).getTime() - new Date(b.timestamp).getTime());
               const promptMarkers = promptSeeds.map((marker) => {
                 const rawX = timeToX(marker.timestamp);
                 const x = Math.max(minCommitTimeX, Math.min(maxCommitTimeX, rawX));

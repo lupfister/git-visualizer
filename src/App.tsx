@@ -7,21 +7,6 @@ import FolderPickerModal from './FolderPickerModal';
 import type { Branch, BranchCommitPreview, BranchPromptMeta, BranchPromptMarker, CheckedOutRef, Commit, DirectCommit, GitHubAuthStatus, GitHubInfo, MergeNode, MergedPR, OpenPR } from '../types';
 
 type View = 'landing' | 'map' | 'diff';
-const PROMPT_MARKER_META_MAX = 80;
-
-function sampleEvenlyByTime<T>(items: T[], maxCount: number): T[] {
-  if (items.length <= maxCount) return [...items];
-  if (maxCount <= 1) return [items[items.length - 1]];
-  const sampled: T[] = [];
-  let lastIndex = -1;
-  for (let i = 0; i < maxCount; i += 1) {
-    const idx = Math.round((i * (items.length - 1)) / (maxCount - 1));
-    if (idx === lastIndex) continue;
-    sampled.push(items[idx]);
-    lastIndex = idx;
-  }
-  return sampled;
-}
 
 function App() {
   const [repoPath, setRepoPath] = useState<string | null>(null);
@@ -350,10 +335,7 @@ function App() {
             const latest = prompts[0];
             const promptsAsc = [...prompts]
               .sort((a, b) => new Date(a.timestamp).getTime() - new Date(b.timestamp).getTime());
-            const markers: BranchPromptMarker[] = sampleEvenlyByTime(
-              promptsAsc,
-              PROMPT_MARKER_META_MAX
-            )
+            const markers: BranchPromptMarker[] = promptsAsc
               .map(p => ({
                 id: p.id,
                 agent: p.agent,
@@ -406,10 +388,7 @@ function App() {
           const latest = prompts[0];
           const promptsAsc = [...prompts]
             .sort((a, b) => new Date(a.timestamp).getTime() - new Date(b.timestamp).getTime());
-          const markers: BranchPromptMarker[] = sampleEvenlyByTime(
-            promptsAsc,
-            PROMPT_MARKER_META_MAX
-          )
+          const markers: BranchPromptMarker[] = promptsAsc
             .map((p) => ({
               id: p.id,
               agent: p.agent,
