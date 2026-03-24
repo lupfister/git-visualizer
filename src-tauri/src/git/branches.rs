@@ -26,6 +26,8 @@ pub struct Branch {
 pub struct CheckedOutRef {
     pub branch_name: Option<String>,
     pub head_sha: String,
+    pub parent_sha: Option<String>,
+    pub has_uncommitted_changes: bool,
 }
 
 /// Get the default branch name (usually main or master)
@@ -63,9 +65,23 @@ pub fn get_checked_out_ref(repo: &Path) -> Result<CheckedOutRef, GitError> {
     let head_raw = cli::run(repo, &["rev-parse", "HEAD"])?;
     let head_sha = head_raw.trim().to_string();
 
+    let parent_sha = cli::run(repo, &["rev-list", "--parents", "-n", "1", "HEAD"])
+        .ok()
+        .and_then(|output| {
+            let mut parts = output.split_whitespace();
+            let _head = parts.next()?;
+            parts.next().map(|sha| sha.to_string())
+        });
+
+    let has_uncommitted_changes = cli::run(repo, &["status", "--porcelain", "--untracked-files=normal"])
+        .map(|output| !output.trim().is_empty())
+        .unwrap_or(false);
+
     Ok(CheckedOutRef {
         branch_name,
         head_sha,
+        parent_sha,
+        has_uncommitted_changes,
     })
 }
 

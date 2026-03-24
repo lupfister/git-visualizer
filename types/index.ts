@@ -23,6 +23,8 @@ export interface Branch {
 export interface CheckedOutRef {
   branchName: string | null;
   headSha: string;
+  parentSha?: string | null;
+  hasUncommittedChanges: boolean;
 }
 
 export interface Commit {

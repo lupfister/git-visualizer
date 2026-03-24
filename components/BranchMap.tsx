@@ -39,6 +39,8 @@ const CLUMP_MAX_ENTRIES_TOUCH = 2;
 const CLUMP_MAX_ENTRIES_FULL = CLUMP_COUNT_MAX;
 const CLUMP_STRUCTURAL_PRIORITY = 5;
 const CLUMP_SECONDARY_PRIORITY = 1.5;
+const CHECKED_OUT_AHEAD_OFFSET_WORLD = 120;
+const DETACHED_WORK_OFFSET_WORLD = 22;
 
 type TooltipData = {
   x: number;
@@ -1617,7 +1619,41 @@ export default function BranchMap({
 
   const checkedOutBranchName = checkedOutRef?.branchName ?? null;
   const checkedOutHeadSha = checkedOutRef?.headSha ?? null;
+  const checkedOutParentSha = checkedOutRef?.parentSha ?? null;
+  const checkedOutHasUncommittedChanges = checkedOutRef?.hasUncommittedChanges ?? false;
+  const checkedOutIsDetached = !checkedOutBranchName;
+
+  function checkedOutPointForSha(sha: string): { x: number; y: number } | null {
+    const directX = directXByFullSha.get(sha);
+    if (typeof directX === 'number') {
+      return { x: mainX, y: timeCoordToY(directX) };
+    }
+
+    const mergeX = nodeXByFullSha.get(sha);
+    if (typeof mergeX === 'number') {
+      return { x: mainX, y: timeCoordToY(mergeX) };
+    }
+
+    const branchBySha = activeBranches.find((b) => b.headSha === sha);
+    if (branchBySha) {
+      return {
+        x: laneXByBranch.get(branchBySha.name) ?? mainX,
+        y: timeCoordToY(branchTipX(branchBySha)),
+      };
+    }
+
+    return null;
+  }
+
   const checkedOutIndicatorLocal = (() => {
+    if (checkedOutBranchName === defaultBranch) {
+      if (checkedOutHeadSha) {
+        const headPoint = checkedOutPointForSha(checkedOutHeadSha);
+        if (headPoint) return headPoint;
+      }
+      return { x: mainX, y: mainActiveEndY };
+    }
+
     if (checkedOutBranchName && checkedOutBranchName !== defaultBranch) {
       const branch = activeBranches.find((b) => b.name === checkedOutBranchName);
       if (branch) {
@@ -1629,33 +1665,29 @@ export default function BranchMap({
     }
 
     if (checkedOutHeadSha) {
-      const directX = directXByFullSha.get(checkedOutHeadSha);
-      if (typeof directX === 'number') {
-        return { x: mainX, y: timeCoordToY(directX) };
-      }
-      const mergeX = nodeXByFullSha.get(checkedOutHeadSha);
-      if (typeof mergeX === 'number') {
-        return { x: mainX, y: timeCoordToY(mergeX) };
-      }
-      const branchBySha = activeBranches.find((b) => b.headSha === checkedOutHeadSha);
-      if (branchBySha) {
-        return {
-          x: laneXByBranch.get(branchBySha.name) ?? mainX,
-          y: timeCoordToY(branchTipX(branchBySha)),
-        };
-      }
-    }
+      const headPoint = checkedOutPointForSha(checkedOutHeadSha);
+      if (headPoint) return headPoint;
 
-    if (checkedOutBranchName === defaultBranch) {
-      return { x: mainX, y: mainEndY };
+      if (checkedOutIsDetached && checkedOutParentSha) {
+        const parentPoint = checkedOutPointForSha(checkedOutParentSha);
+        if (parentPoint) return parentPoint;
+      }
     }
 
     return null;
   })();
-  const checkedOutAnchor = checkedOutIndicatorLocal
+
+  const checkedOutDisplayIndicatorLocal = checkedOutIndicatorLocal
     ? {
-      x: projectPoint(checkedOutIndicatorLocal.x, checkedOutIndicatorLocal.y).x,
-      y: projectPoint(checkedOutIndicatorLocal.x, checkedOutIndicatorLocal.y).y,
+      x: checkedOutIndicatorLocal.x + (checkedOutHasUncommittedChanges && checkedOutIsDetached ? DETACHED_WORK_OFFSET_WORLD : 0),
+      y: checkedOutIndicatorLocal.y + (checkedOutHasUncommittedChanges ? -CHECKED_OUT_AHEAD_OFFSET_WORLD : 0),
+    }
+    : null;
+  const checkedOutAnchorTarget = checkedOutDisplayIndicatorLocal ?? checkedOutIndicatorLocal;
+  const checkedOutAnchor = checkedOutAnchorTarget
+    ? {
+      x: projectPoint(checkedOutAnchorTarget.x, checkedOutAnchorTarget.y).x,
+      y: projectPoint(checkedOutAnchorTarget.x, checkedOutAnchorTarget.y).y,
     }
     : null;
 
@@ -3351,6 +3383,27 @@ export default function BranchMap({
             })}
           </g>
 
+          {/* Checked-out connector line (render below node overlays). */}
+          {checkedOutHasUncommittedChanges && checkedOutDisplayIndicatorLocal && checkedOutIndicatorLocal && (() => {
+            const markerPoint = projectPoint(checkedOutDisplayIndicatorLocal.x, checkedOutDisplayIndicatorLocal.y);
+            const anchorPoint = projectPoint(checkedOutIndicatorLocal.x, checkedOutIndicatorLocal.y);
+            return (
+              <g style={{ pointerEvents: 'none' }}>
+                <line
+                  x1={anchorPoint.x}
+                  y1={anchorPoint.y}
+                  x2={markerPoint.x}
+                  y2={markerPoint.y}
+                  stroke="#2563eb"
+                  strokeWidth={1.5}
+                  strokeLinecap="round"
+                  vectorEffect="non-scaling-stroke"
+                  opacity={0.9}
+                />
+              </g>
+            );
+          })()}
+
           {/* Main commit node overlay so branch connectors never render over main clumps. */}
           <g style={{ opacity: mainTimelineOpacity, transition: 'opacity 0.15s', pointerEvents: 'none' }}>
             {(() => {
@@ -3521,25 +3574,25 @@ export default function BranchMap({
           })()}
 
           {/* Checked-out commit marker */}
-          {checkedOutIndicatorLocal && (() => {
-            const markerPoint = projectPoint(checkedOutIndicatorLocal.x, checkedOutIndicatorLocal.y);
+          {checkedOutDisplayIndicatorLocal && (() => {
+            const markerPoint = projectPoint(checkedOutDisplayIndicatorLocal.x, checkedOutDisplayIndicatorLocal.y);
             return (
               <g style={{ pointerEvents: 'none' }}>
-                <g className="branch-map-icon-fixed">
-                    <circle
-                      className="checked-out-halo-pulse"
-                      cx={markerPoint.x}
-                      cy={markerPoint.y}
-                      r={12}
-                      fill="#93c5fd"
-                    />
-                    <circle
-                      cx={markerPoint.x}
-                      cy={markerPoint.y}
-                      r={7}
-                      fill="#2563eb"
-                    />
-                </g>
+                <circle
+                  className="branch-map-icon-fixed"
+                  cx={markerPoint.x}
+                  cy={markerPoint.y}
+                  r={12}
+                  fill="#93c5fd"
+                  opacity={0.35}
+                />
+                <circle
+                  className="branch-map-icon-fixed"
+                  cx={markerPoint.x}
+                  cy={markerPoint.y}
+                  r={7}
+                  fill="#2563eb"
+                />
               </g>
             );
           })()}
