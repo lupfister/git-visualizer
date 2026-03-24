@@ -2540,8 +2540,8 @@ fn get_anthropic_key() -> Option<String> {
 const TRAY_TOGGLE_ID: &str = "toggle-window";
 const TRAY_QUIT_ID: &str = "quit-app";
 const POPOVER_OFFSET_Y: i32 = 0;
-const POPOVER_WIDTH: f64 = 460.0;
-const POPOVER_HEIGHT: f64 = 620.0;
+const POPOVER_WIDTH: f64 = 240.0;
+const POPOVER_HEIGHT: f64 = 320.0;
 const POPOVER_FADE_OUT_MS: u64 = 85;
 const POPOVER_FADE_STEP_MS: u64 = 8;
 static MAIN_WINDOW_LOCKED_POS: OnceLock<Mutex<Option<(i32, i32)>>> = OnceLock::new();
