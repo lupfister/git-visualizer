@@ -1798,7 +1798,9 @@ export default function BranchMap({
   const scaledNodeSize = NODE_SIZE;
   // Keep interaction hit areas consistent in screen pixels across zoom levels.
   const scaledHoverHitSize = worldPx(20);
-  const scaledBranchHitStrokeWidth = worldPx(BRANCH_HIT_STROKE_WIDTH);
+  // Branch hover lines use vector-effect: non-scaling-stroke, so this should
+  // stay in screen px (not inverse-scaled by zoom) to avoid oversized hitboxes when zoomed out.
+  const branchHitStrokeWidth = BRANCH_HIT_STROKE_WIDTH;
   const clumpProgress = clumpProgressForZoom(animatedClumpZoom);
   const clumpDistanceWorld =
     worldPx(CLUMP_TOUCH_DISTANCE_PX) +
@@ -2688,7 +2690,7 @@ export default function BranchMap({
                     d={curvePath}
                     fill="none"
                     stroke="transparent"
-                    strokeWidth={scaledBranchHitStrokeWidth}
+                    strokeWidth={branchHitStrokeWidth}
                     style={{ pointerEvents: 'stroke' }}
                   />
                   <line
@@ -2698,7 +2700,7 @@ export default function BranchMap({
                     x2={projectPoint(lanePosX + AHEAD_LABEL_OFFSET_X + aheadLabelWidth + 10, tipY).x}
                     y2={projectPoint(lanePosX + AHEAD_LABEL_OFFSET_X + aheadLabelWidth + 10, tipY).y}
                     stroke="transparent"
-                    strokeWidth={scaledBranchHitStrokeWidth}
+                    strokeWidth={branchHitStrokeWidth}
                     style={{ pointerEvents: 'stroke' }}
                   />
 
