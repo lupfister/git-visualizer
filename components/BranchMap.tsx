@@ -1891,7 +1891,7 @@ export default function BranchMap({
             {/* Main label and ticks — fade in once the line is drawn */}
             <g className={fadeInInfoClass} style={{ '--delay': `${MAIN_DRAW_MS}ms` } as React.CSSProperties}>
               {(() => {
-                const labelPoint = projectPoint(mainX + worldPx(MAIN_LABEL_OFFSET_X), mainEndY + worldPx(4));
+                const labelPoint = projectPoint(mainX + MAIN_LABEL_OFFSET_X, mainEndY + 4);
                 return (
                   <text
                     className="branch-map-icon-fixed"
