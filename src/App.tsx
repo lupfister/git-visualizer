@@ -320,16 +320,16 @@ function App() {
                 date: c.date,
                 kind: 'commit',
               }));
-            const branchCreatedSha = branch.divergedFromSha?.slice(0, 7) ?? branch.headSha.slice(0, 7);
-            const branchCreationPreview: BranchCommitPreview = {
-              fullSha: `branch-created:${branch.name}:${branchCreatedAt}`,
-              sha: branchCreatedSha || 'created',
-              message: `Branch created: ${branch.name}`,
+            const fallbackHeadPreview: BranchCommitPreview = {
+              fullSha: branch.headSha,
+              sha: branch.headSha.slice(0, 7),
+              message: `HEAD of ${branch.name}`,
               author: branch.lastCommitAuthor || 'Unknown',
-              date: branchCreatedAt,
-              kind: 'branch-created',
+              date: branch.lastCommitDate,
+              kind: 'commit',
             };
-            const previews: BranchCommitPreview[] = [...commitPreviews, branchCreationPreview];
+            const previews: BranchCommitPreview[] =
+              commitPreviews.length > 0 ? commitPreviews : [fallbackHeadPreview];
             const uniqueCount = branch.commitsAhead > 0 ? commitPreviews.length : null;
 
             if (prompts.length === 0) {
@@ -358,19 +358,17 @@ function App() {
               uniqueCount,
             }] as const;
           } catch {
-            const branchCreatedAt = branch.createdDate ?? branch.divergedFromDate ?? branch.lastCommitDate;
-            const branchCreatedSha = branch.divergedFromSha?.slice(0, 7) ?? branch.headSha.slice(0, 7);
-            const branchCreationPreview: BranchCommitPreview = {
-              fullSha: `branch-created:${branch.name}:${branchCreatedAt}`,
-              sha: branchCreatedSha || 'created',
-              message: `Branch created: ${branch.name}`,
+            const fallbackHeadPreview: BranchCommitPreview = {
+              fullSha: branch.headSha,
+              sha: branch.headSha.slice(0, 7),
+              message: `HEAD of ${branch.name}`,
               author: branch.lastCommitAuthor || 'Unknown',
-              date: branchCreatedAt,
-              kind: 'branch-created',
+              date: branch.lastCommitDate,
+              kind: 'commit',
             };
             return [branch.name, {
               promptMeta: null,
-              previews: [branchCreationPreview],
+              previews: [fallbackHeadPreview],
               uniqueCount: branch.commitsAhead > 0 ? branch.commitsAhead : null,
             }] as const;
           }

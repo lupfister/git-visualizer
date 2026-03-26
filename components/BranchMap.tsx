@@ -1468,19 +1468,20 @@ export default function BranchMap({
 
     if (hasNonDefaultParent && b.parentBranch) {
       const parentBranch = branchByName.get(b.parentBranch);
+      const anchoredToParentHead =
+        parentBranch && b.divergedFromSha && b.divergedFromSha === parentBranch.headSha
+          ? branchTipX(parentBranch)
+          : null;
       const anchoredParentForkX =
-        branchCommitXForSha(b.parentBranch, b.divergedFromSha) ??
-        (
-          parentBranch && b.divergedFromSha && b.divergedFromSha === parentBranch.headSha
-            ? branchHeadCommitX(parentBranch)
-            : null
-        );
+        anchoredToParentHead ??
+        branchCommitXForSha(b.parentBranch, b.divergedFromSha);
       if (anchoredParentForkX != null) return anchoredParentForkX;
       const snappedParentForkX = snapToBranchCommitX(
         b.parentBranch,
         b.divergedFromDate ?? b.createdDate
       );
       if (snappedParentForkX != null) return snappedParentForkX;
+      if (parentBranch) return branchTipX(parentBranch);
     }
 
     // For stacked branches, fork should snap to the parent divergence commit
@@ -1724,22 +1725,26 @@ export default function BranchMap({
   const checkedOutHasUncommittedChanges = checkedOutRef?.hasUncommittedChanges ?? false;
   const checkedOutIsDetached = !checkedOutBranchName;
 
-  function checkedOutPointForSha(sha: string): { x: number; y: number } | null {
+  function checkedOutPointForSha(sha: string): { x: number; y: number; renderable: boolean } | null {
     const directX = directXByFullSha.get(sha);
     if (typeof directX === 'number') {
-      return { x: mainX, y: timeCoordToY(directX) };
+      return { x: mainX, y: timeCoordToY(directX), renderable: true };
     }
 
     const mergeX = nodeXByFullSha.get(sha);
     if (typeof mergeX === 'number') {
-      return { x: mainX, y: timeCoordToY(mergeX) };
+      return { x: mainX, y: timeCoordToY(mergeX), renderable: true };
     }
 
     const branchBySha = activeBranches.find((b) => b.headSha === sha);
     if (branchBySha) {
+      const hasVisibleHeadDot = branchAheadCount(branchBySha) > 0;
       return {
         x: laneXByBranch.get(branchBySha.name) ?? mainX,
-        y: timeCoordToY(branchTipX(branchBySha)),
+        y: hasVisibleHeadDot
+          ? timeCoordToY(branchTipX(branchBySha))
+          : timeCoordToY(branchHeadCommitX(branchBySha)),
+        renderable: hasVisibleHeadDot,
       };
     }
 
@@ -1750,7 +1755,7 @@ export default function BranchMap({
     if (checkedOutBranchName === defaultBranch) {
       if (checkedOutHeadSha) {
         const headPoint = checkedOutPointForSha(checkedOutHeadSha);
-        if (headPoint) return headPoint;
+        if (headPoint) return { x: headPoint.x, y: headPoint.y };
       }
       return { x: mainX, y: mainActiveEndY };
     }
@@ -1767,12 +1772,17 @@ export default function BranchMap({
 
     if (checkedOutHeadSha) {
       const headPoint = checkedOutPointForSha(checkedOutHeadSha);
-      if (headPoint) return headPoint;
+      if (headPoint && (!checkedOutIsDetached || headPoint.renderable || !checkedOutParentSha)) {
+        return { x: headPoint.x, y: headPoint.y };
+      }
 
       if (checkedOutIsDetached && checkedOutParentSha) {
         const parentPoint = checkedOutPointForSha(checkedOutParentSha);
-        if (parentPoint) return parentPoint;
+        if (parentPoint?.renderable) return { x: parentPoint.x, y: parentPoint.y };
+        if (parentPoint) return { x: parentPoint.x, y: parentPoint.y };
       }
+
+      if (headPoint) return { x: headPoint.x, y: headPoint.y };
     }
 
     return null;
@@ -2526,22 +2536,7 @@ export default function BranchMap({
           {/* ── Active branches ── */}
           <g style={{ opacity: hoveredPR !== null ? 0.2 : 1, transition: 'opacity 0.15s' }}>
             {activeBranches.map((b) => {
-              const rawForkTimeX = branchForkX(b);
-              const parentName = b.parentBranch;
-              const parentBranch =
-                parentName && parentName !== defaultBranch
-                  ? branchByName.get(parentName)
-                  : undefined;
-              const parentHeadTimeX = parentBranch ? branchHeadCommitX(parentBranch) : null;
-              const forksFromParentHead = !!(
-                parentBranch &&
-                b.divergedFromSha &&
-                b.divergedFromSha === parentBranch.headSha
-              );
-              const forkTimeX =
-                forksFromParentHead && parentHeadTimeX != null
-                  ? parentHeadTimeX
-                  : rawForkTimeX;
+              const forkTimeX = branchForkX(b);
               const forkY = timeCoordToY(forkTimeX);
               const lanePosX = laneX(b);
               const startX = branchStartX(b);
@@ -3280,22 +3275,7 @@ export default function BranchMap({
             style={{ opacity: hoveredPR !== null ? 0.2 : 1, transition: 'opacity 0.15s', pointerEvents: 'none' }}
           >
             {activeBranches.map((b) => {
-              const rawForkTimeX = branchForkX(b);
-              const parentName = b.parentBranch;
-              const parentBranch =
-                parentName && parentName !== defaultBranch
-                  ? branchByName.get(parentName)
-                  : undefined;
-              const parentHeadTimeX = parentBranch ? branchHeadCommitX(parentBranch) : null;
-              const forksFromParentHead = !!(
-                parentBranch &&
-                b.divergedFromSha &&
-                b.divergedFromSha === parentBranch.headSha
-              );
-              const forkTimeX =
-                forksFromParentHead && parentHeadTimeX != null
-                  ? parentHeadTimeX
-                  : rawForkTimeX;
+              const forkTimeX = branchForkX(b);
               const lanePosX = laneX(b);
               const mergeNodeForBranch = b.commitsAhead === 0
                 ? mergeNodeByMergedHeadSha.get(b.headSha)
