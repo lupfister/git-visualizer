@@ -27,6 +27,7 @@ interface Props {
   scrollRequest?: { branch: Branch; seq: number } | null;
   focusedErrorBranch?: Branch | null;
   checkedOutRef?: CheckedOutRef | null;
+  isPopoverWindow?: boolean;
 }
 
 export default function BranchMapView({
@@ -51,6 +52,7 @@ export default function BranchMapView({
   scrollRequest,
   focusedErrorBranch,
   checkedOutRef = null,
+  isPopoverWindow = false,
 }: Props) {
   // Determine active vs inactive error branches
   const openPRBranchNames = new Set(openPRs.map(p => p.branchName));
@@ -95,6 +97,7 @@ export default function BranchMapView({
             scrollRequest={scrollRequest}
             focusedErrorBranch={focusedErrorBranch}
             checkedOutRef={checkedOutRef}
+            isPopoverWindow={isPopoverWindow}
           />
         </div>
       ) : (

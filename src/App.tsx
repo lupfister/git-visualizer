@@ -34,8 +34,6 @@ function App() {
   // scrollRequest.seq increments on each click so the same branch re-triggers the effect
   const [scrollRequest, setScrollRequest] = useState<{ branch: Branch; seq: number } | null>(null);
   const [focusedErrorBranch, setFocusedErrorBranch] = useState<Branch | null>(null);
-  const [mapUiReady, setMapUiReady] = useState(false);
-  const hadMapDataRef = useRef(false);
   const [githubAvailable, setGithubAvailable] = useState(false);
   const [githubOwner, setGithubOwner] = useState<string | null>(null);
   const [githubRepo, setGithubRepo] = useState<string | null>(null);
@@ -219,19 +217,8 @@ function App() {
     (b) => !openPRBranchNames.has(b.name) && now - new Date(b.lastCommitDate).getTime() > ACTIVE_MS
   );
 
-  // Reveal map controls once timeline data is present.
-  const hasTimelineData =
-    branches.length > 0 || mergeNodes.length > 0 || directCommits.length > 0;
-  useEffect(() => {
-    if (!hasTimelineData || hadMapDataRef.current) return;
-    hadMapDataRef.current = true;
-    setMapUiReady(true);
-  }, [hasTimelineData]);
-
   // Reset when a new repo is loaded
   useEffect(() => {
-    hadMapDataRef.current = false;
-    setMapUiReady(false);
     setPrewarmedMainShots(null);
     prewarmedRef.current = false;
     setBranchPromptMeta({});
@@ -277,11 +264,9 @@ function App() {
                 ? branch.parentBranch
                 : defaultBranch;
             const mergeNode = mergeNodeByMergedHeadSha.get(branch.headSha);
-            const parentIsDefault =
-              !branch.parentBranch ||
-              branch.parentBranch === branch.name ||
-              branch.parentBranch === defaultBranch;
-            const shouldUseMergeRange = branch.commitsAhead === 0 && parentIsDefault;
+            // If this branch head appears on the merged side of a main-line merge commit,
+            // always use that merge-side range so commits are attributed once.
+            const shouldUseMergeRange = branch.commitsAhead === 0 && !!mergeNode?.fullSha;
             const mergeCommitSha = shouldUseMergeRange ? mergeNode?.fullSha : undefined;
             const commits = await invoke<Commit[]>('get_branch_commits', {
               repoPath,
@@ -655,7 +640,7 @@ function App() {
               </h1>
               <div className="justify-self-end" aria-hidden="true" />
             </div>
-            <div className="mt-3 flex flex-wrap items-center gap-2">
+            <div className="mt-3 min-h-8 flex flex-wrap items-center gap-2 content-start">
               {selectedBranch && (
                 <div className="flex items-center gap-2">
                   <span className="text-sm text-cyan-400 border border-cyan-800 rounded-full px-3 py-1 bg-cyan-950/50">
@@ -724,20 +709,6 @@ function App() {
                 >
                   {commitSwitchFeedback.message}
                 </span>
-              )}
-              {activeErrorBranches.length > 0 && (
-                <button
-                  onClick={() => { if (showErrorPanel) { closeErrorPanel(); } else { setShowErrorPanel(true); } }}
-                  style={{ opacity: mapUiReady ? 1 : 0, transition: 'opacity 0.4s ease, background-color 0.2s ease, border-color 0.2s ease' }}
-                  className={`flex items-center gap-1.5 text-xs border rounded-full px-3 py-1 ${
-                    showErrorPanel
-                      ? 'text-destructive border-destructive/40 bg-destructive/10'
-                      : 'text-destructive border-destructive/20 bg-destructive/5 hover:bg-destructive/10'
-                  }`}
-                >
-                  <span className="w-1.5 h-1.5 rounded-full bg-destructive shrink-0" />
-                  {activeErrorBranches.length} active error{activeErrorBranches.length !== 1 ? 's' : ''}
-                </button>
               )}
             </div>
           </header>
@@ -835,6 +806,7 @@ function App() {
               scrollRequest={scrollRequest}
               focusedErrorBranch={focusedErrorBranch}
               checkedOutRef={checkedOutRef}
+              isPopoverWindow={isPopoverWindow}
             />
           </div>
         </div>

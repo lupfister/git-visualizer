@@ -1,5 +1,6 @@
 use super::cli::{self, GitError};
 use serde::Serialize;
+use std::collections::HashSet;
 use std::path::Path;
 
 #[derive(Debug, Clone, Serialize)]
@@ -73,9 +74,10 @@ pub fn get_checked_out_ref(repo: &Path) -> Result<CheckedOutRef, GitError> {
             parts.next().map(|sha| sha.to_string())
         });
 
-    let has_uncommitted_changes = cli::run(repo, &["status", "--porcelain", "--untracked-files=normal"])
-        .map(|output| !output.trim().is_empty())
-        .unwrap_or(false);
+    let has_uncommitted_changes =
+        cli::run(repo, &["status", "--porcelain", "--untracked-files=normal"])
+            .map(|output| !output.trim().is_empty())
+            .unwrap_or(false);
 
     Ok(CheckedOutRef {
         branch_name,
@@ -128,14 +130,10 @@ pub fn list_branches(repo: &Path, default_branch: &str) -> Result<Vec<Branch>, G
 fn get_branch_info(repo: &Path, name: &str, default_branch: &str) -> Result<Branch, GitError> {
     // Get ahead/behind counts
     let (commits_ahead, commits_behind) = get_ahead_behind(repo, name, default_branch)?;
-    let (remote_sync_status, unpushed_commits) =
-        get_remote_sync_status(repo, name, commits_ahead);
+    let (remote_sync_status, unpushed_commits) = get_remote_sync_status(repo, name, commits_ahead);
 
     // Get last commit info: SHA, author, date
-    let log_output = cli::run(
-        repo,
-        &["log", "-1", "--format=%H|%an|%aI", name],
-    )?;
+    let log_output = cli::run(repo, &["log", "-1", "--format=%H|%an|%aI", name])?;
     let parts: Vec<&str> = log_output.trim().split('|').collect();
 
     let head_sha = parts.first().unwrap_or(&"").to_string();
@@ -174,6 +172,13 @@ struct ParentCandidate {
     is_default: bool,
 }
 
+#[derive(Clone)]
+struct BranchCreationInfo {
+    sha: String,
+    date: String,
+    source_ref: Option<String>,
+}
+
 fn infer_branch_parents(
     repo: &Path,
     branches: &mut [Branch],
@@ -203,69 +208,93 @@ fn infer_branch_parents(
         });
     }
 
+    let candidate_names: HashSet<String> = candidates.iter().map(|c| c.name.clone()).collect();
+
     for branch in branches.iter_mut() {
-        let mut best: Option<(ParentCandidate, i32)> = None;
+        let created_from_reflog = get_branch_reflog_created_entry(repo, &branch.name)
+            .ok()
+            .flatten();
+        let created_from_reflog_sha = created_from_reflog.as_ref().map(|info| info.sha.clone());
+        let created_from_reflog_date = created_from_reflog.as_ref().map(|info| info.date.clone());
+        let created_from_reflog_parent = created_from_reflog
+            .as_ref()
+            .and_then(|info| info.source_ref.as_deref())
+            .and_then(|source| normalize_reflog_parent(source, default_branch, &candidate_names))
+            .filter(|name| name != &branch.name);
 
-        for candidate in &candidates {
-            if candidate.name == branch.name {
-                continue;
-            }
-            if candidate.head_sha.is_empty() || branch.head_sha.is_empty() {
-                continue;
-            }
+        // Prefer explicit reflog origin whenever available.
+        // If reflog is missing/ambiguous, fall back to heuristic inference.
+        let mut parent_name = created_from_reflog_parent;
+        if parent_name.is_none() {
+            let mut best: Option<(ParentCandidate, i32)> = None;
 
-            let ancestor = is_ancestor_head(repo, &candidate.head_sha, &branch.head_sha)?;
-            if !ancestor {
-                continue;
-            }
+            for candidate in &candidates {
+                if candidate.name == branch.name {
+                    continue;
+                }
+                if candidate.head_sha.is_empty() || branch.head_sha.is_empty() {
+                    continue;
+                }
 
-            let distance = commit_distance(repo, &candidate.head_sha, &branch.head_sha)?;
-            if distance <= 0 {
-                continue;
-            }
+                let ancestor = is_ancestor_head(repo, &candidate.head_sha, &branch.head_sha)?;
+                if !ancestor {
+                    continue;
+                }
 
-            match &best {
-                None => best = Some((candidate.clone(), distance)),
-                Some((best_candidate, best_distance)) => {
-                    let better_distance = distance < *best_distance;
-                    let same_distance = distance == *best_distance;
-                    let newer_candidate = candidate.last_commit_date > best_candidate.last_commit_date;
-                    let prefer_non_default = best_candidate.is_default && !candidate.is_default;
+                let distance = commit_distance(repo, &candidate.head_sha, &branch.head_sha)?;
+                if distance <= 0 {
+                    continue;
+                }
 
-                    if better_distance || (same_distance && (newer_candidate || prefer_non_default)) {
-                        best = Some((candidate.clone(), distance));
+                match &best {
+                    None => best = Some((candidate.clone(), distance)),
+                    Some((best_candidate, best_distance)) => {
+                        let better_distance = distance < *best_distance;
+                        let same_distance = distance == *best_distance;
+                        let newer_candidate =
+                            candidate.last_commit_date > best_candidate.last_commit_date;
+                        let prefer_non_default = best_candidate.is_default && !candidate.is_default;
+
+                        if better_distance
+                            || (same_distance && (newer_candidate || prefer_non_default))
+                        {
+                            best = Some((candidate.clone(), distance));
+                        }
                     }
                 }
             }
+
+            if let Some((candidate, _)) = best {
+                parent_name = Some(candidate.name);
+            }
         }
 
-        let parent_name = if let Some((candidate, _)) = best {
-            Some(candidate.name)
-        } else {
-            candidates
+        if parent_name.is_none() {
+            parent_name = candidates
                 .iter()
                 .find(|c| c.is_default)
-                .map(|c| c.name.clone())
-        };
+                .map(|c| c.name.clone());
+        }
 
         branch.parent_branch = parent_name.clone();
 
-        if let Some(parent_ref) = parent_name {
+        if let Some(parent_ref) = parent_name.as_deref() {
             if let Ok((sha, date)) = get_fork_point(repo, &branch.name, &parent_ref) {
                 branch.diverged_from_sha = sha;
                 branch.diverged_from_date = date;
             }
         }
 
-        let created_from_reflog = get_branch_reflog_created_entry(repo, &branch.name).ok().flatten();
-        let created_from_reflog_sha = created_from_reflog.as_ref().map(|(sha, _)| sha.clone());
-        let created_from_reflog_date = created_from_reflog.as_ref().map(|(_, date)| date.clone());
-        let created_from_unique_commit = branch
-            .parent_branch
-            .as_deref()
-            .and_then(|parent| get_first_unique_commit_date(repo, parent, &branch.name).ok().flatten());
-        branch.created_from_sha = created_from_reflog_sha.or_else(|| branch.diverged_from_sha.clone());
+        let created_from_unique_commit = branch.parent_branch.as_deref().and_then(|parent| {
+            get_first_unique_commit_date(repo, parent, &branch.name)
+                .ok()
+                .flatten()
+        });
+        branch.created_from_sha = created_from_reflog_sha
+            .clone()
+            .or_else(|| branch.diverged_from_sha.clone());
         branch.created_date = created_from_reflog_date
+            .clone()
             .or(created_from_unique_commit)
             .or_else(|| branch.diverged_from_date.clone())
             .or_else(|| Some(branch.last_commit_date.clone()));
@@ -284,20 +313,32 @@ fn get_commit_date(repo: &Path, reference: &str) -> Result<String, GitError> {
     Ok(output.trim().to_string())
 }
 
-fn is_ancestor_head(repo: &Path, ancestor_sha: &str, descendant_sha: &str) -> Result<bool, GitError> {
+fn is_ancestor_head(
+    repo: &Path,
+    ancestor_sha: &str,
+    descendant_sha: &str,
+) -> Result<bool, GitError> {
     let output = cli::run(repo, &["merge-base", ancestor_sha, descendant_sha])?;
     Ok(output.trim() == ancestor_sha)
 }
 
 fn commit_distance(repo: &Path, from_sha: &str, to_sha: &str) -> Result<i32, GitError> {
-    let output = cli::run(repo, &["rev-list", "--count", &format!("{}..{}", from_sha, to_sha)])?;
+    let output = cli::run(
+        repo,
+        &["rev-list", "--count", &format!("{}..{}", from_sha, to_sha)],
+    )?;
     Ok(output.trim().parse::<i32>().unwrap_or(i32::MAX))
 }
 
 fn get_ahead_behind(repo: &Path, branch: &str, base: &str) -> Result<(i32, i32), GitError> {
     let output = cli::run(
         repo,
-        &["rev-list", "--left-right", "--count", &format!("{}...{}", base, branch)],
+        &[
+            "rev-list",
+            "--left-right",
+            "--count",
+            &format!("{}...{}", base, branch),
+        ],
     )?;
 
     let parts: Vec<&str> = output.trim().split_whitespace().collect();
@@ -307,7 +348,11 @@ fn get_ahead_behind(repo: &Path, branch: &str, base: &str) -> Result<(i32, i32),
     Ok((ahead, behind))
 }
 
-fn get_fork_point(repo: &Path, branch: &str, base: &str) -> Result<(Option<String>, Option<String>), GitError> {
+fn get_fork_point(
+    repo: &Path,
+    branch: &str,
+    base: &str,
+) -> Result<(Option<String>, Option<String>), GitError> {
     let merge_base = cli::run(repo, &["merge-base", base, branch])?;
     let sha = merge_base.trim();
 
@@ -321,10 +366,19 @@ fn get_fork_point(repo: &Path, branch: &str, base: &str) -> Result<(Option<Strin
     Ok((Some(sha.to_string()), Some(date)))
 }
 
-fn get_first_unique_commit_date(repo: &Path, base: &str, branch: &str) -> Result<Option<String>, GitError> {
+fn get_first_unique_commit_date(
+    repo: &Path,
+    base: &str,
+    branch: &str,
+) -> Result<Option<String>, GitError> {
     let output = cli::run(
         repo,
-        &["log", "--reverse", "--format=%aI", &format!("{}..{}", base, branch)],
+        &[
+            "log",
+            "--reverse",
+            "--format=%aI",
+            &format!("{}..{}", base, branch),
+        ],
     )?;
 
     Ok(output
@@ -334,11 +388,20 @@ fn get_first_unique_commit_date(repo: &Path, base: &str, branch: &str) -> Result
         .map(|line| line.to_string()))
 }
 
-fn get_branch_reflog_created_entry(repo: &Path, branch: &str) -> Result<Option<(String, String)>, GitError> {
+fn get_branch_reflog_created_entry(
+    repo: &Path,
+    branch: &str,
+) -> Result<Option<BranchCreationInfo>, GitError> {
     let ref_name = format!("refs/heads/{}", branch);
     let output = cli::run(
         repo,
-        &["reflog", "show", "--date=iso-strict", "--format=%H|%gd", &ref_name],
+        &[
+            "reflog",
+            "show",
+            "--date=iso-strict",
+            "--format=%H|%gd|%gs",
+            &ref_name,
+        ],
     )?;
 
     let entry = output
@@ -351,9 +414,10 @@ fn get_branch_reflog_created_entry(repo: &Path, branch: &str) -> Result<Option<(
         return Ok(None);
     };
 
-    let mut parts = entry.splitn(2, '|');
+    let mut parts = entry.splitn(3, '|');
     let sha = parts.next().map(str::trim).unwrap_or("");
     let selector = parts.next().map(str::trim).unwrap_or("");
+    let subject = parts.next().map(str::trim).unwrap_or("");
     if sha.is_empty() || selector.is_empty() {
         return Ok(None);
     }
@@ -371,11 +435,66 @@ fn get_branch_reflog_created_entry(repo: &Path, branch: &str) -> Result<Option<(
     let Some(date) = normalize_git_date(raw_date) else {
         return Ok(None);
     };
-    Ok(Some((sha.to_string(), date)))
+    let source_ref = parse_reflog_created_from_subject(subject);
+    Ok(Some(BranchCreationInfo {
+        sha: sha.to_string(),
+        date,
+        source_ref,
+    }))
+}
+
+fn parse_reflog_created_from_subject(subject: &str) -> Option<String> {
+    let raw = subject.trim();
+    let created_prefix = "branch: Created from ";
+    let source = raw.strip_prefix(created_prefix)?.trim();
+    if source.is_empty() {
+        None
+    } else {
+        Some(source.to_string())
+    }
+}
+
+fn normalize_reflog_parent(
+    source: &str,
+    default_branch: &str,
+    candidate_names: &HashSet<String>,
+) -> Option<String> {
+    let raw = source.trim();
+    if raw.is_empty() {
+        return None;
+    }
+
+    let mut options: Vec<String> = vec![raw.to_string()];
+    if let Some(stripped) = raw.strip_prefix("refs/heads/") {
+        options.push(stripped.to_string());
+    }
+    if let Some(stripped) = raw.strip_prefix("origin/") {
+        options.push(stripped.to_string());
+    }
+    if let Some(stripped) = raw.strip_prefix("refs/remotes/origin/") {
+        options.push(stripped.to_string());
+    }
+    if let Some(stripped) = raw.strip_prefix("refs/remotes/") {
+        if let Some((_remote, branch_name)) = stripped.split_once('/') {
+            options.push(branch_name.to_string());
+        }
+    }
+
+    for candidate in options {
+        if candidate == "HEAD" {
+            continue;
+        }
+        if candidate == default_branch || candidate_names.contains(&candidate) {
+            return Some(candidate);
+        }
+    }
+
+    None
 }
 
 fn get_remote_sync_status(repo: &Path, branch: &str, commits_ahead: i32) -> (String, i32) {
-    let compare_ref = get_branch_upstream(repo, branch).or_else(|| find_remote_branch_ref(repo, branch));
+    let compare_ref =
+        get_branch_upstream(repo, branch).or_else(|| find_remote_branch_ref(repo, branch));
 
     if let Some(remote_ref) = compare_ref {
         if let Ok((ahead, _behind)) = get_ahead_behind(repo, branch, &remote_ref) {

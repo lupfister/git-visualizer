@@ -40,6 +40,8 @@ const CLUMP_MAX_ENTRIES_FULL = CLUMP_COUNT_MAX;
 const CLUMP_STRUCTURAL_PRIORITY = 5;
 const CLUMP_SECONDARY_PRIORITY = 1.5;
 const CHECKED_OUT_AHEAD_OFFSET_WORLD = 120;
+const INITIAL_CENTER_SETTLE_MS = 340;
+const INITIAL_REVEAL_FADE_MS = 520;
 const ENABLE_TIMELINE_INTRO_ANIMATIONS = false;
 
 type TooltipData = {
@@ -379,6 +381,7 @@ interface BranchMapProps {
   scrollRequest?: { branch: Branch; seq: number } | null;
   focusedErrorBranch?: Branch | null;
   checkedOutRef?: CheckedOutRef | null;
+  isPopoverWindow?: boolean;
 }
 
 export default function BranchMap({
@@ -404,6 +407,7 @@ export default function BranchMap({
   scrollRequest,
   focusedErrorBranch,
   checkedOutRef = null,
+  isPopoverWindow = false,
 }: BranchMapProps) {
   const [tooltip, setTooltip] = useState<TooltipData | null>(null);
   const [hoveredBranch, setHoveredBranch] = useState<string | null>(null);
@@ -461,6 +465,11 @@ export default function BranchMap({
   const animationsLockedRef = useRef(animationsLocked);
   const focusScrollCancelRef = useRef<(() => void) | null>(null);
   const hasAutoCenteredRef = useRef(false);
+  const autoCenterSignatureRef = useRef<string | null>(null);
+  const hasUserMovedCameraRef = useRef(false);
+  const [timelineRevealReady, setTimelineRevealReady] = useState(false);
+  const [hasInitialRevealDone, setHasInitialRevealDone] = useState(false);
+  const timelineRevealTimeoutRef = useRef<number | null>(null);
 
   // Bottom chrome controls visibility state
   const [controlsReady, setControlsReady] = useState(false);
@@ -480,6 +489,29 @@ export default function BranchMap({
     event.stopPropagation();
     if (!commitSha) return;
     onCommitClick?.({ commitSha, branchName });
+  }
+
+  function clearTimelineRevealTimer() {
+    if (timelineRevealTimeoutRef.current !== null) {
+      clearTimeout(timelineRevealTimeoutRef.current);
+      timelineRevealTimeoutRef.current = null;
+    }
+  }
+
+  function scheduleTimelineReveal(delayMs = INITIAL_CENTER_SETTLE_MS) {
+    clearTimelineRevealTimer();
+    timelineRevealTimeoutRef.current = window.setTimeout(() => {
+      timelineRevealTimeoutRef.current = null;
+      setTimelineRevealReady(true);
+      setHasInitialRevealDone(true);
+    }, delayMs);
+  }
+
+  function markUserMovedCamera() {
+    hasUserMovedCameraRef.current = true;
+    clearTimelineRevealTimer();
+    setTimelineRevealReady(true);
+    setHasInitialRevealDone(true);
   }
 
   const openPRBranchNames = new Set(openPRs.map(p => p.branchName));
@@ -925,6 +957,7 @@ export default function BranchMap({
       lockAnimationsIfReady();
       focusScrollCancelRef.current?.();
       focusScrollCancelRef.current = null;
+      markUserMovedCamera();
 
       if (e.ctrlKey || e.metaKey) {
         stopWheelInertia();
@@ -956,6 +989,7 @@ export default function BranchMap({
       stopWheelInertia();
       stopPanSmoothing();
       setTooltip(null);
+      markUserMovedCamera();
       gestureZoomBaseRef.current = zoomRef.current;
       const rect = el.getBoundingClientRect();
       gesturePointRef.current = {
@@ -1060,6 +1094,7 @@ export default function BranchMap({
           e.preventDefault();
           const el = scrollRef.current;
           if (!el) return;
+          markUserMovedCamera();
           stopWheelInertia();
           stopZoomAnimation();
           applyZoomAt(
@@ -1100,6 +1135,11 @@ export default function BranchMap({
 
   useEffect(() => {
     hasAutoCenteredRef.current = false;
+    autoCenterSignatureRef.current = null;
+    hasUserMovedCameraRef.current = false;
+    clearTimelineRevealTimer();
+    setTimelineRevealReady(false);
+    setHasInitialRevealDone(false);
   }, [orientation]);
 
   function handleCanvasMouseDown(e: React.MouseEvent<HTMLDivElement>) {
@@ -1113,6 +1153,7 @@ export default function BranchMap({
       (e.button === 0 && (spacePressedRef.current || clickedBackground));
     if (!canPan || !scrollRef.current) return;
     e.preventDefault();
+    markUserMovedCamera();
     lockAnimationsIfReady();
     focusScrollCancelRef.current?.();
     focusScrollCancelRef.current = null;
@@ -1471,6 +1512,16 @@ export default function BranchMap({
       !!b.parentBranch && b.parentBranch !== b.name && b.parentBranch !== defaultBranch;
     const isParentDefault = !hasNonDefaultParent;
 
+    // For merged branches, merge-base against default can collapse to branch HEAD.
+    // Prefer the recorded branch-creation anchor first.
+    if (b.commitsAhead === 0 && isParentDefault && b.createdDate) {
+      const createdAnchorX =
+        commitXForSha(b.createdFromSha) ??
+        snapToMainCommitX(b.createdDate);
+      if (createdAnchorX != null) return createdAnchorX;
+      return timeToX(b.createdDate);
+    }
+
     if (isParentDefault) {
       const anchoredMainForkX = commitXForSha(b.createdFromSha) ?? commitXForSha(b.divergedFromSha);
       if (anchoredMainForkX != null) return anchoredMainForkX;
@@ -1499,10 +1550,6 @@ export default function BranchMap({
     // For stacked branches, fork should snap to the parent divergence commit
     // so child lanes originate exactly from parent tips (no floating gap).
     if (hasNonDefaultParent && b.divergedFromDate) return timeToX(b.divergedFromDate);
-
-    // For branches merged back to default, merge-base against default can drift
-    // to the branch head; keep original branch creation anchor in that case.
-    if (b.commitsAhead === 0 && b.createdDate) return timeToX(b.createdDate);
 
     if (b.divergedFromDate) return timeToX(b.divergedFromDate);
     if (b.createdDate) return timeToX(b.createdDate);
@@ -1860,15 +1907,31 @@ export default function BranchMap({
   useEffect(() => {
     if (!hasTimelineSeedData) {
       hasAutoCenteredRef.current = false;
+      autoCenterSignatureRef.current = null;
+      hasUserMovedCameraRef.current = false;
+      clearTimelineRevealTimer();
+      setTimelineRevealReady(false);
+      setHasInitialRevealDone(false);
       return;
     }
-    if (hasAutoCenteredRef.current || viewportSize.width <= 0 || viewportSize.height <= 0) return;
+    if (hasUserMovedCameraRef.current || viewportSize.width <= 0 || viewportSize.height <= 0) return;
+    // During initial data hydration, the checked-out target can be unresolved
+    // for a render or two. Wait for a concrete anchor if we know one should exist.
+    if (checkedOutRef && checkedOutAnchor == null) return;
     const zoomValue = zoomRef.current;
     const fallbackCenter = {
       x: svgWidth / 2,
       y: svgHeight / 2,
     };
     const target = checkedOutAnchor ?? fallbackCenter;
+    const signature = [
+      Math.round(target.x * 10) / 10,
+      Math.round(target.y * 10) / 10,
+      Math.round(viewportSize.width),
+      Math.round(viewportSize.height),
+      Math.round(zoomValue * 1000) / 1000,
+    ].join('|');
+    if (hasAutoCenteredRef.current && autoCenterSignatureRef.current === signature) return;
     const scale = getCameraScale(zoomValue, isHorizontal);
     const nextPan = clampPan(
       {
@@ -1880,15 +1943,26 @@ export default function BranchMap({
     );
     applyCamera(nextPan, zoomValue, true);
     hasAutoCenteredRef.current = true;
+    autoCenterSignatureRef.current = signature;
+    if (!hasInitialRevealDone) {
+      setTimelineRevealReady(false);
+      scheduleTimelineReveal();
+    }
   }, [
     hasTimelineSeedData,
+    hasInitialRevealDone,
     viewportSize.width,
     viewportSize.height,
     graphOffsetX,
     graphOffsetY,
     svgWidth,
     svgHeight,
-    checkedOutAnchor,
+    checkedOutAnchor?.x,
+    checkedOutAnchor?.y,
+    checkedOutRef?.branchName,
+    checkedOutRef?.headSha,
+    checkedOutRef?.parentSha,
+    checkedOutRef?.hasUncommittedChanges,
     effectiveTimeScale,
     effectiveSpacingMode,
   ]);
@@ -1898,6 +1972,7 @@ export default function BranchMap({
   useEffect(() => {
     if (!scrollRequest) return;
     if (isHorizontal ? viewportSize.width <= 0 : viewportSize.height <= 0) return;
+    markUserMovedCamera();
     const { branch } = scrollRequest;
     const focusTime = branch.divergedFromDate
       ? timeToX(branch.divergedFromDate)
@@ -1958,6 +2033,12 @@ export default function BranchMap({
     isHorizontal,
   ]);
 
+  useEffect(() => {
+    return () => {
+      clearTimelineRevealTimer();
+    };
+  }, []);
+
   const worldUnitsPerScreenPx = 1 / Math.max(renderCameraScale.x, 0.0001);
   const worldPx = (px: number) => px * worldUnitsPerScreenPx;
   const scaledNodeSize = NODE_SIZE;
@@ -1978,6 +2059,8 @@ export default function BranchMap({
   const fadeInInfoClass = (!ENABLE_TIMELINE_INTRO_ANIMATIONS || animationsLocked) ? undefined : 'fade-in-info';
   const fadeInPillClass = (!ENABLE_TIMELINE_INTRO_ANIMATIONS || animationsLocked) ? undefined : 'fade-in-pill';
   const mainTimelineOpacity = hoveredPR !== null || hoveredBranch !== null ? 0.2 : 1;
+  const holdTimelineForInitialCenter =
+    isLoading || (!hasInitialRevealDone && hasTimelineSeedData && !timelineRevealReady && !hasUserMovedCameraRef.current);
 
   return (
     <div className="h-full">
@@ -2027,6 +2110,13 @@ export default function BranchMap({
           <g
             ref={zoomLayerRef}
             transform={`scale(${renderCameraScale.x} ${renderCameraScale.y})`}
+          >
+          <g
+            style={{
+              opacity: holdTimelineForInitialCenter ? 0 : 1,
+              transition: `opacity ${INITIAL_REVEAL_FADE_MS}ms cubic-bezier(0.22, 1, 0.36, 1)`,
+              pointerEvents: holdTimelineForInitialCenter ? 'none' : 'auto',
+            }}
           >
 
           {/* ── Main timeline + merge nodes ── */}
@@ -2605,6 +2695,7 @@ export default function BranchMap({
                 : null;
               const baseTipTimeX = branchTipX(b);
               const tipTimeX = mergeNodeTimeX != null ? Math.max(baseTipTimeX, mergeNodeTimeX) : baseTipTimeX;
+              const commitTipTimeX = isMergedBranch ? baseTipTimeX : tipTimeX;
               const tipY = timeCoordToY(tipTimeX);
               const cornerDir = tipY <= forkY ? -1 : 1;
               const turnY = forkY + cornerDir * cornerR;
@@ -2645,7 +2736,7 @@ export default function BranchMap({
                 )
                 : [];
               const minCommitTimeX = forkTimeX + cornerR + 6;
-              const maxCommitTimeX = Math.max(minCommitTimeX, tipTimeX);
+              const maxCommitTimeX = Math.max(minCommitTimeX, commitTipTimeX);
               const commitItems: Array<BranchCommitPreview | undefined> = hasPreviewData
                 ? displayedCommits
                 : Array.from({ length: commitCount }, () => undefined);
@@ -2674,7 +2765,8 @@ export default function BranchMap({
                 branchEndDotIndex = anchorIndex;
                 const anchor = commitDots[anchorIndex];
                 if (anchor) {
-                  commitDots[anchorIndex] = { ...anchor, y: tipY };
+                  const branchCommitEndY = timeCoordToY(commitTipTimeX);
+                  commitDots[anchorIndex] = { ...anchor, y: branchCommitEndY };
                 }
               } else if (commitDots.length > 0) {
                 branchEndDotIndex = commitDots.length - 1;
@@ -3273,33 +3365,17 @@ export default function BranchMap({
               const turnY = anchorLocal.y + verticalDir * bend;
               return `M ${pathCoord(anchorLocal.x, anchorLocal.y)} L ${pathCoord(preTurnX, anchorLocal.y)} Q ${pathCoord(markerLocal.x, anchorLocal.y)} ${pathCoord(markerLocal.x, turnY)} L ${pathCoord(markerLocal.x, markerLocal.y)}`;
             })();
-            const markerPoint = projectPoint(markerLocal.x, markerLocal.y);
-            const anchorPoint = projectPoint(anchorLocal.x, anchorLocal.y);
+            const straightPath = `M ${pathCoord(anchorLocal.x, anchorLocal.y)} L ${pathCoord(markerLocal.x, markerLocal.y)}`;
             return (
               <g style={{ pointerEvents: 'none' }}>
-                {forkPath ? (
-                  <path
-                    d={forkPath}
-                    fill="none"
-                    stroke="#2563eb"
-                    strokeWidth={1.5}
-                    strokeLinecap="round"
-                    vectorEffect="non-scaling-stroke"
-                    opacity={0.9}
-                  />
-                ) : (
-                  <line
-                    x1={anchorPoint.x}
-                    y1={anchorPoint.y}
-                    x2={markerPoint.x}
-                    y2={markerPoint.y}
-                    stroke="#2563eb"
-                    strokeWidth={1.5}
-                    strokeLinecap="round"
-                    vectorEffect="non-scaling-stroke"
-                    opacity={0.9}
-                  />
-                )}
+                <path
+                  d={forkPath ?? straightPath}
+                  fill="none"
+                  stroke="#2563eb"
+                  strokeWidth={1.5}
+                  strokeLinecap="round"
+                  opacity={0.9}
+                />
               </g>
             );
           })()}
@@ -3311,6 +3387,7 @@ export default function BranchMap({
             {activeBranches.map((b) => {
               const forkTimeX = branchForkX(b);
               const lanePosX = laneX(b);
+              const isMergedBranch = b.commitsAhead === 0;
               const mergeNodeForBranch = b.commitsAhead === 0
                 ? mergeNodeByMergedHeadSha.get(b.headSha)
                 : undefined;
@@ -3319,9 +3396,8 @@ export default function BranchMap({
                 : null;
               const baseTipTimeX = branchTipX(b);
               const tipTimeX = mergeNodeTimeX != null ? Math.max(baseTipTimeX, mergeNodeTimeX) : baseTipTimeX;
-              const tipY = timeCoordToY(tipTimeX);
+              const commitTipTimeX = isMergedBranch ? baseTipTimeX : tipTimeX;
 
-              const isMergedBranch = b.commitsAhead === 0;
               const isConflict = b.status === 'conflict-risk' && !isMergedBranch;
               const isSelected = selectedBranch?.name === b.name;
               const isHovered = hoveredBranch === b.name;
@@ -3344,7 +3420,7 @@ export default function BranchMap({
                 )
                 : [];
               const minCommitTimeX = forkTimeX + cornerR + 6;
-              const maxCommitTimeX = Math.max(minCommitTimeX, tipTimeX);
+              const maxCommitTimeX = Math.max(minCommitTimeX, commitTipTimeX);
               const commitItems: Array<BranchCommitPreview | undefined> = hasPreviewData
                 ? displayedCommits
                 : Array.from({ length: commitCount }, () => undefined);
@@ -3373,7 +3449,8 @@ export default function BranchMap({
                 branchEndDotIndex = anchorIndex;
                 const anchor = commitDots[anchorIndex];
                 if (anchor) {
-                  commitDots[anchorIndex] = { ...anchor, y: tipY };
+                  const branchCommitEndY = timeCoordToY(commitTipTimeX);
+                  commitDots[anchorIndex] = { ...anchor, y: branchCommitEndY };
                 }
               } else if (commitDots.length > 0) {
                 branchEndDotIndex = commitDots.length - 1;
@@ -3769,9 +3846,10 @@ export default function BranchMap({
               </g>
             );
           })()}
+          </g>
 
           {/* Checked-out commit marker */}
-          {checkedOutDisplayIndicatorLocal && (() => {
+          {!holdTimelineForInitialCenter && checkedOutDisplayIndicatorLocal && (() => {
             const markerPoint = projectPoint(checkedOutDisplayIndicatorLocal.x, checkedOutDisplayIndicatorLocal.y);
             return (
               <g className="branch-map-icon-fixed" style={{ pointerEvents: 'none' }}>
@@ -3795,8 +3873,23 @@ export default function BranchMap({
         </svg>
         </div>
 
+        {holdTimelineForInitialCenter && (
+          <div className="absolute inset-0 pointer-events-none flex items-center justify-center">
+            <div className="relative h-6 w-6">
+              <span
+                className="absolute inset-0 rounded-full"
+                style={{ backgroundColor: '#93c5fd', opacity: 0.35 }}
+              />
+              <span
+                className="absolute left-1/2 top-1/2 h-3.5 w-3.5 -translate-x-1/2 -translate-y-1/2 rounded-full"
+                style={{ backgroundColor: '#2563eb' }}
+              />
+            </div>
+          </div>
+        )}
+
         {/* Fixed-size tooltip layer (not affected by timeline zoom). */}
-        {tooltip && (() => {
+        {timelineRevealReady && tooltip && (() => {
           const [title, subtitle, meta] = tooltip.lines;
           const avatarFallback = tooltip.avatarFallback || '?';
           const tooltipW = Math.min(320, Math.max(240, viewportSize.width - 16));
@@ -3858,15 +3951,8 @@ export default function BranchMap({
           );
         })()}
 
-        {/* Empty / loading state */}
-        {sortedNodes.length === 0 && activeBranches.length === 0 && (
-          isLoading ? (
-            <div className="absolute inset-0 flex items-center justify-center pointer-events-none">
-              <div className="rounded-xl border border-border bg-card px-4 py-2">
-                <p className="text-xs text-muted-foreground">Loading branch map...</p>
-              </div>
-            </div>
-          ) : (
+        {/* Empty state */}
+        {sortedNodes.length === 0 && activeBranches.length === 0 && !isLoading && (
             <div className="absolute inset-0 flex items-center justify-center px-6">
               <div className="bg-card/80 backdrop-blur-sm rounded-2xl border shadow-sm px-5 py-4 text-center max-w-md">
                 <p className="text-sm text-foreground">
@@ -3881,7 +3967,6 @@ export default function BranchMap({
                 )}
               </div>
             </div>
-          )
         )}
       </div>
 
@@ -3893,48 +3978,52 @@ export default function BranchMap({
         <div
           className="flex items-center justify-end gap-4"
           style={{
-            opacity: isLoading || !controlsReady ? 0 : 1,
+            opacity: isLoading || !controlsReady || holdTimelineForInitialCenter ? 0 : 1,
             transition: 'opacity 0.4s ease',
           }}
         >
-          <div className="flex items-center gap-1 shrink-0 bg-card border border-border rounded-full p-1">
-            <button
-              onClick={() => setOrientation('vertical')}
-              className={`px-2.5 py-1 rounded-full text-xs leading-none select-none transition-colors ${orientation === 'vertical'
-                ? 'bg-primary/10 text-foreground'
-                : 'text-muted-foreground hover:text-foreground hover:bg-muted'
-                }`}
-              title="Timeline runs top to bottom"
-            >
-              Vertical
-            </button>
-            <button
-              onClick={() => setOrientation('horizontal')}
-              className={`px-2.5 py-1 rounded-full text-xs leading-none select-none transition-colors ${orientation === 'horizontal'
-                ? 'bg-primary/10 text-foreground'
-                : 'text-muted-foreground hover:text-foreground hover:bg-muted'
-                }`}
-              title="Timeline runs left to right"
-            >
-              Horizontal
-            </button>
-          </div>
-          <div className="flex items-center gap-2 shrink-0 bg-card border border-border rounded-full px-3 py-1">
-            <span className="text-xs text-muted-foreground select-none">Time</span>
-            <input
-              type="range"
-              min={TIME_SCALE_MIN}
-              max={TIME_SCALE_MAX}
-              step={TIME_SCALE_STEP}
-              value={timeScale}
-              onChange={(e) => setTimeScale(Number(e.target.value))}
-              className="timeline-scale-range w-24"
-              title={`${orientation === 'vertical' ? 'Vertical' : 'Horizontal'} time scaling`}
-            />
-            <span className="text-xs text-muted-foreground w-10 text-right tabular-nums select-none">
-              {effectiveTimeScale.toFixed(2)}x
-            </span>
-          </div>
+          {!isPopoverWindow && (
+            <div className="flex items-center gap-1 shrink-0 bg-card border border-border rounded-full p-1">
+              <button
+                onClick={() => setOrientation('vertical')}
+                className={`px-2.5 py-1 rounded-full text-xs leading-none select-none transition-colors ${orientation === 'vertical'
+                  ? 'bg-primary/10 text-foreground'
+                  : 'text-muted-foreground hover:text-foreground hover:bg-muted'
+                  }`}
+                title="Timeline runs top to bottom"
+              >
+                Vertical
+              </button>
+              <button
+                onClick={() => setOrientation('horizontal')}
+                className={`px-2.5 py-1 rounded-full text-xs leading-none select-none transition-colors ${orientation === 'horizontal'
+                  ? 'bg-primary/10 text-foreground'
+                  : 'text-muted-foreground hover:text-foreground hover:bg-muted'
+                  }`}
+                title="Timeline runs left to right"
+              >
+                Horizontal
+              </button>
+            </div>
+          )}
+          {!isPopoverWindow && (
+            <div className="flex items-center gap-2 shrink-0 bg-card border border-border rounded-full px-3 py-1">
+              <span className="text-xs text-muted-foreground select-none">Time</span>
+              <input
+                type="range"
+                min={TIME_SCALE_MIN}
+                max={TIME_SCALE_MAX}
+                step={TIME_SCALE_STEP}
+                value={timeScale}
+                onChange={(e) => setTimeScale(Number(e.target.value))}
+                className="timeline-scale-range w-24"
+                title={`${orientation === 'vertical' ? 'Vertical' : 'Horizontal'} time scaling`}
+              />
+              <span className="text-xs text-muted-foreground w-10 text-right tabular-nums select-none">
+                {effectiveTimeScale.toFixed(2)}x
+              </span>
+            </div>
+          )}
         </div>
       </div>
 
