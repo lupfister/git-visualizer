@@ -40,7 +40,7 @@ const CLUMP_MAX_ENTRIES_FULL = CLUMP_COUNT_MAX;
 const CLUMP_STRUCTURAL_PRIORITY = 5;
 const CLUMP_SECONDARY_PRIORITY = 1.5;
 const CHECKED_OUT_AHEAD_OFFSET_WORLD = 120;
-const DETACHED_WORK_OFFSET_WORLD = 22;
+const ENABLE_TIMELINE_INTRO_ANIMATIONS = false;
 
 type TooltipData = {
   x: number;
@@ -364,6 +364,7 @@ interface BranchMapProps {
   selectedBranch?: Branch | null;
   onBranchSelect?: (branch: Branch) => void;
   onBranchClick?: (branch: Branch) => void;
+  onCommitClick?: (target: { commitSha: string; branchName?: string }) => void;
   onLoadMore?: () => void;
   githubOwner?: string | null;
   githubRepo?: string | null;
@@ -389,6 +390,7 @@ export default function BranchMap({
   selectedBranch,
   onBranchSelect,
   onBranchClick,
+  onCommitClick,
   githubOwner,
   githubRepo,
   branchPromptMeta = {},
@@ -420,7 +422,7 @@ export default function BranchMap({
   // WKWebView (Tauri) doesn't fire CSS animations on SVG elements inserted during
   // the initial paint. Defer animation classes by one rAF so they start post-paint.
   const [drawReady, setDrawReady] = useState(false);
-  const [animationsLocked, setAnimationsLocked] = useState(false);
+  const [animationsLocked, setAnimationsLocked] = useState(true);
   // flashingName: branch in "bright" phase right after focus (clears after 700ms, triggering CSS stroke transition to lighter red)
   const [_flashingName, setFlashingName] = useState<string | null>(null);
 
@@ -470,6 +472,16 @@ export default function BranchMap({
   const [errorPanelOpen, setErrorPanelOpen] = useState(false);
   const errorPanelRef = useRef<HTMLDivElement>(null);
 
+  function handleCommitNodeClick(
+    event: React.MouseEvent,
+    commitSha?: string,
+    branchName?: string,
+  ) {
+    event.stopPropagation();
+    if (!commitSha) return;
+    onCommitClick?.({ commitSha, branchName });
+  }
+
   const openPRBranchNames = new Set(openPRs.map(p => p.branchName));
   const localBranchCount = branches.filter((b) => b.name !== defaultBranch).length;
   const hasTimelineSeedData =
@@ -483,11 +495,17 @@ export default function BranchMap({
     if (!hasTimelineSeedData) {
       hadDataRef.current = false;
       setDrawReady(false);
-      setAnimationsLocked(false);
+      setAnimationsLocked(true);
       return;
     }
     if (hadDataRef.current) return;
     hadDataRef.current = true;
+
+    if (!ENABLE_TIMELINE_INTRO_ANIMATIONS) {
+      setDrawReady(true);
+      setAnimationsLocked(true);
+      return;
+    }
 
     // Use a cancelled flag so React StrictMode's cleanup can invalidate the
     // first invocation's callbacks before the second invocation schedules its own.
@@ -866,13 +884,15 @@ export default function BranchMap({
     return true;
   }
 
-  // Reveal the controls after the main draw-in animation completes.
-  // drawReady fires when animations start; 2600ms matches draw-path-main duration.
-  // When drawReady resets (new repo), hide controls immediately so they
-  // doesn't flash visible before the next animation cycle begins.
+  // Reveal controls immediately when intro animations are disabled.
+  // When enabled, keep the original delayed reveal timing.
   useEffect(() => {
     if (!drawReady) {
       setControlsReady(false);
+      return;
+    }
+    if (!ENABLE_TIMELINE_INTRO_ANIMATIONS) {
+      setControlsReady(true);
       return;
     }
     const id = setTimeout(() => setControlsReady(true), 2600);
@@ -880,10 +900,14 @@ export default function BranchMap({
   }, [drawReady]);
 
   // In WebKit, repeated ancestor transform updates can occasionally restart SVG
-  // stroke-dash animations. Lock them to final state right after initial intro.
+  // stroke-dash animations. Keep them locked when intro animations are disabled.
   useEffect(() => {
     if (!drawReady) {
-      setAnimationsLocked(false);
+      setAnimationsLocked(true);
+      return;
+    }
+    if (!ENABLE_TIMELINE_INTRO_ANIMATIONS) {
+      setAnimationsLocked(true);
       return;
     }
     const id = setTimeout(() => setAnimationsLocked(true), 2800);
@@ -1150,6 +1174,7 @@ export default function BranchMap({
       return new Date(b.lastCommitDate).getTime() - new Date(a.lastCommitDate).getTime();
     })
     .slice(0, MAX_ACTIVE);
+  const branchByName = new Map(activeBranches.map((b) => [b.name, b]));
 
   // ── Animation delays — branches and PRs computed independently ───────────
   // Keeping them separate means adding mergedPRs (async GitHub data) never
@@ -1362,6 +1387,76 @@ export default function BranchMap({
     return null;
   }
 
+  function branchCommitXForSha(branchName: string, sha?: string): number | null {
+    if (!sha) return null;
+    const previews = branchCommitPreviews[branchName] ?? [];
+    const exact = previews.find((commit) => commit.fullSha === sha || commit.sha === sha);
+    if (exact) return timeToX(exact.date);
+    const prefix = previews.find(
+      (commit) =>
+        commit.fullSha.startsWith(sha) ||
+        sha.startsWith(commit.fullSha) ||
+        commit.sha.startsWith(sha) ||
+        sha.startsWith(commit.sha)
+    );
+    if (prefix) return timeToX(prefix.date);
+    return null;
+  }
+
+  const mainCommitAnchors = [
+    ...sortedDirectCommits.map((commit) => ({
+      t: new Date(commit.date).getTime(),
+      x: directXByFullSha.get(commit.fullSha) ?? timeToX(commit.date),
+    })),
+    ...sortedNodes.map((node) => ({
+      t: new Date(node.date).getTime(),
+      x: nodeXByFullSha.get(node.fullSha) ?? timeToX(node.date),
+    })),
+  ].filter((anchor) => Number.isFinite(anchor.t) && Number.isFinite(anchor.x));
+
+  function snapToMainCommitX(dateStr?: string): number | null {
+    if (!dateStr || mainCommitAnchors.length === 0) return null;
+    const target = new Date(dateStr).getTime();
+    if (!Number.isFinite(target)) return null;
+    let bestPast: { delta: number; x: number } | null = null;
+    let bestFuture: { delta: number; x: number } | null = null;
+    for (const anchor of mainCommitAnchors) {
+      if (anchor.t <= target) {
+        const delta = target - anchor.t;
+        if (!bestPast || delta < bestPast.delta) bestPast = { delta, x: anchor.x };
+      } else {
+        const delta = anchor.t - target;
+        if (!bestFuture || delta < bestFuture.delta) bestFuture = { delta, x: anchor.x };
+      }
+    }
+    return bestPast?.x ?? bestFuture?.x ?? null;
+  }
+
+  function snapToBranchCommitX(branchName: string, dateStr?: string): number | null {
+    if (!dateStr) return null;
+    const commits = (branchCommitPreviews[branchName] ?? []).filter(
+      (commit) => commit.kind !== 'branch-created'
+    );
+    if (commits.length === 0) return null;
+    const target = new Date(dateStr).getTime();
+    if (!Number.isFinite(target)) return null;
+    let bestPast: { delta: number; x: number } | null = null;
+    let bestFuture: { delta: number; x: number } | null = null;
+    for (const commit of commits) {
+      const commitTime = new Date(commit.date).getTime();
+      if (!Number.isFinite(commitTime)) continue;
+      const commitX = timeToX(commit.date);
+      if (commitTime <= target) {
+        const delta = target - commitTime;
+        if (!bestPast || delta < bestPast.delta) bestPast = { delta, x: commitX };
+      } else {
+        const delta = commitTime - target;
+        if (!bestFuture || delta < bestFuture.delta) bestFuture = { delta, x: commitX };
+      }
+    }
+    return bestPast?.x ?? bestFuture?.x ?? null;
+  }
+
   function branchCreatedDate(b: Branch): string {
     return b.createdDate ?? b.divergedFromDate ?? b.lastCommitDate;
   }
@@ -1379,6 +1474,26 @@ export default function BranchMap({
     if (isParentDefault) {
       const anchoredMainForkX = commitXForSha(b.createdFromSha) ?? commitXForSha(b.divergedFromSha);
       if (anchoredMainForkX != null) return anchoredMainForkX;
+      const snappedMainForkX = snapToMainCommitX(b.divergedFromDate ?? b.createdDate);
+      if (snappedMainForkX != null) return snappedMainForkX;
+    }
+
+    if (hasNonDefaultParent && b.parentBranch) {
+      const parentBranch = branchByName.get(b.parentBranch);
+      const anchoredToParentHead =
+        parentBranch && b.divergedFromSha && b.divergedFromSha === parentBranch.headSha
+          ? branchTipX(parentBranch)
+          : null;
+      const anchoredParentForkX =
+        anchoredToParentHead ??
+        branchCommitXForSha(b.parentBranch, b.divergedFromSha);
+      if (anchoredParentForkX != null) return anchoredParentForkX;
+      const snappedParentForkX = snapToBranchCommitX(
+        b.parentBranch,
+        b.divergedFromDate ?? b.createdDate
+      );
+      if (snappedParentForkX != null) return snappedParentForkX;
+      if (parentBranch) return branchTipX(parentBranch);
     }
 
     // For stacked branches, fork should snap to the parent divergence commit
@@ -1398,10 +1513,6 @@ export default function BranchMap({
     const forkX = branchForkX(b);
     const lastCommitX = timeToX(b.lastCommitDate);
     return Math.max(lastCommitX, forkX + cornerR + 20);
-  }
-
-  function branchHeadCommitX(b: Branch): number {
-    return timeToX(b.lastCommitDate);
   }
 
   function branchAheadCount(b: Branch): number {
@@ -1459,7 +1570,6 @@ export default function BranchMap({
     if (forkDiff !== 0) return forkDiff;
     return a.name.localeCompare(b.name);
   });
-  const branchByName = new Map(activeBranches.map((b) => [b.name, b]));
 
   const BRANCH_LANE_MIN_SEPARATION_X = Math.max(20, 40 * effectiveTimeScale);
   const laneAssignments = new Map<string, number>();
@@ -1623,6 +1733,18 @@ export default function BranchMap({
   const checkedOutHasUncommittedChanges = checkedOutRef?.hasUncommittedChanges ?? false;
   const checkedOutIsDetached = !checkedOutBranchName;
 
+  function branchPreviewContainsSha(branchName: string, sha: string): boolean {
+    const previews = branchCommitPreviews[branchName] ?? [];
+    return previews.some((commit) =>
+      commit.fullSha === sha ||
+      commit.sha === sha ||
+      commit.fullSha.startsWith(sha) ||
+      sha.startsWith(commit.fullSha) ||
+      commit.sha.startsWith(sha) ||
+      sha.startsWith(commit.sha)
+    );
+  }
+
   function checkedOutPointForSha(sha: string): { x: number; y: number } | null {
     const directX = directXByFullSha.get(sha);
     if (typeof directX === 'number') {
@@ -1634,8 +1756,27 @@ export default function BranchMap({
       return { x: mainX, y: timeCoordToY(mergeX) };
     }
 
-    const branchBySha = activeBranches.find((b) => b.headSha === sha);
-    if (branchBySha) {
+    const branchesByShaAll = activeBranches.filter((b) => b.headSha === sha);
+    const preferredHeadBranches = branchesByShaAll.filter((b) => branchAheadCount(b) > 0);
+    const branchesBySha = preferredHeadBranches.length > 0
+      ? preferredHeadBranches
+      : branchesByShaAll;
+    if (branchesBySha.length > 0) {
+      const branchBySha = (() => {
+        if (branchesBySha.length === 1) return branchesBySha[0];
+        if (checkedOutParentSha) {
+          const byParent = branchesBySha.find((b) =>
+            branchPreviewContainsSha(b.name, checkedOutParentSha)
+          );
+          if (byParent) return byParent;
+        }
+        return [...branchesBySha].sort((a, b) => {
+          const laneAX = laneXByBranch.get(a.name) ?? mainX;
+          const laneBX = laneXByBranch.get(b.name) ?? mainX;
+          if (laneAX !== laneBX) return laneAX - laneBX;
+          return a.name.localeCompare(b.name);
+        })[0];
+      })();
       return {
         x: laneXByBranch.get(branchBySha.name) ?? mainX,
         y: timeCoordToY(branchTipX(branchBySha)),
@@ -1679,7 +1820,31 @@ export default function BranchMap({
 
   const checkedOutDisplayIndicatorLocal = checkedOutIndicatorLocal
     ? {
-      x: checkedOutIndicatorLocal.x + (checkedOutHasUncommittedChanges && checkedOutIsDetached ? DETACHED_WORK_OFFSET_WORLD : 0),
+      x: (() => {
+        if (!(checkedOutHasUncommittedChanges && checkedOutIsDetached)) {
+          return checkedOutIndicatorLocal.x;
+        }
+        const lanePositions = Array.from(
+          new Set<number>([mainX, ...Array.from(laneXByBranch.values())])
+        ).sort((a, b) => a - b);
+        if (lanePositions.length <= 1) {
+          return mainX + laneWidth + 40;
+        }
+
+        let nearestLane = lanePositions[0];
+        let nearestDistance = Math.abs(checkedOutIndicatorLocal.x - nearestLane);
+        for (const lanePos of lanePositions.slice(1)) {
+          const distance = Math.abs(checkedOutIndicatorLocal.x - lanePos);
+          if (distance < nearestDistance) {
+            nearestLane = lanePos;
+            nearestDistance = distance;
+          }
+        }
+
+        const nextLane = lanePositions.find((lanePos) => lanePos > nearestLane + 0.5);
+        if (typeof nextLane === 'number') return nextLane;
+        return nearestLane + laneWidth;
+      })(),
       y: checkedOutIndicatorLocal.y + (checkedOutHasUncommittedChanges ? -CHECKED_OUT_AHEAD_OFFSET_WORLD : 0),
     }
     : null;
@@ -1808,10 +1973,10 @@ export default function BranchMap({
   const clumpMaxEntries =
     CLUMP_MAX_ENTRIES_TOUCH +
     Math.round((CLUMP_MAX_ENTRIES_FULL - CLUMP_MAX_ENTRIES_TOUCH) * clumpProgress);
-  const drawPathMainClass = animationsLocked ? undefined : 'draw-path-main';
-  const drawPathArcClass = animationsLocked ? undefined : 'draw-path-arc';
-  const fadeInInfoClass = animationsLocked ? undefined : 'fade-in-info';
-  const fadeInPillClass = animationsLocked ? undefined : 'fade-in-pill';
+  const drawPathMainClass = (!ENABLE_TIMELINE_INTRO_ANIMATIONS || animationsLocked) ? undefined : 'draw-path-main';
+  const drawPathArcClass = (!ENABLE_TIMELINE_INTRO_ANIMATIONS || animationsLocked) ? undefined : 'draw-path-arc';
+  const fadeInInfoClass = (!ENABLE_TIMELINE_INTRO_ANIMATIONS || animationsLocked) ? undefined : 'fade-in-info';
+  const fadeInPillClass = (!ENABLE_TIMELINE_INTRO_ANIMATIONS || animationsLocked) ? undefined : 'fade-in-pill';
   const mainTimelineOpacity = hoveredPR !== null || hoveredBranch !== null ? 0.2 : 1;
 
   return (
@@ -1840,7 +2005,7 @@ export default function BranchMap({
           height={svgHeight}
           className={[
             'branch-map-svg',
-            drawReady ? 'timeline-ready' : '',
+            drawReady && ENABLE_TIMELINE_INTRO_ANIMATIONS ? 'timeline-ready' : '',
             animationsLocked ? 'timeline-static' : '',
           ].filter(Boolean).join(' ')}
           style={{
@@ -1984,6 +2149,8 @@ export default function BranchMap({
                         stroke="var(--background)"
                         strokeWidth={1.2}
                         style={{ cursor: 'pointer' }}
+                        onClick={(event) => handleCommitNodeClick(event, c.fullSha)}
+                        onDoubleClick={(event) => event.stopPropagation()}
                         onMouseEnter={() =>
                           setTooltip({
                             x: anchorX,
@@ -2016,6 +2183,8 @@ export default function BranchMap({
                         stroke="var(--background)"
                         strokeWidth={1.2}
                         style={{ cursor: 'pointer' }}
+                        onClick={(event) => handleCommitNodeClick(event, last.fullSha)}
+                        onDoubleClick={(event) => event.stopPropagation()}
                         onMouseEnter={() =>
                           setTooltip({
                             x: anchorX,
@@ -2401,22 +2570,7 @@ export default function BranchMap({
           {/* ── Active branches ── */}
           <g style={{ opacity: hoveredPR !== null ? 0.2 : 1, transition: 'opacity 0.15s' }}>
             {activeBranches.map((b) => {
-              const rawForkTimeX = branchForkX(b);
-              const parentName = b.parentBranch;
-              const parentBranch =
-                parentName && parentName !== defaultBranch
-                  ? branchByName.get(parentName)
-                  : undefined;
-              const parentHeadTimeX = parentBranch ? branchHeadCommitX(parentBranch) : null;
-              const forksFromParentHead = !!(
-                parentBranch &&
-                b.divergedFromSha &&
-                b.divergedFromSha === parentBranch.headSha
-              );
-              const forkTimeX =
-                forksFromParentHead && parentHeadTimeX != null
-                  ? parentHeadTimeX
-                  : rawForkTimeX;
+              const forkTimeX = branchForkX(b);
               const forkY = timeCoordToY(forkTimeX);
               const lanePosX = laneX(b);
               const startX = branchStartX(b);
@@ -2481,9 +2635,12 @@ export default function BranchMap({
 
               const branchCommits = branchCommitPreviews[b.name] ?? [];
               const hasPreviewData = Object.prototype.hasOwnProperty.call(branchCommitPreviews, b.name);
-              const commitCount = hasPreviewData ? branchCommits.length : b.commitsAhead;
+              const visibleBranchCommits = hasPreviewData
+                ? branchCommits.filter((commit) => commit.kind !== 'branch-created')
+                : branchCommits;
+              const commitCount = hasPreviewData ? visibleBranchCommits.length : b.commitsAhead;
               const displayedCommits = hasPreviewData
-                ? [...branchCommits.slice(0, commitCount)].sort(
+                ? [...visibleBranchCommits.slice(0, commitCount)].sort(
                   (a, b) => new Date(a.date).getTime() - new Date(b.date).getTime()
                 )
                 : [];
@@ -2836,20 +2993,23 @@ export default function BranchMap({
                       );
                       const anchorX = animatedAnchor.x;
                       const anchorY = animatedAnchor.y;
-                      const dotShouldUseLocalGray =
-                        fullBranchShouldUseLocalGray ||
-                        cluster.entries.every((entry) => localCommitDotIndices.has(entry.item.index));
-                      const dotFill = dotShouldUseLocalGray
-                        ? LOCAL_UNPUSHED_GRAY
-                        : (isSelected ? '#22d3ee' : isConflict ? '#dc2626' : isFocusedError ? focusedErrorColor : '#57534e');
+                    const dotShouldUseLocalGray =
+                      fullBranchShouldUseLocalGray ||
+                      cluster.entries.every((entry) => localCommitDotIndices.has(entry.item.index));
+                    const dotFill = dotShouldUseLocalGray
+                      ? LOCAL_UNPUSHED_GRAY
+                      : (isSelected ? '#22d3ee' : isConflict ? '#dc2626' : isFocusedError ? focusedErrorColor : '#57534e');
+                    const clusterHasBranchTip =
+                      branchEndDotIndex != null &&
+                      cluster.entries.some((entry) => entry.item.index === branchEndDotIndex);
 
-                      if (count <= 1) {
-                        const commitEntry = realCommitEntries[0] ?? lastEntry;
-                        const commit = commitEntry.item.commit;
-                        const isBranchCreatedEvent = commit?.kind === 'branch-created';
-                        const tooltipAuthor = commit?.author ?? b.lastCommitAuthor;
-                        const tooltipDate = commit?.date ?? b.lastCommitDate;
-                        const tooltipSha = commit?.sha ?? b.headSha?.slice(0, 7) ?? '-------';
+                    if (count <= 1) {
+                      const commitEntry = realCommitEntries[0] ?? lastEntry;
+                      const commit = commitEntry.item.commit;
+                      const targetCommitSha = commit?.fullSha ?? b.headSha;
+                      const tooltipAuthor = commit?.author ?? b.lastCommitAuthor;
+                      const tooltipDate = commit?.date ?? b.lastCommitDate;
+                      const tooltipSha = commit?.sha ?? b.headSha?.slice(0, 7) ?? '-------';
                         const tooltipMessage = commit?.message;
                         const showBranchAvatar = !!(
                           commit &&
@@ -2867,12 +3027,21 @@ export default function BranchMap({
                             fill={dotFill}
                             stroke="var(--background)"
                             strokeWidth={1.2}
+                            style={{ cursor: 'pointer' }}
+                            onClick={(event) =>
+                              handleCommitNodeClick(
+                                event,
+                                targetCommitSha,
+                                clusterHasBranchTip ? b.name : undefined,
+                              )
+                            }
+                            onDoubleClick={(event) => event.stopPropagation()}
                             onMouseEnter={() =>
                               setTooltip({
                                 x: anchorX,
                                 y: anchorY,
                                 lines: [
-                                  isBranchCreatedEvent ? 'Branch created' : `Commit ${tooltipSha}`,
+                                  `Commit ${tooltipSha}`,
                                   tooltipMessage
                                     ? truncatePrompt(tooltipMessage, COMMIT_TOOLTIP_PREVIEW_MAX)
                                     : `@${tooltipAuthor}`,
@@ -2898,6 +3067,7 @@ export default function BranchMap({
                       const latestCommitMessage = lastRealEntry.item.commit?.message
                         ? truncatePrompt(lastRealEntry.item.commit.message, COMMIT_CLUSTER_PREVIEW_MAX)
                         : `on ${b.name}`;
+                      const targetCommitSha = lastRealEntry.item.commit?.fullSha ?? b.headSha;
 
                       return (
                         <g key={clusterKey} className="branch-map-icon-fixed">
@@ -2909,6 +3079,14 @@ export default function BranchMap({
                             stroke="var(--background)"
                             strokeWidth={1.2}
                             style={{ cursor: 'pointer' }}
+                            onClick={(event) =>
+                              handleCommitNodeClick(
+                                event,
+                                targetCommitSha,
+                                clusterHasBranchTip ? b.name : undefined,
+                              )
+                            }
+                            onDoubleClick={(event) => event.stopPropagation()}
                             onMouseEnter={() =>
                               setTooltip({
                                 x: anchorX,
@@ -3076,27 +3254,62 @@ export default function BranchMap({
             })}
           </g>
 
+          {/* Checked-out connector line (render below node overlays). */}
+          {checkedOutHasUncommittedChanges && checkedOutDisplayIndicatorLocal && checkedOutIndicatorLocal && (() => {
+            const markerLocal = checkedOutDisplayIndicatorLocal;
+            const anchorLocal = checkedOutIndicatorLocal;
+            const hasHorizontalOffset = Math.abs(markerLocal.x - anchorLocal.x) > 0.5;
+            const hasVerticalOffset = Math.abs(markerLocal.y - anchorLocal.y) > 0.5;
+            const forkPath = (() => {
+              if (!hasHorizontalOffset || !hasVerticalOffset) return null;
+              const horizontalDir = markerLocal.x >= anchorLocal.x ? 1 : -1;
+              const verticalDir = markerLocal.y >= anchorLocal.y ? 1 : -1;
+              const bend = Math.min(
+                cornerR,
+                Math.abs(markerLocal.x - anchorLocal.x),
+                Math.abs(markerLocal.y - anchorLocal.y),
+              );
+              const preTurnX = markerLocal.x - horizontalDir * bend;
+              const turnY = anchorLocal.y + verticalDir * bend;
+              return `M ${pathCoord(anchorLocal.x, anchorLocal.y)} L ${pathCoord(preTurnX, anchorLocal.y)} Q ${pathCoord(markerLocal.x, anchorLocal.y)} ${pathCoord(markerLocal.x, turnY)} L ${pathCoord(markerLocal.x, markerLocal.y)}`;
+            })();
+            const markerPoint = projectPoint(markerLocal.x, markerLocal.y);
+            const anchorPoint = projectPoint(anchorLocal.x, anchorLocal.y);
+            return (
+              <g style={{ pointerEvents: 'none' }}>
+                {forkPath ? (
+                  <path
+                    d={forkPath}
+                    fill="none"
+                    stroke="#2563eb"
+                    strokeWidth={1.5}
+                    strokeLinecap="round"
+                    vectorEffect="non-scaling-stroke"
+                    opacity={0.9}
+                  />
+                ) : (
+                  <line
+                    x1={anchorPoint.x}
+                    y1={anchorPoint.y}
+                    x2={markerPoint.x}
+                    y2={markerPoint.y}
+                    stroke="#2563eb"
+                    strokeWidth={1.5}
+                    strokeLinecap="round"
+                    vectorEffect="non-scaling-stroke"
+                    opacity={0.9}
+                  />
+                )}
+              </g>
+            );
+          })()}
+
           {/* Global node overlay so commit/prompt nodes always paint above branch lines. */}
           <g
             style={{ opacity: hoveredPR !== null ? 0.2 : 1, transition: 'opacity 0.15s', pointerEvents: 'none' }}
           >
             {activeBranches.map((b) => {
-              const rawForkTimeX = branchForkX(b);
-              const parentName = b.parentBranch;
-              const parentBranch =
-                parentName && parentName !== defaultBranch
-                  ? branchByName.get(parentName)
-                  : undefined;
-              const parentHeadTimeX = parentBranch ? branchHeadCommitX(parentBranch) : null;
-              const forksFromParentHead = !!(
-                parentBranch &&
-                b.divergedFromSha &&
-                b.divergedFromSha === parentBranch.headSha
-              );
-              const forkTimeX =
-                forksFromParentHead && parentHeadTimeX != null
-                  ? parentHeadTimeX
-                  : rawForkTimeX;
+              const forkTimeX = branchForkX(b);
               const lanePosX = laneX(b);
               const mergeNodeForBranch = b.commitsAhead === 0
                 ? mergeNodeByMergedHeadSha.get(b.headSha)
@@ -3121,9 +3334,12 @@ export default function BranchMap({
 
               const branchCommits = branchCommitPreviews[b.name] ?? [];
               const hasPreviewData = Object.prototype.hasOwnProperty.call(branchCommitPreviews, b.name);
-              const commitCount = hasPreviewData ? branchCommits.length : b.commitsAhead;
+              const visibleBranchCommits = hasPreviewData
+                ? branchCommits.filter((commit) => commit.kind !== 'branch-created')
+                : branchCommits;
+              const commitCount = hasPreviewData ? visibleBranchCommits.length : b.commitsAhead;
               const displayedCommits = hasPreviewData
-                ? [...branchCommits.slice(0, commitCount)].sort(
+                ? [...visibleBranchCommits.slice(0, commitCount)].sort(
                   (a, b) => new Date(a.date).getTime() - new Date(b.date).getTime()
                 )
                 : [];
@@ -3385,27 +3601,6 @@ export default function BranchMap({
             })}
           </g>
 
-          {/* Checked-out connector line (render below node overlays). */}
-          {checkedOutHasUncommittedChanges && checkedOutDisplayIndicatorLocal && checkedOutIndicatorLocal && (() => {
-            const markerPoint = projectPoint(checkedOutDisplayIndicatorLocal.x, checkedOutDisplayIndicatorLocal.y);
-            const anchorPoint = projectPoint(checkedOutIndicatorLocal.x, checkedOutIndicatorLocal.y);
-            return (
-              <g style={{ pointerEvents: 'none' }}>
-                <line
-                  x1={anchorPoint.x}
-                  y1={anchorPoint.y}
-                  x2={markerPoint.x}
-                  y2={markerPoint.y}
-                  stroke="#2563eb"
-                  strokeWidth={1.5}
-                  strokeLinecap="round"
-                  vectorEffect="non-scaling-stroke"
-                  opacity={0.9}
-                />
-              </g>
-            );
-          })()}
-
           {/* Main commit node overlay so branch connectors never render over main clumps. */}
           <g style={{ opacity: mainTimelineOpacity, transition: 'opacity 0.15s', pointerEvents: 'none' }}>
             {(() => {
@@ -3579,9 +3774,8 @@ export default function BranchMap({
           {checkedOutDisplayIndicatorLocal && (() => {
             const markerPoint = projectPoint(checkedOutDisplayIndicatorLocal.x, checkedOutDisplayIndicatorLocal.y);
             return (
-              <g style={{ pointerEvents: 'none' }}>
+              <g className="branch-map-icon-fixed" style={{ pointerEvents: 'none' }}>
                 <circle
-                  className="branch-map-icon-fixed"
                   cx={markerPoint.x}
                   cy={markerPoint.y}
                   r={12}
@@ -3589,7 +3783,6 @@ export default function BranchMap({
                   opacity={0.35}
                 />
                 <circle
-                  className="branch-map-icon-fixed"
                   cx={markerPoint.x}
                   cy={markerPoint.y}
                   r={7}
@@ -3669,14 +3862,8 @@ export default function BranchMap({
         {sortedNodes.length === 0 && activeBranches.length === 0 && (
           isLoading ? (
             <div className="absolute inset-0 flex items-center justify-center pointer-events-none">
-              <div className="flex items-center gap-1.5">
-                {[0, 1, 2].map(i => (
-                  <span
-                    key={i}
-                    className="w-1.5 h-1.5 rounded-full bg-muted-foreground/40 animate-bounce"
-                    style={{ animationDelay: `${i * 150}ms` }}
-                  />
-                ))}
+              <div className="rounded-xl border border-border bg-card px-4 py-2">
+                <p className="text-xs text-muted-foreground">Loading branch map...</p>
               </div>
             </div>
           ) : (

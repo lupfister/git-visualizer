@@ -7,6 +7,7 @@ import FolderPickerModal from './FolderPickerModal';
 import type { Branch, BranchCommitPreview, BranchPromptMeta, BranchPromptMarker, CheckedOutRef, Commit, DirectCommit, GitHubAuthStatus, GitHubInfo, MergeNode, MergedPR, OpenPR } from '../types';
 
 type View = 'landing' | 'map' | 'diff';
+const PROMPT_ENRICHMENT_ENABLED = false;
 
 function cn(...classes: Array<string | false | null | undefined>) {
   return classes.filter(Boolean).join(' ');
@@ -41,6 +42,10 @@ function App() {
   const [githubAuthStatus, setGithubAuthStatus] = useState<GitHubAuthStatus | null>(null);
   const [githubAuthLoading, setGithubAuthLoading] = useState(false);
   const [githubAuthMessage, setGithubAuthMessage] = useState<string | null>(null);
+  const [commitSwitchFeedback, setCommitSwitchFeedback] = useState<{
+    kind: 'success' | 'error';
+    message: string;
+  } | null>(null);
   const [branchPromptMeta, setBranchPromptMeta] = useState<Record<string, BranchPromptMeta>>({});
   const [branchCommitPreviews, setBranchCommitPreviews] = useState<Record<string, BranchCommitPreview[]>>({});
   const [branchUniqueAheadCounts, setBranchUniqueAheadCounts] = useState<Record<string, number>>({});
@@ -214,16 +219,13 @@ function App() {
     (b) => !openPRBranchNames.has(b.name) && now - new Date(b.lastCommitDate).getTime() > ACTIVE_MS
   );
 
-  // Mirror BranchMap's controlsReady timing so the error pill fades in together.
-  // BranchMap fires drawReady after 2 rAFs (~33ms), then delays controls 2600ms.
+  // Reveal map controls once timeline data is present.
   const hasTimelineData =
     branches.length > 0 || mergeNodes.length > 0 || directCommits.length > 0;
   useEffect(() => {
     if (!hasTimelineData || hadMapDataRef.current) return;
     hadMapDataRef.current = true;
-    setMapUiReady(false);
-    const id = setTimeout(() => setMapUiReady(true), 2650);
-    return () => clearTimeout(id);
+    setMapUiReady(true);
   }, [hasTimelineData]);
 
   // Reset when a new repo is loaded
@@ -240,6 +242,7 @@ function App() {
     setGithubAuthStatus(null);
     setGithubAuthMessage(null);
     setCheckedOutRef(null);
+    setCommitSwitchFeedback(null);
   }, [repoPath]);
 
   useEffect(() => {
@@ -285,6 +288,7 @@ function App() {
               branch: branch.name,
               baseBranch: comparisonBase,
               mergeCommitSha,
+              includePrompts: PROMPT_ENRICHMENT_ENABLED,
             });
             let historyCommits = mergeCommitSha
               ? commits.filter((c) => c.fullSha !== mergeCommitSha)
@@ -301,6 +305,7 @@ function App() {
                 repoPath,
                 branch: branch.name,
                 limit: 200,
+                includePrompts: PROMPT_ENRICHMENT_ENABLED,
               });
               historyCommits = recent.filter((c) => {
                 const commitMs = new Date(c.date).getTime();
@@ -320,16 +325,16 @@ function App() {
                 date: c.date,
                 kind: 'commit',
               }));
-            const branchCreatedSha = branch.divergedFromSha?.slice(0, 7) ?? branch.headSha.slice(0, 7);
-            const branchCreationPreview: BranchCommitPreview = {
-              fullSha: `branch-created:${branch.name}:${branchCreatedAt}`,
-              sha: branchCreatedSha || 'created',
-              message: `Branch created: ${branch.name}`,
+            const fallbackHeadPreview: BranchCommitPreview = {
+              fullSha: branch.headSha,
+              sha: branch.headSha.slice(0, 7),
+              message: `HEAD of ${branch.name}`,
               author: branch.lastCommitAuthor || 'Unknown',
-              date: branchCreatedAt,
-              kind: 'branch-created',
+              date: branch.lastCommitDate,
+              kind: 'commit',
             };
-            const previews: BranchCommitPreview[] = [...commitPreviews, branchCreationPreview];
+            const previews: BranchCommitPreview[] =
+              commitPreviews.length > 0 ? commitPreviews : [fallbackHeadPreview];
             const uniqueCount = branch.commitsAhead > 0 ? commitPreviews.length : null;
 
             if (prompts.length === 0) {
@@ -358,19 +363,17 @@ function App() {
               uniqueCount,
             }] as const;
           } catch {
-            const branchCreatedAt = branch.createdDate ?? branch.divergedFromDate ?? branch.lastCommitDate;
-            const branchCreatedSha = branch.divergedFromSha?.slice(0, 7) ?? branch.headSha.slice(0, 7);
-            const branchCreationPreview: BranchCommitPreview = {
-              fullSha: `branch-created:${branch.name}:${branchCreatedAt}`,
-              sha: branchCreatedSha || 'created',
-              message: `Branch created: ${branch.name}`,
+            const fallbackHeadPreview: BranchCommitPreview = {
+              fullSha: branch.headSha,
+              sha: branch.headSha.slice(0, 7),
+              message: `HEAD of ${branch.name}`,
               author: branch.lastCommitAuthor || 'Unknown',
-              date: branchCreatedAt,
-              kind: 'branch-created',
+              date: branch.lastCommitDate,
+              kind: 'commit',
             };
             return [branch.name, {
               promptMeta: null,
-              previews: [branchCreationPreview],
+              previews: [fallbackHeadPreview],
               uniqueCount: branch.commitsAhead > 0 ? branch.commitsAhead : null,
             }] as const;
           }
@@ -384,6 +387,7 @@ function App() {
           branch: defaultBranch,
           limit: 250,
           firstParent: false,
+          includePrompts: PROMPT_ENRICHMENT_ENABLED,
         });
         const prompts = mainCommits
           .flatMap((c) => c.agentPrompts ?? [])
@@ -512,12 +516,45 @@ function App() {
 
   function handleBranchSelect(branch: Branch) {
     setSelectedBranch(branch);
-    setView('diff');
   }
 
   function handleBranchClick(branch: Branch) {
     setSelectedBranch(branch);
     setView('diff');
+  }
+
+  async function handleMapCommitClick(target: { commitSha: string; branchName?: string }) {
+    if (!repoPath) return;
+    setCommitSwitchFeedback(null);
+    try {
+      const nextCheckedOutRef = target.branchName
+        ? await invoke<CheckedOutRef>('checkout_branch', {
+            repoPath,
+            branchName: target.branchName,
+          })
+        : await invoke<CheckedOutRef>('checkout_ref', {
+            repoPath,
+            refName: target.commitSha,
+          });
+      const confirmedCheckedOutRef = await invoke<CheckedOutRef>('get_checked_out_ref', {
+        repoPath,
+      }).catch(() => nextCheckedOutRef);
+      setCheckedOutRef(confirmedCheckedOutRef);
+      const refLabel = confirmedCheckedOutRef.branchName
+        ? confirmedCheckedOutRef.branchName
+        : `${confirmedCheckedOutRef.headSha.slice(0, 7)} (detached)`;
+      setCommitSwitchFeedback({
+        kind: 'success',
+        message: `Checked out ${refLabel}`,
+      });
+    } catch (e) {
+      const message = e instanceof Error ? e.message : String(e);
+      setCommitSwitchFeedback({
+        kind: 'error',
+        message,
+      });
+      console.error('Failed to checkout commit:', message);
+    }
   }
 
   function handleFocusOnMap(branch: Branch) {
@@ -537,6 +574,10 @@ function App() {
   function handleBackToMap() {
     setSelectedBranch(null);
     setView('map');
+  }
+
+  function handleCheckedOutRefChange(nextCheckedOutRef: CheckedOutRef) {
+    setCheckedOutRef(nextCheckedOutRef);
   }
 
   // True when pre-warm finished but root route is auth-gated (all shots null)
@@ -662,6 +703,28 @@ function App() {
                   {githubAuthMessage}
                 </span>
               )}
+              {checkedOutRef && (
+                <span
+                  className="text-xs text-muted-foreground border border-border/50 rounded-full px-3 py-1 max-w-[22rem] truncate"
+                  title={checkedOutRef.branchName ?? checkedOutRef.headSha}
+                >
+                  {checkedOutRef.branchName
+                    ? `Checked out: ${checkedOutRef.branchName}`
+                    : `Checked out: ${checkedOutRef.headSha.slice(0, 7)} (detached)`}
+                </span>
+              )}
+              {commitSwitchFeedback && (
+                <span
+                  className={`text-xs rounded-full px-3 py-1 max-w-[26rem] truncate ${
+                    commitSwitchFeedback.kind === 'error'
+                      ? 'bg-red-50 dark:bg-red-900/20 text-red-600 dark:text-red-400'
+                      : 'bg-blue-50 dark:bg-blue-900/20 text-blue-600 dark:text-blue-400'
+                  }`}
+                  title={commitSwitchFeedback.message}
+                >
+                  {commitSwitchFeedback.message}
+                </span>
+              )}
               {activeErrorBranches.length > 0 && (
                 <button
                   onClick={() => { if (showErrorPanel) { closeErrorPanel(); } else { setShowErrorPanel(true); } }}
@@ -760,6 +823,7 @@ function App() {
               selectedBranch={selectedBranch}
               onBranchSelect={handleBranchSelect}
               onBranchClick={handleBranchClick}
+              onCommitClick={handleMapCommitClick}
               githubAvailable={githubAvailable}
               githubOwner={githubOwner}
               githubRepo={githubRepo}
@@ -784,6 +848,8 @@ function App() {
               branch={selectedBranch}
               defaultBranch={defaultBranch}
               mergedPR={mergedPRs.find(p => p.branchName === selectedBranch.name)}
+              checkedOutRef={checkedOutRef}
+              onCheckedOutRefChange={handleCheckedOutRefChange}
               prewarmedMainShots={prewarmedMainShots}
               onBack={handleBackToMap}
             />
@@ -797,96 +863,17 @@ function App() {
 }
 
 function InteractiveDotField() {
-  const canvasRef = useRef<HTMLCanvasElement>(null);
-  const mouse = useRef({ x: -9999, y: -9999 });
-  const raf = useRef(0);
-  const dots = useRef<{ x: number; y: number; phase: number }[]>([]);
-
-  useEffect(() => {
-    const rawCanvas = canvasRef.current;
-    if (!rawCanvas) return;
-    const canvas: HTMLCanvasElement = rawCanvas;
-    const ctx = canvas.getContext('2d')!;
-    const SPACING = 20;
-
-    function buildDots(w: number, h: number) {
-      const arr: { x: number; y: number; phase: number }[] = [];
-      const cols = Math.floor(w / SPACING);
-      const rows = Math.floor(h / SPACING);
-      const ox = (w - cols * SPACING) / 2;
-      const oy = (h - rows * SPACING) / 2;
-      for (let r = 0; r <= rows; r++) {
-        for (let c = 0; c <= cols; c++) {
-          arr.push({ x: ox + c * SPACING, y: oy + r * SPACING, phase: Math.random() * Math.PI * 2 });
-        }
-      }
-      dots.current = arr;
-    }
-
-    function resize() {
-      const dpr = window.devicePixelRatio || 1;
-      const w = canvas.offsetWidth;
-      const h = canvas.offsetHeight;
-      canvas.width = w * dpr;
-      canvas.height = h * dpr;
-      ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
-      buildDots(w, h);
-    }
-
-    resize();
-    const ro = new ResizeObserver(resize);
-    ro.observe(canvas);
-
-    function draw(t: number) {
-      const w = canvas.offsetWidth;
-      const h = canvas.offsetHeight;
-      ctx.clearRect(0, 0, w, h);
-      const mx = mouse.current.x;
-      const my = mouse.current.y;
-      const INFLUENCE = 160;
-      const MAX_PUSH  = 28;
-
-      for (const d of dots.current) {
-        const pulse = 0.1 + 0.22 * Math.sin(t * 0.0005 + d.phase);
-        const ddx = d.x - mx;
-        const ddy = d.y - my;
-        const dist = Math.sqrt(ddx * ddx + ddy * ddy);
-        const prox = Math.max(0, 1 - dist / INFLUENCE);
-
-        // Repel: push dot away from cursor
-        const force = Math.pow(prox, 2) * MAX_PUSH;
-        const drawX = dist > 0 ? d.x + (ddx / dist) * force : d.x;
-        const drawY = dist > 0 ? d.y + (ddy / dist) * force : d.y;
-
-        const opacity = pulse + prox * 0.4;
-        const r = 1.3 + prox * 1.2;
-
-        ctx.beginPath();
-        ctx.arc(drawX, drawY, r, 0, Math.PI * 2);
-        ctx.fillStyle = `rgba(168, 162, 158, ${opacity})`;
-        ctx.fill();
-      }
-
-      raf.current = requestAnimationFrame(draw);
-    }
-
-    raf.current = requestAnimationFrame(draw);
-    return () => {
-      cancelAnimationFrame(raf.current);
-      ro.disconnect();
-    };
-  }, []);
-
   return (
-    <canvas
-      ref={canvasRef}
-      className="w-full h-full"
-      onMouseMove={(e) => {
-        const rect = e.currentTarget.getBoundingClientRect();
-        mouse.current = { x: e.clientX - rect.left, y: e.clientY - rect.top };
-      }}
-      onMouseLeave={() => { mouse.current = { x: -9999, y: -9999 }; }}
-    />
+    <div className="w-full h-full bg-muted" aria-hidden="true">
+      <div
+        className="w-full h-full"
+        style={{
+          backgroundImage:
+            'radial-gradient(circle at 1px 1px, color-mix(in srgb, var(--muted-foreground) 26%, transparent) 1px, transparent 0)',
+          backgroundSize: '18px 18px',
+        }}
+      />
+    </div>
   );
 }
 
@@ -1067,7 +1054,7 @@ function RepoSelector({
               Enter repo path
             </button>
           ) : (
-            <div className={cn('flex flex-col gap-2', isPopoverWindow ? '' : 'animate-pill-expand')}>
+            <div className="flex flex-col gap-2">
               <form
                 onSubmit={handleSubmit}
                 className={cn('flex items-center border border-border bg-card', isPopoverWindow ? 'rounded-lg' : 'rounded-2xl')}
@@ -1101,13 +1088,9 @@ function RepoSelector({
                     isPopoverWindow ? 'm-1 w-8 h-8 rounded-lg' : 'm-1.5 w-10 h-10 rounded-[14px]'
                   )}
                 >
-                  {loading ? (
-                    <div className="w-3.5 h-3.5 border-2 border-background/30 border-t-background rounded-full animate-spin" />
-                  ) : (
-                    <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2.5} d="M9 5l7 7-7 7" />
-                    </svg>
-                  )}
+                  <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2.5} d="M9 5l7 7-7 7" />
+                  </svg>
                 </button>
               </form>
               {inputError && <p className="text-xs text-destructive px-2">{inputError}</p>}

@@ -26,6 +26,7 @@ export default function FolderPickerModal({ onSelect, onClose }: FolderPickerMod
   const [activeIndex, setActiveIndex] = useState(-1);
   const inputRef = useRef<HTMLInputElement>(null);
   const searchTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const searchRequestIdRef = useRef(0);
 
   const isSearching = query.length >= 2;
 
@@ -52,29 +53,35 @@ export default function FolderPickerModal({ onSelect, onClose }: FolderPickerMod
     if (!query || query.length < 2) {
       setSearchResults([]);
       setSearching(false);
+      searchRequestIdRef.current += 1;
       return;
     }
 
     setSearching(true);
+    const requestId = searchRequestIdRef.current + 1;
+    searchRequestIdRef.current = requestId;
 
     searchTimeoutRef.current = setTimeout(async () => {
       try {
-        const depth = currentDir === homeDir ? 4 : 3;
+        const depth = currentDir === homeDir ? 3 : 2;
         const results = await invoke<DirEntry[]>('search_directories', {
           path: currentDir,
           query,
           maxDepth: depth,
-          limit: 20,
+          limit: 15,
         });
+        if (searchRequestIdRef.current !== requestId) return;
         setSearchResults(results);
         setSelectedIndex(0);
       } catch (e) {
+        if (searchRequestIdRef.current !== requestId) return;
         console.error('Search failed:', e);
         setSearchResults([]);
       } finally {
+        if (searchRequestIdRef.current !== requestId) return;
         setSearching(false);
       }
-    }, 150);
+    }, 220);
 
     return () => {
       if (searchTimeoutRef.current) clearTimeout(searchTimeoutRef.current);
@@ -117,10 +124,14 @@ export default function FolderPickerModal({ onSelect, onClose }: FolderPickerMod
     if (homeDir) navigateTo(homeDir);
   }, [homeDir, navigateTo]);
 
+  function openItem(item: DirEntry) {
+    item.isRepo ? onSelect(item.path) : navigateTo(item.path);
+  }
+
   function openActive() {
-    const item = activeIndex >= 0 ? allItems[activeIndex] : allItems[selectedIndex];
+    const item = allItems[selectedIndex] ?? (activeIndex >= 0 ? allItems[activeIndex] : undefined);
     if (item) {
-      item.isRepo ? onSelect(item.path) : navigateTo(item.path);
+      openItem(item);
     } else {
       onSelect(currentDir);
     }
@@ -235,16 +246,10 @@ export default function FolderPickerModal({ onSelect, onClose }: FolderPickerMod
 
         {/* Search input */}
         <div className="flex items-center gap-2 px-4 py-2 border-b border-border">
-          <div className="flex items-center justify-center text-muted-foreground">
-            {searching ? (
-              <svg className="w-4 h-4 animate-spin" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15" />
-              </svg>
-            ) : (
-              <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0z" />
-              </svg>
-            )}
+          <div className={`flex items-center justify-center text-muted-foreground ${searching ? 'opacity-70' : ''}`}>
+            <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0z" />
+            </svg>
           </div>
           <input
             ref={inputRef}
@@ -294,7 +299,7 @@ export default function FolderPickerModal({ onSelect, onClose }: FolderPickerMod
                           i === activeIndex ? 'bg-primary/10' : i === selectedIndex ? 'bg-accent' : 'hover:bg-accent'
                         }`}
                         onClick={() => { setActiveIndex(i); setSelectedIndex(i); }}
-                        onDoubleClick={() => openActive()}
+                        onDoubleClick={() => openItem(entry)}
                         onMouseEnter={() => setSelectedIndex(i)}
                       >
                         <svg className={`w-4 h-4 flex-shrink-0 ${entry.isRepo ? 'text-blue-400' : 'text-muted-foreground'}`} fill="none" stroke="currentColor" viewBox="0 0 24 24">
@@ -327,7 +332,7 @@ export default function FolderPickerModal({ onSelect, onClose }: FolderPickerMod
                       i === activeIndex ? 'bg-primary/10' : i === selectedIndex ? 'bg-accent' : 'hover:bg-accent'
                     }`}
                     onClick={() => { setActiveIndex(i); setSelectedIndex(i); }}
-                    onDoubleClick={() => openActive()}
+                    onDoubleClick={() => openItem(entry)}
                     onMouseEnter={() => setSelectedIndex(i)}
                   >
                     <svg className={`w-4 h-4 flex-shrink-0 ${entry.isRepo ? 'text-blue-400' : 'text-muted-foreground'}`} fill="none" stroke="currentColor" viewBox="0 0 24 24">
