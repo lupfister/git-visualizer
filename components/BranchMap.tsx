@@ -3903,21 +3903,41 @@ export default function BranchMap({
           const subtitleLines = subtitle ? Math.max(1, Math.ceil(subtitle.length / estimatedCharsPerLine)) : 0;
           const metaLines = meta ? Math.max(1, Math.ceil(meta.length / estimatedCharsPerLine)) : 0;
           const tooltipH = Math.min(220, Math.max(96, 46 + (subtitleLines + metaLines) * 16));
-          const rawLeft = anchorX - tooltipW / 2;
+          const viewportPad = 8;
           const gap = 10;
-          const rawTopAbove = anchorY - tooltipH - gap;
-          const rawTopBelow = anchorY + gap;
-          const canFitAbove = rawTopAbove >= 8;
-          const canFitBelow = rawTopBelow + tooltipH <= viewportSize.height - 8;
-          const rawTop = canFitAbove || !canFitBelow ? rawTopAbove : rawTopBelow;
-          const maxLeft = Math.max(8, viewportSize.width - tooltipW - 8);
-          const maxTop = Math.max(8, viewportSize.height - tooltipH - 8);
-          const left = Math.min(maxLeft, Math.max(8, rawLeft));
-          const top = Math.min(maxTop, Math.max(8, rawTop));
+          const nodeClearance = 18;
+          const maxLeft = Math.max(viewportPad, viewportSize.width - tooltipW - viewportPad);
+          const maxTop = Math.max(viewportPad, viewportSize.height - tooltipH - viewportPad);
+          const clampLeft = (left: number) => Math.min(maxLeft, Math.max(viewportPad, left));
+          const clampTop = (top: number) => Math.min(maxTop, Math.max(viewportPad, top));
+          const candidatePositions = [
+            { left: anchorX - tooltipW / 2, top: anchorY - tooltipH - gap }, // above
+            { left: anchorX - tooltipW / 2, top: anchorY + gap }, // below
+            { left: anchorX + gap, top: anchorY - tooltipH / 2 }, // right
+            { left: anchorX - tooltipW - gap, top: anchorY - tooltipH / 2 }, // left
+          ].map((position) => ({
+            left: clampLeft(position.left),
+            top: clampTop(position.top),
+          }));
+          const overlapsAnchor = ({ left, top }: { left: number; top: number }) =>
+            anchorX >= left - nodeClearance &&
+            anchorX <= left + tooltipW + nodeClearance &&
+            anchorY >= top - nodeClearance &&
+            anchorY <= top + tooltipH + nodeClearance;
+          const distanceFromRect = ({ left, top }: { left: number; top: number }) => {
+            const dx = anchorX < left ? left - anchorX : anchorX > left + tooltipW ? anchorX - (left + tooltipW) : 0;
+            const dy = anchorY < top ? top - anchorY : anchorY > top + tooltipH ? anchorY - (top + tooltipH) : 0;
+            return dx * dx + dy * dy;
+          };
+          const nonOverlappingPosition = candidatePositions.find((position) => !overlapsAnchor(position));
+          const fallbackPosition = candidatePositions.reduce((best, candidate) =>
+            distanceFromRect(candidate) > distanceFromRect(best) ? candidate : best
+          );
+          const { left, top } = nonOverlappingPosition ?? fallbackPosition;
 
           return (
             <div
-              className="absolute z-30 rounded-xl border border-border bg-card shadow-sm overflow-hidden pointer-events-none"
+              className="absolute z-[120] rounded-xl border border-border bg-card shadow-sm overflow-hidden pointer-events-none"
               style={{ left, top, width: tooltipW }}
             >
               <div className="h-6 px-3 flex items-center bg-muted/80 border-b border-border/70">

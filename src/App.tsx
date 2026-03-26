@@ -626,8 +626,35 @@ function App() {
       <div className={`flex-1 overflow-hidden relative ${view === 'landing' ? 'hidden' : ''}`}>
 
         {/* Map view */}
-        <div className={`absolute inset-0 flex flex-col ${view !== 'map' ? 'invisible pointer-events-none' : ''}`}>
-          <header className="px-4 py-3 md:px-8 md:py-5">
+        <div className={`absolute inset-0 overflow-hidden ${view !== 'map' ? 'invisible pointer-events-none' : ''}`}>
+          <div className="absolute inset-0 overflow-hidden">
+            <BranchMapView
+              branches={branches}
+              mergeNodes={mergeNodes}
+              directCommits={directCommits}
+              mergedPRs={mergedPRs}
+              openPRs={openPRs}
+              defaultBranch={defaultBranch}
+              selectedBranch={selectedBranch}
+              onBranchSelect={handleBranchSelect}
+              onBranchClick={handleBranchClick}
+              onCommitClick={handleMapCommitClick}
+              githubAvailable={githubAvailable}
+              githubOwner={githubOwner}
+              githubRepo={githubRepo}
+              branchPromptMeta={branchPromptMeta}
+              branchCommitPreviews={branchCommitPreviews}
+              branchUniqueAheadCounts={branchUniqueAheadCounts}
+              view="time"
+              isLoading={mapLoading}
+              scrollRequest={scrollRequest}
+              focusedErrorBranch={focusedErrorBranch}
+              checkedOutRef={checkedOutRef}
+              isPopoverWindow={isPopoverWindow}
+            />
+          </div>
+
+          <header className="absolute left-0 right-0 z-40 px-4 py-3 md:px-8 md:py-5">
             <div className="grid grid-cols-[1fr_auto_1fr] items-center gap-3">
               <button
                 onClick={handleBackToLanding}
@@ -783,32 +810,6 @@ function App() {
             </div>
           )}
 
-          <div className="flex-1 overflow-hidden">
-            <BranchMapView
-              branches={branches}
-              mergeNodes={mergeNodes}
-              directCommits={directCommits}
-              mergedPRs={mergedPRs}
-              openPRs={openPRs}
-              defaultBranch={defaultBranch}
-              selectedBranch={selectedBranch}
-              onBranchSelect={handleBranchSelect}
-              onBranchClick={handleBranchClick}
-              onCommitClick={handleMapCommitClick}
-              githubAvailable={githubAvailable}
-              githubOwner={githubOwner}
-              githubRepo={githubRepo}
-              branchPromptMeta={branchPromptMeta}
-              branchCommitPreviews={branchCommitPreviews}
-              branchUniqueAheadCounts={branchUniqueAheadCounts}
-              view="time"
-              isLoading={mapLoading}
-              scrollRequest={scrollRequest}
-              focusedErrorBranch={focusedErrorBranch}
-              checkedOutRef={checkedOutRef}
-              isPopoverWindow={isPopoverWindow}
-            />
-          </div>
         </div>
 
         {/* Diff view */}
