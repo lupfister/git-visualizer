@@ -1503,10 +1503,6 @@ export default function BranchMap({
     return Math.max(lastCommitX, forkX + cornerR + 20);
   }
 
-  function branchHeadCommitX(b: Branch): number {
-    return timeToX(b.lastCommitDate);
-  }
-
   function branchAheadCount(b: Branch): number {
     if (Object.prototype.hasOwnProperty.call(branchUniqueAheadCounts, b.name)) {
       return branchUniqueAheadCounts[b.name] ?? 0;
@@ -1725,26 +1721,53 @@ export default function BranchMap({
   const checkedOutHasUncommittedChanges = checkedOutRef?.hasUncommittedChanges ?? false;
   const checkedOutIsDetached = !checkedOutBranchName;
 
-  function checkedOutPointForSha(sha: string): { x: number; y: number; renderable: boolean } | null {
+  function branchPreviewContainsSha(branchName: string, sha: string): boolean {
+    const previews = branchCommitPreviews[branchName] ?? [];
+    return previews.some((commit) =>
+      commit.fullSha === sha ||
+      commit.sha === sha ||
+      commit.fullSha.startsWith(sha) ||
+      sha.startsWith(commit.fullSha) ||
+      commit.sha.startsWith(sha) ||
+      sha.startsWith(commit.sha)
+    );
+  }
+
+  function checkedOutPointForSha(sha: string): { x: number; y: number } | null {
     const directX = directXByFullSha.get(sha);
     if (typeof directX === 'number') {
-      return { x: mainX, y: timeCoordToY(directX), renderable: true };
+      return { x: mainX, y: timeCoordToY(directX) };
     }
 
     const mergeX = nodeXByFullSha.get(sha);
     if (typeof mergeX === 'number') {
-      return { x: mainX, y: timeCoordToY(mergeX), renderable: true };
+      return { x: mainX, y: timeCoordToY(mergeX) };
     }
 
-    const branchBySha = activeBranches.find((b) => b.headSha === sha);
-    if (branchBySha) {
-      const hasVisibleHeadDot = branchAheadCount(branchBySha) > 0;
+    const branchesByShaAll = activeBranches.filter((b) => b.headSha === sha);
+    const preferredHeadBranches = branchesByShaAll.filter((b) => branchAheadCount(b) > 0);
+    const branchesBySha = preferredHeadBranches.length > 0
+      ? preferredHeadBranches
+      : branchesByShaAll;
+    if (branchesBySha.length > 0) {
+      const branchBySha = (() => {
+        if (branchesBySha.length === 1) return branchesBySha[0];
+        if (checkedOutParentSha) {
+          const byParent = branchesBySha.find((b) =>
+            branchPreviewContainsSha(b.name, checkedOutParentSha)
+          );
+          if (byParent) return byParent;
+        }
+        return [...branchesBySha].sort((a, b) => {
+          const laneAX = laneXByBranch.get(a.name) ?? mainX;
+          const laneBX = laneXByBranch.get(b.name) ?? mainX;
+          if (laneAX !== laneBX) return laneAX - laneBX;
+          return a.name.localeCompare(b.name);
+        })[0];
+      })();
       return {
         x: laneXByBranch.get(branchBySha.name) ?? mainX,
-        y: hasVisibleHeadDot
-          ? timeCoordToY(branchTipX(branchBySha))
-          : timeCoordToY(branchHeadCommitX(branchBySha)),
-        renderable: hasVisibleHeadDot,
+        y: timeCoordToY(branchTipX(branchBySha)),
       };
     }
 
@@ -1755,7 +1778,7 @@ export default function BranchMap({
     if (checkedOutBranchName === defaultBranch) {
       if (checkedOutHeadSha) {
         const headPoint = checkedOutPointForSha(checkedOutHeadSha);
-        if (headPoint) return { x: headPoint.x, y: headPoint.y };
+        if (headPoint) return headPoint;
       }
       return { x: mainX, y: mainActiveEndY };
     }
@@ -1772,17 +1795,12 @@ export default function BranchMap({
 
     if (checkedOutHeadSha) {
       const headPoint = checkedOutPointForSha(checkedOutHeadSha);
-      if (headPoint && (!checkedOutIsDetached || headPoint.renderable || !checkedOutParentSha)) {
-        return { x: headPoint.x, y: headPoint.y };
-      }
+      if (headPoint) return headPoint;
 
       if (checkedOutIsDetached && checkedOutParentSha) {
         const parentPoint = checkedOutPointForSha(checkedOutParentSha);
-        if (parentPoint?.renderable) return { x: parentPoint.x, y: parentPoint.y };
-        if (parentPoint) return { x: parentPoint.x, y: parentPoint.y };
+        if (parentPoint) return parentPoint;
       }
-
-      if (headPoint) return { x: headPoint.x, y: headPoint.y };
     }
 
     return null;
@@ -3202,45 +3220,23 @@ export default function BranchMap({
           {checkedOutHasUncommittedChanges && checkedOutDisplayIndicatorLocal && checkedOutIndicatorLocal && (() => {
             const markerLocal = checkedOutDisplayIndicatorLocal;
             const anchorLocal = checkedOutIndicatorLocal;
-            const deltaX = markerLocal.x - anchorLocal.x;
-            const deltaY = markerLocal.y - anchorLocal.y;
-            const distance = Math.hypot(deltaX, deltaY);
-            const anchorRadius = scaledNodeSize / 2 + 0.8;
-            const markerRadius = 7;
-            const totalTrim = anchorRadius + markerRadius;
-            const trimScale =
-              distance > 0.0001
-                ? Math.min(1, Math.max(0, (distance - 0.5) / Math.max(totalTrim, 0.0001)))
-                : 0;
-            const startTrim = anchorRadius * trimScale;
-            const endTrim = markerRadius * trimScale;
-            const unitX = distance > 0.0001 ? deltaX / distance : 0;
-            const unitY = distance > 0.0001 ? deltaY / distance : 0;
-            const trimmedAnchorLocal = {
-              x: anchorLocal.x + unitX * startTrim,
-              y: anchorLocal.y + unitY * startTrim,
-            };
-            const trimmedMarkerLocal = {
-              x: markerLocal.x - unitX * endTrim,
-              y: markerLocal.y - unitY * endTrim,
-            };
-            const hasHorizontalOffset = Math.abs(trimmedMarkerLocal.x - trimmedAnchorLocal.x) > 0.5;
-            const hasVerticalOffset = Math.abs(trimmedMarkerLocal.y - trimmedAnchorLocal.y) > 0.5;
+            const hasHorizontalOffset = Math.abs(markerLocal.x - anchorLocal.x) > 0.5;
+            const hasVerticalOffset = Math.abs(markerLocal.y - anchorLocal.y) > 0.5;
             const forkPath = (() => {
               if (!hasHorizontalOffset || !hasVerticalOffset) return null;
-              const horizontalDir = trimmedMarkerLocal.x >= trimmedAnchorLocal.x ? 1 : -1;
-              const verticalDir = trimmedMarkerLocal.y >= trimmedAnchorLocal.y ? 1 : -1;
+              const horizontalDir = markerLocal.x >= anchorLocal.x ? 1 : -1;
+              const verticalDir = markerLocal.y >= anchorLocal.y ? 1 : -1;
               const bend = Math.min(
                 cornerR,
-                Math.abs(trimmedMarkerLocal.x - trimmedAnchorLocal.x),
-                Math.abs(trimmedMarkerLocal.y - trimmedAnchorLocal.y),
+                Math.abs(markerLocal.x - anchorLocal.x),
+                Math.abs(markerLocal.y - anchorLocal.y),
               );
-              const preTurnX = trimmedMarkerLocal.x - horizontalDir * bend;
-              const turnY = trimmedAnchorLocal.y + verticalDir * bend;
-              return `M ${pathCoord(trimmedAnchorLocal.x, trimmedAnchorLocal.y)} L ${pathCoord(preTurnX, trimmedAnchorLocal.y)} Q ${pathCoord(trimmedMarkerLocal.x, trimmedAnchorLocal.y)} ${pathCoord(trimmedMarkerLocal.x, turnY)} L ${pathCoord(trimmedMarkerLocal.x, trimmedMarkerLocal.y)}`;
+              const preTurnX = markerLocal.x - horizontalDir * bend;
+              const turnY = anchorLocal.y + verticalDir * bend;
+              return `M ${pathCoord(anchorLocal.x, anchorLocal.y)} L ${pathCoord(preTurnX, anchorLocal.y)} Q ${pathCoord(markerLocal.x, anchorLocal.y)} ${pathCoord(markerLocal.x, turnY)} L ${pathCoord(markerLocal.x, markerLocal.y)}`;
             })();
-            const markerPoint = projectPoint(trimmedMarkerLocal.x, trimmedMarkerLocal.y);
-            const anchorPoint = projectPoint(trimmedAnchorLocal.x, trimmedAnchorLocal.y);
+            const markerPoint = projectPoint(markerLocal.x, markerLocal.y);
+            const anchorPoint = projectPoint(anchorLocal.x, anchorLocal.y);
             return (
               <g style={{ pointerEvents: 'none' }}>
                 {forkPath ? (
@@ -3742,18 +3738,16 @@ export default function BranchMap({
             return (
               <g style={{ pointerEvents: 'none' }}>
                 <circle
-                  className="branch-map-icon-fixed"
                   cx={markerPoint.x}
                   cy={markerPoint.y}
-                  r={12}
+                  r={worldPx(12)}
                   fill="#93c5fd"
                   opacity={0.35}
                 />
                 <circle
-                  className="branch-map-icon-fixed"
                   cx={markerPoint.x}
                   cy={markerPoint.y}
-                  r={7}
+                  r={worldPx(7)}
                   fill="#2563eb"
                 />
               </g>
