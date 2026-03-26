@@ -42,6 +42,7 @@ function App() {
   const [githubAuthStatus, setGithubAuthStatus] = useState<GitHubAuthStatus | null>(null);
   const [githubAuthLoading, setGithubAuthLoading] = useState(false);
   const [githubAuthMessage, setGithubAuthMessage] = useState<string | null>(null);
+  const [commitSwitchMessage, setCommitSwitchMessage] = useState<string | null>(null);
   const [branchPromptMeta, setBranchPromptMeta] = useState<Record<string, BranchPromptMeta>>({});
   const [branchCommitPreviews, setBranchCommitPreviews] = useState<Record<string, BranchCommitPreview[]>>({});
   const [branchUniqueAheadCounts, setBranchUniqueAheadCounts] = useState<Record<string, number>>({});
@@ -238,6 +239,7 @@ function App() {
     setGithubAuthStatus(null);
     setGithubAuthMessage(null);
     setCheckedOutRef(null);
+    setCommitSwitchMessage(null);
   }, [repoPath]);
 
   useEffect(() => {
@@ -511,12 +513,27 @@ function App() {
 
   function handleBranchSelect(branch: Branch) {
     setSelectedBranch(branch);
-    setView('diff');
   }
 
   function handleBranchClick(branch: Branch) {
     setSelectedBranch(branch);
     setView('diff');
+  }
+
+  async function handleMapCommitClick(commitSha: string) {
+    if (!repoPath) return;
+    setCommitSwitchMessage(null);
+    try {
+      const nextCheckedOutRef = await invoke<CheckedOutRef>('checkout_ref', {
+        repoPath,
+        refName: commitSha,
+      });
+      setCheckedOutRef(nextCheckedOutRef);
+    } catch (e) {
+      const message = e instanceof Error ? e.message : String(e);
+      setCommitSwitchMessage(message);
+      console.error('Failed to checkout commit:', message);
+    }
   }
 
   function handleFocusOnMap(branch: Branch) {
@@ -536,6 +553,10 @@ function App() {
   function handleBackToMap() {
     setSelectedBranch(null);
     setView('map');
+  }
+
+  function handleCheckedOutRefChange(nextCheckedOutRef: CheckedOutRef) {
+    setCheckedOutRef(nextCheckedOutRef);
   }
 
   // True when pre-warm finished but root route is auth-gated (all shots null)
@@ -661,6 +682,14 @@ function App() {
                   {githubAuthMessage}
                 </span>
               )}
+              {commitSwitchMessage && (
+                <span
+                  className="text-xs text-red-600 dark:text-red-400 border border-red-200 dark:border-red-800/60 rounded-full px-3 py-1 max-w-[22rem] truncate"
+                  title={commitSwitchMessage}
+                >
+                  {commitSwitchMessage}
+                </span>
+              )}
               {activeErrorBranches.length > 0 && (
                 <button
                   onClick={() => { if (showErrorPanel) { closeErrorPanel(); } else { setShowErrorPanel(true); } }}
@@ -759,6 +788,7 @@ function App() {
               selectedBranch={selectedBranch}
               onBranchSelect={handleBranchSelect}
               onBranchClick={handleBranchClick}
+              onCommitClick={handleMapCommitClick}
               githubAvailable={githubAvailable}
               githubOwner={githubOwner}
               githubRepo={githubRepo}
@@ -783,6 +813,8 @@ function App() {
               branch={selectedBranch}
               defaultBranch={defaultBranch}
               mergedPR={mergedPRs.find(p => p.branchName === selectedBranch.name)}
+              checkedOutRef={checkedOutRef}
+              onCheckedOutRefChange={handleCheckedOutRefChange}
               prewarmedMainShots={prewarmedMainShots}
               onBack={handleBackToMap}
             />

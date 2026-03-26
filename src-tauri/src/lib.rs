@@ -380,6 +380,13 @@ fn get_checked_out_ref(repo_path: String) -> Result<CheckedOutRef, String> {
     git::get_checked_out_ref(path).map_err(|e| e.to_string())
 }
 
+#[tauri::command(rename_all = "camelCase")]
+fn checkout_ref(repo_path: String, ref_name: String) -> Result<CheckedOutRef, String> {
+    let path = Path::new(&repo_path);
+    git::cli::run(path, &["checkout", "--detach", &ref_name]).map_err(|e| e.to_string())?;
+    git::get_checked_out_ref(path).map_err(|e| e.to_string())
+}
+
 #[tauri::command]
 fn get_repo_info(repo_path: String) -> Result<RepoInfo, String> {
     let path = Path::new(&repo_path);
@@ -2929,6 +2936,7 @@ pub fn run() {
             get_merge_nodes,
             get_default_branch,
             get_checked_out_ref,
+            checkout_ref,
             get_repo_info,
             get_github_info,
             get_github_auth_status,

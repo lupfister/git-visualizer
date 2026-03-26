@@ -364,6 +364,7 @@ interface BranchMapProps {
   selectedBranch?: Branch | null;
   onBranchSelect?: (branch: Branch) => void;
   onBranchClick?: (branch: Branch) => void;
+  onCommitClick?: (commitSha: string) => void;
   onLoadMore?: () => void;
   githubOwner?: string | null;
   githubRepo?: string | null;
@@ -389,6 +390,7 @@ export default function BranchMap({
   selectedBranch,
   onBranchSelect,
   onBranchClick,
+  onCommitClick,
   githubOwner,
   githubRepo,
   branchPromptMeta = {},
@@ -469,6 +471,12 @@ export default function BranchMap({
   // Branch issues panel state
   const [errorPanelOpen, setErrorPanelOpen] = useState(false);
   const errorPanelRef = useRef<HTMLDivElement>(null);
+
+  function handleCommitNodeClick(event: React.MouseEvent, commitSha?: string) {
+    event.stopPropagation();
+    if (!commitSha) return;
+    onCommitClick?.(commitSha);
+  }
 
   const openPRBranchNames = new Set(openPRs.map(p => p.branchName));
   const localBranchCount = branches.filter((b) => b.name !== defaultBranch).length;
@@ -2137,6 +2145,8 @@ export default function BranchMap({
                         stroke="var(--background)"
                         strokeWidth={1.2}
                         style={{ cursor: 'pointer' }}
+                        onClick={(event) => handleCommitNodeClick(event, c.fullSha)}
+                        onDoubleClick={(event) => event.stopPropagation()}
                         onMouseEnter={() =>
                           setTooltip({
                             x: anchorX,
@@ -2169,6 +2179,8 @@ export default function BranchMap({
                         stroke="var(--background)"
                         strokeWidth={1.2}
                         style={{ cursor: 'pointer' }}
+                        onClick={(event) => handleCommitNodeClick(event, last.fullSha)}
+                        onDoubleClick={(event) => event.stopPropagation()}
                         onMouseEnter={() =>
                           setTooltip({
                             x: anchorX,
@@ -3007,6 +3019,9 @@ export default function BranchMap({
                             fill={dotFill}
                             stroke="var(--background)"
                             strokeWidth={1.2}
+                            style={{ cursor: commit ? 'pointer' : 'default' }}
+                            onClick={(event) => handleCommitNodeClick(event, commit?.fullSha)}
+                            onDoubleClick={(event) => event.stopPropagation()}
                             onMouseEnter={() =>
                               setTooltip({
                                 x: anchorX,
@@ -3049,6 +3064,8 @@ export default function BranchMap({
                             stroke="var(--background)"
                             strokeWidth={1.2}
                             style={{ cursor: 'pointer' }}
+                            onClick={(event) => handleCommitNodeClick(event, lastRealEntry.item.commit?.fullSha)}
+                            onDoubleClick={(event) => event.stopPropagation()}
                             onMouseEnter={() =>
                               setTooltip({
                                 x: anchorX,
@@ -3510,6 +3527,10 @@ export default function BranchMap({
                     const dotFill = dotShouldUseLocalGray
                       ? LOCAL_UNPUSHED_GRAY
                       : (isSelected ? '#22d3ee' : isConflict ? '#dc2626' : isFocusedError ? focusedErrorColor : '#57534e');
+                    const targetCommitShaForSingle =
+                      realCommitEntries[0]?.item.commit?.fullSha ??
+                      lastEntry.item.commit?.fullSha ??
+                      b.headSha;
 
                     if (count <= 1) {
                       return (
@@ -3525,10 +3546,16 @@ export default function BranchMap({
                             cy={anchorY}
                             r={scaledNodeSize / 2}
                             fill={dotFill}
+                            style={{ cursor: 'pointer', pointerEvents: 'all' }}
+                            onClick={(event) => handleCommitNodeClick(event, targetCommitShaForSingle)}
+                            onDoubleClick={(event) => event.stopPropagation()}
                           />
                         </g>
                       );
                     }
+
+                    const targetCommitShaForCluster =
+                      realCommitEntries[realCommitEntries.length - 1]?.item.commit?.fullSha ?? b.headSha;
 
                     return (
                       <g key={`commit-overlay-${clusterKey}`} className="branch-map-icon-fixed">
@@ -3543,6 +3570,9 @@ export default function BranchMap({
                           cy={anchorY}
                           r={scaledNodeSize / 2 + CLUMP_SIZE_BOOST_PX}
                           fill={dotFill}
+                          style={{ cursor: 'pointer', pointerEvents: 'all' }}
+                          onClick={(event) => handleCommitNodeClick(event, targetCommitShaForCluster)}
+                          onDoubleClick={(event) => event.stopPropagation()}
                         />
                         <text
                           x={anchorX}
@@ -3552,6 +3582,7 @@ export default function BranchMap({
                           fontSize={count >= 10 ? 6.5 : 8}
                           fill="#fafaf9"
                           fontWeight={600}
+                          style={{ pointerEvents: 'none' }}
                         >
                           {clumpCountLabel(count)}
                         </text>
@@ -3641,6 +3672,9 @@ export default function BranchMap({
                         cy={anchorY}
                         r={scaledNodeSize / 2}
                         fill="#57534e"
+                        style={{ cursor: 'pointer', pointerEvents: 'all' }}
+                        onClick={(event) => handleCommitNodeClick(event, last.fullSha)}
+                        onDoubleClick={(event) => event.stopPropagation()}
                       />
                     </g>
                   );
@@ -3659,6 +3693,9 @@ export default function BranchMap({
                       cy={anchorY}
                       r={scaledNodeSize / 2 + CLUMP_SIZE_BOOST_PX}
                       fill="#57534e"
+                      style={{ cursor: 'pointer', pointerEvents: 'all' }}
+                      onClick={(event) => handleCommitNodeClick(event, last.fullSha)}
+                      onDoubleClick={(event) => event.stopPropagation()}
                     />
                     <text
                       x={anchorX}
@@ -3668,6 +3705,7 @@ export default function BranchMap({
                       fontSize={count >= 10 ? 6.5 : 8}
                       fill="#fafaf9"
                       fontWeight={600}
+                      style={{ pointerEvents: 'none' }}
                     >
                       {clumpCountLabel(count)}
                     </text>

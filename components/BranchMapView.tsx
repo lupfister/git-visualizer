@@ -14,6 +14,7 @@ interface Props {
   selectedBranch?: Branch | null;
   onBranchSelect?: (branch: Branch) => void;
   onBranchClick?: (branch: Branch) => void;
+  onCommitClick?: (commitSha: string) => void;
   onLoadMore?: () => void;
   githubAvailable?: boolean;
   githubOwner?: string | null;
@@ -38,6 +39,7 @@ export default function BranchMapView({
   selectedBranch,
   onBranchSelect,
   onBranchClick,
+  onCommitClick,
   onLoadMore,
   githubOwner,
   githubRepo,
@@ -79,6 +81,7 @@ export default function BranchMapView({
             selectedBranch={selectedBranch}
             onBranchSelect={onBranchSelect}
             onBranchClick={onBranchClick}
+            onCommitClick={onCommitClick}
             onLoadMore={onLoadMore}
             githubOwner={githubOwner}
             githubRepo={githubRepo}

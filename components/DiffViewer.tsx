@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { invoke } from '@tauri-apps/api/core';
-import type { Branch, Commit, MergedPR } from '../types';
+import type { Branch, CheckedOutRef, Commit, MergedPR } from '../types';
 
 function timeAgo(dateStr: string) {
   const s = (Date.now() - new Date(dateStr).getTime()) / 1000;
@@ -124,6 +124,8 @@ interface DiffViewerProps {
   branch: Branch;
   defaultBranch: string;
   mergedPR?: MergedPR;
+  checkedOutRef?: CheckedOutRef | null;
+  onCheckedOutRefChange?: (checkedOutRef: CheckedOutRef) => void;
   onBack: () => void;
   prewarmedMainShots?: (string | null)[] | null;
 }
@@ -133,12 +135,15 @@ export default function DiffViewer({
   branch,
   defaultBranch,
   mergedPR,
+  checkedOutRef = null,
+  onCheckedOutRefChange,
   onBack,
   prewarmedMainShots,
 }: DiffViewerProps) {
   const [commits, setCommits] = useState<Commit[]>([]);
-  const [selectedCommitSha, setSelectedCommitSha] = useState<string | null>(null);
   const [commitsLoading, setCommitsLoading] = useState(true);
+  const [switchingCommitSha, setSwitchingCommitSha] = useState<string | null>(null);
+  const [checkoutError, setCheckoutError] = useState<string | null>(null);
 
   const [summary, setSummary] = useState<SummarySection[] | null>(null);
   const [summaryLoading, setSummaryLoading] = useState(true);
@@ -153,10 +158,19 @@ export default function DiffViewer({
   const [beforeError, setBeforeError] = useState<string | null>(null);
   const [afterError, setAfterError] = useState<string | null>(null);
 
-  const currentCommit = useMemo(
-    () => commits.find(c => c.fullSha === selectedCommitSha) ?? commits[0] ?? null,
-    [commits, selectedCommitSha],
-  );
+  const currentCommit = useMemo(() => {
+    const checkedOutSha = checkedOutRef?.headSha;
+    if (checkedOutSha) {
+      const matched = commits.find((commit) =>
+        commit.fullSha === checkedOutSha ||
+        checkedOutSha.startsWith(commit.fullSha) ||
+        commit.fullSha.startsWith(checkedOutSha),
+      );
+      if (matched) return matched;
+    }
+
+    return commits[0] ?? null;
+  }, [commits, checkedOutRef?.headSha]);
   const multiRoute = routes.length > 1;
 
   const baseRef = currentCommit?.parentSha || defaultBranch;
@@ -195,13 +209,8 @@ export default function DiffViewer({
             })();
 
         setCommits(result);
-        setSelectedCommitSha(prev => {
-          if (prev && result.some(c => c.fullSha === prev)) return prev;
-          return result[0]?.fullSha ?? null;
-        });
       } catch {
         setCommits([]);
-        setSelectedCommitSha(null);
       }
       setCommitsLoading(false);
     }
@@ -276,6 +285,27 @@ export default function DiffViewer({
 
     loadDiffSummary();
   }, [repoPath, currentCommit?.fullSha, currentCommit?.parentSha]);
+
+  useEffect(() => {
+    setCheckoutError(null);
+    setSwitchingCommitSha(null);
+  }, [branch.name]);
+
+  async function handleCommitClick(commit: Commit) {
+    setCheckoutError(null);
+    setSwitchingCommitSha(commit.fullSha);
+    try {
+      const nextCheckedOutRef = await invoke<CheckedOutRef>('checkout_ref', {
+        repoPath,
+        refName: commit.fullSha,
+      });
+      onCheckedOutRefChange?.(nextCheckedOutRef);
+    } catch (e) {
+      setCheckoutError(String(e));
+    } finally {
+      setSwitchingCommitSha((prev) => (prev === commit.fullSha ? null : prev));
+    }
+  }
 
   useEffect(() => {
     async function generatePreviews() {
@@ -443,18 +473,25 @@ export default function DiffViewer({
 
     return (
       <div className="space-y-2">
+        {checkoutError && (
+          <p className="text-xs text-destructive mb-1">{checkoutError}</p>
+        )}
         {commits.map(c => {
           const isSelected = currentCommit?.fullSha === c.fullSha;
           const promptCount = c.agentPrompts?.length ?? 0;
+          const isSwitching = switchingCommitSha === c.fullSha;
           return (
             <button
               key={c.fullSha}
-              onClick={() => setSelectedCommitSha(c.fullSha)}
-              className={`w-full text-left rounded-lg border px-3 py-2.5 transition-colors ${isSelected ? 'border-primary/40 bg-primary/10' : 'border-border hover:bg-muted/50'}`}
+              onClick={() => handleCommitClick(c)}
+              disabled={isSwitching}
+              className={`w-full text-left rounded-lg border px-3 py-2.5 transition-colors ${isSelected ? 'border-primary/40 bg-primary/10' : 'border-border hover:bg-muted/50'} ${isSwitching ? 'opacity-70 cursor-wait' : ''}`}
             >
               <div className="flex items-center justify-between gap-2 mb-1">
                 <span className="font-mono text-xs text-foreground">{c.sha}</span>
-                <span className="text-xs text-muted-foreground">{timeAgo(c.date)}</span>
+                <span className="text-xs text-muted-foreground">
+                  {isSwitching ? 'Switching...' : timeAgo(c.date)}
+                </span>
               </div>
               <p className="text-sm text-foreground leading-snug line-clamp-2">{c.message}</p>
               <p className="text-xs text-muted-foreground mt-1">@{c.author}</p>
