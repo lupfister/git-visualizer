@@ -42,7 +42,10 @@ function App() {
   const [githubAuthStatus, setGithubAuthStatus] = useState<GitHubAuthStatus | null>(null);
   const [githubAuthLoading, setGithubAuthLoading] = useState(false);
   const [githubAuthMessage, setGithubAuthMessage] = useState<string | null>(null);
-  const [commitSwitchMessage, setCommitSwitchMessage] = useState<string | null>(null);
+  const [commitSwitchFeedback, setCommitSwitchFeedback] = useState<{
+    kind: 'success' | 'error';
+    message: string;
+  } | null>(null);
   const [branchPromptMeta, setBranchPromptMeta] = useState<Record<string, BranchPromptMeta>>({});
   const [branchCommitPreviews, setBranchCommitPreviews] = useState<Record<string, BranchCommitPreview[]>>({});
   const [branchUniqueAheadCounts, setBranchUniqueAheadCounts] = useState<Record<string, number>>({});
@@ -239,7 +242,7 @@ function App() {
     setGithubAuthStatus(null);
     setGithubAuthMessage(null);
     setCheckedOutRef(null);
-    setCommitSwitchMessage(null);
+    setCommitSwitchFeedback(null);
   }, [repoPath]);
 
   useEffect(() => {
@@ -520,18 +523,36 @@ function App() {
     setView('diff');
   }
 
-  async function handleMapCommitClick(commitSha: string) {
+  async function handleMapCommitClick(target: { commitSha: string; branchName?: string }) {
     if (!repoPath) return;
-    setCommitSwitchMessage(null);
+    setCommitSwitchFeedback(null);
     try {
-      const nextCheckedOutRef = await invoke<CheckedOutRef>('checkout_ref', {
+      const nextCheckedOutRef = target.branchName
+        ? await invoke<CheckedOutRef>('checkout_branch', {
+            repoPath,
+            branchName: target.branchName,
+          })
+        : await invoke<CheckedOutRef>('checkout_ref', {
+            repoPath,
+            refName: target.commitSha,
+          });
+      const confirmedCheckedOutRef = await invoke<CheckedOutRef>('get_checked_out_ref', {
         repoPath,
-        refName: commitSha,
+      }).catch(() => nextCheckedOutRef);
+      setCheckedOutRef(confirmedCheckedOutRef);
+      const refLabel = confirmedCheckedOutRef.branchName
+        ? confirmedCheckedOutRef.branchName
+        : `${confirmedCheckedOutRef.headSha.slice(0, 7)} (detached)`;
+      setCommitSwitchFeedback({
+        kind: 'success',
+        message: `Checked out ${refLabel}`,
       });
-      setCheckedOutRef(nextCheckedOutRef);
     } catch (e) {
       const message = e instanceof Error ? e.message : String(e);
-      setCommitSwitchMessage(message);
+      setCommitSwitchFeedback({
+        kind: 'error',
+        message,
+      });
       console.error('Failed to checkout commit:', message);
     }
   }
@@ -682,12 +703,26 @@ function App() {
                   {githubAuthMessage}
                 </span>
               )}
-              {commitSwitchMessage && (
+              {checkedOutRef && (
                 <span
-                  className="text-xs text-red-600 dark:text-red-400 border border-red-200 dark:border-red-800/60 rounded-full px-3 py-1 max-w-[22rem] truncate"
-                  title={commitSwitchMessage}
+                  className="text-xs text-muted-foreground border border-border/50 rounded-full px-3 py-1 max-w-[22rem] truncate"
+                  title={checkedOutRef.branchName ?? checkedOutRef.headSha}
                 >
-                  {commitSwitchMessage}
+                  {checkedOutRef.branchName
+                    ? `Checked out: ${checkedOutRef.branchName}`
+                    : `Checked out: ${checkedOutRef.headSha.slice(0, 7)} (detached)`}
+                </span>
+              )}
+              {commitSwitchFeedback && (
+                <span
+                  className={`text-xs rounded-full px-3 py-1 max-w-[26rem] truncate ${
+                    commitSwitchFeedback.kind === 'error'
+                      ? 'bg-red-50 dark:bg-red-900/20 text-red-600 dark:text-red-400'
+                      : 'bg-blue-50 dark:bg-blue-900/20 text-blue-600 dark:text-blue-400'
+                  }`}
+                  title={commitSwitchFeedback.message}
+                >
+                  {commitSwitchFeedback.message}
                 </span>
               )}
               {activeErrorBranches.length > 0 && (

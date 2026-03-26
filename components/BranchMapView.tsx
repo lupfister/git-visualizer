@@ -14,7 +14,7 @@ interface Props {
   selectedBranch?: Branch | null;
   onBranchSelect?: (branch: Branch) => void;
   onBranchClick?: (branch: Branch) => void;
-  onCommitClick?: (commitSha: string) => void;
+  onCommitClick?: (target: { commitSha: string; branchName?: string }) => void;
   onLoadMore?: () => void;
   githubAvailable?: boolean;
   githubOwner?: string | null;
