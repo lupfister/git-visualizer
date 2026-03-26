@@ -19,7 +19,7 @@ use std::{
         atomic::{AtomicU64, Ordering},
         Mutex, OnceLock,
     },
-    time::Duration as StdDuration,
+    time::{Duration as StdDuration, Instant},
 };
 
 #[cfg(target_os = "macos")]
@@ -52,9 +52,9 @@ pub struct DirEntry {
     is_repo: bool,
 }
 
-/// List contents of a directory.
-/// Returns directories first (sorted), then files (sorted).
-/// For directories, also indicates if they are git repositories.
+/// List visible sub-directories of a directory.
+/// Returns sorted directories only (files are intentionally omitted).
+/// Also indicates if each directory is a git repository.
 #[tauri::command(rename_all = "camelCase")]
 fn list_directory(path: String) -> Result<Vec<DirEntry>, String> {
     let dir = Path::new(&path);
@@ -67,8 +67,8 @@ fn list_directory(path: String) -> Result<Vec<DirEntry>, String> {
         return Err(format!("Not a directory: {path}"));
     }
 
+    const MAX_DIRECTORY_ENTRIES: usize = 2000;
     let mut dirs = Vec::new();
-    let mut files = Vec::new();
 
     let entries = std::fs::read_dir(dir).map_err(|e| format!("Failed to read directory: {e}"))?;
 
@@ -80,30 +80,32 @@ fn list_directory(path: String) -> Result<Vec<DirEntry>, String> {
             continue;
         }
 
+        let file_type = match entry.file_type() {
+            Ok(file_type) => file_type,
+            Err(_) => continue,
+        };
+        if !file_type.is_dir() || file_type.is_symlink() {
+            continue;
+        }
+
         let entry_path = entry.path();
-        let is_dir = entry_path.is_dir();
-        let is_repo = is_dir && entry_path.join(".git").exists();
+        let is_repo = entry_path.join(".git").is_dir();
 
         let item = DirEntry {
             name,
             path: entry_path.to_string_lossy().to_string(),
-            is_dir,
+            is_dir: true,
             is_repo,
         };
 
-        if is_dir {
-            dirs.push(item);
-        } else {
-            files.push(item);
+        dirs.push(item);
+        if dirs.len() >= MAX_DIRECTORY_ENTRIES {
+            break;
         }
     }
 
     // Sort alphabetically (case-insensitive)
-    dirs.sort_by(|a, b| a.name.to_lowercase().cmp(&b.name.to_lowercase()));
-    files.sort_by(|a, b| a.name.to_lowercase().cmp(&b.name.to_lowercase()));
-
-    // Directories first, then files
-    dirs.extend(files);
+    dirs.sort_by_key(|entry| entry.name.to_ascii_lowercase());
     Ok(dirs)
 }
 
@@ -170,6 +172,9 @@ fn search_directories(
     let max_depth = max_depth.unwrap_or(6);
     let limit = limit.unwrap_or(20);
     let query_lower = query.to_lowercase();
+    let mut visited_dirs = 0usize;
+    let max_visited_dirs = 6000usize;
+    let deadline = Instant::now() + StdDuration::from_millis(180);
 
     if !dir.exists() || !dir.is_dir() {
         return Err(format!("Invalid directory: {path}"));
@@ -187,22 +192,35 @@ fn search_directories(
         for dev_folder in DEV_FOLDERS {
             let dev_path = dir.join(dev_folder);
             if dev_path.exists() && dev_path.is_dir() {
-                search_repos_recursive(
+                let should_stop = search_repos_recursive(
                     &dev_path,
                     &query_lower,
                     0,
                     max_depth,
                     &mut results,
                     collect_limit,
+                    &mut visited_dirs,
+                    max_visited_dirs,
+                    deadline,
                 );
-                if results.len() >= collect_limit {
+                if should_stop {
                     break;
                 }
             }
         }
     } else {
         // Normal recursive search for non-home directories
-        search_repos_recursive(dir, &query_lower, 0, max_depth, &mut results, collect_limit);
+        search_repos_recursive(
+            dir,
+            &query_lower,
+            0,
+            max_depth,
+            &mut results,
+            collect_limit,
+            &mut visited_dirs,
+            max_visited_dirs,
+            deadline,
+        );
     }
 
     // Sort results by relevance:
@@ -232,10 +250,17 @@ fn search_repos_recursive(
     max_depth: u32,
     results: &mut Vec<DirEntry>,
     limit: usize,
+    visited_dirs: &mut usize,
+    max_visited_dirs: usize,
+    deadline: Instant,
 ) -> bool {
     if depth > max_depth || results.len() >= limit {
         return results.len() >= limit;
     }
+    if *visited_dirs >= max_visited_dirs || Instant::now() >= deadline {
+        return true;
+    }
+    *visited_dirs += 1;
 
     let entries = match std::fs::read_dir(dir) {
         Ok(e) => e,
@@ -255,13 +280,21 @@ fn search_repos_recursive(
             continue;
         }
 
-        let entry_path = entry.path();
-        if !entry_path.is_dir() {
-            continue;
+        if *visited_dirs >= max_visited_dirs || Instant::now() >= deadline {
+            return true;
         }
 
+        let file_type = match entry.file_type() {
+            Ok(file_type) => file_type,
+            Err(_) => continue,
+        };
+        if !file_type.is_dir() || file_type.is_symlink() {
+            continue;
+        }
+        let entry_path = entry.path();
+
         // Check if this is a git repository
-        let is_repo = entry_path.join(".git").exists();
+        let is_repo = entry_path.join(".git").is_dir();
 
         if is_repo {
             // Only add if name matches query
@@ -281,7 +314,17 @@ fn search_repos_recursive(
             // Don't recurse into repos (nested repos are rare)
         } else {
             // Not a repo, recurse to find repos inside
-            if search_repos_recursive(&entry_path, query, depth + 1, max_depth, results, limit) {
+            if search_repos_recursive(
+                &entry_path,
+                query,
+                depth + 1,
+                max_depth,
+                results,
+                limit,
+                visited_dirs,
+                max_visited_dirs,
+                deadline,
+            ) {
                 return true;
             }
         }
@@ -1056,6 +1099,7 @@ fn get_branch_commits(
     branch: String,
     base_branch: String,
     merge_commit_sha: Option<String>,
+    include_prompts: Option<bool>,
 ) -> Result<Vec<CommitInfo>, String> {
     let path = Path::new(&repo_path);
     let range = if let Some(sha) = merge_commit_sha {
@@ -1095,7 +1139,9 @@ fn get_branch_commits(
         })
         .collect();
 
-    hydrate_commit_prompt_windows(path, &mut commits);
+    if include_prompts.unwrap_or(true) {
+        hydrate_commit_prompt_windows(path, &mut commits);
+    }
 
     Ok(commits)
 }
@@ -1135,6 +1181,7 @@ fn get_recent_log(
     branch: String,
     limit: Option<u32>,
     first_parent: Option<bool>,
+    include_prompts: Option<bool>,
 ) -> Result<Vec<CommitInfo>, String> {
     let path = Path::new(&repo_path);
     let limit_str = limit.unwrap_or(20).to_string();
@@ -1170,7 +1217,9 @@ fn get_recent_log(
             })
         })
         .collect();
-    hydrate_commit_prompt_windows(path, &mut commits);
+    if include_prompts.unwrap_or(true) {
+        hydrate_commit_prompt_windows(path, &mut commits);
+    }
     Ok(commits)
 }
 

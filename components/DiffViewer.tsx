@@ -179,6 +179,7 @@ export default function DiffViewer({
               branch: defaultBranch,
               limit: 250,
               firstParent: false,
+              includePrompts: false,
             })
           : await (async () => {
               const mergeCommitSha = branch.commitsAhead === 0 && mergedPR?.mergeCommitSha
@@ -189,6 +190,7 @@ export default function DiffViewer({
                 branch: branch.name,
                 baseBranch: defaultBranch,
                 mergeCommitSha,
+                includePrompts: false,
               });
             })();
 

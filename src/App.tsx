@@ -7,6 +7,7 @@ import FolderPickerModal from './FolderPickerModal';
 import type { Branch, BranchCommitPreview, BranchPromptMeta, BranchPromptMarker, CheckedOutRef, Commit, DirectCommit, GitHubAuthStatus, GitHubInfo, MergeNode, MergedPR, OpenPR } from '../types';
 
 type View = 'landing' | 'map' | 'diff';
+const PROMPT_ENRICHMENT_ENABLED = false;
 
 function cn(...classes: Array<string | false | null | undefined>) {
   return classes.filter(Boolean).join(' ');
@@ -214,16 +215,13 @@ function App() {
     (b) => !openPRBranchNames.has(b.name) && now - new Date(b.lastCommitDate).getTime() > ACTIVE_MS
   );
 
-  // Mirror BranchMap's controlsReady timing so the error pill fades in together.
-  // BranchMap fires drawReady after 2 rAFs (~33ms), then delays controls 2600ms.
+  // Reveal map controls once timeline data is present.
   const hasTimelineData =
     branches.length > 0 || mergeNodes.length > 0 || directCommits.length > 0;
   useEffect(() => {
     if (!hasTimelineData || hadMapDataRef.current) return;
     hadMapDataRef.current = true;
-    setMapUiReady(false);
-    const id = setTimeout(() => setMapUiReady(true), 2650);
-    return () => clearTimeout(id);
+    setMapUiReady(true);
   }, [hasTimelineData]);
 
   // Reset when a new repo is loaded
@@ -285,6 +283,7 @@ function App() {
               branch: branch.name,
               baseBranch: comparisonBase,
               mergeCommitSha,
+              includePrompts: PROMPT_ENRICHMENT_ENABLED,
             });
             let historyCommits = mergeCommitSha
               ? commits.filter((c) => c.fullSha !== mergeCommitSha)
@@ -301,6 +300,7 @@ function App() {
                 repoPath,
                 branch: branch.name,
                 limit: 200,
+                includePrompts: PROMPT_ENRICHMENT_ENABLED,
               });
               historyCommits = recent.filter((c) => {
                 const commitMs = new Date(c.date).getTime();
@@ -384,6 +384,7 @@ function App() {
           branch: defaultBranch,
           limit: 250,
           firstParent: false,
+          includePrompts: PROMPT_ENRICHMENT_ENABLED,
         });
         const prompts = mainCommits
           .flatMap((c) => c.agentPrompts ?? [])
@@ -797,96 +798,17 @@ function App() {
 }
 
 function InteractiveDotField() {
-  const canvasRef = useRef<HTMLCanvasElement>(null);
-  const mouse = useRef({ x: -9999, y: -9999 });
-  const raf = useRef(0);
-  const dots = useRef<{ x: number; y: number; phase: number }[]>([]);
-
-  useEffect(() => {
-    const rawCanvas = canvasRef.current;
-    if (!rawCanvas) return;
-    const canvas: HTMLCanvasElement = rawCanvas;
-    const ctx = canvas.getContext('2d')!;
-    const SPACING = 20;
-
-    function buildDots(w: number, h: number) {
-      const arr: { x: number; y: number; phase: number }[] = [];
-      const cols = Math.floor(w / SPACING);
-      const rows = Math.floor(h / SPACING);
-      const ox = (w - cols * SPACING) / 2;
-      const oy = (h - rows * SPACING) / 2;
-      for (let r = 0; r <= rows; r++) {
-        for (let c = 0; c <= cols; c++) {
-          arr.push({ x: ox + c * SPACING, y: oy + r * SPACING, phase: Math.random() * Math.PI * 2 });
-        }
-      }
-      dots.current = arr;
-    }
-
-    function resize() {
-      const dpr = window.devicePixelRatio || 1;
-      const w = canvas.offsetWidth;
-      const h = canvas.offsetHeight;
-      canvas.width = w * dpr;
-      canvas.height = h * dpr;
-      ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
-      buildDots(w, h);
-    }
-
-    resize();
-    const ro = new ResizeObserver(resize);
-    ro.observe(canvas);
-
-    function draw(t: number) {
-      const w = canvas.offsetWidth;
-      const h = canvas.offsetHeight;
-      ctx.clearRect(0, 0, w, h);
-      const mx = mouse.current.x;
-      const my = mouse.current.y;
-      const INFLUENCE = 160;
-      const MAX_PUSH  = 28;
-
-      for (const d of dots.current) {
-        const pulse = 0.1 + 0.22 * Math.sin(t * 0.0005 + d.phase);
-        const ddx = d.x - mx;
-        const ddy = d.y - my;
-        const dist = Math.sqrt(ddx * ddx + ddy * ddy);
-        const prox = Math.max(0, 1 - dist / INFLUENCE);
-
-        // Repel: push dot away from cursor
-        const force = Math.pow(prox, 2) * MAX_PUSH;
-        const drawX = dist > 0 ? d.x + (ddx / dist) * force : d.x;
-        const drawY = dist > 0 ? d.y + (ddy / dist) * force : d.y;
-
-        const opacity = pulse + prox * 0.4;
-        const r = 1.3 + prox * 1.2;
-
-        ctx.beginPath();
-        ctx.arc(drawX, drawY, r, 0, Math.PI * 2);
-        ctx.fillStyle = `rgba(168, 162, 158, ${opacity})`;
-        ctx.fill();
-      }
-
-      raf.current = requestAnimationFrame(draw);
-    }
-
-    raf.current = requestAnimationFrame(draw);
-    return () => {
-      cancelAnimationFrame(raf.current);
-      ro.disconnect();
-    };
-  }, []);
-
   return (
-    <canvas
-      ref={canvasRef}
-      className="w-full h-full"
-      onMouseMove={(e) => {
-        const rect = e.currentTarget.getBoundingClientRect();
-        mouse.current = { x: e.clientX - rect.left, y: e.clientY - rect.top };
-      }}
-      onMouseLeave={() => { mouse.current = { x: -9999, y: -9999 }; }}
-    />
+    <div className="w-full h-full bg-muted" aria-hidden="true">
+      <div
+        className="w-full h-full"
+        style={{
+          backgroundImage:
+            'radial-gradient(circle at 1px 1px, color-mix(in srgb, var(--muted-foreground) 26%, transparent) 1px, transparent 0)',
+          backgroundSize: '18px 18px',
+        }}
+      />
+    </div>
   );
 }
 
@@ -1067,7 +989,7 @@ function RepoSelector({
               Enter repo path
             </button>
           ) : (
-            <div className={cn('flex flex-col gap-2', isPopoverWindow ? '' : 'animate-pill-expand')}>
+            <div className="flex flex-col gap-2">
               <form
                 onSubmit={handleSubmit}
                 className={cn('flex items-center border border-border bg-card', isPopoverWindow ? 'rounded-lg' : 'rounded-2xl')}
@@ -1101,13 +1023,9 @@ function RepoSelector({
                     isPopoverWindow ? 'm-1 w-8 h-8 rounded-lg' : 'm-1.5 w-10 h-10 rounded-[14px]'
                   )}
                 >
-                  {loading ? (
-                    <div className="w-3.5 h-3.5 border-2 border-background/30 border-t-background rounded-full animate-spin" />
-                  ) : (
-                    <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2.5} d="M9 5l7 7-7 7" />
-                    </svg>
-                  )}
+                  <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2.5} d="M9 5l7 7-7 7" />
+                  </svg>
                 </button>
               </form>
               {inputError && <p className="text-xs text-destructive px-2">{inputError}</p>}

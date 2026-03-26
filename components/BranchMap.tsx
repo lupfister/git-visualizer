@@ -41,6 +41,7 @@ const CLUMP_STRUCTURAL_PRIORITY = 5;
 const CLUMP_SECONDARY_PRIORITY = 1.5;
 const CHECKED_OUT_AHEAD_OFFSET_WORLD = 120;
 const DETACHED_WORK_OFFSET_WORLD = 22;
+const ENABLE_TIMELINE_INTRO_ANIMATIONS = false;
 
 type TooltipData = {
   x: number;
@@ -420,7 +421,7 @@ export default function BranchMap({
   // WKWebView (Tauri) doesn't fire CSS animations on SVG elements inserted during
   // the initial paint. Defer animation classes by one rAF so they start post-paint.
   const [drawReady, setDrawReady] = useState(false);
-  const [animationsLocked, setAnimationsLocked] = useState(false);
+  const [animationsLocked, setAnimationsLocked] = useState(true);
   // flashingName: branch in "bright" phase right after focus (clears after 700ms, triggering CSS stroke transition to lighter red)
   const [_flashingName, setFlashingName] = useState<string | null>(null);
 
@@ -483,11 +484,17 @@ export default function BranchMap({
     if (!hasTimelineSeedData) {
       hadDataRef.current = false;
       setDrawReady(false);
-      setAnimationsLocked(false);
+      setAnimationsLocked(true);
       return;
     }
     if (hadDataRef.current) return;
     hadDataRef.current = true;
+
+    if (!ENABLE_TIMELINE_INTRO_ANIMATIONS) {
+      setDrawReady(true);
+      setAnimationsLocked(true);
+      return;
+    }
 
     // Use a cancelled flag so React StrictMode's cleanup can invalidate the
     // first invocation's callbacks before the second invocation schedules its own.
@@ -866,13 +873,15 @@ export default function BranchMap({
     return true;
   }
 
-  // Reveal the controls after the main draw-in animation completes.
-  // drawReady fires when animations start; 2600ms matches draw-path-main duration.
-  // When drawReady resets (new repo), hide controls immediately so they
-  // doesn't flash visible before the next animation cycle begins.
+  // Reveal controls immediately when intro animations are disabled.
+  // When enabled, keep the original delayed reveal timing.
   useEffect(() => {
     if (!drawReady) {
       setControlsReady(false);
+      return;
+    }
+    if (!ENABLE_TIMELINE_INTRO_ANIMATIONS) {
+      setControlsReady(true);
       return;
     }
     const id = setTimeout(() => setControlsReady(true), 2600);
@@ -880,10 +889,14 @@ export default function BranchMap({
   }, [drawReady]);
 
   // In WebKit, repeated ancestor transform updates can occasionally restart SVG
-  // stroke-dash animations. Lock them to final state right after initial intro.
+  // stroke-dash animations. Keep them locked when intro animations are disabled.
   useEffect(() => {
     if (!drawReady) {
-      setAnimationsLocked(false);
+      setAnimationsLocked(true);
+      return;
+    }
+    if (!ENABLE_TIMELINE_INTRO_ANIMATIONS) {
+      setAnimationsLocked(true);
       return;
     }
     const id = setTimeout(() => setAnimationsLocked(true), 2800);
@@ -1808,10 +1821,10 @@ export default function BranchMap({
   const clumpMaxEntries =
     CLUMP_MAX_ENTRIES_TOUCH +
     Math.round((CLUMP_MAX_ENTRIES_FULL - CLUMP_MAX_ENTRIES_TOUCH) * clumpProgress);
-  const drawPathMainClass = animationsLocked ? undefined : 'draw-path-main';
-  const drawPathArcClass = animationsLocked ? undefined : 'draw-path-arc';
-  const fadeInInfoClass = animationsLocked ? undefined : 'fade-in-info';
-  const fadeInPillClass = animationsLocked ? undefined : 'fade-in-pill';
+  const drawPathMainClass = (!ENABLE_TIMELINE_INTRO_ANIMATIONS || animationsLocked) ? undefined : 'draw-path-main';
+  const drawPathArcClass = (!ENABLE_TIMELINE_INTRO_ANIMATIONS || animationsLocked) ? undefined : 'draw-path-arc';
+  const fadeInInfoClass = (!ENABLE_TIMELINE_INTRO_ANIMATIONS || animationsLocked) ? undefined : 'fade-in-info';
+  const fadeInPillClass = (!ENABLE_TIMELINE_INTRO_ANIMATIONS || animationsLocked) ? undefined : 'fade-in-pill';
   const mainTimelineOpacity = hoveredPR !== null || hoveredBranch !== null ? 0.2 : 1;
 
   return (
@@ -1840,7 +1853,7 @@ export default function BranchMap({
           height={svgHeight}
           className={[
             'branch-map-svg',
-            drawReady ? 'timeline-ready' : '',
+            drawReady && ENABLE_TIMELINE_INTRO_ANIMATIONS ? 'timeline-ready' : '',
             animationsLocked ? 'timeline-static' : '',
           ].filter(Boolean).join(' ')}
           style={{
@@ -3669,14 +3682,8 @@ export default function BranchMap({
         {sortedNodes.length === 0 && activeBranches.length === 0 && (
           isLoading ? (
             <div className="absolute inset-0 flex items-center justify-center pointer-events-none">
-              <div className="flex items-center gap-1.5">
-                {[0, 1, 2].map(i => (
-                  <span
-                    key={i}
-                    className="w-1.5 h-1.5 rounded-full bg-muted-foreground/40 animate-bounce"
-                    style={{ animationDelay: `${i * 150}ms` }}
-                  />
-                ))}
+              <div className="rounded-xl border border-border bg-card px-4 py-2">
+                <p className="text-xs text-muted-foreground">Loading branch map...</p>
               </div>
             </div>
           ) : (
