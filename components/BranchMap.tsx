@@ -3736,18 +3736,18 @@ export default function BranchMap({
           {checkedOutDisplayIndicatorLocal && (() => {
             const markerPoint = projectPoint(checkedOutDisplayIndicatorLocal.x, checkedOutDisplayIndicatorLocal.y);
             return (
-              <g style={{ pointerEvents: 'none' }}>
+              <g className="branch-map-icon-fixed" style={{ pointerEvents: 'none' }}>
                 <circle
                   cx={markerPoint.x}
                   cy={markerPoint.y}
-                  r={worldPx(12)}
+                  r={12}
                   fill="#93c5fd"
                   opacity={0.35}
                 />
                 <circle
                   cx={markerPoint.x}
                   cy={markerPoint.y}
-                  r={worldPx(7)}
+                  r={7}
                   fill="#2563eb"
                 />
               </g>
