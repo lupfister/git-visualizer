@@ -447,25 +447,51 @@ body.popover-window #root {
 /* Checked-out halo pulse */
 @keyframes checked-out-halo-pulse {
   0% {
-    opacity: 0.24;
-    transform: scale(0.92);
+    opacity: 0.16;
+    transform: scale(0.88);
   }
 
-  50% {
-    opacity: 0.36;
-    transform: scale(1.22);
+  42% {
+    opacity: 0.34;
+    transform: scale(1.18);
+  }
+
+  68% {
+    opacity: 0.24;
+    transform: scale(1.02);
   }
 
   100% {
-    opacity: 0.24;
-    transform: scale(0.92);
+    opacity: 0.16;
+    transform: scale(0.88);
   }
 }
 
 .checked-out-halo-pulse {
   transform-box: fill-box;
   transform-origin: center;
-  animation: checked-out-halo-pulse 1.6s ease-in-out infinite;
+  animation: checked-out-halo-pulse 1.8s cubic-bezier(0.37, 0, 0.63, 1) infinite;
+}
+
+@keyframes branch-map-fog-recede {
+  0% {
+    transform: scale(1);
+    opacity: 0.92;
+  }
+
+  100% {
+    transform: scale(20);
+    opacity: 0;
+  }
+}
+
+.branch-map-fog-recede {
+  background: var(--background);
+  -webkit-mask-image: radial-gradient(circle at center, transparent 0 22px, #000 88px);
+  mask-image: radial-gradient(circle at center, transparent 0 22px, #000 88px);
+  transform-origin: center;
+  will-change: transform, opacity;
+  animation: branch-map-fog-recede var(--fog-duration, 1800ms) cubic-bezier(0.16, 1, 0.3, 1) forwards;
 }
 
 @media (prefers-reduced-motion: reduce) {
@@ -473,5 +499,10 @@ body.popover-window #root {
     animation: none;
     opacity: 0.3;
     transform: scale(1);
+  }
+
+  .branch-map-fog-recede {
+    animation: none;
+    opacity: 0;
   }
 }

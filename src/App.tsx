@@ -1,6 +1,7 @@
 import { useState, useEffect, useRef } from 'react';
 import { invoke } from '@tauri-apps/api/core';
 import { getCurrentWindow } from '@tauri-apps/api/window';
+import { ArrowLeft, Maximize2 } from 'lucide-react';
 import BranchMapView from '../components/BranchMapView';
 import DiffViewer from '../components/DiffViewer';
 import FolderPickerModal from './FolderPickerModal';
@@ -23,6 +24,7 @@ function App() {
   const [openPRs, setOpenPRs] = useState<OpenPR[]>([]);
   const [defaultBranch, setDefaultBranch] = useState<string>('main');
   const [checkedOutRef, setCheckedOutRef] = useState<CheckedOutRef | null>(null);
+  const [hoveredBranchName, setHoveredBranchName] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);       // button spinner in landing
   const [mapLoading, setMapLoading] = useState(false); // canvas skeleton in map
   const [error, setError] = useState<string | null>(null);
@@ -229,6 +231,7 @@ function App() {
     setGithubAuthStatus(null);
     setGithubAuthMessage(null);
     setCheckedOutRef(null);
+    setHoveredBranchName(null);
     setCommitSwitchFeedback(null);
   }, [repoPath]);
 
@@ -606,15 +609,16 @@ function App() {
   return (
     <div className={`h-screen min-h-0 text-foreground flex flex-col relative ${isPopoverWindow ? 'bg-transparent' : 'bg-background'}`}>
       <div className={`h-full min-h-0 flex flex-col relative ${isPopoverWindow ? 'overflow-hidden popover-continuous-60 bg-background' : ''}`}>
-      <button
-        onClick={handleOpenFullApp}
-        className={cn(
-          'absolute z-[80] rounded-lg border border-border bg-card font-medium text-foreground hover:bg-accent transition-colors',
-          isPopoverWindow ? 'top-2 right-2 px-2.5 py-1 text-[11px]' : 'top-3 right-3 px-3 py-1.5 text-xs'
-        )}
-      >
-        Open app
-      </button>
+      {isPopoverWindow && (
+        <button
+          onClick={handleOpenFullApp}
+          aria-label="Open full app"
+          title="Open full app"
+          className="absolute z-[80] top-3 right-3 rounded-lg border border-border bg-card text-foreground hover:bg-accent transition-colors p-2"
+        >
+          <Maximize2 className="h-3.5 w-3.5 shrink-0" />
+        </button>
+      )}
       {view === 'landing' && (
         <div>
           <RepoSelector onSelect={loadRepo} loading={loading} error={error} isPopoverWindow={isPopoverWindow} />
@@ -650,21 +654,37 @@ function App() {
               scrollRequest={scrollRequest}
               focusedErrorBranch={focusedErrorBranch}
               checkedOutRef={checkedOutRef}
+              onHoveredBranchChange={setHoveredBranchName}
               isPopoverWindow={isPopoverWindow}
             />
           </div>
 
-          <header className="absolute left-0 right-0 z-40 px-4 py-3 md:px-8 md:py-5">
+          <header className={cn(
+            'absolute left-0 right-0 z-40',
+            isPopoverWindow ? 'px-3 pt-3' : 'px-4 py-3 md:px-8 md:py-5'
+          )}>
             <div className="grid grid-cols-[1fr_auto_1fr] items-center gap-3">
               <button
                 onClick={handleBackToLanding}
-                className="text-muted-foreground hover:text-foreground transition-colors text-sm shrink-0 justify-self-start"
+                aria-label="Back"
+                title="Back"
+                className="rounded-lg border border-border bg-card text-foreground hover:bg-accent transition-colors p-2 shrink-0 justify-self-start"
               >
-                ← Back
+                <ArrowLeft className="h-3.5 w-3.5 shrink-0" />
               </button>
-              <h1 className="text-sm md:text-base font-medium text-foreground text-center justify-self-center max-w-[52vw] truncate">
-                {repoName}
-              </h1>
+              <div className="justify-self-center max-w-[52vw] min-w-0 text-center">
+                <h1 className="text-sm md:text-base font-medium text-foreground truncate">
+                  {repoName}
+                </h1>
+                {(hoveredBranchName ?? checkedOutRef?.branchName) && (
+                  <p
+                    className="mt-0.5 text-xs text-muted-foreground truncate"
+                    title={hoveredBranchName ?? checkedOutRef?.branchName ?? undefined}
+                  >
+                    {hoveredBranchName ?? checkedOutRef?.branchName}
+                  </p>
+                )}
+              </div>
               <div className="justify-self-end" aria-hidden="true" />
             </div>
             <div className="mt-3 min-h-8 flex flex-wrap items-center gap-2 content-start">
@@ -713,16 +733,6 @@ function App() {
               {githubAuthMessage && (
                 <span className="text-xs text-muted-foreground max-w-64 truncate" title={githubAuthMessage}>
                   {githubAuthMessage}
-                </span>
-              )}
-              {checkedOutRef && (
-                <span
-                  className="text-xs text-muted-foreground border border-border/50 rounded-full px-3 py-1 max-w-[22rem] truncate"
-                  title={checkedOutRef.branchName ?? checkedOutRef.headSha}
-                >
-                  {checkedOutRef.branchName
-                    ? `Checked out: ${checkedOutRef.branchName}`
-                    : `Checked out: ${checkedOutRef.headSha.slice(0, 7)} (detached)`}
                 </span>
               )}
               {commitSwitchFeedback && (
@@ -862,7 +872,7 @@ function RepoSelector({
   isPopoverWindow?: boolean;
 }) {
   const RECENT_REPOS_STORAGE_KEY = 'git-visualizer:recent-repositories';
-  const MAX_RECENT_REPOS = 6;
+  const MAX_RECENT_REPOS = 10;
 
   type RecentRepo = {
     path: string;
@@ -876,24 +886,26 @@ function RepoSelector({
   const [inputError, setInputError] = useState<string | null>(null);
   const [recentRepos, setRecentRepos] = useState<RecentRepo[]>([]);
 
+  function sanitizeRecentRepos(value: unknown): RecentRepo[] {
+    if (!Array.isArray(value)) return [];
+    return value
+      .filter((repo): repo is RecentRepo => {
+        return (
+          typeof repo === 'object' &&
+          repo !== null &&
+          typeof repo.path === 'string' &&
+          typeof repo.name === 'string' &&
+          typeof repo.lastOpenedAt === 'number'
+        );
+      })
+      .slice(0, MAX_RECENT_REPOS);
+  }
+
   useEffect(() => {
     try {
       const raw = localStorage.getItem(RECENT_REPOS_STORAGE_KEY);
       if (!raw) return;
-      const parsed = JSON.parse(raw) as RecentRepo[];
-      if (!Array.isArray(parsed)) return;
-      const sanitized = parsed
-        .filter((repo): repo is RecentRepo => {
-          return (
-            typeof repo === 'object' &&
-            repo !== null &&
-            typeof repo.path === 'string' &&
-            typeof repo.name === 'string' &&
-            typeof repo.lastOpenedAt === 'number'
-          );
-        })
-        .slice(0, MAX_RECENT_REPOS);
-      setRecentRepos(sanitized);
+      setRecentRepos(sanitizeRecentRepos(JSON.parse(raw)));
     } catch {
       setRecentRepos([]);
     }
@@ -915,15 +927,13 @@ function RepoSelector({
       lastOpenedAt: Date.now(),
     };
 
-    setRecentRepos((prev) => {
-      const next = [nextRepo, ...prev.filter((repo) => repo.path !== normalizedPath)].slice(0, MAX_RECENT_REPOS);
-      try {
-        localStorage.setItem(RECENT_REPOS_STORAGE_KEY, JSON.stringify(next));
-      } catch {
-        // Ignore storage failures and keep in-memory list.
-      }
-      return next;
-    });
+    const next = [nextRepo, ...recentRepos.filter((repo) => repo.path !== normalizedPath)].slice(0, MAX_RECENT_REPOS);
+    setRecentRepos(next);
+    try {
+      localStorage.setItem(RECENT_REPOS_STORAGE_KEY, JSON.stringify(next));
+    } catch {
+      // Ignore storage failures and keep in-memory list.
+    }
   }
 
   function openRepo(selectedPath: string) {
@@ -981,28 +991,6 @@ function RepoSelector({
 
             <p className="text-sm text-muted-foreground mb-4">Get started</p>
           </>
-        )}
-
-        {recentRepos.length > 0 && (
-          <div className={cn('w-full', isPopoverWindow ? 'mb-3' : 'max-w-xs mb-4')}>
-            <p className="text-[10px] uppercase tracking-wide text-muted-foreground font-medium mb-2">Recently opened</p>
-            <div className={cn('flex flex-col', isPopoverWindow ? 'gap-1.5' : 'gap-2')}>
-              {recentRepos.map((repo) => (
-                <button
-                  key={repo.path}
-                  onClick={() => openRepo(repo.path)}
-                  disabled={loading}
-                  className={cn(
-                    'w-full rounded-xl border border-border bg-card text-left hover:bg-muted transition-colors disabled:opacity-60 disabled:cursor-not-allowed',
-                    isPopoverWindow ? 'px-3 py-2' : 'px-4 py-2.5'
-                  )}
-                >
-                  <p className={cn('text-foreground truncate', isPopoverWindow ? 'text-xs' : 'text-sm')}>{repo.name}</p>
-                  <p className="text-xs text-muted-foreground truncate">{repo.path}</p>
-                </button>
-              ))}
-            </div>
-          </div>
         )}
 
         <div className={cn('flex flex-col w-full', isPopoverWindow ? 'gap-2' : 'gap-3 max-w-xs')}>
@@ -1071,12 +1059,40 @@ function RepoSelector({
             </div>
           )}
         </div>
+
+        {recentRepos.length > 0 && (
+          <div className={cn('w-full', isPopoverWindow ? 'mt-3' : 'max-w-xs mt-4')}>
+            <p className="text-[10px] uppercase tracking-wide text-muted-foreground font-medium mb-2">Recently opened</p>
+            <div
+              className={cn(
+                'flex flex-col',
+                isPopoverWindow ? 'gap-1.5' : 'gap-2 max-h-72 overflow-y-auto pr-1'
+              )}
+            >
+              {recentRepos.map((repo) => (
+                <button
+                  key={repo.path}
+                  onClick={() => openRepo(repo.path)}
+                  disabled={loading}
+                  className={cn(
+                    'w-full rounded-xl border border-border bg-card text-left hover:bg-muted transition-colors disabled:opacity-60 disabled:cursor-not-allowed',
+                    isPopoverWindow ? 'px-3 py-2' : 'px-4 py-2.5'
+                  )}
+                >
+                  <p className={cn('text-foreground truncate', isPopoverWindow ? 'text-xs' : 'text-sm')}>{repo.name}</p>
+                  <p className="text-xs text-muted-foreground truncate">{repo.path}</p>
+                </button>
+              ))}
+            </div>
+          </div>
+        )}
       </div>
 
       {showPicker && (
         <FolderPickerModal
           onSelect={handlePickerSelect}
           onClose={() => setShowPicker(false)}
+          isPopoverWindow={isPopoverWindow}
         />
       )}
     </main>

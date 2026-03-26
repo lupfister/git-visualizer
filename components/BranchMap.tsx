@@ -40,8 +40,9 @@ const CLUMP_MAX_ENTRIES_FULL = CLUMP_COUNT_MAX;
 const CLUMP_STRUCTURAL_PRIORITY = 5;
 const CLUMP_SECONDARY_PRIORITY = 1.5;
 const CHECKED_OUT_AHEAD_OFFSET_WORLD = 120;
-const INITIAL_CENTER_SETTLE_MS = 340;
-const INITIAL_REVEAL_FADE_MS = 520;
+const CHECKED_OUT_PULSE_MS = 1800;
+const INITIAL_CENTER_SETTLE_MS = CHECKED_OUT_PULSE_MS;
+const INITIAL_REVEAL_FADE_MS = CHECKED_OUT_PULSE_MS;
 const ENABLE_TIMELINE_INTRO_ANIMATIONS = false;
 
 type TooltipData = {
@@ -366,6 +367,7 @@ interface BranchMapProps {
   selectedBranch?: Branch | null;
   onBranchSelect?: (branch: Branch) => void;
   onBranchClick?: (branch: Branch) => void;
+  onHoveredBranchChange?: (branchName: string | null) => void;
   onCommitClick?: (target: { commitSha: string; branchName?: string }) => void;
   onLoadMore?: () => void;
   githubOwner?: string | null;
@@ -393,6 +395,7 @@ export default function BranchMap({
   selectedBranch,
   onBranchSelect,
   onBranchClick,
+  onHoveredBranchChange,
   onCommitClick,
   githubOwner,
   githubRepo,
@@ -467,9 +470,17 @@ export default function BranchMap({
   const hasAutoCenteredRef = useRef(false);
   const autoCenterSignatureRef = useRef<string | null>(null);
   const hasUserMovedCameraRef = useRef(false);
+
+  useEffect(() => {
+    onHoveredBranchChange?.(hoveredBranch);
+  }, [hoveredBranch, onHoveredBranchChange]);
+
+  useEffect(() => () => onHoveredBranchChange?.(null), [onHoveredBranchChange]);
   const [timelineRevealReady, setTimelineRevealReady] = useState(false);
+  const [timelineRevealPhase, setTimelineRevealPhase] = useState<'hidden' | 'fading' | 'done'>('hidden');
   const [hasInitialRevealDone, setHasInitialRevealDone] = useState(false);
-  const timelineRevealTimeoutRef = useRef<number | null>(null);
+  const timelineRevealStartTimeoutRef = useRef<number | null>(null);
+  const timelineRevealDoneTimeoutRef = useRef<number | null>(null);
 
   // Bottom chrome controls visibility state
   const [controlsReady, setControlsReady] = useState(false);
@@ -492,24 +503,36 @@ export default function BranchMap({
   }
 
   function clearTimelineRevealTimer() {
-    if (timelineRevealTimeoutRef.current !== null) {
-      clearTimeout(timelineRevealTimeoutRef.current);
-      timelineRevealTimeoutRef.current = null;
+    if (timelineRevealStartTimeoutRef.current !== null) {
+      clearTimeout(timelineRevealStartTimeoutRef.current);
+      timelineRevealStartTimeoutRef.current = null;
+    }
+    if (timelineRevealDoneTimeoutRef.current !== null) {
+      clearTimeout(timelineRevealDoneTimeoutRef.current);
+      timelineRevealDoneTimeoutRef.current = null;
     }
   }
 
   function scheduleTimelineReveal(delayMs = INITIAL_CENTER_SETTLE_MS) {
     clearTimelineRevealTimer();
-    timelineRevealTimeoutRef.current = window.setTimeout(() => {
-      timelineRevealTimeoutRef.current = null;
-      setTimelineRevealReady(true);
-      setHasInitialRevealDone(true);
+    setTimelineRevealReady(false);
+    setTimelineRevealPhase('hidden');
+    timelineRevealStartTimeoutRef.current = window.setTimeout(() => {
+      timelineRevealStartTimeoutRef.current = null;
+      setTimelineRevealPhase('fading');
+      timelineRevealDoneTimeoutRef.current = window.setTimeout(() => {
+        timelineRevealDoneTimeoutRef.current = null;
+        setTimelineRevealPhase('done');
+        setTimelineRevealReady(true);
+        setHasInitialRevealDone(true);
+      }, INITIAL_REVEAL_FADE_MS);
     }, delayMs);
   }
 
   function markUserMovedCamera() {
     hasUserMovedCameraRef.current = true;
     clearTimelineRevealTimer();
+    setTimelineRevealPhase('done');
     setTimelineRevealReady(true);
     setHasInitialRevealDone(true);
   }
@@ -1138,6 +1161,7 @@ export default function BranchMap({
     autoCenterSignatureRef.current = null;
     hasUserMovedCameraRef.current = false;
     clearTimelineRevealTimer();
+    setTimelineRevealPhase('hidden');
     setTimelineRevealReady(false);
     setHasInitialRevealDone(false);
   }, [orientation]);
@@ -1910,14 +1934,19 @@ export default function BranchMap({
       autoCenterSignatureRef.current = null;
       hasUserMovedCameraRef.current = false;
       clearTimelineRevealTimer();
+      setTimelineRevealPhase('hidden');
       setTimelineRevealReady(false);
       setHasInitialRevealDone(false);
       return;
     }
     if (hasUserMovedCameraRef.current || viewportSize.width <= 0 || viewportSize.height <= 0) return;
-    // During initial data hydration, the checked-out target can be unresolved
-    // for a render or two. Wait for a concrete anchor if we know one should exist.
-    if (checkedOutRef && checkedOutAnchor == null) return;
+    if (!hasInitialRevealDone && timelineRevealPhase === 'fading') return;
+    // During initial hydration, the checked-out target can be unresolved for a
+    // render or two. Keep showing the centered loader marker until the real
+    // anchor exists so reveal timing always starts from the final camera target.
+    if (!hasInitialRevealDone && checkedOutAnchor == null) return;
+    // After the intro reveal has completed, still guard checked-out scenarios.
+    if (hasInitialRevealDone && checkedOutRef && checkedOutAnchor == null) return;
     const zoomValue = zoomRef.current;
     const fallbackCenter = {
       x: svgWidth / 2,
@@ -1944,13 +1973,13 @@ export default function BranchMap({
     applyCamera(nextPan, zoomValue, true);
     hasAutoCenteredRef.current = true;
     autoCenterSignatureRef.current = signature;
-    if (!hasInitialRevealDone) {
-      setTimelineRevealReady(false);
+    if (!hasInitialRevealDone && timelineRevealPhase === 'hidden') {
       scheduleTimelineReveal();
     }
   }, [
     hasTimelineSeedData,
     hasInitialRevealDone,
+    timelineRevealPhase,
     viewportSize.width,
     viewportSize.height,
     graphOffsetX,
@@ -2059,8 +2088,9 @@ export default function BranchMap({
   const fadeInInfoClass = (!ENABLE_TIMELINE_INTRO_ANIMATIONS || animationsLocked) ? undefined : 'fade-in-info';
   const fadeInPillClass = (!ENABLE_TIMELINE_INTRO_ANIMATIONS || animationsLocked) ? undefined : 'fade-in-pill';
   const mainTimelineOpacity = hoveredPR !== null || hoveredBranch !== null ? 0.2 : 1;
+  const timelineCanvasVisible = timelineRevealPhase !== 'hidden';
   const holdTimelineForInitialCenter =
-    isLoading || (!hasInitialRevealDone && hasTimelineSeedData && !timelineRevealReady && !hasUserMovedCameraRef.current);
+    isLoading || (!hasInitialRevealDone && hasTimelineSeedData && timelineRevealPhase !== 'done' && !hasUserMovedCameraRef.current);
 
   return (
     <div className="h-full">
@@ -2110,13 +2140,14 @@ export default function BranchMap({
           <g
             ref={zoomLayerRef}
             transform={`scale(${renderCameraScale.x} ${renderCameraScale.y})`}
-          >
-          <g
             style={{
-              opacity: holdTimelineForInitialCenter ? 0 : 1,
+              opacity: timelineCanvasVisible ? 1 : 0,
+              visibility: timelineCanvasVisible ? 'visible' : 'hidden',
               transition: `opacity ${INITIAL_REVEAL_FADE_MS}ms cubic-bezier(0.22, 1, 0.36, 1)`,
               pointerEvents: holdTimelineForInitialCenter ? 'none' : 'auto',
             }}
+          >
+          <g
           >
 
           {/* ── Main timeline + merge nodes ── */}
@@ -2143,25 +2174,7 @@ export default function BranchMap({
               </g>
             )}
 
-            {/* Main label and ticks — fade in once the line is drawn */}
             <g className={fadeInInfoClass} style={{ '--delay': `${MAIN_DRAW_MS}ms` } as React.CSSProperties}>
-              {(() => {
-                const labelPoint = projectPoint(mainX + MAIN_LABEL_OFFSET_X, mainEndY + 4);
-                return (
-                  <text
-                    className="branch-map-icon-fixed"
-                    x={labelPoint.x}
-                    y={labelPoint.y}
-                    fontSize={12}
-                    fill="#1c1917"
-                    fontWeight={500}
-                    style={{ transformOrigin: `${labelPoint.x}px ${labelPoint.y}px` }}
-                  >
-                    {defaultBranch}
-                  </text>
-                );
-              })()}
-
               {/* Direct commits */}
               {(() => {
                 const entries: MarkerEntry<DirectCommit>[] = sortedDirectCommits.map((commit) => {
@@ -2664,7 +2677,6 @@ export default function BranchMap({
               const forkY = timeCoordToY(forkTimeX);
               const lanePosX = laneX(b);
               const startX = branchStartX(b);
-              const aheadCount = branchAheadCount(b);
               const isMergedBranch = b.commitsAhead === 0;
               const isConflict = b.status === 'conflict-risk' && !isMergedBranch;
               const isSelected = selectedBranch?.name === b.name;
@@ -2905,22 +2917,11 @@ export default function BranchMap({
               const hasOpenPR = openPRBranchNames.has(b.name);
               const daysSinceCommit = (Date.now() - new Date(b.lastCommitDate).getTime()) / 86400000;
               const showClockIcon = hasOpenPR && daysSinceCommit >= 60;
-              const aheadLabelText = formatCommitsAhead(aheadCount);
-              const aheadLabelWidth = estimateSvgTextWidth(aheadLabelText, 12);
               const nameAnchor = projectPoint(lanePosX, forkY);
               const nameDx = isHorizontal ? 24 : 20;
               const nameDy = isHorizontal ? -20 : -12;
               const namePoint = { x: nameAnchor.x + nameDx, y: nameAnchor.y + nameDy };
-              const hoverBadgeAnchor = projectPoint(lanePosX, tipY);
-              const hoverBadgePoint = {
-                x: hoverBadgeAnchor.x + AHEAD_LABEL_OFFSET_X,
-                y: hoverBadgeAnchor.y,
-              };
-              const nameLen = Math.min(b.name.length, 22);
-              const approxNameW = nameLen * 6.5;
-              const clockPoint = projectPoint(lanePosX + approxNameW + 10, forkY);
-              const labelsVisible = zoom > 1 || isHovered;
-              const nameOpacity = labelsVisible ? (isHorizontal ? 1 : (isHovered ? 1 : 0)) : 0;
+              const clockPoint = { x: namePoint.x + 10, y: namePoint.y };
               const branchGroupOpacity =
                 isFocusedError ? 1 : hoveredBranch !== null && !isHovered ? 0.12 : hasSelection && !isSelected ? 0.5 : 1;
 
@@ -2938,16 +2939,6 @@ export default function BranchMap({
                   <path
                     d={curvePath}
                     fill="none"
-                    stroke="transparent"
-                    strokeWidth={branchHitStrokeWidth}
-                    style={{ pointerEvents: 'stroke' }}
-                  />
-                  <line
-                   
-                    x1={projectPoint(lanePosX, tipY).x}
-                    y1={projectPoint(lanePosX, tipY).y}
-                    x2={projectPoint(lanePosX + AHEAD_LABEL_OFFSET_X + aheadLabelWidth + 10, tipY).x}
-                    y2={projectPoint(lanePosX + AHEAD_LABEL_OFFSET_X + aheadLabelWidth + 10, tipY).y}
                     stroke="transparent"
                     strokeWidth={branchHitStrokeWidth}
                     style={{ pointerEvents: 'stroke' }}
@@ -3275,42 +3266,6 @@ export default function BranchMap({
                         </g>
                       );
                     })}
-                    <text
-                      className="branch-map-icon-fixed"
-                      x={namePoint.x}
-                      y={namePoint.y}
-                      textAnchor="start"
-                      textRendering="geometricPrecision"
-                      fontSize={12}
-                      fill={isSelected ? '#22d3ee' : isHovered ? '#1c1917' : color}
-                      fontWeight={isSelected ? 600 : 400}
-                      opacity={nameOpacity}
-                      style={{
-                        transformOrigin: `${namePoint.x}px ${namePoint.y}px`,
-                        pointerEvents: 'none',
-                        transition: 'fill 0.12s ease, opacity 0.12s ease',
-                      } as React.CSSProperties}
-                    >
-                      {b.name.length > 22 ? b.name.slice(0, 22) + '…' : b.name}
-                    </text>
-                    {isHovered && labelsVisible && (
-                      <text
-                        className="branch-map-icon-fixed"
-                        x={hoverBadgePoint.x}
-                        y={hoverBadgePoint.y}
-                        dominantBaseline="middle"
-                        textRendering="geometricPrecision"
-                        fontSize={12}
-                        fill="#1c1917"
-                        fontWeight={500}
-                        style={{
-                          transformOrigin: `${hoverBadgePoint.x}px ${hoverBadgePoint.y}px`,
-                          pointerEvents: 'none',
-                        }}
-                      >
-                        {aheadLabelText}
-                      </text>
-                    )}
                     {showClockIcon && (
                       <g className="branch-map-icon-fixed" style={{ pointerEvents: 'none' }}>
                         <circle cx={clockPoint.x} cy={clockPoint.y} r={4.2} stroke={color} strokeWidth={1.2} fill="none" />
@@ -3373,8 +3328,8 @@ export default function BranchMap({
                   fill="none"
                   stroke="#2563eb"
                   strokeWidth={1.5}
-                  strokeLinecap="round"
-                  opacity={0.9}
+                  pathLength={1}
+                  vectorEffect="non-scaling-stroke"
                 />
               </g>
             );
@@ -3854,6 +3809,7 @@ export default function BranchMap({
             return (
               <g className="branch-map-icon-fixed" style={{ pointerEvents: 'none' }}>
                 <circle
+                  className="checked-out-halo-pulse"
                   cx={markerPoint.x}
                   cy={markerPoint.y}
                   r={12}
@@ -3877,7 +3833,7 @@ export default function BranchMap({
           <div className="absolute inset-0 pointer-events-none flex items-center justify-center">
             <div className="relative h-6 w-6">
               <span
-                className="absolute inset-0 rounded-full"
+                className="absolute inset-0 rounded-full checked-out-halo-pulse"
                 style={{ backgroundColor: '#93c5fd', opacity: 0.35 }}
               />
               <span
@@ -3886,6 +3842,12 @@ export default function BranchMap({
               />
             </div>
           </div>
+        )}
+        {holdTimelineForInitialCenter && timelineRevealPhase === 'fading' && (
+          <div
+            className="absolute inset-0 pointer-events-none branch-map-fog-recede"
+            style={{ '--fog-duration': `${INITIAL_REVEAL_FADE_MS}ms` } as React.CSSProperties}
+          />
         )}
 
         {/* Fixed-size tooltip layer (not affected by timeline zoom). */}
