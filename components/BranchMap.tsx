@@ -2229,6 +2229,9 @@ export default function BranchMap({
                   const last = cluster.entries[count - 1].item;
                   const countLabel = clumpCountLabel(count);
                   const clusterKey = `direct-clump-${first.fullSha}-${last.fullSha}`;
+                  const clusterHasMainTip = cluster.entries.some(
+                    (entry) => entry.item.fullSha === entries[entries.length - 1]?.item.fullSha
+                  );
                   const memberKeys = cluster.entries.map((entry) => `direct:${entry.item.fullSha}`);
                   const animatedAnchor = resolveAnimatedClumpAnchor(
                     clusterKey,
@@ -2252,7 +2255,13 @@ export default function BranchMap({
                         stroke="var(--background)"
                         strokeWidth={1.2}
                         style={{ cursor: 'pointer' }}
-                        onClick={(event) => handleCommitNodeClick(event, c.fullSha)}
+                        onClick={(event) =>
+                          handleCommitNodeClick(
+                            event,
+                            c.fullSha,
+                            clusterHasMainTip ? defaultBranch : undefined,
+                          )
+                        }
                         onDoubleClick={(event) => event.stopPropagation()}
                         onMouseEnter={() =>
                           setTooltip({
@@ -2286,7 +2295,13 @@ export default function BranchMap({
                         stroke="var(--background)"
                         strokeWidth={1.2}
                         style={{ cursor: 'pointer' }}
-                        onClick={(event) => handleCommitNodeClick(event, last.fullSha)}
+                        onClick={(event) =>
+                          handleCommitNodeClick(
+                            event,
+                            last.fullSha,
+                            clusterHasMainTip ? defaultBranch : undefined,
+                          )
+                        }
                         onDoubleClick={(event) => event.stopPropagation()}
                         onMouseEnter={() =>
                           setTooltip({
@@ -3854,30 +3869,58 @@ export default function BranchMap({
         {timelineRevealReady && tooltip && (() => {
           const [title, subtitle, meta] = tooltip.lines;
           const avatarFallback = tooltip.avatarFallback || '?';
-          const tooltipW = Math.min(320, Math.max(240, viewportSize.width - 16));
+          const tooltipCompact = isPopoverWindow || viewportSize.width < 420;
+          const viewportPadX = tooltipCompact ? 18 : 8;
+          const viewportPadTop = tooltipCompact ? 84 : 8;
+          const viewportPadBottom = tooltipCompact ? 18 : 8;
+          const availableTooltipW = Math.max(140, viewportSize.width - viewportPadX * 2);
+          const tooltipMaxW = Math.min(tooltipCompact ? 260 : 320, availableTooltipW);
+          const tooltipMinW = tooltipCompact ? 160 : 240;
+          const tooltipW = Math.min(tooltipMaxW, Math.max(tooltipMinW, availableTooltipW));
+          const tooltipHeaderH = 24;
+          const tooltipAvatarSize = 20;
+          const tooltipBodyGap = 8;
+          const tooltipBodyPadX = 12;
+          const tooltipBodyPadY = 8;
+          const tooltipLineHeight = 16;
           // Use live camera refs to avoid tooltip drift when zoom/pan state is throttled.
           const livePan = panRef.current;
           const liveCameraScale = getCameraScale(zoomRef.current, isHorizontal);
           const anchorX = livePan.x + graphOffsetX + tooltip.x * liveCameraScale.x;
           const anchorY = livePan.y + graphOffsetY + tooltip.y * liveCameraScale.y;
-          const bodyContentW = Math.max(120, tooltipW - 56);
+          const bodyContentW = Math.max(
+            92,
+            tooltipW - tooltipBodyPadX * 2 - tooltipAvatarSize - tooltipBodyGap
+          );
           const estimatedCharsPerLine = Math.max(18, Math.floor(bodyContentW / 6));
           const subtitleLines = subtitle ? Math.max(1, Math.ceil(subtitle.length / estimatedCharsPerLine)) : 0;
           const metaLines = meta ? Math.max(1, Math.ceil(meta.length / estimatedCharsPerLine)) : 0;
-          const tooltipH = Math.min(220, Math.max(96, 46 + (subtitleLines + metaLines) * 16));
-          const viewportPad = 8;
-          const gap = 10;
-          const nodeClearance = 18;
-          const maxLeft = Math.max(viewportPad, viewportSize.width - tooltipW - viewportPad);
-          const maxTop = Math.max(viewportPad, viewportSize.height - tooltipH - viewportPad);
-          const clampLeft = (left: number) => Math.min(maxLeft, Math.max(viewportPad, left));
-          const clampTop = (top: number) => Math.min(maxTop, Math.max(viewportPad, top));
-          const candidatePositions = [
-            { left: anchorX - tooltipW / 2, top: anchorY - tooltipH - gap }, // above
-            { left: anchorX - tooltipW / 2, top: anchorY + gap }, // below
-            { left: anchorX + gap, top: anchorY - tooltipH / 2 }, // right
-            { left: anchorX - tooltipW - gap, top: anchorY - tooltipH / 2 }, // left
-          ].map((position) => ({
+          const tooltipBodyH = Math.max(
+            50,
+            tooltipBodyPadY * 2 + Math.max(tooltipAvatarSize, (subtitleLines + metaLines) * tooltipLineHeight)
+          );
+          const tooltipH = Math.min(220, tooltipHeaderH + tooltipBodyH);
+          const gap = tooltipCompact ? 8 : 10;
+          const nodeClearance = tooltipCompact ? 14 : 18;
+          const maxLeft = Math.max(viewportPadX, viewportSize.width - tooltipW - viewportPadX);
+          const maxTop = Math.max(viewportPadTop, viewportSize.height - tooltipH - viewportPadBottom);
+          const clampLeft = (left: number) => Math.min(maxLeft, Math.max(viewportPadX, left));
+          const clampTop = (top: number) => Math.min(maxTop, Math.max(viewportPadTop, top));
+          const candidatePositions = (
+            tooltipCompact
+              ? [
+                { left: anchorX - tooltipW / 2, top: anchorY + gap }, // below
+                { left: anchorX + gap, top: anchorY - tooltipH / 2 }, // right
+                { left: anchorX - tooltipW - gap, top: anchorY - tooltipH / 2 }, // left
+                { left: anchorX - tooltipW / 2, top: anchorY - tooltipH - gap }, // above
+              ]
+              : [
+                { left: anchorX - tooltipW / 2, top: anchorY - tooltipH - gap }, // above
+                { left: anchorX - tooltipW / 2, top: anchorY + gap }, // below
+                { left: anchorX + gap, top: anchorY - tooltipH / 2 }, // right
+                { left: anchorX - tooltipW - gap, top: anchorY - tooltipH / 2 }, // left
+              ]
+          ).map((position) => ({
             left: clampLeft(position.left),
             top: clampTop(position.top),
           }));
@@ -3902,12 +3945,20 @@ export default function BranchMap({
               className="absolute z-[120] rounded-xl border border-border bg-card shadow-sm overflow-hidden pointer-events-none"
               style={{ left, top, width: tooltipW }}
             >
-              <div className="h-6 px-3 flex items-center bg-muted/80 border-b border-border/70">
+              <div
+                className="flex h-6 items-center bg-muted/80 border-b border-border/70 px-3"
+                style={{ height: tooltipHeaderH }}
+              >
                 <p className="text-xs font-medium text-foreground truncate">{title}</p>
               </div>
-              <div className="px-3 py-2">
+              <div
+                style={{ padding: `${tooltipBodyPadY}px ${tooltipBodyPadX}px` }}
+              >
                 <div className="flex items-start gap-2">
-                  <span className="h-5 w-5 shrink-0 rounded-full overflow-hidden bg-muted flex items-center justify-center text-[10px] font-medium leading-none text-muted-foreground">
+                  <span
+                    className="shrink-0 rounded-full overflow-hidden bg-muted flex items-center justify-center text-[10px] font-medium leading-none text-muted-foreground"
+                    style={{ width: tooltipAvatarSize, height: tooltipAvatarSize }}
+                  >
                     {tooltip.avatarUrl ? (
                       <img
                         src={tooltip.avatarUrl}
@@ -3921,10 +3972,20 @@ export default function BranchMap({
                   </span>
                   <div className="min-w-0 space-y-1">
                     {subtitle && (
-                      <p className="text-xs text-foreground leading-4 whitespace-normal break-words">{subtitle}</p>
+                      <p
+                        className="text-xs text-foreground whitespace-normal break-words"
+                        style={{ lineHeight: `${tooltipLineHeight}px` }}
+                      >
+                        {subtitle}
+                      </p>
                     )}
                     {meta && (
-                      <p className="text-xs text-muted-foreground leading-4 whitespace-normal break-words">{meta}</p>
+                      <p
+                        className="text-xs text-muted-foreground whitespace-normal break-words"
+                        style={{ lineHeight: `${tooltipLineHeight}px` }}
+                      >
+                        {meta}
+                      </p>
                     )}
                   </div>
                 </div>

@@ -9,6 +9,8 @@ import type { Branch, BranchCommitPreview, BranchPromptMeta, BranchPromptMarker,
 
 type View = 'landing' | 'map' | 'diff';
 const PROMPT_ENRICHMENT_ENABLED = false;
+const COMMIT_SWITCH_FEEDBACK_VISIBLE_MS = 1400;
+const COMMIT_SWITCH_FEEDBACK_FADE_MS = 180;
 
 function cn(...classes: Array<string | false | null | undefined>) {
   return classes.filter(Boolean).join(' ');
@@ -46,6 +48,7 @@ function App() {
     kind: 'success' | 'error';
     message: string;
   } | null>(null);
+  const [isCommitSwitchFeedbackVisible, setIsCommitSwitchFeedbackVisible] = useState(false);
   const [branchPromptMeta, setBranchPromptMeta] = useState<Record<string, BranchPromptMeta>>({});
   const [branchCommitPreviews, setBranchCommitPreviews] = useState<Record<string, BranchCommitPreview[]>>({});
   const [branchUniqueAheadCounts, setBranchUniqueAheadCounts] = useState<Record<string, number>>({});
@@ -431,6 +434,26 @@ function App() {
     };
   }, [repoPath, defaultBranch, branches, mergeNodes]);
 
+  useEffect(() => {
+    if (!commitSwitchFeedback) {
+      setIsCommitSwitchFeedbackVisible(false);
+      return;
+    }
+
+    setIsCommitSwitchFeedbackVisible(true);
+    const hideTimer = window.setTimeout(() => {
+      setIsCommitSwitchFeedbackVisible(false);
+    }, COMMIT_SWITCH_FEEDBACK_VISIBLE_MS);
+    const clearTimer = window.setTimeout(() => {
+      setCommitSwitchFeedback(null);
+    }, COMMIT_SWITCH_FEEDBACK_VISIBLE_MS + COMMIT_SWITCH_FEEDBACK_FADE_MS);
+
+    return () => {
+      window.clearTimeout(hideTimer);
+      window.clearTimeout(clearTimer);
+    };
+  }, [commitSwitchFeedback]);
+
   // Pre-warm: start screenshotting main at '/' as soon as active branches arrive.
   // Uses port 3495 (separate from DiffViewer's 3491/3492) to avoid conflicts.
   useEffect(() => {
@@ -737,11 +760,13 @@ function App() {
               )}
               {commitSwitchFeedback && (
                 <span
-                  className={`text-xs rounded-full px-3 py-1 max-w-[26rem] truncate ${
+                  className={cn(
+                    'text-xs rounded-full px-3 py-1 max-w-[26rem] truncate transition-opacity duration-200',
+                    isCommitSwitchFeedbackVisible ? 'opacity-100' : 'opacity-0',
                     commitSwitchFeedback.kind === 'error'
                       ? 'bg-red-50 dark:bg-red-900/20 text-red-600 dark:text-red-400'
                       : 'bg-blue-50 dark:bg-blue-900/20 text-blue-600 dark:text-blue-400'
-                  }`}
+                  )}
                   title={commitSwitchFeedback.message}
                 >
                   {commitSwitchFeedback.message}
