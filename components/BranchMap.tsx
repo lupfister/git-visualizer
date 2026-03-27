@@ -1,4 +1,4 @@
-import React, { useState, useRef, useEffect } from 'react';
+import React, { useState, useRef, useEffect, useLayoutEffect } from 'react';
 import { invoke } from '@tauri-apps/api/core';
 import { X } from 'lucide-react';
 import { Branch, BranchCommitPreview, BranchPromptMeta, CheckedOutRef, DirectCommit, MergeNode, MergedPR, OpenPR } from '../types';
@@ -22,6 +22,12 @@ const CAMERA_UI_SYNC_MS = 24;
 const ZOOM_UI_SYNC_IDLE_MS = 90;
 const CANVAS_PAD_X = 240;
 const CANVAS_PAD_Y = 140;
+const SCENE_WIGGLE_MIN_X = 180;
+const SCENE_WIGGLE_MIN_Y = 140;
+const SCENE_WIGGLE_FACTOR_X = 1.25;
+const SCENE_WIGGLE_FACTOR_Y = 1.25;
+const SCENE_WIGGLE_VIEWPORT_FACTOR_X = 1.25;
+const SCENE_WIGGLE_VIEWPORT_FACTOR_Y = 1.25;
 const TIME_SCALE_MIN = 0.5;
 const TIME_SCALE_MAX = 3;
 const TIME_SCALE_STEP = 0.05;
@@ -455,6 +461,25 @@ export default function BranchMap({
   const gestureZoomBaseRef = useRef(zoomRef.current);
   const gesturePointRef = useRef<{ x: number; y: number } | null>(null);
   const graphOffsetRef = useRef({ x: 0, y: 0 });
+  const cameraBoundsRef = useRef({
+    viewportW: 0,
+    viewportH: 0,
+    canvasWidth: 0,
+    canvasHeight: 0,
+    svgWidth: 0,
+    svgHeight: 0,
+    graphOffsetX: 0,
+    graphOffsetY: 0,
+    isHorizontal: false,
+  });
+  const contentLayerRef = useRef<SVGGElement>(null);
+  const contentBoundsRef = useRef({
+    minX: 0,
+    maxX: 0,
+    minY: 0,
+    maxY: 0,
+    measured: false,
+  });
   const panStartRef = useRef({ x: 0, y: 0, panX: 0, panY: 0 });
   const [pan, setPan] = useState({ x: 0, y: 0 });
   const panRef = useRef(pan);
@@ -742,10 +767,77 @@ export default function BranchMap({
 
   function clampPan(
     next: { x: number; y: number },
-    _zoomValue = zoomRef.current,
-    _mode: ClampMode = 'soft'
+    zoomValue = zoomRef.current,
+    mode: ClampMode = 'soft'
   ) {
-    return next;
+    function clampAxis(value: number, min: number, max: number): number {
+      const lower = Math.min(min, max);
+      const upper = Math.max(min, max);
+      if (value >= lower && value <= upper) return value;
+      const clamped = Math.max(lower, Math.min(upper, value));
+      if (mode === 'soft') {
+        const overshoot = value - clamped;
+        const maxOvershoot = 48;
+        return clamped + Math.max(-maxOvershoot, Math.min(maxOvershoot, overshoot * 0.18));
+      }
+      return clamped;
+    }
+
+    const {
+      viewportW,
+      viewportH,
+      svgWidth: currentSvgWidth,
+      svgHeight: currentSvgHeight,
+      graphOffsetX: currentGraphOffsetX,
+      graphOffsetY: currentGraphOffsetY,
+      isHorizontal: currentIsHorizontal,
+    } = cameraBoundsRef.current;
+    if (viewportW <= 0 || viewportH <= 0) return next;
+
+    const scale = getCameraScale(zoomValue, currentIsHorizontal);
+    const contentBounds = contentBoundsRef.current;
+    const baseContentMinX = currentGraphOffsetX + (
+      contentBounds.measured ? contentBounds.minX : 0
+    ) * scale.x;
+    const baseContentMaxX = currentGraphOffsetX + (
+      contentBounds.measured ? contentBounds.maxX : currentSvgWidth
+    ) * scale.x;
+    const baseContentMinY = currentGraphOffsetY + (
+      contentBounds.measured ? contentBounds.minY : 0
+    ) * scale.y;
+    const baseContentMaxY = currentGraphOffsetY + (
+      contentBounds.measured ? contentBounds.maxY : currentSvgHeight
+    ) * scale.y;
+    const baseContentWidth = Math.max(1, baseContentMaxX - baseContentMinX);
+    const baseContentHeight = Math.max(1, baseContentMaxY - baseContentMinY);
+    const sceneWiggleX = Math.max(
+      SCENE_WIGGLE_MIN_X,
+      viewportW * SCENE_WIGGLE_VIEWPORT_FACTOR_X,
+      baseContentWidth * SCENE_WIGGLE_FACTOR_X
+    );
+    const sceneWiggleY = Math.max(
+      SCENE_WIGGLE_MIN_Y,
+      viewportH * SCENE_WIGGLE_VIEWPORT_FACTOR_Y,
+      baseContentHeight * SCENE_WIGGLE_FACTOR_Y
+    );
+    const sceneMinX = baseContentMinX - sceneWiggleX;
+    const sceneMaxX = baseContentMaxX + sceneWiggleX;
+    const sceneMinY = baseContentMinY - sceneWiggleY;
+    const sceneMaxY = baseContentMaxY + sceneWiggleY;
+
+    const xBounds = {
+      min: viewportW - sceneMaxX,
+      max: -sceneMinX,
+    };
+    const yBounds = {
+      min: viewportH - sceneMaxY,
+      max: -sceneMinY,
+    };
+
+    return {
+      x: clampAxis(next.x, xBounds.min, xBounds.max),
+      y: clampAxis(next.y, yBounds.min, yBounds.max),
+    };
   }
 
   function paintCamera(nextPan = panRef.current, _nextZoom = zoomRef.current) {
@@ -860,6 +952,10 @@ export default function BranchMap({
     }
     panUiSyncTimeoutRef.current = window.setTimeout(() => {
       panUiSyncTimeoutRef.current = null;
+      const settledPan = clampPan(panRef.current, zoomRef.current, 'hard');
+      if (Math.abs(settledPan.x - panRef.current.x) > 0.1 || Math.abs(settledPan.y - panRef.current.y) > 0.1) {
+        applyCamera(settledPan, zoomRef.current);
+      }
       syncUiState(true);
     }, 70);
   }
@@ -1000,7 +1096,7 @@ export default function BranchMap({
       const nextPan = clampPan({
         x: panRef.current.x - e.deltaX,
         y: panRef.current.y - e.deltaY,
-      }, zoomRef.current, 'soft');
+      }, zoomRef.current, 'hard');
       applyCamera(nextPan, zoomRef.current);
       schedulePanUiSync();
     };
@@ -1084,12 +1180,14 @@ export default function BranchMap({
       const nextPan = clampPan({
         x: panStartRef.current.panX + dx,
         y: panStartRef.current.panY + dy,
-      }, zoomRef.current, 'soft');
+      }, zoomRef.current, 'hard');
       applyCamera(nextPan, zoomRef.current);
     };
     const onUp = () => {
       isPanningRef.current = false;
       setIsPanning(false);
+      const settledPan = clampPan(panRef.current, zoomRef.current, 'hard');
+      applyCamera(settledPan, zoomRef.current);
       syncUiState(true);
     };
     window.addEventListener('mousemove', onMove);
@@ -1797,6 +1895,85 @@ export default function BranchMap({
   const graphOffsetX = (canvasWidth - svgWidth) / 2;
   const graphOffsetY = (canvasHeight - svgHeight) / 2;
   graphOffsetRef.current = { x: graphOffsetX, y: graphOffsetY };
+  cameraBoundsRef.current = {
+    viewportW: viewportSize.width,
+    viewportH: viewportSize.height,
+    canvasWidth,
+    canvasHeight,
+    svgWidth,
+    svgHeight,
+    graphOffsetX,
+    graphOffsetY,
+    isHorizontal,
+  };
+
+  useLayoutEffect(() => {
+    const contentLayer = contentLayerRef.current;
+    if (!contentLayer) return;
+    let nextBounds = {
+      minX: 0,
+      maxX: svgWidth,
+      minY: 0,
+      maxY: svgHeight,
+      measured: false,
+    };
+    try {
+      const bbox = contentLayer.getBBox();
+      if (
+        Number.isFinite(bbox.x) &&
+        Number.isFinite(bbox.y) &&
+        Number.isFinite(bbox.width) &&
+        Number.isFinite(bbox.height) &&
+        bbox.width > 0 &&
+        bbox.height > 0
+      ) {
+        nextBounds = {
+          minX: bbox.x,
+          maxX: bbox.x + bbox.width,
+          minY: bbox.y,
+          maxY: bbox.y + bbox.height,
+          measured: true,
+        };
+      }
+    } catch {
+      // Ignore transient SVG measurement failures during mount/update.
+    }
+
+    const prevBounds = contentBoundsRef.current;
+    const changed =
+      prevBounds.measured !== nextBounds.measured ||
+      Math.abs(prevBounds.minX - nextBounds.minX) > 0.5 ||
+      Math.abs(prevBounds.maxX - nextBounds.maxX) > 0.5 ||
+      Math.abs(prevBounds.minY - nextBounds.minY) > 0.5 ||
+      Math.abs(prevBounds.maxY - nextBounds.maxY) > 0.5;
+    if (!changed) return;
+
+    contentBoundsRef.current = nextBounds;
+    const settledPan = clampPan(panRef.current, zoomRef.current, 'hard');
+    if (Math.abs(settledPan.x - panRef.current.x) < 0.1 && Math.abs(settledPan.y - panRef.current.y) < 0.1) {
+      return;
+    }
+    applyCamera(settledPan, zoomRef.current, true, true);
+  });
+
+  useEffect(() => {
+    if (viewportSize.width <= 0 || viewportSize.height <= 0) return;
+    const settledPan = clampPan(panRef.current, zoomRef.current, 'hard');
+    if (Math.abs(settledPan.x - panRef.current.x) < 0.1 && Math.abs(settledPan.y - panRef.current.y) < 0.1) {
+      return;
+    }
+    applyCamera(settledPan, zoomRef.current, true, true);
+  }, [
+    viewportSize.width,
+    viewportSize.height,
+    canvasWidth,
+    canvasHeight,
+    svgWidth,
+    svgHeight,
+    graphOffsetX,
+    graphOffsetY,
+    isHorizontal,
+  ]);
 
   const checkedOutBranchName = checkedOutRef?.branchName ?? null;
   const checkedOutHeadSha = checkedOutRef?.headSha ?? null;
@@ -2148,6 +2325,7 @@ export default function BranchMap({
             }}
           >
           <g
+            ref={contentLayerRef}
           >
 
           {/* ── Main timeline + merge nodes ── */}
