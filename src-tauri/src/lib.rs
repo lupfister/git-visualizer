@@ -28,9 +28,15 @@ use core_graphics::{
     event_source::{CGEventSource, CGEventSourceStateID},
 };
 #[cfg(target_os = "macos")]
-use objc2::MainThreadMarker;
+use objc2::{
+    runtime::{AnyClass, NSObjectProtocol},
+    MainThreadMarker, MainThreadOnly,
+};
 #[cfg(target_os = "macos")]
-use objc2_app_kit::{NSApplication, NSWindow};
+use objc2_app_kit::{
+    NSApplication, NSAutoresizingMaskOptions, NSColor, NSGlassEffectView, NSGlassEffectViewStyle,
+    NSWindow,
+};
 
 #[derive(serde::Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -2603,7 +2609,7 @@ fn get_anthropic_key() -> Option<String> {
 const TRAY_TOGGLE_ID: &str = "toggle-window";
 const TRAY_QUIT_ID: &str = "quit-app";
 const POPOVER_OFFSET_Y: i32 = 0;
-const POPOVER_WIDTH: f64 = 240.0;
+const POPOVER_WIDTH: f64 = 320.0;
 const POPOVER_HEIGHT: f64 = 320.0;
 const POPOVER_FADE_OUT_MS: u64 = 85;
 const POPOVER_FADE_STEP_MS: u64 = 8;
@@ -2701,8 +2707,46 @@ fn configure_main_popover_window(window: &tauri::WebviewWindow) {
     #[cfg(target_os = "macos")]
     {
         let _ = window.with_webview(|webview| unsafe {
+            let Some(mtm) = MainThreadMarker::new() else {
+                return;
+            };
             let ns_window: &NSWindow = &*webview.ns_window().cast();
             ns_window.setHidesOnDeactivate(true);
+            ns_window.setOpaque(false);
+            ns_window.setBackgroundColor(Some(NSColor::clearColor().as_ref()));
+            ns_window.setMovableByWindowBackground(false);
+            ns_window.setHasShadow(false);
+            ns_window.invalidateShadow();
+
+            let Some(glass_class) = AnyClass::get(c"NSGlassEffectView") else {
+                return;
+            };
+            let Some(content_view) = ns_window.contentView() else {
+                return;
+            };
+            if content_view.isKindOfClass(glass_class) {
+                return;
+            }
+
+            let bounds = content_view.bounds();
+            let autoresizing_mask =
+                NSAutoresizingMaskOptions::ViewWidthSizable | NSAutoresizingMaskOptions::ViewHeightSizable;
+            let glass_view = NSGlassEffectView::initWithFrame(NSGlassEffectView::alloc(mtm), bounds);
+            glass_view.setAutoresizingMask(autoresizing_mask);
+            glass_view.setStyle(NSGlassEffectViewStyle::Regular);
+            glass_view.setCornerRadius(bounds.size.width.min(bounds.size.height) * 0.5);
+            glass_view.setWantsLayer(true);
+            if let Some(layer) = glass_view.layer() {
+                layer.setCornerRadius(bounds.size.width.min(bounds.size.height) * 0.5);
+                layer.setMasksToBounds(true);
+                layer.setBorderWidth(0.0);
+                layer.setShadowOpacity(0.0);
+            }
+
+            content_view.setFrame(glass_view.bounds());
+            content_view.setAutoresizingMask(autoresizing_mask);
+            glass_view.setContentView(Some(content_view.as_ref()));
+            ns_window.setContentView(Some(glass_view.as_ref()));
         });
     }
 }
@@ -2769,6 +2813,7 @@ fn reapply_locked_main_position(window: &tauri::WebviewWindow) {
 
 fn show_main_window(app: &tauri::AppHandle, tray_rect: Option<Rect>) {
     if let Some(window) = app.get_webview_window("main") {
+        configure_main_popover_window(&window);
         bump_main_window_hide_seq();
         set_main_window_alpha(&window, 1.0);
         dismiss_other_menu_bar_popovers();
@@ -2780,6 +2825,14 @@ fn show_main_window(app: &tauri::AppHandle, tray_rect: Option<Rect>) {
         let _ = window.set_focusable(true);
         let _ = window.emit("popover://open", ());
         let _ = window.show();
+        #[cfg(target_os = "macos")]
+        {
+            let _ = window.with_webview(|webview| unsafe {
+                let ns_window: &NSWindow = &*webview.ns_window().cast();
+                ns_window.setHasShadow(false);
+                ns_window.invalidateShadow();
+            });
+        }
         let _ = window.unminimize();
         let _ = window.set_focus();
         // Activate after the window is visible/focused so other menu bar popovers

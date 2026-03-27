@@ -95,77 +95,54 @@ body.popover-window #root {
 }
 
 .popover-continuous-60 {
-  border-radius: 18px;
-  /* fallback when clip-path is unavailable */
-  clip-path: polygon(5.22% 0.00%,
-      94.78% 0.00%,
-      96.51% 0.01%,
-      97.18% 0.04%,
-      97.68% 0.08%,
-      98.08% 0.14%,
-      98.43% 0.22%,
-      98.73% 0.33%,
-      98.98% 0.45%,
-      99.21% 0.59%,
-      99.40% 0.75%,
-      99.56% 0.95%,
-      99.70% 1.17%,
-      99.81% 1.42%,
-      99.89% 1.72%,
-      99.95% 2.09%,
-      99.99% 2.59%,
-      100.00% 3.87%,
-      100.00% 96.13%,
-      99.99% 97.41%,
-      99.95% 97.91%,
-      99.89% 98.28%,
-      99.81% 98.58%,
-      99.70% 98.83%,
-      99.56% 99.05%,
-      99.40% 99.25%,
-      99.21% 99.41%,
-      98.98% 99.55%,
-      98.73% 99.67%,
-      98.43% 99.78%,
-      98.08% 99.86%,
-      97.68% 99.92%,
-      97.18% 99.96%,
-      96.51% 99.99%,
-      94.78% 100.00%,
-      5.22% 100.00%,
-      3.49% 99.99%,
-      2.82% 99.96%,
-      2.32% 99.92%,
-      1.92% 99.86%,
-      1.57% 99.78%,
-      1.27% 99.67%,
-      1.02% 99.55%,
-      0.79% 99.41%,
-      0.60% 99.25%,
-      0.44% 99.05%,
-      0.30% 98.83%,
-      0.19% 98.58%,
-      0.11% 98.28%,
-      0.05% 97.91%,
-      0.01% 97.41%,
-      0.00% 96.13%,
-      0.00% 3.87%,
-      0.01% 2.59%,
-      0.05% 2.09%,
-      0.11% 1.72%,
-      0.19% 1.42%,
-      0.30% 1.17%,
-      0.44% 0.95%,
-      0.60% 0.75%,
-      0.79% 0.59%,
-      1.02% 0.45%,
-      1.27% 0.33%,
-      1.57% 0.22%,
-      1.92% 0.14%,
-      2.32% 0.08%,
-      2.82% 0.04%,
-      3.49% 0.01%,
-      5.22% 0.00%);
+  border-radius: 9999px;
+}
+
+.popover-glass-tint {
+  background: rgb(250 250 249 / 0.56);
+  mix-blend-mode: normal;
+  position: relative;
+  isolation: isolate;
+}
+
+.popover-glass-tint::before,
+.popover-glass-tint::after {
+  content: '';
+  position: absolute;
+  inset: 0;
+  border-radius: inherit;
+  pointer-events: none;
+}
+
+.popover-glass-tint::before {
+  background:
+    radial-gradient(120% 120% at 15% 14%, rgb(255 255 255 / 0.55) 0%, rgb(255 255 255 / 0.18) 14%, transparent 36%),
+    radial-gradient(115% 115% at 88% 90%, rgb(255 255 255 / 0.30) 0%, transparent 28%);
+}
+
+.popover-glass-tint::after {
+  box-shadow:
+    inset 0.5px 0.5px 0 rgb(255 255 255 / 0.20),
+    inset -0.5px -0.5px 0 rgb(255 255 255 / 0.08);
+}
+
+@media (prefers-color-scheme: dark) {
+  .popover-glass-tint {
+    background: rgb(28 25 23 / 0.56);
+    mix-blend-mode: normal;
+  }
+
+  .popover-glass-tint::before {
+    background:
+      radial-gradient(120% 120% at 15% 14%, rgb(255 255 255 / 0.38) 0%, rgb(255 255 255 / 0.14) 13%, transparent 34%),
+      radial-gradient(115% 115% at 88% 90%, rgb(255 255 255 / 0.24) 0%, transparent 27%);
+  }
+
+  .popover-glass-tint::after {
+    box-shadow:
+      inset 0.5px 0.5px 0 rgb(255 255 255 / 0.14),
+      inset -0.5px -0.5px 0 rgb(255 255 255 / 0.06);
+  }
 }
 
 /* Space Grotesk for repo titles */

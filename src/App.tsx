@@ -631,7 +631,7 @@ function App() {
 
   return (
     <div className={`h-screen min-h-0 text-foreground flex flex-col relative ${isPopoverWindow ? 'bg-transparent' : 'bg-background'}`}>
-      <div className={`h-full min-h-0 flex flex-col relative ${isPopoverWindow ? 'overflow-hidden popover-continuous-60 bg-background' : ''}`}>
+      <div className={`h-full min-h-0 flex flex-col relative ${isPopoverWindow ? 'overflow-hidden bg-transparent' : ''}`}>
       {isPopoverWindow && (
         <button
           onClick={handleOpenFullApp}
@@ -995,7 +995,7 @@ function RepoSelector({
   return (
     <main className={cn(
       'flex h-full flex-col',
-      isPopoverWindow ? 'overflow-y-auto px-3 pt-12 pb-3 bg-background' : 'overflow-hidden md:flex-row'
+      isPopoverWindow ? 'overflow-y-auto px-3 pt-12 pb-3 bg-transparent' : 'overflow-hidden md:flex-row'
     )}>
       {!isPopoverWindow && (
         <div className="h-28 md:h-auto md:w-[26%] relative flex-shrink-0 bg-muted overflow-hidden">
