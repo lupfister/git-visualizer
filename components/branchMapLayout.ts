@@ -73,6 +73,7 @@ export function assignLanesWithParentOrder(
 ): Map<string, number> {
   const laneAssignments = new Map<string, number>();
   const laneLastEndCoord: number[] = [];
+  const itemById = new Map(items.map((item) => [item.id, item]));
 
   function ensureLaneCapacity(minLane: number) {
     while (laneLastEndCoord.length <= minLane) {
@@ -114,7 +115,13 @@ export function assignLanesWithParentOrder(
       const parentAssigned = parentVisible ? laneAssignments.has(item.parentId as string) : true;
       if (!parentAssigned) continue;
 
-      const minLane = parentVisible ? (laneAssignments.get(item.parentId as string) ?? 0) + 1 : 0;
+      const parentLane = parentVisible ? (laneAssignments.get(item.parentId as string) ?? 0) : 0;
+      const parentItem = parentVisible ? itemById.get(item.parentId as string) : undefined;
+      const overlapsParent =
+        !!parentItem && item.startCoord <= parentItem.endCoord + minSeparation;
+      const minLane = parentVisible
+        ? (overlapsParent ? parentLane + 1 : parentLane)
+        : 0;
       const lane = allocateLane(minLane, item.startCoord, item.endCoord);
       laneAssignments.set(item.id, lane);
       pending.splice(index, 1);
