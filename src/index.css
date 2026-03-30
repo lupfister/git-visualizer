@@ -202,6 +202,10 @@ body.popover-window #root {
   transform: scale(var(--icon-inv-scale));
 }
 
+.branch-map-commit-rect {
+  transition: fill 0.12s ease, stroke 0.12s ease;
+}
+
 /* ── Horizontal time-scale slider ────────────────────────────────────────── */
 .timeline-scale-range {
   -webkit-appearance: none;
