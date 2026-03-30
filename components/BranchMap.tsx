@@ -45,7 +45,7 @@ const GRID_ROW_GAP = 12;
 const GRID_LANE_WIDTH = 10;
 const GRID_LANE_OFFSET_X = 0;
 const GRID_LANE_MIN_SEPARATION = 0;
-const GRID_TIP_MIN_TAIL = 2;
+const GRID_TIP_MIN_TAIL = GRID_ROW_GAP;
 const GRID_ROUTE_CORNER_R = 1;
 const GRID_MERGE_EVENT_ROW_NUDGE = 0.001;
 const LOCAL_UNPUSHED_GRAY = '#a8a29e';
@@ -1429,6 +1429,8 @@ export default function BranchMap({
   const sortedDirectCommits = [...directCommits].sort(
     (a, b) => new Date(a.date).getTime() - new Date(b.date).getTime()
   );
+  const mergeCommitShaSet = new Set(sortedNodes.map((node) => node.fullSha));
+  const directCommitShaSet = new Set<string>(sortedDirectCommits.map((commit) => commit.fullSha));
 
   type TimelineEvent = { key: string; t: number; kind: 'merge' | 'direct' | 'branch' };
   const branchTimelineEvents: TimelineEvent[] = activeBranches.flatMap((b) => {
@@ -1459,13 +1461,14 @@ export default function BranchMap({
 
   const mergeTimelineEvents: TimelineEvent[] = sortedNodes.map((m) => {
     const rawTime = new Date(m.date).getTime();
+    const mergeCommitIsOnMain = directCommitShaSet.has(m.fullSha);
     let eventTime = rawTime;
-    if (isGridLayout && directTimelineTimes.has(rawTime)) {
+    if (isGridLayout && !mergeCommitIsOnMain && directTimelineTimes.has(rawTime)) {
       const bumpIndex = (mergeNudgeCountByRawTime.get(rawTime) ?? 0) + 1;
       mergeNudgeCountByRawTime.set(rawTime, bumpIndex);
       eventTime = rawTime + bumpIndex * GRID_MERGE_EVENT_ROW_NUDGE;
     }
-    if (isGridLayout) {
+    if (isGridLayout && !mergeCommitIsOnMain) {
       const mergedParents = m.parentShas?.slice(1) ?? [];
       for (const parentSha of mergedParents) {
         const mergedBranch = mergedBranchByHeadSha.get(parentSha);
@@ -1554,7 +1557,9 @@ export default function BranchMap({
     const mainTimes = sortedDirectCommits.map((commit) => new Date(commit.date).getTime());
     const mainStructuralIndices = new Set<number>();
     sortedDirectCommits.forEach((commit, index) => {
-      if (protectedMainForkShas.has(commit.fullSha)) mainStructuralIndices.add(index);
+      if (protectedMainForkShas.has(commit.fullSha) || mergeCommitShaSet.has(commit.fullSha)) {
+        mainStructuralIndices.add(index);
+      }
     });
     collapseSequentialTimes(mainTimes, mainStructuralIndices);
 
@@ -1802,6 +1807,16 @@ export default function BranchMap({
       xForTimestamp(new Date(c.date).getTime()),
     ])
   );
+  const forcedMergeJunctionXBySha = new Map<string, number>();
+
+  function mergeJunctionTimeX(mergeNode: MergeNode): number {
+    // Prefer forced grid placement (one row above merged branch source),
+    // otherwise use the actual main-line commit coordinate for the merge SHA.
+    return forcedMergeJunctionXBySha.get(mergeNode.fullSha) ??
+      directXByFullSha.get(mergeNode.fullSha) ??
+      nodeXByFullSha.get(mergeNode.fullSha) ??
+      timeToX(mergeNode.date);
+  }
   const mainEndX = isGridLayout
     ? (gridEventPoints[gridEventPoints.length - 1]?.x ?? leftPad)
     : (allAnchorTimes.length > 0 ? xForTimestamp(lastEventT) : leftPad);
@@ -1970,6 +1985,23 @@ export default function BranchMap({
     return Math.max(lastCommitX, forkX + minTailDistance);
   }
 
+  if (isGridLayout) {
+    for (const branch of activeBranches) {
+      if (branch.commitsAhead !== 0) continue;
+      const mergeNode = mergeNodeByMergedHeadSha.get(branch.headSha);
+      if (!mergeNode) continue;
+      const baseMergeX =
+        directXByFullSha.get(mergeNode.fullSha) ??
+        nodeXByFullSha.get(mergeNode.fullSha) ??
+        timeToX(mergeNode.date);
+      const minMergeX = branchTipX(branch) + GRID_EVENT_GAP;
+      const forcedMergeX = Math.max(baseMergeX, minMergeX);
+      forcedMergeJunctionXBySha.set(mergeNode.fullSha, forcedMergeX);
+      directXByFullSha.set(mergeNode.fullSha, forcedMergeX);
+      mainCommitXBySha.set(mergeNode.fullSha, forcedMergeX);
+    }
+  }
+
   function branchAheadCount(b: Branch): number {
     if (Object.prototype.hasOwnProperty.call(branchUniqueAheadCounts, b.name)) {
       return branchUniqueAheadCounts[b.name] ?? 0;
@@ -2091,7 +2123,7 @@ export default function BranchMap({
   for (const branch of activeBranches) {
     const mergeNode = mergeNodeByMergedHeadSha.get(branch.headSha);
     if (!mergeNode) continue;
-    const mergeTimeX = nodeXByFullSha.get(mergeNode.fullSha) ?? timeToX(mergeNode.date);
+    const mergeTimeX = mergeJunctionTimeX(mergeNode);
     const mergeY = timeCoordToY(mergeTimeX);
     const branchLaneX = laneXByBranch.get(branch.name) ?? mainX;
     pushBranchAnchor(defaultBranch, projectPoint(mainX, mergeY), 'merge');
@@ -2631,6 +2663,7 @@ export default function BranchMap({
                 const latestMainCommitSha = entries[entries.length - 1]?.item.fullSha;
                 const mainEntryIndexBySha = new Map(entries.map((entry, index) => [entry.item.fullSha, index]));
                 const isStructuralMainEntry = (entry: MarkerEntry<DirectCommit>) =>
+                  mergeCommitShaSet.has(entry.item.fullSha) ||
                   structuralMainEntryShas.has(entry.item.fullSha) ||
                   (!isGridLayout && (
                     secondaryMainEntryShas.has(entry.item.fullSha) ||
@@ -3247,7 +3280,7 @@ export default function BranchMap({
                 ? mergeNodeByMergedHeadSha.get(b.headSha)
                 : undefined;
               const mergeNodeTimeX = mergeNodeForBranch
-                ? (nodeXByFullSha.get(mergeNodeForBranch.fullSha) ?? timeToX(mergeNodeForBranch.date))
+                ? mergeJunctionTimeX(mergeNodeForBranch)
                 : null;
               const baseTipTimeX = branchTipX(b);
               const tipTimeX = mergeNodeTimeX != null ? Math.max(baseTipTimeX, mergeNodeTimeX) : baseTipTimeX;
@@ -4017,7 +4050,7 @@ export default function BranchMap({
                 ? mergeNodeByMergedHeadSha.get(b.headSha)
                 : undefined;
               const mergeNodeTimeX = mergeNodeForBranch
-                ? (nodeXByFullSha.get(mergeNodeForBranch.fullSha) ?? timeToX(mergeNodeForBranch.date))
+                ? mergeJunctionTimeX(mergeNodeForBranch)
                 : null;
               const baseTipTimeX = branchTipX(b);
               const tipTimeX = mergeNodeTimeX != null ? Math.max(baseTipTimeX, mergeNodeTimeX) : baseTipTimeX;
@@ -4419,6 +4452,7 @@ export default function BranchMap({
               const latestMainCommitSha = entries[entries.length - 1]?.item.fullSha;
               const mainEntryIndexBySha = new Map(entries.map((entry, index) => [entry.item.fullSha, index]));
               const isStructuralMainEntry = (entry: MarkerEntry<DirectCommit>) =>
+                mergeCommitShaSet.has(entry.item.fullSha) ||
                 structuralMainEntryShas.has(entry.item.fullSha) ||
                 (!isGridLayout && (
                   secondaryMainEntryShas.has(entry.item.fullSha) ||
