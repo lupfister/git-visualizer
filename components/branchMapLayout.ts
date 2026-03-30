@@ -215,6 +215,13 @@ export function buildBranchOrthogonalPath({
   const horizontalDir = laneX > startX ? 1 : -1;
   const verticalDir = tipY >= forkY ? 1 : -1;
   const corner = Math.max(0, Math.min(cornerR, Math.abs(laneX - startX), Math.abs(tipY - forkY)));
+  if (corner < 0.5) {
+    return [
+      `M ${pointFormatter(startX, forkY)}`,
+      `L ${pointFormatter(laneX, forkY)}`,
+      `L ${pointFormatter(laneX, tipY)}`,
+    ].join(' ');
+  }
   const preTurnX = laneX - horizontalDir * corner;
   const postTurnY = forkY + verticalDir * corner;
 
@@ -249,6 +256,13 @@ export function buildMergeOrthogonalPath({
 
   const horizontalDir = mergeX >= laneX ? 1 : -1;
   const corner = Math.max(0, Math.min(cornerR, Math.abs(mergeY - tipY), Math.abs(mergeX - laneX)));
+  if (corner < 0.5) {
+    return [
+      `M ${pointFormatter(laneX, tipY)}`,
+      `L ${pointFormatter(laneX, mergeY)}`,
+      `L ${pointFormatter(mergeX, mergeY)}`,
+    ].join(' ');
+  }
   const preTurnY = mergeY - Math.sign(mergeY - tipY) * corner;
   const cornerX = laneX + horizontalDir * corner;
 

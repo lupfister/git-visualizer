@@ -46,7 +46,7 @@ const GRID_LANE_WIDTH = 10;
 const GRID_LANE_OFFSET_X = 0;
 const GRID_LANE_MIN_SEPARATION = 0;
 const GRID_TIP_MIN_TAIL = 2;
-const GRID_ROUTE_CORNER_R = 5;
+const GRID_ROUTE_CORNER_R = 1;
 const LOCAL_UNPUSHED_GRAY = '#a8a29e';
 const CLUMP_DISTANCE_PX = 8;
 const CLUMP_TOUCH_DISTANCE_PX = NODE_SIZE;
@@ -3129,8 +3129,10 @@ export default function BranchMap({
               const tipTimeX = mergeNodeTimeX != null ? Math.max(baseTipTimeX, mergeNodeTimeX) : baseTipTimeX;
               const commitTipTimeX = isMergedBranch ? baseTipTimeX : tipTimeX;
               const tipY = timeCoordToY(tipTimeX);
+              const commitTipY = timeCoordToY(commitTipTimeX);
+              const branchLineTipY = isGridLayout ? commitTipY : tipY;
               const routeCornerR = isGridLayout ? GRID_ROUTE_CORNER_R : cornerR;
-              const cornerDir = tipY <= forkY ? -1 : 1;
+              const cornerDir = branchLineTipY <= forkY ? -1 : 1;
               const turnY = forkY + cornerDir * routeCornerR;
               const mergeTargetX = mainX;
               const mergeTargetY = mergeNodeTimeX != null ? timeCoordToY(mergeNodeTimeX) : null;
@@ -3141,7 +3143,7 @@ export default function BranchMap({
                 if (isGridLayout) {
                   return buildMergeOrthogonalPath({
                     laneX: lanePosX,
-                    tipY,
+                    tipY: branchLineTipY,
                     mergeX: mergeTargetX,
                     mergeY: mergeTargetY,
                     cornerR: routeCornerR,
@@ -3163,18 +3165,18 @@ export default function BranchMap({
                   startX,
                   forkY,
                   laneX: lanePosX,
-                  tipY,
+                  tipY: branchLineTipY,
                   cornerR: routeCornerR,
                   pointFormatter: pathCoord,
                 })
                 : (() => {
                   if (startX === lanePosX) {
-                    return `M ${pathCoord(lanePosX, forkY)} L ${pathCoord(lanePosX, tipY)}`;
+                    return `M ${pathCoord(lanePosX, forkY)} L ${pathCoord(lanePosX, branchLineTipY)}`;
                   }
                   if (startX < lanePosX) {
-                    return `M ${pathCoord(startX, forkY)} L ${pathCoord(lanePosX - routeCornerR, forkY)} Q ${pathCoord(lanePosX, forkY)} ${pathCoord(lanePosX, turnY)} L ${pathCoord(lanePosX, tipY)}`;
+                    return `M ${pathCoord(startX, forkY)} L ${pathCoord(lanePosX - routeCornerR, forkY)} Q ${pathCoord(lanePosX, forkY)} ${pathCoord(lanePosX, turnY)} L ${pathCoord(lanePosX, branchLineTipY)}`;
                   }
-                  return `M ${pathCoord(startX, forkY)} L ${pathCoord(lanePosX + routeCornerR, forkY)} Q ${pathCoord(lanePosX, forkY)} ${pathCoord(lanePosX, turnY)} L ${pathCoord(lanePosX, tipY)}`;
+                  return `M ${pathCoord(startX, forkY)} L ${pathCoord(lanePosX + routeCornerR, forkY)} Q ${pathCoord(lanePosX, forkY)} ${pathCoord(lanePosX, turnY)} L ${pathCoord(lanePosX, branchLineTipY)}`;
                 })();
 
               const branchCommits = branchCommitPreviews[b.name] ?? [];
@@ -3445,7 +3447,7 @@ export default function BranchMap({
                       d={mergeBackPath}
                       fill="none"
                       stroke={strokeColor}
-                      strokeWidth={Math.max(1, strokeWidth - 0.2)}
+                      strokeWidth={strokeWidth}
                       className={drawPathArcClass}
                       style={{
                         '--delay': `${brDelay}ms`,
@@ -3455,7 +3457,7 @@ export default function BranchMap({
                   )}
                   {!fullBranchShouldUseLocalGray && localSegmentStartY != null && (
                     <path
-                      d={`M ${pathCoord(lanePosX, localSegmentStartY)} L ${pathCoord(lanePosX, tipY)}`}
+                      d={`M ${pathCoord(lanePosX, localSegmentStartY)} L ${pathCoord(lanePosX, branchLineTipY)}`}
                       fill="none"
                       stroke={isHovered && !isSelected ? '#78716c' : LOCAL_UNPUSHED_GRAY}
                       strokeWidth={strokeWidth}
