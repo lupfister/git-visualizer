@@ -281,7 +281,7 @@ export function commitRectSize(baseNodeSize: number, clusterBoost = 0): {
 } {
   const height = Math.max(8, baseNodeSize - 2 + clusterBoost);
   const width = height * 1.5;
-  const radius = Math.max(2, Math.min(4, height * 0.24));
+  const radius = Math.max(1.5, Math.min(3, height * 0.18));
   return { width, height, radius };
 }
 

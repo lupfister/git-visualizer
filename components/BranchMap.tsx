@@ -18,7 +18,7 @@ const LEFT_PAD = 60;
 const RIGHT_PAD = 160;
 const MIN_BRANCH_SPACING_X = 30;
 const LANE_HEIGHT = 120;
-const NODE_SIZE = 14;
+const NODE_SIZE = 24;
 const CORNER_R = 20;
 const BRANCH_HIT_STROKE_WIDTH = 48;
 const AHEAD_LABEL_OFFSET_X = 10;
@@ -375,6 +375,13 @@ function clumpCountLabel(count: number): string {
   return count > CLUMP_COUNT_MAX ? `${CLUMP_COUNT_MAX}+` : String(count);
 }
 
+function nodeLabelFontSize(nodeSize: number, count: number): number {
+  const base = Math.max(9, Math.min(12, nodeSize * 0.46));
+  if (count >= 100) return Math.max(7.5, base - 2.5);
+  if (count >= 10) return Math.max(8.25, base - 1.75);
+  return base;
+}
+
 function promptMarkerPath(centerX: number, centerY: number, size: number): string {
   const markerX = centerX - size / 2;
   const markerY = centerY - size / 2;
@@ -463,7 +470,7 @@ export default function BranchMap({
   const [zoom, setZoom] = useState(ZOOM_DEFAULT);
   const [animatedClumpZoom, setAnimatedClumpZoom] = useState(ZOOM_DEFAULT);
   const [timeScale, setTimeScale] = useState(TIME_SCALE_DEFAULT);
-  const [layoutMode, setLayoutMode] = useState<LayoutMode>('timeline');
+  const [layoutMode, setLayoutMode] = useState<LayoutMode>('grid');
   const [spacingMode] = useState<SpacingMode>('bounded');
   const [orientation, setOrientation] = useState<OrientationMode>('vertical');
   const isHorizontal = orientation === 'horizontal';
@@ -2598,6 +2605,98 @@ export default function BranchMap({
             ref={contentLayerRef}
           >
 
+          {/* ── Grid background (table-like lanes) ── */}
+          {isGridLayout && (
+            <g style={{ pointerEvents: 'none' }}>
+              {(() => {
+                // Horizontal guides: one per collapsed time row.
+                const rawRowYs = gridEventPoints
+                  .map((point) => timeCoordToY(point.x))
+                  .filter((y) => Number.isFinite(y));
+                const rowStep = rawRowYs.length > 320 ? Math.ceil(rawRowYs.length / 260) : 1;
+                const rowYs = rawRowYs.filter((_, idx) => idx % rowStep === 0);
+                const nodeSizeWorld = (() => {
+                  const rect = commitRectSize(scaledNodeSize, CLUMP_SIZE_BOOST_PX * 2);
+                  // Align grid to node outer bounds (edges), not its center.
+                  const iconHalfHeight = Math.max(4, rect.height / 2);
+                  const iconHalfWidth = Math.max(4, rect.width / 2);
+                  // Node icons cancel camera zoom (see `.branch-map-icon-fixed`),
+                  // but the grid background does not. Convert the screen-stable icon size
+                  // into world units so the boundary lines stay aligned at any zoom.
+                  return {
+                    halfHeight: iconHalfHeight / Math.max(renderCameraScale.y, 0.0001),
+                    halfWidth: iconHalfWidth / Math.max(renderCameraScale.x, 0.0001),
+                  };
+                })();
+
+                // Vertical guides: one per lane (main + branches).
+                const laneXs = Array.from(
+                  new Set<number>([
+                    mainX,
+                    ...Array.from(laneXByBranch.values()).filter((x) => Number.isFinite(x)),
+                  ])
+                ).sort((a, b) => a - b);
+
+                const leftX = Math.max(0, timelineMinX - 40);
+                const rightX = Math.min(logicalSvgWidth, maxBranchVisualEndX + 60);
+                const topY = Math.max(0, mainEndY - 120);
+                const bottomY = Math.min(logicalSvgHeight, mainStartY + 80);
+
+                return (
+                  <>
+                    {/* Row lines */}
+                    {rowYs.flatMap((centerY, idx) => {
+                      const topYLine = centerY - nodeSizeWorld.halfHeight;
+                      const bottomYLine = centerY + nodeSizeWorld.halfHeight;
+                      return [
+                        <path
+                          key={`grid-row-top-${idx}`}
+                          d={`M ${pathCoord(leftX, topYLine)} L ${pathCoord(rightX, topYLine)}`}
+                          fill="none"
+                          stroke="#e7e5e4"
+                          strokeOpacity={0.33}
+                          strokeWidth={1}
+                        />,
+                        <path
+                          key={`grid-row-bottom-${idx}`}
+                          d={`M ${pathCoord(leftX, bottomYLine)} L ${pathCoord(rightX, bottomYLine)}`}
+                          fill="none"
+                          stroke="#e7e5e4"
+                          strokeOpacity={0.33}
+                          strokeWidth={1}
+                        />,
+                      ];
+                    })}
+
+                    {/* Column (lane) lines */}
+                    {laneXs.flatMap((centerX, idx) => {
+                      const leftXLine = centerX - nodeSizeWorld.halfWidth;
+                      const rightXLine = centerX + nodeSizeWorld.halfWidth;
+                      return [
+                        <path
+                          key={`grid-col-left-${idx}`}
+                          d={`M ${pathCoord(leftXLine, topY)} L ${pathCoord(leftXLine, bottomY)}`}
+                          fill="none"
+                          stroke="#e7e5e4"
+                          strokeOpacity={0.26}
+                          strokeWidth={1}
+                        />,
+                        <path
+                          key={`grid-col-right-${idx}`}
+                          d={`M ${pathCoord(rightXLine, topY)} L ${pathCoord(rightXLine, bottomY)}`}
+                          fill="none"
+                          stroke="#e7e5e4"
+                          strokeOpacity={0.26}
+                          strokeWidth={1}
+                        />,
+                      ];
+                    })}
+                  </>
+                );
+              })()}
+            </g>
+          )}
+
           {/* ── Main timeline + merge nodes ── */}
           <g style={{ opacity: mainTimelineOpacity, transition: 'opacity 0.15s' }}>
             {/* Use <path> not <line>: pathLength on <line> is SVG 2 only and unreliable in WKWebView */}
@@ -2879,7 +2978,7 @@ export default function BranchMap({
                         y={anchorY}
                         textAnchor="middle"
                         dominantBaseline="middle"
-                        fontSize={count >= 10 ? 6.5 : 8}
+                        fontSize={nodeLabelFontSize(scaledNodeSize, count)}
                         fill="#fafaf9"
                         fontWeight={600}
                         style={{ pointerEvents: 'none' }}
@@ -2930,7 +3029,7 @@ export default function BranchMap({
                   const hitSize = scaledHoverHitSize;
                   const markerStrokeWidth = 1.2;
                   const label = count > 1 ? clumpCountLabel(count) : '';
-                  const labelFontSize = count >= 10 ? 6.2 : 8;
+                  const labelFontSize = nodeLabelFontSize(scaledNodeSize, count);
 
                   if (count === 1) {
                     const marker = lastEntry.item.marker;
@@ -3648,7 +3747,7 @@ export default function BranchMap({
                       const markerPath = promptMarkerPath(anchorX, anchorY, markerSize);
                       const markerStrokeWidth = 1.2;
                       const label = count > 1 ? clumpCountLabel(count) : '';
-                      const labelFontSize = count >= 10 ? 6.2 : 8;
+                      const labelFontSize = nodeLabelFontSize(scaledNodeSize, count);
 
                       return (
                         <g key={`${clusterKey}-visual`} className="branch-map-icon-fixed" style={{ pointerEvents: 'none' }}>
@@ -3888,7 +3987,7 @@ export default function BranchMap({
                             y={anchorY}
                             textAnchor="middle"
                             dominantBaseline="middle"
-                            fontSize={count >= 10 ? 6.5 : 8}
+                            fontSize={nodeLabelFontSize(scaledNodeSize, count)}
                             fill="#fafaf9"
                             fontWeight={600}
                             style={{ pointerEvents: 'none' }}
@@ -4253,7 +4352,7 @@ export default function BranchMap({
                       count > 1 ? scaledNodeSize + CLUMP_SIZE_BOOST_PX * 2 : scaledNodeSize;
                     const markerPath = promptMarkerPath(anchorX, anchorY, markerSize);
                     const label = count > 1 ? clumpCountLabel(count) : '';
-                    const labelFontSize = count >= 10 ? 6.2 : 8;
+                    const labelFontSize = nodeLabelFontSize(scaledNodeSize, count);
 
                     return (
                       <g key={`prompt-overlay-${clusterKey}`} className="branch-map-icon-fixed">
@@ -4397,7 +4496,7 @@ export default function BranchMap({
                           y={anchorY}
                           textAnchor="middle"
                           dominantBaseline="middle"
-                          fontSize={count >= 10 ? 6.5 : 8}
+                          fontSize={nodeLabelFontSize(scaledNodeSize, count)}
                           fill="#fafaf9"
                           fontWeight={600}
                         >
@@ -4605,7 +4704,7 @@ export default function BranchMap({
                       y={anchorY}
                       textAnchor="middle"
                       dominantBaseline="middle"
-                      fontSize={count >= 10 ? 6.5 : 8}
+                      fontSize={nodeLabelFontSize(scaledNodeSize, count)}
                       fill="#fafaf9"
                       fontWeight={600}
                     >
@@ -4881,16 +4980,6 @@ export default function BranchMap({
           }}
         >
           <div className="flex items-center gap-1 shrink-0 bg-card border border-border rounded-full p-1">
-            <button
-              onClick={() => setLayoutMode('timeline')}
-              className={`px-2.5 py-1 rounded-full text-xs leading-none select-none transition-colors ${layoutMode === 'timeline'
-                ? 'bg-primary/10 text-foreground'
-                : 'text-muted-foreground hover:text-foreground hover:bg-muted'
-                }`}
-              title="Time-proportional timeline layout"
-            >
-              Timeline
-            </button>
             <button
               onClick={() => setLayoutMode('grid')}
               className={`px-2.5 py-1 rounded-full text-xs leading-none select-none transition-colors ${layoutMode === 'grid'
