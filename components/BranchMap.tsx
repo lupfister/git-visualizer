@@ -78,7 +78,7 @@ type TooltipData = {
   avatarFallback?: string;
 };
 type PRCommitHover = { x: number; arcY: number; pr: MergedPR; commitIdx: number; total: number };
-type SpacingMode = 'regular' | 'bounded';
+type SpacingMode = 'regular' | 'bounded' | 'uniform';
 type ClampMode = 'hard' | 'soft';
 type OrientationMode = 'vertical' | 'horizontal';
 type MarkerEntry<T> = { x: number; y: number; item: T };
@@ -469,7 +469,10 @@ export default function BranchMap({
   const [animatedClumpZoom, setAnimatedClumpZoom] = useState(ZOOM_DEFAULT);
   const [timeScale, setTimeScale] = useState(TIME_SCALE_DEFAULT);
   const [layoutMode, setLayoutMode] = useState<LayoutMode>('grid');
-  const [spacingMode] = useState<SpacingMode>('bounded');
+  // Non-grid timeline spacing:
+  // - `uniform`: time affects ordering only (no time-proportional gaps)
+  // - `bounded` / `regular`: legacy time-aware spacing modes
+  const [spacingMode] = useState<SpacingMode>('uniform');
   const [orientation, setOrientation] = useState<OrientationMode>('vertical');
   const isHorizontal = orientation === 'horizontal';
   const isGridLayout = layoutMode === 'grid';
@@ -1655,7 +1658,10 @@ export default function BranchMap({
     });
     sortedNodes.forEach((node) => {
       const mergeEventTime = mergeEventTimeByFullSha.get(node.fullSha) ?? new Date(node.date).getTime();
-      registerGridCommitRowTime(mergeEventTime);
+      // Avoid allocating "empty" grid rows for merge events when merge ticks are hidden.
+      // If a merge commit is also on the main line, it will already be covered by the direct commit row.
+      const mergeProducesVisibleMarker = showMergeTicks || directCommitShaSet.has(node.fullSha);
+      if (mergeProducesVisibleMarker) registerGridCommitRowTime(mergeEventTime);
     });
     activeBranches.forEach((branch) => {
       const previews = (branchCommitPreviews[branch.name] ?? [])
@@ -1750,14 +1756,18 @@ export default function BranchMap({
   } else if (allAnchorTimes.length > 0) {
     anchorXs.push(leftPad);
     for (let i = 1; i < allAnchorTimes.length; i += 1) {
+      if (effectiveSpacingMode === 'uniform') {
+        anchorXs.push(anchorXs[i - 1] + IDEAL_EVENT_GAP);
+        continue;
+      }
       if (effectiveSpacingMode === 'regular') {
         anchorXs.push(leftPad + (allAnchorTimes[i] - firstEventT) * regularPxPerMs);
-      } else {
-        const deltaMs = Math.max(1, allAnchorTimes[i] - allAnchorTimes[i - 1]);
-        const scaledGap = IDEAL_EVENT_GAP * (deltaMs / Math.max(avgAnchorIntervalMs, 1));
-        const boundedGap = Math.max(MIN_EVENT_GAP, Math.min(MAX_EVENT_GAP, scaledGap));
-        anchorXs.push(anchorXs[i - 1] + boundedGap);
+        continue;
       }
+      const deltaMs = Math.max(1, allAnchorTimes[i] - allAnchorTimes[i - 1]);
+      const scaledGap = IDEAL_EVENT_GAP * (deltaMs / Math.max(avgAnchorIntervalMs, 1));
+      const boundedGap = Math.max(MIN_EVENT_GAP, Math.min(MAX_EVENT_GAP, scaledGap));
+      anchorXs.push(anchorXs[i - 1] + boundedGap);
     }
   }
 
@@ -1794,6 +1804,15 @@ export default function BranchMap({
       const mid = (lo + hi) >> 1;
       if (allAnchorTimes[mid] < t) lo = mid + 1;
       else hi = mid;
+    }
+    if (effectiveSpacingMode === 'uniform') {
+      // Time affects ordering only: snap to the next chronological anchor slot.
+      if (lo <= 0) return leftPad - IDEAL_EVENT_GAP * 2;
+      if (lo >= allAnchorTimes.length) {
+        const endX = anchorXs[anchorXs.length - 1] ?? leftPad;
+        return endX + IDEAL_EVENT_GAP * 2;
+      }
+      return anchorXs[lo] ?? leftPad + lo * IDEAL_EVENT_GAP;
     }
     if (lo <= 0) {
       const rawX = leftPad + (t - firstEventT) * safeExtrapPxPerMs;
@@ -2809,21 +2828,7 @@ export default function BranchMap({
                       : undefined
                   );
                 const clusters = isGridLayout
-                  ? mergeCoLocatedClusters(rawClusters.map((cluster) => {
-                    const hasStructuralEntry = cluster.entries.some((entry) => isStructuralMainEntry(entry));
-                    if (hasStructuralEntry || mainStructuralCommitAnchors.length === 0) return cluster;
-                    let nearestAnchor: AnchorPoint | null = null;
-                    let nearestDistance = Number.POSITIVE_INFINITY;
-                    for (const anchor of mainStructuralCommitAnchors) {
-                      const distance = Math.hypot(anchor.x - cluster.x, anchor.y - cluster.y);
-                      if (distance < nearestDistance) {
-                        nearestDistance = distance;
-                        nearestAnchor = anchor;
-                      }
-                    }
-                    if (!nearestAnchor || nearestDistance > GRID_EVENT_GAP * 1.25) return cluster;
-                    return { ...cluster, x: nearestAnchor.x, y: nearestAnchor.y };
-                  }))
+                  ? mergeCoLocatedClusters(rawClusters)
                   : rawClusters;
                 return clusters.map((cluster) => {
                   const count = cluster.entries.length;
@@ -4612,21 +4617,7 @@ export default function BranchMap({
                     : undefined
                 );
               const clusters = isGridLayout
-                ? mergeCoLocatedClusters(rawClusters.map((cluster) => {
-                  const hasStructuralEntry = cluster.entries.some((entry) => isStructuralMainEntry(entry));
-                  if (hasStructuralEntry || mainStructuralCommitAnchors.length === 0) return cluster;
-                  let nearestAnchor: AnchorPoint | null = null;
-                  let nearestDistance = Number.POSITIVE_INFINITY;
-                  for (const anchor of mainStructuralCommitAnchors) {
-                    const distance = Math.hypot(anchor.x - cluster.x, anchor.y - cluster.y);
-                    if (distance < nearestDistance) {
-                      nearestDistance = distance;
-                      nearestAnchor = anchor;
-                    }
-                  }
-                  if (!nearestAnchor || nearestDistance > GRID_EVENT_GAP * 1.25) return cluster;
-                  return { ...cluster, x: nearestAnchor.x, y: nearestAnchor.y };
-                }))
+                ? mergeCoLocatedClusters(rawClusters)
                 : rawClusters;
 
               return clusters.map((cluster) => {
