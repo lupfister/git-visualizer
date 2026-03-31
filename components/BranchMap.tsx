@@ -25,7 +25,10 @@ const AHEAD_LABEL_OFFSET_X = 10;
 const MAIN_LABEL_OFFSET_X = 10;
 const MAX_ACTIVE = 50;
 const ZOOM_DEFAULT = 1;
-const ZOOM_LOCKED = 1;
+const ZOOM_MIN = 1;
+const ZOOM_MAX = 3;
+const ZOOM_WHEEL_EXP_SENSITIVITY = 0.0025;
+const ZOOM_WHEEL_DELTA_MAX_PX = 180;
 const CAMERA_UI_SYNC_MS = 24;
 const CANVAS_PAD_X = 240;
 const CANVAS_PAD_Y = 140;
@@ -460,8 +463,8 @@ export default function BranchMap({
   const [hoveredPRCommit, setHoveredPRCommit] = useState<PRCommitHover | null>(null);
   const [hoveredMergeNode, setHoveredMergeNode] = useState<{ y: number; node: MergeNode } | null>(null);
   const [prCommits, setPrCommits] = useState<Map<number, string[]>>(new Map());
-  const [zoom, setZoom] = useState(ZOOM_LOCKED);
-  const [animatedClumpZoom, setAnimatedClumpZoom] = useState(ZOOM_LOCKED);
+  const [zoom, setZoom] = useState(ZOOM_DEFAULT);
+  const [animatedClumpZoom, setAnimatedClumpZoom] = useState(ZOOM_DEFAULT);
   const [timeScale, setTimeScale] = useState(TIME_SCALE_DEFAULT);
   const [layoutMode, setLayoutMode] = useState<LayoutMode>('grid');
   const [spacingMode] = useState<SpacingMode>('bounded');
@@ -484,6 +487,8 @@ export default function BranchMap({
   const zoomRef = useRef(zoom);
   const zoomStateRef = useRef(zoom);
   const lastContinuousZoomTsRef = useRef(0);
+  const gestureZoomBaseRef = useRef(zoomRef.current);
+  const gesturePointRef = useRef<{ x: number; y: number } | null>(null);
   const panUiSyncTimeoutRef = useRef<number | null>(null);
   const zoomUiSyncTimeoutRef = useRef<number | null>(null);
   const cameraPaintRafRef = useRef<number | null>(null);
@@ -881,11 +886,6 @@ export default function BranchMap({
     if (!el) return;
     const cameraScale = getCameraScale(_nextZoom, isHorizontal);
     el.style.transform = `translate3d(${nextPan.x}px, ${nextPan.y}px, 0)`;
-    const svg = svgRef.current;
-    if (svg) {
-      const inv = 1 / Math.max(cameraScale.x, 0.0001);
-      svg.style.setProperty('--icon-inv-scale', String(inv));
-    }
     const zoomLayer = zoomLayerRef.current;
     if (zoomLayer) {
       zoomLayer.setAttribute('transform', `scale(${cameraScale.x} ${cameraScale.y})`);
@@ -947,20 +947,46 @@ export default function BranchMap({
 
   function applyCamera(
     nextPan: { x: number; y: number },
-    _nextZoom = zoomRef.current,
+    nextZoom = zoomRef.current,
     forceUiSync = false,
     immediateUiSync = false
   ) {
     panRef.current = nextPan;
     targetPanRef.current = nextPan;
-    zoomRef.current = ZOOM_LOCKED;
-    pendingCameraRef.current = { pan: nextPan, zoom: ZOOM_LOCKED };
+    zoomRef.current = nextZoom;
+    pendingCameraRef.current = { pan: nextPan, zoom: nextZoom };
     if (immediateUiSync) {
       stopCameraPaint();
     } else {
       scheduleCameraPaint();
     }
     syncUiState(forceUiSync, immediateUiSync);
+  }
+
+  function normalizeWheelDeltaPx(delta: number, deltaMode: number, pageSizePx: number): number {
+    if (deltaMode === WheelEvent.DOM_DELTA_LINE) return delta * 16;
+    if (deltaMode === WheelEvent.DOM_DELTA_PAGE) return delta * Math.max(pageSizePx, 1);
+    return delta;
+  }
+
+  type ZoomUiSyncMode = 'none' | 'deferred' | 'immediate';
+
+  function scheduleZoomUiSync(immediate = false) {
+    if (immediate) {
+      if (zoomUiSyncTimeoutRef.current !== null) {
+        clearTimeout(zoomUiSyncTimeoutRef.current);
+        zoomUiSyncTimeoutRef.current = null;
+      }
+      syncUiState(true, true);
+      return;
+    }
+    if (zoomUiSyncTimeoutRef.current !== null) {
+      clearTimeout(zoomUiSyncTimeoutRef.current);
+    }
+    zoomUiSyncTimeoutRef.current = window.setTimeout(() => {
+      zoomUiSyncTimeoutRef.current = null;
+      syncUiState(true, true);
+    }, 90);
   }
 
   function lockAnimationsIfReady() {
@@ -1033,7 +1059,50 @@ export default function BranchMap({
     return () => clearTimeout(id);
   }, [drawReady]);
 
-  // Wheel behavior: inertial pan in both axes (zoom disabled).
+  function applyZoomAt(
+    point: { x: number; y: number },
+    nextZoomRaw: number,
+    uiSyncMode: ZoomUiSyncMode = 'none'
+  ): boolean {
+    lockAnimationsIfReady();
+    const nextZoom = Math.max(ZOOM_MIN, Math.min(ZOOM_MAX, nextZoomRaw));
+    if (!Number.isFinite(nextZoom) || nextZoom <= 0) return false;
+    const currentZoom = zoomRef.current;
+    if (Math.abs(nextZoom - currentZoom) < 0.0001) return false;
+
+    const currentPan = panRef.current;
+    const graphOffset = graphOffsetRef.current;
+    const currentScale = getCameraScale(currentZoom, isHorizontal);
+    const nextScale = getCameraScale(nextZoom, isHorizontal);
+    const worldX = (point.x - currentPan.x - graphOffset.x) / Math.max(currentScale.x, 0.0001);
+    const worldY = (point.y - currentPan.y - graphOffset.y) / Math.max(currentScale.y, 0.0001);
+    const nextPan = clampPan(
+      {
+        x: point.x - graphOffset.x - worldX * nextScale.x,
+        y: point.y - graphOffset.y - worldY * nextScale.y,
+      },
+      nextZoom,
+      'soft'
+    );
+
+    stopPanSmoothing();
+    if (uiSyncMode === 'deferred') {
+      lastContinuousZoomTsRef.current = performance.now();
+    }
+    if (uiSyncMode === 'immediate') {
+      applyCamera(nextPan, nextZoom, true, true);
+      return true;
+    }
+    applyCamera(nextPan, nextZoom);
+    if (uiSyncMode === 'deferred') {
+      scheduleZoomUiSync();
+    }
+    return true;
+  }
+
+  // Wheel behavior:
+  // - Ctrl/Cmd + wheel: direct cursor-anchored zoom (min 1x)
+  // - plain wheel: inertial pan in both axes
   useEffect(() => {
     const el = scrollRef.current;
     if (!el) return;
@@ -1044,6 +1113,20 @@ export default function BranchMap({
       focusScrollCancelRef.current = null;
       markUserMovedCamera();
 
+      if (e.ctrlKey || e.metaKey) {
+        stopWheelInertia();
+        stopPanSmoothing();
+        setTooltip(null);
+        const rect = el.getBoundingClientRect();
+        const point = { x: e.clientX - rect.left, y: e.clientY - rect.top };
+        const pixelDeltaY = normalizeWheelDeltaPx(e.deltaY, e.deltaMode, el.clientHeight);
+        const clampedDeltaY = Math.max(-ZOOM_WHEEL_DELTA_MAX_PX, Math.min(ZOOM_WHEEL_DELTA_MAX_PX, pixelDeltaY));
+        const zoomFactor = Math.exp(-clampedDeltaY * ZOOM_WHEEL_EXP_SENSITIVITY);
+        if (!Number.isFinite(zoomFactor) || Math.abs(zoomFactor - 1) < 0.0001) return;
+        applyZoomAt(point, zoomRef.current * zoomFactor, 'deferred');
+        return;
+      }
+
       flushPendingZoomUiSync();
       const nextPan = clampPan({
         x: panRef.current.x - e.deltaX,
@@ -1053,9 +1136,46 @@ export default function BranchMap({
       schedulePanUiSync();
     };
 
+    const onGestureStart = (evt: Event) => {
+      const e = evt as Event & { scale?: number; clientX?: number; clientY?: number };
+      e.preventDefault();
+      lockAnimationsIfReady();
+      stopWheelInertia();
+      stopPanSmoothing();
+      setTooltip(null);
+      markUserMovedCamera();
+      gestureZoomBaseRef.current = zoomRef.current;
+      const rect = el.getBoundingClientRect();
+      gesturePointRef.current = {
+        x: (e.clientX ?? (rect.left + rect.width / 2)) - rect.left,
+        y: (e.clientY ?? (rect.top + rect.height / 2)) - rect.top,
+      };
+    };
+
+    const onGestureChange = (evt: Event) => {
+      const e = evt as Event & { scale?: number };
+      e.preventDefault();
+      const point = gesturePointRef.current;
+      const scale = e.scale;
+      if (!point || scale == null || !Number.isFinite(scale)) return;
+      applyZoomAt(point, gestureZoomBaseRef.current * scale, 'deferred');
+    };
+
+    const onGestureEnd = (evt: Event) => {
+      evt.preventDefault();
+      gesturePointRef.current = null;
+      scheduleZoomUiSync(true);
+    };
+
     el.addEventListener('wheel', onWheel, { passive: false });
+    el.addEventListener('gesturestart', onGestureStart as EventListener, { passive: false });
+    el.addEventListener('gesturechange', onGestureChange as EventListener, { passive: false });
+    el.addEventListener('gestureend', onGestureEnd as EventListener, { passive: false });
     return () => {
       el.removeEventListener('wheel', onWheel);
+      el.removeEventListener('gesturestart', onGestureStart as EventListener);
+      el.removeEventListener('gesturechange', onGestureChange as EventListener);
+      el.removeEventListener('gestureend', onGestureEnd as EventListener);
     };
   }, []);
 
@@ -2438,7 +2558,6 @@ export default function BranchMap({
             animationsLocked ? 'timeline-static' : '',
           ].filter(Boolean).join(' ')}
           style={{
-            '--icon-inv-scale': String(1 / Math.max(renderCameraScale.x, 0.0001)),
             minWidth: svgWidth,
             display: 'block',
             position: 'absolute',
@@ -2480,14 +2599,9 @@ export default function BranchMap({
                 const nodeSizeWorld = (() => {
                   const rect = commitRectSize(scaledNodeSize, CLUMP_SIZE_BOOST_PX * 2);
                   // Align grid to node outer bounds (edges), not its center.
-                  const iconHalfHeight = Math.max(4, rect.height / 2);
-                  const iconHalfWidth = Math.max(4, rect.width / 2);
-                  // Node icons cancel camera zoom (see `.branch-map-icon-fixed`),
-                  // but the grid background does not. Convert the screen-stable icon size
-                  // into world units so the boundary lines stay aligned at any zoom.
                   return {
-                    halfHeight: iconHalfHeight / Math.max(renderCameraScale.y, 0.0001),
-                    halfWidth: iconHalfWidth / Math.max(renderCameraScale.x, 0.0001),
+                    halfHeight: Math.max(4, rect.height / 2),
+                    halfWidth: Math.max(4, rect.width / 2),
                   };
                 })();
 
@@ -2537,6 +2651,7 @@ export default function BranchMap({
                       return [
                         <path
                           key={`grid-col-left-${idx}`}
+                          className="non-scaling-stroke"
                           d={`M ${pathCoord(leftXLine, topY)} L ${pathCoord(leftXLine, bottomY)}`}
                           fill="none"
                           stroke="#e7e5e4"
@@ -2545,6 +2660,7 @@ export default function BranchMap({
                         />,
                         <path
                           key={`grid-col-right-${idx}`}
+                          className="non-scaling-stroke"
                           d={`M ${pathCoord(rightXLine, topY)} L ${pathCoord(rightXLine, bottomY)}`}
                           fill="none"
                           stroke="#e7e5e4"
@@ -2700,12 +2816,12 @@ export default function BranchMap({
                       isGridLayout ? (
                         <rect
                           key={clusterKey}
-                          className="branch-map-icon-fixed branch-map-commit-rect"
+                          className="branch-map-commit-rect"
                           x={anchorX - rectSize.width / 2}
                           y={anchorY - rectSize.height / 2}
                           width={rectSize.width}
                           height={rectSize.height}
-                          rx={rectSize.radius}
+                          rx={rectSize.radius / Math.max(renderCameraScale.x, 0.0001)}
                           fill="#57534e"
                           stroke="var(--background)"
                           strokeWidth={1.2}
@@ -2731,7 +2847,6 @@ export default function BranchMap({
                       ) : (
                         <circle
                           key={clusterKey}
-                          className="branch-map-icon-fixed"
                           cx={anchorX}
                           cy={anchorY}
                           r={scaledNodeSize / 2}
@@ -2771,7 +2886,7 @@ export default function BranchMap({
                     : 'on main';
 
                   return (
-                    <g key={clusterKey} className="branch-map-icon-fixed">
+                    <g key={clusterKey}>
                       {isGridLayout ? (
                         (() => {
                           const rectSize = commitRectSize(scaledNodeSize, CLUMP_SIZE_BOOST_PX * 2);
@@ -2782,7 +2897,7 @@ export default function BranchMap({
                               y={anchorY - rectSize.height / 2}
                               width={rectSize.width}
                               height={rectSize.height}
-                              rx={rectSize.radius}
+                              rx={rectSize.radius / Math.max(renderCameraScale.x, 0.0001)}
                               fill="#57534e"
                               stroke="var(--background)"
                               strokeWidth={1.2}
@@ -2840,7 +2955,7 @@ export default function BranchMap({
                         y={anchorY}
                         textAnchor="middle"
                         dominantBaseline="middle"
-                        fontSize={nodeLabelFontSize(scaledNodeSize, count)}
+                        fontSize={nodeLabelFontSize(scaledNodeSize, count) / Math.max(renderCameraScale.x, 0.0001)}
                         fill="#fafaf9"
                         fontWeight={600}
                         style={{ pointerEvents: 'none' }}
@@ -2897,7 +3012,7 @@ export default function BranchMap({
                     const marker = lastEntry.item.marker;
                     return (
                       <g key={clusterKey}>
-                        <g className="branch-map-icon-fixed" style={{ pointerEvents: 'none' }}>
+                        <g style={{ pointerEvents: 'none' }}>
                           <path
                             d={markerPath}
                             fill="var(--background)"
@@ -2938,7 +3053,7 @@ export default function BranchMap({
                   const latestPrompt = truncatePrompt(lastEntry.item.marker.prompt, PROMPT_CLUSTER_PREVIEW_MAX);
                   return (
                     <g key={clusterKey}>
-                      <g className="branch-map-icon-fixed" style={{ pointerEvents: 'none' }}>
+                      <g style={{ pointerEvents: 'none' }}>
                         <path
                           d={markerPath}
                           fill="var(--background)"
@@ -3011,7 +3126,7 @@ export default function BranchMap({
                       {/* Visible tick — pointer-events off so hit rect handles hover */}
                       <circle
                        
-                        className="branch-map-icon-fixed"
+                        className={undefined}
                         cx={mainX}
                         cy={y}
                         r={scaledNodeSize / 2}
@@ -3116,7 +3231,7 @@ export default function BranchMap({
                 <g className={fadeInInfoClass} style={{ '--delay': `${prDelay + INFO_OFFSET}ms` } as React.CSSProperties}>
                   <circle
                    
-                    className="branch-map-icon-fixed"
+                    className={undefined}
                     cx={mainX}
                     cy={forkY}
                     r={scaledNodeSize / 2}
@@ -3127,7 +3242,7 @@ export default function BranchMap({
                   />
                   <circle
                    
-                    className="branch-map-icon-fixed"
+                    className={undefined}
                     cx={mainX}
                     cy={effectiveMergeY}
                     r={scaledNodeSize / 2}
@@ -3149,7 +3264,7 @@ export default function BranchMap({
                         {/* Visible tick */}
                         <circle
                          
-                          className="branch-map-icon-fixed"
+                          className={undefined}
                           cx={arcX}
                           cy={cy}
                           r={tickSize / 2}
@@ -3182,7 +3297,7 @@ export default function BranchMap({
                   {pr.authorAvatar ? (
                     <image
                      
-                      className="branch-map-icon-fixed"
+                      className={undefined}
                       href={pr.authorAvatar}
                       x={arcX - 9}
                       y={midY - 10}
@@ -3191,10 +3306,10 @@ export default function BranchMap({
                       style={{ clipPath: 'circle(9px at 9px 9px)' }}
                     />
                   ) : (
-                    <circle className="branch-map-icon-fixed" cx={arcX} cy={midY} r={8} fill="#57534e" />
+                    <circle cx={arcX} cy={midY} r={8} fill="#57534e" />
                   )}
                   <text
-                    className="branch-map-icon-fixed"
+                    className={undefined}
                     x={arcX + 12}
                     y={midY + 4}
                     fontSize={12}
@@ -3612,7 +3727,7 @@ export default function BranchMap({
                       const labelFontSize = nodeLabelFontSize(scaledNodeSize, count);
 
                       return (
-                        <g key={`${clusterKey}-visual`} className="branch-map-icon-fixed" style={{ pointerEvents: 'none' }}>
+                        <g key={`${clusterKey}-visual`} style={{ pointerEvents: 'none' }}>
                           <path
                             d={markerPath}
                             fill="var(--background)"
@@ -3691,7 +3806,7 @@ export default function BranchMap({
                           isGridLayout ? (
                             <rect
                               key={clusterKey}
-                              className="branch-map-icon-fixed branch-map-commit-rect"
+                              className="branch-map-commit-rect"
                               x={anchorX - rectSize.width / 2}
                               y={anchorY - rectSize.height / 2}
                               width={rectSize.width}
@@ -3729,7 +3844,7 @@ export default function BranchMap({
                           ) : (
                             <circle
                               key={clusterKey}
-                              className="branch-map-icon-fixed"
+                              className={undefined}
                               cx={anchorX}
                               cy={anchorY}
                               r={scaledNodeSize / 2}
@@ -3780,7 +3895,7 @@ export default function BranchMap({
                       const targetCommitSha = lastRealEntry.item.commit?.fullSha ?? b.headSha;
 
                       return (
-                        <g key={clusterKey} className="branch-map-icon-fixed">
+                        <g key={clusterKey}>
                           {isGridLayout ? (
                             (() => {
                               const rectSize = commitRectSize(scaledNodeSize, CLUMP_SIZE_BOOST_PX * 2);
@@ -3931,7 +4046,7 @@ export default function BranchMap({
                       );
                     })}
                     {showClockIcon && (
-                      <g className="branch-map-icon-fixed" style={{ pointerEvents: 'none' }}>
+                      <g style={{ pointerEvents: 'none' }}>
                         <circle cx={clockPoint.x} cy={clockPoint.y} r={4.2} stroke={color} strokeWidth={1.2} fill="none" />
                         <line x1={clockPoint.x} y1={clockPoint.y - 2.9} x2={clockPoint.x} y2={clockPoint.y} stroke={color} strokeWidth={1.2} strokeLinecap="round" />
                         <line x1={clockPoint.x} y1={clockPoint.y} x2={clockPoint.x + 2.3} y2={clockPoint.y + 1.5} stroke={color} strokeWidth={1.2} strokeLinecap="round" />
@@ -4217,7 +4332,7 @@ export default function BranchMap({
                     const labelFontSize = nodeLabelFontSize(scaledNodeSize, count);
 
                     return (
-                      <g key={`prompt-overlay-${clusterKey}`} className="branch-map-icon-fixed">
+                      <g key={`prompt-overlay-${clusterKey}`}>
                         <path
                           d={markerPath}
                           fill="var(--background)"
@@ -4231,7 +4346,7 @@ export default function BranchMap({
                             y={anchorY}
                             textAnchor="middle"
                             dominantBaseline="middle"
-                            fontSize={labelFontSize}
+                            fontSize={labelFontSize / Math.max(renderCameraScale.x, 0.0001)}
                             fill="#14b8a6"
                             fontWeight={700}
                             style={{ fontVariantNumeric: 'tabular-nums' }}
@@ -4275,14 +4390,14 @@ export default function BranchMap({
                       const gridPad = isGridLayout ? 0 : 2.8;
                       return (
                         isGridLayout ? (
-                          <g key={`commit-overlay-${clusterKey}`} className="branch-map-icon-fixed">
+                          <g key={`commit-overlay-${clusterKey}`}>
                             <rect
                               className="branch-map-commit-rect"
                               x={anchorX - (rectSize.width + gridPad) / 2}
                               y={anchorY - (rectSize.height + gridPad) / 2}
                               width={rectSize.width + gridPad}
                               height={rectSize.height + gridPad}
-                              rx={Math.max(2, rectSize.radius + (gridPad ? 0.6 : 0))}
+                              rx={Math.max(2, rectSize.radius + (gridPad ? 0.6 : 0)) / Math.max(renderCameraScale.x, 0.0001)}
                               fill="var(--background)"
                             />
                             <rect
@@ -4291,12 +4406,12 @@ export default function BranchMap({
                               y={anchorY - rectSize.height / 2}
                               width={rectSize.width}
                               height={rectSize.height}
-                              rx={rectSize.radius}
+                              rx={rectSize.radius / Math.max(renderCameraScale.x, 0.0001)}
                               fill={dotFill}
                             />
                           </g>
                         ) : (
-                          <g key={`commit-overlay-${clusterKey}`} className="branch-map-icon-fixed">
+                          <g key={`commit-overlay-${clusterKey}`}>
                             <circle
                               cx={anchorX}
                               cy={anchorY}
@@ -4317,7 +4432,7 @@ export default function BranchMap({
                     const clusterRectSize = commitRectSize(scaledNodeSize, CLUMP_SIZE_BOOST_PX * 2);
                     const gridPad = isGridLayout ? 0 : 2.8;
                     return (
-                      <g key={`commit-overlay-${clusterKey}`} className="branch-map-icon-fixed">
+                      <g key={`commit-overlay-${clusterKey}`}>
                         {isGridLayout ? (
                           <>
                             <rect
@@ -4326,7 +4441,7 @@ export default function BranchMap({
                               y={anchorY - (clusterRectSize.height + gridPad) / 2}
                               width={clusterRectSize.width + gridPad}
                               height={clusterRectSize.height + gridPad}
-                              rx={Math.max(2, clusterRectSize.radius + (gridPad ? 0.6 : 0))}
+                              rx={Math.max(2, clusterRectSize.radius + (gridPad ? 0.6 : 0)) / Math.max(renderCameraScale.x, 0.0001)}
                               fill="var(--background)"
                             />
                             <rect
@@ -4335,7 +4450,7 @@ export default function BranchMap({
                               y={anchorY - clusterRectSize.height / 2}
                               width={clusterRectSize.width}
                               height={clusterRectSize.height}
-                              rx={clusterRectSize.radius}
+                              rx={clusterRectSize.radius / Math.max(renderCameraScale.x, 0.0001)}
                               fill={dotFill}
                             />
                           </>
@@ -4360,7 +4475,7 @@ export default function BranchMap({
                           y={anchorY}
                           textAnchor="middle"
                           dominantBaseline="middle"
-                          fontSize={nodeLabelFontSize(scaledNodeSize, count)}
+                          fontSize={nodeLabelFontSize(scaledNodeSize, count) / Math.max(renderCameraScale.x, 0.0001)}
                           fill="#fafaf9"
                           fontWeight={600}
                         >
@@ -4485,14 +4600,14 @@ export default function BranchMap({
                   const gridPad = isGridLayout ? 0 : 2.8;
                   return (
                     isGridLayout ? (
-                      <g key={`main-direct-overlay-${clusterKey}`} className="branch-map-icon-fixed">
+                      <g key={`main-direct-overlay-${clusterKey}`}>
                         <rect
                           className="branch-map-commit-rect"
                           x={anchorX - (rectSize.width + gridPad) / 2}
                           y={anchorY - (rectSize.height + gridPad) / 2}
                           width={rectSize.width + gridPad}
                           height={rectSize.height + gridPad}
-                          rx={Math.max(2, rectSize.radius + (gridPad ? 0.6 : 0))}
+                          rx={Math.max(2, rectSize.radius + (gridPad ? 0.6 : 0)) / Math.max(renderCameraScale.x, 0.0001)}
                           fill="var(--background)"
                         />
                         <rect
@@ -4501,12 +4616,12 @@ export default function BranchMap({
                           y={anchorY - rectSize.height / 2}
                           width={rectSize.width}
                           height={rectSize.height}
-                          rx={rectSize.radius}
+                          rx={rectSize.radius / Math.max(renderCameraScale.x, 0.0001)}
                           fill="#57534e"
                         />
                       </g>
                     ) : (
-                      <g key={`main-direct-overlay-${clusterKey}`} className="branch-map-icon-fixed">
+                      <g key={`main-direct-overlay-${clusterKey}`}>
                         <circle
                           cx={anchorX}
                           cy={anchorY}
@@ -4527,7 +4642,7 @@ export default function BranchMap({
                 const clusterRectSize = commitRectSize(scaledNodeSize, CLUMP_SIZE_BOOST_PX * 2);
                 const gridPad = isGridLayout ? 0 : 2.8;
                 return (
-                  <g key={`main-direct-overlay-${clusterKey}`} className="branch-map-icon-fixed">
+                  <g key={`main-direct-overlay-${clusterKey}`}>
                     {isGridLayout ? (
                       <>
                         <rect
@@ -4536,7 +4651,7 @@ export default function BranchMap({
                           y={anchorY - (clusterRectSize.height + gridPad) / 2}
                           width={clusterRectSize.width + gridPad}
                           height={clusterRectSize.height + gridPad}
-                          rx={Math.max(2, clusterRectSize.radius + (gridPad ? 0.6 : 0))}
+                          rx={Math.max(2, clusterRectSize.radius + (gridPad ? 0.6 : 0)) / Math.max(renderCameraScale.x, 0.0001)}
                           fill="var(--background)"
                         />
                         <rect
@@ -4545,7 +4660,7 @@ export default function BranchMap({
                           y={anchorY - clusterRectSize.height / 2}
                           width={clusterRectSize.width}
                           height={clusterRectSize.height}
-                          rx={clusterRectSize.radius}
+                          rx={clusterRectSize.radius / Math.max(renderCameraScale.x, 0.0001)}
                           fill="#57534e"
                         />
                       </>
@@ -4570,7 +4685,7 @@ export default function BranchMap({
                       y={anchorY}
                       textAnchor="middle"
                       dominantBaseline="middle"
-                      fontSize={nodeLabelFontSize(scaledNodeSize, count)}
+                      fontSize={nodeLabelFontSize(scaledNodeSize, count) / Math.max(renderCameraScale.x, 0.0001)}
                       fill="#fafaf9"
                       fontWeight={600}
                     >
@@ -4642,7 +4757,7 @@ export default function BranchMap({
           {!holdTimelineForInitialCenter && checkedOutDisplayIndicatorLocal && (() => {
             const markerPoint = projectPoint(checkedOutDisplayIndicatorLocal.x, checkedOutDisplayIndicatorLocal.y);
             return (
-              <g className="branch-map-icon-fixed" style={{ pointerEvents: 'none' }}>
+              <g style={{ pointerEvents: 'none' }}>
                 <circle
                   className="checked-out-halo-pulse"
                   cx={markerPoint.x}
