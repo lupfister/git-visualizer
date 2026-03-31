@@ -43,10 +43,12 @@ const TIME_SCALE_MAX = 3;
 const TIME_SCALE_STEP = 0.05;
 const TIME_SCALE_DEFAULT = 0.5;
 const CLUMP_SIZE_BOOST_PX = 0.5;
-const GRID_NODE_RECT = commitRectSize(NODE_SIZE, CLUMP_SIZE_BOOST_PX * 2);
+// Grid nodes render without clump boost, so grid spacing must match the un-boosted rect size
+// or you'll see tiny gaps between nodes.
+const GRID_NODE_RECT = commitRectSize(NODE_SIZE, 0);
 // Grid spacing should match node bounds so nodes "kiss" instead of overlapping.
-const GRID_ROW_GAP = Math.ceil(GRID_NODE_RECT.height);
-const GRID_LANE_WIDTH = Math.ceil(GRID_NODE_RECT.width);
+const GRID_ROW_GAP = GRID_NODE_RECT.height;
+const GRID_LANE_WIDTH = GRID_NODE_RECT.width;
 const GRID_LANE_OFFSET_X = 0;
 const GRID_LANE_MIN_SEPARATION = 0;
 const GRID_TIP_MIN_TAIL = GRID_ROW_GAP;
@@ -489,6 +491,8 @@ export default function BranchMap({
   const lastContinuousZoomTsRef = useRef(0);
   const gestureZoomBaseRef = useRef(zoomRef.current);
   const gesturePointRef = useRef<{ x: number; y: number } | null>(null);
+  const zoomStableTextElsRef = useRef<SVGTextElement[]>([]);
+  const zoomStableRectElsRef = useRef<SVGRectElement[]>([]);
   const panUiSyncTimeoutRef = useRef<number | null>(null);
   const zoomUiSyncTimeoutRef = useRef<number | null>(null);
   const cameraPaintRafRef = useRef<number | null>(null);
@@ -886,11 +890,36 @@ export default function BranchMap({
     if (!el) return;
     const cameraScale = getCameraScale(_nextZoom, isHorizontal);
     el.style.transform = `translate3d(${nextPan.x}px, ${nextPan.y}px, 0)`;
+    const svg = svgRef.current;
+    if (svg) {
+      svg.style.setProperty('--camera-scale', String(cameraScale.x));
+    }
     const zoomLayer = zoomLayerRef.current;
     if (zoomLayer) {
       zoomLayer.setAttribute('transform', `scale(${cameraScale.x} ${cameraScale.y})`);
     }
+
+    // Keep zoom-stable typography + corner rounding continuous during wheel/pinch
+    // by updating attributes imperatively at the same cadence as the camera transform.
+    const inv = 1 / Math.max(cameraScale.x, 0.0001);
+    for (const textEl of zoomStableTextElsRef.current) {
+      const base = Number(textEl.dataset.baseFontSize);
+      if (!Number.isFinite(base)) continue;
+      textEl.style.fontSize = `${base * inv}px`;
+    }
+    for (const rectEl of zoomStableRectElsRef.current) {
+      const base = Number(rectEl.dataset.baseRx);
+      if (!Number.isFinite(base)) continue;
+      rectEl.setAttribute('rx', String(base * inv));
+    }
   }
+
+  useLayoutEffect(() => {
+    const svg = svgRef.current;
+    if (!svg) return;
+    zoomStableTextElsRef.current = Array.from(svg.querySelectorAll<SVGTextElement>('text[data-base-font-size]'));
+    zoomStableRectElsRef.current = Array.from(svg.querySelectorAll<SVGRectElement>('rect[data-base-rx]'));
+  });
 
   function flushCameraPaint() {
     const pending = pendingCameraRef.current;
@@ -1093,7 +1122,9 @@ export default function BranchMap({
       applyCamera(nextPan, nextZoom, true, true);
       return true;
     }
-    applyCamera(nextPan, nextZoom);
+    // Keep zoom-driven visuals (label fontSize, rx scaling, etc.) continuous by
+    // syncing React state during active zoom gestures (throttled in `syncUiState`).
+    applyCamera(nextPan, nextZoom, uiSyncMode === 'deferred');
     if (uiSyncMode === 'deferred') {
       scheduleZoomUiSync();
     }
@@ -2505,6 +2536,9 @@ export default function BranchMap({
   const worldUnitsPerScreenPx = 1 / Math.max(renderCameraScale.x, 0.0001);
   const worldPx = (px: number) => px * worldUnitsPerScreenPx;
   const scaledNodeSize = NODE_SIZE;
+  const gridClumpBoost = isGridLayout ? 0 : CLUMP_SIZE_BOOST_PX * 2;
+  const nodeRectSize = (count: number) =>
+    commitRectSize(scaledNodeSize, count > 1 ? gridClumpBoost : 0);
   // Keep interaction hit areas consistent in screen pixels across zoom levels.
   const scaledHoverHitSize = worldPx(20);
   // Branch hover lines use vector-effect: non-scaling-stroke, so this should
@@ -2558,6 +2592,7 @@ export default function BranchMap({
             animationsLocked ? 'timeline-static' : '',
           ].filter(Boolean).join(' ')}
           style={{
+            '--camera-scale': String(renderCameraScale.x),
             minWidth: svgWidth,
             display: 'block',
             position: 'absolute',
@@ -2596,8 +2631,8 @@ export default function BranchMap({
                   .filter((y) => Number.isFinite(y));
                 const rowStep = rawRowYs.length > 320 ? Math.ceil(rawRowYs.length / 260) : 1;
                 const rowYs = rawRowYs.filter((_, idx) => idx % rowStep === 0);
-                const nodeSizeWorld = (() => {
-                  const rect = commitRectSize(scaledNodeSize, CLUMP_SIZE_BOOST_PX * 2);
+                  const nodeSizeWorld = (() => {
+                    const rect = nodeRectSize(2);
                   // Align grid to node outer bounds (edges), not its center.
                   return {
                     halfHeight: Math.max(4, rect.height / 2),
@@ -2821,11 +2856,12 @@ export default function BranchMap({
                           y={anchorY - rectSize.height / 2}
                           width={rectSize.width}
                           height={rectSize.height}
+                          data-base-rx={rectSize.radius}
                           rx={rectSize.radius / Math.max(renderCameraScale.x, 0.0001)}
-                          fill="#57534e"
-                          stroke="var(--background)"
-                          strokeWidth={1.2}
                           style={{ cursor: 'pointer' }}
+                          fill="#57534e"
+                          stroke={isGridLayout ? 'none' : 'var(--background)'}
+                          strokeWidth={isGridLayout ? 0 : 1.2}
                           onClick={(event) =>
                             handleCommitNodeClick(
                               event,
@@ -2851,8 +2887,8 @@ export default function BranchMap({
                           cy={anchorY}
                           r={scaledNodeSize / 2}
                           fill="#57534e"
-                          stroke="var(--background)"
-                          strokeWidth={1.2}
+                          stroke={isGridLayout ? 'none' : 'var(--background)'}
+                          strokeWidth={isGridLayout ? 0 : 1.2}
                           style={{ cursor: 'pointer' }}
                           onClick={(event) =>
                             handleCommitNodeClick(
@@ -2889,7 +2925,7 @@ export default function BranchMap({
                     <g key={clusterKey}>
                       {isGridLayout ? (
                         (() => {
-                          const rectSize = commitRectSize(scaledNodeSize, CLUMP_SIZE_BOOST_PX * 2);
+                          const rectSize = nodeRectSize(count);
                           return (
                             <rect
                               className="branch-map-commit-rect"
@@ -2897,11 +2933,12 @@ export default function BranchMap({
                               y={anchorY - rectSize.height / 2}
                               width={rectSize.width}
                               height={rectSize.height}
+                              data-base-rx={rectSize.radius}
                               rx={rectSize.radius / Math.max(renderCameraScale.x, 0.0001)}
-                              fill="#57534e"
-                              stroke="var(--background)"
-                              strokeWidth={1.2}
                               style={{ cursor: 'pointer' }}
+                              fill="#57534e"
+                              stroke={isGridLayout ? 'none' : 'var(--background)'}
+                              strokeWidth={isGridLayout ? 0 : 1.2}
                               onClick={(event) =>
                                 handleCommitNodeClick(
                                   event,
@@ -2928,8 +2965,8 @@ export default function BranchMap({
                           cy={anchorY}
                           r={scaledNodeSize / 2 + CLUMP_SIZE_BOOST_PX}
                           fill="#57534e"
-                          stroke="var(--background)"
-                          strokeWidth={1.2}
+                          stroke={isGridLayout ? 'none' : 'var(--background)'}
+                          strokeWidth={isGridLayout ? 0 : 1.2}
                           style={{ cursor: 'pointer' }}
                           onClick={(event) =>
                             handleCommitNodeClick(
@@ -2955,10 +2992,11 @@ export default function BranchMap({
                         y={anchorY}
                         textAnchor="middle"
                         dominantBaseline="middle"
+                        data-base-font-size={nodeLabelFontSize(scaledNodeSize, count)}
                         fontSize={nodeLabelFontSize(scaledNodeSize, count) / Math.max(renderCameraScale.x, 0.0001)}
+                        style={{ pointerEvents: 'none' }}
                         fill="#fafaf9"
                         fontWeight={600}
-                        style={{ pointerEvents: 'none' }}
                       >
                         {countLabel}
                       </text>
@@ -3001,7 +3039,7 @@ export default function BranchMap({
                   const anchorX = animatedAnchor.x;
                   const anchorY = animatedAnchor.y;
                   const markerSize =
-                    count > 1 ? scaledNodeSize + CLUMP_SIZE_BOOST_PX * 2 : scaledNodeSize;
+                    count > 1 ? scaledNodeSize + gridClumpBoost : scaledNodeSize;
                   const markerPath = promptMarkerPath(anchorX, anchorY, markerSize);
                   const hitSize = scaledHoverHitSize;
                   const markerStrokeWidth = 1.2;
@@ -3066,12 +3104,13 @@ export default function BranchMap({
                           y={anchorY}
                           textAnchor="middle"
                           dominantBaseline="middle"
-                          fontSize={labelFontSize}
                           fill="#14b8a6"
                           fontWeight={700}
                           style={{
                             fontVariantNumeric: 'tabular-nums',
+                            fontSize: `${labelFontSize / Math.max(renderCameraScale.x, 0.0001)}px`,
                           }}
+                          data-base-font-size={labelFontSize}
                         >
                           {label}
                         </text>
@@ -3720,7 +3759,7 @@ export default function BranchMap({
                       const anchorX = animatedAnchor.x;
                       const anchorY = animatedAnchor.y;
                       const markerSize =
-                        count > 1 ? scaledNodeSize + CLUMP_SIZE_BOOST_PX * 2 : scaledNodeSize;
+                        count > 1 ? scaledNodeSize + gridClumpBoost : scaledNodeSize;
                       const markerPath = promptMarkerPath(anchorX, anchorY, markerSize);
                       const markerStrokeWidth = 1.2;
                       const label = count > 1 ? clumpCountLabel(count) : '';
@@ -3741,12 +3780,13 @@ export default function BranchMap({
                               y={anchorY}
                               textAnchor="middle"
                               dominantBaseline="middle"
-                              fontSize={labelFontSize}
                               fill="#14b8a6"
                               fontWeight={700}
                               style={{
                                 fontVariantNumeric: 'tabular-nums',
+                                fontSize: `${labelFontSize / Math.max(renderCameraScale.x, 0.0001)}px`,
                               }}
+                              data-base-font-size={labelFontSize}
                             >
                               {label}
                             </text>
@@ -3811,11 +3851,12 @@ export default function BranchMap({
                               y={anchorY - rectSize.height / 2}
                               width={rectSize.width}
                               height={rectSize.height}
-                              rx={rectSize.radius}
-                              fill={dotFill}
-                              stroke="var(--background)"
-                              strokeWidth={1.2}
+                              data-base-rx={rectSize.radius}
+                              rx={rectSize.radius / Math.max(renderCameraScale.x, 0.0001)}
                               style={{ cursor: 'pointer' }}
+                              fill={dotFill}
+                              stroke={isGridLayout ? 'none' : 'var(--background)'}
+                              strokeWidth={isGridLayout ? 0 : 1.2}
                               onClick={(event) =>
                                 handleCommitNodeClick(
                                   event,
@@ -3849,8 +3890,8 @@ export default function BranchMap({
                               cy={anchorY}
                               r={scaledNodeSize / 2}
                               fill={dotFill}
-                              stroke="var(--background)"
-                              strokeWidth={1.2}
+                              stroke={isGridLayout ? 'none' : 'var(--background)'}
+                              strokeWidth={isGridLayout ? 0 : 1.2}
                               style={{ cursor: 'pointer' }}
                               onClick={(event) =>
                                 handleCommitNodeClick(
@@ -3898,7 +3939,7 @@ export default function BranchMap({
                         <g key={clusterKey}>
                           {isGridLayout ? (
                             (() => {
-                              const rectSize = commitRectSize(scaledNodeSize, CLUMP_SIZE_BOOST_PX * 2);
+                        const rectSize = nodeRectSize(count);
                               return (
                                 <rect
                                   className="branch-map-commit-rect"
@@ -3906,11 +3947,12 @@ export default function BranchMap({
                                   y={anchorY - rectSize.height / 2}
                                   width={rectSize.width}
                                   height={rectSize.height}
-                                  rx={rectSize.radius}
-                                  fill={dotFill}
-                                  stroke="var(--background)"
-                                  strokeWidth={1.2}
+                                  data-base-rx={rectSize.radius}
+                                  rx={rectSize.radius / Math.max(renderCameraScale.x, 0.0001)}
                                   style={{ cursor: 'pointer' }}
+                                  fill={dotFill}
+                                  stroke={isGridLayout ? 'none' : 'var(--background)'}
+                                  strokeWidth={isGridLayout ? 0 : 1.2}
                                   onClick={(event) =>
                                     handleCommitNodeClick(
                                       event,
@@ -3937,8 +3979,8 @@ export default function BranchMap({
                               cy={anchorY}
                               r={scaledNodeSize / 2 + CLUMP_SIZE_BOOST_PX}
                               fill={dotFill}
-                              stroke="var(--background)"
-                              strokeWidth={1.2}
+                              stroke={isGridLayout ? 'none' : 'var(--background)'}
+                              strokeWidth={isGridLayout ? 0 : 1.2}
                               style={{ cursor: 'pointer' }}
                               onClick={(event) =>
                                 handleCommitNodeClick(
@@ -3964,10 +4006,11 @@ export default function BranchMap({
                             y={anchorY}
                             textAnchor="middle"
                             dominantBaseline="middle"
-                            fontSize={nodeLabelFontSize(scaledNodeSize, count)}
+                            data-base-font-size={nodeLabelFontSize(scaledNodeSize, count)}
+                            fontSize={nodeLabelFontSize(scaledNodeSize, count) / Math.max(renderCameraScale.x, 0.0001)}
+                            style={{ pointerEvents: 'none' }}
                             fill="#fafaf9"
                             fontWeight={600}
-                            style={{ pointerEvents: 'none' }}
                           >
                             {clumpCountLabel(count)}
                           </text>
@@ -4326,7 +4369,7 @@ export default function BranchMap({
                     const anchorX = animatedAnchor.x;
                     const anchorY = animatedAnchor.y;
                     const markerSize =
-                      count > 1 ? scaledNodeSize + CLUMP_SIZE_BOOST_PX * 2 : scaledNodeSize;
+                      count > 1 ? scaledNodeSize + gridClumpBoost : scaledNodeSize;
                     const markerPath = promptMarkerPath(anchorX, anchorY, markerSize);
                     const label = count > 1 ? clumpCountLabel(count) : '';
                     const labelFontSize = nodeLabelFontSize(scaledNodeSize, count);
@@ -4346,10 +4389,10 @@ export default function BranchMap({
                             y={anchorY}
                             textAnchor="middle"
                             dominantBaseline="middle"
-                            fontSize={labelFontSize / Math.max(renderCameraScale.x, 0.0001)}
                             fill="#14b8a6"
                             fontWeight={700}
-                            style={{ fontVariantNumeric: 'tabular-nums' }}
+                            style={{ fontVariantNumeric: 'tabular-nums', fontSize: `${labelFontSize / Math.max(renderCameraScale.x, 0.0001)}px` }}
+                            data-base-font-size={labelFontSize}
                           >
                             {label}
                           </text>
@@ -4397,6 +4440,7 @@ export default function BranchMap({
                               y={anchorY - (rectSize.height + gridPad) / 2}
                               width={rectSize.width + gridPad}
                               height={rectSize.height + gridPad}
+                              data-base-rx={Math.max(2, rectSize.radius + (gridPad ? 0.6 : 0))}
                               rx={Math.max(2, rectSize.radius + (gridPad ? 0.6 : 0)) / Math.max(renderCameraScale.x, 0.0001)}
                               fill="var(--background)"
                             />
@@ -4406,6 +4450,7 @@ export default function BranchMap({
                               y={anchorY - rectSize.height / 2}
                               width={rectSize.width}
                               height={rectSize.height}
+                              data-base-rx={rectSize.radius}
                               rx={rectSize.radius / Math.max(renderCameraScale.x, 0.0001)}
                               fill={dotFill}
                             />
@@ -4429,7 +4474,7 @@ export default function BranchMap({
                       );
                     }
 
-                    const clusterRectSize = commitRectSize(scaledNodeSize, CLUMP_SIZE_BOOST_PX * 2);
+                    const clusterRectSize = nodeRectSize(count);
                     const gridPad = isGridLayout ? 0 : 2.8;
                     return (
                       <g key={`commit-overlay-${clusterKey}`}>
@@ -4441,6 +4486,7 @@ export default function BranchMap({
                               y={anchorY - (clusterRectSize.height + gridPad) / 2}
                               width={clusterRectSize.width + gridPad}
                               height={clusterRectSize.height + gridPad}
+                              data-base-rx={Math.max(2, clusterRectSize.radius + (gridPad ? 0.6 : 0))}
                               rx={Math.max(2, clusterRectSize.radius + (gridPad ? 0.6 : 0)) / Math.max(renderCameraScale.x, 0.0001)}
                               fill="var(--background)"
                             />
@@ -4450,6 +4496,7 @@ export default function BranchMap({
                               y={anchorY - clusterRectSize.height / 2}
                               width={clusterRectSize.width}
                               height={clusterRectSize.height}
+                              data-base-rx={clusterRectSize.radius}
                               rx={clusterRectSize.radius / Math.max(renderCameraScale.x, 0.0001)}
                               fill={dotFill}
                             />
@@ -4475,6 +4522,7 @@ export default function BranchMap({
                           y={anchorY}
                           textAnchor="middle"
                           dominantBaseline="middle"
+                          data-base-font-size={nodeLabelFontSize(scaledNodeSize, count)}
                           fontSize={nodeLabelFontSize(scaledNodeSize, count) / Math.max(renderCameraScale.x, 0.0001)}
                           fill="#fafaf9"
                           fontWeight={600}
@@ -4607,6 +4655,7 @@ export default function BranchMap({
                           y={anchorY - (rectSize.height + gridPad) / 2}
                           width={rectSize.width + gridPad}
                           height={rectSize.height + gridPad}
+                          data-base-rx={Math.max(2, rectSize.radius + (gridPad ? 0.6 : 0))}
                           rx={Math.max(2, rectSize.radius + (gridPad ? 0.6 : 0)) / Math.max(renderCameraScale.x, 0.0001)}
                           fill="var(--background)"
                         />
@@ -4616,6 +4665,7 @@ export default function BranchMap({
                           y={anchorY - rectSize.height / 2}
                           width={rectSize.width}
                           height={rectSize.height}
+                          data-base-rx={rectSize.radius}
                           rx={rectSize.radius / Math.max(renderCameraScale.x, 0.0001)}
                           fill="#57534e"
                         />
@@ -4639,7 +4689,7 @@ export default function BranchMap({
                   );
                 }
 
-                const clusterRectSize = commitRectSize(scaledNodeSize, CLUMP_SIZE_BOOST_PX * 2);
+                const clusterRectSize = nodeRectSize(count);
                 const gridPad = isGridLayout ? 0 : 2.8;
                 return (
                   <g key={`main-direct-overlay-${clusterKey}`}>
@@ -4651,6 +4701,7 @@ export default function BranchMap({
                           y={anchorY - (clusterRectSize.height + gridPad) / 2}
                           width={clusterRectSize.width + gridPad}
                           height={clusterRectSize.height + gridPad}
+                          data-base-rx={Math.max(2, clusterRectSize.radius + (gridPad ? 0.6 : 0))}
                           rx={Math.max(2, clusterRectSize.radius + (gridPad ? 0.6 : 0)) / Math.max(renderCameraScale.x, 0.0001)}
                           fill="var(--background)"
                         />
@@ -4660,6 +4711,7 @@ export default function BranchMap({
                           y={anchorY - clusterRectSize.height / 2}
                           width={clusterRectSize.width}
                           height={clusterRectSize.height}
+                          data-base-rx={clusterRectSize.radius}
                           rx={clusterRectSize.radius / Math.max(renderCameraScale.x, 0.0001)}
                           fill="#57534e"
                         />
@@ -4685,6 +4737,7 @@ export default function BranchMap({
                       y={anchorY}
                       textAnchor="middle"
                       dominantBaseline="middle"
+                      data-base-font-size={nodeLabelFontSize(scaledNodeSize, count)}
                       fontSize={nodeLabelFontSize(scaledNodeSize, count) / Math.max(renderCameraScale.x, 0.0001)}
                       fill="#fafaf9"
                       fontWeight={600}
