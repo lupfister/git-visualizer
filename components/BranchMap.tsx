@@ -51,10 +51,13 @@ const GRID_ROW_GAP = GRID_NODE_RECT.height;
 const GRID_LANE_WIDTH = GRID_NODE_RECT.width;
 const GRID_LANE_OFFSET_X = 0;
 const GRID_LANE_MIN_SEPARATION = 0;
-const GRID_TIP_MIN_TAIL = GRID_ROW_GAP;
 const GRID_ROUTE_CORNER_R = 1;
 const GRID_MERGE_EVENT_ROW_NUDGE = 0.001;
 const LOCAL_UNPUSHED_GRAY = '#a8a29e';
+const CANVAS_NEUTRAL_GRAY = '#D9D9D9';
+const CANVAS_NEUTRAL_GRAY_HOVER = '#44403c';
+const CANVAS_NEUTRAL_TEXT = '#1c1917';
+const CANVAS_CLUMP_LABEL_GRAY = '#787878';
 const CLUMP_DISTANCE_PX = 8;
 const CLUMP_TOUCH_DISTANCE_PX = NODE_SIZE;
 const CLUMP_COUNT_MAX = 99;
@@ -90,6 +93,11 @@ type ClumpAnchorState = {
   targetX: number;
   targetY: number;
   lastSeenRender: number;
+};
+type ExpandedClumpState = {
+  isExpanded: boolean;
+  phase: 'collapsed' | 'expanding' | 'expanded' | 'collapsing';
+  phaseStartedAt?: number;
 };
 type ClumpMemberAnchorState = {
   x: number;
@@ -465,10 +473,12 @@ export default function BranchMap({
   const [hoveredPRCommit, setHoveredPRCommit] = useState<PRCommitHover | null>(null);
   const [hoveredMergeNode, setHoveredMergeNode] = useState<{ y: number; node: MergeNode } | null>(null);
   const [prCommits, setPrCommits] = useState<Map<number, string[]>>(new Map());
+  const [expandedClumps, setExpandedClumps] = useState<Map<string, ExpandedClumpState>>(() => new Map());
+  const [expandedClumpsRawTimes, setExpandedClumpsRawTimes] = useState<Map<string, number[]>>(() => new Map());
   const [zoom, setZoom] = useState(ZOOM_DEFAULT);
   const [animatedClumpZoom, setAnimatedClumpZoom] = useState(ZOOM_DEFAULT);
   const [timeScale, setTimeScale] = useState(TIME_SCALE_DEFAULT);
-  const [layoutMode, setLayoutMode] = useState<LayoutMode>('grid');
+  const layoutMode: LayoutMode = 'grid';
   // Non-grid timeline spacing:
   // - `uniform`: time affects ordering only (no time-proportional gaps)
   // - `bounded` / `regular`: legacy time-aware spacing modes
@@ -476,6 +486,10 @@ export default function BranchMap({
   const [orientation, setOrientation] = useState<OrientationMode>('vertical');
   const isHorizontal = orientation === 'horizontal';
   const isGridLayout = layoutMode === 'grid';
+  // In horizontal mode we project axes (time runs left→right).
+  // Grid spacing must swap width/height to match node bounds and avoid overlap.
+  const gridEventGap = isGridLayout ? (isHorizontal ? GRID_LANE_WIDTH : GRID_ROW_GAP) : GRID_ROW_GAP;
+  const gridLaneWidth = isGridLayout ? (isHorizontal ? GRID_ROW_GAP : GRID_LANE_WIDTH) : GRID_LANE_WIDTH;
   const effectiveTimeScale = isGridLayout ? TIME_SCALE_DEFAULT : timeScale;
   const effectiveSpacingMode: SpacingMode = spacingMode;
   // WKWebView (Tauri) doesn't fire CSS animations on SVG elements inserted during
@@ -508,6 +522,7 @@ export default function BranchMap({
   const clumpRenderCounterRef = useRef(0);
   clumpRenderCounterRef.current += 1;
   const clumpRenderId = clumpRenderCounterRef.current;
+  const clumpCleanupTimersRef = useRef<Map<string, number>>(new Map());
   const graphOffsetRef = useRef({ x: 0, y: 0 });
   const cameraBoundsRef = useRef({
     viewportW: 0,
@@ -1427,7 +1442,7 @@ export default function BranchMap({
   // Both modes preserve chronology and use the same anchor timestamps.
   const IDEAL_NODE_SPACING = Math.max(MIN_BRANCH_SPACING_X, 160 * effectiveTimeScale);
   const IDEAL_EVENT_GAP = Math.max(8, 40 * effectiveTimeScale);
-  const GRID_EVENT_GAP = GRID_ROW_GAP;
+  const GRID_EVENT_GAP = gridEventGap;
   const MIN_EVENT_GAP = Math.max(4, IDEAL_EVENT_GAP * 0.22);
   const MAX_EVENT_GAP = IDEAL_EVENT_GAP * 6.5;
 
@@ -1529,6 +1544,18 @@ export default function BranchMap({
       .map((c) => new Date(c.date).getTime())
       .filter(Number.isFinite)
   );
+  const expandedUncollapseRawTimesSet = isGridLayout
+    ? (() => {
+      if (expandedClumpsRawTimes.size === 0) return null;
+      const s = new Set<number>();
+      for (const times of expandedClumpsRawTimes.values()) {
+        for (const t of times) {
+          if (Number.isFinite(t)) s.add(t);
+        }
+      }
+      return s;
+    })()
+    : null;
   const gridCollapsedTimeByRawTime = isGridLayout ? new Map<number, number>() : null;
   const gridAnchorTimes = new Set<number>();
   const gridCommitRowTimes = new Set<number>();
@@ -1568,6 +1595,9 @@ export default function BranchMap({
 
   function collapsedGridTime(rawTime: number): number {
     if (!isGridLayout || !gridCollapsedTimeByRawTime || !Number.isFinite(rawTime)) return rawTime;
+    // Expanded clump members must not collapse into shared rows; otherwise
+    // the unstack animation can't “create” the additional grid rows.
+    if (expandedUncollapseRawTimesSet?.has(rawTime)) return rawTime;
     return gridCollapsedTimeByRawTime.get(rawTime) ?? rawTime;
   }
 
@@ -1781,7 +1811,7 @@ export default function BranchMap({
   function xForTimestamp(t: number): number {
     if (gridEventPoints.length > 0) {
       if (!Number.isFinite(t)) return gridEventPoints[0]?.x ?? leftPad;
-      const collapsedTime = gridCollapsedTimeByRawTime?.get(t) ?? t;
+      const collapsedTime = collapsedGridTime(t);
       const exactRow = gridRowByTime?.get(collapsedTime);
       if (typeof exactRow === 'number') return leftPad + exactRow * GRID_EVENT_GAP;
       let lo = 0;
@@ -2020,7 +2050,7 @@ export default function BranchMap({
   function branchTipX(b: Branch): number {
     const forkX = branchForkX(b);
     const lastCommitX = timeToX(b.lastCommitDate);
-    const minTailDistance = isGridLayout ? GRID_TIP_MIN_TAIL : cornerR + 20;
+    const minTailDistance = isGridLayout ? GRID_EVENT_GAP : cornerR + 20;
     return Math.max(lastCommitX, forkX + minTailDistance);
   }
 
@@ -2103,7 +2133,7 @@ export default function BranchMap({
     defaultBranch
   );
 
-  const laneWidth = isGridLayout ? GRID_LANE_WIDTH : LANE_HEIGHT;
+  const laneWidth = isGridLayout ? gridLaneWidth : LANE_HEIGHT;
   const laneOffsetX = isGridLayout ? GRID_LANE_OFFSET_X : 40;
 
   function laneX(b: Branch): number {
@@ -2566,7 +2596,7 @@ export default function BranchMap({
   const clumpProgress = isGridLayout ? 0 : clumpProgressForZoom(animatedClumpZoom);
   const clumpDistanceWorld =
     isGridLayout
-      ? GRID_ROW_GAP * 0.75
+      ? GRID_EVENT_GAP * 0.75
       : worldPx(CLUMP_TOUCH_DISTANCE_PX) + worldPx(CLUMP_DISTANCE_PX) * clumpProgress;
   const clumpMaxEntries = isGridLayout
     ? CLUMP_COUNT_MAX
@@ -2580,6 +2610,121 @@ export default function BranchMap({
   const timelineCanvasVisible = timelineRevealPhase !== 'hidden';
   const holdTimelineForInitialCenter =
     isLoading || (!hasInitialRevealDone && hasTimelineSeedData && timelineRevealPhase !== 'done' && !hasUserMovedCameraRef.current);
+
+  const CLUMP_STACK_DEPTH_MAX = 4;
+  const clumpStackOffset = worldPx(3);
+  const clumpExpandMs = 260;
+  const clumpExpandEasing = 'cubic-bezier(0.22, 1, 0.36, 1)';
+  const clumpAnimStyle: React.CSSProperties = {
+    transition: `transform ${clumpExpandMs}ms ${clumpExpandEasing}, opacity ${clumpExpandMs}ms ${clumpExpandEasing}`,
+    willChange: 'transform, opacity',
+  };
+
+  const toggleClumpExpanded = (clumpKey: string, memberRawTimes: number[] = []) => {
+    const existing = expandedClumps.get(clumpKey);
+    const isExpanded = existing?.isExpanded ?? false;
+
+    const existingCleanupTimer = clumpCleanupTimersRef.current.get(clumpKey);
+    if (existingCleanupTimer != null) {
+      window.clearTimeout(existingCleanupTimer);
+      clumpCleanupTimersRef.current.delete(clumpKey);
+    }
+
+    if (isExpanded) {
+      // Collapse: keep expanded timestamps around until the animation ends,
+      // then remove them so grid rows disappear reliably.
+      const collapseStartedAt = Date.now();
+      setExpandedClumps((prev) => {
+        const next = new Map(prev);
+        next.set(clumpKey, { isExpanded: true, phase: 'collapsing', phaseStartedAt: collapseStartedAt });
+        return next;
+      });
+
+      // Drive re-renders so grid-row interpolation/fade stays smooth.
+      const collapseTick = () => {
+        const elapsed = Date.now() - collapseStartedAt;
+        setClumpAnimationTick((v) => v + 1);
+        if (elapsed < clumpExpandMs) requestAnimationFrame(collapseTick);
+      };
+      requestAnimationFrame(collapseTick);
+
+      const cleanupTimer = window.setTimeout(() => {
+        setExpandedClumps((prev) => {
+          const next = new Map(prev);
+          next.delete(clumpKey);
+          return next;
+        });
+        setExpandedClumpsRawTimes((timesPrev) => {
+          const next = new Map(timesPrev);
+          next.delete(clumpKey);
+          return next;
+        });
+        clumpCleanupTimersRef.current.delete(clumpKey);
+      }, clumpExpandMs);
+
+      clumpCleanupTimersRef.current.set(clumpKey, cleanupTimer);
+      return;
+    }
+
+    // Expand: first paint should be "stacked" so the nodes transition into place.
+    const filteredTimes = memberRawTimes.filter((t) => Number.isFinite(t));
+    setExpandedClumpsRawTimes((timesPrev) => {
+      const next = new Map(timesPrev);
+      next.set(clumpKey, filteredTimes);
+      return next;
+    });
+
+    setExpandedClumps((prev) => {
+      const next = new Map(prev);
+      next.set(clumpKey, { isExpanded: true, phase: 'collapsed', phaseStartedAt: Date.now() });
+      return next;
+    });
+
+    requestAnimationFrame(() => {
+      setExpandedClumps((prev) => {
+        const next = new Map(prev);
+        const current = next.get(clumpKey);
+        if (!current?.isExpanded) return prev;
+        next.set(clumpKey, {
+          isExpanded: true,
+          phase: 'expanding',
+          phaseStartedAt: current.phaseStartedAt ?? Date.now(),
+        });
+        return next;
+      });
+      requestAnimationFrame(() => {
+        setExpandedClumps((prev) => {
+          const next = new Map(prev);
+          const current = next.get(clumpKey);
+          if (!current?.isExpanded) return prev;
+          next.set(clumpKey, {
+            isExpanded: true,
+            phase: 'expanded',
+            phaseStartedAt: current.phaseStartedAt ?? Date.now(),
+          });
+          return next;
+        });
+      });
+    });
+  };
+
+  const gridClipBounds = isGridLayout
+    ? {
+      leftX: Math.max(0, timelineMinX - 40),
+      rightX: Math.min(logicalSvgWidth, maxBranchVisualEndX + 60),
+      topY: Math.max(0, mainEndY - 120),
+      bottomY: Math.min(logicalSvgHeight, mainStartY + 80),
+    }
+    : null;
+  const gridClipPathD = gridClipBounds
+    ? [
+      `M ${pathCoord(gridClipBounds.leftX, gridClipBounds.topY)}`,
+      `L ${pathCoord(gridClipBounds.rightX, gridClipBounds.topY)}`,
+      `L ${pathCoord(gridClipBounds.rightX, gridClipBounds.bottomY)}`,
+      `L ${pathCoord(gridClipBounds.leftX, gridClipBounds.bottomY)}`,
+      'Z',
+    ].join(' ')
+    : null;
 
   return (
     <div className="relative h-full">
@@ -2624,6 +2769,11 @@ export default function BranchMap({
             <filter id="tick-shadow" x="-50%" y="-50%" width="200%" height="200%">
               <feDropShadow dx="0" dy="2" stdDeviation="6" floodColor="#000" floodOpacity="0.08" />
             </filter>
+            {gridClipPathD && (
+              <clipPath id="grid-clip">
+                <path d={gridClipPathD} />
+              </clipPath>
+            )}
           </defs>
 
           <g
@@ -2638,6 +2788,7 @@ export default function BranchMap({
           >
           <g
             ref={contentLayerRef}
+            clipPath={gridClipPathD ? 'url(#grid-clip)' : undefined}
           >
 
           {/* ── Grid background (table-like lanes) ── */}
@@ -2645,19 +2796,36 @@ export default function BranchMap({
             <g style={{ pointerEvents: 'none' }}>
               {(() => {
                 // Horizontal guides: one per collapsed time row.
-                const rawRowYs = gridEventPoints
-                  .map((point) => timeCoordToY(point.x))
-                  .filter((y) => Number.isFinite(y));
-                const rowStep = rawRowYs.length > 320 ? Math.ceil(rawRowYs.length / 260) : 1;
-                const rowYs = rawRowYs.filter((_, idx) => idx % rowStep === 0);
-                  const nodeSizeWorld = (() => {
-                    const rect = nodeRectSize(2);
+                const nowTs = Date.now();
+                const collapseProgressByRawTime = new Map<number, number>();
+                for (const [clumpKey, state] of expandedClumps.entries()) {
+                  if (state.phase !== 'collapsing' || state.phaseStartedAt == null) continue;
+                  const progress = clamp01((nowTs - state.phaseStartedAt) / clumpExpandMs);
+                  if (progress <= 0) continue;
+                  const times = expandedClumpsRawTimes.get(clumpKey) ?? [];
+                  for (const t of times) {
+                    const existing = collapseProgressByRawTime.get(t) ?? 0;
+                    if (progress > existing) collapseProgressByRawTime.set(t, progress);
+                  }
+                }
+
+                const rawRowInfos = gridEventPoints
+                  .map((point) => ({ rawTime: point.t, centerY: timeCoordToY(point.x) }))
+                  .filter((info) => Number.isFinite(info.centerY));
+                const rowStep = rawRowInfos.length > 320 ? Math.ceil(rawRowInfos.length / 260) : 1;
+                const rowInfos = rawRowInfos.filter((_, idx) => idx % rowStep === 0);
+                const nodeSizeWorld = (() => {
+                  const rect = nodeRectSize(2);
                   // Align grid to node outer bounds (edges), not its center.
                   return {
                     halfHeight: Math.max(4, rect.height / 2),
                     halfWidth: Math.max(4, rect.width / 2),
                   };
                 })();
+                // Orientation projection swaps axes; adjust which half-size applies to each logical axis.
+                // Horizontal mode maps logical Y → screen X (use width) and logical X → screen Y (use height).
+                const halfAlongLogicalY = isHorizontal ? nodeSizeWorld.halfWidth : nodeSizeWorld.halfHeight;
+                const halfAlongLogicalX = isHorizontal ? nodeSizeWorld.halfHeight : nodeSizeWorld.halfWidth;
 
                 // Vertical guides: one per lane (main + branches).
                 const laneXs = Array.from(
@@ -2667,24 +2835,32 @@ export default function BranchMap({
                   ])
                 ).sort((a, b) => a - b);
 
-                const leftX = Math.max(0, timelineMinX - 40);
-                const rightX = Math.min(logicalSvgWidth, maxBranchVisualEndX + 60);
-                const topY = Math.max(0, mainEndY - 120);
-                const bottomY = Math.min(logicalSvgHeight, mainStartY + 80);
+                const leftX = gridClipBounds?.leftX ?? Math.max(0, timelineMinX - 40);
+                const rightX = gridClipBounds?.rightX ?? Math.min(logicalSvgWidth, maxBranchVisualEndX + 60);
+                const topY = gridClipBounds?.topY ?? Math.max(0, mainEndY - 120);
+                const bottomY = gridClipBounds?.bottomY ?? Math.min(logicalSvgHeight, mainStartY + 80);
 
                 return (
                   <>
                     {/* Row lines */}
-                    {rowYs.flatMap((centerY, idx) => {
-                      const topYLine = centerY - nodeSizeWorld.halfHeight;
-                      const bottomYLine = centerY + nodeSizeWorld.halfHeight;
+                    {rowInfos.flatMap((info, idx) => {
+                      const collapseProgress = collapseProgressByRawTime.get(info.rawTime) ?? 0;
+                      const collapsedBaseTime = gridCollapsedTimeByRawTime?.get(info.rawTime) ?? info.rawTime;
+                      const collapsedRowIndex = gridRowByTime?.get(collapsedBaseTime);
+                      const collapsedCenterY = typeof collapsedRowIndex === 'number'
+                        ? timeCoordToY(leftPad + collapsedRowIndex * GRID_EVENT_GAP)
+                        : info.centerY;
+                      const centerY = info.centerY + (collapsedCenterY - info.centerY) * collapseProgress;
+                      const topYLine = centerY - halfAlongLogicalY;
+                      const bottomYLine = centerY + halfAlongLogicalY;
+                      const strokeOpacity = 0.33 * (1 - collapseProgress);
                       return [
                         <path
                           key={`grid-row-top-${idx}`}
                           d={`M ${pathCoord(leftX, topYLine)} L ${pathCoord(rightX, topYLine)}`}
                           fill="none"
                           stroke="#e7e5e4"
-                          strokeOpacity={0.33}
+                          strokeOpacity={strokeOpacity}
                           strokeWidth={1}
                         />,
                         <path
@@ -2692,7 +2868,7 @@ export default function BranchMap({
                           d={`M ${pathCoord(leftX, bottomYLine)} L ${pathCoord(rightX, bottomYLine)}`}
                           fill="none"
                           stroke="#e7e5e4"
-                          strokeOpacity={0.33}
+                          strokeOpacity={strokeOpacity}
                           strokeWidth={1}
                         />,
                       ];
@@ -2700,8 +2876,8 @@ export default function BranchMap({
 
                     {/* Column (lane) lines */}
                     {laneXs.flatMap((centerX, idx) => {
-                      const leftXLine = centerX - nodeSizeWorld.halfWidth;
-                      const rightXLine = centerX + nodeSizeWorld.halfWidth;
+                      const leftXLine = centerX - halfAlongLogicalX;
+                      const rightXLine = centerX + halfAlongLogicalX;
                       return [
                         <path
                           key={`grid-col-left-${idx}`}
@@ -2735,7 +2911,7 @@ export default function BranchMap({
             <path
               d={`M ${pathCoord(mainX, mainStartY)} L ${pathCoord(mainX, mainActiveEndY)}`}
               fill="none"
-              stroke="#78716c"
+              stroke={CANVAS_NEUTRAL_GRAY}
               strokeWidth={1.5}
               pathLength={1}
               className={drawPathMainClass}
@@ -2745,7 +2921,7 @@ export default function BranchMap({
                 <path
                   d={`M ${pathCoord(mainX, mainActiveEndY)} L ${pathCoord(mainX, mainEndY)}`}
                   fill="none"
-                  stroke="#a8a29e"
+                  stroke={CANVAS_NEUTRAL_GRAY}
                   strokeWidth={1.5}
                   pathLength={1}
                   className={drawPathMainClass}
@@ -2864,7 +3040,7 @@ export default function BranchMap({
                           data-base-rx={rectSize.radius}
                           rx={rectSize.radius / Math.max(renderCameraScale.x, 0.0001)}
                           style={{ cursor: 'pointer' }}
-                          fill="#57534e"
+                          fill={CANVAS_NEUTRAL_GRAY}
                           stroke={isGridLayout ? 'none' : 'var(--background)'}
                           strokeWidth={isGridLayout ? 0 : 1.2}
                           onClick={(event) =>
@@ -2891,7 +3067,7 @@ export default function BranchMap({
                           cx={anchorX}
                           cy={anchorY}
                           r={scaledNodeSize / 2}
-                          fill="#57534e"
+                          fill={CANVAS_NEUTRAL_GRAY}
                           stroke={isGridLayout ? 'none' : 'var(--background)'}
                           strokeWidth={isGridLayout ? 0 : 1.2}
                           style={{ cursor: 'pointer' }}
@@ -2917,6 +3093,31 @@ export default function BranchMap({
                     );
                   }
 
+                  const expanded = expandedClumps.get(clusterKey);
+                  const isExpanded = expanded?.isExpanded ?? false;
+                  const phase = expanded?.phase ?? 'collapsed';
+                  const phaseStartedAtMs = expanded?.phaseStartedAt ?? Date.now();
+                  const phaseProgress = phase === 'collapsed'
+                    ? 0
+                    : phase === 'expanded'
+                      ? 1
+                      : clamp01((Date.now() - phaseStartedAtMs) / clumpExpandMs);
+                  const phaseEased = phaseProgress <= 0 ? 0 : phaseProgress >= 1 ? 1 : easeInOutCubic(phaseProgress);
+                  const stackDepth = Math.min(CLUMP_STACK_DEPTH_MAX, count);
+                  const rectSize = nodeRectSize(count);
+                  // Expanded members represent single commits in grid layout.
+                  const localRect = commitRectSize(scaledNodeSize, 0);
+                  const memberRawTimes = cluster.entries
+                    .map((e) => new Date(e.item.date).getTime())
+                    .filter((t): t is number => Number.isFinite(t));
+                  const collapseIconSize = Math.max(12, Math.min(localRect.width, localRect.height) * 0.55);
+                  const expandedXs = cluster.entries.map((e) => e.x);
+                  const expandedYs = cluster.entries.map((e) => e.y);
+                  const expandedMaxX = Math.max(...expandedXs) + localRect.width / 2;
+                  const expandedMinY = Math.min(...expandedYs) - localRect.height / 2;
+                  const collapseIconX = expandedMaxX - collapseIconSize - 2;
+                  const collapseIconY = expandedMinY + 2;
+
                   const firstTime = new Date(first.date).getTime();
                   const lastTime = new Date(last.date).getTime();
                   const rangeLine = firstTime === lastTime
@@ -2928,83 +3129,227 @@ export default function BranchMap({
 
                   return (
                     <g key={clusterKey}>
-                      {isGridLayout ? (
-                        (() => {
-                          const rectSize = nodeRectSize(count);
-                          return (
-                            <rect
-                              className="branch-map-commit-rect"
-                              x={anchorX - rectSize.width / 2}
-                              y={anchorY - rectSize.height / 2}
-                              width={rectSize.width}
-                              height={rectSize.height}
-                              data-base-rx={rectSize.radius}
-                              rx={rectSize.radius / Math.max(renderCameraScale.x, 0.0001)}
-                              style={{ cursor: 'pointer' }}
-                              fill="#57534e"
-                              stroke={isGridLayout ? 'none' : 'var(--background)'}
-                              strokeWidth={isGridLayout ? 0 : 1.2}
-                              onClick={(event) =>
-                                handleCommitNodeClick(
-                                  event,
-                                  last.fullSha,
-                                  clusterHasMainTip ? defaultBranch : undefined,
-                                )
-                              }
-                              onDoubleClick={(event) => event.stopPropagation()}
-                              onMouseEnter={() =>
-                                setTooltip({
-                                  x: anchorX,
-                                  y: anchorY,
-                                  lines: [`${count} commits`, latestCommitMessage, rangeLine],
-                                  avatarFallback: last.author?.charAt(0).toUpperCase() || '?',
-                                })
-                              }
-                              onMouseLeave={() => setTooltip(null)}
-                            />
-                          );
-                        })()
-                      ) : (
-                        <circle
-                          cx={anchorX}
-                          cy={anchorY}
-                          r={scaledNodeSize / 2 + CLUMP_SIZE_BOOST_PX}
-                          fill="#57534e"
-                          stroke={isGridLayout ? 'none' : 'var(--background)'}
-                          strokeWidth={isGridLayout ? 0 : 1.2}
-                          style={{ cursor: 'pointer' }}
-                          onClick={(event) =>
-                            handleCommitNodeClick(
-                              event,
-                              last.fullSha,
-                              clusterHasMainTip ? defaultBranch : undefined,
-                            )
-                          }
-                          onDoubleClick={(event) => event.stopPropagation()}
-                          onMouseEnter={() =>
-                            setTooltip({
-                              x: anchorX,
-                              y: anchorY,
-                              lines: [`${count} commits`, latestCommitMessage, rangeLine],
-                              avatarFallback: last.author?.charAt(0).toUpperCase() || '?',
-                            })
-                          }
-                          onMouseLeave={() => setTooltip(null)}
-                        />
+                      {/* Collapsed: draw a stack. Expanded: animate members out. */}
+                      {!isExpanded && (
+                        <g style={{ pointerEvents: 'none' }}>
+                          {Array.from({ length: stackDepth }, (_, i) => {
+                            const depth = stackDepth - 1 - i;
+                            const dx = depth * clumpStackOffset;
+                            const dy = -depth * clumpStackOffset;
+                            if (isGridLayout) {
+                              return (
+                                <g
+                                  key={`stack-${i}`}
+                                  transform={`translate(${anchorX + dx} ${anchorY + dy})`}
+                                  opacity={0.85 - depth * 0.12}
+                                >
+                                  <rect
+                                    className="branch-map-commit-rect"
+                                    x={-rectSize.width / 2}
+                                    y={-rectSize.height / 2}
+                                    width={rectSize.width}
+                                    height={rectSize.height}
+                                    data-base-rx={rectSize.radius}
+                                    rx={rectSize.radius / Math.max(renderCameraScale.x, 0.0001)}
+                                    fill={CANVAS_NEUTRAL_GRAY}
+                                  />
+                                </g>
+                              );
+                            }
+                            return (
+                              <g
+                                key={`stack-${i}`}
+                                transform={`translate(${anchorX + dx} ${anchorY + dy})`}
+                                opacity={0.85 - depth * 0.12}
+                              >
+                                <circle r={scaledNodeSize / 2 + CLUMP_SIZE_BOOST_PX} fill={CANVAS_NEUTRAL_GRAY} />
+                              </g>
+                            );
+                          })}
+                          <text
+                            x={anchorX}
+                            y={anchorY}
+                            textAnchor="middle"
+                            dominantBaseline="middle"
+                            data-base-font-size={nodeLabelFontSize(scaledNodeSize, count)}
+                            fontSize={nodeLabelFontSize(scaledNodeSize, count) / Math.max(renderCameraScale.x, 0.0001)}
+                            fill={CANVAS_CLUMP_LABEL_GRAY}
+                            fontWeight={600}
+                          >
+                            {countLabel}
+                          </text>
+                        </g>
                       )}
-                      <text
-                        x={anchorX}
-                        y={anchorY}
-                        textAnchor="middle"
-                        dominantBaseline="middle"
-                        data-base-font-size={nodeLabelFontSize(scaledNodeSize, count)}
-                        fontSize={nodeLabelFontSize(scaledNodeSize, count) / Math.max(renderCameraScale.x, 0.0001)}
-                        style={{ pointerEvents: 'none' }}
-                        fill="#fafaf9"
-                        fontWeight={600}
-                      >
-                        {countLabel}
-                      </text>
+
+                      {/* Collapsed-only overlay hit target (on top) so clicks never fall through. */}
+                      {!isExpanded && (() => {
+                        const pad = worldPx(6);
+                        const stackPad = (stackDepth - 1) * clumpStackOffset;
+                        const hitW = (isGridLayout ? rectSize.width : (scaledNodeSize + CLUMP_SIZE_BOOST_PX * 2)) + pad + stackPad;
+                        const hitH = (isGridLayout ? rectSize.height : (scaledNodeSize + CLUMP_SIZE_BOOST_PX * 2)) + pad + stackPad;
+                        return (
+                          <rect
+                            x={anchorX - hitW / 2}
+                            y={anchorY - hitH / 2}
+                            width={hitW}
+                            height={hitH}
+                            fill="transparent"
+                            style={{ cursor: 'pointer' }}
+                            onPointerDown={(e) => { e.preventDefault(); e.stopPropagation(); }}
+                            onMouseDown={(e) => { e.preventDefault(); e.stopPropagation(); }}
+                            onClick={(e) => { e.preventDefault(); e.stopPropagation(); toggleClumpExpanded(clusterKey, memberRawTimes); }}
+                            onDoubleClick={(event) => event.stopPropagation()}
+                            onMouseEnter={() =>
+                              setTooltip({
+                                x: anchorX,
+                                y: anchorY,
+                                lines: [`${count} commits`, latestCommitMessage, rangeLine],
+                                avatarFallback: last.author?.charAt(0).toUpperCase() || '?',
+                              })
+                            }
+                            onMouseLeave={() => setTooltip(null)}
+                          />
+                        );
+                      })()}
+
+                      {isExpanded && (
+                        <g>
+                          {cluster.entries.map((entry, idx) => {
+                            const c = entry.item;
+                            const label = truncatePrompt(c.message, COMMIT_TOOLTIP_PREVIEW_MAX);
+                            const collapsedDx = Math.min(idx, stackDepth - 1) * clumpStackOffset;
+                            const collapsedDy = -Math.min(idx, stackDepth - 1) * clumpStackOffset;
+                            const from = { x: anchorX + collapsedDx, y: anchorY + collapsedDy };
+                            const to = { x: entry.x, y: entry.y };
+                            const at = phase === 'collapsing'
+                              ? { x: to.x + (from.x - to.x) * phaseEased, y: to.y + (from.y - to.y) * phaseEased }
+                              : phase === 'expanding'
+                                ? { x: from.x + (to.x - from.x) * phaseEased, y: from.y + (to.y - from.y) * phaseEased }
+                                : phase === 'collapsed'
+                                  ? from
+                                  : to;
+                            const commitKey = `direct:${c.fullSha}`;
+                            const memberOpacity = phase === 'collapsing'
+                              ? 1 - 0.3 * phaseEased
+                              : phase === 'expanding'
+                                ? 0.7 + 0.3 * phaseEased
+                                : phase === 'collapsed'
+                                  ? 0.7
+                                  : 1;
+                            return (
+                              <g
+                                key={commitKey}
+                                transform={`translate(${at.x} ${at.y})`}
+                                style={{ ...clumpAnimStyle, pointerEvents: phase === 'expanded' ? 'auto' : 'none' }}
+                                opacity={memberOpacity}
+                              >
+                                {isGridLayout ? (
+                                  <rect
+                                    className="branch-map-commit-rect"
+                                    x={-localRect.width / 2}
+                                    y={-localRect.height / 2}
+                                    width={localRect.width}
+                                    height={localRect.height}
+                                    data-base-rx={localRect.radius}
+                                    rx={localRect.radius / Math.max(renderCameraScale.x, 0.0001)}
+                                    fill={CANVAS_NEUTRAL_GRAY}
+                                    stroke={isGridLayout ? 'none' : 'var(--background)'}
+                                    strokeWidth={isGridLayout ? 0 : 1.2}
+                                    style={{ cursor: 'pointer' }}
+                                    onClick={(event) =>
+                                      handleCommitNodeClick(
+                                        event,
+                                        c.fullSha,
+                                        clusterHasMainTip ? defaultBranch : undefined,
+                                      )
+                                    }
+                                    onDoubleClick={(event) => event.stopPropagation()}
+                                    onMouseEnter={() =>
+                                      setTooltip({
+                                        x: entry.x,
+                                        y: entry.y,
+                                        lines: [`Commit ${c.sha}`, label, `@${c.author} · ${fmtTooltipDate(c.date)}`],
+                                        avatarFallback: c.author?.charAt(0).toUpperCase() || '?',
+                                      })
+                                    }
+                                    onMouseLeave={() => setTooltip(null)}
+                                  />
+                                ) : (
+                                  <circle
+                                    r={scaledNodeSize / 2}
+                                    fill={CANVAS_NEUTRAL_GRAY}
+                                    stroke={isGridLayout ? 'none' : 'var(--background)'}
+                                    strokeWidth={isGridLayout ? 0 : 1.2}
+                                    style={{ cursor: 'pointer' }}
+                                    onClick={(event) =>
+                                      handleCommitNodeClick(
+                                        event,
+                                        c.fullSha,
+                                        clusterHasMainTip ? defaultBranch : undefined,
+                                      )
+                                    }
+                                    onDoubleClick={(event) => event.stopPropagation()}
+                                    onMouseEnter={() =>
+                                      setTooltip({
+                                        x: entry.x,
+                                        y: entry.y,
+                                        lines: [`Commit ${c.sha}`, label, `@${c.author} · ${fmtTooltipDate(c.date)}`],
+                                        avatarFallback: c.author?.charAt(0).toUpperCase() || '?',
+                                      })
+                                    }
+                                    onMouseLeave={() => setTooltip(null)}
+                                  />
+                                )}
+                              </g>
+                            );
+                          })}
+                          {phase === 'expanded' && (
+                            <>
+                              {phase === 'expanded' && (
+                                <>
+                                  {/* Contextual collapse icon (so expanded stacks can be re-collapsed). */}
+                                  <g
+                                    role="button"
+                                    tabIndex={0}
+                                    aria-label="Collapse commit stack"
+                                    style={{ cursor: 'pointer' }}
+                                    onPointerDown={(e) => { e.preventDefault(); e.stopPropagation(); }}
+                                    onMouseDown={(e) => { e.preventDefault(); e.stopPropagation(); }}
+                                    onClick={(e) => {
+                                      e.preventDefault();
+                                      e.stopPropagation();
+                                      toggleClumpExpanded(clusterKey, memberRawTimes);
+                                    }}
+                                    onKeyDown={(e) => {
+                                      if (e.key !== 'Enter' && e.key !== ' ') return;
+                                      e.preventDefault();
+                                      e.stopPropagation();
+                                      toggleClumpExpanded(clusterKey, memberRawTimes);
+                                    }}
+                                  >
+                                    <rect
+                                      x={collapseIconX}
+                                      y={collapseIconY}
+                                      width={collapseIconSize}
+                                      height={collapseIconSize}
+                                      rx={collapseIconSize * 0.35}
+                                      fill={CANVAS_NEUTRAL_GRAY}
+                                      stroke={CANVAS_NEUTRAL_TEXT}
+                                      strokeWidth={1}
+                                    />
+                                    <path
+                                      d={`M ${collapseIconX + collapseIconSize * 0.28} ${collapseIconY + collapseIconSize / 2} L ${collapseIconX + collapseIconSize * 0.72} ${collapseIconY + collapseIconSize / 2}`}
+                                      stroke={CANVAS_NEUTRAL_TEXT}
+                                      strokeWidth={2}
+                                      strokeLinecap="round"
+                                    />
+                                  </g>
+                                </>
+                              )}
+                            </>
+                          )}
+                        </g>
+                      )}
                     </g>
                   );
                 });
@@ -3174,7 +3519,7 @@ export default function BranchMap({
                         cx={mainX}
                         cy={y}
                         r={scaledNodeSize / 2}
-                        fill={isHovered ? '#44403c' : '#78716c'}
+                        fill={isHovered ? CANVAS_NEUTRAL_GRAY_HOVER : CANVAS_NEUTRAL_GRAY}
                         style={{ pointerEvents: 'none', transition: 'fill 0.1s' }}
                       />
                       {/* Transparent hit area for hover — rendered on top */}
@@ -3227,7 +3572,7 @@ export default function BranchMap({
             const isDimmed = (hoveredPR !== null && !isHovered) || hoveredBranch !== null;
             const isFocusedPR = focusedErrorBranch?.name === pr.branchName;
             const opacity = isFocusedPR ? 1 : isDimmed ? 0.1 : isHovered ? 0.85 : 0.38;
-            const strokeColor = isHovered ? '#44403c' : '#78716c';
+            const strokeColor = isHovered ? CANVAS_NEUTRAL_GRAY_HOVER : CANVAS_NEUTRAL_GRAY;
             const strokeWidth = isHovered ? 1.6 : 1.2;
 
             const arcPath = [
@@ -3312,7 +3657,7 @@ export default function BranchMap({
                           cx={arcX}
                           cy={cy}
                           r={tickSize / 2}
-                          fill={isFocusedPR ? focusedPRColor : isHovered ? '#a8a29e' : '#78716c'}
+                          fill={isFocusedPR ? focusedPRColor : isHovered ? CANVAS_NEUTRAL_GRAY_HOVER : CANVAS_NEUTRAL_GRAY}
                           style={{ pointerEvents: 'none', transition: 'fill 0.1s ease' }}
                         />
                         {/* Invisible hit area */}
@@ -3350,14 +3695,14 @@ export default function BranchMap({
                       style={{ clipPath: 'circle(9px at 9px 9px)' }}
                     />
                   ) : (
-                    <circle cx={arcX} cy={midY} r={8} fill="#57534e" />
+                    <circle cx={arcX} cy={midY} r={8} fill={CANVAS_NEUTRAL_GRAY} />
                   )}
                   <text
                     className={undefined}
                     x={arcX + 12}
                     y={midY + 4}
                     fontSize={12}
-                    fill={isHovered ? '#1c1917' : '#57534e'}
+                    fill={CANVAS_NEUTRAL_TEXT}
                     style={{ transformOrigin: `${arcX + 12}px ${midY + 4}px` }}
                   >
                     {pr.branchName.length > 20 ? pr.branchName.slice(0, 20) + '…' : pr.branchName}
@@ -3383,7 +3728,7 @@ export default function BranchMap({
 
               const isFocusedError = focusedErrorBranch?.name === b.name;
               const focusedErrorColor = b.status === 'conflict-risk' ? '#dc2626' : '#d97706';
-              const neutralColor = hasSelection ? '#57534e' : '#78716c';
+              const neutralColor = CANVAS_NEUTRAL_GRAY;
               const color = isFocusedError
                 ? focusedErrorColor
                 : isSelected
@@ -3394,7 +3739,7 @@ export default function BranchMap({
                       ? '#dc2626'
                       : neutralColor;
               const strokeWidth = isSelected ? 2.5 : isHovered ? 2 : isFocusedError ? 2 : 1.5;
-              const defaultStrokeColor = isHovered && !isSelected ? '#44403c' : color;
+              const defaultStrokeColor = isHovered && !isSelected ? CANVAS_NEUTRAL_GRAY_HOVER : color;
 
               const mergeNodeForBranch = isMergedBranch
                 ? mergeNodeByMergedHeadSha.get(b.headSha)
@@ -3467,7 +3812,7 @@ export default function BranchMap({
                   (a, b) => new Date(a.date).getTime() - new Date(b.date).getTime()
                 )
                 : [];
-              const minCommitTimeX = forkTimeX + (isGridLayout ? GRID_ROW_GAP : routeCornerR + 6);
+              const minCommitTimeX = forkTimeX + (isGridLayout ? GRID_EVENT_GAP : routeCornerR + 6);
               const maxCommitTimeX = Math.max(minCommitTimeX, commitTipTimeX);
               const commitItems: Array<BranchCommitPreview | undefined> = hasPreviewData
                 ? displayedCommits
@@ -3736,7 +4081,7 @@ export default function BranchMap({
                     <path
                       d={`M ${pathCoord(lanePosX, localSegmentStartY)} L ${pathCoord(lanePosX, branchLineTipY)}`}
                       fill="none"
-                      stroke={isHovered && !isSelected ? '#78716c' : LOCAL_UNPUSHED_GRAY}
+                      stroke={isHovered && !isSelected ? CANVAS_NEUTRAL_GRAY_HOVER : LOCAL_UNPUSHED_GRAY}
                       strokeWidth={strokeWidth}
                       className={drawPathArcClass}
                       style={{
@@ -3827,7 +4172,7 @@ export default function BranchMap({
                       cluster.entries.every((entry) => localCommitDotIndices.has(entry.item.index));
                     const dotFill = dotShouldUseLocalGray
                       ? LOCAL_UNPUSHED_GRAY
-                      : (isSelected ? '#22d3ee' : isConflict ? '#dc2626' : isFocusedError ? focusedErrorColor : '#57534e');
+                      : (isSelected ? '#22d3ee' : isConflict ? '#dc2626' : isFocusedError ? focusedErrorColor : CANVAS_NEUTRAL_GRAY);
                     const clusterHasBranchTip =
                       branchEndDotIndex != null &&
                       cluster.entries.some((entry) => entry.item.index === branchEndDotIndex);
@@ -3938,87 +4283,263 @@ export default function BranchMap({
                       const latestCommitMessage = lastRealEntry.item.commit?.message
                         ? truncatePrompt(lastRealEntry.item.commit.message, COMMIT_CLUSTER_PREVIEW_MAX)
                         : `on ${b.name}`;
-                      const targetCommitSha = lastRealEntry.item.commit?.fullSha ?? b.headSha;
+
+                      const expanded = expandedClumps.get(clusterKey);
+                      const isExpanded = expanded?.isExpanded ?? false;
+                      const phase = expanded?.phase ?? 'collapsed';
+                      const phaseStartedAtMs = expanded?.phaseStartedAt ?? Date.now();
+                      const phaseProgress = phase === 'collapsed'
+                        ? 0
+                        : phase === 'expanded'
+                          ? 1
+                          : clamp01((Date.now() - phaseStartedAtMs) / clumpExpandMs);
+                      const phaseEased = phaseProgress <= 0 ? 0 : phaseProgress >= 1 ? 1 : easeInOutCubic(phaseProgress);
+                      const stackDepth = Math.min(CLUMP_STACK_DEPTH_MAX, count);
+                      const rectSize = nodeRectSize(count);
+                      // Expanded members represent single commits in grid layout.
+                      const localRect = commitRectSize(scaledNodeSize, 0);
+                      const memberRawTimes = realCommitEntries
+                        .map((entry) => new Date(entry.item.commit?.date ?? '').getTime())
+                        .filter((t): t is number => Number.isFinite(t));
+                      const collapseIconSize = Math.max(12, Math.min(localRect.width, localRect.height) * 0.55);
+                      const expandedXs = realCommitEntries.map((e) => e.x);
+                      const expandedYs = realCommitEntries.map((e) => e.y);
+                      const expandedMaxX = Math.max(...expandedXs) + localRect.width / 2;
+                      const expandedMinY = Math.min(...expandedYs) - localRect.height / 2;
+                      const collapseIconX = expandedMaxX - collapseIconSize - 2;
+                      const collapseIconY = expandedMinY + 2;
 
                       return (
                         <g key={clusterKey}>
-                          {isGridLayout ? (
-                            (() => {
-                        const rectSize = nodeRectSize(count);
-                              return (
-                                <rect
-                                  className="branch-map-commit-rect"
-                                  x={anchorX - rectSize.width / 2}
-                                  y={anchorY - rectSize.height / 2}
-                                  width={rectSize.width}
-                                  height={rectSize.height}
-                                  data-base-rx={rectSize.radius}
-                                  rx={rectSize.radius / Math.max(renderCameraScale.x, 0.0001)}
-                                  style={{ cursor: 'pointer' }}
-                                  fill={dotFill}
-                                  stroke={isGridLayout ? 'none' : 'var(--background)'}
-                                  strokeWidth={isGridLayout ? 0 : 1.2}
-                                  onClick={(event) =>
-                                    handleCommitNodeClick(
-                                      event,
-                                      targetCommitSha,
-                                      clusterHasBranchTip ? b.name : undefined,
-                                    )
-                                  }
-                                  onDoubleClick={(event) => event.stopPropagation()}
-                                  onMouseEnter={() =>
-                                    setTooltip({
-                                      x: anchorX,
-                                      y: anchorY,
-                                      lines: [`${count} commits`, latestCommitMessage, dateRangeLabel],
-                                      avatarFallback: latestAuthor?.charAt(0).toUpperCase() || '?',
-                                    })
-                                  }
-                                  onMouseLeave={() => setTooltip(null)}
-                                />
-                              );
-                            })()
-                          ) : (
-                            <circle
-                              cx={anchorX}
-                              cy={anchorY}
-                              r={scaledNodeSize / 2 + CLUMP_SIZE_BOOST_PX}
-                              fill={dotFill}
-                              stroke={isGridLayout ? 'none' : 'var(--background)'}
-                              strokeWidth={isGridLayout ? 0 : 1.2}
-                              style={{ cursor: 'pointer' }}
-                              onClick={(event) =>
-                                handleCommitNodeClick(
-                                  event,
-                                  targetCommitSha,
-                                  clusterHasBranchTip ? b.name : undefined,
-                                )
-                              }
-                              onDoubleClick={(event) => event.stopPropagation()}
-                              onMouseEnter={() =>
-                                setTooltip({
-                                  x: anchorX,
-                                  y: anchorY,
-                                  lines: [`${count} commits`, latestCommitMessage, dateRangeLabel],
-                                  avatarFallback: latestAuthor?.charAt(0).toUpperCase() || '?',
-                                })
-                              }
-                              onMouseLeave={() => setTooltip(null)}
-                            />
+                          {!isExpanded && (
+                            <g style={{ pointerEvents: 'none' }}>
+                              {Array.from({ length: stackDepth }, (_, i) => {
+                                const depth = stackDepth - 1 - i;
+                                const dx = depth * clumpStackOffset;
+                                const dy = -depth * clumpStackOffset;
+                                if (isGridLayout) {
+                                  return (
+                                    <g
+                                      key={`stack-${i}`}
+                                      transform={`translate(${anchorX + dx} ${anchorY + dy})`}
+                                      opacity={0.85 - depth * 0.12}
+                                    >
+                                      <rect
+                                        className="branch-map-commit-rect"
+                                        x={-rectSize.width / 2}
+                                        y={-rectSize.height / 2}
+                                        width={rectSize.width}
+                                        height={rectSize.height}
+                                        data-base-rx={rectSize.radius}
+                                        rx={rectSize.radius / Math.max(renderCameraScale.x, 0.0001)}
+                                        fill={dotFill}
+                                      />
+                                    </g>
+                                  );
+                                }
+                                return (
+                                  <g
+                                    key={`stack-${i}`}
+                                    transform={`translate(${anchorX + dx} ${anchorY + dy})`}
+                                    opacity={0.85 - depth * 0.12}
+                                  >
+                                    <circle r={scaledNodeSize / 2 + CLUMP_SIZE_BOOST_PX} fill={dotFill} />
+                                  </g>
+                                );
+                              })}
+                              <text
+                                x={anchorX}
+                                y={anchorY}
+                                textAnchor="middle"
+                                dominantBaseline="middle"
+                                data-base-font-size={nodeLabelFontSize(scaledNodeSize, count)}
+                                fontSize={nodeLabelFontSize(scaledNodeSize, count) / Math.max(renderCameraScale.x, 0.0001)}
+                                fill={CANVAS_CLUMP_LABEL_GRAY}
+                                fontWeight={600}
+                              >
+                                {clumpCountLabel(count)}
+                              </text>
+                            </g>
                           )}
-                          <text
-                            x={anchorX}
-                            y={anchorY}
-                            textAnchor="middle"
-                            dominantBaseline="middle"
-                            data-base-font-size={nodeLabelFontSize(scaledNodeSize, count)}
-                            fontSize={nodeLabelFontSize(scaledNodeSize, count) / Math.max(renderCameraScale.x, 0.0001)}
-                            style={{ pointerEvents: 'none' }}
-                            fill="#fafaf9"
-                            fontWeight={600}
-                          >
-                            {clumpCountLabel(count)}
-                          </text>
+
+                          {/* Collapsed-only overlay hit target (on top) so clicks never fall through. */}
+                          {!isExpanded && (() => {
+                            const pad = worldPx(6);
+                            const stackPad = (stackDepth - 1) * clumpStackOffset;
+                            const hitW = (isGridLayout ? rectSize.width : (scaledNodeSize + CLUMP_SIZE_BOOST_PX * 2)) + pad + stackPad;
+                            const hitH = (isGridLayout ? rectSize.height : (scaledNodeSize + CLUMP_SIZE_BOOST_PX * 2)) + pad + stackPad;
+                            return (
+                              <rect
+                                x={anchorX - hitW / 2}
+                                y={anchorY - hitH / 2}
+                                width={hitW}
+                                height={hitH}
+                                fill="transparent"
+                                style={{ cursor: 'pointer' }}
+                                onPointerDown={(e) => { e.preventDefault(); e.stopPropagation(); }}
+                                onMouseDown={(e) => { e.preventDefault(); e.stopPropagation(); }}
+                                onClick={(e) => { e.preventDefault(); e.stopPropagation(); toggleClumpExpanded(clusterKey, memberRawTimes); }}
+                                onDoubleClick={(event) => event.stopPropagation()}
+                                onMouseEnter={() =>
+                                  setTooltip({
+                                    x: anchorX,
+                                    y: anchorY,
+                                    lines: [`${count} commits`, latestCommitMessage, dateRangeLabel],
+                                    avatarFallback: latestAuthor?.charAt(0).toUpperCase() || '?',
+                                  })
+                                }
+                                onMouseLeave={() => setTooltip(null)}
+                              />
+                            );
+                          })()}
+
+                          {isExpanded && (
+                            <g>
+                              {realCommitEntries.map((entry, idx) => {
+                                const commit = entry.item.commit;
+                                if (!commit?.fullSha) return null;
+                                const tooltipAuthor = commit.author ?? b.lastCommitAuthor;
+                                const tooltipDate = commit.date ?? b.lastCommitDate;
+                                const tooltipSha = commit.sha ?? commit.fullSha.slice(0, 7);
+                                const tooltipMessage = commit.message;
+
+                                const collapsedDx = Math.min(idx, stackDepth - 1) * clumpStackOffset;
+                                const collapsedDy = -Math.min(idx, stackDepth - 1) * clumpStackOffset;
+                                const from = { x: anchorX + collapsedDx, y: anchorY + collapsedDy };
+                                const to = { x: entry.x, y: entry.y };
+                                const at = phase === 'collapsing'
+                                  ? { x: to.x + (from.x - to.x) * phaseEased, y: to.y + (from.y - to.y) * phaseEased }
+                                  : phase === 'expanding'
+                                    ? { x: from.x + (to.x - from.x) * phaseEased, y: from.y + (to.y - from.y) * phaseEased }
+                                    : phase === 'collapsed'
+                                      ? from
+                                      : to;
+                                const memberOpacity = phase === 'collapsing'
+                                  ? 1 - 0.3 * phaseEased
+                                  : phase === 'expanding'
+                                    ? 0.7 + 0.3 * phaseEased
+                                    : phase === 'collapsed'
+                                      ? 0.7
+                                      : 1;
+
+                                return (
+                                  <g
+                                    key={`branch-commit:${b.name}:${commit.fullSha}`}
+                                    transform={`translate(${at.x} ${at.y})`}
+                                    style={{ ...clumpAnimStyle, pointerEvents: phase === 'expanded' ? 'auto' : 'none' }}
+                                    opacity={memberOpacity}
+                                  >
+                                    {isGridLayout ? (
+                                      <rect
+                                        className="branch-map-commit-rect"
+                                        x={-localRect.width / 2}
+                                        y={-localRect.height / 2}
+                                        width={localRect.width}
+                                        height={localRect.height}
+                                        data-base-rx={localRect.radius}
+                                        rx={localRect.radius / Math.max(renderCameraScale.x, 0.0001)}
+                                        fill={dotFill}
+                                        stroke={isGridLayout ? 'none' : 'var(--background)'}
+                                        strokeWidth={isGridLayout ? 0 : 1.2}
+                                        style={{ cursor: 'pointer' }}
+                                        onClick={(event) =>
+                                          handleCommitNodeClick(
+                                            event,
+                                            commit.fullSha,
+                                            clusterHasBranchTip ? b.name : undefined,
+                                          )
+                                        }
+                                        onDoubleClick={(event) => event.stopPropagation()}
+                                        onMouseEnter={() =>
+                                          setTooltip({
+                                            x: entry.x,
+                                            y: entry.y,
+                                            lines: [
+                                              `Commit ${tooltipSha}`,
+                                              tooltipMessage
+                                                ? truncatePrompt(tooltipMessage, COMMIT_TOOLTIP_PREVIEW_MAX)
+                                                : `@${tooltipAuthor}`,
+                                              `@${tooltipAuthor} · ${fmtTooltipDate(tooltipDate)}`,
+                                            ],
+                                            avatarFallback: tooltipAuthor?.charAt(0).toUpperCase() || '?',
+                                          })
+                                        }
+                                        onMouseLeave={() => setTooltip(null)}
+                                      />
+                                    ) : (
+                                      <circle
+                                        r={scaledNodeSize / 2}
+                                        fill={dotFill}
+                                        stroke={isGridLayout ? 'none' : 'var(--background)'}
+                                        strokeWidth={isGridLayout ? 0 : 1.2}
+                                        style={{ cursor: 'pointer' }}
+                                        onClick={(event) =>
+                                          handleCommitNodeClick(
+                                            event,
+                                            commit.fullSha,
+                                            clusterHasBranchTip ? b.name : undefined,
+                                          )
+                                        }
+                                        onDoubleClick={(event) => event.stopPropagation()}
+                                        onMouseEnter={() =>
+                                          setTooltip({
+                                            x: entry.x,
+                                            y: entry.y,
+                                            lines: [
+                                              `Commit ${tooltipSha}`,
+                                              tooltipMessage
+                                                ? truncatePrompt(tooltipMessage, COMMIT_TOOLTIP_PREVIEW_MAX)
+                                                : `@${tooltipAuthor}`,
+                                              `@${tooltipAuthor} · ${fmtTooltipDate(tooltipDate)}`,
+                                            ],
+                                            avatarFallback: tooltipAuthor?.charAt(0).toUpperCase() || '?',
+                                          })
+                                        }
+                                        onMouseLeave={() => setTooltip(null)}
+                                      />
+                                    )}
+                                  </g>
+                                );
+                              })}
+                              {/* Contextual collapse icon (so expanded stacks can be re-collapsed). */}
+                              <g
+                                role="button"
+                                tabIndex={0}
+                                aria-label="Collapse commit stack"
+                                style={{ cursor: 'pointer' }}
+                                onPointerDown={(e) => { e.preventDefault(); e.stopPropagation(); }}
+                                onMouseDown={(e) => { e.preventDefault(); e.stopPropagation(); }}
+                                onClick={(e) => {
+                                  e.preventDefault();
+                                  e.stopPropagation();
+                                  toggleClumpExpanded(clusterKey, memberRawTimes);
+                                }}
+                                onKeyDown={(e) => {
+                                  if (e.key !== 'Enter' && e.key !== ' ') return;
+                                  e.preventDefault();
+                                  e.stopPropagation();
+                                  toggleClumpExpanded(clusterKey, memberRawTimes);
+                                }}
+                              >
+                                <rect
+                                  x={collapseIconX}
+                                  y={collapseIconY}
+                                  width={collapseIconSize}
+                                  height={collapseIconSize}
+                                  rx={collapseIconSize * 0.35}
+                                  fill={CANVAS_NEUTRAL_GRAY}
+                                  stroke={CANVAS_NEUTRAL_TEXT}
+                                  strokeWidth={1}
+                                />
+                                <path
+                                  d={`M ${collapseIconX + collapseIconSize * 0.28} ${collapseIconY + collapseIconSize / 2} L ${collapseIconX + collapseIconSize * 0.72} ${collapseIconY + collapseIconSize / 2}`}
+                                  stroke={CANVAS_NEUTRAL_TEXT}
+                                  strokeWidth={2}
+                                  strokeLinecap="round"
+                                />
+                              </g>
+                            </g>
+                          )}
                         </g>
                       );
                     })}
@@ -4201,7 +4722,7 @@ export default function BranchMap({
                   (a, b) => new Date(a.date).getTime() - new Date(b.date).getTime()
                 )
                 : [];
-              const minCommitTimeX = forkTimeX + (isGridLayout ? GRID_ROW_GAP : cornerR + 6);
+              const minCommitTimeX = forkTimeX + (isGridLayout ? GRID_EVENT_GAP : cornerR + 6);
               const maxCommitTimeX = Math.max(minCommitTimeX, commitTipTimeX);
               const commitItems: Array<BranchCommitPreview | undefined> = hasPreviewData
                 ? displayedCommits
@@ -4431,7 +4952,7 @@ export default function BranchMap({
                       cluster.entries.every((entry) => localCommitDotIndices.has(entry.item.index));
                     const dotFill = dotShouldUseLocalGray
                       ? LOCAL_UNPUSHED_GRAY
-                      : (isSelected ? '#22d3ee' : isConflict ? '#dc2626' : isFocusedError ? focusedErrorColor : '#57534e');
+                      : (isSelected ? '#22d3ee' : isConflict ? '#dc2626' : isFocusedError ? focusedErrorColor : CANVAS_NEUTRAL_GRAY);
 
                     if (count <= 1) {
                       const rectSize = commitRectSize(scaledNodeSize);
@@ -4529,7 +5050,7 @@ export default function BranchMap({
                           dominantBaseline="middle"
                           data-base-font-size={nodeLabelFontSize(scaledNodeSize, count)}
                           fontSize={nodeLabelFontSize(scaledNodeSize, count) / Math.max(renderCameraScale.x, 0.0001)}
-                          fill="#fafaf9"
+                          fill={CANVAS_CLUMP_LABEL_GRAY}
                           fontWeight={600}
                         >
                           {clumpCountLabel(count)}
@@ -4658,7 +5179,7 @@ export default function BranchMap({
                           height={rectSize.height}
                           data-base-rx={rectSize.radius}
                           rx={rectSize.radius / Math.max(renderCameraScale.x, 0.0001)}
-                          fill="#57534e"
+                          fill={CANVAS_NEUTRAL_GRAY}
                         />
                       </g>
                     ) : (
@@ -4673,7 +5194,7 @@ export default function BranchMap({
                           cx={anchorX}
                           cy={anchorY}
                           r={scaledNodeSize / 2}
-                          fill="#57534e"
+                          fill={CANVAS_NEUTRAL_GRAY}
                         />
                       </g>
                     )
@@ -4704,7 +5225,7 @@ export default function BranchMap({
                           height={clusterRectSize.height}
                           data-base-rx={clusterRectSize.radius}
                           rx={clusterRectSize.radius / Math.max(renderCameraScale.x, 0.0001)}
-                          fill="#57534e"
+                          fill={CANVAS_NEUTRAL_GRAY}
                         />
                       </>
                     ) : (
@@ -4719,7 +5240,7 @@ export default function BranchMap({
                           cx={anchorX}
                           cy={anchorY}
                           r={scaledNodeSize / 2 + CLUMP_SIZE_BOOST_PX}
-                          fill="#57534e"
+                          fill={CANVAS_NEUTRAL_GRAY}
                         />
                       </>
                     )}
@@ -4730,7 +5251,7 @@ export default function BranchMap({
                       dominantBaseline="middle"
                       data-base-font-size={nodeLabelFontSize(scaledNodeSize, count)}
                       fontSize={nodeLabelFontSize(scaledNodeSize, count) / Math.max(renderCameraScale.x, 0.0001)}
-                      fill="#fafaf9"
+                      fill={CANVAS_CLUMP_LABEL_GRAY}
                       fontWeight={600}
                     >
                       {clumpCountLabel(count)}
@@ -5004,18 +5525,6 @@ export default function BranchMap({
             transition: 'opacity 0.4s ease',
           }}
         >
-          <div className="flex items-center gap-1 shrink-0 bg-card border border-border rounded-full p-1">
-            <button
-              onClick={() => setLayoutMode('grid')}
-              className={`px-2.5 py-1 rounded-full text-xs leading-none select-none transition-colors ${layoutMode === 'grid'
-                ? 'bg-primary/10 text-foreground'
-                : 'text-muted-foreground hover:text-foreground hover:bg-muted'
-                }`}
-              title="Strict commit-order grid layout"
-            >
-              Grid
-            </button>
-          </div>
           {!isPopoverWindow && (
             <div className="flex items-center gap-1 shrink-0 bg-card border border-border rounded-full p-1">
               <button
