@@ -25,10 +25,8 @@ const AHEAD_LABEL_OFFSET_X = 10;
 const MAIN_LABEL_OFFSET_X = 10;
 const MAX_ACTIVE = 50;
 const ZOOM_DEFAULT = 1;
-const ZOOM_WHEEL_EXP_SENSITIVITY = 0.0025;
-const ZOOM_WHEEL_DELTA_MAX_PX = 180;
+const ZOOM_LOCKED = 1;
 const CAMERA_UI_SYNC_MS = 24;
-const ZOOM_UI_SYNC_IDLE_MS = 90;
 const CANVAS_PAD_X = 240;
 const CANVAS_PAD_Y = 140;
 const SCENE_WIGGLE_MIN_X = 180;
@@ -41,8 +39,11 @@ const TIME_SCALE_MIN = 0.5;
 const TIME_SCALE_MAX = 3;
 const TIME_SCALE_STEP = 0.05;
 const TIME_SCALE_DEFAULT = 0.5;
-const GRID_ROW_GAP = 12;
-const GRID_LANE_WIDTH = 10;
+const CLUMP_SIZE_BOOST_PX = 0.5;
+const GRID_NODE_RECT = commitRectSize(NODE_SIZE, CLUMP_SIZE_BOOST_PX * 2);
+// Grid spacing should match node bounds so nodes "kiss" instead of overlapping.
+const GRID_ROW_GAP = Math.ceil(GRID_NODE_RECT.height);
+const GRID_LANE_WIDTH = Math.ceil(GRID_NODE_RECT.width);
 const GRID_LANE_OFFSET_X = 0;
 const GRID_LANE_MIN_SEPARATION = 0;
 const GRID_TIP_MIN_TAIL = GRID_ROW_GAP;
@@ -52,7 +53,6 @@ const LOCAL_UNPUSHED_GRAY = '#a8a29e';
 const CLUMP_DISTANCE_PX = 8;
 const CLUMP_TOUCH_DISTANCE_PX = NODE_SIZE;
 const CLUMP_COUNT_MAX = 99;
-const CLUMP_SIZE_BOOST_PX = 0.5;
 const CLUMP_START_ZOOM = 1.15;
 const CLUMP_FULL_ZOOM = 0.72;
 const CLUMP_ANIMATION_MS = 180;
@@ -76,7 +76,6 @@ type PRCommitHover = { x: number; arcY: number; pr: MergedPR; commitIdx: number;
 type SpacingMode = 'regular' | 'bounded';
 type ClampMode = 'hard' | 'soft';
 type OrientationMode = 'vertical' | 'horizontal';
-type ZoomUiSyncMode = 'none' | 'deferred' | 'immediate';
 type MarkerEntry<T> = { x: number; y: number; item: T };
 type MarkerCluster<T> = { x: number; y: number; entries: MarkerEntry<T>[] };
 type AnchorPoint = LayoutAnchorPoint;
@@ -116,12 +115,6 @@ function clumpProgressForZoom(zoomValue: number): number {
 
 function getCameraScale(zoomValue: number, _horizontal: boolean): { x: number; y: number } {
   return { x: zoomValue, y: zoomValue };
-}
-
-function normalizeWheelDeltaPx(delta: number, deltaMode: number, pageSizePx: number): number {
-  if (deltaMode === WheelEvent.DOM_DELTA_LINE) return delta * 16;
-  if (deltaMode === WheelEvent.DOM_DELTA_PAGE) return delta * Math.max(pageSizePx, 1);
-  return delta;
 }
 
 function smoothValueTo(
@@ -467,8 +460,8 @@ export default function BranchMap({
   const [hoveredPRCommit, setHoveredPRCommit] = useState<PRCommitHover | null>(null);
   const [hoveredMergeNode, setHoveredMergeNode] = useState<{ y: number; node: MergeNode } | null>(null);
   const [prCommits, setPrCommits] = useState<Map<number, string[]>>(new Map());
-  const [zoom, setZoom] = useState(ZOOM_DEFAULT);
-  const [animatedClumpZoom, setAnimatedClumpZoom] = useState(ZOOM_DEFAULT);
+  const [zoom, setZoom] = useState(ZOOM_LOCKED);
+  const [animatedClumpZoom, setAnimatedClumpZoom] = useState(ZOOM_LOCKED);
   const [timeScale, setTimeScale] = useState(TIME_SCALE_DEFAULT);
   const [layoutMode, setLayoutMode] = useState<LayoutMode>('grid');
   const [spacingMode] = useState<SpacingMode>('bounded');
@@ -503,8 +496,6 @@ export default function BranchMap({
   const clumpRenderCounterRef = useRef(0);
   clumpRenderCounterRef.current += 1;
   const clumpRenderId = clumpRenderCounterRef.current;
-  const gestureZoomBaseRef = useRef(zoomRef.current);
-  const gesturePointRef = useRef<{ x: number; y: number } | null>(null);
   const graphOffsetRef = useRef({ x: 0, y: 0 });
   const cameraBoundsRef = useRef({
     viewportW: 0,
@@ -956,14 +947,14 @@ export default function BranchMap({
 
   function applyCamera(
     nextPan: { x: number; y: number },
-    nextZoom = zoomRef.current,
+    _nextZoom = zoomRef.current,
     forceUiSync = false,
     immediateUiSync = false
   ) {
     panRef.current = nextPan;
     targetPanRef.current = nextPan;
-    zoomRef.current = nextZoom;
-    pendingCameraRef.current = { pan: nextPan, zoom: nextZoom };
+    zoomRef.current = ZOOM_LOCKED;
+    pendingCameraRef.current = { pan: nextPan, zoom: ZOOM_LOCKED };
     if (immediateUiSync) {
       stopCameraPaint();
     } else {
@@ -1015,69 +1006,11 @@ export default function BranchMap({
     }
   }
 
-  function scheduleZoomUiSync(immediate = false) {
-    if (immediate) {
-      if (zoomUiSyncTimeoutRef.current !== null) {
-        clearTimeout(zoomUiSyncTimeoutRef.current);
-        zoomUiSyncTimeoutRef.current = null;
-      }
-      syncUiState(true, true);
-      return;
-    }
-    if (zoomUiSyncTimeoutRef.current !== null) {
-      clearTimeout(zoomUiSyncTimeoutRef.current);
-    }
-    zoomUiSyncTimeoutRef.current = window.setTimeout(() => {
-      zoomUiSyncTimeoutRef.current = null;
-      syncUiState(true, true);
-    }, ZOOM_UI_SYNC_IDLE_MS);
-  }
-
   function flushPendingZoomUiSync() {
     if (zoomUiSyncTimeoutRef.current === null) return;
     clearTimeout(zoomUiSyncTimeoutRef.current);
     zoomUiSyncTimeoutRef.current = null;
     syncUiState(true, true);
-  }
-
-  function applyZoomAt(
-    point: { x: number; y: number },
-    nextZoom: number,
-    uiSyncMode: ZoomUiSyncMode = 'none'
-  ): boolean {
-    lockAnimationsIfReady();
-    if (!Number.isFinite(nextZoom) || nextZoom <= 0) return false;
-    const currentZoom = zoomRef.current;
-    if (Math.abs(nextZoom - currentZoom) < 0.0001) return false;
-
-    const currentPan = panRef.current;
-    const graphOffset = graphOffsetRef.current;
-    const currentScale = getCameraScale(currentZoom, isHorizontal);
-    const nextScale = getCameraScale(nextZoom, isHorizontal);
-    const worldX = (point.x - currentPan.x - graphOffset.x) / Math.max(currentScale.x, 0.0001);
-    const worldY = (point.y - currentPan.y - graphOffset.y) / Math.max(currentScale.y, 0.0001);
-    const nextPan = clampPan(
-      {
-        x: point.x - graphOffset.x - worldX * nextScale.x,
-        y: point.y - graphOffset.y - worldY * nextScale.y,
-      },
-      nextZoom,
-      'soft'
-    );
-
-    stopPanSmoothing();
-    if (uiSyncMode === 'deferred') {
-      lastContinuousZoomTsRef.current = performance.now();
-    }
-    if (uiSyncMode === 'immediate') {
-      applyCamera(nextPan, nextZoom, true, true);
-      return true;
-    }
-    applyCamera(nextPan, nextZoom);
-    if (uiSyncMode === 'deferred') {
-      scheduleZoomUiSync();
-    }
-    return true;
   }
 
   // Keep controls available regardless of intro-reveal state.
@@ -1100,9 +1033,7 @@ export default function BranchMap({
     return () => clearTimeout(id);
   }, [drawReady]);
 
-  // Wheel behavior:
-  // - Ctrl/Cmd + wheel: direct cursor-anchored zoom
-  // - plain wheel: inertial pan in both axes
+  // Wheel behavior: inertial pan in both axes (zoom disabled).
   useEffect(() => {
     const el = scrollRef.current;
     if (!el) return;
@@ -1113,20 +1044,6 @@ export default function BranchMap({
       focusScrollCancelRef.current = null;
       markUserMovedCamera();
 
-      if (e.ctrlKey || e.metaKey) {
-        stopWheelInertia();
-        stopPanSmoothing();
-        setTooltip(null);
-        const rect = el.getBoundingClientRect();
-        const point = { x: e.clientX - rect.left, y: e.clientY - rect.top };
-        const pixelDeltaY = normalizeWheelDeltaPx(e.deltaY, e.deltaMode, el.clientHeight);
-        const clampedDeltaY = Math.max(-ZOOM_WHEEL_DELTA_MAX_PX, Math.min(ZOOM_WHEEL_DELTA_MAX_PX, pixelDeltaY));
-        const zoomFactor = Math.exp(-clampedDeltaY * ZOOM_WHEEL_EXP_SENSITIVITY);
-        if (!Number.isFinite(zoomFactor) || Math.abs(zoomFactor - 1) < 0.0001) return;
-        applyZoomAt(point, zoomRef.current * zoomFactor, 'deferred');
-        return;
-      }
-
       flushPendingZoomUiSync();
       const nextPan = clampPan({
         x: panRef.current.x - e.deltaX,
@@ -1136,46 +1053,9 @@ export default function BranchMap({
       schedulePanUiSync();
     };
 
-    const onGestureStart = (evt: Event) => {
-      const e = evt as Event & { scale?: number; clientX?: number; clientY?: number };
-      e.preventDefault();
-      lockAnimationsIfReady();
-      stopWheelInertia();
-      stopPanSmoothing();
-      setTooltip(null);
-      markUserMovedCamera();
-      gestureZoomBaseRef.current = zoomRef.current;
-      const rect = el.getBoundingClientRect();
-      gesturePointRef.current = {
-        x: (e.clientX ?? (rect.left + rect.width / 2)) - rect.left,
-        y: (e.clientY ?? (rect.top + rect.height / 2)) - rect.top,
-      };
-    };
-
-    const onGestureChange = (evt: Event) => {
-      const e = evt as Event & { scale?: number };
-      e.preventDefault();
-      const point = gesturePointRef.current;
-      const scale = e.scale;
-      if (!point || scale == null || !Number.isFinite(scale)) return;
-      applyZoomAt(point, gestureZoomBaseRef.current * scale, 'deferred');
-    };
-
-    const onGestureEnd = (evt: Event) => {
-      evt.preventDefault();
-      gesturePointRef.current = null;
-      scheduleZoomUiSync(true);
-    };
-
     el.addEventListener('wheel', onWheel, { passive: false });
-    el.addEventListener('gesturestart', onGestureStart as EventListener, { passive: false });
-    el.addEventListener('gesturechange', onGestureChange as EventListener, { passive: false });
-    el.addEventListener('gestureend', onGestureEnd as EventListener, { passive: false });
     return () => {
       el.removeEventListener('wheel', onWheel);
-      el.removeEventListener('gesturestart', onGestureStart as EventListener);
-      el.removeEventListener('gesturechange', onGestureChange as EventListener);
-      el.removeEventListener('gestureend', onGestureEnd as EventListener);
     };
   }, []);
 
@@ -1242,25 +1122,7 @@ export default function BranchMap({
     const onKeyDown = (e: KeyboardEvent) => {
       if (isEditable(e.target)) return;
 
-      // Keep zoom shortcuts on the graph camera (unbounded), not browser/webview zoom.
-      if (e.metaKey || e.ctrlKey) {
-        const isZoomIn = e.key === '=' || e.key === '+';
-        const isZoomOut = e.key === '-' || e.key === '_';
-        if (isZoomIn || isZoomOut) {
-          e.preventDefault();
-          const el = scrollRef.current;
-          if (!el) return;
-          markUserMovedCamera();
-          stopWheelInertia();
-          stopZoomAnimation();
-          applyZoomAt(
-            { x: el.clientWidth / 2, y: el.clientHeight / 2 },
-            zoomRef.current * (isZoomIn ? 1.08 : 0.92),
-            'immediate'
-          );
-          return;
-        }
-      }
+      // Zoom shortcuts disabled.
 
       if (e.code !== 'Space') return;
       e.preventDefault();
@@ -4410,16 +4272,17 @@ export default function BranchMap({
 
                     if (count <= 1) {
                       const rectSize = commitRectSize(scaledNodeSize);
+                      const gridPad = isGridLayout ? 0 : 2.8;
                       return (
                         isGridLayout ? (
                           <g key={`commit-overlay-${clusterKey}`} className="branch-map-icon-fixed">
                             <rect
                               className="branch-map-commit-rect"
-                              x={anchorX - (rectSize.width + 2.8) / 2}
-                              y={anchorY - (rectSize.height + 2.8) / 2}
-                              width={rectSize.width + 2.8}
-                              height={rectSize.height + 2.8}
-                              rx={Math.max(2, rectSize.radius + 0.6)}
+                              x={anchorX - (rectSize.width + gridPad) / 2}
+                              y={anchorY - (rectSize.height + gridPad) / 2}
+                              width={rectSize.width + gridPad}
+                              height={rectSize.height + gridPad}
+                              rx={Math.max(2, rectSize.radius + (gridPad ? 0.6 : 0))}
                               fill="var(--background)"
                             />
                             <rect
@@ -4452,17 +4315,18 @@ export default function BranchMap({
                     }
 
                     const clusterRectSize = commitRectSize(scaledNodeSize, CLUMP_SIZE_BOOST_PX * 2);
+                    const gridPad = isGridLayout ? 0 : 2.8;
                     return (
                       <g key={`commit-overlay-${clusterKey}`} className="branch-map-icon-fixed">
                         {isGridLayout ? (
                           <>
                             <rect
                               className="branch-map-commit-rect"
-                              x={anchorX - (clusterRectSize.width + 2.8) / 2}
-                              y={anchorY - (clusterRectSize.height + 2.8) / 2}
-                              width={clusterRectSize.width + 2.8}
-                              height={clusterRectSize.height + 2.8}
-                              rx={Math.max(2, clusterRectSize.radius + 0.6)}
+                              x={anchorX - (clusterRectSize.width + gridPad) / 2}
+                              y={anchorY - (clusterRectSize.height + gridPad) / 2}
+                              width={clusterRectSize.width + gridPad}
+                              height={clusterRectSize.height + gridPad}
+                              rx={Math.max(2, clusterRectSize.radius + (gridPad ? 0.6 : 0))}
                               fill="var(--background)"
                             />
                             <rect
@@ -4618,16 +4482,17 @@ export default function BranchMap({
 
                 if (count === 1) {
                   const rectSize = commitRectSize(scaledNodeSize);
+                  const gridPad = isGridLayout ? 0 : 2.8;
                   return (
                     isGridLayout ? (
                       <g key={`main-direct-overlay-${clusterKey}`} className="branch-map-icon-fixed">
                         <rect
                           className="branch-map-commit-rect"
-                          x={anchorX - (rectSize.width + 2.8) / 2}
-                          y={anchorY - (rectSize.height + 2.8) / 2}
-                          width={rectSize.width + 2.8}
-                          height={rectSize.height + 2.8}
-                          rx={Math.max(2, rectSize.radius + 0.6)}
+                          x={anchorX - (rectSize.width + gridPad) / 2}
+                          y={anchorY - (rectSize.height + gridPad) / 2}
+                          width={rectSize.width + gridPad}
+                          height={rectSize.height + gridPad}
+                          rx={Math.max(2, rectSize.radius + (gridPad ? 0.6 : 0))}
                           fill="var(--background)"
                         />
                         <rect
@@ -4660,17 +4525,18 @@ export default function BranchMap({
                 }
 
                 const clusterRectSize = commitRectSize(scaledNodeSize, CLUMP_SIZE_BOOST_PX * 2);
+                const gridPad = isGridLayout ? 0 : 2.8;
                 return (
                   <g key={`main-direct-overlay-${clusterKey}`} className="branch-map-icon-fixed">
                     {isGridLayout ? (
                       <>
                         <rect
                           className="branch-map-commit-rect"
-                          x={anchorX - (clusterRectSize.width + 2.8) / 2}
-                          y={anchorY - (clusterRectSize.height + 2.8) / 2}
-                          width={clusterRectSize.width + 2.8}
-                          height={clusterRectSize.height + 2.8}
-                          rx={Math.max(2, clusterRectSize.radius + 0.6)}
+                          x={anchorX - (clusterRectSize.width + gridPad) / 2}
+                          y={anchorY - (clusterRectSize.height + gridPad) / 2}
+                          width={clusterRectSize.width + gridPad}
+                          height={clusterRectSize.height + gridPad}
+                          rx={Math.max(2, clusterRectSize.radius + (gridPad ? 0.6 : 0))}
                           fill="var(--background)"
                         />
                         <rect
