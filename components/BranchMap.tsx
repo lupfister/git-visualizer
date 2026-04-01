@@ -3554,7 +3554,9 @@ export default function BranchMap({
                                       handleCommitNodeClick(
                                         event,
                                         c.fullSha,
-                                        clusterHasMainTip ? defaultBranch : undefined,
+                                        clusterHasMainTip && c.fullSha === latestMainCommitSha
+                                          ? defaultBranch
+                                          : undefined,
                                       )
                                     }
                                     onDoubleClick={(event) => event.stopPropagation()}
@@ -3579,7 +3581,9 @@ export default function BranchMap({
                                       handleCommitNodeClick(
                                         event,
                                         c.fullSha,
-                                        clusterHasMainTip ? defaultBranch : undefined,
+                                        clusterHasMainTip && c.fullSha === latestMainCommitSha
+                                          ? defaultBranch
+                                          : undefined,
                                       )
                                     }
                                     onDoubleClick={(event) => event.stopPropagation()}
@@ -4747,7 +4751,9 @@ export default function BranchMap({
                                           handleCommitNodeClick(
                                             event,
                                             commit.fullSha,
-                                            clusterHasBranchTip ? b.name : undefined,
+                                            clusterHasBranchTip && commit.fullSha === b.headSha
+                                              ? b.name
+                                              : undefined,
                                           )
                                         }
                                         onDoubleClick={(event) => event.stopPropagation()}
@@ -4778,7 +4784,9 @@ export default function BranchMap({
                                           handleCommitNodeClick(
                                             event,
                                             commit.fullSha,
-                                            clusterHasBranchTip ? b.name : undefined,
+                                            clusterHasBranchTip && commit.fullSha === b.headSha
+                                              ? b.name
+                                              : undefined,
                                           )
                                         }
                                         onDoubleClick={(event) => event.stopPropagation()}
