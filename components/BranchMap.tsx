@@ -1,6 +1,6 @@
 import React, { useState, useRef, useEffect, useLayoutEffect } from 'react';
 import { invoke } from '@tauri-apps/api/core';
-import { X } from 'lucide-react';
+import { Loader2, X } from 'lucide-react';
 import { Branch, BranchCommitPreview, BranchPromptMeta, CheckedOutRef, DirectCommit, MergeNode, MergedPR, OpenPR } from '../types';
 import { ViewMode } from './BranchMapView';
 import {
@@ -89,6 +89,11 @@ const CLUMP_ZOOM_INTERACTION_WINDOW_MS = 120;
 const CLUMP_MAX_ENTRIES_TOUCH = 2;
 const CLUMP_MAX_ENTRIES_FULL = CLUMP_COUNT_MAX;
 const CHECKED_OUT_AHEAD_OFFSET_WORLD = 120;
+/** Ring around the commit that matches HEAD (SVG user units; hex OK for SVG). */
+const CHECKED_OUT_RING_STROKE = '#2563eb';
+const CHECKED_OUT_RING_STROKE_WIDTH = 2;
+/** Space between node edge and inner edge of the ring. */
+const CHECKED_OUT_RING_GAP = 2.5;
 const CHECKED_OUT_PULSE_MS = 1800;
 const INITIAL_CENTER_SETTLE_MS = CHECKED_OUT_PULSE_MS;
 const INITIAL_REVEAL_FADE_MS = CHECKED_OUT_PULSE_MS;
@@ -199,12 +204,13 @@ function fmtLabelDate(dateStr: string) {
   });
 }
 
-function formatCommitsAhead(commitsAhead: number): string {
-  return `${commitsAhead} commit${commitsAhead === 1 ? '' : 's'} ahead`;
-}
-
 function estimateSvgTextWidth(text: string, fontSize = 10): number {
   return Math.ceil(text.length * fontSize * 0.56);
+}
+
+function shaMatchesGitRef(a: string | undefined | null, b: string | undefined | null): boolean {
+  if (!a || !b) return false;
+  return a === b || a.startsWith(b) || b.startsWith(a);
 }
 
 function truncatePrompt(text: string, max = 90): string {
@@ -2262,8 +2268,7 @@ export default function BranchMap({
   }
 
   function branchVisualEndTimeX(b: Branch): number {
-    const tipX = branchTipX(b);
-    return tipX + AHEAD_LABEL_OFFSET_X + estimateSvgTextWidth(formatCommitsAhead(branchAheadCount(b)));
+    return branchTipX(b);
   }
 
   // Canonical (logical) layout uses vertical time; orientation projection swaps axes when needed.
@@ -2432,8 +2437,7 @@ export default function BranchMap({
 
   const maxBranchVisualEndX = activeBranches.reduce((max, b) => {
     const lanePosX = laneXByBranch.get(b.name) ?? mainX;
-    const labelWidth = estimateSvgTextWidth(formatCommitsAhead(branchAheadCount(b)));
-    return Math.max(max, lanePosX + AHEAD_LABEL_OFFSET_X + labelWidth);
+    return Math.max(max, lanePosX + AHEAD_LABEL_OFFSET_X);
   }, mainX + MAIN_LABEL_OFFSET_X + estimateSvgTextWidth(defaultBranch));
 
   // Lane geometry (used for grid width — see below).
@@ -2448,10 +2452,8 @@ export default function BranchMap({
   // clamp to 0 or the clip slices the left half of the left column (same idea as Y below).
   const graphExtentMinX = Math.min(timelineMinX, minLaneXForBounds - gridHalfWForBounds);
 
-  // Grid: `maxBranchVisualEndX` reserves space for “N commits ahead” width, but that string
-  // is not rendered on the canvas — only lanes/commits are. Using it for SVG width and
-  // grid row extent made horizontal row lines stretch past the last column (wide empty band
-  // on the right; in horizontal mode the same bug reads as extra space at the bottom).
+  // Grid: use `tightGridXSpan` for SVG width so row lines match lane columns. Non-grid
+  // width still uses `maxBranchVisualEndX` (branch lane + label margin).
   const tightGridXSpan = gridLaneExtentMaxX - graphExtentMinX;
   const logicalSvgWidth = isGridLayout
     ? tightGridXSpan + 2 * svgContentPadding + rightPad + SVG_LAYOUT_TAIL_X
@@ -5263,6 +5265,23 @@ export default function BranchMap({
                       ? LOCAL_UNPUSHED_GRAY
                       : (isSelected ? '#22d3ee' : isConflict ? '#dc2626' : isFocusedError ? focusedErrorColor : CANVAS_NEUTRAL_GRAY);
 
+                    const clusterHasCheckedOutHead =
+                      checkedOutHeadSha != null &&
+                      cluster.entries.some((entry) => {
+                        const idx = entry.item.index;
+                        const commit = entry.item.commit;
+                        if (hasPreviewData && commit && commit.kind !== 'branch-created') {
+                          return (
+                            shaMatchesGitRef(commit.fullSha, checkedOutHeadSha) ||
+                            shaMatchesGitRef(commit.sha, checkedOutHeadSha)
+                          );
+                        }
+                        if (!hasPreviewData && checkedOutBranchName === b.name && branchEndDotIndex === idx) {
+                          return shaMatchesGitRef(b.headSha, checkedOutHeadSha);
+                        }
+                        return false;
+                      });
+
                     if (count <= 1) {
                       const rectSize = commitRectSize(scaledNodeSize);
                       const gridPad = isGridLayout ? 0 : 2.8;
@@ -5289,6 +5308,24 @@ export default function BranchMap({
                               rx={rectSize.radius / Math.max(layerCameraScale.x, 0.0001)}
                               fill={dotFill}
                             />
+                            {clusterHasCheckedOutHead && (
+                              <rect
+                                className="branch-map-commit-rect"
+                                x={anchorX - (rectSize.width + gridPad) / 2 - CHECKED_OUT_RING_GAP}
+                                y={anchorY - (rectSize.height + gridPad) / 2 - CHECKED_OUT_RING_GAP}
+                                width={rectSize.width + gridPad + 2 * CHECKED_OUT_RING_GAP}
+                                height={rectSize.height + gridPad + 2 * CHECKED_OUT_RING_GAP}
+                                data-base-rx={Math.max(2, rectSize.radius + (gridPad ? 0.6 : 0)) + CHECKED_OUT_RING_GAP}
+                                rx={
+                                  (Math.max(2, rectSize.radius + (gridPad ? 0.6 : 0)) + CHECKED_OUT_RING_GAP) /
+                                  Math.max(layerCameraScale.x, 0.0001)
+                                }
+                                fill="none"
+                                stroke={CHECKED_OUT_RING_STROKE}
+                                strokeWidth={CHECKED_OUT_RING_STROKE_WIDTH}
+                                vectorEffect="non-scaling-stroke"
+                              />
+                            )}
                           </g>
                         ) : (
                           <g key={`commit-overlay-${clusterKey}`}>
@@ -5304,6 +5341,17 @@ export default function BranchMap({
                               r={scaledNodeSize / 2}
                               fill={dotFill}
                             />
+                            {clusterHasCheckedOutHead && (
+                              <circle
+                                cx={anchorX}
+                                cy={anchorY}
+                                r={scaledNodeSize / 2 + 1.4 + CHECKED_OUT_RING_GAP}
+                                fill="none"
+                                stroke={CHECKED_OUT_RING_STROKE}
+                                strokeWidth={CHECKED_OUT_RING_STROKE_WIDTH}
+                                vectorEffect="non-scaling-stroke"
+                              />
+                            )}
                           </g>
                         )
                       );
@@ -5335,6 +5383,24 @@ export default function BranchMap({
                               rx={clusterRectSize.radius / Math.max(layerCameraScale.x, 0.0001)}
                               fill={dotFill}
                             />
+                            {clusterHasCheckedOutHead && (
+                              <rect
+                                className="branch-map-commit-rect"
+                                x={anchorX - (clusterRectSize.width + gridPad) / 2 - CHECKED_OUT_RING_GAP}
+                                y={anchorY - (clusterRectSize.height + gridPad) / 2 - CHECKED_OUT_RING_GAP}
+                                width={clusterRectSize.width + gridPad + 2 * CHECKED_OUT_RING_GAP}
+                                height={clusterRectSize.height + gridPad + 2 * CHECKED_OUT_RING_GAP}
+                                data-base-rx={Math.max(2, clusterRectSize.radius + (gridPad ? 0.6 : 0)) + CHECKED_OUT_RING_GAP}
+                                rx={
+                                  (Math.max(2, clusterRectSize.radius + (gridPad ? 0.6 : 0)) + CHECKED_OUT_RING_GAP) /
+                                  Math.max(layerCameraScale.x, 0.0001)
+                                }
+                                fill="none"
+                                stroke={CHECKED_OUT_RING_STROKE}
+                                strokeWidth={CHECKED_OUT_RING_STROKE_WIDTH}
+                                vectorEffect="non-scaling-stroke"
+                              />
+                            )}
                           </>
                         ) : (
                           <>
@@ -5350,6 +5416,17 @@ export default function BranchMap({
                               r={scaledNodeSize / 2 + CLUMP_SIZE_BOOST_PX}
                               fill={dotFill}
                             />
+                            {clusterHasCheckedOutHead && (
+                              <circle
+                                cx={anchorX}
+                                cy={anchorY}
+                                r={scaledNodeSize / 2 + CLUMP_SIZE_BOOST_PX + 1.4 + CHECKED_OUT_RING_GAP}
+                                fill="none"
+                                stroke={CHECKED_OUT_RING_STROKE}
+                                strokeWidth={CHECKED_OUT_RING_STROKE_WIDTH}
+                                vectorEffect="non-scaling-stroke"
+                              />
+                            )}
                           </>
                         )}
                         <text
@@ -5464,6 +5541,12 @@ export default function BranchMap({
                 const anchorX = animatedAnchor.x;
                 const anchorY = animatedAnchor.y;
 
+                const mainClusterHasCheckedOutHead =
+                  checkedOutHeadSha != null &&
+                  cluster.entries.some((entry) =>
+                    shaMatchesGitRef(entry.item.fullSha, checkedOutHeadSha)
+                  );
+
                 if (count === 1) {
                   const rectSize = commitRectSize(scaledNodeSize);
                   const gridPad = isGridLayout ? 0 : 2.8;
@@ -5490,6 +5573,24 @@ export default function BranchMap({
                           rx={rectSize.radius / Math.max(layerCameraScale.x, 0.0001)}
                           fill={CANVAS_NEUTRAL_GRAY}
                         />
+                        {mainClusterHasCheckedOutHead && (
+                          <rect
+                            className="branch-map-commit-rect"
+                            x={anchorX - (rectSize.width + gridPad) / 2 - CHECKED_OUT_RING_GAP}
+                            y={anchorY - (rectSize.height + gridPad) / 2 - CHECKED_OUT_RING_GAP}
+                            width={rectSize.width + gridPad + 2 * CHECKED_OUT_RING_GAP}
+                            height={rectSize.height + gridPad + 2 * CHECKED_OUT_RING_GAP}
+                            data-base-rx={Math.max(2, rectSize.radius + (gridPad ? 0.6 : 0)) + CHECKED_OUT_RING_GAP}
+                            rx={
+                              (Math.max(2, rectSize.radius + (gridPad ? 0.6 : 0)) + CHECKED_OUT_RING_GAP) /
+                              Math.max(layerCameraScale.x, 0.0001)
+                            }
+                            fill="none"
+                            stroke={CHECKED_OUT_RING_STROKE}
+                            strokeWidth={CHECKED_OUT_RING_STROKE_WIDTH}
+                            vectorEffect="non-scaling-stroke"
+                          />
+                        )}
                       </g>
                     ) : (
                       <g key={`main-direct-overlay-${clusterKey}`}>
@@ -5505,6 +5606,17 @@ export default function BranchMap({
                           r={scaledNodeSize / 2}
                           fill={CANVAS_NEUTRAL_GRAY}
                         />
+                        {mainClusterHasCheckedOutHead && (
+                          <circle
+                            cx={anchorX}
+                            cy={anchorY}
+                            r={scaledNodeSize / 2 + 1.4 + CHECKED_OUT_RING_GAP}
+                            fill="none"
+                            stroke={CHECKED_OUT_RING_STROKE}
+                            strokeWidth={CHECKED_OUT_RING_STROKE_WIDTH}
+                            vectorEffect="non-scaling-stroke"
+                          />
+                        )}
                       </g>
                     )
                   );
@@ -5536,6 +5648,24 @@ export default function BranchMap({
                           rx={clusterRectSize.radius / Math.max(layerCameraScale.x, 0.0001)}
                           fill={CANVAS_NEUTRAL_GRAY}
                         />
+                        {mainClusterHasCheckedOutHead && (
+                          <rect
+                            className="branch-map-commit-rect"
+                            x={anchorX - (clusterRectSize.width + gridPad) / 2 - CHECKED_OUT_RING_GAP}
+                            y={anchorY - (clusterRectSize.height + gridPad) / 2 - CHECKED_OUT_RING_GAP}
+                            width={clusterRectSize.width + gridPad + 2 * CHECKED_OUT_RING_GAP}
+                            height={clusterRectSize.height + gridPad + 2 * CHECKED_OUT_RING_GAP}
+                            data-base-rx={Math.max(2, clusterRectSize.radius + (gridPad ? 0.6 : 0)) + CHECKED_OUT_RING_GAP}
+                            rx={
+                              (Math.max(2, clusterRectSize.radius + (gridPad ? 0.6 : 0)) + CHECKED_OUT_RING_GAP) /
+                              Math.max(layerCameraScale.x, 0.0001)
+                            }
+                            fill="none"
+                            stroke={CHECKED_OUT_RING_STROKE}
+                            strokeWidth={CHECKED_OUT_RING_STROKE_WIDTH}
+                            vectorEffect="non-scaling-stroke"
+                          />
+                        )}
                       </>
                     ) : (
                       <>
@@ -5551,6 +5681,17 @@ export default function BranchMap({
                           r={scaledNodeSize / 2 + CLUMP_SIZE_BOOST_PX}
                           fill={CANVAS_NEUTRAL_GRAY}
                         />
+                        {mainClusterHasCheckedOutHead && (
+                          <circle
+                            cx={anchorX}
+                            cy={anchorY}
+                            r={scaledNodeSize / 2 + CLUMP_SIZE_BOOST_PX + 1.4 + CHECKED_OUT_RING_GAP}
+                            fill="none"
+                            stroke={CHECKED_OUT_RING_STROKE}
+                            strokeWidth={CHECKED_OUT_RING_STROKE_WIDTH}
+                            vectorEffect="non-scaling-stroke"
+                          />
+                        )}
                       </>
                     )}
                     <text
@@ -5626,29 +5767,6 @@ export default function BranchMap({
             );
           })()}
           </g>
-
-          {/* Checked-out commit marker (same translate as graph so it stays on the commit) */}
-          {!holdTimelineForInitialCenter && checkedOutDisplayIndicatorLocal && (() => {
-            const markerPoint = projectPoint(checkedOutDisplayIndicatorLocal.x, checkedOutDisplayIndicatorLocal.y);
-            return (
-              <g style={{ pointerEvents: 'none' }}>
-                <circle
-                  className="checked-out-halo-pulse"
-                  cx={markerPoint.x}
-                  cy={markerPoint.y}
-                  r={12}
-                  fill="#93c5fd"
-                  opacity={0.35}
-                />
-                <circle
-                  cx={markerPoint.x}
-                  cy={markerPoint.y}
-                  r={7}
-                  fill="#2563eb"
-                />
-              </g>
-            );
-          })()}
           </g>
           </g>
         </svg>
@@ -5656,16 +5774,10 @@ export default function BranchMap({
 
         {holdTimelineForInitialCenter && (
           <div className="absolute inset-0 pointer-events-none flex items-center justify-center">
-            <div className="relative h-6 w-6">
-              <span
-                className="absolute inset-0 rounded-full checked-out-halo-pulse"
-                style={{ backgroundColor: '#93c5fd', opacity: 0.35 }}
-              />
-              <span
-                className="absolute left-1/2 top-1/2 h-3.5 w-3.5 -translate-x-1/2 -translate-y-1/2 rounded-full"
-                style={{ backgroundColor: '#2563eb' }}
-              />
-            </div>
+            <Loader2
+              className="size-6 shrink-0 animate-spin text-muted-foreground"
+              aria-hidden
+            />
           </div>
         )}
         {holdTimelineForInitialCenter && timelineRevealPhase === 'fading' && (
