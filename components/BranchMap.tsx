@@ -54,7 +54,7 @@ const GRID_VIEW_PAD_X = 0;
  * `svgContentPadding` scales from this baseline when the map viewport is larger than
  * `SVG_CONTENT_PADDING_VIEWPORT_REF_MIN` (min of width/height, px); mini windows stay ~baseline.
  */
-const SVG_CONTENT_PADDING_BASE = 120;
+const SVG_CONTENT_PADDING_BASE =  20;
 const SVG_CONTENT_PADDING_VIEWPORT_REF_MIN = 360;
 const SVG_CONTENT_PADDING_MAX = 320;
 /** Full-bleed fill behind graph content (SVG user units; hex OK for SVG fills). */
@@ -936,6 +936,9 @@ export default function BranchMap({
     const sceneMaxY = currentGraphOffsetY + maxYWorld * scale.y + CAMERA_CONTENT_PAD;
 
     const topInset = viewportTopInset ?? 0;
+    const visibleH = viewportH - topInset;
+    const sceneSpanX = sceneMaxX - sceneMinX;
+    const sceneSpanY = sceneMaxY - sceneMinY;
     const xBounds = {
       min: viewportW - sceneMaxX,
       max: -sceneMinX,
@@ -945,10 +948,30 @@ export default function BranchMap({
       max: topInset - sceneMinY,
     };
 
-    return {
-      x: clampAxis(next.x, xBounds.min, xBounds.max),
-      y: clampAxis(next.y, yBounds.min, yBounds.max),
-    };
+    // When zoomed out enough that the graph fits inside the viewport with extra margin,
+    // snap pan so the content stays centered. Skip while space-drag panning so the gesture
+    // still moves the map; the mouseup settle pass recenters when slack.
+    const SLACK_EPS = 0.5;
+    const allowSlackCenter = mode === 'hard' && !isPanningRef.current;
+    let x: number;
+    if (mode !== 'hard') {
+      x = clampAxis(next.x, xBounds.min, xBounds.max);
+    } else if (allowSlackCenter && sceneSpanX <= viewportW + SLACK_EPS) {
+      x = viewportW / 2 - (sceneMinX + sceneMaxX) / 2;
+    } else {
+      x = clampAxis(next.x, xBounds.min, xBounds.max);
+    }
+
+    let y: number;
+    if (mode !== 'hard') {
+      y = clampAxis(next.y, yBounds.min, yBounds.max);
+    } else if (allowSlackCenter && visibleH > 0 && sceneSpanY <= visibleH + SLACK_EPS) {
+      y = (topInset + viewportH) / 2 - (sceneMinY + sceneMaxY) / 2;
+    } else {
+      y = clampAxis(next.y, yBounds.min, yBounds.max);
+    }
+
+    return { x, y };
   }
 
   function cancelZoomBoundsSnap() {
@@ -1270,11 +1293,37 @@ export default function BranchMap({
   }
 
   // Wheel behavior:
-  // - Ctrl/Cmd + wheel: direct cursor-anchored zoom (min 1x)
+  // - Ctrl/Cmd + wheel: zoom toward cursor when over the SVG lake; otherwise zoom toward viewport center
   // - plain wheel: inertial pan in both axes
   useEffect(() => {
     const el = scrollRef.current;
     if (!el) return;
+
+    // Use layout math for the SVG viewport (the blue lake), not `svg.getBoundingClientRect()`.
+    // With `overflow: visible`, painted graph content can inflate the SVG's bbox to fill the
+    // scroll area, which made every point look "inside" and defeated center zoom on margins.
+    const zoomAnchorForClientPoint = (clientX: number, clientY: number) => {
+      const rect = el.getBoundingClientRect();
+      const localX = clientX - rect.left;
+      const localY = clientY - rect.top;
+      const { x: panX, y: panY } = panRef.current;
+      const go = graphOffsetRef.current;
+      const { svgWidth: sw, svgHeight: sh } = cameraBoundsRef.current;
+      const lakeLeft = panX + go.x;
+      const lakeTop = panY + go.y;
+      const overLake =
+        sw > 0 &&
+        sh > 0 &&
+        localX >= lakeLeft &&
+        localX <= lakeLeft + sw &&
+        localY >= lakeTop &&
+        localY <= lakeTop + sh;
+      if (overLake) {
+        return { x: localX, y: localY };
+      }
+      return { x: rect.width / 2, y: rect.height / 2 };
+    };
+
     const onWheel = (e: WheelEvent) => {
       e.preventDefault();
       lockAnimationsIfReady();
@@ -1286,8 +1335,7 @@ export default function BranchMap({
         stopWheelInertia();
         stopPanSmoothing();
         setTooltip(null);
-        const rect = el.getBoundingClientRect();
-        const point = { x: e.clientX - rect.left, y: e.clientY - rect.top };
+        const point = zoomAnchorForClientPoint(e.clientX, e.clientY);
         const pixelDeltaY = normalizeWheelDeltaPx(e.deltaY, e.deltaMode, el.clientHeight);
         const clampedDeltaY = Math.max(-ZOOM_WHEEL_DELTA_MAX_PX, Math.min(ZOOM_WHEEL_DELTA_MAX_PX, pixelDeltaY));
         const zoomFactor = Math.exp(-clampedDeltaY * ZOOM_WHEEL_EXP_SENSITIVITY);
@@ -1322,10 +1370,9 @@ export default function BranchMap({
       markUserMovedCamera();
       gestureZoomBaseRef.current = zoomRef.current;
       const rect = el.getBoundingClientRect();
-      gesturePointRef.current = {
-        x: (e.clientX ?? (rect.left + rect.width / 2)) - rect.left,
-        y: (e.clientY ?? (rect.top + rect.height / 2)) - rect.top,
-      };
+      const cx = e.clientX ?? rect.left + rect.width / 2;
+      const cy = e.clientY ?? rect.top + rect.height / 2;
+      gesturePointRef.current = zoomAnchorForClientPoint(cx, cy);
     };
 
     const onGestureChange = (evt: Event) => {
