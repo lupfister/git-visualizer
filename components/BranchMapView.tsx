@@ -29,6 +29,8 @@ interface Props {
   focusedErrorBranch?: Branch | null;
   checkedOutRef?: CheckedOutRef | null;
   isPopoverWindow?: boolean;
+  /** Height of overlay UI above the map (px); improves aspect + padding vs. full window. */
+  mapTopInsetPx?: number;
 }
 
 export default function BranchMapView({
@@ -55,6 +57,7 @@ export default function BranchMapView({
   focusedErrorBranch,
   checkedOutRef = null,
   isPopoverWindow = false,
+  mapTopInsetPx = 0,
 }: Props) {
   // Determine active vs inactive error branches
   const openPRBranchNames = new Set(openPRs.map(p => p.branchName));
@@ -101,6 +104,7 @@ export default function BranchMapView({
             focusedErrorBranch={focusedErrorBranch}
             checkedOutRef={checkedOutRef}
             isPopoverWindow={isPopoverWindow}
+            mapTopInsetPx={mapTopInsetPx}
           />
         </div>
       ) : (

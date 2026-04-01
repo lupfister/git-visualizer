@@ -1,4 +1,4 @@
-import { useState, useEffect, useRef } from 'react';
+import { useState, useEffect, useLayoutEffect, useRef } from 'react';
 import { invoke } from '@tauri-apps/api/core';
 import { getCurrentWindow } from '@tauri-apps/api/window';
 import { ArrowLeft, Maximize2 } from 'lucide-react';
@@ -59,6 +59,27 @@ function App() {
   const prewarmedRef = useRef(false);
   const [authSetupLoading, setAuthSetupLoading] = useState(false);
   const [isPopoverWindow, setIsPopoverWindow] = useState(false);
+  const mapHeaderRef = useRef<HTMLElement | null>(null);
+  const [mapHeaderInsetPx, setMapHeaderInsetPx] = useState(0);
+
+  useLayoutEffect(() => {
+    if (view === 'landing') {
+      setMapHeaderInsetPx(0);
+      return;
+    }
+    const el = mapHeaderRef.current;
+    if (!el) {
+      setMapHeaderInsetPx(0);
+      return;
+    }
+    const measure = () => {
+      setMapHeaderInsetPx(Math.round(el.getBoundingClientRect().height));
+    };
+    measure();
+    const ro = new ResizeObserver(measure);
+    ro.observe(el);
+    return () => ro.disconnect();
+  }, [view]);
 
   useEffect(() => {
     try {
@@ -679,13 +700,17 @@ function App() {
               checkedOutRef={checkedOutRef}
               onHoveredBranchChange={setHoveredBranchName}
               isPopoverWindow={isPopoverWindow}
+              mapTopInsetPx={mapHeaderInsetPx}
             />
           </div>
 
-          <header className={cn(
-            'absolute left-0 right-0 z-40',
-            isPopoverWindow ? 'px-3 pt-3' : 'px-4 py-3 md:px-8 md:py-5'
-          )}>
+          <header
+            ref={mapHeaderRef}
+            className={cn(
+              'absolute left-0 right-0 z-40',
+              isPopoverWindow ? 'px-3 pt-3' : 'px-4 py-3 md:px-8 md:py-5'
+            )}
+          >
             <div className="grid grid-cols-[1fr_auto_1fr] items-center gap-3">
               <button
                 onClick={handleBackToLanding}
