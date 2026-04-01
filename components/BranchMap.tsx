@@ -14,8 +14,8 @@ import {
 } from './branchMapLayout';
 
 // ── Layout constants ──────────────────────────────────────────────────────────
-const LEFT_PAD = 60;
-const RIGHT_PAD = 160;
+const LEFT_PAD = 0;
+const RIGHT_PAD = 0;
 const MIN_BRANCH_SPACING_X = 30;
 const LANE_HEIGHT = 120;
 const NODE_SIZE = 24;
@@ -26,18 +26,27 @@ const MAIN_LABEL_OFFSET_X = 10;
 const MAX_ACTIVE = 50;
 const ZOOM_DEFAULT = 1;
 const ZOOM_MIN = 1;
-const ZOOM_MAX = 3;
+const ZOOM_MAX = 6;
 const ZOOM_WHEEL_EXP_SENSITIVITY = 0.0025;
 const ZOOM_WHEEL_DELTA_MAX_PX = 180;
 const CAMERA_UI_SYNC_MS = 24;
-const CANVAS_PAD_X = 240;
-const CANVAS_PAD_Y = 140;
-const SCENE_WIGGLE_MIN_X = 180;
-const SCENE_WIGGLE_MIN_Y = 140;
-const SCENE_WIGGLE_FACTOR_X = 1.25;
-const SCENE_WIGGLE_FACTOR_Y = 1.25;
-const SCENE_WIGGLE_VIEWPORT_FACTOR_X = 1.25;
-const SCENE_WIGGLE_VIEWPORT_FACTOR_Y = 1.25;
+/** Space between the `<svg>` and the camera container edges (screen px each side). */
+const CANVAS_PAD_X = 0;
+const CANVAS_PAD_Y = 0;
+/** Extra logical width/height beyond content (SVG user units). */
+const SVG_LAYOUT_TAIL_X = 0;
+const SVG_LAYOUT_TAIL_Y = 0;
+/** Margins around the graph when clipping / finite pan bounds (SVG user units). */
+const CLIP_MARGIN_LEFT = 0;
+const CLIP_MARGIN_RIGHT = 0;
+const CLIP_MARGIN_TOP = 0;
+const CLIP_MARGIN_BOTTOM = 0;
+/** Grid: horizontal pad around lane + label extent (SVG user units). */
+const GRID_VIEW_PAD_X = 0;
+/** Equal inset between graph/grid content and the SVG edges on all four sides (user units). */
+const SVG_CONTENT_PADDING = 120;
+/** Full-bleed fill behind graph content (SVG user units; hex OK for SVG fills). */
+const SVG_AREA_BG = '#e8f4fc';
 const TIME_SCALE_MIN = 0.5;
 const TIME_SCALE_MAX = 3;
 const TIME_SCALE_STEP = 0.05;
@@ -82,7 +91,7 @@ type TooltipData = {
 };
 type PRCommitHover = { x: number; arcY: number; pr: MergedPR; commitIdx: number; total: number };
 type SpacingMode = 'regular' | 'bounded' | 'uniform';
-type ClampMode = 'hard' | 'soft';
+type ClampMode = 'hard' | 'soft' | 'none';
 type OrientationMode = 'vertical' | 'horizontal';
 type MarkerEntry<T> = { x: number; y: number; item: T };
 type MarkerCluster<T> = { x: number; y: number; entries: MarkerEntry<T>[] };
@@ -403,6 +412,32 @@ function promptMarkerPath(centerX: number, centerY: number, size: number): strin
   ].join(' ');
 }
 
+/** Axis-aligned hit rect for a collapsed clump stack (discs/rects offset by +x, −y from anchor). */
+function collapsedClumpHitRect(
+  isGridLayout: boolean,
+  anchorX: number,
+  anchorY: number,
+  stackDepth: number,
+  rectSize: { width: number; height: number },
+  scaledNodeSize: number,
+  clumpStackOffset: number,
+  padWorld: number
+): { x: number; y: number; width: number; height: number } {
+  const k = Math.max(0, stackDepth - 1);
+  if (isGridLayout) {
+    const w = rectSize.width + k * clumpStackOffset + padWorld * 2;
+    const h = rectSize.height + k * clumpStackOffset + padWorld * 2;
+    const cx = anchorX + (k * clumpStackOffset) / 2;
+    const cy = anchorY - (k * clumpStackOffset) / 2;
+    return { x: cx - w / 2, y: cy - h / 2, width: w, height: h };
+  }
+  const r = scaledNodeSize / 2 + CLUMP_SIZE_BOOST_PX;
+  const span = k * clumpStackOffset + 2 * r + padWorld * 2;
+  const cx = anchorX + (k * clumpStackOffset) / 2;
+  const cy = anchorY - (k * clumpStackOffset) / 2;
+  return { x: cx - span / 2, y: cy - span / 2, width: span, height: span };
+}
+
 function placeItemsEvenly<T>(items: T[], minX: number, maxX: number): Array<{ item: T; x: number }> {
   if (items.length === 0) return [];
   if (items.length === 1) return [{ item: items[0], x: maxX }];
@@ -484,6 +519,7 @@ export default function BranchMap({
   // - `bounded` / `regular`: legacy time-aware spacing modes
   const [spacingMode] = useState<SpacingMode>('uniform');
   const [orientation, setOrientation] = useState<OrientationMode>('vertical');
+  const [showGridGuides, setShowGridGuides] = useState(true);
   const isHorizontal = orientation === 'horizontal';
   const isGridLayout = layoutMode === 'grid';
   // In horizontal mode we project axes (time runs left→right).
@@ -512,6 +548,8 @@ export default function BranchMap({
   const zoomStableRectElsRef = useRef<SVGRectElement[]>([]);
   const panUiSyncTimeoutRef = useRef<number | null>(null);
   const zoomUiSyncTimeoutRef = useRef<number | null>(null);
+  /** After ctrl/cmd+wheel zoom stops, snap pan to finite bounds (ms idle). */
+  const zoomWheelSnapTimeoutRef = useRef<number | null>(null);
   const cameraPaintRafRef = useRef<number | null>(null);
   const pendingCameraRef = useRef<{ pan: { x: number; y: number }; zoom: number } | null>(null);
   const clumpZoomCancelRef = useRef<(() => void) | null>(null);
@@ -536,7 +574,7 @@ export default function BranchMap({
     isHorizontal: false,
   });
   const contentLayerRef = useRef<SVGGElement>(null);
-  const contentBoundsRef = useRef({
+  const finiteWorldBoundsRef = useRef({
     minX: 0,
     maxX: 0,
     minY: 0,
@@ -573,8 +611,9 @@ export default function BranchMap({
   // Bottom chrome controls visibility state
   const [controlsReady, setControlsReady] = useState(false);
   const [viewportSize, setViewportSize] = useState({ width: 0, height: 0 });
-  const [containerHeight, setContainerHeight] = useState(540);
-  const renderCameraScale = getCameraScale(zoom, isHorizontal);
+  // Use zoomRef (not React `zoom` state) so transforms match paintCamera during throttled sync.
+  // Otherwise re-renders can overwrite the <g> scale with a stale zoom and cause WKWebView glitches.
+  const layerCameraScale = getCameraScale(zoomRef.current, isHorizontal);
 
   // Branch issues panel state
   const [errorPanelOpen, setErrorPanelOpen] = useState(false);
@@ -828,10 +867,12 @@ export default function BranchMap({
     paintCamera(panRef.current, zoomRef.current);
   }, [pan, isPanning]);
 
+  const CAMERA_CONTENT_PAD = 0;
+
   function clampPan(
     next: { x: number; y: number },
     zoomValue = zoomRef.current,
-    mode: ClampMode = 'soft'
+    mode: ClampMode = 'hard'
   ) {
     function clampAxis(value: number, min: number, max: number): number {
       const lower = Math.min(min, max);
@@ -856,37 +897,24 @@ export default function BranchMap({
       isHorizontal: currentIsHorizontal,
     } = cameraBoundsRef.current;
     if (viewportW <= 0 || viewportH <= 0) return next;
+    if (mode === 'none') return next;
 
     const scale = getCameraScale(zoomValue, currentIsHorizontal);
-    const contentBounds = contentBoundsRef.current;
-    const baseContentMinX = currentGraphOffsetX + (
-      contentBounds.measured ? contentBounds.minX : 0
-    ) * scale.x;
-    const baseContentMaxX = currentGraphOffsetX + (
-      contentBounds.measured ? contentBounds.maxX : currentSvgWidth
-    ) * scale.x;
-    const baseContentMinY = currentGraphOffsetY + (
-      contentBounds.measured ? contentBounds.minY : 0
-    ) * scale.y;
-    const baseContentMaxY = currentGraphOffsetY + (
-      contentBounds.measured ? contentBounds.maxY : currentSvgHeight
-    ) * scale.y;
-    const baseContentWidth = Math.max(1, baseContentMaxX - baseContentMinX);
-    const baseContentHeight = Math.max(1, baseContentMaxY - baseContentMinY);
-    const sceneWiggleX = Math.max(
-      SCENE_WIGGLE_MIN_X,
-      viewportW * SCENE_WIGGLE_VIEWPORT_FACTOR_X,
-      baseContentWidth * SCENE_WIGGLE_FACTOR_X
-    );
-    const sceneWiggleY = Math.max(
-      SCENE_WIGGLE_MIN_Y,
-      viewportH * SCENE_WIGGLE_VIEWPORT_FACTOR_Y,
-      baseContentHeight * SCENE_WIGGLE_FACTOR_Y
-    );
-    const sceneMinX = baseContentMinX - sceneWiggleX;
-    const sceneMaxX = baseContentMaxX + sceneWiggleX;
-    const sceneMinY = baseContentMinY - sceneWiggleY;
-    const sceneMaxY = baseContentMaxY + sceneWiggleY;
+
+    // Strict finite bounds: clamp around the actual content bbox (plus small padding),
+    // not the whole logical SVG, so you can't drift into vast empty space.
+    const finiteWorld = finiteWorldBoundsRef.current;
+    const hasFinite = finiteWorld.measured;
+
+    const minXWorld = hasFinite ? finiteWorld.minX : 0;
+    const maxXWorld = hasFinite ? finiteWorld.maxX : currentSvgWidth;
+    const minYWorld = hasFinite ? finiteWorld.minY : 0;
+    const maxYWorld = hasFinite ? finiteWorld.maxY : currentSvgHeight;
+
+    const sceneMinX = currentGraphOffsetX + minXWorld * scale.x - CAMERA_CONTENT_PAD;
+    const sceneMaxX = currentGraphOffsetX + maxXWorld * scale.x + CAMERA_CONTENT_PAD;
+    const sceneMinY = currentGraphOffsetY + minYWorld * scale.y - CAMERA_CONTENT_PAD;
+    const sceneMaxY = currentGraphOffsetY + maxYWorld * scale.y + CAMERA_CONTENT_PAD;
 
     const xBounds = {
       min: viewportW - sceneMaxX,
@@ -901,6 +929,33 @@ export default function BranchMap({
       x: clampAxis(next.x, xBounds.min, xBounds.max),
       y: clampAxis(next.y, yBounds.min, yBounds.max),
     };
+  }
+
+  function snapZoomPanToBounds() {
+    const settled = clampPan(panRef.current, zoomRef.current, 'hard');
+    if (
+      Math.abs(settled.x - panRef.current.x) < 0.1 &&
+      Math.abs(settled.y - panRef.current.y) < 0.1
+    ) {
+      return;
+    }
+    applyCamera(settled, zoomRef.current, true, true);
+  }
+
+  function scheduleZoomWheelSnap() {
+    if (zoomWheelSnapTimeoutRef.current !== null) {
+      clearTimeout(zoomWheelSnapTimeoutRef.current);
+    }
+    zoomWheelSnapTimeoutRef.current = window.setTimeout(() => {
+      zoomWheelSnapTimeoutRef.current = null;
+      snapZoomPanToBounds();
+    }, 150);
+  }
+
+  function cancelZoomWheelSnapPending() {
+    if (zoomWheelSnapTimeoutRef.current === null) return;
+    clearTimeout(zoomWheelSnapTimeoutRef.current);
+    zoomWheelSnapTimeoutRef.current = null;
   }
 
   function paintCamera(nextPan = panRef.current, _nextZoom = zoomRef.current) {
@@ -1123,13 +1178,14 @@ export default function BranchMap({
     const nextScale = getCameraScale(nextZoom, isHorizontal);
     const worldX = (point.x - currentPan.x - graphOffset.x) / Math.max(currentScale.x, 0.0001);
     const worldY = (point.y - currentPan.y - graphOffset.y) / Math.max(currentScale.y, 0.0001);
+    // Zoom ignores finite bounds during the gesture; wheel debounce / gesture end snaps.
     const nextPan = clampPan(
       {
         x: point.x - graphOffset.x - worldX * nextScale.x,
         y: point.y - graphOffset.y - worldY * nextScale.y,
       },
       nextZoom,
-      'soft'
+      'none'
     );
 
     stopPanSmoothing();
@@ -1173,10 +1229,16 @@ export default function BranchMap({
         const zoomFactor = Math.exp(-clampedDeltaY * ZOOM_WHEEL_EXP_SENSITIVITY);
         if (!Number.isFinite(zoomFactor) || Math.abs(zoomFactor - 1) < 0.0001) return;
         applyZoomAt(point, zoomRef.current * zoomFactor, 'deferred');
+        scheduleZoomWheelSnap();
         return;
       }
 
       flushPendingZoomUiSync();
+      if (zoomWheelSnapTimeoutRef.current !== null) {
+        clearTimeout(zoomWheelSnapTimeoutRef.current);
+        zoomWheelSnapTimeoutRef.current = null;
+        snapZoomPanToBounds();
+      }
       const nextPan = clampPan({
         x: panRef.current.x - e.deltaX,
         y: panRef.current.y - e.deltaY,
@@ -1213,6 +1275,8 @@ export default function BranchMap({
     const onGestureEnd = (evt: Event) => {
       evt.preventDefault();
       gesturePointRef.current = null;
+      cancelZoomWheelSnapPending();
+      snapZoomPanToBounds();
       scheduleZoomUiSync(true);
     };
 
@@ -1221,6 +1285,10 @@ export default function BranchMap({
     el.addEventListener('gesturechange', onGestureChange as EventListener, { passive: false });
     el.addEventListener('gestureend', onGestureEnd as EventListener, { passive: false });
     return () => {
+      if (zoomWheelSnapTimeoutRef.current !== null) {
+        clearTimeout(zoomWheelSnapTimeoutRef.current);
+        zoomWheelSnapTimeoutRef.current = null;
+      }
       el.removeEventListener('wheel', onWheel);
       el.removeEventListener('gesturestart', onGestureStart as EventListener);
       el.removeEventListener('gesturechange', onGestureChange as EventListener);
@@ -1247,7 +1315,6 @@ export default function BranchMap({
     const updateSize = () => {
       const rect = el.getBoundingClientRect();
       setViewportSize({ width: rect.width, height: rect.height });
-      if (rect.height > 0) setContainerHeight(rect.height);
     };
     updateSize();
     const ro = new ResizeObserver(updateSize);
@@ -2086,15 +2153,15 @@ export default function BranchMap({
   }
 
   // Canonical (logical) layout uses vertical time; orientation projection swaps axes when needed.
-  const MAIN_LEFT_PAD = 80;
-  const MAIN_TOP_PAD = 80;
+  const MAIN_LEFT_PAD = 0;
+  const MAIN_TOP_PAD = 0;
   const mainX = MAIN_LEFT_PAD;
   const timelineMinX = leftPad;
   const timelineMaxX = activeBranches.reduce(
     (max, b) => Math.max(max, branchTipX(b)),
     mainEndX
   );
-  const timelineSpanY = Math.max(220, timelineMaxX - timelineMinX);
+  const timelineSpanY = Math.max(1, timelineMaxX - timelineMinX);
   const mainStartY = MAIN_TOP_PAD + timelineSpanY; // oldest
   function timeCoordToY(timeCoordX: number): number {
     return mainStartY - (timeCoordX - timelineMinX);
@@ -2102,7 +2169,27 @@ export default function BranchMap({
   const mainEndY = timeCoordToY(mainEndX); // newest anchor on main
   const mainActiveEndY = timeCoordToY(mainActiveEndX);
   const hasMainStaleTailY = Math.abs(mainActiveEndY - mainEndY) > 0.5;
-  const logicalTimelineHeight = Math.max(mainStartY + 120, containerHeight);
+
+  // Vertical extent of grid rows in Y (half node above/below row centers). Used so clipPath
+  // does not slice nodes: using mainEndY/mainStartY as edges cut off the outer half of cells.
+  const gridHalfHForBounds = GRID_NODE_RECT.height / 2;
+  const gridRowYExtent =
+    isGridLayout && gridEventPoints.length > 0
+      ? (() => {
+          const ys = gridEventPoints.map((p) => timeCoordToY(p.x)).filter(Number.isFinite);
+          if (ys.length === 0) return null;
+          const minC = Math.min(...ys);
+          const maxC = Math.max(...ys);
+          return { minY: minC - gridHalfHForBounds, maxY: maxC + gridHalfHForBounds };
+        })()
+      : null;
+
+  const logicalTimelineHeight = gridRowYExtent
+    ? Math.max(
+        mainStartY + SVG_LAYOUT_TAIL_Y,
+        gridRowYExtent.maxY - Math.min(0, gridRowYExtent.minY),
+      ) + 2 * SVG_CONTENT_PADDING
+    : mainStartY + SVG_LAYOUT_TAIL_Y + 2 * SVG_CONTENT_PADDING;
 
   function projectPoint(x: number, y: number): { x: number; y: number } {
     return isHorizontal ? { x: logicalTimelineHeight - y, y: x } : { x, y };
@@ -2219,7 +2306,27 @@ export default function BranchMap({
     const labelWidth = estimateSvgTextWidth(formatCommitsAhead(branchAheadCount(b)));
     return Math.max(max, lanePosX + AHEAD_LABEL_OFFSET_X + labelWidth);
   }, mainX + MAIN_LABEL_OFFSET_X + estimateSvgTextWidth(defaultBranch));
-  const logicalSvgWidth = maxBranchVisualEndX + rightPad + 80;
+
+  // Lane geometry (used for grid width — see below).
+  const laneXsForBounds = [mainX, ...Array.from(laneXByBranch.values())];
+  const minLaneXForBounds = Math.min(...laneXsForBounds);
+  const maxLaneXForBounds = Math.max(...laneXsForBounds);
+  const gridHalfWForBounds = GRID_LANE_WIDTH / 2;
+  /** Right edge of the lane column strip (grid columns + row lines should match this). */
+  const gridLaneExtentMaxX = maxLaneXForBounds + gridHalfWForBounds;
+
+  // Left edge can be < 0 when mainX is 0: lane cells extend to minLaneX - laneHalf. Do not
+  // clamp to 0 or the clip slices the left half of the left column (same idea as Y below).
+  const graphExtentMinX = Math.min(timelineMinX, minLaneXForBounds - gridHalfWForBounds);
+
+  // Grid: `maxBranchVisualEndX` reserves space for “N commits ahead” width, but that string
+  // is not rendered on the canvas — only lanes/commits are. Using it for SVG width and
+  // grid row extent made horizontal row lines stretch past the last column (wide empty band
+  // on the right; in horizontal mode the same bug reads as extra space at the bottom).
+  const tightGridXSpan = gridLaneExtentMaxX - graphExtentMinX;
+  const logicalSvgWidth = isGridLayout
+    ? tightGridXSpan + 2 * SVG_CONTENT_PADDING + rightPad + SVG_LAYOUT_TAIL_X
+    : maxBranchVisualEndX + rightPad + SVG_LAYOUT_TAIL_X + 2 * SVG_CONTENT_PADDING;
 
   // Merged PRs lane layout
   const MERGED_LANE_HEIGHT = 60;
@@ -2244,54 +2351,62 @@ export default function BranchMap({
     isHorizontal,
   };
 
-  useLayoutEffect(() => {
-    const contentLayer = contentLayerRef.current;
-    if (!contentLayer) return;
-    let nextBounds = {
-      minX: 0,
-      maxX: svgWidth,
-      minY: 0,
-      maxY: svgHeight,
-      measured: false,
-    };
-    try {
-      const bbox = contentLayer.getBBox();
-      if (
-        Number.isFinite(bbox.x) &&
-        Number.isFinite(bbox.y) &&
-        Number.isFinite(bbox.width) &&
-        Number.isFinite(bbox.height) &&
-        bbox.width > 0 &&
-        bbox.height > 0
-      ) {
-        nextBounds = {
-          minX: bbox.x,
-          maxX: bbox.x + bbox.width,
-          minY: bbox.y,
-          maxY: bbox.y + bbox.height,
-          measured: true,
-        };
+  // Center finite graph content inside the SVG viewBox so empty padding is even on all sides.
+  const yPadSymmetric = Math.min(CLIP_MARGIN_TOP, CLIP_MARGIN_BOTTOM);
+
+  let minXWorldForBounds: number;
+  let maxXWorldForBounds: number;
+  let minYWorldForBounds: number;
+  let maxYWorldForBounds: number;
+
+  if (isGridLayout) {
+    const tightMinX = graphExtentMinX - GRID_VIEW_PAD_X;
+    const tightMaxX = gridLaneExtentMaxX + GRID_VIEW_PAD_X;
+    minXWorldForBounds = tightMinX - SVG_CONTENT_PADDING;
+    maxXWorldForBounds = tightMaxX + SVG_CONTENT_PADDING;
+    if (gridRowYExtent) {
+      minYWorldForBounds = gridRowYExtent.minY - yPadSymmetric - SVG_CONTENT_PADDING;
+      maxYWorldForBounds = gridRowYExtent.maxY + yPadSymmetric + SVG_CONTENT_PADDING;
+    } else {
+      minYWorldForBounds = Math.max(0, mainEndY - yPadSymmetric) - SVG_CONTENT_PADDING;
+      maxYWorldForBounds = Math.min(logicalSvgHeight, mainStartY + yPadSymmetric) + SVG_CONTENT_PADDING;
+    }
+  } else {
+    minXWorldForBounds = Math.max(0, timelineMinX - CLIP_MARGIN_LEFT) - SVG_CONTENT_PADDING;
+    maxXWorldForBounds = maxBranchVisualEndX + CLIP_MARGIN_RIGHT + SVG_CONTENT_PADDING;
+    minYWorldForBounds = Math.max(0, mainEndY - CLIP_MARGIN_TOP) - SVG_CONTENT_PADDING;
+    maxYWorldForBounds = mainStartY + CLIP_MARGIN_BOTTOM + SVG_CONTENT_PADDING;
+  }
+  const projectedContentBounds = isHorizontal
+    ? {
+        minX: logicalTimelineHeight - maxYWorldForBounds,
+        maxX: logicalTimelineHeight - minYWorldForBounds,
+        minY: minXWorldForBounds,
+        maxY: maxXWorldForBounds,
       }
-    } catch {
-      // Ignore transient SVG measurement failures during mount/update.
-    }
-
-    const prevBounds = contentBoundsRef.current;
-    const changed =
-      prevBounds.measured !== nextBounds.measured ||
-      Math.abs(prevBounds.minX - nextBounds.minX) > 0.5 ||
-      Math.abs(prevBounds.maxX - nextBounds.maxX) > 0.5 ||
-      Math.abs(prevBounds.minY - nextBounds.minY) > 0.5 ||
-      Math.abs(prevBounds.maxY - nextBounds.maxY) > 0.5;
-    if (!changed) return;
-
-    contentBoundsRef.current = nextBounds;
-    const settledPan = clampPan(panRef.current, zoomRef.current, 'hard');
-    if (Math.abs(settledPan.x - panRef.current.x) < 0.1 && Math.abs(settledPan.y - panRef.current.y) < 0.1) {
-      return;
-    }
-    applyCamera(settledPan, zoomRef.current, true, true);
-  });
+    : {
+        minX: minXWorldForBounds,
+        maxX: maxXWorldForBounds,
+        minY: minYWorldForBounds,
+        maxY: maxYWorldForBounds,
+      };
+  const contentBBoxW = projectedContentBounds.maxX - projectedContentBounds.minX;
+  const contentBBoxH = projectedContentBounds.maxY - projectedContentBounds.minY;
+  const graphContentTranslateX =
+    contentBBoxW > 0 && Number.isFinite(contentBBoxW)
+      ? (svgWidth - contentBBoxW) / 2 - projectedContentBounds.minX
+      : 0;
+  const graphContentTranslateY =
+    contentBBoxH > 0 && Number.isFinite(contentBBoxH)
+      ? (svgHeight - contentBBoxH) / 2 - projectedContentBounds.minY
+      : 0;
+  finiteWorldBoundsRef.current = {
+    minX: projectedContentBounds.minX + graphContentTranslateX,
+    maxX: projectedContentBounds.maxX + graphContentTranslateX,
+    minY: projectedContentBounds.minY + graphContentTranslateY,
+    maxY: projectedContentBounds.maxY + graphContentTranslateY,
+    measured: true,
+  };
 
   useEffect(() => {
     if (viewportSize.width <= 0 || viewportSize.height <= 0) return;
@@ -2310,6 +2425,8 @@ export default function BranchMap({
     graphOffsetX,
     graphOffsetY,
     isHorizontal,
+    graphContentTranslateX,
+    graphContentTranslateY,
   ]);
 
   const checkedOutBranchName = checkedOutRef?.branchName ?? null;
@@ -2466,7 +2583,12 @@ export default function BranchMap({
       x: svgWidth / 2,
       y: svgHeight / 2,
     };
-    const target = checkedOutAnchor ?? fallbackCenter;
+    const target = checkedOutAnchor
+      ? {
+          x: checkedOutAnchor.x + graphContentTranslateX,
+          y: checkedOutAnchor.y + graphContentTranslateY,
+        }
+      : fallbackCenter;
     const signature = [
       Math.round(target.x * 10) / 10,
       Math.round(target.y * 10) / 10,
@@ -2508,6 +2630,8 @@ export default function BranchMap({
     checkedOutRef?.hasUncommittedChanges,
     effectiveTimeScale,
     effectiveSpacingMode,
+    graphContentTranslateX,
+    graphContentTranslateY,
   ]);
 
   // Scroll timeline to the requested branch. Set flashingName briefly so the arc
@@ -2528,7 +2652,9 @@ export default function BranchMap({
     const axisScale = Math.max(isHorizontal ? scalePair.x : scalePair.y, 0.0001);
     const axisSvgSize = isHorizontal ? svgWidth : svgHeight;
     const visibleWorldSpan = viewportSpan / axisScale;
-    const axisCoord = isHorizontal ? projected.x : projected.y;
+    const axisCoord = isHorizontal
+      ? projected.x + graphContentTranslateX
+      : projected.y + graphContentTranslateY;
     const targetWorldStart = Math.max(
       0,
       Math.min(Math.max(0, axisSvgSize - visibleWorldSpan), axisCoord - visibleWorldSpan / 2)
@@ -2574,6 +2700,8 @@ export default function BranchMap({
     canvasWidth,
     canvasHeight,
     isHorizontal,
+    graphContentTranslateX,
+    graphContentTranslateY,
   ]);
 
   useEffect(() => {
@@ -2582,7 +2710,7 @@ export default function BranchMap({
     };
   }, []);
 
-  const worldUnitsPerScreenPx = 1 / Math.max(renderCameraScale.x, 0.0001);
+  const worldUnitsPerScreenPx = 1 / Math.max(layerCameraScale.x, 0.0001);
   const worldPx = (px: number) => px * worldUnitsPerScreenPx;
   const scaledNodeSize = NODE_SIZE;
   const gridClumpBoost = isGridLayout ? 0 : CLUMP_SIZE_BOOST_PX * 2;
@@ -2710,12 +2838,13 @@ export default function BranchMap({
 
   const gridClipBounds = isGridLayout
     ? {
-      leftX: Math.max(0, timelineMinX - 40),
-      rightX: Math.min(logicalSvgWidth, maxBranchVisualEndX + 60),
-      topY: Math.max(0, mainEndY - 120),
-      bottomY: Math.min(logicalSvgHeight, mainStartY + 80),
+      leftX: minXWorldForBounds,
+      rightX: maxXWorldForBounds,
+      topY: minYWorldForBounds,
+      bottomY: maxYWorldForBounds,
     }
     : null;
+
   const gridClipPathD = gridClipBounds
     ? [
       `M ${pathCoord(gridClipBounds.leftX, gridClipBounds.topY)}`,
@@ -2756,7 +2885,7 @@ export default function BranchMap({
             animationsLocked ? 'timeline-static' : '',
           ].filter(Boolean).join(' ')}
           style={{
-            '--camera-scale': String(renderCameraScale.x),
+            '--camera-scale': String(layerCameraScale.x),
             minWidth: svgWidth,
             display: 'block',
             position: 'absolute',
@@ -2778,7 +2907,7 @@ export default function BranchMap({
 
           <g
             ref={zoomLayerRef}
-            transform={`scale(${renderCameraScale.x} ${renderCameraScale.y})`}
+            transform={`scale(${layerCameraScale.x} ${layerCameraScale.y})`}
             style={{
               opacity: timelineCanvasVisible ? 1 : 0,
               visibility: timelineCanvasVisible ? 'visible' : 'hidden',
@@ -2786,13 +2915,22 @@ export default function BranchMap({
               pointerEvents: holdTimelineForInitialCenter ? 'none' : 'auto',
             }}
           >
+            <rect
+              x={0}
+              y={0}
+              width={svgWidth}
+              height={svgHeight}
+              fill={SVG_AREA_BG}
+              style={{ pointerEvents: 'none' }}
+            />
+          <g transform={`translate(${graphContentTranslateX} ${graphContentTranslateY})`}>
           <g
             ref={contentLayerRef}
             clipPath={gridClipPathD ? 'url(#grid-clip)' : undefined}
           >
 
           {/* ── Grid background (table-like lanes) ── */}
-          {isGridLayout && (
+          {isGridLayout && showGridGuides && (
             <g style={{ pointerEvents: 'none' }}>
               {(() => {
                 // Horizontal guides: one per collapsed time row.
@@ -2835,10 +2973,10 @@ export default function BranchMap({
                   ])
                 ).sort((a, b) => a - b);
 
-                const leftX = gridClipBounds?.leftX ?? Math.max(0, timelineMinX - 40);
-                const rightX = gridClipBounds?.rightX ?? Math.min(logicalSvgWidth, maxBranchVisualEndX + 60);
-                const topY = gridClipBounds?.topY ?? Math.max(0, mainEndY - 120);
-                const bottomY = gridClipBounds?.bottomY ?? Math.min(logicalSvgHeight, mainStartY + 80);
+                const leftX = gridClipBounds?.leftX ?? Math.max(0, timelineMinX - CLIP_MARGIN_LEFT);
+                const rightX = gridClipBounds?.rightX ?? Math.min(logicalSvgWidth, maxBranchVisualEndX + CLIP_MARGIN_RIGHT);
+                const topY = gridClipBounds?.topY ?? Math.max(0, mainEndY - CLIP_MARGIN_TOP);
+                const bottomY = gridClipBounds?.bottomY ?? Math.min(logicalSvgHeight, mainStartY + CLIP_MARGIN_BOTTOM);
 
                 return (
                   <>
@@ -3038,7 +3176,7 @@ export default function BranchMap({
                           width={rectSize.width}
                           height={rectSize.height}
                           data-base-rx={rectSize.radius}
-                          rx={rectSize.radius / Math.max(renderCameraScale.x, 0.0001)}
+                          rx={rectSize.radius / Math.max(layerCameraScale.x, 0.0001)}
                           style={{ cursor: 'pointer' }}
                           fill={CANVAS_NEUTRAL_GRAY}
                           stroke={isGridLayout ? 'none' : 'var(--background)'}
@@ -3150,7 +3288,7 @@ export default function BranchMap({
                                     width={rectSize.width}
                                     height={rectSize.height}
                                     data-base-rx={rectSize.radius}
-                                    rx={rectSize.radius / Math.max(renderCameraScale.x, 0.0001)}
+                                    rx={rectSize.radius / Math.max(layerCameraScale.x, 0.0001)}
                                     fill={CANVAS_NEUTRAL_GRAY}
                                   />
                                 </g>
@@ -3172,7 +3310,7 @@ export default function BranchMap({
                             textAnchor="middle"
                             dominantBaseline="middle"
                             data-base-font-size={nodeLabelFontSize(scaledNodeSize, count)}
-                            fontSize={nodeLabelFontSize(scaledNodeSize, count) / Math.max(renderCameraScale.x, 0.0001)}
+                            fontSize={nodeLabelFontSize(scaledNodeSize, count) / Math.max(layerCameraScale.x, 0.0001)}
                             fill={CANVAS_CLUMP_LABEL_GRAY}
                             fontWeight={600}
                           >
@@ -3184,15 +3322,22 @@ export default function BranchMap({
                       {/* Collapsed-only overlay hit target (on top) so clicks never fall through. */}
                       {!isExpanded && (() => {
                         const pad = worldPx(6);
-                        const stackPad = (stackDepth - 1) * clumpStackOffset;
-                        const hitW = (isGridLayout ? rectSize.width : (scaledNodeSize + CLUMP_SIZE_BOOST_PX * 2)) + pad + stackPad;
-                        const hitH = (isGridLayout ? rectSize.height : (scaledNodeSize + CLUMP_SIZE_BOOST_PX * 2)) + pad + stackPad;
+                        const hit = collapsedClumpHitRect(
+                          isGridLayout,
+                          anchorX,
+                          anchorY,
+                          stackDepth,
+                          rectSize,
+                          scaledNodeSize,
+                          clumpStackOffset,
+                          pad
+                        );
                         return (
                           <rect
-                            x={anchorX - hitW / 2}
-                            y={anchorY - hitH / 2}
-                            width={hitW}
-                            height={hitH}
+                            x={hit.x}
+                            y={hit.y}
+                            width={hit.width}
+                            height={hit.height}
                             fill="transparent"
                             style={{ cursor: 'pointer' }}
                             onPointerDown={(e) => { e.preventDefault(); e.stopPropagation(); }}
@@ -3251,7 +3396,7 @@ export default function BranchMap({
                                     width={localRect.width}
                                     height={localRect.height}
                                     data-base-rx={localRect.radius}
-                                    rx={localRect.radius / Math.max(renderCameraScale.x, 0.0001)}
+                                    rx={localRect.radius / Math.max(layerCameraScale.x, 0.0001)}
                                     fill={CANVAS_NEUTRAL_GRAY}
                                     stroke={isGridLayout ? 'none' : 'var(--background)'}
                                     strokeWidth={isGridLayout ? 0 : 1.2}
@@ -3458,7 +3603,7 @@ export default function BranchMap({
                           fontWeight={700}
                           style={{
                             fontVariantNumeric: 'tabular-nums',
-                            fontSize: `${labelFontSize / Math.max(renderCameraScale.x, 0.0001)}px`,
+                            fontSize: `${labelFontSize / Math.max(layerCameraScale.x, 0.0001)}px`,
                           }}
                           data-base-font-size={labelFontSize}
                         >
@@ -4134,7 +4279,7 @@ export default function BranchMap({
                               fontWeight={700}
                               style={{
                                 fontVariantNumeric: 'tabular-nums',
-                                fontSize: `${labelFontSize / Math.max(renderCameraScale.x, 0.0001)}px`,
+                                fontSize: `${labelFontSize / Math.max(layerCameraScale.x, 0.0001)}px`,
                               }}
                               data-base-font-size={labelFontSize}
                             >
@@ -4202,7 +4347,7 @@ export default function BranchMap({
                               width={rectSize.width}
                               height={rectSize.height}
                               data-base-rx={rectSize.radius}
-                              rx={rectSize.radius / Math.max(renderCameraScale.x, 0.0001)}
+                              rx={rectSize.radius / Math.max(layerCameraScale.x, 0.0001)}
                               style={{ cursor: 'pointer' }}
                               fill={dotFill}
                               stroke={isGridLayout ? 'none' : 'var(--background)'}
@@ -4331,7 +4476,7 @@ export default function BranchMap({
                                         width={rectSize.width}
                                         height={rectSize.height}
                                         data-base-rx={rectSize.radius}
-                                        rx={rectSize.radius / Math.max(renderCameraScale.x, 0.0001)}
+                                        rx={rectSize.radius / Math.max(layerCameraScale.x, 0.0001)}
                                         fill={dotFill}
                                       />
                                     </g>
@@ -4353,7 +4498,7 @@ export default function BranchMap({
                                 textAnchor="middle"
                                 dominantBaseline="middle"
                                 data-base-font-size={nodeLabelFontSize(scaledNodeSize, count)}
-                                fontSize={nodeLabelFontSize(scaledNodeSize, count) / Math.max(renderCameraScale.x, 0.0001)}
+                                fontSize={nodeLabelFontSize(scaledNodeSize, count) / Math.max(layerCameraScale.x, 0.0001)}
                                 fill={CANVAS_CLUMP_LABEL_GRAY}
                                 fontWeight={600}
                               >
@@ -4365,15 +4510,22 @@ export default function BranchMap({
                           {/* Collapsed-only overlay hit target (on top) so clicks never fall through. */}
                           {!isExpanded && (() => {
                             const pad = worldPx(6);
-                            const stackPad = (stackDepth - 1) * clumpStackOffset;
-                            const hitW = (isGridLayout ? rectSize.width : (scaledNodeSize + CLUMP_SIZE_BOOST_PX * 2)) + pad + stackPad;
-                            const hitH = (isGridLayout ? rectSize.height : (scaledNodeSize + CLUMP_SIZE_BOOST_PX * 2)) + pad + stackPad;
+                            const hit = collapsedClumpHitRect(
+                              isGridLayout,
+                              anchorX,
+                              anchorY,
+                              stackDepth,
+                              rectSize,
+                              scaledNodeSize,
+                              clumpStackOffset,
+                              pad
+                            );
                             return (
                               <rect
-                                x={anchorX - hitW / 2}
-                                y={anchorY - hitH / 2}
-                                width={hitW}
-                                height={hitH}
+                                x={hit.x}
+                                y={hit.y}
+                                width={hit.width}
+                                height={hit.height}
                                 fill="transparent"
                                 style={{ cursor: 'pointer' }}
                                 onPointerDown={(e) => { e.preventDefault(); e.stopPropagation(); }}
@@ -4437,7 +4589,7 @@ export default function BranchMap({
                                         width={localRect.width}
                                         height={localRect.height}
                                         data-base-rx={localRect.radius}
-                                        rx={localRect.radius / Math.max(renderCameraScale.x, 0.0001)}
+                                        rx={localRect.radius / Math.max(layerCameraScale.x, 0.0001)}
                                         fill={dotFill}
                                         stroke={isGridLayout ? 'none' : 'var(--background)'}
                                         strokeWidth={isGridLayout ? 0 : 1.2}
@@ -4917,7 +5069,7 @@ export default function BranchMap({
                             dominantBaseline="middle"
                             fill="#14b8a6"
                             fontWeight={700}
-                            style={{ fontVariantNumeric: 'tabular-nums', fontSize: `${labelFontSize / Math.max(renderCameraScale.x, 0.0001)}px` }}
+                            style={{ fontVariantNumeric: 'tabular-nums', fontSize: `${labelFontSize / Math.max(layerCameraScale.x, 0.0001)}px` }}
                             data-base-font-size={labelFontSize}
                           >
                             {label}
@@ -4967,7 +5119,7 @@ export default function BranchMap({
                               width={rectSize.width + gridPad}
                               height={rectSize.height + gridPad}
                               data-base-rx={Math.max(2, rectSize.radius + (gridPad ? 0.6 : 0))}
-                              rx={Math.max(2, rectSize.radius + (gridPad ? 0.6 : 0)) / Math.max(renderCameraScale.x, 0.0001)}
+                              rx={Math.max(2, rectSize.radius + (gridPad ? 0.6 : 0)) / Math.max(layerCameraScale.x, 0.0001)}
                               fill="var(--background)"
                             />
                             <rect
@@ -4977,7 +5129,7 @@ export default function BranchMap({
                               width={rectSize.width}
                               height={rectSize.height}
                               data-base-rx={rectSize.radius}
-                              rx={rectSize.radius / Math.max(renderCameraScale.x, 0.0001)}
+                              rx={rectSize.radius / Math.max(layerCameraScale.x, 0.0001)}
                               fill={dotFill}
                             />
                           </g>
@@ -5013,7 +5165,7 @@ export default function BranchMap({
                               width={clusterRectSize.width + gridPad}
                               height={clusterRectSize.height + gridPad}
                               data-base-rx={Math.max(2, clusterRectSize.radius + (gridPad ? 0.6 : 0))}
-                              rx={Math.max(2, clusterRectSize.radius + (gridPad ? 0.6 : 0)) / Math.max(renderCameraScale.x, 0.0001)}
+                              rx={Math.max(2, clusterRectSize.radius + (gridPad ? 0.6 : 0)) / Math.max(layerCameraScale.x, 0.0001)}
                               fill="var(--background)"
                             />
                             <rect
@@ -5023,7 +5175,7 @@ export default function BranchMap({
                               width={clusterRectSize.width}
                               height={clusterRectSize.height}
                               data-base-rx={clusterRectSize.radius}
-                              rx={clusterRectSize.radius / Math.max(renderCameraScale.x, 0.0001)}
+                              rx={clusterRectSize.radius / Math.max(layerCameraScale.x, 0.0001)}
                               fill={dotFill}
                             />
                           </>
@@ -5049,7 +5201,7 @@ export default function BranchMap({
                           textAnchor="middle"
                           dominantBaseline="middle"
                           data-base-font-size={nodeLabelFontSize(scaledNodeSize, count)}
-                          fontSize={nodeLabelFontSize(scaledNodeSize, count) / Math.max(renderCameraScale.x, 0.0001)}
+                          fontSize={nodeLabelFontSize(scaledNodeSize, count) / Math.max(layerCameraScale.x, 0.0001)}
                           fill={CANVAS_CLUMP_LABEL_GRAY}
                           fontWeight={600}
                         >
@@ -5168,7 +5320,7 @@ export default function BranchMap({
                           width={rectSize.width + gridPad}
                           height={rectSize.height + gridPad}
                           data-base-rx={Math.max(2, rectSize.radius + (gridPad ? 0.6 : 0))}
-                          rx={Math.max(2, rectSize.radius + (gridPad ? 0.6 : 0)) / Math.max(renderCameraScale.x, 0.0001)}
+                          rx={Math.max(2, rectSize.radius + (gridPad ? 0.6 : 0)) / Math.max(layerCameraScale.x, 0.0001)}
                           fill="var(--background)"
                         />
                         <rect
@@ -5178,7 +5330,7 @@ export default function BranchMap({
                           width={rectSize.width}
                           height={rectSize.height}
                           data-base-rx={rectSize.radius}
-                          rx={rectSize.radius / Math.max(renderCameraScale.x, 0.0001)}
+                          rx={rectSize.radius / Math.max(layerCameraScale.x, 0.0001)}
                           fill={CANVAS_NEUTRAL_GRAY}
                         />
                       </g>
@@ -5214,7 +5366,7 @@ export default function BranchMap({
                           width={clusterRectSize.width + gridPad}
                           height={clusterRectSize.height + gridPad}
                           data-base-rx={Math.max(2, clusterRectSize.radius + (gridPad ? 0.6 : 0))}
-                          rx={Math.max(2, clusterRectSize.radius + (gridPad ? 0.6 : 0)) / Math.max(renderCameraScale.x, 0.0001)}
+                          rx={Math.max(2, clusterRectSize.radius + (gridPad ? 0.6 : 0)) / Math.max(layerCameraScale.x, 0.0001)}
                           fill="var(--background)"
                         />
                         <rect
@@ -5224,7 +5376,7 @@ export default function BranchMap({
                           width={clusterRectSize.width}
                           height={clusterRectSize.height}
                           data-base-rx={clusterRectSize.radius}
-                          rx={clusterRectSize.radius / Math.max(renderCameraScale.x, 0.0001)}
+                          rx={clusterRectSize.radius / Math.max(layerCameraScale.x, 0.0001)}
                           fill={CANVAS_NEUTRAL_GRAY}
                         />
                       </>
@@ -5250,7 +5402,7 @@ export default function BranchMap({
                       textAnchor="middle"
                       dominantBaseline="middle"
                       data-base-font-size={nodeLabelFontSize(scaledNodeSize, count)}
-                      fontSize={nodeLabelFontSize(scaledNodeSize, count) / Math.max(renderCameraScale.x, 0.0001)}
+                      fontSize={nodeLabelFontSize(scaledNodeSize, count) / Math.max(layerCameraScale.x, 0.0001)}
                       fill={CANVAS_CLUMP_LABEL_GRAY}
                       fontWeight={600}
                     >
@@ -5318,7 +5470,7 @@ export default function BranchMap({
           })()}
           </g>
 
-          {/* Checked-out commit marker */}
+          {/* Checked-out commit marker (same translate as graph so it stays on the commit) */}
           {!holdTimelineForInitialCenter && checkedOutDisplayIndicatorLocal && (() => {
             const markerPoint = projectPoint(checkedOutDisplayIndicatorLocal.x, checkedOutDisplayIndicatorLocal.y);
             return (
@@ -5340,6 +5492,7 @@ export default function BranchMap({
               </g>
             );
           })()}
+          </g>
           </g>
         </svg>
         </div>
@@ -5386,8 +5539,10 @@ export default function BranchMap({
           // Use live camera refs to avoid tooltip drift when zoom/pan state is throttled.
           const livePan = panRef.current;
           const liveCameraScale = getCameraScale(zoomRef.current, isHorizontal);
-          const anchorX = livePan.x + graphOffsetX + tooltip.x * liveCameraScale.x;
-          const anchorY = livePan.y + graphOffsetY + tooltip.y * liveCameraScale.y;
+          const anchorX =
+            livePan.x + graphOffsetX + (tooltip.x + graphContentTranslateX) * liveCameraScale.x;
+          const anchorY =
+            livePan.y + graphOffsetY + (tooltip.y + graphContentTranslateY) * liveCameraScale.y;
           const bodyContentW = Math.max(
             92,
             tooltipW - tooltipBodyPadX * 2 - tooltipAvatarSize - tooltipBodyGap
@@ -5547,6 +5702,31 @@ export default function BranchMap({
               >
                 Horizontal
               </button>
+            </div>
+          )}
+          {!isPopoverWindow && isGridLayout && (
+            <div className="flex items-center gap-2 shrink-0 bg-card border border-border rounded-full px-3 py-1">
+              <span className="text-xs text-muted-foreground select-none">Grid lines</span>
+              <label className="relative inline-flex items-center cursor-pointer">
+                <input
+                  type="checkbox"
+                  checked={showGridGuides}
+                  onChange={(e) => setShowGridGuides(e.target.checked)}
+                  aria-label="Toggle grid lines"
+                  className="sr-only"
+                />
+                <span
+                  className={`w-10 h-5 rounded-full border transition-colors flex items-center p-0.5 ${
+                    showGridGuides ? 'bg-primary/10 border-primary/30' : 'bg-muted/30 border-border'
+                  }`}
+                >
+                  <span
+                    className={`w-4 h-4 rounded-full bg-card shadow-sm transform transition-transform duration-200 ${
+                      showGridGuides ? 'translate-x-5' : 'translate-x-0'
+                    }`}
+                  />
+                </span>
+              </label>
             </div>
           )}
           {!isPopoverWindow && !isGridLayout && (
