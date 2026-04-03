@@ -9,7 +9,6 @@ import {
   buildMergeOrthogonalPath,
   commitRectSize,
   LayoutMode,
-  selectClosestEntryIndices,
   type AnchorPoint as LayoutAnchorPoint,
 } from './branchMapLayout';
 
@@ -63,7 +62,7 @@ const TIME_SCALE_MIN = 0.5;
 const TIME_SCALE_MAX = 3;
 const TIME_SCALE_STEP = 0.05;
 const TIME_SCALE_DEFAULT = 0.5;
-const CLUMP_SIZE_BOOST_PX = 0.5;
+const CLUMP_SIZE_BOOST_PX = 0;
 // Grid nodes render without clump boost, so grid spacing must match the un-boosted rect size
 // or you'll see tiny gaps between nodes.
 const GRID_NODE_RECT = commitRectSize(NODE_SIZE, 0);
@@ -79,15 +78,7 @@ const CANVAS_NEUTRAL_GRAY = '#D9D9D9';
 const CANVAS_NEUTRAL_GRAY_HOVER = '#44403c';
 const CANVAS_NEUTRAL_TEXT = '#1c1917';
 const CANVAS_CLUMP_LABEL_GRAY = '#787878';
-const CLUMP_DISTANCE_PX = 8;
-const CLUMP_TOUCH_DISTANCE_PX = NODE_SIZE;
 const CLUMP_COUNT_MAX = 99;
-const CLUMP_START_ZOOM = 1.15;
-const CLUMP_FULL_ZOOM = 0.72;
-const CLUMP_ANIMATION_MS = 180;
-const CLUMP_ZOOM_INTERACTION_WINDOW_MS = 120;
-const CLUMP_MAX_ENTRIES_TOUCH = 2;
-const CLUMP_MAX_ENTRIES_FULL = CLUMP_COUNT_MAX;
 const CHECKED_OUT_AHEAD_OFFSET_WORLD = 120;
 /** Ring around the commit that matches HEAD (SVG user units; hex OK for SVG). */
 const CHECKED_OUT_RING_STROKE = '#2563eb';
@@ -130,13 +121,6 @@ type ClumpMemberAnchorState = {
   y: number;
   lastSeenRender: number;
 };
-type ClusterOptions<T> = {
-  shouldBreak?: (prev: MarkerEntry<T>, next: MarkerEntry<T>) => boolean;
-  anchorPriority?: (entry: MarkerEntry<T>) => number;
-  preferredAnchors?: AnchorPoint[];
-  maxEntriesPerCluster?: number;
-  snapToEntry?: boolean;
-};
 
 function clamp01(value: number): number {
   return Math.max(0, Math.min(1, value));
@@ -146,11 +130,6 @@ function easeInOutCubic(t: number): number {
   return t < 0.5 ? 4 * t * t * t : 1 - Math.pow(-2 * t + 2, 3) / 2;
 }
 
-function clumpProgressForZoom(zoomValue: number): number {
-  const span = Math.max(CLUMP_START_ZOOM - CLUMP_FULL_ZOOM, 0.0001);
-  const normalized = clamp01((CLUMP_START_ZOOM - zoomValue) / span);
-  return easeInOutCubic(normalized);
-}
 
 function getCameraScale(zoomValue: number, _horizontal: boolean): { x: number; y: number } {
   return { x: zoomValue, y: zoomValue };
@@ -223,185 +202,55 @@ const COMMIT_CLUSTER_PREVIEW_MAX = 90;
 const PROMPT_TOOLTIP_PREVIEW_MAX = 120;
 const PROMPT_CLUSTER_PREVIEW_MAX = 90;
 
-function clusterMarkersByDistance<T>(
+/**
+ * Cluster entries by splitting at fork-point indices.
+ *
+ * Rules (grid mode only):
+ * 1. Never clump across lanes (caller ensures entries are from one branch).
+ * 2. Split where another branch forked off. The fork commit is included in the
+ *    **left** (earlier) clump; the next commit starts a new clump.
+ * 3. Anchor each cluster on the entry nearest the centroid (snap-to-entry).
+ *
+ * `forkIndices` contains the indices (into `entries`) of commits where a child
+ * branch diverged. A split happens **after** each fork index.
+ */
+function clusterByForkPoints<T>(
   entries: MarkerEntry<T>[],
-  maxGap: number,
-  options: ClusterOptions<T> = {}
+  forkIndices: Set<number>,
 ): MarkerCluster<T>[] {
   if (entries.length === 0) return [];
-  if (maxGap <= 0) {
-    return entries.map((entry) => ({
-      x: entry.x,
-      y: entry.y,
-      entries: [entry],
-    }));
-  }
 
   const clusters: MarkerCluster<T>[] = [];
   let current: MarkerEntry<T>[] = [entries[0]];
-  const maxEntriesPerCluster =
-    typeof options.maxEntriesPerCluster === 'number' && options.maxEntriesPerCluster > 0
-      ? Math.max(1, Math.floor(options.maxEntriesPerCluster))
-      : Number.POSITIVE_INFINITY;
 
   function flush() {
+    if (current.length === 0) return;
     if (current.length === 1) {
-      const only = current[0];
-      clusters.push({
-        x: only.x,
-        y: only.y,
-        entries: current,
-      });
+      clusters.push({ x: current[0].x, y: current[0].y, entries: current });
       return;
     }
-
-    const totalX = current.reduce((sum, entry) => sum + entry.x, 0);
-    const totalY = current.reduce((sum, entry) => sum + entry.y, 0);
-    const centroidX = totalX / current.length;
-    const centroidY = totalY / current.length;
-    let anchorX = centroidX;
-    let anchorY = centroidY;
-
-    let usedPriorityAnchor = false;
-    if (options.anchorPriority) {
-      let bestEntry: MarkerEntry<T> | null = null;
-      let bestScore = Number.NEGATIVE_INFINITY;
-      let bestDistance = Number.POSITIVE_INFINITY;
-      for (const entry of current) {
-        const score = options.anchorPriority(entry);
-        if (score <= 0) continue;
-        const distanceToCentroid = Math.hypot(entry.x - centroidX, entry.y - centroidY);
-        if (
-          score > bestScore ||
-          (score === bestScore && distanceToCentroid < bestDistance)
-        ) {
-          bestEntry = entry;
-          bestScore = score;
-          bestDistance = distanceToCentroid;
-        }
-      }
-      if (bestEntry) {
-        anchorX = bestEntry.x;
-        anchorY = bestEntry.y;
-        usedPriorityAnchor = true;
-      }
+    const cx = current.reduce((s, e) => s + e.x, 0) / current.length;
+    const cy = current.reduce((s, e) => s + e.y, 0) / current.length;
+    let nearest = current[0];
+    let nearestDist = Math.hypot(nearest.x - cx, nearest.y - cy);
+    for (let i = 1; i < current.length; i += 1) {
+      const d = Math.hypot(current[i].x - cx, current[i].y - cy);
+      if (d < nearestDist) { nearest = current[i]; nearestDist = d; }
     }
-    if (!usedPriorityAnchor && options.snapToEntry) {
-      let nearestEntry = current[0];
-      let nearestDistance = Math.hypot(nearestEntry.x - centroidX, nearestEntry.y - centroidY);
-      for (let index = 1; index < current.length; index += 1) {
-        const entry = current[index];
-        const distanceToCentroid = Math.hypot(entry.x - centroidX, entry.y - centroidY);
-        if (distanceToCentroid < nearestDistance) {
-          nearestEntry = entry;
-          nearestDistance = distanceToCentroid;
-        }
-      }
-      anchorX = nearestEntry.x;
-      anchorY = nearestEntry.y;
-    } else if (!usedPriorityAnchor && options.preferredAnchors && options.preferredAnchors.length > 0) {
-      const snapDistance = Math.max(1, maxGap * 1.35);
-      let bestAnchor: AnchorPoint | null = null;
-      let bestDistance = Number.POSITIVE_INFINITY;
-      for (const anchor of options.preferredAnchors) {
-        const touchesCluster = current.some(
-          (entry) => Math.hypot(anchor.x - entry.x, anchor.y - entry.y) <= snapDistance
-        );
-        if (!touchesCluster) continue;
-        const distanceToCentroid = Math.hypot(anchor.x - centroidX, anchor.y - centroidY);
-        if (distanceToCentroid < bestDistance) {
-          bestDistance = distanceToCentroid;
-          bestAnchor = anchor;
-        }
-      }
-      if (bestAnchor) {
-        anchorX = bestAnchor.x;
-        anchorY = bestAnchor.y;
-      }
-    }
-
-    clusters.push({
-      x: anchorX,
-      y: anchorY,
-      entries: current,
-    });
+    clusters.push({ x: nearest.x, y: nearest.y, entries: current });
   }
 
   for (let i = 1; i < entries.length; i += 1) {
-    const prev = current[current.length - 1];
-    const next = entries[i];
-    const distance = Math.hypot(next.x - prev.x, next.y - prev.y);
-    const forceBreak = options.shouldBreak?.(prev, next) ?? false;
-    const roomInCluster = current.length < maxEntriesPerCluster;
-    if (!forceBreak && roomInCluster && distance <= maxGap) {
-      current.push(next);
-    } else {
+    const prevIdx = i - 1;
+    if (forkIndices.has(prevIdx)) {
       flush();
-      current = [next];
+      current = [entries[i]];
+    } else {
+      current.push(entries[i]);
     }
   }
   flush();
   return clusters;
-}
-
-function mergeCoLocatedClusters<T>(
-  clusters: MarkerCluster<T>[],
-  tolerance = 0.25
-): MarkerCluster<T>[] {
-  if (clusters.length <= 1) return clusters;
-  const merged: MarkerCluster<T>[] = [];
-  for (const cluster of clusters) {
-    const existing = merged.find(
-      (candidate) =>
-        Math.abs(candidate.x - cluster.x) <= tolerance &&
-        Math.abs(candidate.y - cluster.y) <= tolerance
-    );
-    if (existing) {
-      existing.entries.push(...cluster.entries);
-      continue;
-    }
-    merged.push({
-      x: cluster.x,
-      y: cluster.y,
-      entries: [...cluster.entries],
-    });
-  }
-  return merged;
-}
-
-function clusterDirectCommitsWithAnchors(
-  entries: MarkerEntry<DirectCommit>[],
-  maxGap: number,
-  protectedShas: Set<string>,
-  preferredAnchors: AnchorPoint[] = [],
-  maxEntriesPerCluster?: number,
-  entryPriority?: (entry: MarkerEntry<DirectCommit>) => number
-): MarkerCluster<DirectCommit>[] {
-  function isProtected(entry: MarkerEntry<DirectCommit>): boolean {
-    return protectedShas.has(entry.item.fullSha);
-  }
-
-  return clusterMarkersByDistance(entries, maxGap, {
-    anchorPriority: (entry) => (isProtected(entry) ? 3 : 0) + (entryPriority?.(entry) ?? 0),
-    preferredAnchors,
-    maxEntriesPerCluster,
-  });
-}
-
-function shouldBreakStructuralCommitRun<T>(
-  prev: MarkerEntry<T>,
-  next: MarkerEntry<T>,
-  options: {
-    getIndex: (entry: MarkerEntry<T>) => number;
-    isStructural: (entry: MarkerEntry<T>) => boolean;
-  }
-): boolean {
-  const prevIndex = options.getIndex(prev);
-  const nextIndex = options.getIndex(next);
-  if (prevIndex < 0 || nextIndex < 0) return true;
-  if (nextIndex !== prevIndex + 1) return true;
-  if (options.isStructural(prev) || options.isStructural(next)) return true;
-  return false;
 }
 
 function clumpCountLabel(count: number): string {
@@ -532,7 +381,6 @@ export default function BranchMap({
   const [expandedClumps, setExpandedClumps] = useState<Map<string, ExpandedClumpState>>(() => new Map());
   const [expandedClumpsRawTimes, setExpandedClumpsRawTimes] = useState<Map<string, number[]>>(() => new Map());
   const [zoom, setZoom] = useState(ZOOM_DEFAULT);
-  const [animatedClumpZoom, setAnimatedClumpZoom] = useState(ZOOM_DEFAULT);
   const [timeScale, setTimeScale] = useState(TIME_SCALE_DEFAULT);
   const layoutMode: LayoutMode = 'grid';
   // Non-grid timeline spacing:
@@ -575,8 +423,6 @@ export default function BranchMap({
   const zoomBoundsSnapCancelRef = useRef<(() => void) | null>(null);
   const cameraPaintRafRef = useRef<number | null>(null);
   const pendingCameraRef = useRef<{ pan: { x: number; y: number }; zoom: number } | null>(null);
-  const clumpZoomCancelRef = useRef<(() => void) | null>(null);
-  const clumpZoomRef = useRef(ZOOM_DEFAULT);
   const [, setClumpAnimationTick] = useState(0);
   const clumpAnchorStateRef = useRef<Map<string, ClumpAnchorState>>(new Map());
   const clumpMemberAnchorStateRef = useRef<Map<string, ClumpMemberAnchorState>>(new Map());
@@ -737,37 +583,6 @@ export default function BranchMap({
     zoomRef.current = zoom;
     zoomStateRef.current = zoom;
     paintCamera(panRef.current, zoomRef.current);
-  }, [zoom]);
-
-  useEffect(() => {
-    clumpZoomCancelRef.current?.();
-    const start = clumpZoomRef.current;
-    const inContinuousZoomWindow =
-      performance.now() - lastContinuousZoomTsRef.current < CLUMP_ZOOM_INTERACTION_WINDOW_MS;
-    if (inContinuousZoomWindow) {
-      clumpZoomRef.current = zoom;
-      setAnimatedClumpZoom(zoom);
-      return;
-    }
-    if (Math.abs(start - zoom) < 0.0001) {
-      clumpZoomRef.current = zoom;
-      setAnimatedClumpZoom(zoom);
-      return;
-    }
-    clumpZoomCancelRef.current = smoothValueTo(
-      start,
-      zoom,
-      CLUMP_ANIMATION_MS,
-      (value) => {
-        clumpZoomRef.current = value;
-        setAnimatedClumpZoom(value);
-      },
-      0.0001
-    );
-    return () => {
-      clumpZoomCancelRef.current?.();
-      clumpZoomCancelRef.current = null;
-    };
   }, [zoom]);
 
   function resolveAnimatedClumpAnchor(
@@ -1597,6 +1412,47 @@ export default function BranchMap({
       .flatMap((b) => [b.createdFromSha, b.divergedFromSha].filter((sha): sha is string => !!sha))
   );
 
+  const childBranchesByParent = new Map<string, Branch[]>();
+  activeBranches.forEach((branch) => {
+    const effectiveParent = (!branch.parentBranch || branch.parentBranch === branch.name)
+      ? defaultBranch
+      : branch.parentBranch;
+    const existing = childBranchesByParent.get(effectiveParent) ?? [];
+    existing.push(branch);
+    childBranchesByParent.set(effectiveParent, existing);
+  });
+
+  function branchPreviewIndexForChildFork(
+    previews: BranchCommitPreview[],
+    branchTimes: number[],
+    child: Branch
+  ): number {
+    const childForkSha = child.divergedFromSha;
+    if (childForkSha) {
+      const bySha = previews.findIndex((preview) =>
+        preview.fullSha === childForkSha ||
+        preview.sha === childForkSha ||
+        preview.fullSha.startsWith(childForkSha) ||
+        childForkSha.startsWith(preview.fullSha) ||
+        preview.sha.startsWith(childForkSha) ||
+        childForkSha.startsWith(preview.sha)
+      );
+      if (bySha >= 0) return bySha;
+    }
+    const childForkTime = new Date(child.divergedFromDate ?? child.createdDate ?? child.lastCommitDate).getTime();
+    if (!Number.isFinite(childForkTime) || branchTimes.length === 0) return -1;
+    let bestIndex = -1;
+    let bestDelta = Number.POSITIVE_INFINITY;
+    for (let index = 0; index < branchTimes.length; index += 1) {
+      const delta = Math.abs(branchTimes[index] - childForkTime);
+      if (delta < bestDelta) {
+        bestDelta = delta;
+        bestIndex = index;
+      }
+    }
+    return bestIndex;
+  }
+
   // ── Animation delays — branches and PRs computed independently ───────────
   // Keeping them separate means adding mergedPRs (async GitHub data) never
   // changes branch delays mid-animation, which would restart their CSS animation.
@@ -1654,7 +1510,6 @@ export default function BranchMap({
   const sortedDirectCommits = [...directCommits].sort(
     (a, b) => new Date(a.date).getTime() - new Date(b.date).getTime()
   );
-  const mergeCommitShaSet = new Set(sortedNodes.map((node) => node.fullSha));
   const directCommitShaSet = new Set<string>(sortedDirectCommits.map((commit) => commit.fullSha));
 
   type TimelineEvent = { key: string; t: number; kind: 'merge' | 'direct' | 'branch' };
@@ -1763,20 +1618,15 @@ export default function BranchMap({
     }
   }
 
-  function collapseSequentialTimes(times: number[], structuralIndices: Set<number>) {
+  function collapseSequentialTimes(times: number[], forkIndices: Set<number>) {
     if (!isGridLayout) return;
     let runAnchorTime: number | null = null;
     for (let index = 0; index < times.length; index += 1) {
       const time = times[index];
       if (!Number.isFinite(time)) continue;
-      const isStructural = structuralIndices.has(index);
-      if (isStructural) {
-        registerGridCollapsedTime(time, time);
-        runAnchorTime = null;
-        continue;
-      }
       if (runAnchorTime == null) runAnchorTime = time;
       registerGridCollapsedTime(time, runAnchorTime);
+      if (forkIndices.has(index)) runAnchorTime = null;
     }
   }
 
@@ -1795,59 +1645,13 @@ export default function BranchMap({
 
   if (isGridLayout) {
     const mainTimes = sortedDirectCommits.map((commit) => new Date(commit.date).getTime());
-    const mainStructuralIndices = new Set<number>();
+    const mainForkIndicesForCollapse = new Set<number>();
     sortedDirectCommits.forEach((commit, index) => {
-      if (protectedMainForkShas.has(commit.fullSha) || mergeCommitShaSet.has(commit.fullSha)) {
-        mainStructuralIndices.add(index);
+      if (protectedMainForkShas.has(commit.fullSha)) {
+        mainForkIndicesForCollapse.add(index);
       }
     });
-    collapseSequentialTimes(mainTimes, mainStructuralIndices);
-
-    sortedNodes.forEach((node) => {
-      const time = mergeEventTimeByFullSha.get(node.fullSha) ?? new Date(node.date).getTime();
-      registerGridCollapsedTime(time, time);
-    });
-
-    const childBranchesByParent = new Map<string, Branch[]>();
-    activeBranches.forEach((branch) => {
-      const parent = branch.parentBranch;
-      if (!parent || parent === defaultBranch || parent === branch.name) return;
-      const existing = childBranchesByParent.get(parent) ?? [];
-      existing.push(branch);
-      childBranchesByParent.set(parent, existing);
-    });
-
-    function branchPreviewIndexForChildFork(
-      previews: BranchCommitPreview[],
-      branchTimes: number[],
-      child: Branch
-    ): number {
-      const childForkSha = child.divergedFromSha;
-      if (childForkSha) {
-        const bySha = previews.findIndex((preview) =>
-          preview.fullSha === childForkSha ||
-          preview.sha === childForkSha ||
-          preview.fullSha.startsWith(childForkSha) ||
-          childForkSha.startsWith(preview.fullSha) ||
-          preview.sha.startsWith(childForkSha) ||
-          childForkSha.startsWith(preview.sha)
-        );
-        if (bySha >= 0) return bySha;
-      }
-
-      const childForkTime = new Date(child.divergedFromDate ?? child.createdDate ?? child.lastCommitDate).getTime();
-      if (!Number.isFinite(childForkTime) || branchTimes.length === 0) return -1;
-      let bestIndex = -1;
-      let bestDelta = Number.POSITIVE_INFINITY;
-      for (let index = 0; index < branchTimes.length; index += 1) {
-        const delta = Math.abs(branchTimes[index] - childForkTime);
-        if (delta < bestDelta) {
-          bestDelta = delta;
-          bestIndex = index;
-        }
-      }
-      return bestIndex;
-    }
+    collapseSequentialTimes(mainTimes, mainForkIndicesForCollapse);
 
     activeBranches.forEach((branch) => {
       const previews = (branchCommitPreviews[branch.name] ?? [])
@@ -1872,13 +1676,6 @@ export default function BranchMap({
 
     sortedDirectCommits.forEach((commit) => {
       registerGridCommitRowTime(new Date(commit.date).getTime());
-    });
-    sortedNodes.forEach((node) => {
-      const mergeEventTime = mergeEventTimeByFullSha.get(node.fullSha) ?? new Date(node.date).getTime();
-      // Avoid allocating "empty" grid rows for merge events when merge ticks are hidden.
-      // If a merge commit is also on the main line, it will already be covered by the direct commit row.
-      const mergeProducesVisibleMarker = showMergeTicks || directCommitShaSet.has(node.fullSha);
-      if (mergeProducesVisibleMarker) registerGridCommitRowTime(mergeEventTime);
     });
     activeBranches.forEach((branch) => {
       const previews = (branchCommitPreviews[branch.name] ?? [])
@@ -2366,64 +2163,6 @@ export default function BranchMap({
     activeBranches.map((b) => [b.name, laneX(b)])
   );
 
-  const branchOutAnchorsByBranch = new Map<string, AnchorPoint[]>();
-  const branchMergeAnchorsByBranch = new Map<string, AnchorPoint[]>();
-  const mainBranchOutAnchors: AnchorPoint[] = [];
-  const mainMergeAnchors: AnchorPoint[] = [];
-  const branchOutAnchorSeen = new Set<string>();
-  function pushBranchAnchor(
-    branchName: string,
-    point: AnchorPoint,
-    kind: 'out' | 'merge'
-  ) {
-    const xKey = Math.round(point.x * 10) / 10;
-    const yKey = Math.round(point.y * 10) / 10;
-    const dedupeKey = `${kind}:${branchName}:${xKey}:${yKey}`;
-    if (branchOutAnchorSeen.has(dedupeKey)) return;
-    branchOutAnchorSeen.add(dedupeKey);
-    if (branchName === defaultBranch) {
-      if (kind === 'merge') {
-        mainMergeAnchors.push(point);
-      } else {
-        mainBranchOutAnchors.push(point);
-      }
-      return;
-    }
-    const branchMap = kind === 'merge' ? branchMergeAnchorsByBranch : branchOutAnchorsByBranch;
-    const existing = branchMap.get(branchName) ?? [];
-    existing.push(point);
-    branchMap.set(branchName, existing);
-  }
-  for (const branch of activeBranches) {
-    const forkX = branchForkX(branch);
-    const forkY = timeCoordToY(forkX);
-    const parentName = branch.parentBranch;
-    const hasVisibleNonDefaultParent =
-      !!parentName &&
-      parentName !== defaultBranch &&
-      parentName !== branch.name &&
-      laneXByBranch.has(parentName);
-    if (hasVisibleNonDefaultParent) {
-      const parentLaneX = laneXByBranch.get(parentName!)!;
-      pushBranchAnchor(parentName!, projectPoint(parentLaneX, forkY), 'out');
-    } else {
-      pushBranchAnchor(defaultBranch, projectPoint(mainX, forkY), 'out');
-    }
-  }
-  for (const branch of activeBranches) {
-    const mergeNode = mergeNodeByMergedHeadSha.get(branch.headSha);
-    if (!mergeNode) continue;
-    const mergeTimeX = mergeJunctionTimeX(mergeNode);
-    const mergeY = timeCoordToY(mergeTimeX);
-    const branchLaneX = laneXByBranch.get(branch.name) ?? mainX;
-    pushBranchAnchor(defaultBranch, projectPoint(mainX, mergeY), 'merge');
-    pushBranchAnchor(branch.name, projectPoint(branchLaneX, mergeY), 'merge');
-  }
-  const mainClumpAnchors: AnchorPoint[] = [
-    ...mainBranchOutAnchors,
-    ...mainMergeAnchors,
-  ];
-
   function branchStartX(b: Branch): number {
     const parent = b.parentBranch;
     if (parent && parent !== defaultBranch) {
@@ -2865,23 +2604,12 @@ export default function BranchMap({
   const worldUnitsPerScreenPx = 1 / Math.max(layerCameraScale.x, 0.0001);
   const worldPx = (px: number) => px * worldUnitsPerScreenPx;
   const scaledNodeSize = NODE_SIZE;
-  const gridClumpBoost = isGridLayout ? 0 : CLUMP_SIZE_BOOST_PX * 2;
-  const nodeRectSize = (count: number) =>
-    commitRectSize(scaledNodeSize, count > 1 ? gridClumpBoost : 0);
+  const nodeRectSize = (_count: number) => commitRectSize(scaledNodeSize, 0);
   // Keep interaction hit areas consistent in screen pixels across zoom levels.
   const scaledHoverHitSize = worldPx(20);
   // Branch hover lines use vector-effect: non-scaling-stroke, so this should
   // stay in screen px (not inverse-scaled by zoom) to avoid oversized hitboxes when zoomed out.
   const branchHitStrokeWidth = BRANCH_HIT_STROKE_WIDTH;
-  const clumpProgress = isGridLayout ? 0 : clumpProgressForZoom(animatedClumpZoom);
-  const clumpDistanceWorld =
-    isGridLayout
-      ? GRID_EVENT_GAP * 0.75
-      : worldPx(CLUMP_TOUCH_DISTANCE_PX) + worldPx(CLUMP_DISTANCE_PX) * clumpProgress;
-  const clumpMaxEntries = isGridLayout
-    ? CLUMP_COUNT_MAX
-    : CLUMP_MAX_ENTRIES_TOUCH +
-      Math.round((CLUMP_MAX_ENTRIES_FULL - CLUMP_MAX_ENTRIES_TOUCH) * clumpProgress);
   const drawPathMainClass = (!ENABLE_TIMELINE_INTRO_ANIMATIONS || animationsLocked) ? undefined : 'draw-path-main';
   const drawPathArcClass = (!ENABLE_TIMELINE_INTRO_ANIMATIONS || animationsLocked) ? undefined : 'draw-path-arc';
   const fadeInInfoClass = (!ENABLE_TIMELINE_INTRO_ANIMATIONS || animationsLocked) ? undefined : 'fade-in-info';
@@ -3226,75 +2954,12 @@ export default function BranchMap({
                   const markerPoint = projectPoint(mainX, timeCoordToY(timeCoordX));
                   return { x: markerPoint.x, y: markerPoint.y, item: commit };
                 });
-                const mainInitialCommitAnchor = entries.length > 0
-                  ? [{ x: entries[0].x, y: entries[0].y }]
-                  : [];
-                const mainEndCommitAnchor = entries.length > 0
-                  ? [{ x: entries[entries.length - 1].x, y: entries[entries.length - 1].y }]
-                  : [];
-                const mainStructuralCommitAnchors = [...mainClumpAnchors];
-                const mainSecondaryCommitAnchors = isGridLayout
-                  ? []
-                  : [
-                    ...mainInitialCommitAnchor,
-                    ...mainEndCommitAnchor,
-                  ];
-                const mainDirectClumpAnchors = [
-                  ...mainStructuralCommitAnchors,
-                  ...mainSecondaryCommitAnchors,
-                ];
-                const structuralMainEntryIndices = selectClosestEntryIndices(entries, mainStructuralCommitAnchors);
-                const secondaryMainEntryIndices = selectClosestEntryIndices(entries, mainSecondaryCommitAnchors);
-                const structuralMainEntryShas = new Set(
-                  Array.from(structuralMainEntryIndices)
-                    .map((idx) => entries[idx]?.item.fullSha)
-                    .filter((sha): sha is string => typeof sha === 'string')
-                );
-                const secondaryMainEntryShas = new Set(
-                  Array.from(secondaryMainEntryIndices)
-                    .map((idx) => entries[idx]?.item.fullSha)
-                    .filter((sha): sha is string => typeof sha === 'string')
-                );
-                const firstMainCommitSha = entries[0]?.item.fullSha;
                 const latestMainCommitSha = entries[entries.length - 1]?.item.fullSha;
-                const mainEntryIndexBySha = new Map(entries.map((entry, index) => [entry.item.fullSha, index]));
-                const isStructuralMainEntry = (entry: MarkerEntry<DirectCommit>) =>
-                  mergeCommitShaSet.has(entry.item.fullSha) ||
-                  structuralMainEntryShas.has(entry.item.fullSha) ||
-                  (!isGridLayout && (
-                    secondaryMainEntryShas.has(entry.item.fullSha) ||
-                    entry.item.fullSha === firstMainCommitSha ||
-                    entry.item.fullSha === latestMainCommitSha
-                  ));
-                const rawClusters = isGridLayout
-                  ? clusterMarkersByDistance(entries, Number.POSITIVE_INFINITY, {
-                    shouldBreak: (prev, next) =>
-                      shouldBreakStructuralCommitRun(prev, next, {
-                        getIndex: (entry) => mainEntryIndexBySha.get(entry.item.fullSha) ?? -1,
-                        isStructural: isStructuralMainEntry,
-                      }),
-                    anchorPriority: (entry) => (isStructuralMainEntry(entry) ? 16 : 0),
-                    preferredAnchors: mainDirectClumpAnchors,
-                    maxEntriesPerCluster: CLUMP_COUNT_MAX,
-                    snapToEntry: true,
-                  })
-                  : clusterDirectCommitsWithAnchors(
-                    entries,
-                    clumpDistanceWorld,
-                    protectedMainForkShas,
-                    mainDirectClumpAnchors,
-                    clumpMaxEntries,
-                    firstMainCommitSha
-                      ? (entry) =>
-                        (entry.item.fullSha === firstMainCommitSha ? 2.5 : 0) +
-                        (entry.item.fullSha === latestMainCommitSha ? 6.5 : 0) +
-                        (secondaryMainEntryShas.has(entry.item.fullSha) ? 3 : 0) +
-                        (structuralMainEntryShas.has(entry.item.fullSha) ? 10 : 0)
-                      : undefined
-                  );
-                const clusters = isGridLayout
-                  ? mergeCoLocatedClusters(rawClusters)
-                  : rawClusters;
+                const mainForkIndices = new Set<number>();
+                entries.forEach((entry, idx) => {
+                  if (protectedMainForkShas.has(entry.item.fullSha)) mainForkIndices.add(idx);
+                });
+                const clusters = clusterByForkPoints(entries, mainForkIndices);
                 return clusters.map((cluster) => {
                   const count = cluster.entries.length;
                   const first = cluster.entries[0].item;
@@ -3669,12 +3334,7 @@ export default function BranchMap({
                       item: { marker, index: markerIndex },
                     };
                   });
-                const promptAnchors = promptEntries.map((entry) => ({ x: entry.x, y: entry.y }));
-                const clusters = clusterMarkersByDistance(promptEntries, clumpDistanceWorld, {
-                  preferredAnchors: promptAnchors,
-                  maxEntriesPerCluster: clumpMaxEntries,
-                  snapToEntry: isGridLayout,
-                });
+                const clusters = clusterByForkPoints(promptEntries, new Set<number>());
                 return clusters.map((cluster) => {
                   const count = cluster.entries.length;
                   const firstEntry = cluster.entries[0];
@@ -3689,7 +3349,7 @@ export default function BranchMap({
                   const anchorX = animatedAnchor.x;
                   const anchorY = animatedAnchor.y;
                   const markerSize =
-                    count > 1 ? scaledNodeSize + gridClumpBoost : scaledNodeSize;
+                    scaledNodeSize;
                   const markerPath = promptMarkerPath(anchorX, anchorY, markerSize);
                   const hitSize = scaledHoverHitSize;
                   const markerStrokeWidth = 1.2;
@@ -4214,67 +3874,19 @@ export default function BranchMap({
                     item: { index, commit },
                   };
                 });
-              const branchOutAnchors = branchOutAnchorsByBranch.get(b.name) ?? [];
-              const branchMergeAnchors = branchMergeAnchorsByBranch.get(b.name) ?? [];
-              const branchStartCommitAnchor = commitDotEntries.length > 0
-                ? [{ x: commitDotEntries[0].x, y: commitDotEntries[0].y }]
-                : [];
-              const branchEndCommitAnchor =
-                branchEndDotIndex != null && commitDotEntries[branchEndDotIndex]
-                  ? [{ x: commitDotEntries[branchEndDotIndex].x, y: commitDotEntries[branchEndDotIndex].y }]
-                  : [];
-              const branchStructuralCommitAnchors = isGridLayout
-                ? [...branchOutAnchors]
-                : [
-                  ...branchOutAnchors,
-                  ...branchMergeAnchors,
-                ];
-              const branchSecondaryCommitAnchors = isGridLayout
-                ? []
-                : [
-                  ...branchStartCommitAnchor,
-                  ...branchEndCommitAnchor,
-                ];
-              const branchClumpAnchors = [
-                ...branchStructuralCommitAnchors,
-                ...branchSecondaryCommitAnchors,
-              ];
-              const structuralBranchEntryIndices = selectClosestEntryIndices(
-                commitDotEntries,
-                branchStructuralCommitAnchors
-              );
-              const secondaryBranchEntryIndices = selectClosestEntryIndices(
-                commitDotEntries,
-                branchSecondaryCommitAnchors
-              );
-              const isStructuralBranchEntry = (entry: MarkerEntry<{ index: number; commit?: BranchCommitPreview }>) =>
-                structuralBranchEntryIndices.has(entry.item.index) ||
-                (!isGridLayout && (
-                  secondaryBranchEntryIndices.has(entry.item.index) ||
-                  entry.item.index === 0 ||
-                  (branchEndDotIndex != null && entry.item.index === branchEndDotIndex)
-                ));
-              const commitDotClusters = isGridLayout
-                ? clusterMarkersByDistance(commitDotEntries, Number.POSITIVE_INFINITY, {
-                  shouldBreak: (prev, next) =>
-                    shouldBreakStructuralCommitRun(prev, next, {
-                      getIndex: (entry) => entry.item.index,
-                      isStructural: isStructuralBranchEntry,
-                    }),
-                  preferredAnchors: branchClumpAnchors,
-                  maxEntriesPerCluster: CLUMP_COUNT_MAX,
-                  anchorPriority: (entry) => (isStructuralBranchEntry(entry) ? 16 : 0),
-                  snapToEntry: true,
-                })
-                : clusterMarkersByDistance(commitDotEntries, clumpDistanceWorld, {
-                  preferredAnchors: branchClumpAnchors,
-                  maxEntriesPerCluster: clumpMaxEntries,
-                  anchorPriority: (entry) =>
-                    (entry.item.index === 0 ? 2.5 : 0) +
-                    (branchEndDotIndex != null && entry.item.index === branchEndDotIndex ? 6 : 0) +
-                    (secondaryBranchEntryIndices.has(entry.item.index) ? 3 : 0) +
-                    (structuralBranchEntryIndices.has(entry.item.index) ? 10 : 0),
+              const branchForkIndices = new Set<number>();
+              const branchChildBranches = childBranchesByParent.get(b.name) ?? [];
+              if (branchChildBranches.length > 0) {
+                const previews = (branchCommitPreviews[b.name] ?? [])
+                  .filter((c) => c.kind !== 'branch-created')
+                  .sort((a, bx) => new Date(a.date).getTime() - new Date(bx.date).getTime());
+                const branchTimes = previews.map((c) => new Date(c.date).getTime());
+                branchChildBranches.forEach((child) => {
+                  const idx = branchPreviewIndexForChildFork(previews, branchTimes, child);
+                  if (idx >= 0) branchForkIndices.add(idx);
                 });
+              }
+              const commitDotClusters = clusterByForkPoints(commitDotEntries, branchForkIndices);
               const promptMarkerEntries: MarkerEntry<{ marker: typeof promptMarkers[number]['marker']; index: number }>[] =
                 promptMarkers.map(({ y, marker }, markerIndex) => {
                   const point = projectPoint(lanePosX, y);
@@ -4287,12 +3899,7 @@ export default function BranchMap({
                     },
                   };
                 });
-              const promptBranchAnchors = promptMarkerEntries.map((entry) => ({ x: entry.x, y: entry.y }));
-              const promptMarkerClusters = clusterMarkersByDistance(promptMarkerEntries, clumpDistanceWorld, {
-                preferredAnchors: promptBranchAnchors,
-                maxEntriesPerCluster: clumpMaxEntries,
-                snapToEntry: isGridLayout,
-              });
+              const promptMarkerClusters = clusterByForkPoints(promptMarkerEntries, new Set<number>());
 
               const brDelay = branchDelayMs.get(b.name) ?? 0;
 
@@ -4409,7 +4016,7 @@ export default function BranchMap({
                       const anchorX = animatedAnchor.x;
                       const anchorY = animatedAnchor.y;
                       const markerSize =
-                        count > 1 ? scaledNodeSize + gridClumpBoost : scaledNodeSize;
+                        scaledNodeSize;
                       const markerPath = promptMarkerPath(anchorX, anchorY, markerSize);
                       const markerStrokeWidth = 1.2;
                       const label = count > 1 ? clumpCountLabel(count) : '';
@@ -5137,67 +4744,19 @@ export default function BranchMap({
                     item: { index, commit },
                   };
                 });
-              const branchOutAnchors = branchOutAnchorsByBranch.get(b.name) ?? [];
-              const branchMergeAnchors = branchMergeAnchorsByBranch.get(b.name) ?? [];
-              const branchStartCommitAnchor = commitDotEntries.length > 0
-                ? [{ x: commitDotEntries[0].x, y: commitDotEntries[0].y }]
-                : [];
-              const branchEndCommitAnchor =
-                branchEndDotIndex != null && commitDotEntries[branchEndDotIndex]
-                  ? [{ x: commitDotEntries[branchEndDotIndex].x, y: commitDotEntries[branchEndDotIndex].y }]
-                  : [];
-              const branchStructuralCommitAnchors = isGridLayout
-                ? [...branchOutAnchors]
-                : [
-                  ...branchOutAnchors,
-                  ...branchMergeAnchors,
-                ];
-              const branchSecondaryCommitAnchors = isGridLayout
-                ? []
-                : [
-                  ...branchStartCommitAnchor,
-                  ...branchEndCommitAnchor,
-                ];
-              const branchClumpAnchors = [
-                ...branchStructuralCommitAnchors,
-                ...branchSecondaryCommitAnchors,
-              ];
-              const structuralBranchEntryIndices = selectClosestEntryIndices(
-                commitDotEntries,
-                branchStructuralCommitAnchors
-              );
-              const secondaryBranchEntryIndices = selectClosestEntryIndices(
-                commitDotEntries,
-                branchSecondaryCommitAnchors
-              );
-              const isStructuralBranchEntry = (entry: MarkerEntry<{ index: number; commit?: BranchCommitPreview }>) =>
-                structuralBranchEntryIndices.has(entry.item.index) ||
-                (!isGridLayout && (
-                  secondaryBranchEntryIndices.has(entry.item.index) ||
-                  entry.item.index === 0 ||
-                  (branchEndDotIndex != null && entry.item.index === branchEndDotIndex)
-                ));
-              const commitDotClusters = isGridLayout
-                ? clusterMarkersByDistance(commitDotEntries, Number.POSITIVE_INFINITY, {
-                  shouldBreak: (prev, next) =>
-                    shouldBreakStructuralCommitRun(prev, next, {
-                      getIndex: (entry) => entry.item.index,
-                      isStructural: isStructuralBranchEntry,
-                    }),
-                  preferredAnchors: branchClumpAnchors,
-                  maxEntriesPerCluster: CLUMP_COUNT_MAX,
-                  anchorPriority: (entry) => (isStructuralBranchEntry(entry) ? 16 : 0),
-                  snapToEntry: true,
-                })
-                : clusterMarkersByDistance(commitDotEntries, clumpDistanceWorld, {
-                  preferredAnchors: branchClumpAnchors,
-                  maxEntriesPerCluster: clumpMaxEntries,
-                  anchorPriority: (entry) =>
-                    (entry.item.index === 0 ? 2.5 : 0) +
-                    (branchEndDotIndex != null && entry.item.index === branchEndDotIndex ? 6 : 0) +
-                    (secondaryBranchEntryIndices.has(entry.item.index) ? 3 : 0) +
-                    (structuralBranchEntryIndices.has(entry.item.index) ? 10 : 0),
+              const branchForkIndices2 = new Set<number>();
+              const branchChildBranches2 = childBranchesByParent.get(b.name) ?? [];
+              if (branchChildBranches2.length > 0) {
+                const previews = (branchCommitPreviews[b.name] ?? [])
+                  .filter((c) => c.kind !== 'branch-created')
+                  .sort((a, bx) => new Date(a.date).getTime() - new Date(bx.date).getTime());
+                const branchTimes = previews.map((c) => new Date(c.date).getTime());
+                branchChildBranches2.forEach((child) => {
+                  const idx = branchPreviewIndexForChildFork(previews, branchTimes, child);
+                  if (idx >= 0) branchForkIndices2.add(idx);
                 });
+              }
+              const commitDotClusters = clusterByForkPoints(commitDotEntries, branchForkIndices2);
 
               const promptMarkersRaw = branchPromptMeta[b.name]?.markers ?? [];
               const promptSeeds = [...promptMarkersRaw]
@@ -5222,12 +4781,7 @@ export default function BranchMap({
                     },
                   };
                 });
-              const promptBranchAnchors = promptMarkerEntries.map((entry) => ({ x: entry.x, y: entry.y }));
-              const promptMarkerClusters = clusterMarkersByDistance(promptMarkerEntries, clumpDistanceWorld, {
-                preferredAnchors: promptBranchAnchors,
-                maxEntriesPerCluster: clumpMaxEntries,
-                snapToEntry: isGridLayout,
-              });
+              const promptMarkerClusters = clusterByForkPoints(promptMarkerEntries, new Set<number>());
 
               return (
                 <g key={`node-overlay-${b.name}`} style={{ opacity: branchGroupOpacity }}>
@@ -5245,7 +4799,7 @@ export default function BranchMap({
                     const anchorX = animatedAnchor.x;
                     const anchorY = animatedAnchor.y;
                     const markerSize =
-                      count > 1 ? scaledNodeSize + gridClumpBoost : scaledNodeSize;
+                      scaledNodeSize;
                     const markerPath = promptMarkerPath(anchorX, anchorY, markerSize);
                     const label = count > 1 ? clumpCountLabel(count) : '';
                     const labelFontSize = nodeLabelFontSize(scaledNodeSize, count);
@@ -5501,75 +5055,11 @@ export default function BranchMap({
                 const markerPoint = projectPoint(mainX, timeCoordToY(timeCoordX));
                 return { x: markerPoint.x, y: markerPoint.y, item: commit };
               });
-              const mainInitialCommitAnchor = entries.length > 0
-                ? [{ x: entries[0].x, y: entries[0].y }]
-                : [];
-              const mainEndCommitAnchor = entries.length > 0
-                ? [{ x: entries[entries.length - 1].x, y: entries[entries.length - 1].y }]
-                : [];
-              const mainStructuralCommitAnchors = [...mainClumpAnchors];
-              const mainSecondaryCommitAnchors = isGridLayout
-                ? []
-                : [
-                  ...mainInitialCommitAnchor,
-                  ...mainEndCommitAnchor,
-                ];
-              const mainDirectClumpAnchors = [
-                ...mainStructuralCommitAnchors,
-                ...mainSecondaryCommitAnchors,
-              ];
-              const structuralMainEntryIndices = selectClosestEntryIndices(entries, mainStructuralCommitAnchors);
-              const secondaryMainEntryIndices = selectClosestEntryIndices(entries, mainSecondaryCommitAnchors);
-              const structuralMainEntryShas = new Set(
-                Array.from(structuralMainEntryIndices)
-                  .map((idx) => entries[idx]?.item.fullSha)
-                  .filter((sha): sha is string => typeof sha === 'string')
-              );
-              const secondaryMainEntryShas = new Set(
-                Array.from(secondaryMainEntryIndices)
-                  .map((idx) => entries[idx]?.item.fullSha)
-                  .filter((sha): sha is string => typeof sha === 'string')
-              );
-              const firstMainCommitSha = entries[0]?.item.fullSha;
-              const latestMainCommitSha = entries[entries.length - 1]?.item.fullSha;
-              const mainEntryIndexBySha = new Map(entries.map((entry, index) => [entry.item.fullSha, index]));
-              const isStructuralMainEntry = (entry: MarkerEntry<DirectCommit>) =>
-                mergeCommitShaSet.has(entry.item.fullSha) ||
-                structuralMainEntryShas.has(entry.item.fullSha) ||
-                (!isGridLayout && (
-                  secondaryMainEntryShas.has(entry.item.fullSha) ||
-                  entry.item.fullSha === firstMainCommitSha ||
-                  entry.item.fullSha === latestMainCommitSha
-                ));
-              const rawClusters = isGridLayout
-                ? clusterMarkersByDistance(entries, Number.POSITIVE_INFINITY, {
-                  shouldBreak: (prev, next) =>
-                    shouldBreakStructuralCommitRun(prev, next, {
-                      getIndex: (entry) => mainEntryIndexBySha.get(entry.item.fullSha) ?? -1,
-                      isStructural: isStructuralMainEntry,
-                    }),
-                  anchorPriority: (entry) => (isStructuralMainEntry(entry) ? 16 : 0),
-                  preferredAnchors: mainDirectClumpAnchors,
-                  maxEntriesPerCluster: CLUMP_COUNT_MAX,
-                  snapToEntry: true,
-                })
-                : clusterDirectCommitsWithAnchors(
-                  entries,
-                  clumpDistanceWorld,
-                  protectedMainForkShas,
-                  mainDirectClumpAnchors,
-                  clumpMaxEntries,
-                  firstMainCommitSha
-                    ? (entry) =>
-                      (entry.item.fullSha === firstMainCommitSha ? 2.5 : 0) +
-                      (entry.item.fullSha === latestMainCommitSha ? 6.5 : 0) +
-                      (secondaryMainEntryShas.has(entry.item.fullSha) ? 3 : 0) +
-                      (structuralMainEntryShas.has(entry.item.fullSha) ? 10 : 0)
-                    : undefined
-                );
-              const clusters = isGridLayout
-                ? mergeCoLocatedClusters(rawClusters)
-                : rawClusters;
+              const mainForkIndices2 = new Set<number>();
+              entries.forEach((entry, idx) => {
+                if (protectedMainForkShas.has(entry.item.fullSha)) mainForkIndices2.add(idx);
+              });
+              const clusters = clusterByForkPoints(entries, mainForkIndices2);
 
               return clusters.map((cluster) => {
                 const count = cluster.entries.length;
