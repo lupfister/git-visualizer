@@ -9,10 +9,6 @@ const config: Record<BranchStatus, { label: string; className: string }> = {
     label: 'Stale',
     className: 'bg-amber-950/50 text-amber-400 border border-amber-800',
   },
-  'conflict-risk': {
-    label: 'Conflict Risk',
-    className: 'bg-red-950/50 text-red-400 border border-red-800',
-  },
   unknown: {
     label: 'Unknown',
     className: 'bg-stone-800 text-stone-400 border border-stone-700',

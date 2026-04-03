@@ -126,13 +126,6 @@ const STATUS_CONFIG: {
   description: string;
 }[] = [
   {
-    status: 'conflict-risk',
-    label: 'Conflict risk',
-    color: '#ef4444',
-    bg: 'bg-red-500/10',
-    description: 'Cannot be cleanly merged',
-  },
-  {
     status: 'stale',
     label: 'Stale',
     color: '#f59e0b',
@@ -205,7 +198,6 @@ function CreatorView({
   }
 
   const STATUS_COLORS: Record<BranchStatus, string> = {
-    'conflict-risk': '#ef4444',
     stale: '#f59e0b',
     fresh: '#22c55e',
     unknown: '#78716c',

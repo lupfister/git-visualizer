@@ -228,7 +228,7 @@ function App() {
   const openPRBranchNames = new Set(openPRs.map((p) => p.branchName));
   const ACTIVE_MS = 14 * 86400000;
   const now = Date.now();
-  const errorBranches = branches.filter((b) => b.status === 'conflict-risk' || b.status === 'stale');
+  const errorBranches = branches.filter((b) => b.status === 'stale');
   const activeErrorBranches = errorBranches.filter(
     (b) => openPRBranchNames.has(b.name) || now - new Date(b.lastCommitDate).getTime() <= ACTIVE_MS
   );
@@ -763,16 +763,14 @@ function App() {
                       onClick={() => handleFocusOnMap(b)}
                       className={`w-full flex items-start gap-2 py-3 border-b border-border/30 last:border-0 hover:bg-accent transition-colors text-left ${
                         isFocused
-                          ? b.status === 'conflict-risk'
-                            ? 'bg-red-50/60 dark:bg-red-900/10 px-4'
-                            : 'bg-amber-50/60 dark:bg-amber-900/10 px-4'
+                          ? 'bg-amber-50/60 dark:bg-amber-900/10 px-4'
                           : 'px-4'
                       }`}
                     >
                       <div className="flex-1 min-w-0">
                         <p className={`text-sm font-medium truncate ${
                           isFocused
-                            ? b.status === 'conflict-risk' ? 'text-destructive' : 'text-amber-600 dark:text-amber-400'
+                            ? 'text-amber-600 dark:text-amber-400'
                             : 'text-foreground'
                         }`}>{b.name}</p>
                         <p className="text-xs text-muted-foreground mt-0.5">
@@ -781,12 +779,8 @@ function App() {
                           {b.commitsBehind > 0 && `${b.commitsBehind} behind`}
                         </p>
                       </div>
-                      <span className={`text-[10px] font-medium uppercase tracking-wide px-2 py-0.5 rounded-full shrink-0 mt-0.5 ${
-                        b.status === 'conflict-risk'
-                          ? 'bg-red-50 text-red-600 dark:bg-red-900/20 dark:text-red-400'
-                          : 'bg-amber-50 text-amber-600 dark:bg-amber-900/20 dark:text-amber-400'
-                      }`}>
-                        {b.status === 'conflict-risk' ? 'Conflict' : 'Stale'}
+                      <span className="text-[10px] font-medium uppercase tracking-wide bg-amber-50 text-amber-600 dark:bg-amber-900/20 dark:text-amber-400 px-2 py-0.5 rounded-full shrink-0 mt-0.5">
+                        Stale
                       </span>
                     </button>
                   );

@@ -1,4 +1,4 @@
-export type BranchStatus = 'fresh' | 'stale' | 'conflict-risk' | 'unknown';
+export type BranchStatus = 'fresh' | 'stale' | 'unknown';
 export type RemoteSyncStatus = 'local-only' | 'unpushed' | 'on-github';
 
 export interface Branch {

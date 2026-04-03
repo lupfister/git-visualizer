@@ -61,10 +61,6 @@ export default function BranchMapView({
     return openPRBranchNames.has(b.name) || viewNow - new Date(b.lastCommitDate).getTime() <= ACTIVE_MS;
   }
 
-  // Only active error branches get red/amber treatment
-  const conflictBranches = branches
-    .filter(b => b.status === 'conflict-risk' && isBranchActive(b))
-    .sort((a, b) => new Date(b.lastCommitDate).getTime() - new Date(a.lastCommitDate).getTime());
   const staleBranches = branches
     .filter(b => b.status === 'stale' && isBranchActive(b))
     .sort((a, b) => new Date(b.lastCommitDate).getTime() - new Date(a.lastCommitDate).getTime());
@@ -88,7 +84,6 @@ export default function BranchMapView({
             branchCommitPreviews={branchCommitPreviews}
             branchUniqueAheadCounts={branchUniqueAheadCounts}
             view={view}
-            conflictBranches={conflictBranches}
             staleBranches={staleBranches}
             isLoading={isLoading}
             scrollRequest={scrollRequest}

@@ -560,8 +560,10 @@ fn calculate_status(commits_behind: i32, last_commit_date: &str) -> String {
         return "stale".to_string();
     }
 
+    // Historically we returned "conflict-risk" here, but the app no longer
+    // surfaces that as a dedicated indicator.
     if commits_behind > 10 {
-        return "conflict-risk".to_string();
+        return "stale".to_string();
     }
 
     // Check date freshness

@@ -121,12 +121,10 @@ export async function fetchBranches(
         const divergedFromDate: string | undefined = compare.merge_base_commit?.commit?.author?.date;
         const mergeable: boolean | null = compare.mergeable ?? null;
 
-        let status: BranchStatus;
-        if (mergeable === false) {
-          status = 'conflict-risk';
-        } else {
-          status = staleness(lastCommitDate);
-        }
+        // We intentionally do not surface "conflict risk" as a separate UI status.
+        // Mergeability still influences the `mergeable` field, but the visible state
+        // falls back to fresh/stale based on last commit date.
+        const status: BranchStatus = staleness(lastCommitDate);
 
         return {
           name,

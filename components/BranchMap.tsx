@@ -302,7 +302,6 @@ interface BranchMapProps {
   branchCommitPreviews?: Record<string, BranchCommitPreview[]>;
   branchUniqueAheadCounts?: Record<string, number>;
   view?: ViewMode;
-  conflictBranches?: Branch[];
   staleBranches?: Branch[];
   openPRs?: OpenPR[];
   isLoading?: boolean;
@@ -328,7 +327,6 @@ export default function BranchMap({
   branchCommitPreviews = {},
   branchUniqueAheadCounts = {},
   view = 'time',
-  conflictBranches = [],
   staleBranches = [],
   openPRs = [],
   isLoading = false,
@@ -1343,7 +1341,7 @@ export default function BranchMap({
   }, [errorPanelOpen]);
 
   // ── Active branches (branch-first) ─────────────────────────────────────────
-  const STATUS_PRIORITY: Record<string, number> = { 'conflict-risk': 0, stale: 1, fresh: 2, unknown: 3 };
+  const STATUS_PRIORITY: Record<string, number> = { stale: 1, fresh: 2, unknown: 3 };
   const activeBranches = branches
     .filter(b => b.name !== defaultBranch)
     .sort((a, b) => {
@@ -2427,7 +2425,6 @@ export default function BranchMap({
   const drawPathMainClass = (!ENABLE_TIMELINE_INTRO_ANIMATIONS || animationsLocked) ? undefined : 'draw-path-main';
   const drawPathArcClass = (!ENABLE_TIMELINE_INTRO_ANIMATIONS || animationsLocked) ? undefined : 'draw-path-arc';
   const fadeInInfoClass = (!ENABLE_TIMELINE_INTRO_ANIMATIONS || animationsLocked) ? undefined : 'fade-in-info';
-  const fadeInPillClass = (!ENABLE_TIMELINE_INTRO_ANIMATIONS || animationsLocked) ? undefined : 'fade-in-pill';
   const mainTimelineOpacity = hoveredPR !== null || hoveredBranch !== null ? 0.2 : 1;
   const timelineCanvasVisible = timelineRevealPhase !== 'hidden';
   const holdTimelineForInitialCenter =
@@ -3255,8 +3252,8 @@ export default function BranchMap({
 
             const prDelay = prDelayMs.get(pr.number) ?? 0;
 
-            const mergedBranch = branches.find(b => b.name === pr.branchName);
-            const focusedPRColor = mergedBranch?.status === 'conflict-risk' ? '#dc2626' : '#d97706';
+            // Focused error branches are now only "stale" (no dedicated conflict indicator).
+            const focusedPRColor = '#d97706';
             return (
               <g
                 key={pr.number}
@@ -3383,20 +3380,13 @@ export default function BranchMap({
               const startX = branchStartX(b);
               const isFreshCopy = freshCopyBranchNames.has(b.name);
               const isMergedBranch = b.commitsAhead === 0 && !isFreshCopy;
-              const isConflict = b.status === 'conflict-risk' && !isMergedBranch;
               const isHovered = hoveredBranch === b.name;
               const isLocalBranch = b.remoteSyncStatus !== 'on-github';
 
               const isFocusedError = focusedErrorBranch?.name === b.name;
-              const focusedErrorColor = b.status === 'conflict-risk' ? '#dc2626' : '#d97706';
+              const focusedErrorColor = '#d97706';
               const neutralColor = CANVAS_NEUTRAL_GRAY;
-              const color = isFocusedError
-                ? focusedErrorColor
-                : isLocalBranch
-                  ? neutralColor
-                  : isConflict
-                    ? '#dc2626'
-                    : neutralColor;
+              const color = isFocusedError ? focusedErrorColor : neutralColor;
               const strokeWidth = isHovered ? 2 : isFocusedError ? 2 : 1.5;
               const defaultStrokeColor = isHovered ? CANVAS_NEUTRAL_GRAY_HOVER : color;
 
@@ -3579,14 +3569,6 @@ export default function BranchMap({
 
               const brDelay = branchDelayMs.get(b.name) ?? 0;
 
-              // If this branch forks directly on a merge node, suppress status pills
-              // below the baseline so labels don't stack under dense marker clusters.
-              const forkOnNode = showMergeTicks && sortedNodes.some((n) =>
-                Math.abs((nodeXByFullSha.get(n.fullSha) ?? timeToX(n.date)) - forkTimeX) < scaledNodeSize
-              );
-              const statusLabelX = lanePosX;
-              const statusLabelY = forkY + 16;
-              const statusLabelPoint = projectPoint(statusLabelX, statusLabelY);
               const hasOpenPR = openPRBranchNames.has(b.name);
               const daysSinceCommit = (Date.now() - new Date(b.lastCommitDate).getTime()) / 86400000;
               const showClockIcon = hasOpenPR && daysSinceCommit >= 60;
@@ -3740,7 +3722,9 @@ export default function BranchMap({
                       cluster.entries.every((entry) => localCommitDotIndices.has(entry.item.index));
                     const dotFill = dotShouldUseLocalGray
                       ? LOCAL_UNPUSHED_GRAY
-                      : (isConflict ? '#dc2626' : isFocusedError ? focusedErrorColor : CANVAS_NEUTRAL_GRAY);
+                      : isFocusedError
+                        ? focusedErrorColor
+                        : CANVAS_NEUTRAL_GRAY;
                     const clusterHasBranchTip =
                       branchEndDotIndex != null &&
                       cluster.entries.some((entry) => entry.item.index === branchEndDotIndex);
@@ -4141,26 +4125,7 @@ export default function BranchMap({
                     )}
                   </g>
 
-                  {/* Status labels — own fade-in-pill group so they animate independently of fade-in-info */}
-                  {!forkOnNode && !isLocalBranch && isConflict && (
-                    <g
-                      className={fadeInPillClass}
-                      style={{ '--delay': `${brDelay + INFO_OFFSET}ms` } as React.CSSProperties}
-                    >
-                      {/* Invisible hit area — text alone is too small to click reliably */}
-                      <rect
-                       
-                        x={statusLabelPoint.x - 22}
-                        y={statusLabelPoint.y - 11}
-                        width={44}
-                        height={14}
-                        fill="transparent"
-                      />
-                      {isConflict && (
-                        <text x={statusLabelPoint.x} y={statusLabelPoint.y} textAnchor="middle" fontSize={10} fill="#dc2626">conflict</text>
-                      )}
-                    </g>
-                  )}
+                  {/* Status labels are conflict-aware upstream; conflict indicator was removed. */}
                 </g>
               );
             })}
@@ -4219,11 +4184,10 @@ export default function BranchMap({
               const tipTimeX = mergeNodeTimeX != null ? Math.max(baseTipTimeX, mergeNodeTimeX) : baseTipTimeX;
               const commitTipTimeX = isMergedBranch ? baseTipTimeX : tipTimeX;
 
-              const isConflict = b.status === 'conflict-risk' && !isMergedBranch;
               const isHovered = hoveredBranch === b.name;
               const isLocalBranch = b.remoteSyncStatus !== 'on-github';
               const isFocusedError = focusedErrorBranch?.name === b.name;
-              const focusedErrorColor = b.status === 'conflict-risk' ? '#dc2626' : '#d97706';
+              const focusedErrorColor = '#d97706';
               const branchGroupOpacity =
                 isFocusedError ? 1 : hoveredBranch !== null && !isHovered ? 0.12 : 1;
 
@@ -4416,7 +4380,9 @@ export default function BranchMap({
                       cluster.entries.every((entry) => localCommitDotIndices.has(entry.item.index));
                     const dotFill = dotShouldUseLocalGray
                       ? LOCAL_UNPUSHED_GRAY
-                      : (isConflict ? '#dc2626' : isFocusedError ? focusedErrorColor : CANVAS_NEUTRAL_GRAY);
+                      : isFocusedError
+                        ? focusedErrorColor
+                        : CANVAS_NEUTRAL_GRAY;
 
                     const clusterHasCheckedOutHead =
                       checkedOutHeadSha != null &&
@@ -5015,28 +4981,6 @@ export default function BranchMap({
         </div>
 
         <div className="flex-1 overflow-y-auto py-2">
-          {conflictBranches.length > 0 && (
-            <>
-              <p className="text-[10px] uppercase tracking-wide text-muted-foreground font-medium px-4 pt-2 pb-1">
-                Merge risk
-              </p>
-              {conflictBranches.map(b => (
-                <div
-                  key={b.name}
-                  className="flex items-start gap-2.5 px-4 py-2.5"
-                >
-                  <span className="mt-0.5 w-2 h-2 rounded-full bg-destructive shrink-0" />
-                  <div className="min-w-0">
-                    <p className="text-xs font-medium text-foreground truncate">{b.name}</p>
-                    <p className="text-[11px] text-muted-foreground">
-                      {b.lastCommitAuthor ? `${b.lastCommitAuthor} · ` : ''}{fmtRelativeDate(b.lastCommitDate)}
-                    </p>
-                  </div>
-                </div>
-              ))}
-            </>
-          )}
-
           {staleBranches.length > 0 && (
             <>
               <p className="text-[10px] uppercase tracking-wide text-muted-foreground font-medium px-4 pt-3 pb-1">
