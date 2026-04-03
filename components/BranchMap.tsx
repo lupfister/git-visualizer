@@ -8,7 +8,6 @@ import {
   buildBranchOrthogonalPath,
   buildMergeOrthogonalPath,
   commitRectSize,
-  LayoutMode,
   type AnchorPoint as LayoutAnchorPoint,
 } from './branchMapLayout';
 
@@ -16,7 +15,6 @@ import {
 const LEFT_PAD = 0;
 const RIGHT_PAD = 0;
 const MIN_BRANCH_SPACING_X = 30;
-const LANE_HEIGHT = 120;
 const NODE_SIZE = 24;
 const CORNER_R = 20;
 const BRANCH_HIT_STROKE_WIDTH = 48;
@@ -58,11 +56,7 @@ const SVG_CONTENT_PADDING_VIEWPORT_REF_MIN = 360;
 const SVG_CONTENT_PADDING_MAX = 320;
 /** Full-bleed fill behind graph content (SVG user units; hex OK for SVG fills). */
 const SVG_AREA_BG = '#e8f4fc';
-const TIME_SCALE_MIN = 0.5;
-const TIME_SCALE_MAX = 3;
-const TIME_SCALE_STEP = 0.05;
 const TIME_SCALE_DEFAULT = 0.5;
-const CLUMP_SIZE_BOOST_PX = 0;
 // Grid nodes render without clump boost, so grid spacing must match the un-boosted rect size
 // or you'll see tiny gaps between nodes.
 const GRID_NODE_RECT = commitRectSize(NODE_SIZE, 0);
@@ -98,7 +92,6 @@ type TooltipData = {
   avatarFallback?: string;
 };
 type PRCommitHover = { x: number; arcY: number; pr: MergedPR; commitIdx: number; total: number };
-type SpacingMode = 'regular' | 'bounded' | 'uniform';
 type ClampMode = 'hard' | 'soft' | 'none';
 type OrientationMode = 'vertical' | 'horizontal';
 type MarkerEntry<T> = { x: number; y: number; item: T };
@@ -205,7 +198,7 @@ const PROMPT_CLUSTER_PREVIEW_MAX = 90;
 /**
  * Cluster entries by splitting at fork-point indices.
  *
- * Rules (grid mode only):
+ * Rules:
  * 1. Never clump across lanes (caller ensures entries are from one branch).
  * 2. Split where another branch forked off. The fork commit is included in the
  *    **left** (earlier) clump; the next commit starts a new clump.
@@ -267,30 +260,21 @@ function promptMarkerPath(centerX: number, centerY: number, size: number): strin
   ].join(' ');
 }
 
-/** Axis-aligned hit rect for a collapsed clump stack (discs/rects offset by +x, −y from anchor). */
+/** Axis-aligned hit rect for a collapsed clump stack (rects offset by +x, −y from anchor). */
 function collapsedClumpHitRect(
-  isGridLayout: boolean,
   anchorX: number,
   anchorY: number,
   stackDepth: number,
   rectSize: { width: number; height: number },
-  scaledNodeSize: number,
   clumpStackOffset: number,
   padWorld: number
 ): { x: number; y: number; width: number; height: number } {
   const k = Math.max(0, stackDepth - 1);
-  if (isGridLayout) {
-    const w = rectSize.width + k * clumpStackOffset + padWorld * 2;
-    const h = rectSize.height + k * clumpStackOffset + padWorld * 2;
-    const cx = anchorX + (k * clumpStackOffset) / 2;
-    const cy = anchorY - (k * clumpStackOffset) / 2;
-    return { x: cx - w / 2, y: cy - h / 2, width: w, height: h };
-  }
-  const r = scaledNodeSize / 2 + CLUMP_SIZE_BOOST_PX;
-  const span = k * clumpStackOffset + 2 * r + padWorld * 2;
+  const w = rectSize.width + k * clumpStackOffset + padWorld * 2;
+  const h = rectSize.height + k * clumpStackOffset + padWorld * 2;
   const cx = anchorX + (k * clumpStackOffset) / 2;
   const cy = anchorY - (k * clumpStackOffset) / 2;
-  return { x: cx - span / 2, y: cy - span / 2, width: span, height: span };
+  return { x: cx - w / 2, y: cy - h / 2, width: w, height: h };
 }
 
 function placeItemsEvenly<T>(items: T[], minX: number, maxX: number): Array<{ item: T; x: number }> {
@@ -362,22 +346,11 @@ export default function BranchMap({
   const [prCommits, setPrCommits] = useState<Map<number, string[]>>(new Map());
   const [expandedClumps, setExpandedClumps] = useState<Map<string, ExpandedClumpState>>(() => new Map());
   const [zoom, setZoom] = useState(ZOOM_DEFAULT);
-  const [timeScale, setTimeScale] = useState(TIME_SCALE_DEFAULT);
-  const layoutMode: LayoutMode = 'grid';
-  // Non-grid timeline spacing:
-  // - `uniform`: time affects ordering only (no time-proportional gaps)
-  // - `bounded` / `regular`: legacy time-aware spacing modes
-  const [spacingMode] = useState<SpacingMode>('uniform');
   const [orientation, setOrientation] = useState<OrientationMode>('vertical');
-  const [showGridGuides, setShowGridGuides] = useState(true);
+  const [showGuides, setShowGuides] = useState(true);
   const isHorizontal = orientation === 'horizontal';
-  const isGridLayout = layoutMode === 'grid';
-  // In horizontal mode we project axes (time runs left→right).
-  // Grid spacing must swap width/height to match node bounds and avoid overlap.
-  const gridEventGap = isGridLayout ? (isHorizontal ? GRID_LANE_WIDTH : GRID_ROW_GAP) : GRID_ROW_GAP;
-  const gridLaneWidth = isGridLayout ? (isHorizontal ? GRID_ROW_GAP : GRID_LANE_WIDTH) : GRID_LANE_WIDTH;
-  const effectiveTimeScale = isGridLayout ? TIME_SCALE_DEFAULT : timeScale;
-  const effectiveSpacingMode: SpacingMode = spacingMode;
+  const gridEventGap = isHorizontal ? GRID_LANE_WIDTH : GRID_ROW_GAP;
+  const gridLaneWidth = isHorizontal ? GRID_ROW_GAP : GRID_LANE_WIDTH;
   // WKWebView (Tauri) doesn't fire CSS animations on SVG elements inserted during
   // the initial paint. Defer animation classes by one rAF so they start post-paint.
   const [drawReady, setDrawReady] = useState(false);
@@ -1493,11 +1466,9 @@ export default function BranchMap({
   // - `regular`: true time-proportional spacing.
   // - `bounded`: time-aware spacing with per-gap clamping.
   // Both modes preserve chronology and use the same anchor timestamps.
-  const IDEAL_NODE_SPACING = Math.max(MIN_BRANCH_SPACING_X, 160 * effectiveTimeScale);
-  const IDEAL_EVENT_GAP = Math.max(8, 40 * effectiveTimeScale);
+  const IDEAL_NODE_SPACING = Math.max(MIN_BRANCH_SPACING_X, 160 * TIME_SCALE_DEFAULT);
+  const IDEAL_EVENT_GAP = Math.max(8, 40 * TIME_SCALE_DEFAULT);
   const GRID_EVENT_GAP = gridEventGap;
-  const MIN_EVENT_GAP = Math.max(4, IDEAL_EVENT_GAP * 0.22);
-  const MAX_EVENT_GAP = IDEAL_EVENT_GAP * 6.5;
 
   const sortedNodes = [...mergeNodes].sort(
     (a, b) => new Date(a.date).getTime() - new Date(b.date).getTime()
@@ -1531,23 +1502,6 @@ export default function BranchMap({
   const directCommitShaSet = new Set<string>(sortedDirectCommits.map((commit) => commit.fullSha));
 
   type TimelineEvent = { key: string; t: number; kind: 'merge' | 'direct' | 'branch' };
-  const branchTimelineEvents: TimelineEvent[] = activeBranches.flatMap((b) => {
-    const events: TimelineEvent[] = [
-      {
-        key: `branch:tip:${b.name}`,
-        t: new Date(b.lastCommitDate).getTime(),
-        kind: 'branch',
-      },
-    ];
-    if (b.divergedFromDate) {
-      events.push({
-        key: `branch:fork:${b.name}`,
-        t: new Date(b.divergedFromDate).getTime(),
-        kind: 'branch',
-      });
-    }
-    return events;
-  });
   const directTimelineEvents: TimelineEvent[] = sortedDirectCommits.map((c) => ({
     key: `direct:${c.fullSha}`,
     t: new Date(c.date).getTime(),
@@ -1557,16 +1511,16 @@ export default function BranchMap({
   const mergeNudgeCountByRawTime = new Map<number, number>();
   const mergeEventTimeByFullSha = new Map<string, number>();
 
-  const mergeTimelineEvents: TimelineEvent[] = sortedNodes.map((m) => {
+  sortedNodes.forEach((m) => {
     const rawTime = new Date(m.date).getTime();
     const mergeCommitIsOnMain = directCommitShaSet.has(m.fullSha);
     let eventTime = rawTime;
-    if (isGridLayout && !mergeCommitIsOnMain && directTimelineTimes.has(rawTime)) {
+    if (!mergeCommitIsOnMain && directTimelineTimes.has(rawTime)) {
       const bumpIndex = (mergeNudgeCountByRawTime.get(rawTime) ?? 0) + 1;
       mergeNudgeCountByRawTime.set(rawTime, bumpIndex);
       eventTime = rawTime + bumpIndex * GRID_MERGE_EVENT_ROW_NUDGE;
     }
-    if (isGridLayout && !mergeCommitIsOnMain) {
+    if (!mergeCommitIsOnMain) {
       const mergedParents = m.parentShas?.slice(1) ?? [];
       for (const parentSha of mergedParents) {
         const mergedBranch = mergedBranchByHeadSha.get(parentSha);
@@ -1577,38 +1531,13 @@ export default function BranchMap({
       }
     }
     mergeEventTimeByFullSha.set(m.fullSha, eventTime);
-    return {
-      key: `merge:${m.fullSha}`,
-      t: eventTime,
-      kind: 'merge' as const,
-    };
   });
 
-  const timelineEvents: TimelineEvent[] = [
-    ...mergeTimelineEvents,
-    ...directTimelineEvents,
-    ...(isGridLayout ? [] : branchTimelineEvents),
-  ].sort((a, b) => {
-    if (a.t !== b.t) return a.t - b.t;
-    // Keep direct dots first, then branch markers, then merge ticks.
-    if (a.kind === b.kind) return a.key.localeCompare(b.key);
-    if (a.kind === 'direct') return -1;
-    if (b.kind === 'direct') return 1;
-    if (a.kind === 'branch') return -1;
-    if (b.kind === 'branch') return 1;
-    return 0;
-  });
-
-  const branchCommitAnchorTimes = activeBranches.flatMap((b) =>
-    (branchCommitPreviews[b.name] ?? [])
-      .map((c) => new Date(c.date).getTime())
-      .filter(Number.isFinite)
-  );
   // ── Grid: build clumps first, derive rows from them ────────────────
   type GridClump = { lane: string; shas: string[]; earliestTime: number; rowIndex: number; key: string };
   const gridClumps: GridClump[] = [];
-  const gridRowBySha = isGridLayout ? new Map<string, number>() : null;
-  if (isGridLayout) {
+  const gridRowBySha = new Map<string, number>();
+  {
     const mainForkIdx = new Set<number>();
     sortedDirectCommits.forEach((c, i) => {
       if (protectedMainForkShas.has(c.fullSha)) mainForkIdx.add(i);
@@ -1685,52 +1614,22 @@ export default function BranchMap({
     }
   }
 
-  const gridRowTimes = isGridLayout
-    ? (() => {
-      const times: number[] = [];
-      for (const clump of gridClumps) {
-        const isExpanded = expandedClumps.get(clump.key)?.isExpanded ?? false;
-        if (isExpanded && clump.shas.length > 1) {
-          for (let i = 0; i < clump.shas.length; i++) times.push(clump.earliestTime + i);
-        } else {
-          times.push(clump.earliestTime);
-        }
+  const gridRowTimes = (() => {
+    const times: number[] = [];
+    for (const clump of gridClumps) {
+      const isExpanded = expandedClumps.get(clump.key)?.isExpanded ?? false;
+      if (isExpanded && clump.shas.length > 1) {
+        for (let i = 0; i < clump.shas.length; i++) times.push(clump.earliestTime + i);
+      } else {
+        times.push(clump.earliestTime);
       }
-      return times;
-    })()
-    : [];
-  const gridEventPoints = isGridLayout
-    ? gridRowTimes.map((time, index) => ({ t: time, x: leftPad + index * GRID_EVENT_GAP }))
-    : [];
+    }
+    return times;
+  })();
+  const gridEventPoints = gridRowTimes.map((time, index) => ({ t: time, x: leftPad + index * GRID_EVENT_GAP }));
 
 
-  const promptAnchorTimes = activeBranches.flatMap((b) =>
-    (branchPromptMeta[b.name]?.markers ?? [])
-      .map((m) => new Date(m.timestamp).getTime())
-      .filter(Number.isFinite)
-  );
-  const mainPromptAnchorTimes = (branchPromptMeta[defaultBranch]?.markers ?? [])
-    .map((m) => new Date(m.timestamp).getTime())
-    .filter(Number.isFinite);
-  const allAnchorTimes = isGridLayout
-    ? gridRowTimes
-    : Array.from(
-      new Set<number>([
-        ...timelineEvents.map((e) => e.t).filter(Number.isFinite),
-        ...branchCommitAnchorTimes,
-        ...promptAnchorTimes,
-        ...mainPromptAnchorTimes,
-      ])
-    ).sort((a, b) => a - b);
-
-  const DAY_MS = 86400000;
-  const firstEventT = allAnchorTimes.length > 0 ? allAnchorTimes[0] : Date.now();
-  const lastEventT = allAnchorTimes.length > 1 ? allAnchorTimes[allAnchorTimes.length - 1] : firstEventT + 1;
-  const timelineTimeSpan = Math.max(lastEventT - firstEventT, 1);
-  const avgAnchorIntervalMs = allAnchorTimes.length > 1
-    ? timelineTimeSpan / (allAnchorTimes.length - 1)
-    : 7 * DAY_MS;
-  const regularPxPerMs = IDEAL_EVENT_GAP / Math.max(avgAnchorIntervalMs, 1);
+  const allAnchorTimes = gridRowTimes;
 
   const anchorXs: number[] = [];
   if (gridEventPoints.length > 0) {
@@ -1738,27 +1637,9 @@ export default function BranchMap({
   } else if (allAnchorTimes.length > 0) {
     anchorXs.push(leftPad);
     for (let i = 1; i < allAnchorTimes.length; i += 1) {
-      if (effectiveSpacingMode === 'uniform') {
-        anchorXs.push(anchorXs[i - 1] + IDEAL_EVENT_GAP);
-        continue;
-      }
-      if (effectiveSpacingMode === 'regular') {
-        anchorXs.push(leftPad + (allAnchorTimes[i] - firstEventT) * regularPxPerMs);
-        continue;
-      }
-      const deltaMs = Math.max(1, allAnchorTimes[i] - allAnchorTimes[i - 1]);
-      const scaledGap = IDEAL_EVENT_GAP * (deltaMs / Math.max(avgAnchorIntervalMs, 1));
-      const boundedGap = Math.max(MIN_EVENT_GAP, Math.min(MAX_EVENT_GAP, scaledGap));
-      anchorXs.push(anchorXs[i - 1] + boundedGap);
+      anchorXs.push(anchorXs[i - 1] + IDEAL_EVENT_GAP);
     }
   }
-
-  const averageEventGap = anchorXs.length > 1
-    ? (anchorXs[anchorXs.length - 1] - leftPad) / (anchorXs.length - 1)
-    : (isGridLayout ? GRID_EVENT_GAP : IDEAL_EVENT_GAP);
-  const safeExtrapPxPerMs = effectiveSpacingMode === 'regular'
-    ? regularPxPerMs
-    : averageEventGap / Math.max(avgAnchorIntervalMs, 7 * DAY_MS);
 
   function xForTimestamp(t: number): number {
     if (gridEventPoints.length > 0) {
@@ -1784,35 +1665,16 @@ export default function BranchMap({
       if (allAnchorTimes[mid] < t) lo = mid + 1;
       else hi = mid;
     }
-    if (effectiveSpacingMode === 'uniform') {
-      // Time affects ordering only: snap to the next chronological anchor slot.
-      if (lo <= 0) return leftPad - IDEAL_EVENT_GAP * 2;
-      if (lo >= allAnchorTimes.length) {
-        const endX = anchorXs[anchorXs.length - 1] ?? leftPad;
-        return endX + IDEAL_EVENT_GAP * 2;
-      }
-      return anchorXs[lo] ?? leftPad + lo * IDEAL_EVENT_GAP;
-    }
-    if (lo <= 0) {
-      const rawX = leftPad + (t - firstEventT) * safeExtrapPxPerMs;
-      return Math.max(rawX, leftPad - MIN_EVENT_GAP * 2);
-    }
+    if (lo <= 0) return leftPad - IDEAL_EVENT_GAP * 2;
     if (lo >= allAnchorTimes.length) {
       const endX = anchorXs[anchorXs.length - 1] ?? leftPad;
-      return endX + (t - lastEventT) * safeExtrapPxPerMs;
+      return endX + IDEAL_EVENT_GAP * 2;
     }
-    const i = lo - 1;
-    const tA = allAnchorTimes[i];
-    const tB = allAnchorTimes[lo];
-    const xA = anchorXs[i] ?? leftPad;
-    const xB = anchorXs[lo] ?? xA;
-    if (tB <= tA) return xA;
-    const ratio = (t - tA) / (tB - tA);
-    return xA + ratio * (xB - xA);
+    return anchorXs[lo] ?? leftPad + lo * IDEAL_EVENT_GAP;
   }
 
   function gridXForSha(sha: string): number | undefined {
-    if (!isGridLayout || !gridRowBySha) return undefined;
+    if (!gridRowBySha) return undefined;
     const row = gridRowBySha.get(sha);
     if (row == null) return undefined;
     return leftPad + row * GRID_EVENT_GAP;
@@ -1840,9 +1702,7 @@ export default function BranchMap({
       nodeXByFullSha.get(mergeNode.fullSha) ??
       timeToX(mergeNode.date);
   }
-  const mainEndX = isGridLayout
-    ? (gridEventPoints[gridEventPoints.length - 1]?.x ?? leftPad)
-    : (allAnchorTimes.length > 0 ? xForTimestamp(lastEventT) : leftPad);
+  const mainEndX = gridEventPoints[gridEventPoints.length - 1]?.x ?? leftPad;
   const mainCommitXs = [
     ...sortedNodes.map((m) => nodeXByFullSha.get(m.fullSha) ?? leftPad),
     ...sortedDirectCommits.map((c) => directXByFullSha.get(c.fullSha) ?? leftPad),
@@ -2005,26 +1865,24 @@ export default function BranchMap({
   function branchTipX(b: Branch): number {
     const forkX = branchForkX(b);
     const lastCommitX = (b.headSha ? gridXForSha(b.headSha) : undefined) ?? timeToX(b.lastCommitDate);
-    const minTailDistance = isGridLayout ? GRID_EVENT_GAP : cornerR + 20;
+    const minTailDistance = GRID_EVENT_GAP;
     return Math.max(lastCommitX, forkX + minTailDistance);
   }
 
-  if (isGridLayout) {
-    for (const branch of activeBranches) {
-      if (branch.commitsAhead !== 0) continue;
-      if (freshCopyBranchNames.has(branch.name)) continue;
-      const mergeNode = mergeNodeByMergedHeadSha.get(branch.headSha);
-      if (!mergeNode) continue;
-      const baseMergeX =
-        directXByFullSha.get(mergeNode.fullSha) ??
-        nodeXByFullSha.get(mergeNode.fullSha) ??
-        timeToX(mergeNode.date);
-      const minMergeX = branchTipX(branch) + GRID_EVENT_GAP;
-      const forcedMergeX = Math.max(baseMergeX, minMergeX);
-      forcedMergeJunctionXBySha.set(mergeNode.fullSha, forcedMergeX);
-      directXByFullSha.set(mergeNode.fullSha, forcedMergeX);
-      mainCommitXBySha.set(mergeNode.fullSha, forcedMergeX);
-    }
+  for (const branch of activeBranches) {
+    if (branch.commitsAhead !== 0) continue;
+    if (freshCopyBranchNames.has(branch.name)) continue;
+    const mergeNode = mergeNodeByMergedHeadSha.get(branch.headSha);
+    if (!mergeNode) continue;
+    const baseMergeX =
+      directXByFullSha.get(mergeNode.fullSha) ??
+      nodeXByFullSha.get(mergeNode.fullSha) ??
+      timeToX(mergeNode.date);
+    const minMergeX = branchTipX(branch) + GRID_EVENT_GAP;
+    const forcedMergeX = Math.max(baseMergeX, minMergeX);
+    forcedMergeJunctionXBySha.set(mergeNode.fullSha, forcedMergeX);
+    directXByFullSha.set(mergeNode.fullSha, forcedMergeX);
+    mainCommitXBySha.set(mergeNode.fullSha, forcedMergeX);
   }
 
   function branchAheadCount(b: Branch): number {
@@ -2034,10 +1892,6 @@ export default function BranchMap({
     const previews = branchCommitPreviews[b.name];
     if (previews != null) return previews.filter((preview) => preview.kind !== 'branch-created').length;
     return b.commitsAhead;
-  }
-
-  function branchVisualEndTimeX(b: Branch): number {
-    return branchTipX(b);
   }
 
   // Canonical (logical) layout uses vertical time; orientation projection swaps axes when needed.
@@ -2077,7 +1931,7 @@ export default function BranchMap({
   // does not slice nodes: using mainEndY/mainStartY as edges cut off the outer half of cells.
   const gridHalfHForBounds = GRID_NODE_RECT.height / 2;
   const gridRowYExtent =
-    isGridLayout && gridEventPoints.length > 0
+    gridEventPoints.length > 0
       ? (() => {
           const ys = gridEventPoints.map((p) => timeCoordToY(p.x)).filter(Number.isFinite);
           if (ys.length === 0) return null;
@@ -2108,23 +1962,21 @@ export default function BranchMap({
   // 1) If a branch has a visible parent branch, it must render to the right of that parent.
   // 2) Unrelated branches can shift rightward to satisfy (1).
   // 3) Lane occupancy still respects time separation to reduce label overlap.
-  const BRANCH_LANE_MIN_SEPARATION_X = isGridLayout
-    ? GRID_LANE_MIN_SEPARATION
-    : Math.max(20, 40 * effectiveTimeScale);
+  const BRANCH_LANE_MIN_SEPARATION_X = GRID_LANE_MIN_SEPARATION;
   const laneAssignments = assignLanesWithParentOrder(
     activeBranches.map((branch) => ({
       id: branch.name,
       createdOrder: branchCreatedMs(branch),
       startCoord: branchForkX(branch),
-      endCoord: isGridLayout ? branchTipX(branch) : branchVisualEndTimeX(branch),
+      endCoord: branchTipX(branch),
       parentId: branch.parentBranch,
     })),
     BRANCH_LANE_MIN_SEPARATION_X,
     defaultBranch
   );
 
-  const laneWidth = isGridLayout ? gridLaneWidth : LANE_HEIGHT;
-  const laneOffsetX = isGridLayout ? GRID_LANE_OFFSET_X : 40;
+  const laneWidth = gridLaneWidth;
+  const laneOffsetX = GRID_LANE_OFFSET_X;
 
   function laneX(b: Branch): number {
     const lane = laneAssignments.get(b.name) ?? 0;
@@ -2163,12 +2015,9 @@ export default function BranchMap({
   // clamp to 0 or the clip slices the left half of the left column (same idea as Y below).
   const graphExtentMinX = Math.min(timelineMinX, minLaneXForBounds - gridHalfWForBounds);
 
-  // Grid: use `tightGridXSpan` for SVG width so row lines match lane columns. Non-grid
-  // width still uses `maxBranchVisualEndX` (branch lane + label margin).
+  // Use `tightGridXSpan` for SVG width so row lines match lane columns.
   const tightGridXSpan = gridLaneExtentMaxX - graphExtentMinX;
-  const logicalSvgWidth = isGridLayout
-    ? tightGridXSpan + 2 * svgContentPadding + rightPad + SVG_LAYOUT_TAIL_X
-    : maxBranchVisualEndX + rightPad + SVG_LAYOUT_TAIL_X + 2 * svgContentPadding;
+  const logicalSvgWidth = tightGridXSpan + 2 * svgContentPadding + rightPad + SVG_LAYOUT_TAIL_X;
 
   // Merged PRs lane layout
   const MERGED_LANE_HEIGHT = 60;
@@ -2219,7 +2068,7 @@ export default function BranchMap({
   let minYWorldForBounds: number;
   let maxYWorldForBounds: number;
 
-  if (isGridLayout) {
+  {
     const tightMinX = graphExtentMinX - GRID_VIEW_PAD_X;
     const tightMaxX = gridLaneExtentMaxX + GRID_VIEW_PAD_X;
     minXWorldForBounds = tightMinX - svgContentPadding;
@@ -2231,11 +2080,6 @@ export default function BranchMap({
       minYWorldForBounds = Math.max(0, mainEndY - yPadSymmetric) - svgContentPadding;
       maxYWorldForBounds = Math.min(logicalSvgHeight, mainStartY + yPadSymmetric) + svgContentPadding;
     }
-  } else {
-    minXWorldForBounds = Math.max(0, timelineMinX - CLIP_MARGIN_LEFT) - svgContentPadding;
-    maxXWorldForBounds = maxBranchVisualEndX + CLIP_MARGIN_RIGHT + svgContentPadding;
-    minYWorldForBounds = Math.max(0, mainEndY - CLIP_MARGIN_TOP) - svgContentPadding;
-    maxYWorldForBounds = mainStartY + CLIP_MARGIN_BOTTOM + svgContentPadding;
   }
   const projectedContentBounds = isHorizontal
     ? {
@@ -2489,8 +2333,6 @@ export default function BranchMap({
     checkedOutRef?.headSha,
     checkedOutRef?.parentSha,
     checkedOutRef?.hasUncommittedChanges,
-    effectiveTimeScale,
-    effectiveSpacingMode,
     graphContentTranslateX,
     graphContentTranslateY,
     mapTopInset,
@@ -2675,14 +2517,12 @@ export default function BranchMap({
     });
   };
 
-  const gridClipBounds = isGridLayout
-    ? {
-      leftX: minXWorldForBounds,
-      rightX: maxXWorldForBounds,
-      topY: minYWorldForBounds,
-      bottomY: maxYWorldForBounds,
-    }
-    : null;
+  const gridClipBounds = {
+    leftX: minXWorldForBounds,
+    rightX: maxXWorldForBounds,
+    topY: minYWorldForBounds,
+    bottomY: maxYWorldForBounds,
+  };
 
   const gridClipPathD = gridClipBounds
     ? [
@@ -2768,7 +2608,7 @@ export default function BranchMap({
           >
 
           {/* ── Grid background (table-like lanes) ── */}
-          {isGridLayout && showGridGuides && (
+          {showGuides && (
             <g style={{ pointerEvents: 'none' }}>
               {(() => {
                 const rawRowInfos = gridEventPoints
@@ -2922,67 +2762,37 @@ export default function BranchMap({
                     const label = truncatePrompt(c.message, COMMIT_TOOLTIP_PREVIEW_MAX);
                     const rectSize = commitRectSize(scaledNodeSize);
                     return (
-                      isGridLayout ? (
-                        <rect
-                          key={clusterKey}
-                          className="branch-map-commit-rect"
-                          x={anchorX - rectSize.width / 2}
-                          y={anchorY - rectSize.height / 2}
-                          width={rectSize.width}
-                          height={rectSize.height}
-                          data-base-rx={rectSize.radius}
-                          rx={rectSize.radius / Math.max(layerCameraScale.x, 0.0001)}
-                          style={{ cursor: 'pointer' }}
-                          fill={CANVAS_NEUTRAL_GRAY}
-                          stroke={isGridLayout ? 'none' : 'var(--background)'}
-                          strokeWidth={isGridLayout ? 0 : 1.2}
-                          onClick={(event) =>
-                            handleCommitNodeClick(
-                              event,
-                              c.fullSha,
-                              clusterHasMainTip ? defaultBranch : undefined,
-                            )
-                          }
-                          onDoubleClick={(event) => event.stopPropagation()}
-                          onMouseEnter={() =>
-                            setTooltip({
-                              x: anchorX,
-                              y: anchorY,
-                              lines: [`Commit ${c.sha}`, label, `@${c.author} · ${fmtTooltipDate(c.date)}`],
-                              avatarFallback: c.author?.charAt(0).toUpperCase() || '?',
-                            })
-                          }
-                          onMouseLeave={() => setTooltip(null)}
-                        />
-                      ) : (
-                        <circle
-                          key={clusterKey}
-                          cx={anchorX}
-                          cy={anchorY}
-                          r={scaledNodeSize / 2}
-                          fill={CANVAS_NEUTRAL_GRAY}
-                          stroke={isGridLayout ? 'none' : 'var(--background)'}
-                          strokeWidth={isGridLayout ? 0 : 1.2}
-                          style={{ cursor: 'pointer' }}
-                          onClick={(event) =>
-                            handleCommitNodeClick(
-                              event,
-                              c.fullSha,
-                              clusterHasMainTip ? defaultBranch : undefined,
-                            )
-                          }
-                          onDoubleClick={(event) => event.stopPropagation()}
-                          onMouseEnter={() =>
-                            setTooltip({
-                              x: anchorX,
-                              y: anchorY,
-                              lines: [`Commit ${c.sha}`, label, `@${c.author} · ${fmtTooltipDate(c.date)}`],
-                              avatarFallback: c.author?.charAt(0).toUpperCase() || '?',
-                            })
-                          }
-                          onMouseLeave={() => setTooltip(null)}
-                        />
-                      )
+                      <rect
+                        key={clusterKey}
+                        className="branch-map-commit-rect"
+                        x={anchorX - rectSize.width / 2}
+                        y={anchorY - rectSize.height / 2}
+                        width={rectSize.width}
+                        height={rectSize.height}
+                        data-base-rx={rectSize.radius}
+                        rx={rectSize.radius / Math.max(layerCameraScale.x, 0.0001)}
+                        style={{ cursor: 'pointer' }}
+                        fill={CANVAS_NEUTRAL_GRAY}
+                        stroke="none"
+                        strokeWidth={0}
+                        onClick={(event) =>
+                          handleCommitNodeClick(
+                            event,
+                            c.fullSha,
+                            clusterHasMainTip ? defaultBranch : undefined,
+                          )
+                        }
+                        onDoubleClick={(event) => event.stopPropagation()}
+                        onMouseEnter={() =>
+                          setTooltip({
+                            x: anchorX,
+                            y: anchorY,
+                            lines: [`Commit ${c.sha}`, label, `@${c.author} · ${fmtTooltipDate(c.date)}`],
+                            avatarFallback: c.author?.charAt(0).toUpperCase() || '?',
+                          })
+                        }
+                        onMouseLeave={() => setTooltip(null)}
+                      />
                     );
                   }
 
@@ -3025,33 +2835,22 @@ export default function BranchMap({
                             const depth = stackDepth - 1 - i;
                             const dx = depth * clumpStackOffset;
                             const dy = -depth * clumpStackOffset;
-                            if (isGridLayout) {
-                              return (
-                                <g
-                                  key={`stack-${i}`}
-                                  transform={`translate(${anchorX + dx} ${anchorY + dy})`}
-                                  opacity={0.85 - depth * 0.12}
-                                >
-                                  <rect
-                                    className="branch-map-commit-rect"
-                                    x={-rectSize.width / 2}
-                                    y={-rectSize.height / 2}
-                                    width={rectSize.width}
-                                    height={rectSize.height}
-                                    data-base-rx={rectSize.radius}
-                                    rx={rectSize.radius / Math.max(layerCameraScale.x, 0.0001)}
-                                    fill={CANVAS_NEUTRAL_GRAY}
-                                  />
-                                </g>
-                              );
-                            }
                             return (
                               <g
                                 key={`stack-${i}`}
                                 transform={`translate(${anchorX + dx} ${anchorY + dy})`}
                                 opacity={0.85 - depth * 0.12}
                               >
-                                <circle r={scaledNodeSize / 2 + CLUMP_SIZE_BOOST_PX} fill={CANVAS_NEUTRAL_GRAY} />
+                                <rect
+                                  className="branch-map-commit-rect"
+                                  x={-rectSize.width / 2}
+                                  y={-rectSize.height / 2}
+                                  width={rectSize.width}
+                                  height={rectSize.height}
+                                  data-base-rx={rectSize.radius}
+                                  rx={rectSize.radius / Math.max(layerCameraScale.x, 0.0001)}
+                                  fill={CANVAS_NEUTRAL_GRAY}
+                                />
                               </g>
                             );
                           })}
@@ -3074,12 +2873,10 @@ export default function BranchMap({
                       {!isExpanded && (() => {
                         const pad = worldPx(6);
                         const hit = collapsedClumpHitRect(
-                          isGridLayout,
                           anchorX,
                           anchorY,
                           stackDepth,
                           rectSize,
-                          scaledNodeSize,
                           clumpStackOffset,
                           pad
                         );
@@ -3139,67 +2936,38 @@ export default function BranchMap({
                                 style={{ ...clumpAnimStyle, pointerEvents: phase === 'expanded' ? 'auto' : 'none' }}
                                 opacity={memberOpacity}
                               >
-                                {isGridLayout ? (
-                                  <rect
-                                    className="branch-map-commit-rect"
-                                    x={-localRect.width / 2}
-                                    y={-localRect.height / 2}
-                                    width={localRect.width}
-                                    height={localRect.height}
-                                    data-base-rx={localRect.radius}
-                                    rx={localRect.radius / Math.max(layerCameraScale.x, 0.0001)}
-                                    fill={CANVAS_NEUTRAL_GRAY}
-                                    stroke={isGridLayout ? 'none' : 'var(--background)'}
-                                    strokeWidth={isGridLayout ? 0 : 1.2}
-                                    style={{ cursor: 'pointer' }}
-                                    onClick={(event) =>
-                                      handleCommitNodeClick(
-                                        event,
-                                        c.fullSha,
-                                        clusterHasMainTip && c.fullSha === latestMainCommitSha
-                                          ? defaultBranch
-                                          : undefined,
-                                      )
-                                    }
-                                    onDoubleClick={(event) => event.stopPropagation()}
-                                    onMouseEnter={() =>
-                                      setTooltip({
-                                        x: entry.x,
-                                        y: entry.y,
-                                        lines: [`Commit ${c.sha}`, label, `@${c.author} · ${fmtTooltipDate(c.date)}`],
-                                        avatarFallback: c.author?.charAt(0).toUpperCase() || '?',
-                                      })
-                                    }
-                                    onMouseLeave={() => setTooltip(null)}
-                                  />
-                                ) : (
-                                  <circle
-                                    r={scaledNodeSize / 2}
-                                    fill={CANVAS_NEUTRAL_GRAY}
-                                    stroke={isGridLayout ? 'none' : 'var(--background)'}
-                                    strokeWidth={isGridLayout ? 0 : 1.2}
-                                    style={{ cursor: 'pointer' }}
-                                    onClick={(event) =>
-                                      handleCommitNodeClick(
-                                        event,
-                                        c.fullSha,
-                                        clusterHasMainTip && c.fullSha === latestMainCommitSha
-                                          ? defaultBranch
-                                          : undefined,
-                                      )
-                                    }
-                                    onDoubleClick={(event) => event.stopPropagation()}
-                                    onMouseEnter={() =>
-                                      setTooltip({
-                                        x: entry.x,
-                                        y: entry.y,
-                                        lines: [`Commit ${c.sha}`, label, `@${c.author} · ${fmtTooltipDate(c.date)}`],
-                                        avatarFallback: c.author?.charAt(0).toUpperCase() || '?',
-                                      })
-                                    }
-                                    onMouseLeave={() => setTooltip(null)}
-                                  />
-                                )}
+                                <rect
+                                  className="branch-map-commit-rect"
+                                  x={-localRect.width / 2}
+                                  y={-localRect.height / 2}
+                                  width={localRect.width}
+                                  height={localRect.height}
+                                  data-base-rx={localRect.radius}
+                                  rx={localRect.radius / Math.max(layerCameraScale.x, 0.0001)}
+                                  fill={CANVAS_NEUTRAL_GRAY}
+                                  stroke="none"
+                                  strokeWidth={0}
+                                  style={{ cursor: 'pointer' }}
+                                  onClick={(event) =>
+                                    handleCommitNodeClick(
+                                      event,
+                                      c.fullSha,
+                                      clusterHasMainTip && c.fullSha === latestMainCommitSha
+                                        ? defaultBranch
+                                        : undefined,
+                                    )
+                                  }
+                                  onDoubleClick={(event) => event.stopPropagation()}
+                                  onMouseEnter={() =>
+                                    setTooltip({
+                                      x: entry.x,
+                                      y: entry.y,
+                                      lines: [`Commit ${c.sha}`, label, `@${c.author} · ${fmtTooltipDate(c.date)}`],
+                                      avatarFallback: c.author?.charAt(0).toUpperCase() || '?',
+                                    })
+                                  }
+                                  onMouseLeave={() => setTooltip(null)}
+                                />
                               </g>
                             );
                           })}
@@ -3641,56 +3409,32 @@ export default function BranchMap({
               const baseTipTimeX = branchTipX(b);
               const tipTimeX = mergeNodeTimeX != null ? Math.max(baseTipTimeX, mergeNodeTimeX) : baseTipTimeX;
               const commitTipTimeX = isMergedBranch ? baseTipTimeX : tipTimeX;
-              const tipY = timeCoordToY(tipTimeX);
               const commitTipY = timeCoordToY(commitTipTimeX);
-              const branchLineTipY = isGridLayout ? commitTipY : tipY;
-              const routeCornerR = isGridLayout ? GRID_ROUTE_CORNER_R : cornerR;
-              const cornerDir = branchLineTipY <= forkY ? -1 : 1;
-              const turnY = forkY + cornerDir * routeCornerR;
+              const branchLineTipY = commitTipY;
+              const routeCornerR = GRID_ROUTE_CORNER_R;
               const mergeTargetX = mainX;
               const mergeTargetY = mergeNodeTimeX != null ? timeCoordToY(mergeNodeTimeX) : null;
               const hasMergeBackConnector =
                 mergeTargetY != null && Math.abs(lanePosX - mergeTargetX) > 0.5;
               const mergeBackPath = (() => {
                 if (!hasMergeBackConnector || mergeTargetY == null) return null;
-                if (isGridLayout) {
-                  return buildMergeOrthogonalPath({
-                    laneX: lanePosX,
-                    tipY: branchLineTipY,
-                    mergeX: mergeTargetX,
-                    mergeY: mergeTargetY,
-                    cornerR: routeCornerR,
-                    pointFormatter: pathCoord,
-                  });
-                }
-                const horizontalDir = mergeTargetX >= lanePosX ? 1 : -1;
-                const verticalDelta = mergeTargetY - tipY;
-                if (Math.abs(verticalDelta) < 0.5) {
-                  return `M ${pathCoord(lanePosX, tipY)} L ${pathCoord(mergeTargetX, mergeTargetY)}`;
-                }
-                const cornerYOffset = Math.min(routeCornerR, Math.abs(verticalDelta));
-                const preTurnY = mergeTargetY - Math.sign(verticalDelta) * cornerYOffset;
-                const cornerX = lanePosX + horizontalDir * routeCornerR;
-                return `M ${pathCoord(lanePosX, tipY)} L ${pathCoord(lanePosX, preTurnY)} Q ${pathCoord(lanePosX, mergeTargetY)} ${pathCoord(cornerX, mergeTargetY)} L ${pathCoord(mergeTargetX, mergeTargetY)}`;
-              })();
-              const curvePath = isGridLayout
-                ? buildBranchOrthogonalPath({
-                  startX,
-                  forkY,
+                return buildMergeOrthogonalPath({
                   laneX: lanePosX,
                   tipY: branchLineTipY,
+                  mergeX: mergeTargetX,
+                  mergeY: mergeTargetY,
                   cornerR: routeCornerR,
                   pointFormatter: pathCoord,
-                })
-                : (() => {
-                  if (startX === lanePosX) {
-                    return `M ${pathCoord(lanePosX, forkY)} L ${pathCoord(lanePosX, branchLineTipY)}`;
-                  }
-                  if (startX < lanePosX) {
-                    return `M ${pathCoord(startX, forkY)} L ${pathCoord(lanePosX - routeCornerR, forkY)} Q ${pathCoord(lanePosX, forkY)} ${pathCoord(lanePosX, turnY)} L ${pathCoord(lanePosX, branchLineTipY)}`;
-                  }
-                  return `M ${pathCoord(startX, forkY)} L ${pathCoord(lanePosX + routeCornerR, forkY)} Q ${pathCoord(lanePosX, forkY)} ${pathCoord(lanePosX, turnY)} L ${pathCoord(lanePosX, branchLineTipY)}`;
-                })();
+                });
+              })();
+              const curvePath = buildBranchOrthogonalPath({
+                startX,
+                forkY,
+                laneX: lanePosX,
+                tipY: branchLineTipY,
+                cornerR: routeCornerR,
+                pointFormatter: pathCoord,
+              });
 
               const branchCommits = branchCommitPreviews[b.name] ?? [];
               const hasPreviewData = Object.prototype.hasOwnProperty.call(branchCommitPreviews, b.name);
@@ -3703,7 +3447,7 @@ export default function BranchMap({
                   (a, b) => new Date(a.date).getTime() - new Date(b.date).getTime()
                 )
                 : [];
-              const minCommitTimeX = forkTimeX + (isGridLayout ? GRID_EVENT_GAP : routeCornerR + 6);
+              const minCommitTimeX = forkTimeX + GRID_EVENT_GAP;
               const maxCommitTimeX = Math.max(minCommitTimeX, commitTipTimeX);
               const commitItems: Array<BranchCommitPreview | undefined> = hasPreviewData
                 ? displayedCommits
@@ -4018,84 +3762,45 @@ export default function BranchMap({
                         const isGhostRect = isFreshCopy;
 
                         return (
-                          isGridLayout ? (
-                            <rect
-                              key={clusterKey}
-                              className="branch-map-commit-rect"
-                              x={anchorX - rectSize.width / 2}
-                              y={anchorY - rectSize.height / 2}
-                              width={rectSize.width}
-                              height={rectSize.height}
-                              data-base-rx={rectSize.radius}
-                              rx={rectSize.radius / Math.max(layerCameraScale.x, 0.0001)}
-                              style={{ cursor: 'pointer' }}
-                              fill={isGhostRect ? 'none' : dotFill}
-                              stroke={isGhostRect ? LOCAL_UNPUSHED_GRAY : isGridLayout ? 'none' : 'var(--background)'}
-                              strokeWidth={isGhostRect ? 1.2 : isGridLayout ? 0 : 1.2}
-                              strokeDasharray={isGhostRect ? '3 3' : undefined}
-                              onClick={(event) =>
-                                handleCommitNodeClick(
-                                  event,
-                                  targetCommitSha,
-                                  clusterHasBranchTip ? b.name : undefined,
-                                )
-                              }
-                              onDoubleClick={(event) => event.stopPropagation()}
-                              onMouseEnter={() =>
-                                setTooltip({
-                                  x: anchorX,
-                                  y: anchorY,
-                                  lines: [
-                                    `Commit ${tooltipSha}`,
-                                    tooltipMessage
-                                      ? truncatePrompt(tooltipMessage, COMMIT_TOOLTIP_PREVIEW_MAX)
-                                      : `@${tooltipAuthor}`,
-                                    `@${tooltipAuthor} · ${fmtTooltipDate(tooltipDate)}`,
-                                  ],
-                                  avatarUrl: showBranchAvatar ? b.lastCommitAuthorAvatar : undefined,
-                                  avatarFallback: tooltipAuthor?.charAt(0).toUpperCase() || '?',
-                                })
-                              }
-                              onMouseLeave={() => setTooltip(null)}
-                            />
-                          ) : (
-                            <circle
-                              key={clusterKey}
-                              className={undefined}
-                              cx={anchorX}
-                              cy={anchorY}
-                              r={scaledNodeSize / 2}
-                              fill={isGhostRect ? 'none' : dotFill}
-                              stroke={isGhostRect ? LOCAL_UNPUSHED_GRAY : 'var(--background)'}
-                              strokeWidth={1.2}
-                              strokeDasharray={isGhostRect ? '3 3' : undefined}
-                              style={{ cursor: 'pointer' }}
-                              onClick={(event) =>
-                                handleCommitNodeClick(
-                                  event,
-                                  targetCommitSha,
-                                  clusterHasBranchTip ? b.name : undefined,
-                                )
-                              }
-                              onDoubleClick={(event) => event.stopPropagation()}
-                              onMouseEnter={() =>
-                                setTooltip({
-                                  x: anchorX,
-                                  y: anchorY,
-                                  lines: [
-                                    `Commit ${tooltipSha}`,
-                                    tooltipMessage
-                                      ? truncatePrompt(tooltipMessage, COMMIT_TOOLTIP_PREVIEW_MAX)
-                                      : `@${tooltipAuthor}`,
-                                    `@${tooltipAuthor} · ${fmtTooltipDate(tooltipDate)}`,
-                                  ],
-                                  avatarUrl: showBranchAvatar ? b.lastCommitAuthorAvatar : undefined,
-                                  avatarFallback: tooltipAuthor?.charAt(0).toUpperCase() || '?',
-                                })
-                              }
-                              onMouseLeave={() => setTooltip(null)}
-                            />
-                          )
+                          <rect
+                            key={clusterKey}
+                            className="branch-map-commit-rect"
+                            x={anchorX - rectSize.width / 2}
+                            y={anchorY - rectSize.height / 2}
+                            width={rectSize.width}
+                            height={rectSize.height}
+                            data-base-rx={rectSize.radius}
+                            rx={rectSize.radius / Math.max(layerCameraScale.x, 0.0001)}
+                            style={{ cursor: 'pointer' }}
+                            fill={isGhostRect ? 'none' : dotFill}
+                            stroke={isGhostRect ? LOCAL_UNPUSHED_GRAY : 'none'}
+                            strokeWidth={isGhostRect ? 1.2 : 0}
+                            strokeDasharray={isGhostRect ? '3 3' : undefined}
+                            onClick={(event) =>
+                              handleCommitNodeClick(
+                                event,
+                                targetCommitSha,
+                                clusterHasBranchTip ? b.name : undefined,
+                              )
+                            }
+                            onDoubleClick={(event) => event.stopPropagation()}
+                            onMouseEnter={() =>
+                              setTooltip({
+                                x: anchorX,
+                                y: anchorY,
+                                lines: [
+                                  `Commit ${tooltipSha}`,
+                                  tooltipMessage
+                                    ? truncatePrompt(tooltipMessage, COMMIT_TOOLTIP_PREVIEW_MAX)
+                                    : `@${tooltipAuthor}`,
+                                  `@${tooltipAuthor} · ${fmtTooltipDate(tooltipDate)}`,
+                                ],
+                                avatarUrl: showBranchAvatar ? b.lastCommitAuthorAvatar : undefined,
+                                avatarFallback: tooltipAuthor?.charAt(0).toUpperCase() || '?',
+                              })
+                            }
+                            onMouseLeave={() => setTooltip(null)}
+                          />
                         );
                       }
 
@@ -4141,33 +3846,22 @@ export default function BranchMap({
                                 const depth = stackDepth - 1 - i;
                                 const dx = depth * clumpStackOffset;
                                 const dy = -depth * clumpStackOffset;
-                                if (isGridLayout) {
-                                  return (
-                                    <g
-                                      key={`stack-${i}`}
-                                      transform={`translate(${anchorX + dx} ${anchorY + dy})`}
-                                      opacity={0.85 - depth * 0.12}
-                                    >
-                                      <rect
-                                        className="branch-map-commit-rect"
-                                        x={-rectSize.width / 2}
-                                        y={-rectSize.height / 2}
-                                        width={rectSize.width}
-                                        height={rectSize.height}
-                                        data-base-rx={rectSize.radius}
-                                        rx={rectSize.radius / Math.max(layerCameraScale.x, 0.0001)}
-                                        fill={dotFill}
-                                      />
-                                    </g>
-                                  );
-                                }
                                 return (
                                   <g
                                     key={`stack-${i}`}
                                     transform={`translate(${anchorX + dx} ${anchorY + dy})`}
                                     opacity={0.85 - depth * 0.12}
                                   >
-                                    <circle r={scaledNodeSize / 2 + CLUMP_SIZE_BOOST_PX} fill={dotFill} />
+                                    <rect
+                                      className="branch-map-commit-rect"
+                                      x={-rectSize.width / 2}
+                                      y={-rectSize.height / 2}
+                                      width={rectSize.width}
+                                      height={rectSize.height}
+                                      data-base-rx={rectSize.radius}
+                                      rx={rectSize.radius / Math.max(layerCameraScale.x, 0.0001)}
+                                      fill={dotFill}
+                                    />
                                   </g>
                                 );
                               })}
@@ -4190,12 +3884,10 @@ export default function BranchMap({
                           {!isExpanded && (() => {
                             const pad = worldPx(6);
                             const hit = collapsedClumpHitRect(
-                              isGridLayout,
                               anchorX,
                               anchorY,
                               stackDepth,
                               rectSize,
-                              scaledNodeSize,
                               clumpStackOffset,
                               pad
                             );
@@ -4264,112 +3956,64 @@ export default function BranchMap({
                                     style={{ ...clumpAnimStyle, pointerEvents: phase === 'expanded' ? 'auto' : 'none' }}
                                     opacity={memberOpacity}
                                   >
-                                    {isGridLayout ? (
-                                      <rect
-                                        className="branch-map-commit-rect"
-                                        x={-localRect.width / 2}
-                                        y={-localRect.height / 2}
-                                        width={localRect.width}
-                                        height={localRect.height}
-                                        data-base-rx={localRect.radius}
-                                        rx={localRect.radius / Math.max(layerCameraScale.x, 0.0001)}
-                                        fill={dotFill}
-                                        stroke={isGridLayout ? 'none' : 'var(--background)'}
-                                        strokeWidth={isGridLayout ? 0 : 1.2}
-                                        style={{ cursor: 'pointer' }}
-                                        onClick={(event) =>
-                                          handleCommitNodeClick(
-                                            event,
-                                            commit.fullSha,
-                                            clusterHasBranchTip && commit.fullSha === b.headSha
-                                              ? b.name
-                                              : undefined,
-                                          )
-                                        }
-                                        onDoubleClick={(event) => event.stopPropagation()}
-                                        onMouseEnter={() =>
-                                          setTooltip({
-                                            x: entry.x,
-                                            y: entry.y,
-                                            lines: [
-                                              `Commit ${tooltipSha}`,
-                                              tooltipMessage
-                                                ? truncatePrompt(tooltipMessage, COMMIT_TOOLTIP_PREVIEW_MAX)
-                                                : `@${tooltipAuthor}`,
-                                              `@${tooltipAuthor} · ${fmtTooltipDate(tooltipDate)}`,
-                                            ],
-                                            avatarFallback: tooltipAuthor?.charAt(0).toUpperCase() || '?',
-                                          })
-                                        }
-                                        onMouseLeave={() => setTooltip(null)}
-                                      />
-                                    ) : (
-                                      <circle
-                                        r={scaledNodeSize / 2}
-                                        fill={dotFill}
-                                        stroke={isGridLayout ? 'none' : 'var(--background)'}
-                                        strokeWidth={isGridLayout ? 0 : 1.2}
-                                        style={{ cursor: 'pointer' }}
-                                        onClick={(event) =>
-                                          handleCommitNodeClick(
-                                            event,
-                                            commit.fullSha,
-                                            clusterHasBranchTip && commit.fullSha === b.headSha
-                                              ? b.name
-                                              : undefined,
-                                          )
-                                        }
-                                        onDoubleClick={(event) => event.stopPropagation()}
-                                        onMouseEnter={() =>
-                                          setTooltip({
-                                            x: entry.x,
-                                            y: entry.y,
-                                            lines: [
-                                              `Commit ${tooltipSha}`,
-                                              tooltipMessage
-                                                ? truncatePrompt(tooltipMessage, COMMIT_TOOLTIP_PREVIEW_MAX)
-                                                : `@${tooltipAuthor}`,
-                                              `@${tooltipAuthor} · ${fmtTooltipDate(tooltipDate)}`,
-                                            ],
-                                            avatarFallback: tooltipAuthor?.charAt(0).toUpperCase() || '?',
-                                          })
-                                        }
-                                        onMouseLeave={() => setTooltip(null)}
-                                      />
-                                    )}
+                                    <rect
+                                      className="branch-map-commit-rect"
+                                      x={-localRect.width / 2}
+                                      y={-localRect.height / 2}
+                                      width={localRect.width}
+                                      height={localRect.height}
+                                      data-base-rx={localRect.radius}
+                                      rx={localRect.radius / Math.max(layerCameraScale.x, 0.0001)}
+                                      fill={dotFill}
+                                      stroke="none"
+                                      strokeWidth={0}
+                                      style={{ cursor: 'pointer' }}
+                                      onClick={(event) =>
+                                        handleCommitNodeClick(
+                                          event,
+                                          commit.fullSha,
+                                          clusterHasBranchTip && commit.fullSha === b.headSha
+                                            ? b.name
+                                            : undefined,
+                                        )
+                                      }
+                                      onDoubleClick={(event) => event.stopPropagation()}
+                                      onMouseEnter={() =>
+                                        setTooltip({
+                                          x: entry.x,
+                                          y: entry.y,
+                                          lines: [
+                                            `Commit ${tooltipSha}`,
+                                            tooltipMessage
+                                              ? truncatePrompt(tooltipMessage, COMMIT_TOOLTIP_PREVIEW_MAX)
+                                              : `@${tooltipAuthor}`,
+                                            `@${tooltipAuthor} · ${fmtTooltipDate(tooltipDate)}`,
+                                          ],
+                                          avatarFallback: tooltipAuthor?.charAt(0).toUpperCase() || '?',
+                                        })
+                                      }
+                                      onMouseLeave={() => setTooltip(null)}
+                                    />
 
                                     {isCheckedOutCommit && (
                                       <>
-                                        {isGridLayout ? (
-                                          <rect
-                                            className="branch-map-commit-rect"
-                                            x={-localRect.width / 2 - CHECKED_OUT_RING_GAP}
-                                            y={-localRect.height / 2 - CHECKED_OUT_RING_GAP}
-                                            width={localRect.width + 2 * CHECKED_OUT_RING_GAP}
-                                            height={localRect.height + 2 * CHECKED_OUT_RING_GAP}
-                                            data-base-rx={localRect.radius + CHECKED_OUT_RING_GAP}
-                                            rx={
-                                              (localRect.radius + CHECKED_OUT_RING_GAP) /
-                                              Math.max(layerCameraScale.x, 0.0001)
-                                            }
-                                            fill="none"
-                                            stroke={CHECKED_OUT_RING_STROKE}
-                                            strokeWidth={CHECKED_OUT_RING_STROKE_WIDTH}
-                                            vectorEffect="non-scaling-stroke"
-                                            pointerEvents="none"
-                                          />
-                                        ) : (
-                                          <circle
-                                            cx={0}
-                                            cy={0}
-                                            r={scaledNodeSize / 2 + CHECKED_OUT_RING_GAP}
-                                            fill="none"
-                                            stroke={CHECKED_OUT_RING_STROKE}
-                                            strokeWidth={CHECKED_OUT_RING_STROKE_WIDTH}
-                                            vectorEffect="non-scaling-stroke"
-                                            pointerEvents="none"
-                                          />
-                                        )}
+                                        <rect
+                                          className="branch-map-commit-rect"
+                                          x={-localRect.width / 2 - CHECKED_OUT_RING_GAP}
+                                          y={-localRect.height / 2 - CHECKED_OUT_RING_GAP}
+                                          width={localRect.width + 2 * CHECKED_OUT_RING_GAP}
+                                          height={localRect.height + 2 * CHECKED_OUT_RING_GAP}
+                                          data-base-rx={localRect.radius + CHECKED_OUT_RING_GAP}
+                                          rx={
+                                            (localRect.radius + CHECKED_OUT_RING_GAP) /
+                                            Math.max(layerCameraScale.x, 0.0001)
+                                          }
+                                          fill="none"
+                                          stroke={CHECKED_OUT_RING_STROKE}
+                                          strokeWidth={CHECKED_OUT_RING_STROKE_WIDTH}
+                                          vectorEffect="non-scaling-stroke"
+                                          pointerEvents="none"
+                                        />
                                       </>
                                     )}
                                   </g>
@@ -4594,7 +4238,7 @@ export default function BranchMap({
                   (a, b) => new Date(a.date).getTime() - new Date(b.date).getTime()
                 )
                 : [];
-              const minCommitTimeX = forkTimeX + (isGridLayout ? GRID_EVENT_GAP : cornerR + 6);
+              const minCommitTimeX = forkTimeX + GRID_EVENT_GAP;
               const maxCommitTimeX = Math.max(minCommitTimeX, commitTipTimeX);
               const commitItems: Array<BranchCommitPreview | undefined> = hasPreviewData
                 ? displayedCommits
@@ -4796,162 +4440,101 @@ export default function BranchMap({
 
                     if (count <= 1) {
                       const rectSize = commitRectSize(scaledNodeSize);
-                      const gridPad = isGridLayout ? 0 : 2.8;
+                      const gridPad = 0;
                       const isGhostRect = isFreshCopy;
                       return (
-                        isGridLayout ? (
-                          <g key={`commit-overlay-${clusterKey}`}>
-                            {!isGhostRect && (
-                              <rect
-                                className="branch-map-commit-rect"
-                                x={anchorX - (rectSize.width + gridPad) / 2}
-                                y={anchorY - (rectSize.height + gridPad) / 2}
-                                width={rectSize.width + gridPad}
-                                height={rectSize.height + gridPad}
-                                data-base-rx={Math.max(2, rectSize.radius + (gridPad ? 0.6 : 0))}
-                                rx={Math.max(2, rectSize.radius + (gridPad ? 0.6 : 0)) / Math.max(layerCameraScale.x, 0.0001)}
-                                fill="var(--background)"
-                              />
-                            )}
+                        <g key={`commit-overlay-${clusterKey}`}>
+                          {!isGhostRect && (
                             <rect
                               className="branch-map-commit-rect"
-                              x={anchorX - rectSize.width / 2}
-                              y={anchorY - rectSize.height / 2}
-                              width={rectSize.width}
-                              height={rectSize.height}
-                              data-base-rx={rectSize.radius}
-                              rx={rectSize.radius / Math.max(layerCameraScale.x, 0.0001)}
-                              fill={isGhostRect ? 'none' : dotFill}
-                              stroke={isGhostRect ? LOCAL_UNPUSHED_GRAY : undefined}
-                              strokeWidth={isGhostRect ? 1.2 : undefined}
-                              strokeDasharray={isGhostRect ? '3 3' : undefined}
+                              x={anchorX - (rectSize.width + gridPad) / 2}
+                              y={anchorY - (rectSize.height + gridPad) / 2}
+                              width={rectSize.width + gridPad}
+                              height={rectSize.height + gridPad}
+                              data-base-rx={Math.max(2, rectSize.radius + (gridPad ? 0.6 : 0))}
+                              rx={Math.max(2, rectSize.radius + (gridPad ? 0.6 : 0)) / Math.max(layerCameraScale.x, 0.0001)}
+                              fill="var(--background)"
                             />
-                            {clusterHasCheckedOutHead && !isOverlayExpanded && (
-                              <rect
-                                className="branch-map-commit-rect"
-                                x={anchorX - (rectSize.width + gridPad) / 2 - CHECKED_OUT_RING_GAP}
-                                y={anchorY - (rectSize.height + gridPad) / 2 - CHECKED_OUT_RING_GAP}
-                                width={rectSize.width + gridPad + 2 * CHECKED_OUT_RING_GAP}
-                                height={rectSize.height + gridPad + 2 * CHECKED_OUT_RING_GAP}
-                                data-base-rx={Math.max(2, rectSize.radius + (gridPad ? 0.6 : 0)) + CHECKED_OUT_RING_GAP}
-                                rx={
-                                  (Math.max(2, rectSize.radius + (gridPad ? 0.6 : 0)) + CHECKED_OUT_RING_GAP) /
-                                  Math.max(layerCameraScale.x, 0.0001)
-                                }
-                                fill="none"
-                                stroke={CHECKED_OUT_RING_STROKE}
-                                strokeWidth={CHECKED_OUT_RING_STROKE_WIDTH}
-                                vectorEffect="non-scaling-stroke"
-                              />
-                            )}
-                          </g>
-                        ) : (
-                          <g key={`commit-overlay-${clusterKey}`}>
-                            {!isGhostRect && (
-                              <circle
-                                cx={anchorX}
-                                cy={anchorY}
-                                r={scaledNodeSize / 2 + 1.4}
-                                fill="var(--background)"
-                              />
-                            )}
-                            <circle
-                              cx={anchorX}
-                              cy={anchorY}
-                              r={scaledNodeSize / 2}
-                              fill={isGhostRect ? 'none' : dotFill}
-                              stroke={isGhostRect ? LOCAL_UNPUSHED_GRAY : undefined}
-                              strokeWidth={isGhostRect ? 1.2 : undefined}
-                              strokeDasharray={isGhostRect ? '3 3' : undefined}
+                          )}
+                          <rect
+                            className="branch-map-commit-rect"
+                            x={anchorX - rectSize.width / 2}
+                            y={anchorY - rectSize.height / 2}
+                            width={rectSize.width}
+                            height={rectSize.height}
+                            data-base-rx={rectSize.radius}
+                            rx={rectSize.radius / Math.max(layerCameraScale.x, 0.0001)}
+                            fill={isGhostRect ? 'none' : dotFill}
+                            stroke={isGhostRect ? LOCAL_UNPUSHED_GRAY : undefined}
+                            strokeWidth={isGhostRect ? 1.2 : undefined}
+                            strokeDasharray={isGhostRect ? '3 3' : undefined}
+                          />
+                          {clusterHasCheckedOutHead && !isOverlayExpanded && (
+                            <rect
+                              className="branch-map-commit-rect"
+                              x={anchorX - (rectSize.width + gridPad) / 2 - CHECKED_OUT_RING_GAP}
+                              y={anchorY - (rectSize.height + gridPad) / 2 - CHECKED_OUT_RING_GAP}
+                              width={rectSize.width + gridPad + 2 * CHECKED_OUT_RING_GAP}
+                              height={rectSize.height + gridPad + 2 * CHECKED_OUT_RING_GAP}
+                              data-base-rx={Math.max(2, rectSize.radius + (gridPad ? 0.6 : 0)) + CHECKED_OUT_RING_GAP}
+                              rx={
+                                (Math.max(2, rectSize.radius + (gridPad ? 0.6 : 0)) + CHECKED_OUT_RING_GAP) /
+                                Math.max(layerCameraScale.x, 0.0001)
+                              }
+                              fill="none"
+                              stroke={CHECKED_OUT_RING_STROKE}
+                              strokeWidth={CHECKED_OUT_RING_STROKE_WIDTH}
+                              vectorEffect="non-scaling-stroke"
                             />
-                            {clusterHasCheckedOutHead && !isOverlayExpanded && (
-                              <circle
-                                cx={anchorX}
-                                cy={anchorY}
-                                r={scaledNodeSize / 2 + 1.4 + CHECKED_OUT_RING_GAP}
-                                fill="none"
-                                stroke={CHECKED_OUT_RING_STROKE}
-                                strokeWidth={CHECKED_OUT_RING_STROKE_WIDTH}
-                                vectorEffect="non-scaling-stroke"
-                              />
-                            )}
-                          </g>
-                        )
+                          )}
+                        </g>
                       );
                     }
 
                     const clusterRectSize = nodeRectSize(count);
-                    const gridPad = isGridLayout ? 0 : 2.8;
+                    const gridPad = 0;
                     return (
                       <g key={`commit-overlay-${clusterKey}`}>
-                        {isGridLayout ? (
-                          <>
+                        <>
+                          <rect
+                            className="branch-map-commit-rect"
+                            x={anchorX - (clusterRectSize.width + gridPad) / 2}
+                            y={anchorY - (clusterRectSize.height + gridPad) / 2}
+                            width={clusterRectSize.width + gridPad}
+                            height={clusterRectSize.height + gridPad}
+                            data-base-rx={Math.max(2, clusterRectSize.radius + (gridPad ? 0.6 : 0))}
+                            rx={Math.max(2, clusterRectSize.radius + (gridPad ? 0.6 : 0)) / Math.max(layerCameraScale.x, 0.0001)}
+                            fill="var(--background)"
+                          />
+                          <rect
+                            className="branch-map-commit-rect"
+                            x={anchorX - clusterRectSize.width / 2}
+                            y={anchorY - clusterRectSize.height / 2}
+                            width={clusterRectSize.width}
+                            height={clusterRectSize.height}
+                            data-base-rx={clusterRectSize.radius}
+                            rx={clusterRectSize.radius / Math.max(layerCameraScale.x, 0.0001)}
+                            fill={dotFill}
+                          />
+                          {clusterHasCheckedOutHead && !isOverlayExpanded && (
                             <rect
                               className="branch-map-commit-rect"
-                              x={anchorX - (clusterRectSize.width + gridPad) / 2}
-                              y={anchorY - (clusterRectSize.height + gridPad) / 2}
-                              width={clusterRectSize.width + gridPad}
-                              height={clusterRectSize.height + gridPad}
-                              data-base-rx={Math.max(2, clusterRectSize.radius + (gridPad ? 0.6 : 0))}
-                              rx={Math.max(2, clusterRectSize.radius + (gridPad ? 0.6 : 0)) / Math.max(layerCameraScale.x, 0.0001)}
-                              fill="var(--background)"
+                              x={anchorX - (clusterRectSize.width + gridPad) / 2 - CHECKED_OUT_RING_GAP}
+                              y={anchorY - (clusterRectSize.height + gridPad) / 2 - CHECKED_OUT_RING_GAP}
+                              width={clusterRectSize.width + gridPad + 2 * CHECKED_OUT_RING_GAP}
+                              height={clusterRectSize.height + gridPad + 2 * CHECKED_OUT_RING_GAP}
+                              data-base-rx={Math.max(2, clusterRectSize.radius + (gridPad ? 0.6 : 0)) + CHECKED_OUT_RING_GAP}
+                              rx={
+                                (Math.max(2, clusterRectSize.radius + (gridPad ? 0.6 : 0)) + CHECKED_OUT_RING_GAP) /
+                                Math.max(layerCameraScale.x, 0.0001)
+                              }
+                              fill="none"
+                              stroke={CHECKED_OUT_RING_STROKE}
+                              strokeWidth={CHECKED_OUT_RING_STROKE_WIDTH}
+                              vectorEffect="non-scaling-stroke"
                             />
-                            <rect
-                              className="branch-map-commit-rect"
-                              x={anchorX - clusterRectSize.width / 2}
-                              y={anchorY - clusterRectSize.height / 2}
-                              width={clusterRectSize.width}
-                              height={clusterRectSize.height}
-                              data-base-rx={clusterRectSize.radius}
-                              rx={clusterRectSize.radius / Math.max(layerCameraScale.x, 0.0001)}
-                              fill={dotFill}
-                            />
-                            {clusterHasCheckedOutHead && !isOverlayExpanded && (
-                              <rect
-                                className="branch-map-commit-rect"
-                                x={anchorX - (clusterRectSize.width + gridPad) / 2 - CHECKED_OUT_RING_GAP}
-                                y={anchorY - (clusterRectSize.height + gridPad) / 2 - CHECKED_OUT_RING_GAP}
-                                width={clusterRectSize.width + gridPad + 2 * CHECKED_OUT_RING_GAP}
-                                height={clusterRectSize.height + gridPad + 2 * CHECKED_OUT_RING_GAP}
-                                data-base-rx={Math.max(2, clusterRectSize.radius + (gridPad ? 0.6 : 0)) + CHECKED_OUT_RING_GAP}
-                                rx={
-                                  (Math.max(2, clusterRectSize.radius + (gridPad ? 0.6 : 0)) + CHECKED_OUT_RING_GAP) /
-                                  Math.max(layerCameraScale.x, 0.0001)
-                                }
-                                fill="none"
-                                stroke={CHECKED_OUT_RING_STROKE}
-                                strokeWidth={CHECKED_OUT_RING_STROKE_WIDTH}
-                                vectorEffect="non-scaling-stroke"
-                              />
-                            )}
-                          </>
-                        ) : (
-                          <>
-                            <circle
-                              cx={anchorX}
-                              cy={anchorY}
-                              r={scaledNodeSize / 2 + CLUMP_SIZE_BOOST_PX + 1.4}
-                              fill="var(--background)"
-                            />
-                            <circle
-                              cx={anchorX}
-                              cy={anchorY}
-                              r={scaledNodeSize / 2 + CLUMP_SIZE_BOOST_PX}
-                              fill={dotFill}
-                            />
-                            {clusterHasCheckedOutHead && !isOverlayExpanded && (
-                              <circle
-                                cx={anchorX}
-                                cy={anchorY}
-                                r={scaledNodeSize / 2 + CLUMP_SIZE_BOOST_PX + 1.4 + CHECKED_OUT_RING_GAP}
-                                fill="none"
-                                stroke={CHECKED_OUT_RING_STROKE}
-                                strokeWidth={CHECKED_OUT_RING_STROKE_WIDTH}
-                                vectorEffect="non-scaling-stroke"
-                              />
-                            )}
-                          </>
-                        )}
+                          )}
+                        </>
                         {!isOverlayExpanded && (
                           <text
                             x={anchorX}
@@ -5017,151 +4600,95 @@ export default function BranchMap({
 
                 if (count === 1) {
                   const rectSize = commitRectSize(scaledNodeSize);
-                  const gridPad = isGridLayout ? 0 : 2.8;
+                  const gridPad = 0;
                   return (
-                    isGridLayout ? (
-                      <g key={`main-direct-overlay-${clusterKey}`}>
+                    <g key={`main-direct-overlay-${clusterKey}`}>
+                      <rect
+                        className="branch-map-commit-rect"
+                        x={anchorX - (rectSize.width + gridPad) / 2}
+                        y={anchorY - (rectSize.height + gridPad) / 2}
+                        width={rectSize.width + gridPad}
+                        height={rectSize.height + gridPad}
+                        data-base-rx={Math.max(2, rectSize.radius + (gridPad ? 0.6 : 0))}
+                        rx={Math.max(2, rectSize.radius + (gridPad ? 0.6 : 0)) / Math.max(layerCameraScale.x, 0.0001)}
+                        fill="var(--background)"
+                      />
+                      <rect
+                        className="branch-map-commit-rect"
+                        x={anchorX - rectSize.width / 2}
+                        y={anchorY - rectSize.height / 2}
+                        width={rectSize.width}
+                        height={rectSize.height}
+                        data-base-rx={rectSize.radius}
+                        rx={rectSize.radius / Math.max(layerCameraScale.x, 0.0001)}
+                        fill={CANVAS_NEUTRAL_GRAY}
+                      />
+                      {mainClusterHasCheckedOutHead && (
                         <rect
                           className="branch-map-commit-rect"
-                          x={anchorX - (rectSize.width + gridPad) / 2}
-                          y={anchorY - (rectSize.height + gridPad) / 2}
-                          width={rectSize.width + gridPad}
-                          height={rectSize.height + gridPad}
-                          data-base-rx={Math.max(2, rectSize.radius + (gridPad ? 0.6 : 0))}
-                          rx={Math.max(2, rectSize.radius + (gridPad ? 0.6 : 0)) / Math.max(layerCameraScale.x, 0.0001)}
-                          fill="var(--background)"
+                          x={anchorX - (rectSize.width + gridPad) / 2 - CHECKED_OUT_RING_GAP}
+                          y={anchorY - (rectSize.height + gridPad) / 2 - CHECKED_OUT_RING_GAP}
+                          width={rectSize.width + gridPad + 2 * CHECKED_OUT_RING_GAP}
+                          height={rectSize.height + gridPad + 2 * CHECKED_OUT_RING_GAP}
+                          data-base-rx={Math.max(2, rectSize.radius + (gridPad ? 0.6 : 0)) + CHECKED_OUT_RING_GAP}
+                          rx={
+                            (Math.max(2, rectSize.radius + (gridPad ? 0.6 : 0)) + CHECKED_OUT_RING_GAP) /
+                            Math.max(layerCameraScale.x, 0.0001)
+                          }
+                          fill="none"
+                          stroke={CHECKED_OUT_RING_STROKE}
+                          strokeWidth={CHECKED_OUT_RING_STROKE_WIDTH}
+                          vectorEffect="non-scaling-stroke"
                         />
-                        <rect
-                          className="branch-map-commit-rect"
-                          x={anchorX - rectSize.width / 2}
-                          y={anchorY - rectSize.height / 2}
-                          width={rectSize.width}
-                          height={rectSize.height}
-                          data-base-rx={rectSize.radius}
-                          rx={rectSize.radius / Math.max(layerCameraScale.x, 0.0001)}
-                          fill={CANVAS_NEUTRAL_GRAY}
-                        />
-                        {mainClusterHasCheckedOutHead && (
-                          <rect
-                            className="branch-map-commit-rect"
-                            x={anchorX - (rectSize.width + gridPad) / 2 - CHECKED_OUT_RING_GAP}
-                            y={anchorY - (rectSize.height + gridPad) / 2 - CHECKED_OUT_RING_GAP}
-                            width={rectSize.width + gridPad + 2 * CHECKED_OUT_RING_GAP}
-                            height={rectSize.height + gridPad + 2 * CHECKED_OUT_RING_GAP}
-                            data-base-rx={Math.max(2, rectSize.radius + (gridPad ? 0.6 : 0)) + CHECKED_OUT_RING_GAP}
-                            rx={
-                              (Math.max(2, rectSize.radius + (gridPad ? 0.6 : 0)) + CHECKED_OUT_RING_GAP) /
-                              Math.max(layerCameraScale.x, 0.0001)
-                            }
-                            fill="none"
-                            stroke={CHECKED_OUT_RING_STROKE}
-                            strokeWidth={CHECKED_OUT_RING_STROKE_WIDTH}
-                            vectorEffect="non-scaling-stroke"
-                          />
-                        )}
-                      </g>
-                    ) : (
-                      <g key={`main-direct-overlay-${clusterKey}`}>
-                        <circle
-                          cx={anchorX}
-                          cy={anchorY}
-                          r={scaledNodeSize / 2 + 1.4}
-                          fill="var(--background)"
-                        />
-                        <circle
-                          cx={anchorX}
-                          cy={anchorY}
-                          r={scaledNodeSize / 2}
-                          fill={CANVAS_NEUTRAL_GRAY}
-                        />
-                        {mainClusterHasCheckedOutHead && (
-                          <circle
-                            cx={anchorX}
-                            cy={anchorY}
-                            r={scaledNodeSize / 2 + 1.4 + CHECKED_OUT_RING_GAP}
-                            fill="none"
-                            stroke={CHECKED_OUT_RING_STROKE}
-                            strokeWidth={CHECKED_OUT_RING_STROKE_WIDTH}
-                            vectorEffect="non-scaling-stroke"
-                          />
-                        )}
-                      </g>
-                    )
+                      )}
+                    </g>
                   );
                 }
 
                 const clusterRectSize = nodeRectSize(count);
-                const gridPad = isGridLayout ? 0 : 2.8;
+                const gridPad = 0;
                 return (
                   <g key={`main-direct-overlay-${clusterKey}`}>
-                    {isGridLayout ? (
-                      <>
+                    <>
+                      <rect
+                        className="branch-map-commit-rect"
+                        x={anchorX - (clusterRectSize.width + gridPad) / 2}
+                        y={anchorY - (clusterRectSize.height + gridPad) / 2}
+                        width={clusterRectSize.width + gridPad}
+                        height={clusterRectSize.height + gridPad}
+                        data-base-rx={Math.max(2, clusterRectSize.radius + (gridPad ? 0.6 : 0))}
+                        rx={Math.max(2, clusterRectSize.radius + (gridPad ? 0.6 : 0)) / Math.max(layerCameraScale.x, 0.0001)}
+                        fill="var(--background)"
+                      />
+                      <rect
+                        className="branch-map-commit-rect"
+                        x={anchorX - clusterRectSize.width / 2}
+                        y={anchorY - clusterRectSize.height / 2}
+                        width={clusterRectSize.width}
+                        height={clusterRectSize.height}
+                        data-base-rx={clusterRectSize.radius}
+                        rx={clusterRectSize.radius / Math.max(layerCameraScale.x, 0.0001)}
+                        fill={CANVAS_NEUTRAL_GRAY}
+                      />
+                      {mainClusterHasCheckedOutHead && (
                         <rect
                           className="branch-map-commit-rect"
-                          x={anchorX - (clusterRectSize.width + gridPad) / 2}
-                          y={anchorY - (clusterRectSize.height + gridPad) / 2}
-                          width={clusterRectSize.width + gridPad}
-                          height={clusterRectSize.height + gridPad}
-                          data-base-rx={Math.max(2, clusterRectSize.radius + (gridPad ? 0.6 : 0))}
-                          rx={Math.max(2, clusterRectSize.radius + (gridPad ? 0.6 : 0)) / Math.max(layerCameraScale.x, 0.0001)}
-                          fill="var(--background)"
+                          x={anchorX - (clusterRectSize.width + gridPad) / 2 - CHECKED_OUT_RING_GAP}
+                          y={anchorY - (clusterRectSize.height + gridPad) / 2 - CHECKED_OUT_RING_GAP}
+                          width={clusterRectSize.width + gridPad + 2 * CHECKED_OUT_RING_GAP}
+                          height={clusterRectSize.height + gridPad + 2 * CHECKED_OUT_RING_GAP}
+                          data-base-rx={Math.max(2, clusterRectSize.radius + (gridPad ? 0.6 : 0)) + CHECKED_OUT_RING_GAP}
+                          rx={
+                            (Math.max(2, clusterRectSize.radius + (gridPad ? 0.6 : 0)) + CHECKED_OUT_RING_GAP) /
+                            Math.max(layerCameraScale.x, 0.0001)
+                          }
+                          fill="none"
+                          stroke={CHECKED_OUT_RING_STROKE}
+                          strokeWidth={CHECKED_OUT_RING_STROKE_WIDTH}
+                          vectorEffect="non-scaling-stroke"
                         />
-                        <rect
-                          className="branch-map-commit-rect"
-                          x={anchorX - clusterRectSize.width / 2}
-                          y={anchorY - clusterRectSize.height / 2}
-                          width={clusterRectSize.width}
-                          height={clusterRectSize.height}
-                          data-base-rx={clusterRectSize.radius}
-                          rx={clusterRectSize.radius / Math.max(layerCameraScale.x, 0.0001)}
-                          fill={CANVAS_NEUTRAL_GRAY}
-                        />
-                        {mainClusterHasCheckedOutHead && (
-                          <rect
-                            className="branch-map-commit-rect"
-                            x={anchorX - (clusterRectSize.width + gridPad) / 2 - CHECKED_OUT_RING_GAP}
-                            y={anchorY - (clusterRectSize.height + gridPad) / 2 - CHECKED_OUT_RING_GAP}
-                            width={clusterRectSize.width + gridPad + 2 * CHECKED_OUT_RING_GAP}
-                            height={clusterRectSize.height + gridPad + 2 * CHECKED_OUT_RING_GAP}
-                            data-base-rx={Math.max(2, clusterRectSize.radius + (gridPad ? 0.6 : 0)) + CHECKED_OUT_RING_GAP}
-                            rx={
-                              (Math.max(2, clusterRectSize.radius + (gridPad ? 0.6 : 0)) + CHECKED_OUT_RING_GAP) /
-                              Math.max(layerCameraScale.x, 0.0001)
-                            }
-                            fill="none"
-                            stroke={CHECKED_OUT_RING_STROKE}
-                            strokeWidth={CHECKED_OUT_RING_STROKE_WIDTH}
-                            vectorEffect="non-scaling-stroke"
-                          />
-                        )}
-                      </>
-                    ) : (
-                      <>
-                        <circle
-                          cx={anchorX}
-                          cy={anchorY}
-                          r={scaledNodeSize / 2 + CLUMP_SIZE_BOOST_PX + 1.4}
-                          fill="var(--background)"
-                        />
-                        <circle
-                          cx={anchorX}
-                          cy={anchorY}
-                          r={scaledNodeSize / 2 + CLUMP_SIZE_BOOST_PX}
-                          fill={CANVAS_NEUTRAL_GRAY}
-                        />
-                        {mainClusterHasCheckedOutHead && (
-                          <circle
-                            cx={anchorX}
-                            cy={anchorY}
-                            r={scaledNodeSize / 2 + CLUMP_SIZE_BOOST_PX + 1.4 + CHECKED_OUT_RING_GAP}
-                            fill="none"
-                            stroke={CHECKED_OUT_RING_STROKE}
-                            strokeWidth={CHECKED_OUT_RING_STROKE_WIDTH}
-                            vectorEffect="non-scaling-stroke"
-                          />
-                        )}
-                      </>
-                    )}
+                      )}
+                    </>
                     {!isExpanded && (
                       <text
                         x={anchorX}
@@ -5443,47 +4970,29 @@ export default function BranchMap({
               </button>
             </div>
           )}
-          {!isPopoverWindow && isGridLayout && (
+          {!isPopoverWindow && (
             <div className="flex items-center gap-2 shrink-0 bg-card border border-border rounded-full px-3 py-1">
-              <span className="text-xs text-muted-foreground select-none">Grid lines</span>
+              <span className="text-xs text-muted-foreground select-none">Guide lines</span>
               <label className="relative inline-flex items-center cursor-pointer">
                 <input
                   type="checkbox"
-                  checked={showGridGuides}
-                  onChange={(e) => setShowGridGuides(e.target.checked)}
-                  aria-label="Toggle grid lines"
+                  checked={showGuides}
+                  onChange={(e) => setShowGuides(e.target.checked)}
+                  aria-label="Toggle guide lines"
                   className="sr-only"
                 />
                 <span
                   className={`w-10 h-5 rounded-full border transition-colors flex items-center p-0.5 ${
-                    showGridGuides ? 'bg-primary/10 border-primary/30' : 'bg-muted/30 border-border'
+                    showGuides ? 'bg-primary/10 border-primary/30' : 'bg-muted/30 border-border'
                   }`}
                 >
                   <span
                     className={`w-4 h-4 rounded-full bg-card shadow-sm transform transition-transform duration-200 ${
-                      showGridGuides ? 'translate-x-5' : 'translate-x-0'
+                      showGuides ? 'translate-x-5' : 'translate-x-0'
                     }`}
                   />
                 </span>
               </label>
-            </div>
-          )}
-          {!isPopoverWindow && !isGridLayout && (
-            <div className="flex items-center gap-2 shrink-0 bg-card border border-border rounded-full px-3 py-1">
-              <span className="text-xs text-muted-foreground select-none">Time</span>
-              <input
-                type="range"
-                min={TIME_SCALE_MIN}
-                max={TIME_SCALE_MAX}
-                step={TIME_SCALE_STEP}
-                value={timeScale}
-                onChange={(e) => setTimeScale(Number(e.target.value))}
-                className="timeline-scale-range w-24"
-                title={`${orientation === 'vertical' ? 'Vertical' : 'Horizontal'} time scaling`}
-              />
-              <span className="text-xs text-muted-foreground w-10 text-right tabular-nums select-none">
-                {effectiveTimeScale.toFixed(2)}x
-              </span>
             </div>
           )}
         </div>

@@ -1,5 +1,3 @@
-export type LayoutMode = 'timeline' | 'grid';
-
 export type AnchorPoint = { x: number; y: number };
 
 export type GridAxis = {
@@ -283,17 +281,6 @@ export function commitRectSize(baseNodeSize: number, clusterBoost = 0): {
   const width = height * 1.5;
   const radius = Math.max(1.5, Math.min(3, height * 0.18));
   return { width, height, radius };
-}
-
-export function densityLabelFromLayout(layoutMode: LayoutMode): string {
-  return layoutMode === 'grid' ? 'Density' : 'Time';
-}
-
-export function densityTitleFromLayout(layoutMode: LayoutMode, orientation: 'vertical' | 'horizontal'): string {
-  if (layoutMode === 'grid') {
-    return `${orientation === 'vertical' ? 'Vertical' : 'Horizontal'} grid density`;
-  }
-  return `${orientation === 'vertical' ? 'Vertical' : 'Horizontal'} time scaling`;
 }
 
 export function easedDensityProgress(value: number): number {
