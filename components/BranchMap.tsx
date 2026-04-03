@@ -4045,6 +4045,32 @@ export default function BranchMap({
                         </g>
                       );
                     })}
+                    {/* Ghost outline for fresh-copy branches with no commits */}
+                    {isFreshCopy && commitDots.length === 0 && (() => {
+                      const ghostRect = commitRectSize(scaledNodeSize);
+                      const tipPoint = projectPoint(lanePosX, timeCoordToY(commitTipTimeX));
+                      // Render a dashed-outline rect at the branch tip.
+                      // Fresh-copy branches have no real commit nodes, so we must not
+                      // fabricate any "HEAD of ___" commit previews.
+                      return (
+                        <rect
+                          key={`ghost-${b.name}`}
+                          className="branch-map-commit-rect"
+                          x={tipPoint.x - ghostRect.width / 2}
+                          y={tipPoint.y - ghostRect.height / 2}
+                          width={ghostRect.width}
+                          height={ghostRect.height}
+                          data-base-rx={ghostRect.radius}
+                          rx={ghostRect.radius / Math.max(layerCameraScale.x, 0.0001)}
+                          fill="none"
+                          stroke={LOCAL_UNPUSHED_GRAY}
+                          strokeWidth={1.2}
+                          strokeDasharray="3 3"
+                          style={{ pointerEvents: 'none' }}
+                        />
+                      );
+                    })()}
+
                     {/* Prompt marker hit areas stay on top so hover remains easy. */}
                     {promptMarkerClusters.map((cluster) => {
                       const count = cluster.entries.length;

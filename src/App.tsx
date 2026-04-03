@@ -380,7 +380,9 @@ function App() {
             const previews: BranchCommitPreview[] =
               commitPreviews.length > 0
                 ? commitPreviews
-                : [fallbackHeadPreview];
+                : isFreshBranch
+                  ? []
+                  : [fallbackHeadPreview];
             const uniqueCount = isFreshBranch
               ? 0
               : branch.commitsAhead > 0 ? commitPreviews.length : null;
