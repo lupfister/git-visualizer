@@ -4705,6 +4705,10 @@ export default function BranchMap({
                               {realCommitEntries.map((entry, idx) => {
                                 const commit = entry.item.commit;
                                 if (!commit?.fullSha) return null;
+                                const isCheckedOutCommit =
+                                  checkedOutHeadSha != null &&
+                                  (shaMatchesGitRef(commit.fullSha, checkedOutHeadSha) ||
+                                    shaMatchesGitRef(commit.sha, checkedOutHeadSha));
                                 const tooltipAuthor = commit.author ?? b.lastCommitAuthor;
                                 const tooltipDate = commit.date ?? b.lastCommitDate;
                                 const tooltipSha = commit.sha ?? commit.fullSha.slice(0, 7);
@@ -4808,6 +4812,41 @@ export default function BranchMap({
                                         }
                                         onMouseLeave={() => setTooltip(null)}
                                       />
+                                    )}
+
+                                    {isCheckedOutCommit && (
+                                      <>
+                                        {isGridLayout ? (
+                                          <rect
+                                            className="branch-map-commit-rect"
+                                            x={-localRect.width / 2 - CHECKED_OUT_RING_GAP}
+                                            y={-localRect.height / 2 - CHECKED_OUT_RING_GAP}
+                                            width={localRect.width + 2 * CHECKED_OUT_RING_GAP}
+                                            height={localRect.height + 2 * CHECKED_OUT_RING_GAP}
+                                            data-base-rx={localRect.radius + CHECKED_OUT_RING_GAP}
+                                            rx={
+                                              (localRect.radius + CHECKED_OUT_RING_GAP) /
+                                              Math.max(layerCameraScale.x, 0.0001)
+                                            }
+                                            fill="none"
+                                            stroke={CHECKED_OUT_RING_STROKE}
+                                            strokeWidth={CHECKED_OUT_RING_STROKE_WIDTH}
+                                            vectorEffect="non-scaling-stroke"
+                                            pointerEvents="none"
+                                          />
+                                        ) : (
+                                          <circle
+                                            cx={0}
+                                            cy={0}
+                                            r={scaledNodeSize / 2 + CHECKED_OUT_RING_GAP}
+                                            fill="none"
+                                            stroke={CHECKED_OUT_RING_STROKE}
+                                            strokeWidth={CHECKED_OUT_RING_STROKE_WIDTH}
+                                            vectorEffect="non-scaling-stroke"
+                                            pointerEvents="none"
+                                          />
+                                        )}
+                                      </>
                                     )}
                                   </g>
                                 );
@@ -5282,6 +5321,9 @@ export default function BranchMap({
                         return false;
                       });
 
+                    const isOverlayExpanded =
+                      (expandedClumps.get(clusterKey)?.isExpanded ?? false);
+
                     if (count <= 1) {
                       const rectSize = commitRectSize(scaledNodeSize);
                       const gridPad = isGridLayout ? 0 : 2.8;
@@ -5308,7 +5350,7 @@ export default function BranchMap({
                               rx={rectSize.radius / Math.max(layerCameraScale.x, 0.0001)}
                               fill={dotFill}
                             />
-                            {clusterHasCheckedOutHead && (
+                            {clusterHasCheckedOutHead && !isOverlayExpanded && (
                               <rect
                                 className="branch-map-commit-rect"
                                 x={anchorX - (rectSize.width + gridPad) / 2 - CHECKED_OUT_RING_GAP}
@@ -5341,7 +5383,7 @@ export default function BranchMap({
                               r={scaledNodeSize / 2}
                               fill={dotFill}
                             />
-                            {clusterHasCheckedOutHead && (
+                            {clusterHasCheckedOutHead && !isOverlayExpanded && (
                               <circle
                                 cx={anchorX}
                                 cy={anchorY}
@@ -5383,7 +5425,7 @@ export default function BranchMap({
                               rx={clusterRectSize.radius / Math.max(layerCameraScale.x, 0.0001)}
                               fill={dotFill}
                             />
-                            {clusterHasCheckedOutHead && (
+                            {clusterHasCheckedOutHead && !isOverlayExpanded && (
                               <rect
                                 className="branch-map-commit-rect"
                                 x={anchorX - (clusterRectSize.width + gridPad) / 2 - CHECKED_OUT_RING_GAP}
@@ -5416,7 +5458,7 @@ export default function BranchMap({
                               r={scaledNodeSize / 2 + CLUMP_SIZE_BOOST_PX}
                               fill={dotFill}
                             />
-                            {clusterHasCheckedOutHead && (
+                            {clusterHasCheckedOutHead && !isOverlayExpanded && (
                               <circle
                                 cx={anchorX}
                                 cy={anchorY}
@@ -5429,18 +5471,20 @@ export default function BranchMap({
                             )}
                           </>
                         )}
-                        <text
-                          x={anchorX}
-                          y={anchorY}
-                          textAnchor="middle"
-                          dominantBaseline="middle"
-                          data-base-font-size={nodeLabelFontSize(scaledNodeSize, count)}
-                          fontSize={nodeLabelFontSize(scaledNodeSize, count) / Math.max(layerCameraScale.x, 0.0001)}
-                          fill={CANVAS_CLUMP_LABEL_GRAY}
-                          fontWeight={600}
-                        >
-                          {clumpCountLabel(count)}
-                        </text>
+                        {!isOverlayExpanded && (
+                          <text
+                            x={anchorX}
+                            y={anchorY}
+                            textAnchor="middle"
+                            dominantBaseline="middle"
+                            data-base-font-size={nodeLabelFontSize(scaledNodeSize, count)}
+                            fontSize={nodeLabelFontSize(scaledNodeSize, count) / Math.max(layerCameraScale.x, 0.0001)}
+                            fill={CANVAS_CLUMP_LABEL_GRAY}
+                            fontWeight={600}
+                          >
+                            {clumpCountLabel(count)}
+                          </text>
+                        )}
                       </g>
                     );
                   })}
@@ -5538,14 +5582,21 @@ export default function BranchMap({
                   { x: cluster.x, y: cluster.y },
                   memberKeys
                 );
-                const anchorX = animatedAnchor.x;
-                const anchorY = animatedAnchor.y;
-
                 const mainClusterHasCheckedOutHead =
                   checkedOutHeadSha != null &&
                   cluster.entries.some((entry) =>
                     shaMatchesGitRef(entry.item.fullSha, checkedOutHeadSha)
                   );
+                const expanded = expandedClumps.get(clusterKey);
+                const isExpanded = expanded?.isExpanded ?? false;
+                const headEntryForCluster =
+                  mainClusterHasCheckedOutHead && checkedOutHeadSha && isExpanded
+                    ? cluster.entries.find((entry) =>
+                        shaMatchesGitRef(entry.item.fullSha, checkedOutHeadSha)
+                      )
+                    : null;
+                const anchorX = headEntryForCluster?.x ?? animatedAnchor.x;
+                const anchorY = headEntryForCluster?.y ?? animatedAnchor.y;
 
                 if (count === 1) {
                   const rectSize = commitRectSize(scaledNodeSize);
@@ -5694,18 +5745,20 @@ export default function BranchMap({
                         )}
                       </>
                     )}
-                    <text
-                      x={anchorX}
-                      y={anchorY}
-                      textAnchor="middle"
-                      dominantBaseline="middle"
-                      data-base-font-size={nodeLabelFontSize(scaledNodeSize, count)}
-                      fontSize={nodeLabelFontSize(scaledNodeSize, count) / Math.max(layerCameraScale.x, 0.0001)}
-                      fill={CANVAS_CLUMP_LABEL_GRAY}
-                      fontWeight={600}
-                    >
-                      {clumpCountLabel(count)}
-                    </text>
+                    {!isExpanded && (
+                      <text
+                        x={anchorX}
+                        y={anchorY}
+                        textAnchor="middle"
+                        dominantBaseline="middle"
+                        data-base-font-size={nodeLabelFontSize(scaledNodeSize, count)}
+                        fontSize={nodeLabelFontSize(scaledNodeSize, count) / Math.max(layerCameraScale.x, 0.0001)}
+                        fill={CANVAS_CLUMP_LABEL_GRAY}
+                        fontWeight={600}
+                      >
+                        {clumpCountLabel(count)}
+                      </text>
+                    )}
                   </g>
                 );
               });
