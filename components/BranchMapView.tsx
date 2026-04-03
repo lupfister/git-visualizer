@@ -11,9 +11,6 @@ interface Props {
   mergedPRs: MergedPR[];
   openPRs?: OpenPR[];
   defaultBranch: string;
-  selectedBranch?: Branch | null;
-  onBranchSelect?: (branch: Branch) => void;
-  onBranchClick?: (branch: Branch) => void;
   onHoveredBranchChange?: (branchName: string | null) => void;
   onCommitClick?: (target: { commitSha: string; branchName?: string }) => void;
   onLoadMore?: () => void;
@@ -40,9 +37,6 @@ export default function BranchMapView({
   mergedPRs,
   openPRs = [],
   defaultBranch,
-  selectedBranch,
-  onBranchSelect,
-  onBranchClick,
   onHoveredBranchChange,
   onCommitClick,
   onLoadMore,
@@ -85,9 +79,6 @@ export default function BranchMapView({
             mergedPRs={mergedPRs}
             openPRs={openPRs}
             defaultBranch={defaultBranch}
-            selectedBranch={selectedBranch}
-            onBranchSelect={onBranchSelect}
-            onBranchClick={onBranchClick}
             onHoveredBranchChange={onHoveredBranchChange}
             onCommitClick={onCommitClick}
             onLoadMore={onLoadMore}
@@ -113,7 +104,6 @@ export default function BranchMapView({
             view={view}
             branches={branches}
             defaultBranch={defaultBranch}
-            onBranchClick={onBranchClick}
           />
         </div>
       )}

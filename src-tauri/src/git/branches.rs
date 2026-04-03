@@ -242,7 +242,7 @@ fn infer_branch_parents(
                 }
 
                 let distance = commit_distance(repo, &candidate.head_sha, &branch.head_sha)?;
-                if distance <= 0 {
+                if distance < 0 {
                     continue;
                 }
 

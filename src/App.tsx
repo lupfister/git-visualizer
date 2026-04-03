@@ -3,11 +3,10 @@ import { invoke } from '@tauri-apps/api/core';
 import { getCurrentWindow } from '@tauri-apps/api/window';
 import { ArrowLeft, Maximize2 } from 'lucide-react';
 import BranchMapView from '../components/BranchMapView';
-import DiffViewer from '../components/DiffViewer';
 import FolderPickerModal from './FolderPickerModal';
 import type { Branch, BranchCommitPreview, BranchPromptMeta, BranchPromptMarker, CheckedOutRef, Commit, DirectCommit, GitHubAuthStatus, GitHubInfo, MergeNode, MergedPR, OpenPR } from '../types';
 
-type View = 'landing' | 'map' | 'diff';
+type View = 'landing' | 'map';
 const PROMPT_ENRICHMENT_ENABLED = false;
 const COMMIT_SWITCH_FEEDBACK_VISIBLE_MS = 1400;
 const COMMIT_SWITCH_FEEDBACK_FADE_MS = 180;
@@ -31,7 +30,6 @@ function App() {
   const [mapLoading, setMapLoading] = useState(false); // canvas skeleton in map
   const [error, setError] = useState<string | null>(null);
   const [view, setView] = useState<View>('landing');
-  const [selectedBranch, setSelectedBranch] = useState<Branch | null>(null);
   const [showErrorPanel, setShowErrorPanel] = useState(false);
   const [errorPanelClosing, setErrorPanelClosing] = useState(false);
   const [errorPanelTab, setErrorPanelTab] = useState<'active' | 'inactive'>('active');
@@ -53,11 +51,6 @@ function App() {
   const [branchCommitPreviews, setBranchCommitPreviews] = useState<Record<string, BranchCommitPreview[]>>({});
   const [branchUniqueAheadCounts, setBranchUniqueAheadCounts] = useState<Record<string, number>>({});
 
-  // Pre-warm: screenshot main branch at '/' as soon as active branches load,
-  // so DiffViewer can skip the main-side server start for the common case.
-  const [prewarmedMainShots, setPrewarmedMainShots] = useState<(string | null)[] | null>(null);
-  const prewarmedRef = useRef(false);
-  const [authSetupLoading, setAuthSetupLoading] = useState(false);
   const [isPopoverWindow, setIsPopoverWindow] = useState(false);
   const mapHeaderRef = useRef<HTMLElement | null>(null);
   const [mapHeaderInsetPx, setMapHeaderInsetPx] = useState(0);
@@ -245,12 +238,9 @@ function App() {
 
   // Reset when a new repo is loaded
   useEffect(() => {
-    setPrewarmedMainShots(null);
-    prewarmedRef.current = false;
     setBranchPromptMeta({});
     setBranchCommitPreviews({});
     setBranchUniqueAheadCounts({});
-    setAuthSetupLoading(false);
     setGithubAuthLoading(false);
     setGithubAuthStatus(null);
     setGithubAuthMessage(null);
@@ -279,6 +269,36 @@ function App() {
 
     const activeBranches = branches.filter((b) => b.name !== defaultBranch);
 
+    // Detect fresh-copy branches (worktrees): when multiple branches share the
+    // exact same HEAD SHA, all but the oldest are fresh copies with no unique
+    // commits. This works regardless of parent-branch detection accuracy.
+    const headShaGroups = new Map<string, Branch[]>();
+    for (const b of activeBranches) {
+      if (!b.headSha) continue;
+      const group = headShaGroups.get(b.headSha) ?? [];
+      group.push(b);
+      headShaGroups.set(b.headSha, group);
+    }
+    const freshCopyBranchNames = new Set<string>();
+    for (const group of headShaGroups.values()) {
+      if (group.length < 2) continue;
+      const sorted = [...group].sort((a, b) => {
+        const aDate = a.createdDate ?? a.divergedFromDate ?? a.lastCommitDate;
+        const bDate = b.createdDate ?? b.divergedFromDate ?? b.lastCommitDate;
+        return aDate.localeCompare(bDate);
+      });
+      for (let i = 1; i < sorted.length; i++) {
+        freshCopyBranchNames.add(sorted[i].name);
+      }
+    }
+    // Also detect branches at commitsAhead===0 with no merge node — these are
+    // fresh branches from the default branch, not genuinely merged.
+    for (const b of activeBranches) {
+      if (b.commitsAhead === 0 && b.headSha && !mergeNodeByMergedHeadSha.has(b.headSha)) {
+        freshCopyBranchNames.add(b.name);
+      }
+    }
+
     let cancelled = false;
     async function loadPromptMeta() {
       const results = await Promise.all(
@@ -291,38 +311,50 @@ function App() {
                 ? branch.parentBranch
                 : defaultBranch;
             const mergeNode = mergeNodeByMergedHeadSha.get(branch.headSha);
+            const isMergedBranch = !!mergeNode;
+            const isFreshCopy = freshCopyBranchNames.has(branch.name);
+            const isFreshBranch = isFreshCopy || (
+              !isMergedBranch &&
+              !!branch.headSha &&
+              (branch.headSha === branch.createdFromSha ||
+                branch.headSha === branch.divergedFromSha)
+            );
+
             // If this branch head appears on the merged side of a main-line merge commit,
             // always use that merge-side range so commits are attributed once.
             const shouldUseMergeRange = branch.commitsAhead === 0 && !!mergeNode?.fullSha;
             const mergeCommitSha = shouldUseMergeRange ? mergeNode?.fullSha : undefined;
-            const commits = await invoke<Commit[]>('get_branch_commits', {
-              repoPath,
-              branch: branch.name,
-              baseBranch: comparisonBase,
-              mergeCommitSha,
-              includePrompts: PROMPT_ENRICHMENT_ENABLED,
-            });
-            let historyCommits = mergeCommitSha
-              ? commits.filter((c) => c.fullSha !== mergeCommitSha)
-              : commits;
 
-            if (
-              historyCommits.length === 0 &&
-              branch.commitsAhead === 0 &&
-              Number.isFinite(branchCreatedAtMs)
-            ) {
-              // Branch is already merged into main; recover historical branch commits
-              // from first-parent log bounded by branch creation time.
-              const recent = await invoke<Commit[]>('get_recent_log', {
+            let historyCommits: Commit[] = [];
+            if (!isFreshBranch) {
+              const commits = await invoke<Commit[]>('get_branch_commits', {
                 repoPath,
                 branch: branch.name,
-                limit: 200,
+                baseBranch: comparisonBase,
+                mergeCommitSha,
                 includePrompts: PROMPT_ENRICHMENT_ENABLED,
               });
-              historyCommits = recent.filter((c) => {
-                const commitMs = new Date(c.date).getTime();
-                return Number.isFinite(commitMs) && commitMs >= branchCreatedAtMs;
-              });
+              historyCommits = mergeCommitSha
+                ? commits.filter((c) => c.fullSha !== mergeCommitSha)
+                : commits;
+
+              if (
+                historyCommits.length === 0 &&
+                branch.commitsAhead === 0 &&
+                isMergedBranch &&
+                Number.isFinite(branchCreatedAtMs)
+              ) {
+                const recent = await invoke<Commit[]>('get_recent_log', {
+                  repoPath,
+                  branch: branch.name,
+                  limit: 200,
+                  includePrompts: PROMPT_ENRICHMENT_ENABLED,
+                });
+                historyCommits = recent.filter((c) => {
+                  const commitMs = new Date(c.date).getTime();
+                  return Number.isFinite(commitMs) && commitMs >= branchCreatedAtMs;
+                });
+              }
             }
 
             const prompts = historyCommits
@@ -346,8 +378,12 @@ function App() {
               kind: 'commit',
             };
             const previews: BranchCommitPreview[] =
-              commitPreviews.length > 0 ? commitPreviews : [fallbackHeadPreview];
-            const uniqueCount = branch.commitsAhead > 0 ? commitPreviews.length : null;
+              commitPreviews.length > 0
+                ? commitPreviews
+                : [fallbackHeadPreview];
+            const uniqueCount = isFreshBranch
+              ? 0
+              : branch.commitsAhead > 0 ? commitPreviews.length : null;
 
             if (prompts.length === 0) {
               return [branch.name, { promptMeta: null, previews, uniqueCount }] as const;
@@ -475,55 +511,20 @@ function App() {
     };
   }, [commitSwitchFeedback]);
 
-  // Pre-warm: start screenshotting main at '/' as soon as active branches arrive.
-  // Uses port 3495 (separate from DiffViewer's 3491/3492) to avoid conflicts.
-  useEffect(() => {
-    const activeBranches = branches.filter(b => b.commitsAhead > 0);
-    if (!repoPath || !defaultBranch || activeBranches.length === 0) return;
-    if (prewarmedRef.current) return;
-    prewarmedRef.current = true;
-    invoke<string[]>('generate_preview_routes', {
-      repoPath,
-      branch: defaultBranch,
-      port: 3495,
-      paths: ['/'],
-    }).then(shots => {
-      setPrewarmedMainShots(shots.map(s => (s.startsWith('data:') ? s : null)));
-    }).catch(() => { /* silent — DiffViewer will fall back to fresh generation */ });
-  }, [repoPath, defaultBranch, branches.length]);
-
-
-  // ── Cmd+Shift+S: capture screenshots of main timeline + every branch detail ──
+  // ── Cmd+Shift+S: capture screenshots of main timeline ──
   useEffect(() => {
     if (!repoPath || branches.length === 0) return;
     const sleep = (ms: number) => new Promise<void>(r => setTimeout(r, ms));
-    const sanitize = (s: string) => s.replace(/[/\\:*?"<>|]/g, '-');
 
     async function captureScreenshots() {
       const homeDir = await invoke<string>('get_home_dir');
       const outDir = `${homeDir}/Desktop/git-viz-screenshots/${repoName}`;
       console.log(`📸 Saving screenshots to ${outDir}`);
 
-      // 1. Main timeline
-      setSelectedBranch(null);
       setView('map');
       await sleep(800);
       await invoke('screenshot', { path: `${outDir}/main-timeline.png` });
-      console.log('  ✓ main-timeline.png');
-
-      // 2. Each branch detail page
-      for (const branch of branches) {
-        setSelectedBranch(branch);
-        setView('diff');
-        await sleep(1200); // wait for commits to load
-        await invoke('screenshot', { path: `${outDir}/${sanitize(branch.name)}.png` });
-        console.log(`  ✓ ${sanitize(branch.name)}.png`);
-      }
-
-      // Back to map
-      setSelectedBranch(null);
-      setView('map');
-      console.log(`📸 Done — ${branches.length + 1} screenshots saved to ${outDir}`);
+      console.log(`📸 Done — screenshot saved to ${outDir}`);
     }
 
     const handler = (e: KeyboardEvent) => {
@@ -544,15 +545,6 @@ function App() {
       setErrorPanelTab('active');
       setFocusedErrorBranch(null);
     }, 100);
-  }
-
-  function handleBranchSelect(branch: Branch) {
-    setSelectedBranch(branch);
-  }
-
-  function handleBranchClick(branch: Branch) {
-    setSelectedBranch(branch);
-    setView('diff');
   }
 
   async function handleMapCommitClick(target: { commitSha: string; branchName?: string }) {
@@ -590,44 +582,10 @@ function App() {
   }
 
   function handleFocusOnMap(branch: Branch) {
-    setSelectedBranch(null);
     setView('map');
     setFocusedErrorBranch(branch);
     setScrollRequest(prev => ({ branch, seq: (prev?.seq ?? 0) + 1 }));
     // panel stays open intentionally
-  }
-
-  function handleViewDiff() {
-    if (selectedBranch) {
-      setView('diff');
-    }
-  }
-
-  function handleBackToMap() {
-    setSelectedBranch(null);
-    setView('map');
-  }
-
-  function handleCheckedOutRefChange(nextCheckedOutRef: CheckedOutRef) {
-    setCheckedOutRef(nextCheckedOutRef);
-  }
-
-  // True when pre-warm finished but root route is auth-gated (all shots null)
-  const previewIsAuthGated =
-    prewarmedMainShots !== null && prewarmedMainShots.every(s => s === null);
-
-  async function handleAuthSetup() {
-    if (!repoPath) return;
-    setAuthSetupLoading(true);
-    try {
-      await invoke('open_preview_browser', { repoPath, branch: defaultBranch });
-    } catch (e) {
-      console.error('Auth setup failed:', e);
-    }
-    setAuthSetupLoading(false);
-    // Re-run pre-warm so updated auth is reflected in DiffViewer
-    prewarmedRef.current = false;
-    setPrewarmedMainShots(null);
   }
 
   function handleBackToLanding() {
@@ -669,12 +627,10 @@ function App() {
         </div>
       )}
 
-      {/* Map + Diff share a container — hidden only during landing.
-          Map↔Diff transitions use visibility (not display) so CSS animations don't reset. */}
       <div className={`flex-1 overflow-hidden relative ${view === 'landing' ? 'hidden' : ''}`}>
 
         {/* Map view */}
-        <div className={`absolute inset-0 overflow-hidden ${view !== 'map' ? 'invisible pointer-events-none' : ''}`}>
+        <div className="absolute inset-0 overflow-hidden">
           <div className="absolute inset-0 overflow-hidden">
             <BranchMapView
               branches={branches}
@@ -683,9 +639,6 @@ function App() {
               mergedPRs={mergedPRs}
               openPRs={openPRs}
               defaultBranch={defaultBranch}
-              selectedBranch={selectedBranch}
-              onBranchSelect={handleBranchSelect}
-              onBranchClick={handleBranchClick}
               onCommitClick={handleMapCommitClick}
               githubAvailable={githubAvailable}
               githubOwner={githubOwner}
@@ -736,34 +689,6 @@ function App() {
               <div className="justify-self-end" aria-hidden="true" />
             </div>
             <div className="mt-3 min-h-8 flex flex-wrap items-center gap-2 content-start">
-              {selectedBranch && (
-                <div className="flex items-center gap-2">
-                  <span className="text-sm text-cyan-400 border border-cyan-800 rounded-full px-3 py-1 bg-cyan-950/50">
-                    {selectedBranch.name}
-                  </span>
-                  <button
-                    onClick={handleViewDiff}
-                    className="text-sm text-foreground border border-border rounded-full px-3 py-1 bg-card hover:bg-accent transition-colors"
-                  >
-                    View diff →
-                  </button>
-                  <button
-                    onClick={() => setSelectedBranch(null)}
-                    className="text-muted-foreground hover:text-foreground text-sm"
-                  >
-                    ✕
-                  </button>
-                </div>
-              )}
-              {(previewIsAuthGated || authSetupLoading) && (
-                <button
-                  onClick={handleAuthSetup}
-                  disabled={authSetupLoading}
-                  className="text-xs text-muted-foreground hover:text-foreground border border-border/50 rounded-full px-3 py-1 transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
-                >
-                  {authSetupLoading ? 'Log in and close Chrome...' : 'Authenticate Preview'}
-                </button>
-              )}
               {githubAuthStatus?.ghAvailable && !githubAuthStatus.authenticated && (
                 <button
                   onClick={handleGitHubAuthSetup}
@@ -871,23 +796,6 @@ function App() {
           )}
 
         </div>
-
-        {/* Diff view */}
-        {repoPath && selectedBranch && (
-          <div className={`absolute inset-0 flex flex-col transition-opacity duration-150 ${view !== 'diff' ? 'opacity-0 pointer-events-none' : 'opacity-100'}`}>
-            <DiffViewer
-              key={selectedBranch.name}
-              repoPath={repoPath}
-              branch={selectedBranch}
-              defaultBranch={defaultBranch}
-              mergedPR={mergedPRs.find(p => p.branchName === selectedBranch.name)}
-              checkedOutRef={checkedOutRef}
-              onCheckedOutRefChange={handleCheckedOutRefChange}
-              prewarmedMainShots={prewarmedMainShots}
-              onBack={handleBackToMap}
-            />
-          </div>
-        )}
 
       </div>
       </div>

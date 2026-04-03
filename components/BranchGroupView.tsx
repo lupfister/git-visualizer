@@ -14,12 +14,10 @@ function timeAgo(dateStr: string) {
 function BranchTable({
   branches,
   getAccentColor,
-  onBranchClick,
   emptyLabel = 'No branches',
 }: {
   branches: Branch[];
   getAccentColor: (branch: Branch) => string;
-  onBranchClick?: (branch: Branch) => void;
   emptyLabel?: string;
 }) {
   if (branches.length === 0) {
@@ -61,12 +59,9 @@ function BranchTable({
               : '—';
 
           return (
-            <button
+            <div
               key={branch.name}
-              type="button"
-              onClick={() => onBranchClick?.(branch)}
-              className="w-full text-left grid grid-cols-[16px_1fr_auto] sm:grid-cols-[16px_1.5fr_160px_1fr_88px_88px] gap-3 px-3 py-2.5 hover:bg-accent transition-colors"
-              aria-label={`Open branch ${branch.name}`}
+              className="w-full text-left grid grid-cols-[16px_1fr_auto] sm:grid-cols-[16px_1.5fr_160px_1fr_88px_88px] gap-3 px-3 py-2.5"
             >
               <span className="flex items-center justify-center">
                 <span className="w-2 h-2 rounded-full shrink-0" style={{ background: accentColor }} aria-hidden="true" />
@@ -113,7 +108,7 @@ function BranchTable({
               <span className="hidden sm:block text-xs text-muted-foreground tabular-nums text-right">
                 {deltaText}
               </span>
-            </button>
+            </div>
           );
         })}
       </div>
@@ -156,11 +151,9 @@ const STATUS_CONFIG: {
 function StatusView({
   branches,
   defaultBranch,
-  onBranchClick,
 }: {
   branches: Branch[];
   defaultBranch: string;
-  onBranchClick?: (branch: Branch) => void;
 }) {
   const active = branches.filter(b => b.name !== defaultBranch && b.commitsAhead > 0);
 
@@ -181,7 +174,6 @@ function StatusView({
             <BranchTable
               branches={group}
               getAccentColor={() => color}
-              onBranchClick={onBranchClick}
               emptyLabel="No branches"
             />
           </div>
@@ -196,11 +188,9 @@ function StatusView({
 function CreatorView({
   branches,
   defaultBranch,
-  onBranchClick,
 }: {
   branches: Branch[];
   defaultBranch: string;
-  onBranchClick?: (branch: Branch) => void;
 }) {
   const active = branches.filter(b => b.name !== defaultBranch && b.commitsAhead > 0);
 
@@ -251,7 +241,6 @@ function CreatorView({
               <BranchTable
                 branches={authorBranches}
                 getAccentColor={(b) => STATUS_COLORS[b.status]}
-                onBranchClick={onBranchClick}
                 emptyLabel="No branches"
               />
             </div>
@@ -274,15 +263,13 @@ export default function BranchGroupView({
   view,
   branches,
   defaultBranch,
-  onBranchClick,
 }: {
   view: Exclude<ViewMode, 'time'>;
   branches: Branch[];
   defaultBranch: string;
-  onBranchClick?: (branch: Branch) => void;
 }) {
   if (view === 'status') {
-    return <StatusView branches={branches} defaultBranch={defaultBranch} onBranchClick={onBranchClick} />;
+    return <StatusView branches={branches} defaultBranch={defaultBranch} />;
   }
-  return <CreatorView branches={branches} defaultBranch={defaultBranch} onBranchClick={onBranchClick} />;
+  return <CreatorView branches={branches} defaultBranch={defaultBranch} />;
 }
