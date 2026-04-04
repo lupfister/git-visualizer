@@ -2274,6 +2274,22 @@ export default function BranchMap({
   for (const branch of activeBranches) {
     const lanePosX = laneXByBranch.get(branch.name);
     if (typeof lanePosX !== 'number' || !Number.isFinite(lanePosX)) continue;
+    const isFreshCopy = freshCopyBranchNames.has(branch.name);
+    const isMergedBranch = branch.commitsAhead === 0 && !isFreshCopy;
+    const mergeNodeForBranch = isMergedBranch
+      ? mergeNodeByMergedHeadSha.get(branch.headSha)
+      : undefined;
+    const mergeNodeTimeX = mergeNodeForBranch
+      ? mergeJunctionTimeX(mergeNodeForBranch)
+      : null;
+    const baseTipTimeX = branchTipX(branch);
+    const tipTimeX = mergeNodeTimeX != null ? Math.max(baseTipTimeX, mergeNodeTimeX) : baseTipTimeX;
+    const commitTipTimeX = isMergedBranch ? baseTipTimeX : tipTimeX;
+    const minCommitTimeX = branchForkX(branch) + GRID_EVENT_GAP;
+    const maxCommitTimeX = Math.max(minCommitTimeX, commitTipTimeX);
+    includeCommitCenterCanonical(lanePosX, timeCoordToY(minCommitTimeX));
+    includeCommitCenterCanonical(lanePosX, timeCoordToY(maxCommitTimeX));
+
     const previews = (branchCommitPreviews[branch.name] ?? []).filter(
       (commit) => commit.kind !== 'branch-created'
     );
