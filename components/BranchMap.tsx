@@ -53,8 +53,8 @@ const GRID_VIEW_PAD_X = 0;
 const SVG_CONTENT_PADDING_BASE =  20;
 const SVG_CONTENT_PADDING_VIEWPORT_REF_MIN = 360;
 const SVG_CONTENT_PADDING_MAX = 320;
-/** Full-bleed fill behind graph content (SVG user units; hex OK for SVG fills). */
-const SVG_AREA_BG = '#e8f4fc';
+/** Full-bleed fill behind graph content (SVG user units). */
+const SVG_AREA_BG = 'transparent';
 const TIME_SCALE_DEFAULT = 0.5;
 // Grid nodes render without clump boost, so grid spacing must match the un-boosted rect size
 // or you'll see tiny gaps between nodes.
@@ -66,7 +66,7 @@ const GRID_LANE_OFFSET_X = 0;
 const GRID_LANE_MIN_SEPARATION = 0;
 const GRID_ROUTE_CORNER_R = 6;
 const GRID_MERGE_EVENT_ROW_NUDGE = 0.001;
-const LOCAL_UNPUSHED_GRAY = '#a8a29e';
+const LOCAL_UNPUSHED_GRAY = '#eeeeee';
 const CANVAS_NEUTRAL_GRAY = '#D9D9D9';
 const CANVAS_NEUTRAL_GRAY_HOVER = '#44403c';
 const CANVAS_NEUTRAL_TEXT = '#1c1917';
