@@ -316,20 +316,17 @@ function promptMarkerPath(centerX: number, centerY: number, size: number): strin
   ].join(' ');
 }
 
-/** Axis-aligned hit rect for a collapsed clump stack (rects offset by +x, −y from anchor). */
+/** Axis-aligned hit rect for a collapsed clump anchored to a single node. */
 function collapsedClumpHitRect(
   anchorX: number,
   anchorY: number,
-  stackDepth: number,
   rectSize: { width: number; height: number },
-  clumpStackOffset: number,
   padWorld: number
 ): { x: number; y: number; width: number; height: number } {
-  const k = Math.max(0, stackDepth - 1);
-  const w = rectSize.width + k * clumpStackOffset + padWorld * 2;
-  const h = rectSize.height + k * clumpStackOffset + padWorld * 2;
-  const cx = anchorX + (k * clumpStackOffset) / 2;
-  const cy = anchorY - (k * clumpStackOffset) / 2;
+  const w = rectSize.width + padWorld * 2;
+  const h = rectSize.height + padWorld * 2;
+  const cx = anchorX;
+  const cy = anchorY;
   return { x: cx - w / 2, y: cy - h / 2, width: w, height: h };
 }
 
@@ -2698,8 +2695,6 @@ export default function BranchMap({
   const holdTimelineForInitialCenter =
     isLoading || (!hasInitialRevealDone && hasTimelineSeedData && timelineRevealPhase !== 'done' && !hasUserMovedCameraRef.current);
 
-  const CLUMP_STACK_DEPTH_MAX = 3;
-  const clumpStackOffset = worldPx(3);
   const clumpExpandMs = 260;
   const clumpExpandEasing = 'cubic-bezier(0.22, 1, 0.36, 1)';
   const getNodeStrokeColor = (
@@ -3080,7 +3075,6 @@ export default function BranchMap({
                       ? 1
                       : clamp01((Date.now() - phaseStartedAtMs) / clumpExpandMs);
                   const phaseEased = phaseProgress <= 0 ? 0 : phaseProgress >= 1 ? 1 : easeInOutCubic(phaseProgress);
-                  const stackDepth = Math.min(CLUMP_STACK_DEPTH_MAX, count);
                   const rectSize = nodeRectSize(count);
                   const localRect = commitRectSize(scaledNodeSize, 0);
                   const collapseIconSize = Math.max(12, Math.min(localRect.width, localRect.height) * 0.55);
@@ -3105,34 +3099,21 @@ export default function BranchMap({
 
                   return (
                     <g key={clusterKey}>
-                      {/* Collapsed: draw a stack. Expanded: animate members out. */}
+                      {/* Collapsed: draw one clump node. Expanded: animate members out. */}
                       {!isExpanded && renderCollapsedVisualInBase && (
                         <g style={{ pointerEvents: 'none' }}>
-                          {Array.from({ length: stackDepth }, (_, i) => {
-                            const depth = stackDepth - 1 - i;
-                            const dx = depth * clumpStackOffset;
-                            const dy = -depth * clumpStackOffset;
-                            return (
-                                <g
-                                  key={`stack-${i}`}
-                                  transform={`translate(${anchorX + dx} ${anchorY + dy})`}
-                                  opacity={1}
-                                >
-                                <rect
-                                  className="branch-map-commit-rect"
-                                  x={-rectSize.width / 2 + CANVAS_NODE_STROKE_INSET}
-                                  y={-rectSize.height / 2 + CANVAS_NODE_STROKE_INSET}
-                                  width={rectSize.width - CANVAS_NODE_STROKE_WIDTH}
-                                  height={rectSize.height - CANVAS_NODE_STROKE_WIDTH}
-                                  data-base-rx={rectSize.radius}
-                                  rx={rectSize.radius / Math.max(layerCameraScale.x, 0.0001)}
-                                  fill={CANVAS_NODE_FILL}
-                                  stroke={getNodeStrokeColor(clusterKey, CANVAS_NODE_STROKE, clusterHasCheckedOutHead)}
-                                  strokeWidth={CANVAS_NODE_STROKE_WIDTH}
-                                />
-                              </g>
-                            );
-                          })}
+                          <rect
+                            className="branch-map-commit-rect"
+                            x={anchorX - rectSize.width / 2 + CANVAS_NODE_STROKE_INSET}
+                            y={anchorY - rectSize.height / 2 + CANVAS_NODE_STROKE_INSET}
+                            width={rectSize.width - CANVAS_NODE_STROKE_WIDTH}
+                            height={rectSize.height - CANVAS_NODE_STROKE_WIDTH}
+                            data-base-rx={rectSize.radius}
+                            rx={rectSize.radius / Math.max(layerCameraScale.x, 0.0001)}
+                            fill={CANVAS_NODE_FILL}
+                            stroke={getNodeStrokeColor(clusterKey, CANVAS_NODE_STROKE, clusterHasCheckedOutHead)}
+                            strokeWidth={CANVAS_NODE_STROKE_WIDTH}
+                          />
                           <text
                             x={anchorX + rectSize.width / 2 - nodeFrameLabelRightInsetX}
                             y={anchorY - rectSize.height / 2 - nodeFrameLabelGap}
@@ -3153,9 +3134,7 @@ export default function BranchMap({
                         const hit = collapsedClumpHitRect(
                           anchorX,
                           anchorY,
-                          stackDepth,
                           rectSize,
-                          clumpStackOffset,
                           pad
                         );
                         return (
@@ -3189,12 +3168,10 @@ export default function BranchMap({
 
                       {isExpanded && (
                         <g>
-                          {cluster.entries.map((entry, idx) => {
+                          {cluster.entries.map((entry) => {
                             const c = entry.item;
                             const label = truncatePrompt(c.message, COMMIT_TOOLTIP_PREVIEW_MAX);
-                            const collapsedDx = Math.min(idx, stackDepth - 1) * clumpStackOffset;
-                            const collapsedDy = -Math.min(idx, stackDepth - 1) * clumpStackOffset;
-                            const from = { x: anchorX + collapsedDx, y: anchorY + collapsedDy };
+                            const from = { x: anchorX, y: anchorY };
                             const to = { x: entry.x, y: entry.y };
                             const at = phase === 'collapsing'
                               ? { x: to.x + (from.x - to.x) * phaseEased, y: to.y + (from.y - to.y) * phaseEased }
@@ -4235,7 +4212,6 @@ export default function BranchMap({
                           ? 1
                           : clamp01((Date.now() - phaseStartedAtMs) / clumpExpandMs);
                       const phaseEased = phaseProgress <= 0 ? 0 : phaseProgress >= 1 ? 1 : easeInOutCubic(phaseProgress);
-                      const stackDepth = Math.min(CLUMP_STACK_DEPTH_MAX, count);
                       const rectSize = nodeRectSize(count);
                       // Expanded members represent single commits in grid layout.
                       const localRect = commitRectSize(scaledNodeSize, 0);
@@ -4251,32 +4227,19 @@ export default function BranchMap({
                         <g key={clusterKey}>
                           {!isExpanded && (
                             <g style={{ pointerEvents: 'none' }}>
-                              {Array.from({ length: stackDepth }, (_, i) => {
-                                const depth = stackDepth - 1 - i;
-                                const dx = depth * clumpStackOffset;
-                                const dy = -depth * clumpStackOffset;
-                                return (
-                                  <g
-                                    key={`stack-${i}`}
-                                    transform={`translate(${anchorX + dx} ${anchorY + dy})`}
-                                    opacity={1}
-                                  >
-                                    <rect
-                                      className="branch-map-commit-rect"
-                                      x={-rectSize.width / 2 + dotStrokeInset}
-                                      y={-rectSize.height / 2 + dotStrokeInset}
-                                      width={rectSize.width - dotStrokeWidth}
-                                      height={rectSize.height - dotStrokeWidth}
-                                      data-base-rx={rectSize.radius}
-                                      rx={rectSize.radius / Math.max(layerCameraScale.x, 0.0001)}
-                                      fill={dotFill}
-                                      stroke={getNodeStrokeColor(clusterKey, CANVAS_NODE_STROKE, clusterHasCheckedOutHead)}
-                                      strokeWidth={dotStrokeWidth}
-                                      strokeDasharray={dotStrokeDasharray}
-                                    />
-                                  </g>
-                                );
-                              })}
+                              <rect
+                                className="branch-map-commit-rect"
+                                x={anchorX - rectSize.width / 2 + dotStrokeInset}
+                                y={anchorY - rectSize.height / 2 + dotStrokeInset}
+                                width={rectSize.width - dotStrokeWidth}
+                                height={rectSize.height - dotStrokeWidth}
+                                data-base-rx={rectSize.radius}
+                                rx={rectSize.radius / Math.max(layerCameraScale.x, 0.0001)}
+                                fill={dotFill}
+                                stroke={getNodeStrokeColor(clusterKey, CANVAS_NODE_STROKE, clusterHasCheckedOutHead)}
+                                strokeWidth={dotStrokeWidth}
+                                strokeDasharray={dotStrokeDasharray}
+                              />
                               <text
                                 x={anchorX + rectSize.width / 2 - nodeFrameLabelRightInsetX}
                                 y={anchorY - rectSize.height / 2 - nodeFrameLabelGap}
@@ -4297,9 +4260,7 @@ export default function BranchMap({
                             const hit = collapsedClumpHitRect(
                               anchorX,
                               anchorY,
-                              stackDepth,
                               rectSize,
-                              clumpStackOffset,
                               pad
                             );
                             return (
@@ -4337,7 +4298,7 @@ export default function BranchMap({
 
                           {isExpanded && (
                             <g>
-                              {realCommitEntries.map((entry, idx) => {
+                              {realCommitEntries.map((entry) => {
                                 const commit = entry.item.commit;
                                 if (!commit?.fullSha) return null;
                                 const isCheckedOutCommit =
@@ -4349,9 +4310,7 @@ export default function BranchMap({
                                 const tooltipSha = commit.sha ?? commit.fullSha.slice(0, 7);
                                 const tooltipMessage = commit.message;
 
-                                const collapsedDx = Math.min(idx, stackDepth - 1) * clumpStackOffset;
-                                const collapsedDy = -Math.min(idx, stackDepth - 1) * clumpStackOffset;
-                                const from = { x: anchorX + collapsedDx, y: anchorY + collapsedDy };
+                                const from = { x: anchorX, y: anchorY };
                                 const to = { x: entry.x, y: entry.y };
                                 const at = phase === 'collapsing'
                                   ? { x: to.x + (from.x - to.x) * phaseEased, y: to.y + (from.y - to.y) * phaseEased }
@@ -4899,7 +4858,6 @@ export default function BranchMap({
 
                     const clusterRectSize = nodeRectSize(count);
                     const gridPad = 0;
-                    const stackDepth = Math.min(CLUMP_STACK_DEPTH_MAX, count);
                     const clusterLabelCommit = realCommitEntries[realCommitEntries.length - 1]?.item.commit;
                     const clumpCountText = clumpCountLabel(count);
                     const clumpTitleText = fitNodeFrameTitle(
@@ -4937,34 +4895,19 @@ export default function BranchMap({
                             />
                           </>
                         ) : (
-                          <g>
-                            {Array.from({ length: stackDepth }, (_, i) => {
-                              const depth = stackDepth - 1 - i;
-                              const dx = depth * clumpStackOffset;
-                              const dy = -depth * clumpStackOffset;
-                              return (
-                                <g
-                                  key={`overlay-stack-${i}`}
-                                  transform={`translate(${anchorX + dx} ${anchorY + dy})`}
-                                  opacity={1}
-                                >
-                                  <rect
-                                    className="branch-map-commit-rect"
-                                    x={-clusterRectSize.width / 2 + dotStrokeInset}
-                                    y={-clusterRectSize.height / 2 + dotStrokeInset}
-                                    width={clusterRectSize.width - dotStrokeWidth}
-                                    height={clusterRectSize.height - dotStrokeWidth}
-                                    data-base-rx={clusterRectSize.radius}
-                                    rx={clusterRectSize.radius / Math.max(layerCameraScale.x, 0.0001)}
-                                    fill={dotFill}
-                                    stroke={getNodeStrokeColor(clusterKey, CANVAS_NODE_STROKE, clusterHasCheckedOutHead)}
-                                    strokeWidth={dotStrokeWidth}
-                                    strokeDasharray={dotStrokeDasharray}
-                                  />
-                                </g>
-                              );
-                            })}
-                          </g>
+                          <rect
+                            className="branch-map-commit-rect"
+                            x={anchorX - clusterRectSize.width / 2 + dotStrokeInset}
+                            y={anchorY - clusterRectSize.height / 2 + dotStrokeInset}
+                            width={clusterRectSize.width - dotStrokeWidth}
+                            height={clusterRectSize.height - dotStrokeWidth}
+                            data-base-rx={clusterRectSize.radius}
+                            rx={clusterRectSize.radius / Math.max(layerCameraScale.x, 0.0001)}
+                            fill={dotFill}
+                            stroke={getNodeStrokeColor(clusterKey, CANVAS_NODE_STROKE, clusterHasCheckedOutHead)}
+                            strokeWidth={dotStrokeWidth}
+                            strokeDasharray={dotStrokeDasharray}
+                          />
                         )}
                         {!isOverlayExpanded && (
                           <text
@@ -5089,7 +5032,6 @@ export default function BranchMap({
 
                 const clusterRectSize = nodeRectSize(count);
                 const gridPad = 0;
-                const stackDepth = Math.min(CLUMP_STACK_DEPTH_MAX, count);
                 const clumpCountText = clumpCountLabel(count);
                 const clumpTitleText = fitNodeFrameTitle(
                   defaultBranch,
@@ -5125,33 +5067,18 @@ export default function BranchMap({
                         />
                       </>
                     ) : (
-                      <g>
-                        {Array.from({ length: stackDepth }, (_, i) => {
-                          const depth = stackDepth - 1 - i;
-                          const dx = depth * clumpStackOffset;
-                          const dy = -depth * clumpStackOffset;
-                          return (
-                            <g
-                              key={`main-overlay-stack-${i}`}
-                              transform={`translate(${anchorX + dx} ${anchorY + dy})`}
-                              opacity={1}
-                            >
-                              <rect
-                                className="branch-map-commit-rect"
-                                x={-clusterRectSize.width / 2 + CANVAS_NODE_STROKE_INSET}
-                                y={-clusterRectSize.height / 2 + CANVAS_NODE_STROKE_INSET}
-                                width={clusterRectSize.width - CANVAS_NODE_STROKE_WIDTH}
-                                height={clusterRectSize.height - CANVAS_NODE_STROKE_WIDTH}
-                                data-base-rx={clusterRectSize.radius}
-                                rx={clusterRectSize.radius / Math.max(layerCameraScale.x, 0.0001)}
-                                fill={CANVAS_NODE_FILL}
-                                stroke={getNodeStrokeColor(clusterKey, CANVAS_NODE_STROKE, mainClusterHasCheckedOutHead)}
-                                strokeWidth={CANVAS_NODE_STROKE_WIDTH}
-                              />
-                            </g>
-                          );
-                        })}
-                      </g>
+                      <rect
+                        className="branch-map-commit-rect"
+                        x={anchorX - clusterRectSize.width / 2 + CANVAS_NODE_STROKE_INSET}
+                        y={anchorY - clusterRectSize.height / 2 + CANVAS_NODE_STROKE_INSET}
+                        width={clusterRectSize.width - CANVAS_NODE_STROKE_WIDTH}
+                        height={clusterRectSize.height - CANVAS_NODE_STROKE_WIDTH}
+                        data-base-rx={clusterRectSize.radius}
+                        rx={clusterRectSize.radius / Math.max(layerCameraScale.x, 0.0001)}
+                        fill={CANVAS_NODE_FILL}
+                        stroke={getNodeStrokeColor(clusterKey, CANVAS_NODE_STROKE, mainClusterHasCheckedOutHead)}
+                        strokeWidth={CANVAS_NODE_STROKE_WIDTH}
+                      />
                     )}
                     {!isExpanded && (
                       <text
