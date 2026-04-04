@@ -26,10 +26,12 @@ const ZOOM_MIN = 1;
 const ZOOM_MAX = 6;
 const ZOOM_WHEEL_EXP_SENSITIVITY = 0.0025;
 const ZOOM_WHEEL_DELTA_MAX_PX = 180;
-/** Eased snap-to-bounds after zoom: duration scales with correction distance (ms). */
-const ZOOM_SNAP_MS_MIN = 160;
-const ZOOM_SNAP_MS_MAX = 360;
-const ZOOM_SNAP_MS_PER_PX = 0.32;
+/** Gentler spring-like snap-to-bounds after zoom: duration scales with correction distance (ms). */
+const ZOOM_SNAP_MS_MIN = 420;
+const ZOOM_SNAP_MS_MAX = 1400;
+const ZOOM_SNAP_MS_PER_PX = 1.15;
+const ZOOM_SNAP_SPRING_OMEGA = 2.2;
+const ZOOM_SNAP_IDLE_MS = 220;
 const CAMERA_UI_SYNC_MS = 24;
 /** Space between the `<svg>` and the camera container edges (screen px each side). */
 const CANVAS_PAD_X = 0;
@@ -51,9 +53,9 @@ const GRID_VIEW_PAD_X = 0;
  * `svgContentPadding` scales from this baseline when the map viewport is larger than
  * `SVG_CONTENT_PADDING_VIEWPORT_REF_MIN` (min of width/height, px); mini windows stay ~baseline.
  */
-const SVG_CONTENT_PADDING_BASE =  20;
+const SVG_CONTENT_PADDING_BASE = 0;
 const SVG_CONTENT_PADDING_VIEWPORT_REF_MIN = 360;
-const SVG_CONTENT_PADDING_MAX = 320;
+const SVG_CONTENT_PADDING_MAX = 0;
 /** Full-bleed fill behind graph content (SVG user units). */
 const SVG_AREA_BG = 'transparent';
 const TIME_SCALE_DEFAULT = 0.5;
@@ -127,6 +129,14 @@ function clamp01(value: number): number {
 
 function easeInOutCubic(t: number): number {
   return t < 0.5 ? 4 * t * t * t : 1 - Math.pow(-2 * t + 2, 3) / 2;
+}
+
+function easeOutCriticalSpring(t: number, omega = ZOOM_SNAP_SPRING_OMEGA): number {
+  const clamped = clamp01(t);
+  const raw = 1 - (1 + omega * clamped) * Math.exp(-omega * clamped);
+  const normalizer = 1 - (1 + omega) * Math.exp(-omega);
+  if (normalizer <= 0.000001) return clamped;
+  return raw / normalizer;
 }
 
 
@@ -457,6 +467,13 @@ export default function BranchMap({
     maxY: 0,
     measured: false,
   });
+  const centerableCommitBoundsRef = useRef({
+    minX: 0,
+    maxX: 0,
+    minY: 0,
+    maxY: 0,
+    measured: false,
+  });
   const panStartRef = useRef({ x: 0, y: 0, panX: 0, panY: 0 });
   const [pan, setPan] = useState({ x: 0, y: 0 });
   const panRef = useRef(pan);
@@ -746,24 +763,36 @@ export default function BranchMap({
     if (mode === 'none') return next;
 
     const scale = getCameraScale(zoomValue, currentIsHorizontal);
+    const topInset = viewportTopInset ?? 0;
+    const visibleH = Math.max(0, viewportH - topInset);
 
     // Strict finite bounds: clamp around the actual content bbox (plus small padding),
     // not the whole logical SVG, so you can't drift into vast empty space.
     const finiteWorld = finiteWorldBoundsRef.current;
+    const centerable = centerableCommitBoundsRef.current;
     const hasFinite = finiteWorld.measured;
+    const hasCenterable = centerable.measured;
 
-    const minXWorld = hasFinite ? finiteWorld.minX : 0;
-    const maxXWorld = hasFinite ? finiteWorld.maxX : currentSvgWidth;
-    const minYWorld = hasFinite ? finiteWorld.minY : 0;
-    const maxYWorld = hasFinite ? finiteWorld.maxY : currentSvgHeight;
+    let minXWorld = hasFinite ? finiteWorld.minX : 0;
+    let maxXWorld = hasFinite ? finiteWorld.maxX : currentSvgWidth;
+    let minYWorld = hasFinite ? finiteWorld.minY : 0;
+    let maxYWorld = hasFinite ? finiteWorld.maxY : currentSvgHeight;
+
+    // Compute mathematically minimal bounds that still allow centering any commit rectangle.
+    // Padding is derived from current viewport + zoom, so there's no extra slack.
+    if (hasCenterable) {
+      const halfViewportWorldX = viewportW / Math.max(scale.x, 0.0001) / 2;
+      const halfViewportWorldY = visibleH / Math.max(scale.y, 0.0001) / 2;
+      minXWorld = centerable.minX - halfViewportWorldX;
+      maxXWorld = centerable.maxX + halfViewportWorldX;
+      minYWorld = centerable.minY - halfViewportWorldY;
+      maxYWorld = centerable.maxY + halfViewportWorldY;
+    }
 
     const sceneMinX = currentGraphOffsetX + minXWorld * scale.x - CAMERA_CONTENT_PAD;
     const sceneMaxX = currentGraphOffsetX + maxXWorld * scale.x + CAMERA_CONTENT_PAD;
     const sceneMinY = currentGraphOffsetY + minYWorld * scale.y - CAMERA_CONTENT_PAD;
     const sceneMaxY = currentGraphOffsetY + maxYWorld * scale.y + CAMERA_CONTENT_PAD;
-
-    const topInset = viewportTopInset ?? 0;
-    const visibleH = viewportH - topInset;
     const sceneSpanX = sceneMaxX - sceneMinX;
     const sceneSpanY = sceneMaxY - sceneMinY;
     const xBounds = {
@@ -822,7 +851,7 @@ export default function BranchMap({
     const dist = Math.hypot(dx, dy);
     const durationMs = Math.min(
       ZOOM_SNAP_MS_MAX,
-      Math.max(ZOOM_SNAP_MS_MIN, 90 + dist * ZOOM_SNAP_MS_PER_PX),
+      Math.max(ZOOM_SNAP_MS_MIN, 220 + dist * ZOOM_SNAP_MS_PER_PX),
     );
     const startTime = performance.now();
     let rafId = 0;
@@ -839,7 +868,7 @@ export default function BranchMap({
       if (cancelled) return;
       const elapsed = now - startTime;
       const t = Math.min(1, elapsed / durationMs);
-      const eased = easeInOutCubic(t);
+      const eased = easeOutCriticalSpring(t);
       if (t >= 1) {
         applyCamera(settled, zoomRef.current, true, true);
         zoomBoundsSnapCancelRef.current = null;
@@ -864,7 +893,7 @@ export default function BranchMap({
     zoomWheelSnapTimeoutRef.current = window.setTimeout(() => {
       zoomWheelSnapTimeoutRef.current = null;
       snapZoomPanToBounds();
-    }, 150);
+    }, ZOOM_SNAP_IDLE_MS);
   }
 
   function cancelZoomWheelSnapPending() {
@@ -1092,14 +1121,14 @@ export default function BranchMap({
     const nextScale = getCameraScale(nextZoom, isHorizontal);
     const worldX = (point.x - currentPan.x - graphOffset.x) / Math.max(currentScale.x, 0.0001);
     const worldY = (point.y - currentPan.y - graphOffset.y) / Math.max(currentScale.y, 0.0001);
-    // Zoom ignores finite bounds during the gesture; wheel debounce / gesture end snaps.
+    // Apply a soft clamp during zoom so end-of-gesture correction is smaller and smoother.
     const nextPan = clampPan(
       {
         x: point.x - graphOffset.x - worldX * nextScale.x,
         y: point.y - graphOffset.y - worldY * nextScale.y,
       },
       nextZoom,
-      'none'
+      'soft'
     );
 
     stopPanSmoothing();
@@ -1215,7 +1244,7 @@ export default function BranchMap({
       evt.preventDefault();
       gesturePointRef.current = null;
       cancelZoomWheelSnapPending();
-      snapZoomPanToBounds();
+      scheduleZoomWheelSnap();
       scheduleZoomUiSync(true);
     };
 
@@ -2207,6 +2236,63 @@ export default function BranchMap({
     return mainX;
   }
 
+  let hasCommitCenterCanonicalBounds = false;
+  let commitCenterCanonicalMinX = 0;
+  let commitCenterCanonicalMaxX = 0;
+  let commitCenterCanonicalMinY = 0;
+  let commitCenterCanonicalMaxY = 0;
+
+  function includeCommitCenterCanonical(x: number, y: number) {
+    if (!Number.isFinite(x) || !Number.isFinite(y)) return;
+    if (!hasCommitCenterCanonicalBounds) {
+      hasCommitCenterCanonicalBounds = true;
+      commitCenterCanonicalMinX = x;
+      commitCenterCanonicalMaxX = x;
+      commitCenterCanonicalMinY = y;
+      commitCenterCanonicalMaxY = y;
+      return;
+    }
+    commitCenterCanonicalMinX = Math.min(commitCenterCanonicalMinX, x);
+    commitCenterCanonicalMaxX = Math.max(commitCenterCanonicalMaxX, x);
+    commitCenterCanonicalMinY = Math.min(commitCenterCanonicalMinY, y);
+    commitCenterCanonicalMaxY = Math.max(commitCenterCanonicalMaxY, y);
+  }
+
+  const seenMainCommitShas = new Set<string>();
+  for (const commit of sortedDirectCommits) {
+    const timeCoordX = directXByFullSha.get(commit.fullSha) ?? timeToX(commit.date);
+    includeCommitCenterCanonical(mainX, timeCoordToY(timeCoordX));
+    seenMainCommitShas.add(commit.fullSha);
+  }
+  if (reserveMergeRows) {
+    for (const node of sortedNodes) {
+      if (seenMainCommitShas.has(node.fullSha)) continue;
+      const timeCoordX = nodeXByFullSha.get(node.fullSha) ?? timeToX(node.date);
+      includeCommitCenterCanonical(mainX, timeCoordToY(timeCoordX));
+    }
+  }
+  for (const branch of activeBranches) {
+    const lanePosX = laneXByBranch.get(branch.name);
+    if (typeof lanePosX !== 'number' || !Number.isFinite(lanePosX)) continue;
+    const previews = (branchCommitPreviews[branch.name] ?? []).filter(
+      (commit) => commit.kind !== 'branch-created'
+    );
+    if (previews.length > 0) {
+      for (const preview of previews) {
+        const timeCoordX =
+          gridXForBranchSha(branch.name, preview.fullSha) ?? timeToX(preview.date);
+        includeCommitCenterCanonical(lanePosX, timeCoordToY(timeCoordX));
+      }
+      continue;
+    }
+    const syntheticCount = Math.max(0, branchAheadCount(branch));
+    for (let slot = 0; slot < syntheticCount; slot += 1) {
+      const timeCoordX =
+        gridXForBranchSlot(branch.name, slot) ?? timeToX(branch.lastCommitDate);
+      includeCommitCenterCanonical(lanePosX, timeCoordToY(timeCoordX));
+    }
+  }
+
   const maxBranchVisualEndX = activeBranches.reduce((max, b) => {
     const lanePosX = laneXByBranch.get(b.name) ?? mainX;
     return Math.max(max, lanePosX + AHEAD_LABEL_OFFSET_X);
@@ -2313,6 +2399,21 @@ export default function BranchMap({
     contentBBoxH > 0 && Number.isFinite(contentBBoxH)
       ? (svgHeight - contentBBoxH) / 2 - projectedContentBounds.minY
       : 0;
+  const projectedCommitCenterBounds = hasCommitCenterCanonicalBounds
+    ? (isHorizontal
+      ? {
+          minX: logicalTimelineHeight - commitCenterCanonicalMaxY,
+          maxX: logicalTimelineHeight - commitCenterCanonicalMinY,
+          minY: commitCenterCanonicalMinX,
+          maxY: commitCenterCanonicalMaxX,
+        }
+      : {
+          minX: commitCenterCanonicalMinX,
+          maxX: commitCenterCanonicalMaxX,
+          minY: commitCenterCanonicalMinY,
+          maxY: commitCenterCanonicalMaxY,
+        })
+    : null;
   finiteWorldBoundsRef.current = {
     minX: projectedContentBounds.minX + graphContentTranslateX,
     maxX: projectedContentBounds.maxX + graphContentTranslateX,
@@ -2320,6 +2421,24 @@ export default function BranchMap({
     maxY: projectedContentBounds.maxY + graphContentTranslateY,
     measured: true,
   };
+  centerableCommitBoundsRef.current = projectedCommitCenterBounds
+    ? {
+        minX: projectedCommitCenterBounds.minX + graphContentTranslateX,
+        maxX: projectedCommitCenterBounds.maxX + graphContentTranslateX,
+        minY: projectedCommitCenterBounds.minY + graphContentTranslateY,
+        maxY: projectedCommitCenterBounds.maxY + graphContentTranslateY,
+        measured: true,
+      }
+    : {
+        minX: 0,
+        maxX: 0,
+        minY: 0,
+        maxY: 0,
+        measured: false,
+      };
+  const centerableCommitBoundsDep = projectedCommitCenterBounds
+    ? `${projectedCommitCenterBounds.minX}:${projectedCommitCenterBounds.maxX}:${projectedCommitCenterBounds.minY}:${projectedCommitCenterBounds.maxY}`
+    : 'none';
 
   useEffect(() => {
     if (viewportSize.width <= 0 || viewportSize.height <= 0) return;
@@ -2339,6 +2458,7 @@ export default function BranchMap({
     graphContentTranslateX,
     graphContentTranslateY,
     mapTopInset,
+    centerableCommitBoundsDep,
   ]);
 
   const checkedOutBranchName = checkedOutRef?.branchName ?? null;
