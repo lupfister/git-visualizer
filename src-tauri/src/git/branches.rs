@@ -229,10 +229,25 @@ fn infer_branch_parents(
             .and_then(|info| info.source_ref.as_deref())
             .and_then(|source| normalize_reflog_parent(source, default_branch, &candidate_names))
             .filter(|name| name != &branch.name);
+        let created_from_head = created_from_reflog
+            .as_ref()
+            .and_then(|info| info.source_ref.as_deref())
+            .map(|source| source.trim() == "HEAD")
+            .unwrap_or(false);
 
         // Prefer explicit reflog origin whenever available.
         // If reflog is missing/ambiguous, fall back to heuristic inference.
         let mut parent_name = created_from_reflog_parent;
+        // Reflog may report "Created from HEAD" for detached states.
+        // In that case, infer the branch parent from the first-parent ancestry
+        // of the creation commit so we preserve full lineage.
+        if parent_name.is_none() && created_from_head {
+            parent_name = created_from_reflog_sha
+                .as_deref()
+                .and_then(|created_sha| {
+                    infer_parent_from_created_head_sha(repo, &branch.name, created_sha, &candidates)
+                });
+        }
         // For empty/fresh branches whose HEAD matches default HEAD, anchor to default.
         // This avoids unstable sibling/cyclic parenting among same-SHA placeholder branches.
         if parent_name.is_none() && branch.commits_ahead <= 0 {
@@ -455,6 +470,63 @@ fn get_merge_base_sha(repo: &Path, left: &str, right: &str) -> Result<Option<Str
         return Ok(None);
     }
     Ok(Some(sha.to_string()))
+}
+
+fn get_first_parent_sha(repo: &Path, sha: &str) -> Result<Option<String>, GitError> {
+    let output = cli::run(repo, &["rev-list", "--parents", "-n", "1", sha])?;
+    let mut parts = output.split_whitespace();
+    let _head = parts.next();
+    Ok(parts.next().map(|parent| parent.to_string()))
+}
+
+fn is_ancestor(repo: &Path, ancestor: &str, descendant: &str) -> bool {
+    cli::run(
+        repo,
+        &["merge-base", "--is-ancestor", ancestor, descendant],
+    )
+    .is_ok()
+}
+
+fn infer_parent_from_created_head_sha(
+    repo: &Path,
+    branch_name: &str,
+    created_sha: &str,
+    candidates: &[ParentCandidate],
+) -> Option<String> {
+    let parent_sha = get_first_parent_sha(repo, created_sha).ok().flatten()?;
+    if parent_sha.is_empty() {
+        return None;
+    }
+
+    let mut best: Option<(ParentCandidate, i32)> = None;
+
+    for candidate in candidates {
+        if candidate.name == branch_name || candidate.head_sha.is_empty() {
+            continue;
+        }
+        if !is_ancestor(repo, &parent_sha, &candidate.head_sha) {
+            continue;
+        }
+
+        let candidate_distance =
+            commit_distance(repo, &parent_sha, &candidate.head_sha).unwrap_or(i32::MAX);
+
+        match &best {
+            None => best = Some((candidate.clone(), candidate_distance)),
+            Some((best_candidate, best_distance)) => {
+                let better_distance = candidate_distance < *best_distance;
+                let same_distance = candidate_distance == *best_distance;
+                let prefer_non_default = best_candidate.is_default && !candidate.is_default;
+                let newer_candidate = candidate.last_commit_date > best_candidate.last_commit_date;
+
+                if better_distance || (same_distance && (prefer_non_default || newer_candidate)) {
+                    best = Some((candidate.clone(), candidate_distance));
+                }
+            }
+        }
+    }
+
+    best.map(|(candidate, _)| candidate.name)
 }
 
 fn get_first_unique_commit_date(

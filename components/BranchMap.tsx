@@ -61,7 +61,7 @@ const GRID_CELL_GAP = 1;
 const GRID_ROW_GAP = GRID_NODE_RECT.height + GRID_CELL_GAP;
 const GRID_LANE_WIDTH = GRID_NODE_RECT.width + GRID_CELL_GAP;
 const GRID_LANE_OFFSET_X = 0;
-const GRID_LANE_MIN_SEPARATION = 0;
+const GRID_LANE_MIN_SEPARATION = GRID_ROW_GAP;
 const GRID_ROUTE_CORNER_R = 6;
 const GRID_MERGE_EVENT_ROW_NUDGE = 0.001;
 const LOCAL_UNPUSHED_GRAY = '#E0E0E0';
@@ -1955,16 +1955,9 @@ export default function BranchMap({
     visiting.add(b.name);
     const forkX = branchForkXWithVisited(b, visiting);
     const lastCommitX = (b.headSha ? gridXForBranchSha(b.name, b.headSha) : undefined) ?? timeToX(b.lastCommitDate);
-    const hasBranchPreviewData = Object.prototype.hasOwnProperty.call(branchCommitPreviews, b.name);
-    const previewCommitCount = (branchCommitPreviews[b.name] ?? []).filter(
-      (commit) => commit.kind !== 'branch-created'
-    ).length;
-    // Only force a minimum tail when commit history is unavailable; otherwise
-    // it can push collapsed clumps exactly one grid row away from their true tip.
-    const minTailDistance =
-      !hasBranchPreviewData || previewCommitCount === 0
-        ? GRID_EVENT_GAP
-        : 0;
+    // Keep every branch tip at least one row above its fork so the lineage
+    // connector is always visible, even for same-head placeholder branches.
+    const minTailDistance = GRID_EVENT_GAP;
     const tipX = Math.max(lastCommitX, forkX + minTailDistance);
     visiting.delete(b.name);
     branchTipXCache.set(b.name, tipX);
@@ -2012,7 +2005,7 @@ export default function BranchMap({
   const timelineMaxX = activeBranches.reduce(
     (max, b) => Math.max(max, branchTipX(b)),
     mainEndX
-  );
+  ) + GRID_EVENT_GAP;
   const timelineSpanY = Math.max(1, timelineMaxX - timelineMinX);
   const mainStartY = MAIN_TOP_PAD + timelineSpanY; // oldest
   function timeCoordToY(timeCoordX: number): number {
@@ -2071,7 +2064,7 @@ export default function BranchMap({
   // 1) If a branch has a visible parent branch, it must render to the right of that parent.
   // 2) Unrelated branches can shift rightward to satisfy (1).
   // 3) Lane occupancy still respects time separation to reduce label overlap.
-  const BRANCH_LANE_MIN_SEPARATION_X = GRID_LANE_MIN_SEPARATION;
+  const BRANCH_LANE_MIN_SEPARATION_X = Math.max(GRID_LANE_MIN_SEPARATION, GRID_EVENT_GAP);
   const laneAssignments = assignLanesWithParentOrder(
     activeBranches.map((branch) => ({
       id: branch.name,
@@ -2087,14 +2080,115 @@ export default function BranchMap({
   const laneWidth = gridLaneWidth;
   const laneOffsetX = GRID_LANE_OFFSET_X;
 
-  function laneX(b: Branch): number {
+  function laneBaseX(b: Branch): number {
     const lane = laneAssignments.get(b.name) ?? 0;
     return mainX + laneWidth * (lane + 1) + laneOffsetX;
   }
 
-  const laneXByBranch = new Map<string, number>(
-    activeBranches.map((b) => [b.name, laneX(b)])
+  const laneBaseXByBranch = new Map<string, number>(
+    activeBranches.map((b) => [b.name, laneBaseX(b)])
   );
+
+  function branchBaseStartX(b: Branch): number {
+    const parent = b.parentBranch;
+    if (parent && parent !== defaultBranch) {
+      const parentX = laneBaseXByBranch.get(parent);
+      if (typeof parentX === 'number') {
+        return parentX;
+      }
+    }
+    return mainX;
+  }
+
+  function branchRawCommitTipTimeX(branch: Branch): number {
+    const isFreshCopy = freshCopyBranchNames.has(branch.name);
+    const isMergedBranch = branch.commitsAhead === 0 && !isFreshCopy;
+    const mergeNodeForBranch = isMergedBranch
+      ? mergeNodeByMergedHeadSha.get(branch.headSha)
+      : undefined;
+    const mergeNodeTimeX = mergeNodeForBranch
+      ? mergeJunctionTimeX(mergeNodeForBranch)
+      : null;
+    const baseTipTimeX = branchTipX(branch);
+    const tipTimeX = mergeNodeTimeX != null ? Math.max(baseTipTimeX, mergeNodeTimeX) : baseTipTimeX;
+    return isMergedBranch ? baseTipTimeX : tipTimeX;
+  }
+
+  function resolvePlaceholderTipCollisionLaneX(
+    branch: Branch,
+    lanePosX: number,
+    candidateTipTimeX: number,
+  ): number {
+    const previews = (branchCommitPreviews[branch.name] ?? []).filter(
+      (commit) => commit.kind !== 'branch-created'
+    );
+    const uniqueAhead = branchAheadCount(branch);
+    // Only adjust placeholder-only nodes (no unique commits) to preserve
+    // concrete commit geometry for real branch history.
+    if (previews.length > 0 || uniqueAhead > 0) return lanePosX;
+
+    const rowThreshold = Math.max(1, GRID_EVENT_GAP * 0.35);
+    const nodeHalfW = GRID_NODE_RECT.width / 2;
+    const threshold = Math.max(1, GRID_EVENT_GAP * 0.35);
+    for (let step = 0; step <= 6; step += 1) {
+      const candidateLaneX = lanePosX + step * laneWidth;
+      const nodeMinX = candidateLaneX - nodeHalfW - 0.5;
+      const nodeMaxX = candidateLaneX + nodeHalfW + 0.5;
+
+      let hasCollision = false;
+      for (const other of activeBranches) {
+        if (other.name === branch.name) continue;
+
+        const otherLaneX = laneBaseXByBranch.get(other.name);
+        if (typeof otherLaneX !== 'number' || !Number.isFinite(otherLaneX)) continue;
+        const otherStartX = branchBaseStartX(other);
+        const otherForkTimeX = branchForkX(other);
+        const otherTipTimeX = branchRawCommitTipTimeX(other);
+        const otherMinTimeX = Math.min(otherForkTimeX, otherTipTimeX);
+        const otherMaxTimeX = Math.max(otherForkTimeX, otherTipTimeX);
+
+        const overlapsVerticalLane =
+          candidateTipTimeX >= otherMinTimeX - threshold &&
+          candidateTipTimeX <= otherMaxTimeX + threshold &&
+          otherLaneX >= nodeMinX &&
+          otherLaneX <= nodeMaxX;
+        if (overlapsVerticalLane) {
+          hasCollision = true;
+          break;
+        }
+
+        const sharesForkRow = Math.abs(candidateTipTimeX - otherForkTimeX) <= rowThreshold;
+        if (!sharesForkRow) continue;
+        const forkMinX = Math.min(otherStartX, otherLaneX);
+        const forkMaxX = Math.max(otherStartX, otherLaneX);
+        const overlapsForkSegment = nodeMaxX >= forkMinX - 0.5 && nodeMinX <= forkMaxX + 0.5;
+        if (overlapsForkSegment) {
+          hasCollision = true;
+          break;
+        }
+      }
+
+      if (!hasCollision) return candidateLaneX;
+    }
+    return lanePosX + laneWidth;
+  }
+
+  const laneXByBranch = new Map<string, number>(
+    activeBranches.map((branch) => {
+      const baseLaneX = laneBaseXByBranch.get(branch.name) ?? laneBaseX(branch);
+      const rawTipTimeX = branchRawCommitTipTimeX(branch);
+      const adjustedLaneX = resolvePlaceholderTipCollisionLaneX(
+        branch,
+        baseLaneX,
+        rawTipTimeX,
+      );
+      return [branch.name, adjustedLaneX];
+    })
+  );
+
+  function laneX(b: Branch): number {
+    return laneXByBranch.get(b.name) ?? laneBaseX(b);
+  }
 
   function branchStartX(b: Branch): number {
     const parent = b.parentBranch;
@@ -2145,25 +2239,15 @@ export default function BranchMap({
   for (const branch of activeBranches) {
     const lanePosX = laneXByBranch.get(branch.name);
     if (typeof lanePosX !== 'number' || !Number.isFinite(lanePosX)) continue;
-    const isFreshCopy = freshCopyBranchNames.has(branch.name);
-    const isMergedBranch = branch.commitsAhead === 0 && !isFreshCopy;
-    const mergeNodeForBranch = isMergedBranch
-      ? mergeNodeByMergedHeadSha.get(branch.headSha)
-      : undefined;
-    const mergeNodeTimeX = mergeNodeForBranch
-      ? mergeJunctionTimeX(mergeNodeForBranch)
-      : null;
-    const baseTipTimeX = branchTipX(branch);
-    const tipTimeX = mergeNodeTimeX != null ? Math.max(baseTipTimeX, mergeNodeTimeX) : baseTipTimeX;
-    const commitTipTimeX = isMergedBranch ? baseTipTimeX : tipTimeX;
+    const commitTipTimeX = branchRawCommitTipTimeX(branch);
+    const uniqueAhead = branchAheadCount(branch);
+    const previews = (branchCommitPreviews[branch.name] ?? []).filter(
+      (commit) => commit.kind !== 'branch-created'
+    );
     const minCommitTimeX = branchForkX(branch) + GRID_EVENT_GAP;
     const maxCommitTimeX = Math.max(minCommitTimeX, commitTipTimeX);
     includeCommitCenterCanonical(lanePosX, timeCoordToY(minCommitTimeX));
     includeCommitCenterCanonical(lanePosX, timeCoordToY(maxCommitTimeX));
-
-    const previews = (branchCommitPreviews[branch.name] ?? []).filter(
-      (commit) => commit.kind !== 'branch-created'
-    );
     if (previews.length > 0) {
       for (const preview of previews) {
         const timeCoordX =
@@ -2172,7 +2256,7 @@ export default function BranchMap({
       }
       continue;
     }
-    const syntheticCount = Math.max(0, branchAheadCount(branch));
+    const syntheticCount = Math.max(0, uniqueAhead);
     for (let slot = 0; slot < syntheticCount; slot += 1) {
       const timeCoordX =
         gridXForBranchSlot(branch.name, slot) ?? timeToX(branch.lastCommitDate);
@@ -4067,9 +4151,18 @@ export default function BranchMap({
                           ? `branch-commit:${b.name}:${commitSha}`
                           : `branch-commit:${b.name}:slot-${entry.item.index}`;
                       });
+                      const preferredAnchorEntry = (() => {
+                        if (branchEndDotIndex != null) {
+                          const headEntry = cluster.entries.find(
+                            (entry) => entry.item.index === branchEndDotIndex
+                          );
+                          if (headEntry) return headEntry;
+                        }
+                        return realCommitEntries[realCommitEntries.length - 1] ?? lastEntry;
+                      })();
                       const animatedAnchor = resolveAnimatedClumpAnchor(
                         clusterKey,
-                        { x: cluster.x, y: cluster.y },
+                        { x: preferredAnchorEntry.x, y: preferredAnchorEntry.y },
                         memberKeys
                       );
                       const anchorX = animatedAnchor.x;
@@ -4116,7 +4209,7 @@ export default function BranchMap({
                           commit.author === b.lastCommitAuthor
                         );
                         const rectSize = commitRectSize(scaledNodeSize);
-                        const isGhostRect = false;
+                        const isGhostRect = isNonCommitPlaceholder;
 
                         return (
                           <rect
@@ -4591,7 +4684,8 @@ export default function BranchMap({
               const visibleBranchCommits = hasPreviewData
                 ? branchCommits.filter((commit) => commit.kind !== 'branch-created')
                 : branchCommits;
-              const fallbackCommitCount = Math.max(1, branchAheadCount(b));
+              const uniqueAheadCount = branchAheadCount(b);
+              const fallbackCommitCount = Math.max(1, uniqueAheadCount);
               const hasConcretePreviewCommits = visibleBranchCommits.length > 0;
               const commitCount = hasConcretePreviewCommits ? visibleBranchCommits.length : fallbackCommitCount;
               const displayedCommits = hasConcretePreviewCommits
@@ -4765,9 +4859,18 @@ export default function BranchMap({
                         ? `branch-commit:${b.name}:${commitSha}`
                         : `branch-commit:${b.name}:slot-${entry.item.index}`;
                     });
+                    const preferredAnchorEntry = (() => {
+                      if (branchEndDotIndex != null) {
+                        const headEntry = cluster.entries.find(
+                          (entry) => entry.item.index === branchEndDotIndex
+                        );
+                        if (headEntry) return headEntry;
+                      }
+                      return realCommitEntries[realCommitEntries.length - 1] ?? lastEntry;
+                    })();
                     const animatedAnchor = resolveAnimatedClumpAnchor(
                       clusterKey,
-                      { x: cluster.x, y: cluster.y },
+                      { x: preferredAnchorEntry.x, y: preferredAnchorEntry.y },
                       memberKeys
                     );
                     const anchorX = animatedAnchor.x;
@@ -4803,7 +4906,7 @@ export default function BranchMap({
                     if (count <= 1) {
                       const rectSize = commitRectSize(scaledNodeSize);
                       const gridPad = 0;
-                      const isGhostRect = false;
+                      const isGhostRect = count === 0 && uniqueAheadCount <= 0;
                       const clusterLabelCommit =
                         realCommitEntries[0]?.item.commit ??
                         cluster.entries[cluster.entries.length - 1]?.item.commit;
