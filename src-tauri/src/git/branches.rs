@@ -244,7 +244,9 @@ fn infer_branch_parents(
             let matches_default_reflog_source = default_head_sha
                 .as_deref()
                 .zip(created_from_reflog_sha.as_deref())
-                .map(|(default_sha, created_sha)| !default_sha.is_empty() && default_sha == created_sha)
+                .map(|(default_sha, created_sha)| {
+                    !default_sha.is_empty() && default_sha == created_sha
+                })
                 .unwrap_or(false);
             let matches_default_fork_point = default_head_sha
                 .as_deref()
@@ -255,8 +257,11 @@ fn infer_branch_parents(
                 parent_name = default_parent_name.clone();
             }
         }
+        // Heuristic parent inference based on merge-base (branch point), not parent tip ancestry.
+        // This allows detecting "child" branches that were created from an older commit on a
+        // feature branch after that parent branch moved forward.
         if parent_name.is_none() {
-            let mut best: Option<(ParentCandidate, i32)> = None;
+            let mut best_by_branch_point: Option<(ParentCandidate, i32, i32)> = None;
 
             for candidate in &candidates {
                 if candidate.name == branch.name {
@@ -266,83 +271,64 @@ fn infer_branch_parents(
                     continue;
                 }
 
-                let ancestor = is_ancestor_head(repo, &candidate.head_sha, &branch.head_sha)?;
-                if !ancestor {
+                let Ok(merge_base_sha) =
+                    get_merge_base_sha(repo, &candidate.head_sha, &branch.head_sha)
+                else {
                     continue;
-                }
-
-                let distance = commit_distance(repo, &candidate.head_sha, &branch.head_sha)?;
-                if distance < 0 {
-                    continue;
-                }
-
-                match &best {
-                    None => best = Some((candidate.clone(), distance)),
-                    Some((best_candidate, best_distance)) => {
-                        let better_distance = distance < *best_distance;
-                        let same_distance = distance == *best_distance;
-                        let newer_candidate =
-                            candidate.last_commit_date > best_candidate.last_commit_date;
-                        let prefer_non_default = best_candidate.is_default && !candidate.is_default;
-
-                        if better_distance
-                            || (same_distance && (newer_candidate || prefer_non_default))
-                        {
-                            best = Some((candidate.clone(), distance));
-                        }
-                    }
-                }
-            }
-
-            if let Some((candidate, _)) = best {
-                parent_name = Some(candidate.name);
-            }
-        }
-
-        // Fallback when strict ancestor-head matching cannot find a parent.
-        // This happens when the true parent branch has moved forward since the
-        // child was created (so parent HEAD is no longer an ancestor of child HEAD).
-        // Use symmetric diff against each candidate and prefer the smallest
-        // non-zero ahead distance from candidate -> branch.
-        if parent_name.is_none() {
-            let mut best_by_diff: Option<(ParentCandidate, i32, i32)> = None;
-
-            for candidate in &candidates {
-                if candidate.name == branch.name {
-                    continue;
-                }
-
-                let Ok((ahead, behind)) = get_ahead_behind(repo, &branch.name, &candidate.name) else {
+                };
+                let Some(merge_base_sha) = merge_base_sha else {
                     continue;
                 };
 
-                // If branch has no commits unique to candidate, candidate is the same tip
-                // (fresh copy) or a descendant, so it cannot be the parent.
-                if ahead <= 0 {
+                let Ok(branch_distance_from_base) =
+                    commit_distance(repo, &merge_base_sha, &branch.head_sha)
+                else {
+                    continue;
+                };
+                if branch_distance_from_base <= 0 {
+                    // Candidate is same-tip/descendant of this branch, so it cannot be parent.
                     continue;
                 }
 
-                let total_delta = ahead.saturating_add(behind.max(0));
-                match &best_by_diff {
-                    None => best_by_diff = Some((candidate.clone(), total_delta, ahead)),
-                    Some((best_candidate, best_total_delta, best_ahead)) => {
-                        let better_total = total_delta < *best_total_delta;
-                        let same_total = total_delta == *best_total_delta;
-                        let better_ahead = ahead < *best_ahead;
+                let candidate_distance_from_base =
+                    commit_distance(repo, &merge_base_sha, &candidate.head_sha).unwrap_or(i32::MAX);
+
+                match &best_by_branch_point {
+                    None => {
+                        best_by_branch_point = Some((
+                            candidate.clone(),
+                            branch_distance_from_base,
+                            candidate_distance_from_base,
+                        ))
+                    }
+                    Some((best_candidate, best_branch_distance, best_candidate_distance)) => {
+                        let better_branch_distance =
+                            branch_distance_from_base < *best_branch_distance;
+                        let same_branch_distance =
+                            branch_distance_from_base == *best_branch_distance;
+                        let better_candidate_distance =
+                            candidate_distance_from_base < *best_candidate_distance;
                         let prefer_non_default = best_candidate.is_default && !candidate.is_default;
                         let newer_candidate =
                             candidate.last_commit_date > best_candidate.last_commit_date;
 
-                        if better_total
-                            || (same_total && (better_ahead || prefer_non_default || newer_candidate))
+                        if better_branch_distance
+                            || (same_branch_distance
+                                && (prefer_non_default
+                                    || better_candidate_distance
+                                    || newer_candidate))
                         {
-                            best_by_diff = Some((candidate.clone(), total_delta, ahead));
+                            best_by_branch_point = Some((
+                                candidate.clone(),
+                                branch_distance_from_base,
+                                candidate_distance_from_base,
+                            ));
                         }
                     }
                 }
             }
 
-            if let Some((candidate, _, _)) = best_by_diff {
+            if let Some((candidate, _, _)) = best_by_branch_point {
                 parent_name = Some(candidate.name);
             }
         }
@@ -418,15 +404,6 @@ fn get_commit_date(repo: &Path, reference: &str) -> Result<String, GitError> {
     Ok(output.trim().to_string())
 }
 
-fn is_ancestor_head(
-    repo: &Path,
-    ancestor_sha: &str,
-    descendant_sha: &str,
-) -> Result<bool, GitError> {
-    let output = cli::run(repo, &["merge-base", ancestor_sha, descendant_sha])?;
-    Ok(output.trim() == ancestor_sha)
-}
-
 fn commit_distance(repo: &Path, from_sha: &str, to_sha: &str) -> Result<i32, GitError> {
     let output = cli::run(
         repo,
@@ -469,6 +446,15 @@ fn get_fork_point(
     let date = date_output.trim().to_string();
 
     Ok((Some(sha.to_string()), Some(date)))
+}
+
+fn get_merge_base_sha(repo: &Path, left: &str, right: &str) -> Result<Option<String>, GitError> {
+    let output = cli::run(repo, &["merge-base", left, right])?;
+    let sha = output.trim();
+    if sha.is_empty() {
+        return Ok(None);
+    }
+    Ok(Some(sha.to_string()))
 }
 
 fn get_first_unique_commit_date(
