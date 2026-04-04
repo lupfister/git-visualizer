@@ -18,6 +18,7 @@ const MIN_BRANCH_SPACING_X = 30;
 const NODE_SIZE = 24;
 const CORNER_R = 20;
 const BRANCH_HIT_STROKE_WIDTH = 48;
+const BRANCH_HIT_END_INSET = 10;
 const AHEAD_LABEL_OFFSET_X = 10;
 const MAIN_LABEL_OFFSET_X = 10;
 const ZOOM_DEFAULT = 1;
@@ -71,20 +72,19 @@ const LOCAL_UNPUSHED_GRAY = '#E0E0E0';
 const CANVAS_NEUTRAL_GRAY = '#E0E0E0';
 const CANVAS_NEUTRAL_GRAY_HOVER = '#44403c';
 const CANVAS_NEUTRAL_TEXT = '#1c1917';
-const CANVAS_CLUMP_LABEL_GRAY = '#787878';
 const CANVAS_NODE_FILL = '#F5F5F5';
 const CANVAS_UNPUSHED_NODE_FILL = 'var(--background)';
 const CANVAS_NODE_STROKE = '#E0E0E0';
 const CANVAS_NODE_STROKE_WIDTH = 1.5;
 const CANVAS_NODE_STROKE_INSET = CANVAS_NODE_STROKE_WIDTH / 2;
+const DEBUG_SHOW_BRANCH_HIT_AREAS = false;
+const DEBUG_BRANCH_HIT_AREA_COLOR = '#ef4444';
+const DEBUG_BRANCH_HIT_AREA_OPACITY = 0.25;
 const UNPUSHED_LANE_STROKE_VISUAL_COMP = 0.3;
 const CLUMP_COUNT_MAX = 99;
 const CHECKED_OUT_AHEAD_OFFSET_WORLD = 120;
-/** Ring around the commit that matches HEAD (SVG user units; hex OK for SVG). */
-const CHECKED_OUT_RING_STROKE = '#2563eb';
-const CHECKED_OUT_RING_STROKE_WIDTH = 2;
-/** Space between node edge and inner edge of the ring. */
-const CHECKED_OUT_RING_GAP = 2.5;
+/** Stroke color used to mark the currently checked-out commit/branch. */
+const CHECKED_OUT_SELECTION_STROKE = '#2563eb';
 const CHECKED_OUT_PULSE_MS = 1800;
 const INITIAL_CENTER_SETTLE_MS = CHECKED_OUT_PULSE_MS;
 const INITIAL_REVEAL_FADE_MS = CHECKED_OUT_PULSE_MS;
@@ -397,6 +397,7 @@ export default function BranchMap({
   const [hoveredPR, setHoveredPR] = useState<number | null>(null);
   const [hoveredPRCommit, setHoveredPRCommit] = useState<PRCommitHover | null>(null);
   const [hoveredMergeNode, setHoveredMergeNode] = useState<{ y: number; node: MergeNode } | null>(null);
+  const [hoveredNodeStrokeKey, setHoveredNodeStrokeKey] = useState<string | null>(null);
   const [prCommits, setPrCommits] = useState<Map<number, string[]>>(new Map());
   const [expandedClumps, setExpandedClumps] = useState<Map<string, ExpandedClumpState>>(() => new Map());
   const [zoom, setZoom] = useState(ZOOM_DEFAULT);
@@ -2633,6 +2634,54 @@ export default function BranchMap({
 
   const worldUnitsPerScreenPx = 1 / Math.max(layerCameraScale.x, 0.0001);
   const worldPx = (px: number) => px * worldUnitsPerScreenPx;
+  const NODE_FRAME_LABEL_FONT_PX = 12;
+  const NODE_FRAME_LABEL_TOP_GAP_PX = 6;
+  const NODE_FRAME_LABEL_LEFT_INSET_PX = 2;
+  const NODE_FRAME_LABEL_RIGHT_INSET_PX = 4;
+  const NODE_FRAME_LABEL_PAIR_GAP_PX = 4;
+  const NODE_FRAME_LABEL_COLOR = '#78716c';
+  const NODE_FRAME_LABEL_WEIGHT = 400;
+  const nodeFrameLabelFontSize = worldPx(NODE_FRAME_LABEL_FONT_PX);
+  const nodeFrameLabelGap = worldPx(NODE_FRAME_LABEL_TOP_GAP_PX);
+  const nodeFrameLabelInsetX = worldPx(NODE_FRAME_LABEL_LEFT_INSET_PX);
+  const nodeFrameLabelRightInsetX = worldPx(NODE_FRAME_LABEL_RIGHT_INSET_PX);
+  const nodeFrameLabelPairGap = worldPx(NODE_FRAME_LABEL_PAIR_GAP_PX);
+  const nodeFrameCountSlotWidth =
+    estimateSvgTextWidth(String(CLUMP_COUNT_MAX), nodeFrameLabelFontSize) + nodeFrameLabelPairGap;
+  const shortShaLabel = (sha?: string | null): string => (sha ? sha.slice(0, 7) : '-------');
+  const trimTextToWidth = (text: string, maxWidth: number): string => {
+    if (maxWidth <= 0) return '';
+    if (estimateSvgTextWidth(text, nodeFrameLabelFontSize) <= maxWidth) return text;
+    const ellipsis = '…';
+    const ellipsisWidth = estimateSvgTextWidth(ellipsis, nodeFrameLabelFontSize);
+    if (ellipsisWidth > maxWidth) return '';
+    let lo = 0;
+    let hi = text.length;
+    while (lo < hi) {
+      const mid = Math.ceil((lo + hi) / 2);
+      const candidate = `${text.slice(0, mid)}${ellipsis}`;
+      if (estimateSvgTextWidth(candidate, nodeFrameLabelFontSize) <= maxWidth) {
+        lo = mid;
+      } else {
+        hi = mid - 1;
+      }
+    }
+    if (lo <= 0) return ellipsis;
+    return `${text.slice(0, lo)}${ellipsis}`;
+  };
+  const fitNodeFrameTitle = (
+    branchName: string,
+    sha: string | undefined | null,
+    rectWidth: number,
+    rightText?: string,
+  ): string => {
+    const fullLabel = `${branchName}/${shortShaLabel(sha)}`;
+    const rightTextWidth = rightText ? nodeFrameCountSlotWidth : 0;
+    const availableTitleWidth =
+      rectWidth - nodeFrameLabelInsetX - nodeFrameLabelRightInsetX - rightTextWidth;
+    if (availableTitleWidth <= 0) return '';
+    return trimTextToWidth(fullLabel, availableTitleWidth);
+  };
   const scaledNodeSize = NODE_SIZE;
   const nodeRectSize = (_count: number) => commitRectSize(scaledNodeSize, 0);
   // Keep interaction hit areas consistent in screen pixels across zoom levels.
@@ -2653,6 +2702,16 @@ export default function BranchMap({
   const clumpStackOffset = worldPx(3);
   const clumpExpandMs = 260;
   const clumpExpandEasing = 'cubic-bezier(0.22, 1, 0.36, 1)';
+  const getNodeStrokeColor = (
+    nodeKey: string,
+    baseStroke = CANVAS_NODE_STROKE,
+    isCheckedOutSelection = false,
+  ) => {
+    if (isCheckedOutSelection) return CHECKED_OUT_SELECTION_STROKE;
+    return hoveredNodeStrokeKey === nodeKey ? CANVAS_NEUTRAL_GRAY_HOVER : baseStroke;
+  };
+  const branchLaneHitPointerEvents: React.CSSProperties['pointerEvents'] =
+    hoveredNodeStrokeKey != null ? 'none' : 'stroke';
   const clumpAnimStyle: React.CSSProperties = {
     transition: `transform ${clumpExpandMs}ms ${clumpExpandEasing}, opacity ${clumpExpandMs}ms ${clumpExpandEasing}`,
     willChange: 'transform, opacity',
@@ -2907,7 +2966,11 @@ export default function BranchMap({
             <path
               d={`M ${pathCoord(mainX, mainStartY)} L ${pathCoord(mainX, mainActiveEndY)}`}
               fill="none"
-              stroke={CANVAS_NEUTRAL_GRAY}
+              stroke={
+                checkedOutIndicatorLocal && Math.abs(checkedOutIndicatorLocal.x - mainX) < 0.5
+                  ? CHECKED_OUT_SELECTION_STROKE
+                  : CANVAS_NEUTRAL_GRAY
+              }
               strokeWidth={1.5}
               pathLength={1}
               className={drawPathMainClass}
@@ -2917,7 +2980,11 @@ export default function BranchMap({
                 <path
                   d={`M ${pathCoord(mainX, mainActiveEndY)} L ${pathCoord(mainX, mainEndY)}`}
                   fill="none"
-                  stroke={CANVAS_NEUTRAL_GRAY}
+                  stroke={
+                    checkedOutIndicatorLocal && Math.abs(checkedOutIndicatorLocal.x - mainX) < 0.5
+                      ? CHECKED_OUT_SELECTION_STROKE
+                      : CANVAS_NEUTRAL_GRAY
+                  }
                   strokeWidth={1.5}
                   pathLength={1}
                   className={drawPathMainClass}
@@ -2948,6 +3015,9 @@ export default function BranchMap({
                   const clusterHasMainTip = cluster.entries.some(
                     (entry) => entry.item.fullSha === entries[entries.length - 1]?.item.fullSha
                   );
+                  const clusterHasCheckedOutHead =
+                    checkedOutHeadSha != null &&
+                    cluster.entries.some((entry) => shaMatchesGitRef(entry.item.fullSha, checkedOutHeadSha));
                   const memberKeys = cluster.entries.map((entry) => `direct:${entry.item.fullSha}`);
                   const animatedAnchor = resolveAnimatedClumpAnchor(
                     clusterKey,
@@ -2973,7 +3043,7 @@ export default function BranchMap({
                         rx={rectSize.radius / Math.max(layerCameraScale.x, 0.0001)}
                         style={{ cursor: 'pointer' }}
                         fill={CANVAS_NODE_FILL}
-                        stroke={CANVAS_NODE_STROKE}
+                        stroke={getNodeStrokeColor(clusterKey, CANVAS_NODE_STROKE, clusterHasCheckedOutHead)}
                         strokeWidth={CANVAS_NODE_STROKE_WIDTH}
                         onClick={(event) =>
                           handleCommitNodeClick(
@@ -2983,15 +3053,19 @@ export default function BranchMap({
                           )
                         }
                         onDoubleClick={(event) => event.stopPropagation()}
-                        onMouseEnter={() =>
+                        onMouseEnter={() => {
+                          setHoveredNodeStrokeKey(clusterKey);
                           setTooltip({
                             x: anchorX,
                             y: anchorY,
                             lines: [`Commit ${c.sha}`, label, `@${c.author} · ${fmtTooltipDate(c.date)}`],
                             avatarFallback: c.author?.charAt(0).toUpperCase() || '?',
-                          })
-                        }
-                        onMouseLeave={() => setTooltip(null)}
+                          });
+                        }}
+                        onMouseLeave={() => {
+                          setHoveredNodeStrokeKey(null);
+                          setTooltip(null);
+                        }}
                       />
                     );
                   }
@@ -3053,21 +3127,20 @@ export default function BranchMap({
                                   data-base-rx={rectSize.radius}
                                   rx={rectSize.radius / Math.max(layerCameraScale.x, 0.0001)}
                                   fill={CANVAS_NODE_FILL}
-                                  stroke={CANVAS_NODE_STROKE}
+                                  stroke={getNodeStrokeColor(clusterKey, CANVAS_NODE_STROKE, clusterHasCheckedOutHead)}
                                   strokeWidth={CANVAS_NODE_STROKE_WIDTH}
                                 />
                               </g>
                             );
                           })}
                           <text
-                            x={anchorX}
-                            y={anchorY}
-                            textAnchor="middle"
-                            dominantBaseline="middle"
-                            data-base-font-size={nodeLabelFontSize(scaledNodeSize, count)}
-                            fontSize={nodeLabelFontSize(scaledNodeSize, count) / Math.max(layerCameraScale.x, 0.0001)}
-                            fill={CANVAS_CLUMP_LABEL_GRAY}
-                            fontWeight={600}
+                            x={anchorX + rectSize.width / 2 - nodeFrameLabelRightInsetX}
+                            y={anchorY - rectSize.height / 2 - nodeFrameLabelGap}
+                            textAnchor="end"
+                            fontSize={nodeFrameLabelFontSize}
+                            fill={NODE_FRAME_LABEL_COLOR}
+                            fontWeight={NODE_FRAME_LABEL_WEIGHT}
+                            pointerEvents="none"
                           >
                             {countLabel}
                           </text>
@@ -3097,15 +3170,19 @@ export default function BranchMap({
                             onMouseDown={(e) => { e.preventDefault(); e.stopPropagation(); }}
                             onClick={(e) => { e.preventDefault(); e.stopPropagation(); toggleClumpExpanded(clusterKey); }}
                             onDoubleClick={(event) => event.stopPropagation()}
-                            onMouseEnter={() =>
+                            onMouseEnter={() => {
+                              setHoveredNodeStrokeKey(clusterKey);
                               setTooltip({
                                 x: anchorX,
                                 y: anchorY,
                                 lines: [`${count} commits`, latestCommitMessage, rangeLine],
                                 avatarFallback: last.author?.charAt(0).toUpperCase() || '?',
-                              })
-                            }
-                            onMouseLeave={() => setTooltip(null)}
+                              });
+                            }}
+                            onMouseLeave={() => {
+                              setHoveredNodeStrokeKey(null);
+                              setTooltip(null);
+                            }}
                           />
                         );
                       })()}
@@ -3127,6 +3204,8 @@ export default function BranchMap({
                                   ? from
                                   : to;
                             const commitKey = `direct:${c.fullSha}`;
+                            const isCheckedOutCommit =
+                              checkedOutHeadSha != null && shaMatchesGitRef(c.fullSha, checkedOutHeadSha);
                             const memberOpacity = phase === 'collapsing'
                               ? 1 - 0.3 * phaseEased
                               : phase === 'expanding'
@@ -3150,7 +3229,7 @@ export default function BranchMap({
                                   data-base-rx={localRect.radius}
                                   rx={localRect.radius / Math.max(layerCameraScale.x, 0.0001)}
                                   fill={CANVAS_NODE_FILL}
-                                  stroke={CANVAS_NODE_STROKE}
+                                  stroke={getNodeStrokeColor(commitKey, CANVAS_NODE_STROKE, isCheckedOutCommit)}
                                   strokeWidth={CANVAS_NODE_STROKE_WIDTH}
                                   style={{ cursor: 'pointer' }}
                                   onClick={(event) =>
@@ -3163,16 +3242,31 @@ export default function BranchMap({
                                     )
                                   }
                                   onDoubleClick={(event) => event.stopPropagation()}
-                                  onMouseEnter={() =>
+                                  onMouseEnter={() => {
+                                    setHoveredNodeStrokeKey(commitKey);
                                     setTooltip({
                                       x: entry.x,
                                       y: entry.y,
                                       lines: [`Commit ${c.sha}`, label, `@${c.author} · ${fmtTooltipDate(c.date)}`],
                                       avatarFallback: c.author?.charAt(0).toUpperCase() || '?',
-                                    })
-                                  }
-                                  onMouseLeave={() => setTooltip(null)}
+                                    });
+                                  }}
+                                  onMouseLeave={() => {
+                                    setHoveredNodeStrokeKey(null);
+                                    setTooltip(null);
+                                  }}
                                 />
+                                <text
+                                  x={-localRect.width / 2 + nodeFrameLabelInsetX}
+                                  y={-localRect.height / 2 - nodeFrameLabelGap}
+                                  textAnchor="start"
+                                  fill={NODE_FRAME_LABEL_COLOR}
+                                  fontSize={nodeFrameLabelFontSize}
+                                  fontWeight={NODE_FRAME_LABEL_WEIGHT}
+                                  pointerEvents="none"
+                                >
+                                  {fitNodeFrameTitle(defaultBranch, c.sha ?? c.fullSha, localRect.width)}
+                                </text>
                               </g>
                             );
                           })}
@@ -3623,7 +3717,7 @@ export default function BranchMap({
               const focusedErrorColor = '#d97706';
               const neutralColor = CANVAS_NEUTRAL_GRAY;
               const color = isFocusedError ? focusedErrorColor : neutralColor;
-              const strokeWidth = isHovered ? 2 : isFocusedError ? 2 : 1.5;
+              const strokeWidth = isFocusedError ? 2 : 1.5;
               const defaultStrokeColor = isHovered ? CANVAS_NEUTRAL_GRAY_HOVER : color;
 
               const mergeNodeForBranch = isMergedBranch
@@ -3658,6 +3752,26 @@ export default function BranchMap({
                 forkY,
                 laneX: lanePosX,
                 tipY: branchLineTipY,
+                cornerR: routeCornerR,
+                pointFormatter: pathCoord,
+              });
+              const horizontalDir = lanePosX >= startX ? 1 : -1;
+              const verticalDir = branchLineTipY >= forkY ? 1 : -1;
+              const startTrim = Math.min(
+                BRANCH_HIT_END_INSET,
+                Math.max(0, Math.abs(lanePosX - startX) - 1),
+              );
+              const endTrim = Math.min(
+                BRANCH_HIT_END_INSET,
+                Math.max(0, Math.abs(branchLineTipY - forkY) - 1),
+              );
+              const hitStartX = startX + horizontalDir * startTrim;
+              const hitTipY = branchLineTipY - verticalDir * endTrim;
+              const hitCurvePath = buildBranchOrthogonalPath({
+                startX: hitStartX,
+                forkY,
+                laneX: lanePosX,
+                tipY: hitTipY,
                 cornerR: routeCornerR,
                 pointFormatter: pathCoord,
               });
@@ -3753,10 +3867,27 @@ export default function BranchMap({
                   : undefined;
               const fullBranchShouldUseLocalGray =
                 isLocalBranch && (allBranchCommitsAreLocal || realCommitDotIndices.length === 0);
+              const branchHasCheckedOutHead =
+                checkedOutHeadSha != null &&
+                (
+                  checkedOutBranchName
+                    ? checkedOutBranchName === b.name
+                    : (
+                      shaMatchesGitRef(b.headSha, checkedOutHeadSha) ||
+                      visibleBranchCommits.some((commit) =>
+                        shaMatchesGitRef(commit.fullSha, checkedOutHeadSha) ||
+                        shaMatchesGitRef(commit.sha, checkedOutHeadSha)
+                      )
+                    )
+                );
               const strokeColor =
-                fullBranchShouldUseLocalGray && !isFocusedError && !isHovered
-                  ? LOCAL_UNPUSHED_GRAY
-                  : defaultStrokeColor;
+                !isFocusedError && branchHasCheckedOutHead
+                  ? CHECKED_OUT_SELECTION_STROKE
+                  : (
+                    fullBranchShouldUseLocalGray && !isFocusedError && !isHovered
+                      ? LOCAL_UNPUSHED_GRAY
+                      : defaultStrokeColor
+                  );
               const unpushedStrokeWidth = strokeWidth + UNPUSHED_LANE_STROKE_VISUAL_COMP;
               const unpushedLaneDasharray = `${Math.max(1, unpushedStrokeWidth)} ${Math.max(2, unpushedStrokeWidth * 1.8)}`;
               const promptMarkersRaw = branchPromptMeta[b.name]?.markers ?? [];
@@ -3829,11 +3960,13 @@ export default function BranchMap({
                 >
                   {/* Invisible wide hit target to make hover/click easier on thin SVG strokes */}
                   <path
-                    d={curvePath}
+                    d={hitCurvePath}
                     fill="none"
-                    stroke="transparent"
+                    stroke={DEBUG_SHOW_BRANCH_HIT_AREAS ? DEBUG_BRANCH_HIT_AREA_COLOR : 'transparent'}
+                    strokeOpacity={DEBUG_SHOW_BRANCH_HIT_AREAS ? DEBUG_BRANCH_HIT_AREA_OPACITY : undefined}
                     strokeWidth={branchHitStrokeWidth}
-                    style={{ pointerEvents: 'stroke' }}
+                    strokeLinecap="butt"
+                    style={{ pointerEvents: branchLaneHitPointerEvents }}
                   />
 
                   {/* Branch path — draws in. key="arc" keeps the DOM node stable so the
@@ -3872,7 +4005,13 @@ export default function BranchMap({
                     <path
                       d={`M ${pathCoord(lanePosX, localSegmentStartY)} L ${pathCoord(lanePosX, branchLineTipY)}`}
                       fill="none"
-                      stroke={isHovered ? CANVAS_NEUTRAL_GRAY_HOVER : LOCAL_UNPUSHED_GRAY}
+                      stroke={
+                        !isFocusedError && branchHasCheckedOutHead
+                          ? CHECKED_OUT_SELECTION_STROKE
+                          : isHovered
+                            ? CANVAS_NEUTRAL_GRAY_HOVER
+                            : LOCAL_UNPUSHED_GRAY
+                      }
                       strokeWidth={unpushedStrokeWidth}
                       strokeDasharray={unpushedLaneDasharray}
                       strokeLinecap="round"
@@ -3969,6 +4108,22 @@ export default function BranchMap({
                     const clusterHasBranchTip =
                       branchEndDotIndex != null &&
                       cluster.entries.some((entry) => entry.item.index === branchEndDotIndex);
+                    const clusterHasCheckedOutHead =
+                      checkedOutHeadSha != null &&
+                      cluster.entries.some((entry) => {
+                        const idx = entry.item.index;
+                        const commit = entry.item.commit;
+                        if (hasPreviewData && commit && commit.kind !== 'branch-created') {
+                          return (
+                            shaMatchesGitRef(commit.fullSha, checkedOutHeadSha) ||
+                            shaMatchesGitRef(commit.sha, checkedOutHeadSha)
+                          );
+                        }
+                        if (!hasPreviewData && checkedOutBranchName === b.name && branchEndDotIndex === idx) {
+                          return shaMatchesGitRef(b.headSha, checkedOutHeadSha);
+                        }
+                        return false;
+                      });
 
                     if (count <= 1) {
                       const commitEntry = renderEntries[0] ?? lastEntry;
@@ -4000,9 +4155,11 @@ export default function BranchMap({
                             style={{ cursor: isNonCommitPlaceholder ? 'default' : 'pointer' }}
                             fill={isGhostRect ? 'none' : dotFill}
                             stroke={
-                              isGhostRect
-                                ? LOCAL_UNPUSHED_GRAY
-                                : CANVAS_NODE_STROKE
+                              getNodeStrokeColor(
+                                clusterKey,
+                                isGhostRect ? LOCAL_UNPUSHED_GRAY : CANVAS_NODE_STROKE,
+                                clusterHasCheckedOutHead,
+                              )
                             }
                             strokeWidth={
                               isGhostRect
@@ -4019,7 +4176,8 @@ export default function BranchMap({
                               );
                             }}
                             onDoubleClick={(event) => event.stopPropagation()}
-                            onMouseEnter={() =>
+                            onMouseEnter={() => {
+                              setHoveredNodeStrokeKey(clusterKey);
                               setTooltip({
                                 x: anchorX,
                                 y: anchorY,
@@ -4044,9 +4202,12 @@ export default function BranchMap({
                                   !isNonCommitPlaceholder
                                     ? (tooltipAuthor?.charAt(0).toUpperCase() || '?')
                                     : undefined,
-                              })
-                            }
-                            onMouseLeave={() => setTooltip(null)}
+                              });
+                            }}
+                            onMouseLeave={() => {
+                              setHoveredNodeStrokeKey(null);
+                              setTooltip(null);
+                            }}
                           />
                         );
                       }
@@ -4109,7 +4270,7 @@ export default function BranchMap({
                                       data-base-rx={rectSize.radius}
                                       rx={rectSize.radius / Math.max(layerCameraScale.x, 0.0001)}
                                       fill={dotFill}
-                                      stroke={CANVAS_NODE_STROKE}
+                                      stroke={getNodeStrokeColor(clusterKey, CANVAS_NODE_STROKE, clusterHasCheckedOutHead)}
                                       strokeWidth={dotStrokeWidth}
                                       strokeDasharray={dotStrokeDasharray}
                                     />
@@ -4117,14 +4278,13 @@ export default function BranchMap({
                                 );
                               })}
                               <text
-                                x={anchorX}
-                                y={anchorY}
-                                textAnchor="middle"
-                                dominantBaseline="middle"
-                                data-base-font-size={nodeLabelFontSize(scaledNodeSize, count)}
-                                fontSize={nodeLabelFontSize(scaledNodeSize, count) / Math.max(layerCameraScale.x, 0.0001)}
-                                fill={CANVAS_CLUMP_LABEL_GRAY}
-                                fontWeight={600}
+                                x={anchorX + rectSize.width / 2 - nodeFrameLabelRightInsetX}
+                                y={anchorY - rectSize.height / 2 - nodeFrameLabelGap}
+                                textAnchor="end"
+                                fontSize={nodeFrameLabelFontSize}
+                                fill={NODE_FRAME_LABEL_COLOR}
+                                fontWeight={NODE_FRAME_LABEL_WEIGHT}
+                                pointerEvents="none"
                               >
                                 {clumpCountLabel(count)}
                               </text>
@@ -4158,15 +4318,19 @@ export default function BranchMap({
                                   if (canExpandCluster) toggleClumpExpanded(clusterKey);
                                 }}
                                 onDoubleClick={(event) => event.stopPropagation()}
-                                onMouseEnter={() =>
+                                onMouseEnter={() => {
+                                  setHoveredNodeStrokeKey(clusterKey);
                                   setTooltip({
                                     x: anchorX,
                                     y: anchorY,
                                     lines: [`${count} commits`, latestCommitMessage, dateRangeLabel],
                                     avatarFallback: latestAuthor?.charAt(0).toUpperCase() || '?',
-                                  })
-                                }
-                                onMouseLeave={() => setTooltip(null)}
+                                  });
+                                }}
+                                onMouseLeave={() => {
+                                  setHoveredNodeStrokeKey(null);
+                                  setTooltip(null);
+                                }}
                               />
                             );
                           })()}
@@ -4203,10 +4367,11 @@ export default function BranchMap({
                                     : phase === 'collapsed'
                                       ? 0.7
                                       : 1;
+                                const commitKey = `branch-commit:${b.name}:${commit.fullSha}`;
 
                                 return (
                                   <g
-                                    key={`branch-commit:${b.name}:${commit.fullSha}`}
+                                    key={commitKey}
                                     transform={`translate(${at.x} ${at.y})`}
                                     style={{ ...clumpAnimStyle, pointerEvents: phase === 'expanded' ? 'auto' : 'none' }}
                                     opacity={memberOpacity}
@@ -4220,7 +4385,7 @@ export default function BranchMap({
                                       data-base-rx={localRect.radius}
                                       rx={localRect.radius / Math.max(layerCameraScale.x, 0.0001)}
                                       fill={dotFill}
-                                      stroke={CANVAS_NODE_STROKE}
+                                      stroke={getNodeStrokeColor(commitKey, CANVAS_NODE_STROKE, isCheckedOutCommit)}
                                       strokeWidth={dotStrokeWidth}
                                       strokeDasharray={dotStrokeDasharray}
                                       style={{ cursor: 'pointer' }}
@@ -4234,7 +4399,8 @@ export default function BranchMap({
                                         )
                                       }
                                       onDoubleClick={(event) => event.stopPropagation()}
-                                      onMouseEnter={() =>
+                                      onMouseEnter={() => {
+                                        setHoveredNodeStrokeKey(commitKey);
                                         setTooltip({
                                           x: entry.x,
                                           y: entry.y,
@@ -4246,32 +4412,24 @@ export default function BranchMap({
                                             `@${tooltipAuthor} · ${fmtTooltipDate(tooltipDate)}`,
                                           ],
                                           avatarFallback: tooltipAuthor?.charAt(0).toUpperCase() || '?',
-                                        })
-                                      }
-                                      onMouseLeave={() => setTooltip(null)}
+                                        });
+                                      }}
+                                      onMouseLeave={() => {
+                                        setHoveredNodeStrokeKey(null);
+                                        setTooltip(null);
+                                      }}
                                     />
-
-                                    {isCheckedOutCommit && (
-                                      <>
-                                        <rect
-                                          className="branch-map-commit-rect"
-                                          x={-localRect.width / 2 - CHECKED_OUT_RING_GAP}
-                                          y={-localRect.height / 2 - CHECKED_OUT_RING_GAP}
-                                          width={localRect.width + 2 * CHECKED_OUT_RING_GAP}
-                                          height={localRect.height + 2 * CHECKED_OUT_RING_GAP}
-                                          data-base-rx={localRect.radius}
-                                          rx={
-                                            localRect.radius /
-                                            Math.max(layerCameraScale.x, 0.0001)
-                                          }
-                                          fill="none"
-                                          stroke={CHECKED_OUT_RING_STROKE}
-                                          strokeWidth={CHECKED_OUT_RING_STROKE_WIDTH}
-                                          vectorEffect="non-scaling-stroke"
-                                          pointerEvents="none"
-                                        />
-                                      </>
-                                    )}
+                                    <text
+                                      x={-localRect.width / 2 + nodeFrameLabelInsetX}
+                                      y={-localRect.height / 2 - nodeFrameLabelGap}
+                                      textAnchor="start"
+                                      fill={NODE_FRAME_LABEL_COLOR}
+                                      fontSize={nodeFrameLabelFontSize}
+                                      fontWeight={NODE_FRAME_LABEL_WEIGHT}
+                                      pointerEvents="none"
+                                    >
+                                      {fitNodeFrameTitle(b.name, commit.sha ?? commit.fullSha, localRect.width)}
+                                    </text>
                                   </g>
                                 );
                               })}
@@ -4429,7 +4587,7 @@ export default function BranchMap({
                 <path
                   d={forkPath ?? straightPath}
                   fill="none"
-                  stroke="#2563eb"
+                  stroke={CHECKED_OUT_SELECTION_STROKE}
                   strokeWidth={1.5}
                   pathLength={1}
                   vectorEffect="non-scaling-stroke"
@@ -4679,6 +4837,14 @@ export default function BranchMap({
                       const rectSize = commitRectSize(scaledNodeSize);
                       const gridPad = 0;
                       const isGhostRect = false;
+                      const clusterLabelCommit =
+                        realCommitEntries[0]?.item.commit ??
+                        cluster.entries[cluster.entries.length - 1]?.item.commit;
+                      const singleTitleText = fitNodeFrameTitle(
+                        b.name,
+                        clusterLabelCommit?.sha ?? clusterLabelCommit?.fullSha ?? b.headSha,
+                        rectSize.width + gridPad,
+                      );
                       return (
                         <g key={`commit-overlay-${clusterKey}`}>
                           {!isGhostRect && (
@@ -4703,9 +4869,11 @@ export default function BranchMap({
                             rx={rectSize.radius / Math.max(layerCameraScale.x, 0.0001)}
                             fill={isGhostRect ? 'none' : dotFill}
                             stroke={
-                              isGhostRect
-                                ? LOCAL_UNPUSHED_GRAY
-                                : CANVAS_NODE_STROKE
+                              getNodeStrokeColor(
+                                clusterKey,
+                                isGhostRect ? LOCAL_UNPUSHED_GRAY : CANVAS_NODE_STROKE,
+                                clusterHasCheckedOutHead,
+                              )
                             }
                             strokeWidth={
                               isGhostRect
@@ -4714,24 +4882,17 @@ export default function BranchMap({
                             }
                             strokeDasharray={isGhostRect ? '3 3' : dotStrokeDasharray}
                           />
-                          {clusterHasCheckedOutHead && !isOverlayExpanded && (
-                            <rect
-                              className="branch-map-commit-rect"
-                              x={anchorX - (rectSize.width + gridPad) / 2 - CHECKED_OUT_RING_GAP}
-                              y={anchorY - (rectSize.height + gridPad) / 2 - CHECKED_OUT_RING_GAP}
-                              width={rectSize.width + gridPad + 2 * CHECKED_OUT_RING_GAP}
-                              height={rectSize.height + gridPad + 2 * CHECKED_OUT_RING_GAP}
-                              data-base-rx={rectSize.radius}
-                              rx={
-                                rectSize.radius /
-                                Math.max(layerCameraScale.x, 0.0001)
-                              }
-                              fill="none"
-                              stroke={CHECKED_OUT_RING_STROKE}
-                              strokeWidth={CHECKED_OUT_RING_STROKE_WIDTH}
-                              vectorEffect="non-scaling-stroke"
-                            />
-                          )}
+                          <text
+                            x={anchorX - (rectSize.width + gridPad) / 2 + nodeFrameLabelInsetX}
+                            y={anchorY - (rectSize.height + gridPad) / 2 - nodeFrameLabelGap}
+                            textAnchor="start"
+                            fill={NODE_FRAME_LABEL_COLOR}
+                            fontSize={nodeFrameLabelFontSize}
+                            fontWeight={NODE_FRAME_LABEL_WEIGHT}
+                            pointerEvents="none"
+                          >
+                            {singleTitleText}
+                          </text>
                         </g>
                       );
                     }
@@ -4739,6 +4900,14 @@ export default function BranchMap({
                     const clusterRectSize = nodeRectSize(count);
                     const gridPad = 0;
                     const stackDepth = Math.min(CLUMP_STACK_DEPTH_MAX, count);
+                    const clusterLabelCommit = realCommitEntries[realCommitEntries.length - 1]?.item.commit;
+                    const clumpCountText = clumpCountLabel(count);
+                    const clumpTitleText = fitNodeFrameTitle(
+                      b.name,
+                      clusterLabelCommit?.sha ?? clusterLabelCommit?.fullSha ?? b.headSha,
+                      clusterRectSize.width + gridPad,
+                      clumpCountText,
+                    );
                     return (
                       <g key={`commit-overlay-${clusterKey}`}>
                         {isOverlayExpanded ? (
@@ -4762,7 +4931,7 @@ export default function BranchMap({
                               data-base-rx={clusterRectSize.radius}
                               rx={clusterRectSize.radius / Math.max(layerCameraScale.x, 0.0001)}
                               fill={dotFill}
-                              stroke={CANVAS_NODE_STROKE}
+                              stroke={getNodeStrokeColor(clusterKey, CANVAS_NODE_STROKE, clusterHasCheckedOutHead)}
                               strokeWidth={dotStrokeWidth}
                               strokeDasharray={dotStrokeDasharray}
                             />
@@ -4788,7 +4957,7 @@ export default function BranchMap({
                                     data-base-rx={clusterRectSize.radius}
                                     rx={clusterRectSize.radius / Math.max(layerCameraScale.x, 0.0001)}
                                     fill={dotFill}
-                                    stroke={CANVAS_NODE_STROKE}
+                                    stroke={getNodeStrokeColor(clusterKey, CANVAS_NODE_STROKE, clusterHasCheckedOutHead)}
                                     strokeWidth={dotStrokeWidth}
                                     strokeDasharray={dotStrokeDasharray}
                                   />
@@ -4797,38 +4966,30 @@ export default function BranchMap({
                             })}
                           </g>
                         )}
-                        {clusterHasCheckedOutHead && !isOverlayExpanded && (
-                          <rect
-                            className="branch-map-commit-rect"
-                            x={anchorX - (clusterRectSize.width + gridPad) / 2 - CHECKED_OUT_RING_GAP}
-                            y={anchorY - (clusterRectSize.height + gridPad) / 2 - CHECKED_OUT_RING_GAP}
-                            width={clusterRectSize.width + gridPad + 2 * CHECKED_OUT_RING_GAP}
-                            height={clusterRectSize.height + gridPad + 2 * CHECKED_OUT_RING_GAP}
-                            data-base-rx={clusterRectSize.radius}
-                            rx={
-                              clusterRectSize.radius /
-                              Math.max(layerCameraScale.x, 0.0001)
-                            }
-                            fill="none"
-                            stroke={CHECKED_OUT_RING_STROKE}
-                            strokeWidth={CHECKED_OUT_RING_STROKE_WIDTH}
-                            vectorEffect="non-scaling-stroke"
-                          />
-                        )}
                         {!isOverlayExpanded && (
                           <text
-                            x={anchorX}
-                            y={anchorY}
-                            textAnchor="middle"
-                            dominantBaseline="middle"
-                            data-base-font-size={nodeLabelFontSize(scaledNodeSize, count)}
-                            fontSize={nodeLabelFontSize(scaledNodeSize, count) / Math.max(layerCameraScale.x, 0.0001)}
-                            fill={CANVAS_CLUMP_LABEL_GRAY}
-                            fontWeight={600}
+                            x={anchorX + (clusterRectSize.width + gridPad) / 2 - nodeFrameLabelRightInsetX}
+                            y={anchorY - (clusterRectSize.height + gridPad) / 2 - nodeFrameLabelGap}
+                            textAnchor="end"
+                            fontSize={nodeFrameLabelFontSize}
+                            fill={NODE_FRAME_LABEL_COLOR}
+                            fontWeight={NODE_FRAME_LABEL_WEIGHT}
+                            pointerEvents="none"
                           >
-                            {clumpCountLabel(count)}
+                            {clumpCountText}
                           </text>
                         )}
+                        <text
+                          x={anchorX - (clusterRectSize.width + gridPad) / 2 + nodeFrameLabelInsetX}
+                          y={anchorY - (clusterRectSize.height + gridPad) / 2 - nodeFrameLabelGap}
+                          textAnchor="start"
+                          fill={NODE_FRAME_LABEL_COLOR}
+                          fontSize={nodeFrameLabelFontSize}
+                          fontWeight={NODE_FRAME_LABEL_WEIGHT}
+                          pointerEvents="none"
+                        >
+                          {clumpTitleText}
+                        </text>
                       </g>
                     );
                   })}
@@ -4882,6 +5043,11 @@ export default function BranchMap({
                 if (count === 1) {
                   const rectSize = commitRectSize(scaledNodeSize);
                   const gridPad = 0;
+                  const singleTitleText = fitNodeFrameTitle(
+                    defaultBranch,
+                    last.sha ?? last.fullSha,
+                    rectSize.width + gridPad,
+                  );
                   return (
                     <g key={`main-direct-overlay-${clusterKey}`}>
                       <rect
@@ -4903,27 +5069,20 @@ export default function BranchMap({
                         data-base-rx={rectSize.radius}
                         rx={rectSize.radius / Math.max(layerCameraScale.x, 0.0001)}
                         fill={CANVAS_NODE_FILL}
-                        stroke={CANVAS_NODE_STROKE}
+                        stroke={getNodeStrokeColor(clusterKey, CANVAS_NODE_STROKE, mainClusterHasCheckedOutHead)}
                         strokeWidth={CANVAS_NODE_STROKE_WIDTH}
                       />
-                      {mainClusterHasCheckedOutHead && (
-                        <rect
-                          className="branch-map-commit-rect"
-                          x={anchorX - (rectSize.width + gridPad) / 2 - CHECKED_OUT_RING_GAP}
-                          y={anchorY - (rectSize.height + gridPad) / 2 - CHECKED_OUT_RING_GAP}
-                          width={rectSize.width + gridPad + 2 * CHECKED_OUT_RING_GAP}
-                          height={rectSize.height + gridPad + 2 * CHECKED_OUT_RING_GAP}
-                          data-base-rx={rectSize.radius}
-                          rx={
-                            rectSize.radius /
-                            Math.max(layerCameraScale.x, 0.0001)
-                          }
-                          fill="none"
-                          stroke={CHECKED_OUT_RING_STROKE}
-                          strokeWidth={CHECKED_OUT_RING_STROKE_WIDTH}
-                          vectorEffect="non-scaling-stroke"
-                        />
-                      )}
+                      <text
+                        x={anchorX - (rectSize.width + gridPad) / 2 + nodeFrameLabelInsetX}
+                        y={anchorY - (rectSize.height + gridPad) / 2 - nodeFrameLabelGap}
+                        textAnchor="start"
+                        fill={NODE_FRAME_LABEL_COLOR}
+                        fontSize={nodeFrameLabelFontSize}
+                        fontWeight={NODE_FRAME_LABEL_WEIGHT}
+                        pointerEvents="none"
+                      >
+                        {singleTitleText}
+                      </text>
                     </g>
                   );
                 }
@@ -4931,6 +5090,13 @@ export default function BranchMap({
                 const clusterRectSize = nodeRectSize(count);
                 const gridPad = 0;
                 const stackDepth = Math.min(CLUMP_STACK_DEPTH_MAX, count);
+                const clumpCountText = clumpCountLabel(count);
+                const clumpTitleText = fitNodeFrameTitle(
+                  defaultBranch,
+                  last.sha ?? last.fullSha,
+                  clusterRectSize.width + gridPad,
+                  clumpCountText,
+                );
                 return (
                   <g key={`main-direct-overlay-${clusterKey}`}>
                     {isExpanded ? (
@@ -4954,7 +5120,7 @@ export default function BranchMap({
                           data-base-rx={clusterRectSize.radius}
                           rx={clusterRectSize.radius / Math.max(layerCameraScale.x, 0.0001)}
                           fill={CANVAS_NODE_FILL}
-                          stroke={CANVAS_NODE_STROKE}
+                          stroke={getNodeStrokeColor(clusterKey, CANVAS_NODE_STROKE, mainClusterHasCheckedOutHead)}
                           strokeWidth={CANVAS_NODE_STROKE_WIDTH}
                         />
                       </>
@@ -4979,7 +5145,7 @@ export default function BranchMap({
                                 data-base-rx={clusterRectSize.radius}
                                 rx={clusterRectSize.radius / Math.max(layerCameraScale.x, 0.0001)}
                                 fill={CANVAS_NODE_FILL}
-                                stroke={CANVAS_NODE_STROKE}
+                                stroke={getNodeStrokeColor(clusterKey, CANVAS_NODE_STROKE, mainClusterHasCheckedOutHead)}
                                 strokeWidth={CANVAS_NODE_STROKE_WIDTH}
                               />
                             </g>
@@ -4987,38 +5153,30 @@ export default function BranchMap({
                         })}
                       </g>
                     )}
-                    {mainClusterHasCheckedOutHead && (
-                      <rect
-                        className="branch-map-commit-rect"
-                        x={anchorX - (clusterRectSize.width + gridPad) / 2 - CHECKED_OUT_RING_GAP}
-                        y={anchorY - (clusterRectSize.height + gridPad) / 2 - CHECKED_OUT_RING_GAP}
-                        width={clusterRectSize.width + gridPad + 2 * CHECKED_OUT_RING_GAP}
-                        height={clusterRectSize.height + gridPad + 2 * CHECKED_OUT_RING_GAP}
-                        data-base-rx={clusterRectSize.radius}
-                        rx={
-                          clusterRectSize.radius /
-                          Math.max(layerCameraScale.x, 0.0001)
-                        }
-                        fill="none"
-                        stroke={CHECKED_OUT_RING_STROKE}
-                        strokeWidth={CHECKED_OUT_RING_STROKE_WIDTH}
-                        vectorEffect="non-scaling-stroke"
-                      />
-                    )}
                     {!isExpanded && (
                       <text
-                        x={anchorX}
-                        y={anchorY}
-                        textAnchor="middle"
-                        dominantBaseline="middle"
-                        data-base-font-size={nodeLabelFontSize(scaledNodeSize, count)}
-                        fontSize={nodeLabelFontSize(scaledNodeSize, count) / Math.max(layerCameraScale.x, 0.0001)}
-                        fill={CANVAS_CLUMP_LABEL_GRAY}
-                        fontWeight={600}
+                        x={anchorX + (clusterRectSize.width + gridPad) / 2 - nodeFrameLabelRightInsetX}
+                        y={anchorY - (clusterRectSize.height + gridPad) / 2 - nodeFrameLabelGap}
+                        textAnchor="end"
+                        fontSize={nodeFrameLabelFontSize}
+                        fill={NODE_FRAME_LABEL_COLOR}
+                        fontWeight={NODE_FRAME_LABEL_WEIGHT}
+                        pointerEvents="none"
                       >
-                        {clumpCountLabel(count)}
+                        {clumpCountText}
                       </text>
                     )}
+                    <text
+                      x={anchorX - (clusterRectSize.width + gridPad) / 2 + nodeFrameLabelInsetX}
+                      y={anchorY - (clusterRectSize.height + gridPad) / 2 - nodeFrameLabelGap}
+                      textAnchor="start"
+                      fill={NODE_FRAME_LABEL_COLOR}
+                      fontSize={nodeFrameLabelFontSize}
+                      fontWeight={NODE_FRAME_LABEL_WEIGHT}
+                      pointerEvents="none"
+                    >
+                      {clumpTitleText}
+                    </text>
                   </g>
                 );
               });
