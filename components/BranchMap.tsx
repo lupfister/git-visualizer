@@ -4,7 +4,6 @@ import { Loader2, X } from 'lucide-react';
 import { Branch, BranchCommitPreview, BranchPromptMeta, CheckedOutRef, DirectCommit, MergeNode, MergedPR, OpenPR } from '../types';
 import { ViewMode } from './BranchMapView';
 import {
-  assignLanesWithParentOrder,
   buildBranchOrthogonalPath,
   buildMergeOrthogonalPath,
   commitRectSize,
@@ -98,6 +97,35 @@ type ClampMode = 'hard' | 'soft' | 'none';
 type OrientationMode = 'vertical' | 'horizontal';
 type MarkerEntry<T> = { x: number; y: number; item: T };
 type MarkerCluster<T> = { x: number; y: number; entries: MarkerEntry<T>[] };
+type CommitDot = { y: number; commit?: BranchCommitPreview };
+type CommitEntryItem = { index: number; commit?: BranchCommitPreview };
+type PromptEntryItem = { marker: NonNullable<BranchPromptMeta['markers']>[number]; index: number };
+type BranchRenderLayout = {
+  forkY: number;
+  lanePosX: number;
+  startX: number;
+  isMergedBranch: boolean;
+  isLocalBranch: boolean;
+  mergeNodeTimeX: number | null;
+  branchLineTipY: number;
+  mergeBackPath: string | null;
+  curvePath: string;
+  hitCurvePath: string;
+  hasPreviewData: boolean;
+  visibleBranchCommits: BranchCommitPreview[];
+  uniqueAheadCount: number;
+  branchEndDotIndex: number | null;
+  localCommitDotIndices: Set<number>;
+  fullBranchShouldUseLocalGray: boolean;
+  localSegmentStartY: number | undefined;
+  commitDotClusters: MarkerCluster<CommitEntryItem>[];
+  promptMarkerClusters: MarkerCluster<PromptEntryItem>[];
+  branchHasCheckedOutHead: boolean;
+  brDelay: number;
+  showClockIcon: boolean;
+  namePoint: { x: number; y: number };
+  clockPoint: { x: number; y: number };
+};
 type AnchorPoint = LayoutAnchorPoint;
 type ClumpAnchorState = {
   x: number;
@@ -1317,7 +1345,7 @@ export default function BranchMap({
   // commits and must not inherit merge nodes or other parent-branch artifacts.
   // Phase 1: same-head-sibling detection among active branches.
   // Phase 2 (after mergeNodeByMergedHeadSha) adds commitsAhead===0-with-no-merge-node.
-  const freshCopyBranchNames = (() => {
+  const sameHeadSiblingMeta = (() => {
     const headShaGroups = new Map<string, Branch[]>();
     for (const b of activeBranches) {
       if (!b.headSha) continue;
@@ -1326,31 +1354,50 @@ export default function BranchMap({
       headShaGroups.set(b.headSha, group);
     }
     const names = new Set<string>();
+    const parentByName = new Map<string, string>();
     for (const group of headShaGroups.values()) {
       if (group.length < 2) continue;
       const sorted = [...group].sort((a, b) => {
         const aDate = a.createdDate ?? a.divergedFromDate ?? a.lastCommitDate;
         const bDate = b.createdDate ?? b.divergedFromDate ?? b.lastCommitDate;
-        return aDate.localeCompare(bDate);
+        const dateDiff = aDate.localeCompare(bDate);
+        if (dateDiff !== 0) return dateDiff;
+        return a.name.localeCompare(b.name);
       });
       for (let i = 1; i < sorted.length; i++) {
-        names.add(sorted[i].name);
+        const child = sorted[i];
+        const parent = sorted[i - 1];
+        names.add(child.name);
+        parentByName.set(child.name, parent.name);
       }
     }
-    return names;
+    return { names, parentByName };
   })();
+  const freshCopyBranchNames = sameHeadSiblingMeta.names;
+  const sameHeadParentOverrideByBranch = sameHeadSiblingMeta.parentByName;
+
+  function renderParentBranchName(branch: Branch): string {
+    const normalizedParent = (!branch.parentBranch || branch.parentBranch === branch.name)
+      ? defaultBranch
+      : branch.parentBranch;
+    if (normalizedParent === defaultBranch) {
+      const overrideParent = sameHeadParentOverrideByBranch.get(branch.name);
+      if (overrideParent && overrideParent !== branch.name) {
+        return overrideParent;
+      }
+    }
+    return normalizedParent;
+  }
 
   const protectedMainForkShas = new Set<string>(
     activeBranches
-      .filter((b) => !b.parentBranch || b.parentBranch === b.name || b.parentBranch === defaultBranch)
+      .filter((b) => renderParentBranchName(b) === defaultBranch)
       .flatMap((b) => [b.createdFromSha, b.divergedFromSha].filter((sha): sha is string => !!sha))
   );
 
   const childBranchesByParent = new Map<string, Branch[]>();
   activeBranches.forEach((branch) => {
-    const effectiveParent = (!branch.parentBranch || branch.parentBranch === branch.name)
-      ? defaultBranch
-      : branch.parentBranch;
+    const effectiveParent = renderParentBranchName(branch);
     const existing = childBranchesByParent.get(effectiveParent) ?? [];
     existing.push(branch);
     childBranchesByParent.set(effectiveParent, existing);
@@ -1505,6 +1552,7 @@ export default function BranchMap({
   const gridRowBySha = new Map<string, number>();
   const gridRowByBranchSha = new Map<string, number>();
   const gridRowByBranchSlot = new Map<string, number>();
+  let claimedGridRowTimes: number[] = [];
   function branchShaRowKey(branchName: string, sha: string): string {
     return `${branchName}::${sha}`;
   }
@@ -1601,7 +1649,19 @@ export default function BranchMap({
 
     gridClumps.sort((a, b) => a.earliestTime - b.earliestTime);
 
-    let rowCursor = 0;
+    const rowByEntity = new Map<string, number>();
+    const rowTimeByIndex = new Map<number, number>();
+    let nextRowIndex = 0;
+    const claimRow = (entityKey: string, rowTime: number): number => {
+      const existing = rowByEntity.get(entityKey);
+      if (existing != null) return existing;
+      const claimed = nextRowIndex;
+      nextRowIndex += 1;
+      rowByEntity.set(entityKey, claimed);
+      rowTimeByIndex.set(claimed, rowTime);
+      return claimed;
+    };
+
     for (const clump of gridClumps) {
       const isExpanded = expandedClumps.get(clump.key)?.isExpanded ?? false;
       const assignShaRow = (sha: string, row: number) => {
@@ -1615,30 +1675,43 @@ export default function BranchMap({
         if (clump.lane === 'main' || clump.lane === 'main-merge') return;
         gridRowByBranchSlot.set(branchSlotRowKey(clump.lane, slotIndex), row);
       };
-      clump.rowIndex = rowCursor;
+
       if (isExpanded && clump.shas.length > 1) {
-        clump.shas.forEach((sha, i) => { assignShaRow(sha, rowCursor + i); });
-        clump.slotIndices?.forEach((slotIndex, i) => { assignSlotRow(slotIndex, rowCursor + i); });
-        rowCursor += clump.shas.length;
+        let firstRow: number | null = null;
+        clump.shas.forEach((sha, i) => {
+          const rowTime = clump.earliestTime + i;
+          const entityKey =
+            clump.lane === 'main' || clump.lane === 'main-merge'
+              ? `main-sha:${sha}`
+              : `branch-sha:${clump.lane}:${sha}`;
+          const claimedRow = claimRow(entityKey, rowTime);
+          if (firstRow == null) firstRow = claimedRow;
+          assignShaRow(sha, claimedRow);
+        });
+        clump.slotIndices?.forEach((slotIndex, i) => {
+          const rowTime = clump.earliestTime + i;
+          const claimedRow = claimRow(`branch-slot:${clump.lane}:${slotIndex}`, rowTime);
+          if (firstRow == null) firstRow = claimedRow;
+          assignSlotRow(slotIndex, claimedRow);
+        });
+        clump.rowIndex = firstRow ?? claimRow(`clump:${clump.key}`, clump.earliestTime);
       } else {
-        clump.shas.forEach((sha) => { assignShaRow(sha, rowCursor); });
-        clump.slotIndices?.forEach((slotIndex) => { assignSlotRow(slotIndex, rowCursor); });
-        rowCursor += 1;
+        const clumpRow = claimRow(`clump:${clump.key}`, clump.earliestTime);
+        clump.rowIndex = clumpRow;
+        clump.shas.forEach((sha) => { assignShaRow(sha, clumpRow); });
+        clump.slotIndices?.forEach((slotIndex) => { assignSlotRow(slotIndex, clumpRow); });
       }
     }
+
+    const rowTimes: number[] = [];
+    for (let i = 0; i < nextRowIndex; i += 1) {
+      rowTimes.push(rowTimeByIndex.get(i) ?? 0);
+    }
+    claimedGridRowTimes = rowTimes;
   }
 
   const gridRowTimes = (() => {
-    const times: number[] = [];
-    for (const clump of gridClumps) {
-      const isExpanded = expandedClumps.get(clump.key)?.isExpanded ?? false;
-      if (isExpanded && clump.shas.length > 1) {
-        for (let i = 0; i < clump.shas.length; i++) times.push(clump.earliestTime + i);
-      } else {
-        times.push(clump.earliestTime);
-      }
-    }
-    return times;
+    return claimedGridRowTimes;
   })();
   const gridEventPoints = gridRowTimes.map((time, index) => ({ t: time, x: leftPad + index * GRID_EVENT_GAP }));
 
@@ -1870,8 +1943,8 @@ export default function BranchMap({
     const cached = branchForkXCache.get(b.name);
     if (typeof cached === 'number') return cached;
 
-    const hasNonDefaultParent =
-      !!b.parentBranch && b.parentBranch !== b.name && b.parentBranch !== defaultBranch;
+    const renderParent = renderParentBranchName(b);
+    const hasNonDefaultParent = renderParent !== b.name && renderParent !== defaultBranch;
     const isParentDefault = !hasNonDefaultParent;
 
     // For merged branches, merge-base against default can collapse to branch HEAD.
@@ -1901,8 +1974,8 @@ export default function BranchMap({
       }
     }
 
-    if (hasNonDefaultParent && b.parentBranch) {
-      const parentBranch = branchByName.get(b.parentBranch);
+    if (hasNonDefaultParent) {
+      const parentBranch = branchByName.get(renderParent);
       const shouldFollowParent = !!parentBranch && !visiting.has(parentBranch.name);
       const anchoredToParentHead =
         parentBranch && shouldFollowParent && b.divergedFromSha && b.divergedFromSha === parentBranch.headSha
@@ -1910,13 +1983,13 @@ export default function BranchMap({
           : null;
       const anchoredParentForkX =
         anchoredToParentHead ??
-        branchCommitXForSha(b.parentBranch, b.divergedFromSha);
+        branchCommitXForSha(renderParent, b.divergedFromSha);
       if (anchoredParentForkX != null) {
         branchForkXCache.set(b.name, anchoredParentForkX);
         return anchoredParentForkX;
       }
       const snappedParentForkX = snapToBranchCommitX(
-        b.parentBranch,
+        renderParent,
         b.divergedFromDate ?? b.createdDate
       );
       if (snappedParentForkX != null) {
@@ -2059,30 +2132,82 @@ export default function BranchMap({
     return `${projected.x} ${projected.y}`;
   }
 
-  // ── Assign branch lanes while preserving parent -> child ordering ─────────
-  // Policy:
-  // 1) If a branch has a visible parent branch, it must render to the right of that parent.
-  // 2) Unrelated branches can shift rightward to satisfy (1).
-  // 3) Lane occupancy still respects time separation to reduce label overlap.
+  // ── Branch columns self-create on first use ────────────────────────────────
+  // Each branch claims its own column lazily, biased to parent+1 when parent
+  // is visible. Columns are reused only when branch time-ranges are separated.
   const BRANCH_LANE_MIN_SEPARATION_X = Math.max(GRID_LANE_MIN_SEPARATION, GRID_EVENT_GAP);
-  const laneAssignments = assignLanesWithParentOrder(
-    activeBranches.map((branch) => ({
-      id: branch.name,
-      createdOrder: branchCreatedMs(branch),
-      startCoord: branchForkX(branch),
-      endCoord: branchTipX(branch),
-      parentId: branch.parentBranch,
-    })),
-    BRANCH_LANE_MIN_SEPARATION_X,
-    defaultBranch
-  );
-
   const laneWidth = gridLaneWidth;
   const laneOffsetX = GRID_LANE_OFFSET_X;
+  const branchColumnByName = new Map<string, number>();
+  const columnIntervals = new Map<number, Array<{ start: number; end: number }>>();
+
+  function intervalsConflict(startA: number, endA: number, startB: number, endB: number): boolean {
+    return !(
+      startA - endB >= BRANCH_LANE_MIN_SEPARATION_X ||
+      startB - endA >= BRANCH_LANE_MIN_SEPARATION_X
+    );
+  }
+
+  function columnHasConflict(column: number, start: number, end: number): boolean {
+    const intervals = columnIntervals.get(column) ?? [];
+    return intervals.some((interval) => intervalsConflict(start, end, interval.start, interval.end));
+  }
+
+  function claimBranchColumnWithVisited(branchName: string, visiting: Set<string>): number {
+    const cached = branchColumnByName.get(branchName);
+    if (typeof cached === 'number') return cached;
+    const branch = branchByName.get(branchName);
+    if (!branch) return 0;
+
+    const branchStart = branchForkX(branch);
+    const branchEnd = branchTipX(branch);
+
+    if (visiting.has(branchName)) {
+      let cycleColumn = 0;
+      while (columnHasConflict(cycleColumn, branchStart, branchEnd)) cycleColumn += 1;
+      const intervals = columnIntervals.get(cycleColumn) ?? [];
+      intervals.push({ start: branchStart, end: branchEnd });
+      columnIntervals.set(cycleColumn, intervals);
+      branchColumnByName.set(branchName, cycleColumn);
+      return cycleColumn;
+    }
+
+    visiting.add(branchName);
+    const renderParent = renderParentBranchName(branch);
+    const hasVisibleParent =
+      renderParent !== defaultBranch &&
+      renderParent !== branch.name &&
+      branchByName.has(renderParent);
+    const minColumn = hasVisibleParent
+      ? claimBranchColumnWithVisited(renderParent, visiting) + 1
+      : 0;
+
+    let column = minColumn;
+    while (columnHasConflict(column, branchStart, branchEnd)) column += 1;
+
+    const intervals = columnIntervals.get(column) ?? [];
+    intervals.push({ start: branchStart, end: branchEnd });
+    columnIntervals.set(column, intervals);
+    branchColumnByName.set(branchName, column);
+    visiting.delete(branchName);
+    return column;
+  }
+
+  [...activeBranches]
+    .sort((a, b) => {
+      const createdDiff = branchCreatedMs(a) - branchCreatedMs(b);
+      if (createdDiff !== 0) return createdDiff;
+      const startDiff = branchForkX(a) - branchForkX(b);
+      if (startDiff !== 0) return startDiff;
+      return a.name.localeCompare(b.name);
+    })
+    .forEach((branch) => {
+      claimBranchColumnWithVisited(branch.name, new Set<string>());
+    });
 
   function laneBaseX(b: Branch): number {
-    const lane = laneAssignments.get(b.name) ?? 0;
-    return mainX + laneWidth * (lane + 1) + laneOffsetX;
+    const column = branchColumnByName.get(b.name) ?? claimBranchColumnWithVisited(b.name, new Set<string>());
+    return mainX + laneWidth * (column + 1) + laneOffsetX;
   }
 
   const laneBaseXByBranch = new Map<string, number>(
@@ -2090,7 +2215,7 @@ export default function BranchMap({
   );
 
   function branchBaseStartX(b: Branch): number {
-    const parent = b.parentBranch;
+    const parent = renderParentBranchName(b);
     if (parent && parent !== defaultBranch) {
       const parentX = laneBaseXByBranch.get(parent);
       if (typeof parentX === 'number') {
@@ -2191,7 +2316,7 @@ export default function BranchMap({
   }
 
   function branchStartX(b: Branch): number {
-    const parent = b.parentBranch;
+    const parent = renderParentBranchName(b);
     if (parent && parent !== defaultBranch) {
       const parentX = laneXByBranch.get(parent);
       if (typeof parentX === 'number') {
@@ -2788,7 +2913,6 @@ export default function BranchMap({
   const drawPathArcClass = (!ENABLE_TIMELINE_INTRO_ANIMATIONS || animationsLocked) ? undefined : 'draw-path-arc';
   const fadeInInfoClass = (!ENABLE_TIMELINE_INTRO_ANIMATIONS || animationsLocked) ? undefined : 'fade-in-info';
   const mainTimelineOpacity = 1;
-  const ENABLE_GLOBAL_NODE_OVERLAY = true;
   const timelineCanvasVisible = timelineRevealPhase !== 'hidden';
   const holdTimelineForInitialCenter =
     isLoading || (!hasInitialRevealDone && hasTimelineSeedData && timelineRevealPhase !== 'done' && !hasUserMovedCameraRef.current);
@@ -2805,6 +2929,265 @@ export default function BranchMap({
   };
   const branchLaneHitPointerEvents: React.CSSProperties['pointerEvents'] =
     hoveredNodeStrokeKey != null ? 'none' : 'stroke';
+  const branchRenderLayoutCache = new Map<string, BranchRenderLayout>();
+  function getBranchRenderLayout(b: Branch): BranchRenderLayout {
+    const cached = branchRenderLayoutCache.get(b.name);
+    if (cached) return cached;
+
+    const forkTimeX = branchForkX(b);
+    const forkY = timeCoordToY(forkTimeX);
+    const lanePosX = laneX(b);
+    const startX = branchStartX(b);
+    const isFreshCopy = freshCopyBranchNames.has(b.name);
+    const isMergedBranch = b.commitsAhead === 0 && !isFreshCopy;
+    const isLocalBranch = b.remoteSyncStatus !== 'on-github';
+    const mergeNodeForBranch = isMergedBranch
+      ? mergeNodeByMergedHeadSha.get(b.headSha)
+      : undefined;
+    const mergeNodeTimeX = mergeNodeForBranch
+      ? mergeJunctionTimeX(mergeNodeForBranch)
+      : null;
+    const baseTipTimeX = branchTipX(b);
+    const tipTimeX = mergeNodeTimeX != null ? Math.max(baseTipTimeX, mergeNodeTimeX) : baseTipTimeX;
+    const commitTipTimeX = isMergedBranch ? baseTipTimeX : tipTimeX;
+    const commitTipY = timeCoordToY(commitTipTimeX);
+    const branchLineTipY = commitTipY;
+    const routeCornerR = GRID_ROUTE_CORNER_R;
+    const mergeTargetX = mainX;
+    const mergeTargetY = mergeNodeTimeX != null ? timeCoordToY(mergeNodeTimeX) : null;
+    const hasMergeBackConnector =
+      mergeTargetY != null && Math.abs(lanePosX - mergeTargetX) > 0.5;
+    const mergeBackPath = (() => {
+      if (!hasMergeBackConnector || mergeTargetY == null) return null;
+      return buildMergeOrthogonalPath({
+        laneX: lanePosX,
+        tipY: branchLineTipY,
+        mergeX: mergeTargetX,
+        mergeY: mergeTargetY,
+        cornerR: routeCornerR,
+        pointFormatter: pathCoord,
+      });
+    })();
+    const curvePath = buildBranchOrthogonalPath({
+      startX,
+      forkY,
+      laneX: lanePosX,
+      tipY: branchLineTipY,
+      cornerR: routeCornerR,
+      pointFormatter: pathCoord,
+    });
+    const horizontalDir = lanePosX >= startX ? 1 : -1;
+    const verticalDir = branchLineTipY >= forkY ? 1 : -1;
+    const startTrim = Math.min(
+      BRANCH_HIT_END_INSET,
+      Math.max(0, Math.abs(lanePosX - startX) - 1),
+    );
+    const endTrim = Math.min(
+      BRANCH_HIT_END_INSET,
+      Math.max(0, Math.abs(branchLineTipY - forkY) - 1),
+    );
+    const hitStartX = startX + horizontalDir * startTrim;
+    const hitTipY = branchLineTipY - verticalDir * endTrim;
+    const hitCurvePath = buildBranchOrthogonalPath({
+      startX: hitStartX,
+      forkY,
+      laneX: lanePosX,
+      tipY: hitTipY,
+      cornerR: routeCornerR,
+      pointFormatter: pathCoord,
+    });
+
+    const branchCommits = branchCommitPreviews[b.name] ?? [];
+    const hasPreviewData = Object.prototype.hasOwnProperty.call(branchCommitPreviews, b.name);
+    const visibleBranchCommits = hasPreviewData
+      ? branchCommits.filter((commit) => commit.kind !== 'branch-created')
+      : branchCommits;
+    const uniqueAheadCount = branchAheadCount(b);
+    const aheadCount = Math.max(1, uniqueAheadCount);
+    const hasConcretePreviewCommits = visibleBranchCommits.length > 0;
+    const commitCount = hasConcretePreviewCommits ? visibleBranchCommits.length : aheadCount;
+    const displayedCommits = hasConcretePreviewCommits
+      ? [...visibleBranchCommits.slice(0, commitCount)].sort(
+        (a, bx) => new Date(a.date).getTime() - new Date(bx.date).getTime()
+      )
+      : [];
+    const minCommitTimeX = forkTimeX + GRID_EVENT_GAP;
+    const maxCommitTimeX = Math.max(minCommitTimeX, commitTipTimeX);
+    const commitItems: Array<BranchCommitPreview | undefined> = hasConcretePreviewCommits
+      ? displayedCommits
+      : Array.from({ length: commitCount }, () => undefined);
+    const headCommitIndex = hasConcretePreviewCommits
+      ? commitItems.findIndex((item) => item?.fullSha === b.headSha)
+      : -1;
+    let commitDots: CommitDot[] = hasConcretePreviewCommits
+      ? commitItems.map((commit, index) => {
+        const slotX = gridXForBranchSlot(b.name, index);
+        const shaX = commit?.fullSha ? gridXForBranchSha(b.name, commit.fullSha) : undefined;
+        const rawX = slotX ?? shaX ?? timeToX(commit?.date ?? b.lastCommitDate);
+        const x = Math.max(minCommitTimeX, Math.min(maxCommitTimeX, rawX));
+        return { y: timeCoordToY(x), commit };
+      })
+      : placeItemsEvenly(commitItems, minCommitTimeX, maxCommitTimeX).map((entry) => ({
+        y: timeCoordToY(entry.x),
+        commit: entry.item,
+      }));
+    const realCommitDotIndices = commitItems.reduce<number[]>((acc, item, index) => {
+      if (item?.kind !== 'branch-created') acc.push(index);
+      return acc;
+    }, []);
+    let branchEndDotIndex: number | null = null;
+    if (realCommitDotIndices.length > 0) {
+      const anchorIndex = headCommitIndex >= 0
+        ? headCommitIndex
+        : realCommitDotIndices[realCommitDotIndices.length - 1];
+      branchEndDotIndex = anchorIndex;
+      const anchor = commitDots[anchorIndex];
+      if (anchor) {
+        const branchCommitEndY = timeCoordToY(commitTipTimeX);
+        commitDots[anchorIndex] = { ...anchor, y: branchCommitEndY };
+      }
+    } else if (commitDots.length > 0) {
+      branchEndDotIndex = commitDots.length - 1;
+    }
+    const targetLocalCommitCount = isLocalBranch
+      ? (
+        b.remoteSyncStatus === 'local-only'
+          ? realCommitDotIndices.length
+          : b.unpushedCommits
+      )
+      : 0;
+    const boundedLocalCommitCount = Math.max(
+      0,
+      Math.min(targetLocalCommitCount, realCommitDotIndices.length),
+    );
+    const localCommitDotIndices = new Set(
+      realCommitDotIndices.slice(realCommitDotIndices.length - boundedLocalCommitCount),
+    );
+    const allBranchCommitsAreLocal =
+      realCommitDotIndices.length > 0 &&
+      boundedLocalCommitCount === realCommitDotIndices.length;
+    const firstLocalDotIndex = localCommitDotIndices.size > 0
+      ? Math.min(...Array.from(localCommitDotIndices))
+      : null;
+    const firstLocalCommitY = firstLocalDotIndex != null
+      ? commitDots[firstLocalDotIndex]?.y
+      : undefined;
+    const previousCommittedIndex = firstLocalDotIndex != null
+      ? (() => {
+        const prior = realCommitDotIndices.filter((idx) => idx < firstLocalDotIndex);
+        return prior.length > 0 ? prior[prior.length - 1] : undefined;
+      })()
+      : undefined;
+    const localSegmentStartY =
+      !allBranchCommitsAreLocal &&
+      firstLocalCommitY != null &&
+      previousCommittedIndex != null
+        ? (
+          (firstLocalCommitY + (commitDots[previousCommittedIndex]?.y ?? firstLocalCommitY)) / 2
+        )
+        : undefined;
+    const fullBranchShouldUseLocalGray =
+      isLocalBranch && (allBranchCommitsAreLocal || realCommitDotIndices.length === 0);
+    const commitDotEntries: MarkerEntry<CommitEntryItem>[] =
+      commitDots.map(({ y, commit }, index) => {
+        const point = projectPoint(lanePosX, y);
+        return {
+          x: point.x,
+          y: point.y,
+          item: { index, commit },
+        };
+      });
+    const branchForkIndices = new Set<number>();
+    const branchChildBranches = childBranchesByParent.get(b.name) ?? [];
+    if (branchChildBranches.length > 0) {
+      const previews = (branchCommitPreviews[b.name] ?? [])
+        .filter((c) => c.kind !== 'branch-created')
+        .sort((a, bx) => new Date(a.date).getTime() - new Date(bx.date).getTime());
+      const branchTimes = previews.map((c) => new Date(c.date).getTime());
+      branchChildBranches.forEach((child) => {
+        const idx = branchPreviewIndexForChildFork(previews, branchTimes, child);
+        if (idx >= 0) branchForkIndices.add(idx);
+      });
+    }
+    const commitDotClusters = clusterByForkPoints(commitDotEntries, branchForkIndices);
+
+    const promptMarkersRaw = branchPromptMeta[b.name]?.markers ?? [];
+    const promptSeeds = [...promptMarkersRaw]
+      .sort((a, bx) => new Date(a.timestamp).getTime() - new Date(bx.timestamp).getTime());
+    const promptMarkers = promptSeeds.map((marker) => {
+      const rawX = timeToX(marker.timestamp);
+      const x = Math.max(minCommitTimeX, Math.min(maxCommitTimeX, rawX));
+      return {
+        y: timeCoordToY(x),
+        marker,
+      };
+    });
+    const promptMarkerEntries: MarkerEntry<PromptEntryItem>[] =
+      promptMarkers.map(({ y, marker }, markerIndex) => {
+        const point = projectPoint(lanePosX, y);
+        return {
+          x: point.x,
+          y: point.y,
+          item: {
+            marker,
+            index: markerIndex,
+          },
+        };
+      });
+    const promptMarkerClusters = clusterByForkPoints(promptMarkerEntries, new Set<number>());
+
+    const branchHasCheckedOutHead =
+      checkedOutHeadSha != null &&
+      (
+        checkedOutBranchName
+          ? checkedOutBranchName === b.name
+          : (
+            shaMatchesGitRef(b.headSha, checkedOutHeadSha) ||
+            visibleBranchCommits.some((commit) =>
+              shaMatchesGitRef(commit.fullSha, checkedOutHeadSha) ||
+              shaMatchesGitRef(commit.sha, checkedOutHeadSha)
+            )
+          )
+      );
+    const brDelay = branchDelayMs.get(b.name) ?? 0;
+    const hasOpenPR = openPRBranchNames.has(b.name);
+    const daysSinceCommit = (Date.now() - new Date(b.lastCommitDate).getTime()) / 86400000;
+    const showClockIcon = hasOpenPR && daysSinceCommit >= 60;
+    const nameAnchor = projectPoint(lanePosX, forkY);
+    const nameDx = isHorizontal ? 24 : 20;
+    const nameDy = isHorizontal ? -20 : -12;
+    const namePoint = { x: nameAnchor.x + nameDx, y: nameAnchor.y + nameDy };
+    const clockPoint = { x: namePoint.x + 10, y: namePoint.y };
+
+    const layout: BranchRenderLayout = {
+      forkY,
+      lanePosX,
+      startX,
+      isMergedBranch,
+      isLocalBranch,
+      mergeNodeTimeX,
+      branchLineTipY,
+      mergeBackPath,
+      curvePath,
+      hitCurvePath,
+      hasPreviewData,
+      visibleBranchCommits,
+      uniqueAheadCount,
+      branchEndDotIndex,
+      localCommitDotIndices,
+      fullBranchShouldUseLocalGray,
+      localSegmentStartY,
+      commitDotClusters,
+      promptMarkerClusters,
+      branchHasCheckedOutHead,
+      brDelay,
+      showClockIcon,
+      namePoint,
+      clockPoint,
+    };
+    branchRenderLayoutCache.set(b.name, layout);
+    return layout;
+  }
   const clumpAnimStyle: React.CSSProperties = {
     transition: `transform ${clumpExpandMs}ms ${clumpExpandEasing}, opacity ${clumpExpandMs}ms ${clumpExpandEasing}`,
     willChange: 'transform, opacity',
@@ -3736,20 +4119,7 @@ export default function BranchMap({
           <g style={{ opacity: hoveredPR !== null ? 0.2 : 1, transition: 'opacity 0.15s' }}>
             {(() => {
               const branchUsesLocalGrayStroke = (branch: Branch): boolean => {
-                if (branch.remoteSyncStatus === 'on-github') return false;
-                const realPreviewCommits = (branchCommitPreviews[branch.name] ?? []).filter(
-                  (commit) => commit.kind !== 'branch-created'
-                );
-                if (realPreviewCommits.length === 0) return true;
-                const targetLocalCommitCount =
-                  branch.remoteSyncStatus === 'local-only'
-                    ? realPreviewCommits.length
-                    : branch.unpushedCommits;
-                const boundedLocalCommitCount = Math.max(
-                  0,
-                  Math.min(targetLocalCommitCount, realPreviewCommits.length),
-                );
-                return boundedLocalCommitCount === realPreviewCommits.length;
+                return getBranchRenderLayout(branch).fullBranchShouldUseLocalGray;
               };
 
               const branchStrokeLayerPriority = (branch: Branch): number => {
@@ -3764,182 +4134,32 @@ export default function BranchMap({
               );
 
               return orderedActiveBranches.map((b) => {
-              const forkTimeX = branchForkX(b);
-              const forkY = timeCoordToY(forkTimeX);
-              const lanePosX = laneX(b);
-              const startX = branchStartX(b);
-              const isFreshCopy = freshCopyBranchNames.has(b.name);
-              const isMergedBranch = b.commitsAhead === 0 && !isFreshCopy;
-              const isHovered = hoveredBranch === b.name;
-              const isLocalBranch = b.remoteSyncStatus !== 'on-github';
-
-              const isFocusedError = focusedErrorBranch?.name === b.name;
-              const focusedErrorColor = '#d97706';
-              const neutralColor = CANVAS_NEUTRAL_GRAY;
-              const color = isFocusedError ? focusedErrorColor : neutralColor;
-              const strokeWidth = isFocusedError ? 2 : 1.5;
-              const defaultStrokeColor = isHovered ? CANVAS_NEUTRAL_GRAY_HOVER : color;
-
-              const mergeNodeForBranch = isMergedBranch
-                ? mergeNodeByMergedHeadSha.get(b.headSha)
-                : undefined;
-              const mergeNodeTimeX = mergeNodeForBranch
-                ? mergeJunctionTimeX(mergeNodeForBranch)
-                : null;
-              const baseTipTimeX = branchTipX(b);
-              const tipTimeX = mergeNodeTimeX != null ? Math.max(baseTipTimeX, mergeNodeTimeX) : baseTipTimeX;
-              const commitTipTimeX = isMergedBranch ? baseTipTimeX : tipTimeX;
-              const commitTipY = timeCoordToY(commitTipTimeX);
-              const branchLineTipY = commitTipY;
-              const routeCornerR = GRID_ROUTE_CORNER_R;
-              const mergeTargetX = mainX;
-              const mergeTargetY = mergeNodeTimeX != null ? timeCoordToY(mergeNodeTimeX) : null;
-              const hasMergeBackConnector =
-                mergeTargetY != null && Math.abs(lanePosX - mergeTargetX) > 0.5;
-              const mergeBackPath = (() => {
-                if (!hasMergeBackConnector || mergeTargetY == null) return null;
-                return buildMergeOrthogonalPath({
-                  laneX: lanePosX,
-                  tipY: branchLineTipY,
-                  mergeX: mergeTargetX,
-                  mergeY: mergeTargetY,
-                  cornerR: routeCornerR,
-                  pointFormatter: pathCoord,
-                });
-              })();
-              const curvePath = buildBranchOrthogonalPath({
-                startX,
-                forkY,
-                laneX: lanePosX,
-                tipY: branchLineTipY,
-                cornerR: routeCornerR,
-                pointFormatter: pathCoord,
-              });
-              const horizontalDir = lanePosX >= startX ? 1 : -1;
-              const verticalDir = branchLineTipY >= forkY ? 1 : -1;
-              const startTrim = Math.min(
-                BRANCH_HIT_END_INSET,
-                Math.max(0, Math.abs(lanePosX - startX) - 1),
-              );
-              const endTrim = Math.min(
-                BRANCH_HIT_END_INSET,
-                Math.max(0, Math.abs(branchLineTipY - forkY) - 1),
-              );
-              const hitStartX = startX + horizontalDir * startTrim;
-              const hitTipY = branchLineTipY - verticalDir * endTrim;
-              const hitCurvePath = buildBranchOrthogonalPath({
-                startX: hitStartX,
-                forkY,
-                laneX: lanePosX,
-                tipY: hitTipY,
-                cornerR: routeCornerR,
-                pointFormatter: pathCoord,
-              });
-
-              const branchCommits = branchCommitPreviews[b.name] ?? [];
-              const hasPreviewData = Object.prototype.hasOwnProperty.call(branchCommitPreviews, b.name);
-              const visibleBranchCommits = hasPreviewData
-                ? branchCommits.filter((commit) => commit.kind !== 'branch-created')
-                : branchCommits;
-              const uniqueAheadCount = branchAheadCount(b);
-              const aheadCount = Math.max(1, uniqueAheadCount);
-              const hasConcretePreviewCommits = visibleBranchCommits.length > 0;
-              const commitCount = hasConcretePreviewCommits ? visibleBranchCommits.length : aheadCount;
-              const displayedCommits = hasConcretePreviewCommits
-                ? [...visibleBranchCommits.slice(0, commitCount)].sort(
-                  (a, b) => new Date(a.date).getTime() - new Date(b.date).getTime()
-                )
-                : [];
-              const minCommitTimeX = forkTimeX + GRID_EVENT_GAP;
-              const maxCommitTimeX = Math.max(minCommitTimeX, commitTipTimeX);
-              const commitItems: Array<BranchCommitPreview | undefined> = hasConcretePreviewCommits
-                ? displayedCommits
-                : Array.from({ length: commitCount }, () => undefined);
-              const headCommitIndex = hasConcretePreviewCommits
-                ? commitItems.findIndex((item) => item?.fullSha === b.headSha)
-                : -1;
-              let commitDots = hasConcretePreviewCommits
-                ? commitItems.map((commit, index) => {
-                  const slotX = gridXForBranchSlot(b.name, index);
-                  const shaX = commit?.fullSha ? gridXForBranchSha(b.name, commit.fullSha) : undefined;
-                  const rawX = slotX ?? shaX ?? timeToX(commit?.date ?? b.lastCommitDate);
-                  const x = Math.max(minCommitTimeX, Math.min(maxCommitTimeX, rawX));
-                  return { y: timeCoordToY(x), commit };
-                })
-                : placeItemsEvenly(commitItems, minCommitTimeX, maxCommitTimeX).map((entry) => ({
-                  y: timeCoordToY(entry.x),
-                  commit: entry.item,
-                }));
-              const realCommitDotIndices = commitItems.reduce<number[]>((acc, item, index) => {
-                if (item?.kind !== 'branch-created') acc.push(index);
-                return acc;
-              }, []);
-              let branchEndDotIndex: number | null = null;
-              if (realCommitDotIndices.length > 0) {
-                const anchorIndex = headCommitIndex >= 0
-                  ? headCommitIndex
-                  : realCommitDotIndices[realCommitDotIndices.length - 1];
-                branchEndDotIndex = anchorIndex;
-                const anchor = commitDots[anchorIndex];
-                if (anchor) {
-                  const branchCommitEndY = timeCoordToY(commitTipTimeX);
-                  commitDots[anchorIndex] = { ...anchor, y: branchCommitEndY };
-                }
-              } else if (commitDots.length > 0) {
-                branchEndDotIndex = commitDots.length - 1;
-              }
-              const targetLocalCommitCount = isLocalBranch
-                ? (
-                  b.remoteSyncStatus === 'local-only'
-                    ? realCommitDotIndices.length
-                    : b.unpushedCommits
-                )
-                : 0;
-              const boundedLocalCommitCount = Math.max(
-                0,
-                Math.min(targetLocalCommitCount, realCommitDotIndices.length),
-              );
-              const localCommitDotIndices = new Set(
-                realCommitDotIndices.slice(realCommitDotIndices.length - boundedLocalCommitCount),
-              );
-              const allBranchCommitsAreLocal =
-                realCommitDotIndices.length > 0 &&
-                boundedLocalCommitCount === realCommitDotIndices.length;
-              const firstLocalDotIndex = localCommitDotIndices.size > 0
-                ? Math.min(...Array.from(localCommitDotIndices))
-                : null;
-              const firstLocalCommitY = firstLocalDotIndex != null
-                ? commitDots[firstLocalDotIndex]?.y
-                : undefined;
-              const previousCommittedIndex = firstLocalDotIndex != null
-                ? (() => {
-                  const prior = realCommitDotIndices.filter((idx) => idx < firstLocalDotIndex);
-                  return prior.length > 0 ? prior[prior.length - 1] : undefined;
-                })()
-                : undefined;
-              const localSegmentStartY =
-                !allBranchCommitsAreLocal &&
-                firstLocalCommitY != null &&
-                previousCommittedIndex != null
-                  ? (
-                    (firstLocalCommitY + (commitDots[previousCommittedIndex]?.y ?? firstLocalCommitY)) / 2
-                  )
-                  : undefined;
-              const fullBranchShouldUseLocalGray =
-                isLocalBranch && (allBranchCommitsAreLocal || realCommitDotIndices.length === 0);
-              const branchHasCheckedOutHead =
-                checkedOutHeadSha != null &&
-                (
-                  checkedOutBranchName
-                    ? checkedOutBranchName === b.name
-                    : (
-                      shaMatchesGitRef(b.headSha, checkedOutHeadSha) ||
-                      visibleBranchCommits.some((commit) =>
-                        shaMatchesGitRef(commit.fullSha, checkedOutHeadSha) ||
-                        shaMatchesGitRef(commit.sha, checkedOutHeadSha)
-                      )
-                    )
-                );
+                const {
+                  lanePosX,
+                  branchLineTipY,
+                  mergeBackPath,
+                  curvePath,
+                  hitCurvePath,
+                  hasPreviewData,
+                  uniqueAheadCount,
+                  branchEndDotIndex,
+                  localCommitDotIndices,
+                  fullBranchShouldUseLocalGray,
+                  localSegmentStartY,
+                  commitDotClusters,
+                  promptMarkerClusters,
+                  branchHasCheckedOutHead,
+                  brDelay,
+                  showClockIcon,
+                  clockPoint,
+                } = getBranchRenderLayout(b);
+                const isHovered = hoveredBranch === b.name;
+                const isFocusedError = focusedErrorBranch?.name === b.name;
+                const focusedErrorColor = '#d97706';
+                const neutralColor = CANVAS_NEUTRAL_GRAY;
+                const color = isFocusedError ? focusedErrorColor : neutralColor;
+                const strokeWidth = isFocusedError ? 2 : 1.5;
+                const defaultStrokeColor = isHovered ? CANVAS_NEUTRAL_GRAY_HOVER : color;
               const strokeColor =
                 !isFocusedError && branchHasCheckedOutHead
                   ? CHECKED_OUT_SELECTION_STROKE
@@ -3950,66 +4170,7 @@ export default function BranchMap({
                   );
               const unpushedStrokeWidth = strokeWidth + UNPUSHED_LANE_STROKE_VISUAL_COMP;
               const unpushedLaneDasharray = `${Math.max(1, unpushedStrokeWidth)} ${Math.max(2, unpushedStrokeWidth * 1.8)}`;
-              const promptMarkersRaw = branchPromptMeta[b.name]?.markers ?? [];
-              const minPromptX = minCommitTimeX;
-              const maxPromptX = maxCommitTimeX;
-              const promptSeeds = [...promptMarkersRaw]
-                .sort((a, b) => new Date(a.timestamp).getTime() - new Date(b.timestamp).getTime());
-              const promptMarkers = promptSeeds.map((marker) => {
-                const rawX = timeToX(marker.timestamp);
-                const x = Math.max(minPromptX, Math.min(maxPromptX, rawX));
-                return {
-                  y: timeCoordToY(x),
-                  marker,
-                };
-              });
-              const commitDotEntries: MarkerEntry<{ index: number; commit?: BranchCommitPreview }>[] =
-                commitDots.map(({ y, commit }, index) => {
-                  const point = projectPoint(lanePosX, y);
-                  return {
-                    x: point.x,
-                    y: point.y,
-                    item: { index, commit },
-                  };
-                });
-              const branchForkIndices = new Set<number>();
-              const branchChildBranches = childBranchesByParent.get(b.name) ?? [];
-              if (branchChildBranches.length > 0) {
-                const previews = (branchCommitPreviews[b.name] ?? [])
-                  .filter((c) => c.kind !== 'branch-created')
-                  .sort((a, bx) => new Date(a.date).getTime() - new Date(bx.date).getTime());
-                const branchTimes = previews.map((c) => new Date(c.date).getTime());
-                branchChildBranches.forEach((child) => {
-                  const idx = branchPreviewIndexForChildFork(previews, branchTimes, child);
-                  if (idx >= 0) branchForkIndices.add(idx);
-                });
-              }
-              const commitDotClusters = clusterByForkPoints(commitDotEntries, branchForkIndices);
-              const promptMarkerEntries: MarkerEntry<{ marker: typeof promptMarkers[number]['marker']; index: number }>[] =
-                promptMarkers.map(({ y, marker }, markerIndex) => {
-                  const point = projectPoint(lanePosX, y);
-                  return {
-                    x: point.x,
-                    y: point.y,
-                    item: {
-                      marker,
-                      index: markerIndex,
-                    },
-                  };
-                });
-              const promptMarkerClusters = clusterByForkPoints(promptMarkerEntries, new Set<number>());
-
-              const brDelay = branchDelayMs.get(b.name) ?? 0;
-
-              const hasOpenPR = openPRBranchNames.has(b.name);
-              const daysSinceCommit = (Date.now() - new Date(b.lastCommitDate).getTime()) / 86400000;
-              const showClockIcon = hasOpenPR && daysSinceCommit >= 60;
-              const nameAnchor = projectPoint(lanePosX, forkY);
-              const nameDx = isHorizontal ? 24 : 20;
-              const nameDy = isHorizontal ? -20 : -12;
-              const namePoint = { x: nameAnchor.x + nameDx, y: nameAnchor.y + nameDy };
-              const clockPoint = { x: namePoint.x + 10, y: namePoint.y };
-              const branchGroupOpacity = 1;
+                const branchGroupOpacity = 1;
 
               return (
                 <g
@@ -4210,74 +4371,91 @@ export default function BranchMap({
                         );
                         const rectSize = commitRectSize(scaledNodeSize);
                         const isGhostRect = isNonCommitPlaceholder;
+                        const singleTitleText = fitNodeFrameTitle(
+                          b.name,
+                          commit?.sha ?? commit?.fullSha ?? b.headSha,
+                          rectSize.width,
+                        );
 
                         return (
-                          <rect
-                            key={clusterKey}
-                            className="branch-map-commit-rect"
-                            x={anchorX - rectSize.width / 2 + dotStrokeInset}
-                            y={anchorY - rectSize.height / 2 + dotStrokeInset}
-                            width={rectSize.width - dotStrokeWidth}
-                            height={rectSize.height - dotStrokeWidth}
-                            data-base-rx={rectSize.radius}
-                            rx={rectSize.radius / Math.max(layerCameraScale.x, 0.0001)}
-                            style={{ cursor: isNonCommitPlaceholder ? 'default' : 'pointer' }}
-                            fill={isGhostRect ? 'none' : dotFill}
-                            stroke={
-                              getNodeStrokeColor(
-                                clusterKey,
-                                isGhostRect ? LOCAL_UNPUSHED_GRAY : CANVAS_NODE_STROKE,
-                                clusterHasCheckedOutHead,
-                              )
-                            }
-                            strokeWidth={
-                              isGhostRect
-                                ? 1.2
-                                : dotStrokeWidth
-                            }
-                            strokeDasharray={isGhostRect ? '3 3' : dotStrokeDasharray}
-                            onClick={(event) => {
-                              if (isNonCommitPlaceholder) return;
-                              handleCommitNodeClick(
-                                event,
-                                targetCommitSha,
-                                clusterHasBranchTip ? b.name : undefined,
-                              );
-                            }}
-                            onDoubleClick={(event) => event.stopPropagation()}
-                            onMouseEnter={() => {
-                              setHoveredNodeStrokeKey(clusterKey);
-                              setTooltip({
-                                x: anchorX,
-                                y: anchorY,
-                                lines: isNonCommitPlaceholder
-                                  ? [
-                                    `No unique commits`,
-                                    `Branch ${b.name}`,
-                                    `Points at a shared commit`,
-                                  ]
-                                  : [
-                                    `Commit ${tooltipSha}`,
-                                    tooltipMessage
-                                      ? truncatePrompt(tooltipMessage, COMMIT_TOOLTIP_PREVIEW_MAX)
-                                      : `@${tooltipAuthor}`,
-                                    `@${tooltipAuthor} · ${fmtTooltipDate(tooltipDate)}`,
-                                  ],
-                                avatarUrl:
-                                  !isNonCommitPlaceholder && showBranchAvatar
-                                    ? b.lastCommitAuthorAvatar
-                                    : undefined,
-                                avatarFallback:
-                                  !isNonCommitPlaceholder
-                                    ? (tooltipAuthor?.charAt(0).toUpperCase() || '?')
-                                    : undefined,
-                              });
-                            }}
-                            onMouseLeave={() => {
-                              setHoveredNodeStrokeKey(null);
-                              setTooltip(null);
-                            }}
-                          />
+                          <g key={clusterKey}>
+                            <rect
+                              className="branch-map-commit-rect"
+                              x={anchorX - rectSize.width / 2 + dotStrokeInset}
+                              y={anchorY - rectSize.height / 2 + dotStrokeInset}
+                              width={rectSize.width - dotStrokeWidth}
+                              height={rectSize.height - dotStrokeWidth}
+                              data-base-rx={rectSize.radius}
+                              rx={rectSize.radius / Math.max(layerCameraScale.x, 0.0001)}
+                              style={{ cursor: isNonCommitPlaceholder ? 'default' : 'pointer' }}
+                              fill={isGhostRect ? 'none' : dotFill}
+                              stroke={
+                                getNodeStrokeColor(
+                                  clusterKey,
+                                  isGhostRect ? LOCAL_UNPUSHED_GRAY : CANVAS_NODE_STROKE,
+                                  clusterHasCheckedOutHead,
+                                )
+                              }
+                              strokeWidth={
+                                isGhostRect
+                                  ? 1.2
+                                  : dotStrokeWidth
+                              }
+                              strokeDasharray={isGhostRect ? '3 3' : dotStrokeDasharray}
+                              onClick={(event) => {
+                                if (isNonCommitPlaceholder) return;
+                                handleCommitNodeClick(
+                                  event,
+                                  targetCommitSha,
+                                  clusterHasBranchTip ? b.name : undefined,
+                                );
+                              }}
+                              onDoubleClick={(event) => event.stopPropagation()}
+                              onMouseEnter={() => {
+                                setHoveredNodeStrokeKey(clusterKey);
+                                setTooltip({
+                                  x: anchorX,
+                                  y: anchorY,
+                                  lines: isNonCommitPlaceholder
+                                    ? [
+                                      `No unique commits`,
+                                      `Branch ${b.name}`,
+                                      `Points at a shared commit`,
+                                    ]
+                                    : [
+                                      `Commit ${tooltipSha}`,
+                                      tooltipMessage
+                                        ? truncatePrompt(tooltipMessage, COMMIT_TOOLTIP_PREVIEW_MAX)
+                                        : `@${tooltipAuthor}`,
+                                      `@${tooltipAuthor} · ${fmtTooltipDate(tooltipDate)}`,
+                                    ],
+                                  avatarUrl:
+                                    !isNonCommitPlaceholder && showBranchAvatar
+                                      ? b.lastCommitAuthorAvatar
+                                      : undefined,
+                                  avatarFallback:
+                                    !isNonCommitPlaceholder
+                                      ? (tooltipAuthor?.charAt(0).toUpperCase() || '?')
+                                      : undefined,
+                                });
+                              }}
+                              onMouseLeave={() => {
+                                setHoveredNodeStrokeKey(null);
+                                setTooltip(null);
+                              }}
+                            />
+                            <text
+                              x={anchorX - rectSize.width / 2 + nodeFrameLabelInsetX}
+                              y={anchorY - rectSize.height / 2 - nodeFrameLabelGap}
+                              textAnchor="start"
+                              fill={NODE_FRAME_LABEL_COLOR}
+                              fontSize={nodeFrameLabelFontSize}
+                              fontWeight={NODE_FRAME_LABEL_WEIGHT}
+                              pointerEvents="none"
+                            >
+                              {singleTitleText}
+                            </text>
+                          </g>
                         );
                       }
 
@@ -4305,6 +4483,13 @@ export default function BranchMap({
                           : clamp01((Date.now() - phaseStartedAtMs) / clumpExpandMs);
                       const phaseEased = phaseProgress <= 0 ? 0 : phaseProgress >= 1 ? 1 : easeInOutCubic(phaseProgress);
                       const rectSize = nodeRectSize(count);
+                      const clumpCountText = stackCountLabel(count);
+                      const clumpTitleText = fitNodeFrameTitle(
+                        b.name,
+                        lastRealEntry.item.commit?.sha ?? lastRealEntry.item.commit?.fullSha ?? b.headSha,
+                        rectSize.width,
+                        clumpCountText,
+                      );
                       // Expanded members represent single commits in grid layout.
                       const localRect = commitRectSize(scaledNodeSize, 0);
                       const collapseIconSize = Math.max(12, Math.min(localRect.width, localRect.height) * 0.55);
@@ -4341,7 +4526,18 @@ export default function BranchMap({
                                 fontWeight={NODE_FRAME_LABEL_WEIGHT}
                                 pointerEvents="none"
                               >
-                                {stackCountLabel(count)}
+                                {clumpCountText}
+                              </text>
+                              <text
+                                x={anchorX - rectSize.width / 2 + nodeFrameLabelInsetX}
+                                y={anchorY - rectSize.height / 2 - nodeFrameLabelGap}
+                                textAnchor="start"
+                                fill={NODE_FRAME_LABEL_COLOR}
+                                fontSize={nodeFrameLabelFontSize}
+                                fontWeight={NODE_FRAME_LABEL_WEIGHT}
+                                pointerEvents="none"
+                              >
+                                {clumpTitleText}
                               </text>
                             </g>
                           )}
@@ -4646,412 +4842,6 @@ export default function BranchMap({
               </g>
             );
           })()}
-
-          {/* Global node overlay so commit/prompt nodes always paint above branch lines. */}
-          {ENABLE_GLOBAL_NODE_OVERLAY && (
-          <g
-            style={{ opacity: 1, transition: 'opacity 0.15s', pointerEvents: 'none' }}
-          >
-            {[...activeBranches]
-              .sort((a, b) => {
-                const priority = (branch: Branch): number => {
-                  if (hoveredBranch === branch.name) return 2;
-                  if (isSelectedLaneBranch(branch)) return 1;
-                  return 0;
-                };
-                return priority(a) - priority(b);
-              })
-              .map((b) => {
-              const forkTimeX = branchForkX(b);
-              const lanePosX = laneX(b);
-              const isFreshCopy = freshCopyBranchNames.has(b.name);
-              const isMergedBranch = b.commitsAhead === 0 && !isFreshCopy;
-              const mergeNodeForBranch = isMergedBranch
-                ? mergeNodeByMergedHeadSha.get(b.headSha)
-                : undefined;
-              const mergeNodeTimeX = mergeNodeForBranch
-                ? mergeJunctionTimeX(mergeNodeForBranch)
-                : null;
-              const baseTipTimeX = branchTipX(b);
-              const tipTimeX = mergeNodeTimeX != null ? Math.max(baseTipTimeX, mergeNodeTimeX) : baseTipTimeX;
-              const commitTipTimeX = isMergedBranch ? baseTipTimeX : tipTimeX;
-
-              const isLocalBranch = b.remoteSyncStatus !== 'on-github';
-              const branchGroupOpacity = 1;
-
-              const branchCommits = branchCommitPreviews[b.name] ?? [];
-              const hasPreviewData = Object.prototype.hasOwnProperty.call(branchCommitPreviews, b.name);
-              const visibleBranchCommits = hasPreviewData
-                ? branchCommits.filter((commit) => commit.kind !== 'branch-created')
-                : branchCommits;
-              const uniqueAheadCount = branchAheadCount(b);
-              const fallbackCommitCount = Math.max(1, uniqueAheadCount);
-              const hasConcretePreviewCommits = visibleBranchCommits.length > 0;
-              const commitCount = hasConcretePreviewCommits ? visibleBranchCommits.length : fallbackCommitCount;
-              const displayedCommits = hasConcretePreviewCommits
-                ? [...visibleBranchCommits.slice(0, commitCount)].sort(
-                  (a, b) => new Date(a.date).getTime() - new Date(b.date).getTime()
-                )
-                : [];
-              const minCommitTimeX = forkTimeX + GRID_EVENT_GAP;
-              const maxCommitTimeX = Math.max(minCommitTimeX, commitTipTimeX);
-              const commitItems: Array<BranchCommitPreview | undefined> = hasConcretePreviewCommits
-                ? displayedCommits
-                : Array.from({ length: commitCount }, () => undefined);
-              let commitDots = hasConcretePreviewCommits
-                ? commitItems.map((commit, index) => {
-                  const slotX = gridXForBranchSlot(b.name, index);
-                  const shaX = commit?.fullSha ? gridXForBranchSha(b.name, commit.fullSha) : undefined;
-                  const rawX = slotX ?? shaX ?? timeToX(commit?.date ?? b.lastCommitDate);
-                  const x = Math.max(minCommitTimeX, Math.min(maxCommitTimeX, rawX));
-                  return { y: timeCoordToY(x), commit };
-                })
-                : placeItemsEvenly(commitItems, minCommitTimeX, maxCommitTimeX).map((entry) => ({
-                  y: timeCoordToY(entry.x),
-                  commit: entry.item,
-                }));
-              const realCommitDotIndices = commitItems.reduce<number[]>((acc, item, index) => {
-                if (item?.kind !== 'branch-created') acc.push(index);
-                return acc;
-              }, []);
-              let branchEndDotIndex: number | null = null;
-              if (realCommitDotIndices.length > 0) {
-                const headCommitIndex = hasConcretePreviewCommits
-                  ? commitItems.findIndex((item) => item?.fullSha === b.headSha)
-                  : -1;
-                const anchorIndex = headCommitIndex >= 0
-                  ? headCommitIndex
-                  : realCommitDotIndices[realCommitDotIndices.length - 1];
-                branchEndDotIndex = anchorIndex;
-                const anchor = commitDots[anchorIndex];
-                if (anchor) {
-                  const branchCommitEndY = timeCoordToY(commitTipTimeX);
-                  commitDots[anchorIndex] = { ...anchor, y: branchCommitEndY };
-                }
-              } else if (commitDots.length > 0) {
-                branchEndDotIndex = commitDots.length - 1;
-              }
-              const targetLocalCommitCount = isLocalBranch
-                ? (
-                  b.remoteSyncStatus === 'local-only'
-                    ? realCommitDotIndices.length
-                    : b.unpushedCommits
-                )
-                : 0;
-              const boundedLocalCommitCount = Math.max(
-                0,
-                Math.min(targetLocalCommitCount, realCommitDotIndices.length),
-              );
-              const localCommitDotIndices = new Set(
-                realCommitDotIndices.slice(realCommitDotIndices.length - boundedLocalCommitCount),
-              );
-              const allBranchCommitsAreLocal =
-                realCommitDotIndices.length > 0 &&
-                boundedLocalCommitCount === realCommitDotIndices.length;
-              const fullBranchShouldUseLocalGray =
-                isLocalBranch && (allBranchCommitsAreLocal || realCommitDotIndices.length === 0);
-              const commitDotEntries: MarkerEntry<{ index: number; commit?: BranchCommitPreview }>[] =
-                commitDots.map(({ y, commit }, index) => {
-                  const point = projectPoint(lanePosX, y);
-                  return {
-                    x: point.x,
-                    y: point.y,
-                    item: { index, commit },
-                  };
-                });
-              const branchForkIndices2 = new Set<number>();
-              const branchChildBranches2 = childBranchesByParent.get(b.name) ?? [];
-              if (branchChildBranches2.length > 0) {
-                const previews = (branchCommitPreviews[b.name] ?? [])
-                  .filter((c) => c.kind !== 'branch-created')
-                  .sort((a, bx) => new Date(a.date).getTime() - new Date(bx.date).getTime());
-                const branchTimes = previews.map((c) => new Date(c.date).getTime());
-                branchChildBranches2.forEach((child) => {
-                  const idx = branchPreviewIndexForChildFork(previews, branchTimes, child);
-                  if (idx >= 0) branchForkIndices2.add(idx);
-                });
-              }
-              const commitDotClusters = clusterByForkPoints(commitDotEntries, branchForkIndices2);
-
-              const promptMarkersRaw = branchPromptMeta[b.name]?.markers ?? [];
-              const promptSeeds = [...promptMarkersRaw]
-                .sort((a, b) => new Date(a.timestamp).getTime() - new Date(b.timestamp).getTime());
-              const promptMarkers = promptSeeds.map((marker) => {
-                const rawX = timeToX(marker.timestamp);
-                const x = Math.max(minCommitTimeX, Math.min(maxCommitTimeX, rawX));
-                return {
-                  y: timeCoordToY(x),
-                  marker,
-                };
-              });
-              const promptMarkerEntries: MarkerEntry<{ marker: typeof promptMarkers[number]['marker']; index: number }>[] =
-                promptMarkers.map(({ y, marker }, markerIndex) => {
-                  const point = projectPoint(lanePosX, y);
-                  return {
-                    x: point.x,
-                    y: point.y,
-                    item: {
-                      marker,
-                      index: markerIndex,
-                    },
-                  };
-                });
-              const promptMarkerClusters = clusterByForkPoints(promptMarkerEntries, new Set<number>());
-
-              return (
-                <g key={`node-overlay-${b.name}`} style={{ opacity: branchGroupOpacity }}>
-                  {promptMarkerClusters.map((cluster) => {
-                    const count = cluster.entries.length;
-                    const firstEntry = cluster.entries[0];
-                    const lastEntry = cluster.entries[count - 1];
-                    const clusterKey = `prompt-clump-${b.name}-${firstEntry.item.index}-${lastEntry.item.index}`;
-                    const memberKeys = cluster.entries.map((entry) => `prompt:${b.name}:slot-${entry.item.index}`);
-                      const animatedAnchor = resolveAnimatedClumpAnchor(
-                        clusterKey,
-                        { x: cluster.x, y: cluster.y },
-                        memberKeys
-                      );
-                    const anchorX = animatedAnchor.x;
-                    const anchorY = animatedAnchor.y;
-                    const markerSize =
-                      scaledNodeSize;
-                    const markerPath = promptMarkerPath(anchorX, anchorY, markerSize);
-                    const label = count > 1 ? clumpCountLabel(count) : '';
-                    const labelFontSize = nodeLabelFontSize(scaledNodeSize, count);
-
-                    return (
-                      <g key={`prompt-overlay-${clusterKey}`}>
-                        <path
-                          d={markerPath}
-                          fill="var(--background)"
-                          stroke="#14b8a6"
-                          strokeWidth={1.2}
-                          strokeLinejoin="round"
-                        />
-                        {count > 1 && (
-                          <text
-                            x={anchorX}
-                            y={anchorY}
-                            textAnchor="middle"
-                            dominantBaseline="middle"
-                            fill="#14b8a6"
-                            fontWeight={700}
-                            style={{ fontVariantNumeric: 'tabular-nums', fontSize: `${labelFontSize / Math.max(layerCameraScale.x, 0.0001)}px` }}
-                            data-base-font-size={labelFontSize}
-                          >
-                            {label}
-                          </text>
-                        )}
-                      </g>
-                    );
-                  })}
-                  {commitDotClusters.map((cluster) => {
-                    const realCommitEntries = cluster.entries.filter(
-                      (entry) => entry.item.commit?.kind !== 'branch-created'
-                    );
-                    const count = realCommitEntries.length;
-                    const firstEntry = cluster.entries[0];
-                    const lastEntry = cluster.entries[cluster.entries.length - 1];
-                    const clusterKey = `commit-clump-${b.name}-${firstEntry.item.index}-${lastEntry.item.index}`;
-                    const memberKeys = cluster.entries.map((entry) => {
-                      const commitSha = entry.item.commit?.fullSha;
-                      return commitSha
-                        ? `branch-commit:${b.name}:${commitSha}`
-                        : `branch-commit:${b.name}:slot-${entry.item.index}`;
-                    });
-                    const preferredAnchorEntry = (() => {
-                      if (branchEndDotIndex != null) {
-                        const headEntry = cluster.entries.find(
-                          (entry) => entry.item.index === branchEndDotIndex
-                        );
-                        if (headEntry) return headEntry;
-                      }
-                      return realCommitEntries[realCommitEntries.length - 1] ?? lastEntry;
-                    })();
-                    const animatedAnchor = resolveAnimatedClumpAnchor(
-                      clusterKey,
-                      { x: preferredAnchorEntry.x, y: preferredAnchorEntry.y },
-                      memberKeys
-                    );
-                    const anchorX = animatedAnchor.x;
-                    const anchorY = animatedAnchor.y;
-                    const dotShouldUseCanvasFill =
-                      fullBranchShouldUseLocalGray ||
-                      cluster.entries.every((entry) => localCommitDotIndices.has(entry.item.index));
-                    const dotFill = dotShouldUseCanvasFill ? CANVAS_UNPUSHED_NODE_FILL : CANVAS_NODE_FILL;
-                    const dotStrokeWidth = CANVAS_NODE_STROKE_WIDTH;
-                    const dotStrokeInset = dotStrokeWidth / 2;
-                    const dotStrokeDasharray = dotShouldUseCanvasFill ? '3 3' : undefined;
-
-                    const clusterHasCheckedOutHead =
-                      checkedOutHeadSha != null &&
-                      cluster.entries.some((entry) => {
-                        const idx = entry.item.index;
-                        const commit = entry.item.commit;
-                        if (hasPreviewData && commit && commit.kind !== 'branch-created') {
-                          return (
-                            shaMatchesGitRef(commit.fullSha, checkedOutHeadSha) ||
-                            shaMatchesGitRef(commit.sha, checkedOutHeadSha)
-                          );
-                        }
-                        if (!hasPreviewData && checkedOutBranchName === b.name && branchEndDotIndex === idx) {
-                          return shaMatchesGitRef(b.headSha, checkedOutHeadSha);
-                        }
-                        return false;
-                      });
-
-                    const isOverlayExpanded =
-                      (expandedClumps.get(clusterKey)?.isExpanded ?? false);
-
-                    if (count <= 1) {
-                      const rectSize = commitRectSize(scaledNodeSize);
-                      const gridPad = 0;
-                      const isGhostRect = count === 0 && uniqueAheadCount <= 0;
-                      const clusterLabelCommit =
-                        realCommitEntries[0]?.item.commit ??
-                        cluster.entries[cluster.entries.length - 1]?.item.commit;
-                      const singleTitleText = fitNodeFrameTitle(
-                        b.name,
-                        clusterLabelCommit?.sha ?? clusterLabelCommit?.fullSha ?? b.headSha,
-                        rectSize.width + gridPad,
-                      );
-                      return (
-                        <g key={`commit-overlay-${clusterKey}`}>
-                          {!isGhostRect && (
-                            <rect
-                              className="branch-map-commit-rect"
-                              x={anchorX - (rectSize.width + gridPad) / 2}
-                              y={anchorY - (rectSize.height + gridPad) / 2}
-                              width={rectSize.width + gridPad}
-                              height={rectSize.height + gridPad}
-                              data-base-rx={rectSize.radius}
-                              rx={rectSize.radius / Math.max(layerCameraScale.x, 0.0001)}
-                              fill="var(--background)"
-                            />
-                          )}
-                          <rect
-                            className="branch-map-commit-rect"
-                            x={anchorX - rectSize.width / 2 + dotStrokeInset}
-                            y={anchorY - rectSize.height / 2 + dotStrokeInset}
-                            width={rectSize.width - dotStrokeWidth}
-                            height={rectSize.height - dotStrokeWidth}
-                            data-base-rx={rectSize.radius}
-                            rx={rectSize.radius / Math.max(layerCameraScale.x, 0.0001)}
-                            fill={isGhostRect ? 'none' : dotFill}
-                            stroke={
-                              getNodeStrokeColor(
-                                clusterKey,
-                                isGhostRect ? LOCAL_UNPUSHED_GRAY : CANVAS_NODE_STROKE,
-                                clusterHasCheckedOutHead,
-                              )
-                            }
-                            strokeWidth={
-                              isGhostRect
-                                ? 1.2
-                                : dotStrokeWidth
-                            }
-                            strokeDasharray={isGhostRect ? '3 3' : dotStrokeDasharray}
-                          />
-                          <text
-                            x={anchorX - (rectSize.width + gridPad) / 2 + nodeFrameLabelInsetX}
-                            y={anchorY - (rectSize.height + gridPad) / 2 - nodeFrameLabelGap}
-                            textAnchor="start"
-                            fill={NODE_FRAME_LABEL_COLOR}
-                            fontSize={nodeFrameLabelFontSize}
-                            fontWeight={NODE_FRAME_LABEL_WEIGHT}
-                            pointerEvents="none"
-                          >
-                            {singleTitleText}
-                          </text>
-                        </g>
-                      );
-                    }
-
-                    const clusterRectSize = nodeRectSize(count);
-                    const gridPad = 0;
-                    const clusterLabelCommit = realCommitEntries[realCommitEntries.length - 1]?.item.commit;
-                    const clumpCountText = stackCountLabel(count);
-                    const clumpTitleText = fitNodeFrameTitle(
-                      b.name,
-                      clusterLabelCommit?.sha ?? clusterLabelCommit?.fullSha ?? b.headSha,
-                      clusterRectSize.width + gridPad,
-                      clumpCountText,
-                    );
-                    return (
-                      <g key={`commit-overlay-${clusterKey}`}>
-                        {isOverlayExpanded ? (
-                          <>
-                            <rect
-                              className="branch-map-commit-rect"
-                              x={anchorX - (clusterRectSize.width + gridPad) / 2}
-                              y={anchorY - (clusterRectSize.height + gridPad) / 2}
-                              width={clusterRectSize.width + gridPad}
-                              height={clusterRectSize.height + gridPad}
-                              data-base-rx={clusterRectSize.radius}
-                              rx={clusterRectSize.radius / Math.max(layerCameraScale.x, 0.0001)}
-                              fill="var(--background)"
-                            />
-                            <rect
-                              className="branch-map-commit-rect"
-                              x={anchorX - clusterRectSize.width / 2 + dotStrokeInset}
-                              y={anchorY - clusterRectSize.height / 2 + dotStrokeInset}
-                              width={clusterRectSize.width - dotStrokeWidth}
-                              height={clusterRectSize.height - dotStrokeWidth}
-                              data-base-rx={clusterRectSize.radius}
-                              rx={clusterRectSize.radius / Math.max(layerCameraScale.x, 0.0001)}
-                              fill={dotFill}
-                              stroke={getNodeStrokeColor(clusterKey, CANVAS_NODE_STROKE, clusterHasCheckedOutHead)}
-                              strokeWidth={dotStrokeWidth}
-                              strokeDasharray={dotStrokeDasharray}
-                            />
-                          </>
-                        ) : (
-                          <rect
-                            className="branch-map-commit-rect"
-                            x={anchorX - clusterRectSize.width / 2 + dotStrokeInset}
-                            y={anchorY - clusterRectSize.height / 2 + dotStrokeInset}
-                            width={clusterRectSize.width - dotStrokeWidth}
-                            height={clusterRectSize.height - dotStrokeWidth}
-                            data-base-rx={clusterRectSize.radius}
-                            rx={clusterRectSize.radius / Math.max(layerCameraScale.x, 0.0001)}
-                            fill={dotFill}
-                            stroke={getNodeStrokeColor(clusterKey, CANVAS_NODE_STROKE, clusterHasCheckedOutHead)}
-                            strokeWidth={dotStrokeWidth}
-                            strokeDasharray={dotStrokeDasharray}
-                          />
-                        )}
-                        {!isOverlayExpanded && (
-                          <text
-                            x={anchorX + (clusterRectSize.width + gridPad) / 2 - nodeFrameLabelRightInsetX}
-                            y={anchorY - (clusterRectSize.height + gridPad) / 2 - nodeFrameLabelGap}
-                            textAnchor="end"
-                            fontSize={nodeFrameLabelFontSize}
-                            fill={NODE_FRAME_LABEL_COLOR}
-                            fontWeight={NODE_FRAME_LABEL_WEIGHT}
-                            pointerEvents="none"
-                          >
-                            {clumpCountText}
-                          </text>
-                        )}
-                        <text
-                          x={anchorX - (clusterRectSize.width + gridPad) / 2 + nodeFrameLabelInsetX}
-                          y={anchorY - (clusterRectSize.height + gridPad) / 2 - nodeFrameLabelGap}
-                          textAnchor="start"
-                          fill={NODE_FRAME_LABEL_COLOR}
-                          fontSize={nodeFrameLabelFontSize}
-                          fontWeight={NODE_FRAME_LABEL_WEIGHT}
-                          pointerEvents="none"
-                        >
-                          {clumpTitleText}
-                        </text>
-                      </g>
-                    );
-                  })}
-                </g>
-              );
-            })}
-          </g>
-          )}
 
           {/* Main commit node overlay so branch connectors never render over main clumps. */}
           <g style={{ opacity: mainTimelineOpacity, transition: 'opacity 0.15s', pointerEvents: 'none' }}>

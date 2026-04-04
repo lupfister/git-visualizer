@@ -217,11 +217,18 @@ fn infer_branch_parents(
         .iter()
         .find(|c| c.is_default)
         .map(|c| c.head_sha.clone());
+    let mut creation_info_by_name: HashMap<String, BranchCreationInfo> = HashMap::new();
+    for branch in branches.iter() {
+        if let Some(info) = get_branch_reflog_created_entry(repo, &branch.name)
+            .ok()
+            .flatten()
+        {
+            creation_info_by_name.insert(branch.name.clone(), info);
+        }
+    }
 
     for branch in branches.iter_mut() {
-        let created_from_reflog = get_branch_reflog_created_entry(repo, &branch.name)
-            .ok()
-            .flatten();
+        let created_from_reflog = creation_info_by_name.get(&branch.name).cloned();
         let created_from_reflog_sha = created_from_reflog.as_ref().map(|info| info.sha.clone());
         let created_from_reflog_date = created_from_reflog.as_ref().map(|info| info.date.clone());
         let created_from_reflog_parent = created_from_reflog
@@ -242,11 +249,9 @@ fn infer_branch_parents(
         // In that case, infer the branch parent from the first-parent ancestry
         // of the creation commit so we preserve full lineage.
         if parent_name.is_none() && created_from_head {
-            parent_name = created_from_reflog_sha
-                .as_deref()
-                .and_then(|created_sha| {
-                    infer_parent_from_created_head_sha(repo, &branch.name, created_sha, &candidates)
-                });
+            parent_name = created_from_reflog_sha.as_deref().and_then(|created_sha| {
+                infer_parent_from_created_head_sha(repo, &branch.name, created_sha, &candidates)
+            });
         }
         // For empty/fresh branches whose HEAD matches default HEAD, anchor to default.
         // This avoids unstable sibling/cyclic parenting among same-SHA placeholder branches.
@@ -270,6 +275,67 @@ fn infer_branch_parents(
                 .unwrap_or(false);
             if matches_default_head || matches_default_reflog_source || matches_default_fork_point {
                 parent_name = default_parent_name.clone();
+            }
+        }
+        // If reflog is unavailable/ambiguous, resolve same-head siblings
+        // deterministically so branch copies still attach to their source branch.
+        if parent_name.is_none() && !branch.head_sha.is_empty() {
+            let branch_created_key = created_from_reflog_date
+                .as_deref()
+                .unwrap_or(&branch.last_commit_date);
+            let mut best_older: Option<(ParentCandidate, String)> = None;
+            let mut best_any: Option<(ParentCandidate, String)> = None;
+
+            for candidate in &candidates {
+                if candidate.name == branch.name || candidate.head_sha != branch.head_sha {
+                    continue;
+                }
+
+                let candidate_created_key = creation_info_by_name
+                    .get(&candidate.name)
+                    .map(|info| info.date.as_str())
+                    .unwrap_or(candidate.last_commit_date.as_str())
+                    .to_string();
+
+                if candidate_created_key.as_str() <= branch_created_key {
+                    match &best_older {
+                        None => {
+                            best_older = Some((candidate.clone(), candidate_created_key.clone()))
+                        }
+                        Some((best_candidate, best_key)) => {
+                            let better_time = candidate_created_key > *best_key;
+                            let same_time = candidate_created_key == *best_key;
+                            let prefer_non_default =
+                                best_candidate.is_default && !candidate.is_default;
+                            if better_time
+                                || (same_time
+                                    && (prefer_non_default || candidate.name < best_candidate.name))
+                            {
+                                best_older =
+                                    Some((candidate.clone(), candidate_created_key.clone()));
+                            }
+                        }
+                    }
+                }
+
+                match &best_any {
+                    None => best_any = Some((candidate.clone(), candidate_created_key)),
+                    Some((best_candidate, best_key)) => {
+                        let better_time = candidate_created_key < *best_key;
+                        let same_time = candidate_created_key == *best_key;
+                        let prefer_non_default = best_candidate.is_default && !candidate.is_default;
+                        if better_time
+                            || (same_time
+                                && (prefer_non_default || candidate.name < best_candidate.name))
+                        {
+                            best_any = Some((candidate.clone(), candidate_created_key));
+                        }
+                    }
+                }
+            }
+
+            if let Some((candidate, _)) = best_older.or(best_any) {
+                parent_name = Some(candidate.name);
             }
         }
         // Heuristic parent inference based on merge-base (branch point), not parent tip ancestry.
@@ -480,11 +546,7 @@ fn get_first_parent_sha(repo: &Path, sha: &str) -> Result<Option<String>, GitErr
 }
 
 fn is_ancestor(repo: &Path, ancestor: &str, descendant: &str) -> bool {
-    cli::run(
-        repo,
-        &["merge-base", "--is-ancestor", ancestor, descendant],
-    )
-    .is_ok()
+    cli::run(repo, &["merge-base", "--is-ancestor", ancestor, descendant]).is_ok()
 }
 
 fn infer_parent_from_created_head_sha(
