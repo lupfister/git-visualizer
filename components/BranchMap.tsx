@@ -21,9 +21,9 @@ const BRANCH_HIT_STROKE_WIDTH = 48;
 const BRANCH_HIT_END_INSET = 10;
 const AHEAD_LABEL_OFFSET_X = 10;
 const MAIN_LABEL_OFFSET_X = 10;
-const ZOOM_DEFAULT = 1.25;
-const ZOOM_MIN = 1.25;
-const ZOOM_MAX = 7.5;
+const ZOOM_DEFAULT = 2;
+const ZOOM_MIN = 2;
+const ZOOM_MAX = 30;
 const ZOOM_WHEEL_EXP_SENSITIVITY = 0.0025;
 const ZOOM_WHEEL_DELTA_MAX_PX = 180;
 const CAMERA_UI_SYNC_MS = 24;
@@ -899,6 +899,15 @@ export default function BranchMap({
     }
     syncUiState(forceUiSync, immediateUiSync);
   }
+
+  useEffect(() => {
+    // Fast Refresh keeps hook state between edits. If zoom constants change,
+    // snap stale zoom values into the active range so updates are visible.
+    const clampedZoom = Math.max(ZOOM_MIN, Math.min(ZOOM_MAX, zoomRef.current));
+    if (Math.abs(clampedZoom - zoomRef.current) < 0.0001) return;
+    const nextPan = clampPan(panRef.current, clampedZoom, 'hard');
+    applyCamera(nextPan, clampedZoom, true, true);
+  }, [viewportSize.width, viewportSize.height]);
 
   function normalizeWheelDeltaPx(delta: number, deltaMode: number, pageSizePx: number): number {
     if (deltaMode === WheelEvent.DOM_DELTA_LINE) return delta * 16;
