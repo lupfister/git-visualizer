@@ -59,18 +59,25 @@ const TIME_SCALE_DEFAULT = 0.5;
 // Grid nodes render without clump boost, so grid spacing must match the un-boosted rect size
 // or you'll see tiny gaps between nodes.
 const GRID_NODE_RECT = commitRectSize(NODE_SIZE, 0);
-// Grid spacing should match node bounds so nodes "kiss" instead of overlapping.
-const GRID_ROW_GAP = GRID_NODE_RECT.height;
-const GRID_LANE_WIDTH = GRID_NODE_RECT.width;
+// Keep a subtle gutter between rows/columns so cells don't visually touch.
+const GRID_CELL_GAP = 1;
+const GRID_ROW_GAP = GRID_NODE_RECT.height + GRID_CELL_GAP;
+const GRID_LANE_WIDTH = GRID_NODE_RECT.width + GRID_CELL_GAP;
 const GRID_LANE_OFFSET_X = 0;
 const GRID_LANE_MIN_SEPARATION = 0;
 const GRID_ROUTE_CORNER_R = 6;
 const GRID_MERGE_EVENT_ROW_NUDGE = 0.001;
-const LOCAL_UNPUSHED_GRAY = '#eeeeee';
-const CANVAS_NEUTRAL_GRAY = '#D9D9D9';
+const LOCAL_UNPUSHED_GRAY = '#E0E0E0';
+const CANVAS_NEUTRAL_GRAY = '#E0E0E0';
 const CANVAS_NEUTRAL_GRAY_HOVER = '#44403c';
 const CANVAS_NEUTRAL_TEXT = '#1c1917';
 const CANVAS_CLUMP_LABEL_GRAY = '#787878';
+const CANVAS_NODE_FILL = '#F5F5F5';
+const CANVAS_UNPUSHED_NODE_FILL = 'var(--background)';
+const CANVAS_NODE_STROKE = '#E0E0E0';
+const CANVAS_NODE_STROKE_WIDTH = 1.5;
+const CANVAS_NODE_STROKE_INSET = CANVAS_NODE_STROKE_WIDTH / 2;
+const UNPUSHED_LANE_STROKE_VISUAL_COMP = 0.3;
 const CLUMP_COUNT_MAX = 99;
 const CHECKED_OUT_AHEAD_OFFSET_WORLD = 120;
 /** Ring around the commit that matches HEAD (SVG user units; hex OK for SVG). */
@@ -2637,12 +2644,12 @@ export default function BranchMap({
   const drawPathArcClass = (!ENABLE_TIMELINE_INTRO_ANIMATIONS || animationsLocked) ? undefined : 'draw-path-arc';
   const fadeInInfoClass = (!ENABLE_TIMELINE_INTRO_ANIMATIONS || animationsLocked) ? undefined : 'fade-in-info';
   const mainTimelineOpacity = 1;
-  const ENABLE_GLOBAL_NODE_OVERLAY = false;
+  const ENABLE_GLOBAL_NODE_OVERLAY = true;
   const timelineCanvasVisible = timelineRevealPhase !== 'hidden';
   const holdTimelineForInitialCenter =
     isLoading || (!hasInitialRevealDone && hasTimelineSeedData && timelineRevealPhase !== 'done' && !hasUserMovedCameraRef.current);
 
-  const CLUMP_STACK_DEPTH_MAX = 4;
+  const CLUMP_STACK_DEPTH_MAX = 3;
   const clumpStackOffset = worldPx(3);
   const clumpExpandMs = 260;
   const clumpExpandEasing = 'cubic-bezier(0.22, 1, 0.36, 1)';
@@ -2848,7 +2855,7 @@ export default function BranchMap({
                           key={`grid-row-top-${idx}`}
                           d={`M ${pathCoord(leftX, topYLine)} L ${pathCoord(rightX, topYLine)}`}
                           fill="none"
-                          stroke="#e7e5e4"
+                          stroke="#E0E0E0"
                           strokeOpacity={strokeOpacity}
                           strokeWidth={1}
                         />,
@@ -2856,7 +2863,7 @@ export default function BranchMap({
                           key={`grid-row-bottom-${idx}`}
                           d={`M ${pathCoord(leftX, bottomYLine)} L ${pathCoord(rightX, bottomYLine)}`}
                           fill="none"
-                          stroke="#e7e5e4"
+                          stroke="#E0E0E0"
                           strokeOpacity={strokeOpacity}
                           strokeWidth={1}
                         />,
@@ -2873,7 +2880,7 @@ export default function BranchMap({
                           className="non-scaling-stroke"
                           d={`M ${pathCoord(leftXLine, topY)} L ${pathCoord(leftXLine, bottomY)}`}
                           fill="none"
-                          stroke="#e7e5e4"
+                          stroke="#E0E0E0"
                           strokeOpacity={0.26}
                           strokeWidth={1}
                         />,
@@ -2882,7 +2889,7 @@ export default function BranchMap({
                           className="non-scaling-stroke"
                           d={`M ${pathCoord(rightXLine, topY)} L ${pathCoord(rightXLine, bottomY)}`}
                           fill="none"
-                          stroke="#e7e5e4"
+                          stroke="#E0E0E0"
                           strokeOpacity={0.26}
                           strokeWidth={1}
                         />,
@@ -2958,16 +2965,16 @@ export default function BranchMap({
                       <rect
                         key={clusterKey}
                         className="branch-map-commit-rect"
-                        x={anchorX - rectSize.width / 2}
-                        y={anchorY - rectSize.height / 2}
-                        width={rectSize.width}
-                        height={rectSize.height}
+                        x={anchorX - rectSize.width / 2 + CANVAS_NODE_STROKE_INSET}
+                        y={anchorY - rectSize.height / 2 + CANVAS_NODE_STROKE_INSET}
+                        width={rectSize.width - CANVAS_NODE_STROKE_WIDTH}
+                        height={rectSize.height - CANVAS_NODE_STROKE_WIDTH}
                         data-base-rx={rectSize.radius}
                         rx={rectSize.radius / Math.max(layerCameraScale.x, 0.0001)}
                         style={{ cursor: 'pointer' }}
-                        fill={CANVAS_NEUTRAL_GRAY}
-                        stroke="none"
-                        strokeWidth={0}
+                        fill={CANVAS_NODE_FILL}
+                        stroke={CANVAS_NODE_STROKE}
+                        strokeWidth={CANVAS_NODE_STROKE_WIDTH}
                         onClick={(event) =>
                           handleCommitNodeClick(
                             event,
@@ -3018,31 +3025,36 @@ export default function BranchMap({
                   const latestCommitMessage = last.message
                     ? truncatePrompt(last.message, COMMIT_CLUSTER_PREVIEW_MAX)
                     : 'on main';
+                  // Main-node visuals are authored in the dedicated overlay to keep branch
+                  // connectors behind them; keep this base layer for interaction only.
+                  const renderCollapsedVisualInBase = false;
 
                   return (
                     <g key={clusterKey}>
                       {/* Collapsed: draw a stack. Expanded: animate members out. */}
-                      {!isExpanded && (
+                      {!isExpanded && renderCollapsedVisualInBase && (
                         <g style={{ pointerEvents: 'none' }}>
                           {Array.from({ length: stackDepth }, (_, i) => {
                             const depth = stackDepth - 1 - i;
                             const dx = depth * clumpStackOffset;
                             const dy = -depth * clumpStackOffset;
                             return (
-                              <g
-                                key={`stack-${i}`}
-                                transform={`translate(${anchorX + dx} ${anchorY + dy})`}
-                                opacity={0.85 - depth * 0.12}
-                              >
+                                <g
+                                  key={`stack-${i}`}
+                                  transform={`translate(${anchorX + dx} ${anchorY + dy})`}
+                                  opacity={1}
+                                >
                                 <rect
                                   className="branch-map-commit-rect"
-                                  x={-rectSize.width / 2}
-                                  y={-rectSize.height / 2}
-                                  width={rectSize.width}
-                                  height={rectSize.height}
+                                  x={-rectSize.width / 2 + CANVAS_NODE_STROKE_INSET}
+                                  y={-rectSize.height / 2 + CANVAS_NODE_STROKE_INSET}
+                                  width={rectSize.width - CANVAS_NODE_STROKE_WIDTH}
+                                  height={rectSize.height - CANVAS_NODE_STROKE_WIDTH}
                                   data-base-rx={rectSize.radius}
                                   rx={rectSize.radius / Math.max(layerCameraScale.x, 0.0001)}
-                                  fill={CANVAS_NEUTRAL_GRAY}
+                                  fill={CANVAS_NODE_FILL}
+                                  stroke={CANVAS_NODE_STROKE}
+                                  strokeWidth={CANVAS_NODE_STROKE_WIDTH}
                                 />
                               </g>
                             );
@@ -3131,15 +3143,15 @@ export default function BranchMap({
                               >
                                 <rect
                                   className="branch-map-commit-rect"
-                                  x={-localRect.width / 2}
-                                  y={-localRect.height / 2}
-                                  width={localRect.width}
-                                  height={localRect.height}
+                                  x={-localRect.width / 2 + CANVAS_NODE_STROKE_INSET}
+                                  y={-localRect.height / 2 + CANVAS_NODE_STROKE_INSET}
+                                  width={localRect.width - CANVAS_NODE_STROKE_WIDTH}
+                                  height={localRect.height - CANVAS_NODE_STROKE_WIDTH}
                                   data-base-rx={localRect.radius}
                                   rx={localRect.radius / Math.max(layerCameraScale.x, 0.0001)}
-                                  fill={CANVAS_NEUTRAL_GRAY}
-                                  stroke="none"
-                                  strokeWidth={0}
+                                  fill={CANVAS_NODE_FILL}
+                                  stroke={CANVAS_NODE_STROKE}
+                                  strokeWidth={CANVAS_NODE_STROKE_WIDTH}
                                   style={{ cursor: 'pointer' }}
                                   onClick={(event) =>
                                     handleCommitNodeClick(
@@ -3569,7 +3581,35 @@ export default function BranchMap({
 
           {/* ── Active branches ── */}
           <g style={{ opacity: hoveredPR !== null ? 0.2 : 1, transition: 'opacity 0.15s' }}>
-            {activeBranches.map((b) => {
+            {(() => {
+              const branchUsesLocalGrayStroke = (branch: Branch): boolean => {
+                if (branch.remoteSyncStatus === 'on-github') return false;
+                const realPreviewCommits = (branchCommitPreviews[branch.name] ?? []).filter(
+                  (commit) => commit.kind !== 'branch-created'
+                );
+                if (realPreviewCommits.length === 0) return true;
+                const targetLocalCommitCount =
+                  branch.remoteSyncStatus === 'local-only'
+                    ? realPreviewCommits.length
+                    : branch.unpushedCommits;
+                const boundedLocalCommitCount = Math.max(
+                  0,
+                  Math.min(targetLocalCommitCount, realPreviewCommits.length),
+                );
+                return boundedLocalCommitCount === realPreviewCommits.length;
+              };
+
+              const branchStrokeLayerPriority = (branch: Branch): number => {
+                if (hoveredBranch === branch.name) return 3;
+                if (focusedErrorBranch?.name === branch.name) return 2;
+                return branchUsesLocalGrayStroke(branch) ? 0 : 1;
+              };
+
+              const orderedActiveBranches = [...activeBranches].sort(
+                (a, b) => branchStrokeLayerPriority(a) - branchStrokeLayerPriority(b)
+              );
+
+              return orderedActiveBranches.map((b) => {
               const forkTimeX = branchForkX(b);
               const forkY = timeCoordToY(forkTimeX);
               const lanePosX = laneX(b);
@@ -3717,6 +3757,8 @@ export default function BranchMap({
                 fullBranchShouldUseLocalGray && !isFocusedError && !isHovered
                   ? LOCAL_UNPUSHED_GRAY
                   : defaultStrokeColor;
+              const unpushedStrokeWidth = strokeWidth + UNPUSHED_LANE_STROKE_VISUAL_COMP;
+              const unpushedLaneDasharray = `${Math.max(1, unpushedStrokeWidth)} ${Math.max(2, unpushedStrokeWidth * 1.8)}`;
               const promptMarkersRaw = branchPromptMeta[b.name]?.markers ?? [];
               const minPromptX = minCommitTimeX;
               const maxPromptX = maxCommitTimeX;
@@ -3801,13 +3843,14 @@ export default function BranchMap({
                     d={curvePath}
                     fill="none"
                     stroke={strokeColor}
-                    strokeWidth={strokeWidth}
+                    strokeWidth={fullBranchShouldUseLocalGray ? unpushedStrokeWidth : strokeWidth}
+                    strokeDasharray={fullBranchShouldUseLocalGray ? unpushedLaneDasharray : undefined}
+                    strokeLinecap={fullBranchShouldUseLocalGray ? 'round' : undefined}
                     pathLength={fullBranchShouldUseLocalGray ? undefined : 1}
                     className={drawPathArcClass}
                     style={{
                       '--delay': `${brDelay}ms`,
                       transition: 'stroke 0.12s ease',
-                      ...(fullBranchShouldUseLocalGray ? { strokeLinecap: 'round' } : {}),
                     } as React.CSSProperties}
                   />
                   {mergeBackPath && (
@@ -3815,7 +3858,9 @@ export default function BranchMap({
                       d={mergeBackPath}
                       fill="none"
                       stroke={strokeColor}
-                      strokeWidth={strokeWidth}
+                      strokeWidth={fullBranchShouldUseLocalGray ? unpushedStrokeWidth : strokeWidth}
+                      strokeDasharray={fullBranchShouldUseLocalGray ? unpushedLaneDasharray : undefined}
+                      strokeLinecap={fullBranchShouldUseLocalGray ? 'round' : undefined}
                       className={drawPathArcClass}
                       style={{
                         '--delay': `${brDelay}ms`,
@@ -3828,11 +3873,12 @@ export default function BranchMap({
                       d={`M ${pathCoord(lanePosX, localSegmentStartY)} L ${pathCoord(lanePosX, branchLineTipY)}`}
                       fill="none"
                       stroke={isHovered ? CANVAS_NEUTRAL_GRAY_HOVER : LOCAL_UNPUSHED_GRAY}
-                      strokeWidth={strokeWidth}
+                      strokeWidth={unpushedStrokeWidth}
+                      strokeDasharray={unpushedLaneDasharray}
+                      strokeLinecap="round"
                       className={drawPathArcClass}
                       style={{
                         '--delay': `${brDelay}ms`,
-                        strokeLinecap: 'round',
                       } as React.CSSProperties}
                     />
                   )}
@@ -3913,14 +3959,13 @@ export default function BranchMap({
                       );
                       const anchorX = animatedAnchor.x;
                       const anchorY = animatedAnchor.y;
-                    const dotShouldUseLocalGray =
+                    const dotShouldUseCanvasFill =
                       fullBranchShouldUseLocalGray ||
                       cluster.entries.every((entry) => localCommitDotIndices.has(entry.item.index));
-                    const dotFill = dotShouldUseLocalGray
-                      ? LOCAL_UNPUSHED_GRAY
-                      : isFocusedError
-                        ? focusedErrorColor
-                        : CANVAS_NEUTRAL_GRAY;
+                    const dotFill = dotShouldUseCanvasFill ? CANVAS_UNPUSHED_NODE_FILL : CANVAS_NODE_FILL;
+                    const dotStrokeWidth = CANVAS_NODE_STROKE_WIDTH;
+                    const dotStrokeInset = dotStrokeWidth / 2;
+                    const dotStrokeDasharray = dotShouldUseCanvasFill ? '3 3' : undefined;
                     const clusterHasBranchTip =
                       branchEndDotIndex != null &&
                       cluster.entries.some((entry) => entry.item.index === branchEndDotIndex);
@@ -3946,17 +3991,25 @@ export default function BranchMap({
                           <rect
                             key={clusterKey}
                             className="branch-map-commit-rect"
-                            x={anchorX - rectSize.width / 2}
-                            y={anchorY - rectSize.height / 2}
-                            width={rectSize.width}
-                            height={rectSize.height}
+                            x={anchorX - rectSize.width / 2 + dotStrokeInset}
+                            y={anchorY - rectSize.height / 2 + dotStrokeInset}
+                            width={rectSize.width - dotStrokeWidth}
+                            height={rectSize.height - dotStrokeWidth}
                             data-base-rx={rectSize.radius}
                             rx={rectSize.radius / Math.max(layerCameraScale.x, 0.0001)}
                             style={{ cursor: isNonCommitPlaceholder ? 'default' : 'pointer' }}
                             fill={isGhostRect ? 'none' : dotFill}
-                            stroke={isGhostRect ? LOCAL_UNPUSHED_GRAY : 'none'}
-                            strokeWidth={isGhostRect ? 1.2 : 0}
-                            strokeDasharray={isGhostRect ? '3 3' : undefined}
+                            stroke={
+                              isGhostRect
+                                ? LOCAL_UNPUSHED_GRAY
+                                : CANVAS_NODE_STROKE
+                            }
+                            strokeWidth={
+                              isGhostRect
+                                ? 1.2
+                                : dotStrokeWidth
+                            }
+                            strokeDasharray={isGhostRect ? '3 3' : dotStrokeDasharray}
                             onClick={(event) => {
                               if (isNonCommitPlaceholder) return;
                               handleCommitNodeClick(
@@ -4045,17 +4098,20 @@ export default function BranchMap({
                                   <g
                                     key={`stack-${i}`}
                                     transform={`translate(${anchorX + dx} ${anchorY + dy})`}
-                                    opacity={0.85 - depth * 0.12}
+                                    opacity={1}
                                   >
                                     <rect
                                       className="branch-map-commit-rect"
-                                      x={-rectSize.width / 2}
-                                      y={-rectSize.height / 2}
-                                      width={rectSize.width}
-                                      height={rectSize.height}
+                                      x={-rectSize.width / 2 + dotStrokeInset}
+                                      y={-rectSize.height / 2 + dotStrokeInset}
+                                      width={rectSize.width - dotStrokeWidth}
+                                      height={rectSize.height - dotStrokeWidth}
                                       data-base-rx={rectSize.radius}
                                       rx={rectSize.radius / Math.max(layerCameraScale.x, 0.0001)}
                                       fill={dotFill}
+                                      stroke={CANVAS_NODE_STROKE}
+                                      strokeWidth={dotStrokeWidth}
+                                      strokeDasharray={dotStrokeDasharray}
                                     />
                                   </g>
                                 );
@@ -4157,15 +4213,16 @@ export default function BranchMap({
                                   >
                                     <rect
                                       className="branch-map-commit-rect"
-                                      x={-localRect.width / 2}
-                                      y={-localRect.height / 2}
-                                      width={localRect.width}
-                                      height={localRect.height}
+                                      x={-localRect.width / 2 + dotStrokeInset}
+                                      y={-localRect.height / 2 + dotStrokeInset}
+                                      width={localRect.width - dotStrokeWidth}
+                                      height={localRect.height - dotStrokeWidth}
                                       data-base-rx={localRect.radius}
                                       rx={localRect.radius / Math.max(layerCameraScale.x, 0.0001)}
                                       fill={dotFill}
-                                      stroke="none"
-                                      strokeWidth={0}
+                                      stroke={CANVAS_NODE_STROKE}
+                                      strokeWidth={dotStrokeWidth}
+                                      strokeDasharray={dotStrokeDasharray}
                                       style={{ cursor: 'pointer' }}
                                       onClick={(event) =>
                                         handleCommitNodeClick(
@@ -4202,9 +4259,9 @@ export default function BranchMap({
                                           y={-localRect.height / 2 - CHECKED_OUT_RING_GAP}
                                           width={localRect.width + 2 * CHECKED_OUT_RING_GAP}
                                           height={localRect.height + 2 * CHECKED_OUT_RING_GAP}
-                                          data-base-rx={localRect.radius + CHECKED_OUT_RING_GAP}
+                                          data-base-rx={localRect.radius}
                                           rx={
-                                            (localRect.radius + CHECKED_OUT_RING_GAP) /
+                                            localRect.radius /
                                             Math.max(layerCameraScale.x, 0.0001)
                                           }
                                           fill="none"
@@ -4343,7 +4400,8 @@ export default function BranchMap({
                   {/* Status labels are conflict-aware upstream; conflict indicator was removed. */}
                 </g>
               );
-            })}
+              });
+            })()}
           </g>
 
           {/* Checked-out connector line (render below node overlays). */}
@@ -4401,8 +4459,6 @@ export default function BranchMap({
               const commitTipTimeX = isMergedBranch ? baseTipTimeX : tipTimeX;
 
               const isLocalBranch = b.remoteSyncStatus !== 'on-github';
-              const isFocusedError = focusedErrorBranch?.name === b.name;
-              const focusedErrorColor = '#d97706';
               const branchGroupOpacity = 1;
 
               const branchCommits = branchCommitPreviews[b.name] ?? [];
@@ -4475,7 +4531,6 @@ export default function BranchMap({
                 boundedLocalCommitCount === realCommitDotIndices.length;
               const fullBranchShouldUseLocalGray =
                 isLocalBranch && (allBranchCommitsAreLocal || realCommitDotIndices.length === 0);
-
               const commitDotEntries: MarkerEntry<{ index: number; commit?: BranchCommitPreview }>[] =
                 commitDots.map(({ y, commit }, index) => {
                   const point = projectPoint(lanePosX, y);
@@ -4592,14 +4647,13 @@ export default function BranchMap({
                     );
                     const anchorX = animatedAnchor.x;
                     const anchorY = animatedAnchor.y;
-                    const dotShouldUseLocalGray =
+                    const dotShouldUseCanvasFill =
                       fullBranchShouldUseLocalGray ||
                       cluster.entries.every((entry) => localCommitDotIndices.has(entry.item.index));
-                  const dotFill = dotShouldUseLocalGray
-                    ? LOCAL_UNPUSHED_GRAY
-                    : isFocusedError
-                      ? focusedErrorColor
-                      : CANVAS_NEUTRAL_GRAY;
+                    const dotFill = dotShouldUseCanvasFill ? CANVAS_UNPUSHED_NODE_FILL : CANVAS_NODE_FILL;
+                    const dotStrokeWidth = CANVAS_NODE_STROKE_WIDTH;
+                    const dotStrokeInset = dotStrokeWidth / 2;
+                    const dotStrokeDasharray = dotShouldUseCanvasFill ? '3 3' : undefined;
 
                     const clusterHasCheckedOutHead =
                       checkedOutHeadSha != null &&
@@ -4634,23 +4688,31 @@ export default function BranchMap({
                               y={anchorY - (rectSize.height + gridPad) / 2}
                               width={rectSize.width + gridPad}
                               height={rectSize.height + gridPad}
-                              data-base-rx={Math.max(2, rectSize.radius + (gridPad ? 0.6 : 0))}
-                              rx={Math.max(2, rectSize.radius + (gridPad ? 0.6 : 0)) / Math.max(layerCameraScale.x, 0.0001)}
+                              data-base-rx={rectSize.radius}
+                              rx={rectSize.radius / Math.max(layerCameraScale.x, 0.0001)}
                               fill="var(--background)"
                             />
                           )}
                           <rect
                             className="branch-map-commit-rect"
-                            x={anchorX - rectSize.width / 2}
-                            y={anchorY - rectSize.height / 2}
-                            width={rectSize.width}
-                            height={rectSize.height}
+                            x={anchorX - rectSize.width / 2 + dotStrokeInset}
+                            y={anchorY - rectSize.height / 2 + dotStrokeInset}
+                            width={rectSize.width - dotStrokeWidth}
+                            height={rectSize.height - dotStrokeWidth}
                             data-base-rx={rectSize.radius}
                             rx={rectSize.radius / Math.max(layerCameraScale.x, 0.0001)}
                             fill={isGhostRect ? 'none' : dotFill}
-                            stroke={isGhostRect ? LOCAL_UNPUSHED_GRAY : undefined}
-                            strokeWidth={isGhostRect ? 1.2 : undefined}
-                            strokeDasharray={isGhostRect ? '3 3' : undefined}
+                            stroke={
+                              isGhostRect
+                                ? LOCAL_UNPUSHED_GRAY
+                                : CANVAS_NODE_STROKE
+                            }
+                            strokeWidth={
+                              isGhostRect
+                                ? 1.2
+                                : dotStrokeWidth
+                            }
+                            strokeDasharray={isGhostRect ? '3 3' : dotStrokeDasharray}
                           />
                           {clusterHasCheckedOutHead && !isOverlayExpanded && (
                             <rect
@@ -4659,9 +4721,9 @@ export default function BranchMap({
                               y={anchorY - (rectSize.height + gridPad) / 2 - CHECKED_OUT_RING_GAP}
                               width={rectSize.width + gridPad + 2 * CHECKED_OUT_RING_GAP}
                               height={rectSize.height + gridPad + 2 * CHECKED_OUT_RING_GAP}
-                              data-base-rx={Math.max(2, rectSize.radius + (gridPad ? 0.6 : 0)) + CHECKED_OUT_RING_GAP}
+                              data-base-rx={rectSize.radius}
                               rx={
-                                (Math.max(2, rectSize.radius + (gridPad ? 0.6 : 0)) + CHECKED_OUT_RING_GAP) /
+                                rectSize.radius /
                                 Math.max(layerCameraScale.x, 0.0001)
                               }
                               fill="none"
@@ -4676,48 +4738,83 @@ export default function BranchMap({
 
                     const clusterRectSize = nodeRectSize(count);
                     const gridPad = 0;
+                    const stackDepth = Math.min(CLUMP_STACK_DEPTH_MAX, count);
                     return (
                       <g key={`commit-overlay-${clusterKey}`}>
-                        <>
-                          <rect
-                            className="branch-map-commit-rect"
-                            x={anchorX - (clusterRectSize.width + gridPad) / 2}
-                            y={anchorY - (clusterRectSize.height + gridPad) / 2}
-                            width={clusterRectSize.width + gridPad}
-                            height={clusterRectSize.height + gridPad}
-                            data-base-rx={Math.max(2, clusterRectSize.radius + (gridPad ? 0.6 : 0))}
-                            rx={Math.max(2, clusterRectSize.radius + (gridPad ? 0.6 : 0)) / Math.max(layerCameraScale.x, 0.0001)}
-                            fill="var(--background)"
-                          />
-                          <rect
-                            className="branch-map-commit-rect"
-                            x={anchorX - clusterRectSize.width / 2}
-                            y={anchorY - clusterRectSize.height / 2}
-                            width={clusterRectSize.width}
-                            height={clusterRectSize.height}
-                            data-base-rx={clusterRectSize.radius}
-                            rx={clusterRectSize.radius / Math.max(layerCameraScale.x, 0.0001)}
-                            fill={dotFill}
-                          />
-                          {clusterHasCheckedOutHead && !isOverlayExpanded && (
+                        {isOverlayExpanded ? (
+                          <>
                             <rect
                               className="branch-map-commit-rect"
-                              x={anchorX - (clusterRectSize.width + gridPad) / 2 - CHECKED_OUT_RING_GAP}
-                              y={anchorY - (clusterRectSize.height + gridPad) / 2 - CHECKED_OUT_RING_GAP}
-                              width={clusterRectSize.width + gridPad + 2 * CHECKED_OUT_RING_GAP}
-                              height={clusterRectSize.height + gridPad + 2 * CHECKED_OUT_RING_GAP}
-                              data-base-rx={Math.max(2, clusterRectSize.radius + (gridPad ? 0.6 : 0)) + CHECKED_OUT_RING_GAP}
-                              rx={
-                                (Math.max(2, clusterRectSize.radius + (gridPad ? 0.6 : 0)) + CHECKED_OUT_RING_GAP) /
-                                Math.max(layerCameraScale.x, 0.0001)
-                              }
-                              fill="none"
-                              stroke={CHECKED_OUT_RING_STROKE}
-                              strokeWidth={CHECKED_OUT_RING_STROKE_WIDTH}
-                              vectorEffect="non-scaling-stroke"
+                              x={anchorX - (clusterRectSize.width + gridPad) / 2}
+                              y={anchorY - (clusterRectSize.height + gridPad) / 2}
+                              width={clusterRectSize.width + gridPad}
+                              height={clusterRectSize.height + gridPad}
+                              data-base-rx={clusterRectSize.radius}
+                              rx={clusterRectSize.radius / Math.max(layerCameraScale.x, 0.0001)}
+                              fill="var(--background)"
                             />
-                          )}
-                        </>
+                            <rect
+                              className="branch-map-commit-rect"
+                              x={anchorX - clusterRectSize.width / 2 + dotStrokeInset}
+                              y={anchorY - clusterRectSize.height / 2 + dotStrokeInset}
+                              width={clusterRectSize.width - dotStrokeWidth}
+                              height={clusterRectSize.height - dotStrokeWidth}
+                              data-base-rx={clusterRectSize.radius}
+                              rx={clusterRectSize.radius / Math.max(layerCameraScale.x, 0.0001)}
+                              fill={dotFill}
+                              stroke={CANVAS_NODE_STROKE}
+                              strokeWidth={dotStrokeWidth}
+                              strokeDasharray={dotStrokeDasharray}
+                            />
+                          </>
+                        ) : (
+                          <g>
+                            {Array.from({ length: stackDepth }, (_, i) => {
+                              const depth = stackDepth - 1 - i;
+                              const dx = depth * clumpStackOffset;
+                              const dy = -depth * clumpStackOffset;
+                              return (
+                                <g
+                                  key={`overlay-stack-${i}`}
+                                  transform={`translate(${anchorX + dx} ${anchorY + dy})`}
+                                  opacity={1}
+                                >
+                                  <rect
+                                    className="branch-map-commit-rect"
+                                    x={-clusterRectSize.width / 2 + dotStrokeInset}
+                                    y={-clusterRectSize.height / 2 + dotStrokeInset}
+                                    width={clusterRectSize.width - dotStrokeWidth}
+                                    height={clusterRectSize.height - dotStrokeWidth}
+                                    data-base-rx={clusterRectSize.radius}
+                                    rx={clusterRectSize.radius / Math.max(layerCameraScale.x, 0.0001)}
+                                    fill={dotFill}
+                                    stroke={CANVAS_NODE_STROKE}
+                                    strokeWidth={dotStrokeWidth}
+                                    strokeDasharray={dotStrokeDasharray}
+                                  />
+                                </g>
+                              );
+                            })}
+                          </g>
+                        )}
+                        {clusterHasCheckedOutHead && !isOverlayExpanded && (
+                          <rect
+                            className="branch-map-commit-rect"
+                            x={anchorX - (clusterRectSize.width + gridPad) / 2 - CHECKED_OUT_RING_GAP}
+                            y={anchorY - (clusterRectSize.height + gridPad) / 2 - CHECKED_OUT_RING_GAP}
+                            width={clusterRectSize.width + gridPad + 2 * CHECKED_OUT_RING_GAP}
+                            height={clusterRectSize.height + gridPad + 2 * CHECKED_OUT_RING_GAP}
+                            data-base-rx={clusterRectSize.radius}
+                            rx={
+                              clusterRectSize.radius /
+                              Math.max(layerCameraScale.x, 0.0001)
+                            }
+                            fill="none"
+                            stroke={CHECKED_OUT_RING_STROKE}
+                            strokeWidth={CHECKED_OUT_RING_STROKE_WIDTH}
+                            vectorEffect="non-scaling-stroke"
+                          />
+                        )}
                         {!isOverlayExpanded && (
                           <text
                             x={anchorX}
@@ -4793,19 +4890,21 @@ export default function BranchMap({
                         y={anchorY - (rectSize.height + gridPad) / 2}
                         width={rectSize.width + gridPad}
                         height={rectSize.height + gridPad}
-                        data-base-rx={Math.max(2, rectSize.radius + (gridPad ? 0.6 : 0))}
-                        rx={Math.max(2, rectSize.radius + (gridPad ? 0.6 : 0)) / Math.max(layerCameraScale.x, 0.0001)}
+                        data-base-rx={rectSize.radius}
+                        rx={rectSize.radius / Math.max(layerCameraScale.x, 0.0001)}
                         fill="var(--background)"
                       />
                       <rect
                         className="branch-map-commit-rect"
-                        x={anchorX - rectSize.width / 2}
-                        y={anchorY - rectSize.height / 2}
-                        width={rectSize.width}
-                        height={rectSize.height}
+                        x={anchorX - rectSize.width / 2 + CANVAS_NODE_STROKE_INSET}
+                        y={anchorY - rectSize.height / 2 + CANVAS_NODE_STROKE_INSET}
+                        width={rectSize.width - CANVAS_NODE_STROKE_WIDTH}
+                        height={rectSize.height - CANVAS_NODE_STROKE_WIDTH}
                         data-base-rx={rectSize.radius}
                         rx={rectSize.radius / Math.max(layerCameraScale.x, 0.0001)}
-                        fill={CANVAS_NEUTRAL_GRAY}
+                        fill={CANVAS_NODE_FILL}
+                        stroke={CANVAS_NODE_STROKE}
+                        strokeWidth={CANVAS_NODE_STROKE_WIDTH}
                       />
                       {mainClusterHasCheckedOutHead && (
                         <rect
@@ -4814,9 +4913,9 @@ export default function BranchMap({
                           y={anchorY - (rectSize.height + gridPad) / 2 - CHECKED_OUT_RING_GAP}
                           width={rectSize.width + gridPad + 2 * CHECKED_OUT_RING_GAP}
                           height={rectSize.height + gridPad + 2 * CHECKED_OUT_RING_GAP}
-                          data-base-rx={Math.max(2, rectSize.radius + (gridPad ? 0.6 : 0)) + CHECKED_OUT_RING_GAP}
+                          data-base-rx={rectSize.radius}
                           rx={
-                            (Math.max(2, rectSize.radius + (gridPad ? 0.6 : 0)) + CHECKED_OUT_RING_GAP) /
+                            rectSize.radius /
                             Math.max(layerCameraScale.x, 0.0001)
                           }
                           fill="none"
@@ -4831,48 +4930,81 @@ export default function BranchMap({
 
                 const clusterRectSize = nodeRectSize(count);
                 const gridPad = 0;
+                const stackDepth = Math.min(CLUMP_STACK_DEPTH_MAX, count);
                 return (
                   <g key={`main-direct-overlay-${clusterKey}`}>
-                    <>
-                      <rect
-                        className="branch-map-commit-rect"
-                        x={anchorX - (clusterRectSize.width + gridPad) / 2}
-                        y={anchorY - (clusterRectSize.height + gridPad) / 2}
-                        width={clusterRectSize.width + gridPad}
-                        height={clusterRectSize.height + gridPad}
-                        data-base-rx={Math.max(2, clusterRectSize.radius + (gridPad ? 0.6 : 0))}
-                        rx={Math.max(2, clusterRectSize.radius + (gridPad ? 0.6 : 0)) / Math.max(layerCameraScale.x, 0.0001)}
-                        fill="var(--background)"
-                      />
-                      <rect
-                        className="branch-map-commit-rect"
-                        x={anchorX - clusterRectSize.width / 2}
-                        y={anchorY - clusterRectSize.height / 2}
-                        width={clusterRectSize.width}
-                        height={clusterRectSize.height}
-                        data-base-rx={clusterRectSize.radius}
-                        rx={clusterRectSize.radius / Math.max(layerCameraScale.x, 0.0001)}
-                        fill={CANVAS_NEUTRAL_GRAY}
-                      />
-                      {mainClusterHasCheckedOutHead && (
+                    {isExpanded ? (
+                      <>
                         <rect
                           className="branch-map-commit-rect"
-                          x={anchorX - (clusterRectSize.width + gridPad) / 2 - CHECKED_OUT_RING_GAP}
-                          y={anchorY - (clusterRectSize.height + gridPad) / 2 - CHECKED_OUT_RING_GAP}
-                          width={clusterRectSize.width + gridPad + 2 * CHECKED_OUT_RING_GAP}
-                          height={clusterRectSize.height + gridPad + 2 * CHECKED_OUT_RING_GAP}
-                          data-base-rx={Math.max(2, clusterRectSize.radius + (gridPad ? 0.6 : 0)) + CHECKED_OUT_RING_GAP}
-                          rx={
-                            (Math.max(2, clusterRectSize.radius + (gridPad ? 0.6 : 0)) + CHECKED_OUT_RING_GAP) /
-                            Math.max(layerCameraScale.x, 0.0001)
-                          }
-                          fill="none"
-                          stroke={CHECKED_OUT_RING_STROKE}
-                          strokeWidth={CHECKED_OUT_RING_STROKE_WIDTH}
-                          vectorEffect="non-scaling-stroke"
+                          x={anchorX - (clusterRectSize.width + gridPad) / 2}
+                          y={anchorY - (clusterRectSize.height + gridPad) / 2}
+                          width={clusterRectSize.width + gridPad}
+                          height={clusterRectSize.height + gridPad}
+                          data-base-rx={clusterRectSize.radius}
+                          rx={clusterRectSize.radius / Math.max(layerCameraScale.x, 0.0001)}
+                          fill="var(--background)"
                         />
-                      )}
-                    </>
+                        <rect
+                          className="branch-map-commit-rect"
+                          x={anchorX - clusterRectSize.width / 2 + CANVAS_NODE_STROKE_INSET}
+                          y={anchorY - clusterRectSize.height / 2 + CANVAS_NODE_STROKE_INSET}
+                          width={clusterRectSize.width - CANVAS_NODE_STROKE_WIDTH}
+                          height={clusterRectSize.height - CANVAS_NODE_STROKE_WIDTH}
+                          data-base-rx={clusterRectSize.radius}
+                          rx={clusterRectSize.radius / Math.max(layerCameraScale.x, 0.0001)}
+                          fill={CANVAS_NODE_FILL}
+                          stroke={CANVAS_NODE_STROKE}
+                          strokeWidth={CANVAS_NODE_STROKE_WIDTH}
+                        />
+                      </>
+                    ) : (
+                      <g>
+                        {Array.from({ length: stackDepth }, (_, i) => {
+                          const depth = stackDepth - 1 - i;
+                          const dx = depth * clumpStackOffset;
+                          const dy = -depth * clumpStackOffset;
+                          return (
+                            <g
+                              key={`main-overlay-stack-${i}`}
+                              transform={`translate(${anchorX + dx} ${anchorY + dy})`}
+                              opacity={1}
+                            >
+                              <rect
+                                className="branch-map-commit-rect"
+                                x={-clusterRectSize.width / 2 + CANVAS_NODE_STROKE_INSET}
+                                y={-clusterRectSize.height / 2 + CANVAS_NODE_STROKE_INSET}
+                                width={clusterRectSize.width - CANVAS_NODE_STROKE_WIDTH}
+                                height={clusterRectSize.height - CANVAS_NODE_STROKE_WIDTH}
+                                data-base-rx={clusterRectSize.radius}
+                                rx={clusterRectSize.radius / Math.max(layerCameraScale.x, 0.0001)}
+                                fill={CANVAS_NODE_FILL}
+                                stroke={CANVAS_NODE_STROKE}
+                                strokeWidth={CANVAS_NODE_STROKE_WIDTH}
+                              />
+                            </g>
+                          );
+                        })}
+                      </g>
+                    )}
+                    {mainClusterHasCheckedOutHead && (
+                      <rect
+                        className="branch-map-commit-rect"
+                        x={anchorX - (clusterRectSize.width + gridPad) / 2 - CHECKED_OUT_RING_GAP}
+                        y={anchorY - (clusterRectSize.height + gridPad) / 2 - CHECKED_OUT_RING_GAP}
+                        width={clusterRectSize.width + gridPad + 2 * CHECKED_OUT_RING_GAP}
+                        height={clusterRectSize.height + gridPad + 2 * CHECKED_OUT_RING_GAP}
+                        data-base-rx={clusterRectSize.radius}
+                        rx={
+                          clusterRectSize.radius /
+                          Math.max(layerCameraScale.x, 0.0001)
+                        }
+                        fill="none"
+                        stroke={CHECKED_OUT_RING_STROKE}
+                        strokeWidth={CHECKED_OUT_RING_STROKE_WIDTH}
+                        vectorEffect="non-scaling-stroke"
+                      />
+                    )}
                     {!isExpanded && (
                       <text
                         x={anchorX}
