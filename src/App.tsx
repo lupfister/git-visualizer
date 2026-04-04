@@ -268,6 +268,12 @@ function App() {
     }
 
     const activeBranches = branches.filter((b) => b.name !== defaultBranch);
+    const childBranchCountByParent = new Map<string, number>();
+    for (const branch of activeBranches) {
+      if (!branch.parentBranch || branch.parentBranch === branch.name) continue;
+      const current = childBranchCountByParent.get(branch.parentBranch) ?? 0;
+      childBranchCountByParent.set(branch.parentBranch, current + 1);
+    }
 
     // Detect fresh-copy branches (worktrees): when multiple branches share the
     // exact same HEAD SHA, all but the oldest are fresh copies with no unique
@@ -294,7 +300,13 @@ function App() {
     // Also detect branches at commitsAhead===0 with no merge node — these are
     // fresh branches from the default branch, not genuinely merged.
     for (const b of activeBranches) {
-      if (b.commitsAhead === 0 && b.headSha && !mergeNodeByMergedHeadSha.has(b.headSha)) {
+      const hasChildBranches = (childBranchCountByParent.get(b.name) ?? 0) > 0;
+      if (
+        b.commitsAhead === 0 &&
+        b.headSha &&
+        !mergeNodeByMergedHeadSha.has(b.headSha) &&
+        !hasChildBranches
+      ) {
         freshCopyBranchNames.add(b.name);
       }
     }
@@ -306,15 +318,19 @@ function App() {
           try {
             const branchCreatedAt = branch.createdDate ?? branch.divergedFromDate ?? branch.lastCommitDate;
             const branchCreatedAtMs = new Date(branchCreatedAt).getTime();
-            const comparisonBase =
+            const parentComparisonBase =
               branch.parentBranch && branch.parentBranch !== branch.name
                 ? branch.parentBranch
                 : defaultBranch;
             const mergeNode = mergeNodeByMergedHeadSha.get(branch.headSha);
             const isMergedBranch = !!mergeNode;
             const isFreshCopy = freshCopyBranchNames.has(branch.name);
+            const hasChildren = (childBranchCountByParent.get(branch.name) ?? 0) > 0;
             const isFreshBranch = isFreshCopy || (
               !isMergedBranch &&
+              !hasChildren &&
+              branch.remoteSyncStatus !== 'on-github' &&
+              branch.commitsAhead === 0 &&
               !!branch.headSha &&
               (branch.headSha === branch.createdFromSha ||
                 branch.headSha === branch.divergedFromSha)
@@ -327,27 +343,45 @@ function App() {
 
             let historyCommits: Commit[] = [];
             if (!isFreshBranch) {
-              const commits = await invoke<Commit[]>('get_branch_commits', {
-                repoPath,
-                branch: branch.name,
-                baseBranch: comparisonBase,
-                mergeCommitSha,
-                includePrompts: PROMPT_ENRICHMENT_ENABLED,
-              });
-              historyCommits = mergeCommitSha
-                ? commits.filter((c) => c.fullSha !== mergeCommitSha)
-                : commits;
+              if (mergeCommitSha) {
+                const commits = await invoke<Commit[]>('get_branch_commits', {
+                  repoPath,
+                  branch: branch.name,
+                  baseBranch: parentComparisonBase,
+                  mergeCommitSha,
+                  includePrompts: PROMPT_ENRICHMENT_ENABLED,
+                });
+                historyCommits = commits.filter((c) => c.fullSha !== mergeCommitSha);
+              } else {
+                const candidateBases = Array.from(new Set(
+                  [
+                    branch.createdFromSha,
+                    branch.divergedFromSha,
+                    parentComparisonBase,
+                    defaultBranch,
+                  ].filter((value): value is string => !!value),
+                ));
 
-              if (
-                historyCommits.length === 0 &&
-                branch.commitsAhead === 0 &&
-                isMergedBranch &&
-                Number.isFinite(branchCreatedAtMs)
-              ) {
+                for (const baseBranch of candidateBases) {
+                  const commits = await invoke<Commit[]>('get_branch_commits', {
+                    repoPath,
+                    branch: branch.name,
+                    baseBranch,
+                    includePrompts: PROMPT_ENRICHMENT_ENABLED,
+                  });
+                  if (commits.length > 0) {
+                    historyCommits = commits;
+                    break;
+                  }
+                }
+              }
+
+              if (historyCommits.length === 0 && Number.isFinite(branchCreatedAtMs)) {
                 const recent = await invoke<Commit[]>('get_recent_log', {
                   repoPath,
                   branch: branch.name,
-                  limit: 200,
+                  limit: 400,
+                  firstParent: false,
                   includePrompts: PROMPT_ENRICHMENT_ENABLED,
                 });
                 historyCommits = recent.filter((c) => {
@@ -369,23 +403,14 @@ function App() {
                 date: c.date,
                 kind: 'commit',
               }));
-            const fallbackHeadPreview: BranchCommitPreview = {
-              fullSha: branch.headSha,
-              sha: branch.headSha.slice(0, 7),
-              message: `HEAD of ${branch.name}`,
-              author: branch.lastCommitAuthor || 'Unknown',
-              date: branch.lastCommitDate,
-              kind: 'commit',
-            };
-            const previews: BranchCommitPreview[] =
-              commitPreviews.length > 0
-                ? commitPreviews
-                : isFreshBranch
-                  ? []
-                  : [fallbackHeadPreview];
+            // Never fabricate synthetic "HEAD of <branch>" commits.
+            // If we can't resolve real commit objects, render no commit nodes.
+            const previews: BranchCommitPreview[] = commitPreviews;
             const uniqueCount = isFreshBranch
               ? 0
-              : branch.commitsAhead > 0 ? commitPreviews.length : null;
+              : branch.commitsAhead > 0 && commitPreviews.length > 0
+                ? commitPreviews.length
+                : null;
 
             if (prompts.length === 0) {
               return [branch.name, { promptMeta: null, previews, uniqueCount }] as const;
@@ -413,18 +438,10 @@ function App() {
               uniqueCount,
             }] as const;
           } catch {
-            const fallbackHeadPreview: BranchCommitPreview = {
-              fullSha: branch.headSha,
-              sha: branch.headSha.slice(0, 7),
-              message: `HEAD of ${branch.name}`,
-              author: branch.lastCommitAuthor || 'Unknown',
-              date: branch.lastCommitDate,
-              kind: 'commit',
-            };
             return [branch.name, {
               promptMeta: null,
-              previews: [fallbackHeadPreview],
-              uniqueCount: branch.commitsAhead > 0 ? branch.commitsAhead : null,
+              previews: [],
+              uniqueCount: null,
             }] as const;
           }
         }),

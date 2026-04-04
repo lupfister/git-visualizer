@@ -20,7 +20,6 @@ const CORNER_R = 20;
 const BRANCH_HIT_STROKE_WIDTH = 48;
 const AHEAD_LABEL_OFFSET_X = 10;
 const MAIN_LABEL_OFFSET_X = 10;
-const MAX_ACTIVE = 50;
 const ZOOM_DEFAULT = 1;
 const ZOOM_MIN = 1;
 const ZOOM_MAX = 6;
@@ -65,7 +64,7 @@ const GRID_ROW_GAP = GRID_NODE_RECT.height;
 const GRID_LANE_WIDTH = GRID_NODE_RECT.width;
 const GRID_LANE_OFFSET_X = 0;
 const GRID_LANE_MIN_SEPARATION = 0;
-const GRID_ROUTE_CORNER_R = 1;
+const GRID_ROUTE_CORNER_R = 6;
 const GRID_MERGE_EVENT_ROW_NUDGE = 0.001;
 const LOCAL_UNPUSHED_GRAY = '#a8a29e';
 const CANVAS_NEUTRAL_GRAY = '#D9D9D9';
@@ -196,6 +195,55 @@ const PROMPT_TOOLTIP_PREVIEW_MAX = 120;
 const PROMPT_CLUSTER_PREVIEW_MAX = 90;
 
 /**
+ * Remove fork split points that create singleton clusters (size 1).
+ * Those singleton clumps render as unlabeled boxes and look like empty rows.
+ */
+function pruneForkSplitIndices(
+  entryCount: number,
+  forkIndices: Set<number>,
+): Set<number> {
+  if (entryCount <= 1 || forkIndices.size === 0) return new Set(forkIndices);
+  const active = Array.from(forkIndices)
+    .filter((index) => index >= 0 && index < entryCount - 1)
+    .sort((a, b) => a - b);
+  if (active.length === 0) return new Set<number>();
+
+  const buildSegments = () => {
+    const segments: Array<{ start: number; end: number; len: number }> = [];
+    let start = 0;
+    for (const split of active) {
+      const end = Math.min(split, entryCount - 1);
+      if (end >= start) {
+        segments.push({ start, end, len: end - start + 1 });
+      }
+      start = end + 1;
+    }
+    if (start <= entryCount - 1) {
+      segments.push({ start, end: entryCount - 1, len: entryCount - start });
+    }
+    return segments;
+  };
+
+  while (active.length > 0) {
+    const segments = buildSegments();
+    const singletonIdx = segments.findIndex((segment) => segment.len === 1);
+    if (singletonIdx < 0 || segments.length <= 1) break;
+
+    // Prefer removing the split before the singleton so fork commits stay with
+    // the following context rather than becoming isolated rows.
+    const splitToRemove =
+      singletonIdx > 0
+        ? segments[singletonIdx - 1].end
+        : segments[0].end;
+    const removeAt = active.indexOf(splitToRemove);
+    if (removeAt < 0) break;
+    active.splice(removeAt, 1);
+  }
+
+  return new Set(active);
+}
+
+/**
  * Cluster entries by splitting at fork-point indices.
  *
  * Rules:
@@ -213,6 +261,7 @@ function clusterByForkPoints<T>(
   forkIndices: Set<number>,
 ): MarkerCluster<T>[] {
   if (entries.length === 0) return [];
+  const effectiveForkIndices = pruneForkSplitIndices(entries.length, forkIndices);
 
   const clusters: MarkerCluster<T>[] = [];
   let current: MarkerEntry<T>[] = [entries[0]];
@@ -223,7 +272,7 @@ function clusterByForkPoints<T>(
   }
 
   for (let i = 1; i < entries.length; i += 1) {
-    if (forkIndices.has(i - 1)) {
+    if (effectiveForkIndices.has(i - 1)) {
       flush();
       current = [entries[i]];
     } else {
@@ -345,7 +394,7 @@ export default function BranchMap({
   const [expandedClumps, setExpandedClumps] = useState<Map<string, ExpandedClumpState>>(() => new Map());
   const [zoom, setZoom] = useState(ZOOM_DEFAULT);
   const [orientation, setOrientation] = useState<OrientationMode>('vertical');
-  const [showGuides, setShowGuides] = useState(true);
+  const [showGuides, setShowGuides] = useState(false);
   const isHorizontal = orientation === 'horizontal';
   const gridEventGap = isHorizontal ? GRID_LANE_WIDTH : GRID_ROW_GAP;
   const gridLaneWidth = isHorizontal ? GRID_ROW_GAP : GRID_LANE_WIDTH;
@@ -1355,8 +1404,7 @@ export default function BranchMap({
       }
       // 'time': most recently committed first
       return new Date(b.lastCommitDate).getTime() - new Date(a.lastCommitDate).getTime();
-    })
-    .slice(0, MAX_ACTIVE);
+    });
   const branchByName = new Map(activeBranches.map((b) => [b.name, b]));
 
   // Detect fresh-copy branches (worktrees): when multiple branches share the
@@ -1455,6 +1503,8 @@ export default function BranchMap({
   const showMergeTicks = false;
   const showMergedPROverlays = false;
 
+  const reserveMergeRows = showMergeTicks || showMergedPROverlays;
+
   const leftPad = LEFT_PAD;
   const rightPad = RIGHT_PAD;
   const cornerR = CORNER_R;
@@ -1483,7 +1533,13 @@ export default function BranchMap({
   // Phase 2: branches with commitsAhead===0 that have no merge node are fresh
   // branches from the default branch (not genuinely merged).
   for (const b of activeBranches) {
-    if (b.commitsAhead === 0 && b.headSha && !mergeNodeByMergedHeadSha.has(b.headSha)) {
+    const hasChildBranches = (childBranchesByParent.get(b.name)?.length ?? 0) > 0;
+    if (
+      b.commitsAhead === 0 &&
+      b.headSha &&
+      !mergeNodeByMergedHeadSha.has(b.headSha) &&
+      !hasChildBranches
+    ) {
       freshCopyBranchNames.add(b.name);
     }
   }
@@ -1532,9 +1588,24 @@ export default function BranchMap({
   });
 
   // ── Grid: build clumps first, derive rows from them ────────────────
-  type GridClump = { lane: string; shas: string[]; earliestTime: number; rowIndex: number; key: string };
+  type GridClump = {
+    lane: string;
+    shas: string[];
+    earliestTime: number;
+    rowIndex: number;
+    key: string;
+    slotIndices?: number[];
+  };
   const gridClumps: GridClump[] = [];
   const gridRowBySha = new Map<string, number>();
+  const gridRowByBranchSha = new Map<string, number>();
+  const gridRowByBranchSlot = new Map<string, number>();
+  function branchShaRowKey(branchName: string, sha: string): string {
+    return `${branchName}::${sha}`;
+  }
+  function branchSlotRowKey(branchName: string, slotIndex: number): string {
+    return `${branchName}::slot:${slotIndex}`;
+  }
   {
     const mainForkIdx = new Set<number>();
     sortedDirectCommits.forEach((c, i) => {
@@ -1543,16 +1614,17 @@ export default function BranchMap({
 
     {
       let buf: string[] = [];
-      let t0 = 0;
+      let tLatest = 0;
+      const effectiveMainForkIdx = pruneForkSplitIndices(sortedDirectCommits.length, mainForkIdx);
       const flush = () => {
         if (buf.length === 0) return;
-        gridClumps.push({ lane: 'main', shas: [...buf], earliestTime: t0, rowIndex: -1, key: `direct-clump-${buf[0]}-${buf[buf.length - 1]}` });
+        gridClumps.push({ lane: 'main', shas: [...buf], earliestTime: tLatest, rowIndex: -1, key: `direct-clump-${buf[0]}-${buf[buf.length - 1]}` });
         buf = [];
       };
       sortedDirectCommits.forEach((c, i) => {
-        if (buf.length === 0) t0 = new Date(c.date).getTime();
+        tLatest = new Date(c.date).getTime();
         buf.push(c.fullSha);
-        if (mainForkIdx.has(i)) flush();
+        if (effectiveMainForkIdx.has(i)) flush();
       });
       flush();
     }
@@ -1561,11 +1633,23 @@ export default function BranchMap({
       const previews = (branchCommitPreviews[branch.name] ?? [])
         .filter((c) => c.kind !== 'branch-created')
         .sort((a, bx) => new Date(a.date).getTime() - new Date(bx.date).getTime());
+      const uniqueAhead = branchAheadCount(branch);
       if (previews.length === 0) {
-        if (branch.commitsAhead > 0) {
-          const t = new Date(branch.lastCommitDate).getTime();
-          gridClumps.push({ lane: branch.name, shas: [], earliestTime: t, rowIndex: -1, key: `commit-clump-${branch.name}-tip` });
+        // Zero-unique placeholder branches should not reserve timeline rows.
+        // They still render as non-commit rectangles anchored to shared history.
+        if (uniqueAhead <= 0) {
+          return;
         }
+        const fallbackCount = Math.max(1, uniqueAhead);
+        const t = new Date(branch.lastCommitDate).getTime();
+        gridClumps.push({
+          lane: branch.name,
+          shas: [],
+          earliestTime: t,
+          rowIndex: -1,
+          key: `commit-clump-${branch.name}-synthetic`,
+          slotIndices: Array.from({ length: fallbackCount }, (_, index) => index),
+        });
         return;
       }
       const branchTimes = previews.map((c) => new Date(c.date).getTime());
@@ -1574,39 +1658,66 @@ export default function BranchMap({
         const idx = branchPreviewIndexForChildFork(previews, branchTimes, child);
         if (idx >= 0) forkIdx.add(idx);
       });
+      const effectiveForkIdx = pruneForkSplitIndices(previews.length, forkIdx);
       let buf: string[] = [];
-      let t0 = 0;
+      let slotBuf: number[] = [];
+      let tLatest = 0;
       let startIdx = 0;
       const flushBranch = (endIdx: number) => {
         if (buf.length === 0) return;
-        gridClumps.push({ lane: branch.name, shas: [...buf], earliestTime: t0, rowIndex: -1, key: `commit-clump-${branch.name}-${startIdx}-${endIdx}` });
+        gridClumps.push({
+          lane: branch.name,
+          shas: [...buf],
+          earliestTime: tLatest,
+          rowIndex: -1,
+          key: `commit-clump-${branch.name}-${startIdx}-${endIdx}`,
+          slotIndices: [...slotBuf],
+        });
         buf = [];
+        slotBuf = [];
       };
       previews.forEach((c, i) => {
-        if (buf.length === 0) { t0 = new Date(c.date).getTime(); startIdx = i; }
+        if (buf.length === 0) { startIdx = i; }
+        tLatest = new Date(c.date).getTime();
         buf.push(c.fullSha);
-        if (forkIdx.has(i)) { flushBranch(i); }
+        slotBuf.push(i);
+        if (effectiveForkIdx.has(i)) { flushBranch(i); }
       });
       flushBranch(previews.length - 1);
     });
 
-    sortedNodes.forEach((node) => {
-      if (directCommitShaSet.has(node.fullSha)) return;
-      const t = mergeEventTimeByFullSha.get(node.fullSha) ?? new Date(node.date).getTime();
-      gridClumps.push({ lane: 'main-merge', shas: [node.fullSha], earliestTime: t, rowIndex: -1, key: `merge-row-${node.fullSha}` });
-    });
+    if (reserveMergeRows) {
+      sortedNodes.forEach((node) => {
+        if (directCommitShaSet.has(node.fullSha)) return;
+        const t = mergeEventTimeByFullSha.get(node.fullSha) ?? new Date(node.date).getTime();
+        gridClumps.push({ lane: 'main-merge', shas: [node.fullSha], earliestTime: t, rowIndex: -1, key: `merge-row-${node.fullSha}` });
+      });
+    }
 
     gridClumps.sort((a, b) => a.earliestTime - b.earliestTime);
 
     let rowCursor = 0;
     for (const clump of gridClumps) {
       const isExpanded = expandedClumps.get(clump.key)?.isExpanded ?? false;
+      const assignShaRow = (sha: string, row: number) => {
+        if (clump.lane === 'main' || clump.lane === 'main-merge') {
+          gridRowBySha.set(sha, row);
+        } else {
+          gridRowByBranchSha.set(branchShaRowKey(clump.lane, sha), row);
+        }
+      };
+      const assignSlotRow = (slotIndex: number, row: number) => {
+        if (clump.lane === 'main' || clump.lane === 'main-merge') return;
+        gridRowByBranchSlot.set(branchSlotRowKey(clump.lane, slotIndex), row);
+      };
       clump.rowIndex = rowCursor;
       if (isExpanded && clump.shas.length > 1) {
-        clump.shas.forEach((sha, i) => { gridRowBySha!.set(sha, rowCursor + i); });
+        clump.shas.forEach((sha, i) => { assignShaRow(sha, rowCursor + i); });
+        clump.slotIndices?.forEach((slotIndex, i) => { assignSlotRow(slotIndex, rowCursor + i); });
         rowCursor += clump.shas.length;
       } else {
-        clump.shas.forEach((sha) => { gridRowBySha!.set(sha, rowCursor); });
+        clump.shas.forEach((sha) => { assignShaRow(sha, rowCursor); });
+        clump.slotIndices?.forEach((slotIndex) => { assignSlotRow(slotIndex, rowCursor); });
         rowCursor += 1;
       }
     }
@@ -1678,6 +1789,18 @@ export default function BranchMap({
     return leftPad + row * GRID_EVENT_GAP;
   }
 
+  function gridXForBranchSha(branchName: string, sha: string): number | undefined {
+    const branchRow = gridRowByBranchSha.get(branchShaRowKey(branchName, sha));
+    if (branchRow != null) return leftPad + branchRow * GRID_EVENT_GAP;
+    return gridXForSha(sha);
+  }
+
+  function gridXForBranchSlot(branchName: string, slotIndex: number): number | undefined {
+    const branchRow = gridRowByBranchSlot.get(branchSlotRowKey(branchName, slotIndex));
+    if (branchRow == null) return undefined;
+    return leftPad + branchRow * GRID_EVENT_GAP;
+  }
+
   const nodeXByFullSha = new Map<string, number>(
     sortedNodes.map((m) => [
       m.fullSha,
@@ -1735,7 +1858,7 @@ export default function BranchMap({
     if (!sha) return null;
     const previews = branchCommitPreviews[branchName] ?? [];
     const exact = previews.find((commit) => commit.fullSha === sha || commit.sha === sha);
-    if (exact) return gridXForSha(exact.fullSha) ?? timeToX(exact.date);
+    if (exact) return gridXForBranchSha(branchName, exact.fullSha) ?? timeToX(exact.date);
     const prefix = previews.find(
       (commit) =>
         commit.fullSha.startsWith(sha) ||
@@ -1743,7 +1866,7 @@ export default function BranchMap({
         commit.sha.startsWith(sha) ||
         sha.startsWith(commit.sha)
     );
-    if (prefix) return gridXForSha(prefix.fullSha) ?? timeToX(prefix.date);
+    if (prefix) return gridXForBranchSha(branchName, prefix.fullSha) ?? timeToX(prefix.date);
     return null;
   }
 
@@ -1752,10 +1875,12 @@ export default function BranchMap({
       t: new Date(commit.date).getTime(),
       x: directXByFullSha.get(commit.fullSha) ?? timeToX(commit.date),
     })),
-    ...sortedNodes.map((node) => ({
-      t: new Date(node.date).getTime(),
-      x: nodeXByFullSha.get(node.fullSha) ?? timeToX(node.date),
-    })),
+    ...(reserveMergeRows
+      ? sortedNodes.map((node) => ({
+        t: new Date(node.date).getTime(),
+        x: nodeXByFullSha.get(node.fullSha) ?? timeToX(node.date),
+      }))
+      : []),
   ].filter((anchor) => Number.isFinite(anchor.t) && Number.isFinite(anchor.x));
 
   function snapToMainCommitX(dateStr?: string): number | null {
@@ -1789,7 +1914,7 @@ export default function BranchMap({
     for (const commit of commits) {
       const commitTime = new Date(commit.date).getTime();
       if (!Number.isFinite(commitTime)) continue;
-      const commitX = gridXForSha(commit.fullSha) ?? timeToX(commit.date);
+      const commitX = gridXForBranchSha(branchName, commit.fullSha) ?? timeToX(commit.date);
       if (commitTime <= target) {
         const delta = target - commitTime;
         if (!bestPast || delta < bestPast.delta) bestPast = { delta, x: commitX };
@@ -1801,6 +1926,22 @@ export default function BranchMap({
     return bestPast?.x ?? bestFuture?.x ?? null;
   }
 
+  function branchHeadAnchorX(branch: Branch): number {
+    const byBranchSha = branch.headSha ? branchCommitXForSha(branch.name, branch.headSha) : null;
+    if (byBranchSha != null) return byBranchSha;
+
+    const byMainSha = commitXForSha(branch.headSha);
+    if (byMainSha != null) return byMainSha;
+
+    const byBranchDate = snapToBranchCommitX(branch.name, branch.lastCommitDate);
+    if (byBranchDate != null) return byBranchDate;
+
+    const byMainDate = snapToMainCommitX(branch.lastCommitDate);
+    if (byMainDate != null) return byMainDate;
+
+    return timeToX(branch.lastCommitDate);
+  }
+
   function branchCreatedDate(b: Branch): string {
     return b.createdDate ?? b.divergedFromDate ?? b.lastCommitDate;
   }
@@ -1810,7 +1951,20 @@ export default function BranchMap({
     return Number.isFinite(t) ? t : Number.POSITIVE_INFINITY;
   }
 
-  function branchForkX(b: Branch): number {
+  function branchEarliestPreviewDate(branchName: string): string | null {
+    const previews = (branchCommitPreviews[branchName] ?? [])
+      .filter((commit) => commit.kind !== 'branch-created')
+      .sort((a, b) => new Date(a.date).getTime() - new Date(b.date).getTime());
+    return previews[0]?.date ?? null;
+  }
+
+  const branchForkXCache = new Map<string, number>();
+  const branchTipXCache = new Map<string, number>();
+
+  function branchForkXWithVisited(b: Branch, visiting: Set<string>): number {
+    const cached = branchForkXCache.get(b.name);
+    if (typeof cached === 'number') return cached;
+
     const hasNonDefaultParent =
       !!b.parentBranch && b.parentBranch !== b.name && b.parentBranch !== defaultBranch;
     const isParentDefault = !hasNonDefaultParent;
@@ -1819,52 +1973,105 @@ export default function BranchMap({
     // Prefer the recorded branch-creation anchor first.
     // Skip for fresh-copy branches (worktrees) — they aren't actually merged.
     if (b.commitsAhead === 0 && !freshCopyBranchNames.has(b.name) && isParentDefault && b.createdDate) {
+      const earliestPreviewDate = branchEarliestPreviewDate(b.name);
       const createdAnchorX =
         commitXForSha(b.createdFromSha) ??
+        snapToMainCommitX(earliestPreviewDate ?? b.createdDate) ??
         snapToMainCommitX(b.createdDate);
-      if (createdAnchorX != null) return createdAnchorX;
-      return timeToX(b.createdDate);
+      const createdResolved = createdAnchorX ?? timeToX(b.createdDate);
+      branchForkXCache.set(b.name, createdResolved);
+      return createdResolved;
     }
 
     if (isParentDefault) {
       const anchoredMainForkX = commitXForSha(b.createdFromSha) ?? commitXForSha(b.divergedFromSha);
-      if (anchoredMainForkX != null) return anchoredMainForkX;
+      if (anchoredMainForkX != null) {
+        branchForkXCache.set(b.name, anchoredMainForkX);
+        return anchoredMainForkX;
+      }
       const snappedMainForkX = snapToMainCommitX(b.divergedFromDate ?? b.createdDate);
-      if (snappedMainForkX != null) return snappedMainForkX;
+      if (snappedMainForkX != null) {
+        branchForkXCache.set(b.name, snappedMainForkX);
+        return snappedMainForkX;
+      }
     }
 
     if (hasNonDefaultParent && b.parentBranch) {
       const parentBranch = branchByName.get(b.parentBranch);
+      const shouldFollowParent = !!parentBranch && !visiting.has(parentBranch.name);
       const anchoredToParentHead =
-        parentBranch && b.divergedFromSha && b.divergedFromSha === parentBranch.headSha
-          ? branchTipX(parentBranch)
+        parentBranch && shouldFollowParent && b.divergedFromSha && b.divergedFromSha === parentBranch.headSha
+          ? branchHeadAnchorX(parentBranch)
           : null;
       const anchoredParentForkX =
         anchoredToParentHead ??
         branchCommitXForSha(b.parentBranch, b.divergedFromSha);
-      if (anchoredParentForkX != null) return anchoredParentForkX;
+      if (anchoredParentForkX != null) {
+        branchForkXCache.set(b.name, anchoredParentForkX);
+        return anchoredParentForkX;
+      }
       const snappedParentForkX = snapToBranchCommitX(
         b.parentBranch,
         b.divergedFromDate ?? b.createdDate
       );
-      if (snappedParentForkX != null) return snappedParentForkX;
-      if (parentBranch) return branchTipX(parentBranch);
+      if (snappedParentForkX != null) {
+        branchForkXCache.set(b.name, snappedParentForkX);
+        return snappedParentForkX;
+      }
+      if (parentBranch && shouldFollowParent) {
+        const resolvedParentAnchor = branchHeadAnchorX(parentBranch);
+        branchForkXCache.set(b.name, resolvedParentAnchor);
+        return resolvedParentAnchor;
+      }
     }
 
     // For stacked branches, fork should snap to the parent divergence commit
     // so child lanes originate exactly from parent tips (no floating gap).
-    if (hasNonDefaultParent && b.divergedFromDate) return timeToX(b.divergedFromDate);
+    const fallbackForkX = hasNonDefaultParent && b.divergedFromDate
+      ? timeToX(b.divergedFromDate)
+      : b.divergedFromDate
+        ? timeToX(b.divergedFromDate)
+        : b.createdDate
+          ? timeToX(b.createdDate)
+          : timeToX(b.lastCommitDate);
+    branchForkXCache.set(b.name, fallbackForkX);
+    return fallbackForkX;
+  }
 
-    if (b.divergedFromDate) return timeToX(b.divergedFromDate);
-    if (b.createdDate) return timeToX(b.createdDate);
-    return timeToX(b.lastCommitDate);
+  function branchTipXWithVisited(b: Branch, visiting: Set<string>): number {
+    const cached = branchTipXCache.get(b.name);
+    if (typeof cached === 'number') return cached;
+
+    // Guard against circular parent metadata (A->B->A, etc.).
+    if (visiting.has(b.name)) {
+      return (b.headSha ? gridXForBranchSha(b.name, b.headSha) : undefined) ?? timeToX(b.lastCommitDate);
+    }
+
+    visiting.add(b.name);
+    const forkX = branchForkXWithVisited(b, visiting);
+    const lastCommitX = (b.headSha ? gridXForBranchSha(b.name, b.headSha) : undefined) ?? timeToX(b.lastCommitDate);
+    const hasBranchPreviewData = Object.prototype.hasOwnProperty.call(branchCommitPreviews, b.name);
+    const previewCommitCount = (branchCommitPreviews[b.name] ?? []).filter(
+      (commit) => commit.kind !== 'branch-created'
+    ).length;
+    // Only force a minimum tail when commit history is unavailable; otherwise
+    // it can push collapsed clumps exactly one grid row away from their true tip.
+    const minTailDistance =
+      !hasBranchPreviewData || previewCommitCount === 0
+        ? GRID_EVENT_GAP
+        : 0;
+    const tipX = Math.max(lastCommitX, forkX + minTailDistance);
+    visiting.delete(b.name);
+    branchTipXCache.set(b.name, tipX);
+    return tipX;
+  }
+
+  function branchForkX(b: Branch): number {
+    return branchForkXWithVisited(b, new Set<string>());
   }
 
   function branchTipX(b: Branch): number {
-    const forkX = branchForkX(b);
-    const lastCommitX = (b.headSha ? gridXForSha(b.headSha) : undefined) ?? timeToX(b.lastCommitDate);
-    const minTailDistance = GRID_EVENT_GAP;
-    return Math.max(lastCommitX, forkX + minTailDistance);
+    return branchTipXWithVisited(b, new Set<string>());
   }
 
   for (const branch of activeBranches) {
@@ -1925,8 +2132,8 @@ export default function BranchMap({
         )
       : SVG_CONTENT_PADDING_BASE;
 
-  // Vertical extent of grid rows in Y (half node above/below row centers). Used so clipPath
-  // does not slice nodes: using mainEndY/mainStartY as edges cut off the outer half of cells.
+  // Vertical extent of grid rows in Y (half node above/below row centers). Used to keep
+  // guide and viewport bounds aligned to full node cells instead of center lines.
   const gridHalfHForBounds = GRID_NODE_RECT.height / 2;
   const gridRowYExtent =
     gridEventPoints.length > 0
@@ -2248,7 +2455,11 @@ export default function BranchMap({
         if (typeof nextLane === 'number') return nextLane;
         return nearestLane + laneWidth;
       })(),
-      y: checkedOutIndicatorLocal.y + (checkedOutHasUncommittedChanges ? -CHECKED_OUT_AHEAD_OFFSET_WORLD : 0),
+      y: checkedOutIndicatorLocal.y + (
+        checkedOutHasUncommittedChanges && checkedOutIsDetached
+          ? -CHECKED_OUT_AHEAD_OFFSET_WORLD
+          : 0
+      ),
     }
     : null;
   const checkedOutAnchorTarget = checkedOutDisplayIndicatorLocal ?? checkedOutIndicatorLocal;
@@ -2425,7 +2636,8 @@ export default function BranchMap({
   const drawPathMainClass = (!ENABLE_TIMELINE_INTRO_ANIMATIONS || animationsLocked) ? undefined : 'draw-path-main';
   const drawPathArcClass = (!ENABLE_TIMELINE_INTRO_ANIMATIONS || animationsLocked) ? undefined : 'draw-path-arc';
   const fadeInInfoClass = (!ENABLE_TIMELINE_INTRO_ANIMATIONS || animationsLocked) ? undefined : 'fade-in-info';
-  const mainTimelineOpacity = hoveredPR !== null || hoveredBranch !== null ? 0.2 : 1;
+  const mainTimelineOpacity = 1;
+  const ENABLE_GLOBAL_NODE_OVERLAY = false;
   const timelineCanvasVisible = timelineRevealPhase !== 'hidden';
   const holdTimelineForInitialCenter =
     isLoading || (!hasInitialRevealDone && hasTimelineSeedData && timelineRevealPhase !== 'done' && !hasUserMovedCameraRef.current);
@@ -2521,16 +2733,6 @@ export default function BranchMap({
     bottomY: maxYWorldForBounds,
   };
 
-  const gridClipPathD = gridClipBounds
-    ? [
-      `M ${pathCoord(gridClipBounds.leftX, gridClipBounds.topY)}`,
-      `L ${pathCoord(gridClipBounds.rightX, gridClipBounds.topY)}`,
-      `L ${pathCoord(gridClipBounds.rightX, gridClipBounds.bottomY)}`,
-      `L ${pathCoord(gridClipBounds.leftX, gridClipBounds.bottomY)}`,
-      'Z',
-    ].join(' ')
-    : null;
-
   return (
     <div className="relative h-full">
       <div
@@ -2573,11 +2775,6 @@ export default function BranchMap({
             <filter id="tick-shadow" x="-50%" y="-50%" width="200%" height="200%">
               <feDropShadow dx="0" dy="2" stdDeviation="6" floodColor="#000" floodOpacity="0.08" />
             </filter>
-            {gridClipPathD && (
-              <clipPath id="grid-clip">
-                <path d={gridClipPathD} />
-              </clipPath>
-            )}
           </defs>
 
           <g
@@ -2601,7 +2798,6 @@ export default function BranchMap({
           <g transform={`translate(${graphContentTranslateX} ${graphContentTranslateY})`}>
           <g
             ref={contentLayerRef}
-            clipPath={gridClipPathD ? 'url(#grid-clip)' : undefined}
           >
 
           {/* ── Grid background (table-like lanes) ── */}
@@ -3431,24 +3627,28 @@ export default function BranchMap({
               const visibleBranchCommits = hasPreviewData
                 ? branchCommits.filter((commit) => commit.kind !== 'branch-created')
                 : branchCommits;
-              const commitCount = hasPreviewData ? visibleBranchCommits.length : b.commitsAhead;
-              const displayedCommits = hasPreviewData
+              const uniqueAheadCount = branchAheadCount(b);
+              const aheadCount = Math.max(1, uniqueAheadCount);
+              const hasConcretePreviewCommits = visibleBranchCommits.length > 0;
+              const commitCount = hasConcretePreviewCommits ? visibleBranchCommits.length : aheadCount;
+              const displayedCommits = hasConcretePreviewCommits
                 ? [...visibleBranchCommits.slice(0, commitCount)].sort(
                   (a, b) => new Date(a.date).getTime() - new Date(b.date).getTime()
                 )
                 : [];
               const minCommitTimeX = forkTimeX + GRID_EVENT_GAP;
               const maxCommitTimeX = Math.max(minCommitTimeX, commitTipTimeX);
-              const commitItems: Array<BranchCommitPreview | undefined> = hasPreviewData
+              const commitItems: Array<BranchCommitPreview | undefined> = hasConcretePreviewCommits
                 ? displayedCommits
                 : Array.from({ length: commitCount }, () => undefined);
-              const headCommitIndex = hasPreviewData
+              const headCommitIndex = hasConcretePreviewCommits
                 ? commitItems.findIndex((item) => item?.fullSha === b.headSha)
                 : -1;
-              let commitDots = hasPreviewData
-                ? commitItems.map((commit) => {
-                  const shaX = commit?.fullSha ? gridXForSha(commit.fullSha) : undefined;
-                  const rawX = shaX ?? timeToX(commit?.date ?? b.lastCommitDate);
+              let commitDots = hasConcretePreviewCommits
+                ? commitItems.map((commit, index) => {
+                  const slotX = gridXForBranchSlot(b.name, index);
+                  const shaX = commit?.fullSha ? gridXForBranchSha(b.name, commit.fullSha) : undefined;
+                  const rawX = slotX ?? shaX ?? timeToX(commit?.date ?? b.lastCommitDate);
                   const x = Math.max(minCommitTimeX, Math.min(maxCommitTimeX, rawX));
                   return { y: timeCoordToY(x), commit };
                 })
@@ -3513,7 +3713,6 @@ export default function BranchMap({
                   : undefined;
               const fullBranchShouldUseLocalGray =
                 isLocalBranch && (allBranchCommitsAreLocal || realCommitDotIndices.length === 0);
-              const localSegmentDashPattern = `${0.1} ${6}`;
               const strokeColor =
                 fullBranchShouldUseLocalGray && !isFocusedError && !isHovered
                   ? LOCAL_UNPUSHED_GRAY
@@ -3577,8 +3776,7 @@ export default function BranchMap({
               const nameDy = isHorizontal ? -20 : -12;
               const namePoint = { x: nameAnchor.x + nameDx, y: nameAnchor.y + nameDy };
               const clockPoint = { x: namePoint.x + 10, y: namePoint.y };
-              const branchGroupOpacity =
-                isFocusedError ? 1 : hoveredBranch !== null && !isHovered ? 0.12 : 1;
+              const branchGroupOpacity = 1;
 
               return (
                 <g
@@ -3609,9 +3807,7 @@ export default function BranchMap({
                     style={{
                       '--delay': `${brDelay}ms`,
                       transition: 'stroke 0.12s ease',
-                      ...(fullBranchShouldUseLocalGray
-                        ? { strokeDasharray: localSegmentDashPattern, strokeLinecap: 'round' }
-                        : {}),
+                      ...(fullBranchShouldUseLocalGray ? { strokeLinecap: 'round' } : {}),
                     } as React.CSSProperties}
                   />
                   {mergeBackPath && (
@@ -3636,7 +3832,6 @@ export default function BranchMap({
                       className={drawPathArcClass}
                       style={{
                         '--delay': `${brDelay}ms`,
-                        strokeDasharray: localSegmentDashPattern,
                         strokeLinecap: 'round',
                       } as React.CSSProperties}
                     />
@@ -3700,7 +3895,8 @@ export default function BranchMap({
                       const realCommitEntries = cluster.entries.filter(
                         (entry) => entry.item.commit?.kind !== 'branch-created'
                       );
-                      const count = realCommitEntries.length;
+                      const renderEntries = realCommitEntries.length > 0 ? realCommitEntries : cluster.entries;
+                      const count = renderEntries.length;
                       const firstEntry = cluster.entries[0];
                       const lastEntry = cluster.entries[cluster.entries.length - 1];
                       const clusterKey = `commit-clump-${b.name}-${firstEntry.item.index}-${lastEntry.item.index}`;
@@ -3730,8 +3926,9 @@ export default function BranchMap({
                       cluster.entries.some((entry) => entry.item.index === branchEndDotIndex);
 
                     if (count <= 1) {
-                      const commitEntry = realCommitEntries[0] ?? lastEntry;
+                      const commitEntry = renderEntries[0] ?? lastEntry;
                       const commit = commitEntry.item.commit;
+                      const isNonCommitPlaceholder = !commit && uniqueAheadCount <= 0;
                       const targetCommitSha = commit?.fullSha ?? b.headSha;
                       const tooltipAuthor = commit?.author ?? b.lastCommitAuthor;
                       const tooltipDate = commit?.date ?? b.lastCommitDate;
@@ -3743,7 +3940,7 @@ export default function BranchMap({
                           commit.author === b.lastCommitAuthor
                         );
                         const rectSize = commitRectSize(scaledNodeSize);
-                        const isGhostRect = isFreshCopy;
+                        const isGhostRect = false;
 
                         return (
                           <rect
@@ -3755,32 +3952,45 @@ export default function BranchMap({
                             height={rectSize.height}
                             data-base-rx={rectSize.radius}
                             rx={rectSize.radius / Math.max(layerCameraScale.x, 0.0001)}
-                            style={{ cursor: 'pointer' }}
+                            style={{ cursor: isNonCommitPlaceholder ? 'default' : 'pointer' }}
                             fill={isGhostRect ? 'none' : dotFill}
                             stroke={isGhostRect ? LOCAL_UNPUSHED_GRAY : 'none'}
                             strokeWidth={isGhostRect ? 1.2 : 0}
                             strokeDasharray={isGhostRect ? '3 3' : undefined}
-                            onClick={(event) =>
+                            onClick={(event) => {
+                              if (isNonCommitPlaceholder) return;
                               handleCommitNodeClick(
                                 event,
                                 targetCommitSha,
                                 clusterHasBranchTip ? b.name : undefined,
-                              )
-                            }
+                              );
+                            }}
                             onDoubleClick={(event) => event.stopPropagation()}
                             onMouseEnter={() =>
                               setTooltip({
                                 x: anchorX,
                                 y: anchorY,
-                                lines: [
-                                  `Commit ${tooltipSha}`,
-                                  tooltipMessage
-                                    ? truncatePrompt(tooltipMessage, COMMIT_TOOLTIP_PREVIEW_MAX)
-                                    : `@${tooltipAuthor}`,
-                                  `@${tooltipAuthor} · ${fmtTooltipDate(tooltipDate)}`,
-                                ],
-                                avatarUrl: showBranchAvatar ? b.lastCommitAuthorAvatar : undefined,
-                                avatarFallback: tooltipAuthor?.charAt(0).toUpperCase() || '?',
+                                lines: isNonCommitPlaceholder
+                                  ? [
+                                    `No unique commits`,
+                                    `Branch ${b.name}`,
+                                    `Points at a shared commit`,
+                                  ]
+                                  : [
+                                    `Commit ${tooltipSha}`,
+                                    tooltipMessage
+                                      ? truncatePrompt(tooltipMessage, COMMIT_TOOLTIP_PREVIEW_MAX)
+                                      : `@${tooltipAuthor}`,
+                                    `@${tooltipAuthor} · ${fmtTooltipDate(tooltipDate)}`,
+                                  ],
+                                avatarUrl:
+                                  !isNonCommitPlaceholder && showBranchAvatar
+                                    ? b.lastCommitAuthorAvatar
+                                    : undefined,
+                                avatarFallback:
+                                  !isNonCommitPlaceholder
+                                    ? (tooltipAuthor?.charAt(0).toUpperCase() || '?')
+                                    : undefined,
                               })
                             }
                             onMouseLeave={() => setTooltip(null)}
@@ -3788,8 +3998,8 @@ export default function BranchMap({
                         );
                       }
 
-                      const firstRealEntry = realCommitEntries[0] ?? firstEntry;
-                      const lastRealEntry = realCommitEntries[realCommitEntries.length - 1] ?? lastEntry;
+                      const firstRealEntry = renderEntries[0] ?? firstEntry;
+                      const lastRealEntry = renderEntries[renderEntries.length - 1] ?? lastEntry;
                       const firstDate = firstRealEntry.item.commit?.date ?? b.lastCommitDate;
                       const lastDate = lastRealEntry.item.commit?.date ?? b.lastCommitDate;
                       const dateRangeLabel = new Date(firstDate).getTime() === new Date(lastDate).getTime()
@@ -3800,8 +4010,9 @@ export default function BranchMap({
                         ? truncatePrompt(lastRealEntry.item.commit.message, COMMIT_CLUSTER_PREVIEW_MAX)
                         : `on ${b.name}`;
 
-                      const expanded = expandedClumps.get(clusterKey);
-                      const isExpanded = expanded?.isExpanded ?? false;
+                      const canExpandCluster = realCommitEntries.length > 1;
+                      const expanded = canExpandCluster ? expandedClumps.get(clusterKey) : undefined;
+                      const isExpanded = canExpandCluster ? (expanded?.isExpanded ?? false) : false;
                       const phase = expanded?.phase ?? 'collapsed';
                       const phaseStartedAtMs = expanded?.phaseStartedAt ?? Date.now();
                       const phaseProgress = phase === 'collapsed'
@@ -3882,10 +4093,14 @@ export default function BranchMap({
                                 width={hit.width}
                                 height={hit.height}
                                 fill="transparent"
-                                style={{ cursor: 'pointer' }}
+                                style={{ cursor: canExpandCluster ? 'pointer' : 'default' }}
                                 onPointerDown={(e) => { e.preventDefault(); e.stopPropagation(); }}
                                 onMouseDown={(e) => { e.preventDefault(); e.stopPropagation(); }}
-                                onClick={(e) => { e.preventDefault(); e.stopPropagation(); toggleClumpExpanded(clusterKey); }}
+                                onClick={(e) => {
+                                  e.preventDefault();
+                                  e.stopPropagation();
+                                  if (canExpandCluster) toggleClumpExpanded(clusterKey);
+                                }}
                                 onDoubleClick={(event) => event.stopPropagation()}
                                 onMouseEnter={() =>
                                   setTooltip({
@@ -4045,32 +4260,6 @@ export default function BranchMap({
                         </g>
                       );
                     })}
-                    {/* Ghost outline for fresh-copy branches with no commits */}
-                    {isFreshCopy && commitDots.length === 0 && (() => {
-                      const ghostRect = commitRectSize(scaledNodeSize);
-                      const tipPoint = projectPoint(lanePosX, timeCoordToY(commitTipTimeX));
-                      // Render a dashed-outline rect at the branch tip.
-                      // Fresh-copy branches have no real commit nodes, so we must not
-                      // fabricate any "HEAD of ___" commit previews.
-                      return (
-                        <rect
-                          key={`ghost-${b.name}`}
-                          className="branch-map-commit-rect"
-                          x={tipPoint.x - ghostRect.width / 2}
-                          y={tipPoint.y - ghostRect.height / 2}
-                          width={ghostRect.width}
-                          height={ghostRect.height}
-                          data-base-rx={ghostRect.radius}
-                          rx={ghostRect.radius / Math.max(layerCameraScale.x, 0.0001)}
-                          fill="none"
-                          stroke={LOCAL_UNPUSHED_GRAY}
-                          strokeWidth={1.2}
-                          strokeDasharray="3 3"
-                          style={{ pointerEvents: 'none' }}
-                        />
-                      );
-                    })()}
-
                     {/* Prompt marker hit areas stay on top so hover remains easy. */}
                     {promptMarkerClusters.map((cluster) => {
                       const count = cluster.entries.length;
@@ -4192,8 +4381,9 @@ export default function BranchMap({
           })()}
 
           {/* Global node overlay so commit/prompt nodes always paint above branch lines. */}
+          {ENABLE_GLOBAL_NODE_OVERLAY && (
           <g
-            style={{ opacity: hoveredPR !== null ? 0.2 : 1, transition: 'opacity 0.15s', pointerEvents: 'none' }}
+            style={{ opacity: 1, transition: 'opacity 0.15s', pointerEvents: 'none' }}
           >
             {activeBranches.map((b) => {
               const forkTimeX = branchForkX(b);
@@ -4210,33 +4400,34 @@ export default function BranchMap({
               const tipTimeX = mergeNodeTimeX != null ? Math.max(baseTipTimeX, mergeNodeTimeX) : baseTipTimeX;
               const commitTipTimeX = isMergedBranch ? baseTipTimeX : tipTimeX;
 
-              const isHovered = hoveredBranch === b.name;
               const isLocalBranch = b.remoteSyncStatus !== 'on-github';
               const isFocusedError = focusedErrorBranch?.name === b.name;
               const focusedErrorColor = '#d97706';
-              const branchGroupOpacity =
-                isFocusedError ? 1 : hoveredBranch !== null && !isHovered ? 0.12 : 1;
+              const branchGroupOpacity = 1;
 
               const branchCommits = branchCommitPreviews[b.name] ?? [];
               const hasPreviewData = Object.prototype.hasOwnProperty.call(branchCommitPreviews, b.name);
               const visibleBranchCommits = hasPreviewData
                 ? branchCommits.filter((commit) => commit.kind !== 'branch-created')
                 : branchCommits;
-              const commitCount = hasPreviewData ? visibleBranchCommits.length : b.commitsAhead;
-              const displayedCommits = hasPreviewData
+              const fallbackCommitCount = Math.max(1, branchAheadCount(b));
+              const hasConcretePreviewCommits = visibleBranchCommits.length > 0;
+              const commitCount = hasConcretePreviewCommits ? visibleBranchCommits.length : fallbackCommitCount;
+              const displayedCommits = hasConcretePreviewCommits
                 ? [...visibleBranchCommits.slice(0, commitCount)].sort(
                   (a, b) => new Date(a.date).getTime() - new Date(b.date).getTime()
                 )
                 : [];
               const minCommitTimeX = forkTimeX + GRID_EVENT_GAP;
               const maxCommitTimeX = Math.max(minCommitTimeX, commitTipTimeX);
-              const commitItems: Array<BranchCommitPreview | undefined> = hasPreviewData
+              const commitItems: Array<BranchCommitPreview | undefined> = hasConcretePreviewCommits
                 ? displayedCommits
                 : Array.from({ length: commitCount }, () => undefined);
-              let commitDots = hasPreviewData
-                ? commitItems.map((commit) => {
-                  const shaX = commit?.fullSha ? gridXForSha(commit.fullSha) : undefined;
-                  const rawX = shaX ?? timeToX(commit?.date ?? b.lastCommitDate);
+              let commitDots = hasConcretePreviewCommits
+                ? commitItems.map((commit, index) => {
+                  const slotX = gridXForBranchSlot(b.name, index);
+                  const shaX = commit?.fullSha ? gridXForBranchSha(b.name, commit.fullSha) : undefined;
+                  const rawX = slotX ?? shaX ?? timeToX(commit?.date ?? b.lastCommitDate);
                   const x = Math.max(minCommitTimeX, Math.min(maxCommitTimeX, rawX));
                   return { y: timeCoordToY(x), commit };
                 })
@@ -4250,7 +4441,7 @@ export default function BranchMap({
               }, []);
               let branchEndDotIndex: number | null = null;
               if (realCommitDotIndices.length > 0) {
-                const headCommitIndex = hasPreviewData
+                const headCommitIndex = hasConcretePreviewCommits
                   ? commitItems.findIndex((item) => item?.fullSha === b.headSha)
                   : -1;
                 const anchorIndex = headCommitIndex >= 0
@@ -4341,11 +4532,11 @@ export default function BranchMap({
                     const lastEntry = cluster.entries[count - 1];
                     const clusterKey = `prompt-clump-${b.name}-${firstEntry.item.index}-${lastEntry.item.index}`;
                     const memberKeys = cluster.entries.map((entry) => `prompt:${b.name}:slot-${entry.item.index}`);
-                    const animatedAnchor = resolveAnimatedClumpAnchor(
-                      clusterKey,
-                      { x: cluster.x, y: cluster.y },
-                      memberKeys
-                    );
+                      const animatedAnchor = resolveAnimatedClumpAnchor(
+                        clusterKey,
+                        { x: cluster.x, y: cluster.y },
+                        memberKeys
+                      );
                     const anchorX = animatedAnchor.x;
                     const anchorY = animatedAnchor.y;
                     const markerSize =
@@ -4404,11 +4595,11 @@ export default function BranchMap({
                     const dotShouldUseLocalGray =
                       fullBranchShouldUseLocalGray ||
                       cluster.entries.every((entry) => localCommitDotIndices.has(entry.item.index));
-                    const dotFill = dotShouldUseLocalGray
-                      ? LOCAL_UNPUSHED_GRAY
-                      : isFocusedError
-                        ? focusedErrorColor
-                        : CANVAS_NEUTRAL_GRAY;
+                  const dotFill = dotShouldUseLocalGray
+                    ? LOCAL_UNPUSHED_GRAY
+                    : isFocusedError
+                      ? focusedErrorColor
+                      : CANVAS_NEUTRAL_GRAY;
 
                     const clusterHasCheckedOutHead =
                       checkedOutHeadSha != null &&
@@ -4433,7 +4624,7 @@ export default function BranchMap({
                     if (count <= 1) {
                       const rectSize = commitRectSize(scaledNodeSize);
                       const gridPad = 0;
-                      const isGhostRect = isFreshCopy;
+                      const isGhostRect = false;
                       return (
                         <g key={`commit-overlay-${clusterKey}`}>
                           {!isGhostRect && (
@@ -4548,6 +4739,7 @@ export default function BranchMap({
               );
             })}
           </g>
+          )}
 
           {/* Main commit node overlay so branch connectors never render over main clumps. */}
           <g style={{ opacity: mainTimelineOpacity, transition: 'opacity 0.15s', pointerEvents: 'none' }}>
@@ -4569,11 +4761,11 @@ export default function BranchMap({
                 const last = cluster.entries[count - 1].item;
                 const clusterKey = `direct-clump-${first.fullSha}-${last.fullSha}`;
                 const memberKeys = cluster.entries.map((entry) => `direct:${entry.item.fullSha}`);
-                const animatedAnchor = resolveAnimatedClumpAnchor(
-                  clusterKey,
-                  { x: cluster.x, y: cluster.y },
-                  memberKeys
-                );
+                    const animatedAnchor = resolveAnimatedClumpAnchor(
+                      clusterKey,
+                      { x: cluster.x, y: cluster.y },
+                      memberKeys
+                    );
                 const mainClusterHasCheckedOutHead =
                   checkedOutHeadSha != null &&
                   cluster.entries.some((entry) =>

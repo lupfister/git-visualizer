@@ -1,6 +1,6 @@
 use super::cli::{self, GitError};
 use serde::Serialize;
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::path::Path;
 
 #[derive(Debug, Clone, Serialize)]
@@ -209,6 +209,14 @@ fn infer_branch_parents(
     }
 
     let candidate_names: HashSet<String> = candidates.iter().map(|c| c.name.clone()).collect();
+    let default_parent_name = candidates
+        .iter()
+        .find(|c| c.is_default)
+        .map(|c| c.name.clone());
+    let default_head_sha = candidates
+        .iter()
+        .find(|c| c.is_default)
+        .map(|c| c.head_sha.clone());
 
     for branch in branches.iter_mut() {
         let created_from_reflog = get_branch_reflog_created_entry(repo, &branch.name)
@@ -225,6 +233,28 @@ fn infer_branch_parents(
         // Prefer explicit reflog origin whenever available.
         // If reflog is missing/ambiguous, fall back to heuristic inference.
         let mut parent_name = created_from_reflog_parent;
+        // For empty/fresh branches whose HEAD matches default HEAD, anchor to default.
+        // This avoids unstable sibling/cyclic parenting among same-SHA placeholder branches.
+        if parent_name.is_none() && branch.commits_ahead <= 0 {
+            let branch_head = branch.head_sha.as_str();
+            let matches_default_head = default_head_sha
+                .as_deref()
+                .map(|sha| !sha.is_empty() && sha == branch_head)
+                .unwrap_or(false);
+            let matches_default_reflog_source = default_head_sha
+                .as_deref()
+                .zip(created_from_reflog_sha.as_deref())
+                .map(|(default_sha, created_sha)| !default_sha.is_empty() && default_sha == created_sha)
+                .unwrap_or(false);
+            let matches_default_fork_point = default_head_sha
+                .as_deref()
+                .zip(branch.diverged_from_sha.as_deref())
+                .map(|(default_sha, fork_sha)| !default_sha.is_empty() && default_sha == fork_sha)
+                .unwrap_or(false);
+            if matches_default_head || matches_default_reflog_source || matches_default_fork_point {
+                parent_name = default_parent_name.clone();
+            }
+        }
         if parent_name.is_none() {
             let mut best: Option<(ParentCandidate, i32)> = None;
 
@@ -269,11 +299,56 @@ fn infer_branch_parents(
             }
         }
 
+        // Fallback when strict ancestor-head matching cannot find a parent.
+        // This happens when the true parent branch has moved forward since the
+        // child was created (so parent HEAD is no longer an ancestor of child HEAD).
+        // Use symmetric diff against each candidate and prefer the smallest
+        // non-zero ahead distance from candidate -> branch.
         if parent_name.is_none() {
-            parent_name = candidates
-                .iter()
-                .find(|c| c.is_default)
-                .map(|c| c.name.clone());
+            let mut best_by_diff: Option<(ParentCandidate, i32, i32)> = None;
+
+            for candidate in &candidates {
+                if candidate.name == branch.name {
+                    continue;
+                }
+
+                let Ok((ahead, behind)) = get_ahead_behind(repo, &branch.name, &candidate.name) else {
+                    continue;
+                };
+
+                // If branch has no commits unique to candidate, candidate is the same tip
+                // (fresh copy) or a descendant, so it cannot be the parent.
+                if ahead <= 0 {
+                    continue;
+                }
+
+                let total_delta = ahead.saturating_add(behind.max(0));
+                match &best_by_diff {
+                    None => best_by_diff = Some((candidate.clone(), total_delta, ahead)),
+                    Some((best_candidate, best_total_delta, best_ahead)) => {
+                        let better_total = total_delta < *best_total_delta;
+                        let same_total = total_delta == *best_total_delta;
+                        let better_ahead = ahead < *best_ahead;
+                        let prefer_non_default = best_candidate.is_default && !candidate.is_default;
+                        let newer_candidate =
+                            candidate.last_commit_date > best_candidate.last_commit_date;
+
+                        if better_total
+                            || (same_total && (better_ahead || prefer_non_default || newer_candidate))
+                        {
+                            best_by_diff = Some((candidate.clone(), total_delta, ahead));
+                        }
+                    }
+                }
+            }
+
+            if let Some((candidate, _, _)) = best_by_diff {
+                parent_name = Some(candidate.name);
+            }
+        }
+
+        if parent_name.is_none() {
+            parent_name = default_parent_name.clone();
         }
 
         branch.parent_branch = parent_name.clone();
@@ -298,6 +373,36 @@ fn infer_branch_parents(
             .or(created_from_unique_commit)
             .or_else(|| branch.diverged_from_date.clone())
             .or_else(|| Some(branch.last_commit_date.clone()));
+    }
+
+    // Final sanitization: break any parent cycles by anchoring cycle participants to default.
+    if let Some(default_parent) = default_parent_name {
+        let parent_by_name: HashMap<String, Option<String>> = branches
+            .iter()
+            .map(|b| (b.name.clone(), b.parent_branch.clone()))
+            .collect();
+
+        for branch in branches.iter_mut() {
+            let mut cursor = branch.parent_branch.clone();
+            let mut seen: HashSet<String> = HashSet::new();
+            let mut has_cycle = false;
+
+            while let Some(parent) = cursor {
+                if parent == branch.name || !seen.insert(parent.clone()) {
+                    has_cycle = true;
+                    break;
+                }
+                cursor = parent_by_name.get(&parent).cloned().flatten();
+            }
+
+            if has_cycle {
+                branch.parent_branch = Some(default_parent.clone());
+                if let Ok((sha, date)) = get_fork_point(repo, &branch.name, &default_parent) {
+                    branch.diverged_from_sha = sha;
+                    branch.diverged_from_date = date;
+                }
+            }
+        }
     }
 
     Ok(())
