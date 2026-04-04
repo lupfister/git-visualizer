@@ -26,6 +26,9 @@ const ZOOM_MIN = 1;
 const ZOOM_MAX = 6;
 const ZOOM_WHEEL_EXP_SENSITIVITY = 0.0025;
 const ZOOM_WHEEL_DELTA_MAX_PX = 180;
+const PAN_FIT_LOCK_IN_RATIO = 0.92;
+const PAN_FIT_LOCK_OUT_RATIO = 0.98;
+const PAN_FIT_LOCK_SLACK_PX = 0;
 const CAMERA_UI_SYNC_MS = 24;
 /** Space between the `<svg>` and the camera container edges (screen px each side). */
 const CANVAS_PAD_X = 0;
@@ -42,6 +45,11 @@ const CLIP_MARGIN_TOP = 0;
 const CLIP_MARGIN_BOTTOM = 0;
 /** Grid: horizontal pad around lane + label extent (SVG user units). */
 const GRID_VIEW_PAD_X = 0;
+const DEBUG_CANVAS_LAYERS = true;
+const DEBUG_SCROLL_BG = 'rgba(239, 68, 68, 0.12)';
+const DEBUG_CAMERA_BG = 'rgba(34, 197, 94, 0.12)';
+const DEBUG_SVG_BG = 'rgba(59, 130, 246, 0.12)';
+const DEBUG_LAKE_BG = 'rgba(250, 204, 21, 0.14)';
 /**
  * Equal inset between graph/grid content and the SVG edges on all four sides (SVG user units).
  * `svgContentPadding` scales from this baseline when the map viewport is larger than
@@ -51,7 +59,7 @@ const SVG_CONTENT_PADDING_BASE = 0;
 const SVG_CONTENT_PADDING_VIEWPORT_REF_MIN = 360;
 const SVG_CONTENT_PADDING_MAX = 0;
 /** Full-bleed fill behind graph content (SVG user units). */
-const SVG_AREA_BG = 'transparent';
+const SVG_AREA_BG = DEBUG_CANVAS_LAYERS ? DEBUG_LAKE_BG : 'transparent';
 const TIME_SCALE_DEFAULT = 0.5;
 // Grid nodes render without clump boost, so grid spacing must match the un-boosted rect size
 // or you'll see tiny gaps between nodes.
@@ -456,6 +464,7 @@ export default function BranchMap({
     maxY: 0,
     measured: false,
   });
+  const panFitLockRef = useRef({ x: false, y: false });
   const panStartRef = useRef({ x: 0, y: 0, panX: 0, panY: 0 });
   const [pan, setPan] = useState({ x: 0, y: 0 });
   const panRef = useRef(pan);
@@ -759,12 +768,20 @@ export default function BranchMap({
     let maxXWorld = hasFinite ? finiteWorld.maxX : currentSvgWidth;
     let minYWorld = hasFinite ? finiteWorld.minY : 0;
     let maxYWorld = hasFinite ? finiteWorld.maxY : currentSvgHeight;
+    let centerSpanScreenX = Number.POSITIVE_INFINITY;
+    let centerSpanScreenY = Number.POSITIVE_INFINITY;
+    let centerMidWorldX = 0;
+    let centerMidWorldY = 0;
 
     // Compute mathematically minimal bounds that still allow centering any commit rectangle.
     // Padding is derived from current viewport + zoom, so there's no extra slack.
     if (hasCenterable) {
       const halfViewportWorldX = viewportW / Math.max(scale.x, 0.0001) / 2;
       const halfViewportWorldY = visibleH / Math.max(scale.y, 0.0001) / 2;
+      centerSpanScreenX = (centerable.maxX - centerable.minX) * scale.x;
+      centerSpanScreenY = (centerable.maxY - centerable.minY) * scale.y;
+      centerMidWorldX = (centerable.minX + centerable.maxX) / 2;
+      centerMidWorldY = (centerable.minY + centerable.maxY) / 2;
       minXWorld = centerable.minX - halfViewportWorldX;
       maxXWorld = centerable.maxX + halfViewportWorldX;
       minYWorld = centerable.minY - halfViewportWorldY;
@@ -783,12 +800,40 @@ export default function BranchMap({
       min: viewportH - sceneMaxY,
       max: topInset - sceneMinY,
     };
+    const lockState = panFitLockRef.current;
+    const xFitRatio = viewportW > 0 ? centerSpanScreenX / viewportW : Number.POSITIVE_INFINITY;
+    const yFitRatio = visibleH > 0 ? centerSpanScreenY / visibleH : Number.POSITIVE_INFINITY;
+    lockState.x = lockState.x
+      ? xFitRatio <= PAN_FIT_LOCK_OUT_RATIO
+      : xFitRatio <= PAN_FIT_LOCK_IN_RATIO;
+    lockState.y = lockState.y
+      ? yFitRatio <= PAN_FIT_LOCK_OUT_RATIO
+      : yFitRatio <= PAN_FIT_LOCK_IN_RATIO;
+    const visibleCenterY = (topInset + viewportH) / 2;
+    const centeredPanX = viewportW / 2 - currentGraphOffsetX - centerMidWorldX * scale.x;
+    const centeredPanY = visibleCenterY - currentGraphOffsetY - centerMidWorldY * scale.y;
 
     let x: number;
-    x = clampAxis(next.x, xBounds.min, xBounds.max);
+    if (hasCenterable && lockState.x) {
+      x = clampAxis(
+        next.x,
+        centeredPanX - PAN_FIT_LOCK_SLACK_PX,
+        centeredPanX + PAN_FIT_LOCK_SLACK_PX
+      );
+    } else {
+      x = clampAxis(next.x, xBounds.min, xBounds.max);
+    }
 
     let y: number;
-    y = clampAxis(next.y, yBounds.min, yBounds.max);
+    if (hasCenterable && lockState.y) {
+      y = clampAxis(
+        next.y,
+        centeredPanY - PAN_FIT_LOCK_SLACK_PX,
+        centeredPanY + PAN_FIT_LOCK_SLACK_PX
+      );
+    } else {
+      y = clampAxis(next.y, yBounds.min, yBounds.max);
+    }
 
     return { x, y };
   }
@@ -2805,6 +2850,11 @@ export default function BranchMap({
         ref={scrollRef}
         onMouseDown={handleCanvasMouseDown}
         className={`w-full h-full overflow-hidden branch-map-scroll relative select-none touch-none ${isPanning ? 'cursor-grabbing' : spaceHeld ? 'cursor-grab' : 'cursor-default'}`}
+        style={DEBUG_CANVAS_LAYERS ? {
+          background: DEBUG_SCROLL_BG,
+          outline: '2px dashed rgba(239, 68, 68, 0.55)',
+          outlineOffset: '-2px',
+        } : undefined}
       >
         <div
           ref={cameraRef}
@@ -2816,6 +2866,11 @@ export default function BranchMap({
             height: canvasHeight,
             transformOrigin: 'top left',
             willChange: 'transform',
+            ...(DEBUG_CANVAS_LAYERS ? {
+              background: DEBUG_CAMERA_BG,
+              outline: '2px dashed rgba(34, 197, 94, 0.6)',
+              outlineOffset: '-2px',
+            } : {}),
           }}
         >
         <svg
@@ -2835,6 +2890,11 @@ export default function BranchMap({
             left: graphOffsetX,
             top: graphOffsetY,
             overflow: 'visible',
+            ...(DEBUG_CANVAS_LAYERS ? {
+              background: DEBUG_SVG_BG,
+              outline: '2px dashed rgba(59, 130, 246, 0.65)',
+              outlineOffset: '-2px',
+            } : {}),
           } as React.CSSProperties}
         >
           <defs>
