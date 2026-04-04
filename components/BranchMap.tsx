@@ -2120,7 +2120,6 @@ export default function BranchMap({
   }
   const mainEndY = timeCoordToY(mainEndX); // newest anchor on main
   const mainActiveEndY = timeCoordToY(mainActiveEndX);
-  const hasMainStaleTailY = Math.abs(mainActiveEndY - mainEndY) > 0.5;
 
   const mapTopInset = Math.max(0, mapTopInsetPx);
   const layoutViewportW = viewportSize.width;
@@ -2357,6 +2356,15 @@ export default function BranchMap({
       sha.startsWith(commit.fullSha) ||
       commit.sha.startsWith(sha) ||
       sha.startsWith(commit.sha)
+    );
+  }
+
+  function isSelectedLaneBranch(branch: Branch): boolean {
+    if (checkedOutBranchName) return checkedOutBranchName === branch.name;
+    if (!checkedOutHeadSha) return false;
+    return (
+      shaMatchesGitRef(branch.headSha, checkedOutHeadSha) ||
+      branchPreviewContainsSha(branch.name, checkedOutHeadSha)
     );
   }
 
@@ -2632,10 +2640,10 @@ export default function BranchMap({
   const worldUnitsPerScreenPx = 1 / Math.max(layerCameraScale.x, 0.0001);
   const worldPx = (px: number) => px * worldUnitsPerScreenPx;
   const NODE_FRAME_LABEL_FONT_PX = 12;
-  const NODE_FRAME_LABEL_TOP_GAP_PX = 6;
+  const NODE_FRAME_LABEL_TOP_GAP_PX = 2;
   const NODE_FRAME_LABEL_LEFT_INSET_PX = 2;
   const NODE_FRAME_LABEL_RIGHT_INSET_PX = 4;
-  const NODE_FRAME_LABEL_PAIR_GAP_PX = 4;
+  const NODE_FRAME_LABEL_PAIR_GAP_PX = 2;
   const NODE_FRAME_LABEL_COLOR = '#78716c';
   const NODE_FRAME_LABEL_WEIGHT = 400;
   const nodeFrameLabelFontSize = worldPx(NODE_FRAME_LABEL_FONT_PX);
@@ -2644,8 +2652,9 @@ export default function BranchMap({
   const nodeFrameLabelRightInsetX = worldPx(NODE_FRAME_LABEL_RIGHT_INSET_PX);
   const nodeFrameLabelPairGap = worldPx(NODE_FRAME_LABEL_PAIR_GAP_PX);
   const nodeFrameCountSlotWidth =
-    estimateSvgTextWidth(String(CLUMP_COUNT_MAX), nodeFrameLabelFontSize) + nodeFrameLabelPairGap;
+    estimateSvgTextWidth(`x${CLUMP_COUNT_MAX}`, nodeFrameLabelFontSize) + nodeFrameLabelPairGap;
   const shortShaLabel = (sha?: string | null): string => (sha ? sha.slice(0, 7) : '-------');
+  const stackCountLabel = (count: number): string => `x${clumpCountLabel(count)}`;
   const trimTextToWidth = (text: string, maxWidth: number): string => {
     if (maxWidth <= 0) return '';
     if (estimateSvgTextWidth(text, nodeFrameLabelFontSize) <= maxWidth) return text;
@@ -2970,22 +2979,6 @@ export default function BranchMap({
               pathLength={1}
               className={drawPathMainClass}
             />
-            {hasMainStaleTailY && (
-              <g className="main-stale-tail-glow">
-                <path
-                  d={`M ${pathCoord(mainX, mainActiveEndY)} L ${pathCoord(mainX, mainEndY)}`}
-                  fill="none"
-                  stroke={
-                    checkedOutIndicatorLocal && Math.abs(checkedOutIndicatorLocal.x - mainX) < 0.5
-                      ? CHECKED_OUT_SELECTION_STROKE
-                      : CANVAS_NEUTRAL_GRAY
-                  }
-                  strokeWidth={1.5}
-                  pathLength={1}
-                  className={drawPathMainClass}
-                />
-              </g>
-            )}
 
             <g className={fadeInInfoClass} style={{ '--delay': `${MAIN_DRAW_MS}ms` } as React.CSSProperties}>
               {/* Direct commits */}
@@ -3005,7 +2998,7 @@ export default function BranchMap({
                   const count = cluster.entries.length;
                   const first = cluster.entries[0].item;
                   const last = cluster.entries[count - 1].item;
-                  const countLabel = clumpCountLabel(count);
+                  const countLabel = stackCountLabel(count);
                   const clusterKey = `direct-clump-${first.fullSha}-${last.fullSha}`;
                   const clusterHasMainTip = cluster.entries.some(
                     (entry) => entry.item.fullSha === entries[entries.length - 1]?.item.fullSha
@@ -3671,7 +3664,8 @@ export default function BranchMap({
               };
 
               const branchStrokeLayerPriority = (branch: Branch): number => {
-                if (hoveredBranch === branch.name) return 3;
+                if (hoveredBranch === branch.name) return 4;
+                if (isSelectedLaneBranch(branch)) return 3;
                 if (focusedErrorBranch?.name === branch.name) return 2;
                 return branchUsesLocalGrayStroke(branch) ? 0 : 1;
               };
@@ -4249,7 +4243,7 @@ export default function BranchMap({
                                 fontWeight={NODE_FRAME_LABEL_WEIGHT}
                                 pointerEvents="none"
                               >
-                                {clumpCountLabel(count)}
+                                {stackCountLabel(count)}
                               </text>
                             </g>
                           )}
@@ -4560,7 +4554,16 @@ export default function BranchMap({
           <g
             style={{ opacity: 1, transition: 'opacity 0.15s', pointerEvents: 'none' }}
           >
-            {activeBranches.map((b) => {
+            {[...activeBranches]
+              .sort((a, b) => {
+                const priority = (branch: Branch): number => {
+                  if (hoveredBranch === branch.name) return 2;
+                  if (isSelectedLaneBranch(branch)) return 1;
+                  return 0;
+                };
+                return priority(a) - priority(b);
+              })
+              .map((b) => {
               const forkTimeX = branchForkX(b);
               const lanePosX = laneX(b);
               const isFreshCopy = freshCopyBranchNames.has(b.name);
@@ -4859,7 +4862,7 @@ export default function BranchMap({
                     const clusterRectSize = nodeRectSize(count);
                     const gridPad = 0;
                     const clusterLabelCommit = realCommitEntries[realCommitEntries.length - 1]?.item.commit;
-                    const clumpCountText = clumpCountLabel(count);
+                    const clumpCountText = stackCountLabel(count);
                     const clumpTitleText = fitNodeFrameTitle(
                       b.name,
                       clusterLabelCommit?.sha ?? clusterLabelCommit?.fullSha ?? b.headSha,
@@ -5032,7 +5035,7 @@ export default function BranchMap({
 
                 const clusterRectSize = nodeRectSize(count);
                 const gridPad = 0;
-                const clumpCountText = clumpCountLabel(count);
+                const clumpCountText = stackCountLabel(count);
                 const clumpTitleText = fitNodeFrameTitle(
                   defaultBranch,
                   last.sha ?? last.fullSha,
