@@ -398,6 +398,7 @@ function App() {
               .map((c) => ({
                 fullSha: c.fullSha,
                 sha: c.sha,
+                parentSha: c.parentSha ?? null,
                 message: c.message,
                 author: c.author,
                 date: c.date,

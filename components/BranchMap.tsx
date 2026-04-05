@@ -219,6 +219,76 @@ function truncatePrompt(text: string, max = 90): string {
   return `${text.slice(0, max)}…`;
 }
 
+type LineageCommitLike = {
+  fullSha: string;
+  parentSha?: string | null;
+  date: string;
+};
+
+function compareByDateThenSha<T extends LineageCommitLike>(a: T, b: T): number {
+  const aTime = new Date(a.date).getTime();
+  const bTime = new Date(b.date).getTime();
+  const aFinite = Number.isFinite(aTime);
+  const bFinite = Number.isFinite(bTime);
+  if (aFinite && bFinite && aTime !== bTime) return aTime - bTime;
+  if (aFinite !== bFinite) return aFinite ? -1 : 1;
+  return a.fullSha.localeCompare(b.fullSha);
+}
+
+/**
+ * Order commits using explicit parent edges first, then time/sha as a stable tie-breaker.
+ * This keeps lineage deterministic and avoids date-only inversions.
+ */
+function orderByLineage<T extends LineageCommitLike>(items: T[]): T[] {
+  if (items.length <= 1) return [...items];
+
+  const bySha = new Map(items.map((item) => [item.fullSha, item]));
+  const inDegree = new Map<string, number>();
+  const childrenByParent = new Map<string, T[]>();
+
+  items.forEach((item) => inDegree.set(item.fullSha, 0));
+
+  for (const item of items) {
+    const parentSha = item.parentSha ?? undefined;
+    if (!parentSha || !bySha.has(parentSha)) continue;
+    inDegree.set(item.fullSha, (inDegree.get(item.fullSha) ?? 0) + 1);
+    const children = childrenByParent.get(parentSha) ?? [];
+    children.push(item);
+    childrenByParent.set(parentSha, children);
+  }
+
+  for (const children of childrenByParent.values()) {
+    children.sort(compareByDateThenSha);
+  }
+
+  const ready = items
+    .filter((item) => (inDegree.get(item.fullSha) ?? 0) === 0)
+    .sort(compareByDateThenSha);
+  const ordered: T[] = [];
+  const seen = new Set<string>();
+
+  while (ready.length > 0) {
+    const next = ready.shift()!;
+    if (seen.has(next.fullSha)) continue;
+    seen.add(next.fullSha);
+    ordered.push(next);
+
+    const children = childrenByParent.get(next.fullSha) ?? [];
+    for (const child of children) {
+      const remainingParents = (inDegree.get(child.fullSha) ?? 0) - 1;
+      inDegree.set(child.fullSha, remainingParents);
+      if (remainingParents === 0) ready.push(child);
+    }
+    ready.sort(compareByDateThenSha);
+  }
+
+  if (ordered.length === items.length) return ordered;
+  const remainder = items
+    .filter((item) => !seen.has(item.fullSha))
+    .sort(compareByDateThenSha);
+  return [...ordered, ...remainder];
+}
+
 const COMMIT_TOOLTIP_PREVIEW_MAX = 120;
 const COMMIT_CLUSTER_PREVIEW_MAX = 90;
 const PROMPT_TOOLTIP_PREVIEW_MAX = 120;
@@ -1492,10 +1562,36 @@ export default function BranchMap({
       mergedBranchByHeadSha.set(branch.headSha, branch);
     }
   }
-  const sortedDirectCommits = [...directCommits].sort(
-    (a, b) => new Date(a.date).getTime() - new Date(b.date).getTime()
-  );
+  const sortedDirectCommits = orderByLineage(directCommits);
   const directCommitShaSet = new Set<string>(sortedDirectCommits.map((commit) => commit.fullSha));
+  const mainMergeCommitShas = new Set<string>(
+    sortedNodes
+      .map((node) => node.fullSha)
+      .filter((sha) => directCommitShaSet.has(sha))
+  );
+  const mainCommitSplitIndices = (() => {
+    const splits = new Set<number>();
+    if (sortedDirectCommits.length <= 1) return splits;
+
+    for (let index = 0; index < sortedDirectCommits.length; index += 1) {
+      const commit = sortedDirectCommits[index];
+      const prev = index > 0 ? sortedDirectCommits[index - 1] : null;
+
+      if (index > 0 && prev && commit.parentSha && commit.parentSha !== prev.fullSha) {
+        splits.add(index - 1);
+      }
+
+      if (mainMergeCommitShas.has(commit.fullSha) && index < sortedDirectCommits.length - 1) {
+        splits.add(index);
+      }
+
+      if (protectedMainForkShas.has(commit.fullSha) && index < sortedDirectCommits.length - 1) {
+        splits.add(index);
+      }
+    }
+
+    return splits;
+  })();
 
   type TimelineEvent = { key: string; t: number; kind: 'merge' | 'direct' | 'branch' };
   const directTimelineEvents: TimelineEvent[] = sortedDirectCommits.map((c) => ({
@@ -1551,22 +1647,20 @@ export default function BranchMap({
     return `${branchName}::slot:${slotIndex}`;
   }
   {
-    const mainForkIdx = new Set<number>();
-    sortedDirectCommits.forEach((c, i) => {
-      if (protectedMainForkShas.has(c.fullSha)) mainForkIdx.add(i);
-    });
+    const mainForkIdx = new Set<number>(mainCommitSplitIndices);
 
     {
       let buf: string[] = [];
-      let tLatest = 0;
+      let tFirst = 0;
       const effectiveMainForkIdx = pruneForkSplitIndices(sortedDirectCommits.length, mainForkIdx);
       const flush = () => {
         if (buf.length === 0) return;
-        gridClumps.push({ lane: 'main', shas: [...buf], earliestTime: tLatest, rowIndex: -1, key: `direct-clump-${buf[0]}-${buf[buf.length - 1]}` });
+        gridClumps.push({ lane: 'main', shas: [...buf], earliestTime: tFirst, rowIndex: -1, key: `direct-clump-${buf[0]}-${buf[buf.length - 1]}` });
         buf = [];
       };
       sortedDirectCommits.forEach((c, i) => {
-        tLatest = new Date(c.date).getTime();
+        const commitTime = new Date(c.date).getTime();
+        if (buf.length === 0) tFirst = commitTime;
         buf.push(c.fullSha);
         if (effectiveMainForkIdx.has(i)) flush();
       });
@@ -1600,14 +1694,14 @@ export default function BranchMap({
       const effectiveForkIdx = pruneForkSplitIndices(previews.length, forkIdx);
       let buf: string[] = [];
       let slotBuf: number[] = [];
-      let tLatest = 0;
+      let tFirst = 0;
       let startIdx = 0;
       const flushBranch = (endIdx: number) => {
         if (buf.length === 0) return;
         gridClumps.push({
           lane: branch.name,
           shas: [...buf],
-          earliestTime: tLatest,
+          earliestTime: tFirst,
           rowIndex: -1,
           key: `commit-clump-${branch.name}-${startIdx}-${endIdx}`,
           slotIndices: [...slotBuf],
@@ -1616,8 +1710,9 @@ export default function BranchMap({
         slotBuf = [];
       };
       previews.forEach((c, i) => {
+        const commitTime = new Date(c.date).getTime();
         if (buf.length === 0) { startIdx = i; }
-        tLatest = new Date(c.date).getTime();
+        if (buf.length === 0) tFirst = commitTime;
         buf.push(c.fullSha);
         slotBuf.push(i);
         if (effectiveForkIdx.has(i)) { flushBranch(i); }
@@ -2002,17 +2097,28 @@ export default function BranchMap({
   function xForTimestamp(t: number): number {
     if (gridEventPoints.length > 0) {
       if (!Number.isFinite(t)) return gridEventPoints[0]?.x ?? leftPad;
-      let best = gridEventPoints[0];
-      let bestDelta = Math.abs(t - best.t);
-      for (let i = 1; i < gridEventPoints.length; i += 1) {
-        const point = gridEventPoints[i];
-        const delta = Math.abs(t - point.t);
-        if (delta < bestDelta || (delta === bestDelta && point.x < best.x)) {
-          best = point;
-          bestDelta = delta;
+      // Preserve chronology: anchor to the latest row at-or-before the target
+      // timestamp. Only fall forward when nothing exists in the past.
+      let bestPast: { t: number; x: number } | null = null;
+      let bestFuture: { t: number; x: number } | null = null;
+      for (const point of gridEventPoints) {
+        if (point.t <= t) {
+          if (
+            bestPast == null ||
+            point.t > bestPast.t ||
+            (point.t === bestPast.t && point.x > bestPast.x)
+          ) {
+            bestPast = point;
+          }
+        } else if (
+          bestFuture == null ||
+          point.t < bestFuture.t ||
+          (point.t === bestFuture.t && point.x < bestFuture.x)
+        ) {
+          bestFuture = point;
         }
       }
-      return best.x;
+      return bestPast?.x ?? bestFuture?.x ?? (gridEventPoints[0]?.x ?? leftPad);
     }
     if (!Number.isFinite(t) || allAnchorTimes.length === 0) return leftPad;
     let lo = 0;
@@ -2418,9 +2524,9 @@ export default function BranchMap({
   }
 
   function sortedConcreteBranchPreviews(branchName: string): BranchCommitPreview[] {
-    return (branchCommitPreviews[branchName] ?? [])
-      .filter((commit) => commit.kind !== 'branch-created')
-      .sort((a, b) => new Date(a.date).getTime() - new Date(b.date).getTime());
+    const concrete = (branchCommitPreviews[branchName] ?? [])
+      .filter((commit) => commit.kind !== 'branch-created');
+    return orderByLineage(concrete);
   }
 
   function renderableBranchPreviews(branch: Branch): BranchCommitPreview[] {
@@ -3316,9 +3422,7 @@ export default function BranchMap({
     });
 
     const displayedCommits = hasConcretePreviewCommits
-      ? [...visibleBranchCommits.slice(0, commitCount)].sort(
-        (a, bx) => new Date(a.date).getTime() - new Date(bx.date).getTime()
-      )
+      ? [...visibleBranchCommits.slice(0, commitCount)]
       : [];
     const minCommitTimeX = forkTimeX;
     const maxCommitTimeX = Math.max(minCommitTimeX, commitTipTimeX);
@@ -3607,10 +3711,7 @@ export default function BranchMap({
     return { x: markerPoint.x, y: markerPoint.y, item: commit };
   });
   const latestMainCommitSha = mainDirectEntries[mainDirectEntries.length - 1]?.item.fullSha;
-  const mainForkIndices = new Set<number>();
-  mainDirectEntries.forEach((entry, idx) => {
-    if (protectedMainForkShas.has(entry.item.fullSha)) mainForkIndices.add(idx);
-  });
+  const mainForkIndices = new Set<number>(mainCommitSplitIndices);
   const mainDirectClusters: MainDirectClusterLayout[] = clusterByForkPoints(mainDirectEntries, mainForkIndices)
     .map((cluster) => {
       const count = cluster.entries.length;

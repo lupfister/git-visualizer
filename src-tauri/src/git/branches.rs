@@ -133,7 +133,7 @@ fn get_branch_info(repo: &Path, name: &str, default_branch: &str) -> Result<Bran
     let (remote_sync_status, unpushed_commits) = get_remote_sync_status(repo, name, commits_ahead);
 
     // Get last commit info: SHA, author, date
-    let log_output = cli::run(repo, &["log", "-1", "--format=%H|%an|%aI", name])?;
+    let log_output = cli::run(repo, &["log", "-1", "--format=%H|%an|%cI", name])?;
     let parts: Vec<&str> = log_output.trim().split('|').collect();
 
     let head_sha = parts.first().unwrap_or(&"").to_string();
@@ -462,7 +462,7 @@ fn get_ref_head_sha(repo: &Path, reference: &str) -> Result<String, GitError> {
 }
 
 fn get_commit_date(repo: &Path, reference: &str) -> Result<String, GitError> {
-    let output = cli::run(repo, &["log", "-1", "--format=%aI", reference])?;
+    let output = cli::run(repo, &["log", "-1", "--format=%cI", reference])?;
     Ok(output.trim().to_string())
 }
 
@@ -504,7 +504,7 @@ fn get_fork_point(
         return Ok((None, None));
     }
 
-    let date_output = cli::run(repo, &["log", "-1", "--format=%aI", sha])?;
+    let date_output = cli::run(repo, &["log", "-1", "--format=%cI", sha])?;
     let date = date_output.trim().to_string();
 
     Ok((Some(sha.to_string()), Some(date)))
@@ -582,7 +582,7 @@ fn get_first_unique_commit_date(
         &[
             "log",
             "--reverse",
-            "--format=%aI",
+            "--format=%cI",
             &format!("{}..{}", base, branch),
         ],
     )?;
