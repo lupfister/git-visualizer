@@ -13,18 +13,14 @@ export default function BranchCard({
   branch: Branch;
   onClick?: () => void;
 }) {
-  const isError = branch.status === 'conflict-risk';
-
   return (
     <button
       onClick={onClick}
-      className={`block w-full text-left group rounded-xl border bg-stone-800 p-4 transition-all hover:bg-stone-750 hover:border-stone-600 ${
-        isError ? 'border-red-800' : 'border-stone-700'
-      }`}
+      className="block w-full text-left group rounded-xl border bg-stone-800 p-4 transition-all hover:bg-stone-750 hover:border-stone-600 border-stone-700"
     >
       <div className="flex items-start justify-between gap-3">
         <div className="min-w-0">
-          <p className={`font-mono text-sm font-medium truncate ${isError ? 'text-red-400' : 'text-stone-100'}`}>
+          <p className="font-mono text-sm font-medium truncate text-stone-100">
             {branch.name}
           </p>
           <p className="text-xs text-stone-500 mt-1">
@@ -48,7 +44,7 @@ export default function BranchCard({
       </div>
 
       {branch.mergeable === null && branch.name !== 'main' && (
-        <p className="text-xs text-stone-600 mt-2 italic">Conflict status computing…</p>
+        <p className="text-xs text-stone-600 mt-2 italic">Status computing…</p>
       )}
     </button>
   );

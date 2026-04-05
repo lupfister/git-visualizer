@@ -11,66 +11,107 @@ function timeAgo(dateStr: string) {
   return new Date(dateStr).toLocaleDateString('en-US', { month: 'short', day: 'numeric' });
 }
 
-function BranchCard({
-  branch,
-  accentColor,
-  onClick,
+function BranchTable({
+  branches,
+  getAccentColor,
+  emptyLabel = 'No branches',
 }: {
-  branch: Branch;
-  accentColor: string;
-  onClick?: () => void;
+  branches: Branch[];
+  getAccentColor: (branch: Branch) => string;
+  emptyLabel?: string;
 }) {
+  if (branches.length === 0) {
+    return (
+      <div className="rounded-xl border border-border/50 bg-muted/30 px-4 py-6 text-center">
+        <p className="text-xs text-muted-foreground">{emptyLabel}</p>
+      </div>
+    );
+  }
+
   return (
-    <div
-      onClick={onClick}
-      className="group rounded-xl border border-border bg-card p-4 flex flex-col gap-3 cursor-pointer hover:shadow-sm hover:border-border/80 transition-all"
-    >
-      <div className="flex items-start justify-between gap-2">
-        <span className="text-sm font-medium text-foreground leading-snug break-all">
-          {branch.name}
+    <div className="rounded-xl border border-border bg-card overflow-hidden">
+      <div
+        className="grid grid-cols-[16px_1fr_auto] sm:grid-cols-[16px_1.5fr_160px_1fr_88px_88px] gap-3 px-3 py-2 border-b border-border/50 bg-muted/30"
+        role="row"
+      >
+        <span className="text-[10px] uppercase tracking-wide text-muted-foreground font-medium" aria-hidden="true" />
+        <span className="text-[10px] uppercase tracking-wide text-muted-foreground font-medium">Branch</span>
+        <span className="text-[10px] uppercase tracking-wide text-muted-foreground font-medium justify-self-end sm:justify-self-auto sm:text-left">
+          Updated
         </span>
-        <span
-          className="shrink-0 w-2 h-2 rounded-full mt-1"
-          style={{ background: accentColor }}
-        />
+        <span className="hidden sm:block text-[10px] uppercase tracking-wide text-muted-foreground font-medium">
+          Sync
+        </span>
+        <span className="hidden sm:block text-[10px] uppercase tracking-wide text-muted-foreground font-medium">
+          Author
+        </span>
+        <span className="hidden sm:block text-[10px] uppercase tracking-wide text-muted-foreground font-medium text-right">
+          Δ
+        </span>
       </div>
 
-      <div className="flex items-center gap-2">
-        <RemoteSyncBadge
-          status={branch.remoteSyncStatus}
-          unpushedCommits={branch.unpushedCommits}
-          compact
-        />
-      </div>
+      <div className="divide-y divide-border/50" role="rowgroup">
+        {branches.map((branch) => {
+          const accentColor = getAccentColor(branch);
+          const deltaText =
+            branch.commitsAhead > 0 || branch.commitsBehind > 0
+              ? `${branch.commitsAhead > 0 ? `+${branch.commitsAhead}` : ''}${branch.commitsAhead > 0 && branch.commitsBehind > 0 ? ' / ' : ''}${branch.commitsBehind > 0 ? `-${branch.commitsBehind}` : ''}`
+              : '—';
 
-      <div className="flex items-center gap-2">
-        {branch.lastCommitAuthorAvatar ? (
-          <img
-            src={branch.lastCommitAuthorAvatar}
-            alt={branch.lastCommitAuthor}
-            className="w-5 h-5 rounded-full shrink-0"
-          />
-        ) : (
-          <div className="w-5 h-5 rounded-full bg-muted flex items-center justify-center shrink-0">
-            <span className="text-[10px] text-muted-foreground font-medium">
-              {branch.lastCommitAuthor?.charAt(0).toUpperCase() || '?'}
-            </span>
-          </div>
-        )}
-        <span className="text-xs text-muted-foreground truncate">{branch.lastCommitAuthor}</span>
-        <span className="text-xs text-muted-foreground ml-auto shrink-0">{timeAgo(branch.lastCommitDate)}</span>
-      </div>
+          return (
+            <div
+              key={branch.name}
+              className="w-full text-left grid grid-cols-[16px_1fr_auto] sm:grid-cols-[16px_1.5fr_160px_1fr_88px_88px] gap-3 px-3 py-2.5"
+            >
+              <span className="flex items-center justify-center">
+                <span className="w-2 h-2 rounded-full shrink-0" style={{ background: accentColor }} aria-hidden="true" />
+              </span>
 
-      {(branch.commitsAhead > 0 || branch.commitsBehind > 0) && (
-        <div className="flex items-center gap-2 text-[10px] text-muted-foreground">
-          {branch.commitsAhead > 0 && (
-            <span>+{branch.commitsAhead} ahead</span>
-          )}
-          {branch.commitsBehind > 0 && (
-            <span>-{branch.commitsBehind} behind</span>
-          )}
-        </div>
-      )}
+              <div className="min-w-0">
+                <p className="text-sm font-medium text-foreground truncate">{branch.name}</p>
+                <div className="sm:hidden mt-0.5 flex items-center gap-2 min-w-0">
+                  <span className="text-xs text-muted-foreground truncate">{branch.lastCommitAuthor || 'Unknown'}</span>
+                  <span className="text-xs text-muted-foreground shrink-0">·</span>
+                  <span className="text-xs text-muted-foreground shrink-0 tabular-nums">{deltaText}</span>
+                </div>
+              </div>
+
+              <span className="text-xs text-muted-foreground shrink-0 tabular-nums justify-self-end sm:justify-self-auto">
+                {timeAgo(branch.lastCommitDate)}
+              </span>
+
+              <div className="hidden sm:flex items-center min-w-0">
+                <RemoteSyncBadge
+                  status={branch.remoteSyncStatus}
+                  unpushedCommits={branch.unpushedCommits}
+                  compact
+                />
+              </div>
+
+              <div className="hidden sm:flex items-center gap-2 min-w-0">
+                {branch.lastCommitAuthorAvatar ? (
+                  <img
+                    src={branch.lastCommitAuthorAvatar}
+                    alt={branch.lastCommitAuthor}
+                    className="w-5 h-5 rounded-full shrink-0"
+                  />
+                ) : (
+                  <div className="w-5 h-5 rounded-full bg-muted flex items-center justify-center shrink-0">
+                    <span className="text-[10px] text-muted-foreground font-medium">
+                      {branch.lastCommitAuthor?.charAt(0).toUpperCase() || '?'}
+                    </span>
+                  </div>
+                )}
+                <span className="text-xs text-muted-foreground truncate">{branch.lastCommitAuthor || 'Unknown'}</span>
+              </div>
+
+              <span className="hidden sm:block text-xs text-muted-foreground tabular-nums text-right">
+                {deltaText}
+              </span>
+            </div>
+          );
+        })}
+      </div>
     </div>
   );
 }
@@ -84,13 +125,6 @@ const STATUS_CONFIG: {
   bg: string;
   description: string;
 }[] = [
-  {
-    status: 'conflict-risk',
-    label: 'Conflict risk',
-    color: '#ef4444',
-    bg: 'bg-red-500/10',
-    description: 'Cannot be cleanly merged',
-  },
   {
     status: 'stale',
     label: 'Stale',
@@ -110,11 +144,9 @@ const STATUS_CONFIG: {
 function StatusView({
   branches,
   defaultBranch,
-  onBranchClick,
 }: {
   branches: Branch[];
   defaultBranch: string;
-  onBranchClick?: (branch: Branch) => void;
 }) {
   const active = branches.filter(b => b.name !== defaultBranch && b.commitsAhead > 0);
 
@@ -132,22 +164,11 @@ function StatusView({
               </div>
               <p className="text-[10px] text-muted-foreground pl-4">{description}</p>
             </div>
-            <div className="flex flex-col gap-2">
-              {group.length === 0 ? (
-                <div className="rounded-xl border border-border/50 bg-muted/30 px-4 py-6 text-center">
-                  <p className="text-xs text-muted-foreground">No branches</p>
-                </div>
-              ) : (
-                group.map(b => (
-                  <BranchCard
-                    key={b.name}
-                    branch={b}
-                    accentColor={color}
-                    onClick={() => onBranchClick?.(b)}
-                  />
-                ))
-              )}
-            </div>
+            <BranchTable
+              branches={group}
+              getAccentColor={() => color}
+              emptyLabel="No branches"
+            />
           </div>
         );
       })}
@@ -160,11 +181,9 @@ function StatusView({
 function CreatorView({
   branches,
   defaultBranch,
-  onBranchClick,
 }: {
   branches: Branch[];
   defaultBranch: string;
-  onBranchClick?: (branch: Branch) => void;
 }) {
   const active = branches.filter(b => b.name !== defaultBranch && b.commitsAhead > 0);
 
@@ -179,7 +198,6 @@ function CreatorView({
   }
 
   const STATUS_COLORS: Record<BranchStatus, string> = {
-    'conflict-risk': '#ef4444',
     stale: '#f59e0b',
     fresh: '#22c55e',
     unknown: '#78716c',
@@ -210,16 +228,13 @@ function CreatorView({
               </div>
             </div>
 
-            {/* Branch cards grid */}
-            <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-4 gap-3 pl-11">
-              {authorBranches.map(b => (
-                <BranchCard
-                  key={b.name}
-                  branch={b}
-                  accentColor={STATUS_COLORS[b.status]}
-                  onClick={() => onBranchClick?.(b)}
-                />
-              ))}
+            {/* Table-like branch grid */}
+            <div className="pl-11">
+              <BranchTable
+                branches={authorBranches}
+                getAccentColor={(b) => STATUS_COLORS[b.status]}
+                emptyLabel="No branches"
+              />
             </div>
           </div>
         );
@@ -240,15 +255,13 @@ export default function BranchGroupView({
   view,
   branches,
   defaultBranch,
-  onBranchClick,
 }: {
   view: Exclude<ViewMode, 'time'>;
   branches: Branch[];
   defaultBranch: string;
-  onBranchClick?: (branch: Branch) => void;
 }) {
   if (view === 'status') {
-    return <StatusView branches={branches} defaultBranch={defaultBranch} onBranchClick={onBranchClick} />;
+    return <StatusView branches={branches} defaultBranch={defaultBranch} />;
   }
-  return <CreatorView branches={branches} defaultBranch={defaultBranch} onBranchClick={onBranchClick} />;
+  return <CreatorView branches={branches} defaultBranch={defaultBranch} />;
 }

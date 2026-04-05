@@ -11,9 +11,6 @@ interface Props {
   mergedPRs: MergedPR[];
   openPRs?: OpenPR[];
   defaultBranch: string;
-  selectedBranch?: Branch | null;
-  onBranchSelect?: (branch: Branch) => void;
-  onBranchClick?: (branch: Branch) => void;
   onHoveredBranchChange?: (branchName: string | null) => void;
   onCommitClick?: (target: { commitSha: string; branchName?: string }) => void;
   onLoadMore?: () => void;
@@ -29,6 +26,8 @@ interface Props {
   focusedErrorBranch?: Branch | null;
   checkedOutRef?: CheckedOutRef | null;
   isPopoverWindow?: boolean;
+  /** Height of overlay UI above the map (px); improves aspect + padding vs. full window. */
+  mapTopInsetPx?: number;
 }
 
 export default function BranchMapView({
@@ -38,9 +37,6 @@ export default function BranchMapView({
   mergedPRs,
   openPRs = [],
   defaultBranch,
-  selectedBranch,
-  onBranchSelect,
-  onBranchClick,
   onHoveredBranchChange,
   onCommitClick,
   onLoadMore,
@@ -55,6 +51,7 @@ export default function BranchMapView({
   focusedErrorBranch,
   checkedOutRef = null,
   isPopoverWindow = false,
+  mapTopInsetPx = 0,
 }: Props) {
   // Determine active vs inactive error branches
   const openPRBranchNames = new Set(openPRs.map(p => p.branchName));
@@ -64,10 +61,6 @@ export default function BranchMapView({
     return openPRBranchNames.has(b.name) || viewNow - new Date(b.lastCommitDate).getTime() <= ACTIVE_MS;
   }
 
-  // Only active error branches get red/amber treatment
-  const conflictBranches = branches
-    .filter(b => b.status === 'conflict-risk' && isBranchActive(b))
-    .sort((a, b) => new Date(b.lastCommitDate).getTime() - new Date(a.lastCommitDate).getTime());
   const staleBranches = branches
     .filter(b => b.status === 'stale' && isBranchActive(b))
     .sort((a, b) => new Date(b.lastCommitDate).getTime() - new Date(a.lastCommitDate).getTime());
@@ -82,9 +75,6 @@ export default function BranchMapView({
             mergedPRs={mergedPRs}
             openPRs={openPRs}
             defaultBranch={defaultBranch}
-            selectedBranch={selectedBranch}
-            onBranchSelect={onBranchSelect}
-            onBranchClick={onBranchClick}
             onHoveredBranchChange={onHoveredBranchChange}
             onCommitClick={onCommitClick}
             onLoadMore={onLoadMore}
@@ -94,13 +84,13 @@ export default function BranchMapView({
             branchCommitPreviews={branchCommitPreviews}
             branchUniqueAheadCounts={branchUniqueAheadCounts}
             view={view}
-            conflictBranches={conflictBranches}
             staleBranches={staleBranches}
             isLoading={isLoading}
             scrollRequest={scrollRequest}
             focusedErrorBranch={focusedErrorBranch}
             checkedOutRef={checkedOutRef}
             isPopoverWindow={isPopoverWindow}
+            mapTopInsetPx={mapTopInsetPx}
           />
         </div>
       ) : (
@@ -109,7 +99,6 @@ export default function BranchMapView({
             view={view}
             branches={branches}
             defaultBranch={defaultBranch}
-            onBranchClick={onBranchClick}
           />
         </div>
       )}

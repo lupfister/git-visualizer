@@ -1040,7 +1040,7 @@ fn hydrate_commit_prompt_windows(path: &Path, commits: &mut [CommitInfo]) {
         if parent_dates.contains_key(parent_sha) {
             continue;
         }
-        let Ok(parent_date_raw) = git::cli::run(path, &["log", "-1", "--format=%aI", parent_sha]) else {
+        let Ok(parent_date_raw) = git::cli::run(path, &["log", "-1", "--format=%cI", parent_sha]) else {
             continue;
         };
         let parsed = parse_iso_to_utc(parent_date_raw.trim());
@@ -1125,7 +1125,7 @@ fn get_branch_commits(
     };
     let output = git::cli::run(
         path,
-        &["log", &range, "--format=%H|%h|%s|%an|%aI|%P"],
+        &["log", &range, "--format=%H|%h|%s|%an|%cI|%P"],
     )
     .map_err(|e| e.to_string())?;
 
@@ -1205,7 +1205,7 @@ fn get_recent_log(
     }
     args.push(branch);
     args.push(format!("--max-count={}", limit_str));
-    args.push("--format=%H|%h|%s|%an|%aI|%P".to_string());
+    args.push("--format=%H|%h|%s|%an|%cI|%P".to_string());
     let arg_refs: Vec<&str> = args.iter().map(|s| s.as_str()).collect();
     let output = git::cli::run(path, &arg_refs).map_err(|e| e.to_string())?;
     let mut commits: Vec<CommitInfo> = output

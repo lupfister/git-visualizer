@@ -7,6 +7,7 @@ use std::path::Path;
 pub struct DirectCommit {
     pub full_sha: String,
     pub sha: String,
+    pub parent_sha: Option<String>,
     pub message: String,
     pub author: String,
     pub date: String,
@@ -25,7 +26,7 @@ pub fn get_direct_commits(
                 "log",
                 "--first-parent",
                 &format!("--max-count={}", limit),
-                "--format=%H|%h|%s|%an|%aI",
+                "--format=%H|%h|%s|%an|%cI|%P",
                 branch,
             ],
         )?
@@ -35,7 +36,7 @@ pub fn get_direct_commits(
             &[
                 "log",
                 "--first-parent",
-                "--format=%H|%h|%s|%an|%aI",
+                "--format=%H|%h|%s|%an|%cI|%P",
                 branch,
             ],
         )?
@@ -45,13 +46,18 @@ pub fn get_direct_commits(
         .lines()
         .filter(|s| !s.is_empty())
         .filter_map(|line| {
-            let parts: Vec<&str> = line.splitn(5, '|').collect();
-            if parts.len() < 5 {
+            let parts: Vec<&str> = line.splitn(6, '|').collect();
+            if parts.len() < 6 {
                 return None;
             }
+            let parent_sha = parts[5]
+                .split_whitespace()
+                .next()
+                .map(|value| value.to_string());
             Some(DirectCommit {
                 full_sha: parts[0].to_string(),
                 sha: parts[1].to_string(),
+                parent_sha,
                 message: parts[2].to_string(),
                 author: parts[3].to_string(),
                 date: parts[4].to_string(),
@@ -91,7 +97,7 @@ pub fn get_merge_commits(
             "--merges",
             &format!("--max-count={}", limit),
             &format!("--skip={}", skip),
-            "--format=%H|%h|%s|%aI|%P",
+            "--format=%H|%h|%s|%cI|%P",
             branch,
         ],
     )?;

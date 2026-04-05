@@ -1,4 +1,4 @@
-export type BranchStatus = 'fresh' | 'stale' | 'conflict-risk' | 'unknown';
+export type BranchStatus = 'fresh' | 'stale' | 'unknown';
 export type RemoteSyncStatus = 'local-only' | 'unpushed' | 'on-github';
 
 export interface Branch {
@@ -42,6 +42,7 @@ export interface Commit {
 export interface BranchCommitPreview {
   fullSha: string;
   sha: string;
+  parentSha?: string | null;
   message: string;
   author: string;
   date: string;
@@ -74,6 +75,7 @@ export interface BranchPromptMeta {
 export interface DirectCommit {
   fullSha: string;
   sha: string;
+  parentSha?: string | null;
   message: string;
   author: string;
   date: string;

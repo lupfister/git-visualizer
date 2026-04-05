@@ -184,7 +184,7 @@ body.popover-window #root {
   /* Chrome / Safari */
 }
 
-/* Keep graph strokes and symbol sizing visually stable while camera scales. */
+/* Keep graph strokes visually stable while camera scales. */
 .branch-map-svg path,
 .branch-map-svg line,
 .branch-map-svg polyline,
@@ -192,14 +192,14 @@ body.popover-window #root {
   vector-effect: non-scaling-stroke;
 }
 
-.branch-map-svg {
-  --icon-inv-scale: 1;
-}
-
 .branch-map-icon-fixed {
   transform-box: fill-box;
   transform-origin: center;
-  transform: scale(var(--icon-inv-scale));
+}
+
+.branch-map-commit-rect {
+  transition: fill 0.12s ease, stroke 0.12s ease;
+  vector-effect: non-scaling-stroke;
 }
 
 /* ── Horizontal time-scale slider ────────────────────────────────────────── */
