@@ -405,12 +405,12 @@ function App() {
               }));
             // Never fabricate synthetic "HEAD of <branch>" commits.
             // If we can't resolve real commit objects, render no commit nodes.
-            const previews: BranchCommitPreview[] = commitPreviews;
             const uniqueCount = isFreshBranch
               ? 0
               : branch.commitsAhead > 0 && commitPreviews.length > 0
                 ? commitPreviews.length
                 : null;
+            const previews: BranchCommitPreview[] = commitPreviews;
 
             if (prompts.length === 0) {
               return [branch.name, { promptMeta: null, previews, uniqueCount }] as const;
