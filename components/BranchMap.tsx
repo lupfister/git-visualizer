@@ -3343,7 +3343,6 @@ export default function BranchMap({
     if (cached) return cached;
 
     const forkTimeX = branchForkX(b);
-    const forkY = timeCoordToY(forkTimeX);
     const lanePosX = laneX(b);
     const startX = branchStartX(b);
     const isFreshCopy = freshCopyBranchNames.has(b.name);
@@ -3376,9 +3375,37 @@ export default function BranchMap({
         branchLineTipY = timeCoordToY(placeholderTipX);
       }
     }
+    const forkY = timeCoordToY(forkTimeX);
     const routeCornerR = GRID_ROUTE_CORNER_R;
-    const mergeTargetX = mainX;
-    const mergeTargetY = mergeNodeTimeX != null ? timeCoordToY(mergeNodeTimeX) : null;
+    const maxAllowedMergeY = branchLineTipY - GRID_EVENT_GAP;
+    const renderedMergeAnchorByShaRaw = mergeNodeForBranch
+      ? renderedMainAnchorByCommitSha.get(mergeNodeForBranch.fullSha)
+      : undefined;
+    const renderedMergeAnchorBySha =
+      renderedMergeAnchorByShaRaw && renderedMergeAnchorByShaRaw.y <= maxAllowedMergeY
+        ? renderedMergeAnchorByShaRaw
+        : undefined;
+    const renderedMergeAnchorByTime = renderedMainAnchorForTimeX(mergeNodeTimeX, maxAllowedMergeY);
+    const renderedMergeAnchor = renderedMergeAnchorBySha ?? renderedMergeAnchorByTime;
+    const fallbackMergeTarget = mergeNodeTimeX != null
+      ? { x: mainX, y: timeCoordToY(mergeNodeTimeX) }
+      : null;
+    const mergeTarget = (() => {
+      const isUpward = (y: number): boolean => y <= maxAllowedMergeY;
+      if (renderedMergeAnchor && isUpward(renderedMergeAnchor.y)) {
+        return { x: renderedMergeAnchor.x, y: renderedMergeAnchor.y };
+      }
+      if (fallbackMergeTarget && isUpward(fallbackMergeTarget.y)) {
+        return fallbackMergeTarget;
+      }
+      if (renderedMergeAnchor || fallbackMergeTarget) {
+        // Guardrail: merge connectors should never route downward.
+        return { x: mainX, y: maxAllowedMergeY };
+      }
+      return null;
+    })();
+    const mergeTargetX = mergeTarget?.x ?? mainX;
+    const mergeTargetY = mergeTarget?.y ?? null;
     const hasMergeBackConnector =
       mergeTargetY != null && Math.abs(lanePosX - mergeTargetX) > 0.5;
     const mergeBackPath = (() => {
@@ -3733,6 +3760,92 @@ export default function BranchMap({
           cluster.entries.some((entry) => shaMatchesGitRef(entry.item.fullSha, checkedOutHeadSha)),
       };
     });
+  const renderedMainAnchorByCommitSha = (() => {
+    const anchors = new Map<string, AnchorPoint>();
+    for (const clusterLayout of mainDirectClusters) {
+      const {
+        cluster,
+        clusterKey,
+        memberKeys,
+        clusterHasCheckedOutHead: mainClusterHasCheckedOutHead,
+      } = clusterLayout;
+      const animatedAnchor = resolveAnimatedClumpAnchor(
+        clusterKey,
+        { x: cluster.x, y: cluster.y },
+        memberKeys
+      );
+      const expanded = expandedClumps.get(clusterKey);
+      const isExpanded = expanded?.isExpanded ?? false;
+      const headEntryForCluster =
+        mainClusterHasCheckedOutHead && checkedOutHeadSha && isExpanded
+          ? cluster.entries.find((entry) =>
+              shaMatchesGitRef(entry.item.fullSha, checkedOutHeadSha)
+            )
+          : null;
+      const anchorProjected = headEntryForCluster ?? animatedAnchor;
+      const collapsedCanonical = unprojectPoint(anchorProjected.x, anchorProjected.y);
+
+      if (!isExpanded || cluster.entries.length <= 1) {
+        cluster.entries.forEach((entry) => {
+          anchors.set(entry.item.fullSha, collapsedCanonical);
+        });
+        continue;
+      }
+
+      const phase = expanded?.phase ?? 'collapsed';
+      const phaseStartedAtMs = expanded?.phaseStartedAt ?? Date.now();
+      const phaseProgress = phase === 'collapsed'
+        ? 0
+        : phase === 'expanded'
+          ? 1
+          : clamp01((Date.now() - phaseStartedAtMs) / clumpExpandMs);
+      const phaseEased = phaseProgress <= 0 ? 0 : phaseProgress >= 1 ? 1 : easeInOutCubic(phaseProgress);
+      cluster.entries.forEach((entry) => {
+        const from = { x: anchorProjected.x, y: anchorProjected.y };
+        const to = { x: entry.x, y: entry.y };
+        const at = phase === 'collapsing'
+          ? { x: to.x + (from.x - to.x) * phaseEased, y: to.y + (from.y - to.y) * phaseEased }
+          : phase === 'expanding'
+            ? { x: from.x + (to.x - from.x) * phaseEased, y: from.y + (to.y - from.y) * phaseEased }
+            : phase === 'collapsed'
+              ? from
+              : to;
+        anchors.set(entry.item.fullSha, unprojectPoint(at.x, at.y));
+      });
+    }
+    return anchors;
+  })();
+  const renderedMainAnchorsByTime = (() => {
+    const timedAnchors: Array<{ timeX: number; anchor: AnchorPoint }> = [];
+    for (const [sha, anchor] of renderedMainAnchorByCommitSha.entries()) {
+      const timeX = directXByFullSha.get(sha) ?? mainCommitXBySha.get(sha);
+      if (typeof timeX !== 'number' || !Number.isFinite(timeX)) continue;
+      timedAnchors.push({ timeX, anchor });
+    }
+    timedAnchors.sort((a, b) => a.timeX - b.timeX);
+    return timedAnchors;
+  })();
+
+  function renderedMainAnchorForTimeX(targetTimeX: number | null, maxY: number = Number.POSITIVE_INFINITY): AnchorPoint | undefined {
+    if (targetTimeX == null || !Number.isFinite(targetTimeX) || renderedMainAnchorsByTime.length === 0) {
+      return undefined;
+    }
+
+    // Prefer a newer-or-equal visible main node so merge connectors trend upward.
+    let future: { delta: number; anchor: AnchorPoint } | null = null;
+    let past: { delta: number; anchor: AnchorPoint } | null = null;
+    for (const entry of renderedMainAnchorsByTime) {
+      if (entry.anchor.y > maxY) continue;
+      if (entry.timeX >= targetTimeX) {
+        const delta = entry.timeX - targetTimeX;
+        if (!future || delta < future.delta) future = { delta, anchor: entry.anchor };
+      } else {
+        const delta = targetTimeX - entry.timeX;
+        if (!past || delta < past.delta) past = { delta, anchor: entry.anchor };
+      }
+    }
+    return future?.anchor ?? past?.anchor;
+  }
 
   type RowDebugUsage = {
     mainDirect: number;
