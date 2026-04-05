@@ -213,10 +213,6 @@ fn infer_branch_parents(
         .iter()
         .find(|c| c.is_default)
         .map(|c| c.name.clone());
-    let default_head_sha = candidates
-        .iter()
-        .find(|c| c.is_default)
-        .map(|c| c.head_sha.clone());
     let mut creation_info_by_name: HashMap<String, BranchCreationInfo> = HashMap::new();
     for branch in branches.iter() {
         if let Some(info) = get_branch_reflog_created_entry(repo, &branch.name)
@@ -242,176 +238,28 @@ fn infer_branch_parents(
             .map(|source| source.trim() == "HEAD")
             .unwrap_or(false);
 
-        // Prefer explicit reflog origin whenever available.
-        // If reflog is missing/ambiguous, fall back to heuristic inference.
+        // Parent inference (simple, ordered, deterministic):
+        // 1) explicit reflog source
+        // 2) "Created from HEAD" ancestry
+        // 3) same-head sibling lineage
+        // 4) merge-base heuristic
+        // 5) default branch
         let mut parent_name = created_from_reflog_parent;
-        // Reflog may report "Created from HEAD" for detached states.
-        // In that case, infer the branch parent from the first-parent ancestry
-        // of the creation commit so we preserve full lineage.
         if parent_name.is_none() && created_from_head {
             parent_name = created_from_reflog_sha.as_deref().and_then(|created_sha| {
                 infer_parent_from_created_head_sha(repo, &branch.name, created_sha, &candidates)
             });
         }
-        // For empty/fresh branches whose HEAD matches default HEAD, anchor to default.
-        // This avoids unstable sibling/cyclic parenting among same-SHA placeholder branches.
-        if parent_name.is_none() && branch.commits_ahead <= 0 {
-            let branch_head = branch.head_sha.as_str();
-            let matches_default_head = default_head_sha
-                .as_deref()
-                .map(|sha| !sha.is_empty() && sha == branch_head)
-                .unwrap_or(false);
-            let matches_default_reflog_source = default_head_sha
-                .as_deref()
-                .zip(created_from_reflog_sha.as_deref())
-                .map(|(default_sha, created_sha)| {
-                    !default_sha.is_empty() && default_sha == created_sha
-                })
-                .unwrap_or(false);
-            let matches_default_fork_point = default_head_sha
-                .as_deref()
-                .zip(branch.diverged_from_sha.as_deref())
-                .map(|(default_sha, fork_sha)| !default_sha.is_empty() && default_sha == fork_sha)
-                .unwrap_or(false);
-            if matches_default_head || matches_default_reflog_source || matches_default_fork_point {
-                parent_name = default_parent_name.clone();
-            }
-        }
-        // If reflog is unavailable/ambiguous, resolve same-head siblings
-        // deterministically so branch copies still attach to their source branch.
-        if parent_name.is_none() && !branch.head_sha.is_empty() {
-            let branch_created_key = created_from_reflog_date
-                .as_deref()
-                .unwrap_or(&branch.last_commit_date);
-            let mut best_older: Option<(ParentCandidate, String)> = None;
-            let mut best_any: Option<(ParentCandidate, String)> = None;
-
-            for candidate in &candidates {
-                if candidate.name == branch.name || candidate.head_sha != branch.head_sha {
-                    continue;
-                }
-
-                let candidate_created_key = creation_info_by_name
-                    .get(&candidate.name)
-                    .map(|info| info.date.as_str())
-                    .unwrap_or(candidate.last_commit_date.as_str())
-                    .to_string();
-
-                if candidate_created_key.as_str() <= branch_created_key {
-                    match &best_older {
-                        None => {
-                            best_older = Some((candidate.clone(), candidate_created_key.clone()))
-                        }
-                        Some((best_candidate, best_key)) => {
-                            let better_time = candidate_created_key > *best_key;
-                            let same_time = candidate_created_key == *best_key;
-                            let prefer_non_default =
-                                best_candidate.is_default && !candidate.is_default;
-                            if better_time
-                                || (same_time
-                                    && (prefer_non_default || candidate.name < best_candidate.name))
-                            {
-                                best_older =
-                                    Some((candidate.clone(), candidate_created_key.clone()));
-                            }
-                        }
-                    }
-                }
-
-                match &best_any {
-                    None => best_any = Some((candidate.clone(), candidate_created_key)),
-                    Some((best_candidate, best_key)) => {
-                        let better_time = candidate_created_key < *best_key;
-                        let same_time = candidate_created_key == *best_key;
-                        let prefer_non_default = best_candidate.is_default && !candidate.is_default;
-                        if better_time
-                            || (same_time
-                                && (prefer_non_default || candidate.name < best_candidate.name))
-                        {
-                            best_any = Some((candidate.clone(), candidate_created_key));
-                        }
-                    }
-                }
-            }
-
-            if let Some((candidate, _)) = best_older.or(best_any) {
-                parent_name = Some(candidate.name);
-            }
-        }
-        // Heuristic parent inference based on merge-base (branch point), not parent tip ancestry.
-        // This allows detecting "child" branches that were created from an older commit on a
-        // feature branch after that parent branch moved forward.
         if parent_name.is_none() {
-            let mut best_by_branch_point: Option<(ParentCandidate, i32, i32)> = None;
-
-            for candidate in &candidates {
-                if candidate.name == branch.name {
-                    continue;
-                }
-                if candidate.head_sha.is_empty() || branch.head_sha.is_empty() {
-                    continue;
-                }
-
-                let Ok(merge_base_sha) =
-                    get_merge_base_sha(repo, &candidate.head_sha, &branch.head_sha)
-                else {
-                    continue;
-                };
-                let Some(merge_base_sha) = merge_base_sha else {
-                    continue;
-                };
-
-                let Ok(branch_distance_from_base) =
-                    commit_distance(repo, &merge_base_sha, &branch.head_sha)
-                else {
-                    continue;
-                };
-                if branch_distance_from_base <= 0 {
-                    // Candidate is same-tip/descendant of this branch, so it cannot be parent.
-                    continue;
-                }
-
-                let candidate_distance_from_base =
-                    commit_distance(repo, &merge_base_sha, &candidate.head_sha).unwrap_or(i32::MAX);
-
-                match &best_by_branch_point {
-                    None => {
-                        best_by_branch_point = Some((
-                            candidate.clone(),
-                            branch_distance_from_base,
-                            candidate_distance_from_base,
-                        ))
-                    }
-                    Some((best_candidate, best_branch_distance, best_candidate_distance)) => {
-                        let better_branch_distance =
-                            branch_distance_from_base < *best_branch_distance;
-                        let same_branch_distance =
-                            branch_distance_from_base == *best_branch_distance;
-                        let better_candidate_distance =
-                            candidate_distance_from_base < *best_candidate_distance;
-                        let prefer_non_default = best_candidate.is_default && !candidate.is_default;
-                        let newer_candidate =
-                            candidate.last_commit_date > best_candidate.last_commit_date;
-
-                        if better_branch_distance
-                            || (same_branch_distance
-                                && (prefer_non_default
-                                    || better_candidate_distance
-                                    || newer_candidate))
-                        {
-                            best_by_branch_point = Some((
-                                candidate.clone(),
-                                branch_distance_from_base,
-                                candidate_distance_from_base,
-                            ));
-                        }
-                    }
-                }
-            }
-
-            if let Some((candidate, _, _)) = best_by_branch_point {
-                parent_name = Some(candidate.name);
-            }
+            parent_name = infer_parent_from_same_head_siblings(
+                branch,
+                created_from_reflog_date.as_deref(),
+                &candidates,
+                &creation_info_by_name,
+            );
+        }
+        if parent_name.is_none() {
+            parent_name = infer_parent_by_merge_base(repo, branch, &candidates);
         }
 
         if parent_name.is_none() {
@@ -473,6 +321,139 @@ fn infer_branch_parents(
     }
 
     Ok(())
+}
+
+fn candidate_created_key(
+    candidate: &ParentCandidate,
+    creation_info_by_name: &HashMap<String, BranchCreationInfo>,
+) -> String {
+    creation_info_by_name
+        .get(&candidate.name)
+        .map(|info| info.date.clone())
+        .unwrap_or_else(|| candidate.last_commit_date.clone())
+}
+
+fn infer_parent_from_same_head_siblings(
+    branch: &Branch,
+    created_from_reflog_date: Option<&str>,
+    candidates: &[ParentCandidate],
+    creation_info_by_name: &HashMap<String, BranchCreationInfo>,
+) -> Option<String> {
+    if branch.head_sha.is_empty() {
+        return None;
+    }
+
+    let branch_created_key = created_from_reflog_date.unwrap_or(&branch.last_commit_date);
+    let mut peers: Vec<(ParentCandidate, String)> = candidates
+        .iter()
+        .filter(|candidate| candidate.name != branch.name && candidate.head_sha == branch.head_sha)
+        .map(|candidate| {
+            (
+                candidate.clone(),
+                candidate_created_key(candidate, creation_info_by_name),
+            )
+        })
+        .collect();
+    if peers.is_empty() {
+        return None;
+    }
+
+    peers.sort_by(|(left_candidate, left_key), (right_candidate, right_key)| {
+        let by_date = left_key.cmp(right_key);
+        if by_date != std::cmp::Ordering::Equal {
+            return by_date;
+        }
+        if left_candidate.is_default != right_candidate.is_default {
+            return left_candidate.is_default.cmp(&right_candidate.is_default);
+        }
+        left_candidate.name.cmp(&right_candidate.name)
+    });
+
+    if let Some((candidate, _)) = peers.iter().rev().find(|(candidate, created_key)| {
+        !candidate.is_default && created_key.as_str() <= branch_created_key
+    }) {
+        return Some(candidate.name.clone());
+    }
+    if let Some((candidate, _)) = peers
+        .iter()
+        .rev()
+        .find(|(_, created_key)| created_key.as_str() <= branch_created_key)
+    {
+        return Some(candidate.name.clone());
+    }
+    if let Some((candidate, _)) = peers.iter().find(|(candidate, _)| !candidate.is_default) {
+        return Some(candidate.name.clone());
+    }
+
+    peers.first().map(|(candidate, _)| candidate.name.clone())
+}
+
+fn infer_parent_by_merge_base(
+    repo: &Path,
+    branch: &Branch,
+    candidates: &[ParentCandidate],
+) -> Option<String> {
+    let mut best_by_branch_point: Option<(ParentCandidate, i32, i32)> = None;
+
+    for candidate in candidates {
+        if candidate.name == branch.name {
+            continue;
+        }
+        if candidate.head_sha.is_empty() || branch.head_sha.is_empty() {
+            continue;
+        }
+
+        let Ok(merge_base_sha) = get_merge_base_sha(repo, &candidate.head_sha, &branch.head_sha)
+        else {
+            continue;
+        };
+        let Some(merge_base_sha) = merge_base_sha else {
+            continue;
+        };
+
+        let Ok(branch_distance_from_base) =
+            commit_distance(repo, &merge_base_sha, &branch.head_sha)
+        else {
+            continue;
+        };
+        if branch_distance_from_base <= 0 {
+            continue;
+        }
+
+        let candidate_distance_from_base =
+            commit_distance(repo, &merge_base_sha, &candidate.head_sha).unwrap_or(i32::MAX);
+
+        match &best_by_branch_point {
+            None => {
+                best_by_branch_point = Some((
+                    candidate.clone(),
+                    branch_distance_from_base,
+                    candidate_distance_from_base,
+                ));
+            }
+            Some((best_candidate, best_branch_distance, best_candidate_distance)) => {
+                let better_branch_distance = branch_distance_from_base < *best_branch_distance;
+                let same_branch_distance = branch_distance_from_base == *best_branch_distance;
+                let better_candidate_distance =
+                    candidate_distance_from_base < *best_candidate_distance;
+                let prefer_non_default = best_candidate.is_default && !candidate.is_default;
+                let newer_candidate = candidate.last_commit_date > best_candidate.last_commit_date;
+
+                if better_branch_distance
+                    || (same_branch_distance
+                        && (prefer_non_default || better_candidate_distance || newer_candidate))
+                {
+                    best_by_branch_point = Some((
+                        candidate.clone(),
+                        branch_distance_from_base,
+                        candidate_distance_from_base,
+                    ));
+                }
+            }
+        }
+    }
+
+    best_by_branch_point.map(|(candidate, _, _)| candidate.name)
 }
 
 fn get_ref_head_sha(repo: &Path, reference: &str) -> Result<String, GitError> {

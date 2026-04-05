@@ -1904,22 +1904,6 @@ export default function BranchMap({
     return bestPast?.x ?? bestFuture?.x ?? null;
   }
 
-  function branchHeadAnchorX(branch: Branch): number {
-    const byBranchSha = branch.headSha ? branchCommitXForSha(branch.name, branch.headSha) : null;
-    if (byBranchSha != null) return byBranchSha;
-
-    const byMainSha = commitXForSha(branch.headSha);
-    if (byMainSha != null) return byMainSha;
-
-    const byBranchDate = snapToBranchCommitX(branch.name, branch.lastCommitDate);
-    if (byBranchDate != null) return byBranchDate;
-
-    const byMainDate = snapToMainCommitX(branch.lastCommitDate);
-    if (byMainDate != null) return byMainDate;
-
-    return timeToX(branch.lastCommitDate);
-  }
-
   function branchCreatedDate(b: Branch): string {
     return b.createdDate ?? b.divergedFromDate ?? b.lastCommitDate;
   }
@@ -1936,113 +1920,133 @@ export default function BranchMap({
     return previews[0]?.date ?? null;
   }
 
-  const branchForkXCache = new Map<string, number>();
-  const branchTipXCache = new Map<string, number>();
+  type BranchTiming = {
+    parentName: string;
+    forkTimeX: number;
+    tipTimeX: number;
+    mergeNodeTimeX: number | null;
+    maxTimeX: number;
+    isFreshCopy: boolean;
+    isMergedBranch: boolean;
+  };
 
-  function branchForkXWithVisited(b: Branch, visiting: Set<string>): number {
-    const cached = branchForkXCache.get(b.name);
-    if (typeof cached === 'number') return cached;
+  const branchTimingByName = new Map<string, BranchTiming>();
 
-    const renderParent = renderParentBranchName(b);
-    const hasNonDefaultParent = renderParent !== b.name && renderParent !== defaultBranch;
-    const isParentDefault = !hasNonDefaultParent;
-
-    // For merged branches, merge-base against default can collapse to branch HEAD.
-    // Prefer the recorded branch-creation anchor first.
-    // Skip for fresh-copy branches (worktrees) — they aren't actually merged.
-    if (b.commitsAhead === 0 && !freshCopyBranchNames.has(b.name) && isParentDefault && b.createdDate) {
-      const earliestPreviewDate = branchEarliestPreviewDate(b.name);
-      const createdAnchorX =
-        commitXForSha(b.createdFromSha) ??
-        snapToMainCommitX(earliestPreviewDate ?? b.createdDate) ??
-        snapToMainCommitX(b.createdDate);
-      const createdResolved = createdAnchorX ?? timeToX(b.createdDate);
-      branchForkXCache.set(b.name, createdResolved);
-      return createdResolved;
-    }
-
-    if (isParentDefault) {
-      const anchoredMainForkX = commitXForSha(b.createdFromSha) ?? commitXForSha(b.divergedFromSha);
-      if (anchoredMainForkX != null) {
-        branchForkXCache.set(b.name, anchoredMainForkX);
-        return anchoredMainForkX;
-      }
-      const snappedMainForkX = snapToMainCommitX(b.divergedFromDate ?? b.createdDate);
-      if (snappedMainForkX != null) {
-        branchForkXCache.set(b.name, snappedMainForkX);
-        return snappedMainForkX;
-      }
-    }
-
-    if (hasNonDefaultParent) {
-      const parentBranch = branchByName.get(renderParent);
-      const shouldFollowParent = !!parentBranch && !visiting.has(parentBranch.name);
-      const anchoredToParentHead =
-        parentBranch && shouldFollowParent && b.divergedFromSha && b.divergedFromSha === parentBranch.headSha
-          ? branchHeadAnchorX(parentBranch)
-          : null;
-      const anchoredParentForkX =
-        anchoredToParentHead ??
-        branchCommitXForSha(renderParent, b.divergedFromSha);
-      if (anchoredParentForkX != null) {
-        branchForkXCache.set(b.name, anchoredParentForkX);
-        return anchoredParentForkX;
-      }
-      const snappedParentForkX = snapToBranchCommitX(
-        renderParent,
-        b.divergedFromDate ?? b.createdDate
-      );
-      if (snappedParentForkX != null) {
-        branchForkXCache.set(b.name, snappedParentForkX);
-        return snappedParentForkX;
-      }
-      if (parentBranch && shouldFollowParent) {
-        const resolvedParentAnchor = branchHeadAnchorX(parentBranch);
-        branchForkXCache.set(b.name, resolvedParentAnchor);
-        return resolvedParentAnchor;
-      }
-    }
-
-    // For stacked branches, fork should snap to the parent divergence commit
-    // so child lanes originate exactly from parent tips (no floating gap).
-    const fallbackForkX = hasNonDefaultParent && b.divergedFromDate
-      ? timeToX(b.divergedFromDate)
-      : b.divergedFromDate
-        ? timeToX(b.divergedFromDate)
-        : b.createdDate
-          ? timeToX(b.createdDate)
-          : timeToX(b.lastCommitDate);
-    branchForkXCache.set(b.name, fallbackForkX);
-    return fallbackForkX;
+  function branchHeadTimeX(branch: Branch): number {
+    const byBranchSha = branch.headSha ? branchCommitXForSha(branch.name, branch.headSha) : null;
+    if (byBranchSha != null) return byBranchSha;
+    const byMainSha = commitXForSha(branch.headSha);
+    if (byMainSha != null) return byMainSha;
+    const byBranchDate = snapToBranchCommitX(branch.name, branch.lastCommitDate);
+    if (byBranchDate != null) return byBranchDate;
+    const byMainDate = snapToMainCommitX(branch.lastCommitDate);
+    if (byMainDate != null) return byMainDate;
+    return timeToX(branch.lastCommitDate);
   }
 
-  function branchTipXWithVisited(b: Branch, visiting: Set<string>): number {
-    const cached = branchTipXCache.get(b.name);
-    if (typeof cached === 'number') return cached;
+  function branchForkTimeX(branch: Branch, parentName: string, visiting: Set<string>): number {
+    const hasParentBranch =
+      parentName !== defaultBranch &&
+      parentName !== branch.name &&
+      branchByName.has(parentName);
 
-    // Guard against circular parent metadata (A->B->A, etc.).
-    if (visiting.has(b.name)) {
-      return (b.headSha ? gridXForBranchSha(b.name, b.headSha) : undefined) ?? timeToX(b.lastCommitDate);
+    if (!hasParentBranch) {
+      const createdAnchor =
+        commitXForSha(branch.createdFromSha) ??
+        commitXForSha(branch.divergedFromSha);
+      if (createdAnchor != null) return createdAnchor;
+
+      const earliestPreviewDate = branchEarliestPreviewDate(branch.name);
+      const snapMain =
+        snapToMainCommitX(branch.divergedFromDate ?? branch.createdDate) ??
+        snapToMainCommitX(earliestPreviewDate ?? branch.createdDate);
+      if (snapMain != null) return snapMain;
+    } else {
+      const byParentSha = branchCommitXForSha(parentName, branch.divergedFromSha);
+      if (byParentSha != null) return byParentSha;
+
+      const byParentDate = snapToBranchCommitX(parentName, branch.divergedFromDate ?? branch.createdDate);
+      if (byParentDate != null) return byParentDate;
+
+      const parentTiming = branchTimingWithVisited(parentName, visiting);
+      return parentTiming.tipTimeX;
     }
 
-    visiting.add(b.name);
-    const forkX = branchForkXWithVisited(b, visiting);
-    const lastCommitX = (b.headSha ? gridXForBranchSha(b.name, b.headSha) : undefined) ?? timeToX(b.lastCommitDate);
-    // Keep every branch tip at least one row above its fork so the lineage
-    // connector is always visible, even for same-head placeholder branches.
-    const minTailDistance = GRID_EVENT_GAP;
-    const tipX = Math.max(lastCommitX, forkX + minTailDistance);
-    visiting.delete(b.name);
-    branchTipXCache.set(b.name, tipX);
-    return tipX;
+    return timeToX(branch.divergedFromDate ?? branch.createdDate ?? branch.lastCommitDate);
   }
 
-  function branchForkX(b: Branch): number {
-    return branchForkXWithVisited(b, new Set<string>());
+  function branchTimingWithVisited(branchName: string, visiting: Set<string>): BranchTiming {
+    const cached = branchTimingByName.get(branchName);
+    if (cached) return cached;
+
+    const branch = branchByName.get(branchName);
+    if (!branch) {
+      const fallbackDate =
+        activeBranches[activeBranches.length - 1]?.lastCommitDate ??
+        activeBranches[0]?.lastCommitDate ??
+        new Date().toISOString();
+      const fallbackTimeX = timeToX(fallbackDate);
+      const fallback: BranchTiming = {
+        parentName: defaultBranch,
+        forkTimeX: fallbackTimeX,
+        tipTimeX: fallbackTimeX,
+        mergeNodeTimeX: null,
+        maxTimeX: fallbackTimeX,
+        isFreshCopy: false,
+        isMergedBranch: false,
+      };
+      return fallback;
+    }
+
+    if (visiting.has(branch.name)) {
+      const cycleHeadX = branchHeadTimeX(branch);
+      const cycleFallback: BranchTiming = {
+        parentName: defaultBranch,
+        forkTimeX: Math.max(timeToX(branchCreatedDate(branch)), cycleHeadX - GRID_EVENT_GAP),
+        tipTimeX: cycleHeadX,
+        mergeNodeTimeX: null,
+        maxTimeX: cycleHeadX,
+        isFreshCopy: freshCopyBranchNames.has(branch.name),
+        isMergedBranch: false,
+      };
+      branchTimingByName.set(branch.name, cycleFallback);
+      return cycleFallback;
+    }
+
+    visiting.add(branch.name);
+    const parentName = renderParentBranchName(branch);
+    const forkTimeX = branchForkTimeX(branch, parentName, visiting);
+    const tipTimeX = Math.max(branchHeadTimeX(branch), forkTimeX);
+    const isFreshCopy = freshCopyBranchNames.has(branch.name);
+    const isMergedBranch = branch.commitsAhead === 0 && !isFreshCopy;
+    const mergeNodeForBranch = isMergedBranch
+      ? mergeNodeByMergedHeadSha.get(branch.headSha)
+      : undefined;
+    const mergeNodeTimeX = mergeNodeForBranch ? mergeJunctionTimeX(mergeNodeForBranch) : null;
+    const timing: BranchTiming = {
+      parentName,
+      forkTimeX,
+      tipTimeX,
+      mergeNodeTimeX,
+      maxTimeX: mergeNodeTimeX != null ? Math.max(tipTimeX, mergeNodeTimeX) : tipTimeX,
+      isFreshCopy,
+      isMergedBranch,
+    };
+    visiting.delete(branch.name);
+    branchTimingByName.set(branch.name, timing);
+    return timing;
   }
 
-  function branchTipX(b: Branch): number {
-    return branchTipXWithVisited(b, new Set<string>());
+  function branchTiming(branch: Branch): BranchTiming {
+    return branchTimingWithVisited(branch.name, new Set<string>());
+  }
+
+  function branchForkX(branch: Branch): number {
+    return branchTiming(branch).forkTimeX;
+  }
+
+  function branchTipX(branch: Branch): number {
+    return branchTiming(branch).tipTimeX;
   }
 
   for (const branch of activeBranches) {
@@ -2158,9 +2162,9 @@ export default function BranchMap({
     if (typeof cached === 'number') return cached;
     const branch = branchByName.get(branchName);
     if (!branch) return 0;
-
-    const branchStart = branchForkX(branch);
-    const branchEnd = branchTipX(branch);
+    const timing = branchTiming(branch);
+    const branchStart = timing.forkTimeX;
+    const branchEnd = timing.maxTimeX;
 
     if (visiting.has(branchName)) {
       let cycleColumn = 0;
@@ -2173,7 +2177,7 @@ export default function BranchMap({
     }
 
     visiting.add(branchName);
-    const renderParent = renderParentBranchName(branch);
+    const renderParent = timing.parentName;
     const hasVisibleParent =
       renderParent !== defaultBranch &&
       renderParent !== branch.name &&
@@ -2214,100 +2218,10 @@ export default function BranchMap({
     activeBranches.map((b) => [b.name, laneBaseX(b)])
   );
 
-  function branchBaseStartX(b: Branch): number {
-    const parent = renderParentBranchName(b);
-    if (parent && parent !== defaultBranch) {
-      const parentX = laneBaseXByBranch.get(parent);
-      if (typeof parentX === 'number') {
-        return parentX;
-      }
-    }
-    return mainX;
-  }
-
-  function branchRawCommitTipTimeX(branch: Branch): number {
-    const isFreshCopy = freshCopyBranchNames.has(branch.name);
-    const isMergedBranch = branch.commitsAhead === 0 && !isFreshCopy;
-    const mergeNodeForBranch = isMergedBranch
-      ? mergeNodeByMergedHeadSha.get(branch.headSha)
-      : undefined;
-    const mergeNodeTimeX = mergeNodeForBranch
-      ? mergeJunctionTimeX(mergeNodeForBranch)
-      : null;
-    const baseTipTimeX = branchTipX(branch);
-    const tipTimeX = mergeNodeTimeX != null ? Math.max(baseTipTimeX, mergeNodeTimeX) : baseTipTimeX;
-    return isMergedBranch ? baseTipTimeX : tipTimeX;
-  }
-
-  function resolvePlaceholderTipCollisionLaneX(
-    branch: Branch,
-    lanePosX: number,
-    candidateTipTimeX: number,
-  ): number {
-    const previews = (branchCommitPreviews[branch.name] ?? []).filter(
-      (commit) => commit.kind !== 'branch-created'
-    );
-    const uniqueAhead = branchAheadCount(branch);
-    // Only adjust placeholder-only nodes (no unique commits) to preserve
-    // concrete commit geometry for real branch history.
-    if (previews.length > 0 || uniqueAhead > 0) return lanePosX;
-
-    const rowThreshold = Math.max(1, GRID_EVENT_GAP * 0.35);
-    const nodeHalfW = GRID_NODE_RECT.width / 2;
-    const threshold = Math.max(1, GRID_EVENT_GAP * 0.35);
-    for (let step = 0; step <= 6; step += 1) {
-      const candidateLaneX = lanePosX + step * laneWidth;
-      const nodeMinX = candidateLaneX - nodeHalfW - 0.5;
-      const nodeMaxX = candidateLaneX + nodeHalfW + 0.5;
-
-      let hasCollision = false;
-      for (const other of activeBranches) {
-        if (other.name === branch.name) continue;
-
-        const otherLaneX = laneBaseXByBranch.get(other.name);
-        if (typeof otherLaneX !== 'number' || !Number.isFinite(otherLaneX)) continue;
-        const otherStartX = branchBaseStartX(other);
-        const otherForkTimeX = branchForkX(other);
-        const otherTipTimeX = branchRawCommitTipTimeX(other);
-        const otherMinTimeX = Math.min(otherForkTimeX, otherTipTimeX);
-        const otherMaxTimeX = Math.max(otherForkTimeX, otherTipTimeX);
-
-        const overlapsVerticalLane =
-          candidateTipTimeX >= otherMinTimeX - threshold &&
-          candidateTipTimeX <= otherMaxTimeX + threshold &&
-          otherLaneX >= nodeMinX &&
-          otherLaneX <= nodeMaxX;
-        if (overlapsVerticalLane) {
-          hasCollision = true;
-          break;
-        }
-
-        const sharesForkRow = Math.abs(candidateTipTimeX - otherForkTimeX) <= rowThreshold;
-        if (!sharesForkRow) continue;
-        const forkMinX = Math.min(otherStartX, otherLaneX);
-        const forkMaxX = Math.max(otherStartX, otherLaneX);
-        const overlapsForkSegment = nodeMaxX >= forkMinX - 0.5 && nodeMinX <= forkMaxX + 0.5;
-        if (overlapsForkSegment) {
-          hasCollision = true;
-          break;
-        }
-      }
-
-      if (!hasCollision) return candidateLaneX;
-    }
-    return lanePosX + laneWidth;
-  }
-
   const laneXByBranch = new Map<string, number>(
     activeBranches.map((branch) => {
       const baseLaneX = laneBaseXByBranch.get(branch.name) ?? laneBaseX(branch);
-      const rawTipTimeX = branchRawCommitTipTimeX(branch);
-      const adjustedLaneX = resolvePlaceholderTipCollisionLaneX(
-        branch,
-        baseLaneX,
-        rawTipTimeX,
-      );
-      return [branch.name, adjustedLaneX];
+      return [branch.name, baseLaneX];
     })
   );
 
@@ -2316,7 +2230,7 @@ export default function BranchMap({
   }
 
   function branchStartX(b: Branch): number {
-    const parent = renderParentBranchName(b);
+    const parent = branchTiming(b).parentName;
     if (parent && parent !== defaultBranch) {
       const parentX = laneXByBranch.get(parent);
       if (typeof parentX === 'number') {
@@ -2364,12 +2278,12 @@ export default function BranchMap({
   for (const branch of activeBranches) {
     const lanePosX = laneXByBranch.get(branch.name);
     if (typeof lanePosX !== 'number' || !Number.isFinite(lanePosX)) continue;
-    const commitTipTimeX = branchRawCommitTipTimeX(branch);
+    const commitTipTimeX = branchTipX(branch);
     const uniqueAhead = branchAheadCount(branch);
     const previews = (branchCommitPreviews[branch.name] ?? []).filter(
       (commit) => commit.kind !== 'branch-created'
     );
-    const minCommitTimeX = branchForkX(branch) + GRID_EVENT_GAP;
+    const minCommitTimeX = branchForkX(branch);
     const maxCommitTimeX = Math.max(minCommitTimeX, commitTipTimeX);
     includeCommitCenterCanonical(lanePosX, timeCoordToY(minCommitTimeX));
     includeCommitCenterCanonical(lanePosX, timeCoordToY(maxCommitTimeX));
@@ -3011,7 +2925,7 @@ export default function BranchMap({
         (a, bx) => new Date(a.date).getTime() - new Date(bx.date).getTime()
       )
       : [];
-    const minCommitTimeX = forkTimeX + GRID_EVENT_GAP;
+    const minCommitTimeX = forkTimeX;
     const maxCommitTimeX = Math.max(minCommitTimeX, commitTipTimeX);
     const commitItems: Array<BranchCommitPreview | undefined> = hasConcretePreviewCommits
       ? displayedCommits
