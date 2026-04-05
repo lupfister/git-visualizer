@@ -301,6 +301,7 @@ const PROMPT_CLUSTER_PREVIEW_MAX = 90;
 function pruneForkSplitIndices(
   entryCount: number,
   forkIndices: Set<number>,
+  preserveSplitIndices: Set<number> = new Set<number>(),
 ): Set<number> {
   if (entryCount <= 1 || forkIndices.size === 0) return new Set(forkIndices);
   const active = Array.from(forkIndices)
@@ -331,10 +332,21 @@ function pruneForkSplitIndices(
 
     // Prefer removing the split before the singleton so fork commits stay with
     // the following context rather than becoming isolated rows.
-    const splitToRemove =
+    let splitToRemove =
       singletonIdx > 0
         ? segments[singletonIdx - 1].end
         : segments[0].end;
+    if (preserveSplitIndices.has(splitToRemove)) {
+      const alternate =
+        singletonIdx > 0 && singletonIdx < segments.length
+          ? segments[singletonIdx].end
+          : -1;
+      if (alternate >= 0 && !preserveSplitIndices.has(alternate)) {
+        splitToRemove = alternate;
+      } else {
+        break;
+      }
+    }
     const removeAt = active.indexOf(splitToRemove);
     if (removeAt < 0) break;
     active.splice(removeAt, 1);
@@ -359,9 +371,10 @@ function pruneForkSplitIndices(
 function clusterByForkPoints<T>(
   entries: MarkerEntry<T>[],
   forkIndices: Set<number>,
+  preserveSplitIndices: Set<number> = new Set<number>(),
 ): MarkerCluster<T>[] {
   if (entries.length === 0) return [];
-  const effectiveForkIndices = pruneForkSplitIndices(entries.length, forkIndices);
+  const effectiveForkIndices = pruneForkSplitIndices(entries.length, forkIndices, preserveSplitIndices);
 
   const clusters: MarkerCluster<T>[] = [];
   let current: MarkerEntry<T>[] = [entries[0]];
@@ -1569,6 +1582,20 @@ export default function BranchMap({
       .map((node) => node.fullSha)
       .filter((sha) => directCommitShaSet.has(sha))
   );
+  const forcedVisibleMainShas = new Set<string>();
+  const latestMainDirectCommitSha = sortedDirectCommits[sortedDirectCommits.length - 1]?.fullSha;
+  if (latestMainDirectCommitSha) {
+    forcedVisibleMainShas.add(latestMainDirectCommitSha);
+  }
+  if (checkedOutRef?.headSha) {
+    const checkedOutOnMain = sortedDirectCommits.find((commit) =>
+      shaMatchesGitRef(commit.fullSha, checkedOutRef.headSha)
+    );
+    if (checkedOutOnMain?.fullSha) {
+      forcedVisibleMainShas.add(checkedOutOnMain.fullSha);
+    }
+  }
+  const forcedMainSplitIndices = new Set<number>();
   const mainCommitSplitIndices = (() => {
     const splits = new Set<number>();
     if (sortedDirectCommits.length <= 1) return splits;
@@ -1587,6 +1614,13 @@ export default function BranchMap({
 
       if (protectedMainForkShas.has(commit.fullSha) && index < sortedDirectCommits.length - 1) {
         splits.add(index);
+      }
+
+      // Keep the latest/checked-out main commit visible instead of hidden in a clump.
+      if (forcedVisibleMainShas.has(commit.fullSha) && index > 0) {
+        const splitBefore = index - 1;
+        splits.add(splitBefore);
+        forcedMainSplitIndices.add(splitBefore);
       }
     }
 
@@ -1652,7 +1686,11 @@ export default function BranchMap({
     {
       let buf: string[] = [];
       let tFirst = 0;
-      const effectiveMainForkIdx = pruneForkSplitIndices(sortedDirectCommits.length, mainForkIdx);
+      const effectiveMainForkIdx = pruneForkSplitIndices(
+        sortedDirectCommits.length,
+        mainForkIdx,
+        forcedMainSplitIndices,
+      );
       const flush = () => {
         if (buf.length === 0) return;
         gridClumps.push({ lane: 'main', shas: [...buf], earliestTime: tFirst, rowIndex: -1, key: `direct-clump-${buf[0]}-${buf[buf.length - 1]}` });
@@ -2520,7 +2558,7 @@ export default function BranchMap({
     }
     const previews = branchCommitPreviews[b.name];
     if (previews != null) return previews.filter((preview) => preview.kind !== 'branch-created').length;
-    return b.commitsAhead;
+    return 0;
   }
 
   function sortedConcreteBranchPreviews(branchName: string): BranchCommitPreview[] {
@@ -3739,7 +3777,11 @@ export default function BranchMap({
   });
   const latestMainCommitSha = mainDirectEntries[mainDirectEntries.length - 1]?.item.fullSha;
   const mainForkIndices = new Set<number>(mainCommitSplitIndices);
-  const mainDirectClusters: MainDirectClusterLayout[] = clusterByForkPoints(mainDirectEntries, mainForkIndices)
+  const mainDirectClusters: MainDirectClusterLayout[] = clusterByForkPoints(
+    mainDirectEntries,
+    mainForkIndices,
+    forcedMainSplitIndices,
+  )
     .map((cluster) => {
       const count = cluster.entries.length;
       const first = cluster.entries[0].item;

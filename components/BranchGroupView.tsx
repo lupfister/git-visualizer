@@ -14,10 +14,12 @@ function timeAgo(dateStr: string) {
 function BranchTable({
   branches,
   getAccentColor,
+  getAheadCount,
   emptyLabel = 'No branches',
 }: {
   branches: Branch[];
   getAccentColor: (branch: Branch) => string;
+  getAheadCount: (branch: Branch) => number;
   emptyLabel?: string;
 }) {
   if (branches.length === 0) {
@@ -53,9 +55,10 @@ function BranchTable({
       <div className="divide-y divide-border/50" role="rowgroup">
         {branches.map((branch) => {
           const accentColor = getAccentColor(branch);
+          const ahead = getAheadCount(branch);
           const deltaText =
-            branch.commitsAhead > 0 || branch.commitsBehind > 0
-              ? `${branch.commitsAhead > 0 ? `+${branch.commitsAhead}` : ''}${branch.commitsAhead > 0 && branch.commitsBehind > 0 ? ' / ' : ''}${branch.commitsBehind > 0 ? `-${branch.commitsBehind}` : ''}`
+            ahead > 0 || branch.commitsBehind > 0
+              ? `${ahead > 0 ? `+${ahead}` : ''}${ahead > 0 && branch.commitsBehind > 0 ? ' / ' : ''}${branch.commitsBehind > 0 ? `-${branch.commitsBehind}` : ''}`
               : '—';
 
           return (
@@ -144,11 +147,18 @@ const STATUS_CONFIG: {
 function StatusView({
   branches,
   defaultBranch,
+  branchUniqueAheadCounts,
 }: {
   branches: Branch[];
   defaultBranch: string;
+  branchUniqueAheadCounts: Record<string, number>;
 }) {
-  const active = branches.filter(b => b.name !== defaultBranch && b.commitsAhead > 0);
+  const aheadCount = (branch: Branch): number => (
+    Object.prototype.hasOwnProperty.call(branchUniqueAheadCounts, branch.name)
+      ? Math.max(0, branchUniqueAheadCounts[branch.name] ?? 0)
+      : Math.max(0, branch.commitsAhead)
+  );
+  const active = branches.filter((b) => b.name !== defaultBranch && aheadCount(b) > 0);
 
   return (
     <div className="grid grid-cols-3 gap-6 items-start">
@@ -167,6 +177,7 @@ function StatusView({
             <BranchTable
               branches={group}
               getAccentColor={() => color}
+              getAheadCount={aheadCount}
               emptyLabel="No branches"
             />
           </div>
@@ -181,11 +192,18 @@ function StatusView({
 function CreatorView({
   branches,
   defaultBranch,
+  branchUniqueAheadCounts,
 }: {
   branches: Branch[];
   defaultBranch: string;
+  branchUniqueAheadCounts: Record<string, number>;
 }) {
-  const active = branches.filter(b => b.name !== defaultBranch && b.commitsAhead > 0);
+  const aheadCount = (branch: Branch): number => (
+    Object.prototype.hasOwnProperty.call(branchUniqueAheadCounts, branch.name)
+      ? Math.max(0, branchUniqueAheadCounts[branch.name] ?? 0)
+      : Math.max(0, branch.commitsAhead)
+  );
+  const active = branches.filter((b) => b.name !== defaultBranch && aheadCount(b) > 0);
 
   // Group by author, preserve most-recently-active author first
   const authorMap = new Map<string, Branch[]>();
@@ -233,6 +251,7 @@ function CreatorView({
               <BranchTable
                 branches={authorBranches}
                 getAccentColor={(b) => STATUS_COLORS[b.status]}
+                getAheadCount={aheadCount}
                 emptyLabel="No branches"
               />
             </div>
@@ -255,13 +274,27 @@ export default function BranchGroupView({
   view,
   branches,
   defaultBranch,
+  branchUniqueAheadCounts = {},
 }: {
   view: Exclude<ViewMode, 'time'>;
   branches: Branch[];
   defaultBranch: string;
+  branchUniqueAheadCounts?: Record<string, number>;
 }) {
   if (view === 'status') {
-    return <StatusView branches={branches} defaultBranch={defaultBranch} />;
+    return (
+      <StatusView
+        branches={branches}
+        defaultBranch={defaultBranch}
+        branchUniqueAheadCounts={branchUniqueAheadCounts}
+      />
+    );
   }
-  return <CreatorView branches={branches} defaultBranch={defaultBranch} />;
+  return (
+    <CreatorView
+      branches={branches}
+      defaultBranch={defaultBranch}
+      branchUniqueAheadCounts={branchUniqueAheadCounts}
+    />
+  );
 }

@@ -99,6 +99,7 @@ export default function BranchMapView({
             view={view}
             branches={branches}
             defaultBranch={defaultBranch}
+            branchUniqueAheadCounts={branchUniqueAheadCounts}
           />
         </div>
       )}

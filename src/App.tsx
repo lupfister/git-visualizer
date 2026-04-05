@@ -235,6 +235,11 @@ function App() {
   const inactiveErrorBranches = errorBranches.filter(
     (b) => !openPRBranchNames.has(b.name) && now - new Date(b.lastCommitDate).getTime() > ACTIVE_MS
   );
+  const aheadCountForBranch = (branch: Branch): number => (
+    Object.prototype.hasOwnProperty.call(branchUniqueAheadCounts, branch.name)
+      ? Math.max(0, branchUniqueAheadCounts[branch.name] ?? 0)
+      : Math.max(0, branch.commitsAhead)
+  );
 
   // Reset when a new repo is loaded
   useEffect(() => {
@@ -336,12 +341,16 @@ function App() {
                 branch.headSha === branch.divergedFromSha)
             );
 
-            // If this branch head appears on the merged side of a main-line merge commit,
-            // always use that merge-side range so commits are attributed once.
-            const shouldUseMergeRange = branch.commitsAhead === 0 && !!mergeNode?.fullSha;
+            // Only use merge-side attribution when the branch actually merges into
+            // the default branch lane. Child branches should stay parent-exclusive.
+            const shouldUseMergeRange =
+              isMergedBranch &&
+              parentComparisonBase === defaultBranch &&
+              !!mergeNode?.fullSha;
             const mergeCommitSha = shouldUseMergeRange ? mergeNode?.fullSha : undefined;
 
             let historyCommits: Commit[] = [];
+            let resolvedComparisonRange = false;
             if (!isFreshBranch) {
               if (mergeCommitSha) {
                 const commits = await invoke<Commit[]>('get_branch_commits', {
@@ -352,31 +361,51 @@ function App() {
                   includePrompts: PROMPT_ENRICHMENT_ENABLED,
                 });
                 historyCommits = commits.filter((c) => c.fullSha !== mergeCommitSha);
+                resolvedComparisonRange = true;
               } else {
-                const candidateBases = Array.from(new Set(
-                  [
-                    branch.createdFromSha,
-                    branch.divergedFromSha,
-                    parentComparisonBase,
-                    defaultBranch,
-                  ].filter((value): value is string => !!value),
-                ));
-
+                const candidateBases = Array.from(new Set([
+                  parentComparisonBase,
+                  defaultBranch,
+                  branch.divergedFromSha,
+                  branch.createdFromSha,
+                ].filter((value): value is string => !!value)));
+                let firstSuccessfulCommits: Commit[] | null = null;
                 for (const baseBranch of candidateBases) {
-                  const commits = await invoke<Commit[]>('get_branch_commits', {
-                    repoPath,
-                    branch: branch.name,
-                    baseBranch,
-                    includePrompts: PROMPT_ENRICHMENT_ENABLED,
-                  });
-                  if (commits.length > 0) {
-                    historyCommits = commits;
-                    break;
+                  try {
+                    const commits = await invoke<Commit[]>('get_branch_commits', {
+                      repoPath,
+                      branch: branch.name,
+                      baseBranch,
+                      includePrompts: PROMPT_ENRICHMENT_ENABLED,
+                    });
+                    if (firstSuccessfulCommits == null) {
+                      firstSuccessfulCommits = commits;
+                    }
+                    // Parent-relative commits are the source of truth for stacked branches.
+                    if (baseBranch === parentComparisonBase) {
+                      historyCommits = commits;
+                      resolvedComparisonRange = true;
+                      break;
+                    }
+                    // For fallback bases, accept the first non-empty result.
+                    if (commits.length > 0) {
+                      historyCommits = commits;
+                      resolvedComparisonRange = true;
+                      break;
+                    }
+                  } catch {
+                    // Try the next fallback base.
                   }
+                }
+
+                if (!resolvedComparisonRange && firstSuccessfulCommits != null) {
+                  // Keep explicit zero-commit results (do not inflate from unrelated bases).
+                  historyCommits = firstSuccessfulCommits;
+                  resolvedComparisonRange = true;
                 }
               }
 
-              if (historyCommits.length === 0 && Number.isFinite(branchCreatedAtMs)) {
+              if (!resolvedComparisonRange && Number.isFinite(branchCreatedAtMs)) {
                 const recent = await invoke<Commit[]>('get_recent_log', {
                   repoPath,
                   branch: branch.name,
@@ -408,9 +437,7 @@ function App() {
             // If we can't resolve real commit objects, render no commit nodes.
             const uniqueCount = isFreshBranch
               ? 0
-              : branch.commitsAhead > 0 && commitPreviews.length > 0
-                ? commitPreviews.length
-                : null;
+              : commitPreviews.length;
             const previews: BranchCommitPreview[] = commitPreviews;
 
             if (prompts.length === 0) {
@@ -777,6 +804,7 @@ function App() {
               <div className="overflow-y-auto max-h-64">
                 {(errorPanelTab === 'active' ? activeErrorBranches : inactiveErrorBranches).map((b) => {
                   const isFocused = focusedErrorBranch?.name === b.name;
+                  const ahead = aheadCountForBranch(b);
                   return (
                     <button
                       key={b.name}
@@ -794,8 +822,8 @@ function App() {
                             : 'text-foreground'
                         }`}>{b.name}</p>
                         <p className="text-xs text-muted-foreground mt-0.5">
-                          {b.commitsAhead > 0 && `${b.commitsAhead} ahead`}
-                          {b.commitsAhead > 0 && b.commitsBehind > 0 && ', '}
+                          {ahead > 0 && `${ahead} ahead`}
+                          {ahead > 0 && b.commitsBehind > 0 && ', '}
                           {b.commitsBehind > 0 && `${b.commitsBehind} behind`}
                         </p>
                       </div>
