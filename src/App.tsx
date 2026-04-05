@@ -363,12 +363,17 @@ function App() {
                 historyCommits = commits.filter((c) => c.fullSha !== mergeCommitSha);
                 resolvedComparisonRange = true;
               } else {
-                const candidateBases = Array.from(new Set([
-                  parentComparisonBase,
-                  defaultBranch,
-                  branch.divergedFromSha,
+                const topLevelStableBases = [
                   branch.createdFromSha,
-                ].filter((value): value is string => !!value)));
+                  branch.divergedFromSha,
+                ].filter((value): value is string => !!value);
+                const candidateBases = Array.from(
+                  new Set(
+                    parentComparisonBase === defaultBranch
+                      ? [...topLevelStableBases, parentComparisonBase, defaultBranch]
+                      : [parentComparisonBase, ...topLevelStableBases, defaultBranch],
+                  ),
+                );
                 let firstSuccessfulCommits: Commit[] | null = null;
                 for (const baseBranch of candidateBases) {
                   try {
@@ -381,8 +386,18 @@ function App() {
                     if (firstSuccessfulCommits == null) {
                       firstSuccessfulCommits = commits;
                     }
+                    const isStableTopLevelBase =
+                      parentComparisonBase === defaultBranch &&
+                      (baseBranch === branch.createdFromSha || baseBranch === branch.divergedFromSha);
                     // Parent-relative commits are the source of truth for stacked branches.
                     if (baseBranch === parentComparisonBase) {
+                      historyCommits = commits;
+                      resolvedComparisonRange = true;
+                      break;
+                    }
+                    // For top-level branches, prefer stable base SHAs so merges into
+                    // main do not erase the branch's own historical stack.
+                    if (isStableTopLevelBase) {
                       historyCommits = commits;
                       resolvedComparisonRange = true;
                       break;
