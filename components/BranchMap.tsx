@@ -80,6 +80,8 @@ const CLUMP_COUNT_MAX = 99;
 const CHECKED_OUT_AHEAD_OFFSET_WORLD = 120;
 /** Stroke color used to mark the currently checked-out commit/branch. */
 const CHECKED_OUT_SELECTION_STROKE = '#2563eb';
+/** Stroke color used for user-selected commits/branches (distinct from checked-out). */
+const USER_SELECTION_STROKE = '#d97706';
 const CHECKED_OUT_PULSE_MS = 1800;
 const INITIAL_CENTER_SETTLE_MS = CHECKED_OUT_PULSE_MS;
 const INITIAL_REVEAL_FADE_MS = CHECKED_OUT_PULSE_MS;
@@ -524,7 +526,7 @@ export default function BranchMap({
   const [zoom, setZoom] = useState(ZOOM_DEFAULT);
   const [orientation, setOrientation] = useState<OrientationMode>('vertical');
   const [showGuides, setShowGuides] = useState(false);
-  const [showRowDebugOverlay, setShowRowDebugOverlay] = useState(true);
+  const [showRowDebugOverlay, setShowRowDebugOverlay] = useState(false);
   const [selectedBranchNames, setSelectedBranchNames] = useState<string[]>([]);
   const [selectedCommitShas, setSelectedCommitShas] = useState<string[]>([]);
   const [mergeTargetCommitSha, setMergeTargetCommitSha] = useState<string | null>(null);
@@ -4418,7 +4420,7 @@ export default function BranchMap({
         const firstEntry = cluster.entries[0];
         const lastEntry = cluster.entries[cluster.entries.length - 1];
         const clusterKey = `commit-clump-${branch.name}-${firstEntry.item.index}-${lastEntry.item.index}`;
-        const canExpandCluster = realCommitEntries.length > 1;
+        const canExpandCluster = renderEntries.length > 1;
         const expanded = canExpandCluster ? expandedClumps.get(clusterKey) : undefined;
         const isExpanded = canExpandCluster ? (expanded?.isExpanded ?? false) : false;
 
@@ -4853,13 +4855,15 @@ export default function BranchMap({
                   const phaseEased = phaseProgress <= 0 ? 0 : phaseProgress >= 1 ? 1 : easeInOutCubic(phaseProgress);
                   const rectSize = nodeRectSize(count);
                   const localRect = commitRectSize(scaledNodeSize, 0);
-                  const collapseIconSize = Math.max(12, Math.min(localRect.width, localRect.height) * 0.55);
-                  const expandedXs = cluster.entries.map((e) => e.x);
-                  const expandedYs = cluster.entries.map((e) => e.y);
-                  const expandedMaxX = Math.max(...expandedXs) + localRect.width / 2;
-                  const expandedMinY = Math.min(...expandedYs) - localRect.height / 2;
-                  const collapseIconX = expandedMaxX - collapseIconSize - 2;
-                  const collapseIconY = expandedMinY + 2;
+                  const collapseIconSize = worldPx(10);
+                  const collapseHitSize = worldPx(14);
+                  const collapseStrokeWidth = 1;
+                  const clumpCountAnchorX = anchorX + rectSize.width / 2 - nodeFrameLabelRightInsetX;
+                  const clumpCountAnchorY = anchorY - rectSize.height / 2 - nodeFrameLabelGap;
+                  const collapseIconX = clumpCountAnchorX - collapseHitSize;
+                  const collapseIconY = clumpCountAnchorY - collapseHitSize + worldPx(3);
+                  const collapseCaretX = collapseIconX + (collapseHitSize - collapseIconSize) / 2;
+                  const collapseCaretY = collapseIconY + (collapseHitSize - collapseIconSize) / 2;
 
                   const firstTime = new Date(first.date).getTime();
                   const lastTime = new Date(last.date).getTime();
@@ -5057,18 +5061,19 @@ export default function BranchMap({
                                     <rect
                                       x={collapseIconX}
                                       y={collapseIconY}
-                                      width={collapseIconSize}
-                                      height={collapseIconSize}
-                                      rx={collapseIconSize * 0.35}
-                                      fill={CANVAS_NEUTRAL_GRAY}
-                                      stroke={CANVAS_NEUTRAL_TEXT}
-                                      strokeWidth={1}
+                                      width={collapseHitSize}
+                                      height={collapseHitSize}
+                                      fill="rgba(0,0,0,0.001)"
+                                      pointerEvents="all"
                                     />
                                     <path
-                                      d={`M ${collapseIconX + collapseIconSize * 0.28} ${collapseIconY + collapseIconSize / 2} L ${collapseIconX + collapseIconSize * 0.72} ${collapseIconY + collapseIconSize / 2}`}
+                                      d={`M ${collapseCaretX + collapseIconSize * 0.24} ${collapseCaretY + collapseIconSize * 0.38} L ${collapseCaretX + collapseIconSize * 0.5} ${collapseCaretY + collapseIconSize * 0.64} L ${collapseCaretX + collapseIconSize * 0.76} ${collapseCaretY + collapseIconSize * 0.38}`}
                                       stroke={CANVAS_NEUTRAL_TEXT}
-                                      strokeWidth={2}
+                                      strokeWidth={collapseStrokeWidth}
                                       strokeLinecap="round"
+                                      strokeLinejoin="round"
+                                      fill="none"
+                                      vectorEffect="non-scaling-stroke"
                                     />
                                   </g>
                                 </>
@@ -5480,13 +5485,13 @@ export default function BranchMap({
                 const strokeWidth = isFocusedError || isSelectedForMerge ? 2 : 1.5;
                 const defaultStrokeColor =
                   isSelectedForMerge
-                    ? CHECKED_OUT_SELECTION_STROKE
+                    ? USER_SELECTION_STROKE
                     : isHovered
                       ? CANVAS_NEUTRAL_GRAY_HOVER
                       : color;
                 const strokeColor =
                   isSelectedForMerge
-                    ? CHECKED_OUT_SELECTION_STROKE
+                    ? USER_SELECTION_STROKE
                     : !isFocusedError && branchHasCheckedOutHead
                       ? CHECKED_OUT_SELECTION_STROKE
                       : (
@@ -5563,7 +5568,7 @@ export default function BranchMap({
                       fill="none"
                       stroke={
                         isSelectedForMerge
-                          ? CHECKED_OUT_SELECTION_STROKE
+                          ? USER_SELECTION_STROKE
                           : !isFocusedError && branchHasCheckedOutHead
                             ? CHECKED_OUT_SELECTION_STROKE
                             : isHovered
@@ -5815,7 +5820,7 @@ export default function BranchMap({
                         ? truncatePrompt(lastRealEntry.item.commit.message, COMMIT_CLUSTER_PREVIEW_MAX)
                         : `on ${b.name}`;
 
-                      const canExpandCluster = realCommitEntries.length > 1;
+                      const canExpandCluster = renderEntries.length > 1;
                       const expanded = canExpandCluster ? expandedClumps.get(clusterKey) : undefined;
                       const isExpanded = canExpandCluster ? (expanded?.isExpanded ?? false) : false;
                       const phase = expanded?.phase ?? 'collapsed';
@@ -5836,13 +5841,15 @@ export default function BranchMap({
                       );
                       // Expanded members represent single commits in grid layout.
                       const localRect = commitRectSize(scaledNodeSize, 0);
-                      const collapseIconSize = Math.max(12, Math.min(localRect.width, localRect.height) * 0.55);
-                      const expandedXs = realCommitEntries.map((e) => e.x);
-                      const expandedYs = realCommitEntries.map((e) => e.y);
-                      const expandedMaxX = Math.max(...expandedXs) + localRect.width / 2;
-                      const expandedMinY = Math.min(...expandedYs) - localRect.height / 2;
-                      const collapseIconX = expandedMaxX - collapseIconSize - 2;
-                      const collapseIconY = expandedMinY + 2;
+                      const collapseIconSize = worldPx(10);
+                      const collapseHitSize = worldPx(14);
+                      const collapseStrokeWidth = 1;
+                      const clumpCountAnchorX = anchorX + rectSize.width / 2 - nodeFrameLabelRightInsetX;
+                      const clumpCountAnchorY = anchorY - rectSize.height / 2 - nodeFrameLabelGap;
+                      const collapseIconX = clumpCountAnchorX - collapseHitSize;
+                      const collapseIconY = clumpCountAnchorY - collapseHitSize + worldPx(3);
+                      const collapseCaretX = collapseIconX + (collapseHitSize - collapseIconSize) / 2;
+                      const collapseCaretY = collapseIconY + (collapseHitSize - collapseIconSize) / 2;
 
                       return (
                         <g key={clusterKey}>
@@ -5933,7 +5940,7 @@ export default function BranchMap({
 
                           {isExpanded && (
                             <g>
-                              {realCommitEntries.map((entry) => {
+                              {renderEntries.map((entry) => {
                                 const commit = entry.item.commit;
                                 if (!commit?.fullSha) return null;
                                 const isCheckedOutCommit =
@@ -6050,18 +6057,19 @@ export default function BranchMap({
                                 <rect
                                   x={collapseIconX}
                                   y={collapseIconY}
-                                  width={collapseIconSize}
-                                  height={collapseIconSize}
-                                  rx={collapseIconSize * 0.35}
-                                  fill={CANVAS_NEUTRAL_GRAY}
-                                  stroke={CANVAS_NEUTRAL_TEXT}
-                                  strokeWidth={1}
+                                  width={collapseHitSize}
+                                  height={collapseHitSize}
+                                  fill="rgba(0,0,0,0.001)"
+                                  pointerEvents="all"
                                 />
                                 <path
-                                  d={`M ${collapseIconX + collapseIconSize * 0.28} ${collapseIconY + collapseIconSize / 2} L ${collapseIconX + collapseIconSize * 0.72} ${collapseIconY + collapseIconSize / 2}`}
+                                  d={`M ${collapseCaretX + collapseIconSize * 0.24} ${collapseCaretY + collapseIconSize * 0.38} L ${collapseCaretX + collapseIconSize * 0.5} ${collapseCaretY + collapseIconSize * 0.64} L ${collapseCaretX + collapseIconSize * 0.76} ${collapseCaretY + collapseIconSize * 0.38}`}
                                   stroke={CANVAS_NEUTRAL_TEXT}
-                                  strokeWidth={2}
+                                  strokeWidth={collapseStrokeWidth}
                                   strokeLinecap="round"
+                                  strokeLinejoin="round"
+                                  fill="none"
+                                  vectorEffect="non-scaling-stroke"
                                 />
                               </g>
                             </g>
@@ -6317,7 +6325,7 @@ export default function BranchMap({
                     );
                   }
 
-                  const canExpandCluster = realCommitEntries.length > 1;
+                  const canExpandCluster = renderEntries.length > 1;
                   const expanded = canExpandCluster ? expandedClumps.get(clusterKey) : undefined;
                   const isExpanded = canExpandCluster ? (expanded?.isExpanded ?? false) : false;
 
@@ -6354,7 +6362,7 @@ export default function BranchMap({
 
                   return (
                     <g key={`branch-overlay-${clusterKey}`}>
-                      {realCommitEntries.map((entry) => {
+                      {renderEntries.map((entry) => {
                         const commit = entry.item.commit;
                         if (!commit?.fullSha) return null;
                         const isCheckedOutCommit =
@@ -6626,7 +6634,7 @@ export default function BranchMap({
                       );
                     }
 
-                    const canExpandCluster = realCommitEntries.length > 1;
+                    const canExpandCluster = renderEntries.length > 1;
                     const expanded = canExpandCluster ? expandedClumps.get(clusterKey) : undefined;
                     const isExpanded = canExpandCluster ? (expanded?.isExpanded ?? false) : false;
 
@@ -6682,7 +6690,7 @@ export default function BranchMap({
 
                     return (
                       <g key={`branch-label-overlay-${clusterKey}`}>
-                        {realCommitEntries.map((entry) => {
+                        {renderEntries.map((entry) => {
                           const commit = entry.item.commit;
                           if (!commit?.fullSha) return null;
 
@@ -6894,7 +6902,7 @@ export default function BranchMap({
                   width={ringRect.width}
                   height={ringRect.height}
                   fill="none"
-                  stroke={CHECKED_OUT_SELECTION_STROKE}
+                  stroke={USER_SELECTION_STROKE}
                   strokeWidth={2}
                   vectorEffect="non-scaling-stroke"
                   rx={1 / Math.max(layerCameraScale.x, 0.0001)}
@@ -6923,7 +6931,7 @@ export default function BranchMap({
                   width={ringRect.width}
                   height={ringRect.height}
                   fill="none"
-                  stroke={CHECKED_OUT_SELECTION_STROKE}
+                  stroke={USER_SELECTION_STROKE}
                   strokeWidth={2}
                   vectorEffect="non-scaling-stroke"
                   rx={1 / Math.max(layerCameraScale.x, 0.0001)}
