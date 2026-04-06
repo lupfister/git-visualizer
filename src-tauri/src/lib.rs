@@ -396,6 +396,37 @@ fn checkout_branch(repo_path: String, branch_name: String) -> Result<CheckedOutR
     git::get_checked_out_ref(path).map_err(|e| e.to_string())
 }
 
+#[tauri::command(rename_all = "camelCase")]
+fn merge_branches(
+    repo_path: String,
+    source_branch: String,
+    target_branch: String,
+) -> Result<CheckedOutRef, String> {
+    if source_branch == target_branch {
+        return Err("Source and target branches must be different".to_string());
+    }
+    merge_ref_into_branch(repo_path, source_branch, target_branch)
+}
+
+#[tauri::command(rename_all = "camelCase")]
+fn merge_ref_into_branch(
+    repo_path: String,
+    source_ref: String,
+    target_branch: String,
+) -> Result<CheckedOutRef, String> {
+    if source_ref == target_branch {
+        return Err("Source and target must be different".to_string());
+    }
+    let path = Path::new(&repo_path);
+    git::cli::run(path, &["checkout", &target_branch]).map_err(|e| e.to_string())?;
+    git::cli::run(
+        path,
+        &["merge", "--no-ff", "--no-edit", &source_ref],
+    )
+    .map_err(|e| e.to_string())?;
+    git::get_checked_out_ref(path).map_err(|e| e.to_string())
+}
+
 #[tauri::command]
 fn get_repo_info(repo_path: String) -> Result<RepoInfo, String> {
     let path = Path::new(&repo_path);
@@ -3708,6 +3739,8 @@ pub fn run() {
             get_checked_out_ref,
             checkout_ref,
             checkout_branch,
+            merge_branches,
+            merge_ref_into_branch,
             get_repo_info,
             get_github_info,
             get_github_auth_status,

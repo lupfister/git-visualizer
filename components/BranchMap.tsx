@@ -100,6 +100,29 @@ type MarkerCluster<T> = { x: number; y: number; entries: MarkerEntry<T>[] };
 type CommitDot = { y: number; commit?: BranchCommitPreview };
 type CommitEntryItem = { index: number; commit?: BranchCommitPreview };
 type PromptEntryItem = { marker: NonNullable<BranchPromptMeta['markers']>[number]; index: number };
+type BranchHeadTarget = {
+  branchName: string;
+  headSha: string;
+  point: { x: number; y: number };
+};
+type CommitSelectionTarget = {
+  commitSha: string;
+  point: { x: number; y: number };
+};
+type MarqueeDragState = {
+  startX: number;
+  startY: number;
+  currentX: number;
+  currentY: number;
+  additive: boolean;
+  moved: boolean;
+};
+type MarqueeRect = {
+  left: number;
+  top: number;
+  width: number;
+  height: number;
+};
 type BranchRenderLayout = {
   forkY: number;
   lanePosX: number;
@@ -460,6 +483,8 @@ interface BranchMapProps {
   isPopoverWindow?: boolean;
   /** Pixels of vertical chrome (e.g. floating header) covering the top of the map; used for aspect/padding and pan bounds. */
   mapTopInsetPx?: number;
+  onMergeRefsIntoBranch?: (sourceRefs: string[], targetBranch: string) => Promise<void> | void;
+  mergeInProgress?: boolean;
 }
 
 export default function BranchMap({
@@ -484,6 +509,8 @@ export default function BranchMap({
   checkedOutRef = null,
   isPopoverWindow = false,
   mapTopInsetPx = 0,
+  onMergeRefsIntoBranch,
+  mergeInProgress = false,
 }: BranchMapProps) {
   const [tooltip, setTooltip] = useState<TooltipData | null>(null);
   const [hoveredBranch, setHoveredBranch] = useState<string | null>(null);
@@ -498,6 +525,11 @@ export default function BranchMap({
   const [orientation, setOrientation] = useState<OrientationMode>('vertical');
   const [showGuides, setShowGuides] = useState(false);
   const [showRowDebugOverlay, setShowRowDebugOverlay] = useState(true);
+  const [selectedBranchNames, setSelectedBranchNames] = useState<string[]>([]);
+  const [selectedCommitShas, setSelectedCommitShas] = useState<string[]>([]);
+  const [mergeTargetCommitSha, setMergeTargetCommitSha] = useState<string | null>(null);
+  const [isMarqueeSelecting, setIsMarqueeSelecting] = useState(false);
+  const [marqueeRect, setMarqueeRect] = useState<MarqueeRect | null>(null);
   const isHorizontal = orientation === 'horizontal';
   const gridEventGap = isHorizontal ? GRID_LANE_WIDTH : GRID_ROW_GAP;
   const gridLaneWidth = isHorizontal ? GRID_ROW_GAP : GRID_LANE_WIDTH;
@@ -574,6 +606,16 @@ export default function BranchMap({
   const hasAutoCenteredRef = useRef(false);
   const autoCenterSignatureRef = useRef<string | null>(null);
   const hasUserMovedCameraRef = useRef(false);
+  const marqueeDragRef = useRef<MarqueeDragState | null>(null);
+  const branchHeadTargetsRef = useRef<BranchHeadTarget[]>([]);
+  const commitSelectionTargetsRef = useRef<CommitSelectionTarget[]>([]);
+  const selectionProjectionRef = useRef({
+    graphOffsetX: 0,
+    graphOffsetY: 0,
+    graphContentTranslateX: 0,
+    graphContentTranslateY: 0,
+    isHorizontal: false,
+  });
 
   useEffect(() => {
     onHoveredBranchChange?.(hoveredBranch);
@@ -604,7 +646,141 @@ export default function BranchMap({
   ) {
     event.stopPropagation();
     if (!commitSha) return;
-    onCommitClick?.({ commitSha, branchName });
+    const shouldCheckout = event.ctrlKey || event.metaKey || event.detail >= 2;
+    if (branchName) {
+      if (event.shiftKey) {
+        setSelectedBranchNames((prev) =>
+          prev.includes(branchName)
+            ? prev.filter((name) => name !== branchName)
+            : [...prev, branchName]
+        );
+      } else {
+        setSelectedBranchNames([branchName]);
+      }
+    }
+    setSelectedCommitShas((prev) => {
+      if (event.shiftKey) {
+        return prev.includes(commitSha)
+          ? prev.filter((sha) => sha !== commitSha)
+          : [...prev, commitSha];
+      }
+      return [commitSha];
+    });
+    setMergeTargetCommitSha(commitSha);
+    if (!branchName && !event.shiftKey) {
+      setSelectedBranchNames([]);
+    }
+    if (shouldCheckout) {
+      onCommitClick?.({ commitSha, branchName });
+    }
+  }
+
+  function normalizeMarqueeRect(drag: MarqueeDragState): MarqueeRect {
+    const left = Math.min(drag.startX, drag.currentX);
+    const top = Math.min(drag.startY, drag.currentY);
+    const width = Math.abs(drag.currentX - drag.startX);
+    const height = Math.abs(drag.currentY - drag.startY);
+    return { left, top, width, height };
+  }
+
+  function applyMarqueeBranchSelection(nextRect: MarqueeRect, additive: boolean) {
+    const targets = branchHeadTargetsRef.current;
+    const projection = selectionProjectionRef.current;
+    const cameraScale = getCameraScale(zoomRef.current, projection.isHorizontal);
+    const nodeRect = commitRectSize(scaledNodeSize);
+    const halfWidthPx = (nodeRect.width / 2) * cameraScale.x;
+    const halfHeightPx = (nodeRect.height / 2) * cameraScale.y;
+    const hitPaddingPx = 3;
+    const selected = targets
+      .filter((target) => {
+        const centerX =
+          panRef.current.x +
+          projection.graphOffsetX +
+          (projection.graphContentTranslateX + target.point.x) * cameraScale.x;
+        const centerY =
+          panRef.current.y +
+          projection.graphOffsetY +
+          (projection.graphContentTranslateY + target.point.y) * cameraScale.y;
+        const nodeLeft = centerX - halfWidthPx - hitPaddingPx;
+        const nodeRight = centerX + halfWidthPx + hitPaddingPx;
+        const nodeTop = centerY - halfHeightPx - hitPaddingPx;
+        const nodeBottom = centerY + halfHeightPx + hitPaddingPx;
+        return (
+          nodeLeft <= nextRect.left + nextRect.width &&
+          nodeRight >= nextRect.left &&
+          nodeTop <= nextRect.top + nextRect.height &&
+          nodeBottom >= nextRect.top
+        );
+      })
+      .map((target) => target.branchName);
+
+    setSelectedBranchNames((prev) => {
+      if (!additive) return selected;
+      const merged = new Set(prev);
+      selected.forEach((name) => merged.add(name));
+      return Array.from(merged);
+    });
+  }
+
+  function applyMarqueeCommitSelection(nextRect: MarqueeRect, additive: boolean) {
+    const targets = commitSelectionTargetsRef.current;
+    const projection = selectionProjectionRef.current;
+    const cameraScale = getCameraScale(zoomRef.current, projection.isHorizontal);
+    const nodeRect = commitRectSize(scaledNodeSize);
+    const halfWidthPx = (nodeRect.width / 2) * cameraScale.x;
+    const halfHeightPx = (nodeRect.height / 2) * cameraScale.y;
+    const hitPaddingPx = 3;
+    const selected = targets
+      .filter((target) => {
+        const centerX =
+          panRef.current.x +
+          projection.graphOffsetX +
+          (projection.graphContentTranslateX + target.point.x) * cameraScale.x;
+        const centerY =
+          panRef.current.y +
+          projection.graphOffsetY +
+          (projection.graphContentTranslateY + target.point.y) * cameraScale.y;
+        const nodeLeft = centerX - halfWidthPx - hitPaddingPx;
+        const nodeRight = centerX + halfWidthPx + hitPaddingPx;
+        const nodeTop = centerY - halfHeightPx - hitPaddingPx;
+        const nodeBottom = centerY + halfHeightPx + hitPaddingPx;
+        return (
+          nodeLeft <= nextRect.left + nextRect.width &&
+          nodeRight >= nextRect.left &&
+          nodeTop <= nextRect.top + nextRect.height &&
+          nodeBottom >= nextRect.top
+        );
+      })
+      .map((target) => target.commitSha);
+
+    setSelectedCommitShas((prev) => {
+      if (!additive) return Array.from(new Set(selected));
+      const merged = new Set(prev);
+      selected.forEach((sha) => merged.add(sha));
+      return Array.from(merged);
+    });
+    if (!additive) {
+      setMergeTargetCommitSha(selected[selected.length - 1] ?? null);
+    }
+  }
+
+  function beginMarqueeSelection(event: React.MouseEvent<HTMLDivElement>, additive: boolean) {
+    const container = scrollRef.current;
+    if (!container) return;
+    const bounds = container.getBoundingClientRect();
+    const startX = event.clientX - bounds.left;
+    const startY = event.clientY - bounds.top;
+    marqueeDragRef.current = {
+      startX,
+      startY,
+      currentX: startX,
+      currentY: startY,
+      additive,
+      moved: false,
+    };
+    setTooltip(null);
+    setMarqueeRect({ left: startX, top: startY, width: 0, height: 0 });
+    setIsMarqueeSelecting(true);
   }
 
   function clearTimelineRevealTimer() {
@@ -1319,32 +1495,87 @@ export default function BranchMap({
     setHasInitialRevealDone(false);
   }, [orientation]);
 
+  useEffect(() => {
+    if (!isMarqueeSelecting) return;
+    const onMove = (event: MouseEvent) => {
+      const container = scrollRef.current;
+      const drag = marqueeDragRef.current;
+      if (!container || !drag) return;
+      const bounds = container.getBoundingClientRect();
+      drag.currentX = event.clientX - bounds.left;
+      drag.currentY = event.clientY - bounds.top;
+      if (Math.abs(drag.currentX - drag.startX) > 2 || Math.abs(drag.currentY - drag.startY) > 2) {
+        drag.moved = true;
+      }
+      setMarqueeRect(normalizeMarqueeRect(drag));
+    };
+    const onUp = () => {
+      const drag = marqueeDragRef.current;
+      if (!drag) {
+        setIsMarqueeSelecting(false);
+        setMarqueeRect(null);
+        return;
+      }
+      const nextRect = normalizeMarqueeRect(drag);
+      if (drag.moved && nextRect.width > 1 && nextRect.height > 1) {
+        applyMarqueeBranchSelection(nextRect, drag.additive);
+        applyMarqueeCommitSelection(nextRect, drag.additive);
+      } else if (!drag.additive) {
+        setSelectedBranchNames([]);
+        setSelectedCommitShas([]);
+        setMergeTargetCommitSha(null);
+      }
+      marqueeDragRef.current = null;
+      setMarqueeRect(null);
+      setIsMarqueeSelecting(false);
+    };
+    window.addEventListener('mousemove', onMove);
+    window.addEventListener('mouseup', onUp);
+    return () => {
+      window.removeEventListener('mousemove', onMove);
+      window.removeEventListener('mouseup', onUp);
+    };
+  }, [isMarqueeSelecting]);
+
   function handleCanvasMouseDown(e: React.MouseEvent<HTMLDivElement>) {
     const target = e.target as Element | null;
     const clickedBackground =
       target === scrollRef.current ||
       target === svgRef.current ||
       !!(target instanceof HTMLDivElement && target.parentElement === scrollRef.current);
-    const canPan =
-      e.button === 1 ||
-      (e.button === 0 && (spacePressedRef.current || clickedBackground));
-    if (!canPan || !scrollRef.current) return;
-    e.preventDefault();
-    markUserMovedCamera();
-    lockAnimationsIfReady();
-    focusScrollCancelRef.current?.();
-    focusScrollCancelRef.current = null;
-    flushPendingZoomUiSync();
-    stopWheelInertia();
-    targetPanRef.current = panRef.current;
-    panStartRef.current = {
-      x: e.clientX,
-      y: e.clientY,
-      panX: targetPanRef.current.x,
-      panY: targetPanRef.current.y,
-    };
-    isPanningRef.current = true;
-    setIsPanning(true);
+    const canPan = e.button === 1 || (e.button === 0 && spacePressedRef.current);
+    if (canPan && scrollRef.current) {
+      e.preventDefault();
+      markUserMovedCamera();
+      lockAnimationsIfReady();
+      focusScrollCancelRef.current?.();
+      focusScrollCancelRef.current = null;
+      flushPendingZoomUiSync();
+      stopWheelInertia();
+      targetPanRef.current = panRef.current;
+      panStartRef.current = {
+        x: e.clientX,
+        y: e.clientY,
+        panX: targetPanRef.current.x,
+        panY: targetPanRef.current.y,
+      };
+      isPanningRef.current = true;
+      setIsPanning(true);
+      return;
+    }
+    if (e.button === 0 && clickedBackground) {
+      e.preventDefault();
+      beginMarqueeSelection(e, e.shiftKey);
+      return;
+    }
+  }
+
+  async function handleMergeSourcesIntoTarget(sourceRefs: string[], targetBranch: string) {
+    if (!onMergeRefsIntoBranch || mergeInProgress) return;
+    await onMergeRefsIntoBranch(sourceRefs, targetBranch);
+    setSelectedCommitShas([]);
+    setSelectedBranchNames([]);
+    setMergeTargetCommitSha(null);
   }
 
   // Fetch real commit SHAs for merged PRs
@@ -1391,7 +1622,13 @@ export default function BranchMap({
       // 'time': most recently committed first
       return new Date(b.lastCommitDate).getTime() - new Date(a.lastCommitDate).getTime();
     });
+  const selectableBranchNameSet = new Set<string>([defaultBranch, ...activeBranches.map((b) => b.name)]);
+  const activeBranchNameSignature = Array.from(selectableBranchNameSet).sort().join('\u0000');
   const branchByName = new Map(activeBranches.map((b) => [b.name, b]));
+
+  useEffect(() => {
+    setSelectedBranchNames((prev) => prev.filter((name) => selectableBranchNameSet.has(name)));
+  }, [activeBranchNameSignature]);
 
   // Detect fresh-copy branches (worktrees): when multiple branches share the
   // exact same HEAD SHA, all but the oldest are fresh copies with no unique
@@ -2938,6 +3175,13 @@ export default function BranchMap({
     contentBBoxH > 0 && Number.isFinite(contentBBoxH)
       ? (svgHeight - contentBBoxH) / 2 - projectedContentBounds.minY
       : 0;
+  selectionProjectionRef.current = {
+    graphOffsetX,
+    graphOffsetY,
+    graphContentTranslateX,
+    graphContentTranslateY,
+    isHorizontal,
+  };
   const projectedCommitCenterBounds = hasCommitCenterCanonicalBounds
     ? (isHorizontal
       ? {
@@ -3676,6 +3920,7 @@ export default function BranchMap({
     branchRenderLayoutCache.set(b.name, layout);
     return layout;
   }
+
   const clumpAnimStyle: React.CSSProperties = {
     transition: `transform ${clumpExpandMs}ms ${clumpExpandEasing}, opacity ${clumpExpandMs}ms ${clumpExpandEasing}`,
     willChange: 'transform, opacity',
@@ -3902,6 +4147,129 @@ export default function BranchMap({
     }
     return future?.anchor ?? past?.anchor;
   }
+
+  function resolveBranchHeadProjectedPoint(layout: BranchRenderLayout): { x: number; y: number } {
+    if (layout.branchEndDotIndex != null) {
+      for (const cluster of layout.commitDotClusters) {
+        const matchedEntry = cluster.entries.find(
+          (entry) => entry.item.index === layout.branchEndDotIndex
+        );
+        if (matchedEntry) return { x: matchedEntry.x, y: matchedEntry.y };
+      }
+    }
+    return projectPoint(layout.lanePosX, layout.branchLineTipY);
+  }
+
+  const branchHeadTargets: BranchHeadTarget[] = [
+    ...activeBranches.map((branch) => {
+      const layout = getBranchRenderLayout(branch);
+      return {
+        branchName: branch.name,
+        headSha: branch.headSha,
+        point: resolveBranchHeadProjectedPoint(layout),
+      };
+    }),
+    ...(() => {
+      if (!latestMainCommitSha) return [] as BranchHeadTarget[];
+      const mainAnchor = renderedMainAnchorByCommitSha.get(latestMainCommitSha);
+      if (!mainAnchor) return [] as BranchHeadTarget[];
+      return [{
+        branchName: defaultBranch,
+        headSha: latestMainCommitSha,
+        point: projectPoint(mainAnchor.x, mainAnchor.y),
+      }];
+    })(),
+  ];
+  branchHeadTargetsRef.current = branchHeadTargets;
+  const commitSelectionTargets = (() => {
+    const bySha = new Map<string, CommitSelectionTarget>();
+    for (const [sha, anchor] of renderedMainAnchorByCommitSha.entries()) {
+      bySha.set(sha, {
+        commitSha: sha,
+        point: projectPoint(anchor.x, anchor.y),
+      });
+    }
+    for (const branch of activeBranches) {
+      const layout = getBranchRenderLayout(branch);
+      for (const cluster of layout.commitDotClusters) {
+        for (const entry of cluster.entries) {
+          const commit = entry.item.commit;
+          if (!commit || commit.kind === 'branch-created') continue;
+          if (bySha.has(commit.fullSha)) continue;
+          bySha.set(commit.fullSha, {
+            commitSha: commit.fullSha,
+            point: { x: entry.x, y: entry.y },
+          });
+        }
+      }
+    }
+    for (const target of branchHeadTargets) {
+      if (bySha.has(target.headSha)) continue;
+      bySha.set(target.headSha, {
+        commitSha: target.headSha,
+        point: target.point,
+      });
+    }
+    return Array.from(bySha.values());
+  })();
+  commitSelectionTargetsRef.current = commitSelectionTargets;
+  const selectableCommitShaSet = new Set(commitSelectionTargets.map((target) => target.commitSha));
+  const selectedVisibleCommitShas = selectedCommitShas.filter((sha) => selectableCommitShaSet.has(sha));
+  const selectedCommitShaSet = new Set(selectedVisibleCommitShas);
+  const commitShaToBranchNames = (() => {
+    const map = new Map<string, Set<string>>();
+    const add = (sha: string | undefined | null, branchName: string) => {
+      if (!sha) return;
+      const set = map.get(sha) ?? new Set<string>();
+      set.add(branchName);
+      map.set(sha, set);
+    };
+
+    for (const commit of sortedDirectCommits) {
+      add(commit.fullSha, defaultBranch);
+    }
+    for (const branch of activeBranches) {
+      const layout = getBranchRenderLayout(branch);
+      for (const cluster of layout.commitDotClusters) {
+        for (const entry of cluster.entries) {
+          add(entry.item.commit?.fullSha, branch.name);
+        }
+      }
+      add(branch.headSha, branch.name);
+    }
+    return map;
+  })();
+  const selectedBranchList = selectedBranchNames.filter((name) => selectableBranchNameSet.has(name));
+  const selectedBranchNameSet = new Set(selectedBranchList);
+  const selectedCommitTargetSha =
+    mergeTargetCommitSha && selectedCommitShaSet.has(mergeTargetCommitSha)
+      ? mergeTargetCommitSha
+      : selectedVisibleCommitShas[selectedVisibleCommitShas.length - 1] ?? null;
+  const branchCandidatesForCommit = (sha: string): string[] => {
+    const branchesForCommit = commitShaToBranchNames.get(sha);
+    if (!branchesForCommit) return [];
+    return Array.from(branchesForCommit).filter((name) => selectableBranchNameSet.has(name));
+  };
+  const resolveTargetBranch = (targetSha: string): string | null => {
+    const candidates = branchCandidatesForCommit(targetSha);
+    if (candidates.length === 0) return null;
+    const explicitBranch = selectedBranchList.find((branchName) => candidates.includes(branchName));
+    if (explicitBranch) return explicitBranch;
+    if (candidates.length === 1) return candidates[0];
+    const nonDefault = candidates.find((branchName) => branchName !== defaultBranch);
+    return nonDefault ?? candidates[0];
+  };
+  const targetBranchForSelectedCommit =
+    selectedCommitTargetSha ? resolveTargetBranch(selectedCommitTargetSha) : null;
+  const commitMergeSources = (() => {
+    if (!selectedCommitTargetSha || !targetBranchForSelectedCommit) return [] as string[];
+    const targetSha = selectedCommitTargetSha;
+    const filtered = selectedVisibleCommitShas.filter((sha) => sha !== targetSha);
+    return filtered.filter((sha) => {
+      const sourceCandidates = new Set(branchCandidatesForCommit(sha));
+      return !sourceCandidates.has(targetBranchForSelectedCommit);
+    });
+  })();
 
   type RowDebugUsage = {
     mainDirect: number;
@@ -4555,8 +4923,15 @@ export default function BranchMap({
                             style={{ cursor: 'pointer' }}
                             onPointerDown={(e) => { e.preventDefault(); e.stopPropagation(); }}
                             onMouseDown={(e) => { e.preventDefault(); e.stopPropagation(); }}
-                            onClick={(e) => { e.preventDefault(); e.stopPropagation(); toggleClumpExpanded(clusterKey); }}
-                            onDoubleClick={(event) => event.stopPropagation()}
+                            onClick={(e) => {
+                              e.preventDefault();
+                              e.stopPropagation();
+                              toggleClumpExpanded(clusterKey);
+                            }}
+                            onDoubleClick={(event) => {
+                              event.preventDefault();
+                              event.stopPropagation();
+                            }}
                             onMouseEnter={() => {
                               handleNodeHoverEnter(clusterKey);
                               setTooltip({
@@ -5065,6 +5440,7 @@ export default function BranchMap({
               };
 
               const branchStrokeLayerPriority = (branch: Branch): number => {
+                if (selectedBranchNameSet.has(branch.name)) return 5;
                 if (hoveredBranch === branch.name || isNodeLineageHovered(branch.name)) return 4;
                 if (isSelectedLaneBranch(branch)) return 3;
                 if (focusedErrorBranch?.name === branch.name) return 2;
@@ -5096,23 +5472,31 @@ export default function BranchMap({
                   clockPoint,
                 } = getBranchRenderLayout(b);
                 const isHovered = hoveredBranch === b.name || isNodeLineageHovered(b.name);
+                const isSelectedForMerge = selectedBranchNameSet.has(b.name);
                 const isFocusedError = focusedErrorBranch?.name === b.name;
                 const focusedErrorColor = '#d97706';
                 const neutralColor = CANVAS_NEUTRAL_GRAY;
                 const color = isFocusedError ? focusedErrorColor : neutralColor;
-                const strokeWidth = isFocusedError ? 2 : 1.5;
-                const defaultStrokeColor = isHovered ? CANVAS_NEUTRAL_GRAY_HOVER : color;
-              const strokeColor =
-                !isFocusedError && branchHasCheckedOutHead
-                  ? CHECKED_OUT_SELECTION_STROKE
-                  : (
-                    fullBranchShouldUseLocalGray && !isFocusedError && !isHovered
-                      ? LOCAL_UNPUSHED_GRAY
-                      : defaultStrokeColor
-                  );
-              const unpushedStrokeWidth = strokeWidth + UNPUSHED_LANE_STROKE_VISUAL_COMP;
-              const unpushedLaneDasharray = `${Math.max(1, unpushedStrokeWidth)} ${Math.max(2, unpushedStrokeWidth * 1.8)}`;
-              const isEmptyBranch = uniqueAheadCount <= 0;
+                const strokeWidth = isFocusedError || isSelectedForMerge ? 2 : 1.5;
+                const defaultStrokeColor =
+                  isSelectedForMerge
+                    ? CHECKED_OUT_SELECTION_STROKE
+                    : isHovered
+                      ? CANVAS_NEUTRAL_GRAY_HOVER
+                      : color;
+                const strokeColor =
+                  isSelectedForMerge
+                    ? CHECKED_OUT_SELECTION_STROKE
+                    : !isFocusedError && branchHasCheckedOutHead
+                      ? CHECKED_OUT_SELECTION_STROKE
+                      : (
+                        fullBranchShouldUseLocalGray && !isFocusedError && !isHovered
+                          ? LOCAL_UNPUSHED_GRAY
+                          : defaultStrokeColor
+                      );
+                const unpushedStrokeWidth = strokeWidth + UNPUSHED_LANE_STROKE_VISUAL_COMP;
+                const unpushedLaneDasharray = `${Math.max(1, unpushedStrokeWidth)} ${Math.max(2, unpushedStrokeWidth * 1.8)}`;
+                const isEmptyBranch = uniqueAheadCount <= 0;
                 const branchGroupOpacity = 1;
 
               return (
@@ -5178,11 +5562,13 @@ export default function BranchMap({
                       d={`M ${pathCoord(lanePosX, localSegmentStartY)} L ${pathCoord(lanePosX, branchLineTipY)}`}
                       fill="none"
                       stroke={
-                        !isFocusedError && branchHasCheckedOutHead
+                        isSelectedForMerge
                           ? CHECKED_OUT_SELECTION_STROKE
-                          : isHovered
-                            ? CANVAS_NEUTRAL_GRAY_HOVER
-                            : LOCAL_UNPUSHED_GRAY
+                          : !isFocusedError && branchHasCheckedOutHead
+                            ? CHECKED_OUT_SELECTION_STROKE
+                            : isHovered
+                              ? CANVAS_NEUTRAL_GRAY_HOVER
+                              : LOCAL_UNPUSHED_GRAY
                       }
                       strokeWidth={unpushedStrokeWidth}
                       strokeDasharray={unpushedLaneDasharray}
@@ -5524,7 +5910,10 @@ export default function BranchMap({
                                   e.stopPropagation();
                                   if (canExpandCluster) toggleClumpExpanded(clusterKey);
                                 }}
-                                onDoubleClick={(event) => event.stopPropagation()}
+                                onDoubleClick={(event) => {
+                                  event.preventDefault();
+                                  event.stopPropagation();
+                                }}
                                 onMouseEnter={() => {
                                   handleNodeHoverEnter(clusterKey, b.name);
                                   setTooltip({
@@ -6485,6 +6874,64 @@ export default function BranchMap({
             </g>
           </g>
 
+          {/* Commit selection rings. */}
+          <g style={{ pointerEvents: 'none' }}>
+            {commitSelectionTargets.map((target) => {
+              if (!selectedCommitShaSet.has(target.commitSha)) return null;
+              const rectSize = commitRectSize(scaledNodeSize);
+              const ringPad = worldPx(2);
+              const ringRect = collapsedClumpHitRect(
+                target.point.x,
+                target.point.y,
+                rectSize,
+                ringPad
+              );
+              return (
+                <rect
+                  key={`commit-selection-ring-${target.commitSha}`}
+                  x={ringRect.x}
+                  y={ringRect.y}
+                  width={ringRect.width}
+                  height={ringRect.height}
+                  fill="none"
+                  stroke={CHECKED_OUT_SELECTION_STROKE}
+                  strokeWidth={2}
+                  vectorEffect="non-scaling-stroke"
+                  rx={1 / Math.max(layerCameraScale.x, 0.0001)}
+                />
+              );
+            })}
+          </g>
+
+          {/* Explicit merge selection rings for branch heads. */}
+          <g style={{ pointerEvents: 'none' }}>
+            {branchHeadTargets.map((target) => {
+              if (!selectedBranchNameSet.has(target.branchName)) return null;
+              const rectSize = commitRectSize(scaledNodeSize);
+              const ringPad = worldPx(2);
+              const ringRect = collapsedClumpHitRect(
+                target.point.x,
+                target.point.y,
+                rectSize,
+                ringPad
+              );
+              return (
+                <rect
+                  key={`branch-selection-ring-${target.branchName}`}
+                  x={ringRect.x}
+                  y={ringRect.y}
+                  width={ringRect.width}
+                  height={ringRect.height}
+                  fill="none"
+                  stroke={CHECKED_OUT_SELECTION_STROKE}
+                  strokeWidth={2}
+                  vectorEffect="non-scaling-stroke"
+                  rx={1 / Math.max(layerCameraScale.x, 0.0001)}
+                />
+              );
+            })}
+          </g>
+
           {/* Branch commit tooltip is rendered as an HTML overlay outside the zoomed camera. */}
 
           {/* Tooltip for main-line merge nodes — shown above the tick */}
@@ -6544,6 +6991,18 @@ export default function BranchMap({
           </g>
         </svg>
         </div>
+
+        {marqueeRect && (
+          <div
+            className="absolute border border-primary bg-primary/10 rounded-sm pointer-events-none z-40"
+            style={{
+              left: marqueeRect.left,
+              top: marqueeRect.top,
+              width: marqueeRect.width,
+              height: marqueeRect.height,
+            }}
+          />
+        )}
 
         {holdTimelineForInitialCenter && (
           <div className="absolute inset-0 pointer-events-none flex items-center justify-center">
@@ -6716,86 +7175,142 @@ export default function BranchMap({
 
         {/* Controls row */}
         <div
-          className="flex items-center justify-end gap-4"
+          className="flex items-center justify-between gap-4"
           style={{
             opacity: isLoading || !controlsReady ? 0 : 1,
             transition: 'opacity 0.4s ease',
           }}
         >
-          {!isPopoverWindow && (
-            <div className="flex items-center gap-1 shrink-0 bg-card border border-border rounded-full p-1">
-              <button
-                onClick={() => setOrientation('vertical')}
-                className={`px-2.5 py-1 rounded-full text-xs leading-none select-none transition-colors ${orientation === 'vertical'
-                  ? 'bg-primary/10 text-foreground'
-                  : 'text-muted-foreground hover:text-foreground hover:bg-muted'
-                  }`}
-                title="Timeline runs top to bottom"
-              >
-                Vertical
-              </button>
-              <button
-                onClick={() => setOrientation('horizontal')}
-                className={`px-2.5 py-1 rounded-full text-xs leading-none select-none transition-colors ${orientation === 'horizontal'
-                  ? 'bg-primary/10 text-foreground'
-                  : 'text-muted-foreground hover:text-foreground hover:bg-muted'
-                  }`}
-                title="Timeline runs left to right"
-              >
-                Horizontal
-              </button>
-            </div>
-          )}
-          {!isPopoverWindow && (
-            <div className="flex items-center gap-2 shrink-0 bg-card border border-border rounded-full px-3 py-1">
-              <span className="text-xs text-muted-foreground select-none">Guide lines</span>
-              <label className="relative inline-flex items-center cursor-pointer">
-                <input
-                  type="checkbox"
-                  checked={showGuides}
-                  onChange={(e) => setShowGuides(e.target.checked)}
-                  aria-label="Toggle guide lines"
-                  className="sr-only"
-                />
-                <span
-                  className={`w-10 h-5 rounded-full border transition-colors flex items-center p-0.5 ${
-                    showGuides ? 'bg-primary/10 border-primary/30' : 'bg-muted/30 border-border'
-                  }`}
-                >
-                  <span
-                    className={`w-4 h-4 rounded-full bg-card shadow-sm transform transition-transform duration-200 ${
-                      showGuides ? 'translate-x-5' : 'translate-x-0'
-                    }`}
-                  />
+          <div className="flex items-center gap-2 min-w-0">
+            {selectedBranchList.length > 0 && (
+              <div className="flex items-center gap-2 shrink-0 bg-card border border-border rounded-md px-3 py-1">
+                <span className="text-xs text-muted-foreground select-none">
+                  Selected {selectedBranchList.length}
                 </span>
-              </label>
-            </div>
-          )}
-          {!isPopoverWindow && (
-            <div className="flex items-center gap-2 shrink-0 bg-card border border-border rounded-full px-3 py-1">
-              <span className="text-xs text-muted-foreground select-none">Row debug</span>
-              <label className="relative inline-flex items-center cursor-pointer">
-                <input
-                  type="checkbox"
-                  checked={showRowDebugOverlay}
-                  onChange={(e) => setShowRowDebugOverlay(e.target.checked)}
-                  aria-label="Toggle row debug overlay"
-                  className="sr-only"
-                />
-                <span
-                  className={`w-10 h-5 rounded-full border transition-colors flex items-center p-0.5 ${
-                    showRowDebugOverlay ? 'bg-primary/10 border-primary/30' : 'bg-muted/30 border-border'
-                  }`}
+                <button
+                  onClick={() => {
+                    setSelectedBranchNames([]);
+                    setSelectedCommitShas([]);
+                    setMergeTargetCommitSha(null);
+                  }}
+                  className="text-xs text-muted-foreground hover:text-foreground transition-colors"
+                  title="Clear selection"
                 >
-                  <span
-                    className={`w-4 h-4 rounded-full bg-card shadow-sm transform transition-transform duration-200 ${
-                      showRowDebugOverlay ? 'translate-x-5' : 'translate-x-0'
-                    }`}
-                  />
+                  Clear
+                </button>
+              </div>
+            )}
+            {selectedVisibleCommitShas.length > 0 && (
+              <div className="flex items-center gap-2 shrink-0 bg-card border border-border rounded-md px-3 py-1">
+                <span className="text-xs text-muted-foreground select-none">
+                  {selectedVisibleCommitShas.length === 1
+                    ? `Commit ${selectedVisibleCommitShas[0].slice(0, 7)}`
+                    : `Commits ${selectedVisibleCommitShas.length}`}
                 </span>
-              </label>
-            </div>
-          )}
+              </div>
+            )}
+            {selectedCommitTargetSha && targetBranchForSelectedCommit && (
+              <div className="flex items-center gap-2 shrink-0 bg-card border border-border rounded-md px-2 py-1.5">
+                <span className="text-[10px] uppercase tracking-wide text-muted-foreground font-medium select-none">
+                  Merge Commit
+                </span>
+                <span className="text-xs text-muted-foreground select-none">
+                  {`Target ${selectedCommitTargetSha.slice(0, 7)} on ${targetBranchForSelectedCommit}`}
+                </span>
+                <button
+                  onClick={() => void handleMergeSourcesIntoTarget(commitMergeSources, targetBranchForSelectedCommit)}
+                  disabled={mergeInProgress || commitMergeSources.length === 0}
+                  className="px-2.5 py-1 rounded-md text-xs leading-none select-none transition-colors bg-muted/30 text-foreground hover:bg-muted disabled:opacity-50 disabled:cursor-not-allowed"
+                  title={
+                    commitMergeSources.length > 0
+                      ? `Merge ${commitMergeSources.length} commits into ${targetBranchForSelectedCommit}`
+                      : 'No eligible source commits to merge'
+                  }
+                >
+                  {commitMergeSources.length > 0
+                    ? `Merge ${commitMergeSources.length} selected into ${targetBranchForSelectedCommit}`
+                    : 'Nothing to merge'}
+                </button>
+              </div>
+            )}
+          </div>
+
+          <div className="flex items-center justify-end gap-4">
+            {!isPopoverWindow && (
+              <div className="flex items-center gap-1 shrink-0 bg-card border border-border rounded-full p-1">
+                <button
+                  onClick={() => setOrientation('vertical')}
+                  className={`px-2.5 py-1 rounded-full text-xs leading-none select-none transition-colors ${orientation === 'vertical'
+                    ? 'bg-primary/10 text-foreground'
+                    : 'text-muted-foreground hover:text-foreground hover:bg-muted'
+                    }`}
+                  title="Timeline runs top to bottom"
+                >
+                  Vertical
+                </button>
+                <button
+                  onClick={() => setOrientation('horizontal')}
+                  className={`px-2.5 py-1 rounded-full text-xs leading-none select-none transition-colors ${orientation === 'horizontal'
+                    ? 'bg-primary/10 text-foreground'
+                    : 'text-muted-foreground hover:text-foreground hover:bg-muted'
+                    }`}
+                  title="Timeline runs left to right"
+                >
+                  Horizontal
+                </button>
+              </div>
+            )}
+            {!isPopoverWindow && (
+              <div className="flex items-center gap-2 shrink-0 bg-card border border-border rounded-full px-3 py-1">
+                <span className="text-xs text-muted-foreground select-none">Guide lines</span>
+                <label className="relative inline-flex items-center cursor-pointer">
+                  <input
+                    type="checkbox"
+                    checked={showGuides}
+                    onChange={(e) => setShowGuides(e.target.checked)}
+                    aria-label="Toggle guide lines"
+                    className="sr-only"
+                  />
+                  <span
+                    className={`w-10 h-5 rounded-full border transition-colors flex items-center p-0.5 ${
+                      showGuides ? 'bg-primary/10 border-primary/30' : 'bg-muted/30 border-border'
+                    }`}
+                  >
+                    <span
+                      className={`w-4 h-4 rounded-full bg-card shadow-sm transform transition-transform duration-200 ${
+                        showGuides ? 'translate-x-5' : 'translate-x-0'
+                      }`}
+                    />
+                  </span>
+                </label>
+              </div>
+            )}
+            {!isPopoverWindow && (
+              <div className="flex items-center gap-2 shrink-0 bg-card border border-border rounded-full px-3 py-1">
+                <span className="text-xs text-muted-foreground select-none">Row debug</span>
+                <label className="relative inline-flex items-center cursor-pointer">
+                  <input
+                    type="checkbox"
+                    checked={showRowDebugOverlay}
+                    onChange={(e) => setShowRowDebugOverlay(e.target.checked)}
+                    aria-label="Toggle row debug overlay"
+                    className="sr-only"
+                  />
+                  <span
+                    className={`w-10 h-5 rounded-full border transition-colors flex items-center p-0.5 ${
+                      showRowDebugOverlay ? 'bg-primary/10 border-primary/30' : 'bg-muted/30 border-border'
+                    }`}
+                  >
+                    <span
+                      className={`w-4 h-4 rounded-full bg-card shadow-sm transform transition-transform duration-200 ${
+                        showRowDebugOverlay ? 'translate-x-5' : 'translate-x-0'
+                      }`}
+                    />
+                  </span>
+                </label>
+              </div>
+            )}
+          </div>
         </div>
       </div>
 

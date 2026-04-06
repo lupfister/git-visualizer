@@ -52,6 +52,7 @@ function App() {
     message: string;
   } | null>(null);
   const [isCommitSwitchFeedbackVisible, setIsCommitSwitchFeedbackVisible] = useState(false);
+  const [mergeInProgress, setMergeInProgress] = useState(false);
   const [branchPromptMeta, setBranchPromptMeta] = useState<Record<string, BranchPromptMeta>>({});
   const [branchCommitPreviews, setBranchCommitPreviews] = useState<Record<string, BranchCommitPreview[]>>({});
   const [branchUniqueAheadCounts, setBranchUniqueAheadCounts] = useState<Record<string, number>>({});
@@ -213,6 +214,13 @@ function App() {
   useEffect(() => {
     let unlisten: null | (() => void) = null;
     let isDisposed = false;
+    const windowLabel = (() => {
+      try {
+        return getCurrentWindow().label;
+      } catch {
+        return null;
+      }
+    })();
 
     const openPath = async (payload?: OpenRepoEventPayload | null) => {
       const nextPath = payload?.path?.trim();
@@ -225,9 +233,11 @@ function App() {
     };
 
     const attach = async () => {
-      unlisten = await listen<OpenRepoEventPayload>('gitviz://open-repo', async (event) => {
-        await openPath(event.payload);
-      });
+      if (windowLabel === 'main') {
+        unlisten = await listen<OpenRepoEventPayload>('gitviz://open-repo', async (event) => {
+          await openPath(event.payload);
+        });
+      }
       const pending = await invoke<OpenRepoEventPayload | null>('take_pending_open_repo');
       await openPath(pending);
     };
@@ -677,6 +687,54 @@ function App() {
     }
   }
 
+  async function handleMergeRefsIntoBranch(sourceRefs: string[], targetBranch: string) {
+    if (!repoPath) return;
+    const uniqueSourceRefs = Array.from(new Set(sourceRefs.filter((ref) => !!ref && ref !== targetBranch)));
+    if (uniqueSourceRefs.length === 0) return;
+    setCommitSwitchFeedback(null);
+    setMergeInProgress(true);
+    try {
+      let nextCheckedOutRef: CheckedOutRef | null = null;
+      for (const sourceRef of uniqueSourceRefs) {
+        nextCheckedOutRef = await invoke<CheckedOutRef>('merge_ref_into_branch', {
+          repoPath,
+          sourceRef,
+          targetBranch,
+        });
+      }
+      const [branchList, nodes, directResult, confirmedCheckedOutRef] = await Promise.all([
+        invoke<Branch[]>('get_branches', { repoPath }),
+        fetchAllMergeNodes(repoPath, defaultBranch),
+        invoke<DirectCommit[]>('get_direct_commits', {
+          repoPath,
+          branch: defaultBranch,
+        }),
+        invoke<CheckedOutRef>('get_checked_out_ref', {
+          repoPath,
+        }).catch(() => nextCheckedOutRef),
+      ]);
+      setBranches(branchList);
+      setMergeNodes(nodes);
+      setDirectCommits(directResult);
+      setCheckedOutRef(confirmedCheckedOutRef);
+      setCommitSwitchFeedback({
+        kind: 'success',
+        message: uniqueSourceRefs.length === 1
+          ? `Merged ${uniqueSourceRefs[0].slice(0, 7)} into ${targetBranch}`
+          : `Merged ${uniqueSourceRefs.length} commits into ${targetBranch}`,
+      });
+    } catch (e) {
+      const message = e instanceof Error ? e.message : String(e);
+      setCommitSwitchFeedback({
+        kind: 'error',
+        message,
+      });
+      console.error('Failed to merge refs into branch:', message);
+    } finally {
+      setMergeInProgress(false);
+    }
+  }
+
   function handleFocusOnMap(branch: Branch) {
     setView('map');
     setFocusedErrorBranch(branch);
@@ -750,6 +808,8 @@ function App() {
               onHoveredBranchChange={setHoveredBranchName}
               isPopoverWindow={isPopoverWindow}
               mapTopInsetPx={mapHeaderInsetPx}
+              onMergeRefsIntoBranch={handleMergeRefsIntoBranch}
+              mergeInProgress={mergeInProgress}
             />
           </div>
 

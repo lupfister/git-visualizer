@@ -28,6 +28,8 @@ interface Props {
   isPopoverWindow?: boolean;
   /** Height of overlay UI above the map (px); improves aspect + padding vs. full window. */
   mapTopInsetPx?: number;
+  onMergeRefsIntoBranch?: (sourceRefs: string[], targetBranch: string) => Promise<void> | void;
+  mergeInProgress?: boolean;
 }
 
 export default function BranchMapView({
@@ -52,6 +54,8 @@ export default function BranchMapView({
   checkedOutRef = null,
   isPopoverWindow = false,
   mapTopInsetPx = 0,
+  onMergeRefsIntoBranch,
+  mergeInProgress = false,
 }: Props) {
   // Determine active vs inactive error branches
   const openPRBranchNames = new Set(openPRs.map(p => p.branchName));
@@ -91,6 +95,8 @@ export default function BranchMapView({
             checkedOutRef={checkedOutRef}
             isPopoverWindow={isPopoverWindow}
             mapTopInsetPx={mapTopInsetPx}
+            onMergeRefsIntoBranch={onMergeRefsIntoBranch}
+            mergeInProgress={mergeInProgress}
           />
         </div>
       ) : (
