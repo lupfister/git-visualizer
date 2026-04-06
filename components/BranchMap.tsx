@@ -79,9 +79,9 @@ const UNPUSHED_LANE_STROKE_VISUAL_COMP = 0.3;
 const CLUMP_COUNT_MAX = 99;
 const CHECKED_OUT_AHEAD_OFFSET_WORLD = 120;
 /** Stroke color used to mark the currently checked-out commit/branch. */
-const CHECKED_OUT_SELECTION_STROKE = '#2563eb';
+const CHECKED_OUT_SELECTION_STROKE = '#B4CDEB';
 /** Stroke color used for user-selected commits/branches (distinct from checked-out). */
-const USER_SELECTION_STROKE = '#d97706';
+const USER_SELECTION_STROKE = '#6F88C3';
 const CHECKED_OUT_PULSE_MS = 1800;
 const INITIAL_CENTER_SETTLE_MS = CHECKED_OUT_PULSE_MS;
 const INITIAL_REVEAL_FADE_MS = CHECKED_OUT_PULSE_MS;
@@ -3623,8 +3623,8 @@ export default function BranchMap({
     isCheckedOutSelection = false,
     isUserSelected = false,
   ) => {
-    if (isCheckedOutSelection) return CHECKED_OUT_SELECTION_STROKE;
     if (isUserSelected) return USER_SELECTION_STROKE;
+    if (isCheckedOutSelection) return CHECKED_OUT_SELECTION_STROKE;
     return hoveredNodeStrokeKey === nodeKey ? CANVAS_NEUTRAL_GRAY_HOVER : baseStroke;
   };
   const branchLaneHitPointerEvents: React.CSSProperties['pointerEvents'] =
@@ -7330,7 +7330,7 @@ export default function BranchMap({
           }}
         >
           <div className="flex items-center gap-2 min-w-0">
-            {selectedCommitTargetOption && targetBranchForSelectedCommit && (
+            {selectedVisibleCommitShas.length > 1 && selectedCommitTargetOption && targetBranchForSelectedCommit && (
               <div className="flex items-center gap-2 shrink-0 bg-card border border-border rounded-full pl-3 pr-1 py-1">
                 <span className="text-xs text-muted-foreground font-medium select-none">
                   merge to...
