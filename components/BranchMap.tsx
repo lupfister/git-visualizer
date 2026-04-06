@@ -7330,7 +7330,10 @@ export default function BranchMap({
           }}
         >
           <div className="flex items-center gap-2 min-w-0">
-            {selectedVisibleCommitShas.length > 1 && selectedCommitTargetOption && targetBranchForSelectedCommit && (
+            {selectedVisibleCommitShas.length > 1 &&
+              commitMergeTargetOptions.length > 1 &&
+              selectedCommitTargetOption &&
+              targetBranchForSelectedCommit && (
               <div className="flex items-center gap-2 shrink-0 bg-card border border-border rounded-full pl-3 pr-1 py-1">
                 <span className="text-xs text-muted-foreground font-medium select-none">
                   merge to...
@@ -7357,7 +7360,8 @@ export default function BranchMap({
                 <button
                   onClick={() => void handleMergeSourcesIntoTarget(commitMergeSources, targetBranchForSelectedCommit)}
                   disabled={mergeInProgress || commitMergeSources.length === 0}
-                  className="px-2.5 py-1 rounded-full text-xs leading-none select-none transition-colors bg-black text-white hover:bg-black/90 disabled:opacity-50 disabled:cursor-not-allowed"
+                  className="px-2.5 py-1 rounded-full text-xs leading-none select-none transition-opacity text-white hover:opacity-90 disabled:opacity-50 disabled:cursor-not-allowed"
+                  style={{ backgroundColor: USER_SELECTION_STROKE }}
                   title={
                     commitMergeSources.length > 0
                       ? `Merge ${commitMergeSources.length} commits into ${targetBranchForSelectedCommit}`
