@@ -3621,8 +3621,10 @@ export default function BranchMap({
     nodeKey: string,
     baseStroke = CANVAS_NODE_STROKE,
     isCheckedOutSelection = false,
+    isUserSelected = false,
   ) => {
     if (isCheckedOutSelection) return CHECKED_OUT_SELECTION_STROKE;
+    if (isUserSelected) return USER_SELECTION_STROKE;
     return hoveredNodeStrokeKey === nodeKey ? CANVAS_NEUTRAL_GRAY_HOVER : baseStroke;
   };
   const branchLaneHitPointerEvents: React.CSSProperties['pointerEvents'] =
@@ -4030,6 +4032,7 @@ export default function BranchMap({
     memberKeys: string[];
     clusterHasMainTip: boolean;
     clusterHasCheckedOutHead: boolean;
+    clusterHasSelectedCommit: boolean;
   };
   const mainDirectEntries: MarkerEntry<DirectCommit>[] = sortedDirectCommits.map((commit) => {
     const timeCoordX = directXByFullSha.get(commit.fullSha) ?? timeToX(commit.date);
@@ -4037,6 +4040,7 @@ export default function BranchMap({
     return { x: markerPoint.x, y: markerPoint.y, item: commit };
   });
   const latestMainCommitSha = mainDirectEntries[mainDirectEntries.length - 1]?.item.fullSha;
+  const selectedCommitShaRawSet = new Set(selectedCommitShas);
   const mainForkIndices = new Set<number>(mainCommitSplitIndices);
   const mainDirectClusters: MainDirectClusterLayout[] = clusterByForkPoints(
     mainDirectEntries,
@@ -4061,6 +4065,8 @@ export default function BranchMap({
         clusterHasCheckedOutHead:
           checkedOutHeadSha != null &&
           cluster.entries.some((entry) => shaMatchesGitRef(entry.item.fullSha, checkedOutHeadSha)),
+        clusterHasSelectedCommit:
+          cluster.entries.some((entry) => selectedCommitShaRawSet.has(entry.item.fullSha)),
       };
     });
   const renderedMainAnchorByCommitSha = (() => {
@@ -4854,6 +4860,7 @@ export default function BranchMap({
                     clusterKey,
                     clusterHasMainTip,
                     clusterHasCheckedOutHead,
+                    clusterHasSelectedCommit,
                     memberKeys,
                   } = clusterLayout;
                   const countLabel = stackCountLabel(count);
@@ -4881,7 +4888,12 @@ export default function BranchMap({
                         rx={rectSize.radius / Math.max(layerCameraScale.x, 0.0001)}
                         style={{ cursor: 'pointer' }}
                         fill={CANVAS_NODE_FILL}
-                        stroke={getNodeStrokeColor(clusterKey, CANVAS_NODE_STROKE, clusterHasCheckedOutHead)}
+                        stroke={getNodeStrokeColor(
+                          clusterKey,
+                          CANVAS_NODE_STROKE,
+                          clusterHasCheckedOutHead,
+                          clusterHasSelectedCommit || (clusterHasMainTip && selectedBranchNameSet.has(defaultBranch)),
+                        )}
                         strokeWidth={CANVAS_NODE_STROKE_WIDTH}
                         onClick={(event) =>
                           handleCommitNodeClick(
@@ -4920,11 +4932,18 @@ export default function BranchMap({
                   const phaseEased = phaseProgress <= 0 ? 0 : phaseProgress >= 1 ? 1 : easeInOutCubic(phaseProgress);
                   const rectSize = nodeRectSize(count);
                   const localRect = commitRectSize(scaledNodeSize, 0);
-                  const collapseIconSize = worldPx(10);
-                  const collapseHitSize = worldPx(14);
+                  const collapseIconSize = worldPx(12);
+                  const collapseHitSize = worldPx(16);
                   const collapseStrokeWidth = 1;
-                  const clumpCountAnchorX = anchorX + rectSize.width / 2 - nodeFrameLabelRightInsetX;
-                  const clumpCountAnchorY = anchorY - rectSize.height / 2 - nodeFrameLabelGap;
+                  const topExpandedEntry = isExpanded
+                    ? cluster.entries.reduce((top, entry) => (entry.y < top.y ? entry : top), cluster.entries[0])
+                    : null;
+                  const clumpCountAnchorX = topExpandedEntry
+                    ? topExpandedEntry.x + localRect.width / 2 - nodeFrameLabelRightInsetX
+                    : anchorX + rectSize.width / 2 - nodeFrameLabelRightInsetX;
+                  const clumpCountAnchorY = topExpandedEntry
+                    ? topExpandedEntry.y - localRect.height / 2 - nodeFrameLabelGap
+                    : anchorY - rectSize.height / 2 - nodeFrameLabelGap;
                   const collapseIconX = clumpCountAnchorX - collapseHitSize;
                   const collapseIconY = clumpCountAnchorY - collapseHitSize + worldPx(3);
                   const collapseCaretX = collapseIconX + (collapseHitSize - collapseIconSize) / 2;
@@ -4956,7 +4975,12 @@ export default function BranchMap({
                             data-base-rx={rectSize.radius}
                             rx={rectSize.radius / Math.max(layerCameraScale.x, 0.0001)}
                             fill={CANVAS_NODE_FILL}
-                            stroke={getNodeStrokeColor(clusterKey, CANVAS_NODE_STROKE, clusterHasCheckedOutHead)}
+                            stroke={getNodeStrokeColor(
+                              clusterKey,
+                              CANVAS_NODE_STROKE,
+                              clusterHasCheckedOutHead,
+                              clusterHasSelectedCommit || (clusterHasMainTip && selectedBranchNameSet.has(defaultBranch)),
+                            )}
                             strokeWidth={CANVAS_NODE_STROKE_WIDTH}
                           />
                           <text
@@ -5058,7 +5082,15 @@ export default function BranchMap({
                                   data-base-rx={localRect.radius}
                                   rx={localRect.radius / Math.max(layerCameraScale.x, 0.0001)}
                                   fill={CANVAS_NODE_FILL}
-                                  stroke={getNodeStrokeColor(commitKey, CANVAS_NODE_STROKE, isCheckedOutCommit)}
+                                  stroke={getNodeStrokeColor(
+                                    commitKey,
+                                    CANVAS_NODE_STROKE,
+                                    isCheckedOutCommit,
+                                    selectedCommitShaSet.has(c.fullSha) ||
+                                      (clusterHasMainTip &&
+                                        selectedBranchNameSet.has(defaultBranch) &&
+                                        c.fullSha === latestMainCommitSha),
+                                  )}
                                   strokeWidth={CANVAS_NODE_STROKE_WIDTH}
                                   style={{ cursor: 'pointer' }}
                                   onClick={(event) =>
@@ -5085,17 +5117,6 @@ export default function BranchMap({
                                     setTooltip(null);
                                   }}
                                 />
-                                <text
-                                  x={-localRect.width / 2 + nodeFrameLabelInsetX}
-                                  y={-localRect.height / 2 - nodeFrameLabelGap}
-                                  textAnchor="start"
-                                  fill={NODE_FRAME_LABEL_COLOR}
-                                  fontSize={nodeFrameLabelFontSize}
-                                  fontWeight={NODE_FRAME_LABEL_WEIGHT}
-                                  pointerEvents="none"
-                                >
-                                  {fitNodeFrameTitle(defaultBranch, c.sha ?? c.fullSha, localRect.width)}
-                                </text>
                               </g>
                             );
                           })}
@@ -5761,6 +5782,12 @@ export default function BranchMap({
                         }
                         return false;
                       });
+                    const clusterHasSelectedCommit =
+                      cluster.entries.some((entry) => {
+                        const commitSha = entry.item.commit?.fullSha;
+                        return !!commitSha && selectedCommitShaSet.has(commitSha);
+                      });
+                    const clusterHasSelectedHead = clusterHasBranchTip && selectedBranchNameSet.has(b.name);
 
                     if (count <= 1) {
                       const commitEntry = renderEntries[0] ?? lastEntry;
@@ -5803,6 +5830,7 @@ export default function BranchMap({
                                   clusterKey,
                                   isGhostRect ? LOCAL_UNPUSHED_GRAY : CANVAS_NODE_STROKE,
                                   clusterHasCheckedOutHead,
+                                  clusterHasSelectedCommit || clusterHasSelectedHead,
                                 )
                               }
                               strokeWidth={
@@ -5906,11 +5934,18 @@ export default function BranchMap({
                       );
                       // Expanded members represent single commits in grid layout.
                       const localRect = commitRectSize(scaledNodeSize, 0);
-                      const collapseIconSize = worldPx(10);
-                      const collapseHitSize = worldPx(14);
+                      const collapseIconSize = worldPx(12);
+                      const collapseHitSize = worldPx(16);
                       const collapseStrokeWidth = 1;
-                      const clumpCountAnchorX = anchorX + rectSize.width / 2 - nodeFrameLabelRightInsetX;
-                      const clumpCountAnchorY = anchorY - rectSize.height / 2 - nodeFrameLabelGap;
+                      const topExpandedEntry = isExpanded
+                        ? renderEntries.reduce((top, entry) => (entry.y < top.y ? entry : top), renderEntries[0])
+                        : null;
+                      const clumpCountAnchorX = topExpandedEntry
+                        ? topExpandedEntry.x + localRect.width / 2 - nodeFrameLabelRightInsetX
+                        : anchorX + rectSize.width / 2 - nodeFrameLabelRightInsetX;
+                      const clumpCountAnchorY = topExpandedEntry
+                        ? topExpandedEntry.y - localRect.height / 2 - nodeFrameLabelGap
+                        : anchorY - rectSize.height / 2 - nodeFrameLabelGap;
                       const collapseIconX = clumpCountAnchorX - collapseHitSize;
                       const collapseIconY = clumpCountAnchorY - collapseHitSize + worldPx(3);
                       const collapseCaretX = collapseIconX + (collapseHitSize - collapseIconSize) / 2;
@@ -5929,7 +5964,12 @@ export default function BranchMap({
                                 data-base-rx={rectSize.radius}
                                 rx={rectSize.radius / Math.max(layerCameraScale.x, 0.0001)}
                                 fill={dotFill}
-                                stroke={getNodeStrokeColor(clusterKey, CANVAS_NODE_STROKE, clusterHasCheckedOutHead)}
+                                stroke={getNodeStrokeColor(
+                                  clusterKey,
+                                  CANVAS_NODE_STROKE,
+                                  clusterHasCheckedOutHead,
+                                  clusterHasSelectedCommit || clusterHasSelectedHead,
+                                )}
                                 strokeWidth={dotStrokeWidth}
                                 strokeDasharray={dotStrokeDasharray}
                               />
@@ -6051,7 +6091,13 @@ export default function BranchMap({
                                       data-base-rx={localRect.radius}
                                       rx={localRect.radius / Math.max(layerCameraScale.x, 0.0001)}
                                       fill={dotFill}
-                                      stroke={getNodeStrokeColor(commitKey, CANVAS_NODE_STROKE, isCheckedOutCommit)}
+                                      stroke={getNodeStrokeColor(
+                                        commitKey,
+                                        CANVAS_NODE_STROKE,
+                                        isCheckedOutCommit,
+                                        selectedCommitShaSet.has(commit.fullSha) ||
+                                          (clusterHasSelectedHead && commit.fullSha === b.headSha),
+                                      )}
                                       strokeWidth={dotStrokeWidth}
                                       strokeDasharray={dotStrokeDasharray}
                                       style={{ cursor: 'pointer' }}
@@ -6085,17 +6131,6 @@ export default function BranchMap({
                                         setTooltip(null);
                                       }}
                                     />
-                                    <text
-                                      x={-localRect.width / 2 + nodeFrameLabelInsetX}
-                                      y={-localRect.height / 2 - nodeFrameLabelGap}
-                                      textAnchor="start"
-                                      fill={NODE_FRAME_LABEL_COLOR}
-                                      fontSize={nodeFrameLabelFontSize}
-                                      fontWeight={NODE_FRAME_LABEL_WEIGHT}
-                                      pointerEvents="none"
-                                    >
-                                      {fitNodeFrameTitle(b.name, commit.sha ?? commit.fullSha, localRect.width)}
-                                    </text>
                                   </g>
                                 );
                               })}
@@ -6349,6 +6384,15 @@ export default function BranchMap({
                       }
                       return false;
                     });
+                  const clusterHasSelectedCommit =
+                    cluster.entries.some((entry) => {
+                      const commitSha = entry.item.commit?.fullSha;
+                      return !!commitSha && selectedCommitShaSet.has(commitSha);
+                    });
+                  const clusterHasSelectedHead =
+                    branchEndDotIndex != null &&
+                    cluster.entries.some((entry) => entry.item.index === branchEndDotIndex) &&
+                    selectedBranchNameSet.has(b.name);
 
                   if (count <= 1) {
                     const commitEntry = renderEntries[0] ?? lastEntry;
@@ -6375,6 +6419,7 @@ export default function BranchMap({
                               clusterKey,
                               isGhostRect ? LOCAL_UNPUSHED_GRAY : CANVAS_NODE_STROKE,
                               clusterHasCheckedOutHead,
+                              clusterHasSelectedCommit || clusterHasSelectedHead,
                             )
                           }
                           strokeWidth={
@@ -6407,7 +6452,12 @@ export default function BranchMap({
                           data-base-rx={rectSize.radius}
                           rx={rectSize.radius / Math.max(layerCameraScale.x, 0.0001)}
                           fill={dotFill}
-                          stroke={getNodeStrokeColor(clusterKey, CANVAS_NODE_STROKE, clusterHasCheckedOutHead)}
+                          stroke={getNodeStrokeColor(
+                            clusterKey,
+                            CANVAS_NODE_STROKE,
+                            clusterHasCheckedOutHead,
+                            clusterHasSelectedCommit || clusterHasSelectedHead,
+                          )}
                           strokeWidth={dotStrokeWidth}
                           strokeDasharray={dotStrokeDasharray}
                         />
@@ -6469,7 +6519,13 @@ export default function BranchMap({
                               data-base-rx={localRect.radius}
                               rx={localRect.radius / Math.max(layerCameraScale.x, 0.0001)}
                               fill={dotFill}
-                              stroke={getNodeStrokeColor(commitKey, CANVAS_NODE_STROKE, isCheckedOutCommit)}
+                              stroke={getNodeStrokeColor(
+                                commitKey,
+                                CANVAS_NODE_STROKE,
+                                isCheckedOutCommit,
+                                selectedCommitShaSet.has(commit.fullSha) ||
+                                  (clusterHasSelectedHead && commit.fullSha === b.headSha),
+                              )}
                               strokeWidth={dotStrokeWidth}
                               strokeDasharray={dotStrokeDasharray}
                             />
@@ -6492,7 +6548,9 @@ export default function BranchMap({
                   last,
                   clusterKey,
                   memberKeys,
+                  clusterHasMainTip,
                   clusterHasCheckedOutHead: mainClusterHasCheckedOutHead,
+                  clusterHasSelectedCommit: mainClusterHasSelectedCommit,
                 } = clusterLayout;
                 const animatedAnchor = resolveAnimatedClumpAnchor(
                   clusterKey,
@@ -6501,6 +6559,14 @@ export default function BranchMap({
                 );
                 const expanded = expandedClumps.get(clusterKey);
                 const isExpanded = expanded?.isExpanded ?? false;
+                const phase = expanded?.phase ?? 'collapsed';
+                const phaseStartedAtMs = expanded?.phaseStartedAt ?? Date.now();
+                const phaseProgress = phase === 'collapsed'
+                  ? 0
+                  : phase === 'expanded'
+                    ? 1
+                    : clamp01((Date.now() - phaseStartedAtMs) / clumpExpandMs);
+                const phaseEased = phaseProgress <= 0 ? 0 : phaseProgress >= 1 ? 1 : easeInOutCubic(phaseProgress);
                 const headEntryForCluster =
                   mainClusterHasCheckedOutHead && checkedOutHeadSha && isExpanded
                     ? cluster.entries.find((entry) =>
@@ -6529,7 +6595,12 @@ export default function BranchMap({
                         data-base-rx={rectSize.radius}
                         rx={rectSize.radius / Math.max(layerCameraScale.x, 0.0001)}
                         fill={CANVAS_NODE_FILL}
-                        stroke={getNodeStrokeColor(clusterKey, CANVAS_NODE_STROKE, mainClusterHasCheckedOutHead)}
+                        stroke={getNodeStrokeColor(
+                          clusterKey,
+                          CANVAS_NODE_STROKE,
+                          mainClusterHasCheckedOutHead,
+                          mainClusterHasSelectedCommit || (clusterHasMainTip && selectedBranchNameSet.has(defaultBranch)),
+                        )}
                         strokeWidth={CANVAS_NODE_STROKE_WIDTH}
                       />
                       <text
@@ -6548,6 +6619,7 @@ export default function BranchMap({
                 }
 
                 const clusterRectSize = nodeRectSize(count);
+                const localRect = commitRectSize(scaledNodeSize, 0);
                 const gridPad = 0;
                 const clumpCountText = stackCountLabel(count);
                 const clumpTitleText = fitNodeFrameTitle(
@@ -6560,18 +6632,60 @@ export default function BranchMap({
                   <g key={`main-direct-overlay-${clusterKey}`}>
                     {isExpanded ? (
                       <>
-                        <rect
-                          className="branch-map-commit-rect"
-                          x={anchorX - clusterRectSize.width / 2 + CANVAS_NODE_STROKE_INSET}
-                          y={anchorY - clusterRectSize.height / 2 + CANVAS_NODE_STROKE_INSET}
-                          width={clusterRectSize.width - CANVAS_NODE_STROKE_WIDTH}
-                          height={clusterRectSize.height - CANVAS_NODE_STROKE_WIDTH}
-                          data-base-rx={clusterRectSize.radius}
-                          rx={clusterRectSize.radius / Math.max(layerCameraScale.x, 0.0001)}
-                          fill={CANVAS_NODE_FILL}
-                          stroke={getNodeStrokeColor(clusterKey, CANVAS_NODE_STROKE, mainClusterHasCheckedOutHead)}
-                          strokeWidth={CANVAS_NODE_STROKE_WIDTH}
-                        />
+                        {cluster.entries.map((entry) => {
+                          const c = entry.item;
+                          const from = { x: anchorX, y: anchorY };
+                          const to = { x: entry.x, y: entry.y };
+                          const at = phase === 'collapsing'
+                            ? { x: to.x + (from.x - to.x) * phaseEased, y: to.y + (from.y - to.y) * phaseEased }
+                            : phase === 'expanding'
+                              ? { x: from.x + (to.x - from.x) * phaseEased, y: from.y + (to.y - from.y) * phaseEased }
+                              : phase === 'collapsed'
+                                ? from
+                                : to;
+                          const memberOpacity = phase === 'collapsing'
+                            ? 1 - 0.3 * phaseEased
+                            : phase === 'expanding'
+                              ? 0.7 + 0.3 * phaseEased
+                              : phase === 'collapsed'
+                                ? 0.7
+                                : 1;
+                          const commitKey = `direct:${c.fullSha}`;
+                          const isCheckedOutCommit =
+                            checkedOutHeadSha != null &&
+                            (shaMatchesGitRef(c.fullSha, checkedOutHeadSha) ||
+                              shaMatchesGitRef(c.sha, checkedOutHeadSha));
+
+                          return (
+                            <g
+                              key={`main-direct-overlay:${c.fullSha}`}
+                              transform={`translate(${at.x} ${at.y})`}
+                              style={clumpAnimStyle}
+                              opacity={memberOpacity}
+                            >
+                              <rect
+                                className="branch-map-commit-rect"
+                                x={-localRect.width / 2 + CANVAS_NODE_STROKE_INSET}
+                                y={-localRect.height / 2 + CANVAS_NODE_STROKE_INSET}
+                                width={localRect.width - CANVAS_NODE_STROKE_WIDTH}
+                                height={localRect.height - CANVAS_NODE_STROKE_WIDTH}
+                                data-base-rx={localRect.radius}
+                                rx={localRect.radius / Math.max(layerCameraScale.x, 0.0001)}
+                                fill={CANVAS_NODE_FILL}
+                                stroke={getNodeStrokeColor(
+                                  commitKey,
+                                  CANVAS_NODE_STROKE,
+                                  isCheckedOutCommit,
+                                  selectedCommitShaSet.has(c.fullSha) ||
+                                    (clusterHasMainTip &&
+                                      selectedBranchNameSet.has(defaultBranch) &&
+                                      c.fullSha === latestMainCommitSha),
+                                )}
+                                strokeWidth={CANVAS_NODE_STROKE_WIDTH}
+                              />
+                            </g>
+                          );
+                        })}
                       </>
                     ) : (
                       <rect
@@ -6583,7 +6697,12 @@ export default function BranchMap({
                         data-base-rx={clusterRectSize.radius}
                         rx={clusterRectSize.radius / Math.max(layerCameraScale.x, 0.0001)}
                         fill={CANVAS_NODE_FILL}
-                        stroke={getNodeStrokeColor(clusterKey, CANVAS_NODE_STROKE, mainClusterHasCheckedOutHead)}
+                        stroke={getNodeStrokeColor(
+                          clusterKey,
+                          CANVAS_NODE_STROKE,
+                          mainClusterHasCheckedOutHead,
+                          mainClusterHasSelectedCommit || (clusterHasMainTip && selectedBranchNameSet.has(defaultBranch)),
+                        )}
                         strokeWidth={CANVAS_NODE_STROKE_WIDTH}
                       />
                     )}
@@ -6600,17 +6719,19 @@ export default function BranchMap({
                         {clumpCountText}
                       </text>
                     )}
-                    <text
-                      x={anchorX - (clusterRectSize.width + gridPad) / 2 + nodeFrameLabelInsetX}
-                      y={anchorY - (clusterRectSize.height + gridPad) / 2 - nodeFrameLabelGap}
-                      textAnchor="start"
-                      fill={NODE_FRAME_LABEL_COLOR}
-                      fontSize={nodeFrameLabelFontSize}
-                      fontWeight={NODE_FRAME_LABEL_WEIGHT}
-                      pointerEvents="none"
-                    >
-                      {clumpTitleText}
-                    </text>
+                    {!isExpanded && (
+                      <text
+                        x={anchorX - (clusterRectSize.width + gridPad) / 2 + nodeFrameLabelInsetX}
+                        y={anchorY - (clusterRectSize.height + gridPad) / 2 - nodeFrameLabelGap}
+                        textAnchor="start"
+                        fill={NODE_FRAME_LABEL_COLOR}
+                        fontSize={nodeFrameLabelFontSize}
+                        fontWeight={NODE_FRAME_LABEL_WEIGHT}
+                        pointerEvents="none"
+                      >
+                        {clumpTitleText}
+                      </text>
+                    )}
                   </g>
                 );
               })}
@@ -6945,64 +7066,6 @@ export default function BranchMap({
                 );
               })}
             </g>
-          </g>
-
-          {/* Commit selection rings. */}
-          <g style={{ pointerEvents: 'none' }}>
-            {commitSelectionTargets.map((target) => {
-              if (!selectedCommitShaSet.has(target.commitSha)) return null;
-              const rectSize = commitRectSize(scaledNodeSize);
-              const ringPad = worldPx(2);
-              const ringRect = collapsedClumpHitRect(
-                target.point.x,
-                target.point.y,
-                rectSize,
-                ringPad
-              );
-              return (
-                <rect
-                  key={`commit-selection-ring-${target.commitSha}`}
-                  x={ringRect.x}
-                  y={ringRect.y}
-                  width={ringRect.width}
-                  height={ringRect.height}
-                  fill="none"
-                  stroke={USER_SELECTION_STROKE}
-                  strokeWidth={2}
-                  vectorEffect="non-scaling-stroke"
-                  rx={1 / Math.max(layerCameraScale.x, 0.0001)}
-                />
-              );
-            })}
-          </g>
-
-          {/* Explicit merge selection rings for branch heads. */}
-          <g style={{ pointerEvents: 'none' }}>
-            {branchHeadTargets.map((target) => {
-              if (!selectedBranchNameSet.has(target.branchName)) return null;
-              const rectSize = commitRectSize(scaledNodeSize);
-              const ringPad = worldPx(2);
-              const ringRect = collapsedClumpHitRect(
-                target.point.x,
-                target.point.y,
-                rectSize,
-                ringPad
-              );
-              return (
-                <rect
-                  key={`branch-selection-ring-${target.branchName}`}
-                  x={ringRect.x}
-                  y={ringRect.y}
-                  width={ringRect.width}
-                  height={ringRect.height}
-                  fill="none"
-                  stroke={USER_SELECTION_STROKE}
-                  strokeWidth={2}
-                  vectorEffect="non-scaling-stroke"
-                  rx={1 / Math.max(layerCameraScale.x, 0.0001)}
-                />
-              );
-            })}
           </g>
 
           {/* Branch commit tooltip is rendered as an HTML overlay outside the zoomed camera. */}
