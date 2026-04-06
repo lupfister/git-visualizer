@@ -4314,10 +4314,6 @@ export default function BranchMap({
   })();
   const selectedBranchList = selectedBranchNames.filter((name) => selectableBranchNameSet.has(name));
   const selectedBranchNameSet = new Set(selectedBranchList);
-  const selectedCommitTargetSha =
-    mergeTargetCommitSha && selectedCommitShaSet.has(mergeTargetCommitSha)
-      ? mergeTargetCommitSha
-      : selectedVisibleCommitShas[selectedVisibleCommitShas.length - 1] ?? null;
   const branchCandidatesForCommit = (sha: string): string[] => {
     const branchesForCommit = commitShaToBranchNames.get(sha);
     if (!branchesForCommit) return [];
@@ -4332,17 +4328,33 @@ export default function BranchMap({
     const nonDefault = candidates.find((branchName) => branchName !== defaultBranch);
     return nonDefault ?? candidates[0];
   };
-  const targetBranchForSelectedCommit =
-    selectedCommitTargetSha ? resolveTargetBranch(selectedCommitTargetSha) : null;
-  const commitMergeSources = (() => {
-    if (!selectedCommitTargetSha || !targetBranchForSelectedCommit) return [] as string[];
-    const targetSha = selectedCommitTargetSha;
-    const filtered = selectedVisibleCommitShas.filter((sha) => sha !== targetSha);
-    return filtered.filter((sha) => {
-      const sourceCandidates = new Set(branchCandidatesForCommit(sha));
-      return !sourceCandidates.has(targetBranchForSelectedCommit);
-    });
-  })();
+  const commitMergeTargetOptions = Array.from(
+    selectedVisibleCommitShas.reduce((byBranch, targetSha) => {
+      const targetBranch = resolveTargetBranch(targetSha);
+      if (!targetBranch) return byBranch;
+      const sourceRefs = selectedVisibleCommitShas
+        .filter((sha) => sha !== targetSha)
+        .filter((sha) => {
+          const sourceCandidates = new Set(branchCandidatesForCommit(sha));
+          return !sourceCandidates.has(targetBranch);
+        });
+      byBranch.set(targetBranch, {
+        targetSha,
+        targetBranch,
+        sourceRefs,
+      });
+      return byBranch;
+    }, new Map<string, { targetSha: string; targetBranch: string; sourceRefs: string[] }>())
+      .values()
+  );
+  const explicitTargetBranch =
+    mergeTargetCommitSha != null ? resolveTargetBranch(mergeTargetCommitSha) : null;
+  const selectedCommitTargetOption =
+    (explicitTargetBranch
+      ? commitMergeTargetOptions.find((option) => option.targetBranch === explicitTargetBranch)
+      : null) ?? commitMergeTargetOptions[commitMergeTargetOptions.length - 1] ?? null;
+  const targetBranchForSelectedCommit = selectedCommitTargetOption?.targetBranch ?? null;
+  const commitMergeSources = selectedCommitTargetOption?.sourceRefs ?? [];
 
   type RowDebugUsage = {
     mainDirect: number;
@@ -7318,54 +7330,41 @@ export default function BranchMap({
           }}
         >
           <div className="flex items-center gap-2 min-w-0">
-            {selectedBranchList.length > 0 && (
-              <div className="flex items-center gap-2 shrink-0 bg-card border border-border rounded-md px-3 py-1">
-                <span className="text-xs text-muted-foreground select-none">
-                  Selected {selectedBranchList.length}
+            {selectedCommitTargetOption && targetBranchForSelectedCommit && (
+              <div className="flex items-center gap-2 shrink-0 bg-card border border-border rounded-full pl-3 pr-1 py-1">
+                <span className="text-xs text-muted-foreground font-medium select-none">
+                  merge to...
                 </span>
-                <button
-                  onClick={() => {
-                    setSelectedBranchNames([]);
-                    setSelectedCommitShas([]);
-                    setMergeTargetCommitSha(null);
-                  }}
-                  className="text-xs text-muted-foreground hover:text-foreground transition-colors"
-                  title="Clear selection"
-                >
-                  Clear
-                </button>
-              </div>
-            )}
-            {selectedVisibleCommitShas.length > 0 && (
-              <div className="flex items-center gap-2 shrink-0 bg-card border border-border rounded-md px-3 py-1">
-                <span className="text-xs text-muted-foreground select-none">
-                  {selectedVisibleCommitShas.length === 1
-                    ? `Commit ${selectedVisibleCommitShas[0].slice(0, 7)}`
-                    : `Commits ${selectedVisibleCommitShas.length}`}
-                </span>
-              </div>
-            )}
-            {selectedCommitTargetSha && targetBranchForSelectedCommit && (
-              <div className="flex items-center gap-2 shrink-0 bg-card border border-border rounded-md px-2 py-1.5">
-                <span className="text-[10px] uppercase tracking-wide text-muted-foreground font-medium select-none">
-                  Merge Commit
-                </span>
-                <span className="text-xs text-muted-foreground select-none">
-                  {`Target ${selectedCommitTargetSha.slice(0, 7)} on ${targetBranchForSelectedCommit}`}
-                </span>
+                <div className="flex items-center gap-1.5">
+                  {commitMergeTargetOptions.map((option) => {
+                    const isActiveTarget = option.targetBranch === targetBranchForSelectedCommit;
+                    return (
+                      <button
+                        key={`merge-target-${option.targetBranch}`}
+                        onClick={() => setMergeTargetCommitSha(option.targetSha)}
+                        className={`px-2 py-1 rounded-full text-xs leading-none select-none transition-colors ${
+                          isActiveTarget
+                            ? 'bg-primary/10 text-foreground'
+                            : 'bg-muted/30 text-muted-foreground hover:bg-muted hover:text-foreground'
+                        }`}
+                        title={`Merge selected commits into ${option.targetBranch}`}
+                      >
+                        {option.targetBranch}
+                      </button>
+                    );
+                  })}
+                </div>
                 <button
                   onClick={() => void handleMergeSourcesIntoTarget(commitMergeSources, targetBranchForSelectedCommit)}
                   disabled={mergeInProgress || commitMergeSources.length === 0}
-                  className="px-2.5 py-1 rounded-md text-xs leading-none select-none transition-colors bg-muted/30 text-foreground hover:bg-muted disabled:opacity-50 disabled:cursor-not-allowed"
+                  className="px-2.5 py-1 rounded-full text-xs leading-none select-none transition-colors bg-black text-white hover:bg-black/90 disabled:opacity-50 disabled:cursor-not-allowed"
                   title={
                     commitMergeSources.length > 0
                       ? `Merge ${commitMergeSources.length} commits into ${targetBranchForSelectedCommit}`
                       : 'No eligible source commits to merge'
                   }
                 >
-                  {commitMergeSources.length > 0
-                    ? `Merge ${commitMergeSources.length} selected into ${targetBranchForSelectedCommit}`
-                    : 'Nothing to merge'}
+                  Confirm
                 </button>
               </div>
             )}
