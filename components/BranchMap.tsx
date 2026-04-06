@@ -4150,6 +4150,71 @@ export default function BranchMap({
     return future?.anchor ?? past?.anchor;
   }
 
+  const checkedOutClumpKeysToAutoExpand = (() => {
+    if (!checkedOutHeadSha) return [];
+
+    const keys = new Set<string>();
+
+    for (const { cluster, clusterKey } of mainDirectClusters) {
+      if (cluster.entries.length <= 1) continue;
+      const hasCheckedOutCommit = cluster.entries.some((entry) =>
+        shaMatchesGitRef(entry.item.fullSha, checkedOutHeadSha)
+      );
+      if (hasCheckedOutCommit) keys.add(clusterKey);
+    }
+
+    for (const branch of activeBranches) {
+      const { commitDotClusters, hasPreviewData, branchEndDotIndex } = getBranchRenderLayout(branch);
+      for (const cluster of commitDotClusters) {
+        const realCommitEntries = cluster.entries.filter(
+          (entry) => entry.item.commit?.kind !== 'branch-created'
+        );
+        const renderEntries = realCommitEntries.length > 0 ? realCommitEntries : cluster.entries;
+        if (renderEntries.length <= 1) continue;
+
+        const hasCheckedOutCommit = cluster.entries.some((entry) => {
+          const idx = entry.item.index;
+          const commit = entry.item.commit;
+          if (hasPreviewData && commit && commit.kind !== 'branch-created') {
+            return (
+              shaMatchesGitRef(commit.fullSha, checkedOutHeadSha) ||
+              shaMatchesGitRef(commit.sha, checkedOutHeadSha)
+            );
+          }
+          if (!hasPreviewData && checkedOutBranchName === branch.name && branchEndDotIndex === idx) {
+            return shaMatchesGitRef(branch.headSha, checkedOutHeadSha);
+          }
+          return false;
+        });
+
+        if (!hasCheckedOutCommit) continue;
+
+        const firstEntry = cluster.entries[0];
+        const lastEntry = cluster.entries[cluster.entries.length - 1];
+        keys.add(`commit-clump-${branch.name}-${firstEntry.item.index}-${lastEntry.item.index}`);
+      }
+    }
+
+    return Array.from(keys);
+  })();
+  const checkedOutClumpAutoExpandSignature = checkedOutClumpKeysToAutoExpand
+    .slice()
+    .sort()
+    .join('|');
+  useEffect(() => {
+    if (checkedOutClumpKeysToAutoExpand.length === 0) return;
+
+    setExpandedClumps((prev) => {
+      let next: Map<string, ExpandedClumpState> | null = null;
+      for (const clumpKey of checkedOutClumpKeysToAutoExpand) {
+        if (prev.get(clumpKey)?.isExpanded) continue;
+        if (next == null) next = new Map(prev);
+        next.set(clumpKey, { isExpanded: true, phase: 'expanded', phaseStartedAt: Date.now() });
+      }
+      return next ?? prev;
+    });
+  }, [checkedOutClumpAutoExpandSignature]);
+
   function resolveBranchHeadProjectedPoint(layout: BranchRenderLayout): { x: number; y: number } {
     if (layout.branchEndDotIndex != null) {
       for (const cluster of layout.commitDotClusters) {
