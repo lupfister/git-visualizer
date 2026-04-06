@@ -3298,6 +3298,10 @@ export default function BranchMap({
   const NODE_FRAME_LABEL_PAIR_GAP_PX = 2;
   const NODE_FRAME_LABEL_COLOR = '#78716c';
   const NODE_FRAME_LABEL_WEIGHT = 400;
+  const NODE_ASCII_WEIGHT = 550;
+  const NODE_ASCII_COLUMNS = 7;
+  const NODE_ASCII_ROWS = 4;
+  const NODE_ASCII_CHARSET = ['.', ':', '-', '=', '+', '*', '#', '%', '@', '/', '\\', '|', '_', 'x'] as const;
   const nodeFrameLabelFontSize = worldPx(NODE_FRAME_LABEL_FONT_PX);
   const nodeFrameLabelGap = worldPx(NODE_FRAME_LABEL_TOP_GAP_PX);
   const nodeFrameLabelInsetX = worldPx(NODE_FRAME_LABEL_LEFT_INSET_PX);
@@ -3307,6 +3311,89 @@ export default function BranchMap({
     estimateSvgTextWidth(`x${CLUMP_COUNT_MAX}`, nodeFrameLabelFontSize) + nodeFrameLabelPairGap;
   const shortShaLabel = (sha?: string | null): string => (sha ? sha.slice(0, 7) : '-------');
   const stackCountLabel = (count: number): string => `x${clumpCountLabel(count)}`;
+  const hashAsciiSeed = (seed: string): number => {
+    let hash = 2166136261;
+    for (let i = 0; i < seed.length; i += 1) {
+      hash ^= seed.charCodeAt(i);
+      hash = Math.imul(hash, 16777619);
+    }
+    return hash >>> 0;
+  };
+  const mirrorAsciiChar = (char: string): string => {
+    if (char === '/') return '\\';
+    if (char === '\\') return '/';
+    if (char === '(') return ')';
+    if (char === ')') return '(';
+    if (char === '<') return '>';
+    if (char === '>') return '<';
+    if (char === '{') return '}';
+    if (char === '}') return '{';
+    if (char === '[') return ']';
+    if (char === ']') return '[';
+    return char;
+  };
+  const nodeAsciiBlock = (
+    seedInput?: string | null,
+    columns = NODE_ASCII_COLUMNS,
+    rows = NODE_ASCII_ROWS,
+  ): string[] => {
+    const seed = seedInput && seedInput.length > 0 ? seedInput : 'node';
+    let state = hashAsciiSeed(seed);
+    const nextRand = (): number => {
+      state = (Math.imul(state, 1664525) + 1013904223) >>> 0;
+      return state;
+    };
+
+    return Array.from({ length: rows }, (_, rowIndex) => {
+      const rowChars = new Array<string>(columns);
+      const halfCols = Math.ceil(columns / 2);
+      for (let col = 0; col < halfCols; col += 1) {
+        const rand = nextRand() ^ Math.imul(rowIndex + 1, 0x9e3779b1) ^ Math.imul(col + 1, 0x85ebca77);
+        const char = NODE_ASCII_CHARSET[rand % NODE_ASCII_CHARSET.length];
+        const mirrorCol = columns - 1 - col;
+        rowChars[col] = char;
+        rowChars[mirrorCol] = mirrorCol === col ? char : mirrorAsciiChar(char);
+      }
+      return rowChars.join('');
+    });
+  };
+  const renderNodeAsciiStamp = (
+    x: number,
+    y: number,
+    rectWidth: number,
+    rectHeight: number,
+    seed?: string | null,
+  ) => {
+    const lines = nodeAsciiBlock(seed);
+    const columns = lines[0]?.length ?? NODE_ASCII_COLUMNS;
+    const rows = lines.length || NODE_ASCII_ROWS;
+    const fontByWidth = rectWidth / Math.max(1, columns * 0.62);
+    const fontByHeight = rectHeight / Math.max(1, rows * 1.1);
+    const fontSize = Math.max(worldPx(4.5), Math.min(worldPx(12), Math.min(fontByWidth, fontByHeight)));
+    const lineHeight = fontSize * 0.96;
+    const centerOffset = (rows - 1) / 2;
+
+    return (
+      <g pointerEvents="none">
+        {lines.map((line, index) => (
+          <text
+            key={`${seed ?? 'node'}:${index}`}
+            x={x}
+            y={y + (index - centerOffset) * lineHeight}
+            dominantBaseline="middle"
+            textAnchor="middle"
+            fill={NODE_FRAME_LABEL_COLOR}
+            fillOpacity={0.82}
+            fontSize={fontSize}
+            fontWeight={NODE_ASCII_WEIGHT}
+            fontFamily={'ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", "Courier New", monospace'}
+          >
+            {line}
+          </text>
+        ))}
+      </g>
+    );
+  };
   const trimTextToWidth = (text: string, maxWidth: number): string => {
     if (maxWidth <= 0) return '';
     if (estimateSvgTextWidth(text, nodeFrameLabelFontSize) <= maxWidth) return text;
@@ -6208,18 +6295,26 @@ export default function BranchMap({
                       );
 
                       return (
-                        <text
-                          key={`branch-label-overlay-${clusterKey}`}
-                          x={anchorX - rectSize.width / 2 + nodeFrameLabelInsetX}
-                          y={anchorY - rectSize.height / 2 - nodeFrameLabelGap}
-                          textAnchor="start"
-                          fill={NODE_FRAME_LABEL_COLOR}
-                          fontSize={nodeFrameLabelFontSize}
-                          fontWeight={NODE_FRAME_LABEL_WEIGHT}
-                          pointerEvents="none"
-                        >
-                          {singleTitleText}
-                        </text>
+                        <g key={`branch-label-overlay-${clusterKey}`}>
+                          {renderNodeAsciiStamp(
+                            anchorX,
+                            anchorY,
+                            rectSize.width,
+                            rectSize.height,
+                            commit?.fullSha ?? `${b.name}:slot:${commitEntry.item.index}`,
+                          )}
+                          <text
+                            x={anchorX - rectSize.width / 2 + nodeFrameLabelInsetX}
+                            y={anchorY - rectSize.height / 2 - nodeFrameLabelGap}
+                            textAnchor="start"
+                            fill={NODE_FRAME_LABEL_COLOR}
+                            fontSize={nodeFrameLabelFontSize}
+                            fontWeight={NODE_FRAME_LABEL_WEIGHT}
+                            pointerEvents="none"
+                          >
+                            {singleTitleText}
+                          </text>
+                        </g>
                       );
                     }
 
@@ -6241,6 +6336,14 @@ export default function BranchMap({
 
                       return (
                         <g key={`branch-label-overlay-${clusterKey}`}>
+                          {renderNodeAsciiStamp(
+                            anchorX,
+                            anchorY,
+                            rectSize.width,
+                            rectSize.height,
+                            renderEntries[renderEntries.length - 1]?.item.commit?.fullSha ??
+                              `${clusterKey}:collapsed`,
+                          )}
                           <text
                             x={anchorX + rectSize.width / 2 - nodeFrameLabelRightInsetX}
                             y={anchorY - rectSize.height / 2 - nodeFrameLabelGap}
@@ -6307,6 +6410,7 @@ export default function BranchMap({
                               style={clumpAnimStyle}
                               opacity={memberOpacity}
                             >
+                              {renderNodeAsciiStamp(0, 0, localRect.width, localRect.height, commit.fullSha)}
                               <text
                                 x={-localRect.width / 2 + nodeFrameLabelInsetX}
                                 y={-localRect.height / 2 - nodeFrameLabelGap}
@@ -6362,18 +6466,20 @@ export default function BranchMap({
                     rectSize.width,
                   );
                   return (
-                    <text
-                      key={`main-label-overlay-${clusterKey}`}
-                      x={anchorX - rectSize.width / 2 + nodeFrameLabelInsetX}
-                      y={anchorY - rectSize.height / 2 - nodeFrameLabelGap}
-                      textAnchor="start"
-                      fill={NODE_FRAME_LABEL_COLOR}
-                      fontSize={nodeFrameLabelFontSize}
-                      fontWeight={NODE_FRAME_LABEL_WEIGHT}
-                      pointerEvents="none"
-                    >
-                      {singleTitleText}
-                    </text>
+                    <g key={`main-label-overlay-${clusterKey}`}>
+                      {renderNodeAsciiStamp(anchorX, anchorY, rectSize.width, rectSize.height, last.fullSha)}
+                      <text
+                        x={anchorX - rectSize.width / 2 + nodeFrameLabelInsetX}
+                        y={anchorY - rectSize.height / 2 - nodeFrameLabelGap}
+                        textAnchor="start"
+                        fill={NODE_FRAME_LABEL_COLOR}
+                        fontSize={nodeFrameLabelFontSize}
+                        fontWeight={NODE_FRAME_LABEL_WEIGHT}
+                        pointerEvents="none"
+                      >
+                        {singleTitleText}
+                      </text>
+                    </g>
                   );
                 }
 
@@ -6422,6 +6528,7 @@ export default function BranchMap({
                             style={clumpAnimStyle}
                             opacity={memberOpacity}
                           >
+                            {renderNodeAsciiStamp(0, 0, localRect.width, localRect.height, c.fullSha)}
                             <text
                               x={-localRect.width / 2 + nodeFrameLabelInsetX}
                               y={-localRect.height / 2 - nodeFrameLabelGap}
@@ -6441,6 +6548,13 @@ export default function BranchMap({
                 }
                 return (
                   <g key={`main-label-overlay-${clusterKey}`}>
+                    {renderNodeAsciiStamp(
+                      anchorX,
+                      anchorY,
+                      clusterRectSize.width,
+                      clusterRectSize.height,
+                      last.fullSha,
+                    )}
                     {!isExpanded && (
                       <text
                         x={anchorX + clusterRectSize.width / 2 - nodeFrameLabelRightInsetX}
