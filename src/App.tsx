@@ -1,5 +1,6 @@
 import { useState, useEffect, useLayoutEffect, useRef } from 'react';
 import { invoke } from '@tauri-apps/api/core';
+import { listen } from '@tauri-apps/api/event';
 import { getCurrentWindow } from '@tauri-apps/api/window';
 import { ArrowLeft, Maximize2 } from 'lucide-react';
 import BranchMapView from '../components/BranchMapView';
@@ -7,6 +8,10 @@ import FolderPickerModal from './FolderPickerModal';
 import type { Branch, BranchCommitPreview, BranchPromptMeta, BranchPromptMarker, CheckedOutRef, Commit, DirectCommit, GitHubAuthStatus, GitHubInfo, MergeNode, MergedPR, OpenPR } from '../types';
 
 type View = 'landing' | 'map';
+type OpenRepoEventPayload = {
+  path: string;
+  sourceApp?: string | null;
+};
 const PROMPT_ENRICHMENT_ENABLED = false;
 const COMMIT_SWITCH_FEEDBACK_VISIBLE_MS = 1400;
 const COMMIT_SWITCH_FEEDBACK_FADE_MS = 180;
@@ -204,6 +209,35 @@ function App() {
       setGithubAvailable(false);
     }
   }
+
+  useEffect(() => {
+    let unlisten: null | (() => void) = null;
+    let isDisposed = false;
+
+    const openPath = async (payload?: OpenRepoEventPayload | null) => {
+      const nextPath = payload?.path?.trim();
+      if (!nextPath || isDisposed) return;
+      if (repoPath === nextPath) {
+        setView('map');
+        return;
+      }
+      await loadRepo(nextPath);
+    };
+
+    const attach = async () => {
+      unlisten = await listen<OpenRepoEventPayload>('gitviz://open-repo', async (event) => {
+        await openPath(event.payload);
+      });
+      const pending = await invoke<OpenRepoEventPayload | null>('take_pending_open_repo');
+      await openPath(pending);
+    };
+
+    void attach();
+    return () => {
+      isDisposed = true;
+      if (unlisten) unlisten();
+    };
+  }, [repoPath]);
 
   async function handleGitHubAuthSetup() {
     if (!repoPath) return;

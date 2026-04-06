@@ -13,7 +13,7 @@ use chrono::{DateTime, Duration, Utc};
 use std::{
     collections::{HashMap, HashSet},
     fs::{self, File},
-    io::{BufRead, BufReader},
+    io::{BufRead, BufReader, Write},
     path::{Path, PathBuf},
     sync::{
         atomic::{AtomicU64, Ordering},
@@ -30,7 +30,9 @@ use core_graphics::{
 #[cfg(target_os = "macos")]
 use objc2::MainThreadMarker;
 #[cfg(target_os = "macos")]
-use objc2_app_kit::{NSApplication, NSWindow};
+use objc2_app_kit::{NSApplication, NSWindow, NSWorkspace};
+#[cfg(target_os = "macos")]
+use tauri_plugin_global_shortcut::{Code, GlobalShortcutExt, Modifiers, Shortcut, ShortcutState};
 
 #[derive(serde::Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -2600,6 +2602,702 @@ fn get_anthropic_key() -> Option<String> {
     std::env::var("ANTHROPIC_API_KEY").ok()
 }
 
+#[derive(Clone, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+struct OpenRepoEventPayload {
+    path: String,
+    source_app: Option<String>,
+}
+
+#[cfg(target_os = "macos")]
+fn parse_frontmost_process(output: &str) -> Option<(String, i32)> {
+    let trimmed = output.trim();
+    let mut parts = trimmed.splitn(2, "||");
+    let app_name = parts.next()?.trim().to_string();
+    let pid = parts.next()?.trim().parse::<i32>().ok()?;
+    if app_name.is_empty() || pid <= 0 {
+        return None;
+    }
+    Some((app_name, pid))
+}
+
+#[cfg(target_os = "macos")]
+fn frontmost_process_via_nsworkspace() -> Option<(String, i32)> {
+    let workspace = NSWorkspace::sharedWorkspace();
+    let app = workspace.frontmostApplication()?;
+    let pid = app.processIdentifier() as i32;
+    if pid <= 0 {
+        return None;
+    }
+    let app_name = app
+        .localizedName()
+        .map(|name| name.to_string())
+        .filter(|name| !name.is_empty())
+        .unwrap_or_else(|| "Frontmost App".to_string());
+    Some((app_name, pid))
+}
+
+#[cfg(target_os = "macos")]
+fn frontmost_process_via_system_events() -> Option<(String, i32)> {
+    let script = r#"tell application "System Events"
+  tell first application process whose frontmost is true
+    return (name as text) & "||" & (unix id as text)
+  end tell
+end tell"#;
+    let output = std::process::Command::new("osascript")
+        .args(["-e", script])
+        .output()
+        .ok()?;
+    if !output.status.success() {
+        return None;
+    }
+    parse_frontmost_process(std::str::from_utf8(&output.stdout).ok()?)
+}
+
+#[cfg(target_os = "macos")]
+fn frontmost_process_via_swift() -> Option<(String, i32)> {
+    let script = r#"import AppKit
+if let app = NSWorkspace.shared.frontmostApplication {
+    print("\(app.localizedName ?? "")||\(app.processIdentifier)")
+}"#;
+    let output = std::process::Command::new("swift")
+        .args(["-e", script])
+        .output()
+        .ok()?;
+    if !output.status.success() {
+        return None;
+    }
+    parse_frontmost_process(std::str::from_utf8(&output.stdout).ok()?)
+}
+
+#[cfg(target_os = "macos")]
+fn get_frontmost_process() -> Option<(String, i32)> {
+    frontmost_process_via_nsworkspace()
+        .or_else(frontmost_process_via_system_events)
+        .or_else(frontmost_process_via_swift)
+}
+
+#[cfg(target_os = "macos")]
+fn parse_lsof_paths_by_pid(raw: &str) -> HashMap<i32, Vec<PathBuf>> {
+    let mut by_pid: HashMap<i32, Vec<PathBuf>> = HashMap::new();
+    let mut current_pid: Option<i32> = None;
+
+    for line in raw.lines() {
+        if let Some(pid_text) = line.strip_prefix('p') {
+            current_pid = pid_text.trim().parse::<i32>().ok();
+            continue;
+        }
+        let Some(path_text) = line.strip_prefix('n') else {
+            continue;
+        };
+        let Some(pid) = current_pid else {
+            continue;
+        };
+        let path = path_text.trim();
+        if !path.starts_with('/') {
+            continue;
+        }
+        by_pid.entry(pid).or_default().push(PathBuf::from(path));
+    }
+
+    by_pid
+}
+
+#[cfg(target_os = "macos")]
+fn is_noise_system_path(path: &Path) -> bool {
+    let raw = path.to_string_lossy();
+    raw.starts_with("/System/")
+        || raw.starts_with("/usr/")
+        || raw.starts_with("/private/var/")
+        || raw.starts_with("/Library/")
+        || raw.starts_with("/Applications/")
+}
+
+#[cfg(target_os = "macos")]
+fn git_root_for_path(path: &Path) -> Option<PathBuf> {
+    let mut cursor = if path.is_dir() {
+        path.to_path_buf()
+    } else {
+        path.parent()?.to_path_buf()
+    };
+
+    loop {
+        if cursor.join(".git").exists() {
+            return Some(cursor);
+        }
+        if !cursor.pop() {
+            break;
+        }
+    }
+    None
+}
+
+#[cfg(target_os = "macos")]
+fn lsof_paths_for_pids(pids: &[i32], descriptor_filter: &str) -> HashMap<i32, Vec<PathBuf>> {
+    if pids.is_empty() {
+        return HashMap::new();
+    }
+    let mut unique_pids = pids
+        .iter()
+        .copied()
+        .filter(|pid| *pid > 0)
+        .collect::<Vec<_>>();
+    unique_pids.sort_unstable();
+    unique_pids.dedup();
+    if unique_pids.is_empty() {
+        return HashMap::new();
+    }
+
+    let pid_list = unique_pids
+        .iter()
+        .map(|pid| pid.to_string())
+        .collect::<Vec<_>>()
+        .join(",");
+
+    let output = std::process::Command::new("lsof")
+        .args(["-n", "-P", "-a", "-p", &pid_list, "-d", descriptor_filter, "-Fn"])
+        .output();
+    let Ok(output) = output else {
+        return HashMap::new();
+    };
+    let Ok(raw) = std::str::from_utf8(&output.stdout) else {
+        return HashMap::new();
+    };
+    if raw.trim().is_empty() {
+        return HashMap::new();
+    }
+    parse_lsof_paths_by_pid(raw)
+}
+
+#[cfg(target_os = "macos")]
+fn parse_tty_list(raw: &str) -> Vec<String> {
+    raw.split(|ch: char| ch == ',' || ch.is_whitespace())
+        .map(str::trim)
+        .filter(|token| token.starts_with("/dev/tty"))
+        .map(|tty| tty.to_string())
+        .collect()
+}
+
+#[cfg(target_os = "macos")]
+fn terminal_front_tty() -> Option<String> {
+    let output = std::process::Command::new("osascript")
+        .args([
+            "-e",
+            r#"tell application "Terminal"
+  if (count of windows) is 0 then return ""
+  return tty of selected tab of front window
+end tell"#,
+        ])
+        .output()
+        .ok()?;
+    if !output.status.success() {
+        return None;
+    }
+    let raw = std::str::from_utf8(&output.stdout).ok()?;
+    parse_tty_list(raw).into_iter().next()
+}
+
+#[cfg(target_os = "macos")]
+fn terminal_all_ttys() -> Vec<String> {
+    let output = std::process::Command::new("osascript")
+        .args([
+            "-e",
+            r#"tell application "Terminal"
+  if (count of windows) is 0 then return ""
+  return tty of every tab of every window
+end tell"#,
+        ])
+        .output();
+    let Ok(output) = output else {
+        return Vec::new();
+    };
+    if !output.status.success() {
+        return Vec::new();
+    }
+    let Ok(raw) = std::str::from_utf8(&output.stdout) else {
+        return Vec::new();
+    };
+    parse_tty_list(raw)
+}
+
+#[cfg(target_os = "macos")]
+fn pids_for_ttys(ttys: &[String]) -> Vec<i32> {
+    if ttys.is_empty() {
+        return Vec::new();
+    }
+    let mut tty_values = ttys
+        .iter()
+        .filter(|tty| tty.starts_with("/dev/tty"))
+        .cloned()
+        .collect::<Vec<_>>();
+    tty_values.sort();
+    tty_values.dedup();
+    if tty_values.is_empty() {
+        return Vec::new();
+    }
+
+    let output = std::process::Command::new("lsof")
+        .arg("-n")
+        .arg("-P")
+        .arg("-t")
+        .args(tty_values.iter().map(String::as_str))
+        .output();
+    let Ok(output) = output else {
+        return Vec::new();
+    };
+    let Ok(raw) = std::str::from_utf8(&output.stdout) else {
+        return Vec::new();
+    };
+
+    let mut pids = raw
+        .lines()
+        .filter_map(|line| line.trim().parse::<i32>().ok())
+        .filter(|pid| *pid > 0)
+        .collect::<Vec<_>>();
+    pids.sort_unstable();
+    pids.dedup();
+    pids
+}
+
+#[cfg(target_os = "macos")]
+fn detect_repo_from_terminal_sessions(home_dir: Option<&PathBuf>) -> Option<PathBuf> {
+    let front_tty = terminal_front_tty();
+    let mut ttys = front_tty.clone().into_iter().collect::<Vec<_>>();
+    ttys.extend(terminal_all_ttys());
+    ttys.sort();
+    ttys.dedup();
+
+    let pids = pids_for_ttys(&ttys);
+    if pids.is_empty() {
+        return None;
+    }
+
+    let mut scores: HashMap<PathBuf, i32> = HashMap::new();
+    let cwd_by_pid = lsof_paths_for_pids(&pids, "cwd");
+    for path in cwd_by_pid.values().flatten() {
+        if !path_allowed_for_detection(path, home_dir) {
+            continue;
+        }
+        if let Some(root) = git_root_for_path(path) {
+            *scores.entry(root).or_insert(0) += 28;
+        }
+    }
+
+    let files_by_pid = lsof_paths_for_pids(&pids, "0-256");
+    for path in files_by_pid.values().flatten() {
+        if !path_allowed_for_detection(path, home_dir) {
+            continue;
+        }
+        if let Some(root) = git_root_for_path(path) {
+            *scores.entry(root).or_insert(0) += 2;
+        }
+    }
+
+    if let Some(front_tty) = front_tty {
+        let front_pids = pids_for_ttys(&[front_tty]);
+        let front_cwds = lsof_paths_for_pids(&front_pids, "cwd");
+        for path in front_cwds.values().flatten() {
+            if !path_allowed_for_detection(path, home_dir) {
+                continue;
+            }
+            if let Some(root) = git_root_for_path(path) {
+                *scores.entry(root).or_insert(0) += 48;
+            }
+        }
+    }
+
+    best_scored_repo(scores)
+}
+
+#[cfg(target_os = "macos")]
+fn percent_decode_component(raw: &str) -> Option<String> {
+    let bytes = raw.as_bytes();
+    let mut decoded = Vec::with_capacity(bytes.len());
+    let mut index = 0usize;
+
+    while index < bytes.len() {
+        if bytes[index] == b'%' {
+            if index + 2 >= bytes.len() {
+                return None;
+            }
+            let hex = std::str::from_utf8(&bytes[(index + 1)..(index + 3)]).ok()?;
+            let value = u8::from_str_radix(hex, 16).ok()?;
+            decoded.push(value);
+            index += 3;
+            continue;
+        }
+        decoded.push(bytes[index]);
+        index += 1;
+    }
+
+    String::from_utf8(decoded).ok()
+}
+
+#[cfg(target_os = "macos")]
+fn file_uri_to_path(uri: &str) -> Option<PathBuf> {
+    let encoded_path = uri.strip_prefix("file://")?;
+    if !encoded_path.starts_with('/') {
+        return None;
+    }
+    let decoded = percent_decode_component(encoded_path)?;
+    if decoded.is_empty() {
+        return None;
+    }
+    Some(PathBuf::from(decoded))
+}
+
+#[cfg(target_os = "macos")]
+fn detect_repo_from_editor_storage(home_dir: Option<&PathBuf>) -> Option<PathBuf> {
+    let home = home_dir?;
+    let storage_files = [
+        home.join("Library/Application Support/Cursor/User/globalStorage/storage.json"),
+        home.join("Library/Application Support/Antigravity/User/globalStorage/storage.json"),
+        home.join("Library/Application Support/Code/User/globalStorage/storage.json"),
+    ];
+
+    let mut scores: HashMap<PathBuf, i32> = HashMap::new();
+
+    for storage_path in storage_files {
+        let Ok(raw) = fs::read_to_string(&storage_path) else {
+            continue;
+        };
+        let Ok(json) = serde_json::from_str::<serde_json::Value>(&raw) else {
+            continue;
+        };
+        let Some(folders) = json
+            .pointer("/backupWorkspaces/folders")
+            .and_then(|value| value.as_array())
+        else {
+            continue;
+        };
+
+        for (idx, folder) in folders.iter().enumerate() {
+            let Some(uri) = folder.get("folderUri").and_then(|value| value.as_str()) else {
+                continue;
+            };
+            let Some(folder_path) = file_uri_to_path(uri) else {
+                continue;
+            };
+            if !path_allowed_for_detection(&folder_path, home_dir) {
+                continue;
+            }
+            let Some(root) = git_root_for_path(&folder_path) else {
+                continue;
+            };
+            let position_weight = (40_i32 - (idx as i32 * 6)).max(8);
+            *scores.entry(root).or_insert(0) += position_weight;
+        }
+    }
+
+    best_scored_repo(scores)
+}
+
+#[cfg(target_os = "macos")]
+fn collect_descendant_pids(root_pid: i32, max_nodes: usize) -> Vec<i32> {
+    let output = std::process::Command::new("ps")
+        .args(["-axo", "pid=,ppid="])
+        .output();
+    let Ok(output) = output else {
+        return Vec::new();
+    };
+    if !output.status.success() {
+        return Vec::new();
+    }
+    let Ok(raw) = std::str::from_utf8(&output.stdout) else {
+        return Vec::new();
+    };
+
+    let mut children: HashMap<i32, Vec<i32>> = HashMap::new();
+    for line in raw.lines() {
+        let mut parts = line.split_whitespace();
+        let Some(pid_text) = parts.next() else {
+            continue;
+        };
+        let Some(ppid_text) = parts.next() else {
+            continue;
+        };
+        let Ok(pid) = pid_text.parse::<i32>() else {
+            continue;
+        };
+        let Ok(ppid) = ppid_text.parse::<i32>() else {
+            continue;
+        };
+        children.entry(ppid).or_default().push(pid);
+    }
+
+    let mut result = Vec::new();
+    let mut queue = vec![root_pid];
+    let mut cursor = 0usize;
+    let mut seen: HashSet<i32> = HashSet::new();
+    seen.insert(root_pid);
+
+    while cursor < queue.len() && result.len() < max_nodes {
+        let current = queue[cursor];
+        cursor += 1;
+        let Some(next_children) = children.get(&current) else {
+            continue;
+        };
+        for child in next_children {
+            if seen.insert(*child) {
+                result.push(*child);
+                queue.push(*child);
+                if result.len() >= max_nodes {
+                    break;
+                }
+            }
+        }
+    }
+
+    result
+}
+
+#[cfg(target_os = "macos")]
+fn parse_etime_to_seconds(raw: &str) -> Option<i64> {
+    let trimmed = raw.trim();
+    let (day_part, time_part) = if let Some((days, rest)) = trimmed.split_once('-') {
+        (days.parse::<i64>().ok()?, rest)
+    } else {
+        (0_i64, trimmed)
+    };
+    let pieces = time_part
+        .split(':')
+        .map(|part| part.parse::<i64>().ok())
+        .collect::<Option<Vec<_>>>()?;
+    let (hours, minutes, seconds) = match pieces.as_slice() {
+        [h, m, s] => (*h, *m, *s),
+        [m, s] => (0, *m, *s),
+        [s] => (0, 0, *s),
+        _ => return None,
+    };
+    Some(day_part * 86_400 + hours * 3_600 + minutes * 60 + seconds)
+}
+
+#[cfg(target_os = "macos")]
+fn parse_ps_pid_elapsed_command(line: &str) -> Option<(i32, i64, String)> {
+    let trimmed = line.trim_start();
+    let pid_end = trimmed.find(char::is_whitespace)?;
+    let pid = trimmed[..pid_end].trim().parse::<i32>().ok()?;
+    let rest = trimmed[pid_end..].trim_start();
+    let etime_end = rest.find(char::is_whitespace)?;
+    let elapsed = parse_etime_to_seconds(rest[..etime_end].trim())?;
+    let command = rest[etime_end..].trim_start().to_string();
+    if command.is_empty() {
+        return None;
+    }
+    Some((pid, elapsed, command))
+}
+
+#[cfg(target_os = "macos")]
+fn process_command_weight(command_lower: &str) -> i32 {
+    if command_lower.contains("pnpm tauri dev")
+        || command_lower.contains("npm run tauri")
+        || command_lower.contains("tauri dev")
+    {
+        return 90;
+    }
+    if command_lower.contains("cursor")
+        || command_lower.contains("visual studio code")
+        || command_lower.contains("/code ")
+        || command_lower.contains("claude")
+        || command_lower.contains("codex")
+        || command_lower.contains("dia")
+    {
+        return 64;
+    }
+    if command_lower.contains("pnpm")
+        || command_lower.contains("npm")
+        || command_lower.contains("yarn")
+        || command_lower.contains("bun")
+        || command_lower.contains("node")
+        || command_lower.contains("cargo")
+        || command_lower.contains("python")
+        || command_lower.contains("uv ")
+        || command_lower.contains("go ")
+    {
+        return 46;
+    }
+    if command_lower.contains("terminal")
+        || command_lower.contains("iterm")
+        || command_lower.contains("wezterm")
+        || command_lower.contains("alacritty")
+        || command_lower.contains("/zsh")
+        || command_lower.contains("/bash")
+        || command_lower.contains("/fish")
+    {
+        return 30;
+    }
+    12
+}
+
+#[cfg(target_os = "macos")]
+fn should_scan_process_command(command_lower: &str) -> bool {
+    command_lower.contains("tauri")
+        || command_lower.contains("git")
+        || command_lower.contains("pnpm")
+        || command_lower.contains("npm")
+        || command_lower.contains("yarn")
+        || command_lower.contains("bun")
+        || command_lower.contains("node")
+        || command_lower.contains("cargo")
+        || command_lower.contains("python")
+        || command_lower.contains("uv ")
+        || command_lower.contains("zsh")
+        || command_lower.contains("bash")
+        || command_lower.contains("fish")
+        || command_lower.contains("terminal")
+        || command_lower.contains("iterm")
+        || command_lower.contains("wezterm")
+        || command_lower.contains("alacritty")
+}
+
+#[cfg(target_os = "macos")]
+fn best_scored_repo(scores: HashMap<PathBuf, i32>) -> Option<PathBuf> {
+    scores
+        .into_iter()
+        .max_by(|(path_a, score_a), (path_b, score_b)| {
+            score_a
+                .cmp(score_b)
+                .then_with(|| path_a.as_os_str().len().cmp(&path_b.as_os_str().len()))
+        })
+        .map(|(path, _)| path)
+}
+
+#[cfg(target_os = "macos")]
+fn path_allowed_for_detection(path: &Path, home_dir: Option<&PathBuf>) -> bool {
+    if is_noise_system_path(path) {
+        return false;
+    }
+    if let Some(home) = home_dir {
+        return path.starts_with(home);
+    }
+    true
+}
+
+#[cfg(target_os = "macos")]
+fn detect_repo_from_active_dev_processes(home_dir: Option<&PathBuf>) -> Option<PathBuf> {
+    let output = std::process::Command::new("ps")
+        .args(["-axo", "pid=,etime=,command="])
+        .output()
+        .ok()?;
+    if !output.status.success() {
+        return None;
+    }
+    let raw = std::str::from_utf8(&output.stdout).ok()?;
+
+    let mut process_rows: Vec<(i32, i64, String)> = raw
+        .lines()
+        .filter_map(parse_ps_pid_elapsed_command)
+        .filter_map(|(pid, elapsed, command)| {
+            let command_lower = command.to_lowercase();
+            if !should_scan_process_command(&command_lower) {
+                return None;
+            }
+            Some((pid, elapsed, command_lower))
+        })
+        .collect();
+
+    process_rows.sort_by_key(|(_, elapsed, _)| *elapsed);
+    if process_rows.len() > 180 {
+        process_rows.truncate(180);
+    }
+
+    let pid_list: Vec<i32> = process_rows.iter().map(|(pid, _, _)| *pid).collect();
+    let cwd_by_pid = lsof_paths_for_pids(&pid_list, "cwd");
+    let mut scores: HashMap<PathBuf, i32> = HashMap::new();
+
+    for (pid, elapsed, command_lower) in process_rows {
+        let Some(paths) = cwd_by_pid.get(&pid) else {
+            continue;
+        };
+        let base_weight = process_command_weight(&command_lower);
+        let recency_bonus = (900_i64.saturating_sub(elapsed.min(900)) / 45) as i32; // 0..20
+        let total_weight = base_weight + recency_bonus;
+        for path in paths {
+            if !path_allowed_for_detection(path, home_dir) {
+                continue;
+            }
+            let Some(root) = git_root_for_path(path) else {
+                continue;
+            };
+            *scores.entry(root).or_insert(0) += total_weight;
+        }
+    }
+
+    best_scored_repo(scores)
+}
+
+#[cfg(target_os = "macos")]
+fn detect_repo_from_process_cwd() -> Option<PathBuf> {
+    let cwd = std::env::current_dir().ok()?;
+    git_root_for_path(&cwd)
+}
+
+#[cfg(target_os = "macos")]
+fn detect_repo_from_frontmost_process() -> Option<OpenRepoEventPayload> {
+    let frontmost = get_frontmost_process();
+    let mut scores: HashMap<PathBuf, i32> = HashMap::new();
+    let home_dir = dirs::home_dir();
+    let source_app = frontmost.as_ref().map(|(name, _)| name.clone());
+
+    if let Some((_, pid)) = frontmost {
+        let mut pids = vec![pid];
+        pids.extend(collect_descendant_pids(pid, 280));
+
+        let cwd_by_pid = lsof_paths_for_pids(&pids, "cwd");
+        for (owner_pid, paths) in cwd_by_pid {
+            let weight = if owner_pid == pid { 24 } else { 14 };
+            for path in paths {
+                if !path_allowed_for_detection(&path, home_dir.as_ref()) {
+                    continue;
+                }
+                if let Some(root) = git_root_for_path(&path) {
+                    *scores.entry(root).or_insert(0) += weight;
+                }
+            }
+        }
+
+        let file_by_pid = lsof_paths_for_pids(&pids, "0-256");
+        for (owner_pid, paths) in file_by_pid {
+            let weight = if owner_pid == pid { 2 } else { 1 };
+            for path in paths {
+                if !path_allowed_for_detection(&path, home_dir.as_ref()) {
+                    continue;
+                }
+                if let Some(root) = git_root_for_path(&path) {
+                    *scores.entry(root).or_insert(0) += weight;
+                }
+            }
+        }
+    }
+
+    if let Some(terminal_repo) = detect_repo_from_terminal_sessions(home_dir.as_ref()) {
+        *scores.entry(terminal_repo).or_insert(0) += 80;
+    }
+    if let Some(storage_repo) = detect_repo_from_editor_storage(home_dir.as_ref()) {
+        *scores.entry(storage_repo).or_insert(0) += 55;
+    }
+
+    let best = best_scored_repo(scores)
+        .or_else(|| detect_repo_from_active_dev_processes(home_dir.as_ref()))
+        .or_else(detect_repo_from_process_cwd)?;
+
+    Some(OpenRepoEventPayload {
+        path: best.to_string_lossy().to_string(),
+        source_app,
+    })
+}
+
+#[cfg(target_os = "macos")]
+fn append_shortcut_debug_log(message: &str) {
+    let mut path = std::env::temp_dir();
+    path.push("git-visualizer-shortcut.log");
+
+    if let Ok(mut file) = fs::OpenOptions::new().create(true).append(true).open(path) {
+        let timestamp = chrono::Local::now().format("%Y-%m-%d %H:%M:%S");
+        let _ = writeln!(file, "[{timestamp}] {message}");
+    }
+}
+
 const TRAY_TOGGLE_ID: &str = "toggle-window";
 const TRAY_QUIT_ID: &str = "quit-app";
 const POPOVER_OFFSET_Y: i32 = 0;
@@ -2609,6 +3307,7 @@ const POPOVER_FADE_OUT_MS: u64 = 85;
 const POPOVER_FADE_STEP_MS: u64 = 8;
 static MAIN_WINDOW_LOCKED_POS: OnceLock<Mutex<Option<(i32, i32)>>> = OnceLock::new();
 static MAIN_WINDOW_HIDE_SEQ: OnceLock<AtomicU64> = OnceLock::new();
+static PENDING_OPEN_REPO: OnceLock<Mutex<Option<OpenRepoEventPayload>>> = OnceLock::new();
 
 fn main_window_locked_pos() -> &'static Mutex<Option<(i32, i32)>> {
     MAIN_WINDOW_LOCKED_POS.get_or_init(|| Mutex::new(None))
@@ -2616,6 +3315,20 @@ fn main_window_locked_pos() -> &'static Mutex<Option<(i32, i32)>> {
 
 fn main_window_hide_seq() -> &'static AtomicU64 {
     MAIN_WINDOW_HIDE_SEQ.get_or_init(|| AtomicU64::new(0))
+}
+
+fn pending_open_repo() -> &'static Mutex<Option<OpenRepoEventPayload>> {
+    PENDING_OPEN_REPO.get_or_init(|| Mutex::new(None))
+}
+
+fn set_pending_open_repo(payload: Option<OpenRepoEventPayload>) {
+    if let Ok(mut pending) = pending_open_repo().lock() {
+        *pending = payload;
+    }
+}
+
+fn consume_pending_open_repo() -> Option<OpenRepoEventPayload> {
+    pending_open_repo().lock().ok()?.take()
 }
 
 fn bump_main_window_hide_seq() -> u64 {
@@ -2839,19 +3552,39 @@ fn toggle_main_window(app: &tauri::AppHandle, tray_rect: Option<Rect>) {
     }
 }
 
-#[tauri::command]
-fn open_full_app_window(app: tauri::AppHandle) -> Result<(), String> {
+fn open_full_window_and_emit_repo(
+    app: &tauri::AppHandle,
+    repo_payload: Option<&OpenRepoEventPayload>,
+) -> Result<(), String> {
     let full = app
         .get_webview_window("main-full")
         .ok_or_else(|| "Full app window not found".to_string())?;
 
-    set_desktop_mode(&app);
-    hide_main_window(&app);
+    set_desktop_mode(app);
+    hide_main_window(app);
 
     let _ = full.show();
     let _ = full.unminimize();
     let _ = full.set_focus();
+
+    if let Some(payload) = repo_payload {
+        set_pending_open_repo(Some(payload.clone()));
+        let _ = full.emit("gitviz://open-repo", payload);
+    } else {
+        set_pending_open_repo(None);
+    }
+
     Ok(())
+}
+
+#[tauri::command]
+fn open_full_app_window(app: tauri::AppHandle) -> Result<(), String> {
+    open_full_window_and_emit_repo(&app, None)
+}
+
+#[tauri::command]
+fn take_pending_open_repo() -> Option<OpenRepoEventPayload> {
+    consume_pending_open_repo()
 }
 
 fn create_tray_icon(app: &tauri::AppHandle) -> Result<(), tauri::Error> {
@@ -2897,6 +3630,7 @@ fn create_tray_icon(app: &tauri::AppHandle) -> Result<(), tauri::Error> {
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
+        .plugin(tauri_plugin_global_shortcut::Builder::new().build())
         .setup(|app| {
             create_tray_icon(app.handle())?;
             set_menu_bar_mode(app.handle());
@@ -2905,6 +3639,35 @@ pub fn run() {
             }
             hide_main_window(app.handle());
             hide_full_window(app.handle());
+            #[cfg(target_os = "macos")]
+            {
+                let shortcut = Shortcut::new(Some(Modifiers::SUPER), Code::KeyG);
+                app.global_shortcut()
+                    .on_shortcut(shortcut, move |app_handle, _shortcut, event| {
+                        if event.state() != ShortcutState::Pressed {
+                            return;
+                        }
+                        let detected_repo = detect_repo_from_frontmost_process();
+                        #[cfg(target_os = "macos")]
+                        {
+                            match detected_repo.as_ref() {
+                                Some(payload) => {
+                                    let source = payload
+                                        .source_app
+                                        .as_deref()
+                                        .unwrap_or("unknown");
+                                    append_shortcut_debug_log(&format!(
+                                        "Cmd+G detected path='{}' source='{}'",
+                                        payload.path, source
+                                    ));
+                                }
+                                None => append_shortcut_debug_log("Cmd+G detected no repository"),
+                            }
+                        }
+                        let _ = open_full_window_and_emit_repo(app_handle, detected_repo.as_ref());
+                    })
+                    .map_err(|e| format!("Failed to register Cmd+G: {e}"))?;
+            }
             Ok(())
         })
         .on_window_event(|window, event| {
@@ -2970,6 +3733,7 @@ pub fn run() {
             get_changed_routes_for_commit,
             debug_diff_files,
             open_full_app_window,
+            take_pending_open_repo,
         ])
         .run(tauri::generate_context!())
         .expect("error running tauri application");
