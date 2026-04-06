@@ -1608,8 +1608,20 @@ export default function BranchMap({
         splits.add(index - 1);
       }
 
-      if (mainMergeCommitShas.has(commit.fullSha) && index < sortedDirectCommits.length - 1) {
-        splits.add(index);
+      if (mainMergeCommitShas.has(commit.fullSha)) {
+        // Keep merge commits from being absorbed into adjacent clumps.
+        // Add boundaries on both sides and preserve them through pruning so
+        // the merge row stays chronologically ahead of preceding clumps.
+        if (index > 0) {
+          const splitBefore = index - 1;
+          splits.add(splitBefore);
+          forcedMainSplitIndices.add(splitBefore);
+        }
+        if (index < sortedDirectCommits.length - 1) {
+          const splitAfter = index;
+          splits.add(splitAfter);
+          forcedMainSplitIndices.add(splitAfter);
+        }
       }
 
       if (protectedMainForkShas.has(commit.fullSha) && index < sortedDirectCommits.length - 1) {
@@ -2548,6 +2560,8 @@ export default function BranchMap({
     const minMergeX = branchTipX(branch) + GRID_EVENT_GAP;
     const forcedMergeX = Math.max(baseMergeX, minMergeX);
     forcedMergeJunctionXBySha.set(mergeNode.fullSha, forcedMergeX);
+    // Keep merge-node rendering aligned with forced merge junction placement.
+    nodeXByFullSha.set(mergeNode.fullSha, forcedMergeX);
     directXByFullSha.set(mergeNode.fullSha, forcedMergeX);
     mainCommitXBySha.set(mergeNode.fullSha, forcedMergeX);
   }
