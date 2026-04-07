@@ -942,9 +942,13 @@ function App() {
   }
 
   // If there are working tree modifications, natively construct a fake node that the core layout engine parses directly!
-  const { enrichedBranches, enrichedBranchCommitPreviews } = useMemo(() => {
+  const { enrichedBranches, enrichedBranchCommitPreviews, enrichedBranchUniqueAheadCounts } = useMemo(() => {
     if (!checkedOutRef?.hasUncommittedChanges) {
-      return { enrichedBranches: branches, enrichedBranchCommitPreviews: branchCommitPreviews };
+      return {
+        enrichedBranches: branches,
+        enrichedBranchCommitPreviews: branchCommitPreviews,
+        enrichedBranchUniqueAheadCounts: branchUniqueAheadCounts,
+      };
     }
     
     // Find the branch we are checked out on:
@@ -954,7 +958,7 @@ function App() {
     const uncommittedDate = new Date().toISOString();
     const uncommittedNode: BranchCommitPreview = {
       fullSha: 'WORKING_TREE',
-      sha: 'Uncommitted',
+      sha: 'Uncommited Changes',
       parentSha: checkedOutRef.headSha,
       message: 'Local uncommitted changes',
       author: 'You',
@@ -981,7 +985,16 @@ function App() {
         enrichedBranchCommitPreviews: {
           ...branchCommitPreviews,
           [checkedOutBranch.name]: [uncommittedNode, ...(branchCommitPreviews[checkedOutBranch.name] || [])]
-        }
+        },
+        enrichedBranchUniqueAheadCounts: {
+          ...branchUniqueAheadCounts,
+          [checkedOutBranch.name]: Math.max(
+            0,
+            (Object.prototype.hasOwnProperty.call(branchUniqueAheadCounts, checkedOutBranch.name)
+              ? branchUniqueAheadCounts[checkedOutBranch.name]
+              : checkedOutBranch.commitsAhead) ?? 0,
+          ) + 1,
+        },
       };
     } else {
       // Detached head OR checked out to an old commit lower down a branch.
@@ -1004,10 +1017,14 @@ function App() {
         enrichedBranchCommitPreviews: {
           ...branchCommitPreviews,
           [fakeBranch.name]: [uncommittedNode]
-        }
+        },
+        enrichedBranchUniqueAheadCounts: {
+          ...branchUniqueAheadCounts,
+          [fakeBranch.name]: 1,
+        },
       };
     }
-  }, [branches, branchCommitPreviews, checkedOutRef, defaultBranch]);
+  }, [branches, branchCommitPreviews, branchUniqueAheadCounts, checkedOutRef, defaultBranch]);
 
   return (
     <div className={`h-screen min-h-0 text-foreground flex flex-col relative ${isPopoverWindow ? 'bg-transparent' : 'bg-background'}`}>
@@ -1046,7 +1063,7 @@ function App() {
               githubRepo={githubRepo}
               branchPromptMeta={branchPromptMeta}
               branchCommitPreviews={enrichedBranchCommitPreviews}
-              branchUniqueAheadCounts={branchUniqueAheadCounts}
+              branchUniqueAheadCounts={enrichedBranchUniqueAheadCounts}
               view="time"
               isLoading={mapLoading}
               scrollRequest={scrollRequest}
