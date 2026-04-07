@@ -942,47 +942,56 @@ function App() {
   }
 
   // If there are working tree modifications, natively construct a fake node that the core layout engine parses directly!
-  const { enrichedBranches, enrichedDirectCommits, enrichedBranchCommitPreviews } = useMemo(() => {
+  const {
+    enrichedBranches,
+    enrichedDirectCommits,
+    enrichedBranchCommitPreviews,
+    enrichedBranchUniqueAheadCounts,
+  } = useMemo(() => {
     if (!checkedOutRef?.hasUncommittedChanges) {
-      return { enrichedBranches: branches, enrichedDirectCommits: directCommits, enrichedBranchCommitPreviews: branchCommitPreviews };
+      return {
+        enrichedBranches: branches,
+        enrichedDirectCommits: directCommits,
+        enrichedBranchCommitPreviews: branchCommitPreviews,
+        enrichedBranchUniqueAheadCounts: branchUniqueAheadCounts,
+      };
     }
-    
+
     // Find the branch we are checked out on:
-    const checkedOutBranch = branches.find(b => b.name === checkedOutRef.branchName);
+    const checkedOutBranch = branches.find((b) => b.name === checkedOutRef.branchName);
     const hasBranchAttached = !!checkedOutBranch;
     const isOnMainBranch = checkedOutRef.branchName === defaultBranch;
 
     const uncommittedDate = new Date().toISOString();
     const uncommittedNode: BranchCommitPreview = {
       fullSha: 'WORKING_TREE',
-      sha: 'Uncommitted',
+      sha: 'Uncommited Changes',
       parentSha: checkedOutRef.headSha,
       message: 'Local uncommitted changes',
       author: 'You',
       date: uncommittedDate,
-      kind: 'uncommitted'
+      kind: 'uncommitted',
     };
-    
+
     const uncommittedDirectCommit: DirectCommit = {
       fullSha: 'WORKING_TREE',
-      sha: 'Uncommitted',
+      sha: 'Uncommited Changes',
       parentSha: checkedOutRef.headSha,
       message: 'Local uncommitted changes',
       author: 'You',
       date: uncommittedDate,
-      kind: 'uncommitted'
     };
 
     if (hasBranchAttached) {
       // Append directly to the branch (natively draws ahead in the exact same lane)
-      const nextBranches = branches.map(b => {
-        if (b.name === checkedOutBranch!.name) {
+      const nextBranches = branches.map((b) => {
+        if (b.name === checkedOutBranch.name) {
           return {
             ...b,
             commitsAhead: b.commitsAhead + 1,
             unpushedCommits: b.unpushedCommits + 1,
             lastCommitDate: uncommittedDate, // Engine uses this to push the branch tip out chronologically!
-            headSha: 'WORKING_TREE'
+            headSha: 'WORKING_TREE',
           };
         }
         return b;
@@ -992,42 +1001,58 @@ function App() {
         enrichedDirectCommits: directCommits,
         enrichedBranchCommitPreviews: {
           ...branchCommitPreviews,
-          [checkedOutBranch!.name]: [uncommittedNode, ...(branchCommitPreviews[checkedOutBranch!.name] || [])]
-        }
-      };
-    } else if (isOnMainBranch) {
-      // If we are on main branch, it doesn't appear in `branches`, so we append to directCommits!
-      return {
-        enrichedBranches: branches,
-        enrichedDirectCommits: [uncommittedDirectCommit, ...directCommits],
-        enrichedBranchCommitPreviews: branchCommitPreviews
-      };
-    } else {
-      // Detached head OR checked out to an old commit lower down a branch.
-      // Draw it "off to the side like a branch" by literally handing the layout engine a fake branch!
-      const fakeBranch: Branch = {
-        name: '*Uncommitted', // use special name
-        commitsAhead: 1,
-        commitsBehind: 0,
-        lastCommitDate: uncommittedDate,
-        lastCommitAuthor: 'You',
-        status: 'fresh',
-        remoteSyncStatus: 'local-only',
-        unpushedCommits: 1,
-        headSha: 'WORKING_TREE',
-        divergedFromSha: checkedOutRef.headSha,
-        parentBranch: checkedOutRef.branchName || defaultBranch,
-      };
-      return {
-        enrichedBranches: [fakeBranch, ...branches],
-        enrichedDirectCommits: directCommits,
-        enrichedBranchCommitPreviews: {
-          ...branchCommitPreviews,
-          [fakeBranch.name]: [uncommittedNode]
-        }
+          [checkedOutBranch.name]: [uncommittedNode, ...(branchCommitPreviews[checkedOutBranch.name] || [])],
+        },
+        enrichedBranchUniqueAheadCounts: {
+          ...branchUniqueAheadCounts,
+          [checkedOutBranch.name]: Math.max(
+            0,
+            (Object.prototype.hasOwnProperty.call(branchUniqueAheadCounts, checkedOutBranch.name)
+              ? branchUniqueAheadCounts[checkedOutBranch.name]
+              : checkedOutBranch.commitsAhead) ?? 0,
+          ) + 1,
+        },
       };
     }
-  }, [branches, branchCommitPreviews, directCommits, checkedOutRef, defaultBranch]);
+
+    if (isOnMainBranch) {
+      // Main is rendered from direct commits, so append uncommitted there.
+      return {
+        enrichedBranches: branches,
+        enrichedDirectCommits: [...directCommits, uncommittedDirectCommit],
+        enrichedBranchCommitPreviews: branchCommitPreviews,
+        enrichedBranchUniqueAheadCounts: branchUniqueAheadCounts,
+      };
+    }
+
+    // Detached head OR checked out to an old commit lower down a branch.
+    // Draw it "off to the side like a branch" by literally handing the layout engine a fake branch!
+    const fakeBranch: Branch = {
+      name: '*Uncommitted', // use special name
+      commitsAhead: 1,
+      commitsBehind: 0,
+      lastCommitDate: uncommittedDate,
+      lastCommitAuthor: 'You',
+      status: 'fresh',
+      remoteSyncStatus: 'local-only',
+      unpushedCommits: 1,
+      headSha: 'WORKING_TREE',
+      divergedFromSha: checkedOutRef.headSha,
+      parentBranch: checkedOutRef.branchName || defaultBranch,
+    };
+    return {
+      enrichedBranches: [fakeBranch, ...branches],
+      enrichedDirectCommits: directCommits,
+      enrichedBranchCommitPreviews: {
+        ...branchCommitPreviews,
+        [fakeBranch.name]: [uncommittedNode],
+      },
+      enrichedBranchUniqueAheadCounts: {
+        ...branchUniqueAheadCounts,
+        [fakeBranch.name]: 1,
+      },
+    };
+  }, [branches, branchCommitPreviews, branchUniqueAheadCounts, directCommits, checkedOutRef, defaultBranch]);
 
   return (
     <div className={`h-screen min-h-0 text-foreground flex flex-col relative ${isPopoverWindow ? 'bg-transparent' : 'bg-background'}`}>
@@ -1066,7 +1091,7 @@ function App() {
               githubRepo={githubRepo}
               branchPromptMeta={branchPromptMeta}
               branchCommitPreviews={enrichedBranchCommitPreviews}
-              branchUniqueAheadCounts={branchUniqueAheadCounts}
+              branchUniqueAheadCounts={enrichedBranchUniqueAheadCounts}
               view="time"
               isLoading={mapLoading}
               scrollRequest={scrollRequest}
