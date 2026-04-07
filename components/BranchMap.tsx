@@ -7281,27 +7281,23 @@ export default function BranchMap({
             tooltipBodyPadY * 2 + Math.max(tooltipAvatarSize, (subtitleLines + metaLines) * tooltipLineHeight)
           );
           const tooltipH = Math.min(220, tooltipHeaderH + tooltipBodyH);
-          const gap = tooltipCompact ? 8 : 10;
-          const nodeClearance = tooltipCompact ? 14 : 18;
+          const axisScale = isHorizontal ? liveCameraScale.x : liveCameraScale.y;
+          const zoomAwareNodeClearance = Math.max(
+            tooltipCompact ? 14 : 18,
+            Math.round((scaledNodeSize * axisScale) / 2 + (tooltipCompact ? 6 : 8))
+          );
+          const gap = zoomAwareNodeClearance + (tooltipCompact ? 6 : 8);
+          const nodeClearance = zoomAwareNodeClearance;
           const maxLeft = Math.max(viewportPadX, viewportSize.width - tooltipW - viewportPadX);
           const maxTop = Math.max(viewportPadTop, viewportSize.height - tooltipH - viewportPadBottom);
           const clampLeft = (left: number) => Math.min(maxLeft, Math.max(viewportPadX, left));
           const clampTop = (top: number) => Math.min(maxTop, Math.max(viewportPadTop, top));
-          const candidatePositions = (
-            tooltipCompact
-              ? [
-                { left: anchorX - tooltipW / 2, top: anchorY + gap }, // below
-                { left: anchorX + gap, top: anchorY - tooltipH / 2 }, // right
-                { left: anchorX - tooltipW - gap, top: anchorY - tooltipH / 2 }, // left
-                { left: anchorX - tooltipW / 2, top: anchorY - tooltipH - gap }, // above
-              ]
-              : [
-                { left: anchorX - tooltipW / 2, top: anchorY - tooltipH - gap }, // above
-                { left: anchorX - tooltipW / 2, top: anchorY + gap }, // below
-                { left: anchorX + gap, top: anchorY - tooltipH / 2 }, // right
-                { left: anchorX - tooltipW - gap, top: anchorY - tooltipH / 2 }, // left
-              ]
-          ).map((position) => ({
+          const candidatePositions = [
+            { left: anchorX - tooltipW / 2, top: anchorY - tooltipH - gap }, // above (preferred)
+            { left: anchorX + gap, top: anchorY - tooltipH + tooltipHeaderH }, // upper-right
+            { left: anchorX - tooltipW - gap, top: anchorY - tooltipH + tooltipHeaderH }, // upper-left
+            { left: anchorX - tooltipW / 2, top: anchorY + gap }, // below (fallback)
+          ].map((position) => ({
             left: clampLeft(position.left),
             top: clampTop(position.top),
           }));
