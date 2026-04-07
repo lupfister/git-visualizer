@@ -230,8 +230,33 @@ function fmtLabelDate(dateStr: string) {
   });
 }
 
+const svgTextWidthCache = new Map<string, number>();
+let svgTextMeasureCtx: CanvasRenderingContext2D | null = null;
+
 function estimateSvgTextWidth(text: string, fontSize = 10): number {
-  return Math.ceil(text.length * fontSize * 0.56);
+  const cacheKey = `${fontSize}:${text}`;
+  const cached = svgTextWidthCache.get(cacheKey);
+  if (cached != null) return cached;
+
+  let width: number;
+  if (typeof document !== 'undefined') {
+    if (!svgTextMeasureCtx) {
+      const canvas = document.createElement('canvas');
+      svgTextMeasureCtx = canvas.getContext('2d');
+    }
+    if (svgTextMeasureCtx) {
+      // Match the SVG label style closely so truncation happens at the right time.
+      svgTextMeasureCtx.font = `400 ${fontSize}px sans-serif`;
+      width = Math.ceil(svgTextMeasureCtx.measureText(text).width);
+    } else {
+      width = Math.ceil(text.length * fontSize * 0.56);
+    }
+  } else {
+    width = Math.ceil(text.length * fontSize * 0.56);
+  }
+
+  svgTextWidthCache.set(cacheKey, width);
+  return width;
 }
 
 function shaMatchesGitRef(a: string | undefined | null, b: string | undefined | null): boolean {
@@ -2696,13 +2721,20 @@ export default function BranchMap({
       if (snapMain != null) return snapMain;
     } else {
       const byParentSha = branchCommitXForSha(parentName, branch.divergedFromSha);
-      if (byParentSha != null) return byParentSha;
-
       const byParentDate = snapToBranchCommitX(parentName, branch.divergedFromDate ?? branch.createdDate);
-      if (byParentDate != null) return byParentDate;
 
-      const parentTiming = branchTimingWithVisited(parentName, visiting);
-      return parentTiming.tipTimeX;
+      let baseForkX: number;
+      if (byParentSha != null) {
+        baseForkX = byParentSha;
+      } else if (byParentDate != null) {
+        baseForkX = byParentDate;
+      } else {
+        const parentTiming = branchTimingWithVisited(parentName, visiting);
+        baseForkX = parentTiming.tipTimeX;
+      }
+
+      const lift = collapsedParentClumpLiftedTipX(branch, parentName);
+      return lift != null ? Math.max(baseForkX, lift) : baseForkX;
     }
 
     return timeToX(branch.divergedFromDate ?? branch.createdDate ?? branch.lastCommitDate);
@@ -2748,12 +2780,23 @@ export default function BranchMap({
 
     visiting.add(branch.name);
     const parentName = renderParentBranchName(branch);
+
+    const children = childBranchesByParent.get(branch.name) || [];
+    let maxChildLift = Number.NEGATIVE_INFINITY;
+    for (const child of children) {
+      const lift = collapsedParentClumpLiftedTipX(child, branch.name);
+      if (lift != null) {
+        maxChildLift = Math.max(maxChildLift, lift);
+      }
+    }
+
     const forkTimeX = branchForkTimeX(branch, parentName, visiting);
     const minTipTimeXFromCollapsedParent = collapsedParentClumpLiftedTipX(branch, parentName);
     const tipTimeX = Math.max(
       branchHeadTimeX(branch),
       forkTimeX,
       minTipTimeXFromCollapsedParent ?? Number.NEGATIVE_INFINITY,
+      maxChildLift,
     );
     const isFreshCopy = freshCopyBranchNames.has(branch.name);
     const isMergedBranch = branch.commitsAhead === 0 && !isFreshCopy;
@@ -3563,8 +3606,7 @@ export default function BranchMap({
   const nodeFrameLabelInsetX = worldPx(NODE_FRAME_LABEL_LEFT_INSET_PX);
   const nodeFrameLabelRightInsetX = worldPx(NODE_FRAME_LABEL_RIGHT_INSET_PX);
   const nodeFrameLabelPairGap = worldPx(NODE_FRAME_LABEL_PAIR_GAP_PX);
-  const nodeFrameCountSlotWidth =
-    estimateSvgTextWidth(`x${CLUMP_COUNT_MAX}`, nodeFrameLabelFontSize) + nodeFrameLabelPairGap;
+  const nodeFrameCollapseIconSize = worldPx(12);
   const shortShaLabel = (sha?: string | null): string => (sha ? sha.slice(0, 7) : '-------');
   const stackCountLabel = (count: number): string => `x${clumpCountLabel(count)}`;
   const trimTextToWidth = (text: string, maxWidth: number): string => {
@@ -3592,11 +3634,17 @@ export default function BranchMap({
     sha: string | undefined | null,
     rectWidth: number,
     rightText?: string,
+    reserveIconWidth = false,
   ): string => {
     const fullLabel = `${branchName}/${shortShaLabel(sha)}`;
-    const rightTextWidth = rightText ? nodeFrameCountSlotWidth : 0;
+    let rightContentWidth = 0;
+    if (rightText) {
+      rightContentWidth = estimateSvgTextWidth(rightText, nodeFrameLabelFontSize) + nodeFrameLabelPairGap;
+    } else if (reserveIconWidth) {
+      rightContentWidth = nodeFrameCollapseIconSize + nodeFrameLabelPairGap;
+    }
     const availableTitleWidth =
-      rectWidth - nodeFrameLabelInsetX - nodeFrameLabelRightInsetX - rightTextWidth;
+      rectWidth - nodeFrameLabelInsetX - nodeFrameLabelRightInsetX - rightContentWidth;
     if (availableTitleWidth <= 0) return '';
     return trimTextToWidth(fullLabel, availableTitleWidth);
   };
@@ -4944,22 +4992,6 @@ export default function BranchMap({
                   const phaseEased = phaseProgress <= 0 ? 0 : phaseProgress >= 1 ? 1 : easeInOutCubic(phaseProgress);
                   const rectSize = nodeRectSize(count);
                   const localRect = commitRectSize(scaledNodeSize, 0);
-                  const collapseIconSize = worldPx(12);
-                  const collapseHitSize = worldPx(16);
-                  const collapseStrokeWidth = 1;
-                  const topExpandedEntry = isExpanded
-                    ? cluster.entries.reduce((top, entry) => (entry.y < top.y ? entry : top), cluster.entries[0])
-                    : null;
-                  const clumpCountAnchorX = topExpandedEntry
-                    ? topExpandedEntry.x + localRect.width / 2 - nodeFrameLabelRightInsetX
-                    : anchorX + rectSize.width / 2 - nodeFrameLabelRightInsetX;
-                  const clumpCountAnchorY = topExpandedEntry
-                    ? topExpandedEntry.y - localRect.height / 2 - nodeFrameLabelGap
-                    : anchorY - rectSize.height / 2 - nodeFrameLabelGap;
-                  const collapseIconX = clumpCountAnchorX - collapseHitSize;
-                  const collapseIconY = clumpCountAnchorY - collapseHitSize + worldPx(3);
-                  const collapseCaretX = collapseIconX + (collapseHitSize - collapseIconSize) / 2;
-                  const collapseCaretY = collapseIconY + (collapseHitSize - collapseIconSize) / 2;
 
                   const firstTime = new Date(first.date).getTime();
                   const lastTime = new Date(last.date).getTime();
@@ -5132,52 +5164,6 @@ export default function BranchMap({
                               </g>
                             );
                           })}
-                          {phase === 'expanded' && (
-                            <>
-                              {phase === 'expanded' && (
-                                <>
-                                  {/* Contextual collapse icon (so expanded stacks can be re-collapsed). */}
-                                  <g
-                                    role="button"
-                                    tabIndex={0}
-                                    aria-label="Collapse commit stack"
-                                    style={{ cursor: 'pointer' }}
-                                    onPointerDown={(e) => { e.preventDefault(); e.stopPropagation(); }}
-                                    onMouseDown={(e) => { e.preventDefault(); e.stopPropagation(); }}
-                                    onClick={(e) => {
-                                      e.preventDefault();
-                                      e.stopPropagation();
-                                      toggleClumpExpanded(clusterKey);
-                                    }}
-                                    onKeyDown={(e) => {
-                                      if (e.key !== 'Enter' && e.key !== ' ') return;
-                                      e.preventDefault();
-                                      e.stopPropagation();
-                                      toggleClumpExpanded(clusterKey);
-                                    }}
-                                  >
-                                    <rect
-                                      x={collapseIconX}
-                                      y={collapseIconY}
-                                      width={collapseHitSize}
-                                      height={collapseHitSize}
-                                      fill="rgba(0,0,0,0.001)"
-                                      pointerEvents="all"
-                                    />
-                                    <path
-                                      d={`M ${collapseCaretX + collapseIconSize * 0.24} ${collapseCaretY + collapseIconSize * 0.38} L ${collapseCaretX + collapseIconSize * 0.5} ${collapseCaretY + collapseIconSize * 0.64} L ${collapseCaretX + collapseIconSize * 0.76} ${collapseCaretY + collapseIconSize * 0.38}`}
-                                      stroke={CANVAS_NEUTRAL_TEXT}
-                                      strokeWidth={collapseStrokeWidth}
-                                      strokeLinecap="round"
-                                      strokeLinejoin="round"
-                                      fill="none"
-                                      vectorEffect="non-scaling-stroke"
-                                    />
-                                  </g>
-                                </>
-                              )}
-                            </>
-                          )}
                         </g>
                       )}
                     </g>
@@ -5819,12 +5805,6 @@ export default function BranchMap({
                         const isGhostRect = isNonCommitPlaceholder;
                         const ghostRectStrokeWidth = unpushedStrokeWidth;
                         const ghostRectDasharray = unpushedLaneDasharray;
-                        const singleTitleText = fitNodeFrameTitle(
-                          b.name,
-                          commit?.sha ?? commit?.fullSha ?? b.headSha,
-                          rectSize.width,
-                        );
-
                         return (
                           <g key={clusterKey}>
                             <rect
@@ -5898,17 +5878,6 @@ export default function BranchMap({
                                 setTooltip(null);
                               }}
                             />
-                            <text
-                              x={anchorX - rectSize.width / 2 + nodeFrameLabelInsetX}
-                              y={anchorY - rectSize.height / 2 - nodeFrameLabelGap}
-                              textAnchor="start"
-                              fill={NODE_FRAME_LABEL_COLOR}
-                              fontSize={nodeFrameLabelFontSize}
-                              fontWeight={NODE_FRAME_LABEL_WEIGHT}
-                              pointerEvents="none"
-                            >
-                              {singleTitleText}
-                            </text>
                           </g>
                         );
                       }
@@ -5937,31 +5906,8 @@ export default function BranchMap({
                           : clamp01((Date.now() - phaseStartedAtMs) / clumpExpandMs);
                       const phaseEased = phaseProgress <= 0 ? 0 : phaseProgress >= 1 ? 1 : easeInOutCubic(phaseProgress);
                       const rectSize = nodeRectSize(count);
-                      const clumpCountText = stackCountLabel(count);
-                      const clumpTitleText = fitNodeFrameTitle(
-                        b.name,
-                        lastRealEntry.item.commit?.sha ?? lastRealEntry.item.commit?.fullSha ?? b.headSha,
-                        rectSize.width,
-                        clumpCountText,
-                      );
                       // Expanded members represent single commits in grid layout.
                       const localRect = commitRectSize(scaledNodeSize, 0);
-                      const collapseIconSize = worldPx(12);
-                      const collapseHitSize = worldPx(16);
-                      const collapseStrokeWidth = 1;
-                      const topExpandedEntry = isExpanded
-                        ? renderEntries.reduce((top, entry) => (entry.y < top.y ? entry : top), renderEntries[0])
-                        : null;
-                      const clumpCountAnchorX = topExpandedEntry
-                        ? topExpandedEntry.x + localRect.width / 2 - nodeFrameLabelRightInsetX
-                        : anchorX + rectSize.width / 2 - nodeFrameLabelRightInsetX;
-                      const clumpCountAnchorY = topExpandedEntry
-                        ? topExpandedEntry.y - localRect.height / 2 - nodeFrameLabelGap
-                        : anchorY - rectSize.height / 2 - nodeFrameLabelGap;
-                      const collapseIconX = clumpCountAnchorX - collapseHitSize;
-                      const collapseIconY = clumpCountAnchorY - collapseHitSize + worldPx(3);
-                      const collapseCaretX = collapseIconX + (collapseHitSize - collapseIconSize) / 2;
-                      const collapseCaretY = collapseIconY + (collapseHitSize - collapseIconSize) / 2;
 
                       return (
                         <g key={clusterKey}>
@@ -5985,28 +5931,6 @@ export default function BranchMap({
                                 strokeWidth={dotStrokeWidth}
                                 strokeDasharray={dotStrokeDasharray}
                               />
-                              <text
-                                x={anchorX + rectSize.width / 2 - nodeFrameLabelRightInsetX}
-                                y={anchorY - rectSize.height / 2 - nodeFrameLabelGap}
-                                textAnchor="end"
-                                fontSize={nodeFrameLabelFontSize}
-                                fill={NODE_FRAME_LABEL_COLOR}
-                                fontWeight={NODE_FRAME_LABEL_WEIGHT}
-                                pointerEvents="none"
-                              >
-                                {clumpCountText}
-                              </text>
-                              <text
-                                x={anchorX - rectSize.width / 2 + nodeFrameLabelInsetX}
-                                y={anchorY - rectSize.height / 2 - nodeFrameLabelGap}
-                                textAnchor="start"
-                                fill={NODE_FRAME_LABEL_COLOR}
-                                fontSize={nodeFrameLabelFontSize}
-                                fontWeight={NODE_FRAME_LABEL_WEIGHT}
-                                pointerEvents="none"
-                              >
-                                {clumpTitleText}
-                              </text>
                             </g>
                           )}
 
@@ -6146,44 +6070,6 @@ export default function BranchMap({
                                   </g>
                                 );
                               })}
-                              {/* Contextual collapse icon (so expanded stacks can be re-collapsed). */}
-                              <g
-                                role="button"
-                                tabIndex={0}
-                                aria-label="Collapse commit stack"
-                                style={{ cursor: 'pointer' }}
-                                onPointerDown={(e) => { e.preventDefault(); e.stopPropagation(); }}
-                                onMouseDown={(e) => { e.preventDefault(); e.stopPropagation(); }}
-                                onClick={(e) => {
-                                  e.preventDefault();
-                                  e.stopPropagation();
-                                  toggleClumpExpanded(clusterKey);
-                                }}
-                                onKeyDown={(e) => {
-                                  if (e.key !== 'Enter' && e.key !== ' ') return;
-                                  e.preventDefault();
-                                  e.stopPropagation();
-                                  toggleClumpExpanded(clusterKey);
-                                }}
-                              >
-                                <rect
-                                  x={collapseIconX}
-                                  y={collapseIconY}
-                                  width={collapseHitSize}
-                                  height={collapseHitSize}
-                                  fill="rgba(0,0,0,0.001)"
-                                  pointerEvents="all"
-                                />
-                                <path
-                                  d={`M ${collapseCaretX + collapseIconSize * 0.24} ${collapseCaretY + collapseIconSize * 0.38} L ${collapseCaretX + collapseIconSize * 0.5} ${collapseCaretY + collapseIconSize * 0.64} L ${collapseCaretX + collapseIconSize * 0.76} ${collapseCaretY + collapseIconSize * 0.38}`}
-                                  stroke={CANVAS_NEUTRAL_TEXT}
-                                  strokeWidth={collapseStrokeWidth}
-                                  strokeLinecap="round"
-                                  strokeLinejoin="round"
-                                  fill="none"
-                                  vectorEffect="non-scaling-stroke"
-                                />
-                              </g>
                             </g>
                           )}
                         </g>
@@ -6557,7 +6443,6 @@ export default function BranchMap({
                 const {
                   cluster,
                   count,
-                  last,
                   clusterKey,
                   memberKeys,
                   clusterHasMainTip,
@@ -6590,12 +6475,6 @@ export default function BranchMap({
 
                 if (count === 1) {
                   const rectSize = commitRectSize(scaledNodeSize);
-                  const gridPad = 0;
-                  const singleTitleText = fitNodeFrameTitle(
-                    defaultBranch,
-                    last.sha ?? last.fullSha,
-                    rectSize.width + gridPad,
-                  );
                   return (
                     <g key={`main-direct-overlay-${clusterKey}`}>
                       <rect
@@ -6615,31 +6494,12 @@ export default function BranchMap({
                         )}
                         strokeWidth={CANVAS_NODE_STROKE_WIDTH}
                       />
-                      <text
-                        x={anchorX - (rectSize.width + gridPad) / 2 + nodeFrameLabelInsetX}
-                        y={anchorY - (rectSize.height + gridPad) / 2 - nodeFrameLabelGap}
-                        textAnchor="start"
-                        fill={NODE_FRAME_LABEL_COLOR}
-                        fontSize={nodeFrameLabelFontSize}
-                        fontWeight={NODE_FRAME_LABEL_WEIGHT}
-                        pointerEvents="none"
-                      >
-                        {singleTitleText}
-                      </text>
                     </g>
                   );
                 }
 
                 const clusterRectSize = nodeRectSize(count);
                 const localRect = commitRectSize(scaledNodeSize, 0);
-                const gridPad = 0;
-                const clumpCountText = stackCountLabel(count);
-                const clumpTitleText = fitNodeFrameTitle(
-                  defaultBranch,
-                  last.sha ?? last.fullSha,
-                  clusterRectSize.width + gridPad,
-                  clumpCountText,
-                );
                 return (
                   <g key={`main-direct-overlay-${clusterKey}`}>
                     {isExpanded ? (
@@ -6718,32 +6578,6 @@ export default function BranchMap({
                         strokeWidth={CANVAS_NODE_STROKE_WIDTH}
                       />
                     )}
-                    {!isExpanded && (
-                      <text
-                        x={anchorX + (clusterRectSize.width + gridPad) / 2 - nodeFrameLabelRightInsetX}
-                        y={anchorY - (clusterRectSize.height + gridPad) / 2 - nodeFrameLabelGap}
-                        textAnchor="end"
-                        fontSize={nodeFrameLabelFontSize}
-                        fill={NODE_FRAME_LABEL_COLOR}
-                        fontWeight={NODE_FRAME_LABEL_WEIGHT}
-                        pointerEvents="none"
-                      >
-                        {clumpCountText}
-                      </text>
-                    )}
-                    {!isExpanded && (
-                      <text
-                        x={anchorX - (clusterRectSize.width + gridPad) / 2 + nodeFrameLabelInsetX}
-                        y={anchorY - (clusterRectSize.height + gridPad) / 2 - nodeFrameLabelGap}
-                        textAnchor="start"
-                        fill={NODE_FRAME_LABEL_COLOR}
-                        fontSize={nodeFrameLabelFontSize}
-                        fontWeight={NODE_FRAME_LABEL_WEIGHT}
-                        pointerEvents="none"
-                      >
-                        {clumpTitleText}
-                      </text>
-                    )}
                   </g>
                 );
               })}
@@ -6819,7 +6653,7 @@ export default function BranchMap({
                       return (
                         <text
                           key={`branch-label-overlay-${clusterKey}`}
-                          x={anchorX - rectSize.width / 2 + nodeFrameLabelInsetX}
+                          x={anchorX - rectSize.width / 2 + CANVAS_NODE_STROKE_INSET + nodeFrameLabelInsetX}
                           y={anchorY - rectSize.height / 2 - nodeFrameLabelGap}
                           textAnchor="start"
                           fill={NODE_FRAME_LABEL_COLOR}
@@ -6851,7 +6685,7 @@ export default function BranchMap({
                       return (
                         <g key={`branch-label-overlay-${clusterKey}`}>
                           <text
-                            x={anchorX + rectSize.width / 2 - nodeFrameLabelRightInsetX}
+                            x={anchorX + rectSize.width / 2 - CANVAS_NODE_STROKE_INSET - nodeFrameLabelRightInsetX}
                             y={anchorY - rectSize.height / 2 - nodeFrameLabelGap}
                             textAnchor="end"
                             fontSize={nodeFrameLabelFontSize}
@@ -6862,7 +6696,7 @@ export default function BranchMap({
                             {clumpCountText}
                           </text>
                           <text
-                            x={anchorX - rectSize.width / 2 + nodeFrameLabelInsetX}
+                            x={anchorX - rectSize.width / 2 + CANVAS_NODE_STROKE_INSET + nodeFrameLabelInsetX}
                             y={anchorY - rectSize.height / 2 - nodeFrameLabelGap}
                             textAnchor="start"
                             fill={NODE_FRAME_LABEL_COLOR}
@@ -6885,7 +6719,10 @@ export default function BranchMap({
                         : clamp01((Date.now() - phaseStartedAtMs) / clumpExpandMs);
                     const phaseEased = phaseProgress <= 0 ? 0 : phaseProgress >= 1 ? 1 : easeInOutCubic(phaseProgress);
                     const localRect = commitRectSize(scaledNodeSize, 0);
-
+                    const topExpandedEntry = renderEntries.reduce(
+                      (top, entry) => (entry.y < top.y ? entry : top),
+                      renderEntries[0]
+                    );
                     return (
                       <g key={`branch-label-overlay-${clusterKey}`}>
                         {renderEntries.map((entry) => {
@@ -6909,26 +6746,32 @@ export default function BranchMap({
                                 ? 0.7
                                 : 1;
 
-                          return (
-                            <g
-                              key={`branch-label-overlay:${b.name}:${commit.fullSha}`}
-                              transform={`translate(${at.x} ${at.y})`}
-                              style={clumpAnimStyle}
-                              opacity={memberOpacity}
-                            >
-                              <text
-                                x={-localRect.width / 2 + nodeFrameLabelInsetX}
-                                y={-localRect.height / 2 - nodeFrameLabelGap}
-                                textAnchor="start"
-                                fill={NODE_FRAME_LABEL_COLOR}
-                                fontSize={nodeFrameLabelFontSize}
-                                fontWeight={NODE_FRAME_LABEL_WEIGHT}
-                                pointerEvents="none"
-                              >
-                                {fitNodeFrameTitle(b.name, commit.sha ?? commit.fullSha, localRect.width)}
-                              </text>
-                            </g>
-                          );
+                              return (
+                                <g
+                                  key={`branch-label-overlay:${b.name}:${commit.fullSha}`}
+                                  transform={`translate(${at.x} ${at.y})`}
+                                  style={clumpAnimStyle}
+                                  opacity={memberOpacity}
+                                >
+                                  <text
+                                    x={-localRect.width / 2 + CANVAS_NODE_STROKE_INSET + nodeFrameLabelInsetX}
+                                    y={-localRect.height / 2 - nodeFrameLabelGap}
+                                    textAnchor="start"
+                                    fill={NODE_FRAME_LABEL_COLOR}
+                                    fontSize={nodeFrameLabelFontSize}
+                                    fontWeight={NODE_FRAME_LABEL_WEIGHT}
+                                    pointerEvents="none"
+                                  >
+                                    {fitNodeFrameTitle(
+                                      b.name,
+                                      commit.sha ?? commit.fullSha,
+                                      localRect.width,
+                                      undefined,
+                                      entry === topExpandedEntry
+                                    )}
+                                  </text>
+                                </g>
+                              );
                         })}
                       </g>
                     );
@@ -6973,7 +6816,7 @@ export default function BranchMap({
                   return (
                     <text
                       key={`main-label-overlay-${clusterKey}`}
-                      x={anchorX - rectSize.width / 2 + nodeFrameLabelInsetX}
+                      x={anchorX - rectSize.width / 2 + CANVAS_NODE_STROKE_INSET + nodeFrameLabelInsetX}
                       y={anchorY - rectSize.height / 2 - nodeFrameLabelGap}
                       textAnchor="start"
                       fill={NODE_FRAME_LABEL_COLOR}
@@ -7004,6 +6847,10 @@ export default function BranchMap({
                       : clamp01((Date.now() - phaseStartedAtMs) / clumpExpandMs);
                   const phaseEased = phaseProgress <= 0 ? 0 : phaseProgress >= 1 ? 1 : easeInOutCubic(phaseProgress);
                   const localRect = commitRectSize(scaledNodeSize, 0);
+                  const topEntryForLabels = cluster.entries.reduce(
+                    (top, entry) => (entry.y < top.y ? entry : top),
+                    cluster.entries[0]
+                  );
                   return (
                     <g key={`main-label-overlay-${clusterKey}`}>
                       {cluster.entries.map((entry) => {
@@ -7024,26 +6871,32 @@ export default function BranchMap({
                             : phase === 'collapsed'
                               ? 0.7
                               : 1;
-                        return (
-                          <g
-                            key={`main-label-overlay:${c.fullSha}`}
-                            transform={`translate(${at.x} ${at.y})`}
-                            style={clumpAnimStyle}
-                            opacity={memberOpacity}
-                          >
-                            <text
-                              x={-localRect.width / 2 + nodeFrameLabelInsetX}
-                              y={-localRect.height / 2 - nodeFrameLabelGap}
-                              textAnchor="start"
-                              fill={NODE_FRAME_LABEL_COLOR}
-                              fontSize={nodeFrameLabelFontSize}
-                              fontWeight={NODE_FRAME_LABEL_WEIGHT}
-                              pointerEvents="none"
+                          return (
+                            <g
+                              key={`main-label-overlay:${c.fullSha}`}
+                              transform={`translate(${at.x} ${at.y})`}
+                              style={clumpAnimStyle}
+                              opacity={memberOpacity}
                             >
-                              {fitNodeFrameTitle(defaultBranch, c.sha ?? c.fullSha, localRect.width)}
-                            </text>
-                          </g>
-                        );
+                              <text
+                                x={-localRect.width / 2 + CANVAS_NODE_STROKE_INSET + nodeFrameLabelInsetX}
+                                y={-localRect.height / 2 - nodeFrameLabelGap}
+                                textAnchor="start"
+                                fill={NODE_FRAME_LABEL_COLOR}
+                                fontSize={nodeFrameLabelFontSize}
+                                fontWeight={NODE_FRAME_LABEL_WEIGHT}
+                                pointerEvents="none"
+                              >
+                                {fitNodeFrameTitle(
+                                  defaultBranch,
+                                  c.sha ?? c.fullSha,
+                                  localRect.width,
+                                  undefined,
+                                  entry === topEntryForLabels
+                                )}
+                              </text>
+                            </g>
+                          );
                       })}
                     </g>
                   );
@@ -7052,7 +6905,7 @@ export default function BranchMap({
                   <g key={`main-label-overlay-${clusterKey}`}>
                     {!isExpanded && (
                       <text
-                        x={anchorX + clusterRectSize.width / 2 - nodeFrameLabelRightInsetX}
+                        x={anchorX + clusterRectSize.width / 2 - CANVAS_NODE_STROKE_INSET - nodeFrameLabelRightInsetX}
                         y={anchorY - clusterRectSize.height / 2 - nodeFrameLabelGap}
                         textAnchor="end"
                         fontSize={nodeFrameLabelFontSize}
@@ -7064,7 +6917,7 @@ export default function BranchMap({
                       </text>
                     )}
                     <text
-                      x={anchorX - clusterRectSize.width / 2 + nodeFrameLabelInsetX}
+                      x={anchorX - clusterRectSize.width / 2 + CANVAS_NODE_STROKE_INSET + nodeFrameLabelInsetX}
                       y={anchorY - clusterRectSize.height / 2 - nodeFrameLabelGap}
                       textAnchor="start"
                       fill={NODE_FRAME_LABEL_COLOR}
@@ -7078,6 +6931,154 @@ export default function BranchMap({
                 );
               })}
             </g>
+          </g>
+
+          {/* Top-most collapse controls so carets are never occluded by node layers. */}
+          <g>
+            {mainDirectClusters.map((clusterLayout) => {
+              const { cluster, count, clusterKey } = clusterLayout;
+              const expanded = expandedClumps.get(clusterKey);
+              const isExpanded = expanded?.isExpanded ?? false;
+              const phase = expanded?.phase ?? 'collapsed';
+              if (count <= 1 || !isExpanded || phase !== 'expanded') return null;
+
+              const localRect = commitRectSize(scaledNodeSize, 0);
+              const collapseIconSize = nodeFrameCollapseIconSize;
+              const collapseHitSize = worldPx(16);
+              const collapseStrokeWidth = 1;
+              const topExpandedEntry = cluster.entries.reduce(
+                (top, entry) => (entry.y < top.y ? entry : top),
+                cluster.entries[0]
+              );
+              const clumpCountAnchorX =
+                topExpandedEntry.x + localRect.width / 2 - CANVAS_NODE_STROKE_INSET - nodeFrameLabelRightInsetX;
+              const clumpCountAnchorY = topExpandedEntry.y - localRect.height / 2 - nodeFrameLabelGap;
+              const collapseHitX = clumpCountAnchorX - collapseHitSize;
+              const collapseHitY = clumpCountAnchorY - collapseHitSize + worldPx(3);
+              // Keep caret right edge locked to the same anchor as count text ("end"-aligned).
+              const collapseCaretX = clumpCountAnchorX - collapseIconSize;
+              const collapseCaretY = collapseHitY + (collapseHitSize - collapseIconSize) / 2;
+              const collapseCaretNudgeX = worldPx(0.8);
+
+              return (
+                <g
+                  key={`main-collapse-control-${clusterKey}`}
+                  role="button"
+                  tabIndex={0}
+                  aria-label="Collapse commit stack"
+                  style={{ cursor: 'pointer' }}
+                  onPointerDown={(e) => { e.preventDefault(); e.stopPropagation(); }}
+                  onMouseDown={(e) => { e.preventDefault(); e.stopPropagation(); }}
+                  onClick={(e) => {
+                    e.preventDefault();
+                    e.stopPropagation();
+                    toggleClumpExpanded(clusterKey);
+                  }}
+                  onKeyDown={(e) => {
+                    if (e.key !== 'Enter' && e.key !== ' ') return;
+                    e.preventDefault();
+                    e.stopPropagation();
+                    toggleClumpExpanded(clusterKey);
+                  }}
+                >
+                  <rect
+                    x={collapseHitX}
+                    y={collapseHitY}
+                    width={collapseHitSize}
+                    height={collapseHitSize}
+                    fill="rgba(0,0,0,0.001)"
+                    pointerEvents="all"
+                  />
+                  <path
+                    d={`M ${collapseCaretX + collapseCaretNudgeX + collapseIconSize * 0.16} ${collapseCaretY + collapseIconSize * 0.34} L ${collapseCaretX + collapseCaretNudgeX + collapseIconSize * 0.5} ${collapseCaretY + collapseIconSize * 0.66} L ${collapseCaretX + collapseCaretNudgeX + collapseIconSize * 0.84} ${collapseCaretY + collapseIconSize * 0.34}`}
+                    stroke={NODE_FRAME_LABEL_COLOR}
+                    strokeWidth={collapseStrokeWidth}
+                    strokeLinecap="round"
+                    strokeLinejoin="round"
+                    fill="none"
+                    vectorEffect="non-scaling-stroke"
+                  />
+                </g>
+              );
+            })}
+
+            {activeBranches.flatMap((b) => {
+              const { commitDotClusters } = getBranchRenderLayout(b);
+              return commitDotClusters.map((cluster) => {
+                const realCommitEntries = cluster.entries.filter(
+                  (entry) => entry.item.commit?.kind !== 'branch-created'
+                );
+                const renderEntries = realCommitEntries.length > 0 ? realCommitEntries : cluster.entries;
+                const count = renderEntries.length;
+                const firstEntry = cluster.entries[0];
+                const lastEntry = cluster.entries[cluster.entries.length - 1];
+                const clusterKey = `commit-clump-${b.name}-${firstEntry.item.index}-${lastEntry.item.index}`;
+                const canExpandCluster = renderEntries.length > 1;
+                const expanded = canExpandCluster ? expandedClumps.get(clusterKey) : undefined;
+                const isExpanded = canExpandCluster ? (expanded?.isExpanded ?? false) : false;
+                const phase = expanded?.phase ?? 'collapsed';
+                if (count <= 1 || !isExpanded || phase !== 'expanded') return null;
+
+                const localRect = commitRectSize(scaledNodeSize, 0);
+                const collapseIconSize = nodeFrameCollapseIconSize;
+                const collapseHitSize = worldPx(16);
+                const collapseStrokeWidth = 1;
+                const topExpandedEntry = renderEntries.reduce(
+                  (top, entry) => (entry.y < top.y ? entry : top),
+                  renderEntries[0]
+                );
+                const clumpCountAnchorX =
+                  topExpandedEntry.x + localRect.width / 2 - CANVAS_NODE_STROKE_INSET - nodeFrameLabelRightInsetX;
+                const clumpCountAnchorY = topExpandedEntry.y - localRect.height / 2 - nodeFrameLabelGap;
+                const collapseHitX = clumpCountAnchorX - collapseHitSize;
+                const collapseHitY = clumpCountAnchorY - collapseHitSize + worldPx(3);
+                // Keep caret right edge locked to the same anchor as count text ("end"-aligned).
+                const collapseCaretX = clumpCountAnchorX - collapseIconSize;
+                const collapseCaretY = collapseHitY + (collapseHitSize - collapseIconSize) / 2;
+                const collapseCaretNudgeX = worldPx(0.8);
+
+                return (
+                  <g
+                    key={`branch-collapse-control-${clusterKey}`}
+                    role="button"
+                    tabIndex={0}
+                    aria-label="Collapse commit stack"
+                    style={{ cursor: 'pointer' }}
+                    onPointerDown={(e) => { e.preventDefault(); e.stopPropagation(); }}
+                    onMouseDown={(e) => { e.preventDefault(); e.stopPropagation(); }}
+                    onClick={(e) => {
+                      e.preventDefault();
+                      e.stopPropagation();
+                      toggleClumpExpanded(clusterKey);
+                    }}
+                    onKeyDown={(e) => {
+                      if (e.key !== 'Enter' && e.key !== ' ') return;
+                      e.preventDefault();
+                      e.stopPropagation();
+                      toggleClumpExpanded(clusterKey);
+                    }}
+                  >
+                    <rect
+                      x={collapseHitX}
+                      y={collapseHitY}
+                      width={collapseHitSize}
+                      height={collapseHitSize}
+                      fill="rgba(0,0,0,0.001)"
+                      pointerEvents="all"
+                    />
+                    <path
+                      d={`M ${collapseCaretX + collapseCaretNudgeX + collapseIconSize * 0.16} ${collapseCaretY + collapseIconSize * 0.34} L ${collapseCaretX + collapseCaretNudgeX + collapseIconSize * 0.5} ${collapseCaretY + collapseIconSize * 0.66} L ${collapseCaretX + collapseCaretNudgeX + collapseIconSize * 0.84} ${collapseCaretY + collapseIconSize * 0.34}`}
+                      stroke={NODE_FRAME_LABEL_COLOR}
+                      strokeWidth={collapseStrokeWidth}
+                      strokeLinecap="round"
+                      strokeLinejoin="round"
+                      fill="none"
+                      vectorEffect="non-scaling-stroke"
+                    />
+                  </g>
+                );
+              });
+            })}
           </g>
 
           {/* Branch commit tooltip is rendered as an HTML overlay outside the zoomed camera. */}
