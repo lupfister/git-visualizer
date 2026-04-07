@@ -60,10 +60,9 @@ fn watch_repo(repo_path: String, app: tauri::AppHandle) -> Result<(), String> {
 
     std::thread::spawn(move || {
         for res in rx {
-            if let Ok(event) = res {
-                if matches!(event.kind, notify::EventKind::Modify(_) | notify::EventKind::Create(_)) {
-                    let _ = app.emit("git-activity", ());
-                }
+            if let Ok(_event) = res {
+                // Just emit on any filesystem event inside .git/refs, logs, HEAD
+                let _ = app.emit("git-activity", ());
             }
         }
     });

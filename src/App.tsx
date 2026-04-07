@@ -258,10 +258,10 @@ function App() {
 
     let isFetching = false;
     let timeoutId: number;
-    let unlisten: null | (() => void) = null;
+    let unlisten: (() => void) | null = null;
+    let isDisposed = false;
 
     listen('git-activity', () => {
-      // Debounce the file system events slightly to bundle rapid git operations
       clearTimeout(timeoutId);
       timeoutId = window.setTimeout(async () => {
         if (isFetching) return;
@@ -273,6 +273,7 @@ function App() {
             invoke<CheckedOutRef>('get_checked_out_ref', { repoPath }).catch(() => null),
             invoke<DirectCommit[]>('get_direct_commits', { repoPath, branch: defaultBranch }),
           ]);
+          if (isDisposed) return;
           setBranches(branchList);
           setMergeNodes(nodes);
           setDirectCommits(directResult);
@@ -282,10 +283,14 @@ function App() {
         } finally {
           isFetching = false;
         }
-      }, 50);
-    }).then(fn => { unlisten = fn; }).catch(console.error);
+      }, 200); // Wait 200ms for git commands to fully complete their I/O
+    }).then(fn => {
+      if (isDisposed) fn();
+      else unlisten = fn;
+    }).catch(console.error);
 
     return () => {
+      isDisposed = true;
       clearTimeout(timeoutId);
       if (unlisten) unlisten();
     };
