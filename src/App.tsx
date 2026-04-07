@@ -262,10 +262,12 @@ function App() {
     let isDisposed = false;
 
     listen('git-activity', () => {
+      console.log('🔄 Git activity received in frontend, debouncing...');
       clearTimeout(timeoutId);
       timeoutId = window.setTimeout(async () => {
         if (isFetching) return;
         isFetching = true;
+        console.log('🔄 Fetching new git state...');
         try {
           const [branchList, nodes, currentCheckedOut, directResult] = await Promise.all([
             invoke<Branch[]>('get_branches', { repoPath }),

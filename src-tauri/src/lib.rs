@@ -54,14 +54,12 @@ fn watch_repo(repo_path: String, app: tauri::AppHandle) -> Result<(), String> {
     let (tx, rx) = std::sync::mpsc::channel();
     let mut watcher = notify::recommended_watcher(tx).map_err(|e| e.to_string())?;
 
-    let _ = watcher.watch(&git_dir.join("refs"), RecursiveMode::Recursive);
-    let _ = watcher.watch(&git_dir.join("logs"), RecursiveMode::Recursive);
-    let _ = watcher.watch(&git_dir.join("HEAD"), RecursiveMode::NonRecursive);
+    let _ = watcher.watch(&git_dir, RecursiveMode::Recursive);
 
     std::thread::spawn(move || {
         for res in rx {
-            if let Ok(_event) = res {
-                // Just emit on any filesystem event inside .git/refs, logs, HEAD
+            if let Ok(event) = res {
+                println!("Git activity detected: {:?}", event.kind);
                 let _ = app.emit("git-activity", ());
             }
         }
