@@ -259,8 +259,10 @@ function App() {
     let isFetching = false;
     let pendingFetch = false;
     let timeoutId: number;
+    const retryTimeoutIds = new Set<number>();
     let unlisten: (() => void) | null = null;
     let isDisposed = false;
+    let isSyncingCheckedOut = false;
 
     const performFetch = async () => {
       if (isFetching) {
@@ -269,17 +271,40 @@ function App() {
       }
       isFetching = true;
       try {
-        const [branchList, nodes, currentCheckedOut, directResult] = await Promise.all([
+        const [branchListResult, nodesResult, currentCheckedOutResult, directResultResult] = await Promise.allSettled([
           invoke<Branch[]>('get_branches', { repoPath }),
           fetchAllMergeNodes(repoPath, defaultBranch),
           invoke<CheckedOutRef>('get_checked_out_ref', { repoPath }).catch(() => null),
           invoke<DirectCommit[]>('get_direct_commits', { repoPath, branch: defaultBranch }),
         ]);
         if (isDisposed) return;
-        setBranches(branchList);
-        setMergeNodes(nodes);
-        setDirectCommits(directResult);
-        if (currentCheckedOut) setCheckedOutRef(currentCheckedOut);
+        if (branchListResult.status === 'fulfilled') {
+          setBranches(branchListResult.value);
+        }
+        if (nodesResult.status === 'fulfilled') {
+          setMergeNodes(nodesResult.value);
+        }
+        if (directResultResult.status === 'fulfilled') {
+          setDirectCommits(directResultResult.value);
+        }
+        if (
+          currentCheckedOutResult.status === 'fulfilled' &&
+          currentCheckedOutResult.value
+        ) {
+          const nextRef = currentCheckedOutResult.value;
+          setCheckedOutRef((prev) => {
+            if (
+              prev &&
+              prev.branchName === nextRef.branchName &&
+              prev.headSha === nextRef.headSha &&
+              prev.parentSha === nextRef.parentSha &&
+              prev.hasUncommittedChanges === nextRef.hasUncommittedChanges
+            ) {
+              return prev;
+            }
+            return nextRef;
+          });
+        }
       } catch (e) {
         console.error('Auto-refresh failed:', e);
       } finally {
@@ -292,17 +317,66 @@ function App() {
       }
     };
 
-    listen('git-activity', () => {
+    const syncCheckedOutRef = async () => {
+      if (isSyncingCheckedOut) return;
+      isSyncingCheckedOut = true;
+      try {
+        const nextRef = await invoke<CheckedOutRef>('get_checked_out_ref', { repoPath });
+        if (isDisposed) return;
+        setCheckedOutRef((prev) => {
+          if (
+            prev &&
+            prev.branchName === nextRef.branchName &&
+            prev.headSha === nextRef.headSha &&
+            prev.parentSha === nextRef.parentSha &&
+            prev.hasUncommittedChanges === nextRef.hasUncommittedChanges
+          ) {
+            return prev;
+          }
+          return nextRef;
+        });
+      } catch {
+        // ignore transient git read failures
+      } finally {
+        isSyncingCheckedOut = false;
+      }
+    };
+
+    const scheduleRefreshBurst = () => {
       clearTimeout(timeoutId);
       timeoutId = window.setTimeout(performFetch, 300); // 300ms to let Git settle completely
+      const retries = [900];
+      for (const delayMs of retries) {
+        const id = window.setTimeout(() => {
+          retryTimeoutIds.delete(id);
+          void performFetch();
+        }, delayMs);
+        retryTimeoutIds.add(id);
+      }
+    };
+
+    listen<string>('git-activity', (event) => {
+      const mode = event.payload;
+      if (mode === 'local') {
+        void syncCheckedOutRef();
+        return;
+      }
+      scheduleRefreshBurst();
     }).then(fn => {
       if (isDisposed) fn();
       else unlisten = fn;
     }).catch(console.error);
 
+    // Prime UI state once when listener attaches.
+    void performFetch();
+
     return () => {
       isDisposed = true;
       clearTimeout(timeoutId);
+      for (const id of retryTimeoutIds) {
+        window.clearTimeout(id);
+      }
+      retryTimeoutIds.clear();
       if (unlisten) unlisten();
     };
   }, [repoPath, defaultBranch]);
