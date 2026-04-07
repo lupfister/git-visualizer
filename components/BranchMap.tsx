@@ -2524,10 +2524,13 @@ export default function BranchMap({
 
   function branchCommitXForSha(branchName: string, sha?: string): number | null {
     if (!sha) return null;
-    const previews = branchCommitPreviews[branchName] ?? [];
-    const exact = previews.find((commit) => commit.fullSha === sha || commit.sha === sha);
+    const b = branchByName.get(branchName);
+    if (!b) return null;
+
+    const renderable = renderableBranchPreviews(b);
+    const exact = renderable.find((commit) => commit.fullSha === sha || commit.sha === sha);
     if (exact) return gridXForBranchSha(branchName, exact.fullSha) ?? timeToX(exact.date);
-    const prefix = previews.find(
+    const prefix = renderable.find(
       (commit) =>
         commit.fullSha.startsWith(sha) ||
         sha.startsWith(commit.fullSha) ||
@@ -2535,6 +2538,17 @@ export default function BranchMap({
         sha.startsWith(commit.sha)
     );
     if (prefix) return gridXForBranchSha(branchName, prefix.fullSha) ?? timeToX(prefix.date);
+
+    // If the sha wasn't found in the explicitly rendered commits of this branch,
+    // we assume this branch is either a fresh copy (no unique commits) or the
+    // fork happened before its unique history. If it's an empty placeholder,
+    // Force it to anchor directly to its visual box (slot 0).
+    const isPlaceholder = renderable.length === 0;
+    if (isPlaceholder) {
+      const slotX = gridXForBranchSlot(branchName, 0);
+      if (slotX != null) return slotX;
+    }
+
     return null;
   }
 
@@ -2721,20 +2735,13 @@ export default function BranchMap({
       if (snapMain != null) return snapMain;
     } else {
       const byParentSha = branchCommitXForSha(parentName, branch.divergedFromSha);
+      if (byParentSha != null) return byParentSha;
+
       const byParentDate = snapToBranchCommitX(parentName, branch.divergedFromDate ?? branch.createdDate);
+      if (byParentDate != null) return byParentDate;
 
-      let baseForkX: number;
-      if (byParentSha != null) {
-        baseForkX = byParentSha;
-      } else if (byParentDate != null) {
-        baseForkX = byParentDate;
-      } else {
-        const parentTiming = branchTimingWithVisited(parentName, visiting);
-        baseForkX = parentTiming.tipTimeX;
-      }
-
-      const lift = collapsedParentClumpLiftedTipX(branch, parentName);
-      return lift != null ? Math.max(baseForkX, lift) : baseForkX;
+      const parentTiming = branchTimingWithVisited(parentName, visiting);
+      return parentTiming.tipTimeX;
     }
 
     return timeToX(branch.divergedFromDate ?? branch.createdDate ?? branch.lastCommitDate);
@@ -2780,23 +2787,12 @@ export default function BranchMap({
 
     visiting.add(branch.name);
     const parentName = renderParentBranchName(branch);
-
-    const children = childBranchesByParent.get(branch.name) || [];
-    let maxChildLift = Number.NEGATIVE_INFINITY;
-    for (const child of children) {
-      const lift = collapsedParentClumpLiftedTipX(child, branch.name);
-      if (lift != null) {
-        maxChildLift = Math.max(maxChildLift, lift);
-      }
-    }
-
     const forkTimeX = branchForkTimeX(branch, parentName, visiting);
     const minTipTimeXFromCollapsedParent = collapsedParentClumpLiftedTipX(branch, parentName);
     const tipTimeX = Math.max(
       branchHeadTimeX(branch),
       forkTimeX,
       minTipTimeXFromCollapsedParent ?? Number.NEGATIVE_INFINITY,
-      maxChildLift,
     );
     const isFreshCopy = freshCopyBranchNames.has(branch.name);
     const isMergedBranch = branch.commitsAhead === 0 && !isFreshCopy;
@@ -3692,7 +3688,25 @@ export default function BranchMap({
 
     const forkTimeX = branchForkX(b);
     const lanePosX = laneX(b);
-    const startX = branchStartX(b);
+    let startX = branchStartX(b);
+    const parentName = renderParentBranchName(b);
+    const pb = branchByName.get(parentName);
+    const isParentPlaceholder = pb && renderableBranchPreviews(pb).length === 0;
+
+    if (isParentPlaceholder && branchForkX(b) === branchHeadTimeX(pb!)) {
+      const { width: rectW, height: rectH } = commitRectSize(NODE_SIZE);
+      const logicalOffset = isHorizontal ? rectH / 2 : rectW / 2;
+      // Depending on if the child is to the right/top or left/bottom of the parent
+      const direction = lanePosX > startX ? 1 : -1;
+      
+      // projectPoint mappings:
+      // Vertical: PhysicalX = LogicalX
+      // Horizontal: PhysicalY = ... - LogicalX
+      // When horizontal, shifting PhysicalY down means decreasing LogicalX
+      // Fortunately direction calculation already captures the logical relation
+      startX += direction * logicalOffset;
+    }
+
     const isFreshCopy = freshCopyBranchNames.has(b.name);
     const isMergedBranch = b.commitsAhead === 0 && !isFreshCopy;
     const isLocalBranch = b.remoteSyncStatus !== 'on-github';
@@ -3720,7 +3734,7 @@ export default function BranchMap({
     if (!hasConcretePreviewCommits && commitCount > 0) {
       const placeholderTipX = gridXForBranchSlot(b.name, commitCount - 1);
       if (placeholderTipX != null) {
-        branchLineTipY = timeCoordToY(placeholderTipX);
+        branchLineTipY = timeCoordToY(Math.max(placeholderTipX, commitTipTimeX));
       }
     }
     const forkY = timeCoordToY(forkTimeX);
