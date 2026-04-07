@@ -1672,7 +1672,6 @@ export default function BranchMap({
       headShaGroups.set(b.headSha, group);
     }
     const names = new Set<string>();
-    const parentByName = new Map<string, string>();
     for (const group of headShaGroups.values()) {
       if (group.length < 2) continue;
       const sorted = [...group].sort((a, b) => {
@@ -1684,27 +1683,17 @@ export default function BranchMap({
       });
       for (let i = 1; i < sorted.length; i++) {
         const child = sorted[i];
-        const parent = sorted[i - 1];
         names.add(child.name);
-        parentByName.set(child.name, parent.name);
       }
     }
-    return { names, parentByName };
+    return { names };
   })();
   const freshCopyBranchNames = sameHeadSiblingMeta.names;
-  const sameHeadParentOverrideByBranch = sameHeadSiblingMeta.parentByName;
 
   function renderParentBranchName(branch: Branch): string {
-    const normalizedParent = (!branch.parentBranch || branch.parentBranch === branch.name)
+    return (!branch.parentBranch || branch.parentBranch === branch.name)
       ? defaultBranch
       : branch.parentBranch;
-    if (normalizedParent === defaultBranch) {
-      const overrideParent = sameHeadParentOverrideByBranch.get(branch.name);
-      if (overrideParent && overrideParent !== branch.name) {
-        return overrideParent;
-      }
-    }
-    return normalizedParent;
   }
 
   const protectedMainForkShas = new Set<string>(
@@ -1840,7 +1829,30 @@ export default function BranchMap({
       mergedBranchByHeadSha.set(branch.headSha, branch);
     }
   }
-  const sortedDirectCommits = orderByLineage(directCommits);
+  const forceUncommittedOnMainLane =
+    checkedOutRef?.hasUncommittedChanges === true &&
+    checkedOutRef.branchName === defaultBranch;
+  const directCommitsForLayout = (() => {
+    if (!forceUncommittedOnMainLane) return directCommits;
+    if (directCommits.some((commit) => commit.fullSha === 'WORKING_TREE')) return directCommits;
+    const parentSha =
+      checkedOutRef?.headSha ??
+      checkedOutRef?.parentSha ??
+      directCommits[directCommits.length - 1]?.fullSha ??
+      null;
+    return [
+      ...directCommits,
+      {
+        fullSha: 'WORKING_TREE',
+        sha: 'Uncommited Changes',
+        parentSha,
+        message: 'Local uncommitted changes',
+        author: 'You',
+        date: new Date().toISOString(),
+      },
+    ];
+  })();
+  const sortedDirectCommits = orderByLineage(directCommitsForLayout);
   const directCommitShaSet = new Set<string>(sortedDirectCommits.map((commit) => commit.fullSha));
   const mainMergeCommitShas = new Set<string>(
     sortedNodes
@@ -3383,11 +3395,42 @@ export default function BranchMap({
 
     return null;
   })();
+  const checkedOutMatchesKnownBranchTip = (() => {
+    const checkedOutAnchorSha = checkedOutHeadSha ?? checkedOutParentSha ?? null;
+    if (!checkedOutIndicatorLocal) return false;
+    const epsilon = 0.5;
+    const isMainTipAnchor =
+      Math.abs(checkedOutIndicatorLocal.x - mainX) <= epsilon &&
+      Math.abs(checkedOutIndicatorLocal.y - mainActiveEndY) <= epsilon;
+    if (isMainTipAnchor) return true;
+
+    for (const branch of activeBranches) {
+      const branchTipPoint = {
+        x: laneXByBranch.get(branch.name) ?? mainX,
+        y: timeCoordToY(branchTipX(branch)),
+      };
+      const samePoint =
+        Math.abs(checkedOutIndicatorLocal.x - branchTipPoint.x) <= epsilon &&
+        Math.abs(checkedOutIndicatorLocal.y - branchTipPoint.y) <= epsilon;
+      if (samePoint) return true;
+    }
+
+    // Keep a SHA fallback for cases where coordinates are unavailable/ambiguous.
+    if (!checkedOutAnchorSha) return false;
+    return (
+      (latestMainDirectCommitSha ? shaMatchesGitRef(latestMainDirectCommitSha, checkedOutAnchorSha) : false) ||
+      activeBranches.some((branch) => shaMatchesGitRef(branch.headSha, checkedOutAnchorSha))
+    );
+  })();
+  const shouldOffsetDetachedUncommittedIndicator =
+    checkedOutHasUncommittedChanges &&
+    checkedOutIsDetached &&
+    !checkedOutMatchesKnownBranchTip;
 
   const checkedOutDisplayIndicatorLocal = checkedOutIndicatorLocal
     ? {
       x: (() => {
-        if (!(checkedOutHasUncommittedChanges && checkedOutIsDetached)) {
+        if (!shouldOffsetDetachedUncommittedIndicator) {
           return checkedOutIndicatorLocal.x;
         }
         const lanePositions = Array.from(
@@ -3412,7 +3455,7 @@ export default function BranchMap({
         return nearestLane + laneWidth;
       })(),
       y: checkedOutIndicatorLocal.y + (
-        checkedOutHasUncommittedChanges && checkedOutIsDetached
+        shouldOffsetDetachedUncommittedIndicator
           ? -CHECKED_OUT_AHEAD_OFFSET_WORLD
           : 0
       ),
@@ -3606,6 +3649,7 @@ export default function BranchMap({
   const nodeFrameCollapseIconSize = worldPx(12);
   const shortShaLabel = (sha?: string | null): string => {
     if (!sha) return '-------';
+    if (sha === 'WORKING_TREE') return 'Uncommited Changes';
     // Only abbreviate real commit SHAs. Keep human-readable synthetic labels intact.
     return /^[0-9a-f]{7,40}$/i.test(sha) ? sha.slice(0, 7) : sha;
   };
@@ -3717,7 +3761,9 @@ export default function BranchMap({
     const isLocalBranch = b.remoteSyncStatus !== 'on-github';
     const branchCommits = renderableBranchPreviews(b);
     const hasPreviewData = branchCommitPreviews[b.name] != null;
-    const visibleBranchCommits = branchCommits;
+    const visibleBranchCommits = forceUncommittedOnMainLane
+      ? branchCommits.filter((commit) => commit.kind !== 'uncommitted')
+      : branchCommits;
     const hasUncommittedPreview = visibleBranchCommits.some((commit) => commit.kind === 'uncommitted');
     const uniqueAheadCount = branchAheadCount(b);
     const aheadCount = Math.max(0, uniqueAheadCount);
@@ -4097,17 +4143,18 @@ export default function BranchMap({
     });
   };
 
-  type MainDirectClusterLayout = {
-    cluster: MarkerCluster<DirectCommit>;
-    clusterKey: string;
-    count: number;
-    first: DirectCommit;
-    last: DirectCommit;
-    memberKeys: string[];
-    clusterHasMainTip: boolean;
-    clusterHasCheckedOutHead: boolean;
-    clusterHasSelectedCommit: boolean;
-  };
+type MainDirectClusterLayout = {
+  cluster: MarkerCluster<DirectCommit>;
+  clusterKey: string;
+  count: number;
+  first: DirectCommit;
+  last: DirectCommit;
+  memberKeys: string[];
+  clusterHasMainTip: boolean;
+  clusterHasCheckedOutHead: boolean;
+  clusterHasSelectedCommit: boolean;
+  clusterHasUncommitted: boolean;
+};
   const mainDirectEntries: MarkerEntry<DirectCommit>[] = sortedDirectCommits.map((commit) => {
     const timeCoordX = directXByFullSha.get(commit.fullSha) ?? timeToX(commit.date);
     const markerPoint = projectPoint(mainX, timeCoordToY(timeCoordX));
@@ -4141,6 +4188,8 @@ export default function BranchMap({
           cluster.entries.some((entry) => shaMatchesGitRef(entry.item.fullSha, checkedOutHeadSha)),
         clusterHasSelectedCommit:
           cluster.entries.some((entry) => selectedCommitShaRawSet.has(entry.item.fullSha)),
+        clusterHasUncommitted:
+          cluster.entries.some((entry) => entry.item.fullSha === 'WORKING_TREE'),
       };
     });
   const renderedMainAnchorByCommitSha = (() => {
@@ -4960,6 +5009,7 @@ export default function BranchMap({
 
                   if (count === 1) {
                     const c = last;
+                    const isUncommittedCommit = c.fullSha === 'WORKING_TREE';
                     const label = truncatePrompt(c.message, COMMIT_TOOLTIP_PREVIEW_MAX);
                     const rectSize = commitRectSize(scaledNodeSize);
                     return (
@@ -4976,11 +5026,14 @@ export default function BranchMap({
                         fill={CANVAS_NODE_FILL}
                         stroke={getNodeStrokeColor(
                           clusterKey,
-                          CANVAS_NODE_STROKE,
+                          isUncommittedCommit ? CHECKED_OUT_SELECTION_STROKE : CANVAS_NODE_STROKE,
                           clusterHasCheckedOutHead,
                           clusterHasSelectedCommit || (clusterHasMainTip && selectedBranchNameSet.has(defaultBranch)),
                         )}
                         strokeWidth={CANVAS_NODE_STROKE_WIDTH}
+                        strokeDasharray={isUncommittedCommit ? '3 3' : undefined}
+                        strokeLinecap={isUncommittedCommit ? 'round' : undefined}
+                        strokeLinejoin={isUncommittedCommit ? 'round' : undefined}
                         onClick={(event) =>
                           handleCommitNodeClick(
                             event,
@@ -4994,7 +5047,11 @@ export default function BranchMap({
                           setTooltip({
                             x: anchorX,
                             y: anchorY,
-                            lines: [`Commit ${c.sha}`, label, `@${c.author} · ${fmtTooltipDate(c.date)}`],
+                            lines: [
+                              isUncommittedCommit ? 'Uncommited Changes' : `Commit ${c.sha}`,
+                              label,
+                              `@${c.author} · ${fmtTooltipDate(c.date)}`,
+                            ],
                             avatarFallback: c.author?.charAt(0).toUpperCase() || '?',
                           });
                         }}
@@ -5126,9 +5183,10 @@ export default function BranchMap({
                                 : phase === 'collapsed'
                                   ? from
                                   : to;
-                            const commitKey = `direct:${c.fullSha}`;
-                            const isCheckedOutCommit =
-                              checkedOutHeadSha != null && shaMatchesGitRef(c.fullSha, checkedOutHeadSha);
+                          const commitKey = `direct:${c.fullSha}`;
+                          const isUncommittedCommit = c.fullSha === 'WORKING_TREE';
+                          const isCheckedOutCommit =
+                            checkedOutHeadSha != null && shaMatchesGitRef(c.fullSha, checkedOutHeadSha);
                             const memberOpacity = phase === 'collapsing'
                               ? 1 - 0.3 * phaseEased
                               : phase === 'expanding'
@@ -5154,7 +5212,7 @@ export default function BranchMap({
                                   fill={CANVAS_NODE_FILL}
                                   stroke={getNodeStrokeColor(
                                     commitKey,
-                                    CANVAS_NODE_STROKE,
+                                    isUncommittedCommit ? CHECKED_OUT_SELECTION_STROKE : CANVAS_NODE_STROKE,
                                     isCheckedOutCommit,
                                     selectedCommitShaSet.has(c.fullSha) ||
                                       (clusterHasMainTip &&
@@ -5162,6 +5220,9 @@ export default function BranchMap({
                                         c.fullSha === latestMainCommitSha),
                                   )}
                                   strokeWidth={CANVAS_NODE_STROKE_WIDTH}
+                                  strokeDasharray={isUncommittedCommit ? '3 3' : undefined}
+                                  strokeLinecap={isUncommittedCommit ? 'round' : undefined}
+                                  strokeLinejoin={isUncommittedCommit ? 'round' : undefined}
                                   style={{ cursor: 'pointer' }}
                                   onClick={(event) =>
                                     handleCommitNodeClick(
@@ -5178,7 +5239,11 @@ export default function BranchMap({
                                     setTooltip({
                                       x: entry.x,
                                       y: entry.y,
-                                      lines: [`Commit ${c.sha}`, label, `@${c.author} · ${fmtTooltipDate(c.date)}`],
+                                      lines: [
+                                        isUncommittedCommit ? 'Uncommited Changes' : `Commit ${c.sha}`,
+                                        label,
+                                        `@${c.author} · ${fmtTooltipDate(c.date)}`,
+                                      ],
                                       avatarFallback: c.author?.charAt(0).toUpperCase() || '?',
                                     });
                                   }}
@@ -6520,6 +6585,7 @@ export default function BranchMap({
                   clusterHasMainTip,
                   clusterHasCheckedOutHead: mainClusterHasCheckedOutHead,
                   clusterHasSelectedCommit: mainClusterHasSelectedCommit,
+                  clusterHasUncommitted,
                 } = clusterLayout;
                 const animatedAnchor = resolveAnimatedClumpAnchor(
                   clusterKey,
@@ -6546,6 +6612,7 @@ export default function BranchMap({
                 const anchorY = headEntryForCluster?.y ?? animatedAnchor.y;
 
                 if (count === 1) {
+                  const isUncommittedCommit = cluster.entries[0]?.item.fullSha === 'WORKING_TREE';
                   const rectSize = commitRectSize(scaledNodeSize);
                   return (
                     <g key={`main-direct-overlay-${clusterKey}`}>
@@ -6560,11 +6627,14 @@ export default function BranchMap({
                         fill={CANVAS_NODE_FILL}
                         stroke={getNodeStrokeColor(
                           clusterKey,
-                          CANVAS_NODE_STROKE,
+                          isUncommittedCommit ? CHECKED_OUT_SELECTION_STROKE : CANVAS_NODE_STROKE,
                           mainClusterHasCheckedOutHead,
                           mainClusterHasSelectedCommit || (clusterHasMainTip && selectedBranchNameSet.has(defaultBranch)),
                         )}
                         strokeWidth={CANVAS_NODE_STROKE_WIDTH}
+                        strokeDasharray={isUncommittedCommit ? '3 3' : undefined}
+                        strokeLinecap={isUncommittedCommit ? 'round' : undefined}
+                        strokeLinejoin={isUncommittedCommit ? 'round' : undefined}
                       />
                     </g>
                   );
@@ -6595,6 +6665,7 @@ export default function BranchMap({
                                 ? 0.7
                                 : 1;
                           const commitKey = `direct:${c.fullSha}`;
+                          const isUncommittedCommit = c.fullSha === 'WORKING_TREE';
                           const isCheckedOutCommit =
                             checkedOutHeadSha != null &&
                             (shaMatchesGitRef(c.fullSha, checkedOutHeadSha) ||
@@ -6618,7 +6689,7 @@ export default function BranchMap({
                                 fill={CANVAS_NODE_FILL}
                                 stroke={getNodeStrokeColor(
                                   commitKey,
-                                  CANVAS_NODE_STROKE,
+                                  isUncommittedCommit ? CHECKED_OUT_SELECTION_STROKE : CANVAS_NODE_STROKE,
                                   isCheckedOutCommit,
                                   selectedCommitShaSet.has(c.fullSha) ||
                                     (clusterHasMainTip &&
@@ -6626,6 +6697,9 @@ export default function BranchMap({
                                       c.fullSha === latestMainCommitSha),
                                 )}
                                 strokeWidth={CANVAS_NODE_STROKE_WIDTH}
+                                strokeDasharray={isUncommittedCommit ? '3 3' : undefined}
+                                strokeLinecap={isUncommittedCommit ? 'round' : undefined}
+                                strokeLinejoin={isUncommittedCommit ? 'round' : undefined}
                               />
                             </g>
                           );
@@ -6643,11 +6717,14 @@ export default function BranchMap({
                         fill={CANVAS_NODE_FILL}
                         stroke={getNodeStrokeColor(
                           clusterKey,
-                          CANVAS_NODE_STROKE,
+                          clusterHasUncommitted ? CHECKED_OUT_SELECTION_STROKE : CANVAS_NODE_STROKE,
                           mainClusterHasCheckedOutHead,
                           mainClusterHasSelectedCommit || (clusterHasMainTip && selectedBranchNameSet.has(defaultBranch)),
                         )}
                         strokeWidth={CANVAS_NODE_STROKE_WIDTH}
+                        strokeDasharray={clusterHasUncommitted ? '3 3' : undefined}
+                        strokeLinecap={clusterHasUncommitted ? 'round' : undefined}
+                        strokeLinejoin={clusterHasUncommitted ? 'round' : undefined}
                       />
                     )}
                   </g>
