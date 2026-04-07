@@ -259,10 +259,26 @@ function App() {
     let isFetching = false;
     let pendingFetch = false;
     let timeoutId: number;
+    let monitorIntervalId: number | null = null;
     const retryTimeoutIds = new Set<number>();
     let unlisten: (() => void) | null = null;
     let isDisposed = false;
     let isSyncingCheckedOut = false;
+    let lastCheckedOutKey: string | null = null;
+    let lastBranchesSignature: string | null = null;
+    let lastMergeNodesSignature: string | null = null;
+    let lastDirectCommitsSignature: string | null = null;
+
+    const getBranchesSignature = (list: Branch[]): string =>
+      list
+        .map((b) => `${b.name}|${b.headSha}|${b.commitsAhead}|${b.commitsBehind}|${b.unpushedCommits}|${b.remoteSyncStatus}`)
+        .join('||');
+
+    const getMergeNodesSignature = (list: MergeNode[]): string =>
+      list.map((n) => n.fullSha).join('|');
+
+    const getDirectCommitsSignature = (list: DirectCommit[]): string =>
+      list.map((c) => c.fullSha).join('|');
 
     const performFetch = async () => {
       if (isFetching) {
@@ -279,13 +295,28 @@ function App() {
         ]);
         if (isDisposed) return;
         if (branchListResult.status === 'fulfilled') {
-          setBranches(branchListResult.value);
+          const next = branchListResult.value;
+          const sig = getBranchesSignature(next);
+          if (sig !== lastBranchesSignature) {
+            lastBranchesSignature = sig;
+            setBranches(next);
+          }
         }
         if (nodesResult.status === 'fulfilled') {
-          setMergeNodes(nodesResult.value);
+          const next = nodesResult.value;
+          const sig = getMergeNodesSignature(next);
+          if (sig !== lastMergeNodesSignature) {
+            lastMergeNodesSignature = sig;
+            setMergeNodes(next);
+          }
         }
         if (directResultResult.status === 'fulfilled') {
-          setDirectCommits(directResultResult.value);
+          const next = directResultResult.value;
+          const sig = getDirectCommitsSignature(next);
+          if (sig !== lastDirectCommitsSignature) {
+            lastDirectCommitsSignature = sig;
+            setDirectCommits(next);
+          }
         }
         if (
           currentCheckedOutResult.status === 'fulfilled' &&
@@ -323,18 +354,28 @@ function App() {
       try {
         const nextRef = await invoke<CheckedOutRef>('get_checked_out_ref', { repoPath });
         if (isDisposed) return;
+        // Only track the fields that matter for visible UI transitions:
+        // branch/head movement and dirty-state toggles.
+        const nextKey = `${nextRef.branchName ?? ''}|${nextRef.headSha}|${nextRef.hasUncommittedChanges ? 1 : 0}`;
+        const prevKey = lastCheckedOutKey;
+        const branchOrHeadChanged = !prevKey || prevKey.split('|').slice(0, 2).join('|') !== nextKey.split('|').slice(0, 2).join('|');
+        lastCheckedOutKey = nextKey;
         setCheckedOutRef((prev) => {
           if (
             prev &&
             prev.branchName === nextRef.branchName &&
             prev.headSha === nextRef.headSha &&
-            prev.parentSha === nextRef.parentSha &&
             prev.hasUncommittedChanges === nextRef.hasUncommittedChanges
           ) {
             return prev;
           }
           return nextRef;
         });
+
+        // Heavy graph refresh only when branch/head actually moves (commit/checkout/merge).
+        if (branchOrHeadChanged) {
+          scheduleRefreshBurst();
+        }
       } catch {
         // ignore transient git read failures
       } finally {
@@ -369,10 +410,16 @@ function App() {
 
     // Prime UI state once when listener attaches.
     void performFetch();
+    // Authoritative monitor independent of filesystem notifications.
+    monitorIntervalId = window.setInterval(() => {
+      void syncCheckedOutRef();
+    }, 700);
+    void syncCheckedOutRef();
 
     return () => {
       isDisposed = true;
       clearTimeout(timeoutId);
+      if (monitorIntervalId != null) window.clearInterval(monitorIntervalId);
       for (const id of retryTimeoutIds) {
         window.clearTimeout(id);
       }
