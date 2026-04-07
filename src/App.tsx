@@ -1,4 +1,4 @@
-import { useState, useEffect, useLayoutEffect, useRef } from 'react';
+import { useState, useEffect, useLayoutEffect, useRef, useMemo } from 'react';
 import { invoke } from '@tauri-apps/api/core';
 import { listen } from '@tauri-apps/api/event';
 import { getCurrentWindow } from '@tauri-apps/api/window';
@@ -820,6 +820,74 @@ function App() {
     }
   }
 
+  // If there are working tree modifications, natively construct a fake node that the core layout engine parses directly!
+  const { enrichedBranches, enrichedBranchCommitPreviews } = useMemo(() => {
+    if (!checkedOutRef?.hasUncommittedChanges) {
+      return { enrichedBranches: branches, enrichedBranchCommitPreviews: branchCommitPreviews };
+    }
+    
+    // Find the branch we are checked out on:
+    const checkedOutBranch = branches.find(b => b.name === checkedOutRef.branchName);
+    const isOnBranchTip = checkedOutBranch && checkedOutBranch.headSha === checkedOutRef.headSha;
+
+    const uncommittedDate = new Date().toISOString();
+    const uncommittedNode: BranchCommitPreview = {
+      fullSha: 'WORKING_TREE',
+      sha: 'Uncommitted',
+      parentSha: checkedOutRef.headSha,
+      message: 'Local uncommitted changes',
+      author: 'You',
+      date: uncommittedDate,
+      kind: 'uncommitted'
+    };
+
+    if (isOnBranchTip) {
+      // Append directly to the branch (natively draws ahead in the exact same lane)
+      const nextBranches = branches.map(b => {
+        if (b.name === checkedOutBranch.name) {
+          return {
+            ...b,
+            commitsAhead: b.commitsAhead + 1,
+            unpushedCommits: b.unpushedCommits + 1,
+            lastCommitDate: uncommittedDate, // Engine uses this to push the branch tip out chronologically!
+            headSha: 'WORKING_TREE'
+          };
+        }
+        return b;
+      });
+      return {
+        enrichedBranches: nextBranches,
+        enrichedBranchCommitPreviews: {
+          ...branchCommitPreviews,
+          [checkedOutBranch.name]: [uncommittedNode, ...(branchCommitPreviews[checkedOutBranch.name] || [])]
+        }
+      };
+    } else {
+      // Detached head OR checked out to an old commit lower down a branch.
+      // Draw it "off to the side like a branch" by literally handing the layout engine a fake branch!
+      const fakeBranch: Branch = {
+        name: '*Uncommitted', // use special name
+        commitsAhead: 1,
+        commitsBehind: 0,
+        lastCommitDate: uncommittedDate,
+        lastCommitAuthor: 'You',
+        status: 'fresh',
+        remoteSyncStatus: 'local-only',
+        unpushedCommits: 1,
+        headSha: 'WORKING_TREE',
+        divergedFromSha: checkedOutRef.headSha,
+        parentBranch: checkedOutRef.branchName || defaultBranch,
+      };
+      return {
+        enrichedBranches: [fakeBranch, ...branches],
+        enrichedBranchCommitPreviews: {
+          ...branchCommitPreviews,
+          [fakeBranch.name]: [uncommittedNode]
+        }
+      };
+    }
+  }, [branches, branchCommitPreviews, checkedOutRef, defaultBranch]);
+
   return (
     <div className={`h-screen min-h-0 text-foreground flex flex-col relative ${isPopoverWindow ? 'bg-transparent' : 'bg-background'}`}>
       <div className={`h-full min-h-0 flex flex-col relative ${isPopoverWindow ? 'overflow-hidden popover-continuous-60 bg-background' : ''}`}>
@@ -845,7 +913,7 @@ function App() {
         <div className="absolute inset-0 overflow-hidden">
           <div className="absolute inset-0 overflow-hidden">
             <BranchMapView
-              branches={branches}
+              branches={enrichedBranches}
               mergeNodes={mergeNodes}
               directCommits={directCommits}
               mergedPRs={mergedPRs}
@@ -856,7 +924,7 @@ function App() {
               githubOwner={githubOwner}
               githubRepo={githubRepo}
               branchPromptMeta={branchPromptMeta}
-              branchCommitPreviews={branchCommitPreviews}
+              branchCommitPreviews={enrichedBranchCommitPreviews}
               branchUniqueAheadCounts={branchUniqueAheadCounts}
               view="time"
               isLoading={mapLoading}

@@ -46,7 +46,7 @@ export interface BranchCommitPreview {
   message: string;
   author: string;
   date: string;
-  kind?: 'commit' | 'branch-created';
+  kind?: 'commit' | 'branch-created' | 'uncommitted';
 }
 
 export interface AgentPrompt {
