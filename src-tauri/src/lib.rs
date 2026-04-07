@@ -21,6 +21,7 @@ use std::{
     },
     time::{Duration as StdDuration, Instant},
 };
+use notify::{Watcher, RecursiveMode};
 
 #[cfg(target_os = "macos")]
 use core_graphics::{
@@ -39,6 +40,38 @@ use tauri_plugin_global_shortcut::{Code, GlobalShortcutExt, Modifiers, Shortcut,
 pub struct RepoInfo {
     name: String,
     path: String,
+}
+
+static WATCHER_STATE: OnceLock<Mutex<Option<notify::RecommendedWatcher>>> = OnceLock::new();
+
+#[tauri::command]
+fn watch_repo(repo_path: String, app: tauri::AppHandle) -> Result<(), String> {
+    let git_dir = Path::new(&repo_path).join(".git");
+    if !git_dir.exists() {
+        return Ok(());
+    }
+
+    let (tx, rx) = std::sync::mpsc::channel();
+    let mut watcher = notify::recommended_watcher(tx).map_err(|e| e.to_string())?;
+
+    let _ = watcher.watch(&git_dir.join("refs"), RecursiveMode::Recursive);
+    let _ = watcher.watch(&git_dir.join("logs"), RecursiveMode::Recursive);
+    let _ = watcher.watch(&git_dir.join("HEAD"), RecursiveMode::NonRecursive);
+
+    std::thread::spawn(move || {
+        for res in rx {
+            if let Ok(event) = res {
+                if matches!(event.kind, notify::EventKind::Modify(_) | notify::EventKind::Create(_)) {
+                    let _ = app.emit("git-activity", ());
+                }
+            }
+        }
+    });
+
+    let mut lock = WATCHER_STATE.get_or_init(|| Mutex::new(None)).lock().unwrap();
+    *lock = Some(watcher);
+
+    Ok(())
 }
 
 // =============================================================================
@@ -3767,6 +3800,7 @@ pub fn run() {
             debug_diff_files,
             open_full_app_window,
             take_pending_open_repo,
+            watch_repo,
         ])
         .run(tauri::generate_context!())
         .expect("error running tauri application");

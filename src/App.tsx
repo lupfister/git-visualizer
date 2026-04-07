@@ -249,6 +249,48 @@ function App() {
     };
   }, [repoPath]);
 
+  // Hook up exactly as requested: File watcher triggers `git-activity` event from Rust, 
+  // and we do an invisible refetch of git state. Instant map updates!
+  useEffect(() => {
+    if (!repoPath || !defaultBranch) return;
+
+    invoke('watch_repo', { repoPath }).catch(console.error);
+
+    let isFetching = false;
+    let timeoutId: number;
+    let unlisten: null | (() => void) = null;
+
+    listen('git-activity', () => {
+      // Debounce the file system events slightly to bundle rapid git operations
+      clearTimeout(timeoutId);
+      timeoutId = window.setTimeout(async () => {
+        if (isFetching) return;
+        isFetching = true;
+        try {
+          const [branchList, nodes, currentCheckedOut, directResult] = await Promise.all([
+            invoke<Branch[]>('get_branches', { repoPath }),
+            fetchAllMergeNodes(repoPath, defaultBranch),
+            invoke<CheckedOutRef>('get_checked_out_ref', { repoPath }).catch(() => null),
+            invoke<DirectCommit[]>('get_direct_commits', { repoPath, branch: defaultBranch }),
+          ]);
+          setBranches(branchList);
+          setMergeNodes(nodes);
+          setDirectCommits(directResult);
+          if (currentCheckedOut) setCheckedOutRef(currentCheckedOut);
+        } catch (e) {
+          console.error('Auto-refresh failed:', e);
+        } finally {
+          isFetching = false;
+        }
+      }, 50);
+    }).then(fn => { unlisten = fn; }).catch(console.error);
+
+    return () => {
+      clearTimeout(timeoutId);
+      if (unlisten) unlisten();
+    };
+  }, [repoPath, defaultBranch]);
+
   async function handleGitHubAuthSetup() {
     if (!repoPath) return;
     setGithubAuthLoading(true);
