@@ -7265,10 +7265,19 @@ export default function BranchMap({
           // Use live camera refs to avoid tooltip drift when zoom/pan state is throttled.
           const livePan = panRef.current;
           const liveCameraScale = getCameraScale(zoomRef.current, isHorizontal);
-          const anchorX =
+          const commitAnchorX =
             livePan.x + graphOffsetX + (tooltip.x + graphContentTranslateX) * liveCameraScale.x;
-          const anchorY =
+          const commitAnchorY =
             livePan.y + graphOffsetY + (tooltip.y + graphContentTranslateY) * liveCameraScale.y;
+          const cameraRect = cameraRef.current?.getBoundingClientRect();
+          const cursorAnchorX = cameraRect && lastPointerClientRef.current
+            ? lastPointerClientRef.current.x - cameraRect.left
+            : null;
+          const cursorAnchorY = cameraRect && lastPointerClientRef.current
+            ? lastPointerClientRef.current.y - cameraRect.top
+            : null;
+          const anchorX = cursorAnchorX ?? commitAnchorX;
+          const anchorY = cursorAnchorY ?? commitAnchorY;
           const bodyContentW = Math.max(
             92,
             tooltipW - tooltipBodyPadX * 2 - tooltipAvatarSize - tooltipBodyGap
@@ -7281,6 +7290,8 @@ export default function BranchMap({
             tooltipBodyPadY * 2 + Math.max(tooltipAvatarSize, (subtitleLines + metaLines) * tooltipLineHeight)
           );
           const tooltipH = Math.min(220, tooltipHeaderH + tooltipBodyH);
+          const cursorGapX = tooltipCompact ? 14 : 16;
+          const cursorGapY = tooltipCompact ? 12 : 14;
           const gap = tooltipCompact ? 8 : 10;
           const nodeClearance = tooltipCompact ? 14 : 18;
           const maxLeft = Math.max(viewportPadX, viewportSize.width - tooltipW - viewportPadX);
@@ -7288,15 +7299,15 @@ export default function BranchMap({
           const clampLeft = (left: number) => Math.min(maxLeft, Math.max(viewportPadX, left));
           const clampTop = (top: number) => Math.min(maxTop, Math.max(viewportPadTop, top));
           const candidatePositions = (
-            tooltipCompact
+            cursorAnchorX !== null && cursorAnchorY !== null
               ? [
-                { left: anchorX - tooltipW / 2, top: anchorY + gap }, // below
-                { left: anchorX + gap, top: anchorY - tooltipH / 2 }, // right
-                { left: anchorX - tooltipW - gap, top: anchorY - tooltipH / 2 }, // left
-                { left: anchorX - tooltipW / 2, top: anchorY - tooltipH - gap }, // above
+                { left: anchorX + cursorGapX, top: anchorY + cursorGapY }, // lower-right of cursor
+                { left: anchorX + cursorGapX, top: anchorY - tooltipH - cursorGapY }, // upper-right
+                { left: anchorX - tooltipW - cursorGapX, top: anchorY + cursorGapY }, // lower-left
+                { left: anchorX - tooltipW - cursorGapX, top: anchorY - tooltipH - cursorGapY }, // upper-left
               ]
               : [
-                { left: anchorX - tooltipW / 2, top: anchorY - tooltipH - gap }, // above
+                { left: anchorX - tooltipW / 2, top: anchorY - tooltipH - gap }, // above commit fallback
                 { left: anchorX - tooltipW / 2, top: anchorY + gap }, // below
                 { left: anchorX + gap, top: anchorY - tooltipH / 2 }, // right
                 { left: anchorX - tooltipW - gap, top: anchorY - tooltipH / 2 }, // left
