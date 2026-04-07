@@ -821,14 +821,15 @@ function App() {
   }
 
   // If there are working tree modifications, natively construct a fake node that the core layout engine parses directly!
-  const { enrichedBranches, enrichedBranchCommitPreviews } = useMemo(() => {
+  const { enrichedBranches, enrichedDirectCommits, enrichedBranchCommitPreviews } = useMemo(() => {
     if (!checkedOutRef?.hasUncommittedChanges) {
-      return { enrichedBranches: branches, enrichedBranchCommitPreviews: branchCommitPreviews };
+      return { enrichedBranches: branches, enrichedDirectCommits: directCommits, enrichedBranchCommitPreviews: branchCommitPreviews };
     }
     
     // Find the branch we are checked out on:
     const checkedOutBranch = branches.find(b => b.name === checkedOutRef.branchName);
-    const isOnBranchTip = checkedOutBranch && checkedOutBranch.headSha === checkedOutRef.headSha;
+    const hasBranchAttached = !!checkedOutBranch;
+    const isOnMainBranch = checkedOutRef.branchName === defaultBranch;
 
     const uncommittedDate = new Date().toISOString();
     const uncommittedNode: BranchCommitPreview = {
@@ -840,11 +841,21 @@ function App() {
       date: uncommittedDate,
       kind: 'uncommitted'
     };
+    
+    const uncommittedDirectCommit: DirectCommit = {
+      fullSha: 'WORKING_TREE',
+      sha: 'Uncommitted',
+      parentSha: checkedOutRef.headSha,
+      message: 'Local uncommitted changes',
+      author: 'You',
+      date: uncommittedDate,
+      kind: 'uncommitted'
+    };
 
-    if (isOnBranchTip) {
+    if (hasBranchAttached) {
       // Append directly to the branch (natively draws ahead in the exact same lane)
       const nextBranches = branches.map(b => {
-        if (b.name === checkedOutBranch.name) {
+        if (b.name === checkedOutBranch!.name) {
           return {
             ...b,
             commitsAhead: b.commitsAhead + 1,
@@ -857,10 +868,18 @@ function App() {
       });
       return {
         enrichedBranches: nextBranches,
+        enrichedDirectCommits: directCommits,
         enrichedBranchCommitPreviews: {
           ...branchCommitPreviews,
-          [checkedOutBranch.name]: [uncommittedNode, ...(branchCommitPreviews[checkedOutBranch.name] || [])]
+          [checkedOutBranch!.name]: [uncommittedNode, ...(branchCommitPreviews[checkedOutBranch!.name] || [])]
         }
+      };
+    } else if (isOnMainBranch) {
+      // If we are on main branch, it doesn't appear in `branches`, so we append to directCommits!
+      return {
+        enrichedBranches: branches,
+        enrichedDirectCommits: [uncommittedDirectCommit, ...directCommits],
+        enrichedBranchCommitPreviews: branchCommitPreviews
       };
     } else {
       // Detached head OR checked out to an old commit lower down a branch.
@@ -880,13 +899,14 @@ function App() {
       };
       return {
         enrichedBranches: [fakeBranch, ...branches],
+        enrichedDirectCommits: directCommits,
         enrichedBranchCommitPreviews: {
           ...branchCommitPreviews,
           [fakeBranch.name]: [uncommittedNode]
         }
       };
     }
-  }, [branches, branchCommitPreviews, checkedOutRef, defaultBranch]);
+  }, [branches, branchCommitPreviews, directCommits, checkedOutRef, defaultBranch]);
 
   return (
     <div className={`h-screen min-h-0 text-foreground flex flex-col relative ${isPopoverWindow ? 'bg-transparent' : 'bg-background'}`}>
@@ -915,7 +935,7 @@ function App() {
             <BranchMapView
               branches={enrichedBranches}
               mergeNodes={mergeNodes}
-              directCommits={directCommits}
+              directCommits={enrichedDirectCommits}
               mergedPRs={mergedPRs}
               openPRs={openPRs}
               defaultBranch={defaultBranch}

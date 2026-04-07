@@ -79,6 +79,7 @@ export interface DirectCommit {
   message: string;
   author: string;
   date: string;
+  kind?: 'commit' | 'uncommitted';
 }
 
 export interface MergeNode {
