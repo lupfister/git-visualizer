@@ -259,8 +259,26 @@ function App() {
     let isFetching = false;
     let pendingFetch = false;
     let timeoutId: number;
+    let monitorIntervalId: number | null = null;
+    const retryTimeoutIds = new Set<number>();
     let unlisten: (() => void) | null = null;
     let isDisposed = false;
+    let isSyncingCheckedOut = false;
+    let lastCheckedOutKey: string | null = null;
+    let lastBranchesSignature: string | null = null;
+    let lastMergeNodesSignature: string | null = null;
+    let lastDirectCommitsSignature: string | null = null;
+
+    const getBranchesSignature = (list: Branch[]): string =>
+      list
+        .map((b) => `${b.name}|${b.headSha}|${b.commitsAhead}|${b.commitsBehind}|${b.unpushedCommits}|${b.remoteSyncStatus}`)
+        .join('||');
+
+    const getMergeNodesSignature = (list: MergeNode[]): string =>
+      list.map((n) => n.fullSha).join('|');
+
+    const getDirectCommitsSignature = (list: DirectCommit[]): string =>
+      list.map((c) => c.fullSha).join('|');
 
     const performFetch = async () => {
       if (isFetching) {
@@ -269,17 +287,55 @@ function App() {
       }
       isFetching = true;
       try {
-        const [branchList, nodes, currentCheckedOut, directResult] = await Promise.all([
+        const [branchListResult, nodesResult, currentCheckedOutResult, directResultResult] = await Promise.allSettled([
           invoke<Branch[]>('get_branches', { repoPath }),
           fetchAllMergeNodes(repoPath, defaultBranch),
           invoke<CheckedOutRef>('get_checked_out_ref', { repoPath }).catch(() => null),
           invoke<DirectCommit[]>('get_direct_commits', { repoPath, branch: defaultBranch }),
         ]);
         if (isDisposed) return;
-        setBranches(branchList);
-        setMergeNodes(nodes);
-        setDirectCommits(directResult);
-        if (currentCheckedOut) setCheckedOutRef(currentCheckedOut);
+        if (branchListResult.status === 'fulfilled') {
+          const next = branchListResult.value;
+          const sig = getBranchesSignature(next);
+          if (sig !== lastBranchesSignature) {
+            lastBranchesSignature = sig;
+            setBranches(next);
+          }
+        }
+        if (nodesResult.status === 'fulfilled') {
+          const next = nodesResult.value;
+          const sig = getMergeNodesSignature(next);
+          if (sig !== lastMergeNodesSignature) {
+            lastMergeNodesSignature = sig;
+            setMergeNodes(next);
+          }
+        }
+        if (directResultResult.status === 'fulfilled') {
+          const next = directResultResult.value;
+          const sig = getDirectCommitsSignature(next);
+          if (sig !== lastDirectCommitsSignature) {
+            lastDirectCommitsSignature = sig;
+            setDirectCommits(next);
+          }
+        }
+        if (
+          currentCheckedOutResult.status === 'fulfilled' &&
+          currentCheckedOutResult.value
+        ) {
+          const nextRef = currentCheckedOutResult.value;
+          setCheckedOutRef((prev) => {
+            if (
+              prev &&
+              prev.branchName === nextRef.branchName &&
+              prev.headSha === nextRef.headSha &&
+              prev.parentSha === nextRef.parentSha &&
+              prev.hasUncommittedChanges === nextRef.hasUncommittedChanges
+            ) {
+              return prev;
+            }
+            return nextRef;
+          });
+        }
       } catch (e) {
         console.error('Auto-refresh failed:', e);
       } finally {
@@ -292,17 +348,82 @@ function App() {
       }
     };
 
-    listen('git-activity', () => {
+    const syncCheckedOutRef = async () => {
+      if (isSyncingCheckedOut) return;
+      isSyncingCheckedOut = true;
+      try {
+        const nextRef = await invoke<CheckedOutRef>('get_checked_out_ref', { repoPath });
+        if (isDisposed) return;
+        // Only track the fields that matter for visible UI transitions:
+        // branch/head movement and dirty-state toggles.
+        const nextKey = `${nextRef.branchName ?? ''}|${nextRef.headSha}|${nextRef.hasUncommittedChanges ? 1 : 0}`;
+        const prevKey = lastCheckedOutKey;
+        const branchOrHeadChanged = !prevKey || prevKey.split('|').slice(0, 2).join('|') !== nextKey.split('|').slice(0, 2).join('|');
+        lastCheckedOutKey = nextKey;
+        setCheckedOutRef((prev) => {
+          if (
+            prev &&
+            prev.branchName === nextRef.branchName &&
+            prev.headSha === nextRef.headSha &&
+            prev.hasUncommittedChanges === nextRef.hasUncommittedChanges
+          ) {
+            return prev;
+          }
+          return nextRef;
+        });
+
+        // Heavy graph refresh only when branch/head actually moves (commit/checkout/merge).
+        if (branchOrHeadChanged) {
+          scheduleRefreshBurst();
+        }
+      } catch {
+        // ignore transient git read failures
+      } finally {
+        isSyncingCheckedOut = false;
+      }
+    };
+
+    const scheduleRefreshBurst = () => {
       clearTimeout(timeoutId);
       timeoutId = window.setTimeout(performFetch, 300); // 300ms to let Git settle completely
+      const retries = [900];
+      for (const delayMs of retries) {
+        const id = window.setTimeout(() => {
+          retryTimeoutIds.delete(id);
+          void performFetch();
+        }, delayMs);
+        retryTimeoutIds.add(id);
+      }
+    };
+
+    listen<string>('git-activity', (event) => {
+      const mode = event.payload;
+      if (mode === 'local') {
+        void syncCheckedOutRef();
+        return;
+      }
+      scheduleRefreshBurst();
     }).then(fn => {
       if (isDisposed) fn();
       else unlisten = fn;
     }).catch(console.error);
 
+    // Prime UI state once when listener attaches.
+    void performFetch();
+    // Authoritative monitor independent of filesystem notifications.
+    monitorIntervalId = window.setInterval(() => {
+      void syncCheckedOutRef();
+    }, 700);
+    void syncCheckedOutRef();
+
     return () => {
       isDisposed = true;
       clearTimeout(timeoutId);
+      if (monitorIntervalId != null) window.clearInterval(monitorIntervalId);
+      for (const id of retryTimeoutIds) {
+        window.clearTimeout(id);
+      }
+      retryTimeoutIds.clear();
       if (unlisten) unlisten();
     };
   }, [repoPath, defaultBranch]);
@@ -821,9 +942,13 @@ function App() {
   }
 
   // If there are working tree modifications, natively construct a fake node that the core layout engine parses directly!
-  const { enrichedBranches, enrichedBranchCommitPreviews } = useMemo(() => {
+  const { enrichedBranches, enrichedBranchCommitPreviews, enrichedBranchUniqueAheadCounts } = useMemo(() => {
     if (!checkedOutRef?.hasUncommittedChanges) {
-      return { enrichedBranches: branches, enrichedBranchCommitPreviews: branchCommitPreviews };
+      return {
+        enrichedBranches: branches,
+        enrichedBranchCommitPreviews: branchCommitPreviews,
+        enrichedBranchUniqueAheadCounts: branchUniqueAheadCounts,
+      };
     }
     
     // Find the branch we are checked out on:
@@ -833,7 +958,7 @@ function App() {
     const uncommittedDate = new Date().toISOString();
     const uncommittedNode: BranchCommitPreview = {
       fullSha: 'WORKING_TREE',
-      sha: 'Uncommitted',
+      sha: 'Uncommited Changes',
       parentSha: checkedOutRef.headSha,
       message: 'Local uncommitted changes',
       author: 'You',
@@ -860,7 +985,16 @@ function App() {
         enrichedBranchCommitPreviews: {
           ...branchCommitPreviews,
           [checkedOutBranch.name]: [uncommittedNode, ...(branchCommitPreviews[checkedOutBranch.name] || [])]
-        }
+        },
+        enrichedBranchUniqueAheadCounts: {
+          ...branchUniqueAheadCounts,
+          [checkedOutBranch.name]: Math.max(
+            0,
+            (Object.prototype.hasOwnProperty.call(branchUniqueAheadCounts, checkedOutBranch.name)
+              ? branchUniqueAheadCounts[checkedOutBranch.name]
+              : checkedOutBranch.commitsAhead) ?? 0,
+          ) + 1,
+        },
       };
     } else {
       // Detached head OR checked out to an old commit lower down a branch.
@@ -883,10 +1017,14 @@ function App() {
         enrichedBranchCommitPreviews: {
           ...branchCommitPreviews,
           [fakeBranch.name]: [uncommittedNode]
-        }
+        },
+        enrichedBranchUniqueAheadCounts: {
+          ...branchUniqueAheadCounts,
+          [fakeBranch.name]: 1,
+        },
       };
     }
-  }, [branches, branchCommitPreviews, checkedOutRef, defaultBranch]);
+  }, [branches, branchCommitPreviews, branchUniqueAheadCounts, checkedOutRef, defaultBranch]);
 
   return (
     <div className={`h-screen min-h-0 text-foreground flex flex-col relative ${isPopoverWindow ? 'bg-transparent' : 'bg-background'}`}>
@@ -925,7 +1063,7 @@ function App() {
               githubRepo={githubRepo}
               branchPromptMeta={branchPromptMeta}
               branchCommitPreviews={enrichedBranchCommitPreviews}
-              branchUniqueAheadCounts={branchUniqueAheadCounts}
+              branchUniqueAheadCounts={enrichedBranchUniqueAheadCounts}
               view="time"
               isLoading={mapLoading}
               scrollRequest={scrollRequest}

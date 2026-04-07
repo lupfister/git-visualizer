@@ -43,10 +43,23 @@ pub struct RepoInfo {
 }
 
 static WATCHER_STATE: OnceLock<Mutex<Option<notify::RecommendedWatcher>>> = OnceLock::new();
+const GIT_ACTIVITY_LOCAL_MIN_EMIT_MS: u64 = 250;
+const GIT_ACTIVITY_GRAPH_MIN_EMIT_MS: u64 = 120;
+
+fn path_contains_noise_dir(path: &Path) -> bool {
+    path.components().any(|component| {
+        let name = component.as_os_str().to_string_lossy();
+        matches!(
+            name.as_ref(),
+            "node_modules" | ".next" | "dist" | "build" | "target" | ".turbo" | "out"
+        )
+    })
+}
 
 #[tauri::command]
 fn watch_repo(repo_path: String, app: tauri::AppHandle) -> Result<(), String> {
-    let git_dir = Path::new(&repo_path).join(".git");
+    let repo_root = Path::new(&repo_path);
+    let git_dir = repo_root.join(".git");
     if !git_dir.exists() {
         return Ok(());
     }
@@ -54,23 +67,58 @@ fn watch_repo(repo_path: String, app: tauri::AppHandle) -> Result<(), String> {
     let (tx, rx) = std::sync::mpsc::channel();
     let mut watcher = notify::recommended_watcher(tx).map_err(|e| e.to_string())?;
 
-    let _ = watcher.watch(&git_dir, RecursiveMode::Recursive);
+    let _ = watcher.watch(repo_root, RecursiveMode::Recursive);
+    let last_local_emit_ms = std::sync::Arc::new(AtomicU64::new(0));
+    let last_graph_emit_ms = std::sync::Arc::new(AtomicU64::new(0));
+    let git_dir = git_dir.to_path_buf();
 
     std::thread::spawn(move || {
         for res in rx {
             if let Ok(event) = res {
-                let is_relevant = event.paths.iter().any(|p| {
-                    let path_str = p.to_string_lossy();
-                    path_str.contains("/refs/") 
-                        || path_str.contains("/logs/") 
-                        || path_str.ends_with("HEAD") 
-                        || path_str.ends_with("FETCH_HEAD")
-                        || path_str.ends_with("ORIG_HEAD")
-                });
+                if matches!(event.kind, notify::EventKind::Access(_)) {
+                    continue;
+                }
 
-                if is_relevant && !matches!(event.kind, notify::EventKind::Access(_)) {
-                    println!("Git activity detected: {:?}", event.kind);
-                    let _ = app.emit("git-activity", "refresh");
+                let mut has_graph_change = false;
+                let mut has_local_change = false;
+                for p in &event.paths {
+                    if path_contains_noise_dir(p) {
+                        continue;
+                    }
+
+                    // Working-tree changes are used to refresh local dirty status only.
+                    if !p.starts_with(&git_dir) {
+                        has_local_change = true;
+                        continue;
+                    }
+
+                    // For .git internals, only react to refs/logs/head updates.
+                    let path_str = p.to_string_lossy();
+                    let is_graph_path = path_str.contains("/refs/")
+                        || path_str.contains("/logs/")
+                        || path_str.ends_with("HEAD")
+                        || path_str.ends_with("FETCH_HEAD")
+                        || path_str.ends_with("ORIG_HEAD");
+                    if is_graph_path {
+                        has_graph_change = true;
+                    }
+                }
+
+                if has_graph_change {
+                    let now_ms = Utc::now().timestamp_millis().max(0) as u64;
+                    let prev_ms = last_graph_emit_ms.load(Ordering::Relaxed);
+                    if now_ms.saturating_sub(prev_ms) >= GIT_ACTIVITY_GRAPH_MIN_EMIT_MS {
+                        last_graph_emit_ms.store(now_ms, Ordering::Relaxed);
+                        println!("Git activity detected: {:?}", event.kind);
+                        let _ = app.emit("git-activity", "graph");
+                    }
+                } else if has_local_change {
+                    let now_ms = Utc::now().timestamp_millis().max(0) as u64;
+                    let prev_ms = last_local_emit_ms.load(Ordering::Relaxed);
+                    if now_ms.saturating_sub(prev_ms) >= GIT_ACTIVITY_LOCAL_MIN_EMIT_MS {
+                        last_local_emit_ms.store(now_ms, Ordering::Relaxed);
+                        let _ = app.emit("git-activity", "local");
+                    }
                 }
             }
         }
