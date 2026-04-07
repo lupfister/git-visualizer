@@ -54,13 +54,20 @@ fn watch_repo(repo_path: String, app: tauri::AppHandle) -> Result<(), String> {
     let (tx, rx) = std::sync::mpsc::channel();
     let mut watcher = notify::recommended_watcher(tx).map_err(|e| e.to_string())?;
 
-    let _ = watcher.watch(&git_dir, RecursiveMode::Recursive);
+    // Only watch the extremely specific files that indicate structure changes to avoid infinite read loops
+    let _ = watcher.watch(&git_dir.join("refs").join("heads"), RecursiveMode::Recursive);
+    let _ = watcher.watch(&git_dir.join("HEAD"), RecursiveMode::NonRecursive);
 
     std::thread::spawn(move || {
         for res in rx {
             if let Ok(event) = res {
-                println!("Git activity detected: {:?}", event.kind);
-                let _ = app.emit("git-activity", ());
+                // Ignore Access and Any events, which are triggered just by running 'git log' or 'git branch'
+                if !matches!(event.kind, notify::EventKind::Access(_)) {
+                    // Only emit if it's a create, modify, or remove
+                    if matches!(event.kind, notify::EventKind::Modify(_) | notify::EventKind::Create(_) | notify::EventKind::Remove(_)) {
+                        let _ = app.emit("git-activity", "refresh");
+                    }
+                }
             }
         }
     });

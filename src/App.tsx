@@ -257,35 +257,44 @@ function App() {
     invoke('watch_repo', { repoPath }).catch(console.error);
 
     let isFetching = false;
+    let pendingFetch = false;
     let timeoutId: number;
     let unlisten: (() => void) | null = null;
     let isDisposed = false;
 
-    listen('git-activity', () => {
-      console.log('🔄 Git activity received in frontend, debouncing...');
-      clearTimeout(timeoutId);
-      timeoutId = window.setTimeout(async () => {
-        if (isFetching) return;
-        isFetching = true;
-        console.log('🔄 Fetching new git state...');
-        try {
-          const [branchList, nodes, currentCheckedOut, directResult] = await Promise.all([
-            invoke<Branch[]>('get_branches', { repoPath }),
-            fetchAllMergeNodes(repoPath, defaultBranch),
-            invoke<CheckedOutRef>('get_checked_out_ref', { repoPath }).catch(() => null),
-            invoke<DirectCommit[]>('get_direct_commits', { repoPath, branch: defaultBranch }),
-          ]);
-          if (isDisposed) return;
-          setBranches(branchList);
-          setMergeNodes(nodes);
-          setDirectCommits(directResult);
-          if (currentCheckedOut) setCheckedOutRef(currentCheckedOut);
-        } catch (e) {
-          console.error('Auto-refresh failed:', e);
-        } finally {
-          isFetching = false;
+    const performFetch = async () => {
+      if (isFetching) {
+        pendingFetch = true;
+        return;
+      }
+      isFetching = true;
+      try {
+        const [branchList, nodes, currentCheckedOut, directResult] = await Promise.all([
+          invoke<Branch[]>('get_branches', { repoPath }),
+          fetchAllMergeNodes(repoPath, defaultBranch),
+          invoke<CheckedOutRef>('get_checked_out_ref', { repoPath }).catch(() => null),
+          invoke<DirectCommit[]>('get_direct_commits', { repoPath, branch: defaultBranch }),
+        ]);
+        if (isDisposed) return;
+        setBranches(branchList);
+        setMergeNodes(nodes);
+        setDirectCommits(directResult);
+        if (currentCheckedOut) setCheckedOutRef(currentCheckedOut);
+      } catch (e) {
+        console.error('Auto-refresh failed:', e);
+      } finally {
+        isFetching = false;
+        if (pendingFetch && !isDisposed) {
+          pendingFetch = false;
+          // Defer the pending fetch slightly to avoid infinite tight loops
+          timeoutId = window.setTimeout(performFetch, 200);
         }
-      }, 200); // Wait 200ms for git commands to fully complete their I/O
+      }
+    };
+
+    listen('git-activity', () => {
+      clearTimeout(timeoutId);
+      timeoutId = window.setTimeout(performFetch, 300); // 300ms to let Git settle completely
     }).then(fn => {
       if (isDisposed) fn();
       else unlisten = fn;
