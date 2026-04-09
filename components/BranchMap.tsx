@@ -592,6 +592,13 @@ export default function BranchMap({
   const clumpRenderId = clumpRenderCounterRef.current;
   const clumpCleanupTimersRef = useRef<Map<string, number>>(new Map());
   const graphOffsetRef = useRef({ x: 0, y: 0 });
+  const graphProjectionRef = useRef({
+    graphOffsetX: 0,
+    graphOffsetY: 0,
+    graphContentTranslateX: 0,
+    graphContentTranslateY: 0,
+    initialized: false,
+  });
   const cameraBoundsRef = useRef({
     viewportW: 0,
     viewportH: 0,
@@ -2074,7 +2081,7 @@ export default function BranchMap({
       const expandedState = expandedClumps.get(clump.key);
       const shouldReserveExpandedRows =
         (expandedState?.isExpanded ?? false) &&
-        expandedState?.phase !== 'collapsing';
+        expandedState?.phase !== 'collapsed';
       const assignShaRow = (sha: string, row: number) => {
         if (clump.lane === 'main' || clump.lane === 'main-merge') {
           gridRowBySha.set(sha, row);
@@ -2350,7 +2357,7 @@ export default function BranchMap({
       const expandedState = expandedClumps.get(clump.key);
       const shouldReserveExpandedRows =
         (expandedState?.isExpanded ?? false) &&
-        expandedState?.phase !== 'collapsing';
+        expandedState?.phase !== 'collapsed';
       const memberCount = Math.max(clump.shas.length, clump.slotIndices?.length ?? 0);
 
       if (shouldReserveExpandedRows && memberCount > 1) {
@@ -2670,7 +2677,7 @@ export default function BranchMap({
     const expandedState = expandedClumps.get(clumpKey);
     const parentClumpIsExpanded =
       (expandedState?.isExpanded ?? false) &&
-      expandedState?.phase !== 'collapsing';
+      expandedState?.phase !== 'collapsed';
     if (parentClumpIsExpanded) return null;
 
     const anchorSlotIndex = segmentEnd;
@@ -3296,6 +3303,55 @@ export default function BranchMap({
     centerableCommitBoundsDep,
   ]);
 
+  useLayoutEffect(() => {
+    const previous = graphProjectionRef.current;
+    const next = {
+      graphOffsetX,
+      graphOffsetY,
+      graphContentTranslateX,
+      graphContentTranslateY,
+      initialized: true,
+    };
+    if (!previous.initialized) {
+      graphProjectionRef.current = next;
+      return;
+    }
+    if (!hasUserMovedCameraRef.current) {
+      graphProjectionRef.current = next;
+      return;
+    }
+
+    const deltaGraphOffsetX = next.graphOffsetX - previous.graphOffsetX;
+    const deltaGraphOffsetY = next.graphOffsetY - previous.graphOffsetY;
+    const cameraScale = getCameraScale(zoomRef.current, isHorizontal);
+    const deltaTranslatePxX = (next.graphContentTranslateX - previous.graphContentTranslateX) * cameraScale.x;
+    const deltaTranslatePxY = (next.graphContentTranslateY - previous.graphContentTranslateY) * cameraScale.y;
+    const correctionX = deltaGraphOffsetX + deltaTranslatePxX;
+    const correctionY = deltaGraphOffsetY + deltaTranslatePxY;
+    graphProjectionRef.current = next;
+
+    if (Math.abs(correctionX) < 0.01 && Math.abs(correctionY) < 0.01) return;
+    const stabilizedPan = clampPan(
+      {
+        x: panRef.current.x - correctionX,
+        y: panRef.current.y - correctionY,
+      },
+      zoomRef.current,
+      'hard'
+    );
+    if (
+      Math.abs(stabilizedPan.x - panRef.current.x) < 0.01 &&
+      Math.abs(stabilizedPan.y - panRef.current.y) < 0.01
+    ) return;
+    applyCamera(stabilizedPan, zoomRef.current, true, true);
+  }, [
+    graphOffsetX,
+    graphOffsetY,
+    graphContentTranslateX,
+    graphContentTranslateY,
+    isHorizontal,
+  ]);
+
   const checkedOutBranchName = checkedOutRef?.branchName ?? null;
   const checkedOutHeadSha = checkedOutRef?.headSha ?? null;
   const checkedOutParentSha = checkedOutRef?.parentSha ?? null;
@@ -3708,8 +3764,8 @@ export default function BranchMap({
   const holdTimelineForInitialCenter =
     isLoading || (!hasInitialRevealDone && hasTimelineSeedData && timelineRevealPhase !== 'done' && !hasUserMovedCameraRef.current);
 
-  const clumpExpandMs = 260;
-  const clumpExpandEasing = 'cubic-bezier(0.22, 1, 0.36, 1)';
+  const clumpExpandMs = 360;
+  const clumpExpandEasing = 'cubic-bezier(0.2, 0.8, 0.2, 1)';
   const getNodeStrokeColor = (
     nodeKey: string,
     baseStroke = CANVAS_NODE_STROKE,
@@ -4048,6 +4104,7 @@ export default function BranchMap({
   const clumpAnimStyle: React.CSSProperties = {
     transition: `transform ${clumpExpandMs}ms ${clumpExpandEasing}, opacity ${clumpExpandMs}ms ${clumpExpandEasing}`,
     willChange: 'transform, opacity',
+    transformOrigin: 'center',
   };
   const hoveredNodeBranchLineage = (() => {
     if (!hoveredNodeBranchName) return new Set<string>();
@@ -4069,6 +4126,7 @@ export default function BranchMap({
   const isNodeLineageHovered = (branchName: string): boolean => hoveredNodeBranchLineage.has(branchName);
 
   const toggleClumpExpanded = (clumpKey: string) => {
+    markUserMovedCamera();
     const existing = expandedClumps.get(clumpKey);
     const isExpanded = existing?.isExpanded ?? false;
 
@@ -4115,6 +4173,7 @@ export default function BranchMap({
       return next;
     });
 
+    const expandStartedAt = Date.now();
     requestAnimationFrame(() => {
       setExpandedClumps((prev) => {
         const next = new Map(prev);
@@ -4123,11 +4182,20 @@ export default function BranchMap({
         next.set(clumpKey, {
           isExpanded: true,
           phase: 'expanding',
-          phaseStartedAt: current.phaseStartedAt ?? Date.now(),
+          phaseStartedAt: expandStartedAt,
         });
         return next;
       });
-      requestAnimationFrame(() => {
+
+      // Drive re-renders while expanding so interpolation remains smooth.
+      const expandTick = () => {
+        const elapsed = Date.now() - expandStartedAt;
+        setClumpAnimationTick((v) => v + 1);
+        if (elapsed < clumpExpandMs) requestAnimationFrame(expandTick);
+      };
+      requestAnimationFrame(expandTick);
+
+      const finalizeTimer = window.setTimeout(() => {
         setExpandedClumps((prev) => {
           const next = new Map(prev);
           const current = next.get(clumpKey);
@@ -4135,11 +4203,14 @@ export default function BranchMap({
           next.set(clumpKey, {
             isExpanded: true,
             phase: 'expanded',
-            phaseStartedAt: current.phaseStartedAt ?? Date.now(),
+            phaseStartedAt: expandStartedAt,
           });
           return next;
         });
-      });
+        clumpCleanupTimersRef.current.delete(clumpKey);
+      }, clumpExpandMs);
+
+      clumpCleanupTimersRef.current.set(clumpKey, finalizeTimer);
     });
   };
 
@@ -4199,7 +4270,6 @@ type MainDirectClusterLayout = {
         cluster,
         clusterKey,
         memberKeys,
-        clusterHasCheckedOutHead: mainClusterHasCheckedOutHead,
       } = clusterLayout;
       const animatedAnchor = resolveAnimatedClumpAnchor(
         clusterKey,
@@ -4208,13 +4278,7 @@ type MainDirectClusterLayout = {
       );
       const expanded = expandedClumps.get(clusterKey);
       const isExpanded = expanded?.isExpanded ?? false;
-      const headEntryForCluster =
-        mainClusterHasCheckedOutHead && checkedOutHeadSha && isExpanded
-          ? cluster.entries.find((entry) =>
-              shaMatchesGitRef(entry.item.fullSha, checkedOutHeadSha)
-            )
-          : null;
-      const anchorProjected = headEntryForCluster ?? animatedAnchor;
+      const anchorProjected = animatedAnchor;
       const collapsedCanonical = unprojectPoint(anchorProjected.x, anchorProjected.y);
 
       if (!isExpanded || cluster.entries.length <= 1) {
@@ -6583,7 +6647,7 @@ type MainDirectClusterLayout = {
                   clusterKey,
                   memberKeys,
                   clusterHasMainTip,
-                  clusterHasCheckedOutHead: mainClusterHasCheckedOutHead,
+                  clusterHasCheckedOutHead,
                   clusterHasSelectedCommit: mainClusterHasSelectedCommit,
                   clusterHasUncommitted,
                 } = clusterLayout;
@@ -6602,14 +6666,8 @@ type MainDirectClusterLayout = {
                     ? 1
                     : clamp01((Date.now() - phaseStartedAtMs) / clumpExpandMs);
                 const phaseEased = phaseProgress <= 0 ? 0 : phaseProgress >= 1 ? 1 : easeInOutCubic(phaseProgress);
-                const headEntryForCluster =
-                  mainClusterHasCheckedOutHead && checkedOutHeadSha && isExpanded
-                    ? cluster.entries.find((entry) =>
-                        shaMatchesGitRef(entry.item.fullSha, checkedOutHeadSha)
-                      )
-                    : null;
-                const anchorX = headEntryForCluster?.x ?? animatedAnchor.x;
-                const anchorY = headEntryForCluster?.y ?? animatedAnchor.y;
+                const anchorX = animatedAnchor.x;
+                const anchorY = animatedAnchor.y;
 
                 if (count === 1) {
                   const isUncommittedCommit = cluster.entries[0]?.item.fullSha === 'WORKING_TREE';
@@ -6628,7 +6686,7 @@ type MainDirectClusterLayout = {
                         stroke={getNodeStrokeColor(
                           clusterKey,
                           isUncommittedCommit ? CHECKED_OUT_SELECTION_STROKE : CANVAS_NODE_STROKE,
-                          mainClusterHasCheckedOutHead,
+                          clusterHasCheckedOutHead,
                           mainClusterHasSelectedCommit || (clusterHasMainTip && selectedBranchNameSet.has(defaultBranch)),
                         )}
                         strokeWidth={CANVAS_NODE_STROKE_WIDTH}
@@ -6718,7 +6776,7 @@ type MainDirectClusterLayout = {
                         stroke={getNodeStrokeColor(
                           clusterKey,
                           clusterHasUncommitted ? CHECKED_OUT_SELECTION_STROKE : CANVAS_NODE_STROKE,
-                          mainClusterHasCheckedOutHead,
+                          clusterHasCheckedOutHead,
                           mainClusterHasSelectedCommit || (clusterHasMainTip && selectedBranchNameSet.has(defaultBranch)),
                         )}
                         strokeWidth={CANVAS_NODE_STROKE_WIDTH}
@@ -6941,7 +6999,6 @@ type MainDirectClusterLayout = {
                   last,
                   clusterKey,
                   memberKeys,
-                  clusterHasCheckedOutHead: mainClusterHasCheckedOutHead,
                 } = clusterLayout;
                 const animatedAnchor = resolveAnimatedClumpAnchor(
                   clusterKey,
@@ -6950,14 +7007,8 @@ type MainDirectClusterLayout = {
                 );
                 const expanded = expandedClumps.get(clusterKey);
                 const isExpanded = expanded?.isExpanded ?? false;
-                const headEntryForCluster =
-                  mainClusterHasCheckedOutHead && checkedOutHeadSha && isExpanded
-                    ? cluster.entries.find((entry) =>
-                        shaMatchesGitRef(entry.item.fullSha, checkedOutHeadSha)
-                      )
-                    : null;
-                const anchorX = headEntryForCluster?.x ?? animatedAnchor.x;
-                const anchorY = headEntryForCluster?.y ?? animatedAnchor.y;
+                const anchorX = animatedAnchor.x;
+                const anchorY = animatedAnchor.y;
 
                 if (count === 1) {
                   const rectSize = commitRectSize(scaledNodeSize);
