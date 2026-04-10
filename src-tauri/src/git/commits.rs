@@ -95,6 +95,7 @@ pub fn get_merge_commits(
         &[
             "log",
             "--merges",
+            "--first-parent",
             &format!("--max-count={}", limit),
             &format!("--skip={}", skip),
             "--format=%H|%h|%s|%cI|%P",

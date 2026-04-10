@@ -2111,12 +2111,20 @@ export default function BranchMap({
   const sortedNodes = [...mergeNodes].sort(
     (a, b) => new Date(a.date).getTime() - new Date(b.date).getTime()
   );
+  const mergeHeadTargetKey = (targetBranch: string, mergedHeadSha: string): string =>
+    `${targetBranch}::${mergedHeadSha}`;
   const mergeNodeByMergedHeadSha = new Map<string, MergeNode>();
+  const mergeNodeByMergedHeadAndTarget = new Map<string, MergeNode>();
   for (const node of sortedNodes) {
     const mergedParents = node.parentShas?.slice(1) ?? [];
+    const targetBranch = node.targetBranch ?? defaultBranch;
     for (const parentSha of mergedParents) {
       if (parentSha && !mergeNodeByMergedHeadSha.has(parentSha)) {
         mergeNodeByMergedHeadSha.set(parentSha, node);
+      }
+      const targetedKey = mergeHeadTargetKey(targetBranch, parentSha);
+      if (parentSha && !mergeNodeByMergedHeadAndTarget.has(targetedKey)) {
+        mergeNodeByMergedHeadAndTarget.set(targetedKey, node);
       }
     }
   }
@@ -3005,12 +3013,19 @@ export default function BranchMap({
     return null;
   }
 
-  function collapsedParentClumpLiftedTipX(branch: Branch, parentName: string): number | null {
-    if (!parentName || parentName === defaultBranch || parentName === branch.name) return null;
+  function collapsedParentClumpAnchorX(branch: Branch, parentName: string): number | null {
+    if (!parentName || parentName === branch.name) return null;
 
-    const parentBranch = branchByName.get(parentName);
-    if (!parentBranch) return null;
-    const parentPreviews = renderableBranchPreviews(parentBranch);
+    const parentPreviews: BranchCommitPreview[] = parentName === defaultBranch
+      ? sortedDirectCommits.map((commit) => ({
+        ...commit,
+        kind: commit.kind === 'uncommitted' ? 'uncommitted' : 'commit',
+      } as BranchCommitPreview))
+      : (() => {
+        const parentBranch = branchByName.get(parentName);
+        if (!parentBranch) return [];
+        return renderableBranchPreviews(parentBranch);
+      })();
     if (parentPreviews.length <= 1) return null;
 
     const parentTimes = parentPreviews.map((commit) => new Date(commit.date).getTime());
@@ -3040,11 +3055,32 @@ export default function BranchMap({
 
     const anchorSlotIndex = segmentEnd;
     const anchorPreview = parentPreviews[anchorSlotIndex];
-    const anchorX =
-      gridXForBranchSlot(parentName, anchorSlotIndex) ??
-      (anchorPreview?.fullSha
-        ? gridXForBranchSha(parentName, anchorPreview.fullSha)
-        : undefined);
+    const anchorX = parentName === defaultBranch
+      ? (
+        anchorPreview?.fullSha
+          ? (
+            directXByFullSha.get(anchorPreview.fullSha) ??
+            nodeXByFullSha.get(anchorPreview.fullSha) ??
+            timeToX(anchorPreview.date)
+          )
+          : undefined
+      )
+      : (
+        gridXForBranchSlot(parentName, anchorSlotIndex) ??
+        (anchorPreview?.fullSha
+          ? gridXForBranchSha(parentName, anchorPreview.fullSha)
+          : undefined)
+      );
+    if (anchorX == null) return null;
+    return anchorX;
+  }
+
+  function collapsedParentClumpLiftedForkX(branch: Branch, parentName: string): number | null {
+    return collapsedParentClumpAnchorX(branch, parentName);
+  }
+
+  function collapsedParentClumpLiftedTipX(branch: Branch, parentName: string): number | null {
+    const anchorX = collapsedParentClumpAnchorX(branch, parentName);
     if (anchorX == null) return null;
     return anchorX + GRID_EVENT_GAP;
   }
@@ -3125,6 +3161,14 @@ export default function BranchMap({
     return timeToX(branch.divergedFromDate ?? branch.createdDate ?? branch.lastCommitDate);
   }
 
+  function resolveMergeNodeForBranch(branch: Branch, parentName: string): MergeNode | undefined {
+    const headSha = branch.headSha;
+    if (!headSha) return undefined;
+    const targeted = mergeNodeByMergedHeadAndTarget.get(mergeHeadTargetKey(parentName, headSha));
+    if (targeted) return targeted;
+    return mergeNodeByMergedHeadSha.get(headSha);
+  }
+
   function branchTimingWithVisited(branchName: string, visiting: Set<string>): BranchTiming {
     const cached = branchTimingByName.get(branchName);
     if (cached) return cached;
@@ -3175,7 +3219,7 @@ export default function BranchMap({
     const isFreshCopy = freshCopyBranchNames.has(branch.name);
     const isMergedBranch = branch.commitsAhead === 0 && !isFreshCopy;
     const mergeNodeForBranch = isMergedBranch
-      ? mergeNodeByMergedHeadSha.get(branch.headSha)
+      ? resolveMergeNodeForBranch(branch, parentName)
       : undefined;
     const mergeNodeTimeX = mergeNodeForBranch ? mergeJunctionTimeX(mergeNodeForBranch) : null;
     const timing: BranchTiming = {
@@ -3207,7 +3251,8 @@ export default function BranchMap({
   for (const branch of activeBranches) {
     if (branch.commitsAhead !== 0) continue;
     if (freshCopyBranchNames.has(branch.name)) continue;
-    const mergeNode = mergeNodeByMergedHeadSha.get(branch.headSha);
+    const parentName = renderParentBranchName(branch);
+    const mergeNode = resolveMergeNodeForBranch(branch, parentName);
     if (!mergeNode) continue;
     const baseMergeX =
       directXByFullSha.get(mergeNode.fullSha) ??
@@ -3416,15 +3461,52 @@ export default function BranchMap({
     return laneXByBranch.get(b.name) ?? laneBaseX(b);
   }
 
-  function branchStartX(b: Branch): number {
-    const parent = branchTiming(b).parentName;
-    if (parent && parent !== defaultBranch) {
-      const parentX = laneXByBranch.get(parent);
-      if (typeof parentX === 'number') {
-        return parentX;
+  function resolveBranchStartParentName(b: Branch): string {
+    const declaredParent = branchTiming(b).parentName;
+    const hasConcreteParent =
+      declaredParent &&
+      declaredParent !== defaultBranch &&
+      declaredParent !== b.name &&
+      branchByName.has(declaredParent);
+    if (!hasConcreteParent) return defaultBranch;
+
+    const forkSha = b.divergedFromSha ?? b.createdFromSha;
+    if (forkSha) {
+      const forkOnParent = branchCommitXForSha(declaredParent, forkSha) != null;
+      if (forkOnParent) return declaredParent;
+      const forkOnMain = commitXForSha(forkSha) != null;
+      if (forkOnMain) return defaultBranch;
+    }
+
+    const forkX = branchForkX(b);
+    const forkDate = b.divergedFromDate ?? b.createdDate ?? b.lastCommitDate;
+    const parentForkByDate = snapToBranchCommitX(declaredParent, forkDate);
+    const mainForkByDate = snapToMainCommitX(forkDate);
+    if (mainForkByDate != null && parentForkByDate == null) {
+      return defaultBranch;
+    }
+    if (mainForkByDate != null && parentForkByDate != null) {
+      const mainDelta = Math.abs(mainForkByDate - forkX);
+      const parentDelta = Math.abs(parentForkByDate - forkX);
+      if (mainDelta + GRID_EVENT_GAP * 0.15 < parentDelta) {
+        return defaultBranch;
       }
     }
-    return mainX;
+    const parentTiming = branchTimingWithVisited(declaredParent, new Set<string>());
+    // If a branch forks before the declared parent even exists on-screen,
+    // anchor from main to avoid detached connector starts.
+    if (forkX < parentTiming.forkTimeX - GRID_EVENT_GAP * 0.5) {
+      return defaultBranch;
+    }
+
+    return declaredParent;
+  }
+
+  function branchStartX(b: Branch): number {
+    const startParent = resolveBranchStartParentName(b);
+    if (startParent === defaultBranch) return mainX;
+    const parentX = laneXByBranch.get(startParent);
+    return typeof parentX === 'number' ? parentX : mainX;
   }
 
   let hasCommitCenterCanonicalBounds = false;
@@ -4442,20 +4524,14 @@ export default function BranchMap({
     const lanePosX = laneX(b);
     let startX = branchStartX(b);
     const parentName = renderParentBranchName(b);
-    const pb = branchByName.get(parentName);
-    const isParentPlaceholder = pb && renderableBranchPreviews(pb).length === 0;
+    const liftedForkTimeX = collapsedParentClumpLiftedForkX(b, parentName);
+    const effectiveForkTimeX = liftedForkTimeX != null ? Math.max(forkTimeX, liftedForkTimeX) : forkTimeX;
 
-    if (isParentPlaceholder && branchForkX(b) === branchHeadTimeX(pb!)) {
+    if (Math.abs(lanePosX - startX) > 0.5) {
       const { width: rectW, height: rectH } = commitRectSize(NODE_SIZE);
       const logicalOffset = isHorizontal ? rectH / 2 : rectW / 2;
-      // Depending on if the child is to the right/top or left/bottom of the parent
+      // Start connectors from the source node edge so there is no visible gap.
       const direction = lanePosX > startX ? 1 : -1;
-
-      // projectPoint mappings:
-      // Vertical: PhysicalX = LogicalX
-      // Horizontal: PhysicalY = ... - LogicalX
-      // When horizontal, shifting PhysicalY down means decreasing LogicalX
-      // Fortunately direction calculation already captures the logical relation
       startX += direction * logicalOffset;
     }
 
@@ -4494,32 +4570,28 @@ export default function BranchMap({
         branchLineTipY = timeCoordToY(Math.max(placeholderTipX, commitTipTimeX));
       }
     }
-    const forkY = timeCoordToY(forkTimeX);
+    const forkY = timeCoordToY(effectiveForkTimeX);
     const routeCornerR = GRID_ROUTE_CORNER_R;
     const maxAllowedMergeY = branchLineTipY - GRID_EVENT_GAP;
-    const renderedMergeAnchorByShaRaw = mergeNodeForBranch
-      ? renderedMainAnchorByCommitSha.get(mergeNodeForBranch.fullSha)
-      : undefined;
-    const renderedMergeAnchorBySha =
-      renderedMergeAnchorByShaRaw && renderedMergeAnchorByShaRaw.y <= maxAllowedMergeY
-        ? renderedMergeAnchorByShaRaw
-        : undefined;
-    const renderedMergeAnchorByTime = renderedMainAnchorForTimeX(mergeNodeTimeX, maxAllowedMergeY);
-    const renderedMergeAnchor = renderedMergeAnchorBySha ?? renderedMergeAnchorByTime;
+    const mergeTargetBranchName = mergeNodeForBranch?.targetBranch ?? parentName;
+    const mergeTargetLaneX = mergeTargetBranchName === defaultBranch
+      ? mainX
+      : (laneXByBranch.get(mergeTargetBranchName) ?? (
+        parentName === defaultBranch
+          ? mainX
+          : (laneXByBranch.get(parentName) ?? mainX)
+      ));
     const fallbackMergeTarget = mergeNodeTimeX != null
-      ? { x: mainX, y: timeCoordToY(mergeNodeTimeX) }
+      ? { x: mergeTargetLaneX, y: timeCoordToY(mergeNodeTimeX) }
       : null;
     const mergeTarget = (() => {
       const isUpward = (y: number): boolean => y <= maxAllowedMergeY;
-      if (renderedMergeAnchor && isUpward(renderedMergeAnchor.y)) {
-        return { x: renderedMergeAnchor.x, y: renderedMergeAnchor.y };
-      }
       if (fallbackMergeTarget && isUpward(fallbackMergeTarget.y)) {
         return fallbackMergeTarget;
       }
-      if (renderedMergeAnchor || fallbackMergeTarget) {
+      if (fallbackMergeTarget) {
         // Guardrail: merge connectors should never route downward.
-        return { x: mainX, y: maxAllowedMergeY };
+        return { x: mergeTargetLaneX, y: maxAllowedMergeY };
       }
       return null;
     })();
@@ -4989,48 +5061,64 @@ export default function BranchMap({
     }
     return anchors;
   })();
-  const renderedMainAnchorsByTime = (() => {
-    const timedAnchors: Array<{ timeX: number; anchor: AnchorPoint }> = [];
-    for (const [sha, anchor] of renderedMainAnchorByCommitSha.entries()) {
-      const timeX = directXByFullSha.get(sha) ?? mainCommitXBySha.get(sha);
-      if (typeof timeX !== 'number' || !Number.isFinite(timeX)) continue;
-      timedAnchors.push({ timeX, anchor });
-    }
-    timedAnchors.sort((a, b) => a.timeX - b.timeX);
-    return timedAnchors;
-  })();
-
-  function renderedMainAnchorForTimeX(targetTimeX: number | null, maxY: number = Number.POSITIVE_INFINITY): AnchorPoint | undefined {
-    if (targetTimeX == null || !Number.isFinite(targetTimeX) || renderedMainAnchorsByTime.length === 0) {
-      return undefined;
-    }
-
-    // Prefer a newer-or-equal visible main node so merge connectors trend upward.
-    let future: { delta: number; anchor: AnchorPoint } | null = null;
-    let past: { delta: number; anchor: AnchorPoint } | null = null;
-    for (const entry of renderedMainAnchorsByTime) {
-      if (entry.anchor.y > maxY) continue;
-      if (entry.timeX >= targetTimeX) {
-        const delta = entry.timeX - targetTimeX;
-        if (!future || delta < future.delta) future = { delta, anchor: entry.anchor };
-      } else {
-        const delta = targetTimeX - entry.timeX;
-        if (!past || delta < past.delta) past = { delta, anchor: entry.anchor };
-      }
-    }
-    return future?.anchor ?? past?.anchor;
-  }
-
   // Clumps are closed by default; no checked-out auto-expansion.
 
-  function resolveBranchHeadProjectedPoint(layout: BranchRenderLayout): { x: number; y: number } {
+  function resolveBranchHeadProjectedPoint(branch: Branch, layout: BranchRenderLayout): { x: number; y: number } {
+    const resolveEntryPose = (
+      cluster: MarkerCluster<CommitEntryItem>,
+      entry: MarkerEntry<CommitEntryItem>,
+    ): { x: number; y: number } => {
+      const vm = buildBranchClusterViewModel(branch.name, cluster, layout.branchEndDotIndex);
+      const motion = resolveClusterMotion(
+        vm.clusterKey,
+        { x: vm.preferredAnchorEntry.x, y: vm.preferredAnchorEntry.y },
+        vm.memberKeys,
+        vm.canExpandCluster,
+      );
+      if (!motion.isExpanded || vm.count <= 1 || motion.phase === 'collapsed') {
+        return { x: motion.anchorX, y: motion.anchorY };
+      }
+      const memberPose = interpolateExpandedEntryPose(
+        { x: motion.anchorX, y: motion.anchorY },
+        { x: entry.x, y: entry.y },
+        motion.phase,
+        motion.phaseEased,
+      );
+      return { x: memberPose.x, y: memberPose.y };
+    };
+
+    // Prefer exact head SHA match so connector tips always target the real head node.
+    for (const cluster of layout.commitDotClusters) {
+      const shaEntry = cluster.entries.find((entry) =>
+        shaMatchesGitRef(entry.item.commit?.fullSha, branch.headSha) ||
+        shaMatchesGitRef(entry.item.commit?.sha, branch.headSha)
+      );
+      if (shaEntry) return resolveEntryPose(cluster, shaEntry);
+    }
+
     if (layout.branchEndDotIndex != null) {
       for (const cluster of layout.commitDotClusters) {
-        const matchedEntry = cluster.entries.find(
+        const indexEntry = cluster.entries.find(
           (entry) => entry.item.index === layout.branchEndDotIndex
         );
-        if (matchedEntry) return { x: matchedEntry.x, y: matchedEntry.y };
+        if (!indexEntry) continue;
+        return resolveEntryPose(cluster, indexEntry);
       }
+    }
+    // Fallback: use the newest visible commit entry across clusters so connector tips
+    // still land on a real rendered marker even when the exact index is absent.
+    let fallbackCluster: MarkerCluster<CommitEntryItem> | null = null;
+    let fallbackEntry: MarkerEntry<CommitEntryItem> | null = null;
+    for (const cluster of layout.commitDotClusters) {
+      for (const entry of cluster.entries) {
+        if (!fallbackEntry || entry.item.index > fallbackEntry.item.index) {
+          fallbackEntry = entry;
+          fallbackCluster = cluster;
+        }
+      }
+    }
+    if (fallbackCluster && fallbackEntry) {
+      return resolveEntryPose(fallbackCluster, fallbackEntry);
     }
     return projectPoint(layout.lanePosX, layout.branchLineTipY);
   }
@@ -5041,7 +5129,7 @@ export default function BranchMap({
       return {
         branchName: branch.name,
         headSha: branch.headSha,
-        point: resolveBranchHeadProjectedPoint(layout),
+        point: resolveBranchHeadProjectedPoint(branch, layout),
       };
     }),
   ];
@@ -6221,8 +6309,6 @@ export default function BranchMap({
 
                       return orderedActiveBranches.map((b) => {
                         const {
-                          lanePosX,
-                          branchLineTipY,
                           hasPreviewData,
                           uniqueAheadCount,
                           branchEndDotIndex,
@@ -6241,11 +6327,13 @@ export default function BranchMap({
                           mergeTargetX,
                           mergeTargetY,
                         } = getBranchRenderLayout(b);
+                        const renderedBranchHead = resolveBranchHeadProjectedPoint(b, getBranchRenderLayout(b));
+                        const renderedBranchHeadCanonical = unprojectPoint(renderedBranchHead.x, renderedBranchHead.y);
                         const animatedLine = resolveAnimatedBranchLineGeometry(`branch-line:${b.name}`, {
                           startX,
                           forkY,
-                          lanePosX,
-                          tipY: branchLineTipY,
+                          lanePosX: renderedBranchHeadCanonical.x,
+                          tipY: renderedBranchHeadCanonical.y,
                           mergeTargetX,
                           mergeTargetY,
                           localSegmentStartY: localSegmentStartY ?? null,

@@ -89,6 +89,7 @@ export interface MergeNode {
   prTitle: string | null;
   date: string;
   parentShas: string[];
+  targetBranch?: string;
 }
 
 export interface MergedPR {

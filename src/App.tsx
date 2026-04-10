@@ -116,7 +116,7 @@ function App() {
         perPage,
       });
 
-      all.push(...result.nodes);
+      all.push(...result.nodes.map((node) => ({ ...node, targetBranch: branch })));
       if (!result.hasMore || result.nodes.length === 0) break;
       page += 1;
     }
@@ -148,14 +148,25 @@ function App() {
       setLoading(false); // unblock the landing button
 
       // Phase 2: heavier git data — timeline skeleton shows while this loads
-      const [branchList, nodes, directResult] = await Promise.all([
-        invoke<Branch[]>('get_branches', { repoPath: path }),
-        fetchAllMergeNodes(path, def),
+      const branchList = await invoke<Branch[]>('get_branches', { repoPath: path });
+      const mergeTargetBranches = Array.from(
+        new Set<string>([def, ...branchList.map((branch) => branch.name)])
+      );
+      const [mergeNodeGroups, directResult] = await Promise.all([
+        Promise.all(mergeTargetBranches.map((branchName) => fetchAllMergeNodes(path, branchName))),
         invoke<DirectCommit[]>('get_direct_commits', {
           repoPath: path,
           branch: def,
         }),
       ]);
+      const mergeNodeByBranchAndSha = new Map<string, MergeNode>();
+      for (const nodes of mergeNodeGroups) {
+        for (const node of nodes) {
+          const key = `${node.targetBranch ?? def}::${node.fullSha}`;
+          if (!mergeNodeByBranchAndSha.has(key)) mergeNodeByBranchAndSha.set(key, node);
+        }
+      }
+      const nodes = Array.from(mergeNodeByBranchAndSha.values());
       setBranches(branchList);
       setMergeNodes(nodes);
       setDirectCommits(directResult);
