@@ -203,10 +203,6 @@ function easeOutCubic(t: number): number {
   return 1 - Math.pow(1 - t, 3);
 }
 
-function easeInCubic(t: number): number {
-  return t * t * t;
-}
-
 function getCameraScale(zoomValue: number, _horizontal: boolean): { x: number; y: number } {
   return { x: zoomValue, y: zoomValue };
 }
@@ -4204,15 +4200,15 @@ export default function BranchMap({
   const holdTimelineForInitialCenter =
     isLoading || (!hasInitialRevealDone && hasTimelineSeedData && timelineRevealPhase !== 'done' && !hasUserMovedCameraRef.current);
 
-  const clumpExpandMs = 240;
-  const clumpCollapseMs = 200;
+  const clumpExpandMs = 160;
+  const clumpCollapseMs = 240;
   const clumpRowReleaseDelayMs = 24;
   const clumpExpandEasing = 'cubic-bezier(0.16, 1, 0.3, 1)';
   const clumpCollapseEasing = 'cubic-bezier(0.7, 0, 0.84, 0)';
   const clumpPhaseDurationMs = (phase: ExpandedClumpState['phase']): number =>
     phase === 'collapsing' ? clumpCollapseMs : clumpExpandMs;
   const clumpPhaseEasing = (phase: ExpandedClumpState['phase'], progress: number): number => {
-    if (phase === 'collapsing') return easeInCubic(progress);
+    if (phase === 'collapsing') return 1 - easeOutCubic(1 - progress);
     if (phase === 'expanding') return easeOutCubic(progress);
     return progress;
   };
@@ -4282,12 +4278,21 @@ export default function BranchMap({
     const opacity = phase === 'collapsing'
       ? 1 - phaseEased
       : phase === 'expanding'
-        ? phaseEased
+        ? 1
         : phase === 'collapsed'
           ? 0
           : 1;
     const scale = phase === 'collapsing'
-      ? 1 - 0.04 * phaseEased
+      ? (() => {
+        // Collapse feel: shrink first, then rebound back to normal scale.
+        if (phaseEased < 0.25) {
+          const u = phaseEased / 0.25;
+          return 1 - 0.04 * easeOutCubic(u);
+        }
+        const u = (phaseEased - 0.25) / 0.75;
+        const rebound = 0.96 + 0.05 * easeOutCubic(u); // up to ~1.01
+        return rebound - 0.01 * (u * u * u); // settle at 1.00
+      })()
       : phase === 'expanding'
         ? 0.96 + 0.04 * phaseEased
         : phase === 'collapsed'
@@ -7403,8 +7408,9 @@ export default function BranchMap({
                             const { isExpanded, phase, phaseEased } = canExpandCluster
                               ? resolveClumpPhase(expanded)
                               : { isExpanded: false, phase: 'collapsed' as const, phaseEased: 0 };
+                            const isCollapsing = isExpanded && phase === 'collapsing';
 
-                            if (!isExpanded) {
+                            if (!isExpanded || isCollapsing) {
                               const rectSize = nodeRectSize(count);
                               const clumpCountText = stackCountLabel(count);
                               const latestCommit = renderEntries[renderEntries.length - 1]?.item.commit;
@@ -7419,7 +7425,10 @@ export default function BranchMap({
                               );
 
                               return (
-                                <g key={`branch-label-overlay-${clusterKey}`}>
+                                <g
+                                  key={`branch-label-overlay-${clusterKey}`}
+                                  opacity={isCollapsing ? phaseEased : 1}
+                                >
                                   <text
                                     x={anchorX + rectSize.width / 2 - CANVAS_NODE_STROKE_INSET - nodeFrameLabelRightInsetX}
                                     y={anchorY - rectSize.height / 2 - nodeFrameLabelGap}
@@ -7523,6 +7532,7 @@ export default function BranchMap({
                           const isExpanded = motion.isExpanded;
                           const phase = motion.phase;
                           const phaseEased = motion.phaseEased;
+                          const isCollapsing = isExpanded && phase === 'collapsing';
                           const anchorX = motion.anchorX;
                           const anchorY = motion.anchorY;
 
@@ -7557,7 +7567,7 @@ export default function BranchMap({
                             clusterRectSize.width,
                             clumpCountText,
                           );
-                          if (isExpanded) {
+                          if (isExpanded && !isCollapsing) {
                             const localRect = commitRectSize(scaledNodeSize, 0);
                             const topEntryForLabels = cluster.entries.reduce(
                               (top, entry) => (entry.y < top.y ? entry : top),
@@ -7606,8 +7616,11 @@ export default function BranchMap({
                             );
                           }
                           return (
-                            <g key={`main-label-overlay-${clusterKey}`}>
-                              {!isExpanded && (
+                            <g
+                              key={`main-label-overlay-${clusterKey}`}
+                              opacity={isCollapsing ? phaseEased : 1}
+                            >
+                              {(!isExpanded || isCollapsing) && (
                                 <text
                                   x={anchorX + clusterRectSize.width / 2 - CANVAS_NODE_STROKE_INSET - nodeFrameLabelRightInsetX}
                                   y={anchorY - clusterRectSize.height / 2 - nodeFrameLabelGap}
