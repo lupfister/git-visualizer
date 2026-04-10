@@ -1981,6 +1981,19 @@ export default function BranchMap({
     ];
   })();
   const sortedDirectCommits = orderByLineage(directCommitsForLayout);
+  const defaultBranchFromData = branches.find((branch) => branch.name === defaultBranch);
+  const defaultBranchRenderBranch: Branch = defaultBranchFromData ?? {
+    name: defaultBranch,
+    commitsAhead: Math.max(0, sortedDirectCommits.length - 1),
+    commitsBehind: 0,
+    lastCommitDate: sortedDirectCommits[sortedDirectCommits.length - 1]?.date ?? new Date().toISOString(),
+    lastCommitAuthor: sortedDirectCommits[sortedDirectCommits.length - 1]?.author ?? 'unknown',
+    status: 'fresh',
+    remoteSyncStatus: 'on-github',
+    unpushedCommits: 0,
+    headSha: sortedDirectCommits[sortedDirectCommits.length - 1]?.fullSha ?? 'WORKING_TREE',
+  };
+  const renderBranches = [defaultBranchRenderBranch, ...activeBranches];
   const directCommitShaSet = new Set<string>(sortedDirectCommits.map((commit) => commit.fullSha));
   const mainMergeCommitShas = new Set<string>(
     sortedNodes
@@ -2098,28 +2111,51 @@ export default function BranchMap({
     return `${branchName}::slot:${slotIndex}`;
   }
   {
-    const mainForkIdx = new Set<number>(mainCommitSplitIndices);
+    const mainForkIdx = new Set<number>();
+    const mainPreviewCommits = sortedDirectCommits.map((commit) => ({
+      ...commit,
+      kind: commit.kind === 'uncommitted' ? 'uncommitted' : 'commit',
+    } as BranchCommitPreview));
+    const mainChildBranches = childBranchesByParent.get(defaultBranch) ?? [];
+    if (mainChildBranches.length > 0 && mainPreviewCommits.length > 0) {
+      const mainBranchTimes = mainPreviewCommits.map((commit) => new Date(commit.date).getTime());
+      mainChildBranches.forEach((child) => {
+        const idx = branchPreviewIndexForChildFork(mainPreviewCommits, mainBranchTimes, child);
+        if (idx >= 0) mainForkIdx.add(idx);
+      });
+    }
 
     {
       let buf: string[] = [];
+      let slotBuf: number[] = [];
       let tFirst = 0;
+      let startIdx = 0;
       const effectiveMainForkIdx = pruneForkSplitIndices(
         sortedDirectCommits.length,
         mainForkIdx,
-        forcedMainSplitIndices,
       );
-      const flush = () => {
+      const flush = (endIdx: number) => {
         if (buf.length === 0) return;
-        gridClumps.push({ lane: 'main', shas: [...buf], earliestTime: tFirst, rowIndex: -1, key: `direct-clump-${buf[0]}-${buf[buf.length - 1]}` });
+        gridClumps.push({
+          lane: 'main',
+          shas: [...buf],
+          earliestTime: tFirst,
+          rowIndex: -1,
+          key: `commit-clump-${defaultBranch}-${startIdx}-${endIdx}`,
+          slotIndices: [...slotBuf],
+        });
         buf = [];
+        slotBuf = [];
       };
       sortedDirectCommits.forEach((c, i) => {
         const commitTime = new Date(c.date).getTime();
+        if (buf.length === 0) startIdx = i;
         if (buf.length === 0) tFirst = commitTime;
         buf.push(c.fullSha);
-        if (effectiveMainForkIdx.has(i)) flush();
+        slotBuf.push(i);
+        if (effectiveMainForkIdx.has(i)) flush(i);
       });
-      flush();
+      flush(sortedDirectCommits.length - 1);
     }
 
     activeBranches.forEach((branch) => {
@@ -3982,6 +4018,136 @@ export default function BranchMap({
     const cached = branchRenderLayoutCache.get(b.name);
     if (cached) return cached;
 
+    if (b.name === defaultBranch) {
+      const lanePosX = mainX;
+      const startX = mainX;
+      const forkY = mainStartY;
+      const branchLineTipY = mainActiveEndY;
+      const routeCornerR = GRID_ROUTE_CORNER_R;
+      const curvePath = buildBranchOrthogonalPath({
+        startX,
+        forkY,
+        laneX: lanePosX,
+        tipY: branchLineTipY,
+        cornerR: routeCornerR,
+        pointFormatter: pathCoord,
+      });
+      const verticalDir = branchLineTipY >= forkY ? 1 : -1;
+      const endTrim = Math.min(
+        BRANCH_HIT_END_INSET,
+        Math.max(0, Math.abs(branchLineTipY - forkY) - 1),
+      );
+      const hitCurvePath = buildBranchOrthogonalPath({
+        startX,
+        forkY,
+        laneX: lanePosX,
+        tipY: branchLineTipY - verticalDir * endTrim,
+        cornerR: routeCornerR,
+        pointFormatter: pathCoord,
+      });
+
+      const visibleBranchCommits = sortedDirectCommits.map((commit) => ({
+        ...commit,
+        kind: commit.kind === 'uncommitted' ? 'uncommitted' : 'commit',
+      } as BranchCommitPreview));
+      const commitTimeXs = sortedDirectCommits.map(
+        (commit) => directXByFullSha.get(commit.fullSha) ?? timeToX(commit.date)
+      );
+      const minCommitTimeX = commitTimeXs.length > 0 ? Math.min(...commitTimeXs) : mainEndX;
+      const maxCommitTimeX = commitTimeXs.length > 0 ? Math.max(...commitTimeXs) : mainEndX;
+      const commitDotEntries: MarkerEntry<CommitEntryItem>[] = sortedDirectCommits.map((commit, index) => {
+        const timeCoordX = directXByFullSha.get(commit.fullSha) ?? timeToX(commit.date);
+        const markerPoint = projectPoint(mainX, timeCoordToY(timeCoordX));
+        return {
+          x: markerPoint.x,
+          y: markerPoint.y,
+          item: {
+            index,
+            commit: {
+              ...commit,
+              kind: commit.kind === 'uncommitted' ? 'uncommitted' : 'commit',
+            },
+          },
+        };
+      });
+      const mainForkIndices = new Set<number>();
+      const mainChildBranches = childBranchesByParent.get(defaultBranch) ?? [];
+      if (mainChildBranches.length > 0 && visibleBranchCommits.length > 0) {
+        const branchTimes = visibleBranchCommits.map((commit) => new Date(commit.date).getTime());
+        mainChildBranches.forEach((child) => {
+          const idx = branchPreviewIndexForChildFork(visibleBranchCommits, branchTimes, child);
+          if (idx >= 0) mainForkIndices.add(idx);
+        });
+      }
+      const commitDotClusters = clusterByForkPoints(
+        commitDotEntries,
+        mainForkIndices,
+      );
+
+      const promptMarkersRaw = branchPromptMeta[defaultBranch]?.markers ?? [];
+      const promptSeeds = [...promptMarkersRaw]
+        .sort((a, bx) => new Date(a.timestamp).getTime() - new Date(bx.timestamp).getTime());
+      const promptMarkers = promptSeeds.map((marker) => {
+        const rawX = timeToX(marker.timestamp);
+        const clampedX = Math.max(minCommitTimeX, Math.min(maxCommitTimeX, rawX));
+        return {
+          y: timeCoordToY(clampedX),
+          marker,
+        };
+      });
+      const promptMarkerEntries: MarkerEntry<PromptEntryItem>[] = promptMarkers.map(
+        ({ y, marker }, markerIndex) => {
+          const point = projectPoint(lanePosX, y);
+          return {
+            x: point.x,
+            y: point.y,
+            item: { marker, index: markerIndex },
+          };
+        }
+      );
+      const promptMarkerClusters = clusterByForkPoints(promptMarkerEntries, new Set<number>());
+      const branchEndDotIndex = sortedDirectCommits.length > 0 ? sortedDirectCommits.length - 1 : null;
+      const branchHasCheckedOutHead =
+        checkedOutHeadSha != null &&
+        sortedDirectCommits.some((commit) =>
+          shaMatchesGitRef(commit.fullSha, checkedOutHeadSha) ||
+          shaMatchesGitRef(commit.sha, checkedOutHeadSha)
+        );
+      const nameAnchor = projectPoint(lanePosX, forkY);
+      const namePoint = { x: nameAnchor.x + (isHorizontal ? 24 : 20), y: nameAnchor.y + (isHorizontal ? -20 : -12) };
+      const clockPoint = { x: namePoint.x + 10, y: namePoint.y };
+
+      const layout: BranchRenderLayout = {
+        forkY,
+        lanePosX,
+        startX,
+        isMergedBranch: false,
+        isLocalBranch: false,
+        mergeNodeTimeX: null,
+        branchLineTipY,
+        mergeBackPath: null,
+        curvePath,
+        hitCurvePath,
+        hasPreviewData: true,
+        visibleBranchCommits,
+        uniqueAheadCount: visibleBranchCommits.filter((commit) => commit.kind !== 'branch-created').length,
+        branchEndDotIndex,
+        localCommitDotIndices: new Set<number>(),
+        fullBranchShouldUseLocalGray: false,
+        hasUncommittedPreview: visibleBranchCommits.some((commit) => commit.kind === 'uncommitted'),
+        localSegmentStartY: undefined,
+        commitDotClusters,
+        promptMarkerClusters,
+        branchHasCheckedOutHead,
+        brDelay: MAIN_DRAW_MS,
+        showClockIcon: false,
+        namePoint,
+        clockPoint,
+      };
+      branchRenderLayoutCache.set(b.name, layout);
+      return layout;
+    }
+
     const forkTimeX = branchForkX(b);
     const lanePosX = laneX(b);
     let startX = branchStartX(b);
@@ -4330,10 +4496,11 @@ export default function BranchMap({
   }
 
   function orderedActiveBranchesForLayer(options: { includeSelectedPriority: boolean }): Branch[] {
-    return [...activeBranches].sort(
+    return [...renderBranches].sort(
       (a, b) => branchStrokeLayerPriority(a, options) - branchStrokeLayerPriority(b, options)
     );
   }
+  const mainIsUnifiedRender = renderBranches.some((branch) => branch.name === defaultBranch);
   const isNodeLineageHovered = (branchName: string): boolean => hoveredNodeBranchLineage.has(branchName);
 
   const toggleClumpExpanded = (clumpKey: string) => {
@@ -4473,37 +4640,35 @@ type MainDirectClusterLayout = {
     });
   const renderedMainAnchorByCommitSha = (() => {
     const anchors = new Map<string, AnchorPoint>();
-    for (const clusterLayout of mainDirectClusters) {
-      const {
-        cluster,
-        clusterKey,
-        memberKeys,
-      } = clusterLayout;
+    const mainLayout = getBranchRenderLayout(defaultBranchRenderBranch);
+    for (const cluster of mainLayout.commitDotClusters) {
+      const vm = buildBranchClusterViewModel(defaultBranch, cluster, mainLayout.branchEndDotIndex);
       const motion = resolveClusterMotion(
-        clusterKey,
-        { x: cluster.x, y: cluster.y },
-        memberKeys,
-        cluster.entries.length > 1,
+        vm.clusterKey,
+        { x: vm.preferredAnchorEntry.x, y: vm.preferredAnchorEntry.y },
+        vm.memberKeys,
+        vm.canExpandCluster,
       );
-      const isExpanded = motion.isExpanded;
-      const anchorProjected = { x: motion.anchorX, y: motion.anchorY };
-      const collapsedCanonical = unprojectPoint(anchorProjected.x, anchorProjected.y);
-
-      if (!isExpanded || cluster.entries.length <= 1) {
-        cluster.entries.forEach((entry) => {
-          anchors.set(entry.item.fullSha, collapsedCanonical);
+      const collapsedCanonical = unprojectPoint(motion.anchorX, motion.anchorY);
+      if (!motion.isExpanded || vm.count <= 1) {
+        vm.renderEntries.forEach((entry) => {
+          const sha = entry.item.commit?.fullSha;
+          if (!sha) return;
+          anchors.set(sha, collapsedCanonical);
         });
         continue;
       }
 
-      cluster.entries.forEach((entry) => {
+      vm.renderEntries.forEach((entry) => {
+        const sha = entry.item.commit?.fullSha;
+        if (!sha) return;
         const memberPose = interpolateExpandedEntryPose(
           { x: motion.anchorX, y: motion.anchorY },
           { x: entry.x, y: entry.y },
           motion.phase,
           motion.phaseEased,
         );
-        anchors.set(entry.item.fullSha, unprojectPoint(memberPose.x, memberPose.y));
+        anchors.set(sha, unprojectPoint(memberPose.x, memberPose.y));
       });
     }
     return anchors;
@@ -4545,15 +4710,7 @@ type MainDirectClusterLayout = {
 
     const keys = new Set<string>();
 
-    for (const { cluster, clusterKey } of mainDirectClusters) {
-      if (cluster.entries.length <= 1) continue;
-      const hasCheckedOutCommit = cluster.entries.some((entry) =>
-        shaMatchesGitRef(entry.item.fullSha, checkedOutHeadSha)
-      );
-      if (hasCheckedOutCommit) keys.add(clusterKey);
-    }
-
-    for (const branch of activeBranches) {
+    for (const branch of renderBranches) {
       const { commitDotClusters, hasPreviewData, branchEndDotIndex } = getBranchRenderLayout(branch);
       for (const cluster of commitDotClusters) {
         const vm = buildBranchClusterViewModel(branch.name, cluster, branchEndDotIndex);
@@ -4612,7 +4769,7 @@ type MainDirectClusterLayout = {
   }
 
   const branchHeadTargets: BranchHeadTarget[] = [
-    ...activeBranches.map((branch) => {
+    ...renderBranches.map((branch) => {
       const layout = getBranchRenderLayout(branch);
       return {
         branchName: branch.name,
@@ -4620,16 +4777,6 @@ type MainDirectClusterLayout = {
         point: resolveBranchHeadProjectedPoint(layout),
       };
     }),
-    ...(() => {
-      if (!latestMainCommitSha) return [] as BranchHeadTarget[];
-      const mainAnchor = renderedMainAnchorByCommitSha.get(latestMainCommitSha);
-      if (!mainAnchor) return [] as BranchHeadTarget[];
-      return [{
-        branchName: defaultBranch,
-        headSha: latestMainCommitSha,
-        point: projectPoint(mainAnchor.x, mainAnchor.y),
-      }];
-    })(),
   ];
   branchHeadTargetsRef.current = branchHeadTargets;
   const commitSelectionTargets = (() => {
@@ -4676,10 +4823,7 @@ type MainDirectClusterLayout = {
       map.set(sha, set);
     };
 
-    for (const commit of sortedDirectCommits) {
-      add(commit.fullSha, defaultBranch);
-    }
-    for (const branch of activeBranches) {
+    for (const branch of renderBranches) {
       const layout = getBranchRenderLayout(branch);
       for (const cluster of layout.commitDotClusters) {
         for (const entry of cluster.entries) {
@@ -5213,38 +5357,40 @@ type MainDirectClusterLayout = {
             onMouseEnter={() => setHoveredBranch(defaultBranch)}
             onMouseLeave={() => clearMainBranchHover()}
           >
-            <path
-              d={`M ${pathCoord(mainX, mainStartY)} L ${pathCoord(mainX, mainActiveEndY)}`}
-              fill="none"
-              stroke="transparent"
-              strokeWidth={branchHitStrokeWidth}
-              style={{ pointerEvents: branchLaneHitPointerEvents }}
-            />
-            {/* Use <path> not <line>: pathLength on <line> is SVG 2 only and unreliable in WKWebView */}
-            <path
-              d={`M ${pathCoord(mainX, mainStartY)} L ${pathCoord(mainX, mainActiveEndY)}`}
-              fill="none"
-              stroke={
-                selectedBranchNameSet.has(defaultBranch)
-                  ? USER_SELECTION_STROKE
-                  : (hoveredBranch === defaultBranch || hoveredNodeBranchName === defaultBranch)
-                    ? CANVAS_NEUTRAL_GRAY_HOVER
-                    : (
-                      checkedOutIndicatorLocal && Math.abs(checkedOutIndicatorLocal.x - mainX) < 0.5
-                        ? CHECKED_OUT_SELECTION_STROKE
-                        : CANVAS_NEUTRAL_GRAY
-                    )
-              }
-              strokeWidth={1.5}
-              pathLength={1}
-              className={drawPathMainClass}
-              style={{
-                '--delay': `${MAIN_DRAW_MS}ms`,
-                transition: 'stroke 0.12s ease',
-              } as React.CSSProperties}
-            />
+            {!mainIsUnifiedRender && (
+              <>
+                <path
+                  d={`M ${pathCoord(mainX, mainStartY)} L ${pathCoord(mainX, mainActiveEndY)}`}
+                  fill="none"
+                  stroke="transparent"
+                  strokeWidth={branchHitStrokeWidth}
+                  style={{ pointerEvents: branchLaneHitPointerEvents }}
+                />
+                {/* Use <path> not <line>: pathLength on <line> is SVG 2 only and unreliable in WKWebView */}
+                <path
+                  d={`M ${pathCoord(mainX, mainStartY)} L ${pathCoord(mainX, mainActiveEndY)}`}
+                  fill="none"
+                  stroke={
+                    selectedBranchNameSet.has(defaultBranch)
+                      ? USER_SELECTION_STROKE
+                      : (hoveredBranch === defaultBranch || hoveredNodeBranchName === defaultBranch)
+                        ? CANVAS_NEUTRAL_GRAY_HOVER
+                        : (
+                          checkedOutIndicatorLocal && Math.abs(checkedOutIndicatorLocal.x - mainX) < 0.5
+                            ? CHECKED_OUT_SELECTION_STROKE
+                            : CANVAS_NEUTRAL_GRAY
+                        )
+                  }
+                  strokeWidth={1.5}
+                  pathLength={1}
+                  className={drawPathMainClass}
+                  style={{
+                    '--delay': `${MAIN_DRAW_MS}ms`,
+                    transition: 'stroke 0.12s ease',
+                  } as React.CSSProperties}
+                />
 
-            <g className={fadeInInfoClass} style={{ '--delay': `${MAIN_DRAW_MS + INFO_OFFSET}ms` } as React.CSSProperties}>
+                <g className={fadeInInfoClass} style={{ '--delay': `${MAIN_DRAW_MS + INFO_OFFSET}ms` } as React.CSSProperties}>
               {/* Direct commits */}
               {mainDirectClusters.map((clusterLayout) => {
                   const {
@@ -5706,7 +5852,9 @@ type MainDirectClusterLayout = {
                   );
                 });
               })()}
-            </g>
+                </g>
+              </>
+            )}
           </g>
 
           {/* ── Merged PR overlays (optional secondary context) ── */}
@@ -6733,6 +6881,7 @@ type MainDirectClusterLayout = {
           </g>
 
           {/* Main commit node overlay so branch connectors never render over main clumps. */}
+          {!mainIsUnifiedRender && (
           <g style={{ opacity: mainTimelineOpacity, transition: 'opacity 0.15s', pointerEvents: 'none' }}>
             {mainDirectClusters.map((clusterLayout) => {
                 const {
@@ -6867,6 +7016,7 @@ type MainDirectClusterLayout = {
                 );
               })}
           </g>
+          )}
 
           {/* Top-most label overlay so labels are always above all rectangle layers. */}
           <g style={{ pointerEvents: 'none' }}>
@@ -7028,6 +7178,7 @@ type MainDirectClusterLayout = {
               })()}
             </g>
 
+            {!mainIsUnifiedRender && (
             <g style={{ opacity: mainTimelineOpacity, transition: 'opacity 0.15s' }}>
               {mainDirectClusters.map((clusterLayout) => {
                 const {
@@ -7156,11 +7307,12 @@ type MainDirectClusterLayout = {
                 );
               })}
             </g>
+            )}
           </g>
 
           {/* Top-most collapse controls so carets are never occluded by node layers. */}
           <g>
-            {mainDirectClusters.map((clusterLayout) => {
+            {!mainIsUnifiedRender && mainDirectClusters.map((clusterLayout) => {
               const { cluster, count, clusterKey } = clusterLayout;
               const expanded = expandedClumps.get(clusterKey);
               const { isExpanded, phase } = resolveClumpPhase(expanded);
@@ -7226,7 +7378,7 @@ type MainDirectClusterLayout = {
               );
             })}
 
-            {activeBranches.flatMap((b) => {
+            {renderBranches.flatMap((b) => {
               const { commitDotClusters } = getBranchRenderLayout(b);
               return commitDotClusters.map((cluster) => {
                 const { renderEntries } = resolveBranchClusterEntries(cluster);
