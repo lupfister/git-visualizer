@@ -4548,7 +4548,11 @@ export default function BranchMap({
       const logicalOffset = isHorizontal ? rectH / 2 : rectW / 2;
       // Start connectors from the source node edge so there is no visible gap.
       const direction = lanePosX > startX ? 1 : -1;
-      startX += direction * logicalOffset;
+      // Guard against overshooting the lane when branches are tightly packed,
+      // which creates tiny reversed "stubs" near the fork point.
+      const laneDelta = Math.abs(lanePosX - startX);
+      const safeOffset = Math.min(logicalOffset, Math.max(0, laneDelta - 0.5));
+      startX += direction * safeOffset;
     }
 
     const isFreshCopy = freshCopyBranchNames.has(b.name);
