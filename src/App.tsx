@@ -957,63 +957,39 @@ function App() {
       };
     }
 
-    // Resolve the checked-out anchor commit robustly. During uncommitted states
-    // we can get partial ref data (e.g. missing/ambiguous branchName), so prefer
-    // SHA-based tip ownership before falling back to a synthetic side branch.
+    // Resolve uncommitted placement by lane head ownership:
+    // - same lane when checked-out SHA matches a lane head
+    // - synthetic side lane otherwise.
+    // This is lane-driven, not "main-lane special-cased".
     const checkedOutAnchorSha = checkedOutRef.headSha || checkedOutRef.parentSha || null;
-    const checkedOutBranchByName = checkedOutRef.branchName
-      ? branches.find((b) => b.name === checkedOutRef.branchName)
-      : undefined;
-    const latestMainDirectCommitSha = directCommits[directCommits.length - 1]?.fullSha ?? null;
+    const latestMainDirectCommitSha = directCommits[0]?.fullSha ?? null;
     const shaMatches = (left?: string | null, right?: string | null): boolean => {
       if (!left || !right) return false;
       return left === right || left.startsWith(right) || right.startsWith(left);
     };
-    const anchorMatchesMainTip = !!(
-      checkedOutAnchorSha &&
-      latestMainDirectCommitSha &&
-      shaMatches(checkedOutAnchorSha, latestMainDirectCommitSha)
-    );
-    const checkedOutExplicitlyOnDefaultBranch = checkedOutRef.branchName === defaultBranch;
-    const definitelyOffMainTip = !!(
-      checkedOutExplicitlyOnDefaultBranch &&
-      checkedOutAnchorSha &&
-      latestMainDirectCommitSha &&
-      !shaMatches(checkedOutAnchorSha, latestMainDirectCommitSha)
-    );
-    const checkedOutBranchNameMissingOrUnknown =
-      !checkedOutRef.branchName ||
-      (checkedOutRef.branchName !== defaultBranch &&
-        !branches.some((b) => b.name === checkedOutRef.branchName));
-    const tipMatchedBranches = checkedOutAnchorSha
-      ? branches.filter((b) => b.headSha === checkedOutAnchorSha)
+    type LaneRef = { name: string; headSha: string; isDefault: boolean };
+    const allLanes: LaneRef[] = [
+      { name: defaultBranch, headSha: latestMainDirectCommitSha ?? '', isDefault: true },
+      ...branches.map((b) => ({ name: b.name, headSha: b.headSha, isDefault: false })),
+    ];
+    const explicitLane = checkedOutRef.branchName
+      ? allLanes.find((lane) => lane.name === checkedOutRef.branchName)
+      : undefined;
+    const tipMatchedLanes = checkedOutAnchorSha
+      ? allLanes.filter((lane) => shaMatches(lane.headSha, checkedOutAnchorSha))
       : [];
-    const checkedOutBranch =
-      checkedOutBranchByName ??
-      tipMatchedBranches.find((b) => b.name === defaultBranch) ??
-      tipMatchedBranches[0];
-    const isSharedTipSiblingOfMain = !!(
-      checkedOutBranchByName &&
+    const targetLane =
+      explicitLane ??
+      tipMatchedLanes.find((lane) => lane.isDefault) ??
+      tipMatchedLanes[0];
+    const isOnLaneTip = !!(
+      targetLane &&
       checkedOutAnchorSha &&
-      anchorMatchesMainTip &&
-      shaMatches(checkedOutBranchByName.headSha, checkedOutAnchorSha) &&
-      checkedOutBranchByName.name !== defaultBranch
+      shaMatches(targetLane.headSha, checkedOutAnchorSha)
     );
-    const isOnBranchTip = !!(
-      checkedOutBranch &&
-      checkedOutAnchorSha &&
-      shaMatches(checkedOutBranch.headSha, checkedOutAnchorSha)
-    );
-    const isOnDefaultBranchTip = !!(
-      (checkedOutExplicitlyOnDefaultBranch && !definitelyOffMainTip) ||
-      (
-        anchorMatchesMainTip &&
-        (
-          checkedOutBranchNameMissingOrUnknown ||
-          isSharedTipSiblingOfMain
-        )
-      )
-    );
+    const targetBranch = !targetLane?.isDefault
+      ? branches.find((b) => b.name === targetLane.name)
+      : undefined;
 
     const uncommittedDate = new Date().toISOString();
     const uncommittedNode: BranchCommitPreview = {
@@ -1032,29 +1008,25 @@ function App() {
       message: 'Local uncommitted changes',
       author: 'You',
       date: uncommittedDate,
+      kind: 'uncommitted',
     };
 
     if (import.meta.env.DEV) {
-      const placement = isOnDefaultBranchTip
-        ? 'main-direct'
-        : isOnBranchTip
-          ? `branch:${checkedOutBranch?.name ?? 'unknown'}`
-          : 'synthetic-side-branch';
+      const placement = isOnLaneTip
+        ? `same-lane:${targetLane?.name ?? 'unknown'}`
+        : 'synthetic-side-branch';
       console.debug('[uncommitted-placement]', {
         branchName: checkedOutRef.branchName,
         defaultBranch,
         checkedOutAnchorSha,
+        targetLaneName: targetLane?.name ?? null,
         latestMainDirectCommitSha,
-        anchorMatchesMainTip,
-        checkedOutBranchNameMissingOrUnknown,
-        isSharedTipSiblingOfMain,
-        isOnBranchTip,
-        isOnDefaultBranchTip,
+        isOnLaneTip,
         placement,
       });
     }
 
-    if (isOnDefaultBranchTip) {
+    if (isOnLaneTip && targetLane?.isDefault) {
       return {
         enrichedBranches: branches,
         enrichedBranchCommitPreviews: branchCommitPreviews,
@@ -1063,10 +1035,10 @@ function App() {
       };
     }
 
-    if (isOnBranchTip) {
+    if (isOnLaneTip && targetBranch) {
       // Append directly to the branch (natively draws ahead in the exact same lane)
       const nextBranches = branches.map((b) => {
-        if (b.name === checkedOutBranch.name) {
+        if (b.name === targetBranch.name) {
           return {
             ...b,
             commitsAhead: b.commitsAhead + 1,
@@ -1082,15 +1054,15 @@ function App() {
         enrichedDirectCommits: directCommits,
         enrichedBranchCommitPreviews: {
           ...branchCommitPreviews,
-          [checkedOutBranch.name]: [uncommittedNode, ...(branchCommitPreviews[checkedOutBranch.name] || [])],
+          [targetBranch.name]: [uncommittedNode, ...(branchCommitPreviews[targetBranch.name] || [])],
         },
         enrichedBranchUniqueAheadCounts: {
           ...branchUniqueAheadCounts,
-          [checkedOutBranch.name]: Math.max(
+          [targetBranch.name]: Math.max(
             0,
-            (Object.prototype.hasOwnProperty.call(branchUniqueAheadCounts, checkedOutBranch.name)
-              ? branchUniqueAheadCounts[checkedOutBranch.name]
-              : checkedOutBranch.commitsAhead) ?? 0,
+            (Object.prototype.hasOwnProperty.call(branchUniqueAheadCounts, targetBranch.name)
+              ? branchUniqueAheadCounts[targetBranch.name]
+              : targetBranch.commitsAhead) ?? 0,
           ) + 1,
         },
       };
@@ -1109,7 +1081,7 @@ function App() {
       unpushedCommits: 1,
       headSha: 'WORKING_TREE',
       divergedFromSha: checkedOutAnchorSha ?? undefined,
-      parentBranch: checkedOutBranch?.name || checkedOutRef.branchName || defaultBranch,
+      parentBranch: targetLane?.name || checkedOutRef.branchName || defaultBranch,
     };
     return {
       enrichedBranches: [fakeBranch, ...branches],

@@ -406,6 +406,20 @@ function pruneForkSplitIndices(
   return new Set(active);
 }
 
+function splitIndicesAroundUncommitted<T>(
+  entries: T[],
+  isUncommitted: (entry: T) => boolean,
+): Set<number> {
+  const splits = new Set<number>();
+  entries.forEach((entry, index) => {
+    if (!isUncommitted(entry)) return;
+    // Isolate the uncommitted marker into its own singleton cluster.
+    if (index > 0) splits.add(index - 1);
+    if (index < entries.length - 1) splits.add(index);
+  });
+  return splits;
+}
+
 /**
  * Cluster entries by splitting at fork-point indices.
  *
@@ -1957,29 +1971,7 @@ export default function BranchMap({
       mergedBranchByHeadSha.set(branch.headSha, branch);
     }
   }
-  const forceUncommittedOnMainLane =
-    checkedOutRef?.hasUncommittedChanges === true &&
-    checkedOutRef.branchName === defaultBranch;
-  const directCommitsForLayout = (() => {
-    if (!forceUncommittedOnMainLane) return directCommits;
-    if (directCommits.some((commit) => commit.fullSha === 'WORKING_TREE')) return directCommits;
-    const parentSha =
-      checkedOutRef?.headSha ??
-      checkedOutRef?.parentSha ??
-      directCommits[directCommits.length - 1]?.fullSha ??
-      null;
-    return [
-      ...directCommits,
-      {
-        fullSha: 'WORKING_TREE',
-        sha: 'Uncommited Changes',
-        parentSha,
-        message: 'Local uncommitted changes',
-        author: 'You',
-        date: new Date().toISOString(),
-      },
-    ];
-  })();
+  const directCommitsForLayout = directCommits;
   const sortedDirectCommits = orderByLineage(directCommitsForLayout);
   const defaultBranchFromData = branches.find((branch) => branch.name === defaultBranch);
   const defaultBranchRenderBranch: Branch = defaultBranchFromData ?? {
@@ -2094,6 +2086,7 @@ export default function BranchMap({
     lane: string;
     shas: string[];
     earliestTime: number;
+    latestTime: number;
     rowIndex: number;
     key: string;
     slotIndices?: number[];
@@ -2129,10 +2122,25 @@ export default function BranchMap({
       let buf: string[] = [];
       let slotBuf: number[] = [];
       let tFirst = 0;
+      let tLast = 0;
       let startIdx = 0;
+      const mainUncommittedSplitIndices = splitIndicesAroundUncommitted(
+        sortedDirectCommits,
+        (commit) => commit.fullSha === 'WORKING_TREE' || commit.kind === 'uncommitted'
+      );
+      const mainAllocatorSplitIndices = new Set<number>([
+        ...mainForkIdx,
+        ...mainCommitSplitIndices,
+        ...mainUncommittedSplitIndices,
+      ]);
+      const mainAllocatorPreserveSplitIndices = new Set<number>([
+        ...forcedMainSplitIndices,
+        ...mainUncommittedSplitIndices,
+      ]);
       const effectiveMainForkIdx = pruneForkSplitIndices(
         sortedDirectCommits.length,
-        mainForkIdx,
+        mainAllocatorSplitIndices,
+        mainAllocatorPreserveSplitIndices,
       );
       const flush = (endIdx: number) => {
         if (buf.length === 0) return;
@@ -2140,6 +2148,7 @@ export default function BranchMap({
           lane: 'main',
           shas: [...buf],
           earliestTime: tFirst,
+          latestTime: tLast,
           rowIndex: -1,
           key: `commit-clump-${defaultBranch}-${startIdx}-${endIdx}`,
           slotIndices: [...slotBuf],
@@ -2151,6 +2160,7 @@ export default function BranchMap({
         const commitTime = new Date(c.date).getTime();
         if (buf.length === 0) startIdx = i;
         if (buf.length === 0) tFirst = commitTime;
+        tLast = commitTime;
         buf.push(c.fullSha);
         slotBuf.push(i);
         if (effectiveMainForkIdx.has(i)) flush(i);
@@ -2170,6 +2180,7 @@ export default function BranchMap({
           lane: branch.name,
           shas: [],
           earliestTime: t,
+          latestTime: t,
           rowIndex: -1,
           key: `commit-clump-${branch.name}-synthetic`,
           slotIndices: Array.from({ length: fallbackCount }, (_, index) => index),
@@ -2186,6 +2197,7 @@ export default function BranchMap({
       let buf: string[] = [];
       let slotBuf: number[] = [];
       let tFirst = 0;
+      let tLast = 0;
       let startIdx = 0;
       const flushBranch = (endIdx: number) => {
         if (buf.length === 0) return;
@@ -2193,6 +2205,7 @@ export default function BranchMap({
           lane: branch.name,
           shas: [...buf],
           earliestTime: tFirst,
+          latestTime: tLast,
           rowIndex: -1,
           key: `commit-clump-${branch.name}-${startIdx}-${endIdx}`,
           slotIndices: [...slotBuf],
@@ -2204,6 +2217,7 @@ export default function BranchMap({
         const commitTime = new Date(c.date).getTime();
         if (buf.length === 0) { startIdx = i; }
         if (buf.length === 0) tFirst = commitTime;
+        tLast = commitTime;
         buf.push(c.fullSha);
         slotBuf.push(i);
         if (effectiveForkIdx.has(i)) { flushBranch(i); }
@@ -2215,11 +2229,24 @@ export default function BranchMap({
       sortedNodes.forEach((node) => {
         if (directCommitShaSet.has(node.fullSha)) return;
         const t = mergeEventTimeByFullSha.get(node.fullSha) ?? new Date(node.date).getTime();
-        gridClumps.push({ lane: 'main-merge', shas: [node.fullSha], earliestTime: t, rowIndex: -1, key: `merge-row-${node.fullSha}` });
+        gridClumps.push({
+          lane: 'main-merge',
+          shas: [node.fullSha],
+          earliestTime: t,
+          latestTime: t,
+          rowIndex: -1,
+          key: `merge-row-${node.fullSha}`,
+        });
       });
     }
 
-    gridClumps.sort((a, b) => a.earliestTime - b.earliestTime);
+    gridClumps.sort((a, b) => {
+      const latestDiff = a.latestTime - b.latestTime;
+      if (latestDiff !== 0) return latestDiff;
+      const earliestDiff = a.earliestTime - b.earliestTime;
+      if (earliestDiff !== 0) return earliestDiff;
+      return a.key.localeCompare(b.key);
+    });
 
     const rowByEntity = new Map<string, number>();
     const rowTimeByIndex = new Map<number, number>();
@@ -2257,7 +2284,7 @@ export default function BranchMap({
         for (let i = 0; i < memberCount; i += 1) {
           const sha = clump.shas[i];
           const slotIndex = clump.slotIndices?.[i];
-          const rowTime = clump.earliestTime + i;
+          const rowTime = clump.latestTime + i;
           const fallbackEntityKey = `clump-member:${clump.key}:${i}`;
           const entityKey = (() => {
             if (clump.lane === 'main' || clump.lane === 'main-merge') {
@@ -2272,9 +2299,9 @@ export default function BranchMap({
           if (sha) assignShaRow(sha, claimedRow);
           if (slotIndex != null) assignSlotRow(slotIndex, claimedRow);
         }
-        clump.rowIndex = firstRow ?? claimRow(`clump:${clump.key}`, clump.earliestTime);
+        clump.rowIndex = firstRow ?? claimRow(`clump:${clump.key}`, clump.latestTime);
       } else {
-        const clumpRow = claimRow(`clump:${clump.key}`, clump.earliestTime);
+        const clumpRow = claimRow(`clump:${clump.key}`, clump.latestTime);
         clump.rowIndex = clumpRow;
         clump.shas.forEach((sha) => { assignShaRow(sha, clumpRow); });
         clump.slotIndices?.forEach((slotIndex) => { assignSlotRow(slotIndex, clumpRow); });
@@ -2528,7 +2555,6 @@ export default function BranchMap({
         if (!includedAnyMember) includeRow(clump.rowIndex, clump.key);
         return;
       }
-
       includeRow(clump.rowIndex, clump.key);
     });
 
@@ -4013,6 +4039,57 @@ export default function BranchMap({
   function clearMainBranchHover() {
     setHoveredBranch((current) => (current === defaultBranch ? null : current));
   }
+  function renderCommitNodeRect({
+    nodeKey,
+    centerX,
+    centerY,
+    rectSize,
+    fill,
+    baseStroke,
+    isCheckedOutSelection = false,
+    isUserSelected = false,
+    strokeWidth = CANVAS_NODE_STROKE_WIDTH,
+    strokeInset = strokeWidth / 2,
+    dashed = false,
+    cursor = undefined,
+  }: {
+    nodeKey: string;
+    centerX: number;
+    centerY: number;
+    rectSize: ReturnType<typeof commitRectSize>;
+    fill: string;
+    baseStroke: string;
+    isCheckedOutSelection?: boolean;
+    isUserSelected?: boolean;
+    strokeWidth?: number;
+    strokeInset?: number;
+    dashed?: boolean;
+    cursor?: React.CSSProperties['cursor'];
+  }) {
+    return (
+      <rect
+        className="branch-map-commit-rect"
+        x={centerX - rectSize.width / 2 + strokeInset}
+        y={centerY - rectSize.height / 2 + strokeInset}
+        width={rectSize.width - strokeWidth}
+        height={rectSize.height - strokeWidth}
+        data-base-rx={rectSize.radius}
+        rx={rectSize.radius / Math.max(layerCameraScale.x, 0.0001)}
+        fill={fill}
+        stroke={getNodeStrokeColor(
+          nodeKey,
+          baseStroke,
+          isCheckedOutSelection,
+          isUserSelected,
+        )}
+        strokeWidth={strokeWidth}
+        strokeDasharray={dashed ? '3 3' : undefined}
+        strokeLinecap={dashed ? 'round' : undefined}
+        strokeLinejoin={dashed ? 'round' : undefined}
+        style={cursor ? { cursor } : undefined}
+      />
+    );
+  }
   const branchRenderLayoutCache = new Map<string, BranchRenderLayout>();
   function getBranchRenderLayout(b: Branch): BranchRenderLayout {
     const cached = branchRenderLayoutCache.get(b.name);
@@ -4079,9 +4156,23 @@ export default function BranchMap({
           if (idx >= 0) mainForkIndices.add(idx);
         });
       }
+      const mainUncommittedSplitIndices = splitIndicesAroundUncommitted(
+        commitDotEntries,
+        (entry) => entry.item.commit?.kind === 'uncommitted' || entry.item.commit?.fullSha === 'WORKING_TREE'
+      );
+      const defaultBranchSplitIndices = new Set<number>([
+        ...mainForkIndices,
+        ...mainCommitSplitIndices,
+        ...mainUncommittedSplitIndices,
+      ]);
+      const defaultBranchPreserveSplitIndices = new Set<number>([
+        ...forcedMainSplitIndices,
+        ...mainUncommittedSplitIndices,
+      ]);
       const commitDotClusters = clusterByForkPoints(
         commitDotEntries,
-        mainForkIndices,
+        defaultBranchSplitIndices,
+        defaultBranchPreserveSplitIndices,
       );
 
       const promptMarkersRaw = branchPromptMeta[defaultBranch]?.markers ?? [];
@@ -4174,9 +4265,7 @@ export default function BranchMap({
     const isLocalBranch = b.remoteSyncStatus !== 'on-github';
     const branchCommits = renderableBranchPreviews(b);
     const hasPreviewData = branchCommitPreviews[b.name] != null;
-    const visibleBranchCommits = forceUncommittedOnMainLane
-      ? branchCommits.filter((commit) => commit.kind !== 'uncommitted')
-      : branchCommits;
+    const visibleBranchCommits = branchCommits;
     const hasUncommittedPreview = visibleBranchCommits.some((commit) => commit.kind === 'uncommitted');
     const uniqueAheadCount = branchAheadCount(b);
     const aheadCount = Math.max(0, uniqueAheadCount);
@@ -4377,7 +4466,19 @@ export default function BranchMap({
         if (idx >= 0) branchForkIndices.add(idx);
       });
     }
-    const commitDotClusters = clusterByForkPoints(commitDotEntries, branchForkIndices);
+    const branchUncommittedSplitIndices = splitIndicesAroundUncommitted(
+      commitDotEntries,
+      (entry) => entry.item.commit?.kind === 'uncommitted' || entry.item.commit?.fullSha === 'WORKING_TREE'
+    );
+    const branchSplitIndices = new Set<number>([
+      ...branchForkIndices,
+      ...branchUncommittedSplitIndices,
+    ]);
+    const commitDotClusters = clusterByForkPoints(
+      commitDotEntries,
+      branchSplitIndices,
+      branchUncommittedSplitIndices,
+    );
 
     const promptMarkersRaw = branchPromptMeta[b.name]?.markers ?? [];
     const promptSeeds = [...promptMarkersRaw]
@@ -4545,51 +4646,41 @@ export default function BranchMap({
       return;
     }
 
+    const expandStartedAt = Date.now();
     setExpandedClumps((prev) => {
       const next = new Map(prev);
-      next.set(clumpKey, { isExpanded: true, phase: 'collapsed', phaseStartedAt: Date.now() });
+      next.set(clumpKey, {
+        isExpanded: true,
+        phase: 'expanding',
+        phaseStartedAt: expandStartedAt,
+      });
       return next;
     });
 
-    const expandStartedAt = Date.now();
-    requestAnimationFrame(() => {
+    // Drive re-renders while expanding so interpolation remains smooth.
+    const expandTick = () => {
+      const elapsed = Date.now() - expandStartedAt;
+      setClumpAnimationTick((v) => v + 1);
+      if (elapsed < clumpExpandMs) requestAnimationFrame(expandTick);
+    };
+    requestAnimationFrame(expandTick);
+
+    const finalizeTimer = window.setTimeout(() => {
       setExpandedClumps((prev) => {
         const next = new Map(prev);
         const current = next.get(clumpKey);
         if (!current?.isExpanded) return prev;
         next.set(clumpKey, {
           isExpanded: true,
-          phase: 'expanding',
+          phase: 'expanded',
           phaseStartedAt: expandStartedAt,
         });
         return next;
       });
+      clumpCleanupTimersRef.current.delete(clumpKey);
+    }, clumpExpandMs);
 
-      // Drive re-renders while expanding so interpolation remains smooth.
-      const expandTick = () => {
-        const elapsed = Date.now() - expandStartedAt;
-        setClumpAnimationTick((v) => v + 1);
-        if (elapsed < clumpExpandMs) requestAnimationFrame(expandTick);
-      };
-      requestAnimationFrame(expandTick);
-
-      const finalizeTimer = window.setTimeout(() => {
-        setExpandedClumps((prev) => {
-          const next = new Map(prev);
-          const current = next.get(clumpKey);
-          if (!current?.isExpanded) return prev;
-          next.set(clumpKey, {
-            isExpanded: true,
-            phase: 'expanded',
-            phaseStartedAt: expandStartedAt,
-          });
-          return next;
-        });
-        clumpCleanupTimersRef.current.delete(clumpKey);
-      }, clumpExpandMs);
-
-      clumpCleanupTimersRef.current.set(clumpKey, finalizeTimer);
-    });
+    clumpCleanupTimersRef.current.set(clumpKey, finalizeTimer);
   };
 
 type MainDirectClusterLayout = {
@@ -4599,48 +4690,61 @@ type MainDirectClusterLayout = {
   first: DirectCommit;
   last: DirectCommit;
   memberKeys: string[];
+  preferredAnchorX: number;
+  preferredAnchorY: number;
   clusterHasMainTip: boolean;
   clusterHasCheckedOutHead: boolean;
   clusterHasSelectedCommit: boolean;
   clusterHasUncommitted: boolean;
 };
-  const mainDirectEntries: MarkerEntry<DirectCommit>[] = sortedDirectCommits.map((commit) => {
-    const timeCoordX = directXByFullSha.get(commit.fullSha) ?? timeToX(commit.date);
-    const markerPoint = projectPoint(mainX, timeCoordToY(timeCoordX));
-    return { x: markerPoint.x, y: markerPoint.y, item: commit };
-  });
-  const latestMainCommitSha = mainDirectEntries[mainDirectEntries.length - 1]?.item.fullSha;
+  const mainLayout = getBranchRenderLayout(defaultBranchRenderBranch);
+  const latestMainCommitSha = sortedDirectCommits[sortedDirectCommits.length - 1]?.fullSha;
   const selectedCommitShaRawSet = new Set(selectedCommitShas);
-  const mainForkIndices = new Set<number>(mainCommitSplitIndices);
-  const mainDirectClusters: MainDirectClusterLayout[] = clusterByForkPoints(
-    mainDirectEntries,
-    mainForkIndices,
-    forcedMainSplitIndices,
-  )
+  const mainDirectClusters: MainDirectClusterLayout[] = mainLayout.commitDotClusters
     .map((cluster) => {
-      const vm = buildMainClusterViewModel(cluster);
+      const vm = buildBranchClusterViewModel(defaultBranch, cluster, mainLayout.branchEndDotIndex);
+      const directEntries: MarkerEntry<DirectCommit>[] = vm.renderEntries
+        .map((entry) => {
+          const commit = entry.item.commit;
+          if (!commit) return null;
+          return { x: entry.x, y: entry.y, item: commit as DirectCommit };
+        })
+        .filter((entry): entry is MarkerEntry<DirectCommit> => entry != null);
+
+      if (directEntries.length === 0) return null;
+
+      const directCluster: MarkerCluster<DirectCommit> = {
+        x: cluster.x,
+        y: cluster.y,
+        entries: directEntries,
+      };
+      const mainVm = buildMainClusterViewModel(directCluster);
       return {
-        cluster: vm.cluster,
+        cluster: mainVm.cluster,
         clusterKey: vm.clusterKey,
         count: vm.count,
-        first: vm.first,
-        last: vm.last,
+        first: mainVm.first,
+        last: mainVm.last,
         memberKeys: vm.memberKeys,
-        clusterHasMainTip: cluster.entries.some(
+        preferredAnchorX: vm.preferredAnchorEntry.x,
+        preferredAnchorY: vm.preferredAnchorEntry.y,
+        clusterHasMainTip: directEntries.some(
           (entry) => entry.item.fullSha === latestMainCommitSha
         ),
         clusterHasCheckedOutHead:
           checkedOutHeadSha != null &&
-          cluster.entries.some((entry) => shaMatchesGitRef(entry.item.fullSha, checkedOutHeadSha)),
+          directEntries.some((entry) => shaMatchesGitRef(entry.item.fullSha, checkedOutHeadSha)),
         clusterHasSelectedCommit:
-          cluster.entries.some((entry) => selectedCommitShaRawSet.has(entry.item.fullSha)),
+          directEntries.some((entry) => selectedCommitShaRawSet.has(entry.item.fullSha)),
         clusterHasUncommitted:
-          cluster.entries.some((entry) => entry.item.fullSha === 'WORKING_TREE'),
+          directEntries.some((entry) =>
+            entry.item.fullSha === 'WORKING_TREE' || entry.item.kind === 'uncommitted'
+          ),
       };
-    });
+    })
+    .filter((cluster): cluster is MainDirectClusterLayout => cluster != null);
   const renderedMainAnchorByCommitSha = (() => {
     const anchors = new Map<string, AnchorPoint>();
-    const mainLayout = getBranchRenderLayout(defaultBranchRenderBranch);
     for (const cluster of mainLayout.commitDotClusters) {
       const vm = buildBranchClusterViewModel(defaultBranch, cluster, mainLayout.branchEndDotIndex);
       const motion = resolveClusterMotion(
@@ -4705,56 +4809,7 @@ type MainDirectClusterLayout = {
     return future?.anchor ?? past?.anchor;
   }
 
-  const checkedOutClumpKeysToAutoExpand = (() => {
-    if (!checkedOutHeadSha) return [];
-
-    const keys = new Set<string>();
-
-    for (const branch of renderBranches) {
-      const { commitDotClusters, hasPreviewData, branchEndDotIndex } = getBranchRenderLayout(branch);
-      for (const cluster of commitDotClusters) {
-        const vm = buildBranchClusterViewModel(branch.name, cluster, branchEndDotIndex);
-        if (vm.count <= 1) continue;
-
-        const hasCheckedOutCommit = cluster.entries.some((entry) => {
-          const idx = entry.item.index;
-          const commit = entry.item.commit;
-          if (hasPreviewData && commit && commit.kind !== 'branch-created') {
-            return (
-              shaMatchesGitRef(commit.fullSha, checkedOutHeadSha) ||
-              shaMatchesGitRef(commit.sha, checkedOutHeadSha)
-            );
-          }
-          if (!hasPreviewData && checkedOutBranchName === branch.name && branchEndDotIndex === idx) {
-            return shaMatchesGitRef(branch.headSha, checkedOutHeadSha);
-          }
-          return false;
-        });
-
-        if (!hasCheckedOutCommit) continue;
-        keys.add(vm.clusterKey);
-      }
-    }
-
-    return Array.from(keys);
-  })();
-  const checkedOutClumpAutoExpandSignature = checkedOutClumpKeysToAutoExpand
-    .slice()
-    .sort()
-    .join('|');
-  useEffect(() => {
-    if (checkedOutClumpKeysToAutoExpand.length === 0) return;
-
-    setExpandedClumps((prev) => {
-      let next: Map<string, ExpandedClumpState> | null = null;
-      for (const clumpKey of checkedOutClumpKeysToAutoExpand) {
-        if (prev.get(clumpKey)?.isExpanded) continue;
-        if (next == null) next = new Map(prev);
-        next.set(clumpKey, { isExpanded: true, phase: 'expanded', phaseStartedAt: Date.now() });
-      }
-      return next ?? prev;
-    });
-  }, [checkedOutClumpAutoExpandSignature]);
+  // Clumps are closed by default; no checked-out auto-expansion.
 
   function resolveBranchHeadProjectedPoint(layout: BranchRenderLayout): { x: number; y: number } {
     if (layout.branchEndDotIndex != null) {
@@ -4970,20 +5025,31 @@ type MainDirectClusterLayout = {
 
     // Main commit clumps.
     mainDirectClusters.forEach((clusterLayout) => {
-      const { cluster, clusterKey } = clusterLayout;
-      const expanded = expandedClumps.get(clusterKey);
-      const isExpanded = expanded?.isExpanded ?? false;
+      const { cluster, clusterKey, memberKeys, count, preferredAnchorX, preferredAnchorY } = clusterLayout;
+      const motion = resolveClusterMotion(
+        clusterKey,
+        { x: preferredAnchorX, y: preferredAnchorY },
+        memberKeys,
+        count > 1,
+      );
+      const isExpanded = motion.isExpanded && motion.phase !== 'collapsed' && count > 1;
       if (isExpanded) {
-        cluster.entries.forEach((entry) => {
+        cluster.entries.forEach((entry, entryIndex) => {
+          const memberPose = interpolateExpandedEntryPose(
+            { x: motion.anchorX, y: motion.anchorY },
+            { x: entry.x, y: entry.y },
+            motion.phase,
+            motion.phaseEased,
+          );
           addVisibleAtProjected(
-            entry.x,
-            entry.y,
+            memberPose.x,
+            memberPose.y,
             'main',
-            `main:${entry.item.fullSha}`
+            `main:${entry.item.fullSha}:${entryIndex}`
           );
         });
       } else {
-        addVisibleAtProjected(cluster.x, cluster.y, 'main', clusterKey);
+        addVisibleAtProjected(motion.anchorX, motion.anchorY, 'main', clusterKey);
       }
     });
 
@@ -5403,11 +5469,13 @@ type MainDirectClusterLayout = {
                     clusterHasCheckedOutHead,
                     clusterHasSelectedCommit,
                     memberKeys,
+                    preferredAnchorX,
+                    preferredAnchorY,
                   } = clusterLayout;
                   const countLabel = stackCountLabel(count);
                   const motion = resolveClusterMotion(
                     clusterKey,
-                    { x: cluster.x, y: cluster.y },
+                    { x: preferredAnchorX, y: preferredAnchorY },
                     memberKeys,
                     count > 1,
                   );
@@ -6705,7 +6773,6 @@ type MainDirectClusterLayout = {
                   const dotFill = dotShouldUseCanvasFill ? CANVAS_UNPUSHED_NODE_FILL : CANVAS_NODE_FILL;
                   const dotStrokeWidth = CANVAS_NODE_STROKE_WIDTH;
                   const dotStrokeInset = dotStrokeWidth / 2;
-                  const dotStrokeDasharray = undefined;
                   const clusterHasCheckedOutHead =
                     checkedOutHeadSha != null &&
                     cluster.entries.some((entry) => {
@@ -6744,42 +6811,42 @@ type MainDirectClusterLayout = {
 
                     return (
                       <g key={`branch-overlay-${clusterKey}`}>
-                        <rect
-                          className="branch-map-commit-rect"
-                          x={anchorX - rectSize.width / 2 + dotStrokeInset}
-                          y={anchorY - rectSize.height / 2 + dotStrokeInset}
-                          width={rectSize.width - dotStrokeWidth}
-                          height={rectSize.height - dotStrokeWidth}
-                          data-base-rx={rectSize.radius}
-                          rx={rectSize.radius / Math.max(layerCameraScale.x, 0.0001)}
-                          fill={dotFill}
-                          stroke={
-                            getNodeStrokeColor(
+                        {isGhostRect ? (
+                          <rect
+                            className="branch-map-commit-rect"
+                            x={anchorX - rectSize.width / 2 + dotStrokeInset}
+                            y={anchorY - rectSize.height / 2 + dotStrokeInset}
+                            width={rectSize.width - dotStrokeWidth}
+                            height={rectSize.height - dotStrokeWidth}
+                            data-base-rx={rectSize.radius}
+                            rx={rectSize.radius / Math.max(layerCameraScale.x, 0.0001)}
+                            fill={dotFill}
+                            stroke={getNodeStrokeColor(
                               clusterKey,
-                              isGhostRect
-                                ? LOCAL_UNPUSHED_GRAY
-                                : isUncommittedCommit
-                                  ? CHECKED_OUT_SELECTION_STROKE
-                                  : CANVAS_NODE_STROKE,
+                              LOCAL_UNPUSHED_GRAY,
                               clusterHasCheckedOutHead,
                               clusterHasSelectedCommit || clusterHasSelectedHead,
-                            )
-                          }
-                          strokeWidth={
-                            isGhostRect
-                              ? ghostRectStrokeWidth
-                              : dotStrokeWidth
-                          }
-                          strokeDasharray={
-                            isGhostRect
-                              ? ghostRectDasharray
-                              : isUncommittedCommit
-                                ? '3 3'
-                                : undefined
-                          }
-                          strokeLinecap={isGhostRect || isUncommittedCommit ? 'round' : undefined}
-                          strokeLinejoin={isGhostRect || isUncommittedCommit ? 'round' : undefined}
-                        />
+                            )}
+                            strokeWidth={ghostRectStrokeWidth}
+                            strokeDasharray={ghostRectDasharray}
+                            strokeLinecap="round"
+                            strokeLinejoin="round"
+                          />
+                        ) : renderCommitNodeRect({
+                          nodeKey: clusterKey,
+                          centerX: anchorX,
+                          centerY: anchorY,
+                          rectSize,
+                          fill: isUncommittedCommit ? CANVAS_UNPUSHED_NODE_FILL : dotFill,
+                          baseStroke: isUncommittedCommit
+                            ? CHECKED_OUT_SELECTION_STROKE
+                            : CANVAS_NODE_STROKE,
+                          isCheckedOutSelection: clusterHasCheckedOutHead,
+                          isUserSelected: clusterHasSelectedCommit || clusterHasSelectedHead,
+                          strokeWidth: dotStrokeWidth,
+                          strokeInset: dotStrokeInset,
+                          dashed: !!isUncommittedCommit,
+                        })}
                       </g>
                     );
                   }
@@ -6797,26 +6864,21 @@ type MainDirectClusterLayout = {
                     const rectSize = nodeRectSize(count);
                     return (
                       <g key={`branch-overlay-${clusterKey}`}>
-                        <rect
-                          className="branch-map-commit-rect"
-                          x={anchorX - rectSize.width / 2 + dotStrokeInset}
-                          y={anchorY - rectSize.height / 2 + dotStrokeInset}
-                          width={rectSize.width - dotStrokeWidth}
-                          height={rectSize.height - dotStrokeWidth}
-                          data-base-rx={rectSize.radius}
-                          rx={rectSize.radius / Math.max(layerCameraScale.x, 0.0001)}
-                          fill={dotFill}
-                          stroke={getNodeStrokeColor(
-                            clusterKey,
-                            clusterHasUncommitted ? CHECKED_OUT_SELECTION_STROKE : CANVAS_NODE_STROKE,
-                            clusterHasCheckedOutHead,
-                            clusterHasSelectedCommit || clusterHasSelectedHead,
-                          )}
-                          strokeWidth={dotStrokeWidth}
-                          strokeDasharray={clusterHasUncommitted ? '3 3' : dotStrokeDasharray}
-                          strokeLinecap={clusterHasUncommitted ? 'round' : undefined}
-                          strokeLinejoin={clusterHasUncommitted ? 'round' : undefined}
-                        />
+                        {renderCommitNodeRect({
+                          nodeKey: clusterKey,
+                          centerX: anchorX,
+                          centerY: anchorY,
+                          rectSize,
+                          fill: clusterHasUncommitted ? CANVAS_UNPUSHED_NODE_FILL : dotFill,
+                          baseStroke: clusterHasUncommitted
+                            ? CHECKED_OUT_SELECTION_STROKE
+                            : CANVAS_NODE_STROKE,
+                          isCheckedOutSelection: clusterHasCheckedOutHead,
+                          isUserSelected: clusterHasSelectedCommit || clusterHasSelectedHead,
+                          strokeWidth: dotStrokeWidth,
+                          strokeInset: dotStrokeInset,
+                          dashed: clusterHasUncommitted,
+                        })}
                       </g>
                     );
                   }
@@ -6849,27 +6911,23 @@ type MainDirectClusterLayout = {
                             style={clumpAnimStyle}
                             opacity={memberPose.opacity}
                           >
-                            <rect
-                              className="branch-map-commit-rect"
-                              x={-localRect.width / 2 + dotStrokeInset}
-                              y={-localRect.height / 2 + dotStrokeInset}
-                              width={localRect.width - dotStrokeWidth}
-                              height={localRect.height - dotStrokeWidth}
-                              data-base-rx={localRect.radius}
-                              rx={localRect.radius / Math.max(layerCameraScale.x, 0.0001)}
-                              fill={dotFill}
-                              stroke={getNodeStrokeColor(
-                                commitKey,
-                                isUncommittedCommit ? CHECKED_OUT_SELECTION_STROKE : CANVAS_NODE_STROKE,
-                                isCheckedOutCommit,
+                            {renderCommitNodeRect({
+                              nodeKey: commitKey,
+                              centerX: 0,
+                              centerY: 0,
+                              rectSize: localRect,
+                              fill: isUncommittedCommit ? CANVAS_UNPUSHED_NODE_FILL : dotFill,
+                              baseStroke: isUncommittedCommit
+                                ? CHECKED_OUT_SELECTION_STROKE
+                                : CANVAS_NODE_STROKE,
+                              isCheckedOutSelection: isCheckedOutCommit,
+                              isUserSelected:
                                 selectedCommitShaSet.has(commit.fullSha) ||
-                                  (clusterHasSelectedHead && commit.fullSha === b.headSha),
-                              )}
-                              strokeWidth={dotStrokeWidth}
-                              strokeDasharray={isUncommittedCommit ? '3 3' : dotStrokeDasharray}
-                              strokeLinecap={isUncommittedCommit ? 'round' : undefined}
-                              strokeLinejoin={isUncommittedCommit ? 'round' : undefined}
-                            />
+                                (clusterHasSelectedHead && commit.fullSha === b.headSha),
+                              strokeWidth: dotStrokeWidth,
+                              strokeInset: dotStrokeInset,
+                              dashed: isUncommittedCommit,
+                            })}
                           </g>
                         );
                       })}
@@ -6889,6 +6947,8 @@ type MainDirectClusterLayout = {
                   count,
                   clusterKey,
                   memberKeys,
+                  preferredAnchorX,
+                  preferredAnchorY,
                   clusterHasMainTip,
                   clusterHasCheckedOutHead,
                   clusterHasSelectedCommit: mainClusterHasSelectedCommit,
@@ -6896,7 +6956,7 @@ type MainDirectClusterLayout = {
                 } = clusterLayout;
                 const motion = resolveClusterMotion(
                   clusterKey,
-                  { x: cluster.x, y: cluster.y },
+                  { x: preferredAnchorX, y: preferredAnchorY },
                   memberKeys,
                   count > 1,
                 );
@@ -6911,26 +6971,21 @@ type MainDirectClusterLayout = {
                   const rectSize = commitRectSize(scaledNodeSize);
                   return (
                     <g key={`main-direct-overlay-${clusterKey}`}>
-                      <rect
-                        className="branch-map-commit-rect"
-                        x={anchorX - rectSize.width / 2 + CANVAS_NODE_STROKE_INSET}
-                        y={anchorY - rectSize.height / 2 + CANVAS_NODE_STROKE_INSET}
-                        width={rectSize.width - CANVAS_NODE_STROKE_WIDTH}
-                        height={rectSize.height - CANVAS_NODE_STROKE_WIDTH}
-                        data-base-rx={rectSize.radius}
-                        rx={rectSize.radius / Math.max(layerCameraScale.x, 0.0001)}
-                        fill={CANVAS_NODE_FILL}
-                        stroke={getNodeStrokeColor(
-                          clusterKey,
-                          isUncommittedCommit ? CHECKED_OUT_SELECTION_STROKE : CANVAS_NODE_STROKE,
-                          clusterHasCheckedOutHead,
-                          mainClusterHasSelectedCommit || (clusterHasMainTip && selectedBranchNameSet.has(defaultBranch)),
-                        )}
-                        strokeWidth={CANVAS_NODE_STROKE_WIDTH}
-                        strokeDasharray={isUncommittedCommit ? '3 3' : undefined}
-                        strokeLinecap={isUncommittedCommit ? 'round' : undefined}
-                        strokeLinejoin={isUncommittedCommit ? 'round' : undefined}
-                      />
+                      {renderCommitNodeRect({
+                        nodeKey: clusterKey,
+                        centerX: anchorX,
+                        centerY: anchorY,
+                        rectSize,
+                        fill: isUncommittedCommit ? CANVAS_UNPUSHED_NODE_FILL : CANVAS_NODE_FILL,
+                        baseStroke: isUncommittedCommit
+                          ? CHECKED_OUT_SELECTION_STROKE
+                          : CANVAS_NODE_STROKE,
+                        isCheckedOutSelection: clusterHasCheckedOutHead,
+                        isUserSelected:
+                          mainClusterHasSelectedCommit ||
+                          (clusterHasMainTip && selectedBranchNameSet.has(defaultBranch)),
+                        dashed: isUncommittedCommit,
+                      })}
                     </g>
                   );
                 }
@@ -6963,54 +7018,43 @@ type MainDirectClusterLayout = {
                               style={clumpAnimStyle}
                               opacity={memberPose.opacity}
                             >
-                              <rect
-                                className="branch-map-commit-rect"
-                                x={-localRect.width / 2 + CANVAS_NODE_STROKE_INSET}
-                                y={-localRect.height / 2 + CANVAS_NODE_STROKE_INSET}
-                                width={localRect.width - CANVAS_NODE_STROKE_WIDTH}
-                                height={localRect.height - CANVAS_NODE_STROKE_WIDTH}
-                                data-base-rx={localRect.radius}
-                                rx={localRect.radius / Math.max(layerCameraScale.x, 0.0001)}
-                                fill={CANVAS_NODE_FILL}
-                                stroke={getNodeStrokeColor(
-                                  commitKey,
-                                  isUncommittedCommit ? CHECKED_OUT_SELECTION_STROKE : CANVAS_NODE_STROKE,
-                                  isCheckedOutCommit,
+                              {renderCommitNodeRect({
+                                nodeKey: commitKey,
+                                centerX: 0,
+                                centerY: 0,
+                                rectSize: localRect,
+                                fill: isUncommittedCommit ? CANVAS_UNPUSHED_NODE_FILL : CANVAS_NODE_FILL,
+                                baseStroke: isUncommittedCommit
+                                  ? CHECKED_OUT_SELECTION_STROKE
+                                  : CANVAS_NODE_STROKE,
+                                isCheckedOutSelection: isCheckedOutCommit,
+                                isUserSelected:
                                   selectedCommitShaSet.has(c.fullSha) ||
-                                    (clusterHasMainTip &&
-                                      selectedBranchNameSet.has(defaultBranch) &&
-                                      c.fullSha === latestMainCommitSha),
-                                )}
-                                strokeWidth={CANVAS_NODE_STROKE_WIDTH}
-                                strokeDasharray={isUncommittedCommit ? '3 3' : undefined}
-                                strokeLinecap={isUncommittedCommit ? 'round' : undefined}
-                                strokeLinejoin={isUncommittedCommit ? 'round' : undefined}
-                              />
+                                  (clusterHasMainTip &&
+                                    selectedBranchNameSet.has(defaultBranch) &&
+                                    c.fullSha === latestMainCommitSha),
+                                dashed: isUncommittedCommit,
+                              })}
                             </g>
                           );
                         })}
                       </>
                     ) : (
-                      <rect
-                        className="branch-map-commit-rect"
-                        x={anchorX - clusterRectSize.width / 2 + CANVAS_NODE_STROKE_INSET}
-                        y={anchorY - clusterRectSize.height / 2 + CANVAS_NODE_STROKE_INSET}
-                        width={clusterRectSize.width - CANVAS_NODE_STROKE_WIDTH}
-                        height={clusterRectSize.height - CANVAS_NODE_STROKE_WIDTH}
-                        data-base-rx={clusterRectSize.radius}
-                        rx={clusterRectSize.radius / Math.max(layerCameraScale.x, 0.0001)}
-                        fill={CANVAS_NODE_FILL}
-                        stroke={getNodeStrokeColor(
-                          clusterKey,
-                          clusterHasUncommitted ? CHECKED_OUT_SELECTION_STROKE : CANVAS_NODE_STROKE,
-                          clusterHasCheckedOutHead,
-                          mainClusterHasSelectedCommit || (clusterHasMainTip && selectedBranchNameSet.has(defaultBranch)),
-                        )}
-                        strokeWidth={CANVAS_NODE_STROKE_WIDTH}
-                        strokeDasharray={clusterHasUncommitted ? '3 3' : undefined}
-                        strokeLinecap={clusterHasUncommitted ? 'round' : undefined}
-                        strokeLinejoin={clusterHasUncommitted ? 'round' : undefined}
-                      />
+                      renderCommitNodeRect({
+                        nodeKey: clusterKey,
+                        centerX: anchorX,
+                        centerY: anchorY,
+                        rectSize: clusterRectSize,
+                        fill: clusterHasUncommitted ? CANVAS_UNPUSHED_NODE_FILL : CANVAS_NODE_FILL,
+                        baseStroke: clusterHasUncommitted
+                          ? CHECKED_OUT_SELECTION_STROKE
+                          : CANVAS_NODE_STROKE,
+                        isCheckedOutSelection: clusterHasCheckedOutHead,
+                        isUserSelected:
+                          mainClusterHasSelectedCommit ||
+                          (clusterHasMainTip && selectedBranchNameSet.has(defaultBranch)),
+                        dashed: clusterHasUncommitted,
+                      })
                     )}
                   </g>
                 );
@@ -7187,10 +7231,12 @@ type MainDirectClusterLayout = {
                   last,
                   clusterKey,
                   memberKeys,
+                  preferredAnchorX,
+                  preferredAnchorY,
                 } = clusterLayout;
                 const motion = resolveClusterMotion(
                   clusterKey,
-                  { x: cluster.x, y: cluster.y },
+                  { x: preferredAnchorX, y: preferredAnchorY },
                   memberKeys,
                   count > 1,
                 );
