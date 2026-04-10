@@ -151,6 +151,8 @@ type BranchRenderLayout = {
   showClockIcon: boolean;
   namePoint: { x: number; y: number };
   clockPoint: { x: number; y: number };
+  mergeTargetX: number | null;
+  mergeTargetY: number | null;
 };
 type AnchorPoint = LayoutAnchorPoint;
 type ClumpAnchorState = {
@@ -169,6 +171,23 @@ type ExpandedClumpState = {
 type ClumpMemberAnchorState = {
   x: number;
   y: number;
+  lastSeenRender: number;
+};
+type BranchLineGeometryState = {
+  startX: number;
+  targetStartX: number;
+  forkY: number;
+  targetForkY: number;
+  lanePosX: number;
+  targetLanePosX: number;
+  tipY: number;
+  targetTipY: number;
+  mergeTargetX: number | null;
+  targetMergeTargetX: number | null;
+  mergeTargetY: number | null;
+  targetMergeTargetY: number | null;
+  localSegmentStartY: number | null;
+  targetLocalSegmentStartY: number | null;
   lastSeenRender: number;
 };
 
@@ -730,6 +749,7 @@ export default function BranchMap({
   const [, setClumpAnimationTick] = useState(0);
   const clumpAnchorStateRef = useRef<Map<string, ClumpAnchorState>>(new Map());
   const clumpMemberAnchorStateRef = useRef<Map<string, ClumpMemberAnchorState>>(new Map());
+  const branchLineGeometryStateRef = useRef<Map<string, BranchLineGeometryState>>(new Map());
   const clumpRenderCounterRef = useRef(0);
   clumpRenderCounterRef.current += 1;
   const clumpRenderId = clumpRenderCounterRef.current;
@@ -1054,29 +1074,105 @@ export default function BranchMap({
   ): AnchorPoint {
     const clumpAnchorStates = clumpAnchorStateRef.current;
     const clumpMemberAnchorStates = clumpMemberAnchorStateRef.current;
-    // Layout must be allocator-authoritative. Do not let anchor interpolation
-    // move rendered nodes between rows after allocation.
-    const state: ClumpAnchorState = {
-      x: target.x,
-      y: target.y,
-      targetX: target.x,
-      targetY: target.y,
-      lastSeenRender: clumpRenderId,
-    };
-    clumpAnchorStates.set(clusterKey, state);
-    for (const memberKey of memberKeys) {
-      clumpMemberAnchorStates.set(memberKey, {
+    const existing = clumpAnchorStates.get(clusterKey);
+    const state: ClumpAnchorState = existing
+      ? {
+        ...existing,
+        targetX: target.x,
+        targetY: target.y,
+        lastSeenRender: clumpRenderId,
+      }
+      : {
         x: target.x,
         y: target.y,
+        targetX: target.x,
+        targetY: target.y,
         lastSeenRender: clumpRenderId,
-      });
+      };
+    clumpAnchorStates.set(clusterKey, state);
+    for (const memberKey of memberKeys) {
+      const existingMember = clumpMemberAnchorStates.get(memberKey);
+      clumpMemberAnchorStates.set(memberKey, existingMember
+        ? {
+          ...existingMember,
+          lastSeenRender: clumpRenderId,
+        }
+        : {
+          x: target.x,
+          y: target.y,
+          lastSeenRender: clumpRenderId,
+        });
     }
-    return target;
+    return { x: state.x, y: state.y };
+  }
+
+  function resolveAnimatedBranchLineGeometry(
+    branchKey: string,
+    target: {
+      startX: number;
+      forkY: number;
+      lanePosX: number;
+      tipY: number;
+      mergeTargetX: number | null;
+      mergeTargetY: number | null;
+      localSegmentStartY: number | null;
+    },
+  ): {
+    startX: number;
+    forkY: number;
+    lanePosX: number;
+    tipY: number;
+    mergeTargetX: number | null;
+    mergeTargetY: number | null;
+    localSegmentStartY: number | null;
+  } {
+    const states = branchLineGeometryStateRef.current;
+    const existing = states.get(branchKey);
+    const state: BranchLineGeometryState = existing
+      ? {
+        ...existing,
+        targetStartX: target.startX,
+        targetForkY: target.forkY,
+        targetLanePosX: target.lanePosX,
+        targetTipY: target.tipY,
+        targetMergeTargetX: target.mergeTargetX,
+        targetMergeTargetY: target.mergeTargetY,
+        targetLocalSegmentStartY: target.localSegmentStartY,
+        lastSeenRender: clumpRenderId,
+      }
+      : {
+        startX: target.startX,
+        targetStartX: target.startX,
+        forkY: target.forkY,
+        targetForkY: target.forkY,
+        lanePosX: target.lanePosX,
+        targetLanePosX: target.lanePosX,
+        tipY: target.tipY,
+        targetTipY: target.tipY,
+        mergeTargetX: target.mergeTargetX,
+        targetMergeTargetX: target.mergeTargetX,
+        mergeTargetY: target.mergeTargetY,
+        targetMergeTargetY: target.mergeTargetY,
+        localSegmentStartY: target.localSegmentStartY,
+        targetLocalSegmentStartY: target.localSegmentStartY,
+        lastSeenRender: clumpRenderId,
+      };
+    states.set(branchKey, state);
+    return {
+      startX: state.startX,
+      forkY: state.forkY,
+      lanePosX: state.lanePosX,
+      tipY: state.tipY,
+      mergeTargetX: state.mergeTargetX,
+      mergeTargetY: state.mergeTargetY,
+      localSegmentStartY: state.localSegmentStartY,
+    };
   }
 
   useEffect(() => {
     const clumpAnchorStates = clumpAnchorStateRef.current;
     const clumpMemberAnchorStates = clumpMemberAnchorStateRef.current;
+    const branchLineStates = branchLineGeometryStateRef.current;
 
     for (const [key, state] of clumpAnchorStates.entries()) {
       if (state.lastSeenRender !== clumpRenderId) {
@@ -1086,6 +1182,11 @@ export default function BranchMap({
     for (const [key, state] of clumpMemberAnchorStates.entries()) {
       if (state.lastSeenRender !== clumpRenderId) {
         clumpMemberAnchorStates.delete(key);
+      }
+    }
+    for (const [key, state] of branchLineStates.entries()) {
+      if (state.lastSeenRender !== clumpRenderId) {
+        branchLineStates.delete(key);
       }
     }
 
@@ -1116,6 +1217,67 @@ export default function BranchMap({
       state.x += dx * 0.26;
       state.y += dy * 0.26;
       shouldContinue = true;
+    }
+    const animateNumeric = (
+      current: number,
+      target: number,
+      onUpdate: (value: number) => void,
+    ) => {
+      const delta = target - current;
+      if (Math.abs(delta) <= 0.08) {
+        if (current !== target) {
+          onUpdate(target);
+          snapped = true;
+        }
+        return;
+      }
+      if (reduceMotion) {
+        onUpdate(target);
+        snapped = true;
+        return;
+      }
+      onUpdate(current + delta * 0.26);
+      shouldContinue = true;
+    };
+    const animateNullableNumeric = (
+      current: number | null,
+      target: number | null,
+      onUpdate: (value: number | null) => void,
+    ) => {
+      if (target == null) {
+        if (current != null) {
+          onUpdate(null);
+          snapped = true;
+        }
+        return;
+      }
+      if (current == null) {
+        onUpdate(target);
+        snapped = true;
+        return;
+      }
+      animateNumeric(current, target, onUpdate);
+    };
+    for (const state of branchLineStates.values()) {
+      animateNumeric(state.startX, state.targetStartX, (value) => { state.startX = value; });
+      animateNumeric(state.forkY, state.targetForkY, (value) => { state.forkY = value; });
+      animateNumeric(state.lanePosX, state.targetLanePosX, (value) => { state.lanePosX = value; });
+      animateNumeric(state.tipY, state.targetTipY, (value) => { state.tipY = value; });
+      animateNullableNumeric(
+        state.mergeTargetX,
+        state.targetMergeTargetX,
+        (value) => { state.mergeTargetX = value; },
+      );
+      animateNullableNumeric(
+        state.mergeTargetY,
+        state.targetMergeTargetY,
+        (value) => { state.mergeTargetY = value; },
+      );
+      animateNullableNumeric(
+        state.localSegmentStartY,
+        state.targetLocalSegmentStartY,
+        (value) => { state.localSegmentStartY = value; },
+      );
     }
     if (snapped) {
       setClumpAnimationTick((v) => v + 1);
@@ -2272,7 +2434,9 @@ export default function BranchMap({
     for (const clump of gridClumps) {
       const expandedState = expandedClumps.get(clump.key);
       const shouldReserveExpandedRows =
-        ((expandedState?.isExpanded ?? false) && expandedState?.phase !== 'collapsed') ||
+        ((expandedState?.isExpanded ?? false) &&
+          expandedState?.phase !== 'collapsed' &&
+          expandedState?.phase !== 'collapsing') ||
         ((expandedState?.rowReleaseAt ?? 0) > nowMs);
       const assignShaRow = (sha: string, row: number) => {
         if (clump.lane === 'main' || clump.lane === 'main-merge') {
@@ -2549,7 +2713,9 @@ export default function BranchMap({
     gridClumps.forEach((clump) => {
       const expandedState = expandedClumps.get(clump.key);
       const shouldReserveExpandedRows =
-        ((expandedState?.isExpanded ?? false) && expandedState?.phase !== 'collapsed') ||
+        ((expandedState?.isExpanded ?? false) &&
+          expandedState?.phase !== 'collapsed' &&
+          expandedState?.phase !== 'collapsing') ||
         ((expandedState?.rowReleaseAt ?? 0) > nowMsForUsedRows);
       const memberCount = Math.max(clump.shas.length, clump.slotIndices?.length ?? 0);
 
@@ -3958,7 +4124,7 @@ export default function BranchMap({
 
   const clumpExpandMs = 240;
   const clumpCollapseMs = 200;
-  const clumpRowReleaseBufferMs = 220;
+  const clumpRowReleaseDelayMs = 24;
   const clumpExpandEasing = 'cubic-bezier(0.16, 1, 0.3, 1)';
   const clumpCollapseEasing = 'cubic-bezier(0.7, 0, 0.84, 0)';
   const clumpPhaseDurationMs = (phase: ExpandedClumpState['phase']): number =>
@@ -4265,6 +4431,8 @@ export default function BranchMap({
         showClockIcon: false,
         namePoint,
         clockPoint,
+        mergeTargetX: null,
+        mergeTargetY: null,
       };
       branchRenderLayoutCache.set(b.name, layout);
       return layout;
@@ -4585,6 +4753,8 @@ export default function BranchMap({
       showClockIcon,
       namePoint,
       clockPoint,
+      mergeTargetX,
+      mergeTargetY,
     };
     branchRenderLayoutCache.set(b.name, layout);
     return layout;
@@ -4650,11 +4820,10 @@ export default function BranchMap({
     }
 
     if (isExpanded) {
-      // Collapse in two steps:
-      // 1) animate members back into the clump
-      // 2) briefly hold row reservation before releasing/compacting rows
+      // Collapse while rows start compacting shortly after collapse begins,
+      // so surrounding content moves during the same motion window.
       const collapseStartedAt = Date.now();
-      const rowReleaseAt = collapseStartedAt + clumpCollapseMs + clumpRowReleaseBufferMs;
+      const rowReleaseAt = collapseStartedAt + clumpRowReleaseDelayMs;
       setExpandedClumps((prev) => {
         const next = new Map(prev);
         next.set(clumpKey, {
@@ -4674,31 +4843,16 @@ export default function BranchMap({
       };
       requestAnimationFrame(collapseTick);
 
-      const collapseFinalizeTimer = window.setTimeout(() => {
+      const cleanupTimer = window.setTimeout(() => {
         setExpandedClumps((prev) => {
           const next = new Map(prev);
-          const current = next.get(clumpKey);
-          if (!current) return prev;
-          next.set(clumpKey, {
-            isExpanded: false,
-            phase: 'collapsed',
-            phaseStartedAt: collapseStartedAt + clumpCollapseMs,
-            rowReleaseAt,
-          });
+          next.delete(clumpKey);
           return next;
         });
-        const releaseTimer = window.setTimeout(() => {
-          setExpandedClumps((prev) => {
-            const next = new Map(prev);
-            next.delete(clumpKey);
-            return next;
-          });
-          clumpCleanupTimersRef.current.delete(clumpKey);
-        }, clumpRowReleaseBufferMs);
-        clumpCleanupTimersRef.current.set(clumpKey, releaseTimer);
+        clumpCleanupTimersRef.current.delete(clumpKey);
       }, clumpCollapseMs);
 
-      clumpCleanupTimersRef.current.set(clumpKey, collapseFinalizeTimer);
+      clumpCleanupTimersRef.current.set(clumpKey, cleanupTimer);
       return;
     }
 
@@ -6069,9 +6223,6 @@ export default function BranchMap({
                         const {
                           lanePosX,
                           branchLineTipY,
-                          mergeBackPath,
-                          curvePath,
-                          hitCurvePath,
                           hasPreviewData,
                           uniqueAheadCount,
                           branchEndDotIndex,
@@ -6085,7 +6236,60 @@ export default function BranchMap({
                           brDelay,
                           showClockIcon,
                           clockPoint,
+                          forkY,
+                          startX,
+                          mergeTargetX,
+                          mergeTargetY,
                         } = getBranchRenderLayout(b);
+                        const animatedLine = resolveAnimatedBranchLineGeometry(`branch-line:${b.name}`, {
+                          startX,
+                          forkY,
+                          lanePosX,
+                          tipY: branchLineTipY,
+                          mergeTargetX,
+                          mergeTargetY,
+                          localSegmentStartY: localSegmentStartY ?? null,
+                        });
+                        const routeCornerR = GRID_ROUTE_CORNER_R;
+                        const curvePath = buildBranchOrthogonalPath({
+                          startX: animatedLine.startX,
+                          forkY: animatedLine.forkY,
+                          laneX: animatedLine.lanePosX,
+                          tipY: animatedLine.tipY,
+                          cornerR: routeCornerR,
+                          pointFormatter: pathCoord,
+                        });
+                        const horizontalDir = animatedLine.lanePosX >= animatedLine.startX ? 1 : -1;
+                        const verticalDir = animatedLine.tipY >= animatedLine.forkY ? 1 : -1;
+                        const startTrim = Math.min(
+                          BRANCH_HIT_END_INSET,
+                          Math.max(0, Math.abs(animatedLine.lanePosX - animatedLine.startX) - 1),
+                        );
+                        const endTrim = Math.min(
+                          BRANCH_HIT_END_INSET,
+                          Math.max(0, Math.abs(animatedLine.tipY - animatedLine.forkY) - 1),
+                        );
+                        const hitCurvePath = buildBranchOrthogonalPath({
+                          startX: animatedLine.startX + horizontalDir * startTrim,
+                          forkY: animatedLine.forkY,
+                          laneX: animatedLine.lanePosX,
+                          tipY: animatedLine.tipY - verticalDir * endTrim,
+                          cornerR: routeCornerR,
+                          pointFormatter: pathCoord,
+                        });
+                        const mergeBackPath =
+                          animatedLine.mergeTargetY != null &&
+                            animatedLine.mergeTargetX != null &&
+                            Math.abs(animatedLine.lanePosX - animatedLine.mergeTargetX) > 0.5
+                            ? buildMergeOrthogonalPath({
+                              laneX: animatedLine.lanePosX,
+                              tipY: animatedLine.tipY,
+                              mergeX: animatedLine.mergeTargetX,
+                              mergeY: animatedLine.mergeTargetY,
+                              cornerR: routeCornerR,
+                              pointFormatter: pathCoord,
+                            })
+                            : null;
                         const isHovered = hoveredBranch === b.name || isNodeLineageHovered(b.name);
                         const isSelectedForMerge = selectedBranchNameSet.has(b.name);
                         const isFocusedError = focusedErrorBranch?.name === b.name;
@@ -6175,7 +6379,7 @@ export default function BranchMap({
                             )}
                             {!fullBranchShouldUseLocalGray && localSegmentStartY != null && (
                               <path
-                                d={`M ${pathCoord(lanePosX, localSegmentStartY)} L ${pathCoord(lanePosX, branchLineTipY)}`}
+                                d={`M ${pathCoord(animatedLine.lanePosX, animatedLine.localSegmentStartY ?? animatedLine.tipY)} L ${pathCoord(animatedLine.lanePosX, animatedLine.tipY)}`}
                                 fill="none"
                                 stroke={
                                   isSelectedForMerge
