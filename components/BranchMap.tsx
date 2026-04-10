@@ -839,6 +839,7 @@ export default function BranchMap({
     branchName?: string,
   ) {
     event.stopPropagation();
+    clearTransientHoverState();
     if (!commitSha) return;
     const shouldCheckout = event.ctrlKey || event.metaKey || event.detail >= 2;
     if (branchName) {
@@ -867,6 +868,15 @@ export default function BranchMap({
     if (shouldCheckout) {
       onCommitClick?.({ commitSha, branchName });
     }
+  }
+
+  function clearTransientHoverState() {
+    setHoveredBranch(null);
+    setHoveredPR(null);
+    setHoveredPRCommit(null);
+    setHoveredMergeNode(null);
+    handleNodeHoverLeave();
+    setTooltip(null);
   }
 
   function normalizeMarqueeRect(drag: MarqueeDragState): MarqueeRect {
@@ -1900,6 +1910,7 @@ export default function BranchMap({
     }
     if (e.button === 0 && clickedBackground) {
       e.preventDefault();
+      clearTransientHoverState();
       beginMarqueeSelection(e, e.shiftKey);
       return;
     }
@@ -4886,6 +4897,7 @@ export default function BranchMap({
   const isNodeLineageHovered = (branchName: string): boolean => hoveredNodeBranchLineage.has(branchName);
 
   const toggleClumpExpanded = (clumpKey: string) => {
+    clearTransientHoverState();
     markUserMovedCamera();
     const existing = expandedClumps.get(clumpKey);
     const isExpanded = existing?.isExpanded ?? false;
