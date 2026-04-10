@@ -55,8 +55,8 @@ const TIME_SCALE_DEFAULT = 0.5;
 // Grid nodes render without clump boost, so grid spacing must match the un-boosted rect size
 // or you'll see tiny gaps between nodes.
 const GRID_NODE_RECT = commitRectSize(NODE_SIZE, 0);
-// Keep a subtle gutter between rows/columns so cells don't visually touch.
-const GRID_CELL_GAP = 1;
+// Keep a clear gutter between rows/columns so cells don't visually touch.
+const GRID_CELL_GAP = 5;
 const GRID_ROW_GAP = GRID_NODE_RECT.height + GRID_CELL_GAP;
 const GRID_LANE_WIDTH = GRID_NODE_RECT.width + GRID_CELL_GAP;
 const GRID_LANE_OFFSET_X = 0;
@@ -164,6 +164,7 @@ type ExpandedClumpState = {
   isExpanded: boolean;
   phase: 'collapsed' | 'expanding' | 'expanded' | 'collapsing';
   phaseStartedAt?: number;
+  rowReleaseAt?: number;
 };
 type ClumpMemberAnchorState = {
   x: number;
@@ -177,6 +178,14 @@ function clamp01(value: number): number {
 
 function easeInOutCubic(t: number): number {
   return t < 0.5 ? 4 * t * t * t : 1 - Math.pow(-2 * t + 2, 3) / 2;
+}
+
+function easeOutCubic(t: number): number {
+  return 1 - Math.pow(1 - t, 3);
+}
+
+function easeInCubic(t: number): number {
+  return t * t * t;
 }
 
 function getCameraScale(zoomValue: number, _horizontal: boolean): { x: number; y: number } {
@@ -686,7 +695,6 @@ export default function BranchMap({
   const [expandedClumps, setExpandedClumps] = useState<Map<string, ExpandedClumpState>>(() => new Map());
   const [zoom, setZoom] = useState(ZOOM_DEFAULT);
   const [orientation, setOrientation] = useState<OrientationMode>('vertical');
-  const [showGuides, setShowGuides] = useState(false);
   const [showRowDebugOverlay, setShowRowDebugOverlay] = useState(false);
   const [selectedBranchNames, setSelectedBranchNames] = useState<string[]>([]);
   const [selectedCommitShas, setSelectedCommitShas] = useState<string[]>([]);
@@ -1109,7 +1117,6 @@ export default function BranchMap({
       state.y += dy * 0.26;
       shouldContinue = true;
     }
-
     if (snapped) {
       setClumpAnimationTick((v) => v + 1);
       return;
@@ -2261,11 +2268,12 @@ export default function BranchMap({
       return claimed;
     };
 
+    const nowMs = Date.now();
     for (const clump of gridClumps) {
       const expandedState = expandedClumps.get(clump.key);
       const shouldReserveExpandedRows =
-        (expandedState?.isExpanded ?? false) &&
-        expandedState?.phase !== 'collapsed';
+        ((expandedState?.isExpanded ?? false) && expandedState?.phase !== 'collapsed') ||
+        ((expandedState?.rowReleaseAt ?? 0) > nowMs);
       const assignShaRow = (sha: string, row: number) => {
         if (clump.lane === 'main' || clump.lane === 'main-merge') {
           gridRowBySha.set(sha, row);
@@ -2537,11 +2545,12 @@ export default function BranchMap({
       return undefined;
     };
 
+    const nowMsForUsedRows = Date.now();
     gridClumps.forEach((clump) => {
       const expandedState = expandedClumps.get(clump.key);
       const shouldReserveExpandedRows =
-        (expandedState?.isExpanded ?? false) &&
-        expandedState?.phase !== 'collapsed';
+        ((expandedState?.isExpanded ?? false) && expandedState?.phase !== 'collapsed') ||
+        ((expandedState?.rowReleaseAt ?? 0) > nowMsForUsedRows);
       const memberCount = Math.max(clump.shas.length, clump.slotIndices?.length ?? 0);
 
       if (shouldReserveExpandedRows && memberCount > 1) {
@@ -3095,12 +3104,12 @@ export default function BranchMap({
   const svgContentPadding =
     layoutViewportW > 0 && layoutViewportH > 0
       ? Math.min(
-          SVG_CONTENT_PADDING_MAX,
-          Math.round(
-            SVG_CONTENT_PADDING_BASE *
-              Math.max(1, viewportMinDim / SVG_CONTENT_PADDING_VIEWPORT_REF_MIN)
-          )
+        SVG_CONTENT_PADDING_MAX,
+        Math.round(
+          SVG_CONTENT_PADDING_BASE *
+          Math.max(1, viewportMinDim / SVG_CONTENT_PADDING_VIEWPORT_REF_MIN)
         )
+      )
       : SVG_CONTENT_PADDING_BASE;
 
   // Vertical extent of grid rows in Y (half node above/below row centers). Used to keep
@@ -3109,19 +3118,19 @@ export default function BranchMap({
   const gridRowYExtent =
     gridEventPoints.length > 0
       ? (() => {
-          const ys = gridEventPoints.map((p) => timeCoordToY(p.x)).filter(Number.isFinite);
-          if (ys.length === 0) return null;
-          const minC = Math.min(...ys);
-          const maxC = Math.max(...ys);
-          return { minY: minC - gridHalfHForBounds, maxY: maxC + gridHalfHForBounds };
-        })()
+        const ys = gridEventPoints.map((p) => timeCoordToY(p.x)).filter(Number.isFinite);
+        if (ys.length === 0) return null;
+        const minC = Math.min(...ys);
+        const maxC = Math.max(...ys);
+        return { minY: minC - gridHalfHForBounds, maxY: maxC + gridHalfHForBounds };
+      })()
       : null;
 
   const logicalTimelineHeight = gridRowYExtent
     ? Math.max(
-        mainStartY + SVG_LAYOUT_TAIL_Y,
-        gridRowYExtent.maxY - Math.min(0, gridRowYExtent.minY),
-      ) + 2 * svgContentPadding
+      mainStartY + SVG_LAYOUT_TAIL_Y,
+      gridRowYExtent.maxY - Math.min(0, gridRowYExtent.minY),
+    ) + 2 * svgContentPadding
     : mainStartY + SVG_LAYOUT_TAIL_Y + 2 * svgContentPadding;
 
   function projectPoint(x: number, y: number): { x: number; y: number } {
@@ -3398,17 +3407,17 @@ export default function BranchMap({
   }
   const projectedContentBounds = isHorizontal
     ? {
-        minX: logicalTimelineHeight - maxYWorldForBounds,
-        maxX: logicalTimelineHeight - minYWorldForBounds,
-        minY: minXWorldForBounds,
-        maxY: maxXWorldForBounds,
-      }
+      minX: logicalTimelineHeight - maxYWorldForBounds,
+      maxX: logicalTimelineHeight - minYWorldForBounds,
+      minY: minXWorldForBounds,
+      maxY: maxXWorldForBounds,
+    }
     : {
-        minX: minXWorldForBounds,
-        maxX: maxXWorldForBounds,
-        minY: minYWorldForBounds,
-        maxY: maxYWorldForBounds,
-      };
+      minX: minXWorldForBounds,
+      maxX: maxXWorldForBounds,
+      minY: minYWorldForBounds,
+      maxY: maxYWorldForBounds,
+    };
   const contentBBoxW = projectedContentBounds.maxX - projectedContentBounds.minX;
   const contentBBoxH = projectedContentBounds.maxY - projectedContentBounds.minY;
   const graphContentTranslateX =
@@ -3429,17 +3438,17 @@ export default function BranchMap({
   const projectedCommitCenterBounds = hasCommitCenterCanonicalBounds
     ? (isHorizontal
       ? {
-          minX: logicalTimelineHeight - commitCenterCanonicalMaxY,
-          maxX: logicalTimelineHeight - commitCenterCanonicalMinY,
-          minY: commitCenterCanonicalMinX,
-          maxY: commitCenterCanonicalMaxX,
-        }
+        minX: logicalTimelineHeight - commitCenterCanonicalMaxY,
+        maxX: logicalTimelineHeight - commitCenterCanonicalMinY,
+        minY: commitCenterCanonicalMinX,
+        maxY: commitCenterCanonicalMaxX,
+      }
       : {
-          minX: commitCenterCanonicalMinX,
-          maxX: commitCenterCanonicalMaxX,
-          minY: commitCenterCanonicalMinY,
-          maxY: commitCenterCanonicalMaxY,
-        })
+        minX: commitCenterCanonicalMinX,
+        maxX: commitCenterCanonicalMaxX,
+        minY: commitCenterCanonicalMinY,
+        maxY: commitCenterCanonicalMaxY,
+      })
     : null;
   finiteWorldBoundsRef.current = {
     minX: projectedContentBounds.minX + graphContentTranslateX,
@@ -3450,19 +3459,19 @@ export default function BranchMap({
   };
   centerableCommitBoundsRef.current = projectedCommitCenterBounds
     ? {
-        minX: projectedCommitCenterBounds.minX + graphContentTranslateX,
-        maxX: projectedCommitCenterBounds.maxX + graphContentTranslateX,
-        minY: projectedCommitCenterBounds.minY + graphContentTranslateY,
-        maxY: projectedCommitCenterBounds.maxY + graphContentTranslateY,
-        measured: true,
-      }
+      minX: projectedCommitCenterBounds.minX + graphContentTranslateX,
+      maxX: projectedCommitCenterBounds.maxX + graphContentTranslateX,
+      minY: projectedCommitCenterBounds.minY + graphContentTranslateY,
+      maxY: projectedCommitCenterBounds.maxY + graphContentTranslateY,
+      measured: true,
+    }
     : {
-        minX: 0,
-        maxX: 0,
-        minY: 0,
-        maxY: 0,
-        measured: false,
-      };
+      minX: 0,
+      maxX: 0,
+      minY: 0,
+      maxY: 0,
+      measured: false,
+    };
   const centerableCommitBoundsDep = projectedCommitCenterBounds
     ? `${projectedCommitCenterBounds.minX}:${projectedCommitCenterBounds.maxX}:${projectedCommitCenterBounds.minY}:${projectedCommitCenterBounds.maxY}`
     : 'none';
@@ -3735,9 +3744,9 @@ export default function BranchMap({
     };
     const target = checkedOutAnchor
       ? {
-          x: checkedOutAnchor.x + graphContentTranslateX,
-          y: checkedOutAnchor.y + graphContentTranslateY,
-        }
+        x: checkedOutAnchor.x + graphContentTranslateX,
+        y: checkedOutAnchor.y + graphContentTranslateY,
+      }
       : fallbackCenter;
     const signature = [
       Math.round(target.x * 10) / 10,
@@ -3874,9 +3883,9 @@ export default function BranchMap({
   const worldUnitsPerScreenPx = 1 / Math.max(layerCameraScale.x, 0.0001);
   const worldPx = (px: number) => px * worldUnitsPerScreenPx;
   const NODE_FRAME_LABEL_FONT_PX = 12;
-  const NODE_FRAME_LABEL_TOP_GAP_PX = 2;
-  const NODE_FRAME_LABEL_LEFT_INSET_PX = 2;
-  const NODE_FRAME_LABEL_RIGHT_INSET_PX = 4;
+  const NODE_FRAME_LABEL_TOP_GAP_PX = 1;
+  const NODE_FRAME_LABEL_LEFT_INSET_PX = 0;
+  const NODE_FRAME_LABEL_RIGHT_INSET_PX = 0;
   const NODE_FRAME_LABEL_PAIR_GAP_PX = 2;
   const NODE_FRAME_LABEL_COLOR = '#78716c';
   const NODE_FRAME_LABEL_WEIGHT = 400;
@@ -3947,8 +3956,18 @@ export default function BranchMap({
   const holdTimelineForInitialCenter =
     isLoading || (!hasInitialRevealDone && hasTimelineSeedData && timelineRevealPhase !== 'done' && !hasUserMovedCameraRef.current);
 
-  const clumpExpandMs = 360;
-  const clumpExpandEasing = 'cubic-bezier(0.2, 0.8, 0.2, 1)';
+  const clumpExpandMs = 240;
+  const clumpCollapseMs = 200;
+  const clumpRowReleaseBufferMs = 220;
+  const clumpExpandEasing = 'cubic-bezier(0.16, 1, 0.3, 1)';
+  const clumpCollapseEasing = 'cubic-bezier(0.7, 0, 0.84, 0)';
+  const clumpPhaseDurationMs = (phase: ExpandedClumpState['phase']): number =>
+    phase === 'collapsing' ? clumpCollapseMs : clumpExpandMs;
+  const clumpPhaseEasing = (phase: ExpandedClumpState['phase'], progress: number): number => {
+    if (phase === 'collapsing') return easeInCubic(progress);
+    if (phase === 'expanding') return easeOutCubic(progress);
+    return progress;
+  };
   function resolveClumpPhase(expandedState?: ExpandedClumpState): {
     isExpanded: boolean;
     phase: ExpandedClumpState['phase'];
@@ -3957,12 +3976,17 @@ export default function BranchMap({
     const isExpanded = expandedState?.isExpanded ?? false;
     const phase = expandedState?.phase ?? 'collapsed';
     const phaseStartedAtMs = expandedState?.phaseStartedAt ?? Date.now();
+    const phaseDurationMs = clumpPhaseDurationMs(phase);
     const phaseProgress = phase === 'collapsed'
       ? 0
       : phase === 'expanded'
         ? 1
-        : clamp01((Date.now() - phaseStartedAtMs) / clumpExpandMs);
-    const phaseEased = phaseProgress <= 0 ? 0 : phaseProgress >= 1 ? 1 : easeInOutCubic(phaseProgress);
+        : clamp01((Date.now() - phaseStartedAtMs) / phaseDurationMs);
+    const phaseEased = phaseProgress <= 0
+      ? 0
+      : phaseProgress >= 1
+        ? 1
+        : clumpPhaseEasing(phase, phaseProgress);
     return { isExpanded, phase, phaseEased };
   }
   function resolveClusterMotion(
@@ -3997,7 +4021,7 @@ export default function BranchMap({
     entry: { x: number; y: number },
     phase: ExpandedClumpState['phase'],
     phaseEased: number,
-  ): { x: number; y: number; opacity: number } {
+  ): { x: number; y: number; opacity: number; scale: number } {
     const to = { x: entry.x, y: entry.y };
     const from = { x: anchor.x, y: anchor.y };
     const at = phase === 'collapsing'
@@ -4008,13 +4032,20 @@ export default function BranchMap({
           ? from
           : to;
     const opacity = phase === 'collapsing'
-      ? 1 - 0.3 * phaseEased
+      ? 1 - phaseEased
       : phase === 'expanding'
-        ? 0.7 + 0.3 * phaseEased
+        ? phaseEased
         : phase === 'collapsed'
-          ? 0.7
+          ? 0
           : 1;
-    return { x: at.x, y: at.y, opacity };
+    const scale = phase === 'collapsing'
+      ? 1 - 0.04 * phaseEased
+      : phase === 'expanding'
+        ? 0.96 + 0.04 * phaseEased
+        : phase === 'collapsed'
+          ? 0.96
+          : 1;
+    return { x: at.x, y: at.y, opacity, scale };
   }
   const getNodeStrokeColor = (
     nodeKey: string,
@@ -4251,7 +4282,7 @@ export default function BranchMap({
       const logicalOffset = isHorizontal ? rectH / 2 : rectW / 2;
       // Depending on if the child is to the right/top or left/bottom of the parent
       const direction = lanePosX > startX ? 1 : -1;
-      
+
       // projectPoint mappings:
       // Vertical: PhysicalX = LogicalX
       // Horizontal: PhysicalY = ... - LogicalX
@@ -4439,8 +4470,8 @@ export default function BranchMap({
       : undefined;
     const localSegmentStartY =
       !allBranchCommitsAreLocal &&
-      firstLocalCommitY != null &&
-      previousCommittedIndex != null
+        firstLocalCommitY != null &&
+        previousCommittedIndex != null
         ? (
           (firstLocalCommitY + (commitDots[previousCommittedIndex]?.y ?? firstLocalCommitY)) / 2
         )
@@ -4559,10 +4590,13 @@ export default function BranchMap({
     return layout;
   }
 
-  const clumpAnimStyle: React.CSSProperties = {
-    transition: `transform ${clumpExpandMs}ms ${clumpExpandEasing}, opacity ${clumpExpandMs}ms ${clumpExpandEasing}`,
-    willChange: 'transform, opacity',
-    transformOrigin: 'center',
+  const clumpAnimStyleForPhase = (phase: ExpandedClumpState['phase']): React.CSSProperties => {
+    const phaseDurationMs = clumpPhaseDurationMs(phase);
+    const phaseEasing = phase === 'collapsing' ? clumpCollapseEasing : clumpExpandEasing;
+    return {
+      transition: `transform ${phaseDurationMs}ms ${phaseEasing}, opacity ${phaseDurationMs}ms ${phaseEasing}`,
+      willChange: 'transform, opacity',
+    };
   };
   const hoveredNodeBranchLineage = (() => {
     if (!hoveredNodeBranchName) return new Set<string>();
@@ -4616,12 +4650,19 @@ export default function BranchMap({
     }
 
     if (isExpanded) {
-      // Collapse: keep visual state long enough for transition effects, but
-      // row reservation now drops immediately when phase becomes "collapsing".
+      // Collapse in two steps:
+      // 1) animate members back into the clump
+      // 2) briefly hold row reservation before releasing/compacting rows
       const collapseStartedAt = Date.now();
+      const rowReleaseAt = collapseStartedAt + clumpCollapseMs + clumpRowReleaseBufferMs;
       setExpandedClumps((prev) => {
         const next = new Map(prev);
-        next.set(clumpKey, { isExpanded: true, phase: 'collapsing', phaseStartedAt: collapseStartedAt });
+        next.set(clumpKey, {
+          isExpanded: true,
+          phase: 'collapsing',
+          phaseStartedAt: collapseStartedAt,
+          rowReleaseAt,
+        });
         return next;
       });
 
@@ -4629,20 +4670,35 @@ export default function BranchMap({
       const collapseTick = () => {
         const elapsed = Date.now() - collapseStartedAt;
         setClumpAnimationTick((v) => v + 1);
-        if (elapsed < clumpExpandMs) requestAnimationFrame(collapseTick);
+        if (elapsed < clumpCollapseMs) requestAnimationFrame(collapseTick);
       };
       requestAnimationFrame(collapseTick);
 
-      const cleanupTimer = window.setTimeout(() => {
+      const collapseFinalizeTimer = window.setTimeout(() => {
         setExpandedClumps((prev) => {
           const next = new Map(prev);
-          next.delete(clumpKey);
+          const current = next.get(clumpKey);
+          if (!current) return prev;
+          next.set(clumpKey, {
+            isExpanded: false,
+            phase: 'collapsed',
+            phaseStartedAt: collapseStartedAt + clumpCollapseMs,
+            rowReleaseAt,
+          });
           return next;
         });
-        clumpCleanupTimersRef.current.delete(clumpKey);
-      }, clumpExpandMs);
+        const releaseTimer = window.setTimeout(() => {
+          setExpandedClumps((prev) => {
+            const next = new Map(prev);
+            next.delete(clumpKey);
+            return next;
+          });
+          clumpCleanupTimersRef.current.delete(clumpKey);
+        }, clumpRowReleaseBufferMs);
+        clumpCleanupTimersRef.current.set(clumpKey, releaseTimer);
+      }, clumpCollapseMs);
 
-      clumpCleanupTimersRef.current.set(clumpKey, cleanupTimer);
+      clumpCleanupTimersRef.current.set(clumpKey, collapseFinalizeTimer);
       return;
     }
 
@@ -4653,6 +4709,7 @@ export default function BranchMap({
         isExpanded: true,
         phase: 'expanding',
         phaseStartedAt: expandStartedAt,
+        rowReleaseAt: undefined,
       });
       return next;
     });
@@ -4674,6 +4731,7 @@ export default function BranchMap({
           isExpanded: true,
           phase: 'expanded',
           phaseStartedAt: expandStartedAt,
+          rowReleaseAt: undefined,
         });
         return next;
       });
@@ -4683,20 +4741,20 @@ export default function BranchMap({
     clumpCleanupTimersRef.current.set(clumpKey, finalizeTimer);
   };
 
-type MainDirectClusterLayout = {
-  cluster: MarkerCluster<DirectCommit>;
-  clusterKey: string;
-  count: number;
-  first: DirectCommit;
-  last: DirectCommit;
-  memberKeys: string[];
-  preferredAnchorX: number;
-  preferredAnchorY: number;
-  clusterHasMainTip: boolean;
-  clusterHasCheckedOutHead: boolean;
-  clusterHasSelectedCommit: boolean;
-  clusterHasUncommitted: boolean;
-};
+  type MainDirectClusterLayout = {
+    cluster: MarkerCluster<DirectCommit>;
+    clusterKey: string;
+    count: number;
+    first: DirectCommit;
+    last: DirectCommit;
+    memberKeys: string[];
+    preferredAnchorX: number;
+    preferredAnchorY: number;
+    clusterHasMainTip: boolean;
+    clusterHasCheckedOutHead: boolean;
+    clusterHasSelectedCommit: boolean;
+    clusterHasUncommitted: boolean;
+  };
   const mainLayout = getBranchRenderLayout(defaultBranchRenderBranch);
   const latestMainCommitSha = sortedDirectCommits[sortedDirectCommits.length - 1]?.fullSha;
   const selectedCommitShaRawSet = new Set(selectedCommitShas);
@@ -5147,561 +5205,302 @@ type MainDirectClusterLayout = {
             willChange: 'transform',
           }}
         >
-        <svg
-          ref={svgRef}
-          width={svgWidth}
-          height={svgHeight}
-          className={[
-            'branch-map-svg',
-            drawReady && ENABLE_TIMELINE_INTRO_ANIMATIONS ? 'timeline-ready' : '',
-            animationsLocked ? 'timeline-static' : '',
-          ].filter(Boolean).join(' ')}
-          style={{
-            '--camera-scale': String(layerCameraScale.x),
-            minWidth: svgWidth,
-            display: 'block',
-            position: 'absolute',
-            left: graphOffsetX,
-            top: graphOffsetY,
-            overflow: 'visible',
-          } as React.CSSProperties}
-        >
-          <defs>
-            <filter id="tick-shadow" x="-50%" y="-50%" width="200%" height="200%">
-              <feDropShadow dx="0" dy="2" stdDeviation="6" floodColor="#000" floodOpacity="0.08" />
-            </filter>
-          </defs>
-
-          <g
-            ref={zoomLayerRef}
-            transform={`scale(${layerCameraScale.x} ${layerCameraScale.y})`}
+          <svg
+            ref={svgRef}
+            width={svgWidth}
+            height={svgHeight}
+            className={[
+              'branch-map-svg',
+              drawReady && ENABLE_TIMELINE_INTRO_ANIMATIONS ? 'timeline-ready' : '',
+              animationsLocked ? 'timeline-static' : '',
+            ].filter(Boolean).join(' ')}
             style={{
-              opacity: timelineCanvasVisible ? 1 : 0,
-              visibility: timelineCanvasVisible ? 'visible' : 'hidden',
-              transition: `opacity ${INITIAL_REVEAL_FADE_MS}ms cubic-bezier(0.22, 1, 0.36, 1)`,
-              pointerEvents: holdTimelineForInitialCenter ? 'none' : 'auto',
-            }}
+              '--camera-scale': String(layerCameraScale.x),
+              minWidth: svgWidth,
+              display: 'block',
+              position: 'absolute',
+              left: graphOffsetX,
+              top: graphOffsetY,
+              overflow: 'visible',
+            } as React.CSSProperties}
           >
-            <rect
-              x={0}
-              y={0}
-              width={svgWidth}
-              height={svgHeight}
-              fill={SVG_AREA_BG}
-              style={{ pointerEvents: 'none' }}
-            />
-          <g transform={`translate(${graphContentTranslateX} ${graphContentTranslateY})`}>
-          <g
-            ref={contentLayerRef}
-          >
+            <defs>
+              <filter id="tick-shadow" x="-50%" y="-50%" width="200%" height="200%">
+                <feDropShadow dx="0" dy="2" stdDeviation="6" floodColor="#000" floodOpacity="0.08" />
+              </filter>
+            </defs>
 
-          {/* ── Grid background (table-like lanes) ── */}
-          {(showGuides || showRowDebugOverlay) && (
-            <g style={{ pointerEvents: 'none' }}>
-              {(() => {
-                const rawRowInfos = gridEventPoints
-                  .map((point, index) => {
-                    const entityUsage = rowDebugEntityUsageByIndex.get(index) ?? {
-                      mainDirect: 0,
-                      mainMerge: 0,
-                      branchSha: 0,
-                      branchSlot: 0,
-                    };
-                    const visibleUsage = rowDebugVisibleUsageByIndex.get(index) ?? {
-                      main: 0,
-                      branch: 0,
-                      prompt: 0,
-                      markerKeys: new Set<string>(),
-                    };
-                    const entityTotal =
-                      entityUsage.mainDirect + entityUsage.mainMerge + entityUsage.branchSha + entityUsage.branchSlot;
-                    const visibleTotal = visibleUsage.main + visibleUsage.branch + visibleUsage.prompt;
-                    const rowSources = gridRowSources.get(index) ?? [];
-                    return {
-                      index,
-                      rawTime: point.t,
-                      centerY: timeCoordToY(point.x),
-                      entityUsage,
-                      visibleUsage,
-                      entityTotal,
-                      visibleTotal,
-                      rowSources,
-                    };
-                  })
-                  .filter((info) => Number.isFinite(info.centerY));
-                const rowBandsByIndex = new Map<number, { topY: number; bottomY: number }>();
-                if (rawRowInfos.length > 0) {
-                  for (let i = 0; i < rawRowInfos.length; i += 1) {
-                    const info = rawRowInfos[i];
-                    const prevCenter = rawRowInfos[i - 1]?.centerY;
-                    const nextCenter = rawRowInfos[i + 1]?.centerY;
-                    const defaultHalf =
-                      nextCenter != null
-                        ? Math.abs(info.centerY - nextCenter) / 2
-                        : prevCenter != null
-                          ? Math.abs(prevCenter - info.centerY) / 2
-                          : GRID_EVENT_GAP / 2;
-                    const boundA = prevCenter != null ? (prevCenter + info.centerY) / 2 : info.centerY + defaultHalf;
-                    const boundB = nextCenter != null ? (info.centerY + nextCenter) / 2 : info.centerY - defaultHalf;
-                    rowBandsByIndex.set(info.index, {
-                      topY: Math.min(boundA, boundB),
-                      bottomY: Math.max(boundA, boundB),
-                    });
-                  }
-                }
-                const rowStep = rawRowInfos.length > 320 ? Math.ceil(rawRowInfos.length / 260) : 1;
-                const rowInfos = rawRowInfos.filter((_, idx) => idx % rowStep === 0);
-                const nodeSizeWorld = (() => {
-                  const rect = nodeRectSize(2);
-                  // Align grid to node outer bounds (edges), not its center.
-                  return {
-                    halfHeight: Math.max(4, rect.height / 2),
-                    halfWidth: Math.max(4, rect.width / 2),
-                  };
-                })();
-                // Orientation projection swaps axes; adjust which half-size applies to each logical axis.
-                // Horizontal mode maps logical Y → screen X (use width) and logical X → screen Y (use height).
-                const halfAlongLogicalY = isHorizontal ? nodeSizeWorld.halfWidth : nodeSizeWorld.halfHeight;
-                const halfAlongLogicalX = isHorizontal ? nodeSizeWorld.halfHeight : nodeSizeWorld.halfWidth;
+            <g
+              ref={zoomLayerRef}
+              transform={`scale(${layerCameraScale.x} ${layerCameraScale.y})`}
+              style={{
+                opacity: timelineCanvasVisible ? 1 : 0,
+                visibility: timelineCanvasVisible ? 'visible' : 'hidden',
+                transition: `opacity ${INITIAL_REVEAL_FADE_MS}ms cubic-bezier(0.22, 1, 0.36, 1)`,
+                pointerEvents: holdTimelineForInitialCenter ? 'none' : 'auto',
+              }}
+            >
+              <rect
+                x={0}
+                y={0}
+                width={svgWidth}
+                height={svgHeight}
+                fill={SVG_AREA_BG}
+                style={{ pointerEvents: 'none' }}
+              />
+              <g transform={`translate(${graphContentTranslateX} ${graphContentTranslateY})`}>
+                <g
+                  ref={contentLayerRef}
+                >
 
-                // Vertical guides: one per lane (main + branches).
-                const laneXs = Array.from(
-                  new Set<number>([
-                    mainX,
-                    ...Array.from(laneXByBranch.values()).filter((x) => Number.isFinite(x)),
-                  ])
-                ).sort((a, b) => a - b);
-
-                const leftX = gridClipBounds?.leftX ?? Math.max(0, timelineMinX - CLIP_MARGIN_LEFT);
-                const rightX = gridClipBounds?.rightX ?? Math.min(logicalSvgWidth, maxBranchVisualEndX + CLIP_MARGIN_RIGHT);
-                const topY = gridClipBounds?.topY ?? Math.max(0, mainEndY - CLIP_MARGIN_TOP);
-                const bottomY = gridClipBounds?.bottomY ?? Math.min(logicalSvgHeight, mainStartY + CLIP_MARGIN_BOTTOM);
-                const emptyRows = rawRowInfos.filter((info) => info.visibleTotal === 0);
-                const sharedRows = rawRowInfos.filter((info) => info.visibleTotal > 1);
-                const usedRowCount = rawRowInfos.length - emptyRows.length;
-                const summaryAnchor = projectPoint(leftX + 6, topY + 16);
-
-                return (
-                  <>
-                    {showGuides && (
-                      <>
-                        {/* Row lines */}
-                        {rowInfos.flatMap((info, idx) => {
-                          const centerY = info.centerY;
-                          const topYLine = centerY - halfAlongLogicalY;
-                          const bottomYLine = centerY + halfAlongLogicalY;
-                          const strokeOpacity = 0.33;
-                          return [
-                            <path
-                              key={`grid-row-top-${idx}`}
-                              d={`M ${pathCoord(leftX, topYLine)} L ${pathCoord(rightX, topYLine)}`}
-                              fill="none"
-                              stroke="#E0E0E0"
-                              strokeOpacity={strokeOpacity}
-                              strokeWidth={1}
-                            />,
-                            <path
-                              key={`grid-row-bottom-${idx}`}
-                              d={`M ${pathCoord(leftX, bottomYLine)} L ${pathCoord(rightX, bottomYLine)}`}
-                              fill="none"
-                              stroke="#E0E0E0"
-                              strokeOpacity={strokeOpacity}
-                              strokeWidth={1}
-                            />,
-                          ];
-                        })}
-
-                        {/* Column (lane) lines */}
-                        {laneXs.flatMap((centerX, idx) => {
-                          const leftXLine = centerX - halfAlongLogicalX;
-                          const rightXLine = centerX + halfAlongLogicalX;
-                          return [
-                            <path
-                              key={`grid-col-left-${idx}`}
-                              className="non-scaling-stroke"
-                              d={`M ${pathCoord(leftXLine, topY)} L ${pathCoord(leftXLine, bottomY)}`}
-                              fill="none"
-                              stroke="#E0E0E0"
-                              strokeOpacity={0.26}
-                              strokeWidth={1}
-                            />,
-                            <path
-                              key={`grid-col-right-${idx}`}
-                              className="non-scaling-stroke"
-                              d={`M ${pathCoord(rightXLine, topY)} L ${pathCoord(rightXLine, bottomY)}`}
-                              fill="none"
-                              stroke="#E0E0E0"
-                              strokeOpacity={0.26}
-                              strokeWidth={1}
-                            />,
-                          ];
-                        })}
-                      </>
-                    )}
-
-                    {showRowDebugOverlay && (
-                      <g>
-                        {emptyRows.map((info) => {
-                          const band = rowBandsByIndex.get(info.index);
-                          if (!band) return null;
-                          const topYLine = band.topY;
-                          const bottomYLine = band.bottomY;
-                          const labelPoint = projectPoint(leftX + 6, info.centerY - 2);
-                          return (
-                            <g key={`debug-empty-row-${info.index}`}>
-                              <path
-                                d={`M ${pathCoord(leftX, topYLine)} L ${pathCoord(rightX, topYLine)} L ${pathCoord(rightX, bottomYLine)} L ${pathCoord(leftX, bottomYLine)} Z`}
-                                fill="#ef4444"
-                                fillOpacity={0.12}
-                                stroke="#dc2626"
-                                strokeOpacity={0.65}
-                                strokeWidth={0.8}
-                              />
-                              <text
-                                x={labelPoint.x}
-                                y={labelPoint.y}
-                                fill="#991b1b"
-                                fontSize={10}
-                                fontWeight={600}
-                                pointerEvents="none"
-                              >
-                                {`empty row ${info.index}${info.rowSources.length > 0 ? ` · ${info.rowSources.slice(0, 2).join(', ')}` : ''}`}
-                              </text>
-                            </g>
-                          );
-                        })}
-                        {sharedRows.map((info) => {
-                          const band = rowBandsByIndex.get(info.index);
-                          if (!band) return null;
-                          const topYLine = band.topY;
-                          const bottomYLine = band.bottomY;
-                          const labelPoint = projectPoint(leftX + 120, info.centerY - 2);
-                          return (
-                            <g key={`debug-shared-row-${info.index}`}>
-                              <path
-                                d={`M ${pathCoord(leftX, topYLine)} L ${pathCoord(rightX, topYLine)} L ${pathCoord(rightX, bottomYLine)} L ${pathCoord(leftX, bottomYLine)} Z`}
-                                fill="#f59e0b"
-                                fillOpacity={0.1}
-                                stroke="#b45309"
-                                strokeOpacity={0.5}
-                                strokeWidth={0.7}
-                              />
-                              <text
-                                x={labelPoint.x}
-                                y={labelPoint.y}
-                                fill="#78350f"
-                                fontSize={10}
-                                fontWeight={600}
-                                pointerEvents="none"
-                              >
-                                {`shared row ${info.index} visible x${info.visibleTotal} entity x${info.entityTotal}`}
-                              </text>
-                            </g>
-                          );
-                        })}
-                        <text
-                          x={summaryAnchor.x}
-                          y={summaryAnchor.y}
-                          fill="#7f1d1d"
-                          fontSize={10}
-                          fontWeight={600}
-                          pointerEvents="none"
-                        >
-                          {`row debug: total ${rawRowInfos.length}, used ${usedRowCount}, empty ${emptyRows.length}, shared ${sharedRows.length}`}
-                        </text>
-                      </g>
-                    )}
-                  </>
-                );
-              })()}
-            </g>
-          )}
-
-          {/* ── Main timeline + merge nodes ── */}
-          <g
-            style={{ opacity: mainTimelineOpacity, transition: 'opacity 0.15s' }}
-            onMouseEnter={() => setHoveredBranch(defaultBranch)}
-            onMouseLeave={() => clearMainBranchHover()}
-          >
-            {!mainIsUnifiedRender && (
-              <>
-                <path
-                  d={`M ${pathCoord(mainX, mainStartY)} L ${pathCoord(mainX, mainActiveEndY)}`}
-                  fill="none"
-                  stroke="transparent"
-                  strokeWidth={branchHitStrokeWidth}
-                  style={{ pointerEvents: branchLaneHitPointerEvents }}
-                />
-                {/* Use <path> not <line>: pathLength on <line> is SVG 2 only and unreliable in WKWebView */}
-                <path
-                  d={`M ${pathCoord(mainX, mainStartY)} L ${pathCoord(mainX, mainActiveEndY)}`}
-                  fill="none"
-                  stroke={
-                    selectedBranchNameSet.has(defaultBranch)
-                      ? USER_SELECTION_STROKE
-                      : (hoveredBranch === defaultBranch || hoveredNodeBranchName === defaultBranch)
-                        ? CANVAS_NEUTRAL_GRAY_HOVER
-                        : (
-                          checkedOutIndicatorLocal && Math.abs(checkedOutIndicatorLocal.x - mainX) < 0.5
-                            ? CHECKED_OUT_SELECTION_STROKE
-                            : CANVAS_NEUTRAL_GRAY
-                        )
-                  }
-                  strokeWidth={1.5}
-                  pathLength={1}
-                  className={drawPathMainClass}
-                  style={{
-                    '--delay': `${MAIN_DRAW_MS}ms`,
-                    transition: 'stroke 0.12s ease',
-                  } as React.CSSProperties}
-                />
-
-                <g className={fadeInInfoClass} style={{ '--delay': `${MAIN_DRAW_MS + INFO_OFFSET}ms` } as React.CSSProperties}>
-              {/* Direct commits */}
-              {mainDirectClusters.map((clusterLayout) => {
-                  const {
-                    cluster,
-                    count,
-                    first,
-                    last,
-                    clusterKey,
-                    clusterHasMainTip,
-                    clusterHasCheckedOutHead,
-                    clusterHasSelectedCommit,
-                    memberKeys,
-                    preferredAnchorX,
-                    preferredAnchorY,
-                  } = clusterLayout;
-                  const countLabel = stackCountLabel(count);
-                  const motion = resolveClusterMotion(
-                    clusterKey,
-                    { x: preferredAnchorX, y: preferredAnchorY },
-                    memberKeys,
-                    count > 1,
-                  );
-                  const anchorX = motion.anchorX;
-                  const anchorY = motion.anchorY;
-
-                  if (count === 1) {
-                    const c = last;
-                    const isUncommittedCommit = c.fullSha === 'WORKING_TREE';
-                    const label = truncatePrompt(c.message, COMMIT_TOOLTIP_PREVIEW_MAX);
-                    const rectSize = commitRectSize(scaledNodeSize);
-                    return (
-                      <rect
-                        key={clusterKey}
-                        className="branch-map-commit-rect"
-                        x={anchorX - rectSize.width / 2 + CANVAS_NODE_STROKE_INSET}
-                        y={anchorY - rectSize.height / 2 + CANVAS_NODE_STROKE_INSET}
-                        width={rectSize.width - CANVAS_NODE_STROKE_WIDTH}
-                        height={rectSize.height - CANVAS_NODE_STROKE_WIDTH}
-                        data-base-rx={rectSize.radius}
-                        rx={rectSize.radius / Math.max(layerCameraScale.x, 0.0001)}
-                        style={{ cursor: 'pointer' }}
-                        fill={CANVAS_NODE_FILL}
-                        stroke={getNodeStrokeColor(
-                          clusterKey,
-                          isUncommittedCommit ? CHECKED_OUT_SELECTION_STROKE : CANVAS_NODE_STROKE,
-                          clusterHasCheckedOutHead,
-                          clusterHasSelectedCommit || (clusterHasMainTip && selectedBranchNameSet.has(defaultBranch)),
-                        )}
-                        strokeWidth={CANVAS_NODE_STROKE_WIDTH}
-                        strokeDasharray={isUncommittedCommit ? '3 3' : undefined}
-                        strokeLinecap={isUncommittedCommit ? 'round' : undefined}
-                        strokeLinejoin={isUncommittedCommit ? 'round' : undefined}
-                        onClick={(event) =>
-                          handleCommitNodeClick(
-                            event,
-                            c.fullSha,
-                            clusterHasMainTip ? defaultBranch : undefined,
-                          )
+                  {/* ── Grid background (table-like lanes) ── */}
+                  {showRowDebugOverlay && (
+                    <g style={{ pointerEvents: 'none' }}>
+                      {(() => {
+                        const rawRowInfos = gridEventPoints
+                          .map((point, index) => {
+                            const entityUsage = rowDebugEntityUsageByIndex.get(index) ?? {
+                              mainDirect: 0,
+                              mainMerge: 0,
+                              branchSha: 0,
+                              branchSlot: 0,
+                            };
+                            const visibleUsage = rowDebugVisibleUsageByIndex.get(index) ?? {
+                              main: 0,
+                              branch: 0,
+                              prompt: 0,
+                              markerKeys: new Set<string>(),
+                            };
+                            const entityTotal =
+                              entityUsage.mainDirect + entityUsage.mainMerge + entityUsage.branchSha + entityUsage.branchSlot;
+                            const visibleTotal = visibleUsage.main + visibleUsage.branch + visibleUsage.prompt;
+                            const rowSources = gridRowSources.get(index) ?? [];
+                            return {
+                              index,
+                              rawTime: point.t,
+                              centerY: timeCoordToY(point.x),
+                              entityUsage,
+                              visibleUsage,
+                              entityTotal,
+                              visibleTotal,
+                              rowSources,
+                            };
+                          })
+                          .filter((info) => Number.isFinite(info.centerY));
+                        const rowBandsByIndex = new Map<number, { topY: number; bottomY: number }>();
+                        if (rawRowInfos.length > 0) {
+                          for (let i = 0; i < rawRowInfos.length; i += 1) {
+                            const info = rawRowInfos[i];
+                            const prevCenter = rawRowInfos[i - 1]?.centerY;
+                            const nextCenter = rawRowInfos[i + 1]?.centerY;
+                            const defaultHalf =
+                              nextCenter != null
+                                ? Math.abs(info.centerY - nextCenter) / 2
+                                : prevCenter != null
+                                  ? Math.abs(prevCenter - info.centerY) / 2
+                                  : GRID_EVENT_GAP / 2;
+                            const boundA = prevCenter != null ? (prevCenter + info.centerY) / 2 : info.centerY + defaultHalf;
+                            const boundB = nextCenter != null ? (info.centerY + nextCenter) / 2 : info.centerY - defaultHalf;
+                            rowBandsByIndex.set(info.index, {
+                              topY: Math.min(boundA, boundB),
+                              bottomY: Math.max(boundA, boundB),
+                            });
+                          }
                         }
-                        onDoubleClick={(event) => event.stopPropagation()}
-                        onMouseEnter={() => {
-                          setHoveredBranch(defaultBranch);
-                          handleNodeHoverEnter(clusterKey, defaultBranch);
-                          setTooltip({
-                            x: anchorX,
-                            y: anchorY,
-                            lines: [
-                              isUncommittedCommit ? 'Uncommited Changes' : `Commit ${c.sha}`,
-                              label,
-                              `@${c.author} · ${fmtTooltipDate(c.date)}`,
-                            ],
-                            avatarFallback: c.author?.charAt(0).toUpperCase() || '?',
-                          });
-                        }}
-                        onMouseLeave={() => {
-                          handleNodeHoverLeave();
-                          clearMainBranchHover();
-                          setTooltip(null);
-                        }}
-                      />
-                    );
-                  }
+                        const leftX = gridClipBounds?.leftX ?? Math.max(0, timelineMinX - CLIP_MARGIN_LEFT);
+                        const rightX = gridClipBounds?.rightX ?? Math.min(logicalSvgWidth, maxBranchVisualEndX + CLIP_MARGIN_RIGHT);
+                        const topY = gridClipBounds?.topY ?? Math.max(0, mainEndY - CLIP_MARGIN_TOP);
+                        const emptyRows = rawRowInfos.filter((info) => info.visibleTotal === 0);
+                        const sharedRows = rawRowInfos.filter((info) => info.visibleTotal > 1);
+                        const usedRowCount = rawRowInfos.length - emptyRows.length;
+                        const summaryAnchor = projectPoint(leftX + 6, topY + 16);
 
-                  const isExpanded = motion.isExpanded;
-                  const phase = motion.phase;
-                  const phaseEased = motion.phaseEased;
-                  const rectSize = nodeRectSize(count);
-                  const localRect = commitRectSize(scaledNodeSize, 0);
-
-                  const firstTime = new Date(first.date).getTime();
-                  const lastTime = new Date(last.date).getTime();
-                  const rangeLine = firstTime === lastTime
-                    ? fmtTooltipDate(last.date)
-                    : `${fmtTooltipDate(first.date)} → ${fmtTooltipDate(last.date)}`;
-                  const latestCommitMessage = last.message
-                    ? truncatePrompt(last.message, COMMIT_CLUSTER_PREVIEW_MAX)
-                    : 'on main';
-                  // Main-node visuals are authored in the dedicated overlay to keep branch
-                  // connectors behind them; keep this base layer for interaction only.
-                  const renderCollapsedVisualInBase = false;
-
-                  return (
-                    <g key={clusterKey}>
-                      {/* Collapsed: draw one clump node. Expanded: animate members out. */}
-                      {!isExpanded && renderCollapsedVisualInBase && (
-                        <g style={{ pointerEvents: 'none' }}>
-                          <rect
-                            className="branch-map-commit-rect"
-                            x={anchorX - rectSize.width / 2 + CANVAS_NODE_STROKE_INSET}
-                            y={anchorY - rectSize.height / 2 + CANVAS_NODE_STROKE_INSET}
-                            width={rectSize.width - CANVAS_NODE_STROKE_WIDTH}
-                            height={rectSize.height - CANVAS_NODE_STROKE_WIDTH}
-                            data-base-rx={rectSize.radius}
-                            rx={rectSize.radius / Math.max(layerCameraScale.x, 0.0001)}
-                            fill={CANVAS_NODE_FILL}
-                            stroke={getNodeStrokeColor(
-                              clusterKey,
-                              CANVAS_NODE_STROKE,
-                              clusterHasCheckedOutHead,
-                              clusterHasSelectedCommit || (clusterHasMainTip && selectedBranchNameSet.has(defaultBranch)),
-                            )}
-                            strokeWidth={CANVAS_NODE_STROKE_WIDTH}
-                          />
-                          <text
-                            x={anchorX + rectSize.width / 2 - nodeFrameLabelRightInsetX}
-                            y={anchorY - rectSize.height / 2 - nodeFrameLabelGap}
-                            textAnchor="end"
-                            fontSize={nodeFrameLabelFontSize}
-                            fill={NODE_FRAME_LABEL_COLOR}
-                            fontWeight={NODE_FRAME_LABEL_WEIGHT}
-                            pointerEvents="none"
-                          >
-                            {countLabel}
-                          </text>
-                        </g>
-                      )}
-
-                      {/* Collapsed-only overlay hit target (on top) so clicks never fall through. */}
-                      {!isExpanded && (() => {
-                        const pad = worldPx(6);
-                        const hit = collapsedClumpHitRect(
-                          anchorX,
-                          anchorY,
-                          rectSize,
-                          pad
-                        );
                         return (
-                          <rect
-                            x={hit.x}
-                            y={hit.y}
-                            width={hit.width}
-                            height={hit.height}
-                            fill="transparent"
-                            style={{ cursor: 'pointer' }}
-                            onPointerDown={(e) => { e.preventDefault(); e.stopPropagation(); }}
-                            onMouseDown={(e) => { e.preventDefault(); e.stopPropagation(); }}
-                            onClick={(e) => {
-                              e.preventDefault();
-                              e.stopPropagation();
-                              toggleClumpExpanded(clusterKey);
-                            }}
-                            onDoubleClick={(event) => {
-                              event.preventDefault();
-                              event.stopPropagation();
-                            }}
-                            onMouseEnter={() => {
-                              setHoveredBranch(defaultBranch);
-                              handleNodeHoverEnter(clusterKey, defaultBranch);
-                              setTooltip({
-                                x: anchorX,
-                                y: anchorY,
-                                lines: [`${count} commits`, latestCommitMessage, rangeLine],
-                                avatarFallback: last.author?.charAt(0).toUpperCase() || '?',
-                              });
-                            }}
-                            onMouseLeave={() => {
-                              handleNodeHoverLeave();
-                              clearMainBranchHover();
-                              setTooltip(null);
-                            }}
-                          />
+                          <>
+                            {showRowDebugOverlay && (
+                              <g>
+                                {emptyRows.map((info) => {
+                                  const band = rowBandsByIndex.get(info.index);
+                                  if (!band) return null;
+                                  const topYLine = band.topY;
+                                  const bottomYLine = band.bottomY;
+                                  const labelPoint = projectPoint(leftX + 6, info.centerY - 2);
+                                  return (
+                                    <g key={`debug-empty-row-${info.index}`}>
+                                      <path
+                                        d={`M ${pathCoord(leftX, topYLine)} L ${pathCoord(rightX, topYLine)} L ${pathCoord(rightX, bottomYLine)} L ${pathCoord(leftX, bottomYLine)} Z`}
+                                        fill="#ef4444"
+                                        fillOpacity={0.12}
+                                        stroke="#dc2626"
+                                        strokeOpacity={0.65}
+                                        strokeWidth={0.8}
+                                      />
+                                      <text
+                                        x={labelPoint.x}
+                                        y={labelPoint.y}
+                                        fill="#991b1b"
+                                        fontSize={10}
+                                        fontWeight={600}
+                                        pointerEvents="none"
+                                      >
+                                        {`empty row ${info.index}${info.rowSources.length > 0 ? ` · ${info.rowSources.slice(0, 2).join(', ')}` : ''}`}
+                                      </text>
+                                    </g>
+                                  );
+                                })}
+                                {sharedRows.map((info) => {
+                                  const band = rowBandsByIndex.get(info.index);
+                                  if (!band) return null;
+                                  const topYLine = band.topY;
+                                  const bottomYLine = band.bottomY;
+                                  const labelPoint = projectPoint(leftX + 120, info.centerY - 2);
+                                  return (
+                                    <g key={`debug-shared-row-${info.index}`}>
+                                      <path
+                                        d={`M ${pathCoord(leftX, topYLine)} L ${pathCoord(rightX, topYLine)} L ${pathCoord(rightX, bottomYLine)} L ${pathCoord(leftX, bottomYLine)} Z`}
+                                        fill="#f59e0b"
+                                        fillOpacity={0.1}
+                                        stroke="#b45309"
+                                        strokeOpacity={0.5}
+                                        strokeWidth={0.7}
+                                      />
+                                      <text
+                                        x={labelPoint.x}
+                                        y={labelPoint.y}
+                                        fill="#78350f"
+                                        fontSize={10}
+                                        fontWeight={600}
+                                        pointerEvents="none"
+                                      >
+                                        {`shared row ${info.index} visible x${info.visibleTotal} entity x${info.entityTotal}`}
+                                      </text>
+                                    </g>
+                                  );
+                                })}
+                                <text
+                                  x={summaryAnchor.x}
+                                  y={summaryAnchor.y}
+                                  fill="#7f1d1d"
+                                  fontSize={10}
+                                  fontWeight={600}
+                                  pointerEvents="none"
+                                >
+                                  {`row debug: total ${rawRowInfos.length}, used ${usedRowCount}, empty ${emptyRows.length}, shared ${sharedRows.length}`}
+                                </text>
+                              </g>
+                            )}
+                          </>
                         );
                       })()}
+                    </g>
+                  )}
 
-                      {isExpanded && (
-                        <g>
-                          {cluster.entries.map((entry) => {
-                            const c = entry.item;
-                            const label = truncatePrompt(c.message, COMMIT_TOOLTIP_PREVIEW_MAX);
-                            const memberPose = interpolateExpandedEntryPose(
-                              { x: anchorX, y: anchorY },
-                              { x: entry.x, y: entry.y },
-                              phase,
-                              phaseEased,
+                  {/* ── Main timeline + merge nodes ── */}
+                  <g
+                    style={{ opacity: mainTimelineOpacity, transition: 'opacity 0.15s' }}
+                    onMouseEnter={() => setHoveredBranch(defaultBranch)}
+                    onMouseLeave={() => clearMainBranchHover()}
+                  >
+                    {!mainIsUnifiedRender && (
+                      <>
+                        <path
+                          d={`M ${pathCoord(mainX, mainStartY)} L ${pathCoord(mainX, mainActiveEndY)}`}
+                          fill="none"
+                          stroke="transparent"
+                          strokeWidth={branchHitStrokeWidth}
+                          style={{ pointerEvents: branchLaneHitPointerEvents }}
+                        />
+                        {/* Use <path> not <line>: pathLength on <line> is SVG 2 only and unreliable in WKWebView */}
+                        <path
+                          d={`M ${pathCoord(mainX, mainStartY)} L ${pathCoord(mainX, mainActiveEndY)}`}
+                          fill="none"
+                          stroke={
+                            selectedBranchNameSet.has(defaultBranch)
+                              ? USER_SELECTION_STROKE
+                              : (hoveredBranch === defaultBranch || hoveredNodeBranchName === defaultBranch)
+                                ? CANVAS_NEUTRAL_GRAY_HOVER
+                                : (
+                                  checkedOutIndicatorLocal && Math.abs(checkedOutIndicatorLocal.x - mainX) < 0.5
+                                    ? CHECKED_OUT_SELECTION_STROKE
+                                    : CANVAS_NEUTRAL_GRAY
+                                )
+                          }
+                          strokeWidth={1.5}
+                          pathLength={1}
+                          className={drawPathMainClass}
+                          style={{
+                            '--delay': `${MAIN_DRAW_MS}ms`,
+                            transition: 'stroke 0.12s ease',
+                          } as React.CSSProperties}
+                        />
+
+                        <g className={fadeInInfoClass} style={{ '--delay': `${MAIN_DRAW_MS + INFO_OFFSET}ms` } as React.CSSProperties}>
+                          {/* Direct commits */}
+                          {mainDirectClusters.map((clusterLayout) => {
+                            const {
+                              cluster,
+                              count,
+                              first,
+                              last,
+                              clusterKey,
+                              clusterHasMainTip,
+                              clusterHasCheckedOutHead,
+                              clusterHasSelectedCommit,
+                              memberKeys,
+                              preferredAnchorX,
+                              preferredAnchorY,
+                            } = clusterLayout;
+                            const countLabel = stackCountLabel(count);
+                            const motion = resolveClusterMotion(
+                              clusterKey,
+                              { x: preferredAnchorX, y: preferredAnchorY },
+                              memberKeys,
+                              count > 1,
                             );
-                          const commitKey = `direct:${c.fullSha}`;
-                          const isUncommittedCommit = c.fullSha === 'WORKING_TREE';
-                          const isCheckedOutCommit =
-                            checkedOutHeadSha != null && shaMatchesGitRef(c.fullSha, checkedOutHeadSha);
-                            return (
-                              <g
-                                key={commitKey}
-                                transform={`translate(${memberPose.x} ${memberPose.y})`}
-                                style={{ ...clumpAnimStyle, pointerEvents: phase === 'expanded' ? 'auto' : 'none' }}
-                                opacity={memberPose.opacity}
-                              >
+                            const anchorX = motion.anchorX;
+                            const anchorY = motion.anchorY;
+
+                            if (count === 1) {
+                              const c = last;
+                              const isUncommittedCommit = c.fullSha === 'WORKING_TREE';
+                              const label = truncatePrompt(c.message, COMMIT_TOOLTIP_PREVIEW_MAX);
+                              const rectSize = commitRectSize(scaledNodeSize);
+                              return (
                                 <rect
+                                  key={clusterKey}
                                   className="branch-map-commit-rect"
-                                  x={-localRect.width / 2 + CANVAS_NODE_STROKE_INSET}
-                                  y={-localRect.height / 2 + CANVAS_NODE_STROKE_INSET}
-                                  width={localRect.width - CANVAS_NODE_STROKE_WIDTH}
-                                  height={localRect.height - CANVAS_NODE_STROKE_WIDTH}
-                                  data-base-rx={localRect.radius}
-                                  rx={localRect.radius / Math.max(layerCameraScale.x, 0.0001)}
+                                  x={anchorX - rectSize.width / 2 + CANVAS_NODE_STROKE_INSET}
+                                  y={anchorY - rectSize.height / 2 + CANVAS_NODE_STROKE_INSET}
+                                  width={rectSize.width - CANVAS_NODE_STROKE_WIDTH}
+                                  height={rectSize.height - CANVAS_NODE_STROKE_WIDTH}
+                                  data-base-rx={rectSize.radius}
+                                  rx={rectSize.radius / Math.max(layerCameraScale.x, 0.0001)}
+                                  style={{ cursor: 'pointer' }}
                                   fill={CANVAS_NODE_FILL}
                                   stroke={getNodeStrokeColor(
-                                    commitKey,
+                                    clusterKey,
                                     isUncommittedCommit ? CHECKED_OUT_SELECTION_STROKE : CANVAS_NODE_STROKE,
-                                    isCheckedOutCommit,
-                                    selectedCommitShaSet.has(c.fullSha) ||
-                                      (clusterHasMainTip &&
-                                        selectedBranchNameSet.has(defaultBranch) &&
-                                        c.fullSha === latestMainCommitSha),
+                                    clusterHasCheckedOutHead,
+                                    clusterHasSelectedCommit || (clusterHasMainTip && selectedBranchNameSet.has(defaultBranch)),
                                   )}
                                   strokeWidth={CANVAS_NODE_STROKE_WIDTH}
                                   strokeDasharray={isUncommittedCommit ? '3 3' : undefined}
                                   strokeLinecap={isUncommittedCommit ? 'round' : undefined}
                                   strokeLinejoin={isUncommittedCommit ? 'round' : undefined}
-                                  style={{ cursor: 'pointer' }}
                                   onClick={(event) =>
                                     handleCommitNodeClick(
                                       event,
                                       c.fullSha,
-                                      clusterHasMainTip && c.fullSha === latestMainCommitSha
-                                        ? defaultBranch
-                                        : undefined,
+                                      clusterHasMainTip ? defaultBranch : undefined,
                                     )
                                   }
                                   onDoubleClick={(event) => event.stopPropagation()}
                                   onMouseEnter={() => {
                                     setHoveredBranch(defaultBranch);
-                                    handleNodeHoverEnter(commitKey, defaultBranch);
+                                    handleNodeHoverEnter(clusterKey, defaultBranch);
                                     setTooltip({
-                                      x: entry.x,
-                                      y: entry.y,
+                                      x: anchorX,
+                                      y: anchorY,
                                       lines: [
                                         isUncommittedCommit ? 'Uncommited Changes' : `Commit ${c.sha}`,
                                         label,
@@ -5716,823 +5515,1367 @@ type MainDirectClusterLayout = {
                                     setTooltip(null);
                                   }}
                                 />
+                              );
+                            }
+
+                            const isExpanded = motion.isExpanded;
+                            const phase = motion.phase;
+                            const phaseEased = motion.phaseEased;
+                            const rectSize = nodeRectSize(count);
+                            const localRect = commitRectSize(scaledNodeSize, 0);
+
+                            const firstTime = new Date(first.date).getTime();
+                            const lastTime = new Date(last.date).getTime();
+                            const rangeLine = firstTime === lastTime
+                              ? fmtTooltipDate(last.date)
+                              : `${fmtTooltipDate(first.date)} → ${fmtTooltipDate(last.date)}`;
+                            const latestCommitMessage = last.message
+                              ? truncatePrompt(last.message, COMMIT_CLUSTER_PREVIEW_MAX)
+                              : 'on main';
+                            // Main-node visuals are authored in the dedicated overlay to keep branch
+                            // connectors behind them; keep this base layer for interaction only.
+                            const renderCollapsedVisualInBase = false;
+
+                            return (
+                              <g key={clusterKey}>
+                                {/* Collapsed: draw one clump node. Expanded: animate members out. */}
+                                {!isExpanded && renderCollapsedVisualInBase && (
+                                  <g style={{ pointerEvents: 'none' }}>
+                                    <rect
+                                      className="branch-map-commit-rect"
+                                      x={anchorX - rectSize.width / 2 + CANVAS_NODE_STROKE_INSET}
+                                      y={anchorY - rectSize.height / 2 + CANVAS_NODE_STROKE_INSET}
+                                      width={rectSize.width - CANVAS_NODE_STROKE_WIDTH}
+                                      height={rectSize.height - CANVAS_NODE_STROKE_WIDTH}
+                                      data-base-rx={rectSize.radius}
+                                      rx={rectSize.radius / Math.max(layerCameraScale.x, 0.0001)}
+                                      fill={CANVAS_NODE_FILL}
+                                      stroke={getNodeStrokeColor(
+                                        clusterKey,
+                                        CANVAS_NODE_STROKE,
+                                        clusterHasCheckedOutHead,
+                                        clusterHasSelectedCommit || (clusterHasMainTip && selectedBranchNameSet.has(defaultBranch)),
+                                      )}
+                                      strokeWidth={CANVAS_NODE_STROKE_WIDTH}
+                                    />
+                                    <text
+                                      x={anchorX + rectSize.width / 2 - nodeFrameLabelRightInsetX}
+                                      y={anchorY - rectSize.height / 2 - nodeFrameLabelGap}
+                                      textAnchor="end"
+                                      fontSize={nodeFrameLabelFontSize}
+                                      fill={NODE_FRAME_LABEL_COLOR}
+                                      fontWeight={NODE_FRAME_LABEL_WEIGHT}
+                                      pointerEvents="none"
+                                    >
+                                      {countLabel}
+                                    </text>
+                                  </g>
+                                )}
+
+                                {/* Collapsed-only overlay hit target (on top) so clicks never fall through. */}
+                                {!isExpanded && (() => {
+                                  const pad = worldPx(6);
+                                  const hit = collapsedClumpHitRect(
+                                    anchorX,
+                                    anchorY,
+                                    rectSize,
+                                    pad
+                                  );
+                                  return (
+                                    <rect
+                                      x={hit.x}
+                                      y={hit.y}
+                                      width={hit.width}
+                                      height={hit.height}
+                                      fill="transparent"
+                                      style={{ cursor: 'pointer' }}
+                                      onPointerDown={(e) => { e.preventDefault(); e.stopPropagation(); }}
+                                      onMouseDown={(e) => { e.preventDefault(); e.stopPropagation(); }}
+                                      onClick={(e) => {
+                                        e.preventDefault();
+                                        e.stopPropagation();
+                                        toggleClumpExpanded(clusterKey);
+                                      }}
+                                      onDoubleClick={(event) => {
+                                        event.preventDefault();
+                                        event.stopPropagation();
+                                      }}
+                                      onMouseEnter={() => {
+                                        setHoveredBranch(defaultBranch);
+                                        handleNodeHoverEnter(clusterKey, defaultBranch);
+                                        setTooltip({
+                                          x: anchorX,
+                                          y: anchorY,
+                                          lines: [`${count} commits`, latestCommitMessage, rangeLine],
+                                          avatarFallback: last.author?.charAt(0).toUpperCase() || '?',
+                                        });
+                                      }}
+                                      onMouseLeave={() => {
+                                        handleNodeHoverLeave();
+                                        clearMainBranchHover();
+                                        setTooltip(null);
+                                      }}
+                                    />
+                                  );
+                                })()}
+
+                                {isExpanded && (
+                                  <g>
+                                    {cluster.entries.map((entry) => {
+                                      const c = entry.item;
+                                      const label = truncatePrompt(c.message, COMMIT_TOOLTIP_PREVIEW_MAX);
+                                      const memberPose = interpolateExpandedEntryPose(
+                                        { x: anchorX, y: anchorY },
+                                        { x: entry.x, y: entry.y },
+                                        phase,
+                                        phaseEased,
+                                      );
+                                      const commitKey = `direct:${c.fullSha}`;
+                                      const isUncommittedCommit = c.fullSha === 'WORKING_TREE';
+                                      const isCheckedOutCommit =
+                                        checkedOutHeadSha != null && shaMatchesGitRef(c.fullSha, checkedOutHeadSha);
+                                      return (
+                                        <g
+                                          key={commitKey}
+                                          transform={`translate(${memberPose.x} ${memberPose.y})`}
+                                          style={{ ...clumpAnimStyleForPhase(phase), pointerEvents: phase === 'expanded' ? 'auto' : 'none' }}
+                                          opacity={memberPose.opacity}
+                                        >
+                                          <g transform={`scale(${memberPose.scale})`}>
+                                            <rect
+                                              className="branch-map-commit-rect"
+                                              x={-localRect.width / 2 + CANVAS_NODE_STROKE_INSET}
+                                              y={-localRect.height / 2 + CANVAS_NODE_STROKE_INSET}
+                                              width={localRect.width - CANVAS_NODE_STROKE_WIDTH}
+                                              height={localRect.height - CANVAS_NODE_STROKE_WIDTH}
+                                              data-base-rx={localRect.radius}
+                                              rx={localRect.radius / Math.max(layerCameraScale.x, 0.0001)}
+                                              fill={CANVAS_NODE_FILL}
+                                              stroke={getNodeStrokeColor(
+                                                commitKey,
+                                                isUncommittedCommit ? CHECKED_OUT_SELECTION_STROKE : CANVAS_NODE_STROKE,
+                                                isCheckedOutCommit,
+                                                selectedCommitShaSet.has(c.fullSha) ||
+                                                (clusterHasMainTip &&
+                                                  selectedBranchNameSet.has(defaultBranch) &&
+                                                  c.fullSha === latestMainCommitSha),
+                                              )}
+                                              strokeWidth={CANVAS_NODE_STROKE_WIDTH}
+                                              strokeDasharray={isUncommittedCommit ? '3 3' : undefined}
+                                              strokeLinecap={isUncommittedCommit ? 'round' : undefined}
+                                              strokeLinejoin={isUncommittedCommit ? 'round' : undefined}
+                                              style={{ cursor: 'pointer' }}
+                                              onClick={(event) =>
+                                                handleCommitNodeClick(
+                                                  event,
+                                                  c.fullSha,
+                                                  clusterHasMainTip && c.fullSha === latestMainCommitSha
+                                                    ? defaultBranch
+                                                    : undefined,
+                                                )
+                                              }
+                                              onDoubleClick={(event) => event.stopPropagation()}
+                                              onMouseEnter={() => {
+                                                setHoveredBranch(defaultBranch);
+                                                handleNodeHoverEnter(commitKey, defaultBranch);
+                                                setTooltip({
+                                                  x: entry.x,
+                                                  y: entry.y,
+                                                  lines: [
+                                                    isUncommittedCommit ? 'Uncommited Changes' : `Commit ${c.sha}`,
+                                                    label,
+                                                    `@${c.author} · ${fmtTooltipDate(c.date)}`,
+                                                  ],
+                                                  avatarFallback: c.author?.charAt(0).toUpperCase() || '?',
+                                                });
+                                              }}
+                                              onMouseLeave={() => {
+                                                handleNodeHoverLeave();
+                                                clearMainBranchHover();
+                                                setTooltip(null);
+                                              }}
+                                            />
+                                          </g>
+                                        </g>
+                                      );
+                                    })}
+                                  </g>
+                                )}
                               </g>
                             );
                           })}
-                        </g>
-                      )}
-                    </g>
-                  );
-                })}
-              {(() => {
-                const mainPromptMarkers = [...(branchPromptMeta[defaultBranch]?.markers ?? [])]
-                  .sort((a, b) => new Date(a.timestamp).getTime() - new Date(b.timestamp).getTime());
-                const promptEntries: MarkerEntry<{ marker: typeof mainPromptMarkers[number]; index: number }>[] =
-                  mainPromptMarkers.map((marker, markerIndex) => {
-                    const markerPoint = projectPoint(
-                      mainX,
-                      timeCoordToY(timeToX(marker.timestamp))
-                    );
-                    return {
-                      x: markerPoint.x,
-                      y: markerPoint.y,
-                      item: { marker, index: markerIndex },
-                    };
-                  });
-                const clusters = clusterByForkPoints(promptEntries, new Set<number>());
-                return clusters.map((cluster) => {
-                  const count = cluster.entries.length;
-                  const firstEntry = cluster.entries[0];
-                  const lastEntry = cluster.entries[count - 1];
-                  const clusterKey = `main-prompt-clump-${defaultBranch}-${firstEntry.item.index}-${lastEntry.item.index}`;
-                  const memberKeys = cluster.entries.map((entry) => `prompt:${defaultBranch}:slot-${entry.item.index}`);
-                  const animatedAnchor = resolveAnimatedClumpAnchor(
-                    clusterKey,
-                    { x: cluster.x, y: cluster.y },
-                    memberKeys
-                  );
-                  const anchorX = animatedAnchor.x;
-                  const anchorY = animatedAnchor.y;
-                  const markerSize =
-                    scaledNodeSize;
-                  const markerPath = promptMarkerPath(anchorX, anchorY, markerSize);
-                  const hitSize = scaledHoverHitSize;
-                  const markerStrokeWidth = 1.2;
-                  const label = count > 1 ? clumpCountLabel(count) : '';
-                  const labelFontSize = nodeLabelFontSize(scaledNodeSize, count);
+                          {(() => {
+                            const mainPromptMarkers = [...(branchPromptMeta[defaultBranch]?.markers ?? [])]
+                              .sort((a, b) => new Date(a.timestamp).getTime() - new Date(b.timestamp).getTime());
+                            const promptEntries: MarkerEntry<{ marker: typeof mainPromptMarkers[number]; index: number }>[] =
+                              mainPromptMarkers.map((marker, markerIndex) => {
+                                const markerPoint = projectPoint(
+                                  mainX,
+                                  timeCoordToY(timeToX(marker.timestamp))
+                                );
+                                return {
+                                  x: markerPoint.x,
+                                  y: markerPoint.y,
+                                  item: { marker, index: markerIndex },
+                                };
+                              });
+                            const clusters = clusterByForkPoints(promptEntries, new Set<number>());
+                            return clusters.map((cluster) => {
+                              const count = cluster.entries.length;
+                              const firstEntry = cluster.entries[0];
+                              const lastEntry = cluster.entries[count - 1];
+                              const clusterKey = `main-prompt-clump-${defaultBranch}-${firstEntry.item.index}-${lastEntry.item.index}`;
+                              const memberKeys = cluster.entries.map((entry) => `prompt:${defaultBranch}:slot-${entry.item.index}`);
+                              const animatedAnchor = resolveAnimatedClumpAnchor(
+                                clusterKey,
+                                { x: cluster.x, y: cluster.y },
+                                memberKeys
+                              );
+                              const anchorX = animatedAnchor.x;
+                              const anchorY = animatedAnchor.y;
+                              const markerSize =
+                                scaledNodeSize;
+                              const markerPath = promptMarkerPath(anchorX, anchorY, markerSize);
+                              const hitSize = scaledHoverHitSize;
+                              const markerStrokeWidth = 1.2;
+                              const label = count > 1 ? clumpCountLabel(count) : '';
+                              const labelFontSize = nodeLabelFontSize(scaledNodeSize, count);
 
-                  if (count === 1) {
-                    const marker = lastEntry.item.marker;
+                              if (count === 1) {
+                                const marker = lastEntry.item.marker;
+                                return (
+                                  <g key={clusterKey}>
+                                    <g style={{ pointerEvents: 'none' }}>
+                                      <path
+                                        d={markerPath}
+                                        fill="var(--background)"
+                                        stroke="#14b8a6"
+                                        strokeWidth={markerStrokeWidth}
+                                        strokeLinejoin="round"
+                                      />
+                                    </g>
+                                    <rect
+                                      x={anchorX - hitSize / 2}
+                                      y={anchorY - hitSize / 2}
+                                      width={hitSize}
+                                      height={hitSize}
+                                      fill="transparent"
+                                      style={{ cursor: 'pointer' }}
+                                      onMouseEnter={() =>
+                                        setTooltip({
+                                          x: anchorX,
+                                          y: anchorY,
+                                          lines: [
+                                            'Prompt',
+                                            truncatePrompt(marker.prompt, PROMPT_TOOLTIP_PREVIEW_MAX),
+                                            `${marker.agent} · ${fmtTooltipDate(marker.timestamp)}`,
+                                          ],
+                                        })
+                                      }
+                                      onMouseLeave={() => setTooltip(null)}
+                                    />
+                                  </g>
+                                );
+                              }
+
+                              const firstDate = firstEntry.item.marker.timestamp;
+                              const lastDate = lastEntry.item.marker.timestamp;
+                              const dateRangeLabel = new Date(firstDate).getTime() === new Date(lastDate).getTime()
+                                ? fmtTooltipDate(lastDate)
+                                : `${fmtTooltipDate(firstDate)} → ${fmtTooltipDate(lastDate)}`;
+                              const latestPrompt = truncatePrompt(lastEntry.item.marker.prompt, PROMPT_CLUSTER_PREVIEW_MAX);
+                              return (
+                                <g key={clusterKey}>
+                                  <g style={{ pointerEvents: 'none' }}>
+                                    <path
+                                      d={markerPath}
+                                      fill="var(--background)"
+                                      stroke="#14b8a6"
+                                      strokeWidth={markerStrokeWidth}
+                                      strokeLinejoin="round"
+                                    />
+                                    <text
+                                      x={anchorX}
+                                      y={anchorY}
+                                      textAnchor="middle"
+                                      dominantBaseline="middle"
+                                      fill="#14b8a6"
+                                      fontWeight={700}
+                                      style={{
+                                        fontVariantNumeric: 'tabular-nums',
+                                        fontSize: `${labelFontSize / Math.max(layerCameraScale.x, 0.0001)}px`,
+                                      }}
+                                      data-base-font-size={labelFontSize}
+                                    >
+                                      {label}
+                                    </text>
+                                  </g>
+                                  <rect
+                                    x={anchorX - hitSize / 2}
+                                    y={anchorY - hitSize / 2}
+                                    width={hitSize}
+                                    height={hitSize}
+                                    fill="transparent"
+                                    style={{ cursor: 'pointer' }}
+                                    onMouseEnter={() =>
+                                      setTooltip({
+                                        x: anchorX,
+                                        y: anchorY,
+                                        lines: [`${count} prompts`, latestPrompt, dateRangeLabel],
+                                      })
+                                    }
+                                    onMouseLeave={() => setTooltip(null)}
+                                  />
+                                </g>
+                              );
+                            });
+                          })()}
+
+                          {showMergeTicks && (() => {
+                            // Progressive label culling as zoom decreases.
+                            // Step 1: decide which content lines to show based on node spacing.
+                            //   ≥130px → full (PR#, title, date)
+                            //   ≥80px  → medium (PR#, date — no title)
+                            //   ≥40px  → minimal (PR# only)
+                            //   <40px  → no labels at all (hover tooltip still works)
+                            // Step 2: min gap between shown labels = width of the widest line
+                            //   being rendered, so labels never overlap their neighbours.
+                            const labelSpacing = averageMergeGap;
+                            const showTitle = labelSpacing >= 130;
+                            const showDate = labelSpacing >= 80;
+                            const anyLabel = labelSpacing >= 40;
+                            const minLabelGap = showTitle ? 130 : showDate ? 100 : anyLabel ? 55 : Infinity;
+
+                            let lastLabelY = Number.POSITIVE_INFINITY;
+                            return sortedNodes.map((m) => {
+                              const timeCoordX = nodeXByFullSha.get(m.fullSha) ?? timeToX(m.date);
+                              const y = timeCoordToY(timeCoordX);
+                              const showLabel = anyLabel && lastLabelY - y >= minLabelGap;
+                              if (showLabel) lastLabelY = y;
+                              const label = m.prNumber ? `PR #${m.prNumber}` : m.sha.slice(0, 7);
+                              const isHovered = hoveredMergeNode?.node.fullSha === m.fullSha;
+                              const hitSize = scaledHoverHitSize;
+                              return (
+                                <g key={m.fullSha}>
+                                  {/* Visible tick — pointer-events off so hit rect handles hover */}
+                                  <circle
+
+                                    className={undefined}
+                                    cx={mainX}
+                                    cy={y}
+                                    r={scaledNodeSize / 2}
+                                    fill={isHovered ? CANVAS_NEUTRAL_GRAY_HOVER : CANVAS_NEUTRAL_GRAY}
+                                    style={{ pointerEvents: 'none', transition: 'fill 0.1s' }}
+                                  />
+                                  {/* Transparent hit area for hover — rendered on top */}
+                                  <rect
+
+                                    x={mainX - hitSize / 2}
+                                    y={y - hitSize / 2}
+                                    width={hitSize}
+                                    height={hitSize}
+                                    fill="transparent"
+                                    style={{ cursor: 'default' }}
+                                    onMouseEnter={() => setHoveredMergeNode({ y, node: m })}
+                                    onMouseLeave={() => setHoveredMergeNode(null)}
+                                  />
+                                  {showLabel && (
+                                    <>
+                                      <text x={mainX + 14} y={y + 4} textAnchor="start" fontSize={12} fill="#57534e">
+                                        {label}
+                                      </text>
+                                      {showTitle && (
+                                        <text x={mainX + 14} y={y + 16} textAnchor="start" fontSize={10} fill="#78716c">
+                                          {(m.prTitle ?? '').slice(0, 22) + ((m.prTitle?.length ?? 0) > 22 ? '…' : '')}
+                                        </text>
+                                      )}
+                                      {showDate && (
+                                        <text x={mainX + 14} y={showTitle ? y + 28 : y + 16} textAnchor="start" fontSize={10} fill="#78716c">
+                                          {fmtLabelDate(m.date)}
+                                        </text>
+                                      )}
+                                    </>
+                                  )}
+                                </g>
+                              );
+                            });
+                          })()}
+                        </g>
+                      </>
+                    )}
+                  </g>
+
+                  {/* ── Merged PR overlays (optional secondary context) ── */}
+                  {showMergedPROverlays && mergedPRs.map((pr, idx) => {
+                    const forkY = timeCoordToY(timeToX(pr.createdAt));
+                    const mergeY = timeCoordToY(timeToX(pr.mergedAt));
+                    const lane = idx % MERGED_LANES;
+                    const arcX = mainX - MERGED_LANE_HEIGHT * (lane + 1);
+                    const shas = prCommits.get(pr.number);
+                    const commitCount = Math.min(shas?.length ?? pr.commitCount ?? 1, 12);
+                    const effectiveMergeY = Math.min(mergeY, forkY - cornerR * 2 - 20);
+
+                    const isHovered = hoveredPR === pr.number;
+                    const isDimmed = (hoveredPR !== null && !isHovered) || hoveredBranch !== null;
+                    const isFocusedPR = focusedErrorBranch?.name === pr.branchName;
+                    const opacity = isFocusedPR ? 1 : isDimmed ? 0.1 : isHovered ? 0.85 : 0.38;
+                    const strokeColor = isHovered ? CANVAS_NEUTRAL_GRAY_HOVER : CANVAS_NEUTRAL_GRAY;
+                    const strokeWidth = isHovered ? 1.6 : 1.2;
+
+                    const arcPath = [
+                      `M ${mainX} ${forkY}`,
+                      `L ${arcX + cornerR} ${forkY}`,
+                      `Q ${arcX} ${forkY} ${arcX} ${forkY - cornerR}`,
+                      `L ${arcX} ${effectiveMergeY + cornerR}`,
+                      `Q ${arcX} ${effectiveMergeY} ${arcX + cornerR} ${effectiveMergeY}`,
+                      `L ${mainX} ${effectiveMergeY}`,
+                    ].join(' ');
+
+                    const midY = (forkY + effectiveMergeY) / 2;
+                    const arcSpan = forkY - effectiveMergeY - cornerR * 2;
+                    const commitYs = Array.from({ length: commitCount }, (_, i) =>
+                      forkY - cornerR - (arcSpan * (i + 1)) / (commitCount + 1)
+                    );
+
+                    const prDelay = prDelayMs.get(pr.number) ?? 0;
+
+                    // Focused error branches are now only "stale" (no dedicated conflict indicator).
+                    const focusedPRColor = '#d97706';
                     return (
-                      <g key={clusterKey}>
-                        <g style={{ pointerEvents: 'none' }}>
-                          <path
-                            d={markerPath}
-                            fill="var(--background)"
-                            stroke="#14b8a6"
-                            strokeWidth={markerStrokeWidth}
-                            strokeLinejoin="round"
-                          />
-                        </g>
-                        <rect
-                          x={anchorX - hitSize / 2}
-                          y={anchorY - hitSize / 2}
-                          width={hitSize}
-                          height={hitSize}
-                          fill="transparent"
-                          style={{ cursor: 'pointer' }}
-                          onMouseEnter={() =>
-                            setTooltip({
-                              x: anchorX,
-                              y: anchorY,
-                              lines: [
-                                'Prompt',
-                                truncatePrompt(marker.prompt, PROMPT_TOOLTIP_PREVIEW_MAX),
-                                `${marker.agent} · ${fmtTooltipDate(marker.timestamp)}`,
-                              ],
-                            })
-                          }
-                          onMouseLeave={() => setTooltip(null)}
-                        />
-                      </g>
-                    );
-                  }
-
-                  const firstDate = firstEntry.item.marker.timestamp;
-                  const lastDate = lastEntry.item.marker.timestamp;
-                  const dateRangeLabel = new Date(firstDate).getTime() === new Date(lastDate).getTime()
-                    ? fmtTooltipDate(lastDate)
-                    : `${fmtTooltipDate(firstDate)} → ${fmtTooltipDate(lastDate)}`;
-                  const latestPrompt = truncatePrompt(lastEntry.item.marker.prompt, PROMPT_CLUSTER_PREVIEW_MAX);
-                  return (
-                    <g key={clusterKey}>
-                      <g style={{ pointerEvents: 'none' }}>
+                      <g
+                        key={pr.number}
+                        opacity={opacity}
+                        style={{ transition: 'opacity 0.15s' }}
+                        onMouseEnter={() => setHoveredPR(pr.number)}
+                        onMouseLeave={() => { setHoveredPR(null); setHoveredPRCommit(null); }}
+                      >
+                        {/* Wide invisible stroke for hover */}
+                        <path d={arcPath} fill="none" stroke="transparent" strokeWidth={20} />
+                        {/* Visible arc — draws in */}
                         <path
-                          d={markerPath}
-                          fill="var(--background)"
-                          stroke="#14b8a6"
-                          strokeWidth={markerStrokeWidth}
-                          strokeLinejoin="round"
+                          d={arcPath}
+                          fill="none"
+                          stroke={isFocusedPR ? focusedPRColor : strokeColor}
+                          strokeWidth={(focusedErrorBranch?.name === pr.branchName ? 2 : strokeWidth)}
+                          pathLength={1}
+                          className={drawPathArcClass}
+                          style={{ pointerEvents: 'none', '--delay': `${prDelay}ms` } as React.CSSProperties}
                         />
-                        <text
-                          x={anchorX}
-                          y={anchorY}
-                          textAnchor="middle"
-                          dominantBaseline="middle"
-                          fill="#14b8a6"
-                          fontWeight={700}
-                          style={{
-                            fontVariantNumeric: 'tabular-nums',
-                            fontSize: `${labelFontSize / Math.max(layerCameraScale.x, 0.0001)}px`,
-                          }}
-                          data-base-font-size={labelFontSize}
-                        >
-                          {label}
-                        </text>
-                      </g>
-                      <rect
-                        x={anchorX - hitSize / 2}
-                        y={anchorY - hitSize / 2}
-                        width={hitSize}
-                        height={hitSize}
-                        fill="transparent"
-                        style={{ cursor: 'pointer' }}
-                        onMouseEnter={() =>
-                          setTooltip({
-                            x: anchorX,
-                            y: anchorY,
-                            lines: [`${count} prompts`, latestPrompt, dateRangeLabel],
-                          })
-                        }
-                        onMouseLeave={() => setTooltip(null)}
-                      />
-                    </g>
-                  );
-                });
-              })()}
 
-              {showMergeTicks && (() => {
-                // Progressive label culling as zoom decreases.
-                // Step 1: decide which content lines to show based on node spacing.
-                //   ≥130px → full (PR#, title, date)
-                //   ≥80px  → medium (PR#, date — no title)
-                //   ≥40px  → minimal (PR# only)
-                //   <40px  → no labels at all (hover tooltip still works)
-                // Step 2: min gap between shown labels = width of the widest line
-                //   being rendered, so labels never overlap their neighbours.
-                const labelSpacing = averageMergeGap;
-                const showTitle = labelSpacing >= 130;
-                const showDate = labelSpacing >= 80;
-                const anyLabel = labelSpacing >= 40;
-                const minLabelGap = showTitle ? 130 : showDate ? 100 : anyLabel ? 55 : Infinity;
+                        {/* Arc info — fades in as arc draws */}
+                        <g className={fadeInInfoClass} style={{ '--delay': `${prDelay + INFO_OFFSET}ms` } as React.CSSProperties}>
+                          <circle
 
-                let lastLabelY = Number.POSITIVE_INFINITY;
-                return sortedNodes.map((m) => {
-                  const timeCoordX = nodeXByFullSha.get(m.fullSha) ?? timeToX(m.date);
-                  const y = timeCoordToY(timeCoordX);
-                  const showLabel = anyLabel && lastLabelY - y >= minLabelGap;
-                  if (showLabel) lastLabelY = y;
-                  const label = m.prNumber ? `PR #${m.prNumber}` : m.sha.slice(0, 7);
-                  const isHovered = hoveredMergeNode?.node.fullSha === m.fullSha;
-                  const hitSize = scaledHoverHitSize;
-                  return (
-                    <g key={m.fullSha}>
-                      {/* Visible tick — pointer-events off so hit rect handles hover */}
-                      <circle
-                       
-                        className={undefined}
-                        cx={mainX}
-                        cy={y}
-                        r={scaledNodeSize / 2}
-                        fill={isHovered ? CANVAS_NEUTRAL_GRAY_HOVER : CANVAS_NEUTRAL_GRAY}
-                        style={{ pointerEvents: 'none', transition: 'fill 0.1s' }}
-                      />
-                      {/* Transparent hit area for hover — rendered on top */}
-                      <rect
-                       
-                        x={mainX - hitSize / 2}
-                        y={y - hitSize / 2}
-                        width={hitSize}
-                        height={hitSize}
-                        fill="transparent"
-                        style={{ cursor: 'default' }}
-                        onMouseEnter={() => setHoveredMergeNode({ y, node: m })}
-                        onMouseLeave={() => setHoveredMergeNode(null)}
-                      />
-                      {showLabel && (
-                        <>
-                          <text x={mainX + 14} y={y + 4} textAnchor="start" fontSize={12} fill="#57534e">
-                            {label}
+                            className={undefined}
+                            cx={mainX}
+                            cy={forkY}
+                            r={scaledNodeSize / 2}
+                            fill="#fafaf9"
+                            stroke={isFocusedPR ? focusedPRColor : strokeColor}
+                            strokeWidth={(isFocusedPR ? 1.5 : 1)}
+                            style={{ pointerEvents: 'none' }}
+                          />
+                          <circle
+
+                            className={undefined}
+                            cx={mainX}
+                            cy={effectiveMergeY}
+                            r={scaledNodeSize / 2}
+                            fill="#fafaf9"
+                            stroke={isFocusedPR ? focusedPRColor : strokeColor}
+                            strokeWidth={(isFocusedPR ? 1.5 : 1)}
+                            style={{ pointerEvents: 'none' }}
+                          />
+
+                          {/* Commit ticks — interactive with SHA tooltips */}
+                          {commitYs.map((cy, ci) => {
+                            const isTickHovered = isHovered &&
+                              hoveredPRCommit?.pr.number === pr.number &&
+                              hoveredPRCommit?.commitIdx === ci;
+                            const tickSize = (isTickHovered ? NODE_SIZE + 3 : NODE_SIZE - 2);
+                            const hitSize = scaledHoverHitSize;
+                            return (
+                              <g key={ci}>
+                                {/* Visible tick */}
+                                <circle
+
+                                  className={undefined}
+                                  cx={arcX}
+                                  cy={cy}
+                                  r={tickSize / 2}
+                                  fill={isFocusedPR ? focusedPRColor : isHovered ? CANVAS_NEUTRAL_GRAY_HOVER : CANVAS_NEUTRAL_GRAY}
+                                  style={{ pointerEvents: 'none', transition: 'fill 0.1s ease' }}
+                                />
+                                {/* Invisible hit area */}
+                                <rect
+
+                                  x={arcX - hitSize / 2}
+                                  y={cy - hitSize / 2}
+                                  width={hitSize}
+                                  height={hitSize}
+                                  fill="transparent"
+                                  style={{ cursor: 'crosshair' }}
+                                  onMouseEnter={(e) => {
+                                    e.stopPropagation();
+                                    setHoveredPRCommit({ x: arcX, arcY: cy, pr, commitIdx: ci, total: commitCount });
+                                  }}
+                                  onMouseLeave={(e) => {
+                                    e.stopPropagation();
+                                    setHoveredPRCommit(null);
+                                  }}
+                                />
+                              </g>
+                            );
+                          })}
+
+                          {/* Author avatar */}
+                          {pr.authorAvatar ? (
+                            <image
+
+                              className={undefined}
+                              href={pr.authorAvatar}
+                              x={arcX - 9}
+                              y={midY - 10}
+                              width={18}
+                              height={18}
+                              style={{ clipPath: 'circle(9px at 9px 9px)' }}
+                            />
+                          ) : (
+                            <circle cx={arcX} cy={midY} r={8} fill={CANVAS_NEUTRAL_GRAY} />
+                          )}
+                          <text
+                            className={undefined}
+                            x={arcX + 12}
+                            y={midY + 4}
+                            fontSize={12}
+                            fill={CANVAS_NEUTRAL_TEXT}
+                            style={{ transformOrigin: `${arcX + 12}px ${midY + 4}px` }}
+                          >
+                            {pr.branchName.length > 20 ? pr.branchName.slice(0, 20) + '…' : pr.branchName}
                           </text>
-                          {showTitle && (
-                            <text x={mainX + 14} y={y + 16} textAnchor="start" fontSize={10} fill="#78716c">
-                              {(m.prTitle ?? '').slice(0, 22) + ((m.prTitle?.length ?? 0) > 22 ? '…' : '')}
-                            </text>
-                          )}
-                          {showDate && (
-                            <text x={mainX + 14} y={showTitle ? y + 28 : y + 16} textAnchor="start" fontSize={10} fill="#78716c">
-                              {fmtLabelDate(m.date)}
-                            </text>
-                          )}
-                        </>
-                      )}
-                    </g>
-                  );
-                });
-              })()}
-                </g>
-              </>
-            )}
-          </g>
-
-          {/* ── Merged PR overlays (optional secondary context) ── */}
-          {showMergedPROverlays && mergedPRs.map((pr, idx) => {
-            const forkY = timeCoordToY(timeToX(pr.createdAt));
-            const mergeY = timeCoordToY(timeToX(pr.mergedAt));
-            const lane = idx % MERGED_LANES;
-            const arcX = mainX - MERGED_LANE_HEIGHT * (lane + 1);
-            const shas = prCommits.get(pr.number);
-            const commitCount = Math.min(shas?.length ?? pr.commitCount ?? 1, 12);
-            const effectiveMergeY = Math.min(mergeY, forkY - cornerR * 2 - 20);
-
-            const isHovered = hoveredPR === pr.number;
-            const isDimmed = (hoveredPR !== null && !isHovered) || hoveredBranch !== null;
-            const isFocusedPR = focusedErrorBranch?.name === pr.branchName;
-            const opacity = isFocusedPR ? 1 : isDimmed ? 0.1 : isHovered ? 0.85 : 0.38;
-            const strokeColor = isHovered ? CANVAS_NEUTRAL_GRAY_HOVER : CANVAS_NEUTRAL_GRAY;
-            const strokeWidth = isHovered ? 1.6 : 1.2;
-
-            const arcPath = [
-              `M ${mainX} ${forkY}`,
-              `L ${arcX + cornerR} ${forkY}`,
-              `Q ${arcX} ${forkY} ${arcX} ${forkY - cornerR}`,
-              `L ${arcX} ${effectiveMergeY + cornerR}`,
-              `Q ${arcX} ${effectiveMergeY} ${arcX + cornerR} ${effectiveMergeY}`,
-              `L ${mainX} ${effectiveMergeY}`,
-            ].join(' ');
-
-            const midY = (forkY + effectiveMergeY) / 2;
-            const arcSpan = forkY - effectiveMergeY - cornerR * 2;
-            const commitYs = Array.from({ length: commitCount }, (_, i) =>
-              forkY - cornerR - (arcSpan * (i + 1)) / (commitCount + 1)
-            );
-
-            const prDelay = prDelayMs.get(pr.number) ?? 0;
-
-            // Focused error branches are now only "stale" (no dedicated conflict indicator).
-            const focusedPRColor = '#d97706';
-            return (
-              <g
-                key={pr.number}
-                opacity={opacity}
-                style={{ transition: 'opacity 0.15s' }}
-                onMouseEnter={() => setHoveredPR(pr.number)}
-                onMouseLeave={() => { setHoveredPR(null); setHoveredPRCommit(null); }}
-              >
-                {/* Wide invisible stroke for hover */}
-                <path d={arcPath} fill="none" stroke="transparent" strokeWidth={20} />
-                {/* Visible arc — draws in */}
-                <path
-                  d={arcPath}
-                  fill="none"
-                  stroke={isFocusedPR ? focusedPRColor : strokeColor}
-                  strokeWidth={(focusedErrorBranch?.name === pr.branchName ? 2 : strokeWidth)}
-                  pathLength={1}
-                  className={drawPathArcClass}
-                  style={{ pointerEvents: 'none', '--delay': `${prDelay}ms` } as React.CSSProperties}
-                />
-
-                {/* Arc info — fades in as arc draws */}
-                <g className={fadeInInfoClass} style={{ '--delay': `${prDelay + INFO_OFFSET}ms` } as React.CSSProperties}>
-                  <circle
-                   
-                    className={undefined}
-                    cx={mainX}
-                    cy={forkY}
-                    r={scaledNodeSize / 2}
-                    fill="#fafaf9"
-                    stroke={isFocusedPR ? focusedPRColor : strokeColor}
-                    strokeWidth={(isFocusedPR ? 1.5 : 1)}
-                    style={{ pointerEvents: 'none' }}
-                  />
-                  <circle
-                   
-                    className={undefined}
-                    cx={mainX}
-                    cy={effectiveMergeY}
-                    r={scaledNodeSize / 2}
-                    fill="#fafaf9"
-                    stroke={isFocusedPR ? focusedPRColor : strokeColor}
-                    strokeWidth={(isFocusedPR ? 1.5 : 1)}
-                    style={{ pointerEvents: 'none' }}
-                  />
-
-                  {/* Commit ticks — interactive with SHA tooltips */}
-                  {commitYs.map((cy, ci) => {
-                    const isTickHovered = isHovered &&
-                      hoveredPRCommit?.pr.number === pr.number &&
-                      hoveredPRCommit?.commitIdx === ci;
-                    const tickSize = (isTickHovered ? NODE_SIZE + 3 : NODE_SIZE - 2);
-                    const hitSize = scaledHoverHitSize;
-                    return (
-                      <g key={ci}>
-                        {/* Visible tick */}
-                        <circle
-                         
-                          className={undefined}
-                          cx={arcX}
-                          cy={cy}
-                          r={tickSize / 2}
-                          fill={isFocusedPR ? focusedPRColor : isHovered ? CANVAS_NEUTRAL_GRAY_HOVER : CANVAS_NEUTRAL_GRAY}
-                          style={{ pointerEvents: 'none', transition: 'fill 0.1s ease' }}
-                        />
-                        {/* Invisible hit area */}
-                        <rect
-                         
-                          x={arcX - hitSize / 2}
-                          y={cy - hitSize / 2}
-                          width={hitSize}
-                          height={hitSize}
-                          fill="transparent"
-                          style={{ cursor: 'crosshair' }}
-                          onMouseEnter={(e) => {
-                            e.stopPropagation();
-                            setHoveredPRCommit({ x: arcX, arcY: cy, pr, commitIdx: ci, total: commitCount });
-                          }}
-                          onMouseLeave={(e) => {
-                            e.stopPropagation();
-                            setHoveredPRCommit(null);
-                          }}
-                        />
+                        </g>
                       </g>
                     );
                   })}
 
-                  {/* Author avatar */}
-                  {pr.authorAvatar ? (
-                    <image
-                     
-                      className={undefined}
-                      href={pr.authorAvatar}
-                      x={arcX - 9}
-                      y={midY - 10}
-                      width={18}
-                      height={18}
-                      style={{ clipPath: 'circle(9px at 9px 9px)' }}
-                    />
-                  ) : (
-                    <circle cx={arcX} cy={midY} r={8} fill={CANVAS_NEUTRAL_GRAY} />
-                  )}
-                  <text
-                    className={undefined}
-                    x={arcX + 12}
-                    y={midY + 4}
-                    fontSize={12}
-                    fill={CANVAS_NEUTRAL_TEXT}
-                    style={{ transformOrigin: `${arcX + 12}px ${midY + 4}px` }}
-                  >
-                    {pr.branchName.length > 20 ? pr.branchName.slice(0, 20) + '…' : pr.branchName}
-                  </text>
-                </g>
-              </g>
-            );
-          })}
+                  {/* ── Active branches ── */}
+                  <g style={{ opacity: hoveredPR !== null ? 0.2 : 1, transition: 'opacity 0.15s' }}>
+                    {(() => {
+                      const orderedActiveBranches = orderedActiveBranchesForLayer({
+                        includeSelectedPriority: true,
+                      });
 
-          {/* ── Active branches ── */}
-          <g style={{ opacity: hoveredPR !== null ? 0.2 : 1, transition: 'opacity 0.15s' }}>
-            {(() => {
-              const orderedActiveBranches = orderedActiveBranchesForLayer({
-                includeSelectedPriority: true,
-              });
-
-              return orderedActiveBranches.map((b) => {
-                const {
-                  lanePosX,
-                  branchLineTipY,
-                  mergeBackPath,
-                  curvePath,
-                  hitCurvePath,
-                  hasPreviewData,
-                  uniqueAheadCount,
-                  branchEndDotIndex,
-                  localCommitDotIndices,
-                  fullBranchShouldUseLocalGray,
-                  hasUncommittedPreview,
-                  localSegmentStartY,
-                  commitDotClusters,
-                  promptMarkerClusters,
-                  branchHasCheckedOutHead,
-                  brDelay,
-                  showClockIcon,
-                  clockPoint,
-                } = getBranchRenderLayout(b);
-                const isHovered = hoveredBranch === b.name || isNodeLineageHovered(b.name);
-                const isSelectedForMerge = selectedBranchNameSet.has(b.name);
-                const isFocusedError = focusedErrorBranch?.name === b.name;
-                const focusedErrorColor = '#d97706';
-                const neutralColor = CANVAS_NEUTRAL_GRAY;
-                const color = isFocusedError ? focusedErrorColor : neutralColor;
-                const strokeWidth = isFocusedError || isSelectedForMerge ? 2 : 1.5;
-                const defaultStrokeColor =
-                  isSelectedForMerge
-                    ? USER_SELECTION_STROKE
-                    : isHovered
-                      ? CANVAS_NEUTRAL_GRAY_HOVER
-                      : color;
-                const strokeColor =
-                  isSelectedForMerge
-                    ? USER_SELECTION_STROKE
-                    : !isFocusedError && branchHasCheckedOutHead
-                      ? CHECKED_OUT_SELECTION_STROKE
-                      : (
-                        fullBranchShouldUseLocalGray && !isFocusedError && !isHovered
-                          ? LOCAL_UNPUSHED_GRAY
-                          : defaultStrokeColor
-                      );
-                const unpushedStrokeWidth = strokeWidth + UNPUSHED_LANE_STROKE_VISUAL_COMP;
-                const unpushedLaneDasharray = `${Math.max(1, unpushedStrokeWidth)} ${Math.max(2, unpushedStrokeWidth * 1.8)}`;
-                const isEmptyBranch = uniqueAheadCount <= 0;
-                const shouldDashLocalLane = hasUncommittedPreview || isEmptyBranch;
-                const branchGroupOpacity = 1;
-
-              return (
-                <g
-                  key={b.name}
-                  onMouseEnter={() => setHoveredBranch(b.name)}
-                  onMouseLeave={() => setHoveredBranch(null)}
-                  style={{ opacity: branchGroupOpacity, transition: 'opacity 0.15s' }}
-                >
-                  {/* Invisible wide hit target to make hover/click easier on thin SVG strokes */}
-                  <path
-                    d={hitCurvePath}
-                    fill="none"
-                    stroke={DEBUG_SHOW_BRANCH_HIT_AREAS ? DEBUG_BRANCH_HIT_AREA_COLOR : 'transparent'}
-                    strokeOpacity={DEBUG_SHOW_BRANCH_HIT_AREAS ? DEBUG_BRANCH_HIT_AREA_OPACITY : undefined}
-                    strokeWidth={branchHitStrokeWidth}
-                    strokeLinecap="butt"
-                    style={{
-                      pointerEvents: branchLaneHitPointerEvents,
-                      cursor: isEmptyBranch ? 'pointer' : undefined,
-                    }}
-                    onClick={(event) => {
-                      if (!isEmptyBranch) return;
-                      handleCommitNodeClick(event, b.headSha, b.name);
-                    }}
-                    onDoubleClick={(event) => event.stopPropagation()}
-                  />
-
-                  {/* Branch path — draws in. key="arc" keeps the DOM node stable so the
-                      CSS animation is never restarted when sibling elements change. */}
-                  <path
-                    key="arc"
-                    d={curvePath}
-                    fill="none"
-                    stroke={strokeColor}
-                    strokeWidth={fullBranchShouldUseLocalGray ? unpushedStrokeWidth : strokeWidth}
-                    strokeDasharray={fullBranchShouldUseLocalGray && shouldDashLocalLane ? unpushedLaneDasharray : undefined}
-                    strokeLinecap={fullBranchShouldUseLocalGray && shouldDashLocalLane ? 'round' : undefined}
-                    pathLength={fullBranchShouldUseLocalGray ? undefined : 1}
-                    className={drawPathArcClass}
-                    style={{
-                      '--delay': `${brDelay}ms`,
-                      transition: 'stroke 0.12s ease',
-                    } as React.CSSProperties}
-                  />
-                  {mergeBackPath && (
-                    <path
-                      d={mergeBackPath}
-                      fill="none"
-                      stroke={strokeColor}
-                      strokeWidth={fullBranchShouldUseLocalGray ? unpushedStrokeWidth : strokeWidth}
-                      strokeDasharray={fullBranchShouldUseLocalGray && shouldDashLocalLane ? unpushedLaneDasharray : undefined}
-                      strokeLinecap={fullBranchShouldUseLocalGray && shouldDashLocalLane ? 'round' : undefined}
-                      className={drawPathArcClass}
-                      style={{
-                        '--delay': `${brDelay}ms`,
-                        transition: 'stroke 0.12s ease',
-                      } as React.CSSProperties}
-                    />
-                  )}
-                  {!fullBranchShouldUseLocalGray && localSegmentStartY != null && (
-                    <path
-                      d={`M ${pathCoord(lanePosX, localSegmentStartY)} L ${pathCoord(lanePosX, branchLineTipY)}`}
-                      fill="none"
-                      stroke={
-                        isSelectedForMerge
-                          ? USER_SELECTION_STROKE
-                          : !isFocusedError && branchHasCheckedOutHead
-                            ? CHECKED_OUT_SELECTION_STROKE
+                      return orderedActiveBranches.map((b) => {
+                        const {
+                          lanePosX,
+                          branchLineTipY,
+                          mergeBackPath,
+                          curvePath,
+                          hitCurvePath,
+                          hasPreviewData,
+                          uniqueAheadCount,
+                          branchEndDotIndex,
+                          localCommitDotIndices,
+                          fullBranchShouldUseLocalGray,
+                          hasUncommittedPreview,
+                          localSegmentStartY,
+                          commitDotClusters,
+                          promptMarkerClusters,
+                          branchHasCheckedOutHead,
+                          brDelay,
+                          showClockIcon,
+                          clockPoint,
+                        } = getBranchRenderLayout(b);
+                        const isHovered = hoveredBranch === b.name || isNodeLineageHovered(b.name);
+                        const isSelectedForMerge = selectedBranchNameSet.has(b.name);
+                        const isFocusedError = focusedErrorBranch?.name === b.name;
+                        const focusedErrorColor = '#d97706';
+                        const neutralColor = CANVAS_NEUTRAL_GRAY;
+                        const color = isFocusedError ? focusedErrorColor : neutralColor;
+                        const strokeWidth = isFocusedError || isSelectedForMerge ? 2 : 1.5;
+                        const defaultStrokeColor =
+                          isSelectedForMerge
+                            ? USER_SELECTION_STROKE
                             : isHovered
                               ? CANVAS_NEUTRAL_GRAY_HOVER
-                              : LOCAL_UNPUSHED_GRAY
-                      }
-                      strokeWidth={unpushedStrokeWidth}
-                      strokeDasharray={shouldDashLocalLane ? unpushedLaneDasharray : undefined}
-                      strokeLinecap={shouldDashLocalLane ? 'round' : undefined}
-                      className={drawPathArcClass}
-                      style={{
-                        '--delay': `${brDelay}ms`,
-                      } as React.CSSProperties}
-                    />
-                  )}
+                              : color;
+                        const strokeColor =
+                          isSelectedForMerge
+                            ? USER_SELECTION_STROKE
+                            : !isFocusedError && branchHasCheckedOutHead
+                              ? CHECKED_OUT_SELECTION_STROKE
+                              : (
+                                fullBranchShouldUseLocalGray && !isFocusedError && !isHovered
+                                  ? LOCAL_UNPUSHED_GRAY
+                                  : defaultStrokeColor
+                              );
+                        const unpushedStrokeWidth = strokeWidth + UNPUSHED_LANE_STROKE_VISUAL_COMP;
+                        const unpushedLaneDasharray = `${Math.max(1, unpushedStrokeWidth)} ${Math.max(2, unpushedStrokeWidth * 1.8)}`;
+                        const isEmptyBranch = uniqueAheadCount <= 0;
+                        const shouldDashLocalLane = hasUncommittedPreview || isEmptyBranch;
+                        const branchGroupOpacity = 1;
 
-                  {/* Branch info — fades in as arc draws */}
-                  <g className={fadeInInfoClass} style={{ '--delay': `${brDelay + INFO_OFFSET}ms` } as React.CSSProperties}>
-                    {/* Prompt marker visuals render below commit nodes so branch dots stay on top. */}
-                    {promptMarkerClusters.map((cluster) => {
-                      const count = cluster.entries.length;
-                      const firstEntry = cluster.entries[0];
-                      const lastEntry = cluster.entries[count - 1];
-                      const clusterKey = `prompt-clump-${b.name}-${firstEntry.item.index}-${lastEntry.item.index}`;
-                      const memberKeys = cluster.entries.map((entry) => `prompt:${b.name}:slot-${entry.item.index}`);
-                      const animatedAnchor = resolveAnimatedClumpAnchor(
-                        clusterKey,
-                        { x: cluster.x, y: cluster.y },
-                        memberKeys
-                      );
-                      const anchorX = animatedAnchor.x;
-                      const anchorY = animatedAnchor.y;
-                      const markerSize =
-                        scaledNodeSize;
-                      const markerPath = promptMarkerPath(anchorX, anchorY, markerSize);
-                      const markerStrokeWidth = 1.2;
-                      const label = count > 1 ? clumpCountLabel(count) : '';
-                      const labelFontSize = nodeLabelFontSize(scaledNodeSize, count);
-
-                      return (
-                        <g key={`${clusterKey}-visual`} style={{ pointerEvents: 'none' }}>
-                          <path
-                            d={markerPath}
-                            fill="var(--background)"
-                            stroke="#14b8a6"
-                            strokeWidth={markerStrokeWidth}
-                            strokeLinejoin="round"
-                          />
-                          {count > 1 && (
-                            <text
-                              x={anchorX}
-                              y={anchorY}
-                              textAnchor="middle"
-                              dominantBaseline="middle"
-                              fill="#14b8a6"
-                              fontWeight={700}
-                              style={{
-                                fontVariantNumeric: 'tabular-nums',
-                                fontSize: `${labelFontSize / Math.max(layerCameraScale.x, 0.0001)}px`,
-                              }}
-                              data-base-font-size={labelFontSize}
-                            >
-                              {label}
-                            </text>
-                          )}
-                        </g>
-                      );
-                    })}
-
-                    {/* Commit markers along branch */}
-                    {commitDotClusters.map((cluster) => {
-                      const vm = buildBranchClusterViewModel(b.name, cluster, branchEndDotIndex);
-                      const motion = resolveClusterMotion(
-                        vm.clusterKey,
-                        { x: vm.preferredAnchorEntry.x, y: vm.preferredAnchorEntry.y },
-                        vm.memberKeys,
-                        vm.canExpandCluster,
-                      );
-                      const anchorX = motion.anchorX;
-                      const anchorY = motion.anchorY;
-                    const dotShouldUseCanvasFill =
-                      fullBranchShouldUseLocalGray ||
-                      cluster.entries.every((entry) => localCommitDotIndices.has(entry.item.index));
-                    const dotFill = dotShouldUseCanvasFill ? CANVAS_UNPUSHED_NODE_FILL : CANVAS_NODE_FILL;
-                    const dotStrokeWidth = CANVAS_NODE_STROKE_WIDTH;
-                    const dotStrokeInset = dotStrokeWidth / 2;
-                    const dotStrokeDasharray = undefined;
-                    const clusterHasBranchTip =
-                      branchEndDotIndex != null &&
-                      cluster.entries.some((entry) => entry.item.index === branchEndDotIndex);
-                    const clusterHasCheckedOutHead =
-                      checkedOutHeadSha != null &&
-                      cluster.entries.some((entry) => {
-                        const idx = entry.item.index;
-                        const commit = entry.item.commit;
-                        if (hasPreviewData && commit && commit.kind !== 'branch-created') {
-                          return (
-                            shaMatchesGitRef(commit.fullSha, checkedOutHeadSha) ||
-                            shaMatchesGitRef(commit.sha, checkedOutHeadSha)
-                          );
-                        }
-                        if (!hasPreviewData && checkedOutBranchName === b.name && branchEndDotIndex === idx) {
-                          return shaMatchesGitRef(b.headSha, checkedOutHeadSha);
-                        }
-                        return false;
-                      });
-                    const clusterHasSelectedCommit =
-                      cluster.entries.some((entry) => {
-                        const commitSha = entry.item.commit?.fullSha;
-                        return !!commitSha && selectedCommitShaSet.has(commitSha);
-                      });
-                    const clusterHasSelectedHead = clusterHasBranchTip && selectedBranchNameSet.has(b.name);
-
-                    if (vm.count <= 1) {
-                      const commitEntry = vm.renderEntries[0] ?? cluster.entries[cluster.entries.length - 1];
-                      const commit = commitEntry.item.commit;
-                      const isNonCommitPlaceholder = !commit && uniqueAheadCount <= 0;
-                      const isUncommittedCommit = commit?.kind === 'uncommitted';
-                      const targetCommitSha = commit?.fullSha ?? b.headSha;
-                      const tooltipAuthor = commit?.author ?? b.lastCommitAuthor;
-                      const tooltipDate = commit?.date ?? b.lastCommitDate;
-                      const tooltipSha = commit?.sha ?? b.headSha?.slice(0, 7) ?? '-------';
-                      const tooltipTitle = isUncommittedCommit
-                        ? 'Uncommited changes'
-                        : `Commit ${tooltipSha}`;
-                        const tooltipMessage = commit?.message;
-                        const showBranchAvatar = !!(
-                          commit &&
-                          b.lastCommitAuthorAvatar &&
-                          commit.author === b.lastCommitAuthor
-                        );
-                        const rectSize = commitRectSize(scaledNodeSize);
-                        const isGhostRect = isNonCommitPlaceholder;
-                        const ghostRectStrokeWidth = unpushedStrokeWidth;
-                        const ghostRectDasharray = unpushedLaneDasharray;
                         return (
-                          <g key={vm.clusterKey}>
-                            <rect
-                              className="branch-map-commit-rect"
-                              x={anchorX - rectSize.width / 2 + dotStrokeInset}
-                              y={anchorY - rectSize.height / 2 + dotStrokeInset}
-                              width={rectSize.width - dotStrokeWidth}
-                              height={rectSize.height - dotStrokeWidth}
-                              data-base-rx={rectSize.radius}
-                              rx={rectSize.radius / Math.max(layerCameraScale.x, 0.0001)}
-                              style={{ cursor: 'pointer' }}
-                              fill={dotFill}
-                              stroke={
-                                getNodeStrokeColor(
-                                  vm.clusterKey,
-                                  isGhostRect
-                                    ? LOCAL_UNPUSHED_GRAY
-                                    : isUncommittedCommit
-                                      ? CHECKED_OUT_SELECTION_STROKE
-                                      : CANVAS_NODE_STROKE,
-                                  clusterHasCheckedOutHead,
-                                  clusterHasSelectedCommit || clusterHasSelectedHead,
-                                )
-                              }
-                              strokeWidth={
-                                isGhostRect
-                                  ? ghostRectStrokeWidth
-                                  : dotStrokeWidth
-                              }
-                              strokeDasharray={
-                                isGhostRect
-                                  ? ghostRectDasharray
-                                  : isUncommittedCommit
-                                    ? '3 3'
-                                    : undefined
-                              }
-                              strokeLinecap={isGhostRect || isUncommittedCommit ? 'round' : undefined}
-                              strokeLinejoin={isGhostRect || isUncommittedCommit ? 'round' : undefined}
+                          <g
+                            key={b.name}
+                            onMouseEnter={() => setHoveredBranch(b.name)}
+                            onMouseLeave={() => setHoveredBranch(null)}
+                            style={{ opacity: branchGroupOpacity, transition: 'opacity 0.15s' }}
+                          >
+                            {/* Invisible wide hit target to make hover/click easier on thin SVG strokes */}
+                            <path
+                              d={hitCurvePath}
+                              fill="none"
+                              stroke={DEBUG_SHOW_BRANCH_HIT_AREAS ? DEBUG_BRANCH_HIT_AREA_COLOR : 'transparent'}
+                              strokeOpacity={DEBUG_SHOW_BRANCH_HIT_AREAS ? DEBUG_BRANCH_HIT_AREA_OPACITY : undefined}
+                              strokeWidth={branchHitStrokeWidth}
+                              strokeLinecap="butt"
+                              style={{
+                                pointerEvents: branchLaneHitPointerEvents,
+                                cursor: isEmptyBranch ? 'pointer' : undefined,
+                              }}
                               onClick={(event) => {
-                                if (isNonCommitPlaceholder) {
-                                  handleCommitNodeClick(event, b.headSha, b.name);
-                                  return;
-                                }
-                                handleCommitNodeClick(
-                                  event,
-                                  targetCommitSha,
-                                  clusterHasBranchTip ? b.name : undefined,
-                                );
+                                if (!isEmptyBranch) return;
+                                handleCommitNodeClick(event, b.headSha, b.name);
                               }}
                               onDoubleClick={(event) => event.stopPropagation()}
-                              onMouseEnter={() => {
-                                handleNodeHoverEnter(vm.clusterKey, b.name);
-                                setTooltip({
-                                  x: anchorX,
-                                  y: anchorY,
-                                  lines: isNonCommitPlaceholder
-                                    ? [
-                                      `No unique commits`,
-                                      `Branch ${b.name}`,
-                                      `Click to check out this branch`,
-                                    ]
-                                    : [
-                                      tooltipTitle,
-                                      tooltipMessage
-                                        ? truncatePrompt(tooltipMessage, COMMIT_TOOLTIP_PREVIEW_MAX)
-                                        : `@${tooltipAuthor}`,
-                                      `@${tooltipAuthor} · ${fmtTooltipDate(tooltipDate)}`,
-                                    ],
-                                  avatarUrl:
-                                    !isNonCommitPlaceholder && showBranchAvatar
-                                      ? b.lastCommitAuthorAvatar
-                                      : undefined,
-                                  avatarFallback:
-                                    !isNonCommitPlaceholder
-                                      ? (tooltipAuthor?.charAt(0).toUpperCase() || '?')
-                                      : undefined,
-                                });
-                              }}
-                              onMouseLeave={() => {
-                                handleNodeHoverLeave();
-                                setTooltip(null);
-                              }}
                             />
+
+                            {/* Branch path — draws in. key="arc" keeps the DOM node stable so the
+                      CSS animation is never restarted when sibling elements change. */}
+                            <path
+                              key="arc"
+                              d={curvePath}
+                              fill="none"
+                              stroke={strokeColor}
+                              strokeWidth={fullBranchShouldUseLocalGray ? unpushedStrokeWidth : strokeWidth}
+                              strokeDasharray={fullBranchShouldUseLocalGray && shouldDashLocalLane ? unpushedLaneDasharray : undefined}
+                              strokeLinecap={fullBranchShouldUseLocalGray && shouldDashLocalLane ? 'round' : undefined}
+                              pathLength={fullBranchShouldUseLocalGray ? undefined : 1}
+                              className={drawPathArcClass}
+                              style={{
+                                '--delay': `${brDelay}ms`,
+                                transition: 'stroke 0.12s ease',
+                              } as React.CSSProperties}
+                            />
+                            {mergeBackPath && (
+                              <path
+                                d={mergeBackPath}
+                                fill="none"
+                                stroke={strokeColor}
+                                strokeWidth={fullBranchShouldUseLocalGray ? unpushedStrokeWidth : strokeWidth}
+                                strokeDasharray={fullBranchShouldUseLocalGray && shouldDashLocalLane ? unpushedLaneDasharray : undefined}
+                                strokeLinecap={fullBranchShouldUseLocalGray && shouldDashLocalLane ? 'round' : undefined}
+                                className={drawPathArcClass}
+                                style={{
+                                  '--delay': `${brDelay}ms`,
+                                  transition: 'stroke 0.12s ease',
+                                } as React.CSSProperties}
+                              />
+                            )}
+                            {!fullBranchShouldUseLocalGray && localSegmentStartY != null && (
+                              <path
+                                d={`M ${pathCoord(lanePosX, localSegmentStartY)} L ${pathCoord(lanePosX, branchLineTipY)}`}
+                                fill="none"
+                                stroke={
+                                  isSelectedForMerge
+                                    ? USER_SELECTION_STROKE
+                                    : !isFocusedError && branchHasCheckedOutHead
+                                      ? CHECKED_OUT_SELECTION_STROKE
+                                      : isHovered
+                                        ? CANVAS_NEUTRAL_GRAY_HOVER
+                                        : LOCAL_UNPUSHED_GRAY
+                                }
+                                strokeWidth={unpushedStrokeWidth}
+                                strokeDasharray={shouldDashLocalLane ? unpushedLaneDasharray : undefined}
+                                strokeLinecap={shouldDashLocalLane ? 'round' : undefined}
+                                className={drawPathArcClass}
+                                style={{
+                                  '--delay': `${brDelay}ms`,
+                                } as React.CSSProperties}
+                              />
+                            )}
+
+                            {/* Branch info — fades in as arc draws */}
+                            <g className={fadeInInfoClass} style={{ '--delay': `${brDelay + INFO_OFFSET}ms` } as React.CSSProperties}>
+                              {/* Prompt marker visuals render below commit nodes so branch dots stay on top. */}
+                              {promptMarkerClusters.map((cluster) => {
+                                const count = cluster.entries.length;
+                                const firstEntry = cluster.entries[0];
+                                const lastEntry = cluster.entries[count - 1];
+                                const clusterKey = `prompt-clump-${b.name}-${firstEntry.item.index}-${lastEntry.item.index}`;
+                                const memberKeys = cluster.entries.map((entry) => `prompt:${b.name}:slot-${entry.item.index}`);
+                                const animatedAnchor = resolveAnimatedClumpAnchor(
+                                  clusterKey,
+                                  { x: cluster.x, y: cluster.y },
+                                  memberKeys
+                                );
+                                const anchorX = animatedAnchor.x;
+                                const anchorY = animatedAnchor.y;
+                                const markerSize =
+                                  scaledNodeSize;
+                                const markerPath = promptMarkerPath(anchorX, anchorY, markerSize);
+                                const markerStrokeWidth = 1.2;
+                                const label = count > 1 ? clumpCountLabel(count) : '';
+                                const labelFontSize = nodeLabelFontSize(scaledNodeSize, count);
+
+                                return (
+                                  <g key={`${clusterKey}-visual`} style={{ pointerEvents: 'none' }}>
+                                    <path
+                                      d={markerPath}
+                                      fill="var(--background)"
+                                      stroke="#14b8a6"
+                                      strokeWidth={markerStrokeWidth}
+                                      strokeLinejoin="round"
+                                    />
+                                    {count > 1 && (
+                                      <text
+                                        x={anchorX}
+                                        y={anchorY}
+                                        textAnchor="middle"
+                                        dominantBaseline="middle"
+                                        fill="#14b8a6"
+                                        fontWeight={700}
+                                        style={{
+                                          fontVariantNumeric: 'tabular-nums',
+                                          fontSize: `${labelFontSize / Math.max(layerCameraScale.x, 0.0001)}px`,
+                                        }}
+                                        data-base-font-size={labelFontSize}
+                                      >
+                                        {label}
+                                      </text>
+                                    )}
+                                  </g>
+                                );
+                              })}
+
+                              {/* Commit markers along branch */}
+                              {commitDotClusters.map((cluster) => {
+                                const vm = buildBranchClusterViewModel(b.name, cluster, branchEndDotIndex);
+                                const motion = resolveClusterMotion(
+                                  vm.clusterKey,
+                                  { x: vm.preferredAnchorEntry.x, y: vm.preferredAnchorEntry.y },
+                                  vm.memberKeys,
+                                  vm.canExpandCluster,
+                                );
+                                const anchorX = motion.anchorX;
+                                const anchorY = motion.anchorY;
+                                const dotShouldUseCanvasFill =
+                                  fullBranchShouldUseLocalGray ||
+                                  cluster.entries.every((entry) => localCommitDotIndices.has(entry.item.index));
+                                const dotFill = dotShouldUseCanvasFill ? CANVAS_UNPUSHED_NODE_FILL : CANVAS_NODE_FILL;
+                                const dotStrokeWidth = CANVAS_NODE_STROKE_WIDTH;
+                                const dotStrokeInset = dotStrokeWidth / 2;
+                                const dotStrokeDasharray = undefined;
+                                const clusterHasBranchTip =
+                                  branchEndDotIndex != null &&
+                                  cluster.entries.some((entry) => entry.item.index === branchEndDotIndex);
+                                const clusterHasCheckedOutHead =
+                                  checkedOutHeadSha != null &&
+                                  cluster.entries.some((entry) => {
+                                    const idx = entry.item.index;
+                                    const commit = entry.item.commit;
+                                    if (hasPreviewData && commit && commit.kind !== 'branch-created') {
+                                      return (
+                                        shaMatchesGitRef(commit.fullSha, checkedOutHeadSha) ||
+                                        shaMatchesGitRef(commit.sha, checkedOutHeadSha)
+                                      );
+                                    }
+                                    if (!hasPreviewData && checkedOutBranchName === b.name && branchEndDotIndex === idx) {
+                                      return shaMatchesGitRef(b.headSha, checkedOutHeadSha);
+                                    }
+                                    return false;
+                                  });
+                                const clusterHasSelectedCommit =
+                                  cluster.entries.some((entry) => {
+                                    const commitSha = entry.item.commit?.fullSha;
+                                    return !!commitSha && selectedCommitShaSet.has(commitSha);
+                                  });
+                                const clusterHasSelectedHead = clusterHasBranchTip && selectedBranchNameSet.has(b.name);
+
+                                if (vm.count <= 1) {
+                                  const commitEntry = vm.renderEntries[0] ?? cluster.entries[cluster.entries.length - 1];
+                                  const commit = commitEntry.item.commit;
+                                  const isNonCommitPlaceholder = !commit && uniqueAheadCount <= 0;
+                                  const isUncommittedCommit = commit?.kind === 'uncommitted';
+                                  const targetCommitSha = commit?.fullSha ?? b.headSha;
+                                  const tooltipAuthor = commit?.author ?? b.lastCommitAuthor;
+                                  const tooltipDate = commit?.date ?? b.lastCommitDate;
+                                  const tooltipSha = commit?.sha ?? b.headSha?.slice(0, 7) ?? '-------';
+                                  const tooltipTitle = isUncommittedCommit
+                                    ? 'Uncommited changes'
+                                    : `Commit ${tooltipSha}`;
+                                  const tooltipMessage = commit?.message;
+                                  const showBranchAvatar = !!(
+                                    commit &&
+                                    b.lastCommitAuthorAvatar &&
+                                    commit.author === b.lastCommitAuthor
+                                  );
+                                  const rectSize = commitRectSize(scaledNodeSize);
+                                  const isGhostRect = isNonCommitPlaceholder;
+                                  const ghostRectStrokeWidth = unpushedStrokeWidth;
+                                  const ghostRectDasharray = unpushedLaneDasharray;
+                                  return (
+                                    <g key={vm.clusterKey}>
+                                      <rect
+                                        className="branch-map-commit-rect"
+                                        x={anchorX - rectSize.width / 2 + dotStrokeInset}
+                                        y={anchorY - rectSize.height / 2 + dotStrokeInset}
+                                        width={rectSize.width - dotStrokeWidth}
+                                        height={rectSize.height - dotStrokeWidth}
+                                        data-base-rx={rectSize.radius}
+                                        rx={rectSize.radius / Math.max(layerCameraScale.x, 0.0001)}
+                                        style={{ cursor: 'pointer' }}
+                                        fill={dotFill}
+                                        stroke={
+                                          getNodeStrokeColor(
+                                            vm.clusterKey,
+                                            isGhostRect
+                                              ? LOCAL_UNPUSHED_GRAY
+                                              : isUncommittedCommit
+                                                ? CHECKED_OUT_SELECTION_STROKE
+                                                : CANVAS_NODE_STROKE,
+                                            clusterHasCheckedOutHead,
+                                            clusterHasSelectedCommit || clusterHasSelectedHead,
+                                          )
+                                        }
+                                        strokeWidth={
+                                          isGhostRect
+                                            ? ghostRectStrokeWidth
+                                            : dotStrokeWidth
+                                        }
+                                        strokeDasharray={
+                                          isGhostRect
+                                            ? ghostRectDasharray
+                                            : isUncommittedCommit
+                                              ? '3 3'
+                                              : undefined
+                                        }
+                                        strokeLinecap={isGhostRect || isUncommittedCommit ? 'round' : undefined}
+                                        strokeLinejoin={isGhostRect || isUncommittedCommit ? 'round' : undefined}
+                                        onClick={(event) => {
+                                          if (isNonCommitPlaceholder) {
+                                            handleCommitNodeClick(event, b.headSha, b.name);
+                                            return;
+                                          }
+                                          handleCommitNodeClick(
+                                            event,
+                                            targetCommitSha,
+                                            clusterHasBranchTip ? b.name : undefined,
+                                          );
+                                        }}
+                                        onDoubleClick={(event) => event.stopPropagation()}
+                                        onMouseEnter={() => {
+                                          handleNodeHoverEnter(vm.clusterKey, b.name);
+                                          setTooltip({
+                                            x: anchorX,
+                                            y: anchorY,
+                                            lines: isNonCommitPlaceholder
+                                              ? [
+                                                `No unique commits`,
+                                                `Branch ${b.name}`,
+                                                `Click to check out this branch`,
+                                              ]
+                                              : [
+                                                tooltipTitle,
+                                                tooltipMessage
+                                                  ? truncatePrompt(tooltipMessage, COMMIT_TOOLTIP_PREVIEW_MAX)
+                                                  : `@${tooltipAuthor}`,
+                                                `@${tooltipAuthor} · ${fmtTooltipDate(tooltipDate)}`,
+                                              ],
+                                            avatarUrl:
+                                              !isNonCommitPlaceholder && showBranchAvatar
+                                                ? b.lastCommitAuthorAvatar
+                                                : undefined,
+                                            avatarFallback:
+                                              !isNonCommitPlaceholder
+                                                ? (tooltipAuthor?.charAt(0).toUpperCase() || '?')
+                                                : undefined,
+                                          });
+                                        }}
+                                        onMouseLeave={() => {
+                                          handleNodeHoverLeave();
+                                          setTooltip(null);
+                                        }}
+                                      />
+                                    </g>
+                                  );
+                                }
+
+                                const firstRealEntry = vm.renderEntries[0] ?? cluster.entries[0];
+                                const lastRealEntry = vm.renderEntries[vm.renderEntries.length - 1] ?? cluster.entries[cluster.entries.length - 1];
+                                const firstDate = firstRealEntry.item.commit?.date ?? b.lastCommitDate;
+                                const lastDate = lastRealEntry.item.commit?.date ?? b.lastCommitDate;
+                                const dateRangeLabel = new Date(firstDate).getTime() === new Date(lastDate).getTime()
+                                  ? fmtTooltipDate(lastDate)
+                                  : `${fmtTooltipDate(firstDate)} → ${fmtTooltipDate(lastDate)}`;
+                                const latestAuthor = lastRealEntry.item.commit?.author ?? b.lastCommitAuthor;
+                                const latestCommitMessage = lastRealEntry.item.commit?.message
+                                  ? truncatePrompt(lastRealEntry.item.commit.message, COMMIT_CLUSTER_PREVIEW_MAX)
+                                  : `on ${b.name}`;
+
+                                const clusterHasUncommitted = vm.renderEntries.some(
+                                  (entry) => entry.item.commit?.kind === 'uncommitted'
+                                );
+                                const isExpanded = motion.isExpanded;
+                                const phase = motion.phase;
+                                const phaseEased = motion.phaseEased;
+                                const rectSize = nodeRectSize(vm.count);
+                                // Expanded members represent single commits in grid layout.
+                                const localRect = commitRectSize(scaledNodeSize, 0);
+
+                                return (
+                                  <g key={vm.clusterKey}>
+                                    {!isExpanded && (
+                                      <g style={{ pointerEvents: 'none' }}>
+                                        <rect
+                                          className="branch-map-commit-rect"
+                                          x={anchorX - rectSize.width / 2 + dotStrokeInset}
+                                          y={anchorY - rectSize.height / 2 + dotStrokeInset}
+                                          width={rectSize.width - dotStrokeWidth}
+                                          height={rectSize.height - dotStrokeWidth}
+                                          data-base-rx={rectSize.radius}
+                                          rx={rectSize.radius / Math.max(layerCameraScale.x, 0.0001)}
+                                          fill={dotFill}
+                                          stroke={getNodeStrokeColor(
+                                            vm.clusterKey,
+                                            clusterHasUncommitted ? CHECKED_OUT_SELECTION_STROKE : CANVAS_NODE_STROKE,
+                                            clusterHasCheckedOutHead,
+                                            clusterHasSelectedCommit || clusterHasSelectedHead,
+                                          )}
+                                          strokeWidth={dotStrokeWidth}
+                                          strokeDasharray={clusterHasUncommitted ? '3 3' : dotStrokeDasharray}
+                                          strokeLinecap={clusterHasUncommitted ? 'round' : undefined}
+                                          strokeLinejoin={clusterHasUncommitted ? 'round' : undefined}
+                                        />
+                                      </g>
+                                    )}
+
+                                    {/* Collapsed-only overlay hit target (on top) so clicks never fall through. */}
+                                    {!isExpanded && (() => {
+                                      const pad = worldPx(6);
+                                      const hit = collapsedClumpHitRect(
+                                        anchorX,
+                                        anchorY,
+                                        rectSize,
+                                        pad
+                                      );
+                                      return (
+                                        <rect
+                                          x={hit.x}
+                                          y={hit.y}
+                                          width={hit.width}
+                                          height={hit.height}
+                                          fill="transparent"
+                                          style={{ cursor: vm.canExpandCluster ? 'pointer' : 'default' }}
+                                          onPointerDown={(e) => { e.preventDefault(); e.stopPropagation(); }}
+                                          onMouseDown={(e) => { e.preventDefault(); e.stopPropagation(); }}
+                                          onClick={(e) => {
+                                            e.preventDefault();
+                                            e.stopPropagation();
+                                            if (vm.canExpandCluster) toggleClumpExpanded(vm.clusterKey);
+                                          }}
+                                          onDoubleClick={(event) => {
+                                            event.preventDefault();
+                                            event.stopPropagation();
+                                          }}
+                                          onMouseEnter={() => {
+                                            handleNodeHoverEnter(vm.clusterKey, b.name);
+                                            setTooltip({
+                                              x: anchorX,
+                                              y: anchorY,
+                                              lines: [`${vm.count} commits`, latestCommitMessage, dateRangeLabel],
+                                              avatarFallback: latestAuthor?.charAt(0).toUpperCase() || '?',
+                                            });
+                                          }}
+                                          onMouseLeave={() => {
+                                            handleNodeHoverLeave();
+                                            setTooltip(null);
+                                          }}
+                                        />
+                                      );
+                                    })()}
+
+                                    {isExpanded && (
+                                      <g>
+                                        {vm.renderEntries.map((entry) => {
+                                          const commit = entry.item.commit;
+                                          if (!commit?.fullSha) return null;
+                                          const isCheckedOutCommit =
+                                            checkedOutHeadSha != null &&
+                                            (shaMatchesGitRef(commit.fullSha, checkedOutHeadSha) ||
+                                              shaMatchesGitRef(commit.sha, checkedOutHeadSha));
+                                          const tooltipAuthor = commit.author ?? b.lastCommitAuthor;
+                                          const tooltipDate = commit.date ?? b.lastCommitDate;
+                                          const tooltipSha = commit.sha ?? commit.fullSha.slice(0, 7);
+                                          const tooltipMessage = commit.message;
+                                          const isUncommittedCommit = commit.kind === 'uncommitted';
+                                          const tooltipTitle = isUncommittedCommit
+                                            ? 'Uncommited changes'
+                                            : `Commit ${tooltipSha}`;
+
+                                          const memberPose = interpolateExpandedEntryPose(
+                                            { x: anchorX, y: anchorY },
+                                            { x: entry.x, y: entry.y },
+                                            phase,
+                                            phaseEased,
+                                          );
+                                          const commitKey = `branch-commit:${b.name}:${commit.fullSha}`;
+
+                                          return (
+                                            <g
+                                              key={commitKey}
+                                              transform={`translate(${memberPose.x} ${memberPose.y})`}
+                                              style={{ ...clumpAnimStyleForPhase(phase), pointerEvents: phase === 'expanded' ? 'auto' : 'none' }}
+                                              opacity={memberPose.opacity}
+                                            >
+                                              <g transform={`scale(${memberPose.scale})`}>
+                                                <rect
+                                                  className="branch-map-commit-rect"
+                                                  x={-localRect.width / 2 + dotStrokeInset}
+                                                  y={-localRect.height / 2 + dotStrokeInset}
+                                                  width={localRect.width - dotStrokeWidth}
+                                                  height={localRect.height - dotStrokeWidth}
+                                                  data-base-rx={localRect.radius}
+                                                  rx={localRect.radius / Math.max(layerCameraScale.x, 0.0001)}
+                                                  fill={dotFill}
+                                                  stroke={getNodeStrokeColor(
+                                                    commitKey,
+                                                    isUncommittedCommit ? CHECKED_OUT_SELECTION_STROKE : CANVAS_NODE_STROKE,
+                                                    isCheckedOutCommit,
+                                                    selectedCommitShaSet.has(commit.fullSha) ||
+                                                    (clusterHasSelectedHead && commit.fullSha === b.headSha),
+                                                  )}
+                                                  strokeWidth={dotStrokeWidth}
+                                                  strokeDasharray={isUncommittedCommit ? '3 3' : dotStrokeDasharray}
+                                                  strokeLinecap={isUncommittedCommit ? 'round' : undefined}
+                                                  strokeLinejoin={isUncommittedCommit ? 'round' : undefined}
+                                                  style={{ cursor: 'pointer' }}
+                                                  onClick={(event) =>
+                                                    handleCommitNodeClick(
+                                                      event,
+                                                      commit.fullSha,
+                                                      clusterHasBranchTip && commit.fullSha === b.headSha
+                                                        ? b.name
+                                                        : undefined,
+                                                    )
+                                                  }
+                                                  onDoubleClick={(event) => event.stopPropagation()}
+                                                  onMouseEnter={() => {
+                                                    handleNodeHoverEnter(commitKey, b.name);
+                                                    setTooltip({
+                                                      x: entry.x,
+                                                      y: entry.y,
+                                                      lines: [
+                                                        tooltipTitle,
+                                                        tooltipMessage
+                                                          ? truncatePrompt(tooltipMessage, COMMIT_TOOLTIP_PREVIEW_MAX)
+                                                          : `@${tooltipAuthor}`,
+                                                        `@${tooltipAuthor} · ${fmtTooltipDate(tooltipDate)}`,
+                                                      ],
+                                                      avatarFallback: tooltipAuthor?.charAt(0).toUpperCase() || '?',
+                                                    });
+                                                  }}
+                                                  onMouseLeave={() => {
+                                                    handleNodeHoverLeave();
+                                                    setTooltip(null);
+                                                  }}
+                                                />
+                                              </g>
+                                            </g>
+                                          );
+                                        })}
+                                      </g>
+                                    )}
+                                  </g>
+                                );
+                              })}
+                              {/* Prompt marker hit areas stay on top so hover remains easy. */}
+                              {promptMarkerClusters.map((cluster) => {
+                                const count = cluster.entries.length;
+                                const firstEntry = cluster.entries[0];
+                                const lastEntry = cluster.entries[count - 1];
+                                const clusterKey = `prompt-clump-${b.name}-${firstEntry.item.index}-${lastEntry.item.index}`;
+                                const memberKeys = cluster.entries.map((entry) => `prompt:${b.name}:slot-${entry.item.index}`);
+                                const animatedAnchor = resolveAnimatedClumpAnchor(
+                                  clusterKey,
+                                  { x: cluster.x, y: cluster.y },
+                                  memberKeys
+                                );
+                                const anchorX = animatedAnchor.x;
+                                const anchorY = animatedAnchor.y;
+                                const hitSize = scaledHoverHitSize;
+
+                                if (count === 1) {
+                                  const marker = lastEntry.item.marker;
+                                  return (
+                                    <g key={`${clusterKey}-hit`}>
+                                      <rect
+                                        x={anchorX - hitSize / 2}
+                                        y={anchorY - hitSize / 2}
+                                        width={hitSize}
+                                        height={hitSize}
+                                        fill="transparent"
+                                        style={{ cursor: 'pointer' }}
+                                        onMouseEnter={() =>
+                                          setTooltip({
+                                            x: anchorX,
+                                            y: anchorY,
+                                            lines: [
+                                              'Prompt',
+                                              truncatePrompt(marker.prompt, PROMPT_TOOLTIP_PREVIEW_MAX),
+                                              `${marker.agent} · ${fmtTooltipDate(marker.timestamp)}`,
+                                            ],
+                                          })
+                                        }
+                                        onMouseLeave={() => setTooltip(null)}
+                                      />
+                                    </g>
+                                  );
+                                }
+
+                                const firstDate = firstEntry.item.marker.timestamp;
+                                const lastDate = lastEntry.item.marker.timestamp;
+                                const dateRangeLabel = new Date(firstDate).getTime() === new Date(lastDate).getTime()
+                                  ? fmtTooltipDate(lastDate)
+                                  : `${fmtTooltipDate(firstDate)} → ${fmtTooltipDate(lastDate)}`;
+                                const latestPrompt = truncatePrompt(lastEntry.item.marker.prompt, PROMPT_CLUSTER_PREVIEW_MAX);
+                                return (
+                                  <g key={`${clusterKey}-hit`}>
+                                    <rect
+                                      x={anchorX - hitSize / 2}
+                                      y={anchorY - hitSize / 2}
+                                      width={hitSize}
+                                      height={hitSize}
+                                      fill="transparent"
+                                      style={{ cursor: 'pointer' }}
+                                      onMouseEnter={() =>
+                                        setTooltip({
+                                          x: anchorX,
+                                          y: anchorY,
+                                          lines: [`${count} prompts`, latestPrompt, dateRangeLabel],
+                                        })
+                                      }
+                                      onMouseLeave={() => setTooltip(null)}
+                                    />
+                                  </g>
+                                );
+                              })}
+                              {showClockIcon && (
+                                <g style={{ pointerEvents: 'none' }}>
+                                  <circle cx={clockPoint.x} cy={clockPoint.y} r={4.2} stroke={color} strokeWidth={1.2} fill="none" />
+                                  <line x1={clockPoint.x} y1={clockPoint.y - 2.9} x2={clockPoint.x} y2={clockPoint.y} stroke={color} strokeWidth={1.2} strokeLinecap="round" />
+                                  <line x1={clockPoint.x} y1={clockPoint.y} x2={clockPoint.x + 2.3} y2={clockPoint.y + 1.5} stroke={color} strokeWidth={1.2} strokeLinecap="round" />
+                                </g>
+                              )}
+                            </g>
+
+                            {/* Status labels are conflict-aware upstream; conflict indicator was removed. */}
                           </g>
                         );
-                      }
+                      });
+                    })()}
+                  </g>
 
-                      const firstRealEntry = vm.renderEntries[0] ?? cluster.entries[0];
-                      const lastRealEntry = vm.renderEntries[vm.renderEntries.length - 1] ?? cluster.entries[cluster.entries.length - 1];
-                      const firstDate = firstRealEntry.item.commit?.date ?? b.lastCommitDate;
-                      const lastDate = lastRealEntry.item.commit?.date ?? b.lastCommitDate;
-                      const dateRangeLabel = new Date(firstDate).getTime() === new Date(lastDate).getTime()
-                        ? fmtTooltipDate(lastDate)
-                        : `${fmtTooltipDate(firstDate)} → ${fmtTooltipDate(lastDate)}`;
-                      const latestAuthor = lastRealEntry.item.commit?.author ?? b.lastCommitAuthor;
-                      const latestCommitMessage = lastRealEntry.item.commit?.message
-                        ? truncatePrompt(lastRealEntry.item.commit.message, COMMIT_CLUSTER_PREVIEW_MAX)
-                        : `on ${b.name}`;
-
-                      const clusterHasUncommitted = vm.renderEntries.some(
-                        (entry) => entry.item.commit?.kind === 'uncommitted'
+                  {/* Checked-out connector line (render below node overlays). */}
+                  {checkedOutHasUncommittedChanges && checkedOutDisplayIndicatorLocal && checkedOutIndicatorLocal && (() => {
+                    const markerLocal = checkedOutDisplayIndicatorLocal;
+                    const anchorLocal = checkedOutIndicatorLocal;
+                    const hasHorizontalOffset = Math.abs(markerLocal.x - anchorLocal.x) > 0.5;
+                    const hasVerticalOffset = Math.abs(markerLocal.y - anchorLocal.y) > 0.5;
+                    const forkPath = (() => {
+                      if (!hasHorizontalOffset || !hasVerticalOffset) return null;
+                      const horizontalDir = markerLocal.x >= anchorLocal.x ? 1 : -1;
+                      const verticalDir = markerLocal.y >= anchorLocal.y ? 1 : -1;
+                      const bend = Math.min(
+                        cornerR,
+                        Math.abs(markerLocal.x - anchorLocal.x),
+                        Math.abs(markerLocal.y - anchorLocal.y),
                       );
-                      const isExpanded = motion.isExpanded;
-                      const phase = motion.phase;
-                      const phaseEased = motion.phaseEased;
-                      const rectSize = nodeRectSize(vm.count);
-                      // Expanded members represent single commits in grid layout.
-                      const localRect = commitRectSize(scaledNodeSize, 0);
+                      const preTurnX = markerLocal.x - horizontalDir * bend;
+                      const turnY = anchorLocal.y + verticalDir * bend;
+                      return `M ${pathCoord(anchorLocal.x, anchorLocal.y)} L ${pathCoord(preTurnX, anchorLocal.y)} Q ${pathCoord(markerLocal.x, anchorLocal.y)} ${pathCoord(markerLocal.x, turnY)} L ${pathCoord(markerLocal.x, markerLocal.y)}`;
+                    })();
+                    const straightPath = `M ${pathCoord(anchorLocal.x, anchorLocal.y)} L ${pathCoord(markerLocal.x, markerLocal.y)}`;
+                    return (
+                      <g style={{ pointerEvents: 'none' }}>
+                        <path
+                          d={forkPath ?? straightPath}
+                          fill="none"
+                          stroke={CHECKED_OUT_SELECTION_STROKE}
+                          strokeWidth={1.5}
+                          pathLength={1}
+                          vectorEffect="non-scaling-stroke"
+                        />
+                      </g>
+                    );
+                  })()}
 
-                      return (
-                        <g key={vm.clusterKey}>
-                          {!isExpanded && (
-                            <g style={{ pointerEvents: 'none' }}>
-                              <rect
-                                className="branch-map-commit-rect"
-                                x={anchorX - rectSize.width / 2 + dotStrokeInset}
-                                y={anchorY - rectSize.height / 2 + dotStrokeInset}
-                                width={rectSize.width - dotStrokeWidth}
-                                height={rectSize.height - dotStrokeWidth}
-                                data-base-rx={rectSize.radius}
-                                rx={rectSize.radius / Math.max(layerCameraScale.x, 0.0001)}
-                                fill={dotFill}
-                                stroke={getNodeStrokeColor(
-                                  vm.clusterKey,
-                                  clusterHasUncommitted ? CHECKED_OUT_SELECTION_STROKE : CANVAS_NODE_STROKE,
-                                  clusterHasCheckedOutHead,
-                                  clusterHasSelectedCommit || clusterHasSelectedHead,
-                                )}
-                                strokeWidth={dotStrokeWidth}
-                                strokeDasharray={clusterHasUncommitted ? '3 3' : dotStrokeDasharray}
-                                strokeLinecap={clusterHasUncommitted ? 'round' : undefined}
-                                strokeLinejoin={clusterHasUncommitted ? 'round' : undefined}
-                              />
-                            </g>
-                          )}
+                  {/* Branch commit node overlay so branch connectors/lanes never render over branch rectangles. */}
+                  <g style={{ opacity: hoveredPR !== null ? 0.2 : 1, transition: 'opacity 0.15s', pointerEvents: 'none' }}>
+                    {(() => {
+                      const orderedActiveBranches = orderedActiveBranchesForLayer({
+                        includeSelectedPriority: false,
+                      });
 
-                          {/* Collapsed-only overlay hit target (on top) so clicks never fall through. */}
-                          {!isExpanded && (() => {
-                            const pad = worldPx(6);
-                            const hit = collapsedClumpHitRect(
-                              anchorX,
-                              anchorY,
-                              rectSize,
-                              pad
-                            );
+                      return orderedActiveBranches.flatMap((b) => {
+                        const {
+                          hasPreviewData,
+                          uniqueAheadCount,
+                          branchEndDotIndex,
+                          localCommitDotIndices,
+                          fullBranchShouldUseLocalGray,
+                          commitDotClusters,
+                        } = getBranchRenderLayout(b);
+                        const isFocusedError = focusedErrorBranch?.name === b.name;
+                        const strokeWidth = isFocusedError ? 2 : 1.5;
+                        const unpushedStrokeWidth = strokeWidth + UNPUSHED_LANE_STROKE_VISUAL_COMP;
+                        const unpushedLaneDasharray = `${Math.max(1, unpushedStrokeWidth)} ${Math.max(2, unpushedStrokeWidth * 1.8)}`;
+
+                        return commitDotClusters.map((cluster) => {
+                          const { realCommitEntries, renderEntries } = resolveBranchClusterEntries(cluster);
+                          const count = renderEntries.length;
+                          const clusterKey = branchClusterKey(b.name, cluster);
+                          const memberKeys = branchClusterMemberKeys(b.name, cluster);
+                          const preferredAnchorEntry = branchPreferredAnchorEntry(
+                            cluster,
+                            realCommitEntries,
+                            branchEndDotIndex,
+                          );
+                          const animatedAnchor = resolveAnimatedClumpAnchor(
+                            clusterKey,
+                            { x: preferredAnchorEntry.x, y: preferredAnchorEntry.y },
+                            memberKeys
+                          );
+                          const anchorX = animatedAnchor.x;
+                          const anchorY = animatedAnchor.y;
+                          const dotShouldUseCanvasFill =
+                            fullBranchShouldUseLocalGray ||
+                            cluster.entries.every((entry) => localCommitDotIndices.has(entry.item.index));
+                          const dotFill = dotShouldUseCanvasFill ? CANVAS_UNPUSHED_NODE_FILL : CANVAS_NODE_FILL;
+                          const dotStrokeWidth = CANVAS_NODE_STROKE_WIDTH;
+                          const dotStrokeInset = dotStrokeWidth / 2;
+                          const clusterHasCheckedOutHead =
+                            checkedOutHeadSha != null &&
+                            cluster.entries.some((entry) => {
+                              const idx = entry.item.index;
+                              const commit = entry.item.commit;
+                              if (hasPreviewData && commit && commit.kind !== 'branch-created') {
+                                return (
+                                  shaMatchesGitRef(commit.fullSha, checkedOutHeadSha) ||
+                                  shaMatchesGitRef(commit.sha, checkedOutHeadSha)
+                                );
+                              }
+                              if (!hasPreviewData && checkedOutBranchName === b.name && branchEndDotIndex === idx) {
+                                return shaMatchesGitRef(b.headSha, checkedOutHeadSha);
+                              }
+                              return false;
+                            });
+                          const clusterHasSelectedCommit =
+                            cluster.entries.some((entry) => {
+                              const commitSha = entry.item.commit?.fullSha;
+                              return !!commitSha && selectedCommitShaSet.has(commitSha);
+                            });
+                          const clusterHasSelectedHead =
+                            branchEndDotIndex != null &&
+                            cluster.entries.some((entry) => entry.item.index === branchEndDotIndex) &&
+                            selectedBranchNameSet.has(b.name);
+
+                          if (count <= 1) {
+                            const commitEntry = renderEntries[0] ?? cluster.entries[cluster.entries.length - 1];
+                            const commit = commitEntry.item.commit;
+                            const isNonCommitPlaceholder = !commit && uniqueAheadCount <= 0;
+                            const isUncommittedCommit = commit?.kind === 'uncommitted';
+                            const rectSize = commitRectSize(scaledNodeSize);
+                            const isGhostRect = isNonCommitPlaceholder;
+                            const ghostRectStrokeWidth = unpushedStrokeWidth;
+                            const ghostRectDasharray = unpushedLaneDasharray;
+
                             return (
-                              <rect
-                                x={hit.x}
-                                y={hit.y}
-                                width={hit.width}
-                                height={hit.height}
-                                fill="transparent"
-                                style={{ cursor: vm.canExpandCluster ? 'pointer' : 'default' }}
-                                onPointerDown={(e) => { e.preventDefault(); e.stopPropagation(); }}
-                                onMouseDown={(e) => { e.preventDefault(); e.stopPropagation(); }}
-                                onClick={(e) => {
-                                  e.preventDefault();
-                                  e.stopPropagation();
-                                  if (vm.canExpandCluster) toggleClumpExpanded(vm.clusterKey);
-                                }}
-                                onDoubleClick={(event) => {
-                                  event.preventDefault();
-                                  event.stopPropagation();
-                                }}
-                                onMouseEnter={() => {
-                                  handleNodeHoverEnter(vm.clusterKey, b.name);
-                                  setTooltip({
-                                    x: anchorX,
-                                    y: anchorY,
-                                    lines: [`${vm.count} commits`, latestCommitMessage, dateRangeLabel],
-                                    avatarFallback: latestAuthor?.charAt(0).toUpperCase() || '?',
-                                  });
-                                }}
-                                onMouseLeave={() => {
-                                  handleNodeHoverLeave();
-                                  setTooltip(null);
-                                }}
-                              />
+                              <g key={`branch-overlay-${clusterKey}`}>
+                                {isGhostRect ? (
+                                  <rect
+                                    className="branch-map-commit-rect"
+                                    x={anchorX - rectSize.width / 2 + dotStrokeInset}
+                                    y={anchorY - rectSize.height / 2 + dotStrokeInset}
+                                    width={rectSize.width - dotStrokeWidth}
+                                    height={rectSize.height - dotStrokeWidth}
+                                    data-base-rx={rectSize.radius}
+                                    rx={rectSize.radius / Math.max(layerCameraScale.x, 0.0001)}
+                                    fill={dotFill}
+                                    stroke={getNodeStrokeColor(
+                                      clusterKey,
+                                      LOCAL_UNPUSHED_GRAY,
+                                      clusterHasCheckedOutHead,
+                                      clusterHasSelectedCommit || clusterHasSelectedHead,
+                                    )}
+                                    strokeWidth={ghostRectStrokeWidth}
+                                    strokeDasharray={ghostRectDasharray}
+                                    strokeLinecap="round"
+                                    strokeLinejoin="round"
+                                  />
+                                ) : renderCommitNodeRect({
+                                  nodeKey: clusterKey,
+                                  centerX: anchorX,
+                                  centerY: anchorY,
+                                  rectSize,
+                                  fill: isUncommittedCommit ? CANVAS_UNPUSHED_NODE_FILL : dotFill,
+                                  baseStroke: isUncommittedCommit
+                                    ? CHECKED_OUT_SELECTION_STROKE
+                                    : CANVAS_NODE_STROKE,
+                                  isCheckedOutSelection: clusterHasCheckedOutHead,
+                                  isUserSelected: clusterHasSelectedCommit || clusterHasSelectedHead,
+                                  strokeWidth: dotStrokeWidth,
+                                  strokeInset: dotStrokeInset,
+                                  dashed: !!isUncommittedCommit,
+                                })}
+                              </g>
                             );
-                          })()}
+                          }
 
-                          {isExpanded && (
-                            <g>
-                              {vm.renderEntries.map((entry) => {
+                          const canExpandCluster = renderEntries.length > 1;
+                          const clusterHasUncommitted = renderEntries.some(
+                            (entry) => entry.item.commit?.kind === 'uncommitted'
+                          );
+                          const expanded = canExpandCluster ? expandedClumps.get(clusterKey) : undefined;
+                          const { isExpanded, phase, phaseEased } = canExpandCluster
+                            ? resolveClumpPhase(expanded)
+                            : { isExpanded: false, phase: 'collapsed' as const, phaseEased: 0 };
+
+                          if (!isExpanded) {
+                            const rectSize = nodeRectSize(count);
+                            return (
+                              <g key={`branch-overlay-${clusterKey}`}>
+                                {renderCommitNodeRect({
+                                  nodeKey: clusterKey,
+                                  centerX: anchorX,
+                                  centerY: anchorY,
+                                  rectSize,
+                                  fill: clusterHasUncommitted ? CANVAS_UNPUSHED_NODE_FILL : dotFill,
+                                  baseStroke: clusterHasUncommitted
+                                    ? CHECKED_OUT_SELECTION_STROKE
+                                    : CANVAS_NODE_STROKE,
+                                  isCheckedOutSelection: clusterHasCheckedOutHead,
+                                  isUserSelected: clusterHasSelectedCommit || clusterHasSelectedHead,
+                                  strokeWidth: dotStrokeWidth,
+                                  strokeInset: dotStrokeInset,
+                                  dashed: clusterHasUncommitted,
+                                })}
+                              </g>
+                            );
+                          }
+
+                          const localRect = commitRectSize(scaledNodeSize, 0);
+
+                          return (
+                            <g key={`branch-overlay-${clusterKey}`}>
+                              {renderEntries.map((entry) => {
                                 const commit = entry.item.commit;
                                 if (!commit?.fullSha) return null;
                                 const isCheckedOutCommit =
                                   checkedOutHeadSha != null &&
                                   (shaMatchesGitRef(commit.fullSha, checkedOutHeadSha) ||
                                     shaMatchesGitRef(commit.sha, checkedOutHeadSha));
-                                const tooltipAuthor = commit.author ?? b.lastCommitAuthor;
-                                const tooltipDate = commit.date ?? b.lastCommitDate;
-                                const tooltipSha = commit.sha ?? commit.fullSha.slice(0, 7);
-                                const tooltipMessage = commit.message;
-                                const isUncommittedCommit = commit.kind === 'uncommitted';
-                                const tooltipTitle = isUncommittedCommit
-                                  ? 'Uncommited changes'
-                                  : `Commit ${tooltipSha}`;
 
                                 const memberPose = interpolateExpandedEntryPose(
                                   { x: anchorX, y: anchorY },
@@ -6541,1022 +6884,669 @@ type MainDirectClusterLayout = {
                                   phaseEased,
                                 );
                                 const commitKey = `branch-commit:${b.name}:${commit.fullSha}`;
+                                const isUncommittedCommit = commit.kind === 'uncommitted';
 
                                 return (
                                   <g
-                                    key={commitKey}
+                                    key={`branch-overlay-${commitKey}`}
                                     transform={`translate(${memberPose.x} ${memberPose.y})`}
-                                    style={{ ...clumpAnimStyle, pointerEvents: phase === 'expanded' ? 'auto' : 'none' }}
+                                    style={clumpAnimStyleForPhase(phase)}
                                     opacity={memberPose.opacity}
                                   >
-                                    <rect
-                                      className="branch-map-commit-rect"
-                                      x={-localRect.width / 2 + dotStrokeInset}
-                                      y={-localRect.height / 2 + dotStrokeInset}
-                                      width={localRect.width - dotStrokeWidth}
-                                      height={localRect.height - dotStrokeWidth}
-                                      data-base-rx={localRect.radius}
-                                      rx={localRect.radius / Math.max(layerCameraScale.x, 0.0001)}
-                                      fill={dotFill}
-                                      stroke={getNodeStrokeColor(
-                                        commitKey,
-                                        isUncommittedCommit ? CHECKED_OUT_SELECTION_STROKE : CANVAS_NODE_STROKE,
-                                        isCheckedOutCommit,
-                                        selectedCommitShaSet.has(commit.fullSha) ||
+                                    <g transform={`scale(${memberPose.scale})`}>
+                                      {renderCommitNodeRect({
+                                        nodeKey: commitKey,
+                                        centerX: 0,
+                                        centerY: 0,
+                                        rectSize: localRect,
+                                        fill: isUncommittedCommit ? CANVAS_UNPUSHED_NODE_FILL : dotFill,
+                                        baseStroke: isUncommittedCommit
+                                          ? CHECKED_OUT_SELECTION_STROKE
+                                          : CANVAS_NODE_STROKE,
+                                        isCheckedOutSelection: isCheckedOutCommit,
+                                        isUserSelected:
+                                          selectedCommitShaSet.has(commit.fullSha) ||
                                           (clusterHasSelectedHead && commit.fullSha === b.headSha),
-                                      )}
-                                      strokeWidth={dotStrokeWidth}
-                                      strokeDasharray={isUncommittedCommit ? '3 3' : dotStrokeDasharray}
-                                      strokeLinecap={isUncommittedCommit ? 'round' : undefined}
-                                      strokeLinejoin={isUncommittedCommit ? 'round' : undefined}
-                                      style={{ cursor: 'pointer' }}
-                                      onClick={(event) =>
-                                        handleCommitNodeClick(
-                                          event,
-                                          commit.fullSha,
-                                          clusterHasBranchTip && commit.fullSha === b.headSha
-                                            ? b.name
-                                            : undefined,
-                                        )
-                                      }
-                                      onDoubleClick={(event) => event.stopPropagation()}
-                                      onMouseEnter={() => {
-                                        handleNodeHoverEnter(commitKey, b.name);
-                                        setTooltip({
-                                          x: entry.x,
-                                          y: entry.y,
-                                          lines: [
-                                            tooltipTitle,
-                                            tooltipMessage
-                                              ? truncatePrompt(tooltipMessage, COMMIT_TOOLTIP_PREVIEW_MAX)
-                                              : `@${tooltipAuthor}`,
-                                            `@${tooltipAuthor} · ${fmtTooltipDate(tooltipDate)}`,
-                                          ],
-                                          avatarFallback: tooltipAuthor?.charAt(0).toUpperCase() || '?',
-                                        });
-                                      }}
-                                      onMouseLeave={() => {
-                                        handleNodeHoverLeave();
-                                        setTooltip(null);
-                                      }}
-                                    />
+                                        strokeWidth: dotStrokeWidth,
+                                        strokeInset: dotStrokeInset,
+                                        dashed: isUncommittedCommit,
+                                      })}
+                                    </g>
                                   </g>
                                 );
                               })}
                             </g>
-                          )}
-                        </g>
-                      );
-                    })}
-                    {/* Prompt marker hit areas stay on top so hover remains easy. */}
-                    {promptMarkerClusters.map((cluster) => {
-                      const count = cluster.entries.length;
-                      const firstEntry = cluster.entries[0];
-                      const lastEntry = cluster.entries[count - 1];
-                      const clusterKey = `prompt-clump-${b.name}-${firstEntry.item.index}-${lastEntry.item.index}`;
-                      const memberKeys = cluster.entries.map((entry) => `prompt:${b.name}:slot-${entry.item.index}`);
-                      const animatedAnchor = resolveAnimatedClumpAnchor(
-                        clusterKey,
-                        { x: cluster.x, y: cluster.y },
-                        memberKeys
-                      );
-                      const anchorX = animatedAnchor.x;
-                      const anchorY = animatedAnchor.y;
-                      const hitSize = scaledHoverHitSize;
-
-                      if (count === 1) {
-                        const marker = lastEntry.item.marker;
-                        return (
-                          <g key={`${clusterKey}-hit`}>
-                            <rect
-                              x={anchorX - hitSize / 2}
-                              y={anchorY - hitSize / 2}
-                              width={hitSize}
-                              height={hitSize}
-                              fill="transparent"
-                              style={{ cursor: 'pointer' }}
-                              onMouseEnter={() =>
-                                setTooltip({
-                                  x: anchorX,
-                                  y: anchorY,
-                                  lines: [
-                                    'Prompt',
-                                    truncatePrompt(marker.prompt, PROMPT_TOOLTIP_PREVIEW_MAX),
-                                    `${marker.agent} · ${fmtTooltipDate(marker.timestamp)}`,
-                                  ],
-                                })
-                              }
-                              onMouseLeave={() => setTooltip(null)}
-                            />
-                          </g>
-                        );
-                      }
-
-                      const firstDate = firstEntry.item.marker.timestamp;
-                      const lastDate = lastEntry.item.marker.timestamp;
-                      const dateRangeLabel = new Date(firstDate).getTime() === new Date(lastDate).getTime()
-                        ? fmtTooltipDate(lastDate)
-                        : `${fmtTooltipDate(firstDate)} → ${fmtTooltipDate(lastDate)}`;
-                      const latestPrompt = truncatePrompt(lastEntry.item.marker.prompt, PROMPT_CLUSTER_PREVIEW_MAX);
-                      return (
-                        <g key={`${clusterKey}-hit`}>
-                          <rect
-                            x={anchorX - hitSize / 2}
-                            y={anchorY - hitSize / 2}
-                            width={hitSize}
-                            height={hitSize}
-                            fill="transparent"
-                            style={{ cursor: 'pointer' }}
-                            onMouseEnter={() =>
-                              setTooltip({
-                                x: anchorX,
-                                y: anchorY,
-                                lines: [`${count} prompts`, latestPrompt, dateRangeLabel],
-                              })
-                            }
-                            onMouseLeave={() => setTooltip(null)}
-                          />
-                        </g>
-                      );
-                    })}
-                    {showClockIcon && (
-                      <g style={{ pointerEvents: 'none' }}>
-                        <circle cx={clockPoint.x} cy={clockPoint.y} r={4.2} stroke={color} strokeWidth={1.2} fill="none" />
-                        <line x1={clockPoint.x} y1={clockPoint.y - 2.9} x2={clockPoint.x} y2={clockPoint.y} stroke={color} strokeWidth={1.2} strokeLinecap="round" />
-                        <line x1={clockPoint.x} y1={clockPoint.y} x2={clockPoint.x + 2.3} y2={clockPoint.y + 1.5} stroke={color} strokeWidth={1.2} strokeLinecap="round" />
-                      </g>
-                    )}
+                          );
+                        });
+                      });
+                    })()}
                   </g>
 
-                  {/* Status labels are conflict-aware upstream; conflict indicator was removed. */}
-                </g>
-              );
-              });
-            })()}
-          </g>
-
-          {/* Checked-out connector line (render below node overlays). */}
-          {checkedOutHasUncommittedChanges && checkedOutDisplayIndicatorLocal && checkedOutIndicatorLocal && (() => {
-            const markerLocal = checkedOutDisplayIndicatorLocal;
-            const anchorLocal = checkedOutIndicatorLocal;
-            const hasHorizontalOffset = Math.abs(markerLocal.x - anchorLocal.x) > 0.5;
-            const hasVerticalOffset = Math.abs(markerLocal.y - anchorLocal.y) > 0.5;
-            const forkPath = (() => {
-              if (!hasHorizontalOffset || !hasVerticalOffset) return null;
-              const horizontalDir = markerLocal.x >= anchorLocal.x ? 1 : -1;
-              const verticalDir = markerLocal.y >= anchorLocal.y ? 1 : -1;
-              const bend = Math.min(
-                cornerR,
-                Math.abs(markerLocal.x - anchorLocal.x),
-                Math.abs(markerLocal.y - anchorLocal.y),
-              );
-              const preTurnX = markerLocal.x - horizontalDir * bend;
-              const turnY = anchorLocal.y + verticalDir * bend;
-              return `M ${pathCoord(anchorLocal.x, anchorLocal.y)} L ${pathCoord(preTurnX, anchorLocal.y)} Q ${pathCoord(markerLocal.x, anchorLocal.y)} ${pathCoord(markerLocal.x, turnY)} L ${pathCoord(markerLocal.x, markerLocal.y)}`;
-            })();
-            const straightPath = `M ${pathCoord(anchorLocal.x, anchorLocal.y)} L ${pathCoord(markerLocal.x, markerLocal.y)}`;
-            return (
-              <g style={{ pointerEvents: 'none' }}>
-                <path
-                  d={forkPath ?? straightPath}
-                  fill="none"
-                  stroke={CHECKED_OUT_SELECTION_STROKE}
-                  strokeWidth={1.5}
-                  pathLength={1}
-                  vectorEffect="non-scaling-stroke"
-                />
-              </g>
-            );
-          })()}
-
-          {/* Branch commit node overlay so branch connectors/lanes never render over branch rectangles. */}
-          <g style={{ opacity: hoveredPR !== null ? 0.2 : 1, transition: 'opacity 0.15s', pointerEvents: 'none' }}>
-            {(() => {
-              const orderedActiveBranches = orderedActiveBranchesForLayer({
-                includeSelectedPriority: false,
-              });
-
-              return orderedActiveBranches.flatMap((b) => {
-                const {
-                  hasPreviewData,
-                  uniqueAheadCount,
-                  branchEndDotIndex,
-                  localCommitDotIndices,
-                  fullBranchShouldUseLocalGray,
-                  commitDotClusters,
-                } = getBranchRenderLayout(b);
-                const isFocusedError = focusedErrorBranch?.name === b.name;
-                const strokeWidth = isFocusedError ? 2 : 1.5;
-                const unpushedStrokeWidth = strokeWidth + UNPUSHED_LANE_STROKE_VISUAL_COMP;
-                const unpushedLaneDasharray = `${Math.max(1, unpushedStrokeWidth)} ${Math.max(2, unpushedStrokeWidth * 1.8)}`;
-
-                return commitDotClusters.map((cluster) => {
-                  const { realCommitEntries, renderEntries } = resolveBranchClusterEntries(cluster);
-                  const count = renderEntries.length;
-                  const clusterKey = branchClusterKey(b.name, cluster);
-                  const memberKeys = branchClusterMemberKeys(b.name, cluster);
-                  const preferredAnchorEntry = branchPreferredAnchorEntry(
-                    cluster,
-                    realCommitEntries,
-                    branchEndDotIndex,
-                  );
-                  const animatedAnchor = resolveAnimatedClumpAnchor(
-                    clusterKey,
-                    { x: preferredAnchorEntry.x, y: preferredAnchorEntry.y },
-                    memberKeys
-                  );
-                  const anchorX = animatedAnchor.x;
-                  const anchorY = animatedAnchor.y;
-                  const dotShouldUseCanvasFill =
-                    fullBranchShouldUseLocalGray ||
-                    cluster.entries.every((entry) => localCommitDotIndices.has(entry.item.index));
-                  const dotFill = dotShouldUseCanvasFill ? CANVAS_UNPUSHED_NODE_FILL : CANVAS_NODE_FILL;
-                  const dotStrokeWidth = CANVAS_NODE_STROKE_WIDTH;
-                  const dotStrokeInset = dotStrokeWidth / 2;
-                  const clusterHasCheckedOutHead =
-                    checkedOutHeadSha != null &&
-                    cluster.entries.some((entry) => {
-                      const idx = entry.item.index;
-                      const commit = entry.item.commit;
-                      if (hasPreviewData && commit && commit.kind !== 'branch-created') {
-                        return (
-                          shaMatchesGitRef(commit.fullSha, checkedOutHeadSha) ||
-                          shaMatchesGitRef(commit.sha, checkedOutHeadSha)
+                  {/* Main commit node overlay so branch connectors never render over main clumps. */}
+                  {!mainIsUnifiedRender && (
+                    <g style={{ opacity: mainTimelineOpacity, transition: 'opacity 0.15s', pointerEvents: 'none' }}>
+                      {mainDirectClusters.map((clusterLayout) => {
+                        const {
+                          cluster,
+                          count,
+                          clusterKey,
+                          memberKeys,
+                          preferredAnchorX,
+                          preferredAnchorY,
+                          clusterHasMainTip,
+                          clusterHasCheckedOutHead,
+                          clusterHasSelectedCommit: mainClusterHasSelectedCommit,
+                          clusterHasUncommitted,
+                        } = clusterLayout;
+                        const motion = resolveClusterMotion(
+                          clusterKey,
+                          { x: preferredAnchorX, y: preferredAnchorY },
+                          memberKeys,
+                          count > 1,
                         );
-                      }
-                      if (!hasPreviewData && checkedOutBranchName === b.name && branchEndDotIndex === idx) {
-                        return shaMatchesGitRef(b.headSha, checkedOutHeadSha);
-                      }
-                      return false;
-                    });
-                  const clusterHasSelectedCommit =
-                    cluster.entries.some((entry) => {
-                      const commitSha = entry.item.commit?.fullSha;
-                      return !!commitSha && selectedCommitShaSet.has(commitSha);
-                    });
-                  const clusterHasSelectedHead =
-                    branchEndDotIndex != null &&
-                    cluster.entries.some((entry) => entry.item.index === branchEndDotIndex) &&
-                    selectedBranchNameSet.has(b.name);
+                        const isExpanded = motion.isExpanded;
+                        const phase = motion.phase;
+                        const phaseEased = motion.phaseEased;
+                        const anchorX = motion.anchorX;
+                        const anchorY = motion.anchorY;
 
-                  if (count <= 1) {
-                    const commitEntry = renderEntries[0] ?? cluster.entries[cluster.entries.length - 1];
-                    const commit = commitEntry.item.commit;
-                    const isNonCommitPlaceholder = !commit && uniqueAheadCount <= 0;
-                    const isUncommittedCommit = commit?.kind === 'uncommitted';
-                    const rectSize = commitRectSize(scaledNodeSize);
-                    const isGhostRect = isNonCommitPlaceholder;
-                    const ghostRectStrokeWidth = unpushedStrokeWidth;
-                    const ghostRectDasharray = unpushedLaneDasharray;
-
-                    return (
-                      <g key={`branch-overlay-${clusterKey}`}>
-                        {isGhostRect ? (
-                          <rect
-                            className="branch-map-commit-rect"
-                            x={anchorX - rectSize.width / 2 + dotStrokeInset}
-                            y={anchorY - rectSize.height / 2 + dotStrokeInset}
-                            width={rectSize.width - dotStrokeWidth}
-                            height={rectSize.height - dotStrokeWidth}
-                            data-base-rx={rectSize.radius}
-                            rx={rectSize.radius / Math.max(layerCameraScale.x, 0.0001)}
-                            fill={dotFill}
-                            stroke={getNodeStrokeColor(
-                              clusterKey,
-                              LOCAL_UNPUSHED_GRAY,
-                              clusterHasCheckedOutHead,
-                              clusterHasSelectedCommit || clusterHasSelectedHead,
-                            )}
-                            strokeWidth={ghostRectStrokeWidth}
-                            strokeDasharray={ghostRectDasharray}
-                            strokeLinecap="round"
-                            strokeLinejoin="round"
-                          />
-                        ) : renderCommitNodeRect({
-                          nodeKey: clusterKey,
-                          centerX: anchorX,
-                          centerY: anchorY,
-                          rectSize,
-                          fill: isUncommittedCommit ? CANVAS_UNPUSHED_NODE_FILL : dotFill,
-                          baseStroke: isUncommittedCommit
-                            ? CHECKED_OUT_SELECTION_STROKE
-                            : CANVAS_NODE_STROKE,
-                          isCheckedOutSelection: clusterHasCheckedOutHead,
-                          isUserSelected: clusterHasSelectedCommit || clusterHasSelectedHead,
-                          strokeWidth: dotStrokeWidth,
-                          strokeInset: dotStrokeInset,
-                          dashed: !!isUncommittedCommit,
-                        })}
-                      </g>
-                    );
-                  }
-
-                  const canExpandCluster = renderEntries.length > 1;
-                  const clusterHasUncommitted = renderEntries.some(
-                    (entry) => entry.item.commit?.kind === 'uncommitted'
-                  );
-                  const expanded = canExpandCluster ? expandedClumps.get(clusterKey) : undefined;
-                  const { isExpanded, phase, phaseEased } = canExpandCluster
-                    ? resolveClumpPhase(expanded)
-                    : { isExpanded: false, phase: 'collapsed' as const, phaseEased: 0 };
-
-                  if (!isExpanded) {
-                    const rectSize = nodeRectSize(count);
-                    return (
-                      <g key={`branch-overlay-${clusterKey}`}>
-                        {renderCommitNodeRect({
-                          nodeKey: clusterKey,
-                          centerX: anchorX,
-                          centerY: anchorY,
-                          rectSize,
-                          fill: clusterHasUncommitted ? CANVAS_UNPUSHED_NODE_FILL : dotFill,
-                          baseStroke: clusterHasUncommitted
-                            ? CHECKED_OUT_SELECTION_STROKE
-                            : CANVAS_NODE_STROKE,
-                          isCheckedOutSelection: clusterHasCheckedOutHead,
-                          isUserSelected: clusterHasSelectedCommit || clusterHasSelectedHead,
-                          strokeWidth: dotStrokeWidth,
-                          strokeInset: dotStrokeInset,
-                          dashed: clusterHasUncommitted,
-                        })}
-                      </g>
-                    );
-                  }
-
-                  const localRect = commitRectSize(scaledNodeSize, 0);
-
-                  return (
-                    <g key={`branch-overlay-${clusterKey}`}>
-                      {renderEntries.map((entry) => {
-                        const commit = entry.item.commit;
-                        if (!commit?.fullSha) return null;
-                        const isCheckedOutCommit =
-                          checkedOutHeadSha != null &&
-                          (shaMatchesGitRef(commit.fullSha, checkedOutHeadSha) ||
-                            shaMatchesGitRef(commit.sha, checkedOutHeadSha));
-
-                        const memberPose = interpolateExpandedEntryPose(
-                          { x: anchorX, y: anchorY },
-                          { x: entry.x, y: entry.y },
-                          phase,
-                          phaseEased,
-                        );
-                        const commitKey = `branch-commit:${b.name}:${commit.fullSha}`;
-                        const isUncommittedCommit = commit.kind === 'uncommitted';
-
-                        return (
-                          <g
-                            key={`branch-overlay-${commitKey}`}
-                            transform={`translate(${memberPose.x} ${memberPose.y})`}
-                            style={clumpAnimStyle}
-                            opacity={memberPose.opacity}
-                          >
-                            {renderCommitNodeRect({
-                              nodeKey: commitKey,
-                              centerX: 0,
-                              centerY: 0,
-                              rectSize: localRect,
-                              fill: isUncommittedCommit ? CANVAS_UNPUSHED_NODE_FILL : dotFill,
-                              baseStroke: isUncommittedCommit
-                                ? CHECKED_OUT_SELECTION_STROKE
-                                : CANVAS_NODE_STROKE,
-                              isCheckedOutSelection: isCheckedOutCommit,
-                              isUserSelected:
-                                selectedCommitShaSet.has(commit.fullSha) ||
-                                (clusterHasSelectedHead && commit.fullSha === b.headSha),
-                              strokeWidth: dotStrokeWidth,
-                              strokeInset: dotStrokeInset,
-                              dashed: isUncommittedCommit,
-                            })}
-                          </g>
-                        );
-                      })}
-                    </g>
-                  );
-                });
-              });
-            })()}
-          </g>
-
-          {/* Main commit node overlay so branch connectors never render over main clumps. */}
-          {!mainIsUnifiedRender && (
-          <g style={{ opacity: mainTimelineOpacity, transition: 'opacity 0.15s', pointerEvents: 'none' }}>
-            {mainDirectClusters.map((clusterLayout) => {
-                const {
-                  cluster,
-                  count,
-                  clusterKey,
-                  memberKeys,
-                  preferredAnchorX,
-                  preferredAnchorY,
-                  clusterHasMainTip,
-                  clusterHasCheckedOutHead,
-                  clusterHasSelectedCommit: mainClusterHasSelectedCommit,
-                  clusterHasUncommitted,
-                } = clusterLayout;
-                const motion = resolveClusterMotion(
-                  clusterKey,
-                  { x: preferredAnchorX, y: preferredAnchorY },
-                  memberKeys,
-                  count > 1,
-                );
-                const isExpanded = motion.isExpanded;
-                const phase = motion.phase;
-                const phaseEased = motion.phaseEased;
-                const anchorX = motion.anchorX;
-                const anchorY = motion.anchorY;
-
-                if (count === 1) {
-                  const isUncommittedCommit = cluster.entries[0]?.item.fullSha === 'WORKING_TREE';
-                  const rectSize = commitRectSize(scaledNodeSize);
-                  return (
-                    <g key={`main-direct-overlay-${clusterKey}`}>
-                      {renderCommitNodeRect({
-                        nodeKey: clusterKey,
-                        centerX: anchorX,
-                        centerY: anchorY,
-                        rectSize,
-                        fill: isUncommittedCommit ? CANVAS_UNPUSHED_NODE_FILL : CANVAS_NODE_FILL,
-                        baseStroke: isUncommittedCommit
-                          ? CHECKED_OUT_SELECTION_STROKE
-                          : CANVAS_NODE_STROKE,
-                        isCheckedOutSelection: clusterHasCheckedOutHead,
-                        isUserSelected:
-                          mainClusterHasSelectedCommit ||
-                          (clusterHasMainTip && selectedBranchNameSet.has(defaultBranch)),
-                        dashed: isUncommittedCommit,
-                      })}
-                    </g>
-                  );
-                }
-
-                const clusterRectSize = nodeRectSize(count);
-                const localRect = commitRectSize(scaledNodeSize, 0);
-                return (
-                  <g key={`main-direct-overlay-${clusterKey}`}>
-                    {isExpanded ? (
-                      <>
-                        {cluster.entries.map((entry) => {
-                          const c = entry.item;
-                          const memberPose = interpolateExpandedEntryPose(
-                            { x: anchorX, y: anchorY },
-                            { x: entry.x, y: entry.y },
-                            phase,
-                            phaseEased,
-                          );
-                          const commitKey = `direct:${c.fullSha}`;
-                          const isUncommittedCommit = c.fullSha === 'WORKING_TREE';
-                          const isCheckedOutCommit =
-                            checkedOutHeadSha != null &&
-                            (shaMatchesGitRef(c.fullSha, checkedOutHeadSha) ||
-                              shaMatchesGitRef(c.sha, checkedOutHeadSha));
-
+                        if (count === 1) {
+                          const isUncommittedCommit = cluster.entries[0]?.item.fullSha === 'WORKING_TREE';
+                          const rectSize = commitRectSize(scaledNodeSize);
                           return (
-                            <g
-                              key={`main-direct-overlay:${c.fullSha}`}
-                              transform={`translate(${memberPose.x} ${memberPose.y})`}
-                              style={clumpAnimStyle}
-                              opacity={memberPose.opacity}
-                            >
+                            <g key={`main-direct-overlay-${clusterKey}`}>
                               {renderCommitNodeRect({
-                                nodeKey: commitKey,
-                                centerX: 0,
-                                centerY: 0,
-                                rectSize: localRect,
+                                nodeKey: clusterKey,
+                                centerX: anchorX,
+                                centerY: anchorY,
+                                rectSize,
                                 fill: isUncommittedCommit ? CANVAS_UNPUSHED_NODE_FILL : CANVAS_NODE_FILL,
                                 baseStroke: isUncommittedCommit
                                   ? CHECKED_OUT_SELECTION_STROKE
                                   : CANVAS_NODE_STROKE,
-                                isCheckedOutSelection: isCheckedOutCommit,
+                                isCheckedOutSelection: clusterHasCheckedOutHead,
                                 isUserSelected:
-                                  selectedCommitShaSet.has(c.fullSha) ||
-                                  (clusterHasMainTip &&
-                                    selectedBranchNameSet.has(defaultBranch) &&
-                                    c.fullSha === latestMainCommitSha),
+                                  mainClusterHasSelectedCommit ||
+                                  (clusterHasMainTip && selectedBranchNameSet.has(defaultBranch)),
                                 dashed: isUncommittedCommit,
                               })}
                             </g>
                           );
-                        })}
-                      </>
-                    ) : (
-                      renderCommitNodeRect({
-                        nodeKey: clusterKey,
-                        centerX: anchorX,
-                        centerY: anchorY,
-                        rectSize: clusterRectSize,
-                        fill: clusterHasUncommitted ? CANVAS_UNPUSHED_NODE_FILL : CANVAS_NODE_FILL,
-                        baseStroke: clusterHasUncommitted
-                          ? CHECKED_OUT_SELECTION_STROKE
-                          : CANVAS_NODE_STROKE,
-                        isCheckedOutSelection: clusterHasCheckedOutHead,
-                        isUserSelected:
-                          mainClusterHasSelectedCommit ||
-                          (clusterHasMainTip && selectedBranchNameSet.has(defaultBranch)),
-                        dashed: clusterHasUncommitted,
-                      })
-                    )}
-                  </g>
-                );
-              })}
-          </g>
-          )}
+                        }
 
-          {/* Top-most label overlay so labels are always above all rectangle layers. */}
-          <g style={{ pointerEvents: 'none' }}>
-            <g style={{ opacity: hoveredPR !== null ? 0.2 : 1, transition: 'opacity 0.15s' }}>
-              {(() => {
-                const orderedActiveBranches = orderedActiveBranchesForLayer({
-                  includeSelectedPriority: false,
-                });
+                        const clusterRectSize = nodeRectSize(count);
+                        const localRect = commitRectSize(scaledNodeSize, 0);
+                        return (
+                          <g key={`main-direct-overlay-${clusterKey}`}>
+                            {isExpanded ? (
+                              <>
+                                {cluster.entries.map((entry) => {
+                                  const c = entry.item;
+                                  const memberPose = interpolateExpandedEntryPose(
+                                    { x: anchorX, y: anchorY },
+                                    { x: entry.x, y: entry.y },
+                                    phase,
+                                    phaseEased,
+                                  );
+                                  const commitKey = `direct:${c.fullSha}`;
+                                  const isUncommittedCommit = c.fullSha === 'WORKING_TREE';
+                                  const isCheckedOutCommit =
+                                    checkedOutHeadSha != null &&
+                                    (shaMatchesGitRef(c.fullSha, checkedOutHeadSha) ||
+                                      shaMatchesGitRef(c.sha, checkedOutHeadSha));
 
-                return orderedActiveBranches.flatMap((b) => {
-                  const {
-                    commitDotClusters,
-                    branchEndDotIndex,
-                  } = getBranchRenderLayout(b);
+                                  return (
+                                    <g
+                                      key={`main-direct-overlay:${c.fullSha}`}
+                                      transform={`translate(${memberPose.x} ${memberPose.y})`}
+                                      style={clumpAnimStyleForPhase(phase)}
+                                      opacity={memberPose.opacity}
+                                    >
+                                      <g transform={`scale(${memberPose.scale})`}>
+                                        {renderCommitNodeRect({
+                                          nodeKey: commitKey,
+                                          centerX: 0,
+                                          centerY: 0,
+                                          rectSize: localRect,
+                                          fill: isUncommittedCommit ? CANVAS_UNPUSHED_NODE_FILL : CANVAS_NODE_FILL,
+                                          baseStroke: isUncommittedCommit
+                                            ? CHECKED_OUT_SELECTION_STROKE
+                                            : CANVAS_NODE_STROKE,
+                                          isCheckedOutSelection: isCheckedOutCommit,
+                                          isUserSelected:
+                                            selectedCommitShaSet.has(c.fullSha) ||
+                                            (clusterHasMainTip &&
+                                              selectedBranchNameSet.has(defaultBranch) &&
+                                              c.fullSha === latestMainCommitSha),
+                                          dashed: isUncommittedCommit,
+                                        })}
+                                      </g>
+                                    </g>
+                                  );
+                                })}
+                              </>
+                            ) : (
+                              renderCommitNodeRect({
+                                nodeKey: clusterKey,
+                                centerX: anchorX,
+                                centerY: anchorY,
+                                rectSize: clusterRectSize,
+                                fill: clusterHasUncommitted ? CANVAS_UNPUSHED_NODE_FILL : CANVAS_NODE_FILL,
+                                baseStroke: clusterHasUncommitted
+                                  ? CHECKED_OUT_SELECTION_STROKE
+                                  : CANVAS_NODE_STROKE,
+                                isCheckedOutSelection: clusterHasCheckedOutHead,
+                                isUserSelected:
+                                  mainClusterHasSelectedCommit ||
+                                  (clusterHasMainTip && selectedBranchNameSet.has(defaultBranch)),
+                                dashed: clusterHasUncommitted,
+                              })
+                            )}
+                          </g>
+                        );
+                      })}
+                    </g>
+                  )}
 
-                  return commitDotClusters.map((cluster) => {
-                    const { realCommitEntries, renderEntries } = resolveBranchClusterEntries(cluster);
-                    const count = renderEntries.length;
-                    const clusterKey = branchClusterKey(b.name, cluster);
-                    const memberKeys = branchClusterMemberKeys(b.name, cluster);
-                    const preferredAnchorEntry = branchPreferredAnchorEntry(
-                      cluster,
-                      realCommitEntries,
-                      branchEndDotIndex,
-                    );
-                    const animatedAnchor = resolveAnimatedClumpAnchor(
-                      clusterKey,
-                      { x: preferredAnchorEntry.x, y: preferredAnchorEntry.y },
-                      memberKeys
-                    );
-                    const anchorX = animatedAnchor.x;
-                    const anchorY = animatedAnchor.y;
+                  {/* Top-most label overlay so labels are always above all rectangle layers. */}
+                  <g style={{ pointerEvents: 'none' }}>
+                    <g style={{ opacity: hoveredPR !== null ? 0.2 : 1, transition: 'opacity 0.15s' }}>
+                      {(() => {
+                        const orderedActiveBranches = orderedActiveBranchesForLayer({
+                          includeSelectedPriority: false,
+                        });
 
-                    if (count <= 1) {
-                      const commitEntry = renderEntries[0] ?? cluster.entries[cluster.entries.length - 1];
-                      const commit = commitEntry.item.commit;
-                      const rectSize = commitRectSize(scaledNodeSize);
-                      const singleTitleText = fitNodeFrameTitle(
-                        b.name,
-                        commit?.sha ?? commit?.fullSha ?? b.headSha,
-                        rectSize.width,
-                      );
+                        return orderedActiveBranches.flatMap((b) => {
+                          const {
+                            commitDotClusters,
+                            branchEndDotIndex,
+                          } = getBranchRenderLayout(b);
 
-                      return (
-                        <text
-                          key={`branch-label-overlay-${clusterKey}`}
-                          x={anchorX - rectSize.width / 2 + CANVAS_NODE_STROKE_INSET + nodeFrameLabelInsetX}
-                          y={anchorY - rectSize.height / 2 - nodeFrameLabelGap}
-                          textAnchor="start"
-                          fill={NODE_FRAME_LABEL_COLOR}
-                          fontSize={nodeFrameLabelFontSize}
-                          fontWeight={NODE_FRAME_LABEL_WEIGHT}
-                          pointerEvents="none"
-                        >
-                          {singleTitleText}
-                        </text>
-                      );
-                    }
+                          return commitDotClusters.map((cluster) => {
+                            const { realCommitEntries, renderEntries } = resolveBranchClusterEntries(cluster);
+                            const count = renderEntries.length;
+                            const clusterKey = branchClusterKey(b.name, cluster);
+                            const memberKeys = branchClusterMemberKeys(b.name, cluster);
+                            const preferredAnchorEntry = branchPreferredAnchorEntry(
+                              cluster,
+                              realCommitEntries,
+                              branchEndDotIndex,
+                            );
+                            const animatedAnchor = resolveAnimatedClumpAnchor(
+                              clusterKey,
+                              { x: preferredAnchorEntry.x, y: preferredAnchorEntry.y },
+                              memberKeys
+                            );
+                            const anchorX = animatedAnchor.x;
+                            const anchorY = animatedAnchor.y;
 
-                    const canExpandCluster = renderEntries.length > 1;
-                    const expanded = canExpandCluster ? expandedClumps.get(clusterKey) : undefined;
-                    const { isExpanded, phase, phaseEased } = canExpandCluster
-                      ? resolveClumpPhase(expanded)
-                      : { isExpanded: false, phase: 'collapsed' as const, phaseEased: 0 };
-
-                    if (!isExpanded) {
-                      const rectSize = nodeRectSize(count);
-                      const clumpCountText = stackCountLabel(count);
-                      const latestCommit = renderEntries[renderEntries.length - 1]?.item.commit;
-                      const latestLabel = latestCommit?.kind === 'uncommitted'
-                        ? 'Uncommited Changes'
-                        : (latestCommit?.sha ?? latestCommit?.fullSha ?? b.headSha);
-                      const clumpTitleText = fitNodeFrameTitle(
-                        b.name,
-                        latestLabel,
-                        rectSize.width,
-                        clumpCountText,
-                      );
-
-                      return (
-                        <g key={`branch-label-overlay-${clusterKey}`}>
-                          <text
-                            x={anchorX + rectSize.width / 2 - CANVAS_NODE_STROKE_INSET - nodeFrameLabelRightInsetX}
-                            y={anchorY - rectSize.height / 2 - nodeFrameLabelGap}
-                            textAnchor="end"
-                            fontSize={nodeFrameLabelFontSize}
-                            fill={NODE_FRAME_LABEL_COLOR}
-                            fontWeight={NODE_FRAME_LABEL_WEIGHT}
-                            pointerEvents="none"
-                          >
-                            {clumpCountText}
-                          </text>
-                          <text
-                            x={anchorX - rectSize.width / 2 + CANVAS_NODE_STROKE_INSET + nodeFrameLabelInsetX}
-                            y={anchorY - rectSize.height / 2 - nodeFrameLabelGap}
-                            textAnchor="start"
-                            fill={NODE_FRAME_LABEL_COLOR}
-                            fontSize={nodeFrameLabelFontSize}
-                            fontWeight={NODE_FRAME_LABEL_WEIGHT}
-                            pointerEvents="none"
-                          >
-                            {clumpTitleText}
-                          </text>
-                        </g>
-                      );
-                    }
-
-                    const localRect = commitRectSize(scaledNodeSize, 0);
-                    const topExpandedEntry = renderEntries.reduce(
-                      (top, entry) => (entry.y < top.y ? entry : top),
-                      renderEntries[0]
-                    );
-                    return (
-                      <g key={`branch-label-overlay-${clusterKey}`}>
-                        {renderEntries.map((entry) => {
-                          const commit = entry.item.commit;
-                          if (!commit?.fullSha) return null;
-
-                          const memberPose = interpolateExpandedEntryPose(
-                            { x: anchorX, y: anchorY },
-                            { x: entry.x, y: entry.y },
-                            phase,
-                            phaseEased,
-                          );
+                            if (count <= 1) {
+                              const commitEntry = renderEntries[0] ?? cluster.entries[cluster.entries.length - 1];
+                              const commit = commitEntry.item.commit;
+                              const rectSize = commitRectSize(scaledNodeSize);
+                              const singleTitleText = fitNodeFrameTitle(
+                                b.name,
+                                commit?.sha ?? commit?.fullSha ?? b.headSha,
+                                rectSize.width,
+                              );
 
                               return (
-                                <g
-                                  key={`branch-label-overlay:${b.name}:${commit.fullSha}`}
-                                  transform={`translate(${memberPose.x} ${memberPose.y})`}
-                                  style={clumpAnimStyle}
-                                  opacity={memberPose.opacity}
+                                <text
+                                  key={`branch-label-overlay-${clusterKey}`}
+                                  x={anchorX - rectSize.width / 2 + CANVAS_NODE_STROKE_INSET + nodeFrameLabelInsetX}
+                                  y={anchorY - rectSize.height / 2 - nodeFrameLabelGap}
+                                  textAnchor="start"
+                                  fill={NODE_FRAME_LABEL_COLOR}
+                                  fontSize={nodeFrameLabelFontSize}
+                                  fontWeight={NODE_FRAME_LABEL_WEIGHT}
+                                  pointerEvents="none"
                                 >
+                                  {singleTitleText}
+                                </text>
+                              );
+                            }
+
+                            const canExpandCluster = renderEntries.length > 1;
+                            const expanded = canExpandCluster ? expandedClumps.get(clusterKey) : undefined;
+                            const { isExpanded, phase, phaseEased } = canExpandCluster
+                              ? resolveClumpPhase(expanded)
+                              : { isExpanded: false, phase: 'collapsed' as const, phaseEased: 0 };
+
+                            if (!isExpanded) {
+                              const rectSize = nodeRectSize(count);
+                              const clumpCountText = stackCountLabel(count);
+                              const latestCommit = renderEntries[renderEntries.length - 1]?.item.commit;
+                              const latestLabel = latestCommit?.kind === 'uncommitted'
+                                ? 'Uncommited Changes'
+                                : (latestCommit?.sha ?? latestCommit?.fullSha ?? b.headSha);
+                              const clumpTitleText = fitNodeFrameTitle(
+                                b.name,
+                                latestLabel,
+                                rectSize.width,
+                                clumpCountText,
+                              );
+
+                              return (
+                                <g key={`branch-label-overlay-${clusterKey}`}>
                                   <text
-                                    x={-localRect.width / 2 + CANVAS_NODE_STROKE_INSET + nodeFrameLabelInsetX}
-                                    y={-localRect.height / 2 - nodeFrameLabelGap}
+                                    x={anchorX + rectSize.width / 2 - CANVAS_NODE_STROKE_INSET - nodeFrameLabelRightInsetX}
+                                    y={anchorY - rectSize.height / 2 - nodeFrameLabelGap}
+                                    textAnchor="end"
+                                    fontSize={nodeFrameLabelFontSize}
+                                    fill={NODE_FRAME_LABEL_COLOR}
+                                    fontWeight={NODE_FRAME_LABEL_WEIGHT}
+                                    pointerEvents="none"
+                                  >
+                                    {clumpCountText}
+                                  </text>
+                                  <text
+                                    x={anchorX - rectSize.width / 2 + CANVAS_NODE_STROKE_INSET + nodeFrameLabelInsetX}
+                                    y={anchorY - rectSize.height / 2 - nodeFrameLabelGap}
                                     textAnchor="start"
                                     fill={NODE_FRAME_LABEL_COLOR}
                                     fontSize={nodeFrameLabelFontSize}
                                     fontWeight={NODE_FRAME_LABEL_WEIGHT}
                                     pointerEvents="none"
                                   >
-                                    {fitNodeFrameTitle(
-                                      b.name,
-                                      commit.kind === 'uncommitted'
-                                        ? 'Uncommited Changes'
-                                        : (commit.sha ?? commit.fullSha),
-                                      localRect.width,
-                                      undefined,
-                                      entry === topExpandedEntry
-                                    )}
+                                    {clumpTitleText}
                                   </text>
                                 </g>
                               );
-                        })}
-                      </g>
-                    );
-                  });
-                });
-              })()}
-            </g>
+                            }
 
-            {!mainIsUnifiedRender && (
-            <g style={{ opacity: mainTimelineOpacity, transition: 'opacity 0.15s' }}>
-              {mainDirectClusters.map((clusterLayout) => {
-                const {
-                  cluster,
-                  count,
-                  last,
-                  clusterKey,
-                  memberKeys,
-                  preferredAnchorX,
-                  preferredAnchorY,
-                } = clusterLayout;
-                const motion = resolveClusterMotion(
-                  clusterKey,
-                  { x: preferredAnchorX, y: preferredAnchorY },
-                  memberKeys,
-                  count > 1,
-                );
-                const isExpanded = motion.isExpanded;
-                const phase = motion.phase;
-                const phaseEased = motion.phaseEased;
-                const anchorX = motion.anchorX;
-                const anchorY = motion.anchorY;
+                            const localRect = commitRectSize(scaledNodeSize, 0);
+                            const topExpandedEntry = renderEntries.reduce(
+                              (top, entry) => (entry.y < top.y ? entry : top),
+                              renderEntries[0]
+                            );
+                            return (
+                              <g key={`branch-label-overlay-${clusterKey}`}>
+                                {renderEntries.map((entry) => {
+                                  const commit = entry.item.commit;
+                                  if (!commit?.fullSha) return null;
 
-                if (count === 1) {
-                  const rectSize = commitRectSize(scaledNodeSize);
-                  const singleTitleText = fitNodeFrameTitle(
-                    defaultBranch,
-                    last.sha ?? last.fullSha,
-                    rectSize.width,
-                  );
-                  return (
-                    <text
-                      key={`main-label-overlay-${clusterKey}`}
-                      x={anchorX - rectSize.width / 2 + CANVAS_NODE_STROKE_INSET + nodeFrameLabelInsetX}
-                      y={anchorY - rectSize.height / 2 - nodeFrameLabelGap}
-                      textAnchor="start"
-                      fill={NODE_FRAME_LABEL_COLOR}
-                      fontSize={nodeFrameLabelFontSize}
-                      fontWeight={NODE_FRAME_LABEL_WEIGHT}
-                      pointerEvents="none"
-                    >
-                      {singleTitleText}
-                    </text>
-                  );
-                }
+                                  const memberPose = interpolateExpandedEntryPose(
+                                    { x: anchorX, y: anchorY },
+                                    { x: entry.x, y: entry.y },
+                                    phase,
+                                    phaseEased,
+                                  );
 
-                const clusterRectSize = nodeRectSize(count);
-                const clumpCountText = stackCountLabel(count);
-                const clumpTitleText = fitNodeFrameTitle(
-                  defaultBranch,
-                  last.sha ?? last.fullSha,
-                  clusterRectSize.width,
-                  clumpCountText,
-                );
-                if (isExpanded) {
-                  const localRect = commitRectSize(scaledNodeSize, 0);
-                  const topEntryForLabels = cluster.entries.reduce(
-                    (top, entry) => (entry.y < top.y ? entry : top),
-                    cluster.entries[0]
-                  );
-                  return (
-                    <g key={`main-label-overlay-${clusterKey}`}>
-                      {cluster.entries.map((entry) => {
-                        const c = entry.item;
-                        const memberPose = interpolateExpandedEntryPose(
-                          { x: anchorX, y: anchorY },
-                          { x: entry.x, y: entry.y },
-                          phase,
-                          phaseEased,
-                        );
-                          return (
-                            <g
-                              key={`main-label-overlay:${c.fullSha}`}
-                              transform={`translate(${memberPose.x} ${memberPose.y})`}
-                              style={clumpAnimStyle}
-                              opacity={memberPose.opacity}
-                            >
+                                  return (
+                                    <g
+                                      key={`branch-label-overlay:${b.name}:${commit.fullSha}`}
+                                      transform={`translate(${memberPose.x} ${memberPose.y})`}
+                                      style={clumpAnimStyleForPhase(phase)}
+                                      opacity={memberPose.opacity}
+                                    >
+                                      <g transform={`scale(${memberPose.scale})`}>
+                                        <text
+                                          x={-localRect.width / 2 + CANVAS_NODE_STROKE_INSET + nodeFrameLabelInsetX}
+                                          y={-localRect.height / 2 - nodeFrameLabelGap}
+                                          textAnchor="start"
+                                          fill={NODE_FRAME_LABEL_COLOR}
+                                          fontSize={nodeFrameLabelFontSize}
+                                          fontWeight={NODE_FRAME_LABEL_WEIGHT}
+                                          pointerEvents="none"
+                                        >
+                                          {fitNodeFrameTitle(
+                                            b.name,
+                                            commit.kind === 'uncommitted'
+                                              ? 'Uncommited Changes'
+                                              : (commit.sha ?? commit.fullSha),
+                                            localRect.width,
+                                            undefined,
+                                            entry === topExpandedEntry
+                                          )}
+                                        </text>
+                                      </g>
+                                    </g>
+                                  );
+                                })}
+                              </g>
+                            );
+                          });
+                        });
+                      })()}
+                    </g>
+
+                    {!mainIsUnifiedRender && (
+                      <g style={{ opacity: mainTimelineOpacity, transition: 'opacity 0.15s' }}>
+                        {mainDirectClusters.map((clusterLayout) => {
+                          const {
+                            cluster,
+                            count,
+                            last,
+                            clusterKey,
+                            memberKeys,
+                            preferredAnchorX,
+                            preferredAnchorY,
+                          } = clusterLayout;
+                          const motion = resolveClusterMotion(
+                            clusterKey,
+                            { x: preferredAnchorX, y: preferredAnchorY },
+                            memberKeys,
+                            count > 1,
+                          );
+                          const isExpanded = motion.isExpanded;
+                          const phase = motion.phase;
+                          const phaseEased = motion.phaseEased;
+                          const anchorX = motion.anchorX;
+                          const anchorY = motion.anchorY;
+
+                          if (count === 1) {
+                            const rectSize = commitRectSize(scaledNodeSize);
+                            const singleTitleText = fitNodeFrameTitle(
+                              defaultBranch,
+                              last.sha ?? last.fullSha,
+                              rectSize.width,
+                            );
+                            return (
                               <text
-                                x={-localRect.width / 2 + CANVAS_NODE_STROKE_INSET + nodeFrameLabelInsetX}
-                                y={-localRect.height / 2 - nodeFrameLabelGap}
+                                key={`main-label-overlay-${clusterKey}`}
+                                x={anchorX - rectSize.width / 2 + CANVAS_NODE_STROKE_INSET + nodeFrameLabelInsetX}
+                                y={anchorY - rectSize.height / 2 - nodeFrameLabelGap}
                                 textAnchor="start"
                                 fill={NODE_FRAME_LABEL_COLOR}
                                 fontSize={nodeFrameLabelFontSize}
                                 fontWeight={NODE_FRAME_LABEL_WEIGHT}
                                 pointerEvents="none"
                               >
-                                {fitNodeFrameTitle(
-                                  defaultBranch,
-                                  c.sha ?? c.fullSha,
-                                  localRect.width,
-                                  undefined,
-                                  entry === topEntryForLabels
-                                )}
+                                {singleTitleText}
+                              </text>
+                            );
+                          }
+
+                          const clusterRectSize = nodeRectSize(count);
+                          const clumpCountText = stackCountLabel(count);
+                          const clumpTitleText = fitNodeFrameTitle(
+                            defaultBranch,
+                            last.sha ?? last.fullSha,
+                            clusterRectSize.width,
+                            clumpCountText,
+                          );
+                          if (isExpanded) {
+                            const localRect = commitRectSize(scaledNodeSize, 0);
+                            const topEntryForLabels = cluster.entries.reduce(
+                              (top, entry) => (entry.y < top.y ? entry : top),
+                              cluster.entries[0]
+                            );
+                            return (
+                              <g key={`main-label-overlay-${clusterKey}`}>
+                                {cluster.entries.map((entry) => {
+                                  const c = entry.item;
+                                  const memberPose = interpolateExpandedEntryPose(
+                                    { x: anchorX, y: anchorY },
+                                    { x: entry.x, y: entry.y },
+                                    phase,
+                                    phaseEased,
+                                  );
+                                  return (
+                                    <g
+                                      key={`main-label-overlay:${c.fullSha}`}
+                                      transform={`translate(${memberPose.x} ${memberPose.y})`}
+                                      style={clumpAnimStyleForPhase(phase)}
+                                      opacity={memberPose.opacity}
+                                    >
+                                      <g transform={`scale(${memberPose.scale})`}>
+                                        <text
+                                          x={-localRect.width / 2 + CANVAS_NODE_STROKE_INSET + nodeFrameLabelInsetX}
+                                          y={-localRect.height / 2 - nodeFrameLabelGap}
+                                          textAnchor="start"
+                                          fill={NODE_FRAME_LABEL_COLOR}
+                                          fontSize={nodeFrameLabelFontSize}
+                                          fontWeight={NODE_FRAME_LABEL_WEIGHT}
+                                          pointerEvents="none"
+                                        >
+                                          {fitNodeFrameTitle(
+                                            defaultBranch,
+                                            c.sha ?? c.fullSha,
+                                            localRect.width,
+                                            undefined,
+                                            entry === topEntryForLabels
+                                          )}
+                                        </text>
+                                      </g>
+                                    </g>
+                                  );
+                                })}
+                              </g>
+                            );
+                          }
+                          return (
+                            <g key={`main-label-overlay-${clusterKey}`}>
+                              {!isExpanded && (
+                                <text
+                                  x={anchorX + clusterRectSize.width / 2 - CANVAS_NODE_STROKE_INSET - nodeFrameLabelRightInsetX}
+                                  y={anchorY - clusterRectSize.height / 2 - nodeFrameLabelGap}
+                                  textAnchor="end"
+                                  fontSize={nodeFrameLabelFontSize}
+                                  fill={NODE_FRAME_LABEL_COLOR}
+                                  fontWeight={NODE_FRAME_LABEL_WEIGHT}
+                                  pointerEvents="none"
+                                >
+                                  {clumpCountText}
+                                </text>
+                              )}
+                              <text
+                                x={anchorX - clusterRectSize.width / 2 + CANVAS_NODE_STROKE_INSET + nodeFrameLabelInsetX}
+                                y={anchorY - clusterRectSize.height / 2 - nodeFrameLabelGap}
+                                textAnchor="start"
+                                fill={NODE_FRAME_LABEL_COLOR}
+                                fontSize={nodeFrameLabelFontSize}
+                                fontWeight={NODE_FRAME_LABEL_WEIGHT}
+                                pointerEvents="none"
+                              >
+                                {clumpTitleText}
                               </text>
                             </g>
                           );
-                      })}
-                    </g>
-                  );
-                }
-                return (
-                  <g key={`main-label-overlay-${clusterKey}`}>
-                    {!isExpanded && (
-                      <text
-                        x={anchorX + clusterRectSize.width / 2 - CANVAS_NODE_STROKE_INSET - nodeFrameLabelRightInsetX}
-                        y={anchorY - clusterRectSize.height / 2 - nodeFrameLabelGap}
-                        textAnchor="end"
-                        fontSize={nodeFrameLabelFontSize}
-                        fill={NODE_FRAME_LABEL_COLOR}
-                        fontWeight={NODE_FRAME_LABEL_WEIGHT}
-                        pointerEvents="none"
-                      >
-                        {clumpCountText}
-                      </text>
+                        })}
+                      </g>
                     )}
-                    <text
-                      x={anchorX - clusterRectSize.width / 2 + CANVAS_NODE_STROKE_INSET + nodeFrameLabelInsetX}
-                      y={anchorY - clusterRectSize.height / 2 - nodeFrameLabelGap}
-                      textAnchor="start"
-                      fill={NODE_FRAME_LABEL_COLOR}
-                      fontSize={nodeFrameLabelFontSize}
-                      fontWeight={NODE_FRAME_LABEL_WEIGHT}
-                      pointerEvents="none"
-                    >
-                      {clumpTitleText}
-                    </text>
                   </g>
-                );
-              })}
-            </g>
-            )}
-          </g>
 
-          {/* Top-most collapse controls so carets are never occluded by node layers. */}
-          <g>
-            {!mainIsUnifiedRender && mainDirectClusters.map((clusterLayout) => {
-              const { cluster, count, clusterKey } = clusterLayout;
-              const expanded = expandedClumps.get(clusterKey);
-              const { isExpanded, phase } = resolveClumpPhase(expanded);
-              if (count <= 1 || !isExpanded || phase !== 'expanded') return null;
+                  {/* Top-most collapse controls so carets are never occluded by node layers. */}
+                  <g>
+                    {!mainIsUnifiedRender && mainDirectClusters.map((clusterLayout) => {
+                      const { cluster, count, clusterKey } = clusterLayout;
+                      const expanded = expandedClumps.get(clusterKey);
+                      const { isExpanded, phase } = resolveClumpPhase(expanded);
+                      if (count <= 1 || !isExpanded || phase !== 'expanded') return null;
 
-              const localRect = commitRectSize(scaledNodeSize, 0);
-              const collapseIconSize = nodeFrameCollapseIconSize;
-              const collapseHitSize = worldPx(16);
-              const collapseStrokeWidth = 1;
-              const topExpandedEntry = cluster.entries.reduce(
-                (top, entry) => (entry.y < top.y ? entry : top),
-                cluster.entries[0]
-              );
-              const clumpCountAnchorX =
-                topExpandedEntry.x + localRect.width / 2 - CANVAS_NODE_STROKE_INSET - nodeFrameLabelRightInsetX;
-              const clumpCountAnchorY = topExpandedEntry.y - localRect.height / 2 - nodeFrameLabelGap;
-              const collapseHitX = clumpCountAnchorX - collapseHitSize;
-              const collapseHitY = clumpCountAnchorY - collapseHitSize + worldPx(3);
-              // Keep caret right edge locked to the same anchor as count text ("end"-aligned).
-              const collapseCaretX = clumpCountAnchorX - collapseIconSize;
-              const collapseCaretY = collapseHitY + (collapseHitSize - collapseIconSize) / 2;
-              const collapseCaretNudgeX = worldPx(0.8);
+                      const localRect = commitRectSize(scaledNodeSize, 0);
+                      const collapseIconSize = nodeFrameCollapseIconSize;
+                      const collapseHitSize = worldPx(16);
+                      const collapseStrokeWidth = 1;
+                      const topExpandedEntry = cluster.entries.reduce(
+                        (top, entry) => (entry.y < top.y ? entry : top),
+                        cluster.entries[0]
+                      );
+                      const clumpCountAnchorX =
+                        topExpandedEntry.x + localRect.width / 2 - CANVAS_NODE_STROKE_INSET - nodeFrameLabelRightInsetX;
+                      const clumpCountAnchorY = topExpandedEntry.y - localRect.height / 2 - nodeFrameLabelGap;
+                      const collapseHitX = clumpCountAnchorX - collapseHitSize;
+                      const collapseHitY = clumpCountAnchorY - collapseHitSize + worldPx(3);
+                      // Keep caret right edge locked to the same anchor as count text ("end"-aligned).
+                      const collapseCaretX = clumpCountAnchorX - collapseIconSize;
+                      const collapseCaretY = collapseHitY + (collapseHitSize - collapseIconSize) / 2;
+                      const collapseCaretNudgeX = worldPx(0.8);
 
-              return (
-                <g
-                  key={`main-collapse-control-${clusterKey}`}
-                  role="button"
-                  tabIndex={0}
-                  aria-label="Collapse commit stack"
-                  style={{ cursor: 'pointer' }}
-                  onPointerDown={(e) => { e.preventDefault(); e.stopPropagation(); }}
-                  onMouseDown={(e) => { e.preventDefault(); e.stopPropagation(); }}
-                  onClick={(e) => {
-                    e.preventDefault();
-                    e.stopPropagation();
-                    toggleClumpExpanded(clusterKey);
-                  }}
-                  onKeyDown={(e) => {
-                    if (e.key !== 'Enter' && e.key !== ' ') return;
-                    e.preventDefault();
-                    e.stopPropagation();
-                    toggleClumpExpanded(clusterKey);
-                  }}
-                >
-                  <rect
-                    x={collapseHitX}
-                    y={collapseHitY}
-                    width={collapseHitSize}
-                    height={collapseHitSize}
-                    fill="rgba(0,0,0,0.001)"
-                    pointerEvents="all"
-                  />
-                  <path
-                    d={`M ${collapseCaretX + collapseCaretNudgeX + collapseIconSize * 0.16} ${collapseCaretY + collapseIconSize * 0.34} L ${collapseCaretX + collapseCaretNudgeX + collapseIconSize * 0.5} ${collapseCaretY + collapseIconSize * 0.66} L ${collapseCaretX + collapseCaretNudgeX + collapseIconSize * 0.84} ${collapseCaretY + collapseIconSize * 0.34}`}
-                    stroke={NODE_FRAME_LABEL_COLOR}
-                    strokeWidth={collapseStrokeWidth}
-                    strokeLinecap="round"
-                    strokeLinejoin="round"
-                    fill="none"
-                    vectorEffect="non-scaling-stroke"
-                  />
+                      return (
+                        <g
+                          key={`main-collapse-control-${clusterKey}`}
+                          role="button"
+                          tabIndex={0}
+                          aria-label="Collapse commit stack"
+                          style={{ cursor: 'pointer' }}
+                          onPointerDown={(e) => { e.preventDefault(); e.stopPropagation(); }}
+                          onMouseDown={(e) => { e.preventDefault(); e.stopPropagation(); }}
+                          onClick={(e) => {
+                            e.preventDefault();
+                            e.stopPropagation();
+                            toggleClumpExpanded(clusterKey);
+                          }}
+                          onKeyDown={(e) => {
+                            if (e.key !== 'Enter' && e.key !== ' ') return;
+                            e.preventDefault();
+                            e.stopPropagation();
+                            toggleClumpExpanded(clusterKey);
+                          }}
+                        >
+                          <rect
+                            x={collapseHitX}
+                            y={collapseHitY}
+                            width={collapseHitSize}
+                            height={collapseHitSize}
+                            fill="rgba(0,0,0,0.001)"
+                            pointerEvents="all"
+                          />
+                          <path
+                            d={`M ${collapseCaretX + collapseCaretNudgeX + collapseIconSize * 0.16} ${collapseCaretY + collapseIconSize * 0.34} L ${collapseCaretX + collapseCaretNudgeX + collapseIconSize * 0.5} ${collapseCaretY + collapseIconSize * 0.66} L ${collapseCaretX + collapseCaretNudgeX + collapseIconSize * 0.84} ${collapseCaretY + collapseIconSize * 0.34}`}
+                            stroke={NODE_FRAME_LABEL_COLOR}
+                            strokeWidth={collapseStrokeWidth}
+                            strokeLinecap="round"
+                            strokeLinejoin="round"
+                            fill="none"
+                            vectorEffect="non-scaling-stroke"
+                          />
+                        </g>
+                      );
+                    })}
+
+                    {renderBranches.flatMap((b) => {
+                      const { commitDotClusters } = getBranchRenderLayout(b);
+                      return commitDotClusters.map((cluster) => {
+                        const { renderEntries } = resolveBranchClusterEntries(cluster);
+                        const count = renderEntries.length;
+                        const clusterKey = branchClusterKey(b.name, cluster);
+                        const canExpandCluster = renderEntries.length > 1;
+                        const expanded = canExpandCluster ? expandedClumps.get(clusterKey) : undefined;
+                        const { isExpanded, phase } = canExpandCluster
+                          ? resolveClumpPhase(expanded)
+                          : { isExpanded: false, phase: 'collapsed' as const };
+                        if (count <= 1 || !isExpanded || phase !== 'expanded') return null;
+
+                        const localRect = commitRectSize(scaledNodeSize, 0);
+                        const collapseIconSize = nodeFrameCollapseIconSize;
+                        const collapseHitSize = worldPx(16);
+                        const collapseStrokeWidth = 1;
+                        const topExpandedEntry = renderEntries.reduce(
+                          (top, entry) => (entry.y < top.y ? entry : top),
+                          renderEntries[0]
+                        );
+                        const clumpCountAnchorX =
+                          topExpandedEntry.x + localRect.width / 2 - CANVAS_NODE_STROKE_INSET - nodeFrameLabelRightInsetX;
+                        const clumpCountAnchorY = topExpandedEntry.y - localRect.height / 2 - nodeFrameLabelGap;
+                        const collapseHitX = clumpCountAnchorX - collapseHitSize;
+                        const collapseHitY = clumpCountAnchorY - collapseHitSize + worldPx(3);
+                        // Keep caret right edge locked to the same anchor as count text ("end"-aligned).
+                        const collapseCaretX = clumpCountAnchorX - collapseIconSize;
+                        const collapseCaretY = collapseHitY + (collapseHitSize - collapseIconSize) / 2;
+                        const collapseCaretNudgeX = worldPx(0.8);
+
+                        return (
+                          <g
+                            key={`branch-collapse-control-${clusterKey}`}
+                            role="button"
+                            tabIndex={0}
+                            aria-label="Collapse commit stack"
+                            style={{ cursor: 'pointer' }}
+                            onPointerDown={(e) => { e.preventDefault(); e.stopPropagation(); }}
+                            onMouseDown={(e) => { e.preventDefault(); e.stopPropagation(); }}
+                            onClick={(e) => {
+                              e.preventDefault();
+                              e.stopPropagation();
+                              toggleClumpExpanded(clusterKey);
+                            }}
+                            onKeyDown={(e) => {
+                              if (e.key !== 'Enter' && e.key !== ' ') return;
+                              e.preventDefault();
+                              e.stopPropagation();
+                              toggleClumpExpanded(clusterKey);
+                            }}
+                          >
+                            <rect
+                              x={collapseHitX}
+                              y={collapseHitY}
+                              width={collapseHitSize}
+                              height={collapseHitSize}
+                              fill="rgba(0,0,0,0.001)"
+                              pointerEvents="all"
+                            />
+                            <path
+                              d={`M ${collapseCaretX + collapseCaretNudgeX + collapseIconSize * 0.16} ${collapseCaretY + collapseIconSize * 0.34} L ${collapseCaretX + collapseCaretNudgeX + collapseIconSize * 0.5} ${collapseCaretY + collapseIconSize * 0.66} L ${collapseCaretX + collapseCaretNudgeX + collapseIconSize * 0.84} ${collapseCaretY + collapseIconSize * 0.34}`}
+                              stroke={NODE_FRAME_LABEL_COLOR}
+                              strokeWidth={collapseStrokeWidth}
+                              strokeLinecap="round"
+                              strokeLinejoin="round"
+                              fill="none"
+                              vectorEffect="non-scaling-stroke"
+                            />
+                          </g>
+                        );
+                      });
+                    })}
+                  </g>
+
+                  {/* Branch commit tooltip is rendered as an HTML overlay outside the zoomed camera. */}
+
+                  {/* Tooltip for main-line merge nodes — shown above the tick */}
+                  {hoveredMergeNode && (() => {
+                    const { y, node: m } = hoveredMergeNode;
+                    const label = m.prNumber ? `PR #${m.prNumber}` : m.sha.slice(0, 7);
+                    const title = m.prTitle ?? '';
+                    const hasTitle = title.length > 0;
+                    const TW = 220;
+                    const TH = hasTitle ? 58 : 44;
+                    const tx = mainX + 14;
+                    const ty = y - TH / 2;
+                    return (
+                      <g style={{ pointerEvents: 'none' }}>
+                        <rect x={tx} y={ty} width={TW} height={TH} rx={8}
+                          fill="#ffffff" stroke="#e7e5e0" strokeWidth={1}
+                          filter="url(#tick-shadow)" />
+                        <text x={tx + 10} y={ty + 14} fontSize={10} fontWeight={600} fill="#1c1917">{label}</text>
+                        {hasTitle && (
+                          <text x={tx + 10} y={ty + 30} fontSize={10} fill="#a8a29e">
+                            {title.slice(0, 34)}{title.length > 34 ? '…' : ''}
+                          </text>
+                        )}
+                        <text x={tx + 10} y={hasTitle ? ty + 46 : ty + 30} fontSize={10} fill="#a8a29e">
+                          {fmtLabelDate(m.date)}
+                        </text>
+                      </g>
+                    );
+                  })()}
+
+                  {/* Tooltip for PR commit SHAs — positioned below the tick */}
+                  {hoveredPRCommit && (() => {
+                    const { x, arcY, pr, commitIdx } = hoveredPRCommit;
+                    const sha = prCommits.get(pr.number)?.[commitIdx];
+                    const TW = 200;
+                    const tx = x - TW / 2;
+                    const ty = arcY + 14;
+                    return (
+                      <g style={{ pointerEvents: 'none' }}>
+                        <rect x={tx} y={ty} width={TW} height={60} rx={8}
+                          fill="#ffffff" stroke="#e7e5e0" strokeWidth={1}
+                          filter="url(#tick-shadow)" />
+                        <text x={tx + 10} y={ty + 17} fontSize={10} fontWeight={600} fill="#1c1917">
+                          {sha ?? `commit ${commitIdx + 1}`}
+                        </text>
+                        <text x={tx + 10} y={ty + 32} fontSize={10} fill="#78716c">
+                          PR #{pr.number} · {pr.branchName.length > 22 ? pr.branchName.slice(0, 22) + '…' : pr.branchName}
+                        </text>
+                        <text x={tx + 10} y={ty + 47} fontSize={10} fill="#a8a29e">
+                          @{pr.authorLogin} · merged {fmtLabelDate(pr.mergedAt)}
+                        </text>
+                      </g>
+                    );
+                  })()}
                 </g>
-              );
-            })}
-
-            {renderBranches.flatMap((b) => {
-              const { commitDotClusters } = getBranchRenderLayout(b);
-              return commitDotClusters.map((cluster) => {
-                const { renderEntries } = resolveBranchClusterEntries(cluster);
-                const count = renderEntries.length;
-                const clusterKey = branchClusterKey(b.name, cluster);
-                const canExpandCluster = renderEntries.length > 1;
-                const expanded = canExpandCluster ? expandedClumps.get(clusterKey) : undefined;
-                const { isExpanded, phase } = canExpandCluster
-                  ? resolveClumpPhase(expanded)
-                  : { isExpanded: false, phase: 'collapsed' as const };
-                if (count <= 1 || !isExpanded || phase !== 'expanded') return null;
-
-                const localRect = commitRectSize(scaledNodeSize, 0);
-                const collapseIconSize = nodeFrameCollapseIconSize;
-                const collapseHitSize = worldPx(16);
-                const collapseStrokeWidth = 1;
-                const topExpandedEntry = renderEntries.reduce(
-                  (top, entry) => (entry.y < top.y ? entry : top),
-                  renderEntries[0]
-                );
-                const clumpCountAnchorX =
-                  topExpandedEntry.x + localRect.width / 2 - CANVAS_NODE_STROKE_INSET - nodeFrameLabelRightInsetX;
-                const clumpCountAnchorY = topExpandedEntry.y - localRect.height / 2 - nodeFrameLabelGap;
-                const collapseHitX = clumpCountAnchorX - collapseHitSize;
-                const collapseHitY = clumpCountAnchorY - collapseHitSize + worldPx(3);
-                // Keep caret right edge locked to the same anchor as count text ("end"-aligned).
-                const collapseCaretX = clumpCountAnchorX - collapseIconSize;
-                const collapseCaretY = collapseHitY + (collapseHitSize - collapseIconSize) / 2;
-                const collapseCaretNudgeX = worldPx(0.8);
-
-                return (
-                  <g
-                    key={`branch-collapse-control-${clusterKey}`}
-                    role="button"
-                    tabIndex={0}
-                    aria-label="Collapse commit stack"
-                    style={{ cursor: 'pointer' }}
-                    onPointerDown={(e) => { e.preventDefault(); e.stopPropagation(); }}
-                    onMouseDown={(e) => { e.preventDefault(); e.stopPropagation(); }}
-                    onClick={(e) => {
-                      e.preventDefault();
-                      e.stopPropagation();
-                      toggleClumpExpanded(clusterKey);
-                    }}
-                    onKeyDown={(e) => {
-                      if (e.key !== 'Enter' && e.key !== ' ') return;
-                      e.preventDefault();
-                      e.stopPropagation();
-                      toggleClumpExpanded(clusterKey);
-                    }}
-                  >
-                    <rect
-                      x={collapseHitX}
-                      y={collapseHitY}
-                      width={collapseHitSize}
-                      height={collapseHitSize}
-                      fill="rgba(0,0,0,0.001)"
-                      pointerEvents="all"
-                    />
-                    <path
-                      d={`M ${collapseCaretX + collapseCaretNudgeX + collapseIconSize * 0.16} ${collapseCaretY + collapseIconSize * 0.34} L ${collapseCaretX + collapseCaretNudgeX + collapseIconSize * 0.5} ${collapseCaretY + collapseIconSize * 0.66} L ${collapseCaretX + collapseCaretNudgeX + collapseIconSize * 0.84} ${collapseCaretY + collapseIconSize * 0.34}`}
-                      stroke={NODE_FRAME_LABEL_COLOR}
-                      strokeWidth={collapseStrokeWidth}
-                      strokeLinecap="round"
-                      strokeLinejoin="round"
-                      fill="none"
-                      vectorEffect="non-scaling-stroke"
-                    />
-                  </g>
-                );
-              });
-            })}
-          </g>
-
-          {/* Branch commit tooltip is rendered as an HTML overlay outside the zoomed camera. */}
-
-          {/* Tooltip for main-line merge nodes — shown above the tick */}
-          {hoveredMergeNode && (() => {
-            const { y, node: m } = hoveredMergeNode;
-            const label = m.prNumber ? `PR #${m.prNumber}` : m.sha.slice(0, 7);
-            const title = m.prTitle ?? '';
-            const hasTitle = title.length > 0;
-            const TW = 220;
-            const TH = hasTitle ? 58 : 44;
-            const tx = mainX + 14;
-            const ty = y - TH / 2;
-            return (
-              <g style={{ pointerEvents: 'none' }}>
-                <rect x={tx} y={ty} width={TW} height={TH} rx={8}
-                  fill="#ffffff" stroke="#e7e5e0" strokeWidth={1}
-                  filter="url(#tick-shadow)" />
-                <text x={tx + 10} y={ty + 14} fontSize={10} fontWeight={600} fill="#1c1917">{label}</text>
-                {hasTitle && (
-                  <text x={tx + 10} y={ty + 30} fontSize={10} fill="#a8a29e">
-                    {title.slice(0, 34)}{title.length > 34 ? '…' : ''}
-                  </text>
-                )}
-                <text x={tx + 10} y={hasTitle ? ty + 46 : ty + 30} fontSize={10} fill="#a8a29e">
-                  {fmtLabelDate(m.date)}
-                </text>
               </g>
-            );
-          })()}
-
-          {/* Tooltip for PR commit SHAs — positioned below the tick */}
-          {hoveredPRCommit && (() => {
-            const { x, arcY, pr, commitIdx } = hoveredPRCommit;
-            const sha = prCommits.get(pr.number)?.[commitIdx];
-            const TW = 200;
-            const tx = x - TW / 2;
-            const ty = arcY + 14;
-            return (
-              <g style={{ pointerEvents: 'none' }}>
-                <rect x={tx} y={ty} width={TW} height={60} rx={8}
-                  fill="#ffffff" stroke="#e7e5e0" strokeWidth={1}
-                  filter="url(#tick-shadow)" />
-                <text x={tx + 10} y={ty + 17} fontSize={10} fontWeight={600} fill="#1c1917">
-                  {sha ?? `commit ${commitIdx + 1}`}
-                </text>
-                <text x={tx + 10} y={ty + 32} fontSize={10} fill="#78716c">
-                  PR #{pr.number} · {pr.branchName.length > 22 ? pr.branchName.slice(0, 22) + '…' : pr.branchName}
-                </text>
-                <text x={tx + 10} y={ty + 47} fontSize={10} fill="#a8a29e">
-                  @{pr.authorLogin} · merged {fmtLabelDate(pr.mergedAt)}
-                </text>
-              </g>
-            );
-          })()}
-          </g>
-          </g>
-          </g>
-        </svg>
+            </g>
+          </svg>
         </div>
 
         {marqueeRect && (
@@ -7715,20 +7705,20 @@ type MainDirectClusterLayout = {
 
         {/* Empty state */}
         {sortedNodes.length === 0 && activeBranches.length === 0 && !isLoading && (
-            <div className="absolute inset-0 flex items-center justify-center px-6">
-              <div className="bg-card/80 backdrop-blur-sm rounded-2xl border shadow-sm px-5 py-4 text-center max-w-md">
-                <p className="text-sm text-foreground">
-                  {sortedDirectCommits.length > 0
-                    ? 'No non-default branches found to visualize.'
-                    : 'No branches found.'}
+          <div className="absolute inset-0 flex items-center justify-center px-6">
+            <div className="bg-card/80 backdrop-blur-sm rounded-2xl border shadow-sm px-5 py-4 text-center max-w-md">
+              <p className="text-sm text-foreground">
+                {sortedDirectCommits.length > 0
+                  ? 'No non-default branches found to visualize.'
+                  : 'No branches found.'}
+              </p>
+              {sortedDirectCommits.length > 0 && (
+                <p className="text-xs text-muted-foreground mt-1.5">
+                  Main has commits, but there are no active topic branches yet.
                 </p>
-                {sortedDirectCommits.length > 0 && (
-                  <p className="text-xs text-muted-foreground mt-1.5">
-                    Main has commits, but there are no active topic branches yet.
-                  </p>
-                )}
-              </div>
+              )}
             </div>
+          </div>
         )}
       </div>
 
@@ -7749,44 +7739,43 @@ type MainDirectClusterLayout = {
               commitMergeTargetOptions.length > 1 &&
               selectedCommitTargetOption &&
               targetBranchForSelectedCommit && (
-              <div className="flex items-center gap-2 shrink-0 bg-card border border-border rounded-full pl-3 pr-1 py-1">
-                <span className="text-xs text-muted-foreground font-medium select-none">
-                  merge to...
-                </span>
-                <div className="flex items-center gap-1.5">
-                  {commitMergeTargetOptions.map((option) => {
-                    const isActiveTarget = option.targetBranch === targetBranchForSelectedCommit;
-                    return (
-                      <button
-                        key={`merge-target-${option.targetBranch}`}
-                        onClick={() => setMergeTargetCommitSha(option.targetSha)}
-                        className={`px-2 py-1 rounded-full text-xs leading-none select-none transition-colors ${
-                          isActiveTarget
+                <div className="flex items-center gap-2 shrink-0 bg-card border border-border rounded-full pl-3 pr-1 py-1">
+                  <span className="text-xs text-muted-foreground font-medium select-none">
+                    merge to...
+                  </span>
+                  <div className="flex items-center gap-1.5">
+                    {commitMergeTargetOptions.map((option) => {
+                      const isActiveTarget = option.targetBranch === targetBranchForSelectedCommit;
+                      return (
+                        <button
+                          key={`merge-target-${option.targetBranch}`}
+                          onClick={() => setMergeTargetCommitSha(option.targetSha)}
+                          className={`px-2 py-1 rounded-full text-xs leading-none select-none transition-colors ${isActiveTarget
                             ? 'bg-primary/10 text-foreground'
                             : 'bg-muted/30 text-muted-foreground hover:bg-muted hover:text-foreground'
-                        }`}
-                        title={`Merge selected commits into ${option.targetBranch}`}
-                      >
-                        {option.targetBranch}
-                      </button>
-                    );
-                  })}
+                            }`}
+                          title={`Merge selected commits into ${option.targetBranch}`}
+                        >
+                          {option.targetBranch}
+                        </button>
+                      );
+                    })}
+                  </div>
+                  <button
+                    onClick={() => void handleMergeSourcesIntoTarget(commitMergeSources, targetBranchForSelectedCommit)}
+                    disabled={mergeInProgress || commitMergeSources.length === 0}
+                    className="px-2.5 py-1 rounded-full text-xs leading-none select-none transition-opacity text-white hover:opacity-90 disabled:opacity-50 disabled:cursor-not-allowed"
+                    style={{ backgroundColor: USER_SELECTION_STROKE }}
+                    title={
+                      commitMergeSources.length > 0
+                        ? `Merge ${commitMergeSources.length} commits into ${targetBranchForSelectedCommit}`
+                        : 'No eligible source commits to merge'
+                    }
+                  >
+                    Confirm
+                  </button>
                 </div>
-                <button
-                  onClick={() => void handleMergeSourcesIntoTarget(commitMergeSources, targetBranchForSelectedCommit)}
-                  disabled={mergeInProgress || commitMergeSources.length === 0}
-                  className="px-2.5 py-1 rounded-full text-xs leading-none select-none transition-opacity text-white hover:opacity-90 disabled:opacity-50 disabled:cursor-not-allowed"
-                  style={{ backgroundColor: USER_SELECTION_STROKE }}
-                  title={
-                    commitMergeSources.length > 0
-                      ? `Merge ${commitMergeSources.length} commits into ${targetBranchForSelectedCommit}`
-                      : 'No eligible source commits to merge'
-                  }
-                >
-                  Confirm
-                </button>
-              </div>
-            )}
+              )}
           </div>
 
           <div className="flex items-center justify-end gap-4">
@@ -7816,31 +7805,6 @@ type MainDirectClusterLayout = {
             )}
             {!isPopoverWindow && (
               <div className="flex items-center gap-2 shrink-0 bg-card border border-border rounded-full px-3 py-1">
-                <span className="text-xs text-muted-foreground select-none">Guide lines</span>
-                <label className="relative inline-flex items-center cursor-pointer">
-                  <input
-                    type="checkbox"
-                    checked={showGuides}
-                    onChange={(e) => setShowGuides(e.target.checked)}
-                    aria-label="Toggle guide lines"
-                    className="sr-only"
-                  />
-                  <span
-                    className={`w-10 h-5 rounded-full border transition-colors flex items-center p-0.5 ${
-                      showGuides ? 'bg-primary/10 border-primary/30' : 'bg-muted/30 border-border'
-                    }`}
-                  >
-                    <span
-                      className={`w-4 h-4 rounded-full bg-card shadow-sm transform transition-transform duration-200 ${
-                        showGuides ? 'translate-x-5' : 'translate-x-0'
-                      }`}
-                    />
-                  </span>
-                </label>
-              </div>
-            )}
-            {!isPopoverWindow && (
-              <div className="flex items-center gap-2 shrink-0 bg-card border border-border rounded-full px-3 py-1">
                 <span className="text-xs text-muted-foreground select-none">Row debug</span>
                 <label className="relative inline-flex items-center cursor-pointer">
                   <input
@@ -7851,14 +7815,12 @@ type MainDirectClusterLayout = {
                     className="sr-only"
                   />
                   <span
-                    className={`w-10 h-5 rounded-full border transition-colors flex items-center p-0.5 ${
-                      showRowDebugOverlay ? 'bg-primary/10 border-primary/30' : 'bg-muted/30 border-border'
-                    }`}
+                    className={`w-10 h-5 rounded-full border transition-colors flex items-center p-0.5 ${showRowDebugOverlay ? 'bg-primary/10 border-primary/30' : 'bg-muted/30 border-border'
+                      }`}
                   >
                     <span
-                      className={`w-4 h-4 rounded-full bg-card shadow-sm transform transition-transform duration-200 ${
-                        showRowDebugOverlay ? 'translate-x-5' : 'translate-x-0'
-                      }`}
+                      className={`w-4 h-4 rounded-full bg-card shadow-sm transform transition-transform duration-200 ${showRowDebugOverlay ? 'translate-x-5' : 'translate-x-0'
+                        }`}
                     />
                   </span>
                 </label>
