@@ -447,6 +447,127 @@ function clusterByForkPoints<T>(
   return clusters;
 }
 
+type BranchClusterEntries = {
+  realCommitEntries: MarkerEntry<CommitEntryItem>[];
+  renderEntries: MarkerEntry<CommitEntryItem>[];
+};
+
+type BranchClusterViewModel = {
+  cluster: MarkerCluster<CommitEntryItem>;
+  clusterKey: string;
+  memberKeys: string[];
+  realCommitEntries: MarkerEntry<CommitEntryItem>[];
+  renderEntries: MarkerEntry<CommitEntryItem>[];
+  preferredAnchorEntry: MarkerEntry<CommitEntryItem>;
+  count: number;
+  canExpandCluster: boolean;
+};
+
+type MainClusterViewModel = {
+  cluster: MarkerCluster<DirectCommit>;
+  clusterKey: string;
+  memberKeys: string[];
+  first: DirectCommit;
+  last: DirectCommit;
+  count: number;
+  canExpandCluster: boolean;
+};
+
+function resolveBranchClusterEntries(
+  cluster: MarkerCluster<CommitEntryItem>,
+): BranchClusterEntries {
+  const realCommitEntries = cluster.entries.filter(
+    (entry) => entry.item.commit?.kind !== 'branch-created'
+  );
+  return {
+    realCommitEntries,
+    renderEntries: realCommitEntries.length > 0 ? realCommitEntries : cluster.entries,
+  };
+}
+
+function branchClusterKey(
+  branchName: string,
+  cluster: MarkerCluster<CommitEntryItem>,
+): string {
+  const firstEntry = cluster.entries[0];
+  const lastEntry = cluster.entries[cluster.entries.length - 1];
+  return `commit-clump-${branchName}-${firstEntry.item.index}-${lastEntry.item.index}`;
+}
+
+function branchClusterMemberKeys(
+  branchName: string,
+  cluster: MarkerCluster<CommitEntryItem>,
+): string[] {
+  return cluster.entries.map((entry) => {
+    const commitSha = entry.item.commit?.fullSha;
+    return commitSha
+      ? `branch-commit:${branchName}:${commitSha}`
+      : `branch-commit:${branchName}:slot-${entry.item.index}`;
+  });
+}
+
+function branchPreferredAnchorEntry(
+  cluster: MarkerCluster<CommitEntryItem>,
+  realCommitEntries: MarkerEntry<CommitEntryItem>[],
+  branchEndDotIndex: number | null,
+): MarkerEntry<CommitEntryItem> {
+  if (branchEndDotIndex != null) {
+    const headEntry = cluster.entries.find(
+      (entry) => entry.item.index === branchEndDotIndex
+    );
+    if (headEntry) return headEntry;
+  }
+  return realCommitEntries[realCommitEntries.length - 1] ?? cluster.entries[cluster.entries.length - 1];
+}
+
+function buildBranchClusterViewModel(
+  branchName: string,
+  cluster: MarkerCluster<CommitEntryItem>,
+  branchEndDotIndex: number | null,
+): BranchClusterViewModel {
+  const { realCommitEntries, renderEntries } = resolveBranchClusterEntries(cluster);
+  const count = renderEntries.length;
+  return {
+    cluster,
+    clusterKey: branchClusterKey(branchName, cluster),
+    memberKeys: branchClusterMemberKeys(branchName, cluster),
+    realCommitEntries,
+    renderEntries,
+    preferredAnchorEntry: branchPreferredAnchorEntry(cluster, realCommitEntries, branchEndDotIndex),
+    count,
+    canExpandCluster: count > 1,
+  };
+}
+
+function mainClusterKey(
+  cluster: MarkerCluster<DirectCommit>,
+): string {
+  const first = cluster.entries[0].item;
+  const last = cluster.entries[cluster.entries.length - 1].item;
+  return `direct-clump-${first.fullSha}-${last.fullSha}`;
+}
+
+function mainClusterMemberKeys(
+  cluster: MarkerCluster<DirectCommit>,
+): string[] {
+  return cluster.entries.map((entry) => `direct:${entry.item.fullSha}`);
+}
+
+function buildMainClusterViewModel(
+  cluster: MarkerCluster<DirectCommit>,
+): MainClusterViewModel {
+  const count = cluster.entries.length;
+  return {
+    cluster,
+    clusterKey: mainClusterKey(cluster),
+    memberKeys: mainClusterMemberKeys(cluster),
+    first: cluster.entries[0].item,
+    last: cluster.entries[count - 1].item,
+    count,
+    canExpandCluster: count > 1,
+  };
+}
+
 function clumpCountLabel(count: number): string {
   return count > CLUMP_COUNT_MAX ? `${CLUMP_COUNT_MAX}+` : String(count);
 }
@@ -3756,8 +3877,8 @@ export default function BranchMap({
   // Branch hover lines use vector-effect: non-scaling-stroke, so this should
   // stay in screen px (not inverse-scaled by zoom) to avoid oversized hitboxes when zoomed out.
   const branchHitStrokeWidth = BRANCH_HIT_STROKE_WIDTH;
-  const drawPathMainClass = (!ENABLE_TIMELINE_INTRO_ANIMATIONS || animationsLocked) ? undefined : 'draw-path-main';
   const drawPathArcClass = (!ENABLE_TIMELINE_INTRO_ANIMATIONS || animationsLocked) ? undefined : 'draw-path-arc';
+  const drawPathMainClass = drawPathArcClass;
   const fadeInInfoClass = (!ENABLE_TIMELINE_INTRO_ANIMATIONS || animationsLocked) ? undefined : 'fade-in-info';
   const mainTimelineOpacity = 1;
   const timelineCanvasVisible = timelineRevealPhase !== 'hidden';
@@ -3766,6 +3887,73 @@ export default function BranchMap({
 
   const clumpExpandMs = 360;
   const clumpExpandEasing = 'cubic-bezier(0.2, 0.8, 0.2, 1)';
+  function resolveClumpPhase(expandedState?: ExpandedClumpState): {
+    isExpanded: boolean;
+    phase: ExpandedClumpState['phase'];
+    phaseEased: number;
+  } {
+    const isExpanded = expandedState?.isExpanded ?? false;
+    const phase = expandedState?.phase ?? 'collapsed';
+    const phaseStartedAtMs = expandedState?.phaseStartedAt ?? Date.now();
+    const phaseProgress = phase === 'collapsed'
+      ? 0
+      : phase === 'expanded'
+        ? 1
+        : clamp01((Date.now() - phaseStartedAtMs) / clumpExpandMs);
+    const phaseEased = phaseProgress <= 0 ? 0 : phaseProgress >= 1 ? 1 : easeInOutCubic(phaseProgress);
+    return { isExpanded, phase, phaseEased };
+  }
+  function resolveClusterMotion(
+    clusterKey: string,
+    defaultAnchor: { x: number; y: number },
+    memberKeys: string[],
+    canExpandCluster = true,
+  ): {
+    anchorX: number;
+    anchorY: number;
+    isExpanded: boolean;
+    phase: ExpandedClumpState['phase'];
+    phaseEased: number;
+  } {
+    const animatedAnchor = resolveAnimatedClumpAnchor(
+      clusterKey,
+      defaultAnchor,
+      memberKeys,
+    );
+    const expandedState = canExpandCluster ? expandedClumps.get(clusterKey) : undefined;
+    const { isExpanded, phase, phaseEased } = resolveClumpPhase(expandedState);
+    return {
+      anchorX: animatedAnchor.x,
+      anchorY: animatedAnchor.y,
+      isExpanded: canExpandCluster ? isExpanded : false,
+      phase: canExpandCluster ? phase : 'collapsed',
+      phaseEased: canExpandCluster ? phaseEased : 0,
+    };
+  }
+  function interpolateExpandedEntryPose(
+    anchor: { x: number; y: number },
+    entry: { x: number; y: number },
+    phase: ExpandedClumpState['phase'],
+    phaseEased: number,
+  ): { x: number; y: number; opacity: number } {
+    const to = { x: entry.x, y: entry.y };
+    const from = { x: anchor.x, y: anchor.y };
+    const at = phase === 'collapsing'
+      ? { x: to.x + (from.x - to.x) * phaseEased, y: to.y + (from.y - to.y) * phaseEased }
+      : phase === 'expanding'
+        ? { x: from.x + (to.x - from.x) * phaseEased, y: from.y + (to.y - from.y) * phaseEased }
+        : phase === 'collapsed'
+          ? from
+          : to;
+    const opacity = phase === 'collapsing'
+      ? 1 - 0.3 * phaseEased
+      : phase === 'expanding'
+        ? 0.7 + 0.3 * phaseEased
+        : phase === 'collapsed'
+          ? 0.7
+          : 1;
+    return { x: at.x, y: at.y, opacity };
+  }
   const getNodeStrokeColor = (
     nodeKey: string,
     baseStroke = CANVAS_NODE_STROKE,
@@ -3785,6 +3973,9 @@ export default function BranchMap({
   function handleNodeHoverLeave() {
     setHoveredNodeStrokeKey(null);
     setHoveredNodeBranchName(null);
+  }
+  function clearMainBranchHover() {
+    setHoveredBranch((current) => (current === defaultBranch ? null : current));
   }
   const branchRenderLayoutCache = new Map<string, BranchRenderLayout>();
   function getBranchRenderLayout(b: Branch): BranchRenderLayout {
@@ -4123,6 +4314,26 @@ export default function BranchMap({
     }
     return lineage;
   })();
+  function branchUsesLocalGrayStroke(branch: Branch): boolean {
+    return getBranchRenderLayout(branch).fullBranchShouldUseLocalGray;
+  }
+
+  function branchStrokeLayerPriority(
+    branch: Branch,
+    options: { includeSelectedPriority: boolean },
+  ): number {
+    if (options.includeSelectedPriority && selectedBranchNameSet.has(branch.name)) return 5;
+    if (hoveredBranch === branch.name || isNodeLineageHovered(branch.name)) return 4;
+    if (isSelectedLaneBranch(branch)) return 3;
+    if (focusedErrorBranch?.name === branch.name) return 2;
+    return branchUsesLocalGrayStroke(branch) ? 0 : 1;
+  }
+
+  function orderedActiveBranchesForLayer(options: { includeSelectedPriority: boolean }): Branch[] {
+    return [...activeBranches].sort(
+      (a, b) => branchStrokeLayerPriority(a, options) - branchStrokeLayerPriority(b, options)
+    );
+  }
   const isNodeLineageHovered = (branchName: string): boolean => hoveredNodeBranchLineage.has(branchName);
 
   const toggleClumpExpanded = (clumpKey: string) => {
@@ -4240,17 +4451,14 @@ type MainDirectClusterLayout = {
     forcedMainSplitIndices,
   )
     .map((cluster) => {
-      const count = cluster.entries.length;
-      const first = cluster.entries[0].item;
-      const last = cluster.entries[count - 1].item;
-      const clusterKey = `direct-clump-${first.fullSha}-${last.fullSha}`;
+      const vm = buildMainClusterViewModel(cluster);
       return {
-        cluster,
-        clusterKey,
-        count,
-        first,
-        last,
-        memberKeys: cluster.entries.map((entry) => `direct:${entry.item.fullSha}`),
+        cluster: vm.cluster,
+        clusterKey: vm.clusterKey,
+        count: vm.count,
+        first: vm.first,
+        last: vm.last,
+        memberKeys: vm.memberKeys,
         clusterHasMainTip: cluster.entries.some(
           (entry) => entry.item.fullSha === latestMainCommitSha
         ),
@@ -4271,14 +4479,14 @@ type MainDirectClusterLayout = {
         clusterKey,
         memberKeys,
       } = clusterLayout;
-      const animatedAnchor = resolveAnimatedClumpAnchor(
+      const motion = resolveClusterMotion(
         clusterKey,
         { x: cluster.x, y: cluster.y },
-        memberKeys
+        memberKeys,
+        cluster.entries.length > 1,
       );
-      const expanded = expandedClumps.get(clusterKey);
-      const isExpanded = expanded?.isExpanded ?? false;
-      const anchorProjected = animatedAnchor;
+      const isExpanded = motion.isExpanded;
+      const anchorProjected = { x: motion.anchorX, y: motion.anchorY };
       const collapsedCanonical = unprojectPoint(anchorProjected.x, anchorProjected.y);
 
       if (!isExpanded || cluster.entries.length <= 1) {
@@ -4288,25 +4496,14 @@ type MainDirectClusterLayout = {
         continue;
       }
 
-      const phase = expanded?.phase ?? 'collapsed';
-      const phaseStartedAtMs = expanded?.phaseStartedAt ?? Date.now();
-      const phaseProgress = phase === 'collapsed'
-        ? 0
-        : phase === 'expanded'
-          ? 1
-          : clamp01((Date.now() - phaseStartedAtMs) / clumpExpandMs);
-      const phaseEased = phaseProgress <= 0 ? 0 : phaseProgress >= 1 ? 1 : easeInOutCubic(phaseProgress);
       cluster.entries.forEach((entry) => {
-        const from = { x: anchorProjected.x, y: anchorProjected.y };
-        const to = { x: entry.x, y: entry.y };
-        const at = phase === 'collapsing'
-          ? { x: to.x + (from.x - to.x) * phaseEased, y: to.y + (from.y - to.y) * phaseEased }
-          : phase === 'expanding'
-            ? { x: from.x + (to.x - from.x) * phaseEased, y: from.y + (to.y - from.y) * phaseEased }
-            : phase === 'collapsed'
-              ? from
-              : to;
-        anchors.set(entry.item.fullSha, unprojectPoint(at.x, at.y));
+        const memberPose = interpolateExpandedEntryPose(
+          { x: motion.anchorX, y: motion.anchorY },
+          { x: entry.x, y: entry.y },
+          motion.phase,
+          motion.phaseEased,
+        );
+        anchors.set(entry.item.fullSha, unprojectPoint(memberPose.x, memberPose.y));
       });
     }
     return anchors;
@@ -4359,11 +4556,8 @@ type MainDirectClusterLayout = {
     for (const branch of activeBranches) {
       const { commitDotClusters, hasPreviewData, branchEndDotIndex } = getBranchRenderLayout(branch);
       for (const cluster of commitDotClusters) {
-        const realCommitEntries = cluster.entries.filter(
-          (entry) => entry.item.commit?.kind !== 'branch-created'
-        );
-        const renderEntries = realCommitEntries.length > 0 ? realCommitEntries : cluster.entries;
-        if (renderEntries.length <= 1) continue;
+        const vm = buildBranchClusterViewModel(branch.name, cluster, branchEndDotIndex);
+        if (vm.count <= 1) continue;
 
         const hasCheckedOutCommit = cluster.entries.some((entry) => {
           const idx = entry.item.index;
@@ -4381,10 +4575,7 @@ type MainDirectClusterLayout = {
         });
 
         if (!hasCheckedOutCommit) continue;
-
-        const firstEntry = cluster.entries[0];
-        const lastEntry = cluster.entries[cluster.entries.length - 1];
-        keys.add(`commit-clump-${branch.name}-${firstEntry.item.index}-${lastEntry.item.index}`);
+        keys.add(vm.clusterKey);
       }
     }
 
@@ -4682,38 +4873,22 @@ type MainDirectClusterLayout = {
       const { commitDotClusters, promptMarkerClusters, branchEndDotIndex } = getBranchRenderLayout(branch);
 
       commitDotClusters.forEach((cluster) => {
-        const realCommitEntries = cluster.entries.filter(
-          (entry) => entry.item.commit?.kind !== 'branch-created'
-        );
-        const renderEntries = realCommitEntries.length > 0 ? realCommitEntries : cluster.entries;
-        const count = renderEntries.length;
-        const firstEntry = cluster.entries[0];
-        const lastEntry = cluster.entries[cluster.entries.length - 1];
-        const clusterKey = `commit-clump-${branch.name}-${firstEntry.item.index}-${lastEntry.item.index}`;
-        const canExpandCluster = renderEntries.length > 1;
-        const expanded = canExpandCluster ? expandedClumps.get(clusterKey) : undefined;
-        const isExpanded = canExpandCluster ? (expanded?.isExpanded ?? false) : false;
+        const vm = buildBranchClusterViewModel(branch.name, cluster, branchEndDotIndex);
+        const expanded = vm.canExpandCluster ? expandedClumps.get(vm.clusterKey) : undefined;
+        const isExpanded = vm.canExpandCluster ? (expanded?.isExpanded ?? false) : false;
 
-        if (count <= 1 || !isExpanded) {
-          const preferredAnchorEntry = (() => {
-            if (branchEndDotIndex != null) {
-              const headEntry = cluster.entries.find(
-                (entry) => entry.item.index === branchEndDotIndex
-              );
-              if (headEntry) return headEntry;
-            }
-            return realCommitEntries[realCommitEntries.length - 1] ?? lastEntry;
-          })();
+        if (vm.count <= 1 || !isExpanded) {
+          const preferredAnchorEntry = vm.preferredAnchorEntry;
           addVisibleAtProjected(
             preferredAnchorEntry.x,
             preferredAnchorEntry.y,
             'branch',
-            clusterKey
+            vm.clusterKey
           );
           return;
         }
 
-        realCommitEntries.forEach((entry) => {
+        vm.realCommitEntries.forEach((entry) => {
           addVisibleAtProjected(
             entry.x,
             entry.y,
@@ -5033,22 +5208,43 @@ type MainDirectClusterLayout = {
           )}
 
           {/* ── Main timeline + merge nodes ── */}
-          <g style={{ opacity: mainTimelineOpacity, transition: 'opacity 0.15s' }}>
+          <g
+            style={{ opacity: mainTimelineOpacity, transition: 'opacity 0.15s' }}
+            onMouseEnter={() => setHoveredBranch(defaultBranch)}
+            onMouseLeave={() => clearMainBranchHover()}
+          >
+            <path
+              d={`M ${pathCoord(mainX, mainStartY)} L ${pathCoord(mainX, mainActiveEndY)}`}
+              fill="none"
+              stroke="transparent"
+              strokeWidth={branchHitStrokeWidth}
+              style={{ pointerEvents: branchLaneHitPointerEvents }}
+            />
             {/* Use <path> not <line>: pathLength on <line> is SVG 2 only and unreliable in WKWebView */}
             <path
               d={`M ${pathCoord(mainX, mainStartY)} L ${pathCoord(mainX, mainActiveEndY)}`}
               fill="none"
               stroke={
-                checkedOutIndicatorLocal && Math.abs(checkedOutIndicatorLocal.x - mainX) < 0.5
-                  ? CHECKED_OUT_SELECTION_STROKE
-                  : CANVAS_NEUTRAL_GRAY
+                selectedBranchNameSet.has(defaultBranch)
+                  ? USER_SELECTION_STROKE
+                  : (hoveredBranch === defaultBranch || hoveredNodeBranchName === defaultBranch)
+                    ? CANVAS_NEUTRAL_GRAY_HOVER
+                    : (
+                      checkedOutIndicatorLocal && Math.abs(checkedOutIndicatorLocal.x - mainX) < 0.5
+                        ? CHECKED_OUT_SELECTION_STROKE
+                        : CANVAS_NEUTRAL_GRAY
+                    )
               }
               strokeWidth={1.5}
               pathLength={1}
               className={drawPathMainClass}
+              style={{
+                '--delay': `${MAIN_DRAW_MS}ms`,
+                transition: 'stroke 0.12s ease',
+              } as React.CSSProperties}
             />
 
-            <g className={fadeInInfoClass} style={{ '--delay': `${MAIN_DRAW_MS}ms` } as React.CSSProperties}>
+            <g className={fadeInInfoClass} style={{ '--delay': `${MAIN_DRAW_MS + INFO_OFFSET}ms` } as React.CSSProperties}>
               {/* Direct commits */}
               {mainDirectClusters.map((clusterLayout) => {
                   const {
@@ -5063,13 +5259,14 @@ type MainDirectClusterLayout = {
                     memberKeys,
                   } = clusterLayout;
                   const countLabel = stackCountLabel(count);
-                  const animatedAnchor = resolveAnimatedClumpAnchor(
+                  const motion = resolveClusterMotion(
                     clusterKey,
                     { x: cluster.x, y: cluster.y },
-                    memberKeys
+                    memberKeys,
+                    count > 1,
                   );
-                  const anchorX = animatedAnchor.x;
-                  const anchorY = animatedAnchor.y;
+                  const anchorX = motion.anchorX;
+                  const anchorY = motion.anchorY;
 
                   if (count === 1) {
                     const c = last;
@@ -5107,7 +5304,8 @@ type MainDirectClusterLayout = {
                         }
                         onDoubleClick={(event) => event.stopPropagation()}
                         onMouseEnter={() => {
-                          handleNodeHoverEnter(clusterKey);
+                          setHoveredBranch(defaultBranch);
+                          handleNodeHoverEnter(clusterKey, defaultBranch);
                           setTooltip({
                             x: anchorX,
                             y: anchorY,
@@ -5121,22 +5319,16 @@ type MainDirectClusterLayout = {
                         }}
                         onMouseLeave={() => {
                           handleNodeHoverLeave();
+                          clearMainBranchHover();
                           setTooltip(null);
                         }}
                       />
                     );
                   }
 
-                  const expanded = expandedClumps.get(clusterKey);
-                  const isExpanded = expanded?.isExpanded ?? false;
-                  const phase = expanded?.phase ?? 'collapsed';
-                  const phaseStartedAtMs = expanded?.phaseStartedAt ?? Date.now();
-                  const phaseProgress = phase === 'collapsed'
-                    ? 0
-                    : phase === 'expanded'
-                      ? 1
-                      : clamp01((Date.now() - phaseStartedAtMs) / clumpExpandMs);
-                  const phaseEased = phaseProgress <= 0 ? 0 : phaseProgress >= 1 ? 1 : easeInOutCubic(phaseProgress);
+                  const isExpanded = motion.isExpanded;
+                  const phase = motion.phase;
+                  const phaseEased = motion.phaseEased;
                   const rectSize = nodeRectSize(count);
                   const localRect = commitRectSize(scaledNodeSize, 0);
 
@@ -5217,7 +5409,8 @@ type MainDirectClusterLayout = {
                               event.stopPropagation();
                             }}
                             onMouseEnter={() => {
-                              handleNodeHoverEnter(clusterKey);
+                              setHoveredBranch(defaultBranch);
+                              handleNodeHoverEnter(clusterKey, defaultBranch);
                               setTooltip({
                                 x: anchorX,
                                 y: anchorY,
@@ -5227,6 +5420,7 @@ type MainDirectClusterLayout = {
                             }}
                             onMouseLeave={() => {
                               handleNodeHoverLeave();
+                              clearMainBranchHover();
                               setTooltip(null);
                             }}
                           />
@@ -5238,32 +5432,22 @@ type MainDirectClusterLayout = {
                           {cluster.entries.map((entry) => {
                             const c = entry.item;
                             const label = truncatePrompt(c.message, COMMIT_TOOLTIP_PREVIEW_MAX);
-                            const from = { x: anchorX, y: anchorY };
-                            const to = { x: entry.x, y: entry.y };
-                            const at = phase === 'collapsing'
-                              ? { x: to.x + (from.x - to.x) * phaseEased, y: to.y + (from.y - to.y) * phaseEased }
-                              : phase === 'expanding'
-                                ? { x: from.x + (to.x - from.x) * phaseEased, y: from.y + (to.y - from.y) * phaseEased }
-                                : phase === 'collapsed'
-                                  ? from
-                                  : to;
+                            const memberPose = interpolateExpandedEntryPose(
+                              { x: anchorX, y: anchorY },
+                              { x: entry.x, y: entry.y },
+                              phase,
+                              phaseEased,
+                            );
                           const commitKey = `direct:${c.fullSha}`;
                           const isUncommittedCommit = c.fullSha === 'WORKING_TREE';
                           const isCheckedOutCommit =
                             checkedOutHeadSha != null && shaMatchesGitRef(c.fullSha, checkedOutHeadSha);
-                            const memberOpacity = phase === 'collapsing'
-                              ? 1 - 0.3 * phaseEased
-                              : phase === 'expanding'
-                                ? 0.7 + 0.3 * phaseEased
-                                : phase === 'collapsed'
-                                  ? 0.7
-                                  : 1;
                             return (
                               <g
                                 key={commitKey}
-                                transform={`translate(${at.x} ${at.y})`}
+                                transform={`translate(${memberPose.x} ${memberPose.y})`}
                                 style={{ ...clumpAnimStyle, pointerEvents: phase === 'expanded' ? 'auto' : 'none' }}
-                                opacity={memberOpacity}
+                                opacity={memberPose.opacity}
                               >
                                 <rect
                                   className="branch-map-commit-rect"
@@ -5299,7 +5483,8 @@ type MainDirectClusterLayout = {
                                   }
                                   onDoubleClick={(event) => event.stopPropagation()}
                                   onMouseEnter={() => {
-                                    handleNodeHoverEnter(commitKey);
+                                    setHoveredBranch(defaultBranch);
+                                    handleNodeHoverEnter(commitKey, defaultBranch);
                                     setTooltip({
                                       x: entry.x,
                                       y: entry.y,
@@ -5313,6 +5498,7 @@ type MainDirectClusterLayout = {
                                   }}
                                   onMouseLeave={() => {
                                     handleNodeHoverLeave();
+                                    clearMainBranchHover();
                                     setTooltip(null);
                                   }}
                                 />
@@ -5679,21 +5865,9 @@ type MainDirectClusterLayout = {
           {/* ── Active branches ── */}
           <g style={{ opacity: hoveredPR !== null ? 0.2 : 1, transition: 'opacity 0.15s' }}>
             {(() => {
-              const branchUsesLocalGrayStroke = (branch: Branch): boolean => {
-                return getBranchRenderLayout(branch).fullBranchShouldUseLocalGray;
-              };
-
-              const branchStrokeLayerPriority = (branch: Branch): number => {
-                if (selectedBranchNameSet.has(branch.name)) return 5;
-                if (hoveredBranch === branch.name || isNodeLineageHovered(branch.name)) return 4;
-                if (isSelectedLaneBranch(branch)) return 3;
-                if (focusedErrorBranch?.name === branch.name) return 2;
-                return branchUsesLocalGrayStroke(branch) ? 0 : 1;
-              };
-
-              const orderedActiveBranches = [...activeBranches].sort(
-                (a, b) => branchStrokeLayerPriority(a) - branchStrokeLayerPriority(b)
-              );
+              const orderedActiveBranches = orderedActiveBranchesForLayer({
+                includeSelectedPriority: true,
+              });
 
               return orderedActiveBranches.map((b) => {
                 const {
@@ -5881,36 +6055,15 @@ type MainDirectClusterLayout = {
 
                     {/* Commit markers along branch */}
                     {commitDotClusters.map((cluster) => {
-                      const realCommitEntries = cluster.entries.filter(
-                        (entry) => entry.item.commit?.kind !== 'branch-created'
+                      const vm = buildBranchClusterViewModel(b.name, cluster, branchEndDotIndex);
+                      const motion = resolveClusterMotion(
+                        vm.clusterKey,
+                        { x: vm.preferredAnchorEntry.x, y: vm.preferredAnchorEntry.y },
+                        vm.memberKeys,
+                        vm.canExpandCluster,
                       );
-                      const renderEntries = realCommitEntries.length > 0 ? realCommitEntries : cluster.entries;
-                      const count = renderEntries.length;
-                      const firstEntry = cluster.entries[0];
-                      const lastEntry = cluster.entries[cluster.entries.length - 1];
-                      const clusterKey = `commit-clump-${b.name}-${firstEntry.item.index}-${lastEntry.item.index}`;
-                      const memberKeys = cluster.entries.map((entry) => {
-                        const commitSha = entry.item.commit?.fullSha;
-                        return commitSha
-                          ? `branch-commit:${b.name}:${commitSha}`
-                          : `branch-commit:${b.name}:slot-${entry.item.index}`;
-                      });
-                      const preferredAnchorEntry = (() => {
-                        if (branchEndDotIndex != null) {
-                          const headEntry = cluster.entries.find(
-                            (entry) => entry.item.index === branchEndDotIndex
-                          );
-                          if (headEntry) return headEntry;
-                        }
-                        return realCommitEntries[realCommitEntries.length - 1] ?? lastEntry;
-                      })();
-                      const animatedAnchor = resolveAnimatedClumpAnchor(
-                        clusterKey,
-                        { x: preferredAnchorEntry.x, y: preferredAnchorEntry.y },
-                        memberKeys
-                      );
-                      const anchorX = animatedAnchor.x;
-                      const anchorY = animatedAnchor.y;
+                      const anchorX = motion.anchorX;
+                      const anchorY = motion.anchorY;
                     const dotShouldUseCanvasFill =
                       fullBranchShouldUseLocalGray ||
                       cluster.entries.every((entry) => localCommitDotIndices.has(entry.item.index));
@@ -5944,8 +6097,8 @@ type MainDirectClusterLayout = {
                       });
                     const clusterHasSelectedHead = clusterHasBranchTip && selectedBranchNameSet.has(b.name);
 
-                    if (count <= 1) {
-                      const commitEntry = renderEntries[0] ?? lastEntry;
+                    if (vm.count <= 1) {
+                      const commitEntry = vm.renderEntries[0] ?? cluster.entries[cluster.entries.length - 1];
                       const commit = commitEntry.item.commit;
                       const isNonCommitPlaceholder = !commit && uniqueAheadCount <= 0;
                       const isUncommittedCommit = commit?.kind === 'uncommitted';
@@ -5967,7 +6120,7 @@ type MainDirectClusterLayout = {
                         const ghostRectStrokeWidth = unpushedStrokeWidth;
                         const ghostRectDasharray = unpushedLaneDasharray;
                         return (
-                          <g key={clusterKey}>
+                          <g key={vm.clusterKey}>
                             <rect
                               className="branch-map-commit-rect"
                               x={anchorX - rectSize.width / 2 + dotStrokeInset}
@@ -5980,7 +6133,7 @@ type MainDirectClusterLayout = {
                               fill={dotFill}
                               stroke={
                                 getNodeStrokeColor(
-                                  clusterKey,
+                                  vm.clusterKey,
                                   isGhostRect
                                     ? LOCAL_UNPUSHED_GRAY
                                     : isUncommittedCommit
@@ -6017,7 +6170,7 @@ type MainDirectClusterLayout = {
                               }}
                               onDoubleClick={(event) => event.stopPropagation()}
                               onMouseEnter={() => {
-                                handleNodeHoverEnter(clusterKey, b.name);
+                                handleNodeHoverEnter(vm.clusterKey, b.name);
                                 setTooltip({
                                   x: anchorX,
                                   y: anchorY,
@@ -6053,8 +6206,8 @@ type MainDirectClusterLayout = {
                         );
                       }
 
-                      const firstRealEntry = renderEntries[0] ?? firstEntry;
-                      const lastRealEntry = renderEntries[renderEntries.length - 1] ?? lastEntry;
+                      const firstRealEntry = vm.renderEntries[0] ?? cluster.entries[0];
+                      const lastRealEntry = vm.renderEntries[vm.renderEntries.length - 1] ?? cluster.entries[cluster.entries.length - 1];
                       const firstDate = firstRealEntry.item.commit?.date ?? b.lastCommitDate;
                       const lastDate = lastRealEntry.item.commit?.date ?? b.lastCommitDate;
                       const dateRangeLabel = new Date(firstDate).getTime() === new Date(lastDate).getTime()
@@ -6065,26 +6218,18 @@ type MainDirectClusterLayout = {
                         ? truncatePrompt(lastRealEntry.item.commit.message, COMMIT_CLUSTER_PREVIEW_MAX)
                         : `on ${b.name}`;
 
-                      const canExpandCluster = renderEntries.length > 1;
-                      const clusterHasUncommitted = renderEntries.some(
+                      const clusterHasUncommitted = vm.renderEntries.some(
                         (entry) => entry.item.commit?.kind === 'uncommitted'
                       );
-                      const expanded = canExpandCluster ? expandedClumps.get(clusterKey) : undefined;
-                      const isExpanded = canExpandCluster ? (expanded?.isExpanded ?? false) : false;
-                      const phase = expanded?.phase ?? 'collapsed';
-                      const phaseStartedAtMs = expanded?.phaseStartedAt ?? Date.now();
-                      const phaseProgress = phase === 'collapsed'
-                        ? 0
-                        : phase === 'expanded'
-                          ? 1
-                          : clamp01((Date.now() - phaseStartedAtMs) / clumpExpandMs);
-                      const phaseEased = phaseProgress <= 0 ? 0 : phaseProgress >= 1 ? 1 : easeInOutCubic(phaseProgress);
-                      const rectSize = nodeRectSize(count);
+                      const isExpanded = motion.isExpanded;
+                      const phase = motion.phase;
+                      const phaseEased = motion.phaseEased;
+                      const rectSize = nodeRectSize(vm.count);
                       // Expanded members represent single commits in grid layout.
                       const localRect = commitRectSize(scaledNodeSize, 0);
 
                       return (
-                        <g key={clusterKey}>
+                        <g key={vm.clusterKey}>
                           {!isExpanded && (
                             <g style={{ pointerEvents: 'none' }}>
                               <rect
@@ -6097,7 +6242,7 @@ type MainDirectClusterLayout = {
                                 rx={rectSize.radius / Math.max(layerCameraScale.x, 0.0001)}
                                 fill={dotFill}
                                 stroke={getNodeStrokeColor(
-                                  clusterKey,
+                                  vm.clusterKey,
                                   clusterHasUncommitted ? CHECKED_OUT_SELECTION_STROKE : CANVAS_NODE_STROKE,
                                   clusterHasCheckedOutHead,
                                   clusterHasSelectedCommit || clusterHasSelectedHead,
@@ -6126,24 +6271,24 @@ type MainDirectClusterLayout = {
                                 width={hit.width}
                                 height={hit.height}
                                 fill="transparent"
-                                style={{ cursor: canExpandCluster ? 'pointer' : 'default' }}
+                                style={{ cursor: vm.canExpandCluster ? 'pointer' : 'default' }}
                                 onPointerDown={(e) => { e.preventDefault(); e.stopPropagation(); }}
                                 onMouseDown={(e) => { e.preventDefault(); e.stopPropagation(); }}
                                 onClick={(e) => {
                                   e.preventDefault();
                                   e.stopPropagation();
-                                  if (canExpandCluster) toggleClumpExpanded(clusterKey);
+                                  if (vm.canExpandCluster) toggleClumpExpanded(vm.clusterKey);
                                 }}
                                 onDoubleClick={(event) => {
                                   event.preventDefault();
                                   event.stopPropagation();
                                 }}
                                 onMouseEnter={() => {
-                                  handleNodeHoverEnter(clusterKey, b.name);
+                                  handleNodeHoverEnter(vm.clusterKey, b.name);
                                   setTooltip({
                                     x: anchorX,
                                     y: anchorY,
-                                    lines: [`${count} commits`, latestCommitMessage, dateRangeLabel],
+                                    lines: [`${vm.count} commits`, latestCommitMessage, dateRangeLabel],
                                     avatarFallback: latestAuthor?.charAt(0).toUpperCase() || '?',
                                   });
                                 }}
@@ -6157,7 +6302,7 @@ type MainDirectClusterLayout = {
 
                           {isExpanded && (
                             <g>
-                              {renderEntries.map((entry) => {
+                              {vm.renderEntries.map((entry) => {
                                 const commit = entry.item.commit;
                                 if (!commit?.fullSha) return null;
                                 const isCheckedOutCommit =
@@ -6173,30 +6318,20 @@ type MainDirectClusterLayout = {
                                   ? 'Uncommited changes'
                                   : `Commit ${tooltipSha}`;
 
-                                const from = { x: anchorX, y: anchorY };
-                                const to = { x: entry.x, y: entry.y };
-                                const at = phase === 'collapsing'
-                                  ? { x: to.x + (from.x - to.x) * phaseEased, y: to.y + (from.y - to.y) * phaseEased }
-                                  : phase === 'expanding'
-                                    ? { x: from.x + (to.x - from.x) * phaseEased, y: from.y + (to.y - from.y) * phaseEased }
-                                    : phase === 'collapsed'
-                                      ? from
-                                      : to;
-                                const memberOpacity = phase === 'collapsing'
-                                  ? 1 - 0.3 * phaseEased
-                                  : phase === 'expanding'
-                                    ? 0.7 + 0.3 * phaseEased
-                                    : phase === 'collapsed'
-                                      ? 0.7
-                                      : 1;
+                                const memberPose = interpolateExpandedEntryPose(
+                                  { x: anchorX, y: anchorY },
+                                  { x: entry.x, y: entry.y },
+                                  phase,
+                                  phaseEased,
+                                );
                                 const commitKey = `branch-commit:${b.name}:${commit.fullSha}`;
 
                                 return (
                                   <g
                                     key={commitKey}
-                                    transform={`translate(${at.x} ${at.y})`}
+                                    transform={`translate(${memberPose.x} ${memberPose.y})`}
                                     style={{ ...clumpAnimStyle, pointerEvents: phase === 'expanded' ? 'auto' : 'none' }}
-                                    opacity={memberOpacity}
+                                    opacity={memberPose.opacity}
                                   >
                                     <rect
                                       className="branch-map-commit-rect"
@@ -6381,20 +6516,9 @@ type MainDirectClusterLayout = {
           {/* Branch commit node overlay so branch connectors/lanes never render over branch rectangles. */}
           <g style={{ opacity: hoveredPR !== null ? 0.2 : 1, transition: 'opacity 0.15s', pointerEvents: 'none' }}>
             {(() => {
-              const branchUsesLocalGrayStroke = (branch: Branch): boolean => {
-                return getBranchRenderLayout(branch).fullBranchShouldUseLocalGray;
-              };
-
-              const branchStrokeLayerPriority = (branch: Branch): number => {
-                if (hoveredBranch === branch.name || isNodeLineageHovered(branch.name)) return 4;
-                if (isSelectedLaneBranch(branch)) return 3;
-                if (focusedErrorBranch?.name === branch.name) return 2;
-                return branchUsesLocalGrayStroke(branch) ? 0 : 1;
-              };
-
-              const orderedActiveBranches = [...activeBranches].sort(
-                (a, b) => branchStrokeLayerPriority(a) - branchStrokeLayerPriority(b)
-              );
+              const orderedActiveBranches = orderedActiveBranchesForLayer({
+                includeSelectedPriority: false,
+              });
 
               return orderedActiveBranches.flatMap((b) => {
                 const {
@@ -6411,29 +6535,15 @@ type MainDirectClusterLayout = {
                 const unpushedLaneDasharray = `${Math.max(1, unpushedStrokeWidth)} ${Math.max(2, unpushedStrokeWidth * 1.8)}`;
 
                 return commitDotClusters.map((cluster) => {
-                  const realCommitEntries = cluster.entries.filter(
-                    (entry) => entry.item.commit?.kind !== 'branch-created'
-                  );
-                  const renderEntries = realCommitEntries.length > 0 ? realCommitEntries : cluster.entries;
+                  const { realCommitEntries, renderEntries } = resolveBranchClusterEntries(cluster);
                   const count = renderEntries.length;
-                  const firstEntry = cluster.entries[0];
-                  const lastEntry = cluster.entries[cluster.entries.length - 1];
-                  const clusterKey = `commit-clump-${b.name}-${firstEntry.item.index}-${lastEntry.item.index}`;
-                  const memberKeys = cluster.entries.map((entry) => {
-                    const commitSha = entry.item.commit?.fullSha;
-                    return commitSha
-                      ? `branch-commit:${b.name}:${commitSha}`
-                      : `branch-commit:${b.name}:slot-${entry.item.index}`;
-                  });
-                  const preferredAnchorEntry = (() => {
-                    if (branchEndDotIndex != null) {
-                      const headEntry = cluster.entries.find(
-                        (entry) => entry.item.index === branchEndDotIndex
-                      );
-                      if (headEntry) return headEntry;
-                    }
-                    return realCommitEntries[realCommitEntries.length - 1] ?? lastEntry;
-                  })();
+                  const clusterKey = branchClusterKey(b.name, cluster);
+                  const memberKeys = branchClusterMemberKeys(b.name, cluster);
+                  const preferredAnchorEntry = branchPreferredAnchorEntry(
+                    cluster,
+                    realCommitEntries,
+                    branchEndDotIndex,
+                  );
                   const animatedAnchor = resolveAnimatedClumpAnchor(
                     clusterKey,
                     { x: preferredAnchorEntry.x, y: preferredAnchorEntry.y },
@@ -6475,7 +6585,7 @@ type MainDirectClusterLayout = {
                     selectedBranchNameSet.has(b.name);
 
                   if (count <= 1) {
-                    const commitEntry = renderEntries[0] ?? lastEntry;
+                    const commitEntry = renderEntries[0] ?? cluster.entries[cluster.entries.length - 1];
                     const commit = commitEntry.item.commit;
                     const isNonCommitPlaceholder = !commit && uniqueAheadCount <= 0;
                     const isUncommittedCommit = commit?.kind === 'uncommitted';
@@ -6531,7 +6641,9 @@ type MainDirectClusterLayout = {
                     (entry) => entry.item.commit?.kind === 'uncommitted'
                   );
                   const expanded = canExpandCluster ? expandedClumps.get(clusterKey) : undefined;
-                  const isExpanded = canExpandCluster ? (expanded?.isExpanded ?? false) : false;
+                  const { isExpanded, phase, phaseEased } = canExpandCluster
+                    ? resolveClumpPhase(expanded)
+                    : { isExpanded: false, phase: 'collapsed' as const, phaseEased: 0 };
 
                   if (!isExpanded) {
                     const rectSize = nodeRectSize(count);
@@ -6561,14 +6673,6 @@ type MainDirectClusterLayout = {
                     );
                   }
 
-                  const phase = expanded?.phase ?? 'collapsed';
-                  const phaseStartedAtMs = expanded?.phaseStartedAt ?? Date.now();
-                  const phaseProgress = phase === 'collapsed'
-                    ? 0
-                    : phase === 'expanded'
-                      ? 1
-                      : clamp01((Date.now() - phaseStartedAtMs) / clumpExpandMs);
-                  const phaseEased = phaseProgress <= 0 ? 0 : phaseProgress >= 1 ? 1 : easeInOutCubic(phaseProgress);
                   const localRect = commitRectSize(scaledNodeSize, 0);
 
                   return (
@@ -6581,31 +6685,21 @@ type MainDirectClusterLayout = {
                           (shaMatchesGitRef(commit.fullSha, checkedOutHeadSha) ||
                             shaMatchesGitRef(commit.sha, checkedOutHeadSha));
 
-                        const from = { x: anchorX, y: anchorY };
-                        const to = { x: entry.x, y: entry.y };
-                        const at = phase === 'collapsing'
-                          ? { x: to.x + (from.x - to.x) * phaseEased, y: to.y + (from.y - to.y) * phaseEased }
-                          : phase === 'expanding'
-                            ? { x: from.x + (to.x - from.x) * phaseEased, y: from.y + (to.y - from.y) * phaseEased }
-                            : phase === 'collapsed'
-                              ? from
-                              : to;
-                        const memberOpacity = phase === 'collapsing'
-                          ? 1 - 0.3 * phaseEased
-                          : phase === 'expanding'
-                            ? 0.7 + 0.3 * phaseEased
-                            : phase === 'collapsed'
-                              ? 0.7
-                              : 1;
+                        const memberPose = interpolateExpandedEntryPose(
+                          { x: anchorX, y: anchorY },
+                          { x: entry.x, y: entry.y },
+                          phase,
+                          phaseEased,
+                        );
                         const commitKey = `branch-commit:${b.name}:${commit.fullSha}`;
                         const isUncommittedCommit = commit.kind === 'uncommitted';
 
                         return (
                           <g
                             key={`branch-overlay-${commitKey}`}
-                            transform={`translate(${at.x} ${at.y})`}
+                            transform={`translate(${memberPose.x} ${memberPose.y})`}
                             style={clumpAnimStyle}
-                            opacity={memberOpacity}
+                            opacity={memberPose.opacity}
                           >
                             <rect
                               className="branch-map-commit-rect"
@@ -6651,23 +6745,17 @@ type MainDirectClusterLayout = {
                   clusterHasSelectedCommit: mainClusterHasSelectedCommit,
                   clusterHasUncommitted,
                 } = clusterLayout;
-                const animatedAnchor = resolveAnimatedClumpAnchor(
+                const motion = resolveClusterMotion(
                   clusterKey,
                   { x: cluster.x, y: cluster.y },
-                  memberKeys
+                  memberKeys,
+                  count > 1,
                 );
-                const expanded = expandedClumps.get(clusterKey);
-                const isExpanded = expanded?.isExpanded ?? false;
-                const phase = expanded?.phase ?? 'collapsed';
-                const phaseStartedAtMs = expanded?.phaseStartedAt ?? Date.now();
-                const phaseProgress = phase === 'collapsed'
-                  ? 0
-                  : phase === 'expanded'
-                    ? 1
-                    : clamp01((Date.now() - phaseStartedAtMs) / clumpExpandMs);
-                const phaseEased = phaseProgress <= 0 ? 0 : phaseProgress >= 1 ? 1 : easeInOutCubic(phaseProgress);
-                const anchorX = animatedAnchor.x;
-                const anchorY = animatedAnchor.y;
+                const isExpanded = motion.isExpanded;
+                const phase = motion.phase;
+                const phaseEased = motion.phaseEased;
+                const anchorX = motion.anchorX;
+                const anchorY = motion.anchorY;
 
                 if (count === 1) {
                   const isUncommittedCommit = cluster.entries[0]?.item.fullSha === 'WORKING_TREE';
@@ -6706,22 +6794,12 @@ type MainDirectClusterLayout = {
                       <>
                         {cluster.entries.map((entry) => {
                           const c = entry.item;
-                          const from = { x: anchorX, y: anchorY };
-                          const to = { x: entry.x, y: entry.y };
-                          const at = phase === 'collapsing'
-                            ? { x: to.x + (from.x - to.x) * phaseEased, y: to.y + (from.y - to.y) * phaseEased }
-                            : phase === 'expanding'
-                              ? { x: from.x + (to.x - from.x) * phaseEased, y: from.y + (to.y - from.y) * phaseEased }
-                              : phase === 'collapsed'
-                                ? from
-                                : to;
-                          const memberOpacity = phase === 'collapsing'
-                            ? 1 - 0.3 * phaseEased
-                            : phase === 'expanding'
-                              ? 0.7 + 0.3 * phaseEased
-                              : phase === 'collapsed'
-                                ? 0.7
-                                : 1;
+                          const memberPose = interpolateExpandedEntryPose(
+                            { x: anchorX, y: anchorY },
+                            { x: entry.x, y: entry.y },
+                            phase,
+                            phaseEased,
+                          );
                           const commitKey = `direct:${c.fullSha}`;
                           const isUncommittedCommit = c.fullSha === 'WORKING_TREE';
                           const isCheckedOutCommit =
@@ -6732,9 +6810,9 @@ type MainDirectClusterLayout = {
                           return (
                             <g
                               key={`main-direct-overlay:${c.fullSha}`}
-                              transform={`translate(${at.x} ${at.y})`}
+                              transform={`translate(${memberPose.x} ${memberPose.y})`}
                               style={clumpAnimStyle}
-                              opacity={memberOpacity}
+                              opacity={memberPose.opacity}
                             >
                               <rect
                                 className="branch-map-commit-rect"
@@ -6794,20 +6872,9 @@ type MainDirectClusterLayout = {
           <g style={{ pointerEvents: 'none' }}>
             <g style={{ opacity: hoveredPR !== null ? 0.2 : 1, transition: 'opacity 0.15s' }}>
               {(() => {
-                const branchUsesLocalGrayStroke = (branch: Branch): boolean => {
-                  return getBranchRenderLayout(branch).fullBranchShouldUseLocalGray;
-                };
-
-                const branchStrokeLayerPriority = (branch: Branch): number => {
-                  if (hoveredBranch === branch.name || isNodeLineageHovered(branch.name)) return 4;
-                  if (isSelectedLaneBranch(branch)) return 3;
-                  if (focusedErrorBranch?.name === branch.name) return 2;
-                  return branchUsesLocalGrayStroke(branch) ? 0 : 1;
-                };
-
-                const orderedActiveBranches = [...activeBranches].sort(
-                  (a, b) => branchStrokeLayerPriority(a) - branchStrokeLayerPriority(b)
-                );
+                const orderedActiveBranches = orderedActiveBranchesForLayer({
+                  includeSelectedPriority: false,
+                });
 
                 return orderedActiveBranches.flatMap((b) => {
                   const {
@@ -6816,29 +6883,15 @@ type MainDirectClusterLayout = {
                   } = getBranchRenderLayout(b);
 
                   return commitDotClusters.map((cluster) => {
-                    const realCommitEntries = cluster.entries.filter(
-                      (entry) => entry.item.commit?.kind !== 'branch-created'
-                    );
-                    const renderEntries = realCommitEntries.length > 0 ? realCommitEntries : cluster.entries;
+                    const { realCommitEntries, renderEntries } = resolveBranchClusterEntries(cluster);
                     const count = renderEntries.length;
-                    const firstEntry = cluster.entries[0];
-                    const lastEntry = cluster.entries[cluster.entries.length - 1];
-                    const clusterKey = `commit-clump-${b.name}-${firstEntry.item.index}-${lastEntry.item.index}`;
-                    const memberKeys = cluster.entries.map((entry) => {
-                      const commitSha = entry.item.commit?.fullSha;
-                      return commitSha
-                        ? `branch-commit:${b.name}:${commitSha}`
-                        : `branch-commit:${b.name}:slot-${entry.item.index}`;
-                    });
-                    const preferredAnchorEntry = (() => {
-                      if (branchEndDotIndex != null) {
-                        const headEntry = cluster.entries.find(
-                          (entry) => entry.item.index === branchEndDotIndex
-                        );
-                        if (headEntry) return headEntry;
-                      }
-                      return realCommitEntries[realCommitEntries.length - 1] ?? lastEntry;
-                    })();
+                    const clusterKey = branchClusterKey(b.name, cluster);
+                    const memberKeys = branchClusterMemberKeys(b.name, cluster);
+                    const preferredAnchorEntry = branchPreferredAnchorEntry(
+                      cluster,
+                      realCommitEntries,
+                      branchEndDotIndex,
+                    );
                     const animatedAnchor = resolveAnimatedClumpAnchor(
                       clusterKey,
                       { x: preferredAnchorEntry.x, y: preferredAnchorEntry.y },
@@ -6848,7 +6901,7 @@ type MainDirectClusterLayout = {
                     const anchorY = animatedAnchor.y;
 
                     if (count <= 1) {
-                      const commitEntry = renderEntries[0] ?? lastEntry;
+                      const commitEntry = renderEntries[0] ?? cluster.entries[cluster.entries.length - 1];
                       const commit = commitEntry.item.commit;
                       const rectSize = commitRectSize(scaledNodeSize);
                       const singleTitleText = fitNodeFrameTitle(
@@ -6875,7 +6928,9 @@ type MainDirectClusterLayout = {
 
                     const canExpandCluster = renderEntries.length > 1;
                     const expanded = canExpandCluster ? expandedClumps.get(clusterKey) : undefined;
-                    const isExpanded = canExpandCluster ? (expanded?.isExpanded ?? false) : false;
+                    const { isExpanded, phase, phaseEased } = canExpandCluster
+                      ? resolveClumpPhase(expanded)
+                      : { isExpanded: false, phase: 'collapsed' as const, phaseEased: 0 };
 
                     if (!isExpanded) {
                       const rectSize = nodeRectSize(count);
@@ -6919,14 +6974,6 @@ type MainDirectClusterLayout = {
                       );
                     }
 
-                    const phase = expanded?.phase ?? 'collapsed';
-                    const phaseStartedAtMs = expanded?.phaseStartedAt ?? Date.now();
-                    const phaseProgress = phase === 'collapsed'
-                      ? 0
-                      : phase === 'expanded'
-                        ? 1
-                        : clamp01((Date.now() - phaseStartedAtMs) / clumpExpandMs);
-                    const phaseEased = phaseProgress <= 0 ? 0 : phaseProgress >= 1 ? 1 : easeInOutCubic(phaseProgress);
                     const localRect = commitRectSize(scaledNodeSize, 0);
                     const topExpandedEntry = renderEntries.reduce(
                       (top, entry) => (entry.y < top.y ? entry : top),
@@ -6938,29 +6985,19 @@ type MainDirectClusterLayout = {
                           const commit = entry.item.commit;
                           if (!commit?.fullSha) return null;
 
-                          const from = { x: anchorX, y: anchorY };
-                          const to = { x: entry.x, y: entry.y };
-                          const at = phase === 'collapsing'
-                            ? { x: to.x + (from.x - to.x) * phaseEased, y: to.y + (from.y - to.y) * phaseEased }
-                            : phase === 'expanding'
-                              ? { x: from.x + (to.x - from.x) * phaseEased, y: from.y + (to.y - from.y) * phaseEased }
-                              : phase === 'collapsed'
-                                ? from
-                                : to;
-                          const memberOpacity = phase === 'collapsing'
-                            ? 1 - 0.3 * phaseEased
-                            : phase === 'expanding'
-                              ? 0.7 + 0.3 * phaseEased
-                              : phase === 'collapsed'
-                                ? 0.7
-                                : 1;
+                          const memberPose = interpolateExpandedEntryPose(
+                            { x: anchorX, y: anchorY },
+                            { x: entry.x, y: entry.y },
+                            phase,
+                            phaseEased,
+                          );
 
                               return (
                                 <g
                                   key={`branch-label-overlay:${b.name}:${commit.fullSha}`}
-                                  transform={`translate(${at.x} ${at.y})`}
+                                  transform={`translate(${memberPose.x} ${memberPose.y})`}
                                   style={clumpAnimStyle}
-                                  opacity={memberOpacity}
+                                  opacity={memberPose.opacity}
                                 >
                                   <text
                                     x={-localRect.width / 2 + CANVAS_NODE_STROKE_INSET + nodeFrameLabelInsetX}
@@ -7000,15 +7037,17 @@ type MainDirectClusterLayout = {
                   clusterKey,
                   memberKeys,
                 } = clusterLayout;
-                const animatedAnchor = resolveAnimatedClumpAnchor(
+                const motion = resolveClusterMotion(
                   clusterKey,
                   { x: cluster.x, y: cluster.y },
-                  memberKeys
+                  memberKeys,
+                  count > 1,
                 );
-                const expanded = expandedClumps.get(clusterKey);
-                const isExpanded = expanded?.isExpanded ?? false;
-                const anchorX = animatedAnchor.x;
-                const anchorY = animatedAnchor.y;
+                const isExpanded = motion.isExpanded;
+                const phase = motion.phase;
+                const phaseEased = motion.phaseEased;
+                const anchorX = motion.anchorX;
+                const anchorY = motion.anchorY;
 
                 if (count === 1) {
                   const rectSize = commitRectSize(scaledNodeSize);
@@ -7042,14 +7081,6 @@ type MainDirectClusterLayout = {
                   clumpCountText,
                 );
                 if (isExpanded) {
-                  const phase = expanded?.phase ?? 'collapsed';
-                  const phaseStartedAtMs = expanded?.phaseStartedAt ?? Date.now();
-                  const phaseProgress = phase === 'collapsed'
-                    ? 0
-                    : phase === 'expanded'
-                      ? 1
-                      : clamp01((Date.now() - phaseStartedAtMs) / clumpExpandMs);
-                  const phaseEased = phaseProgress <= 0 ? 0 : phaseProgress >= 1 ? 1 : easeInOutCubic(phaseProgress);
                   const localRect = commitRectSize(scaledNodeSize, 0);
                   const topEntryForLabels = cluster.entries.reduce(
                     (top, entry) => (entry.y < top.y ? entry : top),
@@ -7059,28 +7090,18 @@ type MainDirectClusterLayout = {
                     <g key={`main-label-overlay-${clusterKey}`}>
                       {cluster.entries.map((entry) => {
                         const c = entry.item;
-                        const from = { x: anchorX, y: anchorY };
-                        const to = { x: entry.x, y: entry.y };
-                        const at = phase === 'collapsing'
-                          ? { x: to.x + (from.x - to.x) * phaseEased, y: to.y + (from.y - to.y) * phaseEased }
-                          : phase === 'expanding'
-                            ? { x: from.x + (to.x - from.x) * phaseEased, y: from.y + (to.y - from.y) * phaseEased }
-                            : phase === 'collapsed'
-                              ? from
-                              : to;
-                        const memberOpacity = phase === 'collapsing'
-                          ? 1 - 0.3 * phaseEased
-                          : phase === 'expanding'
-                            ? 0.7 + 0.3 * phaseEased
-                            : phase === 'collapsed'
-                              ? 0.7
-                              : 1;
+                        const memberPose = interpolateExpandedEntryPose(
+                          { x: anchorX, y: anchorY },
+                          { x: entry.x, y: entry.y },
+                          phase,
+                          phaseEased,
+                        );
                           return (
                             <g
                               key={`main-label-overlay:${c.fullSha}`}
-                              transform={`translate(${at.x} ${at.y})`}
+                              transform={`translate(${memberPose.x} ${memberPose.y})`}
                               style={clumpAnimStyle}
-                              opacity={memberOpacity}
+                              opacity={memberPose.opacity}
                             >
                               <text
                                 x={-localRect.width / 2 + CANVAS_NODE_STROKE_INSET + nodeFrameLabelInsetX}
@@ -7142,8 +7163,7 @@ type MainDirectClusterLayout = {
             {mainDirectClusters.map((clusterLayout) => {
               const { cluster, count, clusterKey } = clusterLayout;
               const expanded = expandedClumps.get(clusterKey);
-              const isExpanded = expanded?.isExpanded ?? false;
-              const phase = expanded?.phase ?? 'collapsed';
+              const { isExpanded, phase } = resolveClumpPhase(expanded);
               if (count <= 1 || !isExpanded || phase !== 'expanded') return null;
 
               const localRect = commitRectSize(scaledNodeSize, 0);
@@ -7209,18 +7229,14 @@ type MainDirectClusterLayout = {
             {activeBranches.flatMap((b) => {
               const { commitDotClusters } = getBranchRenderLayout(b);
               return commitDotClusters.map((cluster) => {
-                const realCommitEntries = cluster.entries.filter(
-                  (entry) => entry.item.commit?.kind !== 'branch-created'
-                );
-                const renderEntries = realCommitEntries.length > 0 ? realCommitEntries : cluster.entries;
+                const { renderEntries } = resolveBranchClusterEntries(cluster);
                 const count = renderEntries.length;
-                const firstEntry = cluster.entries[0];
-                const lastEntry = cluster.entries[cluster.entries.length - 1];
-                const clusterKey = `commit-clump-${b.name}-${firstEntry.item.index}-${lastEntry.item.index}`;
+                const clusterKey = branchClusterKey(b.name, cluster);
                 const canExpandCluster = renderEntries.length > 1;
                 const expanded = canExpandCluster ? expandedClumps.get(clusterKey) : undefined;
-                const isExpanded = canExpandCluster ? (expanded?.isExpanded ?? false) : false;
-                const phase = expanded?.phase ?? 'collapsed';
+                const { isExpanded, phase } = canExpandCluster
+                  ? resolveClumpPhase(expanded)
+                  : { isExpanded: false, phase: 'collapsed' as const };
                 if (count <= 1 || !isExpanded || phase !== 'expanded') return null;
 
                 const localRect = commitRectSize(scaledNodeSize, 0);
