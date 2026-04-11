@@ -5,7 +5,7 @@ import { getCurrentWindow } from '@tauri-apps/api/window';
 import { ArrowLeft, Maximize2 } from 'lucide-react';
 import BranchMapView from '../components/BranchMapView';
 import FolderPickerModal from './FolderPickerModal';
-import type { Branch, BranchCommitPreview, BranchPromptMeta, BranchPromptMarker, CheckedOutRef, Commit, DirectCommit, GitHubAuthStatus, GitHubInfo, MergeNode, MergedPR, OpenPR } from '../types';
+import type { Branch, BranchCommitPreview, BranchPromptMeta, BranchPromptMarker, CheckedOutRef, Commit, DirectCommit, GitHubAuthStatus, GitHubInfo, MergeNode, OpenPR } from '../types';
 
 type View = 'landing' | 'map';
 type OpenRepoEventPayload = {
@@ -26,7 +26,6 @@ function App() {
   const [branches, setBranches] = useState<Branch[]>([]);
   const [mergeNodes, setMergeNodes] = useState<MergeNode[]>([]);
   const [directCommits, setDirectCommits] = useState<DirectCommit[]>([]);
-  const [mergedPRs, setMergedPRs] = useState<MergedPR[]>([]);
   const [openPRs, setOpenPRs] = useState<OpenPR[]>([]);
   const [defaultBranch, setDefaultBranch] = useState<string>('main');
   const [checkedOutRef, setCheckedOutRef] = useState<CheckedOutRef | null>(null);
@@ -42,8 +41,6 @@ function App() {
   const [scrollRequest, setScrollRequest] = useState<{ branch: Branch; seq: number } | null>(null);
   const [focusedErrorBranch, setFocusedErrorBranch] = useState<Branch | null>(null);
   const [githubAvailable, setGithubAvailable] = useState(false);
-  const [githubOwner, setGithubOwner] = useState<string | null>(null);
-  const [githubRepo, setGithubRepo] = useState<string | null>(null);
   const [githubAuthStatus, setGithubAuthStatus] = useState<GitHubAuthStatus | null>(null);
   const [githubAuthLoading, setGithubAuthLoading] = useState(false);
   const [githubAuthMessage, setGithubAuthMessage] = useState<string | null>(null);
@@ -173,7 +170,7 @@ function App() {
       setMapLoading(false);
 
       // Phase 3: GitHub data (non-blocking)
-      fetchGitHubData(path, def);
+      fetchGitHubData(path);
     } catch (e) {
       console.error('Failed to load repo:', e);
       setError(e instanceof Error ? e.message : String(e));
@@ -184,34 +181,21 @@ function App() {
     }
   }
 
-  async function fetchGitHubData(path: string, baseBranch: string) {
+  async function fetchGitHubData(path: string) {
     try {
       setGithubAvailable(false);
       setGithubAuthMessage(null);
       const ghInfo = await invoke<GitHubInfo>('get_github_info', { repoPath: path });
-      setGithubOwner(ghInfo.owner);
-      setGithubRepo(ghInfo.repo);
-
       const authStatus = await invoke<GitHubAuthStatus>('get_github_auth_status');
       setGithubAuthStatus(authStatus);
       if (!authStatus.ghAvailable || !authStatus.authenticated) {
         return;
       }
 
-      // Fetch merged PRs and open PRs in parallel
-      const [prs, open] = await Promise.all([
-        invoke<MergedPR[]>('get_merged_prs', {
-          owner: ghInfo.owner,
-          repo: ghInfo.repo,
-          baseBranch,
-          limit: 50,
-        }),
-        invoke<OpenPR[]>('get_open_prs', {
-          owner: ghInfo.owner,
-          repo: ghInfo.repo,
-        }),
-      ]);
-      setMergedPRs(prs);
+      const open = await invoke<OpenPR[]>('get_open_prs', {
+        owner: ghInfo.owner,
+        repo: ghInfo.repo,
+      });
       setOpenPRs(open);
       setGithubAvailable(true);
     } catch (e) {
@@ -448,7 +432,7 @@ function App() {
       const authStatus = await invoke<GitHubAuthStatus>('get_github_auth_status');
       setGithubAuthStatus(authStatus);
       if (authStatus.authenticated) {
-        await fetchGitHubData(repoPath, defaultBranch);
+        await fetchGitHubData(repoPath);
       } else if (authStatus.message) {
         setGithubAuthMessage(authStatus.message);
       }
@@ -934,7 +918,6 @@ function App() {
 
   function handleBackToLanding() {
     setRepoPath(null);
-    setMergedPRs([]);
     setOpenPRs([]);
     setDirectCommits([]);
     setBranchPromptMeta({});
@@ -1136,13 +1119,10 @@ function App() {
               branches={enrichedBranches}
               mergeNodes={mergeNodes}
               directCommits={enrichedDirectCommits}
-              mergedPRs={mergedPRs}
               openPRs={openPRs}
               defaultBranch={defaultBranch}
               onCommitClick={handleMapCommitClick}
               githubAvailable={githubAvailable}
-              githubOwner={githubOwner}
-              githubRepo={githubRepo}
               branchPromptMeta={branchPromptMeta}
               branchCommitPreviews={enrichedBranchCommitPreviews}
               branchUniqueAheadCounts={enrichedBranchUniqueAheadCounts}

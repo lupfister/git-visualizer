@@ -1,4 +1,4 @@
-import { Branch, BranchCommitPreview, BranchPromptMeta, CheckedOutRef, DirectCommit, MergeNode, MergedPR, OpenPR } from '../types';
+import { Branch, BranchCommitPreview, BranchPromptMeta, CheckedOutRef, DirectCommit, MergeNode, OpenPR } from '../types';
 import BranchMap from './BranchMap';
 import BranchGroupView from './BranchGroupView';
 
@@ -8,15 +8,12 @@ interface Props {
   branches: Branch[];
   mergeNodes: MergeNode[];
   directCommits?: DirectCommit[];
-  mergedPRs: MergedPR[];
   openPRs?: OpenPR[];
   defaultBranch: string;
   onHoveredBranchChange?: (branchName: string | null) => void;
   onCommitClick?: (target: { commitSha: string; branchName?: string }) => void;
   onLoadMore?: () => void;
   githubAvailable?: boolean;
-  githubOwner?: string | null;
-  githubRepo?: string | null;
   branchPromptMeta?: Record<string, BranchPromptMeta>;
   branchCommitPreviews?: Record<string, BranchCommitPreview[]>;
   branchUniqueAheadCounts?: Record<string, number>;
@@ -36,14 +33,11 @@ export default function BranchMapView({
   branches,
   mergeNodes,
   directCommits = [],
-  mergedPRs,
   openPRs = [],
   defaultBranch,
   onHoveredBranchChange,
   onCommitClick,
   onLoadMore,
-  githubOwner,
-  githubRepo,
   branchPromptMeta = {},
   branchCommitPreviews = {},
   branchUniqueAheadCounts = {},
@@ -76,14 +70,11 @@ export default function BranchMapView({
             branches={branches}
             mergeNodes={mergeNodes}
             directCommits={directCommits}
-            mergedPRs={mergedPRs}
             openPRs={openPRs}
             defaultBranch={defaultBranch}
             onHoveredBranchChange={onHoveredBranchChange}
             onCommitClick={onCommitClick}
             onLoadMore={onLoadMore}
-            githubOwner={githubOwner}
-            githubRepo={githubRepo}
             branchPromptMeta={branchPromptMeta}
             branchCommitPreviews={branchCommitPreviews}
             branchUniqueAheadCounts={branchUniqueAheadCounts}

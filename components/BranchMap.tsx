@@ -1,6 +1,6 @@
 import React, { useState, useRef, useEffect, useLayoutEffect } from 'react';
 import { Loader2, X } from 'lucide-react';
-import { Branch, BranchCommitPreview, BranchPromptMeta, CheckedOutRef, DirectCommit, MergeNode, MergedPR, OpenPR } from '../types';
+import { Branch, BranchCommitPreview, BranchPromptMeta, CheckedOutRef, DirectCommit, MergeNode, OpenPR } from '../types';
 import { ViewMode } from './BranchMapView';
 import {
   buildBranchOrthogonalPath,
@@ -639,13 +639,10 @@ interface BranchMapProps {
   branches: Branch[];
   mergeNodes: MergeNode[];
   directCommits?: DirectCommit[];
-  mergedPRs?: MergedPR[];
   defaultBranch: string;
   onHoveredBranchChange?: (branchName: string | null) => void;
   onCommitClick?: (target: { commitSha: string; branchName?: string }) => void;
   onLoadMore?: () => void;
-  githubOwner?: string | null;
-  githubRepo?: string | null;
   branchPromptMeta?: Record<string, BranchPromptMeta>;
   branchCommitPreviews?: Record<string, BranchCommitPreview[]>;
   branchUniqueAheadCounts?: Record<string, number>;
