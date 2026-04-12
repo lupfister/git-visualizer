@@ -185,6 +185,7 @@ type BranchLineGeometryState = {
   localSegmentStartY: number | null;
   targetLocalSegmentStartY: number | null;
   lastSeenRender: number;
+  createdAtRender: number;
 };
 
 function clamp01(value: number): number {
@@ -690,6 +691,7 @@ export default function BranchMap({
   const [zoom, setZoom] = useState(ZOOM_DEFAULT);
   const [orientation, setOrientation] = useState<OrientationMode>('vertical');
   const [showRowDebugOverlay, setShowRowDebugOverlay] = useState(false);
+  const [showLineageDebug, setShowLineageDebug] = useState(false);
   const [selectedBranchNames, setSelectedBranchNames] = useState<string[]>([]);
   const [selectedCommitShas, setSelectedCommitShas] = useState<string[]>([]);
   const [mergeTargetCommitSha, setMergeTargetCommitSha] = useState<string | null>(null);
@@ -1138,6 +1140,7 @@ export default function BranchMap({
         localSegmentStartY: target.localSegmentStartY,
         targetLocalSegmentStartY: target.localSegmentStartY,
         lastSeenRender: clumpRenderId,
+        createdAtRender: clumpRenderId,
       };
     states.set(branchKey, state);
     return {
@@ -1241,6 +1244,28 @@ export default function BranchMap({
       animateNumeric(current, target, onUpdate);
     };
     for (const state of branchLineStates.values()) {
+      // Branch lines created very recently (within 2 renders) should snap to
+      // corrected positions instead of animating.  This prevents the visual
+      // glitch where incomplete initial data produces a wrong fork Y that then
+      // visibly lerps to the correct position.
+      const isNewlyCreated = clumpRenderId - state.createdAtRender <= 2;
+      if (isNewlyCreated) {
+        const forkDelta = Math.abs(state.forkY - state.targetForkY);
+        const tipDelta = Math.abs(state.tipY - state.targetTipY);
+        const startDelta = Math.abs(state.startX - state.targetStartX);
+        const laneDelta = Math.abs(state.lanePosX - state.targetLanePosX);
+        if (forkDelta > 0.5 || tipDelta > 0.5 || startDelta > 0.5 || laneDelta > 0.5) {
+          state.startX = state.targetStartX;
+          state.forkY = state.targetForkY;
+          state.lanePosX = state.targetLanePosX;
+          state.tipY = state.targetTipY;
+          state.mergeTargetX = state.targetMergeTargetX;
+          state.mergeTargetY = state.targetMergeTargetY;
+          state.localSegmentStartY = state.targetLocalSegmentStartY;
+          snapped = true;
+          continue;
+        }
+      }
       animateNumeric(state.startX, state.targetStartX, (value) => { state.startX = value; });
       animateNumeric(state.forkY, state.targetForkY, (value) => { state.forkY = value; });
       animateNumeric(state.lanePosX, state.targetLanePosX, (value) => { state.lanePosX = value; });
@@ -2947,10 +2972,11 @@ export default function BranchMap({
   function findSegmentForIndex(
     entryCount: number,
     forkIndices: Set<number>,
-    targetIndex: number
+    targetIndex: number,
+    preserveSplitIndices?: Set<number>,
   ): { start: number; end: number } | null {
     if (entryCount <= 0 || targetIndex < 0 || targetIndex >= entryCount) return null;
-    const effectiveForkIndices = Array.from(pruneForkSplitIndices(entryCount, forkIndices))
+    const effectiveForkIndices = Array.from(pruneForkSplitIndices(entryCount, forkIndices, preserveSplitIndices))
       .sort((a, b) => a - b);
     let start = 0;
     for (const split of effectiveForkIndices) {
@@ -2989,7 +3015,19 @@ export default function BranchMap({
       if (idx >= 0) parentForkIndices.add(idx);
     });
 
-    const parentSegment = findSegmentForIndex(parentPreviews.length, parentForkIndices, forkIndex);
+    // For the default branch, include the same additional split indices that
+    // the grid allocator uses (merge commits, parent-sha breaks, forced-visible
+    // commits, uncommitted markers). Without these, pruneForkSplitIndices may
+    // compute different segment boundaries than the actual rendered clumps,
+    // causing fork points to be incorrectly lifted to a later clump anchor.
+    const combinedSplitIndices = parentName === defaultBranch
+      ? new Set<number>([...parentForkIndices, ...mainCommitSplitIndices])
+      : parentForkIndices;
+    const preserveSplitIndices = parentName === defaultBranch
+      ? forcedMainSplitIndices
+      : undefined;
+
+    const parentSegment = findSegmentForIndex(parentPreviews.length, combinedSplitIndices, forkIndex, preserveSplitIndices);
     if (!parentSegment) return null;
     const { start: segmentStart, end: segmentEnd } = parentSegment;
     const segmentLength = segmentEnd - segmentStart + 1;
@@ -3089,8 +3127,8 @@ export default function BranchMap({
 
     if (!hasParentBranch) {
       const createdAnchor =
-        commitXForSha(branch.createdFromSha) ??
-        commitXForSha(branch.divergedFromSha);
+        commitXForSha(branch.divergedFromSha) ??
+        commitXForSha(branch.createdFromSha);
       if (createdAnchor != null) return createdAnchor;
 
       const earliestPreviewDate = branchEarliestPreviewDate(branch.name);
@@ -3104,6 +3142,19 @@ export default function BranchMap({
 
       const byParentDate = snapToBranchCommitX(parentName, branch.divergedFromDate ?? branch.createdDate);
       if (byParentDate != null) return byParentDate;
+
+      // The declared parent branch doesn't contain the fork SHA or a matching
+      // date.  Before falling back to the parent's tip (which can be wildly
+      // wrong for branches forked from main that git metadata erroneously
+      // attributes to a sibling branch), try resolving the fork commit on main.
+      const mainFallback =
+        commitXForSha(branch.divergedFromSha) ??
+        commitXForSha(branch.createdFromSha);
+      if (mainFallback != null) return mainFallback;
+
+      const snapMainFallback =
+        snapToMainCommitX(branch.divergedFromDate ?? branch.createdDate);
+      if (snapMainFallback != null) return snapMainFallback;
 
       const parentTiming = branchTimingWithVisited(parentName, visiting);
       return parentTiming.tipTimeX;
@@ -7812,7 +7863,259 @@ export default function BranchMap({
                 </label>
               </div>
             )}
+            {!isPopoverWindow && (
+              <button
+                onClick={() => setShowLineageDebug((prev) => !prev)}
+                className={`flex items-center gap-1.5 shrink-0 border rounded-full px-3 py-1.5 text-xs select-none transition-colors ${
+                  showLineageDebug
+                    ? 'bg-primary/10 border-primary/30 text-foreground'
+                    : 'bg-card border-border text-muted-foreground hover:text-foreground hover:bg-muted'
+                }`}
+                title="Show commit lineage debug panel"
+              >
+                Lineage
+              </button>
+            )}
           </div>
+        </div>
+      </div>
+
+      {/* ── Lineage debug panel ── */}
+      <div
+        className={`fixed left-4 top-14 bottom-6 w-[520px] flex flex-col bg-card/90 backdrop-blur-sm rounded-2xl border border-border shadow-lg z-40 transition-all duration-300 ease-in-out ${
+          showLineageDebug ? 'translate-x-0 opacity-100' : 'translate-x-[calc(-100%-2rem)] opacity-0 pointer-events-none'
+        }`}
+      >
+        <div className="flex items-center justify-between px-4 py-3 border-b border-border/50 shrink-0">
+          <span className="text-sm font-medium text-foreground">Commit Lineage</span>
+          <button
+            onClick={() => setShowLineageDebug(false)}
+            className="text-muted-foreground hover:text-foreground transition-colors"
+          >
+            <X className="w-4 h-4" />
+          </button>
+        </div>
+        <div className="flex-1 overflow-y-auto py-2 font-mono text-[11px] leading-relaxed">
+          {(() => {
+            const sha7 = (sha: string): string => {
+              if (sha === 'WORKING_TREE') return '*uncommitted*';
+              return /^[0-9a-f]{7,40}$/i.test(sha) ? sha.slice(0, 7) : sha;
+            };
+
+            // Build a lookup: which branch heads got merged, and into which merge commit
+            const mergedHeadToMergeCommit = new Map<string, { mergeSha: string; targetBranch: string; prNumber: number | null }>();
+            for (const node of sortedNodes) {
+              const mergedParents = node.parentShas?.slice(1) ?? [];
+              for (const parentSha of mergedParents) {
+                if (parentSha) {
+                  mergedHeadToMergeCommit.set(parentSha, {
+                    mergeSha: node.fullSha,
+                    targetBranch: node.targetBranch ?? defaultBranch,
+                    prNumber: node.prNumber,
+                  });
+                }
+              }
+            }
+
+            // Build a lookup: which main-line commits are merge commits, and what branches merged into them
+            const mergeInfoByMainSha = new Map<string, { mergedShas: string[]; mergedBranches: string[] }>();
+            for (const node of sortedNodes) {
+              const mergedParents = node.parentShas?.slice(1) ?? [];
+              if (mergedParents.length === 0) continue;
+              const mergedBranches: string[] = [];
+              for (const parentSha of mergedParents) {
+                const branch = mergedBranchByHeadSha.get(parentSha);
+                if (branch) mergedBranches.push(branch.name);
+              }
+              mergeInfoByMainSha.set(node.fullSha, {
+                mergedShas: mergedParents,
+                mergedBranches,
+              });
+            }
+
+            // Build a lookup: which commits on which branches are fork points for child branches
+            const forkAnnotations = new Map<string, string[]>(); // "branchName::sha" -> child branch names
+            const addForkAnnotation = (branchName: string, sha: string, childName: string) => {
+              const key = `${branchName}::${sha}`;
+              const existing = forkAnnotations.get(key) ?? [];
+              existing.push(childName);
+              forkAnnotations.set(key, existing);
+            };
+
+            // For each active branch, find which parent commit it forked from
+            for (const branch of activeBranches) {
+              const parentName = renderParentBranchName(branch);
+              const forkSha = branch.divergedFromSha ?? branch.createdFromSha;
+              if (forkSha) {
+                addForkAnnotation(parentName, forkSha, branch.name);
+              }
+            }
+
+            type BranchLine = {
+              name: string;
+              fromLabel: string | null; // e.g. "from abc1234 on main"
+              commits: Array<{
+                sha: string;
+                annotations: string[]; // e.g. "(merge from branch-x)", "(fork → branch-y)"
+              }>;
+              mergedTo: string | null; // e.g. "merged to abc1234 on main"
+              debugLayout?: {
+                forkY: number;
+                startX: number;
+                lanePosX: number;
+                parentName: string;
+                forkTimeX: number;
+                createdFromSha: string;
+                divergedFromSha: string;
+                commitXCreated: number | null;
+                commitXDiverged: number | null;
+              };
+            };
+
+            const lines: BranchLine[] = [];
+
+            // === Main branch ===
+            {
+              const commits: BranchLine['commits'] = [];
+              for (const commit of sortedDirectCommits) {
+                const annotations: string[] = [];
+
+                // Check if this is a merge commit
+                const mergeInfo = mergeInfoByMainSha.get(commit.fullSha);
+                if (mergeInfo) {
+                  if (mergeInfo.mergedBranches.length > 0) {
+                    annotations.push(`merge from ${mergeInfo.mergedBranches.join(', ')}`);
+                  } else {
+                    annotations.push(`merge from ${mergeInfo.mergedShas.map(sha7).join(', ')}`);
+                  }
+                }
+
+                // Check if child branches forked here
+                const forkKey = `${defaultBranch}::${commit.fullSha}`;
+                const forkedChildren = forkAnnotations.get(forkKey);
+                if (forkedChildren && forkedChildren.length > 0) {
+                  annotations.push(`fork → ${forkedChildren.join(', ')}`);
+                }
+
+                commits.push({ sha: commit.fullSha, annotations });
+              }
+              lines.push({ name: defaultBranch, fromLabel: null, commits, mergedTo: null });
+            }
+
+            // === Active branches ===
+            for (const branch of activeBranches) {
+              const parentName = renderParentBranchName(branch);
+              const forkSha = branch.divergedFromSha ?? branch.createdFromSha;
+              const fromLabel = forkSha
+                ? `from ${sha7(forkSha)} on ${parentName}`
+                : `from ${parentName}`;
+
+              const previews = sortedConcreteBranchPreviews(branch.name);
+              const commits: BranchLine['commits'] = [];
+
+              for (const commit of previews) {
+                const annotations: string[] = [];
+
+                // Check if child branches forked here
+                const forkKey = `${branch.name}::${commit.fullSha}`;
+                const forkedChildren = forkAnnotations.get(forkKey);
+                if (forkedChildren && forkedChildren.length > 0) {
+                  annotations.push(`fork → ${forkedChildren.join(', ')}`);
+                }
+
+                commits.push({ sha: commit.fullSha, annotations });
+              }
+
+              // Check if this branch was merged
+              let mergedTo: string | null = null;
+              const isMerged = branch.commitsAhead === 0 && !freshCopyBranchNames.has(branch.name);
+              if (isMerged) {
+                const mergeTarget = mergedHeadToMergeCommit.get(branch.headSha);
+                if (mergeTarget) {
+                  mergedTo = `merged to ${sha7(mergeTarget.mergeSha)} on ${mergeTarget.targetBranch}${
+                    mergeTarget.prNumber != null ? ` (PR #${mergeTarget.prNumber})` : ''
+                  }`;
+                } else {
+                  mergedTo = `merged to ${parentName}`;
+                }
+              }
+
+              lines.push({
+                name: branch.name,
+                fromLabel,
+                commits,
+                mergedTo,
+                // Debug: actual layout values
+                debugLayout: (() => {
+                  const layout = getBranchRenderLayout(branch);
+                  const timing = branchTimingByName.get(branch.name);
+                  return {
+                    forkY: Math.round(layout.forkY),
+                    startX: Math.round(layout.startX),
+                    lanePosX: Math.round(layout.lanePosX),
+                    parentName: timing?.parentName ?? '?',
+                    forkTimeX: Math.round(timing?.forkTimeX ?? 0),
+                    createdFromSha: branch.createdFromSha?.slice(0, 7) ?? 'null',
+                    divergedFromSha: branch.divergedFromSha?.slice(0, 7) ?? 'null',
+                    commitXCreated: branch.createdFromSha ? commitXForSha(branch.createdFromSha) : null,
+                    commitXDiverged: branch.divergedFromSha ? commitXForSha(branch.divergedFromSha) : null,
+                  };
+                })(),
+              });
+            }
+
+            return (
+              <div className="space-y-0.5 px-4 py-2 select-text">
+                {lines.map((line) => (
+                  <div key={line.name} className="py-2 border-b border-border/30">
+                    <div className="flex items-baseline gap-1 flex-wrap">
+                      {/* Branch name */}
+                      <span className="text-foreground font-semibold shrink-0">{line.name}</span>
+                      {/* From label */}
+                      {line.fromLabel && (
+                        <span className="text-muted-foreground/50 shrink-0">({line.fromLabel})</span>
+                      )}
+                      <span className="text-muted-foreground/40 shrink-0">:</span>
+                    </div>
+
+                    {/* Commit chain */}
+                    <div className="mt-1 text-muted-foreground leading-relaxed break-all">
+                      {line.commits.length === 0 ? (
+                        <span className="text-muted-foreground/40 italic">no preview commits</span>
+                      ) : (
+                        line.commits.map((commit, i) => (
+                          <span key={commit.sha}>
+                            {i > 0 && (
+                              <span className="text-muted-foreground/30 mx-0.5">{' > '}</span>
+                            )}
+                            <span className="text-foreground">{sha7(commit.sha)}</span>
+                            {commit.annotations.map((anno, j) => (
+                              <span key={j} className="text-amber-600 dark:text-amber-400">
+                                ({anno})
+                              </span>
+                            ))}
+                          </span>
+                        ))
+                      )}
+                      {/* Merged-to suffix */}
+                      {line.mergedTo && (
+                        <>
+                          <span className="text-muted-foreground/30 mx-0.5">{' → '}</span>
+                          <span className="text-green-600 dark:text-green-400">{line.mergedTo}</span>
+                        </>
+                      )}
+                    </div>
+                    {/* Debug layout values */}
+                    {line.debugLayout && (
+                      <div className="mt-1 text-[10px] text-blue-600 dark:text-blue-400">
+                        forkY={line.debugLayout.forkY} startX={line.debugLayout.startX} laneX={line.debugLayout.lanePosX} parent={line.debugLayout.parentName} forkTimeX={line.debugLayout.forkTimeX} created={line.debugLayout.createdFromSha} diverged={line.debugLayout.divergedFromSha} cX={line.debugLayout.commitXCreated ?? 'null'} dX={line.debugLayout.commitXDiverged ?? 'null'}
+                      </div>
+                    )}
+                  </div>
+                ))}
+              </div>
+            );
+          })()}
         </div>
       </div>
 
