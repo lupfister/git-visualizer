@@ -241,6 +241,28 @@ function fmtTooltipDate(dateStr: string) {
   });
 }
 
+function fmtClumpDateRange(startStr: string, endStr: string): string {
+  const d1 = new Date(startStr);
+  const d2 = new Date(endStr);
+  const sameDay =
+    d1.getFullYear() === d2.getFullYear() &&
+    d1.getMonth() === d2.getMonth() &&
+    d1.getDate() === d2.getDate();
+
+  const options: Intl.DateTimeFormatOptions = { month: 'long', day: 'numeric' };
+  const d1Str = d1.toLocaleDateString('en-US', options);
+
+  if (sameDay) {
+    const timeOptions: Intl.DateTimeFormatOptions = { hour: 'numeric', minute: '2-digit' };
+    const t1 = d1.toLocaleTimeString('en-US', timeOptions);
+    const t2 = d2.toLocaleTimeString('en-US', timeOptions);
+    return `${d1Str} at ${t1} → ${t2}`;
+  } else {
+    const d2Str = d2.toLocaleDateString('en-US', options);
+    return `${d1Str} → ${d2Str}`;
+  }
+}
+
 const svgTextWidthCache = new Map<string, number>();
 let svgTextMeasureCtx: CanvasRenderingContext2D | null = null;
 
@@ -5418,11 +5440,7 @@ export default function BranchMap({
                             const rectSize = nodeRectSize(count);
                             const localRect = commitRectSize(scaledNodeSize, 0);
 
-                            const firstTime = new Date(first.date).getTime();
-                            const lastTime = new Date(last.date).getTime();
-                            const rangeLine = firstTime === lastTime
-                              ? fmtTooltipDate(last.date)
-                              : `${fmtTooltipDate(first.date)} → ${fmtTooltipDate(last.date)}`;
+                            const rangeLine = fmtClumpDateRange(first.date, last.date);
                             const latestCommitMessage = last.message
                               ? truncatePrompt(last.message, COMMIT_CLUSTER_PREVIEW_MAX)
                               : 'on main';
@@ -5500,7 +5518,7 @@ export default function BranchMap({
                                         setTooltip({
                                           x: anchorX,
                                           y: anchorY,
-                                          lines: [`${count} commits`, latestCommitMessage, rangeLine],
+                                          lines: [`${count} commits`, latestCommitMessage, `and ${count - 1} more commits`, `@${last.author} · ${rangeLine}`],
                                           avatarFallback: last.author?.charAt(0).toUpperCase() || '?',
                                         });
                                       }}
@@ -5674,9 +5692,7 @@ export default function BranchMap({
 
                               const firstDate = firstEntry.item.marker.timestamp;
                               const lastDate = lastEntry.item.marker.timestamp;
-                              const dateRangeLabel = new Date(firstDate).getTime() === new Date(lastDate).getTime()
-                                ? fmtTooltipDate(lastDate)
-                                : `${fmtTooltipDate(firstDate)} → ${fmtTooltipDate(lastDate)}`;
+                              const dateRangeLabel = fmtClumpDateRange(firstDate, lastDate);
                               const latestPrompt = truncatePrompt(lastEntry.item.marker.prompt, PROMPT_CLUSTER_PREVIEW_MAX);
                               return (
                                 <g key={clusterKey}>
@@ -5715,7 +5731,7 @@ export default function BranchMap({
                                       setTooltip({
                                         x: anchorX,
                                         y: anchorY,
-                                        lines: [`${count} prompts`, latestPrompt, dateRangeLabel],
+                                        lines: [`${count} prompts`, latestPrompt, `and ${count - 1} more prompts`, `${lastEntry.item.marker.agent} · ${dateRangeLabel}`],
                                       })
                                     }
                                     onMouseLeave={() => setTooltip(null)}
@@ -6128,13 +6144,16 @@ export default function BranchMap({
                                 const lastRealEntry = vm.renderEntries[vm.renderEntries.length - 1] ?? cluster.entries[cluster.entries.length - 1];
                                 const firstDate = firstRealEntry.item.commit?.date ?? b.lastCommitDate;
                                 const lastDate = lastRealEntry.item.commit?.date ?? b.lastCommitDate;
-                                const dateRangeLabel = new Date(firstDate).getTime() === new Date(lastDate).getTime()
-                                  ? fmtTooltipDate(lastDate)
-                                  : `${fmtTooltipDate(firstDate)} → ${fmtTooltipDate(lastDate)}`;
+                                const dateRangeLabel = fmtClumpDateRange(firstDate, lastDate);
                                 const latestAuthor = lastRealEntry.item.commit?.author ?? b.lastCommitAuthor;
                                 const latestCommitMessage = lastRealEntry.item.commit?.message
                                   ? truncatePrompt(lastRealEntry.item.commit.message, COMMIT_CLUSTER_PREVIEW_MAX)
                                   : `on ${b.name}`;
+
+                                const showClumpAvatar = !!(
+                                  b.lastCommitAuthorAvatar &&
+                                  latestAuthor === b.lastCommitAuthor
+                                );
 
                                 const clusterHasUncommitted = vm.renderEntries.some(
                                   (entry) => entry.item.commit?.kind === 'uncommitted'
@@ -6206,7 +6225,8 @@ export default function BranchMap({
                                             setTooltip({
                                               x: anchorX,
                                               y: anchorY,
-                                              lines: [`${vm.count} commits`, latestCommitMessage, dateRangeLabel],
+                                              lines: [`${vm.count} commits`, latestCommitMessage, `and ${vm.count - 1} more commits`, `@${latestAuthor} · ${dateRangeLabel}`],
+                                              avatarUrl: showClumpAvatar ? b.lastCommitAuthorAvatar : undefined,
                                               avatarFallback: latestAuthor?.charAt(0).toUpperCase() || '?',
                                             });
                                           }}
@@ -6358,9 +6378,7 @@ export default function BranchMap({
 
                                 const firstDate = firstEntry.item.marker.timestamp;
                                 const lastDate = lastEntry.item.marker.timestamp;
-                                const dateRangeLabel = new Date(firstDate).getTime() === new Date(lastDate).getTime()
-                                  ? fmtTooltipDate(lastDate)
-                                  : `${fmtTooltipDate(firstDate)} → ${fmtTooltipDate(lastDate)}`;
+                                const dateRangeLabel = fmtClumpDateRange(firstDate, lastDate);
                                 const latestPrompt = truncatePrompt(lastEntry.item.marker.prompt, PROMPT_CLUSTER_PREVIEW_MAX);
                                 return (
                                   <g key={`${clusterKey}-hit`}>
@@ -6375,7 +6393,7 @@ export default function BranchMap({
                                         setTooltip({
                                           x: anchorX,
                                           y: anchorY,
-                                          lines: [`${count} prompts`, latestPrompt, dateRangeLabel],
+                                          lines: [`${count} prompts`, latestPrompt, `and ${count - 1} more prompts`, `${lastEntry.item.marker.agent} · ${dateRangeLabel}`],
                                         })
                                       }
                                       onMouseLeave={() => setTooltip(null)}
@@ -7254,7 +7272,11 @@ export default function BranchMap({
 
         {/* Fixed-size tooltip layer (not affected by timeline zoom). */}
         {timelineRevealReady && tooltip && (() => {
-          const [, subtitle, meta] = tooltip.lines;
+          const linesCopy = [...tooltip.lines];
+          linesCopy.shift(); // skip title (index 0)
+          const meta = linesCopy.pop() || '';
+          const subtitle = linesCopy[0] || '';
+          const extra = linesCopy[1] || '';
           const avatarFallback = tooltip.avatarFallback || '?';
           const tooltipCompact = viewportSize.width < 420;
           const viewportPadX = tooltipCompact ? 18 : 8;
@@ -7266,7 +7288,7 @@ export default function BranchMap({
           const tooltipW = Math.min(tooltipMaxW, Math.max(tooltipMinW, availableTooltipW));
           const tooltipAvatarSize = 20;
           const tooltipBodyGap = 8;
-          const tooltipBodyPadX = 12;
+          const tooltipBodyPadX = 8;
           const tooltipBodyPadY = 8;
           const tooltipLineHeight = 16;
           // Use live camera refs to avoid tooltip drift when zoom/pan state is throttled.
@@ -7282,10 +7304,17 @@ export default function BranchMap({
           );
           const estimatedCharsPerLine = Math.max(18, Math.floor(bodyContentW / 6));
           const subtitleLines = subtitle ? Math.max(1, Math.ceil(subtitle.length / estimatedCharsPerLine)) : 0;
-          const metaLines = meta ? Math.max(1, Math.ceil(meta.length / estimatedCharsPerLine)) : 0;
+          const extraLines = extra ? Math.max(1, Math.ceil(extra.length / estimatedCharsPerLine)) : 0;
+          const metaLines = meta ? 1 : 0; // Metadata is now a single line split by justify-between
           const tooltipBodyH = Math.max(
-            50,
-            tooltipBodyPadY * 2 + Math.max(tooltipAvatarSize, (subtitleLines + metaLines) * tooltipLineHeight)
+            52,
+            tooltipBodyPadY * 2 +
+            Math.max(
+              tooltipAvatarSize,
+              (subtitleLines + extraLines + metaLines) * tooltipLineHeight +
+              (extra ? 2 : 0) + // mt-0.5
+              (meta ? 12 : 0)   // mt-3
+            )
           );
           const tooltipH = Math.min(220, tooltipBodyH);
           const axisScale = isHorizontal ? liveCameraScale.x : liveCameraScale.y;
@@ -7326,7 +7355,7 @@ export default function BranchMap({
 
           return (
             <div
-              className="absolute z-[120] rounded-xl border overflow-hidden pointer-events-none"
+              className="absolute z-[120] rounded-[12px] border overflow-hidden pointer-events-none"
               style={{
                 left,
                 top,
@@ -7341,8 +7370,8 @@ export default function BranchMap({
               >
                 <div className="flex items-start gap-2">
                   <span
-                    className="shrink-0 rounded-full overflow-hidden bg-muted flex items-center justify-center text-[10px] font-medium leading-none text-muted-foreground"
-                    style={{ width: tooltipAvatarSize, height: tooltipAvatarSize }}
+                    className="shrink-0 rounded-full overflow-hidden flex items-center justify-center text-[10px] font-medium leading-none text-muted-foreground"
+                    style={{ width: tooltipAvatarSize, height: tooltipAvatarSize, backgroundColor: CANVAS_NODE_STROKE }}
                   >
                     {tooltip.avatarUrl ? (
                       <img
@@ -7355,7 +7384,7 @@ export default function BranchMap({
                       avatarFallback
                     )}
                   </span>
-                  <div className="min-w-0 space-y-1">
+                  <div className="min-w-0 flex flex-col">
                     {subtitle && (
                       <p
                         className="text-xs whitespace-normal break-words"
@@ -7364,14 +7393,38 @@ export default function BranchMap({
                         {subtitle}
                       </p>
                     )}
-                    {meta && (
+                    {extra && (
                       <p
-                        className="text-xs whitespace-normal break-words"
-                        style={{ lineHeight: `${tooltipLineHeight}px`, color: NODE_FRAME_LABEL_COLOR }}
+                        className="text-xs text-muted-foreground whitespace-normal break-words mt-0.5"
+                        style={{ lineHeight: `${tooltipLineHeight}px` }}
                       >
-                        {meta}
+                        {extra}
                       </p>
                     )}
+                    {meta && (() => {
+                      const dotIdx = meta.lastIndexOf(' · ');
+                      if (dotIdx === -1) {
+                        return (
+                          <p
+                            className="text-xs whitespace-normal break-words mt-3"
+                            style={{ lineHeight: `${tooltipLineHeight}px`, color: NODE_FRAME_LABEL_COLOR }}
+                          >
+                            {meta}
+                          </p>
+                        );
+                      }
+                      const leftMeta = meta.slice(0, dotIdx);
+                      const rightMeta = meta.slice(dotIdx + 3);
+                      return (
+                        <div
+                          className="flex items-baseline justify-between gap-4 mt-3"
+                          style={{ color: NODE_FRAME_LABEL_COLOR }}
+                        >
+                          <span className="text-xs truncate">{leftMeta}</span>
+                          <span className="text-xs shrink-0 select-none">{rightMeta}</span>
+                        </div>
+                      );
+                    })()}
                   </div>
                 </div>
               </div>
