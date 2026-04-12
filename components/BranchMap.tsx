@@ -745,6 +745,7 @@ export default function BranchMap({
   const clumpAnchorStateRef = useRef<Map<string, ClumpAnchorState>>(new Map());
   const clumpMemberAnchorStateRef = useRef<Map<string, ClumpMemberAnchorState>>(new Map());
   const branchLineGeometryStateRef = useRef<Map<string, BranchLineGeometryState>>(new Map());
+  const stableHorizontalMaxRowRef = useRef<number | null>(null);
   const clumpRenderCounterRef = useRef(0);
   clumpRenderCounterRef.current += 1;
   const clumpRenderId = clumpRenderCounterRef.current;
@@ -2262,6 +2263,16 @@ export default function BranchMap({
     mergeEventTimeByFullSha.set(m.fullSha, eventTime);
   });
 
+  const hasActiveClumpTransition = Array.from(expandedClumps.values()).some(
+    (state) => state.phase === 'expanding' || state.phase === 'collapsing'
+  );
+  const nowMsForHorizontalRowPin = Date.now();
+  const hasPinnedHorizontalRowOffset = Array.from(expandedClumps.values()).some(
+    (state) =>
+      (((state.isExpanded ?? false) && state.phase !== 'collapsed') ||
+        ((state.rowReleaseAt ?? 0) > nowMsForHorizontalRowPin))
+  );
+
   // ── Grid: build clumps first, derive rows from them ────────────────
   type GridClump = {
     lane: string;
@@ -2737,7 +2748,11 @@ export default function BranchMap({
       includeRow(clump.rowIndex);
     });
 
-    if (usedRows.size === 0) {
+    if (hasActiveClumpTransition) {
+      // Keep row indices stable while clumps are mid-transition so connected
+      // branch paths don't appear to "recalculate" against a shifting grid.
+      claimedGridRowTimes = rowTimes;
+    } else if (usedRows.size === 0) {
       claimedGridRowTimes = rowTimes;
     } else {
       const denseRows = Array.from(usedRows).sort((a, b) => a - b);
@@ -2767,7 +2782,22 @@ export default function BranchMap({
     return claimedGridRowTimes;
   })();
 
-  const gridEventPoints = gridRowTimes.map((time, index) => ({ t: time, x: leftPad + index * GRID_EVENT_GAP }));
+  const currentMaxGridRow = Math.max(0, gridRowTimes.length - 1);
+  if (
+    !isHorizontal ||
+    !hasPinnedHorizontalRowOffset ||
+    stableHorizontalMaxRowRef.current == null
+  ) {
+    stableHorizontalMaxRowRef.current = currentMaxGridRow;
+  }
+  const pinnedHorizontalMaxRow = stableHorizontalMaxRowRef.current ?? currentMaxGridRow;
+  const horizontalRowShiftX = (isHorizontal && hasPinnedHorizontalRowOffset)
+    ? (pinnedHorizontalMaxRow - currentMaxGridRow) * GRID_EVENT_GAP
+    : 0;
+  const shiftedLeftPad = leftPad + horizontalRowShiftX;
+  const gridRowToX = (row: number): number => shiftedLeftPad + row * GRID_EVENT_GAP;
+
+  const gridEventPoints = gridRowTimes.map((time, index) => ({ t: time, x: gridRowToX(index) }));
 
 
   const allAnchorTimes = gridRowTimes;
@@ -2776,7 +2806,7 @@ export default function BranchMap({
   if (gridEventPoints.length > 0) {
     anchorXs.push(...gridEventPoints.map((point) => point.x));
   } else if (allAnchorTimes.length > 0) {
-    anchorXs.push(leftPad);
+    anchorXs.push(shiftedLeftPad);
     for (let i = 1; i < allAnchorTimes.length; i += 1) {
       anchorXs.push(anchorXs[i - 1] + IDEAL_EVENT_GAP);
     }
@@ -2784,7 +2814,7 @@ export default function BranchMap({
 
   function xForTimestamp(t: number): number {
     if (gridEventPoints.length > 0) {
-      if (!Number.isFinite(t)) return gridEventPoints[0]?.x ?? leftPad;
+      if (!Number.isFinite(t)) return gridEventPoints[0]?.x ?? shiftedLeftPad;
       // Preserve chronology: anchor to the latest row at-or-before the target
       // timestamp. Only fall forward when nothing exists in the past.
       let bestPast: { t: number; x: number } | null = null;
@@ -2806,9 +2836,9 @@ export default function BranchMap({
           bestFuture = point;
         }
       }
-      return bestPast?.x ?? bestFuture?.x ?? (gridEventPoints[0]?.x ?? leftPad);
+      return bestPast?.x ?? bestFuture?.x ?? (gridEventPoints[0]?.x ?? shiftedLeftPad);
     }
-    if (!Number.isFinite(t) || allAnchorTimes.length === 0) return leftPad;
+    if (!Number.isFinite(t) || allAnchorTimes.length === 0) return shiftedLeftPad;
     let lo = 0;
     let hi = allAnchorTimes.length;
     while (lo < hi) {
@@ -2816,31 +2846,31 @@ export default function BranchMap({
       if (allAnchorTimes[mid] < t) lo = mid + 1;
       else hi = mid;
     }
-    if (lo <= 0) return leftPad - IDEAL_EVENT_GAP * 2;
+    if (lo <= 0) return shiftedLeftPad - IDEAL_EVENT_GAP * 2;
     if (lo >= allAnchorTimes.length) {
       const endX = anchorXs[anchorXs.length - 1] ?? leftPad;
       return endX + IDEAL_EVENT_GAP * 2;
     }
-    return anchorXs[lo] ?? leftPad + lo * IDEAL_EVENT_GAP;
+    return anchorXs[lo] ?? shiftedLeftPad + lo * IDEAL_EVENT_GAP;
   }
 
   function gridXForSha(sha: string): number | undefined {
     if (!gridRowBySha) return undefined;
     const row = gridRowBySha.get(sha);
     if (row == null) return undefined;
-    return leftPad + row * GRID_EVENT_GAP;
+    return gridRowToX(row);
   }
 
   function gridXForBranchSha(branchName: string, sha: string): number | undefined {
     const branchRow = gridRowByBranchSha.get(branchShaRowKey(branchName, sha));
-    if (branchRow != null) return leftPad + branchRow * GRID_EVENT_GAP;
+    if (branchRow != null) return gridRowToX(branchRow);
     return gridXForSha(sha);
   }
 
   function gridXForBranchSlot(branchName: string, slotIndex: number): number | undefined {
     const branchRow = gridRowByBranchSlot.get(branchSlotRowKey(branchName, slotIndex));
     if (branchRow == null) return undefined;
-    return leftPad + branchRow * GRID_EVENT_GAP;
+    return gridRowToX(branchRow);
   }
 
   const nodeXByFullSha = new Map<string, number>(
@@ -3302,7 +3332,8 @@ export default function BranchMap({
     return previews.slice(previews.length - uniqueAhead);
   }
 
-  // Canonical (logical) layout uses vertical time; orientation projection swaps axes when needed.
+  // Canonical (logical) layout uses vertical time; orientation projection swaps
+  // axes when needed, and mirrors horizontal time so left=past, right=future.
   const MAIN_LEFT_PAD = 0;
   const MAIN_TOP_PAD = 0;
   const mainX = MAIN_LEFT_PAD;
@@ -3355,8 +3386,11 @@ export default function BranchMap({
     ) + 2 * svgContentPadding
     : mainStartY + SVG_LAYOUT_TAIL_Y + 2 * svgContentPadding;
 
+  const horizontalProjectionMirrorX = logicalTimelineHeight;
   function projectPoint(x: number, y: number): { x: number; y: number } {
-    return isHorizontal ? { x: y, y: x } : { x, y };
+    return isHorizontal
+      ? { x: horizontalProjectionMirrorX - y, y: x }
+      : { x, y };
   }
 
   function pathCoord(x: number, y: number): string {
@@ -3365,7 +3399,9 @@ export default function BranchMap({
   }
 
   function unprojectPoint(x: number, y: number): { x: number; y: number } {
-    return isHorizontal ? { x: y, y: x } : { x, y };
+    return isHorizontal
+      ? { x: y, y: horizontalProjectionMirrorX - x }
+      : { x, y };
   }
 
   // ── Branch columns self-create on first use ────────────────────────────────
@@ -3649,8 +3685,8 @@ export default function BranchMap({
   }
   const projectedContentBounds = isHorizontal
     ? {
-      minX: minYWorldForBounds,
-      maxX: maxYWorldForBounds,
+      minX: horizontalProjectionMirrorX - maxYWorldForBounds,
+      maxX: horizontalProjectionMirrorX - minYWorldForBounds,
       minY: minXWorldForBounds,
       maxY: maxXWorldForBounds,
     }
@@ -3680,8 +3716,8 @@ export default function BranchMap({
   const projectedCommitCenterBounds = hasCommitCenterCanonicalBounds
     ? (isHorizontal
       ? {
-        minX: commitCenterCanonicalMinY,
-        maxX: commitCenterCanonicalMaxY,
+        minX: horizontalProjectionMirrorX - commitCenterCanonicalMaxY,
+        maxX: horizontalProjectionMirrorX - commitCenterCanonicalMinY,
         minY: commitCenterCanonicalMinX,
         maxY: commitCenterCanonicalMaxX,
       }
@@ -4200,7 +4236,7 @@ export default function BranchMap({
 
   const clumpExpandMs = 160;
   const clumpCollapseMs = 240;
-  const clumpRowReleaseDelayMs = 24;
+  const clumpRowReleaseDelayMs = clumpCollapseMs;
   const clumpExpandEasing = 'cubic-bezier(0.16, 1, 0.3, 1)';
   const clumpCollapseEasing = 'cubic-bezier(0.7, 0, 0.84, 0)';
   const clumpPhaseDurationMs = (phase: ExpandedClumpState['phase']): number =>
@@ -5069,9 +5105,59 @@ export default function BranchMap({
     }
     return anchors;
   })();
+  const renderedBranchAnchorByCommitSha = (() => {
+    const anchors = new Map<string, AnchorPoint>();
+    for (const branch of activeBranches) {
+      const layout = getBranchRenderLayout(branch);
+      for (const cluster of layout.commitDotClusters) {
+        const vm = buildBranchClusterViewModel(branch.name, cluster, layout.branchEndDotIndex);
+        const motion = resolveClusterMotion(
+          vm.clusterKey,
+          { x: vm.preferredAnchorEntry.x, y: vm.preferredAnchorEntry.y },
+          vm.memberKeys,
+          vm.canExpandCluster,
+        );
+        const collapsedCanonical = unprojectPoint(motion.anchorX, motion.anchorY);
+        if (!motion.isExpanded || vm.count <= 1) {
+          vm.renderEntries.forEach((entry) => {
+            const sha = entry.item.commit?.fullSha;
+            if (!sha) return;
+            anchors.set(sha, collapsedCanonical);
+          });
+          continue;
+        }
+
+        vm.renderEntries.forEach((entry) => {
+          const sha = entry.item.commit?.fullSha;
+          if (!sha) return;
+          const memberPose = interpolateExpandedEntryPose(
+            { x: motion.anchorX, y: motion.anchorY },
+            { x: entry.x, y: entry.y },
+            motion.phase,
+            motion.phaseEased,
+          );
+          anchors.set(sha, unprojectPoint(memberPose.x, memberPose.y));
+        });
+      }
+    }
+    return anchors;
+  })();
   // Clumps are closed by default; no checked-out auto-expansion.
 
   function resolveBranchHeadProjectedPoint(branch: Branch, layout: BranchRenderLayout): { x: number; y: number } {
+    let renderedHeadAnchor = renderedBranchAnchorByCommitSha.get(branch.headSha);
+    if (!renderedHeadAnchor) {
+      for (const [sha, anchor] of renderedBranchAnchorByCommitSha.entries()) {
+        if (shaMatchesGitRef(sha, branch.headSha)) {
+          renderedHeadAnchor = anchor;
+          break;
+        }
+      }
+    }
+    if (renderedHeadAnchor) {
+      return projectPoint(renderedHeadAnchor.x, renderedHeadAnchor.y);
+    }
+
     const resolveEntryPose = (
       cluster: MarkerCluster<CommitEntryItem>,
       entry: MarkerEntry<CommitEntryItem>,
