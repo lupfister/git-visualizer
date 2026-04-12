@@ -107,43 +107,25 @@ function App() {
     setBranches([]);
     setMergeNodes([]);
     setDirectCommits([]);
-    setRepoPath(path);
-    setRepoName(path.split('/').pop() || '');
+
+    // Switch to map immediately for instant feedback
     setView('map');
+
+    // Yield to the browser paint cycle so the map shell and loader are painted
+    await new Promise((resolve) => setTimeout(resolve, 15));
 
     try {
       // Phase 1: fast metadata — show the map shell immediately
-      const [info, def, checkedOut] = await Promise.all([
+      const [info, def] = await Promise.all([
         invoke<{ name: string; path: string }>('get_repo_info', { repoPath: path }),
         invoke<string>('get_default_branch', { repoPath: path }),
-        invoke<CheckedOutRef>('get_checked_out_ref', { repoPath: path }).catch(() => null),
       ]);
       setRepoName(info.name);
       setDefaultBranch(def);
-      setCheckedOutRef(checkedOut);
+      
+      // Setting repoPath triggers the useEffect which runs 'performFetch' + 'loadPromptMeta'
+      setRepoPath(path);
       setLoading(false); // unblock the landing button
-
-      // Phase 2: heavier git data — timeline skeleton shows while this loads
-      const branchList = await invoke<Branch[]>('get_branches', { repoPath: path });
-      const [mergeNodeGroups, directResult] = await Promise.all([
-        Promise.all([fetchAllMergeNodes(path, def)]),
-        invoke<DirectCommit[]>('get_direct_commits', {
-          repoPath: path,
-          branch: def,
-        }),
-      ]);
-      const mergeNodeByBranchAndSha = new Map<string, MergeNode>();
-      for (const nodes of mergeNodeGroups) {
-        for (const node of nodes) {
-          const key = `${node.targetBranch ?? def}::${node.fullSha}`;
-          if (!mergeNodeByBranchAndSha.has(key)) mergeNodeByBranchAndSha.set(key, node);
-        }
-      }
-      const nodes = Array.from(mergeNodeByBranchAndSha.values());
-      setBranches(branchList);
-      setMergeNodes(nodes);
-      setDirectCommits(directResult);
-      setMapLoading(false);
 
       // Phase 3: GitHub data (non-blocking)
       fetchGitHubData(path);
@@ -258,11 +240,16 @@ function App() {
       }
       isFetching = true;
       try {
-        const [branchListResult, nodesResult, currentCheckedOutResult, directResultResult] = await Promise.allSettled([
-          invoke<Branch[]>('get_branches', { repoPath }),
-          fetchAllMergeNodes(repoPath, defaultBranch),
-          invoke<CheckedOutRef>('get_checked_out_ref', { repoPath }).catch(() => null),
-          invoke<DirectCommit[]>('get_direct_commits', { repoPath, branch: defaultBranch }),
+        const branchesPromise = invoke<Branch[]>('get_branches', { repoPath });
+        const mergeNodesPromise = fetchAllMergeNodes(repoPath, defaultBranch);
+        const checkedOutPromise = invoke<CheckedOutRef>('get_checked_out_ref', { repoPath }).catch(() => null);
+        const directCommitsPromise = invoke<DirectCommit[]>('get_direct_commits', { repoPath, branch: defaultBranch });
+
+        // Prioritize the minimum data needed for first paint and interactions.
+        const [branchListResult, currentCheckedOutResult, directResultResult] = await Promise.allSettled([
+          branchesPromise,
+          checkedOutPromise,
+          directCommitsPromise,
         ]);
         if (isDisposed) return;
         if (branchListResult.status === 'fulfilled') {
@@ -273,14 +260,6 @@ function App() {
             setBranches(next);
           }
         }
-        if (nodesResult.status === 'fulfilled') {
-          const next = nodesResult.value;
-          const sig = getMergeNodesSignature(next);
-          if (sig !== lastMergeNodesSignature) {
-            lastMergeNodesSignature = sig;
-            setMergeNodes(next);
-          }
-        }
         if (directResultResult.status === 'fulfilled') {
           const next = directResultResult.value;
           const sig = getDirectCommitsSignature(next);
@@ -289,6 +268,8 @@ function App() {
             setDirectCommits(next);
           }
         }
+        // Unblock the map as soon as primary graph data is ready.
+        setMapLoading(false);
         if (
           currentCheckedOutResult.status === 'fulfilled' &&
           currentCheckedOutResult.value
@@ -307,9 +288,23 @@ function App() {
             return nextRef;
           });
         }
+
+        // Merge nodes can be expensive on large repos; resolve them after first paint.
+        const nodesResult = await Promise.allSettled([mergeNodesPromise]);
+        if (isDisposed) return;
+        const mergeNodeResult = nodesResult[0];
+        if (mergeNodeResult.status === 'fulfilled') {
+          const next = mergeNodeResult.value;
+          const sig = getMergeNodesSignature(next);
+          if (sig !== lastMergeNodesSignature) {
+            lastMergeNodesSignature = sig;
+            setMergeNodes(next);
+          }
+        }
       } catch (e) {
         console.error('Auto-refresh failed:', e);
       } finally {
+        setMapLoading(false);
         isFetching = false;
         if (pendingFetch && !isDisposed) {
           pendingFetch = false;
@@ -356,8 +351,8 @@ function App() {
 
     const scheduleRefreshBurst = () => {
       clearTimeout(timeoutId);
-      timeoutId = window.setTimeout(performFetch, 300); // 300ms to let Git settle completely
-      const retries = [900];
+      timeoutId = window.setTimeout(performFetch, 100);
+      const retries = [450];
       for (const delayMs of retries) {
         const id = window.setTimeout(() => {
           retryTimeoutIds.delete(id);

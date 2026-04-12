@@ -24,3 +24,4 @@ objc2 = "0.6.3"
 objc2-app-kit = { version = "0.3.2", features = ["NSApplication", "NSResponder", "NSWindow", "NSWorkspace", "NSRunningApplication", "libc"] }
 core-graphics = "0.24"
 notify = "7.0.0"
+rayon = "1.10"

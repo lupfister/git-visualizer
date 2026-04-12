@@ -1,4 +1,5 @@
 use super::cli::{self, GitError};
+use rayon::prelude::*;
 use serde::Serialize;
 use std::collections::{HashMap, HashSet};
 use std::path::Path;
@@ -111,13 +112,10 @@ pub fn list_branches(repo: &Path, default_branch: &str) -> Result<Vec<Branch>, G
         .map(|s| s.to_string())
         .collect();
 
-    let mut branches = Vec::new();
-
-    for name in &branch_names {
-        if let Ok(branch) = get_branch_info(repo, name, default_branch) {
-            branches.push(branch);
-        }
-    }
+    let mut branches: Vec<Branch> = branch_names
+        .par_iter()
+        .filter_map(|name| get_branch_info(repo, name, default_branch).ok())
+        .collect();
 
     infer_branch_parents(repo, &mut branches, default_branch)?;
 
@@ -213,17 +211,18 @@ fn infer_branch_parents(
         .iter()
         .find(|c| c.is_default)
         .map(|c| c.name.clone());
-    let mut creation_info_by_name: HashMap<String, BranchCreationInfo> = HashMap::new();
-    for branch in branches.iter() {
-        if let Some(info) = get_branch_reflog_created_entry(repo, &branch.name)
-            .ok()
-            .flatten()
-        {
-            creation_info_by_name.insert(branch.name.clone(), info);
-        }
-    }
 
-    for branch in branches.iter_mut() {
+    let creation_info_list: Vec<(String, BranchCreationInfo)> = branches
+        .par_iter()
+        .filter_map(|branch| {
+            let info = get_branch_reflog_created_entry(repo, &branch.name).ok().flatten()?;
+            Some((branch.name.clone(), info))
+        })
+        .collect();
+
+    let mut creation_info_by_name: HashMap<String, BranchCreationInfo> = HashMap::from_iter(creation_info_list);
+
+    branches.par_iter_mut().for_each(|branch| {
         let created_from_reflog = creation_info_by_name.get(&branch.name).cloned();
         let created_from_reflog_sha = created_from_reflog.as_ref().map(|info| info.sha.clone());
         let created_from_reflog_date = created_from_reflog.as_ref().map(|info| info.date.clone());
@@ -238,12 +237,6 @@ fn infer_branch_parents(
             .map(|source| source.trim() == "HEAD")
             .unwrap_or(false);
 
-        // Parent inference (simple, ordered, deterministic):
-        // 1) explicit reflog source
-        // 2) "Created from HEAD" ancestry
-        // 3) same-head sibling lineage
-        // 4) merge-base heuristic
-        // 5) default branch
         let mut parent_name = created_from_reflog_parent;
         if parent_name.is_none() && created_from_head {
             parent_name = created_from_reflog_sha.as_deref().and_then(|created_sha| {
@@ -288,7 +281,7 @@ fn infer_branch_parents(
             .or(created_from_unique_commit)
             .or_else(|| branch.diverged_from_date.clone())
             .or_else(|| Some(branch.last_commit_date.clone()));
-    }
+    });
 
     // Final sanitization: break any parent cycles by anchoring cycle participants to default.
     if let Some(default_parent) = default_parent_name {
