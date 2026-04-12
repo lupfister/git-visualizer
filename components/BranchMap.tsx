@@ -3356,7 +3356,7 @@ export default function BranchMap({
     : mainStartY + SVG_LAYOUT_TAIL_Y + 2 * svgContentPadding;
 
   function projectPoint(x: number, y: number): { x: number; y: number } {
-    return isHorizontal ? { x: logicalTimelineHeight - y, y: x } : { x, y };
+    return isHorizontal ? { x: y, y: x } : { x, y };
   }
 
   function pathCoord(x: number, y: number): string {
@@ -3365,7 +3365,7 @@ export default function BranchMap({
   }
 
   function unprojectPoint(x: number, y: number): { x: number; y: number } {
-    return isHorizontal ? { x: y, y: logicalTimelineHeight - x } : { x, y };
+    return isHorizontal ? { x: y, y: x } : { x, y };
   }
 
   // ── Branch columns self-create on first use ────────────────────────────────
@@ -3649,8 +3649,8 @@ export default function BranchMap({
   }
   const projectedContentBounds = isHorizontal
     ? {
-      minX: logicalTimelineHeight - maxYWorldForBounds,
-      maxX: logicalTimelineHeight - minYWorldForBounds,
+      minX: minYWorldForBounds,
+      maxX: maxYWorldForBounds,
       minY: minXWorldForBounds,
       maxY: maxXWorldForBounds,
     }
@@ -3680,8 +3680,8 @@ export default function BranchMap({
   const projectedCommitCenterBounds = hasCommitCenterCanonicalBounds
     ? (isHorizontal
       ? {
-        minX: logicalTimelineHeight - commitCenterCanonicalMaxY,
-        maxX: logicalTimelineHeight - commitCenterCanonicalMinY,
+        minX: commitCenterCanonicalMinY,
+        maxX: commitCenterCanonicalMaxY,
         minY: commitCenterCanonicalMinX,
         maxY: commitCenterCanonicalMaxX,
       }
@@ -6900,7 +6900,10 @@ export default function BranchMap({
 
                             const localRect = commitRectSize(scaledNodeSize, 0);
                             const topExpandedEntry = renderEntries.reduce(
-                              (top, entry) => (entry.y < top.y ? entry : top),
+                              (top, entry) => {
+                                const isBetter = isHorizontal ? entry.x > top.x : entry.y < top.y;
+                                return isBetter ? entry : top;
+                              },
                               renderEntries[0]
                             );
                             return (
@@ -7013,7 +7016,10 @@ export default function BranchMap({
                           if (isExpanded && !isCollapsing) {
                             const localRect = commitRectSize(scaledNodeSize, 0);
                             const topEntryForLabels = cluster.entries.reduce(
-                              (top, entry) => (entry.y < top.y ? entry : top),
+                              (top, entry) => {
+                                const isBetter = isHorizontal ? entry.x > top.x : entry.y < top.y;
+                                return isBetter ? entry : top;
+                              },
                               cluster.entries[0]
                             );
                             return (
@@ -7107,7 +7113,10 @@ export default function BranchMap({
                       const collapseHitSize = worldPx(16);
                       const collapseStrokeWidth = 1;
                       const topExpandedEntry = cluster.entries.reduce(
-                        (top, entry) => (entry.y < top.y ? entry : top),
+                        (top, entry) => {
+                          const isBetter = isHorizontal ? entry.x > top.x : entry.y < top.y;
+                          return isBetter ? entry : top;
+                        },
                         cluster.entries[0]
                       );
                       const clumpCountAnchorX =
@@ -7180,7 +7189,10 @@ export default function BranchMap({
                         const collapseHitSize = worldPx(16);
                         const collapseStrokeWidth = 1;
                         const topExpandedEntry = renderEntries.reduce(
-                          (top, entry) => (entry.y < top.y ? entry : top),
+                          (top, entry) => {
+                            const isBetter = isHorizontal ? entry.x > top.x : entry.y < top.y;
+                            return isBetter ? entry : top;
+                          },
                           renderEntries[0]
                         );
                         const clumpCountAnchorX =
