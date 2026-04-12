@@ -56,6 +56,7 @@ function App() {
 
   const mapHeaderRef = useRef<HTMLElement | null>(null);
   const [mapHeaderInsetPx, setMapHeaderInsetPx] = useState(0);
+  const branchMetaLoadKeyRef = useRef<string | null>(null);
 
   useLayoutEffect(() => {
     if (view === 'landing') {
@@ -124,11 +125,8 @@ function App() {
 
       // Phase 2: heavier git data — timeline skeleton shows while this loads
       const branchList = await invoke<Branch[]>('get_branches', { repoPath: path });
-      const mergeTargetBranches = Array.from(
-        new Set<string>([def, ...branchList.map((branch) => branch.name)])
-      );
       const [mergeNodeGroups, directResult] = await Promise.all([
-        Promise.all(mergeTargetBranches.map((branchName) => fetchAllMergeNodes(path, branchName))),
+        Promise.all([fetchAllMergeNodes(path, def)]),
         invoke<DirectCommit[]>('get_direct_commits', {
           repoPath: path,
           branch: def,
@@ -442,6 +440,7 @@ function App() {
     setBranchPromptMeta({});
     setBranchCommitPreviews({});
     setBranchUniqueAheadCounts({});
+    branchMetaLoadKeyRef.current = null;
     setGithubAuthLoading(false);
     setGithubAuthStatus(null);
     setGithubAuthMessage(null);
@@ -455,8 +454,21 @@ function App() {
       setBranchPromptMeta({});
       setBranchCommitPreviews({});
       setBranchUniqueAheadCounts({});
+      branchMetaLoadKeyRef.current = null;
       return;
     }
+
+    const branchHeadKey = branches
+      .map((branch) => `${branch.name}:${branch.headSha}:${branch.parentBranch ?? ''}:${branch.commitsAhead}`)
+      .join('|');
+    const mergeNodesKey = mergeNodes
+      .map((node) => `${node.fullSha}:${node.parentShas?.[1] ?? ''}`)
+      .join('|');
+    const branchMetaLoadKey = `${repoPath}|${defaultBranch}|${branchHeadKey}|${mergeNodesKey}`;
+    if (branchMetaLoadKeyRef.current === branchMetaLoadKey) {
+      return;
+    }
+    branchMetaLoadKeyRef.current = branchMetaLoadKey;
 
     const mergeNodeByMergedHeadSha = new Map<string, MergeNode>();
     for (const node of mergeNodes) {

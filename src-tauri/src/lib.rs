@@ -12,7 +12,7 @@ use std::{
     io::{BufRead, BufReader, Write},
     path::{Path, PathBuf},
     sync::{
-        atomic::{AtomicU64, Ordering},
+        atomic::{AtomicBool, AtomicU64, Ordering},
         Mutex, OnceLock,
     },
     time::{Duration as StdDuration, Instant},
@@ -34,6 +34,8 @@ pub struct RepoInfo {
 static WATCHER_STATE: OnceLock<Mutex<Option<notify::RecommendedWatcher>>> = OnceLock::new();
 const GIT_ACTIVITY_LOCAL_MIN_EMIT_MS: u64 = 250;
 const GIT_ACTIVITY_GRAPH_MIN_EMIT_MS: u64 = 120;
+#[cfg(target_os = "macos")]
+const OPEN_REPO_DETECTION_CACHE_TTL: StdDuration = StdDuration::from_secs(8);
 
 fn path_contains_noise_dir(path: &Path) -> bool {
     path.components().any(|component| {
@@ -2719,6 +2721,69 @@ struct OpenRepoEventPayload {
 }
 
 #[cfg(target_os = "macos")]
+#[derive(Clone)]
+struct OpenRepoDetectionCacheEntry {
+    payload: OpenRepoEventPayload,
+    captured_at: Instant,
+}
+
+#[cfg(target_os = "macos")]
+static OPEN_REPO_DETECTION_CACHE: OnceLock<Mutex<Option<OpenRepoDetectionCacheEntry>>> =
+    OnceLock::new();
+#[cfg(target_os = "macos")]
+static OPEN_REPO_DETECTION_IN_FLIGHT: AtomicBool = AtomicBool::new(false);
+
+#[cfg(target_os = "macos")]
+fn open_repo_detection_cache() -> &'static Mutex<Option<OpenRepoDetectionCacheEntry>> {
+    OPEN_REPO_DETECTION_CACHE.get_or_init(|| Mutex::new(None))
+}
+
+#[cfg(target_os = "macos")]
+fn take_cached_open_repo_detection() -> Option<OpenRepoEventPayload> {
+    let mut cache = open_repo_detection_cache().lock().ok()?;
+    let entry = cache.as_ref()?;
+    if entry.captured_at.elapsed() <= OPEN_REPO_DETECTION_CACHE_TTL {
+        return Some(entry.payload.clone());
+    }
+    *cache = None;
+    None
+}
+
+#[cfg(target_os = "macos")]
+fn cache_open_repo_detection(payload: OpenRepoEventPayload) {
+    if let Ok(mut cache) = open_repo_detection_cache().lock() {
+        *cache = Some(OpenRepoDetectionCacheEntry {
+            payload,
+            captured_at: Instant::now(),
+        });
+    }
+}
+
+#[cfg(target_os = "macos")]
+fn emit_or_queue_open_repo(app_handle: &tauri::AppHandle, payload: OpenRepoEventPayload) {
+    if let Some(window) = app_handle.get_webview_window("main") {
+        let _ = window.emit("gitviz://open-repo", &payload);
+        return;
+    }
+    if let Ok(mut pending) = pending_open_repo().lock() {
+        *pending = Some(payload);
+    }
+}
+
+#[cfg(target_os = "macos")]
+fn detect_open_repo_cached() -> Option<OpenRepoEventPayload> {
+    if let Some(cached) = take_cached_open_repo_detection() {
+        return Some(cached);
+    }
+
+    let detected = detect_repo_from_frontmost_process();
+    if let Some(payload) = detected.clone() {
+        cache_open_repo_detection(payload);
+    }
+    detected
+}
+
+#[cfg(target_os = "macos")]
 fn parse_frontmost_process(output: &str) -> Option<(String, i32)> {
     let trimmed = output.trim();
     let mut parts = trimmed.splitn(2, "||");
@@ -3427,15 +3492,29 @@ pub fn run() {
                         if event.state() != ShortcutState::Pressed {
                             return;
                         }
-                        let detected_repo = detect_repo_from_frontmost_process();
                         if let Some(window) = app_handle.get_webview_window("main") {
                             let _ = window.show();
                             let _ = window.unminimize();
                             let _ = window.set_focus();
-                            if let Some(payload) = detected_repo.as_ref() {
-                                let _ = window.emit("gitviz://open-repo", payload);
-                            }
                         }
+
+                        if let Some(cached) = take_cached_open_repo_detection() {
+                            emit_or_queue_open_repo(app_handle, cached);
+                            return;
+                        }
+
+                        if OPEN_REPO_DETECTION_IN_FLIGHT.swap(true, Ordering::AcqRel) {
+                            return;
+                        }
+
+                        let app_handle = app_handle.clone();
+                        std::thread::spawn(move || {
+                            let detected = detect_open_repo_cached();
+                            OPEN_REPO_DETECTION_IN_FLIGHT.store(false, Ordering::Release);
+                            if let Some(payload) = detected {
+                                emit_or_queue_open_repo(&app_handle, payload);
+                            }
+                        });
                     })
                     .map_err(|e| format!("Failed to register Cmd+G: {e}"))?;
             }
@@ -3495,4 +3574,3 @@ fn consume_pending_open_repo() -> Option<OpenRepoEventPayload> {
 fn take_pending_open_repo() -> Option<OpenRepoEventPayload> {
     consume_pending_open_repo()
 }
-
