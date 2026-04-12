@@ -22,7 +22,7 @@ interface Props {
   scrollRequest?: { branch: Branch; seq: number } | null;
   focusedErrorBranch?: Branch | null;
   checkedOutRef?: CheckedOutRef | null;
-  isPopoverWindow?: boolean;
+
   /** Height of overlay UI above the map (px); improves aspect + padding vs. full window. */
   mapTopInsetPx?: number;
   onMergeRefsIntoBranch?: (sourceRefs: string[], targetBranch: string) => Promise<void> | void;
@@ -46,7 +46,7 @@ export default function BranchMapView({
   scrollRequest,
   focusedErrorBranch,
   checkedOutRef = null,
-  isPopoverWindow = false,
+
   mapTopInsetPx = 0,
   onMergeRefsIntoBranch,
   mergeInProgress = false,
@@ -84,7 +84,7 @@ export default function BranchMapView({
             scrollRequest={scrollRequest}
             focusedErrorBranch={focusedErrorBranch}
             checkedOutRef={checkedOutRef}
-            isPopoverWindow={isPopoverWindow}
+
             mapTopInsetPx={mapTopInsetPx}
             onMergeRefsIntoBranch={onMergeRefsIntoBranch}
             mergeInProgress={mergeInProgress}

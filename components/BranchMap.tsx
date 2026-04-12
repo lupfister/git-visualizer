@@ -654,7 +654,7 @@ interface BranchMapProps {
   scrollRequest?: { branch: Branch; seq: number } | null;
   focusedErrorBranch?: Branch | null;
   checkedOutRef?: CheckedOutRef | null;
-  isPopoverWindow?: boolean;
+
   /** Pixels of vertical chrome (e.g. floating header) covering the top of the map; used for aspect/padding and pan bounds. */
   mapTopInsetPx?: number;
   onMergeRefsIntoBranch?: (sourceRefs: string[], targetBranch: string) => Promise<void> | void;
@@ -678,7 +678,7 @@ export default function BranchMap({
   scrollRequest,
   focusedErrorBranch,
   checkedOutRef = null,
-  isPopoverWindow = false,
+
   mapTopInsetPx = 0,
   onMergeRefsIntoBranch,
   mergeInProgress = false,
@@ -7617,7 +7617,7 @@ export default function BranchMap({
         {timelineRevealReady && tooltip && (() => {
           const [title, subtitle, meta] = tooltip.lines;
           const avatarFallback = tooltip.avatarFallback || '?';
-          const tooltipCompact = isPopoverWindow || viewportSize.width < 420;
+          const tooltipCompact = viewportSize.width < 420;
           const viewportPadX = tooltipCompact ? 18 : 8;
           const viewportPadTop = tooltipCompact ? 84 : 8;
           const viewportPadBottom = tooltipCompact ? 18 : 8;
@@ -7816,66 +7816,60 @@ export default function BranchMap({
           </div>
 
           <div className="flex items-center justify-end gap-4">
-            {!isPopoverWindow && (
-              <div className="flex items-center gap-1 shrink-0 bg-card border border-border rounded-full p-1">
-                <button
-                  onClick={() => setOrientation('vertical')}
-                  className={`px-2.5 py-1 rounded-full text-xs leading-none select-none transition-colors ${orientation === 'vertical'
-                    ? 'bg-primary/10 text-foreground'
-                    : 'text-muted-foreground hover:text-foreground hover:bg-muted'
-                    }`}
-                  title="Timeline runs top to bottom"
-                >
-                  Vertical
-                </button>
-                <button
-                  onClick={() => setOrientation('horizontal')}
-                  className={`px-2.5 py-1 rounded-full text-xs leading-none select-none transition-colors ${orientation === 'horizontal'
-                    ? 'bg-primary/10 text-foreground'
-                    : 'text-muted-foreground hover:text-foreground hover:bg-muted'
-                    }`}
-                  title="Timeline runs left to right"
-                >
-                  Horizontal
-                </button>
-              </div>
-            )}
-            {!isPopoverWindow && (
-              <div className="flex items-center gap-2 shrink-0 bg-card border border-border rounded-full px-3 py-1">
-                <span className="text-xs text-muted-foreground select-none">Row debug</span>
-                <label className="relative inline-flex items-center cursor-pointer">
-                  <input
-                    type="checkbox"
-                    checked={showRowDebugOverlay}
-                    onChange={(e) => setShowRowDebugOverlay(e.target.checked)}
-                    aria-label="Toggle row debug overlay"
-                    className="sr-only"
-                  />
-                  <span
-                    className={`w-10 h-5 rounded-full border transition-colors flex items-center p-0.5 ${showRowDebugOverlay ? 'bg-primary/10 border-primary/30' : 'bg-muted/30 border-border'
-                      }`}
-                  >
-                    <span
-                      className={`w-4 h-4 rounded-full bg-card shadow-sm transform transition-transform duration-200 ${showRowDebugOverlay ? 'translate-x-5' : 'translate-x-0'
-                        }`}
-                    />
-                  </span>
-                </label>
-              </div>
-            )}
-            {!isPopoverWindow && (
+            <div className="flex items-center gap-1 shrink-0 bg-card border border-border rounded-full p-1">
               <button
-                onClick={() => setShowLineageDebug((prev) => !prev)}
-                className={`flex items-center gap-1.5 shrink-0 border rounded-full px-3 py-1.5 text-xs select-none transition-colors ${
-                  showLineageDebug
-                    ? 'bg-primary/10 border-primary/30 text-foreground'
-                    : 'bg-card border-border text-muted-foreground hover:text-foreground hover:bg-muted'
-                }`}
-                title="Show commit lineage debug panel"
+                onClick={() => setOrientation('vertical')}
+                className={`px-2.5 py-1 rounded-full text-xs leading-none select-none transition-colors ${orientation === 'vertical'
+                  ? 'bg-primary/10 text-foreground'
+                  : 'text-muted-foreground hover:text-foreground hover:bg-muted'
+                  }`}
+                title="Timeline runs top to bottom"
               >
-                Lineage
+                Vertical
               </button>
-            )}
+              <button
+                onClick={() => setOrientation('horizontal')}
+                className={`px-2.5 py-1 rounded-full text-xs leading-none select-none transition-colors ${orientation === 'horizontal'
+                  ? 'bg-primary/10 text-foreground'
+                  : 'text-muted-foreground hover:text-foreground hover:bg-muted'
+                  }`}
+                title="Timeline runs left to right"
+              >
+                Horizontal
+              </button>
+            </div>
+            <div className="flex items-center gap-2 shrink-0 bg-card border border-border rounded-full px-3 py-1">
+              <span className="text-xs text-muted-foreground select-none">Row debug</span>
+              <label className="relative inline-flex items-center cursor-pointer">
+                <input
+                  type="checkbox"
+                  checked={showRowDebugOverlay}
+                  onChange={(e) => setShowRowDebugOverlay(e.target.checked)}
+                  aria-label="Toggle row debug overlay"
+                  className="sr-only"
+                />
+                <span
+                  className={`w-10 h-5 rounded-full border transition-colors flex items-center p-0.5 ${showRowDebugOverlay ? 'bg-primary/10 border-primary/30' : 'bg-muted/30 border-border'
+                    }`}
+                >
+                  <span
+                    className={`w-4 h-4 rounded-full bg-card shadow-sm transform transition-transform duration-200 ${showRowDebugOverlay ? 'translate-x-5' : 'translate-x-0'
+                      }`}
+                  />
+                </span>
+              </label>
+            </div>
+            <button
+              onClick={() => setShowLineageDebug((prev) => !prev)}
+              className={`flex items-center gap-1.5 shrink-0 border rounded-full px-3 py-1.5 text-xs select-none transition-colors ${
+                showLineageDebug
+                  ? 'bg-primary/10 border-primary/30 text-foreground'
+                  : 'bg-card border-border text-muted-foreground hover:text-foreground hover:bg-muted'
+              }`}
+              title="Show commit lineage debug panel"
+            >
+              Lineage
+            </button>
           </div>
         </div>
       </div>

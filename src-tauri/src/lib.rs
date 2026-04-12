@@ -1,11 +1,7 @@
 mod git;
 mod github;
 
-use tauri::{
-    menu::{MenuBuilder, MenuItemBuilder},
-    tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent},
-    Emitter, Manager, PhysicalPosition, Position, Rect, Size, WindowEvent,
-};
+use tauri::{Emitter, Manager};
 
 use git::{Branch, CheckedOutRef, DirectCommit, MergeNode};
 use github::{GitHubAuthStatus, GitHubInfo, MergedPR, OpenPR};
@@ -24,14 +20,7 @@ use std::{
 use notify::{Watcher, RecursiveMode};
 
 #[cfg(target_os = "macos")]
-use core_graphics::{
-    event::{CGEvent, CGEventTapLocation},
-    event_source::{CGEventSource, CGEventSourceStateID},
-};
-#[cfg(target_os = "macos")]
-use objc2::MainThreadMarker;
-#[cfg(target_os = "macos")]
-use objc2_app_kit::{NSApplication, NSWindow, NSWorkspace};
+use objc2_app_kit::{NSRunningApplication, NSWorkspace};
 #[cfg(target_os = "macos")]
 use tauri_plugin_global_shortcut::{Code, GlobalShortcutExt, Modifiers, Shortcut, ShortcutState};
 
@@ -2749,11 +2738,16 @@ fn frontmost_process_via_nsworkspace() -> Option<(String, i32)> {
     if pid <= 0 {
         return None;
     }
-    let app_name = app
-        .localizedName()
-        .map(|name| name.to_string())
-        .filter(|name| !name.is_empty())
-        .unwrap_or_else(|| "Frontmost App".to_string());
+    let app_name = if let Some(name) = app.localizedName() {
+        let name_str = name.to_string();
+        if !name_str.is_empty() {
+            name_str
+        } else {
+            "Frontmost App".to_string()
+        }
+    } else {
+        "Frontmost App".to_string()
+    };
     Some((app_name, pid))
 }
 
@@ -3418,349 +3412,15 @@ fn append_shortcut_debug_log(message: &str) {
     }
 }
 
-const TRAY_TOGGLE_ID: &str = "toggle-window";
-const TRAY_QUIT_ID: &str = "quit-app";
-const POPOVER_OFFSET_Y: i32 = 0;
-const POPOVER_WIDTH: f64 = 240.0;
-const POPOVER_HEIGHT: f64 = 320.0;
-const POPOVER_FADE_OUT_MS: u64 = 85;
-const POPOVER_FADE_STEP_MS: u64 = 8;
-static MAIN_WINDOW_LOCKED_POS: OnceLock<Mutex<Option<(i32, i32)>>> = OnceLock::new();
-static MAIN_WINDOW_HIDE_SEQ: OnceLock<AtomicU64> = OnceLock::new();
-static PENDING_OPEN_REPO: OnceLock<Mutex<Option<OpenRepoEventPayload>>> = OnceLock::new();
-
-fn main_window_locked_pos() -> &'static Mutex<Option<(i32, i32)>> {
-    MAIN_WINDOW_LOCKED_POS.get_or_init(|| Mutex::new(None))
-}
-
-fn main_window_hide_seq() -> &'static AtomicU64 {
-    MAIN_WINDOW_HIDE_SEQ.get_or_init(|| AtomicU64::new(0))
-}
-
-fn pending_open_repo() -> &'static Mutex<Option<OpenRepoEventPayload>> {
-    PENDING_OPEN_REPO.get_or_init(|| Mutex::new(None))
-}
-
-fn set_pending_open_repo(payload: Option<OpenRepoEventPayload>) {
-    if let Ok(mut pending) = pending_open_repo().lock() {
-        *pending = payload;
-    }
-}
-
-fn consume_pending_open_repo() -> Option<OpenRepoEventPayload> {
-    pending_open_repo().lock().ok()?.take()
-}
-
-fn bump_main_window_hide_seq() -> u64 {
-    main_window_hide_seq().fetch_add(1, Ordering::SeqCst) + 1
-}
-
-fn set_locked_main_position(x: i32, y: i32) {
-    if let Ok(mut pos) = main_window_locked_pos().lock() {
-        *pos = Some((x, y));
-    }
-}
-
-fn get_locked_main_position() -> Option<(i32, i32)> {
-    main_window_locked_pos()
-        .lock()
-        .ok()
-        .and_then(|pos| *pos)
-}
-
-fn set_main_window_alpha(window: &tauri::WebviewWindow, alpha: f64) {
-    #[cfg(target_os = "macos")]
-    {
-        let clamped = alpha.clamp(0.0, 1.0);
-        let _ = window.with_webview(move |webview| unsafe {
-            let ns_window: &NSWindow = &*webview.ns_window().cast();
-            ns_window.setAlphaValue(clamped);
-        });
-    }
-    #[cfg(not(target_os = "macos"))]
-    {
-        let _ = window;
-        let _ = alpha;
-    }
-}
-
-fn set_menu_bar_mode(app: &tauri::AppHandle) {
-    #[cfg(target_os = "macos")]
-    {
-        let _ = app.set_dock_visibility(false);
-        let _ = app.set_activation_policy(tauri::ActivationPolicy::Accessory);
-    }
-}
-
-fn activate_popover_open_mode(app: &tauri::AppHandle) {
-    #[cfg(target_os = "macos")]
-    {
-        let _ = app.run_on_main_thread(|| {
-            if let Some(mtm) = MainThreadMarker::new() {
-                let ns_app = NSApplication::sharedApplication(mtm);
-                ns_app.activate();
-                #[allow(deprecated)]
-                ns_app.activateIgnoringOtherApps(true);
-            }
-        });
-    }
-}
-
-fn dismiss_other_menu_bar_popovers() {
-    #[cfg(target_os = "macos")]
-    {
-        // Ask any currently open status-item popovers to close (e.g. other menubar apps)
-        // before opening ours, without switching activation policy to Regular.
-        if let Ok(source) = CGEventSource::new(CGEventSourceStateID::CombinedSessionState) {
-            if let Ok(esc_down) = CGEvent::new_keyboard_event(source.clone(), 53, true) {
-                esc_down.post(CGEventTapLocation::HID);
-            }
-            if let Ok(esc_up) = CGEvent::new_keyboard_event(source, 53, false) {
-                esc_up.post(CGEventTapLocation::HID);
-            }
-        }
-    }
-}
-
-fn nudge_popover_open_mode(app: &tauri::AppHandle) {
-    let app_handle = app.clone();
-    std::thread::spawn(move || {
-        std::thread::sleep(StdDuration::from_millis(24));
-        activate_popover_open_mode(&app_handle);
-    });
-}
-
-fn configure_main_popover_window(window: &tauri::WebviewWindow) {
-    #[cfg(target_os = "macos")]
-    {
-        let _ = window.with_webview(|webview| unsafe {
-            let ns_window: &NSWindow = &*webview.ns_window().cast();
-            ns_window.setHidesOnDeactivate(true);
-        });
-    }
-}
-
-fn set_desktop_mode(app: &tauri::AppHandle) {
-    #[cfg(target_os = "macos")]
-    {
-        let _ = app.set_activation_policy(tauri::ActivationPolicy::Regular);
-        let _ = app.set_dock_visibility(true);
-    }
-}
-
-fn rect_to_physical(rect: Rect) -> (f64, f64, f64, f64) {
-    let (x, y) = match rect.position {
-        Position::Physical(pos) => (pos.x as f64, pos.y as f64),
-        Position::Logical(pos) => (pos.x, pos.y),
-    };
-    let (w, h) = match rect.size {
-        Size::Physical(size) => (size.width as f64, size.height as f64),
-        Size::Logical(size) => (size.width, size.height),
-    };
-    (x, y, w, h)
-}
-
-fn anchor_main_window(window: &tauri::WebviewWindow, tray_rect: Rect) {
-    let (tray_x, tray_y, tray_w, tray_h) = rect_to_physical(tray_rect);
-    let window_size = window.outer_size().ok();
-    let popover_w = window_size.map(|s| s.width as f64).unwrap_or(POPOVER_WIDTH);
-    let popover_h = window_size.map(|s| s.height as f64).unwrap_or(POPOVER_HEIGHT);
-
-    let icon_center_x = tray_x + tray_w / 2.0;
-    let mut x = icon_center_x - popover_w / 2.0;
-    let mut y = tray_y + tray_h + f64::from(POPOVER_OFFSET_Y);
-
-    if let Ok(Some(monitor)) = window.monitor_from_point(icon_center_x, tray_y + tray_h / 2.0) {
-        let work = monitor.work_area();
-        let min_x = work.position.x as f64;
-        let max_x = min_x + work.size.width as f64 - popover_w;
-        if max_x >= min_x {
-            x = x.clamp(min_x, max_x);
-        }
-
-        let min_y = work.position.y as f64;
-        let max_y = min_y + work.size.height as f64 - popover_h;
-        if max_y >= min_y {
-            y = y.clamp(min_y, max_y);
-        }
-    }
-
-    let anchored_x = x.round() as i32;
-    let anchored_y = y.round() as i32;
-    set_locked_main_position(anchored_x, anchored_y);
-    let _ = window.set_position(Position::Physical(PhysicalPosition::new(
-        anchored_x,
-        anchored_y,
-    )));
-}
-
-fn reapply_locked_main_position(window: &tauri::WebviewWindow) {
-    if let Some((x, y)) = get_locked_main_position() {
-        let _ = window.set_position(Position::Physical(PhysicalPosition::new(x, y)));
-    }
-}
-
-fn show_main_window(app: &tauri::AppHandle, tray_rect: Option<Rect>) {
-    if let Some(window) = app.get_webview_window("main") {
-        bump_main_window_hide_seq();
-        set_main_window_alpha(&window, 1.0);
-        dismiss_other_menu_bar_popovers();
-        if let Some(rect) = tray_rect {
-            anchor_main_window(&window, rect);
-        } else {
-            reapply_locked_main_position(&window);
-        }
-        let _ = window.set_focusable(true);
-        let _ = window.emit("popover://open", ());
-        let _ = window.show();
-        let _ = window.unminimize();
-        let _ = window.set_focus();
-        // Activate after the window is visible/focused so other menu bar popovers
-        // get dismissed without switching to Regular activation policy.
-        activate_popover_open_mode(app);
-        nudge_popover_open_mode(app);
-    }
-}
-
-fn hide_main_window(app: &tauri::AppHandle) {
-    if let Some(window) = app.get_webview_window("main") {
-        let seq = bump_main_window_hide_seq();
-        let _ = window.emit("popover://closing", ());
-        let app_handle = app.clone();
-        std::thread::spawn(move || {
-            let step_ms = POPOVER_FADE_STEP_MS.max(1);
-            let steps = (POPOVER_FADE_OUT_MS / step_ms).max(1);
-            let sleep_ms = (POPOVER_FADE_OUT_MS / steps).max(1);
-
-            for step in 1..=steps {
-                if main_window_hide_seq().load(Ordering::SeqCst) != seq {
-                    return;
-                }
-                let progress = step as f64 / steps as f64;
-                if let Some(window) = app_handle.get_webview_window("main") {
-                    set_main_window_alpha(&window, (1.0 - progress).max(0.0));
-                } else {
-                    return;
-                }
-                std::thread::sleep(StdDuration::from_millis(sleep_ms));
-            }
-
-            if main_window_hide_seq().load(Ordering::SeqCst) != seq {
-                return;
-            }
-            if let Some(window) = app_handle.get_webview_window("main") {
-                let _ = window.hide();
-                set_main_window_alpha(&window, 1.0);
-            }
-        });
-    }
-}
-
-fn hide_full_window(app: &tauri::AppHandle) {
-    if let Some(window) = app.get_webview_window("main-full") {
-        let _ = window.hide();
-    }
-}
-
-fn toggle_main_window(app: &tauri::AppHandle, tray_rect: Option<Rect>) {
-    if let Some(window) = app.get_webview_window("main") {
-        if window.is_visible().unwrap_or(false) {
-            hide_main_window(app);
-        } else {
-            show_main_window(app, tray_rect);
-        }
-    }
-}
-
-fn open_full_window_and_emit_repo(
-    app: &tauri::AppHandle,
-    repo_payload: Option<&OpenRepoEventPayload>,
-) -> Result<(), String> {
-    let full = app
-        .get_webview_window("main-full")
-        .ok_or_else(|| "Full app window not found".to_string())?;
-
-    set_desktop_mode(app);
-    hide_main_window(app);
-
-    let _ = full.show();
-    let _ = full.unminimize();
-    let _ = full.set_focus();
-
-    if let Some(payload) = repo_payload {
-        set_pending_open_repo(Some(payload.clone()));
-        let _ = full.emit("gitviz://open-repo", payload);
-    } else {
-        set_pending_open_repo(None);
-    }
-
-    Ok(())
-}
-
-#[tauri::command]
-fn open_full_app_window(app: tauri::AppHandle) -> Result<(), String> {
-    open_full_window_and_emit_repo(&app, None)
-}
-
-#[tauri::command]
-fn take_pending_open_repo() -> Option<OpenRepoEventPayload> {
-    consume_pending_open_repo()
-}
-
-fn create_tray_icon(app: &tauri::AppHandle) -> Result<(), tauri::Error> {
-    let toggle_item = MenuItemBuilder::with_id(TRAY_TOGGLE_ID, "Show / Hide Git Visualizer")
-        .build(app)?;
-    let quit_item = MenuItemBuilder::with_id(TRAY_QUIT_ID, "Quit").build(app)?;
-
-    let menu = MenuBuilder::new(app)
-        .item(&toggle_item)
-        .separator()
-        .item(&quit_item)
-        .build()?;
-
-    let mut tray_builder = TrayIconBuilder::with_id("git-visualizer-tray")
-        .menu(&menu)
-        .show_menu_on_left_click(false)
-        .tooltip("Git Visualizer")
-        .on_menu_event(|app, event| match event.id().as_ref() {
-            TRAY_TOGGLE_ID => toggle_main_window(app, None),
-            TRAY_QUIT_ID => app.exit(0),
-            _ => {}
-        })
-        .on_tray_icon_event(|tray, event| {
-            if let TrayIconEvent::Click {
-                button: MouseButton::Left,
-                button_state: MouseButtonState::Up,
-                rect,
-                ..
-            } = event
-            {
-                toggle_main_window(tray.app_handle(), Some(rect));
-            }
-        });
-
-    if let Some(icon) = app.default_window_icon() {
-        tray_builder = tray_builder.icon(icon.clone());
-    }
-
-    let _ = tray_builder.build(app)?;
-    Ok(())
-}
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
         .plugin(tauri_plugin_global_shortcut::Builder::new().build())
         .setup(|app| {
-            create_tray_icon(app.handle())?;
-            set_menu_bar_mode(app.handle());
-            if let Some(window) = app.get_webview_window("main") {
-                configure_main_popover_window(&window);
-            }
-            hide_main_window(app.handle());
-            hide_full_window(app.handle());
             #[cfg(target_os = "macos")]
             {
+                app.set_activation_policy(tauri::ActivationPolicy::Regular);
                 let shortcut = Shortcut::new(Some(Modifiers::SUPER), Code::KeyG);
                 app.global_shortcut()
                     .on_shortcut(shortcut, move |app_handle, _shortcut, event| {
@@ -3768,58 +3428,18 @@ pub fn run() {
                             return;
                         }
                         let detected_repo = detect_repo_from_frontmost_process();
-                        #[cfg(target_os = "macos")]
-                        {
-                            match detected_repo.as_ref() {
-                                Some(payload) => {
-                                    let source = payload
-                                        .source_app
-                                        .as_deref()
-                                        .unwrap_or("unknown");
-                                    append_shortcut_debug_log(&format!(
-                                        "Cmd+G detected path='{}' source='{}'",
-                                        payload.path, source
-                                    ));
-                                }
-                                None => append_shortcut_debug_log("Cmd+G detected no repository"),
+                        if let Some(window) = app_handle.get_webview_window("main") {
+                            let _ = window.show();
+                            let _ = window.unminimize();
+                            let _ = window.set_focus();
+                            if let Some(payload) = detected_repo.as_ref() {
+                                let _ = window.emit("gitviz://open-repo", payload);
                             }
                         }
-                        let _ = open_full_window_and_emit_repo(app_handle, detected_repo.as_ref());
                     })
                     .map_err(|e| format!("Failed to register Cmd+G: {e}"))?;
             }
             Ok(())
-        })
-        .on_window_event(|window, event| {
-            match window.label() {
-                "main" => match event {
-                    WindowEvent::CloseRequested { api, .. } => {
-                        api.prevent_close();
-                        hide_main_window(&window.app_handle());
-                    }
-                    WindowEvent::Focused(false) => {
-                        hide_main_window(&window.app_handle());
-                    }
-                    WindowEvent::Moved(position) => {
-                        if let Some((x, y)) = get_locked_main_position() {
-                            if position.x != x || position.y != y {
-                                let _ = window.set_position(Position::Physical(
-                                    PhysicalPosition::new(x, y),
-                                ));
-                            }
-                        }
-                    }
-                    _ => {}
-                },
-                "main-full" => {
-                    if let WindowEvent::CloseRequested { api, .. } = event {
-                        api.prevent_close();
-                        let _ = window.hide();
-                        set_menu_bar_mode(&window.app_handle());
-                    }
-                }
-                _ => {}
-            }
         })
         .invoke_handler(tauri::generate_handler![
             get_branches,
@@ -3854,10 +3474,25 @@ pub fn run() {
             get_changed_routes,
             get_changed_routes_for_commit,
             debug_diff_files,
-            open_full_app_window,
             take_pending_open_repo,
             watch_repo,
         ])
         .run(tauri::generate_context!())
         .expect("error running tauri application");
 }
+
+static PENDING_OPEN_REPO: OnceLock<Mutex<Option<OpenRepoEventPayload>>> = OnceLock::new();
+
+fn pending_open_repo() -> &'static Mutex<Option<OpenRepoEventPayload>> {
+    PENDING_OPEN_REPO.get_or_init(|| Mutex::new(None))
+}
+
+fn consume_pending_open_repo() -> Option<OpenRepoEventPayload> {
+    pending_open_repo().lock().ok()?.take()
+}
+
+#[tauri::command]
+fn take_pending_open_repo() -> Option<OpenRepoEventPayload> {
+    consume_pending_open_repo()
+}
+

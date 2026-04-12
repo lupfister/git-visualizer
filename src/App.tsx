@@ -2,7 +2,7 @@ import { useState, useEffect, useLayoutEffect, useRef, useMemo } from 'react';
 import { invoke } from '@tauri-apps/api/core';
 import { listen } from '@tauri-apps/api/event';
 import { getCurrentWindow } from '@tauri-apps/api/window';
-import { ArrowLeft, Maximize2 } from 'lucide-react';
+import { ArrowLeft } from 'lucide-react';
 import BranchMapView from '../components/BranchMapView';
 import FolderPickerModal from './FolderPickerModal';
 import type { Branch, BranchCommitPreview, BranchPromptMeta, BranchPromptMarker, CheckedOutRef, Commit, DirectCommit, GitHubAuthStatus, GitHubInfo, MergeNode, OpenPR } from '../types';
@@ -54,7 +54,6 @@ function App() {
   const [branchCommitPreviews, setBranchCommitPreviews] = useState<Record<string, BranchCommitPreview[]>>({});
   const [branchUniqueAheadCounts, setBranchUniqueAheadCounts] = useState<Record<string, number>>({});
 
-  const [isPopoverWindow, setIsPopoverWindow] = useState(false);
   const mapHeaderRef = useRef<HTMLElement | null>(null);
   const [mapHeaderInsetPx, setMapHeaderInsetPx] = useState(0);
 
@@ -77,28 +76,7 @@ function App() {
     return () => ro.disconnect();
   }, [view]);
 
-  useEffect(() => {
-    try {
-      setIsPopoverWindow(getCurrentWindow().label === 'main');
-    } catch {
-      setIsPopoverWindow(false);
-    }
-  }, []);
 
-  useEffect(() => {
-    if (isPopoverWindow) {
-      document.body.classList.add('popover-window');
-      document.documentElement.classList.add('popover-window');
-    } else {
-      document.body.classList.remove('popover-window');
-      document.documentElement.classList.remove('popover-window');
-    }
-
-    return () => {
-      document.body.classList.remove('popover-window');
-      document.documentElement.classList.remove('popover-window');
-    };
-  }, [isPopoverWindow]);
 
   async function fetchAllMergeNodes(path: string, branch: string): Promise<MergeNode[]> {
     const perPage = 100;
@@ -927,13 +905,7 @@ function App() {
     setView('landing');
   }
 
-  async function handleOpenFullApp() {
-    try {
-      await invoke('open_full_app_window');
-    } catch (e) {
-      console.error('Failed to open full app window:', e);
-    }
-  }
+
 
   // If there are working tree modifications, natively construct a fake node that the core layout engine parses directly!
   const {
@@ -1092,21 +1064,11 @@ function App() {
   }, [branches, branchCommitPreviews, branchUniqueAheadCounts, checkedOutRef, defaultBranch, directCommits]);
 
   return (
-    <div className={`h-screen min-h-0 text-foreground flex flex-col relative ${isPopoverWindow ? 'bg-transparent' : 'bg-background'}`}>
-      <div className={`h-full min-h-0 flex flex-col relative ${isPopoverWindow ? 'overflow-hidden popover-continuous-60 bg-background' : ''}`}>
-      {isPopoverWindow && (
-        <button
-          onClick={handleOpenFullApp}
-          aria-label="Open full app"
-          title="Open full app"
-          className="absolute z-[80] top-3 right-3 rounded-lg border border-border bg-card text-foreground hover:bg-accent transition-colors p-2"
-        >
-          <Maximize2 className="h-3.5 w-3.5 shrink-0" />
-        </button>
-      )}
+    <div className="h-screen min-h-0 text-foreground flex flex-col relative bg-background">
+      <div className="h-full min-h-0 flex flex-col relative">
       {view === 'landing' && (
         <div>
-          <RepoSelector onSelect={loadRepo} loading={loading} error={error} isPopoverWindow={isPopoverWindow} />
+          <RepoSelector onSelect={loadRepo} loading={loading} error={error} />
         </div>
       )}
 
@@ -1132,7 +1094,7 @@ function App() {
               focusedErrorBranch={focusedErrorBranch}
               checkedOutRef={checkedOutRef}
               onHoveredBranchChange={setHoveredBranchName}
-              isPopoverWindow={isPopoverWindow}
+
               mapTopInsetPx={mapHeaderInsetPx}
               onMergeRefsIntoBranch={handleMergeRefsIntoBranch}
               mergeInProgress={mergeInProgress}
@@ -1141,10 +1103,7 @@ function App() {
 
           <header
             ref={mapHeaderRef}
-            className={cn(
-              'absolute left-0 right-0 z-40',
-              isPopoverWindow ? 'px-3 pt-3' : 'px-4 py-3 md:px-8 md:py-5'
-            )}
+            className="absolute left-0 right-0 z-40 px-4 py-3 md:px-8 md:py-5"
           >
             <div className="grid grid-cols-[1fr_auto_1fr] items-center gap-3">
               <button
@@ -1244,11 +1203,7 @@ function App() {
                     <button
                       key={b.name}
                       onClick={() => handleFocusOnMap(b)}
-                      className={`w-full flex items-start gap-2 py-3 border-b border-border/30 last:border-0 hover:bg-accent transition-colors text-left ${
-                        isFocused
-                          ? 'bg-amber-50/60 dark:bg-amber-900/10 px-4'
-                          : 'px-4'
-                      }`}
+                      className="w-full group flex items-center justify-between px-4 py-2.5 rounded-xl border border-transparent hover:border-border hover:bg-card transition-all text-left"
                     >
                       <div className="flex-1 min-w-0">
                         <p className={`text-sm font-medium truncate ${
@@ -1299,12 +1254,10 @@ function RepoSelector({
   onSelect,
   loading,
   error,
-  isPopoverWindow = false,
 }: {
   onSelect: (path: string) => void;
   loading: boolean;
   error: string | null;
-  isPopoverWindow?: boolean;
 }) {
   const RECENT_REPOS_STORAGE_KEY = 'git-visualizer:recent-repositories';
   const MAX_RECENT_REPOS = 10;
@@ -1403,38 +1356,23 @@ function RepoSelector({
   }
 
   return (
-    <main className={cn(
-      'flex h-full flex-col',
-      isPopoverWindow ? 'overflow-y-auto px-3 pt-12 pb-3 bg-background' : 'overflow-hidden md:flex-row'
-    )}>
-      {!isPopoverWindow && (
-        <div className="h-28 md:h-auto md:w-[26%] relative flex-shrink-0 bg-muted overflow-hidden">
-          <InteractiveDotField />
-        </div>
-      )}
+    <main className="h-full flex flex-col overflow-hidden md:flex-row">
+      <div className="h-28 md:h-auto md:w-[26%] relative flex-shrink-0 bg-muted overflow-hidden">
+        <InteractiveDotField />
+      </div>
 
-      <div className={cn(
-        'flex-1 flex flex-col min-h-0',
-        isPopoverWindow ? 'justify-start' : 'justify-center px-6 py-8 md:px-16 bg-background'
-      )}>
-        {!isPopoverWindow && (
-          <>
-            <p className="font-light text-foreground max-w-md text-3xl md:text-5xl leading-none" style={{ fontFamily: 'var(--font-space-grotesk)' }}>Git visualizer</p>
-            <h1 className="font-bold text-foreground mb-8 md:mb-14 max-w-md text-3xl md:text-5xl leading-tight" style={{ fontFamily: 'var(--font-space-grotesk)' }}>
-              See what your team is building, without reading a line of code.
-            </h1>
+      <div className="flex-1 flex flex-col items-center justify-center px-6 py-8 md:px-16 bg-background">
+        <p className="font-light text-foreground max-w-md text-3xl md:text-5xl leading-none" style={{ fontFamily: 'var(--font-space-grotesk)' }}>Git visualizer</p>
+        <h1 className="font-bold text-foreground mb-8 md:mb-14 max-w-md text-3xl md:text-5xl leading-tight" style={{ fontFamily: 'var(--font-space-grotesk)' }}>
+          See what your team is building, without reading a line of code.
+        </h1>
 
-            <p className="text-sm text-muted-foreground mb-4">Get started</p>
-          </>
-        )}
+        <p className="text-sm text-muted-foreground mb-4">Get started</p>
 
-        <div className={cn('flex flex-col w-full', isPopoverWindow ? 'gap-2' : 'gap-3 max-w-xs')}>
+        <div className="flex flex-col w-full gap-3 max-w-xs">
           <button
             onClick={() => setShowPicker(true)}
-            className={cn(
-              'border border-border bg-card text-foreground hover:bg-accent transition-colors text-center',
-              isPopoverWindow ? 'px-3 py-2 text-xs rounded-lg' : 'px-6 py-3 text-sm rounded-2xl'
-            )}
+            className="w-full flex items-center justify-center gap-2 px-6 py-3 bg-primary text-primary-foreground text-sm font-medium rounded-2xl hover:opacity-90 transition-opacity"
           >
             Browse for repository
           </button>
@@ -1442,10 +1380,7 @@ function RepoSelector({
           {!showInput ? (
             <button
               onClick={() => setShowInput(true)}
-              className={cn(
-                'border border-border bg-card text-foreground hover:bg-accent transition-colors text-center',
-                isPopoverWindow ? 'px-3 py-2 text-xs rounded-lg' : 'px-6 py-3 text-sm rounded-2xl'
-              )}
+              className="w-full flex items-center justify-center gap-2 px-6 py-3 border border-border bg-card text-foreground text-sm font-medium rounded-2xl hover:bg-accent transition-colors disabled:opacity-50"
             >
               Enter repo path
             </button>
@@ -1453,10 +1388,10 @@ function RepoSelector({
             <div className="flex flex-col gap-2">
               <form
                 onSubmit={handleSubmit}
-                className={cn('flex items-center border border-border bg-card', isPopoverWindow ? 'rounded-lg' : 'rounded-2xl')}
+                className="flex items-center border border-border bg-card rounded-2xl"
               >
                 {/* Input with left-edge gradient fade for overflow text */}
-                <div className={cn('relative flex-1 min-w-0 overflow-hidden', isPopoverWindow ? 'rounded-l-lg' : 'rounded-l-2xl')}>
+                <div className="relative flex-1 min-w-0 overflow-hidden rounded-l-2xl">
                   <input
                     autoFocus
                     type="text"
@@ -1466,10 +1401,7 @@ function RepoSelector({
                       if (inputError) setInputError(null);
                     }}
                     placeholder="Enter local path"
-                    className={cn(
-                      'w-full bg-transparent text-foreground placeholder:text-muted-foreground outline-none',
-                      isPopoverWindow ? 'pl-3 pr-2 py-2 text-xs' : 'pl-5 pr-2 py-3.5 text-sm'
-                    )}
+                    className="w-full bg-transparent pl-5 pr-2 py-3.5 text-sm focus:outline-none placeholder:text-muted-foreground tabular-nums min-w-0"
                   />
                   <div
                     className="absolute left-0 inset-y-0 w-10 pointer-events-none"
@@ -1479,10 +1411,7 @@ function RepoSelector({
                 <button
                   type="submit"
                   disabled={!path || loading}
-                  className={cn(
-                    'bg-foreground text-background flex items-center justify-center shrink-0 hover:opacity-80 transition-opacity disabled:opacity-30',
-                    isPopoverWindow ? 'm-1 w-8 h-8 rounded-lg' : 'm-1.5 w-10 h-10 rounded-[14px]'
-                  )}
+                  className="m-1.5 w-10 h-10 flex items-center justify-center bg-primary text-primary-foreground rounded-[14px] hover:opacity-90 transition-opacity shrink-0"
                 >
                   <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                     <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2.5} d="M9 5l7 7-7 7" />
@@ -1496,25 +1425,17 @@ function RepoSelector({
         </div>
 
         {recentRepos.length > 0 && (
-          <div className={cn('w-full', isPopoverWindow ? 'mt-3' : 'max-w-xs mt-4')}>
+          <div className="w-full max-w-xs mt-4">
             <p className="text-[10px] uppercase tracking-wide text-muted-foreground font-medium mb-2">Recently opened</p>
-            <div
-              className={cn(
-                'flex flex-col',
-                isPopoverWindow ? 'gap-1.5' : 'gap-2 max-h-72 overflow-y-auto pr-1'
-              )}
-            >
+            <div className="flex flex-col gap-2 max-h-72 overflow-y-auto pr-1">
               {recentRepos.map((repo) => (
                 <button
                   key={repo.path}
                   onClick={() => openRepo(repo.path)}
                   disabled={loading}
-                  className={cn(
-                    'w-full rounded-xl border border-border bg-card text-left hover:bg-muted transition-colors disabled:opacity-60 disabled:cursor-not-allowed',
-                    isPopoverWindow ? 'px-3 py-2' : 'px-4 py-2.5'
-                  )}
+                  className="w-full rounded-xl border border-border bg-card text-left px-4 py-2.5 hover:bg-muted transition-colors disabled:opacity-60 disabled:cursor-not-allowed"
                 >
-                  <p className={cn('text-foreground truncate', isPopoverWindow ? 'text-xs' : 'text-sm')}>{repo.name}</p>
+                  <p className="text-foreground truncate text-sm">{repo.name}</p>
                   <p className="text-xs text-muted-foreground truncate">{repo.path}</p>
                 </button>
               ))}
@@ -1527,7 +1448,6 @@ function RepoSelector({
         <FolderPickerModal
           onSelect={handlePickerSelect}
           onClose={() => setShowPicker(false)}
-          isPopoverWindow={isPopoverWindow}
         />
       )}
     </main>

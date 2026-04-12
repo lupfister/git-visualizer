@@ -11,13 +11,12 @@ interface DirEntry {
 interface FolderPickerModalProps {
   onSelect: (path: string) => void;
   onClose: () => void;
-  isPopoverWindow?: boolean;
+
 }
 
 export default function FolderPickerModal({
   onSelect,
   onClose,
-  isPopoverWindow = false,
 }: FolderPickerModalProps) {
   const [query, setQuery] = useState('');
   const [currentDir, setCurrentDir] = useState('');
@@ -205,18 +204,12 @@ export default function FolderPickerModal({
 
   return (
     <div
-      className={`fixed inset-0 bg-black/60 flex items-start justify-center z-50 ${
-        isPopoverWindow ? 'px-3 pt-[58px] pb-3' : 'pt-[12vh]'
-      }`}
+      className="fixed inset-0 bg-black/60 flex items-start justify-center z-50 pt-[12vh]"
       onClick={handleBackdropClick}
       onKeyDown={(e) => e.key === 'Escape' && onClose()}
     >
       <div
-        className={`bg-card rounded-xl shadow-lg flex flex-col overflow-hidden border border-border ${
-          isPopoverWindow
-            ? 'w-full max-w-[520px] max-h-[78vh]'
-            : 'w-[520px] max-w-[90vw] max-h-[65vh]'
-        }`}
+        className="bg-card rounded-xl shadow-lg flex flex-col overflow-hidden border border-border w-[520px] max-w-[90vw] max-h-[65vh]"
       >
         {/* Header with breadcrumbs */}
         <div className="flex items-center gap-2 px-4 py-2.5 border-b border-border">
