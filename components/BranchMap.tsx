@@ -16,8 +16,7 @@ const NODE_SIZE = 24;
 const CORNER_R = 20;
 const BRANCH_HIT_STROKE_WIDTH = 48;
 const BRANCH_HIT_END_INSET = 10;
-const AHEAD_LABEL_OFFSET_X = 10;
-const MAIN_LABEL_OFFSET_X = 10;
+
 const ZOOM_DEFAULT = 2;
 const ZOOM_MIN = 2;
 const ZOOM_MAX = 30;
@@ -33,10 +32,7 @@ const MATCH_SVG_ASPECT_TO_VIEWPORT = true;
 const SVG_LAYOUT_TAIL_X = 0;
 const SVG_LAYOUT_TAIL_Y = 0;
 /** Margins around the graph when clipping / finite pan bounds (SVG user units). */
-const CLIP_MARGIN_LEFT = 0;
-const CLIP_MARGIN_RIGHT = 0;
-const CLIP_MARGIN_TOP = 0;
-const CLIP_MARGIN_BOTTOM = 0;
+
 /** Grid: horizontal pad around lane + label extent (SVG user units). */
 const GRID_VIEW_PAD_X = 0;
 /**
@@ -690,7 +686,7 @@ export default function BranchMap({
   const [expandedClumps, setExpandedClumps] = useState<Map<string, ExpandedClumpState>>(() => new Map());
   const [zoom, setZoom] = useState(ZOOM_DEFAULT);
   const [orientation, setOrientation] = useState<OrientationMode>('vertical');
-  const [showRowDebugOverlay, setShowRowDebugOverlay] = useState(false);
+
   const [showLineageDebug, setShowLineageDebug] = useState(false);
   const [selectedBranchNames, setSelectedBranchNames] = useState<string[]>([]);
   const [selectedCommitShas, setSelectedCommitShas] = useState<string[]>([]);
@@ -977,6 +973,13 @@ export default function BranchMap({
   }
 
   function scheduleTimelineReveal(delayMs = INITIAL_CENTER_SETTLE_MS) {
+    if (!ENABLE_TIMELINE_INTRO_ANIMATIONS) {
+      clearTimelineRevealTimer();
+      setTimelineRevealPhase('done');
+      setTimelineRevealReady(true);
+      setHasInitialRevealDone(true);
+      return;
+    }
     clearTimelineRevealTimer();
     setTimelineRevealReady(false);
     setTimelineRevealPhase('hidden');
@@ -2252,7 +2255,7 @@ export default function BranchMap({
   const gridRowByBranchSha = new Map<string, number>();
   const gridRowByBranchSlot = new Map<string, number>();
   let claimedGridRowTimes: number[] = [];
-  let claimedGridRowSources = new Map<number, string[]>();
+
   function branchShaRowKey(branchName: string, sha: string): string {
     return `${branchName}::${sha}`;
   }
@@ -2666,17 +2669,9 @@ export default function BranchMap({
     // This prevents "phantom" timeline rows reserved by transient/internal clumps
     // from creating blank bands in the rendered map.
     const usedRows = new Set<number>();
-    const usedRowSources = new Map<number, Set<string>>();
-    const includeRow = (row: number | undefined | null, source?: string) => {
+    const includeRow = (row: number | undefined | null) => {
       if (row == null || !Number.isFinite(row)) return;
       usedRows.add(row);
-      if (!source) return;
-      let sources = usedRowSources.get(row);
-      if (!sources) {
-        sources = new Set<string>();
-        usedRowSources.set(row, sources);
-      }
-      sources.add(source);
     };
 
     // Keep only rows that back currently visible clump markers.
@@ -2711,21 +2706,17 @@ export default function BranchMap({
         for (let memberIndex = 0; memberIndex < memberCount; memberIndex += 1) {
           const memberRow = rowForClumpMember(clump, memberIndex);
           if (memberRow == null || !Number.isFinite(memberRow)) continue;
-          includeRow(memberRow, `${clump.key}#${memberIndex}`);
+          includeRow(memberRow);
           includedAnyMember = true;
         }
-        if (!includedAnyMember) includeRow(clump.rowIndex, clump.key);
+        if (!includedAnyMember) includeRow(clump.rowIndex);
         return;
       }
-      includeRow(clump.rowIndex, clump.key);
+      includeRow(clump.rowIndex);
     });
 
     if (usedRows.size === 0) {
       claimedGridRowTimes = rowTimes;
-      claimedGridRowSources = new Map<number, string[]>();
-      rowTimes.forEach((_, row) => {
-        claimedGridRowSources.set(row, Array.from(usedRowSources.get(row) ?? []));
-      });
     } else {
       const denseRows = Array.from(usedRows).sort((a, b) => a - b);
       const denseRowByOld = new Map<number, number>();
@@ -2747,17 +2738,13 @@ export default function BranchMap({
       remapRows(gridRowByBranchSha);
       remapRows(gridRowByBranchSlot);
       claimedGridRowTimes = denseRows.map((row) => rowTimes[row] ?? 0);
-      claimedGridRowSources = new Map<number, string[]>();
-      denseRows.forEach((row, denseIndex) => {
-        claimedGridRowSources.set(denseIndex, Array.from(usedRowSources.get(row) ?? []));
-      });
     }
   }
 
   const gridRowTimes = (() => {
     return claimedGridRowTimes;
   })();
-  const gridRowSources = claimedGridRowSources;
+
   const gridEventPoints = gridRowTimes.map((time, index) => ({ t: time, x: leftPad + index * GRID_EVENT_GAP }));
 
 
@@ -3083,8 +3070,8 @@ export default function BranchMap({
     return Number.isFinite(t) ? t : Number.POSITIVE_INFINITY;
   }
 
-  function branchForkMs(branch: Branch): number {
-    const t = new Date(branch.divergedFromDate ?? branch.createdDate ?? branch.lastCommitDate).getTime();
+  function branchForkMs(b: Branch): number {
+    const t = new Date(b.divergedFromDate ?? b.createdDate ?? b.lastCommitDate).getTime();
     return Number.isFinite(t) ? t : Number.POSITIVE_INFINITY;
   }
 
@@ -3359,17 +3346,6 @@ export default function BranchMap({
     return isHorizontal ? { x: y, y: logicalTimelineHeight - x } : { x, y };
   }
 
-  function rowIndexForProjectedPoint(x: number, y: number): number | undefined {
-    if (gridEventPoints.length === 0) return undefined;
-    const logical = unprojectPoint(x, y);
-    const timeCoordX = timelineMinX + (mainStartY - logical.y);
-    if (!Number.isFinite(timeCoordX)) return undefined;
-    const rawRow = Math.round((timeCoordX - leftPad) / GRID_EVENT_GAP);
-    if (!Number.isFinite(rawRow)) return undefined;
-    if (rawRow < 0 || rawRow >= gridEventPoints.length) return undefined;
-    return rawRow;
-  }
-
   // ── Branch columns self-create on first use ────────────────────────────────
   // Each branch claims its own column lazily, biased to parent+1 when parent
   // is visible. Columns are reused only when branch time-ranges are separated.
@@ -3572,10 +3548,7 @@ export default function BranchMap({
     }
   }
 
-  const maxBranchVisualEndX = activeBranches.reduce((max, b) => {
-    const lanePosX = laneXByBranch.get(b.name) ?? mainX;
-    return Math.max(max, lanePosX + AHEAD_LABEL_OFFSET_X);
-  }, mainX + MAIN_LABEL_OFFSET_X + estimateSvgTextWidth(defaultBranch));
+
 
   // Lane geometry (used for grid width — see below).
   const laneXsForBounds = [mainX, ...Array.from(laneXByBranch.values())];
@@ -3632,7 +3605,7 @@ export default function BranchMap({
   };
 
   // Center finite graph content inside the SVG viewBox so empty padding is even on all sides.
-  const yPadSymmetric = Math.min(CLIP_MARGIN_TOP, CLIP_MARGIN_BOTTOM);
+  const yPadSymmetric = 0;
 
   let minXWorldForBounds: number;
   let maxXWorldForBounds: number;
@@ -5246,201 +5219,6 @@ export default function BranchMap({
   const targetBranchForSelectedCommit = selectedCommitTargetOption?.targetBranch ?? null;
   const commitMergeSources = selectedCommitTargetOption?.sourceRefs ?? [];
 
-  type RowDebugUsage = {
-    mainDirect: number;
-    mainMerge: number;
-    branchSha: number;
-    branchSlot: number;
-  };
-  type RowDebugVisibleUsage = {
-    main: number;
-    branch: number;
-    prompt: number;
-    markerKeys: Set<string>;
-  };
-  const rowDebugEntityUsageByIndex = (() => {
-    const usageByRow = new Map<number, RowDebugUsage>();
-    const ensureRow = (row: number): RowDebugUsage => {
-      let usage = usageByRow.get(row);
-      if (!usage) {
-        usage = { mainDirect: 0, mainMerge: 0, branchSha: 0, branchSlot: 0 };
-        usageByRow.set(row, usage);
-      }
-      return usage;
-    };
-    const addUsage = (row: number | undefined | null, key: keyof RowDebugUsage) => {
-      if (row == null || !Number.isFinite(row)) return;
-      ensureRow(row)[key] += 1;
-    };
-
-    sortedDirectCommits.forEach((commit) => {
-      addUsage(gridRowBySha.get(commit.fullSha), 'mainDirect');
-    });
-    if (reserveMergeRows) {
-      sortedNodes.forEach((node) => {
-        if (directCommitShaSet.has(node.fullSha)) return;
-        addUsage(gridRowBySha.get(node.fullSha), 'mainMerge');
-      });
-    }
-
-    activeBranches.forEach((branch) => {
-      const previews = renderableBranchPreviews(branch);
-      if (previews.length > 0) {
-        previews.forEach((preview, index) => {
-          const slotRow = gridRowByBranchSlot.get(branchSlotRowKey(branch.name, index));
-          if (slotRow != null) {
-            addUsage(slotRow, 'branchSlot');
-            return;
-          }
-          addUsage(gridRowByBranchSha.get(branchShaRowKey(branch.name, preview.fullSha)), 'branchSha');
-        });
-        return;
-      }
-
-      const fallbackCount = Math.max(0, branchAheadCount(branch));
-      for (let slot = 0; slot < fallbackCount; slot += 1) {
-        addUsage(gridRowByBranchSlot.get(branchSlotRowKey(branch.name, slot)), 'branchSlot');
-      }
-    });
-
-    return usageByRow;
-  })();
-  const rowDebugVisibleUsageByIndex = (() => {
-    const usageByRow = new Map<number, RowDebugVisibleUsage>();
-    const ensureRow = (row: number): RowDebugVisibleUsage => {
-      let usage = usageByRow.get(row);
-      if (!usage) {
-        usage = { main: 0, branch: 0, prompt: 0, markerKeys: new Set<string>() };
-        usageByRow.set(row, usage);
-      }
-      return usage;
-    };
-    const addVisible = (
-      row: number | undefined | null,
-      key: 'main' | 'branch' | 'prompt',
-      markerKey: string
-    ) => {
-      if (row == null || !Number.isFinite(row)) return;
-      const usage = ensureRow(row);
-      if (usage.markerKeys.has(markerKey)) return;
-      usage.markerKeys.add(markerKey);
-      usage[key] += 1;
-    };
-    const addVisibleAtProjected = (
-      x: number | undefined | null,
-      y: number | undefined | null,
-      key: 'main' | 'branch' | 'prompt',
-      markerKey: string
-    ) => {
-      if (x == null || y == null || !Number.isFinite(x) || !Number.isFinite(y)) return;
-      addVisible(rowIndexForProjectedPoint(x, y), key, markerKey);
-    };
-
-    // Main commit clumps.
-    mainDirectClusters.forEach((clusterLayout) => {
-      const { cluster, clusterKey, memberKeys, count, preferredAnchorX, preferredAnchorY } = clusterLayout;
-      const motion = resolveClusterMotion(
-        clusterKey,
-        { x: preferredAnchorX, y: preferredAnchorY },
-        memberKeys,
-        count > 1,
-      );
-      const isExpanded = motion.isExpanded && motion.phase !== 'collapsed' && count > 1;
-      if (isExpanded) {
-        cluster.entries.forEach((entry, entryIndex) => {
-          const memberPose = interpolateExpandedEntryPose(
-            { x: motion.anchorX, y: motion.anchorY },
-            { x: entry.x, y: entry.y },
-            motion.phase,
-            motion.phaseEased,
-          );
-          addVisibleAtProjected(
-            memberPose.x,
-            memberPose.y,
-            'main',
-            `main:${entry.item.fullSha}:${entryIndex}`
-          );
-        });
-      } else {
-        addVisibleAtProjected(motion.anchorX, motion.anchorY, 'main', clusterKey);
-      }
-    });
-
-    // Main prompt clumps.
-    {
-      const mainPromptMarkers = [...(branchPromptMeta[defaultBranch]?.markers ?? [])]
-        .sort((a, b) => new Date(a.timestamp).getTime() - new Date(b.timestamp).getTime());
-      const promptEntries: MarkerEntry<{ marker: typeof mainPromptMarkers[number]; index: number }>[] =
-        mainPromptMarkers.map((marker, markerIndex) => {
-          const markerPoint = projectPoint(
-            mainX,
-            timeCoordToY(timeToX(marker.timestamp))
-          );
-          return {
-            x: markerPoint.x,
-            y: markerPoint.y,
-            item: { marker, index: markerIndex },
-          };
-        });
-      const clusters = clusterByForkPoints(promptEntries, new Set<number>());
-      clusters.forEach((cluster) => {
-        const firstEntry = cluster.entries[0];
-        const lastEntry = cluster.entries[cluster.entries.length - 1];
-        const clusterKey = `main-prompt-clump-${defaultBranch}-${firstEntry.item.index}-${lastEntry.item.index}`;
-        addVisibleAtProjected(cluster.x, cluster.y, 'prompt', clusterKey);
-      });
-    }
-
-    // Branch commit and prompt clumps.
-    activeBranches.forEach((branch) => {
-      const { commitDotClusters, promptMarkerClusters, branchEndDotIndex } = getBranchRenderLayout(branch);
-
-      commitDotClusters.forEach((cluster) => {
-        const vm = buildBranchClusterViewModel(branch.name, cluster, branchEndDotIndex);
-        const expanded = vm.canExpandCluster ? expandedClumps.get(vm.clusterKey) : undefined;
-        const isExpanded = vm.canExpandCluster ? (expanded?.isExpanded ?? false) : false;
-
-        if (vm.count <= 1 || !isExpanded) {
-          const preferredAnchorEntry = vm.preferredAnchorEntry;
-          addVisibleAtProjected(
-            preferredAnchorEntry.x,
-            preferredAnchorEntry.y,
-            'branch',
-            vm.clusterKey
-          );
-          return;
-        }
-
-        vm.realCommitEntries.forEach((entry) => {
-          addVisibleAtProjected(
-            entry.x,
-            entry.y,
-            'branch',
-            entry.item.commit?.fullSha
-              ? `branch:${branch.name}:${entry.item.commit.fullSha}`
-              : `branch:${branch.name}:slot-${entry.item.index}`
-          );
-        });
-      });
-
-      promptMarkerClusters.forEach((cluster) => {
-        const firstEntry = cluster.entries[0];
-        const lastEntry = cluster.entries[cluster.entries.length - 1];
-        const clusterKey = `prompt-clump-${branch.name}-${firstEntry.item.index}-${lastEntry.item.index}`;
-        addVisibleAtProjected(cluster.x, cluster.y, 'prompt', clusterKey);
-      });
-    });
-
-    return usageByRow;
-  })();
-
-  const gridClipBounds = {
-    leftX: minXWorldForBounds,
-    rightX: maxXWorldForBounds,
-    topY: minYWorldForBounds,
-    bottomY: maxYWorldForBounds,
-  };
-
   return (
     <div className="relative h-full">
       <div
@@ -5509,146 +5287,7 @@ export default function BranchMap({
                 >
 
                   {/* ── Grid background (table-like lanes) ── */}
-                  {showRowDebugOverlay && (
-                    <g style={{ pointerEvents: 'none' }}>
-                      {(() => {
-                        const rawRowInfos = gridEventPoints
-                          .map((point, index) => {
-                            const entityUsage = rowDebugEntityUsageByIndex.get(index) ?? {
-                              mainDirect: 0,
-                              mainMerge: 0,
-                              branchSha: 0,
-                              branchSlot: 0,
-                            };
-                            const visibleUsage = rowDebugVisibleUsageByIndex.get(index) ?? {
-                              main: 0,
-                              branch: 0,
-                              prompt: 0,
-                              markerKeys: new Set<string>(),
-                            };
-                            const entityTotal =
-                              entityUsage.mainDirect + entityUsage.mainMerge + entityUsage.branchSha + entityUsage.branchSlot;
-                            const visibleTotal = visibleUsage.main + visibleUsage.branch + visibleUsage.prompt;
-                            const rowSources = gridRowSources.get(index) ?? [];
-                            return {
-                              index,
-                              rawTime: point.t,
-                              centerY: timeCoordToY(point.x),
-                              entityUsage,
-                              visibleUsage,
-                              entityTotal,
-                              visibleTotal,
-                              rowSources,
-                            };
-                          })
-                          .filter((info) => Number.isFinite(info.centerY));
-                        const rowBandsByIndex = new Map<number, { topY: number; bottomY: number }>();
-                        if (rawRowInfos.length > 0) {
-                          for (let i = 0; i < rawRowInfos.length; i += 1) {
-                            const info = rawRowInfos[i];
-                            const prevCenter = rawRowInfos[i - 1]?.centerY;
-                            const nextCenter = rawRowInfos[i + 1]?.centerY;
-                            const defaultHalf =
-                              nextCenter != null
-                                ? Math.abs(info.centerY - nextCenter) / 2
-                                : prevCenter != null
-                                  ? Math.abs(prevCenter - info.centerY) / 2
-                                  : GRID_EVENT_GAP / 2;
-                            const boundA = prevCenter != null ? (prevCenter + info.centerY) / 2 : info.centerY + defaultHalf;
-                            const boundB = nextCenter != null ? (info.centerY + nextCenter) / 2 : info.centerY - defaultHalf;
-                            rowBandsByIndex.set(info.index, {
-                              topY: Math.min(boundA, boundB),
-                              bottomY: Math.max(boundA, boundB),
-                            });
-                          }
-                        }
-                        const leftX = gridClipBounds?.leftX ?? Math.max(0, timelineMinX - CLIP_MARGIN_LEFT);
-                        const rightX = gridClipBounds?.rightX ?? Math.min(logicalSvgWidth, maxBranchVisualEndX + CLIP_MARGIN_RIGHT);
-                        const topY = gridClipBounds?.topY ?? Math.max(0, mainEndY - CLIP_MARGIN_TOP);
-                        const emptyRows = rawRowInfos.filter((info) => info.visibleTotal === 0);
-                        const sharedRows = rawRowInfos.filter((info) => info.visibleTotal > 1);
-                        const usedRowCount = rawRowInfos.length - emptyRows.length;
-                        const summaryAnchor = projectPoint(leftX + 6, topY + 16);
 
-                        return (
-                          <>
-                            {showRowDebugOverlay && (
-                              <g>
-                                {emptyRows.map((info) => {
-                                  const band = rowBandsByIndex.get(info.index);
-                                  if (!band) return null;
-                                  const topYLine = band.topY;
-                                  const bottomYLine = band.bottomY;
-                                  const labelPoint = projectPoint(leftX + 6, info.centerY - 2);
-                                  return (
-                                    <g key={`debug-empty-row-${info.index}`}>
-                                      <path
-                                        d={`M ${pathCoord(leftX, topYLine)} L ${pathCoord(rightX, topYLine)} L ${pathCoord(rightX, bottomYLine)} L ${pathCoord(leftX, bottomYLine)} Z`}
-                                        fill="#ef4444"
-                                        fillOpacity={0.12}
-                                        stroke="#dc2626"
-                                        strokeOpacity={0.65}
-                                        strokeWidth={0.8}
-                                      />
-                                      <text
-                                        x={labelPoint.x}
-                                        y={labelPoint.y}
-                                        fill="#991b1b"
-                                        fontSize={10}
-                                        fontWeight={600}
-                                        pointerEvents="none"
-                                      >
-                                        {`empty row ${info.index}${info.rowSources.length > 0 ? ` · ${info.rowSources.slice(0, 2).join(', ')}` : ''}`}
-                                      </text>
-                                    </g>
-                                  );
-                                })}
-                                {sharedRows.map((info) => {
-                                  const band = rowBandsByIndex.get(info.index);
-                                  if (!band) return null;
-                                  const topYLine = band.topY;
-                                  const bottomYLine = band.bottomY;
-                                  const labelPoint = projectPoint(leftX + 120, info.centerY - 2);
-                                  return (
-                                    <g key={`debug-shared-row-${info.index}`}>
-                                      <path
-                                        d={`M ${pathCoord(leftX, topYLine)} L ${pathCoord(rightX, topYLine)} L ${pathCoord(rightX, bottomYLine)} L ${pathCoord(leftX, bottomYLine)} Z`}
-                                        fill="#f59e0b"
-                                        fillOpacity={0.1}
-                                        stroke="#b45309"
-                                        strokeOpacity={0.5}
-                                        strokeWidth={0.7}
-                                      />
-                                      <text
-                                        x={labelPoint.x}
-                                        y={labelPoint.y}
-                                        fill="#78350f"
-                                        fontSize={10}
-                                        fontWeight={600}
-                                        pointerEvents="none"
-                                      >
-                                        {`shared row ${info.index} visible x${info.visibleTotal} entity x${info.entityTotal}`}
-                                      </text>
-                                    </g>
-                                  );
-                                })}
-                                <text
-                                  x={summaryAnchor.x}
-                                  y={summaryAnchor.y}
-                                  fill="#7f1d1d"
-                                  fontSize={10}
-                                  fontWeight={600}
-                                  pointerEvents="none"
-                                >
-                                  {`row debug: total ${rawRowInfos.length}, used ${usedRowCount}, empty ${emptyRows.length}, shared ${sharedRows.length}`}
-                                </text>
-                              </g>
-                            )}
-                          </>
-                        );
-                      })()}
-                    </g>
-                  )}
 
                   {/* ── Main timeline + merge nodes ── */}
                   <g
@@ -7615,7 +7254,7 @@ export default function BranchMap({
 
         {/* Fixed-size tooltip layer (not affected by timeline zoom). */}
         {timelineRevealReady && tooltip && (() => {
-          const [title, subtitle, meta] = tooltip.lines;
+          const [, subtitle, meta] = tooltip.lines;
           const avatarFallback = tooltip.avatarFallback || '?';
           const tooltipCompact = viewportSize.width < 420;
           const viewportPadX = tooltipCompact ? 18 : 8;
@@ -7625,7 +7264,6 @@ export default function BranchMap({
           const tooltipMaxW = Math.min(tooltipCompact ? 260 : 320, availableTooltipW);
           const tooltipMinW = tooltipCompact ? 160 : 240;
           const tooltipW = Math.min(tooltipMaxW, Math.max(tooltipMinW, availableTooltipW));
-          const tooltipHeaderH = 24;
           const tooltipAvatarSize = 20;
           const tooltipBodyGap = 8;
           const tooltipBodyPadX = 12;
@@ -7649,7 +7287,7 @@ export default function BranchMap({
             50,
             tooltipBodyPadY * 2 + Math.max(tooltipAvatarSize, (subtitleLines + metaLines) * tooltipLineHeight)
           );
-          const tooltipH = Math.min(220, tooltipHeaderH + tooltipBodyH);
+          const tooltipH = Math.min(220, tooltipBodyH);
           const axisScale = isHorizontal ? liveCameraScale.x : liveCameraScale.y;
           const zoomAwareNodeClearance = Math.max(
             tooltipCompact ? 14 : 18,
@@ -7663,8 +7301,8 @@ export default function BranchMap({
           const clampTop = (top: number) => Math.min(maxTop, Math.max(viewportPadTop, top));
           const candidatePositions = [
             { left: anchorX - tooltipW / 2, top: anchorY - tooltipH - gap }, // above (preferred)
-            { left: anchorX + gap, top: anchorY - tooltipH + tooltipHeaderH }, // upper-right
-            { left: anchorX - tooltipW - gap, top: anchorY - tooltipH + tooltipHeaderH }, // upper-left
+            { left: anchorX + gap, top: anchorY - tooltipH }, // upper-right
+            { left: anchorX - tooltipW - gap, top: anchorY - tooltipH }, // upper-left
             { left: anchorX - tooltipW / 2, top: anchorY + gap }, // below (fallback)
           ].map((position) => ({
             left: clampLeft(position.left),
@@ -7688,15 +7326,16 @@ export default function BranchMap({
 
           return (
             <div
-              className="absolute z-[120] rounded-xl border border-border bg-card shadow-sm overflow-hidden pointer-events-none"
-              style={{ left, top, width: tooltipW }}
+              className="absolute z-[120] rounded-xl border overflow-hidden pointer-events-none"
+              style={{
+                left,
+                top,
+                width: tooltipW,
+                backgroundColor: CANVAS_NODE_FILL,
+                borderColor: CANVAS_NODE_STROKE,
+                borderWidth: CANVAS_NODE_STROKE_WIDTH,
+              }}
             >
-              <div
-                className="flex h-6 items-center bg-muted/80 border-b border-border/70 px-3"
-                style={{ height: tooltipHeaderH }}
-              >
-                <p className="text-xs font-medium text-foreground truncate">{title}</p>
-              </div>
               <div
                 style={{ padding: `${tooltipBodyPadY}px ${tooltipBodyPadX}px` }}
               >
@@ -7719,16 +7358,16 @@ export default function BranchMap({
                   <div className="min-w-0 space-y-1">
                     {subtitle && (
                       <p
-                        className="text-xs text-foreground whitespace-normal break-words"
-                        style={{ lineHeight: `${tooltipLineHeight}px` }}
+                        className="text-xs whitespace-normal break-words"
+                        style={{ lineHeight: `${tooltipLineHeight}px`, color: '#171717' }}
                       >
                         {subtitle}
                       </p>
                     )}
                     {meta && (
                       <p
-                        className="text-xs text-muted-foreground whitespace-normal break-words"
-                        style={{ lineHeight: `${tooltipLineHeight}px` }}
+                        className="text-xs whitespace-normal break-words"
+                        style={{ lineHeight: `${tooltipLineHeight}px`, color: NODE_FRAME_LABEL_COLOR }}
                       >
                         {meta}
                       </p>
@@ -7740,23 +7379,7 @@ export default function BranchMap({
           );
         })()}
 
-        {/* Empty state */}
-        {sortedNodes.length === 0 && activeBranches.length === 0 && !isLoading && (
-          <div className="absolute inset-0 flex items-center justify-center px-6">
-            <div className="bg-card/80 backdrop-blur-sm rounded-2xl border shadow-sm px-5 py-4 text-center max-w-md">
-              <p className="text-sm text-foreground">
-                {sortedDirectCommits.length > 0
-                  ? 'No non-default branches found to visualize.'
-                  : 'No branches found.'}
-              </p>
-              {sortedDirectCommits.length > 0 && (
-                <p className="text-xs text-muted-foreground mt-1.5">
-                  Main has commits, but there are no active topic branches yet.
-                </p>
-              )}
-            </div>
-          </div>
-        )}
+        {/* Empty state removed as per user request */}
       </div>
 
       {/* Bottom chrome: timeline controls — absolute so it stays inside the map
@@ -7838,27 +7461,7 @@ export default function BranchMap({
                 Horizontal
               </button>
             </div>
-            <div className="flex items-center gap-2 shrink-0 bg-card border border-border rounded-full px-3 py-1">
-              <span className="text-xs text-muted-foreground select-none">Row debug</span>
-              <label className="relative inline-flex items-center cursor-pointer">
-                <input
-                  type="checkbox"
-                  checked={showRowDebugOverlay}
-                  onChange={(e) => setShowRowDebugOverlay(e.target.checked)}
-                  aria-label="Toggle row debug overlay"
-                  className="sr-only"
-                />
-                <span
-                  className={`w-10 h-5 rounded-full border transition-colors flex items-center p-0.5 ${showRowDebugOverlay ? 'bg-primary/10 border-primary/30' : 'bg-muted/30 border-border'
-                    }`}
-                >
-                  <span
-                    className={`w-4 h-4 rounded-full bg-card shadow-sm transform transition-transform duration-200 ${showRowDebugOverlay ? 'translate-x-5' : 'translate-x-0'
-                      }`}
-                  />
-                </span>
-              </label>
-            </div>
+
             <button
               onClick={() => setShowLineageDebug((prev) => !prev)}
               className={`flex items-center gap-1.5 shrink-0 border rounded-full px-3 py-1.5 text-xs select-none transition-colors ${

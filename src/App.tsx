@@ -1074,7 +1074,7 @@ function App() {
     <div className="h-screen min-h-0 text-foreground flex flex-col relative bg-background">
       <div className="h-full min-h-0 flex flex-col relative">
       {view === 'landing' && (
-        <div>
+        <div className="flex-1 min-h-0 overflow-hidden">
           <RepoSelector onSelect={loadRepo} loading={loading} error={error} />
         </div>
       )}
@@ -1242,20 +1242,6 @@ function App() {
   );
 }
 
-function InteractiveDotField() {
-  return (
-    <div className="w-full h-full bg-muted" aria-hidden="true">
-      <div
-        className="w-full h-full"
-        style={{
-          backgroundImage:
-            'radial-gradient(circle at 1px 1px, color-mix(in srgb, var(--muted-foreground) 26%, transparent) 1px, transparent 0)',
-          backgroundSize: '18px 18px',
-        }}
-      />
-    </div>
-  );
-}
 
 function RepoSelector({
   onSelect,
@@ -1363,20 +1349,10 @@ function RepoSelector({
   }
 
   return (
-    <main className="h-full flex flex-col overflow-hidden md:flex-row">
-      <div className="h-28 md:h-auto md:w-[26%] relative flex-shrink-0 bg-muted overflow-hidden">
-        <InteractiveDotField />
-      </div>
+    <main className="h-full flex flex-col items-center pt-[16vh] bg-background">
+      <div className="w-full max-w-sm flex flex-col items-center px-6">
 
-      <div className="flex-1 flex flex-col items-center justify-center px-6 py-8 md:px-16 bg-background">
-        <p className="font-light text-foreground max-w-md text-3xl md:text-5xl leading-none" style={{ fontFamily: 'var(--font-space-grotesk)' }}>Git visualizer</p>
-        <h1 className="font-bold text-foreground mb-8 md:mb-14 max-w-md text-3xl md:text-5xl leading-tight" style={{ fontFamily: 'var(--font-space-grotesk)' }}>
-          See what your team is building, without reading a line of code.
-        </h1>
-
-        <p className="text-sm text-muted-foreground mb-4">Get started</p>
-
-        <div className="flex flex-col w-full gap-3 max-w-xs">
+        <div className="flex flex-col w-full gap-3 shrink-0">
           <button
             onClick={() => setShowPicker(true)}
             className="w-full flex items-center justify-center gap-2 px-6 py-3 bg-primary text-primary-foreground text-sm font-medium rounded-2xl hover:opacity-90 transition-opacity"
@@ -1432,15 +1408,15 @@ function RepoSelector({
         </div>
 
         {recentRepos.length > 0 && (
-          <div className="w-full max-w-xs mt-4">
-            <p className="text-[10px] uppercase tracking-wide text-muted-foreground font-medium mb-2">Recently opened</p>
-            <div className="flex flex-col gap-2 max-h-72 overflow-y-auto pr-1">
-              {recentRepos.map((repo) => (
+          <div className="w-full mt-8 flex flex-col">
+            <p className="text-[10px] uppercase tracking-wide text-muted-foreground font-medium mb-3 shrink-0">Recently opened</p>
+            <div className="flex flex-col gap-2">
+              {recentRepos.slice(0, 5).map((repo) => (
                 <button
                   key={repo.path}
                   onClick={() => openRepo(repo.path)}
                   disabled={loading}
-                  className="w-full rounded-xl border border-border bg-card text-left px-4 py-2.5 hover:bg-muted transition-colors disabled:opacity-60 disabled:cursor-not-allowed"
+                  className="w-full shrink-0 rounded-xl border border-border bg-card text-left px-4 py-2.5 hover:bg-muted transition-colors disabled:opacity-60 disabled:cursor-not-allowed"
                 >
                   <p className="text-foreground truncate text-sm">{repo.name}</p>
                   <p className="text-xs text-muted-foreground truncate">{repo.path}</p>
