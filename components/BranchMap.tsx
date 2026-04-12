@@ -7514,18 +7514,6 @@ export default function BranchMap({
                 Horizontal
               </button>
             </div>
-
-            <button
-              onClick={() => setShowLineageDebug((prev) => !prev)}
-              className={`flex items-center gap-1.5 shrink-0 border rounded-full px-3 py-1.5 text-xs select-none transition-colors ${
-                showLineageDebug
-                  ? 'bg-primary/10 border-primary/30 text-foreground'
-                  : 'bg-card border-border text-muted-foreground hover:text-foreground hover:bg-muted'
-              }`}
-              title="Show commit lineage debug panel"
-            >
-              Lineage
-            </button>
           </div>
         </div>
       </div>
