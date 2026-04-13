@@ -184,6 +184,16 @@ type BranchLineGeometryState = {
   lastSeenRender: number;
   createdAtRender: number;
 };
+type LaneAnchor = {
+  x: number;
+  y: number;
+  trimRadius: number;
+  key: string;
+};
+type LaneSegment = {
+  start: LaneAnchor;
+  end: LaneAnchor;
+};
 
 function clamp01(value: number): number {
   return Math.max(0, Math.min(1, value));
@@ -195,6 +205,14 @@ function easeInOutCubic(t: number): number {
 
 function getCameraScale(zoomValue: number, _horizontal: boolean): { x: number; y: number } {
   return { x: zoomValue, y: zoomValue };
+}
+
+function buildStraightPath(
+  start: { x: number; y: number },
+  end: { x: number; y: number },
+  pointFormatter: (x: number, y: number) => string,
+): string {
+  return `M ${pointFormatter(start.x, start.y)} L ${pointFormatter(end.x, end.y)}`;
 }
 
 function smoothValueTo(
@@ -5164,6 +5182,118 @@ export default function BranchMap({
     }
     return anchors;
   })();
+  const baseLaneTrimRadius = commitRectSize(scaledNodeSize, 0).height / 2;
+
+  function dedupeLaneAnchors(anchors: LaneAnchor[]): LaneAnchor[] {
+    return anchors.filter((anchor, index) => {
+      const previous = anchors[index - 1];
+      if (!previous) return true;
+      return Math.abs(previous.x - anchor.x) > 0.5 || Math.abs(previous.y - anchor.y) > 0.5;
+    });
+  }
+
+  function buildLaneSegments(anchors: LaneAnchor[]): LaneSegment[] {
+    const deduped = dedupeLaneAnchors(anchors);
+    const segments: LaneSegment[] = [];
+    for (let index = 1; index < deduped.length; index += 1) {
+      segments.push({ start: deduped[index - 1], end: deduped[index] });
+    }
+    return segments;
+  }
+
+  function trimLaneSegment(segment: LaneSegment): { start: { x: number; y: number }; end: { x: number; y: number } } | null {
+    const dx = segment.end.x - segment.start.x;
+    const dy = segment.end.y - segment.start.y;
+    const distance = Math.hypot(dx, dy);
+    if (!Number.isFinite(distance) || distance < 0.5) return null;
+    const ux = dx / distance;
+    const uy = dy / distance;
+    const trimStart = Math.min(segment.start.trimRadius, Math.max(0, distance / 2 - 0.25));
+    const trimEnd = Math.min(segment.end.trimRadius, Math.max(0, distance / 2 - 0.25));
+    return {
+      start: {
+        x: segment.start.x + ux * trimStart,
+        y: segment.start.y + uy * trimStart,
+      },
+      end: {
+        x: segment.end.x - ux * trimEnd,
+        y: segment.end.y - uy * trimEnd,
+      },
+    };
+  }
+
+  function buildMainLaneAnchors(): LaneAnchor[] {
+    return dedupeLaneAnchors(
+      mainDirectClusters.map((clusterLayout) => {
+        const motion = resolveClusterMotion(
+          clusterLayout.clusterKey,
+          { x: clusterLayout.preferredAnchorX, y: clusterLayout.preferredAnchorY },
+          clusterLayout.memberKeys,
+          clusterLayout.count > 1,
+        );
+        const anchor = unprojectPoint(motion.anchorX, motion.anchorY);
+        const rectSize = commitRectSize(scaledNodeSize, 0);
+        return {
+          x: anchor.x,
+          y: anchor.y,
+          trimRadius: rectSize.height / 2,
+          key: clusterLayout.clusterKey,
+        };
+      })
+    );
+  }
+
+  function buildBranchLaneAnchors(branch: Branch, layout: BranchRenderLayout): LaneAnchor[] {
+    const anchors: LaneAnchor[] = [];
+    for (const cluster of layout.commitDotClusters) {
+      const { realCommitEntries, renderEntries } = resolveBranchClusterEntries(cluster);
+      const count = renderEntries.length;
+      if (count <= 0) continue;
+      const clusterKey = branchClusterKey(branch.name, cluster);
+      const memberKeys = branchClusterMemberKeys(branch.name, cluster);
+      const preferredAnchorEntry = branchPreferredAnchorEntry(
+        cluster,
+        realCommitEntries,
+        layout.branchEndDotIndex,
+      );
+      const motion = resolveClusterMotion(
+        clusterKey,
+        { x: preferredAnchorEntry.x, y: preferredAnchorEntry.y },
+        memberKeys,
+        count > 1,
+      );
+      if (!motion.isExpanded || count <= 1 || motion.phase === 'collapsed') {
+        const collapsedCanonical = unprojectPoint(motion.anchorX, motion.anchorY);
+        const rectSize = commitRectSize(scaledNodeSize, 0);
+        anchors.push({
+          x: collapsedCanonical.x,
+          y: collapsedCanonical.y,
+          trimRadius: rectSize.height / 2,
+          key: clusterKey,
+        });
+        continue;
+      }
+      renderEntries.forEach((entry) => {
+        const memberPose = interpolateExpandedEntryPose(
+          { x: motion.anchorX, y: motion.anchorY },
+          { x: entry.x, y: entry.y },
+          motion.phase,
+          motion.phaseEased,
+        );
+        const memberCanonical = unprojectPoint(memberPose.x, memberPose.y);
+        anchors.push({
+          x: memberCanonical.x,
+          y: memberCanonical.y,
+          trimRadius: baseLaneTrimRadius,
+          key: `${clusterKey}:${entry.item.index}`,
+        });
+      });
+    }
+    return dedupeLaneAnchors(anchors);
+  }
+
+  const mainLaneAnchors = buildMainLaneAnchors();
+  const mainLaneSegments = buildLaneSegments(mainLaneAnchors);
   // Clumps are closed by default; no checked-out auto-expansion.
 
   function resolveBranchHeadProjectedPoint(branch: Branch, layout: BranchRenderLayout): { x: number; y: number } {
@@ -5431,36 +5561,38 @@ export default function BranchMap({
                   >
                     {!mainIsUnifiedRender && (
                       <>
-                        <path
-                          d={`M ${pathCoord(mainX, mainStartY)} L ${pathCoord(mainX, mainActiveEndY)}`}
-                          fill="none"
-                          stroke="transparent"
-                          strokeWidth={branchHitStrokeWidth}
-                          style={{ pointerEvents: branchLaneHitPointerEvents }}
-                        />
-                        {/* Use <path> not <line>: pathLength on <line> is SVG 2 only and unreliable in WKWebView */}
-                        <path
-                          d={`M ${pathCoord(mainX, mainStartY)} L ${pathCoord(mainX, mainActiveEndY)}`}
-                          fill="none"
-                          stroke={
-                            selectedBranchNameSet.has(defaultBranch)
-                              ? USER_SELECTION_STROKE
-                              : (hoveredBranch === defaultBranch || hoveredNodeBranchName === defaultBranch)
-                                ? CANVAS_NEUTRAL_GRAY_HOVER
-                                : (
-                                  checkedOutIndicatorLocal && Math.abs(checkedOutIndicatorLocal.x - mainX) < 0.5
-                                    ? CHECKED_OUT_SELECTION_STROKE
-                                    : CANVAS_NEUTRAL_GRAY
-                                )
-                          }
-                          strokeWidth={1.5}
-                          pathLength={1}
-                          className={drawPathMainClass}
-                          style={{
-                            '--delay': `${MAIN_DRAW_MS}ms`,
-                            transition: 'stroke 0.12s ease',
-                          } as React.CSSProperties}
-                        />
+                        {mainLaneSegments.map((segment) => {
+                          const trimmed = trimLaneSegment(segment);
+                          if (!trimmed) return null;
+                          return (
+                            <path
+                              key={`main-hit:${segment.start.key}:${segment.end.key}`}
+                              d={buildStraightPath(trimmed.start, trimmed.end, pathCoord)}
+                              fill="none"
+                              stroke="transparent"
+                              strokeWidth={branchHitStrokeWidth}
+                              style={{ pointerEvents: branchLaneHitPointerEvents }}
+                            />
+                          );
+                        })}
+                        {mainLaneSegments.map((segment) => {
+                          const trimmed = trimLaneSegment(segment);
+                          if (!trimmed) return null;
+                          return (
+                            <path
+                              key={`main-segment:${segment.start.key}:${segment.end.key}`}
+                              d={buildStraightPath(trimmed.start, trimmed.end, pathCoord)}
+                              fill="none"
+                              stroke={CANVAS_NEUTRAL_GRAY}
+                              strokeWidth={1.5}
+                              pathLength={1}
+                              className={drawPathMainClass}
+                              style={{
+                                '--delay': `${MAIN_DRAW_MS}ms`,
+                              } as React.CSSProperties}
+                            />
+                          );
+                        })}
 
                         <g className={fadeInInfoClass} style={{ '--delay': `${MAIN_DRAW_MS + INFO_OFFSET}ms` } as React.CSSProperties}>
                           {/* Direct commits */}
@@ -5876,7 +6008,6 @@ export default function BranchMap({
                           localSegmentStartY,
                           commitDotClusters,
                           promptMarkerClusters,
-                          branchHasCheckedOutHead,
                           brDelay,
                           showClockIcon,
                           clockPoint,
@@ -5885,7 +6016,12 @@ export default function BranchMap({
                           mergeTargetX,
                           mergeTargetY,
                         } = getBranchRenderLayout(b);
-                        const renderedBranchHead = resolveBranchHeadProjectedPoint(b, getBranchRenderLayout(b));
+                        const layout = getBranchRenderLayout(b);
+                        const branchLaneAnchors = buildBranchLaneAnchors(b, layout);
+                        const branchLaneSegments = buildLaneSegments(branchLaneAnchors);
+                        const firstLaneAnchor = branchLaneAnchors[0];
+                        const lastLaneAnchor = branchLaneAnchors[branchLaneAnchors.length - 1];
+                        const renderedBranchHead = resolveBranchHeadProjectedPoint(b, layout);
                         const renderedBranchHeadCanonical = unprojectPoint(renderedBranchHead.x, renderedBranchHead.y);
                         const animatedLine = resolveAnimatedBranchLineGeometry(`branch-line:${b.name}`, {
                           startX,
@@ -5897,29 +6033,25 @@ export default function BranchMap({
                           localSegmentStartY: localSegmentStartY ?? null,
                         });
                         const routeCornerR = GRID_ROUTE_CORNER_R;
-                        const curvePath = buildBranchOrthogonalPath({
+                        const forkConnectorTip = firstLaneAnchor ?? {
+                          x: animatedLine.lanePosX,
+                          y: animatedLine.tipY,
+                          trimRadius: baseLaneTrimRadius,
+                          key: `${b.name}:fallback-tip`,
+                        };
+                        const forkConnectorPath = buildBranchOrthogonalPath({
                           startX: animatedLine.startX,
                           forkY: animatedLine.forkY,
-                          laneX: animatedLine.lanePosX,
-                          tipY: animatedLine.tipY,
+                          laneX: forkConnectorTip.x,
+                          tipY: forkConnectorTip.y - forkConnectorTip.trimRadius,
                           cornerR: routeCornerR,
                           pointFormatter: pathCoord,
                         });
-                        const horizontalDir = animatedLine.lanePosX >= animatedLine.startX ? 1 : -1;
-                        const verticalDir = animatedLine.tipY >= animatedLine.forkY ? 1 : -1;
-                        const startTrim = Math.min(
-                          BRANCH_HIT_END_INSET,
-                          Math.max(0, Math.abs(animatedLine.lanePosX - animatedLine.startX) - 1),
-                        );
-                        const endTrim = Math.min(
-                          BRANCH_HIT_END_INSET,
-                          Math.max(0, Math.abs(animatedLine.tipY - animatedLine.forkY) - 1),
-                        );
-                        const hitCurvePath = buildBranchOrthogonalPath({
-                          startX: animatedLine.startX + horizontalDir * startTrim,
+                        const hitForkConnectorPath = buildBranchOrthogonalPath({
+                          startX: animatedLine.startX,
                           forkY: animatedLine.forkY,
-                          laneX: animatedLine.lanePosX,
-                          tipY: animatedLine.tipY - verticalDir * endTrim,
+                          laneX: forkConnectorTip.x,
+                          tipY: forkConnectorTip.y,
                           cornerR: routeCornerR,
                           pointFormatter: pathCoord,
                         });
@@ -5928,37 +6060,16 @@ export default function BranchMap({
                             animatedLine.mergeTargetX != null &&
                             Math.abs(animatedLine.lanePosX - animatedLine.mergeTargetX) > 0.5
                             ? buildMergeOrthogonalPath({
-                              laneX: animatedLine.lanePosX,
-                              tipY: animatedLine.tipY,
+                              laneX: lastLaneAnchor?.x ?? animatedLine.lanePosX,
+                              tipY: (lastLaneAnchor?.y ?? animatedLine.tipY) - (lastLaneAnchor?.trimRadius ?? baseLaneTrimRadius),
                               mergeX: animatedLine.mergeTargetX,
                               mergeY: animatedLine.mergeTargetY,
                               cornerR: routeCornerR,
                               pointFormatter: pathCoord,
                             })
                             : null;
-                        const isHovered = hoveredBranch === b.name || isNodeLineageHovered(b.name);
-                        const isSelectedForMerge = selectedBranchNameSet.has(b.name);
-                        const isFocusedError = focusedErrorBranch?.name === b.name;
-                        const focusedErrorColor = '#d97706';
-                        const neutralColor = CANVAS_NEUTRAL_GRAY;
-                        const color = isFocusedError ? focusedErrorColor : neutralColor;
-                        const strokeWidth = isFocusedError || isSelectedForMerge ? 2 : 1.5;
-                        const defaultStrokeColor =
-                          isSelectedForMerge
-                            ? USER_SELECTION_STROKE
-                            : isHovered
-                              ? CANVAS_NEUTRAL_GRAY_HOVER
-                              : color;
-                        const strokeColor =
-                          isSelectedForMerge
-                            ? USER_SELECTION_STROKE
-                            : !isFocusedError && branchHasCheckedOutHead
-                              ? CHECKED_OUT_SELECTION_STROKE
-                              : (
-                                fullBranchShouldUseLocalGray && !isFocusedError && !isHovered
-                                  ? LOCAL_UNPUSHED_GRAY
-                                  : defaultStrokeColor
-                              );
+                        const strokeWidth = 1.5;
+                        const strokeColor = CANVAS_NEUTRAL_GRAY;
                         const unpushedStrokeWidth = strokeWidth + UNPUSHED_LANE_STROKE_VISUAL_COMP;
                         const unpushedLaneDasharray = `${Math.max(1, unpushedStrokeWidth)} ${Math.max(2, unpushedStrokeWidth * 1.8)}`;
                         const isEmptyBranch = uniqueAheadCount <= 0;
@@ -5974,7 +6085,7 @@ export default function BranchMap({
                           >
                             {/* Invisible wide hit target to make hover/click easier on thin SVG strokes */}
                             <path
-                              d={hitCurvePath}
+                              d={hitForkConnectorPath}
                               fill="none"
                               stroke={DEBUG_SHOW_BRANCH_HIT_AREAS ? DEBUG_BRANCH_HIT_AREA_COLOR : 'transparent'}
                               strokeOpacity={DEBUG_SHOW_BRANCH_HIT_AREAS ? DEBUG_BRANCH_HIT_AREA_OPACITY : undefined}
@@ -5990,12 +6101,36 @@ export default function BranchMap({
                               }}
                               onDoubleClick={(event) => event.stopPropagation()}
                             />
+                            {branchLaneSegments.map((segment) => {
+                              const trimmed = trimLaneSegment(segment);
+                              if (!trimmed) return null;
+                              return (
+                                <path
+                                  key={`branch-hit:${segment.start.key}:${segment.end.key}`}
+                                  d={buildStraightPath(trimmed.start, trimmed.end, pathCoord)}
+                                  fill="none"
+                                  stroke={DEBUG_SHOW_BRANCH_HIT_AREAS ? DEBUG_BRANCH_HIT_AREA_COLOR : 'transparent'}
+                                  strokeOpacity={DEBUG_SHOW_BRANCH_HIT_AREAS ? DEBUG_BRANCH_HIT_AREA_OPACITY : undefined}
+                                  strokeWidth={branchHitStrokeWidth}
+                                  strokeLinecap="butt"
+                                  style={{
+                                    pointerEvents: branchLaneHitPointerEvents,
+                                    cursor: isEmptyBranch ? 'pointer' : undefined,
+                                  }}
+                                  onClick={(event) => {
+                                    if (!isEmptyBranch) return;
+                                    handleCommitNodeClick(event, b.headSha, b.name);
+                                  }}
+                                  onDoubleClick={(event) => event.stopPropagation()}
+                                />
+                              );
+                            })}
 
                             {/* Branch path — draws in. key="arc" keeps the DOM node stable so the
                       CSS animation is never restarted when sibling elements change. */}
                             <path
                               key="arc"
-                              d={curvePath}
+                              d={forkConnectorPath}
                               fill="none"
                               stroke={strokeColor}
                               strokeWidth={fullBranchShouldUseLocalGray ? unpushedStrokeWidth : strokeWidth}
@@ -6005,9 +6140,28 @@ export default function BranchMap({
                               className={drawPathArcClass}
                               style={{
                                 '--delay': `${brDelay}ms`,
-                                transition: 'stroke 0.12s ease',
                               } as React.CSSProperties}
                             />
+                            {branchLaneSegments.map((segment) => {
+                              const trimmed = trimLaneSegment(segment);
+                              if (!trimmed) return null;
+                              return (
+                                <path
+                                  key={`branch-segment:${segment.start.key}:${segment.end.key}`}
+                                  d={buildStraightPath(trimmed.start, trimmed.end, pathCoord)}
+                                  fill="none"
+                                  stroke={fullBranchShouldUseLocalGray ? CANVAS_NEUTRAL_GRAY : strokeColor}
+                                  strokeWidth={fullBranchShouldUseLocalGray ? unpushedStrokeWidth : strokeWidth}
+                                  strokeDasharray={fullBranchShouldUseLocalGray && shouldDashLocalLane ? unpushedLaneDasharray : undefined}
+                                  strokeLinecap={fullBranchShouldUseLocalGray && shouldDashLocalLane ? 'round' : undefined}
+                                  pathLength={fullBranchShouldUseLocalGray ? undefined : 1}
+                                  className={drawPathArcClass}
+                                  style={{
+                                    '--delay': `${brDelay}ms`,
+                                  } as React.CSSProperties}
+                                />
+                              );
+                            })}
                             {mergeBackPath && (
                               <path
                                 d={mergeBackPath}
@@ -6019,23 +6173,14 @@ export default function BranchMap({
                                 className={drawPathArcClass}
                                 style={{
                                   '--delay': `${brDelay}ms`,
-                                  transition: 'stroke 0.12s ease',
                                 } as React.CSSProperties}
                               />
                             )}
                             {!fullBranchShouldUseLocalGray && localSegmentStartY != null && (
                               <path
-                                d={`M ${pathCoord(animatedLine.lanePosX, animatedLine.localSegmentStartY ?? animatedLine.tipY)} L ${pathCoord(animatedLine.lanePosX, animatedLine.tipY)}`}
+                                d={`M ${pathCoord(animatedLine.lanePosX, animatedLine.localSegmentStartY ?? animatedLine.tipY)} L ${pathCoord(lastLaneAnchor?.x ?? animatedLine.lanePosX, (lastLaneAnchor?.y ?? animatedLine.tipY) - (lastLaneAnchor?.trimRadius ?? baseLaneTrimRadius))}`}
                                 fill="none"
-                                stroke={
-                                  isSelectedForMerge
-                                    ? USER_SELECTION_STROKE
-                                    : !isFocusedError && branchHasCheckedOutHead
-                                      ? CHECKED_OUT_SELECTION_STROKE
-                                      : isHovered
-                                        ? CANVAS_NEUTRAL_GRAY_HOVER
-                                        : LOCAL_UNPUSHED_GRAY
-                                }
+                                stroke={CANVAS_NEUTRAL_GRAY}
                                 strokeWidth={unpushedStrokeWidth}
                                 strokeDasharray={shouldDashLocalLane ? unpushedLaneDasharray : undefined}
                                 strokeLinecap={shouldDashLocalLane ? 'round' : undefined}
@@ -6515,9 +6660,9 @@ export default function BranchMap({
                               })}
                               {showClockIcon && (
                                 <g style={{ pointerEvents: 'none' }}>
-                                  <circle cx={clockPoint.x} cy={clockPoint.y} r={4.2} stroke={color} strokeWidth={1.2} fill="none" />
-                                  <line x1={clockPoint.x} y1={clockPoint.y - 2.9} x2={clockPoint.x} y2={clockPoint.y} stroke={color} strokeWidth={1.2} strokeLinecap="round" />
-                                  <line x1={clockPoint.x} y1={clockPoint.y} x2={clockPoint.x + 2.3} y2={clockPoint.y + 1.5} stroke={color} strokeWidth={1.2} strokeLinecap="round" />
+                                  <circle cx={clockPoint.x} cy={clockPoint.y} r={4.2} stroke={CANVAS_NEUTRAL_GRAY} strokeWidth={1.2} fill="none" />
+                                  <line x1={clockPoint.x} y1={clockPoint.y - 2.9} x2={clockPoint.x} y2={clockPoint.y} stroke={CANVAS_NEUTRAL_GRAY} strokeWidth={1.2} strokeLinecap="round" />
+                                  <line x1={clockPoint.x} y1={clockPoint.y} x2={clockPoint.x + 2.3} y2={clockPoint.y + 1.5} stroke={CANVAS_NEUTRAL_GRAY} strokeWidth={1.2} strokeLinecap="round" />
                                 </g>
                               )}
                             </g>
@@ -6554,7 +6699,7 @@ export default function BranchMap({
                         <path
                           d={forkPath ?? straightPath}
                           fill="none"
-                          stroke={CHECKED_OUT_SELECTION_STROKE}
+                          stroke={CANVAS_NEUTRAL_GRAY}
                           strokeWidth={1.5}
                           pathLength={1}
                           vectorEffect="non-scaling-stroke"
