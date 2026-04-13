@@ -158,6 +158,7 @@ type ExpandedClumpState = {
   isExpanded: boolean;
   phase: 'collapsed' | 'expanding' | 'expanded' | 'collapsing';
   phaseStartedAt?: number;
+  phaseProgress?: number;
   rowReleaseAt?: number;
 };
 type ClumpMemberAnchorState = {
@@ -190,10 +191,6 @@ function clamp01(value: number): number {
 
 function easeInOutCubic(t: number): number {
   return t < 0.5 ? 4 * t * t * t : 1 - Math.pow(-2 * t + 2, 3) / 2;
-}
-
-function easeOutCubic(t: number): number {
-  return 1 - Math.pow(1 - t, 3);
 }
 
 function getCameraScale(zoomValue: number, _horizontal: boolean): { x: number; y: number } {
@@ -380,6 +377,8 @@ const PROMPT_CLUSTER_PREVIEW_MAX = 90;
 /**
  * Remove fork split points that create singleton clusters (size 1).
  * Those singleton clumps render as unlabeled boxes and look like empty rows.
+ * Fork-off indices must be included in `preserveSplitIndices` so clump bounds
+ * always align with branch fork points (never merge across a fork).
  */
 function pruneForkSplitIndices(
   entryCount: number,
@@ -1209,7 +1208,15 @@ export default function BranchMap({
 
     let snapped = false;
     let shouldContinue = false;
-    for (const state of clumpAnchorStates.values()) {
+    for (const [, state] of clumpAnchorStates.entries()) {
+      if (reduceMotion) {
+        if (state.x !== state.targetX || state.y !== state.targetY) {
+          state.x = state.targetX;
+          state.y = state.targetY;
+          snapped = true;
+        }
+        continue;
+      }
       const dx = state.targetX - state.x;
       const dy = state.targetY - state.y;
       if (Math.abs(dx) <= 0.08 && Math.abs(dy) <= 0.08) {
@@ -1218,12 +1225,6 @@ export default function BranchMap({
           state.y = state.targetY;
           snapped = true;
         }
-        continue;
-      }
-      if (reduceMotion) {
-        state.x = state.targetX;
-        state.y = state.targetY;
-        snapped = true;
         continue;
       }
       state.x += dx * 0.26;
@@ -1270,7 +1271,7 @@ export default function BranchMap({
       }
       animateNumeric(current, target, onUpdate);
     };
-    for (const state of branchLineStates.values()) {
+    for (const [, state] of branchLineStates.entries()) {
       // Branch lines created very recently (within 2 renders) should snap to
       // corrected positions instead of animating.  This prevents the visual
       // glitch where incomplete initial data produces a wrong fork Y that then
@@ -1322,7 +1323,7 @@ export default function BranchMap({
       setClumpAnimationTick((v) => v + 1);
     });
     return () => cancelAnimationFrame(rafId);
-  });
+  }, [expandedClumps, clumpRenderId]);
 
   useEffect(() => {
     drawReadyRef.current = drawReady;
@@ -2202,19 +2203,17 @@ export default function BranchMap({
       }
 
       if (mainMergeCommitShas.has(commit.fullSha)) {
-        // Keep merge commits from being absorbed into adjacent clumps.
-        // Add boundaries on both sides and preserve them through pruning so
-        // the merge row stays chronologically ahead of preceding clumps.
-        if (index > 0) {
-          const splitBefore = index - 1;
-          splits.add(splitBefore);
-          forcedMainSplitIndices.add(splitBefore);
-        }
+        // Merge-in commits join the clump with newer (toward-HEAD) work: split
+        // before the merge so prior history stays separate, but do not split
+        // after the merge (merge + newer commits share one clump).
         if (index < sortedDirectCommits.length - 1) {
-          const splitAfter = index;
-          splits.add(splitAfter);
-          forcedMainSplitIndices.add(splitAfter);
+          if (index > 0) {
+            const splitBefore = index - 1;
+            splits.add(splitBefore);
+            forcedMainSplitIndices.add(splitBefore);
+          }
         }
+        // When merge is HEAD, omit split-before so it rolls into the preceding clump.
       }
 
       if (protectedMainForkShas.has(commit.fullSha) && index < sortedDirectCommits.length - 1) {
@@ -2223,9 +2222,13 @@ export default function BranchMap({
 
       // Keep the latest/checked-out main commit visible instead of hidden in a clump.
       if (forcedVisibleMainShas.has(commit.fullSha) && index > 0) {
-        const splitBefore = index - 1;
-        splits.add(splitBefore);
-        forcedMainSplitIndices.add(splitBefore);
+        const mergeAtHead =
+          mainMergeCommitShas.has(commit.fullSha) && index === sortedDirectCommits.length - 1;
+        if (!mergeAtHead) {
+          const splitBefore = index - 1;
+          splits.add(splitBefore);
+          forcedMainSplitIndices.add(splitBefore);
+        }
       }
     }
 
@@ -2327,6 +2330,7 @@ export default function BranchMap({
         ...mainUncommittedSplitIndices,
       ]);
       const mainAllocatorPreserveSplitIndices = new Set<number>([
+        ...mainForkIdx,
         ...forcedMainSplitIndices,
         ...mainUncommittedSplitIndices,
       ]);
@@ -2386,7 +2390,7 @@ export default function BranchMap({
         const idx = branchPreviewIndexForChildFork(previews, branchTimes, child);
         if (idx >= 0) forkIdx.add(idx);
       });
-      const effectiveForkIdx = pruneForkSplitIndices(previews.length, forkIdx);
+      const effectiveForkIdx = pruneForkSplitIndices(previews.length, forkIdx, forkIdx);
       let buf: string[] = [];
       let slotBuf: number[] = [];
       let tFirst = 0;
@@ -3063,9 +3067,10 @@ export default function BranchMap({
     const combinedSplitIndices = parentName === defaultBranch
       ? new Set<number>([...parentForkIndices, ...mainCommitSplitIndices])
       : parentForkIndices;
-    const preserveSplitIndices = parentName === defaultBranch
-      ? forcedMainSplitIndices
-      : undefined;
+    const preserveSplitIndices =
+      parentName === defaultBranch
+        ? new Set<number>([...parentForkIndices, ...forcedMainSplitIndices])
+        : parentForkIndices;
 
     const parentSegment = findSegmentForIndex(parentPreviews.length, combinedSplitIndices, forkIndex, preserveSplitIndices);
     if (!parentSegment) return null;
@@ -4163,8 +4168,8 @@ export default function BranchMap({
 
   useEffect(() => {
     return () => {
-      for (const timer of clumpCleanupTimersRef.current.values()) {
-        window.clearTimeout(timer);
+      for (const frameId of clumpCleanupTimersRef.current.values()) {
+        window.cancelAnimationFrame(frameId);
       }
       clumpCleanupTimersRef.current.clear();
     };
@@ -4246,18 +4251,6 @@ export default function BranchMap({
   const holdTimelineForInitialCenter =
     isLoading || (!hasInitialRevealDone && hasTimelineSeedData && timelineRevealPhase !== 'done' && !hasUserMovedCameraRef.current);
 
-  const clumpExpandMs = 160;
-  const clumpCollapseMs = 240;
-  const clumpRowReleaseDelayMs = clumpCollapseMs;
-  const clumpExpandEasing = 'cubic-bezier(0.16, 1, 0.3, 1)';
-  const clumpCollapseEasing = 'cubic-bezier(0.7, 0, 0.84, 0)';
-  const clumpPhaseDurationMs = (phase: ExpandedClumpState['phase']): number =>
-    phase === 'collapsing' ? clumpCollapseMs : clumpExpandMs;
-  const clumpPhaseEasing = (phase: ExpandedClumpState['phase'], progress: number): number => {
-    if (phase === 'collapsing') return 1 - easeOutCubic(1 - progress);
-    if (phase === 'expanding') return easeOutCubic(progress);
-    return progress;
-  };
   function resolveClumpPhase(expandedState?: ExpandedClumpState): {
     isExpanded: boolean;
     phase: ExpandedClumpState['phase'];
@@ -4265,18 +4258,12 @@ export default function BranchMap({
   } {
     const isExpanded = expandedState?.isExpanded ?? false;
     const phase = expandedState?.phase ?? 'collapsed';
-    const phaseStartedAtMs = expandedState?.phaseStartedAt ?? Date.now();
-    const phaseDurationMs = clumpPhaseDurationMs(phase);
     const phaseProgress = phase === 'collapsed'
       ? 0
       : phase === 'expanded'
         ? 1
-        : clamp01((Date.now() - phaseStartedAtMs) / phaseDurationMs);
-    const phaseEased = phaseProgress <= 0
-      ? 0
-      : phaseProgress >= 1
-        ? 1
-        : clumpPhaseEasing(phase, phaseProgress);
+        : clamp01(expandedState?.phaseProgress ?? (phase === 'collapsing' ? 1 : 0));
+    const phaseEased = phase === 'collapsing' ? 1 - phaseProgress : phaseProgress;
     return { isExpanded, phase, phaseEased };
   }
   function resolveClusterMotion(
@@ -4321,24 +4308,9 @@ export default function BranchMap({
         : phase === 'collapsed'
           ? from
           : to;
-    const opacity = phase === 'collapsing'
-      ? 1 - phaseEased
-      : phase === 'expanding'
-        ? 1
-        : phase === 'collapsed'
-          ? 0
-          : 1;
+    const opacity = phase === 'collapsed' ? 0 : 1;
     const scale = phase === 'collapsing'
-      ? (() => {
-        // Collapse feel: shrink first, then rebound back to normal scale.
-        if (phaseEased < 0.25) {
-          const u = phaseEased / 0.25;
-          return 1 - 0.04 * easeOutCubic(u);
-        }
-        const u = (phaseEased - 0.25) / 0.75;
-        const rebound = 0.96 + 0.05 * easeOutCubic(u); // up to ~1.01
-        return rebound - 0.01 * (u * u * u); // settle at 1.00
-      })()
+      ? 1 - 0.04 * phaseEased
       : phase === 'expanding'
         ? 0.96 + 0.04 * phaseEased
         : phase === 'collapsed'
@@ -4496,6 +4468,7 @@ export default function BranchMap({
         ...mainUncommittedSplitIndices,
       ]);
       const defaultBranchPreserveSplitIndices = new Set<number>([
+        ...mainForkIndices,
         ...forcedMainSplitIndices,
         ...mainUncommittedSplitIndices,
       ]);
@@ -4800,10 +4773,14 @@ export default function BranchMap({
       ...branchForkIndices,
       ...branchUncommittedSplitIndices,
     ]);
+    const branchPreserveSplitIndices = new Set<number>([
+      ...branchForkIndices,
+      ...branchUncommittedSplitIndices,
+    ]);
     const commitDotClusters = clusterByForkPoints(
       commitDotEntries,
       branchSplitIndices,
-      branchUncommittedSplitIndices,
+      branchPreserveSplitIndices,
     );
 
     const promptMarkersRaw = branchPromptMeta[b.name]?.markers ?? [];
@@ -4888,10 +4865,8 @@ export default function BranchMap({
   }
 
   const clumpAnimStyleForPhase = (phase: ExpandedClumpState['phase']): React.CSSProperties => {
-    const phaseDurationMs = clumpPhaseDurationMs(phase);
-    const phaseEasing = phase === 'collapsing' ? clumpCollapseEasing : clumpExpandEasing;
+    void phase;
     return {
-      transition: `transform ${phaseDurationMs}ms ${phaseEasing}, opacity ${phaseDurationMs}ms ${phaseEasing}`,
       willChange: 'transform, opacity',
     };
   };
@@ -4941,9 +4916,9 @@ export default function BranchMap({
     const existing = expandedClumps.get(clumpKey);
     const isExpanded = existing?.isExpanded ?? false;
 
-    const existingCleanupTimer = clumpCleanupTimersRef.current.get(clumpKey);
-    if (existingCleanupTimer != null) {
-      window.clearTimeout(existingCleanupTimer);
+    const existingAnimationFrame = clumpCleanupTimersRef.current.get(clumpKey);
+    if (existingAnimationFrame != null) {
+      window.cancelAnimationFrame(existingAnimationFrame);
       clumpCleanupTimersRef.current.delete(clumpKey);
     }
 
@@ -4951,76 +4926,111 @@ export default function BranchMap({
       // Collapse while rows start compacting shortly after collapse begins,
       // so surrounding content moves during the same motion window.
       const collapseStartedAt = Date.now();
-      const rowReleaseAt = collapseStartedAt + clumpRowReleaseDelayMs;
+      const collapseLerp = 0.26;
+      let collapseProgress = existing?.phaseProgress ?? 1;
+      // Keep expanded rows briefly during collapse so member travel remains visible,
+      // then release rows early enough that lane motion still feels synced.
+      const rowReleaseAt = collapseStartedAt + 80;
       setExpandedClumps((prev) => {
         const next = new Map(prev);
         next.set(clumpKey, {
           isExpanded: true,
           phase: 'collapsing',
           phaseStartedAt: collapseStartedAt,
+          phaseProgress: collapseProgress,
           rowReleaseAt,
         });
         return next;
       });
 
-      // Drive re-renders so grid-row interpolation/fade stays smooth.
+      // Drive per-frame exponential interpolation until clump fully collapses.
       const collapseTick = () => {
-        const elapsed = Date.now() - collapseStartedAt;
-        setClumpAnimationTick((v) => v + 1);
-        if (elapsed < clumpCollapseMs) requestAnimationFrame(collapseTick);
-      };
-      requestAnimationFrame(collapseTick);
-
-      const cleanupTimer = window.setTimeout(() => {
+        collapseProgress += (0 - collapseProgress) * collapseLerp;
+        const done = Math.abs(collapseProgress) <= 0.004;
         setExpandedClumps((prev) => {
           const next = new Map(prev);
-          next.delete(clumpKey);
+          if (done) {
+            next.delete(clumpKey);
+            return next;
+          }
+          const current = next.get(clumpKey);
+          if (!current) return prev;
+          next.set(clumpKey, {
+            ...current,
+            isExpanded: true,
+            phase: 'collapsing',
+            phaseStartedAt: collapseStartedAt,
+            phaseProgress: collapseProgress,
+            rowReleaseAt,
+          });
           return next;
         });
-        clumpCleanupTimersRef.current.delete(clumpKey);
-      }, clumpCollapseMs);
-
-      clumpCleanupTimersRef.current.set(clumpKey, cleanupTimer);
+        setClumpAnimationTick((v) => v + 1);
+        if (done) {
+          clumpCleanupTimersRef.current.delete(clumpKey);
+          return;
+        }
+        const frameId = window.requestAnimationFrame(collapseTick);
+        clumpCleanupTimersRef.current.set(clumpKey, frameId);
+      };
+      const frameId = window.requestAnimationFrame(collapseTick);
+      clumpCleanupTimersRef.current.set(clumpKey, frameId);
       return;
     }
 
     const expandStartedAt = Date.now();
+    const expandLerp = 0.26;
+    let expandProgress = existing?.phaseProgress ?? 0;
     setExpandedClumps((prev) => {
       const next = new Map(prev);
       next.set(clumpKey, {
         isExpanded: true,
         phase: 'expanding',
         phaseStartedAt: expandStartedAt,
+        phaseProgress: expandProgress,
         rowReleaseAt: undefined,
       });
       return next;
     });
 
-    // Drive re-renders while expanding so interpolation remains smooth.
+    // Drive per-frame exponential interpolation until clump fully expands.
     const expandTick = () => {
-      const elapsed = Date.now() - expandStartedAt;
-      setClumpAnimationTick((v) => v + 1);
-      if (elapsed < clumpExpandMs) requestAnimationFrame(expandTick);
-    };
-    requestAnimationFrame(expandTick);
-
-    const finalizeTimer = window.setTimeout(() => {
+      expandProgress += (1 - expandProgress) * expandLerp;
+      const done = Math.abs(1 - expandProgress) <= 0.004;
       setExpandedClumps((prev) => {
         const next = new Map(prev);
         const current = next.get(clumpKey);
-        if (!current?.isExpanded) return prev;
+        if (!current) return prev;
+        if (done) {
+          next.set(clumpKey, {
+            isExpanded: true,
+            phase: 'expanded',
+            phaseStartedAt: expandStartedAt,
+            phaseProgress: 1,
+            rowReleaseAt: undefined,
+          });
+          return next;
+        }
         next.set(clumpKey, {
+          ...current,
           isExpanded: true,
-          phase: 'expanded',
+          phase: 'expanding',
           phaseStartedAt: expandStartedAt,
+          phaseProgress: expandProgress,
           rowReleaseAt: undefined,
         });
         return next;
       });
-      clumpCleanupTimersRef.current.delete(clumpKey);
-    }, clumpExpandMs);
-
-    clumpCleanupTimersRef.current.set(clumpKey, finalizeTimer);
+      setClumpAnimationTick((v) => v + 1);
+      if (done) {
+        clumpCleanupTimersRef.current.delete(clumpKey);
+        return;
+      }
+      const frameId = window.requestAnimationFrame(expandTick);
+      clumpCleanupTimersRef.current.set(clumpKey, frameId);
+    };
+    const frameId = window.requestAnimationFrame(expandTick);
+    clumpCleanupTimersRef.current.set(clumpKey, frameId);
   };
 
   type MainDirectClusterLayout = {
@@ -6968,7 +6978,7 @@ export default function BranchMap({
                               return (
                                 <g
                                   key={`branch-label-overlay-${clusterKey}`}
-                                  opacity={isCollapsing ? phaseEased : 1}
+                                  opacity={1}
                                 >
                                   <text
                                     x={anchorX + rectSize.width / 2 - CANVAS_NODE_STROKE_INSET - nodeFrameLabelRightInsetX}
@@ -7165,7 +7175,7 @@ export default function BranchMap({
                           return (
                             <g
                               key={`main-label-overlay-${clusterKey}`}
-                              opacity={isCollapsing ? phaseEased : 1}
+                              opacity={1}
                             >
                               {(!isExpanded || isCollapsing) && (
                                 <text
