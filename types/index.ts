@@ -34,9 +34,15 @@ export interface Commit {
   message: string;
   author: string;
   date: string;
+  keywordCloud?: CommitKeyword[];
   promptWindowStart?: string | null;
   promptWindowEnd?: string | null;
   agentPrompts?: AgentPrompt[];
+}
+
+export interface CommitKeyword {
+  text: string;
+  weight: number;
 }
 
 export interface BranchCommitPreview {
@@ -46,6 +52,7 @@ export interface BranchCommitPreview {
   message: string;
   author: string;
   date: string;
+  keywordCloud?: CommitKeyword[];
   kind?: 'commit' | 'branch-created' | 'uncommitted';
 }
 
@@ -79,6 +86,7 @@ export interface DirectCommit {
   message: string;
   author: string;
   date: string;
+  keywordCloud?: CommitKeyword[];
   kind?: 'commit' | 'uncommitted';
 }
 

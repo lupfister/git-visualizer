@@ -1203,6 +1203,12 @@ export default function BranchMap({
     const clumpMemberAnchorStates = clumpMemberAnchorStateRef.current;
     const branchLineStates = branchLineGeometryStateRef.current;
 
+    const clumpMotionActive = Array.from(expandedClumps.values()).some(
+      (s) => s.phase === 'expanding' || s.phase === 'collapsing',
+    );
+    /** Match lane/connector motion to clump transitions (grid targets jump faster than 0.26 can follow). */
+    const motionLerp = clumpMotionActive ? 0.55 : 0.26;
+
     for (const [key, state] of clumpAnchorStates.entries()) {
       if (state.lastSeenRender !== clumpRenderId) {
         clumpAnchorStates.delete(key);
@@ -1245,8 +1251,8 @@ export default function BranchMap({
         }
         continue;
       }
-      state.x += dx * 0.26;
-      state.y += dy * 0.26;
+      state.x += dx * motionLerp;
+      state.y += dy * motionLerp;
       shouldContinue = true;
     }
     const animateNumeric = (
@@ -1267,7 +1273,7 @@ export default function BranchMap({
         snapped = true;
         return;
       }
-      onUpdate(current + delta * 0.26);
+      onUpdate(current + delta * motionLerp);
       shouldContinue = true;
     };
     const animateNullableNumeric = (
