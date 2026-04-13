@@ -5127,7 +5127,7 @@ export default function BranchMap({
     }
     return anchors;
   })();
-  const renderedBranchAnchorByCommitSha = (() => {
+  const renderedBranchAnchorByBranchAndSha = (() => {
     const anchors = new Map<string, AnchorPoint>();
     for (const branch of activeBranches) {
       const layout = getBranchRenderLayout(branch);
@@ -5144,7 +5144,7 @@ export default function BranchMap({
           vm.renderEntries.forEach((entry) => {
             const sha = entry.item.commit?.fullSha;
             if (!sha) return;
-            anchors.set(sha, collapsedCanonical);
+            anchors.set(`${branch.name}\0${sha}`, collapsedCanonical);
           });
           continue;
         }
@@ -5158,7 +5158,7 @@ export default function BranchMap({
             motion.phase,
             motion.phaseEased,
           );
-          anchors.set(sha, unprojectPoint(memberPose.x, memberPose.y));
+          anchors.set(`${branch.name}\0${sha}`, unprojectPoint(memberPose.x, memberPose.y));
         });
       }
     }
@@ -5167,10 +5167,14 @@ export default function BranchMap({
   // Clumps are closed by default; no checked-out auto-expansion.
 
   function resolveBranchHeadProjectedPoint(branch: Branch, layout: BranchRenderLayout): { x: number; y: number } {
-    let renderedHeadAnchor = renderedBranchAnchorByCommitSha.get(branch.headSha);
+    let renderedHeadAnchor = renderedBranchAnchorByBranchAndSha.get(`${branch.name}\0${branch.headSha}`);
     if (!renderedHeadAnchor) {
-      for (const [sha, anchor] of renderedBranchAnchorByCommitSha.entries()) {
-        if (shaMatchesGitRef(sha, branch.headSha)) {
+      for (const [key, anchor] of renderedBranchAnchorByBranchAndSha.entries()) {
+        const sep = key.indexOf('\0');
+        if (sep < 0) continue;
+        const keyBranch = key.slice(0, sep);
+        const keySha = key.slice(sep + 1);
+        if (keyBranch === branch.name && shaMatchesGitRef(keySha, branch.headSha)) {
           renderedHeadAnchor = anchor;
           break;
         }
