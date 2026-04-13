@@ -746,6 +746,7 @@ export default function BranchMap({
   const clumpMemberAnchorStateRef = useRef<Map<string, ClumpMemberAnchorState>>(new Map());
   const branchLineGeometryStateRef = useRef<Map<string, BranchLineGeometryState>>(new Map());
   const stableHorizontalMaxRowRef = useRef<number | null>(null);
+  const stableHorizontalMirrorRef = useRef<number | null>(null);
   const clumpRenderCounterRef = useRef(0);
   clumpRenderCounterRef.current += 1;
   const clumpRenderId = clumpRenderCounterRef.current;
@@ -3386,7 +3387,16 @@ export default function BranchMap({
     ) + 2 * svgContentPadding
     : mainStartY + SVG_LAYOUT_TAIL_Y + 2 * svgContentPadding;
 
-  const horizontalProjectionMirrorX = logicalTimelineHeight;
+  if (
+    !isHorizontal ||
+    !hasPinnedHorizontalRowOffset ||
+    stableHorizontalMirrorRef.current == null
+  ) {
+    stableHorizontalMirrorRef.current = logicalTimelineHeight;
+  }
+  const horizontalProjectionMirrorX = (isHorizontal && hasPinnedHorizontalRowOffset)
+    ? stableHorizontalMirrorRef.current
+    : logicalTimelineHeight;
   function projectPoint(x: number, y: number): { x: number; y: number } {
     return isHorizontal
       ? { x: horizontalProjectionMirrorX - y, y: x }
@@ -3625,7 +3635,9 @@ export default function BranchMap({
   const logicalSvgWidth = tightGridXSpan + 2 * svgContentPadding + rightPad + SVG_LAYOUT_TAIL_X;
 
   const logicalSvgHeight = logicalTimelineHeight;
-  const contentSvgWidth = isHorizontal ? logicalSvgHeight : logicalSvgWidth;
+  const contentSvgWidth = isHorizontal
+    ? Math.max(logicalSvgHeight, horizontalProjectionMirrorX)
+    : logicalSvgWidth;
   const contentSvgHeight = isHorizontal ? logicalSvgWidth : logicalSvgHeight;
   let svgWidth = contentSvgWidth;
   let svgHeight = contentSvgHeight;
