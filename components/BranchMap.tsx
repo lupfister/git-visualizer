@@ -4328,7 +4328,19 @@ export default function BranchMap({
           : to;
     const opacity = phase === 'collapsed' ? 0 : 1;
     const scale = phase === 'collapsing'
-      ? 1 - 0.04 * phaseEased
+      ? (() => {
+          const t = clamp01(phaseEased);
+          const shallow = 0.032;
+          const dipEnd = 0.38;
+          if (t < dipEnd) {
+            const u = t / dipEnd;
+            const easeOut = 1 - Math.pow(1 - u, 3);
+            return 1 - shallow * easeOut;
+          }
+          const u = (t - dipEnd) / (1 - dipEnd);
+          const low = 1 - shallow;
+          return low + (1 - low) * easeInOutCubic(clamp01(u));
+        })()
       : phase === 'expanding'
         ? 0.96 + 0.04 * phaseEased
         : phase === 'collapsed'
