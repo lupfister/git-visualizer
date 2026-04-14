@@ -1515,6 +1515,21 @@ function App() {
                   {githubAuthMessage}
                 </span>
               )}
+              {repoPath && (
+                <button
+                  type="button"
+                  onClick={() => void handleStashLocalChanges()}
+                  disabled={stashInProgress || !checkedOutRef?.hasUncommittedChanges}
+                  title={
+                    checkedOutRef?.hasUncommittedChanges
+                      ? 'Stash working tree changes (including untracked files)'
+                      : 'No uncommitted changes to stash'
+                  }
+                  className="text-xs font-medium text-foreground border border-border/50 rounded-full px-3 py-1 transition-colors hover:bg-accent hover:text-foreground disabled:opacity-50 disabled:cursor-not-allowed shrink-0"
+                >
+                  {stashInProgress ? 'Stashing…' : 'Stash local'}
+                </button>
+              )}
               {commitSwitchFeedback && (
                 <span
                   className={cn(
