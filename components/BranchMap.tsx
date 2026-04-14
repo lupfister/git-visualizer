@@ -78,6 +78,7 @@ const CHECKED_OUT_SELECTION_STROKE = '#5EB9ED';
 const CHECKED_OUT_SELECTION_FILL = '#EDF7FD';
 /** Stroke color used for user-selected commits/branches (distinct from checked-out). */
 const USER_SELECTION_STROKE = '#3D8AF5';
+const USER_SELECTION_FILL = '#E7F0FE';
 const CHECKED_OUT_PULSE_MS = 1800;
 const INITIAL_CENTER_SETTLE_MS = CHECKED_OUT_PULSE_MS;
 const INITIAL_REVEAL_FADE_MS = CHECKED_OUT_PULSE_MS;
@@ -4499,7 +4500,7 @@ export default function BranchMap({
     isCheckedOutSelection = false,
     isUserSelected = false,
   ) => {
-    if (isUserSelected) return baseFill;
+    if (isUserSelected) return USER_SELECTION_FILL;
     if (isCheckedOutSelection) return CHECKED_OUT_SELECTION_FILL;
     return hoveredNodeStrokeKey === nodeKey ? HOVER_NODE_FILL : baseFill;
   };
