@@ -4282,10 +4282,14 @@ export default function BranchMap({
     rectWidth: number,
     rightText?: string,
     reserveIconWidth = false,
+    includeBranchForUncommitted = branchName !== defaultBranch,
   ): string => {
     const shaLabel = shortShaLabel(sha);
-    const fullLabel = sha === 'WORKING_TREE' || shaLabel === 'Uncommited Changes'
-      ? 'Uncommited Changes'
+    const isUncommittedLabel = sha === 'WORKING_TREE' || shaLabel === 'Uncommited Changes';
+    const fullLabel = isUncommittedLabel
+      ? includeBranchForUncommitted
+        ? `${branchName}/Uncommited Changes`
+        : 'Uncommited Changes'
       : `${branchName}/${shaLabel}`;
     let rightContentWidth = 0;
     if (rightText) {
