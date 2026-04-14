@@ -4680,7 +4680,7 @@ export default function BranchMap({
           y: rectY,
           width: rectWidth,
           height: rectHeight,
-          baseRadius: isUserSelected ? 0 : COMMIT_NODE_CORNER_RADIUS,
+          baseRadius: COMMIT_NODE_CORNER_RADIUS,
           fill: nodeFill,
           stroke: nodeStroke,
           strokeWidth,
