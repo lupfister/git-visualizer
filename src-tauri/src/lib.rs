@@ -615,6 +615,12 @@ fn apply_stash_restore(repo_path: String, stash_index: u32) -> Result<CheckedOut
 }
 
 #[tauri::command(rename_all = "camelCase")]
+fn stash_drop(repo_path: String, stash_index: u32) -> Result<(), String> {
+    let path = Path::new(&repo_path);
+    git::stash_drop(path, stash_index).map_err(|e| e.to_string())
+}
+
+#[tauri::command(rename_all = "camelCase")]
 fn push_branch(
     repo_path: String,
     branch_name: String,
@@ -3849,6 +3855,7 @@ pub fn run() {
             stash_push,
             commit_working_tree,
             apply_stash_restore,
+            stash_drop,
             push_branch,
             push_current_branch,
             push_all_unpushed_branches,

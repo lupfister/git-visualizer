@@ -777,7 +777,11 @@ interface BranchMapProps {
   onPushCurrentBranch?: () => Promise<void> | void;
   onPushCommitTargets?: (targets: Array<{ branchName: string; targetSha: string }>) => Promise<void> | void;
   pushInProgress?: boolean;
-  onDeleteSelection?: (targets: { branchNames: string[]; discardUncommittedChanges: boolean }) => Promise<void> | void;
+  onDeleteSelection?: (targets: {
+    branchNames: string[];
+    discardUncommittedChanges: boolean;
+    stashIndices?: number[];
+  }) => Promise<void> | void;
   deleteInProgress?: boolean;
   worktrees?: WorktreeInfo[];
   onRemoveWorktree?: (worktreePath: string, force: boolean) => Promise<void> | void;
@@ -6483,10 +6487,24 @@ export default function BranchMap({
     (branchName) => branchName !== defaultBranch && freshCopyBranchNames.has(branchName)
   );
   const hasSelectedUncommittedChanges = selectedVisibleCommitShas.includes('WORKING_TREE');
-  const deletableSelectionCount = selectedDeletableBranchNames.length + (hasSelectedUncommittedChanges ? 1 : 0);
+  const selectedStashIndices = Array.from(
+    new Set(
+      selectedVisibleCommitShas
+        .map((sha) => {
+          const match = /^STASH:(\d+)$/.exec(sha);
+          return match ? parseInt(match[1], 10) : null;
+        })
+        .filter((n): n is number => n != null && Number.isFinite(n)),
+    ),
+  ).sort((a, b) => a - b);
+  const deletableSelectionCount =
+    selectedDeletableBranchNames.length +
+    (hasSelectedUncommittedChanges ? 1 : 0) +
+    selectedStashIndices.length;
   const deleteSelectionItems = [
     ...selectedDeletableBranchNames.map((branchName) => `Branch: ${branchName}`),
     ...(hasSelectedUncommittedChanges ? ['Uncommitted changes'] : []),
+    ...selectedStashIndices.map((idx) => `Stash ${idx + 1}`),
   ];
   deletableSelectionCountRef.current = deletableSelectionCount;
   const pushCurrentBranchLabel = checkedOutBranchName ? `Push ${checkedOutBranchName}` : 'Push current branch';
@@ -6512,6 +6530,7 @@ export default function BranchMap({
     await onDeleteSelection({
       branchNames: selectedDeletableBranchNames,
       discardUncommittedChanges: hasSelectedUncommittedChanges,
+      stashIndices: selectedStashIndices.length > 0 ? selectedStashIndices : undefined,
     });
     setDeleteConfirmOpen(false);
     setSelectedCommitShas([]);

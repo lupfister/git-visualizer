@@ -54,3 +54,9 @@ pub fn apply_stash_restore(repo: &Path, stash_index: u32) -> Result<(), GitError
     cli::run(repo, &["stash", "drop", &stash_ref])?;
     Ok(())
 }
+
+pub fn stash_drop(repo: &Path, stash_index: u32) -> Result<(), GitError> {
+    let stash_ref = format!("stash@{{{stash_index}}}");
+    cli::run(repo, &["stash", "drop", &stash_ref])?;
+    Ok(())
+}

@@ -1178,22 +1178,43 @@ function App() {
     }
   }
 
-  async function handleDeleteSelection(targets: { branchNames: string[]; discardUncommittedChanges: boolean }) {
+  async function handleDeleteSelection(targets: {
+    branchNames: string[];
+    discardUncommittedChanges: boolean;
+    stashIndices?: number[];
+  }) {
     if (!repoPath || deleteInProgress) return;
     const uniqueBranchNames = Array.from(new Set(targets.branchNames.filter((branchName) => branchName && branchName !== defaultBranch)));
     const shouldDiscardUncommitted = !!targets.discardUncommittedChanges;
-    if (uniqueBranchNames.length === 0 && !shouldDiscardUncommitted) return;
+    const stashIndices = targets.stashIndices ?? [];
+    const uniqueStashDescending = Array.from(new Set(stashIndices)).sort((a, b) => b - a);
+    if (uniqueBranchNames.length === 0 && !shouldDiscardUncommitted && uniqueStashDescending.length === 0) return;
 
     setCommitSwitchFeedback(null);
     setDeleteInProgress(true);
     try {
-      const result = await invoke<{ deletedBranches: string[]; discardedUncommittedChanges: boolean }>('delete_selected_elements', {
-        repoPath,
-        branchNames: uniqueBranchNames,
-        discardUncommittedChanges: shouldDiscardUncommitted,
-      });
+      for (const stashIndex of uniqueStashDescending) {
+        await invoke('stash_drop', { repoPath, stashIndex });
+      }
+
+      const result =
+        uniqueBranchNames.length > 0 || shouldDiscardUncommitted
+          ? await invoke<{ deletedBranches: string[]; discardedUncommittedChanges: boolean }>('delete_selected_elements', {
+              repoPath,
+              branchNames: uniqueBranchNames,
+              discardUncommittedChanges: shouldDiscardUncommitted,
+            })
+          : { deletedBranches: [] as string[], discardedUncommittedChanges: false };
+
       await refreshRepoGitState(repoPath);
       const feedbackParts: string[] = [];
+      if (uniqueStashDescending.length > 0) {
+        feedbackParts.push(
+          uniqueStashDescending.length === 1
+            ? `removed stash ${uniqueStashDescending[0]! + 1}`
+            : `removed ${uniqueStashDescending.length} stashes`
+        );
+      }
       if (result.discardedUncommittedChanges) feedbackParts.push('discarded local uncommitted changes');
       if (result.deletedBranches.length > 0) {
         feedbackParts.push(
