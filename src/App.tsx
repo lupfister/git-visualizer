@@ -1,4 +1,4 @@
-import { useState, useEffect, useLayoutEffect, useRef, useMemo } from 'react';
+import { useState, useEffect, useRef, useMemo } from 'react';
 import { invoke } from '@tauri-apps/api/core';
 import { listen } from '@tauri-apps/api/event';
 import { getCurrentWindow } from '@tauri-apps/api/window';
@@ -54,28 +54,7 @@ function App() {
   const [branchCommitPreviews, setBranchCommitPreviews] = useState<Record<string, BranchCommitPreview[]>>({});
   const [branchUniqueAheadCounts, setBranchUniqueAheadCounts] = useState<Record<string, number>>({});
 
-  const mapHeaderRef = useRef<HTMLElement | null>(null);
-  const [mapHeaderInsetPx, setMapHeaderInsetPx] = useState(0);
   const branchMetaLoadKeyRef = useRef<string | null>(null);
-
-  useLayoutEffect(() => {
-    if (view === 'landing') {
-      setMapHeaderInsetPx(0);
-      return;
-    }
-    const el = mapHeaderRef.current;
-    if (!el) {
-      setMapHeaderInsetPx(0);
-      return;
-    }
-    const measure = () => {
-      setMapHeaderInsetPx(Math.round(el.getBoundingClientRect().height));
-    };
-    measure();
-    const ro = new ResizeObserver(measure);
-    ro.observe(el);
-    return () => ro.disconnect();
-  }, [view]);
 
 
 
@@ -1123,15 +1102,12 @@ function App() {
               focusedErrorBranch={focusedErrorBranch}
               checkedOutRef={checkedOutRef}
               onHoveredBranchChange={setHoveredBranchName}
-
-              mapTopInsetPx={mapHeaderInsetPx}
               onMergeRefsIntoBranch={handleMergeRefsIntoBranch}
               mergeInProgress={mergeInProgress}
             />
           </div>
 
           <header
-            ref={mapHeaderRef}
             className="absolute left-0 right-0 z-40 px-4 py-3 md:px-8 md:py-5"
           >
             <div className="grid grid-cols-[1fr_auto_1fr] items-center gap-3">

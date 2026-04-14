@@ -286,6 +286,13 @@ function fmtClumpDateRange(startStr: string, endStr: string): string {
 
 const svgTextWidthCache = new Map<string, number>();
 let svgTextMeasureCtx: CanvasRenderingContext2D | null = null;
+const wrappedNodeMessageCache = new Map<string, { lines: string[]; fontSize: number; lineHeight: number }>();
+const footerMetaLayoutCache = new Map<string, { author: string; date: string }>();
+
+function quantizeForCache(value: number, step = 0.25): number {
+  if (!Number.isFinite(value)) return value;
+  return Math.round(value / step) * step;
+}
 
 function estimateSvgTextWidth(text: string, fontSize = 10): number {
   const cacheKey = `${fontSize}:${BRANCH_MAP_SVG_FONT_FAMILY}:${text}`;
@@ -766,6 +773,7 @@ export default function BranchMap({
   const panUiSyncTimeoutRef = useRef<number | null>(null);
   const zoomUiSyncTimeoutRef = useRef<number | null>(null);
   const cameraPaintRafRef = useRef<number | null>(null);
+  const interactiveUiSyncRafRef = useRef<number | null>(null);
   const pendingCameraRef = useRef<{ pan: { x: number; y: number }; zoom: number } | null>(null);
   const [, setClumpAnimationTick] = useState(0);
   const clumpAnchorStateRef = useRef<Map<string, ClumpAnchorState>>(new Map());
@@ -1521,6 +1529,20 @@ export default function BranchMap({
     flushCameraPaint();
   }
 
+  function scheduleInteractiveUiSync() {
+    if (interactiveUiSyncRafRef.current !== null) return;
+    interactiveUiSyncRafRef.current = requestAnimationFrame(() => {
+      interactiveUiSyncRafRef.current = null;
+      syncUiState(true, true);
+    });
+  }
+
+  function stopInteractiveUiSync() {
+    if (interactiveUiSyncRafRef.current === null) return;
+    cancelAnimationFrame(interactiveUiSyncRafRef.current);
+    interactiveUiSyncRafRef.current = null;
+  }
+
   function setTimelineStaticClass(locked: boolean) {
     const svg = svgRef.current;
     if (!svg) return;
@@ -1539,6 +1561,12 @@ export default function BranchMap({
       if (now - lastUiSyncRef.current < minInterval) return;
     }
     lastUiSyncRef.current = now;
+    if (immediate) {
+      zoomStateRef.current = zoomRef.current;
+      setZoom((prev) => (Math.abs(prev - zoomRef.current) < 0.0001 ? prev : zoomRef.current));
+      setPan({ x: panRef.current.x, y: panRef.current.y });
+      return;
+    }
     if (Math.abs(zoomRef.current - zoomStateRef.current) > 0.0001) {
       zoomStateRef.current = zoomRef.current;
       setZoom(zoomRef.current);
@@ -1566,6 +1594,9 @@ export default function BranchMap({
     } else {
       scheduleCameraPaint();
     }
+    if (forceUiSync && !immediateUiSync) {
+      scheduleInteractiveUiSync();
+    }
     syncUiState(forceUiSync, immediateUiSync);
   }
 
@@ -1592,6 +1623,7 @@ export default function BranchMap({
         clearTimeout(zoomUiSyncTimeoutRef.current);
         zoomUiSyncTimeoutRef.current = null;
       }
+      stopInteractiveUiSync();
       syncUiState(true, true);
       return;
     }
@@ -1638,6 +1670,7 @@ export default function BranchMap({
       clearTimeout(zoomUiSyncTimeoutRef.current);
       zoomUiSyncTimeoutRef.current = null;
     }
+    stopInteractiveUiSync();
     if (forceUiSync) {
       syncUiState(true, true);
     }
@@ -1647,6 +1680,7 @@ export default function BranchMap({
     if (zoomUiSyncTimeoutRef.current === null) return;
     clearTimeout(zoomUiSyncTimeoutRef.current);
     zoomUiSyncTimeoutRef.current = null;
+    stopInteractiveUiSync();
     syncUiState(true, true);
   }
 
@@ -1753,7 +1787,7 @@ export default function BranchMap({
         x: panRef.current.x - e.deltaX,
         y: panRef.current.y - e.deltaY,
       }, zoomRef.current, 'hard');
-      applyCamera(nextPan, zoomRef.current);
+      applyCamera(nextPan, zoomRef.current, true);
       schedulePanUiSync();
     };
 
@@ -1842,7 +1876,7 @@ export default function BranchMap({
         x: panStartRef.current.panX + dx,
         y: panStartRef.current.panY + dy,
       }, zoomRef.current, 'hard');
-      applyCamera(nextPan, zoomRef.current);
+      applyCamera(nextPan, zoomRef.current, true);
     };
     const onUp = () => {
       isPanningRef.current = false;
@@ -4250,8 +4284,9 @@ export default function BranchMap({
   const NODE_FRAME_FOOTER_META_PAIR_GAP_PX = 8;
   const NODE_FRAME_FOOTER_META_ZOOM_MIN = 3.5;
   const NODE_FRAME_MESSAGE_RENDER_OFFSET_Y_PX = 0;
-  /** Tooltips — stays readable on card surfaces. */
-  const NODE_FRAME_LABEL_COLOR = '#78716c';
+  const NODE_FRAME_VIEWPORT_PREWARM_SCALE = 4;
+  const NODE_FRAME_VIEWPORT_VISIBLE_SCALE = 2;
+  const SHOW_NODE_VIEWPORT_BANDS = true;
   /** Branch name / sha / stack count row above each node — slightly darker than default rect stroke for legibility. */
   const NODE_FRAME_BRANCH_TITLE_COLOR = '#B3B3B3';
   /** Commit message inside the rectangle keeps the legacy neutral when idle. */
@@ -4328,19 +4363,28 @@ export default function BranchMap({
     strokeWidth: number,
   ): { lines: string[]; fontSize: number; lineHeight: number } => {
     const label = message?.trim().replace(/\s+/g, ' ');
-    const availableWidth = Math.max(
-      0,
-      rectSize.width - strokeWidth - nodeFrameMessageInsetX * 2,
-    );
+    const availableWidth = Math.max(0, rectSize.width - strokeWidth - nodeFrameMessageInsetX * 2);
     const availableHeight =
       rectSize.height - strokeWidth - nodeFrameMessageInsetTop - nodeFrameMessageInsetBottom;
     if (!label || availableWidth <= 0 || availableHeight <= 0) {
       return { lines: [], fontSize: 0, lineHeight: 0 };
     }
 
-    const fontSize = nodeFrameMessageFontSize;
-    const lineHeight = fontSize * 1.08;
-    const maxLines = Math.max(1, Math.floor(availableHeight / lineHeight));
+    const quantizedFontSize = quantizeForCache(nodeFrameMessageFontSize, 0.25);
+    const quantizedWidth = quantizeForCache(availableWidth, 0.5);
+    const quantizedHeight = quantizeForCache(availableHeight, 0.5);
+    const cacheKey = [
+      quantizedFontSize,
+      quantizedWidth,
+      quantizedHeight,
+      label,
+    ].join('|');
+    const cached = wrappedNodeMessageCache.get(cacheKey);
+    if (cached) return cached;
+
+    const fontSize = quantizedFontSize;
+    const lineHeight = quantizeForCache(fontSize * 1.08, 0.25);
+    const maxLines = Math.max(1, Math.floor(quantizedHeight / lineHeight));
     if (maxLines <= 0) return { lines: [], fontSize, lineHeight };
 
     const lines: string[] = [];
@@ -4388,7 +4432,9 @@ export default function BranchMap({
       remaining = rest;
     }
 
-    return { lines, fontSize, lineHeight };
+    const result = { lines, fontSize, lineHeight };
+    wrappedNodeMessageCache.set(cacheKey, result);
+    return result;
   };
   const scaledNodeSize = NODE_SIZE;
   const nodeRectSize = (_count: number) => commitRectSize(scaledNodeSize, 0);
@@ -4537,6 +4583,40 @@ export default function BranchMap({
   function clearMainBranchHover() {
     setHoveredBranch((current) => (current === defaultBranch ? null : current));
   }
+  function getNodeViewportPresence(
+    centerX: number,
+    centerY: number,
+    rectSize: ReturnType<typeof commitRectSize>,
+    visibleScale = 1,
+    prewarmScale = visibleScale,
+  ): 'culled' | 'prewarm' | 'visible' {
+    if (viewportSize.width <= 0 || viewportSize.height <= 0) return 'visible';
+    const scale = layerCameraScale;
+    const visibleViewportHeight = Math.max(0, viewportSize.height - mapTopInset);
+    const visiblePaddingPxX = Math.max(0, (viewportSize.width * visibleScale - viewportSize.width) / 2);
+    const visiblePaddingPxY = Math.max(0, (visibleViewportHeight * visibleScale - visibleViewportHeight) / 2);
+    const prewarmPaddingPxX = Math.max(0, (viewportSize.width * prewarmScale - viewportSize.width) / 2);
+    const prewarmPaddingPxY = Math.max(0, (visibleViewportHeight * prewarmScale - visibleViewportHeight) / 2);
+    const screenLeft =
+      panRef.current.x + graphOffsetX + (graphContentTranslateX + centerX - rectSize.width / 2) * scale.x;
+    const screenRight =
+      panRef.current.x + graphOffsetX + (graphContentTranslateX + centerX + rectSize.width / 2) * scale.x;
+    const screenTop =
+      panRef.current.y + graphOffsetY + (graphContentTranslateY + centerY - rectSize.height / 2) * scale.y;
+    const screenBottom =
+      panRef.current.y + graphOffsetY + (graphContentTranslateY + centerY + rectSize.height / 2) * scale.y;
+
+    const intersects = (paddingPxX: number, paddingPxY: number) => (
+      screenRight >= -paddingPxX &&
+      screenLeft <= viewportSize.width + paddingPxX &&
+      screenBottom >= mapTopInset - paddingPxY &&
+      screenTop <= viewportSize.height + paddingPxY
+    );
+
+    if (intersects(visiblePaddingPxX, visiblePaddingPxY)) return 'visible';
+    if (intersects(prewarmPaddingPxX, prewarmPaddingPxY)) return 'prewarm';
+    return 'culled';
+  }
   function renderCommitNodeShapeRect({
     x,
     y,
@@ -4637,27 +4717,58 @@ export default function BranchMap({
     footerMetaDate?: string;
     isUncommitted?: boolean;
   }) {
-    const wrappedInnerText = innerText?.trim()
-      ? wrapNodeFrameMessage(innerText, rectSize, strokeWidth)
-      : { lines: [], fontSize: 0, lineHeight: 0 };
+    const nodeViewportPresence = getNodeViewportPresence(
+      centerX,
+      centerY,
+      rectSize,
+      NODE_FRAME_VIEWPORT_VISIBLE_SCALE,
+      NODE_FRAME_VIEWPORT_PREWARM_SCALE,
+    );
+    const shouldRenderNodeDetails = nodeViewportPresence !== 'culled';
+    const nodeDetailsTransitionStyle: React.CSSProperties = {
+      opacity: nodeViewportPresence === 'visible' ? 1 : 0,
+      filter: nodeViewportPresence === 'visible' ? 'blur(0px)' : 'blur(4px)',
+      transition: 'opacity 160ms ease, filter 200ms ease',
+      willChange: 'opacity, filter',
+    };
+    const wrappedInnerText =
+      shouldRenderNodeDetails && innerText?.trim()
+        ? wrapNodeFrameMessage(innerText, rectSize, strokeWidth)
+        : { lines: [], fontSize: 0, lineHeight: 0 };
     const shouldShowFooterMeta = zoom >= NODE_FRAME_FOOTER_META_ZOOM_MIN;
     const trimmedFooterMetaAuthor = footerMetaAuthor?.trim();
     const trimmedFooterMetaDate = footerMetaDate?.trim();
     const footerMetaMaxWidth = Math.max(0, rectSize.width - strokeWidth - nodeFrameMessageInsetX * 2);
     const hasFooterMeta = !!trimmedFooterMetaAuthor && !!trimmedFooterMetaDate;
-    const renderedFooterMetaDate = hasFooterMeta
-      ? trimTextToWidth(trimmedFooterMetaDate, footerMetaMaxWidth * 0.65, nodeFrameMessageFontSize)
-      : '';
-    const footerMetaDateWidth = renderedFooterMetaDate
-      ? estimateSvgTextWidth(renderedFooterMetaDate, nodeFrameMessageFontSize)
-      : 0;
-    const renderedFooterMetaAuthor = hasFooterMeta
-      ? trimTextToWidth(
+    let renderedFooterMetaDate = '';
+    let renderedFooterMetaAuthor = '';
+    if (shouldRenderNodeDetails && hasFooterMeta) {
+      const footerCacheKey = [
+        quantizeForCache(nodeFrameMessageFontSize, 0.25),
+        quantizeForCache(footerMetaMaxWidth, 0.5),
+        trimmedFooterMetaAuthor,
+        trimmedFooterMetaDate,
+      ].join('|');
+      const cachedFooterMeta = footerMetaLayoutCache.get(footerCacheKey);
+      if (cachedFooterMeta) {
+        renderedFooterMetaAuthor = cachedFooterMeta.author;
+        renderedFooterMetaDate = cachedFooterMeta.date;
+      } else {
+        renderedFooterMetaDate = trimTextToWidth(trimmedFooterMetaDate, footerMetaMaxWidth * 0.65, nodeFrameMessageFontSize);
+        const footerMetaDateWidth = renderedFooterMetaDate
+          ? estimateSvgTextWidth(renderedFooterMetaDate, nodeFrameMessageFontSize)
+          : 0;
+        renderedFooterMetaAuthor = trimTextToWidth(
           trimmedFooterMetaAuthor,
           Math.max(0, footerMetaMaxWidth - footerMetaDateWidth - nodeFrameFooterMetaPairGap),
           nodeFrameMessageFontSize,
-        )
-      : '';
+        );
+        footerMetaLayoutCache.set(footerCacheKey, {
+          author: renderedFooterMetaAuthor,
+          date: renderedFooterMetaDate,
+        });
+      }
+    }
     const footerMetaTransitionStyle: React.CSSProperties = {
       opacity: shouldShowFooterMeta ? 1 : 0,
       filter: shouldShowFooterMeta ? 'blur(0px)' : 'blur(3px)',
@@ -4697,6 +4808,7 @@ export default function BranchMap({
             fontWeight={NODE_FRAME_LABEL_WEIGHT}
             pointerEvents="none"
             fontSize={wrappedInnerText.fontSize}
+            style={nodeDetailsTransitionStyle}
             y={
               centerY -
               rectSize.height / 2 +
@@ -4734,7 +4846,10 @@ export default function BranchMap({
               fontWeight={NODE_FRAME_LABEL_WEIGHT}
               pointerEvents="none"
               fontSize={nodeFrameMessageFontSize}
-              style={footerMetaTransitionStyle}
+              style={{
+                ...footerMetaTransitionStyle,
+                ...nodeDetailsTransitionStyle,
+              }}
             >
               {renderedFooterMetaAuthor}
             </text>
@@ -4753,7 +4868,10 @@ export default function BranchMap({
               fontWeight={NODE_FRAME_LABEL_WEIGHT}
               pointerEvents="none"
               fontSize={nodeFrameMessageFontSize}
-              style={footerMetaTransitionStyle}
+              style={{
+                ...footerMetaTransitionStyle,
+                ...nodeDetailsTransitionStyle,
+              }}
             >
               {renderedFooterMetaDate}
             </text>
@@ -8014,6 +8132,66 @@ export default function BranchMap({
 
         {/* Empty state removed as per user request */}
       </div>
+
+      {SHOW_NODE_VIEWPORT_BANDS && viewportSize.width > 0 && viewportSize.height > 0 && (
+        <div className="absolute inset-0 pointer-events-none overflow-visible z-40">
+          {(() => {
+            const visibleViewportHeight = Math.max(0, viewportSize.height - mapTopInset);
+            const prewarmPaddingX = Math.max(
+              0,
+              (viewportSize.width * NODE_FRAME_VIEWPORT_PREWARM_SCALE - viewportSize.width) / 2,
+            );
+            const prewarmPaddingY = Math.max(
+              0,
+              (visibleViewportHeight * NODE_FRAME_VIEWPORT_PREWARM_SCALE - visibleViewportHeight) / 2,
+            );
+            const visiblePaddingX = Math.max(
+              0,
+              (viewportSize.width * NODE_FRAME_VIEWPORT_VISIBLE_SCALE - viewportSize.width) / 2,
+            );
+            const visiblePaddingY = Math.max(
+              0,
+              (visibleViewportHeight * NODE_FRAME_VIEWPORT_VISIBLE_SCALE - visibleViewportHeight) / 2,
+            );
+            return (
+              <>
+          <div
+            style={{
+              position: 'absolute',
+              left: -prewarmPaddingX,
+              top: mapTopInset - prewarmPaddingY,
+              width: viewportSize.width + prewarmPaddingX * 2,
+              height: Math.max(
+                0,
+                visibleViewportHeight + prewarmPaddingY * 2,
+              ),
+              border: '1px solid rgba(245, 158, 11, 0.65)',
+              background: 'rgba(245, 158, 11, 0.06)',
+              borderRadius: 12,
+              boxSizing: 'border-box',
+            }}
+          />
+          <div
+            style={{
+              position: 'absolute',
+              left: -visiblePaddingX,
+              top: mapTopInset - visiblePaddingY,
+              width: viewportSize.width + visiblePaddingX * 2,
+              height: Math.max(
+                0,
+                visibleViewportHeight + visiblePaddingY * 2,
+              ),
+              border: '1px solid rgba(59, 130, 246, 0.78)',
+              background: 'rgba(59, 130, 246, 0.04)',
+              borderRadius: 10,
+              boxSizing: 'border-box',
+            }}
+          />
+              </>
+            );
+          })()}
+        </div>
+      )}
 
       {/* Bottom chrome: timeline controls — absolute so it stays inside the map
           container and respects visibility:hidden when the diff view is shown. */}
