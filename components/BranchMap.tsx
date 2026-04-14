@@ -61,6 +61,11 @@ const GRID_LANE_MIN_SEPARATION = Math.max(GRID_ROW_GAP, GRID_LANE_WIDTH);
  * Lower values are less conservative and keep columns more stable across clump toggles.
  */
 const BRANCH_COLUMN_REUSE_TIME_GAP_FACTOR = 0.35;
+/**
+ * Row sharing tolerance for collapsed clumps. Rows can be reused when timestamps are
+ * close and lane-level safety checks pass.
+ */
+const GRID_ROW_SHARE_TIME_TOLERANCE_FACTOR = 0.52;
 const GRID_ROUTE_CORNER_R = 9;
 const GRID_MERGE_EVENT_ROW_NUDGE = 0.001;
 const LOCAL_UNPUSHED_GRAY = '#E0E0E0';
@@ -2537,14 +2542,76 @@ export default function BranchMap({
 
     const rowByEntity = new Map<string, number>();
     const rowTimeByIndex = new Map<number, number>();
+    const rowLanesByIndex = new Map<number, Set<string>>();
+    const rowExclusiveByIndex = new Map<number, boolean>();
     let nextRowIndex = 0;
-    const claimRow = (entityKey: string, rowTime: number): number => {
+    const rowShareTolerance = GRID_EVENT_GAP * GRID_ROW_SHARE_TIME_TOLERANCE_FACTOR;
+    const registerRowUsage = (
+      row: number,
+      lane: string,
+      options: { exclusive: boolean; rowTime: number },
+    ) => {
+      const existingLanes = rowLanesByIndex.get(row);
+      if (existingLanes) {
+        existingLanes.add(lane);
+      } else {
+        rowLanesByIndex.set(row, new Set([lane]));
+      }
+      const existingTime = rowTimeByIndex.get(row);
+      rowTimeByIndex.set(
+        row,
+        existingTime == null || !Number.isFinite(existingTime)
+          ? options.rowTime
+          : Math.max(existingTime, options.rowTime),
+      );
+      if (options.exclusive) {
+        rowExclusiveByIndex.set(row, true);
+      } else if (!rowExclusiveByIndex.has(row)) {
+        rowExclusiveByIndex.set(row, false);
+      }
+    };
+    const claimRow = (
+      entityKey: string,
+      rowTime: number,
+      options: { lane: string; allowShare: boolean; exclusive: boolean },
+    ): number => {
       const existing = rowByEntity.get(entityKey);
-      if (existing != null) return existing;
-      const claimed = nextRowIndex;
-      nextRowIndex += 1;
+      if (existing != null) {
+        registerRowUsage(existing, options.lane, { exclusive: options.exclusive, rowTime });
+        return existing;
+      }
+
+      let claimed: number | null = null;
+      if (options.allowShare && Number.isFinite(rowShareTolerance) && rowShareTolerance > 0) {
+        let bestCandidate: { row: number; timeDelta: number; laneCount: number } | null = null;
+        for (let row = 0; row < nextRowIndex; row += 1) {
+          if (rowExclusiveByIndex.get(row)) continue;
+          const lanes = rowLanesByIndex.get(row);
+          if (lanes?.has(options.lane)) continue;
+          const existingTime = rowTimeByIndex.get(row);
+          if (existingTime == null || !Number.isFinite(existingTime)) continue;
+          const timeDelta = Math.abs(existingTime - rowTime);
+          if (timeDelta > rowShareTolerance) continue;
+          const laneCount = lanes?.size ?? 0;
+          if (
+            bestCandidate == null ||
+            timeDelta < bestCandidate.timeDelta ||
+            (timeDelta === bestCandidate.timeDelta && laneCount < bestCandidate.laneCount)
+          ) {
+            bestCandidate = { row, timeDelta, laneCount };
+          }
+        }
+        if (bestCandidate) {
+          claimed = bestCandidate.row;
+        }
+      }
+
+      if (claimed == null) {
+        claimed = nextRowIndex;
+        nextRowIndex += 1;
+      }
       rowByEntity.set(entityKey, claimed);
-      rowTimeByIndex.set(claimed, rowTime);
+      registerRowUsage(claimed, options.lane, { exclusive: options.exclusive, rowTime });
       return claimed;
     };
 
@@ -2584,14 +2651,33 @@ export default function BranchMap({
             if (slotIndex != null) return `branch-slot:${clump.lane}:${slotIndex}`;
             return fallbackEntityKey;
           })();
-          const claimedRow = claimRow(entityKey, rowTime);
+          const claimedRow = claimRow(entityKey, rowTime, {
+            lane: clump.lane,
+            allowShare: false,
+            exclusive: true,
+          });
           if (firstRow == null) firstRow = claimedRow;
           if (sha) assignShaRow(sha, claimedRow);
           if (slotIndex != null) assignSlotRow(slotIndex, claimedRow);
         }
-        clump.rowIndex = firstRow ?? claimRow(`clump:${clump.key}`, clump.latestTime);
+        clump.rowIndex = firstRow ?? claimRow(`clump:${clump.key}`, clump.latestTime, {
+          lane: clump.lane,
+          allowShare: false,
+          exclusive: true,
+        });
       } else {
-        const clumpRow = claimRow(`clump:${clump.key}`, clump.latestTime);
+        // For collapsed branch clumps, prefer the older edge of the clump window so
+        // sibling branches that fork around the same point can share rows even when
+        // their head commit times drift apart.
+        const shareRowTime =
+          clump.lane === 'main' || clump.lane === 'main-merge'
+            ? clump.latestTime
+            : clump.earliestTime;
+        const clumpRow = claimRow(`clump:${clump.key}`, shareRowTime, {
+          lane: clump.lane,
+          allowShare: true,
+          exclusive: false,
+        });
         clump.rowIndex = clumpRow;
         clump.shas.forEach((sha) => { assignShaRow(sha, clumpRow); });
         clump.slotIndices?.forEach((slotIndex) => { assignSlotRow(slotIndex, clumpRow); });
@@ -2605,7 +2691,11 @@ export default function BranchMap({
 
     // Ensure child branch clumps are always allocated above their parent fork segment.
     // This is a structural layout rule (allocator-level), not a render-time clamp.
-    const shiftBranchRowsToFloor = (branchName: string, floorRowExclusive: number): boolean => {
+    const shiftBranchRowsToFloor = (
+      branchName: string,
+      floorRowExclusive: number,
+      options?: { exactOffset?: boolean; avoidDisplacingOthers?: boolean },
+    ): boolean => {
       const slotPrefix = `${branchName}::slot:`;
       const shaPrefix = `${branchName}::`;
       const slotEntries = Array.from(gridRowByBranchSlot.entries())
@@ -2625,7 +2715,15 @@ export default function BranchMap({
       const floorRow = floorRowExclusive + 1;
       if (!Number.isFinite(floorRow)) return false;
 
-      let delta = Math.max(0, floorRow - minRow);
+      const exactOffset = options?.exactOffset ?? false;
+      const avoidDisplacingOthers = options?.avoidDisplacingOthers ?? false;
+      let delta = exactOffset
+        ? floorRow - minRow
+        : Math.max(0, floorRow - minRow);
+      if (delta < -minRow) delta = -minRow;
+      // If already at-or-above the floor, do not run collision displacement.
+      // Allow legitimate shared rows for sibling branches with matching timing.
+      if (delta === 0) return false;
       const currentRows = Array.from(new Set(allRows)).sort((a, b) => a - b);
       let shiftedOthers = false;
       const occupiedRowsByOthers = (): Set<number> => {
@@ -2670,18 +2768,18 @@ export default function BranchMap({
           rowTimes[Math.min(Math.max(0, thresholdRow), Math.max(0, rowTimes.length - 1))] ?? 0;
         rowTimes.splice(thresholdRow, 0, fallbackTime);
       };
-      for (let guard = 0; guard < 2000; guard += 1) {
-        const occupied = occupiedRowsByOthers();
-        const collisions = currentRows
-          .map((row) => row + delta)
-          .filter((row) => occupied.has(row));
-        if (collisions.length === 0) break;
-        const firstCollision = Math.min(...collisions);
-        shiftOtherRowsAtOrAbove(firstCollision);
-        shiftedOthers = true;
+      if (!avoidDisplacingOthers) {
+        for (let guard = 0; guard < 2000; guard += 1) {
+          const occupied = occupiedRowsByOthers();
+          const collisions = currentRows
+            .map((row) => row + delta)
+            .filter((row) => occupied.has(row));
+          if (collisions.length === 0) break;
+          const firstCollision = Math.min(...collisions);
+          shiftOtherRowsAtOrAbove(firstCollision);
+          shiftedOthers = true;
+        }
       }
-      if (delta === 0) return shiftedOthers;
-
       slotEntries.forEach(([key, row]) => {
         gridRowByBranchSlot.set(key, row + delta);
       });
@@ -2712,7 +2810,15 @@ export default function BranchMap({
 
     const parentAnchorRowForBranch = (branch: Branch): number | null => {
       const parentName = renderParentBranchName(branch);
-      if (!parentName || parentName === defaultBranch || parentName === branch.name) return null;
+      if (!parentName || parentName === branch.name) return null;
+      if (parentName === defaultBranch) {
+        // Lightweight anchor for synthetic/main-parent branches: pin to the fork SHA row
+        // when available, without scanning/splitting main previews.
+        const forkSha = branch.divergedFromSha ?? branch.createdFromSha;
+        if (!forkSha) return null;
+        const row = gridRowBySha.get(forkSha);
+        return row == null || !Number.isFinite(row) ? null : row;
+      }
       const parentBranch = branchByName.get(parentName);
       if (!parentBranch) return null;
       const parentPreviews = renderableBranchPreviews(parentBranch);
@@ -2769,15 +2875,29 @@ export default function BranchMap({
       return depth;
     };
 
+    const syntheticBranchNames = new Set(
+      activeBranches
+        .filter((branch) => renderableBranchPreviews(branch).length === 0)
+        .map((branch) => branch.name),
+    );
+
     // Iterate to settle cascaded parent->child constraints across nested branches.
     for (let pass = 0; pass < activeBranches.length; pass += 1) {
       let changed = false;
+      const parentAnchorRowCache = new Map<string, number | null>();
+      const cachedParentAnchorRowForBranch = (branch: Branch): number | null => {
+        const cached = parentAnchorRowCache.get(branch.name);
+        if (cached !== undefined) return cached;
+        const computed = parentAnchorRowForBranch(branch);
+        parentAnchorRowCache.set(branch.name, computed);
+        return computed;
+      };
       const branchShiftOrder = [...activeBranches].sort((a, b) => {
         const depthDiff = branchDepth(a.name) - branchDepth(b.name);
         if (depthDiff !== 0) return depthDiff;
         const floorDiff =
-          (parentAnchorRowForBranch(a) ?? Number.NEGATIVE_INFINITY) -
-          (parentAnchorRowForBranch(b) ?? Number.NEGATIVE_INFINITY);
+          (cachedParentAnchorRowForBranch(a) ?? Number.NEGATIVE_INFINITY) -
+          (cachedParentAnchorRowForBranch(b) ?? Number.NEGATIVE_INFINITY);
         if (floorDiff !== 0) return floorDiff;
         const forkDiff = branchForkMs(a) - branchForkMs(b);
         if (forkDiff !== 0) return forkDiff;
@@ -2786,9 +2906,22 @@ export default function BranchMap({
         return a.name.localeCompare(b.name);
       });
       for (const branch of branchShiftOrder) {
+        const isSynthetic = syntheticBranchNames.has(branch.name);
+        const isMainParent = renderParentBranchName(branch) === defaultBranch;
         const parentAnchorRow = parentAnchorRowForBranch(branch);
         if (parentAnchorRow == null) continue;
-        changed = shiftBranchRowsToFloor(branch.name, parentAnchorRow) || changed;
+        changed = shiftBranchRowsToFloor(branch.name, parentAnchorRow, {
+          // Empty/synthetic branches (no concrete commits) should sit at a stable
+          // one-row offset from the parent anchor.
+          // Keep main-parent synthetic branches on a soft floor so siblings can
+          // still share the same collapsed row when timing is close.
+          exactOffset:
+            syntheticBranchNames.has(branch.name) &&
+            renderParentBranchName(branch) !== defaultBranch,
+          // For synthetic branches off main, enforce parent+1 floor without
+          // displacing unrelated rows; this preserves shared-row collapsing.
+          avoidDisplacingOthers: isSynthetic && isMainParent,
+        }) || changed;
       }
       if (!changed) break;
     }
