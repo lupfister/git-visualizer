@@ -37,6 +37,8 @@ export interface GitStashEntry {
 /** One linked or main checkout directory for a single Git repository (see `git worktree`). */
 export interface WorktreeInfo {
   path: string;
+  /** False when the directory was deleted but Git still lists the worktree (run `git worktree prune`). */
+  pathExists: boolean;
   headSha: string;
   branchName: string | null;
   parentSha: string | null;

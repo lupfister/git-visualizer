@@ -4324,13 +4324,19 @@ export default function BranchMap({
     return true;
   }
 
+  /** Other worktree with an on-disk checkout (Git can still list deleted folders until prune). */
+  function isUsableOtherWorktree(wt: WorktreeInfo): boolean {
+    if (wt.pathExists === false) return false;
+    return isOtherWorktree(wt);
+  }
+
   function otherWorktreeMatchesBranchCommit(
     branchName: string,
     commitFullSha: string,
     commitSha: string,
   ): boolean {
     for (const wt of worktrees) {
-      if (!isOtherWorktree(wt)) continue;
+      if (!isUsableOtherWorktree(wt)) continue;
       if (wt.branchName) {
         if (wt.branchName === branchName && shaMatchesGitRef(wt.headSha, commitFullSha)) return true;
         continue;
@@ -4353,7 +4359,7 @@ export default function BranchMap({
     commitSha: string,
   ): WorktreeInfo | null {
     for (const wt of worktrees) {
-      if (!isOtherWorktree(wt)) continue;
+      if (!isUsableOtherWorktree(wt)) continue;
       if (wt.branchName) {
         if (wt.branchName === branchName && shaMatchesGitRef(wt.headSha, commitFullSha)) return wt;
         continue;
@@ -4373,7 +4379,7 @@ export default function BranchMap({
   /** Other worktree has this branch checked out (same branch ref cannot be checked out twice). */
   function findWorktreeWithBranchCheckedOut(branchName: string): WorktreeInfo | null {
     for (const wt of worktrees) {
-      if (!isOtherWorktree(wt)) continue;
+      if (!isUsableOtherWorktree(wt)) continue;
       if (wt.branchName === branchName) return wt;
     }
     return null;
@@ -4382,7 +4388,7 @@ export default function BranchMap({
   /** Match by HEAD sha only (when click handlers omit branchName). */
   function findOtherWorktreeByHeadSha(commitFullSha: string, commitShortSha: string): WorktreeInfo | null {
     for (const wt of worktrees) {
-      if (!isOtherWorktree(wt)) continue;
+      if (!isUsableOtherWorktree(wt)) continue;
       if (shaMatchesGitRef(wt.headSha, commitFullSha) || shaMatchesGitRef(wt.headSha, commitShortSha)) {
         return wt;
       }
@@ -9200,6 +9206,12 @@ export default function BranchMap({
                                 <span className="ml-1 text-amber-600 dark:text-amber-400">prunable</span>
                               )}
                             </div>
+                            {wt.pathExists === false && (
+                              <p className="text-[10px] text-amber-600 dark:text-amber-400 mt-1 leading-snug">
+                                Folder was removed; Git still lists this worktree. Remove here or run{' '}
+                                <span className="font-mono">git worktree prune</span> in the repository.
+                              </p>
+                            )}
                           </div>
                           {isOtherWorktree(wt) && (
                             <button
@@ -9218,7 +9230,8 @@ export default function BranchMap({
                     </ul>
                     <p className="text-[10px] text-muted-foreground px-2 pt-1">
                       Amber highlights mark commits checked out in another worktree; blue is this window. Cmd+click (Ctrl+click on
-                      Windows/Linux) or double-click an amber commit to target that worktree in the app.
+                      Windows/Linux) or double-click an amber commit to target that worktree in the app. Stale rows (missing
+                      folder) stay listed until you remove them or run <span className="font-mono">git worktree prune</span>.
                     </p>
                   </div>
                 )}

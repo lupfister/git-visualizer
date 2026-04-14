@@ -6,6 +6,8 @@ use std::path::Path;
 #[serde(rename_all = "camelCase")]
 pub struct WorktreeInfo {
     pub path: String,
+    /// False when the directory was removed but Git still has a worktree registration.
+    pub path_exists: bool,
     pub head_sha: String,
     pub branch_name: Option<String>,
     pub parent_sha: Option<String>,
@@ -81,12 +83,18 @@ pub fn list_worktrees(repo: &Path) -> Result<Vec<WorktreeInfo>, GitError> {
         };
 
         let wt_path = Path::new(&partial.path);
-        let parent_sha = git_parent_sha(wt_path).ok().flatten();
+        let path_exists = wt_path.exists();
+        let parent_sha = if path_exists {
+            git_parent_sha(wt_path).ok().flatten()
+        } else {
+            None
+        };
 
         let is_current = worktree_paths_are_same(repo, wt_path);
 
         result.push(WorktreeInfo {
             path: partial.path,
+            path_exists,
             head_sha,
             branch_name: partial.branch_name,
             parent_sha,

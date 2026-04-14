@@ -970,6 +970,7 @@ function App() {
         return na === nb || na.toLowerCase() === nb.toLowerCase();
       };
       const other = worktrees.find((wt) => {
+        if (wt.pathExists === false) return false;
         if (wt.isCurrent) return false;
         if (repoPath && pathsProbablyEqual(wt.path, repoPath)) return false;
         return wt.branchName === target.branchName;
