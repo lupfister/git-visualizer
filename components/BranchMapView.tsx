@@ -42,6 +42,8 @@ interface Props {
   worktrees?: WorktreeInfo[];
   onRemoveWorktree?: (worktreePath: string, force: boolean) => Promise<void> | void;
   removeWorktreeInProgress?: boolean;
+  /** Cmd/Ctrl+click or double-click an amber (other worktree) commit to target that worktree directory in the app. */
+  onSwitchToWorktree?: (worktreePath: string) => void | Promise<void>;
   onStashLocalChanges?: () => Promise<void> | void;
   stashInProgress?: boolean;
   stashDisabled?: boolean;
@@ -82,6 +84,7 @@ export default function BranchMapView({
   worktrees = [],
   onRemoveWorktree,
   removeWorktreeInProgress = false,
+  onSwitchToWorktree,
   onStashLocalChanges,
   stashInProgress = false,
   stashDisabled = false,
@@ -137,6 +140,7 @@ export default function BranchMapView({
             worktrees={worktrees}
             onRemoveWorktree={onRemoveWorktree}
             removeWorktreeInProgress={removeWorktreeInProgress}
+            onSwitchToWorktree={onSwitchToWorktree}
             onStashLocalChanges={onStashLocalChanges}
             stashInProgress={stashInProgress}
             stashDisabled={stashDisabled}

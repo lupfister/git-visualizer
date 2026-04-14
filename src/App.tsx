@@ -93,17 +93,18 @@ function App() {
     return all;
   }
 
-  async function refreshRepoGitState(path: string) {
+  async function refreshRepoGitState(path: string, resolvedDefaultBranch?: string) {
+    const branchDef = resolvedDefaultBranch ?? defaultBranch;
     const [branchList, nodes, directResult, unpushedDirectResult, confirmedCheckedOutRef, worktreeList, stashList] = await Promise.all([
       invoke<Branch[]>('get_branches', { repoPath: path }),
-      fetchAllMergeNodes(path, defaultBranch),
+      fetchAllMergeNodes(path, branchDef),
       invoke<DirectCommit[]>('get_direct_commits', {
         repoPath: path,
-        branch: defaultBranch,
+        branch: branchDef,
       }),
       invoke<DirectCommit[]>('get_unpushed_direct_commits', {
         repoPath: path,
-        branch: defaultBranch,
+        branch: branchDef,
       }).catch(() => []),
       invoke<CheckedOutRef>('get_checked_out_ref', {
         repoPath: path,
@@ -112,7 +113,7 @@ function App() {
       invoke<GitStashEntry[]>('list_stashes', { repoPath: path }).catch(() => []),
     ]);
     const unpushedShaEntries = await Promise.all(
-      [defaultBranch, ...branchList.map((branch) => branch.name)].map(async (branchName) => {
+      [branchDef, ...branchList.map((branch) => branch.name)].map(async (branchName) => {
         const shas = await invoke<string[]>('get_branch_unpushed_commit_shas', {
           repoPath: path,
           branch: branchName,
@@ -128,6 +129,35 @@ function App() {
     setCheckedOutRef(confirmedCheckedOutRef);
     setWorktrees(worktreeList);
     setStashes(stashList);
+  }
+
+  async function handleSwitchToWorktree(targetPath: string) {
+    setCommitSwitchFeedback(null);
+    setMapLoading(true);
+    try {
+      const [info, def] = await Promise.all([
+        invoke<{ name: string; path: string }>('get_repo_info', { repoPath: targetPath }),
+        invoke<string>('get_default_branch', { repoPath: targetPath }),
+      ]);
+      setRepoName(info.name);
+      setDefaultBranch(def);
+      setRepoPath(targetPath);
+      await refreshRepoGitState(targetPath, def);
+      void fetchGitHubData(targetPath);
+      setCommitSwitchFeedback({
+        kind: 'success',
+        message: `Now targeting worktree at ${targetPath}`,
+      });
+    } catch (e) {
+      const message = e instanceof Error ? e.message : String(e);
+      setCommitSwitchFeedback({
+        kind: 'error',
+        message,
+      });
+      console.error('Failed to switch worktree:', message);
+    } finally {
+      setMapLoading(false);
+    }
   }
 
   async function handleRemoveWorktree(worktreePath: string, force: boolean) {
@@ -1478,6 +1508,7 @@ function App() {
               worktrees={worktrees}
               onRemoveWorktree={handleRemoveWorktree}
               removeWorktreeInProgress={removeWorktreeInProgress}
+              onSwitchToWorktree={handleSwitchToWorktree}
               onStashLocalChanges={handleStashLocalChanges}
               stashInProgress={stashInProgress}
               stashDisabled={!checkedOutRef?.hasUncommittedChanges}

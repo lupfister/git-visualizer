@@ -786,6 +786,8 @@ interface BranchMapProps {
   worktrees?: WorktreeInfo[];
   onRemoveWorktree?: (worktreePath: string, force: boolean) => Promise<void> | void;
   removeWorktreeInProgress?: boolean;
+  /** Cmd/Ctrl+click or double-click an amber (other worktree) commit to target that worktree directory. */
+  onSwitchToWorktree?: (worktreePath: string) => void | Promise<void>;
   onStashLocalChanges?: () => Promise<void> | void;
   stashInProgress?: boolean;
   stashDisabled?: boolean;
@@ -826,6 +828,7 @@ export default function BranchMap({
   worktrees = [],
   onRemoveWorktree,
   removeWorktreeInProgress = false,
+  onSwitchToWorktree,
   onStashLocalChanges,
   stashInProgress = false,
   stashDisabled = false,
@@ -986,6 +989,20 @@ export default function BranchMap({
     event.stopPropagation();
     clearTransientHoverState();
     const shouldCheckout = event.ctrlKey || event.metaKey || event.detail >= 2;
+    if (
+      shouldCheckout &&
+      commitSha &&
+      commitSha !== 'WORKING_TREE' &&
+      branchName &&
+      onSwitchToWorktree
+    ) {
+      const shortSha = commitSha.length >= 40 ? commitSha.slice(0, 7) : commitSha;
+      const otherWt = findOtherWorktreeForCommit(branchName, commitSha, shortSha);
+      if (otherWt) {
+        void onSwitchToWorktree(otherWt.path);
+        return;
+      }
+    }
     const isFreshCopyBranchSelection = !!(branchName && freshCopyBranchNames.has(branchName));
     if (branchName) {
       if (event.shiftKey) {
@@ -4308,6 +4325,29 @@ export default function BranchMap({
       }
     }
     return false;
+  }
+
+  function findOtherWorktreeForCommit(
+    branchName: string,
+    commitFullSha: string,
+    commitSha: string,
+  ): WorktreeInfo | null {
+    for (const wt of worktrees) {
+      if (wt.isCurrent) continue;
+      if (wt.branchName) {
+        if (wt.branchName === branchName && shaMatchesGitRef(wt.headSha, commitFullSha)) return wt;
+        continue;
+      }
+      if (!shaMatchesGitRef(wt.headSha, commitFullSha) && !shaMatchesGitRef(wt.headSha, commitSha)) continue;
+      if (wt.parentSha && branchPreviewContainsSha(branchName, wt.parentSha)) return wt;
+      if (branchPreviewContainsSha(branchName, wt.headSha)) return wt;
+      const branch = activeBranches.find((b) => b.name === branchName);
+      if (branch && shaMatchesGitRef(branch.headSha, wt.headSha)) return wt;
+      if (branchName === defaultBranch) {
+        if (sortedDirectCommits.some((c) => shaMatchesGitRef(c.fullSha, wt.headSha))) return wt;
+      }
+    }
+    return null;
   }
 
   function mergeCheckoutAccent(
@@ -9137,7 +9177,8 @@ export default function BranchMap({
                       ))}
                     </ul>
                     <p className="text-[10px] text-muted-foreground px-2 pt-1">
-                      Amber highlights mark commits checked out in another worktree. Blue is this window.
+                      Amber highlights mark commits checked out in another worktree; blue is this window. Cmd+click (Ctrl+click on
+                      Windows/Linux) or double-click an amber commit to target that worktree in the app.
                     </p>
                   </div>
                 )}
