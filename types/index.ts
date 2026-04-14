@@ -27,6 +27,23 @@ export interface CheckedOutRef {
   hasUncommittedChanges: boolean;
 }
 
+/** One entry from `git stash list` (index 0 = stash@{0}, the newest). */
+export interface GitStashEntry {
+  index: number;
+  baseSha: string;
+  message: string;
+}
+
+/** One linked or main checkout directory for a single Git repository (see `git worktree`). */
+export interface WorktreeInfo {
+  path: string;
+  headSha: string;
+  branchName: string | null;
+  parentSha: string | null;
+  isCurrent: boolean;
+  isPrunable: boolean;
+}
+
 export interface Commit {
   fullSha: string;
   sha: string;
@@ -53,7 +70,7 @@ export interface BranchCommitPreview {
   author: string;
   date: string;
   keywordCloud?: CommitKeyword[];
-  kind?: 'commit' | 'branch-created' | 'uncommitted';
+  kind?: 'commit' | 'branch-created' | 'uncommitted' | 'stash';
 }
 
 export interface AgentPrompt {
@@ -87,7 +104,7 @@ export interface DirectCommit {
   author: string;
   date: string;
   keywordCloud?: CommitKeyword[];
-  kind?: 'commit' | 'uncommitted';
+  kind?: 'commit' | 'uncommitted' | 'stash';
 }
 
 export interface MergeNode {

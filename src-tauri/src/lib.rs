@@ -476,6 +476,18 @@ fn get_checked_out_ref(repo_path: String) -> Result<CheckedOutRef, String> {
     git::get_checked_out_ref(path).map_err(|e| e.to_string())
 }
 
+#[tauri::command]
+fn list_worktrees(repo_path: String) -> Result<Vec<git::WorktreeInfo>, String> {
+    let path = Path::new(&repo_path);
+    git::list_worktrees(path).map_err(|e| e.to_string())
+}
+
+#[tauri::command(rename_all = "camelCase")]
+fn remove_worktree(repo_path: String, worktree_path: String, force: bool) -> Result<(), String> {
+    let path = Path::new(&repo_path);
+    git::remove_git_worktree(path, &worktree_path, force).map_err(|e| e.to_string())
+}
+
 fn list_git_remotes(repo: &Path) -> Result<Vec<String>, String> {
     let output = git::cli::run(repo, &["remote"]).map_err(|e| e.to_string())?;
     Ok(output
@@ -569,6 +581,25 @@ fn checkout_ref(repo_path: String, ref_name: String) -> Result<CheckedOutRef, St
 fn checkout_branch(repo_path: String, branch_name: String) -> Result<CheckedOutRef, String> {
     let path = Path::new(&repo_path);
     git::cli::run(path, &["checkout", &branch_name]).map_err(|e| e.to_string())?;
+    git::get_checked_out_ref(path).map_err(|e| e.to_string())
+}
+
+#[tauri::command(rename_all = "camelCase")]
+fn list_stashes(repo_path: String) -> Result<Vec<git::GitStashEntry>, String> {
+    let path = Path::new(&repo_path);
+    git::list_stashes(path).map_err(|e| e.to_string())
+}
+
+#[tauri::command(rename_all = "camelCase")]
+fn stash_push(repo_path: String, include_untracked: bool) -> Result<(), String> {
+    let path = Path::new(&repo_path);
+    git::stash_push(path, include_untracked).map_err(|e| e.to_string())
+}
+
+#[tauri::command(rename_all = "camelCase")]
+fn apply_stash_restore(repo_path: String, stash_index: u32) -> Result<CheckedOutRef, String> {
+    let path = Path::new(&repo_path);
+    git::apply_stash_restore(path, stash_index).map_err(|e| e.to_string())?;
     git::get_checked_out_ref(path).map_err(|e| e.to_string())
 }
 
@@ -3799,8 +3830,13 @@ pub fn run() {
             get_merge_nodes,
             get_default_branch,
             get_checked_out_ref,
+            list_worktrees,
+            remove_worktree,
             checkout_ref,
             checkout_branch,
+            list_stashes,
+            stash_push,
+            apply_stash_restore,
             push_branch,
             push_current_branch,
             push_all_unpushed_branches,

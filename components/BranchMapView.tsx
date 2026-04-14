@@ -1,4 +1,4 @@
-import { Branch, BranchCommitPreview, BranchPromptMeta, CheckedOutRef, DirectCommit, MergeNode, OpenPR } from '../types';
+import { Branch, BranchCommitPreview, BranchPromptMeta, CheckedOutRef, DirectCommit, MergeNode, OpenPR, WorktreeInfo } from '../types';
 import BranchMap from './BranchMap';
 import BranchGroupView from './BranchGroupView';
 
@@ -35,6 +35,12 @@ interface Props {
   pushInProgress?: boolean;
   onDeleteSelection?: (targets: { branchNames: string[]; discardUncommittedChanges: boolean }) => Promise<void> | void;
   deleteInProgress?: boolean;
+  worktrees?: WorktreeInfo[];
+  onRemoveWorktree?: (worktreePath: string, force: boolean) => Promise<void> | void;
+  removeWorktreeInProgress?: boolean;
+  onStashLocalChanges?: () => Promise<void> | void;
+  stashInProgress?: boolean;
+  stashDisabled?: boolean;
 }
 
 export default function BranchMapView({
@@ -66,6 +72,12 @@ export default function BranchMapView({
   pushInProgress = false,
   onDeleteSelection,
   deleteInProgress = false,
+  worktrees = [],
+  onRemoveWorktree,
+  removeWorktreeInProgress = false,
+  onStashLocalChanges,
+  stashInProgress = false,
+  stashDisabled = false,
 }: Props) {
   // Determine active vs inactive error branches
   const openPRBranchNames = new Set(openPRs.map(p => p.branchName));
@@ -112,6 +124,12 @@ export default function BranchMapView({
             pushInProgress={pushInProgress}
             onDeleteSelection={onDeleteSelection}
             deleteInProgress={deleteInProgress}
+            worktrees={worktrees}
+            onRemoveWorktree={onRemoveWorktree}
+            removeWorktreeInProgress={removeWorktreeInProgress}
+            onStashLocalChanges={onStashLocalChanges}
+            stashInProgress={stashInProgress}
+            stashDisabled={stashDisabled}
           />
         </div>
       ) : (

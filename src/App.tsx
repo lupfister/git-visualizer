@@ -5,7 +5,8 @@ import { getCurrentWindow } from '@tauri-apps/api/window';
 import { ArrowLeft } from 'lucide-react';
 import BranchMapView from '../components/BranchMapView';
 import FolderPickerModal from './FolderPickerModal';
-import type { Branch, BranchCommitPreview, BranchPromptMeta, BranchPromptMarker, CheckedOutRef, Commit, DirectCommit, GitHubAuthStatus, GitHubInfo, MergeNode, OpenPR } from '../types';
+import type { Branch, BranchCommitPreview, BranchPromptMeta, BranchPromptMarker, CheckedOutRef, Commit, DirectCommit, GitHubAuthStatus, GitHubInfo, GitStashEntry, MergeNode, OpenPR, WorktreeInfo } from '../types';
+import { foldStashNodesIntoGraph } from './placeStashNode';
 
 type View = 'landing' | 'map';
 type OpenRepoEventPayload = {
@@ -35,6 +36,8 @@ function App() {
   const [openPRs, setOpenPRs] = useState<OpenPR[]>([]);
   const [defaultBranch, setDefaultBranch] = useState<string>('main');
   const [checkedOutRef, setCheckedOutRef] = useState<CheckedOutRef | null>(null);
+  const [worktrees, setWorktrees] = useState<WorktreeInfo[]>([]);
+  const [removeWorktreeInProgress, setRemoveWorktreeInProgress] = useState(false);
   const [hoveredBranchName, setHoveredBranchName] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);       // button spinner in landing
   const [mapLoading, setMapLoading] = useState(false); // canvas skeleton in map
@@ -61,6 +64,8 @@ function App() {
   const [branchPromptMeta, setBranchPromptMeta] = useState<Record<string, BranchPromptMeta>>({});
   const [branchCommitPreviews, setBranchCommitPreviews] = useState<Record<string, BranchCommitPreview[]>>({});
   const [branchUniqueAheadCounts, setBranchUniqueAheadCounts] = useState<Record<string, number>>({});
+  const [stashes, setStashes] = useState<GitStashEntry[]>([]);
+  const [stashInProgress, setStashInProgress] = useState(false);
 
   const branchMetaLoadKeyRef = useRef<string | null>(null);
 
@@ -88,7 +93,7 @@ function App() {
   }
 
   async function refreshRepoGitState(path: string) {
-    const [branchList, nodes, directResult, unpushedDirectResult, confirmedCheckedOutRef] = await Promise.all([
+    const [branchList, nodes, directResult, unpushedDirectResult, confirmedCheckedOutRef, worktreeList, stashList] = await Promise.all([
       invoke<Branch[]>('get_branches', { repoPath: path }),
       fetchAllMergeNodes(path, defaultBranch),
       invoke<DirectCommit[]>('get_direct_commits', {
@@ -102,6 +107,8 @@ function App() {
       invoke<CheckedOutRef>('get_checked_out_ref', {
         repoPath: path,
       }).catch(() => null),
+      invoke<WorktreeInfo[]>('list_worktrees', { repoPath: path }).catch(() => []),
+      invoke<GitStashEntry[]>('list_stashes', { repoPath: path }).catch(() => []),
     ]);
     const unpushedShaEntries = await Promise.all(
       [defaultBranch, ...branchList.map((branch) => branch.name)].map(async (branchName) => {
@@ -118,6 +125,31 @@ function App() {
     setUnpushedDirectCommits(unpushedDirectResult);
     setUnpushedCommitShasByBranch(Object.fromEntries(unpushedShaEntries));
     setCheckedOutRef(confirmedCheckedOutRef);
+    setWorktrees(worktreeList);
+    setStashes(stashList);
+  }
+
+  async function handleRemoveWorktree(worktreePath: string, force: boolean) {
+    if (!repoPath || removeWorktreeInProgress) return;
+    setRemoveWorktreeInProgress(true);
+    setCommitSwitchFeedback(null);
+    try {
+      await invoke('remove_worktree', { repoPath, worktreePath, force });
+      await refreshRepoGitState(repoPath);
+      setCommitSwitchFeedback({
+        kind: 'success',
+        message: `Removed worktree at ${worktreePath}`,
+      });
+    } catch (e) {
+      const message = e instanceof Error ? e.message : String(e);
+      setCommitSwitchFeedback({
+        kind: 'error',
+        message,
+      });
+      console.error('Failed to remove worktree:', message);
+    } finally {
+      setRemoveWorktreeInProgress(false);
+    }
   }
 
   async function loadRepo(path: string) {
@@ -265,13 +297,15 @@ function App() {
         const branchesPromise = invoke<Branch[]>('get_branches', { repoPath });
         const mergeNodesPromise = fetchAllMergeNodes(repoPath, defaultBranch);
         const checkedOutPromise = invoke<CheckedOutRef>('get_checked_out_ref', { repoPath }).catch(() => null);
+        const worktreesPromise = invoke<WorktreeInfo[]>('list_worktrees', { repoPath }).catch(() => []);
         const directCommitsPromise = invoke<DirectCommit[]>('get_direct_commits', { repoPath, branch: defaultBranch });
         const unpushedDirectPromise = invoke<DirectCommit[]>('get_unpushed_direct_commits', { repoPath, branch: defaultBranch }).catch(() => []);
 
         // Prioritize the minimum data needed for first paint and interactions.
-        const [branchListResult, currentCheckedOutResult, directResultResult, unpushedDirectResult] = await Promise.allSettled([
+        const [branchListResult, currentCheckedOutResult, worktreesResult, directResultResult, unpushedDirectResult] = await Promise.allSettled([
           branchesPromise,
           checkedOutPromise,
+          worktreesPromise,
           directCommitsPromise,
           unpushedDirectPromise,
         ]);
@@ -297,6 +331,9 @@ function App() {
         if (unpushedDirectResult.status === 'fulfilled') {
           setUnpushedDirectCommits(unpushedDirectResult.value);
         }
+        if (worktreesResult.status === 'fulfilled') {
+          setWorktrees(worktreesResult.value);
+        }
 
         // Fetch per-branch unpushed SHAs for accurate per-commit classification.
         const allBranchNames = [defaultBranch, ...(resolvedBranches ?? []).map((b) => b.name)];
@@ -312,6 +349,12 @@ function App() {
         if (!isDisposed) {
           setUnpushedCommitShasByBranch(Object.fromEntries(unpushedShaEntries));
         }
+
+        invoke<GitStashEntry[]>('list_stashes', { repoPath })
+          .then((list) => {
+            if (!isDisposed) setStashes(list);
+          })
+          .catch(() => {});
 
         // Unblock the map as soon as primary graph data is ready.
         setMapLoading(false);
@@ -860,7 +903,42 @@ function App() {
   async function handleMapCommitClick(target: { commitSha: string; branchName?: string }) {
     if (!repoPath) return;
     setCommitSwitchFeedback(null);
+
+    const stashRestore = /^STASH:(\d+)$/.exec(target.commitSha);
+    if (stashRestore) {
+      try {
+        const stashIndex = parseInt(stashRestore[1], 10);
+        const nextRef = await invoke<CheckedOutRef>('apply_stash_restore', {
+          repoPath,
+          stashIndex,
+        });
+        setCheckedOutRef(nextRef);
+        await refreshRepoGitState(repoPath);
+        const label = `Stash ${stashIndex + 1}`;
+        setCommitSwitchFeedback({
+          kind: 'success',
+          message: `Restored ${label} on top of its base commit (now uncommitted).`,
+        });
+      } catch (e) {
+        const message = e instanceof Error ? e.message : String(e);
+        setCommitSwitchFeedback({
+          kind: 'error',
+          message,
+        });
+        console.error('Failed to apply stash:', message);
+      }
+      return;
+    }
+
     try {
+      let stashedPrefix = '';
+      const refBefore = await invoke<CheckedOutRef>('get_checked_out_ref', { repoPath });
+      if (refBefore.hasUncommittedChanges) {
+        await invoke('stash_push', { repoPath, includeUntracked: true });
+        stashedPrefix = 'Stashed local changes (including untracked), then ';
+        await refreshRepoGitState(repoPath);
+      }
+
       const nextCheckedOutRef = target.branchName
         ? await invoke<CheckedOutRef>('checkout_branch', {
             repoPath,
@@ -874,12 +952,13 @@ function App() {
         repoPath,
       }).catch(() => nextCheckedOutRef);
       setCheckedOutRef(confirmedCheckedOutRef);
+      await refreshRepoGitState(repoPath);
       const refLabel = confirmedCheckedOutRef.branchName
         ? confirmedCheckedOutRef.branchName
         : `${confirmedCheckedOutRef.headSha.slice(0, 7)} (detached)`;
       setCommitSwitchFeedback({
         kind: 'success',
-        message: `Checked out ${refLabel}`,
+        message: `${stashedPrefix}Checked out ${refLabel}`,
       });
     } catch (e) {
       const message = e instanceof Error ? e.message : String(e);
@@ -888,6 +967,37 @@ function App() {
         message,
       });
       console.error('Failed to checkout commit:', message);
+    }
+  }
+
+  async function handleStashLocalChanges() {
+    if (!repoPath || stashInProgress) return;
+    setCommitSwitchFeedback(null);
+    setStashInProgress(true);
+    try {
+      const ref = await invoke<CheckedOutRef>('get_checked_out_ref', { repoPath });
+      if (!ref.hasUncommittedChanges) {
+        setCommitSwitchFeedback({
+          kind: 'error',
+          message: 'No local changes to stash.',
+        });
+        return;
+      }
+      await invoke('stash_push', { repoPath, includeUntracked: true });
+      await refreshRepoGitState(repoPath);
+      setCommitSwitchFeedback({
+        kind: 'success',
+        message: 'Stashed local changes (including untracked files).',
+      });
+    } catch (e) {
+      const message = e instanceof Error ? e.message : String(e);
+      setCommitSwitchFeedback({
+        kind: 'error',
+        message,
+      });
+      console.error('Failed to stash:', message);
+    } finally {
+      setStashInProgress(false);
     }
   }
 
@@ -1071,6 +1181,7 @@ function App() {
 
   function handleBackToLanding() {
     setRepoPath(null);
+    setWorktrees([]);
     setOpenPRs([]);
     setDirectCommits([]);
     setUnpushedDirectCommits([]);
@@ -1078,34 +1189,46 @@ function App() {
     setBranchPromptMeta({});
     setBranchCommitPreviews({});
     setBranchUniqueAheadCounts({});
+    setStashes([]);
     setGithubAvailable(false);
     setView('landing');
   }
 
 
 
-  // If there are working tree modifications, natively construct a fake node that the core layout engine parses directly!
+  // Synthetic stash nodes (yellow) and optional uncommitted node (blue) — same lane rules as before.
   const {
     enrichedBranches,
     enrichedBranchCommitPreviews,
     enrichedBranchUniqueAheadCounts,
     enrichedDirectCommits,
   } = useMemo(() => {
+    const stashFolded = foldStashNodesIntoGraph(
+      stashes,
+      branches,
+      directCommits,
+      branchCommitPreviews,
+      branchUniqueAheadCounts,
+      defaultBranch,
+    );
+
+    let eb = stashFolded.branches;
+    let edc = stashFolded.directCommits;
+    let ebp = stashFolded.branchCommitPreviews;
+    let ebuac = stashFolded.branchUniqueAheadCounts;
+
     if (!checkedOutRef?.hasUncommittedChanges) {
       return {
-        enrichedBranches: branches,
-        enrichedDirectCommits: directCommits,
-        enrichedBranchCommitPreviews: branchCommitPreviews,
-        enrichedBranchUniqueAheadCounts: branchUniqueAheadCounts,
+        enrichedBranches: eb,
+        enrichedDirectCommits: edc,
+        enrichedBranchCommitPreviews: ebp,
+        enrichedBranchUniqueAheadCounts: ebuac,
       };
     }
 
-    // Resolve uncommitted placement by lane head ownership:
-    // - same lane when checked-out SHA matches a lane head
-    // - synthetic side lane otherwise.
-    // This is lane-driven, not "main-lane special-cased".
+    // Resolve uncommitted placement by lane head ownership (stash-augmented graph).
     const checkedOutAnchorSha = checkedOutRef.headSha || checkedOutRef.parentSha || null;
-    const latestMainDirectCommitSha = directCommits[0]?.fullSha ?? null;
+    const latestMainDirectCommitSha = edc[0]?.fullSha ?? null;
     const shaMatches = (left?: string | null, right?: string | null): boolean => {
       if (!left || !right) return false;
       return left === right || left.startsWith(right) || right.startsWith(left);
@@ -1113,7 +1236,7 @@ function App() {
     type LaneRef = { name: string; headSha: string; isDefault: boolean };
     const allLanes: LaneRef[] = [
       { name: defaultBranch, headSha: latestMainDirectCommitSha ?? '', isDefault: true },
-      ...branches.map((b) => ({ name: b.name, headSha: b.headSha, isDefault: false })),
+      ...eb.map((b) => ({ name: b.name, headSha: b.headSha, isDefault: false })),
     ];
     const explicitLane = checkedOutRef.branchName
       ? allLanes.find((lane) => lane.name === checkedOutRef.branchName)
@@ -1131,18 +1254,18 @@ function App() {
       shaMatches(targetLane.headSha, checkedOutAnchorSha)
     );
     const targetBranch = targetLane && !targetLane.isDefault
-      ? branches.find((b) => b.name === targetLane.name)
+      ? eb.find((b) => b.name === targetLane.name)
       : undefined;
 
     const anchorCommitDate = (() => {
       if (!checkedOutAnchorSha) return null;
-      const matchingDirectCommit = directCommits.find((commit) => (
+      const matchingDirectCommit = edc.find((commit) => (
         shaMatches(commit.fullSha, checkedOutAnchorSha) ||
         shaMatches(commit.sha, checkedOutAnchorSha)
       ));
       if (matchingDirectCommit?.date) return matchingDirectCommit.date;
       if (targetBranch) {
-        const matchingPreviewCommit = (branchCommitPreviews[targetBranch.name] ?? []).find((commit) => (
+        const matchingPreviewCommit = (ebp[targetBranch.name] ?? []).find((commit) => (
           shaMatches(commit.fullSha, checkedOutAnchorSha) ||
           shaMatches(commit.sha, checkedOutAnchorSha)
         ));
@@ -1152,7 +1275,6 @@ function App() {
     })();
     const anchorCommitTimeMs = anchorCommitDate ? new Date(anchorCommitDate).getTime() : Number.NaN;
     const nowTimeMs = Date.now();
-    // Ensure the synthetic working-tree node is always strictly newer than the checked-out commit.
     const uncommittedTimeMs = Number.isFinite(anchorCommitTimeMs)
       ? Math.max(nowTimeMs, anchorCommitTimeMs + 1)
       : nowTimeMs;
@@ -1178,22 +1300,21 @@ function App() {
 
     if (isOnLaneTip && targetLane?.isDefault) {
       return {
-        enrichedBranches: branches,
-        enrichedBranchCommitPreviews: branchCommitPreviews,
-        enrichedBranchUniqueAheadCounts: branchUniqueAheadCounts,
-        enrichedDirectCommits: [...directCommits, uncommittedDirectCommit],
+        enrichedBranches: eb,
+        enrichedBranchCommitPreviews: ebp,
+        enrichedBranchUniqueAheadCounts: ebuac,
+        enrichedDirectCommits: [...edc, uncommittedDirectCommit],
       };
     }
 
     if (isOnLaneTip && targetBranch) {
-      // Append directly to the branch (natively draws ahead in the exact same lane)
-      const nextBranches = branches.map((b) => {
+      const nextBranches = eb.map((b) => {
         if (b.name === targetBranch.name) {
           return {
             ...b,
             commitsAhead: b.commitsAhead + 1,
             unpushedCommits: b.unpushedCommits + 1,
-            lastCommitDate: uncommittedDate, // Engine uses this to push the branch tip out chronologically!
+            lastCommitDate: uncommittedDate,
             headSha: 'WORKING_TREE',
           };
         }
@@ -1201,27 +1322,25 @@ function App() {
       });
       return {
         enrichedBranches: nextBranches,
-        enrichedDirectCommits: directCommits,
+        enrichedDirectCommits: edc,
         enrichedBranchCommitPreviews: {
-          ...branchCommitPreviews,
-          [targetBranch.name]: [uncommittedNode, ...(branchCommitPreviews[targetBranch.name] || [])],
+          ...ebp,
+          [targetBranch.name]: [uncommittedNode, ...(ebp[targetBranch.name] || [])],
         },
         enrichedBranchUniqueAheadCounts: {
-          ...branchUniqueAheadCounts,
+          ...ebuac,
           [targetBranch.name]: Math.max(
             0,
-            (Object.prototype.hasOwnProperty.call(branchUniqueAheadCounts, targetBranch.name)
-              ? branchUniqueAheadCounts[targetBranch.name]
+            (Object.prototype.hasOwnProperty.call(ebuac, targetBranch.name)
+              ? ebuac[targetBranch.name]
               : targetBranch.commitsAhead) ?? 0,
           ) + 1,
         },
       };
     }
 
-    // Detached head OR checked out to an old commit lower down a branch.
-    // Draw it "off to the side like a branch" by literally handing the layout engine a fake branch!
     const fakeBranch: Branch = {
-      name: '*Uncommitted', // use special name
+      name: '*Uncommitted',
       commitsAhead: 1,
       commitsBehind: 0,
       lastCommitDate: uncommittedDate,
@@ -1234,18 +1353,18 @@ function App() {
       parentBranch: targetLane?.name || checkedOutRef.branchName || defaultBranch,
     };
     return {
-      enrichedBranches: [fakeBranch, ...branches],
+      enrichedBranches: [fakeBranch, ...eb],
       enrichedBranchCommitPreviews: {
-        ...branchCommitPreviews,
+        ...ebp,
         [fakeBranch.name]: [uncommittedNode],
       },
       enrichedBranchUniqueAheadCounts: {
-        ...branchUniqueAheadCounts,
+        ...ebuac,
         [fakeBranch.name]: 1,
       },
-      enrichedDirectCommits: directCommits,
+      enrichedDirectCommits: edc,
     };
-  }, [branches, branchCommitPreviews, branchUniqueAheadCounts, checkedOutRef, defaultBranch, directCommits]);
+  }, [branches, branchCommitPreviews, branchUniqueAheadCounts, checkedOutRef, defaultBranch, directCommits, stashes]);
 
   return (
     <div className="h-screen min-h-0 text-foreground flex flex-col relative bg-background">
@@ -1289,6 +1408,12 @@ function App() {
               pushInProgress={pushInProgress}
               onDeleteSelection={handleDeleteSelection}
               deleteInProgress={deleteInProgress}
+              worktrees={worktrees}
+              onRemoveWorktree={handleRemoveWorktree}
+              removeWorktreeInProgress={removeWorktreeInProgress}
+              onStashLocalChanges={handleStashLocalChanges}
+              stashInProgress={stashInProgress}
+              stashDisabled={!checkedOutRef?.hasUncommittedChanges}
             />
           </div>
 
