@@ -4491,7 +4491,7 @@ export default function BranchMap({
   ) => {
     if (isUserSelected) return USER_SELECTION_STROKE;
     if (isCheckedOutSelection) return CHECKED_OUT_SELECTION_STROKE;
-    return hoveredNodeStrokeKey === nodeKey ? CANVAS_NEUTRAL_GRAY_HOVER : baseStroke;
+    return baseStroke;
   };
   const getNodeFillColor = (
     nodeKey: string,
@@ -4501,7 +4501,7 @@ export default function BranchMap({
   ) => {
     if (isUserSelected) return baseFill;
     if (isCheckedOutSelection) return CHECKED_OUT_SELECTION_FILL;
-    return hoveredNodeStrokeKey === nodeKey ? HOVER_NODE_FILL : baseFill;
+    return baseFill;
   };
   const getNodeFrameTitleColor = (
     nodeKey: string,
@@ -4511,7 +4511,7 @@ export default function BranchMap({
   ) => {
     if (isUserSelected) return '#257BF3';
     if (isCheckedOutSelection || isUncommitted) return '#47AFEB';
-    return hoveredNodeStrokeKey === nodeKey ? '#64A1F7' : NODE_FRAME_BRANCH_TITLE_COLOR;
+    return NODE_FRAME_BRANCH_TITLE_COLOR;
   };
   const getNodeFrameInnerTextColor = (
     nodeKey: string,
@@ -4521,17 +4521,16 @@ export default function BranchMap({
   ) => {
     if (isUserSelected) return '#257BF3';
     if (isCheckedOutSelection || isUncommitted) return '#47AFEB';
-    return hoveredNodeStrokeKey === nodeKey ? '#64A1F7' : NODE_FRAME_INNER_TEXT_COLOR;
+    return NODE_FRAME_INNER_TEXT_COLOR;
   };
   const branchLaneHitPointerEvents: React.CSSProperties['pointerEvents'] =
-    hoveredNodeStrokeKey != null ? 'none' : 'stroke';
+    'stroke';
   function handleNodeHoverEnter(nodeKey: string, branchName?: string) {
-    setHoveredNodeStrokeKey(nodeKey);
-    setHoveredNodeBranchName(branchName ?? null);
+    void nodeKey;
+    void branchName;
   }
   function handleNodeHoverLeave() {
-    setHoveredNodeStrokeKey(null);
-    setHoveredNodeBranchName(null);
+    return;
   }
   function clearMainBranchHover() {
     setHoveredBranch((current) => (current === defaultBranch ? null : current));
@@ -5988,25 +5987,6 @@ export default function BranchMap({
                                     )
                                   }
                                   onDoubleClick={(event) => event.stopPropagation()}
-                                  onMouseEnter={() => {
-                                    setHoveredBranch(defaultBranch);
-                                    handleNodeHoverEnter(clusterKey, defaultBranch);
-                                    setTooltip({
-                                      x: anchorX,
-                                      y: anchorY,
-                                      lines: [
-                                        isUncommittedCommit ? 'Uncommited Changes' : `Commit ${c.sha}`,
-                                        label,
-                                        `@${c.author} · ${fmtTooltipDate(c.date)}`,
-                                      ],
-                                      avatarFallback: c.author?.charAt(0).toUpperCase() || '?',
-                                    });
-                                  }}
-                                  onMouseLeave={() => {
-                                    handleNodeHoverLeave();
-                                    clearMainBranchHover();
-                                    setTooltip(null);
-                                  }}
                                 >
                                   {renderCommitNodeShapeRect({
                                     x: anchorX - rectSize.width / 2 + CANVAS_NODE_STROKE_INSET,
@@ -6116,21 +6096,6 @@ export default function BranchMap({
                                         event.preventDefault();
                                         event.stopPropagation();
                                       }}
-                                      onMouseEnter={() => {
-                                        setHoveredBranch(defaultBranch);
-                                        handleNodeHoverEnter(clusterKey, defaultBranch);
-                                        setTooltip({
-                                          x: anchorX,
-                                          y: anchorY,
-                                          lines: [`${count} commits`, latestCommitMessage, `and ${count - 1} more commits`, `@${last.author} · ${rangeLine}`],
-                                          avatarFallback: last.author?.charAt(0).toUpperCase() || '?',
-                                        });
-                                      }}
-                                      onMouseLeave={() => {
-                                        handleNodeHoverLeave();
-                                        clearMainBranchHover();
-                                        setTooltip(null);
-                                      }}
                                     />
                                   );
                                 })()}
@@ -6170,25 +6135,6 @@ export default function BranchMap({
                                                 )
                                               }
                                               onDoubleClick={(event) => event.stopPropagation()}
-                                              onMouseEnter={() => {
-                                                setHoveredBranch(defaultBranch);
-                                                handleNodeHoverEnter(commitKey, defaultBranch);
-                                                setTooltip({
-                                                  x: entry.x,
-                                                  y: entry.y,
-                                                  lines: [
-                                                    isUncommittedCommit ? 'Uncommited Changes' : `Commit ${c.sha}`,
-                                                    label,
-                                                    `@${c.author} · ${fmtTooltipDate(c.date)}`,
-                                                  ],
-                                                  avatarFallback: c.author?.charAt(0).toUpperCase() || '?',
-                                                });
-                                              }}
-                                              onMouseLeave={() => {
-                                                handleNodeHoverLeave();
-                                                clearMainBranchHover();
-                                                setTooltip(null);
-                                              }}
                                             >
                                               {renderCommitNodeShapeRect({
                                                 x: -localRect.width / 2 + CANVAS_NODE_STROKE_INSET,
@@ -6689,38 +6635,6 @@ export default function BranchMap({
                                         );
                                       }}
                                       onDoubleClick={(event) => event.stopPropagation()}
-                                      onMouseEnter={() => {
-                                        handleNodeHoverEnter(vm.clusterKey, b.name);
-                                        setTooltip({
-                                          x: anchorX,
-                                          y: anchorY,
-                                          lines: isNonCommitPlaceholder
-                                            ? [
-                                              `No unique commits`,
-                                              `Branch ${b.name}`,
-                                              `Click to check out this branch`,
-                                            ]
-                                            : [
-                                              tooltipTitle,
-                                              tooltipMessage
-                                                ? truncatePrompt(tooltipMessage, COMMIT_TOOLTIP_PREVIEW_MAX)
-                                                : `@${tooltipAuthor}`,
-                                              `@${tooltipAuthor} · ${fmtTooltipDate(tooltipDate)}`,
-                                            ],
-                                          avatarUrl:
-                                            !isNonCommitPlaceholder && showBranchAvatar
-                                              ? b.lastCommitAuthorAvatar
-                                              : undefined,
-                                          avatarFallback:
-                                            !isNonCommitPlaceholder
-                                              ? (tooltipAuthor?.charAt(0).toUpperCase() || '?')
-                                              : undefined,
-                                        });
-                                      }}
-                                      onMouseLeave={() => {
-                                        handleNodeHoverLeave();
-                                        setTooltip(null);
-                                      }}
                                     >
                                       {renderCommitNodeShapeRect({
                                         x: anchorX - rectSize.width / 2 + dotStrokeInset,
@@ -6820,20 +6734,6 @@ export default function BranchMap({
                                             event.preventDefault();
                                             event.stopPropagation();
                                           }}
-                                          onMouseEnter={() => {
-                                            handleNodeHoverEnter(vm.clusterKey, b.name);
-                                            setTooltip({
-                                              x: anchorX,
-                                              y: anchorY,
-                                              lines: [`${vm.count} commits`, latestCommitMessage, `and ${vm.count - 1} more commits`, `@${latestAuthor} · ${dateRangeLabel}`],
-                                              avatarUrl: showClumpAvatar ? b.lastCommitAuthorAvatar : undefined,
-                                              avatarFallback: latestAuthor?.charAt(0).toUpperCase() || '?',
-                                            });
-                                          }}
-                                          onMouseLeave={() => {
-                                            handleNodeHoverLeave();
-                                            setTooltip(null);
-                                          }}
                                         />
                                       );
                                     })()}
@@ -6884,25 +6784,6 @@ export default function BranchMap({
                                                     )
                                                   }
                                                   onDoubleClick={(event) => event.stopPropagation()}
-                                                  onMouseEnter={() => {
-                                                    handleNodeHoverEnter(commitKey, b.name);
-                                                    setTooltip({
-                                                      x: entry.x,
-                                                      y: entry.y,
-                                                      lines: [
-                                                        tooltipTitle,
-                                                        tooltipMessage
-                                                          ? truncatePrompt(tooltipMessage, COMMIT_TOOLTIP_PREVIEW_MAX)
-                                                          : `@${tooltipAuthor}`,
-                                                        `@${tooltipAuthor} · ${fmtTooltipDate(tooltipDate)}`,
-                                                      ],
-                                                      avatarFallback: tooltipAuthor?.charAt(0).toUpperCase() || '?',
-                                                    });
-                                                  }}
-                                                  onMouseLeave={() => {
-                                                    handleNodeHoverLeave();
-                                                    setTooltip(null);
-                                                  }}
                                                 >
                                                   {renderCommitNodeShapeRect({
                                                     x: -localRect.width / 2 + dotStrokeInset,
