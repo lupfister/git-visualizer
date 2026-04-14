@@ -8,6 +8,7 @@ interface Props {
   branches: Branch[];
   mergeNodes: MergeNode[];
   directCommits?: DirectCommit[];
+  unpushedDirectCommits?: DirectCommit[];
   openPRs?: OpenPR[];
   defaultBranch: string;
   onHoveredBranchChange?: (branchName: string | null) => void;
@@ -27,12 +28,17 @@ interface Props {
   mapTopInsetPx?: number;
   onMergeRefsIntoBranch?: (sourceRefs: string[], targetBranch: string) => Promise<void> | void;
   mergeInProgress?: boolean;
+  onPushAllBranches?: () => Promise<void> | void;
+  onPushCurrentBranch?: () => Promise<void> | void;
+  onPushCommitTargets?: (targets: Array<{ branchName: string; targetSha: string }>) => Promise<void> | void;
+  pushInProgress?: boolean;
 }
 
 export default function BranchMapView({
   branches,
   mergeNodes,
   directCommits = [],
+  unpushedDirectCommits = [],
   openPRs = [],
   defaultBranch,
   onHoveredBranchChange,
@@ -50,6 +56,10 @@ export default function BranchMapView({
   mapTopInsetPx = 0,
   onMergeRefsIntoBranch,
   mergeInProgress = false,
+  onPushAllBranches,
+  onPushCurrentBranch,
+  onPushCommitTargets,
+  pushInProgress = false,
 }: Props) {
   // Determine active vs inactive error branches
   const openPRBranchNames = new Set(openPRs.map(p => p.branchName));
@@ -70,6 +80,7 @@ export default function BranchMapView({
             branches={branches}
             mergeNodes={mergeNodes}
             directCommits={directCommits}
+            unpushedDirectCommits={unpushedDirectCommits}
             openPRs={openPRs}
             defaultBranch={defaultBranch}
             onHoveredBranchChange={onHoveredBranchChange}
@@ -88,6 +99,10 @@ export default function BranchMapView({
             mapTopInsetPx={mapTopInsetPx}
             onMergeRefsIntoBranch={onMergeRefsIntoBranch}
             mergeInProgress={mergeInProgress}
+            onPushAllBranches={onPushAllBranches}
+            onPushCurrentBranch={onPushCurrentBranch}
+            onPushCommitTargets={onPushCommitTargets}
+            pushInProgress={pushInProgress}
           />
         </div>
       ) : (

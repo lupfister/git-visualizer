@@ -1,4 +1,4 @@
-import { useState, useEffect, useLayoutEffect, useRef, useMemo } from 'react';
+import { useState, useEffect, useRef, useMemo } from 'react';
 import { invoke } from '@tauri-apps/api/core';
 import { listen } from '@tauri-apps/api/event';
 import { getCurrentWindow } from '@tauri-apps/api/window';
@@ -15,6 +15,10 @@ type OpenRepoEventPayload = {
 const PROMPT_ENRICHMENT_ENABLED = false;
 const COMMIT_SWITCH_FEEDBACK_VISIBLE_MS = 1400;
 const COMMIT_SWITCH_FEEDBACK_FADE_MS = 180;
+type PushTarget = {
+  branchName: string;
+  targetSha?: string;
+};
 
 function cn(...classes: Array<string | false | null | undefined>) {
   return classes.filter(Boolean).join(' ');
@@ -26,6 +30,7 @@ function App() {
   const [branches, setBranches] = useState<Branch[]>([]);
   const [mergeNodes, setMergeNodes] = useState<MergeNode[]>([]);
   const [directCommits, setDirectCommits] = useState<DirectCommit[]>([]);
+  const [unpushedDirectCommits, setUnpushedDirectCommits] = useState<DirectCommit[]>([]);
   const [openPRs, setOpenPRs] = useState<OpenPR[]>([]);
   const [defaultBranch, setDefaultBranch] = useState<string>('main');
   const [checkedOutRef, setCheckedOutRef] = useState<CheckedOutRef | null>(null);
@@ -50,32 +55,12 @@ function App() {
   } | null>(null);
   const [isCommitSwitchFeedbackVisible, setIsCommitSwitchFeedbackVisible] = useState(false);
   const [mergeInProgress, setMergeInProgress] = useState(false);
+  const [pushInProgress, setPushInProgress] = useState(false);
   const [branchPromptMeta, setBranchPromptMeta] = useState<Record<string, BranchPromptMeta>>({});
   const [branchCommitPreviews, setBranchCommitPreviews] = useState<Record<string, BranchCommitPreview[]>>({});
   const [branchUniqueAheadCounts, setBranchUniqueAheadCounts] = useState<Record<string, number>>({});
 
-  const mapHeaderRef = useRef<HTMLElement | null>(null);
-  const [mapHeaderInsetPx, setMapHeaderInsetPx] = useState(0);
   const branchMetaLoadKeyRef = useRef<string | null>(null);
-
-  useLayoutEffect(() => {
-    if (view === 'landing') {
-      setMapHeaderInsetPx(0);
-      return;
-    }
-    const el = mapHeaderRef.current;
-    if (!el) {
-      setMapHeaderInsetPx(0);
-      return;
-    }
-    const measure = () => {
-      setMapHeaderInsetPx(Math.round(el.getBoundingClientRect().height));
-    };
-    measure();
-    const ro = new ResizeObserver(measure);
-    ro.observe(el);
-    return () => ro.disconnect();
-  }, [view]);
 
 
 
@@ -100,6 +85,29 @@ function App() {
     return all;
   }
 
+  async function refreshRepoGitState(path: string) {
+    const [branchList, nodes, directResult, unpushedDirectResult, confirmedCheckedOutRef] = await Promise.all([
+      invoke<Branch[]>('get_branches', { repoPath: path }),
+      fetchAllMergeNodes(path, defaultBranch),
+      invoke<DirectCommit[]>('get_direct_commits', {
+        repoPath: path,
+        branch: defaultBranch,
+      }),
+      invoke<DirectCommit[]>('get_unpushed_direct_commits', {
+        repoPath: path,
+        branch: defaultBranch,
+      }).catch(() => []),
+      invoke<CheckedOutRef>('get_checked_out_ref', {
+        repoPath: path,
+      }).catch(() => null),
+    ]);
+    setBranches(branchList);
+    setMergeNodes(nodes);
+    setDirectCommits(directResult);
+    setUnpushedDirectCommits(unpushedDirectResult);
+    setCheckedOutRef(confirmedCheckedOutRef);
+  }
+
   async function loadRepo(path: string) {
     setLoading(true);
     setMapLoading(true);
@@ -107,6 +115,7 @@ function App() {
     setBranches([]);
     setMergeNodes([]);
     setDirectCommits([]);
+    setUnpushedDirectCommits([]);
 
     // Switch to map immediately for instant feedback
     setView('map');
@@ -861,21 +870,10 @@ function App() {
           targetBranch,
         });
       }
-      const [branchList, nodes, directResult, confirmedCheckedOutRef] = await Promise.all([
-        invoke<Branch[]>('get_branches', { repoPath }),
-        fetchAllMergeNodes(repoPath, defaultBranch),
-        invoke<DirectCommit[]>('get_direct_commits', {
-          repoPath,
-          branch: defaultBranch,
-        }),
-        invoke<CheckedOutRef>('get_checked_out_ref', {
-          repoPath,
-        }).catch(() => nextCheckedOutRef),
-      ]);
-      setBranches(branchList);
-      setMergeNodes(nodes);
-      setDirectCommits(directResult);
-      setCheckedOutRef(confirmedCheckedOutRef);
+      await refreshRepoGitState(repoPath);
+      if (nextCheckedOutRef) {
+        setCheckedOutRef(nextCheckedOutRef);
+      }
       setCommitSwitchFeedback({
         kind: 'success',
         message: uniqueSourceRefs.length === 1
@@ -894,6 +892,100 @@ function App() {
     }
   }
 
+  async function handlePushAllBranches() {
+    if (!repoPath || pushInProgress) return;
+    setCommitSwitchFeedback(null);
+    setPushInProgress(true);
+    try {
+      const pushed = await invoke<Array<{ branchName: string }>>('push_all_unpushed_branches', {
+        repoPath,
+      });
+      await refreshRepoGitState(repoPath);
+      setCommitSwitchFeedback({
+        kind: 'success',
+        message: pushed.length > 0
+          ? pushed.length === 1
+            ? `Pushed ${pushed[0].branchName}`
+            : `Pushed ${pushed.length} branches`
+          : 'Everything local is already pushed.',
+      });
+    } catch (e) {
+      const message = e instanceof Error ? e.message : String(e);
+      setCommitSwitchFeedback({
+        kind: 'error',
+        message,
+      });
+      console.error('Failed to push all branches:', message);
+    } finally {
+      setPushInProgress(false);
+    }
+  }
+
+  async function handlePushCurrentBranch() {
+    if (!repoPath || pushInProgress) return;
+    setCommitSwitchFeedback(null);
+    setPushInProgress(true);
+    try {
+      const pushed = await invoke<{ branchName: string }>('push_current_branch', {
+        repoPath,
+      });
+      await refreshRepoGitState(repoPath);
+      setCommitSwitchFeedback({
+        kind: 'success',
+        message: `Pushed ${pushed.branchName}`,
+      });
+    } catch (e) {
+      const message = e instanceof Error ? e.message : String(e);
+      setCommitSwitchFeedback({
+        kind: 'error',
+        message,
+      });
+      console.error('Failed to push current branch:', message);
+    } finally {
+      setPushInProgress(false);
+    }
+  }
+
+  async function handlePushCommitTargets(targets: PushTarget[]) {
+    if (!repoPath || pushInProgress) return;
+    const uniqueTargets = Array.from(
+      new Map(
+        targets
+          .filter((target) => target.branchName && target.targetSha)
+          .map((target) => [target.branchName, target])
+      ).values()
+    );
+    if (uniqueTargets.length === 0) return;
+
+    setCommitSwitchFeedback(null);
+    setPushInProgress(true);
+    try {
+      for (const target of uniqueTargets) {
+        await invoke('push_branch', {
+          repoPath,
+          branchName: target.branchName,
+          targetSha: target.targetSha,
+        });
+      }
+      await refreshRepoGitState(repoPath);
+      setCommitSwitchFeedback({
+        kind: 'success',
+        message: uniqueTargets.length === 1
+          ? `Pushed ${uniqueTargets[0].branchName} through ${uniqueTargets[0].targetSha?.slice(0, 7)}`
+          : `Pushed ${uniqueTargets.length} selected commit ranges`,
+      });
+    } catch (e) {
+      const message = e instanceof Error ? e.message : String(e);
+      setCommitSwitchFeedback({
+        kind: 'error',
+        message,
+      });
+      console.error('Failed to push selected commits:', message);
+    } finally {
+      setPushInProgress(false);
+    }
+  }
+
   function handleFocusOnMap(branch: Branch) {
     setView('map');
     setFocusedErrorBranch(branch);
@@ -905,6 +997,7 @@ function App() {
     setRepoPath(null);
     setOpenPRs([]);
     setDirectCommits([]);
+    setUnpushedDirectCommits([]);
     setBranchPromptMeta({});
     setBranchCommitPreviews({});
     setBranchUniqueAheadCounts({});
@@ -1110,6 +1203,7 @@ function App() {
               branches={enrichedBranches}
               mergeNodes={mergeNodes}
               directCommits={enrichedDirectCommits}
+              unpushedDirectCommits={unpushedDirectCommits}
               openPRs={openPRs}
               defaultBranch={defaultBranch}
               onCommitClick={handleMapCommitClick}
@@ -1124,22 +1218,26 @@ function App() {
               checkedOutRef={checkedOutRef}
               onHoveredBranchChange={setHoveredBranchName}
 
-              mapTopInsetPx={mapHeaderInsetPx}
               onMergeRefsIntoBranch={handleMergeRefsIntoBranch}
               mergeInProgress={mergeInProgress}
+              onPushAllBranches={handlePushAllBranches}
+              onPushCurrentBranch={handlePushCurrentBranch}
+              onPushCommitTargets={handlePushCommitTargets}
+              pushInProgress={pushInProgress}
             />
           </div>
 
           <header
-            ref={mapHeaderRef}
-            className="absolute left-0 right-0 z-40 px-4 py-3 md:px-8 md:py-5"
+            data-map-ui
+            className="pointer-events-none absolute left-0 right-0 top-0 z-40 px-4 pb-3 pt-3 md:px-8 md:pb-5 md:pt-4"
+            style={{ paddingTop: 'max(env(safe-area-inset-top), 10px)' }}
           >
             <div className="grid grid-cols-[1fr_auto_1fr] items-center gap-3">
               <button
                 onClick={handleBackToLanding}
                 aria-label="Back"
                 title="Back"
-                className="rounded-lg border border-border bg-card text-foreground hover:bg-accent transition-colors p-2 shrink-0 justify-self-start"
+                className="pointer-events-auto ml-16 rounded-lg border border-border bg-card text-foreground hover:bg-accent transition-colors p-2 shrink-0 justify-self-start"
               >
                 <ArrowLeft className="h-3.5 w-3.5 shrink-0" />
               </button>
@@ -1158,7 +1256,7 @@ function App() {
               </div>
               <div className="justify-self-end" aria-hidden="true" />
             </div>
-            <div className="mt-3 min-h-8 flex flex-wrap items-center gap-2 content-start">
+            <div className="pointer-events-auto mt-3 min-h-8 flex flex-wrap items-center gap-2 content-start">
               {githubAuthStatus?.ghAvailable && !githubAuthStatus.authenticated && (
                 <button
                   onClick={handleGitHubAuthSetup}
@@ -1197,7 +1295,7 @@ function App() {
 
           {/* Branch errors floating panel */}
           {showErrorPanel && (
-            <div className={`absolute top-[96px] right-4 z-50 w-[calc(100%-2rem)] max-w-80 bg-card border border-border rounded-2xl shadow-lg overflow-hidden ${errorPanelClosing ? 'animate-error-panel-out' : 'animate-error-panel-in'}`}>
+            <div data-map-ui className={`absolute top-[96px] right-4 z-50 w-[calc(100%-2rem)] max-w-80 bg-card border border-border rounded-2xl shadow-lg overflow-hidden ${errorPanelClosing ? 'animate-error-panel-out' : 'animate-error-panel-in'}`}>
               <div className="flex items-center justify-between px-4 py-3 border-b border-border/50">
                 <span className="text-sm font-medium text-foreground">Branch errors</span>
                 <button

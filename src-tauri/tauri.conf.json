@@ -23,6 +23,9 @@
         "maximizable": true,
         "minimizable": true,
         "fullscreen": false,
+        "transparent": true,
+        "titleBarStyle": "Overlay",
+        "hiddenTitle": true,
         "visible": true,
         "alwaysOnTop": false,
         "skipTaskbar": false

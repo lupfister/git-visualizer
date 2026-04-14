@@ -55,7 +55,6 @@ const GRID_CELL_GAP = 8;
 const GRID_ROW_GAP = GRID_NODE_RECT.height + GRID_CELL_GAP;
 const GRID_LANE_WIDTH = GRID_NODE_RECT.width + GRID_CELL_GAP;
 const GRID_LANE_OFFSET_X = 0;
-const GRID_LANE_MIN_SEPARATION = Math.max(GRID_ROW_GAP, GRID_LANE_WIDTH);
 /**
  * How much empty timeline distance two branch lifetimes need before reusing a column.
  * Lower values are less conservative and keep columns more stable across clump toggles.
@@ -74,6 +73,7 @@ const CANVAS_NEUTRAL_GRAY_HOVER = '#7CB0F8';
 const CANVAS_NODE_FILL = '#F5F5F5';
 const HOVER_NODE_FILL = '#F0F6FE';
 const CANVAS_UNPUSHED_NODE_FILL = 'var(--background)';
+const CANVAS_UNPUSHED_NODE_FILL_HEX = '#FAFAF9';
 const CANVAS_NODE_STROKE = '#E0E0E0';
 const CANVAS_NODE_STROKE_WIDTH = 1.5;
 const CANVAS_NODE_STROKE_INSET = CANVAS_NODE_STROKE_WIDTH / 2;
@@ -714,6 +714,7 @@ interface BranchMapProps {
   branches: Branch[];
   mergeNodes: MergeNode[];
   directCommits?: DirectCommit[];
+  unpushedDirectCommits?: DirectCommit[];
   defaultBranch: string;
   onHoveredBranchChange?: (branchName: string | null) => void;
   onCommitClick?: (target: { commitSha: string; branchName?: string }) => void;
@@ -733,12 +734,17 @@ interface BranchMapProps {
   mapTopInsetPx?: number;
   onMergeRefsIntoBranch?: (sourceRefs: string[], targetBranch: string) => Promise<void> | void;
   mergeInProgress?: boolean;
+  onPushAllBranches?: () => Promise<void> | void;
+  onPushCurrentBranch?: () => Promise<void> | void;
+  onPushCommitTargets?: (targets: Array<{ branchName: string; targetSha: string }>) => Promise<void> | void;
+  pushInProgress?: boolean;
 }
 
 export default function BranchMap({
   branches,
   mergeNodes,
   directCommits = [],
+  unpushedDirectCommits = [],
   defaultBranch,
   onHoveredBranchChange,
   onCommitClick,
@@ -756,8 +762,12 @@ export default function BranchMap({
   mapTopInsetPx = 0,
   onMergeRefsIntoBranch,
   mergeInProgress = false,
+  onPushAllBranches,
+  onPushCurrentBranch,
+  onPushCommitTargets,
+  pushInProgress = false,
 }: BranchMapProps) {
-  const [tooltip, setTooltip] = useState<TooltipData | null>(null);
+  const [, setTooltip] = useState<TooltipData | null>(null);
   const [hoveredBranch, setHoveredBranch] = useState<string | null>(null);
   const [hoveredNodeStrokeKey, setHoveredNodeStrokeKey] = useState<string | null>(null);
   const [hoveredNodeBranchName, setHoveredNodeBranchName] = useState<string | null>(null);
@@ -877,7 +887,7 @@ export default function BranchMap({
   }, [hoveredBranch, onHoveredBranchChange]);
 
   useEffect(() => () => onHoveredBranchChange?.(null), [onHoveredBranchChange]);
-  const [timelineRevealReady, setTimelineRevealReady] = useState(false);
+  const [, setTimelineRevealReady] = useState(false);
   const [timelineRevealPhase, setTimelineRevealPhase] = useState<'hidden' | 'fading' | 'done'>('hidden');
   const [hasInitialRevealDone, setHasInitialRevealDone] = useState(false);
   const timelineRevealStartTimeoutRef = useRef<number | null>(null);
@@ -1762,6 +1772,10 @@ export default function BranchMap({
     };
 
     const onWheel = (e: WheelEvent) => {
+      const topElementAtPointer = document.elementFromPoint(e.clientX, e.clientY);
+      if (topElementAtPointer?.closest('[data-map-ui]')) {
+        return;
+      }
       e.preventDefault();
       lastPointerClientRef.current = { x: e.clientX, y: e.clientY };
       lockAnimationsIfReady();
@@ -1793,6 +1807,12 @@ export default function BranchMap({
 
     const onGestureStart = (evt: Event) => {
       const e = evt as Event & { scale?: number; clientX?: number; clientY?: number };
+      if (e.clientX != null && e.clientY != null) {
+        const topElementAtPointer = document.elementFromPoint(e.clientX, e.clientY);
+        if (topElementAtPointer?.closest('[data-map-ui]')) {
+          return;
+        }
+      }
       e.preventDefault();
       lockAnimationsIfReady();
       stopWheelInertia();
@@ -1931,6 +1951,50 @@ export default function BranchMap({
     isPanningRef.current = isPanning;
   }, [isPanning]);
 
+  // Hard guard: when interacting with overlay UI, never allow map gesture handlers
+  // (including wheel inertia or drag-pan) to keep moving the canvas.
+  useEffect(() => {
+    const stopActivePan = () => {
+      if (!isPanningRef.current) return;
+      isPanningRef.current = false;
+      setIsPanning(false);
+      const settledPan = clampPan(panRef.current, zoomRef.current, 'hard');
+      applyCamera(settledPan, zoomRef.current);
+      syncUiState(true);
+    };
+
+    const shouldBlockMapGestures = (target: EventTarget | null): boolean => {
+      if (!(target instanceof Element)) return false;
+      return !!target.closest('[data-map-ui]');
+    };
+
+    const onPointerLikeDownCapture = (event: MouseEvent | PointerEvent) => {
+      if (!shouldBlockMapGestures(event.target)) return;
+      stopWheelInertia();
+      stopPanSmoothing();
+      stopActivePan();
+      event.stopPropagation();
+    };
+
+    const onWheelCapture = (event: WheelEvent) => {
+      if (!shouldBlockMapGestures(event.target)) return;
+      stopWheelInertia();
+      stopPanSmoothing();
+      stopActivePan();
+      event.preventDefault();
+      event.stopPropagation();
+    };
+
+    window.addEventListener('mousedown', onPointerLikeDownCapture, true);
+    window.addEventListener('pointerdown', onPointerLikeDownCapture, true);
+    window.addEventListener('wheel', onWheelCapture, { capture: true, passive: false });
+    return () => {
+      window.removeEventListener('mousedown', onPointerLikeDownCapture, true);
+      window.removeEventListener('pointerdown', onPointerLikeDownCapture, true);
+      window.removeEventListener('wheel', onWheelCapture, true);
+    };
+  }, []);
+
   useEffect(() => {
     hasAutoCenteredRef.current = false;
     autoCenterSignatureRef.current = null;
@@ -1991,7 +2055,15 @@ export default function BranchMap({
   }, [isMarqueeSelecting]);
 
   function handleCanvasMouseDown(e: React.MouseEvent<HTMLDivElement>) {
+    const topElementAtPointer = document.elementFromPoint(e.clientX, e.clientY);
+    if (topElementAtPointer?.closest('[data-map-ui]')) {
+      return;
+    }
     const target = e.target as Element | null;
+    // Never start canvas gestures from UI controls.
+    if (target?.closest('button, input, textarea, select, [role="button"], a')) {
+      return;
+    }
     const clickedBackground =
       target === scrollRef.current ||
       target === svgRef.current ||
@@ -2725,7 +2797,6 @@ export default function BranchMap({
       // Allow legitimate shared rows for sibling branches with matching timing.
       if (delta === 0) return false;
       const currentRows = Array.from(new Set(allRows)).sort((a, b) => a - b);
-      let shiftedOthers = false;
       const occupiedRowsByOthers = (): Set<number> => {
         const occupied = new Set<number>();
         gridRowBySha.forEach((row) => {
@@ -2777,7 +2848,6 @@ export default function BranchMap({
           if (collisions.length === 0) break;
           const firstCollision = Math.min(...collisions);
           shiftOtherRowsAtOrAbove(firstCollision);
-          shiftedOthers = true;
         }
       }
       slotEntries.forEach(([key, row]) => {
@@ -4413,8 +4483,6 @@ export default function BranchMap({
   const NODE_FRAME_FOOTER_META_PAIR_GAP_PX = 8;
   const NODE_FRAME_FOOTER_META_ZOOM_MIN = 3.5;
   const NODE_FRAME_MESSAGE_RENDER_OFFSET_Y_PX = 0;
-  /** Tooltips — stays readable on card surfaces. */
-  const NODE_FRAME_LABEL_COLOR = '#78716c';
   /** Branch name / sha / stack count row above each node — slightly darker than default rect stroke for legibility. */
   const NODE_FRAME_BRANCH_TITLE_COLOR = '#B3B3B3';
   /** Commit message inside the rectangle keeps the legacy neutral when idle. */
@@ -4682,6 +4750,11 @@ export default function BranchMap({
     isCheckedOutSelection = false,
     isUserSelected = false,
   ) => {
+    const normalizedFill = baseFill.trim().toLowerCase();
+    const shouldPreserveBaseFill =
+      normalizedFill === CANVAS_UNPUSHED_NODE_FILL ||
+      normalizedFill === CANVAS_UNPUSHED_NODE_FILL_HEX.toLowerCase();
+    if (shouldPreserveBaseFill) return baseFill;
     if (isUserSelected) return USER_SELECTION_FILL;
     if (isCheckedOutSelection) return CHECKED_OUT_SELECTION_FILL;
     return hoveredNodeStrokeKey === nodeKey ? HOVER_NODE_FILL : baseFill;
@@ -5971,6 +6044,12 @@ export default function BranchMap({
       }
       add(branch.headSha, branch.name);
     }
+    for (const commit of directCommits) {
+      add(commit.fullSha, defaultBranch);
+    }
+    if (checkedOutBranchName === defaultBranch && checkedOutHeadSha) {
+      add(checkedOutHeadSha, defaultBranch);
+    }
     return map;
   })();
   const selectedBranchList = selectedBranchNames.filter((name) => selectableBranchNameSet.has(name));
@@ -6016,6 +6095,106 @@ export default function BranchMap({
       : null) ?? commitMergeTargetOptions[commitMergeTargetOptions.length - 1] ?? null;
   const targetBranchForSelectedCommit = selectedCommitTargetOption?.targetBranch ?? null;
   const commitMergeSources = selectedCommitTargetOption?.sourceRefs ?? [];
+  const pushableBranchByName = new Map(
+    [
+      ...(checkedOutBranchName === defaultBranch
+        ? [{ name: defaultBranch, headSha: checkedOutHeadSha ?? '', unpushedCommits: unpushedDirectCommits.length, remoteSyncStatus: 'unpushed' as const }]
+        : []),
+      ...activeBranches,
+    ]
+      .filter((branch) => branch.unpushedCommits > 0 && branch.remoteSyncStatus !== 'on-github')
+      .map((branch) => [branch.name, branch] as const)
+  );
+  const commitPreviewListForBranch = (branchName: string): BranchCommitPreview[] => {
+    if (branchName === defaultBranch) {
+      return unpushedDirectCommits.map((commit) => ({
+        fullSha: commit.fullSha,
+        sha: commit.sha,
+        parentSha: commit.parentSha ?? null,
+        message: commit.message,
+        author: commit.author,
+        date: commit.date,
+        kind: commit.kind ?? 'commit',
+      }));
+    }
+    return branchCommitPreviews[branchName] ?? [];
+  };
+  const resolvePushBranch = (targetSha: string): string | null => {
+    const candidates = branchCandidatesForCommit(targetSha).filter((branchName) =>
+      pushableBranchByName.has(branchName)
+    );
+    if (candidates.length === 0) return null;
+    const explicitlySelectedBranch = selectedBranchList.find((branchName) => candidates.includes(branchName));
+    if (explicitlySelectedBranch) return explicitlySelectedBranch;
+    if (candidates.length === 1) return candidates[0];
+    if (checkedOutBranchName && candidates.includes(checkedOutBranchName)) return checkedOutBranchName;
+    return candidates[0];
+  };
+  const selectedPushTargets = Array.from(
+    selectedVisibleCommitShas.reduce((byBranch, sha) => {
+      const targetBranch = resolvePushBranch(sha);
+      if (!targetBranch) return byBranch;
+      const branch = pushableBranchByName.get(targetBranch);
+      if (!branch) return byBranch;
+      const unpushedPreviews = commitPreviewListForBranch(targetBranch).slice(0, branch.unpushedCommits);
+      const targetIndex = unpushedPreviews.findIndex((commit) => commit.fullSha === sha);
+      if (targetIndex === -1) return byBranch;
+
+      const existing = byBranch.get(targetBranch);
+      if (!existing || targetIndex < existing.targetIndex) {
+        byBranch.set(targetBranch, {
+          branchName: targetBranch,
+          targetSha: sha,
+          targetIndex,
+          commitCount: unpushedPreviews.length - targetIndex,
+        });
+      }
+      return byBranch;
+    }, new Map<string, { branchName: string; targetSha: string; targetIndex: number; commitCount: number }>())
+      .values()
+  );
+  const selectedBranchPushTargets = selectedBranchList
+    .map((branchName) => {
+      const branch = pushableBranchByName.get(branchName);
+      if (!branch || !branch.headSha) return null;
+      const previews = commitPreviewListForBranch(branchName);
+      const commitCount = Math.max(1, Math.min(branch.unpushedCommits, previews.length || branch.unpushedCommits));
+      return {
+        branchName,
+        targetSha: branch.headSha,
+        targetIndex: 0,
+        commitCount,
+      };
+    })
+    .filter((target): target is { branchName: string; targetSha: string; targetIndex: number; commitCount: number } => !!target);
+  const selectedPushTargetMap = new Map<string, { branchName: string; targetSha: string; targetIndex: number; commitCount: number }>();
+  for (const target of selectedPushTargets) {
+    selectedPushTargetMap.set(target.branchName, target);
+  }
+  for (const target of selectedBranchPushTargets) {
+    if (!selectedPushTargetMap.has(target.branchName)) {
+      selectedPushTargetMap.set(target.branchName, target);
+    }
+  }
+  const resolvedSelectedPushTargets = Array.from(selectedPushTargetMap.values());
+  const hasSelection = selectedVisibleCommitShas.length > 0 || selectedBranchList.length > 0;
+  const pushCurrentBranchLabel = checkedOutBranchName ? `Push ${checkedOutBranchName}` : 'Push current branch';
+  const selectedPushLabel = resolvedSelectedPushTargets.length === 1
+    ? resolvedSelectedPushTargets[0].commitCount > 1
+      ? `Push ${resolvedSelectedPushTargets[0].commitCount} commits on ${resolvedSelectedPushTargets[0].branchName}`
+      : `Push ${resolvedSelectedPushTargets[0].targetSha.slice(0, 7)} on ${resolvedSelectedPushTargets[0].branchName}`
+    : `Push ${resolvedSelectedPushTargets.length} selected ranges`;
+  const selectedPushTitle = resolvedSelectedPushTargets.length === 1
+    ? `Push ${resolvedSelectedPushTargets[0].branchName} through ${resolvedSelectedPushTargets[0].targetSha.slice(0, 7)}, including the earlier unpushed commits in that range`
+    : 'Push each selected branch through its newest selected unpushed commit, including the earlier unpushed commits in that range';
+
+  async function handlePushSelectedTargets() {
+    if (!onPushCommitTargets || pushInProgress || resolvedSelectedPushTargets.length === 0) return;
+    await onPushCommitTargets(resolvedSelectedPushTargets.map(({ branchName, targetSha }) => ({ branchName, targetSha })));
+    setSelectedCommitShas([]);
+    setSelectedBranchNames([]);
+    setMergeTargetCommitSha(null);
+  }
 
   return (
     <div className="relative h-full">
@@ -6840,6 +7019,8 @@ export default function BranchMap({
                                   const commit = commitEntry.item.commit;
                                   const isNonCommitPlaceholder = !commit && uniqueAheadCount <= 0;
                                   const isUncommittedCommit = commit?.kind === 'uncommitted';
+                                  const isLocalCommit =
+                                    !isNonCommitPlaceholder && localCommitDotIndices.has(commitEntry.item.index);
                                   const targetCommitSha = commit?.fullSha ?? b.headSha;
                                   const tooltipAuthor = commit?.author ?? b.lastCommitAuthor;
                                   const tooltipDate = commit?.date ?? b.lastCommitDate;
@@ -6910,7 +7091,7 @@ export default function BranchMap({
                                         y: anchorY - rectSize.height / 2 + dotStrokeInset,
                                         width: rectSize.width - dotStrokeWidth,
                                         height: rectSize.height - dotStrokeWidth,
-                                        fill: dotFill,
+                                        fill: isLocalCommit ? CANVAS_UNPUSHED_NODE_FILL : dotFill,
                                         stroke: getNodeStrokeColor(
                                           vm.clusterKey,
                                           isGhostRect
@@ -6946,6 +7127,9 @@ export default function BranchMap({
                                 const clusterHasUncommitted = vm.renderEntries.some(
                                   (entry) => entry.item.commit?.kind === 'uncommitted'
                                 );
+                                const clusterHasLocalCommits = vm.renderEntries.some((entry) =>
+                                  localCommitDotIndices.has(entry.item.index)
+                                );
                                 const isExpanded = motion.isExpanded;
                                 const phase = motion.phase;
                                 const phaseEased = motion.phaseEased;
@@ -6962,7 +7146,7 @@ export default function BranchMap({
                                           y: anchorY - rectSize.height / 2 + dotStrokeInset,
                                           width: rectSize.width - dotStrokeWidth,
                                           height: rectSize.height - dotStrokeWidth,
-                                          fill: dotFill,
+                                          fill: clusterHasLocalCommits ? CANVAS_UNPUSHED_NODE_FILL : dotFill,
                                           stroke: getNodeStrokeColor(
                                             vm.clusterKey,
                                             clusterHasUncommitted ? CHECKED_OUT_SELECTION_STROKE : CANVAS_NODE_STROKE,
@@ -7035,6 +7219,7 @@ export default function BranchMap({
                                           const tooltipSha = commit.sha ?? commit.fullSha.slice(0, 7);
                                           const tooltipMessage = commit.message;
                                           const isUncommittedCommit = commit.kind === 'uncommitted';
+                                          const isLocalCommit = localCommitDotIndices.has(entry.item.index);
                                           const tooltipTitle = isUncommittedCommit
                                             ? 'Uncommited changes'
                                             : `Commit ${tooltipSha}`;
@@ -7092,7 +7277,7 @@ export default function BranchMap({
                                                     y: -localRect.height / 2 + dotStrokeInset,
                                                     width: localRect.width - dotStrokeWidth,
                                                     height: localRect.height - dotStrokeWidth,
-                                                    fill: dotFill,
+                                                    fill: isLocalCommit ? CANVAS_UNPUSHED_NODE_FILL : dotFill,
                                                     stroke: getNodeStrokeColor(
                                                       commitKey,
                                                       isUncommittedCommit ? CHECKED_OUT_SELECTION_STROKE : CANVAS_NODE_STROKE,
@@ -7306,6 +7491,8 @@ export default function BranchMap({
                             const commit = commitEntry.item.commit;
                             const isNonCommitPlaceholder = !commit && uniqueAheadCount <= 0;
                             const isUncommittedCommit = commit?.kind === 'uncommitted';
+                            const isLocalCommit =
+                              !isNonCommitPlaceholder && localCommitDotIndices.has(commitEntry.item.index);
                             const rectSize = commitRectSize(scaledNodeSize);
                             const isGhostRect = isNonCommitPlaceholder;
                             const ghostRectStrokeWidth = unpushedStrokeWidth;
@@ -7336,7 +7523,7 @@ export default function BranchMap({
                                   innerText: isUncommittedCommit ? undefined : commit?.message,
                                   footerMetaAuthor: `@${commit?.author ?? b.lastCommitAuthor}`,
                                   footerMetaDate: fmtTooltipDate(commit?.date ?? b.lastCommitDate),
-                                  fill: isUncommittedCommit ? CANVAS_UNPUSHED_NODE_FILL : dotFill,
+                                  fill: isUncommittedCommit || isLocalCommit ? CANVAS_UNPUSHED_NODE_FILL : dotFill,
                                   baseStroke: isUncommittedCommit
                                     ? CHECKED_OUT_SELECTION_STROKE
                                     : CANVAS_NODE_STROKE,
@@ -7354,6 +7541,9 @@ export default function BranchMap({
                           const canExpandCluster = renderEntries.length > 1;
                           const clusterHasUncommitted = renderEntries.some(
                             (entry) => entry.item.commit?.kind === 'uncommitted'
+                          );
+                          const clusterHasLocalCommits = renderEntries.some((entry) =>
+                            localCommitDotIndices.has(entry.item.index)
                           );
                           const expanded = canExpandCluster ? expandedClumps.get(clusterKey) : undefined;
                           const { isExpanded, phase, phaseEased } = canExpandCluster
@@ -7383,7 +7573,7 @@ export default function BranchMap({
                                     const lastDate = renderEntries[renderEntries.length - 1]?.item.commit?.date ?? b.lastCommitDate;
                                     return fmtClumpDateRange(firstDate, lastDate);
                                   })(),
-                                  fill: clusterHasUncommitted ? CANVAS_UNPUSHED_NODE_FILL : dotFill,
+                                  fill: clusterHasUncommitted || clusterHasLocalCommits ? CANVAS_UNPUSHED_NODE_FILL : dotFill,
                                   baseStroke: clusterHasUncommitted
                                     ? CHECKED_OUT_SELECTION_STROKE
                                     : CANVAS_NODE_STROKE,
@@ -7418,6 +7608,7 @@ export default function BranchMap({
                                 );
                                 const commitKey = `branch-commit:${b.name}:${commit.fullSha}`;
                                 const isUncommittedCommit = commit.kind === 'uncommitted';
+                                const isLocalCommit = localCommitDotIndices.has(entry.item.index);
 
                                 return (
                                   <g
@@ -7436,7 +7627,7 @@ export default function BranchMap({
                                           isUncommittedCommit ? undefined : commit.message,
                                         footerMetaAuthor: `@${commit.author ?? b.lastCommitAuthor}`,
                                         footerMetaDate: fmtTooltipDate(commit.date ?? b.lastCommitDate),
-                                        fill: isUncommittedCommit ? CANVAS_UNPUSHED_NODE_FILL : dotFill,
+                                        fill: isUncommittedCommit || isLocalCommit ? CANVAS_UNPUSHED_NODE_FILL : dotFill,
                                         baseStroke: isUncommittedCommit
                                           ? CHECKED_OUT_SELECTION_STROKE
                                           : CANVAS_NODE_STROKE,
@@ -8199,17 +8390,60 @@ export default function BranchMap({
 
       {/* Bottom chrome: timeline controls — absolute so it stays inside the map
           container and respects visibility:hidden when the diff view is shown. */}
-      <div className="absolute bottom-6 left-6 right-6 flex flex-col gap-2 z-50">
+      <div
+        data-map-ui
+        className="absolute bottom-6 left-6 right-6 z-50 flex flex-col gap-2 pointer-events-none [&_button]:pointer-events-auto"
+        onMouseDownCapture={(event) => {
+          if ((event.target as Element | null)?.closest('button')) {
+            event.stopPropagation();
+          }
+        }}
+      >
 
         {/* Controls row */}
         <div
-          className="flex items-center justify-between gap-4"
+          className="pointer-events-none flex items-center justify-between gap-4"
           style={{
             opacity: isLoading || !controlsReady ? 0 : 1,
             transition: 'opacity 0.4s ease',
           }}
         >
           <div className="flex items-center gap-2 min-w-0">
+            {!hasSelection && onPushAllBranches && (
+              <button
+                onClick={() => void onPushAllBranches()}
+                disabled={pushInProgress || mergeInProgress}
+                className="shrink-0 rounded-full border border-border bg-card px-3 py-1.5 text-xs font-medium text-foreground transition-colors hover:bg-accent disabled:cursor-not-allowed disabled:opacity-50"
+                title="Push every local branch that still has commits to send"
+              >
+                {pushInProgress ? 'Pushing...' : 'Push all'}
+              </button>
+            )}
+            {!hasSelection && onPushCurrentBranch && (
+              <button
+                onClick={() => void onPushCurrentBranch()}
+                disabled={pushInProgress || mergeInProgress || checkedOutIsDetached}
+                className="shrink-0 rounded-full border border-border bg-card px-3 py-1.5 text-xs font-medium text-foreground transition-colors hover:bg-accent disabled:cursor-not-allowed disabled:opacity-50"
+                title={checkedOutIsDetached ? 'Check out a branch to push it' : 'Push the branch that is currently checked out'}
+              >
+                {pushInProgress ? 'Pushing...' : pushCurrentBranchLabel}
+              </button>
+            )}
+            {resolvedSelectedPushTargets.length > 0 && onPushCommitTargets && (
+              <div className="flex items-center gap-2 shrink-0 rounded-full border border-border bg-card pl-3 pr-1 py-1">
+                <span className="text-xs font-medium text-muted-foreground select-none">
+                  push through...
+                </span>
+                <button
+                  onClick={() => void handlePushSelectedTargets()}
+                  disabled={pushInProgress || mergeInProgress}
+                  className="rounded-full bg-primary/10 px-2.5 py-1 text-xs font-medium text-foreground transition-colors hover:bg-primary/20 disabled:cursor-not-allowed disabled:opacity-50"
+                  title={selectedPushTitle}
+                >
+                  {pushInProgress ? 'Pushing...' : selectedPushLabel}
+                </button>
+              </div>
+            )}
             {selectedVisibleCommitShas.length > 1 &&
               commitMergeTargetOptions.length > 1 &&
               selectedCommitTargetOption &&

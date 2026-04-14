@@ -31,6 +31,13 @@ pub struct RepoInfo {
     path: String,
 }
 
+#[derive(serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+struct PushResult {
+    branch_name: String,
+    target_sha: Option<String>,
+}
+
 static WATCHER_STATE: OnceLock<Mutex<Option<notify::RecommendedWatcher>>> = OnceLock::new();
 const GIT_ACTIVITY_LOCAL_MIN_EMIT_MS: u64 = 250;
 const GIT_ACTIVITY_GRAPH_MIN_EMIT_MS: u64 = 120;
@@ -462,6 +469,88 @@ fn get_checked_out_ref(repo_path: String) -> Result<CheckedOutRef, String> {
     git::get_checked_out_ref(path).map_err(|e| e.to_string())
 }
 
+fn list_git_remotes(repo: &Path) -> Result<Vec<String>, String> {
+    let output = git::cli::run(repo, &["remote"]).map_err(|e| e.to_string())?;
+    Ok(output
+        .lines()
+        .map(str::trim)
+        .filter(|line| !line.is_empty())
+        .map(|line| line.to_string())
+        .collect())
+}
+
+fn remote_ref_exists(repo: &Path, remote_ref: &str) -> bool {
+    git::cli::run(repo, &["show-ref", "--verify", "--quiet", remote_ref]).is_ok()
+}
+
+fn get_branch_push_remote(repo: &Path, branch: &str) -> Result<(String, bool), String> {
+    let upstream_query = format!("{branch}@{{upstream}}");
+    if let Ok(output) = git::cli::run(repo, &["rev-parse", "--abbrev-ref", &upstream_query]) {
+        let upstream = output.trim();
+        if let Some((remote, _branch)) = upstream.split_once('/') {
+            if !remote.is_empty() {
+                return Ok((remote.to_string(), true));
+            }
+        }
+    }
+
+    let remotes = list_git_remotes(repo)?;
+    if remotes.is_empty() {
+        return Err("No git remote is configured for this repository.".to_string());
+    }
+
+    if remotes.iter().any(|remote| remote == "origin") {
+        return Ok(("origin".to_string(), false));
+    }
+
+    Ok((remotes[0].clone(), false))
+}
+
+fn branch_has_unpushed_commits(repo: &Path, branch: &str) -> bool {
+    let compare_ref = get_branch_compare_ref(repo, branch);
+
+    let Some(compare_ref) = compare_ref else {
+        return true;
+    };
+
+    let range = format!("{compare_ref}..{branch}");
+    match git::cli::run(repo, &["rev-list", "--count", &range]) {
+        Ok(output) => output.trim().parse::<u32>().map(|ahead| ahead > 0).unwrap_or(false),
+        Err(_) => false,
+    }
+}
+
+fn get_branch_compare_ref(repo: &Path, branch: &str) -> Option<String> {
+    if let Ok(output) =
+        git::cli::run(repo, &["rev-parse", "--abbrev-ref", &format!("{branch}@{{upstream}}")])
+    {
+        let upstream = output.trim();
+        if !upstream.is_empty() {
+            return Some(upstream.to_string());
+        }
+    }
+    if remote_ref_exists(repo, &format!("refs/remotes/origin/{branch}")) {
+        return Some(format!("origin/{branch}"));
+    }
+    None
+}
+
+fn push_branch_ref(repo: &Path, branch: &str, target_sha: Option<&str>) -> Result<(), String> {
+    let (remote, has_upstream) = get_branch_push_remote(repo, branch)?;
+    let refspec = target_sha
+        .map(|sha| format!("{sha}:refs/heads/{branch}"))
+        .unwrap_or_else(|| branch.to_string());
+
+    let args: Vec<String> = if has_upstream {
+        vec!["push".to_string(), remote, refspec]
+    } else {
+        vec!["push".to_string(), "-u".to_string(), remote, refspec]
+    };
+    let arg_refs: Vec<&str> = args.iter().map(|value| value.as_str()).collect();
+    git::cli::run(repo, &arg_refs).map_err(|e| e.to_string())?;
+    Ok(())
+}
+
 #[tauri::command(rename_all = "camelCase")]
 fn checkout_ref(repo_path: String, ref_name: String) -> Result<CheckedOutRef, String> {
     let path = Path::new(&repo_path);
@@ -474,6 +563,64 @@ fn checkout_branch(repo_path: String, branch_name: String) -> Result<CheckedOutR
     let path = Path::new(&repo_path);
     git::cli::run(path, &["checkout", &branch_name]).map_err(|e| e.to_string())?;
     git::get_checked_out_ref(path).map_err(|e| e.to_string())
+}
+
+#[tauri::command(rename_all = "camelCase")]
+fn push_branch(
+    repo_path: String,
+    branch_name: String,
+    target_sha: Option<String>,
+) -> Result<PushResult, String> {
+    let path = Path::new(&repo_path);
+    push_branch_ref(path, &branch_name, target_sha.as_deref())?;
+    Ok(PushResult {
+        branch_name,
+        target_sha,
+    })
+}
+
+#[tauri::command(rename_all = "camelCase")]
+fn push_current_branch(repo_path: String) -> Result<PushResult, String> {
+    let path = Path::new(&repo_path);
+    let checked_out = git::get_checked_out_ref(path).map_err(|e| e.to_string())?;
+    let branch_name = checked_out
+        .branch_name
+        .ok_or_else(|| "Cannot push while HEAD is detached.".to_string())?;
+    push_branch_ref(path, &branch_name, None)?;
+    Ok(PushResult {
+        branch_name,
+        target_sha: None,
+    })
+}
+
+#[tauri::command(rename_all = "camelCase")]
+fn push_all_unpushed_branches(repo_path: String) -> Result<Vec<PushResult>, String> {
+    let path = Path::new(&repo_path);
+    let default_branch = git::get_default_branch(path).map_err(|e| e.to_string())?;
+    let mut push_targets: Vec<PushResult> = git::list_branches(path, &default_branch)
+        .map_err(|e| e.to_string())?
+        .into_iter()
+        .filter(|branch| branch.remote_sync_status != "on-github" && branch.unpushed_commits > 0)
+        .map(|branch| PushResult {
+            branch_name: branch.name,
+            target_sha: None,
+        })
+        .collect();
+
+    if branch_has_unpushed_commits(path, &default_branch)
+        && !push_targets.iter().any(|target| target.branch_name == default_branch)
+    {
+        push_targets.push(PushResult {
+            branch_name: default_branch.clone(),
+            target_sha: None,
+        });
+    }
+
+    for target in &push_targets {
+        push_branch_ref(path, &target.branch_name, None)?;
+    }
+
+    Ok(push_targets)
 }
 
 #[tauri::command(rename_all = "camelCase")]
@@ -1299,6 +1446,54 @@ fn get_direct_commits(
 ) -> Result<Vec<DirectCommit>, String> {
     let path = Path::new(&repo_path);
     git::get_direct_commits(path, &branch, limit).map_err(|e| e.to_string())
+}
+
+#[tauri::command(rename_all = "camelCase")]
+fn get_unpushed_direct_commits(
+    repo_path: String,
+    branch: String,
+) -> Result<Vec<DirectCommit>, String> {
+    let path = Path::new(&repo_path);
+    let range = if let Some(compare_ref) = get_branch_compare_ref(path, &branch) {
+        format!("{compare_ref}..{branch}")
+    } else {
+        branch.clone()
+    };
+    let output = git::cli::run(
+        path,
+        &[
+            "log",
+            "--first-parent",
+            "--format=%H|%h|%s|%an|%cI|%P",
+            &range,
+        ],
+    )
+    .map_err(|e| e.to_string())?;
+
+    let commits = output
+        .lines()
+        .filter(|s| !s.is_empty())
+        .filter_map(|line| {
+            let parts: Vec<&str> = line.splitn(6, '|').collect();
+            if parts.len() < 6 {
+                return None;
+            }
+            let parent_sha = parts[5]
+                .split_whitespace()
+                .next()
+                .map(|value| value.to_string());
+            Some(DirectCommit {
+                full_sha: parts[0].to_string(),
+                sha: parts[1].to_string(),
+                parent_sha,
+                message: parts[2].to_string(),
+                author: parts[3].to_string(),
+                date: parts[4].to_string(),
+            })
+        })
+        .collect();
+
+    Ok(commits)
 }
 
 /// Recent commits on a branch (no base filtering — just git log -N <branch>).
@@ -3527,6 +3722,9 @@ pub fn run() {
             get_checked_out_ref,
             checkout_ref,
             checkout_branch,
+            push_branch,
+            push_current_branch,
+            push_all_unpushed_branches,
             merge_branches,
             merge_ref_into_branch,
             get_repo_info,
@@ -3547,6 +3745,7 @@ pub fn run() {
             summarize_diff,
             screenshot,
             get_recent_log,
+            get_unpushed_direct_commits,
             generate_preview,
             generate_preview_routes,
             open_preview_browser,
