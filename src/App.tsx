@@ -960,7 +960,7 @@ function App() {
       checkedOutAnchorSha &&
       shaMatches(targetLane.headSha, checkedOutAnchorSha)
     );
-    const targetBranch = !targetLane?.isDefault
+    const targetBranch = targetLane && !targetLane.isDefault
       ? branches.find((b) => b.name === targetLane.name)
       : undefined;
 
