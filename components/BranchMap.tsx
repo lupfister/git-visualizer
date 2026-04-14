@@ -1,5 +1,6 @@
 import React, { useState, useRef, useEffect, useLayoutEffect } from 'react';
 import { Loader2, X } from 'lucide-react';
+import { layoutWithLines, prepareWithSegments } from '@chenglou/pretext';
 import { Branch, BranchCommitPreview, BranchPromptMeta, CheckedOutRef, DirectCommit, MergeNode, OpenPR } from '../types';
 import { ViewMode } from './BranchMapView';
 import {
@@ -286,6 +287,29 @@ function fmtClumpDateRange(startStr: string, endStr: string): string {
 
 const svgTextWidthCache = new Map<string, number>();
 let svgTextMeasureCtx: CanvasRenderingContext2D | null = null;
+const pretextPreparedCache = new Map<string, ReturnType<typeof prepareWithSegments>>();
+const PRETEXT_PREPARED_CACHE_LIMIT = 1800;
+
+function prunePretextPreparedCache() {
+  if (pretextPreparedCache.size <= PRETEXT_PREPARED_CACHE_LIMIT) return;
+  const removeCount = pretextPreparedCache.size - PRETEXT_PREPARED_CACHE_LIMIT;
+  let removed = 0;
+  for (const key of pretextPreparedCache.keys()) {
+    pretextPreparedCache.delete(key);
+    removed += 1;
+    if (removed >= removeCount) break;
+  }
+}
+
+function getPreparedPretext(text: string, font: string) {
+  const cacheKey = `${font}::${text}`;
+  const cached = pretextPreparedCache.get(cacheKey);
+  if (cached) return cached;
+  const prepared = prepareWithSegments(text, font);
+  pretextPreparedCache.set(cacheKey, prepared);
+  prunePretextPreparedCache();
+  return prepared;
+}
 
 function estimateSvgTextWidth(text: string, fontSize = 10): number {
   const cacheKey = `${fontSize}:${BRANCH_MAP_SVG_FONT_FAMILY}:${text}`;
@@ -300,12 +324,12 @@ function estimateSvgTextWidth(text: string, fontSize = 10): number {
     }
     if (svgTextMeasureCtx) {
       svgTextMeasureCtx.font = `400 ${fontSize}px ${BRANCH_MAP_SVG_FONT_FAMILY}`;
-      width = Math.ceil(svgTextMeasureCtx.measureText(text).width);
+      width = svgTextMeasureCtx.measureText(text).width;
     } else {
-      width = Math.ceil(text.length * fontSize * 0.56);
+      width = text.length * fontSize * 0.56;
     }
   } else {
-    width = Math.ceil(text.length * fontSize * 0.56);
+    width = text.length * fontSize * 0.56;
   }
 
   svgTextWidthCache.set(cacheKey, width);
@@ -4342,53 +4366,66 @@ export default function BranchMap({
     const lineHeight = fontSize * 1.08;
     const maxLines = Math.max(1, Math.floor(availableHeight / lineHeight));
     if (maxLines <= 0) return { lines: [], fontSize, lineHeight };
+    try {
+      const prepared = getPreparedPretext(
+        label,
+        `400 ${fontSize}px ${BRANCH_MAP_SVG_FONT_FAMILY}`,
+      );
+      const wrapped = layoutWithLines(prepared, availableWidth, lineHeight);
+      const fullLines = wrapped.lines
+        .map((line) => line.text.trim())
+        .filter((line) => line.length > 0)
+        // Safety clamp: even if a line comes back too wide (e.g. long unbroken token),
+        // never allow visual overflow past the node bounds.
+        .map((line) => trimTextToWidth(line, availableWidth, fontSize));
+      if (fullLines.length <= maxLines) return { lines: fullLines, fontSize, lineHeight };
 
-    const lines: string[] = [];
-    let remaining = label;
-
-    const fitLine = (text: string, truncate = false): { line: string; rest: string } => {
-      const source = text.trimStart();
-      if (!source) return { line: '', rest: '' };
-      if (truncate) return { line: trimTextToWidth(source, availableWidth, fontSize), rest: '' };
-      if (estimateSvgTextWidth(source, fontSize) <= availableWidth) return { line: source, rest: '' };
-
-      let lo = 1;
-      let hi = source.length;
-      while (lo < hi) {
-        const mid = Math.ceil((lo + hi) / 2);
-        const candidate = source.slice(0, mid);
-        if (estimateSvgTextWidth(candidate, fontSize) <= availableWidth) {
-          lo = mid;
-        } else {
-          hi = mid - 1;
+      const lines = fullLines.slice(0, maxLines);
+      const overflow = fullLines.slice(maxLines).join(' ').trim();
+      const lastLineSource = overflow
+        ? `${lines[maxLines - 1]} ${overflow}`.trim()
+        : lines[maxLines - 1];
+      lines[maxLines - 1] = trimTextToWidth(lastLineSource, availableWidth, fontSize);
+      return { lines, fontSize, lineHeight };
+    } catch {
+      const lines: string[] = [];
+      let remaining = label;
+      const fitLine = (text: string, truncate = false): { line: string; rest: string } => {
+        const source = text.trimStart();
+        if (!source) return { line: '', rest: '' };
+        if (truncate) return { line: trimTextToWidth(source, availableWidth, fontSize), rest: '' };
+        if (estimateSvgTextWidth(source, fontSize) <= availableWidth) return { line: source, rest: '' };
+        let lo = 1;
+        let hi = source.length;
+        while (lo < hi) {
+          const mid = Math.ceil((lo + hi) / 2);
+          const candidate = source.slice(0, mid);
+          if (estimateSvgTextWidth(candidate, fontSize) <= availableWidth) {
+            lo = mid;
+          } else {
+            hi = mid - 1;
+          }
         }
-      }
-
-      let end = lo;
-      const fitted = source.slice(0, end);
-      const lastWhitespace = fitted.search(/\s\S*$/);
-      if (lastWhitespace > 0) end = lastWhitespace;
-
-      const line = source.slice(0, end).trimEnd();
-      if (!line) {
-        return { line: trimTextToWidth(source, availableWidth, fontSize), rest: '' };
-      }
-
-      return {
-        line,
-        rest: source.slice(end).trimStart(),
+        let end = lo;
+        const fitted = source.slice(0, end);
+        const lastWhitespace = fitted.search(/\s\S*$/);
+        if (lastWhitespace > 0) end = lastWhitespace;
+        const line = source.slice(0, end).trimEnd();
+        if (!line) return { line: trimTextToWidth(source, availableWidth, fontSize), rest: '' };
+        return {
+          line,
+          rest: source.slice(end).trimStart(),
+        };
       };
-    };
-
-    for (let lineIndex = 0; lineIndex < maxLines && remaining; lineIndex += 1) {
-      const isLastLine = lineIndex === maxLines - 1;
-      const { line, rest } = fitLine(remaining, isLastLine);
-      if (!line) break;
-      lines.push(line);
-      remaining = rest;
+      for (let lineIndex = 0; lineIndex < maxLines && remaining; lineIndex += 1) {
+        const isLastLine = lineIndex === maxLines - 1;
+        const { line, rest } = fitLine(remaining, isLastLine);
+        if (!line) break;
+        lines.push(line);
+        remaining = rest;
+      }
+      return { lines, fontSize, lineHeight };
     }
-
-    return { lines, fontSize, lineHeight };
   };
   const scaledNodeSize = NODE_SIZE;
   const nodeRectSize = (_count: number) => commitRectSize(scaledNodeSize, 0);
