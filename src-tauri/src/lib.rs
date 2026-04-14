@@ -718,9 +718,35 @@ fn delete_selected_elements(
         }
     }
 
+    // Linked worktrees that still have this branch checked out must be removed before `git branch -D`
+    // (otherwise Git refuses or leaves stale registrations).
+    if !unique_branch_names.is_empty() {
+        let worktrees = git::list_worktrees(path).map_err(|e| e.to_string())?;
+        let branch_set: HashSet<&str> = unique_branch_names.iter().map(|s| s.as_str()).collect();
+        let mut removed_wt_paths = HashSet::<String>::new();
+        for wt in &worktrees {
+            if wt.is_current {
+                continue;
+            }
+            let Some(bn) = wt.branch_name.as_deref() else {
+                continue;
+            };
+            if !branch_set.contains(bn) {
+                continue;
+            }
+            if !removed_wt_paths.insert(wt.path.clone()) {
+                continue;
+            }
+            let force = wt.is_prunable || !wt.path_exists;
+            git::remove_git_worktree(path, &wt.path, force).map_err(|e| e.to_string())?;
+        }
+    }
+
     for branch_name in &unique_branch_names {
         git::cli::run(path, &["branch", "-D", branch_name]).map_err(|e| e.to_string())?;
     }
+
+    let _ = git::cli::run(path, &["worktree", "prune"]);
 
     Ok(DeleteSelectionResult {
         deleted_branches: unique_branch_names,

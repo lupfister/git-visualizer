@@ -9403,6 +9403,12 @@ export default function BranchMap({
                 </div>
               ))}
             </div>
+            {selectedDeletableBranchNames.length > 0 && (
+              <p className="text-xs text-muted-foreground mt-2 leading-relaxed">
+                Any linked Git worktree that still has one of these branches checked out is removed first, then the branch
+                ref is deleted, then <span className="font-mono">git worktree prune</span> runs.
+              </p>
+            )}
             <div className="mt-4 flex items-center justify-end gap-2">
               <button
                 onClick={() => setDeleteConfirmOpen(false)}
