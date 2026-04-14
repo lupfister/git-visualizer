@@ -72,7 +72,7 @@ const CANVAS_NEUTRAL_GRAY = '#E0E0E0';
 const CANVAS_NEUTRAL_GRAY_HOVER = '#7CB0F8';
 const CANVAS_NODE_FILL = '#F5F5F5';
 const HOVER_NODE_FILL = '#F0F6FE';
-const CANVAS_UNPUSHED_NODE_FILL = 'var(--background)';
+const CANVAS_UNPUSHED_NODE_FILL = '#FAFAF9';
 const CANVAS_UNPUSHED_NODE_FILL_HEX = '#FAFAF9';
 const CANVAS_NODE_STROKE = '#E0E0E0';
 const CANVAS_NODE_STROKE_WIDTH = 1.5;
@@ -4790,10 +4790,10 @@ export default function BranchMap({
     isUserSelected = false,
   ) => {
     const normalizedFill = baseFill.trim().toLowerCase();
-    const shouldPreserveBaseFill =
+    const isUnpushedFill =
       normalizedFill === CANVAS_UNPUSHED_NODE_FILL ||
       normalizedFill === CANVAS_UNPUSHED_NODE_FILL_HEX.toLowerCase();
-    if (shouldPreserveBaseFill) return baseFill;
+    if (isUnpushedFill) return CANVAS_UNPUSHED_NODE_FILL_HEX;
     if (isUserSelected) return USER_SELECTION_FILL;
     if (isCheckedOutSelection) return CHECKED_OUT_SELECTION_FILL;
     return hoveredNodeStrokeKey === nodeKey ? HOVER_NODE_FILL : baseFill;
@@ -5712,9 +5712,20 @@ export default function BranchMap({
     clusterHasCheckedOutHead: boolean;
     clusterHasSelectedCommit: boolean;
     clusterHasUncommitted: boolean;
+  clusterHasUnpushed: boolean;
   };
   const mainLayout = getBranchRenderLayout(defaultBranchRenderBranch);
   const latestMainCommitSha = sortedDirectCommits[sortedDirectCommits.length - 1]?.fullSha;
+  const fallbackMainUnpushedCommits = (() => {
+    const explicitUnpushed = Math.max(0, defaultBranchFromData?.unpushedCommits ?? 0);
+    if (explicitUnpushed === 0) return [];
+    return sortedDirectCommits.slice(-explicitUnpushed);
+  })();
+  const effectiveUnpushedDirectCommits =
+    unpushedDirectCommits.length > 0 ? unpushedDirectCommits : fallbackMainUnpushedCommits;
+  const unpushedDirectCommitShaSet = new Set(
+    effectiveUnpushedDirectCommits.flatMap((commit) => [commit.fullSha, commit.sha].filter(Boolean))
+  );
   const selectedCommitShaRawSet = new Set(selectedCommitShas);
   const mainDirectClusters: MainDirectClusterLayout[] = mainLayout.commitDotClusters
     .map((cluster) => {
@@ -5755,6 +5766,10 @@ export default function BranchMap({
         clusterHasUncommitted:
           directEntries.some((entry) =>
             entry.item.fullSha === 'WORKING_TREE' || entry.item.kind === 'uncommitted'
+          ),
+        clusterHasUnpushed:
+          directEntries.some((entry) =>
+            unpushedDirectCommitShaSet.has(entry.item.fullSha) || unpushedDirectCommitShaSet.has(entry.item.sha)
           ),
       };
     })
@@ -6382,6 +6397,7 @@ export default function BranchMap({
                               clusterHasMainTip,
                               clusterHasCheckedOutHead,
                               clusterHasSelectedCommit,
+                            clusterHasUnpushed,
                               memberKeys,
                               preferredAnchorX,
                               preferredAnchorY,
@@ -6399,6 +6415,8 @@ export default function BranchMap({
                             if (count === 1) {
                               const c = last;
                               const isUncommittedCommit = c.fullSha === 'WORKING_TREE';
+                              const isUnpushedCommit =
+                                unpushedDirectCommitShaSet.has(c.fullSha) || unpushedDirectCommitShaSet.has(c.sha);
                               const label = truncatePrompt(c.message, COMMIT_TOOLTIP_PREVIEW_MAX);
                               const rectSize = commitRectSize(scaledNodeSize);
                               return (
@@ -6440,7 +6458,7 @@ export default function BranchMap({
                                     height: rectSize.height - CANVAS_NODE_STROKE_WIDTH,
                                     fill: getNodeFillColor(
                                       clusterKey,
-                                      CANVAS_NODE_FILL,
+                                      isUncommittedCommit || isUnpushedCommit ? CANVAS_UNPUSHED_NODE_FILL : CANVAS_NODE_FILL,
                                       clusterHasCheckedOutHead,
                                       clusterHasSelectedCommit || (clusterHasMainTip && selectedBranchNameSet.has(defaultBranch)),
                                     ),
@@ -6573,6 +6591,8 @@ export default function BranchMap({
                                       );
                                       const commitKey = `direct:${c.fullSha}`;
                                       const isUncommittedCommit = c.fullSha === 'WORKING_TREE';
+                                      const isUnpushedCommit =
+                                        unpushedDirectCommitShaSet.has(c.fullSha) || unpushedDirectCommitShaSet.has(c.sha);
                                       const isCheckedOutCommit =
                                         checkedOutHeadSha != null && shaMatchesGitRef(c.fullSha, checkedOutHeadSha);
                                       return (
@@ -6622,7 +6642,7 @@ export default function BranchMap({
                                                 height: localRect.height - CANVAS_NODE_STROKE_WIDTH,
                                                 fill: getNodeFillColor(
                                                   commitKey,
-                                                  CANVAS_NODE_FILL,
+                                                  isUncommittedCommit || isUnpushedCommit ? CANVAS_UNPUSHED_NODE_FILL : CANVAS_NODE_FILL,
                                                   isCheckedOutCommit,
                                                   selectedCommitShaSet.has(c.fullSha) ||
                                                     (clusterHasMainTip && selectedBranchNameSet.has(defaultBranch)),
@@ -7086,6 +7106,8 @@ export default function BranchMap({
                                   const isUncommittedCommit = commit?.kind === 'uncommitted';
                                   const isLocalCommit =
                                     !isNonCommitPlaceholder && localCommitDotIndices.has(commitEntry.item.index);
+                                  const branchCheckedOutUnpushed =
+                                    checkedOutBranchName === b.name && b.remoteSyncStatus !== 'on-github';
                                   const targetCommitSha = commit?.fullSha ?? b.headSha;
                                   const tooltipAuthor = commit?.author ?? b.lastCommitAuthor;
                                   const tooltipDate = commit?.date ?? b.lastCommitDate;
@@ -7156,7 +7178,9 @@ export default function BranchMap({
                                         y: anchorY - rectSize.height / 2 + dotStrokeInset,
                                         width: rectSize.width - dotStrokeWidth,
                                         height: rectSize.height - dotStrokeWidth,
-                                        fill: isLocalCommit ? CANVAS_UNPUSHED_NODE_FILL : dotFill,
+                                        fill: isLocalCommit || (clusterHasCheckedOutHead && branchCheckedOutUnpushed)
+                                          ? CANVAS_UNPUSHED_NODE_FILL
+                                          : dotFill,
                                         stroke: getNodeStrokeColor(
                                           vm.clusterKey,
                                           isGhostRect
@@ -7195,6 +7219,8 @@ export default function BranchMap({
                                 const clusterHasLocalCommits = vm.renderEntries.some((entry) =>
                                   localCommitDotIndices.has(entry.item.index)
                                 );
+                                const branchCheckedOutUnpushed =
+                                  checkedOutBranchName === b.name && b.remoteSyncStatus !== 'on-github';
                                 const isExpanded = motion.isExpanded;
                                 const phase = motion.phase;
                                 const phaseEased = motion.phaseEased;
@@ -7211,7 +7237,9 @@ export default function BranchMap({
                                           y: anchorY - rectSize.height / 2 + dotStrokeInset,
                                           width: rectSize.width - dotStrokeWidth,
                                           height: rectSize.height - dotStrokeWidth,
-                                          fill: clusterHasLocalCommits ? CANVAS_UNPUSHED_NODE_FILL : dotFill,
+                                          fill: clusterHasLocalCommits || (clusterHasCheckedOutHead && branchCheckedOutUnpushed)
+                                            ? CANVAS_UNPUSHED_NODE_FILL
+                                            : dotFill,
                                           stroke: getNodeStrokeColor(
                                             vm.clusterKey,
                                             clusterHasUncommitted ? CHECKED_OUT_SELECTION_STROKE : CANVAS_NODE_STROKE,
@@ -7285,6 +7313,8 @@ export default function BranchMap({
                                           const tooltipMessage = commit.message;
                                           const isUncommittedCommit = commit.kind === 'uncommitted';
                                           const isLocalCommit = localCommitDotIndices.has(entry.item.index);
+                                          const branchCheckedOutUnpushed =
+                                            checkedOutBranchName === b.name && b.remoteSyncStatus !== 'on-github';
                                           const tooltipTitle = isUncommittedCommit
                                             ? 'Uncommited changes'
                                             : `Commit ${tooltipSha}`;
@@ -7342,7 +7372,9 @@ export default function BranchMap({
                                                     y: -localRect.height / 2 + dotStrokeInset,
                                                     width: localRect.width - dotStrokeWidth,
                                                     height: localRect.height - dotStrokeWidth,
-                                                    fill: isLocalCommit ? CANVAS_UNPUSHED_NODE_FILL : dotFill,
+                                                    fill: isLocalCommit || (isCheckedOutCommit && branchCheckedOutUnpushed)
+                                                      ? CANVAS_UNPUSHED_NODE_FILL
+                                                      : dotFill,
                                                     stroke: getNodeStrokeColor(
                                                       commitKey,
                                                       isUncommittedCommit ? CHECKED_OUT_SELECTION_STROKE : CANVAS_NODE_STROKE,
@@ -7558,6 +7590,8 @@ export default function BranchMap({
                             const isUncommittedCommit = commit?.kind === 'uncommitted';
                             const isLocalCommit =
                               !isNonCommitPlaceholder && localCommitDotIndices.has(commitEntry.item.index);
+                            const branchCheckedOutUnpushed =
+                              checkedOutBranchName === b.name && b.remoteSyncStatus !== 'on-github';
                             const rectSize = commitRectSize(scaledNodeSize);
                             const isGhostRect = isNonCommitPlaceholder;
                             const ghostRectStrokeWidth = unpushedStrokeWidth;
@@ -7588,7 +7622,12 @@ export default function BranchMap({
                                   innerText: isUncommittedCommit ? undefined : commit?.message,
                                   footerMetaAuthor: `@${commit?.author ?? b.lastCommitAuthor}`,
                                   footerMetaDate: fmtTooltipDate(commit?.date ?? b.lastCommitDate),
-                                  fill: isUncommittedCommit || isLocalCommit ? CANVAS_UNPUSHED_NODE_FILL : dotFill,
+                                  fill:
+                                    isUncommittedCommit ||
+                                    isLocalCommit ||
+                                    (clusterHasCheckedOutHead && branchCheckedOutUnpushed)
+                                      ? CANVAS_UNPUSHED_NODE_FILL
+                                      : dotFill,
                                   baseStroke: isUncommittedCommit
                                     ? CHECKED_OUT_SELECTION_STROKE
                                     : CANVAS_NODE_STROKE,
@@ -7610,6 +7649,8 @@ export default function BranchMap({
                           const clusterHasLocalCommits = renderEntries.some((entry) =>
                             localCommitDotIndices.has(entry.item.index)
                           );
+                          const branchCheckedOutUnpushed =
+                            checkedOutBranchName === b.name && b.remoteSyncStatus !== 'on-github';
                           const expanded = canExpandCluster ? expandedClumps.get(clusterKey) : undefined;
                           const { isExpanded, phase, phaseEased } = canExpandCluster
                             ? resolveClumpPhase(expanded)
@@ -7638,7 +7679,12 @@ export default function BranchMap({
                                     const lastDate = renderEntries[renderEntries.length - 1]?.item.commit?.date ?? b.lastCommitDate;
                                     return fmtClumpDateRange(firstDate, lastDate);
                                   })(),
-                                  fill: clusterHasUncommitted || clusterHasLocalCommits ? CANVAS_UNPUSHED_NODE_FILL : dotFill,
+                                  fill:
+                                    clusterHasUncommitted ||
+                                    clusterHasLocalCommits ||
+                                    (clusterHasCheckedOutHead && branchCheckedOutUnpushed)
+                                      ? CANVAS_UNPUSHED_NODE_FILL
+                                      : dotFill,
                                   baseStroke: clusterHasUncommitted
                                     ? CHECKED_OUT_SELECTION_STROKE
                                     : CANVAS_NODE_STROKE,
@@ -7674,6 +7720,8 @@ export default function BranchMap({
                                 const commitKey = `branch-commit:${b.name}:${commit.fullSha}`;
                                 const isUncommittedCommit = commit.kind === 'uncommitted';
                                 const isLocalCommit = localCommitDotIndices.has(entry.item.index);
+                                const branchCheckedOutUnpushed =
+                                  checkedOutBranchName === b.name && b.remoteSyncStatus !== 'on-github';
 
                                 return (
                                   <g
@@ -7692,7 +7740,12 @@ export default function BranchMap({
                                           isUncommittedCommit ? undefined : commit.message,
                                         footerMetaAuthor: `@${commit.author ?? b.lastCommitAuthor}`,
                                         footerMetaDate: fmtTooltipDate(commit.date ?? b.lastCommitDate),
-                                        fill: isUncommittedCommit || isLocalCommit ? CANVAS_UNPUSHED_NODE_FILL : dotFill,
+                                        fill:
+                                          isUncommittedCommit ||
+                                          isLocalCommit ||
+                                          (isCheckedOutCommit && branchCheckedOutUnpushed)
+                                            ? CANVAS_UNPUSHED_NODE_FILL
+                                            : dotFill,
                                         baseStroke: isUncommittedCommit
                                           ? CHECKED_OUT_SELECTION_STROKE
                                           : CANVAS_NODE_STROKE,
@@ -7731,6 +7784,7 @@ export default function BranchMap({
                           clusterHasCheckedOutHead,
                           clusterHasSelectedCommit: mainClusterHasSelectedCommit,
                           clusterHasUncommitted,
+                          clusterHasUnpushed,
                         } = clusterLayout;
                         const motion = resolveClusterMotion(
                           clusterKey,
@@ -7747,6 +7801,12 @@ export default function BranchMap({
                         if (count === 1) {
                           const isUncommittedCommit = cluster.entries[0]?.item.fullSha === 'WORKING_TREE';
                           const singleMainCommit = cluster.entries[0]?.item;
+                          const isUnpushedCommit = singleMainCommit
+                            ? (
+                              unpushedDirectCommitShaSet.has(singleMainCommit.fullSha) ||
+                              unpushedDirectCommitShaSet.has(singleMainCommit.sha)
+                            )
+                            : false;
                           const rectSize = commitRectSize(scaledNodeSize);
                           return (
                             <g key={`main-direct-overlay-${clusterKey}`}>
@@ -7758,7 +7818,7 @@ export default function BranchMap({
                                 innerText: isUncommittedCommit ? undefined : singleMainCommit?.message,
                                 footerMetaAuthor: `@${singleMainCommit?.author ?? 'unknown'}`,
                                 footerMetaDate: singleMainCommit?.date ? fmtTooltipDate(singleMainCommit.date) : 'Unknown date',
-                                fill: isUncommittedCommit ? CANVAS_UNPUSHED_NODE_FILL : CANVAS_NODE_FILL,
+                                fill: isUncommittedCommit || isUnpushedCommit ? CANVAS_UNPUSHED_NODE_FILL : CANVAS_NODE_FILL,
                                 baseStroke: isUncommittedCommit
                                   ? CHECKED_OUT_SELECTION_STROKE
                                   : CANVAS_NODE_STROKE,
@@ -7789,6 +7849,8 @@ export default function BranchMap({
                                   );
                                   const commitKey = `direct:${c.fullSha}`;
                                   const isUncommittedCommit = c.fullSha === 'WORKING_TREE';
+                                  const isUnpushedCommit =
+                                    unpushedDirectCommitShaSet.has(c.fullSha) || unpushedDirectCommitShaSet.has(c.sha);
                                   const isCheckedOutCommit =
                                     checkedOutHeadSha != null &&
                                     (shaMatchesGitRef(c.fullSha, checkedOutHeadSha) ||
@@ -7810,7 +7872,7 @@ export default function BranchMap({
                                           innerText: isUncommittedCommit ? undefined : c.message,
                                           footerMetaAuthor: `@${c.author}`,
                                           footerMetaDate: fmtTooltipDate(c.date),
-                                          fill: isUncommittedCommit ? CANVAS_UNPUSHED_NODE_FILL : CANVAS_NODE_FILL,
+                                          fill: isUncommittedCommit || isUnpushedCommit ? CANVAS_UNPUSHED_NODE_FILL : CANVAS_NODE_FILL,
                                           baseStroke: isUncommittedCommit
                                             ? CHECKED_OUT_SELECTION_STROKE
                                             : CANVAS_NODE_STROKE,
@@ -7848,7 +7910,9 @@ export default function BranchMap({
                                   const lastDate = cluster.entries[cluster.entries.length - 1]?.item.date ?? '';
                                   return fmtClumpDateRange(firstDate, lastDate);
                                 })(),
-                                fill: clusterHasUncommitted ? CANVAS_UNPUSHED_NODE_FILL : CANVAS_NODE_FILL,
+                                fill: clusterHasUncommitted || clusterHasUnpushed
+                                  ? CANVAS_UNPUSHED_NODE_FILL
+                                  : CANVAS_NODE_FILL,
                                 baseStroke: clusterHasUncommitted
                                   ? CHECKED_OUT_SELECTION_STROKE
                                   : CANVAS_NODE_STROKE,
