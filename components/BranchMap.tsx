@@ -92,12 +92,12 @@ const CHECKED_OUT_SELECTION_STROKE = '#5EB9ED';
 const CHECKED_OUT_SELECTION_FILL = '#EDF7FD';
 /** Slightly brighter stroke when hovering the checked-out commit (hover must win over checkout chrome). */
 const CHECKED_OUT_SELECTION_HOVER_STROKE = '#64A1F7';
-/** Linked worktree checkout (not this app window) — warm amber vs primary blue */
-const WORKTREE_OTHER_STROKE = '#C49560';
-const WORKTREE_OTHER_FILL = '#FDF6ED';
-const WORKTREE_OTHER_HOVER_STROKE = '#B8864A';
-const WORKTREE_OTHER_TITLE = '#B8732A';
-const WORKTREE_OTHER_INNER_TEXT = '#B8732A';
+/** Linked worktree checkout (not this app window) — teal vs primary blue; stash stays yellow */
+const WORKTREE_OTHER_STROKE = '#0F9489';
+const WORKTREE_OTHER_FILL = '#E6FAF7';
+const WORKTREE_OTHER_HOVER_STROKE = '#0D7D72';
+const WORKTREE_OTHER_TITLE = '#0B6B63';
+const WORKTREE_OTHER_INNER_TEXT = '#0B5C56';
 /** Stroke color used for user-selected commits/branches (distinct from checked-out). */
 const USER_SELECTION_STROKE = '#3D8AF5';
 const USER_SELECTION_FILL = '#E7F0FE';
@@ -788,7 +788,7 @@ interface BranchMapProps {
   currentRepoPath?: string;
   onRemoveWorktree?: (worktreePath: string, force: boolean) => Promise<void> | void;
   removeWorktreeInProgress?: boolean;
-  /** Cmd/Ctrl+click or double-click an amber (other worktree) commit to target that worktree directory. */
+  /** Cmd/Ctrl+click or double-click a teal (other worktree) commit to target that worktree directory. */
   onSwitchToWorktree?: (worktreePath: string) => void | Promise<void>;
   onStashLocalChanges?: () => Promise<void> | void;
   stashInProgress?: boolean;
@@ -5011,9 +5011,12 @@ export default function BranchMap({
     baseStroke = CANVAS_NODE_STROKE,
     checkoutAccent: CheckoutAccent = 'none',
     isUserSelected = false,
+    accentOutlineOnly = false,
   ) => {
     if (isUserSelected) return USER_SELECTION_STROKE;
     if (hoveredNodeStrokeKey === nodeKey) {
+      // Ghost / empty uncommitted: same blue hover ring as normal nodes (not worktree-only stroke).
+      if (accentOutlineOnly) return CANVAS_NEUTRAL_GRAY_HOVER;
       if (checkoutAccent === 'primary') return CHECKED_OUT_SELECTION_HOVER_STROKE;
       if (checkoutAccent === 'other') return WORKTREE_OTHER_HOVER_STROKE;
       return CANVAS_NEUTRAL_GRAY_HOVER;
@@ -5027,16 +5030,24 @@ export default function BranchMap({
     baseFill = CANVAS_NODE_FILL,
     checkoutAccent: CheckoutAccent = 'none',
     isUserSelected = false,
+    accentOutlineOnly = false,
   ) => {
     const normalizedFill = baseFill.trim().toLowerCase();
     const isUnpushedFill =
       normalizedFill === CANVAS_UNPUSHED_NODE_FILL ||
       normalizedFill === CANVAS_UNPUSHED_NODE_FILL_HEX.toLowerCase();
-    if (isUnpushedFill) return CANVAS_UNPUSHED_NODE_FILL_HEX;
+    // Ghost / empty uncommitted, or any node that reads as neutral unpushed with no checkout tint:
+    // keep the same surface fill on hover and selection (stroke + labels carry state).
+    const retainNeutralSurfaceFill =
+      accentOutlineOnly || (isUnpushedFill && checkoutAccent === 'none');
+    if (retainNeutralSurfaceFill) {
+      return CANVAS_UNPUSHED_NODE_FILL_HEX;
+    }
     if (isUserSelected) return USER_SELECTION_FILL;
     if (hoveredNodeStrokeKey === nodeKey) return HOVER_NODE_FILL;
     if (checkoutAccent === 'primary') return CHECKED_OUT_SELECTION_FILL;
     if (checkoutAccent === 'other') return WORKTREE_OTHER_FILL;
+    if (isUnpushedFill) return CANVAS_UNPUSHED_NODE_FILL_HEX;
     return baseFill;
   };
   const getNodeFrameTitleColor = (
@@ -5045,9 +5056,11 @@ export default function BranchMap({
     isUserSelected = false,
     isUncommitted = false,
     isStash = false,
+    accentOutlineOnly = false,
   ) => {
     if (isUserSelected) return '#257BF3';
     if (hoveredNodeStrokeKey === nodeKey) {
+      if (accentOutlineOnly) return '#64A1F7';
       if (checkoutAccent === 'primary') return '#64A1F7';
       if (checkoutAccent === 'other') return WORKTREE_OTHER_HOVER_STROKE;
       return '#64A1F7';
@@ -5064,9 +5077,11 @@ export default function BranchMap({
     isUserSelected = false,
     isUncommitted = false,
     isStash = false,
+    accentOutlineOnly = false,
   ) => {
     if (isUserSelected) return '#257BF3';
     if (hoveredNodeStrokeKey === nodeKey) {
+      if (accentOutlineOnly) return '#64A1F7';
       if (checkoutAccent === 'primary') return '#64A1F7';
       if (checkoutAccent === 'other') return WORKTREE_OTHER_HOVER_STROKE;
       return '#64A1F7';
@@ -5173,6 +5188,7 @@ export default function BranchMap({
     footerMetaDate,
     isUncommitted = false,
     isStash = false,
+    accentOutlineOnly: accentOutlineOnlyProp = false,
   }: {
     nodeKey: string;
     centerX: number;
@@ -5191,6 +5207,8 @@ export default function BranchMap({
     footerMetaDate?: string;
     isUncommitted?: boolean;
     isStash?: boolean;
+    /** Ghost / empty uncommitted: transparent fill; checkout accent only on stroke. */
+    accentOutlineOnly?: boolean;
   }) {
     const wrappedInnerText = innerText?.trim()
       ? wrapNodeFrameMessage(innerText, rectSize, strokeWidth)
@@ -5222,7 +5240,15 @@ export default function BranchMap({
     const rectY = centerY - rectSize.height / 2 + strokeInset;
     const rectWidth = rectSize.width - strokeWidth;
     const rectHeight = rectSize.height - strokeWidth;
-    const nodeFill = getNodeFillColor(nodeKey, fill, checkoutAccent, isUserSelected);
+    const effectiveAccentOutlineOnly =
+      accentOutlineOnlyProp || (isUncommitted && !isStash && !innerText?.trim());
+    const nodeFill = getNodeFillColor(
+      nodeKey,
+      fill,
+      checkoutAccent,
+      isUserSelected,
+      effectiveAccentOutlineOnly,
+    );
     const normalizedFill = fill.trim().toLowerCase();
     const isUnpushedFill =
       normalizedFill === CANVAS_UNPUSHED_NODE_FILL ||
@@ -5233,6 +5259,7 @@ export default function BranchMap({
       baseStroke,
       checkoutAccent,
       isUserSelected,
+      effectiveAccentOutlineOnly,
     );
     return (
       <g style={cursor ? { cursor } : undefined}>
@@ -5253,7 +5280,14 @@ export default function BranchMap({
             textAnchor="start"
             textRendering="geometricPrecision"
             fontFamily={BRANCH_MAP_SVG_FONT_FAMILY}
-            fill={getNodeFrameInnerTextColor(nodeKey, checkoutAccent, isUserSelected, isUncommitted, isStash)}
+            fill={getNodeFrameInnerTextColor(
+              nodeKey,
+              checkoutAccent,
+              isUserSelected,
+              isUncommitted,
+              isStash,
+              effectiveAccentOutlineOnly,
+            )}
             fontWeight={NODE_FRAME_LABEL_WEIGHT}
             pointerEvents="none"
             fontSize={wrappedInnerText.fontSize}
@@ -5305,7 +5339,14 @@ export default function BranchMap({
               textAnchor="start"
               textRendering="geometricPrecision"
               fontFamily={BRANCH_MAP_SVG_FONT_FAMILY}
-              fill={getNodeFrameInnerTextColor(nodeKey, checkoutAccent, isUserSelected, isUncommitted, isStash)}
+              fill={getNodeFrameInnerTextColor(
+                nodeKey,
+                checkoutAccent,
+                isUserSelected,
+                isUncommitted,
+                isStash,
+                effectiveAccentOutlineOnly,
+              )}
               fontWeight={NODE_FRAME_LABEL_WEIGHT}
               pointerEvents="none"
               fontSize={nodeFrameMessageFontSize}
@@ -5324,7 +5365,14 @@ export default function BranchMap({
               textAnchor="end"
               textRendering="geometricPrecision"
               fontFamily={BRANCH_MAP_SVG_FONT_FAMILY}
-              fill={getNodeFrameInnerTextColor(nodeKey, checkoutAccent, isUserSelected, isUncommitted, isStash)}
+              fill={getNodeFrameInnerTextColor(
+                nodeKey,
+                checkoutAccent,
+                isUserSelected,
+                isUncommitted,
+                isStash,
+                effectiveAccentOutlineOnly,
+              )}
               fontWeight={NODE_FRAME_LABEL_WEIGHT}
               pointerEvents="none"
               fontSize={nodeFrameMessageFontSize}
@@ -7200,7 +7248,6 @@ export default function BranchMap({
 
                       return orderedActiveBranches.map((b) => {
                         const {
-                          hasPreviewData,
                           uniqueAheadCount,
                           branchEndDotIndex,
                           localCommitDotIndices,
@@ -7471,13 +7518,13 @@ export default function BranchMap({
                                   cluster.entries.some((entry) => {
                                     const idx = entry.item.index;
                                     const commit = entry.item.commit;
-                                    if (hasPreviewData && commit && commit.kind !== 'branch-created') {
+                                    if (commit && commit.kind !== 'branch-created') {
                                       return (
                                         shaMatchesGitRef(commit.fullSha, checkedOutHeadSha) ||
                                         shaMatchesGitRef(commit.sha, checkedOutHeadSha)
                                       );
                                     }
-                                    if (!hasPreviewData && checkedOutBranchName === b.name && branchEndDotIndex === idx) {
+                                    if (checkedOutBranchName === b.name && branchEndDotIndex === idx) {
                                       return shaMatchesGitRef(b.headSha, checkedOutHeadSha);
                                     }
                                     return false;
@@ -7485,10 +7532,10 @@ export default function BranchMap({
                                 const clusterHasOtherWorktreeHead = cluster.entries.some((entry) => {
                                   const idx = entry.item.index;
                                   const commit = entry.item.commit;
-                                  if (hasPreviewData && commit && commit.kind !== 'branch-created') {
+                                  if (commit && commit.kind !== 'branch-created') {
                                     return otherWorktreeMatchesBranchCommit(b.name, commit.fullSha, commit.sha ?? '');
                                   }
-                                  if (!hasPreviewData && branchEndDotIndex === idx) {
+                                  if (branchEndDotIndex === idx) {
                                     return otherWorktreeMatchesBranchCommit(
                                       b.name,
                                       b.headSha,
@@ -7552,11 +7599,15 @@ export default function BranchMap({
                                           y: anchorY - rectSize.height / 2 + dotStrokeInset,
                                           width: rectSize.width - dotStrokeWidth,
                                           height: rectSize.height - dotStrokeWidth,
-                                          fill: isStashCommit
-                                            ? CANVAS_UNPUSHED_NODE_FILL
-                                            : isLocalCommit
+                                          fill: getNodeFillColor(
+                                            vm.clusterKey,
+                                            isStashCommit || isLocalCommit
                                               ? CANVAS_UNPUSHED_NODE_FILL
                                               : dotFill,
+                                            clusterCheckoutAccent,
+                                            clusterHasSelectedCommit || clusterHasSelectedHead,
+                                            isGhostRect,
+                                          ),
                                           stroke: getNodeStrokeColor(
                                             vm.clusterKey,
                                             isGhostRect
@@ -7564,6 +7615,7 @@ export default function BranchMap({
                                               : stashOrUncommittedBaseStroke(isStashCommit, !!isUncommittedCommit),
                                             clusterCheckoutAccent,
                                             clusterHasSelectedCommit || clusterHasSelectedHead,
+                                            isGhostRect,
                                           ),
                                           strokeWidth: isGhostRect ? ghostRectStrokeWidth : dotStrokeWidth,
                                           dashed: isGhostRect || isUncommittedCommit || isStashCommit,
@@ -7668,9 +7720,14 @@ export default function BranchMap({
                                           y: anchorY - rectSize.height / 2 + dotStrokeInset,
                                           width: rectSize.width - dotStrokeWidth,
                                           height: rectSize.height - dotStrokeWidth,
-                                          fill: clusterHasStash || clusterHasLocalCommits
-                                            ? CANVAS_UNPUSHED_NODE_FILL
-                                            : dotFill,
+                                          fill: getNodeFillColor(
+                                            vm.clusterKey,
+                                            clusterHasStash || clusterHasLocalCommits
+                                              ? CANVAS_UNPUSHED_NODE_FILL
+                                              : dotFill,
+                                            clusterCheckoutAccent,
+                                            clusterHasSelectedCommit || clusterHasSelectedHead,
+                                          ),
                                           stroke: getNodeStrokeColor(
                                             vm.clusterKey,
                                             clusterLocalSyntheticStroke(clusterHasUncommitted, clusterHasStash),
@@ -7808,9 +7865,13 @@ export default function BranchMap({
                                                     y: -localRect.height / 2 + dotStrokeInset,
                                                     width: localRect.width - dotStrokeWidth,
                                                     height: localRect.height - dotStrokeWidth,
-                                                    fill: isLocalCommit
-                                                      ? CANVAS_UNPUSHED_NODE_FILL
-                                                      : dotFill,
+                                                    fill: getNodeFillColor(
+                                                      commitKey,
+                                                      isLocalCommit ? CANVAS_UNPUSHED_NODE_FILL : dotFill,
+                                                      commitCheckoutAccent,
+                                                      selectedCommitShaSet.has(commit.fullSha) ||
+                                                      (clusterHasSelectedHead && commit.fullSha === b.headSha),
+                                                    ),
                                                     stroke: getNodeStrokeColor(
                                                       commitKey,
                                                       isUncommittedCommit ? CHECKED_OUT_SELECTION_STROKE : CANVAS_NODE_STROKE,
@@ -7959,7 +8020,6 @@ export default function BranchMap({
 
                       return orderedActiveBranches.flatMap((b) => {
                         const {
-                          hasPreviewData,
                           uniqueAheadCount,
                           branchEndDotIndex,
                           localCommitDotIndices,
@@ -7998,13 +8058,13 @@ export default function BranchMap({
                             cluster.entries.some((entry) => {
                               const idx = entry.item.index;
                               const commit = entry.item.commit;
-                              if (hasPreviewData && commit && commit.kind !== 'branch-created') {
+                              if (commit && commit.kind !== 'branch-created') {
                                 return (
                                   shaMatchesGitRef(commit.fullSha, checkedOutHeadSha) ||
                                   shaMatchesGitRef(commit.sha, checkedOutHeadSha)
                                 );
                               }
-                              if (!hasPreviewData && checkedOutBranchName === b.name && branchEndDotIndex === idx) {
+                              if (checkedOutBranchName === b.name && branchEndDotIndex === idx) {
                                 return shaMatchesGitRef(b.headSha, checkedOutHeadSha);
                               }
                               return false;
@@ -8012,10 +8072,10 @@ export default function BranchMap({
                           const clusterHasOtherWorktreeHead = cluster.entries.some((entry) => {
                             const idx = entry.item.index;
                             const commit = entry.item.commit;
-                            if (hasPreviewData && commit && commit.kind !== 'branch-created') {
+                            if (commit && commit.kind !== 'branch-created') {
                               return otherWorktreeMatchesBranchCommit(b.name, commit.fullSha, commit.sha ?? '');
                             }
-                            if (!hasPreviewData && branchEndDotIndex === idx) {
+                            if (branchEndDotIndex === idx) {
                               return otherWorktreeMatchesBranchCommit(
                                 b.name,
                                 b.headSha,
@@ -8059,12 +8119,19 @@ export default function BranchMap({
                                     y: anchorY - rectSize.height / 2 + dotStrokeInset,
                                     width: rectSize.width - dotStrokeWidth,
                                     height: rectSize.height - dotStrokeWidth,
-                                    fill: dotFill,
+                                    fill: getNodeFillColor(
+                                      clusterKey,
+                                      dotFill,
+                                      clusterCheckoutAccent,
+                                      clusterHasSelectedCommit || clusterHasSelectedHead,
+                                      true,
+                                    ),
                                     stroke: getNodeStrokeColor(
                                       clusterKey,
                                       LOCAL_UNPUSHED_GRAY,
                                       clusterCheckoutAccent,
                                       clusterHasSelectedCommit || clusterHasSelectedHead,
+                                      true,
                                     ),
                                     strokeWidth: ghostRectStrokeWidth,
                                     dashed: true,
@@ -8414,6 +8481,7 @@ export default function BranchMap({
                           const {
                             commitDotClusters,
                             branchEndDotIndex,
+                            uniqueAheadCount,
                           } = getBranchRenderLayout(b);
 
                           return commitDotClusters.map((cluster) => {
@@ -8490,6 +8558,9 @@ export default function BranchMap({
                                 commit?.sha ?? commit?.fullSha ?? b.headSha,
                                 rectSize.width,
                               );
+                              const accentOutlineOnlyForLabel =
+                                (!commit && uniqueAheadCount <= 0) ||
+                                (commit?.kind === 'uncommitted' && !commit?.message?.trim());
 
                               return (
                                 <text
@@ -8502,6 +8573,8 @@ export default function BranchMap({
                                     clusterIsCheckoutAccent,
                                     clusterIsSelected,
                                     commit?.kind === 'uncommitted',
+                                    !!(commit && isStashCommitLike(commit)),
+                                    accentOutlineOnlyForLabel,
                                   )}
                                   fontSize={nodeFrameLabelFontSize}
                                   fontWeight={NODE_FRAME_LABEL_WEIGHT}
@@ -8535,6 +8608,8 @@ export default function BranchMap({
                                 rectSize.width,
                                 clumpCountText,
                               );
+                              const accentOutlineOnlyForClumpLabel =
+                                latestCommit?.kind === 'uncommitted' && !latestCommit?.message?.trim();
 
                               return (
                                 <g
@@ -8552,6 +8627,7 @@ export default function BranchMap({
                                       clusterIsSelected,
                                       latestCommit?.kind === 'uncommitted',
                                       !!latestCommit && isStashCommitLike(latestCommit),
+                                      accentOutlineOnlyForClumpLabel,
                                     )}
                                     fontWeight={NODE_FRAME_LABEL_WEIGHT}
                                     pointerEvents="none"
@@ -8568,6 +8644,7 @@ export default function BranchMap({
                                       clusterIsSelected,
                                       latestCommit?.kind === 'uncommitted',
                                       !!latestCommit && isStashCommitLike(latestCommit),
+                                      accentOutlineOnlyForClumpLabel,
                                     )}
                                     fontSize={nodeFrameLabelFontSize}
                                     fontWeight={NODE_FRAME_LABEL_WEIGHT}
@@ -9229,9 +9306,10 @@ export default function BranchMap({
                       ))}
                     </ul>
                     <p className="text-[10px] text-muted-foreground px-2 pt-1">
-                      Amber highlights mark commits checked out in another worktree; blue is this window. Cmd+click (Ctrl+click on
-                      Windows/Linux) or double-click an amber commit to target that worktree in the app. Stale rows (missing
-                      folder) stay listed until you remove them or run <span className="font-mono">git worktree prune</span>.
+                      Teal highlights mark commits checked out in another worktree; blue is this window. Yellow is stash.
+                      Cmd+click (Ctrl+click on Windows/Linux) or double-click a teal commit to target that worktree in the app.
+                      Stale rows (missing folder) stay listed until you remove them or run{' '}
+                      <span className="font-mono">git worktree prune</span>.
                     </p>
                   </div>
                 )}

@@ -44,7 +44,7 @@ interface Props {
   currentRepoPath?: string;
   onRemoveWorktree?: (worktreePath: string, force: boolean) => Promise<void> | void;
   removeWorktreeInProgress?: boolean;
-  /** Cmd/Ctrl+click or double-click an amber (other worktree) commit to target that worktree directory in the app. */
+  /** Cmd/Ctrl+click or double-click a teal (other worktree) commit to target that worktree directory in the app. */
   onSwitchToWorktree?: (worktreePath: string) => void | Promise<void>;
   onStashLocalChanges?: () => Promise<void> | void;
   stashInProgress?: boolean;
