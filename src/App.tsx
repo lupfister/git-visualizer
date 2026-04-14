@@ -66,6 +66,7 @@ function App() {
   const [branchUniqueAheadCounts, setBranchUniqueAheadCounts] = useState<Record<string, number>>({});
   const [stashes, setStashes] = useState<GitStashEntry[]>([]);
   const [stashInProgress, setStashInProgress] = useState(false);
+  const [commitInProgress, setCommitInProgress] = useState(false);
 
   const branchMetaLoadKeyRef = useRef<string | null>(null);
 
@@ -1001,6 +1002,51 @@ function App() {
     }
   }
 
+  async function handleCommitLocalChanges(message: string): Promise<boolean> {
+    if (!repoPath || commitInProgress) return false;
+    const trimmed = message.trim();
+    if (!trimmed) {
+      setCommitSwitchFeedback({
+        kind: 'error',
+        message: 'Enter a commit message.',
+      });
+      return false;
+    }
+    setCommitSwitchFeedback(null);
+    setCommitInProgress(true);
+    try {
+      const ref = await invoke<CheckedOutRef>('get_checked_out_ref', { repoPath });
+      if (!ref.hasUncommittedChanges) {
+        setCommitSwitchFeedback({
+          kind: 'error',
+          message: 'No local changes to commit.',
+        });
+        return false;
+      }
+      const nextRef = await invoke<CheckedOutRef>('commit_working_tree', {
+        repoPath,
+        message: trimmed,
+      });
+      setCheckedOutRef(nextRef);
+      await refreshRepoGitState(repoPath);
+      setCommitSwitchFeedback({
+        kind: 'success',
+        message: 'Committed local changes.',
+      });
+      return true;
+    } catch (e) {
+      const errText = e instanceof Error ? e.message : String(e);
+      setCommitSwitchFeedback({
+        kind: 'error',
+        message: errText,
+      });
+      console.error('Failed to commit:', errText);
+      return false;
+    } finally {
+      setCommitInProgress(false);
+    }
+  }
+
   async function handleMergeRefsIntoBranch(sourceRefs: string[], targetBranch: string) {
     if (!repoPath) return;
     const uniqueSourceRefs = Array.from(new Set(sourceRefs.filter((ref) => !!ref && ref !== targetBranch)));
@@ -1414,6 +1460,9 @@ function App() {
               onStashLocalChanges={handleStashLocalChanges}
               stashInProgress={stashInProgress}
               stashDisabled={!checkedOutRef?.hasUncommittedChanges}
+              onCommitLocalChanges={handleCommitLocalChanges}
+              commitInProgress={commitInProgress}
+              commitDisabled={!checkedOutRef?.hasUncommittedChanges}
             />
           </div>
 

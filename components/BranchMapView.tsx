@@ -41,6 +41,9 @@ interface Props {
   onStashLocalChanges?: () => Promise<void> | void;
   stashInProgress?: boolean;
   stashDisabled?: boolean;
+  onCommitLocalChanges?: (message: string) => Promise<boolean>;
+  commitInProgress?: boolean;
+  commitDisabled?: boolean;
 }
 
 export default function BranchMapView({
@@ -78,6 +81,9 @@ export default function BranchMapView({
   onStashLocalChanges,
   stashInProgress = false,
   stashDisabled = false,
+  onCommitLocalChanges,
+  commitInProgress = false,
+  commitDisabled = false,
 }: Props) {
   // Determine active vs inactive error branches
   const openPRBranchNames = new Set(openPRs.map(p => p.branchName));
@@ -130,6 +136,9 @@ export default function BranchMapView({
             onStashLocalChanges={onStashLocalChanges}
             stashInProgress={stashInProgress}
             stashDisabled={stashDisabled}
+            onCommitLocalChanges={onCommitLocalChanges}
+            commitInProgress={commitInProgress}
+            commitDisabled={commitDisabled}
           />
         </div>
       ) : (

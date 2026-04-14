@@ -68,6 +68,13 @@ pub fn get_direct_commits(
     Ok(commits)
 }
 
+/// Stage all changes (`git add -A`) and create a commit with the given message.
+pub fn commit_working_tree(repo: &Path, message: &str) -> Result<(), GitError> {
+    cli::run(repo, &["add", "-A"])?;
+    cli::run(repo, &["commit", "-m", message])?;
+    Ok(())
+}
+
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct MergeNode {

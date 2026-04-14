@@ -597,6 +597,17 @@ fn stash_push(repo_path: String, include_untracked: bool) -> Result<(), String> 
 }
 
 #[tauri::command(rename_all = "camelCase")]
+fn commit_working_tree(repo_path: String, message: String) -> Result<CheckedOutRef, String> {
+    let path = Path::new(&repo_path);
+    let trimmed = message.trim();
+    if trimmed.is_empty() {
+        return Err("Commit message cannot be empty.".to_string());
+    }
+    git::commit_working_tree(path, trimmed).map_err(|e| e.to_string())?;
+    git::get_checked_out_ref(path).map_err(|e| e.to_string())
+}
+
+#[tauri::command(rename_all = "camelCase")]
 fn apply_stash_restore(repo_path: String, stash_index: u32) -> Result<CheckedOutRef, String> {
     let path = Path::new(&repo_path);
     git::apply_stash_restore(path, stash_index).map_err(|e| e.to_string())?;
@@ -3836,6 +3847,7 @@ pub fn run() {
             checkout_branch,
             list_stashes,
             stash_push,
+            commit_working_tree,
             apply_stash_restore,
             push_branch,
             push_current_branch,

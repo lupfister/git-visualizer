@@ -1,5 +1,5 @@
 import React, { useState, useRef, useEffect, useLayoutEffect } from 'react';
-import { Archive, Loader2, X } from 'lucide-react';
+import { Archive, GitCommitHorizontal, Loader2, X } from 'lucide-react';
 import { layoutWithLines, prepareWithSegments } from '@chenglou/pretext';
 import { Branch, BranchCommitPreview, BranchPromptMeta, CheckedOutRef, DirectCommit, MergeNode, OpenPR, WorktreeInfo } from '../types';
 import { ViewMode } from './BranchMapView';
@@ -785,6 +785,9 @@ interface BranchMapProps {
   onStashLocalChanges?: () => Promise<void> | void;
   stashInProgress?: boolean;
   stashDisabled?: boolean;
+  onCommitLocalChanges?: (message: string) => Promise<boolean>;
+  commitInProgress?: boolean;
+  commitDisabled?: boolean;
 }
 
 export default function BranchMap({
@@ -822,6 +825,9 @@ export default function BranchMap({
   onStashLocalChanges,
   stashInProgress = false,
   stashDisabled = false,
+  onCommitLocalChanges,
+  commitInProgress = false,
+  commitDisabled = false,
 }: BranchMapProps) {
   const [, setTooltip] = useState<TooltipData | null>(null);
   const [hoveredBranch, setHoveredBranch] = useState<string | null>(null);
@@ -835,6 +841,9 @@ export default function BranchMap({
   const [selectedBranchNames, setSelectedBranchNames] = useState<string[]>([]);
   const [selectedCommitShas, setSelectedCommitShas] = useState<string[]>([]);
   const [deleteConfirmOpen, setDeleteConfirmOpen] = useState(false);
+  const [commitDialogOpen, setCommitDialogOpen] = useState(false);
+  const [commitMessageDraft, setCommitMessageDraft] = useState('');
+  const commitMessageRef = useRef<HTMLTextAreaElement>(null);
   const [worktreeMenuOpen, setWorktreeMenuOpen] = useState(false);
   const deleteConfirmOpenRef = useRef(false);
   const deleteInProgressRef = useRef(deleteInProgress);
@@ -1988,6 +1997,28 @@ export default function BranchMap({
   useEffect(() => {
     deleteConfirmOpenRef.current = deleteConfirmOpen;
   }, [deleteConfirmOpen]);
+
+  useEffect(() => {
+    if (!commitDialogOpen) return;
+    const id = requestAnimationFrame(() => {
+      commitMessageRef.current?.focus();
+    });
+    return () => cancelAnimationFrame(id);
+  }, [commitDialogOpen]);
+
+  useEffect(() => {
+    if (!commitDialogOpen) return;
+    const onKeyDown = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') {
+        e.preventDefault();
+        if (!commitInProgress) {
+          setCommitDialogOpen(false);
+        }
+      }
+    };
+    window.addEventListener('keydown', onKeyDown);
+    return () => window.removeEventListener('keydown', onKeyDown);
+  }, [commitDialogOpen, commitInProgress]);
 
   useEffect(() => {
     deleteInProgressRef.current = deleteInProgress;
@@ -6488,6 +6519,22 @@ export default function BranchMap({
     setMergeTargetCommitSha(null);
   }
 
+  async function handleConfirmCommit() {
+    if (!onCommitLocalChanges || commitInProgress) return;
+    const ok = await onCommitLocalChanges(commitMessageDraft);
+    if (ok) {
+      setCommitMessageDraft('');
+      setCommitDialogOpen(false);
+    }
+  }
+
+  const handleCommitMessageKeyDown = (e: React.KeyboardEvent<HTMLTextAreaElement>) => {
+    if ((e.metaKey || e.ctrlKey) && e.key === 'Enter') {
+      e.preventDefault();
+      void handleConfirmCommit();
+    }
+  };
+
   return (
     <div className="relative h-full">
       <div
@@ -8984,6 +9031,23 @@ export default function BranchMap({
                 {pushInProgress ? 'Pushing...' : pushCurrentBranchLabel}
               </button>
             )}
+            {!hasSelection && onCommitLocalChanges && (
+              <button
+                type="button"
+                onClick={() => setCommitDialogOpen(true)}
+                disabled={commitInProgress || mergeInProgress || commitDisabled}
+                className="shrink-0 inline-flex items-center gap-1.5 rounded-full border border-border bg-card px-3 py-1.5 text-xs font-medium text-foreground transition-colors hover:bg-accent disabled:cursor-not-allowed disabled:opacity-50"
+                title={
+                  commitDisabled
+                    ? 'No local changes to commit'
+                    : 'Stage all changes and commit with your message'
+                }
+                aria-label="Commit local changes"
+              >
+                <GitCommitHorizontal className="h-3.5 w-3.5 shrink-0" aria-hidden />
+                {commitInProgress ? 'Committing…' : 'Commit'}
+              </button>
+            )}
             {!hasSelection && onStashLocalChanges && (
               <button
                 type="button"
@@ -9144,6 +9208,71 @@ export default function BranchMap({
           </div>
         </div>
       </div>
+
+      {commitDialogOpen && (
+        <div
+          className="absolute inset-0 z-[70] flex items-center justify-center bg-background/70 backdrop-blur-sm p-4"
+          onClick={() => {
+            if (!commitInProgress) setCommitDialogOpen(false);
+          }}
+          role="presentation"
+        >
+          <div
+            role="dialog"
+            aria-modal="true"
+            aria-labelledby="commit-dialog-title"
+            className="w-full max-w-md rounded-2xl border border-border bg-card shadow-lg p-4"
+            onClick={(e) => e.stopPropagation()}
+          >
+            <p id="commit-dialog-title" className="text-sm font-medium text-foreground">
+              Create commit
+            </p>
+            <p className="mt-1 text-xs text-muted-foreground">
+              Stages all changes in the repository, then commits on your current HEAD.
+            </p>
+            <label
+              htmlFor="commit-message-input"
+              className="mt-3 block text-[10px] uppercase tracking-wide text-muted-foreground font-medium"
+            >
+              Commit message
+            </label>
+            <textarea
+              id="commit-message-input"
+              ref={commitMessageRef}
+              value={commitMessageDraft}
+              onChange={(e) => setCommitMessageDraft(e.target.value)}
+              onKeyDown={handleCommitMessageKeyDown}
+              rows={4}
+              disabled={commitInProgress}
+              placeholder="Describe your changes"
+              className="mt-1.5 w-full rounded-lg border border-border bg-background px-3 py-2 text-sm text-foreground placeholder:text-muted-foreground focus:outline-none focus:ring-2 focus:ring-ring resize-y min-h-[5rem] disabled:opacity-50"
+            />
+            <p className="mt-1 text-[10px] text-muted-foreground">
+              ⌘ Enter or Ctrl+Enter to commit
+            </p>
+            <div className="mt-4 flex items-center justify-end gap-2">
+              <button
+                type="button"
+                onClick={() => {
+                  if (!commitInProgress) setCommitDialogOpen(false);
+                }}
+                disabled={commitInProgress}
+                className="rounded-lg border border-border bg-card px-3 py-1.5 text-xs font-medium text-foreground transition-colors hover:bg-accent disabled:cursor-not-allowed disabled:opacity-50"
+              >
+                Cancel
+              </button>
+              <button
+                type="button"
+                onClick={() => void handleConfirmCommit()}
+                disabled={commitInProgress || !commitMessageDraft.trim()}
+                className="rounded-lg border border-border bg-card px-3 py-1.5 text-xs font-medium text-foreground transition-colors hover:bg-accent disabled:cursor-not-allowed disabled:opacity-50"
+              >
+                {commitInProgress ? 'Committing…' : 'Commit'}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
 
       {deleteConfirmOpen && (
         <div className="absolute inset-0 z-[70] flex items-center justify-center bg-background/70 backdrop-blur-sm p-4">
