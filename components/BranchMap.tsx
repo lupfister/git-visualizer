@@ -66,7 +66,7 @@ const CANVAS_UNPUSHED_NODE_FILL = 'var(--background)';
 const CANVAS_NODE_STROKE = '#E0E0E0';
 const CANVAS_NODE_STROKE_WIDTH = 1.5;
 const CANVAS_NODE_STROKE_INSET = CANVAS_NODE_STROKE_WIDTH / 2;
-const COMMIT_NODE_CORNER_RADIUS = 8;
+const COMMIT_NODE_CORNER_RADIUS = 6;
 const DEBUG_SHOW_BRANCH_HIT_AREAS = false;
 const DEBUG_BRANCH_HIT_AREA_COLOR = '#ef4444';
 const DEBUG_BRANCH_HIT_AREA_OPACITY = 0.25;
@@ -4643,7 +4643,7 @@ export default function BranchMap({
     const trimmedFooterMetaAuthor = footerMetaAuthor?.trim();
     const trimmedFooterMetaDate = footerMetaDate?.trim();
     const footerMetaMaxWidth = Math.max(0, rectSize.width - strokeWidth - nodeFrameMessageInsetX * 2);
-    const hasFooterMeta = shouldShowFooterMeta && !!trimmedFooterMetaAuthor && !!trimmedFooterMetaDate;
+    const hasFooterMeta = !!trimmedFooterMetaAuthor && !!trimmedFooterMetaDate;
     const renderedFooterMetaDate = hasFooterMeta
       ? trimTextToWidth(trimmedFooterMetaDate, footerMetaMaxWidth * 0.65, nodeFrameMessageFontSize)
       : '';
@@ -4657,6 +4657,11 @@ export default function BranchMap({
           nodeFrameMessageFontSize,
         )
       : '';
+    const footerMetaTransitionStyle: React.CSSProperties = {
+      opacity: shouldShowFooterMeta ? 1 : 0,
+      filter: shouldShowFooterMeta ? 'blur(0px)' : 'blur(3px)',
+      transition: 'opacity 180ms ease, filter 220ms ease',
+    };
     const rectX = centerX - rectSize.width / 2 + strokeInset;
     const rectY = centerY - rectSize.height / 2 + strokeInset;
     const rectWidth = rectSize.width - strokeWidth;
@@ -4728,6 +4733,7 @@ export default function BranchMap({
               fontWeight={NODE_FRAME_LABEL_WEIGHT}
               pointerEvents="none"
               fontSize={nodeFrameMessageFontSize}
+              style={footerMetaTransitionStyle}
             >
               {renderedFooterMetaAuthor}
             </text>
@@ -4746,6 +4752,7 @@ export default function BranchMap({
               fontWeight={NODE_FRAME_LABEL_WEIGHT}
               pointerEvents="none"
               fontSize={nodeFrameMessageFontSize}
+              style={footerMetaTransitionStyle}
             >
               {renderedFooterMetaDate}
             </text>
