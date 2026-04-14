@@ -4230,6 +4230,8 @@ export default function BranchMap({
   const NODE_FRAME_MESSAGE_INSET_TOP_PX = 5.5;
   const NODE_FRAME_MESSAGE_INSET_BOTTOM_PX = 6;
   const NODE_FRAME_MESSAGE_FONT_PX = 12;
+  const NODE_FRAME_FOOTER_META_PAIR_GAP_PX = 8;
+  const NODE_FRAME_FOOTER_META_ZOOM_MIN = 5;
   const NODE_FRAME_MESSAGE_RENDER_OFFSET_Y_PX = 0;
   /** Tooltips — stays readable on card surfaces. */
   const NODE_FRAME_LABEL_COLOR = '#78716c';
@@ -4247,6 +4249,7 @@ export default function BranchMap({
   const nodeFrameMessageInsetTop = worldPx(NODE_FRAME_MESSAGE_INSET_TOP_PX);
   const nodeFrameMessageInsetBottom = worldPx(NODE_FRAME_MESSAGE_INSET_BOTTOM_PX);
   const nodeFrameMessageFontSize = worldPx(NODE_FRAME_MESSAGE_FONT_PX);
+  const nodeFrameFooterMetaPairGap = worldPx(NODE_FRAME_FOOTER_META_PAIR_GAP_PX);
   const nodeFrameMessageRenderOffsetY = worldPx(NODE_FRAME_MESSAGE_RENDER_OFFSET_Y_PX);
   const nodeFrameCollapseIconSize = worldPx(12);
   const shortShaLabel = (sha?: string | null): string => {
@@ -4530,6 +4533,8 @@ export default function BranchMap({
     dashed = false,
     cursor = undefined,
     innerText,
+    footerMetaAuthor,
+    footerMetaDate,
   }: {
     nodeKey: string;
     centerX: number;
@@ -4544,10 +4549,30 @@ export default function BranchMap({
     dashed?: boolean;
     cursor?: React.CSSProperties['cursor'];
     innerText?: string;
+    footerMetaAuthor?: string;
+    footerMetaDate?: string;
   }) {
     const wrappedInnerText = innerText?.trim()
       ? wrapNodeFrameMessage(innerText, rectSize, strokeWidth)
       : { lines: [], fontSize: 0, lineHeight: 0 };
+    const shouldShowFooterMeta = zoom >= NODE_FRAME_FOOTER_META_ZOOM_MIN;
+    const trimmedFooterMetaAuthor = footerMetaAuthor?.trim();
+    const trimmedFooterMetaDate = footerMetaDate?.trim();
+    const footerMetaMaxWidth = Math.max(0, rectSize.width - strokeWidth - nodeFrameMessageInsetX * 2);
+    const hasFooterMeta = shouldShowFooterMeta && !!trimmedFooterMetaAuthor && !!trimmedFooterMetaDate;
+    const renderedFooterMetaDate = hasFooterMeta
+      ? trimTextToWidth(trimmedFooterMetaDate, footerMetaMaxWidth * 0.65, nodeFrameMessageFontSize)
+      : '';
+    const footerMetaDateWidth = renderedFooterMetaDate
+      ? estimateSvgTextWidth(renderedFooterMetaDate, nodeFrameMessageFontSize)
+      : 0;
+    const renderedFooterMetaAuthor = hasFooterMeta
+      ? trimTextToWidth(
+          trimmedFooterMetaAuthor,
+          Math.max(0, footerMetaMaxWidth - footerMetaDateWidth - nodeFrameFooterMetaPairGap),
+          nodeFrameMessageFontSize,
+        )
+      : '';
     const rectX = centerX - rectSize.width / 2 + strokeInset;
     const rectY = centerY - rectSize.height / 2 + strokeInset;
     const rectWidth = rectSize.width - strokeWidth;
@@ -4603,6 +4628,46 @@ export default function BranchMap({
               </tspan>
             ))}
           </text>
+        )}
+        {renderedFooterMetaAuthor && renderedFooterMetaDate && (
+          <>
+            <text
+              x={centerX - rectSize.width / 2 + strokeInset + nodeFrameMessageInsetX}
+              y={
+                centerY +
+                rectSize.height / 2 -
+                strokeInset -
+                nodeFrameMessageInsetBottom
+              }
+              textAnchor="start"
+              textRendering="geometricPrecision"
+              fontFamily={BRANCH_MAP_SVG_FONT_FAMILY}
+              fill={getNodeFrameInnerTextColor(nodeKey, isCheckedOutSelection, isUserSelected)}
+              fontWeight={NODE_FRAME_LABEL_WEIGHT}
+              pointerEvents="none"
+              fontSize={nodeFrameMessageFontSize}
+            >
+              {renderedFooterMetaAuthor}
+            </text>
+            <text
+              x={centerX + rectSize.width / 2 - strokeInset - nodeFrameMessageInsetX}
+              y={
+                centerY +
+                rectSize.height / 2 -
+                strokeInset -
+                nodeFrameMessageInsetBottom
+              }
+              textAnchor="end"
+              textRendering="geometricPrecision"
+              fontFamily={BRANCH_MAP_SVG_FONT_FAMILY}
+              fill={getNodeFrameInnerTextColor(nodeKey, isCheckedOutSelection, isUserSelected)}
+              fontWeight={NODE_FRAME_LABEL_WEIGHT}
+              pointerEvents="none"
+              fontSize={nodeFrameMessageFontSize}
+            >
+              {renderedFooterMetaDate}
+            </text>
+          </>
         )}
       </g>
     );
@@ -7034,6 +7099,8 @@ export default function BranchMap({
                                   centerY: anchorY,
                                   rectSize,
                                   innerText: isUncommittedCommit ? undefined : commit?.message,
+                                  footerMetaAuthor: `@${commit?.author ?? b.lastCommitAuthor}`,
+                                  footerMetaDate: fmtTooltipDate(commit?.date ?? b.lastCommitDate),
                                   fill: isUncommittedCommit ? CANVAS_UNPUSHED_NODE_FILL : dotFill,
                                   baseStroke: isUncommittedCommit
                                     ? CHECKED_OUT_SELECTION_STROKE
@@ -7070,6 +7137,16 @@ export default function BranchMap({
                                     renderEntries[renderEntries.length - 1]?.item.commit?.kind === 'uncommitted'
                                       ? undefined
                                       : renderEntries[renderEntries.length - 1]?.item.commit?.message,
+                                  footerMetaAuthor: (() => {
+                                    const latestAuthor =
+                                      renderEntries[renderEntries.length - 1]?.item.commit?.author ?? b.lastCommitAuthor;
+                                    return `@${latestAuthor}`;
+                                  })(),
+                                  footerMetaDate: (() => {
+                                    const firstDate = renderEntries[0]?.item.commit?.date ?? b.lastCommitDate;
+                                    const lastDate = renderEntries[renderEntries.length - 1]?.item.commit?.date ?? b.lastCommitDate;
+                                    return fmtClumpDateRange(firstDate, lastDate);
+                                  })(),
                                   fill: clusterHasUncommitted ? CANVAS_UNPUSHED_NODE_FILL : dotFill,
                                   baseStroke: clusterHasUncommitted
                                     ? CHECKED_OUT_SELECTION_STROKE
@@ -7120,6 +7197,8 @@ export default function BranchMap({
                                         rectSize: localRect,
                                         innerText:
                                           isUncommittedCommit ? undefined : commit.message,
+                                        footerMetaAuthor: `@${commit.author ?? b.lastCommitAuthor}`,
+                                        footerMetaDate: fmtTooltipDate(commit.date ?? b.lastCommitDate),
                                         fill: isUncommittedCommit ? CANVAS_UNPUSHED_NODE_FILL : dotFill,
                                         baseStroke: isUncommittedCommit
                                           ? CHECKED_OUT_SELECTION_STROKE
@@ -7182,6 +7261,8 @@ export default function BranchMap({
                                 centerY: anchorY,
                                 rectSize,
                                 innerText: isUncommittedCommit ? undefined : cluster.entries[0]?.item.message,
+                                footerMetaAuthor: `@${cluster.entries[0]?.item.author ?? last.author}`,
+                                footerMetaDate: fmtTooltipDate(cluster.entries[0]?.item.date ?? last.date),
                                 fill: isUncommittedCommit ? CANVAS_UNPUSHED_NODE_FILL : CANVAS_NODE_FILL,
                                 baseStroke: isUncommittedCommit
                                   ? CHECKED_OUT_SELECTION_STROKE
@@ -7231,6 +7312,8 @@ export default function BranchMap({
                                           centerY: 0,
                                           rectSize: localRect,
                                           innerText: isUncommittedCommit ? undefined : c.message,
+                                          footerMetaAuthor: `@${c.author}`,
+                                          footerMetaDate: fmtTooltipDate(c.date),
                                           fill: isUncommittedCommit ? CANVAS_UNPUSHED_NODE_FILL : CANVAS_NODE_FILL,
                                           baseStroke: isUncommittedCommit
                                             ? CHECKED_OUT_SELECTION_STROKE
@@ -7258,6 +7341,16 @@ export default function BranchMap({
                                   cluster.entries[cluster.entries.length - 1]?.item.fullSha === 'WORKING_TREE'
                                     ? undefined
                                     : cluster.entries[cluster.entries.length - 1]?.item.message,
+                                footerMetaAuthor: (() => {
+                                  const latestAuthor =
+                                    cluster.entries[cluster.entries.length - 1]?.item.author ?? last.author;
+                                  return `@${latestAuthor}`;
+                                })(),
+                                footerMetaDate: (() => {
+                                  const firstDate = cluster.entries[0]?.item.date ?? last.date;
+                                  const lastDate = cluster.entries[cluster.entries.length - 1]?.item.date ?? last.date;
+                                  return fmtClumpDateRange(firstDate, lastDate);
+                                })(),
                                 fill: clusterHasUncommitted ? CANVAS_UNPUSHED_NODE_FILL : CANVAS_NODE_FILL,
                                 baseStroke: clusterHasUncommitted
                                   ? CHECKED_OUT_SELECTION_STROKE
