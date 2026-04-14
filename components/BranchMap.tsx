@@ -784,6 +784,8 @@ interface BranchMapProps {
   }) => Promise<void> | void;
   deleteInProgress?: boolean;
   worktrees?: WorktreeInfo[];
+  /** App’s open repo path; used with Git’s worktree paths when isCurrent is wrong (symlinks, /private/var, etc.). */
+  currentRepoPath?: string;
   onRemoveWorktree?: (worktreePath: string, force: boolean) => Promise<void> | void;
   removeWorktreeInProgress?: boolean;
   /** Cmd/Ctrl+click or double-click an amber (other worktree) commit to target that worktree directory. */
@@ -826,6 +828,7 @@ export default function BranchMap({
   onDeleteSelection,
   deleteInProgress = false,
   worktrees = [],
+  currentRepoPath,
   onRemoveWorktree,
   removeWorktreeInProgress = false,
   onSwitchToWorktree,
@@ -4306,13 +4309,28 @@ export default function BranchMap({
     );
   }
 
+  function normalizeRepoPathForCompare(p: string): string {
+    return p.replace(/\\/g, '/').replace(/\/+$/, '');
+  }
+
+  /** True if this worktree is not the app’s checkout (Git flag + path compare for symlink / macOS quirks). */
+  function isOtherWorktree(wt: WorktreeInfo): boolean {
+    if (currentRepoPath) {
+      const a = normalizeRepoPathForCompare(currentRepoPath);
+      const b = normalizeRepoPathForCompare(wt.path);
+      if (a === b || a.toLowerCase() === b.toLowerCase()) return false;
+    }
+    if (wt.isCurrent) return false;
+    return true;
+  }
+
   function otherWorktreeMatchesBranchCommit(
     branchName: string,
     commitFullSha: string,
     commitSha: string,
   ): boolean {
     for (const wt of worktrees) {
-      if (wt.isCurrent) continue;
+      if (!isOtherWorktree(wt)) continue;
       if (wt.branchName) {
         if (wt.branchName === branchName && shaMatchesGitRef(wt.headSha, commitFullSha)) return true;
         continue;
@@ -4335,7 +4353,7 @@ export default function BranchMap({
     commitSha: string,
   ): WorktreeInfo | null {
     for (const wt of worktrees) {
-      if (wt.isCurrent) continue;
+      if (!isOtherWorktree(wt)) continue;
       if (wt.branchName) {
         if (wt.branchName === branchName && shaMatchesGitRef(wt.headSha, commitFullSha)) return wt;
         continue;
@@ -4355,7 +4373,7 @@ export default function BranchMap({
   /** Other worktree has this branch checked out (same branch ref cannot be checked out twice). */
   function findWorktreeWithBranchCheckedOut(branchName: string): WorktreeInfo | null {
     for (const wt of worktrees) {
-      if (wt.isCurrent) continue;
+      if (!isOtherWorktree(wt)) continue;
       if (wt.branchName === branchName) return wt;
     }
     return null;
@@ -4364,7 +4382,7 @@ export default function BranchMap({
   /** Match by HEAD sha only (when click handlers omit branchName). */
   function findOtherWorktreeByHeadSha(commitFullSha: string, commitShortSha: string): WorktreeInfo | null {
     for (const wt of worktrees) {
-      if (wt.isCurrent) continue;
+      if (!isOtherWorktree(wt)) continue;
       if (shaMatchesGitRef(wt.headSha, commitFullSha) || shaMatchesGitRef(wt.headSha, commitShortSha)) {
         return wt;
       }
@@ -9174,7 +9192,7 @@ export default function BranchMap({
                         >
                           <div className="min-w-0 flex-1">
                             <div className="font-medium truncate" title={wt.path}>
-                              {wt.isCurrent ? 'This window' : worktreeShortLabel(wt.path)}
+                              {!isOtherWorktree(wt) ? 'This window' : worktreeShortLabel(wt.path)}
                             </div>
                             <div className="text-muted-foreground truncate">
                               {wt.branchName ?? 'detached'} · {wt.headSha.slice(0, 7)}
@@ -9183,7 +9201,7 @@ export default function BranchMap({
                               )}
                             </div>
                           </div>
-                          {!wt.isCurrent && (
+                          {isOtherWorktree(wt) && (
                             <button
                               type="button"
                               role="menuitem"

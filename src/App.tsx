@@ -964,7 +964,16 @@ function App() {
     // Branch refs live in one place: if this branch is checked out in another worktree, switch the app there
     // instead of `git checkout` (which fails with "already checked out at …").
     if (target.branchName) {
-      const other = worktrees.find((wt) => !wt.isCurrent && wt.branchName === target.branchName);
+      const pathsProbablyEqual = (a: string, b: string) => {
+        const na = a.replace(/\\/g, '/').replace(/\/+$/, '');
+        const nb = b.replace(/\\/g, '/').replace(/\/+$/, '');
+        return na === nb || na.toLowerCase() === nb.toLowerCase();
+      };
+      const other = worktrees.find((wt) => {
+        if (wt.isCurrent) return false;
+        if (repoPath && pathsProbablyEqual(wt.path, repoPath)) return false;
+        return wt.branchName === target.branchName;
+      });
       if (other) {
         await handleSwitchToWorktree(other.path);
         return;
@@ -1516,6 +1525,7 @@ function App() {
               onDeleteSelection={handleDeleteSelection}
               deleteInProgress={deleteInProgress}
               worktrees={worktrees}
+              currentRepoPath={repoPath ?? undefined}
               onRemoveWorktree={handleRemoveWorktree}
               removeWorktreeInProgress={removeWorktreeInProgress}
               onSwitchToWorktree={handleSwitchToWorktree}

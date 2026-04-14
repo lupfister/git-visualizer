@@ -13,11 +13,23 @@ pub struct WorktreeInfo {
     pub is_prunable: bool,
 }
 
+fn worktree_paths_are_same(repo: &Path, wt_path: &Path) -> bool {
+    match (std::fs::canonicalize(repo), std::fs::canonicalize(wt_path)) {
+        (Ok(r), Ok(w)) => r == w,
+        _ => {
+            let trim = |p: &Path| {
+                p.to_string_lossy()
+                    .trim_end_matches(|c| c == '/' || c == '\\')
+                    .to_string()
+            };
+            trim(repo) == trim(wt_path)
+        }
+    }
+}
+
 /// List all worktrees for the repository that contains `repo`.
 /// `repo` may be the main checkout or any linked worktree path.
 pub fn list_worktrees(repo: &Path) -> Result<Vec<WorktreeInfo>, GitError> {
-    let repo_canon = std::fs::canonicalize(repo).unwrap_or_else(|_| repo.to_path_buf());
-
     let output = cli::run(repo, &["worktree", "list", "--porcelain"])?;
     let mut parsed: Vec<PartialWt> = Vec::new();
     let mut current: Option<PartialWt> = None;
@@ -71,9 +83,7 @@ pub fn list_worktrees(repo: &Path) -> Result<Vec<WorktreeInfo>, GitError> {
         let wt_path = Path::new(&partial.path);
         let parent_sha = git_parent_sha(wt_path).ok().flatten();
 
-        let is_current = std::fs::canonicalize(wt_path)
-            .ok()
-            .is_some_and(|p| p == repo_canon);
+        let is_current = worktree_paths_are_same(repo, wt_path);
 
         result.push(WorktreeInfo {
             path: partial.path,

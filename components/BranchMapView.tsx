@@ -40,6 +40,8 @@ interface Props {
   }) => Promise<void> | void;
   deleteInProgress?: boolean;
   worktrees?: WorktreeInfo[];
+  /** Directory the app is using (must match worktree list paths for “current” vs “other”). */
+  currentRepoPath?: string;
   onRemoveWorktree?: (worktreePath: string, force: boolean) => Promise<void> | void;
   removeWorktreeInProgress?: boolean;
   /** Cmd/Ctrl+click or double-click an amber (other worktree) commit to target that worktree directory in the app. */
@@ -82,6 +84,7 @@ export default function BranchMapView({
   onDeleteSelection,
   deleteInProgress = false,
   worktrees = [],
+  currentRepoPath,
   onRemoveWorktree,
   removeWorktreeInProgress = false,
   onSwitchToWorktree,
@@ -138,6 +141,7 @@ export default function BranchMapView({
             onDeleteSelection={onDeleteSelection}
             deleteInProgress={deleteInProgress}
             worktrees={worktrees}
+            currentRepoPath={currentRepoPath}
             onRemoveWorktree={onRemoveWorktree}
             removeWorktreeInProgress={removeWorktreeInProgress}
             onSwitchToWorktree={onSwitchToWorktree}
