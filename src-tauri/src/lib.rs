@@ -1553,6 +1553,28 @@ fn get_unpushed_direct_commits(
     Ok(commits)
 }
 
+#[tauri::command(rename_all = "camelCase")]
+fn get_branch_unpushed_commit_shas(
+    repo_path: String,
+    branch: String,
+) -> Result<Vec<String>, String> {
+    let path = Path::new(&repo_path);
+    let range = if let Some(compare_ref) = get_branch_compare_ref(path, &branch) {
+        format!("{compare_ref}..{branch}")
+    } else {
+        let default_branch = git::get_default_branch(path).map_err(|e| e.to_string())?;
+        format!("{default_branch}..{branch}")
+    };
+    let output = git::cli::run(path, &["rev-list", "--first-parent", &range])
+        .map_err(|e| e.to_string())?;
+    Ok(output
+        .lines()
+        .map(str::trim)
+        .filter(|line| !line.is_empty())
+        .map(|line| line.to_string())
+        .collect())
+}
+
 /// Recent commits on a branch (no base filtering — just git log -N <branch>).
 #[tauri::command(rename_all = "camelCase")]
 fn get_recent_log(
@@ -3804,6 +3826,7 @@ pub fn run() {
             screenshot,
             get_recent_log,
             get_unpushed_direct_commits,
+            get_branch_unpushed_commit_shas,
             generate_preview,
             generate_preview_routes,
             open_preview_browser,

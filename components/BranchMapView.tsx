@@ -9,6 +9,7 @@ interface Props {
   mergeNodes: MergeNode[];
   directCommits?: DirectCommit[];
   unpushedDirectCommits?: DirectCommit[];
+  unpushedCommitShasByBranch?: Record<string, string[]>;
   openPRs?: OpenPR[];
   defaultBranch: string;
   onHoveredBranchChange?: (branchName: string | null) => void;
@@ -41,6 +42,7 @@ export default function BranchMapView({
   mergeNodes,
   directCommits = [],
   unpushedDirectCommits = [],
+  unpushedCommitShasByBranch = {},
   openPRs = [],
   defaultBranch,
   onHoveredBranchChange,
@@ -85,6 +87,7 @@ export default function BranchMapView({
             mergeNodes={mergeNodes}
             directCommits={directCommits}
             unpushedDirectCommits={unpushedDirectCommits}
+            unpushedCommitShasByBranch={unpushedCommitShasByBranch}
             openPRs={openPRs}
             defaultBranch={defaultBranch}
             onHoveredBranchChange={onHoveredBranchChange}

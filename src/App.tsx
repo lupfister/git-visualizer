@@ -31,6 +31,7 @@ function App() {
   const [mergeNodes, setMergeNodes] = useState<MergeNode[]>([]);
   const [directCommits, setDirectCommits] = useState<DirectCommit[]>([]);
   const [unpushedDirectCommits, setUnpushedDirectCommits] = useState<DirectCommit[]>([]);
+  const [unpushedCommitShasByBranch, setUnpushedCommitShasByBranch] = useState<Record<string, string[]>>({});
   const [openPRs, setOpenPRs] = useState<OpenPR[]>([]);
   const [defaultBranch, setDefaultBranch] = useState<string>('main');
   const [checkedOutRef, setCheckedOutRef] = useState<CheckedOutRef | null>(null);
@@ -102,10 +103,20 @@ function App() {
         repoPath: path,
       }).catch(() => null),
     ]);
+    const unpushedShaEntries = await Promise.all(
+      [defaultBranch, ...branchList.map((branch) => branch.name)].map(async (branchName) => {
+        const shas = await invoke<string[]>('get_branch_unpushed_commit_shas', {
+          repoPath: path,
+          branch: branchName,
+        }).catch(() => []);
+        return [branchName, shas] as const;
+      })
+    );
     setBranches(branchList);
     setMergeNodes(nodes);
     setDirectCommits(directResult);
     setUnpushedDirectCommits(unpushedDirectResult);
+    setUnpushedCommitShasByBranch(Object.fromEntries(unpushedShaEntries));
     setCheckedOutRef(confirmedCheckedOutRef);
   }
 
@@ -117,6 +128,7 @@ function App() {
     setMergeNodes([]);
     setDirectCommits([]);
     setUnpushedDirectCommits([]);
+    setUnpushedCommitShasByBranch({});
 
     // Switch to map immediately for instant feedback
     setView('map');
@@ -254,20 +266,24 @@ function App() {
         const mergeNodesPromise = fetchAllMergeNodes(repoPath, defaultBranch);
         const checkedOutPromise = invoke<CheckedOutRef>('get_checked_out_ref', { repoPath }).catch(() => null);
         const directCommitsPromise = invoke<DirectCommit[]>('get_direct_commits', { repoPath, branch: defaultBranch });
+        const unpushedDirectPromise = invoke<DirectCommit[]>('get_unpushed_direct_commits', { repoPath, branch: defaultBranch }).catch(() => []);
 
         // Prioritize the minimum data needed for first paint and interactions.
-        const [branchListResult, currentCheckedOutResult, directResultResult] = await Promise.allSettled([
+        const [branchListResult, currentCheckedOutResult, directResultResult, unpushedDirectResult] = await Promise.allSettled([
           branchesPromise,
           checkedOutPromise,
           directCommitsPromise,
+          unpushedDirectPromise,
         ]);
         if (isDisposed) return;
-        if (branchListResult.status === 'fulfilled') {
-          const next = branchListResult.value;
-          const sig = getBranchesSignature(next);
+
+        const resolvedBranches = branchListResult.status === 'fulfilled' ? branchListResult.value : null;
+
+        if (resolvedBranches) {
+          const sig = getBranchesSignature(resolvedBranches);
           if (sig !== lastBranchesSignature) {
             lastBranchesSignature = sig;
-            setBranches(next);
+            setBranches(resolvedBranches);
           }
         }
         if (directResultResult.status === 'fulfilled') {
@@ -278,6 +294,25 @@ function App() {
             setDirectCommits(next);
           }
         }
+        if (unpushedDirectResult.status === 'fulfilled') {
+          setUnpushedDirectCommits(unpushedDirectResult.value);
+        }
+
+        // Fetch per-branch unpushed SHAs for accurate per-commit classification.
+        const allBranchNames = [defaultBranch, ...(resolvedBranches ?? []).map((b) => b.name)];
+        const unpushedShaEntries = await Promise.all(
+          allBranchNames.map(async (branchName) => {
+            const shas = await invoke<string[]>('get_branch_unpushed_commit_shas', {
+              repoPath,
+              branch: branchName,
+            }).catch(() => []);
+            return [branchName, shas] as const;
+          })
+        );
+        if (!isDisposed) {
+          setUnpushedCommitShasByBranch(Object.fromEntries(unpushedShaEntries));
+        }
+
         // Unblock the map as soon as primary graph data is ready.
         setMapLoading(false);
         if (
@@ -1039,6 +1074,7 @@ function App() {
     setOpenPRs([]);
     setDirectCommits([]);
     setUnpushedDirectCommits([]);
+    setUnpushedCommitShasByBranch({});
     setBranchPromptMeta({});
     setBranchCommitPreviews({});
     setBranchUniqueAheadCounts({});
@@ -1140,21 +1176,6 @@ function App() {
       kind: 'uncommitted',
     };
 
-    if (import.meta.env.DEV) {
-      const placement = isOnLaneTip
-        ? `same-lane:${targetLane?.name ?? 'unknown'}`
-        : 'synthetic-side-branch';
-      console.debug('[uncommitted-placement]', {
-        branchName: checkedOutRef.branchName,
-        defaultBranch,
-        checkedOutAnchorSha,
-        targetLaneName: targetLane?.name ?? null,
-        latestMainDirectCommitSha,
-        isOnLaneTip,
-        placement,
-      });
-    }
-
     if (isOnLaneTip && targetLane?.isDefault) {
       return {
         enrichedBranches: branches,
@@ -1245,6 +1266,7 @@ function App() {
               mergeNodes={mergeNodes}
               directCommits={enrichedDirectCommits}
               unpushedDirectCommits={unpushedDirectCommits}
+              unpushedCommitShasByBranch={unpushedCommitShasByBranch}
               openPRs={openPRs}
               defaultBranch={defaultBranch}
               onCommitClick={handleMapCommitClick}
