@@ -74,9 +74,8 @@ const CANVAS_NODE_FILL = '#F5F5F5';
 const HOVER_NODE_FILL = '#F0F6FE';
 const CANVAS_UNPUSHED_NODE_FILL = '#FAFAF9';
 const CANVAS_UNPUSHED_NODE_FILL_HEX = '#FAFAF9';
-/** Stash synthetic nodes — warm yellow, distinct from uncommitted blue. */
-const CANVAS_STASH_NODE_FILL = '#F5E6A3';
-const CANVAS_STASH_NODE_FILL_HEX = '#F5E6A3';
+/** Stash synthetic nodes — yellow outline; fill matches other commit nodes. */
+const CANVAS_STASH_NODE_STROKE = '#D4A82A';
 const STASH_LABEL_TEXT = '#B8860B';
 const CANVAS_NODE_STROKE = '#E0E0E0';
 const CANVAS_NODE_STROKE_WIDTH = 1.5;
@@ -518,6 +517,19 @@ function isSyntheticLocalCommit(commit: { kind?: string; fullSha?: string }): bo
     commit.kind === 'uncommitted' ||
     isStashCommitLike(commit)
   );
+}
+
+function stashOrUncommittedBaseStroke(isStash: boolean, isUncommitted: boolean): string {
+  if (isStash) return CANVAS_STASH_NODE_STROKE;
+  if (isUncommitted) return CHECKED_OUT_SELECTION_STROKE;
+  return CANVAS_NODE_STROKE;
+}
+
+/** Collapsed clump: blue if any uncommitted, else yellow if stash-only. */
+function clusterLocalSyntheticStroke(clusterHasUncommitted: boolean, clusterHasStash: boolean): string {
+  if (clusterHasUncommitted) return CHECKED_OUT_SELECTION_STROKE;
+  if (clusterHasStash) return CANVAS_STASH_NODE_STROKE;
+  return CANVAS_NODE_STROKE;
 }
 
 function splitIndicesAroundUncommitted<T>(
@@ -4899,10 +4911,6 @@ export default function BranchMap({
     const isUnpushedFill =
       normalizedFill === CANVAS_UNPUSHED_NODE_FILL ||
       normalizedFill === CANVAS_UNPUSHED_NODE_FILL_HEX.toLowerCase();
-    const isStashFill =
-      normalizedFill === CANVAS_STASH_NODE_FILL.toLowerCase() ||
-      normalizedFill === CANVAS_STASH_NODE_FILL_HEX.toLowerCase();
-    if (isStashFill) return CANVAS_STASH_NODE_FILL_HEX;
     if (isUnpushedFill) return CANVAS_UNPUSHED_NODE_FILL_HEX;
     if (isUserSelected) return USER_SELECTION_FILL;
     if (hoveredNodeStrokeKey === nodeKey) return HOVER_NODE_FILL;
@@ -6637,19 +6645,15 @@ export default function BranchMap({
                                       height: rectSize.height - CANVAS_NODE_STROKE_WIDTH,
                                       fill: getNodeFillColor(
                                         clusterKey,
-                                        isStashCommit
-                                          ? CANVAS_STASH_NODE_FILL
-                                          : isUncommittedCommit || isUnpushedCommit
-                                            ? CANVAS_UNPUSHED_NODE_FILL
-                                            : CANVAS_NODE_FILL,
+                                        isStashCommit || isUncommittedCommit || isUnpushedCommit
+                                          ? CANVAS_UNPUSHED_NODE_FILL
+                                          : CANVAS_NODE_FILL,
                                         clusterCheckoutAccent,
                                         clusterHasSelectedCommit || (clusterHasMainTip && selectedBranchNameSet.has(defaultBranch)),
                                       ),
                                       stroke: getNodeStrokeColor(
                                         clusterKey,
-                                        isUncommittedCommit || isStashCommit
-                                          ? CHECKED_OUT_SELECTION_STROKE
-                                          : CANVAS_NODE_STROKE,
+                                        stashOrUncommittedBaseStroke(isStashCommit, isUncommittedCommit),
                                         clusterCheckoutAccent,
                                         clusterHasSelectedCommit || (clusterHasMainTip && selectedBranchNameSet.has(defaultBranch)),
                                       ),
@@ -6876,20 +6880,16 @@ export default function BranchMap({
                                                 height: localRect.height - CANVAS_NODE_STROKE_WIDTH,
                                                 fill: getNodeFillColor(
                                                   commitKey,
-                                                  isStashCommit
-                                                    ? CANVAS_STASH_NODE_FILL
-                                                    : isUncommittedCommit || isUnpushedCommit
-                                                      ? CANVAS_UNPUSHED_NODE_FILL
-                                                      : CANVAS_NODE_FILL,
+                                                  isStashCommit || isUncommittedCommit || isUnpushedCommit
+                                                    ? CANVAS_UNPUSHED_NODE_FILL
+                                                    : CANVAS_NODE_FILL,
                                                   commitCheckoutAccent,
                                                   selectedCommitShaSet.has(c.fullSha) ||
                                                     (clusterHasMainTip && selectedBranchNameSet.has(defaultBranch)),
                                                 ),
                                                 stroke: getNodeStrokeColor(
                                                   commitKey,
-                                                  isUncommittedCommit || isStashCommit
-                                                    ? CHECKED_OUT_SELECTION_STROKE
-                                                    : CANVAS_NODE_STROKE,
+                                                  stashOrUncommittedBaseStroke(isStashCommit, isUncommittedCommit),
                                                   commitCheckoutAccent,
                                                   selectedCommitShaSet.has(c.fullSha) ||
                                                   (clusterHasMainTip &&
@@ -7401,7 +7401,7 @@ export default function BranchMap({
                                           width: rectSize.width - dotStrokeWidth,
                                           height: rectSize.height - dotStrokeWidth,
                                           fill: isStashCommit
-                                            ? CANVAS_STASH_NODE_FILL
+                                            ? CANVAS_UNPUSHED_NODE_FILL
                                             : isLocalCommit
                                               ? CANVAS_UNPUSHED_NODE_FILL
                                               : dotFill,
@@ -7409,9 +7409,7 @@ export default function BranchMap({
                                             vm.clusterKey,
                                             isGhostRect
                                               ? LOCAL_UNPUSHED_GRAY
-                                              : isUncommittedCommit || isStashCommit
-                                                ? CHECKED_OUT_SELECTION_STROKE
-                                                : CANVAS_NODE_STROKE,
+                                              : stashOrUncommittedBaseStroke(isStashCommit, !!isUncommittedCommit),
                                             clusterCheckoutAccent,
                                             clusterHasSelectedCommit || clusterHasSelectedHead,
                                           ),
@@ -7518,16 +7516,12 @@ export default function BranchMap({
                                           y: anchorY - rectSize.height / 2 + dotStrokeInset,
                                           width: rectSize.width - dotStrokeWidth,
                                           height: rectSize.height - dotStrokeWidth,
-                                          fill: clusterHasStash
-                                            ? CANVAS_STASH_NODE_FILL
-                                            : clusterHasLocalCommits
-                                              ? CANVAS_UNPUSHED_NODE_FILL
-                                              : dotFill,
+                                          fill: clusterHasStash || clusterHasLocalCommits
+                                            ? CANVAS_UNPUSHED_NODE_FILL
+                                            : dotFill,
                                           stroke: getNodeStrokeColor(
                                             vm.clusterKey,
-                                            clusterHasUncommitted || clusterHasStash
-                                              ? CHECKED_OUT_SELECTION_STROKE
-                                              : CANVAS_NODE_STROKE,
+                                            clusterLocalSyntheticStroke(clusterHasUncommitted, clusterHasStash),
                                             clusterCheckoutAccent,
                                             clusterHasSelectedCommit || clusterHasSelectedHead,
                                           ),
@@ -7931,14 +7925,10 @@ export default function BranchMap({
                                   innerText: isUncommittedCommit || isStashCommit ? undefined : commit?.message,
                                   footerMetaAuthor: `@${commit?.author ?? b.lastCommitAuthor}`,
                                   footerMetaDate: fmtTooltipDate(commit?.date ?? b.lastCommitDate),
-                                  fill: isStashCommit
-                                    ? CANVAS_STASH_NODE_FILL_HEX
-                                    : isUncommittedCommit || isLocalCommit
-                                      ? CANVAS_UNPUSHED_NODE_FILL
-                                      : dotFill,
-                                  baseStroke: isUncommittedCommit || isStashCommit
-                                    ? CHECKED_OUT_SELECTION_STROKE
-                                    : CANVAS_NODE_STROKE,
+                                  fill: isStashCommit || isUncommittedCommit || isLocalCommit
+                                    ? CANVAS_UNPUSHED_NODE_FILL
+                                    : dotFill,
+                                  baseStroke: stashOrUncommittedBaseStroke(isStashCommit, !!isUncommittedCommit),
                                   checkoutAccent: clusterCheckoutAccent,
                                   isUserSelected: clusterHasSelectedCommit || clusterHasSelectedHead,
                                   strokeWidth: dotStrokeWidth,
@@ -7999,14 +7989,10 @@ export default function BranchMap({
                                     const lastDate = renderEntries[renderEntries.length - 1]?.item.commit?.date ?? b.lastCommitDate;
                                     return fmtClumpDateRange(firstDate, lastDate);
                                   })(),
-                                  fill: clusterHasStash
-                                    ? CANVAS_STASH_NODE_FILL_HEX
-                                    : clusterHasUncommitted || clusterHasLocalCommits
-                                      ? CANVAS_UNPUSHED_NODE_FILL
-                                      : dotFill,
-                                  baseStroke: clusterHasUncommitted || clusterHasStash
-                                    ? CHECKED_OUT_SELECTION_STROKE
-                                    : CANVAS_NODE_STROKE,
+                                  fill: clusterHasStash || clusterHasUncommitted || clusterHasLocalCommits
+                                    ? CANVAS_UNPUSHED_NODE_FILL
+                                    : dotFill,
+                                  baseStroke: clusterLocalSyntheticStroke(clusterHasUncommitted, clusterHasStash),
                                   checkoutAccent: clusterCheckoutAccent,
                                   isUserSelected: clusterHasSelectedCommit || clusterHasSelectedHead,
                                   strokeWidth: dotStrokeWidth,
@@ -8063,14 +8049,10 @@ export default function BranchMap({
                                           isUncommittedCommit || isStashCommit ? undefined : commit.message,
                                         footerMetaAuthor: `@${commit.author ?? b.lastCommitAuthor}`,
                                         footerMetaDate: fmtTooltipDate(commit.date ?? b.lastCommitDate),
-                                        fill: isStashCommit
-                                          ? CANVAS_STASH_NODE_FILL_HEX
-                                          : isUncommittedCommit || isLocalCommit
-                                            ? CANVAS_UNPUSHED_NODE_FILL
-                                            : dotFill,
-                                        baseStroke: isUncommittedCommit || isStashCommit
-                                          ? CHECKED_OUT_SELECTION_STROKE
-                                          : CANVAS_NODE_STROKE,
+                                        fill: isStashCommit || isUncommittedCommit || isLocalCommit
+                                          ? CANVAS_UNPUSHED_NODE_FILL
+                                          : dotFill,
+                                        baseStroke: stashOrUncommittedBaseStroke(isStashCommit, isUncommittedCommit),
                                         checkoutAccent: commitCheckoutAccent,
                                         isUserSelected:
                                           selectedCommitShaSet.has(commit.fullSha) ||
@@ -8142,14 +8124,10 @@ export default function BranchMap({
                                 innerText: isUncommittedCommit || isStashCommit ? undefined : singleMainCommit?.message,
                                 footerMetaAuthor: `@${singleMainCommit?.author ?? 'unknown'}`,
                                 footerMetaDate: singleMainCommit?.date ? fmtTooltipDate(singleMainCommit.date) : 'Unknown date',
-                                fill: isStashCommit
-                                  ? CANVAS_STASH_NODE_FILL_HEX
-                                  : isUncommittedCommit || isUnpushedCommit
-                                    ? CANVAS_UNPUSHED_NODE_FILL
-                                    : CANVAS_NODE_FILL,
-                                baseStroke: isUncommittedCommit || isStashCommit
-                                  ? CHECKED_OUT_SELECTION_STROKE
-                                  : CANVAS_NODE_STROKE,
+                                fill: isStashCommit || isUncommittedCommit || isUnpushedCommit
+                                  ? CANVAS_UNPUSHED_NODE_FILL
+                                  : CANVAS_NODE_FILL,
+                                baseStroke: stashOrUncommittedBaseStroke(isStashCommit, isUncommittedCommit),
                                 checkoutAccent: clusterCheckoutAccent,
                                 isUserSelected:
                                   mainClusterHasSelectedCommit ||
@@ -8206,14 +8184,10 @@ export default function BranchMap({
                                           innerText: isUncommittedCommit || isStashCommit ? undefined : c.message,
                                           footerMetaAuthor: `@${c.author}`,
                                           footerMetaDate: fmtTooltipDate(c.date),
-                                          fill: isStashCommit
-                                            ? CANVAS_STASH_NODE_FILL_HEX
-                                            : isUncommittedCommit || isUnpushedCommit
-                                              ? CANVAS_UNPUSHED_NODE_FILL
-                                              : CANVAS_NODE_FILL,
-                                          baseStroke: isUncommittedCommit || isStashCommit
-                                            ? CHECKED_OUT_SELECTION_STROKE
-                                            : CANVAS_NODE_STROKE,
+                                          fill: isStashCommit || isUncommittedCommit || isUnpushedCommit
+                                            ? CANVAS_UNPUSHED_NODE_FILL
+                                            : CANVAS_NODE_FILL,
+                                          baseStroke: stashOrUncommittedBaseStroke(isStashCommit, isUncommittedCommit),
                                           checkoutAccent: commitCheckoutAccent,
                                           isUserSelected:
                                             selectedCommitShaSet.has(c.fullSha) ||
@@ -8257,14 +8231,10 @@ export default function BranchMap({
                                   const lastDate = cluster.entries[cluster.entries.length - 1]?.item.date ?? '';
                                   return fmtClumpDateRange(firstDate, lastDate);
                                 })(),
-                                fill: clusterHasStash
-                                  ? CANVAS_STASH_NODE_FILL_HEX
-                                  : clusterHasUncommitted || clusterHasUnpushed
-                                    ? CANVAS_UNPUSHED_NODE_FILL
-                                    : CANVAS_NODE_FILL,
-                                baseStroke: clusterHasUncommitted || clusterHasStash
-                                  ? CHECKED_OUT_SELECTION_STROKE
-                                  : CANVAS_NODE_STROKE,
+                                fill: clusterHasStash || clusterHasUncommitted || clusterHasUnpushed
+                                  ? CANVAS_UNPUSHED_NODE_FILL
+                                  : CANVAS_NODE_FILL,
+                                baseStroke: clusterLocalSyntheticStroke(clusterHasUncommitted, clusterHasStash),
                                 checkoutAccent: clusterCheckoutAccent,
                                 isUserSelected:
                                   mainClusterHasSelectedCommit ||
