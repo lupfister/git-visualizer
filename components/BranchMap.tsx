@@ -51,7 +51,7 @@ const TIME_SCALE_DEFAULT = 0.5;
 // or you'll see tiny gaps between nodes.
 const GRID_NODE_RECT = commitRectSize(NODE_SIZE, 0);
 // Keep a clear gutter between rows/columns so cells don't visually touch.
-const GRID_CELL_GAP = 5;
+const GRID_CELL_GAP = 8;
 const GRID_ROW_GAP = GRID_NODE_RECT.height + GRID_CELL_GAP;
 const GRID_LANE_WIDTH = GRID_NODE_RECT.width + GRID_CELL_GAP;
 const GRID_LANE_OFFSET_X = 0;
@@ -4263,7 +4263,7 @@ export default function BranchMap({
   const worldUnitsPerScreenPx = 1 / Math.max(layerCameraScale.x, 0.0001);
   const worldPx = (px: number) => px * worldUnitsPerScreenPx;
   const NODE_FRAME_LABEL_FONT_PX = 12;
-  const NODE_FRAME_LABEL_TOP_GAP_PX = 1;
+  const NODE_FRAME_LABEL_TOP_GAP_PX = 2.5;
   const NODE_FRAME_LABEL_LEFT_INSET_PX = 0;
   const NODE_FRAME_LABEL_RIGHT_INSET_PX = 0;
   const NODE_FRAME_LABEL_PAIR_GAP_PX = 2;
