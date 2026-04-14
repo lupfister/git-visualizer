@@ -54,7 +54,7 @@ const GRID_CELL_GAP = 5;
 const GRID_ROW_GAP = GRID_NODE_RECT.height + GRID_CELL_GAP;
 const GRID_LANE_WIDTH = GRID_NODE_RECT.width + GRID_CELL_GAP;
 const GRID_LANE_OFFSET_X = 0;
-const GRID_LANE_MIN_SEPARATION = GRID_ROW_GAP;
+const GRID_LANE_MIN_SEPARATION = Math.max(GRID_ROW_GAP, GRID_LANE_WIDTH);
 const GRID_ROUTE_CORNER_R = 9;
 const GRID_MERGE_EVENT_ROW_NUDGE = 0.001;
 const LOCAL_UNPUSHED_GRAY = '#E0E0E0';
@@ -4206,6 +4206,13 @@ export default function BranchMap({
   const NODE_FRAME_LABEL_LEFT_INSET_PX = 0;
   const NODE_FRAME_LABEL_RIGHT_INSET_PX = 0;
   const NODE_FRAME_LABEL_PAIR_GAP_PX = 2;
+  const NODE_FRAME_MESSAGE_INSET_X_PX = 6;
+  const NODE_FRAME_MESSAGE_INSET_TOP_PX = 6;
+  const NODE_FRAME_MESSAGE_INSET_BOTTOM_PX = 6;
+  const NODE_FRAME_MESSAGE_FONT_PX = 12;
+  const NODE_FRAME_MESSAGE_CLIP_TOP_BLEED_PX = 6;
+  const NODE_FRAME_MESSAGE_RENDER_OFFSET_Y_PX = 0;
+  const NODE_FRAME_MESSAGE_WRAP_SAFETY_PX = 6;
   const NODE_FRAME_LABEL_COLOR = '#78716c';
   const NODE_FRAME_LABEL_WEIGHT = 400;
   const nodeFrameLabelFontSize = worldPx(NODE_FRAME_LABEL_FONT_PX);
@@ -4213,6 +4220,13 @@ export default function BranchMap({
   const nodeFrameLabelInsetX = worldPx(NODE_FRAME_LABEL_LEFT_INSET_PX);
   const nodeFrameLabelRightInsetX = worldPx(NODE_FRAME_LABEL_RIGHT_INSET_PX);
   const nodeFrameLabelPairGap = worldPx(NODE_FRAME_LABEL_PAIR_GAP_PX);
+  const nodeFrameMessageInsetX = worldPx(NODE_FRAME_MESSAGE_INSET_X_PX);
+  const nodeFrameMessageInsetTop = worldPx(NODE_FRAME_MESSAGE_INSET_TOP_PX);
+  const nodeFrameMessageInsetBottom = worldPx(NODE_FRAME_MESSAGE_INSET_BOTTOM_PX);
+  const nodeFrameMessageFontSize = worldPx(NODE_FRAME_MESSAGE_FONT_PX);
+  const nodeFrameMessageClipTopBleed = worldPx(NODE_FRAME_MESSAGE_CLIP_TOP_BLEED_PX);
+  const nodeFrameMessageRenderOffsetY = worldPx(NODE_FRAME_MESSAGE_RENDER_OFFSET_Y_PX);
+  const nodeFrameMessageWrapSafety = worldPx(NODE_FRAME_MESSAGE_WRAP_SAFETY_PX);
   const nodeFrameCollapseIconSize = worldPx(12);
   const shortShaLabel = (sha?: string | null): string => {
     if (!sha) return '-------';
@@ -4221,18 +4235,18 @@ export default function BranchMap({
     return /^[0-9a-f]{7,40}$/i.test(sha) ? sha.slice(0, 7) : sha;
   };
   const stackCountLabel = (count: number): string => `x${clumpCountLabel(count)}`;
-  const trimTextToWidth = (text: string, maxWidth: number): string => {
+  const trimTextToWidth = (text: string, maxWidth: number, fontSize = nodeFrameLabelFontSize): string => {
     if (maxWidth <= 0) return '';
-    if (estimateSvgTextWidth(text, nodeFrameLabelFontSize) <= maxWidth) return text;
+    if (estimateSvgTextWidth(text, fontSize) <= maxWidth) return text;
     const ellipsis = '…';
-    const ellipsisWidth = estimateSvgTextWidth(ellipsis, nodeFrameLabelFontSize);
+    const ellipsisWidth = estimateSvgTextWidth(ellipsis, fontSize);
     if (ellipsisWidth > maxWidth) return '';
     let lo = 0;
     let hi = text.length;
     while (lo < hi) {
       const mid = Math.ceil((lo + hi) / 2);
       const candidate = `${text.slice(0, mid)}${ellipsis}`;
-      if (estimateSvgTextWidth(candidate, nodeFrameLabelFontSize) <= maxWidth) {
+      if (estimateSvgTextWidth(candidate, fontSize) <= maxWidth) {
         lo = mid;
       } else {
         hi = mid - 1;
@@ -4259,6 +4273,74 @@ export default function BranchMap({
       rectWidth - nodeFrameLabelInsetX - nodeFrameLabelRightInsetX - rightContentWidth;
     if (availableTitleWidth <= 0) return '';
     return trimTextToWidth(fullLabel, availableTitleWidth);
+  };
+  const wrapNodeFrameMessage = (
+    message: string | undefined | null,
+    rectSize: ReturnType<typeof commitRectSize>,
+    strokeWidth: number,
+  ): { lines: string[]; fontSize: number; lineHeight: number } => {
+    const label = message?.trim().replace(/\s+/g, ' ');
+    const availableWidth = Math.max(
+      0,
+      rectSize.width - strokeWidth - nodeFrameMessageInsetX * 2 - nodeFrameMessageWrapSafety,
+    );
+    const availableHeight =
+      rectSize.height - strokeWidth - nodeFrameMessageInsetTop - nodeFrameMessageInsetBottom;
+    if (!label || availableWidth <= 0 || availableHeight <= 0) {
+      return { lines: [], fontSize: 0, lineHeight: 0 };
+    }
+
+    const fontSize = nodeFrameMessageFontSize;
+    const lineHeight = fontSize * 1.08;
+    const maxLines = Math.max(1, Math.floor(availableHeight / lineHeight));
+    if (maxLines <= 0) return { lines: [], fontSize, lineHeight };
+
+    const lines: string[] = [];
+    let remaining = label;
+
+    const fitLine = (text: string, truncate = false): { line: string; rest: string } => {
+      const source = text.trimStart();
+      if (!source) return { line: '', rest: '' };
+      if (truncate) return { line: trimTextToWidth(source, availableWidth, fontSize), rest: '' };
+      if (estimateSvgTextWidth(source, fontSize) <= availableWidth) return { line: source, rest: '' };
+
+      let lo = 1;
+      let hi = source.length;
+      while (lo < hi) {
+        const mid = Math.ceil((lo + hi) / 2);
+        const candidate = source.slice(0, mid);
+        if (estimateSvgTextWidth(candidate, fontSize) <= availableWidth) {
+          lo = mid;
+        } else {
+          hi = mid - 1;
+        }
+      }
+
+      let end = lo;
+      const fitted = source.slice(0, end);
+      const lastWhitespace = fitted.search(/\s\S*$/);
+      if (lastWhitespace > 0) end = lastWhitespace;
+
+      const line = source.slice(0, end).trimEnd();
+      if (!line) {
+        return { line: trimTextToWidth(source, availableWidth, fontSize), rest: '' };
+      }
+
+      return {
+        line,
+        rest: source.slice(end).trimStart(),
+      };
+    };
+
+    for (let lineIndex = 0; lineIndex < maxLines && remaining; lineIndex += 1) {
+      const isLastLine = lineIndex === maxLines - 1;
+      const { line, rest } = fitLine(remaining, isLastLine);
+      if (!line) break;
+      lines.push(line);
+      remaining = rest;
+    }
+
+    return { lines, fontSize, lineHeight };
   };
   const scaledNodeSize = NODE_SIZE;
   const nodeRectSize = (_count: number) => commitRectSize(scaledNodeSize, 0);
@@ -4390,6 +4472,7 @@ export default function BranchMap({
     strokeInset = strokeWidth / 2,
     dashed = false,
     cursor = undefined,
+    innerText,
   }: {
     nodeKey: string;
     centerX: number;
@@ -4403,29 +4486,89 @@ export default function BranchMap({
     strokeInset?: number;
     dashed?: boolean;
     cursor?: React.CSSProperties['cursor'];
+    innerText?: string;
   }) {
+    const wrappedInnerText = innerText?.trim()
+      ? wrapNodeFrameMessage(innerText, rectSize, strokeWidth)
+      : { lines: [], fontSize: 0, lineHeight: 0 };
+    const innerClipId = `commit-node-text-clip-${nodeKey.replace(/[^a-zA-Z0-9_-]/g, '-')}`;
+    const innerClipX = centerX - rectSize.width / 2 + strokeInset + nodeFrameMessageInsetX;
+    const innerClipY =
+      centerY - rectSize.height / 2 + strokeInset + nodeFrameMessageInsetTop - nodeFrameMessageClipTopBleed;
+    const innerClipWidth = Math.max(0, rectSize.width - strokeWidth - nodeFrameMessageInsetX * 2);
+    const innerClipHeight = Math.max(
+      0,
+      rectSize.height -
+        strokeWidth -
+        nodeFrameMessageInsetTop -
+        nodeFrameMessageInsetBottom +
+        nodeFrameMessageClipTopBleed,
+    );
     return (
-      <rect
-        className="branch-map-commit-rect"
-        x={centerX - rectSize.width / 2 + strokeInset}
-        y={centerY - rectSize.height / 2 + strokeInset}
-        width={rectSize.width - strokeWidth}
-        height={rectSize.height - strokeWidth}
-        data-base-rx={rectSize.radius}
-        rx={rectSize.radius / Math.max(layerCameraScale.x, 0.0001)}
-        fill={fill}
-        stroke={getNodeStrokeColor(
-          nodeKey,
-          baseStroke,
-          isCheckedOutSelection,
-          isUserSelected,
+      <g style={cursor ? { cursor } : undefined}>
+        {wrappedInnerText.lines.length > 0 && (
+          <defs>
+            <clipPath id={innerClipId}>
+              <rect
+                x={innerClipX}
+                y={innerClipY}
+                width={innerClipWidth}
+                height={innerClipHeight}
+              />
+            </clipPath>
+          </defs>
         )}
-        strokeWidth={strokeWidth}
-        strokeDasharray={dashed ? '3 3' : undefined}
-        strokeLinecap={dashed ? 'round' : undefined}
-        strokeLinejoin={dashed ? 'round' : undefined}
-        style={cursor ? { cursor } : undefined}
-      />
+        <rect
+          className="branch-map-commit-rect"
+          x={centerX - rectSize.width / 2 + strokeInset}
+          y={centerY - rectSize.height / 2 + strokeInset}
+          width={rectSize.width - strokeWidth}
+          height={rectSize.height - strokeWidth}
+          data-base-rx={rectSize.radius}
+          rx={rectSize.radius / Math.max(layerCameraScale.x, 0.0001)}
+          fill={fill}
+          stroke={getNodeStrokeColor(
+            nodeKey,
+            baseStroke,
+            isCheckedOutSelection,
+            isUserSelected,
+          )}
+          strokeWidth={strokeWidth}
+          strokeDasharray={dashed ? '3 3' : undefined}
+          strokeLinecap={dashed ? 'round' : undefined}
+          strokeLinejoin={dashed ? 'round' : undefined}
+        />
+        {wrappedInnerText.lines.length > 0 && (
+          <text
+            x={centerX - rectSize.width / 2 + strokeInset + nodeFrameMessageInsetX}
+            textAnchor="start"
+            textRendering="geometricPrecision"
+            clipPath={`url(#${innerClipId})`}
+            fill={NODE_FRAME_LABEL_COLOR}
+            fontWeight={NODE_FRAME_LABEL_WEIGHT}
+            pointerEvents="none"
+            fontSize={wrappedInnerText.fontSize}
+            y={
+              centerY -
+              rectSize.height / 2 +
+              strokeInset +
+              nodeFrameMessageInsetTop +
+              wrappedInnerText.fontSize +
+              nodeFrameMessageRenderOffsetY
+            }
+          >
+            {wrappedInnerText.lines.map((line, index) => (
+              <tspan
+                key={`${nodeKey}-line-${index}`}
+                x={centerX - rectSize.width / 2 + strokeInset + nodeFrameMessageInsetX}
+                dy={index === 0 ? 0 : wrappedInnerText.lineHeight}
+              >
+                {line}
+              </tspan>
+            ))}
+          </text>
+        )}
+      </g>
     );
   }
   const branchRenderLayoutCache = new Map<string, BranchRenderLayout>();
@@ -6834,6 +6977,7 @@ export default function BranchMap({
                                   centerX: anchorX,
                                   centerY: anchorY,
                                   rectSize,
+                                  innerText: isUncommittedCommit ? 'Uncommited Changes' : commit?.message,
                                   fill: isUncommittedCommit ? CANVAS_UNPUSHED_NODE_FILL : dotFill,
                                   baseStroke: isUncommittedCommit
                                     ? CHECKED_OUT_SELECTION_STROKE
@@ -6866,6 +7010,10 @@ export default function BranchMap({
                                   centerX: anchorX,
                                   centerY: anchorY,
                                   rectSize,
+                                  innerText:
+                                    renderEntries[renderEntries.length - 1]?.item.commit?.kind === 'uncommitted'
+                                      ? 'Uncommited Changes'
+                                      : renderEntries[renderEntries.length - 1]?.item.commit?.message,
                                   fill: clusterHasUncommitted ? CANVAS_UNPUSHED_NODE_FILL : dotFill,
                                   baseStroke: clusterHasUncommitted
                                     ? CHECKED_OUT_SELECTION_STROKE
@@ -6914,6 +7062,8 @@ export default function BranchMap({
                                         centerX: 0,
                                         centerY: 0,
                                         rectSize: localRect,
+                                        innerText:
+                                          isUncommittedCommit ? 'Uncommited Changes' : commit.message,
                                         fill: isUncommittedCommit ? CANVAS_UNPUSHED_NODE_FILL : dotFill,
                                         baseStroke: isUncommittedCommit
                                           ? CHECKED_OUT_SELECTION_STROKE
@@ -6975,6 +7125,7 @@ export default function BranchMap({
                                 centerX: anchorX,
                                 centerY: anchorY,
                                 rectSize,
+                                innerText: isUncommittedCommit ? 'Uncommited Changes' : cluster.entries[0]?.item.message,
                                 fill: isUncommittedCommit ? CANVAS_UNPUSHED_NODE_FILL : CANVAS_NODE_FILL,
                                 baseStroke: isUncommittedCommit
                                   ? CHECKED_OUT_SELECTION_STROKE
@@ -7023,6 +7174,7 @@ export default function BranchMap({
                                           centerX: 0,
                                           centerY: 0,
                                           rectSize: localRect,
+                                          innerText: isUncommittedCommit ? 'Uncommited Changes' : c.message,
                                           fill: isUncommittedCommit ? CANVAS_UNPUSHED_NODE_FILL : CANVAS_NODE_FILL,
                                           baseStroke: isUncommittedCommit
                                             ? CHECKED_OUT_SELECTION_STROKE
@@ -7046,6 +7198,10 @@ export default function BranchMap({
                                 centerX: anchorX,
                                 centerY: anchorY,
                                 rectSize: clusterRectSize,
+                                innerText:
+                                  cluster.entries[cluster.entries.length - 1]?.item.fullSha === 'WORKING_TREE'
+                                    ? 'Uncommited Changes'
+                                    : cluster.entries[cluster.entries.length - 1]?.item.message,
                                 fill: clusterHasUncommitted ? CANVAS_UNPUSHED_NODE_FILL : CANVAS_NODE_FILL,
                                 baseStroke: clusterHasUncommitted
                                   ? CHECKED_OUT_SELECTION_STROKE
