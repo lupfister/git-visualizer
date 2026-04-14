@@ -56,6 +56,11 @@ const GRID_ROW_GAP = GRID_NODE_RECT.height + GRID_CELL_GAP;
 const GRID_LANE_WIDTH = GRID_NODE_RECT.width + GRID_CELL_GAP;
 const GRID_LANE_OFFSET_X = 0;
 const GRID_LANE_MIN_SEPARATION = Math.max(GRID_ROW_GAP, GRID_LANE_WIDTH);
+/**
+ * How much empty timeline distance two branch lifetimes need before reusing a column.
+ * Lower values are less conservative and keep columns more stable across clump toggles.
+ */
+const BRANCH_COLUMN_REUSE_TIME_GAP_FACTOR = 0.35;
 const GRID_ROUTE_CORNER_R = 9;
 const GRID_MERGE_EVENT_ROW_NUDGE = 0.001;
 const LOCAL_UNPUSHED_GRAY = '#E0E0E0';
@@ -3507,7 +3512,7 @@ export default function BranchMap({
   // ── Branch columns self-create on first use ────────────────────────────────
   // Each branch claims its own column lazily, biased to parent+1 when parent
   // is visible. Columns are reused only when branch time-ranges are separated.
-  const BRANCH_LANE_MIN_SEPARATION_X = Math.max(GRID_LANE_MIN_SEPARATION, GRID_EVENT_GAP);
+  const BRANCH_LANE_MIN_SEPARATION_X = Math.max(1, GRID_EVENT_GAP * BRANCH_COLUMN_REUSE_TIME_GAP_FACTOR);
   const laneWidth = gridLaneWidth;
   const laneOffsetX = GRID_LANE_OFFSET_X;
   const branchColumnByName = new Map<string, number>();
