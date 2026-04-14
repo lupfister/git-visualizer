@@ -66,6 +66,7 @@ const CANVAS_UNPUSHED_NODE_FILL = 'var(--background)';
 const CANVAS_NODE_STROKE = '#E0E0E0';
 const CANVAS_NODE_STROKE_WIDTH = 1.5;
 const CANVAS_NODE_STROKE_INSET = CANVAS_NODE_STROKE_WIDTH / 2;
+const COMMIT_NODE_CORNER_RADIUS = 6;
 const DEBUG_SHOW_BRANCH_HIT_AREAS = false;
 const DEBUG_BRANCH_HIT_AREA_COLOR = '#ef4444';
 const DEBUG_BRANCH_HIT_AREA_OPACITY = 0.25;
@@ -2434,7 +2435,23 @@ export default function BranchMap({
         const idx = branchPreviewIndexForChildFork(previews, branchTimes, child);
         if (idx >= 0) forkIdx.add(idx);
       });
-      const effectiveForkIdx = pruneForkSplitIndices(previews.length, forkIdx, forkIdx);
+      const branchUncommittedSplitIndices = splitIndicesAroundUncommitted(
+        previews,
+        (commit) => commit.fullSha === 'WORKING_TREE' || commit.kind === 'uncommitted'
+      );
+      const branchAllocatorSplitIndices = new Set<number>([
+        ...forkIdx,
+        ...branchUncommittedSplitIndices,
+      ]);
+      const branchAllocatorPreserveSplitIndices = new Set<number>([
+        ...forkIdx,
+        ...branchUncommittedSplitIndices,
+      ]);
+      const effectiveForkIdx = pruneForkSplitIndices(
+        previews.length,
+        branchAllocatorSplitIndices,
+        branchAllocatorPreserveSplitIndices,
+      );
       let buf: string[] = [];
       let slotBuf: number[] = [];
       let tFirst = 0;
@@ -4230,6 +4247,8 @@ export default function BranchMap({
   const NODE_FRAME_MESSAGE_INSET_TOP_PX = 5.5;
   const NODE_FRAME_MESSAGE_INSET_BOTTOM_PX = 6;
   const NODE_FRAME_MESSAGE_FONT_PX = 12;
+  const NODE_FRAME_FOOTER_META_PAIR_GAP_PX = 8;
+  const NODE_FRAME_FOOTER_META_ZOOM_MIN = 3.5;
   const NODE_FRAME_MESSAGE_RENDER_OFFSET_Y_PX = 0;
   /** Tooltips — stays readable on card surfaces. */
   const NODE_FRAME_LABEL_COLOR = '#78716c';
@@ -4247,6 +4266,7 @@ export default function BranchMap({
   const nodeFrameMessageInsetTop = worldPx(NODE_FRAME_MESSAGE_INSET_TOP_PX);
   const nodeFrameMessageInsetBottom = worldPx(NODE_FRAME_MESSAGE_INSET_BOTTOM_PX);
   const nodeFrameMessageFontSize = worldPx(NODE_FRAME_MESSAGE_FONT_PX);
+  const nodeFrameFooterMetaPairGap = worldPx(NODE_FRAME_FOOTER_META_PAIR_GAP_PX);
   const nodeFrameMessageRenderOffsetY = worldPx(NODE_FRAME_MESSAGE_RENDER_OFFSET_Y_PX);
   const nodeFrameCollapseIconSize = worldPx(12);
   const shortShaLabel = (sha?: string | null): string => {
@@ -4282,10 +4302,14 @@ export default function BranchMap({
     rectWidth: number,
     rightText?: string,
     reserveIconWidth = false,
+    includeBranchForUncommitted = branchName !== defaultBranch,
   ): string => {
     const shaLabel = shortShaLabel(sha);
-    const fullLabel = sha === 'WORKING_TREE' || shaLabel === 'Uncommited Changes'
-      ? 'Uncommited Changes'
+    const isUncommittedLabel = sha === 'WORKING_TREE' || shaLabel === 'Uncommited Changes';
+    const fullLabel = isUncommittedLabel
+      ? includeBranchForUncommitted
+        ? `${branchName}/Uncommited Changes`
+        : 'Uncommited Changes'
       : `${branchName}/${shaLabel}`;
     let rightContentWidth = 0;
     if (rightText) {
@@ -4476,7 +4500,7 @@ export default function BranchMap({
     isCheckedOutSelection = false,
     isUserSelected = false,
   ) => {
-    if (isUserSelected) return baseFill;
+    if (isUserSelected) return USER_SELECTION_FILL;
     if (isCheckedOutSelection) return CHECKED_OUT_SELECTION_FILL;
     return hoveredNodeStrokeKey === nodeKey ? HOVER_NODE_FILL : baseFill;
   };
@@ -4494,9 +4518,10 @@ export default function BranchMap({
     nodeKey: string,
     isCheckedOutSelection = false,
     isUserSelected = false,
+    isUncommitted = false,
   ) => {
     if (isUserSelected) return '#257BF3';
-    if (isCheckedOutSelection) return '#47AFEB';
+    if (isCheckedOutSelection || isUncommitted) return '#47AFEB';
     return hoveredNodeStrokeKey === nodeKey ? '#64A1F7' : NODE_FRAME_INNER_TEXT_COLOR;
   };
   const branchLaneHitPointerEvents: React.CSSProperties['pointerEvents'] =
@@ -4512,6 +4537,71 @@ export default function BranchMap({
   function clearMainBranchHover() {
     setHoveredBranch((current) => (current === defaultBranch ? null : current));
   }
+  function renderCommitNodeShapeRect({
+    x,
+    y,
+    width,
+    height,
+    baseRadius = COMMIT_NODE_CORNER_RADIUS,
+    fill,
+    stroke,
+    strokeWidth = CANVAS_NODE_STROKE_WIDTH,
+    dashed = false,
+  }: {
+    x: number;
+    y: number;
+    width: number;
+    height: number;
+    baseRadius?: number;
+    fill: string;
+    stroke: string;
+    strokeWidth?: number;
+    dashed?: boolean;
+  }) {
+    const zoomSafeScale = Math.max(layerCameraScale.x, 0.0001);
+    const radius = Math.max(0, baseRadius / zoomSafeScale);
+    return (
+      <>
+        <rect
+          className="branch-map-commit-rect"
+          x={x}
+          y={y}
+          width={width}
+          height={height}
+          data-base-rx={baseRadius}
+          rx={radius}
+          fill={fill}
+          stroke={stroke}
+          strokeWidth={strokeWidth}
+          strokeDasharray={dashed ? '3 3' : undefined}
+          strokeLinecap={dashed ? 'round' : undefined}
+          strokeLinejoin={dashed ? 'round' : undefined}
+        />
+        {radius > 0 && (
+          <>
+            <rect
+              x={x}
+              y={y}
+              width={radius}
+              height={radius}
+              fill={fill}
+              pointerEvents="none"
+            />
+            <path
+              d={`M ${x + radius} ${y} L ${x} ${y} L ${x} ${y + radius}`}
+              fill="none"
+              stroke={stroke}
+              strokeWidth={strokeWidth}
+              strokeDasharray={dashed ? '3 3' : undefined}
+              strokeLinecap={dashed ? 'round' : undefined}
+              strokeLinejoin={dashed ? 'round' : undefined}
+              pointerEvents="none"
+            />
+          </>
+        )}
+      </>
+    );
+  }
   function renderCommitNodeRect({
     nodeKey,
     centerX,
@@ -4526,6 +4616,9 @@ export default function BranchMap({
     dashed = false,
     cursor = undefined,
     innerText,
+    footerMetaAuthor,
+    footerMetaDate,
+    isUncommitted = false,
   }: {
     nodeKey: string;
     centerX: number;
@@ -4540,43 +4633,67 @@ export default function BranchMap({
     dashed?: boolean;
     cursor?: React.CSSProperties['cursor'];
     innerText?: string;
+    footerMetaAuthor?: string;
+    footerMetaDate?: string;
+    isUncommitted?: boolean;
   }) {
     const wrappedInnerText = innerText?.trim()
       ? wrapNodeFrameMessage(innerText, rectSize, strokeWidth)
       : { lines: [], fontSize: 0, lineHeight: 0 };
+    const shouldShowFooterMeta = zoom >= NODE_FRAME_FOOTER_META_ZOOM_MIN;
+    const trimmedFooterMetaAuthor = footerMetaAuthor?.trim();
+    const trimmedFooterMetaDate = footerMetaDate?.trim();
+    const footerMetaMaxWidth = Math.max(0, rectSize.width - strokeWidth - nodeFrameMessageInsetX * 2);
+    const hasFooterMeta = !!trimmedFooterMetaAuthor && !!trimmedFooterMetaDate;
+    const renderedFooterMetaDate = hasFooterMeta
+      ? trimTextToWidth(trimmedFooterMetaDate, footerMetaMaxWidth * 0.65, nodeFrameMessageFontSize)
+      : '';
+    const footerMetaDateWidth = renderedFooterMetaDate
+      ? estimateSvgTextWidth(renderedFooterMetaDate, nodeFrameMessageFontSize)
+      : 0;
+    const renderedFooterMetaAuthor = hasFooterMeta
+      ? trimTextToWidth(
+          trimmedFooterMetaAuthor,
+          Math.max(0, footerMetaMaxWidth - footerMetaDateWidth - nodeFrameFooterMetaPairGap),
+          nodeFrameMessageFontSize,
+        )
+      : '';
+    const footerMetaTransitionStyle: React.CSSProperties = {
+      opacity: shouldShowFooterMeta ? 1 : 0,
+      filter: shouldShowFooterMeta ? 'blur(0px)' : 'blur(3px)',
+      transition: 'opacity 180ms ease, filter 220ms ease',
+    };
     const rectX = centerX - rectSize.width / 2 + strokeInset;
     const rectY = centerY - rectSize.height / 2 + strokeInset;
     const rectWidth = rectSize.width - strokeWidth;
     const rectHeight = rectSize.height - strokeWidth;
+    const nodeFill = getNodeFillColor(nodeKey, fill, isCheckedOutSelection, isUserSelected);
+    const nodeStroke = getNodeStrokeColor(
+      nodeKey,
+      baseStroke,
+      isCheckedOutSelection,
+      isUserSelected,
+    );
     return (
       <g style={cursor ? { cursor } : undefined}>
-        <rect
-          className="branch-map-commit-rect"
-          x={rectX}
-          y={rectY}
-          width={rectWidth}
-          height={rectHeight}
-          data-base-rx={rectSize.radius}
-          rx={isUserSelected ? 0 : rectSize.radius / Math.max(layerCameraScale.x, 0.0001)}
-          fill={getNodeFillColor(nodeKey, fill, isCheckedOutSelection, isUserSelected)}
-          stroke={getNodeStrokeColor(
-            nodeKey,
-            baseStroke,
-            isCheckedOutSelection,
-            isUserSelected,
-          )}
-          strokeWidth={strokeWidth}
-          strokeDasharray={dashed ? '3 3' : undefined}
-          strokeLinecap={dashed ? 'round' : undefined}
-          strokeLinejoin={dashed ? 'round' : undefined}
-        />
+        {renderCommitNodeShapeRect({
+          x: rectX,
+          y: rectY,
+          width: rectWidth,
+          height: rectHeight,
+          baseRadius: COMMIT_NODE_CORNER_RADIUS,
+          fill: nodeFill,
+          stroke: nodeStroke,
+          strokeWidth,
+          dashed,
+        })}
         {wrappedInnerText.lines.length > 0 && (
           <text
             x={centerX - rectSize.width / 2 + strokeInset + nodeFrameMessageInsetX}
             textAnchor="start"
             textRendering="geometricPrecision"
             fontFamily={BRANCH_MAP_SVG_FONT_FAMILY}
-            fill={getNodeFrameInnerTextColor(nodeKey, isCheckedOutSelection, isUserSelected)}
+            fill={getNodeFrameInnerTextColor(nodeKey, isCheckedOutSelection, isUserSelected, isUncommitted)}
             fontWeight={NODE_FRAME_LABEL_WEIGHT}
             pointerEvents="none"
             fontSize={wrappedInnerText.fontSize}
@@ -4599,6 +4716,48 @@ export default function BranchMap({
               </tspan>
             ))}
           </text>
+        )}
+        {renderedFooterMetaAuthor && renderedFooterMetaDate && (
+          <>
+            <text
+              x={centerX - rectSize.width / 2 + strokeInset + nodeFrameMessageInsetX}
+              y={
+                centerY +
+                rectSize.height / 2 -
+                strokeInset -
+                nodeFrameMessageInsetBottom
+              }
+              textAnchor="start"
+              textRendering="geometricPrecision"
+              fontFamily={BRANCH_MAP_SVG_FONT_FAMILY}
+              fill={getNodeFrameInnerTextColor(nodeKey, isCheckedOutSelection, isUserSelected, isUncommitted)}
+              fontWeight={NODE_FRAME_LABEL_WEIGHT}
+              pointerEvents="none"
+              fontSize={nodeFrameMessageFontSize}
+              style={footerMetaTransitionStyle}
+            >
+              {renderedFooterMetaAuthor}
+            </text>
+            <text
+              x={centerX + rectSize.width / 2 - strokeInset - nodeFrameMessageInsetX}
+              y={
+                centerY +
+                rectSize.height / 2 -
+                strokeInset -
+                nodeFrameMessageInsetBottom
+              }
+              textAnchor="end"
+              textRendering="geometricPrecision"
+              fontFamily={BRANCH_MAP_SVG_FONT_FAMILY}
+              fill={getNodeFrameInnerTextColor(nodeKey, isCheckedOutSelection, isUserSelected, isUncommitted)}
+              fontWeight={NODE_FRAME_LABEL_WEIGHT}
+              pointerEvents="none"
+              fontSize={nodeFrameMessageFontSize}
+              style={footerMetaTransitionStyle}
+            >
+              {renderedFooterMetaDate}
+            </text>
+          </>
         )}
       </g>
     );
@@ -5819,32 +5978,9 @@ export default function BranchMap({
                               const label = truncatePrompt(c.message, COMMIT_TOOLTIP_PREVIEW_MAX);
                               const rectSize = commitRectSize(scaledNodeSize);
                               return (
-                                <rect
+                                <g
                                   key={clusterKey}
-                                  className="branch-map-commit-rect"
-                                  x={anchorX - rectSize.width / 2 + CANVAS_NODE_STROKE_INSET}
-                                  y={anchorY - rectSize.height / 2 + CANVAS_NODE_STROKE_INSET}
-                                  width={rectSize.width - CANVAS_NODE_STROKE_WIDTH}
-                                  height={rectSize.height - CANVAS_NODE_STROKE_WIDTH}
-                                  data-base-rx={rectSize.radius}
-                                  rx={rectSize.radius / Math.max(layerCameraScale.x, 0.0001)}
                                   style={{ cursor: 'pointer' }}
-                                  fill={getNodeFillColor(
-                                    clusterKey,
-                                    CANVAS_NODE_FILL,
-                                    clusterHasCheckedOutHead,
-                                    clusterHasSelectedCommit || (clusterHasMainTip && selectedBranchNameSet.has(defaultBranch)),
-                                  )}
-                                  stroke={getNodeStrokeColor(
-                                    clusterKey,
-                                    isUncommittedCommit ? CHECKED_OUT_SELECTION_STROKE : CANVAS_NODE_STROKE,
-                                    clusterHasCheckedOutHead,
-                                    clusterHasSelectedCommit || (clusterHasMainTip && selectedBranchNameSet.has(defaultBranch)),
-                                  )}
-                                  strokeWidth={CANVAS_NODE_STROKE_WIDTH}
-                                  strokeDasharray={isUncommittedCommit ? '3 3' : undefined}
-                                  strokeLinecap={isUncommittedCommit ? 'round' : undefined}
-                                  strokeLinejoin={isUncommittedCommit ? 'round' : undefined}
                                   onClick={(event) =>
                                     handleCommitNodeClick(
                                       event,
@@ -5872,7 +6008,28 @@ export default function BranchMap({
                                     clearMainBranchHover();
                                     setTooltip(null);
                                   }}
-                                />
+                                >
+                                  {renderCommitNodeShapeRect({
+                                    x: anchorX - rectSize.width / 2 + CANVAS_NODE_STROKE_INSET,
+                                    y: anchorY - rectSize.height / 2 + CANVAS_NODE_STROKE_INSET,
+                                    width: rectSize.width - CANVAS_NODE_STROKE_WIDTH,
+                                    height: rectSize.height - CANVAS_NODE_STROKE_WIDTH,
+                                    fill: getNodeFillColor(
+                                      clusterKey,
+                                      CANVAS_NODE_FILL,
+                                      clusterHasCheckedOutHead,
+                                      clusterHasSelectedCommit || (clusterHasMainTip && selectedBranchNameSet.has(defaultBranch)),
+                                    ),
+                                    stroke: getNodeStrokeColor(
+                                      clusterKey,
+                                      isUncommittedCommit ? CHECKED_OUT_SELECTION_STROKE : CANVAS_NODE_STROKE,
+                                      clusterHasCheckedOutHead,
+                                      clusterHasSelectedCommit || (clusterHasMainTip && selectedBranchNameSet.has(defaultBranch)),
+                                    ),
+                                    strokeWidth: CANVAS_NODE_STROKE_WIDTH,
+                                    dashed: isUncommittedCommit,
+                                  })}
+                                </g>
                               );
                             }
 
@@ -5895,28 +6052,25 @@ export default function BranchMap({
                                 {/* Collapsed: draw one clump node. Expanded: animate members out. */}
                                 {!isExpanded && renderCollapsedVisualInBase && (
                                   <g style={{ pointerEvents: 'none' }}>
-                                    <rect
-                                      className="branch-map-commit-rect"
-                                      x={anchorX - rectSize.width / 2 + CANVAS_NODE_STROKE_INSET}
-                                      y={anchorY - rectSize.height / 2 + CANVAS_NODE_STROKE_INSET}
-                                      width={rectSize.width - CANVAS_NODE_STROKE_WIDTH}
-                                      height={rectSize.height - CANVAS_NODE_STROKE_WIDTH}
-                                      data-base-rx={rectSize.radius}
-                                      rx={rectSize.radius / Math.max(layerCameraScale.x, 0.0001)}
-                                      fill={getNodeFillColor(
+                                    {renderCommitNodeShapeRect({
+                                      x: anchorX - rectSize.width / 2 + CANVAS_NODE_STROKE_INSET,
+                                      y: anchorY - rectSize.height / 2 + CANVAS_NODE_STROKE_INSET,
+                                      width: rectSize.width - CANVAS_NODE_STROKE_WIDTH,
+                                      height: rectSize.height - CANVAS_NODE_STROKE_WIDTH,
+                                      fill: getNodeFillColor(
                                         clusterKey,
                                         CANVAS_NODE_FILL,
                                         clusterHasCheckedOutHead,
                                         clusterHasSelectedCommit || (clusterHasMainTip && selectedBranchNameSet.has(defaultBranch)),
-                                      )}
-                                      stroke={getNodeStrokeColor(
+                                      ),
+                                      stroke: getNodeStrokeColor(
                                         clusterKey,
                                         CANVAS_NODE_STROKE,
                                         clusterHasCheckedOutHead,
                                         clusterHasSelectedCommit || (clusterHasMainTip && selectedBranchNameSet.has(defaultBranch)),
-                                      )}
-                                      strokeWidth={CANVAS_NODE_STROKE_WIDTH}
-                                    />
+                                      ),
+                                      strokeWidth: CANVAS_NODE_STROKE_WIDTH,
+                                    })}
                                     <text
                                       x={anchorX + rectSize.width / 2 - nodeFrameLabelRightInsetX}
                                       y={anchorY - rectSize.height / 2 - nodeFrameLabelGap}
@@ -6005,34 +6159,7 @@ export default function BranchMap({
                                           opacity={memberPose.opacity}
                                         >
                                           <g transform={`scale(${memberPose.scale})`}>
-                                            <rect
-                                              className="branch-map-commit-rect"
-                                              x={-localRect.width / 2 + CANVAS_NODE_STROKE_INSET}
-                                              y={-localRect.height / 2 + CANVAS_NODE_STROKE_INSET}
-                                              width={localRect.width - CANVAS_NODE_STROKE_WIDTH}
-                                              height={localRect.height - CANVAS_NODE_STROKE_WIDTH}
-                                              data-base-rx={localRect.radius}
-                                              rx={localRect.radius / Math.max(layerCameraScale.x, 0.0001)}
-                                              fill={getNodeFillColor(
-                                                commitKey,
-                                                CANVAS_NODE_FILL,
-                                                isCheckedOutCommit,
-                                                selectedCommitShaSet.has(c.fullSha) ||
-                                                  (clusterHasMainTip && selectedBranchNameSet.has(defaultBranch)),
-                                              )}
-                                              stroke={getNodeStrokeColor(
-                                                commitKey,
-                                                isUncommittedCommit ? CHECKED_OUT_SELECTION_STROKE : CANVAS_NODE_STROKE,
-                                                isCheckedOutCommit,
-                                                selectedCommitShaSet.has(c.fullSha) ||
-                                                (clusterHasMainTip &&
-                                                  selectedBranchNameSet.has(defaultBranch) &&
-                                                  c.fullSha === latestMainCommitSha),
-                                              )}
-                                              strokeWidth={CANVAS_NODE_STROKE_WIDTH}
-                                              strokeDasharray={isUncommittedCommit ? '3 3' : undefined}
-                                              strokeLinecap={isUncommittedCommit ? 'round' : undefined}
-                                              strokeLinejoin={isUncommittedCommit ? 'round' : undefined}
+                                            <g
                                               style={{ cursor: 'pointer' }}
                                               onClick={(event) =>
                                                 handleCommitNodeClick(
@@ -6063,7 +6190,32 @@ export default function BranchMap({
                                                 clearMainBranchHover();
                                                 setTooltip(null);
                                               }}
-                                            />
+                                            >
+                                              {renderCommitNodeShapeRect({
+                                                x: -localRect.width / 2 + CANVAS_NODE_STROKE_INSET,
+                                                y: -localRect.height / 2 + CANVAS_NODE_STROKE_INSET,
+                                                width: localRect.width - CANVAS_NODE_STROKE_WIDTH,
+                                                height: localRect.height - CANVAS_NODE_STROKE_WIDTH,
+                                                fill: getNodeFillColor(
+                                                  commitKey,
+                                                  CANVAS_NODE_FILL,
+                                                  isCheckedOutCommit,
+                                                  selectedCommitShaSet.has(c.fullSha) ||
+                                                    (clusterHasMainTip && selectedBranchNameSet.has(defaultBranch)),
+                                                ),
+                                                stroke: getNodeStrokeColor(
+                                                  commitKey,
+                                                  isUncommittedCommit ? CHECKED_OUT_SELECTION_STROKE : CANVAS_NODE_STROKE,
+                                                  isCheckedOutCommit,
+                                                  selectedCommitShaSet.has(c.fullSha) ||
+                                                  (clusterHasMainTip &&
+                                                    selectedBranchNameSet.has(defaultBranch) &&
+                                                    c.fullSha === latestMainCommitSha),
+                                                ),
+                                                strokeWidth: CANVAS_NODE_STROKE_WIDTH,
+                                                dashed: isUncommittedCommit,
+                                              })}
+                                            </g>
                                           </g>
                                         </g>
                                       );
@@ -6522,90 +6674,74 @@ export default function BranchMap({
                                   const rectSize = commitRectSize(scaledNodeSize);
                                   const isGhostRect = isNonCommitPlaceholder;
                                   const ghostRectStrokeWidth = unpushedStrokeWidth;
-                                  const ghostRectDasharray = unpushedLaneDasharray;
                                   return (
-                                    <g key={vm.clusterKey}>
-                                      <rect
-                                        className="branch-map-commit-rect"
-                                        x={anchorX - rectSize.width / 2 + dotStrokeInset}
-                                        y={anchorY - rectSize.height / 2 + dotStrokeInset}
-                                        width={rectSize.width - dotStrokeWidth}
-                                        height={rectSize.height - dotStrokeWidth}
-                                        data-base-rx={rectSize.radius}
-                                        rx={rectSize.radius / Math.max(layerCameraScale.x, 0.0001)}
-                                        style={{ cursor: 'pointer' }}
-                                        fill={dotFill}
-                                        stroke={
-                                          getNodeStrokeColor(
-                                            vm.clusterKey,
-                                            isGhostRect
-                                              ? LOCAL_UNPUSHED_GRAY
-                                              : isUncommittedCommit
-                                                ? CHECKED_OUT_SELECTION_STROKE
-                                                : CANVAS_NODE_STROKE,
-                                            clusterHasCheckedOutHead,
-                                            clusterHasSelectedCommit || clusterHasSelectedHead,
-                                          )
+                                    <g
+                                      key={vm.clusterKey}
+                                      style={{ cursor: 'pointer' }}
+                                      onClick={(event) => {
+                                        if (isNonCommitPlaceholder) {
+                                          handleCommitNodeClick(event, b.headSha, b.name);
+                                          return;
                                         }
-                                        strokeWidth={
+                                        handleCommitNodeClick(
+                                          event,
+                                          targetCommitSha,
+                                          clusterHasBranchTip ? b.name : undefined,
+                                        );
+                                      }}
+                                      onDoubleClick={(event) => event.stopPropagation()}
+                                      onMouseEnter={() => {
+                                        handleNodeHoverEnter(vm.clusterKey, b.name);
+                                        setTooltip({
+                                          x: anchorX,
+                                          y: anchorY,
+                                          lines: isNonCommitPlaceholder
+                                            ? [
+                                              `No unique commits`,
+                                              `Branch ${b.name}`,
+                                              `Click to check out this branch`,
+                                            ]
+                                            : [
+                                              tooltipTitle,
+                                              tooltipMessage
+                                                ? truncatePrompt(tooltipMessage, COMMIT_TOOLTIP_PREVIEW_MAX)
+                                                : `@${tooltipAuthor}`,
+                                              `@${tooltipAuthor} · ${fmtTooltipDate(tooltipDate)}`,
+                                            ],
+                                          avatarUrl:
+                                            !isNonCommitPlaceholder && showBranchAvatar
+                                              ? b.lastCommitAuthorAvatar
+                                              : undefined,
+                                          avatarFallback:
+                                            !isNonCommitPlaceholder
+                                              ? (tooltipAuthor?.charAt(0).toUpperCase() || '?')
+                                              : undefined,
+                                        });
+                                      }}
+                                      onMouseLeave={() => {
+                                        handleNodeHoverLeave();
+                                        setTooltip(null);
+                                      }}
+                                    >
+                                      {renderCommitNodeShapeRect({
+                                        x: anchorX - rectSize.width / 2 + dotStrokeInset,
+                                        y: anchorY - rectSize.height / 2 + dotStrokeInset,
+                                        width: rectSize.width - dotStrokeWidth,
+                                        height: rectSize.height - dotStrokeWidth,
+                                        fill: dotFill,
+                                        stroke: getNodeStrokeColor(
+                                          vm.clusterKey,
                                           isGhostRect
-                                            ? ghostRectStrokeWidth
-                                            : dotStrokeWidth
-                                        }
-                                        strokeDasharray={
-                                          isGhostRect
-                                            ? ghostRectDasharray
+                                            ? LOCAL_UNPUSHED_GRAY
                                             : isUncommittedCommit
-                                              ? '3 3'
-                                              : undefined
-                                        }
-                                        strokeLinecap={isGhostRect || isUncommittedCommit ? 'round' : undefined}
-                                        strokeLinejoin={isGhostRect || isUncommittedCommit ? 'round' : undefined}
-                                        onClick={(event) => {
-                                          if (isNonCommitPlaceholder) {
-                                            handleCommitNodeClick(event, b.headSha, b.name);
-                                            return;
-                                          }
-                                          handleCommitNodeClick(
-                                            event,
-                                            targetCommitSha,
-                                            clusterHasBranchTip ? b.name : undefined,
-                                          );
-                                        }}
-                                        onDoubleClick={(event) => event.stopPropagation()}
-                                        onMouseEnter={() => {
-                                          handleNodeHoverEnter(vm.clusterKey, b.name);
-                                          setTooltip({
-                                            x: anchorX,
-                                            y: anchorY,
-                                            lines: isNonCommitPlaceholder
-                                              ? [
-                                                `No unique commits`,
-                                                `Branch ${b.name}`,
-                                                `Click to check out this branch`,
-                                              ]
-                                              : [
-                                                tooltipTitle,
-                                                tooltipMessage
-                                                  ? truncatePrompt(tooltipMessage, COMMIT_TOOLTIP_PREVIEW_MAX)
-                                                  : `@${tooltipAuthor}`,
-                                                `@${tooltipAuthor} · ${fmtTooltipDate(tooltipDate)}`,
-                                              ],
-                                            avatarUrl:
-                                              !isNonCommitPlaceholder && showBranchAvatar
-                                                ? b.lastCommitAuthorAvatar
-                                                : undefined,
-                                            avatarFallback:
-                                              !isNonCommitPlaceholder
-                                                ? (tooltipAuthor?.charAt(0).toUpperCase() || '?')
-                                                : undefined,
-                                          });
-                                        }}
-                                        onMouseLeave={() => {
-                                          handleNodeHoverLeave();
-                                          setTooltip(null);
-                                        }}
-                                      />
+                                              ? CHECKED_OUT_SELECTION_STROKE
+                                              : CANVAS_NODE_STROKE,
+                                          clusterHasCheckedOutHead,
+                                          clusterHasSelectedCommit || clusterHasSelectedHead,
+                                        ),
+                                        strokeWidth: isGhostRect ? ghostRectStrokeWidth : dotStrokeWidth,
+                                        dashed: isGhostRect || isUncommittedCommit,
+                                      })}
                                     </g>
                                   );
                                 }
@@ -6639,26 +6775,21 @@ export default function BranchMap({
                                   <g key={vm.clusterKey}>
                                     {!isExpanded && (
                                       <g style={{ pointerEvents: 'none' }}>
-                                        <rect
-                                          className="branch-map-commit-rect"
-                                          x={anchorX - rectSize.width / 2 + dotStrokeInset}
-                                          y={anchorY - rectSize.height / 2 + dotStrokeInset}
-                                          width={rectSize.width - dotStrokeWidth}
-                                          height={rectSize.height - dotStrokeWidth}
-                                          data-base-rx={rectSize.radius}
-                                          rx={rectSize.radius / Math.max(layerCameraScale.x, 0.0001)}
-                                          fill={dotFill}
-                                          stroke={getNodeStrokeColor(
+                                        {renderCommitNodeShapeRect({
+                                          x: anchorX - rectSize.width / 2 + dotStrokeInset,
+                                          y: anchorY - rectSize.height / 2 + dotStrokeInset,
+                                          width: rectSize.width - dotStrokeWidth,
+                                          height: rectSize.height - dotStrokeWidth,
+                                          fill: dotFill,
+                                          stroke: getNodeStrokeColor(
                                             vm.clusterKey,
                                             clusterHasUncommitted ? CHECKED_OUT_SELECTION_STROKE : CANVAS_NODE_STROKE,
                                             clusterHasCheckedOutHead,
                                             clusterHasSelectedCommit || clusterHasSelectedHead,
-                                          )}
-                                          strokeWidth={dotStrokeWidth}
-                                          strokeDasharray={clusterHasUncommitted ? '3 3' : dotStrokeDasharray}
-                                          strokeLinecap={clusterHasUncommitted ? 'round' : undefined}
-                                          strokeLinejoin={clusterHasUncommitted ? 'round' : undefined}
-                                        />
+                                          ),
+                                          strokeWidth: dotStrokeWidth,
+                                          dashed: clusterHasUncommitted || !!dotStrokeDasharray,
+                                        })}
                                       </g>
                                     )}
 
@@ -6742,26 +6873,7 @@ export default function BranchMap({
                                               opacity={memberPose.opacity}
                                             >
                                               <g transform={`scale(${memberPose.scale})`}>
-                                                <rect
-                                                  className="branch-map-commit-rect"
-                                                  x={-localRect.width / 2 + dotStrokeInset}
-                                                  y={-localRect.height / 2 + dotStrokeInset}
-                                                  width={localRect.width - dotStrokeWidth}
-                                                  height={localRect.height - dotStrokeWidth}
-                                                  data-base-rx={localRect.radius}
-                                                  rx={localRect.radius / Math.max(layerCameraScale.x, 0.0001)}
-                                                  fill={dotFill}
-                                                  stroke={getNodeStrokeColor(
-                                                    commitKey,
-                                                    isUncommittedCommit ? CHECKED_OUT_SELECTION_STROKE : CANVAS_NODE_STROKE,
-                                                    isCheckedOutCommit,
-                                                    selectedCommitShaSet.has(commit.fullSha) ||
-                                                    (clusterHasSelectedHead && commit.fullSha === b.headSha),
-                                                  )}
-                                                  strokeWidth={dotStrokeWidth}
-                                                  strokeDasharray={isUncommittedCommit ? '3 3' : dotStrokeDasharray}
-                                                  strokeLinecap={isUncommittedCommit ? 'round' : undefined}
-                                                  strokeLinejoin={isUncommittedCommit ? 'round' : undefined}
+                                                <g
                                                   style={{ cursor: 'pointer' }}
                                                   onClick={(event) =>
                                                     handleCommitNodeClick(
@@ -6792,7 +6904,24 @@ export default function BranchMap({
                                                     handleNodeHoverLeave();
                                                     setTooltip(null);
                                                   }}
-                                                />
+                                                >
+                                                  {renderCommitNodeShapeRect({
+                                                    x: -localRect.width / 2 + dotStrokeInset,
+                                                    y: -localRect.height / 2 + dotStrokeInset,
+                                                    width: localRect.width - dotStrokeWidth,
+                                                    height: localRect.height - dotStrokeWidth,
+                                                    fill: dotFill,
+                                                    stroke: getNodeStrokeColor(
+                                                      commitKey,
+                                                      isUncommittedCommit ? CHECKED_OUT_SELECTION_STROKE : CANVAS_NODE_STROKE,
+                                                      isCheckedOutCommit,
+                                                      selectedCommitShaSet.has(commit.fullSha) ||
+                                                      (clusterHasSelectedHead && commit.fullSha === b.headSha),
+                                                    ),
+                                                    strokeWidth: dotStrokeWidth,
+                                                    dashed: isUncommittedCommit || !!dotStrokeDasharray,
+                                                  })}
+                                                </g>
                                               </g>
                                             </g>
                                           );
@@ -6940,7 +7069,6 @@ export default function BranchMap({
                         const isFocusedError = focusedErrorBranch?.name === b.name;
                         const strokeWidth = isFocusedError ? 2 : 1.5;
                         const unpushedStrokeWidth = strokeWidth + UNPUSHED_LANE_STROKE_VISUAL_COMP;
-                        const unpushedLaneDasharray = `${Math.max(1, unpushedStrokeWidth)} ${Math.max(2, unpushedStrokeWidth * 1.8)}`;
 
                         return commitDotClusters.map((cluster) => {
                           const { realCommitEntries, renderEntries } = resolveBranchClusterEntries(cluster);
@@ -6999,37 +7127,33 @@ export default function BranchMap({
                             const rectSize = commitRectSize(scaledNodeSize);
                             const isGhostRect = isNonCommitPlaceholder;
                             const ghostRectStrokeWidth = unpushedStrokeWidth;
-                            const ghostRectDasharray = unpushedLaneDasharray;
 
                             return (
                               <g key={`branch-overlay-${clusterKey}`}>
                                 {isGhostRect ? (
-                                  <rect
-                                    className="branch-map-commit-rect"
-                                    x={anchorX - rectSize.width / 2 + dotStrokeInset}
-                                    y={anchorY - rectSize.height / 2 + dotStrokeInset}
-                                    width={rectSize.width - dotStrokeWidth}
-                                    height={rectSize.height - dotStrokeWidth}
-                                    data-base-rx={rectSize.radius}
-                                    rx={rectSize.radius / Math.max(layerCameraScale.x, 0.0001)}
-                                    fill={dotFill}
-                                    stroke={getNodeStrokeColor(
+                                  renderCommitNodeShapeRect({
+                                    x: anchorX - rectSize.width / 2 + dotStrokeInset,
+                                    y: anchorY - rectSize.height / 2 + dotStrokeInset,
+                                    width: rectSize.width - dotStrokeWidth,
+                                    height: rectSize.height - dotStrokeWidth,
+                                    fill: dotFill,
+                                    stroke: getNodeStrokeColor(
                                       clusterKey,
                                       LOCAL_UNPUSHED_GRAY,
                                       clusterHasCheckedOutHead,
                                       clusterHasSelectedCommit || clusterHasSelectedHead,
-                                    )}
-                                    strokeWidth={ghostRectStrokeWidth}
-                                    strokeDasharray={ghostRectDasharray}
-                                    strokeLinecap="round"
-                                    strokeLinejoin="round"
-                                  />
+                                    ),
+                                    strokeWidth: ghostRectStrokeWidth,
+                                    dashed: true,
+                                  })
                                 ) : renderCommitNodeRect({
                                   nodeKey: clusterKey,
                                   centerX: anchorX,
                                   centerY: anchorY,
                                   rectSize,
                                   innerText: isUncommittedCommit ? undefined : commit?.message,
+                                  footerMetaAuthor: `@${commit?.author ?? b.lastCommitAuthor}`,
+                                  footerMetaDate: fmtTooltipDate(commit?.date ?? b.lastCommitDate),
                                   fill: isUncommittedCommit ? CANVAS_UNPUSHED_NODE_FILL : dotFill,
                                   baseStroke: isUncommittedCommit
                                     ? CHECKED_OUT_SELECTION_STROKE
@@ -7039,6 +7163,7 @@ export default function BranchMap({
                                   strokeWidth: dotStrokeWidth,
                                   strokeInset: dotStrokeInset,
                                   dashed: !!isUncommittedCommit,
+                                  isUncommitted: !!isUncommittedCommit,
                                 })}
                               </g>
                             );
@@ -7066,6 +7191,16 @@ export default function BranchMap({
                                     renderEntries[renderEntries.length - 1]?.item.commit?.kind === 'uncommitted'
                                       ? undefined
                                       : renderEntries[renderEntries.length - 1]?.item.commit?.message,
+                                  footerMetaAuthor: (() => {
+                                    const latestAuthor =
+                                      renderEntries[renderEntries.length - 1]?.item.commit?.author ?? b.lastCommitAuthor;
+                                    return `@${latestAuthor}`;
+                                  })(),
+                                  footerMetaDate: (() => {
+                                    const firstDate = renderEntries[0]?.item.commit?.date ?? b.lastCommitDate;
+                                    const lastDate = renderEntries[renderEntries.length - 1]?.item.commit?.date ?? b.lastCommitDate;
+                                    return fmtClumpDateRange(firstDate, lastDate);
+                                  })(),
                                   fill: clusterHasUncommitted ? CANVAS_UNPUSHED_NODE_FILL : dotFill,
                                   baseStroke: clusterHasUncommitted
                                     ? CHECKED_OUT_SELECTION_STROKE
@@ -7075,6 +7210,7 @@ export default function BranchMap({
                                   strokeWidth: dotStrokeWidth,
                                   strokeInset: dotStrokeInset,
                                   dashed: clusterHasUncommitted,
+                                  isUncommitted: clusterHasUncommitted,
                                 })}
                               </g>
                             );
@@ -7116,6 +7252,8 @@ export default function BranchMap({
                                         rectSize: localRect,
                                         innerText:
                                           isUncommittedCommit ? undefined : commit.message,
+                                        footerMetaAuthor: `@${commit.author ?? b.lastCommitAuthor}`,
+                                        footerMetaDate: fmtTooltipDate(commit.date ?? b.lastCommitDate),
                                         fill: isUncommittedCommit ? CANVAS_UNPUSHED_NODE_FILL : dotFill,
                                         baseStroke: isUncommittedCommit
                                           ? CHECKED_OUT_SELECTION_STROKE
@@ -7127,6 +7265,7 @@ export default function BranchMap({
                                         strokeWidth: dotStrokeWidth,
                                         strokeInset: dotStrokeInset,
                                         dashed: isUncommittedCommit,
+                                        isUncommitted: isUncommittedCommit,
                                       })}
                                     </g>
                                   </g>
@@ -7169,6 +7308,7 @@ export default function BranchMap({
 
                         if (count === 1) {
                           const isUncommittedCommit = cluster.entries[0]?.item.fullSha === 'WORKING_TREE';
+                          const singleMainCommit = cluster.entries[0]?.item;
                           const rectSize = commitRectSize(scaledNodeSize);
                           return (
                             <g key={`main-direct-overlay-${clusterKey}`}>
@@ -7177,7 +7317,9 @@ export default function BranchMap({
                                 centerX: anchorX,
                                 centerY: anchorY,
                                 rectSize,
-                                innerText: isUncommittedCommit ? undefined : cluster.entries[0]?.item.message,
+                                innerText: isUncommittedCommit ? undefined : singleMainCommit?.message,
+                                footerMetaAuthor: `@${singleMainCommit?.author ?? 'unknown'}`,
+                                footerMetaDate: singleMainCommit?.date ? fmtTooltipDate(singleMainCommit.date) : 'Unknown date',
                                 fill: isUncommittedCommit ? CANVAS_UNPUSHED_NODE_FILL : CANVAS_NODE_FILL,
                                 baseStroke: isUncommittedCommit
                                   ? CHECKED_OUT_SELECTION_STROKE
@@ -7187,6 +7329,7 @@ export default function BranchMap({
                                   mainClusterHasSelectedCommit ||
                                   (clusterHasMainTip && selectedBranchNameSet.has(defaultBranch)),
                                 dashed: isUncommittedCommit,
+                                isUncommitted: isUncommittedCommit,
                               })}
                             </g>
                           );
@@ -7227,6 +7370,8 @@ export default function BranchMap({
                                           centerY: 0,
                                           rectSize: localRect,
                                           innerText: isUncommittedCommit ? undefined : c.message,
+                                          footerMetaAuthor: `@${c.author}`,
+                                          footerMetaDate: fmtTooltipDate(c.date),
                                           fill: isUncommittedCommit ? CANVAS_UNPUSHED_NODE_FILL : CANVAS_NODE_FILL,
                                           baseStroke: isUncommittedCommit
                                             ? CHECKED_OUT_SELECTION_STROKE
@@ -7238,6 +7383,7 @@ export default function BranchMap({
                                               selectedBranchNameSet.has(defaultBranch) &&
                                               c.fullSha === latestMainCommitSha),
                                           dashed: isUncommittedCommit,
+                                          isUncommitted: isUncommittedCommit,
                                         })}
                                       </g>
                                     </g>
@@ -7254,6 +7400,16 @@ export default function BranchMap({
                                   cluster.entries[cluster.entries.length - 1]?.item.fullSha === 'WORKING_TREE'
                                     ? undefined
                                     : cluster.entries[cluster.entries.length - 1]?.item.message,
+                                footerMetaAuthor: (() => {
+                                  const latestAuthor =
+                                    cluster.entries[cluster.entries.length - 1]?.item.author ?? 'unknown';
+                                  return `@${latestAuthor}`;
+                                })(),
+                                footerMetaDate: (() => {
+                                  const firstDate = cluster.entries[0]?.item.date ?? '';
+                                  const lastDate = cluster.entries[cluster.entries.length - 1]?.item.date ?? '';
+                                  return fmtClumpDateRange(firstDate, lastDate);
+                                })(),
                                 fill: clusterHasUncommitted ? CANVAS_UNPUSHED_NODE_FILL : CANVAS_NODE_FILL,
                                 baseStroke: clusterHasUncommitted
                                   ? CHECKED_OUT_SELECTION_STROKE
@@ -7263,6 +7419,7 @@ export default function BranchMap({
                                   mainClusterHasSelectedCommit ||
                                   (clusterHasMainTip && selectedBranchNameSet.has(defaultBranch)),
                                 dashed: clusterHasUncommitted,
+                                isUncommitted: clusterHasUncommitted,
                               })
                             )}
                           </g>
@@ -7854,168 +8011,6 @@ export default function BranchMap({
             style={{ '--fog-duration': `${INITIAL_REVEAL_FADE_MS}ms` } as React.CSSProperties}
           />
         )}
-
-        {/* Fixed-size tooltip layer (not affected by timeline zoom). */}
-        {timelineRevealReady && tooltip && (() => {
-          const linesCopy = [...tooltip.lines];
-          linesCopy.shift(); // skip title (index 0)
-          const meta = linesCopy.pop() || '';
-          const subtitle = linesCopy[0] || '';
-          const extra = linesCopy[1] || '';
-          const avatarFallback = tooltip.avatarFallback || '?';
-          const tooltipCompact = viewportSize.width < 420;
-          const viewportPadX = tooltipCompact ? 18 : 8;
-          const viewportPadTop = tooltipCompact ? 84 : 8;
-          const viewportPadBottom = tooltipCompact ? 18 : 8;
-          const availableTooltipW = Math.max(140, viewportSize.width - viewportPadX * 2);
-          const tooltipMaxW = Math.min(tooltipCompact ? 260 : 320, availableTooltipW);
-          const tooltipMinW = tooltipCompact ? 160 : 240;
-          const tooltipW = Math.min(tooltipMaxW, Math.max(tooltipMinW, availableTooltipW));
-          const tooltipAvatarSize = 20;
-          const tooltipBodyGap = 8;
-          const tooltipBodyPadX = 8;
-          const tooltipBodyPadY = 8;
-          const tooltipLineHeight = 16;
-          // Use live camera refs to avoid tooltip drift when zoom/pan state is throttled.
-          const livePan = panRef.current;
-          const liveCameraScale = getCameraScale(zoomRef.current, isHorizontal);
-          const anchorX =
-            livePan.x + graphOffsetX + (tooltip.x + graphContentTranslateX) * liveCameraScale.x;
-          const anchorY =
-            livePan.y + graphOffsetY + (tooltip.y + graphContentTranslateY) * liveCameraScale.y;
-          const bodyContentW = Math.max(
-            92,
-            tooltipW - tooltipBodyPadX * 2 - tooltipAvatarSize - tooltipBodyGap
-          );
-          const estimatedCharsPerLine = Math.max(18, Math.floor(bodyContentW / 6));
-          const subtitleLines = subtitle ? Math.max(1, Math.ceil(subtitle.length / estimatedCharsPerLine)) : 0;
-          const extraLines = extra ? Math.max(1, Math.ceil(extra.length / estimatedCharsPerLine)) : 0;
-          const metaLines = meta ? 1 : 0; // Metadata is now a single line split by justify-between
-          const tooltipBodyH = Math.max(
-            52,
-            tooltipBodyPadY * 2 +
-            Math.max(
-              tooltipAvatarSize,
-              (subtitleLines + extraLines + metaLines) * tooltipLineHeight +
-              (extra ? 2 : 0) + // mt-0.5
-              (meta ? 12 : 0)   // mt-3
-            )
-          );
-          const tooltipH = Math.min(220, tooltipBodyH);
-          const axisScale = isHorizontal ? liveCameraScale.x : liveCameraScale.y;
-          const zoomAwareNodeClearance = Math.max(
-            tooltipCompact ? 14 : 18,
-            Math.round((scaledNodeSize * axisScale) / 2 + (tooltipCompact ? 6 : 8))
-          );
-          const gap = zoomAwareNodeClearance + (tooltipCompact ? 6 : 8);
-          const nodeClearance = zoomAwareNodeClearance;
-          const maxLeft = Math.max(viewportPadX, viewportSize.width - tooltipW - viewportPadX);
-          const maxTop = Math.max(viewportPadTop, viewportSize.height - tooltipH - viewportPadBottom);
-          const clampLeft = (left: number) => Math.min(maxLeft, Math.max(viewportPadX, left));
-          const clampTop = (top: number) => Math.min(maxTop, Math.max(viewportPadTop, top));
-          const candidatePositions = [
-            { left: anchorX - tooltipW / 2, top: anchorY - tooltipH - gap }, // above (preferred)
-            { left: anchorX + gap, top: anchorY - tooltipH }, // upper-right
-            { left: anchorX - tooltipW - gap, top: anchorY - tooltipH }, // upper-left
-            { left: anchorX - tooltipW / 2, top: anchorY + gap }, // below (fallback)
-          ].map((position) => ({
-            left: clampLeft(position.left),
-            top: clampTop(position.top),
-          }));
-          const overlapsAnchor = ({ left, top }: { left: number; top: number }) =>
-            anchorX >= left - nodeClearance &&
-            anchorX <= left + tooltipW + nodeClearance &&
-            anchorY >= top - nodeClearance &&
-            anchorY <= top + tooltipH + nodeClearance;
-          const distanceFromRect = ({ left, top }: { left: number; top: number }) => {
-            const dx = anchorX < left ? left - anchorX : anchorX > left + tooltipW ? anchorX - (left + tooltipW) : 0;
-            const dy = anchorY < top ? top - anchorY : anchorY > top + tooltipH ? anchorY - (top + tooltipH) : 0;
-            return dx * dx + dy * dy;
-          };
-          const nonOverlappingPosition = candidatePositions.find((position) => !overlapsAnchor(position));
-          const fallbackPosition = candidatePositions.reduce((best, candidate) =>
-            distanceFromRect(candidate) > distanceFromRect(best) ? candidate : best
-          );
-          const { left, top } = nonOverlappingPosition ?? fallbackPosition;
-
-          return (
-            <div
-              className="absolute z-[120] rounded-[12px] border overflow-hidden pointer-events-none"
-              style={{
-                left,
-                top,
-                width: tooltipW,
-                backgroundColor: CANVAS_NODE_FILL,
-                borderColor: CANVAS_NODE_STROKE,
-                borderWidth: CANVAS_NODE_STROKE_WIDTH,
-              }}
-            >
-              <div
-                style={{ padding: `${tooltipBodyPadY}px ${tooltipBodyPadX}px` }}
-              >
-                <div className="flex items-start gap-2">
-                  <span
-                    className="shrink-0 rounded-full overflow-hidden flex items-center justify-center text-[10px] font-medium leading-none text-muted-foreground"
-                    style={{ width: tooltipAvatarSize, height: tooltipAvatarSize, backgroundColor: CANVAS_NODE_STROKE }}
-                  >
-                    {tooltip.avatarUrl ? (
-                      <img
-                        src={tooltip.avatarUrl}
-                        alt={`${avatarFallback} avatar`}
-                        className="w-full h-full object-cover"
-                        draggable={false}
-                      />
-                    ) : (
-                      avatarFallback
-                    )}
-                  </span>
-                  <div className="min-w-0 flex flex-col">
-                    {subtitle && (
-                      <p
-                        className="text-xs whitespace-normal break-words"
-                        style={{ lineHeight: `${tooltipLineHeight}px`, color: '#171717' }}
-                      >
-                        {subtitle}
-                      </p>
-                    )}
-                    {extra && (
-                      <p
-                        className="text-xs text-muted-foreground whitespace-normal break-words mt-0.5"
-                        style={{ lineHeight: `${tooltipLineHeight}px` }}
-                      >
-                        {extra}
-                      </p>
-                    )}
-                    {meta && (() => {
-                      const dotIdx = meta.lastIndexOf(' · ');
-                      if (dotIdx === -1) {
-                        return (
-                          <p
-                            className="text-xs whitespace-normal break-words mt-3"
-                            style={{ lineHeight: `${tooltipLineHeight}px`, color: NODE_FRAME_LABEL_COLOR }}
-                          >
-                            {meta}
-                          </p>
-                        );
-                      }
-                      const leftMeta = meta.slice(0, dotIdx);
-                      const rightMeta = meta.slice(dotIdx + 3);
-                      return (
-                        <div
-                          className="flex items-baseline justify-between gap-4 mt-3"
-                          style={{ color: NODE_FRAME_LABEL_COLOR }}
-                        >
-                          <span className="text-xs truncate">{leftMeta}</span>
-                          <span className="text-xs shrink-0 select-none">{rightMeta}</span>
-                        </div>
-                      );
-                    })()}
-                  </div>
-                </div>
-              </div>
-            </div>
-          );
-        })()}
 
         {/* Empty state removed as per user request */}
       </div>
