@@ -964,7 +964,29 @@ function App() {
       ? branches.find((b) => b.name === targetLane.name)
       : undefined;
 
-    const uncommittedDate = new Date().toISOString();
+    const anchorCommitDate = (() => {
+      if (!checkedOutAnchorSha) return null;
+      const matchingDirectCommit = directCommits.find((commit) => (
+        shaMatches(commit.fullSha, checkedOutAnchorSha) ||
+        shaMatches(commit.sha, checkedOutAnchorSha)
+      ));
+      if (matchingDirectCommit?.date) return matchingDirectCommit.date;
+      if (targetBranch) {
+        const matchingPreviewCommit = (branchCommitPreviews[targetBranch.name] ?? []).find((commit) => (
+          shaMatches(commit.fullSha, checkedOutAnchorSha) ||
+          shaMatches(commit.sha, checkedOutAnchorSha)
+        ));
+        if (matchingPreviewCommit?.date) return matchingPreviewCommit.date;
+      }
+      return null;
+    })();
+    const anchorCommitTimeMs = anchorCommitDate ? new Date(anchorCommitDate).getTime() : Number.NaN;
+    const nowTimeMs = Date.now();
+    // Ensure the synthetic working-tree node is always strictly newer than the checked-out commit.
+    const uncommittedTimeMs = Number.isFinite(anchorCommitTimeMs)
+      ? Math.max(nowTimeMs, anchorCommitTimeMs + 1)
+      : nowTimeMs;
+    const uncommittedDate = new Date(uncommittedTimeMs).toISOString();
     const uncommittedNode: BranchCommitPreview = {
       fullSha: 'WORKING_TREE',
       sha: 'Uncommited Changes',

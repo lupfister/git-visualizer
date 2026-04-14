@@ -2434,7 +2434,23 @@ export default function BranchMap({
         const idx = branchPreviewIndexForChildFork(previews, branchTimes, child);
         if (idx >= 0) forkIdx.add(idx);
       });
-      const effectiveForkIdx = pruneForkSplitIndices(previews.length, forkIdx, forkIdx);
+      const branchUncommittedSplitIndices = splitIndicesAroundUncommitted(
+        previews,
+        (commit) => commit.fullSha === 'WORKING_TREE' || commit.kind === 'uncommitted'
+      );
+      const branchAllocatorSplitIndices = new Set<number>([
+        ...forkIdx,
+        ...branchUncommittedSplitIndices,
+      ]);
+      const branchAllocatorPreserveSplitIndices = new Set<number>([
+        ...forkIdx,
+        ...branchUncommittedSplitIndices,
+      ]);
+      const effectiveForkIdx = pruneForkSplitIndices(
+        previews.length,
+        branchAllocatorSplitIndices,
+        branchAllocatorPreserveSplitIndices,
+      );
       let buf: string[] = [];
       let slotBuf: number[] = [];
       let tFirst = 0;
@@ -4501,9 +4517,10 @@ export default function BranchMap({
     nodeKey: string,
     isCheckedOutSelection = false,
     isUserSelected = false,
+    isUncommitted = false,
   ) => {
     if (isUserSelected) return '#257BF3';
-    if (isCheckedOutSelection) return '#47AFEB';
+    if (isCheckedOutSelection || isUncommitted) return '#47AFEB';
     return hoveredNodeStrokeKey === nodeKey ? '#64A1F7' : NODE_FRAME_INNER_TEXT_COLOR;
   };
   const branchLaneHitPointerEvents: React.CSSProperties['pointerEvents'] =
@@ -4535,6 +4552,7 @@ export default function BranchMap({
     innerText,
     footerMetaAuthor,
     footerMetaDate,
+    isUncommitted = false,
   }: {
     nodeKey: string;
     centerX: number;
@@ -4551,6 +4569,7 @@ export default function BranchMap({
     innerText?: string;
     footerMetaAuthor?: string;
     footerMetaDate?: string;
+    isUncommitted?: boolean;
   }) {
     const wrappedInnerText = innerText?.trim()
       ? wrapNodeFrameMessage(innerText, rectSize, strokeWidth)
@@ -4605,7 +4624,7 @@ export default function BranchMap({
             textAnchor="start"
             textRendering="geometricPrecision"
             fontFamily={BRANCH_MAP_SVG_FONT_FAMILY}
-            fill={getNodeFrameInnerTextColor(nodeKey, isCheckedOutSelection, isUserSelected)}
+            fill={getNodeFrameInnerTextColor(nodeKey, isCheckedOutSelection, isUserSelected, isUncommitted)}
             fontWeight={NODE_FRAME_LABEL_WEIGHT}
             pointerEvents="none"
             fontSize={wrappedInnerText.fontSize}
@@ -4642,7 +4661,7 @@ export default function BranchMap({
               textAnchor="start"
               textRendering="geometricPrecision"
               fontFamily={BRANCH_MAP_SVG_FONT_FAMILY}
-              fill={getNodeFrameInnerTextColor(nodeKey, isCheckedOutSelection, isUserSelected)}
+              fill={getNodeFrameInnerTextColor(nodeKey, isCheckedOutSelection, isUserSelected, isUncommitted)}
               fontWeight={NODE_FRAME_LABEL_WEIGHT}
               pointerEvents="none"
               fontSize={nodeFrameMessageFontSize}
@@ -4660,7 +4679,7 @@ export default function BranchMap({
               textAnchor="end"
               textRendering="geometricPrecision"
               fontFamily={BRANCH_MAP_SVG_FONT_FAMILY}
-              fill={getNodeFrameInnerTextColor(nodeKey, isCheckedOutSelection, isUserSelected)}
+              fill={getNodeFrameInnerTextColor(nodeKey, isCheckedOutSelection, isUserSelected, isUncommitted)}
               fontWeight={NODE_FRAME_LABEL_WEIGHT}
               pointerEvents="none"
               fontSize={nodeFrameMessageFontSize}
@@ -7110,6 +7129,7 @@ export default function BranchMap({
                                   strokeWidth: dotStrokeWidth,
                                   strokeInset: dotStrokeInset,
                                   dashed: !!isUncommittedCommit,
+                                  isUncommitted: !!isUncommittedCommit,
                                 })}
                               </g>
                             );
@@ -7156,6 +7176,7 @@ export default function BranchMap({
                                   strokeWidth: dotStrokeWidth,
                                   strokeInset: dotStrokeInset,
                                   dashed: clusterHasUncommitted,
+                                  isUncommitted: clusterHasUncommitted,
                                 })}
                               </g>
                             );
@@ -7210,6 +7231,7 @@ export default function BranchMap({
                                         strokeWidth: dotStrokeWidth,
                                         strokeInset: dotStrokeInset,
                                         dashed: isUncommittedCommit,
+                                        isUncommitted: isUncommittedCommit,
                                       })}
                                     </g>
                                   </g>
@@ -7252,6 +7274,7 @@ export default function BranchMap({
 
                         if (count === 1) {
                           const isUncommittedCommit = cluster.entries[0]?.item.fullSha === 'WORKING_TREE';
+                          const singleMainCommit = cluster.entries[0]?.item;
                           const rectSize = commitRectSize(scaledNodeSize);
                           return (
                             <g key={`main-direct-overlay-${clusterKey}`}>
@@ -7260,9 +7283,9 @@ export default function BranchMap({
                                 centerX: anchorX,
                                 centerY: anchorY,
                                 rectSize,
-                                innerText: isUncommittedCommit ? undefined : cluster.entries[0]?.item.message,
-                                footerMetaAuthor: `@${cluster.entries[0]?.item.author ?? last.author}`,
-                                footerMetaDate: fmtTooltipDate(cluster.entries[0]?.item.date ?? last.date),
+                                innerText: isUncommittedCommit ? undefined : singleMainCommit?.message,
+                                footerMetaAuthor: `@${singleMainCommit?.author ?? 'unknown'}`,
+                                footerMetaDate: singleMainCommit?.date ? fmtTooltipDate(singleMainCommit.date) : 'Unknown date',
                                 fill: isUncommittedCommit ? CANVAS_UNPUSHED_NODE_FILL : CANVAS_NODE_FILL,
                                 baseStroke: isUncommittedCommit
                                   ? CHECKED_OUT_SELECTION_STROKE
@@ -7272,6 +7295,7 @@ export default function BranchMap({
                                   mainClusterHasSelectedCommit ||
                                   (clusterHasMainTip && selectedBranchNameSet.has(defaultBranch)),
                                 dashed: isUncommittedCommit,
+                                isUncommitted: isUncommittedCommit,
                               })}
                             </g>
                           );
@@ -7325,6 +7349,7 @@ export default function BranchMap({
                                               selectedBranchNameSet.has(defaultBranch) &&
                                               c.fullSha === latestMainCommitSha),
                                           dashed: isUncommittedCommit,
+                                          isUncommitted: isUncommittedCommit,
                                         })}
                                       </g>
                                     </g>
@@ -7360,6 +7385,7 @@ export default function BranchMap({
                                   mainClusterHasSelectedCommit ||
                                   (clusterHasMainTip && selectedBranchNameSet.has(defaultBranch)),
                                 dashed: clusterHasUncommitted,
+                                isUncommitted: clusterHasUncommitted,
                               })
                             )}
                           </g>
