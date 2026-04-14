@@ -738,6 +738,8 @@ interface BranchMapProps {
   onPushCurrentBranch?: () => Promise<void> | void;
   onPushCommitTargets?: (targets: Array<{ branchName: string; targetSha: string }>) => Promise<void> | void;
   pushInProgress?: boolean;
+  onDeleteSelection?: (targets: { branchNames: string[]; discardUncommittedChanges: boolean }) => Promise<void> | void;
+  deleteInProgress?: boolean;
 }
 
 export default function BranchMap({
@@ -766,6 +768,8 @@ export default function BranchMap({
   onPushCurrentBranch,
   onPushCommitTargets,
   pushInProgress = false,
+  onDeleteSelection,
+  deleteInProgress = false,
 }: BranchMapProps) {
   const [, setTooltip] = useState<TooltipData | null>(null);
   const [hoveredBranch, setHoveredBranch] = useState<string | null>(null);
@@ -778,6 +782,10 @@ export default function BranchMap({
   const [showLineageDebug, setShowLineageDebug] = useState(false);
   const [selectedBranchNames, setSelectedBranchNames] = useState<string[]>([]);
   const [selectedCommitShas, setSelectedCommitShas] = useState<string[]>([]);
+  const [deleteConfirmOpen, setDeleteConfirmOpen] = useState(false);
+  const deleteConfirmOpenRef = useRef(false);
+  const deleteInProgressRef = useRef(deleteInProgress);
+  const deletableSelectionCountRef = useRef(0);
   const marqueeBaseSelectionRef = useRef<{ branchNames: string[]; commitShas: string[] }>({
     branchNames: [],
     commitShas: [],
@@ -911,8 +919,8 @@ export default function BranchMap({
   ) {
     event.stopPropagation();
     clearTransientHoverState();
-    if (!commitSha) return;
     const shouldCheckout = event.ctrlKey || event.metaKey || event.detail >= 2;
+    const isFreshCopyBranchSelection = !!(branchName && freshCopyBranchNames.has(branchName));
     if (branchName) {
       if (event.shiftKey) {
         setSelectedBranchNames((prev) =>
@@ -923,6 +931,17 @@ export default function BranchMap({
       } else {
         setSelectedBranchNames([branchName]);
       }
+    }
+    if (!commitSha) return;
+    if (isFreshCopyBranchSelection) {
+      if (!event.shiftKey) {
+        setSelectedCommitShas([]);
+        setMergeTargetCommitSha(null);
+      }
+      if (shouldCheckout) {
+        onCommitClick?.({ commitSha, branchName });
+      }
+      return;
     }
     setSelectedCommitShas((prev) => {
       if (event.shiftKey) {
@@ -1914,6 +1933,14 @@ export default function BranchMap({
   }, [isPanning]);
 
   useEffect(() => {
+    deleteConfirmOpenRef.current = deleteConfirmOpen;
+  }, [deleteConfirmOpen]);
+
+  useEffect(() => {
+    deleteInProgressRef.current = deleteInProgress;
+  }, [deleteInProgress]);
+
+  useEffect(() => {
     const isEditable = (el: EventTarget | null) => {
       if (!(el instanceof Element)) return false;
       if (el instanceof HTMLInputElement || el instanceof HTMLTextAreaElement) return true;
@@ -1923,6 +1950,18 @@ export default function BranchMap({
       if (isEditable(e.target)) return;
 
       // Zoom shortcuts disabled.
+
+      if (e.key === 'Delete' || e.key === 'Backspace') {
+        if (
+          deletableSelectionCountRef.current > 0 &&
+          !deleteConfirmOpenRef.current &&
+          !deleteInProgressRef.current
+        ) {
+          e.preventDefault();
+          setDeleteConfirmOpen(true);
+        }
+        return;
+      }
 
       if (e.code !== 'Space') return;
       e.preventDefault();
@@ -4766,7 +4805,8 @@ export default function BranchMap({
     isUncommitted = false,
   ) => {
     if (isUserSelected) return '#257BF3';
-    if (isCheckedOutSelection || isUncommitted) return '#47AFEB';
+    if (isCheckedOutSelection) return '#47AFEB';
+    if (isUncommitted) return hoveredNodeStrokeKey === nodeKey ? '#64A1F7' : '#47AFEB';
     return hoveredNodeStrokeKey === nodeKey ? '#64A1F7' : NODE_FRAME_BRANCH_TITLE_COLOR;
   };
   const getNodeFrameInnerTextColor = (
@@ -4776,7 +4816,8 @@ export default function BranchMap({
     isUncommitted = false,
   ) => {
     if (isUserSelected) return '#257BF3';
-    if (isCheckedOutSelection || isUncommitted) return '#47AFEB';
+    if (isCheckedOutSelection) return '#47AFEB';
+    if (isUncommitted) return hoveredNodeStrokeKey === nodeKey ? '#64A1F7' : '#47AFEB';
     return hoveredNodeStrokeKey === nodeKey ? '#64A1F7' : NODE_FRAME_INNER_TEXT_COLOR;
   };
   const branchLaneHitPointerEvents: React.CSSProperties['pointerEvents'] =
@@ -6178,6 +6219,16 @@ export default function BranchMap({
   }
   const resolvedSelectedPushTargets = Array.from(selectedPushTargetMap.values());
   const hasSelection = selectedVisibleCommitShas.length > 0 || selectedBranchList.length > 0;
+  const selectedDeletableBranchNames = selectedBranchList.filter(
+    (branchName) => branchName !== defaultBranch && freshCopyBranchNames.has(branchName)
+  );
+  const hasSelectedUncommittedChanges = selectedVisibleCommitShas.includes('WORKING_TREE');
+  const deletableSelectionCount = selectedDeletableBranchNames.length + (hasSelectedUncommittedChanges ? 1 : 0);
+  const deleteSelectionItems = [
+    ...selectedDeletableBranchNames.map((branchName) => `Branch: ${branchName}`),
+    ...(hasSelectedUncommittedChanges ? ['Uncommitted changes'] : []),
+  ];
+  deletableSelectionCountRef.current = deletableSelectionCount;
   const pushCurrentBranchLabel = checkedOutBranchName ? `Push ${checkedOutBranchName}` : 'Push current branch';
   const selectedPushLabel = resolvedSelectedPushTargets.length === 1
     ? resolvedSelectedPushTargets[0].commitCount > 1
@@ -6191,6 +6242,18 @@ export default function BranchMap({
   async function handlePushSelectedTargets() {
     if (!onPushCommitTargets || pushInProgress || resolvedSelectedPushTargets.length === 0) return;
     await onPushCommitTargets(resolvedSelectedPushTargets.map(({ branchName, targetSha }) => ({ branchName, targetSha })));
+    setSelectedCommitShas([]);
+    setSelectedBranchNames([]);
+    setMergeTargetCommitSha(null);
+  }
+
+  async function handleConfirmDeleteSelection() {
+    if (!onDeleteSelection || deleteInProgress || deletableSelectionCount === 0) return;
+    await onDeleteSelection({
+      branchNames: selectedDeletableBranchNames,
+      discardUncommittedChanges: hasSelectedUncommittedChanges,
+    });
+    setDeleteConfirmOpen(false);
     setSelectedCommitShas([]);
     setSelectedBranchNames([]);
     setMergeTargetCommitSha(null);
@@ -7012,7 +7075,9 @@ export default function BranchMap({
                                     const commitSha = entry.item.commit?.fullSha;
                                     return !!commitSha && selectedCommitShaSet.has(commitSha);
                                   });
-                                const clusterHasSelectedHead = clusterHasBranchTip && selectedBranchNameSet.has(b.name);
+                                const clusterHasSelectedHead =
+                                  clusterHasBranchTip &&
+                                  selectedBranchNameSet.has(b.name);
 
                                 if (vm.count <= 1) {
                                   const commitEntry = vm.renderEntries[0] ?? cluster.entries[cluster.entries.length - 1];
@@ -7843,7 +7908,9 @@ export default function BranchMap({
                                 const commitSha = entry.item.commit?.fullSha;
                                 return !!commitSha && selectedCommitShaSet.has(commitSha);
                               });
-                            const clusterHasSelectedHead = clusterHasBranchTip && selectedBranchNameSet.has(b.name);
+                            const clusterHasSelectedHead =
+                              clusterHasBranchTip &&
+                              selectedBranchNameSet.has(b.name);
                             const clusterIsCheckedOut = clusterHasCheckedOutHead;
                             const clusterIsSelected = clusterHasSelectedCommit || clusterHasSelectedHead;
                             const preferredAnchorEntry = branchPreferredAnchorEntry(
@@ -8282,7 +8349,10 @@ export default function BranchMap({
                             const commitSha = entry.item.commit?.fullSha;
                             return !!commitSha && selectedCommitShaSet.has(commitSha);
                           });
-                        const caretClusterIsSelected = caretClusterHasSelectedCommit || (caretClusterHasBranchTip && selectedBranchNameSet.has(b.name));
+                        const caretClusterIsSelected =
+                          caretClusterHasSelectedCommit ||
+                          (caretClusterHasBranchTip &&
+                            selectedBranchNameSet.has(b.name));
 
                         const localRect = commitRectSize(scaledNodeSize, 0);
                         const collapseIconSize = nodeFrameCollapseIconSize;
@@ -8513,6 +8583,42 @@ export default function BranchMap({
           </div>
         </div>
       </div>
+
+      {deleteConfirmOpen && (
+        <div className="absolute inset-0 z-[70] flex items-center justify-center bg-background/70 backdrop-blur-sm p-4">
+          <div className="w-full max-w-md rounded-2xl border border-border bg-card shadow-lg p-4">
+            <p className="text-sm font-medium text-foreground">
+              are you sure you want to delete these elements?
+            </p>
+            <div className="mt-2 flex flex-col gap-1.5">
+              {deleteSelectionItems.map((item) => (
+                <div
+                  key={item}
+                  className="rounded-lg border border-border/50 bg-card px-2.5 py-1.5 text-xs text-muted-foreground leading-5"
+                >
+                  {item}
+                </div>
+              ))}
+            </div>
+            <div className="mt-4 flex items-center justify-end gap-2">
+              <button
+                onClick={() => setDeleteConfirmOpen(false)}
+                disabled={deleteInProgress}
+                className="rounded-lg border border-border bg-card px-3 py-1.5 text-xs font-medium text-foreground transition-colors hover:bg-accent disabled:cursor-not-allowed disabled:opacity-50"
+              >
+                Cancel
+              </button>
+              <button
+                onClick={() => void handleConfirmDeleteSelection()}
+                disabled={deleteInProgress || deletableSelectionCount === 0}
+                className="rounded-lg bg-red-50 dark:bg-red-900/20 px-3 py-1.5 text-xs font-medium text-red-600 dark:text-red-400 transition-colors hover:bg-red-50/80 dark:hover:bg-red-900/30 disabled:cursor-not-allowed disabled:opacity-50"
+              >
+                {deleteInProgress ? 'Deleting...' : 'Delete'}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
 
       {/* ── Lineage debug panel ── */}
       <div

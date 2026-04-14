@@ -38,6 +38,13 @@ struct PushResult {
     target_sha: Option<String>,
 }
 
+#[derive(serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+struct DeleteSelectionResult {
+    deleted_branches: Vec<String>,
+    discarded_uncommitted_changes: bool,
+}
+
 static WATCHER_STATE: OnceLock<Mutex<Option<notify::RecommendedWatcher>>> = OnceLock::new();
 const GIT_ACTIVITY_LOCAL_MIN_EMIT_MS: u64 = 250;
 const GIT_ACTIVITY_GRAPH_MIN_EMIT_MS: u64 = 120;
@@ -621,6 +628,56 @@ fn push_all_unpushed_branches(repo_path: String) -> Result<Vec<PushResult>, Stri
     }
 
     Ok(push_targets)
+}
+
+#[tauri::command(rename_all = "camelCase")]
+fn delete_selected_elements(
+    repo_path: String,
+    branch_names: Vec<String>,
+    discard_uncommitted_changes: bool,
+) -> Result<DeleteSelectionResult, String> {
+    let path = Path::new(&repo_path);
+    let default_branch = git::get_default_branch(path).map_err(|e| e.to_string())?;
+
+    if discard_uncommitted_changes {
+        git::cli::run(path, &["reset", "--hard", "HEAD"]).map_err(|e| e.to_string())?;
+        git::cli::run(path, &["clean", "-fd"]).map_err(|e| e.to_string())?;
+    }
+
+    let mut unique_branch_names = Vec::new();
+    let mut seen = HashSet::new();
+    for branch_name in branch_names {
+        let trimmed = branch_name.trim();
+        if trimmed.is_empty() || trimmed == default_branch {
+            continue;
+        }
+        if seen.insert(trimmed.to_string()) {
+            unique_branch_names.push(trimmed.to_string());
+        }
+    }
+
+    if unique_branch_names.is_empty() {
+        return Ok(DeleteSelectionResult {
+            deleted_branches: vec![],
+            discarded_uncommitted_changes: discard_uncommitted_changes,
+        });
+    }
+
+    let checked_out = git::get_checked_out_ref(path).map_err(|e| e.to_string())?;
+    if let Some(current_branch) = checked_out.branch_name {
+        if unique_branch_names.iter().any(|branch_name| branch_name == &current_branch) {
+            git::cli::run(path, &["checkout", &default_branch]).map_err(|e| e.to_string())?;
+        }
+    }
+
+    for branch_name in &unique_branch_names {
+        git::cli::run(path, &["branch", "-D", branch_name]).map_err(|e| e.to_string())?;
+    }
+
+    Ok(DeleteSelectionResult {
+        deleted_branches: unique_branch_names,
+        discarded_uncommitted_changes: discard_uncommitted_changes,
+    })
 }
 
 #[tauri::command(rename_all = "camelCase")]
@@ -3725,6 +3782,7 @@ pub fn run() {
             push_branch,
             push_current_branch,
             push_all_unpushed_branches,
+            delete_selected_elements,
             merge_branches,
             merge_ref_into_branch,
             get_repo_info,

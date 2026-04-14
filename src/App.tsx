@@ -56,6 +56,7 @@ function App() {
   const [isCommitSwitchFeedbackVisible, setIsCommitSwitchFeedbackVisible] = useState(false);
   const [mergeInProgress, setMergeInProgress] = useState(false);
   const [pushInProgress, setPushInProgress] = useState(false);
+  const [deleteInProgress, setDeleteInProgress] = useState(false);
   const [branchPromptMeta, setBranchPromptMeta] = useState<Record<string, BranchPromptMeta>>({});
   const [branchCommitPreviews, setBranchCommitPreviews] = useState<Record<string, BranchCommitPreview[]>>({});
   const [branchUniqueAheadCounts, setBranchUniqueAheadCounts] = useState<Record<string, number>>({});
@@ -986,6 +987,46 @@ function App() {
     }
   }
 
+  async function handleDeleteSelection(targets: { branchNames: string[]; discardUncommittedChanges: boolean }) {
+    if (!repoPath || deleteInProgress) return;
+    const uniqueBranchNames = Array.from(new Set(targets.branchNames.filter((branchName) => branchName && branchName !== defaultBranch)));
+    const shouldDiscardUncommitted = !!targets.discardUncommittedChanges;
+    if (uniqueBranchNames.length === 0 && !shouldDiscardUncommitted) return;
+
+    setCommitSwitchFeedback(null);
+    setDeleteInProgress(true);
+    try {
+      const result = await invoke<{ deletedBranches: string[]; discardedUncommittedChanges: boolean }>('delete_selected_elements', {
+        repoPath,
+        branchNames: uniqueBranchNames,
+        discardUncommittedChanges: shouldDiscardUncommitted,
+      });
+      await refreshRepoGitState(repoPath);
+      const feedbackParts: string[] = [];
+      if (result.discardedUncommittedChanges) feedbackParts.push('discarded local uncommitted changes');
+      if (result.deletedBranches.length > 0) {
+        feedbackParts.push(
+          result.deletedBranches.length === 1
+            ? `deleted ${result.deletedBranches[0]}`
+            : `deleted ${result.deletedBranches.length} branches`
+        );
+      }
+      setCommitSwitchFeedback({
+        kind: 'success',
+        message: feedbackParts.length > 0 ? feedbackParts.join(' and ') : 'Nothing to delete.',
+      });
+    } catch (e) {
+      const message = e instanceof Error ? e.message : String(e);
+      setCommitSwitchFeedback({
+        kind: 'error',
+        message,
+      });
+      console.error('Failed to delete selected elements:', message);
+    } finally {
+      setDeleteInProgress(false);
+    }
+  }
+
   function handleFocusOnMap(branch: Branch) {
     setView('map');
     setFocusedErrorBranch(branch);
@@ -1224,6 +1265,8 @@ function App() {
               onPushCurrentBranch={handlePushCurrentBranch}
               onPushCommitTargets={handlePushCommitTargets}
               pushInProgress={pushInProgress}
+              onDeleteSelection={handleDeleteSelection}
+              deleteInProgress={deleteInProgress}
             />
           </div>
 

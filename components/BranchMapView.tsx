@@ -32,6 +32,8 @@ interface Props {
   onPushCurrentBranch?: () => Promise<void> | void;
   onPushCommitTargets?: (targets: Array<{ branchName: string; targetSha: string }>) => Promise<void> | void;
   pushInProgress?: boolean;
+  onDeleteSelection?: (targets: { branchNames: string[]; discardUncommittedChanges: boolean }) => Promise<void> | void;
+  deleteInProgress?: boolean;
 }
 
 export default function BranchMapView({
@@ -60,6 +62,8 @@ export default function BranchMapView({
   onPushCurrentBranch,
   onPushCommitTargets,
   pushInProgress = false,
+  onDeleteSelection,
+  deleteInProgress = false,
 }: Props) {
   // Determine active vs inactive error branches
   const openPRBranchNames = new Set(openPRs.map(p => p.branchName));
@@ -103,6 +107,8 @@ export default function BranchMapView({
             onPushCurrentBranch={onPushCurrentBranch}
             onPushCommitTargets={onPushCommitTargets}
             pushInProgress={pushInProgress}
+            onDeleteSelection={onDeleteSelection}
+            deleteInProgress={deleteInProgress}
           />
         </div>
       ) : (
