@@ -4270,6 +4270,7 @@ export default function BranchMap({
   const NODE_FRAME_MESSAGE_INSET_X_PX = 6;
   const NODE_FRAME_MESSAGE_INSET_TOP_PX = 5.5;
   const NODE_FRAME_MESSAGE_INSET_BOTTOM_PX = 6;
+  const NODE_FRAME_PADDING_ZOOM_GAIN_MAX = 3.0;
   const NODE_FRAME_MESSAGE_FONT_PX = 12;
   const NODE_FRAME_FOOTER_META_PAIR_GAP_PX = 8;
   const NODE_FRAME_FOOTER_META_ZOOM_MIN = 3.5;
@@ -4286,9 +4287,15 @@ export default function BranchMap({
   const nodeFrameLabelInsetX = worldPx(NODE_FRAME_LABEL_LEFT_INSET_PX);
   const nodeFrameLabelRightInsetX = worldPx(NODE_FRAME_LABEL_RIGHT_INSET_PX);
   const nodeFrameLabelPairGap = worldPx(NODE_FRAME_LABEL_PAIR_GAP_PX);
-  const nodeFrameMessageInsetX = worldPx(NODE_FRAME_MESSAGE_INSET_X_PX);
-  const nodeFrameMessageInsetTop = worldPx(NODE_FRAME_MESSAGE_INSET_TOP_PX);
-  const nodeFrameMessageInsetBottom = worldPx(NODE_FRAME_MESSAGE_INSET_BOTTOM_PX);
+  const nodeFramePaddingZoomProgress = clamp01(
+    (zoom - ZOOM_DEFAULT) / Math.max(1, ZOOM_MAX - ZOOM_DEFAULT),
+  );
+  const nodeFramePaddingZoomFactor = 1 + nodeFramePaddingZoomProgress * NODE_FRAME_PADDING_ZOOM_GAIN_MAX;
+  const nodeFrameMessageInsetX = worldPx(NODE_FRAME_MESSAGE_INSET_X_PX * nodeFramePaddingZoomFactor);
+  const nodeFrameMessageInsetTop = worldPx(NODE_FRAME_MESSAGE_INSET_TOP_PX * nodeFramePaddingZoomFactor);
+  const nodeFrameMessageInsetBottom = worldPx(
+    NODE_FRAME_MESSAGE_INSET_BOTTOM_PX * nodeFramePaddingZoomFactor,
+  );
   const nodeFrameMessageFontSize = worldPx(NODE_FRAME_MESSAGE_FONT_PX);
   const nodeFrameFooterMetaPairGap = worldPx(NODE_FRAME_FOOTER_META_PAIR_GAP_PX);
   const nodeFrameMessageRenderOffsetY = worldPx(NODE_FRAME_MESSAGE_RENDER_OFFSET_Y_PX);
