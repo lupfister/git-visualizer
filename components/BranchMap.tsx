@@ -989,15 +989,17 @@ export default function BranchMap({
     event.stopPropagation();
     clearTransientHoverState();
     const shouldCheckout = event.ctrlKey || event.metaKey || event.detail >= 2;
-    if (
-      shouldCheckout &&
-      commitSha &&
-      commitSha !== 'WORKING_TREE' &&
-      branchName &&
-      onSwitchToWorktree
-    ) {
+    if (shouldCheckout && commitSha && commitSha !== 'WORKING_TREE' && onSwitchToWorktree) {
       const shortSha = commitSha.length >= 40 ? commitSha.slice(0, 7) : commitSha;
-      const otherWt = findOtherWorktreeForCommit(branchName, commitSha, shortSha);
+      let otherWt: WorktreeInfo | null = null;
+      if (branchName) {
+        otherWt = findOtherWorktreeForCommit(branchName, commitSha, shortSha);
+        if (!otherWt) {
+          otherWt = findWorktreeWithBranchCheckedOut(branchName);
+        }
+      } else {
+        otherWt = findOtherWorktreeByHeadSha(commitSha, shortSha);
+      }
       if (otherWt) {
         void onSwitchToWorktree(otherWt.path);
         return;
@@ -4345,6 +4347,26 @@ export default function BranchMap({
       if (branch && shaMatchesGitRef(branch.headSha, wt.headSha)) return wt;
       if (branchName === defaultBranch) {
         if (sortedDirectCommits.some((c) => shaMatchesGitRef(c.fullSha, wt.headSha))) return wt;
+      }
+    }
+    return null;
+  }
+
+  /** Other worktree has this branch checked out (same branch ref cannot be checked out twice). */
+  function findWorktreeWithBranchCheckedOut(branchName: string): WorktreeInfo | null {
+    for (const wt of worktrees) {
+      if (wt.isCurrent) continue;
+      if (wt.branchName === branchName) return wt;
+    }
+    return null;
+  }
+
+  /** Match by HEAD sha only (when click handlers omit branchName). */
+  function findOtherWorktreeByHeadSha(commitFullSha: string, commitShortSha: string): WorktreeInfo | null {
+    for (const wt of worktrees) {
+      if (wt.isCurrent) continue;
+      if (shaMatchesGitRef(wt.headSha, commitFullSha) || shaMatchesGitRef(wt.headSha, commitShortSha)) {
+        return wt;
       }
     }
     return null;

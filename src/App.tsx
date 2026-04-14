@@ -961,6 +961,16 @@ function App() {
       return;
     }
 
+    // Branch refs live in one place: if this branch is checked out in another worktree, switch the app there
+    // instead of `git checkout` (which fails with "already checked out at …").
+    if (target.branchName) {
+      const other = worktrees.find((wt) => !wt.isCurrent && wt.branchName === target.branchName);
+      if (other) {
+        await handleSwitchToWorktree(other.path);
+        return;
+      }
+    }
+
     try {
       let stashedPrefix = '';
       const refBefore = await invoke<CheckedOutRef>('get_checked_out_ref', { repoPath });
