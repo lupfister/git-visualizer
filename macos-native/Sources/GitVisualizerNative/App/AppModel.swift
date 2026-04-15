@@ -4,6 +4,7 @@ import Foundation
 final class AppModel: ObservableObject {
     @Published var startupError: String?
     @Published var repoInfo: RepoInfo?
+    @Published var defaultBranch: String = "main"
     @Published var checkedOutRef: CheckedOutRef?
     @Published var branches: [Branch] = []
     @Published var mergeNodes: [MergeNode] = []
@@ -49,6 +50,7 @@ final class AppModel: ObservableObject {
             )
 
             repoInfo = info
+            self.defaultBranch = defaultBranch
             self.branches = branches
             checkedOutRef = checkedOut
             mergeNodes = mergeNodesResponse.nodes

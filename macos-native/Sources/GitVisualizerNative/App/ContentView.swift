@@ -67,6 +67,8 @@ private struct GraphContainerView: View {
 
     var body: some View {
         BranchGraphRepresentable(
+            defaultBranch: model.defaultBranch,
+            checkedOutRef: model.checkedOutRef,
             branches: model.branches,
             mergeNodes: model.mergeNodes,
             directCommits: model.directCommits,
