@@ -133,6 +133,7 @@ type TooltipData = {
 };
 type ClampMode = 'hard' | 'soft' | 'none';
 type OrientationMode = 'vertical' | 'horizontal';
+const ORIENTATION_SWITCH_FADE_MS = 140;
 type MarkerEntry<T> = { x: number; y: number; item: T };
 type MarkerCluster<T> = { x: number; y: number; entries: MarkerEntry<T>[] };
 type CommitDot = { y: number; commit?: BranchCommitPreview };
@@ -896,6 +897,7 @@ export default function BranchMap({
   const [expandedClumps, setExpandedClumps] = useState<Map<string, ExpandedClumpState>>(() => new Map());
   const [zoom, setZoom] = useState(ZOOM_DEFAULT);
   const [orientation, setOrientation] = useState<OrientationMode>('vertical');
+  const [isOrientationSwitchFading, setIsOrientationSwitchFading] = useState(false);
 
   const [showLineageDebug, setShowLineageDebug] = useState(false);
   const [selectedBranchNames, setSelectedBranchNames] = useState<string[]>([]);
@@ -1007,6 +1009,9 @@ export default function BranchMap({
   const hasAutoCenteredRef = useRef(false);
   const autoCenterSignatureRef = useRef<string | null>(null);
   const hasUserMovedCameraRef = useRef(false);
+  const pendingOrientationAutoCenterRef = useRef(false);
+  const orientationSwitchFadeTimeoutRef = useRef<number | null>(null);
+  const orientationAutoCenterRafRef = useRef<number | null>(null);
   const marqueeDragRef = useRef<MarqueeDragState | null>(null);
   const nodeDragRef = useRef<NodeDragState | null>(null);
   const newBranchInputForNodeRef = useRef<HTMLInputElement>(null);
@@ -2073,6 +2078,14 @@ export default function BranchMap({
     return () => {
       focusScrollCancelRef.current?.();
       focusScrollCancelRef.current = null;
+      if (orientationSwitchFadeTimeoutRef.current !== null) {
+        clearTimeout(orientationSwitchFadeTimeoutRef.current);
+        orientationSwitchFadeTimeoutRef.current = null;
+      }
+      if (orientationAutoCenterRafRef.current !== null) {
+        cancelAnimationFrame(orientationAutoCenterRafRef.current);
+        orientationAutoCenterRafRef.current = null;
+      }
       stopCameraPaint();
       stopZoomAnimation();
       stopWheelInertia();
@@ -2379,13 +2392,24 @@ export default function BranchMap({
   }, []);
 
   useEffect(() => {
+    const hadCompletedReveal = hasInitialRevealDone;
     hasAutoCenteredRef.current = false;
     autoCenterSignatureRef.current = null;
-    hasUserMovedCameraRef.current = false;
+    // Preserve manual camera intent across orientation switches to prevent
+    // jumpy recenter/layout shifts after the user has already panned.
+    // Orientation switches should not replay the intro loader/fog.
+    // Keep reveal state "done" once content has been shown at least once.
+    if (!hadCompletedReveal) {
+      clearTimelineRevealTimer();
+      setTimelineRevealPhase('hidden');
+      setTimelineRevealReady(false);
+      setHasInitialRevealDone(false);
+      return;
+    }
     clearTimelineRevealTimer();
-    setTimelineRevealPhase('hidden');
-    setTimelineRevealReady(false);
-    setHasInitialRevealDone(false);
+    setTimelineRevealPhase('done');
+    setTimelineRevealReady(true);
+    setHasInitialRevealDone(true);
   }, [orientation]);
 
   useEffect(() => {
@@ -4853,20 +4877,21 @@ export default function BranchMap({
       hasAutoCenteredRef.current = false;
       autoCenterSignatureRef.current = null;
       hasUserMovedCameraRef.current = false;
+      pendingOrientationAutoCenterRef.current = false;
       clearTimelineRevealTimer();
       setTimelineRevealPhase('hidden');
       setTimelineRevealReady(false);
       setHasInitialRevealDone(false);
       return;
     }
-    if (hasUserMovedCameraRef.current || viewportSize.width <= 0 || viewportSize.height <= 0) return;
+    const forceOrientationAutoCenter = pendingOrientationAutoCenterRef.current;
+    if (!forceOrientationAutoCenter && hasUserMovedCameraRef.current) return;
+    if (viewportSize.width <= 0 || viewportSize.height <= 0) return;
     if (!hasInitialRevealDone && timelineRevealPhase === 'fading') return;
-    // During initial hydration, the checked-out target can be unresolved for a
-    // render or two. Keep showing the centered loader marker until the real
-    // anchor exists so reveal timing always starts from the final camera target.
-    if (!hasInitialRevealDone && checkedOutAnchor == null) return;
-    // After the intro reveal has completed, still guard checked-out scenarios.
-    if (hasInitialRevealDone && checkedOutRef && checkedOutAnchor == null) return;
+    // During orientation switches and hydration there are brief windows where
+    // checkout anchor resolution lags behind layout. Do not block reveal/camera
+    // on that transient state; center using a fallback first, then this effect
+    // will recenter again once the real checkout anchor resolves.
     const zoomValue = zoomRef.current;
     const fallbackCenter = {
       x: svgWidth / 2,
@@ -4897,10 +4922,23 @@ export default function BranchMap({
       zoomValue,
       'hard'
     );
-    applyCamera(nextPan, zoomValue, true);
+    if (forceOrientationAutoCenter) {
+      if (orientationAutoCenterRafRef.current !== null) {
+        cancelAnimationFrame(orientationAutoCenterRafRef.current);
+      }
+      orientationAutoCenterRafRef.current = requestAnimationFrame(() => {
+        orientationAutoCenterRafRef.current = null;
+        applyCamera(nextPan, zoomValue, true);
+      });
+    } else {
+      applyCamera(nextPan, zoomValue, true);
+    }
     hasAutoCenteredRef.current = true;
     autoCenterSignatureRef.current = signature;
-    if (!hasInitialRevealDone && timelineRevealPhase === 'hidden') {
+    pendingOrientationAutoCenterRef.current = false;
+    const revealAlreadyScheduled =
+      timelineRevealStartTimeoutRef.current !== null || timelineRevealDoneTimeoutRef.current !== null;
+    if (!hasInitialRevealDone && timelineRevealPhase === 'hidden' && !revealAlreadyScheduled) {
       scheduleTimelineReveal();
     }
   }, [
@@ -6975,6 +7013,21 @@ export default function BranchMap({
     }
   };
 
+  const handleOrientationChange = (nextOrientation: OrientationMode) => {
+    if (nextOrientation === orientation) return;
+    if (orientationSwitchFadeTimeoutRef.current !== null) {
+      clearTimeout(orientationSwitchFadeTimeoutRef.current);
+      orientationSwitchFadeTimeoutRef.current = null;
+    }
+    setIsOrientationSwitchFading(true);
+    pendingOrientationAutoCenterRef.current = true;
+    setOrientation(nextOrientation);
+    orientationSwitchFadeTimeoutRef.current = window.setTimeout(() => {
+      orientationSwitchFadeTimeoutRef.current = null;
+      setIsOrientationSwitchFading(false);
+    }, ORIENTATION_SWITCH_FADE_MS);
+  };
+
   return (
     <div className="relative h-full">
       <div
@@ -6991,7 +7044,9 @@ export default function BranchMap({
             width: canvasWidth,
             height: canvasHeight,
             transformOrigin: 'top left',
-            willChange: 'transform',
+            willChange: isOrientationSwitchFading ? 'transform, opacity' : 'transform',
+            opacity: isOrientationSwitchFading ? 0.9 : 1,
+            transition: `opacity ${ORIENTATION_SWITCH_FADE_MS}ms ease-out`,
           }}
         >
           <svg
@@ -9479,7 +9534,6 @@ export default function BranchMap({
             </g>
           </svg>
         </div>
-
         {marqueeRect && (
           <div
             className="absolute pointer-events-none z-40"
@@ -9857,7 +9911,7 @@ export default function BranchMap({
           <div className="flex items-center justify-end gap-4">
             <div className="flex items-center gap-1 shrink-0 bg-card border border-border rounded-full p-1">
               <button
-                onClick={() => setOrientation('vertical')}
+                onClick={() => handleOrientationChange('vertical')}
                 className={`px-2.5 py-1 rounded-full text-xs leading-none select-none transition-colors ${orientation === 'vertical'
                   ? 'bg-primary/10 text-foreground'
                   : 'text-muted-foreground hover:text-foreground hover:bg-muted'
@@ -9867,7 +9921,7 @@ export default function BranchMap({
                 Vertical
               </button>
               <button
-                onClick={() => setOrientation('horizontal')}
+                onClick={() => handleOrientationChange('horizontal')}
                 className={`px-2.5 py-1 rounded-full text-xs leading-none select-none transition-colors ${orientation === 'horizontal'
                   ? 'bg-primary/10 text-foreground'
                   : 'text-muted-foreground hover:text-foreground hover:bg-muted'
