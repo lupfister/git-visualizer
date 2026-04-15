@@ -1,5 +1,6 @@
 import React, { useState, useRef, useEffect, useLayoutEffect } from 'react';
-import { Archive, ChevronDown, GitCommitHorizontal, Loader2, X } from 'lucide-react';
+import { ChevronDown, GitCommitHorizontal, Loader2, X } from 'lucide-react';
+import { AnimatePresence, motion } from 'framer-motion';
 import { layoutWithLines, prepareWithSegments } from '@chenglou/pretext';
 import { Branch, BranchCommitPreview, BranchPromptMeta, CheckedOutRef, DirectCommit, MergeNode, OpenPR, WorktreeInfo } from '../types';
 import { ViewMode } from './BranchMapView';
@@ -106,6 +107,20 @@ const INITIAL_CENTER_SETTLE_MS = CHECKED_OUT_PULSE_MS;
 const INITIAL_REVEAL_FADE_MS = CHECKED_OUT_PULSE_MS;
 const ENABLE_TIMELINE_INTRO_ANIMATIONS = false;
 const ENABLE_NODE_PUSH_DEBUG_LABEL = false;
+const DROPDOWN_SPRING_VARIANTS = {
+  closed: {
+    opacity: 0,
+    y: 12,
+    scale: 0.95,
+    transition: { type: 'spring', stiffness: 1520, damping: 40, mass: 0.24 },
+  },
+  open: {
+    opacity: 1,
+    y: 0,
+    scale: 1,
+    transition: { type: 'spring', stiffness: 2560, damping: 42, mass: 0.2 },
+  },
+} as const;
 /** Same stack as `body` / inherited SVG labels — avoids a generic `sans-serif` ellipsis glyph that looks wider than the UI font. */
 const BRANCH_MAP_SVG_FONT_FAMILY = 'system-ui, -apple-system, sans-serif';
 
@@ -820,6 +835,8 @@ interface BranchMapProps {
   onCommitLocalChanges?: (message: string) => Promise<boolean>;
   commitInProgress?: boolean;
   commitDisabled?: boolean;
+  onStageAllChanges?: () => Promise<boolean> | Promise<void> | boolean | void;
+  stageInProgress?: boolean;
   /** Drag-to-branch: called when user drags WORKING_TREE or a stash node to a new branch. */
   onCreateBranchFromNode?: (nodeId: string, branchName: string) => Promise<void>;
   createBranchFromNodeInProgress?: boolean;
@@ -866,6 +883,8 @@ export default function BranchMap({
   onCommitLocalChanges,
   commitInProgress = false,
   commitDisabled = false,
+  onStageAllChanges,
+  stageInProgress = false,
   onCreateBranchFromNode,
   createBranchFromNodeInProgress = false,
   onMoveNodeBackToBranch,
@@ -886,6 +905,9 @@ export default function BranchMap({
   const [commitMessageDraft, setCommitMessageDraft] = useState('');
   const commitMessageRef = useRef<HTMLTextAreaElement>(null);
   const [worktreeMenuOpen, setWorktreeMenuOpen] = useState(false);
+  const worktreeMenuRef = useRef<HTMLDivElement>(null);
+  const [gitActionMenuOpen, setGitActionMenuOpen] = useState(false);
+  const gitActionMenuRef = useRef<HTMLDivElement>(null);
   const deleteConfirmOpenRef = useRef(false);
   const deleteInProgressRef = useRef(deleteInProgress);
   const deletableSelectionCountRef = useRef(0);
@@ -2465,6 +2487,12 @@ export default function BranchMap({
     setMergeTargetCommitSha(null);
   }
 
+  const openGitActionMenu = () => setGitActionMenuOpen(true);
+  const closeGitActionMenu = () => setGitActionMenuOpen(false);
+  const toggleGitActionMenu = () => setGitActionMenuOpen((open) => !open);
+  const closeWorktreeMenu = () => setWorktreeMenuOpen(false);
+  const toggleWorktreeMenu = () => setWorktreeMenuOpen((open) => !open);
+
   // Close error panel on outside click
   useEffect(() => {
     if (!errorPanelOpen) return;
@@ -2474,6 +2502,26 @@ export default function BranchMap({
     document.addEventListener('mousedown', handler);
     return () => document.removeEventListener('mousedown', handler);
   }, [errorPanelOpen]);
+
+  // Close git action menu on outside click
+  useEffect(() => {
+    if (!gitActionMenuOpen) return;
+    const handler = (e: MouseEvent) => {
+      if (!gitActionMenuRef.current?.contains(e.target as Node)) closeGitActionMenu();
+    };
+    document.addEventListener('mousedown', handler);
+    return () => document.removeEventListener('mousedown', handler);
+  }, [gitActionMenuOpen]);
+
+  // Close worktree menu on outside click
+  useEffect(() => {
+    if (!worktreeMenuOpen) return;
+    const handler = (e: MouseEvent) => {
+      if (!worktreeMenuRef.current?.contains(e.target as Node)) closeWorktreeMenu();
+    };
+    document.addEventListener('mousedown', handler);
+    return () => document.removeEventListener('mousedown', handler);
+  }, [worktreeMenuOpen]);
 
   // ── Active branches (branch-first) ─────────────────────────────────────────
   const STATUS_PRIORITY: Record<string, number> = { stale: 1, fresh: 2, unknown: 3 };
@@ -9486,59 +9534,184 @@ export default function BranchMap({
           }}
         >
           <div className="flex items-center gap-2 min-w-0">
-            {!hasSelection && onPushAllBranches && pushableRemoteBranchCount >= 2 && (
-              <button
-                onClick={() => void onPushAllBranches()}
-                disabled={pushInProgress || mergeInProgress}
-                className="shrink-0 rounded-full border border-border bg-card px-3 py-1.5 text-xs font-medium text-foreground transition-colors hover:bg-accent disabled:cursor-not-allowed disabled:opacity-50"
-                title="Push every local branch that still has commits to send"
-              >
-                {pushInProgress ? 'Pushing...' : 'Push all'}
-              </button>
-            )}
-            {!hasSelection && onPushCurrentBranch && canPushCurrentBranch && (
-              <button
-                onClick={() => void onPushCurrentBranch()}
-                disabled={pushInProgress || mergeInProgress}
-                className="shrink-0 rounded-full border border-border bg-card px-3 py-1.5 text-xs font-medium text-foreground transition-colors hover:bg-accent disabled:cursor-not-allowed disabled:opacity-50"
-                title="Push the branch that is currently checked out"
-              >
-                {pushInProgress ? 'Pushing...' : pushCurrentBranchLabel}
-              </button>
-            )}
-            {!hasSelection && onCommitLocalChanges && !commitDisabled && (
-              <button
-                type="button"
-                onClick={() => setCommitDialogOpen(true)}
-                disabled={commitInProgress || mergeInProgress}
-                className="shrink-0 inline-flex items-center gap-1.5 rounded-full border border-border bg-card px-3 py-1.5 text-xs font-medium text-foreground transition-colors hover:bg-accent disabled:cursor-not-allowed disabled:opacity-50"
-                title="Stage all changes and commit with your message"
-                aria-label="Commit local changes"
-              >
-                <GitCommitHorizontal className="h-3.5 w-3.5 shrink-0" aria-hidden />
-                {commitInProgress ? 'Committing…' : 'Commit'}
-              </button>
-            )}
-            {!hasSelection && onStashLocalChanges && !stashDisabled && (
-              <button
-                type="button"
-                onClick={() => void onStashLocalChanges()}
-                disabled={stashInProgress || mergeInProgress}
-                className="shrink-0 inline-flex items-center gap-1.5 rounded-full border border-border bg-card px-3 py-1.5 text-xs font-medium text-foreground transition-colors hover:bg-accent disabled:cursor-not-allowed disabled:opacity-50"
-                title="Stash local changes (tracked and untracked)"
-                aria-label="Stash local changes"
-              >
-                <Archive className="h-3.5 w-3.5 shrink-0" aria-hidden />
-                {stashInProgress ? 'Stashing…' : 'Stash'}
-              </button>
-            )}
+            {(() => {
+              const canCommit = !hasSelection && !!onCommitLocalChanges && !commitDisabled;
+              const canStage = !hasSelection && !!onStageAllChanges && !commitDisabled;
+              const canStash = !hasSelection && !!onStashLocalChanges && !stashDisabled;
+              const canPushSelected = resolvedSelectedPushTargets.length > 0 && !!onPushCommitTargets;
+              const canPushAll = !hasSelection && !!onPushAllBranches && pushableRemoteBranchCount >= 2 && !canCommit;
+              const canPushCurrent = !hasSelection && !!onPushCurrentBranch && canPushCurrentBranch && !canCommit && !canPushAll;
+
+              type GitPrimaryAction =
+                | { kind: 'commit'; label: string; title: string; run: () => void }
+                | { kind: 'push-selected'; label: string; title: string; run: () => void }
+                | { kind: 'push-all'; label: string; title: string; run: () => void }
+                | { kind: 'push-current'; label: string; title: string; run: () => void }
+                | { kind: 'none'; label: string; title: string; run: () => void };
+
+              const primaryAction: GitPrimaryAction =
+                canCommit
+                  ? { kind: 'commit', label: commitInProgress ? 'Committing…' : 'Commit', title: 'Stage all changes and commit with your message', run: () => setCommitDialogOpen(true) }
+                  : canPushSelected
+                    ? { kind: 'push-selected', label: pushInProgress ? 'Pushing...' : selectedPushLabel, title: selectedPushTitle, run: () => void handlePushSelectedTargets() }
+                    : canPushAll
+                      ? { kind: 'push-all', label: pushInProgress ? 'Pushing...' : 'Push all', title: 'Push every local branch that still has commits to send', run: () => void onPushAllBranches?.() }
+                      : canPushCurrent
+                        ? { kind: 'push-current', label: pushInProgress ? 'Pushing...' : pushCurrentBranchLabel, title: 'Push the branch that is currently checked out', run: () => void onPushCurrentBranch?.() }
+                        : { kind: 'none', label: '', title: 'Open git actions menu', run: openGitActionMenu };
+
+              const anyActionDisabled =
+                pushInProgress || mergeInProgress || commitInProgress || stashInProgress || stageInProgress;
+
+              const hasAnyGitAction =
+                !!onPushCommitTargets || !!onPushAllBranches || !!onPushCurrentBranch || !!onCommitLocalChanges || !!onStageAllChanges || !!onStashLocalChanges;
+
+              if (!hasAnyGitAction) return null;
+
+              return (
+                <div ref={gitActionMenuRef} className="relative shrink-0 pointer-events-auto">
+                  <div className="inline-flex rounded-full border border-border bg-card overflow-hidden">
+                    <button
+                      type="button"
+                      onClick={primaryAction.run}
+                      disabled={anyActionDisabled || primaryAction.kind === 'none'}
+                      className="inline-flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium text-foreground transition-colors hover:bg-accent disabled:cursor-not-allowed disabled:opacity-50"
+                      title={primaryAction.title}
+                      aria-label={primaryAction.title}
+                    >
+                      {primaryAction.kind === 'commit' && (
+                        <GitCommitHorizontal className="h-3.5 w-3.5 shrink-0" aria-hidden />
+                      )}
+                      {primaryAction.label}
+                    </button>
+                    <button
+                      type="button"
+                      onClick={toggleGitActionMenu}
+                      disabled={anyActionDisabled}
+                      className="inline-flex items-center px-2 py-1.5 text-xs font-medium text-muted-foreground transition-colors hover:bg-accent disabled:cursor-not-allowed disabled:opacity-50"
+                      aria-haspopup="menu"
+                      aria-expanded={gitActionMenuOpen}
+                      title="Open git actions menu"
+                      aria-label="Open git actions menu"
+                    >
+                      <ChevronDown className="h-3.5 w-3.5 shrink-0" aria-hidden />
+                    </button>
+                  </div>
+
+                  <AnimatePresence>
+                    {gitActionMenuOpen && (
+                      <motion.div
+                        role="menu"
+                        initial="closed"
+                        animate="open"
+                        exit="closed"
+                        variants={DROPDOWN_SPRING_VARIANTS}
+                        className="absolute bottom-full left-0 mb-2 min-w-[260px] rounded-xl border border-border bg-card/95 backdrop-blur-sm p-2 z-[60] origin-bottom-left transform-gpu"
+                      >
+                      <div className="flex flex-col gap-1">
+                        <button
+                          type="button"
+                          role="menuitem"
+                          onClick={() => {
+                            closeGitActionMenu();
+                            void handlePushSelectedTargets();
+                          }}
+                          disabled={anyActionDisabled || !canPushSelected}
+                          className="w-full text-left rounded-lg px-2 py-1.5 text-xs text-foreground hover:bg-muted/50 transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
+                          title={selectedPushTitle}
+                          aria-label={selectedPushTitle}
+                        >
+                          {selectedPushLabel}
+                        </button>
+
+                        <button
+                          type="button"
+                          role="menuitem"
+                          onClick={() => {
+                            closeGitActionMenu();
+                            void onPushAllBranches?.();
+                          }}
+                          disabled={anyActionDisabled || !canPushAll}
+                          className="w-full text-left rounded-lg px-2 py-1.5 text-xs text-foreground hover:bg-muted/50 transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
+                          title="Push every local branch that still has commits to send"
+                          aria-label="Push all branches"
+                        >
+                          Push all
+                        </button>
+
+                        <button
+                          type="button"
+                          role="menuitem"
+                          onClick={() => {
+                            closeGitActionMenu();
+                            void onPushCurrentBranch?.();
+                          }}
+                          disabled={anyActionDisabled || !canPushCurrent}
+                          className="w-full text-left rounded-lg px-2 py-1.5 text-xs text-foreground hover:bg-muted/50 transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
+                          title="Push the branch that is currently checked out"
+                          aria-label="Push current branch"
+                        >
+                          {pushCurrentBranchLabel}
+                        </button>
+
+                        <button
+                          type="button"
+                          role="menuitem"
+                          onClick={() => {
+                            closeGitActionMenu();
+                            setCommitDialogOpen(true);
+                          }}
+                          disabled={anyActionDisabled || !canCommit}
+                          className="w-full text-left rounded-lg px-2 py-1.5 text-xs text-foreground hover:bg-muted/50 transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
+                          title="Stage all changes and commit with your message"
+                          aria-label="Commit local changes"
+                        >
+                          Commit…
+                        </button>
+
+                        <button
+                          type="button"
+                          role="menuitem"
+                          onClick={() => {
+                            closeGitActionMenu();
+                            void onStashLocalChanges?.();
+                          }}
+                          disabled={anyActionDisabled || !canStash}
+                          className="w-full text-left rounded-lg px-2 py-1.5 text-xs text-foreground hover:bg-muted/50 transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
+                          title="Stash local changes (tracked and untracked)"
+                          aria-label="Stash local changes"
+                        >
+                          Stash
+                        </button>
+
+                        <button
+                          type="button"
+                          role="menuitem"
+                          onClick={() => {
+                            closeGitActionMenu();
+                            void onStageAllChanges?.();
+                          }}
+                          disabled={anyActionDisabled || !canStage}
+                          className="w-full text-left rounded-lg px-2 py-1.5 text-xs text-foreground hover:bg-muted/50 transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
+                          title="Stage all changes (git add -A)"
+                          aria-label="Stage all changes"
+                        >
+                          Stage all
+                        </button>
+                      </div>
+                      </motion.div>
+                    )}
+                  </AnimatePresence>
+                </div>
+              );
+            })()}
             {!hasSelection &&
               worktrees.length > 0 &&
               (onRemoveWorktree || onSwitchToWorktree) && (
-              <div className="relative shrink-0 pointer-events-auto">
+              <div ref={worktreeMenuRef} className="relative shrink-0 pointer-events-auto">
                 <button
                   type="button"
-                  onClick={() => setWorktreeMenuOpen((open) => !open)}
+                  onClick={toggleWorktreeMenu}
                   className="inline-flex items-center gap-1.5 rounded-full border border-border bg-card pl-3 pr-2 py-1.5 text-xs font-medium text-foreground transition-colors hover:bg-accent"
                   aria-expanded={worktreeMenuOpen}
                   aria-haspopup="menu"
@@ -9553,14 +9726,16 @@ export default function BranchMap({
                     aria-hidden
                   />
                 </button>
-                {worktreeMenuOpen && (
-                  <div
-                    role="menu"
-                    className="absolute bottom-full left-0 mb-2 min-w-[280px] max-w-[min(100vw-3rem,420px)] rounded-xl border border-border bg-card/95 backdrop-blur-sm p-2 shadow-lg z-[60]"
-                  >
-                    <p className="text-[10px] uppercase tracking-wide text-muted-foreground font-medium px-2 py-1">
-                      Linked checkouts
-                    </p>
+                <AnimatePresence>
+                  {worktreeMenuOpen && (
+                    <motion.div
+                      role="menu"
+                      initial="closed"
+                      animate="open"
+                      exit="closed"
+                      variants={DROPDOWN_SPRING_VARIANTS}
+                      className="absolute bottom-full left-0 mb-2 min-w-[280px] max-w-[min(100vw-3rem,420px)] rounded-xl border border-border bg-card/95 backdrop-blur-sm p-2 z-[60] origin-bottom-left transform-gpu"
+                    >
                     <ul className="flex flex-col gap-1 max-h-52 overflow-y-auto">
                       {worktrees.map((wt) => (
                         <li
@@ -9601,7 +9776,7 @@ export default function BranchMap({
                                   }
                                   aria-label={`Switch app to worktree ${worktreeShortLabel(wt.path)}`}
                                   onClick={() => {
-                                    setWorktreeMenuOpen(false);
+                                    closeWorktreeMenu();
                                     void onSwitchToWorktree(wt.path);
                                   }}
                                 >
@@ -9630,25 +9805,12 @@ export default function BranchMap({
                         </li>
                       ))}
                     </ul>
-                  </div>
-                )}
+                    </motion.div>
+                  )}
+                </AnimatePresence>
               </div>
             )}
-            {resolvedSelectedPushTargets.length > 0 && onPushCommitTargets && (
-              <div className="flex items-center gap-2 shrink-0 rounded-full border border-border bg-card pl-3 pr-1 py-1">
-                <span className="text-xs font-medium text-muted-foreground select-none">
-                  push through...
-                </span>
-                <button
-                  onClick={() => void handlePushSelectedTargets()}
-                  disabled={pushInProgress || mergeInProgress}
-                  className="rounded-full bg-primary/10 px-2.5 py-1 text-xs font-medium text-foreground transition-colors hover:bg-primary/20 disabled:cursor-not-allowed disabled:opacity-50"
-                  title={selectedPushTitle}
-                >
-                  {pushInProgress ? 'Pushing...' : selectedPushLabel}
-                </button>
-              </div>
-            )}
+            {/* push-through selection is now in the Git actions dropdown */}
             {selectedVisibleCommitShas.length > 1 &&
               commitMergeTargetOptions.length > 1 &&
               selectedCommitTargetOption &&

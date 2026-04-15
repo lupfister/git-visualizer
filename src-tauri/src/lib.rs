@@ -608,6 +608,13 @@ fn commit_working_tree(repo_path: String, message: String) -> Result<CheckedOutR
 }
 
 #[tauri::command(rename_all = "camelCase")]
+fn stage_working_tree(repo_path: String) -> Result<CheckedOutRef, String> {
+    let path = Path::new(&repo_path);
+    git::stage_working_tree(path).map_err(|e| e.to_string())?;
+    git::get_checked_out_ref(path).map_err(|e| e.to_string())
+}
+
+#[tauri::command(rename_all = "camelCase")]
 fn apply_stash_restore(repo_path: String, stash_index: u32) -> Result<CheckedOutRef, String> {
     let path = Path::new(&repo_path);
     git::apply_stash_restore(path, stash_index).map_err(|e| e.to_string())?;
@@ -3894,6 +3901,7 @@ pub fn run() {
             list_stashes,
             stash_push,
             commit_working_tree,
+            stage_working_tree,
             apply_stash_restore,
             stash_drop,
             create_branch_from_uncommitted,

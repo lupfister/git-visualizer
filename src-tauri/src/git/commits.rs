@@ -75,6 +75,12 @@ pub fn commit_working_tree(repo: &Path, message: &str) -> Result<(), GitError> {
     Ok(())
 }
 
+/// Stage all changes (`git add -A`) without creating a commit.
+pub fn stage_working_tree(repo: &Path) -> Result<(), GitError> {
+    cli::run(repo, &["add", "-A"])?;
+    Ok(())
+}
+
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct MergeNode {

@@ -66,6 +66,7 @@ function App() {
   const [stashes, setStashes] = useState<GitStashEntry[]>([]);
   const [stashInProgress, setStashInProgress] = useState(false);
   const [commitInProgress, setCommitInProgress] = useState(false);
+  const [stageInProgress, setStageInProgress] = useState(false);
   const [createBranchFromNodeInProgress, setCreateBranchFromNodeInProgress] = useState(false);
 
   const branchMetaLoadKeyRef = useRef<string | null>(null);
@@ -1099,6 +1100,40 @@ function App() {
     }
   }
 
+  async function handleStageAllChanges(): Promise<boolean> {
+    if (!repoPath || stageInProgress) return false;
+    setCommitSwitchFeedback(null);
+    setStageInProgress(true);
+    try {
+      const ref = await invoke<CheckedOutRef>('get_checked_out_ref', { repoPath });
+      if (!ref.hasUncommittedChanges) {
+        setCommitSwitchFeedback({
+          kind: 'error',
+          message: 'No local changes to stage.',
+        });
+        return false;
+      }
+      const nextRef = await invoke<CheckedOutRef>('stage_working_tree', { repoPath });
+      setCheckedOutRef(nextRef);
+      await refreshRepoGitState(repoPath);
+      setCommitSwitchFeedback({
+        kind: 'success',
+        message: 'Staged all changes.',
+      });
+      return true;
+    } catch (e) {
+      const errText = e instanceof Error ? e.message : String(e);
+      setCommitSwitchFeedback({
+        kind: 'error',
+        message: errText,
+      });
+      console.error('Failed to stage:', errText);
+      return false;
+    } finally {
+      setStageInProgress(false);
+    }
+  }
+
   async function handleCreateBranchFromNode(nodeId: string, branchName: string) {
     if (!repoPath || createBranchFromNodeInProgress) return;
     setCreateBranchFromNodeInProgress(true);
@@ -1592,6 +1627,8 @@ function App() {
               onCommitLocalChanges={handleCommitLocalChanges}
               commitInProgress={commitInProgress}
               commitDisabled={!checkedOutRef?.hasUncommittedChanges}
+              onStageAllChanges={handleStageAllChanges}
+              stageInProgress={stageInProgress}
               onCreateBranchFromNode={handleCreateBranchFromNode}
               createBranchFromNodeInProgress={createBranchFromNodeInProgress}
               onMoveNodeBackToBranch={handleMoveNodeBackToBranch}

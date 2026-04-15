@@ -51,6 +51,8 @@ interface Props {
   onCommitLocalChanges?: (message: string) => Promise<boolean>;
   commitInProgress?: boolean;
   commitDisabled?: boolean;
+  onStageAllChanges?: () => Promise<boolean> | Promise<void> | boolean | void;
+  stageInProgress?: boolean;
   onCreateBranchFromNode?: (nodeId: string, branchName: string) => Promise<void>;
   createBranchFromNodeInProgress?: boolean;
   onMoveNodeBackToBranch?: (targetBranchName: string) => Promise<void>;
@@ -95,6 +97,8 @@ export default function BranchMapView({
   onCommitLocalChanges,
   commitInProgress = false,
   commitDisabled = false,
+  onStageAllChanges,
+  stageInProgress = false,
   onCreateBranchFromNode,
   createBranchFromNodeInProgress = false,
   onMoveNodeBackToBranch,
@@ -154,6 +158,8 @@ export default function BranchMapView({
             onCommitLocalChanges={onCommitLocalChanges}
             commitInProgress={commitInProgress}
             commitDisabled={commitDisabled}
+            onStageAllChanges={onStageAllChanges}
+            stageInProgress={stageInProgress}
             onCreateBranchFromNode={onCreateBranchFromNode}
             createBranchFromNodeInProgress={createBranchFromNodeInProgress}
             onMoveNodeBackToBranch={onMoveNodeBackToBranch}
