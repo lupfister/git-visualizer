@@ -66,6 +66,7 @@ function App() {
   const [stashes, setStashes] = useState<GitStashEntry[]>([]);
   const [stashInProgress, setStashInProgress] = useState(false);
   const [commitInProgress, setCommitInProgress] = useState(false);
+  const [createBranchFromNodeInProgress, setCreateBranchFromNodeInProgress] = useState(false);
 
   const branchMetaLoadKeyRef = useRef<string | null>(null);
 
@@ -1098,6 +1099,62 @@ function App() {
     }
   }
 
+  async function handleCreateBranchFromNode(nodeId: string, branchName: string) {
+    if (!repoPath || createBranchFromNodeInProgress) return;
+    setCreateBranchFromNodeInProgress(true);
+    setCommitSwitchFeedback(null);
+    try {
+      const stashMatch = /^STASH:(\d+)$/.exec(nodeId);
+      let nextRef: CheckedOutRef;
+      if (stashMatch) {
+        const stashIndex = parseInt(stashMatch[1], 10);
+        nextRef = await invoke<CheckedOutRef>('move_stash_to_new_branch', {
+          repoPath,
+          stashIndex,
+          branchName,
+        });
+      } else {
+        nextRef = await invoke<CheckedOutRef>('create_branch_from_uncommitted', {
+          repoPath,
+          branchName,
+        });
+      }
+      setCheckedOutRef(nextRef);
+      await refreshRepoGitState(repoPath);
+      setCommitSwitchFeedback({
+        kind: 'success',
+        message: `Moved to new branch "${branchName}"`,
+      });
+    } catch (e) {
+      const message = e instanceof Error ? e.message : String(e);
+      setCommitSwitchFeedback({ kind: 'error', message });
+      console.error('Failed to create branch from node:', message);
+    } finally {
+      setCreateBranchFromNodeInProgress(false);
+    }
+  }
+
+  async function handleMoveNodeBackToBranch(targetBranchName: string) {
+    if (!repoPath) return;
+    setCommitSwitchFeedback(null);
+    try {
+      const nextRef = await invoke<CheckedOutRef>('checkout_branch', {
+        repoPath,
+        branchName: targetBranchName,
+      });
+      setCheckedOutRef(nextRef);
+      await refreshRepoGitState(repoPath);
+      setCommitSwitchFeedback({
+        kind: 'success',
+        message: `Moved back to "${targetBranchName}"`,
+      });
+    } catch (e) {
+      const message = e instanceof Error ? e.message : String(e);
+      setCommitSwitchFeedback({ kind: 'error', message });
+      console.error('Failed to move node back:', message);
+    }
+  }
+
   async function handleMergeRefsIntoBranch(sourceRefs: string[], targetBranch: string) {
     if (!repoPath) return;
     const uniqueSourceRefs = Array.from(new Set(sourceRefs.filter((ref) => !!ref && ref !== targetBranch)));
@@ -1535,6 +1592,9 @@ function App() {
               onCommitLocalChanges={handleCommitLocalChanges}
               commitInProgress={commitInProgress}
               commitDisabled={!checkedOutRef?.hasUncommittedChanges}
+              onCreateBranchFromNode={handleCreateBranchFromNode}
+              createBranchFromNodeInProgress={createBranchFromNodeInProgress}
+              onMoveNodeBackToBranch={handleMoveNodeBackToBranch}
             />
           </div>
 

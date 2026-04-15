@@ -51,6 +51,9 @@ interface Props {
   onCommitLocalChanges?: (message: string) => Promise<boolean>;
   commitInProgress?: boolean;
   commitDisabled?: boolean;
+  onCreateBranchFromNode?: (nodeId: string, branchName: string) => Promise<void>;
+  createBranchFromNodeInProgress?: boolean;
+  onMoveNodeBackToBranch?: (targetBranchName: string) => Promise<void>;
 }
 
 export default function BranchMapView({
@@ -92,6 +95,9 @@ export default function BranchMapView({
   onCommitLocalChanges,
   commitInProgress = false,
   commitDisabled = false,
+  onCreateBranchFromNode,
+  createBranchFromNodeInProgress = false,
+  onMoveNodeBackToBranch,
 }: Props) {
   // Determine active vs inactive error branches
   const openPRBranchNames = new Set(openPRs.map(p => p.branchName));
@@ -148,6 +154,9 @@ export default function BranchMapView({
             onCommitLocalChanges={onCommitLocalChanges}
             commitInProgress={commitInProgress}
             commitDisabled={commitDisabled}
+            onCreateBranchFromNode={onCreateBranchFromNode}
+            createBranchFromNodeInProgress={createBranchFromNodeInProgress}
+            onMoveNodeBackToBranch={onMoveNodeBackToBranch}
           />
         </div>
       ) : (

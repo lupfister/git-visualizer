@@ -146,6 +146,31 @@ type MarqueeRect = {
   width: number;
   height: number;
 };
+type NodeDragState = {
+  nodeId: string;
+  stashIndex?: number;
+  parentBranchName: string | null;
+  parentSha: string | null;
+  containerLeft: number;
+  containerTop: number;
+  startClientX: number;
+  startClientY: number;
+  currentClientX: number;
+  currentClientY: number;
+  isDragging: boolean;
+  isDone: boolean;
+  /** The actual SVG <g> element being dragged — moved imperatively */
+  nodeElement: SVGGElement | null;
+  /** The label <text> element that lives outside the moved <g> — hidden during drag */
+  nodeLabelElement: SVGTextElement | null;
+};
+type NodeDragDisplay = {
+  /** Cursor position in container-relative pixels, for the floating label */
+  cursorX: number;
+  cursorY: number;
+  nodeId: string;
+  hoveringMoveBackBranch: string | null;
+};
 type CheckoutAccent = 'none' | 'primary' | 'other';
 type BranchRenderLayout = {
   forkY: number;
@@ -795,6 +820,11 @@ interface BranchMapProps {
   onCommitLocalChanges?: (message: string) => Promise<boolean>;
   commitInProgress?: boolean;
   commitDisabled?: boolean;
+  /** Drag-to-branch: called when user drags WORKING_TREE or a stash node to a new branch. */
+  onCreateBranchFromNode?: (nodeId: string, branchName: string) => Promise<void>;
+  createBranchFromNodeInProgress?: boolean;
+  /** Move back: called when user drags back to a branch that shares the current HEAD. */
+  onMoveNodeBackToBranch?: (targetBranchName: string) => Promise<void>;
 }
 
 export default function BranchMap({
@@ -836,6 +866,9 @@ export default function BranchMap({
   onCommitLocalChanges,
   commitInProgress = false,
   commitDisabled = false,
+  onCreateBranchFromNode,
+  createBranchFromNodeInProgress = false,
+  onMoveNodeBackToBranch,
 }: BranchMapProps) {
   const [, setTooltip] = useState<TooltipData | null>(null);
   const [hoveredBranch, setHoveredBranch] = useState<string | null>(null);
@@ -863,6 +896,9 @@ export default function BranchMap({
   const [mergeTargetCommitSha, setMergeTargetCommitSha] = useState<string | null>(null);
   const [isMarqueeSelecting, setIsMarqueeSelecting] = useState(false);
   const [marqueeRect, setMarqueeRect] = useState<MarqueeRect | null>(null);
+  const [nodeDragDisplay, setNodeDragDisplay] = useState<NodeDragDisplay | null>(null);
+  const [newBranchDialogForNode, setNewBranchDialogForNode] = useState<{ nodeId: string; stashIndex?: number } | null>(null);
+  const [newBranchNameForNode, setNewBranchNameForNode] = useState('');
   const isHorizontal = orientation === 'horizontal';
   const gridEventGap = isHorizontal ? GRID_LANE_WIDTH : GRID_ROW_GAP;
   const gridLaneWidth = isHorizontal ? GRID_ROW_GAP : GRID_LANE_WIDTH;
@@ -950,6 +986,11 @@ export default function BranchMap({
   const autoCenterSignatureRef = useRef<string | null>(null);
   const hasUserMovedCameraRef = useRef(false);
   const marqueeDragRef = useRef<MarqueeDragState | null>(null);
+  const nodeDragRef = useRef<NodeDragState | null>(null);
+  const newBranchInputForNodeRef = useRef<HTMLInputElement>(null);
+  const onCreateBranchFromNodeRef = useRef(onCreateBranchFromNode);
+  const onMoveNodeBackToBranchRef = useRef(onMoveNodeBackToBranch);
+  const moveBackCandidateBranchNamesRef = useRef<Set<string>>(new Set());
   const branchHeadTargetsRef = useRef<BranchHeadTarget[]>([]);
   const commitSelectionTargetsRef = useRef<CommitSelectionTarget[]>([]);
   const selectionProjectionRef = useRef({
@@ -1158,6 +1199,51 @@ export default function BranchMap({
     setTooltip(null);
     setMarqueeRect({ left: startX, top: startY, width: 0, height: 0 });
     setIsMarqueeSelecting(true);
+  }
+
+  function beginNodeDrag(e: React.MouseEvent, nodeId: string, _worldX: number, _worldY: number) {
+    if (!onCreateBranchFromNode && !onMoveNodeBackToBranch) return;
+    e.stopPropagation();
+    const container = scrollRef.current;
+    if (!container) return;
+    const bounds = container.getBoundingClientRect();
+    const stashMatch = /^STASH:(\d+)$/.exec(nodeId);
+    const stashIndex = stashMatch ? parseInt(stashMatch[1], 10) : undefined;
+    const parentBranchName =
+      nodeId === 'WORKING_TREE'
+        ? (checkedOutRef?.branchName ?? null)
+        : stashMatch
+          ? (branches.find((b) => b.name === `*Stash:${stashMatch[1]}`)?.parentBranch ?? null)
+          : null;
+    const parentSha =
+      nodeId === 'WORKING_TREE'
+        ? (checkedOutRef?.headSha ?? null)
+        : stashMatch
+          ? (branches.find((b) => b.name === `*Stash:${stashMatch[1]}`)?.divergedFromSha ?? null)
+          : null;
+
+    // Find the actual SVG elements to manipulate imperatively
+    const nodeElement =
+      svgRef.current?.querySelector<SVGGElement>(`[data-drag-id="${CSS.escape(nodeId)}"]`) ?? null;
+    const nodeLabelElement =
+      svgRef.current?.querySelector<SVGTextElement>(`[data-drag-label-id="${CSS.escape(nodeId)}"]`) ?? null;
+
+    nodeDragRef.current = {
+      nodeId,
+      stashIndex,
+      parentBranchName,
+      parentSha,
+      containerLeft: bounds.left,
+      containerTop: bounds.top,
+      startClientX: e.clientX,
+      startClientY: e.clientY,
+      currentClientX: e.clientX,
+      currentClientY: e.clientY,
+      isDragging: false,
+      isDone: false,
+      nodeElement,
+      nodeLabelElement,
+    };
   }
 
   function clearTimelineRevealTimer() {
@@ -2042,6 +2128,139 @@ export default function BranchMap({
   useEffect(() => {
     deleteInProgressRef.current = deleteInProgress;
   }, [deleteInProgress]);
+
+  useEffect(() => {
+    onCreateBranchFromNodeRef.current = onCreateBranchFromNode;
+  }, [onCreateBranchFromNode]);
+
+  useEffect(() => {
+    onMoveNodeBackToBranchRef.current = onMoveNodeBackToBranch;
+  }, [onMoveNodeBackToBranch]);
+
+  useEffect(() => {
+    function findMoveBackBranch(screenX: number): string | null {
+      const candidates = moveBackCandidateBranchNamesRef.current;
+      if (candidates.size === 0) return null;
+      const projection = selectionProjectionRef.current;
+      const cameraScale = getCameraScale(zoomRef.current, projection.isHorizontal);
+      for (const target of branchHeadTargetsRef.current) {
+        if (!candidates.has(target.branchName)) continue;
+        const centerX =
+          panRef.current.x +
+          projection.graphOffsetX +
+          (projection.graphContentTranslateX + target.point.x) * cameraScale.x;
+        if (Math.abs(screenX - centerX) <= 56) return target.branchName;
+      }
+      return null;
+    }
+
+    const onMouseMove = (e: MouseEvent) => {
+      const drag = nodeDragRef.current;
+      if (!drag || drag.isDone) return;
+      const dx = e.clientX - drag.startClientX;
+      const dy = e.clientY - drag.startClientY;
+      const dist = Math.sqrt(dx * dx + dy * dy);
+      const wasDragging = drag.isDragging;
+      const isDragging = wasDragging || dist > 6;
+      nodeDragRef.current = { ...drag, currentClientX: e.clientX, currentClientY: e.clientY, isDragging };
+      if (!isDragging) return;
+
+      // Move the actual SVG element imperatively — world units = screen delta / zoom
+      if (drag.nodeElement) {
+        const worldDx = dx / zoomRef.current;
+        const worldDy = dy / zoomRef.current;
+        drag.nodeElement.setAttribute('transform', `translate(${worldDx} ${worldDy})`);
+      }
+
+      const cursorContainerX = e.clientX - drag.containerLeft;
+      const nextMoveBack = findMoveBackBranch(cursorContainerX);
+      const actionText = nextMoveBack ? `→ ${nextMoveBack}` : '→ New branch';
+
+      if (!wasDragging) {
+        // First drag frame: hide the external label and inject action text inside the moved <g>
+        if (drag.nodeLabelElement) {
+          drag.nodeLabelElement.style.opacity = '0';
+          // Inject a cloned <text> into the moved <g> with action text + same styling
+          if (drag.nodeElement) {
+            const injected = document.createElementNS('http://www.w3.org/2000/svg', 'text');
+            injected.setAttribute('x', drag.nodeLabelElement.getAttribute('x') ?? '0');
+            injected.setAttribute('y', drag.nodeLabelElement.getAttribute('y') ?? '0');
+            injected.setAttribute('text-anchor', drag.nodeLabelElement.getAttribute('text-anchor') ?? 'start');
+            injected.setAttribute('fill', drag.nodeLabelElement.getAttribute('fill') ?? '#47AFEB');
+            injected.setAttribute('font-size', drag.nodeLabelElement.getAttribute('font-size') ?? '');
+            injected.setAttribute('font-weight', drag.nodeLabelElement.getAttribute('font-weight') ?? '');
+            injected.setAttribute('font-family', drag.nodeLabelElement.getAttribute('font-family') ?? '');
+            injected.setAttribute('text-rendering', 'geometricPrecision');
+            injected.setAttribute('pointer-events', 'none');
+            injected.setAttribute('data-action-text', 'true');
+            injected.textContent = actionText;
+            drag.nodeElement.appendChild(injected);
+          }
+        }
+      } else {
+        // Subsequent frames: only update the text if it changed
+        const injected = drag.nodeElement?.querySelector<SVGTextElement>('[data-action-text]');
+        if (injected && injected.textContent !== actionText) injected.textContent = actionText;
+      }
+
+      // Only trigger a React re-render when drop-zone highlights need updating
+      setNodeDragDisplay((prev) => {
+        if (prev && prev.hoveringMoveBackBranch === nextMoveBack) return prev;
+        return { cursorX: cursorContainerX, cursorY: e.clientY - drag.containerTop, nodeId: drag.nodeId, hoveringMoveBackBranch: nextMoveBack };
+      });
+    };
+
+    const resetNodeDrag = (drag: NodeDragState) => {
+      // Reset the SVG element's transform so it snaps back to its original position
+      drag.nodeElement?.removeAttribute('transform');
+      // Remove the injected action text and restore the original label
+      drag.nodeElement?.querySelector('[data-action-text]')?.remove();
+      if (drag.nodeLabelElement) drag.nodeLabelElement.style.removeProperty('opacity');
+      nodeDragRef.current = null;
+      setNodeDragDisplay(null);
+    };
+
+    const onMouseUp = (e: MouseEvent) => {
+      const drag = nodeDragRef.current;
+      if (!drag || drag.isDone) return;
+      const wasDragging = drag.isDragging;
+      resetNodeDrag(drag);
+      if (!wasDragging) return;
+
+      const container = scrollRef.current;
+      if (!container) return;
+      const bounds = container.getBoundingClientRect();
+      const cursorContainerX = e.clientX - bounds.left;
+
+      const moveBackBranch = findMoveBackBranch(cursorContainerX);
+      if (moveBackBranch && onMoveNodeBackToBranchRef.current) {
+        void onMoveNodeBackToBranchRef.current(moveBackBranch);
+        return;
+      }
+
+      if (onCreateBranchFromNodeRef.current) {
+        setNewBranchDialogForNode({ nodeId: drag.nodeId, stashIndex: drag.stashIndex });
+        setNewBranchNameForNode('');
+        setTimeout(() => newBranchInputForNodeRef.current?.focus(), 60);
+      }
+    };
+
+    const onKeyDown = (e: KeyboardEvent) => {
+      const drag = nodeDragRef.current;
+      if (e.key === 'Escape' && drag) {
+        resetNodeDrag(drag);
+      }
+    };
+
+    window.addEventListener('mousemove', onMouseMove, { passive: true });
+    window.addEventListener('mouseup', onMouseUp);
+    window.addEventListener('keydown', onKeyDown, { capture: true });
+    return () => {
+      window.removeEventListener('mousemove', onMouseMove);
+      window.removeEventListener('mouseup', onMouseUp);
+      window.removeEventListener('keydown', onKeyDown, { capture: true });
+    };
+  }, []); // eslint-disable-line react-hooks/exhaustive-deps
 
   useEffect(() => {
     const isEditable = (el: EventTarget | null) => {
@@ -4175,6 +4394,25 @@ export default function BranchMap({
     graphContentTranslateY,
     isHorizontal,
   };
+  // Compute which branches can accept a "move back" drop: any branch sharing the
+  // current HEAD sha (other than the currently checked-out branch itself).
+  {
+    const currentHeadSha = checkedOutRef?.headSha ?? null;
+    const currentBranch = checkedOutRef?.branchName ?? null;
+    if (currentHeadSha && currentBranch && checkedOutRef?.hasUncommittedChanges) {
+      const candidates = new Set<string>();
+      for (const b of activeBranches) {
+        if (b.name !== currentBranch && b.headSha === currentHeadSha) candidates.add(b.name);
+      }
+      const mainHeadSha = sortedDirectCommits[sortedDirectCommits.length - 1]?.fullSha ?? null;
+      if (mainHeadSha && mainHeadSha === currentHeadSha && defaultBranch !== currentBranch) {
+        candidates.add(defaultBranch);
+      }
+      moveBackCandidateBranchNamesRef.current = candidates;
+    } else {
+      moveBackCandidateBranchNamesRef.current = new Set();
+    }
+  }
   const projectedCommitCenterBounds = hasCommitCenterCanonicalBounds
     ? (isHorizontal
       ? {
@@ -6694,7 +6932,7 @@ export default function BranchMap({
       <div
         ref={scrollRef}
         onMouseDown={handleCanvasMouseDown}
-        className={`w-full h-full overflow-hidden branch-map-scroll relative select-none touch-none ${isPanning ? 'cursor-grabbing' : spaceHeld ? 'cursor-grab' : 'cursor-default'}`}
+        className={`w-full h-full overflow-hidden branch-map-scroll relative select-none touch-none ${nodeDragDisplay ? 'cursor-grabbing' : isPanning ? 'cursor-grabbing' : spaceHeld ? 'cursor-grab' : 'cursor-default'}`}
       >
         <div
           ref={cameraRef}
@@ -6838,7 +7076,12 @@ export default function BranchMap({
                               const mainSingleHit = collapsedClumpHitRect(anchorX, anchorY, rectSize, mainSingleHitPad);
                               return (
                                 <g key={clusterKey}>
-                                  <g style={{ pointerEvents: 'none' }}>
+                                  <g
+                                    style={{
+                                      pointerEvents: 'none',
+                                      opacity: (isUncommittedCommit || isStashCommit) && nodeDragDisplay?.nodeId === c.fullSha ? 0 : 1,
+                                    }}
+                                  >
                                     {renderCommitNodeShapeRect({
                                       x: anchorX - rectSize.width / 2 + CANVAS_NODE_STROKE_INSET,
                                       y: anchorY - rectSize.height / 2 + CANVAS_NODE_STROKE_INSET,
@@ -6868,7 +7111,12 @@ export default function BranchMap({
                                     width={mainSingleHit.width}
                                     height={mainSingleHit.height}
                                     fill="transparent"
-                                    style={{ cursor: 'pointer' }}
+                                    style={{ cursor: (isUncommittedCommit || isStashCommit) && onCreateBranchFromNode ? 'grab' : 'pointer' }}
+                                    onMouseDown={(event) => {
+                                      if ((isUncommittedCommit || isStashCommit) && onCreateBranchFromNode) {
+                                        beginNodeDrag(event, c.fullSha, anchorX, anchorY);
+                                      }
+                                    }}
                                     onClick={(event) =>
                                       handleCommitNodeClick(
                                         event,
@@ -7599,7 +7847,12 @@ export default function BranchMap({
                                   );
                                   return (
                                     <g key={vm.clusterKey}>
-                                      <g style={{ pointerEvents: 'none' }}>
+                                      <g
+                                        style={{
+                                          pointerEvents: 'none',
+                                          opacity: (isUncommittedCommit || isStashCommit) && nodeDragDisplay?.nodeId === targetCommitSha ? 0 : 1,
+                                        }}
+                                      >
                                         {renderCommitNodeShapeRect({
                                           x: anchorX - rectSize.width / 2 + dotStrokeInset,
                                           y: anchorY - rectSize.height / 2 + dotStrokeInset,
@@ -7633,7 +7886,12 @@ export default function BranchMap({
                                         width={singleCommitHit.width}
                                         height={singleCommitHit.height}
                                         fill="transparent"
-                                        style={{ cursor: 'pointer' }}
+                                        style={{ cursor: (isUncommittedCommit || isStashCommit) && onCreateBranchFromNode ? 'grab' : 'pointer' }}
+                                        onMouseDown={(event) => {
+                                          if ((isUncommittedCommit || isStashCommit) && onCreateBranchFromNode) {
+                                            beginNodeDrag(event, targetCommitSha, anchorX, anchorY);
+                                          }
+                                        }}
                                         onClick={(event) => {
                                           if (isNonCommitPlaceholder) {
                                             handleCommitNodeClick(event, b.headSha, b.name);
@@ -8129,7 +8387,10 @@ export default function BranchMap({
                             const ghostRectStrokeWidth = unpushedStrokeWidth;
 
                             return (
-                              <g key={`branch-overlay-${clusterKey}`}>
+                              <g
+                                key={`branch-overlay-${clusterKey}`}
+                                {...((isUncommittedCommit || isStashCommit) ? { 'data-drag-id': commit?.fullSha } : {})}
+                              >
                                 {isGhostRect ? (
                                   renderCommitNodeShapeRect({
                                     x: anchorX - rectSize.width / 2 + dotStrokeInset,
@@ -8361,7 +8622,10 @@ export default function BranchMap({
                             : false;
                           const rectSize = commitRectSize(scaledNodeSize);
                           return (
-                            <g key={`main-direct-overlay-${clusterKey}`}>
+                            <g
+                              key={`main-direct-overlay-${clusterKey}`}
+                              {...((isUncommittedCommit || isStashCommit) ? { 'data-drag-id': singleMainCommit?.fullSha } : {})}
+                            >
                               {renderCommitNodeRect({
                                 nodeKey: clusterKey,
                                 centerX: anchorX,
@@ -8592,6 +8856,7 @@ export default function BranchMap({
                               return (
                                 <text
                                   key={`branch-label-overlay-${clusterKey}`}
+                                  {...((commit?.kind === 'uncommitted' || !!(commit && isStashCommitLike(commit))) ? { 'data-drag-label-id': commit?.fullSha } : {})}
                                   x={anchorX - rectSize.width / 2 + CANVAS_NODE_STROKE_INSET + nodeFrameLabelInsetX}
                                   y={anchorY - rectSize.height / 2 - nodeFrameLabelGap}
                                   textAnchor="start"
@@ -8817,6 +9082,7 @@ export default function BranchMap({
                             return (
                               <text
                                 key={`main-label-overlay-${clusterKey}`}
+                                {...((last.kind === 'uncommitted' || isStashCommitLike(last)) ? { 'data-drag-label-id': last.fullSha } : {})}
                                 x={anchorX - rectSize.width / 2 + CANVAS_NODE_STROKE_INSET + nodeFrameLabelInsetX}
                                 y={anchorY - rectSize.height / 2 - nodeFrameLabelGap}
                                 textAnchor="start"
@@ -9452,6 +9718,149 @@ export default function BranchMap({
           </div>
         </div>
       </div>
+
+      {/* ── Node drag: drop-zone column highlights ─────────────────────────────── */}
+      {nodeDragDisplay && (() => {
+        const projection = selectionProjectionRef.current;
+        const cameraScale = getCameraScale(zoomRef.current, projection.isHorizontal);
+        const highlights = branchHeadTargetsRef.current
+          .filter((t) => moveBackCandidateBranchNamesRef.current.has(t.branchName))
+          .map((t) => {
+            const centerX =
+              panRef.current.x +
+              projection.graphOffsetX +
+              (projection.graphContentTranslateX + t.point.x) * cameraScale.x;
+            return { branchName: t.branchName, centerX };
+          });
+        if (highlights.length === 0) return null;
+        return (
+          <>
+            {highlights.map((h) => (
+              <div
+                key={h.branchName}
+                style={{
+                  position: 'absolute',
+                  left: h.centerX - 44,
+                  top: 0,
+                  width: 88,
+                  bottom: 0,
+                  background: `${CHECKED_OUT_SELECTION_STROKE}18`,
+                  borderLeft: `1.5px dashed ${CHECKED_OUT_SELECTION_STROKE}55`,
+                  borderRight: `1.5px dashed ${CHECKED_OUT_SELECTION_STROKE}55`,
+                  pointerEvents: 'none',
+                  zIndex: 6,
+                }}
+              />
+            ))}
+            {highlights.map((h) => (
+              <div
+                key={`${h.branchName}-label`}
+                style={{
+                  position: 'absolute',
+                  left: h.centerX - 52,
+                  top: 16,
+                  width: 104,
+                  pointerEvents: 'none',
+                  zIndex: 7,
+                }}
+                className="text-center"
+              >
+                <span className="inline-block rounded-lg border border-border/60 bg-card/90 backdrop-blur-sm px-2 py-1 text-[10px] leading-tight text-muted-foreground shadow-sm">
+                  Drop to move back
+                  <br />
+                  <span className="font-medium text-foreground">{h.branchName}</span>
+                </span>
+              </div>
+            ))}
+          </>
+        );
+      })()}
+
+
+      {/* ── New branch name dialog (triggered by node drag) ─────────────────────── */}
+      {newBranchDialogForNode && (
+        <div
+          className="absolute inset-0 z-[70] flex items-center justify-center bg-background/70 backdrop-blur-sm p-4"
+          onClick={() => {
+            if (!createBranchFromNodeInProgress) setNewBranchDialogForNode(null);
+          }}
+          role="presentation"
+        >
+          <div
+            role="dialog"
+            aria-modal="true"
+            aria-labelledby="new-branch-dialog-title"
+            className="w-full max-w-sm rounded-2xl border border-border bg-card shadow-lg p-4"
+            onClick={(e) => e.stopPropagation()}
+          >
+            <p id="new-branch-dialog-title" className="text-sm font-medium text-foreground">
+              {newBranchDialogForNode.stashIndex !== undefined ? 'Move stash to new branch' : 'Move changes to new branch'}
+            </p>
+            <p className="mt-1 text-xs text-muted-foreground">
+              {newBranchDialogForNode.stashIndex !== undefined
+                ? "A new branch will be created at the stash's base commit and the stash will be applied as uncommitted changes."
+                : "A new branch will be created at the current HEAD. Your uncommitted changes will follow."}
+            </p>
+            <label
+              htmlFor="new-branch-name-input"
+              className="mt-3 block text-[10px] uppercase tracking-wide text-muted-foreground font-medium"
+            >
+              Branch name
+            </label>
+            <input
+              id="new-branch-name-input"
+              ref={newBranchInputForNodeRef}
+              type="text"
+              value={newBranchNameForNode}
+              onChange={(e) => setNewBranchNameForNode(e.target.value)}
+              onKeyDown={(e) => {
+                if (e.key === 'Enter' && newBranchNameForNode.trim() && !createBranchFromNodeInProgress) {
+                  void (async () => {
+                    const name = newBranchNameForNode.trim();
+                    const nodeId = newBranchDialogForNode.nodeId;
+                    setNewBranchDialogForNode(null);
+                    await onCreateBranchFromNode?.(nodeId, name);
+                  })();
+                }
+                if (e.key === 'Escape' && !createBranchFromNodeInProgress) {
+                  setNewBranchDialogForNode(null);
+                }
+              }}
+              disabled={createBranchFromNodeInProgress}
+              placeholder="e.g. feature/my-changes"
+              autoComplete="off"
+              spellCheck={false}
+              className="mt-1.5 w-full rounded-lg border border-border bg-background px-3 py-2 text-sm text-foreground placeholder:text-muted-foreground focus:outline-none focus:ring-2 focus:ring-ring disabled:opacity-50 font-mono"
+            />
+            <div className="mt-4 flex items-center justify-end gap-2">
+              <button
+                type="button"
+                onClick={() => {
+                  if (!createBranchFromNodeInProgress) setNewBranchDialogForNode(null);
+                }}
+                disabled={createBranchFromNodeInProgress}
+                className="rounded-lg border border-border bg-card px-3 py-1.5 text-xs font-medium text-foreground transition-colors hover:bg-accent disabled:cursor-not-allowed disabled:opacity-50"
+              >
+                Cancel
+              </button>
+              <button
+                type="button"
+                onClick={() => {
+                  const name = newBranchNameForNode.trim();
+                  if (!name || createBranchFromNodeInProgress) return;
+                  const nodeId = newBranchDialogForNode.nodeId;
+                  setNewBranchDialogForNode(null);
+                  void onCreateBranchFromNode?.(nodeId, name);
+                }}
+                disabled={createBranchFromNodeInProgress || !newBranchNameForNode.trim()}
+                className="rounded-lg border border-border bg-card px-3 py-1.5 text-xs font-medium text-foreground transition-colors hover:bg-accent disabled:cursor-not-allowed disabled:opacity-50"
+              >
+                {createBranchFromNodeInProgress ? 'Creating…' : 'Create branch'}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
 
       {commitDialogOpen && (
         <div
