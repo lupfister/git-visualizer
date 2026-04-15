@@ -38,7 +38,6 @@ function App() {
   const [checkedOutRef, setCheckedOutRef] = useState<CheckedOutRef | null>(null);
   const [worktrees, setWorktrees] = useState<WorktreeInfo[]>([]);
   const [removeWorktreeInProgress, setRemoveWorktreeInProgress] = useState(false);
-  const [hoveredBranchName, setHoveredBranchName] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);       // button spinner in landing
   const [mapLoading, setMapLoading] = useState(false); // canvas skeleton in map
   const [error, setError] = useState<string | null>(null);
@@ -559,7 +558,6 @@ function App() {
     setGithubAuthStatus(null);
     setGithubAuthMessage(null);
     setCheckedOutRef(null);
-    setHoveredBranchName(null);
     setCommitSwitchFeedback(null);
   }, [repoPath]);
 
@@ -1515,8 +1513,6 @@ function App() {
               scrollRequest={scrollRequest}
               focusedErrorBranch={focusedErrorBranch}
               checkedOutRef={checkedOutRef}
-              onHoveredBranchChange={setHoveredBranchName}
-
               onMergeRefsIntoBranch={handleMergeRefsIntoBranch}
               mergeInProgress={mergeInProgress}
               onPushAllBranches={handlePushAllBranches}
@@ -1557,14 +1553,6 @@ function App() {
                 <h1 className="text-sm md:text-base font-medium text-foreground truncate">
                   {repoName}
                 </h1>
-                {(hoveredBranchName ?? checkedOutRef?.branchName) && (
-                  <p
-                    className="mt-0.5 text-xs text-muted-foreground truncate"
-                    title={hoveredBranchName ?? checkedOutRef?.branchName ?? undefined}
-                  >
-                    {hoveredBranchName ?? checkedOutRef?.branchName}
-                  </p>
-                )}
               </div>
               <div className="justify-self-end" aria-hidden="true" />
             </div>
@@ -1587,21 +1575,6 @@ function App() {
                 <span className="text-xs text-muted-foreground max-w-64 truncate" title={githubAuthMessage}>
                   {githubAuthMessage}
                 </span>
-              )}
-              {repoPath && (
-                <button
-                  type="button"
-                  onClick={() => void handleStashLocalChanges()}
-                  disabled={stashInProgress || !checkedOutRef?.hasUncommittedChanges}
-                  title={
-                    checkedOutRef?.hasUncommittedChanges
-                      ? 'Stash working tree changes (including untracked files)'
-                      : 'No uncommitted changes to stash'
-                  }
-                  className="text-xs font-medium text-foreground border border-border/50 rounded-full px-3 py-1 transition-colors hover:bg-accent hover:text-foreground disabled:opacity-50 disabled:cursor-not-allowed shrink-0"
-                >
-                  {stashInProgress ? 'Stashing…' : 'Stash local'}
-                </button>
               )}
               {commitSwitchFeedback && (
                 <span

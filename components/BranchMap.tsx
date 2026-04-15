@@ -1,5 +1,5 @@
 import React, { useState, useRef, useEffect, useLayoutEffect } from 'react';
-import { Archive, GitCommitHorizontal, Loader2, X } from 'lucide-react';
+import { Archive, ChevronDown, GitCommitHorizontal, Loader2, X } from 'lucide-react';
 import { layoutWithLines, prepareWithSegments } from '@chenglou/pretext';
 import { Branch, BranchCommitPreview, BranchPromptMeta, CheckedOutRef, DirectCommit, MergeNode, OpenPR, WorktreeInfo } from '../types';
 import { ViewMode } from './BranchMapView';
@@ -755,7 +755,6 @@ interface BranchMapProps {
   unpushedDirectCommits?: DirectCommit[];
   unpushedCommitShasByBranch?: Record<string, string[]>;
   defaultBranch: string;
-  onHoveredBranchChange?: (branchName: string | null) => void;
   onCommitClick?: (target: { commitSha: string; branchName?: string }) => void;
   onLoadMore?: () => void;
   branchPromptMeta?: Record<string, BranchPromptMeta>;
@@ -805,7 +804,6 @@ export default function BranchMap({
   unpushedDirectCommits = [],
   unpushedCommitShasByBranch = {},
   defaultBranch,
-  onHoveredBranchChange,
   onCommitClick,
   branchPromptMeta = {},
   branchCommitPreviews = {},
@@ -962,11 +960,6 @@ export default function BranchMap({
     isHorizontal: false,
   });
 
-  useEffect(() => {
-    onHoveredBranchChange?.(hoveredBranch);
-  }, [hoveredBranch, onHoveredBranchChange]);
-
-  useEffect(() => () => onHoveredBranchChange?.(null), [onHoveredBranchChange]);
   const [, setTimelineRevealReady] = useState(false);
   const [timelineRevealPhase, setTimelineRevealPhase] = useState<'hidden' | 'fading' | 'done'>('hidden');
   const [hasInitialRevealDone, setHasInitialRevealDone] = useState(false);
@@ -6539,9 +6532,19 @@ export default function BranchMap({
         : []),
       ...activeBranches,
     ]
-      .filter((branch) => branch.unpushedCommits > 0 && branch.remoteSyncStatus !== 'on-github')
-      .map((branch) => [branch.name, branch] as const)
+      .filter(
+        (branch) =>
+          !branch.name.startsWith('*') &&
+          branch.unpushedCommits > 0 &&
+          branch.remoteSyncStatus !== 'on-github',
+      )
+      .map((branch) => [branch.name, branch] as const),
   );
+  const pushableRemoteBranchCount = pushableBranchByName.size;
+  const canPushCurrentBranch =
+    !checkedOutIsDetached &&
+    !!checkedOutBranchName &&
+    pushableBranchByName.has(checkedOutBranchName);
   const commitPreviewListForBranch = (branchName: string): BranchCommitPreview[] => {
     if (branchName === defaultBranch) {
       return unpushedDirectCommits.map((commit) => ({
@@ -9217,7 +9220,7 @@ export default function BranchMap({
           }}
         >
           <div className="flex items-center gap-2 min-w-0">
-            {!hasSelection && onPushAllBranches && (
+            {!hasSelection && onPushAllBranches && pushableRemoteBranchCount >= 2 && (
               <button
                 onClick={() => void onPushAllBranches()}
                 disabled={pushInProgress || mergeInProgress}
@@ -9227,61 +9230,62 @@ export default function BranchMap({
                 {pushInProgress ? 'Pushing...' : 'Push all'}
               </button>
             )}
-            {!hasSelection && onPushCurrentBranch && (
+            {!hasSelection && onPushCurrentBranch && canPushCurrentBranch && (
               <button
                 onClick={() => void onPushCurrentBranch()}
-                disabled={pushInProgress || mergeInProgress || checkedOutIsDetached}
+                disabled={pushInProgress || mergeInProgress}
                 className="shrink-0 rounded-full border border-border bg-card px-3 py-1.5 text-xs font-medium text-foreground transition-colors hover:bg-accent disabled:cursor-not-allowed disabled:opacity-50"
-                title={checkedOutIsDetached ? 'Check out a branch to push it' : 'Push the branch that is currently checked out'}
+                title="Push the branch that is currently checked out"
               >
                 {pushInProgress ? 'Pushing...' : pushCurrentBranchLabel}
               </button>
             )}
-            {!hasSelection && onCommitLocalChanges && (
+            {!hasSelection && onCommitLocalChanges && !commitDisabled && (
               <button
                 type="button"
                 onClick={() => setCommitDialogOpen(true)}
-                disabled={commitInProgress || mergeInProgress || commitDisabled}
+                disabled={commitInProgress || mergeInProgress}
                 className="shrink-0 inline-flex items-center gap-1.5 rounded-full border border-border bg-card px-3 py-1.5 text-xs font-medium text-foreground transition-colors hover:bg-accent disabled:cursor-not-allowed disabled:opacity-50"
-                title={
-                  commitDisabled
-                    ? 'No local changes to commit'
-                    : 'Stage all changes and commit with your message'
-                }
+                title="Stage all changes and commit with your message"
                 aria-label="Commit local changes"
               >
                 <GitCommitHorizontal className="h-3.5 w-3.5 shrink-0" aria-hidden />
                 {commitInProgress ? 'Committing…' : 'Commit'}
               </button>
             )}
-            {!hasSelection && onStashLocalChanges && (
+            {!hasSelection && onStashLocalChanges && !stashDisabled && (
               <button
                 type="button"
                 onClick={() => void onStashLocalChanges()}
-                disabled={stashInProgress || mergeInProgress || stashDisabled}
+                disabled={stashInProgress || mergeInProgress}
                 className="shrink-0 inline-flex items-center gap-1.5 rounded-full border border-border bg-card px-3 py-1.5 text-xs font-medium text-foreground transition-colors hover:bg-accent disabled:cursor-not-allowed disabled:opacity-50"
-                title={
-                  stashDisabled
-                    ? 'No local changes to stash'
-                    : 'Stash local changes (tracked and untracked)'
-                }
+                title="Stash local changes (tracked and untracked)"
                 aria-label="Stash local changes"
               >
                 <Archive className="h-3.5 w-3.5 shrink-0" aria-hidden />
                 {stashInProgress ? 'Stashing…' : 'Stash'}
               </button>
             )}
-            {!hasSelection && worktrees.length > 0 && onRemoveWorktree && (
+            {!hasSelection &&
+              worktrees.length > 0 &&
+              (onRemoveWorktree || onSwitchToWorktree) && (
               <div className="relative shrink-0 pointer-events-auto">
                 <button
                   type="button"
                   onClick={() => setWorktreeMenuOpen((open) => !open)}
-                  className="rounded-full border border-border bg-card px-3 py-1.5 text-xs font-medium text-foreground transition-colors hover:bg-accent"
+                  className="inline-flex items-center gap-1.5 rounded-full border border-border bg-card pl-3 pr-2 py-1.5 text-xs font-medium text-foreground transition-colors hover:bg-accent"
                   aria-expanded={worktreeMenuOpen}
                   aria-haspopup="menu"
                   title="Git worktrees: additional checkouts of this repository"
+                  aria-label={`${worktrees.length} ${worktrees.length === 1 ? 'worktree' : 'worktrees'}, menu`}
                 >
-                  Worktrees ({worktrees.length})
+                  <span>
+                    {worktrees.length} {worktrees.length === 1 ? 'Worktree' : 'Worktrees'}
+                  </span>
+                  <ChevronDown
+                    className="h-3.5 w-3.5 shrink-0 text-muted-foreground"
+                    aria-hidden
+                  />
                 </button>
                 {worktreeMenuOpen && (
                   <div
@@ -9315,26 +9319,51 @@ export default function BranchMap({
                             )}
                           </div>
                           {isOtherWorktree(wt) && (
-                            <button
-                              type="button"
-                              role="menuitem"
-                              className="shrink-0 rounded-lg border border-border px-2 py-1 text-xs font-medium transition-colors hover:bg-accent disabled:opacity-50"
-                              disabled={removeWorktreeInProgress}
-                              title={wt.isPrunable ? 'Remove with --force (stale or broken worktree)' : 'Remove worktree'}
-                              onClick={() => void onRemoveWorktree(wt.path, wt.isPrunable)}
-                            >
-                              {removeWorktreeInProgress ? '…' : 'Remove'}
-                            </button>
+                            <div className="flex shrink-0 items-center gap-1">
+                              {onSwitchToWorktree && (
+                                <button
+                                  type="button"
+                                  role="menuitem"
+                                  className="rounded-lg border border-border px-2 py-1 text-xs font-medium transition-colors hover:bg-accent disabled:cursor-not-allowed disabled:opacity-50"
+                                  disabled={
+                                    removeWorktreeInProgress || wt.pathExists === false
+                                  }
+                                  title={
+                                    wt.pathExists === false
+                                      ? 'Folder missing — remove the worktree or run git worktree prune'
+                                      : 'Open this repository in this window'
+                                  }
+                                  aria-label={`Switch app to worktree ${worktreeShortLabel(wt.path)}`}
+                                  onClick={() => {
+                                    setWorktreeMenuOpen(false);
+                                    void onSwitchToWorktree(wt.path);
+                                  }}
+                                >
+                                  Switch
+                                </button>
+                              )}
+                              {onRemoveWorktree && (
+                                <button
+                                  type="button"
+                                  role="menuitem"
+                                  className="rounded-lg border border-border px-2 py-1 text-xs font-medium transition-colors hover:bg-accent disabled:opacity-50"
+                                  disabled={removeWorktreeInProgress}
+                                  title={
+                                    wt.isPrunable
+                                      ? 'Remove with --force (stale or broken worktree)'
+                                      : 'Remove worktree'
+                                  }
+                                  aria-label={`Remove worktree ${worktreeShortLabel(wt.path)}`}
+                                  onClick={() => void onRemoveWorktree(wt.path, wt.isPrunable)}
+                                >
+                                  {removeWorktreeInProgress ? '…' : 'Remove'}
+                                </button>
+                              )}
+                            </div>
                           )}
                         </li>
                       ))}
                     </ul>
-                    <p className="text-[10px] text-muted-foreground px-2 pt-1">
-                      Teal highlights mark commits checked out in another worktree; blue is this window. Yellow is stash.
-                      Cmd+click (Ctrl+click on Windows/Linux) or double-click a teal commit to target that worktree in the app.
-                      Stale rows (missing folder) stay listed until you remove them or run{' '}
-                      <span className="font-mono">git worktree prune</span>.
-                    </p>
                   </div>
                 )}
               </div>

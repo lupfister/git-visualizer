@@ -12,7 +12,6 @@ interface Props {
   unpushedCommitShasByBranch?: Record<string, string[]>;
   openPRs?: OpenPR[];
   defaultBranch: string;
-  onHoveredBranchChange?: (branchName: string | null) => void;
   onCommitClick?: (target: { commitSha: string; branchName?: string }) => void;
   onLoadMore?: () => void;
   githubAvailable?: boolean;
@@ -62,7 +61,6 @@ export default function BranchMapView({
   unpushedCommitShasByBranch = {},
   openPRs = [],
   defaultBranch,
-  onHoveredBranchChange,
   onCommitClick,
   onLoadMore,
   branchPromptMeta = {},
@@ -118,7 +116,6 @@ export default function BranchMapView({
             unpushedCommitShasByBranch={unpushedCommitShasByBranch}
             openPRs={openPRs}
             defaultBranch={defaultBranch}
-            onHoveredBranchChange={onHoveredBranchChange}
             onCommitClick={onCommitClick}
             onLoadMore={onLoadMore}
             branchPromptMeta={branchPromptMeta}
