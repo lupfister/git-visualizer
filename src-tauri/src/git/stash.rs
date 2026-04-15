@@ -1,6 +1,45 @@
+use super::branches::get_default_branch;
 use super::cli::{self, GitError};
 use serde::Serialize;
 use std::path::Path;
+
+/// Local branch names whose tip is exactly `commit_sha` (empty if detached-only / no branch tip).
+fn local_branches_pointing_at(repo: &Path, commit_sha: &str) -> Result<Vec<String>, GitError> {
+    let output = cli::run(
+        repo,
+        &[
+            "branch",
+            "--format=%(refname:short)",
+            "--points-at",
+            commit_sha,
+        ],
+    )?;
+    let mut names: Vec<String> = output
+        .lines()
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .map(str::to_string)
+        .collect();
+    names.sort();
+    Ok(names)
+}
+
+/// Check out `commit_sha`, attached to a branch when that commit is a branch tip (prefers default branch).
+fn checkout_for_stash_base(repo: &Path, commit_sha: &str) -> Result<(), GitError> {
+    let branches = local_branches_pointing_at(repo, commit_sha)?;
+    if branches.is_empty() {
+        cli::run(repo, &["checkout", "--detach", commit_sha])?;
+        return Ok(());
+    }
+    let default_branch = get_default_branch(repo)?;
+    let chosen = if branches.iter().any(|b| b == &default_branch) {
+        default_branch
+    } else {
+        branches[0].clone()
+    };
+    cli::run(repo, &["checkout", &chosen])?;
+    Ok(())
+}
 
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -44,12 +83,14 @@ pub fn stash_push(repo: &Path, include_untracked: bool) -> Result<(), GitError> 
     Ok(())
 }
 
-/// Check out the stash's base commit (detached), apply the stash to the working tree, then drop it from the stash list.
+/// Check out the stash's base (`stash@{n}^1`): attached to a local branch when that commit is a branch tip
+/// (prefers the repo default branch if multiple tips match), otherwise detached. Then apply the stash to the
+/// working tree and drop it from the stash list.
 pub fn apply_stash_restore(repo: &Path, stash_index: u32) -> Result<(), GitError> {
     let stash_ref = format!("stash@{{{stash_index}}}");
     let base_sha = cli::run(repo, &["rev-parse", &format!("{stash_ref}^1")])?;
     let base_sha = base_sha.trim();
-    cli::run(repo, &["checkout", "--detach", base_sha])?;
+    checkout_for_stash_base(repo, base_sha)?;
     cli::run(repo, &["stash", "apply", &stash_ref])?;
     cli::run(repo, &["stash", "drop", &stash_ref])?;
     Ok(())

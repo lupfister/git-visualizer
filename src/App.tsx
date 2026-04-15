@@ -944,9 +944,12 @@ function App() {
         setCheckedOutRef(nextRef);
         await refreshRepoGitState(repoPath);
         const label = `Stash ${stashIndex + 1}`;
+        const branchHint = nextRef.branchName
+          ? ` on branch ${nextRef.branchName}`
+          : ' at the stash base (detached HEAD)';
         setCommitSwitchFeedback({
           kind: 'success',
-          message: `Restored ${label} on top of its base commit (now uncommitted).`,
+          message: `Restored ${label}${branchHint}; stash applied and dropped (uncommitted changes).`,
         });
       } catch (e) {
         const message = e instanceof Error ? e.message : String(e);
