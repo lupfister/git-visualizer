@@ -1,5 +1,6 @@
 mod git;
 mod github;
+mod sidecar_rpc;
 
 use tauri::{Emitter, Manager};
 
@@ -3949,6 +3950,10 @@ pub fn run() {
         ])
         .run(tauri::generate_context!())
         .expect("error running tauri application");
+}
+
+pub fn run_sidecar_stdio() -> Result<(), String> {
+    sidecar_rpc::run_stdio()
 }
 
 static PENDING_OPEN_REPO: OnceLock<Mutex<Option<OpenRepoEventPayload>>> = OnceLock::new();

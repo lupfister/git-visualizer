@@ -1,0 +1,787 @@
+{
+  "builtTestProducts" : [
+    {
+      "binaryPath" : "/Users/luca/cursor/git-visualizer/macos-native/.build/arm64-apple-macosx/debug/GitVisualizerNativePackageTests.xctest/Contents/MacOS/GitVisualizerNativePackageTests",
+      "packagePath" : "/Users/luca/cursor/git-visualizer/macos-native",
+      "productName" : "GitVisualizerNativePackageTests"
+    }
+  ],
+  "copyCommands" : {
+
+  },
+  "explicitTargetDependencyImportCheckingMode" : {
+    "none" : {
+
+    }
+  },
+  "generatedSourceTargetSet" : [
+
+  ],
+  "pluginDescriptions" : [
+
+  ],
+  "swiftCommands" : {
+    "C.GitVisualizerNative-arm64-apple-macosx26.0-debug.module" : {
+      "executable" : "/Applications/Xcode.app/Contents/Developer/Toolchains/XcodeDefault.xctoolchain/usr/bin/swiftc",
+      "fileList" : "/Users/luca/cursor/git-visualizer/macos-native/.build/arm64-apple-macosx/debug/GitVisualizerNative.build/sources",
+      "importPath" : "/Users/luca/cursor/git-visualizer/macos-native/.build/arm64-apple-macosx/debug/Modules",
+      "inputs" : [
+        {
+          "kind" : "file",
+          "name" : "/Users/luca/cursor/git-visualizer/macos-native/Sources/GitVisualizerNative/App/AppModel.swift"
+        },
+        {
+          "kind" : "file",
+          "name" : "/Users/luca/cursor/git-visualizer/macos-native/Sources/GitVisualizerNative/App/ContentView.swift"
+        },
+        {
+          "kind" : "file",
+          "name" : "/Users/luca/cursor/git-visualizer/macos-native/Sources/GitVisualizerNative/App/GitVisualizerNativeApp.swift"
+        },
+        {
+          "kind" : "file",
+          "name" : "/Users/luca/cursor/git-visualizer/macos-native/Sources/GitVisualizerNative/Canvas/BranchGraphRepresentable.swift"
+        },
+        {
+          "kind" : "file",
+          "name" : "/Users/luca/cursor/git-visualizer/macos-native/Sources/GitVisualizerNative/Models/GraphModels.swift"
+        },
+        {
+          "kind" : "file",
+          "name" : "/Users/luca/cursor/git-visualizer/macos-native/Sources/GitVisualizerNative/RPC/SidecarClient.swift"
+        },
+        {
+          "kind" : "file",
+          "name" : "/Users/luca/cursor/git-visualizer/macos-native/.build/arm64-apple-macosx/debug/swift-version--58304C5D6DBC2206.txt"
+        },
+        {
+          "kind" : "file",
+          "name" : "/Users/luca/cursor/git-visualizer/macos-native/.build/arm64-apple-macosx/debug/GitVisualizerNative.build/sources"
+        }
+      ],
+      "isLibrary" : false,
+      "moduleName" : "GitVisualizerNative",
+      "moduleOutputPath" : "/Users/luca/cursor/git-visualizer/macos-native/.build/arm64-apple-macosx/debug/Modules/GitVisualizerNative.swiftmodule",
+      "objects" : [
+        "/Users/luca/cursor/git-visualizer/macos-native/.build/arm64-apple-macosx/debug/GitVisualizerNative.build/AppModel.swift.o",
+        "/Users/luca/cursor/git-visualizer/macos-native/.build/arm64-apple-macosx/debug/GitVisualizerNative.build/ContentView.swift.o",
+        "/Users/luca/cursor/git-visualizer/macos-native/.build/arm64-apple-macosx/debug/GitVisualizerNative.build/GitVisualizerNativeApp.swift.o",
+        "/Users/luca/cursor/git-visualizer/macos-native/.build/arm64-apple-macosx/debug/GitVisualizerNative.build/BranchGraphRepresentable.swift.o",
+        "/Users/luca/cursor/git-visualizer/macos-native/.build/arm64-apple-macosx/debug/GitVisualizerNative.build/GraphModels.swift.o",
+        "/Users/luca/cursor/git-visualizer/macos-native/.build/arm64-apple-macosx/debug/GitVisualizerNative.build/SidecarClient.swift.o"
+      ],
+      "otherArguments" : [
+        "-target",
+        "arm64-apple-macosx14.0",
+        "-incremental",
+        "-enable-batch-mode",
+        "-serialize-diagnostics",
+        "-index-store-path",
+        "/Users/luca/cursor/git-visualizer/macos-native/.build/arm64-apple-macosx/debug/index/store",
+        "-Onone",
+        "-enable-testing",
+        "-j10",
+        "-DSWIFT_PACKAGE",
+        "-DDEBUG",
+        "-DSWIFT_MODULE_RESOURCE_BUNDLE_UNAVAILABLE",
+        "-module-cache-path",
+        "/Users/luca/cursor/git-visualizer/macos-native/.build/arm64-apple-macosx/debug/ModuleCache",
+        "-parseable-output",
+        "-Xfrontend",
+        "-entry-point-function-name",
+        "-Xfrontend",
+        "GitVisualizerNative_main",
+        "-color-diagnostics",
+        "-swift-version",
+        "6",
+        "-plugin-path",
+        "/Applications/Xcode.app/Contents/Developer/Toolchains/XcodeDefault.xctoolchain/usr/lib/swift/host/plugins/testing",
+        "-sdk",
+        "/Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/SDKs/MacOSX26.1.sdk",
+        "-F",
+        "/Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/Library/Frameworks",
+        "-F",
+        "/Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/Library/PrivateFrameworks",
+        "-I",
+        "/Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/usr/lib",
+        "-L",
+        "/Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/usr/lib",
+        "-g",
+        "-Xcc",
+        "-isysroot",
+        "-Xcc",
+        "/Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/SDKs/MacOSX26.1.sdk",
+        "-Xcc",
+        "-F",
+        "-Xcc",
+        "/Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/Library/Frameworks",
+        "-Xcc",
+        "-F",
+        "-Xcc",
+        "/Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/Library/PrivateFrameworks",
+        "-Xcc",
+        "-fPIC",
+        "-Xcc",
+        "-g",
+        "-package-name",
+        "macos_native"
+      ],
+      "outputFileMapPath" : "/Users/luca/cursor/git-visualizer/macos-native/.build/arm64-apple-macosx/debug/GitVisualizerNative.build/output-file-map.json",
+      "outputs" : [
+        {
+          "kind" : "file",
+          "name" : "/Users/luca/cursor/git-visualizer/macos-native/.build/arm64-apple-macosx/debug/GitVisualizerNative.build/AppModel.swift.o"
+        },
+        {
+          "kind" : "file",
+          "name" : "/Users/luca/cursor/git-visualizer/macos-native/.build/arm64-apple-macosx/debug/GitVisualizerNative.build/ContentView.swift.o"
+        },
+        {
+          "kind" : "file",
+          "name" : "/Users/luca/cursor/git-visualizer/macos-native/.build/arm64-apple-macosx/debug/GitVisualizerNative.build/GitVisualizerNativeApp.swift.o"
+        },
+        {
+          "kind" : "file",
+          "name" : "/Users/luca/cursor/git-visualizer/macos-native/.build/arm64-apple-macosx/debug/GitVisualizerNative.build/BranchGraphRepresentable.swift.o"
+        },
+        {
+          "kind" : "file",
+          "name" : "/Users/luca/cursor/git-visualizer/macos-native/.build/arm64-apple-macosx/debug/GitVisualizerNative.build/GraphModels.swift.o"
+        },
+        {
+          "kind" : "file",
+          "name" : "/Users/luca/cursor/git-visualizer/macos-native/.build/arm64-apple-macosx/debug/GitVisualizerNative.build/SidecarClient.swift.o"
+        },
+        {
+          "kind" : "file",
+          "name" : "/Users/luca/cursor/git-visualizer/macos-native/.build/arm64-apple-macosx/debug/Modules/GitVisualizerNative.swiftmodule"
+        }
+      ],
+      "prepareForIndexing" : false,
+      "sources" : [
+        "/Users/luca/cursor/git-visualizer/macos-native/Sources/GitVisualizerNative/App/AppModel.swift",
+        "/Users/luca/cursor/git-visualizer/macos-native/Sources/GitVisualizerNative/App/ContentView.swift",
+        "/Users/luca/cursor/git-visualizer/macos-native/Sources/GitVisualizerNative/App/GitVisualizerNativeApp.swift",
+        "/Users/luca/cursor/git-visualizer/macos-native/Sources/GitVisualizerNative/Canvas/BranchGraphRepresentable.swift",
+        "/Users/luca/cursor/git-visualizer/macos-native/Sources/GitVisualizerNative/Models/GraphModels.swift",
+        "/Users/luca/cursor/git-visualizer/macos-native/Sources/GitVisualizerNative/RPC/SidecarClient.swift"
+      ],
+      "tempsPath" : "/Users/luca/cursor/git-visualizer/macos-native/.build/arm64-apple-macosx/debug/GitVisualizerNative.build",
+      "wholeModuleOptimization" : false
+    },
+    "C.GitVisualizerNativePackageTests-arm64-apple-macosx26.0-debug.module" : {
+      "executable" : "/Applications/Xcode.app/Contents/Developer/Toolchains/XcodeDefault.xctoolchain/usr/bin/swiftc",
+      "fileList" : "/Users/luca/cursor/git-visualizer/macos-native/.build/arm64-apple-macosx/debug/GitVisualizerNativePackageTests.build/sources",
+      "importPath" : "/Users/luca/cursor/git-visualizer/macos-native/.build/arm64-apple-macosx/debug/Modules",
+      "inputs" : [
+        {
+          "kind" : "file",
+          "name" : "/Users/luca/cursor/git-visualizer/macos-native/.build/arm64-apple-macosx/debug/GitVisualizerNativePackageTests.derived/runner.swift"
+        },
+        {
+          "kind" : "file",
+          "name" : "/Users/luca/cursor/git-visualizer/macos-native/.build/arm64-apple-macosx/debug/swift-version--58304C5D6DBC2206.txt"
+        },
+        {
+          "kind" : "file",
+          "name" : "/Users/luca/cursor/git-visualizer/macos-native/.build/arm64-apple-macosx/debug/Modules/GitVisualizerNativeTests.swiftmodule"
+        },
+        {
+          "kind" : "file",
+          "name" : "/Users/luca/cursor/git-visualizer/macos-native/.build/arm64-apple-macosx/debug/GitVisualizerNativePackageTests.build/sources"
+        }
+      ],
+      "isLibrary" : true,
+      "moduleName" : "GitVisualizerNativePackageTests",
+      "moduleOutputPath" : "/Users/luca/cursor/git-visualizer/macos-native/.build/arm64-apple-macosx/debug/Modules/GitVisualizerNativePackageTests.swiftmodule",
+      "objects" : [
+        "/Users/luca/cursor/git-visualizer/macos-native/.build/arm64-apple-macosx/debug/GitVisualizerNativePackageTests.build/runner.swift.o"
+      ],
+      "otherArguments" : [
+        "-target",
+        "arm64-apple-macosx14.0",
+        "-incremental",
+        "-enable-batch-mode",
+        "-serialize-diagnostics",
+        "-index-store-path",
+        "/Users/luca/cursor/git-visualizer/macos-native/.build/arm64-apple-macosx/debug/index/store",
+        "-Onone",
+        "-enable-testing",
+        "-Xfrontend",
+        "-enable-cross-import-overlays",
+        "-j10",
+        "-DSWIFT_PACKAGE",
+        "-DDEBUG",
+        "-DSWIFT_MODULE_RESOURCE_BUNDLE_UNAVAILABLE",
+        "-module-cache-path",
+        "/Users/luca/cursor/git-visualizer/macos-native/.build/arm64-apple-macosx/debug/ModuleCache",
+        "-parseable-output",
+        "-parse-as-library",
+        "-emit-objc-header",
+        "-emit-objc-header-path",
+        "/Users/luca/cursor/git-visualizer/macos-native/.build/arm64-apple-macosx/debug/GitVisualizerNativePackageTests.build/include/GitVisualizerNativePackageTests-Swift.h",
+        "-color-diagnostics",
+        "-plugin-path",
+        "/Applications/Xcode.app/Contents/Developer/Toolchains/XcodeDefault.xctoolchain/usr/lib/swift/host/plugins/testing",
+        "-sdk",
+        "/Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/SDKs/MacOSX26.1.sdk",
+        "-F",
+        "/Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/Library/Frameworks",
+        "-F",
+        "/Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/Library/PrivateFrameworks",
+        "-I",
+        "/Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/usr/lib",
+        "-L",
+        "/Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/usr/lib",
+        "-g",
+        "-Xcc",
+        "-isysroot",
+        "-Xcc",
+        "/Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/SDKs/MacOSX26.1.sdk",
+        "-Xcc",
+        "-F",
+        "-Xcc",
+        "/Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/Library/Frameworks",
+        "-Xcc",
+        "-F",
+        "-Xcc",
+        "/Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/Library/PrivateFrameworks",
+        "-Xcc",
+        "-fPIC",
+        "-Xcc",
+        "-g",
+        "-package-name",
+        "macos_native"
+      ],
+      "outputFileMapPath" : "/Users/luca/cursor/git-visualizer/macos-native/.build/arm64-apple-macosx/debug/GitVisualizerNativePackageTests.build/output-file-map.json",
+      "outputs" : [
+        {
+          "kind" : "file",
+          "name" : "/Users/luca/cursor/git-visualizer/macos-native/.build/arm64-apple-macosx/debug/GitVisualizerNativePackageTests.build/runner.swift.o"
+        },
+        {
+          "kind" : "file",
+          "name" : "/Users/luca/cursor/git-visualizer/macos-native/.build/arm64-apple-macosx/debug/Modules/GitVisualizerNativePackageTests.swiftmodule"
+        }
+      ],
+      "prepareForIndexing" : false,
+      "sources" : [
+        "/Users/luca/cursor/git-visualizer/macos-native/.build/arm64-apple-macosx/debug/GitVisualizerNativePackageTests.derived/runner.swift"
+      ],
+      "tempsPath" : "/Users/luca/cursor/git-visualizer/macos-native/.build/arm64-apple-macosx/debug/GitVisualizerNativePackageTests.build",
+      "wholeModuleOptimization" : false
+    },
+    "C.GitVisualizerNativeTests-arm64-apple-macosx26.0-debug.module" : {
+      "executable" : "/Applications/Xcode.app/Contents/Developer/Toolchains/XcodeDefault.xctoolchain/usr/bin/swiftc",
+      "fileList" : "/Users/luca/cursor/git-visualizer/macos-native/.build/arm64-apple-macosx/debug/GitVisualizerNativeTests.build/sources",
+      "importPath" : "/Users/luca/cursor/git-visualizer/macos-native/.build/arm64-apple-macosx/debug/Modules",
+      "inputs" : [
+        {
+          "kind" : "file",
+          "name" : "/Users/luca/cursor/git-visualizer/macos-native/Tests/GitVisualizerNativeTests/ProtocolVersionTests.swift"
+        },
+        {
+          "kind" : "file",
+          "name" : "/Users/luca/cursor/git-visualizer/macos-native/.build/arm64-apple-macosx/debug/swift-version--58304C5D6DBC2206.txt"
+        },
+        {
+          "kind" : "file",
+          "name" : "/Users/luca/cursor/git-visualizer/macos-native/.build/arm64-apple-macosx/debug/GitVisualizerNative"
+        },
+        {
+          "kind" : "file",
+          "name" : "/Users/luca/cursor/git-visualizer/macos-native/.build/arm64-apple-macosx/debug/GitVisualizerNativeTests.build/sources"
+        }
+      ],
+      "isLibrary" : true,
+      "moduleName" : "GitVisualizerNativeTests",
+      "moduleOutputPath" : "/Users/luca/cursor/git-visualizer/macos-native/.build/arm64-apple-macosx/debug/Modules/GitVisualizerNativeTests.swiftmodule",
+      "objects" : [
+        "/Users/luca/cursor/git-visualizer/macos-native/.build/arm64-apple-macosx/debug/GitVisualizerNativeTests.build/ProtocolVersionTests.swift.o"
+      ],
+      "otherArguments" : [
+        "-target",
+        "arm64-apple-macosx14.0",
+        "-incremental",
+        "-enable-batch-mode",
+        "-serialize-diagnostics",
+        "-index-store-path",
+        "/Users/luca/cursor/git-visualizer/macos-native/.build/arm64-apple-macosx/debug/index/store",
+        "-Onone",
+        "-enable-testing",
+        "-Xfrontend",
+        "-enable-cross-import-overlays",
+        "-j10",
+        "-DSWIFT_PACKAGE",
+        "-DDEBUG",
+        "-DSWIFT_MODULE_RESOURCE_BUNDLE_UNAVAILABLE",
+        "-module-cache-path",
+        "/Users/luca/cursor/git-visualizer/macos-native/.build/arm64-apple-macosx/debug/ModuleCache",
+        "-parseable-output",
+        "-parse-as-library",
+        "-color-diagnostics",
+        "-swift-version",
+        "6",
+        "-plugin-path",
+        "/Applications/Xcode.app/Contents/Developer/Toolchains/XcodeDefault.xctoolchain/usr/lib/swift/host/plugins/testing",
+        "-sdk",
+        "/Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/SDKs/MacOSX26.1.sdk",
+        "-F",
+        "/Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/Library/Frameworks",
+        "-F",
+        "/Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/Library/PrivateFrameworks",
+        "-I",
+        "/Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/usr/lib",
+        "-L",
+        "/Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/usr/lib",
+        "-g",
+        "-Xcc",
+        "-isysroot",
+        "-Xcc",
+        "/Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/SDKs/MacOSX26.1.sdk",
+        "-Xcc",
+        "-F",
+        "-Xcc",
+        "/Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/Library/Frameworks",
+        "-Xcc",
+        "-F",
+        "-Xcc",
+        "/Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/Library/PrivateFrameworks",
+        "-Xcc",
+        "-fPIC",
+        "-Xcc",
+        "-g",
+        "-package-name",
+        "macos_native"
+      ],
+      "outputFileMapPath" : "/Users/luca/cursor/git-visualizer/macos-native/.build/arm64-apple-macosx/debug/GitVisualizerNativeTests.build/output-file-map.json",
+      "outputs" : [
+        {
+          "kind" : "file",
+          "name" : "/Users/luca/cursor/git-visualizer/macos-native/.build/arm64-apple-macosx/debug/GitVisualizerNativeTests.build/ProtocolVersionTests.swift.o"
+        },
+        {
+          "kind" : "file",
+          "name" : "/Users/luca/cursor/git-visualizer/macos-native/.build/arm64-apple-macosx/debug/Modules/GitVisualizerNativeTests.swiftmodule"
+        }
+      ],
+      "prepareForIndexing" : false,
+      "sources" : [
+        "/Users/luca/cursor/git-visualizer/macos-native/Tests/GitVisualizerNativeTests/ProtocolVersionTests.swift"
+      ],
+      "tempsPath" : "/Users/luca/cursor/git-visualizer/macos-native/.build/arm64-apple-macosx/debug/GitVisualizerNativeTests.build",
+      "wholeModuleOptimization" : false
+    }
+  },
+  "swiftFrontendCommands" : {
+
+  },
+  "swiftTargetScanArgs" : {
+    "GitVisualizerNative" : [
+      "/Applications/Xcode.app/Contents/Developer/Toolchains/XcodeDefault.xctoolchain/usr/bin/swiftc",
+      "-module-name",
+      "GitVisualizerNative",
+      "-package-name",
+      "macos_native",
+      "-c",
+      "/Users/luca/cursor/git-visualizer/macos-native/Sources/GitVisualizerNative/App/AppModel.swift",
+      "/Users/luca/cursor/git-visualizer/macos-native/Sources/GitVisualizerNative/App/ContentView.swift",
+      "/Users/luca/cursor/git-visualizer/macos-native/Sources/GitVisualizerNative/App/GitVisualizerNativeApp.swift",
+      "/Users/luca/cursor/git-visualizer/macos-native/Sources/GitVisualizerNative/Canvas/BranchGraphRepresentable.swift",
+      "/Users/luca/cursor/git-visualizer/macos-native/Sources/GitVisualizerNative/Models/GraphModels.swift",
+      "/Users/luca/cursor/git-visualizer/macos-native/Sources/GitVisualizerNative/RPC/SidecarClient.swift",
+      "-I",
+      "/Users/luca/cursor/git-visualizer/macos-native/.build/arm64-apple-macosx/debug/Modules",
+      "-target",
+      "arm64-apple-macosx14.0",
+      "-incremental",
+      "-enable-batch-mode",
+      "-serialize-diagnostics",
+      "-index-store-path",
+      "/Users/luca/cursor/git-visualizer/macos-native/.build/arm64-apple-macosx/debug/index/store",
+      "-Onone",
+      "-enable-testing",
+      "-j10",
+      "-DSWIFT_PACKAGE",
+      "-DDEBUG",
+      "-DSWIFT_MODULE_RESOURCE_BUNDLE_UNAVAILABLE",
+      "-module-cache-path",
+      "/Users/luca/cursor/git-visualizer/macos-native/.build/arm64-apple-macosx/debug/ModuleCache",
+      "-parseable-output",
+      "-Xfrontend",
+      "-entry-point-function-name",
+      "-Xfrontend",
+      "GitVisualizerNative_main",
+      "-color-diagnostics",
+      "-swift-version",
+      "6",
+      "-plugin-path",
+      "/Applications/Xcode.app/Contents/Developer/Toolchains/XcodeDefault.xctoolchain/usr/lib/swift/host/plugins/testing",
+      "-sdk",
+      "/Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/SDKs/MacOSX26.1.sdk",
+      "-F",
+      "/Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/Library/Frameworks",
+      "-F",
+      "/Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/Library/PrivateFrameworks",
+      "-I",
+      "/Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/usr/lib",
+      "-L",
+      "/Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/usr/lib",
+      "-g",
+      "-Xcc",
+      "-isysroot",
+      "-Xcc",
+      "/Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/SDKs/MacOSX26.1.sdk",
+      "-Xcc",
+      "-F",
+      "-Xcc",
+      "/Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/Library/Frameworks",
+      "-Xcc",
+      "-F",
+      "-Xcc",
+      "/Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/Library/PrivateFrameworks",
+      "-Xcc",
+      "-fPIC",
+      "-Xcc",
+      "-g",
+      "-package-name",
+      "macos_native",
+      "-driver-use-frontend-path",
+      "/Applications/Xcode.app/Contents/Developer/Toolchains/XcodeDefault.xctoolchain/usr/bin/swiftc"
+    ],
+    "GitVisualizerNativePackageTests" : [
+      "/Applications/Xcode.app/Contents/Developer/Toolchains/XcodeDefault.xctoolchain/usr/bin/swiftc",
+      "-module-name",
+      "GitVisualizerNativePackageTests",
+      "-package-name",
+      "macos_native",
+      "-c",
+      "/Users/luca/cursor/git-visualizer/macos-native/.build/arm64-apple-macosx/debug/GitVisualizerNativePackageTests.derived/runner.swift",
+      "-I",
+      "/Users/luca/cursor/git-visualizer/macos-native/.build/arm64-apple-macosx/debug/Modules",
+      "-target",
+      "arm64-apple-macosx14.0",
+      "-incremental",
+      "-enable-batch-mode",
+      "-serialize-diagnostics",
+      "-index-store-path",
+      "/Users/luca/cursor/git-visualizer/macos-native/.build/arm64-apple-macosx/debug/index/store",
+      "-Onone",
+      "-enable-testing",
+      "-Xfrontend",
+      "-enable-cross-import-overlays",
+      "-j10",
+      "-DSWIFT_PACKAGE",
+      "-DDEBUG",
+      "-DSWIFT_MODULE_RESOURCE_BUNDLE_UNAVAILABLE",
+      "-module-cache-path",
+      "/Users/luca/cursor/git-visualizer/macos-native/.build/arm64-apple-macosx/debug/ModuleCache",
+      "-parseable-output",
+      "-parse-as-library",
+      "-emit-objc-header",
+      "-emit-objc-header-path",
+      "/Users/luca/cursor/git-visualizer/macos-native/.build/arm64-apple-macosx/debug/GitVisualizerNativePackageTests.build/include/GitVisualizerNativePackageTests-Swift.h",
+      "-color-diagnostics",
+      "-plugin-path",
+      "/Applications/Xcode.app/Contents/Developer/Toolchains/XcodeDefault.xctoolchain/usr/lib/swift/host/plugins/testing",
+      "-sdk",
+      "/Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/SDKs/MacOSX26.1.sdk",
+      "-F",
+      "/Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/Library/Frameworks",
+      "-F",
+      "/Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/Library/PrivateFrameworks",
+      "-I",
+      "/Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/usr/lib",
+      "-L",
+      "/Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/usr/lib",
+      "-g",
+      "-Xcc",
+      "-isysroot",
+      "-Xcc",
+      "/Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/SDKs/MacOSX26.1.sdk",
+      "-Xcc",
+      "-F",
+      "-Xcc",
+      "/Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/Library/Frameworks",
+      "-Xcc",
+      "-F",
+      "-Xcc",
+      "/Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/Library/PrivateFrameworks",
+      "-Xcc",
+      "-fPIC",
+      "-Xcc",
+      "-g",
+      "-package-name",
+      "macos_native",
+      "-driver-use-frontend-path",
+      "/Applications/Xcode.app/Contents/Developer/Toolchains/XcodeDefault.xctoolchain/usr/bin/swiftc"
+    ],
+    "GitVisualizerNativeTests" : [
+      "/Applications/Xcode.app/Contents/Developer/Toolchains/XcodeDefault.xctoolchain/usr/bin/swiftc",
+      "-module-name",
+      "GitVisualizerNativeTests",
+      "-package-name",
+      "macos_native",
+      "-c",
+      "/Users/luca/cursor/git-visualizer/macos-native/Tests/GitVisualizerNativeTests/ProtocolVersionTests.swift",
+      "-I",
+      "/Users/luca/cursor/git-visualizer/macos-native/.build/arm64-apple-macosx/debug/Modules",
+      "-target",
+      "arm64-apple-macosx14.0",
+      "-incremental",
+      "-enable-batch-mode",
+      "-serialize-diagnostics",
+      "-index-store-path",
+      "/Users/luca/cursor/git-visualizer/macos-native/.build/arm64-apple-macosx/debug/index/store",
+      "-Onone",
+      "-enable-testing",
+      "-Xfrontend",
+      "-enable-cross-import-overlays",
+      "-j10",
+      "-DSWIFT_PACKAGE",
+      "-DDEBUG",
+      "-DSWIFT_MODULE_RESOURCE_BUNDLE_UNAVAILABLE",
+      "-module-cache-path",
+      "/Users/luca/cursor/git-visualizer/macos-native/.build/arm64-apple-macosx/debug/ModuleCache",
+      "-parseable-output",
+      "-parse-as-library",
+      "-color-diagnostics",
+      "-swift-version",
+      "6",
+      "-plugin-path",
+      "/Applications/Xcode.app/Contents/Developer/Toolchains/XcodeDefault.xctoolchain/usr/lib/swift/host/plugins/testing",
+      "-sdk",
+      "/Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/SDKs/MacOSX26.1.sdk",
+      "-F",
+      "/Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/Library/Frameworks",
+      "-F",
+      "/Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/Library/PrivateFrameworks",
+      "-I",
+      "/Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/usr/lib",
+      "-L",
+      "/Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/usr/lib",
+      "-g",
+      "-Xcc",
+      "-isysroot",
+      "-Xcc",
+      "/Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/SDKs/MacOSX26.1.sdk",
+      "-Xcc",
+      "-F",
+      "-Xcc",
+      "/Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/Library/Frameworks",
+      "-Xcc",
+      "-F",
+      "-Xcc",
+      "/Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/Library/PrivateFrameworks",
+      "-Xcc",
+      "-fPIC",
+      "-Xcc",
+      "-g",
+      "-package-name",
+      "macos_native",
+      "-driver-use-frontend-path",
+      "/Applications/Xcode.app/Contents/Developer/Toolchains/XcodeDefault.xctoolchain/usr/bin/swiftc"
+    ]
+  },
+  "targetDependencyMap" : {
+    "GitVisualizerNative" : [
+
+    ],
+    "GitVisualizerNativePackageTests" : [
+      "GitVisualizerNativeTests",
+      "GitVisualizerNative"
+    ],
+    "GitVisualizerNativeTests" : [
+      "GitVisualizerNative"
+    ]
+  },
+  "testDiscoveryCommands" : {
+
+  },
+  "testEntryPointCommands" : {
+    "/Users/luca/cursor/git-visualizer/macos-native/.build/arm64-apple-macosx/debug/GitVisualizerNativePackageTests.derived/runner.swift" : {
+      "inputs" : [
+
+      ],
+      "outputs" : [
+        {
+          "kind" : "file",
+          "name" : "/Users/luca/cursor/git-visualizer/macos-native/.build/arm64-apple-macosx/debug/GitVisualizerNativePackageTests.derived/runner.swift"
+        }
+      ]
+    }
+  },
+  "traitConfiguration" : {
+    "default" : {
+
+    }
+  },
+  "writeCommands" : {
+    "/Users/luca/cursor/git-visualizer/macos-native/.build/arm64-apple-macosx/debug/GitVisualizerNative-entitlement.plist" : {
+      "alwaysOutOfDate" : false,
+      "inputs" : [
+        {
+          "kind" : "virtual",
+          "name" : "<entitlement-plist>"
+        },
+        {
+          "kind" : "virtual",
+          "name" : "<com.apple.security.get-task-allow>"
+        }
+      ],
+      "outputFilePath" : "/Users/luca/cursor/git-visualizer/macos-native/.build/arm64-apple-macosx/debug/GitVisualizerNative-entitlement.plist"
+    },
+    "/Users/luca/cursor/git-visualizer/macos-native/.build/arm64-apple-macosx/debug/GitVisualizerNative.build/sources" : {
+      "alwaysOutOfDate" : false,
+      "inputs" : [
+        {
+          "kind" : "virtual",
+          "name" : "<sources-file-list>"
+        },
+        {
+          "kind" : "file",
+          "name" : "/Users/luca/cursor/git-visualizer/macos-native/Sources/GitVisualizerNative/App/AppModel.swift"
+        },
+        {
+          "kind" : "file",
+          "name" : "/Users/luca/cursor/git-visualizer/macos-native/Sources/GitVisualizerNative/App/ContentView.swift"
+        },
+        {
+          "kind" : "file",
+          "name" : "/Users/luca/cursor/git-visualizer/macos-native/Sources/GitVisualizerNative/App/GitVisualizerNativeApp.swift"
+        },
+        {
+          "kind" : "file",
+          "name" : "/Users/luca/cursor/git-visualizer/macos-native/Sources/GitVisualizerNative/Canvas/BranchGraphRepresentable.swift"
+        },
+        {
+          "kind" : "file",
+          "name" : "/Users/luca/cursor/git-visualizer/macos-native/Sources/GitVisualizerNative/Models/GraphModels.swift"
+        },
+        {
+          "kind" : "file",
+          "name" : "/Users/luca/cursor/git-visualizer/macos-native/Sources/GitVisualizerNative/RPC/SidecarClient.swift"
+        }
+      ],
+      "outputFilePath" : "/Users/luca/cursor/git-visualizer/macos-native/.build/arm64-apple-macosx/debug/GitVisualizerNative.build/sources"
+    },
+    "/Users/luca/cursor/git-visualizer/macos-native/.build/arm64-apple-macosx/debug/GitVisualizerNative.product/Objects.LinkFileList" : {
+      "alwaysOutOfDate" : false,
+      "inputs" : [
+        {
+          "kind" : "virtual",
+          "name" : "<link-file-list>"
+        },
+        {
+          "kind" : "file",
+          "name" : "/Users/luca/cursor/git-visualizer/macos-native/.build/arm64-apple-macosx/debug/GitVisualizerNative.build/AppModel.swift.o"
+        },
+        {
+          "kind" : "file",
+          "name" : "/Users/luca/cursor/git-visualizer/macos-native/.build/arm64-apple-macosx/debug/GitVisualizerNative.build/BranchGraphRepresentable.swift.o"
+        },
+        {
+          "kind" : "file",
+          "name" : "/Users/luca/cursor/git-visualizer/macos-native/.build/arm64-apple-macosx/debug/GitVisualizerNative.build/ContentView.swift.o"
+        },
+        {
+          "kind" : "file",
+          "name" : "/Users/luca/cursor/git-visualizer/macos-native/.build/arm64-apple-macosx/debug/GitVisualizerNative.build/GitVisualizerNativeApp.swift.o"
+        },
+        {
+          "kind" : "file",
+          "name" : "/Users/luca/cursor/git-visualizer/macos-native/.build/arm64-apple-macosx/debug/GitVisualizerNative.build/GraphModels.swift.o"
+        },
+        {
+          "kind" : "file",
+          "name" : "/Users/luca/cursor/git-visualizer/macos-native/.build/arm64-apple-macosx/debug/GitVisualizerNative.build/SidecarClient.swift.o"
+        }
+      ],
+      "outputFilePath" : "/Users/luca/cursor/git-visualizer/macos-native/.build/arm64-apple-macosx/debug/GitVisualizerNative.product/Objects.LinkFileList"
+    },
+    "/Users/luca/cursor/git-visualizer/macos-native/.build/arm64-apple-macosx/debug/GitVisualizerNativePackageTests.build/sources" : {
+      "alwaysOutOfDate" : false,
+      "inputs" : [
+        {
+          "kind" : "virtual",
+          "name" : "<sources-file-list>"
+        },
+        {
+          "kind" : "file",
+          "name" : "/Users/luca/cursor/git-visualizer/macos-native/.build/arm64-apple-macosx/debug/GitVisualizerNativePackageTests.derived/runner.swift"
+        }
+      ],
+      "outputFilePath" : "/Users/luca/cursor/git-visualizer/macos-native/.build/arm64-apple-macosx/debug/GitVisualizerNativePackageTests.build/sources"
+    },
+    "/Users/luca/cursor/git-visualizer/macos-native/.build/arm64-apple-macosx/debug/GitVisualizerNativePackageTests.product/Objects.LinkFileList" : {
+      "alwaysOutOfDate" : false,
+      "inputs" : [
+        {
+          "kind" : "virtual",
+          "name" : "<link-file-list>"
+        },
+        {
+          "kind" : "file",
+          "name" : "/Users/luca/cursor/git-visualizer/macos-native/.build/arm64-apple-macosx/debug/GitVisualizerNative.build/AppModel.swift.o"
+        },
+        {
+          "kind" : "file",
+          "name" : "/Users/luca/cursor/git-visualizer/macos-native/.build/arm64-apple-macosx/debug/GitVisualizerNative.build/BranchGraphRepresentable.swift.o"
+        },
+        {
+          "kind" : "file",
+          "name" : "/Users/luca/cursor/git-visualizer/macos-native/.build/arm64-apple-macosx/debug/GitVisualizerNative.build/ContentView.swift.o"
+        },
+        {
+          "kind" : "file",
+          "name" : "/Users/luca/cursor/git-visualizer/macos-native/.build/arm64-apple-macosx/debug/GitVisualizerNative.build/GitVisualizerNativeApp.swift.o"
+        },
+        {
+          "kind" : "file",
+          "name" : "/Users/luca/cursor/git-visualizer/macos-native/.build/arm64-apple-macosx/debug/GitVisualizerNative.build/GraphModels.swift.o"
+        },
+        {
+          "kind" : "file",
+          "name" : "/Users/luca/cursor/git-visualizer/macos-native/.build/arm64-apple-macosx/debug/GitVisualizerNative.build/SidecarClient.swift.o"
+        },
+        {
+          "kind" : "file",
+          "name" : "/Users/luca/cursor/git-visualizer/macos-native/.build/arm64-apple-macosx/debug/GitVisualizerNativePackageTests.build/runner.swift.o"
+        },
+        {
+          "kind" : "file",
+          "name" : "/Users/luca/cursor/git-visualizer/macos-native/.build/arm64-apple-macosx/debug/GitVisualizerNativeTests.build/ProtocolVersionTests.swift.o"
+        }
+      ],
+      "outputFilePath" : "/Users/luca/cursor/git-visualizer/macos-native/.build/arm64-apple-macosx/debug/GitVisualizerNativePackageTests.product/Objects.LinkFileList"
+    },
+    "/Users/luca/cursor/git-visualizer/macos-native/.build/arm64-apple-macosx/debug/GitVisualizerNativeTests.build/sources" : {
+      "alwaysOutOfDate" : false,
+      "inputs" : [
+        {
+          "kind" : "virtual",
+          "name" : "<sources-file-list>"
+        },
+        {
+          "kind" : "file",
+          "name" : "/Users/luca/cursor/git-visualizer/macos-native/Tests/GitVisualizerNativeTests/ProtocolVersionTests.swift"
+        }
+      ],
+      "outputFilePath" : "/Users/luca/cursor/git-visualizer/macos-native/.build/arm64-apple-macosx/debug/GitVisualizerNativeTests.build/sources"
+    },
+    "/Users/luca/cursor/git-visualizer/macos-native/.build/arm64-apple-macosx/debug/swift-version--58304C5D6DBC2206.txt" : {
+      "alwaysOutOfDate" : true,
+      "inputs" : [
+        {
+          "kind" : "virtual",
+          "name" : "<swift-get-version>"
+        },
+        {
+          "kind" : "file",
+          "name" : "/Applications/Xcode.app/Contents/Developer/Toolchains/XcodeDefault.xctoolchain/usr/bin/swiftc"
+        }
+      ],
+      "outputFilePath" : "/Users/luca/cursor/git-visualizer/macos-native/.build/arm64-apple-macosx/debug/swift-version--58304C5D6DBC2206.txt"
+    }
+  }
+}

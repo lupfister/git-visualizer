@@ -1,0 +1,47 @@
+{
+  "": {
+    "swift-dependencies": "/Users/luca/cursor/git-visualizer/macos-native/.build/arm64-apple-macosx/debug/GitVisualizerNative.build/master.swiftdeps"
+  },
+  "/Users/luca/cursor/git-visualizer/macos-native/Sources/GitVisualizerNative/App/AppModel.swift": {
+    "dependencies": "/Users/luca/cursor/git-visualizer/macos-native/.build/arm64-apple-macosx/debug/GitVisualizerNative.build/AppModel.d",
+    "object": "/Users/luca/cursor/git-visualizer/macos-native/.build/arm64-apple-macosx/debug/GitVisualizerNative.build/AppModel.swift.o",
+    "swiftmodule": "/Users/luca/cursor/git-visualizer/macos-native/.build/arm64-apple-macosx/debug/GitVisualizerNative.build/AppModel~partial.swiftmodule",
+    "swift-dependencies": "/Users/luca/cursor/git-visualizer/macos-native/.build/arm64-apple-macosx/debug/GitVisualizerNative.build/AppModel.swiftdeps",
+    "diagnostics": "/Users/luca/cursor/git-visualizer/macos-native/.build/arm64-apple-macosx/debug/GitVisualizerNative.build/AppModel.dia"
+  },
+  "/Users/luca/cursor/git-visualizer/macos-native/Sources/GitVisualizerNative/App/ContentView.swift": {
+    "dependencies": "/Users/luca/cursor/git-visualizer/macos-native/.build/arm64-apple-macosx/debug/GitVisualizerNative.build/ContentView.d",
+    "object": "/Users/luca/cursor/git-visualizer/macos-native/.build/arm64-apple-macosx/debug/GitVisualizerNative.build/ContentView.swift.o",
+    "swiftmodule": "/Users/luca/cursor/git-visualizer/macos-native/.build/arm64-apple-macosx/debug/GitVisualizerNative.build/ContentView~partial.swiftmodule",
+    "swift-dependencies": "/Users/luca/cursor/git-visualizer/macos-native/.build/arm64-apple-macosx/debug/GitVisualizerNative.build/ContentView.swiftdeps",
+    "diagnostics": "/Users/luca/cursor/git-visualizer/macos-native/.build/arm64-apple-macosx/debug/GitVisualizerNative.build/ContentView.dia"
+  },
+  "/Users/luca/cursor/git-visualizer/macos-native/Sources/GitVisualizerNative/App/GitVisualizerNativeApp.swift": {
+    "dependencies": "/Users/luca/cursor/git-visualizer/macos-native/.build/arm64-apple-macosx/debug/GitVisualizerNative.build/GitVisualizerNativeApp.d",
+    "object": "/Users/luca/cursor/git-visualizer/macos-native/.build/arm64-apple-macosx/debug/GitVisualizerNative.build/GitVisualizerNativeApp.swift.o",
+    "swiftmodule": "/Users/luca/cursor/git-visualizer/macos-native/.build/arm64-apple-macosx/debug/GitVisualizerNative.build/GitVisualizerNativeApp~partial.swiftmodule",
+    "swift-dependencies": "/Users/luca/cursor/git-visualizer/macos-native/.build/arm64-apple-macosx/debug/GitVisualizerNative.build/GitVisualizerNativeApp.swiftdeps",
+    "diagnostics": "/Users/luca/cursor/git-visualizer/macos-native/.build/arm64-apple-macosx/debug/GitVisualizerNative.build/GitVisualizerNativeApp.dia"
+  },
+  "/Users/luca/cursor/git-visualizer/macos-native/Sources/GitVisualizerNative/Canvas/BranchGraphRepresentable.swift": {
+    "dependencies": "/Users/luca/cursor/git-visualizer/macos-native/.build/arm64-apple-macosx/debug/GitVisualizerNative.build/BranchGraphRepresentable.d",
+    "object": "/Users/luca/cursor/git-visualizer/macos-native/.build/arm64-apple-macosx/debug/GitVisualizerNative.build/BranchGraphRepresentable.swift.o",
+    "swiftmodule": "/Users/luca/cursor/git-visualizer/macos-native/.build/arm64-apple-macosx/debug/GitVisualizerNative.build/BranchGraphRepresentable~partial.swiftmodule",
+    "swift-dependencies": "/Users/luca/cursor/git-visualizer/macos-native/.build/arm64-apple-macosx/debug/GitVisualizerNative.build/BranchGraphRepresentable.swiftdeps",
+    "diagnostics": "/Users/luca/cursor/git-visualizer/macos-native/.build/arm64-apple-macosx/debug/GitVisualizerNative.build/BranchGraphRepresentable.dia"
+  },
+  "/Users/luca/cursor/git-visualizer/macos-native/Sources/GitVisualizerNative/Models/GraphModels.swift": {
+    "dependencies": "/Users/luca/cursor/git-visualizer/macos-native/.build/arm64-apple-macosx/debug/GitVisualizerNative.build/GraphModels.d",
+    "object": "/Users/luca/cursor/git-visualizer/macos-native/.build/arm64-apple-macosx/debug/GitVisualizerNative.build/GraphModels.swift.o",
+    "swiftmodule": "/Users/luca/cursor/git-visualizer/macos-native/.build/arm64-apple-macosx/debug/GitVisualizerNative.build/GraphModels~partial.swiftmodule",
+    "swift-dependencies": "/Users/luca/cursor/git-visualizer/macos-native/.build/arm64-apple-macosx/debug/GitVisualizerNative.build/GraphModels.swiftdeps",
+    "diagnostics": "/Users/luca/cursor/git-visualizer/macos-native/.build/arm64-apple-macosx/debug/GitVisualizerNative.build/GraphModels.dia"
+  },
+  "/Users/luca/cursor/git-visualizer/macos-native/Sources/GitVisualizerNative/RPC/SidecarClient.swift": {
+    "dependencies": "/Users/luca/cursor/git-visualizer/macos-native/.build/arm64-apple-macosx/debug/GitVisualizerNative.build/SidecarClient.d",
+    "object": "/Users/luca/cursor/git-visualizer/macos-native/.build/arm64-apple-macosx/debug/GitVisualizerNative.build/SidecarClient.swift.o",
+    "swiftmodule": "/Users/luca/cursor/git-visualizer/macos-native/.build/arm64-apple-macosx/debug/GitVisualizerNative.build/SidecarClient~partial.swiftmodule",
+    "swift-dependencies": "/Users/luca/cursor/git-visualizer/macos-native/.build/arm64-apple-macosx/debug/GitVisualizerNative.build/SidecarClient.swiftdeps",
+    "diagnostics": "/Users/luca/cursor/git-visualizer/macos-native/.build/arm64-apple-macosx/debug/GitVisualizerNative.build/SidecarClient.dia"
+  }
+}

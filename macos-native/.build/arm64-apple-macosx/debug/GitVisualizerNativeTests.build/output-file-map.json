@@ -1,0 +1,12 @@
+{
+  "": {
+    "swift-dependencies": "/Users/luca/cursor/git-visualizer/macos-native/.build/arm64-apple-macosx/debug/GitVisualizerNativeTests.build/master.swiftdeps"
+  },
+  "/Users/luca/cursor/git-visualizer/macos-native/Tests/GitVisualizerNativeTests/ProtocolVersionTests.swift": {
+    "dependencies": "/Users/luca/cursor/git-visualizer/macos-native/.build/arm64-apple-macosx/debug/GitVisualizerNativeTests.build/ProtocolVersionTests.d",
+    "object": "/Users/luca/cursor/git-visualizer/macos-native/.build/arm64-apple-macosx/debug/GitVisualizerNativeTests.build/ProtocolVersionTests.swift.o",
+    "swiftmodule": "/Users/luca/cursor/git-visualizer/macos-native/.build/arm64-apple-macosx/debug/GitVisualizerNativeTests.build/ProtocolVersionTests~partial.swiftmodule",
+    "swift-dependencies": "/Users/luca/cursor/git-visualizer/macos-native/.build/arm64-apple-macosx/debug/GitVisualizerNativeTests.build/ProtocolVersionTests.swiftdeps",
+    "diagnostics": "/Users/luca/cursor/git-visualizer/macos-native/.build/arm64-apple-macosx/debug/GitVisualizerNativeTests.build/ProtocolVersionTests.dia"
+  }
+}

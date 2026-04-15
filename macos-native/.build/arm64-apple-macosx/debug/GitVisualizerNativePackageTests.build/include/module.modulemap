@@ -1,0 +1,3 @@
+module GitVisualizerNativePackageTests {
+    header "/Users/luca/cursor/git-visualizer/macos-native/.build/arm64-apple-macosx/debug/GitVisualizerNativePackageTests.build/include/GitVisualizerNativePackageTests-Swift.h"
+}
