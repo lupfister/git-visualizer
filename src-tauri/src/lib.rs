@@ -641,6 +641,11 @@ fn move_stash_to_new_branch(repo_path: String, stash_index: u32, branch_name: St
     git::get_checked_out_ref(path).map_err(|e| e.to_string())
 }
 
+#[tauri::command]
+fn start_window_drag(window: tauri::WebviewWindow) -> Result<(), String> {
+    window.start_dragging().map_err(|e| e.to_string())
+}
+
 #[tauri::command(rename_all = "camelCase")]
 fn push_branch(
     repo_path: String,
@@ -3890,6 +3895,7 @@ pub fn run() {
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
+            start_window_drag,
             get_branches,
             get_merge_nodes,
             get_default_branch,

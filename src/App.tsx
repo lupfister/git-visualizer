@@ -71,6 +71,18 @@ function App() {
 
   const branchMetaLoadKeyRef = useRef<string | null>(null);
 
+  function handleWindowDragStart(e: React.MouseEvent<HTMLElement>) {
+    if (e.button !== 0) return;
+    const target = e.target as HTMLElement | null;
+    if (target?.closest('.window-no-drag')) return;
+    const currentWindow = getCurrentWindow();
+    void invoke('start_window_drag')
+      .catch(() => currentWindow.startDragging())
+      .catch((err) => {
+        console.warn('Failed to start window drag:', err);
+      });
+  }
+
 
 
   async function fetchAllMergeNodes(path: string, branch: string): Promise<MergeNode[]> {
@@ -1578,7 +1590,32 @@ function App() {
 
   return (
     <div className="h-screen min-h-0 text-foreground flex flex-col relative bg-background">
-      <div className="h-full min-h-0 flex flex-col relative">
+      <header
+        data-tauri-drag-region
+        className="window-drag-region absolute left-0 right-0 top-0 z-[9999] h-12 px-4 md:px-8"
+        style={{ paddingTop: 'max(env(safe-area-inset-top), 0px)' }}
+        onMouseDown={handleWindowDragStart}
+      >
+        {view === 'map' && (
+          <div className="relative z-10 pointer-events-none h-12 grid grid-cols-[1fr_auto_1fr] items-center gap-3">
+            <button
+              onClick={handleBackToLanding}
+              aria-label="Back"
+              title="Back"
+              className="window-no-drag pointer-events-auto ml-16 h-7 w-10 rounded-full border border-border bg-card text-foreground hover:bg-accent transition-colors shrink-0 justify-self-start inline-flex items-center justify-center"
+            >
+              <ArrowLeft className="h-3.5 w-3.5 shrink-0" />
+            </button>
+            <div className="justify-self-center max-w-[52vw] min-w-0 text-center">
+              <h1 className="text-sm md:text-base font-medium text-foreground truncate">
+                {repoName}
+              </h1>
+            </div>
+            <div className="justify-self-end" aria-hidden="true" />
+          </div>
+        )}
+      </header>
+      <div className="h-full min-h-0 flex flex-col relative z-10">
       {view === 'landing' && (
         <div className="flex-1 min-h-0 overflow-hidden">
           <RepoSelector onSelect={loadRepo} loading={loading} error={error} />
@@ -1637,26 +1674,9 @@ function App() {
 
           <header
             data-map-ui
-            className="pointer-events-none absolute left-0 right-0 top-0 z-40 px-4 pb-3 pt-3 md:px-8 md:pb-5 md:pt-4"
-            style={{ paddingTop: 'max(env(safe-area-inset-top), 10px)' }}
+            className="absolute left-0 right-0 top-12 z-40 px-4 md:px-8"
           >
-            <div className="grid grid-cols-[1fr_auto_1fr] items-center gap-3">
-              <button
-                onClick={handleBackToLanding}
-                aria-label="Back"
-                title="Back"
-                className="pointer-events-auto ml-16 rounded-lg border border-border bg-card text-foreground hover:bg-accent transition-colors p-2 shrink-0 justify-self-start"
-              >
-                <ArrowLeft className="h-3.5 w-3.5 shrink-0" />
-              </button>
-              <div className="justify-self-center max-w-[52vw] min-w-0 text-center">
-                <h1 className="text-sm md:text-base font-medium text-foreground truncate">
-                  {repoName}
-                </h1>
-              </div>
-              <div className="justify-self-end" aria-hidden="true" />
-            </div>
-            <div className="pointer-events-auto mt-3 min-h-8 flex flex-wrap items-center gap-2 content-start">
+            <div className="window-no-drag pointer-events-auto relative z-10 min-h-8 flex flex-wrap items-center gap-2 content-start">
               {githubAuthStatus?.ghAvailable && !githubAuthStatus.authenticated && (
                 <button
                   onClick={handleGitHubAuthSetup}
