@@ -9617,10 +9617,10 @@ export default function BranchMap({
               const anyActionDisabled =
                 pushInProgress || mergeInProgress || commitInProgress || stashInProgress || stageInProgress;
 
-              const hasAnyGitAction =
-                !!onPushCommitTargets || !!onPushAllBranches || !!onPushCurrentBranch || !!onCommitLocalChanges || !!onStageAllChanges || !!onStashLocalChanges;
+              const hasPossibleGitAction =
+                canPushSelected || canPushAll || canPushCurrent || canCommit || canStash || canStage;
 
-              if (!hasAnyGitAction) return null;
+              if (!hasPossibleGitAction) return null;
 
               return (
                 <div ref={gitActionMenuRef} className="relative shrink-0 pointer-events-auto">
