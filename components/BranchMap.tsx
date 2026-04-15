@@ -25,6 +25,7 @@ const ZOOM_MAX = 30;
 const ZOOM_WHEEL_EXP_SENSITIVITY = 0.0025;
 const ZOOM_WHEEL_DELTA_MAX_PX = 180;
 const CAMERA_UI_SYNC_MS = 24;
+const RESIZE_SETTLE_MS = 140;
 /** Space between the `<svg>` and the camera container edges (screen px each side). */
 const CANVAS_PAD_X = 0;
 const CANVAS_PAD_Y = 0;
@@ -1040,6 +1041,10 @@ export default function BranchMap({
   // Bottom chrome controls visibility state
   const [controlsReady, setControlsReady] = useState(false);
   const [viewportSize, setViewportSize] = useState({ width: 0, height: 0 });
+  const [isResizeSettling, setIsResizeSettling] = useState(false);
+  const resizeRafRef = useRef<number | null>(null);
+  const resizeSettleTimeoutRef = useRef<number | null>(null);
+  const lastViewportRef = useRef({ width: 0, height: 0 });
   // Use zoomRef (not React `zoom` state) so transforms match paintCamera during throttled sync.
   // Otherwise re-renders can overwrite the <g> scale with a stale zoom and cause WKWebView glitches.
   const layerCameraScale = getCameraScale(zoomRef.current, isHorizontal);
@@ -2089,6 +2094,14 @@ export default function BranchMap({
         cancelAnimationFrame(orientationAutoCenterRafRef.current);
         orientationAutoCenterRafRef.current = null;
       }
+      if (resizeRafRef.current !== null) {
+        cancelAnimationFrame(resizeRafRef.current);
+        resizeRafRef.current = null;
+      }
+      if (resizeSettleTimeoutRef.current !== null) {
+        clearTimeout(resizeSettleTimeoutRef.current);
+        resizeSettleTimeoutRef.current = null;
+      }
       stopCameraPaint();
       stopZoomAnimation();
       stopWheelInertia();
@@ -2100,14 +2113,48 @@ export default function BranchMap({
   useEffect(() => {
     const el = scrollRef.current;
     if (!el) return;
-    const updateSize = () => {
-      const rect = el.getBoundingClientRect();
-      setViewportSize({ width: rect.width, height: rect.height });
+    const scheduleResizeSettled = () => {
+      if (resizeSettleTimeoutRef.current !== null) {
+        clearTimeout(resizeSettleTimeoutRef.current);
+      }
+      setIsResizeSettling(true);
+      resizeSettleTimeoutRef.current = window.setTimeout(() => {
+        resizeSettleTimeoutRef.current = null;
+        setIsResizeSettling(false);
+      }, RESIZE_SETTLE_MS);
     };
+
+    const updateSize = () => {
+      if (resizeRafRef.current !== null) return;
+      resizeRafRef.current = requestAnimationFrame(() => {
+        resizeRafRef.current = null;
+        const rect = el.getBoundingClientRect();
+        const next = {
+          width: Math.round(rect.width),
+          height: Math.round(rect.height),
+        };
+        const prev = lastViewportRef.current;
+        if (prev.width === next.width && prev.height === next.height) return;
+        lastViewportRef.current = next;
+        setViewportSize(next);
+        scheduleResizeSettled();
+      });
+    };
+
     updateSize();
     const ro = new ResizeObserver(updateSize);
     ro.observe(el);
-    return () => ro.disconnect();
+    return () => {
+      ro.disconnect();
+      if (resizeRafRef.current !== null) {
+        cancelAnimationFrame(resizeRafRef.current);
+        resizeRafRef.current = null;
+      }
+      if (resizeSettleTimeoutRef.current !== null) {
+        clearTimeout(resizeSettleTimeoutRef.current);
+        resizeSettleTimeoutRef.current = null;
+      }
+    };
   }, []);
 
   // Space+drag (or middle mouse drag) panning, interrupting all inertial motion.
@@ -7050,7 +7097,7 @@ export default function BranchMap({
             transformOrigin: 'top left',
             willChange: isOrientationSwitchFading ? 'transform, opacity' : 'transform',
             opacity: isOrientationSwitchFading ? 0.9 : 1,
-            transition: `opacity ${ORIENTATION_SWITCH_FADE_MS}ms ease-out`,
+            transition: isResizeSettling ? 'none' : `opacity ${ORIENTATION_SWITCH_FADE_MS}ms ease-out`,
           }}
         >
           <svg
@@ -7070,6 +7117,7 @@ export default function BranchMap({
               left: graphOffsetX,
               top: graphOffsetY,
               overflow: 'visible',
+              willChange: isResizeSettling ? 'transform' : undefined,
             } as React.CSSProperties}
           >
             <defs>
@@ -9538,7 +9586,7 @@ export default function BranchMap({
             </g>
           </svg>
         </div>
-        {marqueeRect && (
+        {marqueeRect && !isResizeSettling && (
           <div
             className="absolute pointer-events-none z-40"
             style={{
@@ -9588,7 +9636,7 @@ export default function BranchMap({
           className="pointer-events-none flex items-center justify-between gap-4"
           style={{
             opacity: isLoading || !controlsReady ? 0 : 1,
-            transition: 'opacity 0.4s ease',
+            transition: isResizeSettling ? 'none' : 'opacity 0.4s ease',
           }}
         >
           <div className="flex items-center gap-2 min-w-0">
@@ -9917,7 +9965,7 @@ export default function BranchMap({
       </div>
 
       {/* ── Node drag: drop-zone column highlights ─────────────────────────────── */}
-      {nodeDragDisplay && (() => {
+      {nodeDragDisplay && !isResizeSettling && (() => {
         const projection = selectionProjectionRef.current;
         const cameraScale = getCameraScale(zoomRef.current, projection.isHorizontal);
         const highlights = branchHeadTargetsRef.current
