@@ -5036,10 +5036,9 @@ export default function BranchMap({
     const isUnpushedFill =
       normalizedFill === CANVAS_UNPUSHED_NODE_FILL ||
       normalizedFill === CANVAS_UNPUSHED_NODE_FILL_HEX.toLowerCase();
-    // Ghost / empty uncommitted, or any node that reads as neutral unpushed with no checkout tint:
-    // keep the same surface fill on hover and selection (stroke + labels carry state).
-    const retainNeutralSurfaceFill =
-      accentOutlineOnly || (isUnpushedFill && checkoutAccent === 'none');
+    // Ghost / empty uncommitted, or any unpushed surface: checkout accent must not paint the
+    // pushed-only checked-out fill (#EDF7FD) on top of #FAFAF9.
+    const retainNeutralSurfaceFill = accentOutlineOnly || isUnpushedFill;
     if (retainNeutralSurfaceFill) {
       return CANVAS_UNPUSHED_NODE_FILL_HEX;
     }
@@ -5047,7 +5046,6 @@ export default function BranchMap({
     if (hoveredNodeStrokeKey === nodeKey) return HOVER_NODE_FILL;
     if (checkoutAccent === 'primary') return CHECKED_OUT_SELECTION_FILL;
     if (checkoutAccent === 'other') return WORKTREE_OTHER_FILL;
-    if (isUnpushedFill) return CANVAS_UNPUSHED_NODE_FILL_HEX;
     return baseFill;
   };
   const getNodeFrameTitleColor = (
@@ -7566,6 +7564,11 @@ export default function BranchMap({
                                   const isStashCommit = commit ? isStashCommitLike(commit) : false;
                                   const isLocalCommit =
                                     !isNonCommitPlaceholder && localCommitDotIndices.has(commitEntry.item.index);
+                                  const isUnpushedCommit =
+                                    !!commit &&
+                                    !isUncommittedCommit &&
+                                    !isStashCommit &&
+                                    isCommitUnpushed(commit.fullSha, commit.sha);
                                   const targetCommitSha = commit?.fullSha ?? b.headSha;
                                   const tooltipAuthor = commit?.author ?? b.lastCommitAuthor;
                                   const tooltipDate = commit?.date ?? b.lastCommitDate;
@@ -7601,7 +7604,7 @@ export default function BranchMap({
                                           height: rectSize.height - dotStrokeWidth,
                                           fill: getNodeFillColor(
                                             vm.clusterKey,
-                                            isStashCommit || isLocalCommit
+                                            isStashCommit || isUncommittedCommit || isLocalCommit || isUnpushedCommit
                                               ? CANVAS_UNPUSHED_NODE_FILL
                                               : dotFill,
                                             clusterCheckoutAccent,
@@ -7704,6 +7707,12 @@ export default function BranchMap({
                                 const clusterHasLocalCommits = vm.renderEntries.some((entry) =>
                                   localCommitDotIndices.has(entry.item.index)
                                 );
+                                const clusterHasUnpushedCommits = vm.renderEntries.some((entry) => {
+                                  const c = entry.item.commit;
+                                  if (!c || c.kind === 'uncommitted' || c.fullSha === 'WORKING_TREE') return false;
+                                  if (isStashCommitLike(c)) return false;
+                                  return isCommitUnpushed(c.fullSha, c.sha);
+                                });
                                 const isExpanded = motion.isExpanded;
                                 const phase = motion.phase;
                                 const phaseEased = motion.phaseEased;
@@ -7722,7 +7731,7 @@ export default function BranchMap({
                                           height: rectSize.height - dotStrokeWidth,
                                           fill: getNodeFillColor(
                                             vm.clusterKey,
-                                            clusterHasStash || clusterHasLocalCommits
+                                            clusterHasStash || clusterHasLocalCommits || clusterHasUnpushedCommits
                                               ? CANVAS_UNPUSHED_NODE_FILL
                                               : dotFill,
                                             clusterCheckoutAccent,
@@ -8107,6 +8116,11 @@ export default function BranchMap({
                             const isStashCommit = commit ? isStashCommitLike(commit) : false;
                             const isLocalCommit =
                               !isNonCommitPlaceholder && localCommitDotIndices.has(commitEntry.item.index);
+                            const isUnpushedCommit =
+                              !!commit &&
+                              !isUncommittedCommit &&
+                              !isStashCommit &&
+                              isCommitUnpushed(commit.fullSha, commit.sha);
                             const rectSize = commitRectSize(scaledNodeSize);
                             const isGhostRect = isNonCommitPlaceholder;
                             const ghostRectStrokeWidth = unpushedStrokeWidth;
@@ -8144,7 +8158,7 @@ export default function BranchMap({
                                   innerText: isUncommittedCommit || isStashCommit ? undefined : commit?.message,
                                   footerMetaAuthor: `@${commit?.author ?? b.lastCommitAuthor}`,
                                   footerMetaDate: fmtTooltipDate(commit?.date ?? b.lastCommitDate),
-                                  fill: isStashCommit || isUncommittedCommit || isLocalCommit
+                                  fill: isStashCommit || isUncommittedCommit || isLocalCommit || isUnpushedCommit
                                     ? CANVAS_UNPUSHED_NODE_FILL
                                     : dotFill,
                                   baseStroke: stashOrUncommittedBaseStroke(isStashCommit, !!isUncommittedCommit),
@@ -8172,6 +8186,12 @@ export default function BranchMap({
                           const clusterHasLocalCommits = renderEntries.some((entry) =>
                             localCommitDotIndices.has(entry.item.index)
                           );
+                          const clusterHasUnpushedCommits = renderEntries.some((entry) => {
+                            const c = entry.item.commit;
+                            if (!c || c.kind === 'uncommitted' || c.fullSha === 'WORKING_TREE') return false;
+                            if (isStashCommitLike(c)) return false;
+                            return isCommitUnpushed(c.fullSha, c.sha);
+                          });
                           const expanded = canExpandCluster ? expandedClumps.get(clusterKey) : undefined;
                           const { isExpanded, phase, phaseEased } = canExpandCluster
                             ? resolveClumpPhase(expanded)
@@ -8208,7 +8228,7 @@ export default function BranchMap({
                                     const lastDate = renderEntries[renderEntries.length - 1]?.item.commit?.date ?? b.lastCommitDate;
                                     return fmtClumpDateRange(firstDate, lastDate);
                                   })(),
-                                  fill: clusterHasStash || clusterHasUncommitted || clusterHasLocalCommits
+                                  fill: clusterHasStash || clusterHasUncommitted || clusterHasLocalCommits || clusterHasUnpushedCommits
                                     ? CANVAS_UNPUSHED_NODE_FILL
                                     : dotFill,
                                   baseStroke: clusterLocalSyntheticStroke(clusterHasUncommitted, clusterHasStash),
@@ -8250,6 +8270,10 @@ export default function BranchMap({
                                 const isUncommittedCommit = commit.kind === 'uncommitted';
                                 const isStashCommit = isStashCommitLike(commit);
                                 const isLocalCommit = localCommitDotIndices.has(entry.item.index);
+                                const isUnpushedCommit =
+                                  !isUncommittedCommit &&
+                                  !isStashCommit &&
+                                  isCommitUnpushed(commit.fullSha, commit.sha);
 
                                 return (
                                   <g
@@ -8268,7 +8292,7 @@ export default function BranchMap({
                                           isUncommittedCommit || isStashCommit ? undefined : commit.message,
                                         footerMetaAuthor: `@${commit.author ?? b.lastCommitAuthor}`,
                                         footerMetaDate: fmtTooltipDate(commit.date ?? b.lastCommitDate),
-                                        fill: isStashCommit || isUncommittedCommit || isLocalCommit
+                                        fill: isStashCommit || isUncommittedCommit || isLocalCommit || isUnpushedCommit
                                           ? CANVAS_UNPUSHED_NODE_FILL
                                           : dotFill,
                                         baseStroke: stashOrUncommittedBaseStroke(isStashCommit, isUncommittedCommit),
