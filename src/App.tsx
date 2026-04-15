@@ -3,7 +3,7 @@ import { invoke } from '@tauri-apps/api/core';
 import { listen } from '@tauri-apps/api/event';
 import { getCurrentWindow } from '@tauri-apps/api/window';
 import { ArrowLeft } from 'lucide-react';
-import BranchMapView from '../components/BranchMapView';
+import BranchMapView, { type OrientationMode } from '../components/BranchMapView';
 import FolderPickerModal from './FolderPickerModal';
 import type { Branch, BranchCommitPreview, BranchPromptMeta, BranchPromptMarker, CheckedOutRef, Commit, DirectCommit, GitHubAuthStatus, GitHubInfo, GitStashEntry, MergeNode, OpenPR, WorktreeInfo } from '../types';
 import { foldStashNodesIntoGraph } from './placeStashNode';
@@ -38,6 +38,7 @@ function App() {
   const [checkedOutRef, setCheckedOutRef] = useState<CheckedOutRef | null>(null);
   const [worktrees, setWorktrees] = useState<WorktreeInfo[]>([]);
   const [removeWorktreeInProgress, setRemoveWorktreeInProgress] = useState(false);
+  const [orientation, setOrientation] = useState<OrientationMode>('vertical');
   const [loading, setLoading] = useState(false);       // button spinner in landing
   const [mapLoading, setMapLoading] = useState(false); // canvas skeleton in map
   const [error, setError] = useState<string | null>(null);
@@ -1592,26 +1593,47 @@ function App() {
     <div className="h-screen min-h-0 text-foreground flex flex-col relative bg-background">
       <header
         data-tauri-drag-region
-        className="window-drag-region absolute left-0 right-0 top-0 z-[9999] h-12 px-4 md:px-8"
+        className="window-drag-region absolute left-0 right-0 top-0 z-[9999] h-12 px-4"
         style={{ paddingTop: 'max(env(safe-area-inset-top), 0px)' }}
         onMouseDown={handleWindowDragStart}
       >
         {view === 'map' && (
-          <div className="relative z-10 pointer-events-none h-12 grid grid-cols-[1fr_auto_1fr] items-center gap-3">
+          <div className="relative z-10 pointer-events-none h-12">
             <button
               onClick={handleBackToLanding}
               aria-label="Back"
               title="Back"
-              className="window-no-drag pointer-events-auto ml-16 h-7 w-10 rounded-full border border-border bg-card text-foreground hover:bg-accent transition-colors shrink-0 justify-self-start inline-flex items-center justify-center"
+              className="window-no-drag pointer-events-auto absolute left-19 top-1/2 inline-flex h-7 w-10 -translate-y-1/2 items-center justify-center rounded-full border border-border bg-card text-foreground transition-colors hover:bg-accent"
             >
               <ArrowLeft className="h-3.5 w-3.5 shrink-0" />
             </button>
-            <div className="justify-self-center max-w-[52vw] min-w-0 text-center">
-              <h1 className="text-sm md:text-base font-medium text-foreground truncate">
+            <div className="absolute left-1/2 top-1/2 min-w-0 max-w-[52vw] -translate-x-1/2 -translate-y-1/2 text-center">
+              <h1 className="text-sm font-medium text-foreground truncate">
                 {repoName}
               </h1>
             </div>
-            <div className="justify-self-end" aria-hidden="true" />
+            <button
+              onClick={() => setOrientation((previous) => (previous === 'horizontal' ? 'vertical' : 'horizontal'))}
+              aria-label={orientation === 'horizontal' ? 'Switch layout to vertical' : 'Switch layout to horizontal'}
+              title={orientation === 'horizontal' ? 'Switch layout to vertical' : 'Switch layout to horizontal'}
+              className="window-no-drag pointer-events-auto absolute right-[-5px] top-1/2 inline-flex h-7 -translate-y-1/2 items-center justify-center gap-1.5 rounded-full border border-border bg-card px-3 text-xs text-foreground transition-colors hover:bg-accent"
+            >
+              <svg
+                width="24"
+                height="24"
+                viewBox="0 0 24 24"
+                fill="none"
+                xmlns="http://www.w3.org/2000/svg"
+                className={`h-3.5 w-3.5 shrink-0 transition-transform ${orientation === 'horizontal' ? 'rotate-90' : 'rotate-0'}`}
+                aria-hidden
+              >
+                <path
+                  d="M5 16V16.18C3.84 16.59 3 17.69 3 19C3 20.65 4.35 22 6 22C7.65 22 9 20.65 9 19C9 17.7 8.16 16.6 7 16.18V13H16.5C17.163 13 17.7989 12.7366 18.2678 12.2678C18.7366 11.7989 19 11.163 19 10.5V7.82C20.16 7.41 21 6.31 21 5C21 3.35 19.65 2 18 2C16.35 2 15 3.35 15 5C15 6.3 15.84 7.4 17 7.82V10.5C17 10.78 16.78 11 16.5 11H7V7.82C8.16 7.41 9 6.31 9 5C9 3.35 7.65 2 6 2C4.35 2 3 3.35 3 5C3 6.3 3.84 7.4 5 7.82V16ZM18 4C18.55 4 19 4.45 19 5C19 5.55 18.55 6 18 6C17.45 6 17 5.55 17 5C17 4.45 17.45 4 18 4ZM6 4C6.55 4 7 4.45 7 5C7 5.55 6.55 6 6 6C5.45 6 5 5.55 5 5C5 4.45 5.45 4 6 4ZM6 20C5.45 20 5 19.55 5 19C5 18.45 5.45 18 6 18C6.55 18 7 18.45 7 19C7 19.55 6.55 20 6 20Z"
+                  fill="currentColor"
+                />
+              </svg>
+              {orientation === 'horizontal' ? 'Horizontal' : 'Vertical'}
+            </button>
           </div>
         )}
       </header>
@@ -1669,6 +1691,7 @@ function App() {
               onCreateBranchFromNode={handleCreateBranchFromNode}
               createBranchFromNodeInProgress={createBranchFromNodeInProgress}
               onMoveNodeBackToBranch={handleMoveNodeBackToBranch}
+              orientation={orientation}
             />
           </div>
 

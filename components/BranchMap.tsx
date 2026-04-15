@@ -843,6 +843,7 @@ interface BranchMapProps {
   createBranchFromNodeInProgress?: boolean;
   /** Move back: called when user drags back to a branch that shares the current HEAD. */
   onMoveNodeBackToBranch?: (targetBranchName: string) => Promise<void>;
+  orientation?: OrientationMode;
 }
 
 export default function BranchMap({
@@ -889,6 +890,7 @@ export default function BranchMap({
   onCreateBranchFromNode,
   createBranchFromNodeInProgress = false,
   onMoveNodeBackToBranch,
+  orientation: controlledOrientation,
 }: BranchMapProps) {
   const [, setTooltip] = useState<TooltipData | null>(null);
   const [hoveredBranch, setHoveredBranch] = useState<string | null>(null);
@@ -896,7 +898,7 @@ export default function BranchMap({
   const [hoveredNodeBranchName, setHoveredNodeBranchName] = useState<string | null>(null);
   const [expandedClumps, setExpandedClumps] = useState<Map<string, ExpandedClumpState>>(() => new Map());
   const [zoom, setZoom] = useState(ZOOM_DEFAULT);
-  const [orientation, setOrientation] = useState<OrientationMode>('vertical');
+  const [internalOrientation] = useState<OrientationMode>('vertical');
   const [isOrientationSwitchFading, setIsOrientationSwitchFading] = useState(false);
 
   const [showLineageDebug, setShowLineageDebug] = useState(false);
@@ -923,6 +925,7 @@ export default function BranchMap({
   const [nodeDragDisplay, setNodeDragDisplay] = useState<NodeDragDisplay | null>(null);
   const [newBranchDialogForNode, setNewBranchDialogForNode] = useState<{ nodeId: string; stashIndex?: number } | null>(null);
   const [newBranchNameForNode, setNewBranchNameForNode] = useState('');
+  const orientation = controlledOrientation ?? internalOrientation;
   const isHorizontal = orientation === 'horizontal';
   const gridEventGap = isHorizontal ? GRID_LANE_WIDTH : GRID_ROW_GAP;
   const gridLaneWidth = isHorizontal ? GRID_ROW_GAP : GRID_LANE_WIDTH;
@@ -7013,20 +7016,21 @@ export default function BranchMap({
     }
   };
 
-  const handleOrientationChange = (nextOrientation: OrientationMode) => {
-    if (nextOrientation === orientation) return;
+  const previousOrientationRef = useRef<OrientationMode>(orientation);
+  useEffect(() => {
+    if (previousOrientationRef.current === orientation) return;
+    previousOrientationRef.current = orientation;
     if (orientationSwitchFadeTimeoutRef.current !== null) {
       clearTimeout(orientationSwitchFadeTimeoutRef.current);
       orientationSwitchFadeTimeoutRef.current = null;
     }
     setIsOrientationSwitchFading(true);
     pendingOrientationAutoCenterRef.current = true;
-    setOrientation(nextOrientation);
     orientationSwitchFadeTimeoutRef.current = window.setTimeout(() => {
       orientationSwitchFadeTimeoutRef.current = null;
       setIsOrientationSwitchFading(false);
     }, ORIENTATION_SWITCH_FADE_MS);
-  };
+  }, [orientation]);
 
   return (
     <div className="relative h-full">
@@ -9250,3 +9254,1198 @@ export default function BranchMap({
                                           textAnchor="start"
                                           fill={getNodeFrameTitleColor(
                                             `direct:${c.fullSha}`,
+                                            mergeCheckoutAccent(
+                                              checkedOutHeadSha != null &&
+                                                (shaMatchesGitRef(c.fullSha, checkedOutHeadSha) ||
+                                                  shaMatchesGitRef(c.sha, checkedOutHeadSha)),
+                                              defaultBranch,
+                                              c.fullSha,
+                                              c.sha,
+                                            ),
+                                            selectedCommitShaSet.has(c.fullSha),
+                                            c.kind === 'uncommitted',
+                                            isStashCommitLike(c),
+                                          )}
+                                          fontSize={nodeFrameLabelFontSize}
+                                          fontWeight={NODE_FRAME_LABEL_WEIGHT}
+                                          pointerEvents="none"
+                                        >
+                                          {fitNodeFrameTitle(
+                                            defaultBranch,
+                                            c.kind === 'uncommitted'
+                                              ? 'Uncommited Changes'
+                                              : isStashCommitLike(c)
+                                                ? shortShaLabel(c.fullSha)
+                                                : c.sha ?? c.fullSha,
+                                            localRect.width,
+                                            undefined,
+                                            entry === topEntryForLabels
+                                          )}
+                                        </text>
+                                      </g>
+                                    </g>
+                                  );
+                                })}
+                              </g>
+                            );
+                          }
+                          return (
+                            <g
+                              key={`main-label-overlay-${clusterKey}`}
+                              opacity={1}
+                            >
+                              {(!isExpanded || isCollapsing) && (
+                                <text
+                                  x={anchorX + clusterRectSize.width / 2 - CANVAS_NODE_STROKE_INSET - nodeFrameLabelRightInsetX}
+                                  y={anchorY - clusterRectSize.height / 2 - nodeFrameLabelGap}
+                                  textAnchor="end"
+                                  fontSize={nodeFrameLabelFontSize}
+                                  fill={getNodeFrameTitleColor(
+                                    clusterKey,
+                                    mainClusterCheckoutAccent,
+                                    mainClusterIsSelected,
+                                    last.kind === 'uncommitted',
+                                    isStashCommitLike(last),
+                                  )}
+                                  fontWeight={NODE_FRAME_LABEL_WEIGHT}
+                                  pointerEvents="none"
+                                >
+                                  {clumpCountText}
+                                </text>
+                              )}
+                              <text
+                                x={anchorX - clusterRectSize.width / 2 + CANVAS_NODE_STROKE_INSET + nodeFrameLabelInsetX}
+                                y={anchorY - clusterRectSize.height / 2 - nodeFrameLabelGap}
+                                textAnchor="start"
+                                fill={getNodeFrameTitleColor(
+                                  clusterKey,
+                                  mainClusterCheckoutAccent,
+                                  mainClusterIsSelected,
+                                  last.kind === 'uncommitted',
+                                  isStashCommitLike(last),
+                                )}
+                                fontSize={nodeFrameLabelFontSize}
+                                fontWeight={NODE_FRAME_LABEL_WEIGHT}
+                                pointerEvents="none"
+                              >
+                                {clumpTitleText}
+                              </text>
+                            </g>
+                          );
+                        })}
+                      </g>
+                    )}
+                  </g>
+
+                  {/* Top-most collapse controls so carets are never occluded by node layers. */}
+                  <g>
+                    {!mainIsUnifiedRender && mainDirectClusters.map((clusterLayout) => {
+                      const { cluster, count, clusterKey, clusterHasMainTip, clusterCheckoutAccent, clusterHasSelectedCommit } = clusterLayout;
+                      const expanded = expandedClumps.get(clusterKey);
+                      const { isExpanded, phase } = resolveClumpPhase(expanded);
+                      if (count <= 1 || !isExpanded || phase !== 'expanded') return null;
+
+                      const localRect = commitRectSize(scaledNodeSize, 0);
+                      const collapseIconSize = nodeFrameCollapseIconSize;
+                      const collapseHitSize = worldPx(16);
+                      const collapseStrokeWidth = 1;
+                      const topExpandedEntry = cluster.entries.reduce(
+                        (top, entry) => {
+                          const isBetter = isHorizontal ? entry.x > top.x : entry.y < top.y;
+                          return isBetter ? entry : top;
+                        },
+                        cluster.entries[0]
+                      );
+                      const clumpCountAnchorX =
+                        topExpandedEntry.x + localRect.width / 2 - CANVAS_NODE_STROKE_INSET - nodeFrameLabelRightInsetX;
+                      const clumpCountAnchorY = topExpandedEntry.y - localRect.height / 2 - nodeFrameLabelGap;
+                      const collapseHitX = clumpCountAnchorX - collapseHitSize;
+                      const collapseHitY = clumpCountAnchorY - collapseHitSize + worldPx(3);
+                      // Keep caret right edge locked to the same anchor as count text ("end"-aligned).
+                      const collapseCaretX = clumpCountAnchorX - collapseIconSize;
+                      const collapseCaretY = collapseHitY + (collapseHitSize - collapseIconSize) / 2;
+                      const collapseCaretNudgeX = worldPx(0.8);
+
+                      return (
+                        <g
+                          key={`main-collapse-control-${clusterKey}`}
+                          role="button"
+                          tabIndex={0}
+                          aria-label="Collapse commit stack"
+                          style={{ cursor: 'pointer' }}
+                          onPointerDown={(e) => { e.preventDefault(); e.stopPropagation(); }}
+                          onMouseDown={(e) => { e.preventDefault(); e.stopPropagation(); }}
+                          onClick={(e) => {
+                            e.preventDefault();
+                            e.stopPropagation();
+                            toggleClumpExpanded(clusterKey);
+                          }}
+                          onKeyDown={(e) => {
+                            if (e.key !== 'Enter' && e.key !== ' ') return;
+                            e.preventDefault();
+                            e.stopPropagation();
+                            toggleClumpExpanded(clusterKey);
+                          }}
+                        >
+                          <rect
+                            x={collapseHitX}
+                            y={collapseHitY}
+                            width={collapseHitSize}
+                            height={collapseHitSize}
+                            fill="rgba(0,0,0,0.001)"
+                            pointerEvents="all"
+                          />
+                          <path
+                            d={`M ${collapseCaretX + collapseCaretNudgeX + collapseIconSize * 0.16} ${collapseCaretY + collapseIconSize * 0.34} L ${collapseCaretX + collapseCaretNudgeX + collapseIconSize * 0.5} ${collapseCaretY + collapseIconSize * 0.66} L ${collapseCaretX + collapseCaretNudgeX + collapseIconSize * 0.84} ${collapseCaretY + collapseIconSize * 0.34}`}
+                            stroke={getNodeFrameTitleColor(
+                              clusterKey,
+                              clusterCheckoutAccent,
+                              clusterHasSelectedCommit || (clusterHasMainTip && selectedBranchNameSet.has(defaultBranch)),
+                            )}
+                            strokeWidth={collapseStrokeWidth}
+                            strokeLinecap="round"
+                            strokeLinejoin="round"
+                            fill="none"
+                            vectorEffect="non-scaling-stroke"
+                          />
+                        </g>
+                      );
+                    })}
+
+                    {renderBranches.flatMap((b) => {
+                      const { commitDotClusters, branchEndDotIndex } = getBranchRenderLayout(b);
+                      return commitDotClusters.map((cluster) => {
+                        const { renderEntries } = resolveBranchClusterEntries(cluster);
+                        const count = renderEntries.length;
+                        const clusterKey = branchClusterKey(b.name, cluster);
+                        const canExpandCluster = renderEntries.length > 1;
+                        const expanded = canExpandCluster ? expandedClumps.get(clusterKey) : undefined;
+                        const { isExpanded, phase } = canExpandCluster
+                          ? resolveClumpPhase(expanded)
+                          : { isExpanded: false, phase: 'collapsed' as const };
+                        if (count <= 1 || !isExpanded || phase !== 'expanded') return null;
+                        const caretClusterHasBranchTip =
+                          branchEndDotIndex != null &&
+                          cluster.entries.some((entry) => entry.item.index === branchEndDotIndex);
+                        const caretClusterHasPrimaryCheckout =
+                          checkedOutHeadSha != null &&
+                          cluster.entries.some((entry) => {
+                            const commit = entry.item.commit;
+                            if (commit && commit.kind !== 'branch-created') {
+                              return shaMatchesGitRef(commit.fullSha, checkedOutHeadSha) || shaMatchesGitRef(commit.sha, checkedOutHeadSha);
+                            }
+                            if (checkedOutBranchName === b.name && branchEndDotIndex === entry.item.index) {
+                              return shaMatchesGitRef(b.headSha, checkedOutHeadSha);
+                            }
+                            return false;
+                          });
+                        const caretClusterHasOtherWorktree = cluster.entries.some((entry) => {
+                          const commit = entry.item.commit;
+                          if (commit && commit.kind !== 'branch-created') {
+                            return otherWorktreeMatchesBranchCommit(b.name, commit.fullSha, commit.sha ?? '');
+                          }
+                          if (branchEndDotIndex === entry.item.index) {
+                            return otherWorktreeMatchesBranchCommit(
+                              b.name,
+                              b.headSha,
+                              b.headSha.slice(0, 7),
+                            );
+                          }
+                          return false;
+                        });
+                        const caretClusterCheckoutAccent = caretClusterHasPrimaryCheckout
+                          ? 'primary'
+                          : caretClusterHasOtherWorktree
+                            ? 'other'
+                            : 'none';
+                        const caretClusterHasSelectedCommit =
+                          cluster.entries.some((entry) => {
+                            const commitSha = entry.item.commit?.fullSha;
+                            return !!commitSha && selectedCommitShaSet.has(commitSha);
+                          });
+                        const caretClusterIsSelected =
+                          caretClusterHasSelectedCommit ||
+                          (caretClusterHasBranchTip &&
+                            selectedBranchNameSet.has(b.name));
+
+                        const localRect = commitRectSize(scaledNodeSize, 0);
+                        const collapseIconSize = nodeFrameCollapseIconSize;
+                        const collapseHitSize = worldPx(16);
+                        const collapseStrokeWidth = 1;
+                        const topExpandedEntry = renderEntries.reduce(
+                          (top, entry) => {
+                            const isBetter = isHorizontal ? entry.x > top.x : entry.y < top.y;
+                            return isBetter ? entry : top;
+                          },
+                          renderEntries[0]
+                        );
+                        const clumpCountAnchorX =
+                          topExpandedEntry.x + localRect.width / 2 - CANVAS_NODE_STROKE_INSET - nodeFrameLabelRightInsetX;
+                        const clumpCountAnchorY = topExpandedEntry.y - localRect.height / 2 - nodeFrameLabelGap;
+                        const collapseHitX = clumpCountAnchorX - collapseHitSize;
+                        const collapseHitY = clumpCountAnchorY - collapseHitSize + worldPx(3);
+                        // Keep caret right edge locked to the same anchor as count text ("end"-aligned).
+                        const collapseCaretX = clumpCountAnchorX - collapseIconSize;
+                        const collapseCaretY = collapseHitY + (collapseHitSize - collapseIconSize) / 2;
+                        const collapseCaretNudgeX = worldPx(0.8);
+
+                        return (
+                        <g
+                          key={`branch-collapse-control-${clusterKey}`}
+                          role="button"
+                          tabIndex={0}
+                          aria-label="Collapse commit stack"
+                          style={{ cursor: 'pointer' }}
+                          onPointerDown={(e) => { e.preventDefault(); e.stopPropagation(); }}
+                          onMouseDown={(e) => { e.preventDefault(); e.stopPropagation(); }}
+                          onClick={(e) => {
+                            e.preventDefault();
+                            e.stopPropagation();
+                              toggleClumpExpanded(clusterKey);
+                            }}
+                            onKeyDown={(e) => {
+                              if (e.key !== 'Enter' && e.key !== ' ') return;
+                              e.preventDefault();
+                              e.stopPropagation();
+                              toggleClumpExpanded(clusterKey);
+                            }}
+                          >
+                            <rect
+                              x={collapseHitX}
+                              y={collapseHitY}
+                              width={collapseHitSize}
+                              height={collapseHitSize}
+                              fill="rgba(0,0,0,0.001)"
+                              pointerEvents="all"
+                            />
+                            <path
+                              d={`M ${collapseCaretX + collapseCaretNudgeX + collapseIconSize * 0.16} ${collapseCaretY + collapseIconSize * 0.34} L ${collapseCaretX + collapseCaretNudgeX + collapseIconSize * 0.5} ${collapseCaretY + collapseIconSize * 0.66} L ${collapseCaretX + collapseCaretNudgeX + collapseIconSize * 0.84} ${collapseCaretY + collapseIconSize * 0.34}`}
+                              stroke={getNodeFrameTitleColor(clusterKey, caretClusterCheckoutAccent, caretClusterIsSelected)}
+                              strokeWidth={collapseStrokeWidth}
+                              strokeLinecap="round"
+                              strokeLinejoin="round"
+                              fill="none"
+                              vectorEffect="non-scaling-stroke"
+                            />
+                          </g>
+                        );
+                      });
+                    })}
+                  </g>
+
+                </g>
+              </g>
+            </g>
+          </svg>
+        </div>
+        {marqueeRect && (
+          <div
+            className="absolute pointer-events-none z-40"
+            style={{
+              left: marqueeRect.left,
+              top: marqueeRect.top,
+              width: marqueeRect.width,
+              height: marqueeRect.height,
+              border: `${CANVAS_NODE_STROKE_WIDTH}px solid ${USER_SELECTION_STROKE}`,
+              borderRadius: 0,
+              backgroundColor: 'transparent',
+            }}
+          />
+        )}
+
+        {holdTimelineForInitialCenter && (
+          <div className="absolute inset-0 pointer-events-none flex items-center justify-center">
+            <Loader2
+              className="size-6 shrink-0 animate-spin text-muted-foreground"
+              aria-hidden
+            />
+          </div>
+        )}
+        {holdTimelineForInitialCenter && timelineRevealPhase === 'fading' && (
+          <div
+            className="absolute inset-0 pointer-events-none branch-map-fog-recede"
+            style={{ '--fog-duration': `${INITIAL_REVEAL_FADE_MS}ms` } as React.CSSProperties}
+          />
+        )}
+
+        {/* Empty state removed as per user request */}
+      </div>
+
+      {/* Bottom chrome: timeline controls — absolute so it stays inside the map
+          container and respects visibility:hidden when the diff view is shown. */}
+      <div
+        data-map-ui
+        className="absolute bottom-6 left-6 right-6 z-50 flex flex-col gap-2 pointer-events-none [&_button]:pointer-events-auto"
+        onMouseDownCapture={(event) => {
+          if ((event.target as Element | null)?.closest('button')) {
+            event.stopPropagation();
+          }
+        }}
+      >
+
+        {/* Controls row */}
+        <div
+          className="pointer-events-none flex items-center justify-between gap-4"
+          style={{
+            opacity: isLoading || !controlsReady ? 0 : 1,
+            transition: 'opacity 0.4s ease',
+          }}
+        >
+          <div className="flex items-center gap-2 min-w-0">
+            {(() => {
+              const canCommit = !hasSelection && !!onCommitLocalChanges && !commitDisabled;
+              const canStage = !hasSelection && !!onStageAllChanges && !commitDisabled;
+              const canStash = !hasSelection && !!onStashLocalChanges && !stashDisabled;
+              const canPushSelected = resolvedSelectedPushTargets.length > 0 && !!onPushCommitTargets;
+              const canPushAll = !hasSelection && !!onPushAllBranches && pushableRemoteBranchCount >= 2 && !canCommit;
+              const canPushCurrent = !hasSelection && !!onPushCurrentBranch && canPushCurrentBranch && !canCommit && !canPushAll;
+
+              type GitPrimaryAction =
+                | { kind: 'commit'; label: string; title: string; run: () => void }
+                | { kind: 'push-selected'; label: string; title: string; run: () => void }
+                | { kind: 'push-all'; label: string; title: string; run: () => void }
+                | { kind: 'push-current'; label: string; title: string; run: () => void }
+                | { kind: 'none'; label: string; title: string; run: () => void };
+
+              const primaryAction: GitPrimaryAction =
+                canCommit
+                  ? { kind: 'commit', label: commitInProgress ? 'Committing…' : 'Commit', title: 'Stage all changes and commit with your message', run: () => setCommitDialogOpen(true) }
+                  : canPushSelected
+                    ? { kind: 'push-selected', label: pushInProgress ? 'Pushing...' : selectedPushLabel, title: selectedPushTitle, run: () => void handlePushSelectedTargets() }
+                    : canPushAll
+                      ? { kind: 'push-all', label: pushInProgress ? 'Pushing...' : 'Push all', title: 'Push every local branch that still has commits to send', run: () => void onPushAllBranches?.() }
+                      : canPushCurrent
+                        ? { kind: 'push-current', label: pushInProgress ? 'Pushing...' : pushCurrentBranchLabel, title: 'Push the branch that is currently checked out', run: () => void onPushCurrentBranch?.() }
+                        : { kind: 'none', label: '', title: 'Open git actions menu', run: openGitActionMenu };
+
+              const anyActionDisabled =
+                pushInProgress || mergeInProgress || commitInProgress || stashInProgress || stageInProgress;
+
+              const hasPossibleGitAction =
+                canPushSelected || canPushAll || canPushCurrent || canCommit || canStash || canStage;
+
+              if (!hasPossibleGitAction) return null;
+
+              return (
+                <div ref={gitActionMenuRef} className="relative shrink-0 pointer-events-auto">
+                  <div className="inline-flex rounded-full border border-border bg-card overflow-hidden">
+                    <button
+                      type="button"
+                      onClick={primaryAction.run}
+                      disabled={anyActionDisabled || primaryAction.kind === 'none'}
+                      className="inline-flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium text-foreground transition-colors hover:bg-accent disabled:cursor-not-allowed disabled:opacity-50"
+                      title={primaryAction.title}
+                      aria-label={primaryAction.title}
+                    >
+                      {primaryAction.kind === 'commit' && (
+                        <GitCommitHorizontal className="h-3.5 w-3.5 shrink-0" aria-hidden />
+                      )}
+                      {primaryAction.label}
+                    </button>
+                    <button
+                      type="button"
+                      onClick={toggleGitActionMenu}
+                      disabled={anyActionDisabled}
+                      className="inline-flex items-center px-2 py-1.5 text-xs font-medium text-muted-foreground transition-colors hover:bg-accent disabled:cursor-not-allowed disabled:opacity-50"
+                      aria-haspopup="menu"
+                      aria-expanded={gitActionMenuOpen}
+                      title="Open git actions menu"
+                      aria-label="Open git actions menu"
+                    >
+                      <ChevronDown className="h-3.5 w-3.5 shrink-0" aria-hidden />
+                    </button>
+                  </div>
+
+                  <AnimatePresence>
+                    {gitActionMenuOpen && (
+                      <motion.div
+                        role="menu"
+                        initial="closed"
+                        animate="open"
+                        exit="closed"
+                        variants={DROPDOWN_SPRING_VARIANTS}
+                        className="absolute bottom-full left-0 mb-2 min-w-[260px] rounded-xl border border-border bg-card/95 backdrop-blur-sm p-2 z-[60] origin-bottom-left transform-gpu"
+                      >
+                      <div className="flex flex-col gap-1">
+                        <button
+                          type="button"
+                          role="menuitem"
+                          onClick={() => {
+                            closeGitActionMenu();
+                            void handlePushSelectedTargets();
+                          }}
+                          disabled={anyActionDisabled || !canPushSelected}
+                          className="w-full text-left rounded-lg px-2 py-1.5 text-xs text-foreground hover:bg-muted/50 transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
+                          title={selectedPushTitle}
+                          aria-label={selectedPushTitle}
+                        >
+                          {selectedPushLabel}
+                        </button>
+
+                        <button
+                          type="button"
+                          role="menuitem"
+                          onClick={() => {
+                            closeGitActionMenu();
+                            void onPushAllBranches?.();
+                          }}
+                          disabled={anyActionDisabled || !canPushAll}
+                          className="w-full text-left rounded-lg px-2 py-1.5 text-xs text-foreground hover:bg-muted/50 transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
+                          title="Push every local branch that still has commits to send"
+                          aria-label="Push all branches"
+                        >
+                          Push all
+                        </button>
+
+                        <button
+                          type="button"
+                          role="menuitem"
+                          onClick={() => {
+                            closeGitActionMenu();
+                            void onPushCurrentBranch?.();
+                          }}
+                          disabled={anyActionDisabled || !canPushCurrent}
+                          className="w-full text-left rounded-lg px-2 py-1.5 text-xs text-foreground hover:bg-muted/50 transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
+                          title="Push the branch that is currently checked out"
+                          aria-label="Push current branch"
+                        >
+                          {pushCurrentBranchLabel}
+                        </button>
+
+                        <button
+                          type="button"
+                          role="menuitem"
+                          onClick={() => {
+                            closeGitActionMenu();
+                            setCommitDialogOpen(true);
+                          }}
+                          disabled={anyActionDisabled || !canCommit}
+                          className="w-full text-left rounded-lg px-2 py-1.5 text-xs text-foreground hover:bg-muted/50 transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
+                          title="Stage all changes and commit with your message"
+                          aria-label="Commit local changes"
+                        >
+                          Commit…
+                        </button>
+
+                        <button
+                          type="button"
+                          role="menuitem"
+                          onClick={() => {
+                            closeGitActionMenu();
+                            void onStashLocalChanges?.();
+                          }}
+                          disabled={anyActionDisabled || !canStash}
+                          className="w-full text-left rounded-lg px-2 py-1.5 text-xs text-foreground hover:bg-muted/50 transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
+                          title="Stash local changes (tracked and untracked)"
+                          aria-label="Stash local changes"
+                        >
+                          Stash
+                        </button>
+
+                        <button
+                          type="button"
+                          role="menuitem"
+                          onClick={() => {
+                            closeGitActionMenu();
+                            void onStageAllChanges?.();
+                          }}
+                          disabled={anyActionDisabled || !canStage}
+                          className="w-full text-left rounded-lg px-2 py-1.5 text-xs text-foreground hover:bg-muted/50 transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
+                          title="Stage all changes (git add -A)"
+                          aria-label="Stage all changes"
+                        >
+                          Stage all
+                        </button>
+                      </div>
+                      </motion.div>
+                    )}
+                  </AnimatePresence>
+                </div>
+              );
+            })()}
+            {!hasSelection &&
+              worktrees.length > 0 &&
+              (onRemoveWorktree || onSwitchToWorktree) && (
+              <div ref={worktreeMenuRef} className="relative shrink-0 pointer-events-auto">
+                <button
+                  type="button"
+                  onClick={toggleWorktreeMenu}
+                  className="inline-flex items-center gap-1.5 rounded-full border border-border bg-card pl-3 pr-2 py-1.5 text-xs font-medium text-foreground transition-colors hover:bg-accent"
+                  aria-expanded={worktreeMenuOpen}
+                  aria-haspopup="menu"
+                  title="Git worktrees: additional checkouts of this repository"
+                  aria-label={`${worktrees.length} ${worktrees.length === 1 ? 'worktree' : 'worktrees'}, menu`}
+                >
+                  <span>
+                    {worktrees.length} {worktrees.length === 1 ? 'Worktree' : 'Worktrees'}
+                  </span>
+                  <ChevronDown
+                    className="h-3.5 w-3.5 shrink-0 text-muted-foreground"
+                    aria-hidden
+                  />
+                </button>
+                <AnimatePresence>
+                  {worktreeMenuOpen && (
+                    <motion.div
+                      role="menu"
+                      initial="closed"
+                      animate="open"
+                      exit="closed"
+                      variants={DROPDOWN_SPRING_VARIANTS}
+                      className="absolute bottom-full left-0 mb-2 min-w-[280px] max-w-[min(100vw-3rem,420px)] rounded-xl border border-border bg-card/95 backdrop-blur-sm p-2 z-[60] origin-bottom-left transform-gpu"
+                    >
+                    <ul className="flex flex-col gap-1 max-h-52 overflow-y-auto">
+                      {worktrees.map((wt) => (
+                        <li
+                          key={wt.path}
+                          className="flex items-start gap-2 rounded-lg px-2 py-1.5 text-xs text-foreground hover:bg-muted/50 transition-colors"
+                        >
+                          <div className="min-w-0 flex-1">
+                            <div className="font-medium truncate" title={wt.path}>
+                              {!isOtherWorktree(wt) ? 'This window' : worktreeShortLabel(wt.path)}
+                            </div>
+                            <div className="text-muted-foreground truncate">
+                              {wt.branchName ?? 'detached'} · {wt.headSha.slice(0, 7)}
+                              {wt.isPrunable && (
+                                <span className="ml-1 text-amber-600 dark:text-amber-400">prunable</span>
+                              )}
+                            </div>
+                            {wt.pathExists === false && (
+                              <p className="text-[10px] text-amber-600 dark:text-amber-400 mt-1 leading-snug">
+                                Folder was removed; Git still lists this worktree. Remove here or run{' '}
+                                <span className="font-mono">git worktree prune</span> in the repository.
+                              </p>
+                            )}
+                          </div>
+                          {isOtherWorktree(wt) && (
+                            <div className="flex shrink-0 items-center gap-1">
+                              {onSwitchToWorktree && (
+                                <button
+                                  type="button"
+                                  role="menuitem"
+                                  className="rounded-lg border border-border px-2 py-1 text-xs font-medium transition-colors hover:bg-accent disabled:cursor-not-allowed disabled:opacity-50"
+                                  disabled={
+                                    removeWorktreeInProgress || wt.pathExists === false
+                                  }
+                                  title={
+                                    wt.pathExists === false
+                                      ? 'Folder missing — remove the worktree or run git worktree prune'
+                                      : 'Open this repository in this window'
+                                  }
+                                  aria-label={`Switch app to worktree ${worktreeShortLabel(wt.path)}`}
+                                  onClick={() => {
+                                    closeWorktreeMenu();
+                                    void onSwitchToWorktree(wt.path);
+                                  }}
+                                >
+                                  Switch
+                                </button>
+                              )}
+                              {onRemoveWorktree && (
+                                <button
+                                  type="button"
+                                  role="menuitem"
+                                  className="rounded-lg border border-border px-2 py-1 text-xs font-medium transition-colors hover:bg-accent disabled:opacity-50"
+                                  disabled={removeWorktreeInProgress}
+                                  title={
+                                    wt.isPrunable
+                                      ? 'Remove with --force (stale or broken worktree)'
+                                      : 'Remove worktree'
+                                  }
+                                  aria-label={`Remove worktree ${worktreeShortLabel(wt.path)}`}
+                                  onClick={() => void onRemoveWorktree(wt.path, wt.isPrunable)}
+                                >
+                                  {removeWorktreeInProgress ? '…' : 'Remove'}
+                                </button>
+                              )}
+                            </div>
+                          )}
+                        </li>
+                      ))}
+                    </ul>
+                    </motion.div>
+                  )}
+                </AnimatePresence>
+              </div>
+            )}
+            {/* push-through selection is now in the Git actions dropdown */}
+            {selectedVisibleCommitShas.length > 1 &&
+              commitMergeTargetOptions.length > 1 &&
+              selectedCommitTargetOption &&
+              targetBranchForSelectedCommit && (
+                <div className="flex items-center gap-2 shrink-0 bg-card border border-border rounded-full pl-3 pr-1 py-1">
+                  <span className="text-xs text-muted-foreground font-medium select-none">
+                    merge to...
+                  </span>
+                  <div className="flex items-center gap-1.5">
+                    {commitMergeTargetOptions.map((option) => {
+                      const isActiveTarget = option.targetBranch === targetBranchForSelectedCommit;
+                      return (
+                        <button
+                          key={`merge-target-${option.targetBranch}`}
+                          onClick={() => setMergeTargetCommitSha(option.targetSha)}
+                          className={`px-2 py-1 rounded-full text-xs leading-none select-none transition-colors ${isActiveTarget
+                            ? 'bg-primary/10 text-foreground'
+                            : 'bg-muted/30 text-muted-foreground hover:bg-muted hover:text-foreground'
+                            }`}
+                          title={`Merge selected commits into ${option.targetBranch}`}
+                        >
+                          {option.targetBranch}
+                        </button>
+                      );
+                    })}
+                  </div>
+                  <button
+                    onClick={() => void handleMergeSourcesIntoTarget(commitMergeSources, targetBranchForSelectedCommit)}
+                    disabled={mergeInProgress || commitMergeSources.length === 0}
+                    className="px-2.5 py-1 rounded-full text-xs leading-none select-none transition-opacity text-white hover:opacity-90 disabled:opacity-50 disabled:cursor-not-allowed"
+                    style={{ backgroundColor: USER_SELECTION_STROKE }}
+                    title={
+                      commitMergeSources.length > 0
+                        ? `Merge ${commitMergeSources.length} commits into ${targetBranchForSelectedCommit}`
+                        : 'No eligible source commits to merge'
+                    }
+                  >
+                    Confirm
+                  </button>
+                </div>
+              )}
+          </div>
+
+          <div className="flex items-center justify-end gap-4" />
+        </div>
+      </div>
+
+      {/* ── Node drag: drop-zone column highlights ─────────────────────────────── */}
+      {nodeDragDisplay && (() => {
+        const projection = selectionProjectionRef.current;
+        const cameraScale = getCameraScale(zoomRef.current, projection.isHorizontal);
+        const highlights = branchHeadTargetsRef.current
+          .filter((t) => moveBackCandidateBranchNamesRef.current.has(t.branchName))
+          .map((t) => {
+            const centerX =
+              panRef.current.x +
+              projection.graphOffsetX +
+              (projection.graphContentTranslateX + t.point.x) * cameraScale.x;
+            return { branchName: t.branchName, centerX };
+          });
+        if (highlights.length === 0) return null;
+        return (
+          <>
+            {highlights.map((h) => (
+              <div
+                key={h.branchName}
+                style={{
+                  position: 'absolute',
+                  left: h.centerX - 44,
+                  top: 0,
+                  width: 88,
+                  bottom: 0,
+                  background: `${CHECKED_OUT_SELECTION_STROKE}18`,
+                  borderLeft: `1.5px dashed ${CHECKED_OUT_SELECTION_STROKE}55`,
+                  borderRight: `1.5px dashed ${CHECKED_OUT_SELECTION_STROKE}55`,
+                  pointerEvents: 'none',
+                  zIndex: 6,
+                }}
+              />
+            ))}
+            {highlights.map((h) => (
+              <div
+                key={`${h.branchName}-label`}
+                style={{
+                  position: 'absolute',
+                  left: h.centerX - 52,
+                  top: 16,
+                  width: 104,
+                  pointerEvents: 'none',
+                  zIndex: 7,
+                }}
+                className="text-center"
+              >
+                <span className="inline-block rounded-lg border border-border/60 bg-card/90 backdrop-blur-sm px-2 py-1 text-[10px] leading-tight text-muted-foreground shadow-sm">
+                  Drop to move back
+                  <br />
+                  <span className="font-medium text-foreground">{h.branchName}</span>
+                </span>
+              </div>
+            ))}
+          </>
+        );
+      })()}
+
+
+      {/* ── New branch name dialog (triggered by node drag) ─────────────────────── */}
+      {newBranchDialogForNode && (
+        <div
+          className="absolute inset-0 z-[70] flex items-center justify-center bg-background/70 backdrop-blur-sm p-4"
+          onClick={() => {
+            if (!createBranchFromNodeInProgress) setNewBranchDialogForNode(null);
+          }}
+          role="presentation"
+        >
+          <div
+            role="dialog"
+            aria-modal="true"
+            aria-labelledby="new-branch-dialog-title"
+            className="w-full max-w-sm rounded-2xl border border-border bg-card shadow-lg p-4"
+            onClick={(e) => e.stopPropagation()}
+          >
+            <p id="new-branch-dialog-title" className="text-sm font-medium text-foreground">
+              {newBranchDialogForNode.stashIndex !== undefined ? 'Move stash to new branch' : 'Move changes to new branch'}
+            </p>
+            <p className="mt-1 text-xs text-muted-foreground">
+              {newBranchDialogForNode.stashIndex !== undefined
+                ? "A new branch will be created at the stash's base commit and the stash will be applied as uncommitted changes."
+                : "A new branch will be created at the current HEAD. Your uncommitted changes will follow."}
+            </p>
+            <label
+              htmlFor="new-branch-name-input"
+              className="mt-3 block text-[10px] uppercase tracking-wide text-muted-foreground font-medium"
+            >
+              Branch name
+            </label>
+            <input
+              id="new-branch-name-input"
+              ref={newBranchInputForNodeRef}
+              type="text"
+              value={newBranchNameForNode}
+              onChange={(e) => setNewBranchNameForNode(e.target.value)}
+              onKeyDown={(e) => {
+                if (e.key === 'Enter' && newBranchNameForNode.trim() && !createBranchFromNodeInProgress) {
+                  void (async () => {
+                    const name = newBranchNameForNode.trim();
+                    const nodeId = newBranchDialogForNode.nodeId;
+                    setNewBranchDialogForNode(null);
+                    await onCreateBranchFromNode?.(nodeId, name);
+                  })();
+                }
+                if (e.key === 'Escape' && !createBranchFromNodeInProgress) {
+                  setNewBranchDialogForNode(null);
+                }
+              }}
+              disabled={createBranchFromNodeInProgress}
+              placeholder="e.g. feature/my-changes"
+              autoComplete="off"
+              spellCheck={false}
+              className="mt-1.5 w-full rounded-lg border border-border bg-background px-3 py-2 text-sm text-foreground placeholder:text-muted-foreground focus:outline-none focus:ring-2 focus:ring-ring disabled:opacity-50 font-mono"
+            />
+            <div className="mt-4 flex items-center justify-end gap-2">
+              <button
+                type="button"
+                onClick={() => {
+                  if (!createBranchFromNodeInProgress) setNewBranchDialogForNode(null);
+                }}
+                disabled={createBranchFromNodeInProgress}
+                className="rounded-lg border border-border bg-card px-3 py-1.5 text-xs font-medium text-foreground transition-colors hover:bg-accent disabled:cursor-not-allowed disabled:opacity-50"
+              >
+                Cancel
+              </button>
+              <button
+                type="button"
+                onClick={() => {
+                  const name = newBranchNameForNode.trim();
+                  if (!name || createBranchFromNodeInProgress) return;
+                  const nodeId = newBranchDialogForNode.nodeId;
+                  setNewBranchDialogForNode(null);
+                  void onCreateBranchFromNode?.(nodeId, name);
+                }}
+                disabled={createBranchFromNodeInProgress || !newBranchNameForNode.trim()}
+                className="rounded-lg border border-border bg-card px-3 py-1.5 text-xs font-medium text-foreground transition-colors hover:bg-accent disabled:cursor-not-allowed disabled:opacity-50"
+              >
+                {createBranchFromNodeInProgress ? 'Creating…' : 'Create branch'}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {commitDialogOpen && (
+        <div
+          className="absolute inset-0 z-[70] flex items-center justify-center bg-background/70 backdrop-blur-sm p-4"
+          onClick={() => {
+            if (!commitInProgress) setCommitDialogOpen(false);
+          }}
+          role="presentation"
+        >
+          <div
+            role="dialog"
+            aria-modal="true"
+            aria-labelledby="commit-dialog-title"
+            className="w-full max-w-md rounded-2xl border border-border bg-card shadow-lg p-4"
+            onClick={(e) => e.stopPropagation()}
+          >
+            <p id="commit-dialog-title" className="text-sm font-medium text-foreground">
+              Create commit
+            </p>
+            <p className="mt-1 text-xs text-muted-foreground">
+              Stages all changes in the repository, then commits on your current HEAD.
+            </p>
+            <label
+              htmlFor="commit-message-input"
+              className="mt-3 block text-[10px] uppercase tracking-wide text-muted-foreground font-medium"
+            >
+              Commit message
+            </label>
+            <textarea
+              id="commit-message-input"
+              ref={commitMessageRef}
+              value={commitMessageDraft}
+              onChange={(e) => setCommitMessageDraft(e.target.value)}
+              onKeyDown={handleCommitMessageKeyDown}
+              rows={4}
+              disabled={commitInProgress}
+              placeholder="Describe your changes"
+              className="mt-1.5 w-full rounded-lg border border-border bg-background px-3 py-2 text-sm text-foreground placeholder:text-muted-foreground focus:outline-none focus:ring-2 focus:ring-ring resize-y min-h-[5rem] disabled:opacity-50"
+            />
+            <p className="mt-1 text-[10px] text-muted-foreground">
+              ⌘ Enter or Ctrl+Enter to commit
+            </p>
+            <div className="mt-4 flex items-center justify-end gap-2">
+              <button
+                type="button"
+                onClick={() => {
+                  if (!commitInProgress) setCommitDialogOpen(false);
+                }}
+                disabled={commitInProgress}
+                className="rounded-lg border border-border bg-card px-3 py-1.5 text-xs font-medium text-foreground transition-colors hover:bg-accent disabled:cursor-not-allowed disabled:opacity-50"
+              >
+                Cancel
+              </button>
+              <button
+                type="button"
+                onClick={() => void handleConfirmCommit()}
+                disabled={commitInProgress || !commitMessageDraft.trim()}
+                className="rounded-lg border border-border bg-card px-3 py-1.5 text-xs font-medium text-foreground transition-colors hover:bg-accent disabled:cursor-not-allowed disabled:opacity-50"
+              >
+                {commitInProgress ? 'Committing…' : 'Commit'}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {deleteConfirmOpen && (
+        <div className="absolute inset-0 z-[70] flex items-center justify-center bg-background/70 backdrop-blur-sm p-4">
+          <div className="w-full max-w-md rounded-2xl border border-border bg-card shadow-lg p-4">
+            <p className="text-sm font-medium text-foreground">
+              are you sure you want to delete these elements?
+            </p>
+            <div className="mt-2 flex flex-col gap-1.5">
+              {deleteSelectionItems.map((item) => (
+                <div
+                  key={item}
+                  className="rounded-lg border border-border/50 bg-card px-2.5 py-1.5 text-xs text-muted-foreground leading-5"
+                >
+                  {item}
+                </div>
+              ))}
+            </div>
+            {selectedDeletableBranchNames.length > 0 && (
+              <p className="text-xs text-muted-foreground mt-2 leading-relaxed">
+                Any linked Git worktree that still has one of these branches checked out is removed first, then the branch
+                ref is deleted, then <span className="font-mono">git worktree prune</span> runs.
+              </p>
+            )}
+            <div className="mt-4 flex items-center justify-end gap-2">
+              <button
+                onClick={() => setDeleteConfirmOpen(false)}
+                disabled={deleteInProgress}
+                className="rounded-lg border border-border bg-card px-3 py-1.5 text-xs font-medium text-foreground transition-colors hover:bg-accent disabled:cursor-not-allowed disabled:opacity-50"
+              >
+                Cancel
+              </button>
+              <button
+                onClick={() => void handleConfirmDeleteSelection()}
+                disabled={deleteInProgress || deletableSelectionCount === 0}
+                className="rounded-lg bg-red-50 dark:bg-red-900/20 px-3 py-1.5 text-xs font-medium text-red-600 dark:text-red-400 transition-colors hover:bg-red-50/80 dark:hover:bg-red-900/30 disabled:cursor-not-allowed disabled:opacity-50"
+              >
+                {deleteInProgress ? 'Deleting...' : 'Delete'}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* ── Lineage debug panel ── */}
+      <div
+        className={`fixed left-4 top-14 bottom-6 w-[520px] flex flex-col bg-card/90 backdrop-blur-sm rounded-2xl border border-border shadow-lg z-40 transition-all duration-300 ease-in-out ${
+          showLineageDebug ? 'translate-x-0 opacity-100' : 'translate-x-[calc(-100%-2rem)] opacity-0 pointer-events-none'
+        }`}
+      >
+        <div className="flex items-center justify-between px-4 py-3 border-b border-border/50 shrink-0">
+          <span className="text-sm font-medium text-foreground">Commit Lineage</span>
+          <button
+            onClick={() => setShowLineageDebug(false)}
+            className="text-muted-foreground hover:text-foreground transition-colors"
+          >
+            <X className="w-4 h-4" />
+          </button>
+        </div>
+        <div className="flex-1 overflow-y-auto py-2 font-mono text-[11px] leading-relaxed">
+          {(() => {
+            const sha7 = (sha: string): string => {
+              if (sha === 'WORKING_TREE') return '*uncommitted*';
+              if (sha.startsWith('STASH:')) return `*stash:${sha.slice('STASH:'.length)}*`;
+              return /^[0-9a-f]{7,40}$/i.test(sha) ? sha.slice(0, 7) : sha;
+            };
+
+            // Build a lookup: which branch heads got merged, and into which merge commit
+            const mergedHeadToMergeCommit = new Map<string, { mergeSha: string; targetBranch: string; prNumber: number | null }>();
+            for (const node of sortedNodes) {
+              const mergedParents = node.parentShas?.slice(1) ?? [];
+              for (const parentSha of mergedParents) {
+                if (parentSha) {
+                  mergedHeadToMergeCommit.set(parentSha, {
+                    mergeSha: node.fullSha,
+                    targetBranch: node.targetBranch ?? defaultBranch,
+                    prNumber: node.prNumber,
+                  });
+                }
+              }
+            }
+
+            // Build a lookup: which main-line commits are merge commits, and what branches merged into them
+            const mergeInfoByMainSha = new Map<string, { mergedShas: string[]; mergedBranches: string[] }>();
+            for (const node of sortedNodes) {
+              const mergedParents = node.parentShas?.slice(1) ?? [];
+              if (mergedParents.length === 0) continue;
+              const mergedBranches: string[] = [];
+              for (const parentSha of mergedParents) {
+                const branch = mergedBranchByHeadSha.get(parentSha);
+                if (branch) mergedBranches.push(branch.name);
+              }
+              mergeInfoByMainSha.set(node.fullSha, {
+                mergedShas: mergedParents,
+                mergedBranches,
+              });
+            }
+
+            // Build a lookup: which commits on which branches are fork points for child branches
+            const forkAnnotations = new Map<string, string[]>(); // "branchName::sha" -> child branch names
+            const addForkAnnotation = (branchName: string, sha: string, childName: string) => {
+              const key = `${branchName}::${sha}`;
+              const existing = forkAnnotations.get(key) ?? [];
+              existing.push(childName);
+              forkAnnotations.set(key, existing);
+            };
+
+            // For each active branch, find which parent commit it forked from
+            for (const branch of activeBranches) {
+              const parentName = renderParentBranchName(branch);
+              const forkSha = branch.divergedFromSha ?? branch.createdFromSha;
+              if (forkSha) {
+                addForkAnnotation(parentName, forkSha, branch.name);
+              }
+            }
+
+            type BranchLine = {
+              name: string;
+              fromLabel: string | null; // e.g. "from abc1234 on main"
+              commits: Array<{
+                sha: string;
+                annotations: string[]; // e.g. "(merge from branch-x)", "(fork → branch-y)"
+              }>;
+              mergedTo: string | null; // e.g. "merged to abc1234 on main"
+              debugLayout?: {
+                forkY: number;
+                startX: number;
+                lanePosX: number;
+                parentName: string;
+                forkTimeX: number;
+                createdFromSha: string;
+                divergedFromSha: string;
+                commitXCreated: number | null;
+                commitXDiverged: number | null;
+              };
+            };
+
+            const lines: BranchLine[] = [];
+
+            // === Main branch ===
+            {
+              const commits: BranchLine['commits'] = [];
+              for (const commit of sortedDirectCommits) {
+                const annotations: string[] = [];
+
+                // Check if this is a merge commit
+                const mergeInfo = mergeInfoByMainSha.get(commit.fullSha);
+                if (mergeInfo) {
+                  if (mergeInfo.mergedBranches.length > 0) {
+                    annotations.push(`merge from ${mergeInfo.mergedBranches.join(', ')}`);
+                  } else {
+                    annotations.push(`merge from ${mergeInfo.mergedShas.map(sha7).join(', ')}`);
+                  }
+                }
+
+                // Check if child branches forked here
+                const forkKey = `${defaultBranch}::${commit.fullSha}`;
+                const forkedChildren = forkAnnotations.get(forkKey);
+                if (forkedChildren && forkedChildren.length > 0) {
+                  annotations.push(`fork → ${forkedChildren.join(', ')}`);
+                }
+
+                commits.push({ sha: commit.fullSha, annotations });
+              }
+              lines.push({ name: defaultBranch, fromLabel: null, commits, mergedTo: null });
+            }
+
+            // === Active branches ===
+            for (const branch of activeBranches) {
+              const parentName = renderParentBranchName(branch);
+              const forkSha = branch.divergedFromSha ?? branch.createdFromSha;
+              const fromLabel = forkSha
+                ? `from ${sha7(forkSha)} on ${parentName}`
+                : `from ${parentName}`;
+
+              const previews = sortedConcreteBranchPreviews(branch.name);
+              const commits: BranchLine['commits'] = [];
+
+              for (const commit of previews) {
+                const annotations: string[] = [];
+
+                // Check if child branches forked here
+                const forkKey = `${branch.name}::${commit.fullSha}`;
+                const forkedChildren = forkAnnotations.get(forkKey);
+                if (forkedChildren && forkedChildren.length > 0) {
+                  annotations.push(`fork → ${forkedChildren.join(', ')}`);
+                }
+
+                commits.push({ sha: commit.fullSha, annotations });
+              }
+
+              // Check if this branch was merged
+              let mergedTo: string | null = null;
+              const isMerged = branch.commitsAhead === 0 && !freshCopyBranchNames.has(branch.name);
+              if (isMerged) {
+                const mergeTarget = mergedHeadToMergeCommit.get(branch.headSha);
+                if (mergeTarget) {
+                  mergedTo = `merged to ${sha7(mergeTarget.mergeSha)} on ${mergeTarget.targetBranch}${
+                    mergeTarget.prNumber != null ? ` (PR #${mergeTarget.prNumber})` : ''
+                  }`;
+                } else {
+                  mergedTo = `merged to ${parentName}`;
+                }
+              }
+
+              lines.push({
+                name: branch.name,
+                fromLabel,
+                commits,
+                mergedTo,
+                // Debug: actual layout values
+                debugLayout: (() => {
+                  const layout = getBranchRenderLayout(branch);
+                  const timing = branchTimingByName.get(branch.name);
+                  return {
+                    forkY: Math.round(layout.forkY),
+                    startX: Math.round(layout.startX),
+                    lanePosX: Math.round(layout.lanePosX),
+                    parentName: timing?.parentName ?? '?',
+                    forkTimeX: Math.round(timing?.forkTimeX ?? 0),
+                    createdFromSha: branch.createdFromSha?.slice(0, 7) ?? 'null',
+                    divergedFromSha: branch.divergedFromSha?.slice(0, 7) ?? 'null',
+                    commitXCreated: branch.createdFromSha ? commitXForSha(branch.createdFromSha) : null,
+                    commitXDiverged: branch.divergedFromSha ? commitXForSha(branch.divergedFromSha) : null,
+                  };
+                })(),
+              });
+            }
+
+            return (
+              <div className="space-y-0.5 px-4 py-2 select-text">
+                {lines.map((line) => (
+                  <div key={line.name} className="py-2 border-b border-border/30">
+                    <div className="flex items-baseline gap-1 flex-wrap">
+                      {/* Branch name */}
+                      <span className="text-foreground font-semibold shrink-0">{line.name}</span>
+                      {/* From label */}
+                      {line.fromLabel && (
+                        <span className="text-muted-foreground/50 shrink-0">({line.fromLabel})</span>
+                      )}
+                      <span className="text-muted-foreground/40 shrink-0">:</span>
+                    </div>
+
+                    {/* Commit chain */}
+                    <div className="mt-1 text-muted-foreground leading-relaxed break-all">
+                      {line.commits.length === 0 ? (
+                        <span className="text-muted-foreground/40 italic">no preview commits</span>
+                      ) : (
+                        line.commits.map((commit, i) => (
+                          <span key={commit.sha}>
+                            {i > 0 && (
+                              <span className="text-muted-foreground/30 mx-0.5">{' > '}</span>
+                            )}
+                            <span className="text-foreground">{sha7(commit.sha)}</span>
+                            {commit.annotations.map((anno, j) => (
+                              <span key={j} className="text-amber-600 dark:text-amber-400">
+                                ({anno})
+                              </span>
+                            ))}
+                          </span>
+                        ))
+                      )}
+                      {/* Merged-to suffix */}
+                      {line.mergedTo && (
+                        <>
+                          <span className="text-muted-foreground/30 mx-0.5">{' → '}</span>
+                          <span className="text-green-600 dark:text-green-400">{line.mergedTo}</span>
+                        </>
+                      )}
+                    </div>
+                    {/* Debug layout values */}
+                    {line.debugLayout && (
+                      <div className="mt-1 text-[10px] text-blue-600 dark:text-blue-400">
+                        forkY={line.debugLayout.forkY} startX={line.debugLayout.startX} laneX={line.debugLayout.lanePosX} parent={line.debugLayout.parentName} forkTimeX={line.debugLayout.forkTimeX} created={line.debugLayout.createdFromSha} diverged={line.debugLayout.divergedFromSha} cX={line.debugLayout.commitXCreated ?? 'null'} dX={line.debugLayout.commitXDiverged ?? 'null'}
+                      </div>
+                    )}
+                  </div>
+                ))}
+              </div>
+            );
+          })()}
+        </div>
+      </div>
+
+      {/* Branch issues panel — slides in from right */}
+      <div
+        ref={errorPanelRef}
+        className={`fixed right-4 top-14 bottom-6 w-72 flex flex-col bg-card/90 backdrop-blur-sm rounded-2xl border border-border shadow-lg z-40 transition-all duration-300 ease-in-out ${errorPanelOpen ? 'translate-x-0 opacity-100' : 'translate-x-[110%] opacity-0 pointer-events-none'
+          }`}
+      >
+        <div className="flex items-center justify-between px-4 py-3 border-b border-border/50 shrink-0">
+          <span className="text-sm font-medium text-foreground">Branch issues</span>
+          <button
+            onClick={() => setErrorPanelOpen(false)}
+            className="text-muted-foreground hover:text-foreground transition-colors"
+          >
+            <X className="w-4 h-4" />
+          </button>
+        </div>
+
+        <div className="flex-1 overflow-y-auto py-2">
+          {staleBranches.length > 0 && (
+            <>
+              <p className="text-[10px] uppercase tracking-wide text-muted-foreground font-medium px-4 pt-3 pb-1">
+                Stale branches
+              </p>
+              {staleBranches.map(b => (
+                <div
+                  key={b.name}
+                  className="flex items-start gap-2.5 px-4 py-2.5"
+                >
+                  <span className="mt-0.5 w-2 h-2 rounded-full bg-amber-500 shrink-0" />
+                  <div className="min-w-0">
+                    <p className="text-xs font-medium text-foreground truncate">{b.name}</p>
+                    <p className="text-[11px] text-muted-foreground">
+                      {b.lastCommitAuthor ? `${b.lastCommitAuthor} · ` : ''}{fmtRelativeDate(b.lastCommitDate)}
+                    </p>
+                  </div>
+                </div>
+              ))}
+            </>
+          )}
+        </div>
+      </div>
+    </div>
+  );
+}

@@ -3,6 +3,7 @@ import BranchMap from './BranchMap';
 import BranchGroupView from './BranchGroupView';
 
 export type ViewMode = 'time' | 'status' | 'creator';
+export type OrientationMode = 'vertical' | 'horizontal';
 
 interface Props {
   branches: Branch[];
@@ -56,6 +57,7 @@ interface Props {
   onCreateBranchFromNode?: (nodeId: string, branchName: string) => Promise<void>;
   createBranchFromNodeInProgress?: boolean;
   onMoveNodeBackToBranch?: (targetBranchName: string) => Promise<void>;
+  orientation?: OrientationMode;
 }
 
 export default function BranchMapView({
@@ -102,6 +104,7 @@ export default function BranchMapView({
   onCreateBranchFromNode,
   createBranchFromNodeInProgress = false,
   onMoveNodeBackToBranch,
+  orientation = 'vertical',
 }: Props) {
   // Determine active vs inactive error branches
   const openPRBranchNames = new Set(openPRs.map(p => p.branchName));
@@ -163,6 +166,7 @@ export default function BranchMapView({
             onCreateBranchFromNode={onCreateBranchFromNode}
             createBranchFromNodeInProgress={createBranchFromNodeInProgress}
             onMoveNodeBackToBranch={onMoveNodeBackToBranch}
+            orientation={orientation}
           />
         </div>
       ) : (
