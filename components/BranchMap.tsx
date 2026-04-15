@@ -79,13 +79,13 @@ const CANVAS_UNPUSHED_NODE_FILL_HEX = '#FAFAF9';
 const CANVAS_STASH_NODE_STROKE = '#D4A82A';
 const STASH_LABEL_TEXT = '#B8860B';
 const CANVAS_NODE_STROKE = '#E0E0E0';
-const CANVAS_NODE_STROKE_WIDTH = 1.5;
+const CANVAS_NODE_STROKE_WIDTH = 1;
 const CANVAS_NODE_STROKE_INSET = CANVAS_NODE_STROKE_WIDTH / 2;
 const COMMIT_NODE_CORNER_RADIUS = 6;
 const DEBUG_SHOW_BRANCH_HIT_AREAS = false;
 const DEBUG_BRANCH_HIT_AREA_COLOR = '#ef4444';
 const DEBUG_BRANCH_HIT_AREA_OPACITY = 0.25;
-const UNPUSHED_LANE_STROKE_VISUAL_COMP = 0.3;
+const UNPUSHED_LANE_STROKE_VISUAL_COMP = 0.15;
 const CLUMP_COUNT_MAX = 99;
 const CHECKED_OUT_AHEAD_OFFSET_WORLD = 120;
 /** Stroke color used to mark the currently checked-out commit/branch. */
@@ -7076,7 +7076,7 @@ export default function BranchMap({
                               d={buildStraightPath(trimmed.start, trimmed.end, pathCoord)}
                               fill="none"
                               stroke={CANVAS_NEUTRAL_GRAY}
-                              strokeWidth={1.5}
+                              strokeWidth={0.75}
                               pathLength={1}
                               className={drawPathMainClass}
                               style={{
@@ -7613,7 +7613,7 @@ export default function BranchMap({
                               pointFormatter: pathCoord,
                             })
                             : null;
-                        const strokeWidth = 1.5;
+                        const strokeWidth = 0.75;
                         const strokeColor = CANVAS_NEUTRAL_GRAY;
                         const unpushedStrokeWidth = strokeWidth + UNPUSHED_LANE_STROKE_VISUAL_COMP;
                         const unpushedLaneDasharray = `${Math.max(1, unpushedStrokeWidth)} ${Math.max(2, unpushedStrokeWidth * 1.8)}`;
@@ -8321,7 +8321,7 @@ export default function BranchMap({
                           d={forkPath ?? straightPath}
                           fill="none"
                           stroke={CANVAS_NEUTRAL_GRAY}
-                          strokeWidth={1.5}
+                          strokeWidth={0.75}
                           pathLength={1}
                           vectorEffect="non-scaling-stroke"
                         />
@@ -8345,7 +8345,7 @@ export default function BranchMap({
                           commitDotClusters,
                         } = getBranchRenderLayout(b);
                         const isFocusedError = focusedErrorBranch?.name === b.name;
-                        const strokeWidth = isFocusedError ? 2 : 1.5;
+                        const strokeWidth = isFocusedError ? 1 : 0.75;
                         const unpushedStrokeWidth = strokeWidth + UNPUSHED_LANE_STROKE_VISUAL_COMP;
 
                         return commitDotClusters.map((cluster) => {
