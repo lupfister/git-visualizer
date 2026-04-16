@@ -23,6 +23,8 @@ use notify::{Watcher, RecursiveMode};
 use objc2_app_kit::{NSRunningApplication, NSWorkspace};
 #[cfg(target_os = "macos")]
 use tauri_plugin_global_shortcut::{Code, GlobalShortcutExt, Modifiers, Shortcut, ShortcutState};
+#[cfg(target_os = "macos")]
+use tauri_plugin_macos_fps::MacFpsExt;
 
 #[derive(serde::Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -3854,8 +3856,18 @@ fn append_shortcut_debug_log(message: &str) {
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
-    tauri::Builder::default()
-        .plugin(tauri_plugin_global_shortcut::Builder::new().build())
+    let builder = tauri::Builder::default()
+        .plugin(tauri_plugin_global_shortcut::Builder::new().build());
+    #[cfg(target_os = "macos")]
+    let builder = builder.plugin(
+        tauri::plugin::Builder::<_, ()>::new("macos-fps-unlock")
+            .on_webview_ready(|webview| {
+                let _ = webview.unlock_fps();
+            })
+            .build(),
+    );
+
+    builder
         .setup(|app| {
             #[cfg(target_os = "macos")]
             {
