@@ -3854,8 +3854,12 @@ fn append_shortcut_debug_log(message: &str) {
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
-    tauri::Builder::default()
-        .plugin(tauri_plugin_global_shortcut::Builder::new().build())
+    let builder = tauri::Builder::default()
+        .plugin(tauri_plugin_global_shortcut::Builder::new().build());
+    #[cfg(target_os = "macos")]
+    let builder = builder.plugin(tauri_plugin_macos_fps::init());
+
+    builder
         .setup(|app| {
             #[cfg(target_os = "macos")]
             {

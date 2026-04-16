@@ -3,5 +3,10 @@
     "icon": [
       "icons/icon.icns"
     ]
+  },
+  "plugins": {
+    "macos-fps": {
+      "enabled": true
+    }
   }
 }

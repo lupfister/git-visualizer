@@ -23,7 +23,7 @@
         "maximizable": true,
         "minimizable": true,
         "fullscreen": false,
-        "transparent": true,
+        "transparent": false,
         "titleBarStyle": "Overlay",
         "trafficLightPosition": {
           "x": 17,
@@ -49,5 +49,10 @@
       "icons/icon.icns",
       "icons/icon.ico"
     ]
+  },
+  "plugins": {
+    "macos-fps": {
+      "enabled": true
+    }
   }
 }
