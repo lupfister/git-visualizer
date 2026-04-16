@@ -58,6 +58,13 @@ interface Props {
   createBranchFromNodeInProgress?: boolean;
   onMoveNodeBackToBranch?: (targetBranchName: string) => Promise<void>;
   orientation?: OrientationMode;
+  rendererMode?: 'legacy-svg' | 'canvas-html';
+  onPerfSample?: (sample: {
+    sceneBuildMs: number;
+    totalNodes: number;
+    visibleNodes: number;
+    edges: number;
+  }) => void;
 }
 
 export default function BranchMapView({
@@ -105,6 +112,8 @@ export default function BranchMapView({
   createBranchFromNodeInProgress = false,
   onMoveNodeBackToBranch,
   orientation = 'vertical',
+  rendererMode = 'legacy-svg',
+  onPerfSample,
 }: Props) {
   // Determine active vs inactive error branches
   const openPRBranchNames = new Set(openPRs.map(p => p.branchName));
@@ -167,6 +176,8 @@ export default function BranchMapView({
             createBranchFromNodeInProgress={createBranchFromNodeInProgress}
             onMoveNodeBackToBranch={onMoveNodeBackToBranch}
             orientation={orientation}
+            rendererMode={rendererMode}
+            onPerfSample={onPerfSample}
           />
         </div>
       ) : (

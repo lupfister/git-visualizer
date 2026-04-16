@@ -10,6 +10,7 @@ import {
   commitRectSize,
   type AnchorPoint as LayoutAnchorPoint,
 } from './branchMapLayout';
+import BranchMapCanvasHtml from './BranchMapCanvasHtml';
 
 // ── Layout constants ──────────────────────────────────────────────────────────
 const LEFT_PAD = 0;
@@ -845,6 +846,13 @@ interface BranchMapProps {
   /** Move back: called when user drags back to a branch that shares the current HEAD. */
   onMoveNodeBackToBranch?: (targetBranchName: string) => Promise<void>;
   orientation?: OrientationMode;
+  rendererMode?: 'legacy-svg' | 'canvas-html';
+  onPerfSample?: (sample: {
+    sceneBuildMs: number;
+    totalNodes: number;
+    visibleNodes: number;
+    edges: number;
+  }) => void;
 }
 
 export default function BranchMap({
@@ -892,7 +900,30 @@ export default function BranchMap({
   createBranchFromNodeInProgress = false,
   onMoveNodeBackToBranch,
   orientation: controlledOrientation,
+  rendererMode = 'legacy-svg',
+  onPerfSample,
 }: BranchMapProps) {
+  if (rendererMode === 'canvas-html') {
+    return (
+      <BranchMapCanvasHtml
+        branches={branches}
+        mergeNodes={mergeNodes}
+        directCommits={directCommits}
+        defaultBranch={defaultBranch}
+        onCommitClick={onCommitClick}
+        branchPromptMeta={branchPromptMeta}
+        branchCommitPreviews={branchCommitPreviews}
+        branchUniqueAheadCounts={branchUniqueAheadCounts}
+        openPRs={openPRs}
+        isLoading={isLoading}
+        checkedOutRef={checkedOutRef}
+        worktrees={worktrees}
+        orientation={controlledOrientation ?? 'vertical'}
+        onPerfSample={onPerfSample}
+      />
+    );
+  }
+
   const [, setTooltip] = useState<TooltipData | null>(null);
   const [hoveredBranch, setHoveredBranch] = useState<string | null>(null);
   const [hoveredNodeStrokeKey, setHoveredNodeStrokeKey] = useState<string | null>(null);

@@ -39,6 +39,20 @@ function App() {
   const [worktrees, setWorktrees] = useState<WorktreeInfo[]>([]);
   const [removeWorktreeInProgress, setRemoveWorktreeInProgress] = useState(false);
   const [orientation, setOrientation] = useState<OrientationMode>('vertical');
+  const [rendererMode, setRendererMode] = useState<'legacy-svg' | 'canvas-html'>(() => {
+    try {
+      const stored = window.localStorage.getItem('gitviz.rendererMode');
+      return stored === 'canvas-html' ? 'canvas-html' : 'legacy-svg';
+    } catch {
+      return 'legacy-svg';
+    }
+  });
+  const [rendererPerf, setRendererPerf] = useState<{
+    sceneBuildMs: number;
+    totalNodes: number;
+    visibleNodes: number;
+    edges: number;
+  } | null>(null);
   const [loading, setLoading] = useState(false);       // button spinner in landing
   const [mapLoading, setMapLoading] = useState(false); // canvas skeleton in map
   const [error, setError] = useState<string | null>(null);
@@ -71,6 +85,14 @@ function App() {
   const [createBranchFromNodeInProgress, setCreateBranchFromNodeInProgress] = useState(false);
 
   const branchMetaLoadKeyRef = useRef<string | null>(null);
+
+  useEffect(() => {
+    try {
+      window.localStorage.setItem('gitviz.rendererMode', rendererMode);
+    } catch {
+      // ignore storage failures
+    }
+  }, [rendererMode]);
 
   function handleWindowDragStart(e: React.MouseEvent<HTMLElement>) {
     if (e.button !== 0) return;
@@ -1692,6 +1714,8 @@ function App() {
               createBranchFromNodeInProgress={createBranchFromNodeInProgress}
               onMoveNodeBackToBranch={handleMoveNodeBackToBranch}
               orientation={orientation}
+              rendererMode={rendererMode}
+              onPerfSample={setRendererPerf}
             />
           </div>
 
@@ -1700,6 +1724,21 @@ function App() {
             className="absolute left-0 right-0 top-12 z-40 px-4 md:px-8"
           >
             <div className="window-no-drag pointer-events-auto relative z-10 min-h-8 flex flex-wrap items-center gap-2 content-start">
+              <button
+                type="button"
+                onClick={() => setRendererMode((current) => (
+                  current === 'legacy-svg' ? 'canvas-html' : 'legacy-svg'
+                ))}
+                className="text-xs text-muted-foreground hover:text-foreground border border-border/50 rounded-full px-3 py-1 transition-colors"
+                title={rendererMode === 'legacy-svg' ? 'Switch to Canvas + HTML renderer' : 'Switch to legacy SVG renderer'}
+              >
+                Renderer: {rendererMode === 'legacy-svg' ? 'SVG' : 'Canvas+HTML'}
+              </button>
+              {rendererMode === 'canvas-html' && rendererPerf && (
+                <span className="text-xs text-muted-foreground border border-border/50 rounded-full px-3 py-1 tabular-nums">
+                  Build {rendererPerf.sceneBuildMs.toFixed(1)}ms · Nodes {rendererPerf.visibleNodes}/{rendererPerf.totalNodes}
+                </span>
+              )}
               {githubAuthStatus?.ghAvailable && !githubAuthStatus.authenticated && (
                 <button
                   onClick={handleGitHubAuthSetup}
