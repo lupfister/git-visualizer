@@ -287,32 +287,6 @@ function buildStraightPath(
   return `M ${pointFormatter(start.x, start.y)} L ${pointFormatter(end.x, end.y)}`;
 }
 
-function smoothValueTo(
-  start: number,
-  target: number,
-  durationMs: number,
-  onFrame: (value: number) => void,
-  minDelta = 1
-): () => void {
-  const delta = target - start;
-  if (Math.abs(delta) < minDelta) return () => undefined;
-  const startTime = performance.now();
-  let rafId = 0;
-  let cancelled = false;
-  function step(now: number) {
-    if (cancelled) return;
-    const elapsed = now - startTime;
-    const t = Math.min(1, elapsed / durationMs);
-    onFrame(start + delta * easeInOutCubic(t));
-    if (t < 1) rafId = requestAnimationFrame(step);
-  }
-  rafId = requestAnimationFrame(step);
-  return () => {
-    cancelled = true;
-    cancelAnimationFrame(rafId);
-  };
-}
-
 function fmtRelativeDate(dateStr: string): string {
   const diffDays = Math.floor((Date.now() - new Date(dateStr).getTime()) / 86400000);
   if (diffDays === 0) return 'today';
@@ -949,7 +923,6 @@ export default function BranchMap({
   const lastPointerClientRef = useRef<{ x: number; y: number } | null>(null);
   const zoomStableTextElsRef = useRef<SVGTextElement[]>([]);
   const zoomStableRectElsRef = useRef<SVGRectElement[]>([]);
-  const panUiSyncTimeoutRef = useRef<number | null>(null);
   const zoomUiSyncTimeoutRef = useRef<number | null>(null);
   const cameraPaintRafRef = useRef<number | null>(null);
   const pendingCameraRef = useRef<{ pan: { x: number; y: number }; zoom: number } | null>(null);
@@ -998,15 +971,11 @@ export default function BranchMap({
     maxY: 0,
     measured: false,
   });
-  const panStartRef = useRef({ x: 0, y: 0, panX: 0, panY: 0 });
   const [pan, setPan] = useState({ x: 0, y: 0 });
   const panRef = useRef(pan);
-  const targetPanRef = useRef(pan);
-  const lastUiSyncRef = useRef(0);
+  const panDragStartRef = useRef<{ x: number; y: number; panX: number; panY: number } | null>(null);
   const [isPanning, setIsPanning] = useState(false);
-  const isPanningRef = useRef(false);
-  const [spaceHeld, setSpaceHeld] = useState(false);
-  const spacePressedRef = useRef(false);
+  const lastUiSyncRef = useRef(0);
   const drawReadyRef = useRef(drawReady);
   const animationsLockedRef = useRef(animationsLocked);
   const focusScrollCancelRef = useRef<(() => void) | null>(null);
@@ -1639,11 +1608,8 @@ export default function BranchMap({
 
   useLayoutEffect(() => {
     panRef.current = pan;
-    if (!isPanning) {
-      targetPanRef.current = pan;
-    }
     paintCamera(panRef.current, zoomRef.current);
-  }, [pan, isPanning]);
+  }, [pan]);
 
   const CAMERA_CONTENT_PAD = 0;
 
@@ -1823,7 +1789,6 @@ export default function BranchMap({
     immediateUiSync = false
   ) {
     panRef.current = nextPan;
-    targetPanRef.current = nextPan;
     zoomRef.current = nextZoom;
     pendingCameraRef.current = { pan: nextPan, zoom: nextZoom };
     if (immediateUiSync) {
@@ -1877,27 +1842,6 @@ export default function BranchMap({
     setAnimationsLocked(true);
   }
 
-  function stopPanSmoothing() {
-    if (panUiSyncTimeoutRef.current !== null) {
-      clearTimeout(panUiSyncTimeoutRef.current);
-      panUiSyncTimeoutRef.current = null;
-    }
-  }
-
-  function stopWheelInertia() {
-    stopPanSmoothing();
-  }
-
-  function schedulePanUiSync() {
-    if (panUiSyncTimeoutRef.current !== null) {
-      clearTimeout(panUiSyncTimeoutRef.current);
-    }
-    panUiSyncTimeoutRef.current = window.setTimeout(() => {
-      panUiSyncTimeoutRef.current = null;
-      syncUiState(true, true);
-    }, 70);
-  }
-
   function stopZoomAnimation(forceUiSync = true) {
     if (zoomUiSyncTimeoutRef.current !== null) {
       clearTimeout(zoomUiSyncTimeoutRef.current);
@@ -1906,13 +1850,6 @@ export default function BranchMap({
     if (forceUiSync) {
       syncUiState(true, true);
     }
-  }
-
-  function flushPendingZoomUiSync() {
-    if (zoomUiSyncTimeoutRef.current === null) return;
-    clearTimeout(zoomUiSyncTimeoutRef.current);
-    zoomUiSyncTimeoutRef.current = null;
-    syncUiState(true, true);
   }
 
   // Keep controls available regardless of intro-reveal state.
@@ -1962,7 +1899,6 @@ export default function BranchMap({
       'hard'
     );
 
-    stopPanSmoothing();
     if (uiSyncMode === 'deferred') {
       lastContinuousZoomTsRef.current = performance.now();
     }
@@ -1981,7 +1917,7 @@ export default function BranchMap({
 
   // Wheel behavior:
   // - Ctrl/Cmd + wheel: zoom toward cursor
-  // - plain wheel: inertial pan in both axes
+  // - plain wheel: simple panning in both axes
   useEffect(() => {
     const el = scrollRef.current;
     if (!el) return;
@@ -2005,8 +1941,6 @@ export default function BranchMap({
       markUserMovedCamera();
 
       if (e.ctrlKey || e.metaKey) {
-        stopWheelInertia();
-        stopPanSmoothing();
         setTooltip(null);
         const point = zoomAnchorForClientPoint(e.clientX, e.clientY);
         const pixelDeltaY = normalizeWheelDeltaPx(e.deltaY, e.deltaMode, el.clientHeight);
@@ -2016,14 +1950,15 @@ export default function BranchMap({
         applyZoomAt(point, zoomRef.current * zoomFactor, 'deferred');
         return;
       }
-
-      flushPendingZoomUiSync();
-      const nextPan = clampPan({
-        x: panRef.current.x - e.deltaX,
-        y: panRef.current.y - e.deltaY,
-      }, zoomRef.current, 'hard');
-      applyCamera(nextPan, zoomRef.current);
-      schedulePanUiSync();
+      const nextPan = clampPan(
+        {
+          x: panRef.current.x - e.deltaX,
+          y: panRef.current.y - e.deltaY,
+        },
+        zoomRef.current,
+        'hard'
+      );
+      applyCamera(nextPan, zoomRef.current, true, true);
     };
 
     const onGestureStart = (evt: Event) => {
@@ -2036,8 +1971,6 @@ export default function BranchMap({
       }
       e.preventDefault();
       lockAnimationsIfReady();
-      stopWheelInertia();
-      stopPanSmoothing();
       setTooltip(null);
       markUserMovedCamera();
       gestureZoomBaseRef.current = zoomRef.current;
@@ -2104,8 +2037,6 @@ export default function BranchMap({
       }
       stopCameraPaint();
       stopZoomAnimation();
-      stopWheelInertia();
-      stopPanSmoothing();
     };
   }, []);
 
@@ -2157,24 +2088,25 @@ export default function BranchMap({
     };
   }, []);
 
-  // Space+drag (or middle mouse drag) panning, interrupting all inertial motion.
+  // Simple drag-to-pan (middle mouse button).
   useEffect(() => {
     if (!isPanning) return;
     const onMove = (e: MouseEvent) => {
-      const dx = e.clientX - panStartRef.current.x;
-      const dy = e.clientY - panStartRef.current.y;
-      const nextPan = clampPan({
-        x: panStartRef.current.panX + dx,
-        y: panStartRef.current.panY + dy,
-      }, zoomRef.current, 'hard');
-      applyCamera(nextPan, zoomRef.current);
+      const start = panDragStartRef.current;
+      if (!start) return;
+      const dx = e.clientX - start.x;
+      const dy = e.clientY - start.y;
+      const nextPan = clampPan(
+        { x: start.panX + dx, y: start.panY + dy },
+        zoomRef.current,
+        'hard'
+      );
+      applyCamera(nextPan, zoomRef.current, true, true);
     };
     const onUp = () => {
-      isPanningRef.current = false;
+      panDragStartRef.current = null;
       setIsPanning(false);
-      const settledPan = clampPan(panRef.current, zoomRef.current, 'hard');
-      applyCamera(settledPan, zoomRef.current);
-      syncUiState(true);
+      syncUiState(true, true);
     };
     window.addEventListener('mousemove', onMove);
     window.addEventListener('mouseup', onUp);
@@ -2370,20 +2302,9 @@ export default function BranchMap({
         return;
       }
 
-      if (e.code !== 'Space') return;
-      e.preventDefault();
-      spacePressedRef.current = true;
-      setSpaceHeld(true);
     };
     const onKeyUp = (e: KeyboardEvent) => {
       if (e.code !== 'Space') return;
-      spacePressedRef.current = false;
-      setSpaceHeld(false);
-      if (isPanningRef.current) {
-        isPanningRef.current = false;
-        setIsPanning(false);
-        syncUiState(true);
-      }
     };
     window.addEventListener('keydown', onKeyDown);
     window.addEventListener('keyup', onKeyUp);
@@ -2393,22 +2314,8 @@ export default function BranchMap({
     };
   }, []);
 
+  // Hard guard: when interacting with overlay UI, never allow map gesture handlers.
   useEffect(() => {
-    isPanningRef.current = isPanning;
-  }, [isPanning]);
-
-  // Hard guard: when interacting with overlay UI, never allow map gesture handlers
-  // (including wheel inertia or drag-pan) to keep moving the canvas.
-  useEffect(() => {
-    const stopActivePan = () => {
-      if (!isPanningRef.current) return;
-      isPanningRef.current = false;
-      setIsPanning(false);
-      const settledPan = clampPan(panRef.current, zoomRef.current, 'hard');
-      applyCamera(settledPan, zoomRef.current);
-      syncUiState(true);
-    };
-
     const shouldBlockMapGestures = (target: EventTarget | null): boolean => {
       if (!(target instanceof Element)) return false;
       return !!target.closest('[data-map-ui]');
@@ -2416,17 +2323,11 @@ export default function BranchMap({
 
     const onPointerLikeDownCapture = (event: MouseEvent | PointerEvent) => {
       if (!shouldBlockMapGestures(event.target)) return;
-      stopWheelInertia();
-      stopPanSmoothing();
-      stopActivePan();
       event.stopPropagation();
     };
 
     const onWheelCapture = (event: WheelEvent) => {
       if (!shouldBlockMapGestures(event.target)) return;
-      stopWheelInertia();
-      stopPanSmoothing();
-      stopActivePan();
       event.preventDefault();
       event.stopPropagation();
     };
@@ -2525,23 +2426,18 @@ export default function BranchMap({
       target === scrollRef.current ||
       target === svgRef.current ||
       !!(target instanceof HTMLDivElement && target.parentElement === scrollRef.current);
-    const canPan = e.button === 1 || (e.button === 0 && spacePressedRef.current);
-    if (canPan && scrollRef.current) {
+    if (e.button === 1) {
       e.preventDefault();
       markUserMovedCamera();
       lockAnimationsIfReady();
       focusScrollCancelRef.current?.();
       focusScrollCancelRef.current = null;
-      flushPendingZoomUiSync();
-      stopWheelInertia();
-      targetPanRef.current = panRef.current;
-      panStartRef.current = {
+      panDragStartRef.current = {
         x: e.clientX,
         y: e.clientY,
-        panX: targetPanRef.current.x,
-        panY: targetPanRef.current.y,
+        panX: panRef.current.x,
+        panY: panRef.current.y,
       };
-      isPanningRef.current = true;
       setIsPanning(true);
       return;
     }
@@ -4612,30 +4508,8 @@ export default function BranchMap({
       graphProjectionRef.current = next;
       return;
     }
-
-    const deltaGraphOffsetX = next.graphOffsetX - previous.graphOffsetX;
-    const deltaGraphOffsetY = next.graphOffsetY - previous.graphOffsetY;
-    const cameraScale = getCameraScale(zoomRef.current, isHorizontal);
-    const deltaTranslatePxX = (next.graphContentTranslateX - previous.graphContentTranslateX) * cameraScale.x;
-    const deltaTranslatePxY = (next.graphContentTranslateY - previous.graphContentTranslateY) * cameraScale.y;
-    const correctionX = deltaGraphOffsetX + deltaTranslatePxX;
-    const correctionY = deltaGraphOffsetY + deltaTranslatePxY;
     graphProjectionRef.current = next;
-
-    if (Math.abs(correctionX) < 0.01 && Math.abs(correctionY) < 0.01) return;
-    const stabilizedPan = clampPan(
-      {
-        x: panRef.current.x - correctionX,
-        y: panRef.current.y - correctionY,
-      },
-      zoomRef.current,
-      'hard'
-    );
-    if (
-      Math.abs(stabilizedPan.x - panRef.current.x) < 0.01 &&
-      Math.abs(stabilizedPan.y - panRef.current.y) < 0.01
-    ) return;
-    applyCamera(stabilizedPan, zoomRef.current, true, true);
+    return;
   }, [
     graphOffsetX,
     graphOffsetY,
@@ -4913,15 +4787,8 @@ export default function BranchMap({
       ),
     }
     : null;
-  const checkedOutAnchorTarget = checkedOutDisplayIndicatorLocal ?? checkedOutIndicatorLocal;
-  const checkedOutAnchor = checkedOutAnchorTarget
-    ? {
-      x: projectPoint(checkedOutAnchorTarget.x, checkedOutAnchorTarget.y).x,
-      y: projectPoint(checkedOutAnchorTarget.x, checkedOutAnchorTarget.y).y,
-    }
-    : null;
 
-  // Center the checked-out commit in the viewport when data first appears.
+  // Keep initial reveal timing in sync with seed data; no auto-pan recentering.
   useEffect(() => {
     if (!hasTimelineSeedData) {
       hasAutoCenteredRef.current = false;
@@ -4934,55 +4801,14 @@ export default function BranchMap({
       setHasInitialRevealDone(false);
       return;
     }
-    const forceOrientationAutoCenter = pendingOrientationAutoCenterRef.current;
-    if (!forceOrientationAutoCenter && hasUserMovedCameraRef.current) return;
     if (viewportSize.width <= 0 || viewportSize.height <= 0) return;
     if (!hasInitialRevealDone && timelineRevealPhase === 'fading') return;
-    // During orientation switches and hydration there are brief windows where
-    // checkout anchor resolution lags behind layout. Do not block reveal/camera
-    // on that transient state; center using a fallback first, then this effect
-    // will recenter again once the real checkout anchor resolves.
-    const zoomValue = zoomRef.current;
-    const fallbackCenter = {
-      x: svgWidth / 2,
-      y: svgHeight / 2,
-    };
-    const target = checkedOutAnchor
-      ? {
-        x: checkedOutAnchor.x + graphContentTranslateX,
-        y: checkedOutAnchor.y + graphContentTranslateY,
-      }
-      : fallbackCenter;
     const signature = [
-      Math.round(target.x * 10) / 10,
-      Math.round(target.y * 10) / 10,
       Math.round(viewportSize.width),
       Math.round(viewportSize.height),
       Math.round(mapTopInset),
-      Math.round(zoomValue * 1000) / 1000,
     ].join('|');
     if (hasAutoCenteredRef.current && autoCenterSignatureRef.current === signature) return;
-    const scale = getCameraScale(zoomValue, isHorizontal);
-    const visibleCenterY = (mapTopInset + viewportSize.height) / 2;
-    const nextPan = clampPan(
-      {
-        x: viewportSize.width / 2 - graphOffsetX - target.x * scale.x,
-        y: visibleCenterY - graphOffsetY - target.y * scale.y,
-      },
-      zoomValue,
-      'hard'
-    );
-    if (forceOrientationAutoCenter) {
-      if (orientationAutoCenterRafRef.current !== null) {
-        cancelAnimationFrame(orientationAutoCenterRafRef.current);
-      }
-      orientationAutoCenterRafRef.current = requestAnimationFrame(() => {
-        orientationAutoCenterRafRef.current = null;
-        applyCamera(nextPan, zoomValue, true);
-      });
-    } else {
-      applyCamera(nextPan, zoomValue, true);
-    }
     hasAutoCenteredRef.current = true;
     autoCenterSignatureRef.current = signature;
     pendingOrientationAutoCenterRef.current = false;
@@ -4997,91 +4823,20 @@ export default function BranchMap({
     timelineRevealPhase,
     viewportSize.width,
     viewportSize.height,
-    graphOffsetX,
-    graphOffsetY,
-    svgWidth,
-    svgHeight,
-    checkedOutAnchor?.x,
-    checkedOutAnchor?.y,
-    checkedOutRef?.branchName,
-    checkedOutRef?.headSha,
-    checkedOutRef?.parentSha,
-    checkedOutRef?.hasUncommittedChanges,
-    graphContentTranslateX,
-    graphContentTranslateY,
     mapTopInset,
   ]);
 
-  // Scroll timeline to the requested branch. Set flashingName briefly so the arc
-  // starts bright red, then CSS stroke transition fades it to the settled lighter red.
+  // Keep branch focus request behavior visual-only (no camera panning).
   useEffect(() => {
     if (!scrollRequest) return;
-    if (isHorizontal ? viewportSize.width <= 0 : viewportSize.height <= 0) return;
-    markUserMovedCamera();
     const { branch } = scrollRequest;
-    const focusTime = branch.divergedFromDate
-      ? timeToX(branch.divergedFromDate)
-      : timeToX(branch.lastCommitDate);
-    const focusLaneX = laneXByBranch.get(branch.name) ?? mainX;
-    const projected = projectPoint(focusLaneX, timeCoordToY(focusTime));
-    const viewportSpan = isHorizontal ? layoutViewportW : layoutViewportH;
-    const axisGraphOffset = isHorizontal ? graphOffsetX : graphOffsetY;
-    const scalePair = getCameraScale(zoomRef.current, isHorizontal);
-    const axisScale = Math.max(isHorizontal ? scalePair.x : scalePair.y, 0.0001);
-    const axisSvgSize = isHorizontal ? svgWidth : svgHeight;
-    const visibleWorldSpan = viewportSpan / axisScale;
-    const axisCoord = isHorizontal
-      ? projected.x + graphContentTranslateX
-      : projected.y + graphContentTranslateY;
-    const targetWorldStart = Math.max(
-      0,
-      Math.min(Math.max(0, axisSvgSize - visibleWorldSpan), axisCoord - visibleWorldSpan / 2)
-    );
-    const clampedTargetPan = clampPan(
-      isHorizontal
-        ? { x: -axisGraphOffset - targetWorldStart * axisScale, y: targetPanRef.current.y }
-        : { x: targetPanRef.current.x, y: -axisGraphOffset - targetWorldStart * axisScale },
-      zoomRef.current,
-      'hard'
-    );
-
-    focusScrollCancelRef.current?.();
-    focusScrollCancelRef.current = smoothValueTo(
-      isHorizontal ? panRef.current.x : panRef.current.y,
-      isHorizontal ? clampedTargetPan.x : clampedTargetPan.y,
-      600,
-      (value) => {
-        const next = clampPan(
-          isHorizontal
-            ? { x: value, y: targetPanRef.current.y }
-            : { x: targetPanRef.current.x, y: value },
-          zoomRef.current,
-          'hard'
-        );
-        applyCamera(next, zoomRef.current);
-      }
-    );
     setFlashingName(branch.name);
     const t = setTimeout(() => setFlashingName(null), 700);
     return () => {
       clearTimeout(t);
-      focusScrollCancelRef.current?.();
-      focusScrollCancelRef.current = null;
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [
-    scrollRequest,
-    viewportSize.width,
-    viewportSize.height,
-    graphOffsetX,
-    graphOffsetY,
-    canvasWidth,
-    canvasHeight,
-    isHorizontal,
-    graphContentTranslateX,
-    graphContentTranslateY,
-    mapTopInset,
-  ]);
+  }, [scrollRequest]);
 
   useEffect(() => {
     return () => {
@@ -7084,7 +6839,7 @@ export default function BranchMap({
       <div
         ref={scrollRef}
         onMouseDown={handleCanvasMouseDown}
-        className={`w-full h-full overflow-hidden branch-map-scroll relative select-none touch-none ${nodeDragDisplay ? 'cursor-grabbing' : isPanning ? 'cursor-grabbing' : spaceHeld ? 'cursor-grab' : 'cursor-default'}`}
+        className={`w-full h-full overflow-hidden branch-map-scroll relative select-none touch-none ${nodeDragDisplay || isPanning ? 'cursor-grabbing' : 'cursor-default'}`}
       >
         <div
           ref={cameraRef}
