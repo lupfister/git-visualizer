@@ -9,6 +9,7 @@ import type { Branch, BranchCommitPreview, BranchPromptMeta, BranchPromptMarker,
 import { foldStashNodesIntoGraph } from './placeStashNode';
 
 type View = 'landing' | 'map';
+type MapMode = 'time' | 'grid';
 type OpenRepoEventPayload = {
   path: string;
   sourceApp?: string | null;
@@ -39,6 +40,7 @@ function App() {
   const [worktrees, setWorktrees] = useState<WorktreeInfo[]>([]);
   const [removeWorktreeInProgress, setRemoveWorktreeInProgress] = useState(false);
   const [orientation, setOrientation] = useState<OrientationMode>('vertical');
+  const [mapMode, setMapMode] = useState<MapMode>('time');
   const [loading, setLoading] = useState(false);       // button spinner in landing
   const [mapLoading, setMapLoading] = useState(false); // canvas skeleton in map
   const [error, setError] = useState<string | null>(null);
@@ -1662,7 +1664,7 @@ function App() {
               branchPromptMeta={branchPromptMeta}
               branchCommitPreviews={enrichedBranchCommitPreviews}
               branchUniqueAheadCounts={enrichedBranchUniqueAheadCounts}
-              view="time"
+              view={mapMode}
               isLoading={mapLoading}
               scrollRequest={scrollRequest}
               focusedErrorBranch={focusedErrorBranch}
@@ -1700,6 +1702,32 @@ function App() {
             className="absolute left-0 right-0 top-12 z-40 px-4 md:px-8"
           >
             <div className="window-no-drag pointer-events-auto relative z-10 min-h-8 flex flex-wrap items-center gap-2 content-start">
+              <div className="inline-flex rounded-full border border-border bg-card p-0.5 shadow-sm">
+                <button
+                  onClick={() => setMapMode('time')}
+                  aria-pressed={mapMode === 'time'}
+                  className={cn(
+                    'px-3 py-1.5 rounded-full text-xs font-medium transition-colors',
+                    mapMode === 'time'
+                      ? 'bg-primary/10 text-primary'
+                      : 'text-muted-foreground hover:bg-accent'
+                  )}
+                >
+                  Time
+                </button>
+                <button
+                  onClick={() => setMapMode('grid')}
+                  aria-pressed={mapMode === 'grid'}
+                  className={cn(
+                    'px-3 py-1.5 rounded-full text-xs font-medium transition-colors',
+                    mapMode === 'grid'
+                      ? 'bg-primary/10 text-primary'
+                      : 'text-muted-foreground hover:bg-accent'
+                  )}
+                >
+                  Grid
+                </button>
+              </div>
               {githubAuthStatus?.ghAvailable && !githubAuthStatus.authenticated && (
                 <button
                   onClick={handleGitHubAuthSetup}

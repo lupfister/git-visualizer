@@ -1,0 +1,140 @@
+export type AnchorPoint = { x: number; y: number };
+type PointFormatter = (x: number, y: number) => string;
+type BranchPathInput = { startX: number; forkY: number; laneX: number; tipY: number; cornerR: number; pointFormatter: PointFormatter };
+type MergePathInput = { laneX: number; tipY: number; mergeX: number; mergeY: number; cornerR: number; pointFormatter: PointFormatter };
+
+export function buildBranchOrthogonalPath({ startX, forkY, laneX, tipY, cornerR, pointFormatter }: BranchPathInput): string {
+  if (Math.abs(startX - laneX) < 0.5) return `M ${pointFormatter(laneX, forkY)} L ${pointFormatter(laneX, tipY)}`;
+  const horizontalDir = laneX > startX ? 1 : -1;
+  const verticalDir = tipY >= forkY ? 1 : -1;
+  const corner = Math.max(0, Math.min(cornerR, Math.abs(laneX - startX), Math.abs(tipY - forkY)));
+  if (corner < 0.5) return [`M ${pointFormatter(startX, forkY)}`, `L ${pointFormatter(laneX, forkY)}`, `L ${pointFormatter(laneX, tipY)}`].join(' ');
+  const preTurnX = laneX - horizontalDir * corner;
+  const postTurnY = forkY + verticalDir * corner;
+  return [`M ${pointFormatter(startX, forkY)}`, `L ${pointFormatter(preTurnX, forkY)}`, `Q ${pointFormatter(laneX, forkY)} ${pointFormatter(laneX, postTurnY)}`, `L ${pointFormatter(laneX, tipY)}`].join(' ');
+}
+
+export function buildMergeOrthogonalPath({ laneX, tipY, mergeX, mergeY, cornerR, pointFormatter }: MergePathInput): string {
+  if (Math.abs(mergeY - tipY) < 0.5) return `M ${pointFormatter(laneX, tipY)} L ${pointFormatter(mergeX, mergeY)}`;
+  const horizontalDir = mergeX >= laneX ? 1 : -1;
+  const corner = Math.max(0, Math.min(cornerR, Math.abs(mergeY - tipY), Math.abs(mergeX - laneX)));
+  if (corner < 0.5) return [`M ${pointFormatter(laneX, tipY)}`, `L ${pointFormatter(laneX, mergeY)}`, `L ${pointFormatter(mergeX, mergeY)}`].join(' ');
+  const preTurnY = mergeY - Math.sign(mergeY - tipY) * corner;
+  const cornerX = laneX + horizontalDir * corner;
+  return [`M ${pointFormatter(laneX, tipY)}`, `L ${pointFormatter(laneX, preTurnY)}`, `Q ${pointFormatter(laneX, mergeY)} ${pointFormatter(cornerX, mergeY)}`, `L ${pointFormatter(mergeX, mergeY)}`].join(' ');
+}
+
+export function commitRectSize(baseNodeSize: number, clusterBoost = 0): { width: number; height: number; radius: number } {
+  const height = Math.max(8, baseNodeSize - 2 + clusterBoost);
+  const width = height * 3;
+  const radius = 0;
+  return { width, height, radius };
+}
+
+// Grid-side copies of the data/layout helpers used by the canvas view.
+import { Branch, BranchCommitPreview, DirectCommit } from '../types';
+
+export type BranchGridViewProps = {
+  [key: string]: any;
+  branches: Branch[];
+  directCommits?: DirectCommit[];
+  unpushedDirectCommits?: DirectCommit[];
+  mergeNodes?: unknown[];
+  defaultBranch: string;
+  branchCommitPreviews?: Record<string, BranchCommitPreview[]>;
+  branchUniqueAheadCounts?: Record<string, number>;
+  unpushedCommitShasByBranch?: Record<string, string[]>;
+  openPRs?: import('../types').OpenPR[];
+  onCommitClick?: (target: { commitSha: string; branchName?: string }) => void;
+  onLoadMore?: () => void;
+  view?: string;
+  staleBranches?: Branch[];
+  isLoading?: boolean;
+  scrollRequest?: { branch: Branch; seq: number } | null;
+  focusedErrorBranch?: Branch | null;
+  checkedOutRef?: import('../types').CheckedOutRef | null;
+  mapTopInsetPx?: number;
+  onMergeRefsIntoBranch?: (sourceRefs: string[], targetBranch: string) => Promise<void> | void;
+  mergeInProgress?: boolean;
+  onPushAllBranches?: () => Promise<void> | void;
+  onPushCurrentBranch?: () => Promise<void> | void;
+  onPushCommitTargets?: (targets: Array<{ branchName: string; targetSha: string }>) => Promise<void> | void;
+  pushInProgress?: boolean;
+  onDeleteSelection?: (targets: { branchNames: string[]; discardUncommittedChanges: boolean; stashIndices?: number[] }) => Promise<void> | void;
+  deleteInProgress?: boolean;
+  worktrees?: import('../types').WorktreeInfo[];
+  currentRepoPath?: string;
+  onRemoveWorktree?: (worktreePath: string, force: boolean) => Promise<void> | void;
+  removeWorktreeInProgress?: boolean;
+  onSwitchToWorktree?: (worktreePath: string) => void | Promise<void>;
+  onStashLocalChanges?: () => Promise<void> | void;
+  stashInProgress?: boolean;
+  stashDisabled?: boolean;
+  onCommitLocalChanges?: (message: string) => Promise<boolean>;
+  commitInProgress?: boolean;
+  commitDisabled?: boolean;
+  onStageAllChanges?: () => Promise<boolean> | Promise<void> | boolean | void;
+  stageInProgress?: boolean;
+  onCreateBranchFromNode?: (nodeId: string, branchName: string) => Promise<void>;
+  createBranchFromNodeInProgress?: boolean;
+  onMoveNodeBackToBranch?: (targetBranchName: string) => Promise<void>;
+  orientation?: string;
+};
+
+export type CommitItem = {
+  id: string;
+  branchName: string;
+  message: string;
+  author: string;
+  date: string;
+  parentSha?: string | null;
+  kind?: BranchCommitPreview['kind'] | DirectCommit['kind'];
+};
+
+export type VisualCommit = CommitItem & { visualId: string };
+export type Lane = { name: string; column: number; parentName: string | null };
+export type Node = { commit: VisualCommit; row: number; column: number; x: number; y: number };
+export type Connector = { id: string; fromX: number; fromY: number; toX: number; toY: number };
+
+export const BRANCH_COLUMN_REUSE_TIME_GAP_FACTOR = 0.75;
+export const COLUMN_WIDTH = 160;
+export const ROW_HEIGHT = 88;
+export const ROW_GAP = 10;
+export const CARD_WIDTH = 152;
+export const CARD_HEIGHT = 76;
+export const TOP_PADDING = 12;
+export const LEFT_PADDING = 12;
+export const CONNECTOR_COLOR = 'rgba(148, 163, 184, 0.55)';
+
+export function timeAgo(dateStr: string) {
+  const s = (Date.now() - new Date(dateStr).getTime()) / 1000;
+  if (s < 60) return 'just now';
+  if (s < 3600) return `${Math.floor(s / 60)}m ago`;
+  if (s < 86400) return `${Math.floor(s / 3600)}h ago`;
+  if (s < 86400 * 30) return `${Math.floor(s / 86400)}d ago`;
+  return new Date(dateStr).toLocaleDateString('en-US', { month: 'short', day: 'numeric' });
+}
+
+export function branchTime(branch: Branch): { start: number; end: number } {
+  return { start: new Date(branch.createdDate ?? branch.divergedFromDate ?? branch.lastCommitDate).getTime(), end: new Date(branch.lastCommitDate).getTime() };
+}
+
+export function toCommit(branchName: string, commit: BranchCommitPreview | DirectCommit): CommitItem {
+  return { id: commit.fullSha, branchName, message: commit.message, author: commit.author, date: commit.date, parentSha: commit.parentSha, kind: commit.kind };
+}
+
+export function commitKey(item: { id?: string; fullSha?: string }): string { return item.id ?? item.fullSha ?? ''; }
+export function compareByDateThenSha(a: { id?: string; fullSha?: string; date: string }, b: { id?: string; fullSha?: string; date: string }): number { const d = new Date(a.date).getTime() - new Date(b.date).getTime(); return d !== 0 ? d : commitKey(a).localeCompare(commitKey(b)); }
+export function orderByLineage<T extends { id?: string; fullSha?: string; parentSha?: string | null; date: string }>(items: T[]): T[] { if (items.length <= 1) return [...items]; const bySha = new Map(items.map((item) => [commitKey(item), item])); const inDegree = new Map<string, number>(); const childrenByParent = new Map<string, T[]>(); items.forEach((item) => inDegree.set(commitKey(item), 0)); for (const item of items) { const parentSha = item.parentSha ?? undefined; if (!parentSha || !bySha.has(parentSha)) continue; const itemKey = commitKey(item); inDegree.set(itemKey, (inDegree.get(itemKey) ?? 0) + 1); const children = childrenByParent.get(parentSha) ?? []; children.push(item); childrenByParent.set(parentSha, children); } for (const children of childrenByParent.values()) children.sort(compareByDateThenSha); const ready = items.filter((item) => (inDegree.get(commitKey(item)) ?? 0) === 0).sort(compareByDateThenSha); const ordered: T[] = []; const seen = new Set<string>(); while (ready.length > 0) { const next = ready.shift()!; const nextKey = commitKey(next); if (seen.has(nextKey)) continue; seen.add(nextKey); ordered.push(next); for (const child of childrenByParent.get(nextKey) ?? []) { const childKey = commitKey(child); const remainingParents = (inDegree.get(childKey) ?? 0) - 1; inDegree.set(childKey, remainingParents); if (remainingParents === 0) ready.push(child); } ready.sort(compareByDateThenSha); } return ordered.length === items.length ? ordered : [...ordered, ...items.filter((item) => !seen.has(commitKey(item))).sort(compareByDateThenSha)]; }
+export function branchAheadCount(branchName: string, branchUniqueAheadCounts: Record<string, number>, branchCommitPreviews: Record<string, BranchCommitPreview[]>): number { if (Object.prototype.hasOwnProperty.call(branchUniqueAheadCounts, branchName)) return Math.max(0, branchUniqueAheadCounts[branchName] ?? 0); const previews = branchCommitPreviews[branchName]; if (previews != null) return previews.filter((preview) => preview.kind !== 'branch-created').length; return 0; }
+export function sortedConcreteBranchPreviews(branchName: string, branchCommitPreviews: Record<string, BranchCommitPreview[]>): BranchCommitPreview[] { return orderByLineage((branchCommitPreviews[branchName] ?? []).filter((commit) => commit.kind !== 'branch-created')); }
+export function renderableBranchPreviews(branchName: string, branchUniqueAheadCounts: Record<string, number>, branchCommitPreviews: Record<string, BranchCommitPreview[]>): BranchCommitPreview[] { const previews = sortedConcreteBranchPreviews(branchName, branchCommitPreviews); const uniqueAhead = branchAheadCount(branchName, branchUniqueAheadCounts, branchCommitPreviews); return uniqueAhead <= 0 ? [] : previews.length <= uniqueAhead ? previews : previews.slice(previews.length - uniqueAhead); }
+export function commitKeyWithFallback(commit: { id?: string; fullSha?: string }): string { return commit.id ?? commit.fullSha ?? ''; }
+export function sortByTimeDesc<T extends { date: string }>(commits: T[]): T[] { return [...commits].sort((a, b) => new Date(b.date).getTime() - new Date(a.date).getTime()); }
+export function branchParentName(branch: Branch, byName: Map<string, Branch>, defaultBranch: string): string | null { const declared = branch.parentBranch; if (!declared || declared === branch.name || !byName.has(declared)) return null; return declared === defaultBranch ? defaultBranch : declared; }
+export function branchDepth(branch: Branch, byName: Map<string, Branch>, defaultBranch: string, visiting = new Set<string>()): number { if (visiting.has(branch.name)) return Number.MAX_SAFE_INTEGER; visiting.add(branch.name); const parentName = branchParentName(branch, byName, defaultBranch); if (!parentName || parentName === defaultBranch || parentName === branch.name || !byName.has(parentName)) { visiting.delete(branch.name); return 1; } const parent = byName.get(parentName); if (!parent) { visiting.delete(branch.name); return 1; } const depth = 1 + branchDepth(parent, byName, defaultBranch, visiting); visiting.delete(branch.name); return depth; }
+export function newestCommit(commits: CommitItem[]): CommitItem | null { return commits.length === 0 ? null : [...commits].sort((a, b) => new Date(b.date).getTime() - new Date(a.date).getTime())[0] ?? null; }
+export function nearestCommitByDate(commits: CommitItem[], dateStr?: string): CommitItem | null { if (!dateStr || commits.length === 0) return newestCommit(commits); const target = new Date(dateStr).getTime(); if (!Number.isFinite(target)) return newestCommit(commits); let bestPast: { delta: number; commit: CommitItem } | null = null; let bestFuture: { delta: number; commit: CommitItem } | null = null; for (const commit of commits) { const commitTime = new Date(commit.date).getTime(); if (!Number.isFinite(commitTime)) continue; if (commitTime <= target) { const delta = target - commitTime; if (!bestPast || delta < bestPast.delta) bestPast = { delta, commit }; } else { const delta = commitTime - target; if (!bestFuture || delta < bestFuture.delta) bestFuture = { delta, commit }; } } return bestPast?.commit ?? bestFuture?.commit ?? newestCommit(commits); }
+export function nodeForCommitSha(nodesBySha: Map<string, Node[]>, sha?: string | null, preferredBranchName?: string): Node | null { if (!sha) return null; const nodes = nodesBySha.get(sha) ?? []; if (nodes.length === 0) return null; if (preferredBranchName) { const preferred = nodes.find((node) => node.commit.branchName === preferredBranchName); if (preferred) return preferred; } return nodes[0] ?? null; }
+export function branchBaseCommit(branchName: string, branchCommitPreviews: Record<string, BranchCommitPreview[]>, branchUniqueAheadCounts: Record<string, number>): CommitItem | null { const previews = renderableBranchPreviews(branchName, branchUniqueAheadCounts, branchCommitPreviews); if (previews.length === 0) return null; const commits = previews.map((commit) => toCommit(branchName, commit)); const bySha = new Set(commits.map((commit) => commit.id)); const forkSha = commits[0]?.parentSha ?? null; const branchForkSha = commits.find((commit) => commit.kind === 'branch-created')?.id ?? null; const forkDate = commits[0]?.date; const lineBase = commits.find((commit) => { if (branchForkSha && commit.id === branchForkSha) return true; if (forkSha && commit.id === forkSha) return true; return !commit.parentSha || !bySha.has(commit.parentSha); }); if (lineBase) return lineBase; return nearestCommitByDate(commits, forkDate ?? undefined) ?? commits[0] ?? null; }
+export function buildLanes(branches: Branch[], defaultBranch: string): Lane[] { const byName = new Map(branches.map((branch) => [branch.name, branch])); const children = new Map<string, Branch[]>(); for (const branch of branches) { if (branch.name === defaultBranch) continue; const parent = branch.parentBranch && byName.has(branch.parentBranch) ? branch.parentBranch : defaultBranch; const list = children.get(parent) ?? []; list.push(branch); children.set(parent, list); } for (const list of children.values()) list.sort((a, b) => branchTime(a).start - branchTime(b).start || a.name.localeCompare(b.name)); const laneByName = new Map<string, Lane>(); const lanes: Lane[] = []; const columnIntervals = new Map<number, Array<{ start: number; end: number }>>(); const minGapMs = Math.max(1, 6 * 60 * 60 * 1000 * BRANCH_COLUMN_REUSE_TIME_GAP_FACTOR); const conflicts = (column: number, start: number, end: number): boolean => (columnIntervals.get(column) ?? []).some((interval) => !(start - interval.end >= minGapMs || interval.start - end >= minGapMs)); const claimColumn = (branchName: string): number => { const cached = laneByName.get(branchName); if (cached) return cached.column; const branch = byName.get(branchName); if (!branch) return 0; if (branchName === defaultBranch) { const lane = { name: branchName, column: 0, parentName: null }; laneByName.set(branchName, lane); lanes.push(lane); columnIntervals.set(0, [...(columnIntervals.get(0) ?? []), branchTime(branch)]); return 0; } const parentName = branchParentName(branch, byName, defaultBranch); const minColumn = parentName ? claimColumn(parentName) + 1 : 1; const { start, end } = branchTime(branch); let column = minColumn; while (conflicts(column, start, end)) column += 1; const lane = { name: branchName, column, parentName }; laneByName.set(branchName, lane); lanes.push(lane); columnIntervals.set(column, [...(columnIntervals.get(column) ?? []), { start, end }]); for (const child of children.get(branchName) ?? []) claimColumn(child.name); return column; }; claimColumn(defaultBranch); for (const branch of branches) if (!laneByName.has(branch.name)) claimColumn(branch.name); return lanes.sort((a, b) => a.column - b.column || a.name.localeCompare(b.name)); }
