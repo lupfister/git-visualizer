@@ -1,6 +1,6 @@
 import { Branch, BranchCommitPreview, BranchPromptMeta, CheckedOutRef, DirectCommit, MergeNode, OpenPR, WorktreeInfo } from '../types';
-import BranchMap from './BranchMap';
 import BranchGroupView from './BranchGroupView';
+import GitGraphView from './graph/GitGraphView';
 
 export type ViewMode = 'time' | 'status' | 'creator';
 export type OrientationMode = 'vertical' | 'horizontal';
@@ -62,111 +62,21 @@ interface Props {
 
 export default function BranchMapView({
   branches,
-  mergeNodes,
-  directCommits = [],
-  unpushedDirectCommits = [],
-  unpushedCommitShasByBranch = {},
-  openPRs = [],
   defaultBranch,
   onCommitClick,
-  onLoadMore,
-  branchPromptMeta = {},
-  branchCommitPreviews = {},
   branchUniqueAheadCounts = {},
   view = 'time',
-  isLoading = false,
-  scrollRequest,
-  focusedErrorBranch,
   checkedOutRef = null,
-
-  mapTopInsetPx = 0,
-  onMergeRefsIntoBranch,
-  mergeInProgress = false,
-  onPushAllBranches,
-  onPushCurrentBranch,
-  onPushCommitTargets,
-  pushInProgress = false,
-  onDeleteSelection,
-  deleteInProgress = false,
-  worktrees = [],
   currentRepoPath,
-  onRemoveWorktree,
-  removeWorktreeInProgress = false,
-  onSwitchToWorktree,
-  onStashLocalChanges,
-  stashInProgress = false,
-  stashDisabled = false,
-  onCommitLocalChanges,
-  commitInProgress = false,
-  commitDisabled = false,
-  onStageAllChanges,
-  stageInProgress = false,
-  onCreateBranchFromNode,
-  createBranchFromNodeInProgress = false,
-  onMoveNodeBackToBranch,
-  orientation = 'vertical',
 }: Props) {
-  // Determine active vs inactive error branches
-  const openPRBranchNames = new Set(openPRs.map(p => p.branchName));
-  const ACTIVE_MS = 14 * 86400000;
-  const viewNow = Date.now();
-  function isBranchActive(b: Branch): boolean {
-    return openPRBranchNames.has(b.name) || viewNow - new Date(b.lastCommitDate).getTime() <= ACTIVE_MS;
-  }
-
-  const staleBranches = branches
-    .filter(b => b.status === 'stale' && isBranchActive(b))
-    .sort((a, b) => new Date(b.lastCommitDate).getTime() - new Date(a.lastCommitDate).getTime());
   return (
     <div className="h-full flex flex-col">
       {view === 'time' ? (
         <div className="flex-1 min-h-0">
-          <BranchMap
-            branches={branches}
-            mergeNodes={mergeNodes}
-            directCommits={directCommits}
-            unpushedDirectCommits={unpushedDirectCommits}
-            unpushedCommitShasByBranch={unpushedCommitShasByBranch}
-            openPRs={openPRs}
-            defaultBranch={defaultBranch}
+          <GitGraphView
+            repoPath={currentRepoPath}
+            checkedOutHeadSha={checkedOutRef?.headSha}
             onCommitClick={onCommitClick}
-            onLoadMore={onLoadMore}
-            branchPromptMeta={branchPromptMeta}
-            branchCommitPreviews={branchCommitPreviews}
-            branchUniqueAheadCounts={branchUniqueAheadCounts}
-            view={view}
-            staleBranches={staleBranches}
-            isLoading={isLoading}
-            scrollRequest={scrollRequest}
-            focusedErrorBranch={focusedErrorBranch}
-            checkedOutRef={checkedOutRef}
-
-            mapTopInsetPx={mapTopInsetPx}
-            onMergeRefsIntoBranch={onMergeRefsIntoBranch}
-            mergeInProgress={mergeInProgress}
-            onPushAllBranches={onPushAllBranches}
-            onPushCurrentBranch={onPushCurrentBranch}
-            onPushCommitTargets={onPushCommitTargets}
-            pushInProgress={pushInProgress}
-            onDeleteSelection={onDeleteSelection}
-            deleteInProgress={deleteInProgress}
-            worktrees={worktrees}
-            currentRepoPath={currentRepoPath}
-            onRemoveWorktree={onRemoveWorktree}
-            removeWorktreeInProgress={removeWorktreeInProgress}
-            onSwitchToWorktree={onSwitchToWorktree}
-            onStashLocalChanges={onStashLocalChanges}
-            stashInProgress={stashInProgress}
-            stashDisabled={stashDisabled}
-            onCommitLocalChanges={onCommitLocalChanges}
-            commitInProgress={commitInProgress}
-            commitDisabled={commitDisabled}
-            onStageAllChanges={onStageAllChanges}
-            stageInProgress={stageInProgress}
-            onCreateBranchFromNode={onCreateBranchFromNode}
-            createBranchFromNodeInProgress={createBranchFromNodeInProgress}
-            onMoveNodeBackToBranch={onMoveNodeBackToBranch}
-            orientation={orientation}
           />
         </div>
       ) : (

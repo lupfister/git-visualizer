@@ -3,7 +3,17 @@ mod github;
 
 use tauri::{Emitter, Manager};
 
-use git::{Branch, CheckedOutRef, DirectCommit, MergeNode};
+use git::{
+    Branch,
+    BranchMetadata,
+    CheckedOutRef,
+    CommitDetails,
+    DirectCommit,
+    GraphDelta,
+    GraphLoadOptions,
+    GraphSnapshot,
+    MergeNode,
+};
 use github::{GitHubAuthStatus, GitHubInfo, MergedPR, OpenPR};
 use chrono::{DateTime, Duration, Utc};
 use std::{
@@ -116,6 +126,13 @@ fn watch_repo(repo_path: String, app: tauri::AppHandle) -> Result<(), String> {
                     let prev_ms = last_graph_emit_ms.load(Ordering::Relaxed);
                     if now_ms.saturating_sub(prev_ms) >= GIT_ACTIVITY_GRAPH_MIN_EMIT_MS {
                         last_graph_emit_ms.store(now_ms, Ordering::Relaxed);
+                        let snapshot_id = git::next_snapshot_id();
+                        let delta = GraphDelta {
+                            snapshot_id,
+                            reason: "graph-change".to_string(),
+                            changed_at_ms: now_ms as i64,
+                        };
+                        let _ = app.emit("graph-delta", &delta);
                         println!("Git activity detected: {:?}", event.kind);
                         let _ = app.emit("git-activity", "graph");
                     }
@@ -1675,6 +1692,30 @@ fn get_branch_unpushed_commit_shas(
         .filter(|line| !line.is_empty())
         .map(|line| line.to_string())
         .collect())
+}
+
+#[tauri::command(rename_all = "camelCase")]
+fn load_graph_snapshot(
+    repo_path: String,
+    options: Option<GraphLoadOptions>,
+) -> Result<GraphSnapshot, String> {
+    let path = Path::new(&repo_path);
+    git::build_graph_snapshot(path, options).map_err(|e| e.to_string())
+}
+
+#[tauri::command(rename_all = "camelCase")]
+fn get_commit_details(
+    repo_path: String,
+    commit_sha: String,
+) -> Result<CommitDetails, String> {
+    let path = Path::new(&repo_path);
+    git::get_commit_details(path, &commit_sha).map_err(|e| e.to_string())
+}
+
+#[tauri::command(rename_all = "camelCase")]
+fn get_branch_metadata(repo_path: String) -> Result<Vec<BranchMetadata>, String> {
+    let path = Path::new(&repo_path);
+    git::get_branch_metadata(path).map_err(|e| e.to_string())
 }
 
 /// Recent commits on a branch (no base filtering — just git log -N <branch>).
@@ -3950,6 +3991,9 @@ pub fn run() {
             get_recent_log,
             get_unpushed_direct_commits,
             get_branch_unpushed_commit_shas,
+            load_graph_snapshot,
+            get_commit_details,
+            get_branch_metadata,
             generate_preview,
             generate_preview_routes,
             open_preview_browser,

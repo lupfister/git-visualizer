@@ -163,3 +163,83 @@ export interface ComponentGroup {
   deletions: number;
   files: ChangedFile[];
 }
+
+export interface GraphLoadOptions {
+  maxCommits?: number;
+}
+
+export interface GraphNode {
+  id: string;
+  sha: string;
+  kind: 'commit' | string;
+  laneId: string;
+  row: number;
+  timestamp: number;
+  label: string;
+  author: string;
+  badges: string[];
+}
+
+export interface GraphEdge {
+  id: string;
+  fromNodeId: string;
+  toNodeId: string;
+  edgeType: 'branch' | 'merge' | 'fork' | 'stash' | string;
+}
+
+export interface GraphStats {
+  nodeCount: number;
+  edgeCount: number;
+  laneCount: number;
+  rowCount: number;
+}
+
+export interface GraphSnapshot {
+  snapshotId: number;
+  nodes: GraphNode[];
+  edges: GraphEdge[];
+  lanes: string[];
+  rows: number;
+  branchHeads: Record<string, string>;
+  checkedOutRef: CheckedOutRef;
+  stats: GraphStats;
+}
+
+export interface GraphDelta {
+  snapshotId: number;
+  reason: string;
+  changedAtMs: number;
+}
+
+export interface CommitDetails {
+  sha: string;
+  shortSha: string;
+  authorName: string;
+  authorEmail: string;
+  authoredAt: number;
+  subject: string;
+  body: string;
+  filesChanged: number;
+  additions: number;
+  deletions: number;
+}
+
+export interface BranchMetadata {
+  name: string;
+  headSha: string;
+  parentBranch?: string;
+  commitsAhead: number;
+  commitsBehind: number;
+  status: BranchStatus;
+  remoteSyncStatus: RemoteSyncStatus;
+  unpushedCommits: number;
+  lastCommitDate: string;
+}
+
+export interface ViewportQuery {
+  x: number;
+  y: number;
+  width: number;
+  height: number;
+  zoom: number;
+}
