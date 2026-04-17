@@ -951,6 +951,10 @@ export default function BranchMap({
   const zoomStableRectElsRef = useRef<SVGRectElement[]>([]);
   const panUiSyncTimeoutRef = useRef<number | null>(null);
   const zoomUiSyncTimeoutRef = useRef<number | null>(null);
+  const wheelPanRafRef = useRef<number | null>(null);
+  const dragPanRafRef = useRef<number | null>(null);
+  const wheelPanDeltaRef = useRef({ x: 0, y: 0 });
+  const dragPanPointerRef = useRef<{ clientX: number; clientY: number } | null>(null);
   const cameraPaintRafRef = useRef<number | null>(null);
   const pendingCameraRef = useRef<{ pan: { x: number; y: number }; zoom: number } | null>(null);
   const [, setClumpAnimationTick] = useState(0);
@@ -1884,7 +1888,35 @@ export default function BranchMap({
     }
   }
 
+  function flushWheelPan() {
+    const { x, y } = wheelPanDeltaRef.current;
+    if (Math.abs(x) < 0.01 && Math.abs(y) < 0.01) return;
+    wheelPanDeltaRef.current = { x: 0, y: 0 };
+    const nextPan = clampPan({
+      x: panRef.current.x - x,
+      y: panRef.current.y - y,
+    }, zoomRef.current, 'hard');
+    applyCamera(nextPan, zoomRef.current);
+  }
+
+  function scheduleWheelPan() {
+    if (wheelPanRafRef.current !== null) return;
+    wheelPanRafRef.current = requestAnimationFrame(() => {
+      wheelPanRafRef.current = null;
+      flushWheelPan();
+    });
+  }
+
+  function stopWheelPanRaf() {
+    if (wheelPanRafRef.current !== null) {
+      cancelAnimationFrame(wheelPanRafRef.current);
+      wheelPanRafRef.current = null;
+    }
+    wheelPanDeltaRef.current = { x: 0, y: 0 };
+  }
+
   function stopWheelInertia() {
+    stopWheelPanRaf();
     stopPanSmoothing();
   }
 
@@ -2018,11 +2050,11 @@ export default function BranchMap({
       }
 
       flushPendingZoomUiSync();
-      const nextPan = clampPan({
-        x: panRef.current.x - e.deltaX,
-        y: panRef.current.y - e.deltaY,
-      }, zoomRef.current, 'hard');
-      applyCamera(nextPan, zoomRef.current);
+      wheelPanDeltaRef.current = {
+        x: wheelPanDeltaRef.current.x + e.deltaX,
+        y: wheelPanDeltaRef.current.y + e.deltaY,
+      };
+      scheduleWheelPan();
       schedulePanUiSync();
     };
 
@@ -2106,6 +2138,11 @@ export default function BranchMap({
       stopZoomAnimation();
       stopWheelInertia();
       stopPanSmoothing();
+      if (dragPanRafRef.current !== null) {
+        cancelAnimationFrame(dragPanRafRef.current);
+        dragPanRafRef.current = null;
+      }
+      dragPanPointerRef.current = null;
     };
   }, []);
 
@@ -2160,16 +2197,35 @@ export default function BranchMap({
   // Space+drag (or middle mouse drag) panning, interrupting all inertial motion.
   useEffect(() => {
     if (!isPanning) return;
-    const onMove = (e: MouseEvent) => {
-      const dx = e.clientX - panStartRef.current.x;
-      const dy = e.clientY - panStartRef.current.y;
+    const flushDragPan = () => {
+      const pointer = dragPanPointerRef.current;
+      if (!pointer) return;
+      const dx = pointer.clientX - panStartRef.current.x;
+      const dy = pointer.clientY - panStartRef.current.y;
       const nextPan = clampPan({
         x: panStartRef.current.panX + dx,
         y: panStartRef.current.panY + dy,
       }, zoomRef.current, 'hard');
       applyCamera(nextPan, zoomRef.current);
     };
+    const scheduleDragPan = () => {
+      if (dragPanRafRef.current !== null) return;
+      dragPanRafRef.current = requestAnimationFrame(() => {
+        dragPanRafRef.current = null;
+        flushDragPan();
+      });
+    };
+    const onMove = (e: MouseEvent) => {
+      dragPanPointerRef.current = { clientX: e.clientX, clientY: e.clientY };
+      scheduleDragPan();
+    };
     const onUp = () => {
+      if (dragPanRafRef.current !== null) {
+        cancelAnimationFrame(dragPanRafRef.current);
+        dragPanRafRef.current = null;
+      }
+      flushDragPan();
+      dragPanPointerRef.current = null;
       isPanningRef.current = false;
       setIsPanning(false);
       const settledPan = clampPan(panRef.current, zoomRef.current, 'hard');
@@ -2181,6 +2237,11 @@ export default function BranchMap({
     return () => {
       window.removeEventListener('mousemove', onMove);
       window.removeEventListener('mouseup', onUp);
+      if (dragPanRafRef.current !== null) {
+        cancelAnimationFrame(dragPanRafRef.current);
+        dragPanRafRef.current = null;
+      }
+      dragPanPointerRef.current = null;
     };
   }, [isPanning]);
 
@@ -2380,6 +2441,11 @@ export default function BranchMap({
       spacePressedRef.current = false;
       setSpaceHeld(false);
       if (isPanningRef.current) {
+        if (dragPanRafRef.current !== null) {
+          cancelAnimationFrame(dragPanRafRef.current);
+          dragPanRafRef.current = null;
+        }
+        dragPanPointerRef.current = null;
         isPanningRef.current = false;
         setIsPanning(false);
         syncUiState(true);
@@ -2402,6 +2468,11 @@ export default function BranchMap({
   useEffect(() => {
     const stopActivePan = () => {
       if (!isPanningRef.current) return;
+      if (dragPanRafRef.current !== null) {
+        cancelAnimationFrame(dragPanRafRef.current);
+        dragPanRafRef.current = null;
+      }
+      dragPanPointerRef.current = null;
       isPanningRef.current = false;
       setIsPanning(false);
       const settledPan = clampPan(panRef.current, zoomRef.current, 'hard');
@@ -2541,6 +2612,7 @@ export default function BranchMap({
         panX: targetPanRef.current.x,
         panY: targetPanRef.current.y,
       };
+      dragPanPointerRef.current = { clientX: e.clientX, clientY: e.clientY };
       isPanningRef.current = true;
       setIsPanning(true);
       return;
@@ -7133,7 +7205,7 @@ export default function BranchMap({
                 opacity: timelineCanvasVisible ? 1 : 0,
                 visibility: timelineCanvasVisible ? 'visible' : 'hidden',
                 transition: `opacity ${INITIAL_REVEAL_FADE_MS}ms cubic-bezier(0.22, 1, 0.36, 1)`,
-                pointerEvents: holdTimelineForInitialCenter ? 'none' : 'auto',
+                pointerEvents: holdTimelineForInitialCenter || isPanning ? 'none' : 'auto',
               }}
             >
               <rect
