@@ -942,10 +942,12 @@ export default function BranchMap({
   const [_flashingName, setFlashingName] = useState<string | null>(null);
 
   const scrollRef = useRef<HTMLDivElement>(null);
+  const gridOverlayRef = useRef<HTMLDivElement>(null);
+  const pannedContentRef = useRef<HTMLDivElement>(null);
+
   const cameraRef = useRef<HTMLDivElement>(null);
   const svgRef = useRef<SVGSVGElement>(null);
   const zoomLayerRef = useRef<SVGGElement>(null);
-  const gridOverlayRef = useRef<HTMLDivElement>(null);
   const zoomRef = useRef(zoom);
   const zoomStateRef = useRef(zoom);
   const lastContinuousZoomTsRef = useRef(0);
@@ -1733,23 +1735,14 @@ export default function BranchMap({
   }
 
   function paintCamera(nextPan = panRef.current, _nextZoom = zoomRef.current) {
-    const el = cameraRef.current;
-    if (!el) return;
     const cameraScale = getCameraScale(_nextZoom, isHorizontal);
-    el.style.transform = `translate3d(${nextPan.x}px, ${nextPan.y}px, 0)`;
-    const svg = svgRef.current;
-    if (svg) {
-      svg.style.setProperty('--camera-scale', String(cameraScale.x));
-    }
-    const zoomLayer = zoomLayerRef.current;
-    if (zoomLayer) {
-      zoomLayer.setAttribute('transform', `scale(${cameraScale.x} ${cameraScale.y})`);
+    const pannedContent = pannedContentRef.current;
+    if (pannedContent) {
+      pannedContent.style.transform = `translate3d(${nextPan.x}px, ${nextPan.y}px, 0)`;
     }
 
     const gridOverlay = gridOverlayRef.current;
     if (gridOverlay) {
-      // Offset (graphOffsetX/Y) + Scale (cameraScale) + Content (graphContentTranslateX/Y)
-      // Pan is handled by the parent cameraRef
       gridOverlay.style.transform = `translate3d(${graphOffsetX}px, ${graphOffsetY}px, 0) scale(${cameraScale.x}, ${cameraScale.y}) translate3d(${graphContentTranslateX}px, ${graphContentTranslateY}px, 0)`;
       gridOverlay.style.transformOrigin = 'top left';
     }
@@ -7179,28 +7172,37 @@ export default function BranchMap({
             transition: isResizeSettling ? 'none' : `opacity ${ORIENTATION_SWITCH_FADE_MS}ms ease-out`,
           }}
         >
-          <svg
-            ref={svgRef}
-            width={svgWidth}
-            height={svgHeight}
-            className={[
-              'branch-map-svg',
-              drawReady && ENABLE_TIMELINE_INTRO_ANIMATIONS ? 'timeline-ready' : '',
-              animationsLocked ? 'timeline-static' : '',
-            ].filter(Boolean).join(' ')}
+          <div 
+            ref={pannedContentRef} 
+            className="absolute inset-0 pointer-events-none overflow-visible"
             style={{
-              '--camera-scale': String(layerCameraScale.x),
-              minWidth: svgWidth,
-              display: 'block',
-              position: 'absolute',
-              left: 0,
-              top: 0,
-              transformOrigin: 'top left',
-              transform: `translate3d(${graphOffsetX}px, ${graphOffsetY}px, 0)`,
-              overflow: 'visible',
-              willChange: isResizeSettling ? 'transform' : undefined,
-            } as React.CSSProperties}
+              transform: `translate3d(${panRef.current.x}px, ${panRef.current.y}px, 0)`,
+            }}
           >
+            <svg
+              ref={svgRef}
+              width={svgWidth}
+              height={svgHeight}
+              viewBox={`0 0 ${svgWidth} ${svgHeight}`}
+              className={cn(
+                'block pointer-events-none select-none touch-none overflow-visible branch-map-svg',
+                drawReady && ENABLE_TIMELINE_INTRO_ANIMATIONS && 'timeline-ready',
+                animationsLocked && 'timeline-static',
+                isOrientationSwitchFading && 'transition-opacity duration-300'
+              )}
+              style={{
+                '--camera-scale': String(layerCameraScale.x),
+                minWidth: svgWidth,
+                display: 'block',
+                position: 'absolute',
+                left: 0,
+                top: 0,
+                transformOrigin: 'top left',
+                transform: `translate3d(${graphOffsetX}px, ${graphOffsetY}px, 0)`,
+                overflow: 'visible',
+                willChange: isResizeSettling ? 'transform' : undefined,
+              } as React.CSSProperties}
+            >
             <defs>
               <filter id="tick-shadow" x="-50%" y="-50%" width="200%" height="200%">
                 <feDropShadow dx="0" dy="2" stdDeviation="6" floodColor="#000" floodOpacity="0.08" />
@@ -8761,13 +8763,12 @@ export default function BranchMap({
                       });
                     })}
                   </g>
-
                 </g>
               </g>
             </g>
           </svg>
 
-          {/* HTML Overlay for nodes - Synced with SVG coordinate space */}
+          {/* HTML Overlay for nodes - Synced via shared panned parent */}
           <div 
             ref={gridOverlayRef}
             className="absolute pointer-events-none overflow-visible origin-top-left"
@@ -8811,17 +8812,21 @@ export default function BranchMap({
                         setTooltip({
                           x: preferredAnchorX, y: preferredAnchorY,
                           lines: [
-                            count > 1 ? `${count} commits` : (last.fullSha === 'WORKING_TREE' ? 'Uncommited Changes' : `Commit ${last.sha}`),
-                            truncatePrompt(last.message, COMMIT_TOOLTIP_PREVIEW_MAX),
-                            `@${last.author} · ${fmtTooltipDate(last.date)}`,
+                            last.author || 'system',
+                            last.message || '',
+                            last.fullSha.slice(0, 7)
                           ],
-                          avatarFallback: last.author?.charAt(0).toUpperCase() || '?',
+                          avatarUrl: last.avatarUrl,
+                          avatarFallback: last.authorInitials
                         });
                       }}
-                      onMouseLeave={() => { handleNodeHoverLeave(); clearMainBranchHover(); setTooltip(null); }}
-                      onClick={(event: any) => {
+                      onMouseLeave={() => {
+                        handleNodeHoverLeave();
+                        setTooltip(null);
+                      }}
+                      onClick={(e: any) => {
                         if (count > 1) toggleClumpExpanded(clusterKey);
-                        else handleCommitNodeClick(event, last.fullSha, clusterHasMainTip ? defaultBranch : undefined);
+                        else handleCommitNodeClick(e, last.fullSha, clusterHasMainTip ? defaultBranch : undefined);
                       }}
                     />
                   </div>
@@ -8829,7 +8834,6 @@ export default function BranchMap({
               } else {
                 return clusterLayout.cluster.entries.map((entry: any) => {
                   const c = entry.item;
-                  // Main branch nodes are already projected in clusterLayout
                   const { x, y } = entry;
                   return (
                     <div
@@ -8853,7 +8857,6 @@ export default function BranchMap({
             {activeBranches.flatMap(b => {
               const bLayout = getBranchRenderLayout(b);
               const { commitDotClusters, branchEndDotIndex } = bLayout;
-              const laneX = laneBaseXByBranch.get(b.name) ?? 0;
               
               return commitDotClusters.map(cluster => {
                 const vm = buildBranchClusterViewModel(b.name, cluster, branchEndDotIndex);
@@ -8866,15 +8869,12 @@ export default function BranchMap({
                 const motion = resolveClusterMotion(clusterKey, { x: preferredAnchorEntry.x, y: preferredAnchorEntry.y }, memberKeys, count > 1);
                 const { isExpanded } = motion;
 
-                const nodeX = preferredAnchorEntry.x;
-                const nodeY = preferredAnchorEntry.y;
-
                 if (!isExpanded) {
                   return (
                     <div
                       key={clusterKey}
                       className="absolute -translate-x-1/2 -translate-y-1/2 pointer-events-auto"
-                      style={{ left: nodeX, top: nodeY }}
+                      style={{ left: preferredAnchorEntry.x, top: preferredAnchorEntry.y }}
                     >
                       <NodeCard 
                         clusterKey={clusterKey}
@@ -9824,6 +9824,7 @@ export default function BranchMap({
               ))}
             </>
           )}
+        </div>
         </div>
       </div>
     </div>
