@@ -19,14 +19,9 @@ const CORNER_R = 20;
 const BRANCH_HIT_STROKE_WIDTH = 48;
 const BRANCH_HIT_END_INSET = 10;
 
-const ZOOM_DEFAULT = 2;
-const ZOOM_MIN = 2;
-const ZOOM_MAX = 30;
-const ZOOM_WHEEL_EXP_SENSITIVITY = 0.0025;
-const ZOOM_WHEEL_DELTA_MAX_PX = 180;
-const CAMERA_UI_SYNC_MS = 24;
+
 const RESIZE_SETTLE_MS = 140;
-/** Space between the `<svg>` and the camera container edges (screen px each side). */
+/** Space between the `<svg>` and the scroll container edges (screen px each side). */
 const CANVAS_PAD_X = 0;
 const CANVAS_PAD_Y = 0;
 /** When set, expand the SVG “lake” (user units) so its aspect ratio matches the map viewport; graph layout is unchanged — only empty padding grows. */
@@ -34,8 +29,6 @@ const MATCH_SVG_ASPECT_TO_VIEWPORT = true;
 /** Extra logical width/height beyond content (SVG user units). */
 const SVG_LAYOUT_TAIL_X = 0;
 const SVG_LAYOUT_TAIL_Y = 0;
-/** Margins around the graph when clipping / finite pan bounds (SVG user units). */
-
 /** Grid: horizontal pad around lane + label extent (SVG user units). */
 const GRID_VIEW_PAD_X = 0;
 /**
@@ -275,9 +268,7 @@ function easeInOutCubic(t: number): number {
   return t < 0.5 ? 4 * t * t * t : 1 - Math.pow(-2 * t + 2, 3) / 2;
 }
 
-function getCameraScale(zoomValue: number, _horizontal: boolean): { x: number; y: number } {
-  return { x: zoomValue, y: zoomValue };
-}
+
 
 function buildStraightPath(
   start: { x: number; y: number },
@@ -287,31 +278,6 @@ function buildStraightPath(
   return `M ${pointFormatter(start.x, start.y)} L ${pointFormatter(end.x, end.y)}`;
 }
 
-function smoothValueTo(
-  start: number,
-  target: number,
-  durationMs: number,
-  onFrame: (value: number) => void,
-  minDelta = 1
-): () => void {
-  const delta = target - start;
-  if (Math.abs(delta) < minDelta) return () => undefined;
-  const startTime = performance.now();
-  let rafId = 0;
-  let cancelled = false;
-  function step(now: number) {
-    if (cancelled) return;
-    const elapsed = now - startTime;
-    const t = Math.min(1, elapsed / durationMs);
-    onFrame(start + delta * easeInOutCubic(t));
-    if (t < 1) rafId = requestAnimationFrame(step);
-  }
-  rafId = requestAnimationFrame(step);
-  return () => {
-    cancelled = true;
-    cancelAnimationFrame(rafId);
-  };
-}
 
 function fmtRelativeDate(dateStr: string): string {
   const diffDays = Math.floor((Date.now() - new Date(dateStr).getTime()) / 86400000);
@@ -810,7 +776,7 @@ interface BranchMapProps {
   focusedErrorBranch?: Branch | null;
   checkedOutRef?: CheckedOutRef | null;
 
-  /** Pixels of vertical chrome (e.g. floating header) covering the top of the map; used for aspect/padding and pan bounds. */
+  /** Pixels of vertical chrome (e.g. floating header) covering the top of the map; used for aspect/padding. */
   mapTopInsetPx?: number;
   onMergeRefsIntoBranch?: (sourceRefs: string[], targetBranch: string) => Promise<void> | void;
   mergeInProgress?: boolean;
@@ -898,7 +864,6 @@ export default function BranchMap({
   const [hoveredNodeStrokeKey, setHoveredNodeStrokeKey] = useState<string | null>(null);
   const [hoveredNodeBranchName, setHoveredNodeBranchName] = useState<string | null>(null);
   const [expandedClumps, setExpandedClumps] = useState<Map<string, ExpandedClumpState>>(() => new Map());
-  const [zoom, setZoom] = useState(ZOOM_DEFAULT);
   const [internalOrientation] = useState<OrientationMode>('vertical');
   const [isOrientationSwitchFading, setIsOrientationSwitchFading] = useState(false);
 
@@ -938,21 +903,7 @@ export default function BranchMap({
   const [_flashingName, setFlashingName] = useState<string | null>(null);
 
   const scrollRef = useRef<HTMLDivElement>(null);
-  const cameraRef = useRef<HTMLDivElement>(null);
   const svgRef = useRef<SVGSVGElement>(null);
-  const zoomLayerRef = useRef<SVGGElement>(null);
-  const zoomRef = useRef(zoom);
-  const zoomStateRef = useRef(zoom);
-  const lastContinuousZoomTsRef = useRef(0);
-  const gestureZoomBaseRef = useRef(zoomRef.current);
-  const gesturePointRef = useRef<{ x: number; y: number } | null>(null);
-  const lastPointerClientRef = useRef<{ x: number; y: number } | null>(null);
-  const zoomStableTextElsRef = useRef<SVGTextElement[]>([]);
-  const zoomStableRectElsRef = useRef<SVGRectElement[]>([]);
-  const panUiSyncTimeoutRef = useRef<number | null>(null);
-  const zoomUiSyncTimeoutRef = useRef<number | null>(null);
-  const cameraPaintRafRef = useRef<number | null>(null);
-  const pendingCameraRef = useRef<{ pan: { x: number; y: number }; zoom: number } | null>(null);
   const [, setClumpAnimationTick] = useState(0);
   const clumpAnchorStateRef = useRef<Map<string, ClumpAnchorState>>(new Map());
   const clumpMemberAnchorStateRef = useRef<Map<string, ClumpMemberAnchorState>>(new Map());
@@ -964,25 +915,6 @@ export default function BranchMap({
   const clumpRenderId = clumpRenderCounterRef.current;
   const clumpCleanupTimersRef = useRef<Map<string, number>>(new Map());
   const graphOffsetRef = useRef({ x: 0, y: 0 });
-  const graphProjectionRef = useRef({
-    graphOffsetX: 0,
-    graphOffsetY: 0,
-    graphContentTranslateX: 0,
-    graphContentTranslateY: 0,
-    initialized: false,
-  });
-  const cameraBoundsRef = useRef({
-    viewportW: 0,
-    viewportH: 0,
-    viewportTopInset: 0,
-    canvasWidth: 0,
-    canvasHeight: 0,
-    svgWidth: 0,
-    svgHeight: 0,
-    graphOffsetX: 0,
-    graphOffsetY: 0,
-    isHorizontal: false,
-  });
   const contentLayerRef = useRef<SVGGElement>(null);
   const finiteWorldBoundsRef = useRef({
     minX: 0,
@@ -998,21 +930,11 @@ export default function BranchMap({
     maxY: 0,
     measured: false,
   });
-  const panStartRef = useRef({ x: 0, y: 0, panX: 0, panY: 0 });
-  const [pan, setPan] = useState({ x: 0, y: 0 });
-  const panRef = useRef(pan);
-  const targetPanRef = useRef(pan);
-  const lastUiSyncRef = useRef(0);
-  const [isPanning, setIsPanning] = useState(false);
-  const isPanningRef = useRef(false);
-  const [spaceHeld, setSpaceHeld] = useState(false);
-  const spacePressedRef = useRef(false);
   const drawReadyRef = useRef(drawReady);
   const animationsLockedRef = useRef(animationsLocked);
   const focusScrollCancelRef = useRef<(() => void) | null>(null);
   const hasAutoCenteredRef = useRef(false);
   const autoCenterSignatureRef = useRef<string | null>(null);
-  const hasUserMovedCameraRef = useRef(false);
   const pendingOrientationAutoCenterRef = useRef(false);
   const orientationSwitchFadeTimeoutRef = useRef<number | null>(null);
   const orientationAutoCenterRafRef = useRef<number | null>(null);
@@ -1045,10 +967,36 @@ export default function BranchMap({
   const resizeRafRef = useRef<number | null>(null);
   const resizeSettleTimeoutRef = useRef<number | null>(null);
   const lastViewportRef = useRef({ width: 0, height: 0 });
-  // Use zoomRef (not React `zoom` state) so transforms match paintCamera during throttled sync.
-  // Otherwise re-renders can overwrite the <g> scale with a stale zoom and cause WKWebView glitches.
-  const layerCameraScale = getCameraScale(zoomRef.current, isHorizontal);
 
+  useLayoutEffect(() => {
+    const container = scrollRef.current;
+    if (!container) return;
+    const updateSize = () => {
+      const rect = container.getBoundingClientRect();
+      const next = { width: rect.width, height: rect.height };
+      if (next.width === lastViewportRef.current.width && next.height === lastViewportRef.current.height) return;
+      lastViewportRef.current = next;
+      setViewportSize(next);
+      
+      setIsResizeSettling(true);
+      if (resizeSettleTimeoutRef.current !== null) clearTimeout(resizeSettleTimeoutRef.current);
+      resizeSettleTimeoutRef.current = window.setTimeout(() => {
+        resizeSettleTimeoutRef.current = null;
+        setIsResizeSettling(false);
+      }, RESIZE_SETTLE_MS);
+    };
+    const ro = new ResizeObserver(() => {
+      if (resizeRafRef.current !== null) cancelAnimationFrame(resizeRafRef.current);
+      resizeRafRef.current = requestAnimationFrame(updateSize);
+    });
+    ro.observe(container);
+    updateSize();
+    return () => {
+      ro.disconnect();
+      if (resizeRafRef.current !== null) cancelAnimationFrame(resizeRafRef.current);
+      if (resizeSettleTimeoutRef.current !== null) clearTimeout(resizeSettleTimeoutRef.current);
+    };
+  }, []);
   // Branch issues panel state
   const [errorPanelOpen, setErrorPanelOpen] = useState(false);
   const errorPanelRef = useRef<HTMLDivElement>(null);
@@ -1134,21 +1082,20 @@ export default function BranchMap({
   function getMarqueeBranchSelection(nextRect: MarqueeRect): string[] {
     const targets = branchHeadTargetsRef.current;
     const projection = selectionProjectionRef.current;
-    const cameraScale = getCameraScale(zoomRef.current, projection.isHorizontal);
     const nodeRect = commitRectSize(scaledNodeSize);
-    const halfWidthPx = (nodeRect.width / 2) * cameraScale.x;
-    const halfHeightPx = (nodeRect.height / 2) * cameraScale.y;
+    const halfWidthPx = (nodeRect.width / 2);
+    const halfHeightPx = (nodeRect.height / 2);
     const hitPaddingPx = 3;
     return targets
       .filter((target) => {
         const centerX =
-          panRef.current.x +
+          
           projection.graphOffsetX +
-          (projection.graphContentTranslateX + target.point.x) * cameraScale.x;
+          (projection.graphContentTranslateX + target.point.x);
         const centerY =
-          panRef.current.y +
+          
           projection.graphOffsetY +
-          (projection.graphContentTranslateY + target.point.y) * cameraScale.y;
+          (projection.graphContentTranslateY + target.point.y);
         const nodeLeft = centerX - halfWidthPx - hitPaddingPx;
         const nodeRight = centerX + halfWidthPx + hitPaddingPx;
         const nodeTop = centerY - halfHeightPx - hitPaddingPx;
@@ -1166,21 +1113,20 @@ export default function BranchMap({
   function getMarqueeCommitSelection(nextRect: MarqueeRect): string[] {
     const targets = commitSelectionTargetsRef.current;
     const projection = selectionProjectionRef.current;
-    const cameraScale = getCameraScale(zoomRef.current, projection.isHorizontal);
     const nodeRect = commitRectSize(scaledNodeSize);
-    const halfWidthPx = (nodeRect.width / 2) * cameraScale.x;
-    const halfHeightPx = (nodeRect.height / 2) * cameraScale.y;
+    const halfWidthPx = (nodeRect.width / 2);
+    const halfHeightPx = (nodeRect.height / 2);
     const hitPaddingPx = 3;
     return targets
       .filter((target) => {
         const centerX =
-          panRef.current.x +
+          
           projection.graphOffsetX +
-          (projection.graphContentTranslateX + target.point.x) * cameraScale.x;
+          (projection.graphContentTranslateX + target.point.x);
         const centerY =
-          panRef.current.y +
+          
           projection.graphOffsetY +
-          (projection.graphContentTranslateY + target.point.y) * cameraScale.y;
+          (projection.graphContentTranslateY + target.point.y);
         const nodeLeft = centerX - halfWidthPx - hitPaddingPx;
         const nodeRight = centerX + halfWidthPx + hitPaddingPx;
         const nodeTop = centerY - halfHeightPx - hitPaddingPx;
@@ -1315,13 +1261,6 @@ export default function BranchMap({
     }, delayMs);
   }
 
-  function markUserMovedCamera() {
-    hasUserMovedCameraRef.current = true;
-    clearTimelineRevealTimer();
-    setTimelineRevealPhase('done');
-    setTimelineRevealReady(true);
-    setHasInitialRevealDone(true);
-  }
 
   const openPRBranchNames = new Set(openPRs.map(p => p.branchName));
   const localBranchCount = branches.filter((b) => b.name !== defaultBranch).length;
@@ -1368,11 +1307,6 @@ export default function BranchMap({
     };
   }, [hasTimelineSeedData]);
 
-  useLayoutEffect(() => {
-    zoomRef.current = zoom;
-    zoomStateRef.current = zoom;
-    paintCamera(panRef.current, zoomRef.current);
-  }, [zoom]);
 
   function resolveAnimatedClumpAnchor(
     clusterKey: string,
@@ -1634,286 +1568,31 @@ export default function BranchMap({
 
   useEffect(() => {
     animationsLockedRef.current = animationsLocked;
-    setTimelineStaticClass(animationsLocked);
   }, [animationsLocked]);
 
-  useLayoutEffect(() => {
-    panRef.current = pan;
-    if (!isPanning) {
-      targetPanRef.current = pan;
-    }
-    paintCamera(panRef.current, zoomRef.current);
-  }, [pan, isPanning]);
 
-  const CAMERA_CONTENT_PAD = 0;
+  
 
-  function clampPan(
-    next: { x: number; y: number },
-    zoomValue = zoomRef.current,
-    mode: ClampMode = 'hard'
-  ) {
-    function clampAxis(value: number, min: number, max: number): number {
-      const lower = Math.min(min, max);
-      const upper = Math.max(min, max);
-      if (value >= lower && value <= upper) return value;
-      const clamped = Math.max(lower, Math.min(upper, value));
-      if (mode === 'soft') {
-        const overshoot = value - clamped;
-        const maxOvershoot = 48;
-        return clamped + Math.max(-maxOvershoot, Math.min(maxOvershoot, overshoot * 0.18));
-      }
-      return clamped;
-    }
 
-    const {
-      viewportW,
-      viewportH,
-      viewportTopInset,
-      svgWidth: currentSvgWidth,
-      svgHeight: currentSvgHeight,
-      graphOffsetX: currentGraphOffsetX,
-      graphOffsetY: currentGraphOffsetY,
-      isHorizontal: currentIsHorizontal,
-    } = cameraBoundsRef.current;
-    if (viewportW <= 0 || viewportH <= 0) return next;
-    if (mode === 'none') return next;
 
-    const scale = getCameraScale(zoomValue, currentIsHorizontal);
-    const topInset = viewportTopInset ?? 0;
-    const visibleH = Math.max(0, viewportH - topInset);
 
-    // Strict finite bounds: clamp around the actual content bbox (plus small padding),
-    // not the whole logical SVG, so you can't drift into vast empty space.
-    const finiteWorld = finiteWorldBoundsRef.current;
-    const centerable = centerableCommitBoundsRef.current;
-    const hasFinite = finiteWorld.measured;
-    const hasCenterable = centerable.measured;
 
-    let minXWorld = hasFinite ? finiteWorld.minX : 0;
-    let maxXWorld = hasFinite ? finiteWorld.maxX : currentSvgWidth;
-    let minYWorld = hasFinite ? finiteWorld.minY : 0;
-    let maxYWorld = hasFinite ? finiteWorld.maxY : currentSvgHeight;
 
-    // Compute mathematically minimal bounds that still allow centering any commit rectangle.
-    // Padding is derived from current viewport + zoom, so there's no extra slack.
-    if (hasCenterable) {
-      const halfViewportWorldX = viewportW / Math.max(scale.x, 0.0001) / 2;
-      const halfViewportWorldY = visibleH / Math.max(scale.y, 0.0001) / 2;
-      minXWorld = centerable.minX - halfViewportWorldX;
-      maxXWorld = centerable.maxX + halfViewportWorldX;
-      minYWorld = centerable.minY - halfViewportWorldY;
-      maxYWorld = centerable.maxY + halfViewportWorldY;
-    }
 
-    const sceneMinX = currentGraphOffsetX + minXWorld * scale.x - CAMERA_CONTENT_PAD;
-    const sceneMaxX = currentGraphOffsetX + maxXWorld * scale.x + CAMERA_CONTENT_PAD;
-    const sceneMinY = currentGraphOffsetY + minYWorld * scale.y - CAMERA_CONTENT_PAD;
-    const sceneMaxY = currentGraphOffsetY + maxYWorld * scale.y + CAMERA_CONTENT_PAD;
-    const xBounds = {
-      min: viewportW - sceneMaxX,
-      max: -sceneMinX,
-    };
-    const yBounds = {
-      min: viewportH - sceneMaxY,
-      max: topInset - sceneMinY,
-    };
 
-    let x: number;
-    x = clampAxis(next.x, xBounds.min, xBounds.max);
 
-    let y: number;
-    y = clampAxis(next.y, yBounds.min, yBounds.max);
 
-    return { x, y };
-  }
 
-  function paintCamera(nextPan = panRef.current, _nextZoom = zoomRef.current) {
-    const el = cameraRef.current;
-    if (!el) return;
-    const cameraScale = getCameraScale(_nextZoom, isHorizontal);
-    el.style.transform = `translate3d(${nextPan.x}px, ${nextPan.y}px, 0)`;
-    const svg = svgRef.current;
-    if (svg) {
-      svg.style.setProperty('--camera-scale', String(cameraScale.x));
-    }
-    const zoomLayer = zoomLayerRef.current;
-    if (zoomLayer) {
-      zoomLayer.setAttribute('transform', `scale(${cameraScale.x} ${cameraScale.y})`);
-    }
 
-    // Keep zoom-stable typography + corner rounding continuous during wheel/pinch
-    // by updating attributes imperatively at the same cadence as the camera transform.
-    const inv = 1 / Math.max(cameraScale.x, 0.0001);
-    for (const textEl of zoomStableTextElsRef.current) {
-      const base = Number(textEl.dataset.baseFontSize);
-      if (!Number.isFinite(base)) continue;
-      textEl.style.fontSize = `${base * inv}px`;
-    }
-    for (const rectEl of zoomStableRectElsRef.current) {
-      const base = Number(rectEl.dataset.baseRx);
-      if (!Number.isFinite(base)) continue;
-      rectEl.setAttribute('rx', String(base * inv));
-    }
-  }
 
-  useLayoutEffect(() => {
-    const svg = svgRef.current;
-    if (!svg) return;
-    zoomStableTextElsRef.current = Array.from(svg.querySelectorAll<SVGTextElement>('text[data-base-font-size]'));
-    zoomStableRectElsRef.current = Array.from(svg.querySelectorAll<SVGRectElement>('rect[data-base-rx]'));
-  });
 
-  function flushCameraPaint() {
-    const pending = pendingCameraRef.current;
-    if (!pending) return;
-    pendingCameraRef.current = null;
-    paintCamera(pending.pan, pending.zoom);
-  }
 
-  function scheduleCameraPaint() {
-    if (cameraPaintRafRef.current !== null) return;
-    cameraPaintRafRef.current = requestAnimationFrame(() => {
-      cameraPaintRafRef.current = null;
-      flushCameraPaint();
-    });
-  }
 
-  function stopCameraPaint() {
-    if (cameraPaintRafRef.current !== null) {
-      cancelAnimationFrame(cameraPaintRafRef.current);
-      cameraPaintRafRef.current = null;
-    }
-    flushCameraPaint();
-  }
 
-  function setTimelineStaticClass(locked: boolean) {
-    const svg = svgRef.current;
-    if (!svg) return;
-    if (locked) {
-      svg.classList.add('timeline-static');
-    } else {
-      svg.classList.remove('timeline-static');
-    }
-  }
 
-  function syncUiState(force = false, immediate = false) {
-    if (!force) return;
-    const now = performance.now();
-    if (!immediate) {
-      const minInterval = CAMERA_UI_SYNC_MS;
-      if (now - lastUiSyncRef.current < minInterval) return;
-    }
-    lastUiSyncRef.current = now;
-    if (Math.abs(zoomRef.current - zoomStateRef.current) > 0.0001) {
-      zoomStateRef.current = zoomRef.current;
-      setZoom(zoomRef.current);
-    }
-    const nextPan = panRef.current;
-    setPan((prev) => (
-      Math.abs(prev.x - nextPan.x) < 0.1 && Math.abs(prev.y - nextPan.y) < 0.1
-        ? prev
-        : nextPan
-    ));
-  }
 
-  function applyCamera(
-    nextPan: { x: number; y: number },
-    nextZoom = zoomRef.current,
-    forceUiSync = false,
-    immediateUiSync = false
-  ) {
-    panRef.current = nextPan;
-    targetPanRef.current = nextPan;
-    zoomRef.current = nextZoom;
-    pendingCameraRef.current = { pan: nextPan, zoom: nextZoom };
-    if (immediateUiSync) {
-      stopCameraPaint();
-    } else {
-      scheduleCameraPaint();
-    }
-    syncUiState(forceUiSync, immediateUiSync);
-  }
 
-  useEffect(() => {
-    // Fast Refresh keeps hook state between edits. If zoom constants change,
-    // snap stale zoom values into the active range so updates are visible.
-    const clampedZoom = Math.max(ZOOM_MIN, Math.min(ZOOM_MAX, zoomRef.current));
-    if (Math.abs(clampedZoom - zoomRef.current) < 0.0001) return;
-    const nextPan = clampPan(panRef.current, clampedZoom, 'hard');
-    applyCamera(nextPan, clampedZoom, true, true);
-  }, [viewportSize.width, viewportSize.height]);
 
-  function normalizeWheelDeltaPx(delta: number, deltaMode: number, pageSizePx: number): number {
-    if (deltaMode === WheelEvent.DOM_DELTA_LINE) return delta * 16;
-    if (deltaMode === WheelEvent.DOM_DELTA_PAGE) return delta * Math.max(pageSizePx, 1);
-    return delta;
-  }
-
-  type ZoomUiSyncMode = 'none' | 'deferred' | 'immediate';
-
-  function scheduleZoomUiSync(immediate = false) {
-    if (immediate) {
-      if (zoomUiSyncTimeoutRef.current !== null) {
-        clearTimeout(zoomUiSyncTimeoutRef.current);
-        zoomUiSyncTimeoutRef.current = null;
-      }
-      syncUiState(true, true);
-      return;
-    }
-    if (zoomUiSyncTimeoutRef.current !== null) {
-      clearTimeout(zoomUiSyncTimeoutRef.current);
-    }
-    zoomUiSyncTimeoutRef.current = window.setTimeout(() => {
-      zoomUiSyncTimeoutRef.current = null;
-      syncUiState(true, true);
-    }, 90);
-  }
-
-  function lockAnimationsIfReady() {
-    if (!drawReadyRef.current || animationsLockedRef.current) return;
-    animationsLockedRef.current = true;
-    // Synchronously lock before camera transform changes to avoid WebKit replaying intro animations.
-    setTimelineStaticClass(true);
-    setAnimationsLocked(true);
-  }
-
-  function stopPanSmoothing() {
-    if (panUiSyncTimeoutRef.current !== null) {
-      clearTimeout(panUiSyncTimeoutRef.current);
-      panUiSyncTimeoutRef.current = null;
-    }
-  }
-
-  function stopWheelInertia() {
-    stopPanSmoothing();
-  }
-
-  function schedulePanUiSync() {
-    if (panUiSyncTimeoutRef.current !== null) {
-      clearTimeout(panUiSyncTimeoutRef.current);
-    }
-    panUiSyncTimeoutRef.current = window.setTimeout(() => {
-      panUiSyncTimeoutRef.current = null;
-      syncUiState(true, true);
-    }, 70);
-  }
-
-  function stopZoomAnimation(forceUiSync = true) {
-    if (zoomUiSyncTimeoutRef.current !== null) {
-      clearTimeout(zoomUiSyncTimeoutRef.current);
-      zoomUiSyncTimeoutRef.current = null;
-    }
-    if (forceUiSync) {
-      syncUiState(true, true);
-    }
-  }
-
-  function flushPendingZoomUiSync() {
-    if (zoomUiSyncTimeoutRef.current === null) return;
-    clearTimeout(zoomUiSyncTimeoutRef.current);
-    zoomUiSyncTimeoutRef.current = null;
-    syncUiState(true, true);
-  }
 
   // Keep controls available regardless of intro-reveal state.
   useEffect(() => {
@@ -1935,254 +1614,9 @@ export default function BranchMap({
     return () => clearTimeout(id);
   }, [drawReady]);
 
-  function applyZoomAt(
-    point: { x: number; y: number },
-    nextZoomRaw: number,
-    uiSyncMode: ZoomUiSyncMode = 'none'
-  ): boolean {
-    lockAnimationsIfReady();
-    const nextZoom = Math.max(ZOOM_MIN, Math.min(ZOOM_MAX, nextZoomRaw));
-    if (!Number.isFinite(nextZoom) || nextZoom <= 0) return false;
-    const currentZoom = zoomRef.current;
-    if (Math.abs(nextZoom - currentZoom) < 0.0001) return false;
 
-    const currentPan = panRef.current;
-    const graphOffset = graphOffsetRef.current;
-    const currentScale = getCameraScale(currentZoom, isHorizontal);
-    const nextScale = getCameraScale(nextZoom, isHorizontal);
-    const worldX = (point.x - currentPan.x - graphOffset.x) / Math.max(currentScale.x, 0.0001);
-    const worldY = (point.y - currentPan.y - graphOffset.y) / Math.max(currentScale.y, 0.0001);
-    // Clamp immediately during zoom so camera never performs delayed auto-corrections.
-    const nextPan = clampPan(
-      {
-        x: point.x - graphOffset.x - worldX * nextScale.x,
-        y: point.y - graphOffset.y - worldY * nextScale.y,
-      },
-      nextZoom,
-      'hard'
-    );
 
-    stopPanSmoothing();
-    if (uiSyncMode === 'deferred') {
-      lastContinuousZoomTsRef.current = performance.now();
-    }
-    if (uiSyncMode === 'immediate') {
-      applyCamera(nextPan, nextZoom, true, true);
-      return true;
-    }
-    // Keep zoom-driven visuals (label fontSize, rx scaling, etc.) continuous by
-    // syncing React state during active zoom gestures (throttled in `syncUiState`).
-    applyCamera(nextPan, nextZoom, uiSyncMode === 'deferred');
-    if (uiSyncMode === 'deferred') {
-      scheduleZoomUiSync();
-    }
-    return true;
-  }
 
-  // Wheel behavior:
-  // - Ctrl/Cmd + wheel: zoom toward cursor
-  // - plain wheel: inertial pan in both axes
-  useEffect(() => {
-    const el = scrollRef.current;
-    if (!el) return;
-
-    // Always zoom to the cursor position within the viewport.
-    const zoomAnchorForClientPoint = (clientX: number, clientY: number) => {
-      const rect = el.getBoundingClientRect();
-      return { x: clientX - rect.left, y: clientY - rect.top };
-    };
-
-    const onWheel = (e: WheelEvent) => {
-      const topElementAtPointer = document.elementFromPoint(e.clientX, e.clientY);
-      if (topElementAtPointer?.closest('[data-map-ui]')) {
-        return;
-      }
-      e.preventDefault();
-      lastPointerClientRef.current = { x: e.clientX, y: e.clientY };
-      lockAnimationsIfReady();
-      focusScrollCancelRef.current?.();
-      focusScrollCancelRef.current = null;
-      markUserMovedCamera();
-
-      if (e.ctrlKey || e.metaKey) {
-        stopWheelInertia();
-        stopPanSmoothing();
-        setTooltip(null);
-        const point = zoomAnchorForClientPoint(e.clientX, e.clientY);
-        const pixelDeltaY = normalizeWheelDeltaPx(e.deltaY, e.deltaMode, el.clientHeight);
-        const clampedDeltaY = Math.max(-ZOOM_WHEEL_DELTA_MAX_PX, Math.min(ZOOM_WHEEL_DELTA_MAX_PX, pixelDeltaY));
-        const zoomFactor = Math.exp(-clampedDeltaY * ZOOM_WHEEL_EXP_SENSITIVITY);
-        if (!Number.isFinite(zoomFactor) || Math.abs(zoomFactor - 1) < 0.0001) return;
-        applyZoomAt(point, zoomRef.current * zoomFactor, 'deferred');
-        return;
-      }
-
-      flushPendingZoomUiSync();
-      const nextPan = clampPan({
-        x: panRef.current.x - e.deltaX,
-        y: panRef.current.y - e.deltaY,
-      }, zoomRef.current, 'hard');
-      applyCamera(nextPan, zoomRef.current);
-      schedulePanUiSync();
-    };
-
-    const onGestureStart = (evt: Event) => {
-      const e = evt as Event & { scale?: number; clientX?: number; clientY?: number };
-      if (e.clientX != null && e.clientY != null) {
-        const topElementAtPointer = document.elementFromPoint(e.clientX, e.clientY);
-        if (topElementAtPointer?.closest('[data-map-ui]')) {
-          return;
-        }
-      }
-      e.preventDefault();
-      lockAnimationsIfReady();
-      stopWheelInertia();
-      stopPanSmoothing();
-      setTooltip(null);
-      markUserMovedCamera();
-      gestureZoomBaseRef.current = zoomRef.current;
-      const rect = el.getBoundingClientRect();
-      const lastPointer = lastPointerClientRef.current;
-      const cx = e.clientX ?? lastPointer?.x ?? rect.left + rect.width / 2;
-      const cy = e.clientY ?? lastPointer?.y ?? rect.top + rect.height / 2;
-      gesturePointRef.current = zoomAnchorForClientPoint(cx, cy);
-    };
-
-    const onGestureChange = (evt: Event) => {
-      const e = evt as Event & { scale?: number };
-      e.preventDefault();
-      const point = gesturePointRef.current;
-      const scale = e.scale;
-      if (!point || scale == null || !Number.isFinite(scale)) return;
-      applyZoomAt(point, gestureZoomBaseRef.current * scale, 'deferred');
-    };
-
-    const onGestureEnd = (evt: Event) => {
-      evt.preventDefault();
-      gesturePointRef.current = null;
-      scheduleZoomUiSync(true);
-    };
-
-    const onPointerMove = (e: PointerEvent) => {
-      lastPointerClientRef.current = { x: e.clientX, y: e.clientY };
-    };
-
-    el.addEventListener('wheel', onWheel, { passive: false });
-    el.addEventListener('pointermove', onPointerMove, { passive: true });
-    el.addEventListener('gesturestart', onGestureStart as EventListener, { passive: false });
-    el.addEventListener('gesturechange', onGestureChange as EventListener, { passive: false });
-    el.addEventListener('gestureend', onGestureEnd as EventListener, { passive: false });
-    return () => {
-      el.removeEventListener('wheel', onWheel);
-      el.removeEventListener('pointermove', onPointerMove);
-      el.removeEventListener('gesturestart', onGestureStart as EventListener);
-      el.removeEventListener('gesturechange', onGestureChange as EventListener);
-      el.removeEventListener('gestureend', onGestureEnd as EventListener);
-    };
-  }, []);
-
-  // Keep wheel inertia and RAF loops cleaned up.
-  useEffect(() => {
-    return () => {
-      focusScrollCancelRef.current?.();
-      focusScrollCancelRef.current = null;
-      if (orientationSwitchFadeTimeoutRef.current !== null) {
-        clearTimeout(orientationSwitchFadeTimeoutRef.current);
-        orientationSwitchFadeTimeoutRef.current = null;
-      }
-      if (orientationAutoCenterRafRef.current !== null) {
-        cancelAnimationFrame(orientationAutoCenterRafRef.current);
-        orientationAutoCenterRafRef.current = null;
-      }
-      if (resizeRafRef.current !== null) {
-        cancelAnimationFrame(resizeRafRef.current);
-        resizeRafRef.current = null;
-      }
-      if (resizeSettleTimeoutRef.current !== null) {
-        clearTimeout(resizeSettleTimeoutRef.current);
-        resizeSettleTimeoutRef.current = null;
-      }
-      stopCameraPaint();
-      stopZoomAnimation();
-      stopWheelInertia();
-      stopPanSmoothing();
-    };
-  }, []);
-
-  // Track viewport size for camera clamping + layout.
-  useEffect(() => {
-    const el = scrollRef.current;
-    if (!el) return;
-    const scheduleResizeSettled = () => {
-      if (resizeSettleTimeoutRef.current !== null) {
-        clearTimeout(resizeSettleTimeoutRef.current);
-      }
-      setIsResizeSettling(true);
-      resizeSettleTimeoutRef.current = window.setTimeout(() => {
-        resizeSettleTimeoutRef.current = null;
-        setIsResizeSettling(false);
-      }, RESIZE_SETTLE_MS);
-    };
-
-    const updateSize = () => {
-      if (resizeRafRef.current !== null) return;
-      resizeRafRef.current = requestAnimationFrame(() => {
-        resizeRafRef.current = null;
-        const rect = el.getBoundingClientRect();
-        const next = {
-          width: Math.round(rect.width),
-          height: Math.round(rect.height),
-        };
-        const prev = lastViewportRef.current;
-        if (prev.width === next.width && prev.height === next.height) return;
-        lastViewportRef.current = next;
-        setViewportSize(next);
-        scheduleResizeSettled();
-      });
-    };
-
-    updateSize();
-    const ro = new ResizeObserver(updateSize);
-    ro.observe(el);
-    return () => {
-      ro.disconnect();
-      if (resizeRafRef.current !== null) {
-        cancelAnimationFrame(resizeRafRef.current);
-        resizeRafRef.current = null;
-      }
-      if (resizeSettleTimeoutRef.current !== null) {
-        clearTimeout(resizeSettleTimeoutRef.current);
-        resizeSettleTimeoutRef.current = null;
-      }
-    };
-  }, []);
-
-  // Space+drag (or middle mouse drag) panning, interrupting all inertial motion.
-  useEffect(() => {
-    if (!isPanning) return;
-    const onMove = (e: MouseEvent) => {
-      const dx = e.clientX - panStartRef.current.x;
-      const dy = e.clientY - panStartRef.current.y;
-      const nextPan = clampPan({
-        x: panStartRef.current.panX + dx,
-        y: panStartRef.current.panY + dy,
-      }, zoomRef.current, 'hard');
-      applyCamera(nextPan, zoomRef.current);
-    };
-    const onUp = () => {
-      isPanningRef.current = false;
-      setIsPanning(false);
-      const settledPan = clampPan(panRef.current, zoomRef.current, 'hard');
-      applyCamera(settledPan, zoomRef.current);
-      syncUiState(true);
-    };
-    window.addEventListener('mousemove', onMove);
-    window.addEventListener('mouseup', onUp);
-    return () => {
-      window.removeEventListener('mousemove', onMove);
-      window.removeEventListener('mouseup', onUp);
-    };
-  }, [isPanning]);
 
   useEffect(() => {
     deleteConfirmOpenRef.current = deleteConfirmOpen;
@@ -2227,13 +1661,12 @@ export default function BranchMap({
       const candidates = moveBackCandidateBranchNamesRef.current;
       if (candidates.size === 0) return null;
       const projection = selectionProjectionRef.current;
-      const cameraScale = getCameraScale(zoomRef.current, projection.isHorizontal);
       for (const target of branchHeadTargetsRef.current) {
         if (!candidates.has(target.branchName)) continue;
         const centerX =
-          panRef.current.x +
+          
           projection.graphOffsetX +
-          (projection.graphContentTranslateX + target.point.x) * cameraScale.x;
+          (projection.graphContentTranslateX + target.point.x);
         if (Math.abs(screenX - centerX) <= 56) return target.branchName;
       }
       return null;
@@ -2252,8 +1685,8 @@ export default function BranchMap({
 
       // Move the actual SVG element imperatively — world units = screen delta / zoom
       if (drag.nodeElement) {
-        const worldDx = dx / zoomRef.current;
-        const worldDy = dy / zoomRef.current;
+        const worldDx = dx;
+        const worldDy = dy;
         drag.nodeElement.setAttribute('transform', `translate(${worldDx} ${worldDy})`);
       }
 
@@ -2369,83 +1802,19 @@ export default function BranchMap({
         }
         return;
       }
-
-      if (e.code !== 'Space') return;
-      e.preventDefault();
-      spacePressedRef.current = true;
-      setSpaceHeld(true);
-    };
-    const onKeyUp = (e: KeyboardEvent) => {
-      if (e.code !== 'Space') return;
-      spacePressedRef.current = false;
-      setSpaceHeld(false);
-      if (isPanningRef.current) {
-        isPanningRef.current = false;
-        setIsPanning(false);
-        syncUiState(true);
-      }
     };
     window.addEventListener('keydown', onKeyDown);
-    window.addEventListener('keyup', onKeyUp);
     return () => {
       window.removeEventListener('keydown', onKeyDown);
-      window.removeEventListener('keyup', onKeyUp);
     };
   }, []);
 
-  useEffect(() => {
-    isPanningRef.current = isPanning;
-  }, [isPanning]);
-
-  // Hard guard: when interacting with overlay UI, never allow map gesture handlers
-  // (including wheel inertia or drag-pan) to keep moving the canvas.
-  useEffect(() => {
-    const stopActivePan = () => {
-      if (!isPanningRef.current) return;
-      isPanningRef.current = false;
-      setIsPanning(false);
-      const settledPan = clampPan(panRef.current, zoomRef.current, 'hard');
-      applyCamera(settledPan, zoomRef.current);
-      syncUiState(true);
-    };
-
-    const shouldBlockMapGestures = (target: EventTarget | null): boolean => {
-      if (!(target instanceof Element)) return false;
-      return !!target.closest('[data-map-ui]');
-    };
-
-    const onPointerLikeDownCapture = (event: MouseEvent | PointerEvent) => {
-      if (!shouldBlockMapGestures(event.target)) return;
-      stopWheelInertia();
-      stopPanSmoothing();
-      stopActivePan();
-      event.stopPropagation();
-    };
-
-    const onWheelCapture = (event: WheelEvent) => {
-      if (!shouldBlockMapGestures(event.target)) return;
-      stopWheelInertia();
-      stopPanSmoothing();
-      stopActivePan();
-      event.preventDefault();
-      event.stopPropagation();
-    };
-
-    window.addEventListener('mousedown', onPointerLikeDownCapture, true);
-    window.addEventListener('pointerdown', onPointerLikeDownCapture, true);
-    window.addEventListener('wheel', onWheelCapture, { capture: true, passive: false });
-    return () => {
-      window.removeEventListener('mousedown', onPointerLikeDownCapture, true);
-      window.removeEventListener('pointerdown', onPointerLikeDownCapture, true);
-      window.removeEventListener('wheel', onWheelCapture, true);
-    };
-  }, []);
 
   useEffect(() => {
     const hadCompletedReveal = hasInitialRevealDone;
     hasAutoCenteredRef.current = false;
     autoCenterSignatureRef.current = null;
-    // Preserve manual camera intent across orientation switches to prevent
+    // Preserve state across orientation switches to prevent
     // jumpy recenter/layout shifts after the user has already panned.
     // Orientation switches should not replay the intro loader/fog.
     // Keep reveal state "done" once content has been shown at least once.
@@ -2525,26 +1894,7 @@ export default function BranchMap({
       target === scrollRef.current ||
       target === svgRef.current ||
       !!(target instanceof HTMLDivElement && target.parentElement === scrollRef.current);
-    const canPan = e.button === 1 || (e.button === 0 && spacePressedRef.current);
-    if (canPan && scrollRef.current) {
-      e.preventDefault();
-      markUserMovedCamera();
-      lockAnimationsIfReady();
-      focusScrollCancelRef.current?.();
-      focusScrollCancelRef.current = null;
-      flushPendingZoomUiSync();
-      stopWheelInertia();
-      targetPanRef.current = panRef.current;
-      panStartRef.current = {
-        x: e.clientX,
-        y: e.clientY,
-        panX: targetPanRef.current.x,
-        panY: targetPanRef.current.y,
-      };
-      isPanningRef.current = true;
-      setIsPanning(true);
-      return;
-    }
+
     if (e.button === 0 && clickedBackground) {
       e.preventDefault();
       clearTransientHoverState();
@@ -4452,18 +3802,6 @@ export default function BranchMap({
   const graphOffsetX = (canvasWidth - svgWidth) / 2;
   const graphOffsetY = (canvasHeight - svgHeight) / 2;
   graphOffsetRef.current = { x: graphOffsetX, y: graphOffsetY };
-  cameraBoundsRef.current = {
-    viewportW: viewportSize.width,
-    viewportH: viewportSize.height,
-    viewportTopInset: mapTopInset,
-    canvasWidth,
-    canvasHeight,
-    svgWidth,
-    svgHeight,
-    graphOffsetX,
-    graphOffsetY,
-    isHorizontal,
-  };
 
   // Center finite graph content inside the SVG viewBox so empty padding is even on all sides.
   const yPadSymmetric = 0;
@@ -4576,73 +3914,7 @@ export default function BranchMap({
     ? `${projectedCommitCenterBounds.minX}:${projectedCommitCenterBounds.maxX}:${projectedCommitCenterBounds.minY}:${projectedCommitCenterBounds.maxY}`
     : 'none';
 
-  useEffect(() => {
-    if (viewportSize.width <= 0 || viewportSize.height <= 0) return;
-    syncUiState(true, true);
-  }, [
-    viewportSize.width,
-    viewportSize.height,
-    canvasWidth,
-    canvasHeight,
-    svgWidth,
-    svgHeight,
-    graphOffsetX,
-    graphOffsetY,
-    isHorizontal,
-    graphContentTranslateX,
-    graphContentTranslateY,
-    mapTopInset,
-    centerableCommitBoundsDep,
-  ]);
 
-  useLayoutEffect(() => {
-    const previous = graphProjectionRef.current;
-    const next = {
-      graphOffsetX,
-      graphOffsetY,
-      graphContentTranslateX,
-      graphContentTranslateY,
-      initialized: true,
-    };
-    if (!previous.initialized) {
-      graphProjectionRef.current = next;
-      return;
-    }
-    if (!hasUserMovedCameraRef.current) {
-      graphProjectionRef.current = next;
-      return;
-    }
-
-    const deltaGraphOffsetX = next.graphOffsetX - previous.graphOffsetX;
-    const deltaGraphOffsetY = next.graphOffsetY - previous.graphOffsetY;
-    const cameraScale = getCameraScale(zoomRef.current, isHorizontal);
-    const deltaTranslatePxX = (next.graphContentTranslateX - previous.graphContentTranslateX) * cameraScale.x;
-    const deltaTranslatePxY = (next.graphContentTranslateY - previous.graphContentTranslateY) * cameraScale.y;
-    const correctionX = deltaGraphOffsetX + deltaTranslatePxX;
-    const correctionY = deltaGraphOffsetY + deltaTranslatePxY;
-    graphProjectionRef.current = next;
-
-    if (Math.abs(correctionX) < 0.01 && Math.abs(correctionY) < 0.01) return;
-    const stabilizedPan = clampPan(
-      {
-        x: panRef.current.x - correctionX,
-        y: panRef.current.y - correctionY,
-      },
-      zoomRef.current,
-      'hard'
-    );
-    if (
-      Math.abs(stabilizedPan.x - panRef.current.x) < 0.01 &&
-      Math.abs(stabilizedPan.y - panRef.current.y) < 0.01
-    ) return;
-    applyCamera(stabilizedPan, zoomRef.current, true, true);
-  }, [
-    graphOffsetX,
-    graphOffsetY,
-    graphContentTranslateX,
-    graphContentTranslateY,
-    isHorizontal,
-  ]);
 
   const checkedOutBranchName = checkedOutRef?.branchName ?? null;
   const checkedOutHeadSha = checkedOutRef?.headSha ?? null;
@@ -4926,7 +4198,7 @@ export default function BranchMap({
     if (!hasTimelineSeedData) {
       hasAutoCenteredRef.current = false;
       autoCenterSignatureRef.current = null;
-      hasUserMovedCameraRef.current = false;
+      
       pendingOrientationAutoCenterRef.current = false;
       clearTimelineRevealTimer();
       setTimelineRevealPhase('hidden');
@@ -4935,14 +4207,12 @@ export default function BranchMap({
       return;
     }
     const forceOrientationAutoCenter = pendingOrientationAutoCenterRef.current;
-    if (!forceOrientationAutoCenter && hasUserMovedCameraRef.current) return;
     if (viewportSize.width <= 0 || viewportSize.height <= 0) return;
     if (!hasInitialRevealDone && timelineRevealPhase === 'fading') return;
     // During orientation switches and hydration there are brief windows where
-    // checkout anchor resolution lags behind layout. Do not block reveal/camera
+    // checkout anchor resolution lags behind layout. Do not block reveal
     // on that transient state; center using a fallback first, then this effect
     // will recenter again once the real checkout anchor resolves.
-    const zoomValue = zoomRef.current;
     const fallbackCenter = {
       x: svgWidth / 2,
       y: svgHeight / 2,
@@ -4959,30 +4229,9 @@ export default function BranchMap({
       Math.round(viewportSize.width),
       Math.round(viewportSize.height),
       Math.round(mapTopInset),
-      Math.round(zoomValue * 1000) / 1000,
     ].join('|');
     if (hasAutoCenteredRef.current && autoCenterSignatureRef.current === signature) return;
-    const scale = getCameraScale(zoomValue, isHorizontal);
-    const visibleCenterY = (mapTopInset + viewportSize.height) / 2;
-    const nextPan = clampPan(
-      {
-        x: viewportSize.width / 2 - graphOffsetX - target.x * scale.x,
-        y: visibleCenterY - graphOffsetY - target.y * scale.y,
-      },
-      zoomValue,
-      'hard'
-    );
-    if (forceOrientationAutoCenter) {
-      if (orientationAutoCenterRafRef.current !== null) {
-        cancelAnimationFrame(orientationAutoCenterRafRef.current);
-      }
-      orientationAutoCenterRafRef.current = requestAnimationFrame(() => {
-        orientationAutoCenterRafRef.current = null;
-        applyCamera(nextPan, zoomValue, true);
-      });
-    } else {
-      applyCamera(nextPan, zoomValue, true);
-    }
+
     hasAutoCenteredRef.current = true;
     autoCenterSignatureRef.current = signature;
     pendingOrientationAutoCenterRef.current = false;
@@ -5012,76 +4261,6 @@ export default function BranchMap({
     mapTopInset,
   ]);
 
-  // Scroll timeline to the requested branch. Set flashingName briefly so the arc
-  // starts bright red, then CSS stroke transition fades it to the settled lighter red.
-  useEffect(() => {
-    if (!scrollRequest) return;
-    if (isHorizontal ? viewportSize.width <= 0 : viewportSize.height <= 0) return;
-    markUserMovedCamera();
-    const { branch } = scrollRequest;
-    const focusTime = branch.divergedFromDate
-      ? timeToX(branch.divergedFromDate)
-      : timeToX(branch.lastCommitDate);
-    const focusLaneX = laneXByBranch.get(branch.name) ?? mainX;
-    const projected = projectPoint(focusLaneX, timeCoordToY(focusTime));
-    const viewportSpan = isHorizontal ? layoutViewportW : layoutViewportH;
-    const axisGraphOffset = isHorizontal ? graphOffsetX : graphOffsetY;
-    const scalePair = getCameraScale(zoomRef.current, isHorizontal);
-    const axisScale = Math.max(isHorizontal ? scalePair.x : scalePair.y, 0.0001);
-    const axisSvgSize = isHorizontal ? svgWidth : svgHeight;
-    const visibleWorldSpan = viewportSpan / axisScale;
-    const axisCoord = isHorizontal
-      ? projected.x + graphContentTranslateX
-      : projected.y + graphContentTranslateY;
-    const targetWorldStart = Math.max(
-      0,
-      Math.min(Math.max(0, axisSvgSize - visibleWorldSpan), axisCoord - visibleWorldSpan / 2)
-    );
-    const clampedTargetPan = clampPan(
-      isHorizontal
-        ? { x: -axisGraphOffset - targetWorldStart * axisScale, y: targetPanRef.current.y }
-        : { x: targetPanRef.current.x, y: -axisGraphOffset - targetWorldStart * axisScale },
-      zoomRef.current,
-      'hard'
-    );
-
-    focusScrollCancelRef.current?.();
-    focusScrollCancelRef.current = smoothValueTo(
-      isHorizontal ? panRef.current.x : panRef.current.y,
-      isHorizontal ? clampedTargetPan.x : clampedTargetPan.y,
-      600,
-      (value) => {
-        const next = clampPan(
-          isHorizontal
-            ? { x: value, y: targetPanRef.current.y }
-            : { x: targetPanRef.current.x, y: value },
-          zoomRef.current,
-          'hard'
-        );
-        applyCamera(next, zoomRef.current);
-      }
-    );
-    setFlashingName(branch.name);
-    const t = setTimeout(() => setFlashingName(null), 700);
-    return () => {
-      clearTimeout(t);
-      focusScrollCancelRef.current?.();
-      focusScrollCancelRef.current = null;
-    };
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [
-    scrollRequest,
-    viewportSize.width,
-    viewportSize.height,
-    graphOffsetX,
-    graphOffsetY,
-    canvasWidth,
-    canvasHeight,
-    isHorizontal,
-    graphContentTranslateX,
-    graphContentTranslateY,
-    mapTopInset,
-  ]);
 
   useEffect(() => {
     return () => {
@@ -5098,7 +4277,7 @@ export default function BranchMap({
     };
   }, []);
 
-  const worldUnitsPerScreenPx = 1 / Math.max(layerCameraScale.x, 0.0001);
+  const worldUnitsPerScreenPx = 1;
   const worldPx = (px: number) => px * worldUnitsPerScreenPx;
   const NODE_FRAME_LABEL_FONT_PX = 12;
   const NODE_FRAME_LABEL_TOP_GAP_PX = 2.5;
@@ -5123,9 +4302,7 @@ export default function BranchMap({
   const nodeFrameLabelInsetX = worldPx(NODE_FRAME_LABEL_LEFT_INSET_PX);
   const nodeFrameLabelRightInsetX = worldPx(NODE_FRAME_LABEL_RIGHT_INSET_PX);
   const nodeFrameLabelPairGap = worldPx(NODE_FRAME_LABEL_PAIR_GAP_PX);
-  const nodeFramePaddingZoomProgress = clamp01(
-    (zoom - ZOOM_DEFAULT) / Math.max(1, ZOOM_MAX - ZOOM_DEFAULT),
-  );
+  const nodeFramePaddingZoomProgress = 0;
   const nodeFramePaddingZoomFactor = 1 + nodeFramePaddingZoomProgress * NODE_FRAME_PADDING_ZOOM_GAIN_MAX;
   const nodeFrameMessageInsetX = worldPx(NODE_FRAME_MESSAGE_INSET_X_PX * nodeFramePaddingZoomFactor);
   const nodeFrameMessageInsetTop = worldPx(NODE_FRAME_MESSAGE_INSET_TOP_PX * nodeFramePaddingZoomFactor);
@@ -5292,7 +4469,7 @@ export default function BranchMap({
   const mainTimelineOpacity = 1;
   const timelineCanvasVisible = timelineRevealPhase !== 'hidden';
   const holdTimelineForInitialCenter =
-    isLoading || (!hasInitialRevealDone && hasTimelineSeedData && timelineRevealPhase !== 'done' && !hasUserMovedCameraRef.current);
+    isLoading || (!hasInitialRevealDone && hasTimelineSeedData && timelineRevealPhase !== 'done');
 
   function resolveClumpPhase(expandedState?: ExpandedClumpState): {
     isExpanded: boolean;
@@ -5491,8 +4668,7 @@ export default function BranchMap({
     strokeWidth?: number;
     dashed?: boolean;
   }) {
-    const zoomSafeScale = Math.max(layerCameraScale.x, 0.0001);
-    const radius = Math.max(0, baseRadius / zoomSafeScale);
+    const radius = Math.max(0, baseRadius);
     return (
       <>
         <rect
@@ -5578,7 +4754,7 @@ export default function BranchMap({
     const wrappedInnerText = innerText?.trim()
       ? wrapNodeFrameMessage(innerText, rectSize, strokeWidth)
       : { lines: [], fontSize: 0, lineHeight: 0 };
-    const shouldShowFooterMeta = zoom >= NODE_FRAME_FOOTER_META_ZOOM_MIN;
+    const shouldShowFooterMeta = false;
     const trimmedFooterMetaAuthor = footerMetaAuthor?.trim();
     const trimmedFooterMetaDate = footerMetaDate?.trim();
     const footerMetaMaxWidth = Math.max(0, rectSize.width - strokeWidth - nodeFrameMessageInsetX * 2);
@@ -6300,7 +5476,6 @@ export default function BranchMap({
 
   const toggleClumpExpanded = (clumpKey: string) => {
     clearTransientHoverState();
-    markUserMovedCamera();
     const existing = expandedClumps.get(clumpKey);
     const isExpanded = existing?.isExpanded ?? false;
 
@@ -7084,10 +6259,10 @@ export default function BranchMap({
       <div
         ref={scrollRef}
         onMouseDown={handleCanvasMouseDown}
-        className={`w-full h-full overflow-hidden branch-map-scroll relative select-none touch-none ${nodeDragDisplay ? 'cursor-grabbing' : isPanning ? 'cursor-grabbing' : spaceHeld ? 'cursor-grab' : 'cursor-default'}`}
+        className={`w-full h-full overflow-hidden branch-map-scroll relative select-none touch-none ${nodeDragDisplay ? 'cursor-grabbing' : 'cursor-default'}`}
       >
         <div
-          ref={cameraRef}
+          
           style={{
             position: 'absolute',
             left: 0,
@@ -7110,7 +6285,6 @@ export default function BranchMap({
               animationsLocked ? 'timeline-static' : '',
             ].filter(Boolean).join(' ')}
             style={{
-              '--camera-scale': String(layerCameraScale.x),
               minWidth: svgWidth,
               display: 'block',
               position: 'absolute',
@@ -7127,8 +6301,6 @@ export default function BranchMap({
             </defs>
 
             <g
-              ref={zoomLayerRef}
-              transform={`scale(${layerCameraScale.x} ${layerCameraScale.y})`}
               style={{
                 opacity: timelineCanvasVisible ? 1 : 0,
                 visibility: timelineCanvasVisible ? 'visible' : 'hidden',
@@ -7610,7 +6782,7 @@ export default function BranchMap({
                                       fontWeight={700}
                                       style={{
                                         fontVariantNumeric: 'tabular-nums',
-                                        fontSize: `${labelFontSize / Math.max(layerCameraScale.x, 0.0001)}px`,
+                                        fontSize: `${labelFontSize}px`,
                                       }}
                                       data-base-font-size={labelFontSize}
                                     >
@@ -7885,7 +7057,7 @@ export default function BranchMap({
                                         fontWeight={700}
                                         style={{
                                           fontVariantNumeric: 'tabular-nums',
-                                          fontSize: `${labelFontSize / Math.max(layerCameraScale.x, 0.0001)}px`,
+                                          fontSize: `${labelFontSize}px`,
                                         }}
                                         data-base-font-size={labelFontSize}
                                       >
@@ -9967,14 +9139,13 @@ export default function BranchMap({
       {/* ── Node drag: drop-zone column highlights ─────────────────────────────── */}
       {nodeDragDisplay && !isResizeSettling && (() => {
         const projection = selectionProjectionRef.current;
-        const cameraScale = getCameraScale(zoomRef.current, projection.isHorizontal);
         const highlights = branchHeadTargetsRef.current
           .filter((t) => moveBackCandidateBranchNamesRef.current.has(t.branchName))
           .map((t) => {
             const centerX =
-              panRef.current.x +
+              
               projection.graphOffsetX +
-              (projection.graphContentTranslateX + t.point.x) * cameraScale.x;
+              (projection.graphContentTranslateX + t.point.x);
             return { branchName: t.branchName, centerX };
           });
         if (highlights.length === 0) return null;
