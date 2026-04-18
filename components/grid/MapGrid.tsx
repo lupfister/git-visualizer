@@ -146,10 +146,11 @@ export default function BranchGridMap({
   for (const branch of branches) {
     if (branch.name === defaultBranch) continue;
     const branchStartSha = blueStartShaForBranch(branch);
-    if (!branchStartSha) continue;
     const parentName = resolveBranchStartParentName(branch);
     const existing = blueBoundaryShasByBranch.get(parentName) ?? new Set<string>();
-    existing.add(branchStartSha);
+    if (branchStartSha) existing.add(branchStartSha);
+    const childBaseCommit = branchBaseCommitByName.get(branch.name);
+    if (childBaseCommit?.parentSha) existing.add(childBaseCommit.parentSha);
     blueBoundaryShasByBranch.set(parentName, existing);
   }
 
@@ -367,6 +368,12 @@ export default function BranchGridMap({
   const connectors: Connector[] = [];
   const connectorParentShas = new Set<string>();
   const branchStartShas = new Set<string>();
+  // These two sets intentionally track the same logical "blue" idea from two
+  // render paths:
+  // - `branchStartShas`: commits that mark where a branch begins in the data.
+  // - `connectorParentShas`: commits that a visible connector actually snaps to.
+  // In practice they are usually the same SHA, but we keep both labels because
+  // the grid renders the blue outline and the connector line separately.
   const nodeForConnectorTipSha = (sha: string | null | undefined, preferredBranchName?: string): Node | null => {
     if (!sha) return null;
     const visibleNode = nodeForCommitSha(visibleNodesBySha, sha, preferredBranchName);
