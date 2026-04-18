@@ -58,7 +58,7 @@ interface Props {
 
 export default function BranchGridMapView({
   branches,
-  mergeNodes: _mergeNodes,
+  mergeNodes = [],
   directCommits = [],
   unpushedDirectCommits = [],
   unpushedCommitShasByBranch = {},
@@ -119,6 +119,7 @@ export default function BranchGridMapView({
         <div className="flex-1 min-h-0">
           <BranchGridMap
             branches={branches}
+            mergeNodes={mergeNodes}
             directCommits={directCommits}
             unpushedDirectCommits={unpushedDirectCommits}
             unpushedCommitShasByBranch={unpushedCommitShasByBranch}
@@ -166,6 +167,7 @@ export default function BranchGridMapView({
         <div className="flex-1 min-h-0 overflow-auto">
           <BranchGridMap
             branches={branches}
+            mergeNodes={mergeNodes}
             directCommits={directCommits}
             unpushedDirectCommits={unpushedDirectCommits}
             defaultBranch={defaultBranch}

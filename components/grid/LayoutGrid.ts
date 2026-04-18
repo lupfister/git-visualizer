@@ -32,14 +32,14 @@ export function commitRectSize(baseNodeSize: number, clusterBoost = 0): { width:
 }
 
 // Grid-side copies of the data/layout helpers used by the canvas view.
-import { Branch, BranchCommitPreview, DirectCommit } from '../../types';
+import { Branch, BranchCommitPreview, DirectCommit, MergeNode } from '../../types';
 
 export type BranchGridViewProps = {
   [key: string]: any;
   branches: Branch[];
   directCommits?: DirectCommit[];
   unpushedDirectCommits?: DirectCommit[];
-  mergeNodes?: unknown[];
+  mergeNodes?: MergeNode[];
   defaultBranch: string;
   branchCommitPreviews?: Record<string, BranchCommitPreview[]>;
   branchUniqueAheadCounts?: Record<string, number>;

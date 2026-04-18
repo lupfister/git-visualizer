@@ -24,7 +24,6 @@ pub fn get_direct_commits(
             repo,
             &[
                 "log",
-                "--first-parent",
                 &format!("--max-count={}", limit),
                 "--format=%H|%h|%s|%an|%cI|%P",
                 branch,
@@ -35,7 +34,6 @@ pub fn get_direct_commits(
             repo,
             &[
                 "log",
-                "--first-parent",
                 "--format=%H|%h|%s|%an|%cI|%P",
                 branch,
             ],

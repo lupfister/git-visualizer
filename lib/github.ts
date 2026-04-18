@@ -174,13 +174,25 @@ export async function fetchBranchCommits(
   token?: string
 ): Promise<Commit[]> {
   const headers = makeHeaders(token);
-  const res = await fetch(
-    `${GITHUB_API}/repos/${owner}/${repo}/compare/${base}...${encodeURIComponent(branch)}`,
-    { headers }
-  );
-  if (!res.ok) return [];
-  const data = await res.json();
-  return (data.commits ?? []).map((c: { sha: string; commit: { message: string; author: { name: string; date: string } }; author: { avatar_url: string } | null }) => ({
+  const allCommits: Array<{ sha: string; commit: { message: string; author: { name: string; date: string } }; author: { avatar_url: string } | null }> = [];
+  let page = 1;
+  const perPage = 100;
+
+  while (true) {
+    const res = await fetch(
+      `${GITHUB_API}/repos/${owner}/${repo}/compare/${base}...${encodeURIComponent(branch)}?page=${page}&per_page=${perPage}`,
+      { headers }
+    );
+    if (!res.ok) break;
+    const data = await res.json();
+    const commits = Array.isArray(data.commits) ? data.commits : [];
+    if (commits.length === 0) break;
+    allCommits.push(...commits);
+    if (commits.length < perPage) break;
+    page += 1;
+  }
+
+  return allCommits.map((c) => ({
     sha: c.sha.slice(0, 7),
     message: c.commit.message.split('\n')[0],
     author: c.commit.author.name,
@@ -197,22 +209,34 @@ export async function fetchChangedFiles(
   token?: string
 ): Promise<{ files: ChangedFile[]; groups: ComponentGroup[] }> {
   const headers = makeHeaders(token);
-  const res = await fetch(
-    `${GITHUB_API}/repos/${owner}/${repo}/compare/${base}...${encodeURIComponent(branch)}`,
-    { headers }
-  );
-  if (!res.ok) return { files: [], groups: [] };
-  const data = await res.json();
-  const files: ChangedFile[] = (data.files ?? []).map((f: { filename: string; additions: number; deletions: number; status: string }) => ({
-    filename: f.filename,
-    additions: f.additions,
-    deletions: f.deletions,
-    status: f.status,
-  }));
+  const allFiles: ChangedFile[] = [];
+  let page = 1;
+  const perPage = 100;
+
+  while (true) {
+    const res = await fetch(
+      `${GITHUB_API}/repos/${owner}/${repo}/compare/${base}...${encodeURIComponent(branch)}?page=${page}&per_page=${perPage}`,
+      { headers }
+    );
+    if (!res.ok) return { files: [], groups: [] };
+    const data = await res.json();
+    const files = Array.isArray(data.files) ? data.files : [];
+    if (files.length === 0) break;
+    allFiles.push(
+      ...files.map((f: { filename: string; additions: number; deletions: number; status: string }) => ({
+        filename: f.filename,
+        additions: f.additions,
+        deletions: f.deletions,
+        status: f.status,
+      }))
+    );
+    if (files.length < perPage) break;
+    page += 1;
+  }
 
   // Group by top-level feature folder
   const groupMap = new Map<string, ComponentGroup>();
-  for (const file of files) {
+  for (const file of allFiles) {
     const parts = file.filename.split('/');
     const folder = parts.length > 1 ? parts.slice(0, 2).join('/') : parts[0];
     const label = cleanFolderLabel(folder);
@@ -225,7 +249,7 @@ export async function fetchChangedFiles(
     g.files.push(file);
   }
 
-  return { files, groups: Array.from(groupMap.values()) };
+  return { files: allFiles, groups: Array.from(groupMap.values()) };
 }
 
 export async function fetchMergedPRs(
@@ -281,33 +305,43 @@ export async function fetchMainMergeNodes(
   perPage = 100,
 ): Promise<{ nodes: MergeNode[]; hasMore: boolean }> {
   const headers = makeHeaders(token);
-  const res = await fetch(
-    `${GITHUB_API}/repos/${owner}/${repo}/commits?sha=${defaultBranch}&per_page=${perPage}&page=${page}`,
-    { headers }
-  );
-  if (!res.ok) return { nodes: [], hasMore: false };
-  const commits = await res.json();
+  const allCommits: Array<{ sha: string; commit: { message: string; author: { date: string } }; parents: { sha: string }[] }> = [];
+  let currentPage = Math.max(1, page);
+  let hasMore = false;
 
-  // Only keep actual merge commits (2 parents = a PR merge).
-  // This filters out individual feature commits that landed via squash/rebase,
-  // so the main timeline shows one node per merged PR, not one per commit.
-  const nodes = commits
-    .filter((c: { parents: { sha: string }[] }) => c.parents?.length >= 2)
-    .map((c: { sha: string; commit: { message: string; author: { date: string } }; parents: { sha: string }[] }) => {
-      const prMatch = c.commit.message.match(/#(\d+)/);
-      const titleLine = c.commit.message.split('\n')[0];
-      return {
-        sha: c.sha.slice(0, 7),
-        fullSha: c.sha,
-        prNumber: prMatch ? parseInt(prMatch[1]) : null,
-        prTitle: titleLine,
-        date: c.commit.author.date,
-        parentShas: c.parents.map((p) => p.sha),
-      };
-    });
+  while (true) {
+    const res = await fetch(
+      `${GITHUB_API}/repos/${owner}/${repo}/commits?sha=${defaultBranch}&per_page=${perPage}&page=${currentPage}`,
+      { headers }
+    );
+    if (!res.ok) break;
+    const commits = await res.json();
+    if (!Array.isArray(commits) || commits.length === 0) {
+      hasMore = false;
+      break;
+    }
 
-  // hasMore is based on the raw commit count, not the filtered node count,
-  // since there may be more merge commits in subsequent pages even if this
-  // page happened to have few.
-  return { nodes, hasMore: commits.length === perPage };
+    allCommits.push(...commits);
+    hasMore = commits.length === perPage;
+    if (!hasMore) break;
+    currentPage += 1;
+  }
+
+  // Keep every commit on the default branch so the grid can infer the full
+  // main-line history, including squash/rebase landing commits and the
+  // repository's initial commit.
+  const nodes = allCommits.map((c) => {
+    const prMatch = c.commit.message.match(/#(\d+)/);
+    const titleLine = c.commit.message.split('\n')[0];
+    return {
+      sha: c.sha.slice(0, 7),
+      fullSha: c.sha,
+      prNumber: prMatch ? parseInt(prMatch[1]) : null,
+      prTitle: titleLine,
+      date: c.commit.author.date,
+      parentShas: c.parents.map((p) => p.sha),
+    };
+  });
+
+  return { nodes, hasMore };
 }

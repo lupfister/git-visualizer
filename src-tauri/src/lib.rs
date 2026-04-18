@@ -1622,7 +1622,6 @@ fn get_unpushed_direct_commits(
         path,
         &[
             "log",
-            "--first-parent",
             "--format=%H|%h|%s|%an|%cI|%P",
             &range,
         ],
@@ -1664,10 +1663,10 @@ fn get_branch_unpushed_commit_shas(
     let range = if let Some(compare_ref) = get_branch_compare_ref(path, &branch) {
         format!("{compare_ref}..{branch}")
     } else {
-        let default_branch = git::get_default_branch(path).map_err(|e| e.to_string())?;
-        format!("{default_branch}..{branch}")
+    let default_branch = git::get_default_branch(path).map_err(|e| e.to_string())?;
+    format!("{default_branch}..{branch}")
     };
-    let output = git::cli::run(path, &["rev-list", "--first-parent", &range])
+    let output = git::cli::run(path, &["rev-list", &range])
         .map_err(|e| e.to_string())?;
     Ok(output
         .lines()

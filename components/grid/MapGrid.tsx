@@ -7,6 +7,13 @@ import {
   CARD_WIDTH,
   CONNECTOR_COLOR,
   LEFT_PADDING,
+  type BranchGridViewProps,
+  type CommitItem,
+  type Connector,
+  type Node,
+  type VisualCommit,
+  TOP_PADDING,
+  COLUMN_WIDTH,
   nodeForCommitSha,
   orderByLineage,
   renderableBranchPreviews,
@@ -15,13 +22,6 @@ import {
   ROW_HEIGHT,
   sortByTimeDesc,
   toCommit,
-  type BranchGridViewProps,
-  type CommitItem,
-  type Connector,
-  type Node,
-  type VisualCommit,
-  TOP_PADDING,
-  COLUMN_WIDTH,
 } from './LayoutGrid';
 import type { Branch } from '../../types';
 import type { BranchCommitPreview } from '../../types';
@@ -55,6 +55,7 @@ function clusterByForkPoints<T>(
 
 export default function BranchGridMap({
   branches,
+  mergeNodes = [],
   directCommits = [],
   unpushedDirectCommits = [],
   defaultBranch,
@@ -75,6 +76,15 @@ export default function BranchGridMap({
   const laneByName = new Map(lanes.map((lane) => [lane.name, lane] as const));
 
   const mainCommits = orderByLineage([
+    ...mergeNodes.map((node) => ({
+      id: node.fullSha,
+      branchName: defaultBranch,
+      message: node.prTitle ?? node.sha,
+      author: '',
+      date: node.date,
+      parentSha: node.parentShas?.[0] ?? null,
+    })),
+    ...(branchCommitPreviews[defaultBranch] ?? []).map((commit) => toCommit(defaultBranch, commit)),
     ...directCommits.map((commit) => toCommit(defaultBranch, commit)),
     ...unpushedDirectCommits.map((commit) => toCommit(defaultBranch, commit)),
   ]);
@@ -90,6 +100,7 @@ export default function BranchGridMap({
   }
 
   const mainCommitShas = new Set<string>(mainCommits.map((commit) => commit.id));
+  const oldestMainCommit = [...mainCommits].sort((a, b) => new Date(a.date).getTime() - new Date(b.date).getTime() || a.id.localeCompare(b.id))[0] ?? null;
   const branchCommitShasByName = new Map<string, Set<string>>(
     Array.from(branchCommitsByLane.entries()).map(([branchName, commits]) => [
       branchName,
@@ -137,11 +148,9 @@ export default function BranchGridMap({
     const forkSha = branch.presidesFromSha ?? branch.divergedFromSha ?? branch.createdFromSha ?? childBaseCommit?.parentSha ?? null;
     if (!forkSha) return null;
     const parentName = resolveBranchStartParentName(branch);
-    if (parentName === defaultBranch) {
-      return mainCommitShas.has(forkSha) ? forkSha : null;
-    }
-    const parentCommitShas = branchCommitShasByName.get(parentName) ?? new Set<string>();
-    return parentCommitShas.has(forkSha) ? forkSha : null;
+    if (parentName === defaultBranch) return oldestMainCommit?.id ?? childBaseCommit?.parentSha ?? forkSha;
+    if (mainCommitShas.has(forkSha)) return forkSha;
+    return forkSha;
   };
   const blueStartShaForBranch = (branch: Branch): string | null => resolveBranchStartSha(branch);
 
@@ -425,18 +434,7 @@ export default function BranchGridMap({
 
   const resolveChildNodeForSha = (sha: string | null | undefined, preferredBranchName?: string): Node | null => {
     if (!sha) return null;
-    const preferredNode = nodeForCommitSha(visibleNodesBySha, sha, preferredBranchName);
-    if (preferredNode) return preferredNode;
-    const canonicalNode = resolveCanonicalNodeForSha(sha, preferredBranchName);
-    if (canonicalNode) return canonicalNode;
-    const clusterKeys = clusterKeyBySha.get(sha) ?? [];
-    for (const clusterKey of clusterKeys) {
-      const leadId = leadByClusterKey.get(clusterKey);
-      if (!leadId) continue;
-      const leadNode = renderNodes.find((candidate) => candidate.commit.id === leadId);
-      if (leadNode) return leadNode;
-    }
-    return null;
+    return nodeForCommitSha(visibleNodesBySha, sha, preferredBranchName);
   };
 
   const getIncomingAnchor = (node: Node): { x: number; y: number } => ({
@@ -450,9 +448,7 @@ export default function BranchGridMap({
   });
 
   const resolveParentNode = (parentSha: string, preferredBranchName: string): Node | null => {
-    const preferredNode = nodeForCommitSha(visibleNodesBySha, parentSha, preferredBranchName);
-    if (preferredNode) return preferredNode;
-    return resolveCanonicalNodeForSha(parentSha, preferredBranchName);
+    return nodeForCommitSha(visibleNodesBySha, parentSha, preferredBranchName);
   };
 
   const resolveNodeForSha = (sha: string | null | undefined, preferredBranchName?: string): Node | null => {
@@ -462,7 +458,6 @@ export default function BranchGridMap({
   const branchDebugRows =
     process.env.NODE_ENV !== 'production'
       ? branches.flatMap((branch) => {
-          if (branch.name !== 'promptsOnGraph' && branch.name !== 'verticalGraph') return [];
           const baseCommit = branchBaseCommitByName.get(branch.name);
           const receivingCommit = branchReceivingCommitByName.get(branch.name);
           const parentName = resolveBranchStartParentName(branch);
@@ -473,19 +468,21 @@ export default function BranchGridMap({
           const childNode = receivingCommit
             ? resolveNodeForSha(receivingCommit.id, branch.name) ?? resolveConnectorNode(receivingCommit as VisualCommit)
             : null;
+          const forkPoint = resolveBranchStartSha(branch) ?? branch.presidesFromSha ?? branch.divergedFromSha ?? branch.createdFromSha ?? baseCommit?.parentSha ?? null;
           return [
             `Branch debug ${branch.name}`,
-            `  parentName=${parentName}`,
+            `  parentName=${parentName ?? 'null'}`,
+            `  forkPoint=${forkPoint ?? 'null'}`,
             `  branchStartSha=${branchStartSha ?? 'null'}`,
             `  baseCommit=${baseCommit?.id ?? 'null'}`,
             `  receivingCommit=${receivingCommit?.id ?? 'null'}`,
             `  baseParentSha=${baseCommit?.parentSha ?? 'null'}`,
             `  divergedFromSha=${branch.divergedFromSha ?? 'null'}`,
             `  createdFromSha=${branch.createdFromSha ?? 'null'}`,
-          `  parentNode=${parentNode ? `${parentNode.commit.branchName}/${parentNode.commit.id.slice(0, 7)} col=${parentNode.column} row=${parentNode.row}` : 'null'}`,
-          `  childNode=${childNode ? `${childNode.commit.branchName}/${childNode.commit.id.slice(0, 7)} col=${childNode.column} row=${childNode.row}` : 'null'}`,
-        ];
-      })
+            `  parentNode=${parentNode ? `${parentNode.commit.branchName}/${parentNode.commit.id.slice(0, 7)} col=${parentNode.column} row=${parentNode.row}` : 'null'}`,
+            `  childNode=${childNode ? `${childNode.commit.branchName}/${childNode.commit.id.slice(0, 7)} col=${childNode.column} row=${childNode.row}` : 'null'}`,
+          ];
+        })
       : [];
 
   for (const branch of branches) {
@@ -610,9 +607,11 @@ export default function BranchGridMap({
   }
   for (const [branchName, branchNodes] of nodesByBranch.entries()) {
     if (branchNodes.length < 2) continue;
-    const orderedBranchNodes = [...branchNodes].sort(
-      (a, b) => new Date(a.commit.date).getTime() - new Date(b.commit.date).getTime() || a.commit.id.localeCompare(b.commit.id)
-    );
+    const orderedBranchNodes = [...branchNodes].sort((a, b) => {
+      const aTime = Number.isFinite(new Date(a?.commit?.date ?? '').getTime()) ? new Date(a.commit.date).getTime() : 0;
+      const bTime = Number.isFinite(new Date(b?.commit?.date ?? '').getTime()) ? new Date(b.commit.date).getTime() : 0;
+      return aTime - bTime || (a?.commit?.id ?? '').localeCompare(b?.commit?.id ?? '');
+    });
     for (let index = 1; index < orderedBranchNodes.length; index += 1) {
       const parentNode = orderedBranchNodes[index - 1]!;
       const childNode = orderedBranchNodes[index]!;
@@ -775,6 +774,7 @@ export default function BranchGridMap({
                 return (
                   <Fragment key={connector.id}>
                     <path
+                      key={`${connector.id}-halo`}
                       d={[
                         `M ${connector.fromX} ${connector.fromY}`,
                         `H ${elbowX}`,
@@ -787,6 +787,7 @@ export default function BranchGridMap({
                       strokeLinejoin="round"
                     />
                     <path
+                      key={`${connector.id}-line`}
                       d={[
                         `M ${connector.fromX} ${connector.fromY}`,
                         `H ${elbowX}`,
