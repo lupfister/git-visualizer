@@ -1,4 +1,4 @@
-import { useEffect, useLayoutEffect, useRef, useState } from 'react';
+import { Fragment, useEffect, useLayoutEffect, useRef, useState } from 'react';
 import {
   branchBaseCommit,
   branchAheadCount,
@@ -115,20 +115,18 @@ export default function BranchGridMap({
       declaredParent !== defaultBranch &&
       declaredParent !== branch.name &&
       branchByName.has(declaredParent);
-    if (!hasConcreteParent) return defaultBranch;
+    if (!hasConcreteParent) return declaredParent ?? defaultBranch;
 
     const forkSha = branch.presidesFromSha ?? branch.divergedFromSha ?? branch.createdFromSha;
     if (forkSha) {
       const declaredParentCommitShas = branchCommitShasByName.get(declaredParent) ?? new Set<string>();
       if (declaredParentCommitShas.has(forkSha)) return declaredParent;
-      if (mainCommitShas.has(forkSha)) return defaultBranch;
     }
 
     const forkAnchor = branchBaseCommitByName.get(branch.name)?.parentSha ?? null;
     if (forkAnchor) {
       const declaredParentCommitShas = branchCommitShasByName.get(declaredParent) ?? new Set<string>();
       if (declaredParentCommitShas.has(forkAnchor)) return declaredParent;
-      if (mainCommitShas.has(forkAnchor)) return defaultBranch;
     }
 
     return declaredParent;
@@ -671,11 +669,10 @@ export default function BranchGridMap({
             const clumpCount = clusterKey ? clusterCounts.get(clusterKey) ?? 1 : 1;
             const nodeConnectorDecisions = connectorDecisions.filter((decision) => decision.parent === node.commit.id || decision.child === node.commit.id);
             const nodeConnectorRendered = nodeConnectorDecisions.filter((decision) => decision.rendered).length;
-            const nodeConnectorSkipped = nodeConnectorDecisions.length - nodeConnectorRendered;
             const renderedBranchDecisions = nodeConnectorDecisions.filter((decision) => decision.rendered && decision.kind === 'branch').length;
             const renderedAncestryDecisions = nodeConnectorDecisions.filter((decision) => decision.rendered && decision.kind === 'ancestry').length;
             const nodeConnectorSummary = nodeConnectorDecisions.length > 0
-              ? `${nodeConnectorRendered} shown, ${nodeConnectorSkipped} skipped`
+              ? `${nodeConnectorRendered} shown`
               : 'No connector decisions';
             return (
             <div
@@ -759,27 +756,50 @@ export default function BranchGridMap({
             </div>
             );
             })}
-            <svg className="pointer-events-none absolute inset-0 z-30" width={contentWidth} height={contentHeight} viewBox={`0 0 ${contentWidth} ${contentHeight}`} aria-hidden="true">
+            <svg
+              className="pointer-events-none absolute inset-0 z-10"
+              width={contentWidth}
+              height={contentHeight}
+              viewBox={`0 0 ${contentWidth} ${contentHeight}`}
+              aria-hidden="true"
+              overflow="visible"
+              style={{ overflow: 'visible' }}
+            >
               <defs>
-                <marker id="branch-grid-arrow" markerWidth="8" markerHeight="8" refX="7" refY="4" orient="auto" markerUnits="strokeWidth">
-                  <path d="M0,0 L8,4 L0,8 z" fill={CONNECTOR_COLOR} />
+                <marker id="branch-grid-arrow" markerWidth="5" markerHeight="5" refX="4" refY="2.5" orient="auto" markerUnits="strokeWidth">
+                  <path d="M0,0 L5,2.5 L0,5 z" fill={CONNECTOR_COLOR} />
                 </marker>
               </defs>
               {connectors.map((connector) => {
                 const elbowX = connector.toX;
                 return (
-                  <path
-                    key={connector.id}
-                    d={[
-                      `M ${connector.fromX} ${connector.fromY}`,
-                      `H ${elbowX}`,
-                      `V ${connector.toY}`,
-                    ].join(' ')}
-                    fill="none"
-                    stroke={CONNECTOR_COLOR}
-                    strokeWidth="1.5"
-                    markerEnd="url(#branch-grid-arrow)"
-                  />
+                  <Fragment key={connector.id}>
+                    <path
+                      d={[
+                        `M ${connector.fromX} ${connector.fromY}`,
+                        `H ${elbowX}`,
+                        `V ${connector.toY}`,
+                      ].join(' ')}
+                      fill="none"
+                      stroke="rgba(255, 255, 255, 0.8)"
+                      strokeWidth="4"
+                      strokeLinecap="round"
+                      strokeLinejoin="round"
+                    />
+                    <path
+                      d={[
+                        `M ${connector.fromX} ${connector.fromY}`,
+                        `H ${elbowX}`,
+                        `V ${connector.toY}`,
+                      ].join(' ')}
+                      fill="none"
+                      stroke={CONNECTOR_COLOR}
+                      strokeWidth="2.5"
+                      strokeLinecap="round"
+                      strokeLinejoin="round"
+                      markerEnd="url(#branch-grid-arrow)"
+                    />
+                  </Fragment>
                 );
               })}
             </svg>
