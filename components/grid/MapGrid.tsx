@@ -14,7 +14,6 @@ import {
   ROW_GAP,
   ROW_HEIGHT,
   sortByTimeDesc,
-  timeAgo,
   toCommit,
   type BranchGridViewProps,
   type CommitItem,
@@ -31,126 +30,24 @@ function cn(...classes: Array<string | false | null | undefined>): string {
   return classes.filter(Boolean).join(' ');
 }
 
-function branchPreviewIndexForChildFork(
-  previews: BranchCommitPreview[],
-  branchTimes: number[],
-  child: Branch
-): number {
-  const childForkSha = child.divergedFromSha ?? child.createdFromSha;
-  if (childForkSha) {
-    const bySha = previews.findIndex((preview) =>
-      preview.fullSha === childForkSha ||
-      preview.sha === childForkSha ||
-      preview.fullSha.startsWith(childForkSha) ||
-      childForkSha.startsWith(preview.fullSha) ||
-      preview.sha.startsWith(childForkSha) ||
-      childForkSha.startsWith(preview.sha)
-    );
-    if (bySha >= 0) return bySha;
-  }
-  const childForkTime = new Date(child.divergedFromDate ?? child.createdDate ?? child.lastCommitDate).getTime();
-  if (!Number.isFinite(childForkTime) || branchTimes.length === 0) return -1;
-  const firstTime = branchTimes[0];
-  const lastTime = branchTimes[branchTimes.length - 1];
-  if (childForkTime <= firstTime) return 0;
-  if (childForkTime >= lastTime) return branchTimes.length - 1;
-  let bestPastIndex = -1;
-  let bestPastDelta = Number.POSITIVE_INFINITY;
-  let bestFutureIndex = -1;
-  let bestFutureDelta = Number.POSITIVE_INFINITY;
-  for (let index = 0; index < branchTimes.length; index += 1) {
-    const time = branchTimes[index];
-    if (!Number.isFinite(time)) continue;
-    if (time <= childForkTime) {
-      const delta = childForkTime - time;
-      if (delta < bestPastDelta) {
-        bestPastDelta = delta;
-        bestPastIndex = index;
-      }
-    } else {
-      const delta = time - childForkTime;
-      if (delta < bestFutureDelta) {
-        bestFutureDelta = delta;
-        bestFutureIndex = index;
-      }
-    }
-  }
-  return bestPastIndex >= 0 ? bestPastIndex : bestFutureIndex;
-}
-
-function pruneForkSplitIndices(
-  entryCount: number,
-  forkIndices: Set<number>,
-  preserveSplitIndices: Set<number> = new Set<number>(),
-): Set<number> {
-  if (entryCount <= 1 || forkIndices.size === 0) return new Set(forkIndices);
-  const active = Array.from(forkIndices)
-    .filter((index) => index >= 0 && index < entryCount - 1)
-    .sort((a, b) => a - b);
-  if (active.length === 0) return new Set<number>();
-  const buildSegments = () => {
-    const segments: Array<{ start: number; end: number; len: number }> = [];
-    let start = 0;
-    for (const split of active) {
-      const end = Math.min(split, entryCount - 1);
-      if (end >= start) segments.push({ start, end, len: end - start + 1 });
-      start = end + 1;
-    }
-    if (start <= entryCount - 1) segments.push({ start, end: entryCount - 1, len: entryCount - start });
-    return segments;
-  };
-  while (active.length > 0) {
-    const segments = buildSegments();
-    const singletonIdx = segments.findIndex((segment) => segment.len === 1);
-    if (singletonIdx < 0 || segments.length <= 1) break;
-    let splitToRemove = singletonIdx > 0 ? segments[singletonIdx - 1].end : segments[0].end;
-    if (preserveSplitIndices.has(splitToRemove)) {
-      const alternate = singletonIdx > 0 && singletonIdx < segments.length ? segments[singletonIdx].end : -1;
-      if (alternate >= 0 && !preserveSplitIndices.has(alternate)) splitToRemove = alternate;
-      else break;
-    }
-    const removeAt = active.indexOf(splitToRemove);
-    if (removeAt < 0) break;
-    active.splice(removeAt, 1);
-  }
-  return new Set(active);
-}
-
 function clusterByForkPoints<T>(
   entries: Array<{ item: T }>,
   forkIndices: Set<number>,
-  preserveSplitIndices: Set<number> = new Set<number>(),
 ): Array<{ entries: Array<{ item: T }> }> {
   if (entries.length === 0) return [];
-  const effectiveForkIndices = pruneForkSplitIndices(entries.length, forkIndices, preserveSplitIndices);
+  const effectiveForkIndices = new Set(
+    Array.from(forkIndices).filter((index) => index >= 0 && index < entries.length)
+  );
   const clusters: Array<{ entries: Array<{ item: T }> }> = [];
-  let current = [entries[0]];
+  let current: Array<{ item: T }> = [];
   const flush = () => {
     if (current.length === 0) return;
     clusters.push({ entries: current });
+    current = [];
   };
   for (let i = 0; i < entries.length; i += 1) {
-    const isFork = effectiveForkIndices.has(i);
-    if (i === 0) {
-      if (isFork) {
-        flush();
-        clusters.push({ entries: [entries[i]] });
-        current = [];
-      }
-      continue;
-    }
-    if (effectiveForkIndices.has(i - 1)) {
-      flush();
-      current = [];
-    }
-    if (isFork) {
-      if (current.length > 0) flush();
-      clusters.push({ entries: [entries[i]] });
-      current = [];
-    } else {
-      if (current.length === 0) current = [entries[i]];
-      else current.push(entries[i]);
-    }
+    current.push(entries[i]);
+    if (effectiveForkIndices.has(i)) flush();
   }
   flush();
   return clusters;
@@ -199,20 +96,11 @@ export default function BranchGridMap({
       new Set(commits.map((commit) => commit.id)),
     ] as const)
   );
-
   const branchBaseCommitByName = new Map<string, CommitItem>();
   for (const branch of branches) {
     if (branch.name === defaultBranch) continue;
     const baseCommit = branchBaseCommit(branch.name, branchCommitPreviews, branchUniqueAheadCounts);
     if (baseCommit) branchBaseCommitByName.set(branch.name, baseCommit);
-  }
-
-  const childBranchesByParent = new Map<string, Branch[]>();
-  for (const branch of branches) {
-    const parent = branch.parentBranch && branch.parentBranch !== branch.name ? branch.parentBranch : defaultBranch;
-    const list = childBranchesByParent.get(parent) ?? [];
-    list.push(branch);
-    childBranchesByParent.set(parent, list);
   }
 
   const resolveBranchStartParentName = (branch: Branch): string => {
@@ -252,6 +140,18 @@ export default function BranchGridMap({
     const parentCommitShas = branchCommitShasByName.get(parentName) ?? new Set<string>();
     return parentCommitShas.has(forkSha) ? forkSha : null;
   };
+  const blueStartShaForBranch = (branch: Branch): string | null => resolveBranchStartSha(branch);
+
+  const blueBoundaryShasByBranch = new Map<string, Set<string>>();
+  for (const branch of branches) {
+    if (branch.name === defaultBranch) continue;
+    const branchStartSha = blueStartShaForBranch(branch);
+    if (!branchStartSha) continue;
+    const parentName = resolveBranchStartParentName(branch);
+    const existing = blueBoundaryShasByBranch.get(parentName) ?? new Set<string>();
+    existing.add(branchStartSha);
+    blueBoundaryShasByBranch.set(parentName, existing);
+  }
 
   const visibleCommits: VisualCommit[] = [];
   const branchCommitShaSets = new Map<string, Set<string>>(
@@ -289,13 +189,10 @@ export default function BranchGridMap({
   const buildClustersForBranch = (branchName: string, commits: VisualCommit[]): GridCluster[] => {
     if (commits.length === 0) return [];
     const ordered = [...commits].sort((a, b) => new Date(a.date).getTime() - new Date(b.date).getTime() || a.id.localeCompare(b.id));
-    const previewLike = ordered.map((commit) => ({ fullSha: commit.id, sha: commit.id, date: commit.date, parentSha: commit.parentSha ?? null, message: commit.message, author: commit.author })) as BranchCommitPreview[];
-    const times = ordered.map((commit) => new Date(commit.date).getTime());
-    const children = childBranchesByParent.get(branchName) ?? [];
+    const blueBoundaryShas = blueBoundaryShasByBranch.get(branchName) ?? new Set<string>();
     const forkIdx = new Set<number>();
-    for (const child of children) {
-      const idx = branchPreviewIndexForChildFork(previewLike, times, child);
-      if (idx >= 0) forkIdx.add(idx);
+    for (let index = 0; index < ordered.length; index += 1) {
+      if (blueBoundaryShas.has(ordered[index]!.id)) forkIdx.add(index);
     }
     const clusterEntries = clusterByForkPoints(ordered.map((commit) => ({ item: commit })), forkIdx);
     const clusters: GridCluster[] = [];
@@ -303,7 +200,8 @@ export default function BranchGridMap({
       const chunk = cluster.entries.map((entry) => entry.item);
       if (chunk.length === 0) return;
       const key = `grid-clump-${branchName}-${chunk[0].id}-${chunk[chunk.length - 1].id}-${clusterIndex}`;
-      const leadId = chunk[chunk.length - 1].id;
+      const blueHead = [...chunk].reverse().find((commit) => blueBoundaryShas.has(commit.id)) ?? chunk[chunk.length - 1];
+      const leadId = blueHead.id;
       const clusterVm = { branchName, key, commitIds: chunk.map((commit) => commit.visualId), leadId, count: chunk.length };
       clusters.push(clusterVm);
       leadByClusterKey.set(key, leadId);
@@ -483,11 +381,17 @@ export default function BranchGridMap({
     const childBaseCommit = branchBaseCommitByName.get(branch.name);
     const childNode = nodeForConnectorTipSha(childBaseCommit?.id, branch.name);
     const parentNode = nodeForCommitSha(visibleNodesBySha, childBaseCommit?.parentSha ?? null, parentName);
-    const branchStartSha = resolveBranchStartSha(branch);
+    const branchStartSha = blueStartShaForBranch(branch);
     if (branchStartSha) branchStartShas.add(branchStartSha);
     if (!childNode || !parentNode) continue;
     connectorParentShas.add(parentNode.commit.id);
-    connectors.push({ id: `${parentName}->${branch.name}`, fromX: parentNode.x + CARD_WIDTH, fromY: parentNode.y + CARD_HEIGHT / 2, toX: childNode.x, toY: childNode.y + CARD_HEIGHT / 2 });
+    connectors.push({
+      id: `${parentName}->${branch.name}`,
+      fromX: parentNode.x + CARD_WIDTH,
+      fromY: parentNode.y + CARD_HEIGHT / 2,
+      toX: childNode.x + CARD_WIDTH / 2,
+      toY: childNode.y + CARD_HEIGHT,
+    });
   }
 
   return (
@@ -506,15 +410,15 @@ export default function BranchGridMap({
                 cardRefs.current.set(node.commit.id, el);
               }}
               className={cn(
-                'absolute z-20 rounded-xl bg-card p-1.5 shadow-sm overflow-hidden border transition-all duration-200',
+                'absolute z-20 overflow-hidden rounded-2xl border border-border bg-background/95 shadow-sm transition-all duration-200',
                 branchStartShas.has(node.commit.id) || connectorParentShas.has(node.commit.id)
-                  ? 'border-blue-500 ring-2 ring-blue-500/20'
+                  ? 'border-blue-500 ring-2 ring-blue-500/35 shadow-[0_0_0_1px_rgba(59,130,246,0.18)]'
                   : branchBaseCommitByName.get(node.commit.branchName)?.id === node.commit.id
-                    ? 'border-amber-500 ring-2 ring-amber-500/20'
+                    ? 'border-amber-500 ring-2 ring-amber-500/35 shadow-[0_0_0_1px_rgba(245,158,11,0.18)]'
                     : 'border-border/50',
                 normalizedSearchQuery && !matchingNodes.some((match) => match.commit.id === node.commit.id) ? 'opacity-10 blur-[0.5px]' : '',
-                normalizedSearchQuery && matchingNodes.some((match) => match.commit.id === node.commit.id) ? 'ring-2 ring-primary/30 border-primary/70 shadow-md scale-[1.02]' : '',
-                focusedNode?.commit.id === node.commit.id ? 'z-30 ring-4 ring-primary/30 border-primary shadow-lg scale-[1.03]' : ''
+                normalizedSearchQuery && matchingNodes.some((match) => match.commit.id === node.commit.id) ? 'shadow-md scale-[1.01]' : '',
+                focusedNode?.commit.id === node.commit.id ? 'z-30 shadow-lg scale-[1.015]' : ''
               )}
               style={{ left: node.x, top: node.y, width: CARD_WIDTH, height: CARD_HEIGHT }}
             >
@@ -528,22 +432,29 @@ export default function BranchGridMap({
                     return next;
                   })}
                   className={cn(
-                    'absolute right-2 top-2 z-40 inline-flex items-center rounded-full border px-2 py-0.5 text-[10px] font-medium uppercase tracking-wide shadow-sm transition-colors',
-                    isCollapsed
-                      ? 'border-primary/20 bg-primary/10 text-primary hover:bg-primary/15'
-                      : 'border-border/50 bg-muted/40 text-foreground hover:bg-accent'
+                    'absolute right-3 top-3 z-40 inline-flex items-center rounded-full border border-primary/20 bg-primary/10 px-2 py-0.5 text-[10px] font-medium uppercase tracking-wide text-primary transition-colors hover:bg-primary/15'
                   )}
                 >
                   {isCollapsed ? `Show ${clumpCount}` : `Collapse ${clumpCount}`}
                 </button>
               ) : null}
-              {focusedNode?.commit.id === node.commit.id && normalizedSearchQuery ? (
-                <div className="mb-1 inline-flex rounded-full bg-primary/10 px-2 py-0.5 text-[10px] font-medium uppercase tracking-wide text-primary">
-                  Search result
+              <div className="flex h-full flex-col px-4 py-3">
+                <div className="text-[12px] font-medium leading-none text-primary/80">
+                  {node.commit.branchName}/{node.commit.id.slice(0, 7)}
                 </div>
-              ) : null}
-              <p className="text-sm font-medium text-foreground truncate">{isCollapsed && isTop ? `${node.commit.message} +${clumpCount - 1}` : node.commit.message}</p>
-              <p className="mt-0.5 text-xs text-muted-foreground truncate">{node.commit.branchName} · {timeAgo(node.commit.date)}</p>
+                <div className="mt-2 max-w-[20rem] text-[12px] font-medium leading-tight tracking-tight text-primary/85">
+                  {isCollapsed && isTop ? `${node.commit.message} +${clumpCount - 1}` : node.commit.message}
+                </div>
+                <div className="mt-auto flex items-end justify-between gap-3 pt-4">
+                  <div className="text-[12px] font-medium text-primary/80">@{node.commit.author}</div>
+                  <div className="text-[12px] font-medium text-primary/80">{new Date(node.commit.date).toLocaleString('en-US', { month: 'long', day: 'numeric', hour: 'numeric', minute: '2-digit' })}</div>
+                </div>
+                {focusedNode?.commit.id === node.commit.id && normalizedSearchQuery ? (
+                  <div className="absolute left-4 top-3 inline-flex rounded-full bg-primary/10 px-2 py-0.5 text-[10px] font-medium uppercase tracking-wide text-primary">
+                    Search result
+                  </div>
+                ) : null}
+              </div>
             </div>
             );
           })}
@@ -554,8 +465,25 @@ export default function BranchGridMap({
               </marker>
             </defs>
             {connectors.map((connector) => {
-              const elbowX = connector.fromX + Math.sign(connector.toX - connector.fromX) * Math.min(30, Math.abs(connector.toX - connector.fromX) / 2);
-              return <path key={connector.id} d={`M ${connector.fromX} ${connector.fromY} C ${elbowX} ${connector.fromY}, ${elbowX} ${connector.toY}, ${connector.toX} ${connector.toY}`} fill="none" stroke={CONNECTOR_COLOR} strokeWidth="1.5" markerEnd="url(#branch-grid-arrow)" />;
+              const exitX = connector.fromX + 18;
+              const cornerX = connector.toX;
+              const cornerY = connector.toY;
+              return (
+                <path
+                  key={connector.id}
+                  d={[
+                    `M ${connector.fromX} ${connector.fromY}`,
+                    `H ${exitX}`,
+                    `V ${cornerY}`,
+                    `H ${cornerX}`,
+                    `V ${connector.toY}`,
+                  ].join(' ')}
+                  fill="none"
+                  stroke={CONNECTOR_COLOR}
+                  strokeWidth="1.5"
+                  markerEnd="url(#branch-grid-arrow)"
+                />
+              );
             })}
           </svg>
         </div>

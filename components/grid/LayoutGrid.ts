@@ -98,10 +98,10 @@ export type Connector = { id: string; fromX: number; fromY: number; toX: number;
 
 export const BRANCH_COLUMN_REUSE_TIME_GAP_FACTOR = 0.75;
 export const COLUMN_WIDTH = 160;
-export const ROW_HEIGHT = 88;
+export const ROW_HEIGHT = 116;
 export const ROW_GAP = 10;
-export const CARD_WIDTH = 152;
-export const CARD_HEIGHT = 76;
+export const CARD_WIDTH = 360;
+export const CARD_HEIGHT = 108;
 export const TOP_PADDING = 12;
 export const LEFT_PADDING = 12;
 export const CONNECTOR_COLOR = 'rgba(148, 163, 184, 0.55)';
