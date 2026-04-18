@@ -40,7 +40,7 @@ function App() {
   const [worktrees, setWorktrees] = useState<WorktreeInfo[]>([]);
   const [removeWorktreeInProgress, setRemoveWorktreeInProgress] = useState(false);
   const [orientation, setOrientation] = useState<OrientationMode>('vertical');
-  const [mapMode, setMapMode] = useState<MapMode>('time');
+  const [mapMode, setMapMode] = useState<MapMode>('grid');
   const [gridSearchQuery, setGridSearchQuery] = useState('');
   const [gridSearchJumpToken, setGridSearchJumpToken] = useState(0);
   const [gridSearchResultCount, setGridSearchResultCount] = useState<number | null>(null);

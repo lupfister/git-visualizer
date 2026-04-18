@@ -260,14 +260,6 @@ export default function BranchGridMap({
       previews.length === 0 ? '  no preview data' : null,
     ].filter((line): line is string => line != null);
   });
-  if (allCommits.length === 0) {
-    return (
-      <div className="rounded-xl border border-border/50 bg-muted/30 shadow-inner flex items-center justify-center py-20">
-        <p className="text-sm text-muted-foreground">No commits to render</p>
-      </div>
-    );
-  }
-
   const rowByVisualId = new Map<string, number>(allCommits.map((commit, index) => [commit.visualId, index + 1] as const));
   const nodes: Node[] = allCommits.map((commit) => {
     const lane = laneByName.get(commit.branchName);
@@ -378,8 +370,18 @@ export default function BranchGridMap({
   const contentHeight = TOP_PADDING * 2 + Math.max(0, visibleCommitsList.length - 1) * (ROW_HEIGHT + ROW_GAP) + CARD_HEIGHT;
 
   const connectors: Connector[] = [];
+  const connectorDecisions: Array<{
+    id: string;
+    kind: 'branch' | 'ancestry';
+    parent: string;
+    child: string;
+    rendered: boolean;
+    reason: string;
+  }> = [];
   const connectorParentShas = new Set<string>();
   const branchStartShas = new Set<string>();
+  const connectorParentAccentClass = 'border-slate-400/70 ring-2 ring-slate-400/20 shadow-[0_0_0_1px_rgba(100,116,139,0.14)]';
+  const branchStartAccentClass = 'border-blue-500 ring-2 ring-blue-500/35 shadow-[0_0_0_1px_rgba(59,130,246,0.18)]';
   // These two sets intentionally track the same logical "blue" idea from two
   // render paths:
   // - `branchStartShas`: commits that mark where a branch begins in the data.
@@ -409,30 +411,7 @@ export default function BranchGridMap({
     return renderNodes.find((candidate) => candidate.commit.id === leadId) ?? null;
   };
 
-  const getIncomingAnchor = (node: Node): { x: number; y: number } => ({
-    x: node.x + CARD_WIDTH / 2,
-    y: node.y + CARD_HEIGHT,
-  });
-
-  const getOutgoingAnchor = (node: Node, isBranching: boolean): { x: number; y: number } => ({
-    x: isBranching ? node.x + CARD_WIDTH : node.x + CARD_WIDTH / 2,
-    y: isBranching ? node.y + CARD_HEIGHT / 2 : node.y,
-  });
-
-  const resolveParentNode = (parentSha: string, preferredBranchName: string): Node | null => {
-    const directNode = nodeForCommitSha(visibleNodesBySha, parentSha, preferredBranchName);
-    if (directNode) return directNode;
-    const clusterKeys = clusterKeyBySha.get(parentSha) ?? [];
-    for (const clusterKey of clusterKeys) {
-      const leadId = leadByClusterKey.get(clusterKey);
-      if (!leadId) continue;
-      const leadNode = renderNodes.find((candidate) => candidate.commit.id === leadId);
-      if (leadNode) return leadNode;
-    }
-    return null;
-  };
-
-  const resolveNodeForSha = (sha: string | null | undefined, preferredBranchName?: string): Node | null => {
+  const resolveCanonicalNodeForSha = (sha: string | null | undefined, preferredBranchName?: string): Node | null => {
     if (!sha) return null;
     const directNode = nodeForCommitSha(visibleNodesBySha, sha, preferredBranchName);
     if (directNode) return directNode;
@@ -444,6 +423,42 @@ export default function BranchGridMap({
       if (leadNode) return leadNode;
     }
     return null;
+  };
+
+  const resolveChildNodeForSha = (sha: string | null | undefined, preferredBranchName?: string): Node | null => {
+    if (!sha) return null;
+    const preferredNode = nodeForCommitSha(visibleNodesBySha, sha, preferredBranchName);
+    if (preferredNode) return preferredNode;
+    const canonicalNode = resolveCanonicalNodeForSha(sha, preferredBranchName);
+    if (canonicalNode) return canonicalNode;
+    const clusterKeys = clusterKeyBySha.get(sha) ?? [];
+    for (const clusterKey of clusterKeys) {
+      const leadId = leadByClusterKey.get(clusterKey);
+      if (!leadId) continue;
+      const leadNode = renderNodes.find((candidate) => candidate.commit.id === leadId);
+      if (leadNode) return leadNode;
+    }
+    return null;
+  };
+
+  const getIncomingAnchor = (node: Node): { x: number; y: number } => ({
+    x: node.x + CARD_WIDTH / 2,
+    y: node.y + CARD_HEIGHT,
+  });
+
+  const getOutgoingAnchor = (node: Node, isBranching: boolean): { x: number; y: number } => ({
+    x: isBranching ? node.x + CARD_WIDTH : node.x + CARD_WIDTH / 2,
+    y: isBranching ? node.y + CARD_HEIGHT / 2 : node.y,
+  });
+
+  const resolveParentNode = (parentSha: string, preferredBranchName: string): Node | null => {
+    const preferredNode = nodeForCommitSha(visibleNodesBySha, parentSha, preferredBranchName);
+    if (preferredNode) return preferredNode;
+    return resolveCanonicalNodeForSha(parentSha, preferredBranchName);
+  };
+
+  const resolveNodeForSha = (sha: string | null | undefined, preferredBranchName?: string): Node | null => {
+    return resolveChildNodeForSha(sha, preferredBranchName);
   };
 
   const branchDebugRows =
@@ -469,10 +484,10 @@ export default function BranchGridMap({
             `  baseParentSha=${baseCommit?.parentSha ?? 'null'}`,
             `  divergedFromSha=${branch.divergedFromSha ?? 'null'}`,
             `  createdFromSha=${branch.createdFromSha ?? 'null'}`,
-            `  parentNode=${parentNode ? `${parentNode.commit.branchName}/${parentNode.commit.id.slice(0, 7)} col=${parentNode.column} row=${parentNode.row}` : 'null'}`,
-            `  childNode=${childNode ? `${childNode.commit.branchName}/${childNode.commit.id.slice(0, 7)} col=${childNode.column} row=${childNode.row}` : 'null'}`,
-          ];
-        })
+          `  parentNode=${parentNode ? `${parentNode.commit.branchName}/${parentNode.commit.id.slice(0, 7)} col=${parentNode.column} row=${parentNode.row}` : 'null'}`,
+          `  childNode=${childNode ? `${childNode.commit.branchName}/${childNode.commit.id.slice(0, 7)} col=${childNode.column} row=${childNode.row}` : 'null'}`,
+        ];
+      })
       : [];
 
   for (const branch of branches) {
@@ -483,9 +498,29 @@ export default function BranchGridMap({
     const parentNode = resolveParentNode(branchBaseCommit.parentSha ?? branch.divergedFromSha ?? branch.createdFromSha ?? '', parentName);
     const receivingCommit = branchReceivingCommitByName.get(branch.name) ?? branchBaseCommit;
     const childNode = resolveNodeForSha(receivingCommit.id, branch.name) ?? resolveConnectorNode(receivingCommit as VisualCommit);
-    if (!parentNode || !childNode || parentNode.commit.id === childNode.commit.id) continue;
+    if (!parentNode || !childNode || parentNode.commit.id === childNode.commit.id) {
+      connectorDecisions.push({
+        id: `branch:${parentNode?.commit.id ?? 'null'}->${childNode?.commit.id ?? 'null'}`,
+        kind: 'branch',
+        parent: parentNode?.commit.id ?? 'null',
+        child: childNode?.commit.id ?? 'null',
+        rendered: false,
+        reason: !parentNode ? 'missing parent node' : !childNode ? 'missing child node' : 'parent and child are the same node',
+      });
+      continue;
+    }
     const key = `branch:${parentNode.commit.id}->${childNode.commit.id}`;
-    if (connectorKeySet.has(key)) continue;
+    if (connectorKeySet.has(key)) {
+      connectorDecisions.push({
+        id: key,
+        kind: 'branch',
+        parent: parentNode.commit.id,
+        child: childNode.commit.id,
+        rendered: false,
+        reason: 'duplicate connector key',
+      });
+      continue;
+    }
     connectorKeySet.add(key);
     connectorParentShas.add(parentNode.commit.id);
     const isBranching = parentNode.column !== childNode.column;
@@ -497,6 +532,14 @@ export default function BranchGridMap({
       fromY: sourceAnchor.y,
       toX: targetAnchor.x,
       toY: targetAnchor.y,
+    });
+    connectorDecisions.push({
+      id: key,
+      kind: 'branch',
+      parent: parentNode.commit.id,
+      child: childNode.commit.id,
+      rendered: true,
+      reason: isBranching ? 'branch connector rendered' : 'vertical connector rendered',
     });
   }
 
@@ -504,11 +547,41 @@ export default function BranchGridMap({
     const parentSha = node.commit.parentSha ?? null;
     if (!parentSha) continue;
     const parentNode = resolveParentNode(parentSha, node.commit.branchName);
-    if (!parentNode) continue;
-    const childNode = resolveConnectorNode(node.commit) ?? node;
-    if (childNode.commit.id === parentNode.commit.id) continue;
-    const key = `${parentNode.commit.visualId ?? parentNode.commit.id}->${childNode.commit.visualId}`;
-    if (connectorKeySet.has(key)) continue;
+    if (!parentNode) {
+      connectorDecisions.push({
+        id: `${node.commit.visualId}->${parentSha}`,
+        kind: 'ancestry',
+        parent: parentSha,
+        child: node.commit.id,
+        rendered: false,
+        reason: 'missing parent node',
+      });
+      continue;
+    }
+    const childNode = node;
+    if (childNode.commit.id === parentNode.commit.id) {
+      connectorDecisions.push({
+        id: `${parentNode.commit.id}->${childNode.commit.id}`,
+        kind: 'ancestry',
+        parent: parentNode.commit.id,
+        child: childNode.commit.id,
+        rendered: false,
+        reason: 'parent and child are the same node',
+      });
+      continue;
+    }
+    const key = `${node.commit.branchName}:${parentNode.commit.visualId ?? parentNode.commit.id}->${childNode.commit.visualId}`;
+    if (connectorKeySet.has(key)) {
+      connectorDecisions.push({
+        id: key,
+        kind: 'ancestry',
+        parent: parentNode.commit.id,
+        child: childNode.commit.id,
+        rendered: false,
+        reason: 'duplicate connector key',
+      });
+      continue;
+    }
     connectorKeySet.add(key);
     connectorParentShas.add(parentNode.commit.id);
     const isBranching = parentNode.column !== childNode.column;
@@ -521,17 +594,89 @@ export default function BranchGridMap({
       toX: targetAnchor.x,
       toY: targetAnchor.y,
     });
+    connectorDecisions.push({
+      id: key,
+      kind: 'ancestry',
+      parent: parentNode.commit.id,
+      child: childNode.commit.id,
+      rendered: true,
+      reason: isBranching ? 'ancestry connector rendered' : 'vertical ancestry rendered',
+    });
+  }
+
+  const nodesByBranch = new Map<string, Node[]>();
+  for (const node of renderNodes) {
+    const list = nodesByBranch.get(node.commit.branchName) ?? [];
+    list.push(node);
+    nodesByBranch.set(node.commit.branchName, list);
+  }
+  for (const [branchName, branchNodes] of nodesByBranch.entries()) {
+    if (branchNodes.length < 2) continue;
+    const orderedBranchNodes = [...branchNodes].sort(
+      (a, b) => new Date(a.commit.date).getTime() - new Date(b.commit.date).getTime() || a.commit.id.localeCompare(b.commit.id)
+    );
+    for (let index = 1; index < orderedBranchNodes.length; index += 1) {
+      const parentNode = orderedBranchNodes[index - 1]!;
+      const childNode = orderedBranchNodes[index]!;
+      if (parentNode.commit.id === childNode.commit.id) continue;
+      const key = `chain:${branchName}:${parentNode.commit.id}->${childNode.commit.id}`;
+      if (connectorKeySet.has(key)) {
+        connectorDecisions.push({
+          id: key,
+          kind: 'ancestry',
+          parent: parentNode.commit.id,
+          child: childNode.commit.id,
+          rendered: false,
+          reason: 'duplicate branch chain key',
+        });
+        continue;
+      }
+      connectorKeySet.add(key);
+      const isBranching = parentNode.column !== childNode.column;
+      const sourceAnchor = getOutgoingAnchor(parentNode, isBranching);
+      const targetAnchor = getIncomingAnchor(childNode);
+      connectors.push({
+        id: key,
+        fromX: sourceAnchor.x,
+        fromY: sourceAnchor.y,
+        toX: targetAnchor.x,
+        toY: targetAnchor.y,
+      });
+      connectorDecisions.push({
+        id: key,
+        kind: 'ancestry',
+        parent: parentNode.commit.id,
+        child: childNode.commit.id,
+        rendered: true,
+        reason: 'branch chain rendered',
+      });
+    }
   }
 
   return (
     <div className="rounded-2xl border border-border bg-card overflow-hidden">
-      <div ref={scrollContainerRef} className="overflow-auto">
-        <div className="relative min-w-max p-2.5" style={{ width: contentWidth, height: contentHeight }}>
-          {renderNodes.map((node) => {
+      {allCommits.length === 0 ? (
+        <div className="flex items-center justify-center py-20">
+          <div className="rounded-xl border border-border/50 bg-muted/30 shadow-inner px-4 py-3">
+            <p className="text-sm text-muted-foreground">No commits to render</p>
+          </div>
+        </div>
+      ) : (
+        <div ref={scrollContainerRef} className="overflow-auto">
+          <div className="relative min-w-max p-2.5" style={{ width: contentWidth, height: contentHeight }}>
+            {renderNodes.map((node) => {
             const clusterKey = clusterKeyByCommitId.get(node.commit.visualId);
             const isCollapsed = clusterKey ? collapsedClumps.has(clusterKey) : false;
             const isTop = clusterKey ? leadByClusterKey.get(clusterKey) === node.commit.id : false;
             const clumpCount = clusterKey ? clusterCounts.get(clusterKey) ?? 1 : 1;
+            const nodeConnectorDecisions = connectorDecisions.filter((decision) => decision.parent === node.commit.id || decision.child === node.commit.id);
+            const nodeConnectorRendered = nodeConnectorDecisions.filter((decision) => decision.rendered).length;
+            const nodeConnectorSkipped = nodeConnectorDecisions.length - nodeConnectorRendered;
+            const renderedBranchDecisions = nodeConnectorDecisions.filter((decision) => decision.rendered && decision.kind === 'branch').length;
+            const renderedAncestryDecisions = nodeConnectorDecisions.filter((decision) => decision.rendered && decision.kind === 'ancestry').length;
+            const nodeConnectorSummary = nodeConnectorDecisions.length > 0
+              ? `${nodeConnectorRendered} shown, ${nodeConnectorSkipped} skipped`
+              : 'No connector decisions';
             return (
             <div
               key={node.commit.visualId}
@@ -540,8 +685,10 @@ export default function BranchGridMap({
               }}
               className={cn(
                 'absolute z-20 overflow-hidden rounded-2xl border border-border bg-background/95 shadow-sm transition-all duration-200',
-                branchStartShas.has(node.commit.id) || connectorParentShas.has(node.commit.id)
-                  ? 'border-blue-500 ring-2 ring-blue-500/35 shadow-[0_0_0_1px_rgba(59,130,246,0.18)]'
+                branchStartShas.has(node.commit.id)
+                  ? branchStartAccentClass
+                  : connectorParentShas.has(node.commit.id)
+                    ? connectorParentAccentClass
                   : branchBaseCommitByName.get(node.commit.branchName)?.id === node.commit.id
                     ? 'border-amber-500 ring-2 ring-amber-500/35 shadow-[0_0_0_1px_rgba(245,158,11,0.18)]'
                     : 'border-border/50',
@@ -574,6 +721,31 @@ export default function BranchGridMap({
                 <div className="mt-2 max-w-[20rem] text-[12px] font-medium leading-tight tracking-tight text-primary/85">
                   {isCollapsed && isTop ? `${node.commit.message} +${clumpCount - 1}` : node.commit.message}
                 </div>
+                <div className="mt-2 flex flex-wrap items-center gap-1.5">
+                  <span
+                    className={cn(
+                      'inline-flex items-center rounded-full border px-2 py-0.5 text-[10px] font-medium uppercase tracking-wide',
+                      nodeConnectorRendered > 0
+                        ? 'border-blue-500/20 bg-primary/10 text-primary'
+                        : nodeConnectorDecisions.length > 0
+                          ? 'border-amber-500/20 bg-amber-50 text-amber-600 dark:bg-amber-900/20 dark:text-amber-400'
+                          : 'border-border/50 bg-muted/30 text-muted-foreground'
+                    )}
+                    title={nodeConnectorDecisions.map((decision) => `${decision.rendered ? 'rendered' : 'skipped'} ${decision.kind} ${decision.parent.slice(0, 7)} -> ${decision.child.slice(0, 7)}: ${decision.reason}`).join('\n') || 'No connector decisions'}
+                  >
+                    {nodeConnectorSummary}
+                  </span>
+                  {renderedBranchDecisions > 0 ? (
+                    <span className="inline-flex items-center rounded-full border border-border/50 bg-muted/30 px-2 py-0.5 text-[10px] font-medium uppercase tracking-wide text-muted-foreground">
+                      Branch {renderedBranchDecisions}
+                    </span>
+                  ) : null}
+                  {renderedAncestryDecisions > 0 ? (
+                    <span className="inline-flex items-center rounded-full border border-border/50 bg-muted/30 px-2 py-0.5 text-[10px] font-medium uppercase tracking-wide text-muted-foreground">
+                      Ancestry {renderedAncestryDecisions}
+                    </span>
+                  ) : null}
+                </div>
                 <div className="mt-auto flex items-end justify-between gap-3 pt-4">
                   <div className="text-[12px] font-medium text-primary/80">@{node.commit.author}</div>
                   <div className="text-[12px] font-medium text-primary/80">{new Date(node.commit.date).toLocaleString('en-US', { month: 'long', day: 'numeric', hour: 'numeric', minute: '2-digit' })}</div>
@@ -586,39 +758,40 @@ export default function BranchGridMap({
               </div>
             </div>
             );
-          })}
-          <svg className="pointer-events-none absolute inset-0 z-30" width={contentWidth} height={contentHeight} viewBox={`0 0 ${contentWidth} ${contentHeight}`} aria-hidden="true">
-            <defs>
-              <marker id="branch-grid-arrow" markerWidth="8" markerHeight="8" refX="7" refY="4" orient="auto" markerUnits="strokeWidth">
-                <path d="M0,0 L8,4 L0,8 z" fill={CONNECTOR_COLOR} />
-              </marker>
-            </defs>
-            {connectors.map((connector) => {
-              const elbowX = connector.toX;
-              return (
-                <path
-                  key={connector.id}
-                  d={[
-                    `M ${connector.fromX} ${connector.fromY}`,
-                    `H ${elbowX}`,
-                    `V ${connector.toY}`,
-                  ].join(' ')}
-                  fill="none"
-                  stroke={CONNECTOR_COLOR}
-                  strokeWidth="1.5"
-                  markerEnd="url(#branch-grid-arrow)"
-                />
-              );
             })}
-          </svg>
+            <svg className="pointer-events-none absolute inset-0 z-30" width={contentWidth} height={contentHeight} viewBox={`0 0 ${contentWidth} ${contentHeight}`} aria-hidden="true">
+              <defs>
+                <marker id="branch-grid-arrow" markerWidth="8" markerHeight="8" refX="7" refY="4" orient="auto" markerUnits="strokeWidth">
+                  <path d="M0,0 L8,4 L0,8 z" fill={CONNECTOR_COLOR} />
+                </marker>
+              </defs>
+              {connectors.map((connector) => {
+                const elbowX = connector.toX;
+                return (
+                  <path
+                    key={connector.id}
+                    d={[
+                      `M ${connector.fromX} ${connector.fromY}`,
+                      `H ${elbowX}`,
+                      `V ${connector.toY}`,
+                    ].join(' ')}
+                    fill="none"
+                    stroke={CONNECTOR_COLOR}
+                    strokeWidth="1.5"
+                    markerEnd="url(#branch-grid-arrow)"
+                  />
+                );
+              })}
+            </svg>
+          </div>
         </div>
-      </div>
+      )}
       <details className="border-t border-border/50 bg-muted/30 px-4 py-3" open={process.env.NODE_ENV !== 'production'}>
         <summary className="cursor-pointer text-xs font-medium text-muted-foreground hover:text-foreground transition-colors">
           Commit debug
         </summary>
         <pre className="mt-3 whitespace-pre-wrap break-words text-[11px] leading-5 text-muted-foreground">
-          {[...debugRows, ...branchDebugRows].join('\n')}
+          {[...debugRows, ...branchDebugRows, '', ...connectorDecisions.map((decision) => `${decision.rendered ? 'rendered' : 'skipped'} [${decision.kind}] ${decision.parent.slice(0, 7)} -> ${decision.child.slice(0, 7)} (${decision.reason})`)].join('\n')}
         </pre>
       </details>
     </div>
