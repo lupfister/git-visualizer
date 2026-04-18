@@ -429,12 +429,16 @@ fn infer_parent_by_merge_base(
                 let same_branch_distance = branch_distance_from_base == *best_branch_distance;
                 let better_candidate_distance =
                     candidate_distance_from_base < *best_candidate_distance;
+                let same_candidate_distance =
+                    candidate_distance_from_base == *best_candidate_distance;
                 let prefer_non_default = best_candidate.is_default && !candidate.is_default;
                 let newer_candidate = candidate.last_commit_date > best_candidate.last_commit_date;
 
                 if better_branch_distance
                     || (same_branch_distance
-                        && (prefer_non_default || better_candidate_distance || newer_candidate))
+                        && (better_candidate_distance
+                            || (same_candidate_distance
+                                && (prefer_non_default || newer_candidate))))
                 {
                     best_by_branch_point = Some((
                         candidate.clone(),

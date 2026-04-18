@@ -2,14 +2,13 @@ import React, { useState, useRef, useEffect, useLayoutEffect } from 'react';
 import { ChevronDown, GitCommitHorizontal, Loader2, X } from 'lucide-react';
 import { AnimatePresence, motion } from 'framer-motion';
 import { layoutWithLines, prepareWithSegments } from '@chenglou/pretext';
-import { Branch, BranchCommitPreview, BranchPromptMeta, CheckedOutRef, DirectCommit, MergeNode, OpenPR, WorktreeInfo } from '../types';
-import { ViewMode } from './BranchMapView';
+import { Branch, BranchCommitPreview, BranchPromptMeta, CheckedOutRef, DirectCommit, MergeNode, OpenPR, WorktreeInfo } from '../../types';
 import {
   buildBranchOrthogonalPath,
   buildMergeOrthogonalPath,
   commitRectSize,
   type AnchorPoint as LayoutAnchorPoint,
-} from './branchMapLayout';
+} from './LayoutSvg';
 
 // ── Layout constants ──────────────────────────────────────────────────────────
 const LEFT_PAD = 0;
@@ -802,7 +801,6 @@ interface BranchMapProps {
   branchPromptMeta?: Record<string, BranchPromptMeta>;
   branchCommitPreviews?: Record<string, BranchCommitPreview[]>;
   branchUniqueAheadCounts?: Record<string, number>;
-  view?: ViewMode;
   staleBranches?: Branch[];
   openPRs?: OpenPR[];
   isLoading?: boolean;
@@ -858,7 +856,6 @@ export default function BranchMap({
   branchPromptMeta = {},
   branchCommitPreviews = {},
   branchUniqueAheadCounts = {},
-  view = 'time',
   staleBranches = [],
   openPRs = [],
   isLoading = false,
@@ -2597,22 +2594,10 @@ export default function BranchMap({
     return () => document.removeEventListener('mousedown', handler);
   }, [worktreeMenuOpen]);
 
-  // ── Active branches (branch-first) ─────────────────────────────────────────
-  const STATUS_PRIORITY: Record<string, number> = { stale: 1, fresh: 2, unknown: 3 };
+  // ── Active branches (time-only map) ───────────────────────────────────────
   const activeBranches = branches
     .filter(b => b.name !== defaultBranch)
-    .sort((a, b) => {
-      if (view === 'status') {
-        const diff = STATUS_PRIORITY[a.status] - STATUS_PRIORITY[b.status];
-        return diff !== 0 ? diff : new Date(b.lastCommitDate).getTime() - new Date(a.lastCommitDate).getTime();
-      }
-      if (view === 'creator') {
-        const diff = a.lastCommitAuthor.localeCompare(b.lastCommitAuthor);
-        return diff !== 0 ? diff : new Date(b.lastCommitDate).getTime() - new Date(a.lastCommitDate).getTime();
-      }
-      // 'time': most recently committed first
-      return new Date(b.lastCommitDate).getTime() - new Date(a.lastCommitDate).getTime();
-    });
+    .sort((a, b) => new Date(b.lastCommitDate).getTime() - new Date(a.lastCommitDate).getTime());
   const selectableBranchNameSet = new Set<string>([defaultBranch, ...activeBranches.map((b) => b.name)]);
   const activeBranchNameSignature = Array.from(selectableBranchNameSet).sort().join('\u0000');
   const branchByName = new Map(activeBranches.map((b) => [b.name, b]));
@@ -4246,8 +4231,9 @@ export default function BranchMap({
     }
 
     visiting.add(branchName);
-    const renderParent = timing.parentName;
+    const renderParent = branch.parentBranch ?? timing.parentName;
     const hasVisibleParent =
+      renderParent != null &&
       renderParent !== defaultBranch &&
       renderParent !== branch.name &&
       branchByName.has(renderParent);

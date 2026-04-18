@@ -3,7 +3,7 @@ import { invoke } from '@tauri-apps/api/core';
 import { listen } from '@tauri-apps/api/event';
 import { getCurrentWindow } from '@tauri-apps/api/window';
 import { ArrowLeft } from 'lucide-react';
-import BranchMapView, { type OrientationMode } from '../components/BranchMapView';
+import BranchMapView, { type OrientationMode } from '../components/svg/MapViewSvg';
 import FolderPickerModal from './FolderPickerModal';
 import type { Branch, BranchCommitPreview, BranchPromptMeta, BranchPromptMarker, CheckedOutRef, Commit, DirectCommit, GitHubAuthStatus, GitHubInfo, GitStashEntry, MergeNode, OpenPR, WorktreeInfo } from '../types';
 import { foldStashNodesIntoGraph } from './placeStashNode';
@@ -41,6 +41,10 @@ function App() {
   const [removeWorktreeInProgress, setRemoveWorktreeInProgress] = useState(false);
   const [orientation, setOrientation] = useState<OrientationMode>('vertical');
   const [mapMode, setMapMode] = useState<MapMode>('time');
+  const [gridSearchQuery, setGridSearchQuery] = useState('');
+  const [gridSearchJumpToken, setGridSearchJumpToken] = useState(0);
+  const [gridSearchResultCount, setGridSearchResultCount] = useState<number | null>(null);
+  const [gridFocusSha, setGridFocusSha] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);       // button spinner in landing
   const [mapLoading, setMapLoading] = useState(false); // canvas skeleton in map
   const [error, setError] = useState<string | null>(null);
@@ -1665,6 +1669,11 @@ function App() {
               branchCommitPreviews={enrichedBranchCommitPreviews}
               branchUniqueAheadCounts={enrichedBranchUniqueAheadCounts}
               view={mapMode}
+              gridSearchQuery={gridSearchQuery}
+              gridSearchJumpToken={gridSearchJumpToken}
+              gridFocusSha={gridFocusSha}
+              onGridSearchResultCountChange={setGridSearchResultCount}
+              onGridSearchFocusChange={setGridFocusSha}
               isLoading={mapLoading}
               scrollRequest={scrollRequest}
               focusedErrorBranch={focusedErrorBranch}
@@ -1745,6 +1754,42 @@ function App() {
               {githubAuthMessage && (
                 <span className="text-xs text-muted-foreground max-w-64 truncate" title={githubAuthMessage}>
                   {githubAuthMessage}
+                </span>
+              )}
+              {mapMode === 'grid' && (
+                <div className="window-no-drag flex min-w-56 flex-1 max-w-sm items-center gap-2 rounded-full border border-border bg-card px-3 py-1.5 shadow-sm">
+                  <span className="text-[10px] uppercase tracking-wide text-muted-foreground font-medium shrink-0">
+                    Search
+                  </span>
+                  <input
+                    value={gridSearchQuery}
+                    onChange={(event) => setGridSearchQuery(event.target.value)}
+                    onKeyDown={(event) => {
+                      if (event.key === 'Enter') {
+                        event.preventDefault();
+                        setGridSearchJumpToken((token) => token + 1);
+                      }
+                    }}
+                    placeholder="sha, message, or branch"
+                    className="w-full bg-transparent text-xs text-foreground outline-none placeholder:text-muted-foreground/70"
+                  />
+                  <button
+                    type="button"
+                    onClick={() => setGridSearchJumpToken((token) => token + 1)}
+                    className="shrink-0 rounded-full border border-border/50 bg-muted/30 px-2.5 py-1 text-[10px] font-medium uppercase tracking-wide text-muted-foreground transition-colors hover:bg-accent hover:text-foreground"
+                  >
+                    Jump
+                  </button>
+                </div>
+              )}
+              {mapMode === 'grid' && gridSearchResultCount != null && (
+                <span className="text-xs text-muted-foreground">
+                  {gridSearchResultCount} match{gridSearchResultCount === 1 ? '' : 'es'}
+                </span>
+              )}
+              {mapMode === 'grid' && gridFocusSha && (
+                <span className="text-xs rounded-full border border-primary/30 bg-primary/10 px-3 py-1 text-primary">
+                  Focused {gridFocusSha.slice(0, 7)}
                 </span>
               )}
               {commitSwitchFeedback && (
