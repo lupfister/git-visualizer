@@ -83,6 +83,7 @@ export async function fetchBranches(
           name,
           commitsAhead: 0,
           commitsBehind: 0,
+          presidesFromSha: null,
           lastCommitDate,
           lastCommitAuthor,
           lastCommitAuthorAvatar,
@@ -120,6 +121,7 @@ export async function fetchBranches(
         const divergedFromSha: string = compare.merge_base_commit?.sha;
         const divergedFromDate: string | undefined = compare.merge_base_commit?.commit?.author?.date;
         const mergeable: boolean | null = compare.mergeable ?? null;
+        const presidesFromSha: string | null = compare.merge_base_commit?.sha ?? null;
 
         // We intentionally do not surface "conflict risk" as a separate UI status.
         // Mergeability still influences the `mergeable` field, but the visible state
@@ -130,6 +132,7 @@ export async function fetchBranches(
           name,
           commitsAhead,
           commitsBehind,
+          presidesFromSha,
           lastCommitDate,
           lastCommitAuthor,
           lastCommitAuthorAvatar,
@@ -146,6 +149,7 @@ export async function fetchBranches(
           name,
           commitsAhead: 0,
           commitsBehind: 0,
+          presidesFromSha: null,
           lastCommitDate,
           lastCommitAuthor,
           lastCommitAuthorAvatar,

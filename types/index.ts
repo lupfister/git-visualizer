@@ -5,6 +5,7 @@ export interface Branch {
   name: string;
   commitsAhead: number;
   commitsBehind: number;
+  presidesFromSha?: string | null;
   createdFromSha?: string;
   createdDate?: string;
   lastCommitDate: string;

@@ -102,6 +102,11 @@ export default function BranchGridMap({
     const baseCommit = branchBaseCommit(branch.name, branchCommitPreviews, branchUniqueAheadCounts);
     if (baseCommit) branchBaseCommitByName.set(branch.name, baseCommit);
   }
+  const branchReceivingCommitByName = new Map<string, CommitItem>();
+  for (const [branchName, commits] of branchCommitsByLane.entries()) {
+    const firstConcreteCommit = commits.find((commit) => commit.kind !== 'branch-created');
+    if (firstConcreteCommit) branchReceivingCommitByName.set(branchName, firstConcreteCommit);
+  }
 
   const resolveBranchStartParentName = (branch: Branch): string => {
     const declaredParent = branch.parentBranch;
@@ -112,7 +117,7 @@ export default function BranchGridMap({
       branchByName.has(declaredParent);
     if (!hasConcreteParent) return defaultBranch;
 
-    const forkSha = branch.divergedFromSha ?? branch.createdFromSha;
+    const forkSha = branch.presidesFromSha ?? branch.divergedFromSha ?? branch.createdFromSha;
     if (forkSha) {
       const declaredParentCommitShas = branchCommitShasByName.get(declaredParent) ?? new Set<string>();
       if (declaredParentCommitShas.has(forkSha)) return declaredParent;
@@ -131,7 +136,7 @@ export default function BranchGridMap({
 
   const resolveBranchStartSha = (branch: Branch): string | null => {
     const childBaseCommit = branchBaseCommitByName.get(branch.name);
-    const forkSha = branch.divergedFromSha ?? branch.createdFromSha ?? childBaseCommit?.parentSha ?? null;
+    const forkSha = branch.presidesFromSha ?? branch.divergedFromSha ?? branch.createdFromSha ?? childBaseCommit?.parentSha ?? null;
     if (!forkSha) return null;
     const parentName = resolveBranchStartParentName(branch);
     if (parentName === defaultBranch) {
@@ -185,6 +190,7 @@ export default function BranchGridMap({
   type GridCluster = { branchName: string; key: string; commitIds: string[]; leadId: string; count: number };
   const clustersByBranch = new Map<string, GridCluster[]>();
   const clusterKeyByCommitId = new Map<string, string>();
+  const clusterKeyBySha = new Map<string, string[]>();
   const leadByClusterKey = new Map<string, string>();
   const clusterCounts = new Map<string, number>();
   const buildClustersForBranch = (branchName: string, commits: VisualCommit[]): GridCluster[] => {
@@ -207,7 +213,13 @@ export default function BranchGridMap({
       clusters.push(clusterVm);
       leadByClusterKey.set(key, leadId);
       clusterCounts.set(key, chunk.length);
-      for (const id of clusterVm.commitIds) clusterKeyByCommitId.set(id, key);
+      for (const id of clusterVm.commitIds) {
+        clusterKeyByCommitId.set(id, key);
+        const sha = id.split(':').slice(1).join(':');
+        const keys = clusterKeyBySha.get(sha) ?? [];
+        if (!keys.includes(key)) keys.push(key);
+        clusterKeyBySha.set(sha, keys);
+      }
     });
     return clusters;
   };
@@ -382,22 +394,132 @@ export default function BranchGridMap({
     if (!clusterKey || !collapsedClumps.has(clusterKey)) return null;
     return visibleNodeByClusterKey.get(clusterKey) ?? null;
   };
+  const connectorKeySet = new Set<string>();
   for (const branch of branches) {
-    const parentName = resolveBranchStartParentName(branch);
-    if (!parentName) continue;
-    const childBaseCommit = branchBaseCommitByName.get(branch.name);
-    const childNode = nodeForConnectorTipSha(childBaseCommit?.id, branch.name);
-    const parentNode = nodeForCommitSha(visibleNodesBySha, childBaseCommit?.parentSha ?? null, parentName);
     const branchStartSha = blueStartShaForBranch(branch);
     if (branchStartSha) branchStartShas.add(branchStartSha);
-    if (!childNode || !parentNode) continue;
+  }
+  const resolveConnectorNode = (commit: VisualCommit): Node | null => {
+    const directNode = nodeForConnectorTipSha(commit.id, commit.branchName);
+    if (directNode) return directNode;
+    const clusterKey = clusterKeyByCommitId.get(commit.visualId);
+    if (!clusterKey) return null;
+    const leadId = leadByClusterKey.get(clusterKey);
+    if (!leadId) return null;
+    return renderNodes.find((candidate) => candidate.commit.id === leadId) ?? null;
+  };
+
+  const getIncomingAnchor = (node: Node): { x: number; y: number } => ({
+    x: node.x + CARD_WIDTH / 2,
+    y: node.y + CARD_HEIGHT,
+  });
+
+  const getOutgoingAnchor = (node: Node, isBranching: boolean): { x: number; y: number } => ({
+    x: isBranching ? node.x + CARD_WIDTH : node.x + CARD_WIDTH / 2,
+    y: isBranching ? node.y + CARD_HEIGHT / 2 : node.y,
+  });
+
+  const resolveParentNode = (parentSha: string, preferredBranchName: string): Node | null => {
+    const directNode = nodeForCommitSha(visibleNodesBySha, parentSha, preferredBranchName);
+    if (directNode) return directNode;
+    const clusterKeys = clusterKeyBySha.get(parentSha) ?? [];
+    for (const clusterKey of clusterKeys) {
+      const leadId = leadByClusterKey.get(clusterKey);
+      if (!leadId) continue;
+      const leadNode = renderNodes.find((candidate) => candidate.commit.id === leadId);
+      if (leadNode) return leadNode;
+    }
+    return null;
+  };
+
+  const resolveNodeForSha = (sha: string | null | undefined, preferredBranchName?: string): Node | null => {
+    if (!sha) return null;
+    const directNode = nodeForCommitSha(visibleNodesBySha, sha, preferredBranchName);
+    if (directNode) return directNode;
+    const clusterKeys = clusterKeyBySha.get(sha) ?? [];
+    for (const clusterKey of clusterKeys) {
+      const leadId = leadByClusterKey.get(clusterKey);
+      if (!leadId) continue;
+      const leadNode = renderNodes.find((candidate) => candidate.commit.id === leadId);
+      if (leadNode) return leadNode;
+    }
+    return null;
+  };
+
+  const branchDebugRows =
+    process.env.NODE_ENV !== 'production'
+      ? branches.flatMap((branch) => {
+          if (branch.name !== 'promptsOnGraph' && branch.name !== 'verticalGraph') return [];
+          const baseCommit = branchBaseCommitByName.get(branch.name);
+          const receivingCommit = branchReceivingCommitByName.get(branch.name);
+          const parentName = resolveBranchStartParentName(branch);
+          const branchStartSha = blueStartShaForBranch(branch);
+          const parentNode = baseCommit
+            ? resolveParentNode(baseCommit.parentSha ?? branch.divergedFromSha ?? branch.createdFromSha ?? '', parentName)
+            : null;
+          const childNode = receivingCommit
+            ? resolveNodeForSha(receivingCommit.id, branch.name) ?? resolveConnectorNode(receivingCommit as VisualCommit)
+            : null;
+          return [
+            `Branch debug ${branch.name}`,
+            `  parentName=${parentName}`,
+            `  branchStartSha=${branchStartSha ?? 'null'}`,
+            `  baseCommit=${baseCommit?.id ?? 'null'}`,
+            `  receivingCommit=${receivingCommit?.id ?? 'null'}`,
+            `  baseParentSha=${baseCommit?.parentSha ?? 'null'}`,
+            `  divergedFromSha=${branch.divergedFromSha ?? 'null'}`,
+            `  createdFromSha=${branch.createdFromSha ?? 'null'}`,
+            `  parentNode=${parentNode ? `${parentNode.commit.branchName}/${parentNode.commit.id.slice(0, 7)} col=${parentNode.column} row=${parentNode.row}` : 'null'}`,
+            `  childNode=${childNode ? `${childNode.commit.branchName}/${childNode.commit.id.slice(0, 7)} col=${childNode.column} row=${childNode.row}` : 'null'}`,
+          ];
+        })
+      : [];
+
+  for (const branch of branches) {
+    if (branch.name === defaultBranch) continue;
+    const branchBaseCommit = branchBaseCommitByName.get(branch.name);
+    if (!branchBaseCommit) continue;
+    const parentName = resolveBranchStartParentName(branch);
+    const parentNode = resolveParentNode(branchBaseCommit.parentSha ?? branch.divergedFromSha ?? branch.createdFromSha ?? '', parentName);
+    const receivingCommit = branchReceivingCommitByName.get(branch.name) ?? branchBaseCommit;
+    const childNode = resolveNodeForSha(receivingCommit.id, branch.name) ?? resolveConnectorNode(receivingCommit as VisualCommit);
+    if (!parentNode || !childNode || parentNode.commit.id === childNode.commit.id) continue;
+    const key = `branch:${parentNode.commit.id}->${childNode.commit.id}`;
+    if (connectorKeySet.has(key)) continue;
+    connectorKeySet.add(key);
     connectorParentShas.add(parentNode.commit.id);
+    const isBranching = parentNode.column !== childNode.column;
+    const sourceAnchor = getOutgoingAnchor(parentNode, isBranching);
+    const targetAnchor = getIncomingAnchor(childNode);
     connectors.push({
-      id: `${parentName}->${branch.name}`,
-      fromX: parentNode.x + CARD_WIDTH,
-      fromY: parentNode.y + CARD_HEIGHT / 2,
-      toX: childNode.x + CARD_WIDTH / 2,
-      toY: childNode.y + CARD_HEIGHT,
+      id: key,
+      fromX: sourceAnchor.x,
+      fromY: sourceAnchor.y,
+      toX: targetAnchor.x,
+      toY: targetAnchor.y,
+    });
+  }
+
+  for (const node of renderNodes) {
+    const parentSha = node.commit.parentSha ?? null;
+    if (!parentSha) continue;
+    const parentNode = resolveParentNode(parentSha, node.commit.branchName);
+    if (!parentNode) continue;
+    const childNode = resolveConnectorNode(node.commit) ?? node;
+    if (childNode.commit.id === parentNode.commit.id) continue;
+    const key = `${parentNode.commit.visualId ?? parentNode.commit.id}->${childNode.commit.visualId}`;
+    if (connectorKeySet.has(key)) continue;
+    connectorKeySet.add(key);
+    connectorParentShas.add(parentNode.commit.id);
+    const isBranching = parentNode.column !== childNode.column;
+    const sourceAnchor = getOutgoingAnchor(parentNode, isBranching);
+    const targetAnchor = getIncomingAnchor(childNode);
+    connectors.push({
+      id: key,
+      fromX: sourceAnchor.x,
+      fromY: sourceAnchor.y,
+      toX: targetAnchor.x,
+      toY: targetAnchor.y,
     });
   }
 
@@ -472,17 +594,13 @@ export default function BranchGridMap({
               </marker>
             </defs>
             {connectors.map((connector) => {
-              const exitX = connector.fromX + 18;
-              const cornerX = connector.toX;
-              const cornerY = connector.toY;
+              const elbowX = connector.toX;
               return (
                 <path
                   key={connector.id}
                   d={[
                     `M ${connector.fromX} ${connector.fromY}`,
-                    `H ${exitX}`,
-                    `V ${cornerY}`,
-                    `H ${cornerX}`,
+                    `H ${elbowX}`,
                     `V ${connector.toY}`,
                   ].join(' ')}
                   fill="none"
@@ -495,12 +613,12 @@ export default function BranchGridMap({
           </svg>
         </div>
       </div>
-      <details className="border-t border-border/50 bg-muted/30 px-4 py-3">
+      <details className="border-t border-border/50 bg-muted/30 px-4 py-3" open={process.env.NODE_ENV !== 'production'}>
         <summary className="cursor-pointer text-xs font-medium text-muted-foreground hover:text-foreground transition-colors">
           Commit debug
         </summary>
         <pre className="mt-3 whitespace-pre-wrap break-words text-[11px] leading-5 text-muted-foreground">
-          {debugRows.join('\n')}
+          {[...debugRows, ...branchDebugRows].join('\n')}
         </pre>
       </details>
     </div>
