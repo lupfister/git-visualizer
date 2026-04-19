@@ -31,6 +31,14 @@ function cn(...classes: Array<string | false | null | undefined>): string {
   return classes.filter(Boolean).join(' ');
 }
 
+const GRID_ZOOM_MIN = 0.45;
+const GRID_ZOOM_MAX = 2.25;
+const GRID_ZOOM_WHEEL_SENSITIVITY = 0.0015;
+
+function clampZoom(value: number): number {
+  return Math.max(GRID_ZOOM_MIN, Math.min(GRID_ZOOM_MAX, value));
+}
+
 function clusterByForkPoints<T>(
   entries: Array<{ item: T }>,
   forkIndices: Set<number>,
@@ -149,8 +157,14 @@ export default function BranchGridMap({
 }: BranchGridViewProps) {
   const cardRefs = useRef(new Map<string, HTMLDivElement | null>());
   const scrollContainerRef = useRef<HTMLDivElement | null>(null);
+  const viewportRef = useRef<HTMLDivElement | null>(null);
+  const panRef = useRef({ x: 0, y: 0 });
+  const zoomRef = useRef(1);
+  const dragStateRef = useRef<{ x: number; y: number; panX: number; panY: number } | null>(null);
+  const [isDragging, setIsDragging] = useState(false);
   const [manuallyOpenedClumps, setManuallyOpenedClumps] = useState<Set<string>>(() => new Set());
   const [isDebugOpen, setIsDebugOpen] = useState(false);
+  const [camera, setCamera] = useState({ panX: 0, panY: 0, zoom: 1 });
   const lanes = buildLanes(branches, defaultBranch);
   const branchByName = new Map(branches.map((branch) => [branch.name, branch]));
   const laneByName = new Map(lanes.map((lane) => [lane.name, lane] as const));
@@ -398,6 +412,82 @@ export default function BranchGridMap({
       })
     : nodes;
   const focusedNode = gridFocusSha ? nodes.find((node) => node.commit.id === gridFocusSha) ?? null : null;
+  const inverseZoomStyle = {
+    transform: `scale(${1 / camera.zoom})`,
+    transformOrigin: 'top left' as const,
+    width: `${100 * camera.zoom}%`,
+    height: `${100 * camera.zoom}%`,
+  };
+  const labelTopPx = -(20 / camera.zoom);
+  const borderWidthPx = 1 / camera.zoom;
+  const lineStrokeWidth = 2.5 / camera.zoom;
+  const haloStrokeWidth = 4 / camera.zoom;
+  const iconScaleStyle = {
+    transform: `scale(${1 / camera.zoom})`,
+    transformOrigin: 'center' as const,
+  };
+
+  const syncCamera = (nextPanX: number, nextPanY: number, nextZoom: number) => {
+    panRef.current = { x: nextPanX, y: nextPanY };
+    zoomRef.current = nextZoom;
+    setCamera({ panX: nextPanX, panY: nextPanY, zoom: nextZoom });
+  };
+
+  const zoomToPoint = (clientX: number, clientY: number, nextZoom: number) => {
+    const viewport = viewportRef.current;
+    const targetZoom = clampZoom(nextZoom);
+    if (!viewport) {
+      syncCamera(panRef.current.x, panRef.current.y, targetZoom);
+      return;
+    }
+    const rect = viewport.getBoundingClientRect();
+    const anchorX = clientX - rect.left;
+    const anchorY = clientY - rect.top;
+    const worldX = (anchorX - panRef.current.x) / zoomRef.current;
+    const worldY = (anchorY - panRef.current.y) / zoomRef.current;
+    syncCamera(anchorX - worldX * targetZoom, anchorY - worldY * targetZoom, targetZoom);
+  };
+
+  const handleWheel = (event: React.WheelEvent<HTMLDivElement>) => {
+    if (!event.ctrlKey && !event.metaKey) return;
+    event.preventDefault();
+    const factor = Math.exp(-event.deltaY * GRID_ZOOM_WHEEL_SENSITIVITY);
+    zoomToPoint(event.clientX, event.clientY, zoomRef.current * factor);
+  };
+
+  const startPanDrag = (event: React.MouseEvent<HTMLDivElement>) => {
+    if (event.button !== 0) return;
+    const target = event.target as HTMLElement | null;
+    if (target?.closest('button, a, input, textarea, select')) return;
+    event.preventDefault();
+    setIsDragging(true);
+    dragStateRef.current = {
+      x: event.clientX,
+      y: event.clientY,
+      panX: panRef.current.x,
+      panY: panRef.current.y,
+    };
+  };
+
+  useEffect(() => {
+    const handleMove = (event: MouseEvent) => {
+      const drag = dragStateRef.current;
+      if (!drag) return;
+      const dx = event.clientX - drag.x;
+      const dy = event.clientY - drag.y;
+      syncCamera(drag.panX + dx, drag.panY + dy, zoomRef.current);
+    };
+    const handleUp = () => {
+      dragStateRef.current = null;
+      setIsDragging(false);
+    };
+    window.addEventListener('mousemove', handleMove);
+    window.addEventListener('mouseup', handleUp);
+    return () => {
+      window.removeEventListener('mousemove', handleMove);
+      window.removeEventListener('mouseup', handleUp);
+    };
+  }, []);
 
   useEffect(() => {
     onGridSearchResultCountChange?.(normalizedSearchQuery ? matchingNodes.length : null);
@@ -453,6 +543,9 @@ export default function BranchGridMap({
     return count <= 1 || isOpen || leadId === commit.id;
   });
   const visibleRows = new Map<string, number>(visibleCommitsList.map((commit, index) => [commit.visualId, index + 1] as const));
+  const zoomAwareRowGap = ROW_GAP / camera.zoom;
+  const zoomAwareLabelBand = 20 / camera.zoom;
+  const zoomAwareRowPitch = ROW_HEIGHT + zoomAwareRowGap + zoomAwareLabelBand;
   const renderNodes: Node[] = visibleCommitsList.map((commit) => {
     const lane = laneByName.get(commit.branchName);
     const row = visibleRows.get(commit.visualId) ?? 1;
@@ -461,7 +554,7 @@ export default function BranchGridMap({
       row,
       column: lane?.column ?? 0,
       x: LEFT_PADDING + (lane?.column ?? 0) * COLUMN_WIDTH,
-      y: TOP_PADDING + (row - 1) * (ROW_HEIGHT + ROW_GAP),
+      y: TOP_PADDING + (row - 1) * zoomAwareRowPitch,
     };
   });
   const visibleNodesBySha = new Map<string, Node[]>();
@@ -479,7 +572,7 @@ export default function BranchGridMap({
   }
   const pointFormatter = (x: number, y: number) => `${x.toFixed(1)} ${y.toFixed(1)}`;
   const contentWidth = LEFT_PADDING * 2 + (Math.max(0, ...lanes.map((lane) => lane.column)) + 1) * COLUMN_WIDTH;
-  const contentHeight = TOP_PADDING * 2 + Math.max(0, visibleCommitsList.length - 1) * (ROW_HEIGHT + ROW_GAP) + CARD_HEIGHT + CARD_HEADER_HEIGHT;
+  const contentHeight = TOP_PADDING * 2 + Math.max(0, visibleCommitsList.length - 1) * zoomAwareRowPitch + CARD_HEIGHT + CARD_HEADER_HEIGHT + zoomAwareLabelBand;
 
   const connectors: Connector[] = [];
   const connectorDecisions: Array<{
@@ -823,8 +916,24 @@ export default function BranchGridMap({
         <div ref={scrollContainerRef} className="flex-1 min-h-0 overflow-auto">
           <div
             className="relative min-w-full p-2.5"
+            onWheel={handleWheel}
+            onMouseDown={startPanDrag}
             style={{ width: contentWidth, minWidth: '100%', height: contentHeight }}
           >
+            <div
+              ref={viewportRef}
+              className="absolute inset-0 overflow-hidden"
+              style={{ cursor: isDragging ? 'grabbing' : 'grab' }}
+            >
+              <div
+                className="absolute left-0 top-0"
+                style={{
+                  width: contentWidth,
+                  height: contentHeight,
+                  transformOrigin: 'top left',
+                  transform: `translate3d(${camera.panX}px, ${camera.panY}px, 0) scale(${camera.zoom})`,
+                }}
+              >
             {renderNodes.map((node) => {
             const clusterKey = clusterKeyByCommitId.get(node.commit.visualId);
             const isClusterOpen = clusterKey
@@ -847,31 +956,34 @@ export default function BranchGridMap({
               )}
               style={{ left: node.x, top: node.y, width: CARD_WIDTH, height: CARD_BODY_TOP_OFFSET + CARD_HEIGHT + 4, overflow: 'visible' }}
             >
-              <div className="absolute left-0 top-0 flex w-full items-baseline justify-between px-0 pb-0">
-                <div className="text-sm font-medium leading-none text-muted-foreground">
-                  {node.commit.branchName}/{node.commit.id.slice(0, 7)}
+              <div className="absolute left-0 w-full" style={{ ...inverseZoomStyle, top: `${labelTopPx}px` }}>
+                <div className="flex items-baseline justify-between px-0 pb-0">
+                  <div className="text-sm font-medium leading-none text-muted-foreground">
+                    {node.commit.branchName}/{node.commit.id.slice(0, 7)}
+                  </div>
+                  {isTop && clumpCount > 1 ? (
+                    <button
+                      type="button"
+                      onClick={() => clusterKey && clusterKey !== checkedOutClusterKey && setManuallyOpenedClumps((prev) => {
+                        const next = new Set(prev);
+                        if (next.has(clusterKey)) next.delete(clusterKey);
+                        else next.add(clusterKey);
+                        return next;
+                      })}
+                      className="inline-flex items-center bg-transparent p-0 text-sm font-medium leading-none text-muted-foreground"
+                      style={iconScaleStyle}
+                    >
+                      {isClusterOpen ? '⌃' : `x${clumpCount}`}
+                    </button>
+                  ) : null}
                 </div>
-                {isTop && clumpCount > 1 ? (
-                  <button
-                    type="button"
-                    onClick={() => clusterKey && clusterKey !== checkedOutClusterKey && setManuallyOpenedClumps((prev) => {
-                      const next = new Set(prev);
-                      if (next.has(clusterKey)) next.delete(clusterKey);
-                      else next.add(clusterKey);
-                      return next;
-                    })}
-                    className="inline-flex items-center bg-transparent p-0 text-sm font-medium leading-none text-muted-foreground"
-                  >
-                    {isClusterOpen ? '⌃' : `x${clumpCount}`}
-                  </button>
-                ) : null}
               </div>
               <div
                 ref={(el) => {
                   cardRefs.current.set(node.commit.id, el);
                 }}
                 className={cn(
-                  'absolute left-0 top-5 h-[176px] w-full overflow-hidden rounded-tr-xl rounded-br-xl rounded-bl-xl rounded-tl-none border border-border/50 bg-card transition-all duration-200 ease-in-out hover:border-border hover:shadow-sm',
+                  'absolute left-0 h-[176px] w-full overflow-hidden rounded-tr-xl rounded-br-xl rounded-bl-xl rounded-tl-none border border-border/50 bg-card transition-all duration-200 ease-in-out hover:border-border hover:shadow-sm',
                   branchOffNodeShas.has(node.commit.id) ||
                   branchStartShas.has(node.commit.id) ||
                   crossBranchOutgoingShas.has(node.commit.id)
@@ -886,8 +998,9 @@ export default function BranchGridMap({
                   normalizedSearchQuery && matchingNodes.some((match) => match.commit.id === node.commit.id) ? 'shadow-md' : '',
                   focusedNode?.commit.id === node.commit.id ? 'ring-2 ring-primary/20 shadow-md' : ''
                 )}
+                style={{ top: 0, borderWidth: `${borderWidthPx}px` }}
               >
-                <div className="flex h-full flex-col px-5 py-4">
+                <div className="flex h-full flex-col px-5 py-4" style={inverseZoomStyle}>
                   <div className="mt-0 max-w-[38rem] text-sm font-medium leading-tight tracking-tight text-muted-foreground group-hover:text-muted-foreground">
                     {isTop && isClusterOpen
                       ? node.commit.message
@@ -910,7 +1023,7 @@ export default function BranchGridMap({
                     <div className="text-sm font-medium text-muted-foreground">{new Date(node.commit.date).toLocaleString('en-US', { month: 'long', day: 'numeric', hour: 'numeric', minute: '2-digit' })}</div>
                   </div>
                   {focusedNode?.commit.id === node.commit.id && normalizedSearchQuery ? (
-                    <div className="absolute left-5 top-4 inline-flex rounded-full bg-primary/10 px-2 py-0.5 text-sm font-medium uppercase tracking-wide text-muted-foreground">
+                    <div className="absolute left-5 top-4 inline-flex rounded-full bg-primary/10 px-2 py-0.5 text-sm font-medium uppercase tracking-wide text-muted-foreground" style={iconScaleStyle}>
                       Search result
                     </div>
                   ) : null}
@@ -941,7 +1054,7 @@ export default function BranchGridMap({
                     d={connector.path}
                     fill="none"
                     stroke="rgba(255, 255, 255, 0.8)"
-                    strokeWidth="4"
+                    strokeWidth={haloStrokeWidth}
                     strokeLinecap="round"
                     strokeLinejoin="round"
                   />
@@ -949,7 +1062,7 @@ export default function BranchGridMap({
                     d={connector.path}
                     fill="none"
                     stroke={CONNECTOR_COLOR}
-                    strokeWidth="2.5"
+                    strokeWidth={lineStrokeWidth}
                     strokeLinecap="round"
                     strokeLinejoin="round"
                   />
@@ -961,10 +1074,10 @@ export default function BranchGridMap({
                     arrowDirection,
                     14,
                     0,
-                  )}
+                    )}
                     fill="none"
                     stroke={CONNECTOR_COLOR}
-                    strokeWidth="2.5"
+                    strokeWidth={lineStrokeWidth}
                     strokeLinecap="round"
                     strokeLinejoin="round"
                   />
@@ -992,7 +1105,7 @@ export default function BranchGridMap({
                       d={path}
                       fill="none"
                       stroke="rgba(255, 255, 255, 0.8)"
-                      strokeWidth="4"
+                      strokeWidth={haloStrokeWidth}
                       strokeLinecap="round"
                       strokeLinejoin="round"
                     />
@@ -1001,7 +1114,7 @@ export default function BranchGridMap({
                       d={path}
                       fill="none"
                       stroke={CONNECTOR_COLOR}
-                      strokeWidth="2.5"
+                      strokeWidth={lineStrokeWidth}
                       strokeLinecap="round"
                       strokeLinejoin="round"
                     />
@@ -1010,7 +1123,7 @@ export default function BranchGridMap({
                       d={arrowHead}
                       fill="none"
                       stroke={CONNECTOR_COLOR}
-                      strokeWidth="2.5"
+                      strokeWidth={lineStrokeWidth}
                       strokeLinecap="round"
                       strokeLinejoin="round"
                     />
@@ -1018,6 +1131,8 @@ export default function BranchGridMap({
                 );
               })}
             </svg>
+              </div>
+            </div>
           </div>
         </div>
       )}
