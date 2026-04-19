@@ -1,7 +1,6 @@
 import { Fragment, useEffect, useLayoutEffect, useRef, useState } from 'react';
 import {
   branchBaseCommit,
-  branchAheadCount,
   buildLanes,
   CARD_HEIGHT,
   CARD_WIDTH,
@@ -17,7 +16,6 @@ import {
   nodeForCommitSha,
   orderByLineage,
   renderableBranchPreviews,
-  sortedConcreteBranchPreviews,
   ROW_GAP,
   ROW_HEIGHT,
   toCommit,
@@ -70,6 +68,7 @@ export default function BranchGridMap({
   const cardRefs = useRef(new Map<string, HTMLDivElement | null>());
   const scrollContainerRef = useRef<HTMLDivElement | null>(null);
   const [collapsedClumps, setCollapsedClumps] = useState<Set<string>>(() => new Set());
+  const [isDebugOpen, setIsDebugOpen] = useState(false);
   const didInitCollapsedClumps = useRef(false);
   const lastCheckedOutShaForCollapse = useRef<string | null>(null);
   const lanes = buildLanes(branches, defaultBranch);
@@ -289,26 +288,26 @@ export default function BranchGridMap({
 
   const debugRows = branches.flatMap((branch) => {
     const previews = branchCommitPreviews[branch.name] ?? [];
-    const concretePreviews = [...sortedConcreteBranchPreviews(branch.name, branchCommitPreviews)].reverse();
-    const renderedPreviewIds = new Set((branchPreviewSets.get(branch.name) ?? []).map((commit) => commit.fullSha));
+    const concretePreviews = [...(branchPreviewSets.get(branch.name) ?? [])].reverse();
+    const renderedPreviewIds = new Set((branchCommitsByLane.get(branch.name) ?? []).map((commit) => commit.id));
     return [
       `Branch ${branch.name}`,
-      `  ahead=${branchAheadCount(branch.name, branchUniqueAheadCounts, branchCommitPreviews)} previews=${concretePreviews.length} rendered=${renderedPreviewIds.size}`,
+      `  ahead=${branchUniqueAheadCounts[branch.name] ?? 0} previews=${concretePreviews.length} rendered=${renderedPreviewIds.size}`,
       ...concretePreviews.map((commit) => {
         const status = renderedPreviewIds.has(commit.fullSha) ? 'visible' : 'hidden';
-        const reason =
-          commit.kind === 'branch-created'
-            ? 'branch-created'
-            : renderedPreviewIds.size === 0
-              ? 'no visible previews'
-              : renderedPreviewIds.has(commit.fullSha)
-                ? 'kept by uniqueAhead slice'
-                : 'dropped by uniqueAhead slice';
+        const reason = renderedPreviewIds.has(commit.fullSha) ? 'kept by render set' : 'dropped by render set';
         return `  ${status} ${commit.fullSha.slice(0, 7)} ${commit.message} [${reason}]`;
       }),
       previews.length === 0 ? '  no preview data' : null,
     ].filter((line): line is string => line != null);
   });
+  const branchDebugRows = Array.from(branchCommitsByLane.entries()).map(([branchName, commits]) => {
+    return [
+      `Branch debug ${branchName}`,
+      ...commits.map((commit) => `  ${commit.id.slice(0, 7)} ${commit.message}`),
+    ].join('\n');
+  });
+
   const rowByVisualId = new Map<string, number>(allCommits.map((commit, index) => [commit.visualId, index + 1] as const));
   const nodes: Node[] = allCommits.map((commit) => {
     const lane = laneByName.get(commit.branchName);
@@ -511,36 +510,6 @@ export default function BranchGridMap({
     return resolveChildNodeForSha(sha, preferredBranchName);
   };
 
-  const branchDebugRows =
-    process.env.NODE_ENV !== 'production'
-      ? branches.flatMap((branch) => {
-          const baseCommit = branchBaseCommitByName.get(branch.name);
-          const receivingCommit = branchReceivingCommitByName.get(branch.name);
-          const parentName = resolveBranchStartParentName(branch);
-          const branchStartSha = blueStartShaForBranch(branch);
-          const parentNode = baseCommit
-            ? resolveParentNode(baseCommit.parentSha ?? branch.divergedFromSha ?? branch.createdFromSha ?? '', parentName)
-            : null;
-          const childNode = receivingCommit
-            ? resolveNodeForSha(receivingCommit.id, branch.name) ?? resolveConnectorNode(receivingCommit as VisualCommit)
-            : null;
-          const forkPoint = resolveBranchStartSha(branch) ?? branch.presidesFromSha ?? branch.divergedFromSha ?? branch.createdFromSha ?? baseCommit?.parentSha ?? null;
-          return [
-            `Branch debug ${branch.name}`,
-            `  parentName=${parentName ?? 'null'}`,
-            `  forkPoint=${forkPoint ?? 'null'}`,
-            `  branchStartSha=${branchStartSha ?? 'null'}`,
-            `  baseCommit=${baseCommit?.id ?? 'null'}`,
-            `  receivingCommit=${receivingCommit?.id ?? 'null'}`,
-            `  baseParentSha=${baseCommit?.parentSha ?? 'null'}`,
-            `  divergedFromSha=${branch.divergedFromSha ?? 'null'}`,
-            `  createdFromSha=${branch.createdFromSha ?? 'null'}`,
-            `  parentNode=${parentNode ? `${parentNode.commit.branchName}/${parentNode.commit.id.slice(0, 7)} col=${parentNode.column} row=${parentNode.row}` : 'null'}`,
-            `  childNode=${childNode ? `${childNode.commit.branchName}/${childNode.commit.id.slice(0, 7)} col=${childNode.column} row=${childNode.row}` : 'null'}`,
-          ];
-        })
-      : [];
-
   for (const branch of branches) {
     if (branch.name === defaultBranch) continue;
     const branchBaseCommit = branchBaseCommitByName.get(branch.name);
@@ -728,16 +697,55 @@ export default function BranchGridMap({
   }
 
   return (
-    <div className="rounded-2xl border border-border bg-card overflow-hidden">
+    <div className="relative flex h-full min-h-0 flex-col overflow-hidden rounded-2xl border border-border bg-card">
+      <div className="pointer-events-none absolute bottom-4 right-4 z-[10000] flex items-end gap-2">
+        <button
+          type="button"
+          onClick={() => setIsDebugOpen((open) => !open)}
+          className={cn(
+            'pointer-events-auto inline-flex h-8 items-center rounded-full border px-3 text-xs font-medium shadow-sm transition-colors',
+            isDebugOpen
+              ? 'border-primary/30 bg-primary/10 text-primary'
+              : 'border-border bg-card text-muted-foreground hover:bg-accent hover:text-foreground'
+          )}
+        >
+          Debug
+        </button>
+      </div>
+      {isDebugOpen ? (
+        <div className="absolute bottom-14 right-4 z-[10000] flex max-h-[calc(100%-4rem)] w-[min(42rem,calc(100%-2rem))] flex-col overflow-hidden rounded-2xl border border-border bg-card/95 shadow-lg backdrop-blur-sm">
+          <div className="flex items-center justify-between border-b border-border/50 px-4 py-3">
+            <div>
+              <p className="text-sm font-medium text-foreground">Commit debug</p>
+              <p className="text-xs text-muted-foreground">Rendered branch summaries and connector decisions</p>
+            </div>
+            <button
+              type="button"
+              onClick={() => setIsDebugOpen(false)}
+              className="rounded-full border border-border/50 bg-muted/30 px-2.5 py-1 text-xs font-medium text-muted-foreground transition-colors hover:bg-accent hover:text-foreground"
+            >
+              Close
+            </button>
+          </div>
+          <div className="min-h-0 flex-1 overflow-y-auto px-4 py-3">
+            <pre className="whitespace-pre-wrap break-words text-[11px] leading-5 text-muted-foreground">
+              {[...debugRows, ...branchDebugRows, '', ...connectorDecisions.map((decision) => `${decision.rendered ? 'rendered' : 'skipped'} [${decision.kind}] ${decision.parent.slice(0, 7)} -> ${decision.child.slice(0, 7)} (${decision.reason})`)].join('\n')}
+            </pre>
+          </div>
+        </div>
+      ) : null}
       {allCommits.length === 0 ? (
-        <div className="flex items-center justify-center py-20">
+        <div className="flex flex-1 min-h-0 items-center justify-center py-20">
           <div className="rounded-xl border border-border/50 bg-muted/30 shadow-inner px-4 py-3">
             <p className="text-sm text-muted-foreground">No commits to render</p>
           </div>
         </div>
       ) : (
-        <div ref={scrollContainerRef} className="overflow-auto">
-          <div className="relative min-w-max p-2.5" style={{ width: contentWidth, height: contentHeight }}>
+        <div ref={scrollContainerRef} className="flex-1 min-h-0 overflow-auto">
+          <div
+            className="relative min-w-full p-2.5"
+            style={{ width: contentWidth, minWidth: '100%', height: contentHeight }}
+          >
             {renderNodes.map((node) => {
             const clusterKey = clusterKeyByCommitId.get(node.commit.visualId);
             const isCollapsed = clusterKey ? collapsedClumps.has(clusterKey) : false;
@@ -900,14 +908,6 @@ export default function BranchGridMap({
           </div>
         </div>
       )}
-      <details className="border-t border-border/50 bg-muted/30 px-4 py-3" open={process.env.NODE_ENV !== 'production'}>
-        <summary className="cursor-pointer text-xs font-medium text-muted-foreground hover:text-foreground transition-colors">
-          Commit debug
-        </summary>
-        <pre className="mt-3 whitespace-pre-wrap break-words text-[11px] leading-5 text-muted-foreground">
-          {[...debugRows, ...branchDebugRows, '', ...connectorDecisions.map((decision) => `${decision.rendered ? 'rendered' : 'skipped'} [${decision.kind}] ${decision.parent.slice(0, 7)} -> ${decision.child.slice(0, 7)} (${decision.reason})`)].join('\n')}
-        </pre>
-      </details>
     </div>
   );
 }
