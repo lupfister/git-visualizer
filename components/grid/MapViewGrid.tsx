@@ -176,6 +176,7 @@ export default function BranchGridMapView({
             gridSearchQuery={gridSearchQuery}
             gridSearchJumpToken={gridSearchJumpToken}
             gridFocusSha={gridFocusSha}
+            checkedOutRef={checkedOutRef}
             onGridSearchResultCountChange={onGridSearchResultCountChange}
             onGridSearchFocusChange={onGridSearchFocusChange}
           />
