@@ -23,6 +23,7 @@ import {
 } from './LayoutGrid';
 import type { Branch } from '../../types';
 import type { BranchCommitPreview } from '../../types';
+import { useMemo } from 'react';
 
 function cn(...classes: Array<string | false | null | undefined>): string {
   return classes.filter(Boolean).join(' ');
@@ -51,6 +52,58 @@ function clusterByForkPoints<T>(
   return clusters;
 }
 
+function buildRoundedElbowPath(
+  fromX: number,
+  fromY: number,
+  toX: number,
+  toY: number,
+  cornerR: number,
+  pointFormatter: (x: number, y: number) => string,
+  tipGap = 0,
+): string {
+  const finalY = toY - Math.sign(toY - fromY || 1) * tipGap;
+  const corner = Math.max(0, Math.min(cornerR, Math.abs(toX - fromX), Math.abs(toY - fromY)));
+  if (corner < 0.5) {
+    return [
+      `M ${pointFormatter(fromX, fromY)}`,
+      `L ${pointFormatter(toX, fromY)}`,
+      `L ${pointFormatter(toX, finalY)}`,
+    ].join(' ');
+  }
+  const horizontalDir = toX >= fromX ? 1 : -1;
+  const verticalDir = toY >= fromY ? 1 : -1;
+  const preTurnX = toX - horizontalDir * corner;
+  const postTurnY = finalY - verticalDir * corner;
+  return [
+    `M ${pointFormatter(fromX, fromY)}`,
+    `L ${pointFormatter(preTurnX, fromY)}`,
+    `Q ${pointFormatter(toX, fromY)} ${pointFormatter(toX, fromY + verticalDir * corner)}`,
+    `L ${pointFormatter(toX, postTurnY)}`,
+    `L ${pointFormatter(toX, finalY)}`,
+  ].join(' ');
+}
+
+const GRID_CONNECTOR_GAP_PX = 8;
+const GRID_INCOMING_GAP_PX = 8;
+
+function buildChevronArrowHead(
+  tipX: number,
+  tipY: number,
+  pointFormatter: (x: number, y: number) => string,
+  size = 14,
+  tipYOffset = 0,
+): string {
+  const y = tipY + tipYOffset;
+  const wingX = size * 0.45;
+  const wingY = size * 0.6;
+  return [
+    `M ${pointFormatter(tipX, y)}`,
+    `L ${pointFormatter(tipX - wingX, y + wingY)}`,
+    `M ${pointFormatter(tipX, y)}`,
+    `L ${pointFormatter(tipX + wingX, y + wingY)}`,
+  ].join(' ');
+}
+
 export default function BranchGridMap({
   branches,
   mergeNodes = [],
@@ -68,7 +121,7 @@ export default function BranchGridMap({
 }: BranchGridViewProps) {
   const cardRefs = useRef(new Map<string, HTMLDivElement | null>());
   const scrollContainerRef = useRef<HTMLDivElement | null>(null);
-  const [collapsedClumps, setCollapsedClumps] = useState<Set<string>>(() => new Set());
+  const [manuallyOpenedClumps, setManuallyOpenedClumps] = useState<Set<string>>(() => new Set());
   const [isDebugOpen, setIsDebugOpen] = useState(false);
   const lanes = buildLanes(branches, defaultBranch);
   const branchByName = new Map(branches.map((branch) => [branch.name, branch]));
@@ -331,32 +384,6 @@ export default function BranchGridMap({
     onGridSearchFocusChange?.(firstMatch);
   }, [matchingNodes, normalizedSearchQuery, onGridSearchFocusChange]);
 
-  useEffect(() => {
-    if (!normalizedSearchQuery || matchingNodes.length === 0) return;
-    const firstMatchCluster = clusterKeyByCommitId.get(matchingNodes[0]!.commit.visualId);
-    if (!firstMatchCluster) return;
-    if (!collapsedClumps.has(firstMatchCluster)) return;
-    setCollapsedClumps((prev) => {
-      const next = new Set(prev);
-      next.delete(firstMatchCluster);
-      return next;
-    });
-  }, [collapsedClumps, matchingNodes, normalizedSearchQuery]);
-
-  useEffect(() => {
-    if (!gridFocusSha) return;
-    const focusedCommit = nodes.find((node) => node.commit.id === gridFocusSha)?.commit;
-    if (!focusedCommit) return;
-    const clusterKey = clusterKeyByCommitId.get(focusedCommit.visualId ?? focusedCommit.id);
-    if (!clusterKey) return;
-    if (!collapsedClumps.has(clusterKey)) return;
-    setCollapsedClumps((prev) => {
-      const next = new Set(prev);
-      next.delete(clusterKey);
-      return next;
-    });
-  }, [collapsedClumps, gridFocusSha, nodes]);
-
   useLayoutEffect(() => {
     if (!gridFocusSha) return;
     const el = cardRefs.current.get(gridFocusSha);
@@ -379,13 +406,23 @@ export default function BranchGridMap({
     if (!checkedOutSha || !checkedOutBranchName) return null;
     return clusterKeyByCommitId.get(`${checkedOutBranchName}:${checkedOutSha}`) ?? null;
   })();
+  const defaultCollapsedClumps = useMemo(() => {
+    const next = new Set<string>();
+    for (const clusters of clustersByBranch.values()) {
+      for (const cluster of clusters) {
+        if (cluster.count > 1 && cluster.key !== checkedOutClusterKey) next.add(cluster.key);
+      }
+    }
+    return next;
+  }, [checkedOutClusterKey, clustersByBranch]);
 
   const visibleCommitsList = [...allCommits].reverse().filter((commit) => {
     const clusterKey = clusterKeyByCommitId.get(commit.visualId);
     if (!clusterKey) return true;
     const leadId = leadByClusterKey.get(clusterKey);
     const count = clusterCounts.get(clusterKey) ?? 1;
-    return count <= 1 || clusterKey === checkedOutClusterKey || !collapsedClumps.has(clusterKey) || leadId === commit.id;
+    const isOpen = clusterKey === checkedOutClusterKey || manuallyOpenedClumps.has(clusterKey) || !defaultCollapsedClumps.has(clusterKey);
+    return count <= 1 || isOpen || leadId === commit.id;
   });
   const visibleRows = new Map<string, number>(visibleCommitsList.map((commit, index) => [commit.visualId, index + 1] as const));
   const renderNodes: Node[] = visibleCommitsList.map((commit) => {
@@ -412,15 +449,6 @@ export default function BranchGridMap({
     const current = visibleNodeByClusterKey.get(clusterKey);
     if (!current || node.y < current.y) visibleNodeByClusterKey.set(clusterKey, node);
   }
-  useEffect(() => {
-    const next = new Set<string>();
-    for (const clusters of clustersByBranch.values()) {
-      for (const cluster of clusters) {
-        if (cluster.count > 1 && cluster.key !== checkedOutClusterKey) next.add(cluster.key);
-      }
-    }
-    setCollapsedClumps(next);
-  }, [checkedOutClusterKey, clustersByBranch]);
   const pointFormatter = (x: number, y: number) => `${x.toFixed(1)} ${y.toFixed(1)}`;
   const contentWidth = LEFT_PADDING * 2 + (Math.max(0, ...lanes.map((lane) => lane.column)) + 1) * COLUMN_WIDTH;
   const contentHeight = TOP_PADDING * 2 + Math.max(0, visibleCommitsList.length - 1) * (ROW_HEIGHT + ROW_GAP) + CARD_HEIGHT;
@@ -451,7 +479,7 @@ export default function BranchGridMap({
     const visibleNode = nodeForCommitSha(visibleNodesBySha, sha, preferredBranchName);
     if (visibleNode) return visibleNode;
     const clusterKey = clusterKeyByCommitId.get(`${preferredBranchName ?? defaultBranch}:${sha}`) ?? clusterKeyByCommitId.get(sha);
-    if (!clusterKey || !collapsedClumps.has(clusterKey)) return null;
+    if (!clusterKey) return null;
     return visibleNodeByClusterKey.get(clusterKey) ?? null;
   };
   const connectorKeySet = new Set<string>();
@@ -478,7 +506,7 @@ export default function BranchGridMap({
 
   const getIncomingAnchor = (node: Node): { x: number; y: number } => ({
     x: node.x + CARD_WIDTH / 2,
-    y: node.y + CARD_HEIGHT,
+    y: node.y + CARD_HEIGHT + GRID_INCOMING_GAP_PX,
   });
 
   const getOutgoingAnchor = (node: Node, isBranching: boolean): { x: number; y: number } => ({
@@ -508,9 +536,11 @@ export default function BranchGridMap({
         if (!sourceNode || sourceNode.commit.id === mergeTarget.commit.id) return null;
         return {
           id: `merge:${mergeNode.fullSha}:${parentSha}`,
+          toX: mergeTarget.x + CARD_WIDTH,
+          toY: mergeTarget.y + CARD_HEIGHT / 2,
           path: buildMergeOrthogonalPath({
             laneX: sourceNode.x + CARD_WIDTH / 2,
-            tipY: sourceNode.y,
+            tipY: sourceNode.y - GRID_CONNECTOR_GAP_PX,
             mergeX: mergeTarget.x + CARD_WIDTH,
             mergeY: mergeTarget.y + CARD_HEIGHT / 2,
             cornerR: 18,
@@ -518,7 +548,7 @@ export default function BranchGridMap({
           }),
         };
       })
-      .filter((entry): entry is { id: string; path: string } => entry != null);
+      .filter((entry): entry is { id: string; path: string; toX: number; toY: number } => entry != null);
   });
 
   for (const branch of branches) {
@@ -530,10 +560,14 @@ export default function BranchGridMap({
     const receivingCommit = branchReceivingCommitByName.get(branch.name) ?? branchBaseCommit;
     const childNode = resolveNodeForSha(receivingCommit.id, branch.name) ?? resolveConnectorNode(receivingCommit as VisualCommit);
     if (!parentNode || !childNode || parentNode.commit.id === childNode.commit.id) {
-      if (!parentNode) {
+      const parentClusterKey = clusterKeyByCommitId.get(`${branch.name}:${branchBaseCommit.id}`);
+      const childClusterKey = clusterKeyByCommitId.get(`${branch.name}:${receivingCommit.id}`);
+      const parentHiddenByClump = !!parentClusterKey && !defaultCollapsedClumps.has(parentClusterKey) ? false : !!parentClusterKey && !manuallyOpenedClumps.has(parentClusterKey) && parentClusterKey !== checkedOutClusterKey;
+      const childHiddenByClump = !!childClusterKey && !defaultCollapsedClumps.has(childClusterKey) ? false : !!childClusterKey && !manuallyOpenedClumps.has(childClusterKey) && childClusterKey !== checkedOutClusterKey;
+      if (!parentNode && !parentHiddenByClump) {
         addNodeWarning(childNode?.commit.id ?? branchBaseCommit.id, 'Missing parent node');
       }
-      if (!childNode) {
+      if (!childNode && !childHiddenByClump) {
         addNodeWarning(branchBaseCommit.id, 'Missing child node');
       }
       connectorDecisions.push({
@@ -594,7 +628,11 @@ export default function BranchGridMap({
     if (!parentSha) continue;
     const parentNode = resolveParentNode(parentSha, node.commit.branchName);
     if (!parentNode) {
-      addNodeWarning(node.commit.id, 'Missing parent node');
+      const parentClusterKey = clusterKeyByCommitId.get(`${node.commit.branchName}:${parentSha}`) ?? clusterKeyByCommitId.get(parentSha);
+      const parentHiddenByClump = !!parentClusterKey && !defaultCollapsedClumps.has(parentClusterKey) ? false : !!parentClusterKey && !manuallyOpenedClumps.has(parentClusterKey) && parentClusterKey !== checkedOutClusterKey;
+      if (!parentHiddenByClump) {
+        addNodeWarning(node.commit.id, 'Missing parent node');
+      }
       connectorDecisions.push({
         id: `${node.commit.visualId}->${parentSha}`,
         kind: 'ancestry',
@@ -759,13 +797,15 @@ export default function BranchGridMap({
           >
             {renderNodes.map((node) => {
             const clusterKey = clusterKeyByCommitId.get(node.commit.visualId);
-            const isCollapsed = clusterKey ? collapsedClumps.has(clusterKey) : false;
+            const isClusterOpen = clusterKey
+              ? clusterKey === checkedOutClusterKey || manuallyOpenedClumps.has(clusterKey) || !defaultCollapsedClumps.has(clusterKey)
+              : false;
             const isTop = clusterKey ? leadByClusterKey.get(clusterKey) === node.commit.id : false;
             const clumpCount = clusterKey ? clusterCounts.get(clusterKey) ?? 1 : 1;
             const nodeConnectorDecisions = connectorDecisions.filter((decision) => decision.parent === node.commit.id || decision.child === node.commit.id);
             const hasRenderedAncestry = nodeConnectorDecisions.some((decision) => decision.rendered && decision.kind === 'ancestry');
             const nodeWarningsForCard = nodeWarnings.get(node.commit.id) ?? [];
-            const showDataShapeError = nodeWarningsForCard.length > 0 && !hasRenderedAncestry && !(clusterKey && isCollapsed);
+            const showDataShapeError = nodeWarningsForCard.length > 0 && !hasRenderedAncestry;
             return (
             <div
               key={node.commit.visualId}
@@ -773,7 +813,7 @@ export default function BranchGridMap({
                 cardRefs.current.set(node.commit.id, el);
               }}
               className={cn(
-                'absolute z-20 overflow-hidden rounded-2xl border border-border bg-background/95 shadow-sm transition-all duration-200',
+                'group absolute z-20 overflow-hidden rounded-2xl border border-border/50 bg-card shadow-sm transition-all duration-200 ease-in-out hover:border-border hover:shadow-md',
                 branchOffNodeShas.has(node.commit.id) ||
                 branchStartShas.has(node.commit.id) ||
                 crossBranchOutgoingShas.has(node.commit.id)
@@ -784,35 +824,37 @@ export default function BranchGridMap({
                     ? 'border-amber-500 ring-2 ring-amber-500/35 shadow-[0_0_0_1px_rgba(245,158,11,0.18)]'
                     : showDataShapeError
                       ? 'border-red-500 ring-2 ring-red-500/25 shadow-[0_0_0_1px_rgba(239,68,68,0.12)]'
-                      : 'border-border/50',
+                      : '',
                 normalizedSearchQuery && !matchingNodes.some((match) => match.commit.id === node.commit.id) ? 'opacity-10 blur-[0.5px]' : '',
                 normalizedSearchQuery && matchingNodes.some((match) => match.commit.id === node.commit.id) ? 'shadow-md scale-[1.01]' : '',
-                focusedNode?.commit.id === node.commit.id ? 'z-30 shadow-lg scale-[1.015]' : ''
+                focusedNode?.commit.id === node.commit.id ? 'z-30 shadow-lg scale-[1.015] ring-2 ring-primary/20' : ''
               )}
               style={{ left: node.x, top: node.y, width: CARD_WIDTH, height: CARD_HEIGHT }}
             >
               {isTop && clumpCount > 1 ? (
                 <button
                   type="button"
-                  onClick={() => clusterKey && clusterKey !== checkedOutClusterKey && setCollapsedClumps((prev) => {
+                  onClick={() => clusterKey && clusterKey !== checkedOutClusterKey && setManuallyOpenedClumps((prev) => {
                     const next = new Set(prev);
                     if (next.has(clusterKey)) next.delete(clusterKey);
                     else next.add(clusterKey);
                     return next;
                   })}
-                  className={cn(
-                    'absolute right-3 top-3 z-40 inline-flex items-center rounded-full border border-primary/20 bg-primary/10 px-2 py-0.5 text-[10px] font-medium uppercase tracking-wide text-primary transition-colors hover:bg-primary/15'
-                  )}
+                  className="absolute right-3 top-3 z-40 inline-flex items-center rounded-full border border-primary/20 bg-primary/10 px-2 py-0.5 text-[10px] font-medium uppercase tracking-wide text-primary transition-colors hover:bg-primary/15"
                 >
-                  {isCollapsed ? `Show ${clumpCount}` : `Collapse ${clumpCount}`}
+                  {isClusterOpen ? `Collapse ${clumpCount}` : `Show ${clumpCount}`}
                 </button>
               ) : null}
               <div className="flex h-full flex-col px-4 py-3">
-                <div className="text-[12px] font-medium leading-none text-primary/80">
+                <div className="text-[12px] font-medium leading-none text-muted-foreground">
                   {node.commit.branchName}/{node.commit.id.slice(0, 7)}
                 </div>
-                <div className="mt-2 max-w-[20rem] text-[12px] font-medium leading-tight tracking-tight text-primary/85">
-                  {isCollapsed && isTop ? `${node.commit.message} +${clumpCount - 1}` : node.commit.message}
+                <div className="mt-2 max-w-[20rem] text-[12px] font-medium leading-tight tracking-tight text-foreground group-hover:text-foreground">
+                  {isTop && isClusterOpen
+                    ? node.commit.message
+                    : isTop && clumpCount > 1
+                      ? `${node.commit.message} +${clumpCount - 1}`
+                      : node.commit.message}
                 </div>
                 <div className="mt-2 flex flex-wrap items-center gap-1.5">
                   {showDataShapeError ? (
@@ -825,8 +867,8 @@ export default function BranchGridMap({
                   ) : null}
                 </div>
                 <div className="mt-auto flex items-end justify-between gap-3 pt-4">
-                  <div className="text-[12px] font-medium text-primary/80">@{node.commit.author}</div>
-                  <div className="text-[12px] font-medium text-primary/80">{new Date(node.commit.date).toLocaleString('en-US', { month: 'long', day: 'numeric', hour: 'numeric', minute: '2-digit' })}</div>
+                  <div className="text-[12px] font-medium text-muted-foreground">@{node.commit.author}</div>
+                  <div className="text-[12px] font-medium text-muted-foreground">{new Date(node.commit.date).toLocaleString('en-US', { month: 'long', day: 'numeric', hour: 'numeric', minute: '2-digit' })}</div>
                 </div>
                 {focusedNode?.commit.id === node.commit.id && normalizedSearchQuery ? (
                   <div className="absolute left-4 top-3 inline-flex rounded-full bg-primary/10 px-2 py-0.5 text-[10px] font-medium uppercase tracking-wide text-primary">
@@ -848,9 +890,6 @@ export default function BranchGridMap({
               style={{ overflow: 'visible' }}
             >
               <defs>
-                <marker id="branch-grid-arrow" markerWidth="5" markerHeight="5" refX="4" refY="2.5" orient="auto" markerUnits="strokeWidth">
-                  <path d="M0,0 L5,2.5 L0,5 z" fill={CONNECTOR_COLOR} />
-                </marker>
               </defs>
               {mergeConnectors.map((connector) => (
                 <Fragment key={connector.id}>
@@ -869,21 +908,39 @@ export default function BranchGridMap({
                     strokeWidth="2.5"
                     strokeLinecap="round"
                     strokeLinejoin="round"
-                    markerEnd="url(#branch-grid-arrow)"
+                  />
+                  <path
+                  d={buildChevronArrowHead(
+                    connector.toX,
+                    connector.toY,
+                    pointFormatter,
+                  14,
+                  4,
+                  )}
+                    fill="none"
+                    stroke={CONNECTOR_COLOR}
+                    strokeWidth="2.5"
+                    strokeLinecap="round"
+                    strokeLinejoin="round"
                   />
                 </Fragment>
               ))}
               {connectors.map((connector) => {
-                const elbowX = connector.toX;
+                const path = buildRoundedElbowPath(
+                  connector.fromX,
+                  connector.fromY,
+                  connector.toX,
+                  connector.toY,
+                  18,
+                  pointFormatter,
+                  GRID_CONNECTOR_GAP_PX,
+                );
+                const arrowHead = buildChevronArrowHead(connector.toX, connector.toY, pointFormatter, 14, 4);
                 return (
                   <Fragment key={connector.id}>
                     <path
                       key={`${connector.id}-halo`}
-                      d={[
-                        `M ${connector.fromX} ${connector.fromY}`,
-                        `H ${elbowX}`,
-                        `V ${connector.toY}`,
-                      ].join(' ')}
+                      d={path}
                       fill="none"
                       stroke="rgba(255, 255, 255, 0.8)"
                       strokeWidth="4"
@@ -892,17 +949,21 @@ export default function BranchGridMap({
                     />
                     <path
                       key={`${connector.id}-line`}
-                      d={[
-                        `M ${connector.fromX} ${connector.fromY}`,
-                        `H ${elbowX}`,
-                        `V ${connector.toY}`,
-                      ].join(' ')}
+                      d={path}
                       fill="none"
                       stroke={CONNECTOR_COLOR}
                       strokeWidth="2.5"
                       strokeLinecap="round"
                       strokeLinejoin="round"
-                      markerEnd="url(#branch-grid-arrow)"
+                    />
+                    <path
+                      key={`${connector.id}-arrow`}
+                      d={arrowHead}
+                      fill="none"
+                      stroke={CONNECTOR_COLOR}
+                      strokeWidth="2.5"
+                      strokeLinecap="round"
+                      strokeLinejoin="round"
                     />
                   </Fragment>
                 );
