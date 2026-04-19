@@ -2,6 +2,7 @@ import { Fragment, useEffect, useLayoutEffect, useRef, useState } from 'react';
 import {
   branchBaseCommit,
   buildLanes,
+  buildMergeOrthogonalPath,
   CARD_HEIGHT,
   CARD_WIDTH,
   CONNECTOR_COLOR,
@@ -413,6 +414,30 @@ export default function BranchGridMap({
     const current = visibleNodeByClusterKey.get(clusterKey);
     if (!current || node.y < current.y) visibleNodeByClusterKey.set(clusterKey, node);
   }
+  const pointFormatter = (x: number, y: number) => `${x.toFixed(1)} ${y.toFixed(1)}`;
+  const mergeConnectors = mergeNodes.flatMap((mergeNode) => {
+    const mergeTarget = visibleNodesBySha.get(mergeNode.fullSha)?.[0] ?? null;
+    if (!mergeTarget) return [];
+    const mergedParents = mergeNode.parentShas?.slice(1) ?? [];
+    return mergedParents
+      .map((parentSha) => {
+        if (!parentSha || parentSha === mergeNode.fullSha) return null;
+        const sourceNode = nodeForCommitSha(visibleNodesBySha, parentSha) ?? null;
+        if (!sourceNode || sourceNode.commit.id === mergeTarget.commit.id) return null;
+        return {
+          id: `merge:${mergeNode.fullSha}:${parentSha}`,
+          path: buildMergeOrthogonalPath({
+            laneX: sourceNode.x + CARD_WIDTH / 2,
+            tipY: sourceNode.y,
+            mergeX: mergeTarget.x + CARD_WIDTH,
+            mergeY: mergeTarget.y + CARD_HEIGHT / 2,
+            cornerR: 18,
+            pointFormatter,
+          }),
+        };
+      })
+      .filter((entry): entry is { id: string; path: string } => entry != null);
+  });
 
   useEffect(() => {
     const checkedOutSha = checkedOutRef?.headSha ?? null;
@@ -870,6 +895,27 @@ export default function BranchGridMap({
                   <path d="M0,0 L5,2.5 L0,5 z" fill={CONNECTOR_COLOR} />
                 </marker>
               </defs>
+              {mergeConnectors.map((connector) => (
+                <Fragment key={connector.id}>
+                  <path
+                    d={connector.path}
+                    fill="none"
+                    stroke="rgba(255, 255, 255, 0.8)"
+                    strokeWidth="4"
+                    strokeLinecap="round"
+                    strokeLinejoin="round"
+                  />
+                  <path
+                    d={connector.path}
+                    fill="none"
+                    stroke={CONNECTOR_COLOR}
+                    strokeWidth="2.5"
+                    strokeLinecap="round"
+                    strokeLinejoin="round"
+                    markerEnd="url(#branch-grid-arrow)"
+                  />
+                </Fragment>
+              ))}
               {connectors.map((connector) => {
                 const elbowX = connector.toX;
                 return (
