@@ -31,9 +31,11 @@ function cn(...classes: Array<string | false | null | undefined>): string {
   return classes.filter(Boolean).join(' ');
 }
 
-const GRID_ZOOM_MIN = 0.45;
 const GRID_ZOOM_MAX = 2.25;
+const GRID_ZOOM_DEFAULT = GRID_ZOOM_MAX / 2;
+const GRID_ZOOM_MIN = 0.45;
 const GRID_ZOOM_WHEEL_SENSITIVITY = 0.0015;
+const GRID_RENDER_ZOOM = GRID_ZOOM_MAX;
 
 function clampZoom(value: number): number {
   return Math.max(GRID_ZOOM_MIN, Math.min(GRID_ZOOM_MAX, value));
@@ -159,12 +161,12 @@ export default function BranchGridMap({
   const scrollContainerRef = useRef<HTMLDivElement | null>(null);
   const viewportRef = useRef<HTMLDivElement | null>(null);
   const panRef = useRef({ x: 0, y: 0 });
-  const zoomRef = useRef(1);
+  const zoomRef = useRef(GRID_ZOOM_DEFAULT);
   const dragStateRef = useRef<{ x: number; y: number; panX: number; panY: number } | null>(null);
   const [isDragging, setIsDragging] = useState(false);
   const [manuallyOpenedClumps, setManuallyOpenedClumps] = useState<Set<string>>(() => new Set());
   const [isDebugOpen, setIsDebugOpen] = useState(false);
-  const [camera, setCamera] = useState({ panX: 0, panY: 0, zoom: 1 });
+  const [camera, setCamera] = useState({ panX: 0, panY: 0, zoom: GRID_ZOOM_DEFAULT });
   const lanes = buildLanes(branches, defaultBranch);
   const branchByName = new Map(branches.map((branch) => [branch.name, branch]));
   const laneByName = new Map(lanes.map((lane) => [lane.name, lane] as const));
@@ -412,20 +414,21 @@ export default function BranchGridMap({
       })
     : nodes;
   const focusedNode = gridFocusSha ? nodes.find((node) => node.commit.id === gridFocusSha) ?? null : null;
+  const displayZoom = camera.zoom / GRID_RENDER_ZOOM;
   const inverseZoomStyle = {
-    transform: `scale(${1 / camera.zoom})`,
+    transform: `scale(${1 / displayZoom})`,
     transformOrigin: 'top left' as const,
-    width: `${100 * camera.zoom}%`,
-    height: `${100 * camera.zoom}%`,
+    width: `${100 * displayZoom}%`,
+    height: `${100 * displayZoom}%`,
   };
-  const labelTopPx = -(20 / camera.zoom);
-  const borderWidthPx = 1 / camera.zoom;
-  const lineStrokeWidth = 2.5 / camera.zoom;
-  const haloStrokeWidth = 4 / camera.zoom;
-  const arrowHeadSize = 14 / camera.zoom;
+  const labelTopPx = -(20 / displayZoom);
+  const borderWidthPx = 1 / displayZoom;
+  const lineStrokeWidth = 2.5 / displayZoom;
+  const haloStrokeWidth = 4 / displayZoom;
+  const arrowHeadSize = 14 / displayZoom;
   const arrowHeadTipOffset = 0;
   const iconScaleStyle = {
-    transform: `scale(${1 / camera.zoom})`,
+    transform: `scale(${1 / displayZoom})`,
     transformOrigin: 'center' as const,
   };
   const syncCamera = (nextPanX: number, nextPanY: number, nextZoom: number) => {
@@ -544,8 +547,8 @@ export default function BranchGridMap({
     return count <= 1 || isOpen || leadId === commit.id;
   });
   const visibleRows = new Map<string, number>(visibleCommitsList.map((commit, index) => [commit.visualId, index + 1] as const));
-  const zoomAwareRowGap = ROW_GAP / camera.zoom;
-  const zoomAwareLabelBand = 20 / camera.zoom;
+  const zoomAwareRowGap = ROW_GAP / GRID_RENDER_ZOOM;
+  const zoomAwareLabelBand = 20 / GRID_RENDER_ZOOM;
   const zoomAwareRowPitch = ROW_HEIGHT + zoomAwareRowGap + zoomAwareLabelBand;
   const renderNodes: Node[] = visibleCommitsList.map((commit) => {
     const lane = laneByName.get(commit.branchName);
@@ -932,7 +935,7 @@ export default function BranchGridMap({
                   width: contentWidth,
                   height: contentHeight,
                   transformOrigin: 'top left',
-                  transform: `translate3d(${camera.panX}px, ${camera.panY}px, 0) scale(${camera.zoom})`,
+                  transform: `translate3d(${camera.panX}px, ${camera.panY}px, 0) scale(${displayZoom})`,
                 }}
               >
             {renderNodes.map((node) => {
