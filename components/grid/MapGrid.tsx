@@ -83,24 +83,50 @@ function buildRoundedElbowPath(
   ].join(' ');
 }
 
-const GRID_CONNECTOR_GAP_PX = 8;
-const GRID_INCOMING_GAP_PX = 8;
+const GRID_CONNECTOR_GAP_PX = 4;
+const GRID_INCOMING_GAP_PX = 4;
+const GRID_MERGE_TARGET_GAP_PX = -8;
 
 function buildChevronArrowHead(
   tipX: number,
   tipY: number,
   pointFormatter: (x: number, y: number) => string,
+  direction: 'up' | 'down' | 'left' | 'right' = 'down',
   size = 14,
   tipYOffset = 0,
 ): string {
   const y = tipY + tipYOffset;
-  const wingX = size * 0.45;
-  const wingY = size * 0.6;
+  const wingLength = size * 0.6;
+  const wingSpread = size * 0.45;
+  if (direction === 'right') {
+    return [
+      `M ${pointFormatter(tipX, y)}`,
+      `L ${pointFormatter(tipX - wingLength, y - wingSpread)}`,
+      `M ${pointFormatter(tipX, y)}`,
+      `L ${pointFormatter(tipX - wingLength, y + wingSpread)}`,
+    ].join(' ');
+  }
+  if (direction === 'left') {
+    return [
+      `M ${pointFormatter(tipX, y)}`,
+      `L ${pointFormatter(tipX + wingLength, y - wingSpread)}`,
+      `M ${pointFormatter(tipX, y)}`,
+      `L ${pointFormatter(tipX + wingLength, y + wingSpread)}`,
+    ].join(' ');
+  }
+  if (direction === 'up') {
+    return [
+      `M ${pointFormatter(tipX, y)}`,
+      `L ${pointFormatter(tipX - wingSpread, y + wingLength)}`,
+      `M ${pointFormatter(tipX, y)}`,
+      `L ${pointFormatter(tipX + wingSpread, y + wingLength)}`,
+    ].join(' ');
+  }
   return [
     `M ${pointFormatter(tipX, y)}`,
-    `L ${pointFormatter(tipX - wingX, y + wingY)}`,
+    `L ${pointFormatter(tipX - wingSpread, y - wingLength)}`,
     `M ${pointFormatter(tipX, y)}`,
-    `L ${pointFormatter(tipX + wingX, y + wingY)}`,
+    `L ${pointFormatter(tipX + wingSpread, y - wingLength)}`,
   ].join(' ');
 }
 
@@ -536,19 +562,21 @@ export default function BranchGridMap({
         if (!sourceNode || sourceNode.commit.id === mergeTarget.commit.id) return null;
         return {
           id: `merge:${mergeNode.fullSha}:${parentSha}`,
-          toX: mergeTarget.x + CARD_WIDTH,
+          fromX: sourceNode.x + CARD_WIDTH / 2,
+          fromY: sourceNode.y,
+          toX: mergeTarget.x + CARD_WIDTH - GRID_MERGE_TARGET_GAP_PX,
           toY: mergeTarget.y + CARD_HEIGHT / 2,
           path: buildMergeOrthogonalPath({
             laneX: sourceNode.x + CARD_WIDTH / 2,
-            tipY: sourceNode.y - GRID_CONNECTOR_GAP_PX,
-            mergeX: mergeTarget.x + CARD_WIDTH,
+            tipY: sourceNode.y,
+            mergeX: mergeTarget.x + CARD_WIDTH - GRID_MERGE_TARGET_GAP_PX,
             mergeY: mergeTarget.y + CARD_HEIGHT / 2,
             cornerR: 18,
             pointFormatter,
           }),
         };
       })
-      .filter((entry): entry is { id: string; path: string; toX: number; toY: number } => entry != null);
+      .filter((entry): entry is { id: string; path: string; fromX: number; fromY: number; toX: number; toY: number } => entry != null);
   });
 
   for (const branch of branches) {
@@ -892,6 +920,10 @@ export default function BranchGridMap({
               <defs>
               </defs>
               {mergeConnectors.map((connector) => (
+                (() => {
+                  const dx = connector.toX - connector.fromX;
+                  const arrowDirection = dx >= 0 ? 'right' : 'left';
+                  return (
                 <Fragment key={connector.id}>
                   <path
                     d={connector.path}
@@ -909,13 +941,14 @@ export default function BranchGridMap({
                     strokeLinecap="round"
                     strokeLinejoin="round"
                   />
-                  <path
+                <path
                   d={buildChevronArrowHead(
                     connector.toX,
                     connector.toY,
                     pointFormatter,
-                  14,
-                  4,
+                    arrowDirection,
+                    14,
+                    0,
                   )}
                     fill="none"
                     stroke={CONNECTOR_COLOR}
@@ -924,6 +957,8 @@ export default function BranchGridMap({
                     strokeLinejoin="round"
                   />
                 </Fragment>
+                  );
+                })()
               ))}
               {connectors.map((connector) => {
                 const path = buildRoundedElbowPath(
@@ -935,7 +970,9 @@ export default function BranchGridMap({
                   pointFormatter,
                   GRID_CONNECTOR_GAP_PX,
                 );
-                const arrowHead = buildChevronArrowHead(connector.toX, connector.toY, pointFormatter, 14, 4);
+                const dy = connector.toY - connector.fromY;
+                const arrowDirection = dy >= 0 ? 'down' : 'up';
+                const arrowHead = buildChevronArrowHead(connector.toX, connector.toY, pointFormatter, arrowDirection, 14, 4);
                 return (
                   <Fragment key={connector.id}>
                     <path
