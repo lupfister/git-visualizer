@@ -422,11 +422,12 @@ export default function BranchGridMap({
   const borderWidthPx = 1 / camera.zoom;
   const lineStrokeWidth = 2.5 / camera.zoom;
   const haloStrokeWidth = 4 / camera.zoom;
+  const arrowHeadSize = 14 / camera.zoom;
+  const arrowHeadTipOffset = 0;
   const iconScaleStyle = {
     transform: `scale(${1 / camera.zoom})`,
     transformOrigin: 'center' as const,
   };
-
   const syncCamera = (nextPanX: number, nextPanY: number, nextZoom: number) => {
     panRef.current = { x: nextPanX, y: nextPanY };
     zoomRef.current = nextZoom;
@@ -971,7 +972,6 @@ export default function BranchGridMap({
                         return next;
                       })}
                       className="inline-flex items-center bg-transparent p-0 text-sm font-medium leading-none text-muted-foreground"
-                      style={iconScaleStyle}
                     >
                       {isClusterOpen ? '⌃' : `x${clumpCount}`}
                     </button>
@@ -1000,23 +1000,25 @@ export default function BranchGridMap({
                 )}
                 style={{ top: 0, borderWidth: `${borderWidthPx}px` }}
               >
-                <div className="flex h-full flex-col px-5 py-4" style={inverseZoomStyle}>
-                  <div className="mt-0 max-w-[38rem] text-sm font-medium leading-tight tracking-tight text-muted-foreground group-hover:text-muted-foreground">
-                    {isTop && isClusterOpen
-                      ? node.commit.message
-                      : isTop && clumpCount > 1
-                        ? `${node.commit.message} +${clumpCount - 1}`
-                        : node.commit.message}
-                  </div>
-                  <div className="mt-3 flex flex-wrap items-center gap-1.5">
-                    {showDataShapeError ? (
-                      <span
-                        className="inline-flex items-center gap-1 rounded-lg border border-red-500/25 bg-red-50 px-2 py-0.5 text-sm font-medium uppercase tracking-wide text-muted-foreground dark:bg-red-900/20 dark:text-muted-foreground"
-                        title={nodeWarningsForCard.join('\n')}
-                      >
-                        Broken ancestry
-                      </span>
-                    ) : null}
+                <div className="flex h-full min-h-0 flex-col px-2.5 py-2" style={inverseZoomStyle}>
+                  <div className="min-h-0 flex-1">
+                    <div className="max-w-[38rem] text-sm font-medium leading-tight tracking-tight text-muted-foreground group-hover:text-muted-foreground">
+                      {isTop && isClusterOpen
+                        ? node.commit.message
+                        : isTop && clumpCount > 1
+                          ? `${node.commit.message} +${clumpCount - 1}`
+                          : node.commit.message}
+                    </div>
+                    <div className="mt-3 flex flex-wrap items-center gap-1.5">
+                      {showDataShapeError ? (
+                        <span
+                          className="inline-flex items-center gap-1 rounded-lg border border-red-500/25 bg-red-50 px-2 py-0.5 text-sm font-medium uppercase tracking-wide text-muted-foreground dark:bg-red-900/20 dark:text-muted-foreground"
+                          title={nodeWarningsForCard.join('\n')}
+                        >
+                          Broken ancestry
+                        </span>
+                      ) : null}
+                    </div>
                   </div>
                   <div className="mt-auto flex items-end justify-between gap-4 pt-5">
                     <div className="text-sm font-medium text-muted-foreground">@{node.commit.author}</div>
@@ -1072,7 +1074,7 @@ export default function BranchGridMap({
                     connector.toY,
                     pointFormatter,
                     arrowDirection,
-                    14,
+                    arrowHeadSize,
                     0,
                     )}
                     fill="none"
@@ -1097,7 +1099,7 @@ export default function BranchGridMap({
                 );
                 const dy = connector.toY - connector.fromY;
                 const arrowDirection = dy >= 0 ? 'down' : 'up';
-                const arrowHead = buildChevronArrowHead(connector.toX, connector.toY, pointFormatter, arrowDirection, 14, 4);
+                const arrowHead = buildChevronArrowHead(connector.toX, connector.toY, pointFormatter, arrowDirection, arrowHeadSize, arrowHeadTipOffset);
                 return (
                   <Fragment key={connector.id}>
                     <path
