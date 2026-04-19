@@ -70,8 +70,6 @@ export default function BranchGridMap({
   const scrollContainerRef = useRef<HTMLDivElement | null>(null);
   const [collapsedClumps, setCollapsedClumps] = useState<Set<string>>(() => new Set());
   const [isDebugOpen, setIsDebugOpen] = useState(false);
-  const didInitCollapsedClumps = useRef(false);
-  const lastCheckedOutShaForCollapse = useRef<string | null>(null);
   const lanes = buildLanes(branches, defaultBranch);
   const branchByName = new Map(branches.map((branch) => [branch.name, branch]));
   const laneByName = new Map(lanes.map((lane) => [lane.name, lane] as const));
@@ -155,15 +153,12 @@ export default function BranchGridMap({
   };
   const blueStartShaForBranch = (branch: Branch): string | null => resolveBranchStartSha(branch);
 
-  const blueBoundaryShasByName = new Map<string, Set<string>>();
+  const structuralBlueBoundaryShas = new Set<string>();
   for (const branch of branches) {
-    const parentName = resolveBranchStartParentName(branch);
-    const boundaryShas = blueBoundaryShasByName.get(parentName) ?? new Set<string>();
     const blueSha = blueStartShaForBranch(branch);
-    if (blueSha) boundaryShas.add(blueSha);
+    if (blueSha) structuralBlueBoundaryShas.add(blueSha);
     const forkSha = branch.presidesFromSha ?? branch.divergedFromSha ?? branch.createdFromSha ?? null;
-    if (forkSha) boundaryShas.add(forkSha);
-    blueBoundaryShasByName.set(parentName, boundaryShas);
+    if (forkSha) structuralBlueBoundaryShas.add(forkSha);
   }
 
   const visibleCommits: VisualCommit[] = [];
@@ -203,7 +198,6 @@ export default function BranchGridMap({
   const buildClustersForBranch = (branchName: string, commits: VisualCommit[]): GridCluster[] => {
     if (commits.length === 0) return [];
     const ordered = [...commits].sort((a, b) => new Date(a.date).getTime() - new Date(b.date).getTime() || a.id.localeCompare(b.id));
-    const blueBoundaryShas = blueBoundaryShasByName.get(branchName) ?? new Set<string>();
     const forkIdx = new Set<number>();
     const branchChildBranches = branches.filter((branch) => resolveBranchStartParentName(branch) === branchName);
     if (branchChildBranches.length > 0) {
@@ -217,7 +211,7 @@ export default function BranchGridMap({
             childForkSha.startsWith(commit.id)
           );
           if (bySha >= 0) {
-            forkIdx.add(Math.max(0, bySha - 1));
+            forkIdx.add(bySha);
             return;
           }
         }
@@ -245,23 +239,20 @@ export default function BranchGridMap({
           }
         }
         const idx = bestPastIndex >= 0 ? bestPastIndex : bestFutureIndex;
-        if (idx >= 0) forkIdx.add(Math.max(0, idx - 1));
+        if (idx >= 0) forkIdx.add(idx);
       });
     }
-    const branchUncommittedSplitIndices = new Set<number>();
     ordered.forEach((commit, index) => {
-      if (blueBoundaryShas.has(commit.id)) {
-        if (index > 0) forkIdx.add(index - 1);
+      if (structuralBlueBoundaryShas.has(commit.id)) {
         if (index < ordered.length - 1) forkIdx.add(index);
       }
       if (commit.kind === 'uncommitted' || commit.kind === 'stash' || commit.id === 'WORKING_TREE' || commit.id.startsWith('STASH:')) {
-        if (index > 0) branchUncommittedSplitIndices.add(index - 1);
-        if (index < ordered.length - 1) branchUncommittedSplitIndices.add(index);
+        forkIdx.add(index);
       }
     });
     const clusterEntries = clusterByForkPoints(
       ordered.map((commit) => ({ item: commit })),
-      new Set<number>([...forkIdx, ...branchUncommittedSplitIndices]),
+      forkIdx,
     );
     const clusters: GridCluster[] = [];
     clusterEntries.forEach((cluster, clusterIndex) => {
@@ -382,12 +373,19 @@ export default function BranchGridMap({
     container.scrollTo({ top: Math.max(0, nextTop), left: Math.max(0, nextLeft), behavior: 'smooth' });
   }, [gridFocusSha, gridSearchJumpToken]);
 
+  const checkedOutSha = checkedOutRef?.headSha ?? null;
+  const checkedOutClusterKey = (() => {
+    const checkedOutBranchName = checkedOutRef?.branchName ?? null;
+    if (!checkedOutSha || !checkedOutBranchName) return null;
+    return clusterKeyByCommitId.get(`${checkedOutBranchName}:${checkedOutSha}`) ?? null;
+  })();
+
   const visibleCommitsList = [...allCommits].reverse().filter((commit) => {
     const clusterKey = clusterKeyByCommitId.get(commit.visualId);
     if (!clusterKey) return true;
     const leadId = leadByClusterKey.get(clusterKey);
     const count = clusterCounts.get(clusterKey) ?? 1;
-    return count <= 1 || !collapsedClumps.has(clusterKey) || leadId === commit.id;
+    return count <= 1 || clusterKey === checkedOutClusterKey || !collapsedClumps.has(clusterKey) || leadId === commit.id;
   });
   const visibleRows = new Map<string, number>(visibleCommitsList.map((commit, index) => [commit.visualId, index + 1] as const));
   const renderNodes: Node[] = visibleCommitsList.map((commit) => {
@@ -414,55 +412,16 @@ export default function BranchGridMap({
     const current = visibleNodeByClusterKey.get(clusterKey);
     if (!current || node.y < current.y) visibleNodeByClusterKey.set(clusterKey, node);
   }
-  const pointFormatter = (x: number, y: number) => `${x.toFixed(1)} ${y.toFixed(1)}`;
-  const mergeConnectors = mergeNodes.flatMap((mergeNode) => {
-    const mergeTarget = visibleNodesBySha.get(mergeNode.fullSha)?.[0] ?? null;
-    if (!mergeTarget) return [];
-    const mergedParents = mergeNode.parentShas?.slice(1) ?? [];
-    return mergedParents
-      .map((parentSha) => {
-        if (!parentSha || parentSha === mergeNode.fullSha) return null;
-        const sourceNode = nodeForCommitSha(visibleNodesBySha, parentSha) ?? null;
-        if (!sourceNode || sourceNode.commit.id === mergeTarget.commit.id) return null;
-        return {
-          id: `merge:${mergeNode.fullSha}:${parentSha}`,
-          path: buildMergeOrthogonalPath({
-            laneX: sourceNode.x + CARD_WIDTH / 2,
-            tipY: sourceNode.y,
-            mergeX: mergeTarget.x + CARD_WIDTH,
-            mergeY: mergeTarget.y + CARD_HEIGHT / 2,
-            cornerR: 18,
-            pointFormatter,
-          }),
-        };
-      })
-      .filter((entry): entry is { id: string; path: string } => entry != null);
-  });
-
   useEffect(() => {
-    const checkedOutSha = checkedOutRef?.headSha ?? null;
-    if (didInitCollapsedClumps.current && lastCheckedOutShaForCollapse.current === checkedOutSha) return;
-    didInitCollapsedClumps.current = true;
-    lastCheckedOutShaForCollapse.current = checkedOutSha;
-    const initial = new Set<string>();
-    const checkedOutClusterKeys = new Set<string>();
-    if (checkedOutSha) {
-      const exactClusterKeys = clusterKeyBySha.get(checkedOutSha) ?? [];
-      for (const key of exactClusterKeys) checkedOutClusterKeys.add(key);
-      const checkedOutNode = nodes.find((node) => node.commit.id === checkedOutSha) ?? null;
-      if (checkedOutNode) {
-        const visualClusterKey = clusterKeyByCommitId.get(checkedOutNode.commit.visualId);
-        if (visualClusterKey) checkedOutClusterKeys.add(visualClusterKey);
-      }
-    }
+    const next = new Set<string>();
     for (const clusters of clustersByBranch.values()) {
       for (const cluster of clusters) {
-        if (cluster.count > 1 && !checkedOutClusterKeys.has(cluster.key)) initial.add(cluster.key);
+        if (cluster.count > 1 && cluster.key !== checkedOutClusterKey) next.add(cluster.key);
       }
     }
-    setCollapsedClumps(initial);
-  }, [checkedOutRef, clustersByBranch, clusterKeyByCommitId, clusterKeyBySha, nodes]);
-
+    setCollapsedClumps(next);
+  }, [checkedOutClusterKey, clustersByBranch]);
+  const pointFormatter = (x: number, y: number) => `${x.toFixed(1)} ${y.toFixed(1)}`;
   const contentWidth = LEFT_PADDING * 2 + (Math.max(0, ...lanes.map((lane) => lane.column)) + 1) * COLUMN_WIDTH;
   const contentHeight = TOP_PADDING * 2 + Math.max(0, visibleCommitsList.length - 1) * (ROW_HEIGHT + ROW_GAP) + CARD_HEIGHT;
 
@@ -534,6 +493,33 @@ export default function BranchGridMap({
   const resolveNodeForSha = (sha: string | null | undefined, preferredBranchName?: string): Node | null => {
     return resolveChildNodeForSha(sha, preferredBranchName);
   };
+
+  const mergeConnectors = mergeNodes.flatMap((mergeNode) => {
+    const mergeTarget =
+      nodeForConnectorTipSha(mergeNode.fullSha, defaultBranch) ??
+      visibleNodesBySha.get(mergeNode.fullSha)?.[0] ??
+      null;
+    if (!mergeTarget) return [];
+    const mergedParents = mergeNode.parentShas?.slice(1) ?? [];
+    return mergedParents
+      .map((parentSha) => {
+        if (!parentSha || parentSha === mergeNode.fullSha) return null;
+        const sourceNode = nodeForCommitSha(visibleNodesBySha, parentSha) ?? null;
+        if (!sourceNode || sourceNode.commit.id === mergeTarget.commit.id) return null;
+        return {
+          id: `merge:${mergeNode.fullSha}:${parentSha}`,
+          path: buildMergeOrthogonalPath({
+            laneX: sourceNode.x + CARD_WIDTH / 2,
+            tipY: sourceNode.y,
+            mergeX: mergeTarget.x + CARD_WIDTH,
+            mergeY: mergeTarget.y + CARD_HEIGHT / 2,
+            cornerR: 18,
+            pointFormatter,
+          }),
+        };
+      })
+      .filter((entry): entry is { id: string; path: string } => entry != null);
+  });
 
   for (const branch of branches) {
     if (branch.name === defaultBranch) continue;
@@ -814,7 +800,7 @@ export default function BranchGridMap({
               {isTop && clumpCount > 1 ? (
                 <button
                   type="button"
-                  onClick={() => clusterKey && setCollapsedClumps((prev) => {
+                  onClick={() => clusterKey && clusterKey !== checkedOutClusterKey && setCollapsedClumps((prev) => {
                     const next = new Set(prev);
                     if (next.has(clusterKey)) next.delete(clusterKey);
                     else next.add(clusterKey);
