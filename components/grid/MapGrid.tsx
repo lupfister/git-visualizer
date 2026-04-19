@@ -763,13 +763,7 @@ export default function BranchGridMap({
             const isTop = clusterKey ? leadByClusterKey.get(clusterKey) === node.commit.id : false;
             const clumpCount = clusterKey ? clusterCounts.get(clusterKey) ?? 1 : 1;
             const nodeConnectorDecisions = connectorDecisions.filter((decision) => decision.parent === node.commit.id || decision.child === node.commit.id);
-            const nodeConnectorRendered = nodeConnectorDecisions.filter((decision) => decision.rendered).length;
-            const renderedBranchDecisions = nodeConnectorDecisions.filter((decision) => decision.rendered && decision.kind === 'branch').length;
-            const renderedAncestryDecisions = nodeConnectorDecisions.filter((decision) => decision.rendered && decision.kind === 'ancestry').length;
-            const hasRenderedAncestry = renderedAncestryDecisions > 0;
-            const nodeConnectorSummary = nodeConnectorDecisions.length > 0
-              ? `${nodeConnectorRendered} shown`
-              : 'No connector decisions';
+            const hasRenderedAncestry = nodeConnectorDecisions.some((decision) => decision.rendered && decision.kind === 'ancestry');
             const nodeWarningsForCard = nodeWarnings.get(node.commit.id) ?? [];
             const showDataShapeError = nodeWarningsForCard.length > 0 && !hasRenderedAncestry && !(clusterKey && isCollapsed);
             return (
@@ -827,29 +821,6 @@ export default function BranchGridMap({
                       title={nodeWarningsForCard.join('\n')}
                     >
                       Broken ancestry
-                    </span>
-                  ) : null}
-                  <span
-                    className={cn(
-                      'inline-flex items-center rounded-full border px-2 py-0.5 text-[10px] font-medium uppercase tracking-wide',
-                      nodeConnectorRendered > 0
-                        ? 'border-blue-500/20 bg-primary/10 text-primary'
-                        : nodeConnectorDecisions.length > 0
-                          ? 'border-amber-500/20 bg-amber-50 text-amber-600 dark:bg-amber-900/20 dark:text-amber-400'
-                          : 'border-border/50 bg-muted/30 text-muted-foreground'
-                    )}
-                    title={nodeConnectorDecisions.map((decision) => `${decision.rendered ? 'rendered' : 'skipped'} ${decision.kind} ${decision.parent.slice(0, 7)} -> ${decision.child.slice(0, 7)}: ${decision.reason}`).join('\n') || 'No connector decisions'}
-                  >
-                    {nodeConnectorSummary}
-                  </span>
-                  {renderedBranchDecisions > 0 ? (
-                    <span className="inline-flex items-center rounded-full border border-border/50 bg-muted/30 px-2 py-0.5 text-[10px] font-medium uppercase tracking-wide text-muted-foreground">
-                      Branch {renderedBranchDecisions}
-                    </span>
-                  ) : null}
-                  {renderedAncestryDecisions > 0 ? (
-                    <span className="inline-flex items-center rounded-full border border-border/50 bg-muted/30 px-2 py-0.5 text-[10px] font-medium uppercase tracking-wide text-muted-foreground">
-                      Ancestry {renderedAncestryDecisions}
                     </span>
                   ) : null}
                 </div>
