@@ -4,6 +4,8 @@ import {
   buildLanes,
   buildMergeOrthogonalPath,
   CARD_HEIGHT,
+  CARD_BODY_TOP_OFFSET,
+  CARD_HEADER_HEIGHT,
   CARD_WIDTH,
   CONNECTOR_COLOR,
   LEFT_PADDING,
@@ -477,7 +479,7 @@ export default function BranchGridMap({
   }
   const pointFormatter = (x: number, y: number) => `${x.toFixed(1)} ${y.toFixed(1)}`;
   const contentWidth = LEFT_PADDING * 2 + (Math.max(0, ...lanes.map((lane) => lane.column)) + 1) * COLUMN_WIDTH;
-  const contentHeight = TOP_PADDING * 2 + Math.max(0, visibleCommitsList.length - 1) * (ROW_HEIGHT + ROW_GAP) + CARD_HEIGHT;
+  const contentHeight = TOP_PADDING * 2 + Math.max(0, visibleCommitsList.length - 1) * (ROW_HEIGHT + ROW_GAP) + CARD_HEIGHT + CARD_HEADER_HEIGHT;
 
   const connectors: Connector[] = [];
   const connectorDecisions: Array<{
@@ -532,12 +534,12 @@ export default function BranchGridMap({
 
   const getIncomingAnchor = (node: Node): { x: number; y: number } => ({
     x: node.x + CARD_WIDTH / 2,
-    y: node.y + CARD_HEIGHT + GRID_INCOMING_GAP_PX,
+    y: node.y + CARD_BODY_TOP_OFFSET + CARD_HEIGHT + GRID_INCOMING_GAP_PX,
   });
 
   const getOutgoingAnchor = (node: Node, isBranching: boolean): { x: number; y: number } => ({
     x: isBranching ? node.x + CARD_WIDTH : node.x + CARD_WIDTH / 2,
-    y: isBranching ? node.y + CARD_HEIGHT / 2 : node.y,
+    y: isBranching ? node.y + CARD_BODY_TOP_OFFSET + CARD_HEIGHT / 2 : node.y + CARD_BODY_TOP_OFFSET,
   });
 
   const resolveParentNode = (parentSha: string, preferredBranchName: string): Node | null => {
@@ -565,12 +567,12 @@ export default function BranchGridMap({
           fromX: sourceNode.x + CARD_WIDTH / 2,
           fromY: sourceNode.y,
           toX: mergeTarget.x + CARD_WIDTH - GRID_MERGE_TARGET_GAP_PX,
-          toY: mergeTarget.y + CARD_HEIGHT / 2,
+          toY: mergeTarget.y + CARD_BODY_TOP_OFFSET + CARD_HEIGHT / 2,
           path: buildMergeOrthogonalPath({
             laneX: sourceNode.x + CARD_WIDTH / 2,
             tipY: sourceNode.y,
             mergeX: mergeTarget.x + CARD_WIDTH - GRID_MERGE_TARGET_GAP_PX,
-            mergeY: mergeTarget.y + CARD_HEIGHT / 2,
+            mergeY: mergeTarget.y + CARD_BODY_TOP_OFFSET + CARD_HEIGHT / 2,
             cornerR: 18,
             pointFormatter,
           }),
@@ -837,73 +839,83 @@ export default function BranchGridMap({
             return (
             <div
               key={node.commit.visualId}
-              ref={(el) => {
-                cardRefs.current.set(node.commit.id, el);
-              }}
               className={cn(
-                'group absolute z-20 overflow-hidden rounded-2xl border border-border/50 bg-card shadow-sm transition-all duration-200 ease-in-out hover:border-border hover:shadow-md',
-                branchOffNodeShas.has(node.commit.id) ||
-                branchStartShas.has(node.commit.id) ||
-                crossBranchOutgoingShas.has(node.commit.id)
-                  ? branchStartAccentClass
-                  : connectorParentShas.has(node.commit.id)
-                    ? connectorParentAccentClass
-                  : branchBaseCommitByName.get(node.commit.branchName)?.id === node.commit.id
-                    ? 'border-amber-500 ring-2 ring-amber-500/35 shadow-[0_0_0_1px_rgba(245,158,11,0.18)]'
-                    : showDataShapeError
-                      ? 'border-red-500 ring-2 ring-red-500/25 shadow-[0_0_0_1px_rgba(239,68,68,0.12)]'
-                      : '',
+                'group absolute z-20',
                 normalizedSearchQuery && !matchingNodes.some((match) => match.commit.id === node.commit.id) ? 'opacity-10 blur-[0.5px]' : '',
-                normalizedSearchQuery && matchingNodes.some((match) => match.commit.id === node.commit.id) ? 'shadow-md scale-[1.01]' : '',
-                focusedNode?.commit.id === node.commit.id ? 'z-30 shadow-lg scale-[1.015] ring-2 ring-primary/20' : ''
+                normalizedSearchQuery && matchingNodes.some((match) => match.commit.id === node.commit.id) ? 'scale-[1.01]' : '',
+                focusedNode?.commit.id === node.commit.id ? 'z-30 scale-[1.015]' : ''
               )}
-              style={{ left: node.x, top: node.y, width: CARD_WIDTH, height: CARD_HEIGHT }}
+              style={{ left: node.x, top: node.y, width: CARD_WIDTH, height: CARD_BODY_TOP_OFFSET + CARD_HEIGHT + 4, overflow: 'visible' }}
             >
-              {isTop && clumpCount > 1 ? (
-                <button
-                  type="button"
-                  onClick={() => clusterKey && clusterKey !== checkedOutClusterKey && setManuallyOpenedClumps((prev) => {
-                    const next = new Set(prev);
-                    if (next.has(clusterKey)) next.delete(clusterKey);
-                    else next.add(clusterKey);
-                    return next;
-                  })}
-                  className="absolute right-3 top-3 z-40 inline-flex items-center rounded-full border border-primary/20 bg-primary/10 px-2 py-0.5 text-[10px] font-medium uppercase tracking-wide text-primary transition-colors hover:bg-primary/15"
-                >
-                  {isClusterOpen ? `Collapse ${clumpCount}` : `Show ${clumpCount}`}
-                </button>
-              ) : null}
-              <div className="flex h-full flex-col px-4 py-3">
-                <div className="text-[12px] font-medium leading-none text-muted-foreground">
+              <div className="absolute left-0 top-0 flex w-full items-baseline justify-between px-0 pb-0">
+                <div className="text-sm font-medium leading-none text-muted-foreground">
                   {node.commit.branchName}/{node.commit.id.slice(0, 7)}
                 </div>
-                <div className="mt-2 max-w-[20rem] text-[12px] font-medium leading-tight tracking-tight text-foreground group-hover:text-foreground">
-                  {isTop && isClusterOpen
-                    ? node.commit.message
-                    : isTop && clumpCount > 1
-                      ? `${node.commit.message} +${clumpCount - 1}`
-                      : node.commit.message}
-                </div>
-                <div className="mt-2 flex flex-wrap items-center gap-1.5">
-                  {showDataShapeError ? (
-                    <span
-                      className="inline-flex items-center gap-1 rounded-full border border-red-500/25 bg-red-50 px-2 py-0.5 text-[10px] font-medium uppercase tracking-wide text-red-600 dark:bg-red-900/20 dark:text-red-400"
-                      title={nodeWarningsForCard.join('\n')}
-                    >
-                      Broken ancestry
-                    </span>
-                  ) : null}
-                </div>
-                <div className="mt-auto flex items-end justify-between gap-3 pt-4">
-                  <div className="text-[12px] font-medium text-muted-foreground">@{node.commit.author}</div>
-                  <div className="text-[12px] font-medium text-muted-foreground">{new Date(node.commit.date).toLocaleString('en-US', { month: 'long', day: 'numeric', hour: 'numeric', minute: '2-digit' })}</div>
-                </div>
-                {focusedNode?.commit.id === node.commit.id && normalizedSearchQuery ? (
-                  <div className="absolute left-4 top-3 inline-flex rounded-full bg-primary/10 px-2 py-0.5 text-[10px] font-medium uppercase tracking-wide text-primary">
-                    Search result
-                  </div>
+                {isTop && clumpCount > 1 ? (
+                  <button
+                    type="button"
+                    onClick={() => clusterKey && clusterKey !== checkedOutClusterKey && setManuallyOpenedClumps((prev) => {
+                      const next = new Set(prev);
+                      if (next.has(clusterKey)) next.delete(clusterKey);
+                      else next.add(clusterKey);
+                      return next;
+                    })}
+                    className="inline-flex items-center bg-transparent p-0 text-sm font-medium leading-none text-muted-foreground"
+                  >
+                    {isClusterOpen ? '⌃' : `x${clumpCount}`}
+                  </button>
                 ) : null}
-                {showDataShapeError ? null : null}
+              </div>
+              <div
+                ref={(el) => {
+                  cardRefs.current.set(node.commit.id, el);
+                }}
+                className={cn(
+                  'absolute left-0 top-5 h-[176px] w-full overflow-hidden rounded-tr-xl rounded-br-xl rounded-bl-xl rounded-tl-none border border-border/50 bg-card transition-all duration-200 ease-in-out hover:border-border hover:shadow-sm',
+                  branchOffNodeShas.has(node.commit.id) ||
+                  branchStartShas.has(node.commit.id) ||
+                  crossBranchOutgoingShas.has(node.commit.id)
+                    ? branchStartAccentClass
+                    : connectorParentShas.has(node.commit.id)
+                      ? connectorParentAccentClass
+                    : branchBaseCommitByName.get(node.commit.branchName)?.id === node.commit.id
+                      ? 'border-amber-500 ring-2 ring-amber-500/35 shadow-[0_0_0_1px_rgba(245,158,11,0.18)]'
+                      : showDataShapeError
+                        ? 'border-red-500 ring-2 ring-red-500/25 shadow-[0_0_0_1px_rgba(239,68,68,0.12)]'
+                        : '',
+                  normalizedSearchQuery && matchingNodes.some((match) => match.commit.id === node.commit.id) ? 'shadow-md' : '',
+                  focusedNode?.commit.id === node.commit.id ? 'ring-2 ring-primary/20 shadow-md' : ''
+                )}
+              >
+                <div className="flex h-full flex-col px-5 py-4">
+                  <div className="mt-0 max-w-[38rem] text-sm font-medium leading-tight tracking-tight text-muted-foreground group-hover:text-muted-foreground">
+                    {isTop && isClusterOpen
+                      ? node.commit.message
+                      : isTop && clumpCount > 1
+                        ? `${node.commit.message} +${clumpCount - 1}`
+                        : node.commit.message}
+                  </div>
+                  <div className="mt-3 flex flex-wrap items-center gap-1.5">
+                    {showDataShapeError ? (
+                      <span
+                        className="inline-flex items-center gap-1 rounded-lg border border-red-500/25 bg-red-50 px-2 py-0.5 text-sm font-medium uppercase tracking-wide text-muted-foreground dark:bg-red-900/20 dark:text-muted-foreground"
+                        title={nodeWarningsForCard.join('\n')}
+                      >
+                        Broken ancestry
+                      </span>
+                    ) : null}
+                  </div>
+                  <div className="mt-auto flex items-end justify-between gap-4 pt-5">
+                    <div className="text-sm font-medium text-muted-foreground">@{node.commit.author}</div>
+                    <div className="text-sm font-medium text-muted-foreground">{new Date(node.commit.date).toLocaleString('en-US', { month: 'long', day: 'numeric', hour: 'numeric', minute: '2-digit' })}</div>
+                  </div>
+                  {focusedNode?.commit.id === node.commit.id && normalizedSearchQuery ? (
+                    <div className="absolute left-5 top-4 inline-flex rounded-full bg-primary/10 px-2 py-0.5 text-sm font-medium uppercase tracking-wide text-muted-foreground">
+                      Search result
+                    </div>
+                  ) : null}
+                  {showDataShapeError ? null : null}
+                </div>
               </div>
             </div>
             );

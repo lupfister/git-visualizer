@@ -97,13 +97,15 @@ export type Node = { commit: VisualCommit; row: number; column: number; x: numbe
 export type Connector = { id: string; fromX: number; fromY: number; toX: number; toY: number };
 
 export const BRANCH_COLUMN_REUSE_TIME_GAP_FACTOR = 0.75;
-export const COLUMN_WIDTH = 160;
-export const ROW_HEIGHT = 116;
-export const ROW_GAP = 2;
-export const CARD_WIDTH = 360;
-export const CARD_HEIGHT = 108;
-export const TOP_PADDING = 12;
-export const LEFT_PADDING = 12;
+export const ROW_HEIGHT = 200;
+export const ROW_GAP = 8;
+export const CARD_WIDTH = 540;
+export const CARD_HEIGHT = 176;
+export const CARD_HEADER_HEIGHT = 32;
+export const CARD_BODY_TOP_OFFSET = 20;
+export const COLUMN_WIDTH = CARD_WIDTH;
+export const TOP_PADDING = 18;
+export const LEFT_PADDING = 18;
 export const CONNECTOR_COLOR = '#E6E6E6';
 
 export function timeAgo(dateStr: string) {
