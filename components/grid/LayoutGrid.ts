@@ -94,7 +94,7 @@ export type CommitItem = {
 export type VisualCommit = CommitItem & { visualId: string };
 export type Lane = { name: string; column: number; parentName: string | null };
 export type Node = { commit: VisualCommit; row: number; column: number; x: number; y: number };
-export type Connector = { id: string; fromX: number; fromY: number; toX: number; toY: number };
+export type Connector = { id: string; fromX: number; fromY: number; toX: number; toY: number; path: string };
 
 export const BRANCH_COLUMN_REUSE_TIME_GAP_FACTOR = 0.75;
 export const ROW_HEIGHT = 200;
