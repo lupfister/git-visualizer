@@ -36,6 +36,9 @@ const GRID_ZOOM_DEFAULT = GRID_ZOOM_MAX / 2;
 const GRID_ZOOM_MIN = 0.45;
 const GRID_ZOOM_WHEEL_SENSITIVITY = 0.0015;
 const GRID_RENDER_ZOOM = GRID_ZOOM_MAX;
+const PAN_SMOOTHING = 0.35;
+const CAMERA_SETTLE_EPSILON = 0.1;
+const ZOOM_SETTLE_EPSILON = 0.001;
 
 function clampZoom(value: number): number {
   return Math.max(GRID_ZOOM_MIN, Math.min(GRID_ZOOM_MAX, value));
@@ -160,13 +163,19 @@ export default function BranchGridMap({
   const cardRefs = useRef(new Map<string, HTMLDivElement | null>());
   const scrollContainerRef = useRef<HTMLDivElement | null>(null);
   const viewportRef = useRef<HTMLDivElement | null>(null);
+  const transformLayerRef = useRef<HTMLDivElement | null>(null);
   const panRef = useRef({ x: 0, y: 0 });
   const zoomRef = useRef(GRID_ZOOM_DEFAULT);
+  const renderedCameraRef = useRef({ panX: 0, panY: 0, zoom: GRID_ZOOM_DEFAULT });
+  const cameraFrameRef = useRef<number | null>(null);
+  const renderedZoomRef = useRef(GRID_ZOOM_DEFAULT);
+  const interactionIdleTimeoutRef = useRef<number | null>(null);
   const dragStateRef = useRef<{ x: number; y: number; panX: number; panY: number } | null>(null);
   const [isDragging, setIsDragging] = useState(false);
+  const [isCameraMoving, setIsCameraMoving] = useState(false);
   const [manuallyOpenedClumps, setManuallyOpenedClumps] = useState<Set<string>>(() => new Set());
   const [isDebugOpen, setIsDebugOpen] = useState(false);
-  const [camera, setCamera] = useState({ panX: 0, panY: 0, zoom: GRID_ZOOM_DEFAULT });
+  const [renderedZoom, setRenderedZoom] = useState(GRID_ZOOM_DEFAULT);
   const lanes = buildLanes(branches, defaultBranch);
   const branchByName = new Map(branches.map((branch) => [branch.name, branch]));
   const laneByName = new Map(lanes.map((lane) => [lane.name, lane] as const));
@@ -414,7 +423,7 @@ export default function BranchGridMap({
       })
     : nodes;
   const focusedNode = gridFocusSha ? nodes.find((node) => node.commit.id === gridFocusSha) ?? null : null;
-  const displayZoom = camera.zoom / GRID_RENDER_ZOOM;
+  const displayZoom = renderedZoom / GRID_RENDER_ZOOM;
   const inverseZoomStyle = {
     transform: `scale(${1 / displayZoom})`,
     transformOrigin: 'top left' as const,
@@ -431,15 +440,75 @@ export default function BranchGridMap({
     transform: `scale(${1 / displayZoom})`,
     transformOrigin: 'center' as const,
   };
+  const applyRenderedCamera = (nextPanX: number, nextPanY: number, nextZoom: number) => {
+    renderedCameraRef.current = { panX: nextPanX, panY: nextPanY, zoom: nextZoom };
+    const layer = transformLayerRef.current;
+    if (layer) {
+      layer.style.transform = `translate3d(${nextPanX}px, ${nextPanY}px, 0) scale(${nextZoom / GRID_RENDER_ZOOM})`;
+    }
+    if (Math.abs(renderedZoomRef.current - nextZoom) > ZOOM_SETTLE_EPSILON) {
+      renderedZoomRef.current = nextZoom;
+      setRenderedZoom(nextZoom);
+    }
+  };
+
+  const stepCamera = () => {
+    cameraFrameRef.current = null;
+    const rendered = renderedCameraRef.current;
+    const targetPanX = panRef.current.x;
+    const targetPanY = panRef.current.y;
+    const targetZoom = zoomRef.current;
+    const nextPanX =
+      Math.abs(targetPanX - rendered.panX) <= CAMERA_SETTLE_EPSILON
+        ? targetPanX
+        : rendered.panX + (targetPanX - rendered.panX) * PAN_SMOOTHING;
+    const nextPanY =
+      Math.abs(targetPanY - rendered.panY) <= CAMERA_SETTLE_EPSILON
+        ? targetPanY
+        : rendered.panY + (targetPanY - rendered.panY) * PAN_SMOOTHING;
+    const nextZoom =
+      Math.abs(targetZoom - rendered.zoom) <= ZOOM_SETTLE_EPSILON
+        ? targetZoom
+        : rendered.zoom + (targetZoom - rendered.zoom) * PAN_SMOOTHING;
+
+    applyRenderedCamera(nextPanX, nextPanY, nextZoom);
+
+    if (
+      nextPanX !== targetPanX ||
+      nextPanY !== targetPanY ||
+      nextZoom !== targetZoom
+    ) {
+      cameraFrameRef.current = window.requestAnimationFrame(stepCamera);
+    }
+  };
+
+  const scheduleCameraFrame = () => {
+    if (cameraFrameRef.current != null) return;
+    cameraFrameRef.current = window.requestAnimationFrame(stepCamera);
+  };
+
+  const markCameraInteraction = () => {
+    if (!isCameraMoving) setIsCameraMoving(true);
+    if (interactionIdleTimeoutRef.current != null) {
+      window.clearTimeout(interactionIdleTimeoutRef.current);
+    }
+    interactionIdleTimeoutRef.current = window.setTimeout(() => {
+      interactionIdleTimeoutRef.current = null;
+      if (!dragStateRef.current) setIsCameraMoving(false);
+    }, 90);
+  };
+
   const syncCamera = (nextPanX: number, nextPanY: number, nextZoom: number) => {
     panRef.current = { x: nextPanX, y: nextPanY };
     zoomRef.current = nextZoom;
-    setCamera({ panX: nextPanX, panY: nextPanY, zoom: nextZoom });
+    markCameraInteraction();
+    scheduleCameraFrame();
   };
 
   const zoomToPoint = (clientX: number, clientY: number, nextZoom: number) => {
     const viewport = viewportRef.current;
     const targetZoom = clampZoom(nextZoom);
+    const rendered = renderedCameraRef.current;
     if (!viewport) {
       syncCamera(panRef.current.x, panRef.current.y, targetZoom);
       return;
@@ -447,16 +516,24 @@ export default function BranchGridMap({
     const rect = viewport.getBoundingClientRect();
     const anchorX = clientX - rect.left;
     const anchorY = clientY - rect.top;
-    const worldX = (anchorX - panRef.current.x) / zoomRef.current;
-    const worldY = (anchorY - panRef.current.y) / zoomRef.current;
+    const worldX = (anchorX - rendered.panX) / rendered.zoom;
+    const worldY = (anchorY - rendered.panY) / rendered.zoom;
     syncCamera(anchorX - worldX * targetZoom, anchorY - worldY * targetZoom, targetZoom);
   };
 
   const handleWheel = (event: React.WheelEvent<HTMLDivElement>) => {
-    if (!event.ctrlKey && !event.metaKey) return;
     event.preventDefault();
-    const factor = Math.exp(-event.deltaY * GRID_ZOOM_WHEEL_SENSITIVITY);
-    zoomToPoint(event.clientX, event.clientY, zoomRef.current * factor);
+    if (event.ctrlKey || event.metaKey) {
+      const factor = Math.exp(-event.deltaY * GRID_ZOOM_WHEEL_SENSITIVITY);
+      zoomToPoint(event.clientX, event.clientY, zoomRef.current * factor);
+      return;
+    }
+
+    syncCamera(
+      panRef.current.x - event.deltaX,
+      panRef.current.y - event.deltaY,
+      zoomRef.current
+    );
   };
 
   const startPanDrag = (event: React.MouseEvent<HTMLDivElement>) => {
@@ -484,12 +561,25 @@ export default function BranchGridMap({
     const handleUp = () => {
       dragStateRef.current = null;
       setIsDragging(false);
+      if (interactionIdleTimeoutRef.current == null) setIsCameraMoving(false);
     };
     window.addEventListener('mousemove', handleMove);
     window.addEventListener('mouseup', handleUp);
     return () => {
       window.removeEventListener('mousemove', handleMove);
       window.removeEventListener('mouseup', handleUp);
+    };
+  }, []);
+
+  useLayoutEffect(() => {
+    applyRenderedCamera(0, 0, GRID_ZOOM_DEFAULT);
+    return () => {
+      if (interactionIdleTimeoutRef.current != null) {
+        window.clearTimeout(interactionIdleTimeoutRef.current);
+      }
+      if (cameraFrameRef.current != null) {
+        window.cancelAnimationFrame(cameraFrameRef.current);
+      }
     };
   }, []);
 
@@ -510,16 +600,17 @@ export default function BranchGridMap({
     if (!gridFocusSha) return;
     const el = cardRefs.current.get(gridFocusSha);
     if (!el) return;
-    const container = scrollContainerRef.current;
-    if (!container) {
+    const viewport = viewportRef.current;
+    if (!viewport) {
       el.scrollIntoView({ block: 'center', inline: 'center', behavior: 'smooth' });
       return;
     }
-    const containerRect = container.getBoundingClientRect();
+    const containerRect = viewport.getBoundingClientRect();
     const elRect = el.getBoundingClientRect();
-    const nextTop = container.scrollTop + (elRect.top - containerRect.top) - (containerRect.height / 2) + (elRect.height / 2);
-    const nextLeft = container.scrollLeft + (elRect.left - containerRect.left) - (containerRect.width / 2) + (elRect.width / 2);
-    container.scrollTo({ top: Math.max(0, nextTop), left: Math.max(0, nextLeft), behavior: 'smooth' });
+    const deltaX = containerRect.left + (containerRect.width / 2) - (elRect.left + (elRect.width / 2));
+    const deltaY = containerRect.top + (containerRect.height / 2) - (elRect.top + (elRect.height / 2));
+    const rendered = renderedCameraRef.current;
+    syncCamera(rendered.panX + deltaX, rendered.panY + deltaY, rendered.zoom);
   }, [gridFocusSha, gridSearchJumpToken]);
 
   const checkedOutSha = checkedOutRef?.headSha ?? null;
@@ -917,7 +1008,7 @@ export default function BranchGridMap({
           </div>
         </div>
       ) : (
-        <div ref={scrollContainerRef} className="flex-1 min-h-0 overflow-auto">
+        <div ref={scrollContainerRef} className="flex-1 min-h-0 overflow-hidden">
           <div
             className="relative min-w-full p-2.5"
             onWheel={handleWheel}
@@ -930,12 +1021,14 @@ export default function BranchGridMap({
               style={{ cursor: isDragging ? 'grabbing' : 'grab' }}
             >
               <div
+                ref={transformLayerRef}
                 className="absolute left-0 top-0"
                 style={{
                   width: contentWidth,
                   height: contentHeight,
                   transformOrigin: 'top left',
-                  transform: `translate3d(${camera.panX}px, ${camera.panY}px, 0) scale(${displayZoom})`,
+                  transform: `translate3d(0px, 0px, 0) scale(${displayZoom})`,
+                  willChange: 'transform',
                 }}
               >
             {renderNodes.map((node) => {
@@ -954,7 +1047,9 @@ export default function BranchGridMap({
               key={node.commit.visualId}
               className={cn(
                 'group absolute z-20',
-                normalizedSearchQuery && !matchingNodes.some((match) => match.commit.id === node.commit.id) ? 'opacity-10 blur-[0.5px]' : '',
+                normalizedSearchQuery && !matchingNodes.some((match) => match.commit.id === node.commit.id)
+                  ? isCameraMoving ? 'opacity-10' : 'opacity-10 blur-[0.5px]'
+                  : '',
                 normalizedSearchQuery && matchingNodes.some((match) => match.commit.id === node.commit.id) ? 'scale-[1.01]' : '',
                 focusedNode?.commit.id === node.commit.id ? 'z-30 scale-[1.015]' : ''
               )}
@@ -986,7 +1081,8 @@ export default function BranchGridMap({
                   cardRefs.current.set(node.commit.id, el);
                 }}
                 className={cn(
-                  'absolute left-0 h-[176px] w-full overflow-hidden rounded-tr-xl rounded-br-xl rounded-bl-xl rounded-tl-none border border-border/50 bg-card transition-all duration-200 ease-in-out hover:border-border hover:shadow-sm',
+                  'absolute left-0 h-[176px] w-full overflow-hidden rounded-tr-xl rounded-br-xl rounded-bl-xl rounded-tl-none border border-border/50 bg-card hover:border-border',
+                  isCameraMoving ? 'transition-none' : 'transition-all duration-200 ease-in-out hover:shadow-sm',
                   branchOffNodeShas.has(node.commit.id) ||
                   branchStartShas.has(node.commit.id) ||
                   crossBranchOutgoingShas.has(node.commit.id)
@@ -998,8 +1094,8 @@ export default function BranchGridMap({
                       : showDataShapeError
                         ? 'border-red-500 ring-2 ring-red-500/25 shadow-[0_0_0_1px_rgba(239,68,68,0.12)]'
                         : '',
-                  normalizedSearchQuery && matchingNodes.some((match) => match.commit.id === node.commit.id) ? 'shadow-md' : '',
-                  focusedNode?.commit.id === node.commit.id ? 'ring-2 ring-primary/20 shadow-md' : ''
+                  normalizedSearchQuery && matchingNodes.some((match) => match.commit.id === node.commit.id) && !isCameraMoving ? 'shadow-md' : '',
+                  focusedNode?.commit.id === node.commit.id ? cn('ring-2 ring-primary/20', !isCameraMoving && 'shadow-md') : ''
                 )}
                 style={{ top: 0, borderWidth: `${borderWidthPx}px` }}
               >
@@ -1055,14 +1151,16 @@ export default function BranchGridMap({
                   const arrowDirection = dx >= 0 ? 'right' : 'left';
                   return (
                 <Fragment key={connector.id}>
-                  <path
-                    d={connector.path}
-                    fill="none"
-                    stroke="rgba(255, 255, 255, 0.8)"
-                    strokeWidth={haloStrokeWidth}
-                    strokeLinecap="round"
-                    strokeLinejoin="round"
-                  />
+                  {!isCameraMoving ? (
+                    <path
+                      d={connector.path}
+                      fill="none"
+                      stroke="rgba(255, 255, 255, 0.8)"
+                      strokeWidth={haloStrokeWidth}
+                      strokeLinecap="round"
+                      strokeLinejoin="round"
+                    />
+                  ) : null}
                   <path
                     d={connector.path}
                     fill="none"
@@ -1105,15 +1203,17 @@ export default function BranchGridMap({
                 const arrowHead = buildChevronArrowHead(connector.toX, connector.toY, pointFormatter, arrowDirection, arrowHeadSize, arrowHeadTipOffset);
                 return (
                   <Fragment key={connector.id}>
-                    <path
-                      key={`${connector.id}-halo`}
-                      d={path}
-                      fill="none"
-                      stroke="rgba(255, 255, 255, 0.8)"
-                      strokeWidth={haloStrokeWidth}
-                      strokeLinecap="round"
-                      strokeLinejoin="round"
-                    />
+                    {!isCameraMoving ? (
+                      <path
+                        key={`${connector.id}-halo`}
+                        d={path}
+                        fill="none"
+                        stroke="rgba(255, 255, 255, 0.8)"
+                        strokeWidth={haloStrokeWidth}
+                        strokeLinecap="round"
+                        strokeLinejoin="round"
+                      />
+                    ) : null}
                     <path
                       key={`${connector.id}-line`}
                       d={path}
