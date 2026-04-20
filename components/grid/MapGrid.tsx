@@ -1,4 +1,15 @@
-import { Fragment, startTransition, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
+import {
+  Fragment,
+  startTransition,
+  useCallback,
+  useEffect,
+  useLayoutEffect,
+  useMemo,
+  useRef,
+  useState,
+  type CSSProperties,
+  type ReactNode,
+} from 'react';
 import { buildLanes, CARD_HEIGHT, CARD_BODY_TOP_OFFSET, CARD_WIDTH, CONNECTOR_COLOR, type BranchGridViewProps } from './LayoutGrid';
 import { computeBranchGridLayout } from './branchGridLayoutModel';
 import { buildChevronArrowHead, buildRoundedElbowPath } from './gridPathUtils';
@@ -22,12 +33,56 @@ const MAP_GRID_INNER_PADDING_PX = 10;
 const MAP_GRID_CULL_VIEWPORT_INSET_SCREEN_PX = -100;
 /** Pan-only camera updates throttle React re-renders (zoom always updates immediately). */
 const MAP_GRID_CAMERA_PAN_REACT_THROTTLE_MS = 56;
+/** Max commit cards promoted from the cull queue per animation frame (spreads mount cost). */
+const MAP_GRID_MAX_REVEAL_PER_FRAME = 5;
 const PAN_SMOOTHING = 0.35;
 const CAMERA_SETTLE_EPSILON = 0.1;
 const ZOOM_SETTLE_EPSILON = 0.001;
 
 function clampZoom(value: number): number {
   return Math.max(GRID_ZOOM_MIN, Math.min(GRID_ZOOM_MAX, value));
+}
+
+/** Opacity ramp for commits that re-enter the viewport after culling (double rAF before fade). */
+function MapGridCommitWrapper({
+  fadeIn,
+  className,
+  style,
+  children,
+}: {
+  fadeIn: boolean;
+  className?: string;
+  style?: CSSProperties;
+  children: ReactNode;
+}) {
+  const [opaque, setOpaque] = useState(!fadeIn);
+  useLayoutEffect(() => {
+    if (!fadeIn) {
+      setOpaque(true);
+      return;
+    }
+    setOpaque(false);
+    let innerRaf: number | null = null;
+    const outerRaf = requestAnimationFrame(() => {
+      innerRaf = requestAnimationFrame(() => setOpaque(true));
+    });
+    return () => {
+      cancelAnimationFrame(outerRaf);
+      if (innerRaf != null) cancelAnimationFrame(innerRaf);
+    };
+  }, [fadeIn]);
+  return (
+    <div
+      className={className}
+      style={{
+        ...style,
+        opacity: opaque ? 1 : 0,
+        transition: fadeIn ? 'opacity 240ms ease-out' : undefined,
+      }}
+    >
+      {children}
+    </div>
+  );
 }
 
 type ViewportContentBounds = { left: number; top: number; right: number; bottom: number };
@@ -249,6 +304,11 @@ export default function BranchGridMap({
   const [cameraRenderTick, setCameraRenderTick] = useState(0);
   const [visibleNodeIds, setVisibleNodeIds] = useState<Set<string> | null>(null);
   const [viewportClientSize, setViewportClientSize] = useState<{ width: number; height: number } | null>(null);
+  /** Commits allowed to mount for viewport cull (staggered from `visibleNodeIds` via rAF). */
+  const [revealedStaggerIds, setRevealedStaggerIds] = useState<Set<string>>(() => new Set());
+  const pendingRevealRef = useRef<Set<string>>(new Set());
+  const revealRafRef = useRef<number | null>(null);
+  const prevRevealedStaggerSnapshotRef = useRef<Set<string>>(new Set());
   const panReactTrailingTimeoutRef = useRef<number | null>(null);
   const lastCameraPanReactEmitRef = useRef(0);
 
@@ -317,12 +377,77 @@ export default function BranchGridMap({
     pointFormatter,
   } = layoutModel;
 
+  const drainRevealQueue = useCallback(() => {
+    revealRafRef.current = null;
+    const pending = pendingRevealRef.current;
+    if (pending.size === 0) return;
+    const batch: string[] = [];
+    let n = 0;
+    for (const id of pending) {
+      if (n >= MAP_GRID_MAX_REVEAL_PER_FRAME) break;
+      batch.push(id);
+      pending.delete(id);
+      n += 1;
+    }
+    if (batch.length === 0) return;
+    setRevealedStaggerIds((prev) => {
+      const next = new Set(prev);
+      for (const id of batch) next.add(id);
+      return next;
+    });
+    if (pending.size > 0) {
+      revealRafRef.current = requestAnimationFrame(drainRevealQueue);
+    }
+  }, []);
+
+  useEffect(() => {
+    if (visibleNodeIds === null) {
+      pendingRevealRef.current.clear();
+      if (revealRafRef.current != null) {
+        cancelAnimationFrame(revealRafRef.current);
+        revealRafRef.current = null;
+      }
+      setRevealedStaggerIds(new Set());
+      return;
+    }
+    const vp = visibleNodeIds;
+    for (const id of Array.from(pendingRevealRef.current)) {
+      if (!vp.has(id)) pendingRevealRef.current.delete(id);
+    }
+    setRevealedStaggerIds((prev) => {
+      const next = new Set<string>();
+      for (const id of prev) {
+        if (vp.has(id)) next.add(id);
+      }
+      for (const id of vp) {
+        if (!next.has(id)) pendingRevealRef.current.add(id);
+      }
+      return next;
+    });
+    if (pendingRevealRef.current.size > 0 && revealRafRef.current === null) {
+      revealRafRef.current = requestAnimationFrame(drainRevealQueue);
+    }
+  }, [visibleNodeIds, drainRevealQueue]);
+
+  useEffect(
+    () => () => {
+      if (revealRafRef.current != null) cancelAnimationFrame(revealRafRef.current);
+    },
+    [],
+  );
+
+  useLayoutEffect(() => {
+    prevRevealedStaggerSnapshotRef.current = new Set(revealedStaggerIds);
+  }, [revealedStaggerIds]);
+
   const isGridSearchActive = Boolean(normalizedSearchQuery);
-  const shouldRenderNode = (commitId: string) =>
-    (isGridSearchActive && matchingNodeIds.has(commitId)) ||
-    focusedNode?.commit.id === commitId ||
-    visibleNodeIds === null ||
-    visibleNodeIds.has(commitId);
+  const shouldRenderNode = (commitId: string) => {
+    if (isGridSearchActive && matchingNodeIds.has(commitId)) return true;
+    if (focusedNode?.commit.id === commitId) return true;
+    if (visibleNodeIds === null) return true;
+    if (!visibleNodeIds.has(commitId)) return false;
+    return revealedStaggerIds.has(commitId);
+  };
 
   const displayZoom = renderedZoom / GRID_RENDER_ZOOM;
   const inverseZoomStyle = useMemo(
@@ -751,9 +876,17 @@ export default function BranchGridMap({
             const hasRenderedAncestry = commitIdsWithRenderedAncestry.has(node.commit.id);
             const nodeWarningsForCard = nodeWarnings.get(node.commit.id) ?? [];
             const showDataShapeError = nodeWarningsForCard.length > 0 && !hasRenderedAncestry;
+            const skipEntryFade =
+              (isGridSearchActive && matchingNodeIds.has(node.commit.id)) ||
+              focusedNode?.commit.id === node.commit.id;
+            const needsEntryFade =
+              !skipEntryFade &&
+              revealedStaggerIds.has(node.commit.id) &&
+              !prevRevealedStaggerSnapshotRef.current.has(node.commit.id);
             return (
-            <div
+            <MapGridCommitWrapper
               key={node.commit.visualId}
+              fadeIn={needsEntryFade}
               className={cn(
                 'group absolute z-20',
                 normalizedSearchQuery && !matchingNodeIds.has(node.commit.id)
@@ -841,7 +974,7 @@ export default function BranchGridMap({
                   {showDataShapeError ? null : null}
                 </div>
               </div>
-            </div>
+            </MapGridCommitWrapper>
             );
               })}
               <svg
