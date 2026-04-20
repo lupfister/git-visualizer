@@ -34,7 +34,7 @@ function cn(...classes: Array<string | false | null | undefined>): string {
 const GRID_ZOOM_MAX = 2.25;
 const GRID_ZOOM_DEFAULT = GRID_ZOOM_MAX / 2;
 const GRID_ZOOM_MIN = 0.45;
-const GRID_ZOOM_WHEEL_SENSITIVITY = 0.0015;
+const GRID_ZOOM_WHEEL_SENSITIVITY = 0.01;
 const GRID_RENDER_ZOOM = GRID_ZOOM_MAX;
 const PAN_SMOOTHING = 0.35;
 const CAMERA_SETTLE_EPSILON = 0.1;
