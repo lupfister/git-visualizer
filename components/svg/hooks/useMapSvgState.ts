@@ -93,6 +93,7 @@ export function useMapSvgState(args: {
   const zoomUiSyncTimeoutRef = useRef<number | null>(null);
   const cameraPaintRafRef = useRef<number | null>(null);
   const pendingCameraRef = useRef<{ pan: { x: number; y: number }; zoom: number } | null>(null);
+  const lastPaintedZoomScaleRef = useRef<number | null>(null);
   const [, setClumpAnimationTick] = useState(0);
   const clumpAnchorStateRef = useRef<Map<string, ClumpAnchorState>>(new Map());
   const clumpMemberAnchorStateRef = useRef<Map<string, ClumpMemberAnchorState>>(new Map());
@@ -269,6 +270,7 @@ export function useMapSvgState(args: {
     zoomUiSyncTimeoutRef,
     cameraPaintRafRef,
     pendingCameraRef,
+    lastPaintedZoomScaleRef,
     setClumpAnimationTick,
     clumpAnchorStateRef,
     clumpMemberAnchorStateRef,

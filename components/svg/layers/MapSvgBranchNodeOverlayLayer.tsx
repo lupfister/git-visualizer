@@ -131,7 +131,7 @@ export function MapSvgBranchNodeOverlayLayer({
   });
 
   return (
-    <g style={{ pointerEvents: 'none' }}>
+    <g data-map-layer="overlay" style={{ pointerEvents: 'none' }}>
       {orderedActiveBranches.flatMap((b) => {
         const {
           uniqueAheadCount,

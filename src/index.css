@@ -217,6 +217,19 @@ body.popover-window #root {
   vector-effect: non-scaling-stroke;
 }
 
+/* Keep the scene as close to a pure transform while the user is panning. */
+.branch-map-scroll.is-panning .branch-map-svg,
+.branch-map-scroll.is-panning .branch-map-svg * {
+  animation: none !important;
+  transition: none !important;
+}
+
+.branch-map-scroll.is-panning .branch-map-svg [data-map-layer="labels"],
+.branch-map-scroll.is-panning .branch-map-svg [data-map-layer="overlay"],
+.branch-map-scroll.is-panning .branch-map-svg [data-map-layer="controls"] {
+  display: none !important;
+}
+
 
 
 /* ── Timeline entrance animations ────────────────────────────────────────── */

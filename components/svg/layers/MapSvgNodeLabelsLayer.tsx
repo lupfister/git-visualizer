@@ -135,7 +135,7 @@ export function MapSvgNodeLabelsLayer({
   });
 
   return (
-    <g style={{ pointerEvents: 'none' }}>
+    <g data-map-layer="labels" style={{ pointerEvents: 'none' }}>
       <g>
         {orderedActiveBranches.flatMap((b) => {
           const {

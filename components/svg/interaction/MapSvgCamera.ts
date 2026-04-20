@@ -118,6 +118,7 @@ export function paintCameraCore(args: {
   isHorizontal: boolean;
   zoomStableTextEls: SVGTextElement[];
   zoomStableRectEls: SVGRectElement[];
+  lastPaintedZoomScaleRef: React.MutableRefObject<number | null>;
 }) {
   const {
     cameraEl,
@@ -128,27 +129,32 @@ export function paintCameraCore(args: {
     isHorizontal,
     zoomStableTextEls,
     zoomStableRectEls,
+    lastPaintedZoomScaleRef,
   } = args;
   if (!cameraEl) return;
   const cameraScale = getCameraScale(nextZoom, isHorizontal);
   cameraEl.style.transform = `translate3d(${nextPan.x}px, ${nextPan.y}px, 0)`;
-  if (svgEl) {
-    svgEl.style.setProperty('--camera-scale', String(cameraScale.x));
-  }
-  if (zoomLayerEl) {
-    zoomLayerEl.setAttribute('transform', `scale(${cameraScale.x} ${cameraScale.y})`);
-  }
+  const lastScale = lastPaintedZoomScaleRef.current;
+  if (lastScale == null || Math.abs(lastScale - cameraScale.x) > 0.0001) {
+    lastPaintedZoomScaleRef.current = cameraScale.x;
+    if (svgEl) {
+      svgEl.style.setProperty('--camera-scale', String(cameraScale.x));
+    }
+    if (zoomLayerEl) {
+      zoomLayerEl.setAttribute('transform', `scale(${cameraScale.x} ${cameraScale.y})`);
+    }
 
-  const inv = 1 / Math.max(cameraScale.x, 0.0001);
-  for (const textEl of zoomStableTextEls) {
-    const base = Number(textEl.dataset.baseFontSize);
-    if (!Number.isFinite(base)) continue;
-    textEl.style.fontSize = `${base * inv}px`;
-  }
-  for (const rectEl of zoomStableRectEls) {
-    const base = Number(rectEl.dataset.baseRx);
-    if (!Number.isFinite(base)) continue;
-    rectEl.setAttribute('rx', String(base * inv));
+    const inv = 1 / Math.max(cameraScale.x, 0.0001);
+    for (const textEl of zoomStableTextEls) {
+      const base = Number(textEl.dataset.baseFontSize);
+      if (!Number.isFinite(base)) continue;
+      textEl.style.fontSize = `${base * inv}px`;
+    }
+    for (const rectEl of zoomStableRectEls) {
+      const base = Number(rectEl.dataset.baseRx);
+      if (!Number.isFinite(base)) continue;
+      rectEl.setAttribute('rx', String(base * inv));
+    }
   }
 }
 

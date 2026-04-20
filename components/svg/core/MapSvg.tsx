@@ -294,6 +294,7 @@ export default function BranchMap(props: BranchMapProps) {
     lastPointerClientRef,
     zoomStableTextElsRef,
     zoomStableRectElsRef,
+    lastPaintedZoomScaleRef,
     panUiSyncTimeoutRef,
     zoomUiSyncTimeoutRef,
     cameraPaintRafRef,
@@ -319,7 +320,6 @@ export default function BranchMap(props: BranchMapProps) {
     targetPanRef,
     lastUiSyncRef,
     isPanning,
-    setIsPanning,
     isPanningRef,
     spaceHeld,
     setSpaceHeld,
@@ -847,15 +847,20 @@ export default function BranchMap(props: BranchMapProps) {
       isHorizontal,
       zoomStableTextEls: zoomStableTextElsRef.current,
       zoomStableRectEls: zoomStableRectElsRef.current,
+      lastPaintedZoomScaleRef,
     });
   }
 
   useLayoutEffect(() => {
     const svg = svgRef.current;
     if (!svg) return;
-    zoomStableTextElsRef.current = Array.from(svg.querySelectorAll<SVGTextElement>('text[data-base-font-size]'));
-    zoomStableRectElsRef.current = Array.from(svg.querySelectorAll<SVGRectElement>('rect[data-base-rx]'));
-  });
+    if (zoomStableTextElsRef.current.length === 0) {
+      zoomStableTextElsRef.current = Array.from(svg.querySelectorAll<SVGTextElement>('text[data-base-font-size]'));
+    }
+    if (zoomStableRectElsRef.current.length === 0) {
+      zoomStableRectElsRef.current = Array.from(svg.querySelectorAll<SVGRectElement>('rect[data-base-rx]'));
+    }
+  }, [drawReady]);
 
   function flushCameraPaint() {
     const pending = pendingCameraRef.current;
@@ -925,6 +930,13 @@ export default function BranchMap(props: BranchMapProps) {
     });
   }
 
+  function applyPanOnly(nextPan: { x: number; y: number }) {
+    panRef.current = nextPan;
+    targetPanRef.current = nextPan;
+    pendingCameraRef.current = { pan: nextPan, zoom: zoomRef.current };
+    stopCameraPaint();
+  }
+
   useEffect(() => {
     // Fast Refresh keeps hook state between edits. If zoom constants change,
     // snap stale zoom values into the active range so updates are visible.
@@ -975,16 +987,6 @@ export default function BranchMap(props: BranchMapProps) {
 
   function stopWheelInertia() {
     stopPanSmoothing();
-  }
-
-  function schedulePanUiSync() {
-    if (panUiSyncTimeoutRef.current !== null) {
-      clearTimeout(panUiSyncTimeoutRef.current);
-    }
-    panUiSyncTimeoutRef.current = window.setTimeout(() => {
-      panUiSyncTimeoutRef.current = null;
-      syncUiState(true, true);
-    }, 70);
   }
 
   function stopZoomAnimation(forceUiSync = true) {
@@ -1062,18 +1064,14 @@ export default function BranchMap(props: BranchMapProps) {
     };
 
     const onWheel = (e: WheelEvent) => {
-      const topElementAtPointer = document.elementFromPoint(e.clientX, e.clientY);
-      if (topElementAtPointer?.closest('[data-map-ui]')) {
-        return;
-      }
       e.preventDefault();
-      lastPointerClientRef.current = { x: e.clientX, y: e.clientY };
-      lockAnimationsIfReady();
-      focusScrollCancelRef.current?.();
-      focusScrollCancelRef.current = null;
-      markUserMovedCamera();
 
       if (e.ctrlKey || e.metaKey) {
+        lastPointerClientRef.current = { x: e.clientX, y: e.clientY };
+        lockAnimationsIfReady();
+        focusScrollCancelRef.current?.();
+        focusScrollCancelRef.current = null;
+        markUserMovedCamera();
         stopWheelInertia();
         stopPanSmoothing();
         setTooltip(null);
@@ -1086,13 +1084,11 @@ export default function BranchMap(props: BranchMapProps) {
         return;
       }
 
-      flushPendingZoomUiSync();
       const nextPan = clampPan({
         x: panRef.current.x - e.deltaX,
         y: panRef.current.y - e.deltaY,
       }, zoomRef.current, 'hard');
-      applyCamera(nextPan, zoomRef.current);
-      schedulePanUiSync();
+      applyPanOnly(nextPan);
     };
 
     const onGestureStart = (evt: Event) => {
@@ -1236,14 +1232,14 @@ export default function BranchMap(props: BranchMapProps) {
         x: panStartRef.current.panX + dx,
         y: panStartRef.current.panY + dy,
       }, zoomRef.current, 'hard');
-      applyCamera(nextPan, zoomRef.current);
+      applyPanOnly(nextPan);
     };
     const onUp = () => {
       isPanningRef.current = false;
-      setIsPanning(false);
+      scrollRef.current?.classList.remove('is-panning');
       const settledPan = clampPan(panRef.current, zoomRef.current, 'hard');
       applyCamera(settledPan, zoomRef.current);
-      syncUiState(true);
+      syncUiState(true, true);
     };
     window.addEventListener('mousemove', onMove);
     window.addEventListener('mouseup', onUp);
@@ -1450,8 +1446,8 @@ export default function BranchMap(props: BranchMapProps) {
       setSpaceHeld(false);
       if (isPanningRef.current) {
         isPanningRef.current = false;
-        setIsPanning(false);
-        syncUiState(true);
+        scrollRef.current?.classList.remove('is-panning');
+        syncUiState(true, true);
       }
     };
     window.addEventListener('keydown', onKeyDown);
@@ -1472,10 +1468,10 @@ export default function BranchMap(props: BranchMapProps) {
     const stopActivePan = () => {
       if (!isPanningRef.current) return;
       isPanningRef.current = false;
-      setIsPanning(false);
+      scrollRef.current?.classList.remove('is-panning');
       const settledPan = clampPan(panRef.current, zoomRef.current, 'hard');
       applyCamera(settledPan, zoomRef.current);
-      syncUiState(true);
+      syncUiState(true, true);
     };
 
     const shouldBlockMapGestures = (target: EventTarget | null): boolean => {
@@ -1611,7 +1607,7 @@ export default function BranchMap(props: BranchMapProps) {
         panY: targetPanRef.current.y,
       };
       isPanningRef.current = true;
-      setIsPanning(true);
+      scrollRef.current?.classList.add('is-panning');
       return;
     }
     if (e.button === 0 && clickedBackground) {
@@ -5426,7 +5422,7 @@ export default function BranchMap(props: BranchMapProps) {
         zoomLayerRef={zoomLayerRef}
         contentLayerRef={contentLayerRef}
         onMouseDown={handleCanvasMouseDown}
-        className={`w-full h-full overflow-hidden branch-map-scroll relative select-none touch-none ${nodeDragDisplay ? 'cursor-grabbing' : isPanning ? 'cursor-grabbing' : spaceHeld ? 'cursor-grab' : 'cursor-default'}`}
+        className={`w-full h-full overflow-hidden branch-map-scroll relative select-none touch-none ${nodeDragDisplay ? 'cursor-grabbing' : spaceHeld ? 'cursor-grab' : 'cursor-default'}`}
         canvasWidth={canvasWidth}
         canvasHeight={canvasHeight}
         isOrientationSwitchFading={isOrientationSwitchFading}

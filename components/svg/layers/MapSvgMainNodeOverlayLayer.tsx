@@ -77,7 +77,7 @@ export function MapSvgMainNodeOverlayLayer({
   if (mainIsUnifiedRender) return null;
 
   return (
-    <g style={{ opacity: mainTimelineOpacity, transition: 'opacity 0.15s', pointerEvents: 'none' }}>
+    <g data-map-layer="overlay" style={{ opacity: mainTimelineOpacity, transition: 'opacity 0.15s', pointerEvents: 'none' }}>
       {mainDirectClusters.map((clusterLayout) => {
         const {
           cluster,

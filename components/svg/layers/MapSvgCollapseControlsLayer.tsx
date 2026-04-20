@@ -58,7 +58,7 @@ export function MapSvgCollapseControlsLayer({
   selectedCommitShaSet,
 }: MapSvgCollapseControlsLayerProps) {
   return (
-    <g>
+    <g data-map-layer="controls">
       {!mainIsUnifiedRender && mainDirectClusters.map((clusterLayout) => {
         const {
           cluster,
