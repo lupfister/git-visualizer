@@ -1,31 +1,7 @@
-import { Fragment, useEffect, useLayoutEffect, useRef, useState } from 'react';
-import {
-  branchBaseCommit,
-  buildLanes,
-  buildMergeOrthogonalPath,
-  CARD_HEIGHT,
-  CARD_BODY_TOP_OFFSET,
-  CARD_HEADER_HEIGHT,
-  CARD_WIDTH,
-  CONNECTOR_COLOR,
-  LEFT_PADDING,
-  type BranchGridViewProps,
-  type CommitItem,
-  type Connector,
-  type Node,
-  type VisualCommit,
-  TOP_PADDING,
-  COLUMN_WIDTH,
-  nodeForCommitSha,
-  orderByLineage,
-  renderableBranchPreviews,
-  ROW_GAP,
-  ROW_HEIGHT,
-  toCommit,
-} from './LayoutGrid';
-import type { Branch } from '../../types';
-import type { BranchCommitPreview } from '../../types';
-import { useMemo } from 'react';
+import { Fragment, startTransition, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
+import { buildLanes, CARD_HEIGHT, CARD_BODY_TOP_OFFSET, CARD_WIDTH, CONNECTOR_COLOR, type BranchGridViewProps } from './LayoutGrid';
+import { computeBranchGridLayout } from './branchGridLayoutModel';
+import { buildChevronArrowHead, buildRoundedElbowPath } from './gridPathUtils';
 
 function cn(...classes: Array<string | false | null | undefined>): string {
   return classes.filter(Boolean).join(' ');
@@ -35,7 +11,17 @@ const GRID_ZOOM_MAX = 2.25;
 const GRID_ZOOM_DEFAULT = GRID_ZOOM_MAX / 2;
 const GRID_ZOOM_MIN = 0.45;
 const GRID_ZOOM_WHEEL_SENSITIVITY = 0.01;
+/** Must match `GRID_LAYOUT_RENDER_ZOOM` in `branchGridLayoutModel.ts`. */
 const GRID_RENDER_ZOOM = GRID_ZOOM_MAX;
+/** Keep in sync with `p-2.5` on the padded wrapper around the transform layer (0.625rem ≈ 10px at 16px root). */
+const MAP_GRID_INNER_PADDING_PX = 10;
+/**
+ * Shrinks the cull rectangle on every side (in screen px, converted by zoom) so content near the viewport edge
+ * is culled early — useful to verify culling. Set to `0` to match the full viewport.
+ */
+const MAP_GRID_CULL_VIEWPORT_INSET_SCREEN_PX = -100;
+/** Pan-only camera updates throttle React re-renders (zoom always updates immediately). */
+const MAP_GRID_CAMERA_PAN_REACT_THROTTLE_MS = 56;
 const PAN_SMOOTHING = 0.35;
 const CAMERA_SETTLE_EPSILON = 0.1;
 const ZOOM_SETTLE_EPSILON = 0.001;
@@ -44,8 +30,10 @@ function clampZoom(value: number): number {
   return Math.max(GRID_ZOOM_MIN, Math.min(GRID_ZOOM_MAX, value));
 }
 
+type ViewportContentBounds = { left: number; top: number; right: number; bottom: number };
+
 function intersectsVisibleBounds(
-  bounds: { left: number; top: number; right: number; bottom: number },
+  bounds: ViewportContentBounds,
   rect: { left: number; top: number; right: number; bottom: number },
 ): boolean {
   return !(
@@ -56,124 +44,178 @@ function intersectsVisibleBounds(
   );
 }
 
-function getViewportContentBounds(
-  viewport: HTMLDivElement | null,
-  camera: { panX: number; panY: number; zoom: number },
-): { left: number; top: number; right: number; bottom: number } | null {
-  if (!viewport || camera.zoom <= 0) return null;
-  const width = viewport.clientWidth;
-  const height = viewport.clientHeight;
-  if (width <= 0 || height <= 0) return null;
-  const scale = camera.zoom / GRID_RENDER_ZOOM;
-  if (!Number.isFinite(scale) || scale <= 0) return null;
-  return {
-    left: (-camera.panX) / scale,
-    top: (-camera.panY) / scale,
-    right: (width - camera.panX) / scale,
-    bottom: (height - camera.panY) / scale,
+/** Liang–Barsky: true iff the segment intersects the closed axis-aligned rectangle (inclusive). */
+function segmentIntersectsViewportBounds(
+  x1: number,
+  y1: number,
+  x2: number,
+  y2: number,
+  rect: ViewportContentBounds,
+): boolean {
+  const { left: xmin, top: ymin, right: xmax, bottom: ymax } = rect;
+  let u1 = 0;
+  let u2 = 1;
+  const dx = x2 - x1;
+  const dy = y2 - y1;
+
+  const clip = (p: number, q: number): boolean => {
+    if (Math.abs(p) < 1e-12) {
+      return q >= 0;
+    }
+    const t = q / p;
+    if (p < 0) {
+      if (t > u2) return false;
+      if (t > u1) u1 = t;
+    } else {
+      if (t < u1) return false;
+      if (t < u2) u2 = t;
+    }
+    return true;
   };
+
+  if (!clip(-dx, x1 - xmin)) return false;
+  if (!clip(dx, xmax - x1)) return false;
+  if (!clip(-dy, y1 - ymin)) return false;
+  if (!clip(dy, ymax - y1)) return false;
+  return u1 <= u2;
 }
 
-function clusterByForkPoints<T>(
-  entries: Array<{ item: T }>,
-  forkIndices: Set<number>,
-): Array<{ entries: Array<{ item: T }> }> {
-  if (entries.length === 0) return [];
-  const effectiveForkIndices = new Set(
-    Array.from(forkIndices).filter((index) => index >= 0 && index < entries.length)
-  );
-  const clusters: Array<{ entries: Array<{ item: T }> }> = [];
-  let current: Array<{ item: T }> = [];
-  const flush = () => {
-    if (current.length === 0) return;
-    clusters.push({ entries: current });
-    current = [];
-  };
-  for (let i = 0; i < entries.length; i += 1) {
-    current.push(entries[i]);
-    if (effectiveForkIndices.has(i)) flush();
+function axisAlignedBoundsOfPoints(points: ReadonlyArray<{ x: number; y: number }>): ViewportContentBounds {
+  let left = points[0]?.x ?? 0;
+  let top = points[0]?.y ?? 0;
+  let right = left;
+  let bottom = top;
+  for (const p of points) {
+    left = Math.min(left, p.x);
+    top = Math.min(top, p.y);
+    right = Math.max(right, p.x);
+    bottom = Math.max(bottom, p.y);
   }
-  flush();
-  return clusters;
+  return { left, top, right, bottom };
 }
 
-function buildRoundedElbowPath(
+/** Matches `buildRoundedElbowPath` straight segments + quad bbox (same corner math). */
+function roundedElbowConnectorIntersectsViewportBounds(
   fromX: number,
   fromY: number,
   toX: number,
   toY: number,
   cornerR: number,
-  pointFormatter: (x: number, y: number) => string,
-  tipGap = 0,
-): string {
+  tipGap: number,
+  rect: ViewportContentBounds,
+): boolean {
   const finalY = toY - Math.sign(toY - fromY || 1) * tipGap;
   const corner = Math.max(0, Math.min(cornerR, Math.abs(toX - fromX), Math.abs(toY - fromY)));
   if (corner < 0.5) {
-    return [
-      `M ${pointFormatter(fromX, fromY)}`,
-      `L ${pointFormatter(toX, fromY)}`,
-      `L ${pointFormatter(toX, finalY)}`,
-    ].join(' ');
+    return (
+      segmentIntersectsViewportBounds(fromX, fromY, toX, fromY, rect) ||
+      segmentIntersectsViewportBounds(toX, fromY, toX, finalY, rect)
+    );
   }
   const horizontalDir = toX >= fromX ? 1 : -1;
   const verticalDir = toY >= fromY ? 1 : -1;
   const preTurnX = toX - horizontalDir * corner;
   const postTurnY = finalY - verticalDir * corner;
-  return [
-    `M ${pointFormatter(fromX, fromY)}`,
-    `L ${pointFormatter(preTurnX, fromY)}`,
-    `Q ${pointFormatter(toX, fromY)} ${pointFormatter(toX, fromY + verticalDir * corner)}`,
-    `L ${pointFormatter(toX, postTurnY)}`,
-    `L ${pointFormatter(toX, finalY)}`,
-  ].join(' ');
+  const quadEndX = toX;
+  const quadEndY = fromY + verticalDir * corner;
+  if (segmentIntersectsViewportBounds(fromX, fromY, preTurnX, fromY, rect)) return true;
+  const quadHull = axisAlignedBoundsOfPoints([
+    { x: preTurnX, y: fromY },
+    { x: toX, y: fromY },
+    { x: quadEndX, y: quadEndY },
+  ]);
+  if (intersectsVisibleBounds(rect, quadHull)) return true;
+  if (segmentIntersectsViewportBounds(quadEndX, quadEndY, toX, postTurnY, rect)) return true;
+  return segmentIntersectsViewportBounds(toX, postTurnY, toX, finalY, rect);
+}
+
+/** Matches `buildMergeOrthogonalPath` (LayoutGrid) segment layout. */
+function mergeOrthogonalConnectorIntersectsViewportBounds(
+  laneX: number,
+  tipY: number,
+  mergeX: number,
+  mergeY: number,
+  cornerR: number,
+  rect: ViewportContentBounds,
+): boolean {
+  if (Math.abs(mergeY - tipY) < 0.5) {
+    return segmentIntersectsViewportBounds(laneX, tipY, mergeX, mergeY, rect);
+  }
+  const horizontalDir = mergeX >= laneX ? 1 : -1;
+  const corner = Math.max(0, Math.min(cornerR, Math.abs(mergeY - tipY), Math.abs(mergeX - laneX)));
+  if (corner < 0.5) {
+    return (
+      segmentIntersectsViewportBounds(laneX, tipY, laneX, mergeY, rect) ||
+      segmentIntersectsViewportBounds(laneX, mergeY, mergeX, mergeY, rect)
+    );
+  }
+  const preTurnY = mergeY - Math.sign(mergeY - tipY) * corner;
+  const cornerX = laneX + horizontalDir * corner;
+  if (segmentIntersectsViewportBounds(laneX, tipY, laneX, preTurnY, rect)) return true;
+  const quadHull = axisAlignedBoundsOfPoints([
+    { x: laneX, y: preTurnY },
+    { x: laneX, y: mergeY },
+    { x: cornerX, y: mergeY },
+  ]);
+  if (intersectsVisibleBounds(rect, quadHull)) return true;
+  return segmentIntersectsViewportBounds(cornerX, mergeY, mergeX, mergeY, rect);
+}
+
+function visibleCommitIdSetEquals(a: Set<string> | null, b: Set<string>): boolean {
+  if (a === null) return false;
+  if (a.size !== b.size) return false;
+  for (const id of a) {
+    if (!b.has(id)) return false;
+  }
+  return true;
+}
+
+function getViewportContentBoundsFromClientSize(
+  width: number,
+  height: number,
+  camera: { panX: number; panY: number; zoom: number },
+  options?: { innerPaddingPx?: number },
+): ViewportContentBounds | null {
+  if (camera.zoom <= 0) return null;
+  if (width <= 0 || height <= 0) return null;
+  const scale = camera.zoom / GRID_RENDER_ZOOM;
+  if (!Number.isFinite(scale) || scale <= 0) return null;
+  const pad = options?.innerPaddingPx ?? 0;
+  return {
+    left: (-pad - camera.panX) / scale,
+    top: (-pad - camera.panY) / scale,
+    right: (width - pad - camera.panX) / scale,
+    bottom: (height - pad - camera.panY) / scale,
+  };
+}
+
+/** Inset in content space on all sides; clamped so the rect stays valid. */
+function shrinkViewportContentBounds(bounds: ViewportContentBounds, insetContent: number): ViewportContentBounds {
+  if (!(insetContent > 0)) return bounds;
+  const halfW = (bounds.right - bounds.left) / 2;
+  const halfH = (bounds.bottom - bounds.top) / 2;
+  const clampedInset = Math.min(insetContent, Math.max(0, halfW - 8), Math.max(0, halfH - 8));
+  return {
+    left: bounds.left + clampedInset,
+    top: bounds.top + clampedInset,
+    right: bounds.right - clampedInset,
+    bottom: bounds.bottom - clampedInset,
+  };
+}
+
+function withCullInsetScreenPx(
+  bounds: ViewportContentBounds,
+  cameraZoom: number,
+  insetScreenPx: number,
+): ViewportContentBounds {
+  if (insetScreenPx <= 0) return bounds;
+  const scale = cameraZoom / GRID_RENDER_ZOOM;
+  if (!Number.isFinite(scale) || scale <= 0) return bounds;
+  return shrinkViewportContentBounds(bounds, insetScreenPx / scale);
 }
 
 const GRID_CONNECTOR_GAP_PX = 4;
-const GRID_INCOMING_GAP_PX = 4;
-const GRID_MERGE_TARGET_GAP_PX = -8;
-
-function buildChevronArrowHead(
-  tipX: number,
-  tipY: number,
-  pointFormatter: (x: number, y: number) => string,
-  direction: 'up' | 'down' | 'left' | 'right' = 'down',
-  size = 14,
-  tipYOffset = 0,
-): string {
-  const y = tipY + tipYOffset;
-  const wingLength = size * 0.6;
-  const wingSpread = size * 0.45;
-  if (direction === 'right') {
-    return [
-      `M ${pointFormatter(tipX, y)}`,
-      `L ${pointFormatter(tipX - wingLength, y - wingSpread)}`,
-      `M ${pointFormatter(tipX, y)}`,
-      `L ${pointFormatter(tipX - wingLength, y + wingSpread)}`,
-    ].join(' ');
-  }
-  if (direction === 'left') {
-    return [
-      `M ${pointFormatter(tipX, y)}`,
-      `L ${pointFormatter(tipX + wingLength, y - wingSpread)}`,
-      `M ${pointFormatter(tipX, y)}`,
-      `L ${pointFormatter(tipX + wingLength, y + wingSpread)}`,
-    ].join(' ');
-  }
-  if (direction === 'up') {
-    return [
-      `M ${pointFormatter(tipX, y)}`,
-      `L ${pointFormatter(tipX - wingSpread, y + wingLength)}`,
-      `M ${pointFormatter(tipX, y)}`,
-      `L ${pointFormatter(tipX + wingSpread, y + wingLength)}`,
-    ].join(' ');
-  }
-  return [
-    `M ${pointFormatter(tipX, y)}`,
-    `L ${pointFormatter(tipX - wingSpread, y - wingLength)}`,
-    `M ${pointFormatter(tipX, y)}`,
-    `L ${pointFormatter(tipX + wingSpread, y - wingLength)}`,
-  ].join(' ');
-}
+const GRID_CONNECTOR_CORNER_RADIUS_PX = 18;
 
 export default function BranchGridMap({
   branches,
@@ -191,7 +233,6 @@ export default function BranchGridMap({
   onGridSearchFocusChange,
 }: BranchGridViewProps) {
   const scrollContainerRef = useRef<HTMLDivElement | null>(null);
-  const nodeShellRefs = useRef(new Map<string, HTMLDivElement | null>());
   const transformLayerRef = useRef<HTMLDivElement | null>(null);
   const panRef = useRef({ x: 0, y: 0 });
   const zoomRef = useRef(GRID_ZOOM_DEFAULT);
@@ -206,276 +247,126 @@ export default function BranchGridMap({
   const [isDebugOpen, setIsDebugOpen] = useState(false);
   const [renderedZoom, setRenderedZoom] = useState(GRID_ZOOM_DEFAULT);
   const [cameraRenderTick, setCameraRenderTick] = useState(0);
-  void cameraRenderTick;
   const [visibleNodeIds, setVisibleNodeIds] = useState<Set<string> | null>(null);
-  const lanes = buildLanes(branches, defaultBranch);
-  const branchByName = new Map(branches.map((branch) => [branch.name, branch]));
-  const laneByName = new Map(lanes.map((lane) => [lane.name, lane] as const));
+  const [viewportClientSize, setViewportClientSize] = useState<{ width: number; height: number } | null>(null);
+  const panReactTrailingTimeoutRef = useRef<number | null>(null);
+  const lastCameraPanReactEmitRef = useRef(0);
 
-  const mainCommits = orderByLineage([
-    ...mergeNodes.map((node) => ({
-      id: node.fullSha,
-      branchName: defaultBranch,
-      message: node.prTitle ?? node.sha,
-      author: '',
-      date: node.date,
-      parentSha: node.parentShas?.[0] ?? null,
-    })),
-    ...(branchCommitPreviews[defaultBranch] ?? []).map((commit) => toCommit(defaultBranch, commit)),
-    ...directCommits.map((commit) => toCommit(defaultBranch, commit)),
-    ...unpushedDirectCommits.map((commit) => toCommit(defaultBranch, commit)),
-  ]);
-
-  const branchCommitsByLane = new Map<string, CommitItem[]>();
-  const branchPreviewSets = new Map<string, BranchCommitPreview[]>();
-  for (const branch of branches) {
-    if (branch.name === defaultBranch) continue;
-    const branchPreviews = renderableBranchPreviews(branch.name, branchUniqueAheadCounts, branchCommitPreviews);
-    branchPreviewSets.set(branch.name, branchPreviews);
-    const commits = orderByLineage(branchPreviews.map((commit) => toCommit(branch.name, commit)));
-    if (commits.length > 0) branchCommitsByLane.set(branch.name, commits);
-  }
-
-  const mainCommitShas = new Set<string>(mainCommits.map((commit) => commit.id));
-  const oldestMainCommit = [...mainCommits].sort((a, b) => new Date(a.date).getTime() - new Date(b.date).getTime() || a.id.localeCompare(b.id))[0] ?? null;
-  const branchCommitShasByName = new Map<string, Set<string>>(
-    Array.from(branchCommitsByLane.entries()).map(([branchName, commits]) => [
-      branchName,
-      new Set(commits.map((commit) => commit.id)),
-    ] as const)
-  );
-  const branchBaseCommitByName = new Map<string, CommitItem>();
-  for (const branch of branches) {
-    if (branch.name === defaultBranch) continue;
-    const baseCommit = branchBaseCommit(branch.name, branchCommitPreviews, branchUniqueAheadCounts);
-    if (baseCommit) branchBaseCommitByName.set(branch.name, baseCommit);
-  }
-  const branchReceivingCommitByName = new Map<string, CommitItem>();
-  for (const [branchName, commits] of branchCommitsByLane.entries()) {
-    const firstConcreteCommit = commits.find((commit) => commit.kind !== 'branch-created');
-    if (firstConcreteCommit) branchReceivingCommitByName.set(branchName, firstConcreteCommit);
-  }
-
-  const resolveBranchStartParentName = (branch: Branch): string => {
-    const declaredParent = branch.parentBranch;
-    const hasConcreteParent =
-      declaredParent &&
-      declaredParent !== defaultBranch &&
-      declaredParent !== branch.name &&
-      branchByName.has(declaredParent);
-    if (!hasConcreteParent) return declaredParent ?? defaultBranch;
-
-    const forkSha = branch.presidesFromSha ?? branch.divergedFromSha ?? branch.createdFromSha;
-    if (forkSha) {
-      const declaredParentCommitShas = branchCommitShasByName.get(declaredParent) ?? new Set<string>();
-      if (declaredParentCommitShas.has(forkSha)) return declaredParent;
-    }
-
-    const forkAnchor = branchBaseCommitByName.get(branch.name)?.parentSha ?? null;
-    if (forkAnchor) {
-      const declaredParentCommitShas = branchCommitShasByName.get(declaredParent) ?? new Set<string>();
-      if (declaredParentCommitShas.has(forkAnchor)) return declaredParent;
-    }
-
-    return declaredParent;
-  };
-
-  const resolveBranchStartSha = (branch: Branch): string | null => {
-    const childBaseCommit = branchBaseCommitByName.get(branch.name);
-    const forkSha = branch.presidesFromSha ?? branch.divergedFromSha ?? branch.createdFromSha ?? childBaseCommit?.parentSha ?? null;
-    if (!forkSha) return null;
-    const parentName = resolveBranchStartParentName(branch);
-    if (parentName === defaultBranch) return oldestMainCommit?.id ?? childBaseCommit?.parentSha ?? forkSha;
-    if (mainCommitShas.has(forkSha)) return forkSha;
-    return forkSha;
-  };
-  const blueStartShaForBranch = (branch: Branch): string | null => resolveBranchStartSha(branch);
-
-  const structuralBlueBoundaryShas = new Set<string>();
-  for (const branch of branches) {
-    const blueSha = blueStartShaForBranch(branch);
-    if (blueSha) structuralBlueBoundaryShas.add(blueSha);
-    const forkSha = branch.presidesFromSha ?? branch.divergedFromSha ?? branch.createdFromSha ?? null;
-    if (forkSha) structuralBlueBoundaryShas.add(forkSha);
-  }
-
-  const visibleCommits: VisualCommit[] = [];
-  const branchCommitShaSets = new Map<string, Set<string>>(
-    Array.from(branchCommitsByLane.entries()).map(([branchName, commits]) => [
-      branchName,
-      new Set(commits.map((commit) => commit.id)),
-    ] as const)
-  );
-  const branchCommitShaUnion = new Set<string>();
-  for (const shaSet of branchCommitShaSets.values()) {
-    for (const sha of shaSet) branchCommitShaUnion.add(sha);
-  }
-  for (const commit of mainCommits) {
-    if (branchCommitShaUnion.has(commit.id)) continue;
-    visibleCommits.push({ ...commit, visualId: `${defaultBranch}:${commit.id}` });
-  }
-  for (const [branchName, commits] of branchCommitsByLane.entries()) {
-    for (const commit of commits) {
-      visibleCommits.push({ ...commit, visualId: `${branchName}:${commit.id}` });
-    }
-  }
-
-  const allCommits = [...visibleCommits].sort((a, b) => new Date(a.date).getTime() - new Date(b.date).getTime() || a.id.localeCompare(b.id));
-  const commitsByBranch = new Map<string, VisualCommit[]>();
-  for (const commit of allCommits) {
-    const list = commitsByBranch.get(commit.branchName) ?? [];
-    list.push(commit);
-    commitsByBranch.set(commit.branchName, list);
-  }
-  type GridCluster = { branchName: string; key: string; commitIds: string[]; leadId: string; count: number };
-  const clustersByBranch = new Map<string, GridCluster[]>();
-  const clusterKeyByCommitId = new Map<string, string>();
-  const clusterKeyBySha = new Map<string, string[]>();
-  const leadByClusterKey = new Map<string, string>();
-  const clusterCounts = new Map<string, number>();
-  const buildClustersForBranch = (branchName: string, commits: VisualCommit[]): GridCluster[] => {
-    if (commits.length === 0) return [];
-    const ordered = [...commits].sort((a, b) => new Date(a.date).getTime() - new Date(b.date).getTime() || a.id.localeCompare(b.id));
-    const forkIdx = new Set<number>();
-    const branchChildBranches = branches.filter((branch) => resolveBranchStartParentName(branch) === branchName);
-    if (branchChildBranches.length > 0) {
-      const branchTimes = ordered.map((commit) => new Date(commit.date).getTime());
-      branchChildBranches.forEach((child) => {
-        const childForkSha = child.presidesFromSha ?? child.divergedFromSha ?? child.createdFromSha ?? null;
-        if (childForkSha) {
-          const bySha = ordered.findIndex((commit) =>
-            commit.id === childForkSha ||
-            commit.id.startsWith(childForkSha) ||
-            childForkSha.startsWith(commit.id)
-          );
-          if (bySha >= 0) {
-            forkIdx.add(bySha);
-            return;
-          }
-        }
-        const childForkTime = new Date(child.divergedFromDate ?? child.createdDate ?? child.lastCommitDate).getTime();
-        if (!Number.isFinite(childForkTime) || branchTimes.length === 0) return;
-        let bestPastIndex = -1;
-        let bestPastDelta = Number.POSITIVE_INFINITY;
-        let bestFutureIndex = -1;
-        let bestFutureDelta = Number.POSITIVE_INFINITY;
-        for (let index = 0; index < branchTimes.length; index += 1) {
-          const time = branchTimes[index];
-          if (!Number.isFinite(time)) continue;
-          if (time <= childForkTime) {
-            const delta = childForkTime - time;
-            if (delta < bestPastDelta) {
-              bestPastDelta = delta;
-              bestPastIndex = index;
-            }
-          } else {
-            const delta = time - childForkTime;
-            if (delta < bestFutureDelta) {
-              bestFutureDelta = delta;
-              bestFutureIndex = index;
-            }
-          }
-        }
-        const idx = bestPastIndex >= 0 ? bestPastIndex : bestFutureIndex;
-        if (idx >= 0) forkIdx.add(idx);
-      });
-    }
-    ordered.forEach((commit, index) => {
-      if (structuralBlueBoundaryShas.has(commit.id)) {
-        if (index < ordered.length - 1) forkIdx.add(index);
-      }
-      if (commit.kind === 'uncommitted' || commit.kind === 'stash' || commit.id === 'WORKING_TREE' || commit.id.startsWith('STASH:')) {
-        forkIdx.add(index);
-      }
-    });
-    const clusterEntries = clusterByForkPoints(
-      ordered.map((commit) => ({ item: commit })),
-      forkIdx,
-    );
-    const clusters: GridCluster[] = [];
-    clusterEntries.forEach((cluster, clusterIndex) => {
-      const chunk = cluster.entries.map((entry) => entry.item);
-      if (chunk.length === 0) return;
-      const key = `grid-clump-${branchName}-${chunk[0].id}-${chunk[chunk.length - 1].id}-${clusterIndex}`;
-      const leadId = chunk[chunk.length - 1].id;
-      const clusterVm = { branchName, key, commitIds: chunk.map((commit) => commit.visualId), leadId, count: chunk.length };
-      clusters.push(clusterVm);
-      leadByClusterKey.set(key, leadId);
-      clusterCounts.set(key, chunk.length);
-      for (const id of clusterVm.commitIds) {
-        clusterKeyByCommitId.set(id, key);
-        const sha = id.split(':').slice(1).join(':');
-        const keys = clusterKeyBySha.get(sha) ?? [];
-        if (!keys.includes(key)) keys.push(key);
-        clusterKeyBySha.set(sha, keys);
-      }
-    });
-    return clusters;
-  };
-  for (const [branchName, commits] of commitsByBranch.entries()) {
-    clustersByBranch.set(branchName, buildClustersForBranch(branchName, commits));
-  }
-
-  const debugRows = branches.flatMap((branch) => {
-    const previews = branchCommitPreviews[branch.name] ?? [];
-    const concretePreviews = [...(branchPreviewSets.get(branch.name) ?? [])].reverse();
-    const renderedPreviewIds = new Set((branchCommitsByLane.get(branch.name) ?? []).map((commit) => commit.id));
-    return [
-      `Branch ${branch.name}`,
-      `  ahead=${branchUniqueAheadCounts[branch.name] ?? 0} previews=${concretePreviews.length} rendered=${renderedPreviewIds.size}`,
-      ...concretePreviews.map((commit) => {
-        const status = renderedPreviewIds.has(commit.fullSha) ? 'visible' : 'hidden';
-        const reason = renderedPreviewIds.has(commit.fullSha) ? 'kept by render set' : 'dropped by render set';
-        return `  ${status} ${commit.fullSha.slice(0, 7)} ${commit.message} [${reason}]`;
+  const lanes = useMemo(() => buildLanes(branches, defaultBranch), [branches, defaultBranch]);
+  const layoutModel = useMemo(
+    () =>
+      computeBranchGridLayout({
+        lanes,
+        branches,
+        mergeNodes,
+        directCommits,
+        unpushedDirectCommits,
+        defaultBranch,
+        branchCommitPreviews,
+        branchUniqueAheadCounts,
+        manuallyOpenedClumps,
+        isDebugOpen,
+        gridSearchQuery,
+        gridFocusSha,
+        checkedOutRef: checkedOutRef ?? null,
       }),
-      previews.length === 0 ? '  no preview data' : null,
-    ].filter((line): line is string => line != null);
-  });
-  const branchDebugRows = Array.from(branchCommitsByLane.entries()).map(([branchName, commits]) => {
-    return [
-      `Branch debug ${branchName}`,
-      ...commits.map((commit) => `  ${commit.id.slice(0, 7)} ${commit.message}`),
-    ].join('\n');
-  });
+    [
+      lanes,
+      branches,
+      mergeNodes,
+      directCommits,
+      unpushedDirectCommits,
+      defaultBranch,
+      branchCommitPreviews,
+      branchUniqueAheadCounts,
+      manuallyOpenedClumps,
+      isDebugOpen,
+      gridSearchQuery,
+      gridFocusSha,
+      checkedOutRef?.headSha ?? null,
+      checkedOutRef?.branchName ?? null,
+    ],
+  );
 
-  const rowByVisualId = new Map<string, number>(allCommits.map((commit, index) => [commit.visualId, index + 1] as const));
-  const nodes: Node[] = allCommits.map((commit) => {
-    const lane = laneByName.get(commit.branchName);
-    const row = rowByVisualId.get(commit.visualId) ?? 1;
-    return { commit, row, column: lane?.column ?? 0, x: LEFT_PADDING + (lane?.column ?? 0) * COLUMN_WIDTH, y: TOP_PADDING + (row - 1) * (ROW_HEIGHT + ROW_GAP) };
-  });
-  const normalizedSearchQuery = gridSearchQuery.trim().toLowerCase();
-  const matchingNodes = normalizedSearchQuery
-    ? nodes.filter((node) => {
-        const sha = node.commit.id.toLowerCase();
-        const shortSha = node.commit.id.slice(0, 7).toLowerCase();
-        const message = node.commit.message.toLowerCase();
-        const branchName = node.commit.branchName.toLowerCase();
-        return sha.includes(normalizedSearchQuery) || shortSha.includes(normalizedSearchQuery) || message.includes(normalizedSearchQuery) || branchName.includes(normalizedSearchQuery);
-      })
-    : nodes;
-  const focusedNode = gridFocusSha ? nodes.find((node) => node.commit.id === gridFocusSha) ?? null : null;
-  const matchingNodeIds = new Set(matchingNodes.map((node) => node.commit.id));
+  const {
+    allCommits,
+    debugRows,
+    branchDebugRows,
+    clusterKeyByCommitId,
+    leadByClusterKey,
+    clusterCounts,
+    matchingNodes,
+    matchingNodeIds,
+    normalizedSearchQuery,
+    focusedNode,
+    checkedOutClusterKey,
+    defaultCollapsedClumps,
+    renderNodes,
+    contentWidth,
+    contentHeight,
+    connectors,
+    mergeConnectors,
+    connectorDecisions,
+    nodeWarnings,
+    commitIdsWithRenderedAncestry,
+    connectorParentShas,
+    branchStartShas,
+    branchOffNodeShas,
+    crossBranchOutgoingShas,
+    branchBaseCommitByName,
+    pointFormatter,
+  } = layoutModel;
+
+  const isGridSearchActive = Boolean(normalizedSearchQuery);
+  const shouldRenderNode = (commitId: string) =>
+    (isGridSearchActive && matchingNodeIds.has(commitId)) ||
+    focusedNode?.commit.id === commitId ||
+    visibleNodeIds === null ||
+    visibleNodeIds.has(commitId);
+
   const displayZoom = renderedZoom / GRID_RENDER_ZOOM;
-  const inverseZoomStyle = {
-    transform: `scale(${1 / displayZoom})`,
-    transformOrigin: 'top left' as const,
-    width: `${100 * displayZoom}%`,
-    height: `${100 * displayZoom}%`,
-  };
+  const inverseZoomStyle = useMemo(
+    () => ({
+      transform: `scale(${1 / displayZoom})`,
+      transformOrigin: 'top left' as const,
+      width: `${100 * displayZoom}%`,
+      height: `${100 * displayZoom}%`,
+    }),
+    [displayZoom],
+  );
   const labelTopPx = -(20 / displayZoom);
   const borderWidthPx = 1 / displayZoom;
   const lineStrokeWidth = 2.5 / displayZoom;
   const haloStrokeWidth = 4 / displayZoom;
   const arrowHeadSize = 14 / displayZoom;
   const arrowHeadTipOffset = 0;
-  const iconScaleStyle = {
-    transform: `scale(${1 / displayZoom})`,
-    transformOrigin: 'center' as const,
-  };
+  const iconScaleStyle = useMemo(
+    () => ({
+      transform: `scale(${1 / displayZoom})`,
+      transformOrigin: 'center' as const,
+    }),
+    [displayZoom],
+  );
+
+  const connectorParentAccentClass =
+    'border-slate-400/70 ring-2 ring-slate-400/20 shadow-[0_0_0_1px_rgba(100,116,139,0.14)]';
+  const branchStartAccentClass =
+    'border-blue-500 ring-2 ring-blue-500/35 shadow-[0_0_0_1px_rgba(59,130,246,0.18)]';
+
+  const flushCameraReactTick = useCallback(() => {
+    if (panReactTrailingTimeoutRef.current != null) {
+      window.clearTimeout(panReactTrailingTimeoutRef.current);
+      panReactTrailingTimeoutRef.current = null;
+    }
+    startTransition(() => {
+      setCameraRenderTick((tick) => tick + 1);
+    });
+    lastCameraPanReactEmitRef.current = performance.now();
+  }, []);
+
   const applyRenderedCamera = (nextPanX: number, nextPanY: number, nextZoom: number) => {
+    const prev = renderedCameraRef.current;
     renderedCameraRef.current = { panX: nextPanX, panY: nextPanY, zoom: nextZoom };
-    setCameraRenderTick((tick) => tick + 1);
     const layer = transformLayerRef.current;
     if (layer) {
       layer.style.transform = `translate3d(${nextPanX}px, ${nextPanY}px, 0) scale(${nextZoom / GRID_RENDER_ZOOM})`;
@@ -484,6 +375,26 @@ export default function BranchGridMap({
       renderedZoomRef.current = nextZoom;
       setRenderedZoom(nextZoom);
     }
+
+    const zoomChanged = Math.abs(nextZoom - prev.zoom) > ZOOM_SETTLE_EPSILON;
+    if (zoomChanged) {
+      flushCameraReactTick();
+      return;
+    }
+
+    const now = performance.now();
+    const elapsed = now - lastCameraPanReactEmitRef.current;
+    if (elapsed >= MAP_GRID_CAMERA_PAN_REACT_THROTTLE_MS) {
+      flushCameraReactTick();
+      return;
+    }
+    if (panReactTrailingTimeoutRef.current != null) {
+      window.clearTimeout(panReactTrailingTimeoutRef.current);
+    }
+    panReactTrailingTimeoutRef.current = window.setTimeout(() => {
+      panReactTrailingTimeoutRef.current = null;
+      flushCameraReactTick();
+    }, MAP_GRID_CAMERA_PAN_REACT_THROTTLE_MS - elapsed);
   };
 
   const stepCamera = () => {
@@ -507,12 +418,10 @@ export default function BranchGridMap({
 
     applyRenderedCamera(nextPanX, nextPanY, nextZoom);
 
-    if (
-      nextPanX !== targetPanX ||
-      nextPanY !== targetPanY ||
-      nextZoom !== targetZoom
-    ) {
+    if (nextPanX !== targetPanX || nextPanY !== targetPanY || nextZoom !== targetZoom) {
       cameraFrameRef.current = window.requestAnimationFrame(stepCamera);
+    } else {
+      flushCameraReactTick();
     }
   };
 
@@ -563,11 +472,7 @@ export default function BranchGridMap({
       return;
     }
 
-    syncCamera(
-      panRef.current.x - event.deltaX,
-      panRef.current.y - event.deltaY,
-      zoomRef.current
-    );
+    syncCamera(panRef.current.x - event.deltaX, panRef.current.y - event.deltaY, zoomRef.current);
   };
 
   const startPanDrag = (event: React.MouseEvent<HTMLDivElement>) => {
@@ -596,6 +501,7 @@ export default function BranchGridMap({
       dragStateRef.current = null;
       setIsDragging(false);
       if (interactionIdleTimeoutRef.current == null) setIsCameraMoving(false);
+      flushCameraReactTick();
     };
     window.addEventListener('mousemove', handleMove);
     window.addEventListener('mouseup', handleUp);
@@ -603,7 +509,7 @@ export default function BranchGridMap({
       window.removeEventListener('mousemove', handleMove);
       window.removeEventListener('mouseup', handleUp);
     };
-  }, []);
+  }, [flushCameraReactTick]);
 
   useLayoutEffect(() => {
     applyRenderedCamera(0, 0, GRID_ZOOM_DEFAULT);
@@ -613,6 +519,10 @@ export default function BranchGridMap({
       }
       if (cameraFrameRef.current != null) {
         window.cancelAnimationFrame(cameraFrameRef.current);
+      }
+      if (panReactTrailingTimeoutRef.current != null) {
+        window.clearTimeout(panReactTrailingTimeoutRef.current);
+        panReactTrailingTimeoutRef.current = null;
       }
     };
   }, []);
@@ -648,401 +558,111 @@ export default function BranchGridMap({
     syncCamera(
       targetCenterX - nodeCenterX * scale,
       targetCenterY - nodeCenterY * scale,
-      targetZoom
+      targetZoom,
     );
-  }, [gridFocusSha, gridSearchJumpToken]);
+  }, [gridFocusSha, gridSearchJumpToken, focusedNode]);
 
-  const checkedOutSha = checkedOutRef?.headSha ?? null;
-  const checkedOutClusterKey = (() => {
-    const checkedOutBranchName = checkedOutRef?.branchName ?? null;
-    if (!checkedOutSha || !checkedOutBranchName) return null;
-    return clusterKeyByCommitId.get(`${checkedOutBranchName}:${checkedOutSha}`) ?? null;
-  })();
-  const defaultCollapsedClumps = useMemo(() => {
-    const next = new Set<string>();
-    for (const clusters of clustersByBranch.values()) {
-      for (const cluster of clusters) {
-        if (cluster.count > 1 && cluster.key !== checkedOutClusterKey) next.add(cluster.key);
-      }
-    }
-    return next;
-  }, [checkedOutClusterKey, clustersByBranch]);
-
-  const visibleCommitsList = [...allCommits].reverse().filter((commit) => {
-    const clusterKey = clusterKeyByCommitId.get(commit.visualId);
-    if (!clusterKey) return true;
-    const leadId = leadByClusterKey.get(clusterKey);
-    const count = clusterCounts.get(clusterKey) ?? 1;
-    const isOpen = clusterKey === checkedOutClusterKey || manuallyOpenedClumps.has(clusterKey) || !defaultCollapsedClumps.has(clusterKey);
-    return count <= 1 || isOpen || leadId === commit.id;
-  });
-  const visibleRows = new Map<string, number>(visibleCommitsList.map((commit, index) => [commit.visualId, index + 1] as const));
-  const zoomAwareRowGap = ROW_GAP / GRID_RENDER_ZOOM;
-  const zoomAwareLabelBand = 20 / GRID_RENDER_ZOOM;
-  const zoomAwareRowPitch = ROW_HEIGHT + zoomAwareRowGap + zoomAwareLabelBand;
-  const renderNodes: Node[] = visibleCommitsList.map((commit) => {
-    const lane = laneByName.get(commit.branchName);
-    const row = visibleRows.get(commit.visualId) ?? 1;
-    return {
-      commit,
-      row,
-      column: lane?.column ?? 0,
-      x: LEFT_PADDING + (lane?.column ?? 0) * COLUMN_WIDTH,
-      y: TOP_PADDING + (row - 1) * zoomAwareRowPitch,
-    };
-  });
-  const visibleNodesBySha = new Map<string, Node[]>();
-  for (const node of renderNodes) {
-    const list = visibleNodesBySha.get(node.commit.id) ?? [];
-    list.push(node);
-    visibleNodesBySha.set(node.commit.id, list);
-  }
-  const visibleNodeByClusterKey = new Map<string, Node>();
-  for (const node of renderNodes) {
-    const clusterKey = clusterKeyByCommitId.get(node.commit.visualId);
-    if (!clusterKey) continue;
-    const current = visibleNodeByClusterKey.get(clusterKey);
-    if (!current || node.y < current.y) visibleNodeByClusterKey.set(clusterKey, node);
-  }
-  const pointFormatter = (x: number, y: number) => `${x.toFixed(1)} ${y.toFixed(1)}`;
-  const contentWidth = LEFT_PADDING * 2 + (Math.max(0, ...lanes.map((lane) => lane.column)) + 1) * COLUMN_WIDTH;
-  const contentHeight = TOP_PADDING * 2 + Math.max(0, visibleCommitsList.length - 1) * zoomAwareRowPitch + CARD_HEIGHT + CARD_HEADER_HEIGHT + zoomAwareLabelBand;
-  const visibleBounds = getViewportContentBounds(scrollContainerRef.current, renderedCameraRef.current);
-  const cullConnector = (connector: { fromX: number; fromY: number; toX: number; toY: number }): boolean => {
+  const viewportClientW = viewportClientSize?.width ?? scrollContainerRef.current?.clientWidth ?? 0;
+  const viewportClientH = viewportClientSize?.height ?? scrollContainerRef.current?.clientHeight ?? 0;
+  const rawVisibleBounds =
+    viewportClientW > 0 && viewportClientH > 0
+      ? getViewportContentBoundsFromClientSize(viewportClientW, viewportClientH, renderedCameraRef.current, {
+          innerPaddingPx: MAP_GRID_INNER_PADDING_PX,
+        })
+      : null;
+  const visibleBounds =
+    rawVisibleBounds != null
+      ? withCullInsetScreenPx(
+          rawVisibleBounds,
+          renderedCameraRef.current.zoom,
+          MAP_GRID_CULL_VIEWPORT_INSET_SCREEN_PX,
+        )
+      : null;
+  const cullConnectorPath = (connector: { id: string; fromX: number; fromY: number; toX: number; toY: number }): boolean => {
     if (!visibleBounds) return true;
-    const left = Math.min(connector.fromX, connector.toX);
-    const top = Math.min(connector.fromY, connector.toY);
-    const right = Math.max(connector.fromX, connector.toX);
-    const bottom = Math.max(connector.fromY, connector.toY);
-    return intersectsVisibleBounds(visibleBounds, { left, top, right, bottom });
+    if (connector.id.startsWith('merge:')) {
+      return mergeOrthogonalConnectorIntersectsViewportBounds(
+        connector.fromX,
+        connector.fromY,
+        connector.toX,
+        connector.toY,
+        GRID_CONNECTOR_CORNER_RADIUS_PX,
+        visibleBounds,
+      );
+    }
+    return roundedElbowConnectorIntersectsViewportBounds(
+      connector.fromX,
+      connector.fromY,
+      connector.toX,
+      connector.toY,
+      GRID_CONNECTOR_CORNER_RADIUS_PX,
+      GRID_CONNECTOR_GAP_PX,
+      visibleBounds,
+    );
   };
 
   useLayoutEffect(() => {
     const viewport = scrollContainerRef.current;
     if (!viewport) return;
-    const viewportRect = viewport.getBoundingClientRect();
-    if (viewportRect.width <= 0 || viewportRect.height <= 0) return;
+    if (viewport.clientWidth <= 0 || viewport.clientHeight <= 0) return;
+    const w = viewport.clientWidth;
+    const h = viewport.clientHeight;
+    setViewportClientSize((prev) => (prev?.width === w && prev?.height === h ? prev : { width: w, height: h }));
+    const rawBounds = getViewportContentBoundsFromClientSize(w, h, renderedCameraRef.current, {
+      innerPaddingPx: MAP_GRID_INNER_PADDING_PX,
+    });
+    if (!rawBounds) {
+      setVisibleNodeIds((prev) => (prev === null ? prev : null));
+      return;
+    }
+    const bounds = withCullInsetScreenPx(
+      rawBounds,
+      renderedCameraRef.current.zoom,
+      MAP_GRID_CULL_VIEWPORT_INSET_SCREEN_PX,
+    );
+    const displayZoomForCull = renderedZoom / GRID_RENDER_ZOOM;
+    const labelTopPxForCull = -(20 / displayZoomForCull);
     const nextVisible = new Set<string>();
-    for (const [sha, el] of nodeShellRefs.current.entries()) {
-      if (!el) continue;
-      const rect = el.getBoundingClientRect();
-      if (intersectsVisibleBounds(
-        {
-          left: viewportRect.left,
-          top: viewportRect.top,
-          right: viewportRect.right,
-          bottom: viewportRect.bottom,
-        },
-        {
-          left: rect.left,
-          top: rect.top,
-          right: rect.right,
-          bottom: rect.bottom,
-        },
-      )) {
-        nextVisible.add(sha);
+    for (const node of renderNodes) {
+      const rect = {
+        left: node.x,
+        top: node.y + labelTopPxForCull,
+        right: node.x + CARD_WIDTH,
+        bottom: node.y + CARD_BODY_TOP_OFFSET + CARD_HEIGHT + 4,
+      };
+      if (intersectsVisibleBounds(bounds, rect)) {
+        nextVisible.add(node.commit.id);
       }
     }
-    setVisibleNodeIds(nextVisible);
-  }, [renderedZoom, gridSearchJumpToken, gridFocusSha, isCameraMoving, cameraRenderTick, renderNodes.length]);
+    setVisibleNodeIds((prev) => (visibleCommitIdSetEquals(prev, nextVisible) ? prev : nextVisible));
+  }, [
+    renderedZoom,
+    gridSearchJumpToken,
+    gridFocusSha,
+    isCameraMoving,
+    cameraRenderTick,
+    renderNodes,
+    viewportClientSize,
+  ]);
 
-  const connectors: Connector[] = [];
-  const connectorDecisions: Array<{
-    id: string;
-    kind: 'branch' | 'ancestry';
-    parent: string;
-    child: string;
-    rendered: boolean;
-    reason: string;
-  }> = [];
-  const nodeWarnings = new Map<string, string[]>();
-  const addNodeWarning = (sha: string, message: string) => {
-    const list = nodeWarnings.get(sha) ?? [];
-    if (!list.includes(message)) list.push(message);
-    nodeWarnings.set(sha, list);
-  };
-  const connectorParentShas = new Set<string>();
-  const branchStartShas = new Set<string>();
-  const branchOffNodeShas = new Set<string>();
-  const connectorParentAccentClass = 'border-slate-400/70 ring-2 ring-slate-400/20 shadow-[0_0_0_1px_rgba(100,116,139,0.14)]';
-  const branchStartAccentClass = 'border-blue-500 ring-2 ring-blue-500/35 shadow-[0_0_0_1px_rgba(59,130,246,0.18)]';
-  // Blue highlights are driven by branch-off metadata, not by connector usage.
-  const nodeForConnectorTipSha = (sha: string | null | undefined, preferredBranchName?: string): Node | null => {
-    if (!sha) return null;
-    const visibleNode = nodeForCommitSha(visibleNodesBySha, sha, preferredBranchName);
-    if (visibleNode) return visibleNode;
-    const clusterKey = clusterKeyByCommitId.get(`${preferredBranchName ?? defaultBranch}:${sha}`) ?? clusterKeyByCommitId.get(sha);
-    if (!clusterKey) return null;
-    return visibleNodeByClusterKey.get(clusterKey) ?? null;
-  };
-  const connectorKeySet = new Set<string>();
-  for (const branch of branches) {
-    const branchStartSha = blueStartShaForBranch(branch);
-    if (branchStartSha) branchStartShas.add(branchStartSha);
-    const forkSha = branch.presidesFromSha ?? branch.divergedFromSha ?? branch.createdFromSha ?? null;
-    if (forkSha) branchOffNodeShas.add(forkSha);
-  }
-  const resolveConnectorNode = (commit: VisualCommit): Node | null => {
-    const directNode = nodeForConnectorTipSha(commit.id, commit.branchName);
-    if (directNode) return directNode;
-    const clusterKey = clusterKeyByCommitId.get(commit.visualId);
-    if (!clusterKey) return null;
-    const leadId = leadByClusterKey.get(clusterKey);
-    if (!leadId) return null;
-    return renderNodes.find((candidate) => candidate.commit.id === leadId) ?? null;
-  };
+  useLayoutEffect(() => {
+    const viewport = scrollContainerRef.current;
+    if (!viewport) return;
+    const handleResize = () => {
+      const w = viewport.clientWidth;
+      const h = viewport.clientHeight;
+      if (w <= 0 || h <= 0) return;
+      setViewportClientSize((prev) => (prev?.width === w && prev?.height === h ? prev : { width: w, height: h }));
+    };
+    handleResize();
+    const ro = new ResizeObserver(handleResize);
+    ro.observe(viewport);
+    return () => ro.disconnect();
+  }, [allCommits.length]);
 
-  const resolveChildNodeForSha = (sha: string | null | undefined, preferredBranchName?: string): Node | null => {
-    if (!sha) return null;
-    return nodeForCommitSha(visibleNodesBySha, sha, preferredBranchName);
-  };
-
-  const getIncomingAnchor = (node: Node): { x: number; y: number } => ({
-    x: node.x + CARD_WIDTH / 2,
-    y: node.y + CARD_BODY_TOP_OFFSET + CARD_HEIGHT + GRID_INCOMING_GAP_PX,
-  });
-
-  const getOutgoingAnchor = (node: Node, isBranching: boolean): { x: number; y: number } => ({
-    x: isBranching ? node.x + CARD_WIDTH : node.x + CARD_WIDTH / 2,
-    y: isBranching ? node.y + CARD_BODY_TOP_OFFSET + CARD_HEIGHT / 2 : node.y + CARD_BODY_TOP_OFFSET,
-  });
-
-  const resolveParentNode = (parentSha: string, preferredBranchName: string): Node | null => {
-    return nodeForCommitSha(visibleNodesBySha, parentSha, preferredBranchName);
-  };
-
-  const resolveNodeForSha = (sha: string | null | undefined, preferredBranchName?: string): Node | null => {
-    return resolveChildNodeForSha(sha, preferredBranchName);
-  };
-
-  const mergeConnectors = mergeNodes.flatMap((mergeNode) => {
-    const mergeTarget =
-      nodeForConnectorTipSha(mergeNode.fullSha, defaultBranch) ??
-      visibleNodesBySha.get(mergeNode.fullSha)?.[0] ??
-      null;
-    if (!mergeTarget) return [];
-    const mergedParents = mergeNode.parentShas?.slice(1) ?? [];
-    return mergedParents
-      .map((parentSha) => {
-        if (!parentSha || parentSha === mergeNode.fullSha) return null;
-        const sourceNode = nodeForCommitSha(visibleNodesBySha, parentSha) ?? null;
-        if (!sourceNode || sourceNode.commit.id === mergeTarget.commit.id) return null;
-        return {
-          id: `merge:${mergeNode.fullSha}:${parentSha}`,
-          fromX: sourceNode.x + CARD_WIDTH / 2,
-          fromY: sourceNode.y,
-          toX: mergeTarget.x + CARD_WIDTH - GRID_MERGE_TARGET_GAP_PX,
-          toY: mergeTarget.y + CARD_BODY_TOP_OFFSET + CARD_HEIGHT / 2,
-          path: buildMergeOrthogonalPath({
-            laneX: sourceNode.x + CARD_WIDTH / 2,
-            tipY: sourceNode.y,
-            mergeX: mergeTarget.x + CARD_WIDTH - GRID_MERGE_TARGET_GAP_PX,
-            mergeY: mergeTarget.y + CARD_BODY_TOP_OFFSET + CARD_HEIGHT / 2,
-            cornerR: 18,
-            pointFormatter,
-          }),
-        };
-      })
-      .filter((entry): entry is { id: string; path: string; fromX: number; fromY: number; toX: number; toY: number } => entry != null);
-  });
-
-  for (const branch of branches) {
-    if (branch.name === defaultBranch) continue;
-    const branchBaseCommit = branchBaseCommitByName.get(branch.name);
-    if (!branchBaseCommit) continue;
-    const parentName = resolveBranchStartParentName(branch);
-    const parentNode = resolveParentNode(branchBaseCommit.parentSha ?? branch.divergedFromSha ?? branch.createdFromSha ?? '', parentName);
-    const receivingCommit = branchReceivingCommitByName.get(branch.name) ?? branchBaseCommit;
-    const childNode = resolveNodeForSha(receivingCommit.id, branch.name) ?? resolveConnectorNode(receivingCommit as VisualCommit);
-    if (!parentNode || !childNode || parentNode.commit.id === childNode.commit.id) {
-      const parentClusterKey = clusterKeyByCommitId.get(`${branch.name}:${branchBaseCommit.id}`);
-      const childClusterKey = clusterKeyByCommitId.get(`${branch.name}:${receivingCommit.id}`);
-      const parentHiddenByClump = !!parentClusterKey && !defaultCollapsedClumps.has(parentClusterKey) ? false : !!parentClusterKey && !manuallyOpenedClumps.has(parentClusterKey) && parentClusterKey !== checkedOutClusterKey;
-      const childHiddenByClump = !!childClusterKey && !defaultCollapsedClumps.has(childClusterKey) ? false : !!childClusterKey && !manuallyOpenedClumps.has(childClusterKey) && childClusterKey !== checkedOutClusterKey;
-      if (!parentNode && !parentHiddenByClump) {
-        addNodeWarning(childNode?.commit.id ?? branchBaseCommit.id, 'Missing parent node');
-      }
-      if (!childNode && !childHiddenByClump) {
-        addNodeWarning(branchBaseCommit.id, 'Missing child node');
-      }
-      connectorDecisions.push({
-        id: `branch:${parentNode?.commit.id ?? 'null'}->${childNode?.commit.id ?? 'null'}`,
-        kind: 'branch',
-        parent: parentNode?.commit.id ?? 'null',
-        child: childNode?.commit.id ?? 'null',
-        rendered: false,
-        reason: !parentNode ? 'missing parent node' : !childNode ? 'missing child node' : 'parent and child are the same node',
-      });
-      continue;
-    }
-    const key = `branch:${parentNode.commit.id}->${childNode.commit.id}`;
-    if (connectorKeySet.has(key)) {
-      connectorDecisions.push({
-        id: key,
-        kind: 'branch',
-        parent: parentNode.commit.id,
-        child: childNode.commit.id,
-        rendered: false,
-        reason: 'duplicate connector key',
-      });
-      continue;
-    }
-    connectorKeySet.add(key);
-    connectorParentShas.add(parentNode.commit.id);
-    const isBranching = parentNode.column !== childNode.column;
-    const sourceAnchor = getOutgoingAnchor(parentNode, isBranching);
-    const targetAnchor = getIncomingAnchor(childNode);
-    connectors.push({
-      id: key,
-      fromX: sourceAnchor.x,
-      fromY: sourceAnchor.y,
-      toX: targetAnchor.x,
-      toY: targetAnchor.y,
-    });
-    connectorDecisions.push({
-      id: key,
-      kind: 'branch',
-      parent: parentNode.commit.id,
-      child: childNode.commit.id,
-      rendered: true,
-      reason: isBranching ? 'branch connector rendered' : 'vertical connector rendered',
-    });
-  }
-
-  const crossBranchOutgoingShas = new Set<string>();
-  for (const decision of connectorDecisions) {
-    if (!decision.rendered || decision.kind !== 'branch') continue;
-    const parentBranch = renderNodes.find((node) => node.commit.id === decision.parent)?.commit.branchName ?? null;
-    const childBranch = renderNodes.find((node) => node.commit.id === decision.child)?.commit.branchName ?? null;
-    if (!parentBranch || !childBranch || parentBranch === childBranch) continue;
-    crossBranchOutgoingShas.add(decision.parent);
-  }
-
-  for (const node of renderNodes) {
-    const parentSha = node.commit.parentSha ?? null;
-    if (!parentSha) continue;
-    const parentNode = resolveParentNode(parentSha, node.commit.branchName);
-    if (!parentNode) {
-      const parentClusterKey = clusterKeyByCommitId.get(`${node.commit.branchName}:${parentSha}`) ?? clusterKeyByCommitId.get(parentSha);
-      const parentHiddenByClump = !!parentClusterKey && !defaultCollapsedClumps.has(parentClusterKey) ? false : !!parentClusterKey && !manuallyOpenedClumps.has(parentClusterKey) && parentClusterKey !== checkedOutClusterKey;
-      if (!parentHiddenByClump) {
-        addNodeWarning(node.commit.id, 'Missing parent node');
-      }
-      connectorDecisions.push({
-        id: `${node.commit.visualId}->${parentSha}`,
-        kind: 'ancestry',
-        parent: parentSha,
-        child: node.commit.id,
-        rendered: false,
-        reason: 'missing parent node',
-      });
-      continue;
-    }
-    const childNode = node;
-    if (childNode.commit.id === parentNode.commit.id) {
-      addNodeWarning(childNode.commit.id, 'Parent and child resolve to the same node');
-      connectorDecisions.push({
-        id: `${parentNode.commit.id}->${childNode.commit.id}`,
-        kind: 'ancestry',
-        parent: parentNode.commit.id,
-        child: childNode.commit.id,
-        rendered: false,
-        reason: 'parent and child are the same node',
-      });
-      continue;
-    }
-    const key = `${node.commit.branchName}:${parentNode.commit.visualId ?? parentNode.commit.id}->${childNode.commit.visualId}`;
-    if (connectorKeySet.has(key)) {
-      addNodeWarning(parentNode.commit.id, 'Duplicate connector key');
-      addNodeWarning(childNode.commit.id, 'Duplicate connector key');
-      connectorDecisions.push({
-        id: key,
-        kind: 'ancestry',
-        parent: parentNode.commit.id,
-        child: childNode.commit.id,
-        rendered: false,
-        reason: 'duplicate connector key',
-      });
-      continue;
-    }
-    connectorKeySet.add(key);
-    connectorParentShas.add(parentNode.commit.id);
-    const isBranching = parentNode.column !== childNode.column;
-    const sourceAnchor = getOutgoingAnchor(parentNode, isBranching);
-    const targetAnchor = getIncomingAnchor(childNode);
-    connectors.push({
-      id: key,
-      fromX: sourceAnchor.x,
-      fromY: sourceAnchor.y,
-      toX: targetAnchor.x,
-      toY: targetAnchor.y,
-    });
-    connectorDecisions.push({
-      id: key,
-      kind: 'ancestry',
-      parent: parentNode.commit.id,
-      child: childNode.commit.id,
-      rendered: true,
-      reason: isBranching ? 'ancestry connector rendered' : 'vertical ancestry rendered',
-    });
-  }
-
-  const nodesByBranch = new Map<string, Node[]>();
-  for (const node of renderNodes) {
-    const list = nodesByBranch.get(node.commit.branchName) ?? [];
-    list.push(node);
-    nodesByBranch.set(node.commit.branchName, list);
-  }
-  for (const [branchName, branchNodes] of nodesByBranch.entries()) {
-    if (branchNodes.length < 2) continue;
-    const orderedBranchNodes = [...branchNodes].sort((a, b) => {
-      const aTime = Number.isFinite(new Date(a?.commit?.date ?? '').getTime()) ? new Date(a.commit.date).getTime() : 0;
-      const bTime = Number.isFinite(new Date(b?.commit?.date ?? '').getTime()) ? new Date(b.commit.date).getTime() : 0;
-      return aTime - bTime || (a?.commit?.id ?? '').localeCompare(b?.commit?.id ?? '');
-    });
-    for (let index = 1; index < orderedBranchNodes.length; index += 1) {
-      const parentNode = orderedBranchNodes[index - 1]!;
-      const childNode = orderedBranchNodes[index]!;
-      if (parentNode.commit.id === childNode.commit.id) continue;
-    const key = `chain:${branchName}:${parentNode.commit.id}->${childNode.commit.id}`;
-    if (connectorKeySet.has(key)) {
-      addNodeWarning(parentNode.commit.id, 'Duplicate branch chain connector');
-      addNodeWarning(childNode.commit.id, 'Duplicate branch chain connector');
-      connectorDecisions.push({
-        id: key,
-        kind: 'ancestry',
-          parent: parentNode.commit.id,
-          child: childNode.commit.id,
-          rendered: false,
-          reason: 'duplicate branch chain key',
-        });
-        continue;
-      }
-      connectorKeySet.add(key);
-      const isBranching = parentNode.column !== childNode.column;
-      const sourceAnchor = getOutgoingAnchor(parentNode, isBranching);
-      const targetAnchor = getIncomingAnchor(childNode);
-      connectors.push({
-        id: key,
-        fromX: sourceAnchor.x,
-        fromY: sourceAnchor.y,
-        toX: targetAnchor.x,
-        toY: targetAnchor.y,
-      });
-      connectorDecisions.push({
-        id: key,
-        kind: 'ancestry',
-        parent: parentNode.commit.id,
-        child: childNode.commit.id,
-        rendered: true,
-        reason: 'branch chain rendered',
-      });
-    }
-  }
-
-  const renderedNodeCount = renderNodes.filter((node) => matchingNodeIds.has(node.commit.id) || focusedNode?.commit.id === node.commit.id || visibleNodeIds === null || visibleNodeIds.has(node.commit.id)).length;
-  const renderedMergeConnectorCount = mergeConnectors.filter((connector) => cullConnector(connector)).length;
-  const renderedConnectorCount = connectors.filter((connector) => cullConnector(connector)).length;
+  const renderedNodeCount = renderNodes.filter((node) => shouldRenderNode(node.commit.id)).length;
+  const renderedMergeConnectorCount = mergeConnectors.filter((connector) => cullConnectorPath(connector)).length;
+  const renderedConnectorCount = connectors.filter((connector) => cullConnectorPath(connector)).length;
 
   return (
     <div className="relative flex h-full min-h-0 flex-col overflow-hidden rounded-2xl border border-border bg-card">
@@ -1078,7 +698,7 @@ export default function BranchGridMap({
           <div className="min-h-0 flex-1 overflow-y-auto px-4 py-3">
             <pre className="whitespace-pre-wrap break-words text-[11px] leading-5 text-muted-foreground">
               {[
-                `Cull viewport: ${visibleBounds ? `${visibleBounds.right - visibleBounds.left} x ${visibleBounds.bottom - visibleBounds.top}` : 'unavailable'}`,
+                `Cull viewport (inset ${MAP_GRID_CULL_VIEWPORT_INSET_SCREEN_PX}px screen/side): ${visibleBounds ? `${(visibleBounds.right - visibleBounds.left).toFixed(0)} x ${(visibleBounds.bottom - visibleBounds.top).toFixed(0)} content px` : 'unavailable'}`,
                 `Rendered nodes: ${renderedNodeCount} / ${renderNodes.length}`,
                 `Rendered merge connectors: ${renderedMergeConnectorCount} / ${mergeConnectors.length}`,
                 `Rendered connectors: ${renderedConnectorCount} / ${connectors.length}`,
@@ -1118,18 +738,17 @@ export default function BranchGridMap({
                 height: contentHeight,
                 transformOrigin: 'top left',
                 transform: `translate3d(0px, 0px, 0) scale(${displayZoom})`,
-                willChange: 'transform',
+                ...(isDragging || isCameraMoving ? { willChange: 'transform' as const } : {}),
               }}
             >
-              {renderNodes.filter((node) => matchingNodeIds.has(node.commit.id) || focusedNode?.commit.id === node.commit.id || visibleNodeIds === null || visibleNodeIds.has(node.commit.id)).map((node) => {
+              {renderNodes.filter((node) => shouldRenderNode(node.commit.id)).map((node) => {
             const clusterKey = clusterKeyByCommitId.get(node.commit.visualId);
             const isClusterOpen = clusterKey
               ? clusterKey === checkedOutClusterKey || manuallyOpenedClumps.has(clusterKey) || !defaultCollapsedClumps.has(clusterKey)
               : false;
             const isTop = clusterKey ? leadByClusterKey.get(clusterKey) === node.commit.id : false;
             const clumpCount = clusterKey ? clusterCounts.get(clusterKey) ?? 1 : 1;
-            const nodeConnectorDecisions = connectorDecisions.filter((decision) => decision.parent === node.commit.id || decision.child === node.commit.id);
-            const hasRenderedAncestry = nodeConnectorDecisions.some((decision) => decision.rendered && decision.kind === 'ancestry');
+            const hasRenderedAncestry = commitIdsWithRenderedAncestry.has(node.commit.id);
             const nodeWarningsForCard = nodeWarnings.get(node.commit.id) ?? [];
             const showDataShapeError = nodeWarningsForCard.length > 0 && !hasRenderedAncestry;
             return (
@@ -1138,7 +757,9 @@ export default function BranchGridMap({
               className={cn(
                 'group absolute z-20',
                 normalizedSearchQuery && !matchingNodeIds.has(node.commit.id)
-                  ? isCameraMoving ? 'opacity-10' : 'opacity-10 blur-[0.5px]'
+                  ? isCameraMoving
+                    ? 'opacity-10'
+                    : 'opacity-10 blur-[0.5px]'
                   : '',
                 normalizedSearchQuery && matchingNodeIds.has(node.commit.id) ? 'scale-[1.01]' : '',
                 focusedNode?.commit.id === node.commit.id ? 'z-30 scale-[1.015]' : ''
@@ -1167,12 +788,11 @@ export default function BranchGridMap({
                 </div>
               </div>
               <div
-                ref={(el) => {
-                  nodeShellRefs.current.set(node.commit.id, el);
-                }}
                 className={cn(
                   'absolute left-0 h-[176px] w-full overflow-hidden rounded-tr-xl rounded-br-xl rounded-bl-xl rounded-tl-none border border-border/50 bg-card hover:border-border',
-                  isCameraMoving ? 'transition-none' : 'transition-all duration-200 ease-in-out hover:shadow-sm',
+                  isCameraMoving
+                    ? 'transition-none'
+                    : 'transition-[border-color,box-shadow] duration-200 ease-in-out hover:shadow-sm',
                   branchOffNodeShas.has(node.commit.id) ||
                   branchStartShas.has(node.commit.id) ||
                   crossBranchOutgoingShas.has(node.commit.id)
@@ -1225,106 +845,106 @@ export default function BranchGridMap({
             );
               })}
               <svg
-              className="pointer-events-none absolute inset-0 z-10"
-              width={contentWidth}
-              height={contentHeight}
-              viewBox={`0 0 ${contentWidth} ${contentHeight}`}
-              aria-hidden="true"
-              overflow="visible"
-              style={{ overflow: 'visible' }}
-            >
-              <defs>
-              </defs>
-              {mergeConnectors.filter((connector) => cullConnector(connector)).map((connector) => (
-                (() => {
+                className="pointer-events-none absolute inset-0 z-10"
+                width={contentWidth}
+                height={contentHeight}
+                viewBox={`0 0 ${contentWidth} ${contentHeight}`}
+                aria-hidden="true"
+                overflow="visible"
+                style={{ overflow: 'visible' }}
+              >
+                {mergeConnectors.filter((connector) => cullConnectorPath(connector)).map((connector) => {
                   const dx = connector.toX - connector.fromX;
                   const arrowDirection = dx >= 0 ? 'right' : 'left';
                   return (
-                <Fragment key={connector.id}>
-                  {!isCameraMoving ? (
-                    <path
-                      d={connector.path}
-                      fill="none"
-                      stroke="rgba(255, 255, 255, 0.8)"
-                      strokeWidth={haloStrokeWidth}
-                      strokeLinecap="round"
-                      strokeLinejoin="round"
-                    />
-                  ) : null}
-                  <path
-                    d={connector.path}
-                    fill="none"
-                    stroke={CONNECTOR_COLOR}
-                    strokeWidth={lineStrokeWidth}
-                    strokeLinecap="round"
-                    strokeLinejoin="round"
-                  />
-                <path
-                  d={buildChevronArrowHead(
+                    <Fragment key={connector.id}>
+                      {!isCameraMoving ? (
+                        <path
+                          d={connector.path}
+                          fill="none"
+                          stroke="rgba(255, 255, 255, 0.8)"
+                          strokeWidth={haloStrokeWidth}
+                          strokeLinecap="round"
+                          strokeLinejoin="round"
+                        />
+                      ) : null}
+                      <path
+                        d={connector.path}
+                        fill="none"
+                        stroke={CONNECTOR_COLOR}
+                        strokeWidth={lineStrokeWidth}
+                        strokeLinecap="round"
+                        strokeLinejoin="round"
+                      />
+                      <path
+                        d={buildChevronArrowHead(
+                          connector.toX,
+                          connector.toY,
+                          pointFormatter,
+                          arrowDirection,
+                          arrowHeadSize,
+                          0,
+                        )}
+                        fill="none"
+                        stroke={CONNECTOR_COLOR}
+                        strokeWidth={lineStrokeWidth}
+                        strokeLinecap="round"
+                        strokeLinejoin="round"
+                      />
+                    </Fragment>
+                  );
+                })}
+                {connectors.filter((connector) => cullConnectorPath(connector)).map((connector) => {
+                  const path = buildRoundedElbowPath(
+                    connector.fromX,
+                    connector.fromY,
+                    connector.toX,
+                    connector.toY,
+                    GRID_CONNECTOR_CORNER_RADIUS_PX,
+                    pointFormatter,
+                    GRID_CONNECTOR_GAP_PX,
+                  );
+                  const dy = connector.toY - connector.fromY;
+                  const arrowDirection = dy >= 0 ? 'down' : 'up';
+                  const arrowHead = buildChevronArrowHead(
                     connector.toX,
                     connector.toY,
                     pointFormatter,
                     arrowDirection,
                     arrowHeadSize,
-                    0,
-                    )}
-                    fill="none"
-                    stroke={CONNECTOR_COLOR}
-                    strokeWidth={lineStrokeWidth}
-                    strokeLinecap="round"
-                    strokeLinejoin="round"
-                  />
-                </Fragment>
+                    arrowHeadTipOffset,
                   );
-                })()
-              ))}
-              {connectors.filter((connector) => cullConnector(connector)).map((connector) => {
-                const path = buildRoundedElbowPath(
-                  connector.fromX,
-                  connector.fromY,
-                  connector.toX,
-                  connector.toY,
-                  18,
-                  pointFormatter,
-                  GRID_CONNECTOR_GAP_PX,
-                );
-                const dy = connector.toY - connector.fromY;
-                const arrowDirection = dy >= 0 ? 'down' : 'up';
-                const arrowHead = buildChevronArrowHead(connector.toX, connector.toY, pointFormatter, arrowDirection, arrowHeadSize, arrowHeadTipOffset);
-                return (
-                  <Fragment key={connector.id}>
-                    {!isCameraMoving ? (
+                  return (
+                    <Fragment key={connector.id}>
+                      {!isCameraMoving ? (
+                        <path
+                          d={path}
+                          fill="none"
+                          stroke="rgba(255, 255, 255, 0.8)"
+                          strokeWidth={haloStrokeWidth}
+                          strokeLinecap="round"
+                          strokeLinejoin="round"
+                        />
+                      ) : null}
                       <path
-                        key={`${connector.id}-halo`}
                         d={path}
                         fill="none"
-                        stroke="rgba(255, 255, 255, 0.8)"
-                        strokeWidth={haloStrokeWidth}
+                        stroke={CONNECTOR_COLOR}
+                        strokeWidth={lineStrokeWidth}
                         strokeLinecap="round"
                         strokeLinejoin="round"
                       />
-                    ) : null}
-                    <path
-                      key={`${connector.id}-line`}
-                      d={path}
-                      fill="none"
-                      stroke={CONNECTOR_COLOR}
-                      strokeWidth={lineStrokeWidth}
-                      strokeLinecap="round"
-                      strokeLinejoin="round"
-                    />
-                    <path
-                      key={`${connector.id}-arrow`}
-                      d={arrowHead}
-                      fill="none"
-                      stroke={CONNECTOR_COLOR}
-                      strokeWidth={lineStrokeWidth}
-                      strokeLinecap="round"
-                      strokeLinejoin="round"
-                    />
-                  </Fragment>
-                );
-              })}
+                      <path
+                        d={arrowHead}
+                        fill="none"
+                        stroke={CONNECTOR_COLOR}
+                        strokeWidth={lineStrokeWidth}
+                        strokeLinecap="round"
+                        strokeLinejoin="round"
+                      />
+                    </Fragment>
+                  );
+                })}
               </svg>
             </div>
           </div>
