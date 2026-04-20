@@ -44,6 +44,36 @@ function clampZoom(value: number): number {
   return Math.max(GRID_ZOOM_MIN, Math.min(GRID_ZOOM_MAX, value));
 }
 
+function intersectsVisibleBounds(
+  bounds: { left: number; top: number; right: number; bottom: number },
+  rect: { left: number; top: number; right: number; bottom: number },
+): boolean {
+  return !(
+    rect.right < bounds.left ||
+    rect.left > bounds.right ||
+    rect.bottom < bounds.top ||
+    rect.top > bounds.bottom
+  );
+}
+
+function getViewportContentBounds(
+  viewport: HTMLDivElement | null,
+  camera: { panX: number; panY: number; zoom: number },
+): { left: number; top: number; right: number; bottom: number } | null {
+  if (!viewport || camera.zoom <= 0) return null;
+  const width = viewport.clientWidth;
+  const height = viewport.clientHeight;
+  if (width <= 0 || height <= 0) return null;
+  const scale = camera.zoom / GRID_RENDER_ZOOM;
+  if (!Number.isFinite(scale) || scale <= 0) return null;
+  return {
+    left: (-camera.panX) / scale,
+    top: (-camera.panY) / scale,
+    right: (width - camera.panX) / scale,
+    bottom: (height - camera.panY) / scale,
+  };
+}
+
 function clusterByForkPoints<T>(
   entries: Array<{ item: T }>,
   forkIndices: Set<number>,
@@ -160,9 +190,8 @@ export default function BranchGridMap({
   onGridSearchResultCountChange,
   onGridSearchFocusChange,
 }: BranchGridViewProps) {
-  const cardRefs = useRef(new Map<string, HTMLDivElement | null>());
   const scrollContainerRef = useRef<HTMLDivElement | null>(null);
-  const viewportRef = useRef<HTMLDivElement | null>(null);
+  const nodeShellRefs = useRef(new Map<string, HTMLDivElement | null>());
   const transformLayerRef = useRef<HTMLDivElement | null>(null);
   const panRef = useRef({ x: 0, y: 0 });
   const zoomRef = useRef(GRID_ZOOM_DEFAULT);
@@ -176,6 +205,9 @@ export default function BranchGridMap({
   const [manuallyOpenedClumps, setManuallyOpenedClumps] = useState<Set<string>>(() => new Set());
   const [isDebugOpen, setIsDebugOpen] = useState(false);
   const [renderedZoom, setRenderedZoom] = useState(GRID_ZOOM_DEFAULT);
+  const [cameraRenderTick, setCameraRenderTick] = useState(0);
+  void cameraRenderTick;
+  const [visibleNodeIds, setVisibleNodeIds] = useState<Set<string> | null>(null);
   const lanes = buildLanes(branches, defaultBranch);
   const branchByName = new Map(branches.map((branch) => [branch.name, branch]));
   const laneByName = new Map(lanes.map((lane) => [lane.name, lane] as const));
@@ -423,6 +455,7 @@ export default function BranchGridMap({
       })
     : nodes;
   const focusedNode = gridFocusSha ? nodes.find((node) => node.commit.id === gridFocusSha) ?? null : null;
+  const matchingNodeIds = new Set(matchingNodes.map((node) => node.commit.id));
   const displayZoom = renderedZoom / GRID_RENDER_ZOOM;
   const inverseZoomStyle = {
     transform: `scale(${1 / displayZoom})`,
@@ -442,6 +475,7 @@ export default function BranchGridMap({
   };
   const applyRenderedCamera = (nextPanX: number, nextPanY: number, nextZoom: number) => {
     renderedCameraRef.current = { panX: nextPanX, panY: nextPanY, zoom: nextZoom };
+    setCameraRenderTick((tick) => tick + 1);
     const layer = transformLayerRef.current;
     if (layer) {
       layer.style.transform = `translate3d(${nextPanX}px, ${nextPanY}px, 0) scale(${nextZoom / GRID_RENDER_ZOOM})`;
@@ -506,7 +540,7 @@ export default function BranchGridMap({
   };
 
   const zoomToPoint = (clientX: number, clientY: number, nextZoom: number) => {
-    const viewport = viewportRef.current;
+    const viewport = scrollContainerRef.current;
     const targetZoom = clampZoom(nextZoom);
     const rendered = renderedCameraRef.current;
     if (!viewport) {
@@ -598,19 +632,24 @@ export default function BranchGridMap({
 
   useLayoutEffect(() => {
     if (!gridFocusSha) return;
-    const el = cardRefs.current.get(gridFocusSha);
-    if (!el) return;
-    const viewport = viewportRef.current;
+    const viewport = scrollContainerRef.current;
     if (!viewport) {
-      el.scrollIntoView({ block: 'center', inline: 'center', behavior: 'smooth' });
       return;
     }
-    const containerRect = viewport.getBoundingClientRect();
-    const elRect = el.getBoundingClientRect();
-    const deltaX = containerRect.left + (containerRect.width / 2) - (elRect.left + (elRect.width / 2));
-    const deltaY = containerRect.top + (containerRect.height / 2) - (elRect.top + (elRect.height / 2));
-    const rendered = renderedCameraRef.current;
-    syncCamera(rendered.panX + deltaX, rendered.panY + deltaY, rendered.zoom);
+    const focusNode = focusedNode;
+    if (!focusNode) return;
+    const viewportRect = viewport.getBoundingClientRect();
+    const targetZoom = renderedCameraRef.current.zoom;
+    const scale = targetZoom / GRID_RENDER_ZOOM;
+    const targetCenterX = viewportRect.width / 2;
+    const targetCenterY = viewportRect.height / 2;
+    const nodeCenterX = focusNode.x + CARD_WIDTH / 2;
+    const nodeCenterY = focusNode.y + CARD_BODY_TOP_OFFSET + CARD_HEIGHT / 2;
+    syncCamera(
+      targetCenterX - nodeCenterX * scale,
+      targetCenterY - nodeCenterY * scale,
+      targetZoom
+    );
   }, [gridFocusSha, gridSearchJumpToken]);
 
   const checkedOutSha = checkedOutRef?.headSha ?? null;
@@ -668,6 +707,44 @@ export default function BranchGridMap({
   const pointFormatter = (x: number, y: number) => `${x.toFixed(1)} ${y.toFixed(1)}`;
   const contentWidth = LEFT_PADDING * 2 + (Math.max(0, ...lanes.map((lane) => lane.column)) + 1) * COLUMN_WIDTH;
   const contentHeight = TOP_PADDING * 2 + Math.max(0, visibleCommitsList.length - 1) * zoomAwareRowPitch + CARD_HEIGHT + CARD_HEADER_HEIGHT + zoomAwareLabelBand;
+  const visibleBounds = getViewportContentBounds(scrollContainerRef.current, renderedCameraRef.current);
+  const cullConnector = (connector: { fromX: number; fromY: number; toX: number; toY: number }): boolean => {
+    if (!visibleBounds) return true;
+    const left = Math.min(connector.fromX, connector.toX);
+    const top = Math.min(connector.fromY, connector.toY);
+    const right = Math.max(connector.fromX, connector.toX);
+    const bottom = Math.max(connector.fromY, connector.toY);
+    return intersectsVisibleBounds(visibleBounds, { left, top, right, bottom });
+  };
+
+  useLayoutEffect(() => {
+    const viewport = scrollContainerRef.current;
+    if (!viewport) return;
+    const viewportRect = viewport.getBoundingClientRect();
+    if (viewportRect.width <= 0 || viewportRect.height <= 0) return;
+    const nextVisible = new Set<string>();
+    for (const [sha, el] of nodeShellRefs.current.entries()) {
+      if (!el) continue;
+      const rect = el.getBoundingClientRect();
+      if (intersectsVisibleBounds(
+        {
+          left: viewportRect.left,
+          top: viewportRect.top,
+          right: viewportRect.right,
+          bottom: viewportRect.bottom,
+        },
+        {
+          left: rect.left,
+          top: rect.top,
+          right: rect.right,
+          bottom: rect.bottom,
+        },
+      )) {
+        nextVisible.add(sha);
+      }
+    }
+    setVisibleNodeIds(nextVisible);
+  }, [renderedZoom, gridSearchJumpToken, gridFocusSha, isCameraMoving, cameraRenderTick, renderNodes.length]);
 
   const connectors: Connector[] = [];
   const connectorDecisions: Array<{
@@ -963,6 +1040,10 @@ export default function BranchGridMap({
     }
   }
 
+  const renderedNodeCount = renderNodes.filter((node) => matchingNodeIds.has(node.commit.id) || focusedNode?.commit.id === node.commit.id || visibleNodeIds === null || visibleNodeIds.has(node.commit.id)).length;
+  const renderedMergeConnectorCount = mergeConnectors.filter((connector) => cullConnector(connector)).length;
+  const renderedConnectorCount = connectors.filter((connector) => cullConnector(connector)).length;
+
   return (
     <div className="relative flex h-full min-h-0 flex-col overflow-hidden rounded-2xl border border-border bg-card">
       <div className="pointer-events-none absolute bottom-4 right-4 z-[10000] flex items-end gap-2">
@@ -996,7 +1077,17 @@ export default function BranchGridMap({
           </div>
           <div className="min-h-0 flex-1 overflow-y-auto px-4 py-3">
             <pre className="whitespace-pre-wrap break-words text-[11px] leading-5 text-muted-foreground">
-              {[...debugRows, ...branchDebugRows, '', ...connectorDecisions.map((decision) => `${decision.rendered ? 'rendered' : 'skipped'} [${decision.kind}] ${decision.parent.slice(0, 7)} -> ${decision.child.slice(0, 7)} (${decision.reason})`)].join('\n')}
+              {[
+                `Cull viewport: ${visibleBounds ? `${visibleBounds.right - visibleBounds.left} x ${visibleBounds.bottom - visibleBounds.top}` : 'unavailable'}`,
+                `Rendered nodes: ${renderedNodeCount} / ${renderNodes.length}`,
+                `Rendered merge connectors: ${renderedMergeConnectorCount} / ${mergeConnectors.length}`,
+                `Rendered connectors: ${renderedConnectorCount} / ${connectors.length}`,
+                '',
+                ...debugRows,
+                ...branchDebugRows,
+                '',
+                ...connectorDecisions.map((decision) => `${decision.rendered ? 'rendered' : 'skipped'} [${decision.kind}] ${decision.parent.slice(0, 7)} -> ${decision.child.slice(0, 7)} (${decision.reason})`),
+              ].join('\n')}
             </pre>
           </div>
         </div>
@@ -1008,7 +1099,11 @@ export default function BranchGridMap({
           </div>
         </div>
       ) : (
-        <div ref={scrollContainerRef} className="flex-1 min-h-0 overflow-hidden">
+        <div
+          ref={scrollContainerRef}
+          className="flex-1 min-h-0 overflow-hidden"
+          style={{ cursor: isDragging ? 'grabbing' : 'grab' }}
+        >
           <div
             className="relative min-w-full p-2.5"
             onWheel={handleWheel}
@@ -1016,22 +1111,17 @@ export default function BranchGridMap({
             style={{ width: contentWidth, minWidth: '100%', height: contentHeight }}
           >
             <div
-              ref={viewportRef}
-              className="absolute inset-0 overflow-hidden"
-              style={{ cursor: isDragging ? 'grabbing' : 'grab' }}
+              ref={transformLayerRef}
+              className="absolute left-0 top-0"
+              style={{
+                width: contentWidth,
+                height: contentHeight,
+                transformOrigin: 'top left',
+                transform: `translate3d(0px, 0px, 0) scale(${displayZoom})`,
+                willChange: 'transform',
+              }}
             >
-              <div
-                ref={transformLayerRef}
-                className="absolute left-0 top-0"
-                style={{
-                  width: contentWidth,
-                  height: contentHeight,
-                  transformOrigin: 'top left',
-                  transform: `translate3d(0px, 0px, 0) scale(${displayZoom})`,
-                  willChange: 'transform',
-                }}
-              >
-            {renderNodes.map((node) => {
+              {renderNodes.filter((node) => matchingNodeIds.has(node.commit.id) || focusedNode?.commit.id === node.commit.id || visibleNodeIds === null || visibleNodeIds.has(node.commit.id)).map((node) => {
             const clusterKey = clusterKeyByCommitId.get(node.commit.visualId);
             const isClusterOpen = clusterKey
               ? clusterKey === checkedOutClusterKey || manuallyOpenedClumps.has(clusterKey) || !defaultCollapsedClumps.has(clusterKey)
@@ -1047,10 +1137,10 @@ export default function BranchGridMap({
               key={node.commit.visualId}
               className={cn(
                 'group absolute z-20',
-                normalizedSearchQuery && !matchingNodes.some((match) => match.commit.id === node.commit.id)
+                normalizedSearchQuery && !matchingNodeIds.has(node.commit.id)
                   ? isCameraMoving ? 'opacity-10' : 'opacity-10 blur-[0.5px]'
                   : '',
-                normalizedSearchQuery && matchingNodes.some((match) => match.commit.id === node.commit.id) ? 'scale-[1.01]' : '',
+                normalizedSearchQuery && matchingNodeIds.has(node.commit.id) ? 'scale-[1.01]' : '',
                 focusedNode?.commit.id === node.commit.id ? 'z-30 scale-[1.015]' : ''
               )}
               style={{ left: node.x, top: node.y, width: CARD_WIDTH, height: CARD_BODY_TOP_OFFSET + CARD_HEIGHT + 4, overflow: 'visible' }}
@@ -1078,7 +1168,7 @@ export default function BranchGridMap({
               </div>
               <div
                 ref={(el) => {
-                  cardRefs.current.set(node.commit.id, el);
+                  nodeShellRefs.current.set(node.commit.id, el);
                 }}
                 className={cn(
                   'absolute left-0 h-[176px] w-full overflow-hidden rounded-tr-xl rounded-br-xl rounded-bl-xl rounded-tl-none border border-border/50 bg-card hover:border-border',
@@ -1094,7 +1184,7 @@ export default function BranchGridMap({
                       : showDataShapeError
                         ? 'border-red-500 ring-2 ring-red-500/25 shadow-[0_0_0_1px_rgba(239,68,68,0.12)]'
                         : '',
-                  normalizedSearchQuery && matchingNodes.some((match) => match.commit.id === node.commit.id) && !isCameraMoving ? 'shadow-md' : '',
+                  normalizedSearchQuery && matchingNodeIds.has(node.commit.id) && !isCameraMoving ? 'shadow-md' : '',
                   focusedNode?.commit.id === node.commit.id ? cn('ring-2 ring-primary/20', !isCameraMoving && 'shadow-md') : ''
                 )}
                 style={{ top: 0, borderWidth: `${borderWidthPx}px` }}
@@ -1133,8 +1223,8 @@ export default function BranchGridMap({
               </div>
             </div>
             );
-            })}
-            <svg
+              })}
+              <svg
               className="pointer-events-none absolute inset-0 z-10"
               width={contentWidth}
               height={contentHeight}
@@ -1145,7 +1235,7 @@ export default function BranchGridMap({
             >
               <defs>
               </defs>
-              {mergeConnectors.map((connector) => (
+              {mergeConnectors.filter((connector) => cullConnector(connector)).map((connector) => (
                 (() => {
                   const dx = connector.toX - connector.fromX;
                   const arrowDirection = dx >= 0 ? 'right' : 'left';
@@ -1188,7 +1278,7 @@ export default function BranchGridMap({
                   );
                 })()
               ))}
-              {connectors.map((connector) => {
+              {connectors.filter((connector) => cullConnector(connector)).map((connector) => {
                 const path = buildRoundedElbowPath(
                   connector.fromX,
                   connector.fromY,
@@ -1235,8 +1325,7 @@ export default function BranchGridMap({
                   </Fragment>
                 );
               })}
-            </svg>
-              </div>
+              </svg>
             </div>
           </div>
         </div>
