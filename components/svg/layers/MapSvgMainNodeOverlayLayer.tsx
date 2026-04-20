@@ -1,3 +1,5 @@
+import { isRectVisible } from '../core/MapSvg.utils';
+
 type MapSvgMainNodeOverlayLayerProps = {
   mainIsUnifiedRender: boolean;
   mainTimelineOpacity: number;
@@ -45,6 +47,7 @@ type MapSvgMainNodeOverlayLayerProps = {
   checkedOutHeadSha: string | null;
   shaMatchesGitRef: (a?: string, b?: string) => boolean;
   latestMainCommitSha?: string;
+  visibleWorldBounds: { minX: number; maxX: number; minY: number; maxY: number } | null;
 };
 
 export function MapSvgMainNodeOverlayLayer({
@@ -73,6 +76,7 @@ export function MapSvgMainNodeOverlayLayer({
   checkedOutHeadSha,
   shaMatchesGitRef,
   latestMainCommitSha,
+  visibleWorldBounds,
 }: MapSvgMainNodeOverlayLayerProps) {
   if (mainIsUnifiedRender) return null;
 
@@ -104,7 +108,6 @@ export function MapSvgMainNodeOverlayLayer({
         const phaseEased = motion.phaseEased;
         const anchorX = motion.anchorX;
         const anchorY = motion.anchorY;
-
         if (count === 1) {
           const singleMainCommit = cluster.entries[0]?.item;
           const isUncommittedCommit =
@@ -115,6 +118,14 @@ export function MapSvgMainNodeOverlayLayer({
             ? isCommitUnpushed(singleMainCommit.fullSha, singleMainCommit.sha)
             : false;
           const rectSize = commitRectSize(scaledNodeSize);
+          if (!isRectVisible(visibleWorldBounds, {
+            x: anchorX - rectSize.width / 2,
+            y: anchorY - rectSize.height / 2,
+            width: rectSize.width,
+            height: rectSize.height,
+          })) {
+            return null;
+          }
           return (
             <g
               key={`main-direct-overlay-${clusterKey}`}
@@ -146,12 +157,26 @@ export function MapSvgMainNodeOverlayLayer({
 
         const clusterRectSize = nodeRectSize(count);
         const localRect = commitRectSize(scaledNodeSize, 0);
+        if (!isRectVisible(visibleWorldBounds, {
+          x: anchorX - clusterRectSize.width / 2,
+          y: anchorY - clusterRectSize.height / 2,
+          width: clusterRectSize.width,
+          height: clusterRectSize.height,
+        })) {
+          return null;
+        }
         return (
           <g key={`main-direct-overlay-${clusterKey}`}>
             {isExpanded ? (
               <>
                 {cluster.entries.map((entry: any) => {
                   const c = entry.item;
+                  if (!isRectVisible(visibleWorldBounds, {
+                    x: entry.x - localRect.width / 2,
+                    y: entry.y - localRect.height / 2,
+                    width: localRect.width,
+                    height: localRect.height,
+                  })) return null;
                   const memberPose = interpolateExpandedEntryPose(
                     { x: anchorX, y: anchorY },
                     { x: entry.x, y: entry.y },

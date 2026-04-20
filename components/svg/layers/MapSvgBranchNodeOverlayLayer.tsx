@@ -1,4 +1,5 @@
 import type React from 'react';
+import { isRectVisible } from '../core/MapSvg.utils';
 
 type MapSvgBranchNodeOverlayLayerProps = {
   orderedActiveBranchesForLayer: (options: { includeSelectedPriority: boolean }) => any[];
@@ -85,6 +86,7 @@ type MapSvgBranchNodeOverlayLayerProps = {
     phaseEased: number,
   ) => { x: number; y: number; opacity: number; scale: number };
   clumpAnimStyleForPhase: (phase: 'collapsed' | 'expanding' | 'expanded' | 'collapsing') => any;
+  visibleWorldBounds: { minX: number; maxX: number; minY: number; maxY: number } | null;
 };
 
 export function MapSvgBranchNodeOverlayLayer({
@@ -125,6 +127,7 @@ export function MapSvgBranchNodeOverlayLayer({
   mergeCheckoutAccent,
   interpolateExpandedEntryPose,
   clumpAnimStyleForPhase,
+  visibleWorldBounds,
 }: MapSvgBranchNodeOverlayLayerProps) {
   const orderedActiveBranches = orderedActiveBranchesForLayer({
     includeSelectedPriority: false,
@@ -227,6 +230,14 @@ export function MapSvgBranchNodeOverlayLayer({
               !isStashCommit &&
               isCommitUnpushed(commit.fullSha, commit.sha);
             const rectSize = commitRectSize(scaledNodeSize);
+            if (!isRectVisible(visibleWorldBounds, {
+              x: anchorX - rectSize.width / 2,
+              y: anchorY - rectSize.height / 2,
+              width: rectSize.width,
+              height: rectSize.height,
+            })) {
+              return null;
+            }
             const isGhostRect = isNonCommitPlaceholder;
             const ghostRectStrokeWidth = unpushedStrokeWidth;
 
@@ -353,12 +364,26 @@ export function MapSvgBranchNodeOverlayLayer({
           }
 
           const localRect = commitRectSize(scaledNodeSize, 0);
+          if (!isRectVisible(visibleWorldBounds, {
+            x: anchorX - localRect.width / 2,
+            y: anchorY - localRect.height / 2,
+            width: localRect.width,
+            height: localRect.height,
+          })) {
+            return null;
+          }
 
           return (
             <g key={`branch-overlay-${clusterKey}`}>
               {renderEntries.map((entry: any) => {
                 const commit = entry.item.commit;
                 if (!commit?.fullSha) return null;
+                if (!isRectVisible(visibleWorldBounds, {
+                  x: entry.x - localRect.width / 2,
+                  y: entry.y - localRect.height / 2,
+                  width: localRect.width,
+                  height: localRect.height,
+                })) return null;
                 const commitCheckoutAccent = mergeCheckoutAccent(
                   checkedOutHeadSha != null &&
                     (shaMatchesGitRef(commit.fullSha, checkedOutHeadSha) ||

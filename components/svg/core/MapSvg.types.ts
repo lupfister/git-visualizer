@@ -197,6 +197,13 @@ export type LineageCommitLike = {
   date: string;
 };
 
+export type VisibleWorldBounds = {
+  minX: number;
+  maxX: number;
+  minY: number;
+  maxY: number;
+};
+
 export interface BranchMapProps {
   branches: Branch[];
   mergeNodes: MergeNode[];

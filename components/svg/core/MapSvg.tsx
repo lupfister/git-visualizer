@@ -109,6 +109,8 @@ import {
   fmtTooltipDate,
   getCameraScale,
   getPreparedPretext,
+  getVisibleWorldBounds,
+  isSegmentVisible,
   isStashCommitLike,
   isSyntheticLocalCommit,
   nodeLabelFontSize,
@@ -233,7 +235,6 @@ export default function BranchMap(props: BranchMapProps) {
     hoveredNodeBranchName,
     setHoveredNodeBranchName,
     expandedClumps,
-    setExpandedClumps,
     zoom,
     setZoom,
     isOrientationSwitchFading,
@@ -299,6 +300,7 @@ export default function BranchMap(props: BranchMapProps) {
     zoomUiSyncTimeoutRef,
     cameraPaintRafRef,
     pendingCameraRef,
+    clumpAnimationTick,
     setClumpAnimationTick,
     clumpAnchorStateRef,
     clumpMemberAnchorStateRef,
@@ -4610,7 +4612,28 @@ export default function BranchMap(props: BranchMapProps) {
       ],
     });
   }
-  const branchRenderLayoutCache = new Map<string, BranchRenderLayout>();
+  const branchRenderLayoutCacheRef = useRef(new Map<string, BranchRenderLayout>());
+  useEffect(() => {
+    branchRenderLayoutCacheRef.current.clear();
+  }, [
+    clumpAnimationTick,
+    branches,
+    mergeNodes,
+    directCommits,
+    unpushedDirectCommits,
+    unpushedCommitShasByBranch,
+    defaultBranch,
+    branchPromptMeta,
+    branchCommitPreviews,
+    branchUniqueAheadCounts,
+    staleBranches,
+    openPRs,
+    checkedOutRef,
+    isLoading,
+    mapTopInsetPx,
+    isHorizontal,
+    controlledOrientation,
+  ]);
   function getBranchRenderLayoutCtx() {
     return {
       MAIN_DRAW_MS,
@@ -4656,10 +4679,10 @@ export default function BranchMap(props: BranchMapProps) {
   }
 
   function getBranchRenderLayout(b: Branch): BranchRenderLayout {
-    const cached = branchRenderLayoutCache.get(b.name);
+    const cached = branchRenderLayoutCacheRef.current.get(b.name);
     if (cached) return cached;
     const layout = computeBranchRenderLayout(b, getBranchRenderLayoutCtx());
-    branchRenderLayoutCache.set(b.name, layout);
+    branchRenderLayoutCacheRef.current.set(b.name, layout);
     return layout;
   }
   const clumpAnimStyleForPhase = (phase: ExpandedClumpState['phase']): React.CSSProperties => {
@@ -4729,40 +4752,34 @@ export default function BranchMap(props: BranchMapProps) {
       // Keep expanded rows briefly during collapse so member travel remains visible,
       // then release rows early enough that lane motion still feels synced.
       const rowReleaseAt = collapseStartedAt + 80;
-      setExpandedClumps((prev) => {
-        const next = new Map(prev);
-        next.set(clumpKey, {
-          isExpanded: true,
-          phase: 'collapsing',
-          phaseStartedAt: collapseStartedAt,
-          phaseProgress: collapseProgress,
-          rowReleaseAt,
-        });
-        return next;
+      expandedClumps.set(clumpKey, {
+        isExpanded: true,
+        phase: 'collapsing',
+        phaseStartedAt: collapseStartedAt,
+        phaseProgress: collapseProgress,
+        rowReleaseAt,
       });
+      setClumpAnimationTick((v) => v + 1);
 
       // Drive per-frame exponential interpolation until clump fully collapses.
       const collapseTick = () => {
         collapseProgress += (0 - collapseProgress) * collapseLerp;
         const done = Math.abs(collapseProgress) <= 0.004;
-        setExpandedClumps((prev) => {
-          const next = new Map(prev);
-          if (done) {
-            next.delete(clumpKey);
-            return next;
+        if (done) {
+          expandedClumps.delete(clumpKey);
+        } else {
+          const current = expandedClumps.get(clumpKey);
+          if (current) {
+            expandedClumps.set(clumpKey, {
+              ...current,
+              isExpanded: true,
+              phase: 'collapsing',
+              phaseStartedAt: collapseStartedAt,
+              phaseProgress: collapseProgress,
+              rowReleaseAt,
+            });
           }
-          const current = next.get(clumpKey);
-          if (!current) return prev;
-          next.set(clumpKey, {
-            ...current,
-            isExpanded: true,
-            phase: 'collapsing',
-            phaseStartedAt: collapseStartedAt,
-            phaseProgress: collapseProgress,
-            rowReleaseAt,
-          });
-          return next;
-        });
+        }
         setClumpAnimationTick((v) => v + 1);
         if (done) {
           clumpCleanupTimersRef.current.delete(clumpKey);
@@ -4779,46 +4796,40 @@ export default function BranchMap(props: BranchMapProps) {
     const expandStartedAt = Date.now();
     const expandLerp = 0.26;
     let expandProgress = existing?.phaseProgress ?? 0;
-    setExpandedClumps((prev) => {
-      const next = new Map(prev);
-      next.set(clumpKey, {
-        isExpanded: true,
-        phase: 'expanding',
-        phaseStartedAt: expandStartedAt,
-        phaseProgress: expandProgress,
-        rowReleaseAt: undefined,
-      });
-      return next;
+    expandedClumps.set(clumpKey, {
+      isExpanded: true,
+      phase: 'expanding',
+      phaseStartedAt: expandStartedAt,
+      phaseProgress: expandProgress,
+      rowReleaseAt: undefined,
     });
+    setClumpAnimationTick((v) => v + 1);
 
     // Drive per-frame exponential interpolation until clump fully expands.
     const expandTick = () => {
       expandProgress += (1 - expandProgress) * expandLerp;
       const done = Math.abs(1 - expandProgress) <= 0.004;
-      setExpandedClumps((prev) => {
-        const next = new Map(prev);
-        const current = next.get(clumpKey);
-        if (!current) return prev;
-        if (done) {
-          next.set(clumpKey, {
-            isExpanded: true,
-            phase: 'expanded',
-            phaseStartedAt: expandStartedAt,
-            phaseProgress: 1,
-            rowReleaseAt: undefined,
-          });
-          return next;
-        }
-        next.set(clumpKey, {
-          ...current,
+      if (done) {
+        expandedClumps.set(clumpKey, {
           isExpanded: true,
-          phase: 'expanding',
+          phase: 'expanded',
           phaseStartedAt: expandStartedAt,
-          phaseProgress: expandProgress,
+          phaseProgress: 1,
           rowReleaseAt: undefined,
         });
-        return next;
-      });
+      } else {
+        const current = expandedClumps.get(clumpKey);
+        if (current) {
+          expandedClumps.set(clumpKey, {
+            ...current,
+            isExpanded: true,
+            phase: 'expanding',
+            phaseStartedAt: expandStartedAt,
+            phaseProgress: expandProgress,
+            rowReleaseAt: undefined,
+          });
+        }
+      }
       setClumpAnimationTick((v) => v + 1);
       if (done) {
         clumpCleanupTimersRef.current.delete(clumpKey);
@@ -5174,6 +5185,19 @@ export default function BranchMap(props: BranchMapProps) {
     stroke: CANVAS_NEUTRAL_GRAY,
   };
 
+  const visibleWorldBounds = getVisibleWorldBounds({
+    viewportWidth: viewportSize.width,
+    viewportHeight: viewportSize.height,
+    topInset: mapTopInset,
+    panX: panRef.current.x,
+    panY: panRef.current.y,
+    zoom: zoomRef.current,
+    graphOffsetX,
+    graphOffsetY,
+    graphContentTranslateX,
+    graphContentTranslateY,
+  });
+
   const branchNodeOverlayLayerProps = {
     orderedActiveBranchesForLayer,
     getBranchRenderLayout,
@@ -5212,6 +5236,7 @@ export default function BranchMap(props: BranchMapProps) {
     mergeCheckoutAccent,
     interpolateExpandedEntryPose,
     clumpAnimStyleForPhase,
+    visibleWorldBounds,
   };
 
   const mainNodeOverlayLayerProps = {
@@ -5240,6 +5265,7 @@ export default function BranchMap(props: BranchMapProps) {
     checkedOutHeadSha,
     shaMatchesGitRef,
     latestMainCommitSha,
+    visibleWorldBounds,
   };
 
   const nodeLabelsLayerProps = {
@@ -5281,6 +5307,7 @@ export default function BranchMap(props: BranchMapProps) {
     mainDirectClusters,
     resolveClusterMotion,
     nodeFrameLabelRightInsetX,
+    visibleWorldBounds,
   };
 
   const collapseControlsLayerProps = {
@@ -5457,6 +5484,7 @@ export default function BranchMap(props: BranchMapProps) {
                         {mainLaneSegments.map((segment) => {
                           const trimmed = trimLaneSegment(segment);
                           if (!trimmed) return null;
+                          if (!isSegmentVisible(visibleWorldBounds, trimmed.start, trimmed.end)) return null;
                           return (
                             <path
                               key={`main-hit:${segment.start.key}:${segment.end.key}`}
@@ -5471,6 +5499,7 @@ export default function BranchMap(props: BranchMapProps) {
                         {mainLaneSegments.map((segment) => {
                           const trimmed = trimLaneSegment(segment);
                           if (!trimmed) return null;
+                          if (!isSegmentVisible(visibleWorldBounds, trimmed.start, trimmed.end)) return null;
                           return (
                             <path
                               key={`main-segment:${segment.start.key}:${segment.end.key}`}
@@ -6000,6 +6029,11 @@ export default function BranchMap(props: BranchMapProps) {
                           trimRadius: baseLaneTrimRadius,
                           key: `${b.name}:fallback-tip`,
                         };
+                        const forkConnectorStart = { x: animatedLine.startX, y: animatedLine.forkY };
+                        const forkConnectorEnd = { x: forkConnectorTip.x, y: forkConnectorTip.y - forkConnectorTip.trimRadius };
+                        if (!isSegmentVisible(visibleWorldBounds, forkConnectorStart, forkConnectorEnd)) {
+                          return null;
+                        }
                         const forkConnectorPath = buildBranchOrthogonalPath({
                           startX: animatedLine.startX,
                           forkY: animatedLine.forkY,
@@ -6029,6 +6063,18 @@ export default function BranchMap(props: BranchMapProps) {
                               pointFormatter: pathCoord,
                             })
                             : null;
+                        const mergeBackVisible =
+                          mergeBackPath &&
+                          animatedLine.mergeTargetX != null &&
+                          animatedLine.mergeTargetY != null &&
+                          lastLaneAnchor
+                            ? isSegmentVisible(
+                              visibleWorldBounds,
+                              { x: lastLaneAnchor.x, y: lastLaneAnchor.y - lastLaneAnchor.trimRadius },
+                              { x: animatedLine.mergeTargetX, y: animatedLine.mergeTargetY },
+                            )
+                            : false;
+                        const visibleMergeBackPath = mergeBackVisible ? mergeBackPath : null;
                         const strokeWidth = 0.75;
                         const strokeColor = CANVAS_NEUTRAL_GRAY;
                         const unpushedStrokeWidth = strokeWidth + UNPUSHED_LANE_STROKE_VISUAL_COMP;
@@ -6065,6 +6111,7 @@ export default function BranchMap(props: BranchMapProps) {
                             {branchLaneSegments.map((segment) => {
                               const trimmed = trimLaneSegment(segment);
                               if (!trimmed) return null;
+                              if (!isSegmentVisible(visibleWorldBounds, trimmed.start, trimmed.end)) return null;
                               return (
                                 <path
                                   key={`branch-hit:${segment.start.key}:${segment.end.key}`}
@@ -6106,6 +6153,7 @@ export default function BranchMap(props: BranchMapProps) {
                             {branchLaneSegments.map((segment) => {
                               const trimmed = trimLaneSegment(segment);
                               if (!trimmed) return null;
+                              if (!isSegmentVisible(visibleWorldBounds, trimmed.start, trimmed.end)) return null;
                               return (
                                 <path
                                   key={`branch-segment:${segment.start.key}:${segment.end.key}`}
@@ -6123,9 +6171,9 @@ export default function BranchMap(props: BranchMapProps) {
                                 />
                               );
                             })}
-                            {mergeBackPath && (
+                            {visibleMergeBackPath && (
                               <path
-                                d={mergeBackPath}
+                                d={visibleMergeBackPath}
                                 fill="none"
                                 stroke={strokeColor}
                                 strokeWidth={fullBranchShouldUseLocalGray ? unpushedStrokeWidth : strokeWidth}

@@ -15,6 +15,7 @@ import type {
   MainClusterViewModel,
   MarkerCluster,
   MarkerEntry,
+  VisibleWorldBounds,
 } from './MapSvg.types';
 
 export function clamp01(value: number): number {
@@ -27,6 +28,86 @@ export function easeInOutCubic(t: number): number {
 
 export function getCameraScale(zoomValue: number, _horizontal: boolean): { x: number; y: number } {
   return { x: zoomValue, y: zoomValue };
+}
+
+export function getVisibleWorldBounds(args: {
+  viewportWidth: number;
+  viewportHeight: number;
+  topInset: number;
+  panX: number;
+  panY: number;
+  zoom: number;
+  graphOffsetX: number;
+  graphOffsetY: number;
+  graphContentTranslateX: number;
+  graphContentTranslateY: number;
+  paddingPx?: number;
+}): VisibleWorldBounds | null {
+  const {
+    viewportWidth,
+    viewportHeight,
+    topInset,
+    panX,
+    panY,
+    zoom,
+    graphOffsetX,
+    graphOffsetY,
+    graphContentTranslateX,
+    graphContentTranslateY,
+    paddingPx = 0,
+  } = args;
+  if (viewportWidth <= 0 || viewportHeight <= 0 || zoom <= 0) return null;
+  const scale = getCameraScale(zoom, false);
+  const paddingWorld = paddingPx / Math.max(scale.x, 0.0001);
+  const minScreenX = 0;
+  const maxScreenX = viewportWidth;
+  const minScreenY = Math.max(0, topInset);
+  const maxScreenY = viewportHeight;
+  const minX = (minScreenX - graphOffsetX - panX) / scale.x - graphContentTranslateX - paddingWorld;
+  const maxX = (maxScreenX - graphOffsetX - panX) / scale.x - graphContentTranslateX + paddingWorld;
+  const minY = (minScreenY - graphOffsetY - panY) / scale.y - graphContentTranslateY - paddingWorld;
+  const maxY = (maxScreenY - graphOffsetY - panY) / scale.y - graphContentTranslateY + paddingWorld;
+  return { minX, maxX, minY, maxY };
+}
+
+export function isPointVisible(bounds: VisibleWorldBounds | null, x: number, y: number): boolean {
+  if (!bounds) return true;
+  return x >= bounds.minX && x <= bounds.maxX && y >= bounds.minY && y <= bounds.maxY;
+}
+
+export function isRectVisible(
+  bounds: VisibleWorldBounds | null,
+  rect: { x: number; y: number; width: number; height: number },
+): boolean {
+  if (!bounds) return true;
+  const rectMinX = rect.x;
+  const rectMaxX = rect.x + rect.width;
+  const rectMinY = rect.y;
+  const rectMaxY = rect.y + rect.height;
+  return !(
+    rectMaxX < bounds.minX ||
+    rectMinX > bounds.maxX ||
+    rectMaxY < bounds.minY ||
+    rectMinY > bounds.maxY
+  );
+}
+
+export function isSegmentVisible(
+  bounds: VisibleWorldBounds | null,
+  start: { x: number; y: number },
+  end: { x: number; y: number },
+): boolean {
+  if (!bounds) return true;
+  const minX = Math.min(start.x, end.x);
+  const maxX = Math.max(start.x, end.x);
+  const minY = Math.min(start.y, end.y);
+  const maxY = Math.max(start.y, end.y);
+  return !(
+    maxX < bounds.minX ||
+    minX > bounds.maxX ||
+    maxY < bounds.minY ||
+    minY > bounds.maxY
+  );
 }
 
 export function buildStraightPath(

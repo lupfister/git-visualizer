@@ -94,7 +94,7 @@ export function useMapSvgState(args: {
   const cameraPaintRafRef = useRef<number | null>(null);
   const pendingCameraRef = useRef<{ pan: { x: number; y: number }; zoom: number } | null>(null);
   const lastPaintedZoomScaleRef = useRef<number | null>(null);
-  const [, setClumpAnimationTick] = useState(0);
+  const [clumpAnimationTick, setClumpAnimationTick] = useState(0);
   const clumpAnchorStateRef = useRef<Map<string, ClumpAnchorState>>(new Map());
   const clumpMemberAnchorStateRef = useRef<Map<string, ClumpMemberAnchorState>>(new Map());
   const branchLineGeometryStateRef = useRef<Map<string, BranchLineGeometryState>>(new Map());
@@ -271,6 +271,7 @@ export function useMapSvgState(args: {
     cameraPaintRafRef,
     pendingCameraRef,
     lastPaintedZoomScaleRef,
+    clumpAnimationTick,
     setClumpAnimationTick,
     clumpAnchorStateRef,
     clumpMemberAnchorStateRef,

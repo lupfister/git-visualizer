@@ -1,3 +1,5 @@
+import { isRectVisible } from '../core/MapSvg.utils';
+
 type MapSvgNodeLabelsLayerProps = {
   orderedActiveBranchesForLayer: (options: { includeSelectedPriority: boolean }) => any[];
   getBranchRenderLayout: (branch: any) => any;
@@ -88,6 +90,7 @@ type MapSvgNodeLabelsLayerProps = {
     phaseEased: number;
   };
   nodeFrameLabelRightInsetX: number;
+  visibleWorldBounds: { minX: number; maxX: number; minY: number; maxY: number } | null;
 };
 
 export function MapSvgNodeLabelsLayer({
@@ -129,6 +132,7 @@ export function MapSvgNodeLabelsLayer({
   mainDirectClusters,
   resolveClusterMotion,
   nodeFrameLabelRightInsetX,
+  visibleWorldBounds,
 }: MapSvgNodeLabelsLayerProps) {
   const orderedActiveBranches = orderedActiveBranchesForLayer({
     includeSelectedPriority: false,
@@ -196,6 +200,11 @@ export function MapSvgNodeLabelsLayer({
               selectedBranchNameSet.has(b.name);
             const clusterIsCheckoutAccent = clusterCheckoutAccent;
             const clusterIsSelected = clusterHasSelectedCommit || clusterHasSelectedHead;
+            const canExpandCluster = renderEntries.length > 1;
+            const expanded = canExpandCluster ? expandedClumps.get(clusterKey) : undefined;
+            const { isExpanded, phase, phaseEased } = canExpandCluster
+              ? resolveClumpPhase(expanded)
+              : { isExpanded: false, phase: 'collapsed' as const, phaseEased: 0 };
             const preferredAnchorEntry = branchPreferredAnchorEntry(
               cluster,
               realCommitEntries,
@@ -208,11 +217,18 @@ export function MapSvgNodeLabelsLayer({
             );
             const anchorX = animatedAnchor.x;
             const anchorY = animatedAnchor.y;
-
             if (count <= 1) {
               const commitEntry = renderEntries[0] ?? cluster.entries[cluster.entries.length - 1];
               const commit = commitEntry.item.commit;
               const rectSize = commitRectSize(scaledNodeSize);
+              if (!isRectVisible(visibleWorldBounds, {
+                x: anchorX - rectSize.width / 2,
+                y: anchorY - rectSize.height / 2 - nodeFrameLabelGap - 16,
+                width: rectSize.width,
+                height: rectSize.height + nodeFrameLabelGap + 16,
+              })) {
+                return null;
+              }
               const singleTitleText = fitNodeFrameTitle(
                 b.name,
                 commit?.sha ?? commit?.fullSha ?? b.headSha,
@@ -245,16 +261,18 @@ export function MapSvgNodeLabelsLayer({
                 </text>
               );
             }
-
-            const canExpandCluster = renderEntries.length > 1;
-            const expanded = canExpandCluster ? expandedClumps.get(clusterKey) : undefined;
-            const { isExpanded, phase, phaseEased } = canExpandCluster
-              ? resolveClumpPhase(expanded)
-              : { isExpanded: false, phase: 'collapsed' as const, phaseEased: 0 };
             const isCollapsing = isExpanded && phase === 'collapsing';
 
             if (!isExpanded || isCollapsing) {
               const rectSize = nodeRectSize(count);
+              if (!isRectVisible(visibleWorldBounds, {
+                x: anchorX - rectSize.width / 2,
+                y: anchorY - rectSize.height / 2 - nodeFrameLabelGap - 16,
+                width: rectSize.width,
+                height: rectSize.height + nodeFrameLabelGap + 16,
+              })) {
+                return null;
+              }
               const clumpCountText = stackCountLabel(count);
               const latestCommit = renderEntries[renderEntries.length - 1]?.item.commit;
               const latestLabel =
@@ -318,6 +336,14 @@ export function MapSvgNodeLabelsLayer({
             }
 
             const localRect = commitRectSize(scaledNodeSize, 0);
+            if (!isRectVisible(visibleWorldBounds, {
+              x: anchorX - localRect.width / 2,
+              y: anchorY - localRect.height / 2 - nodeFrameLabelGap - 16,
+              width: localRect.width,
+              height: localRect.height + nodeFrameLabelGap + 16,
+            })) {
+              return null;
+            }
             const topExpandedEntry = renderEntries.reduce(
               (top: any, entry: any) => {
                 const isBetter = isHorizontal ? entry.x > top.x : entry.y < top.y;
@@ -330,6 +356,12 @@ export function MapSvgNodeLabelsLayer({
                 {renderEntries.map((entry: any) => {
                   const commit = entry.item.commit;
                   if (!commit?.fullSha) return null;
+                  if (!isRectVisible(visibleWorldBounds, {
+                    x: entry.x - localRect.width / 2,
+                    y: entry.y - localRect.height / 2 - nodeFrameLabelGap - 16,
+                    width: localRect.width,
+                    height: localRect.height + nodeFrameLabelGap + 16,
+                  })) return null;
 
                   const memberPose = interpolateExpandedEntryPose(
                     { x: anchorX, y: anchorY },
