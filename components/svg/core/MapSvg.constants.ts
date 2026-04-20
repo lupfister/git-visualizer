@@ -1,4 +1,4 @@
-import { commitRectSize } from './LayoutSvg';
+import { commitRectSize } from '../layout/LayoutSvg';
 
 export const LEFT_PAD = 0;
 export const RIGHT_PAD = 0;

@@ -1,6 +1,6 @@
-import { Branch, BranchCommitPreview, BranchPromptMeta, CheckedOutRef, DirectCommit, MergeNode, OpenPR, WorktreeInfo } from '../../types';
+import { Branch, BranchCommitPreview, BranchPromptMeta, CheckedOutRef, DirectCommit, MergeNode, OpenPR, WorktreeInfo } from '../../../types';
 import BranchMap from './MapSvg';
-import BranchGridMapView from '../grid/MapViewGrid';
+import BranchGridMapView from '../../grid/MapViewGrid';
 
 export type ViewMode = 'time' | 'grid';
 export type OrientationMode = 'vertical' | 'horizontal';

@@ -7,8 +7,8 @@ import type {
   MergeNode,
   OpenPR,
   WorktreeInfo,
-} from '../../types';
-import type { AnchorPoint as LayoutAnchorPoint } from './LayoutSvg';
+} from '../../../types';
+import type { AnchorPoint as LayoutAnchorPoint } from '../layout/LayoutSvg';
 
 export type TooltipData = {
   x: number;

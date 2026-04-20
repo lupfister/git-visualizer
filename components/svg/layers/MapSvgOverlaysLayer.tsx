@@ -1,7 +1,7 @@
 import React, { memo, useMemo } from 'react';
 import { X } from 'lucide-react';
-import type { Branch, BranchCommitPreview, DirectCommit, MergeNode } from '../../types';
-import type { BranchRenderLayout } from './MapSvg.types';
+import type { Branch, BranchCommitPreview, DirectCommit, MergeNode } from '../../../types';
+import type { BranchRenderLayout } from '../core/MapSvg.types';
 
 type NewBranchDialogState = {
   nodeId: string;

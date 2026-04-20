@@ -3,7 +3,7 @@ import { invoke } from '@tauri-apps/api/core';
 import { listen } from '@tauri-apps/api/event';
 import { getCurrentWindow } from '@tauri-apps/api/window';
 import { ArrowLeft } from 'lucide-react';
-import BranchMapView, { type OrientationMode } from '../components/svg/MapViewSvg';
+import BranchMapView, { type OrientationMode } from '../components/svg/core/MapViewSvg';
 import FolderPickerModal from './FolderPickerModal';
 import type { Branch, BranchCommitPreview, BranchPromptMeta, BranchPromptMarker, CheckedOutRef, Commit, DirectCommit, GitHubAuthStatus, GitHubInfo, GitStashEntry, MergeNode, OpenPR, WorktreeInfo } from '../types';
 import { foldStashNodesIntoGraph } from './placeStashNode';

@@ -1,5 +1,5 @@
-import type { ExpandedClumpState } from './MapSvg.types';
-import { clamp01, easeInOutCubic } from './MapSvg.utils';
+import type { ExpandedClumpState } from '../core/MapSvg.types';
+import { clamp01, easeInOutCubic } from '../core/MapSvg.utils';
 
 export function resolveClumpPhaseCore(expandedState?: ExpandedClumpState): {
   isExpanded: boolean;

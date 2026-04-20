@@ -1,6 +1,6 @@
-import type { Branch, DirectCommit, WorktreeInfo } from '../../types';
-import type { CheckoutAccent } from './MapSvg.types';
-import { shaMatchesGitRef } from './MapSvg.utils';
+import type { Branch, DirectCommit, WorktreeInfo } from '../../../types';
+import type { CheckoutAccent } from '../core/MapSvg.types';
+import { shaMatchesGitRef } from '../core/MapSvg.utils';
 
 export function normalizeRepoPathForCompare(p: string): string {
   return p.replace(/\\/g, '/').replace(/\/+$/, '');

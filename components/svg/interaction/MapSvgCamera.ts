@@ -1,6 +1,6 @@
 import React from 'react';
-import { getCameraScale } from './MapSvg.utils';
-import type { ClampMode } from './MapSvg.types';
+import { getCameraScale } from '../core/MapSvg.utils';
+import type { ClampMode } from '../core/MapSvg.types';
 
 export type CameraBounds = {
   viewportW: number;

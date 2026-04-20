@@ -5,4 +5,4 @@ export {
   normalizeWheelDeltaPx,
   paintCameraCore,
   syncUiStateCore,
-} from './MapSvgCamera';
+} from '../interaction/MapSvgCamera';

@@ -1,10 +1,10 @@
 import React, { useEffect, useLayoutEffect, useMemo, useRef } from 'react';
-import { Branch, BranchCommitPreview, DirectCommit, MergeNode, WorktreeInfo } from '../../types';
+import { Branch, BranchCommitPreview, DirectCommit, MergeNode, WorktreeInfo } from '../../../types';
 import {
   buildBranchOrthogonalPath,
   buildMergeOrthogonalPath,
   commitRectSize,
-} from './LayoutSvg';
+} from '../layout/LayoutSvg';
 import {
   BRANCH_HIT_STROKE_WIDTH,
   BRANCH_COLUMN_REUSE_TIME_GAP_FACTOR,
@@ -122,14 +122,14 @@ import {
   stashOrUncommittedBaseStroke,
   truncatePrompt,
 } from './MapSvg.utils';
-import { computeBranchRenderLayout } from './MapSvgGraphLayout';
+import { computeBranchRenderLayout } from '../layout/MapSvgGraphLayout';
 import {
   buildBranchLaneAnchors,
   buildLaneSegments,
   buildMainLaneAnchors,
   resolveBranchHeadProjectedPoint,
   trimLaneSegment,
-} from './MapSvgGraphLayout';
+} from '../layout/MapSvgGraphLayout';
 import {
   findOtherWorktreeByHeadSha as findOtherWorktreeByHeadShaInList,
   findOtherWorktreeForCommit as findOtherWorktreeForCommitInList,
@@ -139,7 +139,7 @@ import {
   mergeCheckoutAccent as mergeCheckoutAccentInList,
   otherWorktreeMatchesBranchCommit as otherWorktreeMatchesBranchCommitInList,
   worktreeShortLabel,
-} from './MapSvgWorktreeSemantics';
+} from '../interaction/MapSvgWorktreeSemantics';
 import {
   applyMarqueeSelection as applyMarqueeSelectionCore,
   beginMarqueeSelection as beginMarqueeSelectionCore,
@@ -147,7 +147,7 @@ import {
   getMarqueeSelectionContext as getMarqueeSelectionContextCore,
   handleCommitNodeClick as handleCommitNodeClickCore,
   normalizeMarqueeRect,
-} from './useMapSvgInteraction';
+} from '../hooks/useMapSvgInteraction';
 import {
   applyCameraCore,
   applyZoomAtCore,
@@ -155,7 +155,7 @@ import {
   normalizeWheelDeltaPx as normalizeWheelDeltaPxCore,
   paintCameraCore,
   syncUiStateCore,
-} from './useMapSvgCamera';
+} from '../hooks/useMapSvgCamera';
 import {
   fitNodeFrameTitleCore,
   getNodeFillColorCore,
@@ -166,23 +166,18 @@ import {
   renderCommitNodeShapeRectCore,
   trimTextToWidthCore,
   wrapNodeFrameMessageCore,
-} from './MapSvgNodeFrame';
-import { MapSvgBottomChrome } from './MapSvgBottomChrome';
-import { MapSvgOverlaysLayer } from './MapSvgOverlaysLayer';
-import { MapSvgCanvasShell } from './MapSvgCanvasShell';
-import { MapSvgCheckedOutConnectorLayer } from './MapSvgCheckedOutConnectorLayer';
-import { MapSvgCollapseControlsLayer } from './MapSvgCollapseControlsLayer';
-import { MapSvgBranchNodeOverlayLayer } from './MapSvgBranchNodeOverlayLayer';
-import { MapSvgMainNodeOverlayLayer } from './MapSvgMainNodeOverlayLayer';
-import { MapSvgNodeLabelsLayer } from './MapSvgNodeLabelsLayer';
-import { buildSelectionOps } from './MapSvgSelectionOps';
+} from '../nodes/MapSvgNodeFrame';
+import { MapSvgCanvasShell } from '../layers/MapSvgCanvasShell';
+import { MapSvgCanvasLayerStack } from '../layers/MapSvgCanvasLayerStack';
+import { MapSvgActionOverlays } from '../layers/MapSvgActionOverlays';
+import { buildSelectionOps } from '../interaction/MapSvgSelectionOps';
 import {
   interpolateExpandedEntryPoseCore,
   resolveClumpPhaseCore,
   resolveClusterMotionCore,
-} from './MapSvgClumpMotion';
+} from '../interaction/MapSvgClumpMotion';
 import { normalizeMapSvgProps } from './MapSvgPublicSurface';
-import { useMapSvgState } from './useMapSvgState';
+import { useMapSvgState } from '../hooks/useMapSvgState';
 
 export default function BranchMap(props: BranchMapProps) {
   const {
@@ -5174,6 +5169,254 @@ export default function BranchMap(props: BranchMapProps) {
     return { parentName: timing.parentName, forkTimeX: timing.forkTimeX };
   };
 
+  const checkedOutConnectorLayerProps = {
+    checkedOutHasUncommittedChanges,
+    checkedOutDisplayIndicatorLocal,
+    checkedOutIndicatorLocal,
+    cornerR,
+    pathCoord,
+    stroke: CANVAS_NEUTRAL_GRAY,
+  };
+
+  const branchNodeOverlayLayerProps = {
+    orderedActiveBranchesForLayer,
+    getBranchRenderLayout,
+    focusedErrorBranch,
+    unpushedLaneStrokeVisualComp: UNPUSHED_LANE_STROKE_VISUAL_COMP,
+    resolveBranchClusterEntries,
+    branchClusterKey,
+    branchClusterMemberKeys,
+    branchPreferredAnchorEntry,
+    resolveAnimatedClumpAnchor,
+    canvasUnpushedNodeFill: CANVAS_UNPUSHED_NODE_FILL,
+    canvasNodeFill: CANVAS_NODE_FILL,
+    canvasNodeStrokeWidth: CANVAS_NODE_STROKE_WIDTH,
+    checkedOutHeadSha,
+    checkedOutBranchName,
+    shaMatchesGitRef,
+    otherWorktreeMatchesBranchCommit,
+    selectedCommitShaSet,
+    selectedBranchNameSet,
+    isStashCommitLike,
+    isCommitUnpushed,
+    commitRectSize,
+    scaledNodeSize,
+    renderCommitNodeShapeRect,
+    getNodeFillColor,
+    getNodeStrokeColor,
+    localUnpushedGray: LOCAL_UNPUSHED_GRAY,
+    renderCommitNodeRect,
+    fmtTooltipDate,
+    stashOrUncommittedBaseStroke,
+    expandedClumps,
+    resolveClumpPhase,
+    nodeRectSize,
+    clusterLocalSyntheticStroke,
+    fmtClumpDateRange,
+    mergeCheckoutAccent,
+    interpolateExpandedEntryPose,
+    clumpAnimStyleForPhase,
+  };
+
+  const mainNodeOverlayLayerProps = {
+    mainIsUnifiedRender,
+    mainTimelineOpacity,
+    mainDirectClusters,
+    resolveClusterMotion,
+    interpolateExpandedEntryPose,
+    clumpAnimStyleForPhase,
+    isStashCommitLike,
+    isCommitUnpushed,
+    commitRectSize,
+    nodeRectSize,
+    scaledNodeSize,
+    renderCommitNodeRect,
+    fmtTooltipDate,
+    fmtClumpDateRange,
+    canvasUnpushedNodeFill: CANVAS_UNPUSHED_NODE_FILL,
+    canvasNodeFill: CANVAS_NODE_FILL,
+    stashOrUncommittedBaseStroke,
+    clusterLocalSyntheticStroke,
+    selectedBranchNameSet,
+    defaultBranch,
+    selectedCommitShaSet,
+    mergeCheckoutAccent,
+    checkedOutHeadSha,
+    shaMatchesGitRef,
+    latestMainCommitSha,
+  };
+
+  const nodeLabelsLayerProps = {
+    orderedActiveBranchesForLayer,
+    getBranchRenderLayout,
+    resolveBranchClusterEntries,
+    branchClusterKey,
+    branchClusterMemberKeys,
+    checkedOutHeadSha,
+    checkedOutBranchName,
+    shaMatchesGitRef,
+    otherWorktreeMatchesBranchCommit,
+    selectedCommitShaSet,
+    selectedBranchNameSet,
+    branchPreferredAnchorEntry,
+    resolveAnimatedClumpAnchor,
+    commitRectSize,
+    scaledNodeSize,
+    fitNodeFrameTitle,
+    isStashCommitLike,
+    canvasNodeStrokeInset: CANVAS_NODE_STROKE_INSET,
+    nodeFrameLabelInsetX,
+    nodeFrameLabelGap,
+    getNodeFrameTitleColor,
+    nodeFrameLabelFontSize,
+    nodeFrameLabelWeight: NODE_FRAME_LABEL_WEIGHT,
+    expandedClumps,
+    resolveClumpPhase,
+    nodeRectSize,
+    stackCountLabel,
+    shortShaLabel,
+    isHorizontal,
+    interpolateExpandedEntryPose,
+    clumpAnimStyleForPhase,
+    mergeCheckoutAccent,
+    defaultBranch,
+    mainIsUnifiedRender,
+    mainTimelineOpacity,
+    mainDirectClusters,
+    resolveClusterMotion,
+    nodeFrameLabelRightInsetX,
+  };
+
+  const collapseControlsLayerProps = {
+    mainIsUnifiedRender,
+    mainDirectClusters,
+    expandedClumps,
+    resolveClumpPhase,
+    commitRectSize,
+    scaledNodeSize,
+    nodeFrameCollapseIconSize,
+    worldPx,
+    isHorizontal,
+    canvasNodeStrokeInset: CANVAS_NODE_STROKE_INSET,
+    nodeFrameLabelRightInsetX,
+    nodeFrameLabelGap,
+    getNodeFrameTitleColor,
+    selectedBranchNameSet,
+    defaultBranch,
+    toggleClumpExpanded,
+    renderBranches,
+    getBranchRenderLayout,
+    branchClusterKey,
+    resolveBranchClusterEntries,
+    checkedOutHeadSha,
+    shaMatchesGitRef,
+    checkedOutBranchName,
+    otherWorktreeMatchesBranchCommit,
+    selectedCommitShaSet,
+  };
+
+  const bottomChromeProps = {
+    marqueeRect,
+    isResizeSettling,
+    canvasNodeStrokeWidth: CANVAS_NODE_STROKE_WIDTH,
+    userSelectionStroke: USER_SELECTION_STROKE,
+    holdTimelineForInitialCenter,
+    timelineRevealPhase,
+    initialRevealFadeMs: INITIAL_REVEAL_FADE_MS,
+    isLoading,
+    controlsReady,
+    hasSelection,
+    onCommitLocalChanges,
+    commitDisabled,
+    onStageAllChanges,
+    onStashLocalChanges,
+    stashDisabled,
+    resolvedSelectedPushTargets,
+    onPushCommitTargets,
+    onPushAllBranches,
+    pushableRemoteBranchCount,
+    onPushCurrentBranch,
+    canPushCurrentBranch,
+    pushInProgress,
+    mergeInProgress,
+    commitInProgress,
+    stashInProgress,
+    stageInProgress,
+    selectedPushLabel,
+    selectedPushTitle,
+    handlePushSelectedTargets,
+    pushCurrentBranchLabel,
+    openGitActionMenu,
+    closeGitActionMenu,
+    toggleGitActionMenu,
+    gitActionMenuOpen,
+    gitActionMenuRef,
+    dropdownSpringVariants: DROPDOWN_SPRING_VARIANTS,
+    setCommitDialogOpen,
+    worktrees,
+    onRemoveWorktree,
+    onSwitchToWorktree,
+    worktreeMenuRef,
+    worktreeMenuOpen,
+    toggleWorktreeMenu,
+    closeWorktreeMenu,
+    isOtherWorktree,
+    worktreeShortLabel,
+    removeWorktreeInProgress,
+    selectedVisibleCommitShas,
+    commitMergeTargetOptions,
+    selectedCommitTargetOption,
+    targetBranchForSelectedCommit,
+    setMergeTargetCommitSha,
+    handleMergeSourcesIntoTarget,
+    commitMergeSources,
+  };
+
+  const overlaysLayerProps = {
+    nodeDragHighlights,
+    checkedOutSelectionStroke: CHECKED_OUT_SELECTION_STROKE,
+    newBranchDialogForNode,
+    createBranchFromNodeInProgress,
+    newBranchInputForNodeRef,
+    newBranchNameForNode,
+    setNewBranchNameForNode,
+    onCancelNewBranchDialog: cancelNewBranchDialog,
+    onSubmitNewBranchDialog: submitNewBranchDialog,
+    commitDialogOpen,
+    commitInProgress,
+    commitMessageRef,
+    commitMessageDraft,
+    setCommitMessageDraft,
+    onCommitMessageKeyDown: handleCommitMessageKeyDown,
+    onCancelCommitDialog: cancelCommitDialog,
+    onConfirmCommit: () => void handleConfirmCommit(),
+    deleteConfirmOpen,
+    deleteSelectionItems,
+    selectedDeletableBranchNames,
+    deleteInProgress,
+    deletableSelectionCount,
+    onCancelDeleteConfirm: () => setDeleteConfirmOpen(false),
+    onConfirmDeleteSelection: () => void handleConfirmDeleteSelection(),
+    showLineageDebug,
+    onCloseLineageDebug: () => setShowLineageDebug(false),
+    sortedNodes,
+    defaultBranch,
+    mergedBranchByHeadSha,
+    activeBranches,
+    sortedDirectCommits,
+    renderParentBranchName,
+    sortedConcreteBranchPreviews,
+    freshCopyBranchNames,
+    getBranchRenderLayout,
+    getBranchTimingSummary,
+    commitXForSha,
+    errorPanelRef,
+    errorPanelOpen,
+    onCloseErrorPanel: () => setErrorPanelOpen(false),
+    staleBranches,
+    fmtRelativeDate,
+  };
+
   return (
     <div className="relative h-full">
       <MapSvgCanvasShell
@@ -6472,256 +6715,17 @@ export default function BranchMap(props: BranchMapProps) {
                     })()}
                   </g>
 
-                  <MapSvgCheckedOutConnectorLayer
-                    checkedOutHasUncommittedChanges={checkedOutHasUncommittedChanges}
-                    checkedOutDisplayIndicatorLocal={checkedOutDisplayIndicatorLocal}
-                    checkedOutIndicatorLocal={checkedOutIndicatorLocal}
-                    cornerR={cornerR}
-                    pathCoord={pathCoord}
-                    stroke={CANVAS_NEUTRAL_GRAY}
-                  />
-
-                  {/* Branch commit node overlay so branch connectors/lanes never render over branch rectangles. */}
-                  <MapSvgBranchNodeOverlayLayer
-                    orderedActiveBranchesForLayer={orderedActiveBranchesForLayer}
-                    getBranchRenderLayout={getBranchRenderLayout}
-                    focusedErrorBranch={focusedErrorBranch}
-                    unpushedLaneStrokeVisualComp={UNPUSHED_LANE_STROKE_VISUAL_COMP}
-                    resolveBranchClusterEntries={resolveBranchClusterEntries}
-                    branchClusterKey={branchClusterKey}
-                    branchClusterMemberKeys={branchClusterMemberKeys}
-                    branchPreferredAnchorEntry={branchPreferredAnchorEntry}
-                    resolveAnimatedClumpAnchor={resolveAnimatedClumpAnchor}
-                    canvasUnpushedNodeFill={CANVAS_UNPUSHED_NODE_FILL}
-                    canvasNodeFill={CANVAS_NODE_FILL}
-                    canvasNodeStrokeWidth={CANVAS_NODE_STROKE_WIDTH}
-                    checkedOutHeadSha={checkedOutHeadSha}
-                    checkedOutBranchName={checkedOutBranchName}
-                    shaMatchesGitRef={shaMatchesGitRef}
-                    otherWorktreeMatchesBranchCommit={otherWorktreeMatchesBranchCommit}
-                    selectedCommitShaSet={selectedCommitShaSet}
-                    selectedBranchNameSet={selectedBranchNameSet}
-                    isStashCommitLike={isStashCommitLike}
-                    isCommitUnpushed={isCommitUnpushed}
-                    commitRectSize={commitRectSize}
-                    scaledNodeSize={scaledNodeSize}
-                    renderCommitNodeShapeRect={renderCommitNodeShapeRect}
-                    getNodeFillColor={getNodeFillColor}
-                    getNodeStrokeColor={getNodeStrokeColor}
-                    localUnpushedGray={LOCAL_UNPUSHED_GRAY}
-                    renderCommitNodeRect={renderCommitNodeRect}
-                    fmtTooltipDate={fmtTooltipDate}
-                    stashOrUncommittedBaseStroke={stashOrUncommittedBaseStroke}
-                    expandedClumps={expandedClumps}
-                    resolveClumpPhase={resolveClumpPhase}
-                    nodeRectSize={nodeRectSize}
-                    clusterLocalSyntheticStroke={clusterLocalSyntheticStroke}
-                    fmtClumpDateRange={fmtClumpDateRange}
-                    mergeCheckoutAccent={mergeCheckoutAccent}
-                    interpolateExpandedEntryPose={interpolateExpandedEntryPose}
-                    clumpAnimStyleForPhase={clumpAnimStyleForPhase}
-                  />
-
-                  {/* Main commit node overlay so branch connectors never render over main clumps. */}
-                  <MapSvgMainNodeOverlayLayer
-                    mainIsUnifiedRender={mainIsUnifiedRender}
-                    mainTimelineOpacity={mainTimelineOpacity}
-                    mainDirectClusters={mainDirectClusters}
-                    resolveClusterMotion={resolveClusterMotion}
-                    interpolateExpandedEntryPose={interpolateExpandedEntryPose}
-                    clumpAnimStyleForPhase={clumpAnimStyleForPhase}
-                    isStashCommitLike={isStashCommitLike}
-                    isCommitUnpushed={isCommitUnpushed}
-                    commitRectSize={commitRectSize}
-                    nodeRectSize={nodeRectSize}
-                    scaledNodeSize={scaledNodeSize}
-                    renderCommitNodeRect={renderCommitNodeRect}
-                    fmtTooltipDate={fmtTooltipDate}
-                    fmtClumpDateRange={fmtClumpDateRange}
-                    canvasUnpushedNodeFill={CANVAS_UNPUSHED_NODE_FILL}
-                    canvasNodeFill={CANVAS_NODE_FILL}
-                    stashOrUncommittedBaseStroke={stashOrUncommittedBaseStroke}
-                    clusterLocalSyntheticStroke={clusterLocalSyntheticStroke}
-                    selectedBranchNameSet={selectedBranchNameSet}
-                    defaultBranch={defaultBranch}
-                    selectedCommitShaSet={selectedCommitShaSet}
-                    mergeCheckoutAccent={mergeCheckoutAccent}
-                    checkedOutHeadSha={checkedOutHeadSha}
-                    shaMatchesGitRef={shaMatchesGitRef}
-                    latestMainCommitSha={latestMainCommitSha}
-                  />
-
-                  {/* Top-most label overlay so labels are always above all rectangle layers. */}
-                  <MapSvgNodeLabelsLayer
-                    orderedActiveBranchesForLayer={orderedActiveBranchesForLayer}
-                    getBranchRenderLayout={getBranchRenderLayout}
-                    resolveBranchClusterEntries={resolveBranchClusterEntries}
-                    branchClusterKey={branchClusterKey}
-                    branchClusterMemberKeys={branchClusterMemberKeys}
-                    checkedOutHeadSha={checkedOutHeadSha}
-                    checkedOutBranchName={checkedOutBranchName}
-                    shaMatchesGitRef={shaMatchesGitRef}
-                    otherWorktreeMatchesBranchCommit={otherWorktreeMatchesBranchCommit}
-                    selectedCommitShaSet={selectedCommitShaSet}
-                    selectedBranchNameSet={selectedBranchNameSet}
-                    branchPreferredAnchorEntry={branchPreferredAnchorEntry}
-                    resolveAnimatedClumpAnchor={resolveAnimatedClumpAnchor}
-                    commitRectSize={commitRectSize}
-                    scaledNodeSize={scaledNodeSize}
-                    fitNodeFrameTitle={fitNodeFrameTitle}
-                    isStashCommitLike={isStashCommitLike}
-                    canvasNodeStrokeInset={CANVAS_NODE_STROKE_INSET}
-                    nodeFrameLabelInsetX={nodeFrameLabelInsetX}
-                    nodeFrameLabelGap={nodeFrameLabelGap}
-                    getNodeFrameTitleColor={getNodeFrameTitleColor}
-                    nodeFrameLabelFontSize={nodeFrameLabelFontSize}
-                    nodeFrameLabelWeight={NODE_FRAME_LABEL_WEIGHT}
-                    expandedClumps={expandedClumps}
-                    resolveClumpPhase={resolveClumpPhase}
-                    nodeRectSize={nodeRectSize}
-                    stackCountLabel={stackCountLabel}
-                    shortShaLabel={shortShaLabel}
-                    isHorizontal={isHorizontal}
-                    interpolateExpandedEntryPose={interpolateExpandedEntryPose}
-                    clumpAnimStyleForPhase={clumpAnimStyleForPhase}
-                    mergeCheckoutAccent={mergeCheckoutAccent}
-                    defaultBranch={defaultBranch}
-                    mainIsUnifiedRender={mainIsUnifiedRender}
-                    mainTimelineOpacity={mainTimelineOpacity}
-                    mainDirectClusters={mainDirectClusters}
-                    resolveClusterMotion={resolveClusterMotion}
-                    nodeFrameLabelRightInsetX={nodeFrameLabelRightInsetX}
-                  />
-
-                  {/* Top-most collapse controls so carets are never occluded by node layers. */}
-                  <MapSvgCollapseControlsLayer
-                    mainIsUnifiedRender={mainIsUnifiedRender}
-                    mainDirectClusters={mainDirectClusters}
-                    expandedClumps={expandedClumps}
-                    resolveClumpPhase={resolveClumpPhase}
-                    commitRectSize={commitRectSize}
-                    scaledNodeSize={scaledNodeSize}
-                    nodeFrameCollapseIconSize={nodeFrameCollapseIconSize}
-                    worldPx={worldPx}
-                    isHorizontal={isHorizontal}
-                    canvasNodeStrokeInset={CANVAS_NODE_STROKE_INSET}
-                    nodeFrameLabelRightInsetX={nodeFrameLabelRightInsetX}
-                    nodeFrameLabelGap={nodeFrameLabelGap}
-                    getNodeFrameTitleColor={getNodeFrameTitleColor}
-                    selectedBranchNameSet={selectedBranchNameSet}
-                    defaultBranch={defaultBranch}
-                    toggleClumpExpanded={toggleClumpExpanded}
-                    renderBranches={renderBranches}
-                    getBranchRenderLayout={getBranchRenderLayout}
-                    branchClusterKey={branchClusterKey}
-                    resolveBranchClusterEntries={resolveBranchClusterEntries}
-                    checkedOutHeadSha={checkedOutHeadSha}
-                    shaMatchesGitRef={shaMatchesGitRef}
-                    checkedOutBranchName={checkedOutBranchName}
-                    otherWorktreeMatchesBranchCommit={otherWorktreeMatchesBranchCommit}
-                    selectedCommitShaSet={selectedCommitShaSet}
+                  <MapSvgCanvasLayerStack
+                    checkedOutConnectorLayerProps={checkedOutConnectorLayerProps}
+                    branchNodeOverlayLayerProps={branchNodeOverlayLayerProps}
+                    mainNodeOverlayLayerProps={mainNodeOverlayLayerProps}
+                    nodeLabelsLayerProps={nodeLabelsLayerProps}
+                    collapseControlsLayerProps={collapseControlsLayerProps}
                   />
       </MapSvgCanvasShell>
-        <MapSvgBottomChrome
-          marqueeRect={marqueeRect}
-          isResizeSettling={isResizeSettling}
-          canvasNodeStrokeWidth={CANVAS_NODE_STROKE_WIDTH}
-          userSelectionStroke={USER_SELECTION_STROKE}
-          holdTimelineForInitialCenter={holdTimelineForInitialCenter}
-          timelineRevealPhase={timelineRevealPhase}
-          initialRevealFadeMs={INITIAL_REVEAL_FADE_MS}
-          isLoading={isLoading}
-          controlsReady={controlsReady}
-          hasSelection={hasSelection}
-          onCommitLocalChanges={onCommitLocalChanges}
-          commitDisabled={commitDisabled}
-          onStageAllChanges={onStageAllChanges}
-          onStashLocalChanges={onStashLocalChanges}
-          stashDisabled={stashDisabled}
-          resolvedSelectedPushTargets={resolvedSelectedPushTargets}
-          onPushCommitTargets={onPushCommitTargets}
-          onPushAllBranches={onPushAllBranches}
-          pushableRemoteBranchCount={pushableRemoteBranchCount}
-          onPushCurrentBranch={onPushCurrentBranch}
-          canPushCurrentBranch={canPushCurrentBranch}
-          pushInProgress={pushInProgress}
-          mergeInProgress={mergeInProgress}
-          commitInProgress={commitInProgress}
-          stashInProgress={stashInProgress}
-          stageInProgress={stageInProgress}
-          selectedPushLabel={selectedPushLabel}
-          selectedPushTitle={selectedPushTitle}
-          handlePushSelectedTargets={handlePushSelectedTargets}
-          pushCurrentBranchLabel={pushCurrentBranchLabel}
-          openGitActionMenu={openGitActionMenu}
-          closeGitActionMenu={closeGitActionMenu}
-          toggleGitActionMenu={toggleGitActionMenu}
-          gitActionMenuOpen={gitActionMenuOpen}
-          gitActionMenuRef={gitActionMenuRef}
-          dropdownSpringVariants={DROPDOWN_SPRING_VARIANTS}
-          setCommitDialogOpen={setCommitDialogOpen}
-          worktrees={worktrees}
-          onRemoveWorktree={onRemoveWorktree}
-          onSwitchToWorktree={onSwitchToWorktree}
-          worktreeMenuRef={worktreeMenuRef}
-          worktreeMenuOpen={worktreeMenuOpen}
-          toggleWorktreeMenu={toggleWorktreeMenu}
-          closeWorktreeMenu={closeWorktreeMenu}
-          isOtherWorktree={isOtherWorktree}
-          worktreeShortLabel={worktreeShortLabel}
-          removeWorktreeInProgress={removeWorktreeInProgress}
-          selectedVisibleCommitShas={selectedVisibleCommitShas}
-          commitMergeTargetOptions={commitMergeTargetOptions}
-          selectedCommitTargetOption={selectedCommitTargetOption}
-          targetBranchForSelectedCommit={targetBranchForSelectedCommit}
-          setMergeTargetCommitSha={setMergeTargetCommitSha}
-          handleMergeSourcesIntoTarget={handleMergeSourcesIntoTarget}
-          commitMergeSources={commitMergeSources}
-        />
-
-      <MapSvgOverlaysLayer
-        nodeDragHighlights={nodeDragHighlights}
-        checkedOutSelectionStroke={CHECKED_OUT_SELECTION_STROKE}
-        newBranchDialogForNode={newBranchDialogForNode}
-        createBranchFromNodeInProgress={createBranchFromNodeInProgress}
-        newBranchInputForNodeRef={newBranchInputForNodeRef}
-        newBranchNameForNode={newBranchNameForNode}
-        setNewBranchNameForNode={setNewBranchNameForNode}
-        onCancelNewBranchDialog={cancelNewBranchDialog}
-        onSubmitNewBranchDialog={submitNewBranchDialog}
-        commitDialogOpen={commitDialogOpen}
-        commitInProgress={commitInProgress}
-        commitMessageRef={commitMessageRef}
-        commitMessageDraft={commitMessageDraft}
-        setCommitMessageDraft={setCommitMessageDraft}
-        onCommitMessageKeyDown={handleCommitMessageKeyDown}
-        onCancelCommitDialog={cancelCommitDialog}
-        onConfirmCommit={() => void handleConfirmCommit()}
-        deleteConfirmOpen={deleteConfirmOpen}
-        deleteSelectionItems={deleteSelectionItems}
-        selectedDeletableBranchNames={selectedDeletableBranchNames}
-        deleteInProgress={deleteInProgress}
-        deletableSelectionCount={deletableSelectionCount}
-        onCancelDeleteConfirm={() => setDeleteConfirmOpen(false)}
-        onConfirmDeleteSelection={() => void handleConfirmDeleteSelection()}
-        showLineageDebug={showLineageDebug}
-        onCloseLineageDebug={() => setShowLineageDebug(false)}
-        sortedNodes={sortedNodes}
-        defaultBranch={defaultBranch}
-        mergedBranchByHeadSha={mergedBranchByHeadSha}
-        activeBranches={activeBranches}
-        sortedDirectCommits={sortedDirectCommits}
-        renderParentBranchName={renderParentBranchName}
-        sortedConcreteBranchPreviews={sortedConcreteBranchPreviews}
-        freshCopyBranchNames={freshCopyBranchNames}
-        getBranchRenderLayout={getBranchRenderLayout}
-        getBranchTimingSummary={getBranchTimingSummary}
-        commitXForSha={commitXForSha}
-        errorPanelRef={errorPanelRef}
-        errorPanelOpen={errorPanelOpen}
-        onCloseErrorPanel={() => setErrorPanelOpen(false)}
-        staleBranches={staleBranches}
-        fmtRelativeDate={fmtRelativeDate}
+      <MapSvgActionOverlays
+        bottomChromeProps={bottomChromeProps}
+        overlaysLayerProps={overlaysLayerProps}
       />
     </div>
   );

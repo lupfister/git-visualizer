@@ -1,5 +1,5 @@
 import { commitRectSize } from './LayoutSvg';
-import type { Branch } from '../../types';
+import type { Branch } from '../../../types';
 import type {
   AnchorPoint,
   BranchRenderLayout,
@@ -8,8 +8,8 @@ import type {
   LaneSegment,
   MarkerCluster,
   MarkerEntry,
-} from './MapSvg.types';
-import { buildBranchClusterViewModel, branchClusterKey, branchClusterMemberKeys, branchPreferredAnchorEntry, resolveBranchClusterEntries, shaMatchesGitRef } from './MapSvg.utils';
+} from '../core/MapSvg.types';
+import { buildBranchClusterViewModel, branchClusterKey, branchClusterMemberKeys, branchPreferredAnchorEntry, resolveBranchClusterEntries, shaMatchesGitRef } from '../core/MapSvg.utils';
 
 export function dedupeLaneAnchors(anchors: LaneAnchor[]): LaneAnchor[] {
   return anchors.filter((anchor, index) => {

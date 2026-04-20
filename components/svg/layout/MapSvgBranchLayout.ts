@@ -3,21 +3,21 @@ import {
   BRANCH_HIT_END_INSET,
   GRID_ROUTE_CORNER_R,
   NODE_SIZE,
-} from './MapSvg.constants';
-import { clusterByForkPoints, isSyntheticLocalCommit, shaMatchesGitRef, splitIndicesAroundUncommitted } from './MapSvg.utils';
+} from '../core/MapSvg.constants';
+import { clusterByForkPoints, isSyntheticLocalCommit, shaMatchesGitRef, splitIndicesAroundUncommitted } from '../core/MapSvg.utils';
 import type {
   Branch,
   BranchCommitPreview,
   BranchPromptMeta,
   DirectCommit,
   MergeNode,
-} from '../../types';
+} from '../../../types';
 import type {
   BranchRenderLayout,
   CommitEntryItem,
   MarkerEntry,
   PromptEntryItem,
-} from './MapSvg.types';
+} from '../core/MapSvg.types';
 
 export type BranchRenderLayoutContext = {
   MAIN_DRAW_MS: number;

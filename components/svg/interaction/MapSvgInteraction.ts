@@ -1,14 +1,14 @@
 import React from 'react';
-import { commitRectSize } from './LayoutSvg';
-import type { Branch, WorktreeInfo } from '../../types';
+import { commitRectSize } from '../layout/LayoutSvg';
+import type { Branch, WorktreeInfo } from '../../../types';
 import type {
   BranchHeadTarget,
   CommitSelectionTarget,
   MarqueeDragState,
   MarqueeRect,
   NodeDragState,
-} from './MapSvg.types';
-import { getCameraScale } from './MapSvg.utils';
+} from '../core/MapSvg.types';
+import { getCameraScale } from '../core/MapSvg.utils';
 
 export function normalizeMarqueeRect(drag: MarqueeDragState): MarqueeRect {
   const left = Math.min(drag.startX, drag.currentX);

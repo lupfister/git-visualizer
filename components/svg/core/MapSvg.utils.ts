@@ -1,5 +1,5 @@
 import { layoutWithLines, prepareWithSegments } from '@chenglou/pretext';
-import type { DirectCommit } from '../../types';
+import type { DirectCommit } from '../../../types';
 import {
   BRANCH_MAP_SVG_FONT_FAMILY,
   CANVAS_NODE_STROKE,

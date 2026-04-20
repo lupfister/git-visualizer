@@ -5,4 +5,4 @@ export {
   getMarqueeSelectionContext,
   handleCommitNodeClick,
   normalizeMarqueeRect,
-} from './MapSvgInteraction';
+} from '../interaction/MapSvgInteraction';

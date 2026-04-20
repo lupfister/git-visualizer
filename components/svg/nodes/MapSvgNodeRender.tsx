@@ -1,5 +1,5 @@
 import React from 'react';
-import type { CheckoutAccent } from './MapSvg.types';
+import type { CheckoutAccent } from '../core/MapSvg.types';
 
 export function getNodeStrokeColorCore(args: {
   hoveredNodeStrokeKey: string | null;

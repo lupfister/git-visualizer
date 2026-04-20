@@ -1,5 +1,5 @@
-import type { Branch, BranchCommitPreview, DirectCommit } from '../../types';
-import type { BranchHeadTarget, BranchRenderLayout, CommitSelectionTarget } from './MapSvg.types';
+import type { Branch, BranchCommitPreview, DirectCommit } from '../../../types';
+import type { BranchHeadTarget, BranchRenderLayout, CommitSelectionTarget } from '../core/MapSvg.types';
 
 type PushTarget = {
   branchName: string;

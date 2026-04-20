@@ -3,7 +3,7 @@ import {
   GRID_LANE_WIDTH,
   GRID_ROW_GAP,
   ZOOM_DEFAULT,
-} from './MapSvg.constants';
+} from '../core/MapSvg.constants';
 import {
   BranchHeadTarget,
   BranchLineGeometryState,
@@ -17,8 +17,8 @@ import {
   NodeDragState,
   OrientationMode,
   TooltipData,
-} from './MapSvg.types';
-import { getCameraScale } from './MapSvg.utils';
+} from '../core/MapSvg.types';
+import { getCameraScale } from '../core/MapSvg.utils';
 
 export function useMapSvgState(args: {
   controlledOrientation?: OrientationMode;
