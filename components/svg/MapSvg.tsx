@@ -218,6 +218,8 @@ type BranchRenderLayout = {
   mergeTargetY: number | null;
 };
 type AnchorPoint = LayoutAnchorPoint;
+// Most of the SVG "state" lives in refs so we can animate geometry without
+// making React reconcile the entire graph on every frame.
 type ClumpAnchorState = {
   x: number;
   y: number;
@@ -270,11 +272,13 @@ function clamp01(value: number): number {
   return Math.max(0, Math.min(1, value));
 }
 
+// Smooth easing keeps camera movement and clump expansion from feeling abrupt.
 function easeInOutCubic(t: number): number {
   return t < 0.5 ? 4 * t * t * t : 1 - Math.pow(-2 * t + 2, 3) / 2;
 }
 
 function getCameraScale(zoomValue: number, _horizontal: boolean): { x: number; y: number } {
+  // Orientation changes are handled by projection math; zoom stays uniform.
   return { x: zoomValue, y: zoomValue };
 }
 
@@ -293,6 +297,7 @@ function smoothValueTo(
   onFrame: (value: number) => void,
   minDelta = 1
 ): () => void {
+  // Drive transitions from requestAnimationFrame so they stay paint-synced.
   const delta = target - start;
   if (Math.abs(delta) < minDelta) return () => undefined;
   const startTime = performance.now();
@@ -313,6 +318,7 @@ function smoothValueTo(
 }
 
 function fmtRelativeDate(dateStr: string): string {
+  // Compact labels are easier to scan in the tight timeline UI.
   const diffDays = Math.floor((Date.now() - new Date(dateStr).getTime()) / 86400000);
   if (diffDays === 0) return 'today';
   if (diffDays === 1) return 'yesterday';
@@ -376,6 +382,7 @@ function getPreparedPretext(text: string, font: string) {
 }
 
 function estimateSvgTextWidth(text: string, fontSize = 10): number {
+  // Canvas measurement is a cheap stand-in for SVG text layout during render.
   const cacheKey = `${fontSize}:${BRANCH_MAP_SVG_FONT_FAMILY}:${text}`;
   const cached = svgTextWidthCache.get(cacheKey);
   if (cached != null) return cached;
@@ -431,6 +438,7 @@ function compareByDateThenSha<T extends LineageCommitLike>(a: T, b: T): number {
  * This keeps lineage deterministic and avoids date-only inversions.
  */
 function orderByLineage<T extends LineageCommitLike>(items: T[]): T[] {
+  // Parent edges take priority; time and sha are just deterministic tie-breakers.
   if (items.length <= 1) return [...items];
 
   const bySha = new Map(items.map((item) => [item.fullSha, item]));
@@ -496,6 +504,7 @@ function pruneForkSplitIndices(
   forkIndices: Set<number>,
   preserveSplitIndices: Set<number> = new Set<number>(),
 ): Set<number> {
+  // Drop splits that would leave behind tiny one-item clumps.
   if (entryCount <= 1 || forkIndices.size === 0) return new Set(forkIndices);
   const active = Array.from(forkIndices)
     .filter((index) => index >= 0 && index < entryCount - 1)
@@ -605,6 +614,7 @@ function clusterByForkPoints<T>(
   forkIndices: Set<number>,
   preserveSplitIndices: Set<number> = new Set<number>(),
 ): MarkerCluster<T>[] {
+  // Each resulting cluster maps to one visible node box on the timeline.
   if (entries.length === 0) return [];
   const effectiveForkIndices = pruneForkSplitIndices(entries.length, forkIndices, preserveSplitIndices);
 

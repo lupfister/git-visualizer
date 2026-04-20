@@ -6,6 +6,7 @@ export type ViewMode = 'time' | 'grid';
 export type OrientationMode = 'vertical' | 'horizontal';
 
 interface Props {
+  // Data that defines the repository graph and its overlays.
   branches: Branch[];
   mergeNodes: MergeNode[];
   directCommits?: DirectCommit[];
@@ -13,6 +14,7 @@ interface Props {
   unpushedCommitShasByBranch?: Record<string, string[]>;
   openPRs?: OpenPR[];
   defaultBranch: string;
+  // Interaction hooks are passed through to the SVG/time view and grid view.
   onCommitClick?: (target: { commitSha: string; branchName?: string }) => void;
   onLoadMore?: () => void;
   githubAvailable?: boolean;
@@ -116,7 +118,8 @@ export default function BranchMapView({
   onMoveNodeBackToBranch,
   orientation = 'vertical',
 }: Props) {
-  // Determine active vs inactive error branches
+  // The wrapper decides which renderer is active and precomputes the subset of
+  // stale branches that should still be emphasized.
   const openPRBranchNames = new Set(openPRs.map(p => p.branchName));
   const ACTIVE_MS = 14 * 86400000;
   const viewNow = Date.now();

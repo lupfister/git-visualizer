@@ -2,6 +2,8 @@ export type AnchorPoint = { x: number; y: number };
 
 type PointFormatter = (x: number, y: number) => string;
 
+// This file stays intentionally tiny: it only builds SVG path strings and
+// computes a canonical rectangle size for commit nodes.
 type BranchPathInput = {
   startX: number;
   forkY: number;
@@ -19,14 +21,18 @@ export function buildBranchOrthogonalPath({
   cornerR,
   pointFormatter,
 }: BranchPathInput): string {
+  // A branch either starts already on its lane or needs an elbow to get there.
   if (Math.abs(startX - laneX) < 0.5) {
     return `M ${pointFormatter(laneX, forkY)} L ${pointFormatter(laneX, tipY)}`;
   }
 
+  // Compute turn direction and clamp the corner so it never exceeds the
+  // available horizontal/vertical room.
   const horizontalDir = laneX > startX ? 1 : -1;
   const verticalDir = tipY >= forkY ? 1 : -1;
   const corner = Math.max(0, Math.min(cornerR, Math.abs(laneX - startX), Math.abs(tipY - forkY)));
   if (corner < 0.5) {
+    // In tight geometry, prefer a crisp corner over a tiny, visually noisy arc.
     return [
       `M ${pointFormatter(startX, forkY)}`,
       `L ${pointFormatter(laneX, forkY)}`,
@@ -61,6 +67,7 @@ export function buildMergeOrthogonalPath({
   cornerR,
   pointFormatter,
 }: MergePathInput): string {
+  // Merge connectors are the mirror image of branch connectors.
   if (Math.abs(mergeY - tipY) < 0.5) {
     return `M ${pointFormatter(laneX, tipY)} L ${pointFormatter(mergeX, mergeY)}`;
   }
@@ -90,6 +97,8 @@ export function commitRectSize(baseNodeSize: number, clusterBoost = 0): {
   height: number;
   radius: number;
 } {
+  // Commit nodes are wide capsules: short enough to stay compact, wide enough
+  // for labels and cluster counts to breathe.
   const height = Math.max(8, baseNodeSize - 2 + clusterBoost);
   const width = height * 3;
   const radius = 0;
