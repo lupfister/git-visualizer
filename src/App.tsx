@@ -8,127 +8,7 @@ import type { Branch, BranchCommitPreview, BranchPromptMeta, BranchPromptMarker,
 import { foldStashNodesIntoGraph } from './placeStashNode';
 
 type View = 'landing' | 'map';
-const DEBUG_FAKE_PROJECT_PATH = '__gitviz_debug_fake_project__';
-const DEBUG_FAKE_PROJECT_NAME = 'Debug Fake Project';
 const FROZEN_REPO_BASENAME = 'git-visualizer';
-const DEBUG_NOW = Date.now();
-const DEBUG_DIRECT_COMMITS: DirectCommit[] = [
-  {
-    fullSha: '0000000000000000000000000000000000main01',
-    sha: 'main01a',
-    parentSha: null,
-    message: 'init project scaffold',
-    author: 'Debug Bot',
-    date: new Date(DEBUG_NOW - 1000 * 60 * 180).toISOString(),
-    kind: 'commit',
-  },
-  {
-    fullSha: '0000000000000000000000000000000000main02',
-    sha: 'main02b',
-    parentSha: '0000000000000000000000000000000000main01',
-    message: 'add map rendering base',
-    author: 'Debug Bot',
-    date: new Date(DEBUG_NOW - 1000 * 60 * 145).toISOString(),
-    kind: 'commit',
-  },
-  {
-    fullSha: '0000000000000000000000000000000000main03',
-    sha: 'main03c',
-    parentSha: '0000000000000000000000000000000000main02',
-    message: 'merge feature/selection',
-    author: 'Debug Bot',
-    date: new Date(DEBUG_NOW - 1000 * 60 * 35).toISOString(),
-    kind: 'commit',
-  },
-];
-const DEBUG_BRANCHES: Branch[] = [
-  {
-    name: 'feature/selection',
-    commitsAhead: 2,
-    commitsBehind: 0,
-    createdFromSha: '0000000000000000000000000000000000main02',
-    lastCommitDate: new Date(DEBUG_NOW - 1000 * 60 * 70).toISOString(),
-    lastCommitAuthor: 'Debug Bot',
-    status: 'fresh',
-    remoteSyncStatus: 'unpushed',
-    unpushedCommits: 2,
-    headSha: '0000000000000000000000000000000featA2',
-    parentBranch: 'main',
-    divergedFromSha: '0000000000000000000000000000000000main02',
-  },
-  {
-    name: 'bugfix/pan-wheel',
-    commitsAhead: 1,
-    commitsBehind: 1,
-    createdFromSha: '0000000000000000000000000000000000main02',
-    lastCommitDate: new Date(DEBUG_NOW - 1000 * 60 * 55).toISOString(),
-    lastCommitAuthor: 'Debug Bot',
-    status: 'stale',
-    remoteSyncStatus: 'local-only',
-    unpushedCommits: 1,
-    headSha: '0000000000000000000000000000000bugB1',
-    parentBranch: 'main',
-    divergedFromSha: '0000000000000000000000000000000000main02',
-  },
-];
-const DEBUG_BRANCH_COMMIT_PREVIEWS: Record<string, BranchCommitPreview[]> = {
-  'feature/selection': [
-    {
-      fullSha: '0000000000000000000000000000000featA2',
-      sha: 'featA2',
-      parentSha: '0000000000000000000000000000000featA1',
-      message: 'selection marquee interaction',
-      author: 'Debug Bot',
-      date: new Date(DEBUG_NOW - 1000 * 60 * 70).toISOString(),
-      kind: 'commit',
-    },
-    {
-      fullSha: '0000000000000000000000000000000featA1',
-      sha: 'featA1',
-      parentSha: '0000000000000000000000000000000000main02',
-      message: 'selection state and hover styles',
-      author: 'Debug Bot',
-      date: new Date(DEBUG_NOW - 1000 * 60 * 95).toISOString(),
-      kind: 'commit',
-    },
-  ],
-  'bugfix/pan-wheel': [
-    {
-      fullSha: '0000000000000000000000000000000bugB1',
-      sha: 'bugB1',
-      parentSha: '0000000000000000000000000000000000main02',
-      message: 'normalize wheel delta while panning',
-      author: 'Debug Bot',
-      date: new Date(DEBUG_NOW - 1000 * 60 * 55).toISOString(),
-      kind: 'commit',
-    },
-  ],
-};
-const DEBUG_MERGE_NODES: MergeNode[] = [
-  {
-    sha: 'main03c',
-    fullSha: '0000000000000000000000000000000000main03',
-    prNumber: 42,
-    prTitle: 'Merge feature/selection into main',
-    date: new Date(DEBUG_NOW - 1000 * 60 * 35).toISOString(),
-    parentShas: [
-      '0000000000000000000000000000000000main02',
-      '0000000000000000000000000000000featA2',
-    ],
-    targetBranch: 'main',
-  },
-];
-const DEBUG_UNPUSHED_DIRECT_COMMITS: DirectCommit[] = [];
-const DEBUG_UNPUSHED_SHAS_BY_BRANCH: Record<string, string[]> = {
-  'feature/selection': ['0000000000000000000000000000000featA2', '0000000000000000000000000000000featA1'],
-  'bugfix/pan-wheel': ['0000000000000000000000000000000bugB1'],
-};
-const DEBUG_CHECKED_OUT_REF: CheckedOutRef = {
-  branchName: 'feature/selection',
-  headSha: '0000000000000000000000000000000featA2',
-  parentSha: '0000000000000000000000000000000featA1',
-  hasUncommittedChanges: false,
-};
 type OpenRepoEventPayload = {
   path: string;
   sourceApp?: string | null;
@@ -206,7 +86,6 @@ function App() {
   const [isMapInteracting, setIsMapInteracting] = useState(false);
 
   const branchMetaLoadKeyRef = useRef<string | null>(null);
-  const isDebugFakeProject = repoPath === DEBUG_FAKE_PROJECT_PATH;
   const isFrozenRepo = isFrozenRepoPath(repoPath);
   const isMapInteractingRef = useRef(false);
   const latestBranchesRef = useRef<Branch[]>([]);
@@ -369,30 +248,6 @@ function App() {
   }
 
   async function loadRepo(path: string) {
-    if (path === DEBUG_FAKE_PROJECT_PATH) {
-      setLoading(false);
-      setMapLoading(false);
-      setError(null);
-      setRepoPath(DEBUG_FAKE_PROJECT_PATH);
-      setRepoName(DEBUG_FAKE_PROJECT_NAME);
-      setDefaultBranch('main');
-      setBranches([]);
-      setMergeNodes([]);
-      setDirectCommits([]);
-      setUnpushedDirectCommits([]);
-      setUnpushedCommitShasByBranch({});
-      setOpenPRs([]);
-      setWorktrees([]);
-      setCheckedOutRef(null);
-      setBranchPromptMeta({});
-      setBranchCommitPreviews({});
-      setBranchUniqueAheadCounts({});
-      setStashes([]);
-      setGithubAvailable(false);
-      setView('map');
-      return;
-    }
-
     setLoading(true);
     setMapLoading(true);
     setError(null);
@@ -521,7 +376,7 @@ function App() {
   // Hook up exactly as requested: File watcher triggers `git-activity` event from Rust, 
   // and we do an invisible refetch of git state. Instant map updates!
   useEffect(() => {
-    if (!repoPath || !defaultBranch || isDebugFakeProject || isFrozenRepo) return;
+    if (!repoPath || !defaultBranch || isFrozenRepo) return;
 
     invoke('watch_repo', { repoPath }).catch(console.error);
 
@@ -742,10 +597,10 @@ function App() {
       retryTimeoutIds.clear();
       if (unlisten) unlisten();
     };
-  }, [repoPath, defaultBranch, isDebugFakeProject, isFrozenRepo]);
+  }, [repoPath, defaultBranch, isFrozenRepo]);
 
   useEffect(() => {
-    if (!repoPath || !defaultBranch || isDebugFakeProject || !isFrozenRepo) return;
+    if (!repoPath || !defaultBranch || !isFrozenRepo) return;
 
     invoke('watch_repo', { repoPath }).catch(console.error);
 
@@ -799,7 +654,7 @@ function App() {
       isDisposed = true;
       if (unlisten) unlisten();
     };
-  }, [repoPath, defaultBranch, isDebugFakeProject, isFrozenRepo]);
+  }, [repoPath, defaultBranch, isFrozenRepo]);
 
   async function handleGitHubAuthSetup() {
     if (!repoPath) return;
@@ -851,7 +706,7 @@ function App() {
   }, [repoPath]);
 
   useEffect(() => {
-    if (!repoPath || !defaultBranch || isDebugFakeProject) {
+    if (!repoPath || !defaultBranch) {
       setBranchPromptMeta({});
       setBranchCommitPreviews({});
       setBranchUniqueAheadCounts({});
@@ -1160,7 +1015,7 @@ function App() {
     return () => {
       cancelled = true;
     };
-  }, [repoPath, defaultBranch, branches, mergeNodes, isDebugFakeProject]);
+  }, [repoPath, defaultBranch, branches, mergeNodes]);
 
   useEffect(() => {
     if (!commitSwitchFeedback) {
@@ -1930,46 +1785,25 @@ function App() {
       <div className={`flex-1 overflow-hidden relative ${view === 'landing' ? 'hidden' : ''}`}>
         <div className="absolute inset-0 overflow-hidden">
           <div className="absolute inset-0 overflow-hidden">
-            {isDebugFakeProject ? (
-              <BranchGridMapView
-                branches={DEBUG_BRANCHES}
-                mergeNodes={DEBUG_MERGE_NODES}
-                directCommits={DEBUG_DIRECT_COMMITS}
-                unpushedDirectCommits={DEBUG_UNPUSHED_DIRECT_COMMITS}
-                unpushedCommitShasByBranch={DEBUG_UNPUSHED_SHAS_BY_BRANCH}
-                defaultBranch="main"
-                branchCommitPreviews={DEBUG_BRANCH_COMMIT_PREVIEWS}
-                branchUniqueAheadCounts={{ 'feature/selection': 2, 'bugfix/pan-wheel': 1 }}
-                gridSearchQuery={gridSearchQuery}
-                gridSearchJumpToken={gridSearchJumpToken}
-                gridFocusSha={gridFocusSha}
-                onGridSearchResultCountChange={setGridSearchResultCount}
-                onGridSearchFocusChange={setGridFocusSha}
-                checkedOutRef={DEBUG_CHECKED_OUT_REF}
-                onInteractionChange={setIsMapInteracting}
-              />
-            ) : (
-              <BranchGridMapView
-                branches={enrichedBranches}
-                mergeNodes={mergeNodes}
-                directCommits={enrichedDirectCommits}
-                unpushedDirectCommits={unpushedDirectCommits}
-                unpushedCommitShasByBranch={unpushedCommitShasByBranch}
-                defaultBranch={defaultBranch}
-                branchCommitPreviews={enrichedBranchCommitPreviews}
-                branchUniqueAheadCounts={enrichedBranchUniqueAheadCounts}
-                gridSearchQuery={gridSearchQuery}
-                gridSearchJumpToken={gridSearchJumpToken}
-                gridFocusSha={gridFocusSha}
-                onGridSearchResultCountChange={setGridSearchResultCount}
-                onGridSearchFocusChange={setGridFocusSha}
-                checkedOutRef={checkedOutRef}
-                onInteractionChange={setIsMapInteracting}
-              />
-            )}
+            <BranchGridMapView
+              branches={enrichedBranches}
+              mergeNodes={mergeNodes}
+              directCommits={enrichedDirectCommits}
+              unpushedDirectCommits={unpushedDirectCommits}
+              unpushedCommitShasByBranch={unpushedCommitShasByBranch}
+              defaultBranch={defaultBranch}
+              branchCommitPreviews={enrichedBranchCommitPreviews}
+              branchUniqueAheadCounts={enrichedBranchUniqueAheadCounts}
+              gridSearchQuery={gridSearchQuery}
+              gridSearchJumpToken={gridSearchJumpToken}
+              gridFocusSha={gridFocusSha}
+              onGridSearchResultCountChange={setGridSearchResultCount}
+              onGridSearchFocusChange={setGridFocusSha}
+              checkedOutRef={checkedOutRef}
+              onInteractionChange={setIsMapInteracting}
+            />
           </div>
 
-          {!isDebugFakeProject && (
           <header
             data-map-ui
             className="absolute left-0 right-0 top-12 z-40 px-4 md:px-8"
@@ -2044,7 +1878,6 @@ function App() {
               )}
             </div>
           </header>
-          )}
 
           {/* Branch errors floating panel */}
           {showErrorPanel && (
@@ -2280,22 +2113,8 @@ function RepoSelector({
           )}
         </div>
 
-        <div className="w-full mt-8 flex flex-col">
-          <p className="text-[10px] uppercase tracking-wide text-muted-foreground font-medium mb-3 shrink-0">Debug</p>
-          <div className="flex flex-col gap-2">
-            <button
-              onClick={() => openRepo(DEBUG_FAKE_PROJECT_PATH)}
-              disabled={loading}
-              className="w-full shrink-0 rounded-xl border border-border bg-card text-left px-4 py-2.5 hover:bg-muted transition-colors disabled:opacity-60 disabled:cursor-not-allowed"
-            >
-              <p className="text-foreground truncate text-sm">{DEBUG_FAKE_PROJECT_NAME}</p>
-              <p className="text-xs text-muted-foreground truncate">Built-in debug project</p>
-            </button>
-          </div>
-        </div>
-
         {recentRepos.length > 0 && (
-          <div className="w-full mt-6 flex flex-col">
+          <div className="w-full mt-8 flex flex-col">
             <p className="text-[10px] uppercase tracking-wide text-muted-foreground font-medium mb-3 shrink-0">Recently opened</p>
             <div className="flex flex-col gap-2">
               {recentRepos.slice(0, 5).map((repo) => (
