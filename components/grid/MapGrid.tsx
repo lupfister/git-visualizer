@@ -40,19 +40,19 @@ const MAP_GRID_INNER_PADDING_PX = 10;
  * Negative values expand the rect outward (outset) so more off-screen content stays mounted.
  * Set to `0` to match the full viewport bounds.
  */
-const MAP_GRID_CULL_VIEWPORT_INSET_SCREEN_PX = -500;
+const MAP_GRID_CULL_VIEWPORT_INSET_SCREEN_PX = -100;
 /** Pan-only camera updates throttle React re-renders (zoom always updates immediately). */
-const MAP_GRID_CAMERA_PAN_REACT_THROTTLE_MS = 56;
+const MAP_GRID_CAMERA_PAN_REACT_THROTTLE_MS = 0;
 /** Max commit cards promoted from the cull queue per animation frame (spreads mount cost). */
 const MAP_GRID_MAX_REVEAL_PER_FRAME = 16;
-/** 1 = pan follows input immediately (no smoothing). Zoom still eases separately. */
-const CAMERA_PAN_INTERPOLATION = 1;
+/** Near-1 keeps pan responsive with a very slight eased follow. Zoom still eases separately. */
+const CAMERA_PAN_INTERPOLATION = 0.9;
 /**
  * Zoom must apply in lockstep with pan for cursor-centered zoom — lerping zoom while pan snaps to
  * target breaks the screen→world mapping until the animation finishes.
  */
-const CAMERA_ZOOM_INTERPOLATION = 1;
-const CAMERA_SETTLE_EPSILON = 0.1;
+const CAMERA_ZOOM_INTERPOLATION = 0.9;
+const CAMERA_SETTLE_EPSILON = 0.001;
 const ZOOM_SETTLE_EPSILON = 0.001;
 
 function clampZoom(value: number): number {
@@ -562,6 +562,7 @@ export default function BranchGridMap({
     [displayZoom],
   );
   const labelTopPx = -(20 / displayZoom);
+  const showCommitMetadata = displayZoom > 0.5;
 
   const nodeByCommitId = useMemo(() => {
     const m = new Map<string, Node>();
@@ -1142,10 +1143,19 @@ export default function BranchGridMap({
                       ) : null}
                     </div>
                   </div>
-                  <div className="mt-auto flex items-end justify-between gap-4 pt-5">
-                    <div className="text-sm font-medium text-muted-foreground">@{node.commit.author}</div>
-                    <div className="text-sm font-medium text-muted-foreground">{new Date(node.commit.date).toLocaleString('en-US', { month: 'long', day: 'numeric', hour: 'numeric', minute: '2-digit' })}</div>
-                  </div>
+                  {showCommitMetadata ? (
+                    <div className="mt-auto flex items-end justify-between gap-4 pt-5">
+                      <div className="text-sm font-medium text-muted-foreground">@{node.commit.author}</div>
+                      <div className="text-sm font-medium text-muted-foreground">
+                        {new Date(node.commit.date).toLocaleString('en-US', {
+                          month: 'long',
+                          day: 'numeric',
+                          hour: 'numeric',
+                          minute: '2-digit',
+                        })}
+                      </div>
+                    </div>
+                  ) : null}
                   {focusedNode?.commit.id === node.commit.id && normalizedSearchQuery ? (
                     <div className="absolute left-5 top-4 inline-flex rounded-full bg-primary/10 px-2 py-0.5 text-sm font-medium uppercase tracking-wide text-muted-foreground" style={iconScaleStyle}>
                       Search result
