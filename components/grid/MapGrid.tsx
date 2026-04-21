@@ -815,17 +815,22 @@ export default function BranchGridMap({
           setManuallyClosedClumps={setManuallyClosedClumps}
           onCommitCardClick={handleCommitCardClick}
           unpushedCommitShasSetByBranch={unpushedCommitShasSetByBranch}
+          checkedOutHeadSha={checkedOutHeadSha}
         />
       )}
 
       {marqueeRect && isMarqueeSelecting ? (
         <div
-          className="pointer-events-none absolute z-[60] border border-primary/40 bg-primary/10"
+          className="pointer-events-none absolute z-[60] border"
           style={{
             left: marqueeRect.left,
             top: marqueeRect.top,
             width: marqueeRect.width,
             height: marqueeRect.height,
+            borderColor: '#068CFD',
+            borderWidth: '1.5px',
+            backgroundColor: 'transparent',
+            borderRadius: 0,
           }}
         />
       ) : null}

@@ -579,6 +579,13 @@ export function computeBranchGridLayout(input: BranchGridLayoutInput): BranchGri
   const clusterKeyBySha = new Map<string, string[]>();
   const leadByClusterKey = new Map<string, string>();
   const clusterCounts = new Map<string, number>();
+  const checkedOutHeadSha = checkedOutRef?.headSha ?? null;
+  const checkedOutBranchName = checkedOutRef?.branchName ?? null;
+  const matchesCheckedOutCommit = (branchName: string, commitSha: string): boolean => {
+    if (!checkedOutHeadSha) return false;
+    if (checkedOutBranchName && checkedOutBranchName !== branchName) return false;
+    return commitSha === checkedOutHeadSha || commitSha.startsWith(checkedOutHeadSha) || checkedOutHeadSha.startsWith(commitSha);
+  };
   const buildClustersForBranch = (branchName: string, commits: VisualCommit[]): GridCluster[] => {
     if (commits.length === 0) return [];
     const ordered = [...commits].sort((a, b) => new Date(a.date).getTime() - new Date(b.date).getTime() || a.id.localeCompare(b.id));
@@ -633,6 +640,11 @@ export function computeBranchGridLayout(input: BranchGridLayoutInput): BranchGri
       if (commit.kind === 'uncommitted' || commit.kind === 'stash' || commit.id === 'WORKING_TREE' || commit.id.startsWith('STASH:')) {
         // `clusterByForkPoints` flushes after pushing the current entry, so add a fork
         // on both sides to keep uncommitted/stash commits out of neighboring clumps.
+        if (index > 0) forkIdx.add(index - 1);
+        forkIdx.add(index);
+      }
+      if (matchesCheckedOutCommit(branchName, commit.id)) {
+        // Keep the checked-out commit independent and prevent it from merging into neighboring clumps.
         if (index > 0) forkIdx.add(index - 1);
         forkIdx.add(index);
       }

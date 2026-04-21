@@ -100,6 +100,7 @@ type Props = {
   setManuallyClosedClumps: Dispatch<SetStateAction<Set<string>>>;
   onCommitCardClick: (event: MouseEvent, node: Node) => void;
   unpushedCommitShasSetByBranch: Map<string, Set<string>>;
+  checkedOutHeadSha: string | null;
 };
 
 export default function MapGridCanvas({
@@ -150,6 +151,7 @@ export default function MapGridCanvas({
   setManuallyClosedClumps,
   onCommitCardClick,
   unpushedCommitShasSetByBranch,
+  checkedOutHeadSha,
 }: Props) {
   const compareConnectorDrawOrder = (
     left: { id: string; fromY: number; toY: number; zIndex: number },
@@ -213,8 +215,18 @@ export default function MapGridCanvas({
             const isUnpushedCommit =
               isLocalUncommitted ||
               (unpushedCommitShasSetByBranch.get(node.commit.branchName)?.has(node.commit.id) ?? false);
-            const selectedCommitTextClass = isSelectedCommit ? 'text-[#158EFC]' : 'text-muted-foreground';
-            const selectedCommitTextStyle = isSelectedCommit ? { color: '#158EFC' } : undefined;
+            const isCheckedOutCommit = isLocalUncommitted || (checkedOutHeadSha != null && node.commit.id === checkedOutHeadSha);
+            const checkedOutAccentActive = isCheckedOutCommit && !isSelectedCommit;
+            const selectedCommitTextClass = checkedOutAccentActive
+              ? 'text-[#38BDF2]'
+              : isSelectedCommit
+                ? 'text-[#158EFC]'
+                : 'text-muted-foreground';
+            const selectedCommitTextStyle = checkedOutAccentActive
+              ? { color: '#38BDF2' }
+              : isSelectedCommit
+                ? { color: '#158EFC' }
+                : undefined;
             return (
               <MapGridCommitWrapper
                 key={node.commit.visualId}
@@ -237,7 +249,7 @@ export default function MapGridCanvas({
                   <div className="flex min-w-0 items-baseline justify-between gap-2 px-0 pb-0">
                     <div
                       className={cn(
-                        'min-w-0 flex-1 text-sm font-medium leading-none',
+                        'min-w-0 h-4 flex-1 text-sm font-medium leading-none',
                         selectedCommitTextClass,
                         displayZoom <= 0.5 ? 'overflow-hidden text-ellipsis whitespace-nowrap' : 'break-words whitespace-normal',
                       )}
@@ -285,11 +297,11 @@ export default function MapGridCanvas({
                           }
                           flushCameraReactTick();
                         }}
-                        className={cn('inline-flex items-center bg-transparent p-0 text-sm font-medium leading-none', selectedCommitTextClass)}
+                        className={cn('inline-flex self-start items-center bg-transparent p-0 text-sm font-medium leading-none', selectedCommitTextClass)}
                         style={selectedCommitTextStyle}
                       >
                         {isClusterOpen ? (
-                          <span className="-translate-x-[1px] translate-y-[1px] text-base leading-none">⌃</span>
+                          <span className="-translate-x-[1px] translate-y-[2px] text-base leading-none">⌃</span>
                         ) : (
                           `x${clumpCount}`
                         )}
@@ -299,8 +311,14 @@ export default function MapGridCanvas({
                 </div>
                 <div className={cn(
                     'absolute left-0 h-[176px] w-full cursor-pointer overflow-hidden rounded-tr-xl rounded-br-xl rounded-bl-xl rounded-tl-none border border-border/50',
-                    isUnpushedCommit || isStashedCommit ? 'bg-transparent' : 'bg-[#F5F5F5]',
-                    isStashedCommit ? 'border-dotted' : '',
+                    checkedOutAccentActive && !isUnpushedCommit && !isStashedCommit
+                      ? 'bg-[#EBF7FE]'
+                      : isSelectedCommit && !isUnpushedCommit && !isStashedCommit
+                        ? 'bg-[#E5F0FF]'
+                        : isUnpushedCommit || isStashedCommit
+                          ? 'bg-transparent'
+                          : 'bg-[#F5F5F5]',
+                    isStashedCommit || isLocalUncommitted ? 'border-dashed' : '',
                     branchOffNodeShas.has(node.commit.id) ||
                     branchStartShas.has(node.commit.id) ||
                     crossBranchOutgoingShas.has(node.commit.id)
@@ -316,8 +334,8 @@ export default function MapGridCanvas({
                   )}
                   style={{
                     top: 0,
-                    borderWidth: `${lineStrokeWidth}px`,
-                    borderColor: isSelectedCommit ? '#158EFC' : CONNECTOR_COLOR,
+                    borderWidth: `${(isStashedCommit || isLocalUncommitted) ? lineStrokeWidth * (2 / 1.5) : lineStrokeWidth}px`,
+                    borderColor: checkedOutAccentActive ? '#38BDF2' : isSelectedCommit ? '#158EFC' : CONNECTOR_COLOR,
                     borderTopLeftRadius: 0,
                     borderTopRightRadius: `${commitCornerRadiusPx}px`,
                     borderBottomRightRadius: `${commitCornerRadiusPx}px`,
