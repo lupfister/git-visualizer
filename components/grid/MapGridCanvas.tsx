@@ -98,6 +98,7 @@ type Props = {
   flushCameraReactTick: () => void;
   setManuallyOpenedClumps: Dispatch<SetStateAction<Set<string>>>;
   onCommitCardClick: (event: MouseEvent, node: Node) => void;
+  unpushedCommitShasSetByBranch: Map<string, Set<string>>;
 };
 
 export default function MapGridCanvas({
@@ -146,6 +147,7 @@ export default function MapGridCanvas({
   flushCameraReactTick,
   setManuallyOpenedClumps,
   onCommitCardClick,
+  unpushedCommitShasSetByBranch,
 }: Props) {
   return (
     <div
@@ -181,6 +183,11 @@ export default function MapGridCanvas({
             const nodeWarningsForCard = nodeWarnings.get(node.commit.id) ?? [];
             const showDataShapeError = nodeWarningsForCard.length > 0 && !hasRenderedAncestry;
             const isSelectedCommit = selectedVisibleCommitShas.includes(node.commit.id);
+            const isLocalUncommitted =
+              node.commit.id === 'WORKING_TREE' || node.commit.kind === 'uncommitted';
+            const isUnpushedCommit =
+              isLocalUncommitted ||
+              (unpushedCommitShasSetByBranch.get(node.commit.branchName)?.has(node.commit.id) ?? false);
             const selectedCommitTextClass = isSelectedCommit ? 'text-[#158EFC]' : 'text-muted-foreground';
             const selectedCommitTextStyle = isSelectedCommit ? { color: '#158EFC' } : undefined;
             return (
@@ -235,7 +242,8 @@ export default function MapGridCanvas({
                   </div>
                 </div>
                 <div className={cn(
-                    'absolute left-0 h-[176px] w-full cursor-pointer overflow-hidden rounded-tr-xl rounded-br-xl rounded-bl-xl rounded-tl-none border border-border/50 bg-card',
+                    'absolute left-0 h-[176px] w-full cursor-pointer overflow-hidden rounded-tr-xl rounded-br-xl rounded-bl-xl rounded-tl-none border border-border/50',
+                    isUnpushedCommit ? 'bg-transparent' : 'bg-[#F5F5F5]',
                     branchOffNodeShas.has(node.commit.id) ||
                     branchStartShas.has(node.commit.id) ||
                     crossBranchOutgoingShas.has(node.commit.id)

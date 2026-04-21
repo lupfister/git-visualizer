@@ -164,7 +164,22 @@ export function computeBranchGridLayout(input: BranchGridLayoutInput): BranchGri
     const branchPreviews = renderableBranchPreviews(branch.name, branchUniqueAheadCounts, branchCommitPreviews);
     branchPreviewSets.set(branch.name, branchPreviews);
     const commits = orderByLineage(branchPreviews.map((commit) => toCommit(branch.name, commit)));
-    if (commits.length > 0) branchCommitsByLane.set(branch.name, commits);
+    if (commits.length > 0) {
+      branchCommitsByLane.set(branch.name, commits);
+      continue;
+    }
+    const forkSha = branch.presidesFromSha ?? branch.divergedFromSha ?? branch.createdFromSha ?? null;
+    if (!forkSha) continue;
+    const syntheticBranchNode: CommitItem = {
+      id: `BRANCH_HEAD:${branch.name}:${forkSha}`,
+      branchName: branch.name,
+      message: `Branch ${branch.name}`,
+      author: branch.lastCommitAuthor,
+      date: branch.createdDate ?? branch.divergedFromDate ?? branch.lastCommitDate,
+      parentSha: null,
+      kind: 'branch-created',
+    };
+    branchCommitsByLane.set(branch.name, [syntheticBranchNode]);
   }
 
   const mainCommitShas = new Set<string>(mainCommits.map((commit) => commit.id));
@@ -179,7 +194,18 @@ export function computeBranchGridLayout(input: BranchGridLayoutInput): BranchGri
   for (const branch of branches) {
     if (branch.name === defaultBranch) continue;
     const baseCommit = branchBaseCommit(branch.name, branchCommitPreviews, branchUniqueAheadCounts);
-    if (baseCommit) branchBaseCommitByName.set(branch.name, baseCommit);
+    if (baseCommit) {
+      branchBaseCommitByName.set(branch.name, baseCommit);
+      continue;
+    }
+    const syntheticBaseCommit = branchCommitsByLane.get(branch.name)?.[0];
+    if (syntheticBaseCommit) {
+      const forkSha = branch.presidesFromSha ?? branch.divergedFromSha ?? branch.createdFromSha ?? null;
+      branchBaseCommitByName.set(branch.name, {
+        ...syntheticBaseCommit,
+        parentSha: forkSha,
+      });
+    }
   }
   const branchReceivingCommitByName = new Map<string, CommitItem>();
   for (const [branchName, commits] of branchCommitsByLane.entries()) {

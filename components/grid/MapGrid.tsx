@@ -268,6 +268,13 @@ export default function BranchGridMap({
     }
     return map;
   }, [renderNodes, directCommits, defaultBranch]);
+  const unpushedCommitShasSetByBranch = useMemo(
+    () =>
+      new Map(
+        Object.entries(unpushedCommitShasByBranch).map(([branchName, shas]) => [branchName, new Set(shas)] as const),
+      ),
+    [unpushedCommitShasByBranch],
+  );
   const handlePointerReleaseNoMarquee = useCallback(() => {
     void interactionIdleTimeoutRef.current;
     flushCameraReactTick();
@@ -718,7 +725,6 @@ export default function BranchGridMap({
     (selectedVisibleCommitShas[0] === 'WORKING_TREE' || selectedVisibleCommitShas[0].startsWith('STASH:'));
 
   void [
-    unpushedCommitShasByBranch,
     openPRs,
     onLoadMore,
     view,
@@ -803,6 +809,7 @@ export default function BranchGridMap({
           flushCameraReactTick={flushCameraReactTick}
           setManuallyOpenedClumps={setManuallyOpenedClumps}
           onCommitCardClick={handleCommitCardClick}
+          unpushedCommitShasSetByBranch={unpushedCommitShasSetByBranch}
         />
       )}
 
