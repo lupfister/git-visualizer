@@ -98,8 +98,8 @@ export type BranchGridLayoutInput = {
 
 
 const GRID_CONNECTOR_CORNER_RADIUS_PX = 18;
-const GRID_INCOMING_GAP_PX = 4;
-const GRID_MERGE_TARGET_GAP_PX = -8;
+const GRID_INCOMING_GAP_PX = 0;
+const GRID_MERGE_TARGET_GAP_PX = 0;
 
 function clusterByForkPoints<T>(
   entries: Array<{ item: T }>,
@@ -507,12 +507,12 @@ export function computeBranchGridLayout(input: BranchGridLayoutInput): BranchGri
 
   const getIncomingAnchor = (node: Node): { x: number; y: number } => ({
     x: node.x + CARD_WIDTH / 2,
-    y: node.y + CARD_BODY_TOP_OFFSET + CARD_HEIGHT + GRID_INCOMING_GAP_PX,
+    y: node.y + CARD_HEIGHT + GRID_INCOMING_GAP_PX,
   });
 
   const getOutgoingAnchor = (node: Node, isBranching: boolean): { x: number; y: number } => ({
     x: isBranching ? node.x + CARD_WIDTH : node.x + CARD_WIDTH / 2,
-    y: isBranching ? node.y + CARD_BODY_TOP_OFFSET + CARD_HEIGHT / 2 : node.y + CARD_BODY_TOP_OFFSET,
+    y: isBranching ? node.y + CARD_HEIGHT / 2 : node.y,
   });
 
   const resolveParentNode = (parentSha: string, preferredBranchName: string): Node | null => {
@@ -540,12 +540,12 @@ export function computeBranchGridLayout(input: BranchGridLayoutInput): BranchGri
           fromX: sourceNode.x + CARD_WIDTH / 2,
           fromY: sourceNode.y,
           toX: mergeTarget.x + CARD_WIDTH - GRID_MERGE_TARGET_GAP_PX,
-          toY: mergeTarget.y + CARD_BODY_TOP_OFFSET + CARD_HEIGHT / 2,
+          toY: mergeTarget.y + CARD_HEIGHT / 2,
           path: buildMergeOrthogonalPath({
             laneX: sourceNode.x + CARD_WIDTH / 2,
             tipY: sourceNode.y,
             mergeX: mergeTarget.x + CARD_WIDTH - GRID_MERGE_TARGET_GAP_PX,
-            mergeY: mergeTarget.y + CARD_BODY_TOP_OFFSET + CARD_HEIGHT / 2,
+            mergeY: mergeTarget.y + CARD_HEIGHT / 2,
             cornerR: GRID_CONNECTOR_CORNER_RADIUS_PX,
             pointFormatter,
           }),

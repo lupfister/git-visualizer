@@ -99,7 +99,7 @@ export type Connector = { id: string; fromX: number; fromY: number; toX: number;
 
 export const BRANCH_COLUMN_REUSE_TIME_GAP_FACTOR = 0.75;
 export const ROW_HEIGHT = 200;
-export const ROW_GAP = 8;
+export const ROW_GAP = 240;
 export const CARD_WIDTH = 540;
 export const CARD_HEIGHT = 176;
 export const CARD_HEADER_HEIGHT = 32;

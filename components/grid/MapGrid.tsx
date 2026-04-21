@@ -12,6 +12,7 @@ import {
 } from 'react';
 import {
   buildLanes,
+  buildMergeOrthogonalPath,
   CARD_HEIGHT,
   CARD_BODY_TOP_OFFSET,
   CARD_WIDTH,
@@ -20,7 +21,7 @@ import {
   type Node,
 } from './LayoutGrid';
 import { computeBranchGridLayout } from './branchGridLayoutModel';
-import { buildChevronArrowHead, buildRoundedElbowPath } from './gridPathUtils';
+import { buildRoundedElbowPath } from './gridPathUtils';
 
 function cn(...classes: Array<string | false | null | undefined>): string {
   return classes.filter(Boolean).join(' ');
@@ -375,8 +376,9 @@ function withCullInsetScreenPx(
   return growViewportContentBounds(bounds, -insetScreenPx / scale);
 }
 
-const GRID_CONNECTOR_GAP_PX = 4;
-const GRID_CONNECTOR_CORNER_RADIUS_PX = 18;
+const GRID_CONNECTOR_GAP_PX = 0;
+const GRID_CONNECTOR_CORNER_RADIUS_BASE_PX = 18;
+const GRID_COMMIT_CORNER_RADIUS_BASE_PX = 12;
 
 export default function BranchGridMap({
   branches,
@@ -597,11 +599,12 @@ export default function BranchGridMap({
     return revealedStaggerIds.has(commitId);
   };
 
-  const borderWidthPx = 1 / displayZoom;
-  const lineStrokeWidth = 2.5 / displayZoom;
+  const lineStrokeWidth = 1.5 / displayZoom;
   const haloStrokeWidth = 4 / displayZoom;
-  const arrowHeadSize = 14 / displayZoom;
-  const arrowHeadTipOffset = 0;
+  const zoomOutCornerReductionPx = Math.max(0, 1 - displayZoom) * 8;
+  const connectorCornerRadiusPx =
+    Math.max(6, GRID_CONNECTOR_CORNER_RADIUS_BASE_PX - zoomOutCornerReductionPx) / displayZoom;
+  const commitCornerRadiusPx = GRID_COMMIT_CORNER_RADIUS_BASE_PX / displayZoom;
   const iconScaleStyle = useMemo(
     () => ({
       transform: `scale(${1 / displayZoom})`,
@@ -873,7 +876,7 @@ export default function BranchGridMap({
         connector.fromY,
         connector.toX,
         connector.toY,
-        GRID_CONNECTOR_CORNER_RADIUS_PX,
+        connectorCornerRadiusPx,
         visibleBounds,
       );
     }
@@ -882,7 +885,7 @@ export default function BranchGridMap({
       connector.fromY,
       connector.toX,
       connector.toY,
-      GRID_CONNECTOR_CORNER_RADIUS_PX,
+      connectorCornerRadiusPx,
       GRID_CONNECTOR_GAP_PX,
       visibleBounds,
     );
@@ -1077,8 +1080,13 @@ export default function BranchGridMap({
               style={{ left: node.x, top: node.y, width: CARD_WIDTH, height: CARD_BODY_TOP_OFFSET + CARD_HEIGHT + 4, overflow: 'visible' }}
             >
               <div className="absolute left-0 w-full" style={{ ...inverseZoomStyle, top: `${labelTopPx}px` }}>
-                <div className="flex items-baseline justify-between px-0 pb-0">
-                  <div className="text-sm font-medium leading-none text-muted-foreground">
+                <div className="flex min-w-0 items-baseline justify-between gap-2 px-0 pb-0">
+                  <div
+                    className={cn(
+                      'min-w-0 flex-1 text-sm font-medium leading-none text-muted-foreground',
+                      displayZoom <= 0.5 ? 'overflow-hidden text-ellipsis whitespace-nowrap' : 'break-words whitespace-normal',
+                    )}
+                  >
                     {node.commit.branchName}/{node.commit.id.slice(0, 7)}
                   </div>
                   {isTop && clumpCount > 1 ? (
@@ -1121,11 +1129,24 @@ export default function BranchGridMap({
                   normalizedSearchQuery && matchingNodeIds.has(node.commit.id) && !isCameraMoving ? 'shadow-md' : '',
                   focusedNode?.commit.id === node.commit.id ? cn('ring-2 ring-primary/20', !isCameraMoving && 'shadow-md') : ''
                 )}
-                style={{ top: 0, borderWidth: `${borderWidthPx}px` }}
+                style={{
+                  top: 0,
+                  borderWidth: `${lineStrokeWidth}px`,
+                  borderColor: CONNECTOR_COLOR,
+                  borderTopLeftRadius: 0,
+                  borderTopRightRadius: `${commitCornerRadiusPx}px`,
+                  borderBottomRightRadius: `${commitCornerRadiusPx}px`,
+                  borderBottomLeftRadius: `${commitCornerRadiusPx}px`,
+                }}
               >
                 <div className="flex h-full min-h-0 flex-col px-2.5 py-2" style={inverseZoomStyle}>
                   <div className="min-h-0 flex-1">
-                    <div className="max-w-[38rem] text-sm font-medium leading-tight tracking-tight text-muted-foreground group-hover:text-muted-foreground">
+                    <div
+                      className={cn(
+                        'max-w-[38rem] text-sm font-medium leading-tight tracking-tight text-muted-foreground group-hover:text-muted-foreground',
+                        displayZoom <= 0.5 ? 'overflow-hidden text-ellipsis whitespace-nowrap' : 'break-words whitespace-normal',
+                      )}
+                    >
                       {isTop && isClusterOpen
                         ? node.commit.message
                         : isTop && clumpCount > 1
@@ -1177,66 +1198,14 @@ export default function BranchGridMap({
                 style={{ overflow: 'visible' }}
               >
                 {mergeConnectors.filter((connector) => cullConnectorPath(connector)).map((connector) => {
-                  const dx = connector.toX - connector.fromX;
-                  const arrowDirection = dx >= 0 ? 'right' : 'left';
-                  return (
-                    <Fragment key={connector.id}>
-                      {!isCameraMoving ? (
-                        <path
-                          d={connector.path}
-                          fill="none"
-                          stroke="rgba(255, 255, 255, 0.8)"
-                          strokeWidth={haloStrokeWidth}
-                          strokeLinecap="round"
-                          strokeLinejoin="round"
-                        />
-                      ) : null}
-                      <path
-                        d={connector.path}
-                        fill="none"
-                        stroke={CONNECTOR_COLOR}
-                        strokeWidth={lineStrokeWidth}
-                        strokeLinecap="round"
-                        strokeLinejoin="round"
-                      />
-                      <path
-                        d={buildChevronArrowHead(
-                          connector.toX,
-                          connector.toY,
-                          pointFormatter,
-                          arrowDirection,
-                          arrowHeadSize,
-                          0,
-                        )}
-                        fill="none"
-                        stroke={CONNECTOR_COLOR}
-                        strokeWidth={lineStrokeWidth}
-                        strokeLinecap="round"
-                        strokeLinejoin="round"
-                      />
-                    </Fragment>
-                  );
-                })}
-                {connectors.filter((connector) => cullConnectorPath(connector)).map((connector) => {
-                  const path = buildRoundedElbowPath(
-                    connector.fromX,
-                    connector.fromY,
-                    connector.toX,
-                    connector.toY,
-                    GRID_CONNECTOR_CORNER_RADIUS_PX,
+                  const path = buildMergeOrthogonalPath({
+                    laneX: connector.fromX,
+                    tipY: connector.fromY,
+                    mergeX: connector.toX,
+                    mergeY: connector.toY,
+                    cornerR: connectorCornerRadiusPx,
                     pointFormatter,
-                    GRID_CONNECTOR_GAP_PX,
-                  );
-                  const dy = connector.toY - connector.fromY;
-                  const arrowDirection = dy >= 0 ? 'down' : 'up';
-                  const arrowHead = buildChevronArrowHead(
-                    connector.toX,
-                    connector.toY,
-                    pointFormatter,
-                    arrowDirection,
-                    arrowHeadSize,
-                    arrowHeadTipOffset,
-                  );
+                  });
                   return (
                     <Fragment key={connector.id}>
                       {!isCameraMoving ? (
@@ -1257,8 +1226,33 @@ export default function BranchGridMap({
                         strokeLinecap="round"
                         strokeLinejoin="round"
                       />
+                    </Fragment>
+                  );
+                })}
+                {connectors.filter((connector) => cullConnectorPath(connector)).map((connector) => {
+                  const path = buildRoundedElbowPath(
+                    connector.fromX,
+                    connector.fromY,
+                    connector.toX,
+                    connector.toY,
+                    connectorCornerRadiusPx,
+                    pointFormatter,
+                    GRID_CONNECTOR_GAP_PX,
+                  );
+                  return (
+                    <Fragment key={connector.id}>
+                      {!isCameraMoving ? (
+                        <path
+                          d={path}
+                          fill="none"
+                          stroke="rgba(255, 255, 255, 0.8)"
+                          strokeWidth={haloStrokeWidth}
+                          strokeLinecap="round"
+                          strokeLinejoin="round"
+                        />
+                      ) : null}
                       <path
-                        d={arrowHead}
+                        d={path}
                         fill="none"
                         stroke={CONNECTOR_COLOR}
                         strokeWidth={lineStrokeWidth}
