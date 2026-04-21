@@ -1,4 +1,4 @@
-import { Fragment, useLayoutEffect, useState } from 'react';
+import { Fragment, useEffect, useLayoutEffect, useRef, useState } from 'react';
 import type { CSSProperties, Dispatch, MouseEvent, ReactNode, RefObject, SetStateAction, WheelEvent } from 'react';
 import { buildMergeOrthogonalPath, CARD_BODY_TOP_OFFSET, CARD_HEIGHT, CARD_WIDTH, CONNECTOR_COLOR } from './LayoutGrid';
 import { buildRoundedElbowPath } from './gridPathUtils';
@@ -153,6 +153,53 @@ export default function MapGridCanvas({
   unpushedCommitShasSetByBranch,
   checkedOutHeadSha,
 }: Props) {
+  const [openingClumpAnimations, setOpeningClumpAnimations] = useState<Set<string>>(new Set());
+  const openClumpsLastFrameRef = useRef<Set<string> | null>(null);
+
+  useEffect(() => {
+    const currentlyOpenClumps = new Set<string>();
+    clusterCounts.forEach((_, clusterKey) => {
+      const isClusterOpen =
+        manuallyOpenedClumps.has(clusterKey) ||
+        (!defaultCollapsedClumps.has(clusterKey) && !manuallyClosedClumps.has(clusterKey));
+      if (isClusterOpen) currentlyOpenClumps.add(clusterKey);
+    });
+
+    const previousOpenClumps = openClumpsLastFrameRef.current;
+    if (previousOpenClumps == null) {
+      openClumpsLastFrameRef.current = currentlyOpenClumps;
+      return;
+    }
+
+    const newlyOpenedClumps: string[] = [];
+    currentlyOpenClumps.forEach((clusterKey) => {
+      if (!previousOpenClumps.has(clusterKey)) newlyOpenedClumps.push(clusterKey);
+    });
+
+    if (newlyOpenedClumps.length > 0) {
+      setOpeningClumpAnimations((prev) => {
+        const next = new Set(prev);
+        newlyOpenedClumps.forEach((clusterKey) => next.add(clusterKey));
+        return next;
+      });
+
+      const timeoutHandle = window.setTimeout(() => {
+        setOpeningClumpAnimations((prev) => {
+          const next = new Set(prev);
+          newlyOpenedClumps.forEach((clusterKey) => next.delete(clusterKey));
+          return next;
+        });
+      }, 260);
+
+      openClumpsLastFrameRef.current = currentlyOpenClumps;
+      return () => {
+        window.clearTimeout(timeoutHandle);
+      };
+    }
+
+    openClumpsLastFrameRef.current = currentlyOpenClumps;
+  }, [clusterCounts, defaultCollapsedClumps, manuallyClosedClumps, manuallyOpenedClumps]);
+
   const compareConnectorDrawOrder = (
     left: { id: string; fromY: number; toY: number; zIndex: number },
     right: { id: string; fromY: number; toY: number; zIndex: number },
@@ -203,6 +250,8 @@ export default function MapGridCanvas({
               ? manuallyOpenedClumps.has(clusterKey) || (!defaultCollapsedClumps.has(clusterKey) && !manuallyClosedClumps.has(clusterKey))
               : false;
             const isTop = clusterKey ? leadByClusterKey.get(clusterKey) === node.commit.visualId : false;
+            const shouldAnimateOpeningClump =
+              clusterKey != null && isClusterOpen && !isTop && openingClumpAnimations.has(clusterKey);
             const clumpCount = clusterKey ? clusterCounts.get(clusterKey) ?? 1 : 1;
             const hasRenderedAncestry = commitIdsWithRenderedAncestry.has(node.commit.id);
             const nodeWarningsForCard = nodeWarnings.get(node.commit.id) ?? [];
@@ -230,7 +279,7 @@ export default function MapGridCanvas({
             return (
               <MapGridCommitWrapper
                 key={node.commit.visualId}
-                fadeIn={false}
+                fadeIn={shouldAnimateOpeningClump}
                 dataCommitCard="true"
                 className={cn(
                   'group absolute z-20 cursor-pointer',
