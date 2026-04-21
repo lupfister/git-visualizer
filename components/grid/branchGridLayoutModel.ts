@@ -336,7 +336,7 @@ export function computeBranchGridLayout(input: BranchGridLayoutInput): BranchGri
       const chunk = cluster.entries.map((entry) => entry.item);
       if (chunk.length === 0) return;
       const key = `grid-clump-${branchName}-${chunk[0].id}-${chunk[chunk.length - 1].id}-${clusterIndex}`;
-      const leadId = chunk[chunk.length - 1].id;
+      const leadId = chunk[chunk.length - 1].visualId;
       const clusterVm = { branchName, key, commitIds: chunk.map((commit) => commit.visualId), leadId, count: chunk.length };
       clusters.push(clusterVm);
       leadByClusterKey.set(key, leadId);
@@ -422,7 +422,7 @@ export function computeBranchGridLayout(input: BranchGridLayoutInput): BranchGri
     const leadId = leadByClusterKey.get(clusterKey);
     const count = clusterCounts.get(clusterKey) ?? 1;
     const isOpen = clusterKey === checkedOutClusterKey || manuallyOpenedClumps.has(clusterKey) || !defaultCollapsedClumps.has(clusterKey);
-    return count <= 1 || isOpen || leadId === commit.id;
+    return count <= 1 || isOpen || leadId === commit.visualId;
   });
   const visibleRows = new Map<string, number>(visibleCommitsList.map((commit, index) => [commit.visualId, index + 1] as const));
   const zoomAwareRowGap = ROW_GAP / GRID_LAYOUT_RENDER_ZOOM;

@@ -1,5 +1,4 @@
 import {
-  Fragment,
   startTransition,
   useCallback,
   useEffect,
@@ -7,22 +6,20 @@ import {
   useMemo,
   useRef,
   useState,
-  type CSSProperties,
-  type ReactNode,
 } from 'react';
 import type { BranchCommitPreview, WorktreeInfo } from '../../types';
 import {
   buildLanes,
-  buildMergeOrthogonalPath,
   CARD_HEIGHT,
   CARD_BODY_TOP_OFFSET,
   CARD_WIDTH,
-  CONNECTOR_COLOR,
   type BranchGridViewProps,
   type Node,
 } from './LayoutGrid';
 import { computeBranchGridLayout } from './branchGridLayoutModel';
-import { buildRoundedElbowPath } from './gridPathUtils';
+import MapGridCanvas from './MapGridCanvas';
+import MapGridDebugPanel from './MapGridDebugPanel';
+import MapGridDialogs from './MapGridDialogs';
 
 function cn(...classes: Array<string | false | null | undefined>): string {
   return classes.filter(Boolean).join(' ');
@@ -57,48 +54,6 @@ const ZOOM_SETTLE_EPSILON = 0.001;
 
 function clampZoom(value: number): number {
   return Math.max(GRID_ZOOM_MIN, Math.min(GRID_ZOOM_MAX, value));
-}
-
-/** Opacity ramp for commits that re-enter the viewport after culling (double rAF before fade). */
-function MapGridCommitWrapper({
-  fadeIn,
-  className,
-  style,
-  children,
-}: {
-  fadeIn: boolean;
-  className?: string;
-  style?: CSSProperties;
-  children: ReactNode;
-}) {
-  const [opaque, setOpaque] = useState(!fadeIn);
-  useLayoutEffect(() => {
-    if (!fadeIn) {
-      setOpaque(true);
-      return;
-    }
-    setOpaque(false);
-    let innerRaf: number | null = null;
-    const outerRaf = requestAnimationFrame(() => {
-      innerRaf = requestAnimationFrame(() => setOpaque(true));
-    });
-    return () => {
-      cancelAnimationFrame(outerRaf);
-      if (innerRaf != null) cancelAnimationFrame(innerRaf);
-    };
-  }, [fadeIn]);
-  return (
-    <div
-      className={className}
-      style={{
-        ...style,
-        opacity: opaque ? 1 : 0,
-        transition: fadeIn ? 'opacity 240ms ease-out' : undefined,
-      }}
-    >
-      {children}
-    </div>
-  );
 }
 
 type ViewportContentBounds = { left: number; top: number; right: number; bottom: number };
@@ -586,7 +541,6 @@ export default function BranchGridMap({
     [displayZoom],
   );
   const labelTopPx = -(20 / displayZoom);
-  const showCommitMetadata = displayZoom > 0.5;
 
   const nodeByVisualId = useMemo(() => {
     const m = new Map<string, Node>();
@@ -1368,52 +1322,22 @@ export default function BranchGridMap({
 
   return (
     <div className="relative flex h-full min-h-0 flex-col overflow-hidden rounded-2xl border border-border bg-card">
-      <div className="pointer-events-none absolute bottom-4 right-4 z-[10000] flex items-end gap-2">
-        <button
-          type="button"
-          onClick={() => setIsDebugOpen((open) => !open)}
-          className={cn(
-            'pointer-events-auto inline-flex h-8 items-center rounded-full border px-3 text-xs font-medium transition-colors',
-            isDebugOpen
-              ? 'border-primary/30 bg-primary/10 text-primary'
-              : 'border-border bg-card text-muted-foreground hover:bg-accent hover:text-foreground'
-          )}
-        >
-          Debug
-        </button>
-      </div>
-      {isDebugOpen ? (
-        <div className="absolute bottom-14 right-4 z-[10000] flex max-h-[calc(100%-4rem)] w-[min(42rem,calc(100%-2rem))] flex-col overflow-hidden rounded-2xl border border-border bg-card/95 backdrop-blur-sm">
-          <div className="flex items-center justify-between border-b border-border/50 px-4 py-3">
-            <div>
-              <p className="text-sm font-medium text-foreground">Commit debug</p>
-              <p className="text-xs text-muted-foreground">Rendered branch summaries and connector decisions</p>
-            </div>
-            <button
-              type="button"
-              onClick={() => setIsDebugOpen(false)}
-              className="rounded-full border border-border/50 bg-muted/30 px-2.5 py-1 text-xs font-medium text-muted-foreground transition-colors hover:bg-accent hover:text-foreground"
-            >
-              Close
-            </button>
-          </div>
-          <div className="min-h-0 flex-1 overflow-y-auto px-4 py-3">
-            <pre className="whitespace-pre-wrap break-words text-[11px] leading-5 text-muted-foreground">
-              {[
-                `Cull viewport (inset ${MAP_GRID_CULL_VIEWPORT_INSET_SCREEN_PX}px screen/side): ${visibleBounds ? `${(visibleBounds.right - visibleBounds.left).toFixed(0)} x ${(visibleBounds.bottom - visibleBounds.top).toFixed(0)} content px` : 'unavailable'}`,
-                `Rendered nodes: ${renderedNodeCount} / ${renderNodes.length}`,
-                `Rendered merge connectors: ${renderedMergeConnectorCount} / ${mergeConnectors.length}`,
-                `Rendered connectors: ${renderedConnectorCount} / ${connectors.length}`,
-                '',
-                ...debugRows,
-                ...branchDebugRows,
-                '',
-                ...connectorDecisions.map((decision) => `${decision.rendered ? 'rendered' : 'skipped'} [${decision.kind}] ${decision.parent.slice(0, 7)} -> ${decision.child.slice(0, 7)} (${decision.reason})`),
-              ].join('\n')}
-            </pre>
-          </div>
-        </div>
-      ) : null}
+      <MapGridDebugPanel
+        isOpen={isDebugOpen}
+        onToggle={() => setIsDebugOpen((open) => !open)}
+        onClose={() => setIsDebugOpen(false)}
+        visibleBounds={visibleBounds}
+        renderedNodeCount={renderedNodeCount}
+        totalNodeCount={renderNodes.length}
+        renderedMergeConnectorCount={renderedMergeConnectorCount}
+        totalMergeConnectorCount={mergeConnectors.length}
+        renderedConnectorCount={renderedConnectorCount}
+        totalConnectorCount={connectors.length}
+        mapGridCullViewportInsetScreenPx={MAP_GRID_CULL_VIEWPORT_INSET_SCREEN_PX}
+        debugRows={debugRows}
+        branchDebugRows={branchDebugRows}
+        connectorDecisions={connectorDecisions}
+      />
       {allCommits.length === 0 ? (
         <div className="flex flex-1 min-h-0 items-center justify-center py-20">
           <div className="rounded-xl border border-border/50 bg-muted/30 px-4 py-3">
@@ -1421,249 +1345,53 @@ export default function BranchGridMap({
           </div>
         </div>
       ) : (
-        <div
-          ref={scrollContainerRef}
-          className="flex-1 min-h-0 overflow-hidden"
-          style={{ cursor: isMarqueeSelecting ? 'crosshair' : 'default' }}
-        >
-          <div
-            ref={mapPadHostRef}
-            className="relative min-w-full p-2.5"
-            onWheel={handleWheel}
-            onMouseDown={startMarqueeDrag}
-            style={{ width: contentWidth, minWidth: '100%', height: contentHeight }}
-          >
-            <div
-              ref={transformLayerRef}
-              className="absolute left-0 top-0"
-              style={{
-                width: contentWidth,
-                height: contentHeight,
-                transformOrigin: 'top left' as const,
-                ...(isCameraMoving ? { willChange: 'transform' as const } : {}),
-              }}
-            >
-              {renderNodes.filter((node) => shouldRenderNode(node)).map((node) => {
-            const clusterKey = clusterKeyByCommitId.get(node.commit.visualId);
-            const isClusterOpen = clusterKey
-              ? clusterKey === checkedOutClusterKey || manuallyOpenedClumps.has(clusterKey) || !defaultCollapsedClumps.has(clusterKey)
-              : false;
-            const isTop = clusterKey ? leadByClusterKey.get(clusterKey) === node.commit.id : false;
-            const clumpCount = clusterKey ? clusterCounts.get(clusterKey) ?? 1 : 1;
-            const hasRenderedAncestry = commitIdsWithRenderedAncestry.has(node.commit.id);
-            const nodeWarningsForCard = nodeWarnings.get(node.commit.id) ?? [];
-            const showDataShapeError = nodeWarningsForCard.length > 0 && !hasRenderedAncestry;
-            const isSelectedCommit = selectedVisibleCommitShas.includes(node.commit.id);
-            const selectedCommitTextClass = isSelectedCommit ? 'text-[#158EFC]' : 'text-muted-foreground';
-            const selectedCommitTextStyle = isSelectedCommit ? { color: '#158EFC' } : undefined;
-            return (
-            <MapGridCommitWrapper
-              key={node.commit.visualId}
-              fadeIn={false}
-              className={cn(
-                'group absolute z-20',
-                normalizedSearchQuery && !matchingNodeIds.has(node.commit.id)
-                  ? isCameraMoving
-                    ? 'opacity-10'
-                    : 'opacity-10 blur-[0.5px]'
-                  : '',
-                normalizedSearchQuery && matchingNodeIds.has(node.commit.id) ? 'scale-[1.01]' : '',
-                focusedNode?.commit.id === node.commit.id ? 'z-30 scale-[1.015]' : ''
-              )}
-              style={{ left: node.x, top: node.y, width: CARD_WIDTH, height: CARD_BODY_TOP_OFFSET + CARD_HEIGHT + 4, overflow: 'visible' }}
-            >
-              <div className="absolute left-0 w-full" style={{ ...inverseZoomStyle, top: `${labelTopPx}px` }}>
-                <div className="flex min-w-0 items-baseline justify-between gap-2 px-0 pb-0">
-                  <div
-                    className={cn(
-                      'min-w-0 flex-1 text-sm font-medium leading-none',
-                      selectedCommitTextClass,
-                      displayZoom <= 0.5 ? 'overflow-hidden text-ellipsis whitespace-nowrap' : 'break-words whitespace-normal',
-                    )}
-                    style={selectedCommitTextStyle}
-                  >
-                    {node.commit.branchName}/{node.commit.id.slice(0, 7)}
-                  </div>
-                  {isTop && clumpCount > 1 ? (
-                    <button
-                      type="button"
-                      onClick={() => {
-                        if (!clusterKey || clusterKey === checkedOutClusterKey) return;
-                        setManuallyOpenedClumps((prev) => {
-                          const next = new Set(prev);
-                          if (next.has(clusterKey)) next.delete(clusterKey);
-                          else next.add(clusterKey);
-                          return next;
-                        });
-                        flushCameraReactTick();
-                      }}
-                      className={cn('inline-flex items-center bg-transparent p-0 text-sm font-medium leading-none', selectedCommitTextClass)}
-                      style={selectedCommitTextStyle}
-                    >
-                      {isClusterOpen ? '⌃' : `x${clumpCount}`}
-                    </button>
-                  ) : null}
-                </div>
-              </div>
-              <div
-                data-commit-card="true"
-                onClick={(event) => handleCommitCardClick(event, node)}
-                className={cn(
-                  'absolute left-0 h-[176px] w-full cursor-pointer overflow-hidden rounded-tr-xl rounded-br-xl rounded-bl-xl rounded-tl-none border border-border/50 bg-card',
-                  branchOffNodeShas.has(node.commit.id) ||
-                  branchStartShas.has(node.commit.id) ||
-                  crossBranchOutgoingShas.has(node.commit.id)
-                    ? branchStartAccentClass
-                    : connectorParentShas.has(node.commit.id)
-                      ? connectorParentAccentClass
-                    : branchBaseCommitByName.get(node.commit.branchName)?.id === node.commit.id
-                      ? 'border-amber-500'
-                      : showDataShapeError
-                        ? 'border-red-500'
-                        : '',
-                  normalizedSearchQuery && matchingNodeIds.has(node.commit.id) && !isCameraMoving ? '' : '',
-                )}
-                style={{
-                  top: 0,
-                  borderWidth: `${lineStrokeWidth}px`,
-                  borderColor: isSelectedCommit ? '#158EFC' : CONNECTOR_COLOR,
-                  borderTopLeftRadius: 0,
-                  borderTopRightRadius: `${commitCornerRadiusPx}px`,
-                  borderBottomRightRadius: `${commitCornerRadiusPx}px`,
-                  borderBottomLeftRadius: `${commitCornerRadiusPx}px`,
-                }}
-              >
-                <div className="flex h-full min-h-0 flex-col px-2.5 py-2" style={inverseZoomStyle}>
-                  <div className="min-h-0 flex-1">
-                  <div
-                    className={cn(
-                        'max-w-[38rem] text-sm font-medium leading-tight tracking-tight text-muted-foreground',
-                        selectedCommitTextClass,
-                        displayZoom <= 0.5 ? 'overflow-hidden text-ellipsis whitespace-nowrap' : 'break-words whitespace-normal',
-                      )}
-                    style={selectedCommitTextStyle}
-                    >
-                      {isTop && isClusterOpen
-                        ? node.commit.message
-                        : isTop && clumpCount > 1
-                          ? `${node.commit.message} +${clumpCount - 1}`
-                          : node.commit.message}
-                    </div>
-                    <div className="mt-3 flex flex-wrap items-center gap-1.5">
-                      {showDataShapeError ? (
-                        <span
-                          className="inline-flex items-center gap-1 rounded-lg border border-red-500/25 bg-red-50 px-2 py-0.5 text-sm font-medium uppercase tracking-wide text-muted-foreground dark:bg-red-900/20 dark:text-muted-foreground"
-                          title={nodeWarningsForCard.join('\n')}
-                        >
-                          Broken ancestry
-                        </span>
-                      ) : null}
-                    </div>
-                  </div>
-                  {showCommitMetadata ? (
-                    <div className="mt-auto flex items-end justify-between gap-4 pt-5">
-                      <div className={cn('text-sm font-medium', selectedCommitTextClass)} style={selectedCommitTextStyle}>
-                        @{node.commit.author}
-                      </div>
-                      <div className={cn('text-sm font-medium', selectedCommitTextClass)} style={selectedCommitTextStyle}>
-                        {new Date(node.commit.date).toLocaleString('en-US', {
-                          month: 'long',
-                          day: 'numeric',
-                          hour: 'numeric',
-                          minute: '2-digit',
-                        })}
-                      </div>
-                    </div>
-                  ) : null}
-                  {focusedNode?.commit.id === node.commit.id && normalizedSearchQuery ? (
-                    <div className="absolute left-5 top-4 inline-flex rounded-full bg-primary/10 px-2 py-0.5 text-sm font-medium uppercase tracking-wide text-muted-foreground" style={iconScaleStyle}>
-                      Search result
-                    </div>
-                  ) : null}
-                  {showDataShapeError ? null : null}
-                </div>
-              </div>
-            </MapGridCommitWrapper>
-            );
-              })}
-              <svg
-                className="pointer-events-none absolute inset-0 z-10"
-                width={contentWidth}
-                height={contentHeight}
-                viewBox={`0 0 ${contentWidth} ${contentHeight}`}
-                aria-hidden="true"
-                overflow="visible"
-                style={{ overflow: 'visible' }}
-              >
-                {mergeConnectors.filter((connector) => cullConnectorPath(connector)).map((connector) => {
-                  const path = buildMergeOrthogonalPath({
-                    laneX: connector.fromX,
-                    tipY: connector.fromY,
-                    mergeX: connector.toX,
-                    mergeY: connector.toY,
-                    cornerR: connectorCornerRadiusPx,
-                    pointFormatter,
-                  });
-                  return (
-                    <Fragment key={connector.id}>
-                      {!isCameraMoving ? (
-                        <path
-                          d={path}
-                          fill="none"
-                          stroke="rgba(255, 255, 255, 0.8)"
-                          strokeWidth={haloStrokeWidth}
-                          strokeLinecap="round"
-                          strokeLinejoin="round"
-                        />
-                      ) : null}
-                      <path
-                        d={path}
-                        fill="none"
-                        stroke={CONNECTOR_COLOR}
-                        strokeWidth={lineStrokeWidth}
-                        strokeLinecap="round"
-                        strokeLinejoin="round"
-                      />
-                    </Fragment>
-                  );
-                })}
-                {connectors.filter((connector) => cullConnectorPath(connector)).map((connector) => {
-                  const path = buildRoundedElbowPath(
-                    connector.fromX,
-                    connector.fromY,
-                    connector.toX,
-                    connector.toY,
-                    connectorCornerRadiusPx,
-                    pointFormatter,
-                    GRID_CONNECTOR_GAP_PX,
-                  );
-                  return (
-                    <Fragment key={connector.id}>
-                      {!isCameraMoving ? (
-                        <path
-                          d={path}
-                          fill="none"
-                          stroke="rgba(255, 255, 255, 0.8)"
-                          strokeWidth={haloStrokeWidth}
-                          strokeLinecap="round"
-                          strokeLinejoin="round"
-                        />
-                      ) : null}
-                      <path
-                        d={path}
-                        fill="none"
-                        stroke={CONNECTOR_COLOR}
-                        strokeWidth={lineStrokeWidth}
-                        strokeLinecap="round"
-                        strokeLinejoin="round"
-                      />
-                    </Fragment>
-                  );
-                })}
-              </svg>
-            </div>
-          </div>
-        </div>
+        <MapGridCanvas
+          scrollContainerRef={scrollContainerRef}
+          mapPadHostRef={mapPadHostRef}
+          transformLayerRef={transformLayerRef}
+          isMarqueeSelecting={isMarqueeSelecting}
+          contentWidth={contentWidth}
+          contentHeight={contentHeight}
+          isCameraMoving={isCameraMoving}
+          onWheel={handleWheel}
+          onMouseDown={startMarqueeDrag}
+          labelTopPx={labelTopPx}
+          inverseZoomStyle={inverseZoomStyle}
+          displayZoom={displayZoom}
+          iconScaleStyle={iconScaleStyle}
+          selectedVisibleCommitShas={selectedVisibleCommitShas}
+          normalizedSearchQuery={normalizedSearchQuery}
+          matchingNodeIds={matchingNodeIds}
+          focusedNode={focusedNode}
+          renderNodes={renderNodes}
+          shouldRenderNode={shouldRenderNode}
+          checkedOutClusterKey={checkedOutClusterKey}
+          manuallyOpenedClumps={manuallyOpenedClumps}
+          defaultCollapsedClumps={defaultCollapsedClumps}
+          leadByClusterKey={leadByClusterKey}
+          clusterKeyByCommitId={clusterKeyByCommitId}
+          clusterCounts={clusterCounts}
+          commitIdsWithRenderedAncestry={commitIdsWithRenderedAncestry}
+          nodeWarnings={nodeWarnings}
+          connectorParentShas={connectorParentShas}
+          branchStartShas={branchStartShas}
+          branchOffNodeShas={branchOffNodeShas}
+          crossBranchOutgoingShas={crossBranchOutgoingShas}
+          branchBaseCommitByName={branchBaseCommitByName}
+          branchStartAccentClass={branchStartAccentClass}
+          connectorParentAccentClass={connectorParentAccentClass}
+          commitCornerRadiusPx={commitCornerRadiusPx}
+          lineStrokeWidth={lineStrokeWidth}
+          haloStrokeWidth={haloStrokeWidth}
+          connectorCornerRadiusPx={connectorCornerRadiusPx}
+          pointFormatter={pointFormatter}
+          connectors={connectors}
+          mergeConnectors={mergeConnectors}
+          cullConnectorPath={cullConnectorPath}
+          flushCameraReactTick={flushCameraReactTick}
+          setManuallyOpenedClumps={setManuallyOpenedClumps}
+          onCommitCardClick={handleCommitCardClick}
+        />
       )}
 
       {marqueeRect && isMarqueeSelecting ? (
@@ -1833,107 +1561,26 @@ export default function BranchGridMap({
         ) : null}
       </div>
 
-      {commitDialogOpen ? (
-        <div className="absolute inset-0 z-[80] flex items-center justify-center bg-background/70 p-4 backdrop-blur-sm">
-          <div className="w-full max-w-md rounded-2xl border border-border bg-card p-4">
-            <p className="text-sm font-medium text-foreground">Create commit</p>
-            <p className="mt-1 text-xs text-muted-foreground">Stage all changes, then commit on current HEAD.</p>
-            <textarea
-              value={commitMessageDraft}
-              onChange={(event) => setCommitMessageDraft(event.target.value)}
-              onKeyDown={(event) => {
-                if ((event.metaKey || event.ctrlKey) && event.key === 'Enter') {
-                  event.preventDefault();
-                  void confirmCommit();
-                }
-              }}
-              rows={4}
-              placeholder="Describe your changes"
-              className="mt-3 w-full rounded-lg border border-border bg-background px-3 py-2 text-sm text-foreground placeholder:text-muted-foreground focus:outline-none"
-            />
-            <div className="mt-4 flex items-center justify-end gap-2">
-              <button
-                type="button"
-                onClick={() => setCommitDialogOpen(false)}
-                className="rounded-lg border border-border bg-card px-3 py-1.5 text-xs font-medium text-foreground transition-colors hover:bg-accent"
-              >
-                Cancel
-              </button>
-              <button
-                type="button"
-                onClick={() => void confirmCommit()}
-                disabled={!commitMessageDraft.trim() || commitInProgress}
-                className="rounded-lg border border-border bg-card px-3 py-1.5 text-xs font-medium text-foreground transition-colors hover:bg-accent disabled:cursor-not-allowed disabled:opacity-50"
-              >
-                {commitInProgress ? 'Committing...' : 'Commit'}
-              </button>
-            </div>
-          </div>
-        </div>
-      ) : null}
-
-      {deleteConfirmOpen ? (
-        <div className="absolute inset-0 z-[80] flex items-center justify-center bg-background/70 p-4 backdrop-blur-sm">
-          <div className="w-full max-w-md rounded-2xl border border-border bg-card p-4">
-            <p className="text-sm font-medium text-foreground">Delete selected items?</p>
-            <div className="mt-3 space-y-1.5">
-              {deleteSelectionItems.map((item) => (
-                <div key={item} className="rounded-lg border border-border/50 bg-muted/30 px-2.5 py-1.5 text-xs text-muted-foreground">
-                  {item}
-                </div>
-              ))}
-            </div>
-            <div className="mt-4 flex items-center justify-end gap-2">
-              <button
-                type="button"
-                onClick={() => setDeleteConfirmOpen(false)}
-                className="rounded-lg border border-border bg-card px-3 py-1.5 text-xs font-medium text-foreground transition-colors hover:bg-accent"
-              >
-                Cancel
-              </button>
-              <button
-                type="button"
-                onClick={() => void confirmDeleteSelection()}
-                disabled={deletableSelectionCount === 0 || deleteInProgress}
-                className="rounded-lg bg-red-50 dark:bg-red-900/20 px-3 py-1.5 text-xs font-medium text-red-600 dark:text-red-400 transition-colors hover:bg-red-50/80 dark:hover:bg-red-900/30 disabled:cursor-not-allowed disabled:opacity-50"
-              >
-                {deleteInProgress ? 'Deleting...' : 'Delete'}
-              </button>
-            </div>
-          </div>
-        </div>
-      ) : null}
-
-      {newBranchDialogOpen ? (
-        <div className="absolute inset-0 z-[80] flex items-center justify-center bg-background/70 p-4 backdrop-blur-sm">
-          <div className="w-full max-w-sm rounded-2xl border border-border bg-card p-4">
-            <p className="text-sm font-medium text-foreground">Create branch from selected node</p>
-            <input
-              value={newBranchName}
-              onChange={(event) => setNewBranchName(event.target.value)}
-              placeholder="feature/my-changes"
-              className="mt-3 w-full rounded-lg border border-border bg-background px-3 py-2 text-sm text-foreground placeholder:text-muted-foreground focus:outline-none"
-            />
-            <div className="mt-4 flex items-center justify-end gap-2">
-              <button
-                type="button"
-                onClick={() => setNewBranchDialogOpen(false)}
-                className="rounded-lg border border-border bg-card px-3 py-1.5 text-xs font-medium text-foreground transition-colors hover:bg-accent"
-              >
-                Cancel
-              </button>
-              <button
-                type="button"
-                onClick={() => void confirmCreateBranchFromSelection()}
-                disabled={!newBranchName.trim() || createBranchFromNodeInProgress}
-                className="rounded-lg border border-border bg-card px-3 py-1.5 text-xs font-medium text-foreground transition-colors hover:bg-accent disabled:cursor-not-allowed disabled:opacity-50"
-              >
-                {createBranchFromNodeInProgress ? 'Creating...' : 'Create'}
-              </button>
-            </div>
-          </div>
-        </div>
-      ) : null}
+      <MapGridDialogs
+        commitDialogOpen={commitDialogOpen}
+        commitMessageDraft={commitMessageDraft}
+        onCommitMessageDraftChange={setCommitMessageDraft}
+        onCommitDialogClose={() => setCommitDialogOpen(false)}
+        onCommitConfirm={() => void confirmCommit()}
+        commitInProgress={commitInProgress}
+        deleteConfirmOpen={deleteConfirmOpen}
+        deleteSelectionItems={deleteSelectionItems}
+        onDeleteConfirmClose={() => setDeleteConfirmOpen(false)}
+        onDeleteConfirm={() => void confirmDeleteSelection()}
+        deleteInProgress={deleteInProgress}
+        deletableSelectionCount={deletableSelectionCount}
+        newBranchDialogOpen={newBranchDialogOpen}
+        newBranchName={newBranchName}
+        onNewBranchNameChange={setNewBranchName}
+        onNewBranchDialogClose={() => setNewBranchDialogOpen(false)}
+        onNewBranchConfirm={() => void confirmCreateBranchFromSelection()}
+        createBranchFromNodeInProgress={createBranchFromNodeInProgress}
+      />
     </div>
   );
 }
