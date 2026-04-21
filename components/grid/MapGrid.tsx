@@ -101,6 +101,7 @@ export default function BranchGridMap({
   const [newBranchDialogOpen, setNewBranchDialogOpen] = useState(false);
   const [newBranchName, setNewBranchName] = useState('');
   const [manuallyOpenedClumps, setManuallyOpenedClumps] = useState<Set<string>>(() => new Set());
+  const [manuallyClosedClumps, setManuallyClosedClumps] = useState<Set<string>>(() => new Set());
   const [isDebugOpen, setIsDebugOpen] = useState(false);
   const [visibleNodeIds, setVisibleNodeIds] = useState<Set<string> | null>(null);
   const [viewportClientSize, setViewportClientSize] = useState<{ width: number; height: number } | null>(null);
@@ -132,6 +133,7 @@ export default function BranchGridMap({
         branchCommitPreviews,
         branchUniqueAheadCounts,
         manuallyOpenedClumps,
+        manuallyClosedClumps,
         isDebugOpen,
         gridSearchQuery,
         gridFocusSha,
@@ -147,6 +149,7 @@ export default function BranchGridMap({
       branchCommitPreviews,
       branchUniqueAheadCounts,
       manuallyOpenedClumps,
+      manuallyClosedClumps,
       isDebugOpen,
       gridSearchQuery,
       gridFocusSha,
@@ -166,7 +169,6 @@ export default function BranchGridMap({
     matchingNodeIds,
     normalizedSearchQuery,
     focusedNode,
-    checkedOutClusterKey,
     defaultCollapsedClumps,
     renderNodes,
     visibleNodesBySha,
@@ -224,9 +226,8 @@ export default function BranchGridMap({
       const count = clusterCounts.get(ck) ?? 1;
       if (count > 1) {
         const clusterExpanded =
-          ck === checkedOutClusterKey ||
           manuallyOpenedClumps.has(ck) ||
-          !defaultCollapsedClumps.has(ck);
+          (!defaultCollapsedClumps.has(ck) && !manuallyClosedClumps.has(ck));
         if (clusterExpanded) return true;
       }
     }
@@ -234,7 +235,8 @@ export default function BranchGridMap({
   };
 
   const lineStrokeWidth = 1.5 / displayZoom;
-  const haloStrokeWidth = 4 / displayZoom;
+  // Keep connector halo visually stable while zooming, with a thicker base.
+  const haloStrokeWidth = 6 / displayZoom;
   const zoomOutCornerReductionPx = Math.max(0, 1 - displayZoom) * 8;
   const connectorCornerRadiusPx =
     Math.max(6, GRID_CONNECTOR_CORNER_RADIUS_BASE_PX - zoomOutCornerReductionPx) / displayZoom;
@@ -601,9 +603,8 @@ export default function BranchGridMap({
       const count = clusterCounts.get(ck) ?? 1;
       if (count <= 1) continue;
       const clusterExpanded =
-        ck === checkedOutClusterKey ||
         manuallyOpenedClumps.has(ck) ||
-        !defaultCollapsedClumps.has(ck);
+        (!defaultCollapsedClumps.has(ck) && !manuallyClosedClumps.has(ck));
       if (clusterExpanded) nextVisible.add(node.commit.visualId);
     }
     setVisibleNodeIds((prev) => (visibleCommitIdSetEquals(prev, nextVisible) ? prev : nextVisible));
@@ -614,7 +615,7 @@ export default function BranchGridMap({
     isCameraMoving,
     cameraRenderTick,
     manuallyOpenedClumps,
-    checkedOutClusterKey,
+    manuallyClosedClumps,
     defaultCollapsedClumps,
     clusterKeyByCommitId,
     clusterCounts,
@@ -786,8 +787,8 @@ export default function BranchGridMap({
           focusedNode={focusedNode}
           renderNodes={renderNodes}
           shouldRenderNode={shouldRenderNode}
-          checkedOutClusterKey={checkedOutClusterKey}
           manuallyOpenedClumps={manuallyOpenedClumps}
+          manuallyClosedClumps={manuallyClosedClumps}
           defaultCollapsedClumps={defaultCollapsedClumps}
           leadByClusterKey={leadByClusterKey}
           clusterKeyByCommitId={clusterKeyByCommitId}
@@ -811,6 +812,7 @@ export default function BranchGridMap({
           cullConnectorPath={cullConnectorPath}
           flushCameraReactTick={flushCameraReactTick}
           setManuallyOpenedClumps={setManuallyOpenedClumps}
+          setManuallyClosedClumps={setManuallyClosedClumps}
           onCommitCardClick={handleCommitCardClick}
           unpushedCommitShasSetByBranch={unpushedCommitShasSetByBranch}
         />

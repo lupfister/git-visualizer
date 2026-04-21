@@ -72,8 +72,8 @@ type Props = {
   focusedNode: Node | null;
   renderNodes: Node[];
   shouldRenderNode: (node: Node) => boolean;
-  checkedOutClusterKey: string | null;
   manuallyOpenedClumps: Set<string>;
+  manuallyClosedClumps: Set<string>;
   defaultCollapsedClumps: Set<string>;
   leadByClusterKey: Map<string, string>;
   clusterKeyByCommitId: Map<string, string>;
@@ -92,11 +92,12 @@ type Props = {
   haloStrokeWidth: number;
   connectorCornerRadiusPx: number;
   pointFormatter: (x: number, y: number) => string;
-  connectors: Array<{ id: string; fromX: number; fromY: number; toX: number; toY: number }>;
-  mergeConnectors: Array<{ id: string; path: string; fromX: number; fromY: number; toX: number; toY: number }>;
+  connectors: Array<{ id: string; fromX: number; fromY: number; toX: number; toY: number; zIndex: number }>;
+  mergeConnectors: Array<{ id: string; path: string; fromX: number; fromY: number; toX: number; toY: number; zIndex: number }>;
   cullConnectorPath: (connector: { id: string; fromX: number; fromY: number; toX: number; toY: number }) => boolean;
   flushCameraReactTick: () => void;
   setManuallyOpenedClumps: Dispatch<SetStateAction<Set<string>>>;
+  setManuallyClosedClumps: Dispatch<SetStateAction<Set<string>>>;
   onCommitCardClick: (event: MouseEvent, node: Node) => void;
   unpushedCommitShasSetByBranch: Map<string, Set<string>>;
 };
@@ -121,8 +122,8 @@ export default function MapGridCanvas({
   focusedNode,
   renderNodes,
   shouldRenderNode,
-  checkedOutClusterKey,
   manuallyOpenedClumps,
+  manuallyClosedClumps,
   defaultCollapsedClumps,
   leadByClusterKey,
   clusterKeyByCommitId,
@@ -146,9 +147,31 @@ export default function MapGridCanvas({
   cullConnectorPath,
   flushCameraReactTick,
   setManuallyOpenedClumps,
+  setManuallyClosedClumps,
   onCommitCardClick,
   unpushedCommitShasSetByBranch,
 }: Props) {
+  const compareConnectorDrawOrder = (
+    left: { id: string; fromY: number; toY: number; zIndex: number },
+    right: { id: string; fromY: number; toY: number; zIndex: number },
+  ): number => {
+    // Newer branches draw first (behind older branches).
+    const byAge = right.zIndex - left.zIndex;
+    if (byAge !== 0) return byAge;
+    // Higher connectors draw first to stay visually underneath lower ones.
+    const leftTopY = Math.min(left.fromY, left.toY);
+    const rightTopY = Math.min(right.fromY, right.toY);
+    const byTopY = leftTopY - rightTopY;
+    if (byTopY !== 0) return byTopY;
+    return left.id.localeCompare(right.id);
+  };
+  const sortedVisibleMergeConnectors = mergeConnectors
+    .filter((connector) => cullConnectorPath(connector))
+    .sort(compareConnectorDrawOrder);
+  const sortedVisibleConnectors = connectors
+    .filter((connector) => cullConnectorPath(connector))
+    .sort(compareConnectorDrawOrder);
+
   return (
     <div
       ref={scrollContainerRef}
@@ -175,7 +198,7 @@ export default function MapGridCanvas({
           {renderNodes.filter((node) => shouldRenderNode(node)).map((node) => {
             const clusterKey = clusterKeyByCommitId.get(node.commit.visualId);
             const isClusterOpen = clusterKey
-              ? clusterKey === checkedOutClusterKey || manuallyOpenedClumps.has(clusterKey) || !defaultCollapsedClumps.has(clusterKey)
+              ? manuallyOpenedClumps.has(clusterKey) || (!defaultCollapsedClumps.has(clusterKey) && !manuallyClosedClumps.has(clusterKey))
               : false;
             const isTop = clusterKey ? leadByClusterKey.get(clusterKey) === node.commit.visualId : false;
             const clumpCount = clusterKey ? clusterCounts.get(clusterKey) ?? 1 : 1;
@@ -225,14 +248,41 @@ export default function MapGridCanvas({
                     {isTop && clumpCount > 1 ? (
                       <button
                         type="button"
-                        onClick={() => {
-                          if (!clusterKey || clusterKey === checkedOutClusterKey) return;
-                          setManuallyOpenedClumps((prev) => {
-                            const next = new Set(prev);
-                            if (next.has(clusterKey)) next.delete(clusterKey);
-                            else next.add(clusterKey);
-                            return next;
-                          });
+                        onMouseDown={(event) => {
+                          event.stopPropagation();
+                        }}
+                        onClick={(event) => {
+                          event.stopPropagation();
+                          event.preventDefault();
+                          if (!clusterKey) return;
+                          const isDefaultOpen = !defaultCollapsedClumps.has(clusterKey);
+                          if (isDefaultOpen) {
+                            setManuallyOpenedClumps((prev) => {
+                              if (!prev.has(clusterKey)) return prev;
+                              const next = new Set(prev);
+                              next.delete(clusterKey);
+                              return next;
+                            });
+                            setManuallyClosedClumps((prev) => {
+                              const next = new Set(prev);
+                              if (next.has(clusterKey)) next.delete(clusterKey);
+                              else next.add(clusterKey);
+                              return next;
+                            });
+                          } else {
+                            setManuallyClosedClumps((prev) => {
+                              if (!prev.has(clusterKey)) return prev;
+                              const next = new Set(prev);
+                              next.delete(clusterKey);
+                              return next;
+                            });
+                            setManuallyOpenedClumps((prev) => {
+                              const next = new Set(prev);
+                              if (next.has(clusterKey)) next.delete(clusterKey);
+                              else next.add(clusterKey);
+                              return next;
+                            });
+                          }
                           flushCameraReactTick();
                         }}
                         className={cn('inline-flex items-center bg-transparent p-0 text-sm font-medium leading-none', selectedCommitTextClass)}
@@ -331,7 +381,7 @@ export default function MapGridCanvas({
             overflow="visible"
             style={{ overflow: 'visible' }}
           >
-            {mergeConnectors.filter((connector) => cullConnectorPath(connector)).map((connector) => {
+            {sortedVisibleMergeConnectors.map((connector) => {
               const path = buildMergeOrthogonalPath({
                 laneX: connector.fromX,
                 tipY: connector.fromY,
@@ -342,14 +392,12 @@ export default function MapGridCanvas({
               });
               return (
                 <Fragment key={connector.id}>
-                  {!isCameraMoving ? (
-                    <path d={path} fill="none" stroke="rgba(255, 255, 255, 0.8)" strokeWidth={haloStrokeWidth} strokeLinecap="round" strokeLinejoin="round" />
-                  ) : null}
+                  <path d={path} fill="none" stroke="rgba(255, 255, 255, 0.8)" strokeWidth={haloStrokeWidth} strokeLinecap="round" strokeLinejoin="round" />
                   <path d={path} fill="none" stroke={CONNECTOR_COLOR} strokeWidth={lineStrokeWidth} strokeLinecap="round" strokeLinejoin="round" />
                 </Fragment>
               );
             })}
-            {connectors.filter((connector) => cullConnectorPath(connector)).map((connector) => {
+            {sortedVisibleConnectors.map((connector) => {
               const path = buildRoundedElbowPath(
                 connector.fromX,
                 connector.fromY,
@@ -361,9 +409,7 @@ export default function MapGridCanvas({
               );
               return (
                 <Fragment key={connector.id}>
-                  {!isCameraMoving ? (
-                    <path d={path} fill="none" stroke="rgba(255, 255, 255, 0.8)" strokeWidth={haloStrokeWidth} strokeLinecap="round" strokeLinejoin="round" />
-                  ) : null}
+                  <path d={path} fill="none" stroke="rgba(255, 255, 255, 0.8)" strokeWidth={haloStrokeWidth} strokeLinecap="round" strokeLinejoin="round" />
                   <path d={path} fill="none" stroke={CONNECTOR_COLOR} strokeWidth={lineStrokeWidth} strokeLinecap="round" strokeLinejoin="round" />
                 </Fragment>
               );
