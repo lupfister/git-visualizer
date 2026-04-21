@@ -1800,6 +1800,30 @@ function App() {
               onGridSearchResultCountChange={setGridSearchResultCount}
               onGridSearchFocusChange={setGridFocusSha}
               checkedOutRef={checkedOutRef}
+              onCommitClick={handleMapCommitClick}
+              onMergeRefsIntoBranch={handleMergeRefsIntoBranch}
+              mergeInProgress={mergeInProgress}
+              onPushAllBranches={handlePushAllBranches}
+              onPushCurrentBranch={handlePushCurrentBranch}
+              onPushCommitTargets={handlePushCommitTargets}
+              pushInProgress={pushInProgress}
+              onDeleteSelection={handleDeleteSelection}
+              deleteInProgress={deleteInProgress}
+              worktrees={worktrees}
+              currentRepoPath={repoPath ?? undefined}
+              onRemoveWorktree={handleRemoveWorktree}
+              removeWorktreeInProgress={removeWorktreeInProgress}
+              onSwitchToWorktree={handleSwitchToWorktree}
+              onStashLocalChanges={handleStashLocalChanges}
+              stashInProgress={stashInProgress}
+              stashDisabled={false}
+              onCommitLocalChanges={handleCommitLocalChanges}
+              commitInProgress={commitInProgress}
+              commitDisabled={false}
+              onStageAllChanges={handleStageAllChanges}
+              stageInProgress={stageInProgress}
+              onCreateBranchFromNode={handleCreateBranchFromNode}
+              createBranchFromNodeInProgress={createBranchFromNodeInProgress}
               onInteractionChange={setIsMapInteracting}
             />
           </div>

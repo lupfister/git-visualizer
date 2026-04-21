@@ -10,6 +10,7 @@ import {
   type CSSProperties,
   type ReactNode,
 } from 'react';
+import type { BranchCommitPreview, WorktreeInfo } from '../../types';
 import {
   buildLanes,
   buildMergeOrthogonalPath,
@@ -378,12 +379,91 @@ const GRID_CONNECTOR_GAP_PX = 0;
 const GRID_CONNECTOR_CORNER_RADIUS_BASE_PX = 18;
 const GRID_COMMIT_CORNER_RADIUS_BASE_PX = 12;
 
+type MarqueeDragState = {
+  startX: number;
+  startY: number;
+  currentX: number;
+  currentY: number;
+  additive: boolean;
+};
+
+function normalizeMarqueeRect(drag: MarqueeDragState) {
+  const left = Math.min(drag.startX, drag.currentX);
+  const top = Math.min(drag.startY, drag.currentY);
+  const width = Math.abs(drag.currentX - drag.startX);
+  const height = Math.abs(drag.currentY - drag.startY);
+  return { left, top, width, height };
+}
+
+function normalizeRepoPathForCompare(path: string): string {
+  return path.replace(/\\/g, '/').replace(/\/+$/, '');
+}
+
+function shaMatchesGitRef(a?: string | null, b?: string | null): boolean {
+  if (!a || !b) return false;
+  return a === b || a.startsWith(b) || b.startsWith(a);
+}
+
+function isOtherWorktree(worktree: WorktreeInfo, currentRepoPath?: string): boolean {
+  if (currentRepoPath) {
+    const a = normalizeRepoPathForCompare(currentRepoPath);
+    const b = normalizeRepoPathForCompare(worktree.path);
+    if (a === b || a.toLowerCase() === b.toLowerCase()) return false;
+  }
+  return !worktree.isCurrent;
+}
+
+function isUsableOtherWorktree(worktree: WorktreeInfo, currentRepoPath?: string): boolean {
+  if (worktree.pathExists === false) return false;
+  return isOtherWorktree(worktree, currentRepoPath);
+}
+
+function worktreeShortLabel(path: string): string {
+  const parts = path.replace(/\\/g, '/').split('/').filter(Boolean);
+  if (parts.length <= 2) return path;
+  return `.../${parts.slice(-2).join('/')}`;
+}
+
 export default function BranchGridMap({
   branches,
   mergeNodes = [],
   directCommits = [],
   unpushedDirectCommits = [],
+  unpushedCommitShasByBranch = {},
+  openPRs = [],
   defaultBranch,
+  onCommitClick,
+  onLoadMore,
+  view,
+  staleBranches = [],
+  isLoading = false,
+  scrollRequest,
+  focusedErrorBranch,
+  mapTopInsetPx = 0,
+  onMergeRefsIntoBranch,
+  mergeInProgress = false,
+  onPushAllBranches,
+  onPushCurrentBranch,
+  onPushCommitTargets,
+  pushInProgress = false,
+  onDeleteSelection,
+  deleteInProgress = false,
+  worktrees = [],
+  currentRepoPath,
+  onRemoveWorktree,
+  removeWorktreeInProgress = false,
+  onSwitchToWorktree,
+  onStashLocalChanges,
+  stashInProgress = false,
+  stashDisabled = false,
+  onCommitLocalChanges,
+  commitInProgress = false,
+  commitDisabled = false,
+  onStageAllChanges,
+  stageInProgress = false,
+  onCreateBranchFromNode,
+  createBranchFromNodeInProgress = false,
+  orientation = 'vertical',
   branchCommitPreviews = {},
   branchUniqueAheadCounts = {},
   gridSearchQuery = '',
@@ -404,9 +484,20 @@ export default function BranchGridMap({
   const cameraFrameRef = useRef<number | null>(null);
   const renderedZoomRef = useRef(GRID_ZOOM_DEFAULT);
   const interactionIdleTimeoutRef = useRef<number | null>(null);
-  const dragStateRef = useRef<{ x: number; y: number; panX: number; panY: number } | null>(null);
-  const [isDragging, setIsDragging] = useState(false);
   const [isCameraMoving, setIsCameraMoving] = useState(false);
+  const marqueeDragRef = useRef<MarqueeDragState | null>(null);
+  const marqueeMovedRef = useRef(false);
+  const marqueeBaseSelectionRef = useRef<string[]>([]);
+  const [isMarqueeSelecting, setIsMarqueeSelecting] = useState(false);
+  const [marqueeRect, setMarqueeRect] = useState<{ left: number; top: number; width: number; height: number } | null>(null);
+  const [selectedCommitShas, setSelectedCommitShas] = useState<string[]>([]);
+  const [mergeTargetCommitSha, setMergeTargetCommitSha] = useState<string | null>(null);
+  const [worktreeMenuOpen, setWorktreeMenuOpen] = useState(false);
+  const [commitDialogOpen, setCommitDialogOpen] = useState(false);
+  const [commitMessageDraft, setCommitMessageDraft] = useState('');
+  const [deleteConfirmOpen, setDeleteConfirmOpen] = useState(false);
+  const [newBranchDialogOpen, setNewBranchDialogOpen] = useState(false);
+  const [newBranchName, setNewBranchName] = useState('');
   const [manuallyOpenedClumps, setManuallyOpenedClumps] = useState<Set<string>>(() => new Set());
   const [isDebugOpen, setIsDebugOpen] = useState(false);
   const [renderedZoom, setRenderedZoom] = useState(GRID_ZOOM_DEFAULT);
@@ -466,6 +557,7 @@ export default function BranchGridMap({
     checkedOutClusterKey,
     defaultCollapsedClumps,
     renderNodes,
+    visibleNodesBySha,
     contentWidth,
     contentHeight,
     connectors,
@@ -545,9 +637,221 @@ export default function BranchGridMap({
   );
 
   const connectorParentAccentClass =
-    'border-slate-400/70 ring-2 ring-slate-400/20 shadow-[0_0_0_1px_rgba(100,116,139,0.14)]';
+    'border-slate-400/70';
   const branchStartAccentClass =
-    'border-blue-500 ring-2 ring-blue-500/35 shadow-[0_0_0_1px_rgba(59,130,246,0.18)]';
+    'border-blue-500';
+
+  const branchByName = useMemo(() => new Map(branches.map((branch) => [branch.name, branch])), [branches]);
+  const freshCopyBranchNames = useMemo(
+    () => new Set(branches.filter((branch) => branch.commitsAhead === 0 && !branch.name.startsWith('*')).map((branch) => branch.name)),
+    [branches],
+  );
+  const commitShaToBranchNames = useMemo(() => {
+    const map = new Map<string, Set<string>>();
+    for (const node of renderNodes) {
+      const set = map.get(node.commit.id) ?? new Set<string>();
+      set.add(node.commit.branchName);
+      map.set(node.commit.id, set);
+    }
+    for (const commit of directCommits) {
+      const set = map.get(commit.fullSha) ?? new Set<string>();
+      set.add(defaultBranch);
+      map.set(commit.fullSha, set);
+    }
+    return map;
+  }, [renderNodes, directCommits, defaultBranch]);
+  const selectableCommitShaSet = useMemo(() => new Set(renderNodes.map((node) => node.commit.id)), [renderNodes]);
+  const selectedVisibleCommitShas = useMemo(
+    () => selectedCommitShas.filter((sha) => selectableCommitShaSet.has(sha)),
+    [selectedCommitShas, selectableCommitShaSet],
+  );
+  const branchPreviewContainsSha = useCallback(
+    (branchName: string, sha: string): boolean => {
+      if (!sha) return false;
+      const previews = branchCommitPreviews[branchName] ?? [];
+      if (previews.some((preview) => shaMatchesGitRef(preview.fullSha, sha) || shaMatchesGitRef(preview.sha, sha))) return true;
+      const branch = branchByName.get(branchName);
+      if (branch?.headSha && shaMatchesGitRef(branch.headSha, sha)) return true;
+      return false;
+    },
+    [branchCommitPreviews, branchByName],
+  );
+  const checkedOutBranchName = checkedOutRef?.branchName ?? null;
+  const checkedOutHeadSha = checkedOutRef?.headSha ?? null;
+  const checkedOutIsDetached = checkedOutBranchName == null;
+
+  const findOtherWorktreeForCommit = useCallback(
+    (branchName: string, commitFullSha: string, commitShortSha: string): WorktreeInfo | null => {
+      for (const wt of worktrees) {
+        if (!isUsableOtherWorktree(wt, currentRepoPath)) continue;
+        if (wt.branchName) {
+          if (wt.branchName === branchName && shaMatchesGitRef(wt.headSha, commitFullSha)) return wt;
+          continue;
+        }
+        if (!shaMatchesGitRef(wt.headSha, commitFullSha) && !shaMatchesGitRef(wt.headSha, commitShortSha)) continue;
+        if (wt.parentSha && branchPreviewContainsSha(branchName, wt.parentSha)) return wt;
+        if (branchPreviewContainsSha(branchName, wt.headSha)) return wt;
+        const branch = branchByName.get(branchName);
+        if (branch && shaMatchesGitRef(branch.headSha, wt.headSha)) return wt;
+        if (branchName === defaultBranch && directCommits.some((commit) => shaMatchesGitRef(commit.fullSha, wt.headSha))) {
+          return wt;
+        }
+      }
+      return null;
+    },
+    [worktrees, currentRepoPath, branchPreviewContainsSha, branchByName, defaultBranch, directCommits],
+  );
+
+  const findWorktreeWithBranchCheckedOut = useCallback(
+    (branchName: string): WorktreeInfo | null => {
+      for (const wt of worktrees) {
+        if (!isUsableOtherWorktree(wt, currentRepoPath)) continue;
+        if (wt.branchName === branchName) return wt;
+      }
+      return null;
+    },
+    [worktrees, currentRepoPath],
+  );
+
+  const findOtherWorktreeByHeadSha = useCallback(
+    (commitFullSha: string, commitShortSha: string): WorktreeInfo | null => {
+      for (const wt of worktrees) {
+        if (!isUsableOtherWorktree(wt, currentRepoPath)) continue;
+        if (shaMatchesGitRef(wt.headSha, commitFullSha) || shaMatchesGitRef(wt.headSha, commitShortSha)) return wt;
+      }
+      return null;
+    },
+    [worktrees, currentRepoPath],
+  );
+
+  const branchCandidatesForCommit = useCallback(
+    (sha: string): string[] => Array.from(commitShaToBranchNames.get(sha) ?? []),
+    [commitShaToBranchNames],
+  );
+
+  const selectedCommitTargetOption = useMemo(() => {
+    const byBranch = new Map<string, { targetSha: string; targetBranch: string; sourceRefs: string[] }>();
+    for (const targetSha of selectedVisibleCommitShas) {
+      const candidates = branchCandidatesForCommit(targetSha);
+      if (candidates.length === 0) continue;
+      const targetBranch = candidates.find((name) => name !== defaultBranch) ?? candidates[0];
+      const sourceRefs = selectedVisibleCommitShas
+        .filter((sha) => sha !== targetSha)
+        .filter((sha) => {
+          const sourceCandidates = new Set(branchCandidatesForCommit(sha));
+          return !sourceCandidates.has(targetBranch);
+        });
+      byBranch.set(targetBranch, { targetSha, targetBranch, sourceRefs });
+    }
+    const options = Array.from(byBranch.values());
+    const explicit = mergeTargetCommitSha
+      ? options.find((option) => option.targetSha === mergeTargetCommitSha || option.targetBranch === (branchCandidatesForCommit(mergeTargetCommitSha)[0] ?? ''))
+      : null;
+    const selected = explicit ?? options[options.length - 1] ?? null;
+    return {
+      options,
+      selected,
+      targetBranch: selected?.targetBranch ?? null,
+      sources: selected?.sourceRefs ?? [],
+    };
+  }, [selectedVisibleCommitShas, branchCandidatesForCommit, defaultBranch, mergeTargetCommitSha]);
+
+  const pushableBranchByName = useMemo(() => {
+    const entries = [
+      ...(checkedOutBranchName === defaultBranch
+        ? [{ name: defaultBranch, headSha: checkedOutHeadSha ?? '', unpushedCommits: unpushedDirectCommits.length, remoteSyncStatus: 'unpushed' as const }]
+        : []),
+      ...branches,
+    ]
+      .filter(
+        (branch) =>
+          !branch.name.startsWith('*') &&
+          branch.unpushedCommits > 0 &&
+          branch.remoteSyncStatus !== 'on-github',
+      )
+      .map((branch) => [branch.name, branch] as const);
+    return new Map(entries);
+  }, [branches, checkedOutBranchName, checkedOutHeadSha, defaultBranch, unpushedDirectCommits.length]);
+
+  const selectedPushTargets = useMemo(() => {
+    const resolvePushBranch = (targetSha: string): string | null => {
+      const candidates = branchCandidatesForCommit(targetSha).filter((branchName) => pushableBranchByName.has(branchName));
+      if (candidates.length === 0) return null;
+      if (candidates.length === 1) return candidates[0];
+      if (checkedOutBranchName && candidates.includes(checkedOutBranchName)) return checkedOutBranchName;
+      return candidates.find((name) => name !== defaultBranch) ?? candidates[0];
+    };
+    const commitPreviewListForBranch = (branchName: string): BranchCommitPreview[] => {
+      if (branchName === defaultBranch) {
+        return unpushedDirectCommits.map((commit) => ({
+          fullSha: commit.fullSha,
+          sha: commit.sha,
+          parentSha: commit.parentSha ?? null,
+          message: commit.message,
+          author: commit.author,
+          date: commit.date,
+          kind: commit.kind ?? 'commit',
+        }));
+      }
+      return branchCommitPreviews[branchName] ?? [];
+    };
+    const map = new Map<string, { branchName: string; targetSha: string; targetIndex: number; commitCount: number }>();
+    for (const sha of selectedVisibleCommitShas) {
+      const targetBranch = resolvePushBranch(sha);
+      if (!targetBranch) continue;
+      const branch = pushableBranchByName.get(targetBranch);
+      if (!branch) continue;
+      const unpushedPreviews = commitPreviewListForBranch(targetBranch).slice(0, branch.unpushedCommits);
+      const targetIndex = unpushedPreviews.findIndex((commit) => commit.fullSha === sha);
+      if (targetIndex === -1) continue;
+      const existing = map.get(targetBranch);
+      if (!existing || targetIndex < existing.targetIndex) {
+        map.set(targetBranch, {
+          branchName: targetBranch,
+          targetSha: sha,
+          targetIndex,
+          commitCount: unpushedPreviews.length - targetIndex,
+        });
+      }
+    }
+    return Array.from(map.values());
+  }, [
+    selectedVisibleCommitShas,
+    branchCandidatesForCommit,
+    pushableBranchByName,
+    checkedOutBranchName,
+    defaultBranch,
+    unpushedDirectCommits,
+    branchCommitPreviews,
+  ]);
+
+  const selectedStashIndices = useMemo(
+    () =>
+      Array.from(
+        new Set(
+          selectedVisibleCommitShas
+            .map((sha) => /^STASH:(\d+)$/.exec(sha))
+            .filter((match): match is RegExpExecArray => !!match)
+            .map((match) => parseInt(match[1], 10)),
+        ),
+      ).sort((a, b) => a - b),
+    [selectedVisibleCommitShas],
+  );
+  const hasSelectedUncommittedChanges = selectedVisibleCommitShas.includes('WORKING_TREE');
+  const deletableSelectionCount = (hasSelectedUncommittedChanges ? 1 : 0) + selectedStashIndices.length;
+  const deleteSelectionItems = [
+    ...(hasSelectedUncommittedChanges ? ['Uncommitted changes'] : []),
+    ...selectedStashIndices.map((idx) => `Stash ${idx + 1}`),
+  ];
+  const hasSelection = selectedVisibleCommitShas.length > 0;
+  const pushableRemoteBranchCount = pushableBranchByName.size;
+  const canPushCurrentBranch = !checkedOutIsDetached && !!checkedOutBranchName && pushableBranchByName.has(checkedOutBranchName);
+  const pushCurrentBranchLabel = checkedOutBranchName ? `Push ${checkedOutBranchName}` : 'Push current branch';
+  const selectedPushLabel = selectedPushTargets.length === 1
+    ? selectedPushTargets[0].commitCount > 1
+      ? `Push ${selectedPushTargets[0].commitCount} commits on ${selectedPushTargets[0].branchName}`
+      : `Push ${selectedPushTargets[0].targetSha.slice(0, 7)} on ${selectedPushTargets[0].branchName}`
+    : `Push ${selectedPushTargets.length} selected ranges`;
 
   /** Top-left of the transform layer's local space in viewport (screen) coordinates. */
   const getTransformLayerOriginScreen = useCallback((): { x: number; y: number } | null => {
@@ -646,7 +950,7 @@ export default function BranchGridMap({
     }
     interactionIdleTimeoutRef.current = window.setTimeout(() => {
       interactionIdleTimeoutRef.current = null;
-      if (!dragStateRef.current) setIsCameraMoving(false);
+      setIsCameraMoving(false);
     }, 90);
   };
 
@@ -685,35 +989,100 @@ export default function BranchGridMap({
     syncCamera(panRef.current.x - event.deltaX, panRef.current.y - event.deltaY, zoomRef.current);
   };
 
-  const startPanDrag = (event: React.MouseEvent<HTMLDivElement>) => {
+  const collectCommitSelectionFromMarquee = useCallback(
+    (rect: { left: number; top: number; width: number; height: number }): string[] => {
+      const viewport = scrollContainerRef.current;
+      const origin = getTransformLayerOriginScreen();
+      if (!viewport || !origin) return [];
+      const viewportRect = viewport.getBoundingClientRect();
+      const scale = renderedCameraRef.current.zoom / GRID_RENDER_ZOOM;
+      if (scale <= 0) return [];
+      const selected: string[] = [];
+      const left = rect.left;
+      const right = rect.left + rect.width;
+      const top = rect.top;
+      const bottom = rect.top + rect.height;
+      for (const node of renderNodes) {
+        if (!shouldRenderNode(node)) continue;
+        const nodeLeft = origin.x + renderedCameraRef.current.panX + node.x * scale - viewportRect.left;
+        const nodeTop = origin.y + renderedCameraRef.current.panY + node.y * scale - viewportRect.top;
+        const nodeRight = nodeLeft + CARD_WIDTH * scale;
+        const nodeBottom = nodeTop + (CARD_BODY_TOP_OFFSET + CARD_HEIGHT) * scale;
+        const intersects = !(nodeRight < left || nodeLeft > right || nodeBottom < top || nodeTop > bottom);
+        if (intersects) selected.push(node.commit.id);
+      }
+      return selected;
+    },
+    [getTransformLayerOriginScreen, renderNodes],
+  );
+
+  const startMarqueeDrag = (event: React.MouseEvent<HTMLDivElement>) => {
     if (event.button !== 0) return;
     const target = event.target as HTMLElement | null;
+    if (target?.closest('[data-commit-card]')) return;
     if (target?.closest('button, a, input, textarea, select')) return;
+    const container = scrollContainerRef.current;
+    if (!container) return;
     event.preventDefault();
-    setIsDragging(true);
-    dragStateRef.current = {
-      x: event.clientX,
-      y: event.clientY,
-      panX: panRef.current.x,
-      panY: panRef.current.y,
+    const bounds = container.getBoundingClientRect();
+    const startX = event.clientX - bounds.left;
+    const startY = event.clientY - bounds.top;
+    marqueeDragRef.current = {
+      startX,
+      startY,
+      currentX: startX,
+      currentY: startY,
+      additive: event.metaKey || event.ctrlKey,
     };
+    marqueeMovedRef.current = false;
+    marqueeBaseSelectionRef.current = event.metaKey || event.ctrlKey ? selectedVisibleCommitShas : [];
+    setIsMarqueeSelecting(true);
+    setMarqueeRect({ left: startX, top: startY, width: 0, height: 0 });
   };
 
   useEffect(() => {
-    onInteractionChange?.(isDragging || isCameraMoving);
-  }, [isDragging, isCameraMoving, onInteractionChange]);
+    onInteractionChange?.(isCameraMoving || isMarqueeSelecting);
+  }, [isCameraMoving, isMarqueeSelecting, onInteractionChange]);
 
   useEffect(() => {
     const handleMove = (event: MouseEvent) => {
-      const drag = dragStateRef.current;
-      if (!drag) return;
-      const dx = event.clientX - drag.x;
-      const dy = event.clientY - drag.y;
-      syncCamera(drag.panX + dx, drag.panY + dy, zoomRef.current);
+      const marqueeDrag = marqueeDragRef.current;
+      if (marqueeDrag) {
+        const container = scrollContainerRef.current;
+        if (!container) return;
+        const bounds = container.getBoundingClientRect();
+        marqueeDrag.currentX = event.clientX - bounds.left;
+        marqueeDrag.currentY = event.clientY - bounds.top;
+        if (!marqueeMovedRef.current && (Math.abs(marqueeDrag.currentX - marqueeDrag.startX) > 2 || Math.abs(marqueeDrag.currentY - marqueeDrag.startY) > 2)) {
+          marqueeMovedRef.current = true;
+        }
+        const nextRect = normalizeMarqueeRect(marqueeDrag);
+        setMarqueeRect(nextRect);
+        const commitSelection = collectCommitSelectionFromMarquee(nextRect);
+        setSelectedCommitShas(
+          marqueeDrag.additive
+            ? Array.from(new Set([...marqueeBaseSelectionRef.current, ...commitSelection]))
+            : Array.from(new Set(commitSelection)),
+        );
+        if (!marqueeDrag.additive) {
+          setMergeTargetCommitSha(commitSelection[commitSelection.length - 1] ?? null);
+        }
+        return;
+      }
     };
     const handleUp = () => {
-      dragStateRef.current = null;
-      setIsDragging(false);
+      if (marqueeDragRef.current) {
+        const marqueeDragged = marqueeMovedRef.current;
+        marqueeDragRef.current = null;
+        marqueeMovedRef.current = false;
+        setIsMarqueeSelecting(false);
+        setMarqueeRect(null);
+        if (!marqueeDragged) {
+          setSelectedCommitShas([]);
+          setMergeTargetCommitSha(null);
+        }
+        return;
+      }
       if (interactionIdleTimeoutRef.current == null) setIsCameraMoving(false);
       flushCameraReactTick();
     };
@@ -723,7 +1092,7 @@ export default function BranchGridMap({
       window.removeEventListener('mousemove', handleMove);
       window.removeEventListener('mouseup', handleUp);
     };
-  }, [flushCameraReactTick]);
+  }, [flushCameraReactTick, collectCommitSelectionFromMarquee, selectedVisibleCommitShas]);
 
   useLayoutEffect(() => {
     applyRenderedCamera(0, 0, GRID_ZOOM_DEFAULT);
@@ -899,6 +1268,104 @@ export default function BranchGridMap({
   const renderedMergeConnectorCount = mergeConnectors.filter((connector) => cullConnectorPath(connector)).length;
   const renderedConnectorCount = connectors.filter((connector) => cullConnectorPath(connector)).length;
 
+  const handleCommitCardClick = useCallback(
+    (event: React.MouseEvent, node: Node) => {
+      event.stopPropagation();
+      const commitSha = node.commit.id;
+      if (event.shiftKey) {
+        setSelectedCommitShas((prev) =>
+          prev.includes(commitSha)
+            ? prev.filter((sha) => sha !== commitSha)
+            : [...prev, commitSha],
+        );
+        setMergeTargetCommitSha(commitSha);
+      } else {
+        setSelectedCommitShas((prev) => (prev.includes(commitSha) ? [] : [commitSha]));
+        setMergeTargetCommitSha((current) => (current === commitSha ? null : commitSha));
+      }
+
+      const shouldCheckout = event.metaKey || event.ctrlKey || event.detail >= 2;
+      if (!shouldCheckout) return;
+      if (commitSha === 'WORKING_TREE') return;
+
+      const shortSha = commitSha.length >= 40 ? commitSha.slice(0, 7) : commitSha;
+      let otherWorktree: WorktreeInfo | null = null;
+      if (node.commit.branchName) {
+        otherWorktree = findOtherWorktreeForCommit(node.commit.branchName, commitSha, shortSha);
+        if (!otherWorktree) {
+          otherWorktree = findWorktreeWithBranchCheckedOut(node.commit.branchName);
+        }
+      } else {
+        otherWorktree = findOtherWorktreeByHeadSha(commitSha, shortSha);
+      }
+      if (otherWorktree && onSwitchToWorktree) {
+        void onSwitchToWorktree(otherWorktree.path);
+        return;
+      }
+      onCommitClick?.({ commitSha });
+    },
+    [
+      findOtherWorktreeByHeadSha,
+      findOtherWorktreeForCommit,
+      findWorktreeWithBranchCheckedOut,
+      onCommitClick,
+      onSwitchToWorktree,
+    ],
+  );
+
+  const confirmCommit = useCallback(async () => {
+    if (!onCommitLocalChanges) return;
+    const ok = await onCommitLocalChanges(commitMessageDraft);
+    if (ok) {
+      setCommitDialogOpen(false);
+      setCommitMessageDraft('');
+    }
+  }, [onCommitLocalChanges, commitMessageDraft]);
+
+  const confirmDeleteSelection = useCallback(async () => {
+    if (!onDeleteSelection) return;
+    await onDeleteSelection({
+      branchNames: [],
+      discardUncommittedChanges: hasSelectedUncommittedChanges,
+      stashIndices: selectedStashIndices,
+    });
+    setDeleteConfirmOpen(false);
+    setSelectedCommitShas([]);
+    setMergeTargetCommitSha(null);
+  }, [onDeleteSelection, hasSelectedUncommittedChanges, selectedStashIndices]);
+
+  const confirmCreateBranchFromSelection = useCallback(async () => {
+    if (!onCreateBranchFromNode || selectedVisibleCommitShas.length !== 1) return;
+    const target = selectedVisibleCommitShas[0];
+    if (!(target === 'WORKING_TREE' || target.startsWith('STASH:'))) return;
+    const trimmed = newBranchName.trim();
+    if (!trimmed) return;
+    await onCreateBranchFromNode(target, trimmed);
+    setNewBranchDialogOpen(false);
+    setNewBranchName('');
+    setSelectedCommitShas([]);
+    setMergeTargetCommitSha(null);
+  }, [onCreateBranchFromNode, selectedVisibleCommitShas, newBranchName]);
+
+  const selectedCommitCanCreateBranch =
+    selectedVisibleCommitShas.length === 1 &&
+    (selectedVisibleCommitShas[0] === 'WORKING_TREE' || selectedVisibleCommitShas[0].startsWith('STASH:'));
+
+  void [
+    unpushedCommitShasByBranch,
+    openPRs,
+    onLoadMore,
+    view,
+    staleBranches,
+    isLoading,
+    scrollRequest,
+    focusedErrorBranch,
+    mapTopInsetPx,
+    orientation,
+    visibleNodesBySha,
+    freshCopyBranchNames,
+  ];
+
   return (
     <div className="relative flex h-full min-h-0 flex-col overflow-hidden rounded-2xl border border-border bg-card">
       <div className="pointer-events-none absolute bottom-4 right-4 z-[10000] flex items-end gap-2">
@@ -906,7 +1373,7 @@ export default function BranchGridMap({
           type="button"
           onClick={() => setIsDebugOpen((open) => !open)}
           className={cn(
-            'pointer-events-auto inline-flex h-8 items-center rounded-full border px-3 text-xs font-medium shadow-sm transition-colors',
+            'pointer-events-auto inline-flex h-8 items-center rounded-full border px-3 text-xs font-medium transition-colors',
             isDebugOpen
               ? 'border-primary/30 bg-primary/10 text-primary'
               : 'border-border bg-card text-muted-foreground hover:bg-accent hover:text-foreground'
@@ -916,7 +1383,7 @@ export default function BranchGridMap({
         </button>
       </div>
       {isDebugOpen ? (
-        <div className="absolute bottom-14 right-4 z-[10000] flex max-h-[calc(100%-4rem)] w-[min(42rem,calc(100%-2rem))] flex-col overflow-hidden rounded-2xl border border-border bg-card/95 shadow-lg backdrop-blur-sm">
+        <div className="absolute bottom-14 right-4 z-[10000] flex max-h-[calc(100%-4rem)] w-[min(42rem,calc(100%-2rem))] flex-col overflow-hidden rounded-2xl border border-border bg-card/95 backdrop-blur-sm">
           <div className="flex items-center justify-between border-b border-border/50 px-4 py-3">
             <div>
               <p className="text-sm font-medium text-foreground">Commit debug</p>
@@ -949,7 +1416,7 @@ export default function BranchGridMap({
       ) : null}
       {allCommits.length === 0 ? (
         <div className="flex flex-1 min-h-0 items-center justify-center py-20">
-          <div className="rounded-xl border border-border/50 bg-muted/30 shadow-inner px-4 py-3">
+          <div className="rounded-xl border border-border/50 bg-muted/30 px-4 py-3">
             <p className="text-sm text-muted-foreground">No commits to render</p>
           </div>
         </div>
@@ -957,13 +1424,13 @@ export default function BranchGridMap({
         <div
           ref={scrollContainerRef}
           className="flex-1 min-h-0 overflow-hidden"
-          style={{ cursor: isDragging ? 'grabbing' : 'grab' }}
+          style={{ cursor: isMarqueeSelecting ? 'crosshair' : 'default' }}
         >
           <div
             ref={mapPadHostRef}
             className="relative min-w-full p-2.5"
             onWheel={handleWheel}
-            onMouseDown={startPanDrag}
+            onMouseDown={startMarqueeDrag}
             style={{ width: contentWidth, minWidth: '100%', height: contentHeight }}
           >
             <div
@@ -973,7 +1440,7 @@ export default function BranchGridMap({
                 width: contentWidth,
                 height: contentHeight,
                 transformOrigin: 'top left' as const,
-                ...(isDragging || isCameraMoving ? { willChange: 'transform' as const } : {}),
+                ...(isCameraMoving ? { willChange: 'transform' as const } : {}),
               }}
             >
               {renderNodes.filter((node) => shouldRenderNode(node)).map((node) => {
@@ -986,6 +1453,9 @@ export default function BranchGridMap({
             const hasRenderedAncestry = commitIdsWithRenderedAncestry.has(node.commit.id);
             const nodeWarningsForCard = nodeWarnings.get(node.commit.id) ?? [];
             const showDataShapeError = nodeWarningsForCard.length > 0 && !hasRenderedAncestry;
+            const isSelectedCommit = selectedVisibleCommitShas.includes(node.commit.id);
+            const selectedCommitTextClass = isSelectedCommit ? 'text-[#158EFC]' : 'text-muted-foreground';
+            const selectedCommitTextStyle = isSelectedCommit ? { color: '#158EFC' } : undefined;
             return (
             <MapGridCommitWrapper
               key={node.commit.visualId}
@@ -1006,9 +1476,11 @@ export default function BranchGridMap({
                 <div className="flex min-w-0 items-baseline justify-between gap-2 px-0 pb-0">
                   <div
                     className={cn(
-                      'min-w-0 flex-1 text-sm font-medium leading-none text-muted-foreground',
+                      'min-w-0 flex-1 text-sm font-medium leading-none',
+                      selectedCommitTextClass,
                       displayZoom <= 0.5 ? 'overflow-hidden text-ellipsis whitespace-nowrap' : 'break-words whitespace-normal',
                     )}
+                    style={selectedCommitTextStyle}
                   >
                     {node.commit.branchName}/{node.commit.id.slice(0, 7)}
                   </div>
@@ -1025,7 +1497,8 @@ export default function BranchGridMap({
                         });
                         flushCameraReactTick();
                       }}
-                      className="inline-flex items-center bg-transparent p-0 text-sm font-medium leading-none text-muted-foreground"
+                      className={cn('inline-flex items-center bg-transparent p-0 text-sm font-medium leading-none', selectedCommitTextClass)}
+                      style={selectedCommitTextStyle}
                     >
                       {isClusterOpen ? '⌃' : `x${clumpCount}`}
                     </button>
@@ -1033,11 +1506,10 @@ export default function BranchGridMap({
                 </div>
               </div>
               <div
+                data-commit-card="true"
+                onClick={(event) => handleCommitCardClick(event, node)}
                 className={cn(
-                  'absolute left-0 h-[176px] w-full overflow-hidden rounded-tr-xl rounded-br-xl rounded-bl-xl rounded-tl-none border border-border/50 bg-card hover:border-border',
-                  isCameraMoving
-                    ? 'transition-none'
-                    : 'transition-[border-color,box-shadow] duration-200 ease-in-out hover:shadow-sm',
+                  'absolute left-0 h-[176px] w-full cursor-pointer overflow-hidden rounded-tr-xl rounded-br-xl rounded-bl-xl rounded-tl-none border border-border/50 bg-card',
                   branchOffNodeShas.has(node.commit.id) ||
                   branchStartShas.has(node.commit.id) ||
                   crossBranchOutgoingShas.has(node.commit.id)
@@ -1045,17 +1517,16 @@ export default function BranchGridMap({
                     : connectorParentShas.has(node.commit.id)
                       ? connectorParentAccentClass
                     : branchBaseCommitByName.get(node.commit.branchName)?.id === node.commit.id
-                      ? 'border-amber-500 ring-2 ring-amber-500/35 shadow-[0_0_0_1px_rgba(245,158,11,0.18)]'
+                      ? 'border-amber-500'
                       : showDataShapeError
-                        ? 'border-red-500 ring-2 ring-red-500/25 shadow-[0_0_0_1px_rgba(239,68,68,0.12)]'
+                        ? 'border-red-500'
                         : '',
-                  normalizedSearchQuery && matchingNodeIds.has(node.commit.id) && !isCameraMoving ? 'shadow-md' : '',
-                  focusedNode?.commit.id === node.commit.id ? cn('ring-2 ring-primary/20', !isCameraMoving && 'shadow-md') : ''
+                  normalizedSearchQuery && matchingNodeIds.has(node.commit.id) && !isCameraMoving ? '' : '',
                 )}
                 style={{
                   top: 0,
                   borderWidth: `${lineStrokeWidth}px`,
-                  borderColor: CONNECTOR_COLOR,
+                  borderColor: isSelectedCommit ? '#158EFC' : CONNECTOR_COLOR,
                   borderTopLeftRadius: 0,
                   borderTopRightRadius: `${commitCornerRadiusPx}px`,
                   borderBottomRightRadius: `${commitCornerRadiusPx}px`,
@@ -1064,11 +1535,13 @@ export default function BranchGridMap({
               >
                 <div className="flex h-full min-h-0 flex-col px-2.5 py-2" style={inverseZoomStyle}>
                   <div className="min-h-0 flex-1">
-                    <div
-                      className={cn(
-                        'max-w-[38rem] text-sm font-medium leading-tight tracking-tight text-muted-foreground group-hover:text-muted-foreground',
+                  <div
+                    className={cn(
+                        'max-w-[38rem] text-sm font-medium leading-tight tracking-tight text-muted-foreground',
+                        selectedCommitTextClass,
                         displayZoom <= 0.5 ? 'overflow-hidden text-ellipsis whitespace-nowrap' : 'break-words whitespace-normal',
                       )}
+                    style={selectedCommitTextStyle}
                     >
                       {isTop && isClusterOpen
                         ? node.commit.message
@@ -1089,8 +1562,10 @@ export default function BranchGridMap({
                   </div>
                   {showCommitMetadata ? (
                     <div className="mt-auto flex items-end justify-between gap-4 pt-5">
-                      <div className="text-sm font-medium text-muted-foreground">@{node.commit.author}</div>
-                      <div className="text-sm font-medium text-muted-foreground">
+                      <div className={cn('text-sm font-medium', selectedCommitTextClass)} style={selectedCommitTextStyle}>
+                        @{node.commit.author}
+                      </div>
+                      <div className={cn('text-sm font-medium', selectedCommitTextClass)} style={selectedCommitTextStyle}>
                         {new Date(node.commit.date).toLocaleString('en-US', {
                           month: 'long',
                           day: 'numeric',
@@ -1190,6 +1665,275 @@ export default function BranchGridMap({
           </div>
         </div>
       )}
+
+      {marqueeRect && isMarqueeSelecting ? (
+        <div
+          className="pointer-events-none absolute z-[60] border border-primary/40 bg-primary/10"
+          style={{
+            left: marqueeRect.left,
+            top: marqueeRect.top,
+            width: marqueeRect.width,
+            height: marqueeRect.height,
+          }}
+        />
+      ) : null}
+
+      <div className="pointer-events-none absolute bottom-4 left-4 right-4 z-[70] flex flex-wrap items-center gap-2">
+        <div className="pointer-events-auto inline-flex items-center gap-1 rounded-full border border-border bg-card/95 px-2 py-1 backdrop-blur-sm">
+          <button
+            type="button"
+            onClick={() => setCommitDialogOpen(true)}
+            disabled={!onCommitLocalChanges || commitDisabled || hasSelection || commitInProgress}
+            className="rounded-lg px-2.5 py-1 text-xs font-medium text-foreground transition-colors hover:bg-accent disabled:cursor-not-allowed disabled:opacity-50"
+          >
+            {commitInProgress ? 'Committing...' : 'Commit'}
+          </button>
+          <button
+            type="button"
+            onClick={() => void onStageAllChanges?.()}
+            disabled={!onStageAllChanges || commitDisabled || hasSelection || stageInProgress}
+            className="rounded-lg px-2.5 py-1 text-xs font-medium text-foreground transition-colors hover:bg-accent disabled:cursor-not-allowed disabled:opacity-50"
+          >
+            {stageInProgress ? 'Staging...' : 'Stage all'}
+          </button>
+          <button
+            type="button"
+            onClick={() => void onStashLocalChanges?.()}
+            disabled={!onStashLocalChanges || stashDisabled || hasSelection || stashInProgress}
+            className="rounded-lg px-2.5 py-1 text-xs font-medium text-foreground transition-colors hover:bg-accent disabled:cursor-not-allowed disabled:opacity-50"
+          >
+            {stashInProgress ? 'Stashing...' : 'Stash'}
+          </button>
+          <button
+            type="button"
+            onClick={() => void onPushCurrentBranch?.()}
+            disabled={!onPushCurrentBranch || !canPushCurrentBranch || hasSelection || pushInProgress}
+            className="rounded-lg px-2.5 py-1 text-xs font-medium text-foreground transition-colors hover:bg-accent disabled:cursor-not-allowed disabled:opacity-50"
+          >
+            {pushInProgress ? 'Pushing...' : pushCurrentBranchLabel}
+          </button>
+          <button
+            type="button"
+            onClick={() => void onPushAllBranches?.()}
+            disabled={!onPushAllBranches || pushableRemoteBranchCount < 2 || hasSelection || pushInProgress}
+            className="rounded-lg px-2.5 py-1 text-xs font-medium text-foreground transition-colors hover:bg-accent disabled:cursor-not-allowed disabled:opacity-50"
+          >
+            Push all
+          </button>
+          <button
+            type="button"
+            onClick={() => void onPushCommitTargets?.(selectedPushTargets.map((target) => ({ branchName: target.branchName, targetSha: target.targetSha })))}
+            disabled={!onPushCommitTargets || selectedPushTargets.length === 0 || pushInProgress}
+            className="rounded-lg px-2.5 py-1 text-xs font-medium text-foreground transition-colors hover:bg-accent disabled:cursor-not-allowed disabled:opacity-50"
+            title={selectedPushTargets.length > 0 ? selectedPushLabel : 'Select commits to push'}
+          >
+            {selectedPushTargets.length > 0 ? selectedPushLabel : 'Push selected'}
+          </button>
+          <button
+            type="button"
+            onClick={() => setDeleteConfirmOpen(true)}
+            disabled={!onDeleteSelection || deletableSelectionCount === 0 || deleteInProgress}
+            className="rounded-lg px-2.5 py-1 text-xs font-medium text-red-600 transition-colors hover:bg-red-50 dark:hover:bg-red-900/20 disabled:cursor-not-allowed disabled:opacity-50"
+          >
+            {deleteInProgress ? 'Deleting...' : 'Delete selection'}
+          </button>
+          <button
+            type="button"
+            onClick={() => setNewBranchDialogOpen(true)}
+            disabled={!onCreateBranchFromNode || !selectedCommitCanCreateBranch || createBranchFromNodeInProgress}
+            className="rounded-lg px-2.5 py-1 text-xs font-medium text-foreground transition-colors hover:bg-accent disabled:cursor-not-allowed disabled:opacity-50"
+          >
+            {createBranchFromNodeInProgress ? 'Creating...' : 'Create branch'}
+          </button>
+        </div>
+
+        {selectedVisibleCommitShas.length > 1 && selectedCommitTargetOption.options.length > 0 && selectedCommitTargetOption.targetBranch && onMergeRefsIntoBranch ? (
+          <div className="pointer-events-auto inline-flex items-center gap-1 rounded-full border border-border bg-card/95 px-2 py-1 backdrop-blur-sm">
+            <span className="px-1 text-xs font-medium text-muted-foreground">merge to</span>
+            {selectedCommitTargetOption.options.map((option) => {
+              const isActive = option.targetBranch === selectedCommitTargetOption.targetBranch;
+              return (
+                <button
+                  key={`merge-${option.targetBranch}`}
+                  type="button"
+                  onClick={() => setMergeTargetCommitSha(option.targetSha)}
+                  className={cn(
+                    'rounded-full px-2.5 py-1 text-xs font-medium transition-colors',
+                    isActive ? 'bg-primary/10 text-primary' : 'text-muted-foreground hover:bg-accent hover:text-foreground',
+                  )}
+                >
+                  {option.targetBranch}
+                </button>
+              );
+            })}
+            <button
+              type="button"
+              onClick={() => void onMergeRefsIntoBranch(selectedCommitTargetOption.sources, selectedCommitTargetOption.targetBranch!)}
+              disabled={selectedCommitTargetOption.sources.length === 0 || mergeInProgress}
+              className="rounded-full bg-primary/10 px-2.5 py-1 text-xs font-medium text-primary transition-opacity hover:opacity-90 disabled:cursor-not-allowed disabled:opacity-50"
+            >
+              {mergeInProgress ? 'Merging...' : 'Confirm'}
+            </button>
+          </div>
+        ) : null}
+
+        {worktrees.length > 0 && (onSwitchToWorktree || onRemoveWorktree) ? (
+          <div className="pointer-events-auto relative">
+            <button
+              type="button"
+              onClick={() => setWorktreeMenuOpen((open) => !open)}
+              className="rounded-full border border-border bg-card/95 px-3 py-1 text-xs font-medium text-foreground backdrop-blur-sm transition-colors hover:bg-accent"
+            >
+              {worktrees.length} {worktrees.length === 1 ? 'Worktree' : 'Worktrees'}
+            </button>
+            {worktreeMenuOpen ? (
+              <div className="absolute bottom-full left-0 mb-2 w-[22rem] max-h-64 overflow-auto rounded-xl border border-border bg-card p-2">
+                {worktrees.map((worktree) => (
+                  <div key={worktree.path} className="mb-1 flex items-start justify-between gap-2 rounded-lg px-2 py-1.5 hover:bg-muted/30">
+                    <div className="min-w-0">
+                      <div className="truncate text-xs font-medium text-foreground" title={worktree.path}>
+                        {isOtherWorktree(worktree, currentRepoPath) ? worktreeShortLabel(worktree.path) : 'This window'}
+                      </div>
+                      <div className="truncate text-[11px] text-muted-foreground">
+                        {worktree.branchName ?? 'detached'} • {worktree.headSha.slice(0, 7)}
+                      </div>
+                    </div>
+                    {isOtherWorktree(worktree, currentRepoPath) ? (
+                      <div className="flex items-center gap-1">
+                        {onSwitchToWorktree ? (
+                          <button
+                            type="button"
+                            onClick={() => {
+                              setWorktreeMenuOpen(false);
+                              void onSwitchToWorktree(worktree.path);
+                            }}
+                            disabled={removeWorktreeInProgress || worktree.pathExists === false}
+                            className="rounded-md border border-border px-2 py-0.5 text-[11px] font-medium text-foreground transition-colors hover:bg-accent disabled:cursor-not-allowed disabled:opacity-50"
+                          >
+                            Switch
+                          </button>
+                        ) : null}
+                        {onRemoveWorktree ? (
+                          <button
+                            type="button"
+                            onClick={() => void onRemoveWorktree(worktree.path, worktree.isPrunable)}
+                            disabled={removeWorktreeInProgress}
+                            className="rounded-md border border-border px-2 py-0.5 text-[11px] font-medium text-foreground transition-colors hover:bg-accent disabled:cursor-not-allowed disabled:opacity-50"
+                          >
+                            {removeWorktreeInProgress ? '...' : 'Remove'}
+                          </button>
+                        ) : null}
+                      </div>
+                    ) : null}
+                  </div>
+                ))}
+              </div>
+            ) : null}
+          </div>
+        ) : null}
+      </div>
+
+      {commitDialogOpen ? (
+        <div className="absolute inset-0 z-[80] flex items-center justify-center bg-background/70 p-4 backdrop-blur-sm">
+          <div className="w-full max-w-md rounded-2xl border border-border bg-card p-4">
+            <p className="text-sm font-medium text-foreground">Create commit</p>
+            <p className="mt-1 text-xs text-muted-foreground">Stage all changes, then commit on current HEAD.</p>
+            <textarea
+              value={commitMessageDraft}
+              onChange={(event) => setCommitMessageDraft(event.target.value)}
+              onKeyDown={(event) => {
+                if ((event.metaKey || event.ctrlKey) && event.key === 'Enter') {
+                  event.preventDefault();
+                  void confirmCommit();
+                }
+              }}
+              rows={4}
+              placeholder="Describe your changes"
+              className="mt-3 w-full rounded-lg border border-border bg-background px-3 py-2 text-sm text-foreground placeholder:text-muted-foreground focus:outline-none"
+            />
+            <div className="mt-4 flex items-center justify-end gap-2">
+              <button
+                type="button"
+                onClick={() => setCommitDialogOpen(false)}
+                className="rounded-lg border border-border bg-card px-3 py-1.5 text-xs font-medium text-foreground transition-colors hover:bg-accent"
+              >
+                Cancel
+              </button>
+              <button
+                type="button"
+                onClick={() => void confirmCommit()}
+                disabled={!commitMessageDraft.trim() || commitInProgress}
+                className="rounded-lg border border-border bg-card px-3 py-1.5 text-xs font-medium text-foreground transition-colors hover:bg-accent disabled:cursor-not-allowed disabled:opacity-50"
+              >
+                {commitInProgress ? 'Committing...' : 'Commit'}
+              </button>
+            </div>
+          </div>
+        </div>
+      ) : null}
+
+      {deleteConfirmOpen ? (
+        <div className="absolute inset-0 z-[80] flex items-center justify-center bg-background/70 p-4 backdrop-blur-sm">
+          <div className="w-full max-w-md rounded-2xl border border-border bg-card p-4">
+            <p className="text-sm font-medium text-foreground">Delete selected items?</p>
+            <div className="mt-3 space-y-1.5">
+              {deleteSelectionItems.map((item) => (
+                <div key={item} className="rounded-lg border border-border/50 bg-muted/30 px-2.5 py-1.5 text-xs text-muted-foreground">
+                  {item}
+                </div>
+              ))}
+            </div>
+            <div className="mt-4 flex items-center justify-end gap-2">
+              <button
+                type="button"
+                onClick={() => setDeleteConfirmOpen(false)}
+                className="rounded-lg border border-border bg-card px-3 py-1.5 text-xs font-medium text-foreground transition-colors hover:bg-accent"
+              >
+                Cancel
+              </button>
+              <button
+                type="button"
+                onClick={() => void confirmDeleteSelection()}
+                disabled={deletableSelectionCount === 0 || deleteInProgress}
+                className="rounded-lg bg-red-50 dark:bg-red-900/20 px-3 py-1.5 text-xs font-medium text-red-600 dark:text-red-400 transition-colors hover:bg-red-50/80 dark:hover:bg-red-900/30 disabled:cursor-not-allowed disabled:opacity-50"
+              >
+                {deleteInProgress ? 'Deleting...' : 'Delete'}
+              </button>
+            </div>
+          </div>
+        </div>
+      ) : null}
+
+      {newBranchDialogOpen ? (
+        <div className="absolute inset-0 z-[80] flex items-center justify-center bg-background/70 p-4 backdrop-blur-sm">
+          <div className="w-full max-w-sm rounded-2xl border border-border bg-card p-4">
+            <p className="text-sm font-medium text-foreground">Create branch from selected node</p>
+            <input
+              value={newBranchName}
+              onChange={(event) => setNewBranchName(event.target.value)}
+              placeholder="feature/my-changes"
+              className="mt-3 w-full rounded-lg border border-border bg-background px-3 py-2 text-sm text-foreground placeholder:text-muted-foreground focus:outline-none"
+            />
+            <div className="mt-4 flex items-center justify-end gap-2">
+              <button
+                type="button"
+                onClick={() => setNewBranchDialogOpen(false)}
+                className="rounded-lg border border-border bg-card px-3 py-1.5 text-xs font-medium text-foreground transition-colors hover:bg-accent"
+              >
+                Cancel
+              </button>
+              <button
+                type="button"
+                onClick={() => void confirmCreateBranchFromSelection()}
+                disabled={!newBranchName.trim() || createBranchFromNodeInProgress}
+                className="rounded-lg border border-border bg-card px-3 py-1.5 text-xs font-medium text-foreground transition-colors hover:bg-accent disabled:cursor-not-allowed disabled:opacity-50"
+              >
+                {createBranchFromNodeInProgress ? 'Creating...' : 'Create'}
+              </button>
+            </div>
+          </div>
+        </div>
+      ) : null}
     </div>
   );
 }
