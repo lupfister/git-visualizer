@@ -182,7 +182,7 @@ export default function MapGridCanvas({
     >
       <div
         ref={mapPadHostRef}
-        className="relative min-w-full p-2.5"
+        className="relative min-w-full bg-[#FAFAF9] p-2.5"
         onWheel={onWheel}
         onMouseDown={onMouseDown}
         style={{ width: contentWidth, minWidth: '100%', height: contentHeight }}
@@ -414,7 +414,7 @@ export default function MapGridCanvas({
               });
               return (
                 <Fragment key={connector.id}>
-                  <path d={path} fill="none" stroke="rgba(255, 255, 255, 0.8)" strokeWidth={haloStrokeWidth} strokeLinecap="round" strokeLinejoin="round" />
+                  <path d={path} fill="none" stroke="#FAFAF9" strokeWidth={haloStrokeWidth} strokeLinecap="round" strokeLinejoin="round" />
                   <path d={path} fill="none" stroke={CONNECTOR_COLOR} strokeWidth={lineStrokeWidth} strokeLinecap="round" strokeLinejoin="round" />
                 </Fragment>
               );
@@ -431,7 +431,7 @@ export default function MapGridCanvas({
               );
               return (
                 <Fragment key={connector.id}>
-                  <path d={path} fill="none" stroke="rgba(255, 255, 255, 0.8)" strokeWidth={haloStrokeWidth} strokeLinecap="round" strokeLinejoin="round" />
+                  <path d={path} fill="none" stroke="#FAFAF9" strokeWidth={haloStrokeWidth} strokeLinecap="round" strokeLinejoin="round" />
                   <path d={path} fill="none" stroke={CONNECTOR_COLOR} strokeWidth={lineStrokeWidth} strokeLinecap="round" strokeLinejoin="round" />
                 </Fragment>
               );
