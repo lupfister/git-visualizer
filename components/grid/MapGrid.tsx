@@ -1,5 +1,4 @@
 import {
-  startTransition,
   useCallback,
   useEffect,
   useLayoutEffect,
@@ -18,366 +17,28 @@ import {
 } from './LayoutGrid';
 import { computeBranchGridLayout } from './branchGridLayoutModel';
 import MapGridCanvas from './MapGridCanvas';
+import MapGridControls from './MapGridControls';
 import MapGridDebugPanel from './MapGridDebugPanel';
 import MapGridDialogs from './MapGridDialogs';
-
-function cn(...classes: Array<string | false | null | undefined>): string {
-  return classes.filter(Boolean).join(' ');
-}
-
-const GRID_ZOOM_MAX = 2.25;
-const GRID_ZOOM_DEFAULT = GRID_ZOOM_MAX / 2;
-const GRID_ZOOM_MIN = 0.45;
-const GRID_ZOOM_WHEEL_SENSITIVITY = 0.01;
-/** Must match `GRID_LAYOUT_RENDER_ZOOM` in `branchGridLayoutModel.ts`. */
-const GRID_RENDER_ZOOM = GRID_ZOOM_MAX;
-/** Keep in sync with `p-2.5` on the padded wrapper around the transform layer (0.625rem ≈ 10px at 16px root). */
-const MAP_GRID_INNER_PADDING_PX = 10;
-/**
- * Adjusts the cull rectangle on every side (in screen px, converted by zoom).
- * Positive values shrink the rect (inset) so edge content is culled earlier — useful to verify culling.
- * Negative values expand the rect outward (outset) so more off-screen content stays mounted.
- * Set to `0` to match the full viewport bounds.
- */
-const MAP_GRID_CULL_VIEWPORT_INSET_SCREEN_PX = -100;
-/** Pan-only camera updates throttle React re-renders (zoom always updates immediately). */
-const MAP_GRID_CAMERA_PAN_REACT_THROTTLE_MS = 0;
-/** Near-1 keeps pan responsive with a very slight eased follow. Zoom still eases separately. */
-const CAMERA_PAN_INTERPOLATION = 0.9;
-/**
- * Zoom must apply in lockstep with pan for cursor-centered zoom — lerping zoom while pan snaps to
- * target breaks the screen→world mapping until the animation finishes.
- */
-const CAMERA_ZOOM_INTERPOLATION = 0.9;
-const CAMERA_SETTLE_EPSILON = 0.001;
-const ZOOM_SETTLE_EPSILON = 0.001;
-
-function clampZoom(value: number): number {
-  return Math.max(GRID_ZOOM_MIN, Math.min(GRID_ZOOM_MAX, value));
-}
-
-type ViewportContentBounds = { left: number; top: number; right: number; bottom: number };
-
-function intersectsVisibleBounds(
-  bounds: ViewportContentBounds,
-  rect: { left: number; top: number; right: number; bottom: number },
-): boolean {
-  return !(
-    rect.right < bounds.left ||
-    rect.left > bounds.right ||
-    rect.bottom < bounds.top ||
-    rect.top > bounds.bottom
-  );
-}
-
-/** Liang–Barsky: true iff the segment intersects the closed axis-aligned rectangle (inclusive). */
-function segmentIntersectsViewportBounds(
-  x1: number,
-  y1: number,
-  x2: number,
-  y2: number,
-  rect: ViewportContentBounds,
-): boolean {
-  const { left: xmin, top: ymin, right: xmax, bottom: ymax } = rect;
-  let u1 = 0;
-  let u2 = 1;
-  const dx = x2 - x1;
-  const dy = y2 - y1;
-
-  const clip = (p: number, q: number): boolean => {
-    if (Math.abs(p) < 1e-12) {
-      return q >= 0;
-    }
-    const t = q / p;
-    if (p < 0) {
-      if (t > u2) return false;
-      if (t > u1) u1 = t;
-    } else {
-      if (t < u1) return false;
-      if (t < u2) u2 = t;
-    }
-    return true;
-  };
-
-  if (!clip(-dx, x1 - xmin)) return false;
-  if (!clip(dx, xmax - x1)) return false;
-  if (!clip(-dy, y1 - ymin)) return false;
-  if (!clip(dy, ymax - y1)) return false;
-  return u1 <= u2;
-}
-
-function axisAlignedBoundsOfPoints(points: ReadonlyArray<{ x: number; y: number }>): ViewportContentBounds {
-  let left = points[0]?.x ?? 0;
-  let top = points[0]?.y ?? 0;
-  let right = left;
-  let bottom = top;
-  for (const p of points) {
-    left = Math.min(left, p.x);
-    top = Math.min(top, p.y);
-    right = Math.max(right, p.x);
-    bottom = Math.max(bottom, p.y);
-  }
-  return { left, top, right, bottom };
-}
-
-/** Matches `buildRoundedElbowPath` straight segments + quad bbox (same corner math). */
-function roundedElbowConnectorIntersectsViewportBounds(
-  fromX: number,
-  fromY: number,
-  toX: number,
-  toY: number,
-  cornerR: number,
-  tipGap: number,
-  rect: ViewportContentBounds,
-): boolean {
-  const finalY = toY - Math.sign(toY - fromY || 1) * tipGap;
-  const corner = Math.max(0, Math.min(cornerR, Math.abs(toX - fromX), Math.abs(toY - fromY)));
-  if (corner < 0.5) {
-    return (
-      segmentIntersectsViewportBounds(fromX, fromY, toX, fromY, rect) ||
-      segmentIntersectsViewportBounds(toX, fromY, toX, finalY, rect)
-    );
-  }
-  const horizontalDir = toX >= fromX ? 1 : -1;
-  const verticalDir = toY >= fromY ? 1 : -1;
-  const preTurnX = toX - horizontalDir * corner;
-  const postTurnY = finalY - verticalDir * corner;
-  const quadEndX = toX;
-  const quadEndY = fromY + verticalDir * corner;
-  if (segmentIntersectsViewportBounds(fromX, fromY, preTurnX, fromY, rect)) return true;
-  const quadHull = axisAlignedBoundsOfPoints([
-    { x: preTurnX, y: fromY },
-    { x: toX, y: fromY },
-    { x: quadEndX, y: quadEndY },
-  ]);
-  if (intersectsVisibleBounds(rect, quadHull)) return true;
-  if (segmentIntersectsViewportBounds(quadEndX, quadEndY, toX, postTurnY, rect)) return true;
-  return segmentIntersectsViewportBounds(toX, postTurnY, toX, finalY, rect);
-}
-
-/** Matches `buildMergeOrthogonalPath` (LayoutGrid) segment layout. */
-function mergeOrthogonalConnectorIntersectsViewportBounds(
-  laneX: number,
-  tipY: number,
-  mergeX: number,
-  mergeY: number,
-  cornerR: number,
-  rect: ViewportContentBounds,
-): boolean {
-  if (Math.abs(mergeY - tipY) < 0.5) {
-    return segmentIntersectsViewportBounds(laneX, tipY, mergeX, mergeY, rect);
-  }
-  const horizontalDir = mergeX >= laneX ? 1 : -1;
-  const corner = Math.max(0, Math.min(cornerR, Math.abs(mergeY - tipY), Math.abs(mergeX - laneX)));
-  if (corner < 0.5) {
-    return (
-      segmentIntersectsViewportBounds(laneX, tipY, laneX, mergeY, rect) ||
-      segmentIntersectsViewportBounds(laneX, mergeY, mergeX, mergeY, rect)
-    );
-  }
-  const preTurnY = mergeY - Math.sign(mergeY - tipY) * corner;
-  const cornerX = laneX + horizontalDir * corner;
-  if (segmentIntersectsViewportBounds(laneX, tipY, laneX, preTurnY, rect)) return true;
-  const quadHull = axisAlignedBoundsOfPoints([
-    { x: laneX, y: preTurnY },
-    { x: laneX, y: mergeY },
-    { x: cornerX, y: mergeY },
-  ]);
-  if (intersectsVisibleBounds(rect, quadHull)) return true;
-  return segmentIntersectsViewportBounds(cornerX, mergeY, mergeX, mergeY, rect);
-}
-
-function visibleCommitIdSetEquals(a: Set<string> | null, b: Set<string>): boolean {
-  if (a === null) return false;
-  if (a.size !== b.size) return false;
-  for (const id of a) {
-    if (!b.has(id)) return false;
-  }
-  return true;
-}
-
-/** Horizontal pitch for spatial bucketing (~one card span). */
-const COMMIT_CULL_CELL_W = CARD_WIDTH + 48;
-
-function commitBoundingRectForCull(node: Node, labelTopPxForCull: number) {
-  return {
-    left: node.x,
-    top: node.y + labelTopPxForCull,
-    right: node.x + CARD_WIDTH,
-    bottom: node.y + CARD_BODY_TOP_OFFSET + CARD_HEIGHT + 4,
-  };
-}
-
-type CommitCullSpatialIndex = {
-  cellW: number;
-  cellH: number;
-  buckets: Map<string, Set<string>>;
-};
-
-function buildCommitCullSpatialIndex(nodes: readonly Node[], labelTopPxForCull: number): CommitCullSpatialIndex {
-  const cellW = COMMIT_CULL_CELL_W;
-  const cellH = Math.max(
-    120,
-    Math.ceil(CARD_BODY_TOP_OFFSET + CARD_HEIGHT + 4 - labelTopPxForCull + 24),
-  );
-  const buckets = new Map<string, Set<string>>();
-  for (const node of nodes) {
-    const rect = commitBoundingRectForCull(node, labelTopPxForCull);
-    const ix0 = Math.floor(rect.left / cellW);
-    const ix1 = Math.floor(rect.right / cellW);
-    const iy0 = Math.floor(rect.top / cellH);
-    const iy1 = Math.floor(rect.bottom / cellH);
-    const id = node.commit.visualId;
-    for (let ix = ix0; ix <= ix1; ix++) {
-      for (let iy = iy0; iy <= iy1; iy++) {
-        const key = `${ix},${iy}`;
-        let set = buckets.get(key);
-        if (!set) {
-          set = new Set<string>();
-          buckets.set(key, set);
-        }
-        set.add(id);
-      }
-    }
-  }
-  return { cellW, cellH, buckets };
-}
-
-function collectVisibleCommitIdsFromSpatialIndex(
-  index: CommitCullSpatialIndex,
-  bounds: ViewportContentBounds,
-  nodesByVisualId: ReadonlyMap<string, Node>,
-  labelTopPxForCull: number,
-): Set<string> {
-  const { cellW, cellH, buckets } = index;
-  const ix0 = Math.floor(bounds.left / cellW);
-  const ix1 = Math.floor(bounds.right / cellW);
-  const iy0 = Math.floor(bounds.top / cellH);
-  const iy1 = Math.floor(bounds.bottom / cellH);
-  const candidates = new Set<string>();
-  for (let ix = ix0; ix <= ix1; ix++) {
-    for (let iy = iy0; iy <= iy1; iy++) {
-      const bucket = buckets.get(`${ix},${iy}`);
-      if (!bucket) continue;
-      for (const cid of bucket) candidates.add(cid);
-    }
-  }
-  const nextVisible = new Set<string>();
-  for (const cid of candidates) {
-    const node = nodesByVisualId.get(cid);
-    if (!node) continue;
-    const rect = commitBoundingRectForCull(node, labelTopPxForCull);
-    if (intersectsVisibleBounds(bounds, rect)) nextVisible.add(cid);
-  }
-  return nextVisible;
-}
-
-function getViewportContentBoundsFromClientSize(
-  width: number,
-  height: number,
-  camera: { panX: number; panY: number; zoom: number },
-  options?: { innerPaddingPx?: number },
-): ViewportContentBounds | null {
-  if (camera.zoom <= 0) return null;
-  if (width <= 0 || height <= 0) return null;
-  const scale = camera.zoom / GRID_RENDER_ZOOM;
-  if (!Number.isFinite(scale) || scale <= 0) return null;
-  const pad = options?.innerPaddingPx ?? 0;
-  return {
-    left: (-pad - camera.panX) / scale,
-    top: (-pad - camera.panY) / scale,
-    right: (width - pad - camera.panX) / scale,
-    bottom: (height - pad - camera.panY) / scale,
-  };
-}
-
-/** Inset in content space on all sides; clamped so the rect stays valid. */
-function shrinkViewportContentBounds(bounds: ViewportContentBounds, insetContent: number): ViewportContentBounds {
-  if (!(insetContent > 0)) return bounds;
-  const halfW = (bounds.right - bounds.left) / 2;
-  const halfH = (bounds.bottom - bounds.top) / 2;
-  const clampedInset = Math.min(insetContent, Math.max(0, halfW - 8), Math.max(0, halfH - 8));
-  return {
-    left: bounds.left + clampedInset,
-    top: bounds.top + clampedInset,
-    right: bounds.right - clampedInset,
-    bottom: bounds.bottom - clampedInset,
-  };
-}
-
-/** Outset in content space on all sides (inverse of inset). */
-function growViewportContentBounds(bounds: ViewportContentBounds, outsetContent: number): ViewportContentBounds {
-  if (!(outsetContent > 0)) return bounds;
-  return {
-    left: bounds.left - outsetContent,
-    top: bounds.top - outsetContent,
-    right: bounds.right + outsetContent,
-    bottom: bounds.bottom + outsetContent,
-  };
-}
-
-function withCullInsetScreenPx(
-  bounds: ViewportContentBounds,
-  cameraZoom: number,
-  insetScreenPx: number,
-): ViewportContentBounds {
-  if (insetScreenPx === 0) return bounds;
-  const scale = cameraZoom / GRID_RENDER_ZOOM;
-  if (!Number.isFinite(scale) || scale <= 0) return bounds;
-  if (insetScreenPx > 0) {
-    return shrinkViewportContentBounds(bounds, insetScreenPx / scale);
-  }
-  return growViewportContentBounds(bounds, -insetScreenPx / scale);
-}
-
-const GRID_CONNECTOR_GAP_PX = 0;
-const GRID_CONNECTOR_CORNER_RADIUS_BASE_PX = 18;
-const GRID_COMMIT_CORNER_RADIUS_BASE_PX = 12;
-
-type MarqueeDragState = {
-  startX: number;
-  startY: number;
-  currentX: number;
-  currentY: number;
-  additive: boolean;
-};
-
-function normalizeMarqueeRect(drag: MarqueeDragState) {
-  const left = Math.min(drag.startX, drag.currentX);
-  const top = Math.min(drag.startY, drag.currentY);
-  const width = Math.abs(drag.currentX - drag.startX);
-  const height = Math.abs(drag.currentY - drag.startY);
-  return { left, top, width, height };
-}
-
-function normalizeRepoPathForCompare(path: string): string {
-  return path.replace(/\\/g, '/').replace(/\/+$/, '');
-}
-
-function shaMatchesGitRef(a?: string | null, b?: string | null): boolean {
-  if (!a || !b) return false;
-  return a === b || a.startsWith(b) || b.startsWith(a);
-}
-
-function isOtherWorktree(worktree: WorktreeInfo, currentRepoPath?: string): boolean {
-  if (currentRepoPath) {
-    const a = normalizeRepoPathForCompare(currentRepoPath);
-    const b = normalizeRepoPathForCompare(worktree.path);
-    if (a === b || a.toLowerCase() === b.toLowerCase()) return false;
-  }
-  return !worktree.isCurrent;
-}
-
-function isUsableOtherWorktree(worktree: WorktreeInfo, currentRepoPath?: string): boolean {
-  if (worktree.pathExists === false) return false;
-  return isOtherWorktree(worktree, currentRepoPath);
-}
-
-function worktreeShortLabel(path: string): string {
-  const parts = path.replace(/\\/g, '/').split('/').filter(Boolean);
-  if (parts.length <= 2) return path;
-  return `.../${parts.slice(-2).join('/')}`;
-}
+import { useMapGridCamera } from './useMapGridCamera';
+import { useMapGridSelection } from './useMapGridSelection';
+import {
+  GRID_COMMIT_CORNER_RADIUS_BASE_PX,
+  GRID_CONNECTOR_CORNER_RADIUS_BASE_PX,
+  GRID_CONNECTOR_GAP_PX,
+  GRID_RENDER_ZOOM,
+  MAP_GRID_CULL_VIEWPORT_INSET_SCREEN_PX,
+  MAP_GRID_INNER_PADDING_PX,
+  buildCommitCullSpatialIndex,
+  collectVisibleCommitIdsFromSpatialIndex,
+  getViewportContentBoundsFromClientSize,
+  isUsableOtherWorktree,
+  mergeOrthogonalConnectorIntersectsViewportBounds,
+  roundedElbowConnectorIntersectsViewportBounds,
+  shaMatchesGitRef,
+  visibleCommitIdSetEquals,
+  withCullInsetScreenPx,
+} from './mapGridUtils';
 
 export default function BranchGridMap({
   branches,
@@ -433,20 +94,6 @@ export default function BranchGridMap({
   /** `p-2.5` wrapper: used to map pointer position to the transform layer origin (padding edge). */
   const mapPadHostRef = useRef<HTMLDivElement | null>(null);
   const transformLayerRef = useRef<HTMLDivElement | null>(null);
-  const panRef = useRef({ x: 0, y: 0 });
-  const zoomRef = useRef(GRID_ZOOM_DEFAULT);
-  const renderedCameraRef = useRef({ panX: 0, panY: 0, zoom: GRID_ZOOM_DEFAULT });
-  const cameraFrameRef = useRef<number | null>(null);
-  const renderedZoomRef = useRef(GRID_ZOOM_DEFAULT);
-  const interactionIdleTimeoutRef = useRef<number | null>(null);
-  const [isCameraMoving, setIsCameraMoving] = useState(false);
-  const marqueeDragRef = useRef<MarqueeDragState | null>(null);
-  const marqueeMovedRef = useRef(false);
-  const marqueeBaseSelectionRef = useRef<string[]>([]);
-  const [isMarqueeSelecting, setIsMarqueeSelecting] = useState(false);
-  const [marqueeRect, setMarqueeRect] = useState<{ left: number; top: number; width: number; height: number } | null>(null);
-  const [selectedCommitShas, setSelectedCommitShas] = useState<string[]>([]);
-  const [mergeTargetCommitSha, setMergeTargetCommitSha] = useState<string | null>(null);
   const [worktreeMenuOpen, setWorktreeMenuOpen] = useState(false);
   const [commitDialogOpen, setCommitDialogOpen] = useState(false);
   const [commitMessageDraft, setCommitMessageDraft] = useState('');
@@ -455,12 +102,19 @@ export default function BranchGridMap({
   const [newBranchName, setNewBranchName] = useState('');
   const [manuallyOpenedClumps, setManuallyOpenedClumps] = useState<Set<string>>(() => new Set());
   const [isDebugOpen, setIsDebugOpen] = useState(false);
-  const [renderedZoom, setRenderedZoom] = useState(GRID_ZOOM_DEFAULT);
-  const [cameraRenderTick, setCameraRenderTick] = useState(0);
   const [visibleNodeIds, setVisibleNodeIds] = useState<Set<string> | null>(null);
   const [viewportClientSize, setViewportClientSize] = useState<{ width: number; height: number } | null>(null);
-  const panReactTrailingTimeoutRef = useRef<number | null>(null);
-  const lastCameraPanReactEmitRef = useRef(0);
+  const {
+    isCameraMoving,
+    renderedZoom,
+    cameraRenderTick,
+    renderedCameraRef,
+    interactionIdleTimeoutRef,
+    getTransformLayerOriginScreen,
+    flushCameraReactTick,
+    syncCamera,
+    handleWheel,
+  } = useMapGridCamera({ mapPadHostRef, transformLayerRef });
 
   const lanes = useMemo(() => buildLanes(branches, defaultBranch), [branches, defaultBranch]);
   const layoutModel = useMemo(
@@ -614,6 +268,26 @@ export default function BranchGridMap({
     }
     return map;
   }, [renderNodes, directCommits, defaultBranch]);
+  const handlePointerReleaseNoMarquee = useCallback(() => {
+    void interactionIdleTimeoutRef.current;
+    flushCameraReactTick();
+  }, [flushCameraReactTick, interactionIdleTimeoutRef]);
+  const {
+    isMarqueeSelecting,
+    marqueeRect,
+    selectedCommitShas,
+    setSelectedCommitShas,
+    mergeTargetCommitSha,
+    setMergeTargetCommitSha,
+    startMarqueeDrag,
+  } = useMapGridSelection({
+    scrollContainerRef,
+    renderedCameraRef,
+    getTransformLayerOriginScreen,
+    renderNodes,
+    shouldRenderNode,
+    onPointerReleaseNoMarquee: handlePointerReleaseNoMarquee,
+  });
   const selectableCommitShaSet = useMemo(() => new Set(renderNodes.map((node) => node.commit.id)), [renderNodes]);
   const selectedVisibleCommitShas = useMemo(
     () => selectedCommitShas.filter((sha) => selectableCommitShaSet.has(sha)),
@@ -797,7 +471,6 @@ export default function BranchGridMap({
     ...(hasSelectedUncommittedChanges ? ['Uncommitted changes'] : []),
     ...selectedStashIndices.map((idx) => `Stash ${idx + 1}`),
   ];
-  const hasSelection = selectedVisibleCommitShas.length > 0;
   const pushableRemoteBranchCount = pushableBranchByName.size;
   const canPushCurrentBranch = !checkedOutIsDetached && !!checkedOutBranchName && pushableBranchByName.has(checkedOutBranchName);
   const pushCurrentBranchLabel = checkedOutBranchName ? `Push ${checkedOutBranchName}` : 'Push current branch';
@@ -807,270 +480,9 @@ export default function BranchGridMap({
       : `Push ${selectedPushTargets[0].targetSha.slice(0, 7)} on ${selectedPushTargets[0].branchName}`
     : `Push ${selectedPushTargets.length} selected ranges`;
 
-  /** Top-left of the transform layer's local space in viewport (screen) coordinates. */
-  const getTransformLayerOriginScreen = useCallback((): { x: number; y: number } | null => {
-    const host = mapPadHostRef.current;
-    if (!host) return null;
-    const hr = host.getBoundingClientRect();
-    const cs = getComputedStyle(host);
-    const bl = Number.parseFloat(cs.borderLeftWidth) || 0;
-    const bt = Number.parseFloat(cs.borderTopWidth) || 0;
-    const pl = Number.parseFloat(cs.paddingLeft) || MAP_GRID_INNER_PADDING_PX;
-    const pt = Number.parseFloat(cs.paddingTop) || MAP_GRID_INNER_PADDING_PX;
-    return { x: hr.left + bl + pl, y: hr.top + bt + pt };
-  }, []);
-
-  const flushCameraReactTick = useCallback(() => {
-    if (panReactTrailingTimeoutRef.current != null) {
-      window.clearTimeout(panReactTrailingTimeoutRef.current);
-      panReactTrailingTimeoutRef.current = null;
-    }
-    startTransition(() => {
-      setCameraRenderTick((tick) => tick + 1);
-    });
-    lastCameraPanReactEmitRef.current = performance.now();
-  }, []);
-
-  const applyRenderedCamera = (nextPanX: number, nextPanY: number, nextZoom: number) => {
-    const prev = renderedCameraRef.current;
-    renderedCameraRef.current = { panX: nextPanX, panY: nextPanY, zoom: nextZoom };
-    const layer = transformLayerRef.current;
-    if (layer) {
-      layer.style.transform = `translate3d(${nextPanX}px, ${nextPanY}px, 0) scale(${nextZoom / GRID_RENDER_ZOOM})`;
-    }
-    if (Math.abs(renderedZoomRef.current - nextZoom) > ZOOM_SETTLE_EPSILON) {
-      renderedZoomRef.current = nextZoom;
-      setRenderedZoom(nextZoom);
-    }
-
-    const zoomChanged = Math.abs(nextZoom - prev.zoom) > ZOOM_SETTLE_EPSILON;
-    if (zoomChanged) {
-      flushCameraReactTick();
-      return;
-    }
-
-    const now = performance.now();
-    const elapsed = now - lastCameraPanReactEmitRef.current;
-    if (elapsed >= MAP_GRID_CAMERA_PAN_REACT_THROTTLE_MS) {
-      flushCameraReactTick();
-      return;
-    }
-    if (panReactTrailingTimeoutRef.current != null) {
-      window.clearTimeout(panReactTrailingTimeoutRef.current);
-    }
-    panReactTrailingTimeoutRef.current = window.setTimeout(() => {
-      panReactTrailingTimeoutRef.current = null;
-      flushCameraReactTick();
-    }, MAP_GRID_CAMERA_PAN_REACT_THROTTLE_MS - elapsed);
-  };
-
-  const stepCamera = () => {
-    cameraFrameRef.current = null;
-    const rendered = renderedCameraRef.current;
-    const targetPanX = panRef.current.x;
-    const targetPanY = panRef.current.y;
-    const targetZoom = zoomRef.current;
-    const nextPanX =
-      Math.abs(targetPanX - rendered.panX) <= CAMERA_SETTLE_EPSILON
-        ? targetPanX
-        : rendered.panX + (targetPanX - rendered.panX) * CAMERA_PAN_INTERPOLATION;
-    const nextPanY =
-      Math.abs(targetPanY - rendered.panY) <= CAMERA_SETTLE_EPSILON
-        ? targetPanY
-        : rendered.panY + (targetPanY - rendered.panY) * CAMERA_PAN_INTERPOLATION;
-    const nextZoom =
-      Math.abs(targetZoom - rendered.zoom) <= ZOOM_SETTLE_EPSILON
-        ? targetZoom
-        : rendered.zoom + (targetZoom - rendered.zoom) * CAMERA_ZOOM_INTERPOLATION;
-
-    applyRenderedCamera(nextPanX, nextPanY, nextZoom);
-
-    if (nextPanX !== targetPanX || nextPanY !== targetPanY || nextZoom !== targetZoom) {
-      cameraFrameRef.current = window.requestAnimationFrame(stepCamera);
-    } else {
-      flushCameraReactTick();
-    }
-  };
-
-  const scheduleCameraFrame = () => {
-    if (cameraFrameRef.current != null) return;
-    cameraFrameRef.current = window.requestAnimationFrame(stepCamera);
-  };
-
-  const markCameraInteraction = () => {
-    if (!isCameraMoving) setIsCameraMoving(true);
-    if (interactionIdleTimeoutRef.current != null) {
-      window.clearTimeout(interactionIdleTimeoutRef.current);
-    }
-    interactionIdleTimeoutRef.current = window.setTimeout(() => {
-      interactionIdleTimeoutRef.current = null;
-      setIsCameraMoving(false);
-    }, 90);
-  };
-
-  const syncCamera = (nextPanX: number, nextPanY: number, nextZoom: number) => {
-    panRef.current = { x: nextPanX, y: nextPanY };
-    zoomRef.current = nextZoom;
-    markCameraInteraction();
-    scheduleCameraFrame();
-  };
-
-  const zoomToPoint = (clientX: number, clientY: number, nextZoom: number) => {
-    const targetZoom = clampZoom(nextZoom);
-    const rendered = renderedCameraRef.current;
-    const origin = getTransformLayerOriginScreen();
-    if (!origin) {
-      syncCamera(panRef.current.x, panRef.current.y, targetZoom);
-      return;
-    }
-    const anchorX = clientX - origin.x;
-    const anchorY = clientY - origin.y;
-    const scaleBefore = rendered.zoom / GRID_RENDER_ZOOM;
-    const scaleAfter = targetZoom / GRID_RENDER_ZOOM;
-    const worldX = (anchorX - rendered.panX) / scaleBefore;
-    const worldY = (anchorY - rendered.panY) / scaleBefore;
-    syncCamera(anchorX - worldX * scaleAfter, anchorY - worldY * scaleAfter, targetZoom);
-  };
-
-  const handleWheel = (event: React.WheelEvent<HTMLDivElement>) => {
-    event.preventDefault();
-    if (event.ctrlKey || event.metaKey) {
-      const factor = Math.exp(-event.deltaY * GRID_ZOOM_WHEEL_SENSITIVITY);
-      zoomToPoint(event.clientX, event.clientY, zoomRef.current * factor);
-      return;
-    }
-
-    syncCamera(panRef.current.x - event.deltaX, panRef.current.y - event.deltaY, zoomRef.current);
-  };
-
-  const collectCommitSelectionFromMarquee = useCallback(
-    (rect: { left: number; top: number; width: number; height: number }): string[] => {
-      const viewport = scrollContainerRef.current;
-      const origin = getTransformLayerOriginScreen();
-      if (!viewport || !origin) return [];
-      const viewportRect = viewport.getBoundingClientRect();
-      const scale = renderedCameraRef.current.zoom / GRID_RENDER_ZOOM;
-      if (scale <= 0) return [];
-      const selected: string[] = [];
-      const left = rect.left;
-      const right = rect.left + rect.width;
-      const top = rect.top;
-      const bottom = rect.top + rect.height;
-      for (const node of renderNodes) {
-        if (!shouldRenderNode(node)) continue;
-        const nodeLeft = origin.x + renderedCameraRef.current.panX + node.x * scale - viewportRect.left;
-        const nodeTop = origin.y + renderedCameraRef.current.panY + node.y * scale - viewportRect.top;
-        const nodeRight = nodeLeft + CARD_WIDTH * scale;
-        const nodeBottom = nodeTop + (CARD_BODY_TOP_OFFSET + CARD_HEIGHT) * scale;
-        const intersects = !(nodeRight < left || nodeLeft > right || nodeBottom < top || nodeTop > bottom);
-        if (intersects) selected.push(node.commit.id);
-      }
-      return selected;
-    },
-    [getTransformLayerOriginScreen, renderNodes],
-  );
-
-  const startMarqueeDrag = (event: React.MouseEvent<HTMLDivElement>) => {
-    if (event.button !== 0) return;
-    const target = event.target as HTMLElement | null;
-    if (target?.closest('[data-commit-card]')) return;
-    if (target?.closest('button, a, input, textarea, select')) return;
-    const container = scrollContainerRef.current;
-    if (!container) return;
-    event.preventDefault();
-    const bounds = container.getBoundingClientRect();
-    const startX = event.clientX - bounds.left;
-    const startY = event.clientY - bounds.top;
-    marqueeDragRef.current = {
-      startX,
-      startY,
-      currentX: startX,
-      currentY: startY,
-      additive: event.metaKey || event.ctrlKey,
-    };
-    marqueeMovedRef.current = false;
-    marqueeBaseSelectionRef.current = event.metaKey || event.ctrlKey ? selectedVisibleCommitShas : [];
-    setIsMarqueeSelecting(true);
-    setMarqueeRect({ left: startX, top: startY, width: 0, height: 0 });
-  };
-
   useEffect(() => {
     onInteractionChange?.(isCameraMoving || isMarqueeSelecting);
   }, [isCameraMoving, isMarqueeSelecting, onInteractionChange]);
-
-  useEffect(() => {
-    const handleMove = (event: MouseEvent) => {
-      const marqueeDrag = marqueeDragRef.current;
-      if (marqueeDrag) {
-        const container = scrollContainerRef.current;
-        if (!container) return;
-        const bounds = container.getBoundingClientRect();
-        marqueeDrag.currentX = event.clientX - bounds.left;
-        marqueeDrag.currentY = event.clientY - bounds.top;
-        if (!marqueeMovedRef.current && (Math.abs(marqueeDrag.currentX - marqueeDrag.startX) > 2 || Math.abs(marqueeDrag.currentY - marqueeDrag.startY) > 2)) {
-          marqueeMovedRef.current = true;
-        }
-        const nextRect = normalizeMarqueeRect(marqueeDrag);
-        setMarqueeRect(nextRect);
-        const commitSelection = collectCommitSelectionFromMarquee(nextRect);
-        setSelectedCommitShas(
-          marqueeDrag.additive
-            ? Array.from(new Set([...marqueeBaseSelectionRef.current, ...commitSelection]))
-            : Array.from(new Set(commitSelection)),
-        );
-        if (!marqueeDrag.additive) {
-          setMergeTargetCommitSha(commitSelection[commitSelection.length - 1] ?? null);
-        }
-        return;
-      }
-    };
-    const handleUp = () => {
-      if (marqueeDragRef.current) {
-        const marqueeDragged = marqueeMovedRef.current;
-        marqueeDragRef.current = null;
-        marqueeMovedRef.current = false;
-        setIsMarqueeSelecting(false);
-        setMarqueeRect(null);
-        if (!marqueeDragged) {
-          setSelectedCommitShas([]);
-          setMergeTargetCommitSha(null);
-        }
-        return;
-      }
-      if (interactionIdleTimeoutRef.current == null) setIsCameraMoving(false);
-      flushCameraReactTick();
-    };
-    window.addEventListener('mousemove', handleMove);
-    window.addEventListener('mouseup', handleUp);
-    return () => {
-      window.removeEventListener('mousemove', handleMove);
-      window.removeEventListener('mouseup', handleUp);
-    };
-  }, [flushCameraReactTick, collectCommitSelectionFromMarquee, selectedVisibleCommitShas]);
-
-  useLayoutEffect(() => {
-    applyRenderedCamera(0, 0, GRID_ZOOM_DEFAULT);
-    return () => {
-      if (interactionIdleTimeoutRef.current != null) {
-        window.clearTimeout(interactionIdleTimeoutRef.current);
-      }
-      if (cameraFrameRef.current != null) {
-        window.cancelAnimationFrame(cameraFrameRef.current);
-      }
-      if (panReactTrailingTimeoutRef.current != null) {
-        window.clearTimeout(panReactTrailingTimeoutRef.current);
-        panReactTrailingTimeoutRef.current = null;
-      }
-    };
-  }, []);
-
-  /** Reapply camera transform after React commits — `style` omits `transform` so reconciliation won't strip imperative pan/zoom. */
-  useLayoutEffect(() => {
-    const layer = transformLayerRef.current;
-    if (!layer) return;
-    const r = renderedCameraRef.current;
-    layer.style.transform = `translate3d(${r.panX}px, ${r.panY}px, 0) scale(${r.zoom / GRID_RENDER_ZOOM})`;
-  });
 
   useEffect(() => {
     onGridSearchResultCountChange?.(normalizedSearchQuery ? matchingNodes.length : null);
@@ -1406,160 +818,47 @@ export default function BranchGridMap({
         />
       ) : null}
 
-      <div className="pointer-events-none absolute bottom-4 left-4 right-4 z-[70] flex flex-wrap items-center gap-2">
-        <div className="pointer-events-auto inline-flex items-center gap-1 rounded-full border border-border bg-card/95 px-2 py-1 backdrop-blur-sm">
-          <button
-            type="button"
-            onClick={() => setCommitDialogOpen(true)}
-            disabled={!onCommitLocalChanges || commitDisabled || hasSelection || commitInProgress}
-            className="rounded-lg px-2.5 py-1 text-xs font-medium text-foreground transition-colors hover:bg-accent disabled:cursor-not-allowed disabled:opacity-50"
-          >
-            {commitInProgress ? 'Committing...' : 'Commit'}
-          </button>
-          <button
-            type="button"
-            onClick={() => void onStageAllChanges?.()}
-            disabled={!onStageAllChanges || commitDisabled || hasSelection || stageInProgress}
-            className="rounded-lg px-2.5 py-1 text-xs font-medium text-foreground transition-colors hover:bg-accent disabled:cursor-not-allowed disabled:opacity-50"
-          >
-            {stageInProgress ? 'Staging...' : 'Stage all'}
-          </button>
-          <button
-            type="button"
-            onClick={() => void onStashLocalChanges?.()}
-            disabled={!onStashLocalChanges || stashDisabled || hasSelection || stashInProgress}
-            className="rounded-lg px-2.5 py-1 text-xs font-medium text-foreground transition-colors hover:bg-accent disabled:cursor-not-allowed disabled:opacity-50"
-          >
-            {stashInProgress ? 'Stashing...' : 'Stash'}
-          </button>
-          <button
-            type="button"
-            onClick={() => void onPushCurrentBranch?.()}
-            disabled={!onPushCurrentBranch || !canPushCurrentBranch || hasSelection || pushInProgress}
-            className="rounded-lg px-2.5 py-1 text-xs font-medium text-foreground transition-colors hover:bg-accent disabled:cursor-not-allowed disabled:opacity-50"
-          >
-            {pushInProgress ? 'Pushing...' : pushCurrentBranchLabel}
-          </button>
-          <button
-            type="button"
-            onClick={() => void onPushAllBranches?.()}
-            disabled={!onPushAllBranches || pushableRemoteBranchCount < 2 || hasSelection || pushInProgress}
-            className="rounded-lg px-2.5 py-1 text-xs font-medium text-foreground transition-colors hover:bg-accent disabled:cursor-not-allowed disabled:opacity-50"
-          >
-            Push all
-          </button>
-          <button
-            type="button"
-            onClick={() => void onPushCommitTargets?.(selectedPushTargets.map((target) => ({ branchName: target.branchName, targetSha: target.targetSha })))}
-            disabled={!onPushCommitTargets || selectedPushTargets.length === 0 || pushInProgress}
-            className="rounded-lg px-2.5 py-1 text-xs font-medium text-foreground transition-colors hover:bg-accent disabled:cursor-not-allowed disabled:opacity-50"
-            title={selectedPushTargets.length > 0 ? selectedPushLabel : 'Select commits to push'}
-          >
-            {selectedPushTargets.length > 0 ? selectedPushLabel : 'Push selected'}
-          </button>
-          <button
-            type="button"
-            onClick={() => setDeleteConfirmOpen(true)}
-            disabled={!onDeleteSelection || deletableSelectionCount === 0 || deleteInProgress}
-            className="rounded-lg px-2.5 py-1 text-xs font-medium text-red-600 transition-colors hover:bg-red-50 dark:hover:bg-red-900/20 disabled:cursor-not-allowed disabled:opacity-50"
-          >
-            {deleteInProgress ? 'Deleting...' : 'Delete selection'}
-          </button>
-          <button
-            type="button"
-            onClick={() => setNewBranchDialogOpen(true)}
-            disabled={!onCreateBranchFromNode || !selectedCommitCanCreateBranch || createBranchFromNodeInProgress}
-            className="rounded-lg px-2.5 py-1 text-xs font-medium text-foreground transition-colors hover:bg-accent disabled:cursor-not-allowed disabled:opacity-50"
-          >
-            {createBranchFromNodeInProgress ? 'Creating...' : 'Create branch'}
-          </button>
-        </div>
-
-        {selectedVisibleCommitShas.length > 1 && selectedCommitTargetOption.options.length > 0 && selectedCommitTargetOption.targetBranch && onMergeRefsIntoBranch ? (
-          <div className="pointer-events-auto inline-flex items-center gap-1 rounded-full border border-border bg-card/95 px-2 py-1 backdrop-blur-sm">
-            <span className="px-1 text-xs font-medium text-muted-foreground">merge to</span>
-            {selectedCommitTargetOption.options.map((option) => {
-              const isActive = option.targetBranch === selectedCommitTargetOption.targetBranch;
-              return (
-                <button
-                  key={`merge-${option.targetBranch}`}
-                  type="button"
-                  onClick={() => setMergeTargetCommitSha(option.targetSha)}
-                  className={cn(
-                    'rounded-full px-2.5 py-1 text-xs font-medium transition-colors',
-                    isActive ? 'bg-primary/10 text-primary' : 'text-muted-foreground hover:bg-accent hover:text-foreground',
-                  )}
-                >
-                  {option.targetBranch}
-                </button>
-              );
-            })}
-            <button
-              type="button"
-              onClick={() => void onMergeRefsIntoBranch(selectedCommitTargetOption.sources, selectedCommitTargetOption.targetBranch!)}
-              disabled={selectedCommitTargetOption.sources.length === 0 || mergeInProgress}
-              className="rounded-full bg-primary/10 px-2.5 py-1 text-xs font-medium text-primary transition-opacity hover:opacity-90 disabled:cursor-not-allowed disabled:opacity-50"
-            >
-              {mergeInProgress ? 'Merging...' : 'Confirm'}
-            </button>
-          </div>
-        ) : null}
-
-        {worktrees.length > 0 && (onSwitchToWorktree || onRemoveWorktree) ? (
-          <div className="pointer-events-auto relative">
-            <button
-              type="button"
-              onClick={() => setWorktreeMenuOpen((open) => !open)}
-              className="rounded-full border border-border bg-card/95 px-3 py-1 text-xs font-medium text-foreground backdrop-blur-sm transition-colors hover:bg-accent"
-            >
-              {worktrees.length} {worktrees.length === 1 ? 'Worktree' : 'Worktrees'}
-            </button>
-            {worktreeMenuOpen ? (
-              <div className="absolute bottom-full left-0 mb-2 w-[22rem] max-h-64 overflow-auto rounded-xl border border-border bg-card p-2">
-                {worktrees.map((worktree) => (
-                  <div key={worktree.path} className="mb-1 flex items-start justify-between gap-2 rounded-lg px-2 py-1.5 hover:bg-muted/30">
-                    <div className="min-w-0">
-                      <div className="truncate text-xs font-medium text-foreground" title={worktree.path}>
-                        {isOtherWorktree(worktree, currentRepoPath) ? worktreeShortLabel(worktree.path) : 'This window'}
-                      </div>
-                      <div className="truncate text-[11px] text-muted-foreground">
-                        {worktree.branchName ?? 'detached'} • {worktree.headSha.slice(0, 7)}
-                      </div>
-                    </div>
-                    {isOtherWorktree(worktree, currentRepoPath) ? (
-                      <div className="flex items-center gap-1">
-                        {onSwitchToWorktree ? (
-                          <button
-                            type="button"
-                            onClick={() => {
-                              setWorktreeMenuOpen(false);
-                              void onSwitchToWorktree(worktree.path);
-                            }}
-                            disabled={removeWorktreeInProgress || worktree.pathExists === false}
-                            className="rounded-md border border-border px-2 py-0.5 text-[11px] font-medium text-foreground transition-colors hover:bg-accent disabled:cursor-not-allowed disabled:opacity-50"
-                          >
-                            Switch
-                          </button>
-                        ) : null}
-                        {onRemoveWorktree ? (
-                          <button
-                            type="button"
-                            onClick={() => void onRemoveWorktree(worktree.path, worktree.isPrunable)}
-                            disabled={removeWorktreeInProgress}
-                            className="rounded-md border border-border px-2 py-0.5 text-[11px] font-medium text-foreground transition-colors hover:bg-accent disabled:cursor-not-allowed disabled:opacity-50"
-                          >
-                            {removeWorktreeInProgress ? '...' : 'Remove'}
-                          </button>
-                        ) : null}
-                      </div>
-                    ) : null}
-                  </div>
-                ))}
-              </div>
-            ) : null}
-          </div>
-        ) : null}
-      </div>
+      <MapGridControls
+        selectedVisibleCommitShas={selectedVisibleCommitShas}
+        commitInProgress={commitInProgress}
+        commitDisabled={commitDisabled}
+        stageInProgress={stageInProgress}
+        stashInProgress={stashInProgress}
+        stashDisabled={stashDisabled}
+        pushInProgress={pushInProgress}
+        deleteInProgress={deleteInProgress}
+        createBranchFromNodeInProgress={createBranchFromNodeInProgress}
+        onCommitLocalChanges={onCommitLocalChanges}
+        onStageAllChanges={onStageAllChanges ? () => void onStageAllChanges() : undefined}
+        onStashLocalChanges={onStashLocalChanges}
+        onPushCurrentBranch={onPushCurrentBranch}
+        onPushAllBranches={onPushAllBranches}
+        onPushCommitTargets={onPushCommitTargets}
+        onDeleteSelection={onDeleteSelection}
+        onCreateBranchFromNode={onCreateBranchFromNode}
+        onMergeRefsIntoBranch={onMergeRefsIntoBranch}
+        selectedPushTargets={selectedPushTargets}
+        selectedPushLabel={selectedPushLabel}
+        canPushCurrentBranch={canPushCurrentBranch}
+        pushCurrentBranchLabel={pushCurrentBranchLabel}
+        pushableRemoteBranchCount={pushableRemoteBranchCount}
+        deletableSelectionCount={deletableSelectionCount}
+        selectedCommitCanCreateBranch={selectedCommitCanCreateBranch}
+        selectedCommitTargetOption={selectedCommitTargetOption}
+        mergeInProgress={mergeInProgress}
+        mergeTargetCommitSha={mergeTargetCommitSha}
+        setMergeTargetCommitSha={setMergeTargetCommitSha}
+        worktrees={worktrees}
+        currentRepoPath={currentRepoPath}
+        worktreeMenuOpen={worktreeMenuOpen}
+        setWorktreeMenuOpen={setWorktreeMenuOpen}
+        onSwitchToWorktree={onSwitchToWorktree}
+        onRemoveWorktree={onRemoveWorktree}
+        removeWorktreeInProgress={removeWorktreeInProgress}
+        setCommitDialogOpen={setCommitDialogOpen}
+        setDeleteConfirmOpen={setDeleteConfirmOpen}
+        setNewBranchDialogOpen={setNewBranchDialogOpen}
+      />
 
       <MapGridDialogs
         commitDialogOpen={commitDialogOpen}
