@@ -40,7 +40,7 @@ const MAP_GRID_INNER_PADDING_PX = 10;
  * Negative values expand the rect outward (outset) so more off-screen content stays mounted.
  * Set to `0` to match the full viewport bounds.
  */
-const MAP_GRID_CULL_VIEWPORT_INSET_SCREEN_PX = 0;
+const MAP_GRID_CULL_VIEWPORT_INSET_SCREEN_PX = -500;
 /** Pan-only camera updates throttle React re-renders (zoom always updates immediately). */
 const MAP_GRID_CAMERA_PAN_REACT_THROTTLE_MS = 56;
 /** Max commit cards promoted from the cull queue per animation frame (spreads mount cost). */
@@ -549,13 +549,6 @@ export default function BranchGridMap({
   }, [revealedStaggerIds]);
 
   const isGridSearchActive = Boolean(normalizedSearchQuery);
-  const shouldRenderNode = (commitId: string) => {
-    if (isGridSearchActive && matchingNodeIds.has(commitId)) return true;
-    if (focusedNode?.commit.id === commitId) return true;
-    if (visibleNodeIds === null) return true;
-    if (!visibleNodeIds.has(commitId)) return false;
-    return revealedStaggerIds.has(commitId);
-  };
 
   const displayZoom = renderedZoom / GRID_RENDER_ZOOM;
   const inverseZoomStyle = useMemo(
@@ -581,6 +574,26 @@ export default function BranchGridMap({
     () => buildCommitCullSpatialIndex(renderNodes, labelTopPx),
     [renderNodes, labelTopPx],
   );
+
+  const shouldRenderNode = (commitId: string) => {
+    if (isGridSearchActive && matchingNodeIds.has(commitId)) return true;
+    if (focusedNode?.commit.id === commitId) return true;
+    if (visibleNodeIds === null) return true;
+    if (!visibleNodeIds.has(commitId)) return false;
+    const node = nodeByCommitId.get(commitId);
+    const ck = node ? clusterKeyByCommitId.get(node.commit.visualId) : undefined;
+    if (ck) {
+      const count = clusterCounts.get(ck) ?? 1;
+      if (count > 1) {
+        const clusterExpanded =
+          ck === checkedOutClusterKey ||
+          manuallyOpenedClumps.has(ck) ||
+          !defaultCollapsedClumps.has(ck);
+        if (clusterExpanded) return true;
+      }
+    }
+    return revealedStaggerIds.has(commitId);
+  };
 
   const borderWidthPx = 1 / displayZoom;
   const lineStrokeWidth = 2.5 / displayZoom;
@@ -894,6 +907,20 @@ export default function BranchGridMap({
       nodeByCommitId,
       labelTopPx,
     );
+    /* Expanded clumps: spatial cull rects use live zoom while row layout uses GRID_LAYOUT_RENDER_ZOOM — they
+     * can disagree, so commits stay out of visibleNodeIds and never pass the stagger queue. Always allow
+     * laid-out commits for open multi-commit clusters into the viewport set. */
+    for (const node of renderNodes) {
+      const ck = clusterKeyByCommitId.get(node.commit.visualId);
+      if (!ck) continue;
+      const count = clusterCounts.get(ck) ?? 1;
+      if (count <= 1) continue;
+      const clusterExpanded =
+        ck === checkedOutClusterKey ||
+        manuallyOpenedClumps.has(ck) ||
+        !defaultCollapsedClumps.has(ck);
+      if (clusterExpanded) nextVisible.add(node.commit.id);
+    }
     setVisibleNodeIds((prev) => (visibleCommitIdSetEquals(prev, nextVisible) ? prev : nextVisible));
   }, [
     renderedZoom,
@@ -901,6 +928,11 @@ export default function BranchGridMap({
     gridFocusSha,
     isCameraMoving,
     cameraRenderTick,
+    manuallyOpenedClumps,
+    checkedOutClusterKey,
+    defaultCollapsedClumps,
+    clusterKeyByCommitId,
+    clusterCounts,
     renderNodes,
     viewportClientSize,
     commitCullSpatialIndex,
@@ -1046,12 +1078,16 @@ export default function BranchGridMap({
                   {isTop && clumpCount > 1 ? (
                     <button
                       type="button"
-                      onClick={() => clusterKey && clusterKey !== checkedOutClusterKey && setManuallyOpenedClumps((prev) => {
-                        const next = new Set(prev);
-                        if (next.has(clusterKey)) next.delete(clusterKey);
-                        else next.add(clusterKey);
-                        return next;
-                      })}
+                      onClick={() => {
+                        if (!clusterKey || clusterKey === checkedOutClusterKey) return;
+                        setManuallyOpenedClumps((prev) => {
+                          const next = new Set(prev);
+                          if (next.has(clusterKey)) next.delete(clusterKey);
+                          else next.add(clusterKey);
+                          return next;
+                        });
+                        flushCameraReactTick();
+                      }}
                       className="inline-flex items-center bg-transparent p-0 text-sm font-medium leading-none text-muted-foreground"
                     >
                       {isClusterOpen ? '⌃' : `x${clumpCount}`}
