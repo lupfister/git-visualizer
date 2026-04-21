@@ -27,8 +27,10 @@ const GRID_RENDER_ZOOM = GRID_ZOOM_MAX;
 /** Keep in sync with `p-2.5` on the padded wrapper around the transform layer (0.625rem ≈ 10px at 16px root). */
 const MAP_GRID_INNER_PADDING_PX = 10;
 /**
- * Shrinks the cull rectangle on every side (in screen px, converted by zoom) so content near the viewport edge
- * is culled early — useful to verify culling. Set to `0` to match the full viewport.
+ * Adjusts the cull rectangle on every side (in screen px, converted by zoom).
+ * Positive values shrink the rect (inset) so edge content is culled earlier — useful to verify culling.
+ * Negative values expand the rect outward (outset) so more off-screen content stays mounted.
+ * Set to `0` to match the full viewport bounds.
  */
 const MAP_GRID_CULL_VIEWPORT_INSET_SCREEN_PX = -100;
 /** Pan-only camera updates throttle React re-renders (zoom always updates immediately). */
@@ -258,15 +260,29 @@ function shrinkViewportContentBounds(bounds: ViewportContentBounds, insetContent
   };
 }
 
+/** Outset in content space on all sides (inverse of inset). */
+function growViewportContentBounds(bounds: ViewportContentBounds, outsetContent: number): ViewportContentBounds {
+  if (!(outsetContent > 0)) return bounds;
+  return {
+    left: bounds.left - outsetContent,
+    top: bounds.top - outsetContent,
+    right: bounds.right + outsetContent,
+    bottom: bounds.bottom + outsetContent,
+  };
+}
+
 function withCullInsetScreenPx(
   bounds: ViewportContentBounds,
   cameraZoom: number,
   insetScreenPx: number,
 ): ViewportContentBounds {
-  if (insetScreenPx <= 0) return bounds;
+  if (insetScreenPx === 0) return bounds;
   const scale = cameraZoom / GRID_RENDER_ZOOM;
   if (!Number.isFinite(scale) || scale <= 0) return bounds;
-  return shrinkViewportContentBounds(bounds, insetScreenPx / scale);
+  if (insetScreenPx > 0) {
+    return shrinkViewportContentBounds(bounds, insetScreenPx / scale);
+  }
+  return growViewportContentBounds(bounds, -insetScreenPx / scale);
 }
 
 const GRID_CONNECTOR_GAP_PX = 4;
