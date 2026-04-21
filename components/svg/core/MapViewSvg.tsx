@@ -28,6 +28,7 @@ interface Props {
   onGridSearchFocusChange?: (sha: string | null) => void;
   view?: ViewMode;
   isLoading?: boolean;
+  onInteractionChange?: (isBusy: boolean) => void;
   scrollRequest?: { branch: Branch; seq: number } | null;
   focusedErrorBranch?: Branch | null;
   checkedOutRef?: CheckedOutRef | null;
@@ -87,6 +88,7 @@ export default function BranchMapView({
   onGridSearchFocusChange,
   view = 'time',
   isLoading = false,
+  onInteractionChange,
   scrollRequest,
   focusedErrorBranch,
   checkedOutRef = null,
@@ -149,6 +151,7 @@ export default function BranchMapView({
             branchUniqueAheadCounts={branchUniqueAheadCounts}
             staleBranches={staleBranches}
             isLoading={isLoading}
+            onInteractionChange={onInteractionChange}
             scrollRequest={scrollRequest}
             focusedErrorBranch={focusedErrorBranch}
             checkedOutRef={checkedOutRef}

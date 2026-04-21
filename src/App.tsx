@@ -77,6 +77,28 @@ function App() {
   const [createBranchFromNodeInProgress, setCreateBranchFromNodeInProgress] = useState(false);
 
   const branchMetaLoadKeyRef = useRef<string | null>(null);
+  const isMapInteractionBusyRef = useRef(false);
+  const refreshInFlightRef = useRef(false);
+  const pendingRefreshRef = useRef(false);
+  const refreshTimerRef = useRef<number | null>(null);
+  const lastBranchesSignatureRef = useRef<string | null>(null);
+  const lastMergeNodesSignatureRef = useRef<string | null>(null);
+  const lastDirectCommitsSignatureRef = useRef<string | null>(null);
+  const lastCheckedOutSignatureRef = useRef<string | null>(null);
+  const lastLoadedDefaultBranchRef = useRef<string>('main');
+  const lastLoadedRepoPathRef = useRef<string | null>(null);
+
+  function handleMapInteractionChange(isBusy: boolean) {
+    isMapInteractionBusyRef.current = isBusy;
+    if (!isBusy && pendingRefreshRef.current && !refreshInFlightRef.current) {
+      const nextRepoPath = lastLoadedRepoPathRef.current ?? repoPath;
+      const nextDefaultBranch = lastLoadedDefaultBranchRef.current ?? defaultBranch;
+      if (!nextRepoPath) return;
+      void runQueuedFullRefresh(nextRepoPath, nextDefaultBranch).catch((e) => {
+        console.error('Auto-refresh failed:', e);
+      });
+    }
+  }
 
   function handleWindowDragStart(e: React.MouseEvent<HTMLElement>) {
     if (e.button !== 0) return;
@@ -111,6 +133,24 @@ function App() {
     }
 
     return all;
+  }
+
+  function getBranchesSignature(list: Branch[]): string {
+    return list
+      .map((b) => `${b.name}|${b.headSha}|${b.commitsAhead}|${b.commitsBehind}|${b.unpushedCommits}|${b.remoteSyncStatus}`)
+      .join('||');
+  }
+
+  function getMergeNodesSignature(list: MergeNode[]): string {
+    return list.map((n) => n.fullSha).join('|');
+  }
+
+  function getDirectCommitsSignature(list: DirectCommit[]): string {
+    return list.map((c) => c.fullSha).join('|');
+  }
+
+  function getCheckedOutSignature(ref: CheckedOutRef | null): string {
+    return `${ref?.branchName ?? ''}|${ref?.headSha ?? ''}|${ref?.parentSha ?? ''}|${ref?.hasUncommittedChanges ? 1 : 0}`;
   }
 
   async function refreshRepoGitState(path: string, resolvedDefaultBranch?: string) {
@@ -149,6 +189,31 @@ function App() {
     setCheckedOutRef(confirmedCheckedOutRef);
     setWorktrees(worktreeList);
     setStashes(stashList);
+    lastLoadedRepoPathRef.current = path;
+    lastLoadedDefaultBranchRef.current = branchDef;
+    lastBranchesSignatureRef.current = getBranchesSignature(branchList);
+    lastMergeNodesSignatureRef.current = getMergeNodesSignature(nodes);
+    lastDirectCommitsSignatureRef.current = getDirectCommitsSignature(directResult);
+    lastCheckedOutSignatureRef.current = getCheckedOutSignature(confirmedCheckedOutRef);
+  }
+
+  async function runQueuedFullRefresh(path: string, resolvedDefaultBranch: string) {
+    if (!path || refreshInFlightRef.current) {
+      pendingRefreshRef.current = true;
+      return;
+    }
+    if (isMapInteractionBusyRef.current) {
+      pendingRefreshRef.current = true;
+      return;
+    }
+    refreshInFlightRef.current = true;
+    pendingRefreshRef.current = false;
+    try {
+      await refreshRepoGitState(path, resolvedDefaultBranch);
+      setMapLoading(false);
+    } finally {
+      refreshInFlightRef.current = false;
+    }
   }
 
   async function handleSwitchToWorktree(targetPath: string) {
@@ -307,150 +372,47 @@ function App() {
     };
   }, [repoPath]);
 
-  // Hook up exactly as requested: File watcher triggers `git-activity` event from Rust, 
-  // and we do an invisible refetch of git state. Instant map updates!
+  // Watch the repo, but only run full graph refreshes when signatures change.
   useEffect(() => {
     if (!repoPath || !defaultBranch) return;
 
     invoke('watch_repo', { repoPath }).catch(console.error);
 
-    let isFetching = false;
-    let pendingFetch = false;
-    let timeoutId: number;
+    let isDisposed = false;
+    let isSyncingCheckedOut = false;
+    let refreshRetryTimeoutId: number | null = null;
     let monitorIntervalId: number | null = null;
     const retryTimeoutIds = new Set<number>();
     let unlisten: (() => void) | null = null;
-    let isDisposed = false;
-    let isSyncingCheckedOut = false;
-    let lastCheckedOutKey: string | null = null;
-    let lastBranchesSignature: string | null = null;
-    let lastMergeNodesSignature: string | null = null;
-    let lastDirectCommitsSignature: string | null = null;
 
-    const getBranchesSignature = (list: Branch[]): string =>
-      list
-        .map((b) => `${b.name}|${b.headSha}|${b.commitsAhead}|${b.commitsBehind}|${b.unpushedCommits}|${b.remoteSyncStatus}`)
-        .join('||');
+    const clearRefreshTimer = () => {
+      if (refreshTimerRef.current !== null) {
+        clearTimeout(refreshTimerRef.current);
+        refreshTimerRef.current = null;
+      }
+      if (refreshRetryTimeoutId !== null) {
+        clearTimeout(refreshRetryTimeoutId);
+        refreshRetryTimeoutId = null;
+      }
+      for (const id of retryTimeoutIds) {
+        window.clearTimeout(id);
+      }
+      retryTimeoutIds.clear();
+    };
 
-    const getMergeNodesSignature = (list: MergeNode[]): string =>
-      list.map((n) => n.fullSha).join('|');
-
-    const getDirectCommitsSignature = (list: DirectCommit[]): string =>
-      list.map((c) => c.fullSha).join('|');
-
-    const performFetch = async () => {
-      if (isFetching) {
-        pendingFetch = true;
+    const queueFullRefresh = (delayMs = 120) => {
+      if (isDisposed) return;
+      pendingRefreshRef.current = true;
+      if (isMapInteractionBusyRef.current || refreshInFlightRef.current) {
         return;
       }
-      isFetching = true;
-      try {
-        const branchesPromise = invoke<Branch[]>('get_branches', { repoPath });
-        const mergeNodesPromise = fetchAllMergeNodes(repoPath, defaultBranch);
-        const checkedOutPromise = invoke<CheckedOutRef>('get_checked_out_ref', { repoPath }).catch(() => null);
-        const worktreesPromise = invoke<WorktreeInfo[]>('list_worktrees', { repoPath }).catch(() => []);
-        const directCommitsPromise = invoke<DirectCommit[]>('get_direct_commits', { repoPath, branch: defaultBranch });
-        const unpushedDirectPromise = invoke<DirectCommit[]>('get_unpushed_direct_commits', { repoPath, branch: defaultBranch }).catch(() => []);
-
-        // Prioritize the minimum data needed for first paint and interactions.
-        const [branchListResult, currentCheckedOutResult, worktreesResult, directResultResult, unpushedDirectResult] = await Promise.allSettled([
-          branchesPromise,
-          checkedOutPromise,
-          worktreesPromise,
-          directCommitsPromise,
-          unpushedDirectPromise,
-        ]);
-        if (isDisposed) return;
-
-        const resolvedBranches = branchListResult.status === 'fulfilled' ? branchListResult.value : null;
-
-        if (resolvedBranches) {
-          const sig = getBranchesSignature(resolvedBranches);
-          if (sig !== lastBranchesSignature) {
-            lastBranchesSignature = sig;
-            setBranches(resolvedBranches);
-          }
-        }
-        if (directResultResult.status === 'fulfilled') {
-          const next = directResultResult.value;
-          const sig = getDirectCommitsSignature(next);
-          if (sig !== lastDirectCommitsSignature) {
-            lastDirectCommitsSignature = sig;
-            setDirectCommits(next);
-          }
-        }
-        if (unpushedDirectResult.status === 'fulfilled') {
-          setUnpushedDirectCommits(unpushedDirectResult.value);
-        }
-        if (worktreesResult.status === 'fulfilled') {
-          setWorktrees(worktreesResult.value);
-        }
-
-        // Fetch per-branch unpushed SHAs for accurate per-commit classification.
-        const allBranchNames = [defaultBranch, ...(resolvedBranches ?? []).map((b) => b.name)];
-        const unpushedShaEntries = await Promise.all(
-          allBranchNames.map(async (branchName) => {
-            const shas = await invoke<string[]>('get_branch_unpushed_commit_shas', {
-              repoPath,
-              branch: branchName,
-            }).catch(() => []);
-            return [branchName, shas] as const;
-          })
-        );
-        if (!isDisposed) {
-          setUnpushedCommitShasByBranch(Object.fromEntries(unpushedShaEntries));
-        }
-
-        invoke<GitStashEntry[]>('list_stashes', { repoPath })
-          .then((list) => {
-            if (!isDisposed) setStashes(list);
-          })
-          .catch(() => {});
-
-        // Unblock the map as soon as primary graph data is ready.
-        setMapLoading(false);
-        if (
-          currentCheckedOutResult.status === 'fulfilled' &&
-          currentCheckedOutResult.value
-        ) {
-          const nextRef = currentCheckedOutResult.value;
-          setCheckedOutRef((prev) => {
-            if (
-              prev &&
-              prev.branchName === nextRef.branchName &&
-              prev.headSha === nextRef.headSha &&
-              prev.parentSha === nextRef.parentSha &&
-              prev.hasUncommittedChanges === nextRef.hasUncommittedChanges
-            ) {
-              return prev;
-            }
-            return nextRef;
-          });
-        }
-
-        // Merge nodes can be expensive on large repos; resolve them after first paint.
-        const nodesResult = await Promise.allSettled([mergeNodesPromise]);
-        if (isDisposed) return;
-        const mergeNodeResult = nodesResult[0];
-        if (mergeNodeResult.status === 'fulfilled') {
-          const next = mergeNodeResult.value;
-          const sig = getMergeNodesSignature(next);
-          if (sig !== lastMergeNodesSignature) {
-            lastMergeNodesSignature = sig;
-            setMergeNodes(next);
-          }
-        }
-      } catch (e) {
-        console.error('Auto-refresh failed:', e);
-      } finally {
-        setMapLoading(false);
-        isFetching = false;
-        if (pendingFetch && !isDisposed) {
-          pendingFetch = false;
-          // Defer the pending fetch slightly to avoid infinite tight loops
-          timeoutId = window.setTimeout(performFetch, 200);
-        }
+      if (refreshTimerRef.current !== null) {
+        clearTimeout(refreshTimerRef.current);
       }
+      refreshTimerRef.current = window.setTimeout(() => {
+        refreshTimerRef.current = null;
+        void runQueuedFullRefresh(repoPath, defaultBranch);
+      }, delayMs);
     };
 
     const syncCheckedOutRef = async () => {
@@ -459,27 +421,13 @@ function App() {
       try {
         const nextRef = await invoke<CheckedOutRef>('get_checked_out_ref', { repoPath });
         if (isDisposed) return;
-        // Only track the fields that matter for visible UI transitions:
-        // branch/head movement and dirty-state toggles.
-        const nextKey = `${nextRef.branchName ?? ''}|${nextRef.headSha}|${nextRef.hasUncommittedChanges ? 1 : 0}`;
-        const prevKey = lastCheckedOutKey;
-        const branchOrHeadChanged = !prevKey || prevKey.split('|').slice(0, 2).join('|') !== nextKey.split('|').slice(0, 2).join('|');
-        lastCheckedOutKey = nextKey;
-        setCheckedOutRef((prev) => {
-          if (
-            prev &&
-            prev.branchName === nextRef.branchName &&
-            prev.headSha === nextRef.headSha &&
-            prev.hasUncommittedChanges === nextRef.hasUncommittedChanges
-          ) {
-            return prev;
+        const nextSignature = getCheckedOutSignature(nextRef);
+        if (nextSignature !== lastCheckedOutSignatureRef.current) {
+          lastCheckedOutSignatureRef.current = nextSignature;
+          setCheckedOutRef(nextRef);
+          if (nextRef.branchName || nextRef.headSha) {
+            queueFullRefresh(100);
           }
-          return nextRef;
-        });
-
-        // Heavy graph refresh only when branch/head actually moves (commit/checkout/merge).
-        if (branchOrHeadChanged) {
-          scheduleRefreshBurst();
         }
       } catch {
         // ignore transient git read failures
@@ -488,16 +436,38 @@ function App() {
       }
     };
 
-    const scheduleRefreshBurst = () => {
-      clearTimeout(timeoutId);
-      timeoutId = window.setTimeout(performFetch, 100);
-      const retries = [450];
-      for (const delayMs of retries) {
-        const id = window.setTimeout(() => {
-          retryTimeoutIds.delete(id);
-          void performFetch();
-        }, delayMs);
-        retryTimeoutIds.add(id);
+    const detectGraphChangeAndRefresh = async () => {
+      if (refreshInFlightRef.current) {
+        pendingRefreshRef.current = true;
+        return;
+      }
+
+      try {
+        const [branchList, directList, checkedOut] = await Promise.all([
+          invoke<Branch[]>('get_branches', { repoPath }),
+          invoke<DirectCommit[]>('get_direct_commits', { repoPath, branch: defaultBranch }),
+          invoke<CheckedOutRef>('get_checked_out_ref', { repoPath }).catch(() => null),
+        ]);
+        if (isDisposed) return;
+
+        const nextBranchSignature = getBranchesSignature(branchList);
+        const nextDirectSignature = getDirectCommitsSignature(directList);
+        const nextCheckedOutSignature = getCheckedOutSignature(checkedOut);
+        const changed =
+          nextBranchSignature !== lastBranchesSignatureRef.current ||
+          nextDirectSignature !== lastDirectCommitsSignatureRef.current ||
+          nextCheckedOutSignature !== lastCheckedOutSignatureRef.current;
+
+        if (checkedOut && nextCheckedOutSignature !== lastCheckedOutSignatureRef.current) {
+          lastCheckedOutSignatureRef.current = nextCheckedOutSignature;
+          setCheckedOutRef(checkedOut);
+        }
+
+        if (changed) {
+          queueFullRefresh();
+        }
+      } catch (e) {
+        console.error('Graph change detection failed:', e);
       }
     };
 
@@ -507,15 +477,17 @@ function App() {
         void syncCheckedOutRef();
         return;
       }
-      scheduleRefreshBurst();
-    }).then(fn => {
-      if (isDisposed) fn();
-      else unlisten = fn;
-    }).catch(console.error);
+      void detectGraphChangeAndRefresh();
+    })
+      .then((fn) => {
+        if (isDisposed) fn();
+        else unlisten = fn;
+      })
+      .catch(console.error);
 
-    // Prime UI state once when listener attaches.
-    void performFetch();
-    // Authoritative monitor independent of filesystem notifications.
+    void runQueuedFullRefresh(repoPath, defaultBranch).catch((e) => {
+      console.error('Auto-refresh failed:', e);
+    });
     monitorIntervalId = window.setInterval(() => {
       void syncCheckedOutRef();
     }, 700);
@@ -523,7 +495,7 @@ function App() {
 
     return () => {
       isDisposed = true;
-      clearTimeout(timeoutId);
+      clearRefreshTimer();
       if (monitorIntervalId != null) window.clearInterval(monitorIntervalId);
       for (const id of retryTimeoutIds) {
         window.clearTimeout(id);
@@ -1678,6 +1650,7 @@ function App() {
               scrollRequest={scrollRequest}
               focusedErrorBranch={focusedErrorBranch}
               checkedOutRef={checkedOutRef}
+              onInteractionChange={handleMapInteractionChange}
               onMergeRefsIntoBranch={handleMergeRefsIntoBranch}
               mergeInProgress={mergeInProgress}
               onPushAllBranches={handlePushAllBranches}

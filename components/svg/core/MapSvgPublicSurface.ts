@@ -14,6 +14,7 @@ export type MapSvgNormalizedProps = {
   staleBranches: NonNullable<BranchMapProps['staleBranches']>;
   openPRs: NonNullable<BranchMapProps['openPRs']>;
   isLoading: boolean;
+  onInteractionChange: BranchMapProps['onInteractionChange'];
   scrollRequest: BranchMapProps['scrollRequest'];
   focusedErrorBranch: BranchMapProps['focusedErrorBranch'];
   checkedOutRef: BranchMapProps['checkedOutRef'];
@@ -60,6 +61,7 @@ export function normalizeMapSvgProps(props: BranchMapProps): MapSvgNormalizedPro
     staleBranches: props.staleBranches ?? [],
     openPRs: props.openPRs ?? [],
     isLoading: props.isLoading ?? false,
+    onInteractionChange: props.onInteractionChange,
     scrollRequest: props.scrollRequest,
     focusedErrorBranch: props.focusedErrorBranch,
     checkedOutRef: props.checkedOutRef ?? null,

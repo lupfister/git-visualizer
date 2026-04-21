@@ -219,6 +219,7 @@ export interface BranchMapProps {
   staleBranches?: Branch[];
   openPRs?: OpenPR[];
   isLoading?: boolean;
+  onInteractionChange?: (isBusy: boolean) => void;
   scrollRequest?: { branch: Branch; seq: number } | null;
   focusedErrorBranch?: Branch | null;
   checkedOutRef?: CheckedOutRef | null;

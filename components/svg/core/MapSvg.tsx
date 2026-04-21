@@ -196,6 +196,7 @@ export default function BranchMap(props: BranchMapProps) {
     staleBranches,
     openPRs,
     isLoading,
+    onInteractionChange,
     scrollRequest,
     focusedErrorBranch,
     checkedOutRef,
@@ -226,6 +227,8 @@ export default function BranchMap(props: BranchMapProps) {
     onMoveNodeBackToBranch,
     controlledOrientation,
   } = normalizeMapSvgProps(props);
+  const interactionBusyRef = useRef(false);
+  const interactionReleaseTimeoutRef = useRef<number | null>(null);
   const {
     setTooltip,
     hoveredBranch,
@@ -438,6 +441,7 @@ export default function BranchMap(props: BranchMapProps) {
   }
 
   function beginNodeDrag(e: React.MouseEvent, nodeId: string, _worldX: number, _worldY: number) {
+    setInteractionBusy(true);
     beginNodeDragCore({
       event: e,
       nodeId,
@@ -491,6 +495,24 @@ export default function BranchMap(props: BranchMapProps) {
     setTimelineRevealPhase('done');
     setTimelineRevealReady(true);
     setHasInitialRevealDone(true);
+  }
+
+  function setInteractionBusy(nextBusy: boolean) {
+    if (interactionBusyRef.current === nextBusy) return;
+    interactionBusyRef.current = nextBusy;
+    onInteractionChange?.(nextBusy);
+  }
+
+  function releaseInteractionBusySoon(delayMs = 120) {
+    if (interactionReleaseTimeoutRef.current !== null) {
+      clearTimeout(interactionReleaseTimeoutRef.current);
+    }
+    interactionReleaseTimeoutRef.current = window.setTimeout(() => {
+      interactionReleaseTimeoutRef.current = null;
+      if (!isPanningRef.current && !isMarqueeSelecting && !nodeDragRef.current?.isDragging) {
+        setInteractionBusy(false);
+      }
+    }, delayMs);
   }
 
   const openPRBranchNames = useMemo(
@@ -1074,6 +1096,7 @@ export default function BranchMap(props: BranchMapProps) {
         focusScrollCancelRef.current?.();
         focusScrollCancelRef.current = null;
         markUserMovedCamera();
+        setInteractionBusy(true);
         stopWheelInertia();
         stopPanSmoothing();
         setTooltip(null);
@@ -1083,6 +1106,7 @@ export default function BranchMap(props: BranchMapProps) {
         const zoomFactor = Math.exp(-clampedDeltaY * ZOOM_WHEEL_EXP_SENSITIVITY);
         if (!Number.isFinite(zoomFactor) || Math.abs(zoomFactor - 1) < 0.0001) return;
         applyZoomAt(point, zoomRef.current * zoomFactor, 'deferred');
+        releaseInteractionBusySoon();
         return;
       }
 
@@ -1107,6 +1131,7 @@ export default function BranchMap(props: BranchMapProps) {
       stopPanSmoothing();
       setTooltip(null);
       markUserMovedCamera();
+      setInteractionBusy(true);
       gestureZoomBaseRef.current = zoomRef.current;
       const rect = el.getBoundingClientRect();
       const lastPointer = lastPointerClientRef.current;
@@ -1128,6 +1153,7 @@ export default function BranchMap(props: BranchMapProps) {
       evt.preventDefault();
       gesturePointRef.current = null;
       scheduleZoomUiSync(true);
+      releaseInteractionBusySoon(0);
     };
 
     const onPointerMove = (e: PointerEvent) => {
@@ -1153,6 +1179,10 @@ export default function BranchMap(props: BranchMapProps) {
     return () => {
       focusScrollCancelRef.current?.();
       focusScrollCancelRef.current = null;
+      if (interactionReleaseTimeoutRef.current !== null) {
+        clearTimeout(interactionReleaseTimeoutRef.current);
+        interactionReleaseTimeoutRef.current = null;
+      }
       if (orientationSwitchFadeTimeoutRef.current !== null) {
         clearTimeout(orientationSwitchFadeTimeoutRef.current);
         orientationSwitchFadeTimeoutRef.current = null;
@@ -1242,6 +1272,7 @@ export default function BranchMap(props: BranchMapProps) {
       const settledPan = clampPan(panRef.current, zoomRef.current, 'hard');
       applyCamera(settledPan, zoomRef.current);
       syncUiState(true, true);
+      releaseInteractionBusySoon(0);
     };
     window.addEventListener('mousemove', onMove);
     window.addEventListener('mouseup', onUp);
@@ -1370,6 +1401,7 @@ export default function BranchMap(props: BranchMapProps) {
       if (drag.nodeLabelElement) drag.nodeLabelElement.style.removeProperty('opacity');
       nodeDragRef.current = null;
       setNodeDragDisplay(null);
+      releaseInteractionBusySoon(0);
     };
 
     const onMouseUp = (e: MouseEvent) => {
@@ -1462,6 +1494,9 @@ export default function BranchMap(props: BranchMapProps) {
 
   useEffect(() => {
     isPanningRef.current = isPanning;
+    if (isPanning || isMarqueeSelecting || !!nodeDragRef.current?.isDragging) {
+      setInteractionBusy(true);
+    }
   }, [isPanning]);
 
   // Hard guard: when interacting with overlay UI, never allow map gesture handlers
