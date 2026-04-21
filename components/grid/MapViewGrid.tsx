@@ -54,6 +54,7 @@ interface Props {
   createBranchFromNodeInProgress?: boolean;
   onMoveNodeBackToBranch?: (targetBranchName: string) => Promise<void>;
   orientation?: OrientationMode;
+  onInteractionChange?: (isInteracting: boolean) => void;
 }
 
 export default function BranchGridMapView({
@@ -105,6 +106,7 @@ export default function BranchGridMapView({
   createBranchFromNodeInProgress = false,
   onMoveNodeBackToBranch,
   orientation = 'vertical',
+  onInteractionChange,
 }: Props) {
   const openPRBranchNames = new Set(openPRs.map(p => p.branchName));
   const ACTIVE_MS = 14 * 86400000;
@@ -161,6 +163,7 @@ export default function BranchGridMapView({
             createBranchFromNodeInProgress={createBranchFromNodeInProgress}
             onMoveNodeBackToBranch={onMoveNodeBackToBranch}
             orientation={orientation}
+            onInteractionChange={onInteractionChange}
           />
         </div>
       ) : view === 'grid' ? (
@@ -179,6 +182,7 @@ export default function BranchGridMapView({
             checkedOutRef={checkedOutRef}
             onGridSearchResultCountChange={onGridSearchResultCountChange}
             onGridSearchFocusChange={onGridSearchFocusChange}
+            onInteractionChange={onInteractionChange}
           />
         </div>
       ) : null}

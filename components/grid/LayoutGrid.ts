@@ -79,6 +79,7 @@ export type BranchGridViewProps = {
   createBranchFromNodeInProgress?: boolean;
   onMoveNodeBackToBranch?: (targetBranchName: string) => Promise<void>;
   orientation?: string;
+  onInteractionChange?: (isInteracting: boolean) => void;
 };
 
 export type CommitItem = {

@@ -392,6 +392,7 @@ export default function BranchGridMap({
   checkedOutRef = null,
   onGridSearchResultCountChange,
   onGridSearchFocusChange,
+  onInteractionChange,
 }: BranchGridViewProps) {
   const scrollContainerRef = useRef<HTMLDivElement | null>(null);
   /** `p-2.5` wrapper: used to map pointer position to the transform layer origin (padding edge). */
@@ -762,6 +763,10 @@ export default function BranchGridMap({
       panY: panRef.current.y,
     };
   };
+
+  useEffect(() => {
+    onInteractionChange?.(isDragging || isCameraMoving);
+  }, [isDragging, isCameraMoving, onInteractionChange]);
 
   useEffect(() => {
     const handleMove = (event: MouseEvent) => {
