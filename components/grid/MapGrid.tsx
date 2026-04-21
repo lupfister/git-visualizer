@@ -10,7 +10,15 @@ import {
   type CSSProperties,
   type ReactNode,
 } from 'react';
-import { buildLanes, CARD_HEIGHT, CARD_BODY_TOP_OFFSET, CARD_WIDTH, CONNECTOR_COLOR, type BranchGridViewProps } from './LayoutGrid';
+import {
+  buildLanes,
+  CARD_HEIGHT,
+  CARD_BODY_TOP_OFFSET,
+  CARD_WIDTH,
+  CONNECTOR_COLOR,
+  type BranchGridViewProps,
+  type Node,
+} from './LayoutGrid';
 import { computeBranchGridLayout } from './branchGridLayoutModel';
 import { buildChevronArrowHead, buildRoundedElbowPath } from './gridPathUtils';
 
@@ -32,12 +40,18 @@ const MAP_GRID_INNER_PADDING_PX = 10;
  * Negative values expand the rect outward (outset) so more off-screen content stays mounted.
  * Set to `0` to match the full viewport bounds.
  */
-const MAP_GRID_CULL_VIEWPORT_INSET_SCREEN_PX = -100;
+const MAP_GRID_CULL_VIEWPORT_INSET_SCREEN_PX = 0;
 /** Pan-only camera updates throttle React re-renders (zoom always updates immediately). */
 const MAP_GRID_CAMERA_PAN_REACT_THROTTLE_MS = 56;
 /** Max commit cards promoted from the cull queue per animation frame (spreads mount cost). */
-const MAP_GRID_MAX_REVEAL_PER_FRAME = 5;
-const PAN_SMOOTHING = 0.35;
+const MAP_GRID_MAX_REVEAL_PER_FRAME = 16;
+/** 1 = pan follows input immediately (no smoothing). Zoom still eases separately. */
+const CAMERA_PAN_INTERPOLATION = 1;
+/**
+ * Zoom must apply in lockstep with pan for cursor-centered zoom — lerping zoom while pan snaps to
+ * target breaks the screen→world mapping until the animation finishes.
+ */
+const CAMERA_ZOOM_INTERPOLATION = 1;
 const CAMERA_SETTLE_EPSILON = 0.1;
 const ZOOM_SETTLE_EPSILON = 0.001;
 
@@ -227,6 +241,82 @@ function visibleCommitIdSetEquals(a: Set<string> | null, b: Set<string>): boolea
   return true;
 }
 
+/** Horizontal pitch for spatial bucketing (~one card span). */
+const COMMIT_CULL_CELL_W = CARD_WIDTH + 48;
+
+function commitBoundingRectForCull(node: Node, labelTopPxForCull: number) {
+  return {
+    left: node.x,
+    top: node.y + labelTopPxForCull,
+    right: node.x + CARD_WIDTH,
+    bottom: node.y + CARD_BODY_TOP_OFFSET + CARD_HEIGHT + 4,
+  };
+}
+
+type CommitCullSpatialIndex = {
+  cellW: number;
+  cellH: number;
+  buckets: Map<string, Set<string>>;
+};
+
+function buildCommitCullSpatialIndex(nodes: readonly Node[], labelTopPxForCull: number): CommitCullSpatialIndex {
+  const cellW = COMMIT_CULL_CELL_W;
+  const cellH = Math.max(
+    120,
+    Math.ceil(CARD_BODY_TOP_OFFSET + CARD_HEIGHT + 4 - labelTopPxForCull + 24),
+  );
+  const buckets = new Map<string, Set<string>>();
+  for (const node of nodes) {
+    const rect = commitBoundingRectForCull(node, labelTopPxForCull);
+    const ix0 = Math.floor(rect.left / cellW);
+    const ix1 = Math.floor(rect.right / cellW);
+    const iy0 = Math.floor(rect.top / cellH);
+    const iy1 = Math.floor(rect.bottom / cellH);
+    const id = node.commit.id;
+    for (let ix = ix0; ix <= ix1; ix++) {
+      for (let iy = iy0; iy <= iy1; iy++) {
+        const key = `${ix},${iy}`;
+        let set = buckets.get(key);
+        if (!set) {
+          set = new Set<string>();
+          buckets.set(key, set);
+        }
+        set.add(id);
+      }
+    }
+  }
+  return { cellW, cellH, buckets };
+}
+
+function collectVisibleCommitIdsFromSpatialIndex(
+  index: CommitCullSpatialIndex,
+  bounds: ViewportContentBounds,
+  nodesByCommitId: ReadonlyMap<string, Node>,
+  labelTopPxForCull: number,
+): Set<string> {
+  const { cellW, cellH, buckets } = index;
+  const ix0 = Math.floor(bounds.left / cellW);
+  const ix1 = Math.floor(bounds.right / cellW);
+  const iy0 = Math.floor(bounds.top / cellH);
+  const iy1 = Math.floor(bounds.bottom / cellH);
+  const candidates = new Set<string>();
+  for (let ix = ix0; ix <= ix1; ix++) {
+    for (let iy = iy0; iy <= iy1; iy++) {
+      const bucket = buckets.get(`${ix},${iy}`);
+      if (!bucket) continue;
+      for (const cid of bucket) candidates.add(cid);
+    }
+  }
+  const nextVisible = new Set<string>();
+  for (const cid of candidates) {
+    const node = nodesByCommitId.get(cid);
+    if (!node) continue;
+    const rect = commitBoundingRectForCull(node, labelTopPxForCull);
+    if (intersectsVisibleBounds(bounds, rect)) nextVisible.add(cid);
+  }
+  return nextVisible;
+}
+
 function getViewportContentBoundsFromClientSize(
   width: number,
   height: number,
@@ -304,6 +394,8 @@ export default function BranchGridMap({
   onGridSearchFocusChange,
 }: BranchGridViewProps) {
   const scrollContainerRef = useRef<HTMLDivElement | null>(null);
+  /** `p-2.5` wrapper: used to map pointer position to the transform layer origin (padding edge). */
+  const mapPadHostRef = useRef<HTMLDivElement | null>(null);
   const transformLayerRef = useRef<HTMLDivElement | null>(null);
   const panRef = useRef({ x: 0, y: 0 });
   const zoomRef = useRef(GRID_ZOOM_DEFAULT);
@@ -476,6 +568,20 @@ export default function BranchGridMap({
     [displayZoom],
   );
   const labelTopPx = -(20 / displayZoom);
+
+  const nodeByCommitId = useMemo(() => {
+    const m = new Map<string, Node>();
+    for (const node of renderNodes) {
+      m.set(node.commit.id, node);
+    }
+    return m;
+  }, [renderNodes]);
+
+  const commitCullSpatialIndex = useMemo(
+    () => buildCommitCullSpatialIndex(renderNodes, labelTopPx),
+    [renderNodes, labelTopPx],
+  );
+
   const borderWidthPx = 1 / displayZoom;
   const lineStrokeWidth = 2.5 / displayZoom;
   const haloStrokeWidth = 4 / displayZoom;
@@ -493,6 +599,19 @@ export default function BranchGridMap({
     'border-slate-400/70 ring-2 ring-slate-400/20 shadow-[0_0_0_1px_rgba(100,116,139,0.14)]';
   const branchStartAccentClass =
     'border-blue-500 ring-2 ring-blue-500/35 shadow-[0_0_0_1px_rgba(59,130,246,0.18)]';
+
+  /** Top-left of the transform layer's local space in viewport (screen) coordinates. */
+  const getTransformLayerOriginScreen = useCallback((): { x: number; y: number } | null => {
+    const host = mapPadHostRef.current;
+    if (!host) return null;
+    const hr = host.getBoundingClientRect();
+    const cs = getComputedStyle(host);
+    const bl = Number.parseFloat(cs.borderLeftWidth) || 0;
+    const bt = Number.parseFloat(cs.borderTopWidth) || 0;
+    const pl = Number.parseFloat(cs.paddingLeft) || MAP_GRID_INNER_PADDING_PX;
+    const pt = Number.parseFloat(cs.paddingTop) || MAP_GRID_INNER_PADDING_PX;
+    return { x: hr.left + bl + pl, y: hr.top + bt + pt };
+  }, []);
 
   const flushCameraReactTick = useCallback(() => {
     if (panReactTrailingTimeoutRef.current != null) {
@@ -547,15 +666,15 @@ export default function BranchGridMap({
     const nextPanX =
       Math.abs(targetPanX - rendered.panX) <= CAMERA_SETTLE_EPSILON
         ? targetPanX
-        : rendered.panX + (targetPanX - rendered.panX) * PAN_SMOOTHING;
+        : rendered.panX + (targetPanX - rendered.panX) * CAMERA_PAN_INTERPOLATION;
     const nextPanY =
       Math.abs(targetPanY - rendered.panY) <= CAMERA_SETTLE_EPSILON
         ? targetPanY
-        : rendered.panY + (targetPanY - rendered.panY) * PAN_SMOOTHING;
+        : rendered.panY + (targetPanY - rendered.panY) * CAMERA_PAN_INTERPOLATION;
     const nextZoom =
       Math.abs(targetZoom - rendered.zoom) <= ZOOM_SETTLE_EPSILON
         ? targetZoom
-        : rendered.zoom + (targetZoom - rendered.zoom) * PAN_SMOOTHING;
+        : rendered.zoom + (targetZoom - rendered.zoom) * CAMERA_ZOOM_INTERPOLATION;
 
     applyRenderedCamera(nextPanX, nextPanY, nextZoom);
 
@@ -590,19 +709,20 @@ export default function BranchGridMap({
   };
 
   const zoomToPoint = (clientX: number, clientY: number, nextZoom: number) => {
-    const viewport = scrollContainerRef.current;
     const targetZoom = clampZoom(nextZoom);
     const rendered = renderedCameraRef.current;
-    if (!viewport) {
+    const origin = getTransformLayerOriginScreen();
+    if (!origin) {
       syncCamera(panRef.current.x, panRef.current.y, targetZoom);
       return;
     }
-    const rect = viewport.getBoundingClientRect();
-    const anchorX = clientX - rect.left;
-    const anchorY = clientY - rect.top;
-    const worldX = (anchorX - rendered.panX) / rendered.zoom;
-    const worldY = (anchorY - rendered.panY) / rendered.zoom;
-    syncCamera(anchorX - worldX * targetZoom, anchorY - worldY * targetZoom, targetZoom);
+    const anchorX = clientX - origin.x;
+    const anchorY = clientY - origin.y;
+    const scaleBefore = rendered.zoom / GRID_RENDER_ZOOM;
+    const scaleAfter = targetZoom / GRID_RENDER_ZOOM;
+    const worldX = (anchorX - rendered.panX) / scaleBefore;
+    const worldY = (anchorY - rendered.panY) / scaleBefore;
+    syncCamera(anchorX - worldX * scaleAfter, anchorY - worldY * scaleAfter, targetZoom);
   };
 
   const handleWheel = (event: React.WheelEvent<HTMLDivElement>) => {
@@ -668,6 +788,14 @@ export default function BranchGridMap({
     };
   }, []);
 
+  /** Reapply camera transform after React commits — `style` omits `transform` so reconciliation won't strip imperative pan/zoom. */
+  useLayoutEffect(() => {
+    const layer = transformLayerRef.current;
+    if (!layer) return;
+    const r = renderedCameraRef.current;
+    layer.style.transform = `translate3d(${r.panX}px, ${r.panY}px, 0) scale(${r.zoom / GRID_RENDER_ZOOM})`;
+  });
+
   useEffect(() => {
     onGridSearchResultCountChange?.(normalizedSearchQuery ? matchingNodes.length : null);
   }, [matchingNodes.length, normalizedSearchQuery, onGridSearchResultCountChange]);
@@ -684,24 +812,23 @@ export default function BranchGridMap({
   useLayoutEffect(() => {
     if (!gridFocusSha) return;
     const viewport = scrollContainerRef.current;
-    if (!viewport) {
-      return;
-    }
     const focusNode = focusedNode;
-    if (!focusNode) return;
+    if (!viewport || !focusNode) return;
+    const origin = getTransformLayerOriginScreen();
+    if (!origin) return;
     const viewportRect = viewport.getBoundingClientRect();
     const targetZoom = renderedCameraRef.current.zoom;
     const scale = targetZoom / GRID_RENDER_ZOOM;
-    const targetCenterX = viewportRect.width / 2;
-    const targetCenterY = viewportRect.height / 2;
     const nodeCenterX = focusNode.x + CARD_WIDTH / 2;
     const nodeCenterY = focusNode.y + CARD_BODY_TOP_OFFSET + CARD_HEIGHT / 2;
+    const targetScreenX = viewportRect.left + viewportRect.width / 2;
+    const targetScreenY = viewportRect.top + viewportRect.height / 2;
     syncCamera(
-      targetCenterX - nodeCenterX * scale,
-      targetCenterY - nodeCenterY * scale,
+      targetScreenX - origin.x - nodeCenterX * scale,
+      targetScreenY - origin.y - nodeCenterY * scale,
       targetZoom,
     );
-  }, [gridFocusSha, gridSearchJumpToken, focusedNode]);
+  }, [gridFocusSha, gridSearchJumpToken, focusedNode, getTransformLayerOriginScreen]);
 
   const viewportClientW = viewportClientSize?.width ?? scrollContainerRef.current?.clientWidth ?? 0;
   const viewportClientH = viewportClientSize?.height ?? scrollContainerRef.current?.clientHeight ?? 0;
@@ -761,20 +888,12 @@ export default function BranchGridMap({
       renderedCameraRef.current.zoom,
       MAP_GRID_CULL_VIEWPORT_INSET_SCREEN_PX,
     );
-    const displayZoomForCull = renderedZoom / GRID_RENDER_ZOOM;
-    const labelTopPxForCull = -(20 / displayZoomForCull);
-    const nextVisible = new Set<string>();
-    for (const node of renderNodes) {
-      const rect = {
-        left: node.x,
-        top: node.y + labelTopPxForCull,
-        right: node.x + CARD_WIDTH,
-        bottom: node.y + CARD_BODY_TOP_OFFSET + CARD_HEIGHT + 4,
-      };
-      if (intersectsVisibleBounds(bounds, rect)) {
-        nextVisible.add(node.commit.id);
-      }
-    }
+    const nextVisible = collectVisibleCommitIdsFromSpatialIndex(
+      commitCullSpatialIndex,
+      bounds,
+      nodeByCommitId,
+      labelTopPx,
+    );
     setVisibleNodeIds((prev) => (visibleCommitIdSetEquals(prev, nextVisible) ? prev : nextVisible));
   }, [
     renderedZoom,
@@ -784,6 +903,9 @@ export default function BranchGridMap({
     cameraRenderTick,
     renderNodes,
     viewportClientSize,
+    commitCullSpatialIndex,
+    nodeByCommitId,
+    labelTopPx,
   ]);
 
   useLayoutEffect(() => {
@@ -866,6 +988,7 @@ export default function BranchGridMap({
           style={{ cursor: isDragging ? 'grabbing' : 'grab' }}
         >
           <div
+            ref={mapPadHostRef}
             className="relative min-w-full p-2.5"
             onWheel={handleWheel}
             onMouseDown={startPanDrag}
@@ -877,8 +1000,7 @@ export default function BranchGridMap({
               style={{
                 width: contentWidth,
                 height: contentHeight,
-                transformOrigin: 'top left',
-                transform: `translate3d(0px, 0px, 0) scale(${displayZoom})`,
+                transformOrigin: 'top left' as const,
                 ...(isDragging || isCameraMoving ? { willChange: 'transform' as const } : {}),
               }}
             >
@@ -894,7 +1016,8 @@ export default function BranchGridMap({
             const showDataShapeError = nodeWarningsForCard.length > 0 && !hasRenderedAncestry;
             const skipEntryFade =
               (isGridSearchActive && matchingNodeIds.has(node.commit.id)) ||
-              focusedNode?.commit.id === node.commit.id;
+              focusedNode?.commit.id === node.commit.id ||
+              isCameraMoving;
             const needsEntryFade =
               !skipEntryFade &&
               revealedStaggerIds.has(node.commit.id) &&
