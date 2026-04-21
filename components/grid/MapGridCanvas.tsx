@@ -288,7 +288,11 @@ export default function MapGridCanvas({
                         className={cn('inline-flex items-center bg-transparent p-0 text-sm font-medium leading-none', selectedCommitTextClass)}
                         style={selectedCommitTextStyle}
                       >
-                        {isClusterOpen ? '⌃' : `x${clumpCount}`}
+                        {isClusterOpen ? (
+                          <span className="-translate-x-[1px] translate-y-[1px] text-base leading-none">⌃</span>
+                        ) : (
+                          `x${clumpCount}`
+                        )}
                       </button>
                     ) : null}
                   </div>
