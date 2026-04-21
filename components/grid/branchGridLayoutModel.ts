@@ -7,7 +7,6 @@ import {
   branchBaseCommit,
   buildMergeOrthogonalPath,
   CARD_HEIGHT,
-  CARD_BODY_TOP_OFFSET,
   CARD_HEADER_HEIGHT,
   CARD_WIDTH,
   type CommitItem,
