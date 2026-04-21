@@ -116,7 +116,10 @@ export default function BranchGridMap({
     handleWheel,
   } = useMapGridCamera({ mapPadHostRef, transformLayerRef });
 
-  const lanes = useMemo(() => buildLanes(branches, defaultBranch), [branches, defaultBranch]);
+  const lanes = useMemo(
+    () => buildLanes(branches, defaultBranch, branchCommitPreviews),
+    [branches, defaultBranch, branchCommitPreviews],
+  );
   const layoutModel = useMemo(
     () =>
       computeBranchGridLayout({

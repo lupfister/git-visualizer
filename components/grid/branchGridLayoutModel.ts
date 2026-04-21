@@ -99,6 +99,50 @@ export type BranchGridLayoutInput = {
 const GRID_CONNECTOR_CORNER_RADIUS_PX = 18;
 const GRID_INCOMING_GAP_PX = 0;
 const GRID_MERGE_TARGET_GAP_PX = 0;
+function allocateRowsByColumnAndTime(
+  commits: VisualCommit[],
+  extraParentShasByCommitId: Map<string, Set<string>> = new Map(),
+): Map<string, number> {
+  if (commits.length === 0) return new Map();
+  // Use lineage-first ordering (child before parent) rather than absolute timestamps.
+  const orderedCommits = orderByLineage(commits).reverse();
+  const childShasByParentSha = new Map<string, Set<string>>();
+  for (const commit of commits) {
+    const directParentSha = commit.parentSha ?? null;
+    if (directParentSha) {
+      const children = childShasByParentSha.get(directParentSha) ?? new Set<string>();
+      children.add(commit.id);
+      childShasByParentSha.set(directParentSha, children);
+    }
+    for (const extraParentSha of extraParentShasByCommitId.get(commit.id) ?? []) {
+      if (!extraParentSha) continue;
+      const children = childShasByParentSha.get(extraParentSha) ?? new Set<string>();
+      children.add(commit.id);
+      childShasByParentSha.set(extraParentSha, children);
+    }
+  }
+  const rowByVisualId = new Map<string, number>();
+  const childRowsByParentSha = new Map<string, number[]>();
+  let nextRow = 1;
+  for (const commit of orderedCommits) {
+    const parentShas = new Set<string>();
+    if (commit.parentSha) parentShas.add(commit.parentSha);
+    for (const extraParentSha of extraParentShasByCommitId.get(commit.id) ?? []) {
+      if (extraParentSha) parentShas.add(extraParentSha);
+    }
+    const childRows = Array.from(parentShas).flatMap((parentSha) => childRowsByParentSha.get(parentSha) ?? []);
+    const minimumAllowedRow = childRows.length > 0 ? Math.max(...childRows) + 1 : 1;
+    const assignedRow = Math.max(minimumAllowedRow, nextRow);
+    rowByVisualId.set(commit.visualId, assignedRow);
+    nextRow = assignedRow + 1;
+    for (const parentSha of parentShas) {
+      const existingRowsForParent = childRowsByParentSha.get(parentSha) ?? [];
+      existingRowsForParent.push(assignedRow);
+      childRowsByParentSha.set(parentSha, existingRowsForParent);
+    }
+  }
+  return rowByVisualId;
+}
 
 function clusterByForkPoints<T>(
   entries: Array<{ item: T }>,
@@ -278,6 +322,37 @@ export function computeBranchGridLayout(input: BranchGridLayoutInput): BranchGri
   }
 
   const allCommits = [...visibleCommits].sort((a, b) => new Date(a.date).getTime() - new Date(b.date).getTime() || a.id.localeCompare(b.id));
+  const mergeParentShasByMergeSha = new Map<string, Set<string>>();
+  for (const mergeNode of mergeNodes) {
+    const mergeSha = mergeNode.fullSha;
+    if (!mergeSha) continue;
+    const mergedParentShas = (mergeNode.parentShas ?? []).filter((parentSha): parentSha is string => !!parentSha && parentSha !== mergeSha);
+    if (mergedParentShas.length === 0) continue;
+    const existing = mergeParentShasByMergeSha.get(mergeSha) ?? new Set<string>();
+    for (const parentSha of mergedParentShas) existing.add(parentSha);
+    mergeParentShasByMergeSha.set(mergeSha, existing);
+  }
+  const branchStartAncestorByBranch = new Map<string, string>();
+  for (const branch of branches) {
+    if (branch.name === defaultBranch) continue;
+    const branchStartSha = resolveBranchStartSha(branch);
+    if (branchStartSha) branchStartAncestorByBranch.set(branch.name, branchStartSha);
+  }
+  const extraParentShasByCommitId = new Map<string, Set<string>>();
+  for (const commit of allCommits) {
+    const mergeParentShas = mergeParentShasByMergeSha.get(commit.id);
+    if (mergeParentShas && mergeParentShas.size > 0) {
+      const set = extraParentShasByCommitId.get(commit.id) ?? new Set<string>();
+      for (const parentSha of mergeParentShas) set.add(parentSha);
+      extraParentShasByCommitId.set(commit.id, set);
+    }
+    if (commit.branchName === defaultBranch) continue;
+    const branchStartAncestorSha = branchStartAncestorByBranch.get(commit.branchName);
+    if (!branchStartAncestorSha || branchStartAncestorSha === commit.id) continue;
+    const set = extraParentShasByCommitId.get(commit.id) ?? new Set<string>();
+    set.add(branchStartAncestorSha);
+    extraParentShasByCommitId.set(commit.id, set);
+  }
   const commitsByBranch = new Map<string, VisualCommit[]>();
   for (const commit of allCommits) {
     const list = commitsByBranch.get(commit.branchName) ?? [];
@@ -408,7 +483,7 @@ export function computeBranchGridLayout(input: BranchGridLayoutInput): BranchGri
     : [];
 
 
-  const rowByVisualId = new Map<string, number>(allCommits.map((commit, index) => [commit.visualId, index + 1] as const));
+  const rowByVisualId = allocateRowsByColumnAndTime(allCommits, extraParentShasByCommitId);
   const nodes: Node[] = allCommits.map((commit) => {
     const lane = laneByName.get(commit.branchName);
     const row = rowByVisualId.get(commit.visualId) ?? 1;
@@ -450,7 +525,7 @@ export function computeBranchGridLayout(input: BranchGridLayoutInput): BranchGri
     const isOpen = clusterKey === checkedOutClusterKey || manuallyOpenedClumps.has(clusterKey) || !defaultCollapsedClumps.has(clusterKey);
     return count <= 1 || isOpen || leadId === commit.visualId;
   });
-  const visibleRows = new Map<string, number>(visibleCommitsList.map((commit, index) => [commit.visualId, index + 1] as const));
+  const visibleRows = allocateRowsByColumnAndTime(visibleCommitsList, extraParentShasByCommitId);
   const zoomAwareRowGap = ROW_GAP / GRID_LAYOUT_RENDER_ZOOM;
   const zoomAwareLabelBand = 20 / GRID_LAYOUT_RENDER_ZOOM;
   const zoomAwareRowPitch = ROW_HEIGHT + zoomAwareRowGap + zoomAwareLabelBand;
@@ -480,7 +555,8 @@ export function computeBranchGridLayout(input: BranchGridLayoutInput): BranchGri
   }
   const pointFormatter = (x: number, y: number) => `${x.toFixed(1)} ${y.toFixed(1)}`;
   const contentWidth = LEFT_PADDING * 2 + (Math.max(0, ...lanes.map((lane) => lane.column)) + 1) * COLUMN_WIDTH;
-  const contentHeight = TOP_PADDING * 2 + Math.max(0, visibleCommitsList.length - 1) * zoomAwareRowPitch + CARD_HEIGHT + CARD_HEADER_HEIGHT + zoomAwareLabelBand;
+  const maxVisibleRow = Math.max(0, ...renderNodes.map((node) => node.row));
+  const contentHeight = TOP_PADDING * 2 + Math.max(0, maxVisibleRow - 1) * zoomAwareRowPitch + CARD_HEIGHT + CARD_HEADER_HEIGHT + zoomAwareLabelBand;
 
   const connectors: Connector[] = [];
   const connectorDecisions: ConnectorDecisionRow[] = [];

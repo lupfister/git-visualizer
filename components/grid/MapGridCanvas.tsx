@@ -185,6 +185,8 @@ export default function MapGridCanvas({
             const isSelectedCommit = selectedVisibleCommitShas.includes(node.commit.id);
             const isLocalUncommitted =
               node.commit.id === 'WORKING_TREE' || node.commit.kind === 'uncommitted';
+            const isStashedCommit =
+              node.commit.kind === 'stash' || node.commit.id.startsWith('STASH:');
             const isUnpushedCommit =
               isLocalUncommitted ||
               (unpushedCommitShasSetByBranch.get(node.commit.branchName)?.has(node.commit.id) ?? false);
@@ -243,7 +245,8 @@ export default function MapGridCanvas({
                 </div>
                 <div className={cn(
                     'absolute left-0 h-[176px] w-full cursor-pointer overflow-hidden rounded-tr-xl rounded-br-xl rounded-bl-xl rounded-tl-none border border-border/50',
-                    isUnpushedCommit ? 'bg-transparent' : 'bg-[#F5F5F5]',
+                    isUnpushedCommit || isStashedCommit ? 'bg-transparent' : 'bg-[#F5F5F5]',
+                    isStashedCommit ? 'border-dotted' : '',
                     branchOffNodeShas.has(node.commit.id) ||
                     branchStartShas.has(node.commit.id) ||
                     crossBranchOutgoingShas.has(node.commit.id)
