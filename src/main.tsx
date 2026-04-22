@@ -1,5 +1,6 @@
 import ReactDOM from 'react-dom/client';
 import App from './App';
+import RootLayout from './RootLayout';
 import './index.css';
 
 // Cmd+R / Ctrl+R → reload (Tauri doesn't wire this up automatically)
@@ -11,5 +12,7 @@ document.addEventListener('keydown', (e) => {
 });
 
 ReactDOM.createRoot(document.getElementById('root')!).render(
-  <App />
+  <RootLayout>
+    <App />
+  </RootLayout>
 );

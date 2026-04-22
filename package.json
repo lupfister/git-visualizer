@@ -16,12 +16,15 @@
   "dependencies": {
     "@chenglou/pretext": "^0.0.5",
     "@tauri-apps/api": "^2",
+    "dialkit": "^1.2.0",
     "framer-motion": "^12.38.0",
     "lucide-react": "^0.575.0",
+    "motion": "^12.38.0",
     "react": "^19.0.0",
     "react-dom": "^19.0.0"
   },
   "devDependencies": {
+    "agentation": "^3.0.2",
     "@tailwindcss/postcss": "^4",
     "@tauri-apps/cli": "^2",
     "@types/estree": "^1.0.8",
