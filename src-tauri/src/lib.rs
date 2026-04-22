@@ -643,6 +643,13 @@ fn move_stash_to_new_branch(repo_path: String, stash_index: u32, branch_name: St
     git::get_checked_out_ref(path).map_err(|e| e.to_string())
 }
 
+#[tauri::command(rename_all = "camelCase")]
+fn create_root_branch(repo_path: String, branch_name: String) -> Result<CheckedOutRef, String> {
+    let path = Path::new(&repo_path);
+    git::create_root_branch(path, &branch_name).map_err(|e| e.to_string())?;
+    git::get_checked_out_ref(path).map_err(|e| e.to_string())
+}
+
 #[tauri::command]
 fn start_window_drag(window: tauri::WebviewWindow) -> Result<(), String> {
     window.start_dragging().map_err(|e| e.to_string())
@@ -3923,6 +3930,7 @@ pub fn run() {
             stash_drop,
             create_branch_from_uncommitted,
             move_stash_to_new_branch,
+            create_root_branch,
             push_branch,
             push_current_branch,
             push_all_unpushed_branches,

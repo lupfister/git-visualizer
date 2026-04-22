@@ -1,53 +1,86 @@
-import { useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
-import GridCanvas from './GridCanvas';
 import {
-  branchBaseCommit,
+  useCallback,
+  useEffect,
+  useLayoutEffect,
+  useMemo,
+  useRef,
+  useState,
+} from 'react';
+import type { BranchCommitPreview, WorktreeInfo } from '../../types';
+import {
   buildLanes,
-  buildMergeOrthogonalPath,
   CARD_HEIGHT,
   CARD_BODY_TOP_OFFSET,
   CARD_WIDTH,
-  LEFT_PADDING,
   type BranchGridViewProps,
-  type Connector,
   type Node,
-  type VisualCommit,
-  TOP_PADDING,
-  COLUMN_WIDTH,
-  nodeForCommitSha,
-  orderByLineage,
-  renderableBranchPreviews,
-  ROW_GAP,
-  ROW_HEIGHT,
-  toCommit,
 } from './LayoutGrid';
-
-const GRID_RENDER_ZOOM = 2.25;
-const GRID_CONNECTOR_GAP_PX = 4;
-const GRID_INCOMING_GAP_PX = 4;
-const GRID_MERGE_TARGET_GAP_PX = -8;
-
-function cn(...classes: Array<string | false | null | undefined>): string {
-  return classes.filter(Boolean).join(' ');
-}
-
-function buildRoundedElbowPath(fromX: number, fromY: number, toX: number, toY: number, cornerR: number, pointFormatter: (x: number, y: number) => string, tipGap = 0): string {
-  const finalY = toY - Math.sign(toY - fromY || 1) * tipGap;
-  const corner = Math.max(0, Math.min(cornerR, Math.abs(toX - fromX), Math.abs(toY - fromY)));
-  if (corner < 0.5) return [`M ${pointFormatter(fromX, fromY)}`, `L ${pointFormatter(toX, fromY)}`, `L ${pointFormatter(toX, finalY)}`].join(' ');
-  const horizontalDir = toX >= fromX ? 1 : -1;
-  const verticalDir = toY >= fromY ? 1 : -1;
-  const preTurnX = toX - horizontalDir * corner;
-  const postTurnY = finalY - verticalDir * corner;
-  return [`M ${pointFormatter(fromX, fromY)}`, `L ${pointFormatter(preTurnX, fromY)}`, `Q ${pointFormatter(toX, fromY)} ${pointFormatter(toX, fromY + verticalDir * corner)}`, `L ${pointFormatter(toX, postTurnY)}`, `L ${pointFormatter(toX, finalY)}`].join(' ');
-}
+import { computeBranchGridLayout } from './branchGridLayoutModel';
+import MapGridCanvas from './MapGridCanvas';
+import MapGridControls from './MapGridControls';
+import MapGridDebugPanel from './MapGridDebugPanel';
+import MapGridDialogs from './MapGridDialogs';
+import { useMapGridCamera } from './useMapGridCamera';
+import { useMapGridSelection } from './useMapGridSelection';
+import {
+  GRID_COMMIT_CORNER_RADIUS_BASE_PX,
+  GRID_CONNECTOR_CORNER_RADIUS_BASE_PX,
+  GRID_CONNECTOR_GAP_PX,
+  GRID_RENDER_ZOOM,
+  MAP_GRID_CULL_VIEWPORT_INSET_SCREEN_PX,
+  MAP_GRID_INNER_PADDING_PX,
+  buildCommitCullSpatialIndex,
+  collectVisibleCommitIdsFromSpatialIndex,
+  getViewportContentBoundsFromClientSize,
+  isUsableOtherWorktree,
+  mergeOrthogonalConnectorIntersectsViewportBounds,
+  roundedElbowConnectorIntersectsViewportBounds,
+  shaMatchesGitRef,
+  visibleCommitIdSetEquals,
+  withCullInsetScreenPx,
+} from './mapGridUtils';
 
 export default function BranchGridMap({
   branches,
   mergeNodes = [],
   directCommits = [],
   unpushedDirectCommits = [],
+  unpushedCommitShasByBranch = {},
+  openPRs = [],
   defaultBranch,
+  onCommitClick,
+  onLoadMore,
+  view,
+  staleBranches = [],
+  isLoading = false,
+  scrollRequest,
+  focusedErrorBranch,
+  mapTopInsetPx = 0,
+  onMergeRefsIntoBranch,
+  mergeInProgress = false,
+  onPushAllBranches,
+  onPushCurrentBranch,
+  onPushCommitTargets,
+  pushInProgress = false,
+  onDeleteSelection,
+  deleteInProgress = false,
+  worktrees = [],
+  currentRepoPath,
+  onRemoveWorktree,
+  removeWorktreeInProgress = false,
+  onSwitchToWorktree,
+  onStashLocalChanges,
+  stashInProgress = false,
+  stashDisabled = false,
+  onCommitLocalChanges,
+  commitInProgress = false,
+  commitDisabled = false,
+  onStageAllChanges,
+  stageInProgress = false,
+  onCreateBranchFromNode,
+  onCreateRootBranch,
+  createBranchFromNodeInProgress = false,
+  orientation = 'vertical',
   branchCommitPreviews = {},
   branchUniqueAheadCounts = {},
   gridSearchQuery = '',
@@ -56,231 +89,839 @@ export default function BranchGridMap({
   checkedOutRef = null,
   onGridSearchResultCountChange,
   onGridSearchFocusChange,
+  onInteractionChange,
 }: BranchGridViewProps) {
-  const viewportRef = useRef<HTMLDivElement | null>(null);
+  const scrollContainerRef = useRef<HTMLDivElement | null>(null);
+  /** `p-2.5` wrapper: used to map pointer position to the transform layer origin (padding edge). */
+  const mapPadHostRef = useRef<HTMLDivElement | null>(null);
+  const transformLayerRef = useRef<HTMLDivElement | null>(null);
+  const [worktreeMenuOpen, setWorktreeMenuOpen] = useState(false);
+  const [commitDialogOpen, setCommitDialogOpen] = useState(false);
+  const [commitMessageDraft, setCommitMessageDraft] = useState('');
+  const [deleteConfirmOpen, setDeleteConfirmOpen] = useState(false);
+  const [newBranchDialogOpen, setNewBranchDialogOpen] = useState(false);
+  const [newBranchName, setNewBranchName] = useState('');
+  const [newBranchCreateMode, setNewBranchCreateMode] = useState<'from-selected-node' | 'new-root'>(
+    'from-selected-node',
+  );
+  const [manuallyOpenedClumps, setManuallyOpenedClumps] = useState<Set<string>>(() => new Set());
+  const [manuallyClosedClumps, setManuallyClosedClumps] = useState<Set<string>>(() => new Set());
   const [isDebugOpen, setIsDebugOpen] = useState(false);
-  const [viewportSize, setViewportSize] = useState({ width: 0, height: 0 });
-  const [viewport, setViewport] = useState({ panX: 0, panY: 0, zoom: 1 });
+  const [visibleNodeIds, setVisibleNodeIds] = useState<Set<string> | null>(null);
+  const [viewportClientSize, setViewportClientSize] = useState<{ width: number; height: number } | null>(null);
+  const {
+    isCameraMoving,
+    renderedZoom,
+    cameraRenderTick,
+    renderedCameraRef,
+    interactionIdleTimeoutRef,
+    getTransformLayerOriginScreen,
+    flushCameraReactTick,
+    syncCamera,
+    handleWheel,
+  } = useMapGridCamera({ mapPadHostRef, transformLayerRef });
 
-  const lanes = useMemo(() => buildLanes(branches, defaultBranch), [branches, defaultBranch]);
-  const laneByName = useMemo(() => new Map(lanes.map((lane) => [lane.name, lane] as const)), [lanes]);
+  const lanes = useMemo(
+    () => buildLanes(branches, defaultBranch, branchCommitPreviews),
+    [branches, defaultBranch, branchCommitPreviews],
+  );
+  const layoutModel = useMemo(
+    () =>
+      computeBranchGridLayout({
+        lanes,
+        branches,
+        mergeNodes,
+        directCommits,
+        unpushedDirectCommits,
+        defaultBranch,
+        branchCommitPreviews,
+        branchUniqueAheadCounts,
+        manuallyOpenedClumps,
+        manuallyClosedClumps,
+        isDebugOpen,
+        gridSearchQuery,
+        gridFocusSha,
+        checkedOutRef: checkedOutRef ?? null,
+      }),
+    [
+      lanes,
+      branches,
+      mergeNodes,
+      directCommits,
+      unpushedDirectCommits,
+      defaultBranch,
+      branchCommitPreviews,
+      branchUniqueAheadCounts,
+      manuallyOpenedClumps,
+      manuallyClosedClumps,
+      isDebugOpen,
+      gridSearchQuery,
+      gridFocusSha,
+      checkedOutRef?.headSha ?? null,
+      checkedOutRef?.branchName ?? null,
+    ],
+  );
 
-  const mainCommits = useMemo(() => orderByLineage([
-    ...mergeNodes.map((node) => ({ id: node.fullSha, branchName: defaultBranch, message: node.prTitle ?? node.sha, author: '', date: node.date, parentSha: node.parentShas?.[0] ?? null })),
-    ...(branchCommitPreviews[defaultBranch] ?? []).map((commit) => toCommit(defaultBranch, commit)),
-    ...directCommits.map((commit) => toCommit(defaultBranch, commit)),
-    ...unpushedDirectCommits.map((commit) => toCommit(defaultBranch, commit)),
-  ]), [mergeNodes, defaultBranch, branchCommitPreviews, directCommits, unpushedDirectCommits]);
+  const {
+    allCommits,
+    debugRows,
+    branchDebugRows,
+    clusterKeyByCommitId,
+    leadByClusterKey,
+    clusterCounts,
+    matchingNodes,
+    matchingNodeIds,
+    normalizedSearchQuery,
+    focusedNode,
+    defaultCollapsedClumps,
+    renderNodes,
+    visibleNodesBySha,
+    contentWidth,
+    contentHeight,
+    connectors,
+    mergeConnectors,
+    connectorDecisions,
+    nodeWarnings,
+    commitIdsWithRenderedAncestry,
+    connectorParentShas,
+    branchStartShas,
+    branchOffNodeShas,
+    crossBranchOutgoingShas,
+    branchBaseCommitByName,
+    pointFormatter,
+  } = layoutModel;
 
-  const branchCommitsByLane = useMemo(() => {
-    const map = new Map<string, ReturnType<typeof toCommit>[]>();
-    for (const branch of branches) {
-      if (branch.name === defaultBranch) continue;
-      const branchPreviews = renderableBranchPreviews(branch.name, branchUniqueAheadCounts, branchCommitPreviews);
-      const commits = orderByLineage(branchPreviews.map((commit) => toCommit(branch.name, commit)));
-      if (commits.length > 0) map.set(branch.name, commits);
+  const isGridSearchActive = Boolean(normalizedSearchQuery);
+
+  const displayZoom = renderedZoom / GRID_RENDER_ZOOM;
+  const inverseZoomStyle = useMemo(
+    () => ({
+      transform: `scale(${1 / displayZoom})`,
+      transformOrigin: 'top left' as const,
+      width: `${100 * displayZoom}%`,
+      height: `${100 * displayZoom}%`,
+    }),
+    [displayZoom],
+  );
+  const labelTopPx = -(20 / displayZoom);
+
+  const nodeByVisualId = useMemo(() => {
+    const m = new Map<string, Node>();
+    for (const node of renderNodes) {
+      m.set(node.commit.visualId, node);
+    }
+    return m;
+  }, [renderNodes]);
+
+  const commitCullSpatialIndex = useMemo(
+    () => buildCommitCullSpatialIndex(renderNodes, labelTopPx),
+    [renderNodes, labelTopPx],
+  );
+
+  const shouldRenderNode = (node: Node) => {
+    const commitId = node.commit.id;
+    const visualId = node.commit.visualId;
+    if (isGridSearchActive && matchingNodeIds.has(commitId)) return true;
+    if (focusedNode?.commit.id === commitId) return true;
+    if (visibleNodeIds === null) return true;
+    if (!visibleNodeIds.has(visualId)) return false;
+    const ck = clusterKeyByCommitId.get(visualId);
+    if (ck) {
+      const count = clusterCounts.get(ck) ?? 1;
+      if (count > 1) {
+        const clusterExpanded =
+          manuallyOpenedClumps.has(ck) ||
+          (!defaultCollapsedClumps.has(ck) && !manuallyClosedClumps.has(ck));
+        if (clusterExpanded) return true;
+      }
+    }
+    return true;
+  };
+
+  const lineStrokeWidth = 1.5 / displayZoom;
+  // Keep connector halo visually stable while zooming, with a thicker base.
+  const haloStrokeWidth = 6 / displayZoom;
+  const zoomOutCornerReductionPx = Math.max(0, 1 - displayZoom) * 8;
+  const connectorCornerRadiusPx =
+    Math.max(6, GRID_CONNECTOR_CORNER_RADIUS_BASE_PX - zoomOutCornerReductionPx) / displayZoom;
+  const commitCornerRadiusPx = GRID_COMMIT_CORNER_RADIUS_BASE_PX / displayZoom;
+  const iconScaleStyle = useMemo(
+    () => ({
+      transform: `scale(${1 / displayZoom})`,
+      transformOrigin: 'center' as const,
+    }),
+    [displayZoom],
+  );
+
+  const connectorParentAccentClass =
+    'border-slate-400/70';
+  const branchStartAccentClass =
+    'border-blue-500';
+
+  const branchByName = useMemo(() => new Map(branches.map((branch) => [branch.name, branch])), [branches]);
+  const freshCopyBranchNames = useMemo(
+    () => new Set(branches.filter((branch) => branch.commitsAhead === 0 && !branch.name.startsWith('*')).map((branch) => branch.name)),
+    [branches],
+  );
+  const commitShaToBranchNames = useMemo(() => {
+    const map = new Map<string, Set<string>>();
+    for (const node of renderNodes) {
+      const set = map.get(node.commit.id) ?? new Set<string>();
+      set.add(node.commit.branchName);
+      map.set(node.commit.id, set);
+    }
+    for (const commit of directCommits) {
+      const set = map.get(commit.fullSha) ?? new Set<string>();
+      set.add(defaultBranch);
+      map.set(commit.fullSha, set);
     }
     return map;
-  }, [branches, branchCommitPreviews, branchUniqueAheadCounts, defaultBranch]);
+  }, [renderNodes, directCommits, defaultBranch]);
+  const unpushedCommitShasSetByBranch = useMemo(
+    () =>
+      new Map(
+        Object.entries(unpushedCommitShasByBranch).map(([branchName, shas]) => [branchName, new Set(shas)] as const),
+      ),
+    [unpushedCommitShasByBranch],
+  );
+  const handlePointerReleaseNoMarquee = useCallback(() => {
+    void interactionIdleTimeoutRef.current;
+    flushCameraReactTick();
+  }, [flushCameraReactTick, interactionIdleTimeoutRef]);
+  const {
+    isMarqueeSelecting,
+    marqueeRect,
+    selectedCommitShas,
+    setSelectedCommitShas,
+    mergeTargetCommitSha,
+    setMergeTargetCommitSha,
+    startMarqueeDrag,
+  } = useMapGridSelection({
+    scrollContainerRef,
+    renderedCameraRef,
+    getTransformLayerOriginScreen,
+    renderNodes,
+    shouldRenderNode,
+    onPointerReleaseNoMarquee: handlePointerReleaseNoMarquee,
+  });
+  const selectableCommitShaSet = useMemo(() => new Set(renderNodes.map((node) => node.commit.id)), [renderNodes]);
+  const selectedVisibleCommitShas = useMemo(
+    () => selectedCommitShas.filter((sha) => selectableCommitShaSet.has(sha)),
+    [selectedCommitShas, selectableCommitShaSet],
+  );
+  const branchPreviewContainsSha = useCallback(
+    (branchName: string, sha: string): boolean => {
+      if (!sha) return false;
+      const previews = branchCommitPreviews[branchName] ?? [];
+      if (previews.some((preview) => shaMatchesGitRef(preview.fullSha, sha) || shaMatchesGitRef(preview.sha, sha))) return true;
+      const branch = branchByName.get(branchName);
+      if (branch?.headSha && shaMatchesGitRef(branch.headSha, sha)) return true;
+      return false;
+    },
+    [branchCommitPreviews, branchByName],
+  );
+  const checkedOutBranchName = checkedOutRef?.branchName ?? null;
+  const checkedOutHeadSha = checkedOutRef?.headSha ?? null;
+  const checkedOutIsDetached = checkedOutBranchName == null;
 
-  const visibleCommits = useMemo(() => {
-    const branchCommitShaUnion = new Set<string>();
-    for (const commits of branchCommitsByLane.values()) for (const commit of commits) branchCommitShaUnion.add(commit.id);
-    const visible: VisualCommit[] = [];
-    for (const commit of mainCommits) if (!branchCommitShaUnion.has(commit.id)) visible.push({ ...commit, visualId: `${defaultBranch}:${commit.id}` });
-    for (const [branchName, commits] of branchCommitsByLane.entries()) for (const commit of commits) visible.push({ ...commit, visualId: `${branchName}:${commit.id}` });
-    return visible.sort((a, b) => new Date(a.date).getTime() - new Date(b.date).getTime() || a.id.localeCompare(b.id));
-  }, [mainCommits, branchCommitsByLane, defaultBranch]);
+  const findOtherWorktreeForCommit = useCallback(
+    (branchName: string, commitFullSha: string, commitShortSha: string): WorktreeInfo | null => {
+      for (const wt of worktrees) {
+        if (!isUsableOtherWorktree(wt, currentRepoPath)) continue;
+        if (wt.branchName) {
+          if (wt.branchName === branchName && shaMatchesGitRef(wt.headSha, commitFullSha)) return wt;
+          continue;
+        }
+        if (!shaMatchesGitRef(wt.headSha, commitFullSha) && !shaMatchesGitRef(wt.headSha, commitShortSha)) continue;
+        if (wt.parentSha && branchPreviewContainsSha(branchName, wt.parentSha)) return wt;
+        if (branchPreviewContainsSha(branchName, wt.headSha)) return wt;
+        const branch = branchByName.get(branchName);
+        if (branch && shaMatchesGitRef(branch.headSha, wt.headSha)) return wt;
+        if (branchName === defaultBranch && directCommits.some((commit) => shaMatchesGitRef(commit.fullSha, wt.headSha))) {
+          return wt;
+        }
+      }
+      return null;
+    },
+    [worktrees, currentRepoPath, branchPreviewContainsSha, branchByName, defaultBranch, directCommits],
+  );
 
-  const nodes = useMemo<Node[]>(() => {
-    const rows = new Map<string, number>(visibleCommits.map((commit, index) => [commit.visualId, index + 1] as const));
-    const zoomAwareRowPitch = ROW_HEIGHT + ROW_GAP / GRID_RENDER_ZOOM + 20 / GRID_RENDER_ZOOM;
-    return visibleCommits.map((commit) => {
-      const lane = laneByName.get(commit.branchName);
-      const row = rows.get(commit.visualId) ?? 1;
-      return { commit, row, column: lane?.column ?? 0, x: LEFT_PADDING + (lane?.column ?? 0) * COLUMN_WIDTH, y: TOP_PADDING + (row - 1) * zoomAwareRowPitch };
-    });
-  }, [visibleCommits, laneByName]);
+  const findWorktreeWithBranchCheckedOut = useCallback(
+    (branchName: string): WorktreeInfo | null => {
+      for (const wt of worktrees) {
+        if (!isUsableOtherWorktree(wt, currentRepoPath)) continue;
+        if (wt.branchName === branchName) return wt;
+      }
+      return null;
+    },
+    [worktrees, currentRepoPath],
+  );
 
-  const nodeBySha = useMemo(() => new Map(nodes.map((node) => [node.commit.id, node] as const)), [nodes]);
-  const normalizedSearchQuery = gridSearchQuery.trim().toLowerCase();
-  const matchingNodeIds = useMemo(() => new Set(
-    normalizedSearchQuery
-      ? nodes.filter((node) => {
-          const sha = node.commit.id.toLowerCase();
-          const shortSha = node.commit.id.slice(0, 7).toLowerCase();
-          const message = node.commit.message.toLowerCase();
-          const branchName = node.commit.branchName.toLowerCase();
-          return sha.includes(normalizedSearchQuery) || shortSha.includes(normalizedSearchQuery) || message.includes(normalizedSearchQuery) || branchName.includes(normalizedSearchQuery);
-        }).map((node) => node.commit.id)
-      : []
-  ), [nodes, normalizedSearchQuery]);
+  const findOtherWorktreeByHeadSha = useCallback(
+    (commitFullSha: string, commitShortSha: string): WorktreeInfo | null => {
+      for (const wt of worktrees) {
+        if (!isUsableOtherWorktree(wt, currentRepoPath)) continue;
+        if (shaMatchesGitRef(wt.headSha, commitFullSha) || shaMatchesGitRef(wt.headSha, commitShortSha)) return wt;
+      }
+      return null;
+    },
+    [worktrees, currentRepoPath],
+  );
+
+  const branchCandidatesForCommit = useCallback(
+    (sha: string): string[] => Array.from(commitShaToBranchNames.get(sha) ?? []),
+    [commitShaToBranchNames],
+  );
+
+  const selectedCommitTargetOption = useMemo(() => {
+    const byBranch = new Map<string, { targetSha: string; targetBranch: string; sourceRefs: string[] }>();
+    for (const targetSha of selectedVisibleCommitShas) {
+      const candidates = branchCandidatesForCommit(targetSha);
+      if (candidates.length === 0) continue;
+      const targetBranch = candidates.find((name) => name !== defaultBranch) ?? candidates[0];
+      const sourceRefs = selectedVisibleCommitShas
+        .filter((sha) => sha !== targetSha)
+        .filter((sha) => {
+          const sourceCandidates = new Set(branchCandidatesForCommit(sha));
+          return !sourceCandidates.has(targetBranch);
+        });
+      byBranch.set(targetBranch, { targetSha, targetBranch, sourceRefs });
+    }
+    const options = Array.from(byBranch.values());
+    const explicit = mergeTargetCommitSha
+      ? options.find((option) => option.targetSha === mergeTargetCommitSha || option.targetBranch === (branchCandidatesForCommit(mergeTargetCommitSha)[0] ?? ''))
+      : null;
+    const selected = explicit ?? options[options.length - 1] ?? null;
+    return {
+      options,
+      selected,
+      targetBranch: selected?.targetBranch ?? null,
+      sources: selected?.sourceRefs ?? [],
+    };
+  }, [selectedVisibleCommitShas, branchCandidatesForCommit, defaultBranch, mergeTargetCommitSha]);
+
+  const pushableBranchByName = useMemo(() => {
+    const entries = [
+      ...(checkedOutBranchName === defaultBranch
+        ? [{ name: defaultBranch, headSha: checkedOutHeadSha ?? '', unpushedCommits: unpushedDirectCommits.length, remoteSyncStatus: 'unpushed' as const }]
+        : []),
+      ...branches,
+    ]
+      .filter(
+        (branch) =>
+          !branch.name.startsWith('*') &&
+          branch.unpushedCommits > 0 &&
+          branch.remoteSyncStatus !== 'on-github',
+      )
+      .map((branch) => [branch.name, branch] as const);
+    return new Map(entries);
+  }, [branches, checkedOutBranchName, checkedOutHeadSha, defaultBranch, unpushedDirectCommits.length]);
+
+  const selectedPushTargets = useMemo(() => {
+    const resolvePushBranch = (targetSha: string): string | null => {
+      const candidates = branchCandidatesForCommit(targetSha).filter((branchName) => pushableBranchByName.has(branchName));
+      if (candidates.length === 0) return null;
+      if (candidates.length === 1) return candidates[0];
+      if (checkedOutBranchName && candidates.includes(checkedOutBranchName)) return checkedOutBranchName;
+      return candidates.find((name) => name !== defaultBranch) ?? candidates[0];
+    };
+    const commitPreviewListForBranch = (branchName: string): BranchCommitPreview[] => {
+      if (branchName === defaultBranch) {
+        return unpushedDirectCommits.map((commit) => ({
+          fullSha: commit.fullSha,
+          sha: commit.sha,
+          parentSha: commit.parentSha ?? null,
+          message: commit.message,
+          author: commit.author,
+          date: commit.date,
+          kind: commit.kind ?? 'commit',
+        }));
+      }
+      return branchCommitPreviews[branchName] ?? [];
+    };
+    const map = new Map<string, { branchName: string; targetSha: string; targetIndex: number; commitCount: number }>();
+    for (const sha of selectedVisibleCommitShas) {
+      const targetBranch = resolvePushBranch(sha);
+      if (!targetBranch) continue;
+      const branch = pushableBranchByName.get(targetBranch);
+      if (!branch) continue;
+      const unpushedPreviews = commitPreviewListForBranch(targetBranch).slice(0, branch.unpushedCommits);
+      const targetIndex = unpushedPreviews.findIndex((commit) => commit.fullSha === sha);
+      if (targetIndex === -1) continue;
+      const existing = map.get(targetBranch);
+      if (!existing || targetIndex < existing.targetIndex) {
+        map.set(targetBranch, {
+          branchName: targetBranch,
+          targetSha: sha,
+          targetIndex,
+          commitCount: unpushedPreviews.length - targetIndex,
+        });
+      }
+    }
+    return Array.from(map.values());
+  }, [
+    selectedVisibleCommitShas,
+    branchCandidatesForCommit,
+    pushableBranchByName,
+    checkedOutBranchName,
+    defaultBranch,
+    unpushedDirectCommits,
+    branchCommitPreviews,
+  ]);
+
+  const selectedStashIndices = useMemo(
+    () =>
+      Array.from(
+        new Set(
+          selectedVisibleCommitShas
+            .map((sha) => /^STASH:(\d+)$/.exec(sha))
+            .filter((match): match is RegExpExecArray => !!match)
+            .map((match) => parseInt(match[1], 10)),
+        ),
+      ).sort((a, b) => a - b),
+    [selectedVisibleCommitShas],
+  );
+  const hasSelectedUncommittedChanges = selectedVisibleCommitShas.includes('WORKING_TREE');
+  const deletableSelectionCount = (hasSelectedUncommittedChanges ? 1 : 0) + selectedStashIndices.length;
+  const deleteSelectionItems = [
+    ...(hasSelectedUncommittedChanges ? ['Uncommitted changes'] : []),
+    ...selectedStashIndices.map((idx) => `Stash ${idx + 1}`),
+  ];
+  const pushableRemoteBranchCount = pushableBranchByName.size;
+  const canPushCurrentBranch = !checkedOutIsDetached && !!checkedOutBranchName && pushableBranchByName.has(checkedOutBranchName);
+  const pushCurrentBranchLabel = checkedOutBranchName ? `Push ${checkedOutBranchName}` : 'Push current branch';
+  const selectedPushLabel = selectedPushTargets.length === 1
+    ? selectedPushTargets[0].commitCount > 1
+      ? `Push ${selectedPushTargets[0].commitCount} commits on ${selectedPushTargets[0].branchName}`
+      : `Push ${selectedPushTargets[0].targetSha.slice(0, 7)} on ${selectedPushTargets[0].branchName}`
+    : `Push ${selectedPushTargets.length} selected ranges`;
 
   useEffect(() => {
-    onGridSearchResultCountChange?.(normalizedSearchQuery ? matchingNodeIds.size : null);
-  }, [matchingNodeIds.size, normalizedSearchQuery, onGridSearchResultCountChange]);
+    onInteractionChange?.(isCameraMoving || isMarqueeSelecting);
+  }, [isCameraMoving, isMarqueeSelecting, onInteractionChange]);
 
   useEffect(() => {
-    onGridSearchFocusChange?.(normalizedSearchQuery ? (nodes.find((node) => matchingNodeIds.has(node.commit.id))?.commit.id ?? null) : null);
-  }, [matchingNodeIds, normalizedSearchQuery, nodes, onGridSearchFocusChange]);
+    onGridSearchResultCountChange?.(normalizedSearchQuery ? matchingNodes.length : null);
+  }, [matchingNodes.length, normalizedSearchQuery, onGridSearchResultCountChange]);
+
+  useEffect(() => {
+    if (!normalizedSearchQuery) {
+      onGridSearchFocusChange?.(null);
+      return;
+    }
+    const firstMatch = matchingNodes[0]?.commit.id ?? null;
+    onGridSearchFocusChange?.(firstMatch);
+  }, [matchingNodes, normalizedSearchQuery, onGridSearchFocusChange]);
 
   useLayoutEffect(() => {
     if (!gridFocusSha) return;
-    const node = nodeBySha.get(gridFocusSha);
-    const container = viewportRef.current;
-    if (!node || !container) return;
-    setViewport((current) => ({
-      ...current,
-      panX: Math.max(0, node.x - container.clientWidth / 2 + CARD_WIDTH / 2),
-      panY: Math.max(0, node.y - container.clientHeight / 2 + CARD_HEIGHT / 2),
-    }));
-  }, [gridFocusSha, gridSearchJumpToken, nodeBySha]);
+    const viewport = scrollContainerRef.current;
+    const focusNode = focusedNode;
+    if (!viewport || !focusNode) return;
+    const origin = getTransformLayerOriginScreen();
+    if (!origin) return;
+    const viewportRect = viewport.getBoundingClientRect();
+    const targetZoom = renderedCameraRef.current.zoom;
+    const scale = targetZoom / GRID_RENDER_ZOOM;
+    const nodeCenterX = focusNode.x + CARD_WIDTH / 2;
+    const nodeCenterY = focusNode.y + CARD_BODY_TOP_OFFSET + CARD_HEIGHT / 2;
+    const targetScreenX = viewportRect.left + viewportRect.width / 2;
+    const targetScreenY = viewportRect.top + viewportRect.height / 2;
+    syncCamera(
+      targetScreenX - origin.x - nodeCenterX * scale,
+      targetScreenY - origin.y - nodeCenterY * scale,
+      targetZoom,
+    );
+  }, [gridFocusSha, gridSearchJumpToken, focusedNode, getTransformLayerOriginScreen]);
 
-  const checkedOutClusterKey = checkedOutRef?.headSha && checkedOutRef?.branchName ? `${checkedOutRef.branchName}:${checkedOutRef.headSha}` : null;
-  const clusterKeyByCommitId = new Map<string, string>();
-  const leadByClusterKey = new Map<string, string>();
-  const clusterCounts = new Map<string, number>();
-  const clustersByBranch = new Map<string, Array<{ key: string; count: number }>>();
-  for (const node of nodes) {
-    const key = `${node.commit.branchName}:${node.commit.id}`;
-    clusterKeyByCommitId.set(node.commit.visualId, key);
-    leadByClusterKey.set(key, node.commit.id);
-    clusterCounts.set(key, 1);
-    const list = clustersByBranch.get(node.commit.branchName) ?? [];
-    list.push({ key, count: 1 });
-    clustersByBranch.set(node.commit.branchName, list);
-  }
-  const defaultCollapsedClumps = useMemo(() => new Set<string>(Array.from(clustersByBranch.values()).flat().filter((cluster) => cluster.count > 1 && cluster.key !== checkedOutClusterKey).map((cluster) => cluster.key)), [clustersByBranch, checkedOutClusterKey]);
-  const manuallyOpenedClumps = useMemo(() => new Set<string>(), []);
-
-  const visibleNodesBySha = useMemo(() => {
-    const map = new Map<string, Node[]>();
-    for (const node of nodes) {
-      const list = map.get(node.commit.id) ?? [];
-      list.push(node);
-      map.set(node.commit.id, list);
+  const viewportClientW = viewportClientSize?.width ?? scrollContainerRef.current?.clientWidth ?? 0;
+  const viewportClientH = viewportClientSize?.height ?? scrollContainerRef.current?.clientHeight ?? 0;
+  const rawVisibleBounds =
+    viewportClientW > 0 && viewportClientH > 0
+      ? getViewportContentBoundsFromClientSize(viewportClientW, viewportClientH, renderedCameraRef.current, {
+          innerPaddingPx: MAP_GRID_INNER_PADDING_PX,
+        })
+      : null;
+  const visibleBounds =
+    rawVisibleBounds != null
+      ? withCullInsetScreenPx(
+          rawVisibleBounds,
+          renderedCameraRef.current.zoom,
+          MAP_GRID_CULL_VIEWPORT_INSET_SCREEN_PX,
+        )
+      : null;
+  const cullConnectorPath = (connector: { id: string; fromX: number; fromY: number; toX: number; toY: number }): boolean => {
+    if (!visibleBounds) return true;
+    if (connector.id.startsWith('merge:')) {
+      return mergeOrthogonalConnectorIntersectsViewportBounds(
+        connector.fromX,
+        connector.fromY,
+        connector.toX,
+        connector.toY,
+        connectorCornerRadiusPx,
+        visibleBounds,
+      );
     }
-    return map;
-  }, [nodes]);
-
-  const pointFormatter = (x: number, y: number) => `${x.toFixed(1)} ${y.toFixed(1)}`;
-  const connectors: Connector[] = [];
-  const mergeConnectors = mergeNodes.flatMap((mergeNode) => {
-    const mergeTarget = visibleNodesBySha.get(mergeNode.fullSha)?.[0] ?? null;
-    if (!mergeTarget) return [];
-    return (mergeNode.parentShas?.slice(1) ?? []).map((parentSha) => {
-      const sourceNode = nodeForCommitSha(visibleNodesBySha, parentSha) ?? null;
-      if (!sourceNode || sourceNode.commit.id === mergeTarget.commit.id) return null;
-      return {
-        id: `merge:${mergeNode.fullSha}:${parentSha}`,
-        fromX: sourceNode.x + CARD_WIDTH / 2,
-        fromY: sourceNode.y,
-        toX: mergeTarget.x + CARD_WIDTH - GRID_MERGE_TARGET_GAP_PX,
-        toY: mergeTarget.y + CARD_BODY_TOP_OFFSET + CARD_HEIGHT / 2,
-        path: buildMergeOrthogonalPath({
-          laneX: sourceNode.x + CARD_WIDTH / 2,
-          tipY: sourceNode.y,
-          mergeX: mergeTarget.x + CARD_WIDTH - GRID_MERGE_TARGET_GAP_PX,
-          mergeY: mergeTarget.y + CARD_BODY_TOP_OFFSET + CARD_HEIGHT / 2,
-          cornerR: 18,
-          pointFormatter,
-        }),
-      };
-    }).filter((entry): entry is { id: string; fromX: number; fromY: number; toX: number; toY: number; path: string } => entry != null);
-  });
-
-  for (const node of nodes) {
-    if (!node.commit.parentSha) continue;
-    const parentNode = nodeForCommitSha(visibleNodesBySha, node.commit.parentSha, node.commit.branchName);
-    if (!parentNode || parentNode.commit.id === node.commit.id) continue;
-    const sourceX = parentNode.x + CARD_WIDTH / 2;
-    const sourceY = parentNode.y + CARD_BODY_TOP_OFFSET;
-    const targetX = node.x + CARD_WIDTH / 2;
-    const targetY = node.y + CARD_BODY_TOP_OFFSET + GRID_INCOMING_GAP_PX;
-    connectors.push({
-      id: `${node.commit.branchName}:${parentNode.commit.id}->${node.commit.id}`,
-      fromX: sourceX,
-      fromY: sourceY,
-      toX: targetX,
-      toY: targetY,
-      path: buildRoundedElbowPath(sourceX, sourceY, targetX, targetY, 18, pointFormatter, GRID_CONNECTOR_GAP_PX),
-    });
-  }
-
-  const connectorParentShas = new Set<string>();
-  const branchOffNodeShas = new Set<string>();
-  const branchStartShas = new Set<string>();
-  const crossBranchOutgoingShas = new Set<string>();
-  const branchBaseCommitIds = new Set<string>();
-  const nodeWarnings = new Map<string, string[]>();
-
-  for (const branch of branches) {
-    if (branch.name === defaultBranch) continue;
-    const baseCommit = branchBaseCommit(branch.name, branchCommitPreviews, branchUniqueAheadCounts);
-    if (baseCommit) branchBaseCommitIds.add(baseCommit.id);
-    if (branch.presidesFromSha ?? branch.divergedFromSha ?? branch.createdFromSha) branchOffNodeShas.add(branch.presidesFromSha ?? branch.divergedFromSha ?? branch.createdFromSha ?? '');
-  }
-  for (const node of nodes) {
-    const parent = node.commit.parentSha ? nodeForCommitSha(visibleNodesBySha, node.commit.parentSha, node.commit.branchName) : null;
-    if (parent) connectorParentShas.add(parent.commit.id);
-    if (normalizedSearchQuery && !matchingNodeIds.has(node.commit.id)) nodeWarnings.set(node.commit.id, ['Search filtered']);
-  }
+    return roundedElbowConnectorIntersectsViewportBounds(
+      connector.fromX,
+      connector.fromY,
+      connector.toX,
+      connector.toY,
+      connectorCornerRadiusPx,
+      GRID_CONNECTOR_GAP_PX,
+      visibleBounds,
+    );
+  };
 
   useLayoutEffect(() => {
-    const container = viewportRef.current;
-    if (!container) return;
-    const sync = () => {
-      setViewportSize({
-        width: Math.max(1, container.clientWidth || window.innerWidth),
-        height: Math.max(1, container.clientHeight || window.innerHeight),
-      });
+    const viewport = scrollContainerRef.current;
+    if (!viewport) return;
+    if (viewport.clientWidth <= 0 || viewport.clientHeight <= 0) return;
+    const w = viewport.clientWidth;
+    const h = viewport.clientHeight;
+    setViewportClientSize((prev) => (prev?.width === w && prev?.height === h ? prev : { width: w, height: h }));
+    const rawBounds = getViewportContentBoundsFromClientSize(w, h, renderedCameraRef.current, {
+      innerPaddingPx: MAP_GRID_INNER_PADDING_PX,
+    });
+    if (!rawBounds) {
+      setVisibleNodeIds((prev) => (prev === null ? prev : null));
+      return;
+    }
+    const bounds = withCullInsetScreenPx(
+      rawBounds,
+      renderedCameraRef.current.zoom,
+      MAP_GRID_CULL_VIEWPORT_INSET_SCREEN_PX,
+    );
+    const nextVisible = collectVisibleCommitIdsFromSpatialIndex(
+      commitCullSpatialIndex,
+      bounds,
+      nodeByVisualId,
+      labelTopPx,
+    );
+    /* Expanded clumps: spatial cull rects use live zoom while row layout uses GRID_LAYOUT_RENDER_ZOOM — they
+     * can disagree, so commits stay out of visibleNodeIds. Always allow laid-out commits for open
+     * multi-commit clusters into the viewport set. */
+    for (const node of renderNodes) {
+      const ck = clusterKeyByCommitId.get(node.commit.visualId);
+      if (!ck) continue;
+      const count = clusterCounts.get(ck) ?? 1;
+      if (count <= 1) continue;
+      const clusterExpanded =
+        manuallyOpenedClumps.has(ck) ||
+        (!defaultCollapsedClumps.has(ck) && !manuallyClosedClumps.has(ck));
+      if (clusterExpanded) nextVisible.add(node.commit.visualId);
+    }
+    setVisibleNodeIds((prev) => (visibleCommitIdSetEquals(prev, nextVisible) ? prev : nextVisible));
+  }, [
+    renderedZoom,
+    gridSearchJumpToken,
+    gridFocusSha,
+    isCameraMoving,
+    cameraRenderTick,
+    manuallyOpenedClumps,
+    manuallyClosedClumps,
+    defaultCollapsedClumps,
+    clusterKeyByCommitId,
+    clusterCounts,
+    renderNodes,
+    viewportClientSize,
+    commitCullSpatialIndex,
+    nodeByVisualId,
+    labelTopPx,
+  ]);
+
+  useLayoutEffect(() => {
+    const viewport = scrollContainerRef.current;
+    if (!viewport) return;
+    const handleResize = () => {
+      const w = viewport.clientWidth;
+      const h = viewport.clientHeight;
+      if (w <= 0 || h <= 0) return;
+      setViewportClientSize((prev) => (prev?.width === w && prev?.height === h ? prev : { width: w, height: h }));
     };
-    sync();
-    const resizeObserver = new ResizeObserver(sync);
-    resizeObserver.observe(container);
-    return () => {
-      resizeObserver.disconnect();
-    };
-  }, []);
+    handleResize();
+    const ro = new ResizeObserver(handleResize);
+    ro.observe(viewport);
+    return () => ro.disconnect();
+  }, [allCommits.length]);
+
+  const renderedNodeCount = renderNodes.filter((node) => shouldRenderNode(node)).length;
+  const renderedMergeConnectorCount = mergeConnectors.filter((connector) => cullConnectorPath(connector)).length;
+  const renderedConnectorCount = connectors.filter((connector) => cullConnectorPath(connector)).length;
+
+  const handleCommitCardClick = useCallback(
+    (event: React.MouseEvent, node: Node) => {
+      event.stopPropagation();
+      const commitSha = node.commit.id;
+      if (event.shiftKey) {
+        setSelectedCommitShas((prev) =>
+          prev.includes(commitSha)
+            ? prev.filter((sha) => sha !== commitSha)
+            : [...prev, commitSha],
+        );
+        setMergeTargetCommitSha(commitSha);
+      } else {
+        setSelectedCommitShas((prev) => (prev.includes(commitSha) ? [] : [commitSha]));
+        setMergeTargetCommitSha((current) => (current === commitSha ? null : commitSha));
+      }
+
+      const shouldCheckout = event.metaKey || event.ctrlKey || event.detail >= 2;
+      if (!shouldCheckout) return;
+      if (commitSha === 'WORKING_TREE') return;
+
+      const shortSha = commitSha.length >= 40 ? commitSha.slice(0, 7) : commitSha;
+      let otherWorktree: WorktreeInfo | null = null;
+      if (node.commit.branchName) {
+        otherWorktree = findOtherWorktreeForCommit(node.commit.branchName, commitSha, shortSha);
+        if (!otherWorktree) {
+          otherWorktree = findWorktreeWithBranchCheckedOut(node.commit.branchName);
+        }
+      } else {
+        otherWorktree = findOtherWorktreeByHeadSha(commitSha, shortSha);
+      }
+      if (otherWorktree && onSwitchToWorktree) {
+        void onSwitchToWorktree(otherWorktree.path);
+        return;
+      }
+      onCommitClick?.({ commitSha });
+    },
+    [
+      findOtherWorktreeByHeadSha,
+      findOtherWorktreeForCommit,
+      findWorktreeWithBranchCheckedOut,
+      onCommitClick,
+      onSwitchToWorktree,
+    ],
+  );
+
+  const confirmCommit = useCallback(async () => {
+    if (!onCommitLocalChanges) return;
+    const ok = await onCommitLocalChanges(commitMessageDraft);
+    if (ok) {
+      setCommitDialogOpen(false);
+      setCommitMessageDraft('');
+    }
+  }, [onCommitLocalChanges, commitMessageDraft]);
+
+  const confirmDeleteSelection = useCallback(async () => {
+    if (!onDeleteSelection) return;
+    await onDeleteSelection({
+      branchNames: [],
+      discardUncommittedChanges: hasSelectedUncommittedChanges,
+      stashIndices: selectedStashIndices,
+    });
+    setDeleteConfirmOpen(false);
+    setSelectedCommitShas([]);
+    setMergeTargetCommitSha(null);
+  }, [onDeleteSelection, hasSelectedUncommittedChanges, selectedStashIndices]);
+
+  const confirmCreateBranchFromSelection = useCallback(async () => {
+    const trimmed = newBranchName.trim();
+    if (!trimmed) return;
+    if (newBranchCreateMode === 'new-root') {
+      if (!onCreateRootBranch) return;
+      await onCreateRootBranch(trimmed);
+    } else {
+      if (!onCreateBranchFromNode || selectedVisibleCommitShas.length !== 1) return;
+      const target = selectedVisibleCommitShas[0];
+      if (!(target === 'WORKING_TREE' || target.startsWith('STASH:'))) return;
+      await onCreateBranchFromNode(target, trimmed);
+    }
+    setNewBranchDialogOpen(false);
+    setNewBranchName('');
+    setNewBranchCreateMode('from-selected-node');
+    setSelectedCommitShas([]);
+    setMergeTargetCommitSha(null);
+  }, [newBranchCreateMode, newBranchName, onCreateBranchFromNode, onCreateRootBranch, selectedVisibleCommitShas]);
+
+  const selectedCommitCanCreateBranch =
+    selectedVisibleCommitShas.length === 1 &&
+    (selectedVisibleCommitShas[0] === 'WORKING_TREE' || selectedVisibleCommitShas[0].startsWith('STASH:'));
+  const canCreateRootBranch = Boolean(onCreateRootBranch);
+
+  useEffect(() => {
+    if (!newBranchDialogOpen) return;
+    if (!selectedCommitCanCreateBranch && canCreateRootBranch) {
+      setNewBranchCreateMode('new-root');
+      return;
+    }
+    if (selectedCommitCanCreateBranch) {
+      setNewBranchCreateMode('from-selected-node');
+    }
+  }, [canCreateRootBranch, newBranchDialogOpen, selectedCommitCanCreateBranch]);
+
+  void [
+    openPRs,
+    onLoadMore,
+    view,
+    staleBranches,
+    isLoading,
+    scrollRequest,
+    focusedErrorBranch,
+    mapTopInsetPx,
+    orientation,
+    visibleNodesBySha,
+    freshCopyBranchNames,
+  ];
 
   return (
-    <div className="relative flex h-full min-h-0 flex-col overflow-hidden rounded-2xl border border-border bg-card">
-      <div className="pointer-events-none absolute bottom-4 right-4 z-[10000] flex items-end gap-2">
-        <button type="button" onClick={() => setIsDebugOpen((open) => !open)} className={cn('pointer-events-auto inline-flex h-8 items-center rounded-full border px-3 text-xs font-medium shadow-sm transition-colors', isDebugOpen ? 'border-primary/30 bg-primary/10 text-primary' : 'border-border bg-card text-muted-foreground hover:bg-accent hover:text-foreground')}>Debug</button>
-      </div>
-      {isDebugOpen ? <div className="absolute bottom-14 right-4 z-[10000] flex max-h-[calc(100%-4rem)] w-[min(42rem,calc(100%-2rem))] flex-col overflow-hidden rounded-2xl border border-border bg-card/95 shadow-lg backdrop-blur-sm"><div className="flex items-center justify-between border-b border-border/50 px-4 py-3"><div><p className="text-sm font-medium text-foreground">Commit debug</p><p className="text-xs text-muted-foreground">Canvas-rendered branch summaries</p></div><button type="button" onClick={() => setIsDebugOpen(false)} className="rounded-full border border-border/50 bg-muted/30 px-2.5 py-1 text-xs font-medium text-muted-foreground transition-colors hover:bg-accent hover:text-foreground">Close</button></div><div className="min-h-0 flex-1 overflow-y-auto px-4 py-3"><pre className="whitespace-pre-wrap break-words text-[11px] leading-5 text-muted-foreground">{`nodes=${nodes.length}\nconnectors=${connectors.length}\nsearch=${normalizedSearchQuery || '(none)'}`}</pre></div></div> : null}
-      {nodes.length === 0 ? (
-        <div className="flex flex-1 min-h-0 items-center justify-center py-20"><div className="rounded-xl border border-border/50 bg-muted/30 shadow-inner px-4 py-3"><p className="text-sm text-muted-foreground">No commits to render</p></div></div>
-      ) : (
-        <div ref={viewportRef} className="relative flex-1 min-h-0 overflow-hidden">
-          <GridCanvas
-            nodes={nodes}
-            connectors={connectors}
-            mergeConnectors={mergeConnectors}
-            viewportWidth={viewportSize.width}
-            viewportHeight={viewportSize.height}
-            panX={viewport.panX}
-            panY={viewport.panY}
-            zoom={viewport.zoom}
-            onViewportChange={setViewport}
-            searchQuery={normalizedSearchQuery}
-            matchingNodeIds={matchingNodeIds}
-            focusedNodeId={gridFocusSha}
-            clusterKeyByCommitId={clusterKeyByCommitId}
-            leadByClusterKey={leadByClusterKey}
-            clusterCounts={clusterCounts}
-            defaultCollapsedClumps={defaultCollapsedClumps}
-            manuallyOpenedClumps={manuallyOpenedClumps}
-            checkedOutClusterKey={checkedOutClusterKey}
-            connectorParentShas={connectorParentShas}
-            branchOffNodeShas={branchOffNodeShas}
-            branchStartShas={branchStartShas}
-            crossBranchOutgoingShas={crossBranchOutgoingShas}
-            branchBaseCommitIds={branchBaseCommitIds}
-            nodeWarnings={nodeWarnings}
-          />
+    <div className="relative flex h-full min-h-0 flex-col overflow-hidden border border-border bg-card">
+      <MapGridDebugPanel
+        isOpen={isDebugOpen}
+        onToggle={() => setIsDebugOpen((open) => !open)}
+        onClose={() => setIsDebugOpen(false)}
+        visibleBounds={visibleBounds}
+        renderedNodeCount={renderedNodeCount}
+        totalNodeCount={renderNodes.length}
+        renderedMergeConnectorCount={renderedMergeConnectorCount}
+        totalMergeConnectorCount={mergeConnectors.length}
+        renderedConnectorCount={renderedConnectorCount}
+        totalConnectorCount={connectors.length}
+        mapGridCullViewportInsetScreenPx={MAP_GRID_CULL_VIEWPORT_INSET_SCREEN_PX}
+        debugRows={debugRows}
+        branchDebugRows={branchDebugRows}
+        connectorDecisions={connectorDecisions}
+      />
+      {allCommits.length === 0 ? (
+        <div className="flex flex-1 min-h-0 items-center justify-center py-20">
+          <div className="rounded-xl border border-border/50 bg-muted/30 px-4 py-3">
+            <p className="text-sm text-muted-foreground">No commits to render</p>
+          </div>
         </div>
+      ) : (
+        <MapGridCanvas
+          scrollContainerRef={scrollContainerRef}
+          mapPadHostRef={mapPadHostRef}
+          transformLayerRef={transformLayerRef}
+          isMarqueeSelecting={isMarqueeSelecting}
+          contentWidth={contentWidth}
+          contentHeight={contentHeight}
+          isCameraMoving={isCameraMoving}
+          onWheel={handleWheel}
+          onMouseDown={startMarqueeDrag}
+          labelTopPx={labelTopPx}
+          inverseZoomStyle={inverseZoomStyle}
+          displayZoom={displayZoom}
+          iconScaleStyle={iconScaleStyle}
+          selectedVisibleCommitShas={selectedVisibleCommitShas}
+          normalizedSearchQuery={normalizedSearchQuery}
+          matchingNodeIds={matchingNodeIds}
+          focusedNode={focusedNode}
+          renderNodes={renderNodes}
+          shouldRenderNode={shouldRenderNode}
+          manuallyOpenedClumps={manuallyOpenedClumps}
+          manuallyClosedClumps={manuallyClosedClumps}
+          defaultCollapsedClumps={defaultCollapsedClumps}
+          leadByClusterKey={leadByClusterKey}
+          clusterKeyByCommitId={clusterKeyByCommitId}
+          clusterCounts={clusterCounts}
+          commitIdsWithRenderedAncestry={commitIdsWithRenderedAncestry}
+          nodeWarnings={nodeWarnings}
+          connectorParentShas={connectorParentShas}
+          branchStartShas={branchStartShas}
+          branchOffNodeShas={branchOffNodeShas}
+          crossBranchOutgoingShas={crossBranchOutgoingShas}
+          branchBaseCommitByName={branchBaseCommitByName}
+          branchStartAccentClass={branchStartAccentClass}
+          connectorParentAccentClass={connectorParentAccentClass}
+          commitCornerRadiusPx={commitCornerRadiusPx}
+          lineStrokeWidth={lineStrokeWidth}
+          haloStrokeWidth={haloStrokeWidth}
+          connectorCornerRadiusPx={connectorCornerRadiusPx}
+          pointFormatter={pointFormatter}
+          connectors={connectors}
+          mergeConnectors={mergeConnectors}
+          cullConnectorPath={cullConnectorPath}
+          flushCameraReactTick={flushCameraReactTick}
+          setManuallyOpenedClumps={setManuallyOpenedClumps}
+          setManuallyClosedClumps={setManuallyClosedClumps}
+          onCommitCardClick={handleCommitCardClick}
+          unpushedCommitShasSetByBranch={unpushedCommitShasSetByBranch}
+          checkedOutHeadSha={checkedOutHeadSha}
+        />
       )}
+
+      {marqueeRect && isMarqueeSelecting ? (
+        <div
+          className="pointer-events-none absolute z-[60] border"
+          style={{
+            left: marqueeRect.left,
+            top: marqueeRect.top,
+            width: marqueeRect.width,
+            height: marqueeRect.height,
+            borderColor: '#068CFD',
+            borderWidth: '1.5px',
+            backgroundColor: 'transparent',
+            borderRadius: 0,
+          }}
+        />
+      ) : null}
+
+      <MapGridControls
+        selectedVisibleCommitShas={selectedVisibleCommitShas}
+        commitInProgress={commitInProgress}
+        commitDisabled={commitDisabled}
+        stageInProgress={stageInProgress}
+        stashInProgress={stashInProgress}
+        stashDisabled={stashDisabled}
+        pushInProgress={pushInProgress}
+        deleteInProgress={deleteInProgress}
+        createBranchFromNodeInProgress={createBranchFromNodeInProgress}
+        onCommitLocalChanges={onCommitLocalChanges}
+        onStageAllChanges={onStageAllChanges ? () => void onStageAllChanges() : undefined}
+        onStashLocalChanges={onStashLocalChanges}
+        onPushCurrentBranch={onPushCurrentBranch}
+        onPushAllBranches={onPushAllBranches}
+        onPushCommitTargets={onPushCommitTargets}
+        onDeleteSelection={onDeleteSelection}
+        onCreateBranchFromNode={onCreateBranchFromNode}
+        onMergeRefsIntoBranch={onMergeRefsIntoBranch}
+        selectedPushTargets={selectedPushTargets}
+        selectedPushLabel={selectedPushLabel}
+        canPushCurrentBranch={canPushCurrentBranch}
+        pushCurrentBranchLabel={pushCurrentBranchLabel}
+        pushableRemoteBranchCount={pushableRemoteBranchCount}
+        deletableSelectionCount={deletableSelectionCount}
+        canCreateRootBranch={canCreateRootBranch}
+        selectedCommitTargetOption={selectedCommitTargetOption}
+        mergeInProgress={mergeInProgress}
+        mergeTargetCommitSha={mergeTargetCommitSha}
+        setMergeTargetCommitSha={setMergeTargetCommitSha}
+        worktrees={worktrees}
+        currentRepoPath={currentRepoPath}
+        worktreeMenuOpen={worktreeMenuOpen}
+        setWorktreeMenuOpen={setWorktreeMenuOpen}
+        onSwitchToWorktree={onSwitchToWorktree}
+        onRemoveWorktree={onRemoveWorktree}
+        removeWorktreeInProgress={removeWorktreeInProgress}
+        setCommitDialogOpen={setCommitDialogOpen}
+        setDeleteConfirmOpen={setDeleteConfirmOpen}
+        setNewBranchDialogOpen={setNewBranchDialogOpen}
+      />
+
+      <MapGridDialogs
+        commitDialogOpen={commitDialogOpen}
+        commitMessageDraft={commitMessageDraft}
+        onCommitMessageDraftChange={setCommitMessageDraft}
+        onCommitDialogClose={() => setCommitDialogOpen(false)}
+        onCommitConfirm={() => void confirmCommit()}
+        commitInProgress={commitInProgress}
+        deleteConfirmOpen={deleteConfirmOpen}
+        deleteSelectionItems={deleteSelectionItems}
+        onDeleteConfirmClose={() => setDeleteConfirmOpen(false)}
+        onDeleteConfirm={() => void confirmDeleteSelection()}
+        deleteInProgress={deleteInProgress}
+        deletableSelectionCount={deletableSelectionCount}
+        newBranchDialogOpen={newBranchDialogOpen}
+        newBranchName={newBranchName}
+        newBranchCreateMode={newBranchCreateMode}
+        onNewBranchNameChange={setNewBranchName}
+        onNewBranchCreateModeChange={setNewBranchCreateMode}
+        onNewBranchDialogClose={() => setNewBranchDialogOpen(false)}
+        onNewBranchConfirm={() => void confirmCreateBranchFromSelection()}
+        selectedCommitCanCreateBranch={selectedCommitCanCreateBranch}
+        createBranchFromNodeInProgress={createBranchFromNodeInProgress}
+      />
     </div>
   );
 }

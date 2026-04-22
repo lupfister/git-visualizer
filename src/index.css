@@ -71,11 +71,26 @@ body {
   color: var(--foreground);
   font-family: system-ui, -apple-system, sans-serif;
   -webkit-font-smoothing: antialiased;
+  margin: 0;
+  overflow: hidden;
+  overscroll-behavior: none;
 }
 
 html,
+body,
 #root {
+  width: 100%;
+  height: 100%;
+}
+
+html {
+  overflow: hidden;
+  overscroll-behavior: none;
   background: #FAFAF9;
+}
+
+#root {
+  overflow: hidden;
 }
 
 .window-drag-region {
@@ -215,19 +230,6 @@ body.popover-window #root {
 
 .branch-map-commit-rect {
   vector-effect: non-scaling-stroke;
-}
-
-/* Keep the scene as close to a pure transform while the user is panning. */
-.branch-map-scroll.is-panning .branch-map-svg,
-.branch-map-scroll.is-panning .branch-map-svg * {
-  animation: none !important;
-  transition: none !important;
-}
-
-.branch-map-scroll.is-panning .branch-map-svg [data-map-layer="labels"],
-.branch-map-scroll.is-panning .branch-map-svg [data-map-layer="overlay"],
-.branch-map-scroll.is-panning .branch-map-svg [data-map-layer="controls"] {
-  display: none !important;
 }
 
 

@@ -2,14 +2,14 @@ import { useState, useEffect, useRef, useMemo } from 'react';
 import { invoke } from '@tauri-apps/api/core';
 import { listen } from '@tauri-apps/api/event';
 import { getCurrentWindow } from '@tauri-apps/api/window';
-import { ArrowLeft } from 'lucide-react';
-import BranchMapView, { type OrientationMode } from '../components/svg/core/MapViewSvg';
+import BranchGridMapView from '../components/grid/MapViewGrid';
+import DenseBranchSidebar from '../components/DenseBranchSidebar';
 import FolderPickerModal from './FolderPickerModal';
 import type { Branch, BranchCommitPreview, BranchPromptMeta, BranchPromptMarker, CheckedOutRef, Commit, DirectCommit, GitHubAuthStatus, GitHubInfo, GitStashEntry, MergeNode, OpenPR, WorktreeInfo } from '../types';
 import { foldStashNodesIntoGraph } from './placeStashNode';
 
 type View = 'landing' | 'map';
-type MapMode = 'time' | 'grid';
+const FROZEN_REPO_BASENAME = 'git-visualizer';
 type OpenRepoEventPayload = {
   path: string;
   sourceApp?: string | null;
@@ -26,6 +26,17 @@ function cn(...classes: Array<string | false | null | undefined>) {
   return classes.filter(Boolean).join(' ');
 }
 
+function basenameFromPath(path: string | null): string {
+  if (!path) return '';
+  const normalized = path.replace(/\\/g, '/').replace(/\/+$/, '');
+  const parts = normalized.split('/');
+  return parts[parts.length - 1] ?? '';
+}
+
+function isFrozenRepoPath(path: string | null): boolean {
+  return basenameFromPath(path) === FROZEN_REPO_BASENAME;
+}
+
 function App() {
   const [repoPath, setRepoPath] = useState<string | null>(null);
   const [repoName, setRepoName] = useState<string>('');
@@ -39,8 +50,6 @@ function App() {
   const [checkedOutRef, setCheckedOutRef] = useState<CheckedOutRef | null>(null);
   const [worktrees, setWorktrees] = useState<WorktreeInfo[]>([]);
   const [removeWorktreeInProgress, setRemoveWorktreeInProgress] = useState(false);
-  const [orientation, setOrientation] = useState<OrientationMode>('vertical');
-  const [mapMode, setMapMode] = useState<MapMode>('grid');
   const [gridSearchQuery, setGridSearchQuery] = useState('');
   const [gridSearchJumpToken, setGridSearchJumpToken] = useState(0);
   const [gridSearchResultCount, setGridSearchResultCount] = useState<number | null>(null);
@@ -75,30 +84,14 @@ function App() {
   const [commitInProgress, setCommitInProgress] = useState(false);
   const [stageInProgress, setStageInProgress] = useState(false);
   const [createBranchFromNodeInProgress, setCreateBranchFromNodeInProgress] = useState(false);
+  const [isMapInteracting, setIsMapInteracting] = useState(false);
 
   const branchMetaLoadKeyRef = useRef<string | null>(null);
-  const isMapInteractionBusyRef = useRef(false);
-  const refreshInFlightRef = useRef(false);
-  const pendingRefreshRef = useRef(false);
-  const refreshTimerRef = useRef<number | null>(null);
-  const lastBranchesSignatureRef = useRef<string | null>(null);
-  const lastMergeNodesSignatureRef = useRef<string | null>(null);
-  const lastDirectCommitsSignatureRef = useRef<string | null>(null);
-  const lastCheckedOutSignatureRef = useRef<string | null>(null);
-  const lastLoadedDefaultBranchRef = useRef<string>('main');
-  const lastLoadedRepoPathRef = useRef<string | null>(null);
-
-  function handleMapInteractionChange(isBusy: boolean) {
-    isMapInteractionBusyRef.current = isBusy;
-    if (!isBusy && pendingRefreshRef.current && !refreshInFlightRef.current) {
-      const nextRepoPath = lastLoadedRepoPathRef.current ?? repoPath;
-      const nextDefaultBranch = lastLoadedDefaultBranchRef.current ?? defaultBranch;
-      if (!nextRepoPath) return;
-      void runQueuedFullRefresh(nextRepoPath, nextDefaultBranch).catch((e) => {
-        console.error('Auto-refresh failed:', e);
-      });
-    }
-  }
+  const isFrozenRepo = isFrozenRepoPath(repoPath);
+  const isMapInteractingRef = useRef(false);
+  const latestBranchesRef = useRef<Branch[]>([]);
+  const latestDirectCommitsRef = useRef<DirectCommit[]>([]);
+  const latestCheckedOutRef = useRef<CheckedOutRef | null>(null);
 
   function handleWindowDragStart(e: React.MouseEvent<HTMLElement>) {
     if (e.button !== 0) return;
@@ -135,23 +128,18 @@ function App() {
     return all;
   }
 
-  function getBranchesSignature(list: Branch[]): string {
-    return list
+  const getBranchesSignature = (list: Branch[]): string =>
+    list
       .map((b) => `${b.name}|${b.headSha}|${b.commitsAhead}|${b.commitsBehind}|${b.unpushedCommits}|${b.remoteSyncStatus}`)
       .join('||');
-  }
 
-  function getMergeNodesSignature(list: MergeNode[]): string {
-    return list.map((n) => n.fullSha).join('|');
-  }
+  const getDirectCommitsSignature = (list: DirectCommit[]): string =>
+    list.map((c) => c.fullSha).join('|');
 
-  function getDirectCommitsSignature(list: DirectCommit[]): string {
-    return list.map((c) => c.fullSha).join('|');
-  }
-
-  function getCheckedOutSignature(ref: CheckedOutRef | null): string {
-    return `${ref?.branchName ?? ''}|${ref?.headSha ?? ''}|${ref?.parentSha ?? ''}|${ref?.hasUncommittedChanges ? 1 : 0}`;
-  }
+  const getCheckedOutSignature = (ref: CheckedOutRef | null): string =>
+    ref
+      ? `${ref.branchName ?? ''}|${ref.headSha}|${ref.parentSha ?? ''}|${ref.hasUncommittedChanges ? 1 : 0}`
+      : '__none__';
 
   async function refreshRepoGitState(path: string, resolvedDefaultBranch?: string) {
     const branchDef = resolvedDefaultBranch ?? defaultBranch;
@@ -189,31 +177,23 @@ function App() {
     setCheckedOutRef(confirmedCheckedOutRef);
     setWorktrees(worktreeList);
     setStashes(stashList);
-    lastLoadedRepoPathRef.current = path;
-    lastLoadedDefaultBranchRef.current = branchDef;
-    lastBranchesSignatureRef.current = getBranchesSignature(branchList);
-    lastMergeNodesSignatureRef.current = getMergeNodesSignature(nodes);
-    lastDirectCommitsSignatureRef.current = getDirectCommitsSignature(directResult);
-    lastCheckedOutSignatureRef.current = getCheckedOutSignature(confirmedCheckedOutRef);
   }
 
-  async function runQueuedFullRefresh(path: string, resolvedDefaultBranch: string) {
-    if (!path || refreshInFlightRef.current) {
-      pendingRefreshRef.current = true;
-      return;
-    }
-    if (isMapInteractionBusyRef.current) {
-      pendingRefreshRef.current = true;
-      return;
-    }
-    refreshInFlightRef.current = true;
-    pendingRefreshRef.current = false;
-    try {
-      await refreshRepoGitState(path, resolvedDefaultBranch);
-      setMapLoading(false);
-    } finally {
-      refreshInFlightRef.current = false;
-    }
+  async function hasFrozenRepoStateChanged(path: string, branch: string): Promise<boolean> {
+    const [nextBranches, nextDirectCommits, nextCheckedOutRef] = await Promise.all([
+      invoke<Branch[]>('get_branches', { repoPath: path }).catch(() => []),
+      invoke<DirectCommit[]>('get_direct_commits', {
+        repoPath: path,
+        branch,
+      }).catch(() => []),
+      invoke<CheckedOutRef>('get_checked_out_ref', { repoPath: path }).catch(() => null),
+    ]);
+
+    return (
+      getBranchesSignature(nextBranches) !== getBranchesSignature(latestBranchesRef.current) ||
+      getDirectCommitsSignature(nextDirectCommits) !== getDirectCommitsSignature(latestDirectCommitsRef.current) ||
+      getCheckedOutSignature(nextCheckedOutRef) !== getCheckedOutSignature(latestCheckedOutRef.current)
+    );
   }
 
   async function handleSwitchToWorktree(targetPath: string) {
@@ -292,9 +272,15 @@ function App() {
       ]);
       setRepoName(info.name);
       setDefaultBranch(def);
-      
+
       // Setting repoPath triggers the useEffect which runs 'performFetch' + 'loadPromptMeta'
       setRepoPath(path);
+      if (isFrozenRepoPath(path)) {
+        // Frozen mode does one deterministic full refresh, then stays static
+        // (watcher/polling remain disabled for smooth panning).
+        await refreshRepoGitState(path, def);
+        setMapLoading(false);
+      }
       setLoading(false); // unblock the landing button
 
       // Phase 3: GitHub data (non-blocking)
@@ -372,47 +358,166 @@ function App() {
     };
   }, [repoPath]);
 
-  // Watch the repo, but only run full graph refreshes when signatures change.
   useEffect(() => {
-    if (!repoPath || !defaultBranch) return;
+    latestBranchesRef.current = branches;
+  }, [branches]);
+
+  useEffect(() => {
+    latestDirectCommitsRef.current = directCommits;
+  }, [directCommits]);
+
+  useEffect(() => {
+    latestCheckedOutRef.current = checkedOutRef;
+  }, [checkedOutRef]);
+
+  useEffect(() => {
+    isMapInteractingRef.current = isMapInteracting;
+  }, [isMapInteracting]);
+
+  // Hook up exactly as requested: File watcher triggers `git-activity` event from Rust, 
+  // and we do an invisible refetch of git state. Instant map updates!
+  useEffect(() => {
+    if (!repoPath || !defaultBranch || isFrozenRepo) return;
 
     invoke('watch_repo', { repoPath }).catch(console.error);
 
-    let isDisposed = false;
-    let isSyncingCheckedOut = false;
-    let refreshRetryTimeoutId: number | null = null;
+    let isFetching = false;
+    let pendingFetch = false;
+    let timeoutId: number;
     let monitorIntervalId: number | null = null;
     const retryTimeoutIds = new Set<number>();
     let unlisten: (() => void) | null = null;
+    let isDisposed = false;
+    let isSyncingCheckedOut = false;
+    let lastCheckedOutKey: string | null = null;
+    let lastBranchesSignature: string | null = null;
+    let lastMergeNodesSignature: string | null = null;
+    let lastDirectCommitsSignature: string | null = null;
 
-    const clearRefreshTimer = () => {
-      if (refreshTimerRef.current !== null) {
-        clearTimeout(refreshTimerRef.current);
-        refreshTimerRef.current = null;
-      }
-      if (refreshRetryTimeoutId !== null) {
-        clearTimeout(refreshRetryTimeoutId);
-        refreshRetryTimeoutId = null;
-      }
-      for (const id of retryTimeoutIds) {
-        window.clearTimeout(id);
-      }
-      retryTimeoutIds.clear();
-    };
+    const getBranchesSignature = (list: Branch[]): string =>
+      list
+        .map((b) => `${b.name}|${b.headSha}|${b.commitsAhead}|${b.commitsBehind}|${b.unpushedCommits}|${b.remoteSyncStatus}`)
+        .join('||');
 
-    const queueFullRefresh = (delayMs = 120) => {
-      if (isDisposed) return;
-      pendingRefreshRef.current = true;
-      if (isMapInteractionBusyRef.current || refreshInFlightRef.current) {
+    const getMergeNodesSignature = (list: MergeNode[]): string =>
+      list.map((n) => n.fullSha).join('|');
+
+    const getDirectCommitsSignature = (list: DirectCommit[]): string =>
+      list.map((c) => c.fullSha).join('|');
+
+    const performFetch = async () => {
+      if (isFetching) {
+        pendingFetch = true;
         return;
       }
-      if (refreshTimerRef.current !== null) {
-        clearTimeout(refreshTimerRef.current);
+      isFetching = true;
+      try {
+        const branchesPromise = invoke<Branch[]>('get_branches', { repoPath });
+        const mergeNodesPromise = fetchAllMergeNodes(repoPath, defaultBranch);
+        const checkedOutPromise = invoke<CheckedOutRef>('get_checked_out_ref', { repoPath }).catch(() => null);
+        const worktreesPromise = invoke<WorktreeInfo[]>('list_worktrees', { repoPath }).catch(() => []);
+        const directCommitsPromise = invoke<DirectCommit[]>('get_direct_commits', { repoPath, branch: defaultBranch });
+        const unpushedDirectPromise = invoke<DirectCommit[]>('get_unpushed_direct_commits', { repoPath, branch: defaultBranch }).catch(() => []);
+
+        // Prioritize the minimum data needed for first paint and interactions.
+        const [branchListResult, currentCheckedOutResult, worktreesResult, directResultResult, unpushedDirectResult] = await Promise.allSettled([
+          branchesPromise,
+          checkedOutPromise,
+          worktreesPromise,
+          directCommitsPromise,
+          unpushedDirectPromise,
+        ]);
+        if (isDisposed) return;
+
+        const resolvedBranches = branchListResult.status === 'fulfilled' ? branchListResult.value : null;
+
+        if (resolvedBranches) {
+          const sig = getBranchesSignature(resolvedBranches);
+          if (sig !== lastBranchesSignature) {
+            lastBranchesSignature = sig;
+            setBranches(resolvedBranches);
+          }
+        }
+        if (directResultResult.status === 'fulfilled') {
+          const next = directResultResult.value;
+          const sig = getDirectCommitsSignature(next);
+          if (sig !== lastDirectCommitsSignature) {
+            lastDirectCommitsSignature = sig;
+            setDirectCommits(next);
+          }
+        }
+        if (unpushedDirectResult.status === 'fulfilled') {
+          setUnpushedDirectCommits(unpushedDirectResult.value);
+        }
+        if (worktreesResult.status === 'fulfilled') {
+          setWorktrees(worktreesResult.value);
+        }
+
+        // Fetch per-branch unpushed SHAs for accurate per-commit classification.
+        const allBranchNames = [defaultBranch, ...(resolvedBranches ?? []).map((b) => b.name)];
+        const unpushedShaEntries = await Promise.all(
+          allBranchNames.map(async (branchName) => {
+            const shas = await invoke<string[]>('get_branch_unpushed_commit_shas', {
+              repoPath,
+              branch: branchName,
+            }).catch(() => []);
+            return [branchName, shas] as const;
+          })
+        );
+        if (!isDisposed) {
+          setUnpushedCommitShasByBranch(Object.fromEntries(unpushedShaEntries));
+        }
+
+        invoke<GitStashEntry[]>('list_stashes', { repoPath })
+          .then((list) => {
+            if (!isDisposed) setStashes(list);
+          })
+          .catch(() => {});
+
+        // Unblock the map as soon as primary graph data is ready.
+        setMapLoading(false);
+        if (
+          currentCheckedOutResult.status === 'fulfilled' &&
+          currentCheckedOutResult.value
+        ) {
+          const nextRef = currentCheckedOutResult.value;
+          setCheckedOutRef((prev) => {
+            if (
+              prev &&
+              prev.branchName === nextRef.branchName &&
+              prev.headSha === nextRef.headSha &&
+              prev.parentSha === nextRef.parentSha &&
+              prev.hasUncommittedChanges === nextRef.hasUncommittedChanges
+            ) {
+              return prev;
+            }
+            return nextRef;
+          });
+        }
+
+        // Merge nodes can be expensive on large repos; resolve them after first paint.
+        const nodesResult = await Promise.allSettled([mergeNodesPromise]);
+        if (isDisposed) return;
+        const mergeNodeResult = nodesResult[0];
+        if (mergeNodeResult.status === 'fulfilled') {
+          const next = mergeNodeResult.value;
+          const sig = getMergeNodesSignature(next);
+          if (sig !== lastMergeNodesSignature) {
+            lastMergeNodesSignature = sig;
+            setMergeNodes(next);
+          }
+        }
+      } catch (e) {
+        console.error('Auto-refresh failed:', e);
+      } finally {
+        setMapLoading(false);
+        isFetching = false;
+        if (pendingFetch && !isDisposed) {
+          pendingFetch = false;
+          // Defer the pending fetch slightly to avoid infinite tight loops
+          timeoutId = window.setTimeout(performFetch, 200);
+        }
       }
-      refreshTimerRef.current = window.setTimeout(() => {
-        refreshTimerRef.current = null;
-        void runQueuedFullRefresh(repoPath, defaultBranch);
-      }, delayMs);
     };
 
     const syncCheckedOutRef = async () => {
@@ -421,13 +526,27 @@ function App() {
       try {
         const nextRef = await invoke<CheckedOutRef>('get_checked_out_ref', { repoPath });
         if (isDisposed) return;
-        const nextSignature = getCheckedOutSignature(nextRef);
-        if (nextSignature !== lastCheckedOutSignatureRef.current) {
-          lastCheckedOutSignatureRef.current = nextSignature;
-          setCheckedOutRef(nextRef);
-          if (nextRef.branchName || nextRef.headSha) {
-            queueFullRefresh(100);
+        // Only track the fields that matter for visible UI transitions:
+        // branch/head movement and dirty-state toggles.
+        const nextKey = `${nextRef.branchName ?? ''}|${nextRef.headSha}|${nextRef.hasUncommittedChanges ? 1 : 0}`;
+        const prevKey = lastCheckedOutKey;
+        const branchOrHeadChanged = !prevKey || prevKey.split('|').slice(0, 2).join('|') !== nextKey.split('|').slice(0, 2).join('|');
+        lastCheckedOutKey = nextKey;
+        setCheckedOutRef((prev) => {
+          if (
+            prev &&
+            prev.branchName === nextRef.branchName &&
+            prev.headSha === nextRef.headSha &&
+            prev.hasUncommittedChanges === nextRef.hasUncommittedChanges
+          ) {
+            return prev;
           }
+          return nextRef;
+        });
+
+        // Heavy graph refresh only when branch/head actually moves (commit/checkout/merge).
+        if (branchOrHeadChanged) {
+          scheduleRefreshBurst();
         }
       } catch {
         // ignore transient git read failures
@@ -436,38 +555,16 @@ function App() {
       }
     };
 
-    const detectGraphChangeAndRefresh = async () => {
-      if (refreshInFlightRef.current) {
-        pendingRefreshRef.current = true;
-        return;
-      }
-
-      try {
-        const [branchList, directList, checkedOut] = await Promise.all([
-          invoke<Branch[]>('get_branches', { repoPath }),
-          invoke<DirectCommit[]>('get_direct_commits', { repoPath, branch: defaultBranch }),
-          invoke<CheckedOutRef>('get_checked_out_ref', { repoPath }).catch(() => null),
-        ]);
-        if (isDisposed) return;
-
-        const nextBranchSignature = getBranchesSignature(branchList);
-        const nextDirectSignature = getDirectCommitsSignature(directList);
-        const nextCheckedOutSignature = getCheckedOutSignature(checkedOut);
-        const changed =
-          nextBranchSignature !== lastBranchesSignatureRef.current ||
-          nextDirectSignature !== lastDirectCommitsSignatureRef.current ||
-          nextCheckedOutSignature !== lastCheckedOutSignatureRef.current;
-
-        if (checkedOut && nextCheckedOutSignature !== lastCheckedOutSignatureRef.current) {
-          lastCheckedOutSignatureRef.current = nextCheckedOutSignature;
-          setCheckedOutRef(checkedOut);
-        }
-
-        if (changed) {
-          queueFullRefresh();
-        }
-      } catch (e) {
-        console.error('Graph change detection failed:', e);
+    const scheduleRefreshBurst = () => {
+      clearTimeout(timeoutId);
+      timeoutId = window.setTimeout(performFetch, 100);
+      const retries = [450];
+      for (const delayMs of retries) {
+        const id = window.setTimeout(() => {
+          retryTimeoutIds.delete(id);
+          void performFetch();
+        }, delayMs);
+        retryTimeoutIds.add(id);
       }
     };
 
@@ -477,17 +574,15 @@ function App() {
         void syncCheckedOutRef();
         return;
       }
-      void detectGraphChangeAndRefresh();
-    })
-      .then((fn) => {
-        if (isDisposed) fn();
-        else unlisten = fn;
-      })
-      .catch(console.error);
+      scheduleRefreshBurst();
+    }).then(fn => {
+      if (isDisposed) fn();
+      else unlisten = fn;
+    }).catch(console.error);
 
-    void runQueuedFullRefresh(repoPath, defaultBranch).catch((e) => {
-      console.error('Auto-refresh failed:', e);
-    });
+    // Prime UI state once when listener attaches.
+    void performFetch();
+    // Authoritative monitor independent of filesystem notifications.
     monitorIntervalId = window.setInterval(() => {
       void syncCheckedOutRef();
     }, 700);
@@ -495,7 +590,7 @@ function App() {
 
     return () => {
       isDisposed = true;
-      clearRefreshTimer();
+      clearTimeout(timeoutId);
       if (monitorIntervalId != null) window.clearInterval(monitorIntervalId);
       for (const id of retryTimeoutIds) {
         window.clearTimeout(id);
@@ -503,7 +598,64 @@ function App() {
       retryTimeoutIds.clear();
       if (unlisten) unlisten();
     };
-  }, [repoPath, defaultBranch]);
+  }, [repoPath, defaultBranch, isFrozenRepo]);
+
+  useEffect(() => {
+    if (!repoPath || !defaultBranch || !isFrozenRepo) return;
+
+    invoke('watch_repo', { repoPath }).catch(console.error);
+
+    let isDisposed = false;
+    let refreshQueued = false;
+    let refreshInFlight = false;
+    let unlisten: (() => void) | null = null;
+
+    const runRefreshIfNeeded = async () => {
+      if (isDisposed) return;
+      if (isMapInteractingRef.current) {
+        refreshQueued = true;
+        return;
+      }
+      if (refreshInFlight) {
+        refreshQueued = true;
+        return;
+      }
+
+      refreshInFlight = true;
+      try {
+        const changed = await hasFrozenRepoStateChanged(repoPath, defaultBranch);
+        if (!changed || isDisposed) return;
+        await refreshRepoGitState(repoPath, defaultBranch);
+      } catch (error) {
+        console.warn('Frozen git-activity refresh failed:', error);
+      } finally {
+        refreshInFlight = false;
+        if (refreshQueued && !isDisposed) {
+          refreshQueued = false;
+          window.setTimeout(() => {
+            void runRefreshIfNeeded();
+          }, 0);
+        }
+      }
+    };
+
+    const queueRefresh = () => {
+      refreshQueued = true;
+      void runRefreshIfNeeded();
+    };
+
+    listen<string>('git-activity', () => {
+      queueRefresh();
+    }).then((fn) => {
+      if (isDisposed) fn();
+      else unlisten = fn;
+    }).catch(console.error);
+
+    return () => {
+      isDisposed = true;
+      if (unlisten) unlisten();
+    };
+  }, [repoPath, defaultBranch, isFrozenRepo]);
 
   async function handleGitHubAuthSetup() {
     if (!repoPath) return;
@@ -1160,6 +1312,30 @@ function App() {
     }
   }
 
+  async function handleCreateRootBranch(branchName: string) {
+    if (!repoPath || createBranchFromNodeInProgress) return;
+    setCreateBranchFromNodeInProgress(true);
+    setCommitSwitchFeedback(null);
+    try {
+      const nextRef = await invoke<CheckedOutRef>('create_root_branch', {
+        repoPath,
+        branchName,
+      });
+      setCheckedOutRef(nextRef);
+      await refreshRepoGitState(repoPath);
+      setCommitSwitchFeedback({
+        kind: 'success',
+        message: `Created new root branch "${branchName}"`,
+      });
+    } catch (e) {
+      const message = e instanceof Error ? e.message : String(e);
+      setCommitSwitchFeedback({ kind: 'error', message });
+      console.error('Failed to create root branch:', message);
+    } finally {
+      setCreateBranchFromNodeInProgress(false);
+    }
+  }
+
   async function handleMoveNodeBackToBranch(targetBranchName: string) {
     if (!repoPath) return;
     setCommitSwitchFeedback(null);
@@ -1373,6 +1549,36 @@ function App() {
     }
   }
 
+  void [
+    mapLoading,
+    githubAvailable,
+    worktrees,
+    removeWorktreeInProgress,
+    scrollRequest,
+    focusedErrorBranch,
+    mergeInProgress,
+    pushInProgress,
+    deleteInProgress,
+    branchPromptMeta,
+    stashInProgress,
+    commitInProgress,
+    stageInProgress,
+    createBranchFromNodeInProgress,
+    handleMapCommitClick,
+    handleRemoveWorktree,
+    handleStashLocalChanges,
+    handleCommitLocalChanges,
+    handleStageAllChanges,
+    handleCreateBranchFromNode,
+    handleCreateRootBranch,
+    handleMoveNodeBackToBranch,
+    handleMergeRefsIntoBranch,
+    handlePushAllBranches,
+    handlePushCurrentBranch,
+    handlePushCommitTargets,
+    handleDeleteSelection,
+  ];
+
   function handleFocusOnMap(branch: Branch) {
     setView('map');
     setFocusedErrorBranch(branch);
@@ -1393,6 +1599,18 @@ function App() {
     setStashes([]);
     setGithubAvailable(false);
     setView('landing');
+  }
+
+  function handleSidebarSelectCommit(sha: string) {
+    if (!sha) return;
+    setGridFocusSha(sha);
+    setGridSearchJumpToken((token) => token + 1);
+  }
+
+  function handleSidebarSelectBranch(branchName: string) {
+    if (!branchName) return;
+    setGridSearchQuery(branchName);
+    setGridSearchJumpToken((token) => token + 1);
   }
 
 
@@ -1568,7 +1786,7 @@ function App() {
   }, [branches, branchCommitPreviews, branchUniqueAheadCounts, checkedOutRef, defaultBranch, directCommits, stashes]);
 
   return (
-    <div className="h-screen min-h-0 text-foreground flex flex-col relative bg-background">
+    <div className="relative flex h-screen min-h-0 flex-col bg-background text-foreground">
       <header
         data-tauri-drag-region
         className="window-drag-region absolute left-0 right-0 top-0 z-[9999] h-12 px-4"
@@ -1576,221 +1794,169 @@ function App() {
         onMouseDown={handleWindowDragStart}
       >
         {view === 'map' && (
-          <div className="relative z-10 pointer-events-none h-12">
+          <div className="relative z-10 h-12 pointer-events-none">
             <button
               onClick={handleBackToLanding}
               aria-label="Back"
               title="Back"
               className="window-no-drag pointer-events-auto absolute left-19 top-1/2 inline-flex h-7 w-10 -translate-y-1/2 items-center justify-center rounded-full border border-border bg-card text-foreground transition-colors hover:bg-accent"
             >
-              <ArrowLeft className="h-3.5 w-3.5 shrink-0" />
+              <svg className="h-3.5 w-3.5 shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true">
+                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M15 19l-7-7 7-7" />
+              </svg>
             </button>
             <div className="absolute left-1/2 top-1/2 min-w-0 max-w-[52vw] -translate-x-1/2 -translate-y-1/2 text-center">
-              <h1 className="text-sm font-medium text-foreground truncate">
-                {repoName}
-              </h1>
+              <h1 className="truncate text-sm font-medium text-foreground">{repoName}</h1>
             </div>
-            <button
-              onClick={() => setOrientation((previous) => (previous === 'horizontal' ? 'vertical' : 'horizontal'))}
-              aria-label={orientation === 'horizontal' ? 'Switch layout to vertical' : 'Switch layout to horizontal'}
-              title={orientation === 'horizontal' ? 'Switch layout to vertical' : 'Switch layout to horizontal'}
-              className="window-no-drag pointer-events-auto absolute right-[-5px] top-1/2 inline-flex h-7 -translate-y-1/2 items-center justify-center gap-1.5 rounded-full border border-border bg-card px-3 text-xs text-foreground transition-colors hover:bg-accent"
-            >
-              <svg
-                width="24"
-                height="24"
-                viewBox="0 0 24 24"
-                fill="none"
-                xmlns="http://www.w3.org/2000/svg"
-                className={`h-3.5 w-3.5 shrink-0 transition-transform ${orientation === 'horizontal' ? 'rotate-90' : 'rotate-0'}`}
-                aria-hidden
-              >
-                <path
-                  d="M5 16V16.18C3.84 16.59 3 17.69 3 19C3 20.65 4.35 22 6 22C7.65 22 9 20.65 9 19C9 17.7 8.16 16.6 7 16.18V13H16.5C17.163 13 17.7989 12.7366 18.2678 12.2678C18.7366 11.7989 19 11.163 19 10.5V7.82C20.16 7.41 21 6.31 21 5C21 3.35 19.65 2 18 2C16.35 2 15 3.35 15 5C15 6.3 15.84 7.4 17 7.82V10.5C17 10.78 16.78 11 16.5 11H7V7.82C8.16 7.41 9 6.31 9 5C9 3.35 7.65 2 6 2C4.35 2 3 3.35 3 5C3 6.3 3.84 7.4 5 7.82V16ZM18 4C18.55 4 19 4.45 19 5C19 5.55 18.55 6 18 6C17.45 6 17 5.55 17 5C17 4.45 17.45 4 18 4ZM6 4C6.55 4 7 4.45 7 5C7 5.55 6.55 6 6 6C5.45 6 5 5.55 5 5C5 4.45 5.45 4 6 4ZM6 20C5.45 20 5 19.55 5 19C5 18.45 5.45 18 6 18C6.55 18 7 18.45 7 19C7 19.55 6.55 20 6 20Z"
-                  fill="currentColor"
-                />
-              </svg>
-              {orientation === 'horizontal' ? 'Horizontal' : 'Vertical'}
-            </button>
           </div>
         )}
       </header>
-      <div className="h-full min-h-0 flex flex-col relative z-10">
-      {view === 'landing' && (
-        <div className="flex-1 min-h-0 overflow-hidden">
-          <RepoSelector onSelect={loadRepo} loading={loading} error={error} />
-        </div>
-      )}
 
-      <div className={`flex-1 overflow-hidden relative ${view === 'landing' ? 'hidden' : ''}`}>
-
-        {/* Map view */}
-        <div className="absolute inset-0 overflow-hidden">
-          <div className="absolute inset-0 overflow-hidden">
-            <BranchMapView
-              branches={enrichedBranches}
-              mergeNodes={mergeNodes}
-              directCommits={enrichedDirectCommits}
-              unpushedDirectCommits={unpushedDirectCommits}
-              unpushedCommitShasByBranch={unpushedCommitShasByBranch}
-              openPRs={openPRs}
-              defaultBranch={defaultBranch}
-              onCommitClick={handleMapCommitClick}
-              githubAvailable={githubAvailable}
-              branchPromptMeta={branchPromptMeta}
-              branchCommitPreviews={enrichedBranchCommitPreviews}
-              branchUniqueAheadCounts={enrichedBranchUniqueAheadCounts}
-              view={mapMode}
-              gridSearchQuery={gridSearchQuery}
-              gridSearchJumpToken={gridSearchJumpToken}
-              gridFocusSha={gridFocusSha}
-              onGridSearchResultCountChange={setGridSearchResultCount}
-              onGridSearchFocusChange={setGridFocusSha}
-              isLoading={mapLoading}
-              scrollRequest={scrollRequest}
-              focusedErrorBranch={focusedErrorBranch}
-              checkedOutRef={checkedOutRef}
-              onInteractionChange={handleMapInteractionChange}
-              onMergeRefsIntoBranch={handleMergeRefsIntoBranch}
-              mergeInProgress={mergeInProgress}
-              onPushAllBranches={handlePushAllBranches}
-              onPushCurrentBranch={handlePushCurrentBranch}
-              onPushCommitTargets={handlePushCommitTargets}
-              pushInProgress={pushInProgress}
-              onDeleteSelection={handleDeleteSelection}
-              deleteInProgress={deleteInProgress}
-              worktrees={worktrees}
-              currentRepoPath={repoPath ?? undefined}
-              onRemoveWorktree={handleRemoveWorktree}
-              removeWorktreeInProgress={removeWorktreeInProgress}
-              onSwitchToWorktree={handleSwitchToWorktree}
-              onStashLocalChanges={handleStashLocalChanges}
-              stashInProgress={stashInProgress}
-              stashDisabled={!checkedOutRef?.hasUncommittedChanges}
-              onCommitLocalChanges={handleCommitLocalChanges}
-              commitInProgress={commitInProgress}
-              commitDisabled={!checkedOutRef?.hasUncommittedChanges}
-              onStageAllChanges={handleStageAllChanges}
-              stageInProgress={stageInProgress}
-              onCreateBranchFromNode={handleCreateBranchFromNode}
-              createBranchFromNodeInProgress={createBranchFromNodeInProgress}
-              onMoveNodeBackToBranch={handleMoveNodeBackToBranch}
-              orientation={orientation}
-            />
+      <div className="relative z-10 flex h-full min-h-0 flex-col">
+        {view === 'landing' && (
+          <div className="flex-1 min-h-0 overflow-hidden">
+            <RepoSelector onSelect={loadRepo} loading={loading} error={error} />
           </div>
+        )}
 
-          <header
-            data-map-ui
-            className="absolute left-0 right-0 top-12 z-40 px-4 md:px-8"
-          >
-            <div className="window-no-drag pointer-events-auto relative z-10 min-h-8 flex flex-wrap items-center gap-2 content-start">
-              <div className="inline-flex rounded-full border border-border bg-card p-0.5 shadow-sm">
-                <button
-                  onClick={() => setMapMode('time')}
-                  aria-pressed={mapMode === 'time'}
-                  className={cn(
-                    'px-3 py-1.5 rounded-full text-xs font-medium transition-colors',
-                    mapMode === 'time'
-                      ? 'bg-primary/10 text-primary'
-                      : 'text-muted-foreground hover:bg-accent'
+        <div className={`relative flex h-full min-h-0 flex-1 overflow-hidden ${view === 'landing' ? 'hidden' : ''}`}>
+            <DenseBranchSidebar
+              className="min-h-0 w-[27rem] shrink-0 border-r border-border/50 pb-4 pt-16"
+              branches={enrichedBranches}
+              defaultBranch={defaultBranch}
+              branchCommitPreviews={enrichedBranchCommitPreviews}
+              directCommits={enrichedDirectCommits}
+              mergeNodes={mergeNodes}
+              checkedOutRef={checkedOutRef}
+              onSelectCommit={handleSidebarSelectCommit}
+              onSelectBranch={handleSidebarSelectBranch}
+            />
+
+            <div className="relative min-h-0 min-w-0 flex-1 overflow-hidden">
+              <BranchGridMapView
+                branches={enrichedBranches}
+                mergeNodes={mergeNodes}
+                directCommits={enrichedDirectCommits}
+                unpushedDirectCommits={unpushedDirectCommits}
+                unpushedCommitShasByBranch={unpushedCommitShasByBranch}
+                defaultBranch={defaultBranch}
+                branchCommitPreviews={enrichedBranchCommitPreviews}
+                branchUniqueAheadCounts={enrichedBranchUniqueAheadCounts}
+                gridSearchQuery={gridSearchQuery}
+                gridSearchJumpToken={gridSearchJumpToken}
+                gridFocusSha={gridFocusSha}
+                onGridSearchResultCountChange={setGridSearchResultCount}
+                onGridSearchFocusChange={setGridFocusSha}
+                checkedOutRef={checkedOutRef}
+                onCommitClick={handleMapCommitClick}
+                onMergeRefsIntoBranch={handleMergeRefsIntoBranch}
+                mergeInProgress={mergeInProgress}
+                onPushAllBranches={handlePushAllBranches}
+                onPushCurrentBranch={handlePushCurrentBranch}
+                onPushCommitTargets={handlePushCommitTargets}
+                pushInProgress={pushInProgress}
+                onDeleteSelection={handleDeleteSelection}
+                deleteInProgress={deleteInProgress}
+                worktrees={worktrees}
+                currentRepoPath={repoPath ?? undefined}
+                onRemoveWorktree={handleRemoveWorktree}
+                removeWorktreeInProgress={removeWorktreeInProgress}
+                onSwitchToWorktree={handleSwitchToWorktree}
+                onStashLocalChanges={handleStashLocalChanges}
+                stashInProgress={stashInProgress}
+                stashDisabled={false}
+                onCommitLocalChanges={handleCommitLocalChanges}
+                commitInProgress={commitInProgress}
+                commitDisabled={false}
+                onStageAllChanges={handleStageAllChanges}
+                stageInProgress={stageInProgress}
+                onCreateBranchFromNode={handleCreateBranchFromNode}
+                onCreateRootBranch={handleCreateRootBranch}
+                createBranchFromNodeInProgress={createBranchFromNodeInProgress}
+                onInteractionChange={setIsMapInteracting}
+              />
+
+              <header data-map-ui className="absolute left-0 right-0 top-12 z-40 px-4 md:px-8">
+                <div className="window-no-drag pointer-events-auto relative z-10 min-h-8 content-start flex flex-wrap items-center gap-2">
+                  {githubAuthStatus?.ghAvailable && !githubAuthStatus.authenticated && (
+                    <button
+                      onClick={handleGitHubAuthSetup}
+                      disabled={githubAuthLoading}
+                      className="text-xs text-muted-foreground hover:text-foreground border border-border/50 rounded-full px-3 py-1 transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
+                    >
+                      {githubAuthLoading ? 'Connecting GitHub...' : 'Connect GitHub'}
+                    </button>
                   )}
-                >
-                  Time
-                </button>
-                <button
-                  onClick={() => setMapMode('grid')}
-                  aria-pressed={mapMode === 'grid'}
-                  className={cn(
-                    'px-3 py-1.5 rounded-full text-xs font-medium transition-colors',
-                    mapMode === 'grid'
-                      ? 'bg-primary/10 text-primary'
-                      : 'text-muted-foreground hover:bg-accent'
+                  {githubAuthStatus && !githubAuthStatus.ghAvailable && (
+                    <span className="text-xs text-muted-foreground border border-border/50 rounded-full px-3 py-1">
+                      Install `gh` for private PR data
+                    </span>
                   )}
-                >
-                  Grid
-                </button>
-              </div>
-              {githubAuthStatus?.ghAvailable && !githubAuthStatus.authenticated && (
-                <button
-                  onClick={handleGitHubAuthSetup}
-                  disabled={githubAuthLoading}
-                  className="text-xs text-muted-foreground hover:text-foreground border border-border/50 rounded-full px-3 py-1 transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
-                >
-                  {githubAuthLoading ? 'Connecting GitHub...' : 'Connect GitHub'}
-                </button>
-              )}
-              {githubAuthStatus && !githubAuthStatus.ghAvailable && (
-                <span className="text-xs text-muted-foreground border border-border/50 rounded-full px-3 py-1">
-                  Install `gh` for private PR data
-                </span>
-              )}
-              {githubAuthMessage && (
-                <span className="text-xs text-muted-foreground max-w-64 truncate" title={githubAuthMessage}>
-                  {githubAuthMessage}
-                </span>
-              )}
-              {mapMode === 'grid' && (
-                <div className="window-no-drag flex min-w-56 flex-1 max-w-sm items-center gap-2 rounded-full border border-border bg-card px-3 py-1.5 shadow-sm">
-                  <span className="text-[10px] uppercase tracking-wide text-muted-foreground font-medium shrink-0">
-                    Search
-                  </span>
-                  <input
-                    value={gridSearchQuery}
-                    onChange={(event) => setGridSearchQuery(event.target.value)}
-                    onKeyDown={(event) => {
-                      if (event.key === 'Enter') {
-                        event.preventDefault();
-                        setGridSearchJumpToken((token) => token + 1);
-                      }
-                    }}
-                    placeholder="sha, message, or branch"
-                    className="w-full bg-transparent text-xs text-foreground outline-none placeholder:text-muted-foreground/70"
-                  />
-                  <button
-                    type="button"
-                    onClick={() => setGridSearchJumpToken((token) => token + 1)}
-                    className="shrink-0 rounded-full border border-border/50 bg-muted/30 px-2.5 py-1 text-[10px] font-medium uppercase tracking-wide text-muted-foreground transition-colors hover:bg-accent hover:text-foreground"
-                  >
-                    Jump
-                  </button>
+                  {githubAuthMessage && (
+                    <span className="text-xs text-muted-foreground max-w-64 truncate" title={githubAuthMessage}>
+                      {githubAuthMessage}
+                    </span>
+                  )}
+                  <div className="window-no-drag flex min-w-56 flex-1 max-w-sm items-center gap-2 rounded-full border border-border bg-card px-3 py-1.5 shadow-sm">
+                    <span className="text-[10px] uppercase tracking-wide text-muted-foreground font-medium shrink-0">
+                      Search
+                    </span>
+                    <input
+                      value={gridSearchQuery}
+                      onChange={(event) => setGridSearchQuery(event.target.value)}
+                      onKeyDown={(event) => {
+                        if (event.key === 'Enter') {
+                          event.preventDefault();
+                          setGridSearchJumpToken((token) => token + 1);
+                        }
+                      }}
+                      placeholder="sha, message, or branch"
+                      className="w-full bg-transparent text-xs text-foreground outline-none placeholder:text-muted-foreground/70"
+                    />
+                    <button
+                      type="button"
+                      onClick={() => setGridSearchJumpToken((token) => token + 1)}
+                      className="shrink-0 rounded-full border border-border/50 bg-muted/30 px-2.5 py-1 text-[10px] font-medium uppercase tracking-wide text-muted-foreground transition-colors hover:bg-accent hover:text-foreground"
+                    >
+                      Jump
+                    </button>
+                  </div>
+                  {gridSearchResultCount != null && (
+                    <span className="text-xs text-muted-foreground">
+                      {gridSearchResultCount} match{gridSearchResultCount === 1 ? '' : 'es'}
+                    </span>
+                  )}
+                  {gridFocusSha && (
+                    <span className="text-xs rounded-full border border-primary/30 bg-primary/10 px-3 py-1 text-primary">
+                      Focused {gridFocusSha.slice(0, 7)}
+                    </span>
+                  )}
+                  {commitSwitchFeedback && (
+                    <span
+                      className={cn(
+                        'text-xs rounded-full px-3 py-1 max-w-[26rem] truncate transition-opacity duration-200',
+                        isCommitSwitchFeedbackVisible ? 'opacity-100' : 'opacity-0',
+                        commitSwitchFeedback.kind === 'error'
+                          ? 'bg-red-50 dark:bg-red-900/20 text-red-600 dark:text-red-400'
+                          : 'bg-blue-50 dark:bg-blue-900/20 text-blue-600 dark:text-blue-400',
+                      )}
+                      title={commitSwitchFeedback.message}
+                    >
+                      {commitSwitchFeedback.message}
+                    </span>
+                  )}
                 </div>
-              )}
-              {mapMode === 'grid' && gridSearchResultCount != null && (
-                <span className="text-xs text-muted-foreground">
-                  {gridSearchResultCount} match{gridSearchResultCount === 1 ? '' : 'es'}
-                </span>
-              )}
-              {mapMode === 'grid' && gridFocusSha && (
-                <span className="text-xs rounded-full border border-primary/30 bg-primary/10 px-3 py-1 text-primary">
-                  Focused {gridFocusSha.slice(0, 7)}
-                </span>
-              )}
-              {commitSwitchFeedback && (
-                <span
-                  className={cn(
-                    'text-xs rounded-full px-3 py-1 max-w-[26rem] truncate transition-opacity duration-200',
-                    isCommitSwitchFeedbackVisible ? 'opacity-100' : 'opacity-0',
-                    commitSwitchFeedback.kind === 'error'
-                      ? 'bg-red-50 dark:bg-red-900/20 text-red-600 dark:text-red-400'
-                      : 'bg-blue-50 dark:bg-blue-900/20 text-blue-600 dark:text-blue-400'
-                  )}
-                  title={commitSwitchFeedback.message}
-                >
-                  {commitSwitchFeedback.message}
-                </span>
-              )}
+              </header>
             </div>
-          </header>
 
-          {/* Branch errors floating panel */}
           {showErrorPanel && (
-            <div data-map-ui className={`absolute top-[96px] right-4 z-50 w-[calc(100%-2rem)] max-w-80 bg-card border border-border rounded-2xl shadow-lg overflow-hidden ${errorPanelClosing ? 'animate-error-panel-out' : 'animate-error-panel-in'}`}>
+            <div
+              data-map-ui
+              className={`absolute top-[96px] right-4 z-50 w-[calc(100%-2rem)] max-w-80 bg-card border border-border rounded-2xl shadow-lg overflow-hidden ${errorPanelClosing ? 'animate-error-panel-out' : 'animate-error-panel-in'}`}
+            >
               <div className="flex items-center justify-between px-4 py-3 border-b border-border/50">
                 <span className="text-sm font-medium text-foreground">Branch errors</span>
-                <button
-                  onClick={closeErrorPanel}
-                  className="text-muted-foreground hover:text-foreground transition-colors"
-                >
+                <button onClick={closeErrorPanel} className="text-muted-foreground hover:text-foreground transition-colors">
                   <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                     <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
                   </svg>
@@ -1822,11 +1988,9 @@ function App() {
                       className="w-full group flex items-center justify-between px-4 py-2.5 rounded-xl border border-transparent hover:border-border hover:bg-card transition-all text-left"
                     >
                       <div className="flex-1 min-w-0">
-                        <p className={`text-sm font-medium truncate ${
-                          isFocused
-                            ? 'text-amber-600 dark:text-amber-400'
-                            : 'text-foreground'
-                        }`}>{b.name}</p>
+                        <p className={`text-sm font-medium truncate ${isFocused ? 'text-amber-600 dark:text-amber-400' : 'text-foreground'}`}>
+                          {b.name}
+                        </p>
                         <p className="text-xs text-muted-foreground mt-0.5">
                           {ahead > 0 && `${ahead} ahead`}
                           {ahead > 0 && b.commitsBehind > 0 && ', '}
@@ -1842,10 +2006,7 @@ function App() {
               </div>
             </div>
           )}
-
         </div>
-
-      </div>
       </div>
     </div>
   );

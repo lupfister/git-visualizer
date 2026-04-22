@@ -120,3 +120,9 @@ pub fn move_stash_to_new_branch(repo: &Path, stash_index: u32, branch_name: &str
     cli::run(repo, &["stash", "drop", &stash_ref])?;
     Ok(())
 }
+
+/// Create a branch with unrelated history (`git checkout --orphan`).
+pub fn create_root_branch(repo: &Path, branch_name: &str) -> Result<(), GitError> {
+    cli::run(repo, &["checkout", "--orphan", branch_name])?;
+    Ok(())
+}
