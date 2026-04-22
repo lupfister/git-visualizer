@@ -1,6 +1,7 @@
 import { useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import type { Dispatch, SetStateAction } from 'react';
 import type { Branch, BranchCommitPreview, CheckedOutRef, DirectCommit, MergeNode } from '../types';
+import { branchRootParentSha } from './grid/LayoutGrid';
 import { cn, shaMatchesGitRef } from './grid/mapGridUtils';
 import type { BranchGridLayoutModel } from './grid/branchGridLayoutModel';
 
@@ -112,7 +113,6 @@ function BranchRows({
   branchCommitPreviews,
   childNamesByParent,
   branchAnchorShaByName,
-  firstBranchParentShaByName,
   expandedBranchNames,
   onToggleBranch,
   checkedOutBranchName,
@@ -133,7 +133,6 @@ function BranchRows({
   branchCommitPreviews: Record<string, BranchCommitPreview[]>;
   childNamesByParent: Map<string, string[]>;
   branchAnchorShaByName: Map<string, string | null>;
-  firstBranchParentShaByName: Map<string, string>;
   expandedBranchNames: Set<string>;
   onToggleBranch: (branchName: string) => void;
   checkedOutBranchName: string | null;
@@ -150,8 +149,8 @@ function BranchRows({
   if (ancestors.has(branchName)) return null;
   const branch = branchByName.get(branchName);
   if (!branch) return null;
-  const firstBranchParentSha = firstBranchParentShaByName.get(branchName) ?? null;
-  const firstBranchParentLabel = firstBranchParentSha ? firstBranchParentSha.slice(0, 7) : 'none';
+  const parentAnchorSha = branchAnchorShaByName.get(branchName) ?? null;
+  const parentAnchorLabel = parentAnchorSha ? parentAnchorSha.slice(0, 7) : 'none';
 
   const childBranchNames = childNamesByParent.get(branchName) ?? [];
   const hasChildBranches = childBranchNames.length > 0;
@@ -196,12 +195,13 @@ function BranchRows({
     let currentClusterKey: string | null = null;
     const flushCurrent = () => {
       if (current.length === 0) return;
-      const fallbackKey = `sidebar-single-${branchName}-${current[0]!.fullSha}`;
+      const tip = current[current.length - 1]!;
+      const fallbackKey = `sidebar-single-${branchName}-${tip.fullSha}`;
       clumps.push({
         key: currentClusterKey ?? fallbackKey,
         commits: current,
         count: current.length,
-        lead: current[0]!,
+        lead: tip,
       });
       current = [];
       currentClusterKey = null;
@@ -275,7 +275,7 @@ function BranchRows({
           ) : null}
           <span className="min-w-0 break-words">
             <span className={cn(isCheckedOut ? 'font-medium text-foreground' : 'font-normal')}>{branchName}</span>
-            <span className="ml-1 text-[10px] text-muted-foreground/80">(parent {firstBranchParentLabel})</span>
+            <span className="ml-1 text-[10px] text-muted-foreground/80">(parent {parentAnchorLabel})</span>
           </span>
         </button>
       </div>
@@ -338,7 +338,6 @@ function BranchRows({
                           branchCommitPreviews={branchCommitPreviews}
                           childNamesByParent={childNamesByParent}
                           branchAnchorShaByName={branchAnchorShaByName}
-                          firstBranchParentShaByName={firstBranchParentShaByName}
                           expandedBranchNames={expandedBranchNames}
                           onToggleBranch={onToggleBranch}
                           checkedOutBranchName={checkedOutBranchName}
@@ -374,7 +373,6 @@ function BranchRows({
               branchCommitPreviews={branchCommitPreviews}
               childNamesByParent={childNamesByParent}
               branchAnchorShaByName={branchAnchorShaByName}
-              firstBranchParentShaByName={firstBranchParentShaByName}
               expandedBranchNames={expandedBranchNames}
               onToggleBranch={onToggleBranch}
               checkedOutBranchName={checkedOutBranchName}
@@ -551,24 +549,16 @@ export default function DenseBranchSidebar({
     [branchesWithDefault, defaultBranch, childNamesByParent],
   );
   const branchByName = useMemo(() => new Map(branchesWithDefault.map((branch) => [branch.name, branch])), [branchesWithDefault]);
-  const branchAnchorShaByName = useMemo(
-    () =>
-      new Map(
-        branchesWithDefault.map((branch) => [
-          branch.name,
-          branch.divergedFromSha ?? branch.createdFromSha ?? null,
-        ]),
-      ),
-    [branchesWithDefault],
-  );
-  const firstBranchParentShaByName = useMemo(() => {
-    const next = new Map<string, string>();
-    if (!gridLayoutModel) return next;
-    for (const [branchName, commit] of gridLayoutModel.firstBranchCommitByName.entries()) {
-      if (commit.parentSha) next.set(branchName, commit.parentSha);
+  const branchAnchorShaByName = useMemo(() => {
+    const next = new Map<string, string | null>();
+    const previewsForRoot = gridLayoutModel ? branchCommitPreviewsFromLayout : branchCommitPreviewsWithDefault;
+    for (const branch of branchesWithDefault) {
+      const fromModel = gridLayoutModel?.firstBranchCommitByName.get(branch.name)?.parentSha ?? null;
+      const resolved = fromModel ?? branchRootParentSha(branch, defaultBranch, previewsForRoot);
+      next.set(branch.name, resolved);
     }
     return next;
-  }, [gridLayoutModel]);
+  }, [branchesWithDefault, gridLayoutModel, defaultBranch, branchCommitPreviewsWithDefault, branchCommitPreviewsFromLayout]);
   const [expandedBranchNames, setExpandedBranchNames] = useState<Set<string>>(() =>
     inferDefaultExpanded(rootBranchNames, childNamesByParent, checkedOutRef, defaultBranch),
   );
@@ -684,7 +674,6 @@ export default function DenseBranchSidebar({
               branchCommitPreviews={branchCommitPreviewsFromLayout}
               childNamesByParent={childNamesByParent}
               branchAnchorShaByName={branchAnchorShaByName}
-              firstBranchParentShaByName={firstBranchParentShaByName}
               expandedBranchNames={expandedBranchNames}
               onToggleBranch={handleToggleBranch}
               checkedOutBranchName={checkedOutBranchName}

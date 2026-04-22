@@ -138,6 +138,41 @@ export function roundedElbowConnectorIntersectsViewportBounds(
   return segmentIntersectsViewportBounds(toX, postTurnY, toX, finalY, rect);
 }
 
+/** Viewport cull for {@link import('./gridPathUtils').buildRoundedElbowPathVerticalFirst}. */
+export function roundedElbowVerticalFirstConnectorIntersectsViewportBounds(
+  fromX: number,
+  fromY: number,
+  toX: number,
+  toY: number,
+  cornerR: number,
+  tipGap: number,
+  rect: ViewportContentBounds,
+): boolean {
+  const finalX = toX - Math.sign(toX - fromX || 1) * tipGap;
+  const corner = Math.max(0, Math.min(cornerR, Math.abs(toX - fromX), Math.abs(toY - fromY)));
+  if (corner < 0.5) {
+    return (
+      segmentIntersectsViewportBounds(fromX, fromY, fromX, toY, rect) ||
+      segmentIntersectsViewportBounds(fromX, toY, finalX, toY, rect)
+    );
+  }
+  const horizontalDir = toX >= fromX ? 1 : -1;
+  const verticalDir = toY >= fromY ? 1 : -1;
+  const preTurnY = toY - verticalDir * corner;
+  const postTurnX = finalX - horizontalDir * corner;
+  const quadEndX = fromX + horizontalDir * corner;
+  const quadEndY = toY;
+  if (segmentIntersectsViewportBounds(fromX, fromY, fromX, preTurnY, rect)) return true;
+  const quadHull = axisAlignedBoundsOfPoints([
+    { x: fromX, y: preTurnY },
+    { x: fromX, y: toY },
+    { x: quadEndX, y: quadEndY },
+  ]);
+  if (intersectsVisibleBounds(rect, quadHull)) return true;
+  if (segmentIntersectsViewportBounds(quadEndX, quadEndY, postTurnX, toY, rect)) return true;
+  return segmentIntersectsViewportBounds(postTurnX, toY, finalX, toY, rect);
+}
+
 export function mergeOrthogonalConnectorIntersectsViewportBounds(
   laneX: number,
   tipY: number,

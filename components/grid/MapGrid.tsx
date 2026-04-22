@@ -36,6 +36,7 @@ import {
   isUsableOtherWorktree,
   mergeOrthogonalConnectorIntersectsViewportBounds,
   roundedElbowConnectorIntersectsViewportBounds,
+  roundedElbowVerticalFirstConnectorIntersectsViewportBounds,
   shaMatchesGitRef,
   visibleCommitIdSetEquals,
   withCullInsetScreenPx,
@@ -81,7 +82,7 @@ export default function BranchGridMap({
   onCreateBranchFromNode,
   onCreateRootBranch,
   createBranchFromNodeInProgress = false,
-  orientation = 'vertical',
+  orientation = 'horizontal',
   branchCommitPreviews = {},
   branchUniqueAheadCounts = {},
   gridSearchQuery = '',
@@ -152,6 +153,7 @@ export default function BranchGridMap({
         gridSearchQuery,
         gridFocusSha,
         checkedOutRef: checkedOutRef ?? null,
+        orientation,
       }),
     [
       lanes,
@@ -169,6 +171,7 @@ export default function BranchGridMap({
       gridFocusSha,
       checkedOutRef?.headSha ?? null,
       checkedOutRef?.branchName ?? null,
+      orientation,
     ],
   );
   const layoutModel: BranchGridLayoutModel = providedLayoutModel ?? computedLayoutModel;
@@ -559,21 +562,45 @@ export default function BranchGridMap({
       : null;
   const cullConnectorPath = (connector: { id: string; fromX: number; fromY: number; toX: number; toY: number }): boolean => {
     if (!visibleBounds) return true;
+    const { fromX, fromY, toX, toY } = connector;
     if (connector.id.startsWith('merge:')) {
+      if (orientation === 'horizontal') {
+        return roundedElbowConnectorIntersectsViewportBounds(
+          fromX,
+          fromY,
+          toX,
+          toY,
+          connectorCornerRadiusPx,
+          GRID_CONNECTOR_GAP_PX,
+          visibleBounds,
+        );
+      }
       return mergeOrthogonalConnectorIntersectsViewportBounds(
-        connector.fromX,
-        connector.fromY,
-        connector.toX,
-        connector.toY,
+        fromX,
+        fromY,
+        toX,
+        toY,
         connectorCornerRadiusPx,
         visibleBounds,
       );
     }
+    const useVerticalFirst = orientation === 'horizontal' && Math.abs(toY - fromY) > Math.abs(toX - fromX);
+    if (useVerticalFirst) {
+      return roundedElbowVerticalFirstConnectorIntersectsViewportBounds(
+        fromX,
+        fromY,
+        toX,
+        toY,
+        connectorCornerRadiusPx,
+        GRID_CONNECTOR_GAP_PX,
+        visibleBounds,
+      );
+    }
     return roundedElbowConnectorIntersectsViewportBounds(
-      connector.fromX,
-      connector.fromY,
-      connector.toX,
-      connector.toY,
+      fromX,
+      fromY,
+      toX,
+      toY,
       connectorCornerRadiusPx,
       GRID_CONNECTOR_GAP_PX,
       visibleBounds,
@@ -757,19 +784,7 @@ export default function BranchGridMap({
     }
   }, [canCreateRootBranch, newBranchDialogOpen, selectedCommitCanCreateBranch]);
 
-  void [
-    openPRs,
-    onLoadMore,
-    view,
-    staleBranches,
-    isLoading,
-    scrollRequest,
-    focusedErrorBranch,
-    mapTopInsetPx,
-    orientation,
-    visibleNodesBySha,
-    freshCopyBranchNames,
-  ];
+  void [openPRs, onLoadMore, view, staleBranches, isLoading, scrollRequest, focusedErrorBranch, mapTopInsetPx, visibleNodesBySha, freshCopyBranchNames];
 
   return (
     <div className="relative flex h-full min-h-0 flex-col overflow-hidden border border-border bg-card">
@@ -838,6 +853,7 @@ export default function BranchGridMap({
           connectors={connectors}
           mergeConnectors={mergeConnectors}
           cullConnectorPath={cullConnectorPath}
+          mapOrientation={orientation}
           flushCameraReactTick={flushCameraReactTick}
           setManuallyOpenedClumps={setManuallyOpenedClumps}
           setManuallyClosedClumps={setManuallyClosedClumps}

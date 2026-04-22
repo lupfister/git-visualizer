@@ -2,7 +2,7 @@ import { useState, useEffect, useRef, useMemo } from 'react';
 import { invoke } from '@tauri-apps/api/core';
 import { listen } from '@tauri-apps/api/event';
 import { getCurrentWindow } from '@tauri-apps/api/window';
-import BranchGridMapView from '../components/grid/MapViewGrid';
+import BranchGridMapView, { type OrientationMode } from '../components/grid/MapViewGrid';
 import DenseBranchSidebar from '../components/DenseBranchSidebar';
 import { buildLanes } from '../components/grid/LayoutGrid';
 import { computeBranchGridLayout, type BranchGridLayoutModel } from '../components/grid/branchGridLayoutModel';
@@ -89,6 +89,7 @@ function App() {
   const [stageInProgress, setStageInProgress] = useState(false);
   const [createBranchFromNodeInProgress, setCreateBranchFromNodeInProgress] = useState(false);
   const [isMapInteracting, setIsMapInteracting] = useState(false);
+  const [mapGridOrientation, setMapGridOrientation] = useState<OrientationMode>('horizontal');
 
   const branchMetaLoadKeyRef = useRef<string | null>(null);
   const isFrozenRepo = isFrozenRepoPath(repoPath);
@@ -1826,6 +1827,7 @@ function App() {
         gridSearchQuery,
         gridFocusSha,
         checkedOutRef: checkedOutRef ?? null,
+        orientation: mapGridOrientation,
       }),
     [
       sharedGridLanes,
@@ -1842,6 +1844,7 @@ function App() {
       gridFocusSha,
       checkedOutRef?.headSha ?? null,
       checkedOutRef?.branchName ?? null,
+      mapGridOrientation,
     ],
   );
 
@@ -1944,10 +1947,59 @@ function App() {
                 setManuallyOpenedClumps={setManuallyOpenedGridClumps}
                 setManuallyClosedClumps={setManuallyClosedGridClumps}
                 layoutModel={sharedGridLayoutModel}
+                orientation={mapGridOrientation}
               />
 
               <header data-map-ui className="absolute left-0 right-0 top-12 z-40 px-4 md:px-8">
                 <div className="window-no-drag pointer-events-auto relative z-10 min-h-8 content-start flex flex-wrap items-center gap-2">
+                  <div
+                    className="flex shrink-0 rounded-full border border-border bg-muted/20 p-0.5 shadow-sm"
+                    role="radiogroup"
+                    aria-label="Commit map layout"
+                  >
+                    <button
+                      type="button"
+                      role="radio"
+                      aria-checked={mapGridOrientation === 'horizontal'}
+                      tabIndex={0}
+                      onClick={() => setMapGridOrientation('horizontal')}
+                      onKeyDown={(event) => {
+                        if (event.key === 'ArrowRight' || event.key === 'ArrowDown') {
+                          event.preventDefault();
+                          setMapGridOrientation('vertical');
+                        }
+                      }}
+                      className={cn(
+                        'rounded-full px-3 py-1.5 text-[10px] font-medium uppercase tracking-wide transition-colors outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 focus-visible:ring-offset-background',
+                        mapGridOrientation === 'horizontal'
+                          ? 'border border-border/50 bg-card text-foreground shadow-sm'
+                          : 'text-muted-foreground hover:text-foreground',
+                      )}
+                    >
+                      Horizontal
+                    </button>
+                    <button
+                      type="button"
+                      role="radio"
+                      aria-checked={mapGridOrientation === 'vertical'}
+                      tabIndex={0}
+                      onClick={() => setMapGridOrientation('vertical')}
+                      onKeyDown={(event) => {
+                        if (event.key === 'ArrowLeft' || event.key === 'ArrowUp') {
+                          event.preventDefault();
+                          setMapGridOrientation('horizontal');
+                        }
+                      }}
+                      className={cn(
+                        'rounded-full px-3 py-1.5 text-[10px] font-medium uppercase tracking-wide transition-colors outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 focus-visible:ring-offset-background',
+                        mapGridOrientation === 'vertical'
+                          ? 'border border-border/50 bg-card text-foreground shadow-sm'
+                          : 'text-muted-foreground hover:text-foreground',
+                      )}
+                    >
+                      Vertical
+                    </button>
+                  </div>
                   {githubAuthStatus?.ghAvailable && !githubAuthStatus.authenticated && (
                     <button
                       onClick={handleGitHubAuthSetup}

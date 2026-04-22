@@ -114,7 +114,7 @@ export default function BranchGridMapView({
   onCreateRootBranch,
   createBranchFromNodeInProgress = false,
   onMoveNodeBackToBranch,
-  orientation = 'vertical',
+  orientation = 'horizontal',
   onInteractionChange,
   manuallyOpenedClumps,
   manuallyClosedClumps,
@@ -208,6 +208,7 @@ export default function BranchGridMapView({
             setManuallyOpenedClumps={setManuallyOpenedClumps}
             setManuallyClosedClumps={setManuallyClosedClumps}
             layoutModel={layoutModel}
+            orientation={orientation}
           />
         </div>
       ) : null}

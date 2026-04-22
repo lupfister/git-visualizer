@@ -79,7 +79,7 @@ export type BranchGridViewProps = {
   onCreateRootBranch?: (branchName: string) => Promise<void>;
   createBranchFromNodeInProgress?: boolean;
   onMoveNodeBackToBranch?: (targetBranchName: string) => Promise<void>;
-  orientation?: string;
+  orientation?: 'vertical' | 'horizontal';
   onInteractionChange?: (isInteracting: boolean) => void;
 };
 
@@ -142,6 +142,23 @@ export function newestCommit(commits: CommitItem[]): CommitItem | null { return 
 export function nearestCommitByDate(commits: CommitItem[], dateStr?: string): CommitItem | null { if (!dateStr || commits.length === 0) return newestCommit(commits); const target = new Date(dateStr).getTime(); if (!Number.isFinite(target)) return newestCommit(commits); let bestPast: { delta: number; commit: CommitItem } | null = null; let bestFuture: { delta: number; commit: CommitItem } | null = null; for (const commit of commits) { const commitTime = new Date(commit.date).getTime(); if (!Number.isFinite(commitTime)) continue; if (commitTime <= target) { const delta = target - commitTime; if (!bestPast || delta < bestPast.delta) bestPast = { delta, commit }; } else { const delta = commitTime - target; if (!bestFuture || delta < bestFuture.delta) bestFuture = { delta, commit }; } } return bestPast?.commit ?? bestFuture?.commit ?? newestCommit(commits); }
 export function nodeForCommitSha(nodesBySha: Map<string, Node[]>, sha?: string | null, preferredBranchName?: string): Node | null { if (!sha) return null; const nodes = nodesBySha.get(sha) ?? []; if (nodes.length === 0) return null; if (preferredBranchName) { const preferred = nodes.find((node) => node.commit.branchName === preferredBranchName); if (preferred) return preferred; } return nodes[0] ?? null; }
 export function branchBaseCommit(branchName: string, branchCommitPreviews: Record<string, BranchCommitPreview[]>, branchUniqueAheadCounts: Record<string, number>): CommitItem | null { const previews = renderableBranchPreviews(branchName, branchUniqueAheadCounts, branchCommitPreviews); if (previews.length === 0) return null; const commits = previews.map((commit) => toCommit(branchName, commit)); const bySha = new Set(commits.map((commit) => commit.id)); const forkSha = commits[0]?.parentSha ?? null; const branchForkSha = commits.find((commit) => commit.kind === 'branch-created')?.id ?? null; const forkDate = commits[0]?.date; const lineBase = commits.find((commit) => { if (branchForkSha && commit.id === branchForkSha) return true; if (forkSha && commit.id === forkSha) return true; return !commit.parentSha || !bySha.has(commit.parentSha); }); if (lineBase) return lineBase; return nearestCommitByDate(commits, forkDate ?? undefined) ?? commits[0] ?? null; }
+/** Parent commit on the forked-from line: `parentSha` of the branch-root commit (first commit whose parent is not on this branch). */
+export function branchRootParentSha(
+  branch: Branch,
+  defaultBranch: string,
+  branchCommitPreviews: Record<string, BranchCommitPreview[]>,
+): string | null {
+  if (branch.name === defaultBranch) return null;
+  const previews = sortedConcreteBranchPreviews(branch.name, branchCommitPreviews);
+  if (previews.length > 0) {
+    const commits = previews.map((preview) => toCommit(branch.name, preview));
+    const commitShas = new Set(commits.map((commit) => commit.id));
+    const rootCommit =
+      commits.find((commit) => !commit.parentSha || !commitShas.has(commit.parentSha)) ?? commits[0] ?? null;
+    if (rootCommit?.parentSha) return rootCommit.parentSha;
+  }
+  return branch.presidesFromSha ?? branch.divergedFromSha ?? branch.createdFromSha ?? null;
+}
 export function buildLanes(
   branches: Branch[],
   defaultBranch: string,
@@ -180,13 +197,13 @@ export function buildLanes(
   };
   const resolveLaneParentName = (branch: Branch): string | null => {
     const declaredParent = branchParentName(branch, byName, defaultBranch);
-    const forkSha = branch.presidesFromSha ?? branch.divergedFromSha ?? branch.createdFromSha ?? null;
+    const forkParentSha = branchRootParentSha(branch, defaultBranch, branchCommitPreviews);
     if (declaredParent && declaredParent !== defaultBranch) {
-      if (!forkSha || branchContainsSha(declaredParent, forkSha)) return declaredParent;
+      if (!forkParentSha || branchContainsSha(declaredParent, forkParentSha)) return declaredParent;
       return defaultBranch;
     }
     // True roots (unrelated histories) should not be attached to default.
-    if (!declaredParent && !forkSha) return null;
+    if (!declaredParent && !forkParentSha) return null;
     return declaredParent ?? defaultBranch;
   };
   for (const branch of branches) {
@@ -220,7 +237,7 @@ export function buildLanes(
     const branchSpan = normalizeInterval(branchColumnStartTime(branch), branchTime(branch).end);
     const intervals = [branchSpan];
     const branchStart = branchSpan.start;
-    const forkSha = branch.presidesFromSha ?? branch.divergedFromSha ?? branch.createdFromSha ?? null;
+    const forkSha = branchRootParentSha(branch, defaultBranch, branchCommitPreviews);
     const forkTimeFromCommit = forkSha ? commitTimeBySha.get(forkSha) : undefined;
     const forkTimeFromMetadata = new Date(branch.divergedFromDate ?? branch.createdDate ?? branch.lastCommitDate).getTime();
     const forkTime = Number.isFinite(forkTimeFromCommit ?? NaN)

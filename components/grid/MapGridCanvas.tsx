@@ -1,7 +1,11 @@
 import { useEffect, useLayoutEffect, useRef, useState } from 'react';
 import type { CSSProperties, Dispatch, MouseEvent, ReactNode, RefObject, SetStateAction, WheelEvent } from 'react';
 import { buildMergeOrthogonalPath, CARD_BODY_TOP_OFFSET, CARD_HEIGHT, CARD_WIDTH, CONNECTOR_COLOR } from './LayoutGrid';
-import { buildRoundedElbowPath } from './gridPathUtils';
+import {
+  buildRoundedElbowPath,
+  buildRoundedElbowPathVerticalFirst,
+  shouldUseVerticalFirstElbow,
+} from './gridPathUtils';
 import { cn } from './mapGridUtils';
 import type { Node } from './LayoutGrid';
 
@@ -94,6 +98,8 @@ type Props = {
   connectors: Array<{ id: string; fromX: number; fromY: number; toX: number; toY: number; zIndex: number }>;
   mergeConnectors: Array<{ id: string; fromX: number; fromY: number; toX: number; toY: number; zIndex: number }>;
   cullConnectorPath: (connector: { id: string; fromX: number; fromY: number; toX: number; toY: number }) => boolean;
+  /** When `horizontal`, ancestry elbows pick vertical-first vs horizontal-first from geometry; merges use the same split. */
+  mapOrientation: 'vertical' | 'horizontal';
   flushCameraReactTick: () => void;
   setManuallyOpenedClumps: Dispatch<SetStateAction<Set<string>>>;
   setManuallyClosedClumps: Dispatch<SetStateAction<Set<string>>>;
@@ -144,6 +150,7 @@ export default function MapGridCanvas({
   connectors,
   mergeConnectors,
   cullConnectorPath,
+  mapOrientation,
   flushCameraReactTick,
   setManuallyOpenedClumps,
   setManuallyClosedClumps,
@@ -451,28 +458,31 @@ export default function MapGridCanvas({
             style={{ overflow: 'visible' }}
           >
             {sortedVisibleMergeConnectors.map((connector) => {
-              const path = buildMergeOrthogonalPath({
-                laneX: connector.fromX,
-                tipY: connector.fromY,
-                mergeX: connector.toX,
-                mergeY: connector.toY,
-                cornerR: connectorCornerRadiusPx,
-                pointFormatter,
-              });
+              const { fromX, fromY, toX, toY } = connector;
+              // Horizontal map: always horizontal-then-vertical elbows so merges from a lower lane run along
+              // the branch row before turning up (vertical-first merge paths read as "wrong-way" arcs).
+              const path =
+                mapOrientation === 'horizontal'
+                  ? buildRoundedElbowPath(fromX, fromY, toX, toY, connectorCornerRadiusPx, pointFormatter, 0)
+                  : buildMergeOrthogonalPath({
+                      laneX: fromX,
+                      tipY: fromY,
+                      mergeX: toX,
+                      mergeY: toY,
+                      cornerR: connectorCornerRadiusPx,
+                      pointFormatter,
+                    });
               return (
                 <path key={connector.id} d={path} fill="none" stroke={CONNECTOR_COLOR} strokeWidth={lineStrokeWidth} strokeLinecap="round" strokeLinejoin="round" />
               );
             })}
             {sortedVisibleConnectors.map((connector) => {
-              const path = buildRoundedElbowPath(
-                connector.fromX,
-                connector.fromY,
-                connector.toX,
-                connector.toY,
-                connectorCornerRadiusPx,
-                pointFormatter,
-                0,
-              );
+              const { fromX, fromY, toX, toY } = connector;
+              const useVerticalFirst =
+                mapOrientation === 'horizontal' && shouldUseVerticalFirstElbow(fromX, fromY, toX, toY);
+              const path = useVerticalFirst
+                ? buildRoundedElbowPathVerticalFirst(fromX, fromY, toX, toY, connectorCornerRadiusPx, pointFormatter, 0)
+                : buildRoundedElbowPath(fromX, fromY, toX, toY, connectorCornerRadiusPx, pointFormatter, 0);
               return (
                 <path key={connector.id} d={path} fill="none" stroke={CONNECTOR_COLOR} strokeWidth={lineStrokeWidth} strokeLinecap="round" strokeLinejoin="round" />
               );
