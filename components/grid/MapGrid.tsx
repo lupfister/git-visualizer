@@ -78,6 +78,7 @@ export default function BranchGridMap({
   onStageAllChanges,
   stageInProgress = false,
   onCreateBranchFromNode,
+  onCreateRootBranch,
   createBranchFromNodeInProgress = false,
   orientation = 'vertical',
   branchCommitPreviews = {},
@@ -100,6 +101,9 @@ export default function BranchGridMap({
   const [deleteConfirmOpen, setDeleteConfirmOpen] = useState(false);
   const [newBranchDialogOpen, setNewBranchDialogOpen] = useState(false);
   const [newBranchName, setNewBranchName] = useState('');
+  const [newBranchCreateMode, setNewBranchCreateMode] = useState<'from-selected-node' | 'new-root'>(
+    'from-selected-node',
+  );
   const [manuallyOpenedClumps, setManuallyOpenedClumps] = useState<Set<string>>(() => new Set());
   const [manuallyClosedClumps, setManuallyClosedClumps] = useState<Set<string>>(() => new Set());
   const [isDebugOpen, setIsDebugOpen] = useState(false);
@@ -712,21 +716,39 @@ export default function BranchGridMap({
   }, [onDeleteSelection, hasSelectedUncommittedChanges, selectedStashIndices]);
 
   const confirmCreateBranchFromSelection = useCallback(async () => {
-    if (!onCreateBranchFromNode || selectedVisibleCommitShas.length !== 1) return;
-    const target = selectedVisibleCommitShas[0];
-    if (!(target === 'WORKING_TREE' || target.startsWith('STASH:'))) return;
     const trimmed = newBranchName.trim();
     if (!trimmed) return;
-    await onCreateBranchFromNode(target, trimmed);
+    if (newBranchCreateMode === 'new-root') {
+      if (!onCreateRootBranch) return;
+      await onCreateRootBranch(trimmed);
+    } else {
+      if (!onCreateBranchFromNode || selectedVisibleCommitShas.length !== 1) return;
+      const target = selectedVisibleCommitShas[0];
+      if (!(target === 'WORKING_TREE' || target.startsWith('STASH:'))) return;
+      await onCreateBranchFromNode(target, trimmed);
+    }
     setNewBranchDialogOpen(false);
     setNewBranchName('');
+    setNewBranchCreateMode('from-selected-node');
     setSelectedCommitShas([]);
     setMergeTargetCommitSha(null);
-  }, [onCreateBranchFromNode, selectedVisibleCommitShas, newBranchName]);
+  }, [newBranchCreateMode, newBranchName, onCreateBranchFromNode, onCreateRootBranch, selectedVisibleCommitShas]);
 
   const selectedCommitCanCreateBranch =
     selectedVisibleCommitShas.length === 1 &&
     (selectedVisibleCommitShas[0] === 'WORKING_TREE' || selectedVisibleCommitShas[0].startsWith('STASH:'));
+  const canCreateRootBranch = Boolean(onCreateRootBranch);
+
+  useEffect(() => {
+    if (!newBranchDialogOpen) return;
+    if (!selectedCommitCanCreateBranch && canCreateRootBranch) {
+      setNewBranchCreateMode('new-root');
+      return;
+    }
+    if (selectedCommitCanCreateBranch) {
+      setNewBranchCreateMode('from-selected-node');
+    }
+  }, [canCreateRootBranch, newBranchDialogOpen, selectedCommitCanCreateBranch]);
 
   void [
     openPRs,
@@ -860,7 +882,7 @@ export default function BranchGridMap({
         pushCurrentBranchLabel={pushCurrentBranchLabel}
         pushableRemoteBranchCount={pushableRemoteBranchCount}
         deletableSelectionCount={deletableSelectionCount}
-        selectedCommitCanCreateBranch={selectedCommitCanCreateBranch}
+        canCreateRootBranch={canCreateRootBranch}
         selectedCommitTargetOption={selectedCommitTargetOption}
         mergeInProgress={mergeInProgress}
         mergeTargetCommitSha={mergeTargetCommitSha}
@@ -892,9 +914,12 @@ export default function BranchGridMap({
         deletableSelectionCount={deletableSelectionCount}
         newBranchDialogOpen={newBranchDialogOpen}
         newBranchName={newBranchName}
+        newBranchCreateMode={newBranchCreateMode}
         onNewBranchNameChange={setNewBranchName}
+        onNewBranchCreateModeChange={setNewBranchCreateMode}
         onNewBranchDialogClose={() => setNewBranchDialogOpen(false)}
         onNewBranchConfirm={() => void confirmCreateBranchFromSelection()}
+        selectedCommitCanCreateBranch={selectedCommitCanCreateBranch}
         createBranchFromNodeInProgress={createBranchFromNodeInProgress}
       />
     </div>

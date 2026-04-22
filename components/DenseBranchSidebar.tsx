@@ -208,14 +208,14 @@ function BranchRows({
   }, [anchoredChildrenByCommitIndex, branchName, showCommits, visibleCommitPreviews]);
 
   return (
-    <li className="relative pl-4">
+    <li className={cn('relative', depth > 0 ? 'pl-4' : 'pl-0')}>
       {depth > 0 ? (
         <span
           aria-hidden="true"
           className="absolute left-[0.35rem] top-[-0.3rem] h-4.5 w-3 rounded-bl-md border-b-[1.5px] border-l-[1.5px] border-border/60"
         />
       ) : null}
-      {!isLast ? (
+      {!isLast && depth > 0 ? (
         <span aria-hidden="true" className="absolute left-[0.35rem] top-0 bottom-[-1rem] border-l-[1.5px] border-border/50" />
       ) : null}
 
@@ -248,7 +248,7 @@ function BranchRows({
       </div>
 
       {shouldShowCommitRows ? (
-        <ul className="relative mt-2 space-y-1 pl-1">
+        <ul className="relative mt-2 space-y-1 pl-5">
           {commitClumps.map((clump) => {
             const clumpCollapsed = clump.count > 1 && !openedCommitClumpKeys.has(clump.key);
             const visibleClumpCommits = clumpCollapsed ? [clump.lead] : clump.commits;
@@ -281,14 +281,15 @@ function BranchRows({
                     ) : null}
                   </div>
                   {mergeTargetLabels.length > 0 ? (
-                    <div className="mt-1 flex flex-wrap gap-1">
+                    <div className="mt-1 space-y-1">
                       {mergeTargetLabels.map((targetBranch) => (
-                        <span
+                        <div
                           key={`${commit.fullSha}:${targetBranch}`}
-                          className="inline-flex items-center rounded-full border border-border/60 bg-muted/50 px-2 py-0.5 text-[10px] font-medium uppercase tracking-wide text-muted-foreground"
+                          className="min-w-0 rounded-md px-1 pl-0 py-0.5 text-left text-sm leading-5 text-muted-foreground/70"
                         >
-                          Merge to {targetBranch}
-                        </span>
+                          <span>Merge to </span>
+                          <span className="font-medium text-muted-foreground">{targetBranch}</span>
+                        </div>
                       ))}
                     </div>
                   ) : null}
@@ -380,6 +381,44 @@ export default function DenseBranchSidebar({
       ),
     [directCommits],
   );
+  const syntheticDefaultBranch = useMemo<Branch>(() => {
+    const latestDirectCommit = sortedDirectCommits[sortedDirectCommits.length - 1];
+    return {
+      name: defaultBranch,
+      commitsAhead: 0,
+      commitsBehind: 0,
+      createdFromSha: latestDirectCommit?.fullSha ?? undefined,
+      createdDate: latestDirectCommit?.date,
+      lastCommitDate: latestDirectCommit?.date ?? new Date(0).toISOString(),
+      lastCommitAuthor: latestDirectCommit?.author ?? 'Unknown',
+      status: 'fresh',
+      remoteSyncStatus: 'on-github',
+      unpushedCommits: 0,
+      headSha: latestDirectCommit?.fullSha ?? '',
+      parentBranch: undefined,
+      divergedFromSha: undefined,
+      divergedFromDate: undefined,
+    };
+  }, [defaultBranch, sortedDirectCommits]);
+  const branchesWithDefault = useMemo(() => {
+    if (branches.some((branch) => branch.name === defaultBranch)) return branches;
+    return [syntheticDefaultBranch, ...branches];
+  }, [branches, defaultBranch, syntheticDefaultBranch]);
+  const branchCommitPreviewsWithDefault = useMemo<Record<string, BranchCommitPreview[]>>(() => {
+    const mappedDirectCommits = sortedDirectCommits.map((commit) => ({
+      fullSha: commit.fullSha,
+      sha: commit.sha,
+      parentSha: commit.parentSha ?? null,
+      message: commit.message,
+      author: commit.author,
+      date: commit.date,
+      kind: commit.kind ?? 'commit',
+    }));
+    return {
+      ...branchCommitPreviews,
+      [defaultBranch]: mappedDirectCommits,
+    };
+  }, [branchCommitPreviews, defaultBranch, sortedDirectCommits]);
   const mergeTargetsByParentSha = useMemo(() => {
     const byParentSha = new Map<string, Set<string>>();
     for (const mergeNode of mergeNodes) {
@@ -406,23 +445,23 @@ export default function DenseBranchSidebar({
     return Array.from(labels);
   };
   const childNamesByParent = useMemo(
-    () => buildChildBranchesByParent(branches, defaultBranch),
-    [branches, defaultBranch],
+    () => buildChildBranchesByParent(branchesWithDefault, defaultBranch),
+    [branchesWithDefault, defaultBranch],
   );
   const rootBranchNames = useMemo(
-    () => buildRootNames(branches, defaultBranch, childNamesByParent),
-    [branches, defaultBranch, childNamesByParent],
+    () => buildRootNames(branchesWithDefault, defaultBranch, childNamesByParent),
+    [branchesWithDefault, defaultBranch, childNamesByParent],
   );
-  const branchByName = useMemo(() => new Map(branches.map((branch) => [branch.name, branch])), [branches]);
+  const branchByName = useMemo(() => new Map(branchesWithDefault.map((branch) => [branch.name, branch])), [branchesWithDefault]);
   const branchAnchorShaByName = useMemo(
     () =>
       new Map(
-        branches.map((branch) => [
+        branchesWithDefault.map((branch) => [
           branch.name,
           branch.divergedFromSha ?? branch.createdFromSha ?? null,
         ]),
       ),
-    [branches],
+    [branchesWithDefault],
   );
   const [expandedBranchNames, setExpandedBranchNames] = useState<Set<string>>(() =>
     inferDefaultExpanded(rootBranchNames, childNamesByParent, checkedOutRef, defaultBranch),
@@ -508,173 +547,7 @@ export default function DenseBranchSidebar({
         </button>
       </div>
       <div ref={scrollBodyRef} className="h-[calc(100%-1.75rem)] overflow-y-auto pr-1">
-        <div className="mb-1">
-          <div className="flex items-center gap-1">
-            <button
-              type="button"
-              onClick={() => onSelectBranch?.(defaultBranch)}
-              className={cn(
-                'min-w-0 flex-1 break-words rounded-md px-1 py-0.5 text-left text-sm transition-colors hover:bg-accent',
-                checkedOutBranchName === defaultBranch ? 'font-medium text-foreground' : 'text-muted-foreground hover:text-foreground',
-              )}
-            >
-              {defaultBranch}
-            </button>
-            {null}
-          </div>
-          {showCommits && sortedDirectCommits.length > 0 ? (
-            <ul className="relative mt-2 space-y-1 pl-1">
-              {(() => {
-                const mainForkIdx = new Set<number>();
-                sortedDirectCommits.forEach((commit, idx) => {
-                  const mainChildBranchNames = childNamesByParent.get(defaultBranch) ?? [];
-                  const hasAnchoredBranch = mainChildBranchNames.some((branchName) => {
-                    const anchorSha = branchAnchorShaByName.get(branchName);
-                    if (!anchorSha) return false;
-                    return shaMatchesGitRef(commit.fullSha, anchorSha) || shaMatchesGitRef(commit.sha, anchorSha);
-                  });
-                  if (hasAnchoredBranch) mainForkIdx.add(idx);
-                  if (commit.kind === 'uncommitted' || commit.kind === 'stash' || commit.fullSha === 'WORKING_TREE' || commit.fullSha.startsWith('STASH:')) {
-                    if (idx > 0) mainForkIdx.add(idx - 1);
-                    mainForkIdx.add(idx);
-                  }
-                });
-                const clusterEntries = clusterByForkPoints(sortedDirectCommits, mainForkIdx);
-                const mainClumps = clusterEntries.map((cluster, index) => ({
-                  key: `sidebar-clump-${defaultBranch}-${cluster[0]!.fullSha}-${cluster[cluster.length - 1]!.fullSha}-${index}`,
-                  commits: cluster,
-                  count: cluster.length,
-                  lead: cluster[cluster.length - 1]!,
-                }));
-                return mainClumps.map((clump) => {
-                  const clumpCollapsed = clump.count > 1 && !openedCommitClumpKeys.has(clump.key);
-                  const visibleClumpCommits = clumpCollapsed ? [clump.lead] : clump.commits;
-                  return visibleClumpCommits.map((commit) => {
-                const mergeTargetLabels = getMergeTargetLabels(commit.fullSha, defaultBranch);
-                const mainChildBranchNames = childNamesByParent.get(defaultBranch) ?? [];
-                const anchoredMainChildBranchNames = mainChildBranchNames.filter((branchName) => {
-                  const anchorSha = branchAnchorShaByName.get(branchName);
-                  if (!anchorSha) return false;
-                  return (
-                    shaMatchesGitRef(commit.fullSha, anchorSha) ||
-                    shaMatchesGitRef(commit.sha, anchorSha)
-                  );
-                });
-                return (
-                  <li key={`${defaultBranch}:${commit.fullSha}`}>
-                    <div className="flex items-start gap-1">
-                      <button
-                        type="button"
-                        onClick={() => onSelectCommit?.(commit.fullSha)}
-                        className="min-w-0 flex-1 break-words rounded-md px-1 pl-0 py-0.5 text-left text-sm leading-5 text-muted-foreground/70 transition-colors hover:bg-accent hover:text-muted-foreground"
-                        title={commit.message}
-                      >
-                        {commit.message}
-                      </button>
-                      {clump.count > 1 && commit.fullSha === clump.lead.fullSha ? (
-                        <button
-                          type="button"
-                          data-clump-toggle-id={`${defaultBranch}:${clump.lead.fullSha}`}
-                          onClick={() => handleToggleCommitClump(clump.key, `${defaultBranch}:${clump.lead.fullSha}`)}
-                          className={cn(
-                            'shrink-0 rounded-md px-1 py-0.5 text-left text-sm leading-5 text-muted-foreground/70 transition-colors hover:bg-accent hover:text-muted-foreground',
-                            clumpCollapsed ? '' : 'min-w-[2ch] text-center',
-                          )}
-                        >
-                          {clumpCollapsed ? `+${Math.max(1, clump.count - 1)}` : '−'}
-                        </button>
-                      ) : null}
-                    </div>
-                    {mergeTargetLabels.length > 0 ? (
-                      <div className="mt-1 flex flex-wrap gap-1">
-                        {mergeTargetLabels.map((targetBranch) => (
-                          <span
-                            key={`${commit.fullSha}:${targetBranch}`}
-                            className="inline-flex items-center rounded-full border border-border/60 bg-muted/50 px-2 py-0.5 text-[10px] font-medium uppercase tracking-wide text-muted-foreground"
-                          >
-                            Merge to {targetBranch}
-                          </span>
-                        ))}
-                      </div>
-                    ) : null}
-                    {anchoredMainChildBranchNames.length > 0 ? (
-                      <ul className="relative mt-1 mb-3 space-y-2">
-                        {anchoredMainChildBranchNames.map((branchName, branchIdx) => (
-                          <BranchRows
-                            key={branchName}
-                            branchName={branchName}
-                            depth={1}
-                            isLast={branchIdx === anchoredMainChildBranchNames.length - 1}
-                            branchByName={branchByName}
-                            branchCommitPreviews={branchCommitPreviews}
-                            childNamesByParent={childNamesByParent}
-                            branchAnchorShaByName={branchAnchorShaByName}
-                            expandedBranchNames={expandedBranchNames}
-                            onToggleBranch={handleToggleBranch}
-                            checkedOutBranchName={checkedOutBranchName}
-                            ancestors={new Set([defaultBranch])}
-                            showCommits={showCommits}
-                            getMergeTargetLabels={getMergeTargetLabels}
-                            sourceBranchName={branchName}
-                            openedCommitClumpKeys={openedCommitClumpKeys}
-                            onToggleCommitClump={handleToggleCommitClump}
-                            onSelectCommit={onSelectCommit}
-                            onSelectBranch={onSelectBranch}
-                          />
-                        ))}
-                      </ul>
-                    ) : null}
-                  </li>
-                );
-                  });
-                });
-              })()}
-            </ul>
-          ) : null}
-          {(() => {
-            const mainChildBranchNames = childNamesByParent.get(defaultBranch) ?? [];
-            if (mainChildBranchNames.length === 0) return null;
-            const visibleMainCommits =
-              showCommits ? sortedDirectCommits : [];
-            const unanchoredMainChildren = mainChildBranchNames.filter((branchName) => {
-              if (!showCommits) return true;
-              const anchorSha = branchAnchorShaByName.get(branchName);
-              if (!anchorSha) return true;
-              return !visibleMainCommits.some((commit) => (
-                shaMatchesGitRef(commit.fullSha, anchorSha) || shaMatchesGitRef(commit.sha, anchorSha)
-              ));
-            });
-            if (unanchoredMainChildren.length === 0) return null;
-            return (
-              <ul className="relative mt-1 mb-3 space-y-1 pl-1">
-                {unanchoredMainChildren.map((branchName, branchIdx, list) => (
-                  <BranchRows
-                    key={branchName}
-                    branchName={branchName}
-                    depth={1}
-                    isLast={branchIdx === list.length - 1}
-                    branchByName={branchByName}
-                    branchCommitPreviews={branchCommitPreviews}
-                    childNamesByParent={childNamesByParent}
-                    branchAnchorShaByName={branchAnchorShaByName}
-                    expandedBranchNames={expandedBranchNames}
-                    onToggleBranch={handleToggleBranch}
-                    checkedOutBranchName={checkedOutBranchName}
-                    ancestors={new Set([defaultBranch])}
-                    showCommits={showCommits}
-                    getMergeTargetLabels={getMergeTargetLabels}
-                    sourceBranchName={branchName}
-                    openedCommitClumpKeys={openedCommitClumpKeys}
-                    onToggleCommitClump={handleToggleCommitClump}
-                    onSelectCommit={onSelectCommit}
-                    onSelectBranch={onSelectBranch}
-                  />
-                ))}
-              </ul>
-            );
-          })()}
-        </div>
-        <ul className="space-y-4">
+        <ul className="space-y-1">
           {rootBranchNames.map((branchName, idx) => (
             <BranchRows
               key={branchName}
@@ -682,7 +555,7 @@ export default function DenseBranchSidebar({
               depth={0}
               isLast={idx === rootBranchNames.length - 1}
               branchByName={branchByName}
-              branchCommitPreviews={branchCommitPreviews}
+              branchCommitPreviews={branchCommitPreviewsWithDefault}
               childNamesByParent={childNamesByParent}
               branchAnchorShaByName={branchAnchorShaByName}
               expandedBranchNames={expandedBranchNames}

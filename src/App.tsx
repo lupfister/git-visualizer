@@ -1312,6 +1312,30 @@ function App() {
     }
   }
 
+  async function handleCreateRootBranch(branchName: string) {
+    if (!repoPath || createBranchFromNodeInProgress) return;
+    setCreateBranchFromNodeInProgress(true);
+    setCommitSwitchFeedback(null);
+    try {
+      const nextRef = await invoke<CheckedOutRef>('create_root_branch', {
+        repoPath,
+        branchName,
+      });
+      setCheckedOutRef(nextRef);
+      await refreshRepoGitState(repoPath);
+      setCommitSwitchFeedback({
+        kind: 'success',
+        message: `Created new root branch "${branchName}"`,
+      });
+    } catch (e) {
+      const message = e instanceof Error ? e.message : String(e);
+      setCommitSwitchFeedback({ kind: 'error', message });
+      console.error('Failed to create root branch:', message);
+    } finally {
+      setCreateBranchFromNodeInProgress(false);
+    }
+  }
+
   async function handleMoveNodeBackToBranch(targetBranchName: string) {
     if (!repoPath) return;
     setCommitSwitchFeedback(null);
@@ -1546,6 +1570,7 @@ function App() {
     handleCommitLocalChanges,
     handleStageAllChanges,
     handleCreateBranchFromNode,
+    handleCreateRootBranch,
     handleMoveNodeBackToBranch,
     handleMergeRefsIntoBranch,
     handlePushAllBranches,
@@ -1836,6 +1861,7 @@ function App() {
               onStageAllChanges={handleStageAllChanges}
               stageInProgress={stageInProgress}
               onCreateBranchFromNode={handleCreateBranchFromNode}
+              onCreateRootBranch={handleCreateRootBranch}
               createBranchFromNodeInProgress={createBranchFromNodeInProgress}
               onInteractionChange={setIsMapInteracting}
             />

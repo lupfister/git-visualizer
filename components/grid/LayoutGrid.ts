@@ -76,6 +76,7 @@ export type BranchGridViewProps = {
   onStageAllChanges?: () => Promise<boolean> | Promise<void> | boolean | void;
   stageInProgress?: boolean;
   onCreateBranchFromNode?: (nodeId: string, branchName: string) => Promise<void>;
+  onCreateRootBranch?: (branchName: string) => Promise<void>;
   createBranchFromNodeInProgress?: boolean;
   onMoveNodeBackToBranch?: (targetBranchName: string) => Promise<void>;
   orientation?: string;
@@ -146,6 +147,7 @@ export function buildLanes(
   defaultBranch: string,
   branchCommitPreviews: Record<string, BranchCommitPreview[]> = {},
 ): Lane[] {
+  const ROOT_GROUP_GUTTER_COLUMNS = 1;
   const byName = new Map(branches.map((branch) => [branch.name, branch]));
   const children = new Map<string, Branch[]>();
   const branchContainsSha = (branchName: string, sha: string): boolean => {
@@ -178,11 +180,13 @@ export function buildLanes(
   };
   const resolveLaneParentName = (branch: Branch): string | null => {
     const declaredParent = branchParentName(branch, byName, defaultBranch);
+    const forkSha = branch.presidesFromSha ?? branch.divergedFromSha ?? branch.createdFromSha ?? null;
     if (declaredParent && declaredParent !== defaultBranch) {
-      const forkSha = branch.presidesFromSha ?? branch.divergedFromSha ?? branch.createdFromSha ?? null;
       if (!forkSha || branchContainsSha(declaredParent, forkSha)) return declaredParent;
       return defaultBranch;
     }
+    // True roots (unrelated histories) should not be attached to default.
+    if (!declaredParent && !forkSha) return null;
     return declaredParent ?? defaultBranch;
   };
   for (const branch of branches) {
@@ -267,7 +271,21 @@ export function buildLanes(
   const unclaimedBranches = branches
     .filter((branch) => !laneByName.has(branch.name))
     .sort((a, b) => branchColumnStartTime(a) - branchColumnStartTime(b) || a.name.localeCompare(b.name));
-  for (const branch of unclaimedBranches) claimColumn(branch.name);
+  const attachedBranches = unclaimedBranches.filter((branch) => resolveLaneParentName(branch) != null);
+  const detachedRootBranches = unclaimedBranches.filter((branch) => resolveLaneParentName(branch) == null);
+  for (const branch of attachedBranches) claimColumn(branch.name);
+
+  let detachedRootColumnCursor = Math.max(0, ...lanes.map((lane) => lane.column)) + ROOT_GROUP_GUTTER_COLUMNS + 1;
+  for (const branch of detachedRootBranches) {
+    const claimedIntervals = intervalsForBranchInColumn(branch);
+    let column = detachedRootColumnCursor;
+    while (conflicts(column, claimedIntervals)) column += 1;
+    const lane = { name: branch.name, column, parentName: null };
+    laneByName.set(branch.name, lane);
+    lanes.push(lane);
+    columnIntervals.set(column, [...(columnIntervals.get(column) ?? []), ...claimedIntervals]);
+    detachedRootColumnCursor = column + 1;
+  }
 
   return lanes.sort((a, b) => a.column - b.column || a.name.localeCompare(b.name));
 }

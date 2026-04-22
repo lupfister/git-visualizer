@@ -39,7 +39,7 @@ type Props = {
   pushCurrentBranchLabel: string;
   pushableRemoteBranchCount: number;
   deletableSelectionCount: number;
-  selectedCommitCanCreateBranch: boolean;
+  canCreateRootBranch: boolean;
   selectedCommitTargetOption: SelectedCommitTargetOption;
   mergeInProgress: boolean;
   mergeTargetCommitSha: string | null;
@@ -81,7 +81,7 @@ export default function MapGridControls({
   pushCurrentBranchLabel,
   pushableRemoteBranchCount,
   deletableSelectionCount,
-  selectedCommitCanCreateBranch,
+  canCreateRootBranch,
   selectedCommitTargetOption,
   mergeInProgress,
   setMergeTargetCommitSha,
@@ -122,7 +122,7 @@ export default function MapGridControls({
         <button type="button" onClick={() => setDeleteConfirmOpen(true)} disabled={!onDeleteSelection || deletableSelectionCount === 0 || deleteInProgress} className="rounded-lg px-2.5 py-1 text-xs font-medium text-red-600 transition-colors hover:bg-red-50 dark:hover:bg-red-900/20 disabled:cursor-not-allowed disabled:opacity-50">
           {deleteInProgress ? 'Deleting...' : 'Delete selection'}
         </button>
-        <button type="button" onClick={() => setNewBranchDialogOpen(true)} disabled={!onCreateBranchFromNode || !selectedCommitCanCreateBranch || createBranchFromNodeInProgress} className="rounded-lg px-2.5 py-1 text-xs font-medium text-foreground transition-colors hover:bg-accent disabled:cursor-not-allowed disabled:opacity-50">
+        <button type="button" onClick={() => setNewBranchDialogOpen(true)} disabled={(!onCreateBranchFromNode && !canCreateRootBranch) || createBranchFromNodeInProgress} className="rounded-lg px-2.5 py-1 text-xs font-medium text-foreground transition-colors hover:bg-accent disabled:cursor-not-allowed disabled:opacity-50">
           {createBranchFromNodeInProgress ? 'Creating...' : 'Create branch'}
         </button>
       </div>

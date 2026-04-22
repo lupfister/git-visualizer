@@ -15,9 +15,12 @@ type Props = {
   deletableSelectionCount: number;
   newBranchDialogOpen: boolean;
   newBranchName: string;
+  newBranchCreateMode: 'from-selected-node' | 'new-root';
   onNewBranchNameChange: (value: string) => void;
+  onNewBranchCreateModeChange: (mode: 'from-selected-node' | 'new-root') => void;
   onNewBranchDialogClose: () => void;
   onNewBranchConfirm: () => void;
+  selectedCommitCanCreateBranch: boolean;
   createBranchFromNodeInProgress: boolean;
 };
 
@@ -36,9 +39,12 @@ export default function MapGridDialogs({
   deletableSelectionCount,
   newBranchDialogOpen,
   newBranchName,
+  newBranchCreateMode,
   onNewBranchNameChange,
+  onNewBranchCreateModeChange,
   onNewBranchDialogClose,
   onNewBranchConfirm,
+  selectedCommitCanCreateBranch,
   createBranchFromNodeInProgress,
 }: Props) {
   return (
@@ -117,7 +123,42 @@ export default function MapGridDialogs({
       {newBranchDialogOpen ? (
         <div className="absolute inset-0 z-[80] flex items-center justify-center bg-background/70 p-4 backdrop-blur-sm">
           <div className="w-full max-w-sm rounded-2xl border border-border bg-card p-4">
-            <p className="text-sm font-medium text-foreground">Create branch from selected node</p>
+            <p className="text-sm font-medium text-foreground">Create branch</p>
+            <div className="mt-3 inline-flex items-center rounded-lg border border-border bg-muted/30 p-1">
+              <button
+                type="button"
+                onClick={() => onNewBranchCreateModeChange('from-selected-node')}
+                className={cn(
+                  'rounded-md px-2.5 py-1 text-xs font-medium transition-colors',
+                  newBranchCreateMode === 'from-selected-node'
+                    ? 'bg-card text-foreground'
+                    : 'text-muted-foreground hover:bg-accent hover:text-foreground',
+                )}
+              >
+                From selection
+              </button>
+              <button
+                type="button"
+                onClick={() => onNewBranchCreateModeChange('new-root')}
+                className={cn(
+                  'rounded-md px-2.5 py-1 text-xs font-medium transition-colors',
+                  newBranchCreateMode === 'new-root'
+                    ? 'bg-card text-foreground'
+                    : 'text-muted-foreground hover:bg-accent hover:text-foreground',
+                )}
+              >
+                New root
+              </button>
+            </div>
+            {newBranchCreateMode === 'from-selected-node' ? (
+              <p className="mt-2 text-xs text-muted-foreground">
+                Creates from selected uncommitted changes or stash node.
+              </p>
+            ) : (
+              <p className="mt-2 text-xs text-muted-foreground">
+                Creates an orphan branch with unrelated history.
+              </p>
+            )}
             <input
               value={newBranchName}
               onChange={(event) => onNewBranchNameChange(event.target.value)}
@@ -135,7 +176,11 @@ export default function MapGridDialogs({
               <button
                 type="button"
                 onClick={onNewBranchConfirm}
-                disabled={!newBranchName.trim() || createBranchFromNodeInProgress}
+                disabled={
+                  !newBranchName.trim() ||
+                  createBranchFromNodeInProgress ||
+                  (newBranchCreateMode === 'from-selected-node' && !selectedCommitCanCreateBranch)
+                }
                 className={cn(
                   'rounded-lg border border-border bg-card px-3 py-1.5 text-xs font-medium text-foreground transition-colors hover:bg-accent',
                   'disabled:cursor-not-allowed disabled:opacity-50',

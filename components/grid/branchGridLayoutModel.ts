@@ -489,9 +489,15 @@ export function computeBranchGridLayout(input: BranchGridLayoutInput): BranchGri
   const resolveBranchStartSha = (branch: Branch): string | null => {
     const childBaseCommit = branchBaseCommitByName.get(branch.name);
     const forkSha = branch.presidesFromSha ?? branch.divergedFromSha ?? branch.createdFromSha ?? childBaseCommit?.parentSha ?? null;
+    if (!branch.parentBranch && !forkSha) return null;
     if (!forkSha) return null;
     const parentName = resolveBranchStartParentName(branch);
-    if (parentName === defaultBranch) return oldestMainCommit?.id ?? childBaseCommit?.parentSha ?? forkSha;
+    if (parentName === defaultBranch) {
+      if (mainCommitShas.has(forkSha)) return forkSha;
+      const childParentSha = childBaseCommit?.parentSha ?? null;
+      if (childParentSha && mainCommitShas.has(childParentSha)) return childParentSha;
+      return oldestMainCommit?.id ?? childParentSha ?? forkSha;
+    }
     if (mainCommitShas.has(forkSha)) return forkSha;
     return forkSha;
   };
@@ -892,10 +898,22 @@ export function computeBranchGridLayout(input: BranchGridLayoutInput): BranchGri
   const crossBranchOutgoingShas = new Set<string>();
   for (const branch of branches) {
     if (branch.name === defaultBranch) continue;
+    const branchStartSha = resolveBranchStartSha(branch);
+    if (!branchStartSha) {
+      pushConnectorDecision({
+        id: `branch-root:${branch.name}`,
+        kind: 'branch',
+        parent: 'root',
+        child: branch.name,
+        rendered: false,
+        reason: 'root history without parent anchor',
+      });
+      continue;
+    }
     const branchBaseCommit = branchBaseCommitByName.get(branch.name);
     if (!branchBaseCommit) continue;
     const parentName = resolveBranchStartParentName(branch);
-    const parentNode = resolveParentNode(branchBaseCommit.parentSha ?? branch.divergedFromSha ?? branch.createdFromSha ?? '', parentName);
+    const parentNode = resolveParentNode(branchStartSha, parentName);
     const receivingCommit = branchReceivingCommitByName.get(branch.name) ?? branchBaseCommit;
     const childNode = resolveNodeForSha(receivingCommit.id, branch.name) ?? resolveConnectorNode(receivingCommit as VisualCommit);
     if (!parentNode || !childNode || parentNode.commit.id === childNode.commit.id) {
@@ -1055,6 +1073,13 @@ export function computeBranchGridLayout(input: BranchGridLayoutInput): BranchGri
       const parentNode = orderedBranchNodes[index - 1]!;
       const childNode = orderedBranchNodes[index]!;
       if (parentNode.commit.id === childNode.commit.id) continue;
+      // This is a fallback pass. If the child's real parent is resolvable,
+      // avoid adding an extra synthetic chain connector.
+      const realParentSha = childNode.commit.parentSha ?? null;
+      if (realParentSha) {
+        const resolvedRealParent = resolveParentNode(realParentSha, childNode.commit.branchName);
+        if (resolvedRealParent) continue;
+      }
       const key = `chain:${branchName}:${parentNode.commit.id}->${childNode.commit.id}`;
       if (connectorKeySet.has(key)) {
         addNodeWarning(parentNode.commit.id, 'Duplicate branch chain connector');

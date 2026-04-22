@@ -4,6 +4,13 @@ use serde::Serialize;
 use std::collections::{HashMap, HashSet};
 use std::path::Path;
 
+fn is_no_merge_base_error(error: &GitError) -> bool {
+    match error {
+        GitError::CommandFailed(message) => message.contains("no merge base"),
+        _ => false,
+    }
+}
+
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Branch {
@@ -114,7 +121,12 @@ pub fn list_branches(repo: &Path, default_branch: &str) -> Result<Vec<Branch>, G
 
     let mut branches: Vec<Branch> = branch_names
         .par_iter()
-        .filter_map(|name| get_branch_info(repo, name, default_branch).ok())
+        .filter_map(|name| {
+            match get_branch_info(repo, name, default_branch) {
+                Ok(branch) => Some(branch),
+                Err(_) => build_branch_fallback(repo, name, default_branch),
+            }
+        })
         .collect();
 
     infer_branch_parents(repo, &mut branches, default_branch)?;
@@ -123,6 +135,46 @@ pub fn list_branches(repo: &Path, default_branch: &str) -> Result<Vec<Branch>, G
     branches.sort_by(|a, b| b.last_commit_date.cmp(&a.last_commit_date));
 
     Ok(branches)
+}
+
+fn build_branch_fallback(repo: &Path, name: &str, default_branch: &str) -> Option<Branch> {
+    let log_output = cli::run(repo, &["log", "-1", "--format=%H|%an|%cI", name]).ok()?;
+    let parts: Vec<&str> = log_output.trim().split('|').collect();
+
+    let head_sha = parts.first().unwrap_or(&"").to_string();
+    if head_sha.is_empty() {
+        return None;
+    }
+    let last_commit_author = parts.get(1).unwrap_or(&"Unknown").to_string();
+    let last_commit_date = parts
+        .get(2)
+        .copied()
+        .unwrap_or("1970-01-01T00:00:00Z")
+        .to_string();
+
+    let (commits_ahead, commits_behind) =
+        get_ahead_behind(repo, name, default_branch).unwrap_or((0, 0));
+    let (remote_sync_status, unpushed_commits) = get_remote_sync_status(repo, name, commits_ahead);
+    let (diverged_from_sha, diverged_from_date) =
+        get_fork_point(repo, name, default_branch).unwrap_or((None, None));
+    let status = calculate_status(commits_behind, &last_commit_date);
+
+    Some(Branch {
+        name: name.to_string(),
+        commits_ahead,
+        commits_behind,
+        created_from_sha: None,
+        created_date: Some(last_commit_date.clone()),
+        last_commit_date,
+        last_commit_author,
+        status,
+        remote_sync_status,
+        unpushed_commits,
+        head_sha,
+        parent_branch: None,
+        diverged_from_sha,
+        diverged_from_date,
+    })
 }
 
 fn get_branch_info(repo: &Path, name: &str, default_branch: &str) -> Result<Branch, GitError> {
@@ -211,6 +263,10 @@ fn infer_branch_parents(
         .iter()
         .find(|c| c.is_default)
         .map(|c| c.name.clone());
+    let default_head_sha = candidates
+        .iter()
+        .find(|c| c.is_default)
+        .map(|c| c.head_sha.clone());
 
     let creation_info_list: Vec<(String, BranchCreationInfo)> = branches
         .par_iter()
@@ -256,7 +312,17 @@ fn infer_branch_parents(
         }
 
         if parent_name.is_none() {
-            parent_name = default_parent_name.clone();
+            if let (Some(default_name), Some(default_sha)) =
+                (default_parent_name.clone(), default_head_sha.clone())
+            {
+                let has_shared_history = get_merge_base_sha(repo, &default_sha, &branch.head_sha)
+                    .ok()
+                    .flatten()
+                    .is_some();
+                if has_shared_history {
+                    parent_name = Some(default_name);
+                }
+            }
         }
 
         branch.parent_branch = parent_name.clone();
@@ -273,9 +339,11 @@ fn infer_branch_parents(
                 .ok()
                 .flatten()
         });
+        let is_unrelated_root = branch.parent_branch.is_none() && branch.diverged_from_sha.is_none();
         branch.created_from_sha = created_from_reflog_sha
             .clone()
-            .or_else(|| branch.diverged_from_sha.clone());
+            .or_else(|| branch.diverged_from_sha.clone())
+            .filter(|_| !is_unrelated_root);
         branch.created_date = created_from_reflog_date
             .clone()
             .or(created_from_unique_commit)
@@ -472,7 +540,7 @@ fn commit_distance(repo: &Path, from_sha: &str, to_sha: &str) -> Result<i32, Git
 }
 
 fn get_ahead_behind(repo: &Path, branch: &str, base: &str) -> Result<(i32, i32), GitError> {
-    let output = cli::run(
+    let output = match cli::run(
         repo,
         &[
             "rev-list",
@@ -480,7 +548,19 @@ fn get_ahead_behind(repo: &Path, branch: &str, base: &str) -> Result<(i32, i32),
             "--count",
             &format!("{}...{}", base, branch),
         ],
-    )?;
+    ) {
+        Ok(value) => value,
+        Err(error) if is_no_merge_base_error(&error) => {
+            // Unrelated histories (e.g. orphan roots) have no merge-base.
+            // Treat them as independent instead of dropping the branch.
+            let ahead = cli::run(repo, &["rev-list", "--count", branch])?
+                .trim()
+                .parse::<i32>()
+                .unwrap_or(0);
+            return Ok((ahead.max(0), 0));
+        }
+        Err(error) => return Err(error),
+    };
 
     let parts: Vec<&str> = output.trim().split_whitespace().collect();
     let behind = parts.first().and_then(|s| s.parse().ok()).unwrap_or(0);
@@ -494,7 +574,11 @@ fn get_fork_point(
     branch: &str,
     base: &str,
 ) -> Result<(Option<String>, Option<String>), GitError> {
-    let merge_base = cli::run(repo, &["merge-base", base, branch])?;
+    let merge_base = match cli::run(repo, &["merge-base", base, branch]) {
+        Ok(value) => value,
+        Err(error) if is_no_merge_base_error(&error) => return Ok((None, None)),
+        Err(error) => return Err(error),
+    };
     let sha = merge_base.trim();
 
     if sha.is_empty() {
