@@ -115,7 +115,6 @@ function BranchRows({
   branchName,
   depth,
   isLast,
-  isAnchoredUnderCommit = false,
   branchByName,
   branchCommitPreviews,
   childNamesByParent,
@@ -135,7 +134,6 @@ function BranchRows({
   branchName: string;
   depth: number;
   isLast: boolean;
-  isAnchoredUnderCommit?: boolean;
   branchByName: Map<string, Branch>;
   branchCommitPreviews: Record<string, BranchCommitPreview[]>;
   childNamesByParent: Map<string, string[]>;
@@ -174,9 +172,9 @@ function BranchRows({
   const isCheckedOut = checkedOutBranchName === branchName;
   const nextAncestors = new Set(ancestors);
   nextAncestors.add(branchName);
-  const bendClassName = isAnchoredUnderCommit
-    ? 'top-[-0.05rem] h-3.5'
-    : 'top-[-0.3rem] h-4.5';
+  const bendClassName = 'top-[-0.2rem] h-4.5 w-[10px]';
+  const bendCornerClassName = 'rounded-bl-[7px]';
+  const connectorLeftClassName = 'left-[0.65rem]';
 
   const anchoredChildrenByCommitIndex = new Map<number, string[]>();
   const unanchoredChildren: string[] = [];
@@ -225,13 +223,18 @@ function BranchRows({
         <span
           aria-hidden="true"
           className={cn(
-            'absolute left-[0.4rem] w-3 rounded-bl-md border-b-[1.5px] border-l-[1.5px] border-border/60',
+            'absolute w-3 border-b-[1.5px] border-l-[1.5px] border-border/60',
+            bendCornerClassName,
+            connectorLeftClassName,
             bendClassName,
           )}
         />
       ) : null}
       {!isLast && depth > 0 ? (
-        <span aria-hidden="true" className="absolute left-[0.4rem] top-0 bottom-[-1rem] border-l-[1.5px] border-border/50" />
+        <span
+          aria-hidden="true"
+          className={cn('absolute top-0 bottom-[-1rem] border-l-[1.5px] border-border/50', connectorLeftClassName)}
+        />
       ) : null}
 
       <div className="flex items-center gap-1">
@@ -263,7 +266,7 @@ function BranchRows({
       </div>
 
       {shouldShowCommitRows ? (
-        <ul className="relative space-y-1 pl-5">
+        <ul className="relative space-y-1 pl-4">
           {commitClumps.map((clump) => {
             const clumpCollapsed = clump.count > 1 && !openedCommitClumpKeys.has(clump.key);
             const visibleClumpCommits = clumpCollapsed ? [clump.lead] : clump.commits;
@@ -276,7 +279,7 @@ function BranchRows({
                     <button
                       type="button"
                       onClick={() => onSelectCommit?.(commit.fullSha)}
-                      className="min-w-0 flex-1 break-words rounded-md px-2 pl-0 py-1 text-left text-sm leading-5 text-muted-foreground/70 transition-colors hover:bg-accent hover:text-muted-foreground"
+                      className="min-w-0 flex-1 break-words rounded-md px-2 py-1 text-left text-sm leading-5 text-muted-foreground/70 transition-colors hover:bg-accent hover:text-muted-foreground"
                       title={commit.message}
                     >
                       {commit.message}
@@ -300,7 +303,7 @@ function BranchRows({
                       {mergeTargetLabels.map((targetBranch) => (
                         <div
                           key={`${commit.fullSha}:${targetBranch}`}
-                          className="min-w-0 rounded-md px-2 pl-0 py-1 text-left text-sm leading-5 text-muted-foreground/70"
+                          className="min-w-0 rounded-md px-2 py-1 text-left text-sm leading-5 text-muted-foreground/70"
                         >
                           <span>Merge to </span>
                           <span className="font-medium text-muted-foreground">{targetBranch}</span>
@@ -315,7 +318,6 @@ function BranchRows({
                           key={childName}
                           branchName={childName}
                           depth={depth + 1}
-                          isAnchoredUnderCommit
                           isLast={childIdx === list.length - 1 && unanchoredChildren.length === 0}
                           branchByName={branchByName}
                           branchCommitPreviews={branchCommitPreviews}
