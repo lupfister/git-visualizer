@@ -3,6 +3,7 @@ import { invoke } from '@tauri-apps/api/core';
 import { listen } from '@tauri-apps/api/event';
 import { getCurrentWindow } from '@tauri-apps/api/window';
 import BranchGridMapView from '../components/grid/MapViewGrid';
+import DenseBranchSidebar from '../components/DenseBranchSidebar';
 import FolderPickerModal from './FolderPickerModal';
 import type { Branch, BranchCommitPreview, BranchPromptMeta, BranchPromptMarker, CheckedOutRef, Commit, DirectCommit, GitHubAuthStatus, GitHubInfo, GitStashEntry, MergeNode, OpenPR, WorktreeInfo } from '../types';
 import { foldStashNodesIntoGraph } from './placeStashNode';
@@ -1575,6 +1576,18 @@ function App() {
     setView('landing');
   }
 
+  function handleSidebarSelectCommit(sha: string) {
+    if (!sha) return;
+    setGridFocusSha(sha);
+    setGridSearchJumpToken((token) => token + 1);
+  }
+
+  function handleSidebarSelectBranch(branchName: string) {
+    if (!branchName) return;
+    setGridSearchQuery(branchName);
+    setGridSearchJumpToken((token) => token + 1);
+  }
+
 
 
   // Synthetic stash nodes (yellow) and optional uncommitted node (blue) — same lane rules as before.
@@ -1902,6 +1915,19 @@ function App() {
               )}
             </div>
           </header>
+
+          <aside data-map-ui className="pointer-events-none absolute bottom-4 left-4 top-24 z-40">
+            <DenseBranchSidebar
+              branches={enrichedBranches}
+              defaultBranch={defaultBranch}
+              branchCommitPreviews={enrichedBranchCommitPreviews}
+              directCommits={enrichedDirectCommits}
+              mergeNodes={mergeNodes}
+              checkedOutRef={checkedOutRef}
+              onSelectCommit={handleSidebarSelectCommit}
+              onSelectBranch={handleSidebarSelectBranch}
+            />
+          </aside>
 
           {/* Branch errors floating panel */}
           {showErrorPanel && (
