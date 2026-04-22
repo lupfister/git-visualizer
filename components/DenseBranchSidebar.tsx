@@ -305,7 +305,7 @@ function BranchRows({
                           key={`${commit.fullSha}:${targetBranch}`}
                           className="min-w-0 rounded-md px-2 py-1 text-left text-sm leading-5 text-muted-foreground/70"
                         >
-                          <span>Merge to </span>
+                          <span>Merged from </span>
                           <span className="font-medium text-muted-foreground">{targetBranch}</span>
                         </div>
                       ))}
@@ -438,30 +438,50 @@ export default function DenseBranchSidebar({
       [defaultBranch]: mappedDirectCommits,
     };
   }, [branchCommitPreviews, defaultBranch, sortedDirectCommits]);
-  const mergeTargetsByParentSha = useMemo(() => {
-    const byParentSha = new Map<string, Set<string>>();
+  const mergeSourceLabelsByTargetAndMergeSha = useMemo(() => {
+    const byTargetBranch = new Map<string, Map<string, Set<string>>>();
+    const resolveSourceBranchLabel = (parentSha: string, targetBranch: string): string => {
+      const directHeadMatches = branchesWithDefault
+        .filter((branch) => branch.name !== targetBranch)
+        .filter((branch) => shaMatchesGitRef(branch.headSha, parentSha))
+        .map((branch) => branch.name);
+      if (directHeadMatches.length > 0) return directHeadMatches.sort()[0]!;
+
+      const previewTipMatches = Object.entries(branchCommitPreviewsWithDefault)
+        .filter(([branchName]) => branchName !== targetBranch)
+        .flatMap(([branchName, previews]) => {
+          const tip = previews[previews.length - 1];
+          if (!tip) return [];
+          return shaMatchesGitRef(tip.fullSha, parentSha) || shaMatchesGitRef(tip.sha, parentSha) ? [branchName] : [];
+        });
+      if (previewTipMatches.length > 0) return previewTipMatches.sort()[0]!;
+
+      return parentSha.slice(0, 7);
+    };
+
     for (const mergeNode of mergeNodes) {
       const targetBranch = mergeNode.targetBranch ?? defaultBranch;
-      const mergedParentShas = mergeNode.parentShas.slice(1);
+      if (!targetBranch || !mergeNode.fullSha) continue;
+      const mergedParentShas = (mergeNode.parentShas ?? []).slice(1).filter((sha): sha is string => !!sha && !shaMatchesGitRef(sha, mergeNode.fullSha));
+      if (mergedParentShas.length === 0) continue;
+      const byMergeSha = byTargetBranch.get(targetBranch) ?? new Map<string, Set<string>>();
+      const sourceLabels = byMergeSha.get(mergeNode.fullSha) ?? new Set<string>();
       for (const parentSha of mergedParentShas) {
-        if (!parentSha) continue;
-        const set = byParentSha.get(parentSha) ?? new Set<string>();
-        set.add(targetBranch);
-        byParentSha.set(parentSha, set);
+        sourceLabels.add(resolveSourceBranchLabel(parentSha, targetBranch));
       }
+      byMergeSha.set(mergeNode.fullSha, sourceLabels);
+      byTargetBranch.set(targetBranch, byMergeSha);
     }
-    return byParentSha;
-  }, [mergeNodes, defaultBranch]);
+    return byTargetBranch;
+  }, [mergeNodes, defaultBranch, branchesWithDefault, branchCommitPreviewsWithDefault]);
   const getMergeTargetLabels = (sha: string, sourceBranchName: string): string[] => {
-    const labels = new Set<string>();
-    for (const [parentSha, targetLabels] of mergeTargetsByParentSha.entries()) {
-      if (!shaMatchesGitRef(sha, parentSha)) continue;
-      for (const label of targetLabels) {
-        if (label === sourceBranchName) continue;
-        labels.add(label);
-      }
+    const byMergeSha = mergeSourceLabelsByTargetAndMergeSha.get(sourceBranchName);
+    if (!byMergeSha) return [];
+    for (const [mergeSha, labels] of byMergeSha.entries()) {
+      if (!shaMatchesGitRef(sha, mergeSha)) continue;
+      return Array.from(labels).sort();
     }
-    return Array.from(labels);
+    return [];
   };
   const childNamesByParent = useMemo(
     () => buildChildBranchesByParent(branchesWithDefault, defaultBranch),
