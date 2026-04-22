@@ -11,6 +11,7 @@ type Props = {
   checkedOutRef?: CheckedOutRef | null;
   onSelectCommit?: (sha: string) => void;
   onSelectBranch?: (branchName: string) => void;
+  className?: string;
 };
 
 function buildChildBranchesByParent(branches: Branch[], defaultBranch: string): Map<string, string[]> {
@@ -213,7 +214,13 @@ function BranchRows({
   }, [anchoredChildrenByCommitIndex, branchName, showCommits, visibleCommitPreviews]);
 
   return (
-    <li className={cn('relative', depth > 0 ? 'pl-4' : 'pl-0')}>
+    <li
+      className={cn(
+        'relative',
+        depth > 0 ? 'pl-4' : 'pl-0',
+        depth === 0 && !isLast ? (isExpanded ? 'mb-12' : 'mb-1') : '',
+      )}
+    >
       {depth > 0 ? (
         <span
           aria-hidden="true"
@@ -235,7 +242,7 @@ function BranchRows({
             onSelectBranch?.(branchName);
           }}
           className={cn(
-            'group flex min-w-0 flex-1 items-center gap-1.5 rounded-md px-1 py-0.5 text-left text-sm transition-colors hover:bg-accent',
+            'group flex min-w-0 flex-1 items-center gap-2 rounded-md px-2 py-1 text-left text-sm transition-colors hover:bg-accent',
             isCheckedOut ? 'text-foreground' : 'text-muted-foreground hover:text-foreground',
           )}
         >
@@ -269,7 +276,7 @@ function BranchRows({
                     <button
                       type="button"
                       onClick={() => onSelectCommit?.(commit.fullSha)}
-                      className="min-w-0 flex-1 break-words rounded-md px-1 pl-0 py-0.5 text-left text-sm leading-5 text-muted-foreground/70 transition-colors hover:bg-accent hover:text-muted-foreground"
+                      className="min-w-0 flex-1 break-words rounded-md px-2 pl-0 py-1 text-left text-sm leading-5 text-muted-foreground/70 transition-colors hover:bg-accent hover:text-muted-foreground"
                       title={commit.message}
                     >
                       {commit.message}
@@ -280,7 +287,7 @@ function BranchRows({
                       data-clump-toggle-id={`${branchName}:${clump.lead.fullSha}`}
                       onClick={() => onToggleCommitClump(clump.key, `${branchName}:${clump.lead.fullSha}`)}
                       className={cn(
-                        'shrink-0 rounded-md px-1 py-0.5 text-left text-sm leading-5 text-muted-foreground/70 transition-colors hover:bg-accent hover:text-muted-foreground',
+                        'shrink-0 rounded-md px-2 py-1 text-left text-sm leading-5 text-muted-foreground/70 transition-colors hover:bg-accent hover:text-muted-foreground',
                         clumpCollapsed ? '' : 'min-w-[2ch] text-center',
                       )}
                       >
@@ -293,7 +300,7 @@ function BranchRows({
                       {mergeTargetLabels.map((targetBranch) => (
                         <div
                           key={`${commit.fullSha}:${targetBranch}`}
-                          className="min-w-0 rounded-md px-1 pl-0 py-0.5 text-left text-sm leading-5 text-muted-foreground/70"
+                          className="min-w-0 rounded-md px-2 pl-0 py-1 text-left text-sm leading-5 text-muted-foreground/70"
                         >
                           <span>Merge to </span>
                           <span className="font-medium text-muted-foreground">{targetBranch}</span>
@@ -302,7 +309,7 @@ function BranchRows({
                     </div>
                   ) : null}
                   {anchoredChildrenByCommitIndex.get(idx)?.length ? (
-                    <ul className="relative mb-3 space-y-2">
+                    <ul className="relative mb-1.75 space-y-2">
                       {anchoredChildrenByCommitIndex.get(idx)!.map((childName, childIdx, list) => (
                         <BranchRows
                           key={childName}
@@ -337,7 +344,7 @@ function BranchRows({
       ) : null}
 
       {hasChildBranches && isExpanded && unanchoredChildren.length > 0 ? (
-        <ul className="relative mb-3 space-y-1">
+        <ul className="relative mb-3.5 space-y-1">
           {unanchoredChildren.map((childName, idx) => (
             <BranchRows
               key={childName}
@@ -376,6 +383,7 @@ export default function DenseBranchSidebar({
   checkedOutRef,
   onSelectCommit,
   onSelectBranch,
+  className,
 }: Props) {
   const asideRef = useRef<HTMLElement | null>(null);
   const scrollBodyRef = useRef<HTMLDivElement | null>(null);
@@ -543,20 +551,20 @@ export default function DenseBranchSidebar({
     <aside
       ref={asideRef}
       aria-label="Dense branch sidebar"
-      className="pointer-events-auto h-full w-[26rem] rounded-2xl border border-border bg-card/95 p-3 shadow-sm backdrop-blur-sm"
+      className={cn('pointer-events-auto h-full', className)}
     >
-      <div className="mb-1 px-1">
-        <h2 className="text-sm font-medium text-foreground">Branch Outline</h2>
+      <div className="mb-2 flex items-center justify-between gap-3 px-5">
+        <h2 className="text-sm font-medium text-foreground">Branches</h2>
         <button
           type="button"
           onClick={() => setShowCommits((value) => !value)}
-          className="mt-1 rounded-md border border-border/60 px-2 py-0.5 text-[11px] font-medium text-muted-foreground transition-colors hover:bg-accent hover:text-foreground"
+          className="shrink-0 rounded-md border border-border/60 px-2 py-0.5 text-[11px] font-medium text-muted-foreground transition-colors hover:bg-accent hover:text-foreground"
         >
           {showCommits ? 'Hide commits' : 'Show commits'}
         </button>
       </div>
-      <div ref={scrollBodyRef} className="h-[calc(100%-1.75rem)] overflow-y-auto pr-1">
-        <ul className="space-y-1">
+      <div ref={scrollBodyRef} className="h-[calc(100%-1.75rem)] overflow-y-auto">
+        <ul className="px-5">
           {rootBranchNames.map((branchName, idx) => (
             <BranchRows
               key={branchName}

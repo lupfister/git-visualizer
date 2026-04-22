@@ -1786,7 +1786,7 @@ function App() {
   }, [branches, branchCommitPreviews, branchUniqueAheadCounts, checkedOutRef, defaultBranch, directCommits, stashes]);
 
   return (
-    <div className="h-screen min-h-0 text-foreground flex flex-col relative bg-background">
+    <div className="relative flex h-screen min-h-0 flex-col bg-background text-foreground">
       <header
         data-tauri-drag-region
         className="window-drag-region absolute left-0 right-0 top-0 z-[9999] h-12 px-4"
@@ -1794,7 +1794,7 @@ function App() {
         onMouseDown={handleWindowDragStart}
       >
         {view === 'map' && (
-          <div className="relative z-10 pointer-events-none h-12">
+          <div className="relative z-10 h-12 pointer-events-none">
             <button
               onClick={handleBackToLanding}
               aria-label="Back"
@@ -1806,144 +1806,22 @@ function App() {
               </svg>
             </button>
             <div className="absolute left-1/2 top-1/2 min-w-0 max-w-[52vw] -translate-x-1/2 -translate-y-1/2 text-center">
-              <h1 className="text-sm font-medium text-foreground truncate">
-                {repoName}
-              </h1>
+              <h1 className="truncate text-sm font-medium text-foreground">{repoName}</h1>
             </div>
           </div>
         )}
       </header>
-      <div className="h-full min-h-0 flex flex-col relative z-10">
-      {view === 'landing' && (
-        <div className="flex-1 min-h-0 overflow-hidden">
-          <RepoSelector onSelect={loadRepo} loading={loading} error={error} />
-        </div>
-      )}
 
-      <div className={`flex-1 overflow-hidden relative ${view === 'landing' ? 'hidden' : ''}`}>
-        <div className="absolute inset-0 overflow-hidden">
-          <div className="absolute inset-0 overflow-hidden">
-            <BranchGridMapView
-              branches={enrichedBranches}
-              mergeNodes={mergeNodes}
-              directCommits={enrichedDirectCommits}
-              unpushedDirectCommits={unpushedDirectCommits}
-              unpushedCommitShasByBranch={unpushedCommitShasByBranch}
-              defaultBranch={defaultBranch}
-              branchCommitPreviews={enrichedBranchCommitPreviews}
-              branchUniqueAheadCounts={enrichedBranchUniqueAheadCounts}
-              gridSearchQuery={gridSearchQuery}
-              gridSearchJumpToken={gridSearchJumpToken}
-              gridFocusSha={gridFocusSha}
-              onGridSearchResultCountChange={setGridSearchResultCount}
-              onGridSearchFocusChange={setGridFocusSha}
-              checkedOutRef={checkedOutRef}
-              onCommitClick={handleMapCommitClick}
-              onMergeRefsIntoBranch={handleMergeRefsIntoBranch}
-              mergeInProgress={mergeInProgress}
-              onPushAllBranches={handlePushAllBranches}
-              onPushCurrentBranch={handlePushCurrentBranch}
-              onPushCommitTargets={handlePushCommitTargets}
-              pushInProgress={pushInProgress}
-              onDeleteSelection={handleDeleteSelection}
-              deleteInProgress={deleteInProgress}
-              worktrees={worktrees}
-              currentRepoPath={repoPath ?? undefined}
-              onRemoveWorktree={handleRemoveWorktree}
-              removeWorktreeInProgress={removeWorktreeInProgress}
-              onSwitchToWorktree={handleSwitchToWorktree}
-              onStashLocalChanges={handleStashLocalChanges}
-              stashInProgress={stashInProgress}
-              stashDisabled={false}
-              onCommitLocalChanges={handleCommitLocalChanges}
-              commitInProgress={commitInProgress}
-              commitDisabled={false}
-              onStageAllChanges={handleStageAllChanges}
-              stageInProgress={stageInProgress}
-              onCreateBranchFromNode={handleCreateBranchFromNode}
-              onCreateRootBranch={handleCreateRootBranch}
-              createBranchFromNodeInProgress={createBranchFromNodeInProgress}
-              onInteractionChange={setIsMapInteracting}
-            />
+      <div className="relative z-10 flex h-full min-h-0 flex-col">
+        {view === 'landing' && (
+          <div className="flex-1 min-h-0 overflow-hidden">
+            <RepoSelector onSelect={loadRepo} loading={loading} error={error} />
           </div>
+        )}
 
-          <header
-            data-map-ui
-            className="absolute left-0 right-0 top-12 z-40 px-4 md:px-8"
-          >
-            <div className="window-no-drag pointer-events-auto relative z-10 min-h-8 flex flex-wrap items-center gap-2 content-start">
-              {githubAuthStatus?.ghAvailable && !githubAuthStatus.authenticated && (
-                <button
-                  onClick={handleGitHubAuthSetup}
-                  disabled={githubAuthLoading}
-                  className="text-xs text-muted-foreground hover:text-foreground border border-border/50 rounded-full px-3 py-1 transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
-                >
-                  {githubAuthLoading ? 'Connecting GitHub...' : 'Connect GitHub'}
-                </button>
-              )}
-              {githubAuthStatus && !githubAuthStatus.ghAvailable && (
-                <span className="text-xs text-muted-foreground border border-border/50 rounded-full px-3 py-1">
-                  Install `gh` for private PR data
-                </span>
-              )}
-              {githubAuthMessage && (
-                <span className="text-xs text-muted-foreground max-w-64 truncate" title={githubAuthMessage}>
-                  {githubAuthMessage}
-                </span>
-              )}
-              <div className="window-no-drag flex min-w-56 flex-1 max-w-sm items-center gap-2 rounded-full border border-border bg-card px-3 py-1.5 shadow-sm">
-                <span className="text-[10px] uppercase tracking-wide text-muted-foreground font-medium shrink-0">
-                  Search
-                </span>
-                <input
-                  value={gridSearchQuery}
-                  onChange={(event) => setGridSearchQuery(event.target.value)}
-                  onKeyDown={(event) => {
-                    if (event.key === 'Enter') {
-                      event.preventDefault();
-                      setGridSearchJumpToken((token) => token + 1);
-                    }
-                  }}
-                  placeholder="sha, message, or branch"
-                  className="w-full bg-transparent text-xs text-foreground outline-none placeholder:text-muted-foreground/70"
-                />
-                <button
-                  type="button"
-                  onClick={() => setGridSearchJumpToken((token) => token + 1)}
-                  className="shrink-0 rounded-full border border-border/50 bg-muted/30 px-2.5 py-1 text-[10px] font-medium uppercase tracking-wide text-muted-foreground transition-colors hover:bg-accent hover:text-foreground"
-                >
-                  Jump
-                </button>
-              </div>
-              {gridSearchResultCount != null && (
-                <span className="text-xs text-muted-foreground">
-                  {gridSearchResultCount} match{gridSearchResultCount === 1 ? '' : 'es'}
-                </span>
-              )}
-              {gridFocusSha && (
-                <span className="text-xs rounded-full border border-primary/30 bg-primary/10 px-3 py-1 text-primary">
-                  Focused {gridFocusSha.slice(0, 7)}
-                </span>
-              )}
-              {commitSwitchFeedback && (
-                <span
-                  className={cn(
-                    'text-xs rounded-full px-3 py-1 max-w-[26rem] truncate transition-opacity duration-200',
-                    isCommitSwitchFeedbackVisible ? 'opacity-100' : 'opacity-0',
-                    commitSwitchFeedback.kind === 'error'
-                      ? 'bg-red-50 dark:bg-red-900/20 text-red-600 dark:text-red-400'
-                      : 'bg-blue-50 dark:bg-blue-900/20 text-blue-600 dark:text-blue-400'
-                  )}
-                  title={commitSwitchFeedback.message}
-                >
-                  {commitSwitchFeedback.message}
-                </span>
-              )}
-            </div>
-          </header>
-
-          <aside data-map-ui className="pointer-events-none absolute bottom-4 left-4 top-24 z-40">
+        <div className={`relative flex h-full min-h-0 flex-1 overflow-hidden ${view === 'landing' ? 'hidden' : ''}`}>
             <DenseBranchSidebar
+              className="min-h-0 w-[27rem] shrink-0 border-r border-border/50 pb-4 pt-16"
               branches={enrichedBranches}
               defaultBranch={defaultBranch}
               branchCommitPreviews={enrichedBranchCommitPreviews}
@@ -1953,17 +1831,132 @@ function App() {
               onSelectCommit={handleSidebarSelectCommit}
               onSelectBranch={handleSidebarSelectBranch}
             />
-          </aside>
 
-          {/* Branch errors floating panel */}
+            <div className="relative min-h-0 min-w-0 flex-1 overflow-hidden">
+              <BranchGridMapView
+                branches={enrichedBranches}
+                mergeNodes={mergeNodes}
+                directCommits={enrichedDirectCommits}
+                unpushedDirectCommits={unpushedDirectCommits}
+                unpushedCommitShasByBranch={unpushedCommitShasByBranch}
+                defaultBranch={defaultBranch}
+                branchCommitPreviews={enrichedBranchCommitPreviews}
+                branchUniqueAheadCounts={enrichedBranchUniqueAheadCounts}
+                gridSearchQuery={gridSearchQuery}
+                gridSearchJumpToken={gridSearchJumpToken}
+                gridFocusSha={gridFocusSha}
+                onGridSearchResultCountChange={setGridSearchResultCount}
+                onGridSearchFocusChange={setGridFocusSha}
+                checkedOutRef={checkedOutRef}
+                onCommitClick={handleMapCommitClick}
+                onMergeRefsIntoBranch={handleMergeRefsIntoBranch}
+                mergeInProgress={mergeInProgress}
+                onPushAllBranches={handlePushAllBranches}
+                onPushCurrentBranch={handlePushCurrentBranch}
+                onPushCommitTargets={handlePushCommitTargets}
+                pushInProgress={pushInProgress}
+                onDeleteSelection={handleDeleteSelection}
+                deleteInProgress={deleteInProgress}
+                worktrees={worktrees}
+                currentRepoPath={repoPath ?? undefined}
+                onRemoveWorktree={handleRemoveWorktree}
+                removeWorktreeInProgress={removeWorktreeInProgress}
+                onSwitchToWorktree={handleSwitchToWorktree}
+                onStashLocalChanges={handleStashLocalChanges}
+                stashInProgress={stashInProgress}
+                stashDisabled={false}
+                onCommitLocalChanges={handleCommitLocalChanges}
+                commitInProgress={commitInProgress}
+                commitDisabled={false}
+                onStageAllChanges={handleStageAllChanges}
+                stageInProgress={stageInProgress}
+                onCreateBranchFromNode={handleCreateBranchFromNode}
+                onCreateRootBranch={handleCreateRootBranch}
+                createBranchFromNodeInProgress={createBranchFromNodeInProgress}
+                onInteractionChange={setIsMapInteracting}
+              />
+
+              <header data-map-ui className="absolute left-0 right-0 top-12 z-40 px-4 md:px-8">
+                <div className="window-no-drag pointer-events-auto relative z-10 min-h-8 content-start flex flex-wrap items-center gap-2">
+                  {githubAuthStatus?.ghAvailable && !githubAuthStatus.authenticated && (
+                    <button
+                      onClick={handleGitHubAuthSetup}
+                      disabled={githubAuthLoading}
+                      className="text-xs text-muted-foreground hover:text-foreground border border-border/50 rounded-full px-3 py-1 transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
+                    >
+                      {githubAuthLoading ? 'Connecting GitHub...' : 'Connect GitHub'}
+                    </button>
+                  )}
+                  {githubAuthStatus && !githubAuthStatus.ghAvailable && (
+                    <span className="text-xs text-muted-foreground border border-border/50 rounded-full px-3 py-1">
+                      Install `gh` for private PR data
+                    </span>
+                  )}
+                  {githubAuthMessage && (
+                    <span className="text-xs text-muted-foreground max-w-64 truncate" title={githubAuthMessage}>
+                      {githubAuthMessage}
+                    </span>
+                  )}
+                  <div className="window-no-drag flex min-w-56 flex-1 max-w-sm items-center gap-2 rounded-full border border-border bg-card px-3 py-1.5 shadow-sm">
+                    <span className="text-[10px] uppercase tracking-wide text-muted-foreground font-medium shrink-0">
+                      Search
+                    </span>
+                    <input
+                      value={gridSearchQuery}
+                      onChange={(event) => setGridSearchQuery(event.target.value)}
+                      onKeyDown={(event) => {
+                        if (event.key === 'Enter') {
+                          event.preventDefault();
+                          setGridSearchJumpToken((token) => token + 1);
+                        }
+                      }}
+                      placeholder="sha, message, or branch"
+                      className="w-full bg-transparent text-xs text-foreground outline-none placeholder:text-muted-foreground/70"
+                    />
+                    <button
+                      type="button"
+                      onClick={() => setGridSearchJumpToken((token) => token + 1)}
+                      className="shrink-0 rounded-full border border-border/50 bg-muted/30 px-2.5 py-1 text-[10px] font-medium uppercase tracking-wide text-muted-foreground transition-colors hover:bg-accent hover:text-foreground"
+                    >
+                      Jump
+                    </button>
+                  </div>
+                  {gridSearchResultCount != null && (
+                    <span className="text-xs text-muted-foreground">
+                      {gridSearchResultCount} match{gridSearchResultCount === 1 ? '' : 'es'}
+                    </span>
+                  )}
+                  {gridFocusSha && (
+                    <span className="text-xs rounded-full border border-primary/30 bg-primary/10 px-3 py-1 text-primary">
+                      Focused {gridFocusSha.slice(0, 7)}
+                    </span>
+                  )}
+                  {commitSwitchFeedback && (
+                    <span
+                      className={cn(
+                        'text-xs rounded-full px-3 py-1 max-w-[26rem] truncate transition-opacity duration-200',
+                        isCommitSwitchFeedbackVisible ? 'opacity-100' : 'opacity-0',
+                        commitSwitchFeedback.kind === 'error'
+                          ? 'bg-red-50 dark:bg-red-900/20 text-red-600 dark:text-red-400'
+                          : 'bg-blue-50 dark:bg-blue-900/20 text-blue-600 dark:text-blue-400',
+                      )}
+                      title={commitSwitchFeedback.message}
+                    >
+                      {commitSwitchFeedback.message}
+                    </span>
+                  )}
+                </div>
+              </header>
+            </div>
+
           {showErrorPanel && (
-            <div data-map-ui className={`absolute top-[96px] right-4 z-50 w-[calc(100%-2rem)] max-w-80 bg-card border border-border rounded-2xl shadow-lg overflow-hidden ${errorPanelClosing ? 'animate-error-panel-out' : 'animate-error-panel-in'}`}>
+            <div
+              data-map-ui
+              className={`absolute top-[96px] right-4 z-50 w-[calc(100%-2rem)] max-w-80 bg-card border border-border rounded-2xl shadow-lg overflow-hidden ${errorPanelClosing ? 'animate-error-panel-out' : 'animate-error-panel-in'}`}
+            >
               <div className="flex items-center justify-between px-4 py-3 border-b border-border/50">
                 <span className="text-sm font-medium text-foreground">Branch errors</span>
-                <button
-                  onClick={closeErrorPanel}
-                  className="text-muted-foreground hover:text-foreground transition-colors"
-                >
+                <button onClick={closeErrorPanel} className="text-muted-foreground hover:text-foreground transition-colors">
                   <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                     <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
                   </svg>
@@ -1995,11 +1988,9 @@ function App() {
                       className="w-full group flex items-center justify-between px-4 py-2.5 rounded-xl border border-transparent hover:border-border hover:bg-card transition-all text-left"
                     >
                       <div className="flex-1 min-w-0">
-                        <p className={`text-sm font-medium truncate ${
-                          isFocused
-                            ? 'text-amber-600 dark:text-amber-400'
-                            : 'text-foreground'
-                        }`}>{b.name}</p>
+                        <p className={`text-sm font-medium truncate ${isFocused ? 'text-amber-600 dark:text-amber-400' : 'text-foreground'}`}>
+                          {b.name}
+                        </p>
                         <p className="text-xs text-muted-foreground mt-0.5">
                           {ahead > 0 && `${ahead} ahead`}
                           {ahead > 0 && b.commitsBehind > 0 && ', '}
@@ -2015,10 +2006,7 @@ function App() {
               </div>
             </div>
           )}
-
         </div>
-
-      </div>
       </div>
     </div>
   );

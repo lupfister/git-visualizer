@@ -20,7 +20,7 @@ const RootLayout = ({ children }: RootLayoutProps) => (
     {children}
     <DialKitBootstrap />
     {/* productionEnabled: show in Vite production / Tauri release (defaults off when NODE_ENV is production) */}
-    <DialRoot productionEnabled defaultOpen theme="system" />
+    <DialRoot productionEnabled defaultOpen={false} theme="system" />
     <Agentation />
   </>
 );

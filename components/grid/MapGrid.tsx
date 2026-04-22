@@ -765,7 +765,7 @@ export default function BranchGridMap({
   ];
 
   return (
-    <div className="relative flex h-full min-h-0 flex-col overflow-hidden rounded-2xl border border-border bg-card">
+    <div className="relative flex h-full min-h-0 flex-col overflow-hidden border border-border bg-card">
       <MapGridDebugPanel
         isOpen={isDebugOpen}
         onToggle={() => setIsDebugOpen((open) => !open)}
