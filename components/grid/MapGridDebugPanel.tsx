@@ -16,7 +16,7 @@ type Props = {
   branchDebugRows: string[];
   connectorDecisions: Array<{
     rendered: boolean;
-    kind: 'branch' | 'ancestry';
+    kind: 'branch' | 'ancestry' | 'merge';
     parent: string;
     child: string;
     reason: string;

@@ -128,6 +128,24 @@ function App() {
     return all;
   }
 
+  async function fetchAllMergeNodesForBranches(path: string, branchNames: string[]): Promise<MergeNode[]> {
+    const normalizedBranchNames = Array.from(new Set(branchNames.filter((branchName) => !!branchName)));
+    if (normalizedBranchNames.length === 0) return [];
+    const branchMergeLists = await Promise.all(
+      normalizedBranchNames.map((branchName) => fetchAllMergeNodes(path, branchName).catch(() => [])),
+    );
+    const dedupedByMergeAndTarget = new Map<string, MergeNode>();
+    for (const list of branchMergeLists) {
+      for (const node of list) {
+        const dedupeKey = `${node.fullSha}:${node.targetBranch ?? ''}`;
+        if (!dedupedByMergeAndTarget.has(dedupeKey)) {
+          dedupedByMergeAndTarget.set(dedupeKey, node);
+        }
+      }
+    }
+    return Array.from(dedupedByMergeAndTarget.values());
+  }
+
   const getBranchesSignature = (list: Branch[]): string =>
     list
       .map((b) => `${b.name}|${b.headSha}|${b.commitsAhead}|${b.commitsBehind}|${b.unpushedCommits}|${b.remoteSyncStatus}`)
@@ -143,9 +161,8 @@ function App() {
 
   async function refreshRepoGitState(path: string, resolvedDefaultBranch?: string) {
     const branchDef = resolvedDefaultBranch ?? defaultBranch;
-    const [branchList, nodes, directResult, unpushedDirectResult, confirmedCheckedOutRef, worktreeList, stashList] = await Promise.all([
+    const [branchList, directResult, unpushedDirectResult, confirmedCheckedOutRef, worktreeList, stashList] = await Promise.all([
       invoke<Branch[]>('get_branches', { repoPath: path }),
-      fetchAllMergeNodes(path, branchDef),
       invoke<DirectCommit[]>('get_direct_commits', {
         repoPath: path,
         branch: branchDef,
@@ -160,6 +177,8 @@ function App() {
       invoke<WorktreeInfo[]>('list_worktrees', { repoPath: path }).catch(() => []),
       invoke<GitStashEntry[]>('list_stashes', { repoPath: path }).catch(() => []),
     ]);
+    const mergeFetchBranchNames = Array.from(new Set([branchDef, ...branchList.map((branch) => branch.name)]));
+    const nodes = await fetchAllMergeNodesForBranches(path, mergeFetchBranchNames);
     const unpushedShaEntries = await Promise.all(
       [branchDef, ...branchList.map((branch) => branch.name)].map(async (branchName) => {
         const shas = await invoke<string[]>('get_branch_unpushed_commit_shas', {
@@ -400,7 +419,9 @@ function App() {
         .join('||');
 
     const getMergeNodesSignature = (list: MergeNode[]): string =>
-      list.map((n) => n.fullSha).join('|');
+      list
+        .map((n) => `${n.fullSha}:${n.targetBranch ?? ''}:${(n.parentShas ?? []).join(',')}`)
+        .join('|');
 
     const getDirectCommitsSignature = (list: DirectCommit[]): string =>
       list.map((c) => c.fullSha).join('|');
@@ -413,7 +434,6 @@ function App() {
       isFetching = true;
       try {
         const branchesPromise = invoke<Branch[]>('get_branches', { repoPath });
-        const mergeNodesPromise = fetchAllMergeNodes(repoPath, defaultBranch);
         const checkedOutPromise = invoke<CheckedOutRef>('get_checked_out_ref', { repoPath }).catch(() => null);
         const worktreesPromise = invoke<WorktreeInfo[]>('list_worktrees', { repoPath }).catch(() => []);
         const directCommitsPromise = invoke<DirectCommit[]>('get_direct_commits', { repoPath, branch: defaultBranch });
@@ -496,16 +516,13 @@ function App() {
         }
 
         // Merge nodes can be expensive on large repos; resolve them after first paint.
-        const nodesResult = await Promise.allSettled([mergeNodesPromise]);
+        const mergeFetchBranchNames = Array.from(new Set([defaultBranch, ...(resolvedBranches ?? []).map((branch) => branch.name)]));
+        const next = await fetchAllMergeNodesForBranches(repoPath, mergeFetchBranchNames).catch(() => []);
         if (isDisposed) return;
-        const mergeNodeResult = nodesResult[0];
-        if (mergeNodeResult.status === 'fulfilled') {
-          const next = mergeNodeResult.value;
-          const sig = getMergeNodesSignature(next);
-          if (sig !== lastMergeNodesSignature) {
-            lastMergeNodesSignature = sig;
-            setMergeNodes(next);
-          }
+        const sig = getMergeNodesSignature(next);
+        if (sig !== lastMergeNodesSignature) {
+          lastMergeNodesSignature = sig;
+          setMergeNodes(next);
         }
       } catch (e) {
         console.error('Auto-refresh failed:', e);

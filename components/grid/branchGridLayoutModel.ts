@@ -32,7 +32,7 @@ export type GridCluster = { branchName: string; key: string; commitIds: string[]
 
 export type ConnectorDecisionRow = {
   id: string;
-  kind: 'branch' | 'ancestry';
+  kind: 'branch' | 'ancestry' | 'merge';
   parent: string;
   child: string;
   rendered: boolean;
@@ -863,57 +863,106 @@ export function computeBranchGridLayout(input: BranchGridLayoutInput): BranchGri
     return resolveChildNodeForSha(sha, preferredBranchName);
   };
 
-  const mergeConnectors = mergeNodes.flatMap((mergeNode) => {
+  const mergeConnectors: Array<{ id: string; path: string; fromX: number; fromY: number; toX: number; toY: number; zIndex: number }> = [];
+  for (const mergeNode of mergeNodes) {
+    const mergeTargetBranch = mergeNode.targetBranch ?? defaultBranch;
     const mergeTarget =
-      nodeForConnectorTipSha(mergeNode.fullSha, defaultBranch) ??
+      nodeForConnectorTipSha(mergeNode.fullSha, mergeTargetBranch) ??
       visibleNodesBySha.get(mergeNode.fullSha)?.[0] ??
       null;
-    if (!mergeTarget) return [];
+    if (!mergeTarget) {
+      pushConnectorDecision({
+        id: `merge:${mergeNode.fullSha}:target`,
+        kind: 'merge',
+        parent: mergeNode.parentShas?.[1] ?? 'unknown',
+        child: mergeNode.fullSha,
+        rendered: false,
+        reason: 'missing merge target node',
+      });
+      continue;
+    }
     const mergedParents = mergeNode.parentShas?.slice(1) ?? [];
-    return mergedParents
-      .map((parentSha) => {
-        if (!parentSha || parentSha === mergeNode.fullSha) return null;
-        const sourceNode = nodeForCommitSha(visibleNodesBySha, parentSha) ?? null;
-        if (!sourceNode || sourceNode.commit.id === mergeTarget.commit.id) return null;
-        return {
-          id: `merge:${mergeNode.fullSha}:${parentSha}`,
-          fromX: sourceNode.x + CARD_WIDTH / 2,
-          fromY: sourceNode.y,
-          toX: mergeTarget.x + CARD_WIDTH - GRID_MERGE_TARGET_GAP_PX,
-          toY: mergeTarget.y + CARD_HEIGHT / 2,
-          zIndex: branchConnectorZIndex(sourceNode.commit.branchName),
-          path: buildMergeOrthogonalPath({
-            laneX: sourceNode.x + CARD_WIDTH / 2,
-            tipY: sourceNode.y,
-            mergeX: mergeTarget.x + CARD_WIDTH - GRID_MERGE_TARGET_GAP_PX,
-            mergeY: mergeTarget.y + CARD_HEIGHT / 2,
-            cornerR: GRID_CONNECTOR_CORNER_RADIUS_PX,
-            pointFormatter,
-          }),
-        };
-      })
-      .filter((entry): entry is { id: string; path: string; fromX: number; fromY: number; toX: number; toY: number; zIndex: number } => entry != null);
-  });
+    if (mergedParents.length === 0) {
+      pushConnectorDecision({
+        id: `merge:${mergeNode.fullSha}:parents`,
+        kind: 'merge',
+        parent: 'unknown',
+        child: mergeNode.fullSha,
+        rendered: false,
+        reason: 'no merged parent shas',
+      });
+      continue;
+    }
+    for (const parentSha of mergedParents) {
+      const decisionId = `merge:${mergeNode.fullSha}:${parentSha ?? 'unknown'}`;
+      if (!parentSha || parentSha === mergeNode.fullSha) {
+        pushConnectorDecision({
+          id: decisionId,
+          kind: 'merge',
+          parent: parentSha ?? 'unknown',
+          child: mergeNode.fullSha,
+          rendered: false,
+          reason: !parentSha ? 'missing merged parent sha' : 'merged parent equals merge sha',
+        });
+        continue;
+      }
+      const sourceNode = nodeForCommitSha(visibleNodesBySha, parentSha) ?? null;
+      if (!sourceNode) {
+        pushConnectorDecision({
+          id: decisionId,
+          kind: 'merge',
+          parent: parentSha,
+          child: mergeNode.fullSha,
+          rendered: false,
+          reason: 'missing merge parent node',
+        });
+        continue;
+      }
+      if (sourceNode.commit.id === mergeTarget.commit.id) {
+        pushConnectorDecision({
+          id: decisionId,
+          kind: 'merge',
+          parent: sourceNode.commit.id,
+          child: mergeTarget.commit.id,
+          rendered: false,
+          reason: 'merge parent and target resolve to same node',
+        });
+        continue;
+      }
+      mergeConnectors.push({
+        id: decisionId,
+        fromX: sourceNode.x + CARD_WIDTH / 2,
+        fromY: sourceNode.y,
+        toX: mergeTarget.x + CARD_WIDTH - GRID_MERGE_TARGET_GAP_PX,
+        toY: mergeTarget.y + CARD_HEIGHT / 2,
+        zIndex: branchConnectorZIndex(sourceNode.commit.branchName),
+        path: buildMergeOrthogonalPath({
+          laneX: sourceNode.x + CARD_WIDTH / 2,
+          tipY: sourceNode.y,
+          mergeX: mergeTarget.x + CARD_WIDTH - GRID_MERGE_TARGET_GAP_PX,
+          mergeY: mergeTarget.y + CARD_HEIGHT / 2,
+          cornerR: GRID_CONNECTOR_CORNER_RADIUS_PX,
+          pointFormatter,
+        }),
+      });
+      pushConnectorDecision({
+        id: decisionId,
+        kind: 'merge',
+        parent: sourceNode.commit.id,
+        child: mergeTarget.commit.id,
+        rendered: true,
+        reason: `merge connector rendered to ${mergeTargetBranch}`,
+      });
+    }
+  }
 
   const crossBranchOutgoingShas = new Set<string>();
   for (const branch of branches) {
     if (branch.name === defaultBranch) continue;
-    const branchStartSha = resolveBranchStartSha(branch);
-    if (!branchStartSha) {
-      pushConnectorDecision({
-        id: `branch-root:${branch.name}`,
-        kind: 'branch',
-        parent: 'root',
-        child: branch.name,
-        rendered: false,
-        reason: 'root history without parent anchor',
-      });
-      continue;
-    }
     const branchBaseCommit = branchBaseCommitByName.get(branch.name);
     if (!branchBaseCommit) continue;
     const parentName = resolveBranchStartParentName(branch);
-    const parentNode = resolveParentNode(branchStartSha, parentName);
+    const parentNode = resolveParentNode(branchBaseCommit.parentSha ?? branch.divergedFromSha ?? branch.createdFromSha ?? '', parentName);
     const receivingCommit = branchReceivingCommitByName.get(branch.name) ?? branchBaseCommit;
     const childNode = resolveNodeForSha(receivingCommit.id, branch.name) ?? resolveConnectorNode(receivingCommit as VisualCommit);
     if (!parentNode || !childNode || parentNode.commit.id === childNode.commit.id) {
