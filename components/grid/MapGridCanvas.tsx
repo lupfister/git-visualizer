@@ -1,4 +1,4 @@
-import { Fragment, useEffect, useLayoutEffect, useRef, useState } from 'react';
+import { useEffect, useLayoutEffect, useRef, useState } from 'react';
 import type { CSSProperties, Dispatch, MouseEvent, ReactNode, RefObject, SetStateAction, WheelEvent } from 'react';
 import { buildMergeOrthogonalPath, CARD_BODY_TOP_OFFSET, CARD_HEIGHT, CARD_WIDTH, CONNECTOR_COLOR } from './LayoutGrid';
 import { buildRoundedElbowPath } from './gridPathUtils';
@@ -89,11 +89,10 @@ type Props = {
   connectorParentAccentClass: string;
   commitCornerRadiusPx: number;
   lineStrokeWidth: number;
-  haloStrokeWidth: number;
   connectorCornerRadiusPx: number;
   pointFormatter: (x: number, y: number) => string;
   connectors: Array<{ id: string; fromX: number; fromY: number; toX: number; toY: number; zIndex: number }>;
-  mergeConnectors: Array<{ id: string; path: string; fromX: number; fromY: number; toX: number; toY: number; zIndex: number }>;
+  mergeConnectors: Array<{ id: string; fromX: number; fromY: number; toX: number; toY: number; zIndex: number }>;
   cullConnectorPath: (connector: { id: string; fromX: number; fromY: number; toX: number; toY: number }) => boolean;
   flushCameraReactTick: () => void;
   setManuallyOpenedClumps: Dispatch<SetStateAction<Set<string>>>;
@@ -140,7 +139,6 @@ export default function MapGridCanvas({
   connectorParentAccentClass,
   commitCornerRadiusPx,
   lineStrokeWidth,
-  haloStrokeWidth,
   connectorCornerRadiusPx,
   pointFormatter,
   connectors,
@@ -462,10 +460,7 @@ export default function MapGridCanvas({
                 pointFormatter,
               });
               return (
-                <Fragment key={connector.id}>
-                  <path d={path} fill="none" stroke="#FAFAF9" strokeWidth={haloStrokeWidth} strokeLinecap="round" strokeLinejoin="round" />
-                  <path d={path} fill="none" stroke={CONNECTOR_COLOR} strokeWidth={lineStrokeWidth} strokeLinecap="round" strokeLinejoin="round" />
-                </Fragment>
+                <path key={connector.id} d={path} fill="none" stroke={CONNECTOR_COLOR} strokeWidth={lineStrokeWidth} strokeLinecap="round" strokeLinejoin="round" />
               );
             })}
             {sortedVisibleConnectors.map((connector) => {
@@ -479,10 +474,7 @@ export default function MapGridCanvas({
                 0,
               );
               return (
-                <Fragment key={connector.id}>
-                  <path d={path} fill="none" stroke="#FAFAF9" strokeWidth={haloStrokeWidth} strokeLinecap="round" strokeLinejoin="round" />
-                  <path d={path} fill="none" stroke={CONNECTOR_COLOR} strokeWidth={lineStrokeWidth} strokeLinecap="round" strokeLinejoin="round" />
-                </Fragment>
+                <path key={connector.id} d={path} fill="none" stroke={CONNECTOR_COLOR} strokeWidth={lineStrokeWidth} strokeLinecap="round" strokeLinejoin="round" />
               );
             })}
           </svg>

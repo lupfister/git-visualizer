@@ -5,7 +5,6 @@ import type { DirectCommit } from '../../types';
 import type { MergeNode } from '../../types';
 import {
   branchBaseCommit,
-  buildMergeOrthogonalPath,
   CARD_HEIGHT,
   CARD_HEADER_HEIGHT,
   CARD_WIDTH,
@@ -68,7 +67,7 @@ export type BranchGridLayoutModel = {
   contentWidth: number;
   contentHeight: number;
   connectors: Connector[];
-  mergeConnectors: Array<{ id: string; path: string; fromX: number; fromY: number; toX: number; toY: number; zIndex: number }>;
+  mergeConnectors: Array<{ id: string; fromX: number; fromY: number; toX: number; toY: number; zIndex: number }>;
   connectorDecisions: ConnectorDecisionRow[];
   nodeWarnings: Map<string, string[]>;
   connectorParentShas: Set<string>;
@@ -97,7 +96,6 @@ export type BranchGridLayoutInput = {
 };
 
 
-const GRID_CONNECTOR_CORNER_RADIUS_PX = 18;
 const GRID_INCOMING_GAP_PX = 0;
 const GRID_MERGE_TARGET_GAP_PX = 0;
 const SHARED_ROW_MAX_TIME_DELTA_MS = 30 * 60 * 1000;
@@ -863,7 +861,8 @@ export function computeBranchGridLayout(input: BranchGridLayoutInput): BranchGri
     return resolveChildNodeForSha(sha, preferredBranchName);
   };
 
-  const mergeConnectors: Array<{ id: string; path: string; fromX: number; fromY: number; toX: number; toY: number; zIndex: number }> = [];
+  const mergeConnectors: Array<{ id: string; fromX: number; fromY: number; toX: number; toY: number; zIndex: number }> = [];
+  const mergeConnectorGeometryKeySet = new Set<string>();
   for (const mergeNode of mergeNodes) {
     const mergeTargetBranch = mergeNode.targetBranch ?? defaultBranch;
     const mergeTarget =
@@ -929,21 +928,30 @@ export function computeBranchGridLayout(input: BranchGridLayoutInput): BranchGri
         });
         continue;
       }
+      const fromX = sourceNode.x + CARD_WIDTH / 2;
+      const fromY = sourceNode.y;
+      const toX = mergeTarget.x + CARD_WIDTH - GRID_MERGE_TARGET_GAP_PX;
+      const toY = mergeTarget.y + CARD_HEIGHT / 2;
+      const geometryKey = `${fromX.toFixed(2)}:${fromY.toFixed(2)}:${toX.toFixed(2)}:${toY.toFixed(2)}`;
+      if (mergeConnectorGeometryKeySet.has(geometryKey)) {
+        pushConnectorDecision({
+          id: decisionId,
+          kind: 'merge',
+          parent: sourceNode.commit.id,
+          child: mergeTarget.commit.id,
+          rendered: false,
+          reason: 'duplicate merge connector geometry',
+        });
+        continue;
+      }
+      mergeConnectorGeometryKeySet.add(geometryKey);
       mergeConnectors.push({
         id: decisionId,
-        fromX: sourceNode.x + CARD_WIDTH / 2,
-        fromY: sourceNode.y,
-        toX: mergeTarget.x + CARD_WIDTH - GRID_MERGE_TARGET_GAP_PX,
-        toY: mergeTarget.y + CARD_HEIGHT / 2,
+        fromX,
+        fromY,
+        toX,
+        toY,
         zIndex: branchConnectorZIndex(sourceNode.commit.branchName),
-        path: buildMergeOrthogonalPath({
-          laneX: sourceNode.x + CARD_WIDTH / 2,
-          tipY: sourceNode.y,
-          mergeX: mergeTarget.x + CARD_WIDTH - GRID_MERGE_TARGET_GAP_PX,
-          mergeY: mergeTarget.y + CARD_HEIGHT / 2,
-          cornerR: GRID_CONNECTOR_CORNER_RADIUS_PX,
-          pointFormatter,
-        }),
       });
       pushConnectorDecision({
         id: decisionId,

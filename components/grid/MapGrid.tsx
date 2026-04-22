@@ -239,11 +239,7 @@ export default function BranchGridMap({
   };
 
   const lineStrokeWidth = 1.5 / displayZoom;
-  // Keep connector halo visually stable while zooming, with a thicker base.
-  const haloStrokeWidth = 6 / displayZoom;
-  const zoomOutCornerReductionPx = Math.max(0, 1 - displayZoom) * 8;
-  const connectorCornerRadiusPx =
-    Math.max(6, GRID_CONNECTOR_CORNER_RADIUS_BASE_PX - zoomOutCornerReductionPx) / displayZoom;
+  const connectorCornerRadiusPx = GRID_CONNECTOR_CORNER_RADIUS_BASE_PX;
   const commitCornerRadiusPx = GRID_COMMIT_CORNER_RADIUS_BASE_PX / displayZoom;
   const iconScaleStyle = useMemo(
     () => ({
@@ -826,7 +822,6 @@ export default function BranchGridMap({
           connectorParentAccentClass={connectorParentAccentClass}
           commitCornerRadiusPx={commitCornerRadiusPx}
           lineStrokeWidth={lineStrokeWidth}
-          haloStrokeWidth={haloStrokeWidth}
           connectorCornerRadiusPx={connectorCornerRadiusPx}
           pointFormatter={pointFormatter}
           connectors={connectors}
