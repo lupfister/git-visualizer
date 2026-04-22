@@ -76,6 +76,7 @@ export type BranchGridLayoutModel = {
   crossBranchOutgoingShas: Set<string>;
   commitIdsWithRenderedAncestry: Set<string>;
   branchBaseCommitByName: Map<string, CommitItem>;
+  firstBranchCommitByName: Map<string, CommitItem>;
 };
 
 export type BranchGridLayoutInput = {
@@ -459,6 +460,34 @@ export function computeBranchGridLayout(input: BranchGridLayoutInput): BranchGri
     const firstConcreteCommit = commits.find((commit) => commit.kind !== 'branch-created');
     if (firstConcreteCommit) branchReceivingCommitByName.set(branchName, firstConcreteCommit);
   }
+  const firstBranchCommitByName = new Map<string, CommitItem>();
+  for (const [branchName, commits] of branchCommitsByLane.entries()) {
+    const concreteCommits = commits.filter((commit) => commit.kind !== 'branch-created');
+    const commitsToInspect = concreteCommits.length > 0 ? concreteCommits : commits;
+    const commitShas = new Set(commitsToInspect.map((commit) => commit.id));
+    const branchRootCommit = commitsToInspect.find(
+      (commit) => !commit.parentSha || !commitShas.has(commit.parentSha),
+    );
+    const firstCommit = branchRootCommit ?? commitsToInspect[0];
+    if (firstCommit) firstBranchCommitByName.set(branchName, firstCommit);
+  }
+  const branchStartParentShaByName = new Map<string, string>();
+  for (const branch of branches) {
+    if (branch.name === defaultBranch) continue;
+    const firstBranchCommit = firstBranchCommitByName.get(branch.name) ?? null;
+    const branchRootParentSha = firstBranchCommit?.parentSha ?? null;
+    if (branchRootParentSha) {
+      branchStartParentShaByName.set(branch.name, branchRootParentSha);
+      continue;
+    }
+    const baseParentSha = branchBaseCommitByName.get(branch.name)?.parentSha ?? null;
+    if (baseParentSha) {
+      branchStartParentShaByName.set(branch.name, baseParentSha);
+      continue;
+    }
+    const metadataForkSha = branch.presidesFromSha ?? branch.divergedFromSha ?? branch.createdFromSha ?? null;
+    if (metadataForkSha) branchStartParentShaByName.set(branch.name, metadataForkSha);
+  }
 
   const resolveBranchStartParentName = (branch: Branch): string => {
     const declaredParent = branch.parentBranch;
@@ -469,7 +498,11 @@ export function computeBranchGridLayout(input: BranchGridLayoutInput): BranchGri
       branchByName.has(declaredParent);
     if (!hasConcreteParent) return declaredParent ?? defaultBranch;
 
-    const forkSha = branch.presidesFromSha ?? branch.divergedFromSha ?? branch.createdFromSha;
+    const forkSha =
+      branchStartParentShaByName.get(branch.name)
+      ?? branch.presidesFromSha
+      ?? branch.divergedFromSha
+      ?? branch.createdFromSha;
     if (forkSha) {
       const declaredParentCommitShas = branchCommitShasByName.get(declaredParent) ?? new Set<string>();
       if (declaredParentCommitShas.has(forkSha)) return declaredParent;
@@ -486,7 +519,13 @@ export function computeBranchGridLayout(input: BranchGridLayoutInput): BranchGri
 
   const resolveBranchStartSha = (branch: Branch): string | null => {
     const childBaseCommit = branchBaseCommitByName.get(branch.name);
-    const forkSha = branch.presidesFromSha ?? branch.divergedFromSha ?? branch.createdFromSha ?? childBaseCommit?.parentSha ?? null;
+    const forkSha =
+      branchStartParentShaByName.get(branch.name)
+      ?? childBaseCommit?.parentSha
+      ?? branch.presidesFromSha
+      ?? branch.divergedFromSha
+      ?? branch.createdFromSha
+      ?? null;
     if (!branch.parentBranch && !forkSha) return null;
     if (!forkSha) return null;
     const parentName = resolveBranchStartParentName(branch);
@@ -505,7 +544,7 @@ export function computeBranchGridLayout(input: BranchGridLayoutInput): BranchGri
   for (const branch of branches) {
     const blueSha = blueStartShaForBranch(branch);
     if (blueSha) structuralBlueBoundaryShas.add(blueSha);
-    const forkSha = branch.presidesFromSha ?? branch.divergedFromSha ?? branch.createdFromSha ?? null;
+    const forkSha = branchStartParentShaByName.get(branch.name) ?? null;
     if (forkSha) structuralBlueBoundaryShas.add(forkSha);
   }
 
@@ -598,7 +637,7 @@ export function computeBranchGridLayout(input: BranchGridLayoutInput): BranchGri
     if (branchChildBranches.length > 0) {
       const branchTimes = ordered.map((commit) => new Date(commit.date).getTime());
       branchChildBranches.forEach((child) => {
-        const childForkSha = child.presidesFromSha ?? child.divergedFromSha ?? child.createdFromSha ?? null;
+        const childForkSha = branchStartParentShaByName.get(child.name) ?? null;
         if (childForkSha) {
           const bySha = ordered.findIndex((commit) =>
             commit.id === childForkSha ||
@@ -825,7 +864,7 @@ export function computeBranchGridLayout(input: BranchGridLayoutInput): BranchGri
   for (const branch of branches) {
     const branchStartSha = blueStartShaForBranch(branch);
     if (branchStartSha) branchStartShas.add(branchStartSha);
-    const forkSha = branch.presidesFromSha ?? branch.divergedFromSha ?? branch.createdFromSha ?? null;
+    const forkSha = branchStartParentShaByName.get(branch.name) ?? null;
     if (forkSha) branchOffNodeShas.add(forkSha);
   }
   const resolveConnectorNode = (commit: VisualCommit): Node | null => {
@@ -970,7 +1009,7 @@ export function computeBranchGridLayout(input: BranchGridLayoutInput): BranchGri
     const branchBaseCommit = branchBaseCommitByName.get(branch.name);
     if (!branchBaseCommit) continue;
     const parentName = resolveBranchStartParentName(branch);
-    const parentNode = resolveParentNode(branchBaseCommit.parentSha ?? branch.divergedFromSha ?? branch.createdFromSha ?? '', parentName);
+    const parentNode = resolveParentNode(branchStartParentShaByName.get(branch.name) ?? '', parentName);
     const receivingCommit = branchReceivingCommitByName.get(branch.name) ?? branchBaseCommit;
     const childNode = resolveNodeForSha(receivingCommit.id, branch.name) ?? resolveConnectorNode(receivingCommit as VisualCommit);
     if (!parentNode || !childNode || parentNode.commit.id === childNode.commit.id) {
@@ -1215,5 +1254,6 @@ export function computeBranchGridLayout(input: BranchGridLayoutInput): BranchGri
     crossBranchOutgoingShas,
     commitIdsWithRenderedAncestry,
     branchBaseCommitByName,
+    firstBranchCommitByName,
   };
 }

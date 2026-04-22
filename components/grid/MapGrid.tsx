@@ -16,6 +16,7 @@ import {
   type Node,
 } from './LayoutGrid';
 import { computeBranchGridLayout } from './branchGridLayoutModel';
+import type { BranchGridLayoutModel } from './branchGridLayoutModel';
 import MapGridCanvas from './MapGridCanvas';
 import MapGridControls from './MapGridControls';
 import MapGridDebugPanel from './MapGridDebugPanel';
@@ -90,6 +91,11 @@ export default function BranchGridMap({
   onGridSearchResultCountChange,
   onGridSearchFocusChange,
   onInteractionChange,
+  manuallyOpenedClumps: controlledManuallyOpenedClumps,
+  manuallyClosedClumps: controlledManuallyClosedClumps,
+  setManuallyOpenedClumps: controlledSetManuallyOpenedClumps,
+  setManuallyClosedClumps: controlledSetManuallyClosedClumps,
+  layoutModel: providedLayoutModel,
 }: BranchGridViewProps) {
   const scrollContainerRef = useRef<HTMLDivElement | null>(null);
   /** `p-2.5` wrapper: used to map pointer position to the transform layer origin (padding edge). */
@@ -104,8 +110,12 @@ export default function BranchGridMap({
   const [newBranchCreateMode, setNewBranchCreateMode] = useState<'from-selected-node' | 'new-root'>(
     'from-selected-node',
   );
-  const [manuallyOpenedClumps, setManuallyOpenedClumps] = useState<Set<string>>(() => new Set());
-  const [manuallyClosedClumps, setManuallyClosedClumps] = useState<Set<string>>(() => new Set());
+  const [localManuallyOpenedClumps, setLocalManuallyOpenedClumps] = useState<Set<string>>(() => new Set());
+  const [localManuallyClosedClumps, setLocalManuallyClosedClumps] = useState<Set<string>>(() => new Set());
+  const manuallyOpenedClumps = controlledManuallyOpenedClumps ?? localManuallyOpenedClumps;
+  const manuallyClosedClumps = controlledManuallyClosedClumps ?? localManuallyClosedClumps;
+  const setManuallyOpenedClumps = controlledSetManuallyOpenedClumps ?? setLocalManuallyOpenedClumps;
+  const setManuallyClosedClumps = controlledSetManuallyClosedClumps ?? setLocalManuallyClosedClumps;
   const [isDebugOpen, setIsDebugOpen] = useState(false);
   const [visibleNodeIds, setVisibleNodeIds] = useState<Set<string> | null>(null);
   const [viewportClientSize, setViewportClientSize] = useState<{ width: number; height: number } | null>(null);
@@ -125,7 +135,7 @@ export default function BranchGridMap({
     () => buildLanes(branches, defaultBranch, branchCommitPreviews),
     [branches, defaultBranch, branchCommitPreviews],
   );
-  const layoutModel = useMemo(
+  const computedLayoutModel = useMemo(
     () =>
       computeBranchGridLayout({
         lanes,
@@ -161,6 +171,7 @@ export default function BranchGridMap({
       checkedOutRef?.branchName ?? null,
     ],
   );
+  const layoutModel: BranchGridLayoutModel = providedLayoutModel ?? computedLayoutModel;
 
   const {
     allCommits,

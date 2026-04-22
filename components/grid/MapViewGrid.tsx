@@ -1,5 +1,7 @@
 import { Branch, BranchCommitPreview, BranchPromptMeta, CheckedOutRef, DirectCommit, MergeNode, OpenPR, WorktreeInfo } from '../../types';
+import type { Dispatch, SetStateAction } from 'react';
 import BranchGridMap from './MapGrid';
+import type { BranchGridLayoutModel } from './branchGridLayoutModel';
 
 export type ViewMode = 'time' | 'grid';
 export type OrientationMode = 'vertical' | 'horizontal';
@@ -56,6 +58,11 @@ interface Props {
   onMoveNodeBackToBranch?: (targetBranchName: string) => Promise<void>;
   orientation?: OrientationMode;
   onInteractionChange?: (isInteracting: boolean) => void;
+  manuallyOpenedClumps?: Set<string>;
+  manuallyClosedClumps?: Set<string>;
+  setManuallyOpenedClumps?: Dispatch<SetStateAction<Set<string>>>;
+  setManuallyClosedClumps?: Dispatch<SetStateAction<Set<string>>>;
+  layoutModel?: BranchGridLayoutModel;
 }
 
 export default function BranchGridMapView({
@@ -109,6 +116,11 @@ export default function BranchGridMapView({
   onMoveNodeBackToBranch,
   orientation = 'vertical',
   onInteractionChange,
+  manuallyOpenedClumps,
+  manuallyClosedClumps,
+  setManuallyOpenedClumps,
+  setManuallyClosedClumps,
+  layoutModel,
 }: Props) {
   const openPRBranchNames = new Set(openPRs.map(p => p.branchName));
   const ACTIVE_MS = 14 * 86400000;
@@ -167,6 +179,11 @@ export default function BranchGridMapView({
             onMoveNodeBackToBranch={onMoveNodeBackToBranch}
             orientation={orientation}
             onInteractionChange={onInteractionChange}
+            manuallyOpenedClumps={manuallyOpenedClumps}
+            manuallyClosedClumps={manuallyClosedClumps}
+            setManuallyOpenedClumps={setManuallyOpenedClumps}
+            setManuallyClosedClumps={setManuallyClosedClumps}
+            layoutModel={layoutModel}
           />
         </div>
       ) : view === 'grid' ? (
@@ -186,6 +203,11 @@ export default function BranchGridMapView({
             onGridSearchResultCountChange={onGridSearchResultCountChange}
             onGridSearchFocusChange={onGridSearchFocusChange}
             onInteractionChange={onInteractionChange}
+            manuallyOpenedClumps={manuallyOpenedClumps}
+            manuallyClosedClumps={manuallyClosedClumps}
+            setManuallyOpenedClumps={setManuallyOpenedClumps}
+            setManuallyClosedClumps={setManuallyClosedClumps}
+            layoutModel={layoutModel}
           />
         </div>
       ) : null}

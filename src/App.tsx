@@ -4,6 +4,8 @@ import { listen } from '@tauri-apps/api/event';
 import { getCurrentWindow } from '@tauri-apps/api/window';
 import BranchGridMapView from '../components/grid/MapViewGrid';
 import DenseBranchSidebar from '../components/DenseBranchSidebar';
+import { buildLanes } from '../components/grid/LayoutGrid';
+import { computeBranchGridLayout, type BranchGridLayoutModel } from '../components/grid/branchGridLayoutModel';
 import FolderPickerModal from './FolderPickerModal';
 import type { Branch, BranchCommitPreview, BranchPromptMeta, BranchPromptMarker, CheckedOutRef, Commit, DirectCommit, GitHubAuthStatus, GitHubInfo, GitStashEntry, MergeNode, OpenPR, WorktreeInfo } from '../types';
 import { foldStashNodesIntoGraph } from './placeStashNode';
@@ -52,6 +54,8 @@ function App() {
   const [removeWorktreeInProgress, setRemoveWorktreeInProgress] = useState(false);
   const [gridSearchQuery, setGridSearchQuery] = useState('');
   const [gridSearchJumpToken, setGridSearchJumpToken] = useState(0);
+  const [manuallyOpenedGridClumps, setManuallyOpenedGridClumps] = useState<Set<string>>(() => new Set());
+  const [manuallyClosedGridClumps, setManuallyClosedGridClumps] = useState<Set<string>>(() => new Set());
   const [gridSearchResultCount, setGridSearchResultCount] = useState<number | null>(null);
   const [gridFocusSha, setGridFocusSha] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);       // button spinner in landing
@@ -1801,6 +1805,45 @@ function App() {
       enrichedDirectCommits: edc,
     };
   }, [branches, branchCommitPreviews, branchUniqueAheadCounts, checkedOutRef, defaultBranch, directCommits, stashes]);
+  const sharedGridLanes = useMemo(
+    () => buildLanes(enrichedBranches, defaultBranch, enrichedBranchCommitPreviews),
+    [enrichedBranches, defaultBranch, enrichedBranchCommitPreviews],
+  );
+  const sharedGridLayoutModel: BranchGridLayoutModel = useMemo(
+    () =>
+      computeBranchGridLayout({
+        lanes: sharedGridLanes,
+        branches: enrichedBranches,
+        mergeNodes,
+        directCommits: enrichedDirectCommits,
+        unpushedDirectCommits,
+        defaultBranch,
+        branchCommitPreviews: enrichedBranchCommitPreviews,
+        branchUniqueAheadCounts: enrichedBranchUniqueAheadCounts,
+        manuallyOpenedClumps: manuallyOpenedGridClumps,
+        manuallyClosedClumps: manuallyClosedGridClumps,
+        isDebugOpen: false,
+        gridSearchQuery,
+        gridFocusSha,
+        checkedOutRef: checkedOutRef ?? null,
+      }),
+    [
+      sharedGridLanes,
+      enrichedBranches,
+      mergeNodes,
+      enrichedDirectCommits,
+      unpushedDirectCommits,
+      defaultBranch,
+      enrichedBranchCommitPreviews,
+      enrichedBranchUniqueAheadCounts,
+      manuallyOpenedGridClumps,
+      manuallyClosedGridClumps,
+      gridSearchQuery,
+      gridFocusSha,
+      checkedOutRef?.headSha ?? null,
+      checkedOutRef?.branchName ?? null,
+    ],
+  );
 
   return (
     <div className="relative flex h-screen min-h-0 flex-col bg-background text-foreground">
@@ -1845,6 +1888,11 @@ function App() {
               directCommits={enrichedDirectCommits}
               mergeNodes={mergeNodes}
               checkedOutRef={checkedOutRef}
+              manuallyOpenedClumps={manuallyOpenedGridClumps}
+              manuallyClosedClumps={manuallyClosedGridClumps}
+              setManuallyOpenedClumps={setManuallyOpenedGridClumps}
+              setManuallyClosedClumps={setManuallyClosedGridClumps}
+              gridLayoutModel={sharedGridLayoutModel}
               onSelectCommit={handleSidebarSelectCommit}
               onSelectBranch={handleSidebarSelectBranch}
             />
@@ -1891,6 +1939,11 @@ function App() {
                 onCreateRootBranch={handleCreateRootBranch}
                 createBranchFromNodeInProgress={createBranchFromNodeInProgress}
                 onInteractionChange={setIsMapInteracting}
+                manuallyOpenedClumps={manuallyOpenedGridClumps}
+                manuallyClosedClumps={manuallyClosedGridClumps}
+                setManuallyOpenedClumps={setManuallyOpenedGridClumps}
+                setManuallyClosedClumps={setManuallyClosedGridClumps}
+                layoutModel={sharedGridLayoutModel}
               />
 
               <header data-map-ui className="absolute left-0 right-0 top-12 z-40 px-4 md:px-8">

@@ -1,6 +1,8 @@
 import { useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
+import type { Dispatch, SetStateAction } from 'react';
 import type { Branch, BranchCommitPreview, CheckedOutRef, DirectCommit, MergeNode } from '../types';
 import { cn, shaMatchesGitRef } from './grid/mapGridUtils';
+import type { BranchGridLayoutModel } from './grid/branchGridLayoutModel';
 
 type Props = {
   branches: Branch[];
@@ -9,6 +11,11 @@ type Props = {
   directCommits?: DirectCommit[];
   mergeNodes?: MergeNode[];
   checkedOutRef?: CheckedOutRef | null;
+  manuallyOpenedClumps?: Set<string>;
+  manuallyClosedClumps?: Set<string>;
+  setManuallyOpenedClumps?: Dispatch<SetStateAction<Set<string>>>;
+  setManuallyClosedClumps?: Dispatch<SetStateAction<Set<string>>>;
+  gridLayoutModel?: BranchGridLayoutModel;
   onSelectCommit?: (sha: string) => void;
   onSelectBranch?: (branchName: string) => void;
   className?: string;
@@ -97,20 +104,6 @@ type CommitClump<T extends { fullSha: string; kind?: string }> = {
   lead: T;
 };
 
-function clusterByForkPoints<T>(entries: T[], forkIdx: Set<number>): T[][] {
-  const clusters: T[][] = [];
-  let current: T[] = [];
-  entries.forEach((entry, index) => {
-    current.push(entry);
-    if (forkIdx.has(index)) {
-      clusters.push(current);
-      current = [];
-    }
-  });
-  if (current.length > 0) clusters.push(current);
-  return clusters;
-}
-
 function BranchRows({
   branchName,
   depth,
@@ -119,6 +112,7 @@ function BranchRows({
   branchCommitPreviews,
   childNamesByParent,
   branchAnchorShaByName,
+  firstBranchParentShaByName,
   expandedBranchNames,
   onToggleBranch,
   checkedOutBranchName,
@@ -126,8 +120,9 @@ function BranchRows({
   showCommits,
   getMergeTargetLabels,
   sourceBranchName,
-  openedCommitClumpKeys,
-  onToggleCommitClump,
+  clusterKeyByCommitId,
+  isGridClusterOpen,
+  onToggleGridCluster,
   onSelectCommit,
   onSelectBranch,
 }: {
@@ -138,6 +133,7 @@ function BranchRows({
   branchCommitPreviews: Record<string, BranchCommitPreview[]>;
   childNamesByParent: Map<string, string[]>;
   branchAnchorShaByName: Map<string, string | null>;
+  firstBranchParentShaByName: Map<string, string>;
   expandedBranchNames: Set<string>;
   onToggleBranch: (branchName: string) => void;
   checkedOutBranchName: string | null;
@@ -145,22 +141,22 @@ function BranchRows({
   showCommits: boolean;
   getMergeTargetLabels: (sha: string, sourceBranchName: string) => string[];
   sourceBranchName?: string;
-  openedCommitClumpKeys: Set<string>;
-  onToggleCommitClump: (clumpKey: string, focusTargetId: string) => void;
+  clusterKeyByCommitId: Map<string, string>;
+  isGridClusterOpen: (clusterKey: string) => boolean;
+  onToggleGridCluster: (clusterKey: string, focusTargetId: string) => void;
   onSelectCommit?: (sha: string) => void;
   onSelectBranch?: (branchName: string) => void;
 }) {
   if (ancestors.has(branchName)) return null;
   const branch = branchByName.get(branchName);
   if (!branch) return null;
+  const firstBranchParentSha = firstBranchParentShaByName.get(branchName) ?? null;
+  const firstBranchParentLabel = firstBranchParentSha ? firstBranchParentSha.slice(0, 7) : 'none';
 
   const childBranchNames = childNamesByParent.get(branchName) ?? [];
   const hasChildBranches = childBranchNames.length > 0;
   const commitPreviews = useMemo(
-    () =>
-      [...(branchCommitPreviews[branchName] ?? [])].sort(
-        (left, right) => new Date(left.date).getTime() - new Date(right.date).getTime(),
-      ),
+    () => [...(branchCommitPreviews[branchName] ?? [])],
     [branchCommitPreviews, branchName],
   );
   const hasCommits = showCommits && commitPreviews.length > 0;
@@ -195,21 +191,39 @@ function BranchRows({
   }
   const commitClumps = useMemo(() => {
     if (!showCommits || visibleCommitPreviews.length === 0) return [] as Array<CommitClump<BranchCommitPreview>>;
-    const forkIdx = new Set<number>();
-    visibleCommitPreviews.forEach((commit, idx) => {
-      if (anchoredChildrenByCommitIndex.has(idx)) forkIdx.add(idx);
-      if (commit.kind === 'uncommitted' || commit.kind === 'stash' || commit.fullSha === 'WORKING_TREE' || commit.fullSha.startsWith('STASH:')) {
-        if (idx > 0) forkIdx.add(idx - 1);
-        forkIdx.add(idx);
+    const clumps: Array<CommitClump<BranchCommitPreview>> = [];
+    let current: BranchCommitPreview[] = [];
+    let currentClusterKey: string | null = null;
+    const flushCurrent = () => {
+      if (current.length === 0) return;
+      const fallbackKey = `sidebar-single-${branchName}-${current[0]!.fullSha}`;
+      clumps.push({
+        key: currentClusterKey ?? fallbackKey,
+        commits: current,
+        count: current.length,
+        lead: current[0]!,
+      });
+      current = [];
+      currentClusterKey = null;
+    };
+    visibleCommitPreviews.forEach((commit) => {
+      const clusterKey = clusterKeyByCommitId.get(`${branchName}:${commit.fullSha}`) ?? null;
+      if (current.length === 0) {
+        current = [commit];
+        currentClusterKey = clusterKey;
+        return;
       }
+      if (clusterKey === currentClusterKey) {
+        current.push(commit);
+        return;
+      }
+      flushCurrent();
+      current = [commit];
+      currentClusterKey = clusterKey;
     });
-    return clusterByForkPoints(visibleCommitPreviews, forkIdx).map((cluster, clusterIndex) => ({
-      key: `sidebar-clump-${branchName}-${cluster[0]!.fullSha}-${cluster[cluster.length - 1]!.fullSha}-${clusterIndex}`,
-      commits: cluster,
-      count: cluster.length,
-      lead: cluster[cluster.length - 1]!,
-    }));
-  }, [anchoredChildrenByCommitIndex, branchName, showCommits, visibleCommitPreviews]);
+    flushCurrent();
+    return clumps;
+  }, [branchName, showCommits, visibleCommitPreviews, clusterKeyByCommitId]);
 
   return (
     <li
@@ -259,8 +273,9 @@ function BranchRows({
               ▶
             </span>
           ) : null}
-          <span className={cn('break-words', isCheckedOut ? 'font-medium text-foreground' : 'font-normal')}>
-            {branchName}
+          <span className="min-w-0 break-words">
+            <span className={cn(isCheckedOut ? 'font-medium text-foreground' : 'font-normal')}>{branchName}</span>
+            <span className="ml-1 text-[10px] text-muted-foreground/80">(parent {firstBranchParentLabel})</span>
           </span>
         </button>
       </div>
@@ -268,7 +283,7 @@ function BranchRows({
       {shouldShowCommitRows ? (
         <ul className="relative space-y-1 pl-4">
           {commitClumps.map((clump) => {
-            const clumpCollapsed = clump.count > 1 && !openedCommitClumpKeys.has(clump.key);
+            const clumpCollapsed = clump.count > 1 && !isGridClusterOpen(clump.key);
             const visibleClumpCommits = clumpCollapsed ? [clump.lead] : clump.commits;
             return visibleClumpCommits.map((commit) => {
               const idx = visibleCommitPreviews.findIndex((candidate) => candidate.fullSha === commit.fullSha);
@@ -288,7 +303,7 @@ function BranchRows({
                       <button
                         type="button"
                       data-clump-toggle-id={`${branchName}:${clump.lead.fullSha}`}
-                      onClick={() => onToggleCommitClump(clump.key, `${branchName}:${clump.lead.fullSha}`)}
+                      onClick={() => onToggleGridCluster(clump.key, `${branchName}:${clump.lead.fullSha}`)}
                       className={cn(
                         'shrink-0 rounded-md px-2 py-1 text-left text-sm leading-5 text-muted-foreground/70 transition-colors hover:bg-accent hover:text-muted-foreground',
                         clumpCollapsed ? '' : 'min-w-[2ch] text-center',
@@ -323,6 +338,7 @@ function BranchRows({
                           branchCommitPreviews={branchCommitPreviews}
                           childNamesByParent={childNamesByParent}
                           branchAnchorShaByName={branchAnchorShaByName}
+                          firstBranchParentShaByName={firstBranchParentShaByName}
                           expandedBranchNames={expandedBranchNames}
                           onToggleBranch={onToggleBranch}
                           checkedOutBranchName={checkedOutBranchName}
@@ -330,8 +346,9 @@ function BranchRows({
                           showCommits={showCommits}
                           getMergeTargetLabels={getMergeTargetLabels}
                           sourceBranchName={childName}
-                          openedCommitClumpKeys={openedCommitClumpKeys}
-                          onToggleCommitClump={onToggleCommitClump}
+                          clusterKeyByCommitId={clusterKeyByCommitId}
+                          isGridClusterOpen={isGridClusterOpen}
+                          onToggleGridCluster={onToggleGridCluster}
                           onSelectCommit={onSelectCommit}
                           onSelectBranch={onSelectBranch}
                         />
@@ -357,6 +374,7 @@ function BranchRows({
               branchCommitPreviews={branchCommitPreviews}
               childNamesByParent={childNamesByParent}
               branchAnchorShaByName={branchAnchorShaByName}
+              firstBranchParentShaByName={firstBranchParentShaByName}
               expandedBranchNames={expandedBranchNames}
               onToggleBranch={onToggleBranch}
               checkedOutBranchName={checkedOutBranchName}
@@ -364,8 +382,9 @@ function BranchRows({
               showCommits={showCommits}
               getMergeTargetLabels={getMergeTargetLabels}
               sourceBranchName={childName}
-              openedCommitClumpKeys={openedCommitClumpKeys}
-              onToggleCommitClump={onToggleCommitClump}
+              clusterKeyByCommitId={clusterKeyByCommitId}
+              isGridClusterOpen={isGridClusterOpen}
+              onToggleGridCluster={onToggleGridCluster}
               onSelectCommit={onSelectCommit}
               onSelectBranch={onSelectBranch}
             />
@@ -383,6 +402,11 @@ export default function DenseBranchSidebar({
   directCommits = [],
   mergeNodes = [],
   checkedOutRef,
+  manuallyOpenedClumps: controlledManuallyOpenedClumps,
+  manuallyClosedClumps: controlledManuallyClosedClumps,
+  setManuallyOpenedClumps: controlledSetManuallyOpenedClumps,
+  setManuallyClosedClumps: controlledSetManuallyClosedClumps,
+  gridLayoutModel,
   onSelectCommit,
   onSelectBranch,
   className,
@@ -390,7 +414,12 @@ export default function DenseBranchSidebar({
   const asideRef = useRef<HTMLElement | null>(null);
   const scrollBodyRef = useRef<HTMLDivElement | null>(null);
   const [showCommits, setShowCommits] = useState(true);
-  const [openedCommitClumpKeys, setOpenedCommitClumpKeys] = useState<Set<string>>(() => new Set());
+  const [localManuallyOpenedClumps, setLocalManuallyOpenedClumps] = useState<Set<string>>(() => new Set());
+  const [localManuallyClosedClumps, setLocalManuallyClosedClumps] = useState<Set<string>>(() => new Set());
+  const manuallyOpenedClumps = controlledManuallyOpenedClumps ?? localManuallyOpenedClumps;
+  const manuallyClosedClumps = controlledManuallyClosedClumps ?? localManuallyClosedClumps;
+  const setManuallyOpenedClumps = controlledSetManuallyOpenedClumps ?? setLocalManuallyOpenedClumps;
+  const setManuallyClosedClumps = controlledSetManuallyClosedClumps ?? setLocalManuallyClosedClumps;
   const [pendingClumpFocusTargetId, setPendingClumpFocusTargetId] = useState<string | null>(null);
   const [pendingClumpAnchor, setPendingClumpAnchor] = useState<{ id: string; topWithinScrollBody: number } | null>(null);
   const sortedDirectCommits = useMemo(
@@ -438,6 +467,36 @@ export default function DenseBranchSidebar({
       [defaultBranch]: mappedDirectCommits,
     };
   }, [branchCommitPreviews, defaultBranch, sortedDirectCommits]);
+  const branchCommitPreviewsFromLayout = useMemo<Record<string, BranchCommitPreview[]>>(() => {
+    if (!gridLayoutModel) return branchCommitPreviewsWithDefault;
+    const rowByVisualId = new Map<string, number>(gridLayoutModel.nodes.map((node) => [node.commit.visualId, node.row]));
+    const next: Record<string, BranchCommitPreview[]> = {};
+    for (const commit of gridLayoutModel.allCommits) {
+      const bucket = next[commit.branchName] ?? [];
+      bucket.push({
+        fullSha: commit.id,
+        sha: commit.id.slice(0, 7),
+        parentSha: commit.parentSha ?? null,
+        message: commit.message,
+        author: commit.author,
+        date: commit.date,
+        kind: commit.kind ?? 'commit',
+      });
+      next[commit.branchName] = bucket;
+    }
+    for (const branchName of Object.keys(next)) {
+      next[branchName] = next[branchName].sort((left, right) => {
+        const leftRow = rowByVisualId.get(`${branchName}:${left.fullSha}`) ?? Number.MAX_SAFE_INTEGER;
+        const rightRow = rowByVisualId.get(`${branchName}:${right.fullSha}`) ?? Number.MAX_SAFE_INTEGER;
+        if (leftRow !== rightRow) return leftRow - rightRow;
+        const leftTime = new Date(left.date).getTime();
+        const rightTime = new Date(right.date).getTime();
+        if (leftTime !== rightTime) return leftTime - rightTime;
+        return left.fullSha.localeCompare(right.fullSha);
+      });
+    }
+    return next;
+  }, [gridLayoutModel, branchCommitPreviewsWithDefault]);
   const mergeSourceLabelsByTargetAndMergeSha = useMemo(() => {
     const byTargetBranch = new Map<string, Map<string, Set<string>>>();
     const resolveSourceBranchLabel = (parentSha: string, targetBranch: string): string => {
@@ -447,7 +506,7 @@ export default function DenseBranchSidebar({
         .map((branch) => branch.name);
       if (directHeadMatches.length > 0) return directHeadMatches.sort()[0]!;
 
-      const previewTipMatches = Object.entries(branchCommitPreviewsWithDefault)
+      const previewTipMatches = Object.entries(branchCommitPreviewsFromLayout)
         .filter(([branchName]) => branchName !== targetBranch)
         .flatMap(([branchName, previews]) => {
           const tip = previews[previews.length - 1];
@@ -473,7 +532,7 @@ export default function DenseBranchSidebar({
       byTargetBranch.set(targetBranch, byMergeSha);
     }
     return byTargetBranch;
-  }, [mergeNodes, defaultBranch, branchesWithDefault, branchCommitPreviewsWithDefault]);
+  }, [mergeNodes, defaultBranch, branchesWithDefault, branchCommitPreviewsFromLayout]);
   const getMergeTargetLabels = (sha: string, sourceBranchName: string): string[] => {
     const byMergeSha = mergeSourceLabelsByTargetAndMergeSha.get(sourceBranchName);
     if (!byMergeSha) return [];
@@ -502,6 +561,14 @@ export default function DenseBranchSidebar({
       ),
     [branchesWithDefault],
   );
+  const firstBranchParentShaByName = useMemo(() => {
+    const next = new Map<string, string>();
+    if (!gridLayoutModel) return next;
+    for (const [branchName, commit] of gridLayoutModel.firstBranchCommitByName.entries()) {
+      if (commit.parentSha) next.set(branchName, commit.parentSha);
+    }
+    return next;
+  }, [gridLayoutModel]);
   const [expandedBranchNames, setExpandedBranchNames] = useState<Set<string>>(() =>
     inferDefaultExpanded(rootBranchNames, childNamesByParent, checkedOutRef, defaultBranch),
   );
@@ -515,7 +582,12 @@ export default function DenseBranchSidebar({
   }, [rootBranchNames, childNamesByParent, checkedOutRef, defaultBranch]);
 
   const checkedOutBranchName = checkedOutRef?.branchName ?? null;
-  const handleToggleCommitClump = (clumpKey: string, focusTargetId: string) => {
+  const clusterKeyByCommitId = gridLayoutModel?.clusterKeyByCommitId ?? new Map<string, string>();
+  const defaultCollapsedClumps = gridLayoutModel?.defaultCollapsedClumps ?? new Set<string>();
+  const isGridClusterOpen = (clusterKey: string): boolean =>
+    manuallyOpenedClumps.has(clusterKey) ||
+    (!defaultCollapsedClumps.has(clusterKey) && !manuallyClosedClumps.has(clusterKey));
+  const handleToggleGridCluster = (clumpKey: string, focusTargetId: string) => {
     const host = asideRef.current;
     const scrollBody = scrollBodyRef.current;
     if (host && scrollBody) {
@@ -532,11 +604,21 @@ export default function DenseBranchSidebar({
       setPendingClumpAnchor(null);
     }
     setPendingClumpFocusTargetId(focusTargetId);
-    setOpenedCommitClumpKeys((previous) => {
-      const next = new Set(previous);
-      if (next.has(clumpKey)) next.delete(clumpKey);
-      else next.add(clumpKey);
-      return next;
+    setManuallyOpenedClumps((previousOpened) => {
+      const nextOpened = new Set(previousOpened);
+      const currentlyOpen = isGridClusterOpen(clumpKey);
+      setManuallyClosedClumps((previousClosed) => {
+        const nextClosed = new Set(previousClosed);
+        if (currentlyOpen) {
+          nextOpened.delete(clumpKey);
+          nextClosed.add(clumpKey);
+        } else {
+          nextClosed.delete(clumpKey);
+          nextOpened.add(clumpKey);
+        }
+        return nextClosed;
+      });
+      return nextOpened;
     });
   };
   useLayoutEffect(() => {
@@ -559,7 +641,12 @@ export default function DenseBranchSidebar({
     toggleButton.focus({ preventScroll: true });
     setPendingClumpFocusTargetId(null);
     setPendingClumpAnchor(null);
-  }, [openedCommitClumpKeys, pendingClumpFocusTargetId, pendingClumpAnchor]);
+  }, [
+    manuallyOpenedClumps,
+    manuallyClosedClumps,
+    pendingClumpFocusTargetId,
+    pendingClumpAnchor,
+  ]);
   const handleToggleBranch = (branchName: string) => {
     setExpandedBranchNames((previous) => {
       const next = new Set(previous);
@@ -594,9 +681,10 @@ export default function DenseBranchSidebar({
               depth={0}
               isLast={idx === rootBranchNames.length - 1}
               branchByName={branchByName}
-              branchCommitPreviews={branchCommitPreviewsWithDefault}
+              branchCommitPreviews={branchCommitPreviewsFromLayout}
               childNamesByParent={childNamesByParent}
               branchAnchorShaByName={branchAnchorShaByName}
+              firstBranchParentShaByName={firstBranchParentShaByName}
               expandedBranchNames={expandedBranchNames}
               onToggleBranch={handleToggleBranch}
               checkedOutBranchName={checkedOutBranchName}
@@ -604,8 +692,9 @@ export default function DenseBranchSidebar({
               showCommits={showCommits}
               getMergeTargetLabels={getMergeTargetLabels}
               sourceBranchName={branchName}
-              openedCommitClumpKeys={openedCommitClumpKeys}
-              onToggleCommitClump={handleToggleCommitClump}
+              clusterKeyByCommitId={clusterKeyByCommitId}
+              isGridClusterOpen={isGridClusterOpen}
+              onToggleGridCluster={handleToggleGridCluster}
               onSelectCommit={onSelectCommit}
               onSelectBranch={onSelectBranch}
             />
