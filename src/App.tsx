@@ -172,6 +172,15 @@ function App() {
     void loadRepo(recentProjects[0]!.path);
   }, [recentProjects, repoPath]);
 
+  const mergeTargetBranchByCommitSha = useMemo(
+    () =>
+      mergeNodes.reduce<Record<string, string>>((map, node) => {
+        map[node.targetCommitSha] = node.targetBranch;
+        return map;
+      }, {}),
+    [mergeNodes],
+  );
+
   useEffect(() => {
     if (!repoPath) return;
     setProjectSnapshots((previous) => ({
@@ -183,6 +192,10 @@ function App() {
         mergeNodes,
         directCommits,
         unpushedDirectCommits,
+        mergeTargetBranchByCommitSha: mergeNodes.reduce<Record<string, string>>((map, node) => {
+          map[node.targetCommitSha] = node.targetBranch;
+          return map;
+        }, {}),
         unpushedCommitShasByBranch,
         checkedOutRef,
         worktrees,
@@ -203,6 +216,7 @@ function App() {
     mergeNodes,
     directCommits,
     unpushedDirectCommits,
+    mergeTargetBranchByCommitSha,
     unpushedCommitShasByBranch,
     checkedOutRef,
     worktrees,
@@ -2111,9 +2125,6 @@ function App() {
   const enrichedBranchParentByName = useMemo(() => {
     const map: Record<string, string | null> = { ...branchParentByName };
     map[defaultBranch] = null;
-    for (const branch of enrichedBranches) {
-      if (map[branch.name] == null) map[branch.name] = branch.parentBranch ?? null;
-    }
     return map;
   }, [branchParentByName, defaultBranch, enrichedBranches]);
   const sharedGridLanes = useMemo(

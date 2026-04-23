@@ -78,6 +78,7 @@ pub fn get_all_repo_commits(
     repo: &Path,
     default_branch: &str,
     other_branches: &[String],
+    merge_target_branch_by_commit_sha: &HashMap<String, String>,
 ) -> Result<Vec<DirectCommit>, GitError> {
     let output = cli::run(
         repo,
@@ -156,7 +157,7 @@ pub fn get_all_repo_commits(
         }
     }
 
-    let commits = parsed
+    let mut commits = parsed
         .into_iter()
         .map(|commit| DirectCommit {
             branch: assign_commit_branch(
@@ -176,6 +177,31 @@ pub fn get_all_repo_commits(
             date: commit.date,
         })
         .collect::<Vec<_>>();
+
+    let branch_by_commit_sha: HashMap<String, String> = commits
+        .iter()
+        .map(|commit| (commit.full_sha.clone(), commit.branch.clone()))
+        .collect();
+    for commit in &mut commits {
+        let Some(parent_shas) = commit_parent_shas_by_sha.get(&commit.full_sha) else {
+            continue;
+        };
+        if parent_shas.len() < 2 {
+            continue;
+        }
+        let first_parent_branch = parent_shas
+            .first()
+            .and_then(|parent_sha| branch_by_commit_sha.get(parent_sha))
+            .cloned()
+            .or_else(|| {
+                merge_target_branch_by_commit_sha
+                    .get(&commit.full_sha)
+                    .cloned()
+            });
+        if let Some(branch) = first_parent_branch {
+            commit.branch = branch;
+        }
+    }
 
     Ok(with_cluster_keys(with_child_links(commits)))
 }

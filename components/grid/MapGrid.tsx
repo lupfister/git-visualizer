@@ -176,11 +176,49 @@ export default function BranchGridMap({
     ],
   );
   const layoutModel: BranchGridLayoutModel = providedLayoutModel ?? computedLayoutModel;
+  const debugLayoutModel: BranchGridLayoutModel = useMemo(
+    () =>
+      computeBranchGridLayout({
+        lanes,
+        branches,
+        mergeNodes,
+        directCommits,
+        unpushedDirectCommits,
+        defaultBranch,
+        branchCommitPreviews,
+        branchParentByName,
+        branchUniqueAheadCounts,
+        manuallyOpenedClumps,
+        manuallyClosedClumps,
+        isDebugOpen,
+        gridSearchQuery,
+        gridFocusSha,
+        checkedOutRef: checkedOutRef ?? null,
+        orientation,
+      }),
+    [
+      lanes,
+      branches,
+      mergeNodes,
+      directCommits,
+      unpushedDirectCommits,
+      defaultBranch,
+      branchCommitPreviews,
+      branchParentByName,
+      branchUniqueAheadCounts,
+      manuallyOpenedClumps,
+      manuallyClosedClumps,
+      isDebugOpen,
+      gridSearchQuery,
+      gridFocusSha,
+      checkedOutRef?.headSha ?? null,
+      checkedOutRef?.branchName ?? null,
+      orientation,
+    ],
+  );
 
   const {
     allCommits,
-    debugRows,
-    branchDebugRows,
     clusterKeyByCommitId,
     leadByClusterKey,
     clusterCounts,
@@ -805,8 +843,8 @@ export default function BranchGridMap({
         renderedConnectorCount={renderedConnectorCount}
         totalConnectorCount={connectors.length}
         mapGridCullViewportInsetScreenPx={MAP_GRID_CULL_VIEWPORT_INSET_SCREEN_PX}
-        debugRows={debugRows}
-        branchDebugRows={branchDebugRows}
+        debugRows={debugLayoutModel.debugRows}
+        branchDebugRows={debugLayoutModel.branchDebugRows}
         connectorDecisions={connectorDecisions}
       />
       {allCommits.length === 0 ? (

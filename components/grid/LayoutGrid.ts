@@ -181,26 +181,6 @@ export function buildLanes(
   const ROOT_GROUP_GUTTER_COLUMNS = 1;
   const byName = new Map(branches.map((branch) => [branch.name, branch]));
   const children = new Map<string, Branch[]>();
-  const branchContainsSha = (branchName: string, sha: string): boolean => {
-    if (!sha) return false;
-    const previews = branchCommitPreviews[branchName] ?? [];
-    if (previews.some(
-      (preview) =>
-        preview.fullSha === sha ||
-        preview.sha === sha ||
-        preview.fullSha.startsWith(sha) ||
-        sha.startsWith(preview.fullSha) ||
-        preview.sha.startsWith(sha) ||
-        sha.startsWith(preview.sha),
-    )) return true;
-    const branch = byName.get(branchName);
-    if (!branch?.headSha) return false;
-    return (
-      branch.headSha === sha ||
-      branch.headSha.startsWith(sha) ||
-      sha.startsWith(branch.headSha)
-    );
-  };
   const firstConcreteCommitTimeByBranch = new Map<string, number>();
   for (const branch of branches) {
     const previews = branchCommitPreviews[branch.name] ?? [];
@@ -216,42 +196,16 @@ export function buildLanes(
     if (firstConcreteCommitTime != null) return firstConcreteCommitTime;
     return branchTime(branch).start;
   };
-  const inferParentFromForkSha = (branch: Branch): string | null => {
-    const forkParentSha = branchRootParentSha(branch, defaultBranch, branchCommitPreviews);
-    if (!forkParentSha) return null;
-    const candidates = branches
-      .filter((candidate) => candidate.name !== branch.name)
-      .filter((candidate) => branchContainsSha(candidate.name, forkParentSha))
-      .sort((left, right) => {
-        const leftDepth = branchDepth(left, byName, defaultBranch);
-        const rightDepth = branchDepth(right, byName, defaultBranch);
-        if (leftDepth !== rightDepth) return rightDepth - leftDepth;
-        const leftStart = branchColumnStartTime(left);
-        const rightStart = branchColumnStartTime(right);
-        if (leftStart !== rightStart) return rightStart - leftStart;
-        return left.name.localeCompare(right.name);
-      });
-    return candidates[0]?.name ?? null;
-  };
   const resolveLaneParentName = (branch: Branch): string | null => {
     const mappedParent = branchParentByName[branch.name] ?? null;
     if (mappedParent && mappedParent !== branch.name && (mappedParent === defaultBranch || byName.has(mappedParent))) {
       return mappedParent;
     }
-    const inferredParent = inferParentFromForkSha(branch);
-    if (inferredParent && inferredParent !== branch.name) {
-      return inferredParent === defaultBranch ? defaultBranch : inferredParent;
+    if (branch.name === defaultBranch) return null;
+    if (branch.parentBranch && branch.parentBranch !== branch.name && byName.has(branch.parentBranch)) {
+      return branch.parentBranch;
     }
-    const declaredParent = branchParentName(branch, byName, defaultBranch);
-    const forkParentSha = branchRootParentSha(branch, defaultBranch, branchCommitPreviews);
-    if (declaredParent && declaredParent !== defaultBranch) {
-      // Keep explicit inferred parent hierarchy stable for lane ordering.
-      // SHA containment can be incomplete/noisy with partial preview windows.
-      return declaredParent;
-    }
-    // True roots (unrelated histories) should not be attached to default.
-    if (!declaredParent && !forkParentSha) return null;
-    return declaredParent ?? defaultBranch;
+    return null;
   };
   for (const branch of branches) {
     if (branch.name === defaultBranch) continue;

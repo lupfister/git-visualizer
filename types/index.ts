@@ -177,6 +177,7 @@ export interface RepoVisualSnapshot {
   mergeNodes: MergeNode[];
   directCommits: DirectCommit[];
   unpushedDirectCommits: DirectCommit[];
+  mergeTargetBranchByCommitSha: Record<string, string>;
   unpushedCommitShasByBranch: Record<string, string[]>;
   checkedOutRef: CheckedOutRef | null;
   worktrees: WorktreeInfo[];

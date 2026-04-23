@@ -464,7 +464,7 @@ export function computeBranchGridLayout(input: BranchGridLayoutInput): BranchGri
   }
 
   const resolveBranchStartParentName = (branch: Branch): string => {
-    const declaredParent = branchParentByName[branch.name] ?? branch.parentBranch ?? null;
+    const declaredParent = branchParentByName[branch.name] ?? null;
     const hasConcreteParent =
       declaredParent &&
       declaredParent !== defaultBranch &&
@@ -684,6 +684,18 @@ export function computeBranchGridLayout(input: BranchGridLayoutInput): BranchGri
   for (const [branchName, commits] of commitsByBranch.entries()) {
     clustersByBranch.set(branchName, buildClustersForBranch(branchName, commits));
   }
+  const commitBySha = new Map<string, VisualCommit>();
+  for (const commit of allCommits) {
+    commitBySha.set(commit.id, commit);
+  }
+  const resolveCommitLabel = (sha: string | null | undefined): string => {
+    if (!sha) return 'none';
+    const resolved = Array.from(commitBySha.values()).find(
+      (commit) => shasMatch(commit.id, sha) || shasMatch(commit.id.slice(0, 7), sha) || shasMatch(sha, commit.id),
+    );
+    if (!resolved) return sha.slice(0, 7);
+    return `${resolved.id.slice(0, 7)} ${resolved.branchName}`;
+  };
 
   const debugRows = isDebugOpen
     ? [
@@ -696,9 +708,13 @@ export function computeBranchGridLayout(input: BranchGridLayoutInput): BranchGri
           const previews = branchCommitPreviews[branch.name] ?? [];
           const concretePreviews = [...(branchPreviewSets.get(branch.name) ?? [])].reverse();
           const renderedPreviewIds = new Set((branchCommitsByLane.get(branch.name) ?? []).map((commit) => commit.id));
+          const parentCommitSha = branchStartParentShaByName.get(branch.name) ?? null;
+          const childCommit = concretePreviews.find((commit) => !commit.parentSha || !concretePreviews.some((candidate) => shasMatch(candidate.fullSha, commit.parentSha ?? ''))) ?? concretePreviews[0] ?? null;
           return [
             `Branch ${branch.name}`,
             `  ahead=${branchUniqueAheadCounts[branch.name] ?? 0} previews=${concretePreviews.length} rendered=${renderedPreviewIds.size}`,
+            `  db parent commit=${resolveCommitLabel(parentCommitSha)}`,
+            `  db child commit=${childCommit ? `${childCommit.fullSha.slice(0, 7)} ${branch.name}` : 'none'}`,
             ...concretePreviews.map((commit) => {
               const status = renderedPreviewIds.has(commit.fullSha) ? 'visible' : 'hidden';
               const reason = renderedPreviewIds.has(commit.fullSha) ? 'kept by render set' : 'dropped by render set';

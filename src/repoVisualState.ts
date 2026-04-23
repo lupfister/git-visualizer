@@ -190,11 +190,6 @@ export function deriveRepoVisualState({
 
   const enrichedBranchParentByName: Record<string, string | null> = { ...branchParentByName };
   enrichedBranchParentByName[defaultBranch] = null;
-  for (const branch of enrichedBranches) {
-    if (enrichedBranchParentByName[branch.name] == null) {
-      enrichedBranchParentByName[branch.name] = branch.parentBranch ?? null;
-    }
-  }
   const sharedGridLanes = buildLanes(enrichedBranches, defaultBranch, enrichedBranchCommitPreviews, enrichedBranchParentByName);
   const sharedGridLayoutModel = computeBranchGridLayout({
     lanes: sharedGridLanes,

@@ -85,6 +85,7 @@ struct RepoVisualSnapshot {
     merge_nodes: Vec<MergeNode>,
     direct_commits: Vec<DirectCommit>,
     unpushed_direct_commits: Vec<DirectCommit>,
+    merge_target_branch_by_commit_sha: HashMap<String, String>,
     unpushed_commit_shas_by_branch: HashMap<String, Vec<String>>,
     checked_out_ref: Option<CheckedOutRef>,
     worktrees: Vec<git::WorktreeInfo>,
@@ -227,10 +228,19 @@ fn compute_repo_visual_snapshot(repo_path: &str) -> Result<RepoVisualSnapshot, S
     let default_branch = git::get_default_branch(path).map_err(|e| e.to_string())?;
     let branches = git::list_branches(path, &default_branch).map_err(|e| e.to_string())?;
     let merge_nodes = fetch_all_merge_nodes_for_branches_internal(&resolved_path, &branches, &default_branch)?;
+    let merge_target_branch_by_commit_sha: HashMap<String, String> = merge_nodes
+        .iter()
+        .map(|node| (node.target_commit_sha.clone(), node.target_branch.clone()))
+        .collect();
     let all_branch_names: Vec<String> = std::iter::once(default_branch.clone())
         .chain(branches.iter().map(|branch| branch.name.clone()))
         .collect();
-    let direct_commits = git::get_all_repo_commits(path, &default_branch, &all_branch_names)
+    let direct_commits = git::get_all_repo_commits(
+        path,
+        &default_branch,
+        &all_branch_names,
+        &merge_target_branch_by_commit_sha,
+    )
         .map_err(|e| e.to_string())?;
     let unpushed_direct_commits = get_unpushed_direct_commits(resolved_path.clone(), default_branch.clone())?;
     let checked_out_ref = git::get_checked_out_ref(path).ok();
@@ -450,16 +460,35 @@ fn compute_repo_visual_snapshot(repo_path: &str) -> Result<RepoVisualSnapshot, S
         branch_unique_ahead_counts.insert(branch.name.clone(), unique_count);
     }
 
-    let mut branch_parent_by_name = HashMap::<String, Option<String>>::new();
-    branch_parent_by_name.insert(default_branch.clone(), None);
-    for branch in &branches {
-        let parent = branch
-            .parent_branch
-            .as_ref()
-            .filter(|parent| !parent.is_empty() && *parent != &branch.name)
-            .cloned();
-        branch_parent_by_name.insert(branch.name.clone(), parent);
+    let mut commit_branch_by_sha = HashMap::<String, String>::new();
+    for commit in &direct_commits {
+        commit_branch_by_sha.insert(commit.full_sha.clone(), commit.branch.clone());
     }
+    let branch_parent_by_name = {
+        let mut map = HashMap::<String, Option<String>>::new();
+        map.insert(default_branch.clone(), None);
+        for branch in &branches {
+            let fork_sha = branch
+                .created_from_sha
+                .as_ref()
+                .or(branch.diverged_from_sha.as_ref())
+                .cloned();
+            let parent = fork_sha
+                .and_then(|sha| {
+                    commit_branch_by_sha
+                        .get(&sha)
+                        .cloned()
+                        .or_else(|| {
+                            commit_branch_by_sha
+                                .iter()
+                                .find(|(commit_sha, _)| commit_sha.starts_with(&sha) || sha.starts_with(*commit_sha))
+                                .map(|(_, branch_name)| branch_name.clone())
+                        })
+                });
+            map.insert(branch.name.clone(), parent);
+        }
+        map
+    };
 
     Ok(RepoVisualSnapshot {
         path: resolved_path,
@@ -469,6 +498,7 @@ fn compute_repo_visual_snapshot(repo_path: &str) -> Result<RepoVisualSnapshot, S
         merge_nodes,
         direct_commits,
         unpushed_direct_commits,
+        merge_target_branch_by_commit_sha,
         unpushed_commit_shas_by_branch,
         checked_out_ref,
         worktrees,
