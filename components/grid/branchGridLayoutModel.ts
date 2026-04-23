@@ -114,6 +114,10 @@ const GRID_INCOMING_GAP_PX = 0;
 const GRID_MERGE_TARGET_GAP_PX = 0;
 const SHARED_ROW_MAX_TIME_DELTA_MS = 30 * 60 * 1000;
 const SHARED_ROW_BRANCH_SIBLING_MAX_TIME_DELTA_MS = 24 * 60 * 60 * 1000;
+const safeTimeMs = (value: string | null | undefined): number => {
+  const time = value ? new Date(value).getTime() : Number.NaN;
+  return Number.isFinite(time) ? time : Number.NEGATIVE_INFINITY;
+};
 const shasMatch = (left: string | null | undefined, right: string | null | undefined): boolean => {
   if (!left || !right) return false;
   return left === right || left.startsWith(right) || right.startsWith(left);
@@ -443,7 +447,7 @@ export function computeBranchGridLayout(input: BranchGridLayoutInput): BranchGri
   }
 
   const mainCommitShas = new Set<string>(mainCommits.map((commit) => commit.id));
-  const oldestMainCommit = [...mainCommits].sort((a, b) => new Date(a.date).getTime() - new Date(b.date).getTime() || a.id.localeCompare(b.id))[0] ?? null;
+  const oldestMainCommit = [...mainCommits].sort((a, b) => safeTimeMs(a.date) - safeTimeMs(b.date) || a.id.localeCompare(b.id))[0] ?? null;
   const branchCommitShasByName = new Map<string, Set<string>>(
     Array.from(branchCommitsByLane.entries()).map(([branchName, commits]) => [
       branchName,
@@ -581,7 +585,7 @@ export function computeBranchGridLayout(input: BranchGridLayoutInput): BranchGri
     }
   }
 
-  const allCommits = [...visibleCommits].sort((a, b) => new Date(a.date).getTime() - new Date(b.date).getTime() || a.id.localeCompare(b.id));
+  const allCommits = [...visibleCommits].sort((a, b) => safeTimeMs(a.date) - safeTimeMs(b.date) || a.id.localeCompare(b.id));
   const commitShasByBranchName = new Map<string, Set<string>>();
   for (const commit of allCommits) {
     const existing = commitShasByBranchName.get(commit.branchName) ?? new Set<string>();
@@ -687,11 +691,16 @@ export function computeBranchGridLayout(input: BranchGridLayoutInput): BranchGri
   };
   const buildClustersForBranch = (branchName: string, commits: VisualCommit[]): GridCluster[] => {
     if (commits.length === 0) return [];
-    const ordered = [...commits].sort((a, b) => new Date(a.date).getTime() - new Date(b.date).getTime() || a.id.localeCompare(b.id));
+    const ordered = [...commits].sort((a, b) => {
+      const aRow = allRowByVisualId.get(a.visualId) ?? Number.MAX_SAFE_INTEGER;
+      const bRow = allRowByVisualId.get(b.visualId) ?? Number.MAX_SAFE_INTEGER;
+      if (aRow !== bRow) return aRow - bRow;
+      return safeTimeMs(a.date) - safeTimeMs(b.date) || a.id.localeCompare(b.id);
+    });
     const forkIdx = new Set<number>();
     const branchChildBranches = childBranchesByParentName.get(branchName) ?? [];
     if (branchChildBranches.length > 0) {
-      const branchTimes = ordered.map((commit) => new Date(commit.date).getTime());
+      const branchTimes = ordered.map((commit) => safeTimeMs(commit.date));
       branchChildBranches.forEach((child) => {
         const childForkSha = branchStartParentShaByName.get(child.name) ?? null;
         if (childForkSha) {
@@ -705,7 +714,7 @@ export function computeBranchGridLayout(input: BranchGridLayoutInput): BranchGri
             return;
           }
         }
-        const childForkTime = new Date(child.divergedFromDate ?? child.createdDate ?? child.lastCommitDate).getTime();
+        const childForkTime = safeTimeMs(child.divergedFromDate ?? child.createdDate ?? child.lastCommitDate);
         if (!Number.isFinite(childForkTime) || branchTimes.length === 0) return;
         let bestPastIndex = -1;
         let bestPastDelta = Number.POSITIVE_INFINITY;
@@ -1310,9 +1319,9 @@ export function computeBranchGridLayout(input: BranchGridLayoutInput): BranchGri
   for (const [branchName, branchNodes] of nodesByBranch.entries()) {
     if (branchNodes.length < 2) continue;
     const orderedBranchNodes = [...branchNodes].sort((a, b) => {
-      const aTime = Number.isFinite(new Date(a?.commit?.date ?? '').getTime()) ? new Date(a.commit.date).getTime() : 0;
-      const bTime = Number.isFinite(new Date(b?.commit?.date ?? '').getTime()) ? new Date(b.commit.date).getTime() : 0;
-      return aTime - bTime || (a?.commit?.id ?? '').localeCompare(b?.commit?.id ?? '');
+      if (a.row !== b.row) return a.row - b.row;
+      return safeTimeMs(a?.commit?.date ?? null) - safeTimeMs(b?.commit?.date ?? null)
+        || (a?.commit?.id ?? '').localeCompare(b?.commit?.id ?? '');
     });
     for (let index = 1; index < orderedBranchNodes.length; index += 1) {
       const parentNode = orderedBranchNodes[index - 1]!;
