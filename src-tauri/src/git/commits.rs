@@ -2,6 +2,8 @@ use super::cli::{self, GitError};
 use serde::{Deserialize, Serialize};
 use std::path::Path;
 
+const LOG_FIELD_SEPARATOR: &str = "\u{1f}";
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct DirectCommit {
@@ -25,7 +27,7 @@ pub fn get_direct_commits(
             &[
                 "log",
                 &format!("--max-count={}", limit),
-                "--format=%H|%h|%s|%an|%cI|%P",
+                "--format=%H%x1f%h%x1f%s%x1f%an%x1f%cI%x1f%P",
                 branch,
             ],
         )?
@@ -34,7 +36,7 @@ pub fn get_direct_commits(
             repo,
             &[
                 "log",
-                "--format=%H|%h|%s|%an|%cI|%P",
+                "--format=%H%x1f%h%x1f%s%x1f%an%x1f%cI%x1f%P",
                 branch,
             ],
         )?
@@ -44,7 +46,7 @@ pub fn get_direct_commits(
         .lines()
         .filter(|s| !s.is_empty())
         .filter_map(|line| {
-            let parts: Vec<&str> = line.splitn(6, '|').collect();
+            let parts: Vec<&str> = line.splitn(6, LOG_FIELD_SEPARATOR).collect();
             if parts.len() < 6 {
                 return None;
             }
@@ -128,7 +130,7 @@ pub fn get_merge_commits(
         "--first-parent".to_string(),
         format!("--max-count={}", limit),
         format!("--skip={}", skip),
-        "--format=%H|%h|%s|%cI|%P".to_string(),
+        "--format=%H%x1f%h%x1f%s%x1f%cI%x1f%P".to_string(),
         revision,
     ];
     let arg_refs = args.iter().map(String::as_str).collect::<Vec<&str>>();
@@ -150,7 +152,7 @@ pub fn get_merge_commits(
 }
 
 fn parse_merge_commit(line: &str, target_branch: &str) -> Option<MergeNode> {
-    let parts: Vec<&str> = line.splitn(5, '|').collect();
+    let parts: Vec<&str> = line.splitn(5, LOG_FIELD_SEPARATOR).collect();
     if parts.len() < 5 {
         return None;
     }

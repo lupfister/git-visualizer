@@ -52,7 +52,7 @@ struct DeleteSelectionResult {
 static WATCHER_STATE: OnceLock<Mutex<HashMap<String, notify::RecommendedWatcher>>> = OnceLock::new();
 const GIT_ACTIVITY_LOCAL_MIN_EMIT_MS: u64 = 250;
 const GIT_ACTIVITY_GRAPH_MIN_EMIT_MS: u64 = 120;
-const REPO_VISUAL_CACHE_SCHEMA_VERSION: i32 = 1;
+const REPO_VISUAL_CACHE_SCHEMA_VERSION: i32 = 7;
 #[cfg(target_os = "macos")]
 const OPEN_REPO_DETECTION_CACHE_TTL: StdDuration = StdDuration::from_secs(8);
 
@@ -294,13 +294,26 @@ fn compute_repo_visual_snapshot(repo_path: &str) -> Result<RepoVisualSnapshot, S
             left_date.cmp(&right_date)
         });
         for branch in sorted.into_iter().skip(1) {
-            fresh_copy_branch_names.insert(branch.name);
+            let has_children = child_branch_count_by_parent.get(&branch.name).copied().unwrap_or(0) > 0;
+            let head_matches_origin = !branch.head_sha.is_empty()
+                && (branch.head_sha == branch.created_from_sha.clone().unwrap_or_default()
+                    || branch.head_sha == branch.diverged_from_sha.clone().unwrap_or_default());
+            let is_true_fresh_copy = branch.commits_ahead == 0
+                && head_matches_origin
+                && !has_children
+                && !merge_node_by_merged_head_sha.contains_key(&branch.head_sha);
+            if is_true_fresh_copy {
+                fresh_copy_branch_names.insert(branch.name);
+            }
         }
     }
     for branch in &active_branches {
         let has_children = child_branch_count_by_parent.get(&branch.name).copied().unwrap_or(0) > 0;
+        let head_matches_origin = !branch.head_sha.is_empty()
+            && (branch.head_sha == branch.created_from_sha.clone().unwrap_or_default()
+                || branch.head_sha == branch.diverged_from_sha.clone().unwrap_or_default());
         if branch.commits_ahead == 0
-            && !branch.head_sha.is_empty()
+            && head_matches_origin
             && !merge_node_by_merged_head_sha.contains_key(&branch.head_sha)
             && !has_children
         {
@@ -311,12 +324,6 @@ fn compute_repo_visual_snapshot(repo_path: &str) -> Result<RepoVisualSnapshot, S
     let mut branch_commit_previews = HashMap::<String, Vec<BranchCommitPreviewEntry>>::new();
     let mut branch_unique_ahead_counts = HashMap::<String, i32>::new();
     for branch in &active_branches {
-        let branch_created_at = branch
-            .created_date
-            .clone()
-            .or(branch.diverged_from_date.clone())
-            .unwrap_or_else(|| branch.last_commit_date.clone());
-        let branch_created_at_dt = parse_iso_to_utc(&branch_created_at);
         let parent_comparison_base = branch
             .parent_branch
             .clone()
@@ -324,16 +331,6 @@ fn compute_repo_visual_snapshot(repo_path: &str) -> Result<RepoVisualSnapshot, S
             .unwrap_or_else(|| default_branch.clone());
         let merge_node = merge_node_by_merged_head_sha.get(&branch.head_sha);
         let is_merged_branch = merge_node.is_some();
-        let is_fresh_copy = fresh_copy_branch_names.contains(&branch.name);
-        let has_children = child_branch_count_by_parent.get(&branch.name).copied().unwrap_or(0) > 0;
-        let is_fresh_branch = is_fresh_copy
-            || (!is_merged_branch
-                && !has_children
-                && branch.remote_sync_status != "on-github"
-                && branch.commits_ahead == 0
-                && !branch.head_sha.is_empty()
-                && (branch.head_sha == branch.created_from_sha.clone().unwrap_or_default()
-                    || branch.head_sha == branch.diverged_from_sha.clone().unwrap_or_default()));
         let should_use_merge_range = is_merged_branch
             && parent_comparison_base == default_branch
             && merge_node.map(|node| !node.full_sha.is_empty()).unwrap_or(false);
@@ -344,8 +341,7 @@ fn compute_repo_visual_snapshot(repo_path: &str) -> Result<RepoVisualSnapshot, S
         };
 
         let mut history_commits: Vec<CommitInfo> = Vec::new();
-        let mut resolved_comparison_range = false;
-        if !is_fresh_branch {
+        {
             if let Some(merge_sha) = merge_commit_sha {
                 let commits = get_branch_commits(
                     resolved_path.clone(),
@@ -358,30 +354,29 @@ fn compute_repo_visual_snapshot(repo_path: &str) -> Result<RepoVisualSnapshot, S
                     .into_iter()
                     .filter(|commit| commit.full_sha != merge_sha)
                     .collect();
-                resolved_comparison_range = true;
             } else {
+                if let Ok(canonical_commits) = get_branch_unique_commits_from_default(
+                    &resolved_path,
+                    &default_branch,
+                    &branch.name,
+                ) {
+                    if !canonical_commits.is_empty() {
+                        history_commits = canonical_commits;
+                    }
+                }
+                if history_commits.is_empty() {
                 let mut candidate_bases: Vec<String> = Vec::new();
-                if parent_comparison_base == default_branch {
-                    if let Some(value) = branch.created_from_sha.clone() {
-                        candidate_bases.push(value);
-                    }
-                    if let Some(value) = branch.diverged_from_sha.clone() {
-                        candidate_bases.push(value);
-                    }
-                    candidate_bases.push(parent_comparison_base.clone());
-                    candidate_bases.push(default_branch.clone());
-                } else {
-                    candidate_bases.push(parent_comparison_base.clone());
-                    if let Some(value) = branch.created_from_sha.clone() {
-                        candidate_bases.push(value);
-                    }
-                    if let Some(value) = branch.diverged_from_sha.clone() {
-                        candidate_bases.push(value);
-                    }
-                    candidate_bases.push(default_branch.clone());
+                candidate_bases.push(parent_comparison_base.clone());
+                candidate_bases.push(default_branch.clone());
+                if let Some(value) = branch.created_from_sha.clone() {
+                    candidate_bases.push(value);
+                }
+                if let Some(value) = branch.diverged_from_sha.clone() {
+                    candidate_bases.push(value);
                 }
                 let mut seen = HashSet::<String>::new();
                 candidate_bases.retain(|value| !value.is_empty() && seen.insert(value.clone()));
+                let mut best_non_empty_commits: Option<Vec<CommitInfo>> = None;
                 let mut first_successful_commits: Option<Vec<CommitInfo>> = None;
                 for base_branch in candidate_bases {
                     let commits = match get_branch_commits(
@@ -397,49 +392,52 @@ fn compute_repo_visual_snapshot(repo_path: &str) -> Result<RepoVisualSnapshot, S
                     if first_successful_commits.is_none() {
                         first_successful_commits = Some(commits.clone());
                     }
-                    let is_stable_top_level_base = parent_comparison_base == default_branch
-                        && (Some(base_branch.clone()) == branch.created_from_sha
-                            || Some(base_branch.clone()) == branch.diverged_from_sha);
-                    if base_branch == parent_comparison_base || is_stable_top_level_base || !commits.is_empty() {
-                        history_commits = commits;
-                        resolved_comparison_range = true;
-                        break;
+                    if !commits.is_empty() {
+                        let should_replace = match &best_non_empty_commits {
+                            Some(existing) => commits.len() > existing.len(),
+                            None => true,
+                        };
+                        if should_replace {
+                            best_non_empty_commits = Some(commits);
+                        }
                     }
                 }
-                if !resolved_comparison_range {
-                    if let Some(commits) = first_successful_commits {
-                        history_commits = commits;
-                        resolved_comparison_range = true;
-                    }
+                if let Some(commits) = best_non_empty_commits {
+                    history_commits = commits;
+                } else if let Some(commits) = first_successful_commits {
+                    history_commits = commits;
+                }
                 }
             }
 
-            if !resolved_comparison_range {
-                if let Some(created_at) = branch_created_at_dt {
-                    let recent = get_recent_log(
-                        resolved_path.clone(),
-                        branch.name.clone(),
-                        Some(400),
-                        Some(false),
-                        Some(false),
-                    )?;
-                    history_commits = recent
-                        .into_iter()
-                        .filter(|commit| {
-                            parse_iso_to_utc(&commit.date)
-                                .map(|date| date >= created_at)
-                                .unwrap_or(false)
-                        })
-                        .collect();
+            if history_commits.is_empty() {
+                // Last-resort: pull recent commits on the branch regardless of inferred fork date.
+                history_commits = get_recent_log(
+                    resolved_path.clone(),
+                    branch.name.clone(),
+                    Some(400),
+                    Some(false),
+                    Some(false),
+                )?;
+            }
+
+            let expected_unique = branch.commits_ahead.max(0) as usize;
+            if expected_unique > 0 && history_commits.len() < expected_unique {
+                if let Ok(canonical_commits) = get_branch_unique_commits_from_default(
+                    &resolved_path,
+                    &default_branch,
+                    &branch.name,
+                ) {
+                    if canonical_commits.len() >= expected_unique
+                        || canonical_commits.len() > history_commits.len()
+                    {
+                        history_commits = canonical_commits;
+                    }
                 }
             }
         }
 
-        let unique_count = if is_fresh_branch {
-            0
-        } else {
-            history_commits.len() as i32
-        };
+        let unique_count = std::cmp::max(history_commits.len() as i32, branch.commits_ahead.max(0));
         branch_commit_previews.insert(
             branch.name.clone(),
             history_commits.into_iter().map(to_preview_entry).collect(),
@@ -1389,6 +1387,7 @@ struct PromptCache {
 }
 
 static PROMPT_CACHE: OnceLock<Mutex<Option<PromptCache>>> = OnceLock::new();
+const LOG_FIELD_SEPARATOR: &str = "\u{1f}";
 
 fn parse_iso_to_utc(value: &str) -> Option<DateTime<Utc>> {
     DateTime::parse_from_rfc3339(value)
@@ -1995,7 +1994,7 @@ fn get_branch_commits(
     };
     let output = git::cli::run(
         path,
-        &["log", &range, "--format=%H|%h|%s|%an|%cI|%P"],
+        &["log", &range, "--format=%H%x1f%h%x1f%s%x1f%an%x1f%cI%x1f%P"],
     )
     .map_err(|e| e.to_string())?;
 
@@ -2003,7 +2002,7 @@ fn get_branch_commits(
         .lines()
         .filter(|l| !l.is_empty())
         .filter_map(|line| {
-            let parts: Vec<&str> = line.splitn(6, '|').collect();
+            let parts: Vec<&str> = line.splitn(6, LOG_FIELD_SEPARATOR).collect();
             if parts.len() < 6 { return None; }
             let parent_sha = parts[5]
                 .split_whitespace()
@@ -2028,6 +2027,55 @@ fn get_branch_commits(
     }
 
     Ok(commits)
+}
+
+fn get_branch_unique_commits_from_default(
+    repo_path: &str,
+    default_branch: &str,
+    branch: &str,
+) -> Result<Vec<CommitInfo>, String> {
+    let path = Path::new(repo_path);
+    let merge_base = git::cli::run(path, &["merge-base", default_branch, branch])
+        .ok()
+        .map(|output| output.trim().to_string())
+        .filter(|sha| !sha.is_empty());
+
+    let range = if let Some(base) = merge_base {
+        format!("{base}..{branch}")
+    } else {
+        branch.to_string()
+    };
+    let output = git::cli::run(
+        path,
+        &["log", &range, "--format=%H%x1f%h%x1f%s%x1f%an%x1f%cI%x1f%P"],
+    )
+    .map_err(|e| e.to_string())?;
+
+    Ok(output
+        .lines()
+        .filter(|l| !l.is_empty())
+        .filter_map(|line| {
+            let parts: Vec<&str> = line.splitn(6, LOG_FIELD_SEPARATOR).collect();
+            if parts.len() < 6 {
+                return None;
+            }
+            let parent_sha = parts[5]
+                .split_whitespace()
+                .next()
+                .map(|p| p.to_string());
+            Some(CommitInfo {
+                full_sha: parts[0].to_string(),
+                sha: parts[1].to_string(),
+                parent_sha,
+                message: parts[2].to_string(),
+                author: parts[3].to_string(),
+                date: parts[4].to_string(),
+                prompt_window_start: None,
+                prompt_window_end: None,
+                agent_prompts: Vec::new(),
+            })
+        })
+        .collect())
 }
 
 #[tauri::command(rename_all = "camelCase")]
@@ -2073,7 +2121,7 @@ fn get_unpushed_direct_commits(
         path,
         &[
             "log",
-            "--format=%H|%h|%s|%an|%cI|%P",
+            "--format=%H%x1f%h%x1f%s%x1f%an%x1f%cI%x1f%P",
             &range,
         ],
     )
@@ -2083,7 +2131,7 @@ fn get_unpushed_direct_commits(
         .lines()
         .filter(|s| !s.is_empty())
         .filter_map(|line| {
-            let parts: Vec<&str> = line.splitn(6, '|').collect();
+            let parts: Vec<&str> = line.splitn(6, LOG_FIELD_SEPARATOR).collect();
             if parts.len() < 6 {
                 return None;
             }
@@ -2144,14 +2192,14 @@ fn get_recent_log(
     }
     args.push(branch);
     args.push(format!("--max-count={}", limit_str));
-    args.push("--format=%H|%h|%s|%an|%cI|%P".to_string());
+    args.push("--format=%H%x1f%h%x1f%s%x1f%an%x1f%cI%x1f%P".to_string());
     let arg_refs: Vec<&str> = args.iter().map(|s| s.as_str()).collect();
     let output = git::cli::run(path, &arg_refs).map_err(|e| e.to_string())?;
     let mut commits: Vec<CommitInfo> = output
         .lines()
         .filter(|l| !l.is_empty())
         .filter_map(|line| {
-            let parts: Vec<&str> = line.splitn(6, '|').collect();
+            let parts: Vec<&str> = line.splitn(6, LOG_FIELD_SEPARATOR).collect();
             if parts.len() < 6 { return None; }
             let parent_sha = parts[5]
                 .split_whitespace()
