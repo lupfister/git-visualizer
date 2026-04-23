@@ -112,6 +112,8 @@ function App() {
   const [isMapInteracting, setIsMapInteracting] = useState(false);
   const [mapGridOrientation, setMapGridOrientation] = useState<OrientationMode>('horizontal');
   const autoFocusSyncKeyRef = useRef<string | null>(null);
+  const loadRepoRequestIdRef = useRef(0);
+  const githubFetchRequestIdRef = useRef(0);
 
   const branchMetaLoadKeyRef = useRef<string | null>(null);
   const isFrozenRepo = isFrozenRepoPath(repoPath);
@@ -489,12 +491,14 @@ function App() {
   }
 
   async function loadRepo(path: string) {
+    const requestId = ++loadRepoRequestIdRef.current;
     setLoading(true);
     setMapLoading(true);
     setError(null);
 
     // Yield to the browser paint cycle so the map shell and loader are painted
     await new Promise((resolve) => setTimeout(resolve, 15));
+    if (requestId !== loadRepoRequestIdRef.current) return;
 
     try {
       // Phase 1: fast metadata — show the map shell immediately
@@ -502,6 +506,7 @@ function App() {
         invoke<{ name: string; path: string }>('get_repo_info', { repoPath: path }),
         invoke<string>('get_default_branch', { repoPath: path }),
       ]);
+      if (requestId !== loadRepoRequestIdRef.current) return;
       setRepoName(info.name);
       setDefaultBranch(def);
 
@@ -509,6 +514,7 @@ function App() {
         repoPath: path,
         forceRefresh: true,
       });
+      if (requestId !== loadRepoRequestIdRef.current) return;
       setProjectSnapshots((previous) => ({
         ...previous,
         [path]: snapshot,
@@ -534,8 +540,9 @@ function App() {
       setLoading(false); // unblock the landing button
 
       // Phase 3: GitHub data (non-blocking)
-      fetchGitHubData(path);
+      void fetchGitHubData(path);
     } catch (e) {
+      if (requestId !== loadRepoRequestIdRef.current) return;
       console.error('Failed to load repo:', e);
       setError(e instanceof Error ? e.message : String(e));
       setRepoPath(null);
@@ -545,11 +552,14 @@ function App() {
   }
 
   async function fetchGitHubData(path: string) {
+    const requestId = ++githubFetchRequestIdRef.current;
     try {
+      if (requestId !== githubFetchRequestIdRef.current) return;
       setGithubAvailable(false);
       setGithubAuthMessage(null);
       const ghInfo = await invoke<GitHubInfo>('get_github_info', { repoPath: path });
       const authStatus = await invoke<GitHubAuthStatus>('get_github_auth_status');
+      if (requestId !== githubFetchRequestIdRef.current) return;
       setGithubAuthStatus(authStatus);
       if (!authStatus.ghAvailable || !authStatus.authenticated) {
         return;
@@ -559,9 +569,11 @@ function App() {
         owner: ghInfo.owner,
         repo: ghInfo.repo,
       });
+      if (requestId !== githubFetchRequestIdRef.current) return;
       setOpenPRs(open);
       setGithubAvailable(true);
     } catch (e) {
+      if (requestId !== githubFetchRequestIdRef.current) return;
       // GitHub data is optional, don't show error to user
       console.log('GitHub data not available:', e);
       setGithubAuthMessage(e instanceof Error ? e.message : String(e));
@@ -948,14 +960,14 @@ function App() {
 
   // Reset when a new repo is loaded
   useEffect(() => {
+    // Keep loaded graph/snapshot state intact while switching repos.
+    // We only clear ephemeral UI state that should not carry over.
     setBranchPromptMeta({});
-    setBranchCommitPreviews({});
-    setBranchUniqueAheadCounts({});
     branchMetaLoadKeyRef.current = null;
     setGithubAuthLoading(false);
     setGithubAuthStatus(null);
     setGithubAuthMessage(null);
-    setCheckedOutRef(null);
+    setOpenPRs([]);
     setCommitSwitchFeedback(null);
   }, [repoPath]);
 
@@ -2093,7 +2105,7 @@ function App() {
             className="min-h-0 w-[27rem] shrink-0 border-r border-border/50 pb-4 pt-16"
             projects={projectCards}
             activeProjectPath={repoPath}
-            onSelectProject={(path) => { void loadRepo(path); }}
+            onSelectProject={loadRepo}
             onAddProject={() => {
               void (async () => {
                 try {

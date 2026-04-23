@@ -24,7 +24,7 @@ type Props = {
     treeLoaded?: boolean;
   }>;
   activeProjectPath: string | null;
-  onSelectProject: (path: string) => void;
+  onSelectProject: (path: string) => void | Promise<void>;
   onAddProject: () => void;
   projectLoading?: boolean;
   projectError?: string | null;
@@ -721,7 +721,7 @@ export default function DenseBranchSidebar({
               <div key={project.path} className="rounded-xl border border-border/50 bg-card">
                 <button
                   type="button"
-                  onClick={() => onSelectProject(project.path)}
+                  onClick={() => { void onSelectProject(project.path); }}
                   className={cn(
                     'flex w-full items-center justify-between gap-3 px-4 py-3 text-left transition-colors',
                     isActive ? 'bg-primary/10 text-foreground' : 'hover:bg-accent',
@@ -757,12 +757,12 @@ export default function DenseBranchSidebar({
                             clusterKeyByCommitId={projectRender.clusterKeyByCommitId}
                             isGridClusterOpen={projectRender.isGridClusterOpen}
                             onToggleGridCluster={handleToggleGridCluster}
-                            onSelectCommit={(sha) => {
-                              if (!isActive) onSelectProject(project.path);
+                            onSelectCommit={async (sha) => {
+                              if (!isActive) await onSelectProject(project.path);
                               onSelectCommit?.(sha);
                             }}
-                            onSelectBranch={(branchName) => {
-                              if (!isActive) onSelectProject(project.path);
+                            onSelectBranch={async (branchName) => {
+                              if (!isActive) await onSelectProject(project.path);
                               onSelectBranch?.(branchName);
                             }}
                           />
