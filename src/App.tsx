@@ -2,16 +2,17 @@ import { useState, useEffect, useRef, useMemo } from 'react';
 import { invoke } from '@tauri-apps/api/core';
 import { listen } from '@tauri-apps/api/event';
 import { getCurrentWindow } from '@tauri-apps/api/window';
+import { open } from '@tauri-apps/plugin-dialog';
 import BranchGridMapView, { type OrientationMode } from '../components/grid/MapViewGrid';
 import DenseBranchSidebar from '../components/DenseBranchSidebar';
 import { buildLanes } from '../components/grid/LayoutGrid';
 import { computeBranchGridLayout, type BranchGridLayoutModel } from '../components/grid/branchGridLayoutModel';
-import FolderPickerModal from './FolderPickerModal';
 import type { Branch, BranchCommitPreview, BranchPromptMeta, BranchPromptMarker, CheckedOutRef, Commit, DirectCommit, GitHubAuthStatus, GitHubInfo, GitStashEntry, MergeNode, OpenPR, WorktreeInfo } from '../types';
 import { foldStashNodesIntoGraph } from './placeStashNode';
 
-type View = 'landing' | 'map';
 const FROZEN_REPO_BASENAME = 'git-visualizer';
+const PROJECTS_STORAGE_KEY = 'git-visualizer:projects';
+const MAX_PROJECTS = 12;
 type OpenRepoEventPayload = {
   path: string;
   sourceApp?: string | null;
@@ -22,6 +23,13 @@ const COMMIT_SWITCH_FEEDBACK_FADE_MS = 180;
 type PushTarget = {
   branchName: string;
   targetSha?: string;
+};
+
+type ProjectRecord = {
+  path: string;
+  name: string;
+  lastOpenedAt: number;
+  branchName?: string;
 };
 
 function cn(...classes: Array<string | false | null | undefined>) {
@@ -42,6 +50,8 @@ function isFrozenRepoPath(path: string | null): boolean {
 function App() {
   const [repoPath, setRepoPath] = useState<string | null>(null);
   const [repoName, setRepoName] = useState<string>('');
+  const [recentProjects, setRecentProjects] = useState<ProjectRecord[]>([]);
+  const [projectMenuOpen, setProjectMenuOpen] = useState(false);
   const [branches, setBranches] = useState<Branch[]>([]);
   const [mergeNodes, setMergeNodes] = useState<MergeNode[]>([]);
   const [directCommits, setDirectCommits] = useState<DirectCommit[]>([]);
@@ -58,10 +68,9 @@ function App() {
   const [manuallyClosedGridClumps, setManuallyClosedGridClumps] = useState<Set<string>>(() => new Set());
   const [gridSearchResultCount, setGridSearchResultCount] = useState<number | null>(null);
   const [gridFocusSha, setGridFocusSha] = useState<string | null>(null);
-  const [loading, setLoading] = useState(false);       // button spinner in landing
-  const [mapLoading, setMapLoading] = useState(false); // canvas skeleton in map
+  const [loading, setLoading] = useState(false);
+  const [mapLoading, setMapLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  const [view, setView] = useState<View>('landing');
   const [showErrorPanel, setShowErrorPanel] = useState(false);
   const [errorPanelClosing, setErrorPanelClosing] = useState(false);
   const [errorPanelTab, setErrorPanelTab] = useState<'active' | 'inactive'>('active');
@@ -98,6 +107,49 @@ function App() {
   const latestBranchesRef = useRef<Branch[]>([]);
   const latestDirectCommitsRef = useRef<DirectCommit[]>([]);
   const latestCheckedOutRef = useRef<CheckedOutRef | null>(null);
+
+  useEffect(() => {
+    try {
+      const raw = localStorage.getItem(PROJECTS_STORAGE_KEY);
+      if (!raw) return;
+      const parsed = JSON.parse(raw);
+      if (!Array.isArray(parsed)) return;
+      const next = parsed.filter((project): project is ProjectRecord => (
+        typeof project === 'object' &&
+        project !== null &&
+        typeof project.path === 'string' &&
+        typeof project.name === 'string' &&
+        typeof project.lastOpenedAt === 'number'
+      ));
+      setRecentProjects(next.slice(0, MAX_PROJECTS));
+    } catch {
+      setRecentProjects([]);
+    }
+  }, []);
+
+  function persistProject(project: ProjectRecord) {
+    setRecentProjects((previous) => {
+      const next = [project, ...previous.filter((item) => item.path !== project.path)].slice(0, MAX_PROJECTS);
+      try {
+        localStorage.setItem(PROJECTS_STORAGE_KEY, JSON.stringify(next));
+      } catch {
+        // ignore storage failures
+      }
+      return next;
+    });
+  }
+
+  function updateProjectBranch(path: string, branchName: string) {
+    setRecentProjects((previous) => {
+      const next = previous.map((project) => (project.path === path ? { ...project, branchName } : project));
+      try {
+        localStorage.setItem(PROJECTS_STORAGE_KEY, JSON.stringify(next));
+      } catch {
+        // ignore storage failures
+      }
+      return next;
+    });
+  }
 
   function handleWindowDragStart(e: React.MouseEvent<HTMLElement>) {
     if (e.button !== 0) return;
@@ -282,9 +334,6 @@ function App() {
     setUnpushedDirectCommits([]);
     setUnpushedCommitShasByBranch({});
 
-    // Switch to map immediately for instant feedback
-    setView('map');
-
     // Yield to the browser paint cycle so the map shell and loader are painted
     await new Promise((resolve) => setTimeout(resolve, 15));
 
@@ -299,6 +348,12 @@ function App() {
 
       // Setting repoPath triggers the useEffect which runs 'performFetch' + 'loadPromptMeta'
       setRepoPath(path);
+      persistProject({
+        path,
+        name: info.name,
+        lastOpenedAt: Date.now(),
+        branchName: def,
+      });
       if (isFrozenRepoPath(path)) {
         // Frozen mode does one deterministic full refresh, then stays static
         // (watcher/polling remain disabled for smooth panning).
@@ -312,7 +367,6 @@ function App() {
     } catch (e) {
       console.error('Failed to load repo:', e);
       setError(e instanceof Error ? e.message : String(e));
-      setView('landing');
       setRepoPath(null);
       setLoading(false);
       setMapLoading(false);
@@ -359,7 +413,6 @@ function App() {
       const nextPath = payload?.path?.trim();
       if (!nextPath || isDisposed) return;
       if (repoPath === nextPath) {
-        setView('map');
         return;
       }
       await loadRepo(nextPath);
@@ -564,6 +617,9 @@ function App() {
           }
           return nextRef;
         });
+        if (nextRef.branchName) {
+          updateProjectBranch(repoPath, nextRef.branchName);
+        }
 
         // Heavy graph refresh only when branch/head actually moves (commit/checkout/merge).
         if (branchOrHeadChanged) {
@@ -725,6 +781,7 @@ function App() {
     setGithubAuthMessage(null);
     setCheckedOutRef(null);
     setCommitSwitchFeedback(null);
+    setProjectMenuOpen(false);
   }, [repoPath]);
 
   useEffect(() => {
@@ -1069,7 +1126,6 @@ function App() {
       const outDir = `${homeDir}/Desktop/git-viz-screenshots/${repoName}`;
       console.log(`📸 Saving screenshots to ${outDir}`);
 
-      setView('map');
       await sleep(800);
       await invoke('screenshot', { path: `${outDir}/main-timeline.png` });
       console.log(`📸 Done — screenshot saved to ${outDir}`);
@@ -1601,25 +1657,9 @@ function App() {
   ];
 
   function handleFocusOnMap(branch: Branch) {
-    setView('map');
     setFocusedErrorBranch(branch);
     setScrollRequest(prev => ({ branch, seq: (prev?.seq ?? 0) + 1 }));
     // panel stays open intentionally
-  }
-
-  function handleBackToLanding() {
-    setRepoPath(null);
-    setWorktrees([]);
-    setOpenPRs([]);
-    setDirectCommits([]);
-    setUnpushedDirectCommits([]);
-    setUnpushedCommitShasByBranch({});
-    setBranchPromptMeta({});
-    setBranchCommitPreviews({});
-    setBranchUniqueAheadCounts({});
-    setStashes([]);
-    setGithubAvailable(false);
-    setView('landing');
   }
 
   function handleSidebarSelectCommit(sha: string) {
@@ -1635,8 +1675,6 @@ function App() {
   }
 
   useEffect(() => {
-    if (view !== 'map') return;
-
     const focusSha = checkedOutRef?.hasUncommittedChanges ? 'WORKING_TREE' : checkedOutRef?.headSha ?? null;
     if (!focusSha) return;
 
@@ -1646,7 +1684,7 @@ function App() {
 
     setGridFocusSha(focusSha);
     setGridSearchJumpToken((token) => token + 1);
-  }, [checkedOutRef?.hasUncommittedChanges, checkedOutRef?.headSha, mapGridOrientation, repoPath, view]);
+  }, [checkedOutRef?.hasUncommittedChanges, checkedOutRef?.headSha, mapGridOrientation, repoPath]);
 
 
 
@@ -1868,51 +1906,96 @@ function App() {
         className="window-drag-region absolute left-0 right-0 top-0 z-[9999] h-12 px-4"
         style={{ paddingTop: 'max(env(safe-area-inset-top), 0px)' }}
         onMouseDown={handleWindowDragStart}
-      >
-        {view === 'map' && (
-          <div className="relative z-10 h-12 pointer-events-none">
-            <button
-              onClick={handleBackToLanding}
-              aria-label="Back"
-              title="Back"
-              className="window-no-drag pointer-events-auto absolute left-19 top-1/2 inline-flex h-7 w-10 -translate-y-1/2 items-center justify-center rounded-full border border-border bg-card text-foreground transition-colors hover:bg-accent"
-            >
-              <svg className="h-3.5 w-3.5 shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true">
-                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M15 19l-7-7 7-7" />
-              </svg>
-            </button>
-            <div className="absolute left-1/2 top-1/2 min-w-0 max-w-[52vw] -translate-x-1/2 -translate-y-1/2 text-center">
-              <h1 className="truncate text-sm font-medium text-foreground">{repoName}</h1>
-            </div>
-          </div>
-        )}
-      </header>
+      />
 
       <div className="relative z-10 flex h-full min-h-0 flex-col">
-        {view === 'landing' && (
-          <div className="flex-1 min-h-0 overflow-hidden">
-            <RepoSelector onSelect={loadRepo} loading={loading} error={error} />
-          </div>
-        )}
+        <div className="relative flex h-full min-h-0 flex-1 overflow-hidden">
+          <aside className="flex h-full w-[22rem] shrink-0 flex-col border-r border-border/50 bg-card/30 pt-16">
+            <div className="flex items-center justify-between gap-3 px-5 pb-3">
+              <div className="min-w-0">
+                <p className="text-[10px] uppercase tracking-wide text-muted-foreground font-medium">Projects</p>
+                <button
+                  type="button"
+                  onClick={() => setProjectMenuOpen((value) => !value)}
+                  className="mt-1 truncate text-left text-sm font-medium text-foreground transition-colors hover:text-primary"
+                >
+                  {repoName || 'No project open'}
+                </button>
+              </div>
+              <button
+                type="button"
+                disabled={loading}
+                onClick={() => {
+                  void (async () => {
+                    try {
+                      const selected = await open({ directory: true, multiple: false, defaultPath: recentProjects[0]?.path ?? undefined });
+                      if (typeof selected === 'string' && selected) await loadRepo(selected);
+                    } catch (e) {
+                      setError(e instanceof Error ? e.message : String(e));
+                    }
+                  })();
+                }}
+                className="rounded-lg border border-border/50 bg-card px-3 py-1.5 text-xs font-medium text-foreground transition-colors hover:bg-accent disabled:cursor-not-allowed disabled:opacity-50"
+              >
+                Add repo
+              </button>
+            </div>
+            {error && (
+              <div className="px-5 pb-3">
+                <p className="rounded-xl border border-red-50 bg-red-50 px-3 py-2 text-xs text-red-600 dark:border-red-900/20 dark:bg-red-900/20 dark:text-red-400">
+                  {error}
+                </p>
+              </div>
+            )}
+            <div className="min-h-0 flex-1 overflow-y-auto px-4 pb-4">
+              <div className="flex flex-col gap-2">
+                {recentProjects.length === 0 ? (
+                  <div className="rounded-xl border border-border/50 bg-muted/30 p-4 shadow-inner">
+                    <p className="text-sm text-muted-foreground">Add a repository to get started.</p>
+                  </div>
+                ) : recentProjects.map((project) => {
+                  const isActive = project.path === repoPath;
+                  return (
+                    <button
+                      key={project.path}
+                      type="button"
+                      onClick={() => { void loadRepo(project.path); }}
+                      className={cn(
+                        'flex items-center justify-between gap-3 rounded-xl border px-4 py-3 text-left transition-colors',
+                        isActive ? 'border-primary/30 bg-primary/10 text-foreground' : 'border-border/50 bg-card hover:bg-accent',
+                      )}
+                    >
+                      <div className="min-w-0">
+                        <p className="truncate text-sm font-medium">{project.name}</p>
+                        <p className="truncate text-xs text-muted-foreground">{project.path}</p>
+                      </div>
+                      <span className="shrink-0 rounded-full border border-border/50 bg-muted/30 px-2.5 py-1 text-[10px] font-medium uppercase tracking-wide text-muted-foreground">
+                        {project.branchName ?? 'branch'}
+                      </span>
+                    </button>
+                  );
+                })}
+              </div>
+            </div>
+          </aside>
 
-        <div className={`relative flex h-full min-h-0 flex-1 overflow-hidden ${view === 'landing' ? 'hidden' : ''}`}>
-            <DenseBranchSidebar
-              className="min-h-0 w-[27rem] shrink-0 border-r border-border/50 pb-4 pt-16"
-              branches={enrichedBranches}
-              defaultBranch={defaultBranch}
-              branchCommitPreviews={enrichedBranchCommitPreviews}
-              directCommits={enrichedDirectCommits}
-              checkedOutRef={checkedOutRef}
-              manuallyOpenedClumps={manuallyOpenedGridClumps}
-              manuallyClosedClumps={manuallyClosedGridClumps}
-              setManuallyOpenedClumps={setManuallyOpenedGridClumps}
-              setManuallyClosedClumps={setManuallyClosedGridClumps}
-              gridLayoutModel={sharedGridLayoutModel}
-              onSelectCommit={handleSidebarSelectCommit}
-              onSelectBranch={handleSidebarSelectBranch}
-            />
+          <DenseBranchSidebar
+            className="min-h-0 w-[27rem] shrink-0 border-r border-border/50 pb-4 pt-16"
+            branches={enrichedBranches}
+            defaultBranch={defaultBranch}
+            branchCommitPreviews={enrichedBranchCommitPreviews}
+            directCommits={enrichedDirectCommits}
+            checkedOutRef={checkedOutRef}
+            manuallyOpenedClumps={manuallyOpenedGridClumps}
+            manuallyClosedClumps={manuallyClosedGridClumps}
+            setManuallyOpenedClumps={setManuallyOpenedGridClumps}
+            setManuallyClosedClumps={setManuallyClosedGridClumps}
+            gridLayoutModel={sharedGridLayoutModel}
+            onSelectCommit={handleSidebarSelectCommit}
+            onSelectBranch={handleSidebarSelectBranch}
+          />
 
-            <div className="relative min-h-0 min-w-0 flex-1 overflow-hidden">
+          <div className="relative min-h-0 min-w-0 flex-1 overflow-hidden">
               <BranchGridMapView
                 branches={enrichedBranches}
                 mergeNodes={mergeNodes}
@@ -1964,6 +2047,14 @@ function App() {
 
               <header data-map-ui className="absolute left-0 right-0 top-12 z-40 px-4 md:px-8">
                 <div className="window-no-drag pointer-events-auto relative z-10 min-h-8 content-start flex flex-wrap items-center gap-2">
+                  <button
+                    type="button"
+                    onClick={() => setProjectMenuOpen((value) => !value)}
+                    className="rounded-full border border-border bg-card px-4 py-2 text-sm font-medium text-foreground shadow-sm transition-colors hover:bg-accent"
+                    title="Switch project"
+                  >
+                    {repoName ? `${repoName} · ${checkedOutRef?.branchName ?? defaultBranch}` : 'Open a project'}
+                  </button>
                   <div
                     className="flex shrink-0 rounded-full border border-border bg-muted/20 p-0.5 shadow-sm"
                     role="radiogroup"
@@ -2080,8 +2171,52 @@ function App() {
                     </span>
                   )}
                 </div>
+                {projectMenuOpen && (
+                  <div className="window-no-drag absolute left-4 top-14 w-[22rem] rounded-2xl border border-border bg-card/95 p-3 shadow-lg backdrop-blur-sm">
+                    <div className="mb-2 flex items-center justify-between">
+                      <p className="text-[10px] uppercase tracking-wide text-muted-foreground font-medium">Switch project</p>
+                      <button
+                        type="button"
+                        onClick={() => setProjectMenuOpen(false)}
+                        className="text-xs text-muted-foreground transition-colors hover:text-foreground"
+                      >
+                        Close
+                      </button>
+                    </div>
+                    <div className="max-h-64 overflow-y-auto">
+                      <div className="flex flex-col gap-2">
+                        {recentProjects.length === 0 ? (
+                          <p className="rounded-xl border border-border/50 bg-muted/30 px-4 py-3 text-sm text-muted-foreground">
+                            No saved projects yet.
+                          </p>
+                        ) : recentProjects.map((project) => (
+                          <button
+                            key={project.path}
+                            type="button"
+                            onClick={() => {
+                              setProjectMenuOpen(false);
+                              void loadRepo(project.path);
+                            }}
+                            className={cn(
+                              'flex items-center justify-between gap-3 rounded-xl border px-4 py-3 text-left transition-colors',
+                              project.path === repoPath
+                                ? 'border-primary/30 bg-primary/10 text-foreground'
+                                : 'border-border/50 bg-card hover:bg-accent',
+                            )}
+                          >
+                            <div className="min-w-0">
+                              <p className="truncate text-sm font-medium">{project.name}</p>
+                              <p className="truncate text-xs text-muted-foreground">{project.path}</p>
+                            </div>
+                            <span className="shrink-0 text-xs text-muted-foreground">{project.branchName ?? defaultBranch}</span>
+                          </button>
+                        ))}
+                      </div>
+                    </div>
+                  </div>
+                )}
               </header>
-            </div>
+          </div>
 
           {showErrorPanel && (
             <div
@@ -2146,199 +2281,5 @@ function App() {
   );
 }
 
-
-function RepoSelector({
-  onSelect,
-  loading,
-  error,
-}: {
-  onSelect: (path: string) => void;
-  loading: boolean;
-  error: string | null;
-}) {
-  const RECENT_REPOS_STORAGE_KEY = 'git-visualizer:recent-repositories';
-  const MAX_RECENT_REPOS = 10;
-
-  type RecentRepo = {
-    path: string;
-    name: string;
-    lastOpenedAt: number;
-  };
-
-  const [path, setPath] = useState('');
-  const [showPicker, setShowPicker] = useState(false);
-  const [showInput, setShowInput] = useState(false);
-  const [inputError, setInputError] = useState<string | null>(null);
-  const [recentRepos, setRecentRepos] = useState<RecentRepo[]>([]);
-
-  function sanitizeRecentRepos(value: unknown): RecentRepo[] {
-    if (!Array.isArray(value)) return [];
-    return value
-      .filter((repo): repo is RecentRepo => {
-        return (
-          typeof repo === 'object' &&
-          repo !== null &&
-          typeof repo.path === 'string' &&
-          typeof repo.name === 'string' &&
-          typeof repo.lastOpenedAt === 'number'
-        );
-      })
-      .slice(0, MAX_RECENT_REPOS);
-  }
-
-  useEffect(() => {
-    try {
-      const raw = localStorage.getItem(RECENT_REPOS_STORAGE_KEY);
-      if (!raw) return;
-      setRecentRepos(sanitizeRecentRepos(JSON.parse(raw)));
-    } catch {
-      setRecentRepos([]);
-    }
-  }, []);
-
-  function normalizePath(value: string) {
-    if (value === '/') return value;
-    return value.replace(/\/+$/, '');
-  }
-
-  function persistRecentRepo(repoPath: string) {
-    const normalizedPath = normalizePath(repoPath.trim());
-    if (!normalizedPath) return;
-
-    const name = normalizedPath.split('/').pop() || normalizedPath;
-    const nextRepo: RecentRepo = {
-      path: normalizedPath,
-      name,
-      lastOpenedAt: Date.now(),
-    };
-
-    const next = [nextRepo, ...recentRepos.filter((repo) => repo.path !== normalizedPath)].slice(0, MAX_RECENT_REPOS);
-    setRecentRepos(next);
-    try {
-      localStorage.setItem(RECENT_REPOS_STORAGE_KEY, JSON.stringify(next));
-    } catch {
-      // Ignore storage failures and keep in-memory list.
-    }
-  }
-
-  function openRepo(selectedPath: string) {
-    const normalizedPath = normalizePath(selectedPath);
-    setInputError(null);
-    persistRecentRepo(normalizedPath);
-    onSelect(normalizedPath);
-  }
-
-  function handlePickerSelect(selectedPath: string) {
-    setShowPicker(false);
-    openRepo(selectedPath);
-  }
-
-  function handleSubmit(e: React.FormEvent<HTMLFormElement>) {
-    e.preventDefault();
-    const value = path.trim();
-    if (!value) return;
-
-    const looksLikeUrl =
-      value.startsWith('http://') ||
-      value.startsWith('https://') ||
-      value.startsWith('git@') ||
-      value.startsWith('github.com/');
-
-    if (looksLikeUrl) {
-      setInputError('Enter a local repo folder path (for example: /Users/you/code/repo).');
-      return;
-    }
-
-    openRepo(value);
-  }
-
-  return (
-    <main className="h-full flex flex-col items-center pt-[16vh] bg-background">
-      <div className="w-full max-w-sm flex flex-col items-center px-6">
-
-        <div className="flex flex-col w-full gap-3 shrink-0">
-          <button
-            onClick={() => setShowPicker(true)}
-            className="w-full flex items-center justify-center gap-2 px-6 py-3 bg-primary text-primary-foreground text-sm font-medium rounded-2xl hover:opacity-90 transition-opacity"
-          >
-            Browse for repository
-          </button>
-
-          {!showInput ? (
-            <button
-              onClick={() => setShowInput(true)}
-              className="w-full flex items-center justify-center gap-2 px-6 py-3 border border-border bg-card text-foreground text-sm font-medium rounded-2xl hover:bg-accent transition-colors disabled:opacity-50"
-            >
-              Enter repo path
-            </button>
-          ) : (
-            <div className="flex flex-col gap-2">
-              <form
-                onSubmit={handleSubmit}
-                className="flex items-center border border-border bg-card rounded-2xl"
-              >
-                {/* Input with left-edge gradient fade for overflow text */}
-                <div className="relative flex-1 min-w-0 overflow-hidden rounded-l-2xl">
-                  <input
-                    autoFocus
-                    type="text"
-                    value={path}
-                    onChange={(e) => {
-                      setPath(e.target.value);
-                      if (inputError) setInputError(null);
-                    }}
-                    placeholder="Enter local path"
-                    className="w-full bg-transparent pl-5 pr-2 py-3.5 text-sm focus:outline-none placeholder:text-muted-foreground tabular-nums min-w-0"
-                  />
-                  <div
-                    className="absolute left-0 inset-y-0 w-10 pointer-events-none"
-                    style={{ background: 'linear-gradient(to right, var(--card), transparent)' }}
-                  />
-                </div>
-                <button
-                  type="submit"
-                  disabled={!path || loading}
-                  className="m-1.5 w-10 h-10 flex items-center justify-center bg-primary text-primary-foreground rounded-[14px] hover:opacity-90 transition-opacity shrink-0"
-                >
-                  <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2.5} d="M9 5l7 7-7 7" />
-                  </svg>
-                </button>
-              </form>
-              {inputError && <p className="text-xs text-destructive px-2">{inputError}</p>}
-              {!inputError && error && <p className="text-xs text-destructive px-2">{error}</p>}
-            </div>
-          )}
-        </div>
-
-        {recentRepos.length > 0 && (
-          <div className="w-full mt-8 flex flex-col">
-            <p className="text-[10px] uppercase tracking-wide text-muted-foreground font-medium mb-3 shrink-0">Recently opened</p>
-            <div className="flex flex-col gap-2">
-              {recentRepos.slice(0, 5).map((repo) => (
-                <button
-                  key={repo.path}
-                  onClick={() => openRepo(repo.path)}
-                  disabled={loading}
-                  className="w-full shrink-0 rounded-xl border border-border bg-card text-left px-4 py-2.5 hover:bg-muted transition-colors disabled:opacity-60 disabled:cursor-not-allowed"
-                >
-                  <p className="text-foreground truncate text-sm">{repo.name}</p>
-                  <p className="text-xs text-muted-foreground truncate">{repo.path}</p>
-                </button>
-              ))}
-            </div>
-          </div>
-        )}
-      </div>
-
-      {showPicker && (
-        <FolderPickerModal
-          onSelect={handlePickerSelect}
-          onClose={() => setShowPicker(false)}
-        />
-      )}
-    </main>
-  );
-}
 
 export default App;

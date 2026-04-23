@@ -3864,7 +3864,8 @@ fn append_shortcut_debug_log(message: &str) {
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     let builder = tauri::Builder::default()
-        .plugin(tauri_plugin_global_shortcut::Builder::new().build());
+        .plugin(tauri_plugin_global_shortcut::Builder::new().build())
+        .plugin(tauri_plugin_dialog::init());
     #[cfg(target_os = "macos")]
     let builder = builder.plugin(
         tauri::plugin::Builder::<_, ()>::new("macos-fps-unlock")
