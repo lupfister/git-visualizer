@@ -90,6 +90,7 @@ function App() {
   const [createBranchFromNodeInProgress, setCreateBranchFromNodeInProgress] = useState(false);
   const [isMapInteracting, setIsMapInteracting] = useState(false);
   const [mapGridOrientation, setMapGridOrientation] = useState<OrientationMode>('horizontal');
+  const autoFocusSyncKeyRef = useRef<string | null>(null);
 
   const branchMetaLoadKeyRef = useRef<string | null>(null);
   const isFrozenRepo = isFrozenRepoPath(repoPath);
@@ -1632,6 +1633,20 @@ function App() {
     setGridSearchQuery(branchName);
     setGridSearchJumpToken((token) => token + 1);
   }
+
+  useEffect(() => {
+    if (view !== 'map') return;
+
+    const focusSha = checkedOutRef?.hasUncommittedChanges ? 'WORKING_TREE' : checkedOutRef?.headSha ?? null;
+    if (!focusSha) return;
+
+    const syncKey = `${repoPath ?? '__no-repo__'}|${mapGridOrientation}|${focusSha}`;
+    if (autoFocusSyncKeyRef.current === syncKey) return;
+    autoFocusSyncKeyRef.current = syncKey;
+
+    setGridFocusSha(focusSha);
+    setGridSearchJumpToken((token) => token + 1);
+  }, [checkedOutRef?.hasUncommittedChanges, checkedOutRef?.headSha, mapGridOrientation, repoPath, view]);
 
 
 
