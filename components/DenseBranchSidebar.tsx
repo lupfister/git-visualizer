@@ -233,7 +233,7 @@ function BranchRows({
         <span
           aria-hidden="true"
           className={cn(
-            'absolute w-3 border-b-[1.5px] border-l-[1.5px] border-border/60',
+            'absolute w-3 border-b-[1.5px] border-l-[1.5px] border-border',
             bendCornerClassName,
             connectorLeftClassName,
             bendClassName,
@@ -243,7 +243,11 @@ function BranchRows({
       {!isLast && depth > 0 ? (
         <span
           aria-hidden="true"
-          className={cn('absolute top-0 bottom-[-1rem] border-l-[1.5px] border-border/50', connectorLeftClassName)}
+          className={cn(
+            'absolute top-0 border-l-[1.5px] border-border',
+            'bottom-[-0.5rem]',
+            connectorLeftClassName,
+          )}
         />
       ) : null}
 
@@ -309,7 +313,7 @@ function BranchRows({
                     ) : null}
                   </div>
                   {mergeTargetLabels.length > 0 ? (
-                    <div className="mt-1 space-y-1">
+                    <div className="mt-0.5 space-y-1">
                       {mergeTargetLabels.map((targetBranch) => (
                         <div
                           key={`${commit.fullSha}:${targetBranch}`}
@@ -322,7 +326,7 @@ function BranchRows({
                     </div>
                   ) : null}
                   {anchoredChildrenByCommitIndex.get(idx)?.length ? (
-                    <ul className="relative mb-1.75 space-y-2">
+                    <ul className="relative mb-1.75 space-y-0">
                       {anchoredChildrenByCommitIndex.get(idx)!.map((childName, childIdx, list) => (
                         <BranchRows
                           key={childName}
@@ -357,7 +361,7 @@ function BranchRows({
       ) : null}
 
       {hasChildBranches && isExpanded && unanchoredChildren.length > 0 ? (
-        <ul className="relative mb-3.5 space-y-1">
+        <ul className="relative mb-1.75 space-y-1.75">
           {unanchoredChildren.map((childName, idx) => (
             <BranchRows
               key={childName}
