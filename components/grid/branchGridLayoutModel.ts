@@ -95,7 +95,7 @@ export type BranchGridLayoutInput = {
   gridSearchQuery: string;
   gridFocusSha: string | null;
   checkedOutRef: CheckedOutRef | null;
-  /** `vertical`: older above; `horizontal`: older to the left (default). */
+  /** `vertical`: newest above; `horizontal`: newest to the right (default). */
   orientation?: 'vertical' | 'horizontal';
 };
 
@@ -314,8 +314,8 @@ function allocateRowsByColumnAndTime(
     }
     pending = nextPending;
   }
-  // Row index increases toward descendants. Map to pixels in `computeBranchGridLayout`:
-  // vertical → smaller row = higher y (older above); horizontal → smaller row = smaller x (older to the left).
+  // Row index increases toward descendants. Pixel mapping in `computeBranchGridLayout`:
+  // vertical inverts this row index (newer above); horizontal keeps it direct (newer right).
   return rowByVisualId;
 }
 
@@ -758,6 +758,7 @@ export function computeBranchGridLayout(input: BranchGridLayoutInput): BranchGri
     ? CARD_WIDTH + zoomAwareRowGapPreview + zoomAwareLabelBandPreview
     : ROW_HEIGHT + zoomAwareRowGapPreview + zoomAwareLabelBandPreview;
   const previewLanePitch = isHorizontal ? ROW_HEIGHT + zoomAwareRowGapPreview + zoomAwareLabelBandPreview : COLUMN_WIDTH;
+  const maxPreviewRow = Math.max(0, ...allCommits.map((commit) => rowByVisualId.get(commit.visualId) ?? 1));
   const nodes: Node[] = allCommits.map((commit) => {
     const lane = laneByName.get(commit.branchName);
     const row = rowByVisualId.get(commit.visualId) ?? 1;
@@ -776,7 +777,7 @@ export function computeBranchGridLayout(input: BranchGridLayoutInput): BranchGri
       row,
       column,
       x: LEFT_PADDING + column * COLUMN_WIDTH,
-      y: TOP_PADDING + (row - 1) * previewTimelinePitch,
+      y: TOP_PADDING + (maxPreviewRow - row) * previewTimelinePitch,
     };
   });
   const normalizedSearchQuery = gridSearchQuery.trim().toLowerCase();
@@ -824,6 +825,7 @@ export function computeBranchGridLayout(input: BranchGridLayoutInput): BranchGri
     ? CARD_WIDTH + zoomAwareRowGap + zoomAwareLabelBand
     : ROW_HEIGHT + zoomAwareRowGap + zoomAwareLabelBand;
   const zoomAwareLanePitch = isHorizontal ? ROW_HEIGHT + zoomAwareRowGap + zoomAwareLabelBand : COLUMN_WIDTH;
+  const maxVisibleRowForVertical = Math.max(0, ...visibleCommitsList.map((commit) => visibleRows.get(commit.visualId) ?? 1));
   const renderNodes: Node[] = visibleCommitsList.map((commit) => {
     const lane = laneByName.get(commit.branchName);
     const row = visibleRows.get(commit.visualId) ?? 1;
@@ -842,7 +844,7 @@ export function computeBranchGridLayout(input: BranchGridLayoutInput): BranchGri
       row,
       column,
       x: LEFT_PADDING + column * COLUMN_WIDTH,
-      y: TOP_PADDING + (row - 1) * zoomAwareTimelinePitch,
+      y: TOP_PADDING + (maxVisibleRowForVertical - row) * zoomAwareTimelinePitch,
     };
   });
   const visibleNodesBySha = new Map<string, Node[]>();
@@ -856,8 +858,8 @@ export function computeBranchGridLayout(input: BranchGridLayoutInput): BranchGri
     const clusterKey = clusterKeyByCommitId.get(node.commit.visualId);
     if (!clusterKey) continue;
     const current = visibleNodeByClusterKey.get(clusterKey);
-    // Vertical: older above; cluster tip is bottom-most. Horizontal: older left; tip is right-most.
-    if (!current || (isHorizontal ? node.x > current.x : node.y > current.y)) visibleNodeByClusterKey.set(clusterKey, node);
+    // Vertical: newer above; cluster tip is top-most. Horizontal: newer right; tip is right-most.
+    if (!current || (isHorizontal ? node.x > current.x : node.y < current.y)) visibleNodeByClusterKey.set(clusterKey, node);
   }
   const pointFormatter = (x: number, y: number) => `${x.toFixed(1)} ${y.toFixed(1)}`;
   const maxVisibleRow = Math.max(0, ...renderNodes.map((node) => node.row));
@@ -933,6 +935,13 @@ export function computeBranchGridLayout(input: BranchGridLayoutInput): BranchGri
     return { x: node.x - GRID_INCOMING_GAP_PX, y: node.y + CARD_HEIGHT / 2, face: 'left' };
   };
 
+  const getBranchIncomingAnchor = (node: Node): { x: number; y: number; face: ConnectorFace } => {
+    if (!isHorizontal) {
+      return { x: node.x + CARD_WIDTH / 2, y: node.y + CARD_HEIGHT + GRID_INCOMING_GAP_PX, face: 'bottom' };
+    }
+    return { x: node.x + CARD_WIDTH + GRID_INCOMING_GAP_PX, y: node.y + CARD_HEIGHT / 2, face: 'right' };
+  };
+
   /** Lanes can share a column when time ranges do not overlap — column alone misses cross-branch links in horizontal mode. */
   const isConnectorBranching = (parentNode: Node, childNode: Node): boolean => {
     if (parentNode.column !== childNode.column) return true;
@@ -967,6 +976,13 @@ export function computeBranchGridLayout(input: BranchGridLayoutInput): BranchGri
       return { x: node.x + CARD_WIDTH / 2, y: node.y + CARD_HEIGHT + GRID_INCOMING_GAP_PX, face: 'bottom' };
     }
     return { x: node.x + CARD_WIDTH / 2, y: node.y - GRID_INCOMING_GAP_PX, face: 'top' };
+  };
+
+  const getBranchOutgoingAnchor = (node: Node): { x: number; y: number; face: ConnectorFace } => {
+    if (!isHorizontal) {
+      return { x: node.x + CARD_WIDTH, y: node.y + CARD_HEIGHT / 2, face: 'right' };
+    }
+    return { x: node.x + CARD_WIDTH / 2, y: node.y + CARD_HEIGHT + GRID_INCOMING_GAP_PX, face: 'bottom' };
   };
 
   const resolveParentNode = (parentSha: string, preferredBranchName: string): Node | null => {
@@ -1047,26 +1063,17 @@ export function computeBranchGridLayout(input: BranchGridLayoutInput): BranchGri
       let fromX: number;
       let fromY: number;
       let fromFace: ConnectorFace;
-      const toX = isHorizontal ? mergeTarget.x - GRID_MERGE_TARGET_GAP_PX : mergeTarget.x + CARD_WIDTH - GRID_MERGE_TARGET_GAP_PX;
-      const toY = mergeTarget.y + CARD_HEIGHT / 2;
-      const toFace: ConnectorFace = isHorizontal ? 'left' : 'right';
+      const toX = isHorizontal ? mergeTarget.x + CARD_WIDTH / 2 : mergeTarget.x + CARD_WIDTH - GRID_MERGE_TARGET_GAP_PX;
+      const toY = isHorizontal ? mergeTarget.y + CARD_HEIGHT + GRID_MERGE_TARGET_GAP_PX : mergeTarget.y + CARD_HEIGHT / 2;
+      const toFace: ConnectorFace = isHorizontal ? 'bottom' : 'right';
       if (!isHorizontal) {
         fromX = sourceNode.x + CARD_WIDTH / 2;
         fromY = sourceNode.y;
         fromFace = 'top';
-      } else if (sourceNode.column === mergeTarget.column) {
-        fromX = sourceNode.x + CARD_WIDTH;
+      } else {
+        fromX = sourceNode.x + CARD_WIDTH + GRID_MERGE_TARGET_GAP_PX;
         fromY = sourceNode.y + CARD_HEIGHT / 2;
         fromFace = 'right';
-      } else if (sourceNode.column > mergeTarget.column) {
-        // Merged-from lane is below the merge commit lane — leave from bottom (drop), not mid-side (upward arch).
-        fromX = sourceNode.x + CARD_WIDTH / 2;
-        fromY = sourceNode.y + CARD_HEIGHT;
-        fromFace = 'bottom';
-      } else {
-        fromX = sourceNode.x + CARD_WIDTH / 2;
-        fromY = sourceNode.y;
-        fromFace = 'top';
       }
       const geometryKey = `${fromX.toFixed(2)}:${fromY.toFixed(2)}:${toX.toFixed(2)}:${toY.toFixed(2)}`;
       if (mergeConnectorGeometryKeySet.has(geometryKey)) {
@@ -1156,8 +1163,8 @@ export function computeBranchGridLayout(input: BranchGridLayoutInput): BranchGri
     if (parentNode.commit.branchName !== childNode.commit.branchName) {
       crossBranchOutgoingShas.add(parentNode.commit.id);
     }
-    const sourceAnchor = getOutgoingAnchor(parentNode, isBranching, childNode);
-    const targetAnchor = getIncomingAnchor(childNode, parentNode);
+    const sourceAnchor = getBranchOutgoingAnchor(parentNode);
+    const targetAnchor = getBranchIncomingAnchor(childNode);
     connectors.push({
       id: key,
       fromX: sourceAnchor.x,

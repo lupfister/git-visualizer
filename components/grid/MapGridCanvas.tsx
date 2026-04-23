@@ -1,12 +1,7 @@
 import { useEffect, useLayoutEffect, useRef, useState } from 'react';
 import type { CSSProperties, Dispatch, MouseEvent, ReactNode, RefObject, SetStateAction, WheelEvent } from 'react';
-import { buildMergeOrthogonalPath, CARD_BODY_TOP_OFFSET, CARD_HEIGHT, CARD_WIDTH, CONNECTOR_COLOR } from './LayoutGrid';
-import {
-  buildLooseCablePath,
-  buildRoundedElbowPath,
-  buildRoundedElbowPathVerticalFirst,
-  shouldUseVerticalFirstElbow,
-} from './gridPathUtils';
+import { CARD_BODY_TOP_OFFSET, CARD_HEIGHT, CARD_WIDTH, CONNECTOR_COLOR } from './LayoutGrid';
+import { buildLooseCablePath } from './gridPathUtils';
 import { cn } from './mapGridUtils';
 import type { ConnectorFace, Node } from './LayoutGrid';
 
@@ -94,15 +89,10 @@ type Props = {
   connectorParentAccentClass: string;
   commitCornerRadiusPx: number;
   lineStrokeWidth: number;
-  connectorCornerRadiusPx: number;
   pointFormatter: (x: number, y: number) => string;
   connectors: Array<{ id: string; fromX: number; fromY: number; toX: number; toY: number; zIndex: number; fromFace?: ConnectorFace; toFace?: ConnectorFace }>;
   mergeConnectors: Array<{ id: string; fromX: number; fromY: number; toX: number; toY: number; zIndex: number; fromFace?: ConnectorFace; toFace?: ConnectorFace }>;
   cullConnectorPath: (connector: { id: string; fromX: number; fromY: number; toX: number; toY: number; fromFace?: ConnectorFace; toFace?: ConnectorFace }) => boolean;
-  /** When `horizontal`, ancestry elbows pick vertical-first vs horizontal-first from geometry; merges use the same split. */
-  mapOrientation: 'vertical' | 'horizontal';
-  /** Cubic Bézier cables instead of orthogonal elbows (feature flag). */
-  looseCableConnectors?: boolean;
   flushCameraReactTick: () => void;
   setManuallyOpenedClumps: Dispatch<SetStateAction<Set<string>>>;
   setManuallyClosedClumps: Dispatch<SetStateAction<Set<string>>>;
@@ -148,13 +138,10 @@ export default function MapGridCanvas({
   connectorParentAccentClass,
   commitCornerRadiusPx,
   lineStrokeWidth,
-  connectorCornerRadiusPx,
   pointFormatter,
   connectors,
   mergeConnectors,
   cullConnectorPath,
-  mapOrientation,
-  looseCableConnectors = false,
   flushCameraReactTick,
   setManuallyOpenedClumps,
   setManuallyClosedClumps,
@@ -463,34 +450,14 @@ export default function MapGridCanvas({
           >
             {sortedVisibleMergeConnectors.map((connector) => {
               const { fromX, fromY, toX, toY } = connector;
-              const path = looseCableConnectors
-                ? buildLooseCablePath(fromX, fromY, toX, toY, pointFormatter, connector.fromFace, connector.toFace)
-                : mapOrientation === 'horizontal'
-                  ? buildRoundedElbowPath(fromX, fromY, toX, toY, connectorCornerRadiusPx, pointFormatter, 0)
-                  : buildMergeOrthogonalPath({
-                      laneX: fromX,
-                      tipY: fromY,
-                      mergeX: toX,
-                      mergeY: toY,
-                      cornerR: connectorCornerRadiusPx,
-                      pointFormatter,
-                    });
+              const path = buildLooseCablePath(fromX, fromY, toX, toY, pointFormatter, connector.fromFace, connector.toFace);
               return (
                 <path key={connector.id} d={path} fill="none" stroke={CONNECTOR_COLOR} strokeWidth={lineStrokeWidth} strokeLinecap="round" strokeLinejoin="round" />
               );
             })}
             {sortedVisibleConnectors.map((connector) => {
               const { fromX, fromY, toX, toY } = connector;
-              let path: string;
-              if (looseCableConnectors) {
-                path = buildLooseCablePath(fromX, fromY, toX, toY, pointFormatter, connector.fromFace, connector.toFace);
-              } else {
-                const useVerticalFirst =
-                  mapOrientation === 'horizontal' && shouldUseVerticalFirstElbow(fromX, fromY, toX, toY);
-                path = useVerticalFirst
-                  ? buildRoundedElbowPathVerticalFirst(fromX, fromY, toX, toY, connectorCornerRadiusPx, pointFormatter, 0)
-                  : buildRoundedElbowPath(fromX, fromY, toX, toY, connectorCornerRadiusPx, pointFormatter, 0);
-              }
+              const path = buildLooseCablePath(fromX, fromY, toX, toY, pointFormatter, connector.fromFace, connector.toFace);
               return (
                 <path key={connector.id} d={path} fill="none" stroke={CONNECTOR_COLOR} strokeWidth={lineStrokeWidth} strokeLinecap="round" strokeLinejoin="round" />
               );

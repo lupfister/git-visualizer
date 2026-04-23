@@ -26,8 +26,6 @@ import { useMapGridCamera } from './useMapGridCamera';
 import { useMapGridSelection } from './useMapGridSelection';
 import {
   GRID_COMMIT_CORNER_RADIUS_BASE_PX,
-  GRID_CONNECTOR_CORNER_RADIUS_BASE_PX,
-  GRID_CONNECTOR_GAP_PX,
   GRID_RENDER_ZOOM,
   MAP_GRID_CULL_VIEWPORT_INSET_SCREEN_PX,
   MAP_GRID_INNER_PADDING_PX,
@@ -35,11 +33,7 @@ import {
   collectVisibleCommitIdsFromSpatialIndex,
   getViewportContentBoundsFromClientSize,
   isUsableOtherWorktree,
-  GRID_LOOSE_CABLE_STORAGE_KEY,
   looseCableConnectorIntersectsViewportBounds,
-  mergeOrthogonalConnectorIntersectsViewportBounds,
-  roundedElbowConnectorIntersectsViewportBounds,
-  roundedElbowVerticalFirstConnectorIntersectsViewportBounds,
   shaMatchesGitRef,
   visibleCommitIdSetEquals,
   withCullInsetScreenPx,
@@ -121,26 +115,6 @@ export default function BranchGridMap({
   const setManuallyOpenedClumps = controlledSetManuallyOpenedClumps ?? setLocalManuallyOpenedClumps;
   const setManuallyClosedClumps = controlledSetManuallyClosedClumps ?? setLocalManuallyClosedClumps;
   const [isDebugOpen, setIsDebugOpen] = useState(false);
-  const [looseCableConnectors, setLooseCableConnectors] = useState(() => {
-    if (typeof window === 'undefined') return false;
-    try {
-      const q = new URLSearchParams(window.location.search).get('looseCables');
-      if (q === '1' || q === 'true') return true;
-      if (q === '0' || q === 'false') return false;
-      return localStorage.getItem(GRID_LOOSE_CABLE_STORAGE_KEY) === '1';
-    } catch {
-      return false;
-    }
-  });
-
-  const handleLooseCableConnectorsChange = useCallback((enabled: boolean) => {
-    setLooseCableConnectors(enabled);
-    try {
-      localStorage.setItem(GRID_LOOSE_CABLE_STORAGE_KEY, enabled ? '1' : '0');
-    } catch {
-      /* ignore */
-    }
-  }, []);
 
   const [visibleNodeIds, setVisibleNodeIds] = useState<Set<string> | null>(null);
   const [viewportClientSize, setViewportClientSize] = useState<{ width: number; height: number } | null>(null);
@@ -277,7 +251,6 @@ export default function BranchGridMap({
   };
 
   const lineStrokeWidth = 1.5 / displayZoom;
-  const connectorCornerRadiusPx = GRID_CONNECTOR_CORNER_RADIUS_BASE_PX;
   const commitCornerRadiusPx = GRID_COMMIT_CORNER_RADIUS_BASE_PX / displayZoom;
   const iconScaleStyle = useMemo(
     () => ({
@@ -587,51 +560,7 @@ export default function BranchGridMap({
   const cullConnectorPath = (connector: { id: string; fromX: number; fromY: number; toX: number; toY: number; fromFace?: ConnectorFace; toFace?: ConnectorFace }): boolean => {
     if (!visibleBounds) return true;
     const { fromX, fromY, toX, toY } = connector;
-    if (looseCableConnectors) {
-      return looseCableConnectorIntersectsViewportBounds(fromX, fromY, toX, toY, visibleBounds, connector.fromFace, connector.toFace);
-    }
-    if (connector.id.startsWith('merge:')) {
-      if (orientation === 'horizontal') {
-        return roundedElbowConnectorIntersectsViewportBounds(
-          fromX,
-          fromY,
-          toX,
-          toY,
-          connectorCornerRadiusPx,
-          GRID_CONNECTOR_GAP_PX,
-          visibleBounds,
-        );
-      }
-      return mergeOrthogonalConnectorIntersectsViewportBounds(
-        fromX,
-        fromY,
-        toX,
-        toY,
-        connectorCornerRadiusPx,
-        visibleBounds,
-      );
-    }
-    const useVerticalFirst = orientation === 'horizontal' && Math.abs(toY - fromY) > Math.abs(toX - fromX);
-    if (useVerticalFirst) {
-      return roundedElbowVerticalFirstConnectorIntersectsViewportBounds(
-        fromX,
-        fromY,
-        toX,
-        toY,
-        connectorCornerRadiusPx,
-        GRID_CONNECTOR_GAP_PX,
-        visibleBounds,
-      );
-    }
-    return roundedElbowConnectorIntersectsViewportBounds(
-      fromX,
-      fromY,
-      toX,
-      toY,
-      connectorCornerRadiusPx,
-      GRID_CONNECTOR_GAP_PX,
-      visibleBounds,
-    );
+    return looseCableConnectorIntersectsViewportBounds(fromX, fromY, toX, toY, visibleBounds, connector.fromFace, connector.toFace);
   };
 
   useLayoutEffect(() => {
@@ -819,8 +748,6 @@ export default function BranchGridMap({
         isOpen={isDebugOpen}
         onToggle={() => setIsDebugOpen((open) => !open)}
         onClose={() => setIsDebugOpen(false)}
-        looseCableConnectors={looseCableConnectors}
-        onLooseCableConnectorsChange={handleLooseCableConnectorsChange}
         visibleBounds={visibleBounds}
         renderedNodeCount={renderedNodeCount}
         totalNodeCount={renderNodes.length}
@@ -877,13 +804,10 @@ export default function BranchGridMap({
           connectorParentAccentClass={connectorParentAccentClass}
           commitCornerRadiusPx={commitCornerRadiusPx}
           lineStrokeWidth={lineStrokeWidth}
-          connectorCornerRadiusPx={connectorCornerRadiusPx}
           pointFormatter={pointFormatter}
           connectors={connectors}
           mergeConnectors={mergeConnectors}
           cullConnectorPath={cullConnectorPath}
-          mapOrientation={orientation}
-          looseCableConnectors={looseCableConnectors}
           flushCameraReactTick={flushCameraReactTick}
           setManuallyOpenedClumps={setManuallyOpenedClumps}
           setManuallyClosedClumps={setManuallyClosedClumps}

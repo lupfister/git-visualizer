@@ -72,6 +72,8 @@ export type CableFace = 'left' | 'right' | 'top' | 'bottom';
 const LOOSE_CABLE_AXIS_EPS = 8;
 /** When both legs are at least this long (px), use a soft orthogonal elbow instead of one diagonal cubic. */
 const LOOSE_CABLE_DIAG_MIN = 44;
+/** Visual radius target for loose-cable elbow corners. */
+const LOOSE_CABLE_CORNER_RADIUS = 120;
 
 type LooseCableGeo =
   | { kind: 'line' }
@@ -273,16 +275,28 @@ export function buildLooseCablePath(
     ].join(' ');
   }
   if (g.kind === 'elbowH') {
+    const cornerR = Math.max(8, Math.min(LOOSE_CABLE_CORNER_RADIUS, Math.abs(toX - fromX) * 0.48, Math.abs(toY - fromY) * 0.48));
+    const hDir = toX >= fromX ? 1 : -1;
+    const vDir = toY >= fromY ? 1 : -1;
+    const preCornerX = g.cx - hDir * cornerR;
+    const postCornerY = g.cy + vDir * cornerR;
     return [
       `M ${pointFormatter(fromX, fromY)}`,
-      `C ${pointFormatter(g.s1c1x, g.s1c1y)} ${pointFormatter(g.s1c2x, g.s1c2y)} ${pointFormatter(g.cx, g.cy)}`,
-      `C ${pointFormatter(g.s2c1x, g.s2c1y)} ${pointFormatter(g.s2c2x, g.s2c2y)} ${pointFormatter(toX, toY)}`,
+      `C ${pointFormatter(g.s1c1x, g.s1c1y)} ${pointFormatter(preCornerX - hDir * cornerR * 0.5, g.cy)} ${pointFormatter(preCornerX, g.cy)}`,
+      `Q ${pointFormatter(g.cx, g.cy)} ${pointFormatter(g.cx, postCornerY)}`,
+      `C ${pointFormatter(g.cx, postCornerY + vDir * cornerR * 0.5)} ${pointFormatter(g.s2c2x, g.s2c2y)} ${pointFormatter(toX, toY)}`,
     ].join(' ');
   }
+  const cornerR = Math.max(8, Math.min(LOOSE_CABLE_CORNER_RADIUS, Math.abs(toX - fromX) * 0.48, Math.abs(toY - fromY) * 0.48));
+  const hDir = toX >= fromX ? 1 : -1;
+  const vDir = toY >= fromY ? 1 : -1;
+  const preCornerY = g.cy - vDir * cornerR;
+  const postCornerX = g.cx + hDir * cornerR;
   return [
     `M ${pointFormatter(fromX, fromY)}`,
-    `C ${pointFormatter(g.s1c1x, g.s1c1y)} ${pointFormatter(g.s1c2x, g.s1c2y)} ${pointFormatter(g.cx, g.cy)}`,
-    `C ${pointFormatter(g.s2c1x, g.s2c1y)} ${pointFormatter(g.s2c2x, g.s2c2y)} ${pointFormatter(toX, toY)}`,
+    `C ${pointFormatter(g.s1c1x, g.s1c1y)} ${pointFormatter(g.cx, preCornerY - vDir * cornerR * 0.5)} ${pointFormatter(g.cx, preCornerY)}`,
+    `Q ${pointFormatter(g.cx, g.cy)} ${pointFormatter(postCornerX, g.cy)}`,
+    `C ${pointFormatter(postCornerX + hDir * cornerR * 0.5, g.cy)} ${pointFormatter(g.s2c2x, g.s2c2y)} ${pointFormatter(toX, toY)}`,
   ].join(' ');
 }
 
