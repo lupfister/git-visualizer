@@ -340,6 +340,8 @@ export async function fetchMainMergeNodes(
       prTitle: titleLine,
       date: c.commit.author.date,
       parentShas: c.parents.map((p) => p.sha),
+      targetBranch: defaultBranch,
+      targetCommitSha: c.sha,
     };
   });
 

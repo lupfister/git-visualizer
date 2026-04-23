@@ -125,7 +125,7 @@ function App() {
         perPage,
       });
 
-      all.push(...result.nodes.map((node) => ({ ...node, targetBranch: branch })));
+      all.push(...result.nodes);
       if (!result.hasMore || result.nodes.length === 0) break;
       page += 1;
     }
@@ -133,8 +133,8 @@ function App() {
     return all;
   }
 
-  async function fetchAllMergeNodesForBranches(path: string, branchNames: string[]): Promise<MergeNode[]> {
-    const normalizedBranchNames = Array.from(new Set(branchNames.filter((branchName) => !!branchName)));
+  async function fetchAllMergeNodesForBranches(path: string, branchList: Branch[], defaultBranchName: string): Promise<MergeNode[]> {
+    const normalizedBranchNames = Array.from(new Set([defaultBranchName, ...branchList.map((branch) => branch.name)].filter((branchName) => !!branchName)));
     if (normalizedBranchNames.length === 0) return [];
     const branchMergeLists = await Promise.all(
       normalizedBranchNames.map((branchName) => fetchAllMergeNodes(path, branchName).catch(() => [])),
@@ -142,7 +142,7 @@ function App() {
     const dedupedByMergeAndTarget = new Map<string, MergeNode>();
     for (const list of branchMergeLists) {
       for (const node of list) {
-        const dedupeKey = `${node.fullSha}:${node.targetBranch ?? ''}`;
+        const dedupeKey = `${node.targetCommitSha}:${node.targetBranch}`;
         if (!dedupedByMergeAndTarget.has(dedupeKey)) {
           dedupedByMergeAndTarget.set(dedupeKey, node);
         }
@@ -182,8 +182,7 @@ function App() {
       invoke<WorktreeInfo[]>('list_worktrees', { repoPath: path }).catch(() => []),
       invoke<GitStashEntry[]>('list_stashes', { repoPath: path }).catch(() => []),
     ]);
-    const mergeFetchBranchNames = Array.from(new Set([branchDef, ...branchList.map((branch) => branch.name)]));
-    const nodes = await fetchAllMergeNodesForBranches(path, mergeFetchBranchNames);
+    const nodes = await fetchAllMergeNodesForBranches(path, branchList, branchDef);
     const unpushedShaEntries = await Promise.all(
       [branchDef, ...branchList.map((branch) => branch.name)].map(async (branchName) => {
         const shas = await invoke<string[]>('get_branch_unpushed_commit_shas', {
@@ -425,7 +424,7 @@ function App() {
 
     const getMergeNodesSignature = (list: MergeNode[]): string =>
       list
-        .map((n) => `${n.fullSha}:${n.targetBranch ?? ''}:${(n.parentShas ?? []).join(',')}`)
+        .map((n) => `${n.targetCommitSha}:${n.targetBranch}:${(n.parentShas ?? []).join(',')}`)
         .join('|');
 
     const getDirectCommitsSignature = (list: DirectCommit[]): string =>
@@ -521,8 +520,7 @@ function App() {
         }
 
         // Merge nodes can be expensive on large repos; resolve them after first paint.
-        const mergeFetchBranchNames = Array.from(new Set([defaultBranch, ...(resolvedBranches ?? []).map((branch) => branch.name)]));
-        const next = await fetchAllMergeNodesForBranches(repoPath, mergeFetchBranchNames).catch(() => []);
+        const next = await fetchAllMergeNodesForBranches(repoPath, resolvedBranches ?? [], defaultBranch).catch(() => []);
         if (isDisposed) return;
         const sig = getMergeNodesSignature(next);
         if (sig !== lastMergeNodesSignature) {
@@ -1889,7 +1887,6 @@ function App() {
               defaultBranch={defaultBranch}
               branchCommitPreviews={enrichedBranchCommitPreviews}
               directCommits={enrichedDirectCommits}
-              mergeNodes={mergeNodes}
               checkedOutRef={checkedOutRef}
               manuallyOpenedClumps={manuallyOpenedGridClumps}
               manuallyClosedClumps={manuallyClosedGridClumps}

@@ -39,6 +39,14 @@ export type ConnectorDecisionRow = {
   reason: string;
 };
 
+export type MergeDestination = {
+  sourceCommitSha: string;
+  sourceBranchName: string;
+  mergeCommitSha: string;
+  targetCommitSha: string;
+  targetBranchName: string;
+};
+
 export type BranchGridLayoutModel = {
   branchByName: Map<string, Branch>;
   laneByName: Map<string, Lane>;
@@ -78,6 +86,8 @@ export type BranchGridLayoutModel = {
   commitIdsWithRenderedAncestry: Set<string>;
   branchBaseCommitByName: Map<string, CommitItem>;
   firstBranchCommitByName: Map<string, CommitItem>;
+  mergeDestinations: MergeDestination[];
+  mergeTargetBranchesBySourceBranchAndCommitSha: Map<string, Map<string, Set<string>>>;
 };
 
 export type BranchGridLayoutInput = {
@@ -104,16 +114,17 @@ const GRID_INCOMING_GAP_PX = 0;
 const GRID_MERGE_TARGET_GAP_PX = 0;
 const SHARED_ROW_MAX_TIME_DELTA_MS = 30 * 60 * 1000;
 const SHARED_ROW_BRANCH_SIBLING_MAX_TIME_DELTA_MS = 24 * 60 * 60 * 1000;
+const shasMatch = (left: string | null | undefined, right: string | null | undefined): boolean => {
+  if (!left || !right) return false;
+  return left === right || left.startsWith(right) || right.startsWith(left);
+};
+
 function allocateRowsByColumnAndTime(
   commits: VisualCommit[],
   laneByName: Map<string, Lane>,
   extraParentShasByCommitId: Map<string, Set<string>> = new Map(),
 ): Map<string, number> {
   if (commits.length === 0) return new Map();
-  const shasMatch = (left: string | null | undefined, right: string | null | undefined): boolean => {
-    if (!left || !right) return false;
-    return left === right || left.startsWith(right) || right.startsWith(left);
-  };
   // Use lineage-first ordering (parent before child) before row assignment.
   const orderedCommits = orderByLineage(commits);
   const childShasByParentSha = new Map<string, Set<string>>();
@@ -571,14 +582,58 @@ export function computeBranchGridLayout(input: BranchGridLayoutInput): BranchGri
   }
 
   const allCommits = [...visibleCommits].sort((a, b) => new Date(a.date).getTime() - new Date(b.date).getTime() || a.id.localeCompare(b.id));
+  const commitShasByBranchName = new Map<string, Set<string>>();
+  for (const commit of allCommits) {
+    const existing = commitShasByBranchName.get(commit.branchName) ?? new Set<string>();
+    existing.add(commit.id);
+    commitShasByBranchName.set(commit.branchName, existing);
+  }
+  const branchHasCommitSha = (branchName: string, sha: string): boolean => {
+    const knownShas = commitShasByBranchName.get(branchName);
+    if (!knownShas || knownShas.size === 0) return false;
+    for (const knownSha of knownShas) {
+      if (shasMatch(knownSha, sha)) return true;
+    }
+    return false;
+  };
+  const resolveSourceBranchName = (sourceSha: string, targetBranchName: string): string => {
+    const directMatches = Array.from(commitShasByBranchName.entries())
+      .filter(([branchName]) => branchName !== targetBranchName)
+      .filter(([, commitShas]) => Array.from(commitShas).some((knownSha) => shasMatch(knownSha, sourceSha)))
+      .map(([branchName]) => branchName);
+    if (directMatches.length > 0) return directMatches.sort()[0]!;
+    return sourceSha.slice(0, 7);
+  };
+  const mergeDestinations: MergeDestination[] = [];
+  const mergeTargetBranchesBySourceBranchAndCommitSha = new Map<string, Map<string, Set<string>>>();
   const mergeParentShasByMergeSha = new Map<string, Set<string>>();
   for (const mergeNode of mergeNodes) {
     const mergeSha = mergeNode.fullSha;
-    if (!mergeSha) continue;
-    const mergedParentShas = (mergeNode.parentShas ?? []).filter((parentSha): parentSha is string => !!parentSha && parentSha !== mergeSha);
+    const targetBranchName = mergeNode.targetBranch;
+    const targetCommitSha = mergeNode.targetCommitSha;
+    if (!mergeSha || !targetBranchName || !targetCommitSha) continue;
+    if (!branchHasCommitSha(targetBranchName, targetCommitSha)) continue;
+    const mergedParentShas = (mergeNode.parentShas ?? []).slice(1).filter(
+      (parentSha): parentSha is string => !!parentSha && !shasMatch(parentSha, mergeSha),
+    );
     if (mergedParentShas.length === 0) continue;
     const existing = mergeParentShasByMergeSha.get(mergeSha) ?? new Set<string>();
-    for (const parentSha of mergedParentShas) existing.add(parentSha);
+    for (const parentSha of mergedParentShas) {
+      existing.add(parentSha);
+      const sourceBranchName = resolveSourceBranchName(parentSha, targetBranchName);
+      mergeDestinations.push({
+        sourceCommitSha: parentSha,
+        sourceBranchName,
+        mergeCommitSha: mergeSha,
+        targetCommitSha,
+        targetBranchName,
+      });
+      const byCommitSha = mergeTargetBranchesBySourceBranchAndCommitSha.get(sourceBranchName) ?? new Map<string, Set<string>>();
+      const targetBranches = byCommitSha.get(parentSha) ?? new Set<string>();
+      targetBranches.add(targetBranchName);
+      byCommitSha.set(parentSha, targetBranches);
+      mergeTargetBranchesBySourceBranchAndCommitSha.set(sourceBranchName, byCommitSha);
+    }
     mergeParentShasByMergeSha.set(mergeSha, existing);
   }
   const branchStartAncestorByBranch = new Map<string, string>();
@@ -995,71 +1050,56 @@ export function computeBranchGridLayout(input: BranchGridLayoutInput): BranchGri
 
   const mergeConnectors: Array<{ id: string; fromX: number; fromY: number; toX: number; toY: number; zIndex: number; fromFace?: ConnectorFace; toFace?: ConnectorFace }> = [];
   const mergeConnectorGeometryKeySet = new Set<string>();
-  for (const mergeNode of mergeNodes) {
-    const mergeTargetBranch = mergeNode.targetBranch ?? defaultBranch;
+  for (const destination of mergeDestinations) {
     const mergeTarget =
-      nodeForConnectorTipSha(mergeNode.fullSha, mergeTargetBranch) ??
-      visibleNodesBySha.get(mergeNode.fullSha)?.[0] ??
-      null;
+      nodeForConnectorTipSha(destination.targetCommitSha, destination.targetBranchName) ?? null;
     if (!mergeTarget) {
       pushConnectorDecision({
-        id: `merge:${mergeNode.fullSha}:target`,
+        id: `merge:${destination.mergeCommitSha}:${destination.sourceCommitSha}:target`,
         kind: 'merge',
-        parent: mergeNode.parentShas?.[1] ?? 'unknown',
-        child: mergeNode.fullSha,
+        parent: destination.sourceCommitSha,
+        child: destination.targetCommitSha,
         rendered: false,
         reason: 'missing merge target node',
       });
       continue;
     }
-    const mergedParents = mergeNode.parentShas?.slice(1) ?? [];
-    if (mergedParents.length === 0) {
+    const parentSha = destination.sourceCommitSha;
+    const decisionId = `merge:${destination.mergeCommitSha}:${parentSha ?? 'unknown'}`;
+    if (!parentSha || shasMatch(parentSha, destination.targetCommitSha)) {
       pushConnectorDecision({
-        id: `merge:${mergeNode.fullSha}:parents`,
+        id: decisionId,
         kind: 'merge',
-        parent: 'unknown',
-        child: mergeNode.fullSha,
+        parent: parentSha ?? 'unknown',
+        child: destination.targetCommitSha,
         rendered: false,
-        reason: 'no merged parent shas',
+        reason: !parentSha ? 'missing merged parent sha' : 'merged parent equals merge target sha',
       });
       continue;
     }
-    for (const parentSha of mergedParents) {
-      const decisionId = `merge:${mergeNode.fullSha}:${parentSha ?? 'unknown'}`;
-      if (!parentSha || parentSha === mergeNode.fullSha) {
-        pushConnectorDecision({
-          id: decisionId,
-          kind: 'merge',
-          parent: parentSha ?? 'unknown',
-          child: mergeNode.fullSha,
-          rendered: false,
-          reason: !parentSha ? 'missing merged parent sha' : 'merged parent equals merge sha',
-        });
-        continue;
-      }
-      const sourceNode = nodeForCommitSha(visibleNodesBySha, parentSha) ?? null;
-      if (!sourceNode) {
-        pushConnectorDecision({
-          id: decisionId,
-          kind: 'merge',
-          parent: parentSha,
-          child: mergeNode.fullSha,
-          rendered: false,
-          reason: 'missing merge parent node',
-        });
-        continue;
-      }
-      if (sourceNode.commit.id === mergeTarget.commit.id) {
-        pushConnectorDecision({
-          id: decisionId,
-          kind: 'merge',
-          parent: sourceNode.commit.id,
-          child: mergeTarget.commit.id,
-          rendered: false,
-          reason: 'merge parent and target resolve to same node',
-        });
-        continue;
-      }
+    const sourceNode = nodeForCommitSha(visibleNodesBySha, parentSha) ?? null;
+    if (!sourceNode) {
+      pushConnectorDecision({
+        id: decisionId,
+        kind: 'merge',
+        parent: parentSha,
+        child: destination.targetCommitSha,
+        rendered: false,
+        reason: 'missing merge parent node',
+      });
+      continue;
+    }
+    if (sourceNode.commit.id === mergeTarget.commit.id) {
+      pushConnectorDecision({
+        id: decisionId,
+        kind: 'merge',
+        parent: sourceNode.commit.id,
+        child: mergeTarget.commit.id,
+        rendered: false,
+        reason: 'merge parent and target resolve to same node',
+      });
+      continue;
+    }
       let fromX: number;
       let fromY: number;
       let fromFace: ConnectorFace;
@@ -1104,9 +1144,8 @@ export function computeBranchGridLayout(input: BranchGridLayoutInput): BranchGri
         parent: sourceNode.commit.id,
         child: mergeTarget.commit.id,
         rendered: true,
-        reason: `merge connector rendered to ${mergeTargetBranch}`,
+        reason: `merge connector rendered to ${destination.targetBranchName}`,
       });
-    }
   }
 
   const crossBranchOutgoingShas = new Set<string>();
@@ -1367,5 +1406,7 @@ export function computeBranchGridLayout(input: BranchGridLayoutInput): BranchGri
     commitIdsWithRenderedAncestry,
     branchBaseCommitByName,
     firstBranchCommitByName,
+    mergeDestinations,
+    mergeTargetBranchesBySourceBranchAndCommitSha,
   };
 }

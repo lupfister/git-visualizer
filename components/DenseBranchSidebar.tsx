@@ -1,6 +1,6 @@
 import { useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import type { Dispatch, SetStateAction } from 'react';
-import type { Branch, BranchCommitPreview, CheckedOutRef, DirectCommit, MergeNode } from '../types';
+import type { Branch, BranchCommitPreview, CheckedOutRef, DirectCommit } from '../types';
 import { branchRootParentSha } from './grid/LayoutGrid';
 import { cn, shaMatchesGitRef } from './grid/mapGridUtils';
 import type { BranchGridLayoutModel } from './grid/branchGridLayoutModel';
@@ -10,7 +10,6 @@ type Props = {
   defaultBranch: string;
   branchCommitPreviews: Record<string, BranchCommitPreview[]>;
   directCommits?: DirectCommit[];
-  mergeNodes?: MergeNode[];
   checkedOutRef?: CheckedOutRef | null;
   manuallyOpenedClumps?: Set<string>;
   manuallyClosedClumps?: Set<string>;
@@ -149,9 +148,6 @@ function BranchRows({
   if (ancestors.has(branchName)) return null;
   const branch = branchByName.get(branchName);
   if (!branch) return null;
-  const parentAnchorSha = branchAnchorShaByName.get(branchName) ?? null;
-  const parentAnchorLabel = parentAnchorSha ? parentAnchorSha.slice(0, 7) : 'none';
-
   const childBranchNames = childNamesByParent.get(branchName) ?? [];
   const hasChildBranches = childBranchNames.length > 0;
   const commitPreviews = useMemo(
@@ -275,7 +271,6 @@ function BranchRows({
           ) : null}
           <span className="min-w-0 break-words">
             <span className={cn(isCheckedOut ? 'font-medium text-foreground' : 'font-normal')}>{branchName}</span>
-            <span className="ml-1 text-[10px] text-muted-foreground/80">(parent {parentAnchorLabel})</span>
           </span>
         </button>
       </div>
@@ -294,10 +289,10 @@ function BranchRows({
                     <button
                       type="button"
                       onClick={() => onSelectCommit?.(commit.fullSha)}
-                      className="min-w-0 flex-1 break-words rounded-md px-2 py-1 text-left text-sm leading-5 text-muted-foreground/70 transition-colors hover:bg-accent hover:text-muted-foreground"
+                      className="min-w-0 flex-1 truncate rounded-md px-2 py-1 text-left text-xs leading-4 text-muted-foreground/70 transition-colors hover:bg-accent hover:text-muted-foreground"
                       title={commit.message}
                     >
-                      {commit.message}
+                      <span className="block truncate">{commit.message}</span>
                     </button>
                     {clump.count > 1 && commit.fullSha === clump.lead.fullSha ? (
                       <button
@@ -305,7 +300,7 @@ function BranchRows({
                       data-clump-toggle-id={`${branchName}:${clump.lead.fullSha}`}
                       onClick={() => onToggleGridCluster(clump.key, `${branchName}:${clump.lead.fullSha}`)}
                       className={cn(
-                        'shrink-0 rounded-md px-2 py-1 text-left text-sm leading-5 text-muted-foreground/70 transition-colors hover:bg-accent hover:text-muted-foreground',
+                        'shrink-0 rounded-md px-2 py-1 text-left text-xs leading-4 text-muted-foreground/70 transition-colors hover:bg-accent hover:text-muted-foreground',
                         clumpCollapsed ? '' : 'min-w-[2ch] text-center',
                       )}
                       >
@@ -318,9 +313,9 @@ function BranchRows({
                       {mergeTargetLabels.map((targetBranch) => (
                         <div
                           key={`${commit.fullSha}:${targetBranch}`}
-                          className="min-w-0 rounded-md px-2 py-1 text-left text-sm leading-5 text-muted-foreground/70"
+                          className="min-w-0 rounded-md px-2 py-1 text-left text-xs leading-4 text-muted-foreground/70"
                         >
-                          <span>Merged from </span>
+                          <span>Merged to </span>
                           <span className="font-medium text-muted-foreground">{targetBranch}</span>
                         </div>
                       ))}
@@ -398,7 +393,6 @@ export default function DenseBranchSidebar({
   defaultBranch,
   branchCommitPreviews,
   directCommits = [],
-  mergeNodes = [],
   checkedOutRef,
   manuallyOpenedClumps: controlledManuallyOpenedClumps,
   manuallyClosedClumps: controlledManuallyClosedClumps,
@@ -495,47 +489,15 @@ export default function DenseBranchSidebar({
     }
     return next;
   }, [gridLayoutModel, branchCommitPreviewsWithDefault]);
-  const mergeSourceLabelsByTargetAndMergeSha = useMemo(() => {
-    const byTargetBranch = new Map<string, Map<string, Set<string>>>();
-    const resolveSourceBranchLabel = (parentSha: string, targetBranch: string): string => {
-      const directHeadMatches = branchesWithDefault
-        .filter((branch) => branch.name !== targetBranch)
-        .filter((branch) => shaMatchesGitRef(branch.headSha, parentSha))
-        .map((branch) => branch.name);
-      if (directHeadMatches.length > 0) return directHeadMatches.sort()[0]!;
-
-      const previewTipMatches = Object.entries(branchCommitPreviewsFromLayout)
-        .filter(([branchName]) => branchName !== targetBranch)
-        .flatMap(([branchName, previews]) => {
-          const tip = previews[previews.length - 1];
-          if (!tip) return [];
-          return shaMatchesGitRef(tip.fullSha, parentSha) || shaMatchesGitRef(tip.sha, parentSha) ? [branchName] : [];
-        });
-      if (previewTipMatches.length > 0) return previewTipMatches.sort()[0]!;
-
-      return parentSha.slice(0, 7);
-    };
-
-    for (const mergeNode of mergeNodes) {
-      const targetBranch = mergeNode.targetBranch ?? defaultBranch;
-      if (!targetBranch || !mergeNode.fullSha) continue;
-      const mergedParentShas = (mergeNode.parentShas ?? []).slice(1).filter((sha): sha is string => !!sha && !shaMatchesGitRef(sha, mergeNode.fullSha));
-      if (mergedParentShas.length === 0) continue;
-      const byMergeSha = byTargetBranch.get(targetBranch) ?? new Map<string, Set<string>>();
-      const sourceLabels = byMergeSha.get(mergeNode.fullSha) ?? new Set<string>();
-      for (const parentSha of mergedParentShas) {
-        sourceLabels.add(resolveSourceBranchLabel(parentSha, targetBranch));
-      }
-      byMergeSha.set(mergeNode.fullSha, sourceLabels);
-      byTargetBranch.set(targetBranch, byMergeSha);
-    }
-    return byTargetBranch;
-  }, [mergeNodes, defaultBranch, branchesWithDefault, branchCommitPreviewsFromLayout]);
+  const mergeTargetLabelsBySourceAndCommitSha = useMemo(
+    () => gridLayoutModel?.mergeTargetBranchesBySourceBranchAndCommitSha ?? new Map<string, Map<string, Set<string>>>(),
+    [gridLayoutModel],
+  );
   const getMergeTargetLabels = (sha: string, sourceBranchName: string): string[] => {
-    const byMergeSha = mergeSourceLabelsByTargetAndMergeSha.get(sourceBranchName);
-    if (!byMergeSha) return [];
-    for (const [mergeSha, labels] of byMergeSha.entries()) {
-      if (!shaMatchesGitRef(sha, mergeSha)) continue;
+    const byCommitSha = mergeTargetLabelsBySourceAndCommitSha.get(sourceBranchName);
+    if (!byCommitSha) return [];
+    for (const [commitSha, labels] of byCommitSha.entries()) {
+      if (!shaMatchesGitRef(sha, commitSha)) continue;
       return Array.from(labels).sort();
     }
     return [];

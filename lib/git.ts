@@ -18,10 +18,11 @@ export async function getBranches(repoPath: string): Promise<Branch[]> {
 export async function getMergeNodes(
   repoPath: string,
   branch: string,
+  excludeRef: string | null,
   page: number,
   perPage: number
 ): Promise<MergeNodesResponse> {
-  return invoke('get_merge_nodes', { repoPath, branch, page, perPage });
+  return invoke('get_merge_nodes', { repoPath, branch, excludeRef, page, perPage });
 }
 
 export async function getDefaultBranch(repoPath: string): Promise<string> {

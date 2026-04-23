@@ -88,12 +88,15 @@ pub struct MergeNode {
     pub pr_title: Option<String>,
     pub date: String,
     pub parent_shas: Vec<String>,
+    pub target_branch: String,
+    pub target_commit_sha: String,
 }
 
 /// Get merge commits from a branch (commits with 2+ parents)
 pub fn get_merge_commits(
     repo: &Path,
     branch: &str,
+    exclude_ref: Option<&str>,
     page: u32,
     per_page: u32,
 ) -> Result<(Vec<MergeNode>, bool), GitError> {
@@ -101,23 +104,40 @@ pub fn get_merge_commits(
     // Fetch one extra to determine if there are more
     let limit = per_page + 1;
 
-    let output = cli::run(
-        repo,
-        &[
-            "log",
-            "--merges",
-            "--first-parent",
-            &format!("--max-count={}", limit),
-            &format!("--skip={}", skip),
-            "--format=%H|%h|%s|%cI|%P",
-            branch,
-        ],
-    )?;
+    let revision = if let Some(exclude) = exclude_ref {
+        if exclude.is_empty() {
+            branch.to_string()
+        } else {
+            let merge_base = cli::run(repo, &["merge-base", branch, exclude])
+                .ok()
+                .map(|output| output.trim().to_string())
+                .filter(|value| !value.is_empty());
+            if let Some(base) = merge_base {
+                format!("{}..{}", base, branch)
+            } else {
+                branch.to_string()
+            }
+        }
+    } else {
+        branch.to_string()
+    };
+
+    let args = vec![
+        "log".to_string(),
+        "--merges".to_string(),
+        "--first-parent".to_string(),
+        format!("--max-count={}", limit),
+        format!("--skip={}", skip),
+        "--format=%H|%h|%s|%cI|%P".to_string(),
+        revision,
+    ];
+    let arg_refs = args.iter().map(String::as_str).collect::<Vec<&str>>();
+    let output = cli::run(repo, &arg_refs)?;
 
     let mut nodes: Vec<MergeNode> = output
         .lines()
         .filter(|s| !s.is_empty())
-        .filter_map(|line| parse_merge_commit(line))
+        .filter_map(|line| parse_merge_commit(line, branch))
         .collect();
 
     // Check if there are more results
@@ -129,7 +149,7 @@ pub fn get_merge_commits(
     Ok((nodes, has_more))
 }
 
-fn parse_merge_commit(line: &str) -> Option<MergeNode> {
+fn parse_merge_commit(line: &str, target_branch: &str) -> Option<MergeNode> {
     let parts: Vec<&str> = line.splitn(5, '|').collect();
     if parts.len() < 5 {
         return None;
@@ -152,11 +172,13 @@ fn parse_merge_commit(line: &str) -> Option<MergeNode> {
 
     Some(MergeNode {
         sha,
+        target_commit_sha: full_sha.clone(),
         full_sha,
         pr_number,
         pr_title,
         date,
         parent_shas,
+        target_branch: target_branch.to_string(),
     })
 }
 

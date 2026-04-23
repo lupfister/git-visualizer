@@ -457,12 +457,13 @@ fn get_branches(repo_path: String) -> Result<Vec<Branch>, String> {
 fn get_merge_nodes(
     repo_path: String,
     branch: String,
+    exclude_ref: Option<String>,
     page: u32,
     per_page: u32,
 ) -> Result<MergeNodesResponse, String> {
     let path = Path::new(&repo_path);
-    let (nodes, has_more) =
-        git::get_merge_commits(path, &branch, page, per_page).map_err(|e| e.to_string())?;
+    let (nodes, has_more) = git::get_merge_commits(path, &branch, exclude_ref.as_deref(), page, per_page)
+        .map_err(|e| e.to_string())?;
     Ok(MergeNodesResponse { nodes, has_more })
 }
 
