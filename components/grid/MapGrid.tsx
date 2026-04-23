@@ -13,6 +13,7 @@ import {
   CARD_BODY_TOP_OFFSET,
   CARD_WIDTH,
   type BranchGridViewProps,
+  type ConnectorFace,
   type Node,
 } from './LayoutGrid';
 import { computeBranchGridLayout } from './branchGridLayoutModel';
@@ -34,6 +35,8 @@ import {
   collectVisibleCommitIdsFromSpatialIndex,
   getViewportContentBoundsFromClientSize,
   isUsableOtherWorktree,
+  GRID_LOOSE_CABLE_STORAGE_KEY,
+  looseCableConnectorIntersectsViewportBounds,
   mergeOrthogonalConnectorIntersectsViewportBounds,
   roundedElbowConnectorIntersectsViewportBounds,
   roundedElbowVerticalFirstConnectorIntersectsViewportBounds,
@@ -118,6 +121,27 @@ export default function BranchGridMap({
   const setManuallyOpenedClumps = controlledSetManuallyOpenedClumps ?? setLocalManuallyOpenedClumps;
   const setManuallyClosedClumps = controlledSetManuallyClosedClumps ?? setLocalManuallyClosedClumps;
   const [isDebugOpen, setIsDebugOpen] = useState(false);
+  const [looseCableConnectors, setLooseCableConnectors] = useState(() => {
+    if (typeof window === 'undefined') return false;
+    try {
+      const q = new URLSearchParams(window.location.search).get('looseCables');
+      if (q === '1' || q === 'true') return true;
+      if (q === '0' || q === 'false') return false;
+      return localStorage.getItem(GRID_LOOSE_CABLE_STORAGE_KEY) === '1';
+    } catch {
+      return false;
+    }
+  });
+
+  const handleLooseCableConnectorsChange = useCallback((enabled: boolean) => {
+    setLooseCableConnectors(enabled);
+    try {
+      localStorage.setItem(GRID_LOOSE_CABLE_STORAGE_KEY, enabled ? '1' : '0');
+    } catch {
+      /* ignore */
+    }
+  }, []);
+
   const [visibleNodeIds, setVisibleNodeIds] = useState<Set<string> | null>(null);
   const [viewportClientSize, setViewportClientSize] = useState<{ width: number; height: number } | null>(null);
   const {
@@ -560,9 +584,12 @@ export default function BranchGridMap({
           MAP_GRID_CULL_VIEWPORT_INSET_SCREEN_PX,
         )
       : null;
-  const cullConnectorPath = (connector: { id: string; fromX: number; fromY: number; toX: number; toY: number }): boolean => {
+  const cullConnectorPath = (connector: { id: string; fromX: number; fromY: number; toX: number; toY: number; fromFace?: ConnectorFace; toFace?: ConnectorFace }): boolean => {
     if (!visibleBounds) return true;
     const { fromX, fromY, toX, toY } = connector;
+    if (looseCableConnectors) {
+      return looseCableConnectorIntersectsViewportBounds(fromX, fromY, toX, toY, visibleBounds, connector.fromFace, connector.toFace);
+    }
     if (connector.id.startsWith('merge:')) {
       if (orientation === 'horizontal') {
         return roundedElbowConnectorIntersectsViewportBounds(
@@ -792,6 +819,8 @@ export default function BranchGridMap({
         isOpen={isDebugOpen}
         onToggle={() => setIsDebugOpen((open) => !open)}
         onClose={() => setIsDebugOpen(false)}
+        looseCableConnectors={looseCableConnectors}
+        onLooseCableConnectorsChange={handleLooseCableConnectorsChange}
         visibleBounds={visibleBounds}
         renderedNodeCount={renderedNodeCount}
         totalNodeCount={renderNodes.length}
@@ -854,6 +883,7 @@ export default function BranchGridMap({
           mergeConnectors={mergeConnectors}
           cullConnectorPath={cullConnectorPath}
           mapOrientation={orientation}
+          looseCableConnectors={looseCableConnectors}
           flushCameraReactTick={flushCameraReactTick}
           setManuallyOpenedClumps={setManuallyOpenedClumps}
           setManuallyClosedClumps={setManuallyClosedClumps}

@@ -1,4 +1,6 @@
 import { CARD_BODY_TOP_OFFSET, CARD_HEIGHT, CARD_WIDTH, type Node } from './LayoutGrid';
+import { looseCablePathHullPoints } from './gridPathUtils';
+import type { CableFace } from './gridPathUtils';
 import type { WorktreeInfo } from '../../types';
 
 export const GRID_ZOOM_MAX = 2.25;
@@ -16,6 +18,8 @@ export const ZOOM_SETTLE_EPSILON = 0.001;
 export const GRID_CONNECTOR_GAP_PX = 0;
 export const GRID_CONNECTOR_CORNER_RADIUS_BASE_PX = 120;
 export const GRID_COMMIT_CORNER_RADIUS_BASE_PX = 12;
+/** Persisted flag for cubic “loose cable” connectors on the branch map (`localStorage`). */
+export const GRID_LOOSE_CABLE_STORAGE_KEY = 'git-visualizer-loose-cable-connectors';
 const COMMIT_CULL_CELL_W = CARD_WIDTH + 48;
 
 export type ViewportContentBounds = { left: number; top: number; right: number; bottom: number };
@@ -171,6 +175,21 @@ export function roundedElbowVerticalFirstConnectorIntersectsViewportBounds(
   if (intersectsVisibleBounds(rect, quadHull)) return true;
   if (segmentIntersectsViewportBounds(quadEndX, quadEndY, postTurnX, toY, rect)) return true;
   return segmentIntersectsViewportBounds(postTurnX, toY, finalX, toY, rect);
+}
+
+/** Viewport cull for {@link import('./gridPathUtils').buildLooseCablePath} (hull of endpoints + Bézier controls). */
+export function looseCableConnectorIntersectsViewportBounds(
+  fromX: number,
+  fromY: number,
+  toX: number,
+  toY: number,
+  rect: ViewportContentBounds,
+  fromFace?: CableFace,
+  toFace?: CableFace,
+): boolean {
+  const pts = looseCablePathHullPoints(fromX, fromY, toX, toY, fromFace, toFace);
+  const hull = axisAlignedBoundsOfPoints(pts);
+  return intersectsVisibleBounds(rect, hull);
 }
 
 export function mergeOrthogonalConnectorIntersectsViewportBounds(

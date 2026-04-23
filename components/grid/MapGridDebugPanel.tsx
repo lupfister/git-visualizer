@@ -1,9 +1,11 @@
-import { cn } from './mapGridUtils';
+import { cn, GRID_LOOSE_CABLE_STORAGE_KEY } from './mapGridUtils';
 
 type Props = {
   isOpen: boolean;
   onToggle: () => void;
   onClose: () => void;
+  looseCableConnectors: boolean;
+  onLooseCableConnectorsChange: (enabled: boolean) => void;
   visibleBounds: { left: number; top: number; right: number; bottom: number } | null;
   renderedNodeCount: number;
   totalNodeCount: number;
@@ -27,6 +29,8 @@ export default function MapGridDebugPanel({
   isOpen,
   onToggle,
   onClose,
+  looseCableConnectors,
+  onLooseCableConnectorsChange,
   visibleBounds,
   renderedNodeCount,
   totalNodeCount,
@@ -71,6 +75,23 @@ export default function MapGridDebugPanel({
             </button>
           </div>
           <div className="min-h-0 flex-1 overflow-y-auto px-4 py-3">
+            <label className="mb-3 flex cursor-pointer items-start gap-2 rounded-lg border border-border/40 bg-muted/15 px-3 py-2.5">
+              <input
+                type="checkbox"
+                checked={looseCableConnectors}
+                onChange={(event) => onLooseCableConnectorsChange(event.target.checked)}
+                className="mt-0.5 h-4 w-4 shrink-0 rounded border-border text-primary focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+              />
+              <span>
+                <span className="block text-sm font-medium text-foreground">Loose cable connectors</span>
+                <span className="mt-0.5 block text-xs text-muted-foreground">
+                  Smooth cubic paths instead of elbows. Persists in localStorage (
+                  <code className="rounded bg-muted/50 px-1 py-0.5 text-[10px]">{GRID_LOOSE_CABLE_STORAGE_KEY}</code>
+                  ). Optional URL flag:{' '}
+                  <code className="rounded bg-muted/50 px-1 py-0.5 text-[10px]">?looseCables=1</code>
+                </span>
+              </span>
+            </label>
             <pre className="whitespace-pre-wrap break-words text-[11px] leading-5 text-muted-foreground">
               {[
                 `Cull viewport (inset ${mapGridCullViewportInsetScreenPx}px screen/side): ${visibleBounds ? `${(visibleBounds.right - visibleBounds.left).toFixed(0)} x ${(visibleBounds.bottom - visibleBounds.top).toFixed(0)} content px` : 'unavailable'}`,
