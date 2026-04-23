@@ -226,7 +226,7 @@ function BranchRows({
       className={cn(
         'relative',
         depth > 0 ? 'pl-4' : 'pl-0',
-        depth === 0 && !isLast ? (isExpanded ? 'mb-12' : 'mb-1') : '',
+        depth === 0 && !isLast ? (isExpanded ? 'mb-5' : 'mb-1') : '',
       )}
     >
       {depth > 0 ? (
@@ -293,10 +293,20 @@ function BranchRows({
                     <button
                       type="button"
                       onClick={() => onSelectCommit?.(commit.fullSha)}
-                      className="min-w-0 flex-1 truncate rounded-md px-2 py-1 text-left text-xs leading-4 text-muted-foreground/70 transition-colors hover:bg-accent hover:text-muted-foreground"
+                      className="min-w-0 flex-1 rounded-md px-2 py-1 text-left text-xs leading-4 text-muted-foreground/70 transition-colors hover:bg-accent hover:text-muted-foreground"
                       title={commit.message}
                     >
                       <span className="block truncate">{commit.message}</span>
+                      {mergeTargetLabels.length > 0 ? (
+                        <span className="mt-0 block space-y-0.5">
+                          {mergeTargetLabels.map((targetBranch) => (
+                            <span key={`${commit.fullSha}:${targetBranch}`} className="block truncate">
+                              <span>Merged to </span>
+                              <span className="font-medium text-muted-foreground">{targetBranch}</span>
+                            </span>
+                          ))}
+                        </span>
+                      ) : null}
                     </button>
                     {clump.count > 1 && commit.fullSha === clump.lead.fullSha ? (
                       <button
@@ -312,19 +322,6 @@ function BranchRows({
                       </button>
                     ) : null}
                   </div>
-                  {mergeTargetLabels.length > 0 ? (
-                    <div className="mt-0.5 space-y-1">
-                      {mergeTargetLabels.map((targetBranch) => (
-                        <div
-                          key={`${commit.fullSha}:${targetBranch}`}
-                          className="min-w-0 rounded-md px-2 py-1 text-left text-xs leading-4 text-muted-foreground/70"
-                        >
-                          <span>Merged to </span>
-                          <span className="font-medium text-muted-foreground">{targetBranch}</span>
-                        </div>
-                      ))}
-                    </div>
-                  ) : null}
                   {anchoredChildrenByCommitIndex.get(idx)?.length ? (
                     <ul className="relative mb-1.75 space-y-0">
                       {anchoredChildrenByCommitIndex.get(idx)!.map((childName, childIdx, list) => (
@@ -409,7 +406,7 @@ export default function DenseBranchSidebar({
 }: Props) {
   const asideRef = useRef<HTMLElement | null>(null);
   const scrollBodyRef = useRef<HTMLDivElement | null>(null);
-  const [showCommits, setShowCommits] = useState(true);
+  const [showCommits, setShowCommits] = useState(false);
   const [localManuallyOpenedClumps, setLocalManuallyOpenedClumps] = useState<Set<string>>(() => new Set());
   const [localManuallyClosedClumps, setLocalManuallyClosedClumps] = useState<Set<string>>(() => new Set());
   const manuallyOpenedClumps = controlledManuallyOpenedClumps ?? localManuallyOpenedClumps;
