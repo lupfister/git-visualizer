@@ -297,7 +297,7 @@ function App() {
         lastOpenedAt: Date.now(),
         branchName: resolvedDefaultBranch,
       });
-      await loadProjectSnapshot(normalizedPath);
+      await loadProjectSnapshot(normalizedPath, true);
     } catch (e) {
       setError(e instanceof Error ? e.message : String(e));
     }
@@ -507,7 +507,7 @@ function App() {
 
       const snapshot = await invoke<RepoVisualSnapshot>('get_repo_visual_snapshot', {
         repoPath: path,
-        forceRefresh: false,
+        forceRefresh: true,
       });
       setProjectSnapshots((previous) => ({
         ...previous,
