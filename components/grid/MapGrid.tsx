@@ -330,6 +330,17 @@ export default function BranchGridMap({
   const checkedOutBranchName = checkedOutRef?.branchName ?? null;
   const checkedOutHeadSha = checkedOutRef?.headSha ?? null;
   const checkedOutIsDetached = checkedOutBranchName == null;
+  const focusedRenderNode = useMemo(() => {
+    if (!gridFocusSha) return null;
+    const candidates = renderNodes.filter((node) => node.commit.id === gridFocusSha);
+    if (candidates.length === 0) return null;
+    if (candidates.length === 1 || !focusedNode) return candidates[0];
+    return candidates.reduce((best, candidate) => {
+      const bestDistance = (best.x - focusedNode.x) ** 2 + (best.y - focusedNode.y) ** 2;
+      const candidateDistance = (candidate.x - focusedNode.x) ** 2 + (candidate.y - focusedNode.y) ** 2;
+      return candidateDistance < bestDistance ? candidate : best;
+    });
+  }, [gridFocusSha, renderNodes, focusedNode]);
 
   const findOtherWorktreeForCommit = useCallback(
     (branchName: string, commitFullSha: string, commitShortSha: string): WorktreeInfo | null => {
@@ -511,19 +522,54 @@ export default function BranchGridMap({
     onGridSearchResultCountChange?.(normalizedSearchQuery ? matchingNodes.length : null);
   }, [matchingNodes.length, normalizedSearchQuery, onGridSearchResultCountChange]);
 
+  const searchMatchedBranchHeadSha = useMemo(() => {
+    if (!normalizedSearchQuery) return null;
+    const query = normalizedSearchQuery;
+    const branchNames = branches.map((branch) => branch.name);
+    const exactBranchName = branchNames.find((branchName) => branchName.toLowerCase() === query);
+    const startsWithBranchName =
+      exactBranchName ?? branchNames.find((branchName) => branchName.toLowerCase().startsWith(query));
+    const includesBranchName =
+      startsWithBranchName ?? branchNames.find((branchName) => branchName.toLowerCase().includes(query));
+    const matchedBranchName = includesBranchName;
+    if (!matchedBranchName) return null;
+
+    const matchedBranch = branches.find((branch) => branch.name === matchedBranchName) ?? null;
+    if (matchedBranch?.headSha) return matchedBranch.headSha;
+
+    const previews = branchCommitPreviews[matchedBranchName] ?? [];
+    if (previews.length > 0) return previews[0]?.fullSha ?? null;
+
+    if (matchedBranchName === defaultBranch) {
+      return directCommits[0]?.fullSha ?? null;
+    }
+    return null;
+  }, [normalizedSearchQuery, branches, branchCommitPreviews, defaultBranch, directCommits]);
+
   useEffect(() => {
     if (!normalizedSearchQuery) {
       onGridSearchFocusChange?.(null);
       return;
     }
+    if (gridSearchJumpToken <= 0) return;
+    if (searchMatchedBranchHeadSha) {
+      onGridSearchFocusChange?.(searchMatchedBranchHeadSha);
+      return;
+    }
     const firstMatch = matchingNodes[0]?.commit.id ?? null;
     onGridSearchFocusChange?.(firstMatch);
-  }, [matchingNodes, normalizedSearchQuery, onGridSearchFocusChange]);
+  }, [
+    matchingNodes,
+    normalizedSearchQuery,
+    onGridSearchFocusChange,
+    searchMatchedBranchHeadSha,
+    gridSearchJumpToken,
+  ]);
 
   useLayoutEffect(() => {
     if (!gridFocusSha) return;
     const viewport = scrollContainerRef.current;
-    const focusNode = focusedNode;
+    const focusNode = focusedRenderNode;
     if (!viewport || !focusNode) return;
     const origin = getTransformLayerOriginScreen();
     if (!origin) return;
@@ -539,7 +585,7 @@ export default function BranchGridMap({
       targetScreenY - origin.y - nodeCenterY * scale,
       targetZoom,
     );
-  }, [gridFocusSha, gridSearchJumpToken, focusedNode, getTransformLayerOriginScreen]);
+  }, [gridFocusSha, gridSearchJumpToken, focusedRenderNode, getTransformLayerOriginScreen, syncCamera, renderedCameraRef]);
 
   const viewportClientW = viewportClientSize?.width ?? scrollContainerRef.current?.clientWidth ?? 0;
   const viewportClientH = viewportClientSize?.height ?? scrollContainerRef.current?.clientHeight ?? 0;
@@ -784,7 +830,7 @@ export default function BranchGridMap({
           selectedVisibleCommitShas={selectedVisibleCommitShas}
           normalizedSearchQuery={normalizedSearchQuery}
           matchingNodeIds={matchingNodeIds}
-          focusedNode={focusedNode}
+          focusedNode={focusedRenderNode}
           renderNodes={renderNodes}
           shouldRenderNode={shouldRenderNode}
           manuallyOpenedClumps={manuallyOpenedClumps}

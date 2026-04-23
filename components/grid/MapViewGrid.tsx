@@ -146,6 +146,11 @@ export default function BranchGridMapView({
             branchPromptMeta={branchPromptMeta}
             branchCommitPreviews={branchCommitPreviews}
             branchUniqueAheadCounts={branchUniqueAheadCounts}
+            gridSearchQuery={gridSearchQuery}
+            gridSearchJumpToken={gridSearchJumpToken}
+            gridFocusSha={gridFocusSha}
+            onGridSearchResultCountChange={onGridSearchResultCountChange}
+            onGridSearchFocusChange={onGridSearchFocusChange}
             staleBranches={staleBranches}
             isLoading={isLoading}
             scrollRequest={scrollRequest}
