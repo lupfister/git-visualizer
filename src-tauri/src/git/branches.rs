@@ -1,6 +1,6 @@
 use super::cli::{self, GitError};
 use rayon::prelude::*;
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use std::collections::{HashMap, HashSet};
 use std::path::Path;
 
@@ -11,7 +11,7 @@ fn is_no_merge_base_error(error: &GitError) -> bool {
     }
 }
 
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Branch {
     pub name: String,
@@ -30,7 +30,7 @@ pub struct Branch {
     pub diverged_from_date: Option<String>,
 }
 
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct CheckedOutRef {
     pub branch_name: Option<String>,

@@ -6,6 +6,8 @@ use tauri::{Emitter, Manager};
 use git::{Branch, CheckedOutRef, DirectCommit, MergeNode};
 use github::{GitHubAuthStatus, GitHubInfo, MergedPR, OpenPR};
 use chrono::{DateTime, Duration, Utc};
+use rusqlite::{params, Connection, OptionalExtension};
+use serde::{Deserialize, Serialize};
 use std::{
     collections::{HashMap, HashSet},
     fs::{self, File},
@@ -47,11 +49,52 @@ struct DeleteSelectionResult {
     discarded_uncommitted_changes: bool,
 }
 
-static WATCHER_STATE: OnceLock<Mutex<Option<notify::RecommendedWatcher>>> = OnceLock::new();
+static WATCHER_STATE: OnceLock<Mutex<HashMap<String, notify::RecommendedWatcher>>> = OnceLock::new();
 const GIT_ACTIVITY_LOCAL_MIN_EMIT_MS: u64 = 250;
 const GIT_ACTIVITY_GRAPH_MIN_EMIT_MS: u64 = 120;
+const REPO_VISUAL_CACHE_SCHEMA_VERSION: i32 = 1;
 #[cfg(target_os = "macos")]
 const OPEN_REPO_DETECTION_CACHE_TTL: StdDuration = StdDuration::from_secs(8);
+
+#[derive(Serialize, Deserialize, Clone)]
+#[serde(rename_all = "camelCase")]
+struct GitActivityEventPayload {
+    repo_path: String,
+    kind: String,
+}
+
+#[derive(Serialize, Deserialize, Clone)]
+#[serde(rename_all = "camelCase")]
+struct BranchCommitPreviewEntry {
+    full_sha: String,
+    sha: String,
+    parent_sha: Option<String>,
+    message: String,
+    author: String,
+    date: String,
+    kind: String,
+}
+
+#[derive(Serialize, Deserialize, Clone)]
+#[serde(rename_all = "camelCase")]
+struct RepoVisualSnapshot {
+    path: String,
+    name: String,
+    default_branch: String,
+    branches: Vec<Branch>,
+    merge_nodes: Vec<MergeNode>,
+    direct_commits: Vec<DirectCommit>,
+    unpushed_direct_commits: Vec<DirectCommit>,
+    unpushed_commit_shas_by_branch: HashMap<String, Vec<String>>,
+    checked_out_ref: Option<CheckedOutRef>,
+    worktrees: Vec<git::WorktreeInfo>,
+    stashes: Vec<git::GitStashEntry>,
+    branch_commit_previews: HashMap<String, Vec<BranchCommitPreviewEntry>>,
+    branch_unique_ahead_counts: HashMap<String, i32>,
+    loaded: bool,
+    cache_schema_version: i32,
+    updated_at_ms: i64,
+}
 
 fn path_contains_noise_dir(path: &Path) -> bool {
     path.components().any(|component| {
@@ -63,12 +106,384 @@ fn path_contains_noise_dir(path: &Path) -> bool {
     })
 }
 
+fn visual_cache_db_path() -> Result<PathBuf, String> {
+    let base_dir = dirs::data_local_dir()
+        .or_else(dirs::cache_dir)
+        .ok_or_else(|| "Could not determine local data directory".to_string())?;
+    Ok(base_dir.join("git-visualizer").join("repo-visual-cache.sqlite3"))
+}
+
+fn open_visual_cache_connection() -> Result<Connection, String> {
+    let db_path = visual_cache_db_path()?;
+    if let Some(parent) = db_path.parent() {
+        fs::create_dir_all(parent).map_err(|e| format!("Failed to create cache directory: {e}"))?;
+    }
+    let conn = Connection::open(db_path).map_err(|e| format!("Failed to open cache database: {e}"))?;
+    conn.execute_batch(
+        "
+        CREATE TABLE IF NOT EXISTS repo_visual_cache (
+            repo_path TEXT PRIMARY KEY,
+            payload_json TEXT NOT NULL,
+            updated_at_ms INTEGER NOT NULL,
+            schema_version INTEGER NOT NULL
+        );
+        ",
+    )
+    .map_err(|e| format!("Failed to initialize cache schema: {e}"))?;
+    Ok(conn)
+}
+
+fn load_cached_repo_visual_snapshot(repo_path: &str) -> Result<Option<RepoVisualSnapshot>, String> {
+    let conn = open_visual_cache_connection()?;
+    let row: Option<(String, i32)> = conn
+        .query_row(
+            "SELECT payload_json, schema_version FROM repo_visual_cache WHERE repo_path = ?1",
+            params![repo_path],
+            |row| Ok((row.get(0)?, row.get(1)?)),
+        )
+        .optional()
+        .map_err(|e| format!("Failed to read cache row: {e}"))?;
+    let Some((payload_json, schema_version)) = row else {
+        return Ok(None);
+    };
+    if schema_version != REPO_VISUAL_CACHE_SCHEMA_VERSION {
+        return Ok(None);
+    }
+    let payload = serde_json::from_str::<RepoVisualSnapshot>(&payload_json)
+        .map_err(|e| format!("Failed to decode cached snapshot: {e}"))?;
+    Ok(Some(payload))
+}
+
+fn store_repo_visual_snapshot(snapshot: &RepoVisualSnapshot) -> Result<(), String> {
+    let conn = open_visual_cache_connection()?;
+    let payload_json = serde_json::to_string(snapshot)
+        .map_err(|e| format!("Failed to encode repo snapshot: {e}"))?;
+    conn.execute(
+        "
+        INSERT INTO repo_visual_cache (repo_path, payload_json, updated_at_ms, schema_version)
+        VALUES (?1, ?2, ?3, ?4)
+        ON CONFLICT(repo_path) DO UPDATE SET
+            payload_json = excluded.payload_json,
+            updated_at_ms = excluded.updated_at_ms,
+            schema_version = excluded.schema_version
+        ",
+        params![
+            snapshot.path,
+            payload_json,
+            snapshot.updated_at_ms,
+            REPO_VISUAL_CACHE_SCHEMA_VERSION,
+        ],
+    )
+    .map_err(|e| format!("Failed to upsert repo snapshot: {e}"))?;
+    Ok(())
+}
+
+fn to_preview_entry(commit: CommitInfo) -> BranchCommitPreviewEntry {
+    BranchCommitPreviewEntry {
+        full_sha: commit.full_sha,
+        sha: commit.sha,
+        parent_sha: commit.parent_sha,
+        message: commit.message,
+        author: commit.author,
+        date: commit.date,
+        kind: "commit".to_string(),
+    }
+}
+
+fn fetch_all_merge_nodes_for_branches_internal(
+    repo_path: &str,
+    branches: &[Branch],
+    default_branch: &str,
+) -> Result<Vec<MergeNode>, String> {
+    let path = Path::new(repo_path);
+    let branch_names: Vec<String> = std::iter::once(default_branch.to_string())
+        .chain(branches.iter().map(|branch| branch.name.clone()))
+        .collect::<HashSet<_>>()
+        .into_iter()
+        .collect();
+    let mut deduped = HashMap::<String, MergeNode>::new();
+    for branch_name in branch_names {
+        let mut page = 0;
+        loop {
+            let (nodes, has_more) = git::get_merge_commits(path, &branch_name, None, page, 100)
+                .map_err(|e| e.to_string())?;
+            for node in nodes {
+                let key = format!("{}:{}", node.target_commit_sha, node.target_branch);
+                deduped.entry(key).or_insert(node);
+            }
+            if !has_more {
+                break;
+            }
+            page += 1;
+        }
+    }
+    Ok(deduped.into_values().collect())
+}
+
+fn compute_repo_visual_snapshot(repo_path: &str) -> Result<RepoVisualSnapshot, String> {
+    let path = Path::new(repo_path);
+    let (name, resolved_path) = git::get_repo_info(path).map_err(|e| e.to_string())?;
+    let default_branch = git::get_default_branch(path).map_err(|e| e.to_string())?;
+    let branches = git::list_branches(path, &default_branch).map_err(|e| e.to_string())?;
+    let merge_nodes = fetch_all_merge_nodes_for_branches_internal(&resolved_path, &branches, &default_branch)?;
+    let direct_commits = git::get_direct_commits(path, &default_branch, None).map_err(|e| e.to_string())?;
+    let unpushed_direct_commits = get_unpushed_direct_commits(resolved_path.clone(), default_branch.clone())?;
+    let checked_out_ref = git::get_checked_out_ref(path).ok();
+    let worktrees = git::list_worktrees(path).unwrap_or_default();
+    let stashes = git::list_stashes(path).unwrap_or_default();
+
+    let mut unpushed_commit_shas_by_branch = HashMap::new();
+    for branch_name in std::iter::once(default_branch.clone()).chain(branches.iter().map(|branch| branch.name.clone())) {
+        let shas = get_branch_unpushed_commit_shas(resolved_path.clone(), branch_name.clone()).unwrap_or_default();
+        unpushed_commit_shas_by_branch.insert(branch_name, shas);
+    }
+
+    let branch_head_by_name: HashMap<String, Branch> = branches
+        .iter()
+        .cloned()
+        .map(|branch| (branch.name.clone(), branch))
+        .collect();
+    let mut merge_node_by_merged_head_sha = HashMap::<String, MergeNode>::new();
+    for node in &merge_nodes {
+        for parent_sha in node.parent_shas.iter().skip(1) {
+            if !parent_sha.is_empty() && !merge_node_by_merged_head_sha.contains_key(parent_sha) {
+                merge_node_by_merged_head_sha.insert(parent_sha.clone(), node.clone());
+            }
+        }
+    }
+
+    let active_branches: Vec<Branch> = branches
+        .iter()
+        .filter(|branch| branch.name != default_branch)
+        .cloned()
+        .collect();
+    let mut child_branch_count_by_parent = HashMap::<String, usize>::new();
+    for branch in &active_branches {
+        if let Some(parent) = branch.parent_branch.as_ref() {
+            if parent != &branch.name {
+                *child_branch_count_by_parent.entry(parent.clone()).or_insert(0) += 1;
+            }
+        }
+    }
+    let mut head_sha_groups = HashMap::<String, Vec<Branch>>::new();
+    for branch in &active_branches {
+        if !branch.head_sha.is_empty() {
+            head_sha_groups
+                .entry(branch.head_sha.clone())
+                .or_default()
+                .push(branch.clone());
+        }
+    }
+    let mut fresh_copy_branch_names = HashSet::<String>::new();
+    for group in head_sha_groups.values() {
+        if group.len() < 2 {
+            continue;
+        }
+        let mut sorted = group.clone();
+        sorted.sort_by(|left, right| {
+            let left_date = left
+                .created_date
+                .clone()
+                .or(left.diverged_from_date.clone())
+                .unwrap_or_else(|| left.last_commit_date.clone());
+            let right_date = right
+                .created_date
+                .clone()
+                .or(right.diverged_from_date.clone())
+                .unwrap_or_else(|| right.last_commit_date.clone());
+            left_date.cmp(&right_date)
+        });
+        for branch in sorted.into_iter().skip(1) {
+            fresh_copy_branch_names.insert(branch.name);
+        }
+    }
+    for branch in &active_branches {
+        let has_children = child_branch_count_by_parent.get(&branch.name).copied().unwrap_or(0) > 0;
+        if branch.commits_ahead == 0
+            && !branch.head_sha.is_empty()
+            && !merge_node_by_merged_head_sha.contains_key(&branch.head_sha)
+            && !has_children
+        {
+            fresh_copy_branch_names.insert(branch.name.clone());
+        }
+    }
+
+    let mut branch_commit_previews = HashMap::<String, Vec<BranchCommitPreviewEntry>>::new();
+    let mut branch_unique_ahead_counts = HashMap::<String, i32>::new();
+    for branch in &active_branches {
+        let branch_created_at = branch
+            .created_date
+            .clone()
+            .or(branch.diverged_from_date.clone())
+            .unwrap_or_else(|| branch.last_commit_date.clone());
+        let branch_created_at_dt = parse_iso_to_utc(&branch_created_at);
+        let parent_comparison_base = branch
+            .parent_branch
+            .clone()
+            .filter(|parent| parent != &branch.name)
+            .unwrap_or_else(|| default_branch.clone());
+        let merge_node = merge_node_by_merged_head_sha.get(&branch.head_sha);
+        let is_merged_branch = merge_node.is_some();
+        let is_fresh_copy = fresh_copy_branch_names.contains(&branch.name);
+        let has_children = child_branch_count_by_parent.get(&branch.name).copied().unwrap_or(0) > 0;
+        let is_fresh_branch = is_fresh_copy
+            || (!is_merged_branch
+                && !has_children
+                && branch.remote_sync_status != "on-github"
+                && branch.commits_ahead == 0
+                && !branch.head_sha.is_empty()
+                && (branch.head_sha == branch.created_from_sha.clone().unwrap_or_default()
+                    || branch.head_sha == branch.diverged_from_sha.clone().unwrap_or_default()));
+        let should_use_merge_range = is_merged_branch
+            && parent_comparison_base == default_branch
+            && merge_node.map(|node| !node.full_sha.is_empty()).unwrap_or(false);
+        let merge_commit_sha = if should_use_merge_range {
+            merge_node.map(|node| node.full_sha.clone())
+        } else {
+            None
+        };
+
+        let mut history_commits: Vec<CommitInfo> = Vec::new();
+        let mut resolved_comparison_range = false;
+        if !is_fresh_branch {
+            if let Some(merge_sha) = merge_commit_sha {
+                let commits = get_branch_commits(
+                    resolved_path.clone(),
+                    branch.name.clone(),
+                    parent_comparison_base.clone(),
+                    Some(merge_sha.clone()),
+                    Some(false),
+                )?;
+                history_commits = commits
+                    .into_iter()
+                    .filter(|commit| commit.full_sha != merge_sha)
+                    .collect();
+                resolved_comparison_range = true;
+            } else {
+                let mut candidate_bases: Vec<String> = Vec::new();
+                if parent_comparison_base == default_branch {
+                    if let Some(value) = branch.created_from_sha.clone() {
+                        candidate_bases.push(value);
+                    }
+                    if let Some(value) = branch.diverged_from_sha.clone() {
+                        candidate_bases.push(value);
+                    }
+                    candidate_bases.push(parent_comparison_base.clone());
+                    candidate_bases.push(default_branch.clone());
+                } else {
+                    candidate_bases.push(parent_comparison_base.clone());
+                    if let Some(value) = branch.created_from_sha.clone() {
+                        candidate_bases.push(value);
+                    }
+                    if let Some(value) = branch.diverged_from_sha.clone() {
+                        candidate_bases.push(value);
+                    }
+                    candidate_bases.push(default_branch.clone());
+                }
+                let mut seen = HashSet::<String>::new();
+                candidate_bases.retain(|value| !value.is_empty() && seen.insert(value.clone()));
+                let mut first_successful_commits: Option<Vec<CommitInfo>> = None;
+                for base_branch in candidate_bases {
+                    let commits = match get_branch_commits(
+                        resolved_path.clone(),
+                        branch.name.clone(),
+                        base_branch.clone(),
+                        None,
+                        Some(false),
+                    ) {
+                        Ok(value) => value,
+                        Err(_) => continue,
+                    };
+                    if first_successful_commits.is_none() {
+                        first_successful_commits = Some(commits.clone());
+                    }
+                    let is_stable_top_level_base = parent_comparison_base == default_branch
+                        && (Some(base_branch.clone()) == branch.created_from_sha
+                            || Some(base_branch.clone()) == branch.diverged_from_sha);
+                    if base_branch == parent_comparison_base || is_stable_top_level_base || !commits.is_empty() {
+                        history_commits = commits;
+                        resolved_comparison_range = true;
+                        break;
+                    }
+                }
+                if !resolved_comparison_range {
+                    if let Some(commits) = first_successful_commits {
+                        history_commits = commits;
+                        resolved_comparison_range = true;
+                    }
+                }
+            }
+
+            if !resolved_comparison_range {
+                if let Some(created_at) = branch_created_at_dt {
+                    let recent = get_recent_log(
+                        resolved_path.clone(),
+                        branch.name.clone(),
+                        Some(400),
+                        Some(false),
+                        Some(false),
+                    )?;
+                    history_commits = recent
+                        .into_iter()
+                        .filter(|commit| {
+                            parse_iso_to_utc(&commit.date)
+                                .map(|date| date >= created_at)
+                                .unwrap_or(false)
+                        })
+                        .collect();
+                }
+            }
+        }
+
+        let unique_count = if is_fresh_branch {
+            0
+        } else {
+            history_commits.len() as i32
+        };
+        branch_commit_previews.insert(
+            branch.name.clone(),
+            history_commits.into_iter().map(to_preview_entry).collect(),
+        );
+        branch_unique_ahead_counts.insert(branch.name.clone(), unique_count);
+    }
+
+    Ok(RepoVisualSnapshot {
+        path: resolved_path,
+        name,
+        default_branch,
+        branches,
+        merge_nodes,
+        direct_commits,
+        unpushed_direct_commits,
+        unpushed_commit_shas_by_branch,
+        checked_out_ref,
+        worktrees,
+        stashes,
+        branch_commit_previews,
+        branch_unique_ahead_counts,
+        loaded: true,
+        cache_schema_version: REPO_VISUAL_CACHE_SCHEMA_VERSION,
+        updated_at_ms: Utc::now().timestamp_millis(),
+    })
+}
+
 #[tauri::command]
 fn watch_repo(repo_path: String, app: tauri::AppHandle) -> Result<(), String> {
     let repo_root = Path::new(&repo_path);
     let git_dir = repo_root.join(".git");
     if !git_dir.exists() {
         return Ok(());
+    }
+
+    let normalized_repo_path = repo_root.to_string_lossy().to_string();
+    {
+        let lock = WATCHER_STATE
+            .get_or_init(|| Mutex::new(HashMap::new()))
+            .lock()
+            .unwrap();
+        if lock.contains_key(&normalized_repo_path) {
+            return Ok(());
+        }
     }
 
     let (tx, rx) = std::sync::mpsc::channel();
@@ -78,6 +493,7 @@ fn watch_repo(repo_path: String, app: tauri::AppHandle) -> Result<(), String> {
     let last_local_emit_ms = std::sync::Arc::new(AtomicU64::new(0));
     let last_graph_emit_ms = std::sync::Arc::new(AtomicU64::new(0));
     let git_dir = git_dir.to_path_buf();
+    let repo_path_for_events = normalized_repo_path.clone();
 
     std::thread::spawn(move || {
         for res in rx {
@@ -117,22 +533,37 @@ fn watch_repo(repo_path: String, app: tauri::AppHandle) -> Result<(), String> {
                     if now_ms.saturating_sub(prev_ms) >= GIT_ACTIVITY_GRAPH_MIN_EMIT_MS {
                         last_graph_emit_ms.store(now_ms, Ordering::Relaxed);
                         println!("Git activity detected: {:?}", event.kind);
-                        let _ = app.emit("git-activity", "graph");
+                        let _ = app.emit(
+                            "git-activity",
+                            GitActivityEventPayload {
+                                repo_path: repo_path_for_events.clone(),
+                                kind: "graph".to_string(),
+                            },
+                        );
                     }
                 } else if has_local_change {
                     let now_ms = Utc::now().timestamp_millis().max(0) as u64;
                     let prev_ms = last_local_emit_ms.load(Ordering::Relaxed);
                     if now_ms.saturating_sub(prev_ms) >= GIT_ACTIVITY_LOCAL_MIN_EMIT_MS {
                         last_local_emit_ms.store(now_ms, Ordering::Relaxed);
-                        let _ = app.emit("git-activity", "local");
+                        let _ = app.emit(
+                            "git-activity",
+                            GitActivityEventPayload {
+                                repo_path: repo_path_for_events.clone(),
+                                kind: "local".to_string(),
+                            },
+                        );
                     }
                 }
             }
         }
     });
 
-    let mut lock = WATCHER_STATE.get_or_init(|| Mutex::new(None)).lock().unwrap();
-    *lock = Some(watcher);
+    let mut lock = WATCHER_STATE
+        .get_or_init(|| Mutex::new(HashMap::new()))
+        .lock()
+        .unwrap();
+    lock.insert(normalized_repo_path, watcher);
 
     Ok(())
 }
@@ -451,6 +882,18 @@ fn get_branches(repo_path: String) -> Result<Vec<Branch>, String> {
     let path = Path::new(&repo_path);
     let default = git::get_default_branch(path).unwrap_or_else(|_| "main".to_string());
     git::list_branches(path, &default).map_err(|e| e.to_string())
+}
+
+#[tauri::command(rename_all = "camelCase")]
+fn get_repo_visual_snapshot(repo_path: String, force_refresh: Option<bool>) -> Result<RepoVisualSnapshot, String> {
+    if !force_refresh.unwrap_or(false) {
+        if let Some(cached) = load_cached_repo_visual_snapshot(&repo_path)? {
+            return Ok(cached);
+        }
+    }
+    let snapshot = compute_repo_visual_snapshot(&repo_path)?;
+    store_repo_visual_snapshot(&snapshot)?;
+    Ok(snapshot)
 }
 
 #[tauri::command]
@@ -903,7 +1346,7 @@ fn get_branch_diff(
     }
 }
 
-#[derive(serde::Serialize)]
+#[derive(Serialize, Deserialize, Clone)]
 #[serde(rename_all = "camelCase")]
 pub struct CommitInfo {
     full_sha: String,
@@ -917,7 +1360,7 @@ pub struct CommitInfo {
     agent_prompts: Vec<AgentPrompt>,
 }
 
-#[derive(serde::Serialize, Clone)]
+#[derive(Serialize, Deserialize, Clone)]
 #[serde(rename_all = "camelCase")]
 pub struct AgentPrompt {
     id: String,
@@ -3917,6 +4360,7 @@ pub fn run() {
         .invoke_handler(tauri::generate_handler![
             start_window_drag,
             get_branches,
+            get_repo_visual_snapshot,
             get_merge_nodes,
             get_default_branch,
             get_checked_out_ref,

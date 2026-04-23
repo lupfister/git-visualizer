@@ -7,7 +7,7 @@ import BranchGridMapView, { type OrientationMode } from '../components/grid/MapV
 import DenseBranchSidebar from '../components/DenseBranchSidebar';
 import { buildLanes } from '../components/grid/LayoutGrid';
 import { computeBranchGridLayout, type BranchGridLayoutModel } from '../components/grid/branchGridLayoutModel';
-import type { Branch, BranchCommitPreview, BranchPromptMeta, BranchPromptMarker, CheckedOutRef, Commit, DirectCommit, GitHubAuthStatus, GitHubInfo, GitStashEntry, MergeNode, OpenPR, WorktreeInfo } from '../types';
+import type { Branch, BranchCommitPreview, BranchPromptMeta, BranchPromptMarker, CheckedOutRef, Commit, DirectCommit, GitHubAuthStatus, GitHubInfo, GitStashEntry, MergeNode, OpenPR, RepoVisualSnapshot, WorktreeInfo } from '../types';
 import { foldStashNodesIntoGraph } from './placeStashNode';
 
 const FROZEN_REPO_BASENAME = 'git-visualizer';
@@ -16,6 +16,10 @@ const MAX_PROJECTS = 12;
 type OpenRepoEventPayload = {
   path: string;
   sourceApp?: string | null;
+};
+type GitActivityEventPayload = {
+  repoPath: string;
+  kind: 'graph' | 'local';
 };
 const PROMPT_ENRICHMENT_ENABLED = false;
 const COMMIT_SWITCH_FEEDBACK_VISIBLE_MS = 1400;
@@ -31,6 +35,13 @@ type ProjectRecord = {
   lastOpenedAt: number;
   branchName?: string;
 };
+
+type ProjectSnapshot = RepoVisualSnapshot;
+
+function normalizePath(path: string): string {
+  if (path === '/') return path;
+  return path.replace(/\/+$/, '');
+}
 
 function cn(...classes: Array<string | false | null | undefined>) {
   return classes.filter(Boolean).join(' ');
@@ -51,7 +62,8 @@ function App() {
   const [repoPath, setRepoPath] = useState<string | null>(null);
   const [repoName, setRepoName] = useState<string>('');
   const [recentProjects, setRecentProjects] = useState<ProjectRecord[]>([]);
-  const [projectMenuOpen, setProjectMenuOpen] = useState(false);
+  const [projectSnapshots, setProjectSnapshots] = useState<Record<string, ProjectSnapshot>>({});
+  const [projectTreeLoading, setProjectTreeLoading] = useState(false);
   const [branches, setBranches] = useState<Branch[]>([]);
   const [mergeNodes, setMergeNodes] = useState<MergeNode[]>([]);
   const [directCommits, setDirectCommits] = useState<DirectCommit[]>([]);
@@ -104,9 +116,30 @@ function App() {
   const branchMetaLoadKeyRef = useRef<string | null>(null);
   const isFrozenRepo = isFrozenRepoPath(repoPath);
   const isMapInteractingRef = useRef(false);
+  const hasAttemptedAutoRestoreRef = useRef(false);
+  const loadingProjectSnapshotsRef = useRef<Set<string>>(new Set());
   const latestBranchesRef = useRef<Branch[]>([]);
   const latestDirectCommitsRef = useRef<DirectCommit[]>([]);
   const latestCheckedOutRef = useRef<CheckedOutRef | null>(null);
+  const projectCards = useMemo(
+    () => recentProjects.map((project) => ({
+      ...project,
+      ...(projectSnapshots[project.path] ?? {}),
+      branches: projectSnapshots[project.path]?.branches ?? [],
+      mergeNodes: projectSnapshots[project.path]?.mergeNodes ?? [],
+      directCommits: projectSnapshots[project.path]?.directCommits ?? [],
+      unpushedDirectCommits: projectSnapshots[project.path]?.unpushedDirectCommits ?? [],
+      unpushedCommitShasByBranch: projectSnapshots[project.path]?.unpushedCommitShasByBranch ?? {},
+      checkedOutRef: projectSnapshots[project.path]?.checkedOutRef ?? null,
+      worktrees: projectSnapshots[project.path]?.worktrees ?? [],
+      stashes: projectSnapshots[project.path]?.stashes ?? [],
+      branchCommitPreviews: projectSnapshots[project.path]?.branchCommitPreviews ?? {},
+      branchUniqueAheadCounts: projectSnapshots[project.path]?.branchUniqueAheadCounts ?? {},
+      defaultBranch: projectSnapshots[project.path]?.defaultBranch ?? project.branchName ?? 'main',
+      treeLoaded: projectSnapshots[project.path]?.loaded ?? false,
+    })),
+    [recentProjects, projectSnapshots],
+  );
 
   useEffect(() => {
     try {
@@ -127,9 +160,116 @@ function App() {
     }
   }, []);
 
+  useEffect(() => {
+    if (hasAttemptedAutoRestoreRef.current) return;
+    if (repoPath) return;
+    if (recentProjects.length === 0) return;
+
+    hasAttemptedAutoRestoreRef.current = true;
+    void loadRepo(recentProjects[0]!.path);
+  }, [recentProjects, repoPath]);
+
+  useEffect(() => {
+    if (!repoPath) return;
+    setProjectSnapshots((previous) => ({
+      ...previous,
+      [repoPath]: {
+        path: repoPath,
+        name: repoName || basenameFromPath(repoPath),
+        branches,
+        mergeNodes,
+        directCommits,
+        unpushedDirectCommits,
+        unpushedCommitShasByBranch,
+        checkedOutRef,
+        worktrees,
+        stashes,
+        branchCommitPreviews,
+        branchUniqueAheadCounts,
+        defaultBranch,
+        loaded: true,
+        cacheSchemaVersion: previous[repoPath]?.cacheSchemaVersion ?? 1,
+        updatedAtMs: Date.now(),
+      },
+    }));
+  }, [
+    repoPath,
+    repoName,
+    branches,
+    mergeNodes,
+    directCommits,
+    unpushedDirectCommits,
+    unpushedCommitShasByBranch,
+    checkedOutRef,
+    worktrees,
+    stashes,
+    branchCommitPreviews,
+    branchUniqueAheadCounts,
+    defaultBranch,
+  ]);
+
+  async function loadProjectSnapshot(path: string, forceRefresh = false) {
+    const normalizedPath = normalizePath(path);
+    if (!normalizedPath) return;
+    if (loadingProjectSnapshotsRef.current.has(normalizedPath)) return;
+    if (!forceRefresh && projectSnapshots[normalizedPath]?.loaded) return;
+
+    loadingProjectSnapshotsRef.current.add(normalizedPath);
+    setProjectTreeLoading(true);
+    try {
+      const snapshot = await invoke<RepoVisualSnapshot>('get_repo_visual_snapshot', {
+        repoPath: normalizedPath,
+        forceRefresh,
+      });
+      setProjectSnapshots((previous) => ({
+        ...previous,
+        [normalizedPath]: snapshot,
+      }));
+    } finally {
+      loadingProjectSnapshotsRef.current.delete(normalizedPath);
+      if (loadingProjectSnapshotsRef.current.size === 0) {
+        setProjectTreeLoading(false);
+      }
+    }
+  }
+
+  useEffect(() => {
+    if (recentProjects.length === 0) return;
+    recentProjects.forEach((project) => {
+      void loadProjectSnapshot(project.path);
+      void invoke('watch_repo', { repoPath: project.path }).catch(console.error);
+    });
+  }, [recentProjects]);
+
+  useEffect(() => {
+    let isDisposed = false;
+    let unlisten: (() => void) | null = null;
+
+    listen<GitActivityEventPayload>('git-activity', (event) => {
+      if (isDisposed) return;
+      const changedPath = normalizePath(event.payload.repoPath);
+      if (!changedPath || changedPath === repoPath) return;
+      void loadProjectSnapshot(changedPath, true);
+    }).then((fn) => {
+      if (isDisposed) fn();
+      else unlisten = fn;
+    }).catch(console.error);
+
+    return () => {
+      isDisposed = true;
+      if (unlisten) unlisten();
+    };
+  }, [repoPath]);
+
   function persistProject(project: ProjectRecord) {
     setRecentProjects((previous) => {
-      const next = [project, ...previous.filter((item) => item.path !== project.path)].slice(0, MAX_PROJECTS);
+      const normalizedPath = normalizePath(project.path);
+      if (!normalizedPath) return previous;
+      const normalizedProject: ProjectRecord = {
+        ...project,
+        path: normalizedPath,
+      };
+      const next = [normalizedProject, ...previous.filter((item) => item.path !== normalizedPath)].slice(0, MAX_PROJECTS);
       try {
         localStorage.setItem(PROJECTS_STORAGE_KEY, JSON.stringify(next));
       } catch {
@@ -137,6 +277,27 @@ function App() {
       }
       return next;
     });
+  }
+
+  async function addProject(path: string) {
+    const normalizedPath = normalizePath(path);
+    if (!normalizedPath) return;
+    setError(null);
+    try {
+      const [info, resolvedDefaultBranch] = await Promise.all([
+        invoke<{ name: string; path: string }>('get_repo_info', { repoPath: normalizedPath }),
+        invoke<string>('get_default_branch', { repoPath: normalizedPath }).catch(() => 'main'),
+      ]);
+      persistProject({
+        path: normalizedPath,
+        name: info.name,
+        lastOpenedAt: Date.now(),
+        branchName: resolvedDefaultBranch,
+      });
+      await loadProjectSnapshot(normalizedPath);
+    } catch (e) {
+      setError(e instanceof Error ? e.message : String(e));
+    }
   }
 
   function updateProjectBranch(path: string, branchName: string) {
@@ -645,12 +806,15 @@ function App() {
       }
     };
 
-    listen<string>('git-activity', (event) => {
-      const mode = event.payload;
+    listen<GitActivityEventPayload>('git-activity', (event) => {
+      if (normalizePath(event.payload.repoPath) !== repoPath) return;
+      const mode = event.payload.kind;
       if (mode === 'local') {
+        void loadProjectSnapshot(repoPath, true);
         void syncCheckedOutRef();
         return;
       }
+      void loadProjectSnapshot(repoPath, true);
       scheduleRefreshBurst();
     }).then(fn => {
       if (isDisposed) fn();
@@ -721,7 +885,9 @@ function App() {
       void runRefreshIfNeeded();
     };
 
-    listen<string>('git-activity', () => {
+    listen<GitActivityEventPayload>('git-activity', (event) => {
+      if (normalizePath(event.payload.repoPath) !== repoPath) return;
+      void loadProjectSnapshot(repoPath, true);
       queueRefresh();
     }).then((fn) => {
       if (isDisposed) fn();
@@ -781,7 +947,6 @@ function App() {
     setGithubAuthMessage(null);
     setCheckedOutRef(null);
     setCommitSwitchFeedback(null);
-    setProjectMenuOpen(false);
   }, [repoPath]);
 
   useEffect(() => {
@@ -1686,6 +1851,10 @@ function App() {
     setGridSearchJumpToken((token) => token + 1);
   }, [checkedOutRef?.hasUncommittedChanges, checkedOutRef?.headSha, mapGridOrientation, repoPath]);
 
+  useEffect(() => {
+    autoFocusSyncKeyRef.current = null;
+  }, [repoPath]);
+
 
 
   // Synthetic stash nodes (yellow) and optional uncommitted node (blue) — same lane rules as before.
@@ -1910,77 +2079,23 @@ function App() {
 
       <div className="relative z-10 flex h-full min-h-0 flex-col">
         <div className="relative flex h-full min-h-0 flex-1 overflow-hidden">
-          <aside className="flex h-full w-[22rem] shrink-0 flex-col border-r border-border/50 bg-card/30 pt-16">
-            <div className="flex items-center justify-between gap-3 px-5 pb-3">
-              <div className="min-w-0">
-                <p className="text-[10px] uppercase tracking-wide text-muted-foreground font-medium">Projects</p>
-                <button
-                  type="button"
-                  onClick={() => setProjectMenuOpen((value) => !value)}
-                  className="mt-1 truncate text-left text-sm font-medium text-foreground transition-colors hover:text-primary"
-                >
-                  {repoName || 'No project open'}
-                </button>
-              </div>
-              <button
-                type="button"
-                disabled={loading}
-                onClick={() => {
-                  void (async () => {
-                    try {
-                      const selected = await open({ directory: true, multiple: false, defaultPath: recentProjects[0]?.path ?? undefined });
-                      if (typeof selected === 'string' && selected) await loadRepo(selected);
-                    } catch (e) {
-                      setError(e instanceof Error ? e.message : String(e));
-                    }
-                  })();
-                }}
-                className="rounded-lg border border-border/50 bg-card px-3 py-1.5 text-xs font-medium text-foreground transition-colors hover:bg-accent disabled:cursor-not-allowed disabled:opacity-50"
-              >
-                Add repo
-              </button>
-            </div>
-            {error && (
-              <div className="px-5 pb-3">
-                <p className="rounded-xl border border-red-50 bg-red-50 px-3 py-2 text-xs text-red-600 dark:border-red-900/20 dark:bg-red-900/20 dark:text-red-400">
-                  {error}
-                </p>
-              </div>
-            )}
-            <div className="min-h-0 flex-1 overflow-y-auto px-4 pb-4">
-              <div className="flex flex-col gap-2">
-                {recentProjects.length === 0 ? (
-                  <div className="rounded-xl border border-border/50 bg-muted/30 p-4 shadow-inner">
-                    <p className="text-sm text-muted-foreground">Add a repository to get started.</p>
-                  </div>
-                ) : recentProjects.map((project) => {
-                  const isActive = project.path === repoPath;
-                  return (
-                    <button
-                      key={project.path}
-                      type="button"
-                      onClick={() => { void loadRepo(project.path); }}
-                      className={cn(
-                        'flex items-center justify-between gap-3 rounded-xl border px-4 py-3 text-left transition-colors',
-                        isActive ? 'border-primary/30 bg-primary/10 text-foreground' : 'border-border/50 bg-card hover:bg-accent',
-                      )}
-                    >
-                      <div className="min-w-0">
-                        <p className="truncate text-sm font-medium">{project.name}</p>
-                        <p className="truncate text-xs text-muted-foreground">{project.path}</p>
-                      </div>
-                      <span className="shrink-0 rounded-full border border-border/50 bg-muted/30 px-2.5 py-1 text-[10px] font-medium uppercase tracking-wide text-muted-foreground">
-                        {project.branchName ?? 'branch'}
-                      </span>
-                    </button>
-                  );
-                })}
-              </div>
-            </div>
-          </aside>
-
           <DenseBranchSidebar
             className="min-h-0 w-[27rem] shrink-0 border-r border-border/50 pb-4 pt-16"
+            projects={projectCards}
+            activeProjectPath={repoPath}
+            onSelectProject={(path) => { void loadRepo(path); }}
+            onAddProject={() => {
+              void (async () => {
+                try {
+                  const selected = await open({ directory: true, multiple: false, defaultPath: recentProjects[0]?.path ?? undefined });
+                  if (typeof selected === 'string' && selected) await addProject(selected);
+                } catch (e) {
+                  setError(e instanceof Error ? e.message : String(e));
+                }
+              })();
+            }}
+            projectLoading={loading || projectTreeLoading}
+            projectError={error}
             branches={enrichedBranches}
             defaultBranch={defaultBranch}
             branchCommitPreviews={enrichedBranchCommitPreviews}
@@ -2047,14 +2162,6 @@ function App() {
 
               <header data-map-ui className="absolute left-0 right-0 top-12 z-40 px-4 md:px-8">
                 <div className="window-no-drag pointer-events-auto relative z-10 min-h-8 content-start flex flex-wrap items-center gap-2">
-                  <button
-                    type="button"
-                    onClick={() => setProjectMenuOpen((value) => !value)}
-                    className="rounded-full border border-border bg-card px-4 py-2 text-sm font-medium text-foreground shadow-sm transition-colors hover:bg-accent"
-                    title="Switch project"
-                  >
-                    {repoName ? `${repoName} · ${checkedOutRef?.branchName ?? defaultBranch}` : 'Open a project'}
-                  </button>
                   <div
                     className="flex shrink-0 rounded-full border border-border bg-muted/20 p-0.5 shadow-sm"
                     role="radiogroup"
@@ -2171,50 +2278,6 @@ function App() {
                     </span>
                   )}
                 </div>
-                {projectMenuOpen && (
-                  <div className="window-no-drag absolute left-4 top-14 w-[22rem] rounded-2xl border border-border bg-card/95 p-3 shadow-lg backdrop-blur-sm">
-                    <div className="mb-2 flex items-center justify-between">
-                      <p className="text-[10px] uppercase tracking-wide text-muted-foreground font-medium">Switch project</p>
-                      <button
-                        type="button"
-                        onClick={() => setProjectMenuOpen(false)}
-                        className="text-xs text-muted-foreground transition-colors hover:text-foreground"
-                      >
-                        Close
-                      </button>
-                    </div>
-                    <div className="max-h-64 overflow-y-auto">
-                      <div className="flex flex-col gap-2">
-                        {recentProjects.length === 0 ? (
-                          <p className="rounded-xl border border-border/50 bg-muted/30 px-4 py-3 text-sm text-muted-foreground">
-                            No saved projects yet.
-                          </p>
-                        ) : recentProjects.map((project) => (
-                          <button
-                            key={project.path}
-                            type="button"
-                            onClick={() => {
-                              setProjectMenuOpen(false);
-                              void loadRepo(project.path);
-                            }}
-                            className={cn(
-                              'flex items-center justify-between gap-3 rounded-xl border px-4 py-3 text-left transition-colors',
-                              project.path === repoPath
-                                ? 'border-primary/30 bg-primary/10 text-foreground'
-                                : 'border-border/50 bg-card hover:bg-accent',
-                            )}
-                          >
-                            <div className="min-w-0">
-                              <p className="truncate text-sm font-medium">{project.name}</p>
-                              <p className="truncate text-xs text-muted-foreground">{project.path}</p>
-                            </div>
-                            <span className="shrink-0 text-xs text-muted-foreground">{project.branchName ?? defaultBranch}</span>
-                          </button>
-                        ))}
-                      </div>
-                    </div>
-                  </div>
-                )}
               </header>
           </div>
 

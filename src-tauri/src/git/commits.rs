@@ -1,8 +1,8 @@
 use super::cli::{self, GitError};
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use std::path::Path;
 
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct DirectCommit {
     pub full_sha: String,
@@ -79,7 +79,7 @@ pub fn stage_working_tree(repo: &Path) -> Result<(), GitError> {
     Ok(())
 }
 
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct MergeNode {
     pub sha: String,

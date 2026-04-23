@@ -1,11 +1,34 @@
 import { useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import type { Dispatch, SetStateAction } from 'react';
-import type { Branch, BranchCommitPreview, CheckedOutRef, DirectCommit } from '../types';
+import type { Branch, BranchCommitPreview, CheckedOutRef, DirectCommit, GitStashEntry, MergeNode, WorktreeInfo } from '../types';
 import { branchRootParentSha } from './grid/LayoutGrid';
 import { cn, shaMatchesGitRef } from './grid/mapGridUtils';
 import type { BranchGridLayoutModel } from './grid/branchGridLayoutModel';
+import { deriveRepoVisualState } from '../src/repoVisualState';
 
 type Props = {
+  projects: Array<{
+    path: string;
+    name: string;
+    branchName?: string;
+    branches: Branch[];
+    mergeNodes: MergeNode[];
+    directCommits: DirectCommit[];
+    unpushedDirectCommits: DirectCommit[];
+    unpushedCommitShasByBranch: Record<string, string[]>;
+    checkedOutRef: CheckedOutRef | null;
+    worktrees: WorktreeInfo[];
+    stashes: GitStashEntry[];
+    branchCommitPreviews: Record<string, BranchCommitPreview[]>;
+    branchUniqueAheadCounts: Record<string, number>;
+    defaultBranch: string;
+    treeLoaded?: boolean;
+  }>;
+  activeProjectPath: string | null;
+  onSelectProject: (path: string) => void;
+  onAddProject: () => void;
+  projectLoading?: boolean;
+  projectError?: string | null;
   branches: Branch[];
   defaultBranch: string;
   branchCommitPreviews: Record<string, BranchCommitPreview[]>;
@@ -390,6 +413,12 @@ function BranchRows({
 }
 
 export default function DenseBranchSidebar({
+  projects,
+  activeProjectPath,
+  onSelectProject,
+  onAddProject,
+  projectLoading = false,
+  projectError = null,
   branches,
   defaultBranch,
   branchCommitPreviews,
@@ -407,6 +436,7 @@ export default function DenseBranchSidebar({
   const asideRef = useRef<HTMLElement | null>(null);
   const scrollBodyRef = useRef<HTMLDivElement | null>(null);
   const [showCommits, setShowCommits] = useState(false);
+  const [expandedProjects, setExpandedProjects] = useState<Set<string>>(() => new Set());
   const [localManuallyOpenedClumps, setLocalManuallyOpenedClumps] = useState<Set<string>>(() => new Set());
   const [localManuallyClosedClumps, setLocalManuallyClosedClumps] = useState<Set<string>>(() => new Set());
   const manuallyOpenedClumps = controlledManuallyOpenedClumps ?? localManuallyOpenedClumps;
@@ -445,64 +475,6 @@ export default function DenseBranchSidebar({
     if (branches.some((branch) => branch.name === defaultBranch)) return branches;
     return [syntheticDefaultBranch, ...branches];
   }, [branches, defaultBranch, syntheticDefaultBranch]);
-  const branchCommitPreviewsWithDefault = useMemo<Record<string, BranchCommitPreview[]>>(() => {
-    const mappedDirectCommits = sortedDirectCommits.map((commit) => ({
-      fullSha: commit.fullSha,
-      sha: commit.sha,
-      parentSha: commit.parentSha ?? null,
-      message: commit.message,
-      author: commit.author,
-      date: commit.date,
-      kind: commit.kind ?? 'commit',
-    }));
-    return {
-      ...branchCommitPreviews,
-      [defaultBranch]: mappedDirectCommits,
-    };
-  }, [branchCommitPreviews, defaultBranch, sortedDirectCommits]);
-  const branchCommitPreviewsFromLayout = useMemo<Record<string, BranchCommitPreview[]>>(() => {
-    if (!gridLayoutModel) return branchCommitPreviewsWithDefault;
-    const rowByVisualId = new Map<string, number>(gridLayoutModel.nodes.map((node) => [node.commit.visualId, node.row]));
-    const next: Record<string, BranchCommitPreview[]> = {};
-    for (const commit of gridLayoutModel.allCommits) {
-      const bucket = next[commit.branchName] ?? [];
-      bucket.push({
-        fullSha: commit.id,
-        sha: commit.id.slice(0, 7),
-        parentSha: commit.parentSha ?? null,
-        message: commit.message,
-        author: commit.author,
-        date: commit.date,
-        kind: commit.kind ?? 'commit',
-      });
-      next[commit.branchName] = bucket;
-    }
-    for (const branchName of Object.keys(next)) {
-      next[branchName] = next[branchName].sort((left, right) => {
-        const leftRow = rowByVisualId.get(`${branchName}:${left.fullSha}`) ?? Number.MAX_SAFE_INTEGER;
-        const rightRow = rowByVisualId.get(`${branchName}:${right.fullSha}`) ?? Number.MAX_SAFE_INTEGER;
-        if (leftRow !== rightRow) return leftRow - rightRow;
-        const leftTime = new Date(left.date).getTime();
-        const rightTime = new Date(right.date).getTime();
-        if (leftTime !== rightTime) return leftTime - rightTime;
-        return left.fullSha.localeCompare(right.fullSha);
-      });
-    }
-    return next;
-  }, [gridLayoutModel, branchCommitPreviewsWithDefault]);
-  const mergeTargetLabelsBySourceAndCommitSha = useMemo(
-    () => gridLayoutModel?.mergeTargetBranchesBySourceBranchAndCommitSha ?? new Map<string, Map<string, Set<string>>>(),
-    [gridLayoutModel],
-  );
-  const getMergeTargetLabels = (sha: string, sourceBranchName: string): string[] => {
-    const byCommitSha = mergeTargetLabelsBySourceAndCommitSha.get(sourceBranchName);
-    if (!byCommitSha) return [];
-    for (const [commitSha, labels] of byCommitSha.entries()) {
-      if (!shaMatchesGitRef(sha, commitSha)) continue;
-      return Array.from(labels).sort();
-    }
-    return [];
-  };
   const childNamesByParent = useMemo(
     () => buildChildBranchesByParent(branchesWithDefault, defaultBranch),
     [branchesWithDefault, defaultBranch],
@@ -511,17 +483,6 @@ export default function DenseBranchSidebar({
     () => buildRootNames(branchesWithDefault, defaultBranch, childNamesByParent),
     [branchesWithDefault, defaultBranch, childNamesByParent],
   );
-  const branchByName = useMemo(() => new Map(branchesWithDefault.map((branch) => [branch.name, branch])), [branchesWithDefault]);
-  const branchAnchorShaByName = useMemo(() => {
-    const next = new Map<string, string | null>();
-    const previewsForRoot = gridLayoutModel ? branchCommitPreviewsFromLayout : branchCommitPreviewsWithDefault;
-    for (const branch of branchesWithDefault) {
-      const fromModel = gridLayoutModel?.firstBranchCommitByName.get(branch.name)?.parentSha ?? null;
-      const resolved = fromModel ?? branchRootParentSha(branch, defaultBranch, previewsForRoot);
-      next.set(branch.name, resolved);
-    }
-    return next;
-  }, [branchesWithDefault, gridLayoutModel, defaultBranch, branchCommitPreviewsWithDefault, branchCommitPreviewsFromLayout]);
   const [expandedBranchNames, setExpandedBranchNames] = useState<Set<string>>(() =>
     inferDefaultExpanded(rootBranchNames, childNamesByParent, checkedOutRef, defaultBranch),
   );
@@ -534,8 +495,6 @@ export default function DenseBranchSidebar({
     });
   }, [rootBranchNames, childNamesByParent, checkedOutRef, defaultBranch]);
 
-  const checkedOutBranchName = checkedOutRef?.branchName ?? null;
-  const clusterKeyByCommitId = gridLayoutModel?.clusterKeyByCommitId ?? new Map<string, string>();
   const defaultCollapsedClumps = gridLayoutModel?.defaultCollapsedClumps ?? new Set<string>();
   const isGridClusterOpen = (clusterKey: string): boolean =>
     manuallyOpenedClumps.has(clusterKey) ||
@@ -609,49 +568,252 @@ export default function DenseBranchSidebar({
     });
   };
 
+  useEffect(() => {
+    setExpandedProjects((previous) => {
+      const next = new Set(previous);
+      for (const project of projects) next.add(project.path);
+      if (activeProjectPath) next.add(activeProjectPath);
+      return next;
+    });
+  }, [activeProjectPath, projects]);
+
+  const projectRenderDataByPath = useMemo(() => {
+    const next = new Map<string, {
+      rootBranchNames: string[];
+      branchByName: Map<string, Branch>;
+      branchCommitPreviewsFromLayout: Record<string, BranchCommitPreview[]>;
+      childNamesByParent: Map<string, string[]>;
+      branchAnchorShaByName: Map<string, string | null>;
+      checkedOutBranchName: string | null;
+      clusterKeyByCommitId: Map<string, string>;
+      getMergeTargetLabels: (sha: string, sourceBranchName: string) => string[];
+      isGridClusterOpen: (clusterKey: string) => boolean;
+    }>();
+
+    for (const project of projects) {
+      const isActive = project.path === activeProjectPath;
+      const visualState = deriveRepoVisualState({
+        branches: project.branches,
+        mergeNodes: project.mergeNodes,
+        directCommits: project.directCommits,
+        unpushedDirectCommits: project.unpushedDirectCommits,
+        defaultBranch: project.defaultBranch,
+        branchCommitPreviews: project.branchCommitPreviews,
+        branchUniqueAheadCounts: project.branchUniqueAheadCounts,
+        checkedOutRef: project.checkedOutRef,
+        stashes: project.stashes,
+        manuallyOpenedClumps: isActive ? manuallyOpenedClumps : new Set<string>(),
+        manuallyClosedClumps: isActive ? manuallyClosedClumps : new Set<string>(),
+      });
+
+      const sortedProjectDirectCommits = [...visualState.enrichedDirectCommits].sort(
+        (left, right) => new Date(left.date).getTime() - new Date(right.date).getTime(),
+      );
+      const syntheticDefaultBranch: Branch = {
+        name: project.defaultBranch,
+        commitsAhead: 0,
+        commitsBehind: 0,
+        createdFromSha: sortedProjectDirectCommits[sortedProjectDirectCommits.length - 1]?.fullSha ?? undefined,
+        createdDate: sortedProjectDirectCommits[sortedProjectDirectCommits.length - 1]?.date,
+        lastCommitDate: sortedProjectDirectCommits[sortedProjectDirectCommits.length - 1]?.date ?? new Date(0).toISOString(),
+        lastCommitAuthor: sortedProjectDirectCommits[sortedProjectDirectCommits.length - 1]?.author ?? 'Unknown',
+        status: 'fresh',
+        remoteSyncStatus: 'on-github',
+        unpushedCommits: 0,
+        headSha: sortedProjectDirectCommits[sortedProjectDirectCommits.length - 1]?.fullSha ?? '',
+        parentBranch: undefined,
+        divergedFromSha: undefined,
+        divergedFromDate: undefined,
+      };
+      const branchesWithDefault = visualState.enrichedBranches.some((branch) => branch.name === project.defaultBranch)
+        ? visualState.enrichedBranches
+        : [syntheticDefaultBranch, ...visualState.enrichedBranches];
+      const branchCommitPreviewsWithDefault: Record<string, BranchCommitPreview[]> = {
+        ...visualState.enrichedBranchCommitPreviews,
+        [project.defaultBranch]: sortedProjectDirectCommits.map((commit) => ({
+          fullSha: commit.fullSha,
+          sha: commit.sha,
+          parentSha: commit.parentSha ?? null,
+          message: commit.message,
+          author: commit.author,
+          date: commit.date,
+          kind: commit.kind ?? 'commit',
+        })),
+      };
+      const rowByVisualId = new Map<string, number>(visualState.sharedGridLayoutModel.nodes.map((node) => [node.commit.visualId, node.row]));
+      const branchCommitPreviewsFromLayout: Record<string, BranchCommitPreview[]> = {};
+      for (const commit of visualState.sharedGridLayoutModel.allCommits) {
+        const bucket = branchCommitPreviewsFromLayout[commit.branchName] ?? [];
+        bucket.push({
+          fullSha: commit.id,
+          sha: commit.id.slice(0, 7),
+          parentSha: commit.parentSha ?? null,
+          message: commit.message,
+          author: commit.author,
+          date: commit.date,
+          kind: commit.kind ?? 'commit',
+        });
+        branchCommitPreviewsFromLayout[commit.branchName] = bucket;
+      }
+      for (const branchName of Object.keys(branchCommitPreviewsFromLayout)) {
+        branchCommitPreviewsFromLayout[branchName] = branchCommitPreviewsFromLayout[branchName]!.sort((left, right) => {
+          const leftRow = rowByVisualId.get(`${branchName}:${left.fullSha}`) ?? Number.MAX_SAFE_INTEGER;
+          const rightRow = rowByVisualId.get(`${branchName}:${right.fullSha}`) ?? Number.MAX_SAFE_INTEGER;
+          if (leftRow !== rightRow) return leftRow - rightRow;
+          const leftTime = new Date(left.date).getTime();
+          const rightTime = new Date(right.date).getTime();
+          if (leftTime !== rightTime) return leftTime - rightTime;
+          return left.fullSha.localeCompare(right.fullSha);
+        });
+      }
+      const mergeTargetLabelsBySourceAndCommitSha =
+        visualState.sharedGridLayoutModel.mergeTargetBranchesBySourceBranchAndCommitSha ?? new Map<string, Map<string, Set<string>>>();
+      const getMergeTargetLabels = (sha: string, sourceBranchName: string): string[] => {
+        const byCommitSha = mergeTargetLabelsBySourceAndCommitSha.get(sourceBranchName);
+        if (!byCommitSha) return [];
+        for (const [commitSha, labels] of byCommitSha.entries()) {
+          if (!shaMatchesGitRef(sha, commitSha)) continue;
+          return Array.from(labels).sort();
+        }
+        return [];
+      };
+      const childNamesByParent = buildChildBranchesByParent(branchesWithDefault, project.defaultBranch);
+      const rootBranchNames = buildRootNames(branchesWithDefault, project.defaultBranch, childNamesByParent);
+      const branchByName = new Map(branchesWithDefault.map((branch) => [branch.name, branch]));
+      const branchAnchorShaByName = new Map<string, string | null>();
+      for (const branch of branchesWithDefault) {
+        const fromModel = visualState.sharedGridLayoutModel.firstBranchCommitByName.get(branch.name)?.parentSha ?? null;
+        const resolved = fromModel ?? branchRootParentSha(branch, project.defaultBranch, branchCommitPreviewsWithDefault);
+        branchAnchorShaByName.set(branch.name, resolved);
+      }
+      const defaultCollapsedClumps = visualState.sharedGridLayoutModel.defaultCollapsedClumps ?? new Set<string>();
+      const localManuallyOpenedClumps = isActive ? manuallyOpenedClumps : new Set<string>();
+      const localManuallyClosedClumps = isActive ? manuallyClosedClumps : new Set<string>();
+      const isGridClusterOpen = (clusterKey: string): boolean =>
+        localManuallyOpenedClumps.has(clusterKey) ||
+        (!defaultCollapsedClumps.has(clusterKey) && !localManuallyClosedClumps.has(clusterKey));
+
+      next.set(project.path, {
+        rootBranchNames,
+        branchByName,
+        branchCommitPreviewsFromLayout,
+        childNamesByParent,
+        branchAnchorShaByName,
+        checkedOutBranchName: project.checkedOutRef?.branchName ?? null,
+        clusterKeyByCommitId: visualState.sharedGridLayoutModel.clusterKeyByCommitId ?? new Map<string, string>(),
+        getMergeTargetLabels,
+        isGridClusterOpen,
+      });
+    }
+
+    return next;
+  }, [activeProjectPath, manuallyClosedClumps, manuallyOpenedClumps, projects]);
+
   return (
     <aside
       ref={asideRef}
       aria-label="Dense branch sidebar"
       className={cn('pointer-events-auto h-full', className)}
     >
-      <div className="mb-2 flex items-center justify-between gap-3 px-5">
-        <h2 className="text-sm font-medium text-foreground">Branches</h2>
-        <button
-          type="button"
-          onClick={() => setShowCommits((value) => !value)}
-          className="shrink-0 rounded-md border border-border/60 px-2 py-0.5 text-[11px] font-medium text-muted-foreground transition-colors hover:bg-accent hover:text-foreground"
-        >
-          {showCommits ? 'Hide commits' : 'Show commits'}
-        </button>
-      </div>
-      <div ref={scrollBodyRef} className="h-[calc(100%-1.75rem)] overflow-y-auto">
-        <ul className="px-5">
-          {rootBranchNames.map((branchName, idx) => (
-            <BranchRows
-              key={branchName}
-              branchName={branchName}
-              depth={0}
-              isLast={idx === rootBranchNames.length - 1}
-              branchByName={branchByName}
-              branchCommitPreviews={branchCommitPreviewsFromLayout}
-              childNamesByParent={childNamesByParent}
-              branchAnchorShaByName={branchAnchorShaByName}
-              expandedBranchNames={expandedBranchNames}
-              onToggleBranch={handleToggleBranch}
-              checkedOutBranchName={checkedOutBranchName}
-              ancestors={new Set()}
-              showCommits={showCommits}
-              getMergeTargetLabels={getMergeTargetLabels}
-              sourceBranchName={branchName}
-              clusterKeyByCommitId={clusterKeyByCommitId}
-              isGridClusterOpen={isGridClusterOpen}
-              onToggleGridCluster={handleToggleGridCluster}
-              onSelectCommit={onSelectCommit}
-              onSelectBranch={onSelectBranch}
-            />
-          ))}
-        </ul>
+      <div className="flex h-full min-h-0 flex-col">
+        <div className="mb-2 flex items-center justify-between gap-3 px-5">
+          <h2 className="text-sm font-medium text-foreground">Projects</h2>
+          <div className="flex items-center gap-2">
+            <button
+              type="button"
+              onClick={onAddProject}
+              disabled={projectLoading}
+              className="shrink-0 rounded-md border border-border/60 px-2 py-0.5 text-[11px] font-medium text-muted-foreground transition-colors hover:bg-accent hover:text-foreground disabled:cursor-not-allowed disabled:opacity-50"
+            >
+              Add repo
+            </button>
+            <button
+              type="button"
+              onClick={() => setShowCommits((value) => !value)}
+              className="shrink-0 rounded-md border border-border/60 px-2 py-0.5 text-[11px] font-medium text-muted-foreground transition-colors hover:bg-accent hover:text-foreground"
+            >
+              {showCommits ? 'Hide commits' : 'Show commits'}
+            </button>
+          </div>
+        </div>
+        {projectError && (
+          <div className="px-5 pb-3">
+            <p className="rounded-xl border border-red-50 bg-red-50 px-3 py-2 text-xs text-red-600 dark:border-red-900/20 dark:bg-red-900/20 dark:text-red-400">
+              {projectError}
+            </p>
+          </div>
+        )}
+        <div ref={scrollBodyRef} className="mb-3 min-h-0 flex-1 space-y-2 overflow-y-auto px-5">
+          {projects.map((project) => {
+            const isActive = project.path === activeProjectPath;
+            const isExpanded = expandedProjects.has(project.path) || isActive;
+            const projectTreeLoaded = project.treeLoaded ?? project.branches.length > 0;
+            const projectRender = projectRenderDataByPath.get(project.path);
+            const expandedBranchNamesForProject = isActive
+              ? expandedBranchNames
+              : new Set(projectRender ? Array.from(projectRender.branchByName.keys()) : []);
+            return (
+              <div key={project.path} className="rounded-xl border border-border/50 bg-card">
+                <button
+                  type="button"
+                  onClick={() => onSelectProject(project.path)}
+                  className={cn(
+                    'flex w-full items-center justify-between gap-3 px-4 py-3 text-left transition-colors',
+                    isActive ? 'bg-primary/10 text-foreground' : 'hover:bg-accent',
+                  )}
+                >
+                  <div className="min-w-0">
+                    <p className="truncate text-sm font-medium">{project.name}</p>
+                    <p className="truncate text-xs text-muted-foreground">{project.path}</p>
+                  </div>
+                  <span className="shrink-0 text-xs text-muted-foreground">{project.branchName ?? 'branch'}</span>
+                </button>
+                {isExpanded && (
+                  <div className="border-t border-border/50 px-3 py-3">
+                    {projectTreeLoaded && projectRender ? (
+                      <ul className="space-y-1">
+                        {projectRender.rootBranchNames.map((branchName, idx) => (
+                          <BranchRows
+                            key={`${project.path}:${branchName}`}
+                            branchName={branchName}
+                            depth={0}
+                            isLast={idx === projectRender.rootBranchNames.length - 1}
+                            branchByName={projectRender.branchByName}
+                            branchCommitPreviews={projectRender.branchCommitPreviewsFromLayout}
+                            childNamesByParent={projectRender.childNamesByParent}
+                            branchAnchorShaByName={projectRender.branchAnchorShaByName}
+                            expandedBranchNames={expandedBranchNamesForProject}
+                            onToggleBranch={handleToggleBranch}
+                            checkedOutBranchName={projectRender.checkedOutBranchName}
+                            ancestors={new Set()}
+                            showCommits={showCommits}
+                            getMergeTargetLabels={projectRender.getMergeTargetLabels}
+                            sourceBranchName={branchName}
+                            clusterKeyByCommitId={projectRender.clusterKeyByCommitId}
+                            isGridClusterOpen={projectRender.isGridClusterOpen}
+                            onToggleGridCluster={handleToggleGridCluster}
+                            onSelectCommit={(sha) => {
+                              if (!isActive) onSelectProject(project.path);
+                              onSelectCommit?.(sha);
+                            }}
+                            onSelectBranch={(branchName) => {
+                              if (!isActive) onSelectProject(project.path);
+                              onSelectBranch?.(branchName);
+                            }}
+                          />
+                        ))}
+                      </ul>
+                    ) : (
+                      <p className="px-2 py-1 text-xs text-muted-foreground">
+                        Loading branch tree...
+                      </p>
+                    )}
+                  </div>
+                )}
+              </div>
+            );
+          })}
+        </div>
       </div>
     </aside>
   );

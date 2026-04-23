@@ -165,3 +165,22 @@ export interface ComponentGroup {
   deletions: number;
   files: ChangedFile[];
 }
+
+export interface RepoVisualSnapshot {
+  path: string;
+  name: string;
+  defaultBranch: string;
+  branches: Branch[];
+  mergeNodes: MergeNode[];
+  directCommits: DirectCommit[];
+  unpushedDirectCommits: DirectCommit[];
+  unpushedCommitShasByBranch: Record<string, string[]>;
+  checkedOutRef: CheckedOutRef | null;
+  worktrees: WorktreeInfo[];
+  stashes: GitStashEntry[];
+  branchCommitPreviews: Record<string, BranchCommitPreview[]>;
+  branchUniqueAheadCounts: Record<string, number>;
+  loaded: boolean;
+  cacheSchemaVersion: number;
+  updatedAtMs: number;
+}

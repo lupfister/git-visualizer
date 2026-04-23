@@ -1,6 +1,6 @@
 use super::branches::get_default_branch;
 use super::cli::{self, GitError};
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use std::path::Path;
 
 /// Local branch names whose tip is exactly `commit_sha` (empty if detached-only / no branch tip).
@@ -41,7 +41,7 @@ fn checkout_for_stash_base(repo: &Path, commit_sha: &str) -> Result<(), GitError
     Ok(())
 }
 
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct GitStashEntry {
     pub index: u32,
