@@ -1,7 +1,6 @@
 import { useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import type { Dispatch, SetStateAction } from 'react';
 import type { Branch, BranchCommitPreview, CheckedOutRef, DirectCommit, GitStashEntry, MergeNode, WorktreeInfo } from '../types';
-import { branchRootParentSha } from './grid/LayoutGrid';
 import { cn, shaMatchesGitRef } from './grid/mapGridUtils';
 import type { BranchGridLayoutModel } from './grid/branchGridLayoutModel';
 import { deriveRepoVisualState } from '../src/repoVisualState';
@@ -31,8 +30,6 @@ type Props = {
   projectError?: string | null;
   branches: Branch[];
   defaultBranch: string;
-  branchCommitPreviews: Record<string, BranchCommitPreview[]>;
-  directCommits?: DirectCommit[];
   checkedOutRef?: CheckedOutRef | null;
   manuallyOpenedClumps?: Set<string>;
   manuallyClosedClumps?: Set<string>;
@@ -421,8 +418,6 @@ export default function DenseBranchSidebar({
   projectError = null,
   branches,
   defaultBranch,
-  branchCommitPreviews,
-  directCommits = [],
   checkedOutRef,
   manuallyOpenedClumps: controlledManuallyOpenedClumps,
   manuallyClosedClumps: controlledManuallyClosedClumps,
@@ -445,36 +440,24 @@ export default function DenseBranchSidebar({
   const setManuallyClosedClumps = controlledSetManuallyClosedClumps ?? setLocalManuallyClosedClumps;
   const [pendingClumpFocusTargetId, setPendingClumpFocusTargetId] = useState<string | null>(null);
   const [pendingClumpAnchor, setPendingClumpAnchor] = useState<{ id: string; topWithinScrollBody: number } | null>(null);
-  const sortedDirectCommits = useMemo(
-    () =>
-      [...directCommits].sort(
-        (left, right) => new Date(left.date).getTime() - new Date(right.date).getTime(),
-      ),
-    [directCommits],
-  );
-  const syntheticDefaultBranch = useMemo<Branch>(() => {
-    const latestDirectCommit = sortedDirectCommits[sortedDirectCommits.length - 1];
-    return {
+  const branchesWithDefault = useMemo<Branch[]>(() => {
+    if (branches.some((branch) => branch.name === defaultBranch)) return branches;
+    const syntheticDefault: Branch = {
       name: defaultBranch,
       commitsAhead: 0,
       commitsBehind: 0,
-      createdFromSha: latestDirectCommit?.fullSha ?? undefined,
-      createdDate: latestDirectCommit?.date,
-      lastCommitDate: latestDirectCommit?.date ?? new Date(0).toISOString(),
-      lastCommitAuthor: latestDirectCommit?.author ?? 'Unknown',
-      status: 'fresh',
+      lastCommitDate: new Date(0).toISOString(),
+      lastCommitAuthor: 'Unknown',
+      status: 'unknown',
       remoteSyncStatus: 'on-github',
       unpushedCommits: 0,
-      headSha: latestDirectCommit?.fullSha ?? '',
+      headSha: '',
       parentBranch: undefined,
       divergedFromSha: undefined,
       divergedFromDate: undefined,
     };
-  }, [defaultBranch, sortedDirectCommits]);
-  const branchesWithDefault = useMemo(() => {
-    if (branches.some((branch) => branch.name === defaultBranch)) return branches;
-    return [syntheticDefaultBranch, ...branches];
-  }, [branches, defaultBranch, syntheticDefaultBranch]);
+    return [syntheticDefault, ...branches];
+  }, [branches, defaultBranch]);
   const childNamesByParent = useMemo(
     () => buildChildBranchesByParent(branchesWithDefault, defaultBranch),
     [branchesWithDefault, defaultBranch],
@@ -606,40 +589,22 @@ export default function DenseBranchSidebar({
         manuallyClosedClumps: isActive ? manuallyClosedClumps : new Set<string>(),
       });
 
-      const sortedProjectDirectCommits = [...visualState.enrichedDirectCommits].sort(
-        (left, right) => new Date(left.date).getTime() - new Date(right.date).getTime(),
-      );
-      const syntheticDefaultBranch: Branch = {
-        name: project.defaultBranch,
-        commitsAhead: 0,
-        commitsBehind: 0,
-        createdFromSha: sortedProjectDirectCommits[sortedProjectDirectCommits.length - 1]?.fullSha ?? undefined,
-        createdDate: sortedProjectDirectCommits[sortedProjectDirectCommits.length - 1]?.date,
-        lastCommitDate: sortedProjectDirectCommits[sortedProjectDirectCommits.length - 1]?.date ?? new Date(0).toISOString(),
-        lastCommitAuthor: sortedProjectDirectCommits[sortedProjectDirectCommits.length - 1]?.author ?? 'Unknown',
-        status: 'fresh',
-        remoteSyncStatus: 'on-github',
-        unpushedCommits: 0,
-        headSha: sortedProjectDirectCommits[sortedProjectDirectCommits.length - 1]?.fullSha ?? '',
-        parentBranch: undefined,
-        divergedFromSha: undefined,
-        divergedFromDate: undefined,
-      };
-      const branchesWithDefault = visualState.enrichedBranches.some((branch) => branch.name === project.defaultBranch)
+      const branchesWithDefault: Branch[] = visualState.enrichedBranches.some((branch) => branch.name === project.defaultBranch)
         ? visualState.enrichedBranches
-        : [syntheticDefaultBranch, ...visualState.enrichedBranches];
-      const branchCommitPreviewsWithDefault: Record<string, BranchCommitPreview[]> = {
-        ...visualState.enrichedBranchCommitPreviews,
-        [project.defaultBranch]: sortedProjectDirectCommits.map((commit) => ({
-          fullSha: commit.fullSha,
-          sha: commit.sha,
-          parentSha: commit.parentSha ?? null,
-          message: commit.message,
-          author: commit.author,
-          date: commit.date,
-          kind: commit.kind ?? 'commit',
-        })),
-      };
+        : [{
+            name: project.defaultBranch,
+            commitsAhead: 0,
+            commitsBehind: 0,
+            lastCommitDate: new Date(0).toISOString(),
+            lastCommitAuthor: 'Unknown',
+            status: 'unknown',
+            remoteSyncStatus: 'on-github',
+            unpushedCommits: 0,
+            headSha: '',
+            parentBranch: undefined,
+            divergedFromSha: undefined,
+            divergedFromDate: undefined,
+          } as Branch, ...visualState.enrichedBranches];
       const rowByVisualId = new Map<string, number>(visualState.sharedGridLayoutModel.nodes.map((node) => [node.commit.visualId, node.row]));
       const branchCommitPreviewsFromLayout: Record<string, BranchCommitPreview[]> = {};
       for (const commit of visualState.sharedGridLayoutModel.allCommits) {
@@ -683,7 +648,7 @@ export default function DenseBranchSidebar({
       const branchAnchorShaByName = new Map<string, string | null>();
       for (const branch of branchesWithDefault) {
         const fromModel = visualState.sharedGridLayoutModel.firstBranchCommitByName.get(branch.name)?.parentSha ?? null;
-        const resolved = fromModel ?? branchRootParentSha(branch, project.defaultBranch, branchCommitPreviewsWithDefault);
+        const resolved = fromModel ?? null;
         branchAnchorShaByName.set(branch.name, resolved);
       }
       const defaultCollapsedClumps = visualState.sharedGridLayoutModel.defaultCollapsedClumps ?? new Set<string>();

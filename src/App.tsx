@@ -269,13 +269,16 @@ function App() {
         ...project,
         path: normalizedPath,
       };
-      const next = [normalizedProject, ...previous.filter((item) => item.path !== normalizedPath)].slice(0, MAX_PROJECTS);
+      const next = previous.some((item) => item.path === normalizedPath)
+        ? previous.map((item) => (item.path === normalizedPath ? normalizedProject : item))
+        : [...previous, normalizedProject];
+      const trimmed = next.slice(-MAX_PROJECTS);
       try {
-        localStorage.setItem(PROJECTS_STORAGE_KEY, JSON.stringify(next));
+        localStorage.setItem(PROJECTS_STORAGE_KEY, JSON.stringify(trimmed));
       } catch {
         // ignore storage failures
       }
-      return next;
+      return trimmed;
     });
   }
 
@@ -489,11 +492,6 @@ function App() {
     setLoading(true);
     setMapLoading(true);
     setError(null);
-    setBranches([]);
-    setMergeNodes([]);
-    setDirectCommits([]);
-    setUnpushedDirectCommits([]);
-    setUnpushedCommitShasByBranch({});
 
     // Yield to the browser paint cycle so the map shell and loader are painted
     await new Promise((resolve) => setTimeout(resolve, 15));
@@ -507,7 +505,24 @@ function App() {
       setRepoName(info.name);
       setDefaultBranch(def);
 
-      // Setting repoPath triggers the useEffect which runs 'performFetch' + 'loadPromptMeta'
+      const snapshot = await invoke<RepoVisualSnapshot>('get_repo_visual_snapshot', {
+        repoPath: path,
+        forceRefresh: false,
+      });
+      setProjectSnapshots((previous) => ({
+        ...previous,
+        [path]: snapshot,
+      }));
+      setBranches(snapshot.branches);
+      setMergeNodes(snapshot.mergeNodes);
+      setDirectCommits(snapshot.directCommits);
+      setUnpushedDirectCommits(snapshot.unpushedDirectCommits);
+      setUnpushedCommitShasByBranch(snapshot.unpushedCommitShasByBranch);
+      setCheckedOutRef(snapshot.checkedOutRef);
+      setWorktrees(snapshot.worktrees);
+      setStashes(snapshot.stashes);
+      setBranchCommitPreviews(snapshot.branchCommitPreviews);
+      setBranchUniqueAheadCounts(snapshot.branchUniqueAheadCounts);
       setRepoPath(path);
       persistProject({
         path,
@@ -515,12 +530,7 @@ function App() {
         lastOpenedAt: Date.now(),
         branchName: def,
       });
-      if (isFrozenRepoPath(path)) {
-        // Frozen mode does one deterministic full refresh, then stays static
-        // (watcher/polling remain disabled for smooth panning).
-        await refreshRepoGitState(path, def);
-        setMapLoading(false);
-      }
+      setMapLoading(false);
       setLoading(false); // unblock the landing button
 
       // Phase 3: GitHub data (non-blocking)
@@ -2098,8 +2108,6 @@ function App() {
             projectError={error}
             branches={enrichedBranches}
             defaultBranch={defaultBranch}
-            branchCommitPreviews={enrichedBranchCommitPreviews}
-            directCommits={enrichedDirectCommits}
             checkedOutRef={checkedOutRef}
             manuallyOpenedClumps={manuallyOpenedGridClumps}
             manuallyClosedClumps={manuallyClosedGridClumps}
