@@ -98,6 +98,7 @@ export type BranchGridLayoutInput = {
   unpushedDirectCommits: DirectCommit[];
   defaultBranch: string;
   branchCommitPreviews: Record<string, BranchCommitPreview[]>;
+  branchParentByName?: Record<string, string | null>;
   branchUniqueAheadCounts: Record<string, number>;
   manuallyOpenedClumps: Set<string>;
   manuallyClosedClumps: Set<string>;
@@ -129,8 +130,14 @@ function allocateRowsByColumnAndTime(
   extraParentShasByCommitId: Map<string, Set<string>> = new Map(),
 ): Map<string, number> {
   if (commits.length === 0) return new Map();
-  // Use lineage-first ordering (parent before child) before row assignment.
-  const orderedCommits = orderByLineage(commits);
+  // Use strict chronological ordering first; lineage constraints are still enforced by the
+  // pending/dependency pass below before each commit can be assigned.
+  const orderedCommits = [...commits].sort((a, b) => {
+    const timeDelta = safeTimeMs(a.date) - safeTimeMs(b.date);
+    if (timeDelta !== 0) return timeDelta;
+    if (a.id !== b.id) return a.id.localeCompare(b.id);
+    return a.visualId.localeCompare(b.visualId);
+  });
   const childShasByParentSha = new Map<string, Set<string>>();
   for (const commit of commits) {
     const directParentSha = commit.parentSha ?? null;
@@ -334,56 +341,6 @@ function allocateRowsByColumnAndTime(
   return rowByVisualId;
 }
 
-function clusterByForkPoints<T>(
-  entries: Array<{ item: T }>,
-  forkIndices: Set<number>,
-): Array<{ entries: Array<{ item: T }> }> {
-  if (entries.length === 0) return [];
-  const effectiveForkIndices = new Set(
-    Array.from(forkIndices).filter((index) => index >= 0 && index < entries.length)
-  );
-  const clusters: Array<{ entries: Array<{ item: T }> }> = [];
-  let current: Array<{ item: T }> = [];
-  const flush = () => {
-    if (current.length === 0) return;
-    clusters.push({ entries: current });
-    current = [];
-  };
-  for (let i = 0; i < entries.length; i += 1) {
-    current.push(entries[i]);
-    if (effectiveForkIndices.has(i)) flush();
-  }
-  flush();
-  return clusters;
-}
-
-function splitClusterEntriesByAdjacentRows<T extends { visualId: string }>(
-  entries: Array<{ item: T }>,
-  rowByVisualId: Map<string, number>,
-): Array<Array<{ item: T }>> {
-  if (entries.length === 0) return [];
-  const chunks: Array<Array<{ item: T }>> = [];
-  let current: Array<{ item: T }> = [];
-  let previousRow: number | null = null;
-
-  const flush = () => {
-    if (current.length === 0) return;
-    chunks.push(current);
-    current = [];
-  };
-
-  for (const entry of entries) {
-    const row = rowByVisualId.get(entry.item.visualId);
-    const isAdjacent = row != null && previousRow != null && Math.abs(row - previousRow) === 1;
-    if (current.length > 0 && !isAdjacent) flush();
-    current.push(entry);
-    previousRow = row ?? null;
-  }
-
-  flush();
-  return chunks;
-}
-
 export function computeBranchGridLayout(input: BranchGridLayoutInput): BranchGridLayoutModel {
   const {
     lanes,
@@ -393,6 +350,7 @@ export function computeBranchGridLayout(input: BranchGridLayoutInput): BranchGri
     unpushedDirectCommits,
     defaultBranch,
     branchCommitPreviews,
+    branchParentByName = {},
     branchUniqueAheadCounts,
     manuallyOpenedClumps,
     manuallyClosedClumps,
@@ -506,7 +464,7 @@ export function computeBranchGridLayout(input: BranchGridLayoutInput): BranchGri
   }
 
   const resolveBranchStartParentName = (branch: Branch): string => {
-    const declaredParent = branch.parentBranch;
+    const declaredParent = branchParentByName[branch.name] ?? branch.parentBranch ?? null;
     const hasConcreteParent =
       declaredParent &&
       declaredParent !== defaultBranch &&
@@ -556,15 +514,22 @@ export function computeBranchGridLayout(input: BranchGridLayoutInput): BranchGri
   };
   const blueStartShaForBranch = (branch: Branch): string | null => resolveBranchStartSha(branch);
 
-  const structuralBlueBoundaryShas = new Set<string>();
-  for (const branch of branches) {
-    const blueSha = blueStartShaForBranch(branch);
-    if (blueSha) structuralBlueBoundaryShas.add(blueSha);
-    const forkSha = branchStartParentShaByName.get(branch.name) ?? null;
-    if (forkSha) structuralBlueBoundaryShas.add(forkSha);
+  // Canonical source of truth: backend-assigned direct commits (already de-duplicated by SHA).
+  const canonicalCommitBySha = new Map<string, VisualCommit>();
+  for (const commit of [...directCommits, ...unpushedDirectCommits]) {
+    const visualCommit: VisualCommit = {
+      ...toCommit(commit.branch || defaultBranch, commit),
+      visualId: `${commit.branch || defaultBranch}:${commit.fullSha}`,
+    };
+    canonicalCommitBySha.set(commit.fullSha, visualCommit);
   }
 
-  const visibleCommits: VisualCommit[] = [];
+  const visibleCommitBySha = new Map<string, VisualCommit>(canonicalCommitBySha);
+  const insertVisibleCommitIfMissing = (commit: VisualCommit) => {
+    if (visibleCommitBySha.has(commit.id)) return;
+    visibleCommitBySha.set(commit.id, commit);
+  };
+
   const branchCommitShaSets = new Map<string, Set<string>>(
     Array.from(branchCommitsByLane.entries()).map(([branchName, commits]) => [
       branchName,
@@ -577,13 +542,17 @@ export function computeBranchGridLayout(input: BranchGridLayoutInput): BranchGri
   }
   for (const commit of mainCommits) {
     if (branchCommitShaUnion.has(commit.id)) continue;
-    visibleCommits.push({ ...commit, visualId: `${defaultBranch}:${commit.id}` });
+    insertVisibleCommitIfMissing({ ...commit, visualId: `${commit.branchName}:${commit.id}` });
   }
   for (const [branchName, commits] of branchCommitsByLane.entries()) {
     for (const commit of commits) {
-      visibleCommits.push({ ...commit, visualId: `${branchName}:${commit.id}` });
+      insertVisibleCommitIfMissing({ ...commit, visualId: `${branchName}:${commit.id}` });
     }
   }
+  const visibleCommits: VisualCommit[] = Array.from(visibleCommitBySha.values()).map((commit) => ({
+    ...commit,
+    visualId: `${commit.branchName}:${commit.id}`,
+  }));
 
   const allCommits = [...visibleCommits].sort((a, b) => safeTimeMs(a.date) - safeTimeMs(b.date) || a.id.localeCompare(b.id));
   const commitShasByBranchName = new Map<string, Set<string>>();
@@ -668,27 +637,11 @@ export function computeBranchGridLayout(input: BranchGridLayoutInput): BranchGri
     list.push(commit);
     commitsByBranch.set(commit.branchName, list);
   }
-  /** One pass over `branches` — avoids O(|branches| × |commitsByBranch|) filters inside clustering. */
-  const childBranchesByParentName = new Map<string, Branch[]>();
-  for (const branch of branches) {
-    if (branch.name === defaultBranch) continue;
-    const parentName = resolveBranchStartParentName(branch);
-    const bucket = childBranchesByParentName.get(parentName) ?? [];
-    bucket.push(branch);
-    childBranchesByParentName.set(parentName, bucket);
-  }
   const clustersByBranch = new Map<string, GridCluster[]>();
   const clusterKeyByCommitId = new Map<string, string>();
   const clusterKeyBySha = new Map<string, string[]>();
   const leadByClusterKey = new Map<string, string>();
   const clusterCounts = new Map<string, number>();
-  const checkedOutHeadSha = checkedOutRef?.headSha ?? null;
-  const checkedOutBranchName = checkedOutRef?.branchName ?? null;
-  const matchesCheckedOutCommit = (branchName: string, commitSha: string): boolean => {
-    if (!checkedOutHeadSha) return false;
-    if (checkedOutBranchName && checkedOutBranchName !== branchName) return false;
-    return commitSha === checkedOutHeadSha || commitSha.startsWith(checkedOutHeadSha) || checkedOutHeadSha.startsWith(commitSha);
-  };
   const buildClustersForBranch = (branchName: string, commits: VisualCommit[]): GridCluster[] => {
     if (commits.length === 0) return [];
     const ordered = [...commits].sort((a, b) => {
@@ -697,91 +650,35 @@ export function computeBranchGridLayout(input: BranchGridLayoutInput): BranchGri
       if (aRow !== bRow) return aRow - bRow;
       return safeTimeMs(a.date) - safeTimeMs(b.date) || a.id.localeCompare(b.id);
     });
-    const forkIdx = new Set<number>();
-    const branchChildBranches = childBranchesByParentName.get(branchName) ?? [];
-    if (branchChildBranches.length > 0) {
-      const branchTimes = ordered.map((commit) => safeTimeMs(commit.date));
-      branchChildBranches.forEach((child) => {
-        const childForkSha = branchStartParentShaByName.get(child.name) ?? null;
-        if (childForkSha) {
-          const bySha = ordered.findIndex((commit) =>
-            commit.id === childForkSha ||
-            commit.id.startsWith(childForkSha) ||
-            childForkSha.startsWith(commit.id)
-          );
-          if (bySha >= 0) {
-            forkIdx.add(bySha);
-            return;
-          }
-        }
-        const childForkTime = safeTimeMs(child.divergedFromDate ?? child.createdDate ?? child.lastCommitDate);
-        if (!Number.isFinite(childForkTime) || branchTimes.length === 0) return;
-        let bestPastIndex = -1;
-        let bestPastDelta = Number.POSITIVE_INFINITY;
-        let bestFutureIndex = -1;
-        let bestFutureDelta = Number.POSITIVE_INFINITY;
-        for (let index = 0; index < branchTimes.length; index += 1) {
-          const time = branchTimes[index];
-          if (!Number.isFinite(time)) continue;
-          if (time <= childForkTime) {
-            const delta = childForkTime - time;
-            if (delta < bestPastDelta) {
-              bestPastDelta = delta;
-              bestPastIndex = index;
-            }
-          } else {
-            const delta = time - childForkTime;
-            if (delta < bestFutureDelta) {
-              bestFutureDelta = delta;
-              bestFutureIndex = index;
-            }
-          }
-        }
-        const idx = bestPastIndex >= 0 ? bestPastIndex : bestFutureIndex;
-        if (idx >= 0) forkIdx.add(idx);
-      });
+    const entriesByKey = new Map<string, VisualCommit[]>();
+    for (const commit of ordered) {
+      const key = commit.clusterKey?.trim() || `cluster:${branchName}:${commit.id}`;
+      const list = entriesByKey.get(key) ?? [];
+      list.push(commit);
+      entriesByKey.set(key, list);
     }
-    ordered.forEach((commit, index) => {
-      if (structuralBlueBoundaryShas.has(commit.id)) {
-        if (index < ordered.length - 1) forkIdx.add(index);
-      }
-      if (commit.kind === 'uncommitted' || commit.kind === 'stash' || commit.id === 'WORKING_TREE' || commit.id.startsWith('STASH:')) {
-        // `clusterByForkPoints` flushes after pushing the current entry, so add a fork
-        // on both sides to keep uncommitted/stash commits out of neighboring clumps.
-        if (index > 0) forkIdx.add(index - 1);
-        forkIdx.add(index);
-      }
-      if (matchesCheckedOutCommit(branchName, commit.id)) {
-        // Keep the checked-out commit independent and prevent it from merging into neighboring clumps.
-        if (index > 0) forkIdx.add(index - 1);
-        forkIdx.add(index);
-      }
-    });
-    const clusterEntries = clusterByForkPoints(
-      ordered.map((commit) => ({ item: commit })),
-      forkIdx,
-    );
     const clusters: GridCluster[] = [];
-    clusterEntries.forEach((cluster, clusterIndex) => {
-      const rowAdjacentChunks = splitClusterEntriesByAdjacentRows(cluster.entries, allRowByVisualId);
-      rowAdjacentChunks.forEach((rowAdjacentChunk, adjacentChunkIndex) => {
-        const chunk = rowAdjacentChunk.map((entry) => entry.item);
-        if (chunk.length === 0) return;
-        const key = `grid-clump-${branchName}-${chunk[0].id}-${chunk[chunk.length - 1].id}-${clusterIndex}-${adjacentChunkIndex}`;
-        const leadId = chunk[chunk.length - 1].visualId;
-        const clusterVm = { branchName, key, commitIds: chunk.map((commit) => commit.visualId), leadId, count: chunk.length };
-        clusters.push(clusterVm);
-        leadByClusterKey.set(key, leadId);
-        clusterCounts.set(key, chunk.length);
-        for (const id of clusterVm.commitIds) {
-          clusterKeyByCommitId.set(id, key);
-          const sha = id.split(':').slice(1).join(':');
-          const keys = clusterKeyBySha.get(sha) ?? [];
-          if (!keys.includes(key)) keys.push(key);
-          clusterKeyBySha.set(sha, keys);
-        }
-      });
-    });
+    for (const [key, chunk] of entriesByKey.entries()) {
+      if (chunk.length === 0) continue;
+      const lead = [...chunk].sort((a, b) => {
+        const aRow = allRowByVisualId.get(a.visualId) ?? Number.MIN_SAFE_INTEGER;
+        const bRow = allRowByVisualId.get(b.visualId) ?? Number.MIN_SAFE_INTEGER;
+        if (aRow !== bRow) return bRow - aRow;
+        return safeTimeMs(b.date) - safeTimeMs(a.date) || b.id.localeCompare(a.id);
+      })[0]!;
+      const leadId = lead.visualId;
+      const clusterVm = { branchName, key, commitIds: chunk.map((commit) => commit.visualId), leadId, count: chunk.length };
+      clusters.push(clusterVm);
+      leadByClusterKey.set(key, leadId);
+      clusterCounts.set(key, chunk.length);
+      for (const id of clusterVm.commitIds) {
+        clusterKeyByCommitId.set(id, key);
+        const sha = id.split(':').slice(1).join(':');
+        const keys = clusterKeyBySha.get(sha) ?? [];
+        if (!keys.includes(key)) keys.push(key);
+        clusterKeyBySha.set(sha, keys);
+      }
+    }
     return clusters;
   };
   for (const [branchName, commits] of commitsByBranch.entries()) {
@@ -789,21 +686,28 @@ export function computeBranchGridLayout(input: BranchGridLayoutInput): BranchGri
   }
 
   const debugRows = isDebugOpen
-    ? branches.flatMap((branch) => {
-        const previews = branchCommitPreviews[branch.name] ?? [];
-        const concretePreviews = [...(branchPreviewSets.get(branch.name) ?? [])].reverse();
-        const renderedPreviewIds = new Set((branchCommitsByLane.get(branch.name) ?? []).map((commit) => commit.id));
-        return [
-          `Branch ${branch.name}`,
-          `  ahead=${branchUniqueAheadCounts[branch.name] ?? 0} previews=${concretePreviews.length} rendered=${renderedPreviewIds.size}`,
-          ...concretePreviews.map((commit) => {
-            const status = renderedPreviewIds.has(commit.fullSha) ? 'visible' : 'hidden';
-            const reason = renderedPreviewIds.has(commit.fullSha) ? 'kept by render set' : 'dropped by render set';
-            return `  ${status} ${commit.fullSha.slice(0, 7)} ${commit.message} [${reason}]`;
-          }),
-          previews.length === 0 ? '  no preview data' : null,
-        ].filter((line): line is string => line != null);
-      })
+    ? [
+        'Lane rows (expected):',
+        ...[...lanes]
+          .sort((a, b) => a.column - b.column || a.name.localeCompare(b.name))
+          .map((lane) => `  row=${lane.column} branch=${lane.name} parent=${lane.parentName ?? 'none'}`),
+        '',
+        ...branches.flatMap((branch) => {
+          const previews = branchCommitPreviews[branch.name] ?? [];
+          const concretePreviews = [...(branchPreviewSets.get(branch.name) ?? [])].reverse();
+          const renderedPreviewIds = new Set((branchCommitsByLane.get(branch.name) ?? []).map((commit) => commit.id));
+          return [
+            `Branch ${branch.name}`,
+            `  ahead=${branchUniqueAheadCounts[branch.name] ?? 0} previews=${concretePreviews.length} rendered=${renderedPreviewIds.size}`,
+            ...concretePreviews.map((commit) => {
+              const status = renderedPreviewIds.has(commit.fullSha) ? 'visible' : 'hidden';
+              const reason = renderedPreviewIds.has(commit.fullSha) ? 'kept by render set' : 'dropped by render set';
+              return `  ${status} ${commit.fullSha.slice(0, 7)} ${commit.message} [${reason}]`;
+            }),
+            previews.length === 0 ? '  no preview data' : null,
+          ].filter((line): line is string => line != null);
+        }),
+      ]
     : [];
   const branchDebugRows = isDebugOpen
     ? Array.from(branchCommitsByLane.entries()).map(([branchName, commits]) => {
@@ -1233,30 +1137,34 @@ export function computeBranchGridLayout(input: BranchGridLayoutInput): BranchGri
     });
   }
 
-  for (const node of renderNodes) {
-    const parentSha = node.commit.parentSha ?? null;
+  for (const commit of allCommits) {
+    const childNode = resolveConnectorNode(commit);
+    if (!childNode) continue;
+    const parentSha = commit.parentSha ?? null;
     if (!parentSha) continue;
-    const parentNode = resolveParentNode(parentSha, node.commit.branchName);
+    const parentNode =
+      nodeForConnectorTipSha(parentSha, commit.branchName)
+      ?? resolveParentNode(parentSha, commit.branchName);
     if (!parentNode) {
-      const parentClusterKey = clusterKeyByCommitId.get(`${node.commit.branchName}:${parentSha}`) ?? clusterKeyByCommitId.get(parentSha);
+      const parentClusterKey =
+        clusterKeyByCommitId.get(`${commit.branchName}:${parentSha}`) ?? clusterKeyByCommitId.get(parentSha);
       const parentClusterDefaultOpen = !!parentClusterKey && !defaultCollapsedClumps.has(parentClusterKey);
       const parentHiddenByClump = !!parentClusterKey
         && !manuallyOpenedClumps.has(parentClusterKey)
         && (parentClusterDefaultOpen ? manuallyClosedClumps.has(parentClusterKey) : true);
       if (!parentHiddenByClump) {
-        addNodeWarning(node.commit.id, 'Missing parent node');
+        addNodeWarning(commit.id, 'Missing parent node');
       }
       pushConnectorDecision({
-        id: `${node.commit.visualId}->${parentSha}`,
+        id: `${commit.visualId}->${parentSha}`,
         kind: 'ancestry',
         parent: parentSha,
-        child: node.commit.id,
+        child: commit.id,
         rendered: false,
         reason: 'missing parent node',
       });
       continue;
     }
-    const childNode = node;
     if (childNode.commit.id === parentNode.commit.id) {
       addNodeWarning(childNode.commit.id, 'Parent and child resolve to the same node');
       pushConnectorDecision({
@@ -1269,7 +1177,7 @@ export function computeBranchGridLayout(input: BranchGridLayoutInput): BranchGri
       });
       continue;
     }
-    const key = `${node.commit.branchName}:${parentNode.commit.visualId ?? parentNode.commit.id}->${childNode.commit.visualId}`;
+    const key = `${commit.branchName}:${parentNode.commit.visualId ?? parentNode.commit.id}->${childNode.commit.visualId}`;
     if (connectorKeySet.has(key)) {
       addNodeWarning(parentNode.commit.id, 'Duplicate connector key');
       addNodeWarning(childNode.commit.id, 'Duplicate connector key');

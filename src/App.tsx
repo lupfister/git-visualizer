@@ -103,6 +103,7 @@ function App() {
   const [deleteInProgress, setDeleteInProgress] = useState(false);
   const [branchPromptMeta, setBranchPromptMeta] = useState<Record<string, BranchPromptMeta>>({});
   const [branchCommitPreviews, setBranchCommitPreviews] = useState<Record<string, BranchCommitPreview[]>>({});
+  const [branchParentByName, setBranchParentByName] = useState<Record<string, string | null>>({});
   const [branchUniqueAheadCounts, setBranchUniqueAheadCounts] = useState<Record<string, number>>({});
   const [stashes, setStashes] = useState<GitStashEntry[]>([]);
   const [stashInProgress, setStashInProgress] = useState(false);
@@ -187,6 +188,7 @@ function App() {
         worktrees,
         stashes,
         branchCommitPreviews,
+        branchParentByName,
         branchUniqueAheadCounts,
         defaultBranch,
         loaded: true,
@@ -206,6 +208,7 @@ function App() {
     worktrees,
     stashes,
     branchCommitPreviews,
+    branchParentByName,
     branchUniqueAheadCounts,
     defaultBranch,
   ]);
@@ -502,6 +505,7 @@ function App() {
     setWorktrees(snapshot.worktrees);
     setStashes(snapshot.stashes);
     setBranchCommitPreviews(snapshot.branchCommitPreviews);
+    setBranchParentByName(snapshot.branchParentByName ?? {});
     setBranchUniqueAheadCounts(snapshot.branchUniqueAheadCounts);
     setRepoPath(path);
   }
@@ -1028,6 +1032,7 @@ function App() {
     if (!repoPath || !defaultBranch) {
       setBranchPromptMeta({});
       setBranchCommitPreviews({});
+      setBranchParentByName({});
       setBranchUniqueAheadCounts({});
       branchMetaLoadKeyRef.current = null;
       return;
@@ -2028,6 +2033,8 @@ function App() {
       fullSha: 'WORKING_TREE',
       sha: 'Uncommited Changes',
       parentSha: checkedOutAnchorSha,
+      childShas: [],
+      branch: defaultBranch,
       message: 'Local uncommitted changes',
       author: 'You',
       date: uncommittedDate,
@@ -2101,9 +2108,17 @@ function App() {
       enrichedDirectCommits: edc,
     };
   }, [branches, branchCommitPreviews, branchUniqueAheadCounts, checkedOutRef, defaultBranch, directCommits, stashes]);
+  const enrichedBranchParentByName = useMemo(() => {
+    const map: Record<string, string | null> = { ...branchParentByName };
+    map[defaultBranch] = null;
+    for (const branch of enrichedBranches) {
+      if (map[branch.name] == null) map[branch.name] = branch.parentBranch ?? null;
+    }
+    return map;
+  }, [branchParentByName, defaultBranch, enrichedBranches]);
   const sharedGridLanes = useMemo(
-    () => buildLanes(enrichedBranches, defaultBranch, enrichedBranchCommitPreviews),
-    [enrichedBranches, defaultBranch, enrichedBranchCommitPreviews],
+    () => buildLanes(enrichedBranches, defaultBranch, enrichedBranchCommitPreviews, enrichedBranchParentByName),
+    [enrichedBranches, defaultBranch, enrichedBranchCommitPreviews, enrichedBranchParentByName],
   );
   const sharedGridLayoutModel: BranchGridLayoutModel = useMemo(
     () =>
@@ -2115,6 +2130,7 @@ function App() {
         unpushedDirectCommits,
         defaultBranch,
         branchCommitPreviews: enrichedBranchCommitPreviews,
+        branchParentByName: enrichedBranchParentByName,
         branchUniqueAheadCounts: enrichedBranchUniqueAheadCounts,
         manuallyOpenedClumps: manuallyOpenedGridClumps,
         manuallyClosedClumps: manuallyClosedGridClumps,
@@ -2132,6 +2148,7 @@ function App() {
       unpushedDirectCommits,
       defaultBranch,
       enrichedBranchCommitPreviews,
+      enrichedBranchParentByName,
       enrichedBranchUniqueAheadCounts,
       manuallyOpenedGridClumps,
       manuallyClosedGridClumps,
@@ -2192,6 +2209,7 @@ function App() {
                 unpushedCommitShasByBranch={unpushedCommitShasByBranch}
                 defaultBranch={defaultBranch}
                 branchCommitPreviews={enrichedBranchCommitPreviews}
+                branchParentByName={enrichedBranchParentByName}
                 branchUniqueAheadCounts={enrichedBranchUniqueAheadCounts}
                 gridSearchQuery={gridSearchQuery}
                 gridSearchJumpToken={gridSearchJumpToken}

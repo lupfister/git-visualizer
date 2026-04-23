@@ -103,6 +103,9 @@ export interface DirectCommit {
   fullSha: string;
   sha: string;
   parentSha?: string | null;
+  childShas: string[];
+  clusterKey?: string | null;
+  branch: string;
   message: string;
   author: string;
   date: string;
@@ -179,6 +182,7 @@ export interface RepoVisualSnapshot {
   worktrees: WorktreeInfo[];
   stashes: GitStashEntry[];
   branchCommitPreviews: Record<string, BranchCommitPreview[]>;
+  branchParentByName: Record<string, string | null>;
   branchUniqueAheadCounts: Record<string, number>;
   loaded: boolean;
   cacheSchemaVersion: number;

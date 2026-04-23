@@ -1,7 +1,8 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import type { MouseEvent, MutableRefObject, RefObject } from 'react';
 import { CARD_BODY_TOP_OFFSET, CARD_HEIGHT, CARD_WIDTH, type Node } from './LayoutGrid';
-import { GRID_RENDER_ZOOM, type MapGridCameraState } from './mapGridUtils';
+import { GRID_RENDER_ZOOM } from './mapGridUtils';
+import type { MapGridCameraState } from './useMapGridCamera';
 
 type MarqueeDragState = {
   startX: number;

@@ -88,6 +88,8 @@ export function placeStashNode(
     fullSha: stashId,
     sha: stashTitle,
     parentSha: anchorSha,
+    childShas: [],
+    branch: targetBranch?.name ?? defaultBranch,
     message: trimmedMessage || stashTitle,
     author: 'You',
     date: stashDate,

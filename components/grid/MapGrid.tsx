@@ -81,6 +81,7 @@ export default function BranchGridMap({
   createBranchFromNodeInProgress = false,
   orientation = 'horizontal',
   branchCommitPreviews = {},
+  branchParentByName = {},
   branchUniqueAheadCounts = {},
   gridSearchQuery = '',
   gridSearchJumpToken = 0,
@@ -131,8 +132,8 @@ export default function BranchGridMap({
   } = useMapGridCamera({ mapPadHostRef, transformLayerRef });
 
   const lanes = useMemo(
-    () => buildLanes(branches, defaultBranch, branchCommitPreviews),
-    [branches, defaultBranch, branchCommitPreviews],
+    () => buildLanes(branches, defaultBranch, branchCommitPreviews, branchParentByName),
+    [branches, defaultBranch, branchCommitPreviews, branchParentByName],
   );
   const computedLayoutModel = useMemo(
     () =>
@@ -144,6 +145,7 @@ export default function BranchGridMap({
         unpushedDirectCommits,
         defaultBranch,
         branchCommitPreviews,
+        branchParentByName,
         branchUniqueAheadCounts,
         manuallyOpenedClumps,
         manuallyClosedClumps,
@@ -161,6 +163,7 @@ export default function BranchGridMap({
       unpushedDirectCommits,
       defaultBranch,
       branchCommitPreviews,
+      branchParentByName,
       branchUniqueAheadCounts,
       manuallyOpenedClumps,
       manuallyClosedClumps,
@@ -279,7 +282,7 @@ export default function BranchGridMap({
     }
     for (const commit of directCommits) {
       const set = map.get(commit.fullSha) ?? new Set<string>();
-      set.add(defaultBranch);
+      set.add(commit.branch ?? defaultBranch);
       map.set(commit.fullSha, set);
     }
     return map;

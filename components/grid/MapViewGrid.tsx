@@ -19,6 +19,7 @@ interface Props {
   githubAvailable?: boolean;
   branchPromptMeta?: Record<string, BranchPromptMeta>;
   branchCommitPreviews?: Record<string, BranchCommitPreview[]>;
+  branchParentByName?: Record<string, string | null>;
   branchUniqueAheadCounts?: Record<string, number>;
   gridSearchQuery?: string;
   gridSearchJumpToken?: number;
@@ -77,6 +78,7 @@ export default function BranchGridMapView({
   onLoadMore,
   branchPromptMeta = {},
   branchCommitPreviews = {},
+  branchParentByName = {},
   branchUniqueAheadCounts = {},
   gridSearchQuery = '',
   gridSearchJumpToken = 0,
@@ -145,6 +147,7 @@ export default function BranchGridMapView({
             onLoadMore={onLoadMore}
             branchPromptMeta={branchPromptMeta}
             branchCommitPreviews={branchCommitPreviews}
+            branchParentByName={branchParentByName}
             branchUniqueAheadCounts={branchUniqueAheadCounts}
             gridSearchQuery={gridSearchQuery}
             gridSearchJumpToken={gridSearchJumpToken}
@@ -200,6 +203,7 @@ export default function BranchGridMapView({
             unpushedDirectCommits={unpushedDirectCommits}
             defaultBranch={defaultBranch}
             branchCommitPreviews={branchCommitPreviews}
+            branchParentByName={branchParentByName}
             branchUniqueAheadCounts={branchUniqueAheadCounts}
             gridSearchQuery={gridSearchQuery}
             gridSearchJumpToken={gridSearchJumpToken}

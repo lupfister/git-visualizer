@@ -42,6 +42,7 @@ export type BranchGridViewProps = {
   mergeNodes?: MergeNode[];
   defaultBranch: string;
   branchCommitPreviews?: Record<string, BranchCommitPreview[]>;
+  branchParentByName?: Record<string, string | null>;
   branchUniqueAheadCounts?: Record<string, number>;
   unpushedCommitShasByBranch?: Record<string, string[]>;
   openPRs?: import('../../types').OpenPR[];
@@ -90,6 +91,7 @@ export type CommitItem = {
   author: string;
   date: string;
   parentSha?: string | null;
+  clusterKey?: string | null;
   kind?: BranchCommitPreview['kind'] | DirectCommit['kind'];
 };
 
@@ -126,7 +128,17 @@ export function branchTime(branch: Branch): { start: number; end: number } {
 }
 
 export function toCommit(branchName: string, commit: BranchCommitPreview | DirectCommit): CommitItem {
-  return { id: commit.fullSha, branchName, message: commit.message, author: commit.author, date: commit.date, parentSha: commit.parentSha, kind: commit.kind };
+  const resolvedBranchName = 'branch' in commit && commit.branch ? commit.branch : branchName;
+  return {
+    id: commit.fullSha,
+    branchName: resolvedBranchName,
+    message: commit.message,
+    author: commit.author,
+    date: commit.date,
+    parentSha: commit.parentSha,
+    clusterKey: 'clusterKey' in commit ? (commit.clusterKey ?? null) : null,
+    kind: commit.kind,
+  };
 }
 
 export function commitKey(item: { id?: string; fullSha?: string }): string { return item.id ?? item.fullSha ?? ''; }
@@ -164,6 +176,7 @@ export function buildLanes(
   branches: Branch[],
   defaultBranch: string,
   branchCommitPreviews: Record<string, BranchCommitPreview[]> = {},
+  branchParentByName: Record<string, string | null> = {},
 ): Lane[] {
   const ROOT_GROUP_GUTTER_COLUMNS = 1;
   const byName = new Map(branches.map((branch) => [branch.name, branch]));
@@ -171,7 +184,7 @@ export function buildLanes(
   const branchContainsSha = (branchName: string, sha: string): boolean => {
     if (!sha) return false;
     const previews = branchCommitPreviews[branchName] ?? [];
-    return previews.some(
+    if (previews.some(
       (preview) =>
         preview.fullSha === sha ||
         preview.sha === sha ||
@@ -179,6 +192,13 @@ export function buildLanes(
         sha.startsWith(preview.fullSha) ||
         preview.sha.startsWith(sha) ||
         sha.startsWith(preview.sha),
+    )) return true;
+    const branch = byName.get(branchName);
+    if (!branch?.headSha) return false;
+    return (
+      branch.headSha === sha ||
+      branch.headSha.startsWith(sha) ||
+      sha.startsWith(branch.headSha)
     );
   };
   const firstConcreteCommitTimeByBranch = new Map<string, number>();
@@ -196,12 +216,38 @@ export function buildLanes(
     if (firstConcreteCommitTime != null) return firstConcreteCommitTime;
     return branchTime(branch).start;
   };
+  const inferParentFromForkSha = (branch: Branch): string | null => {
+    const forkParentSha = branchRootParentSha(branch, defaultBranch, branchCommitPreviews);
+    if (!forkParentSha) return null;
+    const candidates = branches
+      .filter((candidate) => candidate.name !== branch.name)
+      .filter((candidate) => branchContainsSha(candidate.name, forkParentSha))
+      .sort((left, right) => {
+        const leftDepth = branchDepth(left, byName, defaultBranch);
+        const rightDepth = branchDepth(right, byName, defaultBranch);
+        if (leftDepth !== rightDepth) return rightDepth - leftDepth;
+        const leftStart = branchColumnStartTime(left);
+        const rightStart = branchColumnStartTime(right);
+        if (leftStart !== rightStart) return rightStart - leftStart;
+        return left.name.localeCompare(right.name);
+      });
+    return candidates[0]?.name ?? null;
+  };
   const resolveLaneParentName = (branch: Branch): string | null => {
+    const mappedParent = branchParentByName[branch.name] ?? null;
+    if (mappedParent && mappedParent !== branch.name && (mappedParent === defaultBranch || byName.has(mappedParent))) {
+      return mappedParent;
+    }
+    const inferredParent = inferParentFromForkSha(branch);
+    if (inferredParent && inferredParent !== branch.name) {
+      return inferredParent === defaultBranch ? defaultBranch : inferredParent;
+    }
     const declaredParent = branchParentName(branch, byName, defaultBranch);
     const forkParentSha = branchRootParentSha(branch, defaultBranch, branchCommitPreviews);
     if (declaredParent && declaredParent !== defaultBranch) {
-      if (!forkParentSha || branchContainsSha(declaredParent, forkParentSha)) return declaredParent;
-      return defaultBranch;
+      // Keep explicit inferred parent hierarchy stable for lane ordering.
+      // SHA containment can be incomplete/noisy with partial preview windows.
+      return declaredParent;
     }
     // True roots (unrelated histories) should not be attached to default.
     if (!declaredParent && !forkParentSha) return null;
@@ -220,6 +266,7 @@ export function buildLanes(
 
   const laneByName = new Map<string, Lane>();
   const lanes: Lane[] = [];
+  const laneDepthByName = new Map<string, number>();
   const columnIntervals = new Map<number, Array<{ start: number; end: number }>>();
   const commitTimeBySha = new Map<string, number>();
   for (const previews of Object.values(branchCommitPreviews)) {
@@ -258,23 +305,51 @@ export function buildLanes(
     candidateIntervals.some((candidate) =>
       (columnIntervals.get(column) ?? []).some((existing) => overlapsWithGap(candidate, existing)),
     );
+  const resolveLaneDepth = (branchName: string, visiting = new Set<string>()): number => {
+    const cached = laneDepthByName.get(branchName);
+    if (cached != null) return cached;
+    if (visiting.has(branchName)) return 1;
+    visiting.add(branchName);
+    const branch = byName.get(branchName);
+    if (!branch || branchName === defaultBranch) {
+      visiting.delete(branchName);
+      laneDepthByName.set(branchName, 0);
+      return 0;
+    }
+    const parentName = resolveLaneParentName(branch);
+    const depth = parentName ? resolveLaneDepth(parentName, visiting) + 1 : 1;
+    visiting.delete(branchName);
+    laneDepthByName.set(branchName, depth);
+    return depth;
+  };
 
-  const claimColumn = (branchName: string): number => {
+  const claimColumn = (branchName: string, visiting = new Set<string>()): number => {
     const cached = laneByName.get(branchName);
     if (cached) return cached.column;
+    if (visiting.has(branchName)) return 0;
+    visiting.add(branchName);
     const branch = byName.get(branchName);
-    if (!branch) return 0;
+    if (!branch) {
+      visiting.delete(branchName);
+      return 0;
+    }
     if (branchName === defaultBranch) {
       const lane = { name: branchName, column: 0, parentName: null };
       laneByName.set(branchName, lane);
       lanes.push(lane);
       const claimedIntervals = intervalsForBranchInColumn(branch);
       columnIntervals.set(0, [...(columnIntervals.get(0) ?? []), ...claimedIntervals]);
+      visiting.delete(branchName);
       return 0;
     }
-    const parentName = resolveLaneParentName(branch);
-    const parentColumn = parentName ? claimColumn(parentName) : 0;
-    const minColumn = parentName ? parentColumn + 1 : 1;
+    const resolvedParentName = resolveLaneParentName(branch);
+    const parentName =
+      resolvedParentName && !visiting.has(resolvedParentName)
+        ? resolvedParentName
+        : null;
+    const parentColumn = parentName ? claimColumn(parentName, visiting) : 0;
+    const nestingFloorColumn = Math.max(1, resolveLaneDepth(branchName));
+    const minColumn = Math.max(parentName ? parentColumn + 1 : 1, nestingFloorColumn);
     const claimedIntervals = intervalsForBranchInColumn(branch);
     let column = minColumn;
     while (conflicts(column, claimedIntervals)) column += 1;
@@ -282,6 +357,7 @@ export function buildLanes(
     laneByName.set(branchName, lane);
     lanes.push(lane);
     columnIntervals.set(column, [...(columnIntervals.get(column) ?? []), ...claimedIntervals]);
+    visiting.delete(branchName);
     return column;
   };
 

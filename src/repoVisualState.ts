@@ -10,6 +10,7 @@ type RepoVisualStateInput = {
   unpushedDirectCommits: DirectCommit[];
   defaultBranch: string;
   branchCommitPreviews: Record<string, BranchCommitPreview[]>;
+  branchParentByName?: Record<string, string | null>;
   branchUniqueAheadCounts: Record<string, number>;
   checkedOutRef: CheckedOutRef | null;
   stashes: GitStashEntry[];
@@ -35,6 +36,7 @@ export function deriveRepoVisualState({
   unpushedDirectCommits,
   defaultBranch,
   branchCommitPreviews,
+  branchParentByName = {},
   branchUniqueAheadCounts,
   checkedOutRef,
   stashes,
@@ -124,6 +126,8 @@ export function deriveRepoVisualState({
       fullSha: 'WORKING_TREE',
       sha: 'Uncommited Changes',
       parentSha: checkedOutAnchorSha,
+      childShas: [],
+      branch: defaultBranch,
       message: 'Local uncommitted changes',
       author: 'You',
       date: uncommittedDate,
@@ -184,7 +188,14 @@ export function deriveRepoVisualState({
     }
   }
 
-  const sharedGridLanes = buildLanes(enrichedBranches, defaultBranch, enrichedBranchCommitPreviews);
+  const enrichedBranchParentByName: Record<string, string | null> = { ...branchParentByName };
+  enrichedBranchParentByName[defaultBranch] = null;
+  for (const branch of enrichedBranches) {
+    if (enrichedBranchParentByName[branch.name] == null) {
+      enrichedBranchParentByName[branch.name] = branch.parentBranch ?? null;
+    }
+  }
+  const sharedGridLanes = buildLanes(enrichedBranches, defaultBranch, enrichedBranchCommitPreviews, enrichedBranchParentByName);
   const sharedGridLayoutModel = computeBranchGridLayout({
     lanes: sharedGridLanes,
     branches: enrichedBranches,
@@ -193,6 +204,7 @@ export function deriveRepoVisualState({
     unpushedDirectCommits,
     defaultBranch,
     branchCommitPreviews: enrichedBranchCommitPreviews,
+    branchParentByName: enrichedBranchParentByName,
     branchUniqueAheadCounts: enrichedBranchUniqueAheadCounts,
     manuallyOpenedClumps,
     manuallyClosedClumps,

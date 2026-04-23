@@ -52,7 +52,7 @@ struct DeleteSelectionResult {
 static WATCHER_STATE: OnceLock<Mutex<HashMap<String, notify::RecommendedWatcher>>> = OnceLock::new();
 const GIT_ACTIVITY_LOCAL_MIN_EMIT_MS: u64 = 250;
 const GIT_ACTIVITY_GRAPH_MIN_EMIT_MS: u64 = 120;
-const REPO_VISUAL_CACHE_SCHEMA_VERSION: i32 = 7;
+const REPO_VISUAL_CACHE_SCHEMA_VERSION: i32 = 12;
 #[cfg(target_os = "macos")]
 const OPEN_REPO_DETECTION_CACHE_TTL: StdDuration = StdDuration::from_secs(8);
 
@@ -90,6 +90,7 @@ struct RepoVisualSnapshot {
     worktrees: Vec<git::WorktreeInfo>,
     stashes: Vec<git::GitStashEntry>,
     branch_commit_previews: HashMap<String, Vec<BranchCommitPreviewEntry>>,
+    branch_parent_by_name: HashMap<String, Option<String>>,
     branch_unique_ahead_counts: HashMap<String, i32>,
     loaded: bool,
     cache_schema_version: i32,
@@ -226,7 +227,11 @@ fn compute_repo_visual_snapshot(repo_path: &str) -> Result<RepoVisualSnapshot, S
     let default_branch = git::get_default_branch(path).map_err(|e| e.to_string())?;
     let branches = git::list_branches(path, &default_branch).map_err(|e| e.to_string())?;
     let merge_nodes = fetch_all_merge_nodes_for_branches_internal(&resolved_path, &branches, &default_branch)?;
-    let direct_commits = git::get_direct_commits(path, &default_branch, None).map_err(|e| e.to_string())?;
+    let all_branch_names: Vec<String> = std::iter::once(default_branch.clone())
+        .chain(branches.iter().map(|branch| branch.name.clone()))
+        .collect();
+    let direct_commits = git::get_all_repo_commits(path, &default_branch, &all_branch_names)
+        .map_err(|e| e.to_string())?;
     let unpushed_direct_commits = get_unpushed_direct_commits(resolved_path.clone(), default_branch.clone())?;
     let checked_out_ref = git::get_checked_out_ref(path).ok();
     let worktrees = git::list_worktrees(path).unwrap_or_default();
@@ -445,6 +450,17 @@ fn compute_repo_visual_snapshot(repo_path: &str) -> Result<RepoVisualSnapshot, S
         branch_unique_ahead_counts.insert(branch.name.clone(), unique_count);
     }
 
+    let mut branch_parent_by_name = HashMap::<String, Option<String>>::new();
+    branch_parent_by_name.insert(default_branch.clone(), None);
+    for branch in &branches {
+        let parent = branch
+            .parent_branch
+            .as_ref()
+            .filter(|parent| !parent.is_empty() && *parent != &branch.name)
+            .cloned();
+        branch_parent_by_name.insert(branch.name.clone(), parent);
+    }
+
     Ok(RepoVisualSnapshot {
         path: resolved_path,
         name,
@@ -458,6 +474,7 @@ fn compute_repo_visual_snapshot(repo_path: &str) -> Result<RepoVisualSnapshot, S
         worktrees,
         stashes,
         branch_commit_previews,
+        branch_parent_by_name,
         branch_unique_ahead_counts,
         loaded: true,
         cache_schema_version: REPO_VISUAL_CACHE_SCHEMA_VERSION,
@@ -2127,7 +2144,7 @@ fn get_unpushed_direct_commits(
     )
     .map_err(|e| e.to_string())?;
 
-    let commits = output
+    let mut commits: Vec<DirectCommit> = output
         .lines()
         .filter(|s| !s.is_empty())
         .filter_map(|line| {
@@ -2143,12 +2160,31 @@ fn get_unpushed_direct_commits(
                 full_sha: parts[0].to_string(),
                 sha: parts[1].to_string(),
                 parent_sha,
+                child_shas: Vec::new(),
+                cluster_key: None,
+                branch: branch.clone(),
                 message: parts[2].to_string(),
                 author: parts[3].to_string(),
                 date: parts[4].to_string(),
             })
         })
         .collect();
+
+    let mut child_shas_by_parent = HashMap::<String, Vec<String>>::new();
+    for commit in &commits {
+        if let Some(parent_sha) = &commit.parent_sha {
+            child_shas_by_parent
+                .entry(parent_sha.clone())
+                .or_default()
+                .push(commit.full_sha.clone());
+        }
+    }
+    for commit in &mut commits {
+        commit.child_shas = child_shas_by_parent
+            .get(&commit.full_sha)
+            .cloned()
+            .unwrap_or_default();
+    }
 
     Ok(commits)
 }
