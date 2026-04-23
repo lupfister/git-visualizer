@@ -490,8 +490,71 @@ function App() {
     }
   }
 
+  function applySnapshotToActiveState(path: string, snapshot: RepoVisualSnapshot) {
+    setRepoName(snapshot.name || basenameFromPath(path));
+    setDefaultBranch(snapshot.defaultBranch || 'main');
+    setBranches(snapshot.branches);
+    setMergeNodes(snapshot.mergeNodes);
+    setDirectCommits(snapshot.directCommits);
+    setUnpushedDirectCommits(snapshot.unpushedDirectCommits);
+    setUnpushedCommitShasByBranch(snapshot.unpushedCommitShasByBranch);
+    setCheckedOutRef(snapshot.checkedOutRef);
+    setWorktrees(snapshot.worktrees);
+    setStashes(snapshot.stashes);
+    setBranchCommitPreviews(snapshot.branchCommitPreviews);
+    setBranchUniqueAheadCounts(snapshot.branchUniqueAheadCounts);
+    setRepoPath(path);
+  }
+
+  async function refreshRepoSnapshotInBackground(path: string, requestId: number) {
+    try {
+      const [info, def] = await Promise.all([
+        invoke<{ name: string; path: string }>('get_repo_info', { repoPath: path }),
+        invoke<string>('get_default_branch', { repoPath: path }),
+      ]);
+      if (requestId !== loadRepoRequestIdRef.current) return;
+      const snapshot = await invoke<RepoVisualSnapshot>('get_repo_visual_snapshot', {
+        repoPath: path,
+        forceRefresh: true,
+      });
+      if (requestId !== loadRepoRequestIdRef.current) return;
+      setProjectSnapshots((previous) => ({
+        ...previous,
+        [path]: snapshot,
+      }));
+      setRepoName(info.name);
+      setDefaultBranch(def);
+      if (repoPath === path || loadRepoRequestIdRef.current === requestId) {
+        applySnapshotToActiveState(path, snapshot);
+      }
+      void fetchGitHubData(path);
+    } catch (e) {
+      if (requestId !== loadRepoRequestIdRef.current) return;
+      console.error('Background snapshot refresh failed:', e);
+    }
+  }
+
   async function loadRepo(path: string) {
     const requestId = ++loadRepoRequestIdRef.current;
+    const normalizedPath = normalizePath(path);
+    if (!normalizedPath) return;
+
+    const cachedSnapshot = projectSnapshots[normalizedPath];
+    if (cachedSnapshot?.loaded) {
+      setError(null);
+      applySnapshotToActiveState(normalizedPath, cachedSnapshot);
+      persistProject({
+        path: normalizedPath,
+        name: cachedSnapshot.name || basenameFromPath(normalizedPath),
+        lastOpenedAt: Date.now(),
+        branchName: cachedSnapshot.defaultBranch,
+      });
+      setMapLoading(false);
+      setLoading(false);
+      void refreshRepoSnapshotInBackground(normalizedPath, requestId);
+      return;
+    }
+
     setLoading(true);
     setMapLoading(true);
     setError(null);
@@ -503,35 +566,25 @@ function App() {
     try {
       // Phase 1: fast metadata — show the map shell immediately
       const [info, def] = await Promise.all([
-        invoke<{ name: string; path: string }>('get_repo_info', { repoPath: path }),
-        invoke<string>('get_default_branch', { repoPath: path }),
+        invoke<{ name: string; path: string }>('get_repo_info', { repoPath: normalizedPath }),
+        invoke<string>('get_default_branch', { repoPath: normalizedPath }),
       ]);
       if (requestId !== loadRepoRequestIdRef.current) return;
       setRepoName(info.name);
       setDefaultBranch(def);
 
       const snapshot = await invoke<RepoVisualSnapshot>('get_repo_visual_snapshot', {
-        repoPath: path,
+        repoPath: normalizedPath,
         forceRefresh: true,
       });
       if (requestId !== loadRepoRequestIdRef.current) return;
       setProjectSnapshots((previous) => ({
         ...previous,
-        [path]: snapshot,
+        [normalizedPath]: snapshot,
       }));
-      setBranches(snapshot.branches);
-      setMergeNodes(snapshot.mergeNodes);
-      setDirectCommits(snapshot.directCommits);
-      setUnpushedDirectCommits(snapshot.unpushedDirectCommits);
-      setUnpushedCommitShasByBranch(snapshot.unpushedCommitShasByBranch);
-      setCheckedOutRef(snapshot.checkedOutRef);
-      setWorktrees(snapshot.worktrees);
-      setStashes(snapshot.stashes);
-      setBranchCommitPreviews(snapshot.branchCommitPreviews);
-      setBranchUniqueAheadCounts(snapshot.branchUniqueAheadCounts);
-      setRepoPath(path);
+      applySnapshotToActiveState(normalizedPath, snapshot);
       persistProject({
-        path,
+        path: normalizedPath,
         name: info.name,
         lastOpenedAt: Date.now(),
         branchName: def,
@@ -540,7 +593,7 @@ function App() {
       setLoading(false); // unblock the landing button
 
       // Phase 3: GitHub data (non-blocking)
-      void fetchGitHubData(path);
+      void fetchGitHubData(normalizedPath);
     } catch (e) {
       if (requestId !== loadRepoRequestIdRef.current) return;
       console.error('Failed to load repo:', e);
