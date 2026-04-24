@@ -844,6 +844,7 @@ export default function BranchGridMap({
     (event: React.PointerEvent<HTMLDivElement>, node: Node) => {
       if (event.button !== 0) return;
       const target = event.target as HTMLElement | null;
+      if (target?.closest('[data-selectable-text="true"]')) return;
       if (target?.closest('button, a, input, textarea, select')) return;
       event.stopPropagation();
       event.preventDefault();

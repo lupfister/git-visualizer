@@ -415,6 +415,7 @@ export default function MapGridCanvas({
                           selectedCommitTextClass,
                           displayZoom <= 0.5 ? 'overflow-hidden text-ellipsis whitespace-nowrap' : 'break-words whitespace-normal',
                         )}
+                        data-selectable-text="true"
                         style={selectedCommitTextStyle}
                       >
                         {isTop && isClusterOpen
@@ -436,10 +437,18 @@ export default function MapGridCanvas({
                     </div>
                     {displayZoom > 0.5 ? (
                       <div className="mt-auto flex items-end justify-between gap-4 pt-5">
-                        <div className={cn('select-text text-sm font-medium', selectedCommitTextClass)} style={selectedCommitTextStyle}>
+                        <div
+                          className={cn('select-text text-sm font-medium', selectedCommitTextClass)}
+                          data-selectable-text="true"
+                          style={selectedCommitTextStyle}
+                        >
                           @{node.commit.author}
                         </div>
-                        <div className={cn('select-text text-sm font-medium', selectedCommitTextClass)} style={selectedCommitTextStyle}>
+                        <div
+                          className={cn('select-text text-sm font-medium', selectedCommitTextClass)}
+                          data-selectable-text="true"
+                          style={selectedCommitTextStyle}
+                        >
                           {new Date(node.commit.date).toLocaleString('en-US', {
                             month: 'long',
                             day: 'numeric',
