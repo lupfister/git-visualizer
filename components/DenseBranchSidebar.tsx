@@ -709,7 +709,7 @@ export default function DenseBranchSidebar({
     <aside
       ref={asideRef}
       aria-label="Dense branch sidebar"
-      className={cn('pointer-events-auto relative h-full overflow-hidden', className)}
+      className={cn('pointer-events-auto relative h-full select-none overflow-hidden', className)}
       style={style}
     >
       <header data-tauri-drag-region className="absolute inset-x-0 top-0 z-80 flex h-12 items-start px-2.5 pt-2.25">

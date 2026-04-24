@@ -986,7 +986,7 @@ export default function BranchGridMap({
   void [openPRs, onLoadMore, view, staleBranches, isLoading, scrollRequest, focusedErrorBranch, mapTopInsetPx, visibleNodesBySha, freshCopyBranchNames];
 
   return (
-    <div className="relative flex h-full min-h-0 flex-col overflow-hidden border border-border bg-card">
+    <div className="relative flex h-full min-h-0 flex-col overflow-hidden border-l border-border bg-card">
       <MapGridDebugPanel
         isOpen={isDebugOpen}
         onClose={() => onDebugClose?.()}
