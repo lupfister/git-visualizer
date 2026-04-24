@@ -85,6 +85,7 @@ function App() {
   const [manuallyClosedGridClumps, setManuallyClosedGridClumps] = useState<Set<string>>(() => new Set());
   const [gridSearchResultCount, setGridSearchResultCount] = useState<number | null>(null);
   const [gridFocusSha, setGridFocusSha] = useState<string | null>(null);
+  const [showCommits, setShowCommits] = useState(false);
   const [loading, setLoading] = useState(false);
   const [mapLoading, setMapLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -361,6 +362,17 @@ function App() {
       return next;
     });
   }
+
+  const handleAddProject = () => {
+    void (async () => {
+      try {
+        const selected = await open({ directory: true, multiple: false, defaultPath: recentProjects[0]?.path ?? undefined });
+        if (typeof selected === 'string' && selected) await addProject(selected);
+      } catch (e) {
+        setError(e instanceof Error ? e.message : String(e));
+      }
+    })();
+  };
 
   function handleWindowDragStart(e: React.MouseEvent<HTMLElement>) {
     if (e.button !== 0) return;
@@ -1218,6 +1230,11 @@ function App() {
     }
 
     const handler = (e: KeyboardEvent) => {
+      if ((e.metaKey || e.ctrlKey) && !e.shiftKey && !e.altKey && e.key.toLowerCase() === 'b') {
+        e.preventDefault();
+        setIsSidebarCollapsed((value) => !value);
+        return;
+      }
       if ((e.metaKey || e.ctrlKey) && e.shiftKey && e.key === 'S') {
         e.preventDefault();
         captureScreenshots();
@@ -2111,60 +2128,43 @@ function App() {
 
   return (
     <div className="relative flex h-screen min-h-0 flex-col bg-background text-foreground">
-      <header
-        data-tauri-drag-region
-        className="window-drag-region absolute left-0 right-0 top-0 z-[9999] h-12 px-4"
-        style={{ paddingTop: 'max(env(safe-area-inset-top), 0px)' }}
-        onMouseDown={handleWindowDragStart}
-      >
-        <div className="flex h-full items-start gap-2 ml-17 mt-2.25">
-          <button
-            type="button"
-            className="window-no-drag inline-flex h-7 w-7 items-center justify-center rounded-md text-muted-foreground transition-colors hover:bg-accent hover:text-foreground"
-            aria-label={isSidebarCollapsed ? 'Open sidebar' : 'Collapse sidebar'}
-            onClick={() => setIsSidebarCollapsed((value) => !value)}
-          >
-            {isSidebarCollapsed ? (
-              <PanelLeftOpen className="h-4 w-4 shrink-0" />
-            ) : (
-              <PanelLeftClose className="h-4 w-4 shrink-0" />
-            )}
-          </button>
-        </div>
-      </header>
-
-      <div className="relative z-10 flex h-full min-h-0 flex-col">
+      <div className="relative z-30 flex h-full min-h-0 flex-col">
         <div className="relative flex h-full min-h-0 flex-1 overflow-hidden">
           <div
             ref={sidebarShellRef}
-            className="relative flex h-full min-h-0 flex-none overflow-visible"
-            style={{ width: isSidebarCollapsed ? 0 : sidebarWidthPx }}
+            className="relative z-20 flex h-full min-h-0 flex-none overflow-visible"
+            style={{ width: isSidebarCollapsed ? 64 : sidebarWidthPx }}
           >
+            <button
+              type="button"
+              className="window-no-drag absolute right-2.5 left-22 top-2.25 z-[90] inline-flex h-7 w-7 items-center justify-center rounded-md border border-border/60 text-muted-foreground transition-colors hover:bg-accent hover:text-foreground"
+              aria-label={isSidebarCollapsed ? 'Open sidebar' : 'Collapse sidebar'}
+              onClick={() => setIsSidebarCollapsed((value) => !value)}
+            >
+              {isSidebarCollapsed ? (
+                <PanelLeftOpen className="h-4 w-4 shrink-0" />
+              ) : (
+                <PanelLeftClose className="h-4 w-4 shrink-0" />
+              )}
+            </button>
             <DenseBranchSidebar
               className={cn(
-                'min-h-0 shrink-0 overflow-hidden pb-4 pt-16 transition-[width,opacity] duration-300 ease-in-out',
-                isSidebarCollapsed ? 'pointer-events-none opacity-0' : 'opacity-100',
+                'min-h-0 shrink-0 overflow-hidden pt-16 transition-[width,opacity] duration-300 ease-in-out',
+                'opacity-100',
               )}
               style={{ width: '100%' }}
               collapsed={isSidebarCollapsed}
               projects={projectCards}
               activeProjectPath={repoPath}
               onSelectProject={loadRepo}
-              onAddProject={() => {
-                void (async () => {
-                  try {
-                    const selected = await open({ directory: true, multiple: false, defaultPath: recentProjects[0]?.path ?? undefined });
-                    if (typeof selected === 'string' && selected) await addProject(selected);
-                  } catch (e) {
-                    setError(e instanceof Error ? e.message : String(e));
-                  }
-                })();
-              }}
+              onAddProject={handleAddProject}
               projectLoading={loading || projectTreeLoading}
               projectError={error}
               branches={enrichedBranches}
               defaultBranch={defaultBranch}
               checkedOutRef={checkedOutRef}
+              showCommits={showCommits}
+              onToggleShowCommits={() => setShowCommits((value) => !value)}
               manuallyOpenedClumps={manuallyOpenedGridClumps}
               manuallyClosedClumps={manuallyClosedGridClumps}
               setManuallyOpenedClumps={setManuallyOpenedGridClumps}
@@ -2191,6 +2191,7 @@ function App() {
           </div>
 
           <div className="relative min-h-0 min-w-0 flex-1 overflow-hidden">
+            <div className="pointer-events-none absolute left-0 right-0 top-0 z-40 h-12" />
               <BranchGridMapView
                 branches={enrichedBranches}
                 mergeNodes={mergeNodes}
@@ -2241,8 +2242,8 @@ function App() {
                 orientation={mapGridOrientation}
               />
 
-              <header data-map-ui className="absolute left-0 right-0 top-12 z-40 px-4 md:px-8">
-                <div className="window-no-drag pointer-events-auto relative z-10 min-h-8 content-start flex flex-wrap items-center gap-2">
+              <header data-tauri-drag-region data-map-ui className="absolute left-0 right-0 top-0 z-40 px-4 md:px-8">
+                <div className="window-no-drag pointer-events-auto relative z-10 min-h-12 content-start flex flex-wrap items-start gap-2 pt-2.25">
                   <div
                     className="flex shrink-0 rounded-full border border-border bg-muted/20 p-0.5 shadow-sm"
                     role="radiogroup"

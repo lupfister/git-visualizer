@@ -38,6 +38,8 @@ type Props = {
   gridLayoutModel?: BranchGridLayoutModel;
   onSelectCommit?: (sha: string) => void;
   onSelectBranch?: (branchName: string) => void;
+  showCommits: boolean;
+  onToggleShowCommits: () => void;
   className?: string;
   style?: CSSProperties;
   collapsed?: boolean;
@@ -411,6 +413,32 @@ function BranchRows({
   );
 }
 
+function FolderIcon({ open }: { open: boolean }) {
+  return open ? (
+    <svg viewBox="0 0 20 20" aria-hidden="true" className="h-4 w-4 shrink-0 text-muted-foreground transition-colors">
+      <path
+        d="M2.5 7a2 2 0 0 1 2-2h3.1c.44 0 .86.18 1.18.49l.84.81h5.88a2 2 0 0 1 2 2V14a2 2 0 0 1-2 2h-13a2 2 0 0 1-2-2V7Z"
+        fill="none"
+        stroke="currentColor"
+        strokeWidth="1.4"
+        strokeLinejoin="round"
+      />
+      <path d="M4.25 6H8l.84.81" fill="none" stroke="currentColor" strokeWidth="1.4" strokeLinecap="round" strokeLinejoin="round" />
+    </svg>
+  ) : (
+    <svg viewBox="0 0 20 20" aria-hidden="true" className="h-4 w-4 shrink-0 text-muted-foreground transition-colors">
+      <path
+        d="M2.5 7a2 2 0 0 1 2-2h3.1c.44 0 .86.18 1.18.49l.84.81h5.88a2 2 0 0 1 2 2V14a2 2 0 0 1-2 2h-13a2 2 0 0 1-2-2V7Z"
+        fill="none"
+        stroke="currentColor"
+        strokeWidth="1.4"
+        strokeLinejoin="round"
+      />
+      <path d="M6.1 5H8l.84.81" fill="none" stroke="currentColor" strokeWidth="1.4" strokeLinecap="round" strokeLinejoin="round" />
+    </svg>
+  );
+}
+
 export default function DenseBranchSidebar({
   projects,
   activeProjectPath,
@@ -428,13 +456,14 @@ export default function DenseBranchSidebar({
   gridLayoutModel,
   onSelectCommit,
   onSelectBranch,
+  showCommits,
+  onToggleShowCommits,
   className,
   style,
   collapsed = false,
 }: Props) {
   const asideRef = useRef<HTMLElement | null>(null);
   const scrollBodyRef = useRef<HTMLDivElement | null>(null);
-  const [showCommits, setShowCommits] = useState(false);
   const [expandedProjects, setExpandedProjects] = useState<Set<string>>(() => new Set());
   const [localManuallyOpenedClumps, setLocalManuallyOpenedClumps] = useState<Set<string>>(() => new Set());
   const [localManuallyClosedClumps, setLocalManuallyClosedClumps] = useState<Set<string>>(() => new Set());
@@ -481,6 +510,13 @@ export default function DenseBranchSidebar({
       return next;
     });
   }, [rootBranchNames, childNamesByParent, checkedOutRef, defaultBranch]);
+  useEffect(() => {
+    setExpandedProjects((previous) => {
+      const next = new Set(previous);
+      for (const project of projects) next.add(project.path);
+      return next;
+    });
+  }, [projects]);
 
   const defaultCollapsedClumps = gridLayoutModel?.defaultCollapsedClumps ?? new Set<string>();
   const isGridClusterOpen = (clusterKey: string): boolean =>
@@ -554,15 +590,6 @@ export default function DenseBranchSidebar({
       return next;
     });
   };
-
-  useEffect(() => {
-    setExpandedProjects((previous) => {
-      const next = new Set(previous);
-      for (const project of projects) next.add(project.path);
-      if (activeProjectPath) next.add(activeProjectPath);
-      return next;
-    });
-  }, [activeProjectPath, projects]);
 
   const projectRenderDataByPath = useMemo(() => {
     const next = new Map<string, {
@@ -685,31 +712,26 @@ export default function DenseBranchSidebar({
       className={cn('pointer-events-auto relative h-full overflow-hidden', className)}
       style={style}
     >
-      <div className="flex h-full min-h-0 flex-col">
-        <div className="mb-2 flex items-center justify-between gap-3 px-2.5">
-          {!collapsed ? <h2 className="text-sm font-medium text-foreground">Projects</h2> : <span className="sr-only">Projects</span>}
-          <div className="flex items-center gap-2">
-            {!collapsed ? (
-              <>
-                <button
-                  type="button"
-                  onClick={onAddProject}
-                  disabled={projectLoading}
-                  className="shrink-0 rounded-md border border-border/60 px-2 py-0.5 text-[11px] font-medium text-muted-foreground transition-colors hover:text-foreground disabled:cursor-not-allowed disabled:opacity-50"
-                >
-                  Add repo
-                </button>
-                <button
-                  type="button"
-                  onClick={() => setShowCommits((value) => !value)}
-                  className="shrink-0 rounded-md border border-border/60 px-2 py-0.5 text-[11px] font-medium text-muted-foreground transition-colors hover:text-foreground"
-                >
-                  {showCommits ? 'Hide commits' : 'Show commits'}
-                </button>
-              </>
-            ) : null}
-          </div>
+      <header data-tauri-drag-region className="absolute inset-x-0 top-0 z-80 flex h-12 items-start px-2.5 pt-2.25">
+        <div className="ml-auto flex items-center gap-2">
+          <button
+            type="button"
+            onClick={onAddProject}
+            disabled={projectLoading}
+            className="window-no-drag shrink-0 rounded-md border border-border/60 px-2 h-7 text-[11px] font-medium text-muted-foreground transition-colors hover:text-foreground hover:bg-accent disabled:cursor-not-allowed disabled:opacity-50"
+          >
+            Add Repo
+          </button>
+          <button
+            type="button"
+            onClick={onToggleShowCommits}
+            className="window-no-drag shrink-0 rounded-md border border-border/60 px-2 h-7 text-[11px] font-medium text-muted-foreground transition-colors hover:text-foreground hover:bg-accent"
+          >
+            {showCommits ? 'Hide Commits' : 'Show Commits'}
+          </button>
         </div>
+      </header>
+      <div className="flex h-full min-h-0 flex-col">
         {projectError && (
           <div className="px-2.5 pb-3">
             <p className="rounded-xl border border-red-50 bg-red-50 px-3 py-2 text-xs text-red-600 dark:border-red-900/20 dark:bg-red-900/20 dark:text-red-400">
@@ -717,37 +739,64 @@ export default function DenseBranchSidebar({
             </p>
           </div>
         )}
-        <div ref={scrollBodyRef} className={cn('min-h-0 flex-1 space-y-2.5 overflow-y-auto px-2.5', collapsed ? 'opacity-0 pointer-events-none' : '')}>
+        <div
+          ref={scrollBodyRef}
+          className={cn('min-h-0 flex-1 space-y-8 overflow-y-auto px-2.5 pr-4', collapsed ? 'opacity-0 pointer-events-none' : '')}
+          style={{ scrollbarGutter: 'stable both-edges' }}
+        >
           {projects.map((project) => {
             const isActive = project.path === activeProjectPath;
-            const isExpanded = expandedProjects.has(project.path) || isActive;
+            const isExpanded = expandedProjects.has(project.path);
             const projectTreeLoaded = project.treeLoaded ?? project.branches.length > 0;
             const projectRender = projectRenderDataByPath.get(project.path);
             const expandedBranchNamesForProject = isActive
               ? expandedBranchNames
               : new Set(projectRender ? Array.from(projectRender.branchByName.keys()) : []);
             return (
-              <div key={project.path}>
-                <button
-                  type="button"
-                  onClick={() => { void onSelectProject(project.path); }}
-                  className={cn(
-                    'flex w-full items-center justify-between gap-3 rounded-xl px-4 py-3 text-left transition-colors',
-                    isActive ? 'text-foreground' : 'text-muted-foreground hover:bg-accent hover:text-foreground',
-                  )}
-                >
-                  <div className="min-w-0">
-                    <p className={cn('truncate text-sm', isActive ? 'font-semibold text-foreground' : 'font-medium text-muted-foreground')}>
+              <div
+                key={project.path}
+                className={cn(
+                  'relative z-0',
+                  isExpanded && projectRender ? 'mb-5' : 'mb-1',
+                )}
+              >
+                <div className="relative z-0 px-1">
+                  <div
+                    className={cn(
+                      'sticky top-0 z-20 flex w-full items-center gap-2 rounded-lg bg-[#FAFAF9] px-0 py-1 transition-colors hover:bg-accent',
+                      isActive ? 'text-foreground' : 'text-muted-foreground hover:text-foreground',
+                    )}
+                  >
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setExpandedProjects((previous) => {
+                          const next = new Set(previous);
+                          if (next.has(project.path)) next.delete(project.path);
+                          else next.add(project.path);
+                          return next;
+                        });
+                      }}
+                      aria-expanded={isExpanded}
+                      aria-label={`${isExpanded ? 'Collapse' : 'Expand'} ${project.name}`}
+                      className="flex h-4 w-4 shrink-0 items-center justify-center rounded-md transition-colors hover:bg-accent"
+                    >
+                      <FolderIcon open={isExpanded} />
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => { void onSelectProject(project.path); }}
+                      className={cn(
+                        'min-w-0 flex-1 truncate pl-0 text-left text-sm transition-colors',
+                        isActive ? 'font-semibold text-primary' : 'font-medium text-muted-foreground',
+                      )}
+                    >
                       {project.name}
-                    </p>
-                    <p className="truncate text-xs text-muted-foreground">{project.path}</p>
+                    </button>
                   </div>
-                  <span className="shrink-0 text-xs text-muted-foreground">{project.branchName ?? 'branch'}</span>
-                </button>
-                {isExpanded && (
-                  <div className="px-2.5">
-                    {projectTreeLoaded && projectRender ? (
-                      <ul className="space-y-1">
+                  {isExpanded ? (
+                    projectTreeLoaded && projectRender ? (
+                      <ul className="relative z-0 space-y-0 pt-0">
                         {projectRender.rootBranchNames.map((branchName, idx) => (
                           <BranchRows
                             key={`${project.path}:${branchName}`}
@@ -780,12 +829,12 @@ export default function DenseBranchSidebar({
                         ))}
                       </ul>
                     ) : (
-                      <p className="px-2 py-1 text-xs text-muted-foreground">
+                      <p className="px-2 py-2 text-xs text-muted-foreground">
                         Loading branch tree...
                       </p>
-                    )}
-                  </div>
-                )}
+                    )
+                  ) : null}
+                </div>
               </div>
             );
           })}

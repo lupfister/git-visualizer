@@ -101,6 +101,9 @@ export default function BranchGridMap({
   /** `p-2.5` wrapper: used to map pointer position to the transform layer origin (padding edge). */
   const mapPadHostRef = useRef<HTMLDivElement | null>(null);
   const transformLayerRef = useRef<HTMLDivElement | null>(null);
+  const lastInteractionStateRef = useRef<boolean | null>(null);
+  const lastSearchResultCountRef = useRef<number | null | undefined>(undefined);
+  const lastSearchFocusShaRef = useRef<string | null | undefined>(undefined);
   const [worktreeMenuOpen, setWorktreeMenuOpen] = useState(false);
   const [commitDialogOpen, setCommitDialogOpen] = useState(false);
   const [commitMessageDraft, setCommitMessageDraft] = useState('');
@@ -575,11 +578,17 @@ export default function BranchGridMap({
     : `Push ${selectedPushTargets.length} selected ranges`;
 
   useEffect(() => {
-    onInteractionChange?.(isCameraMoving || isMarqueeSelecting);
+    const next = isCameraMoving || isMarqueeSelecting;
+    if (lastInteractionStateRef.current === next) return;
+    lastInteractionStateRef.current = next;
+    onInteractionChange?.(next);
   }, [isCameraMoving, isMarqueeSelecting, onInteractionChange]);
 
   useEffect(() => {
-    onGridSearchResultCountChange?.(normalizedSearchQuery ? matchingNodes.length : null);
+    const next = normalizedSearchQuery ? matchingNodes.length : null;
+    if (lastSearchResultCountRef.current === next) return;
+    lastSearchResultCountRef.current = next;
+    onGridSearchResultCountChange?.(next);
   }, [matchingNodes.length, normalizedSearchQuery, onGridSearchResultCountChange]);
 
   const searchMatchedBranchHeadSha = useMemo(() => {
@@ -607,17 +616,18 @@ export default function BranchGridMap({
   }, [normalizedSearchQuery, branches, branchCommitPreviews, defaultBranch, directCommits]);
 
   useEffect(() => {
+    let nextFocusSha: string | null;
     if (!normalizedSearchQuery) {
-      onGridSearchFocusChange?.(null);
-      return;
+      nextFocusSha = null;
+    } else if (gridSearchJumpToken <= 0) return;
+    else if (searchMatchedBranchHeadSha) {
+      nextFocusSha = searchMatchedBranchHeadSha;
+    } else {
+      nextFocusSha = matchingNodes[0]?.commit.id ?? null;
     }
-    if (gridSearchJumpToken <= 0) return;
-    if (searchMatchedBranchHeadSha) {
-      onGridSearchFocusChange?.(searchMatchedBranchHeadSha);
-      return;
-    }
-    const firstMatch = matchingNodes[0]?.commit.id ?? null;
-    onGridSearchFocusChange?.(firstMatch);
+    if (lastSearchFocusShaRef.current === nextFocusSha) return;
+    lastSearchFocusShaRef.current = nextFocusSha;
+    onGridSearchFocusChange?.(nextFocusSha);
   }, [
     matchingNodes,
     normalizedSearchQuery,
