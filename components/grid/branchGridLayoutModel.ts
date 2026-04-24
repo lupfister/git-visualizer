@@ -6,6 +6,7 @@ import type { MergeNode } from '../../types';
 import {
   branchBaseCommit,
   CARD_HEIGHT,
+  CARD_BODY_TOP_OFFSET,
   CARD_HEADER_HEIGHT,
   CARD_WIDTH,
   type CommitItem,
@@ -16,6 +17,7 @@ import {
   LEFT_PADDING,
   TOP_PADDING,
   COLUMN_WIDTH,
+  type NodePositionOverrides,
   nodeForCommitSha,
   orderByLineage,
   renderableBranchPreviews,
@@ -109,6 +111,7 @@ export type BranchGridLayoutInput = {
   checkedOutRef: CheckedOutRef | null;
   /** `vertical`: newest above; `horizontal`: newest to the right (default). */
   orientation?: 'vertical' | 'horizontal';
+  nodePositionOverrides?: NodePositionOverrides;
 };
 
 
@@ -345,6 +348,7 @@ export function computeBranchGridLayout(input: BranchGridLayoutInput): BranchGri
     gridFocusSha,
     checkedOutRef,
     orientation = 'horizontal',
+    nodePositionOverrides = {},
   } = input;
   const isHorizontal = orientation === 'horizontal';
 
@@ -743,17 +747,23 @@ export function computeBranchGridLayout(input: BranchGridLayoutInput): BranchGri
       y: TOP_PADDING + (maxPreviewRow - row) * previewTimelinePitch,
     };
   });
+  const applyNodeOverrides = (node: Node): Node => {
+    const override = nodePositionOverrides[node.commit.visualId] ?? nodePositionOverrides[node.commit.id];
+    if (!override) return node;
+    return { ...node, x: override.x, y: override.y };
+  };
+  const overriddenNodes = nodes.map(applyNodeOverrides);
   const normalizedSearchQuery = gridSearchQuery.trim().toLowerCase();
   const matchingNodes = normalizedSearchQuery
-    ? nodes.filter((node) => {
+    ? overriddenNodes.filter((node) => {
         const sha = node.commit.id.toLowerCase();
         const shortSha = node.commit.id.slice(0, 7).toLowerCase();
         const message = node.commit.message.toLowerCase();
         const branchName = node.commit.branchName.toLowerCase();
         return sha.includes(normalizedSearchQuery) || shortSha.includes(normalizedSearchQuery) || message.includes(normalizedSearchQuery) || branchName.includes(normalizedSearchQuery);
       })
-    : nodes;
-  const focusedNode = gridFocusSha ? nodes.find((node) => node.commit.id === gridFocusSha) ?? null : null;
+    : overriddenNodes;
+  const focusedNode = gridFocusSha ? overriddenNodes.find((node) => node.commit.id === gridFocusSha) ?? null : null;
   const matchingNodeIds = new Set(matchingNodes.map((node) => node.commit.id));
 
 
@@ -794,21 +804,21 @@ export function computeBranchGridLayout(input: BranchGridLayoutInput): BranchGri
     const row = visibleRows.get(commit.visualId) ?? 1;
     const column = lane?.column ?? 0;
     if (isHorizontal) {
-      return {
+      return applyNodeOverrides({
         commit,
         row,
         column,
         x: LEFT_PADDING + (row - 1) * zoomAwareTimelinePitch,
         y: TOP_PADDING + column * zoomAwareLanePitch,
-      };
+      });
     }
-    return {
+    return applyNodeOverrides({
       commit,
       row,
       column,
       x: LEFT_PADDING + column * COLUMN_WIDTH,
       y: TOP_PADDING + (maxVisibleRowForVertical - row) * zoomAwareTimelinePitch,
-    };
+    });
   });
   const visibleNodesBySha = new Map<string, Node[]>();
   for (const node of renderNodes) {
@@ -827,12 +837,20 @@ export function computeBranchGridLayout(input: BranchGridLayoutInput): BranchGri
   const pointFormatter = (x: number, y: number) => `${x.toFixed(1)} ${y.toFixed(1)}`;
   const maxVisibleRow = Math.max(0, ...renderNodes.map((node) => node.row));
   const maxLaneColumn = Math.max(0, ...lanes.map((lane) => lane.column));
-  const contentWidth = isHorizontal
-    ? LEFT_PADDING * 2 + Math.max(0, maxVisibleRow - 1) * zoomAwareTimelinePitch + CARD_WIDTH + CARD_HEADER_HEIGHT + zoomAwareLabelBand
-    : LEFT_PADDING * 2 + (maxLaneColumn + 1) * COLUMN_WIDTH;
-  const contentHeight = isHorizontal
-    ? TOP_PADDING * 2 + maxLaneColumn * zoomAwareLanePitch + CARD_HEIGHT + CARD_HEADER_HEIGHT + zoomAwareLabelBand
-    : TOP_PADDING * 2 + Math.max(0, maxVisibleRow - 1) * zoomAwareTimelinePitch + CARD_HEIGHT + CARD_HEADER_HEIGHT + zoomAwareLabelBand;
+  const renderedMaxX = Math.max(0, ...renderNodes.map((node) => node.x + CARD_WIDTH));
+  const renderedMaxY = Math.max(0, ...renderNodes.map((node) => node.y + CARD_BODY_TOP_OFFSET + CARD_HEIGHT));
+  const contentWidth = Math.max(
+    isHorizontal
+      ? LEFT_PADDING * 2 + Math.max(0, maxVisibleRow - 1) * zoomAwareTimelinePitch + CARD_WIDTH + CARD_HEADER_HEIGHT + zoomAwareLabelBand
+      : LEFT_PADDING * 2 + (maxLaneColumn + 1) * COLUMN_WIDTH,
+    renderedMaxX + LEFT_PADDING,
+  );
+  const contentHeight = Math.max(
+    isHorizontal
+      ? TOP_PADDING * 2 + maxLaneColumn * zoomAwareLanePitch + CARD_HEIGHT + CARD_HEADER_HEIGHT + zoomAwareLabelBand
+      : TOP_PADDING * 2 + Math.max(0, maxVisibleRow - 1) * zoomAwareTimelinePitch + CARD_HEIGHT + CARD_HEADER_HEIGHT + zoomAwareLabelBand,
+    renderedMaxY + TOP_PADDING,
+  );
 
   const connectors: Connector[] = [];
   const branchZIndexByName = new Map<string, number>(

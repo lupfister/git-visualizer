@@ -10,6 +10,7 @@ function MapGridCommitWrapper({
   className,
   style,
   onClick,
+  onPointerDown,
   dataCommitCard,
   children,
 }: {
@@ -17,6 +18,7 @@ function MapGridCommitWrapper({
   className?: string;
   style?: CSSProperties;
   onClick?: React.MouseEventHandler<HTMLDivElement>;
+  onPointerDown?: React.PointerEventHandler<HTMLDivElement>;
   dataCommitCard?: string;
   children: ReactNode;
 }) {
@@ -41,6 +43,7 @@ function MapGridCommitWrapper({
       className={className}
       data-commit-card={dataCommitCard}
       onClick={onClick}
+      onPointerDown={onPointerDown}
       style={{
         ...style,
         opacity: opaque ? 1 : 0,
@@ -62,6 +65,7 @@ type Props = {
   isCameraMoving: boolean;
   onWheel: (event: WheelEvent<HTMLDivElement>) => void;
   onMouseDown: (event: MouseEvent<HTMLDivElement>) => void;
+  onNodePointerDown: (event: React.PointerEvent<HTMLDivElement>, node: Node) => void;
   labelTopPx: number;
   inverseZoomStyle: CSSProperties;
   displayZoom: number;
@@ -111,6 +115,7 @@ export default function MapGridCanvas({
   isCameraMoving,
   onWheel,
   onMouseDown,
+  onNodePointerDown,
   labelTopPx,
   inverseZoomStyle,
   displayZoom,
@@ -288,7 +293,7 @@ export default function MapGridCanvas({
                 fadeIn={shouldAnimateOpeningClump}
                 dataCommitCard="true"
                 className={cn(
-                  'group absolute z-20 cursor-pointer',
+                  'group absolute z-20 cursor-grab active:cursor-grabbing',
                   normalizedSearchQuery && !matchingNodeIds.has(node.commit.id)
                     ? isCameraMoving
                       ? 'opacity-10'
@@ -299,6 +304,7 @@ export default function MapGridCanvas({
                 )}
                 style={{ left: node.x, top: node.y, width: CARD_WIDTH, height: CARD_BODY_TOP_OFFSET + CARD_HEIGHT + 4, overflow: 'visible' }}
                 onClick={(event) => onCommitCardClick(event, node)}
+                onPointerDown={(event) => onNodePointerDown(event, node)}
               >
                 <div className="absolute left-0 w-full" style={{ ...inverseZoomStyle, top: `${labelTopPx}px` }}>
                   <div className="flex min-w-0 items-baseline justify-between gap-2 px-0 pb-0">

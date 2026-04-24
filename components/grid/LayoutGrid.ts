@@ -84,6 +84,9 @@ export type BranchGridViewProps = {
   onInteractionChange?: (isInteracting: boolean) => void;
 };
 
+export type NodePositionOverride = { x: number; y: number };
+export type NodePositionOverrides = Record<string, NodePositionOverride>;
+
 export type CommitItem = {
   id: string;
   branchName: string;

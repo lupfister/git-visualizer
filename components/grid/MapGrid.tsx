@@ -14,6 +14,7 @@ import {
   CARD_WIDTH,
   type BranchGridViewProps,
   type ConnectorFace,
+  type NodePositionOverrides,
   type Node,
 } from './LayoutGrid';
 import { computeBranchGridLayout } from './branchGridLayoutModel';
@@ -111,6 +112,19 @@ export default function BranchGridMap({
   );
   const [localManuallyOpenedClumps, setLocalManuallyOpenedClumps] = useState<Set<string>>(() => new Set());
   const [localManuallyClosedClumps, setLocalManuallyClosedClumps] = useState<Set<string>>(() => new Set());
+  const [nodePositionOverrides, setNodePositionOverrides] = useState<NodePositionOverrides>({});
+  const suppressNextCommitClickRef = useRef(false);
+  const dragNodeRef = useRef<{
+    nodeId: string;
+    startX: number;
+    startY: number;
+    baseX: number;
+    baseY: number;
+    moved: boolean;
+    pendingX: number;
+    pendingY: number;
+  } | null>(null);
+  const dragRafRef = useRef<number | null>(null);
   const manuallyOpenedClumps = controlledManuallyOpenedClumps ?? localManuallyOpenedClumps;
   const manuallyClosedClumps = controlledManuallyClosedClumps ?? localManuallyClosedClumps;
   const setManuallyOpenedClumps = controlledSetManuallyOpenedClumps ?? setLocalManuallyOpenedClumps;
@@ -154,6 +168,7 @@ export default function BranchGridMap({
         gridFocusSha,
         checkedOutRef: checkedOutRef ?? null,
         orientation,
+        nodePositionOverrides,
       }),
     [
       lanes,
@@ -173,9 +188,11 @@ export default function BranchGridMap({
       checkedOutRef?.headSha ?? null,
       checkedOutRef?.branchName ?? null,
       orientation,
+      nodePositionOverrides,
     ],
   );
-  const layoutModel: BranchGridLayoutModel = providedLayoutModel ?? computedLayoutModel;
+  const hasNodeOverrides = Object.keys(nodePositionOverrides).length > 0;
+  const layoutModel: BranchGridLayoutModel = hasNodeOverrides ? computedLayoutModel : (providedLayoutModel ?? computedLayoutModel);
   const debugLayoutModel: BranchGridLayoutModel = useMemo(
     () =>
       computeBranchGridLayout({
@@ -195,6 +212,7 @@ export default function BranchGridMap({
         gridFocusSha,
         checkedOutRef: checkedOutRef ?? null,
         orientation,
+        nodePositionOverrides,
       }),
     [
       lanes,
@@ -214,6 +232,7 @@ export default function BranchGridMap({
       checkedOutRef?.headSha ?? null,
       checkedOutRef?.branchName ?? null,
       orientation,
+      nodePositionOverrides,
     ],
   );
 
@@ -728,6 +747,11 @@ export default function BranchGridMap({
 
   const handleCommitCardClick = useCallback(
     (event: React.MouseEvent, node: Node) => {
+      if (suppressNextCommitClickRef.current) {
+        event.preventDefault();
+        event.stopPropagation();
+        return;
+      }
       event.stopPropagation();
       const commitSha = node.commit.id;
       if (event.shiftKey) {
@@ -769,6 +793,80 @@ export default function BranchGridMap({
       onCommitClick,
       onSwitchToWorktree,
     ],
+  );
+
+  const handleNodePointerDown = useCallback(
+    (event: React.PointerEvent<HTMLDivElement>, node: Node) => {
+      if (event.button !== 0) return;
+      const target = event.target as HTMLElement | null;
+      if (target?.closest('button, a, input, textarea, select')) return;
+      event.stopPropagation();
+      event.preventDefault();
+      suppressNextCommitClickRef.current = false;
+      event.currentTarget.setPointerCapture(event.pointerId);
+      const currentOverride = nodePositionOverrides[node.commit.visualId] ?? nodePositionOverrides[node.commit.id];
+      dragNodeRef.current = {
+        nodeId: node.commit.visualId,
+        startX: event.clientX,
+        startY: event.clientY,
+        baseX: currentOverride?.x ?? node.x,
+        baseY: currentOverride?.y ?? node.y,
+        moved: false,
+        pendingX: currentOverride?.x ?? node.x,
+        pendingY: currentOverride?.y ?? node.y,
+      };
+      const flushDragPosition = () => {
+        dragRafRef.current = null;
+        const dragState = dragNodeRef.current;
+        if (!dragState) return;
+        setNodePositionOverrides((prev) => ({
+          ...prev,
+          [dragState.nodeId]: {
+            x: dragState.pendingX,
+            y: dragState.pendingY,
+          },
+        }));
+      };
+      const handleMove = (moveEvent: PointerEvent) => {
+        const dragState = dragNodeRef.current;
+        if (!dragState) return;
+        const dragScale = renderedCameraRef.current.zoom / GRID_RENDER_ZOOM;
+        const inverseScale = dragScale > 0 ? 1 / dragScale : 1;
+        const deltaX = (moveEvent.clientX - dragState.startX) * inverseScale;
+        const deltaY = (moveEvent.clientY - dragState.startY) * inverseScale;
+        if (Math.abs(deltaX) > 2 || Math.abs(deltaY) > 2) dragState.moved = true;
+        if (dragState.moved) suppressNextCommitClickRef.current = true;
+        dragState.pendingX = dragState.baseX + deltaX;
+        dragState.pendingY = dragState.baseY + deltaY;
+        if (dragRafRef.current != null) return;
+        dragRafRef.current = window.requestAnimationFrame(flushDragPosition);
+      };
+      const handleUp = () => {
+        window.removeEventListener('pointermove', handleMove);
+        window.removeEventListener('pointerup', handleUp);
+        window.removeEventListener('pointercancel', handleUp);
+        if (dragRafRef.current != null) {
+          window.cancelAnimationFrame(dragRafRef.current);
+          dragRafRef.current = null;
+          flushDragPosition();
+        }
+        try {
+          event.currentTarget.releasePointerCapture(event.pointerId);
+        } catch {
+          // Ignore if the pointer was already released.
+        }
+        const dragState = dragNodeRef.current;
+        dragNodeRef.current = null;
+        if (!dragState) return;
+        window.setTimeout(() => {
+          suppressNextCommitClickRef.current = false;
+        }, 0);
+      };
+      window.addEventListener('pointermove', handleMove);
+      window.addEventListener('pointerup', handleUp);
+      window.addEventListener('pointercancel', handleUp);
+    },
+    [nodePositionOverrides],
   );
 
   const confirmCommit = useCallback(async () => {
@@ -864,6 +962,7 @@ export default function BranchGridMap({
           isCameraMoving={isCameraMoving}
           onWheel={handleWheel}
           onMouseDown={startMarqueeDrag}
+          onNodePointerDown={handleNodePointerDown}
           labelTopPx={labelTopPx}
           inverseZoomStyle={inverseZoomStyle}
           displayZoom={displayZoom}
