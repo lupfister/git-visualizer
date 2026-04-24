@@ -301,12 +301,10 @@ body.popover-window #root {
 
   0%,
   100% {
-    filter: drop-shadow(0 0 0 color-mix(in srgb, var(--muted-foreground) 0%, transparent));
     opacity: 0.88;
   }
 
   50% {
-    filter: drop-shadow(0 0 4px color-mix(in srgb, var(--muted-foreground) 55%, transparent));
     opacity: 1;
   }
 }
@@ -369,7 +367,6 @@ body.popover-window #root {
 
   .main-stale-tail-glow {
     animation: none;
-    filter: drop-shadow(0 0 1px color-mix(in srgb, var(--muted-foreground) 35%, transparent));
     opacity: 0.95;
   }
 }

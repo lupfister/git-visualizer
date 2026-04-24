@@ -3,7 +3,7 @@ import { invoke } from '@tauri-apps/api/core';
 import { listen } from '@tauri-apps/api/event';
 import { getCurrentWindow } from '@tauri-apps/api/window';
 import { open } from '@tauri-apps/plugin-dialog';
-import { PanelLeftClose, PanelLeftOpen } from 'lucide-react';
+import { ChevronLeft, ChevronRight, PanelLeftClose, PanelLeftOpen, Search } from 'lucide-react';
 import BranchGridMapView, { type OrientationMode } from '../components/grid/MapViewGrid';
 import DenseBranchSidebar from '../components/DenseBranchSidebar';
 import { buildLanes, lanesFromStoredColumns } from '../components/grid/LayoutGrid';
@@ -81,6 +81,7 @@ function App() {
   const [removeWorktreeInProgress, setRemoveWorktreeInProgress] = useState(false);
   const [gridSearchQuery, setGridSearchQuery] = useState('');
   const [gridSearchJumpToken, setGridSearchJumpToken] = useState(0);
+  const [gridSearchJumpDirection, setGridSearchJumpDirection] = useState<1 | -1>(1);
   const [manuallyOpenedGridClumps, setManuallyOpenedGridClumps] = useState<Set<string>>(() => new Set());
   const [manuallyClosedGridClumps, setManuallyClosedGridClumps] = useState<Set<string>>(() => new Set());
   const [gridSearchResultCount, setGridSearchResultCount] = useState<number | null>(null);
@@ -2184,7 +2185,7 @@ function App() {
               />
             ) : null}
             {sidebarDebug.dragging ? (
-              <div className="pointer-events-none absolute bottom-2 right-2 z-50 rounded-md border border-border/50 bg-card/90 px-2 py-1 text-[10px] text-muted-foreground shadow-sm">
+              <div className="pointer-events-none absolute bottom-2 right-2 z-50 rounded-md border border-border/50 bg-card/90 px-2 py-1 text-[10px] text-muted-foreground">
                 {sidebarDebug.lastEvent}
               </div>
             ) : null}
@@ -2204,6 +2205,7 @@ function App() {
                 branchUniqueAheadCounts={enrichedBranchUniqueAheadCounts}
                 gridSearchQuery={gridSearchQuery}
                 gridSearchJumpToken={gridSearchJumpToken}
+                gridSearchJumpDirection={gridSearchJumpDirection}
                 gridFocusSha={gridFocusSha}
                 onGridSearchResultCountChange={setGridSearchResultCount}
                 onGridSearchFocusChange={setGridFocusSha}
@@ -2242,10 +2244,81 @@ function App() {
                 orientation={mapGridOrientation}
               />
 
-              <header data-tauri-drag-region data-map-ui className="absolute left-0 right-0 top-0 z-40 px-4 md:px-8">
-                <div className="window-no-drag pointer-events-auto relative z-10 min-h-12 content-start flex flex-wrap items-start gap-2 pt-2.25">
+              <header data-tauri-drag-region data-map-ui className="absolute inset-x-0 top-0 z-40 px-4">
+                <div className="window-no-drag pointer-events-auto relative z-10 flex min-h-12 w-full items-center justify-between gap-2 py-4">
+                  <div className="flex flex-wrap items-start gap-2">
+                    {githubAuthStatus?.ghAvailable && !githubAuthStatus.authenticated && (
+                      <button
+                        onClick={handleGitHubAuthSetup}
+                        disabled={githubAuthLoading}
+                        className="rounded-md border border-border/60 px-2 h-7 text-[11px] font-medium text-muted-foreground transition-colors hover:bg-accent hover:text-foreground disabled:cursor-not-allowed disabled:opacity-50"
+                      >
+                        {githubAuthLoading ? 'Connecting GitHub...' : 'Connect GitHub'}
+                      </button>
+                    )}
+                    {githubAuthStatus && !githubAuthStatus.ghAvailable && (
+                      <span className="inline-flex h-7 items-center rounded-md border border-border/60 px-2 text-[11px] font-medium text-muted-foreground">
+                        Install `gh` for private PR data
+                      </span>
+                    )}
+                    <div className="window-no-drag flex min-h-7 min-w-64 flex-1 max-w-[42rem] items-center gap-2 rounded-full border border-border/60 bg-card/95 pl-2.5 pr-1 py-1">
+                      <Search className="h-3.5 w-3.5 shrink-0 text-muted-foreground" />
+                      <input
+                        value={gridSearchQuery}
+                        onChange={(event) => setGridSearchQuery(event.target.value)}
+                        onKeyDown={(event) => {
+                          if (event.key === 'Enter') {
+                            event.preventDefault();
+                            setGridSearchJumpToken((token) => token + 1);
+                          }
+                        }}
+                        placeholder="sha, message, or branch"
+                        className="w-full bg-transparent text-[11px] text-foreground outline-none placeholder:text-muted-foreground/70"
+                      />
+                      <div className="flex items-center gap-1 rounded-full border border-border/60 bg-muted/20 px-1">
+                        <button
+                          type="button"
+                          onClick={() => {
+                            setGridSearchJumpDirection(-1);
+                            setGridSearchJumpToken((token) => token + 1);
+                          }}
+                          disabled={gridSearchResultCount == null || gridSearchResultCount === 0}
+                          className="inline-flex h-6 w-6 items-center justify-center rounded-md border border-border/60 text-muted-foreground transition-colors hover:bg-accent hover:text-foreground disabled:cursor-not-allowed disabled:opacity-40"
+                          aria-label="Previous search result"
+                          title="Previous result"
+                        >
+                          <ChevronLeft className="h-3.5 w-3.5 shrink-0" />
+                        </button>
+                        <span
+                          className={cn(
+                            'inline-flex h-6 items-center rounded-md border border-border/60 px-2 text-[10px] font-medium',
+                            gridSearchResultCount != null && gridSearchResultCount > 0
+                              ? 'bg-card text-foreground'
+                              : 'text-muted-foreground',
+                          )}
+                        >
+                          {gridSearchResultCount != null
+                            ? `${gridSearchResultCount} match${gridSearchResultCount === 1 ? '' : 'es'}`
+                            : 'Find'}
+                        </span>
+                        <button
+                          type="button"
+                          onClick={() => {
+                            setGridSearchJumpDirection(1);
+                            setGridSearchJumpToken((token) => token + 1);
+                          }}
+                          disabled={gridSearchResultCount == null || gridSearchResultCount === 0}
+                          className="inline-flex h-6 w-6 items-center justify-center rounded-md border border-border/60 text-muted-foreground transition-colors hover:bg-accent hover:text-foreground disabled:cursor-not-allowed disabled:opacity-40"
+                          aria-label="Next search result"
+                          title="Next result"
+                        >
+                          <ChevronRight className="h-3.5 w-3.5 shrink-0" />
+                        </button>
+                      </div>
+                    </div>
+                  </div>
                   <div
-                    className="flex shrink-0 rounded-full border border-border bg-muted/20 p-0.5 shadow-sm"
+                    className="flex shrink-0 rounded-full border border-border/60 bg-muted/20 p-0.5"
                     role="radiogroup"
                     aria-label="Commit map layout"
                   >
@@ -2262,9 +2335,9 @@ function App() {
                         }
                       }}
                       className={cn(
-                        'rounded-full px-3 py-1.5 text-[10px] font-medium uppercase tracking-wide transition-colors outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 focus-visible:ring-offset-background',
+                        'rounded-full px-2.5 h-7 text-[11px] font-medium transition-colors outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 focus-visible:ring-offset-background',
                         mapGridOrientation === 'horizontal'
-                          ? 'border border-border/50 bg-card text-foreground shadow-sm'
+                          ? 'border border-border/60 bg-card text-foreground'
                           : 'text-muted-foreground hover:text-foreground',
                       )}
                     >
@@ -2283,90 +2356,53 @@ function App() {
                         }
                       }}
                       className={cn(
-                        'rounded-full px-3 py-1.5 text-[10px] font-medium uppercase tracking-wide transition-colors outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 focus-visible:ring-offset-background',
+                        'rounded-full px-2.5 h-7 text-[11px] font-medium transition-colors outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 focus-visible:ring-offset-background',
                         mapGridOrientation === 'vertical'
-                          ? 'border border-border/50 bg-card text-foreground shadow-sm'
+                          ? 'border border-border/60 bg-card text-foreground'
                           : 'text-muted-foreground hover:text-foreground',
                       )}
                     >
                       Vertical
                     </button>
                   </div>
-                  {githubAuthStatus?.ghAvailable && !githubAuthStatus.authenticated && (
-                    <button
-                      onClick={handleGitHubAuthSetup}
-                      disabled={githubAuthLoading}
-                      className="text-xs text-muted-foreground hover:text-foreground border border-border/50 rounded-full px-3 py-1 transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
-                    >
-                      {githubAuthLoading ? 'Connecting GitHub...' : 'Connect GitHub'}
-                    </button>
-                  )}
-                  {githubAuthStatus && !githubAuthStatus.ghAvailable && (
-                    <span className="text-xs text-muted-foreground border border-border/50 rounded-full px-3 py-1">
-                      Install `gh` for private PR data
-                    </span>
-                  )}
-                  {githubAuthMessage && (
-                    <span className="text-xs text-muted-foreground max-w-64 truncate" title={githubAuthMessage}>
-                      {githubAuthMessage}
-                    </span>
-                  )}
-                  <div className="window-no-drag flex min-w-56 flex-1 max-w-sm items-center gap-2 rounded-full border border-border bg-card px-3 py-1.5 shadow-sm">
-                    <span className="text-[10px] uppercase tracking-wide text-muted-foreground font-medium shrink-0">
-                      Search
-                    </span>
-                    <input
-                      value={gridSearchQuery}
-                      onChange={(event) => setGridSearchQuery(event.target.value)}
-                      onKeyDown={(event) => {
-                        if (event.key === 'Enter') {
-                          event.preventDefault();
-                          setGridSearchJumpToken((token) => token + 1);
-                        }
-                      }}
-                      placeholder="sha, message, or branch"
-                      className="w-full bg-transparent text-xs text-foreground outline-none placeholder:text-muted-foreground/70"
-                    />
-                    <button
-                      type="button"
-                      onClick={() => setGridSearchJumpToken((token) => token + 1)}
-                      className="shrink-0 rounded-full border border-border/50 bg-muted/30 px-2.5 py-1 text-[10px] font-medium uppercase tracking-wide text-muted-foreground transition-colors hover:bg-accent hover:text-foreground"
-                    >
-                      Jump
-                    </button>
-                  </div>
-                  {gridSearchResultCount != null && (
-                    <span className="text-xs text-muted-foreground">
-                      {gridSearchResultCount} match{gridSearchResultCount === 1 ? '' : 'es'}
-                    </span>
-                  )}
-                  {gridFocusSha && (
-                    <span className="text-xs rounded-full border border-primary/30 bg-primary/10 px-3 py-1 text-primary">
-                      Focused {gridFocusSha.slice(0, 7)}
-                    </span>
-                  )}
-                  {commitSwitchFeedback && (
-                    <span
-                      className={cn(
-                        'text-xs rounded-full px-3 py-1 max-w-[26rem] truncate transition-opacity duration-200',
-                        isCommitSwitchFeedbackVisible ? 'opacity-100' : 'opacity-0',
-                        commitSwitchFeedback.kind === 'error'
-                          ? 'bg-red-50 dark:bg-red-900/20 text-red-600 dark:text-red-400'
-                          : 'bg-blue-50 dark:bg-blue-900/20 text-blue-600 dark:text-blue-400',
-                      )}
-                      title={commitSwitchFeedback.message}
-                    >
-                      {commitSwitchFeedback.message}
-                    </span>
-                  )}
                 </div>
               </header>
+
+              <div className="pointer-events-none fixed right-4 top-4 z-50 flex w-[min(16rem,calc(100vw-2rem))] flex-col gap-1.5">
+                {githubAuthMessage && (
+                  <div className="window-no-drag pointer-events-auto inline-flex h-7 items-center gap-2 rounded-md border border-border/60 bg-card/95 px-2 text-[11px] text-muted-foreground backdrop-blur-sm">
+                    <p className="shrink-0 text-[10px] font-medium text-muted-foreground">GitHub</p>
+                    <p className="max-w-36 truncate text-[11px] text-foreground/90" title={githubAuthMessage}>
+                      {githubAuthMessage}
+                    </p>
+                  </div>
+                )}
+                {commitSwitchFeedback && (
+                  <div
+                    className={cn(
+                      'window-no-drag pointer-events-auto inline-flex h-7 items-center gap-2 rounded-md border px-2 text-[11px] backdrop-blur-sm transition-opacity duration-200',
+                      isCommitSwitchFeedbackVisible ? 'opacity-100' : 'opacity-0',
+                      commitSwitchFeedback.kind === 'error'
+                        ? 'border-red-200/80 bg-red-50/95 text-red-700 dark:border-red-900/30 dark:bg-red-900/20 dark:text-red-300'
+                        : 'border-blue-200/80 bg-blue-50/95 text-blue-700 dark:border-blue-900/30 dark:bg-blue-900/20 dark:text-blue-300',
+                    )}
+                    title={commitSwitchFeedback.message}
+                  >
+                    <p className="shrink-0 text-[10px] font-medium opacity-70">
+                      {commitSwitchFeedback.kind === 'error' ? 'Alert' : 'Update'}
+                    </p>
+                    <p className="truncate text-[11px]">
+                      {commitSwitchFeedback.message}
+                    </p>
+                  </div>
+                )}
+              </div>
           </div>
 
           {showErrorPanel && (
             <div
               data-map-ui
-              className={`absolute top-[96px] right-4 z-50 w-[calc(100%-2rem)] max-w-80 bg-card border border-border rounded-2xl shadow-lg overflow-hidden ${errorPanelClosing ? 'animate-error-panel-out' : 'animate-error-panel-in'}`}
+              className={`absolute top-[96px] right-4 z-50 w-[calc(100%-2rem)] max-w-80 bg-card border border-border rounded-2xl overflow-hidden ${errorPanelClosing ? 'animate-error-panel-out' : 'animate-error-panel-in'}`}
             >
               <div className="flex items-center justify-between px-4 py-3 border-b border-border/50">
                 <span className="text-sm font-medium text-foreground">Branch errors</span>

@@ -86,6 +86,7 @@ export default function BranchGridMap({
   branchUniqueAheadCounts = {},
   gridSearchQuery = '',
   gridSearchJumpToken = 0,
+  gridSearchJumpDirection = 1,
   gridFocusSha = null,
   checkedOutRef = null,
   onGridSearchResultCountChange,
@@ -104,6 +105,7 @@ export default function BranchGridMap({
   const lastInteractionStateRef = useRef<boolean | null>(null);
   const lastSearchResultCountRef = useRef<number | null | undefined>(undefined);
   const lastSearchFocusShaRef = useRef<string | null | undefined>(undefined);
+  const lastHandledSearchJumpTokenRef = useRef<number>(0);
   const [worktreeMenuOpen, setWorktreeMenuOpen] = useState(false);
   const [commitDialogOpen, setCommitDialogOpen] = useState(false);
   const [commitMessageDraft, setCommitMessageDraft] = useState('');
@@ -616,15 +618,26 @@ export default function BranchGridMap({
   }, [normalizedSearchQuery, branches, branchCommitPreviews, defaultBranch, directCommits]);
 
   useEffect(() => {
-    let nextFocusSha: string | null;
     if (!normalizedSearchQuery) {
-      nextFocusSha = null;
-    } else if (gridSearchJumpToken <= 0) return;
-    else if (searchMatchedBranchHeadSha) {
-      nextFocusSha = searchMatchedBranchHeadSha;
-    } else {
-      nextFocusSha = matchingNodes[0]?.commit.id ?? null;
+      lastHandledSearchJumpTokenRef.current = gridSearchJumpToken;
+      if (lastSearchFocusShaRef.current === null) return;
+      lastSearchFocusShaRef.current = null;
+      onGridSearchFocusChange?.(null);
+      return;
     }
+
+    if (gridSearchJumpToken <= 0) return;
+    if (lastHandledSearchJumpTokenRef.current === gridSearchJumpToken) return;
+    lastHandledSearchJumpTokenRef.current = gridSearchJumpToken;
+
+    let nextFocusSha: string | null;
+    const currentIndex = gridFocusSha ? matchingNodes.findIndex((node) => node.commit.id === gridFocusSha) : -1;
+    const nextIndex = matchingNodes.length > 0
+      ? (currentIndex < 0
+          ? 0
+          : (currentIndex + gridSearchJumpDirection + matchingNodes.length) % matchingNodes.length)
+      : -1;
+    nextFocusSha = matchingNodes[nextIndex]?.commit.id ?? searchMatchedBranchHeadSha ?? null;
     if (lastSearchFocusShaRef.current === nextFocusSha) return;
     lastSearchFocusShaRef.current = nextFocusSha;
     onGridSearchFocusChange?.(nextFocusSha);
@@ -634,6 +647,7 @@ export default function BranchGridMap({
     onGridSearchFocusChange,
     searchMatchedBranchHeadSha,
     gridSearchJumpToken,
+    gridSearchJumpDirection,
   ]);
 
   useLayoutEffect(() => {

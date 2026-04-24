@@ -23,6 +23,7 @@ interface Props {
   branchUniqueAheadCounts?: Record<string, number>;
   gridSearchQuery?: string;
   gridSearchJumpToken?: number;
+  gridSearchJumpDirection?: 1 | -1;
   gridFocusSha?: string | null;
   onGridSearchResultCountChange?: (count: number | null) => void;
   onGridSearchFocusChange?: (sha: string | null) => void;
@@ -82,6 +83,7 @@ export default function BranchGridMapView({
   branchUniqueAheadCounts = {},
   gridSearchQuery = '',
   gridSearchJumpToken = 0,
+  gridSearchJumpDirection = 1,
   gridFocusSha = null,
   onGridSearchResultCountChange,
   onGridSearchFocusChange,
@@ -151,6 +153,7 @@ export default function BranchGridMapView({
             branchUniqueAheadCounts={branchUniqueAheadCounts}
             gridSearchQuery={gridSearchQuery}
             gridSearchJumpToken={gridSearchJumpToken}
+            gridSearchJumpDirection={gridSearchJumpDirection}
             gridFocusSha={gridFocusSha}
             onGridSearchResultCountChange={onGridSearchResultCountChange}
             onGridSearchFocusChange={onGridSearchFocusChange}
@@ -207,6 +210,7 @@ export default function BranchGridMapView({
             branchUniqueAheadCounts={branchUniqueAheadCounts}
             gridSearchQuery={gridSearchQuery}
             gridSearchJumpToken={gridSearchJumpToken}
+            gridSearchJumpDirection={gridSearchJumpDirection}
             gridFocusSha={gridFocusSha}
             checkedOutRef={checkedOutRef}
             onGridSearchResultCountChange={onGridSearchResultCountChange}
