@@ -1,5 +1,5 @@
 import { useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
-import type { Dispatch, SetStateAction } from 'react';
+import type { CSSProperties, Dispatch, SetStateAction } from 'react';
 import type { Branch, BranchCommitPreview, CheckedOutRef, DirectCommit, GitStashEntry, MergeNode, WorktreeInfo } from '../types';
 import { cn, shaMatchesGitRef } from './grid/mapGridUtils';
 import type { BranchGridLayoutModel } from './grid/branchGridLayoutModel';
@@ -39,6 +39,8 @@ type Props = {
   onSelectCommit?: (sha: string) => void;
   onSelectBranch?: (branchName: string) => void;
   className?: string;
+  style?: CSSProperties;
+  collapsed?: boolean;
 };
 
 function buildChildBranchesByParent(branches: Branch[], defaultBranch: string): Map<string, string[]> {
@@ -427,6 +429,8 @@ export default function DenseBranchSidebar({
   onSelectCommit,
   onSelectBranch,
   className,
+  style,
+  collapsed = false,
 }: Props) {
   const asideRef = useRef<HTMLElement | null>(null);
   const scrollBodyRef = useRef<HTMLDivElement | null>(null);
@@ -678,27 +682,32 @@ export default function DenseBranchSidebar({
     <aside
       ref={asideRef}
       aria-label="Dense branch sidebar"
-      className={cn('pointer-events-auto h-full', className)}
+      className={cn('pointer-events-auto relative h-full overflow-hidden', className)}
+      style={style}
     >
       <div className="flex h-full min-h-0 flex-col">
         <div className="mb-2 flex items-center justify-between gap-3 px-2.5">
-          <h2 className="text-sm font-medium text-foreground">Projects</h2>
+          {!collapsed ? <h2 className="text-sm font-medium text-foreground">Projects</h2> : <span className="sr-only">Projects</span>}
           <div className="flex items-center gap-2">
-            <button
-              type="button"
-              onClick={onAddProject}
-              disabled={projectLoading}
-              className="shrink-0 rounded-md border border-border/60 px-2 py-0.5 text-[11px] font-medium text-muted-foreground transition-colors hover:bg-accent hover:text-foreground disabled:cursor-not-allowed disabled:opacity-50"
-            >
-              Add repo
-            </button>
-            <button
-              type="button"
-              onClick={() => setShowCommits((value) => !value)}
-              className="shrink-0 rounded-md border border-border/60 px-2 py-0.5 text-[11px] font-medium text-muted-foreground transition-colors hover:bg-accent hover:text-foreground"
-            >
-              {showCommits ? 'Hide commits' : 'Show commits'}
-            </button>
+            {!collapsed ? (
+              <>
+                <button
+                  type="button"
+                  onClick={onAddProject}
+                  disabled={projectLoading}
+                  className="shrink-0 rounded-md border border-border/60 px-2 py-0.5 text-[11px] font-medium text-muted-foreground transition-colors hover:text-foreground disabled:cursor-not-allowed disabled:opacity-50"
+                >
+                  Add repo
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setShowCommits((value) => !value)}
+                  className="shrink-0 rounded-md border border-border/60 px-2 py-0.5 text-[11px] font-medium text-muted-foreground transition-colors hover:text-foreground"
+                >
+                  {showCommits ? 'Hide commits' : 'Show commits'}
+                </button>
+              </>
+            ) : null}
           </div>
         </div>
         {projectError && (
@@ -708,7 +717,7 @@ export default function DenseBranchSidebar({
             </p>
           </div>
         )}
-        <div ref={scrollBodyRef} className="min-h-0 flex-1 space-y-2 overflow-y-auto px-2.5">
+        <div ref={scrollBodyRef} className={cn('min-h-0 flex-1 space-y-2 overflow-y-auto px-2.5', collapsed ? 'opacity-0 pointer-events-none' : '')}>
           {projects.map((project) => {
             const isActive = project.path === activeProjectPath;
             const isExpanded = expandedProjects.has(project.path) || isActive;
@@ -723,7 +732,7 @@ export default function DenseBranchSidebar({
                   type="button"
                   onClick={() => { void onSelectProject(project.path); }}
                   className={cn(
-                    'flex w-full items-center justify-between gap-3 rounded-xl px-4 py-3 text-left transition-colors hover:bg-accent',
+                    'flex w-full items-center justify-between gap-3 rounded-xl px-4 py-3 text-left transition-colors',
                     isActive ? 'bg-primary/10 text-foreground' : 'text-muted-foreground hover:text-foreground',
                   )}
                 >

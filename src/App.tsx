@@ -3,6 +3,7 @@ import { invoke } from '@tauri-apps/api/core';
 import { listen } from '@tauri-apps/api/event';
 import { getCurrentWindow } from '@tauri-apps/api/window';
 import { open } from '@tauri-apps/plugin-dialog';
+import { PanelLeftClose, PanelLeftOpen } from 'lucide-react';
 import BranchGridMapView, { type OrientationMode } from '../components/grid/MapViewGrid';
 import DenseBranchSidebar from '../components/DenseBranchSidebar';
 import { buildLanes, lanesFromStoredColumns } from '../components/grid/LayoutGrid';
@@ -23,6 +24,11 @@ type GitActivityEventPayload = {
 };
 const COMMIT_SWITCH_FEEDBACK_VISIBLE_MS = 1400;
 const COMMIT_SWITCH_FEEDBACK_FADE_MS = 180;
+const SIDEBAR_WIDTH_STORAGE_KEY = 'git-visualizer:sidebar-width';
+const SIDEBAR_COLLAPSED_STORAGE_KEY = 'git-visualizer:sidebar-collapsed';
+const SIDEBAR_DEFAULT_WIDTH_PX = 432;
+const SIDEBAR_MIN_WIDTH_PX = 280;
+const SIDEBAR_MAX_WIDTH_PX = 640;
 type PushTarget = {
   branchName: string;
   targetSha?: string;
@@ -112,9 +118,26 @@ function App() {
   const [createBranchFromNodeInProgress, setCreateBranchFromNodeInProgress] = useState(false);
   const [isMapInteracting, setIsMapInteracting] = useState(false);
   const [mapGridOrientation, setMapGridOrientation] = useState<OrientationMode>('horizontal');
+  const [sidebarWidthPx, setSidebarWidthPx] = useState(SIDEBAR_DEFAULT_WIDTH_PX);
+  const [isSidebarCollapsed, setIsSidebarCollapsed] = useState(false);
+  const [sidebarDebug, setSidebarDebug] = useState<{
+    dragging: boolean;
+    lastEvent: string;
+  }>({
+    dragging: false,
+    lastEvent: 'idle',
+  });
   const autoFocusSyncKeyRef = useRef<string | null>(null);
   const loadRepoRequestIdRef = useRef(0);
   const githubFetchRequestIdRef = useRef(0);
+  const sidebarDragRef = useRef<{
+    startX: number;
+    startWidth: number;
+    pendingWidth: number;
+    pointerId: number;
+  } | null>(null);
+  const sidebarWidthRef = useRef(SIDEBAR_DEFAULT_WIDTH_PX);
+  const sidebarShellRef = useRef<HTMLDivElement | null>(null);
 
   const branchMetaLoadKeyRef = useRef<string | null>(null);
   // Keep every selected repo on the same low-churn refresh strategy that was
@@ -1977,6 +2000,115 @@ function App() {
     ],
   );
 
+  useEffect(() => {
+    try {
+      const rawWidth = window.localStorage.getItem(SIDEBAR_WIDTH_STORAGE_KEY);
+      if (rawWidth) {
+        const parsed = Number(rawWidth);
+        if (Number.isFinite(parsed)) {
+          setSidebarWidthPx(Math.min(SIDEBAR_MAX_WIDTH_PX, Math.max(SIDEBAR_MIN_WIDTH_PX, parsed)));
+        }
+      }
+      const rawCollapsed = window.localStorage.getItem(SIDEBAR_COLLAPSED_STORAGE_KEY);
+      if (rawCollapsed != null) setIsSidebarCollapsed(rawCollapsed === 'true');
+    } catch {
+      // ignore storage failures
+    }
+  }, []);
+
+  useEffect(() => {
+    sidebarWidthRef.current = sidebarWidthPx;
+  }, [sidebarWidthPx]);
+
+  useEffect(() => {
+    const shell = sidebarShellRef.current;
+    if (!shell) return;
+    shell.style.width = isSidebarCollapsed ? '0px' : `${sidebarWidthPx}px`;
+  }, [sidebarWidthPx, isSidebarCollapsed]);
+
+  useEffect(() => {
+    try {
+      window.localStorage.setItem(SIDEBAR_COLLAPSED_STORAGE_KEY, String(isSidebarCollapsed));
+    } catch {
+      // ignore storage failures
+    }
+  }, [isSidebarCollapsed]);
+
+  const updateSidebarWidthFromPointer = (clientX: number) => {
+    const drag = sidebarDragRef.current;
+    if (!drag) return;
+    const nextWidth = drag.startWidth + (clientX - drag.startX);
+    drag.pendingWidth = Math.min(SIDEBAR_MAX_WIDTH_PX, Math.max(SIDEBAR_MIN_WIDTH_PX, nextWidth));
+    const shell = sidebarShellRef.current;
+    if (shell) shell.style.width = `${drag.pendingWidth}px`;
+  };
+
+  const finishSidebarDrag = (reason: string, pointerId?: number) => {
+    const drag = sidebarDragRef.current;
+    if (!drag) return;
+    if (pointerId != null && drag.pointerId !== pointerId) return;
+    sidebarDragRef.current = null;
+    setSidebarDebug({ dragging: false, lastEvent: reason });
+    document.body.style.cursor = '';
+    document.body.style.userSelect = '';
+    setSidebarWidthPx(drag.pendingWidth);
+    try {
+      window.localStorage.setItem(SIDEBAR_WIDTH_STORAGE_KEY, String(drag.pendingWidth));
+    } catch {
+      // ignore storage failures
+    }
+  };
+
+  const handleSidebarPointerDown = (event: React.PointerEvent<HTMLDivElement>) => {
+    if (event.button !== 0) return;
+    event.preventDefault();
+    setSidebarDebug({ dragging: true, lastEvent: 'handle:pointerdown' });
+    console.debug('[sidebar-resize] pointerdown', {
+      pointerId: event.pointerId,
+      clientX: event.clientX,
+      width: sidebarWidthRef.current,
+    });
+    sidebarDragRef.current = {
+      startX: event.clientX,
+      startWidth: sidebarWidthRef.current,
+      pendingWidth: sidebarWidthRef.current,
+      pointerId: event.pointerId,
+    };
+    document.body.style.cursor = 'col-resize';
+    document.body.style.userSelect = 'none';
+    event.currentTarget.setPointerCapture(event.pointerId);
+  };
+
+  const handleSidebarPointerMove = (event: React.PointerEvent<HTMLDivElement>) => {
+    const drag = sidebarDragRef.current;
+    if (!drag || drag.pointerId !== event.pointerId) return;
+    if (sidebarDebug.lastEvent !== 'move') console.debug('[sidebar-resize] pointermove', { clientX: event.clientX });
+    setSidebarDebug((previous) => (previous.dragging ? { dragging: true, lastEvent: 'move' } : previous));
+    updateSidebarWidthFromPointer(event.clientX);
+  };
+
+  const handleSidebarPointerUp = (event: React.PointerEvent<HTMLDivElement>) => {
+    if (!sidebarDragRef.current) return;
+    console.debug('[sidebar-resize] pointerup', { pointerId: event.pointerId });
+    try {
+      event.currentTarget.releasePointerCapture(event.pointerId);
+    } catch {
+      // ignore if capture already released
+    }
+    finishSidebarDrag('pointerup', event.pointerId);
+  };
+
+  const handleSidebarPointerCancel = (event: React.PointerEvent<HTMLDivElement>) => {
+    if (!sidebarDragRef.current) return;
+    console.debug('[sidebar-resize] pointercancel', { pointerId: event.pointerId });
+    try {
+      event.currentTarget.releasePointerCapture(event.pointerId);
+    } catch {
+      // ignore if capture already released
+    }
+    finishSidebarDrag('pointercancel', event.pointerId);
+  };
+
   return (
     <div className="relative flex h-screen min-h-0 flex-col bg-background text-foreground">
       <header
@@ -1984,38 +2116,79 @@ function App() {
         className="window-drag-region absolute left-0 right-0 top-0 z-[9999] h-12 px-4"
         style={{ paddingTop: 'max(env(safe-area-inset-top), 0px)' }}
         onMouseDown={handleWindowDragStart}
-      />
+      >
+        <div className="flex h-full items-start gap-2 pt-2">
+          <button
+            type="button"
+            className="window-no-drag ml-16 inline-flex h-7 w-7 items-center justify-center rounded-md border border-border/60 bg-card text-muted-foreground shadow-sm transition-colors hover:bg-accent hover:text-foreground"
+            aria-label={isSidebarCollapsed ? 'Open sidebar' : 'Collapse sidebar'}
+            onClick={() => setIsSidebarCollapsed((value) => !value)}
+          >
+            {isSidebarCollapsed ? (
+              <PanelLeftOpen className="h-4 w-4 shrink-0" />
+            ) : (
+              <PanelLeftClose className="h-4 w-4 shrink-0" />
+            )}
+          </button>
+        </div>
+      </header>
 
       <div className="relative z-10 flex h-full min-h-0 flex-col">
         <div className="relative flex h-full min-h-0 flex-1 overflow-hidden">
-          <DenseBranchSidebar
-            className="min-h-0 w-[27rem] shrink-0 border-r border-border/50 pb-4 pt-16"
-            projects={projectCards}
-            activeProjectPath={repoPath}
-            onSelectProject={loadRepo}
-            onAddProject={() => {
-              void (async () => {
-                try {
-                  const selected = await open({ directory: true, multiple: false, defaultPath: recentProjects[0]?.path ?? undefined });
-                  if (typeof selected === 'string' && selected) await addProject(selected);
-                } catch (e) {
-                  setError(e instanceof Error ? e.message : String(e));
-                }
-              })();
-            }}
-            projectLoading={loading || projectTreeLoading}
-            projectError={error}
-            branches={enrichedBranches}
-            defaultBranch={defaultBranch}
-            checkedOutRef={checkedOutRef}
-            manuallyOpenedClumps={manuallyOpenedGridClumps}
-            manuallyClosedClumps={manuallyClosedGridClumps}
-            setManuallyOpenedClumps={setManuallyOpenedGridClumps}
-            setManuallyClosedClumps={setManuallyClosedGridClumps}
-            gridLayoutModel={sharedGridLayoutModel}
-            onSelectCommit={handleSidebarSelectCommit}
-            onSelectBranch={handleSidebarSelectBranch}
-          />
+          <div
+            ref={sidebarShellRef}
+            className="relative flex h-full min-h-0 flex-none overflow-visible"
+            style={{ width: isSidebarCollapsed ? 0 : sidebarWidthPx }}
+          >
+            <DenseBranchSidebar
+              className={cn(
+                'min-h-0 shrink-0 overflow-hidden pb-4 pt-16 transition-[width,opacity] duration-300 ease-in-out',
+                isSidebarCollapsed ? 'pointer-events-none opacity-0' : 'opacity-100',
+              )}
+              style={{ width: '100%' }}
+              collapsed={isSidebarCollapsed}
+              projects={projectCards}
+              activeProjectPath={repoPath}
+              onSelectProject={loadRepo}
+              onAddProject={() => {
+                void (async () => {
+                  try {
+                    const selected = await open({ directory: true, multiple: false, defaultPath: recentProjects[0]?.path ?? undefined });
+                    if (typeof selected === 'string' && selected) await addProject(selected);
+                  } catch (e) {
+                    setError(e instanceof Error ? e.message : String(e));
+                  }
+                })();
+              }}
+              projectLoading={loading || projectTreeLoading}
+              projectError={error}
+              branches={enrichedBranches}
+              defaultBranch={defaultBranch}
+              checkedOutRef={checkedOutRef}
+              manuallyOpenedClumps={manuallyOpenedGridClumps}
+              manuallyClosedClumps={manuallyClosedGridClumps}
+              setManuallyOpenedClumps={setManuallyOpenedGridClumps}
+              setManuallyClosedClumps={setManuallyClosedGridClumps}
+              gridLayoutModel={sharedGridLayoutModel}
+              onSelectCommit={handleSidebarSelectCommit}
+              onSelectBranch={handleSidebarSelectBranch}
+            />
+            {!isSidebarCollapsed ? (
+              <div
+                aria-hidden="true"
+                onPointerDown={handleSidebarPointerDown}
+                onPointerMove={handleSidebarPointerMove}
+                onPointerUp={handleSidebarPointerUp}
+                onPointerCancel={handleSidebarPointerCancel}
+                className="absolute bottom-0 right-[-6px] top-0 z-50 w-3 cursor-col-resize bg-transparent"
+              />
+            ) : null}
+            {sidebarDebug.dragging ? (
+              <div className="pointer-events-none absolute bottom-2 right-2 z-50 rounded-md border border-border/50 bg-card/90 px-2 py-1 text-[10px] text-muted-foreground shadow-sm">
+                {sidebarDebug.lastEvent}
+              </div>
+            ) : null}
+          </div>
 
           <div className="relative min-h-0 min-w-0 flex-1 overflow-hidden">
               <BranchGridMapView
