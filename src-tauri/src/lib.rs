@@ -180,18 +180,6 @@ fn store_repo_visual_snapshot(snapshot: &RepoVisualSnapshot) -> Result<(), Strin
     Ok(())
 }
 
-fn to_preview_entry(commit: CommitInfo) -> BranchCommitPreviewEntry {
-    BranchCommitPreviewEntry {
-        full_sha: commit.full_sha,
-        sha: commit.sha,
-        parent_sha: commit.parent_sha,
-        message: commit.message,
-        author: commit.author,
-        date: commit.date,
-        kind: "commit".to_string(),
-    }
-}
-
 fn fetch_all_merge_nodes_for_branches_internal(
     repo_path: &str,
     branches: &[Branch],
@@ -253,11 +241,6 @@ fn compute_repo_visual_snapshot(repo_path: &str) -> Result<RepoVisualSnapshot, S
         unpushed_commit_shas_by_branch.insert(branch_name, shas);
     }
 
-    let branch_head_by_name: HashMap<String, Branch> = branches
-        .iter()
-        .cloned()
-        .map(|branch| (branch.name.clone(), branch))
-        .collect();
     let mut merge_node_by_merged_head_sha = HashMap::<String, MergeNode>::new();
     for node in &merge_nodes {
         for parent_sha in node.parent_shas.iter().skip(1) {
@@ -339,151 +322,94 @@ fn compute_repo_visual_snapshot(repo_path: &str) -> Result<RepoVisualSnapshot, S
     let mut branch_commit_previews = HashMap::<String, Vec<BranchCommitPreviewEntry>>::new();
     let mut branch_unique_ahead_counts = HashMap::<String, i32>::new();
     for branch in &active_branches {
-        let parent_comparison_base = branch
-            .parent_branch
-            .clone()
-            .filter(|parent| parent != &branch.name)
-            .unwrap_or_else(|| default_branch.clone());
-        let merge_node = merge_node_by_merged_head_sha.get(&branch.head_sha);
-        let is_merged_branch = merge_node.is_some();
-        let should_use_merge_range = is_merged_branch
-            && parent_comparison_base == default_branch
-            && merge_node.map(|node| !node.full_sha.is_empty()).unwrap_or(false);
-        let merge_commit_sha = if should_use_merge_range {
-            merge_node.map(|node| node.full_sha.clone())
-        } else {
-            None
-        };
-
-        let mut history_commits: Vec<CommitInfo> = Vec::new();
-        {
-            if let Some(merge_sha) = merge_commit_sha {
-                let commits = get_branch_commits(
-                    resolved_path.clone(),
-                    branch.name.clone(),
-                    parent_comparison_base.clone(),
-                    Some(merge_sha.clone()),
-                    Some(false),
-                )?;
-                history_commits = commits
-                    .into_iter()
-                    .filter(|commit| commit.full_sha != merge_sha)
-                    .collect();
-            } else {
-                if let Ok(canonical_commits) = get_branch_unique_commits_from_default(
-                    &resolved_path,
-                    &default_branch,
-                    &branch.name,
-                ) {
-                    if !canonical_commits.is_empty() {
-                        history_commits = canonical_commits;
-                    }
-                }
-                if history_commits.is_empty() {
-                let mut candidate_bases: Vec<String> = Vec::new();
-                candidate_bases.push(parent_comparison_base.clone());
-                candidate_bases.push(default_branch.clone());
-                if let Some(value) = branch.created_from_sha.clone() {
-                    candidate_bases.push(value);
-                }
-                if let Some(value) = branch.diverged_from_sha.clone() {
-                    candidate_bases.push(value);
-                }
-                let mut seen = HashSet::<String>::new();
-                candidate_bases.retain(|value| !value.is_empty() && seen.insert(value.clone()));
-                let mut best_non_empty_commits: Option<Vec<CommitInfo>> = None;
-                let mut first_successful_commits: Option<Vec<CommitInfo>> = None;
-                for base_branch in candidate_bases {
-                    let commits = match get_branch_commits(
-                        resolved_path.clone(),
-                        branch.name.clone(),
-                        base_branch.clone(),
-                        None,
-                        Some(false),
-                    ) {
-                        Ok(value) => value,
-                        Err(_) => continue,
-                    };
-                    if first_successful_commits.is_none() {
-                        first_successful_commits = Some(commits.clone());
-                    }
-                    if !commits.is_empty() {
-                        let should_replace = match &best_non_empty_commits {
-                            Some(existing) => commits.len() > existing.len(),
-                            None => true,
-                        };
-                        if should_replace {
-                            best_non_empty_commits = Some(commits);
-                        }
-                    }
-                }
-                if let Some(commits) = best_non_empty_commits {
-                    history_commits = commits;
-                } else if let Some(commits) = first_successful_commits {
-                    history_commits = commits;
-                }
-                }
-            }
-
-            if history_commits.is_empty() {
-                // Last-resort: pull recent commits on the branch regardless of inferred fork date.
-                history_commits = get_recent_log(
-                    resolved_path.clone(),
-                    branch.name.clone(),
-                    Some(400),
-                    Some(false),
-                    Some(false),
-                )?;
-            }
-
-            let expected_unique = branch.commits_ahead.max(0) as usize;
-            if expected_unique > 0 && history_commits.len() < expected_unique {
-                if let Ok(canonical_commits) = get_branch_unique_commits_from_default(
-                    &resolved_path,
-                    &default_branch,
-                    &branch.name,
-                ) {
-                    if canonical_commits.len() >= expected_unique
-                        || canonical_commits.len() > history_commits.len()
-                    {
-                        history_commits = canonical_commits;
-                    }
-                }
-            }
-        }
-
-        let unique_count = std::cmp::max(history_commits.len() as i32, branch.commits_ahead.max(0));
-        branch_commit_previews.insert(
-            branch.name.clone(),
-            history_commits.into_iter().map(to_preview_entry).collect(),
-        );
-        branch_unique_ahead_counts.insert(branch.name.clone(), unique_count);
+        let mut history_commits: Vec<BranchCommitPreviewEntry> = direct_commits
+            .iter()
+            .filter(|commit| commit.branch == branch.name)
+            .map(|commit| BranchCommitPreviewEntry {
+                full_sha: commit.full_sha.clone(),
+                sha: commit.sha.clone(),
+                parent_sha: commit.parent_sha.clone(),
+                message: commit.message.clone(),
+                author: commit.author.clone(),
+                date: commit.date.clone(),
+                kind: "commit".to_string(),
+            })
+            .collect();
+        history_commits.sort_by(|left, right| {
+            right
+                .date
+                .cmp(&left.date)
+                .then_with(|| right.full_sha.cmp(&left.full_sha))
+        });
+        branch_unique_ahead_counts.insert(branch.name.clone(), history_commits.len() as i32);
+        branch_commit_previews.insert(branch.name.clone(), history_commits);
     }
 
     let mut commit_branch_by_sha = HashMap::<String, String>::new();
     for commit in &direct_commits {
         commit_branch_by_sha.insert(commit.full_sha.clone(), commit.branch.clone());
     }
+    let resolve_branch_for_sha = |sha: &str| -> Option<String> {
+        if sha.is_empty() {
+            return None;
+        }
+        commit_branch_by_sha
+            .get(sha)
+            .cloned()
+            .or_else(|| {
+                commit_branch_by_sha
+                    .iter()
+                    .find(|(commit_sha, _)| commit_sha.starts_with(sha) || sha.starts_with(*commit_sha))
+                    .map(|(_, branch_name)| branch_name.clone())
+            })
+    };
     let branch_parent_by_name = {
         let mut map = HashMap::<String, Option<String>>::new();
         map.insert(default_branch.clone(), None);
         for branch in &branches {
-            let fork_sha = branch
+            if branch.name == default_branch {
+                map.insert(branch.name.clone(), None);
+                continue;
+            }
+            let branch_commits: Vec<&DirectCommit> = direct_commits
+                .iter()
+                .filter(|commit| commit.branch == branch.name)
+                .collect();
+            let branch_commit_shas: HashSet<&str> =
+                branch_commits.iter().map(|commit| commit.full_sha.as_str()).collect();
+            let graph_parent_sha = branch_commits
+                .iter()
+                .filter(|commit| {
+                    commit
+                        .parent_sha
+                        .as_deref()
+                        .map(|parent| !branch_commit_shas.contains(parent))
+                        .unwrap_or(true)
+                })
+                .min_by(|left, right| {
+                    left.date
+                        .cmp(&right.date)
+                        .then_with(|| left.full_sha.cmp(&right.full_sha))
+                })
+                .and_then(|commit| commit.parent_sha.clone());
+            let metadata_fork_sha = branch
                 .created_from_sha
                 .as_ref()
                 .or(branch.diverged_from_sha.as_ref())
                 .cloned();
-            let parent = fork_sha
-                .and_then(|sha| {
-                    commit_branch_by_sha
-                        .get(&sha)
-                        .cloned()
-                        .or_else(|| {
-                            commit_branch_by_sha
-                                .iter()
-                                .find(|(commit_sha, _)| commit_sha.starts_with(&sha) || sha.starts_with(*commit_sha))
-                                .map(|(_, branch_name)| branch_name.clone())
-                        })
+            let parent = graph_parent_sha
+                .as_deref()
+                .and_then(&resolve_branch_for_sha)
+                .or_else(|| {
+                    metadata_fork_sha
+                        .as_deref()
+                        .and_then(&resolve_branch_for_sha)
+                })
+                .or_else(|| {
+                    branch
+                        .parent_branch
+                        .clone()
+                        .filter(|name| name != &branch.name)
                 });
             map.insert(branch.name.clone(), parent);
         }
@@ -2151,6 +2077,28 @@ fn get_direct_commits(
 ) -> Result<Vec<DirectCommit>, String> {
     let path = Path::new(&repo_path);
     git::get_direct_commits(path, &branch, limit).map_err(|e| e.to_string())
+}
+
+#[tauri::command(rename_all = "camelCase")]
+fn get_all_repo_commits(repo_path: String) -> Result<Vec<DirectCommit>, String> {
+    let path = Path::new(&repo_path);
+    let default_branch = git::get_default_branch(path).map_err(|e| e.to_string())?;
+    let branches = git::list_branches(path, &default_branch).map_err(|e| e.to_string())?;
+    let merge_nodes = fetch_all_merge_nodes_for_branches_internal(&repo_path, &branches, &default_branch)?;
+    let merge_target_branch_by_commit_sha: HashMap<String, String> = merge_nodes
+        .iter()
+        .map(|node| (node.target_commit_sha.clone(), node.target_branch.clone()))
+        .collect();
+    let all_branch_names: Vec<String> = std::iter::once(default_branch.clone())
+        .chain(branches.iter().map(|branch| branch.name.clone()))
+        .collect();
+    git::get_all_repo_commits(
+        path,
+        &default_branch,
+        &all_branch_names,
+        &merge_target_branch_by_commit_sha,
+    )
+    .map_err(|e| e.to_string())
 }
 
 #[tauri::command(rename_all = "camelCase")]
@@ -4511,6 +4459,7 @@ pub fn run() {
             get_branch_commits,
             get_commit_diff,
             get_direct_commits,
+            get_all_repo_commits,
             get_anthropic_key,
             summarize_diff,
             screenshot,

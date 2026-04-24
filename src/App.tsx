@@ -7,7 +7,7 @@ import BranchGridMapView, { type OrientationMode } from '../components/grid/MapV
 import DenseBranchSidebar from '../components/DenseBranchSidebar';
 import { buildLanes } from '../components/grid/LayoutGrid';
 import { computeBranchGridLayout, type BranchGridLayoutModel } from '../components/grid/branchGridLayoutModel';
-import type { Branch, BranchCommitPreview, BranchPromptMeta, BranchPromptMarker, CheckedOutRef, Commit, DirectCommit, GitHubAuthStatus, GitHubInfo, GitStashEntry, MergeNode, OpenPR, RepoVisualSnapshot, WorktreeInfo } from '../types';
+import type { Branch, BranchCommitPreview, BranchPromptMeta, CheckedOutRef, DirectCommit, GitHubAuthStatus, GitHubInfo, GitStashEntry, MergeNode, OpenPR, RepoVisualSnapshot, WorktreeInfo } from '../types';
 import { foldStashNodesIntoGraph } from './placeStashNode';
 
 const FROZEN_REPO_BASENAME = 'git-visualizer';
@@ -21,7 +21,6 @@ type GitActivityEventPayload = {
   repoPath: string;
   kind: 'graph' | 'local';
 };
-const PROMPT_ENRICHMENT_ENABLED = false;
 const COMMIT_SWITCH_FEEDBACK_VISIBLE_MS = 1400;
 const COMMIT_SWITCH_FEEDBACK_FADE_MS = 180;
 type PushTarget = {
@@ -404,10 +403,7 @@ function App() {
     const branchDef = resolvedDefaultBranch ?? defaultBranch;
     const [branchList, directResult, unpushedDirectResult, confirmedCheckedOutRef, worktreeList, stashList] = await Promise.all([
       invoke<Branch[]>('get_branches', { repoPath: path }),
-      invoke<DirectCommit[]>('get_direct_commits', {
-        repoPath: path,
-        branch: branchDef,
-      }),
+      invoke<DirectCommit[]>('get_all_repo_commits', { repoPath: path }),
       invoke<DirectCommit[]>('get_unpushed_direct_commits', {
         repoPath: path,
         branch: branchDef,
@@ -438,13 +434,10 @@ function App() {
     setStashes(stashList);
   }
 
-  async function hasFrozenRepoStateChanged(path: string, branch: string): Promise<boolean> {
+  async function hasFrozenRepoStateChanged(path: string): Promise<boolean> {
     const [nextBranches, nextDirectCommits, nextCheckedOutRef] = await Promise.all([
       invoke<Branch[]>('get_branches', { repoPath: path }).catch(() => []),
-      invoke<DirectCommit[]>('get_direct_commits', {
-        repoPath: path,
-        branch,
-      }).catch(() => []),
+      invoke<DirectCommit[]>('get_all_repo_commits', { repoPath: path }).catch(() => []),
       invoke<CheckedOutRef>('get_checked_out_ref', { repoPath: path }).catch(() => null),
     ]);
 
@@ -748,7 +741,7 @@ function App() {
         const branchesPromise = invoke<Branch[]>('get_branches', { repoPath });
         const checkedOutPromise = invoke<CheckedOutRef>('get_checked_out_ref', { repoPath }).catch(() => null);
         const worktreesPromise = invoke<WorktreeInfo[]>('list_worktrees', { repoPath }).catch(() => []);
-        const directCommitsPromise = invoke<DirectCommit[]>('get_direct_commits', { repoPath, branch: defaultBranch });
+        const directCommitsPromise = invoke<DirectCommit[]>('get_all_repo_commits', { repoPath });
         const unpushedDirectPromise = invoke<DirectCommit[]>('get_unpushed_direct_commits', { repoPath, branch: defaultBranch }).catch(() => []);
 
         // Prioritize the minimum data needed for first paint and interactions.
@@ -957,7 +950,7 @@ function App() {
 
       refreshInFlight = true;
       try {
-        const changed = await hasFrozenRepoStateChanged(repoPath, defaultBranch);
+        const changed = await hasFrozenRepoStateChanged(repoPath);
         if (!changed || isDisposed) return;
         await refreshRepoGitState(repoPath, defaultBranch);
       } catch (error) {
@@ -1063,297 +1056,35 @@ function App() {
       return;
     }
     branchMetaLoadKeyRef.current = branchMetaLoadKey;
-
-    const mergeNodeByMergedHeadSha = new Map<string, MergeNode>();
-    for (const node of mergeNodes) {
-      const mergedParents = node.parentShas?.slice(1) ?? [];
-      for (const parentSha of mergedParents) {
-        if (parentSha && !mergeNodeByMergedHeadSha.has(parentSha)) {
-          mergeNodeByMergedHeadSha.set(parentSha, node);
-        }
-      }
+    const nextCommitPreviews: Record<string, BranchCommitPreview[]> = {};
+    const nextUniqueAheadCounts: Record<string, number> = {};
+    for (const branch of branches) {
+      if (branch.name === defaultBranch) continue;
+      const previews = directCommits
+        .filter((commit) => commit.branch === branch.name)
+        .map((commit) => ({
+          fullSha: commit.fullSha,
+          sha: commit.sha,
+          parentSha: commit.parentSha ?? null,
+          message: commit.message,
+          author: commit.author,
+          date: commit.date,
+          kind: 'commit' as const,
+        }));
+      nextCommitPreviews[branch.name] = previews;
+      nextUniqueAheadCounts[branch.name] = previews.length;
     }
 
-    const activeBranches = branches.filter((b) => b.name !== defaultBranch);
-    const childBranchCountByParent = new Map<string, number>();
-    for (const branch of activeBranches) {
-      if (!branch.parentBranch || branch.parentBranch === branch.name) continue;
-      const current = childBranchCountByParent.get(branch.parentBranch) ?? 0;
-      childBranchCountByParent.set(branch.parentBranch, current + 1);
+    const nextBranchParentByName: Record<string, string | null> = { [defaultBranch]: null };
+    for (const branch of branches) {
+      nextBranchParentByName[branch.name] = branch.parentBranch ?? null;
     }
 
-    // Detect fresh-copy branches (worktrees): when multiple branches share the
-    // exact same HEAD SHA, all but the oldest are fresh copies with no unique
-    // commits. This works regardless of parent-branch detection accuracy.
-    const headShaGroups = new Map<string, Branch[]>();
-    for (const b of activeBranches) {
-      if (!b.headSha) continue;
-      const group = headShaGroups.get(b.headSha) ?? [];
-      group.push(b);
-      headShaGroups.set(b.headSha, group);
-    }
-    const freshCopyBranchNames = new Set<string>();
-    for (const group of headShaGroups.values()) {
-      if (group.length < 2) continue;
-      const sorted = [...group].sort((a, b) => {
-        const aDate = a.createdDate ?? a.divergedFromDate ?? a.lastCommitDate;
-        const bDate = b.createdDate ?? b.divergedFromDate ?? b.lastCommitDate;
-        return aDate.localeCompare(bDate);
-      });
-      for (let i = 1; i < sorted.length; i++) {
-        freshCopyBranchNames.add(sorted[i].name);
-      }
-    }
-    // Also detect branches at commitsAhead===0 with no merge node — these are
-    // fresh branches from the default branch, not genuinely merged.
-    for (const b of activeBranches) {
-      const hasChildBranches = (childBranchCountByParent.get(b.name) ?? 0) > 0;
-      if (
-        b.commitsAhead === 0 &&
-        b.headSha &&
-        !mergeNodeByMergedHeadSha.has(b.headSha) &&
-        !hasChildBranches
-      ) {
-        freshCopyBranchNames.add(b.name);
-      }
-    }
-
-    let cancelled = false;
-    async function loadPromptMeta() {
-      const results = await Promise.all(
-        activeBranches.map(async (branch) => {
-          try {
-            const branchCreatedAt = branch.createdDate ?? branch.divergedFromDate ?? branch.lastCommitDate;
-            const branchCreatedAtMs = new Date(branchCreatedAt).getTime();
-            const parentComparisonBase =
-              branch.parentBranch && branch.parentBranch !== branch.name
-                ? branch.parentBranch
-                : defaultBranch;
-            const mergeNode = mergeNodeByMergedHeadSha.get(branch.headSha);
-            const isMergedBranch = !!mergeNode;
-            const isFreshCopy = freshCopyBranchNames.has(branch.name);
-            const hasChildren = (childBranchCountByParent.get(branch.name) ?? 0) > 0;
-            const isFreshBranch = isFreshCopy || (
-              !isMergedBranch &&
-              !hasChildren &&
-              branch.remoteSyncStatus !== 'on-github' &&
-              branch.commitsAhead === 0 &&
-              !!branch.headSha &&
-              (branch.headSha === branch.createdFromSha ||
-                branch.headSha === branch.divergedFromSha)
-            );
-
-            // Only use merge-side attribution when the branch actually merges into
-            // the default branch lane. Child branches should stay parent-exclusive.
-            const shouldUseMergeRange =
-              isMergedBranch &&
-              parentComparisonBase === defaultBranch &&
-              !!mergeNode?.fullSha;
-            const mergeCommitSha = shouldUseMergeRange ? mergeNode?.fullSha : undefined;
-
-            let historyCommits: Commit[] = [];
-            let resolvedComparisonRange = false;
-            if (!isFreshBranch) {
-              if (mergeCommitSha) {
-                const commits = await invoke<Commit[]>('get_branch_commits', {
-                  repoPath,
-                  branch: branch.name,
-                  baseBranch: parentComparisonBase,
-                  mergeCommitSha,
-                  includePrompts: PROMPT_ENRICHMENT_ENABLED,
-                });
-                historyCommits = commits.filter((c) => c.fullSha !== mergeCommitSha);
-                resolvedComparisonRange = true;
-              } else {
-                const topLevelStableBases = [
-                  branch.createdFromSha,
-                  branch.divergedFromSha,
-                ].filter((value): value is string => !!value);
-                const candidateBases = Array.from(
-                  new Set(
-                    parentComparisonBase === defaultBranch
-                      ? [...topLevelStableBases, parentComparisonBase, defaultBranch]
-                      : [parentComparisonBase, ...topLevelStableBases, defaultBranch],
-                  ),
-                );
-                let firstSuccessfulCommits: Commit[] | null = null;
-                for (const baseBranch of candidateBases) {
-                  try {
-                    const commits = await invoke<Commit[]>('get_branch_commits', {
-                      repoPath,
-                      branch: branch.name,
-                      baseBranch,
-                      includePrompts: PROMPT_ENRICHMENT_ENABLED,
-                    });
-                    if (firstSuccessfulCommits == null) {
-                      firstSuccessfulCommits = commits;
-                    }
-                    const isStableTopLevelBase =
-                      parentComparisonBase === defaultBranch &&
-                      (baseBranch === branch.createdFromSha || baseBranch === branch.divergedFromSha);
-                    // Parent-relative commits are the source of truth for stacked branches.
-                    if (baseBranch === parentComparisonBase) {
-                      historyCommits = commits;
-                      resolvedComparisonRange = true;
-                      break;
-                    }
-                    // For top-level branches, prefer stable base SHAs so merges into
-                    // main do not erase the branch's own historical stack.
-                    if (isStableTopLevelBase) {
-                      historyCommits = commits;
-                      resolvedComparisonRange = true;
-                      break;
-                    }
-                    // For fallback bases, accept the first non-empty result.
-                    if (commits.length > 0) {
-                      historyCommits = commits;
-                      resolvedComparisonRange = true;
-                      break;
-                    }
-                  } catch {
-                    // Try the next fallback base.
-                  }
-                }
-
-                if (!resolvedComparisonRange && firstSuccessfulCommits != null) {
-                  // Keep explicit zero-commit results (do not inflate from unrelated bases).
-                  historyCommits = firstSuccessfulCommits;
-                  resolvedComparisonRange = true;
-                }
-              }
-
-              if (!resolvedComparisonRange && Number.isFinite(branchCreatedAtMs)) {
-                const recent = await invoke<Commit[]>('get_recent_log', {
-                  repoPath,
-                  branch: branch.name,
-                  limit: 400,
-                  firstParent: false,
-                  includePrompts: PROMPT_ENRICHMENT_ENABLED,
-                });
-                historyCommits = recent.filter((c) => {
-                  const commitMs = new Date(c.date).getTime();
-                  return Number.isFinite(commitMs) && commitMs >= branchCreatedAtMs;
-                });
-              }
-            }
-
-            const prompts = historyCommits
-              .flatMap(c => c.agentPrompts ?? [])
-              .sort((a, b) => new Date(b.timestamp).getTime() - new Date(a.timestamp).getTime());
-            const commitPreviews: BranchCommitPreview[] = historyCommits
-              .map((c) => ({
-                fullSha: c.fullSha,
-                sha: c.sha,
-                parentSha: c.parentSha ?? null,
-                message: c.message,
-                author: c.author,
-                date: c.date,
-                kind: 'commit',
-              }));
-            // Never fabricate synthetic "HEAD of <branch>" commits.
-            // If we can't resolve real commit objects, render no commit nodes.
-            const uniqueCount = isFreshBranch
-              ? 0
-              : commitPreviews.length;
-            const previews: BranchCommitPreview[] = commitPreviews;
-
-            if (prompts.length === 0) {
-              return [branch.name, { promptMeta: null, previews, uniqueCount }] as const;
-            }
-
-            const latest = prompts[0];
-            const promptsAsc = [...prompts]
-              .sort((a, b) => new Date(a.timestamp).getTime() - new Date(b.timestamp).getTime());
-            const markers: BranchPromptMarker[] = promptsAsc
-              .map(p => ({
-                id: p.id,
-                agent: p.agent,
-                prompt: p.prompt,
-                timestamp: p.timestamp,
-              }));
-            return [branch.name, {
-              promptMeta: {
-                count: prompts.length,
-                latestPrompt: latest.prompt,
-                latestAgent: latest.agent,
-                latestTimestamp: latest.timestamp,
-                markers,
-              },
-              previews,
-              uniqueCount,
-            }] as const;
-          } catch {
-            return [branch.name, {
-              promptMeta: null,
-              previews: [],
-              uniqueCount: null,
-            }] as const;
-          }
-        }),
-      );
-
-      let mainPromptMeta: BranchPromptMeta | null = null;
-      try {
-        const mainCommits = await invoke<Commit[]>('get_recent_log', {
-          repoPath,
-          branch: defaultBranch,
-          limit: 250,
-          firstParent: false,
-          includePrompts: PROMPT_ENRICHMENT_ENABLED,
-        });
-        const prompts = mainCommits
-          .flatMap((c) => c.agentPrompts ?? [])
-          .sort((a, b) => new Date(b.timestamp).getTime() - new Date(a.timestamp).getTime());
-        if (prompts.length > 0) {
-          const latest = prompts[0];
-          const promptsAsc = [...prompts]
-            .sort((a, b) => new Date(a.timestamp).getTime() - new Date(b.timestamp).getTime());
-          const markers: BranchPromptMarker[] = promptsAsc
-            .map((p) => ({
-              id: p.id,
-              agent: p.agent,
-              prompt: p.prompt,
-              timestamp: p.timestamp,
-            }));
-          mainPromptMeta = {
-            count: prompts.length,
-            latestPrompt: latest.prompt,
-            latestAgent: latest.agent,
-            latestTimestamp: latest.timestamp,
-            markers,
-          };
-        }
-      } catch {
-        mainPromptMeta = null;
-      }
-
-      if (cancelled) return;
-      const nextPromptMeta: Record<string, BranchPromptMeta> = {};
-      const nextCommitPreviews: Record<string, BranchCommitPreview[]> = {};
-      const nextUniqueAheadCounts: Record<string, number> = {};
-      for (const [branchName, data] of results) {
-        if (data.promptMeta) nextPromptMeta[branchName] = data.promptMeta;
-        // Keep empty arrays too so the renderer knows this branch has loaded
-        // and should show 0 unique commits relative to its selected base.
-        nextCommitPreviews[branchName] = [...data.previews];
-        if (data.uniqueCount != null) {
-          nextUniqueAheadCounts[branchName] = data.uniqueCount;
-        }
-      }
-      if (mainPromptMeta) {
-        nextPromptMeta[defaultBranch] = mainPromptMeta;
-      }
-
-      setBranchPromptMeta(nextPromptMeta);
-      setBranchCommitPreviews(nextCommitPreviews);
-      setBranchUniqueAheadCounts(nextUniqueAheadCounts);
-    }
-
-    loadPromptMeta();
-    return () => {
-      cancelled = true;
-    };
-  }, [repoPath, defaultBranch, branches, mergeNodes]);
+    setBranchPromptMeta({});
+    setBranchCommitPreviews(nextCommitPreviews);
+    setBranchParentByName(nextBranchParentByName);
+    setBranchUniqueAheadCounts(nextUniqueAheadCounts);
+  }, [repoPath, defaultBranch, branches, mergeNodes, directCommits]);
 
   useEffect(() => {
     if (!commitSwitchFeedback) {
