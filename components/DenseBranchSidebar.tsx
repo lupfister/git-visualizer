@@ -681,7 +681,7 @@ export default function DenseBranchSidebar({
       className={cn('pointer-events-auto h-full', className)}
     >
       <div className="flex h-full min-h-0 flex-col">
-        <div className="mb-2 flex items-center justify-between gap-3 px-5">
+        <div className="mb-2 flex items-center justify-between gap-3 px-2.5">
           <h2 className="text-sm font-medium text-foreground">Projects</h2>
           <div className="flex items-center gap-2">
             <button
@@ -702,13 +702,13 @@ export default function DenseBranchSidebar({
           </div>
         </div>
         {projectError && (
-          <div className="px-5 pb-3">
+          <div className="px-2.5 pb-3">
             <p className="rounded-xl border border-red-50 bg-red-50 px-3 py-2 text-xs text-red-600 dark:border-red-900/20 dark:bg-red-900/20 dark:text-red-400">
               {projectError}
             </p>
           </div>
         )}
-        <div ref={scrollBodyRef} className="mb-3 min-h-0 flex-1 space-y-2 overflow-y-auto px-5">
+        <div ref={scrollBodyRef} className="min-h-0 flex-1 space-y-2 overflow-y-auto px-2.5">
           {projects.map((project) => {
             const isActive = project.path === activeProjectPath;
             const isExpanded = expandedProjects.has(project.path) || isActive;
@@ -718,23 +718,25 @@ export default function DenseBranchSidebar({
               ? expandedBranchNames
               : new Set(projectRender ? Array.from(projectRender.branchByName.keys()) : []);
             return (
-              <div key={project.path} className="rounded-xl border border-border/50 bg-card">
+              <div key={project.path}>
                 <button
                   type="button"
                   onClick={() => { void onSelectProject(project.path); }}
                   className={cn(
-                    'flex w-full items-center justify-between gap-3 px-4 py-3 text-left transition-colors',
-                    isActive ? 'bg-primary/10 text-foreground' : 'hover:bg-accent',
+                    'flex w-full items-center justify-between gap-3 rounded-xl px-4 py-3 text-left transition-colors hover:bg-accent',
+                    isActive ? 'bg-primary/10 text-foreground' : 'text-muted-foreground hover:text-foreground',
                   )}
                 >
                   <div className="min-w-0">
-                    <p className="truncate text-sm font-medium">{project.name}</p>
+                    <p className={cn('truncate text-sm', isActive ? 'font-semibold text-foreground' : 'font-medium text-muted-foreground')}>
+                      {project.name}
+                    </p>
                     <p className="truncate text-xs text-muted-foreground">{project.path}</p>
                   </div>
                   <span className="shrink-0 text-xs text-muted-foreground">{project.branchName ?? 'branch'}</span>
                 </button>
                 {isExpanded && (
-                  <div className="border-t border-border/50 px-3 py-3">
+                  <div className="px-2.5">
                     {projectTreeLoaded && projectRender ? (
                       <ul className="space-y-1">
                         {projectRender.rootBranchNames.map((branchName, idx) => (
