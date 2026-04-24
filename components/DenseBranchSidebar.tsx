@@ -622,12 +622,12 @@ export default function DenseBranchSidebar({
       }
       for (const branchName of Object.keys(branchCommitPreviewsFromLayout)) {
         branchCommitPreviewsFromLayout[branchName] = branchCommitPreviewsFromLayout[branchName]!.sort((left, right) => {
-          const leftRow = rowByVisualId.get(`${branchName}:${left.fullSha}`) ?? Number.MAX_SAFE_INTEGER;
-          const rightRow = rowByVisualId.get(`${branchName}:${right.fullSha}`) ?? Number.MAX_SAFE_INTEGER;
-          if (leftRow !== rightRow) return leftRow - rightRow;
           const leftTime = new Date(left.date).getTime();
           const rightTime = new Date(right.date).getTime();
           if (leftTime !== rightTime) return leftTime - rightTime;
+          const leftRow = rowByVisualId.get(`${branchName}:${left.fullSha}`) ?? Number.MAX_SAFE_INTEGER;
+          const rightRow = rowByVisualId.get(`${branchName}:${right.fullSha}`) ?? Number.MAX_SAFE_INTEGER;
+          if (leftRow !== rightRow) return leftRow - rightRow;
           return left.fullSha.localeCompare(right.fullSha);
         });
       }

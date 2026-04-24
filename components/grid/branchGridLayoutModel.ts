@@ -21,6 +21,7 @@ import {
   renderableBranchPreviews,
   ROW_GAP,
   ROW_HEIGHT,
+  sortByDateThenSha,
   toCommit,
 } from './LayoutGrid';
 import type { Lane } from './LayoutGrid';
@@ -317,28 +318,9 @@ function allocateRowsByColumnAndTime(
     rowBySha.set(commit.id, rowsForSha);
   };
 
-  let pending = [...orderedCommits];
-  while (pending.length > 0) {
-    const nextPending: VisualCommit[] = [];
-    let progressed = false;
-    for (const commit of pending) {
-      const parentShas = strictParentShasByCommitId.get(commit.visualId) ?? new Set<string>();
-      const unresolvedInGraphParent = Array.from(parentShas).some(
-        (parentSha) => resolveKnownShas(parentSha).some((knownParentSha) => (rowBySha.get(knownParentSha)?.length ?? 0) === 0),
-      );
-      if (unresolvedInGraphParent) {
-        nextPending.push(commit);
-        continue;
-      }
-      assignCommit(commit, parentShas);
-      progressed = true;
-    }
-    if (!progressed) {
-      const forcedCommit = nextPending.shift();
-      if (!forcedCommit) break;
-      assignCommit(forcedCommit, strictParentShasByCommitId.get(forcedCommit.visualId) ?? new Set<string>());
-    }
-    pending = nextPending;
+  for (const commit of orderedCommits) {
+    const parentShas = strictParentShasByCommitId.get(commit.visualId) ?? new Set<string>();
+    assignCommit(commit, parentShas);
   }
   // Row index increases toward descendants. Pixel mapping in `computeBranchGridLayout`:
   // vertical inverts this row index (newer above); horizontal keeps it direct (newer right).
@@ -389,7 +371,7 @@ export function computeBranchGridLayout(input: BranchGridLayoutInput): BranchGri
     if (branch.name === defaultBranch) continue;
     const branchPreviews = renderableBranchPreviews(branch.name, branchUniqueAheadCounts, branchCommitPreviews);
     branchPreviewSets.set(branch.name, branchPreviews);
-    const commits = orderByLineage(branchPreviews.map((commit) => toCommit(branch.name, commit)));
+    const commits = sortByDateThenSha(branchPreviews.map((commit) => toCommit(branch.name, commit)));
     if (commits.length > 0) {
       branchCommitsByLane.set(branch.name, commits);
       continue;
@@ -446,29 +428,18 @@ export function computeBranchGridLayout(input: BranchGridLayoutInput): BranchGri
   for (const [branchName, commits] of branchCommitsByLane.entries()) {
     const concreteCommits = commits.filter((commit) => commit.kind !== 'branch-created');
     const commitsToInspect = concreteCommits.length > 0 ? concreteCommits : commits;
-    const commitShas = new Set(commitsToInspect.map((commit) => commit.id));
-    const branchRootCommit = commitsToInspect.find(
-      (commit) => !commit.parentSha || !commitShas.has(commit.parentSha),
-    );
-    const firstCommit = branchRootCommit ?? commitsToInspect[0];
+    const firstCommit = commitsToInspect[0] ?? null;
     if (firstCommit) firstBranchCommitByName.set(branchName, firstCommit);
   }
   const branchStartParentShaByName = new Map<string, string>();
   for (const branch of branches) {
     if (branch.name === defaultBranch) continue;
     const firstBranchCommit = firstBranchCommitByName.get(branch.name) ?? null;
-    const branchRootParentSha = firstBranchCommit?.parentSha ?? null;
-    if (branchRootParentSha) {
-      branchStartParentShaByName.set(branch.name, branchRootParentSha);
-      continue;
-    }
     const baseParentSha = branchBaseCommitByName.get(branch.name)?.parentSha ?? null;
-    if (baseParentSha) {
-      branchStartParentShaByName.set(branch.name, baseParentSha);
-      continue;
-    }
     const metadataForkSha = branch.presidesFromSha ?? branch.divergedFromSha ?? branch.createdFromSha ?? null;
-    if (metadataForkSha) branchStartParentShaByName.set(branch.name, metadataForkSha);
+    const firstParentSha = firstBranchCommit?.parentSha ?? null;
+    const branchStartParentSha = firstParentSha ?? baseParentSha ?? metadataForkSha;
+    if (branchStartParentSha) branchStartParentShaByName.set(branch.name, branchStartParentSha);
   }
 
   const resolveBranchStartParentName = (branch: Branch): string => {
