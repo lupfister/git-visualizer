@@ -14,6 +14,25 @@ const shaMatches = (left?: string | null, right?: string | null): boolean => {
 
 type LaneRef = { name: string; headSha: string; isDefault: boolean };
 
+function resolveAnchorOwningBranchName(
+  anchorSha: string | null | undefined,
+  directCommits: DirectCommit[],
+  branchCommitPreviews: Record<string, BranchCommitPreview[]>,
+  defaultBranch: string,
+): string | null {
+  if (!anchorSha) return null;
+  const matchesSha = (value?: string | null): boolean => shaMatches(value, anchorSha);
+
+  const inDirectCommits = directCommits.some((commit) => matchesSha(commit.fullSha) || matchesSha(commit.sha));
+  if (inDirectCommits) return defaultBranch;
+
+  for (const [branchName, previews] of Object.entries(branchCommitPreviews)) {
+    const onBranch = previews.some((commit) => matchesSha(commit.fullSha) || matchesSha(commit.sha));
+    if (onBranch) return branchName;
+  }
+  return null;
+}
+
 /**
  * Places one stash node using the same lane rules as the uncommitted-changes synthetic node.
  */
@@ -38,8 +57,17 @@ export function placeStashNode(
   const tipMatchedLanes = anchorSha
     ? allLanes.filter((lane) => shaMatches(lane.headSha, anchorSha))
     : [];
+  const anchorOwningBranchName = resolveAnchorOwningBranchName(
+    anchorSha,
+    directCommits,
+    branchCommitPreviews,
+    defaultBranch,
+  );
+  const anchorOwningLane = anchorOwningBranchName
+    ? allLanes.find((lane) => lane.name === anchorOwningBranchName)
+    : undefined;
   const targetLane =
-    tipMatchedLanes.find((lane) => lane.isDefault) ?? tipMatchedLanes[0];
+    tipMatchedLanes.find((lane) => lane.isDefault) ?? tipMatchedLanes[0] ?? anchorOwningLane;
   const isOnLaneTip = !!(
     targetLane &&
     anchorSha &&

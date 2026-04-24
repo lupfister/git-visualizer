@@ -216,6 +216,7 @@ export default function MapGridCanvas({
   const sortedVisibleConnectors = connectors
     .filter((connector) => cullConnectorPath(connector))
     .sort(compareConnectorDrawOrder);
+  const visibleRenderNodes = renderNodes.filter((node) => shouldRenderNode(node));
 
   return (
     <div
@@ -240,7 +241,7 @@ export default function MapGridCanvas({
             ...(isCameraMoving ? { willChange: 'transform' as const } : {}),
           }}
         >
-          {renderNodes.filter((node) => shouldRenderNode(node)).map((node) => {
+          {visibleRenderNodes.map((node) => {
             const clusterKey = clusterKeyByCommitId.get(node.commit.visualId);
             const isClusterOpen = clusterKey
               ? manuallyOpenedClumps.has(clusterKey) || (!defaultCollapsedClumps.has(clusterKey) && !manuallyClosedClumps.has(clusterKey))
@@ -257,6 +258,15 @@ export default function MapGridCanvas({
               node.commit.id === 'WORKING_TREE' || node.commit.kind === 'uncommitted';
             const isStashedCommit =
               node.commit.kind === 'stash' || node.commit.id.startsWith('STASH:');
+            const stashIndexMatch = /^STASH:(\d+)$/.exec(node.commit.id);
+            const stashHeaderLabel = stashIndexMatch ? `Stash:${stashIndexMatch[1]}` : null;
+            const stashBodyMessage = isStashedCommit
+              ? (node.commit.message.trim() && node.commit.message.trim() !== 'git-visualizer'
+                  ? node.commit.message
+                  : 'Stashed changes')
+              : node.commit.message;
+            const isEmptyBranchNode =
+              node.commit.kind === 'branch-created' && node.commit.id.startsWith('BRANCH_HEAD:');
             const isUnpushedCommit =
               isLocalUncommitted ||
               (unpushedCommitShasSetByBranch.get(node.commit.branchName)?.has(node.commit.id) ?? false);
@@ -300,7 +310,11 @@ export default function MapGridCanvas({
                       )}
                       style={selectedCommitTextStyle}
                     >
-                      {node.commit.branchName}/{node.commit.id.slice(0, 7)}
+                      {isStashedCommit && stashHeaderLabel
+                        ? stashHeaderLabel
+                      : node.commit.branchName
+                        ? `${node.commit.branchName}/${node.commit.id.slice(0, 7)}`
+                        : node.commit.id.slice(0, 7)}
                     </div>
                     {isTop && clumpCount > 1 ? (
                       <button
@@ -356,14 +370,14 @@ export default function MapGridCanvas({
                 </div>
                 <div className={cn(
                     'absolute left-0 h-[176px] w-full cursor-pointer overflow-hidden rounded-tr-xl rounded-br-xl rounded-bl-xl rounded-tl-none border border-border/50',
-                    checkedOutAccentActive && !isUnpushedCommit && !isStashedCommit
+                    checkedOutAccentActive && !isUnpushedCommit && !isStashedCommit && !isEmptyBranchNode
                       ? 'bg-[#EBF7FE]'
-                      : isSelectedCommit && !isUnpushedCommit && !isStashedCommit
+                      : isSelectedCommit && !isUnpushedCommit && !isStashedCommit && !isEmptyBranchNode
                         ? 'bg-[#E5F0FF]'
-                        : isUnpushedCommit || isStashedCommit
+                        : isUnpushedCommit || isStashedCommit || isEmptyBranchNode
                           ? 'bg-transparent'
                           : 'bg-[#F5F5F5]',
-                    isStashedCommit || isLocalUncommitted ? 'border-dashed' : '',
+                    isStashedCommit || isLocalUncommitted || isEmptyBranchNode ? 'border-dashed' : '',
                     branchOffNodeShas.has(node.commit.id) ||
                     branchStartShas.has(node.commit.id) ||
                     crossBranchOutgoingShas.has(node.commit.id)
@@ -379,7 +393,7 @@ export default function MapGridCanvas({
                   )}
                   style={{
                     top: 0,
-                    borderWidth: `${(isStashedCommit || isLocalUncommitted) ? lineStrokeWidth * (2 / 1.5) : lineStrokeWidth}px`,
+                    borderWidth: `${(isStashedCommit || isLocalUncommitted || isEmptyBranchNode) ? lineStrokeWidth * (2 / 1.5) : lineStrokeWidth}px`,
                     borderColor: checkedOutAccentActive ? '#38BDF2' : isSelectedCommit ? '#158EFC' : CONNECTOR_COLOR,
                     borderTopLeftRadius: 0,
                     borderTopRightRadius: `${commitCornerRadiusPx}px`,
@@ -398,10 +412,10 @@ export default function MapGridCanvas({
                         style={selectedCommitTextStyle}
                       >
                         {isTop && isClusterOpen
-                          ? node.commit.message
+                          ? stashBodyMessage
                           : isTop && clumpCount > 1
-                            ? `${node.commit.message} +${clumpCount - 1}`
-                            : node.commit.message}
+                            ? `${stashBodyMessage} +${clumpCount - 1}`
+                            : stashBodyMessage}
                       </div>
                       <div className="mt-3 flex flex-wrap items-center gap-1.5">
                         {showDataShapeError ? (

@@ -149,7 +149,7 @@ export function sortedConcreteBranchPreviews(branchName: string, branchCommitPre
 export function renderableBranchPreviews(branchName: string, _branchUniqueAheadCounts: Record<string, number>, branchCommitPreviews: Record<string, BranchCommitPreview[]>): BranchCommitPreview[] { return sortedConcreteBranchPreviews(branchName, branchCommitPreviews); }
 export function commitKeyWithFallback(commit: { id?: string; fullSha?: string }): string { return commit.id ?? commit.fullSha ?? ''; }
 export function sortByTimeDesc<T extends { date: string }>(commits: T[]): T[] { return [...commits].sort((a, b) => new Date(b.date).getTime() - new Date(a.date).getTime()); }
-export function branchParentName(branch: Branch, byName: Map<string, Branch>, defaultBranch: string): string | null { const declared = branch.parentBranch; if (!declared || declared === branch.name || !byName.has(declared)) return null; return declared === defaultBranch ? defaultBranch : declared; }
+export function branchParentName(branch: Branch, byName: Map<string, Branch>, defaultBranch: string): string | null { const declared = branch.parentBranch; if (!declared || declared === branch.name || (declared !== defaultBranch && !byName.has(declared))) return null; return declared === defaultBranch ? defaultBranch : declared; }
 export function branchDepth(branch: Branch, byName: Map<string, Branch>, defaultBranch: string, visiting = new Set<string>()): number { if (visiting.has(branch.name)) return Number.MAX_SAFE_INTEGER; visiting.add(branch.name); const parentName = branchParentName(branch, byName, defaultBranch); if (!parentName || parentName === defaultBranch || parentName === branch.name || !byName.has(parentName)) { visiting.delete(branch.name); return 1; } const parent = byName.get(parentName); if (!parent) { visiting.delete(branch.name); return 1; } const depth = 1 + branchDepth(parent, byName, defaultBranch, visiting); visiting.delete(branch.name); return depth; }
 export function newestCommit(commits: CommitItem[]): CommitItem | null { return commits.length === 0 ? null : [...commits].sort((a, b) => new Date(b.date).getTime() - new Date(a.date).getTime())[0] ?? null; }
 export function nearestCommitByDate(commits: CommitItem[], dateStr?: string): CommitItem | null { if (!dateStr || commits.length === 0) return newestCommit(commits); const target = new Date(dateStr).getTime(); if (!Number.isFinite(target)) return newestCommit(commits); let bestPast: { delta: number; commit: CommitItem } | null = null; let bestFuture: { delta: number; commit: CommitItem } | null = null; for (const commit of commits) { const commitTime = new Date(commit.date).getTime(); if (!Number.isFinite(commitTime)) continue; if (commitTime <= target) { const delta = target - commitTime; if (!bestPast || delta < bestPast.delta) bestPast = { delta, commit }; } else { const delta = commitTime - target; if (!bestFuture || delta < bestFuture.delta) bestFuture = { delta, commit }; } } return bestPast?.commit ?? bestFuture?.commit ?? newestCommit(commits); }
@@ -202,7 +202,11 @@ export function buildLanes(
       return mappedParent;
     }
     if (branch.name === defaultBranch) return null;
-    if (branch.parentBranch && branch.parentBranch !== branch.name && byName.has(branch.parentBranch)) {
+    if (
+      branch.parentBranch &&
+      branch.parentBranch !== branch.name &&
+      (branch.parentBranch === defaultBranch || byName.has(branch.parentBranch))
+    ) {
       return branch.parentBranch;
     }
     return null;
@@ -351,7 +355,11 @@ export function lanesFromStoredColumns(
       return mappedParent;
     }
     if (branch.name === defaultBranch) return null;
-    if (branch.parentBranch && branch.parentBranch !== branch.name && byName.has(branch.parentBranch)) {
+    if (
+      branch.parentBranch &&
+      branch.parentBranch !== branch.name &&
+      (branch.parentBranch === defaultBranch || byName.has(branch.parentBranch))
+    ) {
       return branch.parentBranch;
     }
     return null;

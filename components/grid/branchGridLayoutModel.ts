@@ -251,6 +251,9 @@ function allocateRowsByColumnAndTime(
     const parentRows = Array.from(parentShas).flatMap((parentSha) =>
       resolveKnownShas(parentSha).flatMap((knownParentSha) => rowBySha.get(knownParentSha) ?? []),
     );
+    const forcedImmediateChildRow = (commit.kind === 'branch-created' || commit.kind === 'stash') && parentRows.length > 0
+      ? Math.max(...parentRows) + 1
+      : null;
     const minimumAllowedRow = parentRows.length > 0 ? Math.max(...parentRows) + 1 : 1;
     const childShas = childShasByParentSha.get(commit.id) ?? new Set<string>();
     const childColumns = Array.from(childShas).flatMap((childSha) => Array.from(commitColumnsBySha.get(childSha) ?? []));
@@ -290,6 +293,7 @@ function allocateRowsByColumnAndTime(
       assignedRow = candidateRow;
       break;
     }
+    if (forcedImmediateChildRow != null) assignedRow = forcedImmediateChildRow;
     if (assignedRow == null) assignedRow = Math.max(minimumAllowedRow, nextRow);
     rowByVisualId.set(commit.visualId, assignedRow);
     if (assignedRow >= nextRow) nextRow = assignedRow + 1;
@@ -375,8 +379,8 @@ export function computeBranchGridLayout(input: BranchGridLayoutInput): BranchGri
       parentSha: node.parentShas?.[0] ?? null,
     })),
     ...(branchCommitPreviews[defaultBranch] ?? []).map((commit) => toCommit(defaultBranch, commit)),
-    ...directCommits.map((commit) => toCommit(defaultBranch, commit)),
-    ...unpushedDirectCommits.map((commit) => toCommit(defaultBranch, commit)),
+    ...directCommits.map((commit) => toCommit(commit.branch || '', commit)),
+    ...unpushedDirectCommits.map((commit) => toCommit(commit.branch || '', commit)),
   ]);
 
   const branchCommitsByLane = new Map<string, CommitItem[]>();
@@ -392,13 +396,17 @@ export function computeBranchGridLayout(input: BranchGridLayoutInput): BranchGri
     }
     const forkSha = branch.presidesFromSha ?? branch.divergedFromSha ?? branch.createdFromSha ?? null;
     if (!forkSha) continue;
+    const forkDateFromDirect = directCommits.find((commit) => shasMatch(commit.fullSha, forkSha) || shasMatch(commit.sha, forkSha))?.date;
+    const forkDateFromPreview = forkDateFromDirect
+      ? null
+      : Object.values(branchCommitPreviews).flat().find((commit) => shasMatch(commit.fullSha, forkSha) || shasMatch(commit.sha, forkSha))?.date;
     const syntheticBranchNode: CommitItem = {
       id: `BRANCH_HEAD:${branch.name}:${forkSha}`,
       branchName: branch.name,
       message: `Branch ${branch.name}`,
       author: branch.lastCommitAuthor,
-      date: branch.createdDate ?? branch.divergedFromDate ?? branch.lastCommitDate,
-      parentSha: null,
+      date: forkDateFromDirect ?? forkDateFromPreview ?? branch.createdDate ?? branch.divergedFromDate ?? branch.lastCommitDate,
+      parentSha: forkSha,
       kind: 'branch-created',
     };
     branchCommitsByLane.set(branch.name, [syntheticBranchNode]);
@@ -470,7 +478,7 @@ export function computeBranchGridLayout(input: BranchGridLayoutInput): BranchGri
       declaredParent !== defaultBranch &&
       declaredParent !== branch.name &&
       branchByName.has(declaredParent);
-    if (!hasConcreteParent) return declaredParent ?? defaultBranch;
+    if (!hasConcreteParent) return declaredParent ?? '';
 
     const forkSha =
       branchStartParentShaByName.get(branch.name)
@@ -518,8 +526,8 @@ export function computeBranchGridLayout(input: BranchGridLayoutInput): BranchGri
   const canonicalCommitBySha = new Map<string, VisualCommit>();
   for (const commit of [...directCommits, ...unpushedDirectCommits]) {
     const visualCommit: VisualCommit = {
-      ...toCommit(commit.branch || defaultBranch, commit),
-      visualId: `${commit.branch || defaultBranch}:${commit.fullSha}`,
+      ...toCommit(commit.branch || '', commit),
+      visualId: `${commit.branch || ''}:${commit.fullSha}`,
     };
     canonicalCommitBySha.set(commit.fullSha, visualCommit);
   }
@@ -923,7 +931,7 @@ export function computeBranchGridLayout(input: BranchGridLayoutInput): BranchGri
     if (!isHorizontal) {
       return { x: node.x + CARD_WIDTH / 2, y: node.y + CARD_HEIGHT + GRID_INCOMING_GAP_PX, face: 'bottom' };
     }
-    return { x: node.x + CARD_WIDTH + GRID_INCOMING_GAP_PX, y: node.y + CARD_HEIGHT / 2, face: 'right' };
+    return { x: node.x - GRID_INCOMING_GAP_PX, y: node.y + CARD_HEIGHT / 2, face: 'left' };
   };
 
   /** Lanes can share a column when time ranges do not overlap — column alone misses cross-branch links in horizontal mode. */

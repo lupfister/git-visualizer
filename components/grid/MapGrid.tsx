@@ -320,7 +320,7 @@ export default function BranchGridMap({
     }
     for (const commit of directCommits) {
       const set = map.get(commit.fullSha) ?? new Set<string>();
-      set.add(commit.branch ?? defaultBranch);
+      if (commit.branch) set.add(commit.branch);
       map.set(commit.fullSha, set);
     }
     return map;

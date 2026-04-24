@@ -321,7 +321,7 @@ pub fn get_all_repo_commits(
         if let Some((branch_name, _, _)) = best_match {
             commit.branch = branch_name;
         } else {
-            commit.branch = default_branch.to_string();
+            commit.branch.clear();
         }
     }
 
@@ -360,7 +360,7 @@ fn assign_commit_branch(
         return branch_name.to_string();
     }
 
-    default_branch.to_string()
+    String::new()
 }
 
 fn parse_direct_commit_line(line: &str) -> Option<ParsedCommitLine> {
