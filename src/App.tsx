@@ -2272,7 +2272,7 @@ function App() {
                             setGridSearchJumpToken((token) => token + 1);
                           }
                         }}
-                        placeholder="sha, message, or branch"
+                        placeholder="Search"
                         className="w-full bg-transparent text-[11px] text-foreground outline-none placeholder:text-muted-foreground/70"
                       />
                       <div className="flex items-center gap-1 rounded-full border border-border/60 bg-muted/20 px-1">
