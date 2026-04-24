@@ -3,7 +3,7 @@ import { invoke } from '@tauri-apps/api/core';
 import { listen } from '@tauri-apps/api/event';
 import { getCurrentWindow } from '@tauri-apps/api/window';
 import { open } from '@tauri-apps/plugin-dialog';
-import { ChevronLeft, ChevronRight, PanelLeftClose, PanelLeftOpen, Search } from 'lucide-react';
+import { ChevronDown, ChevronUp, PanelLeftClose, PanelLeftOpen, Search } from 'lucide-react';
 import BranchGridMapView, { type OrientationMode } from '../components/grid/MapViewGrid';
 import DenseBranchSidebar from '../components/DenseBranchSidebar';
 import { buildLanes, lanesFromStoredColumns } from '../components/grid/LayoutGrid';
@@ -85,6 +85,7 @@ function App() {
   const [manuallyOpenedGridClumps, setManuallyOpenedGridClumps] = useState<Set<string>>(() => new Set());
   const [manuallyClosedGridClumps, setManuallyClosedGridClumps] = useState<Set<string>>(() => new Set());
   const [gridSearchResultCount, setGridSearchResultCount] = useState<number | null>(null);
+  const [gridSearchResultIndex, setGridSearchResultIndex] = useState<number | null>(null);
   const [gridFocusSha, setGridFocusSha] = useState<string | null>(null);
   const [showCommits, setShowCommits] = useState(false);
   const [loading, setLoading] = useState(false);
@@ -1978,7 +1979,7 @@ function App() {
       ?? buildLanes(enrichedBranches, defaultBranch, enrichedBranchCommitPreviews, enrichedBranchParentByName),
     [enrichedBranches, defaultBranch, enrichedBranchCommitPreviews, enrichedBranchParentByName, laneByBranch],
   );
-  const sharedGridLayoutModel: BranchGridLayoutModel = useMemo(
+  const baseSharedGridLayoutModel: BranchGridLayoutModel = useMemo(
     () =>
       computeBranchGridLayout({
         lanes: sharedGridLanes,
@@ -2010,6 +2011,62 @@ function App() {
       enrichedBranchUniqueAheadCounts,
       manuallyOpenedGridClumps,
       manuallyClosedGridClumps,
+      gridSearchQuery,
+      gridFocusSha,
+      checkedOutRef?.headSha ?? null,
+      checkedOutRef?.branchName ?? null,
+      mapGridOrientation,
+    ],
+  );
+  const tempSearchOpenClusterKey = useMemo(() => {
+    if (!gridFocusSha) return null;
+    return baseSharedGridLayoutModel.clusterKeyByCommitId.get(gridFocusSha) ?? null;
+  }, [baseSharedGridLayoutModel.clusterKeyByCommitId, gridFocusSha]);
+  const effectiveManuallyOpenedGridClumps = useMemo(() => {
+    if (!tempSearchOpenClusterKey) return manuallyOpenedGridClumps;
+    if (manuallyClosedGridClumps.has(tempSearchOpenClusterKey)) return manuallyOpenedGridClumps;
+    const next = new Set(manuallyOpenedGridClumps);
+    next.add(tempSearchOpenClusterKey);
+    return next;
+  }, [manuallyClosedGridClumps, manuallyOpenedGridClumps, tempSearchOpenClusterKey]);
+  const effectiveManuallyClosedGridClumps = useMemo(() => {
+    if (!tempSearchOpenClusterKey) return manuallyClosedGridClumps;
+    const next = new Set(manuallyClosedGridClumps);
+    next.delete(tempSearchOpenClusterKey);
+    return next;
+  }, [manuallyClosedGridClumps, tempSearchOpenClusterKey]);
+  const sharedGridLayoutModel: BranchGridLayoutModel = useMemo(
+    () =>
+      computeBranchGridLayout({
+        lanes: sharedGridLanes,
+        branches: enrichedBranches,
+        mergeNodes,
+        directCommits: enrichedDirectCommits,
+        unpushedDirectCommits,
+        defaultBranch,
+        branchCommitPreviews: enrichedBranchCommitPreviews,
+        branchParentByName: enrichedBranchParentByName,
+        branchUniqueAheadCounts: enrichedBranchUniqueAheadCounts,
+        manuallyOpenedClumps: effectiveManuallyOpenedGridClumps,
+        manuallyClosedClumps: effectiveManuallyClosedGridClumps,
+        isDebugOpen: false,
+        gridSearchQuery,
+        gridFocusSha,
+        checkedOutRef: checkedOutRef ?? null,
+        orientation: mapGridOrientation,
+      }),
+    [
+      sharedGridLanes,
+      enrichedBranches,
+      mergeNodes,
+      enrichedDirectCommits,
+      unpushedDirectCommits,
+      defaultBranch,
+      enrichedBranchCommitPreviews,
+      enrichedBranchParentByName,
+      enrichedBranchUniqueAheadCounts,
+      effectiveManuallyOpenedGridClumps,
+      effectiveManuallyClosedGridClumps,
       gridSearchQuery,
       gridFocusSha,
       checkedOutRef?.headSha ?? null,
@@ -2166,8 +2223,8 @@ function App() {
               checkedOutRef={checkedOutRef}
               showCommits={showCommits}
               onToggleShowCommits={() => setShowCommits((value) => !value)}
-              manuallyOpenedClumps={manuallyOpenedGridClumps}
-              manuallyClosedClumps={manuallyClosedGridClumps}
+              manuallyOpenedClumps={effectiveManuallyOpenedGridClumps}
+              manuallyClosedClumps={effectiveManuallyClosedGridClumps}
               setManuallyOpenedClumps={setManuallyOpenedGridClumps}
               setManuallyClosedClumps={setManuallyClosedGridClumps}
               gridLayoutModel={sharedGridLayoutModel}
@@ -2208,6 +2265,7 @@ function App() {
                 gridSearchJumpDirection={gridSearchJumpDirection}
                 gridFocusSha={gridFocusSha}
                 onGridSearchResultCountChange={setGridSearchResultCount}
+                onGridSearchResultIndexChange={setGridSearchResultIndex}
                 onGridSearchFocusChange={setGridFocusSha}
                 checkedOutRef={checkedOutRef}
                 onCommitClick={handleMapCommitClick}
@@ -2236,8 +2294,8 @@ function App() {
                 onCreateRootBranch={handleCreateRootBranch}
                 createBranchFromNodeInProgress={createBranchFromNodeInProgress}
                 onInteractionChange={setIsMapInteracting}
-                manuallyOpenedClumps={manuallyOpenedGridClumps}
-                manuallyClosedClumps={manuallyClosedGridClumps}
+                manuallyOpenedClumps={effectiveManuallyOpenedGridClumps}
+                manuallyClosedClumps={effectiveManuallyClosedGridClumps}
                 setManuallyOpenedClumps={setManuallyOpenedGridClumps}
                 setManuallyClosedClumps={setManuallyClosedGridClumps}
                 layoutModel={sharedGridLayoutModel}
@@ -2275,46 +2333,37 @@ function App() {
                         placeholder="Search"
                         className="w-full bg-transparent text-[11px] text-foreground outline-none placeholder:text-muted-foreground/70"
                       />
-                      <div className="flex items-center gap-1 rounded-full border border-border/60 bg-muted/20 px-1">
-                        <button
-                          type="button"
-                          onClick={() => {
-                            setGridSearchJumpDirection(-1);
-                            setGridSearchJumpToken((token) => token + 1);
-                          }}
-                          disabled={gridSearchResultCount == null || gridSearchResultCount === 0}
-                          className="inline-flex h-6 w-6 items-center justify-center rounded-md border border-border/60 text-muted-foreground transition-colors hover:bg-accent hover:text-foreground disabled:cursor-not-allowed disabled:opacity-40"
-                          aria-label="Previous search result"
-                          title="Previous result"
-                        >
-                          <ChevronLeft className="h-3.5 w-3.5 shrink-0" />
-                        </button>
-                        <span
-                          className={cn(
-                            'inline-flex h-6 items-center rounded-md border border-border/60 px-2 text-[10px] font-medium',
-                            gridSearchResultCount != null && gridSearchResultCount > 0
-                              ? 'bg-card text-foreground'
-                              : 'text-muted-foreground',
-                          )}
-                        >
-                          {gridSearchResultCount != null
-                            ? `${gridSearchResultCount} match${gridSearchResultCount === 1 ? '' : 'es'}`
-                            : 'Find'}
-                        </span>
-                        <button
-                          type="button"
-                          onClick={() => {
-                            setGridSearchJumpDirection(1);
-                            setGridSearchJumpToken((token) => token + 1);
-                          }}
-                          disabled={gridSearchResultCount == null || gridSearchResultCount === 0}
-                          className="inline-flex h-6 w-6 items-center justify-center rounded-md border border-border/60 text-muted-foreground transition-colors hover:bg-accent hover:text-foreground disabled:cursor-not-allowed disabled:opacity-40"
-                          aria-label="Next search result"
-                          title="Next result"
-                        >
-                          <ChevronRight className="h-3.5 w-3.5 shrink-0" />
-                        </button>
-                      </div>
+                      {gridSearchResultCount != null && gridSearchResultCount > 0 ? (
+                        <div className="flex items-center gap-2">
+                          <span className="text-[11px] font-medium tabular-nums text-foreground">
+                            {(gridSearchResultIndex ?? 0) + 1}/{gridSearchResultCount}
+                          </span>
+                          <button
+                            type="button"
+                            onClick={() => {
+                              setGridSearchJumpDirection(-1);
+                              setGridSearchJumpToken((token) => token + 1);
+                            }}
+                            className="inline-flex h-6 w-6 items-center justify-center rounded-md text-muted-foreground transition-colors hover:text-foreground"
+                            aria-label="Previous search result"
+                            title="Previous result"
+                          >
+                            <ChevronUp className="h-4 w-4 shrink-0" />
+                          </button>
+                          <button
+                            type="button"
+                            onClick={() => {
+                              setGridSearchJumpDirection(1);
+                              setGridSearchJumpToken((token) => token + 1);
+                            }}
+                            className="inline-flex h-6 w-6 items-center justify-center rounded-md text-muted-foreground transition-colors hover:text-foreground"
+                            aria-label="Next search result"
+                            title="Next result"
+                          >
+                            <ChevronDown className="h-4 w-4 shrink-0" />
+                          </button>
+                        </div>
+                      ) : null}
                     </div>
                   </div>
                   <div

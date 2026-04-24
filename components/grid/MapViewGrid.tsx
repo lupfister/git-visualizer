@@ -26,6 +26,7 @@ interface Props {
   gridSearchJumpDirection?: 1 | -1;
   gridFocusSha?: string | null;
   onGridSearchResultCountChange?: (count: number | null) => void;
+  onGridSearchResultIndexChange?: (index: number | null) => void;
   onGridSearchFocusChange?: (sha: string | null) => void;
   view?: ViewMode;
   isLoading?: boolean;
@@ -86,6 +87,7 @@ export default function BranchGridMapView({
   gridSearchJumpDirection = 1,
   gridFocusSha = null,
   onGridSearchResultCountChange,
+  onGridSearchResultIndexChange,
   onGridSearchFocusChange,
   view = 'time',
   isLoading = false,
@@ -156,6 +158,7 @@ export default function BranchGridMapView({
             gridSearchJumpDirection={gridSearchJumpDirection}
             gridFocusSha={gridFocusSha}
             onGridSearchResultCountChange={onGridSearchResultCountChange}
+            onGridSearchResultIndexChange={onGridSearchResultIndexChange}
             onGridSearchFocusChange={onGridSearchFocusChange}
             staleBranches={staleBranches}
             isLoading={isLoading}
@@ -214,6 +217,7 @@ export default function BranchGridMapView({
             gridFocusSha={gridFocusSha}
             checkedOutRef={checkedOutRef}
             onGridSearchResultCountChange={onGridSearchResultCountChange}
+            onGridSearchResultIndexChange={onGridSearchResultIndexChange}
             onGridSearchFocusChange={onGridSearchFocusChange}
             onInteractionChange={onInteractionChange}
             manuallyOpenedClumps={manuallyOpenedClumps}

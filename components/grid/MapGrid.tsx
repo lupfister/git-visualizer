@@ -90,6 +90,7 @@ export default function BranchGridMap({
   gridFocusSha = null,
   checkedOutRef = null,
   onGridSearchResultCountChange,
+  onGridSearchResultIndexChange,
   onGridSearchFocusChange,
   onInteractionChange,
   manuallyOpenedClumps: controlledManuallyOpenedClumps,
@@ -104,6 +105,7 @@ export default function BranchGridMap({
   const transformLayerRef = useRef<HTMLDivElement | null>(null);
   const lastInteractionStateRef = useRef<boolean | null>(null);
   const lastSearchResultCountRef = useRef<number | null | undefined>(undefined);
+  const lastSearchResultIndexRef = useRef<number | null | undefined>(undefined);
   const lastSearchFocusShaRef = useRef<string | null | undefined>(undefined);
   const lastHandledSearchJumpTokenRef = useRef<number>(0);
   const [worktreeMenuOpen, setWorktreeMenuOpen] = useState(false);
@@ -592,6 +594,19 @@ export default function BranchGridMap({
     lastSearchResultCountRef.current = next;
     onGridSearchResultCountChange?.(next);
   }, [matchingNodes.length, normalizedSearchQuery, onGridSearchResultCountChange]);
+
+  useEffect(() => {
+    const next =
+      normalizedSearchQuery && gridFocusSha
+        ? (() => {
+            const index = matchingNodes.findIndex((node) => node.commit.id === gridFocusSha);
+            return index >= 0 ? index : null;
+          })()
+        : null;
+    if (lastSearchResultIndexRef.current === next) return;
+    lastSearchResultIndexRef.current = next;
+    onGridSearchResultIndexChange?.(next);
+  }, [gridFocusSha, matchingNodes, normalizedSearchQuery, onGridSearchResultIndexChange]);
 
   const searchMatchedBranchHeadSha = useMemo(() => {
     if (!normalizedSearchQuery) return null;
