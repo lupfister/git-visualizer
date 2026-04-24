@@ -5,7 +5,7 @@ import { getCurrentWindow } from '@tauri-apps/api/window';
 import { open } from '@tauri-apps/plugin-dialog';
 import BranchGridMapView, { type OrientationMode } from '../components/grid/MapViewGrid';
 import DenseBranchSidebar from '../components/DenseBranchSidebar';
-import { buildLanes } from '../components/grid/LayoutGrid';
+import { buildLanes, lanesFromStoredColumns } from '../components/grid/LayoutGrid';
 import { computeBranchGridLayout, type BranchGridLayoutModel } from '../components/grid/branchGridLayoutModel';
 import type { Branch, BranchCommitPreview, BranchPromptMeta, CheckedOutRef, DirectCommit, GitHubAuthStatus, GitHubInfo, GitStashEntry, MergeNode, OpenPR, RepoVisualSnapshot, WorktreeInfo } from '../types';
 import { foldStashNodesIntoGraph } from './placeStashNode';
@@ -103,6 +103,7 @@ function App() {
   const [branchPromptMeta, setBranchPromptMeta] = useState<Record<string, BranchPromptMeta>>({});
   const [branchCommitPreviews, setBranchCommitPreviews] = useState<Record<string, BranchCommitPreview[]>>({});
   const [branchParentByName, setBranchParentByName] = useState<Record<string, string | null>>({});
+  const [laneByBranch, setLaneByBranch] = useState<Record<string, number>>({});
   const [branchUniqueAheadCounts, setBranchUniqueAheadCounts] = useState<Record<string, number>>({});
   const [stashes, setStashes] = useState<GitStashEntry[]>([]);
   const [stashInProgress, setStashInProgress] = useState(false);
@@ -116,7 +117,9 @@ function App() {
   const githubFetchRequestIdRef = useRef(0);
 
   const branchMetaLoadKeyRef = useRef<string | null>(null);
-  const isFrozenRepo = isFrozenRepoPath(repoPath);
+  // Keep every selected repo on the same low-churn refresh strategy that was
+  // previously reserved for the default/frozen project.
+  const isFrozenRepo = isFrozenRepoPath(repoPath) || true;
   const isMapInteractingRef = useRef(false);
   const hasAttemptedAutoRestoreRef = useRef(false);
   const loadingProjectSnapshotsRef = useRef<Set<string>>(new Set());
@@ -136,6 +139,7 @@ function App() {
       worktrees: projectSnapshots[project.path]?.worktrees ?? [],
       stashes: projectSnapshots[project.path]?.stashes ?? [],
       branchCommitPreviews: projectSnapshots[project.path]?.branchCommitPreviews ?? {},
+      laneByBranch: projectSnapshots[project.path]?.laneByBranch ?? {},
       branchUniqueAheadCounts: projectSnapshots[project.path]?.branchUniqueAheadCounts ?? {},
       defaultBranch: projectSnapshots[project.path]?.defaultBranch ?? project.branchName ?? 'main',
       treeLoaded: projectSnapshots[project.path]?.loaded ?? false,
@@ -201,6 +205,7 @@ function App() {
         stashes,
         branchCommitPreviews,
         branchParentByName,
+        laneByBranch,
         branchUniqueAheadCounts,
         defaultBranch,
         loaded: true,
@@ -222,6 +227,7 @@ function App() {
     stashes,
     branchCommitPreviews,
     branchParentByName,
+    laneByBranch,
     branchUniqueAheadCounts,
     defaultBranch,
   ]);
@@ -513,11 +519,18 @@ function App() {
     setStashes(snapshot.stashes);
     setBranchCommitPreviews(snapshot.branchCommitPreviews);
     setBranchParentByName(snapshot.branchParentByName ?? {});
+    setLaneByBranch(snapshot.laneByBranch ?? {});
     setBranchUniqueAheadCounts(snapshot.branchUniqueAheadCounts);
     setRepoPath(path);
   }
 
-  async function refreshRepoSnapshotInBackground(path: string, requestId: number) {
+  async function refreshRepoSnapshotInBackground(
+    path: string,
+    requestId: number,
+    options?: { forceRefresh?: boolean; applyToActiveState?: boolean },
+  ) {
+    const forceRefresh = options?.forceRefresh ?? true;
+    const applyToActiveState = options?.applyToActiveState ?? true;
     try {
       const [info, def] = await Promise.all([
         invoke<{ name: string; path: string }>('get_repo_info', { repoPath: path }),
@@ -526,16 +539,16 @@ function App() {
       if (requestId !== loadRepoRequestIdRef.current) return;
       const snapshot = await invoke<RepoVisualSnapshot>('get_repo_visual_snapshot', {
         repoPath: path,
-        forceRefresh: true,
+        forceRefresh,
       });
       if (requestId !== loadRepoRequestIdRef.current) return;
       setProjectSnapshots((previous) => ({
         ...previous,
         [path]: snapshot,
       }));
-      setRepoName(info.name);
-      setDefaultBranch(def);
-      if (repoPath === path || loadRepoRequestIdRef.current === requestId) {
+      if (applyToActiveState && (repoPath === path || loadRepoRequestIdRef.current === requestId)) {
+        setRepoName(info.name);
+        setDefaultBranch(def);
         applySnapshotToActiveState(path, snapshot);
       }
       void fetchGitHubData(path);
@@ -562,7 +575,10 @@ function App() {
       });
       setMapLoading(false);
       setLoading(false);
-      void refreshRepoSnapshotInBackground(normalizedPath, requestId);
+      void refreshRepoSnapshotInBackground(normalizedPath, requestId, {
+        forceRefresh: false,
+        applyToActiveState: false,
+      });
       return;
     }
 
@@ -708,6 +724,7 @@ function App() {
     let isFetching = false;
     let pendingFetch = false;
     let timeoutId: number;
+    let localRefreshTimeoutId: number | null = null;
     let monitorIntervalId: number | null = null;
     const retryTimeoutIds = new Set<number>();
     let unlisten: (() => void) | null = null;
@@ -891,13 +908,23 @@ function App() {
         retryTimeoutIds.add(id);
       }
     };
+    const scheduleLocalRefresh = () => {
+      if (localRefreshTimeoutId != null) {
+        window.clearTimeout(localRefreshTimeoutId);
+      }
+      localRefreshTimeoutId = window.setTimeout(() => {
+        localRefreshTimeoutId = null;
+        if (isDisposed) return;
+        void performFetch();
+      }, 300);
+    };
 
     listen<GitActivityEventPayload>('git-activity', (event) => {
       if (normalizePath(event.payload.repoPath) !== repoPath) return;
       const mode = event.payload.kind;
       if (mode === 'local') {
-        void loadProjectSnapshot(repoPath, true);
         void syncCheckedOutRef();
+        scheduleLocalRefresh();
         return;
       }
       void loadProjectSnapshot(repoPath, true);
@@ -912,12 +939,13 @@ function App() {
     // Authoritative monitor independent of filesystem notifications.
     monitorIntervalId = window.setInterval(() => {
       void syncCheckedOutRef();
-    }, 700);
+    }, 1800);
     void syncCheckedOutRef();
 
     return () => {
       isDisposed = true;
       clearTimeout(timeoutId);
+      if (localRefreshTimeoutId != null) window.clearTimeout(localRefreshTimeoutId);
       if (monitorIntervalId != null) window.clearInterval(monitorIntervalId);
       for (const id of retryTimeoutIds) {
         window.clearTimeout(id);
@@ -1040,6 +1068,7 @@ function App() {
       setBranchPromptMeta({});
       setBranchCommitPreviews({});
       setBranchParentByName({});
+      setLaneByBranch({});
       setBranchUniqueAheadCounts({});
       branchMetaLoadKeyRef.current = null;
       return;
@@ -1075,16 +1104,60 @@ function App() {
       nextUniqueAheadCounts[branch.name] = previews.length;
     }
 
+    const commitBranchBySha = new Map<string, string>();
+    for (const commit of directCommits) {
+      commitBranchBySha.set(commit.fullSha, commit.branch);
+    }
+    const resolveParentBranchForSha = (sha: string | null | undefined): string | null => {
+      if (!sha) return null;
+      const exact = commitBranchBySha.get(sha);
+      if (exact) return exact;
+      for (const [knownSha, branchName] of commitBranchBySha.entries()) {
+        if (knownSha.startsWith(sha) || sha.startsWith(knownSha)) return branchName;
+      }
+      return null;
+    };
     const nextBranchParentByName: Record<string, string | null> = { [defaultBranch]: null };
     for (const branch of branches) {
-      nextBranchParentByName[branch.name] = branch.parentBranch ?? null;
+      if (branch.name === defaultBranch) {
+        nextBranchParentByName[branch.name] = null;
+        continue;
+      }
+      const branchCommits = directCommits.filter((commit) => commit.branch === branch.name);
+      const branchCommitShas = new Set(branchCommits.map((commit) => commit.fullSha));
+      const graphParentSha = branchCommits
+        .filter((commit) => {
+          const parentSha = commit.parentSha ?? null;
+          return !parentSha || !branchCommitShas.has(parentSha);
+        })
+        .sort((a, b) => {
+          const dt = new Date(a.date).getTime() - new Date(b.date).getTime();
+          if (dt !== 0) return dt;
+          return a.fullSha.localeCompare(b.fullSha);
+        })[0]?.parentSha ?? null;
+      const parentFromGraph = resolveParentBranchForSha(graphParentSha);
+      nextBranchParentByName[branch.name] =
+        parentFromGraph ??
+        branchParentByName[branch.name] ??
+        branch.parentBranch ??
+        null;
     }
 
     setBranchPromptMeta({});
     setBranchCommitPreviews(nextCommitPreviews);
     setBranchParentByName(nextBranchParentByName);
+    setLaneByBranch((previous) => {
+      const next: Record<string, number> = {};
+      for (const branch of branches) {
+        const lane = previous[branch.name];
+        if (lane != null && Number.isFinite(lane)) {
+          next[branch.name] = lane;
+        }
+      }
+      return next;
+    });
     setBranchUniqueAheadCounts(nextUniqueAheadCounts);
-  }, [repoPath, defaultBranch, branches, mergeNodes, directCommits]);
+  }, [repoPath, defaultBranch, branches, mergeNodes, directCommits, branchParentByName]);
 
   useEffect(() => {
     if (!commitSwitchFeedback) {
@@ -1859,8 +1932,10 @@ function App() {
     return map;
   }, [branchParentByName, defaultBranch, enrichedBranches]);
   const sharedGridLanes = useMemo(
-    () => buildLanes(enrichedBranches, defaultBranch, enrichedBranchCommitPreviews, enrichedBranchParentByName),
-    [enrichedBranches, defaultBranch, enrichedBranchCommitPreviews, enrichedBranchParentByName],
+    () =>
+      lanesFromStoredColumns(enrichedBranches, defaultBranch, enrichedBranchParentByName, laneByBranch)
+      ?? buildLanes(enrichedBranches, defaultBranch, enrichedBranchCommitPreviews, enrichedBranchParentByName),
+    [enrichedBranches, defaultBranch, enrichedBranchCommitPreviews, enrichedBranchParentByName, laneByBranch],
   );
   const sharedGridLayoutModel: BranchGridLayoutModel = useMemo(
     () =>

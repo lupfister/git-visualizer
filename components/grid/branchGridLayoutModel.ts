@@ -708,8 +708,8 @@ export function computeBranchGridLayout(input: BranchGridLayoutInput): BranchGri
           const previews = branchCommitPreviews[branch.name] ?? [];
           const concretePreviews = [...(branchPreviewSets.get(branch.name) ?? [])].reverse();
           const renderedPreviewIds = new Set((branchCommitsByLane.get(branch.name) ?? []).map((commit) => commit.id));
-          const parentCommitSha = branchStartParentShaByName.get(branch.name) ?? null;
           const childCommit = concretePreviews.find((commit) => !commit.parentSha || !concretePreviews.some((candidate) => shasMatch(candidate.fullSha, commit.parentSha ?? ''))) ?? concretePreviews[0] ?? null;
+          const parentCommitSha = childCommit?.parentSha ?? branchStartParentShaByName.get(branch.name) ?? null;
           return [
             `Branch ${branch.name}`,
             `  ahead=${branchUniqueAheadCounts[branch.name] ?? 0} previews=${concretePreviews.length} rendered=${renderedPreviewIds.size}`,

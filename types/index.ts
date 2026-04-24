@@ -184,6 +184,7 @@ export interface RepoVisualSnapshot {
   stashes: GitStashEntry[];
   branchCommitPreviews: Record<string, BranchCommitPreview[]>;
   branchParentByName: Record<string, string | null>;
+  laneByBranch: Record<string, number>;
   branchUniqueAheadCounts: Record<string, number>;
   loaded: boolean;
   cacheSchemaVersion: number;

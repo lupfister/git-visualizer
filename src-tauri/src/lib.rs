@@ -52,7 +52,7 @@ struct DeleteSelectionResult {
 static WATCHER_STATE: OnceLock<Mutex<HashMap<String, notify::RecommendedWatcher>>> = OnceLock::new();
 const GIT_ACTIVITY_LOCAL_MIN_EMIT_MS: u64 = 250;
 const GIT_ACTIVITY_GRAPH_MIN_EMIT_MS: u64 = 120;
-const REPO_VISUAL_CACHE_SCHEMA_VERSION: i32 = 12;
+const REPO_VISUAL_CACHE_SCHEMA_VERSION: i32 = 13;
 #[cfg(target_os = "macos")]
 const OPEN_REPO_DETECTION_CACHE_TTL: StdDuration = StdDuration::from_secs(8);
 
@@ -92,10 +92,97 @@ struct RepoVisualSnapshot {
     stashes: Vec<git::GitStashEntry>,
     branch_commit_previews: HashMap<String, Vec<BranchCommitPreviewEntry>>,
     branch_parent_by_name: HashMap<String, Option<String>>,
+    lane_by_branch: HashMap<String, i32>,
     branch_unique_ahead_counts: HashMap<String, i32>,
     loaded: bool,
     cache_schema_version: i32,
     updated_at_ms: i64,
+}
+
+fn parse_time_ms(value: Option<&str>) -> i64 {
+    value
+        .and_then(|v| chrono::DateTime::parse_from_rfc3339(v).ok())
+        .map(|dt| dt.timestamp_millis())
+        .unwrap_or(0)
+}
+
+fn compute_lane_by_branch(
+    branches: &[Branch],
+    default_branch: &str,
+    branch_commit_previews: &HashMap<String, Vec<BranchCommitPreviewEntry>>,
+    branch_parent_by_name: &HashMap<String, Option<String>>,
+) -> HashMap<String, i32> {
+    let by_name: HashMap<String, Branch> = branches
+        .iter()
+        .cloned()
+        .map(|branch| (branch.name.clone(), branch))
+        .collect();
+    let mut first_commit_time_by_branch = HashMap::<String, i64>::new();
+    for branch in branches {
+        let first_time = branch_commit_previews
+            .get(&branch.name)
+            .into_iter()
+            .flat_map(|previews| previews.iter())
+            .filter(|preview| preview.kind != "branch-created")
+            .filter_map(|preview| chrono::DateTime::parse_from_rfc3339(&preview.date).ok().map(|dt| dt.timestamp_millis()))
+            .min();
+        if let Some(time) = first_time {
+            first_commit_time_by_branch.insert(branch.name.clone(), time);
+        }
+    }
+    let branch_start_time = |branch: &Branch| -> i64 {
+        first_commit_time_by_branch.get(&branch.name).copied().unwrap_or_else(|| {
+            parse_time_ms(
+                branch
+                    .created_date
+                    .as_deref()
+                    .or(branch.diverged_from_date.as_deref())
+                    .or(Some(branch.last_commit_date.as_str())),
+            )
+        })
+    };
+    let resolve_parent = |branch: &Branch| -> Option<String> {
+        let mapped = branch_parent_by_name.get(&branch.name).and_then(|value| value.clone());
+        if let Some(parent) = mapped {
+            if parent != branch.name && (parent == default_branch || by_name.contains_key(&parent)) {
+                return Some(parent);
+            }
+        }
+        if let Some(parent) = branch.parent_branch.clone() {
+            if parent != branch.name && by_name.contains_key(&parent) {
+                return Some(parent);
+            }
+        }
+        None
+    };
+
+    let mut lane_by_name = HashMap::<String, i32>::new();
+    lane_by_name.insert(default_branch.to_string(), 0);
+
+    let mut pending: Vec<Branch> = branches
+        .iter()
+        .filter(|branch| branch.name != default_branch)
+        .cloned()
+        .collect();
+    pending.sort_by(|left, right| {
+        branch_start_time(left)
+            .cmp(&branch_start_time(right))
+            .then_with(|| left.name.cmp(&right.name))
+    });
+
+    let mut detached_cursor = 1_i32;
+    for branch in pending {
+        let parent = resolve_parent(&branch);
+        let lane = if let Some(parent_name) = parent {
+            let parent_lane = lane_by_name.get(&parent_name).copied().unwrap_or(0);
+            (parent_lane + 1).max(detached_cursor)
+        } else {
+            detached_cursor
+        };
+        lane_by_name.insert(branch.name.clone(), lane);
+        detached_cursor = detached_cursor.max(lane + 1);
+    }
+    lane_by_name
 }
 
 fn path_contains_noise_dir(path: &Path) -> bool {
@@ -415,6 +502,12 @@ fn compute_repo_visual_snapshot(repo_path: &str) -> Result<RepoVisualSnapshot, S
         }
         map
     };
+    let lane_by_branch = compute_lane_by_branch(
+        &branches,
+        &default_branch,
+        &branch_commit_previews,
+        &branch_parent_by_name,
+    );
 
     Ok(RepoVisualSnapshot {
         path: resolved_path,
@@ -431,6 +524,7 @@ fn compute_repo_visual_snapshot(repo_path: &str) -> Result<RepoVisualSnapshot, S
         stashes,
         branch_commit_previews,
         branch_parent_by_name,
+        lane_by_branch,
         branch_unique_ahead_counts,
         loaded: true,
         cache_schema_version: REPO_VISUAL_CACHE_SCHEMA_VERSION,

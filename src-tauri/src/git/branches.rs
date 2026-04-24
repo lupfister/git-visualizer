@@ -119,6 +119,8 @@ pub fn list_branches(repo: &Path, default_branch: &str) -> Result<Vec<Branch>, G
         .map(|s| s.to_string())
         .collect();
 
+    let default_first_parent_shas = get_first_parent_shas(repo, default_branch).unwrap_or_default();
+
     let mut branches: Vec<Branch> = branch_names
         .par_iter()
         .filter_map(|name| {
@@ -127,6 +129,7 @@ pub fn list_branches(repo: &Path, default_branch: &str) -> Result<Vec<Branch>, G
                 Err(_) => build_branch_fallback(repo, name, default_branch),
             }
         })
+        .filter(|branch| !is_fast_forward_merged_into_base(branch, &default_first_parent_shas))
         .collect();
 
     infer_branch_parents(repo, &mut branches, default_branch)?;
@@ -135,6 +138,18 @@ pub fn list_branches(repo: &Path, default_branch: &str) -> Result<Vec<Branch>, G
     branches.sort_by(|a, b| b.last_commit_date.cmp(&a.last_commit_date));
 
     Ok(branches)
+}
+
+fn is_fast_forward_merged_into_base(
+    branch: &Branch,
+    default_first_parent_shas: &HashSet<String>,
+) -> bool {
+    if branch.head_sha.is_empty() {
+        return false;
+    }
+    // A branch is considered FF-merged when its tip is on the default branch
+    // first-parent chain and it has no unique commits ahead of default.
+    branch.commits_ahead <= 0 && default_first_parent_shas.contains(&branch.head_sha)
 }
 
 fn build_branch_fallback(repo: &Path, name: &str, default_branch: &str) -> Option<Branch> {
@@ -529,6 +544,16 @@ fn get_ref_head_sha(repo: &Path, reference: &str) -> Result<String, GitError> {
 fn get_commit_date(repo: &Path, reference: &str) -> Result<String, GitError> {
     let output = cli::run(repo, &["log", "-1", "--format=%cI", reference])?;
     Ok(output.trim().to_string())
+}
+
+fn get_first_parent_shas(repo: &Path, reference: &str) -> Result<HashSet<String>, GitError> {
+    let output = cli::run(repo, &["rev-list", "--first-parent", reference])?;
+    Ok(output
+        .lines()
+        .map(str::trim)
+        .filter(|line| !line.is_empty())
+        .map(|line| line.to_string())
+        .collect())
 }
 
 fn commit_distance(repo: &Path, from_sha: &str, to_sha: &str) -> Result<i32, GitError> {

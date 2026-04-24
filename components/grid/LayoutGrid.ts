@@ -337,3 +337,35 @@ export function buildLanes(
 
   return lanes.sort((a, b) => a.column - b.column || a.name.localeCompare(b.name));
 }
+
+export function lanesFromStoredColumns(
+  branches: Branch[],
+  defaultBranch: string,
+  branchParentByName: Record<string, string | null>,
+  laneByBranch: Record<string, number>,
+): Lane[] | null {
+  const byName = new Map(branches.map((branch) => [branch.name, branch]));
+  const resolveParentName = (branch: Branch): string | null => {
+    const mappedParent = branchParentByName[branch.name] ?? null;
+    if (mappedParent && mappedParent !== branch.name && (mappedParent === defaultBranch || byName.has(mappedParent))) {
+      return mappedParent;
+    }
+    if (branch.name === defaultBranch) return null;
+    if (branch.parentBranch && branch.parentBranch !== branch.name && byName.has(branch.parentBranch)) {
+      return branch.parentBranch;
+    }
+    return null;
+  };
+  const entries: Lane[] = [];
+  for (const branch of branches) {
+    const column = laneByBranch[branch.name];
+    if (column == null || !Number.isFinite(column)) return null;
+    entries.push({
+      name: branch.name,
+      column,
+      parentName: resolveParentName(branch),
+    });
+  }
+  if (!entries.some((lane) => lane.name === defaultBranch && lane.column === 0)) return null;
+  return entries.sort((a, b) => a.column - b.column || a.name.localeCompare(b.name));
+}

@@ -203,6 +203,128 @@ pub fn get_all_repo_commits(
         }
     }
 
+    // Enforce branch ownership boundaries: a branch can only own commits that are
+    // descendants of (or equal to) that branch's child/root commit on its first-parent line.
+    let mut branch_by_commit_sha: HashMap<String, String> = commits
+        .iter()
+        .map(|commit| (commit.full_sha.clone(), commit.branch.clone()))
+        .collect();
+    let first_parent_by_sha: HashMap<String, String> = commit_parent_shas_by_sha
+        .iter()
+        .filter_map(|(sha, parents)| parents.first().map(|parent| (sha.clone(), parent.clone())))
+        .collect();
+    let mut child_sha_by_branch = HashMap::<String, String>::new();
+    for branch_name in &branch_order {
+        if branch_name == default_branch {
+            continue;
+        }
+        let Some(head_sha) = head_sha_by_branch.get(branch_name).cloned() else {
+            continue;
+        };
+        let mut cursor = head_sha.clone();
+        loop {
+            let Some(parent_sha) = first_parent_by_sha.get(&cursor).cloned() else {
+                child_sha_by_branch.insert(branch_name.clone(), cursor.clone());
+                break;
+            };
+            let parent_branch = branch_by_commit_sha.get(&parent_sha);
+            if parent_branch == Some(branch_name) {
+                cursor = parent_sha;
+                continue;
+            }
+            child_sha_by_branch.insert(branch_name.clone(), cursor.clone());
+            break;
+        }
+    }
+    let mut descendant_cache = HashMap::<(String, String), bool>::new();
+    let mut is_descendant_or_equal = |sha: &str, ancestor_sha: &str| -> bool {
+        if sha == ancestor_sha {
+            return true;
+        }
+        let key = (sha.to_string(), ancestor_sha.to_string());
+        if let Some(value) = descendant_cache.get(&key).copied() {
+            return value;
+        }
+        let mut queue = VecDeque::<String>::new();
+        let mut visited = HashSet::<String>::new();
+        queue.push_back(sha.to_string());
+        visited.insert(sha.to_string());
+        let mut found = false;
+        while let Some(current_sha) = queue.pop_front() {
+            let Some(parent_shas) = commit_parent_shas_by_sha.get(&current_sha) else {
+                continue;
+            };
+            for parent_sha in parent_shas {
+                if parent_sha.is_empty() {
+                    continue;
+                }
+                if parent_sha == ancestor_sha {
+                    found = true;
+                    break;
+                }
+                if visited.insert(parent_sha.clone()) {
+                    queue.push_back(parent_sha.clone());
+                }
+            }
+            if found {
+                break;
+            }
+        }
+        descendant_cache.insert(key, found);
+        found
+    };
+    let branch_accepts_commit = |branch_name: &str,
+                                 commit_sha: &str,
+                                 child_sha_by_branch: &HashMap<String, String>,
+                                 is_descendant_or_equal: &mut dyn FnMut(&str, &str) -> bool|
+     -> bool {
+        if branch_name == default_branch {
+            return true;
+        }
+        let Some(child_sha) = child_sha_by_branch.get(branch_name) else {
+            return false;
+        };
+        is_descendant_or_equal(commit_sha, child_sha)
+    };
+    for commit in &mut commits {
+        if branch_accepts_commit(
+            &commit.branch,
+            &commit.full_sha,
+            &child_sha_by_branch,
+            &mut is_descendant_or_equal,
+        ) {
+            continue;
+        }
+        let mut best_match: Option<(String, usize, usize)> = None;
+        for (branch_index, branch_name) in branch_order.iter().enumerate() {
+            if !branch_accepts_commit(
+                branch_name,
+                &commit.full_sha,
+                &child_sha_by_branch,
+                &mut is_descendant_or_equal,
+            ) {
+                continue;
+            }
+            let key = (commit.full_sha.clone(), branch_name.clone());
+            let Some(distance) = distance_by_commit_sha_and_branch.get(&key).copied() else {
+                continue;
+            };
+            match &best_match {
+                None => best_match = Some((branch_name.clone(), distance, branch_index)),
+                Some((_, best_distance, best_index)) => {
+                    if distance < *best_distance || (distance == *best_distance && branch_index < *best_index) {
+                        best_match = Some((branch_name.clone(), distance, branch_index));
+                    }
+                }
+            }
+        }
+        if let Some((branch_name, _, _)) = best_match {
+            commit.branch = branch_name;
+        } else {
+            commit.branch = default_branch.to_string();
+        }
+    }
+
     Ok(with_cluster_keys(with_child_links(commits)))
 }
 
