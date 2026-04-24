@@ -2117,10 +2117,10 @@ function App() {
         style={{ paddingTop: 'max(env(safe-area-inset-top), 0px)' }}
         onMouseDown={handleWindowDragStart}
       >
-        <div className="flex h-full items-start gap-2 pt-2">
+        <div className="flex h-full items-start gap-2 ml-17 mt-2.25">
           <button
             type="button"
-            className="window-no-drag ml-16 inline-flex h-7 w-7 items-center justify-center rounded-md border border-border/60 bg-card text-muted-foreground shadow-sm transition-colors hover:bg-accent hover:text-foreground"
+            className="window-no-drag inline-flex h-7 w-7 items-center justify-center rounded-md text-muted-foreground transition-colors hover:bg-accent hover:text-foreground"
             aria-label={isSidebarCollapsed ? 'Open sidebar' : 'Collapse sidebar'}
             onClick={() => setIsSidebarCollapsed((value) => !value)}
           >

@@ -717,7 +717,7 @@ export default function DenseBranchSidebar({
             </p>
           </div>
         )}
-        <div ref={scrollBodyRef} className={cn('min-h-0 flex-1 space-y-2 overflow-y-auto px-2.5', collapsed ? 'opacity-0 pointer-events-none' : '')}>
+        <div ref={scrollBodyRef} className={cn('min-h-0 flex-1 space-y-2.5 overflow-y-auto px-2.5', collapsed ? 'opacity-0 pointer-events-none' : '')}>
           {projects.map((project) => {
             const isActive = project.path === activeProjectPath;
             const isExpanded = expandedProjects.has(project.path) || isActive;
@@ -733,7 +733,7 @@ export default function DenseBranchSidebar({
                   onClick={() => { void onSelectProject(project.path); }}
                   className={cn(
                     'flex w-full items-center justify-between gap-3 rounded-xl px-4 py-3 text-left transition-colors',
-                    isActive ? 'bg-primary/10 text-foreground' : 'text-muted-foreground hover:text-foreground',
+                    isActive ? 'text-foreground' : 'text-muted-foreground hover:bg-accent hover:text-foreground',
                   )}
                 >
                   <div className="min-w-0">
