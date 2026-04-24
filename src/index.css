@@ -74,6 +74,7 @@ body {
   margin: 0;
   overflow: hidden;
   overscroll-behavior: none;
+  user-select: none;
 }
 
 html,
@@ -102,6 +103,12 @@ html {
 .window-no-drag {
   -webkit-app-region: no-drag;
   app-region: no-drag;
+}
+
+input,
+textarea,
+[contenteditable='true'] {
+  user-select: text;
 }
 
 body.popover-window {

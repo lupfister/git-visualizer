@@ -80,6 +80,8 @@ export type BranchGridViewProps = {
   onCreateRootBranch?: (branchName: string) => Promise<void>;
   createBranchFromNodeInProgress?: boolean;
   onMoveNodeBackToBranch?: (targetBranchName: string) => Promise<void>;
+  isDebugOpen?: boolean;
+  onDebugClose?: () => void;
   orientation?: 'vertical' | 'horizontal';
   onInteractionChange?: (isInteracting: boolean) => void;
 };

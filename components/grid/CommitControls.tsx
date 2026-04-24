@@ -24,6 +24,7 @@ type Props = {
   stashInProgress: boolean;
   stashDisabled: boolean;
   pushInProgress: boolean;
+  hasUncommittedChanges: boolean;
   deleteInProgress: boolean;
   createBranchFromNodeInProgress: boolean;
   onCommitLocalChanges?: BranchGridViewProps['onCommitLocalChanges'];
@@ -33,7 +34,6 @@ type Props = {
   onPushAllBranches?: BranchGridViewProps['onPushAllBranches'];
   onPushCommitTargets?: BranchGridViewProps['onPushCommitTargets'];
   onDeleteSelection?: BranchGridViewProps['onDeleteSelection'];
-  onCreateBranchFromNode?: BranchGridViewProps['onCreateBranchFromNode'];
   onMergeRefsIntoBranch?: BranchGridViewProps['onMergeRefsIntoBranch'];
   selectedPushTargets: PushTarget[];
   selectedPushLabel: string;
@@ -41,7 +41,6 @@ type Props = {
   pushCurrentBranchLabel: string;
   pushableRemoteBranchCount: number;
   deletableSelectionCount: number;
-  canCreateRootBranch: boolean;
   selectedCommitTargetOption: SelectedCommitTargetOption;
   mergeInProgress: boolean;
   mergeTargetCommitSha: string | null;
@@ -58,13 +57,14 @@ type Props = {
   setNewBranchDialogOpen: (open: boolean) => void;
 };
 
-export default function MapGridControls({
+export default function CommitControls({
   selectedVisibleCommitShas,
   commitInProgress,
   commitDisabled,
   stashInProgress,
   stashDisabled,
   pushInProgress,
+  hasUncommittedChanges,
   deleteInProgress,
   createBranchFromNodeInProgress,
   onCommitLocalChanges,
@@ -73,7 +73,6 @@ export default function MapGridControls({
   onPushAllBranches,
   onPushCommitTargets,
   onDeleteSelection,
-  onCreateBranchFromNode,
   onMergeRefsIntoBranch,
   selectedPushTargets,
   selectedPushLabel,
@@ -81,7 +80,6 @@ export default function MapGridControls({
   pushCurrentBranchLabel,
   pushableRemoteBranchCount,
   deletableSelectionCount,
-  canCreateRootBranch,
   selectedCommitTargetOption,
   mergeInProgress,
   setMergeTargetCommitSha,
@@ -100,7 +98,7 @@ export default function MapGridControls({
   const [actionMenuOpen, setActionMenuOpen] = useState(false);
   const controlClassName =
     'inline-flex h-7 items-center rounded-md border border-border/60 bg-card/95 px-2 text-[11px] font-medium text-muted-foreground transition-colors hover:bg-accent hover:text-foreground disabled:cursor-not-allowed disabled:opacity-50';
-  const canCommit = !!onCommitLocalChanges && !commitDisabled && !hasSelection && !commitInProgress;
+  const canCommit = !!onCommitLocalChanges && hasUncommittedChanges && !commitDisabled && !hasSelection && !commitInProgress;
   const canPushCurrent = !!onPushCurrentBranch && canPushCurrentBranch && !hasSelection && !pushInProgress;
   const canPushSelected = !!onPushCommitTargets && selectedPushTargets.length > 0 && !pushInProgress;
   const canPushAll = !!onPushAllBranches && pushableRemoteBranchCount >= 2 && !hasSelection && !pushInProgress;
@@ -127,104 +125,112 @@ export default function MapGridControls({
             }
           : null;
 
-  return (
-    <div className="pointer-events-none absolute bottom-2.5 left-2.5 right-2.5 z-[70] flex flex-wrap items-center gap-2">
-      <div className="pointer-events-auto relative inline-flex items-stretch rounded-md bg-background border border-border/60">
-        <button
-          type="button"
-          onClick={() => {
-            if (!primaryAction) return;
-            primaryAction.run();
-          }}
-          disabled={!primaryAction || primaryAction.disabled}
-          className={cn(controlClassName, 'rounded-r-none border-0 bg-transparent hover:bg-accent')}
-        >
-          {primaryAction?.label ?? 'No action'}
-        </button>
-        <button
-          type="button"
-          onClick={() => setActionMenuOpen((open: boolean) => !open)}
-          disabled={!primaryAction}
-          aria-haspopup="menu"
-          aria-expanded={actionMenuOpen}
-          className={cn(controlClassName, 'rounded-l-none border-0 bg-transparent hover:bg-accent')}
-          title="More actions"
-        >
-          <ChevronDown className="h-3.5 w-3.5 shrink-0" />
-        </button>
-        {actionMenuOpen && primaryAction ? (
-          <div className="absolute bottom-full left-0 mb-2 min-w-56 overflow-hidden rounded-md border border-border/60 bg-background p-1">
-            <button
-              type="button"
-              onClick={() => {
-                setActionMenuOpen(false);
-                setCommitDialogOpen(true);
-              }}
-              disabled={!canCommit}
-              className={cn(controlClassName, 'w-full justify-start rounded-md border-0 bg-transparent px-2', !canCommit && 'text-muted-foreground opacity-50')}
-            >
-              {commitInProgress ? 'Committing...' : 'Commit'}
-            </button>
-            <button
-              type="button"
-              onClick={() => {
-                setActionMenuOpen(false);
-                void onPushCurrentBranch?.();
-              }}
-              disabled={!canPushCurrent}
-              className={cn(controlClassName, 'w-full justify-start rounded-md border-0 bg-transparent px-2', !canPushCurrent && 'text-muted-foreground opacity-50')}
-            >
-              {pushInProgress ? 'Pushing...' : pushCurrentBranchLabel}
-            </button>
-            <button
-              type="button"
-              onClick={() => {
-                setActionMenuOpen(false);
-                void onPushCommitTargets?.(selectedPushTargets.map((target) => ({ branchName: target.branchName, targetSha: target.targetSha })));
-              }}
-              disabled={!canPushSelected}
-              className={cn(controlClassName, 'w-full justify-start rounded-md border-0 bg-transparent px-2', !canPushSelected && 'text-muted-foreground opacity-50')}
-              title={selectedPushLabel}
-            >
-              {pushSelectedLabel}
-            </button>
-            <button
-              type="button"
-              onClick={() => {
-                setActionMenuOpen(false);
-                void onPushAllBranches?.();
-              }}
-              disabled={!canPushAll}
-              className={cn(controlClassName, 'w-full justify-start rounded-md border-0 bg-transparent px-2', !canPushAll && 'text-muted-foreground opacity-50')}
-            >
-              Push all
-            </button>
-            <button
-              type="button"
-              onClick={() => {
-                setActionMenuOpen(false);
-                void onStashLocalChanges?.();
-              }}
-              disabled={!canStash}
-              className={cn(controlClassName, 'w-full justify-start rounded-md border-0 bg-transparent px-2', !canStash && 'text-muted-foreground opacity-50')}
-            >
-              {stashInProgress ? 'Stashing...' : 'Stash'}
-            </button>
-          </div>
-        ) : null}
-      </div>
+  const toolbar = (
+    <div className="pointer-events-none absolute inset-x-0 top-0 z-[60] px-2.5 pt-2.25">
+      <div className="pointer-events-auto inline-flex w-fit max-w-full flex-wrap items-center justify-start gap-[9px]">
+        <div className="relative inline-flex h-7 items-stretch rounded-md border border-border/60 bg-card/95">
+          <button
+            type="button"
+            onClick={() => {
+              if (!primaryAction) return;
+              primaryAction.run();
+            }}
+            disabled={!primaryAction || primaryAction.disabled}
+            className={cn(controlClassName, 'h-full rounded-r-none border-0 bg-transparent hover:bg-accent')}
+          >
+            {primaryAction?.label ?? 'No action'}
+          </button>
+          <button
+            type="button"
+            onClick={() => setActionMenuOpen((open: boolean) => !open)}
+            disabled={!primaryAction}
+            aria-haspopup="menu"
+            aria-expanded={actionMenuOpen}
+            className={cn(controlClassName, 'h-full rounded-l-none border-0 bg-transparent hover:bg-accent')}
+            title="More actions"
+          >
+            <ChevronDown className="h-3.5 w-3.5 shrink-0" />
+          </button>
+          {actionMenuOpen && primaryAction ? (
+            <div className="absolute bottom-full left-0 mb-2 min-w-56 overflow-hidden rounded-md border border-border/60 bg-card p-1">
+              <button
+                type="button"
+                onClick={() => {
+                  setActionMenuOpen(false);
+                  setCommitDialogOpen(true);
+                }}
+                disabled={!canCommit}
+                className={cn(controlClassName, 'w-full justify-start rounded-md border-0 bg-transparent px-2', !canCommit && 'text-muted-foreground opacity-50')}
+              >
+                {commitInProgress ? 'Committing...' : 'Commit'}
+              </button>
+              <button
+                type="button"
+                onClick={() => {
+                  setActionMenuOpen(false);
+                  void onPushCurrentBranch?.();
+                }}
+                disabled={!canPushCurrent}
+                className={cn(controlClassName, 'w-full justify-start rounded-md border-0 bg-transparent px-2', !canPushCurrent && 'text-muted-foreground opacity-50')}
+              >
+                {pushInProgress ? 'Pushing...' : pushCurrentBranchLabel}
+              </button>
+              <button
+                type="button"
+                onClick={() => {
+                  setActionMenuOpen(false);
+                  void onPushCommitTargets?.(selectedPushTargets.map((target) => ({ branchName: target.branchName, targetSha: target.targetSha })));
+                }}
+                disabled={!canPushSelected}
+                className={cn(controlClassName, 'w-full justify-start rounded-md border-0 bg-transparent px-2', !canPushSelected && 'text-muted-foreground opacity-50')}
+                title={selectedPushLabel}
+              >
+                {pushSelectedLabel}
+              </button>
+              <button
+                type="button"
+                onClick={() => {
+                  setActionMenuOpen(false);
+                  void onPushAllBranches?.();
+                }}
+                disabled={!canPushAll}
+                className={cn(controlClassName, 'w-full justify-start rounded-md border-0 bg-transparent px-2', !canPushAll && 'text-muted-foreground opacity-50')}
+              >
+                Push all
+              </button>
+              <button
+                type="button"
+                onClick={() => {
+                  setActionMenuOpen(false);
+                  void onStashLocalChanges?.();
+                }}
+                disabled={!canStash}
+                className={cn(controlClassName, 'w-full justify-start rounded-md border-0 bg-transparent px-2', !canStash && 'text-muted-foreground opacity-50')}
+              >
+                {stashInProgress ? 'Stashing...' : 'Stash'}
+              </button>
+            </div>
+          ) : null}
+        </div>
 
-      {deletableSelectionCount > 0 ? (
-        <button type="button" onClick={() => setDeleteConfirmOpen(true)} disabled={!onDeleteSelection || deleteInProgress} className={cn(controlClassName, 'bg-background text-red-600 hover:bg-red-50 dark:hover:bg-red-900/20')}>
-            {deleteInProgress ? 'Deleting...' : 'Delete selection'}
-        </button>
-      ) : null}
-      <button type="button" onClick={() => setNewBranchDialogOpen(true)} disabled={(!onCreateBranchFromNode && !canCreateRootBranch) || createBranchFromNodeInProgress} className={cn(controlClassName, 'bg-background')}>
-          {createBranchFromNodeInProgress ? 'Creating...' : 'Create Branch'}
-      </button>
+        <div className="flex flex-wrap items-center gap-[9px]">
+          {deletableSelectionCount > 0 ? (
+            <button type="button" onClick={() => setDeleteConfirmOpen(true)} disabled={!onDeleteSelection || deleteInProgress} className={cn(controlClassName, 'bg-background text-red-600 hover:bg-red-50 dark:hover:bg-red-900/20')}>
+              {deleteInProgress ? 'Deleting...' : 'Delete selection'}
+            </button>
+          ) : null}
+          <button
+            type="button"
+            onClick={() => setNewBranchDialogOpen(true)}
+            disabled={createBranchFromNodeInProgress}
+            className={cn(controlClassName, 'pointer-events-auto relative z-10 bg-background')}
+          >
+            {createBranchFromNodeInProgress ? 'Creating...' : 'Create Branch'}
+          </button>
+        </div>
 
-      {selectedVisibleCommitShas.length > 1 && selectedCommitTargetOption.options.length > 0 && selectedCommitTargetOption.targetBranch && onMergeRefsIntoBranch ? (
-        <div className="pointer-events-auto inline-flex items-center gap-1 rounded-full border border-border/60 bg-card/95 px-2 py-1">
+        {selectedVisibleCommitShas.length > 1 && selectedCommitTargetOption.options.length > 0 && selectedCommitTargetOption.targetBranch && onMergeRefsIntoBranch ? (
+          <div className="pointer-events-auto inline-flex items-center gap-[9px] rounded-full border border-border/60 bg-card/95 px-2 py-1">
           <span className="px-1 text-[11px] font-medium text-muted-foreground">merge to</span>
           {selectedCommitTargetOption.options.map((option) => {
             const isActive = option.targetBranch === selectedCommitTargetOption.targetBranch;
@@ -245,12 +251,12 @@ export default function MapGridControls({
           <button type="button" onClick={() => void onMergeRefsIntoBranch(selectedCommitTargetOption.sources, selectedCommitTargetOption.targetBranch!)} disabled={selectedCommitTargetOption.sources.length === 0 || mergeInProgress} className="rounded-md border border-border/60 px-2 h-7 text-[11px] font-medium text-muted-foreground transition-colors hover:bg-accent hover:text-foreground disabled:cursor-not-allowed disabled:opacity-50">
             {mergeInProgress ? 'Merging...' : 'Confirm'}
           </button>
-        </div>
-      ) : null}
+          </div>
+        ) : null}
 
-      {worktrees.length > 0 && (onSwitchToWorktree || onRemoveWorktree) ? (
-        <div className="pointer-events-auto relative">
-          <button type="button" onClick={() => setWorktreeMenuOpen((open) => !open)} className={controlClassName}>
+        {worktrees.length > 0 && (onSwitchToWorktree || onRemoveWorktree) ? (
+          <div className="pointer-events-auto relative">
+            <button type="button" onClick={() => setWorktreeMenuOpen((open) => !open)} className={controlClassName}>
             {worktrees.length} {worktrees.length === 1 ? 'Worktree' : 'Worktrees'}
           </button>
           {worktreeMenuOpen ? (
@@ -283,8 +289,11 @@ export default function MapGridControls({
               ))}
             </div>
           ) : null}
-        </div>
-      ) : null}
+          </div>
+        ) : null}
+      </div>
     </div>
   );
+
+  return toolbar;
 }

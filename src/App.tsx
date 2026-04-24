@@ -3,11 +3,13 @@ import { invoke } from '@tauri-apps/api/core';
 import { listen } from '@tauri-apps/api/event';
 import { getCurrentWindow } from '@tauri-apps/api/window';
 import { open } from '@tauri-apps/plugin-dialog';
-import { ChevronDown, ChevronUp, PanelLeftClose, PanelLeftOpen, Search } from 'lucide-react';
+import { PanelLeftClose, PanelLeftOpen } from 'lucide-react';
 import BranchGridMapView, { type OrientationMode } from '../components/grid/MapViewGrid';
 import DenseBranchSidebar from '../components/DenseBranchSidebar';
 import { buildLanes, lanesFromStoredColumns } from '../components/grid/LayoutGrid';
 import { computeBranchGridLayout, type BranchGridLayoutModel } from '../components/grid/branchGridLayoutModel';
+import MapOrientationToggle from '../components/grid/MapOrientationToggle';
+import MapSearchBar from '../components/grid/MapSearchBar';
 import type { Branch, BranchCommitPreview, BranchPromptMeta, CheckedOutRef, DirectCommit, GitHubAuthStatus, GitHubInfo, GitStashEntry, MergeNode, OpenPR, RepoVisualSnapshot, WorktreeInfo } from '../types';
 import { foldStashNodesIntoGraph } from './placeStashNode';
 
@@ -121,6 +123,7 @@ function App() {
   const [createBranchFromNodeInProgress, setCreateBranchFromNodeInProgress] = useState(false);
   const [isMapInteracting, setIsMapInteracting] = useState(false);
   const [mapGridOrientation, setMapGridOrientation] = useState<OrientationMode>('horizontal');
+  const [isGridDebugOpen, setIsGridDebugOpen] = useState(false);
   const [sidebarWidthPx, setSidebarWidthPx] = useState(SIDEBAR_DEFAULT_WIDTH_PX);
   const [isSidebarCollapsed, setIsSidebarCollapsed] = useState(false);
   const [sidebarDebug, setSidebarDebug] = useState<{
@@ -375,20 +378,6 @@ function App() {
       }
     })();
   };
-
-  function handleWindowDragStart(e: React.MouseEvent<HTMLElement>) {
-    if (e.button !== 0) return;
-    const target = e.target as HTMLElement | null;
-    if (target?.closest('.window-no-drag')) return;
-    const currentWindow = getCurrentWindow();
-    void invoke('start_window_drag')
-      .catch(() => currentWindow.startDragging())
-      .catch((err) => {
-        console.warn('Failed to start window drag:', err);
-      });
-  }
-
-
 
   async function fetchAllMergeNodes(path: string, branch: string): Promise<MergeNode[]> {
     const perPage = 100;
@@ -2241,11 +2230,6 @@ function App() {
                 className="absolute bottom-0 right-[-6px] top-0 z-50 w-3 cursor-col-resize bg-transparent"
               />
             ) : null}
-            {sidebarDebug.dragging ? (
-              <div className="pointer-events-none absolute bottom-2 right-2 z-50 rounded-md border border-border/50 bg-card/90 px-2 py-1 text-[10px] text-muted-foreground">
-                {sidebarDebug.lastEvent}
-              </div>
-            ) : null}
           </div>
 
           <div className="relative min-h-0 min-w-0 flex-1 overflow-hidden">
@@ -2293,6 +2277,8 @@ function App() {
                 onCreateBranchFromNode={handleCreateBranchFromNode}
                 onCreateRootBranch={handleCreateRootBranch}
                 createBranchFromNodeInProgress={createBranchFromNodeInProgress}
+                isDebugOpen={isGridDebugOpen}
+                onDebugClose={() => setIsGridDebugOpen(false)}
                 onInteractionChange={setIsMapInteracting}
                 manuallyOpenedClumps={effectiveManuallyOpenedGridClumps}
                 manuallyClosedClumps={effectiveManuallyClosedGridClumps}
@@ -2302,8 +2288,8 @@ function App() {
                 orientation={mapGridOrientation}
               />
 
-              <header data-tauri-drag-region data-map-ui className="absolute inset-x-0 top-0 z-40 px-4">
-                <div className="window-no-drag pointer-events-auto relative z-10 flex min-h-12 w-full items-center justify-between gap-2 py-4">
+              <header data-tauri-drag-region data-map-ui className="absolute inset-x-0 top-0 z-40 px-2.5">
+                <div className="window-no-drag pointer-events-auto relative z-10 flex min-h-12 w-full items-center justify-between gap-2 py-2.25">
                   <div className="flex flex-wrap items-start gap-2">
                     {githubAuthStatus?.ghAvailable && !githubAuthStatus.authenticated && (
                       <button
@@ -2319,99 +2305,27 @@ function App() {
                         Install `gh` for private PR data
                       </span>
                     )}
-                    <div className="window-no-drag flex min-h-7 min-w-64 flex-1 max-w-[42rem] items-center gap-2 rounded-full border border-border/60 bg-card/95 pl-2.5 pr-1 py-1">
-                      <Search className="h-3.5 w-3.5 shrink-0 text-muted-foreground" />
-                      <input
-                        value={gridSearchQuery}
-                        onChange={(event) => setGridSearchQuery(event.target.value)}
-                        onKeyDown={(event) => {
-                          if (event.key === 'Enter') {
-                            event.preventDefault();
-                            setGridSearchJumpToken((token) => token + 1);
-                          }
-                        }}
-                        placeholder="Search"
-                        className="w-full bg-transparent text-[11px] text-foreground outline-none placeholder:text-muted-foreground/70"
-                      />
-                      {gridSearchResultCount != null && gridSearchResultCount > 0 ? (
-                        <div className="flex items-center gap-2">
-                          <span className="text-[11px] font-medium tabular-nums text-foreground">
-                            {(gridSearchResultIndex ?? 0) + 1}/{gridSearchResultCount}
-                          </span>
-                          <button
-                            type="button"
-                            onClick={() => {
-                              setGridSearchJumpDirection(-1);
-                              setGridSearchJumpToken((token) => token + 1);
-                            }}
-                            className="inline-flex h-6 w-6 items-center justify-center rounded-md text-muted-foreground transition-colors hover:text-foreground"
-                            aria-label="Previous search result"
-                            title="Previous result"
-                          >
-                            <ChevronUp className="h-4 w-4 shrink-0" />
-                          </button>
-                          <button
-                            type="button"
-                            onClick={() => {
-                              setGridSearchJumpDirection(1);
-                              setGridSearchJumpToken((token) => token + 1);
-                            }}
-                            className="inline-flex h-6 w-6 items-center justify-center rounded-md text-muted-foreground transition-colors hover:text-foreground"
-                            aria-label="Next search result"
-                            title="Next result"
-                          >
-                            <ChevronDown className="h-4 w-4 shrink-0" />
-                          </button>
-                        </div>
-                      ) : null}
-                    </div>
                   </div>
-                  <div
-                    className="flex shrink-0 rounded-full border border-border/60 bg-muted/20 p-0.5"
-                    role="radiogroup"
-                    aria-label="Commit map layout"
-                  >
+                  <div className="flex flex-wrap items-center gap-2">
+                    <MapSearchBar
+                      query={gridSearchQuery}
+                      onQueryChange={setGridSearchQuery}
+                      resultCount={gridSearchResultCount}
+                      resultIndex={gridSearchResultIndex}
+                      onJump={(direction) => {
+                        setGridSearchJumpDirection(direction);
+                        setGridSearchJumpToken((token) => token + 1);
+                      }}
+                    />
+                    <MapOrientationToggle orientation={mapGridOrientation} onOrientationChange={setMapGridOrientation} />
                     <button
                       type="button"
-                      role="radio"
-                      aria-checked={mapGridOrientation === 'horizontal'}
-                      tabIndex={0}
-                      onClick={() => setMapGridOrientation('horizontal')}
-                      onKeyDown={(event) => {
-                        if (event.key === 'ArrowRight' || event.key === 'ArrowDown') {
-                          event.preventDefault();
-                          setMapGridOrientation('vertical');
-                        }
-                      }}
-                      className={cn(
-                        'rounded-full px-2.5 h-7 text-[11px] font-medium transition-colors outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 focus-visible:ring-offset-background',
-                        mapGridOrientation === 'horizontal'
-                          ? 'border border-border/60 bg-card text-foreground'
-                          : 'text-muted-foreground hover:text-foreground',
-                      )}
+                      onClick={() => setIsGridDebugOpen((open) => !open)}
+                      className="hidden"
+                      aria-hidden="true"
+                      tabIndex={-1}
                     >
-                      Horizontal
-                    </button>
-                    <button
-                      type="button"
-                      role="radio"
-                      aria-checked={mapGridOrientation === 'vertical'}
-                      tabIndex={0}
-                      onClick={() => setMapGridOrientation('vertical')}
-                      onKeyDown={(event) => {
-                        if (event.key === 'ArrowLeft' || event.key === 'ArrowUp') {
-                          event.preventDefault();
-                          setMapGridOrientation('horizontal');
-                        }
-                      }}
-                      className={cn(
-                        'rounded-full px-2.5 h-7 text-[11px] font-medium transition-colors outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 focus-visible:ring-offset-background',
-                        mapGridOrientation === 'vertical'
-                          ? 'border border-border/60 bg-card text-foreground'
-                          : 'text-muted-foreground hover:text-foreground',
-                      )}
-                    >
-                      Vertical
+                      Debug
                     </button>
                   </div>
                 </div>

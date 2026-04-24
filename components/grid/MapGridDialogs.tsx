@@ -21,6 +21,7 @@ type Props = {
   onNewBranchDialogClose: () => void;
   onNewBranchConfirm: () => void;
   selectedCommitCanCreateBranch: boolean;
+  currentCheckedOutCommitCanCreateBranch: boolean;
   createBranchFromNodeInProgress: boolean;
 };
 
@@ -45,6 +46,7 @@ export default function MapGridDialogs({
   onNewBranchDialogClose,
   onNewBranchConfirm,
   selectedCommitCanCreateBranch,
+  currentCheckedOutCommitCanCreateBranch,
   createBranchFromNodeInProgress,
 }: Props) {
   return (
@@ -179,7 +181,11 @@ export default function MapGridDialogs({
                 disabled={
                   !newBranchName.trim() ||
                   createBranchFromNodeInProgress ||
-                  (newBranchCreateMode === 'from-selected-node' && !selectedCommitCanCreateBranch)
+                  (
+                    newBranchCreateMode === 'from-selected-node' &&
+                    !selectedCommitCanCreateBranch &&
+                    !currentCheckedOutCommitCanCreateBranch
+                  )
                 }
                 className={cn(
                   'rounded-lg border border-border bg-card px-3 py-1.5 text-xs font-medium text-foreground transition-colors hover:bg-accent',

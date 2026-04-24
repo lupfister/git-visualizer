@@ -411,7 +411,7 @@ export default function MapGridCanvas({
                     <div className="min-h-0 flex-1">
                       <div
                         className={cn(
-                          'max-w-[38rem] text-sm font-medium leading-tight tracking-tight text-muted-foreground',
+                          'max-w-[38rem] select-text text-sm font-medium leading-tight tracking-tight text-muted-foreground',
                           selectedCommitTextClass,
                           displayZoom <= 0.5 ? 'overflow-hidden text-ellipsis whitespace-nowrap' : 'break-words whitespace-normal',
                         )}
@@ -436,10 +436,10 @@ export default function MapGridCanvas({
                     </div>
                     {displayZoom > 0.5 ? (
                       <div className="mt-auto flex items-end justify-between gap-4 pt-5">
-                        <div className={cn('text-sm font-medium', selectedCommitTextClass)} style={selectedCommitTextStyle}>
+                        <div className={cn('select-text text-sm font-medium', selectedCommitTextClass)} style={selectedCommitTextStyle}>
                           @{node.commit.author}
                         </div>
-                        <div className={cn('text-sm font-medium', selectedCommitTextClass)} style={selectedCommitTextStyle}>
+                        <div className={cn('select-text text-sm font-medium', selectedCommitTextClass)} style={selectedCommitTextStyle}>
                           {new Date(node.commit.date).toLocaleString('en-US', {
                             month: 'long',
                             day: 'numeric',

@@ -20,7 +20,7 @@ import {
 import { computeBranchGridLayout } from './branchGridLayoutModel';
 import type { BranchGridLayoutModel } from './branchGridLayoutModel';
 import MapGridCanvas from './MapGridCanvas';
-import MapGridControls from './MapGridControls';
+import CommitControls from './CommitControls';
 import MapGridDebugPanel from './MapGridDebugPanel';
 import MapGridDialogs from './MapGridDialogs';
 import { useMapGridCamera } from './useMapGridCamera';
@@ -39,6 +39,11 @@ import {
   visibleCommitIdSetEquals,
   withCullInsetScreenPx,
 } from './mapGridUtils';
+
+type Props = BranchGridViewProps & {
+  isDebugOpen?: boolean;
+  onDebugClose?: () => void;
+};
 
 export default function BranchGridMap({
   branches,
@@ -80,6 +85,8 @@ export default function BranchGridMap({
   onCreateBranchFromNode,
   onCreateRootBranch,
   createBranchFromNodeInProgress = false,
+  isDebugOpen = false,
+  onDebugClose,
   orientation = 'horizontal',
   branchCommitPreviews = {},
   branchParentByName = {},
@@ -98,7 +105,7 @@ export default function BranchGridMap({
   setManuallyOpenedClumps: controlledSetManuallyOpenedClumps,
   setManuallyClosedClumps: controlledSetManuallyClosedClumps,
   layoutModel: providedLayoutModel,
-}: BranchGridViewProps) {
+}: Props) {
   const scrollContainerRef = useRef<HTMLDivElement | null>(null);
   /** `p-2.5` wrapper: used to map pointer position to the transform layer origin (padding edge). */
   const mapPadHostRef = useRef<HTMLDivElement | null>(null);
@@ -136,8 +143,6 @@ export default function BranchGridMap({
   const manuallyClosedClumps = controlledManuallyClosedClumps ?? localManuallyClosedClumps;
   const setManuallyOpenedClumps = controlledSetManuallyOpenedClumps ?? setLocalManuallyOpenedClumps;
   const setManuallyClosedClumps = controlledSetManuallyClosedClumps ?? setLocalManuallyClosedClumps;
-  const [isDebugOpen, setIsDebugOpen] = useState(false);
-
   const [visibleNodeIds, setVisibleNodeIds] = useState<Set<string> | null>(null);
   const [viewportClientSize, setViewportClientSize] = useState<{ width: number; height: number } | null>(null);
   const {
@@ -333,6 +338,7 @@ export default function BranchGridMap({
     'border-blue-500';
 
   const branchByName = useMemo(() => new Map(branches.map((branch) => [branch.name, branch])), [branches]);
+  const hasUncommittedChanges = checkedOutRef?.hasUncommittedChanges ?? false;
   const freshCopyBranchNames = useMemo(
     () => new Set(branches.filter((branch) => branch.commitsAhead === 0 && !branch.name.startsWith('*')).map((branch) => branch.name)),
     [branches],
@@ -936,9 +942,18 @@ export default function BranchGridMap({
       if (!onCreateRootBranch) return;
       await onCreateRootBranch(trimmed);
     } else {
-      if (!onCreateBranchFromNode || selectedVisibleCommitShas.length !== 1) return;
-      const target = selectedVisibleCommitShas[0];
-      if (!(target === 'WORKING_TREE' || target.startsWith('STASH:'))) return;
+      if (!onCreateBranchFromNode) return;
+      const target = selectedVisibleCommitShas.length === 1
+        ? selectedVisibleCommitShas[0]
+        : checkedOutRef?.headSha ?? null;
+      if (!target) return;
+      if (
+        !(
+          target === 'WORKING_TREE' ||
+          target.startsWith('STASH:') ||
+          target === checkedOutRef?.headSha
+        )
+      ) return;
       await onCreateBranchFromNode(target, trimmed);
     }
     setNewBranchDialogOpen(false);
@@ -946,23 +961,27 @@ export default function BranchGridMap({
     setNewBranchCreateMode('from-selected-node');
     setSelectedCommitShas([]);
     setMergeTargetCommitSha(null);
-  }, [newBranchCreateMode, newBranchName, onCreateBranchFromNode, onCreateRootBranch, selectedVisibleCommitShas]);
+  }, [checkedOutRef?.headSha, newBranchCreateMode, newBranchName, onCreateBranchFromNode, onCreateRootBranch, selectedVisibleCommitShas]);
 
+  const checkedOutCommitCanCreateBranch = Boolean(checkedOutRef?.headSha);
+  const currentCheckedOutCommitCanCreateBranch =
+    selectedVisibleCommitShas.length === 0 && checkedOutCommitCanCreateBranch;
   const selectedCommitCanCreateBranch =
-    selectedVisibleCommitShas.length === 1 &&
-    (selectedVisibleCommitShas[0] === 'WORKING_TREE' || selectedVisibleCommitShas[0].startsWith('STASH:'));
+    (selectedVisibleCommitShas.length === 1 &&
+      (selectedVisibleCommitShas[0] === 'WORKING_TREE' || selectedVisibleCommitShas[0].startsWith('STASH:'))) ||
+    currentCheckedOutCommitCanCreateBranch;
   const canCreateRootBranch = Boolean(onCreateRootBranch);
 
   useEffect(() => {
     if (!newBranchDialogOpen) return;
-    if (!selectedCommitCanCreateBranch && canCreateRootBranch) {
+    if (!selectedCommitCanCreateBranch && !currentCheckedOutCommitCanCreateBranch && canCreateRootBranch) {
       setNewBranchCreateMode('new-root');
       return;
     }
-    if (selectedCommitCanCreateBranch) {
+    if (selectedCommitCanCreateBranch || currentCheckedOutCommitCanCreateBranch) {
       setNewBranchCreateMode('from-selected-node');
     }
-  }, [canCreateRootBranch, newBranchDialogOpen, selectedCommitCanCreateBranch]);
+  }, [canCreateRootBranch, currentCheckedOutCommitCanCreateBranch, newBranchDialogOpen, selectedCommitCanCreateBranch]);
 
   void [openPRs, onLoadMore, view, staleBranches, isLoading, scrollRequest, focusedErrorBranch, mapTopInsetPx, visibleNodesBySha, freshCopyBranchNames];
 
@@ -970,8 +989,7 @@ export default function BranchGridMap({
     <div className="relative flex h-full min-h-0 flex-col overflow-hidden border border-border bg-card">
       <MapGridDebugPanel
         isOpen={isDebugOpen}
-        onToggle={() => setIsDebugOpen((open) => !open)}
-        onClose={() => setIsDebugOpen(false)}
+        onClose={() => onDebugClose?.()}
         visibleBounds={visibleBounds}
         renderedNodeCount={renderedNodeCount}
         totalNodeCount={renderNodes.length}
@@ -1058,7 +1076,7 @@ export default function BranchGridMap({
         />
       ) : null}
 
-      <MapGridControls
+      <CommitControls
         selectedVisibleCommitShas={selectedVisibleCommitShas}
         commitInProgress={commitInProgress}
         commitDisabled={commitDisabled}
@@ -1066,6 +1084,7 @@ export default function BranchGridMap({
         stashInProgress={stashInProgress}
         stashDisabled={stashDisabled}
         pushInProgress={pushInProgress}
+        hasUncommittedChanges={hasUncommittedChanges}
         deleteInProgress={deleteInProgress}
         createBranchFromNodeInProgress={createBranchFromNodeInProgress}
         onCommitLocalChanges={onCommitLocalChanges}
@@ -1075,7 +1094,6 @@ export default function BranchGridMap({
         onPushAllBranches={onPushAllBranches}
         onPushCommitTargets={onPushCommitTargets}
         onDeleteSelection={onDeleteSelection}
-        onCreateBranchFromNode={onCreateBranchFromNode}
         onMergeRefsIntoBranch={onMergeRefsIntoBranch}
         selectedPushTargets={selectedPushTargets}
         selectedPushLabel={selectedPushLabel}
@@ -1083,7 +1101,6 @@ export default function BranchGridMap({
         pushCurrentBranchLabel={pushCurrentBranchLabel}
         pushableRemoteBranchCount={pushableRemoteBranchCount}
         deletableSelectionCount={deletableSelectionCount}
-        canCreateRootBranch={canCreateRootBranch}
         selectedCommitTargetOption={selectedCommitTargetOption}
         mergeInProgress={mergeInProgress}
         mergeTargetCommitSha={mergeTargetCommitSha}
@@ -1121,6 +1138,7 @@ export default function BranchGridMap({
         onNewBranchDialogClose={() => setNewBranchDialogOpen(false)}
         onNewBranchConfirm={() => void confirmCreateBranchFromSelection()}
         selectedCommitCanCreateBranch={selectedCommitCanCreateBranch}
+        currentCheckedOutCommitCanCreateBranch={currentCheckedOutCommitCanCreateBranch}
         createBranchFromNodeInProgress={createBranchFromNodeInProgress}
       />
     </div>

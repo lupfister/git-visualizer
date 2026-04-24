@@ -59,6 +59,8 @@ interface Props {
   onCreateRootBranch?: (branchName: string) => Promise<void>;
   createBranchFromNodeInProgress?: boolean;
   onMoveNodeBackToBranch?: (targetBranchName: string) => Promise<void>;
+  isDebugOpen?: boolean;
+  onDebugClose?: () => void;
   orientation?: OrientationMode;
   onInteractionChange?: (isInteracting: boolean) => void;
   manuallyOpenedClumps?: Set<string>;
@@ -120,6 +122,8 @@ export default function BranchGridMapView({
   onCreateRootBranch,
   createBranchFromNodeInProgress = false,
   onMoveNodeBackToBranch,
+  isDebugOpen = false,
+  onDebugClose,
   orientation = 'horizontal',
   onInteractionChange,
   manuallyOpenedClumps,
@@ -191,6 +195,8 @@ export default function BranchGridMapView({
             onCreateRootBranch={onCreateRootBranch}
             createBranchFromNodeInProgress={createBranchFromNodeInProgress}
             onMoveNodeBackToBranch={onMoveNodeBackToBranch}
+            isDebugOpen={isDebugOpen}
+            onDebugClose={onDebugClose}
             orientation={orientation}
             onInteractionChange={onInteractionChange}
             manuallyOpenedClumps={manuallyOpenedClumps}
@@ -225,6 +231,8 @@ export default function BranchGridMapView({
             setManuallyOpenedClumps={setManuallyOpenedClumps}
             setManuallyClosedClumps={setManuallyClosedClumps}
             layoutModel={layoutModel}
+            isDebugOpen={isDebugOpen}
+            onDebugClose={onDebugClose}
             orientation={orientation}
           />
         </div>

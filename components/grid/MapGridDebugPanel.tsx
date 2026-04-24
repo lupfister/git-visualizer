@@ -1,8 +1,5 @@
-import { cn } from './mapGridUtils';
-
 type Props = {
   isOpen: boolean;
-  onToggle: () => void;
   onClose: () => void;
   visibleBounds: { left: number; top: number; right: number; bottom: number } | null;
   renderedNodeCount: number;
@@ -25,7 +22,6 @@ type Props = {
 
 export default function MapGridDebugPanel({
   isOpen,
-  onToggle,
   onClose,
   visibleBounds,
   renderedNodeCount,
@@ -41,22 +37,8 @@ export default function MapGridDebugPanel({
 }: Props) {
   return (
     <>
-      <div className="pointer-events-none absolute bottom-4 right-4 z-[10000] flex items-end gap-2">
-        <button
-          type="button"
-          onClick={onToggle}
-          className={cn(
-            'pointer-events-auto inline-flex h-8 items-center rounded-full border px-3 text-xs font-medium transition-colors',
-            isOpen
-              ? 'border-primary/30 bg-primary/10 text-primary'
-              : 'border-border bg-card text-muted-foreground hover:bg-accent hover:text-foreground',
-          )}
-        >
-          Debug
-        </button>
-      </div>
       {isOpen ? (
-        <div className="absolute bottom-14 right-4 z-[10000] flex max-h-[calc(100%-4rem)] w-[min(42rem,calc(100%-2rem))] flex-col overflow-hidden rounded-2xl border border-border bg-card/95 backdrop-blur-sm">
+        <div className="absolute right-2.5 top-10 z-[10000] flex max-h-[calc(100%-4rem)] w-[min(42rem,calc(100%-2rem))] flex-col overflow-hidden rounded-2xl border border-border bg-card/95 backdrop-blur-sm">
           <div className="flex items-center justify-between border-b border-border/50 px-4 py-3">
             <div>
               <p className="text-sm font-medium text-foreground">Commit debug</p>
