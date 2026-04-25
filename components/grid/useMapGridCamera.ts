@@ -145,18 +145,20 @@ export function useMapGridCamera({ mapPadHostRef, transformLayerRef }: Params) {
 
   const zoomToPoint = useCallback((clientX: number, clientY: number, nextZoom: number) => {
     const targetZoom = clampZoom(nextZoom);
-    const rendered = renderedCameraRef.current;
+    const currentPanX = panRef.current.x;
+    const currentPanY = panRef.current.y;
+    const currentZoom = zoomRef.current;
     const origin = getTransformLayerOriginScreen();
     if (!origin) {
-      syncCamera(panRef.current.x, panRef.current.y, targetZoom);
+      syncCamera(currentPanX, currentPanY, targetZoom);
       return;
     }
     const anchorX = clientX - origin.x;
     const anchorY = clientY - origin.y;
-    const scaleBefore = rendered.zoom / GRID_RENDER_ZOOM;
+    const scaleBefore = currentZoom / GRID_RENDER_ZOOM;
     const scaleAfter = targetZoom / GRID_RENDER_ZOOM;
-    const worldX = (anchorX - rendered.panX) / scaleBefore;
-    const worldY = (anchorY - rendered.panY) / scaleBefore;
+    const worldX = (anchorX - currentPanX) / scaleBefore;
+    const worldY = (anchorY - currentPanY) / scaleBefore;
     syncCamera(anchorX - worldX * scaleAfter, anchorY - worldY * scaleAfter, targetZoom);
   }, [getTransformLayerOriginScreen, syncCamera]);
 
