@@ -798,7 +798,9 @@ export function computeBranchGridLayout(input: BranchGridLayoutInput): BranchGri
     ? CARD_WIDTH + zoomAwareRowGap + zoomAwareLabelBand
     : ROW_HEIGHT + zoomAwareRowGap + zoomAwareLabelBand;
   const zoomAwareLanePitch = isHorizontal ? ROW_HEIGHT + zoomAwareRowGap + zoomAwareLabelBand : COLUMN_WIDTH;
+  const maxAllRowForHorizontalAnchor = Math.max(0, ...allCommits.map((commit) => allRowByVisualId.get(commit.visualId) ?? 1));
   const maxVisibleRowForVertical = Math.max(0, ...visibleCommitsList.map((commit) => visibleRows.get(commit.visualId) ?? 1));
+  const horizontalRightAnchorRowOffset = Math.max(0, maxAllRowForHorizontalAnchor - maxVisibleRowForVertical);
   const renderNodes: Node[] = visibleCommitsList.map((commit) => {
     const lane = laneByName.get(commit.branchName);
     const row = visibleRows.get(commit.visualId) ?? 1;
@@ -808,7 +810,9 @@ export function computeBranchGridLayout(input: BranchGridLayoutInput): BranchGri
         commit,
         row,
         column,
-        x: LEFT_PADDING + (row - 1) * zoomAwareTimelinePitch,
+        // Keep horizontal clump expansion anchored on the newest/right edge:
+        // when hidden rows become visible, they grow leftward instead of pushing the lead node right.
+        x: LEFT_PADDING + (horizontalRightAnchorRowOffset + row - 1) * zoomAwareTimelinePitch,
         y: TOP_PADDING + column * zoomAwareLanePitch,
       });
     }
