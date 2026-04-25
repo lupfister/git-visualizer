@@ -287,6 +287,7 @@ export default function MapGridCanvas({
               : isSelectedCommit
                 ? { color: '#158EFC' }
                 : undefined;
+            const focusedCommitBorderColor = selectedCommitTextStyle?.color ?? '#8B8B8B';
             return (
               <MapGridCommitWrapper
                 key={node.commit.visualId}
@@ -300,7 +301,7 @@ export default function MapGridCanvas({
                       : 'opacity-10 blur-[0.5px]'
                     : '',
                   normalizedSearchQuery && matchingNodeIds.has(node.commit.id) ? 'scale-[1.01]' : '',
-                  focusedNode?.commit.id === node.commit.id ? 'z-30 scale-[1.015]' : '',
+                  focusedNode?.commit.id === node.commit.id ? 'z-30' : '',
                 )}
                 style={{ left: node.x, top: node.y, width: CARD_WIDTH, height: CARD_BODY_TOP_OFFSET + CARD_HEIGHT + 4, overflow: 'visible' }}
                 onClick={(event) => onCommitCardClick(event, node)}
@@ -378,7 +379,7 @@ export default function MapGridCanvas({
                     'absolute left-0 h-[176px] w-full cursor-pointer overflow-hidden rounded-tr-xl rounded-br-xl rounded-bl-xl rounded-tl-none border border-border/50',
                     checkedOutAccentActive && !isUnpushedCommit && !isStashedCommit && !isEmptyBranchNode
                       ? 'bg-[#EBF7FE]'
-                      : isSelectedCommit && !isUnpushedCommit && !isStashedCommit && !isEmptyBranchNode
+                    : isSelectedCommit && !isUnpushedCommit && !isStashedCommit && !isEmptyBranchNode
                         ? 'bg-[#E5F0FF]'
                         : isUnpushedCommit || isStashedCommit || isEmptyBranchNode
                           ? 'bg-transparent'
@@ -399,8 +400,16 @@ export default function MapGridCanvas({
                   )}
                   style={{
                     top: 0,
-                    borderWidth: `${(isStashedCommit || isLocalUncommitted || isEmptyBranchNode) ? lineStrokeWidth * (2 / 1.5) : lineStrokeWidth}px`,
-                    borderColor: checkedOutAccentActive ? '#38BDF2' : isSelectedCommit ? '#158EFC' : CONNECTOR_COLOR,
+                    borderWidth: focusedNode?.commit.id === node.commit.id
+                      ? `${(isStashedCommit || isLocalUncommitted || isEmptyBranchNode) ? lineStrokeWidth * (2 / 1.5) : lineStrokeWidth}px`
+                      : `${(isStashedCommit || isLocalUncommitted || isEmptyBranchNode) ? lineStrokeWidth * (2 / 1.5) : lineStrokeWidth}px`,
+                    borderColor: focusedNode?.commit.id === node.commit.id
+                      ? focusedCommitBorderColor
+                      : checkedOutAccentActive
+                        ? '#38BDF2'
+                        : isSelectedCommit
+                          ? '#158EFC'
+                          : CONNECTOR_COLOR,
                     borderTopLeftRadius: 0,
                     borderTopRightRadius: `${commitCornerRadiusPx}px`,
                     borderBottomRightRadius: `${commitCornerRadiusPx}px`,
@@ -456,11 +465,6 @@ export default function MapGridCanvas({
                             minute: '2-digit',
                           })}
                         </div>
-                      </div>
-                    ) : null}
-                    {focusedNode?.commit.id === node.commit.id && normalizedSearchQuery ? (
-                      <div className="absolute left-5 top-4 inline-flex rounded-full bg-primary/10 px-2 py-0.5 text-sm font-medium uppercase tracking-wide text-muted-foreground" style={iconScaleStyle}>
-                        Search result
                       </div>
                     ) : null}
                   </div>

@@ -2245,7 +2245,7 @@ function App() {
             </button>
             <DenseBranchSidebar
               className={cn(
-                'min-h-0 shrink-0 overflow-hidden pt-16 transition-[width,opacity] duration-300 ease-in-out',
+                'min-h-0 shrink-0 overflow-hidden pt-14 transition-[width,opacity] duration-300 ease-in-out',
                 'opacity-100',
               )}
               style={{ width: '100%' }}

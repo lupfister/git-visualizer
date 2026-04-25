@@ -756,7 +756,26 @@ export default function DenseBranchSidebar({
             aria-label="Add Repo"
             className="window-no-drag flex h-7 w-7 shrink-0 items-center justify-center rounded-md border border-border/60 text-muted-foreground transition-colors hover:bg-accent hover:text-foreground disabled:cursor-not-allowed disabled:opacity-50"
           >
-            <img src="/icon-projectNew.svg" alt="" aria-hidden="true" className="h-4 w-4 shrink-0" />
+            <svg
+              aria-hidden="true"
+              viewBox="0 0 24 24"
+              fill="none"
+              className="h-4 w-4 shrink-0"
+            >
+              <path
+                d="M19.5 10V8C19.5 6.89543 18.6046 6 17.5 6H12.5C11.8509 6 11.2193 5.78947 10.7 5.4L10.3 5.1C9.78071 4.71053 9.14911 4.5 8.5 4.5H5.5C4.39543 4.5 3.5 5.39543 3.5 6.5V16.5C3.5 17.6046 4.39543 18.5 5.5 18.5H11"
+                stroke="currentColor"
+                strokeWidth="1.5"
+                strokeLinecap="round"
+              />
+              <path
+                d="M18 17V14M18 17H15M18 17H21M18 17V20"
+                stroke="currentColor"
+                strokeWidth="1.5"
+                strokeLinecap="round"
+              />
+              <path d="M3.5 10L11.9211 10L19.5 10" stroke="currentColor" strokeWidth="1.5" />
+            </svg>
           </button>
           <button
             type="button"

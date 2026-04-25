@@ -1,4 +1,5 @@
 import { ChevronDown, ChevronUp, Search } from 'lucide-react';
+import { useRef } from 'react';
 
 type Props = {
   query: string;
@@ -15,12 +16,26 @@ export default function MapSearchBar({
   resultIndex,
   onJump,
 }: Props) {
+  const inputRef = useRef<HTMLInputElement | null>(null);
+
   return (
-    <div className="window-no-drag flex h-7 w-full min-w-[10rem] max-w-[20rem] items-center gap-2 rounded-full border border-border/60 bg-card/95 pl-2.5 pr-1">
+    <div className="window-no-drag flex h-7 w-[20rem] shrink-0 items-center gap-2 rounded-full border border-border/60 bg-card/95 pl-2.5 pr-1">
       <Search className="h-3.5 w-3.5 shrink-0 text-muted-foreground" />
       <input
+        ref={inputRef}
         value={query}
         onChange={(event) => onQueryChange(event.target.value)}
+        onBlur={(event) => {
+          const relatedTarget = event.relatedTarget as HTMLElement | null;
+          if (
+            relatedTarget?.closest('button, a, input, textarea, select, [contenteditable="true"]')
+          ) {
+            return;
+          }
+          window.setTimeout(() => {
+            inputRef.current?.focus();
+          }, 0);
+        }}
         onKeyDown={(event) => {
           if (event.key === 'Enter') {
             event.preventDefault();
@@ -28,7 +43,7 @@ export default function MapSearchBar({
           }
         }}
         placeholder="Search"
-        className="w-full bg-transparent text-[11px] text-foreground outline-none placeholder:text-muted-foreground/70"
+        className="min-w-0 flex-1 bg-transparent text-[11px] text-foreground outline-none placeholder:text-muted-foreground/70"
       />
       {resultCount != null && resultCount > 0 ? (
         <div className="flex items-center gap-2">
