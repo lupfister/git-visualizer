@@ -366,6 +366,57 @@ function App() {
     });
   }
 
+  function removeProject(path: string) {
+    const normalizedPath = normalizePath(path);
+    if (!normalizedPath) return;
+    setRecentProjects((previous) => {
+      const next = previous.filter((project) => project.path !== normalizedPath);
+      try {
+        localStorage.setItem(PROJECTS_STORAGE_KEY, JSON.stringify(next));
+      } catch {
+        // ignore storage failures
+      }
+      return next;
+    });
+    setProjectSnapshots((previous) => {
+      if (!(normalizedPath in previous)) return previous;
+      const next = { ...previous };
+      delete next[normalizedPath];
+      return next;
+    });
+    if (repoPath === normalizedPath) {
+      const nextPath = recentProjects.find((project) => project.path !== normalizedPath)?.path ?? null;
+      if (nextPath) {
+        void loadRepo(nextPath);
+      } else {
+        setRepoPath(null);
+        setRepoName('');
+        setBranches([]);
+        setMergeNodes([]);
+        setDirectCommits([]);
+        setUnpushedDirectCommits([]);
+        setUnpushedCommitShasByBranch({});
+        setCheckedOutRef(null);
+        setWorktrees([]);
+        setStashes([]);
+        setBranchCommitPreviews({});
+        setBranchParentByName({});
+        setLaneByBranch({});
+        setBranchUniqueAheadCounts({});
+      }
+    }
+  }
+
+  async function revealProjectInFinder(path: string) {
+    const normalizedPath = normalizePath(path);
+    if (!normalizedPath) return;
+    try {
+      await invoke('reveal_in_finder', { path: normalizedPath });
+    } catch (e) {
+      setError(e instanceof Error ? e.message : String(e));
+    }
+  }
+
   const handleAddProject = () => {
     void (async () => {
       try {
@@ -2203,6 +2254,8 @@ function App() {
               activeProjectPath={repoPath}
               onSelectProject={loadRepo}
               onAddProject={handleAddProject}
+              onRemoveProject={removeProject}
+              onRevealProjectInFinder={revealProjectInFinder}
               projectLoading={loading || projectTreeLoading}
               projectError={error}
               branches={enrichedBranches}

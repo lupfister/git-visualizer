@@ -16,7 +16,7 @@ export default function MapOrientationToggle({ orientation, onOrientationChange 
       type="button"
       onClick={() => onOrientationChange(nextOrientation)}
       className={cn(
-        'inline-flex h-7 items-center gap-1.5 rounded-md border border-border/60 bg-card pl-1.5 pr-2 py-1 transition-colors hover:bg-accent focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 focus-visible:ring-offset-background',
+        'window-no-drag inline-flex h-7 items-center gap-1.5 rounded-md border border-border/60 bg-card pl-1.5 pr-2 py-1 transition-colors hover:bg-accent focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 focus-visible:ring-offset-background',
       )}
       aria-label={`Rotate view to ${nextOrientation}`}
       title="Rotate View"

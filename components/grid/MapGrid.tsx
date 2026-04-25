@@ -6,6 +6,7 @@ import {
   useRef,
   useState,
 } from 'react';
+import { getCurrentWindow } from '@tauri-apps/api/window';
 import type { BranchCommitPreview, WorktreeInfo } from '../../types';
 import {
   buildLanes,
@@ -607,6 +608,14 @@ export default function BranchGridMap({
       : `Push ${selectedPushTargets[0].targetSha.slice(0, 7)} on ${selectedPushTargets[0].branchName}`
     : `Push ${selectedPushTargets.length} selected ranges`;
 
+  const handleHeaderPointerDown = useCallback((event: React.PointerEvent<HTMLElement>) => {
+    const target = event.target as HTMLElement | null;
+    if (target?.closest('.window-no-drag, input, textarea, select, button, [contenteditable="true"]')) {
+      return;
+    }
+    void getCurrentWindow().startDragging();
+  }, []);
+
   useEffect(() => {
     const next = isCameraMoving || isMarqueeSelecting;
     if (lastInteractionStateRef.current === next) return;
@@ -1040,61 +1049,69 @@ export default function BranchGridMap({
         connectorDecisions={connectorDecisions}
       />
       {gridHudProps ? (
-        <div className="pointer-events-none absolute left-0 right-0 top-0 z-[70] flex justify-between">
-          <div className="window-no-drag pointer-events-auto ml-auto flex w-full max-w-[calc(100vw-116px)] flex-nowrap items-center justify-between gap-3 overflow-visible p-2.25">
-            <div className="flex min-w-0 shrink-0 items-center">
-              <CommitControls
-                selectedVisibleCommitShas={selectedVisibleCommitShas}
-                commitInProgress={commitInProgress}
-                commitDisabled={commitDisabled}
-                stageInProgress={stageInProgress}
-                stashInProgress={stashInProgress}
-                stashDisabled={stashDisabled}
-                pushInProgress={pushInProgress}
-                hasUncommittedChanges={hasUncommittedChanges}
-                createBranchFromNodeInProgress={createBranchFromNodeInProgress}
-                onCommitLocalChanges={onCommitLocalChanges}
-                onStageAllChanges={onStageAllChanges ? () => void onStageAllChanges() : undefined}
-                onStashLocalChanges={onStashLocalChanges}
-                onPushCurrentBranch={onPushCurrentBranch}
-                onPushAllBranches={onPushAllBranches}
-                onPushCommitTargets={onPushCommitTargets}
-                onMergeRefsIntoBranch={onMergeRefsIntoBranch}
-                selectedPushTargets={selectedPushTargets}
-                selectedPushLabel={selectedPushLabel}
-                canPushCurrentBranch={canPushCurrentBranch}
-                pushCurrentBranchLabel={pushCurrentBranchLabel}
-                pushableRemoteBranchCount={pushableRemoteBranchCount}
-                selectedCommitTargetOption={selectedCommitTargetOption}
-                mergeInProgress={mergeInProgress}
-                mergeTargetCommitSha={mergeTargetCommitSha}
-                setMergeTargetCommitSha={setMergeTargetCommitSha}
-                worktrees={worktrees}
-                currentRepoPath={currentRepoPath}
-                worktreeMenuOpen={worktreeMenuOpen}
-                setWorktreeMenuOpen={setWorktreeMenuOpen}
-                onSwitchToWorktree={onSwitchToWorktree}
-                onRemoveWorktree={onRemoveWorktree}
-                removeWorktreeInProgress={removeWorktreeInProgress}
-                setCommitDialogOpen={setCommitDialogOpen}
-                setNewBranchDialogOpen={setNewBranchDialogOpen}
-              />
+        <header
+          data-tauri-drag-region
+          onPointerDown={handleHeaderPointerDown}
+          className="window-drag-region pointer-events-auto absolute left-0 right-0 top-0 z-[70] flex justify-between select-none"
+        >
+          <div className="flex flex-1 min-w-0 items-start justify-between gap-3 p-2.25 select-none">
+            <div className="flex min-w-0 flex-1 items-center">
+              <div className="window-no-drag pointer-events-auto flex min-w-0 flex-nowrap items-center justify-start gap-3 overflow-visible">
+                <CommitControls
+                  selectedVisibleCommitShas={selectedVisibleCommitShas}
+                  commitInProgress={commitInProgress}
+                  commitDisabled={commitDisabled}
+                  stageInProgress={stageInProgress}
+                  stashInProgress={stashInProgress}
+                  stashDisabled={stashDisabled}
+                  pushInProgress={pushInProgress}
+                  hasUncommittedChanges={hasUncommittedChanges}
+                  createBranchFromNodeInProgress={createBranchFromNodeInProgress}
+                  onCommitLocalChanges={onCommitLocalChanges}
+                  onStageAllChanges={onStageAllChanges ? () => void onStageAllChanges() : undefined}
+                  onStashLocalChanges={onStashLocalChanges}
+                  onPushCurrentBranch={onPushCurrentBranch}
+                  onPushAllBranches={onPushAllBranches}
+                  onPushCommitTargets={onPushCommitTargets}
+                  onMergeRefsIntoBranch={onMergeRefsIntoBranch}
+                  selectedPushTargets={selectedPushTargets}
+                  selectedPushLabel={selectedPushLabel}
+                  canPushCurrentBranch={canPushCurrentBranch}
+                  pushCurrentBranchLabel={pushCurrentBranchLabel}
+                  pushableRemoteBranchCount={pushableRemoteBranchCount}
+                  selectedCommitTargetOption={selectedCommitTargetOption}
+                  mergeInProgress={mergeInProgress}
+                  mergeTargetCommitSha={mergeTargetCommitSha}
+                  setMergeTargetCommitSha={setMergeTargetCommitSha}
+                  worktrees={worktrees}
+                  currentRepoPath={currentRepoPath}
+                  worktreeMenuOpen={worktreeMenuOpen}
+                  setWorktreeMenuOpen={setWorktreeMenuOpen}
+                  onSwitchToWorktree={onSwitchToWorktree}
+                  onRemoveWorktree={onRemoveWorktree}
+                  removeWorktreeInProgress={removeWorktreeInProgress}
+                  setCommitDialogOpen={setCommitDialogOpen}
+                  setNewBranchDialogOpen={setNewBranchDialogOpen}
+                />
+              </div>
             </div>
             <div className="flex min-w-0 shrink-0 items-center justify-end gap-2">
-              <MapSearchBar
-                query={gridHudProps.gridSearchQuery}
-                onQueryChange={gridHudProps.setGridSearchQuery}
-                resultCount={gridHudProps.gridSearchResultCount}
-                resultIndex={gridHudProps.gridSearchResultIndex}
-                onJump={(direction) => {
-                  gridHudProps.setGridSearchJumpDirection(direction);
-                  gridHudProps.setGridSearchJumpToken((token) => token + 1);
-                }}
-              />
-              <MapOrientationToggle
-                orientation={gridHudProps.mapGridOrientation}
-                onOrientationChange={gridHudProps.setMapGridOrientation}
-              />
+              <div className="window-no-drag pointer-events-auto flex items-center gap-2">
+                <MapSearchBar
+                  query={gridHudProps.gridSearchQuery}
+                  onQueryChange={gridHudProps.setGridSearchQuery}
+                  resultCount={gridHudProps.gridSearchResultCount}
+                  resultIndex={gridHudProps.gridSearchResultIndex}
+                  onJump={(direction) => {
+                    gridHudProps.setGridSearchJumpDirection(direction);
+                    gridHudProps.setGridSearchJumpToken((token) => token + 1);
+                  }}
+                />
+                <MapOrientationToggle
+                  orientation={gridHudProps.mapGridOrientation}
+                  onOrientationChange={gridHudProps.setMapGridOrientation}
+                />
+              </div>
             </div>
           </div>
           <div className="pointer-events-none fixed bottom-4 right-4 z-[80] flex max-w-[min(22rem,calc(100vw-2rem))] flex-col items-end gap-1.5">
@@ -1143,7 +1160,7 @@ export default function BranchGridMap({
               </div>
             ) : null}
           </div>
-        </div>
+        </header>
       ) : null}
       {allCommits.length === 0 ? (
         <div className="flex flex-1 min-h-0 items-center justify-center py-20">

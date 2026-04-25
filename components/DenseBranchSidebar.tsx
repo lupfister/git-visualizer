@@ -1,5 +1,6 @@
 import { useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import type { CSSProperties, Dispatch, SetStateAction } from 'react';
+import { MoreHorizontal } from 'lucide-react';
 import type { Branch, BranchCommitPreview, CheckedOutRef, DirectCommit, GitStashEntry, MergeNode, WorktreeInfo } from '../types';
 import { cn, shaMatchesGitRef } from './grid/mapGridUtils';
 import type { BranchGridLayoutModel } from './grid/branchGridLayoutModel';
@@ -26,6 +27,8 @@ type Props = {
   activeProjectPath: string | null;
   onSelectProject: (path: string) => void | Promise<void>;
   onAddProject: () => void;
+  onRemoveProject: (path: string) => void;
+  onRevealProjectInFinder: (path: string) => Promise<void> | void;
   projectLoading?: boolean;
   projectError?: string | null;
   branches: Branch[];
@@ -466,6 +469,8 @@ export default function DenseBranchSidebar({
   activeProjectPath,
   onSelectProject,
   onAddProject,
+  onRemoveProject,
+  onRevealProjectInFinder,
   projectLoading = false,
   projectError = null,
   branches,
@@ -489,6 +494,7 @@ export default function DenseBranchSidebar({
   const [expandedProjects, setExpandedProjects] = useState<Set<string>>(() => new Set());
   const [localManuallyOpenedClumps, setLocalManuallyOpenedClumps] = useState<Set<string>>(() => new Set());
   const [localManuallyClosedClumps, setLocalManuallyClosedClumps] = useState<Set<string>>(() => new Set());
+  const [openProjectMenuPath, setOpenProjectMenuPath] = useState<string | null>(null);
   const manuallyOpenedClumps = controlledManuallyOpenedClumps ?? localManuallyOpenedClumps;
   const manuallyClosedClumps = controlledManuallyClosedClumps ?? localManuallyClosedClumps;
   const setManuallyOpenedClumps = controlledSetManuallyOpenedClumps ?? setLocalManuallyOpenedClumps;
@@ -612,6 +618,13 @@ export default function DenseBranchSidebar({
       return next;
     });
   };
+
+  useEffect(() => {
+    if (openProjectMenuPath == null) return;
+    const handlePointerDown = () => setOpenProjectMenuPath(null);
+    window.addEventListener('pointerdown', handlePointerDown);
+    return () => window.removeEventListener('pointerdown', handlePointerDown);
+  }, [openProjectMenuPath]);
 
   const projectRenderDataByPath = useMemo(() => {
     const next = new Map<string, {
@@ -756,7 +769,7 @@ export default function DenseBranchSidebar({
       </header>
       <div className="flex h-full min-h-0 flex-col">
         {projectError && (
-          <div className="px-2.5 pb-3">
+          <div className="px-2.5 pb-2">
             <p className="rounded-xl border border-red-50 bg-red-50 px-3 py-2 text-xs text-red-600 dark:border-red-900/20 dark:bg-red-900/20 dark:text-red-400">
               {projectError}
             </p>
@@ -764,7 +777,7 @@ export default function DenseBranchSidebar({
         )}
         <div
           ref={scrollBodyRef}
-          className={cn('min-h-0 flex-1 space-y-8 overflow-y-auto px-2.5 pr-4', collapsed ? 'opacity-0 pointer-events-none' : '')}
+          className={cn('min-h-0 flex-1 space-y-6 overflow-y-auto px-2.5', collapsed ? 'opacity-0 pointer-events-none' : '')}
           style={{ scrollbarGutter: 'stable both-edges' }}
         >
           {projects.map((project) => {
@@ -817,6 +830,50 @@ export default function DenseBranchSidebar({
                     >
                       {project.name}
                     </button>
+                    <div className="relative shrink-0">
+                      <button
+                        type="button"
+                        aria-label={`Project actions for ${project.name}`}
+                        aria-expanded={openProjectMenuPath === project.path}
+                        onClick={(event) => {
+                          event.stopPropagation();
+                          setOpenProjectMenuPath((current) => (current === project.path ? null : project.path));
+                        }}
+                        className="flex h-6 w-6 shrink-0 items-center justify-center rounded-md transition-colors hover:bg-accent"
+                      >
+                        <MoreHorizontal className="h-4 w-4 shrink-0" />
+                      </button>
+                      {openProjectMenuPath === project.path ? (
+                        <div
+                          role="menu"
+                          className="absolute right-0 top-full z-30 mt-1 w-40 overflow-hidden rounded-xl border border-border/60 bg-card p-1 shadow-lg"
+                          onClick={(event) => event.stopPropagation()}
+                        >
+                          <button
+                            type="button"
+                            role="menuitem"
+                            onClick={() => {
+                              setOpenProjectMenuPath(null);
+                              onRevealProjectInFinder(project.path);
+                            }}
+                            className="flex w-full items-center rounded-lg px-3 py-2 text-left text-sm text-muted-foreground transition-colors hover:bg-accent hover:text-foreground"
+                          >
+                            Open in Finder
+                          </button>
+                          <button
+                            type="button"
+                            role="menuitem"
+                            onClick={() => {
+                              setOpenProjectMenuPath(null);
+                              onRemoveProject(project.path);
+                            }}
+                            className="flex w-full items-center rounded-lg px-3 py-2 text-left text-sm text-red-600 transition-colors hover:bg-red-50 hover:text-red-700 dark:text-red-400 dark:hover:bg-red-900/20 dark:hover:text-red-300"
+                          >
+                            Remove
+                          </button>
+                        </div>
+                      ) : null}
+                    </div>
                   </div>
                   {isExpanded ? (
                     projectTreeLoaded && projectRender ? (

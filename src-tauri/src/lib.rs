@@ -4567,6 +4567,7 @@ pub fn run() {
             get_changed_routes_for_commit,
             debug_diff_files,
             take_pending_open_repo,
+            reveal_in_finder,
             watch_repo,
         ])
         .run(tauri::generate_context!())
@@ -4586,4 +4587,18 @@ fn consume_pending_open_repo() -> Option<OpenRepoEventPayload> {
 #[tauri::command]
 fn take_pending_open_repo() -> Option<OpenRepoEventPayload> {
     consume_pending_open_repo()
+}
+
+#[tauri::command]
+fn reveal_in_finder(path: String) -> Result<(), String> {
+    let output = std::process::Command::new("open")
+        .arg("-R")
+        .arg(&path)
+        .output()
+        .map_err(|e| format!("Failed to reveal in Finder: {e}"))?;
+    if output.status.success() {
+        Ok(())
+    } else {
+        Err(String::from_utf8_lossy(&output.stderr).trim().to_string())
+    }
 }
