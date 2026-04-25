@@ -137,7 +137,7 @@ export default function CommitControls({
   }, [setWorktreeMenuOpen]);
 
   const toolbar = (
-    <div className="pointer-events-none z-[60] flex w-full justify-end">
+    <div className="pointer-events-none z-[60] flex w-full justify-start">
       <div className="pointer-events-auto flex w-fit max-w-full flex-nowrap items-center justify-start gap-[9px]">
         <div ref={actionMenuRef} className="relative inline-flex h-7 items-stretch rounded-md border border-border/60 bg-card/95">
           <button

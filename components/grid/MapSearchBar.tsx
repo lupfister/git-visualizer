@@ -16,7 +16,7 @@ export default function MapSearchBar({
   onJump,
 }: Props) {
   return (
-    <div className="window-no-drag flex h-7 min-w-64 flex-1 max-w-[42rem] items-center gap-2 rounded-full border border-border/60 bg-card/95 pl-2.5 pr-1">
+    <div className="window-no-drag flex h-7 w-full min-w-[10rem] max-w-[20rem] items-center gap-2 rounded-full border border-border/60 bg-card/95 pl-2.5 pr-1">
       <Search className="h-3.5 w-3.5 shrink-0 text-muted-foreground" />
       <input
         value={query}

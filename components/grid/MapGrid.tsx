@@ -1040,9 +1040,9 @@ export default function BranchGridMap({
         connectorDecisions={connectorDecisions}
       />
       {gridHudProps ? (
-        <div className="pointer-events-none z-[70] flex w-full justify-between">
-          <div className="window-no-drag pointer-events-auto ml-auto flex w-full max-w-[calc(100vw-116px)] flex-nowrap items-center justify-between gap-3 overflow-x-auto bg-red-500/20 p-2.25">
-            <div className="flex min-w-0 flex-1 items-center">
+        <div className="pointer-events-none absolute left-0 right-0 top-0 z-[70] flex justify-between">
+          <div className="window-no-drag pointer-events-auto ml-auto flex w-full max-w-[calc(100vw-116px)] flex-nowrap items-center justify-between gap-3 overflow-visible p-2.25">
+            <div className="flex min-w-0 shrink-0 items-center">
               <CommitControls
                 selectedVisibleCommitShas={selectedVisibleCommitShas}
                 commitInProgress={commitInProgress}
@@ -1080,7 +1080,7 @@ export default function BranchGridMap({
                 setNewBranchDialogOpen={setNewBranchDialogOpen}
               />
             </div>
-            <div className="flex min-w-0 flex-1 items-center justify-center gap-2">
+            <div className="flex min-w-0 shrink-0 items-center justify-end gap-2">
               <MapSearchBar
                 query={gridHudProps.gridSearchQuery}
                 onQueryChange={gridHudProps.setGridSearchQuery}
@@ -1091,19 +1091,10 @@ export default function BranchGridMap({
                   gridHudProps.setGridSearchJumpToken((token) => token + 1);
                 }}
               />
-            </div>
-            <div className="flex min-w-0 flex-none items-center gap-2">
               <MapOrientationToggle
                 orientation={gridHudProps.mapGridOrientation}
                 onOrientationChange={gridHudProps.setMapGridOrientation}
               />
-              <button
-                type="button"
-                onClick={() => gridHudProps.setIsGridDebugOpen((open) => !open)}
-                className="inline-flex h-7 items-center rounded-md border border-border/60 bg-card px-2 text-[11px] font-medium text-muted-foreground transition-colors hover:bg-accent hover:text-foreground"
-              >
-                Debug
-              </button>
             </div>
           </div>
           <div className="pointer-events-none fixed bottom-4 right-4 z-[80] flex max-w-[min(22rem,calc(100vw-2rem))] flex-col items-end gap-1.5">
