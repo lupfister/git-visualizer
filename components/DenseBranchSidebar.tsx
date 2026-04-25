@@ -279,27 +279,39 @@ function BranchRows({
         <button
           type="button"
           onClick={() => {
-            if (isBranchExpandable) onToggleBranch(branchName);
             onSelectBranch?.(branchName);
           }}
           className={cn(
-            'group flex min-w-0 flex-1 items-center gap-2 rounded-md px-2 py-1 text-left text-sm transition-colors hover:bg-accent',
+            'group flex min-w-0 flex-1 items-center gap-0 rounded-md px-2 h-7 text-left text-sm font-normal transition-colors hover:bg-accent',
             isCheckedOut ? 'text-foreground' : 'text-muted-foreground hover:text-foreground',
           )}
         >
           {isBranchExpandable ? (
-            <span
-              className={cn(
-                'inline-block text-[10px] text-muted-foreground transition-transform',
-                isExpanded ? 'rotate-90' : '',
-              )}
+            <button
+              type="button"
+              aria-label={`${isExpanded ? 'Collapse' : 'Expand'} ${branchName}`}
+              onPointerDown={(event) => {
+                event.preventDefault();
+              }}
+              onClick={(event) => {
+                event.preventDefault();
+                event.stopPropagation();
+                onToggleBranch(branchName);
+              }}
+              className="group/chevron flex h-6 w-6 -ml-2 shrink-0 items-center justify-center rounded-sm p-0 text-[10px] leading-none text-muted-foreground transition-colors hover:bg-accent"
             >
-              ▶
-            </span>
+              <span
+                aria-hidden="true"
+                className={cn(
+                  'inline-block transition-transform',
+                  isExpanded ? 'rotate-90' : '',
+                )}
+              >
+                ▶
+              </span>
+            </button>
           ) : null}
-          <span className="min-w-0 break-words">
-            <span className={cn(isCheckedOut ? 'font-medium text-foreground' : 'font-normal')}>{branchName}</span>
-          </span>
+          <span className="min-w-0 break-words">{branchName}</span>
         </button>
       </div>
 
@@ -317,7 +329,7 @@ function BranchRows({
                     <button
                       type="button"
                       onClick={() => onSelectCommit?.(commit.fullSha)}
-                      className="min-w-0 flex-1 rounded-md px-2 py-1 text-left text-xs leading-4 text-muted-foreground/70 transition-colors hover:bg-accent hover:text-muted-foreground"
+                      className="min-w-0 flex-1 rounded-md px-2 py-1 text-left text-xs font-normal leading-4 text-muted-foreground/70 transition-colors hover:bg-accent hover:text-muted-foreground"
                       title={commit.message}
                     >
                       <span className="block truncate">{commit.message}</span>
@@ -338,7 +350,7 @@ function BranchRows({
                       data-clump-toggle-id={`${branchName}:${clump.lead.fullSha}`}
                       onClick={() => onToggleGridCluster(clump.key, `${branchName}:${clump.lead.fullSha}`)}
                       className={cn(
-                        'shrink-0 rounded-md px-2 py-1 text-left text-xs leading-4 text-muted-foreground/70 transition-colors hover:bg-accent hover:text-muted-foreground',
+                        'shrink-0 rounded-md px-2 py-1 text-left text-xs font-normal leading-4 text-muted-foreground/70 transition-colors hover:bg-accent hover:text-muted-foreground',
                         clumpCollapsed ? '' : 'min-w-[2ch] text-center',
                       )}
                       >
@@ -413,28 +425,38 @@ function BranchRows({
   );
 }
 
-function FolderIcon({ open }: { open: boolean }) {
-  return open ? (
-    <svg viewBox="0 0 20 20" aria-hidden="true" className="h-4 w-4 shrink-0 text-muted-foreground transition-colors">
-      <path
-        d="M2.5 7a2 2 0 0 1 2-2h3.1c.44 0 .86.18 1.18.49l.84.81h5.88a2 2 0 0 1 2 2V14a2 2 0 0 1-2 2h-13a2 2 0 0 1-2-2V7Z"
-        fill="none"
-        stroke="currentColor"
-        strokeWidth="1.4"
-        strokeLinejoin="round"
-      />
-      <path d="M4.25 6H8l.84.81" fill="none" stroke="currentColor" strokeWidth="1.4" strokeLinecap="round" strokeLinejoin="round" />
-    </svg>
-  ) : (
-    <svg viewBox="0 0 20 20" aria-hidden="true" className="h-4 w-4 shrink-0 text-muted-foreground transition-colors">
-      <path
-        d="M2.5 7a2 2 0 0 1 2-2h3.1c.44 0 .86.18 1.18.49l.84.81h5.88a2 2 0 0 1 2 2V14a2 2 0 0 1-2 2h-13a2 2 0 0 1-2-2V7Z"
-        fill="none"
-        stroke="currentColor"
-        strokeWidth="1.4"
-        strokeLinejoin="round"
-      />
-      <path d="M6.1 5H8l.84.81" fill="none" stroke="currentColor" strokeWidth="1.4" strokeLinecap="round" strokeLinejoin="round" />
+function ProjectIcon({ open }: { open: boolean }) {
+  return (
+    <svg
+      viewBox="0 0 24 24"
+      aria-hidden="true"
+      className="h-4 w-4 shrink-0 transition-opacity"
+      fill="none"
+      xmlns="http://www.w3.org/2000/svg"
+    >
+      {open ? (
+        <>
+          <path
+            d="M11.7031 19H5.97457C4.96341 19 4.11131 18.2453 3.9892 17.2415L2.77269 7.24152C2.62773 6.04996 3.5577 5 4.75805 5H7C7.64911 5 8.28071 5.21053 8.8 5.6L9.2 5.9C9.71929 6.28947 10.3509 6.5 11 6.5H16.2369C17.2445 6.5 18.0947 7.24955 18.2211 8.2492L18.4938 10.4062"
+            stroke="currentColor"
+            strokeWidth="1.5"
+          />
+          <path
+            d="M5.21532 12.0419C5.42789 11.1385 6.23405 10.5 7.16215 10.5H19.8105C20.7133 10.5 21.38 11.3419 21.1733 12.2207L19.9409 17.4581C19.7284 18.3615 18.9222 19 17.9941 19H6.10333C4.81363 19 3.8611 17.7973 4.1565 16.5419L5.21532 12.0419Z"
+            stroke="currentColor"
+            strokeWidth="1.5"
+          />
+        </>
+      ) : (
+        <>
+          <path
+            d="M4 7C4 5.89543 4.89543 5 6 5H9C9.64911 5 10.2807 5.21053 10.8 5.6L11.2 5.9C11.7193 6.28947 12.3509 6.5 13 6.5H18C19.1046 6.5 20 7.39543 20 8.5V17C20 18.1046 19.1046 19 18 19H6C4.89543 19 4 18.1046 4 17V7Z"
+            stroke="currentColor"
+            strokeWidth="1.5"
+          />
+          <path d="M4 10.5L12.4211 10.5L20 10.5" stroke="currentColor" strokeWidth="1.5" />
+        </>
+      )}
     </svg>
   );
 }
@@ -718,9 +740,10 @@ export default function DenseBranchSidebar({
             type="button"
             onClick={onAddProject}
             disabled={projectLoading}
-            className="window-no-drag shrink-0 rounded-md border border-border/60 px-2 h-7 text-[11px] font-medium text-muted-foreground transition-colors hover:text-foreground hover:bg-accent disabled:cursor-not-allowed disabled:opacity-50"
+            aria-label="Add Repo"
+            className="window-no-drag flex h-7 w-7 shrink-0 items-center justify-center rounded-md border border-border/60 text-muted-foreground transition-colors hover:bg-accent hover:text-foreground disabled:cursor-not-allowed disabled:opacity-50"
           >
-            Add Repo
+            <img src="/icon-projectNew.svg" alt="" aria-hidden="true" className="h-4 w-4 shrink-0" />
           </button>
           <button
             type="button"
@@ -763,7 +786,7 @@ export default function DenseBranchSidebar({
                 <div className="relative z-0 px-1">
                   <div
                     className={cn(
-                      'sticky top-0 z-20 flex w-full items-center gap-2 rounded-lg bg-[#FAFAF9] px-0 py-1 transition-colors hover:bg-accent',
+                      'sticky top-0 z-20 flex w-full items-center gap-0 rounded-lg bg-background px-0 py-1 transition-colors hover:bg-accent',
                       isActive ? 'text-foreground' : 'text-muted-foreground hover:text-foreground',
                     )}
                   >
@@ -775,20 +798,21 @@ export default function DenseBranchSidebar({
                           if (next.has(project.path)) next.delete(project.path);
                           else next.add(project.path);
                           return next;
-                        });
+                      });
                       }}
                       aria-expanded={isExpanded}
                       aria-label={`${isExpanded ? 'Collapse' : 'Expand'} ${project.name}`}
-                      className="flex h-4 w-4 shrink-0 items-center justify-center rounded-md transition-colors hover:bg-accent"
+                      className="flex h-6 w-6 shrink-0 items-center justify-center rounded-md transition-colors hover:bg-accent"
                     >
-                      <FolderIcon open={isExpanded} />
+                      <ProjectIcon open={isExpanded} />
                     </button>
                     <button
                       type="button"
                       onClick={() => { void onSelectProject(project.path); }}
                       className={cn(
                         'min-w-0 flex-1 truncate pl-0 text-left text-sm transition-colors',
-                        isActive ? 'font-semibold text-primary' : 'font-medium text-muted-foreground',
+                        'font-normal',
+                        isActive ? 'text-primary' : 'text-muted-foreground',
                       )}
                     >
                       {project.name}
