@@ -177,7 +177,6 @@ export default function BranchGridMapView({
             onPushCommitTargets={onPushCommitTargets}
             pushInProgress={pushInProgress}
             onDeleteSelection={onDeleteSelection}
-            deleteInProgress={deleteInProgress}
             worktrees={worktrees}
             currentRepoPath={currentRepoPath}
             onRemoveWorktree={onRemoveWorktree}

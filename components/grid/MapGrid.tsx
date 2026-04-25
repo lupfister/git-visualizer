@@ -984,6 +984,22 @@ export default function BranchGridMap({
     }
   }, [canCreateRootBranch, currentCheckedOutCommitCanCreateBranch, newBranchDialogOpen, selectedCommitCanCreateBranch]);
 
+  useEffect(() => {
+    const handleKeyDown = (event: KeyboardEvent) => {
+      if (!onDeleteSelection) return;
+      if (deleteConfirmOpen) return;
+      if (selectedVisibleCommitShas.length === 0) return;
+      const target = event.target as HTMLElement | null;
+      if (target?.closest('input, textarea, select, button, [contenteditable="true"]')) return;
+      if (event.key !== 'Delete' && event.key !== 'Backspace') return;
+      event.preventDefault();
+      setDeleteConfirmOpen(true);
+    };
+
+    window.addEventListener('keydown', handleKeyDown);
+    return () => window.removeEventListener('keydown', handleKeyDown);
+  }, [deleteConfirmOpen, onDeleteSelection, selectedVisibleCommitShas.length]);
+
   void [openPRs, onLoadMore, view, staleBranches, isLoading, scrollRequest, focusedErrorBranch, mapTopInsetPx, visibleNodesBySha, freshCopyBranchNames];
 
   return (
@@ -1086,7 +1102,6 @@ export default function BranchGridMap({
         stashDisabled={stashDisabled}
         pushInProgress={pushInProgress}
         hasUncommittedChanges={hasUncommittedChanges}
-        deleteInProgress={deleteInProgress}
         createBranchFromNodeInProgress={createBranchFromNodeInProgress}
         onCommitLocalChanges={onCommitLocalChanges}
         onStageAllChanges={onStageAllChanges ? () => void onStageAllChanges() : undefined}
@@ -1094,14 +1109,12 @@ export default function BranchGridMap({
         onPushCurrentBranch={onPushCurrentBranch}
         onPushAllBranches={onPushAllBranches}
         onPushCommitTargets={onPushCommitTargets}
-        onDeleteSelection={onDeleteSelection}
         onMergeRefsIntoBranch={onMergeRefsIntoBranch}
         selectedPushTargets={selectedPushTargets}
         selectedPushLabel={selectedPushLabel}
         canPushCurrentBranch={canPushCurrentBranch}
         pushCurrentBranchLabel={pushCurrentBranchLabel}
         pushableRemoteBranchCount={pushableRemoteBranchCount}
-        deletableSelectionCount={deletableSelectionCount}
         selectedCommitTargetOption={selectedCommitTargetOption}
         mergeInProgress={mergeInProgress}
         mergeTargetCommitSha={mergeTargetCommitSha}
@@ -1114,7 +1127,6 @@ export default function BranchGridMap({
         onRemoveWorktree={onRemoveWorktree}
         removeWorktreeInProgress={removeWorktreeInProgress}
         setCommitDialogOpen={setCommitDialogOpen}
-        setDeleteConfirmOpen={setDeleteConfirmOpen}
         setNewBranchDialogOpen={setNewBranchDialogOpen}
       />
 

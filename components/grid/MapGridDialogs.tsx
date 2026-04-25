@@ -52,8 +52,8 @@ export default function MapGridDialogs({
   return (
     <>
       {commitDialogOpen ? (
-        <div className="absolute inset-0 z-[80] flex items-center justify-center bg-background/70 p-4 backdrop-blur-sm">
-          <div className="w-full max-w-md rounded-2xl border border-border bg-card p-4">
+        <div className="absolute inset-0 z-[80] flex items-center justify-center bg-background/70 p-4 backdrop-blur-sm" onClick={onCommitDialogClose}>
+          <div className="w-full max-w-md rounded-2xl border border-border bg-card p-4" onClick={(event) => event.stopPropagation()}>
             <p className="text-sm font-medium text-foreground">Create commit</p>
             <p className="mt-1 text-xs text-muted-foreground">Stage all changes, then commit on current HEAD.</p>
             <textarea
@@ -91,8 +91,8 @@ export default function MapGridDialogs({
       ) : null}
 
       {deleteConfirmOpen ? (
-        <div className="absolute inset-0 z-[80] flex items-center justify-center bg-background/70 p-4 backdrop-blur-sm">
-          <div className="w-full max-w-md rounded-2xl border border-border bg-card p-4">
+        <div className="absolute inset-0 z-[80] flex items-center justify-center bg-background/70 p-4 backdrop-blur-sm" onClick={onDeleteConfirmClose}>
+          <div className="w-full max-w-md rounded-2xl border border-border bg-card p-4" onClick={(event) => event.stopPropagation()}>
             <p className="text-sm font-medium text-foreground">Delete selected items?</p>
             <div className="mt-3 space-y-1.5">
               {deleteSelectionItems.map((item) => (
@@ -123,8 +123,8 @@ export default function MapGridDialogs({
       ) : null}
 
       {newBranchDialogOpen ? (
-        <div className="absolute inset-0 z-[80] flex items-center justify-center bg-background/70 p-4 backdrop-blur-sm">
-          <div className="w-full max-w-sm rounded-2xl border border-border bg-card p-4">
+        <div className="absolute inset-0 z-[80] flex items-center justify-center bg-background/70 p-4 backdrop-blur-sm" onClick={onNewBranchDialogClose}>
+          <div className="w-full max-w-sm rounded-2xl border border-border bg-card p-4" onClick={(event) => event.stopPropagation()}>
             <p className="text-sm font-medium text-foreground">Create branch</p>
             <div className="mt-3 inline-flex items-center rounded-lg border border-border bg-muted/30 p-1">
               <button

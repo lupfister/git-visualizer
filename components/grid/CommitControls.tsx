@@ -1,7 +1,7 @@
 import type { WorktreeInfo } from '../../types';
 import type { BranchGridViewProps } from './LayoutGrid';
 import { ChevronDown } from 'lucide-react';
-import { useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { cn, isOtherWorktree, worktreeShortLabel } from './mapGridUtils';
 
 type PushTarget = {
@@ -25,7 +25,6 @@ type Props = {
   stashDisabled: boolean;
   pushInProgress: boolean;
   hasUncommittedChanges: boolean;
-  deleteInProgress: boolean;
   createBranchFromNodeInProgress: boolean;
   onCommitLocalChanges?: BranchGridViewProps['onCommitLocalChanges'];
   onStageAllChanges?: (() => boolean | void | Promise<void> | Promise<boolean>) | undefined;
@@ -33,14 +32,12 @@ type Props = {
   onPushCurrentBranch?: BranchGridViewProps['onPushCurrentBranch'];
   onPushAllBranches?: BranchGridViewProps['onPushAllBranches'];
   onPushCommitTargets?: BranchGridViewProps['onPushCommitTargets'];
-  onDeleteSelection?: BranchGridViewProps['onDeleteSelection'];
   onMergeRefsIntoBranch?: BranchGridViewProps['onMergeRefsIntoBranch'];
   selectedPushTargets: PushTarget[];
   selectedPushLabel: string;
   canPushCurrentBranch: boolean;
   pushCurrentBranchLabel: string;
   pushableRemoteBranchCount: number;
-  deletableSelectionCount: number;
   selectedCommitTargetOption: SelectedCommitTargetOption;
   mergeInProgress: boolean;
   mergeTargetCommitSha: string | null;
@@ -53,7 +50,6 @@ type Props = {
   onRemoveWorktree?: BranchGridViewProps['onRemoveWorktree'];
   removeWorktreeInProgress: boolean;
   setCommitDialogOpen: (open: boolean) => void;
-  setDeleteConfirmOpen: (open: boolean) => void;
   setNewBranchDialogOpen: (open: boolean) => void;
 };
 
@@ -65,21 +61,18 @@ export default function CommitControls({
   stashDisabled,
   pushInProgress,
   hasUncommittedChanges,
-  deleteInProgress,
   createBranchFromNodeInProgress,
   onCommitLocalChanges,
   onStashLocalChanges,
   onPushCurrentBranch,
   onPushAllBranches,
   onPushCommitTargets,
-  onDeleteSelection,
   onMergeRefsIntoBranch,
   selectedPushTargets,
   selectedPushLabel,
   canPushCurrentBranch,
   pushCurrentBranchLabel,
   pushableRemoteBranchCount,
-  deletableSelectionCount,
   selectedCommitTargetOption,
   mergeInProgress,
   setMergeTargetCommitSha,
@@ -91,14 +84,18 @@ export default function CommitControls({
   onRemoveWorktree,
   removeWorktreeInProgress,
   setCommitDialogOpen,
-  setDeleteConfirmOpen,
   setNewBranchDialogOpen,
 }: Props) {
   const hasSelection = selectedVisibleCommitShas.length > 0;
+  const hasWorkingTreeSelection =
+    selectedVisibleCommitShas.length > 0 &&
+    selectedVisibleCommitShas.every((sha) => sha === 'WORKING_TREE');
   const [actionMenuOpen, setActionMenuOpen] = useState(false);
+  const actionMenuRef = useRef<HTMLDivElement | null>(null);
+  const worktreeMenuRef = useRef<HTMLDivElement | null>(null);
   const controlClassName =
     'inline-flex h-7 items-center rounded-md border border-border/60 bg-card/95 px-2 text-[11px] font-medium text-muted-foreground transition-colors hover:bg-accent hover:text-foreground disabled:cursor-not-allowed disabled:opacity-50';
-  const canCommit = !!onCommitLocalChanges && hasUncommittedChanges && !commitDisabled && !hasSelection && !commitInProgress;
+  const canCommit = !!onCommitLocalChanges && hasUncommittedChanges && !commitDisabled && !commitInProgress && (!hasSelection || hasWorkingTreeSelection);
   const canPushCurrent = !!onPushCurrentBranch && canPushCurrentBranch && !hasSelection && !pushInProgress;
   const canPushSelected = !!onPushCommitTargets && selectedPushTargets.length > 0 && !pushInProgress;
   const canPushAll = !!onPushAllBranches && pushableRemoteBranchCount >= 2 && !hasSelection && !pushInProgress;
@@ -125,10 +122,24 @@ export default function CommitControls({
             }
           : null;
 
+  useEffect(() => {
+    const handlePointerDown = (event: PointerEvent) => {
+      const target = event.target as Node | null;
+      if (!target) return;
+      if (actionMenuRef.current?.contains(target)) return;
+      if (worktreeMenuRef.current?.contains(target)) return;
+      setActionMenuOpen(false);
+      setWorktreeMenuOpen(false);
+    };
+
+    window.addEventListener('pointerdown', handlePointerDown);
+    return () => window.removeEventListener('pointerdown', handlePointerDown);
+  }, [setWorktreeMenuOpen]);
+
   const toolbar = (
     <div className="pointer-events-none absolute inset-x-0 top-0 z-[60] px-2.5 pt-2.25">
       <div className="pointer-events-auto inline-flex w-fit max-w-full flex-wrap items-center justify-start gap-[9px]">
-        <div className="relative inline-flex h-7 items-stretch rounded-md border border-border/60 bg-card/95">
+        <div ref={actionMenuRef} className="relative inline-flex h-7 items-stretch rounded-md border border-border/60 bg-card/95">
           <button
             type="button"
             onClick={() => {
@@ -136,9 +147,9 @@ export default function CommitControls({
               primaryAction.run();
             }}
             disabled={!primaryAction || primaryAction.disabled}
-            className={cn(controlClassName, 'h-full rounded-r-none border-0 bg-transparent hover:bg-accent')}
+            className={cn(controlClassName, 'h-full rounded-r-none border-0 bg-transparent pr-1 hover:bg-accent')}
           >
-            {primaryAction?.label ?? 'No action'}
+            {primaryAction?.label ?? 'Commit'}
           </button>
           <button
             type="button"
@@ -146,13 +157,13 @@ export default function CommitControls({
             disabled={!primaryAction}
             aria-haspopup="menu"
             aria-expanded={actionMenuOpen}
-            className={cn(controlClassName, 'h-full rounded-l-none border-0 bg-transparent hover:bg-accent')}
+            className={cn(controlClassName, 'h-full rounded-l-none border-0 bg-transparent pl-1 hover:bg-accent')}
             title="More actions"
           >
             <ChevronDown className="h-3.5 w-3.5 shrink-0" />
           </button>
           {actionMenuOpen && primaryAction ? (
-            <div className="absolute bottom-full left-0 mb-2 min-w-56 overflow-hidden rounded-md border border-border/60 bg-card p-1">
+            <div className="absolute left-0 top-full z-[70] mt-2 inline-flex w-max min-w-0 flex-col overflow-hidden rounded-md border border-border/60 bg-card p-1">
               <button
                 type="button"
                 onClick={() => {
@@ -160,7 +171,7 @@ export default function CommitControls({
                   setCommitDialogOpen(true);
                 }}
                 disabled={!canCommit}
-                className={cn(controlClassName, 'w-full justify-start rounded-md border-0 bg-transparent px-2', !canCommit && 'text-muted-foreground opacity-50')}
+                className={cn(controlClassName, 'w-max justify-start whitespace-nowrap rounded-md border-0 bg-transparent px-2', !canCommit && 'text-muted-foreground opacity-50')}
               >
                 {commitInProgress ? 'Committing...' : 'Commit'}
               </button>
@@ -171,7 +182,7 @@ export default function CommitControls({
                   void onPushCurrentBranch?.();
                 }}
                 disabled={!canPushCurrent}
-                className={cn(controlClassName, 'w-full justify-start rounded-md border-0 bg-transparent px-2', !canPushCurrent && 'text-muted-foreground opacity-50')}
+                className={cn(controlClassName, 'w-max justify-start whitespace-nowrap rounded-md border-0 bg-transparent px-2', !canPushCurrent && 'text-muted-foreground opacity-50')}
               >
                 {pushInProgress ? 'Pushing...' : pushCurrentBranchLabel}
               </button>
@@ -182,7 +193,7 @@ export default function CommitControls({
                   void onPushCommitTargets?.(selectedPushTargets.map((target) => ({ branchName: target.branchName, targetSha: target.targetSha })));
                 }}
                 disabled={!canPushSelected}
-                className={cn(controlClassName, 'w-full justify-start rounded-md border-0 bg-transparent px-2', !canPushSelected && 'text-muted-foreground opacity-50')}
+                className={cn(controlClassName, 'w-max justify-start whitespace-nowrap rounded-md border-0 bg-transparent px-2', !canPushSelected && 'text-muted-foreground opacity-50')}
                 title={selectedPushLabel}
               >
                 {pushSelectedLabel}
@@ -194,7 +205,7 @@ export default function CommitControls({
                   void onPushAllBranches?.();
                 }}
                 disabled={!canPushAll}
-                className={cn(controlClassName, 'w-full justify-start rounded-md border-0 bg-transparent px-2', !canPushAll && 'text-muted-foreground opacity-50')}
+                className={cn(controlClassName, 'w-max justify-start whitespace-nowrap rounded-md border-0 bg-transparent px-2', !canPushAll && 'text-muted-foreground opacity-50')}
               >
                 Push all
               </button>
@@ -205,7 +216,7 @@ export default function CommitControls({
                   void onStashLocalChanges?.();
                 }}
                 disabled={!canStash}
-                className={cn(controlClassName, 'w-full justify-start rounded-md border-0 bg-transparent px-2', !canStash && 'text-muted-foreground opacity-50')}
+                className={cn(controlClassName, 'w-max justify-start whitespace-nowrap rounded-md border-0 bg-transparent px-2', !canStash && 'text-muted-foreground opacity-50')}
               >
                 {stashInProgress ? 'Stashing...' : 'Stash'}
               </button>
@@ -214,11 +225,6 @@ export default function CommitControls({
         </div>
 
         <div className="flex flex-wrap items-center gap-[9px]">
-          {deletableSelectionCount > 0 ? (
-            <button type="button" onClick={() => setDeleteConfirmOpen(true)} disabled={!onDeleteSelection || deleteInProgress} className={cn(controlClassName, 'bg-background text-red-600 hover:bg-red-50 dark:hover:bg-red-900/20')}>
-              {deleteInProgress ? 'Deleting...' : 'Delete selection'}
-            </button>
-          ) : null}
           <button
             type="button"
             onClick={() => setNewBranchDialogOpen(true)}
@@ -255,12 +261,12 @@ export default function CommitControls({
         ) : null}
 
         {worktrees.length > 0 && (onSwitchToWorktree || onRemoveWorktree) ? (
-          <div className="pointer-events-auto relative">
+          <div ref={worktreeMenuRef} className="pointer-events-auto relative">
             <button type="button" onClick={() => setWorktreeMenuOpen((open) => !open)} className={controlClassName}>
             {worktrees.length} {worktrees.length === 1 ? 'Worktree' : 'Worktrees'}
           </button>
           {worktreeMenuOpen ? (
-            <div className="absolute bottom-full left-0 mb-2 w-[22rem] max-h-64 overflow-auto rounded-xl border border-border/60 bg-card p-2">
+            <div className="absolute left-0 top-full z-[70] mt-2 w-[22rem] max-h-64 overflow-auto rounded-xl border border-border/60 bg-card p-2">
               {worktrees.map((worktree) => (
                 <div key={worktree.path} className="mb-1 flex items-start justify-between gap-2 rounded-lg px-2 py-1.5 hover:bg-muted/30">
                   <div className="min-w-0">

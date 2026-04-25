@@ -6,55 +6,43 @@ type Props = {
   onOrientationChange: (orientation: OrientationMode) => void;
 };
 
+const iconGitOrientation = '/icon-GitOrientation.svg';
+
 export default function MapOrientationToggle({ orientation, onOrientationChange }: Props) {
+  const nextOrientation = orientation === 'horizontal' ? 'vertical' : 'horizontal';
+
   return (
-    <div
-      className="flex shrink-0 rounded-full border border-border/60 bg-muted/20 p-0.5"
-      role="radiogroup"
-      aria-label="Commit map layout"
+    <button
+      type="button"
+      onClick={() => onOrientationChange(nextOrientation)}
+      className={cn(
+        'inline-flex h-7 items-center gap-1.5 rounded-md border border-border/60 bg-card pl-1.5 pr-2 py-1 transition-colors hover:bg-accent focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 focus-visible:ring-offset-background',
+      )}
+      aria-label={`Rotate view to ${nextOrientation}`}
+      title="Rotate View"
     >
-      <button
-        type="button"
-        role="radio"
-        aria-checked={orientation === 'horizontal'}
-        tabIndex={0}
-        onClick={() => onOrientationChange('horizontal')}
-        onKeyDown={(event) => {
-          if (event.key === 'ArrowRight' || event.key === 'ArrowDown') {
-            event.preventDefault();
-            onOrientationChange('vertical');
-          }
-        }}
-        className={cn(
-          'rounded-full px-2.5 h-7 text-[11px] font-medium transition-colors outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 focus-visible:ring-offset-background',
-          orientation === 'horizontal'
-            ? 'border border-border/60 bg-card text-foreground'
-            : 'text-muted-foreground hover:text-foreground',
-        )}
-      >
-        Horizontal
-      </button>
-      <button
-        type="button"
-        role="radio"
-        aria-checked={orientation === 'vertical'}
-        tabIndex={0}
-        onClick={() => onOrientationChange('vertical')}
-        onKeyDown={(event) => {
-          if (event.key === 'ArrowLeft' || event.key === 'ArrowUp') {
-            event.preventDefault();
-            onOrientationChange('horizontal');
-          }
-        }}
-        className={cn(
-          'rounded-full px-2.5 h-7 text-[11px] font-medium transition-colors outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 focus-visible:ring-offset-background',
-          orientation === 'vertical'
-            ? 'border border-border/60 bg-card text-foreground'
-            : 'text-muted-foreground hover:text-foreground',
-        )}
-      >
-        Vertical
-      </button>
-    </div>
+      <span className="relative size-4 shrink-0">
+        <span
+          aria-hidden="true"
+          className={cn(
+            'absolute inset-0 bg-muted-foreground transition-transform duration-300 ease-in-out',
+            orientation === 'vertical' && 'rotate-[-90deg]',
+          )}
+          style={{
+            WebkitMaskImage: `url(${iconGitOrientation})`,
+            WebkitMaskPosition: 'center',
+            WebkitMaskRepeat: 'no-repeat',
+            WebkitMaskSize: 'contain',
+            maskImage: `url(${iconGitOrientation})`,
+            maskPosition: 'center',
+            maskRepeat: 'no-repeat',
+            maskSize: 'contain',
+          }}
+        />
+      </span>
+      <span className="whitespace-nowrap text-[12px] font-normal leading-none text-muted-foreground">
+        Rotate View
+      </span>
+    </button>
   );
 }
