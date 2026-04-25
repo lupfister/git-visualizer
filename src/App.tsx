@@ -8,8 +8,6 @@ import BranchGridMapView, { type OrientationMode } from '../components/grid/MapV
 import DenseBranchSidebar from '../components/DenseBranchSidebar';
 import { buildLanes, lanesFromStoredColumns } from '../components/grid/LayoutGrid';
 import { computeBranchGridLayout, type BranchGridLayoutModel } from '../components/grid/branchGridLayoutModel';
-import MapOrientationToggle from '../components/grid/MapOrientationToggle';
-import MapSearchBar from '../components/grid/MapSearchBar';
 import type { Branch, BranchCommitPreview, BranchPromptMeta, CheckedOutRef, DirectCommit, GitHubAuthStatus, GitHubInfo, GitStashEntry, MergeNode, OpenPR, RepoVisualSnapshot, WorktreeInfo } from '../types';
 import { foldStashNodesIntoGraph } from './placeStashNode';
 
@@ -2286,80 +2284,24 @@ function App() {
                 setManuallyClosedClumps={setManuallyClosedGridClumps}
                 layoutModel={sharedGridLayoutModel}
                 orientation={mapGridOrientation}
+                gridHudProps={{
+                  githubAuthStatus,
+                  githubAuthLoading,
+                  onGitHubAuthSetup: handleGitHubAuthSetup,
+                  gridSearchQuery,
+                  setGridSearchQuery,
+                  gridSearchResultCount,
+                  gridSearchResultIndex,
+                  setGridSearchJumpDirection,
+                  setGridSearchJumpToken,
+                  mapGridOrientation,
+                  setMapGridOrientation,
+                  setIsGridDebugOpen,
+                  githubAuthMessage,
+                  commitSwitchFeedback,
+                  isCommitSwitchFeedbackVisible,
+                }}
               />
-
-              <header data-tauri-drag-region data-map-ui className="absolute inset-x-0 top-0 z-40 px-2.5">
-                <div className="window-no-drag pointer-events-auto relative z-10 flex min-h-12 w-full items-center justify-between gap-2 py-2.25">
-                  <div className="flex flex-wrap items-start gap-2">
-                    {githubAuthStatus?.ghAvailable && !githubAuthStatus.authenticated && (
-                      <button
-                        onClick={handleGitHubAuthSetup}
-                        disabled={githubAuthLoading}
-                        className="rounded-md border border-border/60 px-2 h-7 text-[11px] font-medium text-muted-foreground transition-colors hover:bg-accent hover:text-foreground disabled:cursor-not-allowed disabled:opacity-50"
-                      >
-                        {githubAuthLoading ? 'Connecting GitHub...' : 'Connect GitHub'}
-                      </button>
-                    )}
-                    {githubAuthStatus && !githubAuthStatus.ghAvailable && (
-                      <span className="inline-flex h-7 items-center rounded-md border border-border/60 px-2 text-[11px] font-medium text-muted-foreground">
-                        Install `gh` for private PR data
-                      </span>
-                    )}
-                  </div>
-                  <div className="flex flex-wrap items-center gap-2">
-                    <MapSearchBar
-                      query={gridSearchQuery}
-                      onQueryChange={setGridSearchQuery}
-                      resultCount={gridSearchResultCount}
-                      resultIndex={gridSearchResultIndex}
-                      onJump={(direction) => {
-                        setGridSearchJumpDirection(direction);
-                        setGridSearchJumpToken((token) => token + 1);
-                      }}
-                    />
-                    <MapOrientationToggle orientation={mapGridOrientation} onOrientationChange={setMapGridOrientation} />
-                    <button
-                      type="button"
-                      onClick={() => setIsGridDebugOpen((open) => !open)}
-                      className="hidden"
-                      aria-hidden="true"
-                      tabIndex={-1}
-                    >
-                      Debug
-                    </button>
-                  </div>
-                </div>
-              </header>
-
-              <div className="pointer-events-none fixed right-4 top-4 z-50 flex w-[min(16rem,calc(100vw-2rem))] flex-col gap-1.5">
-                {githubAuthMessage && (
-                  <div className="window-no-drag pointer-events-auto inline-flex h-7 items-center gap-2 rounded-md border border-border/60 bg-card/95 px-2 text-[11px] text-muted-foreground backdrop-blur-sm">
-                    <p className="shrink-0 text-[10px] font-medium text-muted-foreground">GitHub</p>
-                    <p className="max-w-36 truncate text-[11px] text-foreground/90" title={githubAuthMessage}>
-                      {githubAuthMessage}
-                    </p>
-                  </div>
-                )}
-                {commitSwitchFeedback && (
-                  <div
-                    className={cn(
-                      'window-no-drag pointer-events-auto inline-flex h-7 items-center gap-2 rounded-md border px-2 text-[11px] backdrop-blur-sm transition-opacity duration-200',
-                      isCommitSwitchFeedbackVisible ? 'opacity-100' : 'opacity-0',
-                      commitSwitchFeedback.kind === 'error'
-                        ? 'border-red-200/80 bg-red-50/95 text-red-700 dark:border-red-900/30 dark:bg-red-900/20 dark:text-red-300'
-                        : 'border-blue-200/80 bg-blue-50/95 text-blue-700 dark:border-blue-900/30 dark:bg-blue-900/20 dark:text-blue-300',
-                    )}
-                    title={commitSwitchFeedback.message}
-                  >
-                    <p className="shrink-0 text-[10px] font-medium opacity-70">
-                      {commitSwitchFeedback.kind === 'error' ? 'Alert' : 'Update'}
-                    </p>
-                    <p className="truncate text-[11px]">
-                      {commitSwitchFeedback.message}
-                    </p>
-                  </div>
-                )}
-              </div>
           </div>
 
           {showErrorPanel && (

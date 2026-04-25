@@ -19,10 +19,12 @@ import {
 } from './LayoutGrid';
 import { computeBranchGridLayout } from './branchGridLayoutModel';
 import type { BranchGridLayoutModel } from './branchGridLayoutModel';
-import MapGridCanvas from './MapGridCanvas';
 import CommitControls from './CommitControls';
+import MapGridCanvas from './MapGridCanvas';
 import MapGridDebugPanel from './MapGridDebugPanel';
 import MapGridDialogs from './MapGridDialogs';
+import MapOrientationToggle from './MapOrientationToggle';
+import MapSearchBar from './MapSearchBar';
 import { useMapGridCamera } from './useMapGridCamera';
 import { useMapGridSelection } from './useMapGridSelection';
 import {
@@ -43,6 +45,23 @@ import {
 type Props = BranchGridViewProps & {
   isDebugOpen?: boolean;
   onDebugClose?: () => void;
+  gridHudProps?: {
+    githubAuthStatus: { ghAvailable: boolean; authenticated: boolean } | null;
+    githubAuthLoading: boolean;
+    onGitHubAuthSetup: () => void;
+    gridSearchQuery: string;
+    setGridSearchQuery: (value: string) => void;
+    gridSearchResultCount: number | null;
+    gridSearchResultIndex: number | null;
+    setGridSearchJumpDirection: (direction: 1 | -1) => void;
+    setGridSearchJumpToken: (token: number | ((token: number) => number)) => void;
+    mapGridOrientation: import('./MapViewGrid').OrientationMode;
+    setMapGridOrientation: (orientation: import('./MapViewGrid').OrientationMode) => void;
+    setIsGridDebugOpen: (open: boolean | ((open: boolean) => boolean)) => void;
+    githubAuthMessage: string | null;
+    commitSwitchFeedback: { kind: 'success' | 'error'; message: string } | null;
+    isCommitSwitchFeedbackVisible: boolean;
+  };
 };
 
 export default function BranchGridMap({
@@ -105,6 +124,7 @@ export default function BranchGridMap({
   setManuallyOpenedClumps: controlledSetManuallyOpenedClumps,
   setManuallyClosedClumps: controlledSetManuallyClosedClumps,
   layoutModel: providedLayoutModel,
+  gridHudProps,
 }: Props) {
   const scrollContainerRef = useRef<HTMLDivElement | null>(null);
   /** `p-2.5` wrapper: used to map pointer position to the transform layer origin (padding edge). */
@@ -1019,6 +1039,121 @@ export default function BranchGridMap({
         branchDebugRows={debugLayoutModel.branchDebugRows}
         connectorDecisions={connectorDecisions}
       />
+      {gridHudProps ? (
+        <div className="pointer-events-none z-[70] flex w-full justify-between">
+          <div className="window-no-drag pointer-events-auto ml-auto flex w-full max-w-[calc(100vw-116px)] flex-nowrap items-center justify-between gap-3 overflow-x-auto bg-red-500/20 p-2.25">
+            <div className="flex min-w-0 flex-1 items-center">
+              <CommitControls
+                selectedVisibleCommitShas={selectedVisibleCommitShas}
+                commitInProgress={commitInProgress}
+                commitDisabled={commitDisabled}
+                stageInProgress={stageInProgress}
+                stashInProgress={stashInProgress}
+                stashDisabled={stashDisabled}
+                pushInProgress={pushInProgress}
+                hasUncommittedChanges={hasUncommittedChanges}
+                createBranchFromNodeInProgress={createBranchFromNodeInProgress}
+                onCommitLocalChanges={onCommitLocalChanges}
+                onStageAllChanges={onStageAllChanges ? () => void onStageAllChanges() : undefined}
+                onStashLocalChanges={onStashLocalChanges}
+                onPushCurrentBranch={onPushCurrentBranch}
+                onPushAllBranches={onPushAllBranches}
+                onPushCommitTargets={onPushCommitTargets}
+                onMergeRefsIntoBranch={onMergeRefsIntoBranch}
+                selectedPushTargets={selectedPushTargets}
+                selectedPushLabel={selectedPushLabel}
+                canPushCurrentBranch={canPushCurrentBranch}
+                pushCurrentBranchLabel={pushCurrentBranchLabel}
+                pushableRemoteBranchCount={pushableRemoteBranchCount}
+                selectedCommitTargetOption={selectedCommitTargetOption}
+                mergeInProgress={mergeInProgress}
+                mergeTargetCommitSha={mergeTargetCommitSha}
+                setMergeTargetCommitSha={setMergeTargetCommitSha}
+                worktrees={worktrees}
+                currentRepoPath={currentRepoPath}
+                worktreeMenuOpen={worktreeMenuOpen}
+                setWorktreeMenuOpen={setWorktreeMenuOpen}
+                onSwitchToWorktree={onSwitchToWorktree}
+                onRemoveWorktree={onRemoveWorktree}
+                removeWorktreeInProgress={removeWorktreeInProgress}
+                setCommitDialogOpen={setCommitDialogOpen}
+                setNewBranchDialogOpen={setNewBranchDialogOpen}
+              />
+            </div>
+            <div className="flex min-w-0 flex-1 items-center justify-center gap-2">
+              <MapSearchBar
+                query={gridHudProps.gridSearchQuery}
+                onQueryChange={gridHudProps.setGridSearchQuery}
+                resultCount={gridHudProps.gridSearchResultCount}
+                resultIndex={gridHudProps.gridSearchResultIndex}
+                onJump={(direction) => {
+                  gridHudProps.setGridSearchJumpDirection(direction);
+                  gridHudProps.setGridSearchJumpToken((token) => token + 1);
+                }}
+              />
+            </div>
+            <div className="flex min-w-0 flex-none items-center gap-2">
+              <MapOrientationToggle
+                orientation={gridHudProps.mapGridOrientation}
+                onOrientationChange={gridHudProps.setMapGridOrientation}
+              />
+              <button
+                type="button"
+                onClick={() => gridHudProps.setIsGridDebugOpen((open) => !open)}
+                className="inline-flex h-7 items-center rounded-md border border-border/60 bg-card px-2 text-[11px] font-medium text-muted-foreground transition-colors hover:bg-accent hover:text-foreground"
+              >
+                Debug
+              </button>
+            </div>
+          </div>
+          <div className="pointer-events-none fixed bottom-4 right-4 z-[80] flex max-w-[min(22rem,calc(100vw-2rem))] flex-col items-end gap-1.5">
+            {gridHudProps.githubAuthStatus?.ghAvailable && !gridHudProps.githubAuthStatus.authenticated ? (
+              <button
+                onClick={gridHudProps.onGitHubAuthSetup}
+                disabled={gridHudProps.githubAuthLoading}
+                className="window-no-drag pointer-events-auto inline-flex h-7 items-center gap-2 rounded-md border border-border/60 bg-card/95 px-2 text-[11px] font-medium text-muted-foreground backdrop-blur-sm transition-colors hover:bg-accent hover:text-foreground disabled:cursor-not-allowed disabled:opacity-50"
+              >
+                {gridHudProps.githubAuthLoading ? 'Connecting GitHub...' : 'Connect GitHub'}
+              </button>
+            ) : null}
+            {gridHudProps.githubAuthStatus && !gridHudProps.githubAuthStatus.ghAvailable ? (
+              <div className="window-no-drag pointer-events-auto inline-flex h-7 items-center gap-2 rounded-md border border-border/60 bg-card/95 px-2 text-[11px] font-medium text-muted-foreground backdrop-blur-sm">
+                <p className="shrink-0 text-[10px] font-medium text-muted-foreground">GitHub</p>
+                <p className="max-w-36 truncate text-[11px] text-foreground/90">
+                  Install `gh` for private PR data
+                </p>
+              </div>
+            ) : null}
+            {gridHudProps.githubAuthMessage ? (
+              <div className="window-no-drag pointer-events-auto inline-flex h-7 items-center gap-2 rounded-md border border-border/60 bg-card/95 px-2 text-[11px] text-muted-foreground backdrop-blur-sm">
+                <p className="shrink-0 text-[10px] font-medium text-muted-foreground">GitHub</p>
+                <p className="max-w-36 truncate text-[11px] text-foreground/90" title={gridHudProps.githubAuthMessage}>
+                  {gridHudProps.githubAuthMessage}
+                </p>
+              </div>
+            ) : null}
+            {gridHudProps.commitSwitchFeedback ? (
+              <div
+                className={`window-no-drag pointer-events-auto inline-flex h-7 items-center gap-2 rounded-md border px-2 text-[11px] backdrop-blur-sm transition-opacity duration-200 ${
+                  gridHudProps.isCommitSwitchFeedbackVisible ? 'opacity-100' : 'opacity-0'
+                } ${
+                  gridHudProps.commitSwitchFeedback.kind === 'error'
+                    ? 'border-red-200/80 bg-red-50/95 text-red-700 dark:border-red-900/30 dark:bg-red-900/20 dark:text-red-300'
+                    : 'border-blue-200/80 bg-blue-50/95 text-blue-700 dark:border-blue-900/30 dark:bg-blue-900/20 dark:text-blue-300'
+                }`}
+                title={gridHudProps.commitSwitchFeedback.message}
+              >
+                <p className="shrink-0 text-[10px] font-medium opacity-70">
+                  {gridHudProps.commitSwitchFeedback.kind === 'error' ? 'Alert' : 'Update'}
+                </p>
+                <p className="truncate text-[11px]">
+                  {gridHudProps.commitSwitchFeedback.message}
+                </p>
+              </div>
+            ) : null}
+          </div>
+        </div>
+      ) : null}
       {allCommits.length === 0 ? (
         <div className="flex flex-1 min-h-0 items-center justify-center py-20">
           <div className="rounded-xl border border-border/50 bg-muted/30 px-4 py-3">
@@ -1092,43 +1227,6 @@ export default function BranchGridMap({
           }}
         />
       ) : null}
-
-      <CommitControls
-        selectedVisibleCommitShas={selectedVisibleCommitShas}
-        commitInProgress={commitInProgress}
-        commitDisabled={commitDisabled}
-        stageInProgress={stageInProgress}
-        stashInProgress={stashInProgress}
-        stashDisabled={stashDisabled}
-        pushInProgress={pushInProgress}
-        hasUncommittedChanges={hasUncommittedChanges}
-        createBranchFromNodeInProgress={createBranchFromNodeInProgress}
-        onCommitLocalChanges={onCommitLocalChanges}
-        onStageAllChanges={onStageAllChanges ? () => void onStageAllChanges() : undefined}
-        onStashLocalChanges={onStashLocalChanges}
-        onPushCurrentBranch={onPushCurrentBranch}
-        onPushAllBranches={onPushAllBranches}
-        onPushCommitTargets={onPushCommitTargets}
-        onMergeRefsIntoBranch={onMergeRefsIntoBranch}
-        selectedPushTargets={selectedPushTargets}
-        selectedPushLabel={selectedPushLabel}
-        canPushCurrentBranch={canPushCurrentBranch}
-        pushCurrentBranchLabel={pushCurrentBranchLabel}
-        pushableRemoteBranchCount={pushableRemoteBranchCount}
-        selectedCommitTargetOption={selectedCommitTargetOption}
-        mergeInProgress={mergeInProgress}
-        mergeTargetCommitSha={mergeTargetCommitSha}
-        setMergeTargetCommitSha={setMergeTargetCommitSha}
-        worktrees={worktrees}
-        currentRepoPath={currentRepoPath}
-        worktreeMenuOpen={worktreeMenuOpen}
-        setWorktreeMenuOpen={setWorktreeMenuOpen}
-        onSwitchToWorktree={onSwitchToWorktree}
-        onRemoveWorktree={onRemoveWorktree}
-        removeWorktreeInProgress={removeWorktreeInProgress}
-        setCommitDialogOpen={setCommitDialogOpen}
-        setNewBranchDialogOpen={setNewBranchDialogOpen}
-      />
 
       <MapGridDialogs
         commitDialogOpen={commitDialogOpen}

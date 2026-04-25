@@ -137,8 +137,8 @@ export default function CommitControls({
   }, [setWorktreeMenuOpen]);
 
   const toolbar = (
-    <div className="pointer-events-none absolute inset-x-0 top-0 z-[60] px-2.5 pt-2.25">
-      <div className="pointer-events-auto inline-flex w-fit max-w-full flex-wrap items-center justify-start gap-[9px]">
+    <div className="pointer-events-none z-[60] flex w-full justify-end">
+      <div className="pointer-events-auto flex w-fit max-w-full flex-nowrap items-center justify-start gap-[9px]">
         <div ref={actionMenuRef} className="relative inline-flex h-7 items-stretch rounded-md border border-border/60 bg-card/95">
           <button
             type="button"
@@ -224,20 +224,20 @@ export default function CommitControls({
           ) : null}
         </div>
 
-        <div className="flex flex-wrap items-center gap-[9px]">
+        <div className="flex w-fit flex-nowrap items-center gap-[9px]">
           <button
             type="button"
             onClick={() => setNewBranchDialogOpen(true)}
             disabled={createBranchFromNodeInProgress}
             className={cn(controlClassName, 'pointer-events-auto relative z-10 bg-background')}
           >
-            {createBranchFromNodeInProgress ? 'Creating...' : 'Create Branch'}
+            {createBranchFromNodeInProgress ? 'Creating...' : 'New Branch'}
           </button>
         </div>
 
         {selectedVisibleCommitShas.length > 1 && selectedCommitTargetOption.options.length > 0 && selectedCommitTargetOption.targetBranch && onMergeRefsIntoBranch ? (
-          <div className="pointer-events-auto inline-flex items-center gap-[9px] rounded-full border border-border/60 bg-card/95 px-2 py-1">
-          <span className="px-1 text-[11px] font-medium text-muted-foreground">merge to</span>
+          <div className="pointer-events-auto inline-flex w-fit flex-nowrap items-center gap-[9px] rounded-md border border-border/60 bg-card/95 px-2 py-1">
+          <span className="px-1 text-[11px] font-medium text-muted-foreground">Merge to</span>
           {selectedCommitTargetOption.options.map((option) => {
             const isActive = option.targetBranch === selectedCommitTargetOption.targetBranch;
             return (
@@ -246,7 +246,7 @@ export default function CommitControls({
                 type="button"
                 onClick={() => setMergeTargetCommitSha(option.targetSha)}
                 className={cn(
-                  'rounded-md border border-border/60 px-2 h-7 text-[11px] font-medium transition-colors',
+                  'rounded-md border border-border/60 px-1.5 h-4.5 text-[11px] font-medium transition-colors',
                   isActive ? 'bg-card text-foreground' : 'text-muted-foreground hover:bg-accent hover:text-foreground',
                 )}
               >
@@ -254,7 +254,7 @@ export default function CommitControls({
               </button>
             );
           })}
-          <button type="button" onClick={() => void onMergeRefsIntoBranch(selectedCommitTargetOption.sources, selectedCommitTargetOption.targetBranch!)} disabled={selectedCommitTargetOption.sources.length === 0 || mergeInProgress} className="rounded-md border border-border/60 px-2 h-7 text-[11px] font-medium text-muted-foreground transition-colors hover:bg-accent hover:text-foreground disabled:cursor-not-allowed disabled:opacity-50">
+          <button type="button" onClick={() => void onMergeRefsIntoBranch(selectedCommitTargetOption.sources, selectedCommitTargetOption.targetBranch!)} disabled={selectedCommitTargetOption.sources.length === 0 || mergeInProgress} className="rounded-md border border-border/60 px-1.5 h-4.5 text-[11px] font-medium text-muted-foreground transition-colors hover:bg-accent hover:text-foreground disabled:cursor-not-allowed disabled:opacity-50">
             {mergeInProgress ? 'Merging...' : 'Confirm'}
           </button>
           </div>
@@ -263,38 +263,38 @@ export default function CommitControls({
         {worktrees.length > 0 && (onSwitchToWorktree || onRemoveWorktree) ? (
           <div ref={worktreeMenuRef} className="pointer-events-auto relative">
             <button type="button" onClick={() => setWorktreeMenuOpen((open) => !open)} className={controlClassName}>
-            {worktrees.length} {worktrees.length === 1 ? 'Worktree' : 'Worktrees'}
-          </button>
-          {worktreeMenuOpen ? (
-            <div className="absolute left-0 top-full z-[70] mt-2 w-[22rem] max-h-64 overflow-auto rounded-xl border border-border/60 bg-card p-2">
-              {worktrees.map((worktree) => (
-                <div key={worktree.path} className="mb-1 flex items-start justify-between gap-2 rounded-lg px-2 py-1.5 hover:bg-muted/30">
-                  <div className="min-w-0">
-                    <div className="truncate text-xs font-medium text-foreground" title={worktree.path}>
-                      {isOtherWorktree(worktree, currentRepoPath) ? worktreeShortLabel(worktree.path) : 'This window'}
+              {worktrees.length} {worktrees.length === 1 ? 'Worktree' : 'Worktrees'}
+            </button>
+            {worktreeMenuOpen ? (
+              <div className="absolute left-0 top-full z-[70] mt-2 w-[22rem] max-h-64 overflow-auto rounded-xl border border-border/60 bg-card p-2">
+                {worktrees.map((worktree) => (
+                  <div key={worktree.path} className="mb-1 flex items-start justify-between gap-2 rounded-lg px-2 py-1.5 hover:bg-muted/30">
+                    <div className="min-w-0">
+                      <div className="truncate text-xs font-medium text-foreground" title={worktree.path}>
+                        {isOtherWorktree(worktree, currentRepoPath) ? worktreeShortLabel(worktree.path) : 'This window'}
+                      </div>
+                      <div className="truncate text-[11px] text-muted-foreground">
+                        {worktree.branchName ?? 'detached'} • {worktree.headSha.slice(0, 7)}
+                      </div>
                     </div>
-                    <div className="truncate text-[11px] text-muted-foreground">
-                      {worktree.branchName ?? 'detached'} • {worktree.headSha.slice(0, 7)}
-                    </div>
+                    {isOtherWorktree(worktree, currentRepoPath) ? (
+                      <div className="flex items-center gap-1">
+                        {onSwitchToWorktree ? (
+                          <button type="button" onClick={() => { setWorktreeMenuOpen(false); void onSwitchToWorktree(worktree.path); }} disabled={removeWorktreeInProgress || worktree.pathExists === false} className="rounded-md border border-border/60 px-2 h-7 text-[11px] font-medium text-muted-foreground transition-colors hover:bg-accent hover:text-foreground disabled:cursor-not-allowed disabled:opacity-50">
+                            Switch
+                          </button>
+                        ) : null}
+                        {onRemoveWorktree ? (
+                          <button type="button" onClick={() => void onRemoveWorktree(worktree.path, worktree.isPrunable)} disabled={removeWorktreeInProgress} className="rounded-md border border-border/60 px-2 h-7 text-[11px] font-medium text-muted-foreground transition-colors hover:bg-accent hover:text-foreground disabled:cursor-not-allowed disabled:opacity-50">
+                            {removeWorktreeInProgress ? '...' : 'Remove'}
+                          </button>
+                        ) : null}
+                      </div>
+                    ) : null}
                   </div>
-                  {isOtherWorktree(worktree, currentRepoPath) ? (
-                    <div className="flex items-center gap-1">
-                      {onSwitchToWorktree ? (
-                        <button type="button" onClick={() => { setWorktreeMenuOpen(false); void onSwitchToWorktree(worktree.path); }} disabled={removeWorktreeInProgress || worktree.pathExists === false} className="rounded-md border border-border/60 px-2 h-7 text-[11px] font-medium text-muted-foreground transition-colors hover:bg-accent hover:text-foreground disabled:cursor-not-allowed disabled:opacity-50">
-                          Switch
-                        </button>
-                      ) : null}
-                      {onRemoveWorktree ? (
-                        <button type="button" onClick={() => void onRemoveWorktree(worktree.path, worktree.isPrunable)} disabled={removeWorktreeInProgress} className="rounded-md border border-border/60 px-2 h-7 text-[11px] font-medium text-muted-foreground transition-colors hover:bg-accent hover:text-foreground disabled:cursor-not-allowed disabled:opacity-50">
-                          {removeWorktreeInProgress ? '...' : 'Remove'}
-                        </button>
-                      ) : null}
-                    </div>
-                  ) : null}
-                </div>
-              ))}
-            </div>
-          ) : null}
+                ))}
+              </div>
+            ) : null}
           </div>
         ) : null}
       </div>

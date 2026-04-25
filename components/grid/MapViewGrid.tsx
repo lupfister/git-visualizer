@@ -68,6 +68,23 @@ interface Props {
   setManuallyOpenedClumps?: Dispatch<SetStateAction<Set<string>>>;
   setManuallyClosedClumps?: Dispatch<SetStateAction<Set<string>>>;
   layoutModel?: BranchGridLayoutModel;
+  gridHudProps?: {
+    githubAuthStatus: { ghAvailable: boolean; authenticated: boolean } | null;
+    githubAuthLoading: boolean;
+    onGitHubAuthSetup: () => void;
+    gridSearchQuery: string;
+    setGridSearchQuery: (value: string) => void;
+    gridSearchResultCount: number | null;
+    gridSearchResultIndex: number | null;
+    setGridSearchJumpDirection: (direction: 1 | -1) => void;
+    setGridSearchJumpToken: (token: number | ((token: number) => number)) => void;
+    mapGridOrientation: OrientationMode;
+    setMapGridOrientation: (orientation: OrientationMode) => void;
+    setIsGridDebugOpen: (open: boolean | ((open: boolean) => boolean)) => void;
+    githubAuthMessage: string | null;
+    commitSwitchFeedback: { kind: 'success' | 'error'; message: string } | null;
+    isCommitSwitchFeedbackVisible: boolean;
+  };
 }
 
 export default function BranchGridMapView({
@@ -104,7 +121,6 @@ export default function BranchGridMapView({
   onPushCommitTargets,
   pushInProgress = false,
   onDeleteSelection,
-  deleteInProgress = false,
   worktrees = [],
   currentRepoPath,
   onRemoveWorktree,
@@ -131,6 +147,7 @@ export default function BranchGridMapView({
   setManuallyOpenedClumps,
   setManuallyClosedClumps,
   layoutModel,
+  gridHudProps,
 }: Props) {
   const openPRBranchNames = new Set(openPRs.map(p => p.branchName));
   const ACTIVE_MS = 14 * 86400000;
@@ -203,6 +220,7 @@ export default function BranchGridMapView({
             setManuallyOpenedClumps={setManuallyOpenedClumps}
             setManuallyClosedClumps={setManuallyClosedClumps}
             layoutModel={layoutModel}
+            gridHudProps={gridHudProps}
           />
         </div>
       ) : view === 'grid' ? (
@@ -233,6 +251,7 @@ export default function BranchGridMapView({
             isDebugOpen={isDebugOpen}
             onDebugClose={onDebugClose}
             orientation={orientation}
+            gridHudProps={gridHudProps}
           />
         </div>
       ) : null}
