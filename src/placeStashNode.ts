@@ -43,6 +43,7 @@ export function placeStashNode(
   branchCommitPreviews: Record<string, BranchCommitPreview[]>,
   branchUniqueAheadCounts: Record<string, number>,
   defaultBranch: string,
+  hasUncommittedChanges = false,
 ): StashGraphState {
   const anchorSha = stash.baseSha;
   const stashId = `STASH:${stash.index}`;
@@ -84,7 +85,7 @@ export function placeStashNode(
         shaMatches(commit.sha, anchorSha),
     );
     if (matchingDirectCommit?.date) return matchingDirectCommit.date;
-    if (targetBranch) {
+  if (targetBranch && !hasUncommittedChanges) {
       const matchingPreviewCommit = (branchCommitPreviews[targetBranch.name] ?? []).find(
         (commit) =>
           shaMatches(commit.fullSha, anchorSha) ||
@@ -112,27 +113,6 @@ export function placeStashNode(
     date: stashDate,
     kind: 'stash',
   };
-  const stashDirectCommit: DirectCommit = {
-    fullSha: stashId,
-    sha: stashTitle,
-    parentSha: anchorSha,
-    childShas: [],
-    branch: targetBranch?.name ?? defaultBranch,
-    message: trimmedMessage || stashTitle,
-    author: 'You',
-    date: stashDate,
-    kind: 'stash',
-  };
-
-  if (isOnLaneTip && targetLane?.isDefault) {
-    return {
-      branches,
-      branchCommitPreviews,
-      branchUniqueAheadCounts,
-      directCommits: [...directCommits, stashDirectCommit],
-    };
-  }
-
   if (isOnLaneTip && targetBranch) {
     const nextBranches = branches.map((b) => {
       if (b.name === targetBranch.name) {
@@ -163,6 +143,18 @@ export function placeStashNode(
               : targetBranch.commitsAhead) ?? 0,
           ) + 1,
       },
+    };
+  }
+
+  if (isOnLaneTip && targetLane?.isDefault && !hasUncommittedChanges) {
+    return {
+      branches,
+      directCommits,
+      branchCommitPreviews: {
+        ...branchCommitPreviews,
+        [defaultBranch]: [stashNode, ...(branchCommitPreviews[defaultBranch] || [])],
+      },
+      branchUniqueAheadCounts,
     };
   }
 
@@ -202,6 +194,7 @@ export function foldStashNodesIntoGraph(
   branchCommitPreviews: Record<string, BranchCommitPreview[]>,
   branchUniqueAheadCounts: Record<string, number>,
   defaultBranch: string,
+  hasUncommittedChanges = false,
 ): StashGraphState {
   const ordered = [...stashes].sort((a, b) => a.index - b.index);
   let state: StashGraphState = {
@@ -218,6 +211,7 @@ export function foldStashNodesIntoGraph(
       state.branchCommitPreviews,
       state.branchUniqueAheadCounts,
       defaultBranch,
+      hasUncommittedChanges,
     );
   }
   return state;

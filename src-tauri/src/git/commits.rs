@@ -80,14 +80,23 @@ pub fn get_all_repo_commits(
     other_branches: &[String],
     merge_target_branch_by_commit_sha: &HashMap<String, String>,
 ) -> Result<Vec<DirectCommit>, GitError> {
-    let output = cli::run(
-        repo,
-        &[
-            "log",
-            "--all",
-            "--format=%H%x1f%h%x1f%s%x1f%an%x1f%cI%x1f%P",
-        ],
-    )?;
+    let mut refs: Vec<String> = std::iter::once(default_branch.to_string())
+        .chain(
+            other_branches
+                .iter()
+                .filter(|name| *name != default_branch)
+                .cloned(),
+        )
+        .collect();
+    refs.sort();
+    refs.dedup();
+    let mut args: Vec<String> = vec![
+        "log".to_string(),
+        "--format=%H%x1f%h%x1f%s%x1f%an%x1f%cI%x1f%P".to_string(),
+    ];
+    args.extend(refs);
+    let arg_refs: Vec<&str> = args.iter().map(String::as_str).collect();
+    let output = cli::run(repo, &arg_refs)?;
     let parsed: Vec<ParsedCommitLine> = output
         .lines()
         .filter(|s| !s.is_empty())

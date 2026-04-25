@@ -53,6 +53,7 @@ export function deriveRepoVisualState({
     branchCommitPreviews,
     branchUniqueAheadCounts,
     defaultBranch,
+    checkedOutRef?.hasUncommittedChanges ?? false,
   );
 
   let enrichedBranches = stashFolded.branches;
@@ -62,35 +63,13 @@ export function deriveRepoVisualState({
 
   if (checkedOutRef?.hasUncommittedChanges) {
     const checkedOutAnchorSha = checkedOutRef.headSha || checkedOutRef.parentSha || null;
-    const latestMainDirectCommitSha = enrichedDirectCommits[0]?.fullSha ?? null;
     const shaMatches = (left?: string | null, right?: string | null): boolean => {
       if (!left || !right) return false;
       return left === right || left.startsWith(right) || right.startsWith(left);
     };
-    type LaneRef = { name: string; headSha: string; isDefault: boolean };
-    const allLanes: LaneRef[] = [
-      { name: defaultBranch, headSha: latestMainDirectCommitSha ?? '', isDefault: true },
-      ...enrichedBranches.map((branch) => ({ name: branch.name, headSha: branch.headSha, isDefault: false })),
-    ];
-    const explicitLane = checkedOutRef.branchName
-      ? allLanes.find((lane) => lane.name === checkedOutRef.branchName)
+    const targetBranch = checkedOutRef.branchName
+      ? enrichedBranches.find((branch) => branch.name === checkedOutRef.branchName)
       : undefined;
-    const tipMatchedLanes = checkedOutAnchorSha
-      ? allLanes.filter((lane) => shaMatches(lane.headSha, checkedOutAnchorSha))
-      : [];
-    const targetLane =
-      explicitLane ??
-      tipMatchedLanes.find((lane) => lane.isDefault) ??
-      tipMatchedLanes[0];
-    const isOnLaneTip = !!(
-      targetLane &&
-      checkedOutAnchorSha &&
-      shaMatches(targetLane.headSha, checkedOutAnchorSha)
-    );
-    const targetBranch = targetLane && !targetLane.isDefault
-      ? enrichedBranches.find((branch) => branch.name === targetLane.name)
-      : undefined;
-
     const anchorCommitDate = (() => {
       if (!checkedOutAnchorSha) return null;
       const matchingDirectCommit = enrichedDirectCommits.find((commit) => (
@@ -122,21 +101,7 @@ export function deriveRepoVisualState({
       date: uncommittedDate,
       kind: 'uncommitted',
     };
-    const uncommittedDirectCommit: DirectCommit = {
-      fullSha: 'WORKING_TREE',
-      sha: 'Uncommited Changes',
-      parentSha: checkedOutAnchorSha,
-      childShas: [],
-      branch: defaultBranch,
-      message: 'Local uncommitted changes',
-      author: 'You',
-      date: uncommittedDate,
-      kind: 'uncommitted',
-    };
-
-    if (isOnLaneTip && targetLane?.isDefault) {
-      enrichedDirectCommits = [...enrichedDirectCommits, uncommittedDirectCommit];
-    } else if (isOnLaneTip && targetBranch) {
+    if (targetBranch) {
       enrichedBranches = enrichedBranches.map((branch) => {
         if (branch.name === targetBranch.name) {
           return {
@@ -163,27 +128,9 @@ export function deriveRepoVisualState({
         ) + 1,
       };
     } else {
-      const fakeBranch: Branch = {
-        name: '*Uncommitted',
-        commitsAhead: 1,
-        commitsBehind: 0,
-        lastCommitDate: uncommittedDate,
-        lastCommitAuthor: 'You',
-        status: 'fresh',
-        remoteSyncStatus: 'local-only',
-        unpushedCommits: 1,
-        headSha: 'WORKING_TREE',
-        divergedFromSha: checkedOutAnchorSha ?? undefined,
-        parentBranch: targetLane?.name || checkedOutRef.branchName || defaultBranch,
-      };
-      enrichedBranches = [fakeBranch, ...enrichedBranches];
       enrichedBranchCommitPreviews = {
         ...enrichedBranchCommitPreviews,
-        [fakeBranch.name]: [uncommittedNode],
-      };
-      enrichedBranchUniqueAheadCounts = {
-        ...enrichedBranchUniqueAheadCounts,
-        [fakeBranch.name]: 1,
+        [defaultBranch]: [uncommittedNode, ...(enrichedBranchCommitPreviews[defaultBranch] || [])],
       };
     }
   }

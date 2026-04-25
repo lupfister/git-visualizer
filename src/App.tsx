@@ -1929,6 +1929,7 @@ function App() {
       branchCommitPreviews,
       branchUniqueAheadCounts,
       defaultBranch,
+      checkedOutRef?.hasUncommittedChanges ?? false,
     );
 
     let eb = stashFolded.branches;
@@ -1967,11 +1968,6 @@ function App() {
       explicitLane ??
       tipMatchedLanes.find((lane) => lane.isDefault) ??
       tipMatchedLanes[0];
-    const isOnLaneTip = !!(
-      targetLane &&
-      checkedOutAnchorSha &&
-      shaMatches(targetLane.headSha, checkedOutAnchorSha)
-    );
     const targetBranch = targetLane && !targetLane.isDefault
       ? eb.find((b) => b.name === targetLane.name)
       : undefined;
@@ -2007,28 +2003,7 @@ function App() {
       date: uncommittedDate,
       kind: 'uncommitted',
     };
-    const uncommittedDirectCommit: DirectCommit = {
-      fullSha: 'WORKING_TREE',
-      sha: 'Uncommited Changes',
-      parentSha: checkedOutAnchorSha,
-      childShas: [],
-      branch: defaultBranch,
-      message: 'Local uncommitted changes',
-      author: 'You',
-      date: uncommittedDate,
-      kind: 'uncommitted',
-    };
-
-    if (isOnLaneTip && targetLane?.isDefault) {
-      return {
-        enrichedBranches: eb,
-        enrichedBranchCommitPreviews: ebp,
-        enrichedBranchUniqueAheadCounts: ebuac,
-        enrichedDirectCommits: [...edc, uncommittedDirectCommit],
-      };
-    }
-
-    if (isOnLaneTip && targetBranch) {
+    if (targetBranch) {
       const nextBranches = eb.map((b) => {
         if (b.name === targetBranch.name) {
           return {
@@ -2060,28 +2035,14 @@ function App() {
       };
     }
 
-    const fakeBranch: Branch = {
-      name: '*Uncommitted',
-      commitsAhead: 1,
-      commitsBehind: 0,
-      lastCommitDate: uncommittedDate,
-      lastCommitAuthor: 'You',
-      status: 'fresh',
-      remoteSyncStatus: 'local-only',
-      unpushedCommits: 1,
-      headSha: 'WORKING_TREE',
-      divergedFromSha: checkedOutAnchorSha ?? undefined,
-      parentBranch: targetLane?.name || checkedOutRef.branchName || defaultBranch,
-    };
     return {
-      enrichedBranches: [fakeBranch, ...eb],
+      enrichedBranches: eb,
       enrichedBranchCommitPreviews: {
         ...ebp,
-        [fakeBranch.name]: [uncommittedNode],
+        [defaultBranch]: [uncommittedNode, ...(ebp[defaultBranch] || [])],
       },
       enrichedBranchUniqueAheadCounts: {
         ...ebuac,
-        [fakeBranch.name]: 1,
       },
       enrichedDirectCommits: edc,
     };
