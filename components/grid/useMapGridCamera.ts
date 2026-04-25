@@ -159,8 +159,12 @@ export function useMapGridCamera({ mapPadHostRef, transformLayerRef }: Params) {
     const scaleAfter = targetZoom / GRID_RENDER_ZOOM;
     const worldX = (anchorX - currentPanX) / scaleBefore;
     const worldY = (anchorY - currentPanY) / scaleBefore;
-    syncCamera(anchorX - worldX * scaleAfter, anchorY - worldY * scaleAfter, targetZoom);
-  }, [getTransformLayerOriginScreen, syncCamera]);
+    const nextPanX = anchorX - worldX * scaleAfter;
+    const nextPanY = anchorY - worldY * scaleAfter;
+    panRef.current = { x: nextPanX, y: nextPanY };
+    zoomRef.current = targetZoom;
+    applyRenderedCamera(nextPanX, nextPanY, targetZoom);
+  }, [applyRenderedCamera, getTransformLayerOriginScreen]);
 
   const handleWheel = useCallback((event: WheelEvent<HTMLDivElement>) => {
     event.preventDefault();
