@@ -124,7 +124,6 @@ export default function BranchGridMap({
   manuallyClosedClumps: controlledManuallyClosedClumps,
   setManuallyOpenedClumps: controlledSetManuallyOpenedClumps,
   setManuallyClosedClumps: controlledSetManuallyClosedClumps,
-  layoutModel: providedLayoutModel,
   gridHudProps,
 }: Props) {
   const scrollContainerRef = useRef<HTMLDivElement | null>(null);
@@ -136,6 +135,7 @@ export default function BranchGridMap({
   const lastSearchResultIndexRef = useRef<number | null | undefined>(undefined);
   const lastSearchFocusShaRef = useRef<string | null | undefined>(undefined);
   const lastHandledSearchJumpTokenRef = useRef<number>(0);
+  const lastHandledViewportFocusRequestRef = useRef<string | null>(null);
   const [worktreeMenuOpen, setWorktreeMenuOpen] = useState(false);
   const [commitDialogOpen, setCommitDialogOpen] = useState(false);
   const [commitMessageDraft, setCommitMessageDraft] = useState('');
@@ -224,8 +224,7 @@ export default function BranchGridMap({
       nodePositionOverrides,
     ],
   );
-  const hasNodeOverrides = Object.keys(nodePositionOverrides).length > 0;
-  const layoutModel: BranchGridLayoutModel = hasNodeOverrides ? computedLayoutModel : (providedLayoutModel ?? computedLayoutModel);
+  const layoutModel: BranchGridLayoutModel = computedLayoutModel;
   const debugLayoutModel: BranchGridLayoutModel = useMemo(
     () =>
       computeBranchGridLayout({
@@ -695,6 +694,8 @@ export default function BranchGridMap({
 
   useLayoutEffect(() => {
     if (!gridFocusSha) return;
+    const focusRequestKey = `${gridFocusSha}:${gridSearchJumpToken}`;
+    if (lastHandledViewportFocusRequestRef.current === focusRequestKey) return;
     const viewport = scrollContainerRef.current;
     const focusNode = focusedRenderNode;
     if (!viewport || !focusNode) return;
@@ -712,6 +713,7 @@ export default function BranchGridMap({
       targetScreenY - origin.y - nodeCenterY * scale,
       targetZoom,
     );
+    lastHandledViewportFocusRequestRef.current = focusRequestKey;
   }, [gridFocusSha, gridSearchJumpToken, focusedRenderNode, getTransformLayerOriginScreen, syncCamera, renderedCameraRef]);
 
   const viewportClientW = viewportClientSize?.width ?? scrollContainerRef.current?.clientWidth ?? 0;
@@ -1209,6 +1211,7 @@ export default function BranchGridMap({
           onCommitCardClick={handleCommitCardClick}
           unpushedCommitShasSetByBranch={unpushedCommitShasSetByBranch}
           checkedOutHeadSha={checkedOutHeadSha}
+          orientation={orientation}
         />
       )}
 

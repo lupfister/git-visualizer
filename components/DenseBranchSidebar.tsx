@@ -503,7 +503,25 @@ export default function DenseBranchSidebar({
 }: Props) {
   const asideRef = useRef<HTMLElement | null>(null);
   const scrollBodyRef = useRef<HTMLDivElement | null>(null);
-  const [expandedProjects, setExpandedProjects] = useState<Set<string>>(() => new Set());
+  const [expandedProjects, setExpandedProjects] = useState<Set<string>>(() => {
+    if (typeof window === 'undefined') return new Set();
+    try {
+      const raw = window.localStorage.getItem(EXPANDED_PROJECTS_STORAGE_KEY);
+      if (raw) {
+        const parsed = JSON.parse(raw);
+        if (Array.isArray(parsed)) {
+          const next = new Set<string>();
+          for (const value of parsed) {
+            if (typeof value === 'string') next.add(value);
+          }
+          return next;
+        }
+      }
+    } catch {
+      // ignore storage failures
+    }
+    return new Set(projects.map((project) => project.path));
+  });
   const [expandedBranchNamesByProject, setExpandedBranchNamesByProject] = useState<Record<string, Set<string>>>({});
   const [localManuallyOpenedClumps, setLocalManuallyOpenedClumps] = useState<Set<string>>(() => new Set());
   const [localManuallyClosedClumps, setLocalManuallyClosedClumps] = useState<Set<string>>(() => new Set());
@@ -531,28 +549,6 @@ export default function DenseBranchSidebar({
       // ignore storage failures
     }
   };
-  useEffect(() => {
-    try {
-      const raw = window.localStorage.getItem(EXPANDED_PROJECTS_STORAGE_KEY);
-      if (!raw) return;
-      const parsed = JSON.parse(raw);
-      if (!Array.isArray(parsed)) return;
-      const next = new Set<string>();
-      for (const value of parsed) {
-        if (typeof value === 'string') next.add(value);
-      }
-      setExpandedProjects(next);
-    } catch {
-      // ignore storage failures
-    }
-  }, []);
-  useEffect(() => {
-    setExpandedProjects((previous) => {
-      const next = new Set(previous);
-      for (const project of projects) next.add(project.path);
-      return next;
-    });
-  }, [projects]);
   useEffect(() => {
     persistExpandedProjects(expandedProjects);
   }, [expandedProjects]);
@@ -871,8 +867,9 @@ export default function DenseBranchSidebar({
                           const next = new Set(previous);
                           if (next.has(project.path)) next.delete(project.path);
                           else next.add(project.path);
+                          persistExpandedProjects(next);
                           return next;
-                      });
+                        });
                       }}
                       aria-expanded={isExpanded}
                       aria-label={`${isExpanded ? 'Collapse' : 'Expand'} ${project.name}`}

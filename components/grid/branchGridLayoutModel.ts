@@ -810,8 +810,6 @@ export function computeBranchGridLayout(input: BranchGridLayoutInput): BranchGri
         commit,
         row,
         column,
-        // Keep horizontal clump expansion anchored on the newest/right edge:
-        // when hidden rows become visible, they grow leftward instead of pushing the lead node right.
         x: LEFT_PADDING + (horizontalRightAnchorRowOffset + row - 1) * zoomAwareTimelinePitch,
         y: TOP_PADDING + column * zoomAwareLanePitch,
       });

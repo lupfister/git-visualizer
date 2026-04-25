@@ -102,6 +102,7 @@ type Props = {
   onCommitCardClick: (event: MouseEvent, node: Node) => void;
   unpushedCommitShasSetByBranch: Map<string, Set<string>>;
   checkedOutHeadSha: string | null;
+  orientation?: 'vertical' | 'horizontal';
 };
 
 export default function MapGridCanvas({
