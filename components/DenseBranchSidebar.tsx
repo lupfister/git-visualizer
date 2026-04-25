@@ -6,6 +6,9 @@ import { cn, shaMatchesGitRef } from './grid/mapGridUtils';
 import type { BranchGridLayoutModel } from './grid/branchGridLayoutModel';
 import { deriveRepoVisualState } from '../src/repoVisualState';
 
+const EXPANDED_PROJECTS_STORAGE_KEY = 'git-visualizer:expanded-projects';
+const EXPANDED_BRANCHES_STORAGE_KEY = 'git-visualizer:expanded-branches';
+
 type Props = {
   projects: Array<{
     path: string;
@@ -31,9 +34,9 @@ type Props = {
   onRevealProjectInFinder: (path: string) => Promise<void> | void;
   projectLoading?: boolean;
   projectError?: string | null;
-  branches: Branch[];
-  defaultBranch: string;
   checkedOutRef?: CheckedOutRef | null;
+  manuallyOpenedClumpsByProject?: Record<string, Set<string>>;
+  manuallyClosedClumpsByProject?: Record<string, Set<string>>;
   manuallyOpenedClumps?: Set<string>;
   manuallyClosedClumps?: Set<string>;
   setManuallyOpenedClumps?: Dispatch<SetStateAction<Set<string>>>;
@@ -279,15 +282,24 @@ function BranchRows({
       ) : null}
 
       <div className="flex items-center gap-1">
-        <button
-          type="button"
-          onClick={() => {
-            onSelectBranch?.(branchName);
-          }}
+        <div
           className={cn(
             'group flex min-w-0 flex-1 items-center gap-0 rounded-md px-2 h-7 text-left text-sm font-normal transition-colors hover:bg-accent',
             isCheckedOut ? 'text-foreground' : 'text-muted-foreground hover:text-foreground',
           )}
+          role={isBranchExpandable ? 'button' : undefined}
+          tabIndex={isBranchExpandable ? 0 : undefined}
+          onClick={() => {
+            if (isBranchExpandable) onToggleBranch(branchName);
+            else onSelectBranch?.(branchName);
+          }}
+          onKeyDown={(event) => {
+            if (!isBranchExpandable) return;
+            if (event.key === 'Enter' || event.key === ' ') {
+              event.preventDefault();
+              onToggleBranch(branchName);
+            }
+          }}
         >
           {isBranchExpandable ? (
             <button
@@ -314,8 +326,8 @@ function BranchRows({
               </span>
             </button>
           ) : null}
-          <span className="min-w-0 break-words">{branchName}</span>
-        </button>
+          <span className="min-w-0 flex-1 break-words">{branchName}</span>
+        </div>
       </div>
 
       {shouldShowCommitRows ? (
@@ -473,9 +485,9 @@ export default function DenseBranchSidebar({
   onRevealProjectInFinder,
   projectLoading = false,
   projectError = null,
-  branches,
-  defaultBranch,
   checkedOutRef,
+  manuallyOpenedClumpsByProject = {},
+  manuallyClosedClumpsByProject = {},
   manuallyOpenedClumps: controlledManuallyOpenedClumps,
   manuallyClosedClumps: controlledManuallyClosedClumps,
   setManuallyOpenedClumps: controlledSetManuallyOpenedClumps,
@@ -492,6 +504,7 @@ export default function DenseBranchSidebar({
   const asideRef = useRef<HTMLElement | null>(null);
   const scrollBodyRef = useRef<HTMLDivElement | null>(null);
   const [expandedProjects, setExpandedProjects] = useState<Set<string>>(() => new Set());
+  const [expandedBranchNamesByProject, setExpandedBranchNamesByProject] = useState<Record<string, Set<string>>>({});
   const [localManuallyOpenedClumps, setLocalManuallyOpenedClumps] = useState<Set<string>>(() => new Set());
   const [localManuallyClosedClumps, setLocalManuallyClosedClumps] = useState<Set<string>>(() => new Set());
   const [openProjectMenuPath, setOpenProjectMenuPath] = useState<string | null>(null);
@@ -501,43 +514,38 @@ export default function DenseBranchSidebar({
   const setManuallyClosedClumps = controlledSetManuallyClosedClumps ?? setLocalManuallyClosedClumps;
   const [pendingClumpFocusTargetId, setPendingClumpFocusTargetId] = useState<string | null>(null);
   const [pendingClumpAnchor, setPendingClumpAnchor] = useState<{ id: string; topWithinScrollBody: number } | null>(null);
-  const branchesWithDefault = useMemo<Branch[]>(() => {
-    if (branches.some((branch) => branch.name === defaultBranch)) return branches;
-    const syntheticDefault: Branch = {
-      name: defaultBranch,
-      commitsAhead: 0,
-      commitsBehind: 0,
-      lastCommitDate: new Date(0).toISOString(),
-      lastCommitAuthor: 'Unknown',
-      status: 'unknown',
-      remoteSyncStatus: 'on-github',
-      unpushedCommits: 0,
-      headSha: '',
-      parentBranch: undefined,
-      divergedFromSha: undefined,
-      divergedFromDate: undefined,
-    };
-    return [syntheticDefault, ...branches];
-  }, [branches, defaultBranch]);
-  const childNamesByParent = useMemo(
-    () => buildChildBranchesByParent(branchesWithDefault, defaultBranch),
-    [branchesWithDefault, defaultBranch],
-  );
-  const rootBranchNames = useMemo(
-    () => buildRootNames(branchesWithDefault, defaultBranch, childNamesByParent),
-    [branchesWithDefault, defaultBranch, childNamesByParent],
-  );
-  const [expandedBranchNames, setExpandedBranchNames] = useState<Set<string>>(() =>
-    inferDefaultExpanded(rootBranchNames, childNamesByParent, checkedOutRef, defaultBranch),
-  );
+  const persistExpandedProjects = (next: Set<string>) => {
+    try {
+      window.localStorage.setItem(EXPANDED_PROJECTS_STORAGE_KEY, JSON.stringify(Array.from(next)));
+    } catch {
+      // ignore storage failures
+    }
+  };
+  const persistExpandedBranches = (next: Record<string, Set<string>>) => {
+    try {
+      const serialized = Object.fromEntries(
+        Object.entries(next).map(([projectPath, branchNames]) => [projectPath, Array.from(branchNames)]),
+      );
+      window.localStorage.setItem(EXPANDED_BRANCHES_STORAGE_KEY, JSON.stringify(serialized));
+    } catch {
+      // ignore storage failures
+    }
+  };
   useEffect(() => {
-    setExpandedBranchNames((previous) => {
-      const inferred = inferDefaultExpanded(rootBranchNames, childNamesByParent, checkedOutRef, defaultBranch);
-      const next = new Set(previous);
-      for (const name of inferred) next.add(name);
-      return next;
-    });
-  }, [rootBranchNames, childNamesByParent, checkedOutRef, defaultBranch]);
+    try {
+      const raw = window.localStorage.getItem(EXPANDED_PROJECTS_STORAGE_KEY);
+      if (!raw) return;
+      const parsed = JSON.parse(raw);
+      if (!Array.isArray(parsed)) return;
+      const next = new Set<string>();
+      for (const value of parsed) {
+        if (typeof value === 'string') next.add(value);
+      }
+      setExpandedProjects(next);
+    } catch {
+      // ignore storage failures
+    }
+  }, []);
   useEffect(() => {
     setExpandedProjects((previous) => {
       const next = new Set(previous);
@@ -545,6 +553,32 @@ export default function DenseBranchSidebar({
       return next;
     });
   }, [projects]);
+  useEffect(() => {
+    persistExpandedProjects(expandedProjects);
+  }, [expandedProjects]);
+  useEffect(() => {
+    try {
+      const raw = window.localStorage.getItem(EXPANDED_BRANCHES_STORAGE_KEY);
+      if (!raw) return;
+      const parsed = JSON.parse(raw);
+      if (!parsed || typeof parsed !== 'object') return;
+      const next: Record<string, Set<string>> = {};
+      for (const [projectPath, branchNames] of Object.entries(parsed as Record<string, unknown>)) {
+        if (!Array.isArray(branchNames)) continue;
+        const set = new Set<string>();
+        for (const value of branchNames) {
+          if (typeof value === 'string') set.add(value);
+        }
+        next[projectPath] = set;
+      }
+      setExpandedBranchNamesByProject(next);
+    } catch {
+      // ignore storage failures
+    }
+  }, []);
+  useEffect(() => {
+    persistExpandedBranches(expandedBranchNamesByProject);
+  }, [expandedBranchNamesByProject]);
 
   const defaultCollapsedClumps = gridLayoutModel?.defaultCollapsedClumps ?? new Set<string>();
   const isGridClusterOpen = (clusterKey: string): boolean =>
@@ -610,12 +644,15 @@ export default function DenseBranchSidebar({
     pendingClumpFocusTargetId,
     pendingClumpAnchor,
   ]);
-  const handleToggleBranch = (branchName: string) => {
-    setExpandedBranchNames((previous) => {
-      const next = new Set(previous);
+  const handleToggleBranch = (projectPath: string, branchName: string) => {
+    setExpandedBranchNamesByProject((previous) => {
+      const current = previous[projectPath] ?? new Set<string>();
+      const next = new Set(current);
       if (next.has(branchName)) next.delete(branchName);
       else next.add(branchName);
-      return next;
+      const nextState = { ...previous, [projectPath]: next };
+      persistExpandedBranches(nextState);
+      return nextState;
     });
   };
 
@@ -640,7 +677,6 @@ export default function DenseBranchSidebar({
     }>();
 
     for (const project of projects) {
-      const isActive = project.path === activeProjectPath;
       const visualState = deriveRepoVisualState({
         branches: project.branches,
         mergeNodes: project.mergeNodes,
@@ -651,8 +687,8 @@ export default function DenseBranchSidebar({
         branchUniqueAheadCounts: project.branchUniqueAheadCounts,
         checkedOutRef: project.checkedOutRef,
         stashes: project.stashes,
-        manuallyOpenedClumps: isActive ? manuallyOpenedClumps : new Set<string>(),
-        manuallyClosedClumps: isActive ? manuallyClosedClumps : new Set<string>(),
+        manuallyOpenedClumps: manuallyOpenedClumpsByProject[project.path] ?? new Set<string>(),
+        manuallyClosedClumps: manuallyClosedClumpsByProject[project.path] ?? new Set<string>(),
       });
 
       const branchesWithDefault: Branch[] = visualState.enrichedBranches.some((branch) => branch.name === project.defaultBranch)
@@ -718,8 +754,8 @@ export default function DenseBranchSidebar({
         branchAnchorShaByName.set(branch.name, resolved);
       }
       const defaultCollapsedClumps = visualState.sharedGridLayoutModel.defaultCollapsedClumps ?? new Set<string>();
-      const localManuallyOpenedClumps = isActive ? manuallyOpenedClumps : new Set<string>();
-      const localManuallyClosedClumps = isActive ? manuallyClosedClumps : new Set<string>();
+      const localManuallyOpenedClumps = manuallyOpenedClumpsByProject[project.path] ?? new Set<string>();
+      const localManuallyClosedClumps = manuallyClosedClumpsByProject[project.path] ?? new Set<string>();
       const isGridClusterOpen = (clusterKey: string): boolean =>
         localManuallyOpenedClumps.has(clusterKey) ||
         (!defaultCollapsedClumps.has(clusterKey) && !localManuallyClosedClumps.has(clusterKey));
@@ -738,7 +774,7 @@ export default function DenseBranchSidebar({
     }
 
     return next;
-  }, [activeProjectPath, manuallyClosedClumps, manuallyOpenedClumps, projects]);
+  }, [activeProjectPath, manuallyClosedClumpsByProject, manuallyOpenedClumpsByProject, projects]);
 
   return (
     <aside
@@ -804,9 +840,15 @@ export default function DenseBranchSidebar({
             const isExpanded = expandedProjects.has(project.path);
             const projectTreeLoaded = project.treeLoaded ?? project.branches.length > 0;
             const projectRender = projectRenderDataByPath.get(project.path);
-            const expandedBranchNamesForProject = isActive
-              ? expandedBranchNames
-              : new Set(projectRender ? Array.from(projectRender.branchByName.keys()) : []);
+            const expandedBranchNamesForProject = expandedBranchNamesByProject[project.path] ??
+              (projectRender
+                ? inferDefaultExpanded(
+                    projectRender.rootBranchNames,
+                    projectRender.childNamesByParent,
+                    checkedOutRef,
+                    project.defaultBranch,
+                  )
+                : new Set<string>());
             return (
               <div
                 key={project.path}
@@ -908,7 +950,7 @@ export default function DenseBranchSidebar({
                             childNamesByParent={projectRender.childNamesByParent}
                             branchAnchorShaByName={projectRender.branchAnchorShaByName}
                             expandedBranchNames={expandedBranchNamesForProject}
-                            onToggleBranch={handleToggleBranch}
+                            onToggleBranch={(branchName) => handleToggleBranch(project.path, branchName)}
                             checkedOutBranchName={projectRender.checkedOutBranchName}
                             ancestors={new Set()}
                             showCommits={showCommits}

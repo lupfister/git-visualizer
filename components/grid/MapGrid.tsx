@@ -345,13 +345,6 @@ export default function BranchGridMap({
 
   const lineStrokeWidth = 1.5 / displayZoom;
   const commitCornerRadiusPx = GRID_COMMIT_CORNER_RADIUS_BASE_PX / displayZoom;
-  const iconScaleStyle = useMemo(
-    () => ({
-      transform: `scale(${1 / displayZoom})`,
-      transformOrigin: 'center' as const,
-    }),
-    [displayZoom],
-  );
 
   const connectorParentAccentClass =
     'border-slate-400/70';
@@ -1183,7 +1176,6 @@ export default function BranchGridMap({
           labelTopPx={labelTopPx}
           inverseZoomStyle={inverseZoomStyle}
           displayZoom={displayZoom}
-          iconScaleStyle={iconScaleStyle}
           selectedVisibleCommitShas={selectedVisibleCommitShas}
           normalizedSearchQuery={normalizedSearchQuery}
           matchingNodeIds={matchingNodeIds}

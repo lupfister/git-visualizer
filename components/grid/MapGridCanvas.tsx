@@ -70,7 +70,6 @@ type Props = {
   inverseZoomStyle: CSSProperties;
   displayZoom: number;
   selectedVisibleCommitShas: string[];
-  iconScaleStyle: CSSProperties;
   normalizedSearchQuery: string;
   matchingNodeIds: Set<string>;
   focusedNode: Node | null;
@@ -120,7 +119,6 @@ export default function MapGridCanvas({
   inverseZoomStyle,
   displayZoom,
   selectedVisibleCommitShas,
-  iconScaleStyle,
   normalizedSearchQuery,
   matchingNodeIds,
   focusedNode,

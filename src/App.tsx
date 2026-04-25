@@ -1,4 +1,5 @@
-import { useState, useEffect, useRef, useMemo } from 'react';
+import { useState, useEffect, useRef, useMemo, useCallback } from 'react';
+import type { SetStateAction } from 'react';
 import { invoke } from '@tauri-apps/api/core';
 import { listen } from '@tauri-apps/api/event';
 import { getCurrentWindow } from '@tauri-apps/api/window';
@@ -26,6 +27,7 @@ const COMMIT_SWITCH_FEEDBACK_VISIBLE_MS = 1400;
 const COMMIT_SWITCH_FEEDBACK_FADE_MS = 180;
 const SIDEBAR_WIDTH_STORAGE_KEY = 'git-visualizer:sidebar-width';
 const SIDEBAR_COLLAPSED_STORAGE_KEY = 'git-visualizer:sidebar-collapsed';
+const GRID_CLUMPS_STORAGE_KEY = 'git-visualizer:grid-clumps';
 const SIDEBAR_DEFAULT_WIDTH_PX = 432;
 const SIDEBAR_MIN_WIDTH_PX = 280;
 const SIDEBAR_MAX_WIDTH_PX = 640;
@@ -33,6 +35,7 @@ type PushTarget = {
   branchName: string;
   targetSha?: string;
 };
+type RepoScopedClumpState = Record<string, Set<string>>;
 
 type ProjectRecord = {
   path: string;
@@ -82,8 +85,8 @@ function App() {
   const [gridSearchQuery, setGridSearchQuery] = useState('');
   const [gridSearchJumpToken, setGridSearchJumpToken] = useState(0);
   const [gridSearchJumpDirection, setGridSearchJumpDirection] = useState<1 | -1>(1);
-  const [manuallyOpenedGridClumps, setManuallyOpenedGridClumps] = useState<Set<string>>(() => new Set());
-  const [manuallyClosedGridClumps, setManuallyClosedGridClumps] = useState<Set<string>>(() => new Set());
+  const [manuallyOpenedGridClumpsByRepo, setManuallyOpenedGridClumpsByRepo] = useState<RepoScopedClumpState>({});
+  const [manuallyClosedGridClumpsByRepo, setManuallyClosedGridClumpsByRepo] = useState<RepoScopedClumpState>({});
   const [gridSearchResultCount, setGridSearchResultCount] = useState<number | null>(null);
   const [gridSearchResultIndex, setGridSearchResultIndex] = useState<number | null>(null);
   const [gridFocusSha, setGridFocusSha] = useState<string | null>(null);
@@ -153,6 +156,83 @@ function App() {
   const latestBranchesRef = useRef<Branch[]>([]);
   const latestDirectCommitsRef = useRef<DirectCommit[]>([]);
   const latestCheckedOutRef = useRef<CheckedOutRef | null>(null);
+  const activeRepoScopedKey = repoPath ?? '__no-repo__';
+  const persistGridClumps = (opened: RepoScopedClumpState, closed: RepoScopedClumpState) => {
+    try {
+      const serialized = {
+        opened: Object.fromEntries(
+          Object.entries(opened).map(([projectPath, clumps]) => [projectPath, Array.from(clumps)]),
+        ),
+        closed: Object.fromEntries(
+          Object.entries(closed).map(([projectPath, clumps]) => [projectPath, Array.from(clumps)]),
+        ),
+      };
+      window.localStorage.setItem(GRID_CLUMPS_STORAGE_KEY, JSON.stringify(serialized));
+    } catch {
+      // ignore storage failures
+    }
+  };
+  useEffect(() => {
+    try {
+      const raw = window.localStorage.getItem(GRID_CLUMPS_STORAGE_KEY);
+      if (!raw) return;
+      const parsed = JSON.parse(raw);
+      if (!parsed || typeof parsed !== 'object') return;
+      const opened: RepoScopedClumpState = {};
+      const closed: RepoScopedClumpState = {};
+      const asRecord = parsed as {
+        opened?: Record<string, string[]>;
+        closed?: Record<string, string[]>;
+      };
+      for (const [projectPath, clumps] of Object.entries(asRecord.opened ?? {})) {
+        if (!Array.isArray(clumps)) continue;
+        opened[projectPath] = new Set(clumps.filter((value): value is string => typeof value === 'string'));
+      }
+      for (const [projectPath, clumps] of Object.entries(asRecord.closed ?? {})) {
+        if (!Array.isArray(clumps)) continue;
+        closed[projectPath] = new Set(clumps.filter((value): value is string => typeof value === 'string'));
+      }
+      setManuallyOpenedGridClumpsByRepo(opened);
+      setManuallyClosedGridClumpsByRepo(closed);
+    } catch {
+      // ignore storage failures
+    }
+  }, []);
+  useEffect(() => {
+    persistGridClumps(manuallyOpenedGridClumpsByRepo, manuallyClosedGridClumpsByRepo);
+  }, [manuallyClosedGridClumpsByRepo, manuallyOpenedGridClumpsByRepo]);
+  const manuallyOpenedGridClumps = useMemo(
+    () => manuallyOpenedGridClumpsByRepo[activeRepoScopedKey] ?? new Set<string>(),
+    [activeRepoScopedKey, manuallyOpenedGridClumpsByRepo],
+  );
+  const manuallyClosedGridClumps = useMemo(
+    () => manuallyClosedGridClumpsByRepo[activeRepoScopedKey] ?? new Set<string>(),
+    [activeRepoScopedKey, manuallyClosedGridClumpsByRepo],
+  );
+  const setManuallyOpenedGridClumps = useCallback(
+    (updater: SetStateAction<Set<string>>) => {
+      setManuallyOpenedGridClumpsByRepo((previous) => {
+        const previousSet = previous[activeRepoScopedKey] ?? new Set<string>();
+        const nextSet = typeof updater === 'function' ? updater(previousSet) : updater;
+        const nextState = { ...previous, [activeRepoScopedKey]: new Set(nextSet) };
+        persistGridClumps(nextState, manuallyClosedGridClumpsByRepo);
+        return nextState;
+      });
+    },
+    [activeRepoScopedKey, manuallyClosedGridClumpsByRepo],
+  );
+  const setManuallyClosedGridClumps = useCallback(
+    (updater: SetStateAction<Set<string>>) => {
+      setManuallyClosedGridClumpsByRepo((previous) => {
+        const previousSet = previous[activeRepoScopedKey] ?? new Set<string>();
+        const nextSet = typeof updater === 'function' ? updater(previousSet) : updater;
+        const nextState = { ...previous, [activeRepoScopedKey]: new Set(nextSet) };
+        persistGridClumps(manuallyOpenedGridClumpsByRepo, nextState);
+        return nextState;
+      });
+    },
+    [activeRepoScopedKey, manuallyOpenedGridClumpsByRepo],
+  );
   const projectCards = useMemo(
     () => recentProjects.map((project) => ({
       ...project,
@@ -2258,11 +2338,11 @@ function App() {
               onRevealProjectInFinder={revealProjectInFinder}
               projectLoading={loading || projectTreeLoading}
               projectError={error}
-              branches={enrichedBranches}
-              defaultBranch={defaultBranch}
               checkedOutRef={checkedOutRef}
               showCommits={showCommits}
               onToggleShowCommits={() => setShowCommits((value) => !value)}
+              manuallyOpenedClumpsByProject={manuallyOpenedGridClumpsByRepo}
+              manuallyClosedClumpsByProject={manuallyClosedGridClumpsByRepo}
               manuallyOpenedClumps={effectiveManuallyOpenedGridClumps}
               manuallyClosedClumps={effectiveManuallyClosedGridClumps}
               setManuallyOpenedClumps={setManuallyOpenedGridClumps}
