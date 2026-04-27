@@ -1,6 +1,6 @@
 import { useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import type { CSSProperties, Dispatch, SetStateAction } from 'react';
-import { MoreHorizontal } from 'lucide-react';
+import { ChevronRight, MoreHorizontal } from 'lucide-react';
 import type { Branch, BranchCommitPreview, CheckedOutRef, DirectCommit, GitStashEntry, MergeNode, WorktreeInfo } from '../types';
 import { cn, shaMatchesGitRef } from './grid/mapGridUtils';
 import type { BranchGridLayoutModel } from './grid/branchGridLayoutModel';
@@ -315,15 +315,13 @@ function BranchRows({
               }}
               className="group/chevron flex h-6 w-6 -ml-2 shrink-0 items-center justify-center rounded-sm p-0 text-[10px] leading-none text-muted-foreground transition-colors hover:bg-accent"
             >
-              <span
+              <ChevronRight
                 aria-hidden="true"
                 className={cn(
-                  'inline-block transition-transform',
+                  'h-3.5 w-3.5 shrink-0 transition-transform',
                   isExpanded ? 'rotate-90' : '',
                 )}
-              >
-                ▶
-              </span>
+              />
             </button>
           ) : null}
           <span className="min-w-0 flex-1 break-words">{branchName}</span>
