@@ -637,6 +637,45 @@ export function computeBranchGridLayout(input: BranchGridLayoutInput): BranchGri
     set.add(branchStartAncestorSha);
     extraParentShasByCommitId.set(commit.id, set);
   }
+  const childShasByParentSha = new Map<string, Set<string>>();
+  const commitById = new Map<string, VisualCommit>();
+  for (const commit of allCommits) {
+    commitById.set(commit.id, commit);
+    if (commit.parentSha) {
+      const children = childShasByParentSha.get(commit.parentSha) ?? new Set<string>();
+      children.add(commit.id);
+      childShasByParentSha.set(commit.parentSha, children);
+    }
+    for (const extraParentSha of extraParentShasByCommitId.get(commit.id) ?? []) {
+      if (!extraParentSha) continue;
+      const children = childShasByParentSha.get(extraParentSha) ?? new Set<string>();
+      children.add(commit.id);
+      childShasByParentSha.set(extraParentSha, children);
+    }
+  }
+  const specialClusterChildKinds = new Set<NonNullable<VisualCommit['kind']>>(['branch-created', 'stash']);
+  const explicitClusterKeyByCommitId = new Map<string, string>();
+  for (const commit of allCommits) {
+    const explicitKey = commit.clusterKey?.trim();
+    if (explicitKey) {
+      explicitClusterKeyByCommitId.set(commit.visualId, explicitKey);
+      continue;
+    }
+    const childShas = childShasByParentSha.get(commit.id) ?? new Set<string>();
+    if (childShas.size === 0) continue;
+    const childCommits = Array.from(childShas)
+      .map((sha) => commitById.get(sha))
+      .filter((child): child is VisualCommit => child != null);
+    const shouldCluster =
+      childCommits.length > 1 ||
+      childCommits.some((child) => child.kind != null && specialClusterChildKinds.has(child.kind));
+    if (!shouldCluster) continue;
+    const key = `cluster:${commit.branchName}:${commit.id}`;
+    explicitClusterKeyByCommitId.set(commit.visualId, key);
+    for (const child of childCommits) {
+      explicitClusterKeyByCommitId.set(child.visualId, key);
+    }
+  }
   const allRowByVisualId = allocateRowsByColumnAndTime(allCommits, laneByName, extraParentShasByCommitId);
   const commitsByBranch = new Map<string, VisualCommit[]>();
   for (const commit of allCommits) {
@@ -659,7 +698,7 @@ export function computeBranchGridLayout(input: BranchGridLayoutInput): BranchGri
     });
     const entriesByKey = new Map<string, VisualCommit[]>();
     for (const commit of ordered) {
-      const key = commit.clusterKey?.trim() || `cluster:${branchName}:${commit.id}`;
+      const key = explicitClusterKeyByCommitId.get(commit.visualId) ?? commit.clusterKey?.trim() ?? `cluster:${branchName}:${commit.id}`;
       const list = entriesByKey.get(key) ?? [];
       list.push(commit);
       entriesByKey.set(key, list);

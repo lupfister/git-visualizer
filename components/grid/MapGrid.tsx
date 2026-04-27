@@ -1047,11 +1047,11 @@ export default function BranchGridMap({
         <header
           data-tauri-drag-region
           onPointerDown={handleHeaderPointerDown}
-          className="window-drag-region pointer-events-auto absolute left-0 right-0 top-0 z-[70] flex justify-end select-none"
+          className="window-drag-region pointer-events-none absolute inset-x-0 top-0 z-[70] flex w-full select-none"
         >
-          <div className="flex flex-1 min-w-0 items-start justify-between gap-3 p-2.25 select-none max-w-[calc(100vw-116px)]">
+          <div className="pointer-events-auto ml-auto flex w-full max-w-[calc(100vw-116px)] min-w-0 items-start justify-between gap-3 p-2.25 select-none">
             <div className="flex min-w-0 flex-1 items-center">
-              <div className="window-no-drag pointer-events-auto flex min-w-0 flex-nowrap items-center justify-start gap-3 overflow-visible">
+              <div className="window-no-drag pointer-events-auto flex min-w-0 flex-1 flex-nowrap items-center justify-start gap-3 overflow-visible">
                 <CommitControls
                   selectedVisibleCommitShas={selectedVisibleCommitShas}
                   commitInProgress={commitInProgress}
