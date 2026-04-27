@@ -73,6 +73,7 @@ export interface BranchCommitPreview {
   parentSha?: string | null;
   parentShas?: string[];
   childShas?: string[];
+  clusterKey?: string | null;
   message: string;
   author: string;
   date: string;

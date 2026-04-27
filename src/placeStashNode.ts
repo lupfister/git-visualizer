@@ -14,6 +14,55 @@ const shaMatches = (left?: string | null, right?: string | null): boolean => {
 
 type LaneRef = { name: string; headSha: string; isDefault: boolean };
 
+function appendChildShaToCommit(
+  commit: BranchCommitPreview | DirectCommit,
+  childSha: string,
+): BranchCommitPreview | DirectCommit {
+  const nextChildShas = [...(commit.childShas ?? [])];
+  if (!nextChildShas.includes(childSha)) nextChildShas.push(childSha);
+  return {
+    ...commit,
+    childShas: nextChildShas,
+  };
+}
+
+function linkChildToParent(
+  directCommits: DirectCommit[],
+  branchCommitPreviews: Record<string, BranchCommitPreview[]>,
+  parentSha: string | null | undefined,
+  childSha: string,
+  targetBranchName: string | null,
+  defaultBranch: string,
+): {
+  directCommits: DirectCommit[];
+  branchCommitPreviews: Record<string, BranchCommitPreview[]>;
+} {
+  if (!parentSha) return { directCommits, branchCommitPreviews };
+
+  const nextDirectCommits = directCommits.map((commit) =>
+    shaMatches(commit.fullSha, parentSha) || shaMatches(commit.sha, parentSha)
+      ? (appendChildShaToCommit(commit, childSha) as DirectCommit)
+      : commit,
+  );
+
+  const nextBranchCommitPreviews = Object.fromEntries(
+    Object.entries(branchCommitPreviews).map(([branchName, previews]) => [
+      branchName,
+      previews.map((commit) =>
+        (branchName === targetBranchName || branchName === defaultBranch) &&
+        (shaMatches(commit.fullSha, parentSha) || shaMatches(commit.sha, parentSha))
+          ? (appendChildShaToCommit(commit, childSha) as BranchCommitPreview)
+          : commit,
+      ),
+    ]),
+  );
+
+  return {
+    directCommits: nextDirectCommits,
+    branchCommitPreviews: nextBranchCommitPreviews,
+  };
+}
+
 function resolveAnchorOwningBranchName(
   anchorSha: string | null | undefined,
   directCommits: DirectCommit[],
@@ -108,12 +157,22 @@ export function placeStashNode(
     fullSha: stashId,
     sha: stashTitle,
     parentSha: anchorSha,
+    clusterKey: null,
+    childShas: [],
     message: trimmedMessage || stashTitle,
     author: 'You',
     date: stashDate,
     kind: 'stash',
   };
   if (isOnLaneTip && targetBranch) {
+    const linked = linkChildToParent(
+      directCommits,
+      branchCommitPreviews,
+      anchorSha,
+      stashId,
+      targetBranch.name,
+      defaultBranch,
+    );
     const nextBranches = branches.map((b) => {
       if (b.name === targetBranch.name) {
         return {
@@ -128,9 +187,9 @@ export function placeStashNode(
     });
     return {
       branches: nextBranches,
-      directCommits,
+      directCommits: linked.directCommits,
       branchCommitPreviews: {
-        ...branchCommitPreviews,
+        ...linked.branchCommitPreviews,
         [targetBranch.name]: [stashNode, ...(branchCommitPreviews[targetBranch.name] || [])],
       },
       branchUniqueAheadCounts: {
@@ -147,11 +206,19 @@ export function placeStashNode(
   }
 
   if (isOnLaneTip && targetLane?.isDefault && !hasUncommittedChanges) {
+    const linked = linkChildToParent(
+      directCommits,
+      branchCommitPreviews,
+      anchorSha,
+      stashId,
+      defaultBranch,
+      defaultBranch,
+    );
     return {
       branches,
-      directCommits,
+      directCommits: linked.directCommits,
       branchCommitPreviews: {
-        ...branchCommitPreviews,
+        ...linked.branchCommitPreviews,
         [defaultBranch]: [stashNode, ...(branchCommitPreviews[defaultBranch] || [])],
       },
       branchUniqueAheadCounts,
@@ -173,11 +240,20 @@ export function placeStashNode(
     parentBranch: targetLane?.name || defaultBranch,
   };
 
+  const linked = linkChildToParent(
+    directCommits,
+    branchCommitPreviews,
+    anchorSha,
+    stashId,
+    fakeBranchName,
+    defaultBranch,
+  );
+
   return {
     branches: [fakeBranch, ...branches],
-    directCommits,
+    directCommits: linked.directCommits,
     branchCommitPreviews: {
-      ...branchCommitPreviews,
+      ...linked.branchCommitPreviews,
       [fakeBranchName]: [stashNode],
     },
     branchUniqueAheadCounts: {
