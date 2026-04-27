@@ -52,7 +52,7 @@ struct DeleteSelectionResult {
 static WATCHER_STATE: OnceLock<Mutex<HashMap<String, notify::RecommendedWatcher>>> = OnceLock::new();
 const GIT_ACTIVITY_LOCAL_MIN_EMIT_MS: u64 = 250;
 const GIT_ACTIVITY_GRAPH_MIN_EMIT_MS: u64 = 120;
-const REPO_VISUAL_CACHE_SCHEMA_VERSION: i32 = 13;
+const REPO_VISUAL_CACHE_SCHEMA_VERSION: i32 = 15;
 #[cfg(target_os = "macos")]
 const OPEN_REPO_DETECTION_CACHE_TTL: StdDuration = StdDuration::from_secs(8);
 
@@ -69,6 +69,8 @@ struct BranchCommitPreviewEntry {
     full_sha: String,
     sha: String,
     parent_sha: Option<String>,
+    parent_shas: Vec<String>,
+    child_shas: Vec<String>,
     message: String,
     author: String,
     date: String,
@@ -416,6 +418,8 @@ fn compute_repo_visual_snapshot(repo_path: &str) -> Result<RepoVisualSnapshot, S
                 full_sha: commit.full_sha.clone(),
                 sha: commit.sha.clone(),
                 parent_sha: commit.parent_sha.clone(),
+                parent_shas: commit.parent_shas.clone(),
+                child_shas: commit.child_shas.clone(),
                 message: commit.message.clone(),
                 author: commit.author.clone(),
                 date: commit.date.clone(),
@@ -2232,6 +2236,7 @@ fn get_unpushed_direct_commits(
                 full_sha: parts[0].to_string(),
                 sha: parts[1].to_string(),
                 parent_sha,
+                parent_shas: parts[5].split_whitespace().map(|value| value.to_string()).collect(),
                 child_shas: Vec::new(),
                 cluster_key: None,
                 branch: branch.clone(),
@@ -2244,7 +2249,10 @@ fn get_unpushed_direct_commits(
 
     let mut child_shas_by_parent = HashMap::<String, Vec<String>>::new();
     for commit in &commits {
-        if let Some(parent_sha) = &commit.parent_sha {
+        for parent_sha in &commit.parent_shas {
+            if parent_sha.is_empty() {
+                continue;
+            }
             child_shas_by_parent
                 .entry(parent_sha.clone())
                 .or_default()

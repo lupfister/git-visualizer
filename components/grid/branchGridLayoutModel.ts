@@ -325,6 +325,29 @@ function allocateRowsByColumnAndTime(
     const parentShas = strictParentShasByCommitId.get(commit.visualId) ?? new Set<string>();
     assignCommit(commit, parentShas);
   }
+  // Final hard invariant: direct children must be strictly after direct parents.
+  const maxPasses = Math.max(1, orderedCommits.length * 2);
+  for (let pass = 0; pass < maxPasses; pass += 1) {
+    let changed = false;
+    for (const commit of orderedCommits) {
+      const parentShas = strictParentShasByCommitId.get(commit.visualId) ?? new Set<string>();
+      if (parentShas.size === 0) continue;
+      const currentRow = rowByVisualId.get(commit.visualId) ?? 1;
+      let minRow = 1;
+      for (const parentSha of parentShas) {
+        const parentRows = resolveKnownShas(parentSha).flatMap((knownParentSha) => rowBySha.get(knownParentSha) ?? []);
+        if (parentRows.length > 0) minRow = Math.max(minRow, Math.max(...parentRows) + 1);
+      }
+      if (currentRow < minRow) {
+        rowByVisualId.set(commit.visualId, minRow);
+        const existingRows = rowBySha.get(commit.id) ?? [];
+        if (existingRows.length === 0) rowBySha.set(commit.id, [minRow]);
+        else rowBySha.set(commit.id, [...existingRows.slice(0, -1), minRow]);
+        changed = true;
+      }
+    }
+    if (!changed) break;
+  }
   // Row index increases toward descendants. Pixel mapping in `computeBranchGridLayout`:
   // vertical inverts this row index (newer above); horizontal keeps it direct (newer right).
   return rowByVisualId;
@@ -363,6 +386,7 @@ export function computeBranchGridLayout(input: BranchGridLayoutInput): BranchGri
       author: '',
       date: node.date,
       parentSha: node.parentShas?.[0] ?? null,
+      parentShas: node.parentShas ?? [],
     })),
     ...(branchCommitPreviews[defaultBranch] ?? []).map((commit) => toCommit(defaultBranch, commit)),
     ...directCommits.map((commit) => toCommit(commit.branch || '', commit)),
@@ -801,7 +825,7 @@ export function computeBranchGridLayout(input: BranchGridLayoutInput): BranchGri
   const maxAllRowForHorizontalAnchor = Math.max(0, ...allCommits.map((commit) => allRowByVisualId.get(commit.visualId) ?? 1));
   const maxVisibleRowForVertical = Math.max(0, ...visibleCommitsList.map((commit) => visibleRows.get(commit.visualId) ?? 1));
   const horizontalRightAnchorRowOffset = Math.max(0, maxAllRowForHorizontalAnchor - maxVisibleRowForVertical);
-  const renderNodes: Node[] = visibleCommitsList.map((commit) => {
+  const renderNodesRaw: Node[] = visibleCommitsList.map((commit) => {
     const lane = laneByName.get(commit.branchName);
     const row = visibleRows.get(commit.visualId) ?? 1;
     const column = lane?.column ?? 0;
@@ -822,6 +846,35 @@ export function computeBranchGridLayout(input: BranchGridLayoutInput): BranchGri
       y: TOP_PADDING + (maxVisibleRowForVertical - row) * zoomAwareTimelinePitch,
     });
   });
+  // Hard guard against visual collisions: each rendered row/column slot must be unique.
+  const renderNodes = [...renderNodesRaw]
+    .sort((a, b) => {
+      if (a.row !== b.row) return a.row - b.row;
+      if (a.column !== b.column) return a.column - b.column;
+      return a.commit.visualId.localeCompare(b.commit.visualId);
+    })
+    .map((node) => ({ ...node }));
+  const occupiedSlots = new Set<string>();
+  for (const node of renderNodes) {
+    let candidateRow = node.row;
+    let slotKey = `${node.column}:${candidateRow}`;
+    while (occupiedSlots.has(slotKey)) {
+      candidateRow += 1;
+      slotKey = `${node.column}:${candidateRow}`;
+    }
+    node.row = candidateRow;
+    occupiedSlots.add(slotKey);
+  }
+  const maxResolvedRow = Math.max(0, ...renderNodes.map((node) => node.row));
+  for (const node of renderNodes) {
+    if (isHorizontal) {
+      node.x = LEFT_PADDING + (horizontalRightAnchorRowOffset + node.row - 1) * zoomAwareTimelinePitch;
+      node.y = TOP_PADDING + node.column * zoomAwareLanePitch;
+      continue;
+    }
+    node.x = LEFT_PADDING + node.column * COLUMN_WIDTH;
+    node.y = TOP_PADDING + (maxResolvedRow - node.row) * zoomAwareTimelinePitch;
+  }
   const visibleNodesBySha = new Map<string, Node[]>();
   for (const node of renderNodes) {
     const list = visibleNodesBySha.get(node.commit.id) ?? [];

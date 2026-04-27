@@ -51,6 +51,8 @@ export interface Commit {
   fullSha: string;
   sha: string;
   parentSha?: string | null;
+  parentShas?: string[];
+  childShas?: string[];
   message: string;
   author: string;
   date: string;
@@ -69,6 +71,8 @@ export interface BranchCommitPreview {
   fullSha: string;
   sha: string;
   parentSha?: string | null;
+  parentShas?: string[];
+  childShas?: string[];
   message: string;
   author: string;
   date: string;
@@ -103,6 +107,7 @@ export interface DirectCommit {
   fullSha: string;
   sha: string;
   parentSha?: string | null;
+  parentShas: string[];
   childShas: string[];
   clusterKey?: string | null;
   branch: string;

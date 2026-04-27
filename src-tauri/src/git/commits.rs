@@ -11,6 +11,7 @@ pub struct DirectCommit {
     pub full_sha: String,
     pub sha: String,
     pub parent_sha: Option<String>,
+    pub parent_shas: Vec<String>,
     pub child_shas: Vec<String>,
     pub cluster_key: Option<String>,
     pub branch: String,
@@ -138,12 +139,15 @@ pub fn get_all_repo_commits(
     }
 
     let mut distance_by_commit_sha_and_branch = HashMap::<(String, String), usize>::new();
+    let mut first_parent_distance_by_commit_sha_and_branch = HashMap::<(String, String), usize>::new();
     for branch_name in &branch_order {
         let Some(head_sha) = head_sha_by_branch.get(branch_name) else {
             continue;
         };
         let mut queue = VecDeque::<(String, usize)>::new();
         queue.push_back((head_sha.clone(), 0));
+        let mut first_parent_queue = VecDeque::<(String, usize)>::new();
+        first_parent_queue.push_back((head_sha.clone(), 0));
 
         while let Some((sha, distance)) = queue.pop_front() {
             let key = (sha.clone(), branch_name.clone());
@@ -164,6 +168,27 @@ pub fn get_all_repo_commits(
                 queue.push_back((parent_sha.clone(), distance + 1));
             }
         }
+
+        while let Some((sha, distance)) = first_parent_queue.pop_front() {
+            let key = (sha.clone(), branch_name.clone());
+            if let Some(existing) = first_parent_distance_by_commit_sha_and_branch.get(&key) {
+                if *existing <= distance {
+                    continue;
+                }
+            }
+            first_parent_distance_by_commit_sha_and_branch.insert(key, distance);
+
+            let Some(parent_shas) = commit_parent_shas_by_sha.get(&sha) else {
+                continue;
+            };
+            let Some(first_parent_sha) = parent_shas.first() else {
+                continue;
+            };
+            if first_parent_sha.is_empty() {
+                continue;
+            }
+            first_parent_queue.push_back((first_parent_sha.clone(), distance + 1));
+        }
     }
 
     let mut commits = parsed
@@ -174,11 +199,13 @@ pub fn get_all_repo_commits(
                 default_branch,
                 &branch_order,
                 &default_first_parent_set,
+                &first_parent_distance_by_commit_sha_and_branch,
                 &distance_by_commit_sha_and_branch,
             ),
             full_sha: commit.full_sha,
             sha: commit.sha,
             parent_sha: commit.parent_sha,
+            parent_shas: commit.parent_shas,
             child_shas: Vec::new(),
             cluster_key: None,
             message: commit.message,
@@ -208,6 +235,11 @@ pub fn get_all_repo_commits(
                     .cloned()
             });
         if let Some(branch) = first_parent_branch {
+            let reachable_from_branch = distance_by_commit_sha_and_branch
+                .contains_key(&(commit.full_sha.clone(), branch.clone()));
+            if !reachable_from_branch {
+                continue;
+            }
             commit.branch = branch;
         }
     }
@@ -342,11 +374,33 @@ fn assign_commit_branch(
     default_branch: &str,
     branch_order: &[String],
     default_first_parent_set: &HashSet<String>,
+    first_parent_distance_by_commit_sha_and_branch: &HashMap<(String, String), usize>,
     distance_by_commit_sha_and_branch: &HashMap<(String, String), usize>,
 ) -> String {
     // Keep mainline ownership stable for default branch first-parent commits.
     if default_first_parent_set.contains(sha) {
         return default_branch.to_string();
+    }
+
+    // Prefer first-parent ownership to avoid second-parent merge edges
+    // pulling feature commits onto unrelated branches (especially default/main).
+    let mut first_parent_best_match: Option<(&str, usize, usize)> = None;
+    for (branch_index, branch_name) in branch_order.iter().enumerate() {
+        let key = (sha.to_string(), branch_name.clone());
+        let Some(distance) = first_parent_distance_by_commit_sha_and_branch.get(&key).copied() else {
+            continue;
+        };
+        match first_parent_best_match {
+            None => first_parent_best_match = Some((branch_name.as_str(), distance, branch_index)),
+            Some((_, best_distance, best_index)) => {
+                if distance < best_distance || (distance == best_distance && branch_index < best_index) {
+                    first_parent_best_match = Some((branch_name.as_str(), distance, branch_index));
+                }
+            }
+        }
+    }
+    if let Some((branch_name, _, _)) = first_parent_best_match {
+        return branch_name.to_string();
     }
 
     // Otherwise, choose the branch head with shortest graph distance to this commit.
@@ -402,6 +456,7 @@ fn build_direct_commits(parsed: Vec<ParsedCommitLine>, branch: String) -> Vec<Di
             full_sha: commit.full_sha,
             sha: commit.sha,
             parent_sha: commit.parent_sha,
+            parent_shas: commit.parent_shas,
             child_shas: Vec::new(),
             cluster_key: None,
             branch: branch.clone(),
@@ -416,7 +471,10 @@ fn build_direct_commits(parsed: Vec<ParsedCommitLine>, branch: String) -> Vec<Di
 fn with_child_links(mut commits: Vec<DirectCommit>) -> Vec<DirectCommit> {
     let mut child_shas_by_parent = HashMap::<String, Vec<String>>::new();
     for commit in &commits {
-        if let Some(parent_sha) = &commit.parent_sha {
+        for parent_sha in &commit.parent_shas {
+            if parent_sha.is_empty() {
+                continue;
+            }
             child_shas_by_parent
                 .entry(parent_sha.clone())
                 .or_default()
