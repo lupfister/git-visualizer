@@ -494,6 +494,15 @@ fn with_child_links(mut commits: Vec<DirectCommit>) -> Vec<DirectCommit> {
 }
 
 fn with_cluster_keys(mut commits: Vec<DirectCommit>) -> Vec<DirectCommit> {
+    const CLUSTER_PARENT_TIME_WINDOW_SECS: i64 = 90 * 60;
+    const CLUSTER_PARENT_MAX_INTERVENING_COMMITS: usize = 1;
+
+    let commit_time_secs = |date: &str| -> Option<i64> {
+        chrono::DateTime::parse_from_rfc3339(date)
+            .ok()
+            .map(|dt| dt.timestamp())
+    };
+
     let mut branch_by_sha = HashMap::<String, String>::new();
     for commit in &commits {
         branch_by_sha.insert(commit.full_sha.clone(), commit.branch.clone());
@@ -520,7 +529,11 @@ fn with_cluster_keys(mut commits: Vec<DirectCommit>) -> Vec<DirectCommit> {
 
         let mut cluster_idx = 0usize;
         let mut previous_sha: Option<String> = None;
-        for index in ordered {
+        let mut position_by_sha = HashMap::<String, usize>::new();
+        for (position, index) in ordered.iter().enumerate() {
+            position_by_sha.insert(commits[*index].full_sha.clone(), position);
+        }
+        for (position, index) in ordered.iter().copied().enumerate() {
             let commit = &commits[index];
             let starts_new_cluster = match &previous_sha {
                 None => true,
@@ -542,7 +555,42 @@ fn with_cluster_keys(mut commits: Vec<DirectCommit>) -> Vec<DirectCommit> {
                     let previous_has_single_child = previous
                         .map(|prev| prev.child_shas.len() == 1)
                         .unwrap_or(false);
-                    !(parent_matches_previous && parent_branch_matches && previous_has_single_child)
+                    let strict_continuity =
+                        parent_matches_previous && parent_branch_matches && previous_has_single_child;
+                    if strict_continuity {
+                        false
+                    } else {
+                        let parent_bridge = commit.parent_sha.as_ref().and_then(|parent_sha| {
+                            let parent_position = position_by_sha.get(parent_sha).copied()?;
+                            if parent_position >= position {
+                                return None;
+                            }
+                            let parent_branch_matches = branch_by_sha
+                                .get(parent_sha)
+                                .map(|parent_branch| parent_branch == &branch)
+                                .unwrap_or(false);
+                            if !parent_branch_matches {
+                                return None;
+                            }
+                            let parent_index = ordered[parent_position];
+                            let parent = &commits[parent_index];
+                            if parent.child_shas.len() != 1 {
+                                return None;
+                            }
+                            let intervening = position.saturating_sub(parent_position + 1);
+                            if intervening > CLUSTER_PARENT_MAX_INTERVENING_COMMITS {
+                                return None;
+                            }
+                            let parent_time = commit_time_secs(&parent.date)?;
+                            let commit_time = commit_time_secs(&commit.date)?;
+                            let time_gap = (commit_time - parent_time).abs();
+                            if time_gap > CLUSTER_PARENT_TIME_WINDOW_SECS {
+                                return None;
+                            }
+                            Some(())
+                        });
+                        parent_bridge.is_none()
+                    }
                 }
             };
             if starts_new_cluster {
