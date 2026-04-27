@@ -1,4 +1,5 @@
 import { cn } from './mapGridUtils';
+import { GitBranchPlus, GitCommitHorizontal } from 'lucide-react';
 
 type Props = {
   commitDialogOpen: boolean;
@@ -81,8 +82,9 @@ export default function MapGridDialogs({
                 type="button"
                 onClick={onCommitConfirm}
                 disabled={!commitMessageDraft.trim() || commitInProgress}
-                className="rounded-lg border border-border bg-card px-3 py-1.5 text-xs font-medium text-foreground transition-colors hover:bg-accent disabled:cursor-not-allowed disabled:opacity-50"
+                className="inline-flex items-center rounded-lg border border-border bg-card px-3 py-1.5 text-xs font-medium text-foreground transition-colors hover:bg-accent disabled:cursor-not-allowed disabled:opacity-50"
               >
+                <GitCommitHorizontal className="mr-1.5 h-3.5 w-3.5 shrink-0" />
                 {commitInProgress ? 'Committing...' : 'Commit'}
               </button>
             </div>
@@ -188,10 +190,11 @@ export default function MapGridDialogs({
                   )
                 }
                 className={cn(
-                  'rounded-lg border border-border bg-card px-3 py-1.5 text-xs font-medium text-foreground transition-colors hover:bg-accent',
+                  'inline-flex items-center rounded-lg border border-border bg-card px-3 py-1.5 text-xs font-medium text-foreground transition-colors hover:bg-accent',
                   'disabled:cursor-not-allowed disabled:opacity-50',
                 )}
               >
+                <GitBranchPlus className="mr-1.5 h-3.5 w-3.5 shrink-0" />
                 {createBranchFromNodeInProgress ? 'Creating...' : 'Create'}
               </button>
             </div>

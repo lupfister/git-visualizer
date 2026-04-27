@@ -1,6 +1,6 @@
 import type { WorktreeInfo } from '../../types';
 import type { BranchGridViewProps } from './LayoutGrid';
-import { ChevronDown } from 'lucide-react';
+import { ChevronDown, FolderGit2, GitBranchPlus, GitMerge } from 'lucide-react';
 import { useEffect, useRef, useState } from 'react';
 import { cn, isOtherWorktree, worktreeShortLabel } from './mapGridUtils';
 
@@ -105,18 +105,21 @@ export default function CommitControls({
     canCommit
       ? {
           label: commitInProgress ? 'Committing...' : 'Commit',
+          iconSrc: '/icon-commit.svg',
           run: () => setCommitDialogOpen(true),
           disabled: !canCommit,
         }
       : canPushCurrent
         ? {
             label: pushInProgress ? 'Pushing...' : pushCurrentBranchLabel,
+            iconSrc: '/icon-pushBranch.svg',
             run: () => void onPushCurrentBranch?.(),
             disabled: !canPushCurrent,
           }
         : canPushSelected
           ? {
               label: pushSelectedLabel,
+              iconSrc: '/icon-pushSelected.svg',
               run: () => void onPushCommitTargets?.(selectedPushTargets.map((target) => ({ branchName: target.branchName, targetSha: target.targetSha }))),
               disabled: !canPushSelected,
             }
@@ -149,7 +152,10 @@ export default function CommitControls({
             disabled={!primaryAction || primaryAction.disabled}
             className={cn(controlClassName, 'h-full rounded-r-none border-0 bg-transparent pr-1 hover:bg-accent')}
           >
-            {primaryAction?.label ?? 'Commit'}
+            <span className="inline-flex items-center gap-1.5">
+              <img src={primaryAction?.iconSrc ?? '/icon-commit.svg'} alt="" aria-hidden="true" className="h-4.5 w-4.5 shrink-0" />
+              <span>{primaryAction?.label ?? 'Commit'}</span>
+            </span>
           </button>
           <button
             type="button"
@@ -171,8 +177,9 @@ export default function CommitControls({
                   setCommitDialogOpen(true);
                 }}
                 disabled={!canCommit}
-                className={cn(controlClassName, 'w-max justify-start whitespace-nowrap rounded-md border-0 bg-transparent px-2', !canCommit && 'text-muted-foreground opacity-50')}
+                className={cn(controlClassName, 'w-full justify-start whitespace-nowrap rounded-md border-0 bg-transparent px-2', !canCommit && 'text-muted-foreground opacity-50')}
               >
+                <img src="/icon-commit.svg" alt="" aria-hidden="true" className="mr-1.5 h-4.5 w-4.5 shrink-0" />
                 {commitInProgress ? 'Committing...' : 'Commit'}
               </button>
               <button
@@ -182,8 +189,9 @@ export default function CommitControls({
                   void onPushCurrentBranch?.();
                 }}
                 disabled={!canPushCurrent}
-                className={cn(controlClassName, 'w-max justify-start whitespace-nowrap rounded-md border-0 bg-transparent px-2', !canPushCurrent && 'text-muted-foreground opacity-50')}
+                className={cn(controlClassName, 'w-full justify-start whitespace-nowrap rounded-md border-0 bg-transparent px-2', !canPushCurrent && 'text-muted-foreground opacity-50')}
               >
+                <img src="/icon-pushBranch.svg" alt="" aria-hidden="true" className="mr-1.5 h-4.5 w-4.5 shrink-0" />
                 {pushInProgress ? 'Pushing...' : pushCurrentBranchLabel}
               </button>
               <button
@@ -193,9 +201,10 @@ export default function CommitControls({
                   void onPushCommitTargets?.(selectedPushTargets.map((target) => ({ branchName: target.branchName, targetSha: target.targetSha })));
                 }}
                 disabled={!canPushSelected}
-                className={cn(controlClassName, 'w-max justify-start whitespace-nowrap rounded-md border-0 bg-transparent px-2', !canPushSelected && 'text-muted-foreground opacity-50')}
+                className={cn(controlClassName, 'w-full justify-start whitespace-nowrap rounded-md border-0 bg-transparent px-2', !canPushSelected && 'text-muted-foreground opacity-50')}
                 title={selectedPushLabel}
               >
+                <img src="/icon-pushSelected.svg" alt="" aria-hidden="true" className="mr-1.5 h-4.5 w-4.5 shrink-0" />
                 {pushSelectedLabel}
               </button>
               <button
@@ -205,8 +214,9 @@ export default function CommitControls({
                   void onPushAllBranches?.();
                 }}
                 disabled={!canPushAll}
-                className={cn(controlClassName, 'w-max justify-start whitespace-nowrap rounded-md border-0 bg-transparent px-2', !canPushAll && 'text-muted-foreground opacity-50')}
+                className={cn(controlClassName, 'w-full justify-start whitespace-nowrap rounded-md border-0 bg-transparent px-2', !canPushAll && 'text-muted-foreground opacity-50')}
               >
+                <img src="/icon-pushAll.svg" alt="" aria-hidden="true" className="mr-1.5 h-4.5 w-4.5 shrink-0" />
                 Push all
               </button>
               <button
@@ -216,8 +226,9 @@ export default function CommitControls({
                   void onStashLocalChanges?.();
                 }}
                 disabled={!canStash}
-                className={cn(controlClassName, 'w-max justify-start whitespace-nowrap rounded-md border-0 bg-transparent px-2', !canStash && 'text-muted-foreground opacity-50')}
+                className={cn(controlClassName, 'w-full justify-start whitespace-nowrap rounded-md border-0 bg-transparent px-2', !canStash && 'text-muted-foreground opacity-50')}
               >
+                <img src="/icon-stash.svg" alt="" aria-hidden="true" className="mr-1.5 h-4.5 w-4.5 shrink-0" />
                 {stashInProgress ? 'Stashing...' : 'Stash'}
               </button>
             </div>
@@ -231,6 +242,7 @@ export default function CommitControls({
             disabled={createBranchFromNodeInProgress}
             className={cn(controlClassName, 'pointer-events-auto relative z-10 bg-background')}
           >
+            <GitBranchPlus className="mr-1.5 h-3.5 w-3.5 shrink-0" />
             {createBranchFromNodeInProgress ? 'Creating...' : 'New Branch'}
           </button>
         </div>
@@ -255,6 +267,7 @@ export default function CommitControls({
             );
           })}
           <button type="button" onClick={() => void onMergeRefsIntoBranch(selectedCommitTargetOption.sources, selectedCommitTargetOption.targetBranch!)} disabled={selectedCommitTargetOption.sources.length === 0 || mergeInProgress} className="rounded-md border border-border/60 px-1.5 h-4.5 text-[11px] font-medium text-muted-foreground transition-colors hover:bg-accent hover:text-foreground disabled:cursor-not-allowed disabled:opacity-50">
+            <GitMerge className="mr-1 inline h-3 w-3 shrink-0 align-text-bottom" />
             {mergeInProgress ? 'Merging...' : 'Confirm'}
           </button>
           </div>
@@ -263,6 +276,7 @@ export default function CommitControls({
         {worktrees.length > 0 && (onSwitchToWorktree || onRemoveWorktree) ? (
           <div ref={worktreeMenuRef} className="pointer-events-auto relative">
             <button type="button" onClick={() => setWorktreeMenuOpen((open) => !open)} className={controlClassName}>
+              <FolderGit2 className="mr-1.5 h-3.5 w-3.5 shrink-0" />
               {worktrees.length} {worktrees.length === 1 ? 'Worktree' : 'Worktrees'}
             </button>
             {worktreeMenuOpen ? (

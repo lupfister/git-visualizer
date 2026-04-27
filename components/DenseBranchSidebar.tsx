@@ -810,7 +810,9 @@ export default function DenseBranchSidebar({
           <button
             type="button"
             onClick={onToggleShowCommits}
-            className="window-no-drag shrink-0 rounded-md border border-border/60 px-2 h-7 text-[11px] font-medium text-muted-foreground transition-colors hover:text-foreground hover:bg-accent"
+            aria-hidden="true"
+            tabIndex={-1}
+            className="hidden"
           >
             {showCommits ? 'Hide Commits' : 'Show Commits'}
           </button>
