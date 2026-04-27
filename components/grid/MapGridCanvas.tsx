@@ -247,11 +247,6 @@ export default function MapGridCanvas({
         >
           {visibleRenderNodes.map((node) => {
             const clusterKey = clusterKeyByCommitId.get(node.commit.visualId);
-            const clusterKeyLabel = clusterKey ?? 'none';
-            const parentLabels = (node.commit.parentShas?.length ? node.commit.parentShas : node.commit.parentSha ? [node.commit.parentSha] : ['none'])
-              .map((sha: string) => (sha === 'none' ? sha : sha.slice(0, 7)))
-              .join(', ');
-            const childLabels = node.commit.childShas?.length ? node.commit.childShas.map((sha: string) => sha.slice(0, 7)).join(', ') : 'none';
             const isClusterOpen = clusterKey
               ? manuallyOpenedClumps.has(clusterKey) || (!defaultCollapsedClumps.has(clusterKey) && !manuallyClosedClumps.has(clusterKey))
               : false;
@@ -446,12 +441,6 @@ export default function MapGridCanvas({
                             Broken ancestry
                           </span>
                         ) : null}
-                      </div>
-                      <div className="mt-2 select-text text-[10px] font-mono uppercase tracking-wide text-muted-foreground/70" data-selectable-text="true">
-                        clusterKey: {clusterKeyLabel}
-                      </div>
-                      <div className="mt-1 select-text text-[10px] font-mono uppercase tracking-wide text-muted-foreground/70" data-selectable-text="true">
-                        parents: {parentLabels} | children: {childLabels}
                       </div>
                     </div>
                     {displayZoom > 0.5 ? (
