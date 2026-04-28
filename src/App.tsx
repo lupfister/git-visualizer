@@ -66,6 +66,45 @@ function isFrozenRepoPath(path: string | null): boolean {
   return basenameFromPath(path) === FROZEN_REPO_BASENAME;
 }
 
+function getRepoVisualSnapshotSignature(snapshot: RepoVisualSnapshot): string {
+  return [
+    snapshot.path,
+    snapshot.name,
+    snapshot.defaultBranch,
+    snapshot.updatedAtMs,
+    snapshot.branches.map((branch) => [
+      branch.name,
+      branch.headSha,
+      branch.commitsAhead,
+      branch.commitsBehind,
+      branch.unpushedCommits,
+      branch.remoteSyncStatus,
+      branch.status,
+      branch.lastCommitDate,
+    ].join(':')).join('|'),
+    snapshot.mergeNodes.map((node) => [node.fullSha, node.targetBranch, node.targetCommitSha].join(':')).join('|'),
+    snapshot.directCommits.map((commit) => commit.fullSha).join('|'),
+    snapshot.unpushedDirectCommits.map((commit) => commit.fullSha).join('|'),
+    snapshot.checkedOutRef
+      ? [
+          snapshot.checkedOutRef.branchName ?? '',
+          snapshot.checkedOutRef.headSha,
+          snapshot.checkedOutRef.parentSha ?? '',
+          snapshot.checkedOutRef.hasUncommittedChanges ? '1' : '0',
+        ].join(':')
+      : '__none__',
+    Object.entries(snapshot.unpushedCommitShasByBranch)
+      .map(([branchName, shas]) => `${branchName}:${shas.join(',')}`)
+      .join('|'),
+    Object.entries(snapshot.branchCommitPreviews)
+      .map(([branchName, previews]) => `${branchName}:${previews.map((preview) => preview.fullSha).join(',')}`)
+      .join('|'),
+    Object.entries(snapshot.branchParentByName).map(([branchName, parentName]) => `${branchName}:${parentName ?? ''}`).join('|'),
+    Object.entries(snapshot.laneByBranch).map(([branchName, lane]) => `${branchName}:${lane}`).join('|'),
+    Object.entries(snapshot.branchUniqueAheadCounts).map(([branchName, count]) => `${branchName}:${count}`).join('|'),
+  ].join('@@');
+}
+
 function App() {
   const [repoPath, setRepoPath] = useState<string | null>(null);
   const [repoName, setRepoName] = useState<string>('');
@@ -137,6 +176,8 @@ function App() {
   const autoFocusSyncKeyRef = useRef<string | null>(null);
   const loadRepoRequestIdRef = useRef(0);
   const githubFetchRequestIdRef = useRef(0);
+  const projectSnapshotSignatureRef = useRef<Record<string, string>>({});
+  const activeSnapshotSignatureRef = useRef<string | null>(null);
   const sidebarDragRef = useRef<{
     startX: number;
     startWidth: number;
@@ -253,6 +294,60 @@ function App() {
     })),
     [recentProjects, projectSnapshots],
   );
+  const gridHudProps = useMemo(
+    () => ({
+      githubAuthStatus,
+      githubAuthLoading,
+      onGitHubAuthSetup: handleGitHubAuthSetup,
+      gridSearchQuery,
+      setGridSearchQuery,
+      gridSearchResultCount,
+      gridSearchResultIndex,
+      setGridSearchJumpDirection,
+      setGridSearchJumpToken,
+      mapGridOrientation,
+      setMapGridOrientation,
+      setIsGridDebugOpen,
+      githubAuthMessage,
+      commitSwitchFeedback,
+      isCommitSwitchFeedbackVisible,
+    }),
+    [
+      commitSwitchFeedback,
+      githubAuthLoading,
+      githubAuthMessage,
+      githubAuthStatus,
+      gridSearchQuery,
+      gridSearchResultCount,
+      gridSearchResultIndex,
+      handleGitHubAuthSetup,
+      isCommitSwitchFeedbackVisible,
+      mapGridOrientation,
+      setGridSearchQuery,
+      setGridSearchJumpDirection,
+      setGridSearchJumpToken,
+      setIsGridDebugOpen,
+      setMapGridOrientation,
+    ],
+  );
+
+  function upsertProjectSnapshot(path: string, snapshot: RepoVisualSnapshot) {
+    const signature = getRepoVisualSnapshotSignature(snapshot);
+    const previousSignature = projectSnapshotSignatureRef.current[path];
+    if (previousSignature === signature) return false;
+    projectSnapshotSignatureRef.current = {
+      ...projectSnapshotSignatureRef.current,
+      [path]: signature,
+    };
+    setProjectSnapshots((previous) => {
+      if (previous[path] === snapshot) return previous;
+      return {
+        ...previous,
+        [path]: snapshot,
+      };
+    });
+    return true;
+  }
 
   useEffect(() => {
     try {
@@ -352,10 +447,7 @@ function App() {
         repoPath: normalizedPath,
         forceRefresh,
       });
-      setProjectSnapshots((previous) => ({
-        ...previous,
-        [normalizedPath]: snapshot,
-      }));
+      upsertProjectSnapshot(normalizedPath, snapshot);
     } finally {
       loadingProjectSnapshotsRef.current.delete(normalizedPath);
       if (loadingProjectSnapshotsRef.current.size === 0) {
@@ -662,6 +754,11 @@ function App() {
   }
 
   function applySnapshotToActiveState(path: string, snapshot: RepoVisualSnapshot) {
+    const signature = getRepoVisualSnapshotSignature(snapshot);
+    if (activeSnapshotSignatureRef.current === signature) {
+      return false;
+    }
+    activeSnapshotSignatureRef.current = signature;
     setRepoName(snapshot.name || basenameFromPath(path));
     setDefaultBranch(snapshot.defaultBranch || 'main');
     setBranches(snapshot.branches);
@@ -677,6 +774,7 @@ function App() {
     setLaneByBranch(snapshot.laneByBranch ?? {});
     setBranchUniqueAheadCounts(snapshot.branchUniqueAheadCounts);
     setRepoPath(path);
+    return true;
   }
 
   async function refreshRepoSnapshotInBackground(
@@ -697,10 +795,7 @@ function App() {
         forceRefresh,
       });
       if (requestId !== loadRepoRequestIdRef.current) return;
-      setProjectSnapshots((previous) => ({
-        ...previous,
-        [path]: snapshot,
-      }));
+      upsertProjectSnapshot(path, snapshot);
       if (applyToActiveState && (repoPath === path || loadRepoRequestIdRef.current === requestId)) {
         setRepoName(info.name);
         setDefaultBranch(def);
@@ -760,10 +855,7 @@ function App() {
         forceRefresh: true,
       });
       if (requestId !== loadRepoRequestIdRef.current) return;
-      setProjectSnapshots((previous) => ({
-        ...previous,
-        [normalizedPath]: snapshot,
-      }));
+      upsertProjectSnapshot(normalizedPath, snapshot);
       applySnapshotToActiveState(normalizedPath, snapshot);
       persistProject({
         path: normalizedPath,
@@ -2378,23 +2470,7 @@ function App() {
                 setManuallyClosedClumps={setManuallyClosedGridClumps}
                 layoutModel={sharedGridLayoutModel}
                 orientation={mapGridOrientation}
-                gridHudProps={{
-                  githubAuthStatus,
-                  githubAuthLoading,
-                  onGitHubAuthSetup: handleGitHubAuthSetup,
-                  gridSearchQuery,
-                  setGridSearchQuery,
-                  gridSearchResultCount,
-                  gridSearchResultIndex,
-                  setGridSearchJumpDirection,
-                  setGridSearchJumpToken,
-                  mapGridOrientation,
-                  setMapGridOrientation,
-                  setIsGridDebugOpen,
-                  githubAuthMessage,
-                  commitSwitchFeedback,
-                  isCommitSwitchFeedbackVisible,
-                }}
+                  gridHudProps={gridHudProps}
               />
           </div>
 
