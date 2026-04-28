@@ -43,6 +43,18 @@ import {
   withCullInsetScreenPx,
 } from './mapGridUtils';
 
+function MapGridLoadingState() {
+  return (
+    <div className="flex flex-1 min-h-0 items-center justify-center">
+      <div
+        role="status"
+        aria-label="Loading commits"
+        className="h-5 w-5 rounded-full border-2 border-border border-t-muted-foreground animate-spin"
+      />
+    </div>
+  );
+}
+
 type Props = BranchGridViewProps & {
   isDebugOpen?: boolean;
   onDebugClose?: () => void;
@@ -1155,12 +1167,8 @@ export default function BranchGridMap({
           </div>
         </header>
       ) : null}
-      {allCommits.length === 0 ? (
-        <div className="flex flex-1 min-h-0 items-center justify-center py-20">
-          <div className="rounded-xl border border-border/50 bg-muted/30 px-4 py-3">
-            <p className="text-sm text-muted-foreground">No commits to render</p>
-          </div>
-        </div>
+      {isLoading || allCommits.length === 0 ? (
+        <MapGridLoadingState />
       ) : (
         <MapGridCanvas
           scrollContainerRef={scrollContainerRef}
