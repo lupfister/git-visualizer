@@ -145,7 +145,7 @@ function App() {
   const [gridSearchResultCount, setGridSearchResultCount] = useState<number | null>(null);
   const [gridSearchResultIndex, setGridSearchResultIndex] = useState<number | null>(null);
   const [gridFocusSha, setGridFocusSha] = useState<string | null>(null);
-  const [showCommits, setShowCommits] = useState(false);
+  const [showCommits] = useState(false);
   const [loading, setLoading] = useState(false);
   const [mapLoading, setMapLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -2592,7 +2592,6 @@ function App() {
               projectError={error}
               checkedOutRef={checkedOutRef}
               showCommits={showCommits}
-              onToggleShowCommits={() => setShowCommits((value) => !value)}
               manuallyOpenedClumpsByProject={manuallyOpenedGridClumpsByRepo}
               manuallyClosedClumpsByProject={manuallyClosedGridClumpsByRepo}
               manuallyOpenedClumps={effectiveManuallyOpenedGridClumps}

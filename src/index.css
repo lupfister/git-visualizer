@@ -222,6 +222,26 @@ body.popover-window #root {
   /* Chrome / Safari */
 }
 
+.sidebar-scrollbar {
+  scrollbar-color: var(--border) transparent;
+  scrollbar-width: thin;
+}
+
+.sidebar-scrollbar::-webkit-scrollbar {
+  width: 10px;
+}
+
+.sidebar-scrollbar::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+.sidebar-scrollbar::-webkit-scrollbar-thumb {
+  background-color: var(--border);
+  border: 3px solid transparent;
+  background-clip: content-box;
+  border-radius: 9999px;
+}
+
 /* Keep graph strokes visually stable while camera scales. */
 .branch-map-svg path,
 .branch-map-svg line,

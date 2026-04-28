@@ -47,7 +47,6 @@ type Props = {
   onSelectCommit?: (sha: string) => void;
   onSelectBranch?: (branchName: string) => void;
   showCommits: boolean;
-  onToggleShowCommits: () => void;
   className?: string;
   style?: CSSProperties;
   collapsed?: boolean;
@@ -509,7 +508,6 @@ export default function DenseBranchSidebar({
   onSelectCommit,
   onSelectBranch,
   showCommits,
-  onToggleShowCommits,
   className,
   style,
   collapsed = false,
@@ -1128,47 +1126,7 @@ export default function DenseBranchSidebar({
       className={cn('pointer-events-auto relative h-full select-none overflow-hidden', className)}
       style={style}
     >
-      <header data-tauri-drag-region className="absolute inset-x-0 top-0 z-80 flex h-12 items-start px-2.5 pt-2.25">
-        <div className="ml-auto flex items-center gap-2">
-          <button
-            type="button"
-            onClick={onAddProject}
-            disabled={projectLoading}
-            aria-label="Add Repo"
-            className="window-no-drag flex h-7 w-7 shrink-0 items-center justify-center rounded-md text-muted-foreground transition-colors hover:bg-accent disabled:cursor-not-allowed disabled:opacity-50"
-          >
-            <svg
-              aria-hidden="true"
-              viewBox="0 0 24 24"
-              fill="none"
-              className="h-4.5 w-4.5 shrink-0"
-            >
-              <path
-                d="M19.5 10V8C19.5 6.89543 18.6046 6 17.5 6H12.5C11.8509 6 11.2193 5.78947 10.7 5.4L10.3 5.1C9.78071 4.71053 9.14911 4.5 8.5 4.5H5.5C4.39543 4.5 3.5 5.39543 3.5 6.5V16.5C3.5 17.6046 4.39543 18.5 5.5 18.5H11"
-                stroke="currentColor"
-                strokeWidth="1.5"
-                strokeLinecap="round"
-              />
-              <path
-                d="M18 17V14M18 17H15M18 17H21M18 17V20"
-                stroke="currentColor"
-                strokeWidth="1.5"
-                strokeLinecap="round"
-              />
-              <path d="M3.5 10L11.9211 10L19.5 10" stroke="currentColor" strokeWidth="1.5" />
-            </svg>
-          </button>
-          <button
-            type="button"
-            onClick={onToggleShowCommits}
-            aria-hidden="true"
-            tabIndex={-1}
-            className="hidden"
-          >
-            {showCommits ? 'Hide Commits' : 'Show Commits'}
-          </button>
-        </div>
-      </header>
+      <header data-tauri-drag-region className="absolute inset-x-0 top-0 z-80 h-12" />
       <div className="flex h-full min-h-0 flex-col">
         {projectError && (
           <div className="px-2.5 pb-2">
@@ -1177,9 +1135,32 @@ export default function DenseBranchSidebar({
             </p>
           </div>
         )}
+        <div className={cn('px-2 pb-2', collapsed ? 'opacity-0 pointer-events-none' : '')}>
+          <div className="px-1">
+            <button
+              type="button"
+              onClick={onAddProject}
+              disabled={projectLoading}
+              aria-label="Add Repo"
+              className="window-no-drag group flex w-full items-center gap-0 rounded-lg px-0 h-6 text-muted-foreground transition-colors hover:bg-accent disabled:cursor-not-allowed disabled:opacity-50"
+            >
+              <span className="flex h-6 w-6 shrink-0 items-center justify-center rounded-md transition-colors group-hover:bg-accent">
+                <svg aria-hidden="true" viewBox="0 0 24 24" fill="none" className="h-4 w-4 shrink-0">
+                  <path d="M12 5V19M5 12H19" stroke="currentColor" strokeWidth="1.75" strokeLinecap="round" />
+                </svg>
+              </span>
+              <span className="min-w-0 flex-1 truncate pl-0 text-left text-sm font-normal text-muted-foreground">
+                New Project
+              </span>
+            </button>
+          </div>
+        </div>
         <div
           ref={scrollBodyRef}
-          className={cn('min-h-0 flex-1 space-y-2 overflow-y-auto px-2', collapsed ? 'opacity-0 pointer-events-none' : '')}
+          className={cn(
+            'sidebar-scrollbar min-h-0 flex-1 space-y-2 overflow-y-auto px-2',
+            collapsed ? 'opacity-0 pointer-events-none' : '',
+          )}
           style={{ scrollbarGutter: 'stable both-edges' }}
         >
           {renderedProjects.map((project) => renderProject(project, { hideLive: draggingProjectPath === project.path }))}
