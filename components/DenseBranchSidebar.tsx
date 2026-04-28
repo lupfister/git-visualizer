@@ -749,27 +749,25 @@ export default function DenseBranchSidebar({
 
   const startProjectDrag = useCallback((event: ReactPointerEvent<HTMLDivElement>, path: string) => {
     if (event.button !== 0) return;
-    event.preventDefault();
-    event.stopPropagation();
-      dragStateRef.current = {
-        active: true,
-        path,
-        startX: event.clientX,
-        startY: event.clientY,
-        offsetX: event.clientX - event.currentTarget.getBoundingClientRect().left,
-        offsetY: event.clientY - event.currentTarget.getBoundingClientRect().top,
-        width: event.currentTarget.getBoundingClientRect().width,
-        moved: false,
-      };
+    const rect = event.currentTarget.getBoundingClientRect();
+    dragStateRef.current = {
+      active: true,
+      path,
+      startX: event.clientX,
+      startY: event.clientY,
+      offsetX: event.clientX - rect.left,
+      offsetY: event.clientY - rect.top,
+      width: rect.width,
+      moved: false,
+    };
     setDragPendingProjectPath(path);
     setDraggingProjectPath(null);
     setDragPreviewIndex(null);
     setDragGhostRect({
-      x: event.clientX - event.currentTarget.getBoundingClientRect().left,
-      y: event.clientY - event.currentTarget.getBoundingClientRect().top,
-      width: event.currentTarget.getBoundingClientRect().width,
+      x: event.clientX - rect.left,
+      y: event.clientY - rect.top,
+      width: rect.width,
     });
-    event.currentTarget.setPointerCapture(event.pointerId);
   }, []);
 
   const defaultCollapsedClumps = gridLayoutModel?.defaultCollapsedClumps ?? new Set<string>();
@@ -1016,6 +1014,13 @@ export default function DenseBranchSidebar({
               if (target?.closest('.window-no-drag, button, input, textarea, select, [contenteditable="true"]')) return;
               startProjectDrag(event, project.path);
             }}
+            onClick={(event) => {
+              if (ghostMode) return;
+              if (draggingProjectPath === project.path || suppressProjectSelectRef.current) return;
+              const target = event.target as HTMLElement | null;
+              if (target?.closest('button, input, textarea, select, [contenteditable="true"]')) return;
+              void onSelectProject(project.path);
+            }}
           >
             <button
               type="button"
@@ -1042,7 +1047,7 @@ export default function DenseBranchSidebar({
             </button>
             <span
               className={cn(
-                'min-w-0 flex-1 truncate pl-0 text-left text-sm transition-colors hover:text-foreground',
+                'min-w-0 flex-1 truncate pl-0 text-left text-sm transition-colors',
                 'font-normal',
                 isActive ? 'text-primary' : 'text-muted-foreground',
               )}
@@ -1066,12 +1071,12 @@ export default function DenseBranchSidebar({
               >
                 <MoreHorizontal className="h-4 w-4 shrink-0" />
               </button>
-              {openProjectMenuPath === project.path && !ghostMode ? (
-                <div
-                  role="menu"
-                  className="absolute right-0 top-full z-30 mt-1 w-40 overflow-hidden rounded-xl border border-border/60 bg-card p-1 shadow-lg"
-                  onClick={(event) => event.stopPropagation()}
-                >
+            {openProjectMenuPath === project.path && !ghostMode ? (
+              <div
+                role="menu"
+                className="absolute right-0 top-full z-[100] mt-1 w-40 overflow-hidden rounded-xl border border-border/60 bg-card p-1 shadow-lg"
+                onClick={(event) => event.stopPropagation()}
+              >
                   <button
                     type="button"
                     role="menuitem"
