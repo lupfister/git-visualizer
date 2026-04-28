@@ -1,5 +1,5 @@
-import { useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
-import type { CSSProperties, Dispatch, SetStateAction } from 'react';
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
+import type { CSSProperties, Dispatch, PointerEvent as ReactPointerEvent, SetStateAction } from 'react';
 import { ChevronRight, MoreHorizontal } from 'lucide-react';
 import type { Branch, BranchCommitPreview, CheckedOutRef, DirectCommit, GitStashEntry, MergeNode, WorktreeInfo } from '../types';
 import { cn, shaMatchesGitRef } from './grid/mapGridUtils';
@@ -8,6 +8,7 @@ import { deriveRepoVisualState } from '../src/repoVisualState';
 
 const EXPANDED_PROJECTS_STORAGE_KEY = 'git-visualizer:expanded-projects';
 const EXPANDED_BRANCHES_STORAGE_KEY = 'git-visualizer:expanded-branches';
+const PROJECT_ORDER_STORAGE_KEY = 'git-visualizer:project-order';
 
 type Props = {
   projects: Array<{
@@ -530,6 +531,19 @@ export default function DenseBranchSidebar({
   const setManuallyClosedClumps = controlledSetManuallyClosedClumps ?? setLocalManuallyClosedClumps;
   const [pendingClumpFocusTargetId, setPendingClumpFocusTargetId] = useState<string | null>(null);
   const [pendingClumpAnchor, setPendingClumpAnchor] = useState<{ id: string; topWithinScrollBody: number } | null>(null);
+  const [projectOrder, setProjectOrder] = useState<string[] | null>(null);
+  const [dragPendingProjectPath, setDragPendingProjectPath] = useState<string | null>(null);
+  const [draggingProjectPath, setDraggingProjectPath] = useState<string | null>(null);
+  const [dragPreviewIndex, setDragPreviewIndex] = useState<number | null>(null);
+  const suppressProjectSelectRef = useRef(false);
+  const dragStateRef = useRef<{
+    active: boolean;
+    path: string;
+    startX: number;
+    startY: number;
+    moved: boolean;
+  } | null>(null);
+  const dragRafRef = useRef<number | null>(null);
   const persistExpandedProjects = (next: Set<string>) => {
     try {
       window.localStorage.setItem(EXPANDED_PROJECTS_STORAGE_KEY, JSON.stringify(Array.from(next)));
@@ -573,6 +587,176 @@ export default function DenseBranchSidebar({
   useEffect(() => {
     persistExpandedBranches(expandedBranchNamesByProject);
   }, [expandedBranchNamesByProject]);
+  useEffect(() => {
+    try {
+      const raw = window.localStorage.getItem(PROJECT_ORDER_STORAGE_KEY);
+      if (!raw) return;
+      const parsed = JSON.parse(raw);
+      if (!Array.isArray(parsed)) return;
+      const next: string[] = [];
+      for (const value of parsed) {
+        if (typeof value === 'string' && projects.some((project) => project.path === value)) {
+          next.push(value);
+        }
+      }
+      setProjectOrder(next);
+    } catch {
+      // ignore storage failures
+    }
+  }, []);
+
+  useEffect(() => {
+    if (!projectOrder) return;
+    try {
+      window.localStorage.setItem(PROJECT_ORDER_STORAGE_KEY, JSON.stringify(projectOrder));
+    } catch {
+      // ignore storage failures
+    }
+  }, [projectOrder]);
+
+  const orderedProjects = useMemo(() => {
+    if (!projectOrder || projectOrder.length === 0) return projects;
+    const byPath = new Map(projects.map((project) => [project.path, project]));
+    const next: typeof projects = [];
+    for (const path of projectOrder) {
+      const project = byPath.get(path);
+      if (!project) continue;
+      next.push(project);
+      byPath.delete(path);
+    }
+    for (const project of projects) {
+      if (byPath.has(project.path)) next.push(project);
+    }
+    return next;
+  }, [projectOrder, projects]);
+  const renderedProjects = useMemo(() => {
+    if (!draggingProjectPath) return orderedProjects;
+    const movingProject = orderedProjects.find((project) => project.path === draggingProjectPath);
+    if (!movingProject) return orderedProjects;
+    const baseProjects = orderedProjects.filter((project) => project.path !== draggingProjectPath);
+    if (dragPreviewIndex == null) return baseProjects;
+    const next = [...baseProjects];
+    const boundedIndex = Math.max(0, Math.min(dragPreviewIndex, next.length));
+    next.splice(boundedIndex, 0, movingProject);
+    return next;
+  }, [dragPreviewIndex, draggingProjectPath, orderedProjects]);
+
+  const commitProjectOrder = useCallback((nextOrder: string[]) => {
+    setProjectOrder(nextOrder);
+  }, []);
+
+  const clearDragPreview = useCallback(() => {
+    setDragPendingProjectPath(null);
+    setDraggingProjectPath(null);
+    setDragPreviewIndex(null);
+  }, []);
+
+  useEffect(() => {
+    if (!dragPendingProjectPath) return;
+    const handlePointerMove = (event: PointerEvent) => {
+      const dragState = dragStateRef.current;
+      if (!dragState || !dragState.active) return;
+      if (Math.abs(event.clientX - dragState.startX) <= 4 && Math.abs(event.clientY - dragState.startY) <= 4) return;
+      if (dragRafRef.current != null) return;
+      dragRafRef.current = window.requestAnimationFrame(() => {
+        dragRafRef.current = null;
+        const currentDragState = dragStateRef.current;
+        if (!currentDragState || !currentDragState.active) return;
+        if (Math.abs(event.clientX - currentDragState.startX) > 4 || Math.abs(event.clientY - currentDragState.startY) > 4) {
+          currentDragState.moved = true;
+          setDraggingProjectPath(currentDragState.path);
+        }
+
+        const rows = Array.from(scrollBodyRef.current?.querySelectorAll<HTMLElement>('[data-project-path]') ?? []);
+        const targetRows = rows.filter((row) => row.dataset.projectPath && row.dataset.projectPath !== currentDragState.path);
+        let nextPreviewIndex = targetRows.length;
+        if (targetRows.length > 0) {
+          for (let index = 0; index < targetRows.length; index += 1) {
+            const rect = targetRows[index]!.getBoundingClientRect();
+            const midpoint = rect.top + rect.height / 2;
+            if (event.clientY < midpoint) {
+              nextPreviewIndex = index;
+              break;
+            }
+          }
+        }
+        setDragPreviewIndex(nextPreviewIndex);
+      });
+    };
+    const handlePointerUp = () => {
+      const dragState = dragStateRef.current;
+      dragStateRef.current = null;
+      if (dragRafRef.current != null) {
+        window.cancelAnimationFrame(dragRafRef.current);
+        dragRafRef.current = null;
+      }
+      if (!dragState) {
+        clearDragPreview();
+        return;
+      }
+      if (!dragState.moved) {
+        clearDragPreview();
+        return;
+      }
+      suppressProjectSelectRef.current = true;
+      const currentOrder = orderedProjects.map((project) => project.path);
+      const fromIndex = currentOrder.indexOf(dragState.path);
+      if (fromIndex < 0) {
+        clearDragPreview();
+        return;
+      }
+      const previewIndex = dragPreviewIndex;
+      if (previewIndex == null) {
+        clearDragPreview();
+        return;
+      }
+      const nextOrder = currentOrder.filter((path) => path !== dragState.path);
+      const boundedIndex = Math.max(0, Math.min(previewIndex, nextOrder.length));
+      nextOrder.splice(boundedIndex, 0, dragState.path);
+      commitProjectOrder(nextOrder);
+      clearDragPreview();
+      window.requestAnimationFrame(() => {
+        suppressProjectSelectRef.current = false;
+        setOpenProjectMenuPath(null);
+      });
+    };
+    window.addEventListener('pointermove', handlePointerMove);
+    window.addEventListener('pointerup', handlePointerUp);
+    window.addEventListener('pointercancel', handlePointerUp);
+    return () => {
+      window.removeEventListener('pointermove', handlePointerMove);
+      window.removeEventListener('pointerup', handlePointerUp);
+      window.removeEventListener('pointercancel', handlePointerUp);
+    };
+  }, [
+    clearDragPreview,
+    commitProjectOrder,
+    dragPendingProjectPath,
+    dragPreviewIndex,
+    orderedProjects,
+  ]);
+
+  const startProjectDrag = useCallback((event: ReactPointerEvent<HTMLDivElement>, path: string) => {
+    if (event.button !== 0) return;
+    event.preventDefault();
+    event.stopPropagation();
+    dragStateRef.current = {
+      active: true,
+      path,
+      startX: event.clientX,
+      startY: event.clientY,
+      moved: false,
+    };
+    setDragPendingProjectPath(path);
+    setDraggingProjectPath(null);
+    setDragPreviewIndex(null);
+    event.currentTarget.setPointerCapture(event.pointerId);
+  }, []);
+
+  const shouldStartProjectDrag = (target: EventTarget | null): target is HTMLElement => {
+    if (!(target instanceof HTMLElement)) return false;
+    return !target.closest('button[aria-label^="Project actions for"], button[aria-label^="Expand"], button[aria-label^="Collapse"]');
+  };
 
   const defaultCollapsedClumps = gridLayoutModel?.defaultCollapsedClumps ?? new Set<string>();
   const isGridClusterOpen = (clusterKey: string): boolean =>
@@ -831,7 +1015,7 @@ export default function DenseBranchSidebar({
           className={cn('min-h-0 flex-1 space-y-6 overflow-y-auto px-2.5', collapsed ? 'opacity-0 pointer-events-none' : '')}
           style={{ scrollbarGutter: 'stable both-edges' }}
         >
-          {projects.map((project) => {
+          {renderedProjects.map((project) => {
             const isActive = project.path === activeProjectPath;
             const isExpanded = expandedProjects.has(project.path);
             const projectTreeLoaded = project.treeLoaded ?? project.branches.length > 0;
@@ -848,21 +1032,35 @@ export default function DenseBranchSidebar({
             return (
               <div
                 key={project.path}
-                className={cn(
+                data-project-path={project.path}
+              className={cn(
                   'relative z-0',
                   isExpanded && projectRender ? 'mb-5' : 'mb-1',
                 )}
               >
+                {dragPreviewIndex !== null && draggingProjectPath !== project.path && renderedProjects[dragPreviewIndex]?.path === project.path ? (
+                  <div className="h-px" aria-hidden="true">
+                    <div className="mx-1 h-px bg-primary/60" />
+                  </div>
+                ) : null}
                 <div className="relative z-0 px-1">
                   <div
                     className={cn(
-                      'sticky top-0 z-20 flex w-full items-center gap-0 rounded-lg bg-background px-0 py-1 transition-colors hover:bg-accent',
+                      'sticky top-0 z-20 flex w-full items-center gap-0 rounded-lg bg-background px-0 py-1 transition-colors hover:bg-accent cursor-grab active:cursor-grabbing',
                       isActive ? 'text-foreground' : 'text-muted-foreground',
+                      draggingProjectPath === project.path ? 'opacity-95' : '',
                     )}
+                    onPointerDownCapture={(event) => {
+                      if (!shouldStartProjectDrag(event.target)) return;
+                      startProjectDrag(event, project.path);
+                    }}
                   >
                     <button
                       type="button"
-                      onClick={() => {
+                      onPointerDown={(event) => event.stopPropagation()}
+                      onClick={(event) => {
+                        event.preventDefault();
+                        event.stopPropagation();
                         setExpandedProjects((previous) => {
                           const next = new Set(previous);
                           if (next.has(project.path)) next.delete(project.path);
@@ -877,9 +1075,7 @@ export default function DenseBranchSidebar({
                     >
                       <ProjectIcon open={isExpanded} />
                     </button>
-                    <button
-                      type="button"
-                      onClick={() => { void onSelectProject(project.path); }}
+                    <span
                       className={cn(
                         'min-w-0 flex-1 truncate pl-0 text-left text-sm transition-colors hover:text-foreground',
                         'font-normal',
@@ -887,10 +1083,11 @@ export default function DenseBranchSidebar({
                       )}
                     >
                       {project.name}
-                    </button>
+                    </span>
                     <div className="relative shrink-0">
                       <button
                         type="button"
+                        onPointerDown={(event) => event.stopPropagation()}
                         aria-label={`Project actions for ${project.name}`}
                         aria-expanded={openProjectMenuPath === project.path}
                         onClick={(event) => {
