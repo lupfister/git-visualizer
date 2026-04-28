@@ -196,6 +196,7 @@ function App() {
   const activeSnapshotSignatureRef = useRef<string | null>(null);
   const projectFingerprintRef = useRef<Record<string, string>>({});
   const projectQuickStateRef = useRef<Record<string, string>>({});
+  const isRepoSwitchingRef = useRef(false);
   const sidebarDragRef = useRef<{
     startX: number;
     startWidth: number;
@@ -450,6 +451,7 @@ function App() {
 
   useEffect(() => {
     if (!repoPath) return;
+    if (isRepoSwitchingRef.current) return;
     setProjectSnapshots((previous) => ({
       ...previous,
       [repoPath]: {
@@ -776,6 +778,7 @@ function App() {
   async function handleSwitchToWorktree(targetPath: string) {
     setCommitSwitchFeedback(null);
     setMapLoading(true);
+    isRepoSwitchingRef.current = true;
     try {
       const [info, def] = await Promise.all([
         invoke<{ name: string; path: string }>('get_repo_info', { repoPath: targetPath }),
@@ -799,6 +802,7 @@ function App() {
       console.error('Failed to switch worktree:', message);
     } finally {
       setMapLoading(false);
+      isRepoSwitchingRef.current = false;
     }
   }
 
@@ -853,6 +857,7 @@ function App() {
     const requestId = ++loadRepoRequestIdRef.current;
     const normalizedPath = normalizePath(path);
     if (!normalizedPath) return;
+    isRepoSwitchingRef.current = true;
 
     const cachedSnapshot = projectSnapshots[normalizedPath];
     if (cachedSnapshot?.loaded) {
@@ -909,6 +914,7 @@ function App() {
               // Background validation is best-effort.
             }
           })();
+          isRepoSwitchingRef.current = false;
           return;
         }
         projectQuickStateRef.current = {
@@ -971,6 +977,8 @@ function App() {
       setRepoPath(null);
       setLoading(false);
       setMapLoading(false);
+    } finally {
+      isRepoSwitchingRef.current = false;
     }
   }
 
