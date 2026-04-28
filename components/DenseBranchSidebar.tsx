@@ -197,7 +197,7 @@ function BranchRows({
   const isCheckedOut = checkedOutBranchName === branchName;
   const nextAncestors = new Set(ancestors);
   nextAncestors.add(branchName);
-  const bendClassName = 'top-[-0.2rem] h-4.5 w-[10px]';
+  const bendClassName = 'top-[-0.45rem] h-5 w-[10px]';
   const bendCornerClassName = 'rounded-bl-[7px]';
   const connectorLeftClassName = 'left-[0.65rem]';
 
@@ -255,14 +255,14 @@ function BranchRows({
     return clumps;
   }, [branchName, showCommits, visibleCommitPreviews, clusterKeyByCommitId]);
 
-  return (
-    <li
-      className={cn(
-        'relative',
-        depth > 0 ? 'pl-4' : 'pl-0',
-        depth === 0 && !isLast ? (isExpanded ? 'mb-5' : 'mb-1') : '',
-      )}
-    >
+    return (
+      <li
+        className={cn(
+          'relative flex flex-col gap-1',
+          depth > 0 ? 'pl-4' : 'pl-0',
+          isExpanded ? 'mb-2.5' : '',
+        )}
+      >
       {depth > 0 ? (
         <span
           aria-hidden="true"
@@ -279,7 +279,7 @@ function BranchRows({
           aria-hidden="true"
           className={cn(
             'absolute top-0 border-l-[1.5px] border-border',
-            'bottom-[-0.5rem]',
+            'bottom-[-0.25rem]',
             connectorLeftClassName,
           )}
         />
@@ -288,7 +288,7 @@ function BranchRows({
       <div className="flex items-center gap-1">
         <div
           className={cn(
-            'group flex min-w-0 flex-1 items-center gap-0 rounded-md px-2 h-7 text-left text-sm font-normal transition-colors hover:bg-accent',
+            'group flex min-w-0 flex-1 items-center gap-0 rounded-md px-2 h-6 text-left text-sm font-normal transition-colors hover:bg-accent',
             'text-muted-foreground hover:text-foreground',
           )}
           role={isBranchExpandable ? 'button' : undefined}
@@ -354,12 +354,12 @@ function BranchRows({
                     <button
                       type="button"
                       onClick={() => onSelectCommit?.(commit.fullSha)}
-                      className="min-w-0 flex-1 rounded-md px-2 py-1 text-left text-xs font-normal leading-4 text-muted-foreground/70 transition-colors hover:bg-accent hover:text-muted-foreground"
+                      className="min-w-0 flex-1 rounded-md px-2 h-6 text-left text-xs font-normal leading-4 text-muted-foreground/70 transition-colors hover:bg-accent hover:text-muted-foreground"
                       title={commit.message}
                     >
                       <span className="block truncate">{commit.message}</span>
                       {mergeTargetLabels.length > 0 ? (
-                        <span className="mt-0 block space-y-0.5">
+                        <span className="mt-0 block space-y-2">
                           {mergeTargetLabels.map((targetBranch) => (
                             <span key={`${commit.fullSha}:${targetBranch}`} className="block truncate">
                               <span>Merged to </span>
@@ -375,7 +375,7 @@ function BranchRows({
                       data-clump-toggle-id={`${branchName}:${clump.lead.fullSha}`}
                       onClick={() => onToggleGridCluster(clump.key, `${branchName}:${clump.lead.fullSha}`)}
                       className={cn(
-                        'shrink-0 rounded-md px-2 py-1 text-left text-xs font-normal leading-4 text-muted-foreground/70 transition-colors hover:bg-accent hover:text-muted-foreground',
+                        'shrink-0 rounded-md px-2 h-6 text-left text-xs font-normal leading-4 text-muted-foreground/70 transition-colors hover:bg-accent hover:text-muted-foreground',
                         clumpCollapsed ? '' : 'min-w-[2ch] text-center',
                       )}
                       >
@@ -384,7 +384,7 @@ function BranchRows({
                     ) : null}
                   </div>
                   {anchoredChildrenByCommitIndex.get(idx)?.length ? (
-                    <ul className="relative mb-1.75 space-y-0">
+                    <ul className="relative space-y-1">
                       {anchoredChildrenByCommitIndex.get(idx)!.map((childName, childIdx, list) => (
                         <BranchRows
                           key={childName}
@@ -420,7 +420,7 @@ function BranchRows({
       ) : null}
 
       {hasChildBranches && isExpanded && unanchoredChildren.length > 0 ? (
-        <ul className="relative mb-1.75 space-y-1.75">
+        <ul className="relative space-y-1">
           {unanchoredChildren.map((childName, idx) => (
             <BranchRows
               key={childName}
@@ -1005,7 +1005,7 @@ export default function DenseBranchSidebar({
         layout="position"
         transition={{ duration: 0.12, ease: 'easeOut' }}
         data-project-path={project.path}
-        className={cn('relative z-0', isExpanded && projectRender ? 'mb-5' : 'mb-1')}
+        className={cn('relative z-0 flex flex-col gap-1', isExpanded && projectRender ? 'mb-2.5' : '')}
       >
         {dragPreviewIndex !== null && draggingProjectPath !== project.path && renderedProjects[dragPreviewIndex]?.path === project.path ? (
           <div className="h-px" aria-hidden="true">
@@ -1016,8 +1016,8 @@ export default function DenseBranchSidebar({
           <div
             className={cn(
               ghostMode
-                ? 'flex w-full items-center gap-0 rounded-lg px-0 py-1 text-muted-foreground'
-                : 'sticky top-0 z-20 flex w-full items-center gap-0 rounded-lg bg-background px-0 py-1 transition-all duration-100 ease-out hover:bg-accent cursor-grab active:cursor-grabbing',
+                ? 'group flex w-full items-center gap-0 rounded-lg px-0 h-6 text-muted-foreground'
+                : 'group sticky top-0 z-20 flex w-full items-center gap-0 rounded-lg bg-background px-0 h-6 transition-all duration-100 ease-out hover:bg-accent cursor-grab active:cursor-grabbing',
               'text-muted-foreground',
               isDraggingProject && !ghostMode ? 'opacity-0' : '',
             )}
@@ -1078,7 +1078,7 @@ export default function DenseBranchSidebar({
                   setOpenProjectMenuPath((current) => (current === project.path ? null : project.path));
                 }}
                 className={cn(
-                  'flex h-6 w-6 shrink-0 items-center justify-center rounded-md text-muted-foreground transition-colors hover:bg-accent hover:text-muted-foreground',
+                  'pr-1.5 flex h-6 w-6 shrink-0 items-center justify-center rounded-md text-muted-foreground opacity-0 hover:bg-accent hover:text-muted-foreground group-hover:opacity-100',
                   ghostMode ? 'pointer-events-none' : '',
                 )}
               >
@@ -1087,7 +1087,7 @@ export default function DenseBranchSidebar({
             {openProjectMenuPath === project.path && !ghostMode ? (
               <div
                 role="menu"
-                className="absolute right-0 top-full z-[100] mt-1 w-40 overflow-hidden rounded-xl border border-border/60 bg-card p-1 shadow-lg"
+                className="absolute right-0 top-full z-[120] mt-1 w-40 overflow-hidden rounded-xl border border-border/60 bg-card p-1 shadow-lg"
                 onClick={(event) => event.stopPropagation()}
               >
                   <button
@@ -1118,7 +1118,7 @@ export default function DenseBranchSidebar({
           </div>
           {isExpanded ? (
             projectTreeLoaded && projectRender ? (
-              <ul className={cn('relative z-0 space-y-0 pt-0', ghostMode ? 'opacity-70' : '')}>
+              <ul className={cn('relative z-0 space-y-1 pt-0', ghostMode ? 'opacity-70' : '')}>
                 {projectRender.rootBranchNames.map((branchName, idx) => (
                   <BranchRows
                     key={`${project.path}:${branchName}`}
@@ -1220,7 +1220,7 @@ export default function DenseBranchSidebar({
         )}
         <div
           ref={scrollBodyRef}
-          className={cn('min-h-0 flex-1 space-y-6 overflow-y-auto px-2.5', collapsed ? 'opacity-0 pointer-events-none' : '')}
+          className={cn('min-h-0 flex-1 space-y-2 overflow-y-auto px-2', collapsed ? 'opacity-0 pointer-events-none' : '')}
           style={{ scrollbarGutter: 'stable both-edges' }}
         >
           {renderedProjects.map((project) => renderProject(project, { hideLive: draggingProjectPath === project.path }))}
