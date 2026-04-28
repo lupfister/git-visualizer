@@ -52,7 +52,7 @@ struct DeleteSelectionResult {
 static WATCHER_STATE: OnceLock<Mutex<HashMap<String, notify::RecommendedWatcher>>> = OnceLock::new();
 const GIT_ACTIVITY_LOCAL_MIN_EMIT_MS: u64 = 250;
 const GIT_ACTIVITY_GRAPH_MIN_EMIT_MS: u64 = 120;
-const REPO_VISUAL_CACHE_SCHEMA_VERSION: i32 = 15;
+const REPO_VISUAL_CACHE_SCHEMA_VERSION: i32 = 5;
 #[cfg(target_os = "macos")]
 const OPEN_REPO_DETECTION_CACHE_TTL: StdDuration = StdDuration::from_secs(8);
 
@@ -1031,6 +1031,34 @@ fn get_repo_quick_state(repo_path: String) -> Result<RepoQuickState, String> {
         upstream_sha,
         has_uncommitted_changes: !porcelain.trim().is_empty(),
     })
+}
+
+#[tauri::command(rename_all = "camelCase")]
+fn get_remote_branch_head_sha(repo_path: String, branch: String) -> Result<Option<String>, String> {
+    let path = Path::new(&repo_path);
+    let (remote, has_upstream) = get_branch_push_remote(path, &branch)?;
+    let remote_branch = if has_upstream {
+        match git::cli::run(path, &["rev-parse", "--abbrev-ref", &format!("{branch}@{{upstream}}")]) {
+            Ok(output) => output
+                .trim()
+                .split_once('/')
+                .map(|(_, branch_name)| branch_name.to_string())
+                .unwrap_or(branch),
+            Err(_) => branch,
+        }
+    } else {
+        branch
+    };
+
+    let output = git::cli::run(path, &["ls-remote", &remote, &format!("refs/heads/{remote_branch}")])
+        .map_err(|e| e.to_string())?;
+    let sha = output
+        .lines()
+        .next()
+        .and_then(|line| line.split_whitespace().next())
+        .map(|value| value.trim().to_string())
+        .filter(|value| !value.is_empty());
+    Ok(sha)
 }
 
 #[tauri::command]
@@ -4595,6 +4623,7 @@ pub fn run() {
             get_repo_visual_snapshot,
             get_repo_quick_state,
             get_repo_refresh_fingerprint,
+            get_remote_branch_head_sha,
             get_merge_nodes,
             get_default_branch,
             get_checked_out_ref,

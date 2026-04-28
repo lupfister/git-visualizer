@@ -1306,9 +1306,9 @@ function App() {
     let isDisposed = false;
     let refreshQueued = false;
     let refreshInFlight = false;
-    let fingerprintInFlight = false;
-    let lastFingerprintSignature: string | null = null;
-    let fingerprintIntervalId: number | null = null;
+    let remoteTipInFlight = false;
+    let lastRemoteTipSha: string | null = null;
+    let remoteTipIntervalId: number | null = null;
     let unlisten: (() => void) | null = null;
 
     const runRefreshIfNeeded = async () => {
@@ -1345,35 +1345,38 @@ function App() {
       void runRefreshIfNeeded();
     };
 
-    const syncRemoteFingerprint = async () => {
-      if (isDisposed || fingerprintInFlight) return;
-      fingerprintInFlight = true;
+    const syncRemoteTip = async () => {
+      if (isDisposed || remoteTipInFlight || document.visibilityState !== 'visible') return;
+      remoteTipInFlight = true;
       try {
-        const fingerprint = await invoke<RepoRefreshFingerprint>('get_repo_refresh_fingerprint', {
+        const remoteTipSha = await invoke<string | null>('get_remote_branch_head_sha', {
           repoPath,
+          branch: defaultBranch,
         });
         if (isDisposed) return;
-        const nextSignature = fingerprintSignature(fingerprint);
-        if (lastFingerprintSignature == null) {
-          lastFingerprintSignature = nextSignature;
+        if (remoteTipSha == null) {
           return;
         }
-        if (nextSignature === lastFingerprintSignature) {
+        if (lastRemoteTipSha == null) {
+          lastRemoteTipSha = remoteTipSha;
           return;
         }
-        lastFingerprintSignature = nextSignature;
+        if (remoteTipSha === lastRemoteTipSha) {
+          return;
+        }
+        lastRemoteTipSha = remoteTipSha;
         await refreshRepoGitState(repoPath, defaultBranch);
       } catch (error) {
-        console.warn('Fingerprint refresh failed:', error);
+        console.warn('Remote tip refresh failed:', error);
       } finally {
-        fingerprintInFlight = false;
+        remoteTipInFlight = false;
       }
     };
 
-    fingerprintIntervalId = window.setInterval(() => {
-      void syncRemoteFingerprint();
-    }, 1800);
-    void syncRemoteFingerprint();
+    remoteTipIntervalId = window.setInterval(() => {
+      void syncRemoteTip();
+    }, 15000);
+    void syncRemoteTip();
 
     listen<GitActivityEventPayload>('git-activity', (event) => {
       if (normalizePath(event.payload.repoPath) !== repoPath) return;
@@ -1386,7 +1389,7 @@ function App() {
 
     return () => {
       isDisposed = true;
-      if (fingerprintIntervalId != null) window.clearInterval(fingerprintIntervalId);
+      if (remoteTipIntervalId != null) window.clearInterval(remoteTipIntervalId);
       if (unlisten) unlisten();
     };
   }, [repoPath, defaultBranch, isFrozenRepo]);
