@@ -9,7 +9,6 @@ import { deriveRepoVisualState } from '../src/repoVisualState';
 
 const EXPANDED_PROJECTS_STORAGE_KEY = 'git-visualizer:expanded-projects';
 const EXPANDED_BRANCHES_STORAGE_KEY = 'git-visualizer:expanded-branches';
-const PROJECT_ORDER_STORAGE_KEY = 'git-visualizer:project-order';
 
 type Props = {
   projects: Array<{
@@ -34,6 +33,7 @@ type Props = {
   onAddProject: () => void;
   onRemoveProject: (path: string) => void;
   onRevealProjectInFinder: (path: string) => Promise<void> | void;
+  onReorderProjects?: (nextOrder: string[]) => void;
   projectLoading?: boolean;
   projectError?: string | null;
   checkedOutRef?: CheckedOutRef | null;
@@ -495,6 +495,7 @@ export default function DenseBranchSidebar({
   onAddProject,
   onRemoveProject,
   onRevealProjectInFinder,
+  onReorderProjects,
   projectLoading = false,
   projectError = null,
   checkedOutRef,
@@ -544,7 +545,6 @@ export default function DenseBranchSidebar({
   const setManuallyClosedClumps = controlledSetManuallyClosedClumps ?? setLocalManuallyClosedClumps;
   const [pendingClumpFocusTargetId, setPendingClumpFocusTargetId] = useState<string | null>(null);
   const [pendingClumpAnchor, setPendingClumpAnchor] = useState<{ id: string; topWithinScrollBody: number } | null>(null);
-  const [projectOrder, setProjectOrder] = useState<string[] | null>(null);
   const [dragPendingProjectPath, setDragPendingProjectPath] = useState<string | null>(null);
   const [draggingProjectPath, setDraggingProjectPath] = useState<string | null>(null);
   const [dragPreviewIndex, setDragPreviewIndex] = useState<number | null>(null);
@@ -604,48 +604,7 @@ export default function DenseBranchSidebar({
   useEffect(() => {
     persistExpandedBranches(expandedBranchNamesByProject);
   }, [expandedBranchNamesByProject]);
-  useEffect(() => {
-    try {
-      const raw = window.localStorage.getItem(PROJECT_ORDER_STORAGE_KEY);
-      if (!raw) return;
-      const parsed = JSON.parse(raw);
-      if (!Array.isArray(parsed)) return;
-      const next: string[] = [];
-      for (const value of parsed) {
-        if (typeof value === 'string' && projects.some((project) => project.path === value)) {
-          next.push(value);
-        }
-      }
-      setProjectOrder(next);
-    } catch {
-      // ignore storage failures
-    }
-  }, []);
-
-  useEffect(() => {
-    if (!projectOrder) return;
-    try {
-      window.localStorage.setItem(PROJECT_ORDER_STORAGE_KEY, JSON.stringify(projectOrder));
-    } catch {
-      // ignore storage failures
-    }
-  }, [projectOrder]);
-
-  const orderedProjects = useMemo(() => {
-    if (!projectOrder || projectOrder.length === 0) return projects;
-    const byPath = new Map(projects.map((project) => [project.path, project]));
-    const next: typeof projects = [];
-    for (const path of projectOrder) {
-      const project = byPath.get(path);
-      if (!project) continue;
-      next.push(project);
-      byPath.delete(path);
-    }
-    for (const project of projects) {
-      if (byPath.has(project.path)) next.push(project);
-    }
-    return next;
-  }, [projectOrder, projects]);
+  const orderedProjects = projects;
   const renderedProjects = useMemo(() => {
     if (!draggingProjectPath) return orderedProjects;
     const movingProject = orderedProjects.find((project) => project.path === draggingProjectPath);
@@ -659,8 +618,8 @@ export default function DenseBranchSidebar({
   }, [dragPreviewIndex, draggingProjectPath, orderedProjects]);
 
   const commitProjectOrder = useCallback((nextOrder: string[]) => {
-    setProjectOrder(nextOrder);
-  }, []);
+    onReorderProjects?.(nextOrder);
+  }, [onReorderProjects]);
 
   const clearDragPreview = useCallback(() => {
     setDragPendingProjectPath(null);

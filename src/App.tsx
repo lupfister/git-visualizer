@@ -124,7 +124,7 @@ function getRepoVisualSnapshotSignature(snapshot: RepoVisualSnapshot): string {
 function App() {
   const [repoPath, setRepoPath] = useState<string | null>(null);
   const [repoName, setRepoName] = useState<string>('');
-  const [recentProjects, setRecentProjects] = useState<ProjectRecord[]>([]);
+  const [projects, setProjects] = useState<ProjectRecord[]>([]);
   const [projectSnapshots, setProjectSnapshots] = useState<Record<string, ProjectSnapshot>>({});
   const [projectTreeLoading, setProjectTreeLoading] = useState(false);
   const [branches, setBranches] = useState<Branch[]>([]);
@@ -295,7 +295,7 @@ function App() {
     [activeRepoScopedKey, manuallyOpenedGridClumpsByRepo],
   );
   const projectCards = useMemo(
-    () => recentProjects.map((project) => ({
+    () => projects.map((project) => ({
       ...project,
       ...(projectSnapshots[project.path] ?? {}),
       branches: projectSnapshots[project.path]?.branches ?? [],
@@ -312,7 +312,7 @@ function App() {
       defaultBranch: projectSnapshots[project.path]?.defaultBranch ?? project.branchName ?? 'main',
       treeLoaded: projectSnapshots[project.path]?.loaded ?? false,
     })),
-    [recentProjects, projectSnapshots],
+    [projects, projectSnapshots],
   );
   const gridHudProps = useMemo(
     () => ({
@@ -426,20 +426,20 @@ function App() {
         typeof project.name === 'string' &&
         typeof project.lastOpenedAt === 'number'
       ));
-      setRecentProjects(next.slice(0, MAX_PROJECTS));
+      setProjects(next.slice(0, MAX_PROJECTS));
     } catch {
-      setRecentProjects([]);
+      setProjects([]);
     }
   }, []);
 
   useEffect(() => {
     if (hasAttemptedAutoRestoreRef.current) return;
     if (repoPath) return;
-    if (recentProjects.length === 0) return;
+    if (projects.length === 0) return;
 
     hasAttemptedAutoRestoreRef.current = true;
-    void loadRepo(recentProjects[0]!.path);
-  }, [recentProjects, repoPath]);
+    void loadRepo(projects[0]!.path);
+  }, [projects, repoPath]);
 
   const mergeTargetBranchByCommitSha = useMemo(
     () =>
@@ -524,12 +524,12 @@ function App() {
   }
 
   useEffect(() => {
-    if (recentProjects.length === 0) return;
-    recentProjects.forEach((project) => {
+    if (projects.length === 0) return;
+    projects.forEach((project) => {
       void loadProjectSnapshot(project.path);
       void invoke('watch_repo', { repoPath: project.path }).catch(console.error);
     });
-  }, [recentProjects]);
+  }, [projects]);
 
   useEffect(() => {
     let isDisposed = false;
@@ -552,7 +552,7 @@ function App() {
   }, [repoPath]);
 
   function persistProject(project: ProjectRecord) {
-    setRecentProjects((previous) => {
+    setProjects((previous) => {
       const normalizedPath = normalizePath(project.path);
       if (!normalizedPath) return previous;
       const normalizedProject: ProjectRecord = {
@@ -569,6 +569,28 @@ function App() {
         // ignore storage failures
       }
       return trimmed;
+    });
+  }
+
+  function reorderProjects(nextOrder: string[]) {
+    setProjects((previous) => {
+      const byPath = new Map(previous.map((project) => [project.path, project]));
+      const next: ProjectRecord[] = [];
+      for (const path of nextOrder) {
+        const project = byPath.get(path);
+        if (!project) continue;
+        next.push(project);
+        byPath.delete(path);
+      }
+      for (const project of previous) {
+        if (byPath.has(project.path)) next.push(project);
+      }
+      try {
+        localStorage.setItem(PROJECTS_STORAGE_KEY, JSON.stringify(next.slice(0, MAX_PROJECTS)));
+      } catch {
+        // ignore storage failures
+      }
+      return next.slice(0, MAX_PROJECTS);
     });
   }
 
@@ -594,7 +616,7 @@ function App() {
   }
 
   function updateProjectBranch(path: string, branchName: string) {
-    setRecentProjects((previous) => {
+    setProjects((previous) => {
       const next = previous.map((project) => (project.path === path ? { ...project, branchName } : project));
       try {
         localStorage.setItem(PROJECTS_STORAGE_KEY, JSON.stringify(next));
@@ -608,7 +630,7 @@ function App() {
   function removeProject(path: string) {
     const normalizedPath = normalizePath(path);
     if (!normalizedPath) return;
-    setRecentProjects((previous) => {
+    setProjects((previous) => {
       const next = previous.filter((project) => project.path !== normalizedPath);
       try {
         localStorage.setItem(PROJECTS_STORAGE_KEY, JSON.stringify(next));
@@ -624,7 +646,7 @@ function App() {
       return next;
     });
     if (repoPath === normalizedPath) {
-      const nextPath = recentProjects.find((project) => project.path !== normalizedPath)?.path ?? null;
+      const nextPath = projects.find((project) => project.path !== normalizedPath)?.path ?? null;
       if (nextPath) {
         void loadRepo(nextPath);
       } else {
@@ -659,7 +681,7 @@ function App() {
   const handleAddProject = () => {
     void (async () => {
       try {
-        const selected = await open({ directory: true, multiple: false, defaultPath: recentProjects[0]?.path ?? undefined });
+        const selected = await open({ directory: true, multiple: false, defaultPath: projects[0]?.path ?? undefined });
         if (typeof selected === 'string' && selected) await addProject(selected);
       } catch (e) {
         setError(e instanceof Error ? e.message : String(e));
@@ -2564,6 +2586,7 @@ function App() {
               onSelectProject={loadRepo}
               onAddProject={handleAddProject}
               onRemoveProject={removeProject}
+              onReorderProjects={reorderProjects}
               onRevealProjectInFinder={revealProjectInFinder}
               projectLoading={loading || (projectTreeLoading && repoPath ? !projectSnapshots[repoPath]?.loaded : false)}
               projectError={error}

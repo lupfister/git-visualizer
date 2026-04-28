@@ -7,8 +7,7 @@
     "dev": "vite",
     "build": "tsc && vite build",
     "preview": "vite preview",
-    "tauri": "tauri",
-    "devtools": "react-devtools"
+    "tauri": "tauri"
   },
   "pnpm": {
     "onlyBuiltDependencies": ["electron"]
@@ -35,7 +34,6 @@
     "@vitejs/plugin-react": "^4",
     "autoprefixer": "^10",
     "postcss": "^8",
-    "react-devtools": "^7.0.1",
     "tailwindcss": "^4",
     "typescript": "^5",
     "vite": "^6"
