@@ -652,8 +652,14 @@ function App() {
       ? `${ref.branchName ?? ''}|${ref.headSha}|${ref.parentSha ?? ''}|${ref.hasUncommittedChanges ? 1 : 0}`
       : '__none__';
 
-  async function refreshRepoGitState(path: string, resolvedDefaultBranch?: string) {
+  async function refreshRepoGitState(
+    path: string,
+    resolvedDefaultBranch?: string,
+    options?: { includeMergeNodes?: boolean; includeUnpushedShaMap?: boolean },
+  ) {
     const branchDef = resolvedDefaultBranch ?? defaultBranch;
+    const includeMergeNodes = options?.includeMergeNodes ?? true;
+    const includeUnpushedShaMap = options?.includeUnpushedShaMap ?? true;
     const [branchList, directResult, unpushedDirectResult, confirmedCheckedOutRef, worktreeList, stashList] = await Promise.all([
       invoke<Branch[]>('get_branches', { repoPath: path }),
       invoke<DirectCommit[]>('get_all_repo_commits', { repoPath: path }),
@@ -667,16 +673,18 @@ function App() {
       invoke<WorktreeInfo[]>('list_worktrees', { repoPath: path }).catch(() => []),
       invoke<GitStashEntry[]>('list_stashes', { repoPath: path }).catch(() => []),
     ]);
-    const nodes = await fetchAllMergeNodesForBranches(path, branchList, branchDef);
-    const unpushedShaEntries = await Promise.all(
-      [branchDef, ...branchList.map((branch) => branch.name)].map(async (branchName) => {
-        const shas = await invoke<string[]>('get_branch_unpushed_commit_shas', {
-          repoPath: path,
-          branch: branchName,
-        }).catch(() => []);
-        return [branchName, shas] as const;
-      })
-    );
+    const nodes = includeMergeNodes ? await fetchAllMergeNodesForBranches(path, branchList, branchDef) : mergeNodes;
+    const unpushedShaEntries = includeUnpushedShaMap
+      ? await Promise.all(
+          [branchDef, ...branchList.map((branch) => branch.name)].map(async (branchName) => {
+            const shas = await invoke<string[]>('get_branch_unpushed_commit_shas', {
+              repoPath: path,
+              branch: branchName,
+            }).catch(() => []);
+            return [branchName, shas] as const;
+          }),
+        )
+      : Object.entries(unpushedCommitShasByBranch);
     setBranches(branchList);
     setMergeNodes(nodes);
     setDirectCommits(directResult);
@@ -1616,7 +1624,10 @@ function App() {
         message: trimmed,
       });
       setCheckedOutRef(nextRef);
-      await refreshRepoGitState(repoPath);
+      void refreshRepoGitState(repoPath, undefined, {
+        includeMergeNodes: false,
+        includeUnpushedShaMap: false,
+      });
       setCommitSwitchFeedback({
         kind: 'success',
         message: 'Committed local changes.',
@@ -1650,7 +1661,10 @@ function App() {
       }
       const nextRef = await invoke<CheckedOutRef>('stage_working_tree', { repoPath });
       setCheckedOutRef(nextRef);
-      await refreshRepoGitState(repoPath);
+      void refreshRepoGitState(repoPath, undefined, {
+        includeMergeNodes: false,
+        includeUnpushedShaMap: false,
+      });
       setCommitSwitchFeedback({
         kind: 'success',
         message: 'Staged all changes.',
@@ -1690,7 +1704,10 @@ function App() {
         });
       }
       setCheckedOutRef(nextRef);
-      await refreshRepoGitState(repoPath);
+      void refreshRepoGitState(repoPath, undefined, {
+        includeMergeNodes: false,
+        includeUnpushedShaMap: false,
+      });
       setCommitSwitchFeedback({
         kind: 'success',
         message: `Moved to new branch "${branchName}"`,
@@ -1714,7 +1731,10 @@ function App() {
         branchName,
       });
       setCheckedOutRef(nextRef);
-      await refreshRepoGitState(repoPath);
+      void refreshRepoGitState(repoPath, undefined, {
+        includeMergeNodes: false,
+        includeUnpushedShaMap: false,
+      });
       setCommitSwitchFeedback({
         kind: 'success',
         message: `Created new root branch "${branchName}"`,
@@ -1737,7 +1757,10 @@ function App() {
         branchName: targetBranchName,
       });
       setCheckedOutRef(nextRef);
-      await refreshRepoGitState(repoPath);
+      void refreshRepoGitState(repoPath, undefined, {
+        includeMergeNodes: false,
+        includeUnpushedShaMap: false,
+      });
       setCommitSwitchFeedback({
         kind: 'success',
         message: `Moved back to "${targetBranchName}"`,
@@ -1764,7 +1787,10 @@ function App() {
           targetBranch,
         });
       }
-      await refreshRepoGitState(repoPath);
+      void refreshRepoGitState(repoPath, undefined, {
+        includeMergeNodes: false,
+        includeUnpushedShaMap: false,
+      });
       if (nextCheckedOutRef) {
         setCheckedOutRef(nextCheckedOutRef);
       }
@@ -1794,7 +1820,10 @@ function App() {
       const pushed = await invoke<Array<{ branchName: string }>>('push_all_unpushed_branches', {
         repoPath,
       });
-      await refreshRepoGitState(repoPath);
+      void refreshRepoGitState(repoPath, undefined, {
+        includeMergeNodes: false,
+        includeUnpushedShaMap: false,
+      });
       setCommitSwitchFeedback({
         kind: 'success',
         message: pushed.length > 0
@@ -1823,7 +1852,10 @@ function App() {
       const pushed = await invoke<{ branchName: string }>('push_current_branch', {
         repoPath,
       });
-      await refreshRepoGitState(repoPath);
+      void refreshRepoGitState(repoPath, undefined, {
+        includeMergeNodes: false,
+        includeUnpushedShaMap: false,
+      });
       setCommitSwitchFeedback({
         kind: 'success',
         message: `Pushed ${pushed.branchName}`,
@@ -1861,7 +1893,10 @@ function App() {
           targetSha: target.targetSha,
         });
       }
-      await refreshRepoGitState(repoPath);
+      void refreshRepoGitState(repoPath, undefined, {
+        includeMergeNodes: false,
+        includeUnpushedShaMap: false,
+      });
       setCommitSwitchFeedback({
         kind: 'success',
         message: uniqueTargets.length === 1
@@ -1908,7 +1943,10 @@ function App() {
             })
           : { deletedBranches: [] as string[], discardedUncommittedChanges: false };
 
-      await refreshRepoGitState(repoPath);
+      void refreshRepoGitState(repoPath, undefined, {
+        includeMergeNodes: false,
+        includeUnpushedShaMap: false,
+      });
       const feedbackParts: string[] = [];
       if (uniqueStashDescending.length > 0) {
         feedbackParts.push(
