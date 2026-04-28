@@ -1306,6 +1306,9 @@ function App() {
     let isDisposed = false;
     let refreshQueued = false;
     let refreshInFlight = false;
+    let fingerprintInFlight = false;
+    let lastFingerprintSignature: string | null = null;
+    let fingerprintIntervalId: number | null = null;
     let unlisten: (() => void) | null = null;
 
     const runRefreshIfNeeded = async () => {
@@ -1342,6 +1345,36 @@ function App() {
       void runRefreshIfNeeded();
     };
 
+    const syncRemoteFingerprint = async () => {
+      if (isDisposed || fingerprintInFlight) return;
+      fingerprintInFlight = true;
+      try {
+        const fingerprint = await invoke<RepoRefreshFingerprint>('get_repo_refresh_fingerprint', {
+          repoPath,
+        });
+        if (isDisposed) return;
+        const nextSignature = fingerprintSignature(fingerprint);
+        if (lastFingerprintSignature == null) {
+          lastFingerprintSignature = nextSignature;
+          return;
+        }
+        if (nextSignature === lastFingerprintSignature) {
+          return;
+        }
+        lastFingerprintSignature = nextSignature;
+        await refreshRepoGitState(repoPath, defaultBranch);
+      } catch (error) {
+        console.warn('Fingerprint refresh failed:', error);
+      } finally {
+        fingerprintInFlight = false;
+      }
+    };
+
+    fingerprintIntervalId = window.setInterval(() => {
+      void syncRemoteFingerprint();
+    }, 1800);
+    void syncRemoteFingerprint();
+
     listen<GitActivityEventPayload>('git-activity', (event) => {
       if (normalizePath(event.payload.repoPath) !== repoPath) return;
       void loadProjectSnapshot(repoPath, true);
@@ -1353,6 +1386,7 @@ function App() {
 
     return () => {
       isDisposed = true;
+      if (fingerprintIntervalId != null) window.clearInterval(fingerprintIntervalId);
       if (unlisten) unlisten();
     };
   }, [repoPath, defaultBranch, isFrozenRepo]);
