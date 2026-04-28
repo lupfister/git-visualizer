@@ -216,6 +216,7 @@ function App() {
   const latestBranchesRef = useRef<Branch[]>([]);
   const latestDirectCommitsRef = useRef<DirectCommit[]>([]);
   const latestCheckedOutRef = useRef<CheckedOutRef | null>(null);
+  const latestBranchParentByNameRef = useRef<Record<string, string | null>>({});
   const activeRepoScopedKey = repoPath ?? '__no-repo__';
   const persistGridClumps = (opened: RepoScopedClumpState, closed: RepoScopedClumpState) => {
     try {
@@ -1062,6 +1063,10 @@ function App() {
   }, [checkedOutRef]);
 
   useEffect(() => {
+    latestBranchParentByNameRef.current = branchParentByName;
+  }, [branchParentByName]);
+
+  useEffect(() => {
     isMapInteractingRef.current = isMapInteracting;
   }, [isMapInteracting]);
 
@@ -1526,7 +1531,7 @@ function App() {
       const parentFromGraph = resolveParentBranchForSha(graphParentSha);
       nextBranchParentByName[branch.name] =
         parentFromGraph ??
-        branchParentByName[branch.name] ??
+        latestBranchParentByNameRef.current[branch.name] ??
         branch.parentBranch ??
         null;
     }
@@ -1545,7 +1550,7 @@ function App() {
       return next;
     });
     setBranchUniqueAheadCounts(nextUniqueAheadCounts);
-  }, [repoPath, defaultBranch, branches, mergeNodes, directCommits, branchParentByName]);
+  }, [repoPath, defaultBranch, branches, mergeNodes, directCommits]);
 
   useEffect(() => {
     if (!commitSwitchFeedback) {
