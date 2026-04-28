@@ -256,8 +256,7 @@ function BranchRows({
   return (
     <li
       className={cn(
-        'relative',
-        depth > 0 ? 'pl-4' : 'pl-0',
+        'relative w-full',
         depth === 0 && !isLast ? (isExpanded ? 'mb-5' : 'mb-1') : '',
       )}
     >
@@ -283,11 +282,12 @@ function BranchRows({
         />
       ) : null}
 
-      <div className="flex items-center gap-1">
+      <div className="flex w-full items-center gap-1">
         <div
           className={cn(
             'group flex min-w-0 flex-1 items-center gap-0 rounded-md px-2 h-7 text-left text-sm font-normal transition-colors hover:bg-accent',
-            isCheckedOut ? 'text-foreground' : 'text-muted-foreground hover:text-foreground',
+            depth > 0 ? 'ml-4' : '',
+            isCheckedOut ? 'text-zinc-700 dark:text-zinc-300' : 'text-muted-foreground hover:text-foreground',
           )}
           role={isBranchExpandable ? 'button' : undefined}
           tabIndex={isBranchExpandable ? 0 : undefined}
@@ -331,7 +331,7 @@ function BranchRows({
       </div>
 
       {shouldShowCommitRows ? (
-        <ul className="relative space-y-1 pl-4">
+        <ul className="relative w-full space-y-1">
           {commitClumps.map((clump) => {
             const clumpCollapsed = clump.count > 1 && !isGridClusterOpen(clump.key);
             const visibleClumpCommits = clumpCollapsed ? [clump.lead] : clump.commits;
@@ -340,11 +340,14 @@ function BranchRows({
               const mergeTargetLabels = getMergeTargetLabels(commit.fullSha, sourceBranchName ?? branchName);
               return (
                 <li key={`${branchName}:${commit.fullSha}`}>
-                  <div className="flex items-start gap-1">
+                  <div className="flex w-full items-start gap-1">
                     <button
                       type="button"
                       onClick={() => onSelectCommit?.(commit.fullSha)}
-                      className="min-w-0 flex-1 rounded-md px-2 py-1 text-left text-xs font-normal leading-4 text-muted-foreground/70 transition-colors hover:bg-accent hover:text-muted-foreground"
+                      className={cn(
+                        'min-w-0 flex-1 rounded-md px-2 py-1 text-left text-xs font-normal leading-4 text-muted-foreground/70 transition-colors hover:bg-accent hover:text-muted-foreground',
+                        depth > 0 ? 'ml-4' : '',
+                      )}
                       title={commit.message}
                     >
                       <span className="block truncate">{commit.message}</span>
@@ -409,7 +412,7 @@ function BranchRows({
       ) : null}
 
       {hasChildBranches && isExpanded && unanchoredChildren.length > 0 ? (
-        <ul className="relative mb-1.75 space-y-1.75">
+        <ul className="relative mb-1.75 w-full space-y-1.75">
           {unanchoredChildren.map((childName, idx) => (
             <BranchRows
               key={childName}
@@ -1105,7 +1108,7 @@ export default function DenseBranchSidebar({
           </div>
           {isExpanded ? (
             projectTreeLoaded && projectRender ? (
-              <ul className={cn('relative z-0 space-y-0 pt-0', ghostMode ? 'opacity-70' : '')}>
+            <ul className={cn('relative z-0 w-full space-y-0 pt-0', ghostMode ? 'opacity-70' : '')}>
                 {projectRender.rootBranchNames.map((branchName, idx) => (
                   <BranchRows
                     key={`${project.path}:${branchName}`}
