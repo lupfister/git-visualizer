@@ -156,6 +156,7 @@ function BranchRows({
   onToggleGridCluster,
   onSelectCommit,
   onSelectBranch,
+  isActiveProject,
 }: {
   branchName: string;
   depth: number;
@@ -176,6 +177,7 @@ function BranchRows({
   onToggleGridCluster: (clusterKey: string, focusTargetId: string) => void;
   onSelectCommit?: (sha: string) => void;
   onSelectBranch?: (branchName: string) => void;
+  isActiveProject: boolean;
 }) {
   if (ancestors.has(branchName)) return null;
   const branch = branchByName.get(branchName);
@@ -256,7 +258,8 @@ function BranchRows({
   return (
     <li
       className={cn(
-        'relative w-full',
+        'relative',
+        depth > 0 ? 'pl-4' : 'pl-0',
         depth === 0 && !isLast ? (isExpanded ? 'mb-5' : 'mb-1') : '',
       )}
     >
@@ -282,12 +285,11 @@ function BranchRows({
         />
       ) : null}
 
-      <div className="flex w-full items-center gap-1">
+      <div className="flex items-center gap-1">
         <div
           className={cn(
             'group flex min-w-0 flex-1 items-center gap-0 rounded-md px-2 h-7 text-left text-sm font-normal transition-colors hover:bg-accent',
-            depth > 0 ? 'ml-4' : '',
-            isCheckedOut ? 'text-zinc-700 dark:text-zinc-300' : 'text-muted-foreground hover:text-foreground',
+            'text-muted-foreground hover:text-foreground',
           )}
           role={isBranchExpandable ? 'button' : undefined}
           tabIndex={isBranchExpandable ? 0 : undefined}
@@ -321,17 +323,25 @@ function BranchRows({
                 aria-hidden="true"
                 className={cn(
                   'h-3.5 w-3.5 shrink-0 transition-transform',
+                  isCheckedOut && isActiveProject ? 'text-[#38BDF2]' : 'text-muted-foreground',
                   isExpanded ? 'rotate-90' : '',
                 )}
               />
             </button>
           ) : null}
-          <span className="min-w-0 flex-1 break-words">{branchName}</span>
+          <span
+            className={cn(
+              'min-w-0 flex-1 break-words',
+              isCheckedOut && isActiveProject ? 'font-medium text-[#38BDF2]' : 'font-normal text-muted-foreground',
+            )}
+          >
+            {branchName}
+          </span>
         </div>
       </div>
 
       {shouldShowCommitRows ? (
-        <ul className="relative w-full space-y-1">
+        <ul className="relative space-y-1 pl-4">
           {commitClumps.map((clump) => {
             const clumpCollapsed = clump.count > 1 && !isGridClusterOpen(clump.key);
             const visibleClumpCommits = clumpCollapsed ? [clump.lead] : clump.commits;
@@ -340,14 +350,11 @@ function BranchRows({
               const mergeTargetLabels = getMergeTargetLabels(commit.fullSha, sourceBranchName ?? branchName);
               return (
                 <li key={`${branchName}:${commit.fullSha}`}>
-                  <div className="flex w-full items-start gap-1">
+                  <div className="flex items-start gap-1">
                     <button
                       type="button"
                       onClick={() => onSelectCommit?.(commit.fullSha)}
-                      className={cn(
-                        'min-w-0 flex-1 rounded-md px-2 py-1 text-left text-xs font-normal leading-4 text-muted-foreground/70 transition-colors hover:bg-accent hover:text-muted-foreground',
-                        depth > 0 ? 'ml-4' : '',
-                      )}
+                      className="min-w-0 flex-1 rounded-md px-2 py-1 text-left text-xs font-normal leading-4 text-muted-foreground/70 transition-colors hover:bg-accent hover:text-muted-foreground"
                       title={commit.message}
                     >
                       <span className="block truncate">{commit.message}</span>
@@ -400,6 +407,7 @@ function BranchRows({
                           onToggleGridCluster={onToggleGridCluster}
                           onSelectCommit={onSelectCommit}
                           onSelectBranch={onSelectBranch}
+                          isActiveProject={isActiveProject}
                         />
                       ))}
                     </ul>
@@ -412,7 +420,7 @@ function BranchRows({
       ) : null}
 
       {hasChildBranches && isExpanded && unanchoredChildren.length > 0 ? (
-        <ul className="relative mb-1.75 w-full space-y-1.75">
+        <ul className="relative mb-1.75 space-y-1.75">
           {unanchoredChildren.map((childName, idx) => (
             <BranchRows
               key={childName}
@@ -435,6 +443,7 @@ function BranchRows({
               onToggleGridCluster={onToggleGridCluster}
               onSelectCommit={onSelectCommit}
               onSelectBranch={onSelectBranch}
+              isActiveProject={isActiveProject}
             />
           ))}
         </ul>
@@ -989,6 +998,7 @@ export default function DenseBranchSidebar({
           )
         : new Set<string>());
     const isDraggingProject = draggingProjectPath === project.path;
+    const isActiveProject = project.path === activeProjectPath;
     return (
       <motion.div
         key={project.path}
@@ -1008,7 +1018,7 @@ export default function DenseBranchSidebar({
               ghostMode
                 ? 'flex w-full items-center gap-0 rounded-lg px-0 py-1 text-muted-foreground'
                 : 'sticky top-0 z-20 flex w-full items-center gap-0 rounded-lg bg-background px-0 py-1 transition-all duration-100 ease-out hover:bg-accent cursor-grab active:cursor-grabbing',
-              isActive ? 'text-foreground' : 'text-muted-foreground',
+              'text-muted-foreground',
               isDraggingProject && !ghostMode ? 'opacity-0' : '',
             )}
             onPointerDownCapture={(event) => {
@@ -1048,15 +1058,15 @@ export default function DenseBranchSidebar({
             >
               <ProjectIcon open={isExpanded} />
             </button>
-            <span
-              className={cn(
-                'min-w-0 flex-1 truncate pl-0 text-left text-sm transition-colors',
-                'font-normal',
-                isActive ? 'text-primary' : 'text-muted-foreground',
-              )}
-            >
-              {project.name}
-            </span>
+          <span
+            className={cn(
+              'min-w-0 flex-1 truncate pl-0 text-left text-sm transition-colors',
+              'font-normal',
+              'text-muted-foreground',
+            )}
+          >
+            {project.name}
+          </span>
             <div className="relative shrink-0">
               <button
                 type="button"
@@ -1108,7 +1118,7 @@ export default function DenseBranchSidebar({
           </div>
           {isExpanded ? (
             projectTreeLoaded && projectRender ? (
-            <ul className={cn('relative z-0 w-full space-y-0 pt-0', ghostMode ? 'opacity-70' : '')}>
+              <ul className={cn('relative z-0 space-y-0 pt-0', ghostMode ? 'opacity-70' : '')}>
                 {projectRender.rootBranchNames.map((branchName, idx) => (
                   <BranchRows
                     key={`${project.path}:${branchName}`}
@@ -1137,6 +1147,7 @@ export default function DenseBranchSidebar({
                       if (!isActive) await onSelectProject(project.path);
                       onSelectBranch?.(branchName);
                     }}
+                    isActiveProject={isActiveProject}
                   />
                 ))}
               </ul>
