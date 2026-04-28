@@ -45,6 +45,22 @@ type ProjectRecord = {
 };
 
 type ProjectSnapshot = RepoVisualSnapshot;
+type RepoRefreshFingerprint = {
+  repoPath: string;
+  defaultBranch: string;
+  headSha: string;
+  upstreamSha?: string | null;
+  hasUncommittedChanges: boolean;
+  branchCount: number;
+  worktreeCount: number;
+  stashCount: number;
+};
+type RepoQuickState = {
+  repoPath: string;
+  headSha: string;
+  upstreamSha?: string | null;
+  hasUncommittedChanges: boolean;
+};
 
 function normalizePath(path: string): string {
   if (path === '/') return path;
@@ -178,6 +194,8 @@ function App() {
   const githubFetchRequestIdRef = useRef(0);
   const projectSnapshotSignatureRef = useRef<Record<string, string>>({});
   const activeSnapshotSignatureRef = useRef<string | null>(null);
+  const projectFingerprintRef = useRef<Record<string, string>>({});
+  const projectQuickStateRef = useRef<Record<string, string>>({});
   const sidebarDragRef = useRef<{
     startX: number;
     startWidth: number;
@@ -349,6 +367,50 @@ function App() {
     return true;
   }
 
+  function fingerprintSignature(fingerprint: RepoRefreshFingerprint): string {
+    return [
+      fingerprint.repoPath,
+      fingerprint.defaultBranch,
+      fingerprint.headSha,
+      fingerprint.upstreamSha ?? '',
+      fingerprint.hasUncommittedChanges ? '1' : '0',
+      fingerprint.branchCount,
+      fingerprint.worktreeCount,
+      fingerprint.stashCount,
+    ].join('|');
+  }
+
+  function quickStateSignature(state: RepoQuickState): string {
+    return [
+      state.repoPath,
+      state.headSha,
+      state.upstreamSha ?? '',
+      state.hasUncommittedChanges ? '1' : '0',
+    ].join('|');
+  }
+
+  function quickStateFromSnapshot(path: string, snapshot: RepoVisualSnapshot): RepoQuickState {
+    return {
+      repoPath: path,
+      headSha: snapshot.checkedOutRef?.headSha ?? '',
+      upstreamSha: snapshot.checkedOutRef?.parentSha ?? null,
+      hasUncommittedChanges: snapshot.checkedOutRef?.hasUncommittedChanges ?? false,
+    };
+  }
+
+  function fingerprintFromSnapshot(path: string, defaultBranchName: string, snapshot: RepoVisualSnapshot): RepoRefreshFingerprint {
+    return {
+      repoPath: path,
+      defaultBranch: defaultBranchName,
+      headSha: snapshot.checkedOutRef?.headSha ?? '',
+      upstreamSha: snapshot.checkedOutRef?.parentSha ?? null,
+      hasUncommittedChanges: snapshot.checkedOutRef?.hasUncommittedChanges ?? false,
+      branchCount: snapshot.branches.length,
+      worktreeCount: snapshot.worktrees.length,
+      stashCount: snapshot.stashes.length,
+    };
+  }
+
   useEffect(() => {
     try {
       const raw = localStorage.getItem(PROJECTS_STORAGE_KEY);
@@ -441,7 +503,9 @@ function App() {
     if (!forceRefresh && projectSnapshots[normalizedPath]?.loaded) return;
 
     loadingProjectSnapshotsRef.current.add(normalizedPath);
-    setProjectTreeLoading(true);
+    if (normalizedPath === repoPath) {
+      setProjectTreeLoading(true);
+    }
     try {
       const snapshot = await invoke<RepoVisualSnapshot>('get_repo_visual_snapshot', {
         repoPath: normalizedPath,
@@ -450,7 +514,7 @@ function App() {
       upsertProjectSnapshot(normalizedPath, snapshot);
     } finally {
       loadingProjectSnapshotsRef.current.delete(normalizedPath);
-      if (loadingProjectSnapshotsRef.current.size === 0) {
+      if (normalizedPath === repoPath && loadingProjectSnapshotsRef.current.size === 0) {
         setProjectTreeLoading(false);
       }
     }
@@ -785,37 +849,6 @@ function App() {
     return true;
   }
 
-  async function refreshRepoSnapshotInBackground(
-    path: string,
-    requestId: number,
-    options?: { forceRefresh?: boolean; applyToActiveState?: boolean },
-  ) {
-    const forceRefresh = options?.forceRefresh ?? true;
-    const applyToActiveState = options?.applyToActiveState ?? true;
-    try {
-      const [info, def] = await Promise.all([
-        invoke<{ name: string; path: string }>('get_repo_info', { repoPath: path }),
-        invoke<string>('get_default_branch', { repoPath: path }),
-      ]);
-      if (requestId !== loadRepoRequestIdRef.current) return;
-      const snapshot = await invoke<RepoVisualSnapshot>('get_repo_visual_snapshot', {
-        repoPath: path,
-        forceRefresh,
-      });
-      if (requestId !== loadRepoRequestIdRef.current) return;
-      upsertProjectSnapshot(path, snapshot);
-      if (applyToActiveState && (repoPath === path || loadRepoRequestIdRef.current === requestId)) {
-        setRepoName(info.name);
-        setDefaultBranch(def);
-        applySnapshotToActiveState(path, snapshot);
-      }
-      void fetchGitHubData(path);
-    } catch (e) {
-      if (requestId !== loadRepoRequestIdRef.current) return;
-      console.error('Background snapshot refresh failed:', e);
-    }
-  }
-
   async function loadRepo(path: string) {
     const requestId = ++loadRepoRequestIdRef.current;
     const normalizedPath = normalizePath(path);
@@ -823,21 +856,68 @@ function App() {
 
     const cachedSnapshot = projectSnapshots[normalizedPath];
     if (cachedSnapshot?.loaded) {
-      setError(null);
-      applySnapshotToActiveState(normalizedPath, cachedSnapshot);
-      persistProject({
-        path: normalizedPath,
-        name: cachedSnapshot.name || basenameFromPath(normalizedPath),
-        lastOpenedAt: Date.now(),
-        branchName: cachedSnapshot.defaultBranch,
-      });
-      setMapLoading(false);
-      setLoading(false);
-      void refreshRepoSnapshotInBackground(normalizedPath, requestId, {
-        forceRefresh: false,
-        applyToActiveState: false,
-      });
-      return;
+      try {
+      const quickState = await invoke<RepoQuickState>('get_repo_quick_state', {
+          repoPath: normalizedPath,
+        });
+        if (requestId !== loadRepoRequestIdRef.current) return;
+        const nextQuickSignature = quickStateSignature(quickState);
+        const cachedQuickSignature =
+          projectQuickStateRef.current[normalizedPath] ??
+          (cachedSnapshot ? quickStateSignature(quickStateFromSnapshot(normalizedPath, cachedSnapshot)) : null);
+        if (cachedQuickSignature === nextQuickSignature) {
+          setError(null);
+          projectQuickStateRef.current = {
+            ...projectQuickStateRef.current,
+            [normalizedPath]: nextQuickSignature,
+          };
+          applySnapshotToActiveState(normalizedPath, cachedSnapshot);
+          persistProject({
+            path: normalizedPath,
+            name: cachedSnapshot.name || basenameFromPath(normalizedPath),
+            lastOpenedAt: Date.now(),
+            branchName: cachedSnapshot.defaultBranch,
+          });
+          setMapLoading(false);
+          setLoading(false);
+          void fetchGitHubData(normalizedPath);
+          void (async () => {
+            try {
+              const fingerprint = await invoke<RepoRefreshFingerprint>('get_repo_refresh_fingerprint', {
+                repoPath: normalizedPath,
+              });
+              const nextSignature = fingerprintSignature(fingerprint);
+              if (requestId !== loadRepoRequestIdRef.current) return;
+              if (projectFingerprintRef.current[normalizedPath] !== nextSignature) {
+                const snapshot = await invoke<RepoVisualSnapshot>('get_repo_visual_snapshot', {
+                  repoPath: normalizedPath,
+                  forceRefresh: true,
+                });
+                if (requestId !== loadRepoRequestIdRef.current) return;
+                upsertProjectSnapshot(normalizedPath, snapshot);
+                projectFingerprintRef.current = {
+                  ...projectFingerprintRef.current,
+                  [normalizedPath]: nextSignature,
+                };
+                projectQuickStateRef.current = {
+                  ...projectQuickStateRef.current,
+                  [normalizedPath]: quickStateSignature(quickStateFromSnapshot(normalizedPath, snapshot)),
+                };
+                applySnapshotToActiveState(normalizedPath, snapshot);
+              }
+            } catch {
+              // Background validation is best-effort.
+            }
+          })();
+          return;
+        }
+        projectQuickStateRef.current = {
+          ...projectQuickStateRef.current,
+          [normalizedPath]: nextQuickSignature,
+        };
+      } catch {
+        // If the cheap check fails, fall back to the full refresh path below.
+      }
     }
 
     setLoading(true);
@@ -864,6 +944,14 @@ function App() {
       });
       if (requestId !== loadRepoRequestIdRef.current) return;
       upsertProjectSnapshot(normalizedPath, snapshot);
+      projectFingerprintRef.current = {
+        ...projectFingerprintRef.current,
+        [normalizedPath]: fingerprintSignature(fingerprintFromSnapshot(normalizedPath, def, snapshot)),
+      };
+      projectQuickStateRef.current = {
+        ...projectQuickStateRef.current,
+        [normalizedPath]: quickStateSignature(quickStateFromSnapshot(normalizedPath, snapshot)),
+      };
       applySnapshotToActiveState(normalizedPath, snapshot);
       persistProject({
         path: normalizedPath,
@@ -2427,7 +2515,7 @@ function App() {
               onAddProject={handleAddProject}
               onRemoveProject={removeProject}
               onRevealProjectInFinder={revealProjectInFinder}
-              projectLoading={loading || projectTreeLoading}
+              projectLoading={loading || (projectTreeLoading && repoPath ? !projectSnapshots[repoPath]?.loaded : false)}
               projectError={error}
               checkedOutRef={checkedOutRef}
               showCommits={showCommits}

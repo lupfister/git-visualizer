@@ -101,6 +101,28 @@ struct RepoVisualSnapshot {
     updated_at_ms: i64,
 }
 
+#[derive(Serialize, Deserialize, Clone)]
+#[serde(rename_all = "camelCase")]
+struct RepoRefreshFingerprint {
+    repo_path: String,
+    default_branch: String,
+    head_sha: String,
+    upstream_sha: Option<String>,
+    has_uncommitted_changes: bool,
+    branch_count: usize,
+    worktree_count: usize,
+    stash_count: usize,
+}
+
+#[derive(Serialize, Deserialize, Clone)]
+#[serde(rename_all = "camelCase")]
+struct RepoQuickState {
+    repo_path: String,
+    head_sha: String,
+    upstream_sha: Option<String>,
+    has_uncommitted_changes: bool,
+}
+
 fn parse_time_ms(value: Option<&str>) -> i64 {
     value
         .and_then(|v| chrono::DateTime::parse_from_rfc3339(v).ok())
@@ -963,6 +985,52 @@ fn get_repo_visual_snapshot(repo_path: String, force_refresh: Option<bool>) -> R
     let snapshot = compute_repo_visual_snapshot(&repo_path)?;
     store_repo_visual_snapshot(&snapshot)?;
     Ok(snapshot)
+}
+
+#[tauri::command(rename_all = "camelCase")]
+fn get_repo_refresh_fingerprint(repo_path: String) -> Result<RepoRefreshFingerprint, String> {
+    let path = Path::new(&repo_path);
+    let default_branch = git::get_default_branch(path).map_err(|e| e.to_string())?;
+    let branches = git::list_branches(path, &default_branch).map_err(|e| e.to_string())?;
+    let checked_out_ref = git::get_checked_out_ref(path).map_err(|e| e.to_string())?;
+    let worktrees = git::list_worktrees(path).map_err(|e| e.to_string())?;
+    let stashes = git::list_stashes(path).map_err(|e| e.to_string())?;
+    let upstream_sha = git::cli::run(path, &["rev-parse", &format!("{default_branch}@{{upstream}}")])
+        .ok()
+        .map(|value| value.trim().to_string())
+        .filter(|value| !value.is_empty());
+
+    Ok(RepoRefreshFingerprint {
+        repo_path: repo_path.clone(),
+        default_branch,
+        head_sha: checked_out_ref.head_sha,
+        upstream_sha,
+        has_uncommitted_changes: checked_out_ref.has_uncommitted_changes,
+        branch_count: branches.len(),
+        worktree_count: worktrees.len(),
+        stash_count: stashes.len(),
+    })
+}
+
+#[tauri::command(rename_all = "camelCase")]
+fn get_repo_quick_state(repo_path: String) -> Result<RepoQuickState, String> {
+    let path = Path::new(&repo_path);
+    let head_sha = git::cli::run(path, &["rev-parse", "HEAD"])
+        .map_err(|e| e.to_string())?
+        .trim()
+        .to_string();
+    let upstream_sha = git::cli::run(path, &["rev-parse", "--verify", "HEAD@{upstream}"])
+        .ok()
+        .map(|value| value.trim().to_string())
+        .filter(|value| !value.is_empty());
+    let porcelain = git::cli::run(path, &["status", "--porcelain=v1", "--untracked-files=normal"])
+        .map_err(|e| e.to_string())?;
+    Ok(RepoQuickState {
+        repo_path: repo_path.clone(),
+        head_sha,
+        upstream_sha,
+        has_uncommitted_changes: !porcelain.trim().is_empty(),
+    })
 }
 
 #[tauri::command]
@@ -4525,6 +4593,8 @@ pub fn run() {
             start_window_drag,
             get_branches,
             get_repo_visual_snapshot,
+            get_repo_quick_state,
+            get_repo_refresh_fingerprint,
             get_merge_nodes,
             get_default_branch,
             get_checked_out_ref,
