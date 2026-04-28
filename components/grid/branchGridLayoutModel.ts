@@ -117,8 +117,8 @@ export type BranchGridLayoutInput = {
 
 const GRID_INCOMING_GAP_PX = 0;
 const GRID_MERGE_TARGET_GAP_PX = 0;
-const SHARED_ROW_MAX_TIME_DELTA_MS = 30 * 60 * 1000;
-const SHARED_ROW_BRANCH_SIBLING_MAX_TIME_DELTA_MS = 24 * 60 * 60 * 1000;
+const SHARED_ROW_MAX_TIME_DELTA_MS = 60 * 60 * 1000;
+const SHARED_ROW_BRANCH_SIBLING_MAX_TIME_DELTA_MS = 60 * 60 * 1000;
 const safeTimeMs = (value: string | null | undefined): number => {
   const time = value ? new Date(value).getTime() : Number.NaN;
   return Number.isFinite(time) ? time : Number.NEGATIVE_INFINITY;
