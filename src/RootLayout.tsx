@@ -1,3 +1,4 @@
+import { useEffect, useState } from 'react';
 import type { ReactNode } from 'react';
 import { Agentation } from 'agentation';
 import { DialRoot, useDialKit } from 'dialkit';
@@ -15,14 +16,44 @@ const DialKitBootstrap = () => {
   return null;
 };
 
-const RootLayout = ({ children }: RootLayoutProps) => (
-  <>
-    {children}
-    <DialKitBootstrap />
-    {/* productionEnabled: show in Vite production / Tauri release (defaults off when NODE_ENV is production) */}
-    <DialRoot productionEnabled defaultOpen={false} theme="system" />
-    <Agentation />
-  </>
-);
+const VISIBILITY_KEY = 'git-visualizer.chrome-ui-hidden';
+
+const RootLayout = ({ children }: RootLayoutProps) => {
+  const [uiHidden, setUiHidden] = useState(false);
+
+  useEffect(() => {
+    setUiHidden(window.localStorage.getItem(VISIBILITY_KEY) === 'true');
+  }, []);
+
+  useEffect(() => {
+    const handler = (event: KeyboardEvent) => {
+      if ((event.ctrlKey || event.metaKey) && event.key.toLowerCase() === 'd' && !event.shiftKey && !event.altKey) {
+        event.preventDefault();
+        setUiHidden((value) => {
+          const nextValue = !value;
+          window.localStorage.setItem(VISIBILITY_KEY, String(nextValue));
+          return nextValue;
+        });
+      }
+    };
+
+    document.addEventListener('keydown', handler);
+    return () => document.removeEventListener('keydown', handler);
+  }, []);
+
+  return (
+    <>
+      {children}
+      <DialKitBootstrap />
+      {!uiHidden && (
+        <>
+          {/* productionEnabled: show in Vite production / Tauri release (defaults off when NODE_ENV is production) */}
+          <DialRoot productionEnabled defaultOpen={false} theme="system" />
+          <Agentation />
+        </>
+      )}
+    </>
+  );
+};
 
 export default RootLayout;
