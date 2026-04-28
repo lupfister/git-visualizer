@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import type { CSSProperties, Dispatch, PointerEvent as ReactPointerEvent, SetStateAction } from 'react';
 import { ChevronRight, MoreHorizontal } from 'lucide-react';
+import { motion } from 'framer-motion';
 import type { Branch, BranchCommitPreview, CheckedOutRef, DirectCommit, GitStashEntry, MergeNode, WorktreeInfo } from '../types';
 import { cn, shaMatchesGitRef } from './grid/mapGridUtils';
 import type { BranchGridLayoutModel } from './grid/branchGridLayoutModel';
@@ -535,12 +536,16 @@ export default function DenseBranchSidebar({
   const [dragPendingProjectPath, setDragPendingProjectPath] = useState<string | null>(null);
   const [draggingProjectPath, setDraggingProjectPath] = useState<string | null>(null);
   const [dragPreviewIndex, setDragPreviewIndex] = useState<number | null>(null);
+  const [dragGhostRect, setDragGhostRect] = useState<{ x: number; y: number; width: number } | null>(null);
   const suppressProjectSelectRef = useRef(false);
   const dragStateRef = useRef<{
     active: boolean;
     path: string;
     startX: number;
     startY: number;
+    offsetX: number;
+    offsetY: number;
+    width: number;
     moved: boolean;
   } | null>(null);
   const dragRafRef = useRef<number | null>(null);
@@ -649,6 +654,7 @@ export default function DenseBranchSidebar({
     setDragPendingProjectPath(null);
     setDraggingProjectPath(null);
     setDragPreviewIndex(null);
+    setDragGhostRect(null);
   }, []);
 
   useEffect(() => {
@@ -666,6 +672,11 @@ export default function DenseBranchSidebar({
           currentDragState.moved = true;
           setDraggingProjectPath(currentDragState.path);
         }
+        setDragGhostRect({
+          x: event.clientX - currentDragState.offsetX,
+          y: event.clientY - currentDragState.offsetY,
+          width: currentDragState.width,
+        });
 
         const rows = Array.from(scrollBodyRef.current?.querySelectorAll<HTMLElement>('[data-project-path]') ?? []);
         const targetRows = rows.filter((row) => row.dataset.projectPath && row.dataset.projectPath !== currentDragState.path);
@@ -740,23 +751,26 @@ export default function DenseBranchSidebar({
     if (event.button !== 0) return;
     event.preventDefault();
     event.stopPropagation();
-    dragStateRef.current = {
-      active: true,
-      path,
-      startX: event.clientX,
-      startY: event.clientY,
-      moved: false,
-    };
+      dragStateRef.current = {
+        active: true,
+        path,
+        startX: event.clientX,
+        startY: event.clientY,
+        offsetX: event.clientX - event.currentTarget.getBoundingClientRect().left,
+        offsetY: event.clientY - event.currentTarget.getBoundingClientRect().top,
+        width: event.currentTarget.getBoundingClientRect().width,
+        moved: false,
+      };
     setDragPendingProjectPath(path);
     setDraggingProjectPath(null);
     setDragPreviewIndex(null);
+    setDragGhostRect({
+      x: event.clientX - event.currentTarget.getBoundingClientRect().left,
+      y: event.clientY - event.currentTarget.getBoundingClientRect().top,
+      width: event.currentTarget.getBoundingClientRect().width,
+    });
     event.currentTarget.setPointerCapture(event.pointerId);
   }, []);
-
-  const shouldStartProjectDrag = (target: EventTarget | null): target is HTMLElement => {
-    if (!(target instanceof HTMLElement)) return false;
-    return !target.closest('button[aria-label^="Project actions for"], button[aria-label^="Expand"], button[aria-label^="Collapse"]');
-  };
 
   const defaultCollapsedClumps = gridLayoutModel?.defaultCollapsedClumps ?? new Set<string>();
   const isGridClusterOpen = (clusterKey: string): boolean =>
@@ -954,6 +968,181 @@ export default function DenseBranchSidebar({
     return next;
   }, [activeProjectPath, manuallyClosedClumpsByProject, manuallyOpenedClumpsByProject, projects]);
 
+  const renderProject = (
+    project: Props['projects'][number],
+    options: { ghostMode?: boolean; hideLive?: boolean } = {},
+  ) => {
+    const ghostMode = options.ghostMode ?? false;
+    const hideLive = options.hideLive ?? false;
+    const isActive = project.path === activeProjectPath;
+    const isExpanded = expandedProjects.has(project.path);
+    const projectTreeLoaded = project.treeLoaded ?? project.branches.length > 0;
+    const projectRender = projectRenderDataByPath.get(project.path);
+    const expandedBranchNamesForProject = expandedBranchNamesByProject[project.path] ??
+      (projectRender
+        ? inferDefaultExpanded(
+            projectRender.rootBranchNames,
+            projectRender.childNamesByParent,
+            checkedOutRef,
+            project.defaultBranch,
+          )
+        : new Set<string>());
+    const isDraggingProject = draggingProjectPath === project.path;
+    return (
+      <motion.div
+        key={project.path}
+        layout="position"
+        transition={{ duration: 0.12, ease: 'easeOut' }}
+        data-project-path={project.path}
+        className={cn('relative z-0', isExpanded && projectRender ? 'mb-5' : 'mb-1')}
+      >
+        {dragPreviewIndex !== null && draggingProjectPath !== project.path && renderedProjects[dragPreviewIndex]?.path === project.path ? (
+          <div className="h-px" aria-hidden="true">
+            <div className="mx-1 h-px bg-primary/60" />
+          </div>
+        ) : null}
+        <div className={cn('relative z-0 px-1', hideLive ? 'pointer-events-none opacity-0' : '')}>
+          <div
+            className={cn(
+              ghostMode
+                ? 'flex w-full items-center gap-0 rounded-lg px-0 py-1 text-muted-foreground'
+                : 'sticky top-0 z-20 flex w-full items-center gap-0 rounded-lg bg-background px-0 py-1 transition-all duration-100 ease-out hover:bg-accent cursor-grab active:cursor-grabbing',
+              isActive ? 'text-foreground' : 'text-muted-foreground',
+              isDraggingProject && !ghostMode ? 'opacity-0' : '',
+            )}
+            onPointerDownCapture={(event) => {
+              if (ghostMode) return;
+              const target = event.target as HTMLElement | null;
+              if (target?.closest('.window-no-drag, button, input, textarea, select, [contenteditable="true"]')) return;
+              startProjectDrag(event, project.path);
+            }}
+          >
+            <button
+              type="button"
+              onPointerDown={(event) => event.stopPropagation()}
+              onClick={(event) => {
+                event.preventDefault();
+                event.stopPropagation();
+                setExpandedProjects((previous) => {
+                  const next = new Set(previous);
+                  if (next.has(project.path)) next.delete(project.path);
+                  else next.add(project.path);
+                  persistExpandedProjects(next);
+                  return next;
+                });
+              }}
+              aria-expanded={isExpanded}
+              aria-label={`${isExpanded ? 'Collapse' : 'Expand'} ${project.name}`}
+              className={cn(
+                'flex h-6 w-6 shrink-0 items-center justify-center rounded-md transition-colors hover:bg-accent',
+                ghostMode ? 'pointer-events-none' : '',
+              )}
+            >
+              <ProjectIcon open={isExpanded} />
+            </button>
+            <span
+              className={cn(
+                'min-w-0 flex-1 truncate pl-0 text-left text-sm transition-colors hover:text-foreground',
+                'font-normal',
+                isActive ? 'text-primary' : 'text-muted-foreground',
+              )}
+            >
+              {project.name}
+            </span>
+            <div className="relative shrink-0">
+              <button
+                type="button"
+                onPointerDown={(event) => event.stopPropagation()}
+                aria-label={`Project actions for ${project.name}`}
+                aria-expanded={openProjectMenuPath === project.path}
+                onClick={(event) => {
+                  event.stopPropagation();
+                  setOpenProjectMenuPath((current) => (current === project.path ? null : project.path));
+                }}
+                className={cn(
+                  'flex h-6 w-6 shrink-0 items-center justify-center rounded-md text-muted-foreground transition-colors hover:bg-accent hover:text-muted-foreground',
+                  ghostMode ? 'pointer-events-none' : '',
+                )}
+              >
+                <MoreHorizontal className="h-4 w-4 shrink-0" />
+              </button>
+              {openProjectMenuPath === project.path && !ghostMode ? (
+                <div
+                  role="menu"
+                  className="absolute right-0 top-full z-30 mt-1 w-40 overflow-hidden rounded-xl border border-border/60 bg-card p-1 shadow-lg"
+                  onClick={(event) => event.stopPropagation()}
+                >
+                  <button
+                    type="button"
+                    role="menuitem"
+                    onClick={() => {
+                      setOpenProjectMenuPath(null);
+                      void onRevealProjectInFinder(project.path);
+                    }}
+                    className="flex w-full items-center rounded-lg px-3 py-2 text-left text-sm text-muted-foreground transition-colors hover:bg-accent hover:text-foreground"
+                  >
+                    Open in Finder
+                  </button>
+                  <button
+                    type="button"
+                    role="menuitem"
+                    onClick={() => {
+                      setOpenProjectMenuPath(null);
+                      onRemoveProject(project.path);
+                    }}
+                    className="flex w-full items-center rounded-lg px-3 py-2 text-left text-sm text-red-600 transition-colors hover:bg-red-50 hover:text-red-700 dark:text-red-400 dark:hover:bg-red-900/20 dark:hover:text-red-300"
+                  >
+                    Remove
+                  </button>
+                </div>
+              ) : null}
+            </div>
+          </div>
+          {isExpanded ? (
+            projectTreeLoaded && projectRender ? (
+              <ul className={cn('relative z-0 space-y-0 pt-0', ghostMode ? 'opacity-70' : '')}>
+                {projectRender.rootBranchNames.map((branchName, idx) => (
+                  <BranchRows
+                    key={`${project.path}:${branchName}`}
+                    branchName={branchName}
+                    depth={0}
+                    isLast={idx === projectRender.rootBranchNames.length - 1}
+                    branchByName={projectRender.branchByName}
+                    branchCommitPreviews={projectRender.branchCommitPreviewsFromLayout}
+                    childNamesByParent={projectRender.childNamesByParent}
+                    branchAnchorShaByName={projectRender.branchAnchorShaByName}
+                    expandedBranchNames={expandedBranchNamesForProject}
+                    onToggleBranch={(branchName) => handleToggleBranch(project.path, branchName)}
+                    checkedOutBranchName={projectRender.checkedOutBranchName}
+                    ancestors={new Set()}
+                    showCommits={showCommits}
+                    getMergeTargetLabels={projectRender.getMergeTargetLabels}
+                    sourceBranchName={branchName}
+                    clusterKeyByCommitId={projectRender.clusterKeyByCommitId}
+                    isGridClusterOpen={projectRender.isGridClusterOpen}
+                    onToggleGridCluster={handleToggleGridCluster}
+                    onSelectCommit={async (sha) => {
+                      if (!isActive) await onSelectProject(project.path);
+                      onSelectCommit?.(sha);
+                    }}
+                    onSelectBranch={async (branchName) => {
+                      if (!isActive) await onSelectProject(project.path);
+                      onSelectBranch?.(branchName);
+                    }}
+                  />
+                ))}
+              </ul>
+            ) : (
+              <p className={cn('px-2 py-2 text-xs text-muted-foreground', ghostMode ? 'opacity-70' : '')}>
+                Loading branch tree...
+              </p>
+            )
+          ) : null}
+        </div>
+      </motion.div>
+    );
+  };
+
   return (
     <aside
       ref={asideRef}
@@ -1015,167 +1204,21 @@ export default function DenseBranchSidebar({
           className={cn('min-h-0 flex-1 space-y-6 overflow-y-auto px-2.5', collapsed ? 'opacity-0 pointer-events-none' : '')}
           style={{ scrollbarGutter: 'stable both-edges' }}
         >
-          {renderedProjects.map((project) => {
-            const isActive = project.path === activeProjectPath;
-            const isExpanded = expandedProjects.has(project.path);
-            const projectTreeLoaded = project.treeLoaded ?? project.branches.length > 0;
-            const projectRender = projectRenderDataByPath.get(project.path);
-            const expandedBranchNamesForProject = expandedBranchNamesByProject[project.path] ??
-              (projectRender
-                ? inferDefaultExpanded(
-                    projectRender.rootBranchNames,
-                    projectRender.childNamesByParent,
-                    checkedOutRef,
-                    project.defaultBranch,
-                  )
-                : new Set<string>());
-            return (
-              <div
-                key={project.path}
-                data-project-path={project.path}
-              className={cn(
-                  'relative z-0',
-                  isExpanded && projectRender ? 'mb-5' : 'mb-1',
-                )}
-              >
-                {dragPreviewIndex !== null && draggingProjectPath !== project.path && renderedProjects[dragPreviewIndex]?.path === project.path ? (
-                  <div className="h-px" aria-hidden="true">
-                    <div className="mx-1 h-px bg-primary/60" />
-                  </div>
-                ) : null}
-                <div className="relative z-0 px-1">
-                  <div
-                    className={cn(
-                      'sticky top-0 z-20 flex w-full items-center gap-0 rounded-lg bg-background px-0 py-1 transition-colors hover:bg-accent cursor-grab active:cursor-grabbing',
-                      isActive ? 'text-foreground' : 'text-muted-foreground',
-                      draggingProjectPath === project.path ? 'opacity-95' : '',
-                    )}
-                    onPointerDownCapture={(event) => {
-                      if (!shouldStartProjectDrag(event.target)) return;
-                      startProjectDrag(event, project.path);
-                    }}
-                  >
-                    <button
-                      type="button"
-                      onPointerDown={(event) => event.stopPropagation()}
-                      onClick={(event) => {
-                        event.preventDefault();
-                        event.stopPropagation();
-                        setExpandedProjects((previous) => {
-                          const next = new Set(previous);
-                          if (next.has(project.path)) next.delete(project.path);
-                          else next.add(project.path);
-                          persistExpandedProjects(next);
-                          return next;
-                        });
-                      }}
-                      aria-expanded={isExpanded}
-                      aria-label={`${isExpanded ? 'Collapse' : 'Expand'} ${project.name}`}
-                      className="flex h-6 w-6 shrink-0 items-center justify-center rounded-md transition-colors hover:bg-accent"
-                    >
-                      <ProjectIcon open={isExpanded} />
-                    </button>
-                    <span
-                      className={cn(
-                        'min-w-0 flex-1 truncate pl-0 text-left text-sm transition-colors hover:text-foreground',
-                        'font-normal',
-                        isActive ? 'text-primary' : 'text-muted-foreground',
-                      )}
-                    >
-                      {project.name}
-                    </span>
-                    <div className="relative shrink-0">
-                      <button
-                        type="button"
-                        onPointerDown={(event) => event.stopPropagation()}
-                        aria-label={`Project actions for ${project.name}`}
-                        aria-expanded={openProjectMenuPath === project.path}
-                        onClick={(event) => {
-                          event.stopPropagation();
-                          setOpenProjectMenuPath((current) => (current === project.path ? null : project.path));
-                        }}
-                        className="flex h-6 w-6 shrink-0 items-center justify-center rounded-md text-muted-foreground transition-colors hover:bg-accent hover:text-muted-foreground"
-                      >
-                        <MoreHorizontal className="h-4 w-4 shrink-0" />
-                      </button>
-                      {openProjectMenuPath === project.path ? (
-                        <div
-                          role="menu"
-                          className="absolute right-0 top-full z-30 mt-1 w-40 overflow-hidden rounded-xl border border-border/60 bg-card p-1 shadow-lg"
-                          onClick={(event) => event.stopPropagation()}
-                        >
-                          <button
-                            type="button"
-                            role="menuitem"
-                            onClick={() => {
-                              setOpenProjectMenuPath(null);
-                              onRevealProjectInFinder(project.path);
-                            }}
-                            className="flex w-full items-center rounded-lg px-3 py-2 text-left text-sm text-muted-foreground transition-colors hover:bg-accent hover:text-foreground"
-                          >
-                            Open in Finder
-                          </button>
-                          <button
-                            type="button"
-                            role="menuitem"
-                            onClick={() => {
-                              setOpenProjectMenuPath(null);
-                              onRemoveProject(project.path);
-                            }}
-                            className="flex w-full items-center rounded-lg px-3 py-2 text-left text-sm text-red-600 transition-colors hover:bg-red-50 hover:text-red-700 dark:text-red-400 dark:hover:bg-red-900/20 dark:hover:text-red-300"
-                          >
-                            Remove
-                          </button>
-                        </div>
-                      ) : null}
-                    </div>
-                  </div>
-                  {isExpanded ? (
-                    projectTreeLoaded && projectRender ? (
-                      <ul className="relative z-0 space-y-0 pt-0">
-                        {projectRender.rootBranchNames.map((branchName, idx) => (
-                          <BranchRows
-                            key={`${project.path}:${branchName}`}
-                            branchName={branchName}
-                            depth={0}
-                            isLast={idx === projectRender.rootBranchNames.length - 1}
-                            branchByName={projectRender.branchByName}
-                            branchCommitPreviews={projectRender.branchCommitPreviewsFromLayout}
-                            childNamesByParent={projectRender.childNamesByParent}
-                            branchAnchorShaByName={projectRender.branchAnchorShaByName}
-                            expandedBranchNames={expandedBranchNamesForProject}
-                            onToggleBranch={(branchName) => handleToggleBranch(project.path, branchName)}
-                            checkedOutBranchName={projectRender.checkedOutBranchName}
-                            ancestors={new Set()}
-                            showCommits={showCommits}
-                            getMergeTargetLabels={projectRender.getMergeTargetLabels}
-                            sourceBranchName={branchName}
-                            clusterKeyByCommitId={projectRender.clusterKeyByCommitId}
-                            isGridClusterOpen={projectRender.isGridClusterOpen}
-                            onToggleGridCluster={handleToggleGridCluster}
-                            onSelectCommit={async (sha) => {
-                              if (!isActive) await onSelectProject(project.path);
-                              onSelectCommit?.(sha);
-                            }}
-                            onSelectBranch={async (branchName) => {
-                              if (!isActive) await onSelectProject(project.path);
-                              onSelectBranch?.(branchName);
-                            }}
-                          />
-                        ))}
-                      </ul>
-                    ) : (
-                      <p className="px-2 py-2 text-xs text-muted-foreground">
-                        Loading branch tree...
-                      </p>
-                    )
-                  ) : null}
-                </div>
-              </div>
-            );
-          })}
+          {renderedProjects.map((project) => renderProject(project, { hideLive: draggingProjectPath === project.path }))}
         </div>
       </div>
+      {draggingProjectPath && dragGhostRect ? (
+        <div
+          aria-hidden="true"
+          className="pointer-events-none fixed left-0 top-0 z-[90]"
+          style={{
+            transform: `translate3d(${dragGhostRect.x}px, ${dragGhostRect.y}px, 0)`,
+            width: `${dragGhostRect.width}px`,
+          }}
+        >
+          {renderProject(projects.find((project) => project.path === draggingProjectPath) ?? orderedProjects.find((project) => project.path === draggingProjectPath)!, { ghostMode: true })}
+        </div>
+      ) : null}
     </aside>
   );
 }
