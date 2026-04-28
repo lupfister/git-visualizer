@@ -538,6 +538,9 @@ export function computeBranchGridLayout(input: BranchGridLayoutInput): BranchGri
     if (visibleCommitBySha.has(commit.id)) return;
     visibleCommitBySha.set(commit.id, commit);
   };
+  const unpushedDirectCommitShas = new Set(
+    unpushedDirectCommits.map((commit) => commit.fullSha),
+  );
 
   const branchCommitShaSets = new Map<string, Set<string>>(
     Array.from(branchCommitsByLane.entries()).map(([branchName, commits]) => [
@@ -713,13 +716,21 @@ export function computeBranchGridLayout(input: BranchGridLayoutInput): BranchGri
     const entriesByKey = new Map<string, VisualCommit[]>();
     let currentKey: string | null = null;
     let segmentIndex = 0;
+    const clusterBoundaryKind = (commit: VisualCommit): string => {
+      if (commit.kind === 'uncommitted') return 'uncommitted';
+      if (commit.kind === 'stash') return 'stash';
+      if (commit.kind === 'branch-created') return 'branch-created';
+      return unpushedDirectCommitShas.has(commit.id) ? 'unpushed' : 'pushed';
+    };
+    let previousBoundaryKind: string | null = null;
     for (const commit of ordered) {
       const isSyntheticBoundaryChild = commit.kind === 'stash' || commit.kind === 'branch-created';
       const isBoundary = boundaryShaByCommitId.has(commit.visualId);
       if (isSyntheticBoundaryChild) {
         continue;
       }
-      if (!currentKey) {
+      const boundaryKind = clusterBoundaryKind(commit);
+      if (!currentKey || (previousBoundaryKind != null && previousBoundaryKind !== boundaryKind)) {
         segmentIndex += 1;
         currentKey = `cluster:${branchName}:segment:${segmentIndex}`;
       }
@@ -729,6 +740,7 @@ export function computeBranchGridLayout(input: BranchGridLayoutInput): BranchGri
       if (isBoundary) {
         currentKey = null;
       }
+      previousBoundaryKind = boundaryKind;
     }
     const clusters: GridCluster[] = [];
     for (const [key, chunk] of entriesByKey.entries()) {

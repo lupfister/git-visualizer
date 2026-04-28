@@ -443,7 +443,7 @@ export default function MapGridCanvas({
                         ) : null}
                       </div>
                     </div>
-                    {displayZoom > 0.5 ? (
+                    {displayZoom > 0.5 && !isStashedCommit ? (
                       <div className="mt-auto flex items-end justify-between gap-4 pt-5">
                         <div
                           className={cn('select-text text-sm font-medium', selectedCommitTextClass)}
