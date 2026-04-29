@@ -258,9 +258,13 @@ export default function CommitControls({
             type="button"
             onClick={() => setNewBranchDialogOpen(true)}
             disabled={createBranchFromNodeInProgress}
-            className={cn(controlClassName, 'pointer-events-auto relative z-10 !bg-background !border-border')}
+            className={cn(
+              controlClassName,
+              'pointer-events-auto relative z-10 !bg-background !border-border',
+              compactLabels ? 'w-7 justify-center px-0' : '',
+            )}
           >
-            <GitBranchPlus className="mr-1.5 h-3.5 w-3.5 shrink-0" />
+            <GitBranchPlus className={cn('h-3.5 w-3.5 shrink-0', compactLabels ? '' : 'mr-1.5')} />
             {!compactLabels ? (createBranchFromNodeInProgress ? 'Creating...' : 'Branch') : null}
           </button>
         </div>

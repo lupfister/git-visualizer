@@ -376,9 +376,9 @@ export default function MapGridCanvas({
                         style={selectedCommitTextStyle ?? unpushedCommitTextStyle}
                       >
                         {isClusterOpen ? (
-                          <span className="-translate-x-[1px] translate-y-[2px] text-base leading-none">⌃</span>
+                        <span className="-translate-x-[1px] translate-y-[2px] text-base leading-none">⌃</span>
                         ) : (
-                          `x${clumpCount}`
+                          `+${clumpCount - 1}`
                         )}
                       </button>
                     ) : null}
