@@ -37,6 +37,7 @@
   --card-foreground: #1C1917;
   --muted: #F5F4F2;
   --muted-foreground: #78716C;
+  --selected-foreground: #7A716B;
   --primary: #1C1917;
   --primary-foreground: #FAFAF9;
   --accent: #F0EFEC;
@@ -56,6 +57,7 @@
   --color-card-foreground: var(--card-foreground);
   --color-muted: var(--muted);
   --color-muted-foreground: var(--muted-foreground);
+  --color-selected-foreground: var(--selected-foreground);
   --color-primary: var(--primary);
   --color-primary-foreground: var(--primary-foreground);
   --color-accent: var(--accent);
@@ -240,6 +242,17 @@ body.popover-window #root {
   border: 3px solid transparent;
   background-clip: content-box;
   border-radius: 9999px;
+}
+
+.project-row[data-active-project='true'] .project-name,
+.project-row[data-active-project='true'] .project-icon {
+  color: var(--selected-foreground);
+  opacity: 1;
+}
+
+.project-row[data-active-project='false'] .project-name,
+.project-row[data-active-project='false'] .project-icon {
+  opacity: 0.78;
 }
 
 /* Keep graph strokes visually stable while camera scales. */

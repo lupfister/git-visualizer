@@ -304,7 +304,7 @@ export default function MapGridCanvas({
                   ? '#158EFC'
                   : CONNECTOR_COLOR;
             const unpushedCommitTextStyle = isUnpushedCommit && !checkedOutAccentActive && !isSelectedCommit
-              ? { color: '#CCCCCC' }
+              ? { color: '#BCB8B5' }
               : undefined;
             return (
               <MapGridCommitWrapper

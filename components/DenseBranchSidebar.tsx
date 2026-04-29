@@ -129,6 +129,24 @@ function inferDefaultExpanded(
   return expanded;
 }
 
+function pathsProbablyEqual(a: string | null | undefined, b: string | null | undefined): boolean {
+  if (!a || !b) return false;
+  const variantsFor = (value: string): string[] => {
+    const normalized = value.replace(/\\/g, '/').replace(/\/+$/, '');
+    const variants = new Set<string>([normalized]);
+    if (normalized.startsWith('/private/')) variants.add(normalized.slice('/private'.length));
+    return Array.from(variants);
+  };
+  const av = variantsFor(a);
+  const bv = variantsFor(b);
+  for (const left of av) {
+    for (const right of bv) {
+      if (left === right || left.toLowerCase() === right.toLowerCase()) return true;
+    }
+  }
+  return false;
+}
+
 type CommitClump<T extends { fullSha: string; kind?: string }> = {
   key: string;
   commits: T[];
@@ -957,7 +975,7 @@ export default function DenseBranchSidebar({
   ) => {
     const ghostMode = options.ghostMode ?? false;
     const hideLive = options.hideLive ?? false;
-    const isActive = project.path === activeProjectPath;
+    const isActive = pathsProbablyEqual(project.path, activeProjectPath);
     const isExpanded = expandedProjects.has(project.path);
     const projectTreeLoaded = project.treeLoaded ?? project.branches.length > 0;
     const projectRender = projectRenderDataByPath.get(project.path);
@@ -971,14 +989,18 @@ export default function DenseBranchSidebar({
           )
         : new Set<string>());
     const isDraggingProject = draggingProjectPath === project.path;
-    const isActiveProject = project.path === activeProjectPath;
+    const isActiveProject = pathsProbablyEqual(project.path, activeProjectPath);
     return (
       <motion.div
         key={project.path}
         layout="position"
         transition={{ duration: 0.12, ease: 'easeOut' }}
         data-project-path={project.path}
-        className={cn('relative z-10 flex flex-col gap-1', isExpanded && projectRender ? 'mb-2.5' : '')}
+        data-active-project={isActiveProject ? 'true' : 'false'}
+        className={cn(
+          'project-row relative z-10 flex flex-col gap-1 text-muted-foreground',
+          isExpanded && projectRender ? 'mb-2.5' : '',
+        )}
       >
         {dragPreviewIndex !== null && draggingProjectPath !== project.path && renderedProjects[dragPreviewIndex]?.path === project.path ? (
           <div className="h-px" aria-hidden="true">
@@ -989,9 +1011,8 @@ export default function DenseBranchSidebar({
           <div
             className={cn(
               ghostMode
-                ? 'group flex w-full items-center gap-0 rounded-lg px-0 h-6 text-muted-foreground'
+                ? 'group flex w-full items-center gap-0 rounded-lg px-0 h-6'
                 : 'group sticky top-0 z-20 flex w-full items-center gap-0 rounded-lg bg-background px-0 h-6 transition-all duration-100 ease-out hover:bg-accent cursor-grab active:cursor-grabbing',
-              'text-muted-foreground',
               isDraggingProject && !ghostMode ? 'opacity-0' : '',
             )}
             onPointerDownCapture={(event) => {
@@ -1025,7 +1046,7 @@ export default function DenseBranchSidebar({
               aria-expanded={isExpanded}
               aria-label={`${isExpanded ? 'Collapse' : 'Expand'} ${project.name}`}
               className={cn(
-                'flex h-6 w-6 shrink-0 items-center justify-center rounded-md transition-colors hover:bg-accent',
+                'project-icon flex h-6 w-6 shrink-0 items-center justify-center rounded-md transition-colors hover:bg-accent text-inherit',
                 ghostMode ? 'pointer-events-none' : '',
               )}
             >
@@ -1033,9 +1054,9 @@ export default function DenseBranchSidebar({
             </button>
           <span
             className={cn(
-              'min-w-0 flex-1 truncate pl-0 text-left text-sm transition-colors',
+              'project-name min-w-0 flex-1 truncate pl-0 text-left text-sm transition-colors',
               'font-normal',
-              'text-muted-foreground',
+              'text-inherit',
             )}
           >
             {project.name}
@@ -1055,10 +1076,7 @@ export default function DenseBranchSidebar({
                   setOpenProjectMenuCoords({ top: rect.bottom + 8, right: Math.max(8, window.innerWidth - rect.right) });
                   setOpenProjectMenuPath((current) => (current === project.path ? null : project.path));
                 }}
-                className={cn(
-                  'pr-1.5 flex h-6 w-6 shrink-0 items-center justify-center rounded-md text-muted-foreground opacity-0 hover:bg-accent hover:text-muted-foreground group-hover:opacity-100',
-                  ghostMode ? 'pointer-events-none' : '',
-                )}
+                className={cn('pr-1.5 flex h-6 w-6 shrink-0 items-center justify-center rounded-md opacity-0 hover:bg-accent group-hover:opacity-100 text-inherit', ghostMode ? 'pointer-events-none' : '')}
               >
                 <MoreHorizontal className="h-4 w-4 shrink-0" />
               </button>
@@ -1066,7 +1084,7 @@ export default function DenseBranchSidebar({
               ? createPortal(
                   <div
                     role="menu"
-                    className="fixed z-[10000] inline-flex w-max flex-col overflow-hidden rounded-md border border-border/60 bg-card p-1"
+                    className="fixed z-[10000] inline-flex w-max flex-col overflow-hidden rounded-md border border-[#E7E5DE] bg-background p-1"
                     style={{ top: `${openProjectMenuCoords.top}px`, right: `${openProjectMenuCoords.right}px` }}
                     onClick={(event) => event.stopPropagation()}
                   >

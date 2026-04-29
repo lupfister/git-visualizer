@@ -142,7 +142,7 @@ export default function CommitControls({
   const toolbar = (
     <div className="window-no-drag pointer-events-none z-[60] flex w-full justify-start">
       <div className="pointer-events-auto flex w-fit max-w-full flex-nowrap items-center justify-start gap-[9px]">
-        <div ref={actionMenuRef} className="relative inline-flex h-7 items-stretch rounded-md border border-border/60 bg-card/95">
+        <div ref={actionMenuRef} className="relative inline-flex h-7 items-stretch rounded-md border border-[#E7E5DE] bg-background">
           <button
             type="button"
             onClick={() => {
@@ -169,7 +169,7 @@ export default function CommitControls({
             <ChevronDown className="h-3.5 w-3.5 shrink-0" />
           </button>
           {actionMenuOpen && primaryAction ? (
-            <div className="absolute left-[-1px] top-full z-[70] mt-2 inline-flex w-max min-w-0 flex-col overflow-hidden rounded-md border border-border/60 bg-card p-1">
+            <div className="absolute left-[-1px] top-full z-[70] mt-2 inline-flex w-max min-w-0 flex-col overflow-hidden rounded-md border border-[#E7E5DE] bg-background p-1">
               <button
                 type="button"
                 onClick={() => {
@@ -240,7 +240,7 @@ export default function CommitControls({
             type="button"
             onClick={() => setNewBranchDialogOpen(true)}
             disabled={createBranchFromNodeInProgress}
-            className={cn(controlClassName, 'pointer-events-auto relative z-10 bg-background')}
+            className={cn(controlClassName, 'pointer-events-auto relative z-10 !bg-background !border-[#E7E5DE]')}
           >
             <GitBranchPlus className="mr-1.5 h-3.5 w-3.5 shrink-0" />
             {createBranchFromNodeInProgress ? 'Creating...' : 'New Branch'}
@@ -248,7 +248,7 @@ export default function CommitControls({
         </div>
 
         {selectedVisibleCommitShas.length > 1 && selectedCommitTargetOption.options.length > 0 && selectedCommitTargetOption.targetBranch && onMergeRefsIntoBranch ? (
-          <div className="pointer-events-auto inline-flex w-fit flex-nowrap items-center gap-[9px] rounded-md border border-border/60 bg-card/95 px-2 py-1">
+          <div className="pointer-events-auto inline-flex w-fit flex-nowrap items-center gap-[9px] rounded-md border border-[#E7E5DE] bg-background px-2 py-1">
           <span className="px-1 text-[11px] font-medium text-muted-foreground">Merge to</span>
           {selectedCommitTargetOption.options.map((option) => {
             const isActive = option.targetBranch === selectedCommitTargetOption.targetBranch;
@@ -275,12 +275,12 @@ export default function CommitControls({
 
         {worktrees.length > 0 && (onSwitchToWorktree || onRemoveWorktree) ? (
           <div ref={worktreeMenuRef} className="pointer-events-auto relative">
-            <button type="button" onClick={() => setWorktreeMenuOpen((open) => !open)} className={controlClassName}>
+            <button type="button" onClick={() => setWorktreeMenuOpen((open) => !open)} className={cn(controlClassName, '!bg-background !border-[#E7E5DE]')}>
               <FolderGit2 className="mr-1.5 h-3.5 w-3.5 shrink-0" />
               {worktrees.length} {worktrees.length === 1 ? 'Worktree' : 'Worktrees'}
             </button>
             {worktreeMenuOpen ? (
-              <div className="absolute left-0 top-full z-[70] mt-2 w-[22rem] max-h-64 overflow-auto rounded-md border border-border/60 bg-card p-1">
+              <div className="absolute left-0 top-full z-[70] mt-2 w-[22rem] max-h-64 overflow-auto rounded-md border border-[#E7E5DE] bg-background p-1">
                 {worktrees.map((worktree) => (
                   <div key={worktree.path} className="mb-1 flex items-start justify-between gap-2 rounded-lg px-2 py-1.5 hover:bg-muted/30">
                     <div className="min-w-0">
