@@ -5,16 +5,6 @@ import { buildLooseCablePath } from './gridPathUtils';
 import { cn } from './mapGridUtils';
 import type { ConnectorFace, Node } from './LayoutGrid';
 
-const MAP_ACCENT = 'var(--map-accent)';
-const MAP_ACCENT_STRONG = 'var(--map-accent-base)';
-
-function darkenHex(hex: string, amount = 10) {
-  const next = hex.replace('#', '');
-  if (next.length !== 6) return hex;
-  const clamp = (value: number) => Math.max(0, value - amount).toString(16).padStart(2, '0');
-  return `#${clamp(Number.parseInt(next.slice(0, 2), 16))}${clamp(Number.parseInt(next.slice(2, 4), 16))}${clamp(Number.parseInt(next.slice(4, 6), 16))}`;
-}
-
 function MapGridCommitWrapper({
   fadeIn,
   className,
@@ -286,8 +276,6 @@ export default function MapGridCanvas({
               (unpushedCommitShasSetByBranch.get(node.commit.branchName)?.has(node.commit.id) ?? false);
             const isCheckedOutCommit = isLocalUncommitted || (checkedOutHeadSha != null && node.commit.id === checkedOutHeadSha);
             const checkedOutAccentActive = isCheckedOutCommit && !isSelectedCommit;
-            const checkedOutAccentColor = darkenHex(MAP_ACCENT);
-            const selectedAccentColor = darkenHex(MAP_ACCENT_STRONG);
             const selectedCommitTextClass = checkedOutAccentActive
               ? 'text-map-accent'
               : isSelectedCommit

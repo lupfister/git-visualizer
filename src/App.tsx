@@ -132,7 +132,6 @@ function App() {
   const [directCommits, setDirectCommits] = useState<DirectCommit[]>([]);
   const [unpushedDirectCommits, setUnpushedDirectCommits] = useState<DirectCommit[]>([]);
   const [unpushedCommitShasByBranch, setUnpushedCommitShasByBranch] = useState<Record<string, string[]>>({});
-  const [openPRs, setOpenPRs] = useState<OpenPR[]>([]);
   const [defaultBranch, setDefaultBranch] = useState<string>('main');
   const [checkedOutRef, setCheckedOutRef] = useState<CheckedOutRef | null>(null);
   const [worktrees, setWorktrees] = useState<WorktreeInfo[]>([]);
@@ -145,17 +144,12 @@ function App() {
   const [gridSearchResultCount, setGridSearchResultCount] = useState<number | null>(null);
   const [gridSearchResultIndex, setGridSearchResultIndex] = useState<number | null>(null);
   const [gridFocusSha, setGridFocusSha] = useState<string | null>(null);
-  const [showCommits] = useState(false);
   const [loading, setLoading] = useState(false);
   const [mapLoading, setMapLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  const [showErrorPanel, setShowErrorPanel] = useState(false);
-  const [errorPanelClosing, setErrorPanelClosing] = useState(false);
-  const [errorPanelTab, setErrorPanelTab] = useState<'active' | 'inactive'>('active');
   // scrollRequest.seq increments on each click so the same branch re-triggers the effect
-  const [scrollRequest, setScrollRequest] = useState<{ branch: Branch; seq: number } | null>(null);
-  const [focusedErrorBranch, setFocusedErrorBranch] = useState<Branch | null>(null);
-  const [githubAvailable, setGithubAvailable] = useState(false);
+  const scrollRequest: { branch: Branch; seq: number } | null = null;
+  const focusedErrorBranch: Branch | null = null;
   const [githubAuthStatus, setGithubAuthStatus] = useState<GitHubAuthStatus | null>(null);
   const [githubAuthLoading, setGithubAuthLoading] = useState(false);
   const [githubAuthMessage, setGithubAuthMessage] = useState<string | null>(null);
@@ -173,6 +167,7 @@ function App() {
   const [laneByBranch, setLaneByBranch] = useState<Record<string, number>>({});
   const [branchUniqueAheadCounts, setBranchUniqueAheadCounts] = useState<Record<string, number>>({});
   const [stashes, setStashes] = useState<GitStashEntry[]>([]);
+  const [openPRs, setOpenPRs] = useState<OpenPR[]>([]);
   const [stashInProgress, setStashInProgress] = useState(false);
   const [commitInProgress, setCommitInProgress] = useState(false);
   const [stageInProgress, setStageInProgress] = useState(false);
@@ -182,13 +177,6 @@ function App() {
   const [isGridDebugOpen, setIsGridDebugOpen] = useState(false);
   const [sidebarWidthPx, setSidebarWidthPx] = useState(SIDEBAR_DEFAULT_WIDTH_PX);
   const [isSidebarCollapsed, setIsSidebarCollapsed] = useState(false);
-  const [sidebarDebug, setSidebarDebug] = useState<{
-    dragging: boolean;
-    lastEvent: string;
-  }>({
-    dragging: false,
-    lastEvent: 'idle',
-  });
   const autoFocusSyncKeyRef = useRef<string | null>(null);
   const loadRepoRequestIdRef = useRef(0);
   const githubFetchRequestIdRef = useRef(0);
@@ -1009,7 +997,6 @@ function App() {
     const requestId = ++githubFetchRequestIdRef.current;
     try {
       if (requestId !== githubFetchRequestIdRef.current) return;
-      setGithubAvailable(false);
       setGithubAuthMessage(null);
       const ghInfo = await invoke<GitHubInfo>('get_github_info', { repoPath: path });
       const authStatus = await invoke<GitHubAuthStatus>('get_github_auth_status');
@@ -1025,13 +1012,11 @@ function App() {
       });
       if (requestId !== githubFetchRequestIdRef.current) return;
       setOpenPRs(open);
-      setGithubAvailable(true);
     } catch (e) {
       if (requestId !== githubFetchRequestIdRef.current) return;
       // GitHub data is optional, don't show error to user
       console.log('GitHub data not available:', e);
       setGithubAuthMessage(e instanceof Error ? e.message : String(e));
-      setGithubAvailable(false);
     }
   }
 
@@ -1449,22 +1434,6 @@ function App() {
     }
   }
 
-  const openPRBranchNames = new Set(openPRs.map((p) => p.branchName));
-  const ACTIVE_MS = 14 * 86400000;
-  const now = Date.now();
-  const errorBranches = branches.filter((b) => b.status === 'stale');
-  const activeErrorBranches = errorBranches.filter(
-    (b) => openPRBranchNames.has(b.name) || now - new Date(b.lastCommitDate).getTime() <= ACTIVE_MS
-  );
-  const inactiveErrorBranches = errorBranches.filter(
-    (b) => !openPRBranchNames.has(b.name) && now - new Date(b.lastCommitDate).getTime() > ACTIVE_MS
-  );
-  const aheadCountForBranch = (branch: Branch): number => (
-    Object.prototype.hasOwnProperty.call(branchUniqueAheadCounts, branch.name)
-      ? Math.max(0, branchUniqueAheadCounts[branch.name] ?? 0)
-      : Math.max(0, branch.commitsAhead)
-  );
-
   // Reset when a new repo is loaded
   useEffect(() => {
     // Keep loaded graph/snapshot state intact while switching repos.
@@ -1623,16 +1592,6 @@ function App() {
     window.addEventListener('keydown', handler);
     return () => window.removeEventListener('keydown', handler);
   }, [repoPath, repoName, branches]);
-
-  function closeErrorPanel() {
-    setErrorPanelClosing(true);
-    setTimeout(() => {
-      setShowErrorPanel(false);
-      setErrorPanelClosing(false);
-      setErrorPanelTab('active');
-      setFocusedErrorBranch(null);
-    }, 100);
-  }
 
   async function handleMapCommitClick(target: { commitSha: string; branchName?: string }) {
     if (!repoPath) return;
@@ -2141,7 +2100,6 @@ function App() {
 
   void [
     mapLoading,
-    githubAvailable,
     worktrees,
     removeWorktreeInProgress,
     scrollRequest,
@@ -2168,12 +2126,6 @@ function App() {
     handlePushCommitTargets,
     handleDeleteSelection,
   ];
-
-  function handleFocusOnMap(branch: Branch) {
-    setFocusedErrorBranch(branch);
-    setScrollRequest(prev => ({ branch, seq: (prev?.seq ?? 0) + 1 }));
-    // panel stays open intentionally
-  }
 
   function handleSidebarSelectCommit(sha: string) {
     if (!sha) return;
@@ -2487,12 +2439,11 @@ function App() {
     if (shell) shell.style.width = `${drag.pendingWidth}px`;
   };
 
-  const finishSidebarDrag = (reason: string, pointerId?: number) => {
+  const finishSidebarDrag = (_reason: string, pointerId?: number) => {
     const drag = sidebarDragRef.current;
     if (!drag) return;
     if (pointerId != null && drag.pointerId !== pointerId) return;
     sidebarDragRef.current = null;
-    setSidebarDebug({ dragging: false, lastEvent: reason });
     document.body.style.cursor = '';
     document.body.style.userSelect = '';
     setSidebarWidthPx(drag.pendingWidth);
@@ -2506,12 +2457,6 @@ function App() {
   const handleSidebarPointerDown = (event: React.PointerEvent<HTMLDivElement>) => {
     if (event.button !== 0) return;
     event.preventDefault();
-    setSidebarDebug({ dragging: true, lastEvent: 'handle:pointerdown' });
-    console.debug('[sidebar-resize] pointerdown', {
-      pointerId: event.pointerId,
-      clientX: event.clientX,
-      width: sidebarWidthRef.current,
-    });
     sidebarDragRef.current = {
       startX: event.clientX,
       startWidth: sidebarWidthRef.current,
@@ -2526,14 +2471,11 @@ function App() {
   const handleSidebarPointerMove = (event: React.PointerEvent<HTMLDivElement>) => {
     const drag = sidebarDragRef.current;
     if (!drag || drag.pointerId !== event.pointerId) return;
-    if (sidebarDebug.lastEvent !== 'move') console.debug('[sidebar-resize] pointermove', { clientX: event.clientX });
-    setSidebarDebug((previous) => (previous.dragging ? { dragging: true, lastEvent: 'move' } : previous));
     updateSidebarWidthFromPointer(event.clientX);
   };
 
   const handleSidebarPointerUp = (event: React.PointerEvent<HTMLDivElement>) => {
     if (!sidebarDragRef.current) return;
-    console.debug('[sidebar-resize] pointerup', { pointerId: event.pointerId });
     try {
       event.currentTarget.releasePointerCapture(event.pointerId);
     } catch {
@@ -2544,7 +2486,6 @@ function App() {
 
   const handleSidebarPointerCancel = (event: React.PointerEvent<HTMLDivElement>) => {
     if (!sidebarDragRef.current) return;
-    console.debug('[sidebar-resize] pointercancel', { pointerId: event.pointerId });
     try {
       event.currentTarget.releasePointerCapture(event.pointerId);
     } catch {
@@ -2591,7 +2532,7 @@ function App() {
               projectLoading={loading || (projectTreeLoading && repoPath ? !projectSnapshots[repoPath]?.loaded : false)}
               projectError={error}
               checkedOutRef={checkedOutRef}
-              showCommits={showCommits}
+              showCommits={false}
               manuallyOpenedClumpsByProject={manuallyOpenedGridClumpsByRepo}
               manuallyClosedClumpsByProject={manuallyClosedGridClumpsByRepo}
               manuallyOpenedClumps={effectiveManuallyOpenedGridClumps}
@@ -2622,6 +2563,7 @@ function App() {
                 directCommits={enrichedDirectCommits}
                 unpushedDirectCommits={unpushedDirectCommits}
                 unpushedCommitShasByBranch={unpushedCommitShasByBranch}
+                openPRs={openPRs}
                 defaultBranch={defaultBranch}
                 branchCommitPreviews={enrichedBranchCommitPreviews}
                 branchParentByName={enrichedBranchParentByName}
@@ -2672,63 +2614,6 @@ function App() {
               />
           </div>
 
-          {showErrorPanel && (
-            <div
-              data-map-ui
-              className={`absolute top-[96px] right-4 z-50 w-[calc(100%-2rem)] max-w-80 bg-card border border-border rounded-2xl overflow-hidden ${errorPanelClosing ? 'animate-error-panel-out' : 'animate-error-panel-in'}`}
-            >
-              <div className="flex items-center justify-between px-4 py-3 border-b border-border/50">
-                <span className="text-sm font-medium text-foreground">Branch errors</span>
-                <button onClick={closeErrorPanel} className="text-muted-foreground hover:text-foreground transition-colors">
-                  <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
-                  </svg>
-                </button>
-              </div>
-              <div className="flex items-center gap-3 px-4 py-2 border-b border-border/30 bg-muted/30">
-                <button
-                  onClick={() => setErrorPanelTab('active')}
-                  className={`text-xs font-medium transition-colors ${errorPanelTab === 'active' ? 'text-destructive' : 'text-muted-foreground hover:text-foreground'}`}
-                >
-                  {activeErrorBranches.length} active
-                </button>
-                <span className="text-xs text-muted-foreground">·</span>
-                <button
-                  onClick={() => setErrorPanelTab('inactive')}
-                  className={`text-xs font-medium transition-colors ${errorPanelTab === 'inactive' ? 'text-foreground' : 'text-muted-foreground hover:text-foreground'}`}
-                >
-                  {inactiveErrorBranches.length} inactive
-                </button>
-              </div>
-              <div className="overflow-y-auto max-h-64">
-                {(errorPanelTab === 'active' ? activeErrorBranches : inactiveErrorBranches).map((b) => {
-                  const isFocused = focusedErrorBranch?.name === b.name;
-                  const ahead = aheadCountForBranch(b);
-                  return (
-                    <button
-                      key={b.name}
-                      onClick={() => handleFocusOnMap(b)}
-                      className="w-full group flex items-center justify-between px-4 py-2.5 rounded-xl border border-transparent hover:border-border hover:bg-card transition-all text-left"
-                    >
-                      <div className="flex-1 min-w-0">
-                        <p className={`text-sm font-medium truncate ${isFocused ? 'text-amber-600 dark:text-amber-400' : 'text-foreground'}`}>
-                          {b.name}
-                        </p>
-                        <p className="text-xs text-muted-foreground mt-0.5">
-                          {ahead > 0 && `${ahead} ahead`}
-                          {ahead > 0 && b.commitsBehind > 0 && ', '}
-                          {b.commitsBehind > 0 && `${b.commitsBehind} behind`}
-                        </p>
-                      </div>
-                      <span className="text-[10px] font-medium uppercase tracking-wide bg-amber-50 text-amber-600 dark:bg-amber-900/20 dark:text-amber-400 px-2 py-0.5 rounded-full shrink-0 mt-0.5">
-                        Stale
-                      </span>
-                    </button>
-                  );
-                })}
-              </div>
-            </div>
-          )}
         </div>
       </div>
     </div>
