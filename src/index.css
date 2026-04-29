@@ -34,17 +34,20 @@
   --background: #FAFAF9;
   --foreground: #1C1917;
   --card: #FFFFFF;
-  --card-foreground: #1C1917;
   --muted: #F5F4F2;
   --muted-foreground: #78716C;
   --selected-foreground: #7A716B;
-  --primary: #1C1917;
-  --primary-foreground: #FAFAF9;
   --accent: #F0EFEC;
-  --accent-foreground: #1C1917;
-  --border: #E7E5E0;
+  --border: #E7E5DE;
+  --grid-line: #E6E6E6;
+  --map-accent: #38BDF2;
+  --map-accent-strong: #158EFC;
+  --map-accent-base: #068CFD;
+  --selection-soft: #EBF7FE;
+  --selection-soft-strong: #E5F0FF;
+  --neutral-line: #8B8B8B;
+  --neutral-subtle: #BCB8B5;
   --destructive: #DC2626;
-  --destructive-foreground: #ffffff;
   --font-sans: system-ui, -apple-system, sans-serif;
   --font-space-grotesk: 'Space Grotesk', system-ui, -apple-system, sans-serif;
 }
@@ -54,15 +57,19 @@
   --color-background: var(--background);
   --color-foreground: var(--foreground);
   --color-card: var(--card);
-  --color-card-foreground: var(--card-foreground);
   --color-muted: var(--muted);
   --color-muted-foreground: var(--muted-foreground);
   --color-selected-foreground: var(--selected-foreground);
-  --color-primary: var(--primary);
-  --color-primary-foreground: var(--primary-foreground);
   --color-accent: var(--accent);
-  --color-accent-foreground: var(--accent-foreground);
   --color-border: var(--border);
+  --color-grid-line: var(--grid-line);
+  --color-map-accent: var(--map-accent);
+  --color-map-accent-strong: var(--map-accent-strong);
+  --color-map-accent-base: var(--map-accent-base);
+  --color-selection-soft: var(--selection-soft);
+  --color-selection-soft-strong: var(--selection-soft-strong);
+  --color-neutral-line: var(--neutral-line);
+  --color-neutral-subtle: var(--neutral-subtle);
   --color-destructive: var(--destructive);
   --font-sans: var(--font-sans);
   --font-space-grotesk: var(--font-space-grotesk);
@@ -211,6 +218,25 @@ body.popover-window #root {
 /* Space Grotesk for repo titles */
 .font-space-grotesk {
   font-family: var(--font-space-grotesk);
+}
+
+.project-menu-remove {
+  color: #DC2626;
+  transition: background-color 150ms ease, color 150ms ease;
+}
+
+.project-menu-remove:hover {
+  background-color: #FEE2E2;
+  color: #DC2626;
+}
+
+.dark .project-menu-remove {
+  color: #FCA5A5;
+}
+
+.dark .project-menu-remove:hover {
+  background-color: rgba(127, 29, 29, 0.3);
+  color: #FCA5A5;
 }
 
 /* ── Branch map scrollbar — native scrollbar hidden ── */

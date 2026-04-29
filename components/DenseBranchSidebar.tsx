@@ -341,7 +341,7 @@ function BranchRows({
                 aria-hidden="true"
                 className={cn(
                   'h-3.5 w-3.5 shrink-0 transition-transform',
-                  isCheckedOut && isActiveProject ? 'text-[#38BDF2]' : 'text-muted-foreground',
+                  isCheckedOut && isActiveProject ? 'text-map-accent' : 'text-muted-foreground',
                   isExpanded ? 'rotate-90' : '',
                 )}
               />
@@ -350,7 +350,7 @@ function BranchRows({
           <span
             className={cn(
               'min-w-0 flex-1 break-words',
-              isCheckedOut && isActiveProject ? 'font-medium text-[#38BDF2]' : 'font-normal text-muted-foreground',
+              isCheckedOut && isActiveProject ? 'font-medium text-map-accent' : 'font-normal text-muted-foreground',
             )}
           >
             {branchName}
@@ -1004,7 +1004,7 @@ export default function DenseBranchSidebar({
       >
         {dragPreviewIndex !== null && draggingProjectPath !== project.path && renderedProjects[dragPreviewIndex]?.path === project.path ? (
           <div className="h-px" aria-hidden="true">
-            <div className="mx-1 h-px bg-primary/60" />
+            <div className="mx-1 h-px bg-foreground/60" />
           </div>
         ) : null}
         <div className={cn('relative z-0 px-1', hideLive ? 'pointer-events-none opacity-0' : '')}>
@@ -1084,7 +1084,7 @@ export default function DenseBranchSidebar({
               ? createPortal(
                   <div
                     role="menu"
-                    className="fixed z-[10000] inline-flex w-max flex-col overflow-hidden rounded-md border border-[#E7E5DE] bg-background p-1"
+                    className="fixed z-[10000] inline-flex w-max flex-col overflow-hidden rounded-md border border-border bg-background p-1"
                     style={{ top: `${openProjectMenuCoords.top}px`, right: `${openProjectMenuCoords.right}px` }}
                     onClick={(event) => event.stopPropagation()}
                   >
@@ -1106,7 +1106,7 @@ export default function DenseBranchSidebar({
                         setOpenProjectMenuPath(null);
                         onRemoveProject(project.path);
                       }}
-                      className="flex w-full items-center rounded-[2px] px-2 py-1.5 text-left text-xs font-medium text-red-600 transition-colors hover:bg-red-100 hover:text-red-600 dark:text-red-400 dark:hover:bg-red-900/30 dark:hover:text-red-400"
+                      className="project-menu-remove flex w-full items-center rounded-[2px] px-2 py-1.5 text-left text-xs font-medium"
                     >
                       Remove
                     </button>

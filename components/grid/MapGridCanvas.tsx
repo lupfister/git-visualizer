@@ -5,6 +5,9 @@ import { buildLooseCablePath } from './gridPathUtils';
 import { cn } from './mapGridUtils';
 import type { ConnectorFace, Node } from './LayoutGrid';
 
+const MAP_ACCENT = 'var(--map-accent)';
+const MAP_ACCENT_STRONG = 'var(--map-accent-base)';
+
 function darkenHex(hex: string, amount = 10) {
   const next = hex.replace('#', '');
   if (next.length !== 6) return hex;
@@ -283,28 +286,28 @@ export default function MapGridCanvas({
               (unpushedCommitShasSetByBranch.get(node.commit.branchName)?.has(node.commit.id) ?? false);
             const isCheckedOutCommit = isLocalUncommitted || (checkedOutHeadSha != null && node.commit.id === checkedOutHeadSha);
             const checkedOutAccentActive = isCheckedOutCommit && !isSelectedCommit;
-            const checkedOutAccentColor = darkenHex('#38BDF2');
-            const selectedAccentColor = darkenHex('#158EFC');
+            const checkedOutAccentColor = darkenHex(MAP_ACCENT);
+            const selectedAccentColor = darkenHex(MAP_ACCENT_STRONG);
             const selectedCommitTextClass = checkedOutAccentActive
-              ? `text-[${checkedOutAccentColor}]`
+              ? 'text-map-accent'
               : isSelectedCommit
-                ? `text-[${selectedAccentColor}]`
+                ? 'text-map-accent-strong'
                 : 'text-muted-foreground';
             const selectedCommitTextStyle = checkedOutAccentActive
-              ? { color: checkedOutAccentColor }
+              ? { color: 'var(--map-accent)' }
               : isSelectedCommit
-                ? { color: selectedAccentColor }
+                ? { color: 'var(--map-accent-strong)' }
                 : undefined;
-            const focusedCommitBorderColor = selectedCommitTextStyle?.color ?? '#8B8B8B';
+            const focusedCommitBorderColor = selectedCommitTextStyle?.color ?? 'var(--neutral-line)';
             const commitBorderColor = focusedNode?.commit.id === node.commit.id
               ? focusedCommitBorderColor
               : checkedOutAccentActive
-                ? '#38BDF2'
+                ? 'var(--map-accent)'
                 : isSelectedCommit
-                  ? '#158EFC'
+                  ? 'var(--map-accent-strong)'
                   : CONNECTOR_COLOR;
             const unpushedCommitTextStyle = isUnpushedCommit && !checkedOutAccentActive && !isSelectedCommit
-              ? { color: '#BCB8B5' }
+              ? { color: 'var(--neutral-subtle)' }
               : undefined;
             return (
               <MapGridCommitWrapper
@@ -396,9 +399,9 @@ export default function MapGridCanvas({
                 <div className={cn(
                     'absolute left-0 h-[176px] w-full cursor-pointer overflow-hidden rounded-tr-xl rounded-br-xl rounded-bl-xl rounded-tl-none border border-border/50',
                     checkedOutAccentActive && !isUnpushedCommit && !isStashedCommit && !isEmptyBranchNode
-                      ? 'bg-[#EBF7FE]'
+                      ? 'bg-selection-soft'
                     : isSelectedCommit && !isUnpushedCommit && !isStashedCommit && !isEmptyBranchNode
-                        ? 'bg-[#E5F0FF]'
+                        ? 'bg-selection-soft-strong'
                         : isUnpushedCommit || isStashedCommit || isEmptyBranchNode
                           ? 'bg-transparent'
                           : 'bg-background',

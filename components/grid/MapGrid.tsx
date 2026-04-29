@@ -1229,7 +1229,7 @@ export default function BranchGridMap({
             top: marqueeRect.top,
             width: marqueeRect.width,
             height: marqueeRect.height,
-            borderColor: '#068CFD',
+            borderColor: 'var(--map-accent-base)',
             borderWidth: '1.5px',
             backgroundColor: 'transparent',
             borderRadius: 0,
