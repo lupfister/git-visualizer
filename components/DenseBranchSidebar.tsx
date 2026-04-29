@@ -1,3 +1,4 @@
+import { createPortal } from 'react-dom';
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import type { CSSProperties, Dispatch, PointerEvent as ReactPointerEvent, SetStateAction } from 'react';
 import { ChevronRight, MoreHorizontal } from 'lucide-react';
@@ -547,6 +548,8 @@ export default function DenseBranchSidebar({
   const [draggingProjectPath, setDraggingProjectPath] = useState<string | null>(null);
   const [dragPreviewIndex, setDragPreviewIndex] = useState<number | null>(null);
   const [dragGhostRect, setDragGhostRect] = useState<{ x: number; y: number; width: number } | null>(null);
+  const [openProjectMenuCoords, setOpenProjectMenuCoords] = useState<{ top: number; right: number } | null>(null);
+  const projectMenuButtonRefs = useRef(new Map<string, HTMLButtonElement | null>());
   const suppressProjectSelectRef = useRef(false);
   const dragStateRef = useRef<{
     active: boolean;
@@ -817,9 +820,22 @@ export default function DenseBranchSidebar({
 
   useEffect(() => {
     if (openProjectMenuPath == null) return;
+    const updateMenuCoords = () => {
+      const button = projectMenuButtonRefs.current.get(openProjectMenuPath);
+      if (!button) return;
+      const rect = button.getBoundingClientRect();
+      setOpenProjectMenuCoords({ top: rect.bottom + 8, right: Math.max(8, window.innerWidth - rect.right) });
+    };
+    updateMenuCoords();
     const handlePointerDown = () => setOpenProjectMenuPath(null);
     window.addEventListener('pointerdown', handlePointerDown);
-    return () => window.removeEventListener('pointerdown', handlePointerDown);
+    window.addEventListener('resize', updateMenuCoords);
+    window.addEventListener('scroll', updateMenuCoords, true);
+    return () => {
+      window.removeEventListener('pointerdown', handlePointerDown);
+      window.removeEventListener('resize', updateMenuCoords);
+      window.removeEventListener('scroll', updateMenuCoords, true);
+    };
   }, [openProjectMenuPath]);
 
   const projectRenderDataByPath = useMemo(() => {
@@ -962,7 +978,7 @@ export default function DenseBranchSidebar({
         layout="position"
         transition={{ duration: 0.12, ease: 'easeOut' }}
         data-project-path={project.path}
-        className={cn('relative z-0 flex flex-col gap-1', isExpanded && projectRender ? 'mb-2.5' : '')}
+        className={cn('relative z-10 flex flex-col gap-1', isExpanded && projectRender ? 'mb-2.5' : '')}
       >
         {dragPreviewIndex !== null && draggingProjectPath !== project.path && renderedProjects[dragPreviewIndex]?.path === project.path ? (
           <div className="h-px" aria-hidden="true">
@@ -1024,14 +1040,19 @@ export default function DenseBranchSidebar({
           >
             {project.name}
           </span>
-            <div className="relative shrink-0">
+            <div className="relative z-[130] shrink-0">
               <button
                 type="button"
                 onPointerDown={(event) => event.stopPropagation()}
                 aria-label={`Project actions for ${project.name}`}
                 aria-expanded={openProjectMenuPath === project.path}
+                ref={(node) => {
+                  projectMenuButtonRefs.current.set(project.path, node);
+                }}
                 onClick={(event) => {
                   event.stopPropagation();
+                  const rect = event.currentTarget.getBoundingClientRect();
+                  setOpenProjectMenuCoords({ top: rect.bottom + 8, right: Math.max(8, window.innerWidth - rect.right) });
                   setOpenProjectMenuPath((current) => (current === project.path ? null : project.path));
                 }}
                 className={cn(
@@ -1041,36 +1062,40 @@ export default function DenseBranchSidebar({
               >
                 <MoreHorizontal className="h-4 w-4 shrink-0" />
               </button>
-            {openProjectMenuPath === project.path && !ghostMode ? (
-              <div
-                role="menu"
-                className="absolute right-0 top-full z-[120] mt-1 w-40 overflow-hidden rounded-xl border border-border/60 bg-card p-1 shadow-lg"
-                onClick={(event) => event.stopPropagation()}
-              >
-                  <button
-                    type="button"
-                    role="menuitem"
-                    onClick={() => {
-                      setOpenProjectMenuPath(null);
-                      void onRevealProjectInFinder(project.path);
-                    }}
-                    className="flex w-full items-center rounded-lg px-3 py-2 text-left text-sm text-muted-foreground transition-colors hover:bg-accent hover:text-foreground"
+            {openProjectMenuPath === project.path && !ghostMode && openProjectMenuCoords && typeof document !== 'undefined'
+              ? createPortal(
+                  <div
+                    role="menu"
+                    className="fixed z-[10000] inline-flex w-max flex-col overflow-hidden rounded-md border border-border/60 bg-card p-1"
+                    style={{ top: `${openProjectMenuCoords.top}px`, right: `${openProjectMenuCoords.right}px` }}
+                    onClick={(event) => event.stopPropagation()}
                   >
-                    Open in Finder
-                  </button>
-                  <button
-                    type="button"
-                    role="menuitem"
-                    onClick={() => {
-                      setOpenProjectMenuPath(null);
-                      onRemoveProject(project.path);
-                    }}
-                    className="flex w-full items-center rounded-lg px-3 py-2 text-left text-sm text-red-600 transition-colors hover:bg-red-50 hover:text-red-700 dark:text-red-400 dark:hover:bg-red-900/20 dark:hover:text-red-300"
-                  >
-                    Remove
-                  </button>
-                </div>
-              ) : null}
+                    <button
+                      type="button"
+                      role="menuitem"
+                      onClick={() => {
+                        setOpenProjectMenuPath(null);
+                        void onRevealProjectInFinder(project.path);
+                      }}
+                      className="flex w-full items-center rounded-[2px] px-2 py-1.5 text-left text-xs font-medium text-muted-foreground transition-colors hover:bg-accent hover:text-foreground"
+                    >
+                      Open in Finder
+                    </button>
+                    <button
+                      type="button"
+                      role="menuitem"
+                      onClick={() => {
+                        setOpenProjectMenuPath(null);
+                        onRemoveProject(project.path);
+                      }}
+                      className="flex w-full items-center rounded-[2px] px-2 py-1.5 text-left text-xs font-medium text-red-600 transition-colors hover:bg-red-100 hover:text-red-600 dark:text-red-400 dark:hover:bg-red-900/30 dark:hover:text-red-400"
+                    >
+                      Remove
+                    </button>
+                  </div>,
+                  document.body,
+                )
+              : null}
             </div>
           </div>
           {isExpanded ? (
@@ -1123,7 +1148,7 @@ export default function DenseBranchSidebar({
     <aside
       ref={asideRef}
       aria-label="Dense branch sidebar"
-      className={cn('pointer-events-auto relative h-full select-none overflow-hidden', className)}
+      className={cn('pointer-events-auto relative z-[120] h-full select-none overflow-hidden', className)}
       style={style}
     >
       <header data-tauri-drag-region className="absolute inset-x-0 top-0 z-80 h-12" />

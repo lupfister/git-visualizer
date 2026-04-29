@@ -169,7 +169,7 @@ export default function CommitControls({
             <ChevronDown className="h-3.5 w-3.5 shrink-0" />
           </button>
           {actionMenuOpen && primaryAction ? (
-            <div className="absolute left-0 top-full z-[70] mt-2 inline-flex w-max min-w-0 flex-col overflow-hidden rounded-md border border-border/60 bg-card p-1">
+            <div className="absolute left-[-1px] top-full z-[70] mt-2 inline-flex w-max min-w-0 flex-col overflow-hidden rounded-md border border-border/60 bg-card p-1">
               <button
                 type="button"
                 onClick={() => {
@@ -177,7 +177,7 @@ export default function CommitControls({
                   setCommitDialogOpen(true);
                 }}
                 disabled={!canCommit}
-                className={cn(controlClassName, 'w-full justify-start whitespace-nowrap rounded-md border-0 bg-transparent px-2', !canCommit && 'text-muted-foreground opacity-50')}
+                className={cn(controlClassName, 'w-full justify-start whitespace-nowrap rounded-[2px] border-0 bg-transparent px-2', !canCommit && 'text-muted-foreground opacity-50')}
               >
                 <img src="/icon-commit.svg" alt="" aria-hidden="true" className="mr-1.5 h-4.5 w-4.5 shrink-0" />
                 {commitInProgress ? 'Committing...' : 'Commit'}
@@ -189,7 +189,7 @@ export default function CommitControls({
                   void onPushCurrentBranch?.();
                 }}
                 disabled={!canPushCurrent}
-                className={cn(controlClassName, 'w-full justify-start whitespace-nowrap rounded-md border-0 bg-transparent px-2', !canPushCurrent && 'text-muted-foreground opacity-50')}
+                className={cn(controlClassName, 'w-full justify-start whitespace-nowrap rounded-[2px] border-0 bg-transparent px-2', !canPushCurrent && 'text-muted-foreground opacity-50')}
               >
                 <img src="/icon-pushBranch.svg" alt="" aria-hidden="true" className="mr-1.5 h-4.5 w-4.5 shrink-0" />
                 {pushInProgress ? 'Pushing...' : pushCurrentBranchLabel}
@@ -201,7 +201,7 @@ export default function CommitControls({
                   void onPushCommitTargets?.(selectedPushTargets.map((target) => ({ branchName: target.branchName, targetSha: target.targetSha })));
                 }}
                 disabled={!canPushSelected}
-                className={cn(controlClassName, 'w-full justify-start whitespace-nowrap rounded-md border-0 bg-transparent px-2', !canPushSelected && 'text-muted-foreground opacity-50')}
+                className={cn(controlClassName, 'w-full justify-start whitespace-nowrap rounded-[2px] border-0 bg-transparent px-2', !canPushSelected && 'text-muted-foreground opacity-50')}
                 title={selectedPushLabel}
               >
                 <img src="/icon-pushSelected.svg" alt="" aria-hidden="true" className="mr-1.5 h-4.5 w-4.5 shrink-0" />
@@ -214,7 +214,7 @@ export default function CommitControls({
                   void onPushAllBranches?.();
                 }}
                 disabled={!canPushAll}
-                className={cn(controlClassName, 'w-full justify-start whitespace-nowrap rounded-md border-0 bg-transparent px-2', !canPushAll && 'text-muted-foreground opacity-50')}
+                className={cn(controlClassName, 'w-full justify-start whitespace-nowrap rounded-[2px] border-0 bg-transparent px-2', !canPushAll && 'text-muted-foreground opacity-50')}
               >
                 <img src="/icon-pushAll.svg" alt="" aria-hidden="true" className="mr-1.5 h-4.5 w-4.5 shrink-0" />
                 Push all
@@ -226,7 +226,7 @@ export default function CommitControls({
                   void onStashLocalChanges?.();
                 }}
                 disabled={!canStash}
-                className={cn(controlClassName, 'w-full justify-start whitespace-nowrap rounded-md border-0 bg-transparent px-2', !canStash && 'text-muted-foreground opacity-50')}
+                className={cn(controlClassName, 'w-full justify-start whitespace-nowrap rounded-[2px] border-0 bg-transparent px-2', !canStash && 'text-muted-foreground opacity-50')}
               >
                 <img src="/icon-stash.svg" alt="" aria-hidden="true" className="mr-1.5 h-4.5 w-4.5 shrink-0" />
                 {stashInProgress ? 'Stashing...' : 'Stash'}
@@ -280,7 +280,7 @@ export default function CommitControls({
               {worktrees.length} {worktrees.length === 1 ? 'Worktree' : 'Worktrees'}
             </button>
             {worktreeMenuOpen ? (
-              <div className="absolute left-0 top-full z-[70] mt-2 w-[22rem] max-h-64 overflow-auto rounded-xl border border-border/60 bg-card p-2">
+              <div className="absolute left-0 top-full z-[70] mt-2 w-[22rem] max-h-64 overflow-auto rounded-md border border-border/60 bg-card p-1">
                 {worktrees.map((worktree) => (
                   <div key={worktree.path} className="mb-1 flex items-start justify-between gap-2 rounded-lg px-2 py-1.5 hover:bg-muted/30">
                     <div className="min-w-0">

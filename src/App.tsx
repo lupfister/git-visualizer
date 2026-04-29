@@ -2559,7 +2559,7 @@ function App() {
         <div className="relative flex h-full min-h-0 flex-1 overflow-hidden">
           <div
             ref={sidebarShellRef}
-            className="relative z-20 flex h-full min-h-0 flex-none overflow-visible"
+            className="relative z-[60] flex h-full min-h-0 flex-none overflow-visible"
             style={{ width: isSidebarCollapsed ? 64 : sidebarWidthPx }}
           >
             <button

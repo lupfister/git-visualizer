@@ -5,6 +5,13 @@ import { buildLooseCablePath } from './gridPathUtils';
 import { cn } from './mapGridUtils';
 import type { ConnectorFace, Node } from './LayoutGrid';
 
+function darkenHex(hex: string, amount = 10) {
+  const next = hex.replace('#', '');
+  if (next.length !== 6) return hex;
+  const clamp = (value: number) => Math.max(0, value - amount).toString(16).padStart(2, '0');
+  return `#${clamp(Number.parseInt(next.slice(0, 2), 16))}${clamp(Number.parseInt(next.slice(2, 4), 16))}${clamp(Number.parseInt(next.slice(4, 6), 16))}`;
+}
+
 function MapGridCommitWrapper({
   fadeIn,
   className,
@@ -230,7 +237,7 @@ export default function MapGridCanvas({
     >
       <div
         ref={mapPadHostRef}
-        className="relative min-w-full bg-[#FAFAF9] p-2.5"
+        className="relative min-w-full bg-white p-2.5"
         onWheel={onWheel}
         onMouseDown={onMouseDown}
         style={{ width: contentWidth, minWidth: '100%', height: contentHeight }}
@@ -276,17 +283,29 @@ export default function MapGridCanvas({
               (unpushedCommitShasSetByBranch.get(node.commit.branchName)?.has(node.commit.id) ?? false);
             const isCheckedOutCommit = isLocalUncommitted || (checkedOutHeadSha != null && node.commit.id === checkedOutHeadSha);
             const checkedOutAccentActive = isCheckedOutCommit && !isSelectedCommit;
+            const checkedOutAccentColor = darkenHex('#38BDF2');
+            const selectedAccentColor = darkenHex('#158EFC');
             const selectedCommitTextClass = checkedOutAccentActive
-              ? 'text-[#38BDF2]'
+              ? `text-[${checkedOutAccentColor}]`
               : isSelectedCommit
-                ? 'text-[#158EFC]'
+                ? `text-[${selectedAccentColor}]`
                 : 'text-muted-foreground';
             const selectedCommitTextStyle = checkedOutAccentActive
-              ? { color: '#38BDF2' }
+              ? { color: checkedOutAccentColor }
               : isSelectedCommit
-                ? { color: '#158EFC' }
+                ? { color: selectedAccentColor }
                 : undefined;
             const focusedCommitBorderColor = selectedCommitTextStyle?.color ?? '#8B8B8B';
+            const commitBorderColor = focusedNode?.commit.id === node.commit.id
+              ? focusedCommitBorderColor
+              : checkedOutAccentActive
+                ? '#38BDF2'
+                : isSelectedCommit
+                  ? '#158EFC'
+                  : CONNECTOR_COLOR;
+            const unpushedCommitTextStyle = isUnpushedCommit && !checkedOutAccentActive && !isSelectedCommit
+              ? { color: '#CCCCCC' }
+              : undefined;
             return (
               <MapGridCommitWrapper
                 key={node.commit.visualId}
@@ -314,7 +333,7 @@ export default function MapGridCanvas({
                         selectedCommitTextClass,
                         displayZoom <= 0.5 ? 'overflow-hidden text-ellipsis whitespace-nowrap' : 'break-words whitespace-normal',
                       )}
-                      style={selectedCommitTextStyle}
+                      style={selectedCommitTextStyle ?? unpushedCommitTextStyle}
                     >
                       {isStashedCommit && stashHeaderLabel
                         ? stashHeaderLabel
@@ -363,7 +382,7 @@ export default function MapGridCanvas({
                           flushCameraReactTick();
                         }}
                         className={cn('inline-flex self-start items-center bg-transparent p-0 text-sm font-medium leading-none', selectedCommitTextClass)}
-                        style={selectedCommitTextStyle}
+                        style={selectedCommitTextStyle ?? unpushedCommitTextStyle}
                       >
                         {isClusterOpen ? (
                           <span className="-translate-x-[1px] translate-y-[2px] text-base leading-none">⌃</span>
@@ -382,7 +401,7 @@ export default function MapGridCanvas({
                         ? 'bg-[#E5F0FF]'
                         : isUnpushedCommit || isStashedCommit || isEmptyBranchNode
                           ? 'bg-transparent'
-                          : 'bg-[#F5F5F5]',
+                          : 'bg-background',
                     isStashedCommit || isLocalUncommitted || isEmptyBranchNode ? 'border-dashed' : '',
                     branchOffNodeShas.has(node.commit.id) ||
                     branchStartShas.has(node.commit.id) ||
@@ -402,13 +421,7 @@ export default function MapGridCanvas({
                     borderWidth: focusedNode?.commit.id === node.commit.id
                       ? `${(isStashedCommit || isLocalUncommitted || isEmptyBranchNode) ? lineStrokeWidth * (2 / 1.5) : lineStrokeWidth}px`
                       : `${(isStashedCommit || isLocalUncommitted || isEmptyBranchNode) ? lineStrokeWidth * (2 / 1.5) : lineStrokeWidth}px`,
-                    borderColor: focusedNode?.commit.id === node.commit.id
-                      ? focusedCommitBorderColor
-                      : checkedOutAccentActive
-                        ? '#38BDF2'
-                        : isSelectedCommit
-                          ? '#158EFC'
-                          : CONNECTOR_COLOR,
+                    borderColor: commitBorderColor,
                     borderTopLeftRadius: 0,
                     borderTopRightRadius: `${commitCornerRadiusPx}px`,
                     borderBottomRightRadius: `${commitCornerRadiusPx}px`,
@@ -424,7 +437,7 @@ export default function MapGridCanvas({
                           displayZoom <= 0.5 ? 'overflow-hidden text-ellipsis whitespace-nowrap' : 'break-words whitespace-normal',
                         )}
                         data-selectable-text="true"
-                        style={selectedCommitTextStyle}
+                      style={selectedCommitTextStyle ?? unpushedCommitTextStyle}
                       >
                         {isTop && isClusterOpen
                           ? stashBodyMessage
@@ -448,14 +461,14 @@ export default function MapGridCanvas({
                         <div
                           className={cn('select-text text-sm font-medium', selectedCommitTextClass)}
                           data-selectable-text="true"
-                          style={selectedCommitTextStyle}
+                          style={selectedCommitTextStyle ?? unpushedCommitTextStyle}
                         >
                           @{node.commit.author}
                         </div>
                         <div
                           className={cn('select-text text-sm font-medium', selectedCommitTextClass)}
                           data-selectable-text="true"
-                          style={selectedCommitTextStyle}
+                          style={selectedCommitTextStyle ?? unpushedCommitTextStyle}
                         >
                           {new Date(node.commit.date).toLocaleString('en-US', {
                             month: 'long',
