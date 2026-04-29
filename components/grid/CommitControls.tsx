@@ -17,6 +17,7 @@ type SelectedCommitTargetOption = {
 };
 
 type Props = {
+  compactLabels?: boolean;
   selectedVisibleCommitShas: string[];
   commitInProgress: boolean;
   commitDisabled: boolean;
@@ -54,6 +55,7 @@ type Props = {
 };
 
 export default function CommitControls({
+  compactLabels = false,
   selectedVisibleCommitShas,
   commitInProgress,
   commitDisabled,
@@ -121,9 +123,25 @@ export default function CommitControls({
               label: pushSelectedLabel,
               iconSrc: '/icon-pushSelected.svg',
               run: () => void onPushCommitTargets?.(selectedPushTargets.map((target) => ({ branchName: target.branchName, targetSha: target.targetSha }))),
-              disabled: !canPushSelected,
-            }
-          : null;
+          disabled: !canPushSelected,
+        }
+      : null;
+  const renderMaskedIcon = (src: string, className: string) => (
+    <span
+      aria-hidden="true"
+      className={cn('inline-block shrink-0 bg-current', className)}
+      style={{
+        WebkitMaskImage: `url(${src})`,
+        WebkitMaskPosition: 'center',
+        WebkitMaskRepeat: 'no-repeat',
+        WebkitMaskSize: 'contain',
+        maskImage: `url(${src})`,
+        maskPosition: 'center',
+        maskRepeat: 'no-repeat',
+        maskSize: 'contain',
+      }}
+    />
+  );
 
   useEffect(() => {
     const handlePointerDown = (event: PointerEvent) => {
@@ -153,8 +171,8 @@ export default function CommitControls({
             className={cn(controlClassName, 'h-full rounded-r-none border-0 bg-transparent pr-1 hover:bg-accent')}
           >
             <span className="inline-flex items-center gap-1.5">
-              <img src={primaryAction?.iconSrc ?? '/icon-commit.svg'} alt="" aria-hidden="true" className="h-4.5 w-4.5 shrink-0" />
-              <span>{primaryAction?.label ?? 'Commit'}</span>
+              {renderMaskedIcon(primaryAction?.iconSrc ?? '/icon-commit.svg', 'h-4.5 w-4.5')}
+              {!compactLabels ? <span>{primaryAction?.label ?? 'Commit'}</span> : null}
             </span>
           </button>
           <button
@@ -179,7 +197,7 @@ export default function CommitControls({
                 disabled={!canCommit}
                 className={cn(controlClassName, 'w-full justify-start whitespace-nowrap rounded-[2px] border-0 bg-transparent px-2', !canCommit && 'text-muted-foreground opacity-50')}
               >
-                <img src="/icon-commit.svg" alt="" aria-hidden="true" className="mr-1.5 h-4.5 w-4.5 shrink-0" />
+                {renderMaskedIcon('/icon-commit.svg', 'mr-1.5 h-4.5 w-4.5')}
                 {commitInProgress ? 'Committing...' : 'Commit'}
               </button>
               <button
@@ -191,7 +209,7 @@ export default function CommitControls({
                 disabled={!canPushCurrent}
                 className={cn(controlClassName, 'w-full justify-start whitespace-nowrap rounded-[2px] border-0 bg-transparent px-2', !canPushCurrent && 'text-muted-foreground opacity-50')}
               >
-                <img src="/icon-pushBranch.svg" alt="" aria-hidden="true" className="mr-1.5 h-4.5 w-4.5 shrink-0" />
+                {renderMaskedIcon('/icon-pushBranch.svg', 'mr-1.5 h-4.5 w-4.5')}
                 {pushInProgress ? 'Pushing...' : pushCurrentBranchLabel}
               </button>
               <button
@@ -204,7 +222,7 @@ export default function CommitControls({
                 className={cn(controlClassName, 'w-full justify-start whitespace-nowrap rounded-[2px] border-0 bg-transparent px-2', !canPushSelected && 'text-muted-foreground opacity-50')}
                 title={selectedPushLabel}
               >
-                <img src="/icon-pushSelected.svg" alt="" aria-hidden="true" className="mr-1.5 h-4.5 w-4.5 shrink-0" />
+                {renderMaskedIcon('/icon-pushSelected.svg', 'mr-1.5 h-4.5 w-4.5')}
                 {pushSelectedLabel}
               </button>
               <button
@@ -216,7 +234,7 @@ export default function CommitControls({
                 disabled={!canPushAll}
                 className={cn(controlClassName, 'w-full justify-start whitespace-nowrap rounded-[2px] border-0 bg-transparent px-2', !canPushAll && 'text-muted-foreground opacity-50')}
               >
-                <img src="/icon-pushAll.svg" alt="" aria-hidden="true" className="mr-1.5 h-4.5 w-4.5 shrink-0" />
+                {renderMaskedIcon('/icon-pushAll.svg', 'mr-1.5 h-4.5 w-4.5')}
                 Push all
               </button>
               <button
@@ -228,7 +246,7 @@ export default function CommitControls({
                 disabled={!canStash}
                 className={cn(controlClassName, 'w-full justify-start whitespace-nowrap rounded-[2px] border-0 bg-transparent px-2', !canStash && 'text-muted-foreground opacity-50')}
               >
-                <img src="/icon-stash.svg" alt="" aria-hidden="true" className="mr-1.5 h-4.5 w-4.5 shrink-0" />
+                {renderMaskedIcon('/icon-stash.svg', 'mr-1.5 h-4.5 w-4.5')}
                 {stashInProgress ? 'Stashing...' : 'Stash'}
               </button>
             </div>
@@ -243,7 +261,7 @@ export default function CommitControls({
             className={cn(controlClassName, 'pointer-events-auto relative z-10 !bg-background !border-border')}
           >
             <GitBranchPlus className="mr-1.5 h-3.5 w-3.5 shrink-0" />
-            {createBranchFromNodeInProgress ? 'Creating...' : 'New Branch'}
+            {!compactLabels ? (createBranchFromNodeInProgress ? 'Creating...' : 'Branch') : null}
           </button>
         </div>
 
@@ -277,7 +295,8 @@ export default function CommitControls({
           <div ref={worktreeMenuRef} className="pointer-events-auto relative">
             <button type="button" onClick={() => setWorktreeMenuOpen((open) => !open)} className={cn(controlClassName, '!bg-background !border-border')}>
               <FolderGit2 className="mr-1.5 h-3.5 w-3.5 shrink-0" />
-              {worktrees.length} {worktrees.length === 1 ? 'Worktree' : 'Worktrees'}
+              {worktrees.length}
+              {!compactLabels ? ` ${worktrees.length === 1 ? 'Worktree' : 'Worktrees'}` : null}
             </button>
             {worktreeMenuOpen ? (
               <div className="absolute left-0 top-full z-[70] mt-2 w-[22rem] max-h-64 overflow-auto rounded-md border border-border bg-background p-1">

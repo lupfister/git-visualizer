@@ -19,7 +19,7 @@ export default function MapSearchBar({
   const inputRef = useRef<HTMLInputElement | null>(null);
 
   return (
-    <div className="window-no-drag flex h-7 w-[20rem] shrink-0 items-center gap-2 rounded-full border border-border bg-background pl-2.5 pr-1">
+    <div className="window-no-drag flex h-7 w-[12rem] shrink-0 items-center gap-2 rounded-full border border-border bg-background pl-1.5 pr-2.5">
       <Search className="h-3.5 w-3.5 shrink-0 text-muted-foreground" />
       <input
         ref={inputRef}

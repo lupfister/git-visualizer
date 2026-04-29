@@ -28,9 +28,9 @@ const COMMIT_SWITCH_FEEDBACK_FADE_MS = 180;
 const SIDEBAR_WIDTH_STORAGE_KEY = 'git-visualizer:sidebar-width';
 const SIDEBAR_COLLAPSED_STORAGE_KEY = 'git-visualizer:sidebar-collapsed';
 const GRID_CLUMPS_STORAGE_KEY = 'git-visualizer:grid-clumps';
-const SIDEBAR_DEFAULT_WIDTH_PX = 432;
-const SIDEBAR_MIN_WIDTH_PX = 280;
-const SIDEBAR_MAX_WIDTH_PX = 640;
+const SIDEBAR_DEFAULT_WIDTH_PX = 360;
+const SIDEBAR_MIN_WIDTH_PX = 180;
+const SIDEBAR_MAX_WIDTH_PX = 360;
 type PushTarget = {
   branchName: string;
   targetSha?: string;

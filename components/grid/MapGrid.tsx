@@ -139,6 +139,7 @@ export default function BranchGridMap({
   gridHudProps,
 }: Props) {
   const scrollContainerRef = useRef<HTMLDivElement | null>(null);
+  const hudToolbarRef = useRef<HTMLDivElement | null>(null);
   /** `p-2.5` wrapper: used to map pointer position to the transform layer origin (padding edge). */
   const mapPadHostRef = useRef<HTMLDivElement | null>(null);
   const transformLayerRef = useRef<HTMLDivElement | null>(null);
@@ -178,6 +179,8 @@ export default function BranchGridMap({
   const setManuallyClosedClumps = controlledSetManuallyClosedClumps ?? setLocalManuallyClosedClumps;
   const [visibleNodeIds, setVisibleNodeIds] = useState<Set<string> | null>(null);
   const [viewportClientSize, setViewportClientSize] = useState<{ width: number; height: number } | null>(null);
+  const [isCompactHud, setIsCompactHud] = useState(false);
+  const [hideSearchBar, setHideSearchBar] = useState(false);
   const {
     isCameraMoving,
     renderedZoom,
@@ -1021,6 +1024,22 @@ export default function BranchGridMap({
   }, [canCreateRootBranch, currentCheckedOutCommitCanCreateBranch, newBranchDialogOpen, selectedCommitCanCreateBranch]);
 
   useEffect(() => {
+    const element = hudToolbarRef.current;
+    if (!element) return;
+    const compactThresholdPx = 640;
+    const searchHideThresholdPx = 440;
+    const update = () => {
+      const width = element.getBoundingClientRect().width;
+      setIsCompactHud(width < compactThresholdPx);
+      setHideSearchBar(width < searchHideThresholdPx);
+    };
+    update();
+    const observer = new ResizeObserver(() => update());
+    observer.observe(element);
+    return () => observer.disconnect();
+  }, []);
+
+  useEffect(() => {
     const handleKeyDown = (event: KeyboardEvent) => {
       if (!onDeleteSelection) return;
       if (deleteConfirmOpen) return;
@@ -1061,9 +1080,10 @@ export default function BranchGridMap({
           onPointerDown={handleHeaderPointerDown}
           className="window-drag-region pointer-events-none absolute inset-x-0 top-0 z-[70] flex w-full select-none"
         >
-          <div className="pointer-events-auto ml-auto flex w-full max-w-[calc(100vw-116px)] min-w-0 items-start justify-between gap-3 p-2.25 select-none">
+          <div ref={hudToolbarRef} className="pointer-events-auto ml-auto flex w-full max-w-[calc(100vw-116px)] min-w-0 items-start justify-between gap-3 p-2.25 select-none">
               <div className="flex min-w-0 flex-nowrap items-center justify-start gap-3 overflow-visible">
                 <CommitControls
+                  compactLabels={isCompactHud}
                   selectedVisibleCommitShas={selectedVisibleCommitShas}
                   commitInProgress={commitInProgress}
                   commitDisabled={commitDisabled}
@@ -1102,17 +1122,20 @@ export default function BranchGridMap({
               </div>
             <div className="flex min-w-0 shrink-0 items-center justify-end gap-2">
               <div className="window-no-drag pointer-events-auto flex items-center gap-2">
-                <MapSearchBar
-                  query={gridHudProps.gridSearchQuery}
-                  onQueryChange={gridHudProps.setGridSearchQuery}
-                  resultCount={gridHudProps.gridSearchResultCount}
-                  resultIndex={gridHudProps.gridSearchResultIndex}
-                  onJump={(direction) => {
-                    gridHudProps.setGridSearchJumpDirection(direction);
-                    gridHudProps.setGridSearchJumpToken((token) => token + 1);
-                  }}
-                />
+                {!hideSearchBar ? (
+                  <MapSearchBar
+                    query={gridHudProps.gridSearchQuery}
+                    onQueryChange={gridHudProps.setGridSearchQuery}
+                    resultCount={gridHudProps.gridSearchResultCount}
+                    resultIndex={gridHudProps.gridSearchResultIndex}
+                    onJump={(direction) => {
+                      gridHudProps.setGridSearchJumpDirection(direction);
+                      gridHudProps.setGridSearchJumpToken((token) => token + 1);
+                    }}
+                  />
+                ) : null}
                 <MapOrientationToggle
+                  compactLabels={isCompactHud}
                   orientation={gridHudProps.mapGridOrientation}
                   onOrientationChange={gridHudProps.setMapGridOrientation}
                 />
