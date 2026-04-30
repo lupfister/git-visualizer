@@ -303,7 +303,7 @@ export default function MapGridCanvas({
                 fadeIn={shouldAnimateOpeningClump}
                 dataCommitCard="true"
                 className={cn(
-                  'group absolute z-20 cursor-grab active:cursor-grabbing',
+                  'group absolute z-20',
                   normalizedSearchQuery && !matchingNodeIds.has(node.commit.id)
                     ? isCameraMoving
                       ? 'opacity-10'
