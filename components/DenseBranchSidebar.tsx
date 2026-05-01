@@ -165,6 +165,7 @@ function BranchRows({
   expandedBranchNames,
   onToggleBranch,
   checkedOutBranchName,
+  checkedOutHeadSha,
   ancestors,
   showCommits,
   getMergeTargetLabels,
@@ -186,6 +187,7 @@ function BranchRows({
   expandedBranchNames: Set<string>;
   onToggleBranch: (branchName: string) => void;
   checkedOutBranchName: string | null;
+  checkedOutHeadSha: string | null;
   ancestors: Set<string>;
   showCommits: boolean;
   getMergeTargetLabels: (sha: string, sourceBranchName: string) => string[];
@@ -212,7 +214,7 @@ function BranchRows({
   const isExpanded = expandedBranchNames.has(branchName);
   const visibleCommitPreviews = shouldRenderCommitRows ? commitPreviews : [];
   const shouldShowCommitRows = isExpanded && visibleCommitPreviews.length > 0;
-  const isCheckedOut = checkedOutBranchName === branchName;
+  const isCheckedOut = checkedOutBranchName === branchName || (checkedOutHeadSha != null && branch.headSha === checkedOutHeadSha);
   const nextAncestors = new Set(ancestors);
   nextAncestors.add(branchName);
   const bendClassName = 'top-[-0.45rem] h-5 w-[10px]';
@@ -306,9 +308,19 @@ function BranchRows({
       <div className="flex items-center gap-1">
         <div
           className={cn(
+            'branch-row',
             'group flex min-w-0 flex-1 items-center gap-0 rounded-md px-2 h-6 text-left text-sm font-normal transition-colors hover:bg-accent',
-            'text-muted-foreground hover:text-foreground',
+            'text-inherit hover:text-inherit',
           )}
+          data-active-project={isActiveProject ? 'true' : 'false'}
+          data-checked-out-branch={isCheckedOut ? 'true' : 'false'}
+          style={{
+            color: isActiveProject
+              ? isCheckedOut
+                ? 'var(--map-accent)'
+                : 'var(--selected-foreground)'
+              : 'var(--muted-foreground)',
+          }}
           role={isBranchExpandable ? 'button' : undefined}
           tabIndex={isBranchExpandable ? 0 : undefined}
           onClick={() => {
@@ -335,13 +347,12 @@ function BranchRows({
                 event.stopPropagation();
                 onToggleBranch(branchName);
               }}
-              className="group/chevron flex h-6 w-6 -ml-2 shrink-0 items-center justify-center rounded-sm p-0 text-[10px] leading-none text-muted-foreground transition-colors hover:bg-accent"
+              className="group/chevron branch-chevron flex h-6 w-6 -ml-2 shrink-0 items-center justify-center rounded-sm p-0 text-[10px] leading-none transition-colors hover:bg-accent"
             >
               <ChevronRight
                 aria-hidden="true"
                 className={cn(
-                  'h-3.5 w-3.5 shrink-0 transition-transform',
-                  isCheckedOut && isActiveProject ? 'text-map-accent' : 'text-muted-foreground',
+                  'h-3.5 w-3.5 shrink-0 transition-transform text-current',
                   isExpanded ? 'rotate-90' : '',
                 )}
               />
@@ -349,8 +360,8 @@ function BranchRows({
           ) : null}
           <span
             className={cn(
-              'min-w-0 flex-1 break-words',
-              isCheckedOut && isActiveProject ? 'font-medium text-map-accent' : 'font-normal text-muted-foreground',
+              'branch-label min-w-0 flex-1 break-words font-normal',
+              'font-medium',
             )}
           >
             {branchName}
@@ -416,6 +427,7 @@ function BranchRows({
                           expandedBranchNames={expandedBranchNames}
                           onToggleBranch={onToggleBranch}
                           checkedOutBranchName={checkedOutBranchName}
+                          checkedOutHeadSha={checkedOutHeadSha}
                           ancestors={nextAncestors}
                           showCommits={showCommits}
                           getMergeTargetLabels={getMergeTargetLabels}
@@ -452,6 +464,7 @@ function BranchRows({
               expandedBranchNames={expandedBranchNames}
               onToggleBranch={onToggleBranch}
               checkedOutBranchName={checkedOutBranchName}
+              checkedOutHeadSha={checkedOutHeadSha}
               ancestors={nextAncestors}
               showCommits={showCommits}
               getMergeTargetLabels={getMergeTargetLabels}
@@ -864,6 +877,7 @@ export default function DenseBranchSidebar({
       childNamesByParent: Map<string, string[]>;
       branchAnchorShaByName: Map<string, string | null>;
       checkedOutBranchName: string | null;
+      checkedOutHeadSha: string | null;
       clusterKeyByCommitId: Map<string, string>;
       getMergeTargetLabels: (sha: string, sourceBranchName: string) => string[];
       isGridClusterOpen: (clusterKey: string) => boolean;
@@ -960,6 +974,7 @@ export default function DenseBranchSidebar({
         childNamesByParent,
         branchAnchorShaByName,
         checkedOutBranchName: project.checkedOutRef?.branchName ?? null,
+        checkedOutHeadSha: project.checkedOutRef?.headSha ?? null,
         clusterKeyByCommitId: visualState.sharedGridLayoutModel.clusterKeyByCommitId ?? new Map<string, string>(),
         getMergeTargetLabels,
         isGridClusterOpen,
@@ -998,7 +1013,7 @@ export default function DenseBranchSidebar({
         data-project-path={project.path}
         data-active-project={isActiveProject ? 'true' : 'false'}
         className={cn(
-          'project-row relative z-10 flex flex-col gap-1 text-muted-foreground',
+          'project-row relative z-10 flex flex-col gap-1 transition-colors',
           isExpanded && projectRender ? 'mb-2.5' : '',
         )}
       >
@@ -1008,7 +1023,7 @@ export default function DenseBranchSidebar({
           </div>
         ) : null}
         <div className={cn('relative z-0 px-1', hideLive ? 'pointer-events-none opacity-0' : '')}>
-          <div
+        <div
             className={cn(
               ghostMode
                 ? 'group flex w-full items-center gap-0 rounded-lg px-0 h-6'
@@ -1046,9 +1061,10 @@ export default function DenseBranchSidebar({
               aria-expanded={isExpanded}
               aria-label={`${isExpanded ? 'Collapse' : 'Expand'} ${project.name}`}
               className={cn(
-                'project-icon flex h-6 w-6 shrink-0 items-center justify-center rounded-md transition-colors hover:bg-accent text-inherit',
+                'project-icon flex h-6 w-6 shrink-0 items-center justify-center rounded-md transition-colors hover:bg-accent text-current',
                 ghostMode ? 'pointer-events-none' : '',
               )}
+              style={{ color: isActiveProject ? 'var(--selected-foreground)' : 'var(--muted-foreground)' }}
             >
               <ProjectIcon open={isExpanded} />
             </button>
@@ -1056,8 +1072,8 @@ export default function DenseBranchSidebar({
             className={cn(
               'project-name min-w-0 flex-1 truncate pl-0 text-left text-sm transition-colors',
               'font-normal',
-              'text-inherit',
             )}
+            style={{ color: isActiveProject ? 'var(--selected-foreground)' : 'var(--muted-foreground)' }}
           >
             {project.name}
           </span>
@@ -1076,7 +1092,7 @@ export default function DenseBranchSidebar({
                   setOpenProjectMenuCoords({ top: rect.bottom + 8, right: Math.max(8, window.innerWidth - rect.right) });
                   setOpenProjectMenuPath((current) => (current === project.path ? null : project.path));
                 }}
-                className={cn('pr-1.5 flex h-6 w-6 shrink-0 items-center justify-center rounded-md opacity-0 hover:bg-accent group-hover:opacity-100 text-inherit', ghostMode ? 'pointer-events-none' : '')}
+                className={cn('pr-1.5 flex h-6 w-6 shrink-0 items-center justify-center rounded-md opacity-0 hover:bg-accent group-hover:opacity-100 text-current', ghostMode ? 'pointer-events-none' : '')}
               >
                 <MoreHorizontal className="h-4 w-4 shrink-0" />
               </button>
@@ -1135,6 +1151,7 @@ export default function DenseBranchSidebar({
                     expandedBranchNames={expandedBranchNamesForProject}
                     onToggleBranch={(branchName) => handleToggleBranch(project.path, branchName)}
                     checkedOutBranchName={projectRender.checkedOutBranchName}
+                    checkedOutHeadSha={projectRender.checkedOutHeadSha}
                     ancestors={new Set()}
                     showCommits={showCommits}
                     getMergeTargetLabels={projectRender.getMergeTargetLabels}

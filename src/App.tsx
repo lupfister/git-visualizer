@@ -283,24 +283,33 @@ function App() {
     [activeRepoScopedKey, manuallyOpenedGridClumpsByRepo],
   );
   const projectCards = useMemo(
-    () => projects.map((project) => ({
-      ...project,
-      ...(projectSnapshots[project.path] ?? {}),
-      branches: projectSnapshots[project.path]?.branches ?? [],
-      mergeNodes: projectSnapshots[project.path]?.mergeNodes ?? [],
-      directCommits: projectSnapshots[project.path]?.directCommits ?? [],
-      unpushedDirectCommits: projectSnapshots[project.path]?.unpushedDirectCommits ?? [],
-      unpushedCommitShasByBranch: projectSnapshots[project.path]?.unpushedCommitShasByBranch ?? {},
-      checkedOutRef: projectSnapshots[project.path]?.checkedOutRef ?? null,
-      worktrees: projectSnapshots[project.path]?.worktrees ?? [],
-      stashes: projectSnapshots[project.path]?.stashes ?? [],
-      branchCommitPreviews: projectSnapshots[project.path]?.branchCommitPreviews ?? {},
-      laneByBranch: projectSnapshots[project.path]?.laneByBranch ?? {},
-      branchUniqueAheadCounts: projectSnapshots[project.path]?.branchUniqueAheadCounts ?? {},
-      defaultBranch: projectSnapshots[project.path]?.defaultBranch ?? project.branchName ?? 'main',
-      treeLoaded: projectSnapshots[project.path]?.loaded ?? false,
-    })),
-    [projects, projectSnapshots],
+    () => projects.map((project) => {
+      const isActiveProject = (() => {
+        if (!repoPath) return false;
+        const left = normalizePath(project.path).toLowerCase();
+        const right = normalizePath(repoPath).toLowerCase();
+        return left === right;
+      })();
+      const snapshot = projectSnapshots[project.path] ?? {};
+      return {
+        ...project,
+        ...snapshot,
+        branches: snapshot.branches ?? [],
+        mergeNodes: snapshot.mergeNodes ?? [],
+        directCommits: snapshot.directCommits ?? [],
+        unpushedDirectCommits: snapshot.unpushedDirectCommits ?? [],
+        unpushedCommitShasByBranch: snapshot.unpushedCommitShasByBranch ?? {},
+        checkedOutRef: isActiveProject ? checkedOutRef : snapshot.checkedOutRef ?? null,
+        worktrees: snapshot.worktrees ?? [],
+        stashes: snapshot.stashes ?? [],
+        branchCommitPreviews: snapshot.branchCommitPreviews ?? {},
+        laneByBranch: snapshot.laneByBranch ?? {},
+        branchUniqueAheadCounts: snapshot.branchUniqueAheadCounts ?? {},
+        defaultBranch: snapshot.defaultBranch ?? project.branchName ?? 'main',
+        treeLoaded: snapshot.loaded ?? false,
+      };
+    }),
+    [projects, projectSnapshots, repoPath, checkedOutRef],
   );
   const gridHudProps = useMemo(
     () => ({
