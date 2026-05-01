@@ -12,8 +12,6 @@ const shaMatches = (left?: string | null, right?: string | null): boolean => {
   return left === right || left.startsWith(right) || right.startsWith(left);
 };
 
-type LaneRef = { name: string; headSha: string; isDefault: boolean };
-
 function appendChildShaToCommit(
   commit: BranchCommitPreview | DirectCommit,
   childSha: string,
@@ -83,7 +81,7 @@ function resolveAnchorOwningBranchName(
 }
 
 /**
- * Places one stash node using the same lane rules as the uncommitted-changes synthetic node.
+ * Places one stash node on its own synthetic lane so stash history never sits on the parent branch lane.
  */
 export function placeStashNode(
   stash: GitStashEntry,
@@ -97,35 +95,12 @@ export function placeStashNode(
   const anchorSha = stash.baseSha;
   const stashId = `STASH:${stash.index}`;
   const stashTitle = `Stash ${stash.index + 1}`;
-  const latestMainDirectCommitSha = directCommits[0]?.fullSha ?? null;
-
-  const allLanes: LaneRef[] = [
-    { name: defaultBranch, headSha: latestMainDirectCommitSha ?? '', isDefault: true },
-    ...branches.map((b) => ({ name: b.name, headSha: b.headSha, isDefault: false })),
-  ];
-
-  const tipMatchedLanes = anchorSha
-    ? allLanes.filter((lane) => shaMatches(lane.headSha, anchorSha))
-    : [];
   const anchorOwningBranchName = resolveAnchorOwningBranchName(
     anchorSha,
     directCommits,
     branchCommitPreviews,
     defaultBranch,
   );
-  const anchorOwningLane = anchorOwningBranchName
-    ? allLanes.find((lane) => lane.name === anchorOwningBranchName)
-    : undefined;
-  const targetLane =
-    tipMatchedLanes.find((lane) => lane.isDefault) ?? tipMatchedLanes[0] ?? anchorOwningLane;
-  const isOnLaneTip = !!(
-    targetLane &&
-    anchorSha &&
-    shaMatches(targetLane.headSha, anchorSha)
-  );
-  const targetBranch =
-    targetLane && !targetLane.isDefault ? branches.find((b) => b.name === targetLane.name) : undefined;
-
   const anchorCommitDate = (() => {
     if (!anchorSha) return null;
     const matchingDirectCommit = directCommits.find(
@@ -134,11 +109,9 @@ export function placeStashNode(
         shaMatches(commit.sha, anchorSha),
     );
     if (matchingDirectCommit?.date) return matchingDirectCommit.date;
-  if (targetBranch && !hasUncommittedChanges) {
-      const matchingPreviewCommit = (branchCommitPreviews[targetBranch.name] ?? []).find(
-        (commit) =>
-          shaMatches(commit.fullSha, anchorSha) ||
-          shaMatches(commit.sha, anchorSha),
+    if (anchorOwningBranchName && !hasUncommittedChanges) {
+      const matchingPreviewCommit = (branchCommitPreviews[anchorOwningBranchName] ?? []).find(
+        (commit) => shaMatches(commit.fullSha, anchorSha) || shaMatches(commit.sha, anchorSha),
       );
       if (matchingPreviewCommit?.date) return matchingPreviewCommit.date;
     }
@@ -164,66 +137,6 @@ export function placeStashNode(
     date: stashDate,
     kind: 'stash',
   };
-  if (isOnLaneTip && targetBranch) {
-    const linked = linkChildToParent(
-      directCommits,
-      branchCommitPreviews,
-      anchorSha,
-      stashId,
-      targetBranch.name,
-      defaultBranch,
-    );
-    const nextBranches = branches.map((b) => {
-      if (b.name === targetBranch.name) {
-        return {
-          ...b,
-          commitsAhead: b.commitsAhead + 1,
-          unpushedCommits: b.unpushedCommits + 1,
-          lastCommitDate: stashDate,
-          headSha: stashId,
-        };
-      }
-      return b;
-    });
-    return {
-      branches: nextBranches,
-      directCommits: linked.directCommits,
-      branchCommitPreviews: {
-        ...linked.branchCommitPreviews,
-        [targetBranch.name]: [stashNode, ...(branchCommitPreviews[targetBranch.name] || [])],
-      },
-      branchUniqueAheadCounts: {
-        ...branchUniqueAheadCounts,
-        [targetBranch.name]:
-          Math.max(
-            0,
-            (Object.prototype.hasOwnProperty.call(branchUniqueAheadCounts, targetBranch.name)
-              ? branchUniqueAheadCounts[targetBranch.name]
-              : targetBranch.commitsAhead) ?? 0,
-          ) + 1,
-      },
-    };
-  }
-
-  if (isOnLaneTip && targetLane?.isDefault && !hasUncommittedChanges) {
-    const linked = linkChildToParent(
-      directCommits,
-      branchCommitPreviews,
-      anchorSha,
-      stashId,
-      defaultBranch,
-      defaultBranch,
-    );
-    return {
-      branches,
-      directCommits: linked.directCommits,
-      branchCommitPreviews: {
-        ...linked.branchCommitPreviews,
-        [defaultBranch]: [stashNode, ...(branchCommitPreviews[defaultBranch] || [])],
-      },
-      branchUniqueAheadCounts,
-    };
-  }
 
   const fakeBranchName = `*Stash:${stash.index}`;
   const fakeBranch: Branch = {
@@ -237,7 +150,7 @@ export function placeStashNode(
     unpushedCommits: 1,
     headSha: stashId,
     divergedFromSha: anchorSha ?? undefined,
-    parentBranch: targetLane?.name || defaultBranch,
+    parentBranch: anchorOwningBranchName || defaultBranch,
   };
 
   const linked = linkChildToParent(
