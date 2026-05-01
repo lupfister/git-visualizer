@@ -1086,11 +1086,13 @@ export default function DenseBranchSidebar({
                     role="menu"
                     className="fixed z-[10000] inline-flex w-max flex-col overflow-hidden rounded-md border border-border bg-background p-1"
                     style={{ top: `${openProjectMenuCoords.top}px`, right: `${openProjectMenuCoords.right}px` }}
+                    onPointerDownCapture={(event) => event.stopPropagation()}
                     onClick={(event) => event.stopPropagation()}
                   >
                     <button
                       type="button"
                       role="menuitem"
+                      onPointerDown={(event) => event.stopPropagation()}
                       onClick={() => {
                         setOpenProjectMenuPath(null);
                         void onRevealProjectInFinder(project.path);
@@ -1102,6 +1104,7 @@ export default function DenseBranchSidebar({
                     <button
                       type="button"
                       role="menuitem"
+                      onPointerDown={(event) => event.stopPropagation()}
                       onClick={() => {
                         setOpenProjectMenuPath(null);
                         onRemoveProject(project.path);
