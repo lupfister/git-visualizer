@@ -176,10 +176,14 @@ export function useMapGridCamera({ mapPadHostRef, transformLayerRef }: Params) {
       return;
     }
     zoomAnchorRef.current = null;
-    const nextPanX = panRef.current.x - event.deltaX;
-    const nextPanY = panRef.current.y - event.deltaY;
+    // Interrupt any in-flight zoom interpolation so pan takes effect immediately.
+    const rendered = renderedCameraRef.current;
+    panRef.current = { x: rendered.panX, y: rendered.panY };
+    zoomRef.current = rendered.zoom;
+    const nextPanX = rendered.panX - event.deltaX;
+    const nextPanY = rendered.panY - event.deltaY;
     panRef.current = { x: nextPanX, y: nextPanY };
-    applyRenderedCamera(nextPanX, nextPanY, renderedCameraRef.current.zoom);
+    applyRenderedCamera(nextPanX, nextPanY, rendered.zoom);
   }, [applyRenderedCamera, zoomToPoint]);
 
   useLayoutEffect(() => {
