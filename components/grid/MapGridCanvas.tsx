@@ -101,6 +101,7 @@ type Props = {
   setManuallyClosedClumps: Dispatch<SetStateAction<Set<string>>>;
   onCommitCardClick: (event: MouseEvent, node: Node) => void;
   unpushedCommitShasSetByBranch: Map<string, Set<string>>;
+  remoteCommitShas: Set<string>;
   checkedOutHeadSha: string | null;
   orientation?: 'vertical' | 'horizontal';
 };
@@ -151,6 +152,7 @@ export default function MapGridCanvas({
   setManuallyClosedClumps,
   onCommitCardClick,
   unpushedCommitShasSetByBranch,
+  remoteCommitShas,
   checkedOutHeadSha,
 }: Props) {
   const [openingClumpAnimations, setOpeningClumpAnimations] = useState<Set<string>>(new Set());
@@ -274,15 +276,25 @@ export default function MapGridCanvas({
             const isUnpushedCommit =
               isLocalUncommitted ||
               (unpushedCommitShasSetByBranch.get(node.commit.branchName)?.has(node.commit.id) ?? false);
+            const isExplicitRemoteCommit = node.commit.isRemote === true;
+            const isRemoteCommit =
+              !isLocalUncommitted &&
+              !isUnpushedCommit &&
+              (isExplicitRemoteCommit || remoteCommitShas.has(node.commit.id));
             const isCheckedOutCommit = isLocalUncommitted || (checkedOutHeadSha != null && node.commit.id === checkedOutHeadSha);
             const checkedOutAccentActive = isCheckedOutCommit && !isSelectedCommit;
+            const remoteAccentActive = isRemoteCommit && !checkedOutAccentActive && !isSelectedCommit;
             const selectedCommitTextClass = checkedOutAccentActive
               ? 'text-checked'
+              : remoteAccentActive
+                ? 'text-remote'
               : isSelectedCommit
                 ? 'text-select'
                 : 'text-foreground';
             const selectedCommitTextStyle = checkedOutAccentActive
               ? { color: 'var(--checked)' }
+              : remoteAccentActive
+                ? { color: 'var(--remote)' }
               : isSelectedCommit
                 ? { color: 'var(--select)' }
                 : undefined;
@@ -291,6 +303,8 @@ export default function MapGridCanvas({
               ? focusedCommitBorderColor
               : checkedOutAccentActive
                 ? 'var(--checked)'
+                : remoteAccentActive
+                  ? 'var(--remote)'
                 : isSelectedCommit
                   ? 'var(--select)'
                   : CONNECTOR_COLOR;
@@ -393,6 +407,8 @@ export default function MapGridCanvas({
                     'absolute left-0 h-[176px] w-full cursor-pointer overflow-hidden rounded-tr-xl rounded-br-xl rounded-bl-xl rounded-tl-none border border-border/50',
                     checkedOutAccentActive && !isUnpushedCommit && !isStashedCommit && !isEmptyBranchNode
                     ? 'bg-checked-muted'
+                    : remoteAccentActive && !isStashedCommit && !isEmptyBranchNode
+                        ? 'bg-remote-muted'
                     : isSelectedCommit && !isUnpushedCommit && !isStashedCommit && !isEmptyBranchNode
                         ? 'bg-select-muted'
                         : isUnpushedCommit || isStashedCommit || isEmptyBranchNode

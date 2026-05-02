@@ -79,6 +79,7 @@ export interface BranchCommitPreview {
   date: string;
   keywordCloud?: CommitKeyword[];
   kind?: 'commit' | 'branch-created' | 'uncommitted' | 'stash';
+  isRemote?: boolean;
 }
 
 export interface AgentPrompt {
@@ -117,6 +118,7 @@ export interface DirectCommit {
   date: string;
   keywordCloud?: CommitKeyword[];
   kind?: 'commit' | 'uncommitted' | 'stash';
+  isRemote?: boolean;
 }
 
 export interface MergeNode {

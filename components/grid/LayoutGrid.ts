@@ -100,9 +100,10 @@ export type CommitItem = {
   childShas?: string[];
   clusterKey?: string | null;
   kind?: BranchCommitPreview['kind'] | DirectCommit['kind'];
+  isRemote?: boolean;
 };
 
-export type VisualCommit = CommitItem & { visualId: string };
+export type VisualCommit = CommitItem & { visualId: string; isRemote?: boolean };
 export type Lane = { name: string; column: number; parentName: string | null };
 export type Node = { commit: VisualCommit; row: number; column: number; x: number; y: number };
 export type ConnectorFace = 'left' | 'right' | 'top' | 'bottom';
@@ -147,6 +148,7 @@ export function toCommit(branchName: string, commit: BranchCommitPreview | Direc
     childShas: 'childShas' in commit ? (commit.childShas ?? []) : [],
     clusterKey: 'clusterKey' in commit ? (commit.clusterKey ?? null) : null,
     kind: commit.kind,
+    isRemote: commit.isRemote ?? false,
   };
 }
 

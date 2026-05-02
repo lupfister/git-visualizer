@@ -1061,6 +1061,39 @@ fn get_remote_branch_head_sha(repo_path: String, branch: String) -> Result<Optio
     Ok(sha)
 }
 
+#[tauri::command(rename_all = "camelCase")]
+fn get_commit_subject(repo_path: String, sha: String) -> Result<Option<String>, String> {
+    let path = Path::new(&repo_path);
+    let output = git::cli::run(path, &["show", "-s", "--format=%s", &sha]).map_err(|e| e.to_string())?;
+    let subject = output.trim().to_string();
+    if subject.is_empty() {
+        Ok(None)
+    } else {
+        Ok(Some(subject))
+    }
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct CommitMetadata {
+    subject: String,
+    author: String,
+}
+
+#[tauri::command(rename_all = "camelCase")]
+fn get_commit_metadata(repo_path: String, sha: String) -> Result<Option<CommitMetadata>, String> {
+    let path = Path::new(&repo_path);
+    let output = git::cli::run(path, &["show", "-s", "--format=%s%n%an", &sha]).map_err(|e| e.to_string())?;
+    let mut lines = output.lines();
+    let subject = lines.next().unwrap_or("").trim().to_string();
+    let author = lines.next().unwrap_or("").trim().to_string();
+    if subject.is_empty() {
+        Ok(None)
+    } else {
+        Ok(Some(CommitMetadata { subject, author }))
+    }
+}
+
 #[tauri::command]
 fn get_merge_nodes(
     repo_path: String,
@@ -4624,6 +4657,8 @@ pub fn run() {
             get_repo_quick_state,
             get_repo_refresh_fingerprint,
             get_remote_branch_head_sha,
+            get_commit_subject,
+            get_commit_metadata,
             get_merge_nodes,
             get_default_branch,
             get_checked_out_ref,

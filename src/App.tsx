@@ -63,6 +63,7 @@ type RepoQuickState = {
   upstreamSha?: string | null;
   hasUncommittedChanges: boolean;
 };
+type CommitMetadata = { subject: string; author: string };
 
 function normalizePath(path: string): string {
   if (path === '/') return path;
@@ -185,6 +186,8 @@ function App() {
     createBranchFromNodeInProgress;
   const [isMapInteracting, setIsMapInteracting] = useState(false);
   const [mapGridOrientation, setMapGridOrientation] = useState<OrientationMode>('horizontal');
+  const [remoteDefaultTipSha, setRemoteDefaultTipSha] = useState<string | null>(null);
+  const [remoteDefaultTipMetadata, setRemoteDefaultTipMetadata] = useState<CommitMetadata | null>(null);
   const [isGridDebugOpen, setIsGridDebugOpen] = useState(false);
   const [sidebarWidthPx, setSidebarWidthPx] = useState(SIDEBAR_DEFAULT_WIDTH_PX);
   const [isSidebarCollapsed, setIsSidebarCollapsed] = useState(false);
@@ -1489,6 +1492,12 @@ function App() {
         if (remoteTipSha == null) {
           return;
         }
+        setRemoteDefaultTipSha(remoteTipSha);
+        const metadata = await invoke<CommitMetadata | null>('get_commit_metadata', {
+          repoPath,
+          sha: remoteTipSha,
+        }).catch(() => null);
+        setRemoteDefaultTipMetadata(metadata && metadata.subject.trim().length > 0 ? metadata : null);
         if (lastRemoteTipSha == null) {
           lastRemoteTipSha = remoteTipSha;
           return;
@@ -1521,6 +1530,8 @@ function App() {
 
     return () => {
       isDisposed = true;
+      setRemoteDefaultTipSha(null);
+      setRemoteDefaultTipMetadata(null);
       if (remoteTipIntervalId != null) window.clearInterval(remoteTipIntervalId);
       if (unlisten) unlisten();
     };
@@ -2265,6 +2276,50 @@ function App() {
     let edc = stashFolded.directCommits;
     let ebp = stashFolded.branchCommitPreviews;
     let ebuac = stashFolded.branchUniqueAheadCounts;
+    const hasRemoteTipInLocalGraph = remoteDefaultTipSha
+      ? edc.some((commit) => commit.fullSha === remoteDefaultTipSha || commit.sha === remoteDefaultTipSha.slice(0, 7))
+      : true;
+    if (remoteDefaultTipSha && !hasRemoteTipInLocalGraph) {
+      const remoteDate = new Date(Date.now() + 1000).toISOString();
+      const previousDefaultHeadSha = eb.find((branch) => branch.name === defaultBranch)?.headSha ?? (edc[0]?.fullSha ?? null);
+      const remotePreviewNode: BranchCommitPreview = {
+        fullSha: remoteDefaultTipSha,
+        sha: remoteDefaultTipSha.slice(0, 7),
+        parentSha: previousDefaultHeadSha,
+        message: remoteDefaultTipMetadata?.subject?.trim() || `Remote commit on origin/${defaultBranch}`,
+        author: remoteDefaultTipMetadata?.author?.trim() || 'Unknown',
+        date: remoteDate,
+        kind: 'commit',
+        isRemote: true,
+      };
+      const remoteDirectCommit: DirectCommit = {
+        fullSha: remoteDefaultTipSha,
+        sha: remoteDefaultTipSha.slice(0, 7),
+        parentSha: previousDefaultHeadSha,
+        parentShas: previousDefaultHeadSha ? [previousDefaultHeadSha] : [],
+        childShas: [],
+        branch: defaultBranch,
+        message: remotePreviewNode.message,
+        author: remotePreviewNode.author,
+        date: remoteDate,
+        kind: 'commit',
+        isRemote: true,
+      };
+      edc = [remoteDirectCommit, ...edc];
+      ebp = {
+        ...ebp,
+        [defaultBranch]: [remotePreviewNode, ...(ebp[defaultBranch] ?? [])],
+      };
+      eb = eb.map((branch) => (
+        branch.name === defaultBranch
+          ? {
+              ...branch,
+              headSha: remoteDefaultTipSha,
+              lastCommitDate: remoteDate,
+            }
+          : branch
+      ));
+    }
 
     if (!checkedOutRef?.hasUncommittedChanges) {
       return {
@@ -2375,7 +2430,7 @@ function App() {
       },
       enrichedDirectCommits: edc,
     };
-  }, [branches, branchCommitPreviews, branchUniqueAheadCounts, checkedOutRef, defaultBranch, directCommits, stashes]);
+  }, [branches, branchCommitPreviews, branchUniqueAheadCounts, checkedOutRef, defaultBranch, directCommits, remoteDefaultTipMetadata, remoteDefaultTipSha, stashes]);
   const enrichedBranchParentByName = useMemo(() => {
     const map: Record<string, string | null> = { ...branchParentByName };
     map[defaultBranch] = null;

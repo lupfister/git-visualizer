@@ -38,8 +38,10 @@
   --border: #E6EAE6;
   --checked: #38BDF2;
   --select: #158EFC;
+  --remote: #8B5CF6;
   --checked-muted: #EBF7FE;
   --select-muted: #E5F0FF;
+  --remote-muted: #F2EBFF;
   --destructive: #DC2626;
   --font-sans: system-ui, -apple-system, sans-serif;
   --font-space-grotesk: 'Space Grotesk', system-ui, -apple-system, sans-serif;
@@ -54,8 +56,10 @@
   --color-border: var(--border);
   --color-checked: var(--checked);
   --color-select: var(--select);
+  --color-remote: var(--remote);
   --color-checked-muted: var(--checked-muted);
   --color-select-muted: var(--select-muted);
+  --color-remote-muted: var(--remote-muted);
   --color-destructive: var(--destructive);
   --font-sans: var(--font-sans);
   --font-space-grotesk: var(--font-space-grotesk);

@@ -392,6 +392,25 @@ export default function BranchGridMap({
       ),
     [unpushedCommitShasByBranch],
   );
+  const remoteCommitShas = useMemo(() => {
+    const localCommitShas = new Set<string>(directCommits.map((commit) => commit.fullSha));
+    const remoteShas = new Set<string>();
+    const addSha = (sha: string) => {
+      if (!sha) return;
+      remoteShas.add(sha);
+      remoteShas.add(sha.slice(0, 7));
+    };
+    for (const branch of branches) {
+      if (branch.commitsBehind <= 0) continue;
+      const previews = branchCommitPreviews[branch.name] ?? [];
+      for (const preview of previews) {
+        if (preview.kind === 'branch-created' || preview.kind === 'uncommitted' || preview.kind === 'stash') continue;
+        if (!localCommitShas.has(preview.fullSha)) addSha(preview.fullSha);
+      }
+      if (branch.headSha && !localCommitShas.has(branch.headSha)) addSha(branch.headSha);
+    }
+    return remoteShas;
+  }, [branches, branchCommitPreviews, directCommits]);
   const handlePointerReleaseNoMarquee = useCallback(() => {
     void interactionIdleTimeoutRef.current;
     flushCameraReactTick();
@@ -1239,6 +1258,7 @@ export default function BranchGridMap({
           setManuallyClosedClumps={setManuallyClosedClumps}
           onCommitCardClick={handleCommitCardClick}
           unpushedCommitShasSetByBranch={unpushedCommitShasSetByBranch}
+          remoteCommitShas={remoteCommitShas}
           checkedOutHeadSha={checkedOutHeadSha}
           orientation={orientation}
         />
