@@ -96,7 +96,7 @@ export default function CommitControls({
   const actionMenuRef = useRef<HTMLDivElement | null>(null);
   const worktreeMenuRef = useRef<HTMLDivElement | null>(null);
   const controlClassName =
-    'inline-flex h-7 items-center rounded-md border border-border bg-card/95 px-2 text-[11px] font-medium text-selected-foreground transition-colors hover:bg-accent hover:text-foreground disabled:cursor-not-allowed disabled:opacity-50';
+    'inline-flex h-7 items-center rounded-md border border-border bg-card px-2 text-[11px] font-medium text-foreground transition-colors hover:bg-accent hover:text-foreground disabled:cursor-not-allowed disabled:opacity-50';
   const canCommit = !!onCommitLocalChanges && hasUncommittedChanges && !commitDisabled && !commitInProgress && (!hasSelection || hasWorkingTreeSelection);
   const canPushCurrent = !!onPushCurrentBranch && canPushCurrentBranch && !hasSelection && !pushInProgress;
   const canPushSelected = !!onPushCommitTargets && selectedPushTargets.length > 0 && !pushInProgress;
@@ -195,7 +195,7 @@ export default function CommitControls({
                   setCommitDialogOpen(true);
                 }}
                 disabled={!canCommit}
-                className={cn(controlClassName, 'w-full justify-start whitespace-nowrap rounded-[2px] border-0 bg-transparent px-2', !canCommit && 'text-selected-foreground opacity-50')}
+                className={cn(controlClassName, 'w-full justify-start whitespace-nowrap rounded-[2px] border-0 bg-transparent px-2 hover:bg-accent', !canCommit && 'text-foreground opacity-50')}
               >
                 {renderMaskedIcon('/icon-commit.svg', 'mr-1.5 h-4.5 w-4.5')}
                 {commitInProgress ? 'Committing...' : 'Commit'}
@@ -207,7 +207,7 @@ export default function CommitControls({
                   void onPushCurrentBranch?.();
                 }}
                 disabled={!canPushCurrent}
-                className={cn(controlClassName, 'w-full justify-start whitespace-nowrap rounded-[2px] border-0 bg-transparent px-2', !canPushCurrent && 'text-selected-foreground opacity-50')}
+                className={cn(controlClassName, 'w-full justify-start whitespace-nowrap rounded-[2px] border-0 bg-transparent px-2 hover:bg-accent', !canPushCurrent && 'text-foreground opacity-50')}
               >
                 {renderMaskedIcon('/icon-pushBranch.svg', 'mr-1.5 h-4.5 w-4.5')}
                 {pushInProgress ? 'Pushing...' : pushCurrentBranchLabel}
@@ -219,7 +219,7 @@ export default function CommitControls({
                   void onPushCommitTargets?.(selectedPushTargets.map((target) => ({ branchName: target.branchName, targetSha: target.targetSha })));
                 }}
                 disabled={!canPushSelected}
-                className={cn(controlClassName, 'w-full justify-start whitespace-nowrap rounded-[2px] border-0 bg-transparent px-2', !canPushSelected && 'text-selected-foreground opacity-50')}
+                className={cn(controlClassName, 'w-full justify-start whitespace-nowrap rounded-[2px] border-0 bg-transparent px-2 hover:bg-accent', !canPushSelected && 'text-foreground opacity-50')}
                 title={selectedPushLabel}
               >
                 {renderMaskedIcon('/icon-pushSelected.svg', 'mr-1.5 h-4.5 w-4.5')}
@@ -232,7 +232,7 @@ export default function CommitControls({
                   void onPushAllBranches?.();
                 }}
                 disabled={!canPushAll}
-                className={cn(controlClassName, 'w-full justify-start whitespace-nowrap rounded-[2px] border-0 bg-transparent px-2', !canPushAll && 'text-selected-foreground opacity-50')}
+                className={cn(controlClassName, 'w-full justify-start whitespace-nowrap rounded-[2px] border-0 bg-transparent px-2 hover:bg-accent', !canPushAll && 'text-foreground opacity-50')}
               >
                 {renderMaskedIcon('/icon-pushAll.svg', 'mr-1.5 h-4.5 w-4.5')}
                 Push all
@@ -244,7 +244,7 @@ export default function CommitControls({
                   void onStashLocalChanges?.();
                 }}
                 disabled={!canStash}
-                className={cn(controlClassName, 'w-full justify-start whitespace-nowrap rounded-[2px] border-0 bg-transparent px-2', !canStash && 'text-selected-foreground opacity-50')}
+                className={cn(controlClassName, 'w-full justify-start whitespace-nowrap rounded-[2px] border-0 bg-transparent px-2 hover:bg-accent', !canStash && 'text-foreground opacity-50')}
               >
                 {renderMaskedIcon('/icon-stash.svg', 'mr-1.5 h-4.5 w-4.5')}
                 {stashInProgress ? 'Stashing...' : 'Stash'}
@@ -260,7 +260,7 @@ export default function CommitControls({
             disabled={createBranchFromNodeInProgress}
             className={cn(
               controlClassName,
-              'pointer-events-auto relative z-10 !bg-background !border-border',
+              'pointer-events-auto relative z-10 !bg-background !border-border hover:!bg-accent',
               compactLabels ? 'w-7 justify-center px-0' : '',
             )}
           >
@@ -271,7 +271,7 @@ export default function CommitControls({
 
         {selectedVisibleCommitShas.length > 1 && selectedCommitTargetOption.options.length > 0 && selectedCommitTargetOption.targetBranch && onMergeRefsIntoBranch ? (
           <div className="pointer-events-auto inline-flex w-fit flex-nowrap items-center gap-[9px] rounded-md border border-border bg-background px-2 py-1">
-          <span className="px-1 text-[11px] font-medium text-selected-foreground">Merge to</span>
+          <span className="px-1 text-[11px] font-medium text-foreground">Merge to</span>
           {selectedCommitTargetOption.options.map((option) => {
             const isActive = option.targetBranch === selectedCommitTargetOption.targetBranch;
             return (
@@ -281,14 +281,14 @@ export default function CommitControls({
                 onClick={() => setMergeTargetCommitSha(option.targetSha)}
                 className={cn(
                   'rounded-md border border-border/60 px-1.5 h-4.5 text-[11px] font-medium transition-colors',
-                  isActive ? 'bg-card text-foreground' : 'text-selected-foreground hover:bg-accent hover:text-foreground',
+                  isActive ? 'bg-card text-foreground' : 'text-foreground hover:bg-accent hover:text-foreground',
                 )}
               >
                 {option.targetBranch}
               </button>
             );
           })}
-          <button type="button" onClick={() => void onMergeRefsIntoBranch(selectedCommitTargetOption.sources, selectedCommitTargetOption.targetBranch!)} disabled={selectedCommitTargetOption.sources.length === 0 || mergeInProgress} className="rounded-md border border-border/60 px-1.5 h-4.5 text-[11px] font-medium text-selected-foreground transition-colors hover:bg-accent hover:text-foreground disabled:cursor-not-allowed disabled:opacity-50">
+          <button type="button" onClick={() => void onMergeRefsIntoBranch(selectedCommitTargetOption.sources, selectedCommitTargetOption.targetBranch!)} disabled={selectedCommitTargetOption.sources.length === 0 || mergeInProgress} className="rounded-md border border-border/60 px-1.5 h-4.5 text-[11px] font-medium text-foreground transition-colors hover:bg-accent hover:text-foreground disabled:cursor-not-allowed disabled:opacity-50">
             <GitMerge className="mr-1 inline h-3 w-3 shrink-0 align-text-bottom" />
             {mergeInProgress ? 'Merging...' : 'Confirm'}
           </button>
@@ -297,7 +297,7 @@ export default function CommitControls({
 
         {worktrees.length > 0 && (onSwitchToWorktree || onRemoveWorktree) ? (
           <div ref={worktreeMenuRef} className="pointer-events-auto relative">
-            <button type="button" onClick={() => setWorktreeMenuOpen((open) => !open)} className={cn(controlClassName, '!bg-background !border-border')}>
+            <button type="button" onClick={() => setWorktreeMenuOpen((open) => !open)} className={cn(controlClassName, '!bg-background !border-border hover:!bg-accent')}>
               <FolderGit2 className="mr-1.5 h-3.5 w-3.5 shrink-0" />
               {worktrees.length}
               {!compactLabels ? ` ${worktrees.length === 1 ? 'Worktree' : 'Worktrees'}` : null}
@@ -310,19 +310,19 @@ export default function CommitControls({
                       <div className="truncate text-xs font-medium text-foreground" title={worktree.path}>
                         {isOtherWorktree(worktree, currentRepoPath) ? worktreeShortLabel(worktree.path) : 'This window'}
                       </div>
-                      <div className="truncate text-[11px] text-selected-foreground">
+                      <div className="truncate text-[11px] text-foreground">
                         {worktree.branchName ?? 'detached'} • {worktree.headSha.slice(0, 7)}
                       </div>
                     </div>
                     {isOtherWorktree(worktree, currentRepoPath) ? (
                       <div className="flex items-center gap-1">
                         {onSwitchToWorktree ? (
-                          <button type="button" onClick={() => { setWorktreeMenuOpen(false); void onSwitchToWorktree(worktree.path); }} disabled={removeWorktreeInProgress || worktree.pathExists === false} className="rounded-md border border-border/60 px-2 h-7 text-[11px] font-medium text-selected-foreground transition-colors hover:bg-accent hover:text-foreground disabled:cursor-not-allowed disabled:opacity-50">
+                          <button type="button" onClick={() => { setWorktreeMenuOpen(false); void onSwitchToWorktree(worktree.path); }} disabled={removeWorktreeInProgress || worktree.pathExists === false} className="rounded-md border border-border/60 px-2 h-7 text-[11px] font-medium text-foreground transition-colors hover:bg-accent hover:text-foreground disabled:cursor-not-allowed disabled:opacity-50">
                             Switch
                           </button>
                         ) : null}
                         {onRemoveWorktree ? (
-                          <button type="button" onClick={() => void onRemoveWorktree(worktree.path, worktree.isPrunable)} disabled={removeWorktreeInProgress} className="rounded-md border border-border/60 px-2 h-7 text-[11px] font-medium text-selected-foreground transition-colors hover:bg-accent hover:text-foreground disabled:cursor-not-allowed disabled:opacity-50">
+                          <button type="button" onClick={() => void onRemoveWorktree(worktree.path, worktree.isPrunable)} disabled={removeWorktreeInProgress} className="rounded-md border border-border/60 px-2 h-7 text-[11px] font-medium text-foreground transition-colors hover:bg-accent hover:text-foreground disabled:cursor-not-allowed disabled:opacity-50">
                             {removeWorktreeInProgress ? '...' : 'Remove'}
                           </button>
                         ) : null}

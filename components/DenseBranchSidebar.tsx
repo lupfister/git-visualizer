@@ -317,8 +317,8 @@ function BranchRows({
           style={{
             color: isActiveProject
               ? isCheckedOut
-                ? 'var(--map-accent)'
-                : 'var(--selected-foreground)'
+                ? 'var(--highlight)'
+                : 'var(--foreground)'
               : 'var(--muted-foreground)',
           }}
           role="button"
@@ -1067,7 +1067,7 @@ export default function DenseBranchSidebar({
                 'project-icon flex h-6 w-6 shrink-0 items-center justify-center rounded-md transition-colors hover:bg-accent',
                 ghostMode ? 'pointer-events-none' : '',
               )}
-              style={{ color: isActiveProject ? 'var(--selected-foreground)' : 'var(--muted-foreground)' }}
+              style={{ color: isActiveProject ? 'var(--foreground)' : 'var(--muted-foreground)' }}
             >
               <ProjectIcon open={isExpanded} />
             </button>
@@ -1076,7 +1076,7 @@ export default function DenseBranchSidebar({
               'project-name min-w-0 flex-1 truncate pl-0 text-left text-sm transition-colors',
               'font-normal',
             )}
-            style={{ color: isActiveProject ? 'var(--selected-foreground)' : 'var(--muted-foreground)' }}
+            style={{ color: isActiveProject ? 'var(--foreground)' : 'var(--muted-foreground)' }}
           >
             {project.name}
           </span>
@@ -1208,14 +1208,14 @@ export default function DenseBranchSidebar({
               onClick={onAddProject}
               disabled={projectLoading}
               aria-label="Add Repo"
-              className="window-no-drag group flex w-full items-center gap-0 rounded-lg px-0 h-6 text-selected-foreground transition-colors hover:bg-accent disabled:cursor-not-allowed disabled:opacity-50"
+              className="window-no-drag group flex w-full items-center gap-0 rounded-lg px-0 h-6 text-foreground transition-colors hover:bg-accent disabled:cursor-not-allowed disabled:opacity-50"
             >
-              <span className="flex h-6 w-6 shrink-0 items-center justify-center rounded-md transition-colors group-hover:bg-accent text-selected-foreground">
+              <span className="flex h-6 w-6 shrink-0 items-center justify-center rounded-md transition-colors group-hover:bg-accent text-foreground">
                 <svg aria-hidden="true" viewBox="0 0 24 24" fill="none" className="h-4 w-4 shrink-0">
                   <path d="M12 5V19M5 12H19" stroke="currentColor" strokeWidth="1.75" strokeLinecap="round" />
                 </svg>
               </span>
-              <span className="min-w-0 flex-1 truncate pl-0 text-left text-sm font-normal text-selected-foreground">
+              <span className="min-w-0 flex-1 truncate pl-0 text-left text-sm font-normal text-foreground">
                 New Project
               </span>
             </button>

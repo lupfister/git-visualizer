@@ -119,7 +119,7 @@ export const COLUMN_GAP = ROW_GAP / 2;
 export const COLUMN_WIDTH = CARD_WIDTH + COLUMN_GAP;
 export const TOP_PADDING = 18;
 export const LEFT_PADDING = 18;
-export const CONNECTOR_COLOR = 'var(--grid-line)';
+export const CONNECTOR_COLOR = 'var(--border)';
 
 export function timeAgo(dateStr: string) {
   const s = (Date.now() - new Date(dateStr).getTime()) / 1000;

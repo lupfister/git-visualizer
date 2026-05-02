@@ -17,7 +17,7 @@ export default function MapOrientationToggle({ compactLabels = false, orientatio
       type="button"
       onClick={() => onOrientationChange(nextOrientation)}
       className={cn(
-        'window-no-drag inline-flex h-7 items-center rounded-md border border-border bg-background text-selected-foreground hover:bg-accent hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 focus-visible:ring-offset-background',
+        'window-no-drag inline-flex h-7 items-center rounded-md border border-border bg-background text-foreground hover:bg-accent hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 focus-visible:ring-offset-background',
         compactLabels ? 'w-7 justify-center px-0' : 'gap-1.5 pl-1.5 pr-2 py-1',
       )}
       aria-label={`Rotate view to ${nextOrientation}`}
@@ -43,7 +43,7 @@ export default function MapOrientationToggle({ compactLabels = false, orientatio
         />
       </span>
       {!compactLabels ? (
-        <span className="whitespace-nowrap text-[12px] font-normal leading-none text-selected-foreground transition-colors">
+        <span className="whitespace-nowrap text-[12px] font-normal leading-none text-foreground transition-colors">
           Rotate View
         </span>
       ) : null}

@@ -361,9 +361,9 @@ export default function BranchGridMap({
   const commitCornerRadiusPx = GRID_COMMIT_CORNER_RADIUS_BASE_PX / displayZoom;
 
   const connectorParentAccentClass =
-    'border-slate-400/70';
+    'border-border/70';
   const branchStartAccentClass =
-    'border-blue-500';
+    'border-highlight';
 
   const branchByName = useMemo(() => new Map(branches.map((branch) => [branch.name, branch])), [branches]);
   const hasUncommittedChanges = checkedOutRef?.hasUncommittedChanges ?? false;
@@ -1147,22 +1147,22 @@ export default function BranchGridMap({
               <button
                 onClick={gridHudProps.onGitHubAuthSetup}
                 disabled={gridHudProps.githubAuthLoading}
-                className="window-no-drag pointer-events-auto inline-flex h-7 items-center gap-2 rounded-md border border-border/60 bg-card/95 px-2 text-[11px] font-medium text-selected-foreground backdrop-blur-sm transition-colors hover:bg-accent hover:text-foreground disabled:cursor-not-allowed disabled:opacity-50"
+                className="window-no-drag pointer-events-auto inline-flex h-7 items-center gap-2 rounded-md border border-border/60 bg-card/95 px-2 text-[11px] font-medium text-foreground backdrop-blur-sm transition-colors hover:bg-accent hover:text-foreground disabled:cursor-not-allowed disabled:opacity-50"
               >
                 {gridHudProps.githubAuthLoading ? 'Connecting GitHub...' : 'Connect GitHub'}
               </button>
             ) : null}
             {gridHudProps.githubAuthStatus && !gridHudProps.githubAuthStatus.ghAvailable ? (
-              <div className="window-no-drag pointer-events-auto inline-flex h-7 items-center gap-2 rounded-md border border-border/60 bg-card/95 px-2 text-[11px] font-medium text-selected-foreground backdrop-blur-sm">
-                <p className="shrink-0 text-[10px] font-medium text-selected-foreground">GitHub</p>
+              <div className="window-no-drag pointer-events-auto inline-flex h-7 items-center gap-2 rounded-md border border-border/60 bg-card/95 px-2 text-[11px] font-medium text-foreground backdrop-blur-sm">
+                <p className="shrink-0 text-[10px] font-medium text-foreground">GitHub</p>
                 <p className="max-w-36 truncate text-[11px] text-foreground/90">
                   Install `gh` for private PR data
                 </p>
               </div>
             ) : null}
             {gridHudProps.githubAuthMessage ? (
-              <div className="window-no-drag pointer-events-auto inline-flex h-7 items-center gap-2 rounded-md border border-border/60 bg-card/95 px-2 text-[11px] text-selected-foreground backdrop-blur-sm">
-                <p className="shrink-0 text-[10px] font-medium text-selected-foreground">GitHub</p>
+              <div className="window-no-drag pointer-events-auto inline-flex h-7 items-center gap-2 rounded-md border border-border/60 bg-card/95 px-2 text-[11px] text-foreground backdrop-blur-sm">
+                <p className="shrink-0 text-[10px] font-medium text-foreground">GitHub</p>
                 <p className="max-w-36 truncate text-[11px] text-foreground/90" title={gridHudProps.githubAuthMessage}>
                   {gridHudProps.githubAuthMessage}
                 </p>
@@ -1174,8 +1174,8 @@ export default function BranchGridMap({
                   gridHudProps.isCommitSwitchFeedbackVisible ? 'opacity-100' : 'opacity-0'
                 } ${
                   gridHudProps.commitSwitchFeedback.kind === 'error'
-                    ? 'border-red-200/80 bg-red-50/95 text-red-700 dark:border-red-900/30 dark:bg-red-900/20 dark:text-red-300'
-                    : 'border-blue-200/80 bg-blue-50/95 text-blue-700 dark:border-blue-900/30 dark:bg-blue-900/20 dark:text-blue-300'
+                    ? 'border-red-500/25 bg-red-50/95 text-red-600 dark:border-red-900/30 dark:bg-red-900/20 dark:text-red-400'
+                    : 'border-blue-500/25 bg-blue-50/95 text-blue-600 dark:border-blue-900/30 dark:bg-blue-900/20 dark:text-blue-400'
                 }`}
                 title={gridHudProps.commitSwitchFeedback.message}
               >
@@ -1252,7 +1252,7 @@ export default function BranchGridMap({
             top: marqueeRect.top,
             width: marqueeRect.width,
             height: marqueeRect.height,
-            borderColor: 'var(--map-accent-base)',
+            borderColor: 'var(--highlight-border)',
             borderWidth: '1.5px',
             backgroundColor: 'transparent',
             borderRadius: 0,

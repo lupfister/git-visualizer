@@ -277,22 +277,22 @@ export default function MapGridCanvas({
             const isCheckedOutCommit = isLocalUncommitted || (checkedOutHeadSha != null && node.commit.id === checkedOutHeadSha);
             const checkedOutAccentActive = isCheckedOutCommit && !isSelectedCommit;
             const selectedCommitTextClass = checkedOutAccentActive
-              ? 'text-map-accent'
+              ? 'text-highlight'
               : isSelectedCommit
-                ? 'text-map-accent-strong'
-                : 'text-selected-foreground';
+                ? 'text-highlight-strong'
+                : 'text-foreground';
             const selectedCommitTextStyle = checkedOutAccentActive
-              ? { color: 'var(--map-accent)' }
+              ? { color: 'var(--highlight)' }
               : isSelectedCommit
-                ? { color: 'var(--map-accent-strong)' }
+                ? { color: 'var(--highlight-strong)' }
                 : undefined;
-            const focusedCommitBorderColor = selectedCommitTextStyle?.color ?? 'var(--neutral-line)';
+            const focusedCommitBorderColor = selectedCommitTextStyle?.color ?? 'var(--foreground)';
             const commitBorderColor = focusedNode?.commit.id === node.commit.id
               ? focusedCommitBorderColor
               : checkedOutAccentActive
-                ? 'var(--map-accent)'
+                ? 'var(--highlight)'
                 : isSelectedCommit
-                  ? 'var(--map-accent-strong)'
+                  ? 'var(--highlight-strong)'
                   : CONNECTOR_COLOR;
             const nodeBorderWidth = isStashedCommit || isEmptyBranchNode
               ? 1.5 / displayZoom
@@ -300,7 +300,7 @@ export default function MapGridCanvas({
                 ? lineStrokeWidth * (2 / 1.5)
                 : lineStrokeWidth;
             const unpushedCommitTextStyle = isUnpushedCommit && !checkedOutAccentActive && !isSelectedCommit
-              ? { color: 'var(--neutral-subtle)' }
+              ? { color: 'var(--muted-foreground)' }
               : undefined;
             return (
               <MapGridCommitWrapper
@@ -392,9 +392,9 @@ export default function MapGridCanvas({
                 <div className={cn(
                     'absolute left-0 h-[176px] w-full cursor-pointer overflow-hidden rounded-tr-xl rounded-br-xl rounded-bl-xl rounded-tl-none border border-border/50',
                     checkedOutAccentActive && !isUnpushedCommit && !isStashedCommit && !isEmptyBranchNode
-                      ? 'bg-selection-soft'
+                    ? 'bg-highlight-soft'
                     : isSelectedCommit && !isUnpushedCommit && !isStashedCommit && !isEmptyBranchNode
-                        ? 'bg-selection-soft-strong'
+                        ? 'bg-highlight-soft-strong'
                         : isUnpushedCommit || isStashedCommit || isEmptyBranchNode
                           ? 'bg-transparent'
                           : 'bg-background',
@@ -426,7 +426,7 @@ export default function MapGridCanvas({
                     <div className="min-h-0 flex-1">
                       <div
                         className={cn(
-                          'max-w-[38rem] select-text text-sm font-normal leading-tight tracking-tight text-selected-foreground',
+                          'max-w-[38rem] select-text text-sm font-normal leading-tight tracking-tight text-foreground',
                           selectedCommitTextClass,
                           displayZoom <= 0.5 ? 'overflow-hidden text-ellipsis whitespace-nowrap' : 'break-words whitespace-normal',
                         )}
@@ -442,7 +442,7 @@ export default function MapGridCanvas({
                       <div className="mt-3 flex flex-wrap items-center gap-1.5">
                         {showDataShapeError ? (
                           <span
-                            className="inline-flex items-center gap-1 rounded-lg border border-red-500/25 bg-red-50 px-2 py-0.5 text-sm font-medium uppercase tracking-wide text-selected-foreground dark:bg-red-900/20 dark:text-selected-foreground"
+                            className="inline-flex items-center gap-1 rounded-lg border border-red-500/25 bg-red-50 px-2 py-0.5 text-sm font-medium uppercase tracking-wide text-foreground dark:bg-red-900/20 dark:text-foreground"
                             title={nodeWarningsForCard.join('\n')}
                           >
                             Broken ancestry

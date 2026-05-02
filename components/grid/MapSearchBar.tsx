@@ -20,7 +20,7 @@ export default function MapSearchBar({
 
   return (
     <div className="window-no-drag flex h-7 w-[12rem] shrink-0 items-center gap-2 rounded-full border border-border bg-background pl-1.5 pr-2.5">
-      <Search className="h-3.5 w-3.5 shrink-0 text-selected-foreground" />
+      <Search className="h-3.5 w-3.5 shrink-0 text-foreground" />
       <input
         ref={inputRef}
         value={query}
@@ -43,17 +43,17 @@ export default function MapSearchBar({
           }
         }}
         placeholder="Search"
-        className="min-w-0 flex-1 bg-transparent text-[11px] text-selected-foreground outline-none placeholder:text-muted-foreground/70"
+        className="min-w-0 flex-1 bg-transparent text-[11px] text-foreground outline-none placeholder:text-muted-foreground/70"
       />
       {resultCount != null && resultCount > 0 ? (
         <div className="flex items-center gap-2">
-          <span className="text-[11px] font-medium tabular-nums text-selected-foreground">
+          <span className="text-[11px] font-medium tabular-nums text-foreground">
             {(resultIndex ?? 0) + 1}/{resultCount}
           </span>
           <button
             type="button"
             onClick={() => onJump(-1)}
-            className="inline-flex h-6 w-6 items-center justify-center rounded-md text-selected-foreground transition-colors hover:text-foreground"
+            className="inline-flex h-6 w-6 items-center justify-center rounded-md text-foreground transition-colors hover:text-foreground"
             aria-label="Previous search result"
             title="Previous result"
           >
@@ -62,7 +62,7 @@ export default function MapSearchBar({
           <button
             type="button"
             onClick={() => onJump(1)}
-            className="inline-flex h-6 w-6 items-center justify-center rounded-md text-selected-foreground transition-colors hover:text-foreground"
+            className="inline-flex h-6 w-6 items-center justify-center rounded-md text-foreground transition-colors hover:text-foreground"
             aria-label="Next search result"
             title="Next result"
           >

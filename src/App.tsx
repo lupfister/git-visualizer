@@ -2514,7 +2514,7 @@ function App() {
           >
             <button
               type="button"
-              className="window-no-drag absolute right-2.5 left-22 top-2.25 z-[9999] inline-flex h-7 w-7 items-center justify-center rounded-md text-selected-foreground transition-colors hover:bg-accent"
+              className="window-no-drag absolute right-2.5 left-22 top-2.25 z-[9999] inline-flex h-7 w-7 items-center justify-center rounded-md text-foreground transition-colors hover:bg-accent"
               aria-label={isSidebarCollapsed ? 'Open sidebar' : 'Collapse sidebar'}
               onClick={() => setIsSidebarCollapsed((value) => !value)}
             >
