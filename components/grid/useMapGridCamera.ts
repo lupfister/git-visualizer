@@ -14,11 +14,13 @@ import {
 type Params = {
   mapPadHostRef: RefObject<HTMLDivElement | null>;
   transformLayerRef: RefObject<HTMLDivElement | null>;
+  isEnabled?: boolean;
+  onUserCameraChange?: () => void;
 };
 
 export type MapGridCameraState = { panX: number; panY: number; zoom: number };
 
-export function useMapGridCamera({ mapPadHostRef, transformLayerRef }: Params) {
+export function useMapGridCamera({ mapPadHostRef, transformLayerRef, isEnabled = true, onUserCameraChange }: Params) {
   const panRef = useRef({ x: 0, y: 0 });
   const zoomRef = useRef(GRID_ZOOM_DEFAULT);
   const zoomAnchorRef = useRef<{
@@ -111,11 +113,12 @@ export function useMapGridCamera({ mapPadHostRef, transformLayerRef }: Params) {
   }, []);
 
   const syncCamera = useCallback((nextPanX: number, nextPanY: number, nextZoom: number) => {
+    if (!isEnabled) return;
     panRef.current = { x: nextPanX, y: nextPanY };
     zoomRef.current = nextZoom;
     markCameraInteraction();
     scheduleCameraFrame();
-  }, [markCameraInteraction, scheduleCameraFrame]);
+  }, [isEnabled, markCameraInteraction, scheduleCameraFrame]);
 
   stepCameraRef.current = () => {
     cameraFrameRef.current = null;
@@ -147,6 +150,7 @@ export function useMapGridCamera({ mapPadHostRef, transformLayerRef }: Params) {
   };
 
   const zoomToPoint = useCallback((clientX: number, clientY: number, nextZoom: number) => {
+    if (!isEnabled) return;
     const targetZoom = clampZoom(nextZoom);
     const currentPanX = panRef.current.x;
     const currentPanY = panRef.current.y;
@@ -166,15 +170,18 @@ export function useMapGridCamera({ mapPadHostRef, transformLayerRef }: Params) {
     const nextPanY = anchorY - worldY * scaleAfter;
     zoomAnchorRef.current = { anchorX, anchorY, worldX, worldY };
     syncCamera(nextPanX, nextPanY, targetZoom);
-  }, [getTransformLayerOriginScreen, syncCamera]);
+  }, [getTransformLayerOriginScreen, isEnabled, syncCamera]);
 
   const handleWheel = useCallback((event: WheelEvent<HTMLDivElement>) => {
+    if (!isEnabled) return;
     event.preventDefault();
     if (event.ctrlKey || event.metaKey) {
+      onUserCameraChange?.();
       const factor = Math.exp(-event.deltaY * GRID_ZOOM_WHEEL_SENSITIVITY);
       zoomToPoint(event.clientX, event.clientY, zoomRef.current * factor);
       return;
     }
+    onUserCameraChange?.();
     zoomAnchorRef.current = null;
     // Interrupt any in-flight zoom interpolation so pan takes effect immediately.
     const rendered = renderedCameraRef.current;
@@ -184,9 +191,10 @@ export function useMapGridCamera({ mapPadHostRef, transformLayerRef }: Params) {
     const nextPanY = rendered.panY - event.deltaY;
     panRef.current = { x: nextPanX, y: nextPanY };
     applyRenderedCamera(nextPanX, nextPanY, rendered.zoom);
-  }, [applyRenderedCamera, zoomToPoint]);
+  }, [applyRenderedCamera, isEnabled, onUserCameraChange, zoomToPoint]);
 
   useLayoutEffect(() => {
+    if (!isEnabled) return;
     applyRenderedCamera(0, 0, GRID_ZOOM_DEFAULT);
     return () => {
       if (interactionIdleTimeoutRef.current != null) window.clearTimeout(interactionIdleTimeoutRef.current);
@@ -196,7 +204,7 @@ export function useMapGridCamera({ mapPadHostRef, transformLayerRef }: Params) {
         panReactTrailingTimeoutRef.current = null;
       }
     };
-  }, [applyRenderedCamera]);
+  }, [applyRenderedCamera, isEnabled]);
 
   useLayoutEffect(() => {
     const layer = transformLayerRef.current;

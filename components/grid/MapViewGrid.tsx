@@ -58,6 +58,7 @@ interface Props {
   onCreateBranchFromNode?: (nodeId: string, branchName: string) => Promise<void>;
   onCreateRootBranch?: (branchName: string) => Promise<void>;
   createBranchFromNodeInProgress?: boolean;
+  isMutationBusy?: boolean;
   onMoveNodeBackToBranch?: (targetBranchName: string) => Promise<void>;
   isDebugOpen?: boolean;
   onDebugClose?: () => void;
@@ -137,6 +138,7 @@ export default function BranchGridMapView({
   onCreateBranchFromNode,
   onCreateRootBranch,
   createBranchFromNodeInProgress = false,
+  isMutationBusy = false,
   onMoveNodeBackToBranch,
   isDebugOpen = false,
   onDebugClose,
@@ -210,6 +212,7 @@ export default function BranchGridMapView({
             onCreateBranchFromNode={onCreateBranchFromNode}
             onCreateRootBranch={onCreateRootBranch}
             createBranchFromNodeInProgress={createBranchFromNodeInProgress}
+            isMutationBusy={isMutationBusy}
             onMoveNodeBackToBranch={onMoveNodeBackToBranch}
             isDebugOpen={isDebugOpen}
             onDebugClose={onDebugClose}
