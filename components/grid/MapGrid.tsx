@@ -363,7 +363,7 @@ export default function BranchGridMap({
   const connectorParentAccentClass =
     'border-border/70';
   const branchStartAccentClass =
-    'border-highlight';
+    'border-select';
 
   const branchByName = useMemo(() => new Map(branches.map((branch) => [branch.name, branch])), [branches]);
   const hasUncommittedChanges = checkedOutRef?.hasUncommittedChanges ?? false;
@@ -1058,7 +1058,7 @@ export default function BranchGridMap({
   void [openPRs, onLoadMore, view, staleBranches, isLoading, scrollRequest, focusedErrorBranch, mapTopInsetPx, visibleNodesBySha, freshCopyBranchNames];
 
   return (
-    <div className="relative flex h-full min-h-0 flex-col overflow-hidden border-l border-border bg-card">
+    <div className="relative flex h-full min-h-0 flex-col overflow-hidden border-l border-border bg-background">
       <MapGridDebugPanel
         isOpen={isDebugOpen}
         onClose={() => onDebugClose?.()}
@@ -1147,13 +1147,13 @@ export default function BranchGridMap({
               <button
                 onClick={gridHudProps.onGitHubAuthSetup}
                 disabled={gridHudProps.githubAuthLoading}
-                className="window-no-drag pointer-events-auto inline-flex h-7 items-center gap-2 rounded-md border border-border/60 bg-card/95 px-2 text-[11px] font-medium text-foreground backdrop-blur-sm transition-colors hover:bg-accent hover:text-foreground disabled:cursor-not-allowed disabled:opacity-50"
+                className="window-no-drag pointer-events-auto inline-flex h-7 items-center gap-2 rounded-md border border-border/60 bg-background/95 px-2 text-[11px] font-medium text-foreground backdrop-blur-sm transition-colors hover:bg-muted hover:text-foreground disabled:cursor-not-allowed disabled:opacity-50"
               >
                 {gridHudProps.githubAuthLoading ? 'Connecting GitHub...' : 'Connect GitHub'}
               </button>
             ) : null}
             {gridHudProps.githubAuthStatus && !gridHudProps.githubAuthStatus.ghAvailable ? (
-              <div className="window-no-drag pointer-events-auto inline-flex h-7 items-center gap-2 rounded-md border border-border/60 bg-card/95 px-2 text-[11px] font-medium text-foreground backdrop-blur-sm">
+              <div className="window-no-drag pointer-events-auto inline-flex h-7 items-center gap-2 rounded-md border border-border/60 bg-background/95 px-2 text-[11px] font-medium text-foreground backdrop-blur-sm">
                 <p className="shrink-0 text-[10px] font-medium text-foreground">GitHub</p>
                 <p className="max-w-36 truncate text-[11px] text-foreground/90">
                   Install `gh` for private PR data
@@ -1161,7 +1161,7 @@ export default function BranchGridMap({
               </div>
             ) : null}
             {gridHudProps.githubAuthMessage ? (
-              <div className="window-no-drag pointer-events-auto inline-flex h-7 items-center gap-2 rounded-md border border-border/60 bg-card/95 px-2 text-[11px] text-foreground backdrop-blur-sm">
+              <div className="window-no-drag pointer-events-auto inline-flex h-7 items-center gap-2 rounded-md border border-border/60 bg-background/95 px-2 text-[11px] text-foreground backdrop-blur-sm">
                 <p className="shrink-0 text-[10px] font-medium text-foreground">GitHub</p>
                 <p className="max-w-36 truncate text-[11px] text-foreground/90" title={gridHudProps.githubAuthMessage}>
                   {gridHudProps.githubAuthMessage}
@@ -1252,7 +1252,7 @@ export default function BranchGridMap({
             top: marqueeRect.top,
             width: marqueeRect.width,
             height: marqueeRect.height,
-            borderColor: 'var(--highlight-border)',
+            borderColor: 'var(--select)',
             borderWidth: '1.5px',
             backgroundColor: 'transparent',
             borderRadius: 0,

@@ -54,7 +54,7 @@ export default function MapGridDialogs({
     <>
       {commitDialogOpen ? (
         <div className="absolute inset-0 z-[80] flex items-center justify-center bg-background/70 p-4 backdrop-blur-sm" onClick={onCommitDialogClose}>
-          <div className="w-full max-w-md rounded-2xl border border-border bg-card p-4" onClick={(event) => event.stopPropagation()}>
+          <div className="w-full max-w-md rounded-2xl border border-border bg-background p-4" onClick={(event) => event.stopPropagation()}>
             <p className="text-sm font-medium text-foreground">Create commit</p>
             <p className="mt-1 text-xs text-muted-foreground">Stage all changes, then commit on current HEAD.</p>
             <textarea
@@ -74,7 +74,7 @@ export default function MapGridDialogs({
               <button
                 type="button"
                 onClick={onCommitDialogClose}
-                className="rounded-lg border border-border bg-card px-3 py-1.5 text-xs font-medium text-foreground transition-colors hover:bg-accent"
+                className="rounded-lg border border-border bg-background px-3 py-1.5 text-xs font-medium text-foreground transition-colors hover:bg-muted"
               >
                 Cancel
               </button>
@@ -82,7 +82,7 @@ export default function MapGridDialogs({
                 type="button"
                 onClick={onCommitConfirm}
                 disabled={!commitMessageDraft.trim() || commitInProgress}
-                className="inline-flex items-center rounded-lg border border-border bg-card px-3 py-1.5 text-xs font-medium text-foreground transition-colors hover:bg-accent disabled:cursor-not-allowed disabled:opacity-50"
+                className="inline-flex items-center rounded-lg border border-border bg-background px-3 py-1.5 text-xs font-medium text-foreground transition-colors hover:bg-muted disabled:cursor-not-allowed disabled:opacity-50"
               >
                 <GitCommitHorizontal className="mr-1.5 h-3.5 w-3.5 shrink-0" />
                 {commitInProgress ? 'Committing...' : 'Commit'}
@@ -94,7 +94,7 @@ export default function MapGridDialogs({
 
       {deleteConfirmOpen ? (
         <div className="absolute inset-0 z-[80] flex items-center justify-center bg-background/70 p-4 backdrop-blur-sm" onClick={onDeleteConfirmClose}>
-          <div className="w-full max-w-md rounded-2xl border border-border bg-card p-4" onClick={(event) => event.stopPropagation()}>
+          <div className="w-full max-w-md rounded-2xl border border-border bg-background p-4" onClick={(event) => event.stopPropagation()}>
             <p className="text-sm font-medium text-foreground">Delete selected items?</p>
             <div className="mt-3 space-y-1.5">
               {deleteSelectionItems.map((item) => (
@@ -107,7 +107,7 @@ export default function MapGridDialogs({
               <button
                 type="button"
                 onClick={onDeleteConfirmClose}
-                className="rounded-lg border border-border bg-card px-3 py-1.5 text-xs font-medium text-foreground transition-colors hover:bg-accent"
+                className="rounded-lg border border-border bg-background px-3 py-1.5 text-xs font-medium text-foreground transition-colors hover:bg-muted"
               >
                 Cancel
               </button>
@@ -126,7 +126,7 @@ export default function MapGridDialogs({
 
       {newBranchDialogOpen ? (
         <div className="absolute inset-0 z-[80] flex items-center justify-center bg-background/70 p-4 backdrop-blur-sm" onClick={onNewBranchDialogClose}>
-          <div className="w-full max-w-sm rounded-2xl border border-border bg-card p-4" onClick={(event) => event.stopPropagation()}>
+          <div className="w-full max-w-sm rounded-2xl border border-border bg-background p-4" onClick={(event) => event.stopPropagation()}>
             <p className="text-sm font-medium text-foreground">Create branch</p>
             <div className="mt-3 inline-flex items-center rounded-lg border border-border bg-muted/30 p-1">
               <button
@@ -135,8 +135,8 @@ export default function MapGridDialogs({
                 className={cn(
                   'rounded-md px-2.5 py-1 text-xs font-medium transition-colors',
                   newBranchCreateMode === 'from-selected-node'
-                    ? 'bg-card text-foreground'
-                    : 'text-muted-foreground hover:bg-accent hover:text-foreground',
+                    ? 'bg-background text-foreground'
+                    : 'text-muted-foreground hover:bg-muted hover:text-foreground',
                 )}
               >
                 From selection
@@ -147,8 +147,8 @@ export default function MapGridDialogs({
                 className={cn(
                   'rounded-md px-2.5 py-1 text-xs font-medium transition-colors',
                   newBranchCreateMode === 'new-root'
-                    ? 'bg-card text-foreground'
-                    : 'text-muted-foreground hover:bg-accent hover:text-foreground',
+                    ? 'bg-background text-foreground'
+                    : 'text-muted-foreground hover:bg-muted hover:text-foreground',
                 )}
               >
                 New root
@@ -173,7 +173,7 @@ export default function MapGridDialogs({
               <button
                 type="button"
                 onClick={onNewBranchDialogClose}
-                className="rounded-lg border border-border bg-card px-3 py-1.5 text-xs font-medium text-foreground transition-colors hover:bg-accent"
+                className="rounded-lg border border-border bg-background px-3 py-1.5 text-xs font-medium text-foreground transition-colors hover:bg-muted"
               >
                 Cancel
               </button>
@@ -190,7 +190,7 @@ export default function MapGridDialogs({
                   )
                 }
                 className={cn(
-                  'inline-flex items-center rounded-lg border border-border bg-card px-3 py-1.5 text-xs font-medium text-foreground transition-colors hover:bg-accent',
+                  'inline-flex items-center rounded-lg border border-border bg-background px-3 py-1.5 text-xs font-medium text-foreground transition-colors hover:bg-muted',
                   'disabled:cursor-not-allowed disabled:opacity-50',
                 )}
               >

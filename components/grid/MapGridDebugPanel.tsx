@@ -38,7 +38,7 @@ export default function MapGridDebugPanel({
   return (
     <>
       {isOpen ? (
-        <div className="absolute right-2.5 top-10 z-[10000] flex max-h-[calc(100%-4rem)] w-[min(42rem,calc(100%-2rem))] flex-col overflow-hidden rounded-2xl border border-border bg-card/95 backdrop-blur-sm">
+        <div className="absolute right-2.5 top-10 z-[10000] flex max-h-[calc(100%-4rem)] w-[min(42rem,calc(100%-2rem))] flex-col overflow-hidden rounded-2xl border border-border bg-background/95 backdrop-blur-sm">
           <div className="flex items-center justify-between border-b border-border/50 px-4 py-3">
             <div>
               <p className="text-sm font-medium text-foreground">Commit debug</p>
@@ -47,7 +47,7 @@ export default function MapGridDebugPanel({
             <button
               type="button"
               onClick={onClose}
-              className="rounded-full border border-border/50 bg-muted/30 px-2.5 py-1 text-xs font-medium text-muted-foreground transition-colors hover:bg-accent hover:text-foreground"
+              className="rounded-full border border-border/50 bg-muted/30 px-2.5 py-1 text-xs font-medium text-muted-foreground transition-colors hover:bg-muted hover:text-foreground"
             >
               Close
             </button>

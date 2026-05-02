@@ -277,22 +277,22 @@ export default function MapGridCanvas({
             const isCheckedOutCommit = isLocalUncommitted || (checkedOutHeadSha != null && node.commit.id === checkedOutHeadSha);
             const checkedOutAccentActive = isCheckedOutCommit && !isSelectedCommit;
             const selectedCommitTextClass = checkedOutAccentActive
-              ? 'text-highlight'
+              ? 'text-checked'
               : isSelectedCommit
-                ? 'text-highlight-strong'
+                ? 'text-select'
                 : 'text-foreground';
             const selectedCommitTextStyle = checkedOutAccentActive
-              ? { color: 'var(--highlight)' }
+              ? { color: 'var(--checked)' }
               : isSelectedCommit
-                ? { color: 'var(--highlight-strong)' }
+                ? { color: 'var(--select)' }
                 : undefined;
             const focusedCommitBorderColor = selectedCommitTextStyle?.color ?? 'var(--foreground)';
             const commitBorderColor = focusedNode?.commit.id === node.commit.id
               ? focusedCommitBorderColor
               : checkedOutAccentActive
-                ? 'var(--highlight)'
+                ? 'var(--checked)'
                 : isSelectedCommit
-                  ? 'var(--highlight-strong)'
+                  ? 'var(--select)'
                   : CONNECTOR_COLOR;
             const nodeBorderWidth = isStashedCommit || isEmptyBranchNode
               ? 1.5 / displayZoom
@@ -392,12 +392,12 @@ export default function MapGridCanvas({
                 <div className={cn(
                     'absolute left-0 h-[176px] w-full cursor-pointer overflow-hidden rounded-tr-xl rounded-br-xl rounded-bl-xl rounded-tl-none border border-border/50',
                     checkedOutAccentActive && !isUnpushedCommit && !isStashedCommit && !isEmptyBranchNode
-                    ? 'bg-highlight-soft'
+                    ? 'bg-checked-muted'
                     : isSelectedCommit && !isUnpushedCommit && !isStashedCommit && !isEmptyBranchNode
-                        ? 'bg-highlight-soft-strong'
+                        ? 'bg-select-muted'
                         : isUnpushedCommit || isStashedCommit || isEmptyBranchNode
                           ? 'bg-transparent'
-                          : 'bg-background',
+                          : 'bg-muted',
                     isStashedCommit || isLocalUncommitted || isEmptyBranchNode ? 'border-dashed' : '',
                     branchOffNodeShas.has(node.commit.id) ||
                     branchStartShas.has(node.commit.id) ||

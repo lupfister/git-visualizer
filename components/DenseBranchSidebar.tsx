@@ -309,7 +309,7 @@ function BranchRows({
         <div
           className={cn(
             'branch-row',
-            'group flex min-w-0 flex-1 items-center gap-0 rounded-md px-2 h-6 text-left text-sm font-normal transition-colors hover:bg-accent',
+            'group flex min-w-0 flex-1 items-center gap-0 rounded-md px-2 h-6 text-left text-sm font-normal transition-colors hover:bg-muted',
             'text-inherit hover:text-inherit',
           )}
           data-active-project={isActiveProject ? 'true' : 'false'}
@@ -317,7 +317,7 @@ function BranchRows({
           style={{
             color: isActiveProject
               ? isCheckedOut
-                ? 'var(--highlight)'
+                ? 'var(--checked)'
                 : 'var(--foreground)'
               : 'var(--muted-foreground)',
           }}
@@ -349,7 +349,7 @@ function BranchRows({
                 event.stopPropagation();
                 onToggleBranch(branchName);
               }}
-              className="group/chevron branch-chevron flex h-6 w-6 -ml-2 shrink-0 items-center justify-center rounded-sm p-0 text-[10px] leading-none transition-colors hover:bg-accent"
+              className="group/chevron branch-chevron flex h-6 w-6 -ml-2 shrink-0 items-center justify-center rounded-sm p-0 text-[10px] leading-none transition-colors hover:bg-muted"
             >
               <ChevronRight
                 aria-hidden="true"
@@ -385,7 +385,7 @@ function BranchRows({
                     <button
                       type="button"
                       onClick={() => onSelectCommit?.(commit.fullSha)}
-                      className="min-w-0 flex-1 rounded-md px-2 h-6 text-left text-xs font-normal leading-4 text-muted-foreground/70 transition-colors hover:bg-accent hover:text-muted-foreground"
+                      className="min-w-0 flex-1 rounded-md px-2 h-6 text-left text-xs font-normal leading-4 text-muted-foreground/70 transition-colors hover:bg-muted hover:text-muted-foreground"
                       title={commit.message}
                     >
                       <span className="block truncate">{commit.message}</span>
@@ -406,7 +406,7 @@ function BranchRows({
                       data-clump-toggle-id={`${branchName}:${clump.lead.fullSha}`}
                       onClick={() => onToggleGridCluster(clump.key, `${branchName}:${clump.lead.fullSha}`)}
                       className={cn(
-                        'shrink-0 rounded-md px-2 h-6 text-left text-xs font-normal leading-4 text-muted-foreground/70 transition-colors hover:bg-accent hover:text-muted-foreground',
+                        'shrink-0 rounded-md px-2 h-6 text-left text-xs font-normal leading-4 text-muted-foreground/70 transition-colors hover:bg-muted hover:text-muted-foreground',
                         clumpCollapsed ? '' : 'min-w-[2ch] text-center',
                       )}
                       >
@@ -1029,7 +1029,7 @@ export default function DenseBranchSidebar({
             className={cn(
               ghostMode
                 ? 'group flex w-full items-center gap-0 rounded-lg px-0 h-6'
-                : 'group sticky top-0 z-20 flex w-full items-center gap-0 rounded-lg bg-background px-0 h-6 transition-all duration-100 ease-out hover:bg-accent cursor-grab active:cursor-grabbing',
+                : 'group sticky top-0 z-20 flex w-full items-center gap-0 rounded-lg bg-background px-0 h-6 transition-all duration-100 ease-out hover:bg-muted cursor-grab active:cursor-grabbing',
               isDraggingProject && !ghostMode ? 'opacity-0' : '',
             )}
             onPointerDownCapture={(event) => {
@@ -1064,7 +1064,7 @@ export default function DenseBranchSidebar({
               aria-expanded={isExpanded}
               aria-label={`${isExpanded ? 'Collapse' : 'Expand'} ${project.name}`}
               className={cn(
-                'project-icon flex h-6 w-6 shrink-0 items-center justify-center rounded-md transition-colors hover:bg-accent',
+                'project-icon flex h-6 w-6 shrink-0 items-center justify-center rounded-md transition-colors hover:bg-muted',
                 ghostMode ? 'pointer-events-none' : '',
               )}
               style={{ color: isActiveProject ? 'var(--foreground)' : 'var(--muted-foreground)' }}
@@ -1095,7 +1095,7 @@ export default function DenseBranchSidebar({
                   setOpenProjectMenuCoords({ top: rect.bottom + 8, right: Math.max(8, window.innerWidth - rect.right) });
                   setOpenProjectMenuPath((current) => (current === project.path ? null : project.path));
                 }}
-                className={cn('pr-1.5 flex h-6 w-6 shrink-0 items-center justify-center rounded-md opacity-0 hover:bg-accent group-hover:opacity-100 text-current', ghostMode ? 'pointer-events-none' : '')}
+                className={cn('pr-1.5 flex h-6 w-6 shrink-0 items-center justify-center rounded-md opacity-0 hover:bg-muted group-hover:opacity-100 text-current', ghostMode ? 'pointer-events-none' : '')}
               >
                 <MoreHorizontal className="h-4 w-4 shrink-0" />
               </button>
@@ -1116,7 +1116,7 @@ export default function DenseBranchSidebar({
                         setOpenProjectMenuPath(null);
                         void onRevealProjectInFinder(project.path);
                       }}
-                      className="flex w-full items-center rounded-[2px] px-2 py-1.5 text-left text-xs font-medium text-muted-foreground transition-colors hover:bg-accent hover:text-foreground"
+                      className="flex w-full items-center rounded-[2px] px-2 py-1.5 text-left text-xs font-medium text-muted-foreground transition-colors hover:bg-muted hover:text-foreground"
                     >
                       Open in Finder
                     </button>
@@ -1208,9 +1208,9 @@ export default function DenseBranchSidebar({
               onClick={onAddProject}
               disabled={projectLoading}
               aria-label="Add Repo"
-              className="window-no-drag group flex w-full items-center gap-0 rounded-lg px-0 h-6 text-foreground transition-colors hover:bg-accent disabled:cursor-not-allowed disabled:opacity-50"
+              className="window-no-drag group flex w-full items-center gap-0 rounded-lg px-0 h-6 text-foreground transition-colors hover:bg-muted disabled:cursor-not-allowed disabled:opacity-50"
             >
-              <span className="flex h-6 w-6 shrink-0 items-center justify-center rounded-md transition-colors group-hover:bg-accent text-foreground">
+              <span className="flex h-6 w-6 shrink-0 items-center justify-center rounded-md transition-colors group-hover:bg-muted text-foreground">
                 <svg aria-hidden="true" viewBox="0 0 24 24" fill="none" className="h-4 w-4 shrink-0">
                   <path d="M12 5V19M5 12H19" stroke="currentColor" strokeWidth="1.75" strokeLinecap="round" />
                 </svg>
