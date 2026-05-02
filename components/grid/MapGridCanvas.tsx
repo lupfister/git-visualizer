@@ -280,7 +280,7 @@ export default function MapGridCanvas({
               ? 'text-map-accent'
               : isSelectedCommit
                 ? 'text-map-accent-strong'
-                : 'text-muted-foreground';
+                : 'text-selected-foreground';
             const selectedCommitTextStyle = checkedOutAccentActive
               ? { color: 'var(--map-accent)' }
               : isSelectedCommit
@@ -320,7 +320,7 @@ export default function MapGridCanvas({
                   <div className="flex min-w-0 items-baseline justify-between gap-2 px-0 pb-0">
                     <div
                       className={cn(
-                        'min-w-0 h-4 flex-1 text-sm font-medium leading-none',
+                        'min-w-0 h-4 flex-1 text-sm font-normal leading-none',
                         selectedCommitTextClass,
                         displayZoom <= 0.5 ? 'overflow-hidden text-ellipsis whitespace-nowrap' : 'break-words whitespace-normal',
                       )}
@@ -372,7 +372,7 @@ export default function MapGridCanvas({
                           }
                           flushCameraReactTick();
                         }}
-                        className={cn('inline-flex self-start items-center bg-transparent p-0 text-sm font-medium leading-none', selectedCommitTextClass)}
+                        className={cn('inline-flex self-start items-center bg-transparent p-0 text-sm font-normal leading-none', selectedCommitTextClass)}
                         style={selectedCommitTextStyle ?? unpushedCommitTextStyle}
                       >
                         {isClusterOpen ? (
@@ -423,7 +423,7 @@ export default function MapGridCanvas({
                     <div className="min-h-0 flex-1">
                       <div
                         className={cn(
-                          'max-w-[38rem] select-text text-sm font-medium leading-tight tracking-tight text-muted-foreground',
+                          'max-w-[38rem] select-text text-sm font-normal leading-tight tracking-tight text-selected-foreground',
                           selectedCommitTextClass,
                           displayZoom <= 0.5 ? 'overflow-hidden text-ellipsis whitespace-nowrap' : 'break-words whitespace-normal',
                         )}
@@ -439,7 +439,7 @@ export default function MapGridCanvas({
                       <div className="mt-3 flex flex-wrap items-center gap-1.5">
                         {showDataShapeError ? (
                           <span
-                            className="inline-flex items-center gap-1 rounded-lg border border-red-500/25 bg-red-50 px-2 py-0.5 text-sm font-medium uppercase tracking-wide text-muted-foreground dark:bg-red-900/20 dark:text-muted-foreground"
+                            className="inline-flex items-center gap-1 rounded-lg border border-red-500/25 bg-red-50 px-2 py-0.5 text-sm font-medium uppercase tracking-wide text-selected-foreground dark:bg-red-900/20 dark:text-selected-foreground"
                             title={nodeWarningsForCard.join('\n')}
                           >
                             Broken ancestry
@@ -450,14 +450,14 @@ export default function MapGridCanvas({
                     {displayZoom > 0.5 && !isStashedCommit ? (
                       <div className="mt-auto flex items-end justify-between gap-4 pt-5">
                         <div
-                          className={cn('select-text text-sm font-medium', selectedCommitTextClass)}
+                          className={cn('select-text text-sm font-normal', selectedCommitTextClass)}
                           data-selectable-text="true"
                           style={selectedCommitTextStyle ?? unpushedCommitTextStyle}
                         >
                           @{node.commit.author}
                         </div>
                         <div
-                          className={cn('select-text text-sm font-medium', selectedCommitTextClass)}
+                          className={cn('select-text text-sm font-normal', selectedCommitTextClass)}
                           data-selectable-text="true"
                           style={selectedCommitTextStyle ?? unpushedCommitTextStyle}
                         >

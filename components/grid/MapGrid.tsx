@@ -357,7 +357,7 @@ export default function BranchGridMap({
     return true;
   };
 
-  const lineStrokeWidth = 1.5 / displayZoom;
+  const lineStrokeWidth = 1.25 / displayZoom;
   const commitCornerRadiusPx = GRID_COMMIT_CORNER_RADIUS_BASE_PX / displayZoom;
 
   const connectorParentAccentClass =
@@ -1147,22 +1147,22 @@ export default function BranchGridMap({
               <button
                 onClick={gridHudProps.onGitHubAuthSetup}
                 disabled={gridHudProps.githubAuthLoading}
-                className="window-no-drag pointer-events-auto inline-flex h-7 items-center gap-2 rounded-md border border-border/60 bg-card/95 px-2 text-[11px] font-medium text-muted-foreground backdrop-blur-sm transition-colors hover:bg-accent hover:text-foreground disabled:cursor-not-allowed disabled:opacity-50"
+                className="window-no-drag pointer-events-auto inline-flex h-7 items-center gap-2 rounded-md border border-border/60 bg-card/95 px-2 text-[11px] font-medium text-selected-foreground backdrop-blur-sm transition-colors hover:bg-accent hover:text-foreground disabled:cursor-not-allowed disabled:opacity-50"
               >
                 {gridHudProps.githubAuthLoading ? 'Connecting GitHub...' : 'Connect GitHub'}
               </button>
             ) : null}
             {gridHudProps.githubAuthStatus && !gridHudProps.githubAuthStatus.ghAvailable ? (
-              <div className="window-no-drag pointer-events-auto inline-flex h-7 items-center gap-2 rounded-md border border-border/60 bg-card/95 px-2 text-[11px] font-medium text-muted-foreground backdrop-blur-sm">
-                <p className="shrink-0 text-[10px] font-medium text-muted-foreground">GitHub</p>
+              <div className="window-no-drag pointer-events-auto inline-flex h-7 items-center gap-2 rounded-md border border-border/60 bg-card/95 px-2 text-[11px] font-medium text-selected-foreground backdrop-blur-sm">
+                <p className="shrink-0 text-[10px] font-medium text-selected-foreground">GitHub</p>
                 <p className="max-w-36 truncate text-[11px] text-foreground/90">
                   Install `gh` for private PR data
                 </p>
               </div>
             ) : null}
             {gridHudProps.githubAuthMessage ? (
-              <div className="window-no-drag pointer-events-auto inline-flex h-7 items-center gap-2 rounded-md border border-border/60 bg-card/95 px-2 text-[11px] text-muted-foreground backdrop-blur-sm">
-                <p className="shrink-0 text-[10px] font-medium text-muted-foreground">GitHub</p>
+              <div className="window-no-drag pointer-events-auto inline-flex h-7 items-center gap-2 rounded-md border border-border/60 bg-card/95 px-2 text-[11px] text-selected-foreground backdrop-blur-sm">
+                <p className="shrink-0 text-[10px] font-medium text-selected-foreground">GitHub</p>
                 <p className="max-w-36 truncate text-[11px] text-foreground/90" title={gridHudProps.githubAuthMessage}>
                   {gridHudProps.githubAuthMessage}
                 </p>
