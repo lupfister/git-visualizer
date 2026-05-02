@@ -309,7 +309,7 @@ function BranchRows({
         <div
           className={cn(
             'branch-row',
-            'group flex min-w-0 flex-1 items-center gap-0 rounded-md px-2 h-6 text-left text-sm font-normal transition-colors hover:bg-muted',
+            'group flex min-w-0 flex-1 items-center gap-0 rounded-md px-2 h-6 text-left text-sm font-normal transition-colors hover:bg-border/50',
             'text-inherit hover:text-inherit',
           )}
           data-active-project={isActiveProject ? 'true' : 'false'}
@@ -349,7 +349,7 @@ function BranchRows({
                 event.stopPropagation();
                 onToggleBranch(branchName);
               }}
-              className="group/chevron branch-chevron flex h-6 w-6 -ml-2 shrink-0 items-center justify-center rounded-sm p-0 text-[10px] leading-none transition-colors hover:bg-muted"
+              className="group/chevron branch-chevron flex h-6 w-6 -ml-2 shrink-0 items-center justify-center rounded-sm p-0 text-[10px] leading-none transition-colors hover:bg-border/50"
             >
               <ChevronRight
                 aria-hidden="true"
@@ -1029,7 +1029,7 @@ export default function DenseBranchSidebar({
             className={cn(
               ghostMode
                 ? 'group flex w-full items-center gap-0 rounded-lg px-0 h-6'
-                : 'group sticky top-0 z-20 flex w-full items-center gap-0 rounded-lg bg-background px-0 h-6 transition-all duration-100 ease-out hover:bg-muted cursor-grab active:cursor-grabbing',
+                : 'group sticky top-0 z-20 flex w-full items-center gap-0 rounded-lg bg-muted px-0 h-6 transition-all duration-100 ease-out hover:bg-border/50 cursor-grab active:cursor-grabbing',
               isDraggingProject && !ghostMode ? 'opacity-0' : '',
             )}
             onPointerDownCapture={(event) => {
@@ -1064,7 +1064,7 @@ export default function DenseBranchSidebar({
               aria-expanded={isExpanded}
               aria-label={`${isExpanded ? 'Collapse' : 'Expand'} ${project.name}`}
               className={cn(
-                'project-icon flex h-6 w-6 shrink-0 items-center justify-center rounded-md transition-colors hover:bg-muted',
+                'project-icon flex h-6 w-6 shrink-0 items-center justify-center rounded-md transition-colors hover:bg-border/50',
                 ghostMode ? 'pointer-events-none' : '',
               )}
               style={{ color: isActiveProject ? 'var(--foreground)' : 'var(--muted-foreground)' }}
@@ -1095,7 +1095,7 @@ export default function DenseBranchSidebar({
                   setOpenProjectMenuCoords({ top: rect.bottom + 8, right: Math.max(8, window.innerWidth - rect.right) });
                   setOpenProjectMenuPath((current) => (current === project.path ? null : project.path));
                 }}
-                className={cn('pr-1.5 flex h-6 w-6 shrink-0 items-center justify-center rounded-md opacity-0 hover:bg-muted group-hover:opacity-100 text-current', ghostMode ? 'pointer-events-none' : '')}
+                className={cn('pr-1.5 flex h-6 w-6 shrink-0 items-center justify-center rounded-md opacity-0 hover:bg-border/50 group-hover:opacity-100 text-current', ghostMode ? 'pointer-events-none' : '')}
               >
                 <MoreHorizontal className="h-4 w-4 shrink-0" />
               </button>
@@ -1189,7 +1189,7 @@ export default function DenseBranchSidebar({
     <aside
       ref={asideRef}
       aria-label="Dense branch sidebar"
-      className={cn('pointer-events-auto relative z-[120] h-full select-none overflow-hidden', className)}
+      className={cn('pointer-events-auto relative z-[120] h-full select-none overflow-hidden bg-muted', className)}
       style={style}
     >
       <header data-tauri-drag-region className="absolute inset-x-0 top-0 z-80 h-12" />
@@ -1208,9 +1208,9 @@ export default function DenseBranchSidebar({
               onClick={onAddProject}
               disabled={projectLoading}
               aria-label="Add Repo"
-              className="window-no-drag group flex w-full items-center gap-0 rounded-lg px-0 h-6 text-foreground transition-colors hover:bg-muted disabled:cursor-not-allowed disabled:opacity-50"
+              className="window-no-drag group flex w-full items-center gap-0 rounded-lg bg-muted px-0 h-6 text-foreground transition-colors hover:bg-border/50 disabled:cursor-not-allowed disabled:opacity-50"
             >
-              <span className="flex h-6 w-6 shrink-0 items-center justify-center rounded-md transition-colors group-hover:bg-muted text-foreground">
+              <span className="flex h-6 w-6 shrink-0 items-center justify-center rounded-md transition-colors group-hover:bg-border/50 text-foreground">
                 <svg aria-hidden="true" viewBox="0 0 24 24" fill="none" className="h-4 w-4 shrink-0">
                   <path d="M12 5V19M5 12H19" stroke="currentColor" strokeWidth="1.75" strokeLinecap="round" />
                 </svg>
