@@ -308,11 +308,11 @@ export default function MapGridCanvas({
                 : isSelectedCommit
                   ? 'var(--select)'
                   : CONNECTOR_COLOR;
-            const nodeBorderWidth = isStashedCommit || isEmptyBranchNode
-              ? 1.5 / displayZoom
-              : isLocalUncommitted
-                ? lineStrokeWidth * (2 / 1.5)
-                : lineStrokeWidth;
+            const nodeBorderWidth = lineStrokeWidth;
+            const isDashedOutline = isStashedCommit || isLocalUncommitted || isEmptyBranchNode;
+            const dashedStrokeDasharray = `${12 / displayZoom} ${6 / displayZoom}`;
+            const dashedStrokeInset = nodeBorderWidth / 2;
+            const dashedOutlinePath = `M ${dashedStrokeInset} ${dashedStrokeInset} H ${CARD_WIDTH - dashedStrokeInset - commitCornerRadiusPx} Q ${CARD_WIDTH - dashedStrokeInset} ${dashedStrokeInset} ${CARD_WIDTH - dashedStrokeInset} ${dashedStrokeInset + commitCornerRadiusPx} V ${176 - dashedStrokeInset - commitCornerRadiusPx} Q ${CARD_WIDTH - dashedStrokeInset} ${176 - dashedStrokeInset} ${CARD_WIDTH - dashedStrokeInset - commitCornerRadiusPx} ${176 - dashedStrokeInset} H ${dashedStrokeInset + commitCornerRadiusPx} Q ${dashedStrokeInset} ${176 - dashedStrokeInset} ${dashedStrokeInset} ${176 - dashedStrokeInset - commitCornerRadiusPx} V ${dashedStrokeInset}`;
             const unpushedCommitTextStyle = isUnpushedCommit && !checkedOutAccentActive && !isSelectedCommit
               ? { color: 'var(--muted-foreground)' }
               : undefined;
@@ -335,6 +335,24 @@ export default function MapGridCanvas({
                 onClick={(event) => onCommitCardClick(event, node)}
                 onPointerDown={(event) => onNodePointerDown(event, node)}
               >
+                {isDashedOutline ? (
+                  <svg
+                    className="pointer-events-none absolute inset-0 z-20 overflow-visible"
+                    aria-hidden="true"
+                    viewBox={`0 0 ${CARD_WIDTH} 176`}
+                    preserveAspectRatio="none"
+                  >
+                    <path
+                      d={dashedOutlinePath}
+                      fill="none"
+                      stroke={commitBorderColor}
+                      strokeWidth={nodeBorderWidth}
+                      strokeDasharray={dashedStrokeDasharray}
+                      strokeLinecap="butt"
+                      strokeLinejoin="round"
+                    />
+                  </svg>
+                ) : null}
                 <div className="absolute left-0 w-full" style={{ ...inverseZoomStyle, top: `${labelTopPx}px` }}>
                   <div className="flex min-w-0 items-baseline justify-between gap-2 px-0 pb-0">
                     <div
@@ -414,7 +432,7 @@ export default function MapGridCanvas({
                         : isUnpushedCommit || isStashedCommit || isEmptyBranchNode
                           ? 'bg-transparent'
                           : 'bg-muted',
-                    isStashedCommit || isLocalUncommitted || isEmptyBranchNode ? 'border-dashed' : '',
+                    isDashedOutline ? 'border-solid' : '',
                     branchOffNodeShas.has(node.commit.id) ||
                     branchStartShas.has(node.commit.id) ||
                     crossBranchOutgoingShas.has(node.commit.id)
@@ -428,17 +446,17 @@ export default function MapGridCanvas({
                           : '',
                     normalizedSearchQuery && matchingNodeIds.has(node.commit.id) && !isCameraMoving ? '' : '',
                   )}
-                  style={{
-                    top: 0,
-                    borderWidth: `${nodeBorderWidth}px`,
-                    borderColor: commitBorderColor,
-                    borderTopLeftRadius: 0,
-                    borderTopRightRadius: `${commitCornerRadiusPx}px`,
-                    borderBottomRightRadius: `${commitCornerRadiusPx}px`,
-                    borderBottomLeftRadius: `${commitCornerRadiusPx}px`,
-                  }}
+                style={{
+                  top: 0,
+                  borderWidth: `${nodeBorderWidth}px`,
+                  borderColor: isDashedOutline ? 'transparent' : commitBorderColor,
+                  borderTopLeftRadius: 0,
+                  borderTopRightRadius: `${commitCornerRadiusPx}px`,
+                  borderBottomRightRadius: `${commitCornerRadiusPx}px`,
+                  borderBottomLeftRadius: `${commitCornerRadiusPx}px`,
+                }}
                 >
-                  <div className="flex h-full min-h-0 flex-col px-2.5 py-2" style={inverseZoomStyle}>
+                  <div className="relative z-10 flex h-full min-h-0 flex-col px-2.5 py-2" style={inverseZoomStyle}>
                     <div className="min-h-0 flex-1">
                       <div
                         className={cn(
