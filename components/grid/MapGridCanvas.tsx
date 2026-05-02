@@ -227,12 +227,12 @@ export default function MapGridCanvas({
       ref={scrollContainerRef}
       className="flex-1 min-h-0 overflow-hidden"
       style={{ cursor: isMarqueeSelecting ? 'crosshair' : 'default' }}
+      onWheel={onWheel}
+      onMouseDown={onMouseDown}
     >
       <div
         ref={mapPadHostRef}
-        className="relative min-w-full bg-white p-2.5"
-        onWheel={onWheel}
-        onMouseDown={onMouseDown}
+        className="relative min-w-full bg-background p-2.5"
         style={{ width: contentWidth, minWidth: '100%', height: contentHeight }}
       >
         <div
