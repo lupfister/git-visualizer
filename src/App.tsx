@@ -14,6 +14,8 @@ import { foldStashNodesIntoGraph } from './placeStashNode';
 
 const FROZEN_REPO_BASENAME = 'git-visualizer';
 const PROJECTS_STORAGE_KEY = 'git-visualizer:projects';
+const ACTIVE_PROJECT_STORAGE_KEY = 'git-visualizer:active-project';
+const MAP_ORIENTATION_STORAGE_KEY = 'git-visualizer:map-orientation';
 const MAX_PROJECTS = 12;
 type OpenRepoEventPayload = {
   path: string;
@@ -430,13 +432,52 @@ function App() {
   }, []);
 
   useEffect(() => {
+    try {
+      const rawOrientation = window.localStorage.getItem(MAP_ORIENTATION_STORAGE_KEY);
+      if (rawOrientation === 'vertical' || rawOrientation === 'horizontal') {
+        setMapGridOrientation(rawOrientation);
+      }
+    } catch {
+      // ignore storage failures
+    }
+  }, []);
+
+  useEffect(() => {
     if (hasAttemptedAutoRestoreRef.current) return;
     if (repoPath) return;
     if (projects.length === 0) return;
 
+    const storedActiveProjectPath = (() => {
+      try {
+        return window.localStorage.getItem(ACTIVE_PROJECT_STORAGE_KEY);
+      } catch {
+        return null;
+      }
+    })();
+    const restoredProject = storedActiveProjectPath
+      ? projects.find((project) => normalizePath(project.path).toLowerCase() === normalizePath(storedActiveProjectPath).toLowerCase())
+      : null;
+
     hasAttemptedAutoRestoreRef.current = true;
-    void loadRepo(projects[0]!.path);
+    void loadRepo(restoredProject?.path ?? projects[0]!.path);
   }, [projects, repoPath]);
+
+  useEffect(() => {
+    if (!repoPath) return;
+    try {
+      window.localStorage.setItem(ACTIVE_PROJECT_STORAGE_KEY, repoPath);
+    } catch {
+      // ignore storage failures
+    }
+  }, [repoPath]);
+
+  useEffect(() => {
+    try {
+      window.localStorage.setItem(MAP_ORIENTATION_STORAGE_KEY, mapGridOrientation);
+    } catch {
+      // ignore storage failures
+    }
+  }, [mapGridOrientation]);
 
   const mergeTargetBranchByCommitSha = useMemo(
     () =>
@@ -636,6 +677,13 @@ function App() {
       }
       return next;
     });
+    try {
+      if (repoPath && normalizePath(repoPath).toLowerCase() === normalizedPath.toLowerCase()) {
+        window.localStorage.removeItem(ACTIVE_PROJECT_STORAGE_KEY);
+      }
+    } catch {
+      // ignore storage failures
+    }
     setProjectSnapshots((previous) => {
       if (!(normalizedPath in previous)) return previous;
       const next = { ...previous };
