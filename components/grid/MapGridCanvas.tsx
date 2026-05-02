@@ -294,6 +294,11 @@ export default function MapGridCanvas({
                 : isSelectedCommit
                   ? 'var(--map-accent-strong)'
                   : CONNECTOR_COLOR;
+            const nodeBorderWidth = isStashedCommit || isEmptyBranchNode
+              ? 1.5 / displayZoom
+              : isLocalUncommitted
+                ? lineStrokeWidth * (2 / 1.5)
+                : lineStrokeWidth;
             const unpushedCommitTextStyle = isUnpushedCommit && !checkedOutAccentActive && !isSelectedCommit
               ? { color: 'var(--neutral-subtle)' }
               : undefined;
@@ -409,9 +414,7 @@ export default function MapGridCanvas({
                   )}
                   style={{
                     top: 0,
-                    borderWidth: focusedNode?.commit.id === node.commit.id
-                      ? `${(isStashedCommit || isLocalUncommitted || isEmptyBranchNode) ? lineStrokeWidth * (2 / 1.5) : lineStrokeWidth}px`
-                      : `${(isStashedCommit || isLocalUncommitted || isEmptyBranchNode) ? lineStrokeWidth * (2 / 1.5) : lineStrokeWidth}px`,
+                    borderWidth: `${nodeBorderWidth}px`,
                     borderColor: commitBorderColor,
                     borderTopLeftRadius: 0,
                     borderTopRightRadius: `${commitCornerRadiusPx}px`,

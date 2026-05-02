@@ -362,7 +362,7 @@ function BranchRows({
           ) : null}
           <span
             className={cn(
-              'branch-label min-w-0 flex-1 break-words font-normal',
+              'branch-label min-w-0 flex-1 truncate font-normal whitespace-nowrap overflow-hidden',
               'font-medium',
             )}
           >
