@@ -355,8 +355,8 @@ export default function MapGridCanvas({
                     />
                   </svg>
                 ) : null}
-                <div className="absolute left-0 w-full" style={{ ...inverseZoomStyle, top: `${labelTopPx}px` }}>
-                  <div className="flex min-w-0 items-baseline justify-between gap-2 px-0 pb-0">
+                <div className="absolute left-0 z-30 w-full" style={{ ...inverseZoomStyle, top: `${labelTopPx}px` }}>
+                  <div className="flex min-w-0 items-baseline justify-between gap-2 bg-background/95 pb-0">
                     <div
                       className={cn(
                         'min-w-0 h-4 flex-1 text-sm font-normal leading-none',
