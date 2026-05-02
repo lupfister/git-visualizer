@@ -720,7 +720,7 @@ export function computeBranchGridLayout(input: BranchGridLayoutInput): BranchGri
       if (commit.kind === 'uncommitted') return 'uncommitted';
       if (commit.kind === 'stash') return 'stash';
       if (commit.kind === 'branch-created') return 'branch-created';
-      return unpushedDirectCommitShas.has(commit.id) ? 'unpushed' : 'pushed';
+      return unpushedDirectCommitShas.has(commit.id) || commit.isRemote === false ? 'unpushed' : 'pushed';
     };
     let previousBoundaryKind: string | null = null;
     for (const commit of ordered) {
