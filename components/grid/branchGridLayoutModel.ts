@@ -99,6 +99,7 @@ export type BranchGridLayoutInput = {
   mergeNodes: MergeNode[];
   directCommits: DirectCommit[];
   unpushedDirectCommits: DirectCommit[];
+  unpushedCommitShasByBranch?: Record<string, string[]>;
   defaultBranch: string;
   branchCommitPreviews: Record<string, BranchCommitPreview[]>;
   branchParentByName?: Record<string, string | null>;
@@ -360,6 +361,7 @@ export function computeBranchGridLayout(input: BranchGridLayoutInput): BranchGri
     mergeNodes,
     directCommits,
     unpushedDirectCommits,
+    unpushedCommitShasByBranch = {},
     defaultBranch,
     branchCommitPreviews,
     branchParentByName = {},
@@ -538,8 +540,8 @@ export function computeBranchGridLayout(input: BranchGridLayoutInput): BranchGri
     if (visibleCommitBySha.has(commit.id)) return;
     visibleCommitBySha.set(commit.id, commit);
   };
-  const unpushedDirectCommitShas = new Set(
-    unpushedDirectCommits.map((commit) => commit.fullSha),
+  const unpushedCommitShasByBranchSet = new Map(
+    Object.entries(unpushedCommitShasByBranch).map(([branchName, shas]) => [branchName, new Set(shas)] as const),
   );
 
   const branchCommitShaSets = new Map<string, Set<string>>(
@@ -720,7 +722,8 @@ export function computeBranchGridLayout(input: BranchGridLayoutInput): BranchGri
       if (commit.kind === 'uncommitted') return 'uncommitted';
       if (commit.kind === 'stash') return 'stash';
       if (commit.kind === 'branch-created') return 'branch-created';
-      return unpushedDirectCommitShas.has(commit.id) || commit.isRemote === false ? 'unpushed' : 'pushed';
+      const branchUnpushedShas = unpushedCommitShasByBranchSet.get(commit.branchName);
+      return branchUnpushedShas?.has(commit.id) ? 'unpushed' : 'pushed';
     };
     let previousBoundaryKind: string | null = null;
     for (const commit of ordered) {

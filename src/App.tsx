@@ -1349,6 +1349,7 @@ function App() {
         const nextKey = `${nextRef.branchName ?? ''}|${nextRef.headSha}|${nextRef.hasUncommittedChanges ? 1 : 0}`;
         const prevKey = lastCheckedOutKey;
         const branchOrHeadChanged = !prevKey || prevKey.split('|').slice(0, 2).join('|') !== nextKey.split('|').slice(0, 2).join('|');
+        const dirtyStateChanged = !prevKey || prevKey.split('|')[2] !== nextKey.split('|')[2];
         lastCheckedOutKey = nextKey;
         setCheckedOutRef((prev) => {
           if (
@@ -1368,6 +1369,8 @@ function App() {
         // Heavy graph refresh only when branch/head actually moves (commit/checkout/merge).
         if (branchOrHeadChanged) {
           scheduleRefreshBurst();
+        } else if (dirtyStateChanged) {
+          scheduleLocalRefresh();
         }
       } catch {
         // ignore transient git read failures
