@@ -188,6 +188,8 @@ function App() {
   const [mapGridOrientation, setMapGridOrientation] = useState<OrientationMode>('horizontal');
   const [remoteDefaultTipSha, setRemoteDefaultTipSha] = useState<string | null>(null);
   const [remoteDefaultTipMetadata, setRemoteDefaultTipMetadata] = useState<CommitMetadata | null>(null);
+  const [remoteDefaultTipParentSha, setRemoteDefaultTipParentSha] = useState<string | null>(null);
+  const [isRemoteTipHydrated, setIsRemoteTipHydrated] = useState(false);
   const [isGridDebugOpen, setIsGridDebugOpen] = useState(false);
   const [sidebarWidthPx, setSidebarWidthPx] = useState(SIDEBAR_DEFAULT_WIDTH_PX);
   const [isSidebarCollapsed, setIsSidebarCollapsed] = useState(false);
@@ -1490,6 +1492,7 @@ function App() {
         });
         if (isDisposed) return;
         if (remoteTipSha == null) {
+          setIsRemoteTipHydrated(true);
           return;
         }
         setRemoteDefaultTipSha(remoteTipSha);
@@ -1498,6 +1501,16 @@ function App() {
           sha: remoteTipSha,
         }).catch(() => null);
         setRemoteDefaultTipMetadata(metadata && metadata.subject.trim().length > 0 ? metadata : null);
+        const localHeadSha = checkedOutRef?.headSha;
+        const parentSha = localHeadSha
+          ? await invoke<string | null>('get_merge_base', {
+              repoPath,
+              leftSha: remoteTipSha,
+              rightSha: localHeadSha,
+            }).catch(() => null)
+          : null;
+        setRemoteDefaultTipParentSha(parentSha);
+        setIsRemoteTipHydrated(true);
         if (lastRemoteTipSha == null) {
           lastRemoteTipSha = remoteTipSha;
           return;
@@ -1532,6 +1545,8 @@ function App() {
       isDisposed = true;
       setRemoteDefaultTipSha(null);
       setRemoteDefaultTipMetadata(null);
+      setRemoteDefaultTipParentSha(null);
+      setIsRemoteTipHydrated(false);
       if (remoteTipIntervalId != null) window.clearInterval(remoteTipIntervalId);
       if (unlisten) unlisten();
     };
@@ -2044,9 +2059,25 @@ function App() {
     setCommitSwitchFeedback(null);
     setPushInProgress(true);
     try {
-      const pushed = await invoke<Array<{ branchName: string }>>('push_all_unpushed_branches', {
-        repoPath,
-      });
+      let pushed: Array<{ branchName: string }> = [];
+      try {
+        pushed = await invoke<Array<{ branchName: string }>>('push_all_unpushed_branches', {
+          repoPath,
+        });
+      } catch (pushError) {
+        const pushMessage = pushError instanceof Error ? pushError.message : String(pushError);
+        const isNonFastForward = /non-fast-forward|fetch first|rejected/i.test(pushMessage);
+        if (!isNonFastForward) throw pushError;
+        const branchName = checkedOutRef?.branchName;
+        if (!branchName) throw pushError;
+        const useRebase = window.confirm(
+          'Push all hit non-fast-forward.\n\nOK: pull --rebase then retry\nCancel: pull --no-rebase then retry',
+        );
+        await invoke('pull_branch_with_strategy', { repoPath, branchName, rebase: useRebase });
+        pushed = await invoke<Array<{ branchName: string }>>('push_all_unpushed_branches', {
+          repoPath,
+        });
+      }
       await yieldToPaint();
       await refreshRepoAfterPush(repoPath);
       setCommitSwitchFeedback({
@@ -2085,6 +2116,30 @@ function App() {
       });
     } catch (e) {
       const message = e instanceof Error ? e.message : String(e);
+      const isNonFastForward = /non-fast-forward|fetch first|rejected/i.test(message);
+      if (isNonFastForward) {
+        const useRebase = window.confirm(
+          'Push was rejected (non-fast-forward).\n\nOK: pull --rebase then retry push\nCancel: pull --no-rebase then retry push',
+        );
+        try {
+          const branchName = checkedOutRef?.branchName;
+          if (!branchName) throw new Error('Cannot resolve current branch for pull.');
+          await invoke('pull_branch_with_strategy', { repoPath, branchName, rebase: useRebase });
+          const pushed = await invoke<{ branchName: string }>('push_current_branch', { repoPath });
+          await yieldToPaint();
+          await refreshRepoAfterPush(repoPath);
+          setCommitSwitchFeedback({
+            kind: 'success',
+            message: `Pulled (${useRebase ? 'rebase' : 'merge'}) and pushed ${pushed.branchName}`,
+          });
+          return;
+        } catch (retryError) {
+          const retryMessage = retryError instanceof Error ? retryError.message : String(retryError);
+          setCommitSwitchFeedback({ kind: 'error', message: retryMessage });
+          console.error('Failed to resolve non-fast-forward:', retryMessage);
+          return;
+        }
+      }
       setCommitSwitchFeedback({
         kind: 'error',
         message,
@@ -2110,11 +2165,26 @@ function App() {
     setPushInProgress(true);
     try {
       for (const target of uniqueTargets) {
-        await invoke('push_branch', {
-          repoPath,
-          branchName: target.branchName,
-          targetSha: target.targetSha,
-        });
+        try {
+          await invoke('push_branch', {
+            repoPath,
+            branchName: target.branchName,
+            targetSha: target.targetSha,
+          });
+        } catch (pushError) {
+          const pushMessage = pushError instanceof Error ? pushError.message : String(pushError);
+          const isNonFastForward = /non-fast-forward|fetch first|rejected/i.test(pushMessage);
+          if (!isNonFastForward) throw pushError;
+          const useRebase = window.confirm(
+            `Push rejected for ${target.branchName} (non-fast-forward).\n\nOK: pull --rebase then retry\nCancel: pull --no-rebase then retry`,
+          );
+          await invoke('pull_branch_with_strategy', { repoPath, branchName: target.branchName, rebase: useRebase });
+          await invoke('push_branch', {
+            repoPath,
+            branchName: target.branchName,
+            targetSha: target.targetSha,
+          });
+        }
       }
       await refreshRepoAfterMutation(repoPath);
       setCommitSwitchFeedback({
@@ -2237,30 +2307,14 @@ function App() {
     setGridSearchJumpToken((token) => token + 1);
   }
 
-  useEffect(() => {
-    const focusSha = checkedOutRef?.hasUncommittedChanges ? 'WORKING_TREE' : checkedOutRef?.headSha ?? null;
-    if (!focusSha) return;
-
-    const syncKey = `${repoPath ?? '__no-repo__'}|${mapGridOrientation}|${focusSha}`;
-    if (autoFocusSyncKeyRef.current === syncKey) return;
-    autoFocusSyncKeyRef.current = syncKey;
-
-    setGridFocusSha(focusSha);
-    setGridSearchJumpToken((token) => token + 1);
-  }, [checkedOutRef?.hasUncommittedChanges, checkedOutRef?.headSha, mapGridOrientation, repoPath]);
-
-  useEffect(() => {
-    autoFocusSyncKeyRef.current = null;
-  }, [repoPath]);
-
-
-
   // Synthetic stash nodes (yellow) and optional uncommitted node (blue) — same lane rules as before.
   const {
     enrichedBranches,
     enrichedBranchCommitPreviews,
     enrichedBranchUniqueAheadCounts,
     enrichedDirectCommits,
+    enrichedUnpushedDirectCommits,
+    visualCheckedOutRef,
   } = useMemo(() => {
     const stashFolded = foldStashNodesIntoGraph(
       stashes,
@@ -2274,14 +2328,25 @@ function App() {
 
     let eb = stashFolded.branches;
     let edc = stashFolded.directCommits;
+    let eupdc = unpushedDirectCommits;
     let ebp = stashFolded.branchCommitPreviews;
     let ebuac = stashFolded.branchUniqueAheadCounts;
+    let effectiveCheckedOutRef = checkedOutRef;
     const hasRemoteTipInLocalGraph = remoteDefaultTipSha
       ? edc.some((commit) => commit.fullSha === remoteDefaultTipSha || commit.sha === remoteDefaultTipSha.slice(0, 7))
       : true;
-    if (remoteDefaultTipSha && !hasRemoteTipInLocalGraph) {
-      const remoteDate = new Date(Date.now() + 1000).toISOString();
-      const previousDefaultHeadSha = eb.find((branch) => branch.name === defaultBranch)?.headSha ?? (edc[0]?.fullSha ?? null);
+    if (remoteDefaultTipSha && remoteDefaultTipParentSha && !hasRemoteTipInLocalGraph) {
+      const parentDate =
+        edc.find((commit) => commit.fullSha === remoteDefaultTipParentSha || commit.sha === remoteDefaultTipParentSha.slice(0, 7))?.date ??
+        ebp[defaultBranch]?.find((commit) => commit.fullSha === remoteDefaultTipParentSha || commit.sha === remoteDefaultTipParentSha.slice(0, 7))?.date ??
+        null;
+      const remoteDate = parentDate
+        ? new Date(new Date(parentDate).getTime() + 1000).toISOString()
+        : new Date().toISOString();
+      const previousDefaultHeadSha =
+        remoteDefaultTipParentSha ??
+        eb.find((branch) => branch.name === defaultBranch)?.headSha ??
+        (edc[0]?.fullSha ?? null);
       const remotePreviewNode: BranchCommitPreview = {
         fullSha: remoteDefaultTipSha,
         sha: remoteDefaultTipSha.slice(0, 7),
@@ -2321,17 +2386,86 @@ function App() {
       ));
     }
 
-    if (!checkedOutRef?.hasUncommittedChanges) {
+    const shouldSplitLocalDivergenceLane =
+      !!remoteDefaultTipSha &&
+      checkedOutRef?.branchName === defaultBranch &&
+      checkedOutRef.headSha !== remoteDefaultTipSha &&
+      (checkedOutRef.hasUncommittedChanges || unpushedDirectCommits.length > 0);
+    if (shouldSplitLocalDivergenceLane) {
+      const localBranchName = `${defaultBranch} (local)`;
+      const localUnpushedShas = new Set(unpushedDirectCommits.map((commit) => commit.fullSha));
+      if (checkedOutRef?.headSha) localUnpushedShas.add(checkedOutRef.headSha);
+      const localBranchDate =
+        unpushedDirectCommits[0]?.date ??
+        (checkedOutRef?.headSha ? edc.find((commit) => commit.fullSha === checkedOutRef.headSha)?.date : undefined) ??
+        new Date().toISOString();
+
+      if (!eb.some((branch) => branch.name === localBranchName)) {
+        eb = [
+          ...eb,
+          {
+            name: localBranchName,
+            commitsAhead: Math.max(1, localUnpushedShas.size),
+            commitsBehind: 0,
+            lastCommitDate: localBranchDate,
+            lastCommitAuthor: checkedOutRef?.branchName ?? 'You',
+            status: 'fresh',
+            remoteSyncStatus: 'unpushed',
+            unpushedCommits: Math.max(1, localUnpushedShas.size),
+            headSha: checkedOutRef?.headSha ?? (unpushedDirectCommits[0]?.fullSha ?? 'WORKING_TREE'),
+            parentBranch: defaultBranch,
+          },
+        ];
+      }
+
+      edc = edc.map((commit) =>
+        commit.branch === defaultBranch && localUnpushedShas.has(commit.fullSha)
+          ? { ...commit, branch: localBranchName }
+          : commit,
+      );
+      eupdc = eupdc.map((commit) =>
+        commit.branch === defaultBranch && localUnpushedShas.has(commit.fullSha)
+          ? { ...commit, branch: localBranchName }
+          : commit,
+      );
+
+      const defaultPreviews = ebp[defaultBranch] ?? [];
+      const localPreviews = defaultPreviews.filter((preview) =>
+        preview.fullSha === 'WORKING_TREE' || localUnpushedShas.has(preview.fullSha),
+      );
+      const retainedDefaultPreviews = defaultPreviews.filter((preview) => !localPreviews.includes(preview));
+      if (localPreviews.length > 0) {
+        ebp = {
+          ...ebp,
+          [defaultBranch]: retainedDefaultPreviews,
+          [localBranchName]: [...localPreviews, ...(ebp[localBranchName] ?? [])],
+        };
+      }
+      ebuac = {
+        ...ebuac,
+        [localBranchName]: Math.max(1, localUnpushedShas.size),
+      };
+      if (effectiveCheckedOutRef?.branchName === defaultBranch) {
+        effectiveCheckedOutRef = {
+          ...effectiveCheckedOutRef,
+          branchName: localBranchName,
+        };
+      }
+    }
+
+    if (!effectiveCheckedOutRef?.hasUncommittedChanges) {
       return {
         enrichedBranches: eb,
         enrichedDirectCommits: edc,
+        enrichedUnpushedDirectCommits: eupdc,
         enrichedBranchCommitPreviews: ebp,
         enrichedBranchUniqueAheadCounts: ebuac,
+        visualCheckedOutRef: effectiveCheckedOutRef,
       };
     }
 
     // Resolve uncommitted placement by lane head ownership (stash-augmented graph).
-    const checkedOutAnchorSha = checkedOutRef.headSha || checkedOutRef.parentSha || null;
+    const checkedOutAnchorSha = effectiveCheckedOutRef.headSha || effectiveCheckedOutRef.parentSha || null;
     const latestMainDirectCommitSha = edc[0]?.fullSha ?? null;
     const shaMatches = (left?: string | null, right?: string | null): boolean => {
       if (!left || !right) return false;
@@ -2342,8 +2476,8 @@ function App() {
       { name: defaultBranch, headSha: latestMainDirectCommitSha ?? '', isDefault: true },
       ...eb.map((b) => ({ name: b.name, headSha: b.headSha, isDefault: false })),
     ];
-    const explicitLane = checkedOutRef.branchName
-      ? allLanes.find((lane) => lane.name === checkedOutRef.branchName)
+    const explicitLane = effectiveCheckedOutRef.branchName
+      ? allLanes.find((lane) => lane.name === effectiveCheckedOutRef.branchName)
       : undefined;
     const tipMatchedLanes = checkedOutAnchorSha
       ? allLanes.filter((lane) => shaMatches(lane.headSha, checkedOutAnchorSha))
@@ -2403,6 +2537,7 @@ function App() {
       return {
         enrichedBranches: nextBranches,
         enrichedDirectCommits: edc,
+        enrichedUnpushedDirectCommits: eupdc,
         enrichedBranchCommitPreviews: {
           ...ebp,
           [targetBranch.name]: [uncommittedNode, ...(ebp[targetBranch.name] || [])],
@@ -2416,6 +2551,7 @@ function App() {
               : targetBranch.commitsAhead) ?? 0,
           ) + 1,
         },
+        visualCheckedOutRef: effectiveCheckedOutRef,
       };
     }
 
@@ -2429,8 +2565,42 @@ function App() {
         ...ebuac,
       },
       enrichedDirectCommits: edc,
+      enrichedUnpushedDirectCommits: eupdc,
+      visualCheckedOutRef: effectiveCheckedOutRef,
     };
-  }, [branches, branchCommitPreviews, branchUniqueAheadCounts, checkedOutRef, defaultBranch, directCommits, remoteDefaultTipMetadata, remoteDefaultTipSha, stashes]);
+  }, [branches, branchCommitPreviews, branchUniqueAheadCounts, checkedOutRef, defaultBranch, directCommits, remoteDefaultTipMetadata, remoteDefaultTipParentSha, remoteDefaultTipSha, stashes, unpushedDirectCommits]);
+
+  useEffect(() => {
+    const readyForAutoFocus =
+      !mapLoading &&
+      !loading &&
+      (
+        remoteDefaultTipSha == null ||
+        (isRemoteTipHydrated && remoteDefaultTipParentSha != null)
+      );
+    if (!readyForAutoFocus) return;
+    const focusSha = visualCheckedOutRef?.hasUncommittedChanges ? 'WORKING_TREE' : visualCheckedOutRef?.headSha ?? null;
+    if (!focusSha) return;
+    const syncKey = `${repoPath ?? '__no-repo__'}|${mapGridOrientation}|${focusSha}`;
+    if (autoFocusSyncKeyRef.current === syncKey) return;
+    autoFocusSyncKeyRef.current = syncKey;
+    setGridFocusSha(focusSha);
+    setGridSearchJumpToken((token) => token + 1);
+  }, [
+    isRemoteTipHydrated,
+    loading,
+    mapGridOrientation,
+    mapLoading,
+    remoteDefaultTipParentSha,
+    remoteDefaultTipSha,
+    repoPath,
+    visualCheckedOutRef?.hasUncommittedChanges,
+    visualCheckedOutRef?.headSha,
+  ]);
+
+  useEffect(() => {
+    autoFocusSyncKeyRef.current = null;
+  }, [repoPath]);
   const enrichedBranchParentByName = useMemo(() => {
     const map: Record<string, string | null> = { ...branchParentByName };
     map[defaultBranch] = null;
@@ -2449,7 +2619,7 @@ function App() {
         branches: enrichedBranches,
         mergeNodes,
         directCommits: enrichedDirectCommits,
-        unpushedDirectCommits,
+        unpushedDirectCommits: enrichedUnpushedDirectCommits,
         defaultBranch,
         branchCommitPreviews: enrichedBranchCommitPreviews,
         branchParentByName: enrichedBranchParentByName,
@@ -2459,7 +2629,7 @@ function App() {
         isDebugOpen: false,
         gridSearchQuery,
         gridFocusSha,
-        checkedOutRef: checkedOutRef ?? null,
+        checkedOutRef: visualCheckedOutRef ?? null,
         orientation: mapGridOrientation,
       }),
     [
@@ -2467,7 +2637,7 @@ function App() {
       enrichedBranches,
       mergeNodes,
       enrichedDirectCommits,
-      unpushedDirectCommits,
+      enrichedUnpushedDirectCommits,
       defaultBranch,
       enrichedBranchCommitPreviews,
       enrichedBranchParentByName,
@@ -2476,8 +2646,8 @@ function App() {
       manuallyClosedGridClumps,
       gridSearchQuery,
       gridFocusSha,
-      checkedOutRef?.headSha ?? null,
-      checkedOutRef?.branchName ?? null,
+      visualCheckedOutRef?.headSha ?? null,
+      visualCheckedOutRef?.branchName ?? null,
       mapGridOrientation,
     ],
   );
@@ -2505,7 +2675,7 @@ function App() {
         branches: enrichedBranches,
         mergeNodes,
         directCommits: enrichedDirectCommits,
-        unpushedDirectCommits,
+        unpushedDirectCommits: enrichedUnpushedDirectCommits,
         defaultBranch,
         branchCommitPreviews: enrichedBranchCommitPreviews,
         branchParentByName: enrichedBranchParentByName,
@@ -2515,7 +2685,7 @@ function App() {
         isDebugOpen: false,
         gridSearchQuery,
         gridFocusSha,
-        checkedOutRef: checkedOutRef ?? null,
+        checkedOutRef: visualCheckedOutRef ?? null,
         orientation: mapGridOrientation,
       }),
     [
@@ -2523,7 +2693,7 @@ function App() {
       enrichedBranches,
       mergeNodes,
       enrichedDirectCommits,
-      unpushedDirectCommits,
+      enrichedUnpushedDirectCommits,
       defaultBranch,
       enrichedBranchCommitPreviews,
       enrichedBranchParentByName,
@@ -2532,8 +2702,8 @@ function App() {
       effectiveManuallyClosedGridClumps,
       gridSearchQuery,
       gridFocusSha,
-      checkedOutRef?.headSha ?? null,
-      checkedOutRef?.branchName ?? null,
+      visualCheckedOutRef?.headSha ?? null,
+      visualCheckedOutRef?.branchName ?? null,
       mapGridOrientation,
     ],
   );
@@ -2703,7 +2873,7 @@ function App() {
                 branches={enrichedBranches}
                 mergeNodes={mergeNodes}
                 directCommits={enrichedDirectCommits}
-                unpushedDirectCommits={unpushedDirectCommits}
+                unpushedDirectCommits={enrichedUnpushedDirectCommits}
                 unpushedCommitShasByBranch={unpushedCommitShasByBranch}
                 openPRs={openPRs}
                 defaultBranch={defaultBranch}
@@ -2717,7 +2887,7 @@ function App() {
                 onGridSearchResultCountChange={setGridSearchResultCount}
                 onGridSearchResultIndexChange={setGridSearchResultIndex}
                 onGridSearchFocusChange={setGridFocusSha}
-                checkedOutRef={checkedOutRef}
+                checkedOutRef={visualCheckedOutRef}
                 onCommitClick={handleMapCommitClick}
                 onMergeRefsIntoBranch={handleMergeRefsIntoBranch}
                 mergeInProgress={mergeInProgress}

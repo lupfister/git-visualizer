@@ -1094,6 +1094,14 @@ fn get_commit_metadata(repo_path: String, sha: String) -> Result<Option<CommitMe
     }
 }
 
+#[tauri::command(rename_all = "camelCase")]
+fn get_merge_base(repo_path: String, left_sha: String, right_sha: String) -> Result<Option<String>, String> {
+    let path = Path::new(&repo_path);
+    let output = git::cli::run(path, &["merge-base", &left_sha, &right_sha]).map_err(|e| e.to_string())?;
+    let sha = output.lines().next().map(str::trim).filter(|line| !line.is_empty()).map(|line| line.to_string());
+    Ok(sha)
+}
+
 #[tauri::command]
 fn get_merge_nodes(
     repo_path: String,
@@ -1212,6 +1220,20 @@ fn push_branch_ref(repo: &Path, branch: &str, target_sha: Option<&str>) -> Resul
     let arg_refs: Vec<&str> = args.iter().map(|value| value.as_str()).collect();
     git::cli::run(repo, &arg_refs).map_err(|e| e.to_string())?;
     Ok(())
+}
+
+#[tauri::command(rename_all = "camelCase")]
+fn pull_branch_with_strategy(repo_path: String, branch_name: String, rebase: bool) -> Result<(), String> {
+    let path = Path::new(&repo_path);
+    let mut args = vec!["pull"];
+    if rebase {
+        args.push("--rebase");
+    } else {
+        args.push("--no-rebase");
+    }
+    args.push("origin");
+    args.push(&branch_name);
+    git::cli::run(path, &args).map(|_| ()).map_err(|e| e.to_string())
 }
 
 #[tauri::command(rename_all = "camelCase")]
@@ -4659,6 +4681,7 @@ pub fn run() {
             get_remote_branch_head_sha,
             get_commit_subject,
             get_commit_metadata,
+            get_merge_base,
             get_merge_nodes,
             get_default_branch,
             get_checked_out_ref,
@@ -4678,6 +4701,7 @@ pub fn run() {
             push_branch,
             push_current_branch,
             push_all_unpushed_branches,
+            pull_branch_with_strategy,
             delete_selected_elements,
             merge_branches,
             merge_ref_into_branch,
