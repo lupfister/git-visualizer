@@ -2386,8 +2386,12 @@ function App() {
       ));
     }
 
-    const shouldSplitLocalDivergenceLane =
+    const hasActiveRemoteOnlyDivergence =
       !!remoteDefaultTipSha &&
+      !!remoteDefaultTipParentSha &&
+      !hasRemoteTipInLocalGraph;
+    const shouldSplitLocalDivergenceLane =
+      hasActiveRemoteOnlyDivergence &&
       checkedOutRef?.branchName === defaultBranch &&
       checkedOutRef.headSha !== remoteDefaultTipSha &&
       (checkedOutRef.hasUncommittedChanges || unpushedDirectCommits.length > 0);

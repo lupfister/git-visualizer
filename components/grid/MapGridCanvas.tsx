@@ -308,7 +308,9 @@ export default function MapGridCanvas({
                 : isSelectedCommit
                   ? 'var(--select)'
                   : CONNECTOR_COLOR;
-            const nodeBorderWidth = lineStrokeWidth;
+            const nodeBorderWidth = isStashedCommit || isEmptyBranchNode || isLocalUncommitted
+              ? 1.25 / displayZoom
+              : lineStrokeWidth;
             const isDashedOutline = isStashedCommit || isLocalUncommitted || isEmptyBranchNode;
             const dashedStrokeDasharray = `${12 / displayZoom} ${6 / displayZoom}`;
             const dashedStrokeInset = nodeBorderWidth / 2;
