@@ -321,17 +321,19 @@ function BranchRows({
                 : 'var(--selected-foreground)'
               : 'var(--muted-foreground)',
           }}
-          role={isBranchExpandable ? 'button' : undefined}
-          tabIndex={isBranchExpandable ? 0 : undefined}
+          role="button"
+          tabIndex={0}
           onClick={() => {
-            if (isBranchExpandable) onToggleBranch(branchName);
+            if (isActiveProject) onSelectBranch?.(branchName);
+            else if (isBranchExpandable) onToggleBranch(branchName);
             else onSelectBranch?.(branchName);
           }}
           onKeyDown={(event) => {
-            if (!isBranchExpandable) return;
             if (event.key === 'Enter' || event.key === ' ') {
               event.preventDefault();
-              onToggleBranch(branchName);
+              if (isActiveProject) onSelectBranch?.(branchName);
+              else if (isBranchExpandable) onToggleBranch(branchName);
+              else onSelectBranch?.(branchName);
             }
           }}
         >
@@ -1038,6 +1040,7 @@ export default function DenseBranchSidebar({
             }}
             onClick={(event) => {
               if (ghostMode) return;
+              if (isActiveProject) return;
               if (draggingProjectPath === project.path || suppressProjectSelectRef.current) return;
               const target = event.target as HTMLElement | null;
               if (target?.closest('button, input, textarea, select, [contenteditable="true"]')) return;
@@ -1061,10 +1064,10 @@ export default function DenseBranchSidebar({
               aria-expanded={isExpanded}
               aria-label={`${isExpanded ? 'Collapse' : 'Expand'} ${project.name}`}
               className={cn(
-                'project-icon flex h-6 w-6 shrink-0 items-center justify-center rounded-md transition-colors hover:bg-accent text-selected-foreground',
+                'project-icon flex h-6 w-6 shrink-0 items-center justify-center rounded-md transition-colors hover:bg-accent',
                 ghostMode ? 'pointer-events-none' : '',
               )}
-              style={{ color: isActiveProject ? 'var(--selected-foreground)' : 'var(--selected-foreground)' }}
+              style={{ color: isActiveProject ? 'var(--selected-foreground)' : 'var(--muted-foreground)' }}
             >
               <ProjectIcon open={isExpanded} />
             </button>
@@ -1073,7 +1076,7 @@ export default function DenseBranchSidebar({
               'project-name min-w-0 flex-1 truncate pl-0 text-left text-sm transition-colors',
               'font-normal',
             )}
-            style={{ color: isActiveProject ? 'var(--selected-foreground)' : 'var(--selected-foreground)' }}
+            style={{ color: isActiveProject ? 'var(--selected-foreground)' : 'var(--muted-foreground)' }}
           >
             {project.name}
           </span>
