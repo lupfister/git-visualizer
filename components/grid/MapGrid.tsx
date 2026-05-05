@@ -775,6 +775,7 @@ export default function BranchGridMap({
   };
 
   useLayoutEffect(() => {
+    if (isCameraMoving) return;
     const viewport = scrollContainerRef.current;
     if (!viewport) return;
     if (viewport.clientWidth <= 0 || viewport.clientHeight <= 0) return;

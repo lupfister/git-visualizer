@@ -19,6 +19,7 @@ type Params = {
 };
 
 export type MapGridCameraState = { panX: number; panY: number; zoom: number };
+const CAMERA_STORAGE_KEY_PREFIX = 'git-visualizer:map-grid-camera:';
 
 export function useMapGridCamera({ mapPadHostRef, transformLayerRef, isEnabled = true, onUserCameraChange }: Params) {
   const panRef = useRef({ x: 0, y: 0 });
@@ -38,6 +39,15 @@ export function useMapGridCamera({ mapPadHostRef, transformLayerRef, isEnabled =
   const [cameraRenderTick, setCameraRenderTick] = useState(0);
   const panReactTrailingTimeoutRef = useRef<number | null>(null);
   const lastCameraPanReactEmitRef = useRef(0);
+  const isInteractionActiveRef = useRef(false);
+
+  const getCameraStorageKey = useCallback(() => `${CAMERA_STORAGE_KEY_PREFIX}${window.location.pathname}`, []);
+
+  const persistCamera = useCallback((camera: MapGridCameraState) => {
+    try {
+      window.localStorage.setItem(getCameraStorageKey(), JSON.stringify(camera));
+    } catch {}
+  }, [getCameraStorageKey]);
 
   const getTransformLayerOriginScreen = useCallback((): { x: number; y: number } | null => {
     const host = mapPadHostRef.current;
@@ -62,9 +72,15 @@ export function useMapGridCamera({ mapPadHostRef, transformLayerRef, isEnabled =
     lastCameraPanReactEmitRef.current = performance.now();
   }, []);
 
-  const applyRenderedCamera = useCallback((nextPanX: number, nextPanY: number, nextZoom: number) => {
+  const applyRenderedCamera = useCallback((
+    nextPanX: number,
+    nextPanY: number,
+    nextZoom: number,
+    options?: { emitTick?: boolean },
+  ) => {
     const prev = renderedCameraRef.current;
-    renderedCameraRef.current = { panX: nextPanX, panY: nextPanY, zoom: nextZoom };
+    const nextCamera = { panX: nextPanX, panY: nextPanY, zoom: nextZoom };
+    renderedCameraRef.current = nextCamera;
     const layer = transformLayerRef.current;
     if (layer) {
       layer.style.transform = `translate3d(${nextPanX}px, ${nextPanY}px, 0) scale(${nextZoom / GRID_RENDER_ZOOM})`;
@@ -73,6 +89,9 @@ export function useMapGridCamera({ mapPadHostRef, transformLayerRef, isEnabled =
       renderedZoomRef.current = nextZoom;
       setRenderedZoom(nextZoom);
     }
+
+    if (options?.emitTick === false) return;
+    if (isInteractionActiveRef.current) return;
 
     const zoomChanged = Math.abs(nextZoom - prev.zoom) > ZOOM_SETTLE_EPSILON;
     if (zoomChanged) {
@@ -102,15 +121,19 @@ export function useMapGridCamera({ mapPadHostRef, transformLayerRef, isEnabled =
   }, []);
 
   const markCameraInteraction = useCallback(() => {
+    isInteractionActiveRef.current = true;
     setIsCameraMoving(true);
     if (interactionIdleTimeoutRef.current != null) {
       window.clearTimeout(interactionIdleTimeoutRef.current);
     }
     interactionIdleTimeoutRef.current = window.setTimeout(() => {
       interactionIdleTimeoutRef.current = null;
+      isInteractionActiveRef.current = false;
       setIsCameraMoving(false);
+      flushCameraReactTick();
+      persistCamera(renderedCameraRef.current);
     }, 90);
-  }, []);
+  }, [flushCameraReactTick, persistCamera]);
 
   const syncCamera = useCallback((nextPanX: number, nextPanY: number, nextZoom: number) => {
     if (!isEnabled) return;
@@ -195,7 +218,26 @@ export function useMapGridCamera({ mapPadHostRef, transformLayerRef, isEnabled =
 
   useLayoutEffect(() => {
     if (!isEnabled) return;
-    applyRenderedCamera(0, 0, GRID_ZOOM_DEFAULT);
+    let initial: MapGridCameraState = { panX: 0, panY: 0, zoom: GRID_ZOOM_DEFAULT };
+    try {
+      const raw = window.localStorage.getItem(getCameraStorageKey());
+      if (raw) {
+        const parsed = JSON.parse(raw) as Partial<MapGridCameraState>;
+        if (
+          typeof parsed.panX === 'number' &&
+          Number.isFinite(parsed.panX) &&
+          typeof parsed.panY === 'number' &&
+          Number.isFinite(parsed.panY) &&
+          typeof parsed.zoom === 'number' &&
+          Number.isFinite(parsed.zoom)
+        ) {
+          initial = { panX: parsed.panX, panY: parsed.panY, zoom: clampZoom(parsed.zoom) };
+        }
+      }
+    } catch {}
+    panRef.current = { x: initial.panX, y: initial.panY };
+    zoomRef.current = initial.zoom;
+    applyRenderedCamera(initial.panX, initial.panY, initial.zoom, { emitTick: false });
     return () => {
       if (interactionIdleTimeoutRef.current != null) window.clearTimeout(interactionIdleTimeoutRef.current);
       if (cameraFrameRef.current != null) window.cancelAnimationFrame(cameraFrameRef.current);
@@ -203,15 +245,9 @@ export function useMapGridCamera({ mapPadHostRef, transformLayerRef, isEnabled =
         window.clearTimeout(panReactTrailingTimeoutRef.current);
         panReactTrailingTimeoutRef.current = null;
       }
+      persistCamera(renderedCameraRef.current);
     };
-  }, [applyRenderedCamera, isEnabled]);
-
-  useLayoutEffect(() => {
-    const layer = transformLayerRef.current;
-    if (!layer) return;
-    const r = renderedCameraRef.current;
-    layer.style.transform = `translate3d(${r.panX}px, ${r.panY}px, 0) scale(${r.zoom / GRID_RENDER_ZOOM})`;
-  });
+  }, [applyRenderedCamera, getCameraStorageKey, isEnabled, persistCamera]);
 
   return {
     isCameraMoving,

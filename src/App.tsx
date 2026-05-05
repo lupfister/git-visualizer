@@ -1160,34 +1160,6 @@ function App() {
           setMapLoading(false);
           setLoading(false);
           void fetchGitHubData(normalizedPath);
-          void (async () => {
-            try {
-              const fingerprint = await invoke<RepoRefreshFingerprint>('get_repo_refresh_fingerprint', {
-                repoPath: normalizedPath,
-              });
-              const nextSignature = fingerprintSignature(fingerprint);
-              if (requestId !== loadRepoRequestIdRef.current) return;
-              if (projectFingerprintRef.current[normalizedPath] !== nextSignature) {
-                const snapshot = await invoke<RepoVisualSnapshot>('get_repo_visual_snapshot', {
-                  repoPath: normalizedPath,
-                  forceRefresh: true,
-                });
-                if (requestId !== loadRepoRequestIdRef.current) return;
-                upsertProjectSnapshot(normalizedPath, snapshot);
-                projectFingerprintRef.current = {
-                  ...projectFingerprintRef.current,
-                  [normalizedPath]: nextSignature,
-                };
-                projectQuickStateRef.current = {
-                  ...projectQuickStateRef.current,
-                  [normalizedPath]: quickStateSignature(quickStateFromSnapshot(normalizedPath, snapshot)),
-                };
-                applySnapshotToActiveState(normalizedPath, snapshot);
-              }
-            } catch {
-              // Background validation is best-effort.
-            }
-          })();
           isRepoSwitchingRef.current = false;
           return;
         }
@@ -1385,7 +1357,7 @@ function App() {
     };
 
     const runFrozenProbe = async () => {
-      if (isDisposed || probeInFlight || tickInFlight) return;
+      if (isDisposed || probeInFlight || tickInFlight || isMapInteractingRef.current) return;
       probeInFlight = true;
       try {
         const shouldCheckDirty = !Boolean(latestCheckedOutRef.current?.hasUncommittedChanges) || expectPossibleCleanTransition;
@@ -1414,9 +1386,17 @@ function App() {
       const hidden = document.visibilityState !== 'visible';
       const delayMs = hidden ? 60000 : 15000;
       pollTimeoutId = window.setTimeout(() => {
+        if (isMapInteractingRef.current) {
+          scheduleBackgroundProbe();
+          return;
+        }
         if (typeof window.requestIdleCallback === 'function') {
           window.requestIdleCallback(
             () => {
+              if (isMapInteractingRef.current) {
+                scheduleBackgroundProbe();
+                return;
+              }
               void runFrozenProbe();
               scheduleBackgroundProbe();
             },
