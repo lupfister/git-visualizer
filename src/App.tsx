@@ -87,6 +87,26 @@ function isFrozenRepoPath(path: string | null): boolean {
   return basenameFromPath(path) === FROZEN_REPO_BASENAME;
 }
 
+function setSignature(set: Set<string>): string {
+  if (set.size === 0) return '__none__';
+  return Array.from(set).sort().join(',');
+}
+
+function makeLayoutCacheKey(
+  path: string,
+  orientation: OrientationMode,
+  manuallyOpenedClumps: Set<string>,
+  manuallyClosedClumps: Set<string>,
+): string {
+  return [
+    'layout-v3',
+    path,
+    orientation,
+    setSignature(manuallyOpenedClumps),
+    setSignature(manuallyClosedClumps),
+  ].join('|');
+}
+
 function getRepoVisualSnapshotSignature(snapshot: RepoVisualSnapshot): string {
   return [
     snapshot.path,
@@ -655,11 +675,14 @@ function App() {
         const normalizedPath = normalizePath(project.path);
         const snapshot = projectSnapshots[normalizedPath];
         if (!snapshot?.loaded) continue;
-        const layoutKey = [
-          'layout-v2',
+        const projectOpenedClumps = manuallyOpenedGridClumpsByRepo[normalizedPath] ?? new Set<string>();
+        const projectClosedClumps = manuallyClosedGridClumpsByRepo[normalizedPath] ?? new Set<string>();
+        const layoutKey = makeLayoutCacheKey(
           normalizedPath,
           mapGridOrientation,
-        ].join('|');
+          projectOpenedClumps,
+          projectClosedClumps,
+        );
         if (layoutModelCacheRef.current.has(layoutKey)) continue;
         const payloadJson = await invoke<string | null>('get_repo_layout_snapshot', {
           repoPath: normalizedPath,
@@ -688,8 +711,8 @@ function App() {
           branchUniqueAheadCounts: snapshot.branchUniqueAheadCounts,
           checkedOutRef: snapshot.checkedOutRef,
           stashes: snapshot.stashes,
-          manuallyOpenedClumps: new Set<string>(),
-          manuallyClosedClumps: new Set<string>(),
+          manuallyOpenedClumps: projectOpenedClumps,
+          manuallyClosedClumps: projectClosedClumps,
           gridSearchQuery: '',
           gridFocusSha: null,
           orientation: mapGridOrientation,
@@ -716,6 +739,8 @@ function App() {
     projects,
     projectSnapshots,
     mapGridOrientation,
+    manuallyOpenedGridClumpsByRepo,
+    manuallyClosedGridClumpsByRepo,
     mapLoading,
   ]);
 
@@ -1255,12 +1280,15 @@ function App() {
   async function ensureFrozenLayoutReady(
     targetRepoPath: string,
     snapshot: RepoVisualSnapshot,
+    manuallyOpenedClumps: Set<string>,
+    manuallyClosedClumps: Set<string>,
   ): Promise<{ layoutKey: string; model: BranchGridLayoutModel }> {
-    const layoutKey = [
-      'layout-v2',
+    const layoutKey = makeLayoutCacheKey(
       targetRepoPath,
       mapGridOrientation,
-    ].join('|');
+      manuallyOpenedClumps,
+      manuallyClosedClumps,
+    );
     const inMemory = layoutModelCacheRef.current.get(layoutKey);
     if (inMemory) return { layoutKey, model: inMemory };
 
@@ -1291,8 +1319,8 @@ function App() {
       branchUniqueAheadCounts: snapshot.branchUniqueAheadCounts,
       checkedOutRef: snapshot.checkedOutRef,
       stashes: snapshot.stashes,
-      manuallyOpenedClumps: new Set<string>(),
-      manuallyClosedClumps: new Set<string>(),
+      manuallyOpenedClumps,
+      manuallyClosedClumps,
       gridSearchQuery: '',
       gridFocusSha: null,
       orientation: mapGridOrientation,
@@ -1317,11 +1345,14 @@ function App() {
     if (repoPath && sharedGridLayoutCacheKey) {
       layoutModelCacheRef.current.set(sharedGridLayoutCacheKey, sharedGridLayoutModel);
     }
-    const targetLayoutKey = [
-      'layout-v2',
+    const targetOpenedClumps = manuallyOpenedGridClumpsByRepo[normalizedPath] ?? new Set<string>();
+    const targetClosedClumps = manuallyClosedGridClumpsByRepo[normalizedPath] ?? new Set<string>();
+    const targetLayoutKey = makeLayoutCacheKey(
       normalizedPath,
       mapGridOrientation,
-    ].join('|');
+      targetOpenedClumps,
+      targetClosedClumps,
+    );
     const frozenTargetLayout = layoutModelCacheRef.current.get(targetLayoutKey);
     if (frozenTargetLayout) {
       setHydratedLayoutModel(frozenTargetLayout);
@@ -1343,7 +1374,12 @@ function App() {
         ...projectQuickStateRef.current,
         [normalizedPath]: quickStateSignature(quickStateFromSnapshot(normalizedPath, cachedSnapshot)),
       };
-      const frozen = await ensureFrozenLayoutReady(normalizedPath, cachedSnapshot);
+      const frozen = await ensureFrozenLayoutReady(
+        normalizedPath,
+        cachedSnapshot,
+        targetOpenedClumps,
+        targetClosedClumps,
+      );
       if (requestId !== loadRepoRequestIdRef.current) return;
       setHydratedLayoutModel(frozen.model);
       setHydratedLayoutKey(frozen.layoutKey);
@@ -1386,7 +1422,12 @@ function App() {
         forceRefresh: false,
       });
       if (requestId !== loadRepoRequestIdRef.current) return;
-      const frozen = await ensureFrozenLayoutReady(normalizedPath, snapshot);
+      const frozen = await ensureFrozenLayoutReady(
+        normalizedPath,
+        snapshot,
+        targetOpenedClumps,
+        targetClosedClumps,
+      );
       if (requestId !== loadRepoRequestIdRef.current) return;
       setHydratedLayoutModel(frozen.model);
       setHydratedLayoutKey(frozen.layoutKey);
@@ -2716,16 +2757,27 @@ function App() {
       ?? buildLanes(enrichedBranches, defaultBranch, enrichedBranchCommitPreviews, enrichedBranchParentByName),
     [enrichedBranches, defaultBranch, enrichedBranchCommitPreviews, enrichedBranchParentByName, laneByBranch],
   );
+  const openedClumpsSignature = useMemo(
+    () => setSignature(manuallyOpenedGridClumps),
+    [manuallyOpenedGridClumps],
+  );
+  const closedClumpsSignature = useMemo(
+    () => setSignature(manuallyClosedGridClumps),
+    [manuallyClosedGridClumps],
+  );
   const sharedGridLayoutCacheKey = useMemo(() => {
     if (!repoPath) return null;
-    return [
-      'layout-v2',
+    return makeLayoutCacheKey(
       repoPath,
       mapGridOrientation,
-    ].join('|');
+      manuallyOpenedGridClumps,
+      manuallyClosedGridClumps,
+    );
   }, [
     repoPath,
     mapGridOrientation,
+    openedClumpsSignature,
+    closedClumpsSignature,
   ]);
   useEffect(() => {
     if (!repoPath || !sharedGridLayoutCacheKey) {
