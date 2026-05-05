@@ -9,8 +9,10 @@ import BranchGridMapView, { type OrientationMode } from '../components/grid/MapV
 import DenseBranchSidebar from '../components/DenseBranchSidebar';
 import { buildLanes, lanesFromStoredColumns } from '../components/grid/LayoutGrid';
 import { computeBranchGridLayout, type BranchGridLayoutModel } from '../components/grid/branchGridLayoutModel';
+import { hydrateBranchGridLayoutModel, serializeBranchGridLayoutModel } from '../components/grid/layoutSnapshot';
 import type { Branch, BranchCommitPreview, BranchPromptMeta, CheckedOutRef, DirectCommit, GitHubAuthStatus, GitHubInfo, GitStashEntry, MergeNode, OpenPR, RepoVisualSnapshot, WorktreeInfo } from '../types';
 import { foldStashNodesIntoGraph } from './placeStashNode';
+import { deriveRepoVisualState } from './repoVisualState';
 
 const FROZEN_REPO_BASENAME = 'git-visualizer';
 const PROJECTS_STORAGE_KEY = 'git-visualizer:projects';
@@ -216,11 +218,23 @@ function App() {
   const isFrozenRepo = isFrozenRepoPath(repoPath) || true;
   const isMapInteractingRef = useRef(false);
   const hasAttemptedAutoRestoreRef = useRef(false);
+  const hasHydratedInitialProjectSnapshotsRef = useRef(false);
   const loadingProjectSnapshotsRef = useRef<Set<string>>(new Set());
+  const [initialProjectSnapshotsReady, setInitialProjectSnapshotsReady] = useState(false);
   const latestBranchesRef = useRef<Branch[]>([]);
   const latestDirectCommitsRef = useRef<DirectCommit[]>([]);
   const latestCheckedOutRef = useRef<CheckedOutRef | null>(null);
+  const latestUnpushedDirectCommitsRef = useRef<DirectCommit[]>([]);
+  const latestWorktreesRef = useRef<WorktreeInfo[]>([]);
+  const latestStashesRef = useRef<GitStashEntry[]>([]);
+  const latestUnpushedCommitShasByBranchRef = useRef<Record<string, string[]>>({});
+  const latestMergeNodesRef = useRef<MergeNode[]>([]);
   const latestBranchParentByNameRef = useRef<Record<string, string | null>>({});
+  const layoutModelCacheRef = useRef<Map<string, BranchGridLayoutModel>>(new Map());
+  const persistedLayoutKeysRef = useRef<Set<string>>(new Set());
+  const lastResolvedLayoutModelRef = useRef<BranchGridLayoutModel | null>(null);
+  const [hydratedLayoutModel, setHydratedLayoutModel] = useState<BranchGridLayoutModel | null>(null);
+  const [hydratedLayoutKey, setHydratedLayoutKey] = useState<string | null>(null);
   const activeRepoScopedKey = repoPath ?? '__no-repo__';
   const persistGridClumps = (opened: RepoScopedClumpState, closed: RepoScopedClumpState) => {
     try {
@@ -460,6 +474,7 @@ function App() {
     if (hasAttemptedAutoRestoreRef.current) return;
     if (repoPath) return;
     if (projects.length === 0) return;
+    if (!initialProjectSnapshotsReady) return;
 
     const storedActiveProjectPath = (() => {
       try {
@@ -474,7 +489,7 @@ function App() {
 
     hasAttemptedAutoRestoreRef.current = true;
     void loadRepo(restoredProject?.path ?? projects[0]!.path);
-  }, [projects, repoPath]);
+  }, [initialProjectSnapshotsReady, projects, repoPath]);
 
   useEffect(() => {
     if (!repoPath) return;
@@ -529,7 +544,7 @@ function App() {
         defaultBranch,
         loaded: true,
         cacheSchemaVersion: previous[repoPath]?.cacheSchemaVersion ?? 1,
-        updatedAtMs: Date.now(),
+        updatedAtMs: previous[repoPath]?.updatedAtMs ?? Date.now(),
       },
     }));
   }, [
@@ -576,11 +591,38 @@ function App() {
   }
 
   useEffect(() => {
-    if (projects.length === 0) return;
-    projects.forEach((project) => {
-      void loadProjectSnapshot(project.path);
-      void invoke('watch_repo', { repoPath: project.path }).catch(console.error);
-    });
+    if (projects.length === 0) {
+      setInitialProjectSnapshotsReady(true);
+      return;
+    }
+
+    let isDisposed = false;
+    const shouldColdRefresh = false;
+    if (shouldColdRefresh) {
+      setInitialProjectSnapshotsReady(false);
+      setProjectTreeLoading(true);
+    }
+
+    void (async () => {
+      try {
+        await Promise.all(
+          projects.map(async (project) => {
+            await loadProjectSnapshot(project.path, shouldColdRefresh);
+            await invoke('watch_repo', { repoPath: project.path }).catch(console.error);
+          }),
+        );
+      } catch (error) {
+        console.error('Failed to preload project snapshots:', error);
+      }
+      if (isDisposed) return;
+      if (shouldColdRefresh) hasHydratedInitialProjectSnapshotsRef.current = true;
+      setInitialProjectSnapshotsReady(true);
+      setProjectTreeLoading(false);
+    })();
+
+    return () => {
+      isDisposed = true;
+    };
   }, [projects]);
 
   useEffect(() => {
@@ -591,7 +633,8 @@ function App() {
       if (isDisposed) return;
       const changedPath = normalizePath(event.payload.repoPath);
       if (!changedPath || changedPath === repoPath) return;
-      void loadProjectSnapshot(changedPath, true);
+      // Keep sidebar/project cache DB-first; active repo incremental updates come from runProjectStatusTick.
+      void loadProjectSnapshot(changedPath, false);
     }).then((fn) => {
       if (isDisposed) fn();
       else unlisten = fn;
@@ -602,6 +645,79 @@ function App() {
       if (unlisten) unlisten();
     };
   }, [repoPath]);
+
+  useEffect(() => {
+    if (mapLoading || isRepoSwitchingRef.current) return;
+    if (projects.length === 0) return;
+    let isDisposed = false;
+    void (async () => {
+      for (const project of projects) {
+        const normalizedPath = normalizePath(project.path);
+        const snapshot = projectSnapshots[normalizedPath];
+        if (!snapshot?.loaded) continue;
+        const layoutKey = [
+          'layout-v2',
+          normalizedPath,
+          mapGridOrientation,
+        ].join('|');
+        if (layoutModelCacheRef.current.has(layoutKey)) continue;
+        const payloadJson = await invoke<string | null>('get_repo_layout_snapshot', {
+          repoPath: normalizedPath,
+          layoutKey,
+        }).catch(() => null);
+        if (isDisposed) return;
+        if (payloadJson) {
+          try {
+            const parsed = JSON.parse(payloadJson);
+            const hydrated = hydrateBranchGridLayoutModel(parsed);
+            layoutModelCacheRef.current.set(layoutKey, hydrated);
+            persistedLayoutKeysRef.current.add(layoutKey);
+            continue;
+          } catch {
+            // fall through to recompute when persisted payload is invalid
+          }
+        }
+        const computedState = deriveRepoVisualState({
+          branches: snapshot.branches,
+          mergeNodes: snapshot.mergeNodes,
+          directCommits: snapshot.directCommits,
+          unpushedDirectCommits: snapshot.unpushedDirectCommits,
+          defaultBranch: snapshot.defaultBranch,
+          branchCommitPreviews: snapshot.branchCommitPreviews,
+          branchParentByName: snapshot.branchParentByName,
+          branchUniqueAheadCounts: snapshot.branchUniqueAheadCounts,
+          checkedOutRef: snapshot.checkedOutRef,
+          stashes: snapshot.stashes,
+          manuallyOpenedClumps: new Set<string>(),
+          manuallyClosedClumps: new Set<string>(),
+          gridSearchQuery: '',
+          gridFocusSha: null,
+          orientation: mapGridOrientation,
+        });
+        const computedLayoutModel = computedState.sharedGridLayoutModel;
+        layoutModelCacheRef.current.set(layoutKey, computedLayoutModel);
+        persistedLayoutKeysRef.current.add(layoutKey);
+        const serialized = JSON.stringify(serializeBranchGridLayoutModel(computedLayoutModel));
+        void invoke('store_repo_layout_snapshot', {
+          repoPath: normalizedPath,
+          layoutKey,
+          payloadJson: serialized,
+        }).catch(() => {
+          persistedLayoutKeysRef.current.delete(layoutKey);
+        });
+        await yieldToPaint();
+        if (isDisposed) return;
+      }
+    })();
+    return () => {
+      isDisposed = true;
+    };
+  }, [
+    projects,
+    projectSnapshots,
+    mapGridOrientation,
+    mapLoading,
+  ]);
 
   function persistProject(project: ProjectRecord) {
     setProjects((previous) => {
@@ -661,7 +777,7 @@ function App() {
         lastOpenedAt: Date.now(),
         branchName: resolvedDefaultBranch,
       });
-      await loadProjectSnapshot(normalizedPath, true);
+      await loadProjectSnapshot(normalizedPath, false);
     } catch (e) {
       setError(e instanceof Error ? e.message : String(e));
     }
@@ -844,9 +960,9 @@ function App() {
     const [nextBranches, nextDirectCommits, nextUnpushedDirect, nextWorktrees, nextStashes] = await Promise.all([
       invoke<Branch[]>('get_branches', { repoPath: path }).catch(() => latestBranchesRef.current),
       invoke<DirectCommit[]>('get_all_repo_commits', { repoPath: path }).catch(() => latestDirectCommitsRef.current),
-      invoke<DirectCommit[]>('get_unpushed_direct_commits', { repoPath: path, branch: resolvedDefaultBranch }).catch(() => unpushedDirectCommits),
-      invoke<WorktreeInfo[]>('list_worktrees', { repoPath: path }).catch(() => worktrees),
-      invoke<GitStashEntry[]>('list_stashes', { repoPath: path }).catch(() => stashes),
+      invoke<DirectCommit[]>('get_unpushed_direct_commits', { repoPath: path, branch: resolvedDefaultBranch }).catch(() => latestUnpushedDirectCommitsRef.current),
+      invoke<WorktreeInfo[]>('list_worktrees', { repoPath: path }).catch(() => latestWorktreesRef.current),
+      invoke<GitStashEntry[]>('list_stashes', { repoPath: path }).catch(() => latestStashesRef.current),
     ]);
 
     const prevBranches = latestBranchesRef.current;
@@ -859,15 +975,15 @@ function App() {
     delta.graphChanged = graphChanged;
 
     const unpushedChanged =
-      getUnpushedDirectSignature(nextUnpushedDirect) !== getUnpushedDirectSignature(unpushedDirectCommits);
+      getUnpushedDirectSignature(nextUnpushedDirect) !== getUnpushedDirectSignature(latestUnpushedDirectCommitsRef.current);
     delta.unpushedChanged = unpushedChanged;
 
     const worktreeChanged =
-      getWorktreesSignature(nextWorktrees) !== getWorktreesSignature(worktrees);
+      getWorktreesSignature(nextWorktrees) !== getWorktreesSignature(latestWorktreesRef.current);
     delta.worktreeChanged = worktreeChanged;
 
     const stashChanged =
-      getStashesSignature(nextStashes) !== getStashesSignature(stashes);
+      getStashesSignature(nextStashes) !== getStashesSignature(latestStashesRef.current);
     delta.stashChanged = stashChanged;
 
     const shouldCheckDirty =
@@ -913,13 +1029,13 @@ function App() {
             return [branchName, shas] as const;
           }),
         )
-      : Object.entries(unpushedCommitShasByBranch);
+      : Object.entries(latestUnpushedCommitShasByBranchRef.current);
     const nextUnpushedShaMap = Object.fromEntries(nextUnpushedShaMapEntries);
 
     const shouldUpdateMergeNodes = graphChanged;
     const nextMergeNodes = shouldUpdateMergeNodes
-      ? await fetchAllMergeNodesForBranches(path, nextBranches, resolvedDefaultBranch).catch(() => mergeNodes)
-      : mergeNodes;
+      ? await fetchAllMergeNodesForBranches(path, nextBranches, resolvedDefaultBranch).catch(() => latestMergeNodesRef.current)
+      : latestMergeNodesRef.current;
 
     startTransition(() => {
       if (graphChanged) {
@@ -932,7 +1048,7 @@ function App() {
       }
       if (shouldUpdateUnpushedShaMap) {
         const nextSig = getUnpushedShaMapSignature(nextUnpushedShaMap);
-        const prevSig = getUnpushedShaMapSignature(unpushedCommitShasByBranch);
+        const prevSig = getUnpushedShaMapSignature(latestUnpushedCommitShasByBranchRef.current);
         if (nextSig !== prevSig) {
           setUnpushedCommitShasByBranch(nextUnpushedShaMap);
         }
@@ -1108,6 +1224,15 @@ function App() {
     if (activeSnapshotSignatureRef.current === signature) {
       return false;
     }
+    latestBranchesRef.current = snapshot.branches;
+    latestDirectCommitsRef.current = snapshot.directCommits;
+    latestCheckedOutRef.current = snapshot.checkedOutRef;
+    latestUnpushedDirectCommitsRef.current = snapshot.unpushedDirectCommits;
+    latestWorktreesRef.current = snapshot.worktrees;
+    latestStashesRef.current = snapshot.stashes;
+    latestUnpushedCommitShasByBranchRef.current = snapshot.unpushedCommitShasByBranch;
+    latestMergeNodesRef.current = snapshot.mergeNodes;
+    latestBranchParentByNameRef.current = snapshot.branchParentByName ?? {};
     activeSnapshotSignatureRef.current = signature;
     setRepoName(snapshot.name || basenameFromPath(path));
     setDefaultBranch(snapshot.defaultBranch || 'main');
@@ -1127,54 +1252,118 @@ function App() {
     return true;
   }
 
+  async function ensureFrozenLayoutReady(
+    targetRepoPath: string,
+    snapshot: RepoVisualSnapshot,
+  ): Promise<{ layoutKey: string; model: BranchGridLayoutModel }> {
+    const layoutKey = [
+      'layout-v2',
+      targetRepoPath,
+      mapGridOrientation,
+    ].join('|');
+    const inMemory = layoutModelCacheRef.current.get(layoutKey);
+    if (inMemory) return { layoutKey, model: inMemory };
+
+    const payloadJson = await invoke<string | null>('get_repo_layout_snapshot', {
+      repoPath: targetRepoPath,
+      layoutKey,
+    }).catch(() => null);
+    if (payloadJson) {
+      try {
+        const parsed = JSON.parse(payloadJson);
+        const hydrated = hydrateBranchGridLayoutModel(parsed);
+        layoutModelCacheRef.current.set(layoutKey, hydrated);
+        persistedLayoutKeysRef.current.add(layoutKey);
+        return { layoutKey, model: hydrated };
+      } catch {
+        // fall through to compute when persisted payload is invalid
+      }
+    }
+
+    const computed = deriveRepoVisualState({
+      branches: snapshot.branches,
+      mergeNodes: snapshot.mergeNodes,
+      directCommits: snapshot.directCommits,
+      unpushedDirectCommits: snapshot.unpushedDirectCommits,
+      defaultBranch: snapshot.defaultBranch,
+      branchCommitPreviews: snapshot.branchCommitPreviews,
+      branchParentByName: snapshot.branchParentByName,
+      branchUniqueAheadCounts: snapshot.branchUniqueAheadCounts,
+      checkedOutRef: snapshot.checkedOutRef,
+      stashes: snapshot.stashes,
+      manuallyOpenedClumps: new Set<string>(),
+      manuallyClosedClumps: new Set<string>(),
+      gridSearchQuery: '',
+      gridFocusSha: null,
+      orientation: mapGridOrientation,
+    }).sharedGridLayoutModel;
+    layoutModelCacheRef.current.set(layoutKey, computed);
+    persistedLayoutKeysRef.current.add(layoutKey);
+    const serialized = JSON.stringify(serializeBranchGridLayoutModel(computed));
+    void invoke('store_repo_layout_snapshot', {
+      repoPath: targetRepoPath,
+      layoutKey,
+      payloadJson: serialized,
+    }).catch(() => {
+      persistedLayoutKeysRef.current.delete(layoutKey);
+    });
+    return { layoutKey, model: computed };
+  }
+
   async function loadRepo(path: string) {
     const requestId = ++loadRepoRequestIdRef.current;
     const normalizedPath = normalizePath(path);
     if (!normalizedPath) return;
+    if (repoPath && sharedGridLayoutCacheKey) {
+      layoutModelCacheRef.current.set(sharedGridLayoutCacheKey, sharedGridLayoutModel);
+    }
+    const targetLayoutKey = [
+      'layout-v2',
+      normalizedPath,
+      mapGridOrientation,
+    ].join('|');
+    const frozenTargetLayout = layoutModelCacheRef.current.get(targetLayoutKey);
+    if (frozenTargetLayout) {
+      setHydratedLayoutModel(frozenTargetLayout);
+      setHydratedLayoutKey(targetLayoutKey);
+    } else {
+      setHydratedLayoutModel(null);
+      setHydratedLayoutKey(null);
+    }
     isRepoSwitchingRef.current = true;
+    setMapLoading(true);
+    setLoading(true);
+    setError(null);
+    await yieldToPaint();
+    if (requestId !== loadRepoRequestIdRef.current) return;
 
     const cachedSnapshot = projectSnapshots[normalizedPath];
     if (cachedSnapshot?.loaded) {
-      try {
-      const quickState = await invoke<RepoQuickState>('get_repo_quick_state', {
-          repoPath: normalizedPath,
-        });
-        if (requestId !== loadRepoRequestIdRef.current) return;
-        const nextQuickSignature = quickStateSignature(quickState);
-        const cachedQuickSignature =
-          projectQuickStateRef.current[normalizedPath] ??
-          (cachedSnapshot ? quickStateSignature(quickStateFromSnapshot(normalizedPath, cachedSnapshot)) : null);
-        if (cachedQuickSignature === nextQuickSignature) {
-          setError(null);
-          projectQuickStateRef.current = {
-            ...projectQuickStateRef.current,
-            [normalizedPath]: nextQuickSignature,
-          };
-          applySnapshotToActiveState(normalizedPath, cachedSnapshot);
-          persistProject({
-            path: normalizedPath,
-            name: cachedSnapshot.name || basenameFromPath(normalizedPath),
-            lastOpenedAt: Date.now(),
-            branchName: cachedSnapshot.defaultBranch,
-          });
-          setMapLoading(false);
-          setLoading(false);
-          void fetchGitHubData(normalizedPath);
-          isRepoSwitchingRef.current = false;
-          return;
-        }
-        projectQuickStateRef.current = {
-          ...projectQuickStateRef.current,
-          [normalizedPath]: nextQuickSignature,
-        };
-      } catch {
-        // If the cheap check fails, fall back to the full refresh path below.
-      }
+      projectQuickStateRef.current = {
+        ...projectQuickStateRef.current,
+        [normalizedPath]: quickStateSignature(quickStateFromSnapshot(normalizedPath, cachedSnapshot)),
+      };
+      const frozen = await ensureFrozenLayoutReady(normalizedPath, cachedSnapshot);
+      if (requestId !== loadRepoRequestIdRef.current) return;
+      setHydratedLayoutModel(frozen.model);
+      setHydratedLayoutKey(frozen.layoutKey);
+      applySnapshotToActiveState(normalizedPath, cachedSnapshot);
+      persistProject({
+        path: normalizedPath,
+        name: cachedSnapshot.name || basenameFromPath(normalizedPath),
+        lastOpenedAt: Date.now(),
+        branchName: cachedSnapshot.defaultBranch,
+      });
+      await yieldToPaint();
+      await yieldToPaint();
+      if (requestId !== loadRepoRequestIdRef.current) return;
+      setMapLoading(false);
+      setLoading(false);
+      void fetchGitHubData(normalizedPath);
+      // If repo internals changed, the watcher/tick path will reconcile in background.
+      isRepoSwitchingRef.current = false;
+      return;
     }
-
-    setLoading(true);
-    setMapLoading(true);
-    setError(null);
 
     // Yield to the browser paint cycle so the map shell and loader are painted
     await new Promise((resolve) => setTimeout(resolve, 15));
@@ -1192,9 +1381,15 @@ function App() {
 
       const snapshot = await invoke<RepoVisualSnapshot>('get_repo_visual_snapshot', {
         repoPath: normalizedPath,
-        forceRefresh: true,
+        // Prefer the persisted snapshot on project switch to render immediately,
+        // then let the watcher/tick path reconcile any newer git state.
+        forceRefresh: false,
       });
       if (requestId !== loadRepoRequestIdRef.current) return;
+      const frozen = await ensureFrozenLayoutReady(normalizedPath, snapshot);
+      if (requestId !== loadRepoRequestIdRef.current) return;
+      setHydratedLayoutModel(frozen.model);
+      setHydratedLayoutKey(frozen.layoutKey);
       upsertProjectSnapshot(normalizedPath, snapshot);
       projectFingerprintRef.current = {
         ...projectFingerprintRef.current,
@@ -1211,6 +1406,9 @@ function App() {
         lastOpenedAt: Date.now(),
         branchName: def,
       });
+      await yieldToPaint();
+      await yieldToPaint();
+      if (requestId !== loadRepoRequestIdRef.current) return;
       setMapLoading(false);
       setLoading(false); // unblock the landing button
 
@@ -1303,6 +1501,26 @@ function App() {
   useEffect(() => {
     latestCheckedOutRef.current = checkedOutRef;
   }, [checkedOutRef]);
+
+  useEffect(() => {
+    latestUnpushedDirectCommitsRef.current = unpushedDirectCommits;
+  }, [unpushedDirectCommits]);
+
+  useEffect(() => {
+    latestWorktreesRef.current = worktrees;
+  }, [worktrees]);
+
+  useEffect(() => {
+    latestStashesRef.current = stashes;
+  }, [stashes]);
+
+  useEffect(() => {
+    latestUnpushedCommitShasByBranchRef.current = unpushedCommitShasByBranch;
+  }, [unpushedCommitShasByBranch]);
+
+  useEffect(() => {
+    latestMergeNodesRef.current = mergeNodes;
+  }, [mergeNodes]);
 
   useEffect(() => {
     latestBranchParentByNameRef.current = branchParentByName;
@@ -1420,11 +1638,15 @@ function App() {
       else unlisten = fn;
     }).catch(console.error);
 
-    void runTick(true);
+    const initialProbeTimeoutId = window.setTimeout(() => {
+      if (isMapInteractingRef.current) return;
+      void runFrozenProbe();
+    }, 250);
     scheduleBackgroundProbe();
 
     return () => {
       isDisposed = true;
+      window.clearTimeout(initialProbeTimeoutId);
       if (pollTimeoutId != null) window.clearTimeout(pollTimeoutId);
       if (unlisten) unlisten();
     };
@@ -2494,9 +2716,73 @@ function App() {
       ?? buildLanes(enrichedBranches, defaultBranch, enrichedBranchCommitPreviews, enrichedBranchParentByName),
     [enrichedBranches, defaultBranch, enrichedBranchCommitPreviews, enrichedBranchParentByName, laneByBranch],
   );
-  const baseSharedGridLayoutModel: BranchGridLayoutModel = useMemo(
-    () =>
-      computeBranchGridLayout({
+  const sharedGridLayoutCacheKey = useMemo(() => {
+    if (!repoPath) return null;
+    return [
+      'layout-v2',
+      repoPath,
+      mapGridOrientation,
+    ].join('|');
+  }, [
+    repoPath,
+    mapGridOrientation,
+  ]);
+  useEffect(() => {
+    if (!repoPath || !sharedGridLayoutCacheKey) {
+      setHydratedLayoutModel(null);
+      setHydratedLayoutKey(null);
+      return;
+    }
+    const inMemory = layoutModelCacheRef.current.get(sharedGridLayoutCacheKey);
+    if (inMemory) {
+      setHydratedLayoutModel(inMemory);
+      setHydratedLayoutKey(sharedGridLayoutCacheKey);
+      persistedLayoutKeysRef.current.add(sharedGridLayoutCacheKey);
+      return;
+    }
+    let disposed = false;
+    setHydratedLayoutModel(null);
+    setHydratedLayoutKey(null);
+    void invoke<string | null>('get_repo_layout_snapshot', {
+      repoPath,
+      layoutKey: sharedGridLayoutCacheKey,
+    })
+      .then((payloadJson) => {
+        if (disposed || !payloadJson) return;
+        const parsed = JSON.parse(payloadJson);
+        const hydrated = hydrateBranchGridLayoutModel(parsed);
+        layoutModelCacheRef.current.set(sharedGridLayoutCacheKey, hydrated);
+        persistedLayoutKeysRef.current.add(sharedGridLayoutCacheKey);
+        setHydratedLayoutModel(hydrated);
+        setHydratedLayoutKey(sharedGridLayoutCacheKey);
+      })
+      .catch(() => {
+        if (disposed) return;
+        setHydratedLayoutModel(null);
+        setHydratedLayoutKey(null);
+      });
+    return () => {
+      disposed = true;
+    };
+  }, [repoPath, sharedGridLayoutCacheKey]);
+  const sharedGridLayoutModel: BranchGridLayoutModel = useMemo(
+    () => {
+      if (
+        gridSearchQuery.trim().length === 0 &&
+        sharedGridLayoutCacheKey &&
+        hydratedLayoutKey === sharedGridLayoutCacheKey &&
+        hydratedLayoutModel
+      ) {
+        return hydratedLayoutModel;
+      }
+      if (mapLoading) {
+        const fromCache = sharedGridLayoutCacheKey
+          ? layoutModelCacheRef.current.get(sharedGridLayoutCacheKey) ?? null
+          : null;
+        if (fromCache) return fromCache;
+        if (lastResolvedLayoutModelRef.current) return lastResolvedLayoutModelRef.current;
+      }
+      return computeBranchGridLayout({
         lanes: sharedGridLanes,
         branches: enrichedBranches,
         mergeNodes,
@@ -2513,7 +2799,8 @@ function App() {
         gridFocusSha,
         checkedOutRef: visualCheckedOutRef ?? null,
         orientation: mapGridOrientation,
-      }),
+      });
+    },
     [
       sharedGridLanes,
       enrichedBranches,
@@ -2531,64 +2818,30 @@ function App() {
       visualCheckedOutRef?.headSha ?? null,
       visualCheckedOutRef?.branchName ?? null,
       mapGridOrientation,
-    ],
-  );
-  const tempSearchOpenClusterKey = useMemo(() => {
-    if (!gridFocusSha) return null;
-    return baseSharedGridLayoutModel.clusterKeyByCommitId.get(gridFocusSha) ?? null;
-  }, [baseSharedGridLayoutModel.clusterKeyByCommitId, gridFocusSha]);
-  const effectiveManuallyOpenedGridClumps = useMemo(() => {
-    if (!tempSearchOpenClusterKey) return manuallyOpenedGridClumps;
-    if (manuallyClosedGridClumps.has(tempSearchOpenClusterKey)) return manuallyOpenedGridClumps;
-    const next = new Set(manuallyOpenedGridClumps);
-    next.add(tempSearchOpenClusterKey);
-    return next;
-  }, [manuallyClosedGridClumps, manuallyOpenedGridClumps, tempSearchOpenClusterKey]);
-  const effectiveManuallyClosedGridClumps = useMemo(() => {
-    if (!tempSearchOpenClusterKey) return manuallyClosedGridClumps;
-    const next = new Set(manuallyClosedGridClumps);
-    next.delete(tempSearchOpenClusterKey);
-    return next;
-  }, [manuallyClosedGridClumps, tempSearchOpenClusterKey]);
-  const sharedGridLayoutModel: BranchGridLayoutModel = useMemo(
-    () =>
-      computeBranchGridLayout({
-        lanes: sharedGridLanes,
-        branches: enrichedBranches,
-        mergeNodes,
-        directCommits: enrichedDirectCommits,
-        unpushedDirectCommits: enrichedUnpushedDirectCommits,
-        defaultBranch,
-        branchCommitPreviews: enrichedBranchCommitPreviews,
-        branchParentByName: enrichedBranchParentByName,
-        branchUniqueAheadCounts: enrichedBranchUniqueAheadCounts,
-        manuallyOpenedClumps: effectiveManuallyOpenedGridClumps,
-        manuallyClosedClumps: effectiveManuallyClosedGridClumps,
-        isDebugOpen: false,
-        gridSearchQuery,
-        gridFocusSha,
-        checkedOutRef: visualCheckedOutRef ?? null,
-        orientation: mapGridOrientation,
-      }),
-    [
-      sharedGridLanes,
-      enrichedBranches,
-      mergeNodes,
-      enrichedDirectCommits,
-      enrichedUnpushedDirectCommits,
-      defaultBranch,
-      enrichedBranchCommitPreviews,
-      enrichedBranchParentByName,
-      enrichedBranchUniqueAheadCounts,
-      effectiveManuallyOpenedGridClumps,
-      effectiveManuallyClosedGridClumps,
       gridSearchQuery,
-      gridFocusSha,
-      visualCheckedOutRef?.headSha ?? null,
-      visualCheckedOutRef?.branchName ?? null,
-      mapGridOrientation,
+      sharedGridLayoutCacheKey,
+      hydratedLayoutKey,
+      hydratedLayoutModel,
+      mapLoading,
     ],
   );
+  useEffect(() => {
+    lastResolvedLayoutModelRef.current = sharedGridLayoutModel;
+  }, [sharedGridLayoutModel]);
+  useEffect(() => {
+    if (!repoPath || !sharedGridLayoutCacheKey) return;
+    layoutModelCacheRef.current.set(sharedGridLayoutCacheKey, sharedGridLayoutModel);
+    if (persistedLayoutKeysRef.current.has(sharedGridLayoutCacheKey)) return;
+    persistedLayoutKeysRef.current.add(sharedGridLayoutCacheKey);
+    const payloadJson = JSON.stringify(serializeBranchGridLayoutModel(sharedGridLayoutModel));
+    void invoke('store_repo_layout_snapshot', {
+      repoPath,
+      layoutKey: sharedGridLayoutCacheKey,
+      payloadJson,
+    }).catch(() => {
+      persistedLayoutKeysRef.current.delete(sharedGridLayoutCacheKey);
+    });
+  }, [repoPath, sharedGridLayoutCacheKey, sharedGridLayoutModel]);
 
   useEffect(() => {
     try {
@@ -2729,8 +2982,8 @@ function App() {
               showCommits={false}
               manuallyOpenedClumpsByProject={manuallyOpenedGridClumpsByRepo}
               manuallyClosedClumpsByProject={manuallyClosedGridClumpsByRepo}
-              manuallyOpenedClumps={effectiveManuallyOpenedGridClumps}
-              manuallyClosedClumps={effectiveManuallyClosedGridClumps}
+              manuallyOpenedClumps={manuallyOpenedGridClumps}
+              manuallyClosedClumps={manuallyClosedGridClumps}
               setManuallyOpenedClumps={setManuallyOpenedGridClumps}
               setManuallyClosedClumps={setManuallyClosedGridClumps}
               gridLayoutModel={sharedGridLayoutModel}
@@ -2766,6 +3019,7 @@ function App() {
                 gridSearchJumpToken={gridSearchJumpToken}
                 gridSearchJumpDirection={gridSearchJumpDirection}
                 gridFocusSha={gridFocusSha}
+                isLoading={mapLoading || loading}
                 onGridSearchResultCountChange={setGridSearchResultCount}
                 onGridSearchResultIndexChange={setGridSearchResultIndex}
                 onGridSearchFocusChange={setGridFocusSha}
@@ -2799,8 +3053,8 @@ function App() {
                 isDebugOpen={isGridDebugOpen}
                 onDebugClose={() => setIsGridDebugOpen(false)}
                 onInteractionChange={setIsMapInteracting}
-                manuallyOpenedClumps={effectiveManuallyOpenedGridClumps}
-                manuallyClosedClumps={effectiveManuallyClosedGridClumps}
+                manuallyOpenedClumps={manuallyOpenedGridClumps}
+                manuallyClosedClumps={manuallyClosedGridClumps}
                 setManuallyOpenedClumps={setManuallyOpenedGridClumps}
                 setManuallyClosedClumps={setManuallyClosedGridClumps}
                 layoutModel={sharedGridLayoutModel}

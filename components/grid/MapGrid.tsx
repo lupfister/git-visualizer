@@ -138,6 +138,7 @@ export default function BranchGridMap({
   manuallyClosedClumps: controlledManuallyClosedClumps,
   setManuallyOpenedClumps: controlledSetManuallyOpenedClumps,
   setManuallyClosedClumps: controlledSetManuallyClosedClumps,
+  layoutModel: providedLayoutModel,
   gridHudProps,
 }: Props) {
   const scrollContainerRef = useRef<HTMLDivElement | null>(null);
@@ -196,33 +197,10 @@ export default function BranchGridMap({
     handleWheel,
   } = useMapGridCamera({ mapPadHostRef, transformLayerRef });
 
-  const lanes = useMemo(
-    () => buildLanes(branches, defaultBranch, branchCommitPreviews, branchParentByName),
-    [branches, defaultBranch, branchCommitPreviews, branchParentByName],
-  );
-  const computedLayoutModel = useMemo(
-    () =>
-      computeBranchGridLayout({
-        lanes,
-        branches,
-        mergeNodes,
-        directCommits,
-        unpushedDirectCommits,
-        unpushedCommitShasByBranch,
-        defaultBranch,
-        branchCommitPreviews,
-        branchParentByName,
-        branchUniqueAheadCounts,
-        manuallyOpenedClumps,
-        manuallyClosedClumps,
-        isDebugOpen,
-        gridSearchQuery,
-        gridFocusSha,
-        checkedOutRef: checkedOutRef ?? null,
-        orientation,
-        nodePositionOverrides,
-      }),
-    [
+  const computedLayoutModel = useMemo(() => {
+    if (providedLayoutModel) return providedLayoutModel;
+    const lanes = buildLanes(branches, defaultBranch, branchCommitPreviews, branchParentByName);
+    return computeBranchGridLayout({
       lanes,
       branches,
       mergeNodes,
@@ -238,55 +216,32 @@ export default function BranchGridMap({
       isDebugOpen,
       gridSearchQuery,
       gridFocusSha,
-      checkedOutRef?.headSha ?? null,
-      checkedOutRef?.branchName ?? null,
+      checkedOutRef: checkedOutRef ?? null,
       orientation,
       nodePositionOverrides,
-    ],
-  );
-  const layoutModel: BranchGridLayoutModel = computedLayoutModel;
-  const debugLayoutModel: BranchGridLayoutModel = useMemo(
-    () =>
-      computeBranchGridLayout({
-        lanes,
-        branches,
-        mergeNodes,
-        directCommits,
-        unpushedDirectCommits,
-        defaultBranch,
-        branchCommitPreviews,
-        branchParentByName,
-        branchUniqueAheadCounts,
-        manuallyOpenedClumps,
-        manuallyClosedClumps,
-        isDebugOpen,
-        gridSearchQuery,
-        gridFocusSha,
-        checkedOutRef: checkedOutRef ?? null,
-        orientation,
-        nodePositionOverrides,
-      }),
-    [
-      lanes,
-      branches,
-      mergeNodes,
-      directCommits,
-      unpushedDirectCommits,
-      defaultBranch,
-      branchCommitPreviews,
-      branchParentByName,
-      branchUniqueAheadCounts,
-      manuallyOpenedClumps,
-      manuallyClosedClumps,
-      isDebugOpen,
-      gridSearchQuery,
-      gridFocusSha,
-      checkedOutRef?.headSha ?? null,
-      checkedOutRef?.branchName ?? null,
-      orientation,
-      nodePositionOverrides,
-    ],
-  );
+    });
+  }, [
+    providedLayoutModel,
+    branches,
+    mergeNodes,
+    directCommits,
+    unpushedDirectCommits,
+    unpushedCommitShasByBranch,
+    defaultBranch,
+    branchCommitPreviews,
+    branchParentByName,
+    branchUniqueAheadCounts,
+    manuallyOpenedClumps,
+    manuallyClosedClumps,
+    isDebugOpen,
+    gridSearchQuery,
+    gridFocusSha,
+    checkedOutRef?.headSha ?? null,
+    checkedOutRef?.branchName ?? null,
+    orientation,
+    nodePositionOverrides,
+  ]);
+  const resolvedLayoutModel: BranchGridLayoutModel = computedLayoutModel;
 
   const {
     allCommits,
@@ -313,7 +268,7 @@ export default function BranchGridMap({
     crossBranchOutgoingShas,
     branchBaseCommitByName,
     pointFormatter,
-  } = layoutModel;
+  } = resolvedLayoutModel;
 
   const isGridSearchActive = Boolean(normalizedSearchQuery);
 
@@ -1116,8 +1071,8 @@ export default function BranchGridMap({
         renderedConnectorCount={renderedConnectorCount}
         totalConnectorCount={connectors.length}
         mapGridCullViewportInsetScreenPx={MAP_GRID_CULL_VIEWPORT_INSET_SCREEN_PX}
-        debugRows={debugLayoutModel.debugRows}
-        branchDebugRows={debugLayoutModel.branchDebugRows}
+        debugRows={resolvedLayoutModel.debugRows}
+        branchDebugRows={resolvedLayoutModel.branchDebugRows}
         connectorDecisions={connectorDecisions}
       />
       {gridHudProps ? (

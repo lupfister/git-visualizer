@@ -240,6 +240,13 @@ fn open_visual_cache_connection() -> Result<Connection, String> {
             updated_at_ms INTEGER NOT NULL,
             schema_version INTEGER NOT NULL
         );
+        CREATE TABLE IF NOT EXISTS repo_layout_cache (
+            repo_path TEXT NOT NULL,
+            layout_key TEXT NOT NULL,
+            payload_json TEXT NOT NULL,
+            updated_at_ms INTEGER NOT NULL,
+            PRIMARY KEY (repo_path, layout_key)
+        );
         ",
     )
     .map_err(|e| format!("Failed to initialize cache schema: {e}"))?;
@@ -288,6 +295,35 @@ fn store_repo_visual_snapshot(snapshot: &RepoVisualSnapshot) -> Result<(), Strin
         ],
     )
     .map_err(|e| format!("Failed to upsert repo snapshot: {e}"))?;
+    Ok(())
+}
+
+fn load_cached_repo_layout_snapshot(repo_path: &str, layout_key: &str) -> Result<Option<String>, String> {
+    let conn = open_visual_cache_connection()?;
+    let payload: Option<String> = conn
+        .query_row(
+            "SELECT payload_json FROM repo_layout_cache WHERE repo_path = ?1 AND layout_key = ?2",
+            params![repo_path, layout_key],
+            |row| row.get(0),
+        )
+        .optional()
+        .map_err(|e| format!("Failed to read layout cache row: {e}"))?;
+    Ok(payload)
+}
+
+fn upsert_repo_layout_snapshot(repo_path: &str, layout_key: &str, payload_json: &str) -> Result<(), String> {
+    let conn = open_visual_cache_connection()?;
+    conn.execute(
+        "
+        INSERT INTO repo_layout_cache (repo_path, layout_key, payload_json, updated_at_ms)
+        VALUES (?1, ?2, ?3, ?4)
+        ON CONFLICT(repo_path, layout_key) DO UPDATE SET
+            payload_json = excluded.payload_json,
+            updated_at_ms = excluded.updated_at_ms
+        ",
+        params![repo_path, layout_key, payload_json, Utc::now().timestamp_millis()],
+    )
+    .map_err(|e| format!("Failed to upsert layout snapshot: {e}"))?;
     Ok(())
 }
 
@@ -985,6 +1021,16 @@ fn get_repo_visual_snapshot(repo_path: String, force_refresh: Option<bool>) -> R
     let snapshot = compute_repo_visual_snapshot(&repo_path)?;
     store_repo_visual_snapshot(&snapshot)?;
     Ok(snapshot)
+}
+
+#[tauri::command(rename_all = "camelCase")]
+fn get_repo_layout_snapshot(repo_path: String, layout_key: String) -> Result<Option<String>, String> {
+    load_cached_repo_layout_snapshot(&repo_path, &layout_key)
+}
+
+#[tauri::command(rename_all = "camelCase")]
+fn store_repo_layout_snapshot(repo_path: String, layout_key: String, payload_json: String) -> Result<(), String> {
+    upsert_repo_layout_snapshot(&repo_path, &layout_key, &payload_json)
 }
 
 #[tauri::command(rename_all = "camelCase")]
@@ -4676,6 +4722,8 @@ pub fn run() {
             start_window_drag,
             get_branches,
             get_repo_visual_snapshot,
+            get_repo_layout_snapshot,
+            store_repo_layout_snapshot,
             get_repo_quick_state,
             get_repo_refresh_fingerprint,
             get_remote_branch_head_sha,

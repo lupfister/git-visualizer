@@ -571,7 +571,7 @@ export default function DenseBranchSidebar({
     } catch {
       // ignore storage failures
     }
-    return new Set(projects.map((project) => project.path));
+    return new Set<string>();
   });
   const [expandedBranchNamesByProject, setExpandedBranchNamesByProject] = useState<Record<string, Set<string>>>({});
   const [localManuallyOpenedClumps, setLocalManuallyOpenedClumps] = useState<Set<string>>(() => new Set());
@@ -893,6 +893,11 @@ export default function DenseBranchSidebar({
     }>();
 
     for (const project of projects) {
+      const isActiveProject = pathsProbablyEqual(project.path, activeProjectPath);
+      const isExpandedProject = expandedProjects.has(project.path);
+      if (!isActiveProject && !isExpandedProject) {
+        continue;
+      }
       const visualState = deriveRepoVisualState({
         branches: project.branches,
         mergeNodes: project.mergeNodes,
@@ -992,7 +997,7 @@ export default function DenseBranchSidebar({
     }
 
     return next;
-  }, [activeProjectPath, manuallyClosedClumpsByProject, manuallyOpenedClumpsByProject, projects]);
+  }, [activeProjectPath, expandedProjects, manuallyClosedClumpsByProject, manuallyOpenedClumpsByProject, projects]);
 
   const renderProject = (
     project: Props['projects'][number],

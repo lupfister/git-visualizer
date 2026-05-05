@@ -233,6 +233,7 @@ export default function BranchGridMapView({
             mergeNodes={mergeNodes}
             directCommits={directCommits}
             unpushedDirectCommits={unpushedDirectCommits}
+            isLoading={isLoading}
             defaultBranch={defaultBranch}
             branchCommitPreviews={branchCommitPreviews}
             branchParentByName={branchParentByName}
