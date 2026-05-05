@@ -265,7 +265,7 @@ export default function MapGridCanvas({
             const isStashedCommit =
               node.commit.kind === 'stash' || node.commit.id.startsWith('STASH:');
             const stashIndexMatch = /^STASH:(\d+)$/.exec(node.commit.id);
-            const stashHeaderLabel = stashIndexMatch ? `Stash:${stashIndexMatch[1]}` : null;
+            const stashHeaderLabel = stashIndexMatch ? `Stash ${Number.parseInt(stashIndexMatch[1], 10) + 1}` : null;
             const stashBodyMessage = isStashedCommit
               ? (node.commit.message.trim() && node.commit.message.trim() !== 'git-visualizer'
                   ? node.commit.message

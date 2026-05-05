@@ -138,7 +138,7 @@ export function placeStashNode(
     kind: 'stash',
   };
 
-  const fakeBranchName = `*Stash:${stash.index}`;
+  const fakeBranchName = `Stash ${stash.index + 1}`;
   const fakeBranch: Branch = {
     name: fakeBranchName,
     commitsAhead: 1,

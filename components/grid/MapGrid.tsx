@@ -3,6 +3,7 @@ import {
   useEffect,
   useLayoutEffect,
   useMemo,
+  useId,
   useRef,
   useState,
 } from 'react';
@@ -18,6 +19,7 @@ import {
   type NodePositionOverrides,
   type Node,
 } from './LayoutGrid';
+import { GitMerge } from 'lucide-react';
 import { computeBranchGridLayout } from './branchGridLayoutModel';
 import type { BranchGridLayoutModel } from './branchGridLayoutModel';
 import CommitControls from './CommitControls';
@@ -181,6 +183,7 @@ export default function BranchGridMap({
   const [viewportClientSize, setViewportClientSize] = useState<{ width: number; height: number } | null>(null);
   const [isCompactHud, setIsCompactHud] = useState(false);
   const [hideSearchBar, setHideSearchBar] = useState(false);
+  const mergeSliderScopeId = useId();
   const {
     isCameraMoving,
     renderedZoom,
@@ -514,15 +517,16 @@ export default function BranchGridMap({
   );
 
   const selectedCommitTargetOption = useMemo(() => {
+    const isMergeableTargetBranch = (name: string) => !/^stash\b/i.test(name.trim());
     const byBranch = new Map<string, { targetSha: string; targetBranch: string; sourceRefs: string[] }>();
     for (const targetSha of selectedVisibleCommitShas) {
-      const candidates = branchCandidatesForCommit(targetSha);
+      const candidates = branchCandidatesForCommit(targetSha).filter(isMergeableTargetBranch);
       if (candidates.length === 0) continue;
       const targetBranch = candidates.find((name) => name !== defaultBranch) ?? candidates[0];
       const sourceRefs = selectedVisibleCommitShas
         .filter((sha) => sha !== targetSha)
         .filter((sha) => {
-          const sourceCandidates = new Set(branchCandidatesForCommit(sha));
+          const sourceCandidates = new Set(branchCandidatesForCommit(sha).filter(isMergeableTargetBranch));
           return !sourceCandidates.has(targetBranch);
         });
       byBranch.set(targetBranch, { targetSha, targetBranch, sourceRefs });
@@ -539,6 +543,26 @@ export default function BranchGridMap({
       sources: selected?.sourceRefs ?? [],
     };
   }, [selectedVisibleCommitShas, branchCandidatesForCommit, defaultBranch, mergeTargetCommitSha]);
+
+  const hasNonMergeableSelection = useMemo(() => {
+    const isMergeableTargetBranch = (name: string) => !/^stash\b/i.test(name.trim());
+    return selectedVisibleCommitShas.some((sha) => {
+      const candidates = branchCandidatesForCommit(sha);
+      return candidates.length > 0 && candidates.filter(isMergeableTargetBranch).length === 0;
+    });
+  }, [selectedVisibleCommitShas, branchCandidatesForCommit]);
+
+  const shouldShowMergeMenu =
+    selectedVisibleCommitShas.length > 1 &&
+    selectedCommitTargetOption.options.length > 0 &&
+    !!selectedCommitTargetOption.targetBranch &&
+    selectedCommitTargetOption.sources.length > 0 &&
+    !hasNonMergeableSelection &&
+    !!onMergeRefsIntoBranch;
+  const [mergeSliderAnimate, setMergeSliderAnimate] = useState(false);
+  useEffect(() => {
+    if (shouldShowMergeMenu) setMergeSliderAnimate(false);
+  }, [shouldShowMergeMenu, selectedVisibleCommitShas]);
 
   const pushableBranchByName = useMemo(() => {
     const entries = [
@@ -1140,6 +1164,7 @@ export default function BranchGridMap({
                   removeWorktreeInProgress={removeWorktreeInProgress}
                   setCommitDialogOpen={setCommitDialogOpen}
                   setNewBranchDialogOpen={setNewBranchDialogOpen}
+                  hideMergeControls
                 />
               </div>
             <div className="flex min-w-0 shrink-0 items-center justify-end gap-2">
@@ -1211,6 +1236,65 @@ export default function BranchGridMap({
             ) : null}
           </div>
         </header>
+      ) : null}
+      {shouldShowMergeMenu ? (
+        <div className="pointer-events-none absolute bottom-2.25 left-1/2 z-[80] -translate-x-1/2">
+          <div className="pointer-events-auto inline-flex w-fit flex-nowrap items-center gap-2.25">
+            <div className="inline-flex h-7 items-center rounded-md border border-border bg-background/95 pl-[2px] pr-[4px] backdrop-blur-sm">
+              <span className="px-2 text-[11px] font-medium text-foreground">Merge to...</span>
+              <div className="relative inline-flex h-5 items-center rounded-[2px] bg-muted/30 p-0.5">
+                <div className="absolute inset-0.5 overflow-hidden rounded-[1px]">
+                  <div
+                    className={`h-full rounded-[1px] bg-border ${mergeSliderAnimate ? 'transition-all duration-200 ease-in-out' : ''}`}
+                    style={{
+                      width: `var(--${mergeSliderScopeId}-active-width, 0px)`,
+                      transform: `translateX(var(--${mergeSliderScopeId}-active-offset, 0px))`,
+                    }}
+                  />
+                </div>
+                {selectedCommitTargetOption.options.map((option) => {
+                  const isActive = option.targetBranch === selectedCommitTargetOption.targetBranch;
+                  return (
+                    <button
+                      key={`merge-${option.targetBranch}`}
+                      type="button"
+                      onClick={() => {
+                        if (option.targetSha !== mergeTargetCommitSha) setMergeSliderAnimate(true);
+                        setMergeTargetCommitSha(option.targetSha);
+                      }}
+                      ref={(node) => {
+                        if (!node) return;
+                        const parent = node.parentElement;
+                        if (!parent) return;
+                        if (!isActive) return;
+                        const nodeRect = node.getBoundingClientRect();
+                        const parentRect = parent.getBoundingClientRect();
+                        parent.style.setProperty(`--${mergeSliderScopeId}-active-width`, `${nodeRect.width}px`);
+                        parent.style.setProperty(`--${mergeSliderScopeId}-active-offset`, `${nodeRect.left - parentRect.left}px`);
+                      }}
+                      className={`relative z-10 h-4.5 px-2 text-[11px] font-medium transition-colors ${
+                        isActive ? 'text-foreground' : 'text-muted-foreground hover:text-foreground'
+                      }`}
+                    >
+                      {option.targetBranch}
+                    </button>
+                  );
+                })}
+              </div>
+            </div>
+            <button
+              type="button"
+              onClick={() =>
+                void onMergeRefsIntoBranch(selectedCommitTargetOption.sources, selectedCommitTargetOption.targetBranch!)
+              }
+              disabled={selectedCommitTargetOption.sources.length === 0 || mergeInProgress}
+              className="inline-flex h-7 items-center rounded-md border border-border bg-background px-2 text-[11px] font-medium text-foreground transition-colors hover:bg-muted hover:text-foreground disabled:cursor-not-allowed disabled:opacity-50"
+            >
+              <GitMerge className="mr-1.5 h-3.5 w-3.5 shrink-0" />
+              {mergeInProgress ? 'Merging...' : 'Confirm'}
+            </button>
+          </div>
+        </div>
       ) : null}
       {isLoading || allCommits.length === 0 ? (
         <MapGridLoadingState />

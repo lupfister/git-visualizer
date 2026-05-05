@@ -52,6 +52,7 @@ type Props = {
   removeWorktreeInProgress: boolean;
   setCommitDialogOpen: (open: boolean) => void;
   setNewBranchDialogOpen: (open: boolean) => void;
+  hideMergeControls?: boolean;
 };
 
 export default function CommitControls({
@@ -87,6 +88,7 @@ export default function CommitControls({
   removeWorktreeInProgress,
   setCommitDialogOpen,
   setNewBranchDialogOpen,
+  hideMergeControls = false,
 }: Props) {
   const hasSelection = selectedVisibleCommitShas.length > 0;
   const hasWorkingTreeSelection =
@@ -269,7 +271,7 @@ export default function CommitControls({
           </button>
         </div>
 
-        {selectedVisibleCommitShas.length > 1 && selectedCommitTargetOption.options.length > 0 && selectedCommitTargetOption.targetBranch && onMergeRefsIntoBranch ? (
+        {!hideMergeControls && selectedVisibleCommitShas.length > 1 && selectedCommitTargetOption.options.length > 0 && selectedCommitTargetOption.targetBranch && onMergeRefsIntoBranch ? (
           <div className="pointer-events-auto inline-flex w-fit flex-nowrap items-center gap-[9px] rounded-md border border-border bg-background px-2 py-1">
           <span className="px-1 text-[11px] font-medium text-foreground">Merge to</span>
           {selectedCommitTargetOption.options.map((option) => {
