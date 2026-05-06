@@ -2,6 +2,7 @@ import { Branch, BranchCommitPreview, BranchPromptMeta, CheckedOutRef, DirectCom
 import type { Dispatch, SetStateAction } from 'react';
 import BranchGridMap from './MapGrid';
 import type { BranchGridLayoutModel } from './branchGridLayoutModel';
+import type { GpuRenderMode, WebGLRenderMetrics } from './webgl/types';
 
 export type ViewMode = 'time' | 'grid';
 export type OrientationMode = 'vertical' | 'horizontal';
@@ -69,6 +70,8 @@ interface Props {
   setManuallyOpenedClumps?: Dispatch<SetStateAction<Set<string>>>;
   setManuallyClosedClumps?: Dispatch<SetStateAction<Set<string>>>;
   layoutModel?: BranchGridLayoutModel;
+  rendererMode?: GpuRenderMode;
+  onRenderMetrics?: (metrics: WebGLRenderMetrics) => void;
   gridHudProps?: {
     githubAuthStatus: { ghAvailable: boolean; authenticated: boolean } | null;
     githubAuthLoading: boolean;
@@ -81,6 +84,8 @@ interface Props {
     setGridSearchJumpToken: (token: number | ((token: number) => number)) => void;
     mapGridOrientation: OrientationMode;
     setMapGridOrientation: (orientation: OrientationMode) => void;
+    rendererMode: GpuRenderMode;
+    setRendererMode: (mode: GpuRenderMode) => void;
     setIsGridDebugOpen: (open: boolean | ((open: boolean) => boolean)) => void;
     githubAuthMessage: string | null;
     commitSwitchFeedback: { kind: 'success' | 'error'; message: string } | null;
@@ -149,6 +154,8 @@ export default function BranchGridMapView({
   setManuallyOpenedClumps,
   setManuallyClosedClumps,
   layoutModel,
+  rendererMode = 'legacy',
+  onRenderMetrics,
   gridHudProps,
 }: Props) {
   const openPRBranchNames = new Set(openPRs.map(p => p.branchName));
@@ -223,6 +230,8 @@ export default function BranchGridMapView({
             setManuallyOpenedClumps={setManuallyOpenedClumps}
             setManuallyClosedClumps={setManuallyClosedClumps}
             layoutModel={layoutModel}
+            rendererMode={rendererMode}
+            onRenderMetrics={onRenderMetrics}
             gridHudProps={gridHudProps}
           />
         </div>
@@ -252,6 +261,8 @@ export default function BranchGridMapView({
             setManuallyOpenedClumps={setManuallyOpenedClumps}
             setManuallyClosedClumps={setManuallyClosedClumps}
             layoutModel={layoutModel}
+            rendererMode={rendererMode}
+            onRenderMetrics={onRenderMetrics}
             isDebugOpen={isDebugOpen}
             onDebugClose={onDebugClose}
             orientation={orientation}

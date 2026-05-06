@@ -24,9 +24,13 @@ import { computeBranchGridLayout } from './branchGridLayoutModel';
 import type { BranchGridLayoutModel } from './branchGridLayoutModel';
 import CommitControls from './CommitControls';
 import MapGridCanvas from './MapGridCanvas';
+import MapGridWebGLCanvas from './webgl/MapGridWebGLCanvas';
+import { buildGpuFrameInput } from './webgl/adapter';
+import type { GpuRenderMode, WebGLRenderMetrics } from './webgl/types';
 import MapGridDebugPanel from './MapGridDebugPanel';
 import MapGridDialogs from './MapGridDialogs';
 import MapOrientationToggle from './MapOrientationToggle';
+import MapRendererToggle from './MapRendererToggle';
 import MapSearchBar from './MapSearchBar';
 import { useMapGridCamera } from './useMapGridCamera';
 import { useMapGridSelection } from './useMapGridSelection';
@@ -58,6 +62,8 @@ function MapGridLoadingState() {
 }
 
 type Props = BranchGridViewProps & {
+  rendererMode?: GpuRenderMode;
+  onRenderMetrics?: (metrics: WebGLRenderMetrics) => void;
   isDebugOpen?: boolean;
   onDebugClose?: () => void;
   gridHudProps?: {
@@ -72,6 +78,8 @@ type Props = BranchGridViewProps & {
     setGridSearchJumpToken: (token: number | ((token: number) => number)) => void;
     mapGridOrientation: import('./MapViewGrid').OrientationMode;
     setMapGridOrientation: (orientation: import('./MapViewGrid').OrientationMode) => void;
+    rendererMode: GpuRenderMode;
+    setRendererMode: (mode: GpuRenderMode) => void;
     setIsGridDebugOpen: (open: boolean | ((open: boolean) => boolean)) => void;
     githubAuthMessage: string | null;
     commitSwitchFeedback: { kind: 'success' | 'error'; message: string } | null;
@@ -80,6 +88,8 @@ type Props = BranchGridViewProps & {
 };
 
 export default function BranchGridMap({
+  rendererMode = 'legacy',
+  onRenderMetrics,
   branches,
   mergeNodes = [],
   directCommits = [],
@@ -827,15 +837,44 @@ export default function BranchGridMap({
   const renderedNodeCount = renderNodes.filter((node) => shouldRenderNode(node)).length;
   const renderedMergeConnectorCount = mergeConnectors.filter((connector) => cullConnectorPath(connector)).length;
   const renderedConnectorCount = connectors.filter((connector) => cullConnectorPath(connector)).length;
+  const gpuFrameInput = useMemo(
+    () =>
+      buildGpuFrameInput(
+        renderNodes,
+        connectors,
+        mergeConnectors,
+        shouldRenderNode,
+        {
+          selectedVisibleCommitShas,
+          focusedCommitId: focusedRenderNode?.commit.id ?? null,
+          matchingNodeIds,
+          normalizedSearchQuery,
+          checkedOutHeadSha,
+          remoteCommitShas,
+          unpushedCommitShasSetByBranch,
+        },
+        contentWidth,
+        contentHeight,
+      ),
+    [
+      renderNodes,
+      connectors,
+      mergeConnectors,
+      shouldRenderNode,
+      selectedVisibleCommitShas,
+      focusedRenderNode?.commit.id,
+      matchingNodeIds,
+      normalizedSearchQuery,
+      checkedOutHeadSha,
+      remoteCommitShas,
+      unpushedCommitShasSetByBranch,
+      contentWidth,
+      contentHeight,
+    ],
+  );
 
   const handleCommitCardClick = useCallback(
-    (event: React.MouseEvent, node: Node) => {
-      if (suppressNextCommitClickRef.current) {
-        event.preventDefault();
-        event.stopPropagation();
-        return;
-      }
-      event.stopPropagation();
+    (event: { shiftKey: boolean; metaKey: boolean; ctrlKey: boolean; detail: number }, node: Node) => {
       const commitSha = node.commit.id;
       if (event.shiftKey) {
         setSelectedCommitShas((prev) =>
@@ -876,6 +915,19 @@ export default function BranchGridMap({
       onCommitClick,
       onSwitchToWorktree,
     ],
+  );
+
+  const handleLegacyCommitCardClick = useCallback(
+    (event: React.MouseEvent, node: Node) => {
+      if (suppressNextCommitClickRef.current) {
+        event.preventDefault();
+        event.stopPropagation();
+        return;
+      }
+      event.stopPropagation();
+      handleCommitCardClick(event, node);
+    },
+    [handleCommitCardClick],
   );
 
   const handleNodePointerDown = useCallback(
@@ -1139,6 +1191,11 @@ export default function BranchGridMap({
                   orientation={gridHudProps.mapGridOrientation}
                   onOrientationChange={gridHudProps.setMapGridOrientation}
                 />
+                <MapRendererToggle
+                  compactLabels={isCompactHud}
+                  mode={gridHudProps.rendererMode}
+                  onModeChange={gridHudProps.setRendererMode}
+                />
               </div>
             </div>
           </div>
@@ -1251,6 +1308,23 @@ export default function BranchGridMap({
       ) : null}
       {isLoading || allCommits.length === 0 ? (
         <MapGridLoadingState />
+      ) : rendererMode === 'webgl-hybrid' ? (
+        <MapGridWebGLCanvas
+          scrollContainerRef={scrollContainerRef}
+          mapPadHostRef={mapPadHostRef}
+          transformLayerRef={transformLayerRef}
+          contentWidth={contentWidth}
+          contentHeight={contentHeight}
+          onWheel={handleWheel}
+          onMouseDown={startMarqueeDrag}
+          frameInput={gpuFrameInput}
+          lineStrokeWidth={lineStrokeWidth}
+          cullConnectorPath={cullConnectorPath}
+          displayZoom={displayZoom}
+          onRenderMetrics={onRenderMetrics}
+          renderNodes={renderNodes}
+          onNodeClick={handleCommitCardClick}
+        />
       ) : (
         <MapGridCanvas
           scrollContainerRef={scrollContainerRef}
@@ -1296,7 +1370,7 @@ export default function BranchGridMap({
           flushCameraReactTick={flushCameraReactTick}
           setManuallyOpenedClumps={setManuallyOpenedClumps}
           setManuallyClosedClumps={setManuallyClosedClumps}
-          onCommitCardClick={handleCommitCardClick}
+          onCommitCardClick={handleLegacyCommitCardClick}
           unpushedCommitShasSetByBranch={unpushedCommitShasSetByBranch}
           remoteCommitShas={remoteCommitShas}
           checkedOutHeadSha={checkedOutHeadSha}

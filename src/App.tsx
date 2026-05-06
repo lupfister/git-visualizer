@@ -6,6 +6,7 @@ import { getCurrentWindow } from '@tauri-apps/api/window';
 import { open } from '@tauri-apps/plugin-dialog';
 import { PanelLeftClose, PanelLeftOpen } from 'lucide-react';
 import BranchGridMapView, { type OrientationMode } from '../components/grid/MapViewGrid';
+import type { GpuRenderMode, WebGLRenderMetrics } from '../components/grid/webgl/types';
 import DenseBranchSidebar from '../components/DenseBranchSidebar';
 import { buildLanes, lanesFromStoredColumns } from '../components/grid/LayoutGrid';
 import { computeBranchGridLayout, type BranchGridLayoutModel } from '../components/grid/branchGridLayoutModel';
@@ -18,6 +19,7 @@ const FROZEN_REPO_BASENAME = 'git-visualizer';
 const PROJECTS_STORAGE_KEY = 'git-visualizer:projects';
 const ACTIVE_PROJECT_STORAGE_KEY = 'git-visualizer:active-project';
 const MAP_ORIENTATION_STORAGE_KEY = 'git-visualizer:map-orientation';
+const WEBGL_RENDERER_MODE_STORAGE_KEY = 'git-visualizer:webgl-renderer-mode';
 const MAX_PROJECTS = 12;
 type OpenRepoEventPayload = {
   path: string;
@@ -208,6 +210,7 @@ function App() {
     createBranchFromNodeInProgress;
   const [isMapInteracting, setIsMapInteracting] = useState(false);
   const [mapGridOrientation, setMapGridOrientation] = useState<OrientationMode>('horizontal');
+  const [rendererMode, setRendererMode] = useState<GpuRenderMode>('legacy');
   const [remoteDefaultTipSha, setRemoteDefaultTipSha] = useState<string | null>(null);
   const [remoteDefaultTipMetadata, setRemoteDefaultTipMetadata] = useState<CommitMetadata | null>(null);
   const [remoteDefaultTipParentSha, setRemoteDefaultTipParentSha] = useState<string | null>(null);
@@ -374,6 +377,8 @@ function App() {
       setGridSearchJumpToken,
       mapGridOrientation,
       setMapGridOrientation,
+      rendererMode,
+      setRendererMode,
       setIsGridDebugOpen,
       githubAuthMessage,
       commitSwitchFeedback,
@@ -485,6 +490,10 @@ function App() {
       if (rawOrientation === 'vertical' || rawOrientation === 'horizontal') {
         setMapGridOrientation(rawOrientation);
       }
+      const rawRendererMode = window.localStorage.getItem(WEBGL_RENDERER_MODE_STORAGE_KEY);
+      if (rawRendererMode === 'legacy' || rawRendererMode === 'webgl-hybrid') {
+        setRendererMode(rawRendererMode);
+      }
     } catch {
       // ignore storage failures
     }
@@ -523,10 +532,16 @@ function App() {
   useEffect(() => {
     try {
       window.localStorage.setItem(MAP_ORIENTATION_STORAGE_KEY, mapGridOrientation);
+      window.localStorage.setItem(WEBGL_RENDERER_MODE_STORAGE_KEY, rendererMode);
     } catch {
       // ignore storage failures
     }
-  }, [mapGridOrientation]);
+  }, [mapGridOrientation, rendererMode]);
+
+  const handleRenderMetrics = useCallback((metrics: WebGLRenderMetrics) => {
+    if (!isGridDebugOpen) return;
+    console.debug('webgl-render-metrics', metrics);
+  }, [isGridDebugOpen]);
 
   const mergeTargetBranchByCommitSha = useMemo(
     () =>
@@ -3111,7 +3126,9 @@ function App() {
                 setManuallyClosedClumps={setManuallyClosedGridClumps}
                 layoutModel={sharedGridLayoutModel}
                 orientation={mapGridOrientation}
-                  gridHudProps={gridHudProps}
+                rendererMode={rendererMode}
+                onRenderMetrics={handleRenderMetrics}
+                gridHudProps={gridHudProps}
               />
           </div>
 
