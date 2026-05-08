@@ -53,6 +53,8 @@ static WATCHER_STATE: OnceLock<Mutex<HashMap<String, notify::RecommendedWatcher>
 const GIT_ACTIVITY_LOCAL_MIN_EMIT_MS: u64 = 250;
 const GIT_ACTIVITY_GRAPH_MIN_EMIT_MS: u64 = 120;
 const REPO_VISUAL_CACHE_SCHEMA_VERSION: i32 = 5;
+const PROJECT_SNAPSHOT_SCHEMA_VERSION: i32 = 1;
+const PROJECT_SNAPSHOT_RETAIN_COUNT: i64 = 2;
 #[cfg(target_os = "macos")]
 const OPEN_REPO_DETECTION_CACHE_TTL: StdDuration = StdDuration::from_secs(8);
 
@@ -121,6 +123,68 @@ struct RepoQuickState {
     head_sha: String,
     upstream_sha: Option<String>,
     has_uncommitted_changes: bool,
+}
+
+#[derive(Serialize, Deserialize, Clone)]
+#[serde(rename_all = "camelCase")]
+struct SimpleGraphNode {
+    id: String,
+    branch_name: String,
+    clump_id: String,
+    x_horizontal: f64,
+    y_horizontal: f64,
+    x_vertical: f64,
+    y_vertical: f64,
+    parent_sha: Option<String>,
+}
+
+#[derive(Serialize, Deserialize, Clone)]
+#[serde(rename_all = "camelCase")]
+struct SimpleGraphClump {
+    id: String,
+    branch_name: String,
+    commit_shas: Vec<String>,
+    lead_sha: String,
+    count: usize,
+}
+
+#[derive(Serialize, Deserialize, Clone)]
+#[serde(rename_all = "camelCase")]
+struct ProjectGraphSnapshotPayload {
+    repo_visual_snapshot: RepoVisualSnapshot,
+    clumps: Vec<SimpleGraphClump>,
+    simple_nodes: Vec<SimpleGraphNode>,
+}
+
+#[derive(Serialize, Deserialize, Clone)]
+#[serde(rename_all = "camelCase")]
+struct ProjectSnapshotRecord {
+    project_id: String,
+    repo_path: String,
+    snapshot_version: i64,
+    fingerprint: String,
+    schema_version: i32,
+    created_at_ms: i64,
+    payload: ProjectGraphSnapshotPayload,
+}
+
+#[derive(Serialize, Deserialize, Clone)]
+#[serde(rename_all = "camelCase")]
+struct FingerprintCheckResult {
+    project_id: String,
+    repo_path: String,
+    changed: bool,
+    current_fingerprint: String,
+    stored_fingerprint: Option<String>,
+}
+
+#[derive(Serialize, Deserialize, Clone)]
+#[serde(rename_all = "camelCase")]
+struct RefreshProjectResult {
+    project_id: String,
+    repo_path: String,
+    updated: bool,
+    snapshot: Option<ProjectSnapshotRecord>,
 }
 
 fn parse_time_ms(value: Option<&str>) -> i64 {
@@ -247,6 +311,26 @@ fn open_visual_cache_connection() -> Result<Connection, String> {
             updated_at_ms INTEGER NOT NULL,
             PRIMARY KEY (repo_path, layout_key)
         );
+        CREATE TABLE IF NOT EXISTS project_registry (
+            project_id TEXT PRIMARY KEY,
+            repo_path TEXT NOT NULL UNIQUE,
+            active_snapshot_version INTEGER,
+            last_fingerprint TEXT,
+            last_checked_at_ms INTEGER NOT NULL DEFAULT 0
+        );
+        CREATE TABLE IF NOT EXISTS project_snapshot (
+            project_id TEXT NOT NULL,
+            repo_path TEXT NOT NULL,
+            snapshot_version INTEGER NOT NULL,
+            fingerprint TEXT NOT NULL,
+            schema_version INTEGER NOT NULL,
+            created_at_ms INTEGER NOT NULL,
+            payload_json TEXT NOT NULL,
+            is_active INTEGER NOT NULL DEFAULT 0,
+            PRIMARY KEY (project_id, snapshot_version)
+        );
+        CREATE INDEX IF NOT EXISTS idx_project_snapshot_active
+            ON project_snapshot(project_id, is_active, snapshot_version DESC);
         ",
     )
     .map_err(|e| format!("Failed to initialize cache schema: {e}"))?;
@@ -325,6 +409,265 @@ fn upsert_repo_layout_snapshot(repo_path: &str, layout_key: &str, payload_json: 
     )
     .map_err(|e| format!("Failed to upsert layout snapshot: {e}"))?;
     Ok(())
+}
+
+fn normalize_repo_path_id(repo_path: &str) -> String {
+    if repo_path == "/" {
+        "/".to_string()
+    } else {
+        repo_path.trim_end_matches('/').to_string()
+    }
+}
+
+fn compute_repo_fingerprint(repo_path: &str) -> Result<(String, RepoRefreshFingerprint), String> {
+    let path = Path::new(repo_path);
+    let default_branch = git::get_default_branch(path).map_err(|e| e.to_string())?;
+    let branches = git::list_branches(path, &default_branch).map_err(|e| e.to_string())?;
+    let checked_out_ref = git::get_checked_out_ref(path).map_err(|e| e.to_string())?;
+    let worktrees = git::list_worktrees(path).map_err(|e| e.to_string())?;
+    let stashes = git::list_stashes(path).map_err(|e| e.to_string())?;
+    let upstream_sha = git::cli::run(path, &["rev-parse", &format!("{default_branch}@{{upstream}}")])
+        .ok()
+        .map(|value| value.trim().to_string())
+        .filter(|value| !value.is_empty());
+
+    let branch_ref_sig = branches
+        .iter()
+        .map(|branch| format!("{}:{}", branch.name, branch.head_sha))
+        .collect::<Vec<_>>()
+        .join("|");
+    let worktree_sig = worktrees
+        .iter()
+        .map(|worktree| format!("{}:{}:{}", worktree.path, worktree.head_sha, worktree.branch_name.clone().unwrap_or_default()))
+        .collect::<Vec<_>>()
+        .join("|");
+    let stash_sig = stashes
+        .iter()
+        .map(|stash| format!("{}:{}:{}", stash.index, stash.base_sha, stash.message))
+        .collect::<Vec<_>>()
+        .join("|");
+    let upstream_part = upstream_sha.clone().unwrap_or_default();
+    let fingerprint = format!(
+        "{}@@{}@@{}@@{}@@{}@@{}@@{}",
+        default_branch,
+        checked_out_ref.head_sha,
+        upstream_part,
+        if checked_out_ref.has_uncommitted_changes { "1" } else { "0" },
+        branch_ref_sig,
+        worktree_sig,
+        stash_sig
+    );
+
+    Ok((
+        fingerprint,
+        RepoRefreshFingerprint {
+            repo_path: repo_path.to_string(),
+            default_branch,
+            head_sha: checked_out_ref.head_sha,
+            upstream_sha,
+            has_uncommitted_changes: checked_out_ref.has_uncommitted_changes,
+            branch_count: branches.len(),
+            worktree_count: worktrees.len(),
+            stash_count: stashes.len(),
+        },
+    ))
+}
+
+fn build_simple_graph_projection(snapshot: &RepoVisualSnapshot) -> (Vec<SimpleGraphClump>, Vec<SimpleGraphNode>) {
+    let mut branch_order: Vec<String> = std::iter::once(snapshot.default_branch.clone())
+        .chain(snapshot.branches.iter().map(|branch| branch.name.clone()))
+        .collect::<HashSet<_>>()
+        .into_iter()
+        .collect();
+    branch_order.sort();
+    let lane_by_branch: HashMap<String, i32> = if snapshot.lane_by_branch.is_empty() {
+        branch_order
+            .iter()
+            .enumerate()
+            .map(|(idx, name)| (name.clone(), idx as i32))
+            .collect()
+    } else {
+        snapshot.lane_by_branch.clone()
+    };
+
+    let mut commits_by_branch = HashMap::<String, Vec<&DirectCommit>>::new();
+    for commit in &snapshot.direct_commits {
+        commits_by_branch
+            .entry(commit.branch.clone())
+            .or_default()
+            .push(commit);
+    }
+    for commits in commits_by_branch.values_mut() {
+        commits.sort_by(|left, right| {
+            right
+                .date
+                .cmp(&left.date)
+                .then_with(|| right.full_sha.cmp(&left.full_sha))
+        });
+    }
+
+    let mut clumps = Vec::<SimpleGraphClump>::new();
+    let mut nodes = Vec::<SimpleGraphNode>::new();
+    let chunk_size = 20_usize;
+    for branch_name in branch_order {
+        let lane = lane_by_branch.get(&branch_name).copied().unwrap_or(0) as f64;
+        let Some(commits) = commits_by_branch.get(&branch_name) else {
+            continue;
+        };
+        for (chunk_idx, chunk) in commits.chunks(chunk_size).enumerate() {
+            let clump_id = format!("clump:{}:{}", branch_name, chunk_idx);
+            let lead_sha = chunk.first().map(|commit| commit.full_sha.clone()).unwrap_or_default();
+            let commit_shas: Vec<String> = chunk.iter().map(|commit| commit.full_sha.clone()).collect();
+            clumps.push(SimpleGraphClump {
+                id: clump_id.clone(),
+                branch_name: branch_name.clone(),
+                commit_shas,
+                lead_sha,
+                count: chunk.len(),
+            });
+            for (offset, commit) in chunk.iter().enumerate() {
+                let x_h = (chunk_idx * chunk_size + offset) as f64;
+                nodes.push(SimpleGraphNode {
+                    id: commit.full_sha.clone(),
+                    branch_name: branch_name.clone(),
+                    clump_id: clump_id.clone(),
+                    x_horizontal: x_h,
+                    y_horizontal: lane,
+                    x_vertical: lane,
+                    y_vertical: x_h,
+                    parent_sha: commit.parent_sha.clone(),
+                });
+            }
+        }
+    }
+    (clumps, nodes)
+}
+
+fn load_active_project_snapshot(conn: &Connection, project_id: &str) -> Result<Option<ProjectSnapshotRecord>, String> {
+    let row: Option<(String, String, i64, String, i32, i64, String)> = conn
+        .query_row(
+            "
+            SELECT project_id, repo_path, snapshot_version, fingerprint, schema_version, created_at_ms, payload_json
+            FROM project_snapshot
+            WHERE project_id = ?1 AND is_active = 1
+            ORDER BY snapshot_version DESC
+            LIMIT 1
+            ",
+            params![project_id],
+            |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?, row.get(4)?, row.get(5)?, row.get(6)?)),
+        )
+        .optional()
+        .map_err(|e| format!("Failed to query active project snapshot: {e}"))?;
+    let Some((project_id, repo_path, snapshot_version, fingerprint, schema_version, created_at_ms, payload_json)) = row else {
+        return Ok(None);
+    };
+    let payload = serde_json::from_str::<ProjectGraphSnapshotPayload>(&payload_json)
+        .map_err(|e| format!("Failed to decode project snapshot payload: {e}"))?;
+    Ok(Some(ProjectSnapshotRecord {
+        project_id,
+        repo_path,
+        snapshot_version,
+        fingerprint,
+        schema_version,
+        created_at_ms,
+        payload,
+    }))
+}
+
+fn publish_project_snapshot(repo_path: &str) -> Result<ProjectSnapshotRecord, String> {
+    let normalized_repo_path = normalize_repo_path_id(repo_path);
+    let project_id = normalized_repo_path.clone();
+    let snapshot = compute_repo_visual_snapshot(&normalized_repo_path)?;
+    let (fingerprint, _) = compute_repo_fingerprint(&normalized_repo_path)?;
+    let (clumps, simple_nodes) = build_simple_graph_projection(&snapshot);
+    let payload = ProjectGraphSnapshotPayload {
+        repo_visual_snapshot: snapshot,
+        clumps,
+        simple_nodes,
+    };
+    if payload.repo_visual_snapshot.direct_commits.is_empty() {
+        return Err("Snapshot validation failed: direct commits payload is empty".to_string());
+    }
+    let payload_json = serde_json::to_string(&payload)
+        .map_err(|e| format!("Failed to encode project snapshot payload: {e}"))?;
+    let now_ms = Utc::now().timestamp_millis();
+    let mut conn = open_visual_cache_connection()?;
+    let tx = conn
+        .transaction()
+        .map_err(|e| format!("Failed to begin project snapshot transaction: {e}"))?;
+    tx.execute(
+        "
+        INSERT INTO project_registry(project_id, repo_path, active_snapshot_version, last_fingerprint, last_checked_at_ms)
+        VALUES (?1, ?2, NULL, NULL, ?3)
+        ON CONFLICT(project_id) DO UPDATE SET
+            repo_path = excluded.repo_path
+        ",
+        params![project_id, normalized_repo_path, now_ms],
+    )
+    .map_err(|e| format!("Failed to upsert project registry: {e}"))?;
+    let next_version: i64 = tx
+        .query_row(
+            "SELECT COALESCE(MAX(snapshot_version), 0) + 1 FROM project_snapshot WHERE project_id = ?1",
+            params![normalize_repo_path_id(repo_path)],
+            |row| row.get(0),
+        )
+        .map_err(|e| format!("Failed to compute next project snapshot version: {e}"))?;
+    tx.execute(
+        "
+        INSERT INTO project_snapshot(
+            project_id, repo_path, snapshot_version, fingerprint, schema_version, created_at_ms, payload_json, is_active
+        ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, 0)
+        ",
+        params![
+            normalize_repo_path_id(repo_path),
+            normalized_repo_path,
+            next_version,
+            fingerprint,
+            PROJECT_SNAPSHOT_SCHEMA_VERSION,
+            now_ms,
+            payload_json,
+        ],
+    )
+    .map_err(|e| format!("Failed to insert project snapshot: {e}"))?;
+    tx.execute(
+        "UPDATE project_snapshot SET is_active = 0 WHERE project_id = ?1",
+        params![normalize_repo_path_id(repo_path)],
+    )
+    .map_err(|e| format!("Failed to clear active snapshot: {e}"))?;
+    tx.execute(
+        "UPDATE project_snapshot SET is_active = 1 WHERE project_id = ?1 AND snapshot_version = ?2",
+        params![normalize_repo_path_id(repo_path), next_version],
+    )
+    .map_err(|e| format!("Failed to activate snapshot: {e}"))?;
+    tx.execute(
+        "
+        UPDATE project_registry
+        SET active_snapshot_version = ?2, last_fingerprint = ?3, last_checked_at_ms = ?4
+        WHERE project_id = ?1
+        ",
+        params![normalize_repo_path_id(repo_path), next_version, fingerprint, now_ms],
+    )
+    .map_err(|e| format!("Failed to update project registry active snapshot: {e}"))?;
+    tx.execute(
+        "
+        DELETE FROM project_snapshot
+        WHERE project_id = ?1
+          AND snapshot_version NOT IN (
+            SELECT snapshot_version FROM project_snapshot
+            WHERE project_id = ?1
+            ORDER BY snapshot_version DESC
+            LIMIT ?2
+          )
+        ",
+        params![normalize_repo_path_id(repo_path), PROJECT_SNAPSHOT_RETAIN_COUNT],
+    )
+    .map_err(|e| format!("Failed to prune old project snapshots: {e}"))?;
+    tx.commit()
+        .map_err(|e| format!("Failed to commit project snapshot transaction: {e}"))?;
+    let conn = open_visual_cache_connection()?;
+    let snapshot_record = load_active_project_snapshot(&conn, &normalize_repo_path_id(repo_path))?
+        .ok_or_else(|| "Missing active project snapshot after publish".to_string())?;
+    Ok(snapshot_record)
 }
 
 fn fetch_all_merge_nodes_for_branches_internal(
@@ -1024,6 +1367,95 @@ fn get_repo_visual_snapshot(repo_path: String, force_refresh: Option<bool>) -> R
 }
 
 #[tauri::command(rename_all = "camelCase")]
+fn add_project_and_ingest(repo_path: String) -> Result<ProjectSnapshotRecord, String> {
+    let normalized_repo_path = normalize_repo_path_id(&repo_path);
+    let project_id = normalized_repo_path.clone();
+    let conn = open_visual_cache_connection()?;
+    let existing = load_active_project_snapshot(&conn, &project_id)?;
+    let (current_fingerprint, _) = compute_repo_fingerprint(&normalized_repo_path)?;
+    if let Some(active) = existing {
+        if active.fingerprint == current_fingerprint && active.schema_version == PROJECT_SNAPSHOT_SCHEMA_VERSION {
+            return Ok(active);
+        }
+    }
+    publish_project_snapshot(&normalized_repo_path)
+}
+
+#[tauri::command(rename_all = "camelCase")]
+fn load_project_snapshot(project_id: String) -> Result<Option<ProjectSnapshotRecord>, String> {
+    let conn = open_visual_cache_connection()?;
+    load_active_project_snapshot(&conn, &normalize_repo_path_id(&project_id))
+}
+
+#[tauri::command(rename_all = "camelCase")]
+fn check_project_fingerprint(project_id: String) -> Result<FingerprintCheckResult, String> {
+    let normalized_project_id = normalize_repo_path_id(&project_id);
+    let conn = open_visual_cache_connection()?;
+    let row: Option<(String, Option<String>)> = conn
+        .query_row(
+            "SELECT repo_path, last_fingerprint FROM project_registry WHERE project_id = ?1",
+            params![normalized_project_id],
+            |row| Ok((row.get(0)?, row.get(1)?)),
+        )
+        .optional()
+        .map_err(|e| format!("Failed to lookup project registry row: {e}"))?;
+    let repo_path = row
+        .as_ref()
+        .map(|(path, _)| path.clone())
+        .unwrap_or_else(|| normalized_project_id.clone());
+    let stored_fingerprint = row.and_then(|(_, fingerprint)| fingerprint);
+    let (current_fingerprint, _) = compute_repo_fingerprint(&repo_path)?;
+    let changed = stored_fingerprint.as_ref().map(|value| value != &current_fingerprint).unwrap_or(true);
+    conn.execute(
+        "
+        INSERT INTO project_registry(project_id, repo_path, active_snapshot_version, last_fingerprint, last_checked_at_ms)
+        VALUES (?1, ?2, NULL, ?3, ?4)
+        ON CONFLICT(project_id) DO UPDATE SET
+            repo_path = excluded.repo_path,
+            last_checked_at_ms = excluded.last_checked_at_ms
+        ",
+        params![normalized_project_id, repo_path, stored_fingerprint, Utc::now().timestamp_millis()],
+    )
+    .map_err(|e| format!("Failed to update project registry timestamp: {e}"))?;
+    Ok(FingerprintCheckResult {
+        project_id: normalize_repo_path_id(&project_id),
+        repo_path,
+        changed,
+        current_fingerprint,
+        stored_fingerprint,
+    })
+}
+
+#[tauri::command(rename_all = "camelCase")]
+fn refresh_project_if_changed(project_id: String, app: tauri::AppHandle) -> Result<RefreshProjectResult, String> {
+    let normalized_project_id = normalize_repo_path_id(&project_id);
+    let check = check_project_fingerprint(normalized_project_id.clone())?;
+    if !check.changed {
+        return Ok(RefreshProjectResult {
+            project_id: normalized_project_id,
+            repo_path: check.repo_path,
+            updated: false,
+            snapshot: None,
+        });
+    }
+    let snapshot = publish_project_snapshot(&check.repo_path)?;
+    let _ = app.emit(
+        "project-snapshot-updated",
+        serde_json::json!({
+            "projectId": snapshot.project_id,
+            "repoPath": snapshot.repo_path,
+            "snapshotVersion": snapshot.snapshot_version,
+        }),
+    );
+    Ok(RefreshProjectResult {
+        project_id: snapshot.project_id.clone(),
+        repo_path: snapshot.repo_path.clone(),
+        updated: true,
+        snapshot: Some(snapshot),
+    })
+}
+
+#[tauri::command(rename_all = "camelCase")]
 fn get_repo_layout_snapshot(repo_path: String, layout_key: String) -> Result<Option<String>, String> {
     load_cached_repo_layout_snapshot(&repo_path, &layout_key)
 }
@@ -1035,27 +1467,8 @@ fn store_repo_layout_snapshot(repo_path: String, layout_key: String, payload_jso
 
 #[tauri::command(rename_all = "camelCase")]
 fn get_repo_refresh_fingerprint(repo_path: String) -> Result<RepoRefreshFingerprint, String> {
-    let path = Path::new(&repo_path);
-    let default_branch = git::get_default_branch(path).map_err(|e| e.to_string())?;
-    let branches = git::list_branches(path, &default_branch).map_err(|e| e.to_string())?;
-    let checked_out_ref = git::get_checked_out_ref(path).map_err(|e| e.to_string())?;
-    let worktrees = git::list_worktrees(path).map_err(|e| e.to_string())?;
-    let stashes = git::list_stashes(path).map_err(|e| e.to_string())?;
-    let upstream_sha = git::cli::run(path, &["rev-parse", &format!("{default_branch}@{{upstream}}")])
-        .ok()
-        .map(|value| value.trim().to_string())
-        .filter(|value| !value.is_empty());
-
-    Ok(RepoRefreshFingerprint {
-        repo_path: repo_path.clone(),
-        default_branch,
-        head_sha: checked_out_ref.head_sha,
-        upstream_sha,
-        has_uncommitted_changes: checked_out_ref.has_uncommitted_changes,
-        branch_count: branches.len(),
-        worktree_count: worktrees.len(),
-        stash_count: stashes.len(),
-    })
+    let (_, fingerprint) = compute_repo_fingerprint(&repo_path)?;
+    Ok(fingerprint)
 }
 
 #[tauri::command(rename_all = "camelCase")]
@@ -4722,6 +5135,10 @@ pub fn run() {
             start_window_drag,
             get_branches,
             get_repo_visual_snapshot,
+            add_project_and_ingest,
+            load_project_snapshot,
+            check_project_fingerprint,
+            refresh_project_if_changed,
             get_repo_layout_snapshot,
             store_repo_layout_snapshot,
             get_repo_quick_state,

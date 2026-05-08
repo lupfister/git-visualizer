@@ -14,7 +14,6 @@ import type { Branch, BranchCommitPreview, BranchPromptMeta, CheckedOutRef, Dire
 import { foldStashNodesIntoGraph } from './placeStashNode';
 import { deriveRepoVisualState } from './repoVisualState';
 
-const FROZEN_REPO_BASENAME = 'git-visualizer';
 const PROJECTS_STORAGE_KEY = 'git-visualizer:projects';
 const ACTIVE_PROJECT_STORAGE_KEY = 'git-visualizer:active-project';
 const MAP_ORIENTATION_STORAGE_KEY = 'git-visualizer:map-orientation';
@@ -65,6 +64,23 @@ type RepoQuickState = {
   upstreamSha?: string | null;
   hasUncommittedChanges: boolean;
 };
+type ProjectSnapshotRecord = {
+  projectId: string;
+  repoPath: string;
+  snapshotVersion: number;
+  fingerprint: string;
+  schemaVersion: number;
+  createdAtMs: number;
+  payload: {
+    repoVisualSnapshot: RepoVisualSnapshot;
+  };
+};
+type RefreshProjectResult = {
+  projectId: string;
+  repoPath: string;
+  updated: boolean;
+  snapshot?: ProjectSnapshotRecord | null;
+};
 type CommitMetadata = { subject: string; author: string };
 
 function normalizePath(path: string): string {
@@ -81,10 +97,6 @@ function basenameFromPath(path: string | null): string {
   const normalized = path.replace(/\\/g, '/').replace(/\/+$/, '');
   const parts = normalized.split('/');
   return parts[parts.length - 1] ?? '';
-}
-
-function isFrozenRepoPath(path: string | null): boolean {
-  return basenameFromPath(path) === FROZEN_REPO_BASENAME;
 }
 
 function setSignature(set: Set<string>): string {
@@ -144,6 +156,10 @@ function getRepoVisualSnapshotSignature(snapshot: RepoVisualSnapshot): string {
     Object.entries(snapshot.laneByBranch).map(([branchName, lane]) => `${branchName}:${lane}`).join('|'),
     Object.entries(snapshot.branchUniqueAheadCounts).map(([branchName, count]) => `${branchName}:${count}`).join('|'),
   ].join('@@');
+}
+
+function toRepoVisualSnapshot(record: ProjectSnapshotRecord | null | undefined): RepoVisualSnapshot | null {
+  return record?.payload?.repoVisualSnapshot ?? null;
 }
 
 function App() {
@@ -208,10 +224,10 @@ function App() {
     createBranchFromNodeInProgress;
   const [isMapInteracting, setIsMapInteracting] = useState(false);
   const [mapGridOrientation, setMapGridOrientation] = useState<OrientationMode>('horizontal');
-  const [remoteDefaultTipSha, setRemoteDefaultTipSha] = useState<string | null>(null);
-  const [remoteDefaultTipMetadata, setRemoteDefaultTipMetadata] = useState<CommitMetadata | null>(null);
-  const [remoteDefaultTipParentSha, setRemoteDefaultTipParentSha] = useState<string | null>(null);
-  const [isRemoteTipHydrated, setIsRemoteTipHydrated] = useState(false);
+  const [remoteDefaultTipSha] = useState<string | null>(null);
+  const [remoteDefaultTipMetadata] = useState<CommitMetadata | null>(null);
+  const [remoteDefaultTipParentSha] = useState<string | null>(null);
+  const [isRemoteTipHydrated] = useState(false);
   const [isGridDebugOpen, setIsGridDebugOpen] = useState(false);
   const [sidebarWidthPx, setSidebarWidthPx] = useState(SIDEBAR_DEFAULT_WIDTH_PX);
   const [isSidebarCollapsed, setIsSidebarCollapsed] = useState(false);
@@ -233,9 +249,6 @@ function App() {
   const sidebarShellRef = useRef<HTMLDivElement | null>(null);
 
   const branchMetaLoadKeyRef = useRef<string | null>(null);
-  // Keep every selected repo on the same low-churn refresh strategy that was
-  // previously reserved for the default/frozen project.
-  const isFrozenRepo = isFrozenRepoPath(repoPath) || true;
   const isMapInteractingRef = useRef(false);
   const hasAttemptedAutoRestoreRef = useRef(false);
   const hasHydratedInitialProjectSnapshotsRef = useRef(false);
@@ -597,10 +610,25 @@ function App() {
       setProjectTreeLoading(true);
     }
     try {
-      const snapshot = await invoke<RepoVisualSnapshot>('get_repo_visual_snapshot', {
-        repoPath: normalizedPath,
-        forceRefresh,
-      });
+      let record: ProjectSnapshotRecord | null = null;
+      if (forceRefresh) {
+        record = await invoke<ProjectSnapshotRecord>('add_project_and_ingest', {
+          repoPath: normalizedPath,
+        });
+      } else {
+        record = await invoke<ProjectSnapshotRecord | null>('load_project_snapshot', {
+          projectId: normalizedPath,
+        });
+        if (!record) {
+          record = await invoke<ProjectSnapshotRecord>('add_project_and_ingest', {
+            repoPath: normalizedPath,
+          });
+        }
+      }
+      const snapshot = toRepoVisualSnapshot(record);
+      if (!snapshot) {
+        throw new Error('Missing repo visual snapshot payload');
+      }
       upsertProjectSnapshot(normalizedPath, snapshot);
     } finally {
       loadingProjectSnapshotsRef.current.delete(normalizedPath);
@@ -653,7 +681,7 @@ function App() {
       if (isDisposed) return;
       const changedPath = normalizePath(event.payload.repoPath);
       if (!changedPath || changedPath === repoPath) return;
-      // Keep sidebar/project cache DB-first; active repo incremental updates come from runProjectStatusTick.
+      // Keep sidebar/project cache DB-first; active repo updates use snapshot refresh commands.
       void loadProjectSnapshot(changedPath, false);
     }).then((fn) => {
       if (isDisposed) fn();
@@ -808,18 +836,6 @@ function App() {
     }
   }
 
-  function updateProjectBranch(path: string, branchName: string) {
-    setProjects((previous) => {
-      const next = previous.map((project) => (project.path === path ? { ...project, branchName } : project));
-      try {
-        localStorage.setItem(PROJECTS_STORAGE_KEY, JSON.stringify(next));
-      } catch {
-        // ignore storage failures
-      }
-      return next;
-    });
-  }
-
   function removeProject(path: string) {
     const normalizedPath = normalizePath(path);
     if (!normalizedPath) return;
@@ -926,179 +942,6 @@ function App() {
       }
     }
     return Array.from(dedupedByMergeAndTarget.values());
-  }
-
-  const getBranchesSignature = (list: Branch[]): string =>
-    list
-      .map((b) => `${b.name}|${b.headSha}|${b.commitsAhead}|${b.commitsBehind}|${b.unpushedCommits}|${b.remoteSyncStatus}`)
-      .join('||');
-
-  const getDirectCommitsSignature = (list: DirectCommit[]): string =>
-    list.map((c) => c.fullSha).join('|');
-
-  const getCheckedOutSignature = (ref: CheckedOutRef | null): string =>
-    ref
-      ? `${ref.branchName ?? ''}|${ref.headSha}|${ref.parentSha ?? ''}|${ref.hasUncommittedChanges ? 1 : 0}`
-      : '__none__';
-
-  type ProjectStatusDelta = {
-    graphChanged: boolean;
-    remoteTipChanged: boolean;
-    unpushedChanged: boolean;
-    stashChanged: boolean;
-    dirtyChanged: boolean;
-    worktreeChanged: boolean;
-  };
-
-  const getUnpushedDirectSignature = (list: DirectCommit[]): string =>
-    list.map((c) => c.fullSha).join('|');
-
-  const getWorktreesSignature = (list: WorktreeInfo[]): string =>
-    list.map((w) => `${w.path}|${w.branchName ?? ''}|${w.headSha ?? ''}|${w.isCurrent ? 1 : 0}`).join('||');
-
-  const getStashesSignature = (list: GitStashEntry[]): string =>
-    list.map((s) => `${s.index}|${s.baseSha}|${s.message}`).join('||');
-
-  const getUnpushedShaMapSignature = (map: Record<string, string[]>): string =>
-    Object.entries(map)
-      .sort(([a], [b]) => a.localeCompare(b))
-      .map(([branch, shas]) => `${branch}:${shas.join(',')}`)
-      .join('||');
-
-  async function runProjectStatusTick(
-    path: string,
-    resolvedDefaultBranch: string,
-    options?: {
-      forceDirtyCheck?: boolean;
-      expectPossibleCleanTransition?: boolean;
-    },
-  ): Promise<ProjectStatusDelta> {
-    const delta: ProjectStatusDelta = {
-      graphChanged: false,
-      remoteTipChanged: false,
-      unpushedChanged: false,
-      stashChanged: false,
-      dirtyChanged: false,
-      worktreeChanged: false,
-    };
-
-    const [nextBranches, nextDirectCommits, nextUnpushedDirect, nextWorktrees, nextStashes] = await Promise.all([
-      invoke<Branch[]>('get_branches', { repoPath: path }).catch(() => latestBranchesRef.current),
-      invoke<DirectCommit[]>('get_all_repo_commits', { repoPath: path }).catch(() => latestDirectCommitsRef.current),
-      invoke<DirectCommit[]>('get_unpushed_direct_commits', { repoPath: path, branch: resolvedDefaultBranch }).catch(() => latestUnpushedDirectCommitsRef.current),
-      invoke<WorktreeInfo[]>('list_worktrees', { repoPath: path }).catch(() => latestWorktreesRef.current),
-      invoke<GitStashEntry[]>('list_stashes', { repoPath: path }).catch(() => latestStashesRef.current),
-    ]);
-
-    const prevBranches = latestBranchesRef.current;
-    const prevDirectCommits = latestDirectCommitsRef.current;
-    const prevCheckedOut = latestCheckedOutRef.current;
-
-    const graphChanged =
-      getBranchesSignature(nextBranches) !== getBranchesSignature(prevBranches) ||
-      getDirectCommitsSignature(nextDirectCommits) !== getDirectCommitsSignature(prevDirectCommits);
-    delta.graphChanged = graphChanged;
-
-    const unpushedChanged =
-      getUnpushedDirectSignature(nextUnpushedDirect) !== getUnpushedDirectSignature(latestUnpushedDirectCommitsRef.current);
-    delta.unpushedChanged = unpushedChanged;
-
-    const worktreeChanged =
-      getWorktreesSignature(nextWorktrees) !== getWorktreesSignature(latestWorktreesRef.current);
-    delta.worktreeChanged = worktreeChanged;
-
-    const stashChanged =
-      getStashesSignature(nextStashes) !== getStashesSignature(latestStashesRef.current);
-    delta.stashChanged = stashChanged;
-
-    const shouldCheckDirty =
-      Boolean(options?.forceDirtyCheck) ||
-      !Boolean(prevCheckedOut?.hasUncommittedChanges) ||
-      Boolean(options?.expectPossibleCleanTransition) ||
-      graphChanged ||
-      stashChanged;
-
-    let nextCheckedOut: CheckedOutRef | null = prevCheckedOut;
-    if (shouldCheckDirty) {
-      nextCheckedOut = await invoke<CheckedOutRef>('get_checked_out_ref', { repoPath: path }).catch(() => prevCheckedOut);
-    }
-    delta.dirtyChanged = getCheckedOutSignature(nextCheckedOut) !== getCheckedOutSignature(prevCheckedOut);
-
-    const nextRemoteTipSha = await invoke<string | null>('get_remote_branch_head_sha', {
-      repoPath: path,
-      branch: resolvedDefaultBranch,
-    }).catch(() => remoteDefaultTipSha);
-    const [nextRemoteTipMetadata, nextRemoteTipParentSha] = await Promise.all([
-      nextRemoteTipSha
-        ? invoke<CommitMetadata | null>('get_commit_metadata', { repoPath: path, sha: nextRemoteTipSha }).catch(() => null)
-        : Promise.resolve(null),
-      nextRemoteTipSha && nextCheckedOut?.headSha
-        ? invoke<string | null>('get_merge_base', {
-            repoPath: path,
-            leftSha: nextRemoteTipSha,
-            rightSha: nextCheckedOut.headSha,
-          }).catch(() => null)
-        : Promise.resolve(null),
-    ]);
-    const remoteTipChanged = nextRemoteTipSha !== remoteDefaultTipSha;
-    delta.remoteTipChanged = remoteTipChanged;
-
-    const shouldUpdateUnpushedShaMap = graphChanged || unpushedChanged || delta.dirtyChanged;
-    const nextUnpushedShaMapEntries = shouldUpdateUnpushedShaMap
-      ? await Promise.all(
-          [resolvedDefaultBranch, ...nextBranches.map((b) => b.name)].map(async (branchName) => {
-            const shas = await invoke<string[]>('get_branch_unpushed_commit_shas', {
-              repoPath: path,
-              branch: branchName,
-            }).catch(() => []);
-            return [branchName, shas] as const;
-          }),
-        )
-      : Object.entries(latestUnpushedCommitShasByBranchRef.current);
-    const nextUnpushedShaMap = Object.fromEntries(nextUnpushedShaMapEntries);
-
-    const shouldUpdateMergeNodes = graphChanged;
-    const nextMergeNodes = shouldUpdateMergeNodes
-      ? await fetchAllMergeNodesForBranches(path, nextBranches, resolvedDefaultBranch).catch(() => latestMergeNodesRef.current)
-      : latestMergeNodesRef.current;
-
-    startTransition(() => {
-      if (graphChanged) {
-        setBranches(nextBranches);
-        setDirectCommits(nextDirectCommits);
-        setMergeNodes(nextMergeNodes);
-      }
-      if (unpushedChanged) {
-        setUnpushedDirectCommits(nextUnpushedDirect);
-      }
-      if (shouldUpdateUnpushedShaMap) {
-        const nextSig = getUnpushedShaMapSignature(nextUnpushedShaMap);
-        const prevSig = getUnpushedShaMapSignature(latestUnpushedCommitShasByBranchRef.current);
-        if (nextSig !== prevSig) {
-          setUnpushedCommitShasByBranch(nextUnpushedShaMap);
-        }
-      }
-      if (worktreeChanged) {
-        setWorktrees(nextWorktrees);
-      }
-      if (stashChanged) {
-        setStashes(nextStashes);
-      }
-      if (delta.dirtyChanged) {
-        setCheckedOutRef(nextCheckedOut);
-        if (nextCheckedOut?.branchName) {
-          updateProjectBranch(path, nextCheckedOut.branchName);
-        }
-      }
-      if (remoteTipChanged) {
-        setRemoteDefaultTipSha(nextRemoteTipSha ?? null);
-        setRemoteDefaultTipMetadata(nextRemoteTipMetadata && nextRemoteTipMetadata.subject.trim().length > 0 ? nextRemoteTipMetadata : null);
-        setRemoteDefaultTipParentSha(nextRemoteTipParentSha);
-        setIsRemoteTipHydrated(true);
-      }
-    });
-
-    return delta;
   }
 
   async function refreshRepoGitState(
@@ -1415,12 +1258,13 @@ function App() {
       setRepoName(info.name);
       setDefaultBranch(def);
 
-      const snapshot = await invoke<RepoVisualSnapshot>('get_repo_visual_snapshot', {
+      const record = await invoke<ProjectSnapshotRecord>('add_project_and_ingest', {
         repoPath: normalizedPath,
-        // Prefer the persisted snapshot on project switch to render immediately,
-        // then let the watcher/tick path reconcile any newer git state.
-        forceRefresh: false,
       });
+      const snapshot = toRepoVisualSnapshot(record);
+      if (!snapshot) {
+        throw new Error('Missing repo visual snapshot payload');
+      }
       if (requestId !== loadRepoRequestIdRef.current) return;
       const frozen = await ensureFrozenLayoutReady(
         normalizedPath,
@@ -1576,66 +1420,27 @@ function App() {
     invoke('watch_repo', { repoPath }).catch(console.error);
 
     let isDisposed = false;
-    let tickInFlight = false;
-    let tickQueued = false;
-    let probeInFlight = false;
+    let refreshInFlight = false;
     let pollTimeoutId: number | null = null;
     let unlisten: (() => void) | null = null;
-    let expectPossibleCleanTransition = false;
-    let lastProbeRemoteTipSha = remoteDefaultTipSha;
-
-    const runTick = async (forceDirtyCheck = false) => {
-      if (isDisposed) return;
-      if (tickInFlight) {
-        tickQueued = true;
-        return;
-      }
-      if (isMapInteractingRef.current) {
-        tickQueued = true;
-        return;
-      }
-
-      tickInFlight = true;
+    const runRefresh = async () => {
+      if (isDisposed || refreshInFlight || isMapInteractingRef.current) return;
+      refreshInFlight = true;
       try {
-        await runProjectStatusTick(repoPath, defaultBranch, {
-          forceDirtyCheck,
-          expectPossibleCleanTransition,
+        const result = await invoke<RefreshProjectResult>('refresh_project_if_changed', {
+          projectId: repoPath,
         });
-        expectPossibleCleanTransition = false;
+        if (!result.updated) return;
+        const nextSnapshot = toRepoVisualSnapshot(result.snapshot ?? null);
+        if (!nextSnapshot) return;
+        upsertProjectSnapshot(repoPath, nextSnapshot);
+        if (normalizePath(repoPath) === normalizePath(nextSnapshot.path)) {
+          applySnapshotToActiveState(repoPath, nextSnapshot);
+        }
       } catch (error) {
-        console.warn('Project status tick failed:', error);
+        console.warn('Background project refresh failed:', error);
       } finally {
-        tickInFlight = false;
-        if (tickQueued && !isDisposed) {
-          tickQueued = false;
-          window.setTimeout(() => {
-            void runTick(false);
-          }, 0);
-        }
-      }
-    };
-
-    const runFrozenProbe = async () => {
-      if (isDisposed || probeInFlight || tickInFlight || isMapInteractingRef.current) return;
-      probeInFlight = true;
-      try {
-        const shouldCheckDirty = !Boolean(latestCheckedOutRef.current?.hasUncommittedChanges) || expectPossibleCleanTransition;
-        const [nextCheckedOut, nextRemoteTipSha] = await Promise.all([
-          shouldCheckDirty
-            ? invoke<CheckedOutRef>('get_checked_out_ref', { repoPath }).catch(() => latestCheckedOutRef.current)
-            : Promise.resolve(latestCheckedOutRef.current),
-          invoke<string | null>('get_remote_branch_head_sha', { repoPath, branch: defaultBranch }).catch(() => lastProbeRemoteTipSha),
-        ]);
-        const dirtyChanged = getCheckedOutSignature(nextCheckedOut) !== getCheckedOutSignature(latestCheckedOutRef.current);
-        const remoteChanged = nextRemoteTipSha !== lastProbeRemoteTipSha;
-        if (remoteChanged) {
-          lastProbeRemoteTipSha = nextRemoteTipSha;
-        }
-        if (dirtyChanged || remoteChanged || expectPossibleCleanTransition) {
-          void runTick(dirtyChanged || expectPossibleCleanTransition);
-        }
-      } finally {
-        probeInFlight = false;
+        refreshInFlight = false;
       }
     };
 
@@ -1643,45 +1448,23 @@ function App() {
       if (isDisposed) return;
       if (pollTimeoutId != null) window.clearTimeout(pollTimeoutId);
       const hidden = document.visibilityState !== 'visible';
-      const delayMs = hidden ? 60000 : 15000;
+      const delayMs = hidden ? 90000 : 30000;
       pollTimeoutId = window.setTimeout(() => {
-        if (isMapInteractingRef.current) {
-          scheduleBackgroundProbe();
-          return;
-        }
-        if (typeof window.requestIdleCallback === 'function') {
-          window.requestIdleCallback(
-            () => {
-              if (isMapInteractingRef.current) {
-                scheduleBackgroundProbe();
-                return;
-              }
-              void runFrozenProbe();
-              scheduleBackgroundProbe();
-            },
-            { timeout: 2000 },
-          );
-        } else {
-          void runFrozenProbe();
-          scheduleBackgroundProbe();
-        }
+        void runRefresh();
+        scheduleBackgroundProbe();
       }, delayMs);
     };
 
     listen<GitActivityEventPayload>('git-activity', (event) => {
       if (normalizePath(event.payload.repoPath) !== repoPath) return;
-      if (event.payload.kind !== 'local') {
-        expectPossibleCleanTransition = true;
-      }
-      void runTick(event.payload.kind !== 'local');
+      void runRefresh();
     }).then((fn) => {
       if (isDisposed) fn();
       else unlisten = fn;
     }).catch(console.error);
 
     const initialProbeTimeoutId = window.setTimeout(() => {
-      if (isMapInteractingRef.current) return;
-      void runFrozenProbe();
+      void runRefresh();
     }, 250);
     scheduleBackgroundProbe();
 
@@ -1691,7 +1474,7 @@ function App() {
       if (pollTimeoutId != null) window.clearTimeout(pollTimeoutId);
       if (unlisten) unlisten();
     };
-  }, [repoPath, defaultBranch, isFrozenRepo]);
+  }, [repoPath, defaultBranch]);
 
   async function handleGitHubAuthSetup() {
     if (!repoPath) return;
