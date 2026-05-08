@@ -1021,8 +1021,12 @@ function App() {
 
   async function refreshRepoAfterPush(path: string, resolvedDefaultBranch?: string) {
     const branchDef = resolvedDefaultBranch ?? defaultBranch;
-    const [branchList, confirmedCheckedOutRef] = await Promise.all([
+    const [branchList, unpushedDirectResult, confirmedCheckedOutRef] = await Promise.all([
       invoke<Branch[]>('get_branches', { repoPath: path }),
+      invoke<DirectCommit[]>('get_unpushed_direct_commits', {
+        repoPath: path,
+        branch: branchDef,
+      }).catch(() => []),
       invoke<CheckedOutRef>('get_checked_out_ref', { repoPath: path }).catch(() => null),
     ]);
     const unpushedShaEntries = await Promise.all(
@@ -1036,6 +1040,7 @@ function App() {
     );
     startTransition(() => {
       setBranches(branchList);
+      setUnpushedDirectCommits(unpushedDirectResult);
       setUnpushedCommitShasByBranch(Object.fromEntries(unpushedShaEntries));
       setCheckedOutRef(confirmedCheckedOutRef);
     });
