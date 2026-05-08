@@ -79,7 +79,7 @@ export type BranchGridLayoutModel = {
   contentWidth: number;
   contentHeight: number;
   connectors: Connector[];
-  mergeConnectors: Array<{ id: string; fromX: number; fromY: number; toX: number; toY: number; zIndex: number; fromFace?: ConnectorFace; toFace?: ConnectorFace }>;
+  mergeConnectors: Array<{ id: string; fromX: number; fromY: number; toX: number; toY: number; zIndex: number; fromFace?: ConnectorFace; toFace?: ConnectorFace; parentSha?: string; childSha?: string }>;
   connectorDecisions: ConnectorDecisionRow[];
   nodeWarnings: Map<string, string[]>;
   connectorParentShas: Set<string>;
@@ -1119,7 +1119,7 @@ export function computeBranchGridLayout(input: BranchGridLayoutInput): BranchGri
     return resolveChildNodeForSha(sha, preferredBranchName);
   };
 
-  const mergeConnectors: Array<{ id: string; fromX: number; fromY: number; toX: number; toY: number; zIndex: number; fromFace?: ConnectorFace; toFace?: ConnectorFace }> = [];
+  const mergeConnectors: Array<{ id: string; fromX: number; fromY: number; toX: number; toY: number; zIndex: number; fromFace?: ConnectorFace; toFace?: ConnectorFace; parentSha?: string; childSha?: string }> = [];
   const mergeConnectorGeometryKeySet = new Set<string>();
   for (const destination of mergeDestinations) {
     const mergeTarget =
@@ -1235,6 +1235,8 @@ export function computeBranchGridLayout(input: BranchGridLayoutInput): BranchGri
         fromFace,
         toFace,
         zIndex: branchConnectorZIndex(sourceNode.commit.branchName),
+        parentSha: sourceNode.commit.id,
+        childSha: mergeTarget.commit.id,
       });
       pushConnectorDecision({
         id: decisionId,
@@ -1311,6 +1313,8 @@ export function computeBranchGridLayout(input: BranchGridLayoutInput): BranchGri
       fromFace: sourceAnchor.face,
       toFace: targetAnchor.face,
       zIndex: branchConnectorZIndex(childNode.commit.branchName),
+      parentSha: parentNode.commit.id,
+      childSha: childNode.commit.id,
     });
     pushConnectorDecision({
       id: key,
@@ -1390,6 +1394,8 @@ export function computeBranchGridLayout(input: BranchGridLayoutInput): BranchGri
       fromFace: sourceAnchor.face,
       toFace: targetAnchor.face,
       zIndex: branchConnectorZIndex(childNode.commit.branchName),
+      parentSha: parentNode.commit.id,
+      childSha: childNode.commit.id,
     });
     pushConnectorDecision({
       id: key,
@@ -1454,6 +1460,8 @@ export function computeBranchGridLayout(input: BranchGridLayoutInput): BranchGri
         fromFace: sourceAnchor.face,
         toFace: targetAnchor.face,
         zIndex: branchConnectorZIndex(childNode.commit.branchName),
+        parentSha: parentNode.commit.id,
+        childSha: childNode.commit.id,
       });
       pushConnectorDecision({
         id: key,

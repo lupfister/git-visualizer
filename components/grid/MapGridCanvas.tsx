@@ -15,6 +15,8 @@ function MapGridCommitWrapper({
   onPointerMove,
   onPointerUp,
   onPointerCancel,
+  onMouseEnter,
+  onMouseLeave,
   dataCommitCard,
   children,
 }: {
@@ -27,6 +29,8 @@ function MapGridCommitWrapper({
   onPointerMove?: React.PointerEventHandler<HTMLDivElement>;
   onPointerUp?: React.PointerEventHandler<HTMLDivElement>;
   onPointerCancel?: React.PointerEventHandler<HTMLDivElement>;
+  onMouseEnter?: React.MouseEventHandler<HTMLDivElement>;
+  onMouseLeave?: React.MouseEventHandler<HTMLDivElement>;
   dataCommitCard?: string;
   children: ReactNode;
 }) {
@@ -56,6 +60,8 @@ function MapGridCommitWrapper({
       onPointerMove={onPointerMove}
       onPointerUp={onPointerUp}
       onPointerCancel={onPointerCancel}
+      onMouseEnter={onMouseEnter}
+      onMouseLeave={onMouseLeave}
       style={{
         ...style,
         opacity: opaque ? 1 : 0,
@@ -108,9 +114,10 @@ type Props = {
   commitCornerRadiusPx: number;
   lineStrokeWidth: number;
   pointFormatter: (x: number, y: number) => string;
-  connectors: Array<{ id: string; fromX: number; fromY: number; toX: number; toY: number; zIndex: number; fromFace?: ConnectorFace; toFace?: ConnectorFace }>;
-  mergeConnectors: Array<{ id: string; fromX: number; fromY: number; toX: number; toY: number; zIndex: number; fromFace?: ConnectorFace; toFace?: ConnectorFace }>;
-  cullConnectorPath: (connector: { id: string; fromX: number; fromY: number; toX: number; toY: number; fromFace?: ConnectorFace; toFace?: ConnectorFace }) => boolean;
+  connectors: Array<{ id: string; fromX: number; fromY: number; toX: number; toY: number; zIndex: number; fromFace?: ConnectorFace; toFace?: ConnectorFace; parentSha?: string; childSha?: string }>;
+  connectorCommitPairsById: Map<string, { parent: string; child: string }>;
+  mergeConnectors: Array<{ id: string; fromX: number; fromY: number; toX: number; toY: number; zIndex: number; fromFace?: ConnectorFace; toFace?: ConnectorFace; parentSha?: string; childSha?: string }>;
+  cullConnectorPath: (connector: { id: string; fromX: number; fromY: number; toX: number; toY: number; fromFace?: ConnectorFace; toFace?: ConnectorFace; parentSha?: string; childSha?: string }) => boolean;
   flushCameraReactTick: () => void;
   setManuallyOpenedClumps: Dispatch<SetStateAction<Set<string>>>;
   setManuallyClosedClumps: Dispatch<SetStateAction<Set<string>>>;
@@ -165,6 +172,7 @@ export default function MapGridCanvas({
   lineStrokeWidth,
   pointFormatter,
   connectors,
+  connectorCommitPairsById,
   mergeConnectors,
   cullConnectorPath,
   flushCameraReactTick,
@@ -178,6 +186,7 @@ export default function MapGridCanvas({
   nodePositionOverrides = {},
 }: Props) {
   const [openingClumpAnimations, setOpeningClumpAnimations] = useState<Set<string>>(new Set());
+  const [hoveredCommitSha, setHoveredCommitSha] = useState<string | null>(null);
   const openClumpsLastFrameRef = useRef<Set<string> | null>(null);
 
   useEffect(() => {
@@ -291,10 +300,79 @@ export default function MapGridCanvas({
     return { ...connector, fromX: from.x, fromY: from.y, toX: to.x, toY: to.y };
   });
 
+  const shasMatch = (left: string, right: string): boolean => left === right || left.startsWith(right) || right.startsWith(left);
+  const parentShasByChildSha = new Map<string, Set<string>>();
+  const allGraphShas = new Set<string>();
+  for (const connector of [...connectors, ...mergeConnectors]) {
+    const pair = (connector.parentSha && connector.childSha)
+      ? { parent: connector.parentSha, child: connector.childSha }
+      : connectorCommitPairsById.get(connector.id);
+    if (!pair) continue;
+    allGraphShas.add(pair.parent);
+    allGraphShas.add(pair.child);
+    const parents = parentShasByChildSha.get(pair.child) ?? new Set<string>();
+    parents.add(pair.parent);
+    parentShasByChildSha.set(pair.child, parents);
+  }
+  const allGraphShaList = Array.from(allGraphShas);
+  const resolveGraphShas = (sha: string): string[] => {
+    const matches: string[] = [];
+    for (const graphSha of allGraphShaList) {
+      if (shasMatch(graphSha, sha)) matches.push(graphSha);
+    }
+    return matches;
+  };
+  const lineageShasToShow = new Set<string>();
+  const addLineageFromSha = (seedSha: string | null | undefined) => {
+    if (!seedSha) return;
+    const resolvedSeedShas = resolveGraphShas(seedSha);
+    const stack = resolvedSeedShas.length > 0 ? resolvedSeedShas : [seedSha];
+    const visited = new Set<string>();
+    while (stack.length > 0) {
+      const sha = stack.pop()!;
+      if (visited.has(sha)) continue;
+      visited.add(sha);
+      lineageShasToShow.add(sha);
+      const parents = parentShasByChildSha.get(sha);
+      if (parents) {
+        for (const parentSha of parents) stack.push(parentSha);
+      }
+    }
+  };
+  addLineageFromSha(checkedOutHeadSha);
+  if (!checkedOutHeadSha) {
+    const hasWorkingTreeNode = renderNodes.some((node) => node.commit.id === 'WORKING_TREE');
+    if (hasWorkingTreeNode) addLineageFromSha('WORKING_TREE');
+  }
+  for (const selectedSha of selectedVisibleCommitShas) addLineageFromSha(selectedSha);
+  addLineageFromSha(focusedNode?.commit.id ?? null);
+  addLineageFromSha(hoveredCommitSha);
+  const lineageContainsSha = (sha: string): boolean => {
+    if (lineageShasToShow.has(sha)) return true;
+    for (const lineageSha of lineageShasToShow) {
+      if (shasMatch(lineageSha, sha)) return true;
+    }
+    return false;
+  };
+
   const sortedVisibleMergeConnectors = adjustedMergeConnectors
+    .filter((connector) => {
+      const pair = (connector.parentSha && connector.childSha)
+        ? { parent: connector.parentSha, child: connector.childSha }
+        : connectorCommitPairsById.get(connector.id);
+      if (!pair) return false;
+      return lineageContainsSha(pair.parent) && lineageContainsSha(pair.child);
+    })
     .filter((connector) => cullConnectorPath(connector))
     .sort(compareConnectorDrawOrder);
   const sortedVisibleConnectors = adjustedConnectors
+    .filter((connector) => {
+      const pair = (connector.parentSha && connector.childSha)
+        ? { parent: connector.parentSha, child: connector.childSha }
+        : connectorCommitPairsById.get(connector.id);
+      if (!pair) return false;
+      return lineageContainsSha(pair.parent) && lineageContainsSha(pair.child);
+    })
     .filter((connector) => cullConnectorPath(connector))
     .sort(compareConnectorDrawOrder);
 
@@ -420,6 +498,8 @@ export default function MapGridCanvas({
                 onPointerMove={onNodePointerMove}
                 onPointerUp={onNodePointerUp}
                 onPointerCancel={onNodePointerUp}
+                onMouseEnter={() => setHoveredCommitSha(node.commit.id)}
+                onMouseLeave={() => setHoveredCommitSha((current) => (current === node.commit.id ? null : current))}
               >
                 {isDashedOutline ? (
                   <svg

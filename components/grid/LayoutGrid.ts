@@ -107,7 +107,18 @@ export type VisualCommit = CommitItem & { visualId: string; isRemote?: boolean }
 export type Lane = { name: string; column: number; parentName: string | null };
 export type Node = { commit: VisualCommit; row: number; column: number; x: number; y: number };
 export type ConnectorFace = 'left' | 'right' | 'top' | 'bottom';
-export type Connector = { id: string; fromX: number; fromY: number; toX: number; toY: number; zIndex: number; fromFace?: ConnectorFace; toFace?: ConnectorFace };
+export type Connector = {
+  id: string;
+  fromX: number;
+  fromY: number;
+  toX: number;
+  toY: number;
+  zIndex: number;
+  fromFace?: ConnectorFace;
+  toFace?: ConnectorFace;
+  parentSha?: string;
+  childSha?: string;
+};
 
 export const BRANCH_COLUMN_REUSE_TIME_GAP_FACTOR = 3.7;
 export const ROW_HEIGHT = 200;

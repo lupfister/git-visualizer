@@ -332,6 +332,14 @@ export default function BranchGridMap({
     }
     return m;
   }, [renderNodes]);
+  const connectorCommitPairsById = useMemo(() => {
+    const pairs = new Map<string, { parent: string; child: string }>();
+    for (const decision of connectorDecisions) {
+      if (!decision.rendered) continue;
+      pairs.set(decision.id, { parent: decision.parent, child: decision.child });
+    }
+    return pairs;
+  }, [connectorDecisions]);
 
   const commitCullSpatialIndex = useMemo(
     () => buildCommitCullSpatialIndex(renderNodes, labelTopPx),
@@ -1400,6 +1408,7 @@ export default function BranchGridMap({
           lineStrokeWidth={lineStrokeWidth}
           pointFormatter={pointFormatter}
           connectors={connectors}
+          connectorCommitPairsById={connectorCommitPairsById}
           mergeConnectors={mergeConnectors}
           cullConnectorPath={cullConnectorPath}
           flushCameraReactTick={flushCameraReactTick}
