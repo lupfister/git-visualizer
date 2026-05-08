@@ -115,6 +115,7 @@ function makeLayoutCacheKey(
   orientation: OrientationMode,
   manuallyOpenedClumps: Set<string>,
   manuallyClosedClumps: Set<string>,
+  graphSignature = '',
 ): string {
   return [
     'layout-v3',
@@ -122,6 +123,7 @@ function makeLayoutCacheKey(
     orientation,
     setSignature(manuallyOpenedClumps),
     setSignature(manuallyClosedClumps),
+    graphSignature,
   ].join('|');
 }
 
@@ -203,7 +205,6 @@ function App() {
   const [githubAuthStatus, setGithubAuthStatus] = useState<GitHubAuthStatus | null>(null);
   const [githubAuthLoading, setGithubAuthLoading] = useState(false);
   const [githubAuthMessage, setGithubAuthMessage] = useState<string | null>(null);
-  const [forceDbRefreshLoading, setForceDbRefreshLoading] = useState(false);
   const [commitSwitchFeedback, setCommitSwitchFeedback] = useState<{
     kind: 'success' | 'error';
     message: string;
@@ -391,8 +392,6 @@ function App() {
       githubAuthStatus,
       githubAuthLoading,
       onGitHubAuthSetup: handleGitHubAuthSetup,
-      onForceDbRefresh: handleForceDbRefresh,
-      forceDbRefreshLoading,
       gridSearchQuery,
       setGridSearchQuery,
       gridSearchResultCount,
@@ -411,11 +410,9 @@ function App() {
       githubAuthLoading,
       githubAuthMessage,
       githubAuthStatus,
-      forceDbRefreshLoading,
       gridSearchQuery,
       gridSearchResultCount,
       gridSearchResultIndex,
-      handleForceDbRefresh,
       handleGitHubAuthSetup,
       isCommitSwitchFeedbackVisible,
       mapGridOrientation,
@@ -427,10 +424,11 @@ function App() {
     ],
   );
 
-  function upsertProjectSnapshot(path: string, snapshot: RepoVisualSnapshot) {
+  function upsertProjectSnapshot(path: string, snapshot: RepoVisualSnapshot, options?: { force?: boolean }) {
     const signature = getRepoVisualSnapshotSignature(snapshot);
+    const force = options?.force === true;
     const previousSignature = projectSnapshotSignatureRef.current[path];
-    if (previousSignature === signature) return false;
+    if (!force && previousSignature === signature) return false;
     projectSnapshotSignatureRef.current = {
       ...projectSnapshotSignatureRef.current,
       [path]: signature,
@@ -1121,9 +1119,10 @@ function App() {
     }
   }
 
-  function applySnapshotToActiveState(path: string, snapshot: RepoVisualSnapshot) {
+  function applySnapshotToActiveState(path: string, snapshot: RepoVisualSnapshot, options?: { force?: boolean }) {
     const signature = getRepoVisualSnapshotSignature(snapshot);
-    if (activeSnapshotSignatureRef.current === signature) {
+    const force = options?.force === true;
+    if (!force && activeSnapshotSignatureRef.current === signature) {
       return false;
     }
     latestBranchesRef.current = snapshot.branches;
@@ -1537,30 +1536,6 @@ function App() {
       setGithubAuthMessage(e instanceof Error ? e.message : String(e));
     } finally {
       setGithubAuthLoading(false);
-    }
-  }
-
-  async function handleForceDbRefresh() {
-    if (!repoPath || forceDbRefreshLoading) return;
-    setForceDbRefreshLoading(true);
-    try {
-      const result = await invoke<RefreshProjectResult>('force_refresh_project_snapshot', {
-        projectId: repoPath,
-      });
-      const nextSnapshot = toRepoVisualSnapshot(result.snapshot ?? null);
-      if (!nextSnapshot) throw new Error('Missing snapshot payload from forced refresh');
-      upsertProjectSnapshot(repoPath, nextSnapshot);
-      if (sameRepoPath(repoPath, nextSnapshot.path)) {
-        applySnapshotToActiveState(repoPath, nextSnapshot);
-      }
-      setCommitSwitchFeedback({ kind: 'success', message: 'Forced DB refresh complete' });
-      setIsCommitSwitchFeedbackVisible(true);
-    } catch (e) {
-      const message = e instanceof Error ? e.message : String(e);
-      setCommitSwitchFeedback({ kind: 'error', message: `Force refresh failed: ${message}` });
-      setIsCommitSwitchFeedbackVisible(true);
-    } finally {
-      setForceDbRefreshLoading(false);
     }
   }
 
@@ -2616,6 +2591,28 @@ function App() {
     () => setSignature(manuallyClosedGridClumps),
     [manuallyClosedGridClumps],
   );
+  const graphLayoutSignature = useMemo(
+    () => [
+      defaultBranch,
+      visualCheckedOutRef?.branchName ?? '',
+      visualCheckedOutRef?.headSha ?? '',
+      visualCheckedOutRef?.hasUncommittedChanges ? '1' : '0',
+      enrichedBranches.map((branch) => `${branch.name}:${branch.headSha}:${branch.commitsAhead}:${branch.commitsBehind}`).join('|'),
+      enrichedDirectCommits.length,
+      enrichedUnpushedDirectCommits.map((commit) => commit.fullSha).sort().join('|'),
+      mergeNodes.map((node) => `${node.fullSha}:${node.targetBranch}:${node.targetCommitSha}`).join('|'),
+    ].join('@@'),
+    [
+      defaultBranch,
+      visualCheckedOutRef?.branchName,
+      visualCheckedOutRef?.headSha,
+      visualCheckedOutRef?.hasUncommittedChanges,
+      enrichedBranches,
+      enrichedDirectCommits,
+      enrichedUnpushedDirectCommits,
+      mergeNodes,
+    ],
+  );
   const sharedGridLayoutCacheKey = useMemo(() => {
     if (!repoPath) return null;
     return makeLayoutCacheKey(
@@ -2623,12 +2620,14 @@ function App() {
       mapGridOrientation,
       manuallyOpenedGridClumps,
       manuallyClosedGridClumps,
+      graphLayoutSignature,
     );
   }, [
     repoPath,
     mapGridOrientation,
     openedClumpsSignature,
     closedClumpsSignature,
+    graphLayoutSignature,
   ]);
   useEffect(() => {
     if (!repoPath || !sharedGridLayoutCacheKey) {

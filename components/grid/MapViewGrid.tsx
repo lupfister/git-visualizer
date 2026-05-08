@@ -73,8 +73,6 @@ interface Props {
     githubAuthStatus: { ghAvailable: boolean; authenticated: boolean } | null;
     githubAuthLoading: boolean;
     onGitHubAuthSetup: () => void;
-    onForceDbRefresh: () => void;
-    forceDbRefreshLoading: boolean;
     gridSearchQuery: string;
     setGridSearchQuery: (value: string) => void;
     gridSearchResultCount: number | null;

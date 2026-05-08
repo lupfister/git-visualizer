@@ -1492,27 +1492,6 @@ fn refresh_project_if_changed(project_id: String, app: tauri::AppHandle) -> Resu
 }
 
 #[tauri::command(rename_all = "camelCase")]
-fn force_refresh_project_snapshot(project_id: String, app: tauri::AppHandle) -> Result<RefreshProjectResult, String> {
-    let normalized_project_id = normalize_repo_path_id(&project_id);
-    let (current_fingerprint, _) = compute_repo_fingerprint(&normalized_project_id)?;
-    let snapshot = publish_project_snapshot(&normalized_project_id, Some(&current_fingerprint))?;
-    let _ = app.emit(
-        "project-snapshot-updated",
-        serde_json::json!({
-            "projectId": snapshot.project_id,
-            "repoPath": snapshot.repo_path,
-            "snapshotVersion": snapshot.snapshot_version,
-        }),
-    );
-    Ok(RefreshProjectResult {
-        project_id: snapshot.project_id.clone(),
-        repo_path: snapshot.repo_path.clone(),
-        updated: true,
-        snapshot: Some(snapshot),
-    })
-}
-
-#[tauri::command(rename_all = "camelCase")]
 fn get_repo_layout_snapshot(repo_path: String, layout_key: String) -> Result<Option<String>, String> {
     load_cached_repo_layout_snapshot(&repo_path, &layout_key)
 }
@@ -5196,7 +5175,6 @@ pub fn run() {
             load_project_snapshot,
             check_project_fingerprint,
             refresh_project_if_changed,
-            force_refresh_project_snapshot,
             get_repo_layout_snapshot,
             store_repo_layout_snapshot,
             get_repo_quick_state,
