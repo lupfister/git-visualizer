@@ -433,7 +433,16 @@ fn compute_repo_fingerprint(repo_path: &str) -> Result<(String, RepoRefreshFinge
 
     let branch_ref_sig = branches
         .iter()
-        .map(|branch| format!("{}:{}", branch.name, branch.head_sha))
+        .map(|branch| {
+            format!(
+                "{}:{}:{}:{}:{}",
+                branch.name,
+                branch.head_sha,
+                branch.commits_ahead,
+                branch.unpushed_commits,
+                branch.remote_sync_status
+            )
+        })
         .collect::<Vec<_>>()
         .join("|");
     let worktree_sig = worktrees
