@@ -39,6 +39,7 @@ type PushTarget = {
   targetSha?: string;
 };
 type RepoScopedClumpState = Record<string, Set<string>>;
+type MapPresentationState = 'loading' | 'ready' | 'error';
 
 type ProjectRecord = {
   path: string;
@@ -187,6 +188,9 @@ function App() {
   const [gridFocusSha, setGridFocusSha] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
   const [mapLoading, setMapLoading] = useState(false);
+  const [mapSwitchEpoch, setMapSwitchEpoch] = useState(0);
+  const [mapReadyForDisplay, setMapReadyForDisplay] = useState(false);
+  const [mapPresentationState, setMapPresentationState] = useState<MapPresentationState>('loading');
   const [error, setError] = useState<string | null>(null);
   // scrollRequest.seq increments on each click so the same branch re-triggers the effect
   const scrollRequest: { branch: Branch; seq: number } | null = null;
@@ -233,6 +237,7 @@ function App() {
   const [isSidebarCollapsed, setIsSidebarCollapsed] = useState(false);
   const autoFocusSyncKeyRef = useRef<string | null>(null);
   const loadRepoRequestIdRef = useRef(0);
+  const mapSwitchEpochRef = useRef(0);
   const githubFetchRequestIdRef = useRef(0);
   const projectSnapshotSignatureRef = useRef<Record<string, string>>({});
   const activeSnapshotSignatureRef = useRef<string | null>(null);
@@ -1033,7 +1038,25 @@ function App() {
     });
   }
 
+  function beginMapSwitch() {
+    const nextEpoch = mapSwitchEpochRef.current + 1;
+    mapSwitchEpochRef.current = nextEpoch;
+    setMapSwitchEpoch(nextEpoch);
+    setMapReadyForDisplay(false);
+    setMapPresentationState('loading');
+    return nextEpoch;
+  }
+
+  function finishMapSwitch(epoch: number, nextState: MapPresentationState = 'ready') {
+    if (epoch !== mapSwitchEpochRef.current) return;
+    setMapLoading(false);
+    isRepoSwitchingRef.current = false;
+    setMapPresentationState(nextState);
+  }
+
   async function handleSwitchToWorktree(targetPath: string) {
+    const switchEpoch = beginMapSwitch();
+    let hasError = false;
     setCommitSwitchFeedback(null);
     setMapLoading(true);
     isRepoSwitchingRef.current = true;
@@ -1052,6 +1075,7 @@ function App() {
         message: `Now targeting worktree at ${targetPath}`,
       });
     } catch (e) {
+      hasError = true;
       const message = e instanceof Error ? e.message : String(e);
       setCommitSwitchFeedback({
         kind: 'error',
@@ -1059,8 +1083,7 @@ function App() {
       });
       console.error('Failed to switch worktree:', message);
     } finally {
-      setMapLoading(false);
-      isRepoSwitchingRef.current = false;
+      finishMapSwitch(switchEpoch, hasError ? 'error' : 'ready');
     }
   }
 
@@ -1183,6 +1206,8 @@ function App() {
 
   async function loadRepo(path: string) {
     const requestId = ++loadRepoRequestIdRef.current;
+    const switchEpoch = beginMapSwitch();
+    let hasError = false;
     const normalizedPath = normalizePath(path);
     if (!normalizedPath) return;
     if (repoPath && sharedGridLayoutCacheKey) {
@@ -1236,11 +1261,10 @@ function App() {
       await yieldToPaint();
       await yieldToPaint();
       if (requestId !== loadRepoRequestIdRef.current) return;
-      setMapLoading(false);
+      finishMapSwitch(switchEpoch, 'ready');
       setLoading(false);
       void fetchGitHubData(normalizedPath);
       // If repo internals changed, the watcher/tick path will reconcile in background.
-      isRepoSwitchingRef.current = false;
       return;
     }
 
@@ -1294,20 +1318,21 @@ function App() {
       await yieldToPaint();
       await yieldToPaint();
       if (requestId !== loadRepoRequestIdRef.current) return;
-      setMapLoading(false);
+      finishMapSwitch(switchEpoch, 'ready');
       setLoading(false); // unblock the landing button
 
       // Phase 3: GitHub data (non-blocking)
       void fetchGitHubData(normalizedPath);
     } catch (e) {
+      hasError = true;
       if (requestId !== loadRepoRequestIdRef.current) return;
       console.error('Failed to load repo:', e);
       setError(e instanceof Error ? e.message : String(e));
       setRepoPath(null);
       setLoading(false);
-      setMapLoading(false);
     } finally {
-      isRepoSwitchingRef.current = false;
+      if (requestId !== loadRepoRequestIdRef.current) return;
+      finishMapSwitch(switchEpoch, hasError ? 'error' : 'ready');
     }
   }
 
@@ -2776,6 +2801,15 @@ function App() {
     finishSidebarDrag('pointercancel', event.pointerId);
   };
 
+  const handleMapReadyForDisplay = useCallback((epoch: number) => {
+    if (epoch !== mapSwitchEpochRef.current) return;
+    if (mapPresentationState !== 'ready') return;
+    setMapReadyForDisplay(true);
+  }, [mapPresentationState]);
+
+  const blockMapDisplay = !mapReadyForDisplay || mapPresentationState !== 'ready';
+  const blockMapInteraction = mapLoading || loading;
+
   return (
     <div className="relative flex h-screen min-h-0 flex-col bg-background text-foreground">
       <div className="relative z-30 flex h-full min-h-0 flex-col">
@@ -2855,6 +2889,10 @@ function App() {
                 gridSearchJumpDirection={gridSearchJumpDirection}
                 gridFocusSha={gridFocusSha}
                 isLoading={mapLoading || loading}
+                blockMapDisplay={blockMapDisplay}
+                blockMapInteraction={blockMapInteraction}
+                mapReadyEpoch={mapSwitchEpoch}
+                onMapReadyForDisplay={handleMapReadyForDisplay}
                 onGridSearchResultCountChange={setGridSearchResultCount}
                 onGridSearchResultIndexChange={setGridSearchResultIndex}
                 onGridSearchFocusChange={setGridFocusSha}

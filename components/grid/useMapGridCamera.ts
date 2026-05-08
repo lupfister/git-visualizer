@@ -16,12 +16,20 @@ type Params = {
   transformLayerRef: RefObject<HTMLDivElement | null>;
   isEnabled?: boolean;
   onUserCameraChange?: () => void;
+  cameraStorageScopeKey?: string;
 };
 
 export type MapGridCameraState = { panX: number; panY: number; zoom: number };
 const CAMERA_STORAGE_KEY_PREFIX = 'git-visualizer:map-grid-camera:';
+const CAMERA_MAX_ABS_PAN_PX = 200_000;
 
-export function useMapGridCamera({ mapPadHostRef, transformLayerRef, isEnabled = true, onUserCameraChange }: Params) {
+export function useMapGridCamera({
+  mapPadHostRef,
+  transformLayerRef,
+  isEnabled = true,
+  onUserCameraChange,
+  cameraStorageScopeKey,
+}: Params) {
   const panRef = useRef({ x: 0, y: 0 });
   const zoomRef = useRef(GRID_ZOOM_DEFAULT);
   const zoomAnchorRef = useRef<{
@@ -41,7 +49,10 @@ export function useMapGridCamera({ mapPadHostRef, transformLayerRef, isEnabled =
   const lastCameraPanReactEmitRef = useRef(0);
   const isInteractionActiveRef = useRef(false);
 
-  const getCameraStorageKey = useCallback(() => `${CAMERA_STORAGE_KEY_PREFIX}${window.location.pathname}`, []);
+  const getCameraStorageKey = useCallback(() => {
+    const scope = cameraStorageScopeKey?.trim() || window.location.pathname;
+    return `${CAMERA_STORAGE_KEY_PREFIX}${scope}`;
+  }, [cameraStorageScopeKey]);
 
   const persistCamera = useCallback((camera: MapGridCameraState) => {
     try {
@@ -226,8 +237,10 @@ export function useMapGridCamera({ mapPadHostRef, transformLayerRef, isEnabled =
         if (
           typeof parsed.panX === 'number' &&
           Number.isFinite(parsed.panX) &&
+          Math.abs(parsed.panX) <= CAMERA_MAX_ABS_PAN_PX &&
           typeof parsed.panY === 'number' &&
           Number.isFinite(parsed.panY) &&
+          Math.abs(parsed.panY) <= CAMERA_MAX_ABS_PAN_PX &&
           typeof parsed.zoom === 'number' &&
           Number.isFinite(parsed.zoom)
         ) {
