@@ -574,11 +574,14 @@ fn load_active_project_snapshot(conn: &Connection, project_id: &str) -> Result<O
     }))
 }
 
-fn publish_project_snapshot(repo_path: &str) -> Result<ProjectSnapshotRecord, String> {
+fn publish_project_snapshot(repo_path: &str, fingerprint_override: Option<&str>) -> Result<ProjectSnapshotRecord, String> {
     let normalized_repo_path = normalize_repo_path_id(repo_path);
     let project_id = normalized_repo_path.clone();
     let snapshot = compute_repo_visual_snapshot(&normalized_repo_path)?;
-    let (fingerprint, _) = compute_repo_fingerprint(&normalized_repo_path)?;
+    let fingerprint = match fingerprint_override {
+        Some(value) => value.to_string(),
+        None => compute_repo_fingerprint(&normalized_repo_path)?.0,
+    };
     let (clumps, simple_nodes) = build_simple_graph_projection(&snapshot);
     let payload = ProjectGraphSnapshotPayload {
         repo_visual_snapshot: snapshot,
@@ -664,10 +667,15 @@ fn publish_project_snapshot(repo_path: &str) -> Result<ProjectSnapshotRecord, St
     .map_err(|e| format!("Failed to prune old project snapshots: {e}"))?;
     tx.commit()
         .map_err(|e| format!("Failed to commit project snapshot transaction: {e}"))?;
-    let conn = open_visual_cache_connection()?;
-    let snapshot_record = load_active_project_snapshot(&conn, &normalize_repo_path_id(repo_path))?
-        .ok_or_else(|| "Missing active project snapshot after publish".to_string())?;
-    Ok(snapshot_record)
+    Ok(ProjectSnapshotRecord {
+        project_id: normalize_repo_path_id(repo_path),
+        repo_path: normalized_repo_path,
+        snapshot_version: next_version,
+        fingerprint,
+        schema_version: PROJECT_SNAPSHOT_SCHEMA_VERSION,
+        created_at_ms: now_ms,
+        payload,
+    })
 }
 
 fn fetch_all_merge_nodes_for_branches_internal(
@@ -940,10 +948,26 @@ fn compute_repo_visual_snapshot(repo_path: &str) -> Result<RepoVisualSnapshot, S
 #[tauri::command]
 fn watch_repo(repo_path: String, app: tauri::AppHandle) -> Result<(), String> {
     let repo_root = Path::new(&repo_path);
-    let git_dir = repo_root.join(".git");
-    if !git_dir.exists() {
+    let git_dir_hint = repo_root.join(".git");
+    let resolved_git_dir = git::cli::run(repo_root, &["rev-parse", "--absolute-git-dir"])
+        .ok()
+        .map(|value| value.trim().to_string())
+        .filter(|value| !value.is_empty())
+        .map(PathBuf::from)
+        .filter(|path| path.exists())
+        .or_else(|| git_dir_hint.exists().then_some(git_dir_hint.clone()));
+    let resolved_git_common_dir = git::cli::run(repo_root, &["rev-parse", "--git-common-dir"])
+        .ok()
+        .map(|value| value.trim().to_string())
+        .filter(|value| !value.is_empty())
+        .map(|value| {
+            let path = PathBuf::from(value);
+            if path.is_absolute() { path } else { repo_root.join(path) }
+        })
+        .filter(|path| path.exists());
+    let Some(primary_git_dir) = resolved_git_dir else {
         return Ok(());
-    }
+    };
 
     let normalized_repo_path = repo_root.to_string_lossy().to_string();
     {
@@ -960,9 +984,20 @@ fn watch_repo(repo_path: String, app: tauri::AppHandle) -> Result<(), String> {
     let mut watcher = notify::recommended_watcher(tx).map_err(|e| e.to_string())?;
 
     let _ = watcher.watch(repo_root, RecursiveMode::Recursive);
+    let _ = watcher.watch(&primary_git_dir, RecursiveMode::Recursive);
+    if let Some(common_dir) = resolved_git_common_dir.as_ref() {
+        if common_dir != &primary_git_dir {
+            let _ = watcher.watch(common_dir, RecursiveMode::Recursive);
+        }
+    }
     let last_local_emit_ms = std::sync::Arc::new(AtomicU64::new(0));
     let last_graph_emit_ms = std::sync::Arc::new(AtomicU64::new(0));
-    let git_dir = git_dir.to_path_buf();
+    let mut git_roots = vec![primary_git_dir.clone()];
+    if let Some(common_dir) = resolved_git_common_dir {
+        if common_dir != primary_git_dir {
+            git_roots.push(common_dir);
+        }
+    }
     let repo_path_for_events = normalized_repo_path.clone();
 
     std::thread::spawn(move || {
@@ -979,8 +1014,9 @@ fn watch_repo(repo_path: String, app: tauri::AppHandle) -> Result<(), String> {
                         continue;
                     }
 
+                    let is_git_internal = git_roots.iter().any(|root| p.starts_with(root));
                     // Working-tree changes are used to refresh local dirty status only.
-                    if !p.starts_with(&git_dir) {
+                    if !is_git_internal {
                         has_local_change = true;
                         continue;
                     }
@@ -1378,7 +1414,7 @@ fn add_project_and_ingest(repo_path: String) -> Result<ProjectSnapshotRecord, St
             return Ok(active);
         }
     }
-    publish_project_snapshot(&normalized_repo_path)
+    publish_project_snapshot(&normalized_repo_path, Some(&current_fingerprint))
 }
 
 #[tauri::command(rename_all = "camelCase")]
@@ -1438,7 +1474,28 @@ fn refresh_project_if_changed(project_id: String, app: tauri::AppHandle) -> Resu
             snapshot: None,
         });
     }
-    let snapshot = publish_project_snapshot(&check.repo_path)?;
+    let snapshot = publish_project_snapshot(&check.repo_path, Some(&check.current_fingerprint))?;
+    let _ = app.emit(
+        "project-snapshot-updated",
+        serde_json::json!({
+            "projectId": snapshot.project_id,
+            "repoPath": snapshot.repo_path,
+            "snapshotVersion": snapshot.snapshot_version,
+        }),
+    );
+    Ok(RefreshProjectResult {
+        project_id: snapshot.project_id.clone(),
+        repo_path: snapshot.repo_path.clone(),
+        updated: true,
+        snapshot: Some(snapshot),
+    })
+}
+
+#[tauri::command(rename_all = "camelCase")]
+fn force_refresh_project_snapshot(project_id: String, app: tauri::AppHandle) -> Result<RefreshProjectResult, String> {
+    let normalized_project_id = normalize_repo_path_id(&project_id);
+    let (current_fingerprint, _) = compute_repo_fingerprint(&normalized_project_id)?;
+    let snapshot = publish_project_snapshot(&normalized_project_id, Some(&current_fingerprint))?;
     let _ = app.emit(
         "project-snapshot-updated",
         serde_json::json!({
@@ -5139,6 +5196,7 @@ pub fn run() {
             load_project_snapshot,
             check_project_fingerprint,
             refresh_project_if_changed,
+            force_refresh_project_snapshot,
             get_repo_layout_snapshot,
             store_repo_layout_snapshot,
             get_repo_quick_state,

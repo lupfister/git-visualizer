@@ -89,6 +89,11 @@ function normalizePath(path: string): string {
   return path.replace(/\/+$/, '');
 }
 
+function sameRepoPath(left: string | null | undefined, right: string | null | undefined): boolean {
+  if (!left || !right) return false;
+  return normalizePath(left).toLowerCase() === normalizePath(right).toLowerCase();
+}
+
 function cn(...classes: Array<string | false | null | undefined>) {
   return classes.filter(Boolean).join(' ');
 }
@@ -198,6 +203,7 @@ function App() {
   const [githubAuthStatus, setGithubAuthStatus] = useState<GitHubAuthStatus | null>(null);
   const [githubAuthLoading, setGithubAuthLoading] = useState(false);
   const [githubAuthMessage, setGithubAuthMessage] = useState<string | null>(null);
+  const [forceDbRefreshLoading, setForceDbRefreshLoading] = useState(false);
   const [commitSwitchFeedback, setCommitSwitchFeedback] = useState<{
     kind: 'success' | 'error';
     message: string;
@@ -255,6 +261,7 @@ function App() {
 
   const branchMetaLoadKeyRef = useRef<string | null>(null);
   const isMapInteractingRef = useRef(false);
+  const pendingRefreshAfterInteractionRef = useRef(false);
   const hasAttemptedAutoRestoreRef = useRef(false);
   const hasHydratedInitialProjectSnapshotsRef = useRef(false);
   const loadingProjectSnapshotsRef = useRef<Set<string>>(new Set());
@@ -384,6 +391,8 @@ function App() {
       githubAuthStatus,
       githubAuthLoading,
       onGitHubAuthSetup: handleGitHubAuthSetup,
+      onForceDbRefresh: handleForceDbRefresh,
+      forceDbRefreshLoading,
       gridSearchQuery,
       setGridSearchQuery,
       gridSearchResultCount,
@@ -402,9 +411,11 @@ function App() {
       githubAuthLoading,
       githubAuthMessage,
       githubAuthStatus,
+      forceDbRefreshLoading,
       gridSearchQuery,
       gridSearchResultCount,
       gridSearchResultIndex,
+      handleForceDbRefresh,
       handleGitHubAuthSetup,
       isCommitSwitchFeedbackVisible,
       mapGridOrientation,
@@ -685,7 +696,7 @@ function App() {
     listen<GitActivityEventPayload>('git-activity', (event) => {
       if (isDisposed) return;
       const changedPath = normalizePath(event.payload.repoPath);
-      if (!changedPath || changedPath === repoPath) return;
+      if (!changedPath || sameRepoPath(changedPath, repoPath)) return;
       // Keep sidebar/project cache DB-first; active repo updates use snapshot refresh commands.
       void loadProjectSnapshot(changedPath, false);
     }).then((fn) => {
@@ -1449,9 +1460,14 @@ function App() {
     let pollTimeoutId: number | null = null;
     let unlisten: (() => void) | null = null;
     const runRefresh = async () => {
-      if (isDisposed || refreshInFlight || isMapInteractingRef.current) return;
+      if (isDisposed || refreshInFlight) return;
+      if (isMapInteractingRef.current) {
+        pendingRefreshAfterInteractionRef.current = true;
+        return;
+      }
       refreshInFlight = true;
       try {
+        pendingRefreshAfterInteractionRef.current = false;
         const result = await invoke<RefreshProjectResult>('refresh_project_if_changed', {
           projectId: repoPath,
         });
@@ -1466,6 +1482,9 @@ function App() {
         console.warn('Background project refresh failed:', error);
       } finally {
         refreshInFlight = false;
+        if (!isDisposed && pendingRefreshAfterInteractionRef.current && !isMapInteractingRef.current) {
+          void runRefresh();
+        }
       }
     };
 
@@ -1481,7 +1500,7 @@ function App() {
     };
 
     listen<GitActivityEventPayload>('git-activity', (event) => {
-      if (normalizePath(event.payload.repoPath) !== repoPath) return;
+      if (!sameRepoPath(event.payload.repoPath, repoPath)) return;
       void runRefresh();
     }).then((fn) => {
       if (isDisposed) fn();
@@ -1518,6 +1537,30 @@ function App() {
       setGithubAuthMessage(e instanceof Error ? e.message : String(e));
     } finally {
       setGithubAuthLoading(false);
+    }
+  }
+
+  async function handleForceDbRefresh() {
+    if (!repoPath || forceDbRefreshLoading) return;
+    setForceDbRefreshLoading(true);
+    try {
+      const result = await invoke<RefreshProjectResult>('force_refresh_project_snapshot', {
+        projectId: repoPath,
+      });
+      const nextSnapshot = toRepoVisualSnapshot(result.snapshot ?? null);
+      if (!nextSnapshot) throw new Error('Missing snapshot payload from forced refresh');
+      upsertProjectSnapshot(repoPath, nextSnapshot);
+      if (sameRepoPath(repoPath, nextSnapshot.path)) {
+        applySnapshotToActiveState(repoPath, nextSnapshot);
+      }
+      setCommitSwitchFeedback({ kind: 'success', message: 'Forced DB refresh complete' });
+      setIsCommitSwitchFeedbackVisible(true);
+    } catch (e) {
+      const message = e instanceof Error ? e.message : String(e);
+      setCommitSwitchFeedback({ kind: 'error', message: `Force refresh failed: ${message}` });
+      setIsCommitSwitchFeedbackVisible(true);
+    } finally {
+      setForceDbRefreshLoading(false);
     }
   }
 

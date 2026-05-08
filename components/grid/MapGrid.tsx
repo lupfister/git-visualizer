@@ -76,6 +76,8 @@ type Props = BranchGridViewProps & {
     githubAuthStatus: { ghAvailable: boolean; authenticated: boolean } | null;
     githubAuthLoading: boolean;
     onGitHubAuthSetup: () => void;
+    onForceDbRefresh: () => void;
+    forceDbRefreshLoading: boolean;
     gridSearchQuery: string;
     setGridSearchQuery: (value: string) => void;
     gridSearchResultCount: number | null;
@@ -1182,6 +1184,13 @@ export default function BranchGridMap({
             </div>
           </div>
           <div className="pointer-events-none fixed bottom-4 right-4 z-[80] flex max-w-[min(22rem,calc(100vw-2rem))] flex-col items-end gap-1.5">
+            <button
+              onClick={gridHudProps.onForceDbRefresh}
+              disabled={gridHudProps.forceDbRefreshLoading}
+              className="window-no-drag pointer-events-auto inline-flex h-7 items-center gap-2 rounded-md border border-border/60 bg-background/95 px-2 text-[11px] font-medium text-foreground backdrop-blur-sm transition-colors hover:bg-muted hover:text-foreground disabled:cursor-not-allowed disabled:opacity-50"
+            >
+              {gridHudProps.forceDbRefreshLoading ? 'Refreshing DB...' : 'Force DB Refresh'}
+            </button>
             {gridHudProps.githubAuthStatus?.ghAvailable && !gridHudProps.githubAuthStatus.authenticated ? (
               <button
                 onClick={gridHudProps.onGitHubAuthSetup}
