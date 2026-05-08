@@ -1463,7 +1463,7 @@ function App() {
     let refreshInFlight = false;
     let pollTimeoutId: number | null = null;
     let unlisten: (() => void) | null = null;
-    const runRefresh = async () => {
+    const runRefresh = async (reason: 'graph' | 'local' | 'timer' | 'initial' = 'timer') => {
       if (isDisposed || refreshInFlight) return;
       if (isMapInteractingRef.current) {
         pendingRefreshAfterInteractionRef.current = true;
@@ -1472,6 +1472,20 @@ function App() {
       refreshInFlight = true;
       try {
         pendingRefreshAfterInteractionRef.current = false;
+        if (reason !== 'graph') {
+          const quickState = await invoke<RepoQuickState>('get_repo_quick_state', { repoPath }).catch(() => null);
+          if (quickState) {
+            const quickSig = quickStateSignature(quickState);
+            const previousQuickSig = projectQuickStateRef.current[repoPath];
+            if (previousQuickSig && previousQuickSig === quickSig) {
+              return;
+            }
+            projectQuickStateRef.current = {
+              ...projectQuickStateRef.current,
+              [repoPath]: quickSig,
+            };
+          }
+        }
         const result = await invoke<RefreshProjectResult>('refresh_project_if_changed', {
           projectId: repoPath,
         });
@@ -1479,6 +1493,10 @@ function App() {
         const nextSnapshot = toRepoVisualSnapshot(result.snapshot ?? null);
         if (!nextSnapshot) return;
         upsertProjectSnapshot(repoPath, nextSnapshot);
+        projectQuickStateRef.current = {
+          ...projectQuickStateRef.current,
+          [repoPath]: quickStateSignature(quickStateFromSnapshot(repoPath, nextSnapshot)),
+        };
         if (normalizePath(repoPath) === normalizePath(nextSnapshot.path)) {
           applySnapshotToActiveState(repoPath, nextSnapshot);
         }
@@ -1496,23 +1514,23 @@ function App() {
       if (isDisposed) return;
       if (pollTimeoutId != null) window.clearTimeout(pollTimeoutId);
       const hidden = document.visibilityState !== 'visible';
-      const delayMs = hidden ? 90000 : 30000;
+      const delayMs = hidden ? 300000 : 120000;
       pollTimeoutId = window.setTimeout(() => {
-        void runRefresh();
+        void runRefresh('timer');
         scheduleBackgroundProbe();
       }, delayMs);
     };
 
     listen<GitActivityEventPayload>('git-activity', (event) => {
       if (!sameRepoPath(event.payload.repoPath, repoPath)) return;
-      void runRefresh();
+      void runRefresh(event.payload.kind);
     }).then((fn) => {
       if (isDisposed) fn();
       else unlisten = fn;
     }).catch(console.error);
 
     const initialProbeTimeoutId = window.setTimeout(() => {
-      void runRefresh();
+      void runRefresh('initial');
     }, 250);
     scheduleBackgroundProbe();
 
