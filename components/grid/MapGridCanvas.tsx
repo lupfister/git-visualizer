@@ -10,7 +10,11 @@ function MapGridCommitWrapper({
   className,
   style,
   onClick,
+  onMouseDown,
   onPointerDown,
+  onPointerMove,
+  onPointerUp,
+  onPointerCancel,
   dataCommitCard,
   children,
 }: {
@@ -18,7 +22,11 @@ function MapGridCommitWrapper({
   className?: string;
   style?: CSSProperties;
   onClick?: React.MouseEventHandler<HTMLDivElement>;
+  onMouseDown?: React.MouseEventHandler<HTMLDivElement>;
   onPointerDown?: React.PointerEventHandler<HTMLDivElement>;
+  onPointerMove?: React.PointerEventHandler<HTMLDivElement>;
+  onPointerUp?: React.PointerEventHandler<HTMLDivElement>;
+  onPointerCancel?: React.PointerEventHandler<HTMLDivElement>;
   dataCommitCard?: string;
   children: ReactNode;
 }) {
@@ -43,7 +51,11 @@ function MapGridCommitWrapper({
       className={className}
       data-commit-card={dataCommitCard}
       onClick={onClick}
+      onMouseDown={onMouseDown}
       onPointerDown={onPointerDown}
+      onPointerMove={onPointerMove}
+      onPointerUp={onPointerUp}
+      onPointerCancel={onPointerCancel}
       style={{
         ...style,
         opacity: opaque ? 1 : 0,
@@ -65,7 +77,10 @@ type Props = {
   isCameraMoving: boolean;
   onWheel: (event: WheelEvent<HTMLDivElement>) => void;
   onMouseDown: (event: MouseEvent<HTMLDivElement>) => void;
+  onNodeMouseDown: (event: MouseEvent<HTMLDivElement>, node: Node) => void;
   onNodePointerDown: (event: React.PointerEvent<HTMLDivElement>, node: Node) => void;
+  onNodePointerMove: (event: React.PointerEvent<HTMLDivElement>) => void;
+  onNodePointerUp: (event: React.PointerEvent<HTMLDivElement>) => void;
   labelTopPx: number;
   inverseZoomStyle: CSSProperties;
   displayZoom: number;
@@ -104,6 +119,8 @@ type Props = {
   remoteCommitShas: Set<string>;
   checkedOutHeadSha: string | null;
   orientation?: 'vertical' | 'horizontal';
+  dragPreviewByNodeId?: Record<string, { x: number; y: number }>;
+  nodePositionOverrides?: Record<string, { x: number; y: number }>;
 };
 
 export default function MapGridCanvas({
@@ -116,7 +133,10 @@ export default function MapGridCanvas({
   isCameraMoving,
   onWheel,
   onMouseDown,
+  onNodeMouseDown,
   onNodePointerDown,
+  onNodePointerMove,
+  onNodePointerUp,
   labelTopPx,
   inverseZoomStyle,
   displayZoom,
@@ -154,6 +174,8 @@ export default function MapGridCanvas({
   unpushedCommitShasSetByBranch,
   remoteCommitShas,
   checkedOutHeadSha,
+  dragPreviewByNodeId = {},
+  nodePositionOverrides = {},
 }: Props) {
   const [openingClumpAnimations, setOpeningClumpAnimations] = useState<Set<string>>(new Set());
   const openClumpsLastFrameRef = useRef<Set<string> | null>(null);
@@ -216,13 +238,65 @@ export default function MapGridCanvas({
     if (byTopY !== 0) return byTopY;
     return left.id.localeCompare(right.id);
   };
-  const sortedVisibleMergeConnectors = mergeConnectors
-    .filter((connector) => cullConnectorPath(connector))
-    .sort(compareConnectorDrawOrder);
-  const sortedVisibleConnectors = connectors
-    .filter((connector) => cullConnectorPath(connector))
-    .sort(compareConnectorDrawOrder);
   const visibleRenderNodes = renderNodes.filter((node) => shouldRenderNode(node));
+  const anchorForFace = (x: number, y: number, face?: ConnectorFace): { x: number; y: number } => {
+    switch (face) {
+      case 'left':
+        return { x, y: y + CARD_HEIGHT / 2 };
+      case 'right':
+        return { x: x + CARD_WIDTH, y: y + CARD_HEIGHT / 2 };
+      case 'top':
+        return { x: x + CARD_WIDTH / 2, y };
+      case 'bottom':
+        return { x: x + CARD_WIDTH / 2, y: y + CARD_HEIGHT };
+      default:
+        return { x: x + CARD_WIDTH / 2, y: y + CARD_HEIGHT / 2 };
+    }
+  };
+
+  const findAdjustedEndpoint = (
+    endpointX: number,
+    endpointY: number,
+    face: ConnectorFace | undefined,
+  ): { x: number; y: number } => {
+    if (!face) return { x: endpointX, y: endpointY };
+    let best: { dist: number; x: number; y: number } | null = null;
+    for (const node of visibleRenderNodes) {
+      const persistedOverride = nodePositionOverrides[node.commit.visualId] ?? nodePositionOverrides[node.commit.id];
+      const dragPreview = dragPreviewByNodeId[node.commit.visualId];
+      const effectiveX = dragPreview?.x ?? persistedOverride?.x ?? node.x;
+      const effectiveY = dragPreview?.y ?? persistedOverride?.y ?? node.y;
+      if (Math.abs(effectiveX - node.x) < 0.001 && Math.abs(effectiveY - node.y) < 0.001) continue;
+      const originalAnchor = anchorForFace(node.x, node.y, face);
+      const dx = originalAnchor.x - endpointX;
+      const dy = originalAnchor.y - endpointY;
+      const dist = Math.hypot(dx, dy);
+      if (dist > 1.5) continue;
+      const nextAnchor = anchorForFace(effectiveX, effectiveY, face);
+      if (!best || dist < best.dist) {
+        best = { dist, x: nextAnchor.x, y: nextAnchor.y };
+      }
+    }
+    return best ? { x: best.x, y: best.y } : { x: endpointX, y: endpointY };
+  };
+
+  const adjustedMergeConnectors = mergeConnectors.map((connector) => {
+    const from = findAdjustedEndpoint(connector.fromX, connector.fromY, connector.fromFace);
+    const to = findAdjustedEndpoint(connector.toX, connector.toY, connector.toFace);
+    return { ...connector, fromX: from.x, fromY: from.y, toX: to.x, toY: to.y };
+  });
+  const adjustedConnectors = connectors.map((connector) => {
+    const from = findAdjustedEndpoint(connector.fromX, connector.fromY, connector.fromFace);
+    const to = findAdjustedEndpoint(connector.toX, connector.toY, connector.toFace);
+    return { ...connector, fromX: from.x, fromY: from.y, toX: to.x, toY: to.y };
+  });
+
+  const sortedVisibleMergeConnectors = adjustedMergeConnectors
+    .filter((connector) => cullConnectorPath(connector))
+    .sort(compareConnectorDrawOrder);
+  const sortedVisibleConnectors = adjustedConnectors
+    .filter((connector) => cullConnectorPath(connector))
+    .sort(compareConnectorDrawOrder);
 
   return (
     <div
@@ -319,6 +393,12 @@ export default function MapGridCanvas({
               ? { color: 'var(--muted-foreground)' }
               : undefined;
             return (
+              (() => {
+                const dragPreview = dragPreviewByNodeId[node.commit.visualId];
+                const persistedOverride = nodePositionOverrides[node.commit.visualId] ?? nodePositionOverrides[node.commit.id];
+                const cardLeft = dragPreview?.x ?? persistedOverride?.x ?? node.x;
+                const cardTop = dragPreview?.y ?? persistedOverride?.y ?? node.y;
+                return (
               <MapGridCommitWrapper
                 key={node.commit.visualId}
                 fadeIn={shouldAnimateOpeningClump}
@@ -333,9 +413,13 @@ export default function MapGridCanvas({
                   normalizedSearchQuery && matchingNodeIds.has(node.commit.id) ? 'scale-[1.01]' : '',
                   focusedNode?.commit.id === node.commit.id ? 'z-30' : '',
                 )}
-                style={{ left: node.x, top: node.y, width: CARD_WIDTH, height: CARD_BODY_TOP_OFFSET + CARD_HEIGHT + 4, overflow: 'visible' }}
+                style={{ left: cardLeft, top: cardTop, width: CARD_WIDTH, height: CARD_BODY_TOP_OFFSET + CARD_HEIGHT + 4, overflow: 'visible' }}
                 onClick={(event) => onCommitCardClick(event, node)}
+                onMouseDown={(event) => onNodeMouseDown(event, node)}
                 onPointerDown={(event) => onNodePointerDown(event, node)}
+                onPointerMove={onNodePointerMove}
+                onPointerUp={onNodePointerUp}
+                onPointerCancel={onNodePointerUp}
               >
                 {isDashedOutline ? (
                   <svg
@@ -424,7 +508,7 @@ export default function MapGridCanvas({
                   </div>
                 </div>
                 <div className={cn(
-                    'absolute left-0 h-[176px] w-full cursor-pointer overflow-hidden rounded-tr-xl rounded-br-xl rounded-bl-xl rounded-tl-none border border-border/50',
+                    'absolute left-0 h-[176px] w-full cursor-grab active:cursor-grabbing overflow-hidden rounded-tr-xl rounded-br-xl rounded-bl-xl rounded-tl-none border border-border/50',
                     checkedOutAccentActive && !isUnpushedCommit && !isStashedCommit && !isEmptyBranchNode
                     ? 'bg-checked-muted'
                     : remoteAccentActive && !isStashedCommit && !isEmptyBranchNode
@@ -512,6 +596,8 @@ export default function MapGridCanvas({
                   </div>
                 </div>
               </MapGridCommitWrapper>
+                );
+              })()
             );
           })}
           <svg

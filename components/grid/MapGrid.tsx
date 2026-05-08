@@ -57,6 +57,18 @@ function MapGridLoadingState() {
   );
 }
 
+function MapGridEmptyState() {
+  return (
+    <div className="flex flex-1 min-h-0 items-center justify-center">
+      <div className="h-full w-full bg-muted/30 shadow-inner rounded-xl flex items-center justify-center">
+        <div className="text-center">
+          <p className="text-sm text-muted-foreground">No commits to display.</p>
+        </div>
+      </div>
+    </div>
+  );
+}
+
 function MapGridBlockingOverlay() {
   return (
     <div className="pointer-events-auto absolute inset-0 z-[120] flex min-h-0 items-center justify-center bg-background/80 backdrop-blur-sm">
@@ -184,9 +196,11 @@ export default function BranchGridMap({
   const [localManuallyOpenedClumps, setLocalManuallyOpenedClumps] = useState<Set<string>>(() => new Set());
   const [localManuallyClosedClumps, setLocalManuallyClosedClumps] = useState<Set<string>>(() => new Set());
   const [nodePositionOverrides, setNodePositionOverrides] = useState<NodePositionOverrides>({});
+  const [dragPreviewByNodeId, setDragPreviewByNodeId] = useState<Record<string, { x: number; y: number }>>({});
   const suppressNextCommitClickRef = useRef(false);
   const dragNodeRef = useRef<{
     nodeId: string;
+    pointerId?: number;
     startX: number;
     startY: number;
     baseX: number;
@@ -224,7 +238,8 @@ export default function BranchGridMap({
   const lastReadyEpochReportedRef = useRef<number>(0);
 
   const computedLayoutModel = useMemo(() => {
-    if (providedLayoutModel) return providedLayoutModel;
+    const hasNodePositionOverrides = Object.keys(nodePositionOverrides).length > 0;
+    if (providedLayoutModel && !hasNodePositionOverrides) return providedLayoutModel;
     const lanes = buildLanes(branches, defaultBranch, branchCommitPreviews, branchParentByName);
     return computeBranchGridLayout({
       lanes,
@@ -908,12 +923,102 @@ export default function BranchGridMap({
     (event: React.PointerEvent<HTMLDivElement>, node: Node) => {
       if (event.button !== 0) return;
       const target = event.target as HTMLElement | null;
-      if (target?.closest('[data-selectable-text="true"]')) return;
       if (target?.closest('button, a, input, textarea, select')) return;
       event.stopPropagation();
       event.preventDefault();
       suppressNextCommitClickRef.current = false;
       event.currentTarget.setPointerCapture(event.pointerId);
+      const currentOverride = nodePositionOverrides[node.commit.visualId] ?? nodePositionOverrides[node.commit.id];
+      dragNodeRef.current = {
+        nodeId: node.commit.visualId,
+        pointerId: event.pointerId,
+        startX: event.clientX,
+        startY: event.clientY,
+        baseX: currentOverride?.x ?? node.x,
+        baseY: currentOverride?.y ?? node.y,
+        moved: false,
+        pendingX: currentOverride?.x ?? node.x,
+        pendingY: currentOverride?.y ?? node.y,
+      };
+    },
+    [nodePositionOverrides],
+  );
+
+  const flushDragPosition = useCallback(() => {
+    dragRafRef.current = null;
+    const dragState = dragNodeRef.current;
+    if (!dragState) return;
+    setDragPreviewByNodeId((prev) => ({
+      ...prev,
+      [dragState.nodeId]: {
+        x: dragState.pendingX,
+        y: dragState.pendingY,
+      },
+    }));
+    setNodePositionOverrides((prev) => ({
+      ...prev,
+      [dragState.nodeId]: {
+        x: dragState.pendingX,
+        y: dragState.pendingY,
+      },
+    }));
+  }, []);
+
+  const updateDragPosition = useCallback((clientX: number, clientY: number) => {
+    const dragState = dragNodeRef.current;
+    if (!dragState) return;
+    const dragScale = renderedCameraRef.current.zoom / GRID_RENDER_ZOOM;
+    const inverseScale = dragScale > 0 ? 1 / dragScale : 1;
+    const deltaX = (clientX - dragState.startX) * inverseScale;
+    const deltaY = (clientY - dragState.startY) * inverseScale;
+    if (Math.abs(deltaX) > 2 || Math.abs(deltaY) > 2) dragState.moved = true;
+    if (dragState.moved) suppressNextCommitClickRef.current = true;
+    dragState.pendingX = dragState.baseX + deltaX;
+    dragState.pendingY = dragState.baseY + deltaY;
+    if (dragRafRef.current != null) return;
+    dragRafRef.current = window.requestAnimationFrame(flushDragPosition);
+  }, [flushDragPosition, renderedCameraRef]);
+
+  const endDrag = useCallback(() => {
+    if (dragRafRef.current != null) {
+      window.cancelAnimationFrame(dragRafRef.current);
+      dragRafRef.current = null;
+      flushDragPosition();
+    }
+    dragNodeRef.current = null;
+    setDragPreviewByNodeId({});
+    window.setTimeout(() => {
+      suppressNextCommitClickRef.current = false;
+    }, 0);
+  }, [flushDragPosition]);
+
+  const handleNodePointerMove = useCallback((event: React.PointerEvent<HTMLDivElement>) => {
+    const dragState = dragNodeRef.current;
+    if (!dragState) return;
+    if (dragState.pointerId != null && dragState.pointerId !== event.pointerId) return;
+    updateDragPosition(event.clientX, event.clientY);
+  }, [updateDragPosition]);
+
+  const handleNodePointerUp = useCallback((event: React.PointerEvent<HTMLDivElement>) => {
+    const dragState = dragNodeRef.current;
+    if (!dragState) return;
+    if (dragState.pointerId != null && dragState.pointerId !== event.pointerId) return;
+    try {
+      event.currentTarget.releasePointerCapture(event.pointerId);
+    } catch {
+      // Ignore if pointer capture was already released.
+    }
+    endDrag();
+  }, [endDrag]);
+
+  const handleNodeMouseDown = useCallback(
+    (event: React.MouseEvent<HTMLDivElement>, node: Node) => {
+      if (event.button !== 0) return;
+      const target = event.target as HTMLElement | null;
+      if (target?.closest('button, a, input, textarea, select')) return;
+      event.stopPropagation();
+      event.preventDefault();
+      suppressNextCommitClickRef.current = false;
       const currentOverride = nodePositionOverrides[node.commit.visualId] ?? nodePositionOverrides[node.commit.id];
       dragNodeRef.current = {
         nodeId: node.commit.visualId,
@@ -925,58 +1030,18 @@ export default function BranchGridMap({
         pendingX: currentOverride?.x ?? node.x,
         pendingY: currentOverride?.y ?? node.y,
       };
-      const flushDragPosition = () => {
-        dragRafRef.current = null;
-        const dragState = dragNodeRef.current;
-        if (!dragState) return;
-        setNodePositionOverrides((prev) => ({
-          ...prev,
-          [dragState.nodeId]: {
-            x: dragState.pendingX,
-            y: dragState.pendingY,
-          },
-        }));
-      };
-      const handleMove = (moveEvent: PointerEvent) => {
-        const dragState = dragNodeRef.current;
-        if (!dragState) return;
-        const dragScale = renderedCameraRef.current.zoom / GRID_RENDER_ZOOM;
-        const inverseScale = dragScale > 0 ? 1 / dragScale : 1;
-        const deltaX = (moveEvent.clientX - dragState.startX) * inverseScale;
-        const deltaY = (moveEvent.clientY - dragState.startY) * inverseScale;
-        if (Math.abs(deltaX) > 2 || Math.abs(deltaY) > 2) dragState.moved = true;
-        if (dragState.moved) suppressNextCommitClickRef.current = true;
-        dragState.pendingX = dragState.baseX + deltaX;
-        dragState.pendingY = dragState.baseY + deltaY;
-        if (dragRafRef.current != null) return;
-        dragRafRef.current = window.requestAnimationFrame(flushDragPosition);
+      const handleMove = (moveEvent: globalThis.MouseEvent) => {
+        updateDragPosition(moveEvent.clientX, moveEvent.clientY);
       };
       const handleUp = () => {
-        window.removeEventListener('pointermove', handleMove);
-        window.removeEventListener('pointerup', handleUp);
-        window.removeEventListener('pointercancel', handleUp);
-        if (dragRafRef.current != null) {
-          window.cancelAnimationFrame(dragRafRef.current);
-          dragRafRef.current = null;
-          flushDragPosition();
-        }
-        try {
-          event.currentTarget.releasePointerCapture(event.pointerId);
-        } catch {
-          // Ignore if the pointer was already released.
-        }
-        const dragState = dragNodeRef.current;
-        dragNodeRef.current = null;
-        if (!dragState) return;
-        window.setTimeout(() => {
-          suppressNextCommitClickRef.current = false;
-        }, 0);
+        window.removeEventListener('mousemove', handleMove);
+        window.removeEventListener('mouseup', handleUp);
+        endDrag();
       };
-      window.addEventListener('pointermove', handleMove);
-      window.addEventListener('pointerup', handleUp);
-      window.addEventListener('pointercancel', handleUp);
+      window.addEventListener('mousemove', handleMove);
+      window.addEventListener('mouseup', handleUp);
     },
-    [nodePositionOverrides],
+    [nodePositionOverrides, updateDragPosition, endDrag],
   );
 
   const confirmCommit = useCallback(async () => {
@@ -1288,8 +1353,10 @@ export default function BranchGridMap({
           </div>
         </div>
       ) : null}
-      {isLoading || allCommits.length === 0 ? (
+      {isLoading ? (
         <MapGridLoadingState />
+      ) : allCommits.length === 0 ? (
+        <MapGridEmptyState />
       ) : (
         <MapGridCanvas
           scrollContainerRef={scrollContainerRef}
@@ -1301,7 +1368,10 @@ export default function BranchGridMap({
           isCameraMoving={isCameraMoving}
           onWheel={handleWheel}
           onMouseDown={startMarqueeDrag}
+          onNodeMouseDown={handleNodeMouseDown}
           onNodePointerDown={handleNodePointerDown}
+          onNodePointerMove={handleNodePointerMove}
+          onNodePointerUp={handleNodePointerUp}
           labelTopPx={labelTopPx}
           inverseZoomStyle={inverseZoomStyle}
           displayZoom={displayZoom}
@@ -1340,6 +1410,8 @@ export default function BranchGridMap({
           remoteCommitShas={remoteCommitShas}
           checkedOutHeadSha={checkedOutHeadSha}
           orientation={orientation}
+          dragPreviewByNodeId={dragPreviewByNodeId}
+          nodePositionOverrides={nodePositionOverrides}
         />
       )}
       {blockMapDisplay ? <MapGridBlockingOverlay /> : null}

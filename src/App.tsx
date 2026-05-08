@@ -110,6 +110,24 @@ function setSignature(set: Set<string>): string {
   return Array.from(set).sort().join(',');
 }
 
+function hasCommitData(
+  directCommits: DirectCommit[],
+  unpushedDirectCommits: DirectCommit[],
+  mergeNodes: MergeNode[],
+  branchCommitPreviews: Record<string, BranchCommitPreview[]>,
+): boolean {
+  return (
+    directCommits.length > 0 ||
+    unpushedDirectCommits.length > 0 ||
+    mergeNodes.length > 0 ||
+    Object.values(branchCommitPreviews).some((previews) => previews.length > 0)
+  );
+}
+
+function shouldUseOrPersistLayout(hasSourceCommitData: boolean, layoutModel: BranchGridLayoutModel): boolean {
+  return !hasSourceCommitData || layoutModel.allCommits.length > 0;
+}
+
 function makeLayoutCacheKey(
   path: string,
   orientation: OrientationMode,
@@ -735,9 +753,17 @@ function App() {
           try {
             const parsed = JSON.parse(payloadJson);
             const hydrated = hydrateBranchGridLayoutModel(parsed);
-            layoutModelCacheRef.current.set(layoutKey, hydrated);
-            persistedLayoutKeysRef.current.add(layoutKey);
-            continue;
+            const snapshotHasCommitData = hasCommitData(
+              snapshot.directCommits,
+              snapshot.unpushedDirectCommits,
+              snapshot.mergeNodes,
+              snapshot.branchCommitPreviews,
+            );
+            if (shouldUseOrPersistLayout(snapshotHasCommitData, hydrated)) {
+              layoutModelCacheRef.current.set(layoutKey, hydrated);
+              persistedLayoutKeysRef.current.add(layoutKey);
+              continue;
+            }
           } catch {
             // fall through to recompute when persisted payload is invalid
           }
@@ -761,15 +787,23 @@ function App() {
         });
         const computedLayoutModel = computedState.sharedGridLayoutModel;
         layoutModelCacheRef.current.set(layoutKey, computedLayoutModel);
-        persistedLayoutKeysRef.current.add(layoutKey);
-        const serialized = JSON.stringify(serializeBranchGridLayoutModel(computedLayoutModel));
-        void invoke('store_repo_layout_snapshot', {
-          repoPath: normalizedPath,
-          layoutKey,
-          payloadJson: serialized,
-        }).catch(() => {
-          persistedLayoutKeysRef.current.delete(layoutKey);
-        });
+        const snapshotHasCommitData = hasCommitData(
+          snapshot.directCommits,
+          snapshot.unpushedDirectCommits,
+          snapshot.mergeNodes,
+          snapshot.branchCommitPreviews,
+        );
+        if (shouldUseOrPersistLayout(snapshotHasCommitData, computedLayoutModel)) {
+          persistedLayoutKeysRef.current.add(layoutKey);
+          const serialized = JSON.stringify(serializeBranchGridLayoutModel(computedLayoutModel));
+          void invoke('store_repo_layout_snapshot', {
+            repoPath: normalizedPath,
+            layoutKey,
+            payloadJson: serialized,
+          }).catch(() => {
+            persistedLayoutKeysRef.current.delete(layoutKey);
+          });
+        }
         await yieldToPaint();
         if (isDisposed) return;
       }
@@ -1164,6 +1198,12 @@ function App() {
     manuallyOpenedClumps: Set<string>,
     manuallyClosedClumps: Set<string>,
   ): Promise<{ layoutKey: string; model: BranchGridLayoutModel }> {
+    const snapshotHasCommitData = hasCommitData(
+      snapshot.directCommits,
+      snapshot.unpushedDirectCommits,
+      snapshot.mergeNodes,
+      snapshot.branchCommitPreviews,
+    );
     const layoutKey = makeLayoutCacheKey(
       targetRepoPath,
       mapGridOrientation,
@@ -1181,9 +1221,11 @@ function App() {
       try {
         const parsed = JSON.parse(payloadJson);
         const hydrated = hydrateBranchGridLayoutModel(parsed);
-        layoutModelCacheRef.current.set(layoutKey, hydrated);
-        persistedLayoutKeysRef.current.add(layoutKey);
-        return { layoutKey, model: hydrated };
+        if (shouldUseOrPersistLayout(snapshotHasCommitData, hydrated)) {
+          layoutModelCacheRef.current.set(layoutKey, hydrated);
+          persistedLayoutKeysRef.current.add(layoutKey);
+          return { layoutKey, model: hydrated };
+        }
       } catch {
         // fall through to compute when persisted payload is invalid
       }
@@ -1207,15 +1249,17 @@ function App() {
       orientation: mapGridOrientation,
     }).sharedGridLayoutModel;
     layoutModelCacheRef.current.set(layoutKey, computed);
-    persistedLayoutKeysRef.current.add(layoutKey);
-    const serialized = JSON.stringify(serializeBranchGridLayoutModel(computed));
-    void invoke('store_repo_layout_snapshot', {
-      repoPath: targetRepoPath,
-      layoutKey,
-      payloadJson: serialized,
-    }).catch(() => {
-      persistedLayoutKeysRef.current.delete(layoutKey);
-    });
+    if (shouldUseOrPersistLayout(snapshotHasCommitData, computed)) {
+      persistedLayoutKeysRef.current.add(layoutKey);
+      const serialized = JSON.stringify(serializeBranchGridLayoutModel(computed));
+      void invoke('store_repo_layout_snapshot', {
+        repoPath: targetRepoPath,
+        layoutKey,
+        payloadJson: serialized,
+      }).catch(() => {
+        persistedLayoutKeysRef.current.delete(layoutKey);
+      });
+    }
     return { layoutKey, model: computed };
   }
 
@@ -2692,11 +2736,20 @@ function App() {
   }, [repoPath, sharedGridLayoutCacheKey]);
   const sharedGridLayoutModel: BranchGridLayoutModel = useMemo(
     () => {
+      const hasLiveCommitData = hasCommitData(
+        enrichedDirectCommits,
+        enrichedUnpushedDirectCommits,
+        mergeNodes,
+        enrichedBranchCommitPreviews,
+      );
+      const hydratedHasCommits = (hydratedLayoutModel?.allCommits?.length ?? 0) > 0;
+      const canUseHydratedLayout = !hasLiveCommitData || hydratedHasCommits;
       if (
         gridSearchQuery.trim().length === 0 &&
         sharedGridLayoutCacheKey &&
         hydratedLayoutKey === sharedGridLayoutCacheKey &&
-        hydratedLayoutModel
+        hydratedLayoutModel &&
+        canUseHydratedLayout
       ) {
         return hydratedLayoutModel;
       }
@@ -2704,7 +2757,7 @@ function App() {
         const fromCache = sharedGridLayoutCacheKey
           ? layoutModelCacheRef.current.get(sharedGridLayoutCacheKey) ?? null
           : null;
-        if (fromCache) return fromCache;
+        if (fromCache && (!hasLiveCommitData || fromCache.allCommits.length > 0)) return fromCache;
         if (lastResolvedLayoutModelRef.current) return lastResolvedLayoutModelRef.current;
       }
       return computeBranchGridLayout({
@@ -2748,6 +2801,7 @@ function App() {
       hydratedLayoutKey,
       hydratedLayoutModel,
       mapLoading,
+      enrichedBranchCommitPreviews,
     ],
   );
   useEffect(() => {
@@ -2755,7 +2809,14 @@ function App() {
   }, [sharedGridLayoutModel]);
   useEffect(() => {
     if (!repoPath || !sharedGridLayoutCacheKey) return;
+    const hasLiveCommitData = hasCommitData(
+      enrichedDirectCommits,
+      enrichedUnpushedDirectCommits,
+      mergeNodes,
+      enrichedBranchCommitPreviews,
+    );
     layoutModelCacheRef.current.set(sharedGridLayoutCacheKey, sharedGridLayoutModel);
+    if (!shouldUseOrPersistLayout(hasLiveCommitData, sharedGridLayoutModel)) return;
     if (persistedLayoutKeysRef.current.has(sharedGridLayoutCacheKey)) return;
     persistedLayoutKeysRef.current.add(sharedGridLayoutCacheKey);
     const payloadJson = JSON.stringify(serializeBranchGridLayoutModel(sharedGridLayoutModel));
@@ -2766,7 +2827,15 @@ function App() {
     }).catch(() => {
       persistedLayoutKeysRef.current.delete(sharedGridLayoutCacheKey);
     });
-  }, [repoPath, sharedGridLayoutCacheKey, sharedGridLayoutModel]);
+  }, [
+    repoPath,
+    sharedGridLayoutCacheKey,
+    sharedGridLayoutModel,
+    enrichedDirectCommits,
+    enrichedUnpushedDirectCommits,
+    mergeNodes,
+    enrichedBranchCommitPreviews,
+  ]);
 
   useEffect(() => {
     try {
