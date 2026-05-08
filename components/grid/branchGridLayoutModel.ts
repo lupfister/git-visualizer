@@ -1174,9 +1174,36 @@ export function computeBranchGridLayout(input: BranchGridLayoutInput): BranchGri
       let fromX: number;
       let fromY: number;
       let fromFace: ConnectorFace;
-      const toX = isHorizontal ? mergeTarget.x + CARD_WIDTH / 2 : mergeTarget.x + CARD_WIDTH - GRID_MERGE_TARGET_GAP_PX;
-      const toY = isHorizontal ? mergeTarget.y + CARD_HEIGHT + GRID_MERGE_TARGET_GAP_PX : mergeTarget.y + CARD_HEIGHT / 2;
-      const toFace: ConnectorFace = isHorizontal ? 'bottom' : 'right';
+      let toX: number;
+      let toY: number;
+      let toFace: ConnectorFace;
+      if (!isHorizontal) {
+        toX = mergeTarget.x + CARD_WIDTH - GRID_MERGE_TARGET_GAP_PX;
+        toY = mergeTarget.y + CARD_HEIGHT / 2;
+        toFace = 'right';
+      } else {
+        const sourceCenterY = sourceNode.y + CARD_HEIGHT / 2;
+        const targetCenterY = mergeTarget.y + CARD_HEIGHT / 2;
+        const sourceCenterX = sourceNode.x + CARD_WIDTH / 2;
+        const targetCenterX = mergeTarget.x + CARD_WIDTH / 2;
+        const dy = sourceCenterY - targetCenterY;
+        const dx = sourceCenterX - targetCenterX;
+        if (Math.abs(dy) >= Math.abs(dx)) {
+          if (dy >= 0) {
+            toX = mergeTarget.x + CARD_WIDTH / 2;
+            toY = mergeTarget.y + CARD_HEIGHT + GRID_MERGE_TARGET_GAP_PX;
+            toFace = 'bottom';
+          } else {
+            toX = mergeTarget.x + CARD_WIDTH / 2;
+            toY = mergeTarget.y - GRID_MERGE_TARGET_GAP_PX;
+            toFace = 'top';
+          }
+        } else {
+          toX = mergeTarget.x - GRID_MERGE_TARGET_GAP_PX;
+          toY = mergeTarget.y + CARD_HEIGHT / 2;
+          toFace = 'left';
+        }
+      }
       if (!isHorizontal) {
         fromX = sourceNode.x + CARD_WIDTH / 2;
         fromY = sourceNode.y;
