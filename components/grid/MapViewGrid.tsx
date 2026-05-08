@@ -86,6 +86,10 @@ interface Props {
     commitSwitchFeedback: { kind: 'success' | 'error'; message: string } | null;
     isCommitSwitchFeedbackVisible: boolean;
   };
+  blockMapInteraction?: boolean;
+  blockMapDisplay?: boolean;
+  mapReadyEpoch?: number;
+  onMapReadyForDisplay?: (epoch: number) => void;
 }
 
 export default function BranchGridMapView({
@@ -150,6 +154,10 @@ export default function BranchGridMapView({
   setManuallyClosedClumps,
   layoutModel,
   gridHudProps,
+  blockMapInteraction = false,
+  blockMapDisplay = false,
+  mapReadyEpoch = 0,
+  onMapReadyForDisplay,
 }: Props) {
   const openPRBranchNames = new Set(openPRs.map(p => p.branchName));
   const ACTIVE_MS = 14 * 86400000;
@@ -224,6 +232,10 @@ export default function BranchGridMapView({
             setManuallyClosedClumps={setManuallyClosedClumps}
             layoutModel={layoutModel}
             gridHudProps={gridHudProps}
+            blockMapInteraction={blockMapInteraction}
+            blockMapDisplay={blockMapDisplay}
+            mapReadyEpoch={mapReadyEpoch}
+            onMapReadyForDisplay={onMapReadyForDisplay}
           />
         </div>
       ) : view === 'grid' ? (
@@ -256,6 +268,10 @@ export default function BranchGridMapView({
             onDebugClose={onDebugClose}
             orientation={orientation}
             gridHudProps={gridHudProps}
+            blockMapInteraction={blockMapInteraction}
+            blockMapDisplay={blockMapDisplay}
+            mapReadyEpoch={mapReadyEpoch}
+            onMapReadyForDisplay={onMapReadyForDisplay}
           />
         </div>
       ) : null}

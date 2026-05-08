@@ -57,6 +57,18 @@ function MapGridLoadingState() {
   );
 }
 
+function MapGridBlockingOverlay() {
+  return (
+    <div className="pointer-events-auto absolute inset-0 z-[120] flex min-h-0 items-center justify-center bg-background/80 backdrop-blur-sm">
+      <div
+        role="status"
+        aria-label="Preparing map"
+        className="h-5 w-5 rounded-full border-2 border-border border-t-muted-foreground animate-spin"
+      />
+    </div>
+  );
+}
+
 type Props = BranchGridViewProps & {
   isDebugOpen?: boolean;
   onDebugClose?: () => void;
@@ -77,6 +89,10 @@ type Props = BranchGridViewProps & {
     commitSwitchFeedback: { kind: 'success' | 'error'; message: string } | null;
     isCommitSwitchFeedbackVisible: boolean;
   };
+  blockMapInteraction?: boolean;
+  blockMapDisplay?: boolean;
+  mapReadyEpoch?: number;
+  onMapReadyForDisplay?: (epoch: number) => void;
 };
 
 export default function BranchGridMap({
@@ -140,6 +156,10 @@ export default function BranchGridMap({
   setManuallyClosedClumps: controlledSetManuallyClosedClumps,
   layoutModel: providedLayoutModel,
   gridHudProps,
+  blockMapInteraction = false,
+  blockMapDisplay = false,
+  mapReadyEpoch = 0,
+  onMapReadyForDisplay,
 }: Props) {
   const scrollContainerRef = useRef<HTMLDivElement | null>(null);
   const hudToolbarRef = useRef<HTMLDivElement | null>(null);
@@ -195,7 +215,13 @@ export default function BranchGridMap({
     flushCameraReactTick,
     syncCamera,
     handleWheel,
-  } = useMapGridCamera({ mapPadHostRef, transformLayerRef });
+  } = useMapGridCamera({
+    mapPadHostRef,
+    transformLayerRef,
+    isEnabled: !blockMapInteraction,
+    cameraStorageScopeKey: `${currentRepoPath ?? '__no-repo__'}::${orientation}`,
+  });
+  const lastReadyEpochReportedRef = useRef<number>(0);
 
   const computedLayoutModel = useMemo(() => {
     if (providedLayoutModel) return providedLayoutModel;
@@ -1056,6 +1082,19 @@ export default function BranchGridMap({
 
   void [openPRs, onLoadMore, view, staleBranches, isLoading, scrollRequest, focusedErrorBranch, mapTopInsetPx, visibleNodesBySha, freshCopyBranchNames];
 
+  useLayoutEffect(() => {
+    if (isLoading) return;
+    if (blockMapInteraction) return;
+    if (allCommits.length === 0) return;
+    if (lastReadyEpochReportedRef.current === mapReadyEpoch) return;
+    const rafId = window.requestAnimationFrame(() => {
+      if (lastReadyEpochReportedRef.current === mapReadyEpoch) return;
+      lastReadyEpochReportedRef.current = mapReadyEpoch;
+      onMapReadyForDisplay?.(mapReadyEpoch);
+    });
+    return () => window.cancelAnimationFrame(rafId);
+  }, [allCommits.length, isLoading, blockMapInteraction, mapReadyEpoch, onMapReadyForDisplay]);
+
   return (
     <div className="relative flex h-full min-h-0 flex-col overflow-hidden border-l border-border bg-background">
       <MapGridDebugPanel
@@ -1303,6 +1342,7 @@ export default function BranchGridMap({
           orientation={orientation}
         />
       )}
+      {blockMapDisplay ? <MapGridBlockingOverlay /> : null}
 
       {marqueeRect && isMarqueeSelecting ? (
         <div
