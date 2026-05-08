@@ -328,6 +328,15 @@ pub fn get_all_repo_commits(
         is_descendant_or_equal(commit_sha, child_sha)
     };
     for commit in &mut commits {
+        let current_branch_reachable = if commit.branch.is_empty() {
+            false
+        } else {
+            distance_by_commit_sha_and_branch
+                .contains_key(&(commit.full_sha.clone(), commit.branch.clone()))
+        };
+        if current_branch_reachable && commit.branch != default_branch {
+            continue;
+        }
         if branch_accepts_commit(
             &commit.branch,
             &commit.full_sha,
@@ -336,7 +345,7 @@ pub fn get_all_repo_commits(
         ) {
             continue;
         }
-        let mut best_match: Option<(String, usize, usize)> = None;
+        let mut best_match: Option<(String, usize, usize, bool)> = None;
         for (branch_index, branch_name) in branch_order.iter().enumerate() {
             if !branch_accepts_commit(
                 branch_name,
@@ -350,16 +359,23 @@ pub fn get_all_repo_commits(
             let Some(distance) = distance_by_commit_sha_and_branch.get(&key).copied() else {
                 continue;
             };
+            let is_default_branch = branch_name == default_branch;
             match &best_match {
-                None => best_match = Some((branch_name.clone(), distance, branch_index)),
-                Some((_, best_distance, best_index)) => {
+                None => best_match = Some((branch_name.clone(), distance, branch_index, is_default_branch)),
+                Some((_, best_distance, best_index, best_is_default_branch)) => {
+                    if is_default_branch != *best_is_default_branch {
+                        if !is_default_branch {
+                            best_match = Some((branch_name.clone(), distance, branch_index, is_default_branch));
+                        }
+                        continue;
+                    }
                     if distance < *best_distance || (distance == *best_distance && branch_index < *best_index) {
-                        best_match = Some((branch_name.clone(), distance, branch_index));
+                        best_match = Some((branch_name.clone(), distance, branch_index, is_default_branch));
                     }
                 }
             }
         }
-        if let Some((branch_name, _, _)) = best_match {
+        if let Some((branch_name, _, _, _)) = best_match {
             commit.branch = branch_name;
         } else {
             commit.branch.clear();

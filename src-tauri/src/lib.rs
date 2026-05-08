@@ -2869,6 +2869,7 @@ fn get_unpushed_direct_commits(
         path,
         &[
             "log",
+            "--first-parent",
             "--format=%H%x1f%h%x1f%s%x1f%an%x1f%cI%x1f%P",
             &range,
         ],
@@ -2936,7 +2937,7 @@ fn get_branch_unpushed_commit_shas(
     let default_branch = git::get_default_branch(path).map_err(|e| e.to_string())?;
     format!("{default_branch}..{branch}")
     };
-    let output = git::cli::run(path, &["rev-list", &range])
+    let output = git::cli::run(path, &["rev-list", "--first-parent", &range])
         .map_err(|e| e.to_string())?;
     Ok(output
         .lines()
