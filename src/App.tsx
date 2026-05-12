@@ -2590,7 +2590,7 @@ function App() {
   );
   const graphLayoutSignature = useMemo(
     () => [
-      'layout-v2-no-lane-reuse',
+      'layout-v5-parent-origin-no-reuse',
       defaultBranch,
       visualCheckedOutRef?.branchName ?? '',
       visualCheckedOutRef?.headSha ?? '',

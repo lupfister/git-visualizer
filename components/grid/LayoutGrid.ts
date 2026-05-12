@@ -237,7 +237,7 @@ export function buildLanes(
   const laneByName = new Map<string, Lane>();
   const lanes: Lane[] = [];
   const laneDepthByName = new Map<string, number>();
-  const columnIntervals = new Map<number, Array<{ start: number; end: number }>>();
+  const columnIntervals = new Map<number, Array<{ start: number; end: number; parentName: string | null; splitParentName: string | null; rootName: string }>>();
   const commitTimeBySha = new Map<string, number>();
   for (const previews of Object.values(branchCommitPreviews)) {
     for (const preview of previews) {
@@ -271,10 +271,41 @@ export function buildLanes(
   const minGapMs = Math.max(1, 6 * 60 * 60 * 1000 * BRANCH_COLUMN_REUSE_TIME_GAP_FACTOR);
   const overlapsWithGap = (left: { start: number; end: number }, right: { start: number; end: number }): boolean =>
     !(left.start - right.end >= minGapMs || right.start - left.end >= minGapMs);
-  const conflicts = (column: number, candidateIntervals: Array<{ start: number; end: number }>): boolean => {
+  const resolveRootAndSplitParent = (branchName: string): { rootName: string; splitParentName: string | null } => {
+    if (branchName === defaultBranch) return { rootName: defaultBranch, splitParentName: null };
+    let cursor = branchName;
+    let parentName: string | null = null;
+    const seen = new Set<string>();
+    while (!seen.has(cursor)) {
+      seen.add(cursor);
+      const branch = byName.get(cursor);
+      if (!branch) break;
+      parentName = resolveLaneParentName(branch);
+      if (!parentName) return { rootName: cursor, splitParentName: null };
+      if (parentName === defaultBranch) return { rootName: cursor, splitParentName: defaultBranch };
+      cursor = parentName;
+    }
+    return { rootName: branchName, splitParentName: null };
+  };
+  const conflicts = (
+    column: number,
+    candidateIntervals: Array<{ start: number; end: number }>,
+    candidateParentName: string | null,
+    candidateRootName: string,
+    candidateSplitParentName: string | null,
+  ): boolean => {
     const existingIntervals = columnIntervals.get(column) ?? [];
-    // Dedicated-lane mode: once a lane has any branch occupancy, no other branch may reuse it.
-    if (existingIntervals.length > 0) return true;
+    if (existingIntervals.some((existing) => existing.parentName === candidateParentName)) return true;
+    if (
+      existingIntervals.some(
+        (existing) =>
+          existing.splitParentName != null &&
+          existing.splitParentName === candidateSplitParentName &&
+          existing.rootName !== candidateRootName,
+      )
+    ) {
+      return true;
+    }
     return candidateIntervals.some((candidate) =>
       existingIntervals.some((existing) => overlapsWithGap(candidate, existing)),
     );
@@ -312,7 +343,13 @@ export function buildLanes(
       laneByName.set(branchName, lane);
       lanes.push(lane);
       const claimedIntervals = intervalsForBranchInColumn(branch);
-      columnIntervals.set(0, [...(columnIntervals.get(0) ?? []), ...claimedIntervals]);
+      columnIntervals.set(
+        0,
+        [
+          ...(columnIntervals.get(0) ?? []),
+          ...claimedIntervals.map((interval) => ({ ...interval, parentName: null, splitParentName: null, rootName: defaultBranch })),
+        ],
+      );
       visiting.delete(branchName);
       return 0;
     }
@@ -324,13 +361,20 @@ export function buildLanes(
     const parentColumn = parentName ? claimColumn(parentName, visiting) : 0;
     const nestingFloorColumn = Math.max(1, resolveLaneDepth(branchName));
     const minColumn = Math.max(parentName ? parentColumn + 1 : 1, nestingFloorColumn);
+    const { rootName, splitParentName } = resolveRootAndSplitParent(branchName);
     const claimedIntervals = intervalsForBranchInColumn(branch);
     let column = minColumn;
-    while (conflicts(column, claimedIntervals)) column += 1;
+    while (conflicts(column, claimedIntervals, parentName, rootName, splitParentName)) column += 1;
     const lane = { name: branchName, column, parentName };
     laneByName.set(branchName, lane);
     lanes.push(lane);
-    columnIntervals.set(column, [...(columnIntervals.get(column) ?? []), ...claimedIntervals]);
+    columnIntervals.set(
+      column,
+      [
+        ...(columnIntervals.get(column) ?? []),
+        ...claimedIntervals.map((interval) => ({ ...interval, parentName, splitParentName, rootName })),
+      ],
+    );
     visiting.delete(branchName);
     return column;
   };
@@ -347,11 +391,17 @@ export function buildLanes(
   for (const branch of detachedRootBranches) {
     const claimedIntervals = intervalsForBranchInColumn(branch);
     let column = detachedRootColumnCursor;
-    while (conflicts(column, claimedIntervals)) column += 1;
+    while (conflicts(column, claimedIntervals, null, branch.name, null)) column += 1;
     const lane = { name: branch.name, column, parentName: null };
     laneByName.set(branch.name, lane);
     lanes.push(lane);
-    columnIntervals.set(column, [...(columnIntervals.get(column) ?? []), ...claimedIntervals]);
+    columnIntervals.set(
+      column,
+      [
+        ...(columnIntervals.get(column) ?? []),
+        ...claimedIntervals.map((interval) => ({ ...interval, parentName: null, splitParentName: null, rootName: branch.name })),
+      ],
+    );
     detachedRootColumnCursor = column + 1;
   }
 
