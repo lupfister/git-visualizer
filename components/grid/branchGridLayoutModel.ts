@@ -161,6 +161,7 @@ function allocateRowsByColumnAndTime(
   const rowByVisualId = new Map<string, number>();
   const occupiedRowsByRow = new Map<number, Array<{ visualId: string; sha: string; column: number; time: number; branchEntryParentSha: string | null }>>();
   const childRowsByParentSha = new Map<string, number[]>();
+  const stashRowByParentSha = new Map<string, number>();
   const sharedRowBlockedByBranchLine = new Set<number>();
   const branchCommitShasByName = new Map<string, Set<string>>();
   const commitColumnsBySha = new Map<string, Set<number>>();
@@ -256,9 +257,18 @@ function allocateRowsByColumnAndTime(
     const parentRows = Array.from(parentShas).flatMap((parentSha) =>
       resolveKnownShas(parentSha).flatMap((knownParentSha) => rowBySha.get(knownParentSha) ?? []),
     );
-    const forcedImmediateChildRow = (commit.kind === 'branch-created' || commit.kind === 'stash') && parentRows.length > 0
-      ? Math.max(...parentRows) + 1
-      : null;
+    const forcedImmediateChildRow = (() => {
+      if (parentRows.length === 0) return null;
+      if (commit.kind === 'stash' && commit.parentSha) {
+        const siblingStashRow = stashRowByParentSha.get(commit.parentSha);
+        if (siblingStashRow != null) return siblingStashRow;
+        const target = Math.max(...parentRows) + 1;
+        stashRowByParentSha.set(commit.parentSha, target);
+        return target;
+      }
+      if (commit.kind === 'branch-created') return Math.max(...parentRows) + 1;
+      return null;
+    })();
     const minimumAllowedRow = parentRows.length > 0 ? Math.max(...parentRows) + 1 : 1;
     const childShas = childShasByParentSha.get(commit.id) ?? new Set<string>();
     const childColumns = Array.from(childShas).flatMap((childSha) => Array.from(commitColumnsBySha.get(childSha) ?? []));
@@ -348,6 +358,25 @@ function allocateRowsByColumnAndTime(
       }
     }
     if (!changed) break;
+  }
+  // Final stash sibling invariant: same-parent stashes stay on the same row (parent + 1 intent).
+  const stashCommitsByParentSha = new Map<string, VisualCommit[]>();
+  for (const commit of orderedCommits) {
+    if (commit.kind !== 'stash' || !commit.parentSha) continue;
+    const list = stashCommitsByParentSha.get(commit.parentSha) ?? [];
+    list.push(commit);
+    stashCommitsByParentSha.set(commit.parentSha, list);
+  }
+  for (const [parentSha, stashCommits] of stashCommitsByParentSha.entries()) {
+    if (stashCommits.length < 2) continue;
+    const parentRows = resolveKnownShas(parentSha).flatMap((knownParentSha) => rowBySha.get(knownParentSha) ?? []);
+    const targetRowFromParent = parentRows.length > 0 ? Math.max(...parentRows) + 1 : null;
+    const existingRows = stashCommits.map((commit) => rowByVisualId.get(commit.visualId) ?? 1);
+    const targetRow = targetRowFromParent ?? Math.min(...existingRows);
+    for (const stashCommit of stashCommits) {
+      rowByVisualId.set(stashCommit.visualId, targetRow);
+      rowBySha.set(stashCommit.id, [targetRow]);
+    }
   }
   // Row index increases toward descendants. Pixel mapping in `computeBranchGridLayout`:
   // vertical inverts this row index (newer above); horizontal keeps it direct (newer right).
@@ -898,77 +927,80 @@ export function computeBranchGridLayout(input: BranchGridLayoutInput): BranchGri
     const laneColumnFloor = laneByName.get(commit.branchName)?.column ?? 0;
     const clusterKey = clusterKeyByCommitId.get(commit.visualId);
     const clusterColumn = clusterKey ? clusterColumnByKey.get(clusterKey) : undefined;
-    if (clusterColumn != null) {
-      columnByCommitVisualId.set(commit.visualId, Math.max(clusterColumn, laneColumnFloor));
-      continue;
-    }
-    const syntheticBranchChild = commit.kind === 'stash' || commit.kind === 'branch-created';
-    if (syntheticBranchChild) {
-      const parentColumns = clusterParentShasForCommit(commit)
-        .flatMap((parentSha) => clusterKeyBySha.get(parentSha) ?? [])
-        .map((parentClusterKey) => clusterColumnByKey.get(parentClusterKey))
-        .filter((value): value is number => value != null);
-      if (parentColumns.length > 0) {
-        columnByCommitVisualId.set(commit.visualId, Math.max(Math.max(...parentColumns) + 1, laneColumnFloor));
-        continue;
-      }
-    }
-    columnByCommitVisualId.set(commit.visualId, laneColumnFloor);
+    columnByCommitVisualId.set(commit.visualId, Math.max(clusterColumn ?? laneColumnFloor, laneColumnFloor));
   }
-  // Hard invariant: synthetic branch children (stash/placeholder) must stay strictly after
-  // any resolved parent lane, including synthetic-parent chains (e.g. stash@{1} after stash@{0}).
-  const syntheticLaneKinds = new Set<NonNullable<VisualCommit['kind']>>(['stash', 'branch-created']);
-  const maxSyntheticPasses = Math.max(1, allCommitsWithClusters.length);
-  for (let pass = 0; pass < maxSyntheticPasses; pass += 1) {
-    let changed = false;
-    for (const commit of allCommitsWithClusters) {
-      if (!commit.kind || !syntheticLaneKinds.has(commit.kind)) continue;
-      const parentSha = commit.parentSha ?? null;
-      if (!parentSha) continue;
-      const parentColumns = allCommitsWithClusters
-        .filter((candidate) => shasMatch(candidate.id, parentSha))
-        .map((candidate) => columnByCommitVisualId.get(candidate.visualId))
-        .filter((value): value is number => value != null);
-      if (parentColumns.length === 0) continue;
-      const minimumColumn = Math.max(...parentColumns) + 1;
-      const currentColumn = columnByCommitVisualId.get(commit.visualId) ?? 0;
-      if (currentColumn < minimumColumn) {
-        columnByCommitVisualId.set(commit.visualId, minimumColumn);
-        changed = true;
-      }
-    }
-    if (!changed) break;
+  // Invariant: synthetic branch children must be after their parent lane, never before.
+  const syntheticKinds = new Set<NonNullable<VisualCommit['kind']>>(['stash', 'branch-created']);
+  const syntheticLaneGapMs = 60 * 60 * 1000;
+  const syntheticWindowFor = (commit: VisualCommit): { start: number; end: number } => {
+    const center = safeTimeMs(commit.date);
+    if (!Number.isFinite(center)) return { start: Number.NEGATIVE_INFINITY, end: Number.POSITIVE_INFINITY };
+    return { start: center - syntheticLaneGapMs, end: center + syntheticLaneGapMs };
+  };
+  const overlapsWindow = (left: { start: number; end: number }, right: { start: number; end: number }): boolean =>
+    !(left.end < right.start || right.end < left.start);
+  const baseOccupiedByColumn = new Map<number, Array<{ start: number; end: number }>>();
+  for (const other of allCommitsWithClusters) {
+    const column = columnByCommitVisualId.get(other.visualId);
+    if (column == null) continue;
+    const list = baseOccupiedByColumn.get(column) ?? [];
+    list.push(syntheticWindowFor(other));
+    baseOccupiedByColumn.set(column, list);
   }
-  // Real-parent stash siblings must not overlap in the same immediate child lane:
-  // for one parent, allocate stash lanes as parent+1, parent+2, ... (no chaining).
-  const stashSiblingsByParentSha = new Map<string, VisualCommit[]>();
+  const findFreeSyntheticColumn = (
+    commit: VisualCommit,
+    minColumn: number,
+  ): number => {
+    const targetWindow = syntheticWindowFor(commit);
+    const maxOccupiedColumn = Math.max(minColumn, ...Array.from(baseOccupiedByColumn.keys()));
+    const searchEnd = maxOccupiedColumn + 1;
+    let contiguousCollisionTop = minColumn - 1;
+    let seenGap = false;
+    let firstFreeAfterContiguous: number | null = null;
+    let candidate = minColumn;
+    while (candidate <= searchEnd) {
+      const collisions = (baseOccupiedByColumn.get(candidate) ?? []).some((window) => overlapsWindow(window, targetWindow));
+      if (collisions && !seenGap) {
+        contiguousCollisionTop = candidate;
+      } else if (!collisions) {
+        seenGap = true;
+        if (firstFreeAfterContiguous == null && candidate > contiguousCollisionTop) {
+          firstFreeAfterContiguous = candidate;
+        }
+      }
+      candidate += 1;
+    }
+    return firstFreeAfterContiguous ?? (contiguousCollisionTop + 1);
+  };
   for (const commit of allCommitsWithClusters) {
-    if (commit.kind !== 'stash') continue;
+    if (!commit.kind || !syntheticKinds.has(commit.kind)) continue;
     const parentSha = commit.parentSha ?? null;
     if (!parentSha) continue;
-    const siblings = stashSiblingsByParentSha.get(parentSha) ?? [];
-    siblings.push(commit);
-    stashSiblingsByParentSha.set(parentSha, siblings);
-  }
-  for (const [parentSha, siblings] of stashSiblingsByParentSha.entries()) {
     const parentColumns = allCommitsWithClusters
       .filter((candidate) => shasMatch(candidate.id, parentSha))
       .map((candidate) => columnByCommitVisualId.get(candidate.visualId))
       .filter((value): value is number => value != null);
     if (parentColumns.length === 0) continue;
-    let nextMinimumColumn = Math.max(...parentColumns) + 1;
-    siblings.sort((left, right) => {
-      const timeDelta = safeTimeMs(left.date) - safeTimeMs(right.date);
-      if (timeDelta !== 0) return timeDelta;
-      return left.id.localeCompare(right.id);
-    });
-    for (const stashCommit of siblings) {
-      const laneFloor = laneByName.get(stashCommit.branchName)?.column ?? 0;
-      const currentColumn = columnByCommitVisualId.get(stashCommit.visualId) ?? 0;
-      const resolvedColumn = Math.max(currentColumn, laneFloor, nextMinimumColumn);
-      columnByCommitVisualId.set(stashCommit.visualId, resolvedColumn);
-      nextMinimumColumn = resolvedColumn + 1;
+    const laneFloor = laneByName.get(commit.branchName)?.column ?? 0;
+    let minimumColumn = Math.max(laneFloor, Math.max(...parentColumns) + 1);
+    if (commit.kind === 'stash') {
+      const stashTime = safeTimeMs(commit.date);
+      const resolvedParentTimes = allCommitsWithClusters
+        .filter((candidate) => shasMatch(candidate.id, parentSha))
+        .map((candidate) => safeTimeMs(candidate.date))
+        .filter((value) => Number.isFinite(value));
+      const parentTime = resolvedParentTimes.length > 0 ? Math.max(...resolvedParentTimes) : Number.NEGATIVE_INFINITY;
+      const neighborhoodColumns = allCommitsWithClusters
+        .filter((candidate) => {
+          const time = safeTimeMs(candidate.date);
+          return Number.isFinite(time) && time >= parentTime - syntheticLaneGapMs && time <= stashTime + syntheticLaneGapMs;
+        })
+        .map((candidate) => columnByCommitVisualId.get(candidate.visualId))
+        .filter((value): value is number => value != null);
+      if (neighborhoodColumns.includes(minimumColumn)) minimumColumn += 1;
     }
+    const resolvedColumn = findFreeSyntheticColumn(commit, minimumColumn);
+    columnByCommitVisualId.set(commit.visualId, resolvedColumn);
   }
   const allRowByVisualId = allocateRowsByColumnAndTime(
     allCommitsWithClusters,
@@ -1165,20 +1197,57 @@ export function computeBranchGridLayout(input: BranchGridLayoutInput): BranchGri
   };
   const placedNodes: Node[] = [];
   for (const node of renderNodes) {
-    let moved = false;
     while (placedNodes.some((placed) => boxesOverlap(node, placed))) {
-      node.column += 1;
-      moved = true;
       if (isHorizontal) {
-        node.y = TOP_PADDING + node.column * zoomAwareLanePitch;
+        node.row += 1;
+        node.x = LEFT_PADDING + (horizontalRightAnchorRowOffset + node.row - 1) * zoomAwareTimelinePitch;
       } else {
-        node.x = LEFT_PADDING + node.column * COLUMN_WIDTH;
+        node.row += 1;
+        node.y = TOP_PADDING + (maxResolvedRow - node.row) * zoomAwareTimelinePitch;
       }
     }
-    if (moved) {
-      columnByCommitVisualId.set(node.commit.visualId, node.column);
-    }
     placedNodes.push(node);
+  }
+  // Final render-time invariant: stashes sharing the same parent stay on the same row.
+  const stashNodesByParentSha = new Map<string, Node[]>();
+  for (const node of renderNodes) {
+    if (node.commit.kind !== 'stash') continue;
+    const parentSha = node.commit.parentSha ?? null;
+    if (!parentSha) continue;
+    const list = stashNodesByParentSha.get(parentSha) ?? [];
+    list.push(node);
+    stashNodesByParentSha.set(parentSha, list);
+  }
+  for (const [parentSha, stashNodes] of stashNodesByParentSha.entries()) {
+    if (stashNodes.length < 2) continue;
+    const parentVisibleRows = renderNodes
+      .filter((candidate) => shasMatch(candidate.commit.id, parentSha))
+      .map((candidate) => candidate.row);
+    const targetRow = parentVisibleRows.length > 0 ? Math.max(...parentVisibleRows) + 1 : Math.min(...stashNodes.map((node) => node.row));
+    const usedColumns = new Set<number>(
+      renderNodes
+        .filter((candidate) => candidate.commit.kind !== 'stash' || (candidate.commit.parentSha ?? null) !== parentSha)
+        .filter((candidate) => candidate.row === targetRow)
+        .map((candidate) => candidate.column),
+    );
+    const stashNodesOrdered = [...stashNodes].sort((left, right) => left.commit.id.localeCompare(right.commit.id));
+    let nextColumn = Math.min(...stashNodesOrdered.map((node) => node.column));
+    for (const stashNode of stashNodesOrdered) {
+      while (usedColumns.has(nextColumn)) nextColumn += 1;
+      stashNode.column = nextColumn;
+      usedColumns.add(nextColumn);
+      nextColumn += 1;
+    }
+    for (const stashNode of stashNodes) {
+      stashNode.row = targetRow;
+      if (isHorizontal) {
+        stashNode.x = LEFT_PADDING + (horizontalRightAnchorRowOffset + stashNode.row - 1) * zoomAwareTimelinePitch;
+        stashNode.y = TOP_PADDING + stashNode.column * zoomAwareLanePitch;
+      } else {
+        stashNode.x = LEFT_PADDING + stashNode.column * COLUMN_WIDTH;
+        stashNode.y = TOP_PADDING + (maxResolvedRow - stashNode.row) * zoomAwareTimelinePitch;
+      }
+    }
   }
   const visibleNodesBySha = new Map<string, Node[]>();
   for (const node of renderNodes) {
