@@ -5,9 +5,9 @@ import { listen } from '@tauri-apps/api/event';
 import { getCurrentWindow } from '@tauri-apps/api/window';
 import { open } from '@tauri-apps/plugin-dialog';
 import { PanelLeftClose, PanelLeftOpen } from 'lucide-react';
-import BranchGridMapView, { type OrientationMode } from '../components/grid/MapViewGrid';
+import BranchGridMapView from '../components/grid/MapViewGrid';
 import DenseBranchSidebar from '../components/DenseBranchSidebar';
-import { buildLanes, lanesFromStoredColumns } from '../components/grid/LayoutGrid';
+import { buildLanes } from '../components/grid/LayoutGrid';
 import { computeBranchGridLayout, type BranchGridLayoutModel } from '../components/grid/branchGridLayoutModel';
 import { hydrateBranchGridLayoutModel, serializeBranchGridLayoutModel } from '../components/grid/layoutSnapshot';
 import type { Branch, BranchCommitPreview, BranchPromptMeta, CheckedOutRef, DirectCommit, GitHubAuthStatus, GitHubInfo, GitStashEntry, MergeNode, OpenPR, RepoVisualSnapshot, WorktreeInfo } from '../types';
@@ -16,7 +16,6 @@ import { deriveRepoVisualState } from './repoVisualState';
 
 const PROJECTS_STORAGE_KEY = 'git-visualizer:projects';
 const ACTIVE_PROJECT_STORAGE_KEY = 'git-visualizer:active-project';
-const MAP_ORIENTATION_STORAGE_KEY = 'git-visualizer:map-orientation';
 const MAX_PROJECTS = 12;
 type OpenRepoEventPayload = {
   path: string;
@@ -112,7 +111,7 @@ function setSignature(set: Set<string>): string {
 
 function makeLayoutCacheKey(
   path: string,
-  orientation: OrientationMode,
+  orientation: 'horizontal',
   manuallyOpenedClumps: Set<string>,
   manuallyClosedClumps: Set<string>,
   graphSignature = '',
@@ -234,7 +233,7 @@ function App() {
     removeWorktreeInProgress ||
     createBranchFromNodeInProgress;
   const [isMapInteracting, setIsMapInteracting] = useState(false);
-  const [mapGridOrientation, setMapGridOrientation] = useState<OrientationMode>('horizontal');
+  const mapGridOrientation = 'horizontal';
   const [remoteDefaultTipSha] = useState<string | null>(null);
   const [remoteDefaultTipMetadata] = useState<CommitMetadata | null>(null);
   const [remoteDefaultTipParentSha] = useState<string | null>(null);
@@ -398,8 +397,6 @@ function App() {
       gridSearchResultIndex,
       setGridSearchJumpDirection,
       setGridSearchJumpToken,
-      mapGridOrientation,
-      setMapGridOrientation,
       setIsGridDebugOpen,
       githubAuthMessage,
       commitSwitchFeedback,
@@ -415,12 +412,10 @@ function App() {
       gridSearchResultIndex,
       handleGitHubAuthSetup,
       isCommitSwitchFeedbackVisible,
-      mapGridOrientation,
       setGridSearchQuery,
       setGridSearchJumpDirection,
       setGridSearchJumpToken,
       setIsGridDebugOpen,
-      setMapGridOrientation,
     ],
   );
 
@@ -507,17 +502,6 @@ function App() {
   }, []);
 
   useEffect(() => {
-    try {
-      const rawOrientation = window.localStorage.getItem(MAP_ORIENTATION_STORAGE_KEY);
-      if (rawOrientation === 'vertical' || rawOrientation === 'horizontal') {
-        setMapGridOrientation(rawOrientation);
-      }
-    } catch {
-      // ignore storage failures
-    }
-  }, []);
-
-  useEffect(() => {
     if (hasAttemptedAutoRestoreRef.current) return;
     if (repoPath) return;
     if (projects.length === 0) return;
@@ -546,14 +530,6 @@ function App() {
       // ignore storage failures
     }
   }, [repoPath]);
-
-  useEffect(() => {
-    try {
-      window.localStorage.setItem(MAP_ORIENTATION_STORAGE_KEY, mapGridOrientation);
-    } catch {
-      // ignore storage failures
-    }
-  }, [mapGridOrientation]);
 
   const mergeTargetBranchByCommitSha = useMemo(
     () =>
@@ -2601,10 +2577,8 @@ function App() {
     return map;
   }, [branchParentByName, defaultBranch, enrichedBranches]);
   const sharedGridLanes = useMemo(
-    () =>
-      lanesFromStoredColumns(enrichedBranches, defaultBranch, enrichedBranchParentByName, laneByBranch)
-      ?? buildLanes(enrichedBranches, defaultBranch, enrichedBranchCommitPreviews, enrichedBranchParentByName),
-    [enrichedBranches, defaultBranch, enrichedBranchCommitPreviews, enrichedBranchParentByName, laneByBranch],
+    () => buildLanes(enrichedBranches, defaultBranch, enrichedBranchCommitPreviews, enrichedBranchParentByName),
+    [enrichedBranches, defaultBranch, enrichedBranchCommitPreviews, enrichedBranchParentByName],
   );
   const openedClumpsSignature = useMemo(
     () => setSignature(manuallyOpenedGridClumps),
@@ -2616,6 +2590,7 @@ function App() {
   );
   const graphLayoutSignature = useMemo(
     () => [
+      'layout-v2-no-lane-reuse',
       defaultBranch,
       visualCheckedOutRef?.branchName ?? '',
       visualCheckedOutRef?.headSha ?? '',
@@ -2692,11 +2667,20 @@ function App() {
   }, [repoPath, sharedGridLayoutCacheKey]);
   const sharedGridLayoutModel: BranchGridLayoutModel = useMemo(
     () => {
+      const hasGraphSourceData =
+        enrichedBranches.length > 0 ||
+        enrichedDirectCommits.length > 0 ||
+        enrichedUnpushedDirectCommits.length > 0;
+      const hydratedLooksEmptyButShouldNot =
+        Boolean(hydratedLayoutModel) &&
+        (hydratedLayoutModel?.allCommits.length ?? 0) === 0 &&
+        hasGraphSourceData;
       if (
         gridSearchQuery.trim().length === 0 &&
         sharedGridLayoutCacheKey &&
         hydratedLayoutKey === sharedGridLayoutCacheKey &&
-        hydratedLayoutModel
+        hydratedLayoutModel &&
+        !hydratedLooksEmptyButShouldNot
       ) {
         return hydratedLayoutModel;
       }
@@ -2748,6 +2732,7 @@ function App() {
       hydratedLayoutKey,
       hydratedLayoutModel,
       mapLoading,
+      hydratedLayoutModel?.allCommits.length ?? 0,
     ],
   );
   useEffect(() => {
@@ -2868,9 +2853,8 @@ function App() {
 
   const handleMapReadyForDisplay = useCallback((epoch: number) => {
     if (epoch !== mapSwitchEpochRef.current) return;
-    if (mapPresentationState !== 'ready') return;
     setMapReadyForDisplay(true);
-  }, [mapPresentationState]);
+  }, []);
 
   const blockMapDisplay = !mapReadyForDisplay || mapPresentationState !== 'ready';
   const blockMapInteraction = mapLoading || loading;

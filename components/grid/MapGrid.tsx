@@ -26,7 +26,6 @@ import CommitControls from './CommitControls';
 import MapGridCanvas from './MapGridCanvas';
 import MapGridDebugPanel from './MapGridDebugPanel';
 import MapGridDialogs from './MapGridDialogs';
-import MapOrientationToggle from './MapOrientationToggle';
 import MapSearchBar from './MapSearchBar';
 import { useMapGridCamera } from './useMapGridCamera';
 import { useMapGridSelection } from './useMapGridSelection';
@@ -82,8 +81,6 @@ type Props = BranchGridViewProps & {
     gridSearchResultIndex: number | null;
     setGridSearchJumpDirection: (direction: 1 | -1) => void;
     setGridSearchJumpToken: (token: number | ((token: number) => number)) => void;
-    mapGridOrientation: import('./MapViewGrid').OrientationMode;
-    setMapGridOrientation: (orientation: import('./MapViewGrid').OrientationMode) => void;
     setIsGridDebugOpen: (open: boolean | ((open: boolean) => boolean)) => void;
     githubAuthMessage: string | null;
     commitSwitchFeedback: { kind: 'success' | 'error'; message: string } | null;
@@ -204,6 +201,7 @@ export default function BranchGridMap({
   const [viewportClientSize, setViewportClientSize] = useState<{ width: number; height: number } | null>(null);
   const [isCompactHud, setIsCompactHud] = useState(false);
   const [hideSearchBar, setHideSearchBar] = useState(false);
+  const autoRecoverRef = useRef<{ key: string; attempts: number } | null>(null);
   const mergeSliderScopeId = useId();
   const {
     isCameraMoving,
@@ -854,6 +852,66 @@ export default function BranchGridMap({
   const renderedMergeConnectorCount = mergeConnectors.filter((connector) => cullConnectorPath(connector)).length;
   const renderedConnectorCount = connectors.filter((connector) => cullConnectorPath(connector)).length;
 
+  useLayoutEffect(() => {
+    if (isLoading) return;
+    if (blockMapInteraction) return;
+    if (renderNodes.length === 0) return;
+    if (visibleNodeIds === null || visibleNodeIds.size > 0) {
+      autoRecoverRef.current = null;
+      return;
+    }
+    const viewport = scrollContainerRef.current;
+    if (!viewport || viewport.clientWidth <= 0 || viewport.clientHeight <= 0) return;
+    const origin = getTransformLayerOriginScreen();
+    if (!origin) return;
+
+    const recoveryKey = `${mapReadyEpoch}:${renderNodes.length}:${contentWidth}:${contentHeight}`;
+    const previousRecovery = autoRecoverRef.current;
+    const attempts = previousRecovery?.key === recoveryKey ? previousRecovery.attempts + 1 : 1;
+    autoRecoverRef.current = { key: recoveryKey, attempts };
+
+    if (attempts >= 2) {
+      // Safety valve: if culling still reports nothing after recentering, render all commits.
+      setVisibleNodeIds(null);
+      return;
+    }
+
+    let minX = Infinity;
+    let minY = Infinity;
+    let maxX = -Infinity;
+    let maxY = -Infinity;
+    for (const node of renderNodes) {
+      minX = Math.min(minX, node.x);
+      minY = Math.min(minY, node.y + CARD_BODY_TOP_OFFSET);
+      maxX = Math.max(maxX, node.x + CARD_WIDTH);
+      maxY = Math.max(maxY, node.y + CARD_BODY_TOP_OFFSET + CARD_HEIGHT);
+    }
+    if (!Number.isFinite(minX) || !Number.isFinite(minY) || !Number.isFinite(maxX) || !Number.isFinite(maxY)) return;
+    const centerX = (minX + maxX) / 2;
+    const centerY = (minY + maxY) / 2;
+    const viewportRect = viewport.getBoundingClientRect();
+    const targetZoom = renderedCameraRef.current.zoom;
+    const scale = targetZoom / GRID_RENDER_ZOOM;
+    const targetScreenX = viewportRect.left + viewportRect.width / 2;
+    const targetScreenY = viewportRect.top + viewportRect.height / 2;
+    syncCamera(
+      targetScreenX - origin.x - centerX * scale,
+      targetScreenY - origin.y - centerY * scale,
+      targetZoom,
+    );
+  }, [
+    isLoading,
+    blockMapInteraction,
+    renderNodes,
+    visibleNodeIds,
+    mapReadyEpoch,
+    contentWidth,
+    contentHeight,
+    getTransformLayerOriginScreen,
+    renderedCameraRef,
+    syncCamera,
+  ]);
+
   const handleCommitCardClick = useCallback(
     (event: React.MouseEvent, node: Node) => {
       if (suppressNextCommitClickRef.current) {
@@ -1085,7 +1143,6 @@ export default function BranchGridMap({
   useLayoutEffect(() => {
     if (isLoading) return;
     if (blockMapInteraction) return;
-    if (allCommits.length === 0) return;
     if (lastReadyEpochReportedRef.current === mapReadyEpoch) return;
     const rafId = window.requestAnimationFrame(() => {
       if (lastReadyEpochReportedRef.current === mapReadyEpoch) return;
@@ -1173,11 +1230,6 @@ export default function BranchGridMap({
                     }}
                   />
                 ) : null}
-                <MapOrientationToggle
-                  compactLabels={isCompactHud}
-                  orientation={gridHudProps.mapGridOrientation}
-                  onOrientationChange={gridHudProps.setMapGridOrientation}
-                />
               </div>
             </div>
           </div>

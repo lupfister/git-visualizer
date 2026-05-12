@@ -4,7 +4,7 @@ import BranchGridMap from './MapGrid';
 import type { BranchGridLayoutModel } from './branchGridLayoutModel';
 
 export type ViewMode = 'time' | 'grid';
-export type OrientationMode = 'vertical' | 'horizontal';
+export type OrientationMode = 'horizontal';
 
 interface Props {
   branches: Branch[];
@@ -79,8 +79,6 @@ interface Props {
     gridSearchResultIndex: number | null;
     setGridSearchJumpDirection: (direction: 1 | -1) => void;
     setGridSearchJumpToken: (token: number | ((token: number) => number)) => void;
-    mapGridOrientation: OrientationMode;
-    setMapGridOrientation: (orientation: OrientationMode) => void;
     setIsGridDebugOpen: (open: boolean | ((open: boolean) => boolean)) => void;
     githubAuthMessage: string | null;
     commitSwitchFeedback: { kind: 'success' | 'error'; message: string } | null;

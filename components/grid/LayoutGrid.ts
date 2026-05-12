@@ -271,10 +271,14 @@ export function buildLanes(
   const minGapMs = Math.max(1, 6 * 60 * 60 * 1000 * BRANCH_COLUMN_REUSE_TIME_GAP_FACTOR);
   const overlapsWithGap = (left: { start: number; end: number }, right: { start: number; end: number }): boolean =>
     !(left.start - right.end >= minGapMs || right.start - left.end >= minGapMs);
-  const conflicts = (column: number, candidateIntervals: Array<{ start: number; end: number }>): boolean =>
-    candidateIntervals.some((candidate) =>
-      (columnIntervals.get(column) ?? []).some((existing) => overlapsWithGap(candidate, existing)),
+  const conflicts = (column: number, candidateIntervals: Array<{ start: number; end: number }>): boolean => {
+    const existingIntervals = columnIntervals.get(column) ?? [];
+    // Dedicated-lane mode: once a lane has any branch occupancy, no other branch may reuse it.
+    if (existingIntervals.length > 0) return true;
+    return candidateIntervals.some((candidate) =>
+      existingIntervals.some((existing) => overlapsWithGap(candidate, existing)),
     );
+  };
   const resolveLaneDepth = (branchName: string, visiting = new Set<string>()): number => {
     const cached = laneDepthByName.get(branchName);
     if (cached != null) return cached;
