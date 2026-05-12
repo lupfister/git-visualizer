@@ -32,7 +32,7 @@ export function commitRectSize(baseNodeSize: number, clusterBoost = 0): { width:
 }
 
 // Grid-side copies of the data/layout helpers used by the canvas view.
-import { Branch, BranchCommitPreview, DirectCommit, MergeNode } from '../../types';
+import { Branch, BranchCommitPreview, DirectCommit, MapMode, MergeNode } from '../../types';
 
 export type BranchGridViewProps = {
   [key: string]: any;
@@ -83,6 +83,7 @@ export type BranchGridViewProps = {
   isDebugOpen?: boolean;
   onDebugClose?: () => void;
   orientation?: 'vertical' | 'horizontal';
+  mapMode?: MapMode;
   onInteractionChange?: (isInteracting: boolean) => void;
 };
 

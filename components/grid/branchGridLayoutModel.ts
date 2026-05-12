@@ -1,7 +1,9 @@
 import type { Branch } from '../../types';
 import type { BranchCommitPreview } from '../../types';
+import type { BranchWorkspaceNode } from '../../types';
 import type { CheckedOutRef } from '../../types';
 import type { DirectCommit } from '../../types';
+import type { MapMode } from '../../types';
 import type { MergeNode } from '../../types';
 import {
   branchBaseCommit,
@@ -51,6 +53,7 @@ export type MergeDestination = {
 };
 
 export type BranchGridLayoutModel = {
+  mapMode: MapMode;
   branchByName: Map<string, Branch>;
   laneByName: Map<string, Lane>;
   mainCommits: CommitItem[];
@@ -91,6 +94,10 @@ export type BranchGridLayoutModel = {
   firstBranchCommitByName: Map<string, CommitItem>;
   mergeDestinations: MergeDestination[];
   mergeTargetBranchesBySourceBranchAndCommitSha: Map<string, Map<string, Set<string>>>;
+  workspaceNodes: BranchWorkspaceNode[];
+  workspaceConnectors: Connector[];
+  nodeById: Map<string, Node>;
+  sortedNodeIds: string[];
 };
 
 export type BranchGridLayoutInput = {
@@ -110,6 +117,7 @@ export type BranchGridLayoutInput = {
   gridSearchQuery: string;
   gridFocusSha: string | null;
   checkedOutRef: CheckedOutRef | null;
+  mapMode?: MapMode;
   /** `vertical`: newest above; `horizontal`: newest to the right (default). */
   orientation?: 'vertical' | 'horizontal';
   nodePositionOverrides?: NodePositionOverrides;
@@ -354,6 +362,277 @@ function allocateRowsByColumnAndTime(
   return rowByVisualId;
 }
 
+function computeBranchWorkspaceLayout(input: BranchGridLayoutInput): BranchGridLayoutModel {
+  const {
+    lanes,
+    branches,
+    defaultBranch,
+    branchCommitPreviews,
+    branchParentByName = {},
+    gridSearchQuery,
+    gridFocusSha,
+    checkedOutRef,
+    orientation = 'horizontal',
+    nodePositionOverrides = {},
+  } = input;
+  const isHorizontal = orientation === 'horizontal';
+  const branchByName = new Map(branches.map((branch) => [branch.name, branch]));
+  const laneByName = new Map(lanes.map((lane) => [lane.name, lane] as const));
+  const pointFormatter = (x: number, y: number) => `${x.toFixed(1)} ${y.toFixed(1)}`;
+  const safeIsoDate = (value: string | null | undefined, offsetMs = 0): string => {
+    const baseMs = safeTimeMs(value);
+    const ms = Number.isFinite(baseMs) ? baseMs + offsetMs : Date.now() + offsetMs;
+    return new Date(ms).toISOString();
+  };
+
+  const workspaceNodes: BranchWorkspaceNode[] = [];
+  const visualCommits: VisualCommit[] = [];
+  const nodes: Node[] = [];
+  const commitById = new Map<string, VisualCommit>();
+  const checkedOutBranch = checkedOutRef?.branchName ?? null;
+
+  for (const branch of branches) {
+    const previews = branchCommitPreviews[branch.name] ?? [];
+    const head = previews[0];
+    const representedSha = head?.fullSha ?? branch.headSha;
+    const representedDate = safeIsoDate(head?.date ?? branch.lastCommitDate);
+    const isStashBranchNode = representedSha.startsWith('STASH:');
+    const hasUncommitted = checkedOutBranch === branch.name && (checkedOutRef?.hasUncommittedChanges ?? false);
+    const stashCount = previews.filter((preview) => preview.kind === 'stash').length;
+    const workspaceNode: BranchWorkspaceNode = {
+      id: `branch:${branch.name}`,
+      branchName: branch.name,
+      worktreePath: undefined,
+      isCheckedOut: checkedOutBranch === branch.name,
+      representedSha,
+      representedDate,
+      representedKind: 'head',
+      hasUncommitted,
+      stashCount,
+    };
+    workspaceNodes.push(workspaceNode);
+
+    const headCommit: VisualCommit = {
+      id: workspaceNode.id,
+      visualId: workspaceNode.id,
+      branchName: branch.name,
+      message: `Branch head ${representedSha.slice(0, 7)}`,
+      author: branch.lastCommitAuthor || 'unknown',
+      date: representedDate,
+      parentSha: null,
+      parentShas: [],
+      childShas: [],
+      clusterKey: null,
+      kind: 'commit',
+      isRemote: branch.remoteSyncStatus === 'on-github',
+    };
+    visualCommits.push(headCommit);
+    commitById.set(headCommit.id, headCommit);
+
+    if (hasUncommitted) {
+      const syntheticId = `synthetic:working-tree:${branch.name}`;
+      workspaceNodes.push({
+        id: syntheticId,
+        branchName: branch.name,
+        representedSha: representedSha,
+        representedDate: safeIsoDate(representedDate, 1),
+        representedKind: 'head',
+        isCheckedOut: true,
+        hasUncommitted: true,
+        stashCount: 0,
+        syntheticState: 'working-tree',
+      });
+      const syntheticCommit: VisualCommit = {
+        id: syntheticId,
+        visualId: syntheticId,
+        branchName: branch.name,
+        message: 'Uncommitted changes',
+        author: 'You',
+        date: safeIsoDate(representedDate, 1),
+        parentSha: headCommit.id,
+        parentShas: [headCommit.id],
+        childShas: [],
+        clusterKey: null,
+        kind: 'uncommitted',
+      };
+      visualCommits.push(syntheticCommit);
+      commitById.set(syntheticCommit.id, syntheticCommit);
+    }
+    if (stashCount > 0 && !isStashBranchNode) {
+      const syntheticId = `synthetic:stash:${branch.name}`;
+      workspaceNodes.push({
+        id: syntheticId,
+        branchName: branch.name,
+        representedSha: representedSha,
+        representedDate: safeIsoDate(representedDate, 2),
+        representedKind: 'head',
+        isCheckedOut: false,
+        hasUncommitted: false,
+        stashCount,
+        syntheticState: 'stash',
+      });
+      const syntheticCommit: VisualCommit = {
+        id: syntheticId,
+        visualId: syntheticId,
+        branchName: branch.name,
+        message: `${stashCount} stashed ${stashCount === 1 ? 'entry' : 'entries'}`,
+        author: 'Git',
+        date: safeIsoDate(representedDate, 2),
+        parentSha: headCommit.id,
+        parentShas: [headCommit.id],
+        childShas: [],
+        clusterKey: null,
+        kind: 'stash',
+      };
+      visualCommits.push(syntheticCommit);
+      commitById.set(syntheticCommit.id, syntheticCommit);
+    }
+  }
+
+  const sortedCommits = [...visualCommits].sort((a, b) => {
+    const timeDelta = safeTimeMs(a.date) - safeTimeMs(b.date);
+    if (timeDelta !== 0) return timeDelta;
+    const branchDelta = a.branchName.localeCompare(b.branchName);
+    if (branchDelta !== 0) return branchDelta;
+    return a.id.localeCompare(b.id);
+  });
+  const rowById = new Map(sortedCommits.map((commit, index) => [commit.id, index + 1]));
+  const maxRow = sortedCommits.length;
+  const timelinePitch = CARD_WIDTH + ROW_GAP / GRID_LAYOUT_RENDER_ZOOM + 20 / GRID_LAYOUT_RENDER_ZOOM;
+  const lanePitch = ROW_HEIGHT + ROW_GAP / GRID_LAYOUT_RENDER_ZOOM + 20 / GRID_LAYOUT_RENDER_ZOOM;
+  for (const commit of sortedCommits) {
+    const lane = laneByName.get(commit.branchName);
+    const row = rowById.get(commit.id) ?? 1;
+    const column = lane?.column ?? 0;
+    const baseNode: Node = isHorizontal
+      ? {
+          commit,
+          row,
+          column,
+          x: LEFT_PADDING + (row - 1) * timelinePitch,
+          y: TOP_PADDING + column * lanePitch,
+        }
+      : {
+          commit,
+          row,
+          column,
+          x: LEFT_PADDING + column * COLUMN_WIDTH,
+          y: TOP_PADDING + (maxRow - row) * timelinePitch,
+        };
+    const override = nodePositionOverrides[commit.visualId] ?? nodePositionOverrides[commit.id];
+    nodes.push(override ? { ...baseNode, x: override.x, y: override.y } : baseNode);
+  }
+
+  const nodeById = new Map(nodes.map((node) => [node.commit.id, node]));
+  const sortedNodeIds = nodes
+    .slice()
+    .sort((a, b) => (safeTimeMs(b.commit.date) - safeTimeMs(a.commit.date)) || a.commit.id.localeCompare(b.commit.id))
+    .map((node) => node.commit.id);
+  const visibleNodesBySha = new Map<string, Node[]>();
+  for (const node of nodes) visibleNodesBySha.set(node.commit.id, [node]);
+
+  const connectors: Connector[] = [];
+  const connectorDecisions: ConnectorDecisionRow[] = [];
+  const seenEdges = new Set<string>();
+  for (const branch of branches) {
+    const childNode = nodeById.get(`branch:${branch.name}`);
+    if (!childNode) continue;
+    let parentName = branchParentByName[branch.name] ?? branch.parentBranch ?? null;
+    if (!parentName || parentName === branch.name) continue;
+    if (parentName !== defaultBranch && !branchByName.has(parentName)) continue;
+    const parentNode = nodeById.get(`branch:${parentName}`);
+    if (!parentNode) continue;
+    const edgeId = `workspace:${parentNode.commit.id}->${childNode.commit.id}`;
+    if (seenEdges.has(edgeId)) continue;
+    seenEdges.add(edgeId);
+    connectors.push({
+      id: edgeId,
+      fromX: isHorizontal ? parentNode.x + CARD_WIDTH + GRID_INCOMING_GAP_PX : parentNode.x + CARD_WIDTH,
+      fromY: isHorizontal ? parentNode.y + CARD_HEIGHT / 2 : parentNode.y + CARD_HEIGHT / 2,
+      toX: isHorizontal ? childNode.x - GRID_INCOMING_GAP_PX : childNode.x,
+      toY: isHorizontal ? childNode.y + CARD_HEIGHT / 2 : childNode.y + CARD_HEIGHT / 2,
+      fromFace: isHorizontal ? 'right' : 'right',
+      toFace: isHorizontal ? 'left' : 'left',
+      zIndex: safeTimeMs(childNode.commit.date),
+      parentSha: parentNode.commit.id,
+      childSha: childNode.commit.id,
+    });
+    connectorDecisions.push({
+      id: edgeId,
+      kind: 'branch',
+      parent: parentNode.commit.id,
+      child: childNode.commit.id,
+      rendered: true,
+      reason: 'branch-workspace ancestry connector',
+    });
+  }
+
+  const normalizedSearchQuery = gridSearchQuery.trim().toLowerCase();
+  const matchingNodes = normalizedSearchQuery
+    ? nodes.filter((node) => {
+        const searchable = [
+          node.commit.id,
+          node.commit.branchName,
+          node.commit.message,
+          node.commit.author,
+        ].join(' ').toLowerCase();
+        return searchable.includes(normalizedSearchQuery);
+      })
+    : nodes;
+  const matchingNodeIds = new Set(matchingNodes.map((node) => node.commit.id));
+  const focusedNode = gridFocusSha ? nodes.find((node) => node.commit.id === gridFocusSha) ?? null : null;
+  const renderedMaxX = Math.max(0, ...nodes.map((node) => node.x + CARD_WIDTH));
+  const renderedMaxY = Math.max(0, ...nodes.map((node) => node.y + CARD_BODY_TOP_OFFSET + CARD_HEIGHT));
+
+  return {
+    mapMode: 'branch-workspace',
+    branchByName,
+    laneByName,
+    mainCommits: [],
+    branchCommitsByLane: new Map(),
+    branchPreviewSets: new Map(),
+    allCommits: sortedCommits,
+    clustersByBranch: new Map(),
+    clusterKeyByCommitId: new Map(),
+    clusterKeyBySha: new Map(),
+    leadByClusterKey: new Map(),
+    clusterCounts: new Map(),
+    debugRows: [],
+    branchDebugRows: [],
+    nodes,
+    normalizedSearchQuery,
+    matchingNodes,
+    matchingNodeIds,
+    focusedNode,
+    checkedOutClusterKey: null,
+    defaultCollapsedClumps: new Set(),
+    visibleCommitsList: sortedCommits,
+    renderNodes: nodes,
+    visibleNodesBySha,
+    visibleNodeByClusterKey: new Map(),
+    pointFormatter,
+    contentWidth: renderedMaxX + LEFT_PADDING * 2,
+    contentHeight: renderedMaxY + TOP_PADDING * 2,
+    connectors,
+    mergeConnectors: [],
+    connectorDecisions,
+    nodeWarnings: new Map(),
+    connectorParentShas: new Set(connectors.map((c) => c.parentSha ?? '').filter(Boolean)),
+    branchStartShas: new Set(),
+    branchOffNodeShas: new Set(),
+    crossBranchOutgoingShas: new Set(),
+    commitIdsWithRenderedAncestry: new Set(connectors.flatMap((connector) => [connector.parentSha ?? '', connector.childSha ?? '']).filter(Boolean)),
+    branchBaseCommitByName: new Map(),
+    firstBranchCommitByName: new Map(),
+    mergeDestinations: [],
+    mergeTargetBranchesBySourceBranchAndCommitSha: new Map(),
+    workspaceNodes,
+    workspaceConnectors: connectors,
+    nodeById,
+    sortedNodeIds,
+  };
+}
+
 export function computeBranchGridLayout(input: BranchGridLayoutInput): BranchGridLayoutModel {
   const {
     lanes,
@@ -372,9 +651,13 @@ export function computeBranchGridLayout(input: BranchGridLayoutInput): BranchGri
     gridSearchQuery,
     gridFocusSha,
     checkedOutRef,
+    mapMode = 'commit',
     orientation = 'horizontal',
     nodePositionOverrides = {},
   } = input;
+  if (mapMode === 'branch-workspace') {
+    return computeBranchWorkspaceLayout(input);
+  }
   const isHorizontal = orientation === 'horizontal';
 
   const branchByName = new Map(branches.map((branch) => [branch.name, branch]));
@@ -1478,6 +1761,7 @@ export function computeBranchGridLayout(input: BranchGridLayoutInput): BranchGri
 
 
   return {
+    mapMode: 'commit',
     branchByName,
     laneByName,
     mainCommits,
@@ -1518,5 +1802,12 @@ export function computeBranchGridLayout(input: BranchGridLayoutInput): BranchGri
     firstBranchCommitByName,
     mergeDestinations,
     mergeTargetBranchesBySourceBranchAndCommitSha,
+    workspaceNodes: [],
+    workspaceConnectors: [],
+    nodeById: new Map(renderNodes.map((node) => [node.commit.id, node])),
+    sortedNodeIds: renderNodes
+      .slice()
+      .sort((a, b) => safeTimeMs(b.commit.date) - safeTimeMs(a.commit.date) || a.commit.id.localeCompare(b.commit.id))
+      .map((node) => node.commit.id),
   };
 }

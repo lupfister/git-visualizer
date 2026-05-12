@@ -136,7 +136,8 @@ function makeLayoutCacheKey(
   graphSignature = '',
 ): string {
   return [
-    'layout-v3',
+    'layout-v4',
+    'branch-workspace',
     path,
     orientation,
     setSignature(manuallyOpenedClumps),
@@ -2776,6 +2777,7 @@ function App() {
         gridSearchQuery,
         gridFocusSha,
         checkedOutRef: visualCheckedOutRef ?? null,
+        mapMode: 'branch-workspace',
         orientation: mapGridOrientation,
       });
     },

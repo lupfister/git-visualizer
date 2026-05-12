@@ -1,5 +1,20 @@
 export type BranchStatus = 'fresh' | 'stale' | 'unknown';
 export type RemoteSyncStatus = 'local-only' | 'unpushed' | 'on-github';
+export type MapMode = 'commit' | 'branch-workspace';
+export type BranchWorkspaceSyntheticKind = 'working-tree' | 'stash';
+
+export interface BranchWorkspaceNode {
+  id: string;
+  branchName: string;
+  worktreePath?: string;
+  isCheckedOut: boolean;
+  representedSha: string;
+  representedDate: string;
+  representedKind: 'head' | 'bookmark';
+  hasUncommitted: boolean;
+  stashCount: number;
+  syntheticState?: BranchWorkspaceSyntheticKind;
+}
 
 export interface Branch {
   name: string;

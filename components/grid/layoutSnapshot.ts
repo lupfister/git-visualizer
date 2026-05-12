@@ -1,12 +1,14 @@
 import type { BranchGridLayoutModel, ConnectorDecisionRow, GridCluster, MergeDestination } from './branchGridLayoutModel';
 import type { Branch } from '../../types';
 import type { BranchCommitPreview } from '../../types';
+import type { BranchWorkspaceNode } from '../../types';
 import type { CommitItem, Lane, Node, VisualCommit } from './LayoutGrid';
 
 type Entry<T> = [string, T];
 type NestedSetEntry = [string, Array<[string, string[]]>];
 
 type SerializedBranchGridLayoutModel = {
+  mapMode: 'commit' | 'branch-workspace';
   branchByName: Entry<Branch>[];
   laneByName: Entry<Lane>[];
   mainCommits: CommitItem[];
@@ -46,11 +48,15 @@ type SerializedBranchGridLayoutModel = {
   firstBranchCommitByName: Entry<CommitItem>[];
   mergeDestinations: MergeDestination[];
   mergeTargetBranchesBySourceBranchAndCommitSha: NestedSetEntry[];
+  workspaceNodes: BranchWorkspaceNode[];
+  workspaceConnectors: BranchGridLayoutModel['workspaceConnectors'];
+  sortedNodeIds: string[];
 };
 
 export function serializeBranchGridLayoutModel(model: BranchGridLayoutModel): SerializedBranchGridLayoutModel {
   return {
     branchByName: Array.from(model.branchByName.entries()),
+    mapMode: model.mapMode,
     laneByName: Array.from(model.laneByName.entries()),
     mainCommits: model.mainCommits,
     branchCommitsByLane: Array.from(model.branchCommitsByLane.entries()),
@@ -94,6 +100,9 @@ export function serializeBranchGridLayoutModel(model: BranchGridLayoutModel): Se
       branchName,
       Array.from(byCommitSha.entries()).map(([commitSha, targetBranches]) => [commitSha, Array.from(targetBranches)]),
     ]),
+    workspaceNodes: model.workspaceNodes ?? [],
+    workspaceConnectors: model.workspaceConnectors ?? [],
+    sortedNodeIds: model.sortedNodeIds ?? [],
   };
 }
 
@@ -109,6 +118,7 @@ export function hydrateBranchGridLayoutModel(
     ]),
   );
   return {
+    mapMode: snapshot.mapMode ?? 'commit',
     branchByName: new Map(snapshot.branchByName ?? []),
     laneByName: new Map(snapshot.laneByName ?? []),
     mainCommits: snapshot.mainCommits ?? [],
@@ -149,6 +159,9 @@ export function hydrateBranchGridLayoutModel(
     firstBranchCommitByName: new Map(snapshot.firstBranchCommitByName ?? []),
     mergeDestinations: snapshot.mergeDestinations ?? [],
     mergeTargetBranchesBySourceBranchAndCommitSha,
+    workspaceNodes: snapshot.workspaceNodes ?? [],
+    workspaceConnectors: snapshot.workspaceConnectors ?? [],
+    nodeById: new Map((snapshot.renderNodes ?? []).map((node) => [node.commit.id, node])),
+    sortedNodeIds: snapshot.sortedNodeIds ?? [],
   };
 }
-

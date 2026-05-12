@@ -236,6 +236,7 @@ export default function BranchGridMapView({
             blockMapDisplay={blockMapDisplay}
             mapReadyEpoch={mapReadyEpoch}
             onMapReadyForDisplay={onMapReadyForDisplay}
+            mapMode="branch-workspace"
           />
         </div>
       ) : view === 'grid' ? (
@@ -272,6 +273,7 @@ export default function BranchGridMapView({
             blockMapDisplay={blockMapDisplay}
             mapReadyEpoch={mapReadyEpoch}
             onMapReadyForDisplay={onMapReadyForDisplay}
+            mapMode="branch-workspace"
           />
         </div>
       ) : null}

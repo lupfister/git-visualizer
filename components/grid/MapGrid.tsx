@@ -172,6 +172,7 @@ export default function BranchGridMap({
   blockMapDisplay = false,
   mapReadyEpoch = 0,
   onMapReadyForDisplay,
+  mapMode = 'branch-workspace',
 }: Props) {
   const scrollContainerRef = useRef<HTMLDivElement | null>(null);
   const hudToolbarRef = useRef<HTMLDivElement | null>(null);
@@ -233,7 +234,7 @@ export default function BranchGridMap({
     mapPadHostRef,
     transformLayerRef,
     isEnabled: !blockMapInteraction,
-    cameraStorageScopeKey: `${currentRepoPath ?? '__no-repo__'}::${orientation}`,
+    cameraStorageScopeKey: `${currentRepoPath ?? '__no-repo__'}::${orientation}::${mapMode}`,
   });
   const lastReadyEpochReportedRef = useRef<number>(0);
 
@@ -258,6 +259,7 @@ export default function BranchGridMap({
       gridSearchQuery,
       gridFocusSha,
       checkedOutRef: checkedOutRef ?? null,
+      mapMode,
       orientation,
       nodePositionOverrides,
     });
@@ -279,6 +281,7 @@ export default function BranchGridMap({
     gridFocusSha,
     checkedOutRef?.headSha ?? null,
     checkedOutRef?.branchName ?? null,
+    mapMode,
     orientation,
     nodePositionOverrides,
   ]);
@@ -312,6 +315,7 @@ export default function BranchGridMap({
   } = resolvedLayoutModel;
 
   const isGridSearchActive = Boolean(normalizedSearchQuery);
+  const isReadOnlyWorkspaceMode = mapMode === 'branch-workspace';
 
   const displayZoom = renderedZoom / GRID_RENDER_ZOOM;
   const inverseZoomStyle = useMemo(
@@ -347,6 +351,7 @@ export default function BranchGridMap({
   );
 
   const shouldRenderNode = (node: Node) => {
+    if (isReadOnlyWorkspaceMode) return true;
     const commitId = node.commit.id;
     const visualId = node.commit.visualId;
     if (isGridSearchActive && matchingNodeIds.has(commitId)) return true;
@@ -557,6 +562,7 @@ export default function BranchGridMap({
   }, [selectedVisibleCommitShas, branchCandidatesForCommit]);
 
   const shouldShowMergeMenu =
+    !isReadOnlyWorkspaceMode &&
     selectedVisibleCommitShas.length > 1 &&
     selectedCommitTargetOption.options.length > 0 &&
     !!selectedCommitTargetOption.targetBranch &&
@@ -839,6 +845,10 @@ export default function BranchGridMap({
         manuallyOpenedClumps.has(ck) ||
         (!defaultCollapsedClumps.has(ck) && !manuallyClosedClumps.has(ck));
       if (clusterExpanded) nextVisible.add(node.commit.visualId);
+    }
+    if (nextVisible.size === 0 && renderNodes.length > 0) {
+      setVisibleNodeIds((prev) => (prev === null ? prev : null));
+      return;
     }
     setVisibleNodeIds((prev) => (visibleCommitIdSetEquals(prev, nextVisible) ? prev : nextVisible));
   }, [
@@ -1139,6 +1149,7 @@ export default function BranchGridMap({
 
   useEffect(() => {
     const handleKeyDown = (event: KeyboardEvent) => {
+      if (isReadOnlyWorkspaceMode) return;
       if (!onDeleteSelection) return;
       if (deleteConfirmOpen) return;
       if (selectedVisibleCommitShas.length === 0) return;
@@ -1151,7 +1162,7 @@ export default function BranchGridMap({
 
     window.addEventListener('keydown', handleKeyDown);
     return () => window.removeEventListener('keydown', handleKeyDown);
-  }, [deleteConfirmOpen, onDeleteSelection, selectedVisibleCommitShas.length]);
+  }, [deleteConfirmOpen, onDeleteSelection, selectedVisibleCommitShas.length, isReadOnlyWorkspaceMode]);
 
   void [openPRs, onLoadMore, view, staleBranches, isLoading, scrollRequest, focusedErrorBranch, mapTopInsetPx, visibleNodesBySha, freshCopyBranchNames];
 
@@ -1195,22 +1206,22 @@ export default function BranchGridMap({
               <div className="flex min-w-0 flex-nowrap items-center justify-start gap-3 overflow-visible">
                 <CommitControls
                   compactLabels={isCompactHud}
-                  selectedVisibleCommitShas={selectedVisibleCommitShas}
+                  selectedVisibleCommitShas={isReadOnlyWorkspaceMode ? [] : selectedVisibleCommitShas}
                   commitInProgress={commitInProgress}
-                  commitDisabled={commitDisabled}
+                  commitDisabled={commitDisabled || isReadOnlyWorkspaceMode}
                   stageInProgress={stageInProgress}
                   stashInProgress={stashInProgress}
                   stashDisabled={stashDisabled}
                   pushInProgress={pushInProgress}
                   hasUncommittedChanges={hasUncommittedChanges}
                   createBranchFromNodeInProgress={createBranchFromNodeInProgress}
-                  onCommitLocalChanges={onCommitLocalChanges}
-                  onStageAllChanges={onStageAllChanges ? () => void onStageAllChanges() : undefined}
-                  onStashLocalChanges={onStashLocalChanges}
-                  onPushCurrentBranch={onPushCurrentBranch}
-                  onPushAllBranches={onPushAllBranches}
-                  onPushCommitTargets={onPushCommitTargets}
-                  onMergeRefsIntoBranch={onMergeRefsIntoBranch}
+                  onCommitLocalChanges={isReadOnlyWorkspaceMode ? undefined : onCommitLocalChanges}
+                  onStageAllChanges={isReadOnlyWorkspaceMode ? undefined : (onStageAllChanges ? () => void onStageAllChanges() : undefined)}
+                  onStashLocalChanges={isReadOnlyWorkspaceMode ? undefined : onStashLocalChanges}
+                  onPushCurrentBranch={isReadOnlyWorkspaceMode ? undefined : onPushCurrentBranch}
+                  onPushAllBranches={isReadOnlyWorkspaceMode ? undefined : onPushAllBranches}
+                  onPushCommitTargets={isReadOnlyWorkspaceMode ? undefined : onPushCommitTargets}
+                  onMergeRefsIntoBranch={isReadOnlyWorkspaceMode ? undefined : onMergeRefsIntoBranch}
                   selectedPushTargets={selectedPushTargets}
                   selectedPushLabel={selectedPushLabel}
                   canPushCurrentBranch={canPushCurrentBranch}
@@ -1224,11 +1235,11 @@ export default function BranchGridMap({
                   currentRepoPath={currentRepoPath}
                   worktreeMenuOpen={worktreeMenuOpen}
                   setWorktreeMenuOpen={setWorktreeMenuOpen}
-                  onSwitchToWorktree={onSwitchToWorktree}
-                  onRemoveWorktree={onRemoveWorktree}
+                  onSwitchToWorktree={isReadOnlyWorkspaceMode ? undefined : onSwitchToWorktree}
+                  onRemoveWorktree={isReadOnlyWorkspaceMode ? undefined : onRemoveWorktree}
                   removeWorktreeInProgress={removeWorktreeInProgress}
-                  setCommitDialogOpen={setCommitDialogOpen}
-                  setNewBranchDialogOpen={setNewBranchDialogOpen}
+                  setCommitDialogOpen={isReadOnlyWorkspaceMode ? (() => {}) : setCommitDialogOpen}
+                  setNewBranchDialogOpen={isReadOnlyWorkspaceMode ? (() => {}) : setNewBranchDialogOpen}
                   hideMergeControls
                 />
               </div>
@@ -1414,7 +1425,7 @@ export default function BranchGridMap({
           flushCameraReactTick={flushCameraReactTick}
           setManuallyOpenedClumps={setManuallyOpenedClumps}
           setManuallyClosedClumps={setManuallyClosedClumps}
-          onCommitCardClick={handleCommitCardClick}
+          onCommitCardClick={isReadOnlyWorkspaceMode ? () => {} : handleCommitCardClick}
           unpushedCommitShasSetByBranch={unpushedCommitShasSetByBranch}
           remoteCommitShas={remoteCommitShas}
           checkedOutHeadSha={checkedOutHeadSha}
@@ -1441,7 +1452,7 @@ export default function BranchGridMap({
         />
       ) : null}
 
-      <MapGridDialogs
+      {isReadOnlyWorkspaceMode ? null : <MapGridDialogs
         commitDialogOpen={commitDialogOpen}
         commitMessageDraft={commitMessageDraft}
         onCommitMessageDraftChange={setCommitMessageDraft}
@@ -1464,7 +1475,7 @@ export default function BranchGridMap({
         selectedCommitCanCreateBranch={selectedCommitCanCreateBranch}
         currentCheckedOutCommitCanCreateBranch={currentCheckedOutCommitCanCreateBranch}
         createBranchFromNodeInProgress={createBranchFromNodeInProgress}
-      />
+      />}
     </div>
   );
 }

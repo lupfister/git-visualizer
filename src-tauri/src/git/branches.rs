@@ -115,7 +115,7 @@ pub fn list_branches(repo: &Path, default_branch: &str) -> Result<Vec<Branch>, G
 
     let branch_names: Vec<String> = output
         .lines()
-        .filter(|s| !s.is_empty() && *s != default_branch)
+        .filter(|s| !s.is_empty())
         .map(|s| s.to_string())
         .collect();
 
@@ -129,7 +129,7 @@ pub fn list_branches(repo: &Path, default_branch: &str) -> Result<Vec<Branch>, G
                 Err(_) => build_branch_fallback(repo, name, default_branch),
             }
         })
-        .filter(|branch| !is_fast_forward_merged_into_base(branch, &default_first_parent_shas))
+        .filter(|branch| branch.name == default_branch || !is_fast_forward_merged_into_base(branch, &default_first_parent_shas))
         .collect();
 
     infer_branch_parents(repo, &mut branches, default_branch)?;
