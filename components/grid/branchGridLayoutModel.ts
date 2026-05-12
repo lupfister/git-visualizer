@@ -795,27 +795,54 @@ export function computeBranchGridLayout(input: BranchGridLayoutInput): BranchGri
     for (const cluster of clusters) clusterByKey.set(cluster.key, cluster);
   }
   const rootCommitByClusterKey = new Map<string, VisualCommit>();
+  const clusterParentShasForCommit = (commit: VisualCommit): string[] => {
+    const parents = new Set<string>();
+    if (commit.parentSha) parents.add(commit.parentSha);
+    // Only use real merge lineage for clump/lane parenting; exclude synthetic branch-start ancestry edges.
+    for (const mergeParentSha of mergeParentShasByMergeSha.get(commit.id) ?? []) {
+      if (mergeParentSha) parents.add(mergeParentSha);
+    }
+    return Array.from(parents);
+  };
   for (const cluster of clusterByKey.values()) {
     const members = cluster.commitIds
       .map((id) => allCommitsWithClusters.find((commit) => commit.visualId === id) ?? null)
       .filter((commit): commit is VisualCommit => commit != null);
     if (members.length === 0) continue;
-    const memberIds = new Set(members.map((commit) => commit.visualId));
     const root = members.find((commit) => {
-      if (!commit.parentSha) return true;
-      const parentKeys = clusterKeyBySha.get(commit.parentSha) ?? [];
+      const parentKeys = clusterParentShasForCommit(commit).flatMap((parentSha) => clusterKeyBySha.get(parentSha) ?? []);
+      if (parentKeys.length === 0) return true;
       return parentKeys.every((parentKey) => parentKey !== cluster.key);
     }) ?? members[0]!;
     if (root) rootCommitByClusterKey.set(cluster.key, root);
-    memberIds.clear();
+  }
+  const clusterTipRowByKey = new Map<string, number>();
+  for (const [clusterKey, cluster] of clusterByKey.entries()) {
+    const tipRow = Math.max(
+      Number.NEGATIVE_INFINITY,
+      ...cluster.commitIds.map((id) => provisionalRowByVisualId.get(id) ?? Number.NEGATIVE_INFINITY),
+    );
+    clusterTipRowByKey.set(clusterKey, Number.isFinite(tipRow) ? tipRow : Number.NEGATIVE_INFINITY);
   }
   const parentClusterByClusterKey = new Map<string, string | null>();
   for (const [clusterKey, rootCommit] of rootCommitByClusterKey.entries()) {
-    if (!rootCommit.parentSha) {
+    const candidateParentKeys = clusterParentShasForCommit(rootCommit)
+      .flatMap((parentSha) => clusterKeyBySha.get(parentSha) ?? [])
+      .filter((key) => key !== clusterKey);
+    if (candidateParentKeys.length === 0) {
       parentClusterByClusterKey.set(clusterKey, null);
       continue;
     }
-    const parentClusterKey = (clusterKeyBySha.get(rootCommit.parentSha) ?? []).find((key) => key !== clusterKey) ?? null;
+    const rootRow = provisionalRowByVisualId.get(rootCommit.visualId) ?? Number.POSITIVE_INFINITY;
+    const parentClusterKey = [...candidateParentKeys].sort((left, right) => {
+      const leftTip = clusterTipRowByKey.get(left) ?? Number.NEGATIVE_INFINITY;
+      const rightTip = clusterTipRowByKey.get(right) ?? Number.NEGATIVE_INFINITY;
+      const leftDelta = leftTip <= rootRow ? rootRow - leftTip : Number.POSITIVE_INFINITY;
+      const rightDelta = rightTip <= rootRow ? rootRow - rightTip : Number.POSITIVE_INFINITY;
+      if (leftDelta !== rightDelta) return leftDelta - rightDelta;
+      if (leftTip !== rightTip) return rightTip - leftTip;
+      return left.localeCompare(right);
+    })[0] ?? null;
     parentClusterByClusterKey.set(clusterKey, parentClusterKey);
   }
   const childClustersByParent = new Map<string | null, string[]>();
