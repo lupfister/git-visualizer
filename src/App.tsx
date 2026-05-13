@@ -1592,18 +1592,64 @@ function App() {
       nextUniqueAheadCounts[branch.name] = previews.length;
     }
 
-    const commitBranchBySha = new Map<string, string>();
+    const commitBranchesBySha = new Map<string, Set<string>>();
     for (const commit of directCommits) {
-      commitBranchBySha.set(commit.fullSha, commit.branch);
+      const known = commitBranchesBySha.get(commit.fullSha) ?? new Set<string>();
+      known.add(commit.branch);
+      commitBranchesBySha.set(commit.fullSha, known);
     }
+    const knownBranchNames = new Set(branches.map((branch) => branch.name));
+    const isValidParentBranch = (candidate: string | null | undefined, selfName: string): candidate is string => {
+      if (!candidate) return false;
+      if (candidate === selfName) return false;
+      if (candidate === defaultBranch) return true;
+      return knownBranchNames.has(candidate);
+    };
+    const declaredParentByBranch = new Map(branches.map((branch) => [branch.name, branch.parentBranch ?? null]));
+    const branchDepthByName = new Map<string, number>();
+    const resolveBranchDepth = (branchName: string, visiting = new Set<string>()): number => {
+      if (branchName === defaultBranch) return 0;
+      const cached = branchDepthByName.get(branchName);
+      if (cached != null) return cached;
+      if (visiting.has(branchName)) return Number.MAX_SAFE_INTEGER;
+      visiting.add(branchName);
+      const parent = declaredParentByBranch.get(branchName) ?? null;
+      const depth = parent && parent !== branchName
+        ? resolveBranchDepth(parent, visiting) + 1
+        : 1;
+      visiting.delete(branchName);
+      branchDepthByName.set(branchName, depth);
+      return depth;
+    };
+    const branchCreatedAtByName = new Map(
+      branches.map((branch) => [branch.name, new Date(branch.createdDate ?? branch.divergedFromDate ?? branch.lastCommitDate).getTime()]),
+    );
+    const pickCanonicalParentBranch = (candidates: Iterable<string>): string | null => {
+      const valid = Array.from(candidates).filter((candidate) => knownBranchNames.has(candidate));
+      if (valid.length === 0) return null;
+      if (valid.includes(defaultBranch)) return defaultBranch;
+      valid.sort((left, right) => {
+        const depthDelta = resolveBranchDepth(left) - resolveBranchDepth(right);
+        if (depthDelta !== 0) return depthDelta;
+        const leftTime = branchCreatedAtByName.get(left) ?? Number.MAX_SAFE_INTEGER;
+        const rightTime = branchCreatedAtByName.get(right) ?? Number.MAX_SAFE_INTEGER;
+        if (leftTime !== rightTime) return leftTime - rightTime;
+        return left.localeCompare(right);
+      });
+      return valid[0] ?? null;
+    };
     const resolveParentBranchForSha = (sha: string | null | undefined): string | null => {
       if (!sha) return null;
-      const exact = commitBranchBySha.get(sha);
-      if (exact) return exact;
-      for (const [knownSha, branchName] of commitBranchBySha.entries()) {
-        if (knownSha.startsWith(sha) || sha.startsWith(knownSha)) return branchName;
+      const exact = commitBranchesBySha.get(sha);
+      if (exact) return pickCanonicalParentBranch(exact);
+      const prefixMatches = new Set<string>();
+      if (sha.length >= 7) {
+        for (const [knownSha, branchNames] of commitBranchesBySha.entries()) {
+          if (!knownSha.startsWith(sha)) continue;
+          for (const name of branchNames) prefixMatches.add(name);
+        }
       }
-      return null;
+      return pickCanonicalParentBranch(prefixMatches);
     };
     const nextBranchParentByName: Record<string, string | null> = { [defaultBranch]: null };
     for (const branch of branches) {
@@ -1624,10 +1670,20 @@ function App() {
           return a.fullSha.localeCompare(b.fullSha);
         })[0]?.parentSha ?? null;
       const parentFromGraph = resolveParentBranchForSha(graphParentSha);
+      const parentFromForkSha = resolveParentBranchForSha(
+        branch.presidesFromSha ?? branch.divergedFromSha ?? branch.createdFromSha ?? null,
+      );
+      const parentFromBranchMeta = isValidParentBranch(branch.parentBranch ?? null, branch.name)
+        ? branch.parentBranch!
+        : null;
+      const parentFromLatest = isValidParentBranch(latestBranchParentByNameRef.current[branch.name] ?? null, branch.name)
+        ? latestBranchParentByNameRef.current[branch.name]!
+        : null;
       nextBranchParentByName[branch.name] =
         parentFromGraph ??
-        latestBranchParentByNameRef.current[branch.name] ??
-        branch.parentBranch ??
+        parentFromForkSha ??
+        parentFromBranchMeta ??
+        parentFromLatest ??
         null;
     }
 
