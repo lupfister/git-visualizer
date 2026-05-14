@@ -169,6 +169,34 @@ function toRepoVisualSnapshot(record: ProjectSnapshotRecord | null | undefined):
   return record?.payload?.repoVisualSnapshot ?? null;
 }
 
+/** After commit, the synthetic `WORKING_TREE` id disappears; copy saved card positions to the new HEAD id. */
+function migrateWorkingTreeNodeOverrides(
+  overrides: NodePositionOverrides,
+  branchName: string,
+  newHeadSha: string,
+): NodePositionOverrides {
+  const next = { ...overrides };
+  const candidates = [`${branchName}:WORKING_TREE`, 'WORKING_TREE'] as const;
+  let foundKey: string | null = null;
+  let point: { x: number; y: number } | null = null;
+  for (const key of candidates) {
+    const value = next[key];
+    if (value && Number.isFinite(value.x) && Number.isFinite(value.y)) {
+      foundKey = key;
+      point = value;
+      break;
+    }
+  }
+  if (!foundKey || !point) return next;
+  delete next[foundKey];
+  for (const key of candidates) {
+    if (key !== foundKey) delete next[key];
+  }
+  next[`${branchName}:${newHeadSha}`] = point;
+  if (!next[newHeadSha]) next[newHeadSha] = point;
+  return next;
+}
+
 function parseNodePositionOverrides(payloadJson: string | null | undefined): NodePositionOverrides {
   if (!payloadJson) return {};
   try {
@@ -1982,6 +2010,17 @@ function App() {
         message: trimmed,
       });
       setCheckedOutRef(nextRef);
+      if (nextRef.branchName && nextRef.headSha) {
+        const normalizedPath = normalizePath(repoPath);
+        setNodePositionOverridesByRepo((previous) => ({
+          ...previous,
+          [normalizedPath]: migrateWorkingTreeNodeOverrides(
+            previous[normalizedPath] ?? {},
+            nextRef.branchName!,
+            nextRef.headSha,
+          ),
+        }));
+      }
       await yieldToPaint();
       await refreshRepoAfterMutation(repoPath);
       setCommitSwitchFeedback({

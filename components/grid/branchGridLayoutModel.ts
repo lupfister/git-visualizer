@@ -943,6 +943,40 @@ export function computeBranchGridLayout(input: BranchGridLayoutInput): BranchGri
       return left.localeCompare(right);
     })
     .forEach((clusterKey, column) => clusterColumnByKey.set(clusterKey, column));
+  const isShaUnpushedOnBranch = (branchName: string, sha: string): boolean => {
+    const set = unpushedCommitShasByBranchSet.get(branchName);
+    if (!set) return false;
+    for (const candidate of set) {
+      if (shasMatch(candidate, sha)) return true;
+    }
+    return false;
+  };
+  // Keep the first real unpushed tip (and the dirty working-tree cluster) on the same lane column as
+  // its parent pushed tail — otherwise committing replaces WORKING_TREE with a new SHA that jumps to a
+  // fresh "unpushed" cluster column and no longer matches the opened clump / card position users expect.
+  for (const commit of allCommitsWithClusters) {
+    if (commit.kind === 'uncommitted' && commit.parentSha) {
+      const parent = findCommitBySha(commit.parentSha);
+      if (!parent || parent.branchName !== commit.branchName) continue;
+      const ck = clusterKeyByCommitId.get(commit.visualId);
+      const pk = clusterKeyByCommitId.get(parent.visualId);
+      if (!ck || !pk) continue;
+      const parentCol = clusterColumnByKey.get(pk);
+      if (parentCol != null) clusterColumnByKey.set(ck, parentCol);
+      continue;
+    }
+    if (commit.kind === 'stash' || commit.kind === 'branch-created') continue;
+    if (!commit.parentSha) continue;
+    if (!isShaUnpushedOnBranch(commit.branchName, commit.id)) continue;
+    if (isShaUnpushedOnBranch(commit.branchName, commit.parentSha)) continue;
+    const parent = findCommitBySha(commit.parentSha);
+    if (!parent || parent.branchName !== commit.branchName) continue;
+    const ck = clusterKeyByCommitId.get(commit.visualId);
+    const pk = clusterKeyByCommitId.get(parent.visualId);
+    if (!ck || !pk) continue;
+    const parentCol = clusterColumnByKey.get(pk);
+    if (parentCol != null) clusterColumnByKey.set(ck, parentCol);
+  }
   const lanes: Lane[] = Array.from(clusterColumnByKey.entries())
     .map(([key, column]) => ({
       name: key,
@@ -1124,7 +1158,17 @@ export function computeBranchGridLayout(input: BranchGridLayoutInput): BranchGri
   const checkedOutClusterKey = (() => {
     const checkedOutBranchName = checkedOutRef?.branchName ?? null;
     if (!checkedOutSha || !checkedOutBranchName) return null;
-    return clusterKeyByCommitId.get(`${checkedOutBranchName}:${checkedOutSha}`) ?? null;
+    const directKey = clusterKeyByCommitId.get(`${checkedOutBranchName}:${checkedOutSha}`);
+    if (directKey) return directKey;
+    for (const [visualId, clusterKey] of clusterKeyByCommitId.entries()) {
+      const colon = visualId.indexOf(':');
+      if (colon <= 0) continue;
+      const branch = visualId.slice(0, colon);
+      const shaPart = visualId.slice(colon + 1);
+      if (branch !== checkedOutBranchName) continue;
+      if (shasMatch(shaPart, checkedOutSha)) return clusterKey;
+    }
+    return null;
   })();
   const defaultCollapsedClumps = new Set<string>();
   for (const [clusterKey, count] of clusterCounts.entries()) {
