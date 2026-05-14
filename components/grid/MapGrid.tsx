@@ -380,6 +380,59 @@ export default function BranchGridMap({
     },
     [laneFromY, orientation, snapMetrics.lanePitch, snapMetrics.timelinePitch],
   );
+  const avoidNodeCollisions = useCallback(
+    (
+      dragState: NonNullable<typeof dragNodeRef.current>,
+      candidatePositions: NodePositionOverrides,
+    ) => {
+      const draggedNodeIds = new Set(dragState.groupNodes.map((groupNode) => groupNode.nodeId));
+      const occupied = dragState.baseNodes
+        .filter((node) => !draggedNodeIds.has(node.commit.visualId))
+        .map((node) => {
+          const override = dragState.baseOverrides[node.commit.visualId] ?? dragState.baseOverrides[node.commit.id];
+          return {
+            x: override?.x ?? node.x,
+            y: override?.y ?? node.y,
+          };
+        });
+      const nodeBoxHeight = CARD_BODY_TOP_OFFSET + CARD_HEIGHT + 4;
+      const overlaps = (
+        left: { x: number; y: number },
+        right: { x: number; y: number },
+      ) =>
+        left.x < right.x + CARD_WIDTH &&
+        left.x + CARD_WIDTH > right.x &&
+        left.y < right.y + nodeBoxHeight &&
+        left.y + nodeBoxHeight > right.y;
+      const candidateForGroup = (offset: number) =>
+        dragState.groupNodes.map((groupNode) => ({
+          x: (candidatePositions[groupNode.nodeId]?.x ?? groupNode.baseX) + offset,
+          y: candidatePositions[groupNode.nodeId]?.y ?? groupNode.baseY,
+        }));
+
+      let offset = 0;
+      for (let attempt = 0; attempt < 200; attempt += 1) {
+        const groupCandidates = candidateForGroup(offset);
+        const hitsOccupied = groupCandidates.some((candidate) =>
+          occupied.some((occupiedNode) => overlaps(candidate, occupiedNode)),
+        );
+        const hitsGroup = groupCandidates.some((candidate, index) =>
+          groupCandidates.some((other, otherIndex) => otherIndex > index && overlaps(candidate, other)),
+        );
+        if (!hitsOccupied && !hitsGroup) break;
+        offset += orientation === 'horizontal' ? snapMetrics.timelinePitch : snapMetrics.lanePitch;
+      }
+      if (offset === 0) return candidatePositions;
+      const next = { ...candidatePositions };
+      for (const groupNode of dragState.groupNodes) {
+        const point = next[groupNode.nodeId];
+        if (!point) continue;
+        next[groupNode.nodeId] = { x: point.x + offset, y: point.y };
+      }
+      return next;
+    },
+    [orientation, snapMetrics.lanePitch, snapMetrics.timelinePitch],
+  );
 
   const nodeByVisualId = useMemo(() => {
     const m = new Map<string, Node>();
@@ -1059,9 +1112,9 @@ export default function BranchGridMap({
           y: groupNode.baseY + deltaY + snapDeltaY,
         };
       }
-      return next;
+      return avoidNodeCollisions(dragState, next);
     },
-    [snapNodePosition],
+    [avoidNodeCollisions, snapNodePosition],
   );
 
   const buildLiveDragPreviewOverrides = useCallback(
