@@ -14,13 +14,17 @@ import {
   CARD_HEIGHT,
   CARD_BODY_TOP_OFFSET,
   CARD_WIDTH,
+  LEFT_PADDING,
+  ROW_GAP,
+  ROW_HEIGHT,
+  TOP_PADDING,
   type BranchGridViewProps,
   type ConnectorFace,
   type NodePositionOverrides,
   type Node,
 } from './LayoutGrid';
 import { GitMerge } from 'lucide-react';
-import { computeBranchGridLayout } from './branchGridLayoutModel';
+import { computeBranchGridLayout, GRID_LAYOUT_RENDER_ZOOM } from './branchGridLayoutModel';
 import type { BranchGridLayoutModel } from './branchGridLayoutModel';
 import CommitControls from './CommitControls';
 import MapGridCanvas from './MapGridCanvas';
@@ -181,13 +185,20 @@ export default function BranchGridMap({
   const [localManuallyOpenedClumps, setLocalManuallyOpenedClumps] = useState<Set<string>>(() => new Set());
   const [localManuallyClosedClumps, setLocalManuallyClosedClumps] = useState<Set<string>>(() => new Set());
   const [nodePositionOverrides, setNodePositionOverrides] = useState<NodePositionOverrides>({});
+  const [dragPreviewByNodeId, setDragPreviewByNodeId] = useState<NodePositionOverrides>({});
+  const [activeDragNodeIds, setActiveDragNodeIds] = useState<Set<string>>(() => new Set());
   const suppressNextCommitClickRef = useRef(false);
   const dragNodeRef = useRef<{
     nodeId: string;
+    pointerId?: number;
     startX: number;
     startY: number;
     baseX: number;
     baseY: number;
+    sourceLane: number;
+    baseOverrides: NodePositionOverrides;
+    baseNodes: Node[];
+    groupNodes: Array<{ nodeId: string; baseX: number; baseY: number }>;
     moved: boolean;
     pendingX: number;
     pendingY: number;
@@ -222,7 +233,7 @@ export default function BranchGridMap({
   const lastReadyEpochReportedRef = useRef<number>(0);
 
   const computedLayoutModel = useMemo(() => {
-    if (providedLayoutModel) return providedLayoutModel;
+    if (providedLayoutModel && Object.keys(nodePositionOverrides).length === 0) return providedLayoutModel;
     const lanes = buildLanes(branches, defaultBranch, branchCommitPreviews, branchParentByName);
     return computeBranchGridLayout({
       lanes,
@@ -307,6 +318,33 @@ export default function BranchGridMap({
     [displayZoom],
   );
   const labelTopPx = -(20 / displayZoom);
+  const snapMetrics = useMemo(() => {
+    const zoomAwareRowGap = ROW_GAP / GRID_LAYOUT_RENDER_ZOOM;
+    const zoomAwareLabelBand = 20 / GRID_LAYOUT_RENDER_ZOOM;
+    return {
+      timelinePitch: CARD_WIDTH + zoomAwareRowGap + zoomAwareLabelBand,
+      lanePitch: ROW_HEIGHT + zoomAwareRowGap + zoomAwareLabelBand,
+    };
+  }, []);
+  const laneFromY = useCallback(
+    (y: number) => Math.max(0, Math.round((y - TOP_PADDING) / snapMetrics.lanePitch)),
+    [snapMetrics.lanePitch],
+  );
+  const snapNodePosition = useCallback(
+    (x: number, y: number) => {
+      if (orientation !== 'horizontal') {
+        return {
+          x: LEFT_PADDING + Math.max(0, Math.round((x - LEFT_PADDING) / snapMetrics.lanePitch)) * snapMetrics.lanePitch,
+          y: TOP_PADDING + Math.max(0, Math.round((y - TOP_PADDING) / snapMetrics.timelinePitch)) * snapMetrics.timelinePitch,
+        };
+      }
+      return {
+        x: LEFT_PADDING + Math.max(0, Math.round((x - LEFT_PADDING) / snapMetrics.timelinePitch)) * snapMetrics.timelinePitch,
+        y: TOP_PADDING + laneFromY(y) * snapMetrics.lanePitch,
+      };
+    },
+    [laneFromY, orientation, snapMetrics.lanePitch, snapMetrics.timelinePitch],
+  );
 
   const nodeByVisualId = useMemo(() => {
     const m = new Map<string, Node>();
@@ -962,79 +1000,157 @@ export default function BranchGridMap({
     ],
   );
 
+  const buildSnappedDragOverrides = useCallback(
+    (dragState: NonNullable<typeof dragNodeRef.current>) => {
+      const snapped = snapNodePosition(dragState.pendingX, dragState.pendingY);
+      const deltaX = dragState.pendingX - dragState.baseX;
+      const deltaY = dragState.pendingY - dragState.baseY;
+      const snapDeltaX = snapped.x - dragState.pendingX;
+      const snapDeltaY = snapped.y - dragState.pendingY;
+      const next: NodePositionOverrides = { ...dragState.baseOverrides };
+      for (const groupNode of dragState.groupNodes) {
+        next[groupNode.nodeId] = {
+          x: groupNode.baseX + deltaX + snapDeltaX,
+          y: groupNode.baseY + deltaY + snapDeltaY,
+        };
+      }
+      return next;
+    },
+    [snapNodePosition],
+  );
+
+  const buildLiveDragPreviewOverrides = useCallback(
+    (dragState: NonNullable<typeof dragNodeRef.current>) => {
+      const deltaX = dragState.pendingX - dragState.baseX;
+      const deltaY = dragState.pendingY - dragState.baseY;
+      const next: NodePositionOverrides = { ...dragState.baseOverrides };
+      for (const groupNode of dragState.groupNodes) {
+        next[groupNode.nodeId] = {
+          x: groupNode.baseX + deltaX,
+          y: groupNode.baseY + deltaY,
+        };
+      }
+      return next;
+    },
+    [],
+  );
+
+  const flushDragPosition = useCallback(() => {
+    dragRafRef.current = null;
+    const dragState = dragNodeRef.current;
+    if (!dragState) return;
+    setDragPreviewByNodeId(buildLiveDragPreviewOverrides(dragState));
+  }, [buildLiveDragPreviewOverrides]);
+
+  const updateDragPosition = useCallback(
+    (clientX: number, clientY: number) => {
+      const dragState = dragNodeRef.current;
+      if (!dragState) return;
+      const dragScale = renderedCameraRef.current.zoom / GRID_RENDER_ZOOM;
+      const inverseScale = dragScale > 0 ? 1 / dragScale : 1;
+      const deltaX = (clientX - dragState.startX) * inverseScale;
+      const deltaY = (clientY - dragState.startY) * inverseScale;
+      if (Math.abs(deltaX) > 2 || Math.abs(deltaY) > 2) dragState.moved = true;
+      if (dragState.moved) suppressNextCommitClickRef.current = true;
+      dragState.pendingX = dragState.baseX + deltaX;
+      dragState.pendingY = dragState.baseY + deltaY;
+      if (dragRafRef.current != null) return;
+      dragRafRef.current = window.requestAnimationFrame(flushDragPosition);
+    },
+    [flushDragPosition, renderedCameraRef],
+  );
+
+  const endDrag = useCallback(() => {
+    if (dragRafRef.current != null) {
+      window.cancelAnimationFrame(dragRafRef.current);
+      dragRafRef.current = null;
+      flushDragPosition();
+    }
+    const dragState = dragNodeRef.current;
+    if (dragState) {
+      setNodePositionOverrides(buildSnappedDragOverrides(dragState));
+    }
+    dragNodeRef.current = null;
+    setActiveDragNodeIds(new Set());
+    setDragPreviewByNodeId({});
+    document.body.style.removeProperty('user-select');
+    document.body.style.removeProperty('-webkit-user-select');
+    window.setTimeout(() => {
+      suppressNextCommitClickRef.current = false;
+    }, 0);
+  }, [buildSnappedDragOverrides, flushDragPosition]);
+
   const handleNodePointerDown = useCallback(
     (event: React.PointerEvent<HTMLDivElement>, node: Node) => {
       if (event.button !== 0) return;
       const target = event.target as HTMLElement | null;
-      if (target?.closest('[data-selectable-text="true"]')) return;
       if (target?.closest('button, a, input, textarea, select')) return;
       event.stopPropagation();
       event.preventDefault();
+      window.getSelection()?.removeAllRanges();
+      document.body.style.setProperty('user-select', 'none');
+      document.body.style.setProperty('-webkit-user-select', 'none');
       suppressNextCommitClickRef.current = false;
       event.currentTarget.setPointerCapture(event.pointerId);
       const currentOverride = nodePositionOverrides[node.commit.visualId] ?? nodePositionOverrides[node.commit.id];
+      const baseX = currentOverride?.x ?? node.x;
+      const baseY = currentOverride?.y ?? node.y;
+      const selectedCommitShaSet = new Set(selectedVisibleCommitShas);
+      const shouldDragSelection = selectedCommitShaSet.size > 1 && selectedCommitShaSet.has(node.commit.id);
+      const groupNodes = (shouldDragSelection
+        ? renderNodes.filter((renderNode) => selectedCommitShaSet.has(renderNode.commit.id))
+        : [node]
+      ).map((groupNode) => {
+        const groupOverride = nodePositionOverrides[groupNode.commit.visualId] ?? nodePositionOverrides[groupNode.commit.id];
+        return {
+          nodeId: groupNode.commit.visualId,
+          baseX: groupOverride?.x ?? groupNode.x,
+          baseY: groupOverride?.y ?? groupNode.y,
+        };
+      });
+      setActiveDragNodeIds(new Set(groupNodes.map((groupNode) => groupNode.nodeId)));
       dragNodeRef.current = {
         nodeId: node.commit.visualId,
+        pointerId: event.pointerId,
         startX: event.clientX,
         startY: event.clientY,
-        baseX: currentOverride?.x ?? node.x,
-        baseY: currentOverride?.y ?? node.y,
+        baseX,
+        baseY,
+        sourceLane: orientation === 'horizontal' ? laneFromY(baseY) : node.column,
+        baseOverrides: nodePositionOverrides,
+        baseNodes: renderNodes,
+        groupNodes,
         moved: false,
-        pendingX: currentOverride?.x ?? node.x,
-        pendingY: currentOverride?.y ?? node.y,
+        pendingX: baseX,
+        pendingY: baseY,
       };
-      const flushDragPosition = () => {
-        dragRafRef.current = null;
-        const dragState = dragNodeRef.current;
-        if (!dragState) return;
-        setNodePositionOverrides((prev) => ({
-          ...prev,
-          [dragState.nodeId]: {
-            x: dragState.pendingX,
-            y: dragState.pendingY,
-          },
-        }));
-      };
-      const handleMove = (moveEvent: PointerEvent) => {
-        const dragState = dragNodeRef.current;
-        if (!dragState) return;
-        const dragScale = renderedCameraRef.current.zoom / GRID_RENDER_ZOOM;
-        const inverseScale = dragScale > 0 ? 1 / dragScale : 1;
-        const deltaX = (moveEvent.clientX - dragState.startX) * inverseScale;
-        const deltaY = (moveEvent.clientY - dragState.startY) * inverseScale;
-        if (Math.abs(deltaX) > 2 || Math.abs(deltaY) > 2) dragState.moved = true;
-        if (dragState.moved) suppressNextCommitClickRef.current = true;
-        dragState.pendingX = dragState.baseX + deltaX;
-        dragState.pendingY = dragState.baseY + deltaY;
-        if (dragRafRef.current != null) return;
-        dragRafRef.current = window.requestAnimationFrame(flushDragPosition);
-      };
-      const handleUp = () => {
-        window.removeEventListener('pointermove', handleMove);
-        window.removeEventListener('pointerup', handleUp);
-        window.removeEventListener('pointercancel', handleUp);
-        if (dragRafRef.current != null) {
-          window.cancelAnimationFrame(dragRafRef.current);
-          dragRafRef.current = null;
-          flushDragPosition();
-        }
-        try {
-          event.currentTarget.releasePointerCapture(event.pointerId);
-        } catch {
-          // Ignore if the pointer was already released.
-        }
-        const dragState = dragNodeRef.current;
-        dragNodeRef.current = null;
-        if (!dragState) return;
-        window.setTimeout(() => {
-          suppressNextCommitClickRef.current = false;
-        }, 0);
-      };
-      window.addEventListener('pointermove', handleMove);
-      window.addEventListener('pointerup', handleUp);
-      window.addEventListener('pointercancel', handleUp);
     },
-    [nodePositionOverrides],
+    [laneFromY, nodePositionOverrides, orientation, renderNodes, selectedVisibleCommitShas],
+  );
+
+  const handleNodePointerMove = useCallback(
+    (event: React.PointerEvent<HTMLDivElement>) => {
+      const dragState = dragNodeRef.current;
+      if (!dragState) return;
+      if (dragState.pointerId != null && dragState.pointerId !== event.pointerId) return;
+      updateDragPosition(event.clientX, event.clientY);
+    },
+    [updateDragPosition],
+  );
+
+  const handleNodePointerUp = useCallback(
+    (event: React.PointerEvent<HTMLDivElement>) => {
+      const dragState = dragNodeRef.current;
+      if (!dragState) return;
+      if (dragState.pointerId != null && dragState.pointerId !== event.pointerId) return;
+      try {
+        event.currentTarget.releasePointerCapture(event.pointerId);
+      } catch {
+        // Ignore if pointer capture was already released.
+      }
+      endDrag();
+    },
+    [endDrag],
   );
 
   const confirmCommit = useCallback(async () => {
@@ -1354,6 +1470,8 @@ export default function BranchGridMap({
           onWheel={handleWheel}
           onMouseDown={startMarqueeDrag}
           onNodePointerDown={handleNodePointerDown}
+          onNodePointerMove={handleNodePointerMove}
+          onNodePointerUp={handleNodePointerUp}
           labelTopPx={labelTopPx}
           inverseZoomStyle={inverseZoomStyle}
           displayZoom={displayZoom}
@@ -1392,6 +1510,9 @@ export default function BranchGridMap({
           remoteCommitShas={remoteCommitShas}
           checkedOutHeadSha={checkedOutHeadSha}
           orientation={orientation}
+          dragPreviewByNodeId={dragPreviewByNodeId}
+          nodePositionOverrides={nodePositionOverrides}
+          activeDragNodeIds={activeDragNodeIds}
         />
       )}
       {blockMapDisplay ? <MapGridBlockingOverlay /> : null}

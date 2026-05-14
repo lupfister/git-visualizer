@@ -1136,21 +1136,21 @@ export function computeBranchGridLayout(input: BranchGridLayoutInput): BranchGri
     const row = visibleRows.get(commit.visualId) ?? 1;
     const column = columnByCommitVisualId.get(commit.visualId) ?? 0;
     if (isHorizontal) {
-      return applyNodeOverrides({
+      return {
         commit,
         row,
         column,
         x: LEFT_PADDING + (horizontalRightAnchorRowOffset + row - 1) * zoomAwareTimelinePitch,
         y: TOP_PADDING + column * zoomAwareLanePitch,
-      });
+      };
     }
-    return applyNodeOverrides({
+    return {
       commit,
       row,
       column,
       x: LEFT_PADDING + column * COLUMN_WIDTH,
       y: TOP_PADDING + (maxVisibleRowForVertical - row) * zoomAwareTimelinePitch,
-    });
+    };
   });
   // Hard guard against visual collisions: each rendered row/column slot must be unique.
   const renderNodes = [...renderNodesRaw]
@@ -1201,6 +1201,33 @@ export function computeBranchGridLayout(input: BranchGridLayoutInput): BranchGri
       }
     }
     placedNodes.push(node);
+  }
+  const movedLeadByClusterKey = new Map<string, { node: Node; x: number; y: number }>();
+  for (const node of renderNodes) {
+    const clusterKey = clusterKeyByCommitId.get(node.commit.visualId);
+    if (!clusterKey) continue;
+    if (leadByClusterKey.get(clusterKey) !== node.commit.visualId) continue;
+    const override = nodePositionOverrides[node.commit.visualId] ?? nodePositionOverrides[node.commit.id];
+    if (!override) continue;
+    movedLeadByClusterKey.set(clusterKey, { node, x: override.x, y: override.y });
+  }
+  for (const node of renderNodes) {
+    const override = nodePositionOverrides[node.commit.visualId] ?? nodePositionOverrides[node.commit.id];
+    if (override) {
+      node.x = override.x;
+      node.y = override.y;
+      continue;
+    }
+    const clusterKey = clusterKeyByCommitId.get(node.commit.visualId);
+    const movedLead = clusterKey ? movedLeadByClusterKey.get(clusterKey) : null;
+    if (!movedLead) continue;
+    if (isHorizontal) {
+      node.x = movedLead.x - Math.max(0, movedLead.node.row - node.row) * zoomAwareTimelinePitch;
+      node.y = movedLead.y + (node.column - movedLead.node.column) * zoomAwareLanePitch;
+      continue;
+    }
+    node.x = movedLead.x + (node.column - movedLead.node.column) * COLUMN_WIDTH;
+    node.y = movedLead.y + Math.max(0, movedLead.node.row - node.row) * zoomAwareTimelinePitch;
   }
   const visibleNodesBySha = new Map<string, Node[]>();
   for (const node of renderNodes) {
