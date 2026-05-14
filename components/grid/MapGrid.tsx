@@ -72,6 +72,20 @@ function MapGridBlockingOverlay() {
   );
 }
 
+function nodePositionOverridesEqual(left: NodePositionOverrides, right: NodePositionOverrides) {
+  const leftKeys = Object.keys(left);
+  const rightKeys = Object.keys(right);
+  if (leftKeys.length !== rightKeys.length) return false;
+  for (const key of leftKeys) {
+    const leftPoint = left[key];
+    const rightPoint = right[key];
+    if (!rightPoint) return false;
+    if (Math.abs(leftPoint.x - rightPoint.x) > 0.001) return false;
+    if (Math.abs(leftPoint.y - rightPoint.y) > 0.001) return false;
+  }
+  return true;
+}
+
 type Props = BranchGridViewProps & {
   isDebugOpen?: boolean;
   onDebugClose?: () => void;
@@ -94,6 +108,8 @@ type Props = BranchGridViewProps & {
   blockMapDisplay?: boolean;
   mapReadyEpoch?: number;
   onMapReadyForDisplay?: (epoch: number) => void;
+  nodePositionOverrides?: NodePositionOverrides;
+  onNodePositionOverridesChange?: (overrides: NodePositionOverrides) => void;
 };
 
 export default function BranchGridMap({
@@ -161,6 +177,8 @@ export default function BranchGridMap({
   blockMapDisplay = false,
   mapReadyEpoch = 0,
   onMapReadyForDisplay,
+  nodePositionOverrides: controlledNodePositionOverrides,
+  onNodePositionOverridesChange,
 }: Props) {
   const scrollContainerRef = useRef<HTMLDivElement | null>(null);
   const hudToolbarRef = useRef<HTMLDivElement | null>(null);
@@ -184,7 +202,18 @@ export default function BranchGridMap({
   );
   const [localManuallyOpenedClumps, setLocalManuallyOpenedClumps] = useState<Set<string>>(() => new Set());
   const [localManuallyClosedClumps, setLocalManuallyClosedClumps] = useState<Set<string>>(() => new Set());
-  const [nodePositionOverrides, setNodePositionOverrides] = useState<NodePositionOverrides>({});
+  const [localNodePositionOverrides, setLocalNodePositionOverrides] = useState<NodePositionOverrides>({});
+  const [optimisticNodePositionOverrides, setOptimisticNodePositionOverrides] = useState<NodePositionOverrides | null>(null);
+  const nodePositionOverrides =
+    optimisticNodePositionOverrides ?? controlledNodePositionOverrides ?? localNodePositionOverrides;
+  const setNodePositionOverrides = useCallback(
+    (nextOverrides: NodePositionOverrides) => {
+      setLocalNodePositionOverrides(nextOverrides);
+      if (controlledNodePositionOverrides != null) setOptimisticNodePositionOverrides(nextOverrides);
+      onNodePositionOverridesChange?.(nextOverrides);
+    },
+    [controlledNodePositionOverrides, onNodePositionOverridesChange],
+  );
   const [dragPreviewByNodeId, setDragPreviewByNodeId] = useState<NodePositionOverrides>({});
   const [activeDragNodeIds, setActiveDragNodeIds] = useState<Set<string>>(() => new Set());
   const suppressNextCommitClickRef = useRef(false);
@@ -230,7 +259,14 @@ export default function BranchGridMap({
     isEnabled: !blockMapInteraction,
     cameraStorageScopeKey: `${currentRepoPath ?? '__no-repo__'}::${orientation}`,
   });
+
   const lastReadyEpochReportedRef = useRef<number>(0);
+
+  useEffect(() => {
+    if (!optimisticNodePositionOverrides || !controlledNodePositionOverrides) return;
+    if (!nodePositionOverridesEqual(optimisticNodePositionOverrides, controlledNodePositionOverrides)) return;
+    setOptimisticNodePositionOverrides(null);
+  }, [controlledNodePositionOverrides, optimisticNodePositionOverrides]);
 
   const computedLayoutModel = useMemo(() => {
     if (providedLayoutModel && Object.keys(nodePositionOverrides).length === 0) return providedLayoutModel;
@@ -302,7 +338,6 @@ export default function BranchGridMap({
     branchOffNodeShas,
     crossBranchOutgoingShas,
     branchBaseCommitByName,
-    pointFormatter,
   } = resolvedLayoutModel;
 
   const isGridSearchActive = Boolean(normalizedSearchQuery);
@@ -812,6 +847,15 @@ export default function BranchGridMap({
   const cullConnectorPath = (connector: { id: string; fromX: number; fromY: number; toX: number; toY: number; fromFace?: ConnectorFace; toFace?: ConnectorFace }): boolean => {
     if (!visibleBounds) return true;
     const { fromX, fromY, toX, toY } = connector;
+    const pad = 160;
+    if (
+      Math.max(fromX, toX) < visibleBounds.left - pad ||
+      Math.min(fromX, toX) > visibleBounds.right + pad ||
+      Math.max(fromY, toY) < visibleBounds.top - pad ||
+      Math.min(fromY, toY) > visibleBounds.bottom + pad
+    ) {
+      return false;
+    }
     return looseCableConnectorIntersectsViewportBounds(fromX, fromY, toX, toY, visibleBounds, connector.fromFace, connector.toFace);
   };
 
@@ -853,6 +897,7 @@ export default function BranchGridMap({
         (!defaultCollapsedClumps.has(ck) && !manuallyClosedClumps.has(ck));
       if (clusterExpanded) nextVisible.add(node.commit.visualId);
     }
+
     setVisibleNodeIds((prev) => (visibleCommitIdSetEquals(prev, nextVisible) ? prev : nextVisible));
   }, [
     renderedZoom,
@@ -886,9 +931,9 @@ export default function BranchGridMap({
     return () => ro.disconnect();
   }, [allCommits.length]);
 
-  const renderedNodeCount = renderNodes.filter((node) => shouldRenderNode(node)).length;
-  const renderedMergeConnectorCount = mergeConnectors.filter((connector) => cullConnectorPath(connector)).length;
-  const renderedConnectorCount = connectors.filter((connector) => cullConnectorPath(connector)).length;
+  const renderedNodeCount = isDebugOpen ? renderNodes.filter((node) => shouldRenderNode(node)).length : 0;
+  const renderedMergeConnectorCount = isDebugOpen ? mergeConnectors.filter((connector) => cullConnectorPath(connector)).length : 0;
+  const renderedConnectorCount = isDebugOpen ? connectors.filter((connector) => cullConnectorPath(connector)).length : 0;
 
   useLayoutEffect(() => {
     if (isLoading) return;
@@ -1463,6 +1508,7 @@ export default function BranchGridMap({
           scrollContainerRef={scrollContainerRef}
           mapPadHostRef={mapPadHostRef}
           transformLayerRef={transformLayerRef}
+          renderedCameraRef={renderedCameraRef}
           isMarqueeSelecting={isMarqueeSelecting}
           contentWidth={contentWidth}
           contentHeight={contentHeight}
@@ -1498,7 +1544,6 @@ export default function BranchGridMap({
           connectorParentAccentClass={connectorParentAccentClass}
           commitCornerRadiusPx={commitCornerRadiusPx}
           lineStrokeWidth={lineStrokeWidth}
-          pointFormatter={pointFormatter}
           connectors={connectors}
           mergeConnectors={mergeConnectors}
           cullConnectorPath={cullConnectorPath}

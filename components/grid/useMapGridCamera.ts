@@ -102,11 +102,10 @@ export function useMapGridCamera({
     }
 
     if (options?.emitTick === false) return;
-    if (isInteractionActiveRef.current) return;
 
     const zoomChanged = Math.abs(nextZoom - prev.zoom) > ZOOM_SETTLE_EPSILON;
     if (zoomChanged) {
-      flushCameraReactTick();
+      if (!isInteractionActiveRef.current) flushCameraReactTick();
       return;
     }
 
@@ -218,6 +217,7 @@ export function useMapGridCamera({
     onUserCameraChange?.();
     zoomAnchorRef.current = null;
     // Interrupt any in-flight zoom interpolation so pan takes effect immediately.
+    markCameraInteraction();
     const rendered = renderedCameraRef.current;
     panRef.current = { x: rendered.panX, y: rendered.panY };
     zoomRef.current = rendered.zoom;
@@ -225,7 +225,7 @@ export function useMapGridCamera({
     const nextPanY = rendered.panY - event.deltaY;
     panRef.current = { x: nextPanX, y: nextPanY };
     applyRenderedCamera(nextPanX, nextPanY, rendered.zoom);
-  }, [applyRenderedCamera, isEnabled, onUserCameraChange, zoomToPoint]);
+  }, [applyRenderedCamera, isEnabled, markCameraInteraction, onUserCameraChange, zoomToPoint]);
 
   useLayoutEffect(() => {
     if (!isEnabled) return;

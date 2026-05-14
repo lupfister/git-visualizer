@@ -2,6 +2,7 @@ import { Branch, BranchCommitPreview, BranchPromptMeta, CheckedOutRef, DirectCom
 import type { Dispatch, SetStateAction } from 'react';
 import BranchGridMap from './MapGrid';
 import type { BranchGridLayoutModel } from './branchGridLayoutModel';
+import type { NodePositionOverrides } from './LayoutGrid';
 
 export type ViewMode = 'time' | 'grid';
 export type OrientationMode = 'horizontal';
@@ -88,6 +89,8 @@ interface Props {
   blockMapDisplay?: boolean;
   mapReadyEpoch?: number;
   onMapReadyForDisplay?: (epoch: number) => void;
+  nodePositionOverrides?: NodePositionOverrides;
+  onNodePositionOverridesChange?: (overrides: NodePositionOverrides) => void;
 }
 
 export default function BranchGridMapView({
@@ -156,6 +159,8 @@ export default function BranchGridMapView({
   blockMapDisplay = false,
   mapReadyEpoch = 0,
   onMapReadyForDisplay,
+  nodePositionOverrides,
+  onNodePositionOverridesChange,
 }: Props) {
   const openPRBranchNames = new Set(openPRs.map(p => p.branchName));
   const ACTIVE_MS = 14 * 86400000;
@@ -234,6 +239,8 @@ export default function BranchGridMapView({
             blockMapDisplay={blockMapDisplay}
             mapReadyEpoch={mapReadyEpoch}
             onMapReadyForDisplay={onMapReadyForDisplay}
+            nodePositionOverrides={nodePositionOverrides}
+            onNodePositionOverridesChange={onNodePositionOverridesChange}
           />
         </div>
       ) : view === 'grid' ? (
@@ -270,6 +277,8 @@ export default function BranchGridMapView({
             blockMapDisplay={blockMapDisplay}
             mapReadyEpoch={mapReadyEpoch}
             onMapReadyForDisplay={onMapReadyForDisplay}
+            nodePositionOverrides={nodePositionOverrides}
+            onNodePositionOverridesChange={onNodePositionOverridesChange}
           />
         </div>
       ) : null}

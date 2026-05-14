@@ -7,7 +7,7 @@ import { open } from '@tauri-apps/plugin-dialog';
 import { PanelLeftClose, PanelLeftOpen } from 'lucide-react';
 import BranchGridMapView from '../components/grid/MapViewGrid';
 import DenseBranchSidebar from '../components/DenseBranchSidebar';
-import { buildLanes } from '../components/grid/LayoutGrid';
+import { buildLanes, type NodePositionOverrides } from '../components/grid/LayoutGrid';
 import { computeBranchGridLayout, type BranchGridLayoutModel } from '../components/grid/branchGridLayoutModel';
 import { hydrateBranchGridLayoutModel, serializeBranchGridLayoutModel } from '../components/grid/layoutSnapshot';
 import type { Branch, BranchCommitPreview, BranchPromptMeta, CheckedOutRef, DirectCommit, GitHubAuthStatus, GitHubInfo, GitStashEntry, MergeNode, OpenPR, RepoVisualSnapshot, WorktreeInfo } from '../types';
@@ -169,6 +169,25 @@ function toRepoVisualSnapshot(record: ProjectSnapshotRecord | null | undefined):
   return record?.payload?.repoVisualSnapshot ?? null;
 }
 
+function parseNodePositionOverrides(payloadJson: string | null | undefined): NodePositionOverrides {
+  if (!payloadJson) return {};
+  try {
+    const parsed = JSON.parse(payloadJson) as unknown;
+    if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) return {};
+    const next: NodePositionOverrides = {};
+    for (const [nodeId, value] of Object.entries(parsed)) {
+      if (!value || typeof value !== 'object' || Array.isArray(value)) continue;
+      const point = value as { x?: unknown; y?: unknown };
+      if (typeof point.x !== 'number' || typeof point.y !== 'number') continue;
+      if (!Number.isFinite(point.x) || !Number.isFinite(point.y)) continue;
+      next[nodeId] = { x: point.x, y: point.y };
+    }
+    return next;
+  } catch {
+    return {};
+  }
+}
+
 function App() {
   const [repoPath, setRepoPath] = useState<string | null>(null);
   const [repoName, setRepoName] = useState<string>('');
@@ -216,6 +235,8 @@ function App() {
   const [branchCommitPreviews, setBranchCommitPreviews] = useState<Record<string, BranchCommitPreview[]>>({});
   const [branchParentByName, setBranchParentByName] = useState<Record<string, string | null>>({});
   const [laneByBranch, setLaneByBranch] = useState<Record<string, number>>({});
+  const [nodePositionOverridesByRepo, setNodePositionOverridesByRepo] = useState<Record<string, NodePositionOverrides>>({});
+  const nodePositionSaveTimeoutRef = useRef<number | null>(null);
   const [branchUniqueAheadCounts, setBranchUniqueAheadCounts] = useState<Record<string, number>>({});
   const [stashes, setStashes] = useState<GitStashEntry[]>([]);
   const [openPRs, setOpenPRs] = useState<OpenPR[]>([]);
@@ -438,6 +459,42 @@ function App() {
     return true;
   }
 
+  const loadNodePositionsForRepo = useCallback(async (targetPath: string) => {
+    const normalizedPath = normalizePath(targetPath);
+    const payloadJson = await invoke<string | null>('get_repo_node_positions', {
+      repoPath: normalizedPath,
+    }).catch(() => null);
+    const overrides = parseNodePositionOverrides(payloadJson);
+    setNodePositionOverridesByRepo((previous) => ({
+      ...previous,
+      [normalizedPath]: overrides,
+    }));
+  }, []);
+
+  const handleNodePositionOverridesChange = useCallback(
+    (overrides: NodePositionOverrides) => {
+      if (!repoPath) return;
+      const normalizedPath = normalizePath(repoPath);
+      setNodePositionOverridesByRepo((previous) => ({
+        ...previous,
+        [normalizedPath]: overrides,
+      }));
+    },
+    [repoPath],
+  );
+
+  const resetProjectNodePositions = useCallback(
+    (targetPath: string) => {
+      const normalizedPath = normalizePath(targetPath);
+      setNodePositionOverridesByRepo((previous) => ({
+        ...previous,
+        [normalizedPath]: {},
+      }));
+      void invoke('clear_repo_node_positions', { repoPath: normalizedPath });
+    },
+    [],
+  );
+
   function fingerprintSignature(fingerprint: RepoRefreshFingerprint): string {
     return [
       fingerprint.repoPath,
@@ -588,6 +645,23 @@ function App() {
     branchUniqueAheadCounts,
     defaultBranch,
   ]);
+
+  useEffect(() => {
+    if (!repoPath) return;
+    const overrides = nodePositionOverridesByRepo[repoPath] ?? {};
+    const timeoutId = window.setTimeout(() => {
+      const payloadJson = JSON.stringify(overrides);
+      void invoke('store_repo_node_positions', { repoPath, payloadJson });
+    }, 500);
+    if (nodePositionSaveTimeoutRef.current != null) {
+      window.clearTimeout(nodePositionSaveTimeoutRef.current);
+    }
+    nodePositionSaveTimeoutRef.current = timeoutId;
+    return () => {
+      window.clearTimeout(timeoutId);
+      if (nodePositionSaveTimeoutRef.current === timeoutId) nodePositionSaveTimeoutRef.current = null;
+    };
+  }, [nodePositionOverridesByRepo, repoPath]);
 
   async function loadProjectSnapshot(path: string, forceRefresh = false) {
     const normalizedPath = normalizePath(path);
@@ -1242,6 +1316,8 @@ function App() {
       if (requestId !== loadRepoRequestIdRef.current) return;
       setHydratedLayoutModel(frozen.model);
       setHydratedLayoutKey(frozen.layoutKey);
+      await loadNodePositionsForRepo(normalizedPath);
+      if (requestId !== loadRepoRequestIdRef.current) return;
       applySnapshotToActiveState(normalizedPath, cachedSnapshot);
       persistProject({
         path: normalizedPath,
@@ -1290,6 +1366,8 @@ function App() {
       if (requestId !== loadRepoRequestIdRef.current) return;
       setHydratedLayoutModel(frozen.model);
       setHydratedLayoutKey(frozen.layoutKey);
+      await loadNodePositionsForRepo(normalizedPath);
+      if (requestId !== loadRepoRequestIdRef.current) return;
       upsertProjectSnapshot(normalizedPath, snapshot);
       projectFingerprintRef.current = {
         ...projectFingerprintRef.current,
@@ -2950,6 +3028,7 @@ function App() {
               onRemoveProject={removeProject}
               onReorderProjects={reorderProjects}
               onRevealProjectInFinder={revealProjectInFinder}
+              onResetProjectNodePositions={resetProjectNodePositions}
               projectLoading={loading || (projectTreeLoading && repoPath ? !projectSnapshots[repoPath]?.loaded : false)}
               projectError={error}
               checkedOutRef={checkedOutRef}
@@ -3036,6 +3115,8 @@ function App() {
                 setManuallyOpenedClumps={setManuallyOpenedGridClumps}
                 setManuallyClosedClumps={setManuallyClosedGridClumps}
                 layoutModel={sharedGridLayoutModel}
+                nodePositionOverrides={repoPath ? (nodePositionOverridesByRepo[repoPath] ?? {}) : {}}
+                onNodePositionOverridesChange={handleNodePositionOverridesChange}
                 orientation={mapGridOrientation}
                   gridHudProps={gridHudProps}
               />
