@@ -267,6 +267,13 @@ function allocateRowsByColumnAndTime(
         return target;
       }
       if (commit.kind === 'branch-created') return Math.max(...parentRows) + 1;
+      // Working tree: always the next timeline slot after HEAD (and after any stash row on the same parent).
+      if (commit.kind === 'uncommitted' && commit.parentSha) {
+        const minTipRow = Math.max(...parentRows) + 1;
+        const stashRow = stashRowByParentSha.get(commit.parentSha);
+        if (stashRow != null) return Math.max(minTipRow, stashRow + 1);
+        return minTipRow;
+      }
       return null;
     })();
     const minimumAllowedRow = parentRows.length > 0 ? Math.max(...parentRows) + 1 : 1;
@@ -765,7 +772,20 @@ export function computeBranchGridLayout(input: BranchGridLayoutInput): BranchGri
     let currentKey: string | null = null;
     let segmentIndex = 0;
     const clusterBoundaryKind = (commit: VisualCommit): string => {
-      if (commit.kind === 'uncommitted') return 'uncommitted';
+      // Keep the working-tree node in the same lane/cluster segment as the checked-out tip (pushed vs unpushed),
+      // instead of starting a new segment that would assign a fresh column and "float" the card off the branch.
+      if (commit.kind === 'uncommitted') {
+        const parentSha = commit.parentSha ?? null;
+        if (parentSha) {
+          const branchUnpushedShas = unpushedCommitShasByBranchSet.get(commit.branchName);
+          if (branchUnpushedShas) {
+            for (const sha of branchUnpushedShas) {
+              if (shasMatch(sha, parentSha)) return 'unpushed';
+            }
+          }
+        }
+        return 'pushed';
+      }
       if (commit.kind === 'stash') return 'stash';
       if (commit.kind === 'branch-created') return 'branch-created';
       const branchUnpushedShas = unpushedCommitShasByBranchSet.get(commit.branchName);
