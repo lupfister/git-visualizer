@@ -2,9 +2,10 @@ import { Branch, BranchCommitPreview, BranchPromptMeta, CheckedOutRef, DirectCom
 import type { Dispatch, SetStateAction } from 'react';
 import BranchGridMap from './MapGrid';
 import type { BranchGridLayoutModel } from './branchGridLayoutModel';
+import type { NodePositionOverrides } from './LayoutGrid';
 
 export type ViewMode = 'time' | 'grid';
-export type OrientationMode = 'vertical' | 'horizontal';
+export type OrientationMode = 'horizontal';
 
 interface Props {
   branches: Branch[];
@@ -79,8 +80,6 @@ interface Props {
     gridSearchResultIndex: number | null;
     setGridSearchJumpDirection: (direction: 1 | -1) => void;
     setGridSearchJumpToken: (token: number | ((token: number) => number)) => void;
-    mapGridOrientation: OrientationMode;
-    setMapGridOrientation: (orientation: OrientationMode) => void;
     setIsGridDebugOpen: (open: boolean | ((open: boolean) => boolean)) => void;
     githubAuthMessage: string | null;
     commitSwitchFeedback: { kind: 'success' | 'error'; message: string } | null;
@@ -90,6 +89,8 @@ interface Props {
   blockMapDisplay?: boolean;
   mapReadyEpoch?: number;
   onMapReadyForDisplay?: (epoch: number) => void;
+  nodePositionOverrides?: NodePositionOverrides;
+  onNodePositionOverridesChange?: (overrides: NodePositionOverrides) => void;
 }
 
 export default function BranchGridMapView({
@@ -158,6 +159,8 @@ export default function BranchGridMapView({
   blockMapDisplay = false,
   mapReadyEpoch = 0,
   onMapReadyForDisplay,
+  nodePositionOverrides,
+  onNodePositionOverridesChange,
 }: Props) {
   const openPRBranchNames = new Set(openPRs.map(p => p.branchName));
   const ACTIVE_MS = 14 * 86400000;
@@ -236,6 +239,8 @@ export default function BranchGridMapView({
             blockMapDisplay={blockMapDisplay}
             mapReadyEpoch={mapReadyEpoch}
             onMapReadyForDisplay={onMapReadyForDisplay}
+            nodePositionOverrides={nodePositionOverrides}
+            onNodePositionOverridesChange={onNodePositionOverridesChange}
           />
         </div>
       ) : view === 'grid' ? (
@@ -272,6 +277,8 @@ export default function BranchGridMapView({
             blockMapDisplay={blockMapDisplay}
             mapReadyEpoch={mapReadyEpoch}
             onMapReadyForDisplay={onMapReadyForDisplay}
+            nodePositionOverrides={nodePositionOverrides}
+            onNodePositionOverridesChange={onNodePositionOverridesChange}
           />
         </div>
       ) : null}

@@ -311,6 +311,11 @@ fn open_visual_cache_connection() -> Result<Connection, String> {
             updated_at_ms INTEGER NOT NULL,
             PRIMARY KEY (repo_path, layout_key)
         );
+        CREATE TABLE IF NOT EXISTS repo_node_position_cache (
+            repo_path TEXT PRIMARY KEY,
+            payload_json TEXT NOT NULL,
+            updated_at_ms INTEGER NOT NULL
+        );
         CREATE TABLE IF NOT EXISTS project_registry (
             project_id TEXT PRIMARY KEY,
             repo_path TEXT NOT NULL UNIQUE,
@@ -408,6 +413,56 @@ fn upsert_repo_layout_snapshot(repo_path: &str, layout_key: &str, payload_json: 
         params![repo_path, layout_key, payload_json, Utc::now().timestamp_millis()],
     )
     .map_err(|e| format!("Failed to upsert layout snapshot: {e}"))?;
+    Ok(())
+}
+
+fn load_cached_repo_node_positions(repo_path: &str) -> Result<Option<String>, String> {
+    let id = normalize_repo_path_id(repo_path);
+    let conn = open_visual_cache_connection()?;
+    let try_key = |key: &str| -> Result<Option<String>, String> {
+        conn
+            .query_row(
+                "SELECT payload_json FROM repo_node_position_cache WHERE repo_path = ?1",
+                params![key],
+                |row| row.get(0),
+            )
+            .optional()
+            .map_err(|e| format!("Failed to read node position cache row: {e}"))
+    };
+    if let Some(payload) = try_key(&id)? {
+        return Ok(Some(payload));
+    }
+    if repo_path != id {
+        return try_key(repo_path);
+    }
+    Ok(None)
+}
+
+fn upsert_repo_node_positions(repo_path: &str, payload_json: &str) -> Result<(), String> {
+    let id = normalize_repo_path_id(repo_path);
+    let conn = open_visual_cache_connection()?;
+    conn.execute(
+        "
+        INSERT INTO repo_node_position_cache (repo_path, payload_json, updated_at_ms)
+        VALUES (?1, ?2, ?3)
+        ON CONFLICT(repo_path) DO UPDATE SET
+            payload_json = excluded.payload_json,
+            updated_at_ms = excluded.updated_at_ms
+        ",
+        params![id, payload_json, Utc::now().timestamp_millis()],
+    )
+    .map_err(|e| format!("Failed to upsert node position cache: {e}"))?;
+    Ok(())
+}
+
+fn delete_repo_node_positions(repo_path: &str) -> Result<(), String> {
+    let conn = open_visual_cache_connection()?;
+    let id = normalize_repo_path_id(repo_path);
+    conn.execute(
+        "DELETE FROM repo_node_position_cache WHERE repo_path = ?1 OR repo_path = ?2",
+        params![id, repo_path],
+    )
+    .map_err(|e| format!("Failed to clear node position cache: {e}"))?;
     Ok(())
 }
 
@@ -1508,6 +1563,21 @@ fn get_repo_layout_snapshot(repo_path: String, layout_key: String) -> Result<Opt
 #[tauri::command(rename_all = "camelCase")]
 fn store_repo_layout_snapshot(repo_path: String, layout_key: String, payload_json: String) -> Result<(), String> {
     upsert_repo_layout_snapshot(&repo_path, &layout_key, &payload_json)
+}
+
+#[tauri::command(rename_all = "camelCase")]
+fn get_repo_node_positions(repo_path: String) -> Result<Option<String>, String> {
+    load_cached_repo_node_positions(&repo_path)
+}
+
+#[tauri::command(rename_all = "camelCase")]
+fn store_repo_node_positions(repo_path: String, payload_json: String) -> Result<(), String> {
+    upsert_repo_node_positions(&repo_path, &payload_json)
+}
+
+#[tauri::command(rename_all = "camelCase")]
+fn clear_repo_node_positions(repo_path: String) -> Result<(), String> {
+    delete_repo_node_positions(&repo_path)
 }
 
 #[tauri::command(rename_all = "camelCase")]
@@ -5187,6 +5257,9 @@ pub fn run() {
             refresh_project_if_changed,
             get_repo_layout_snapshot,
             store_repo_layout_snapshot,
+            get_repo_node_positions,
+            store_repo_node_positions,
+            clear_repo_node_positions,
             get_repo_quick_state,
             get_repo_refresh_fingerprint,
             get_remote_branch_head_sha,

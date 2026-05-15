@@ -5,9 +5,9 @@ import { listen } from '@tauri-apps/api/event';
 import { getCurrentWindow } from '@tauri-apps/api/window';
 import { open } from '@tauri-apps/plugin-dialog';
 import { PanelLeftClose, PanelLeftOpen } from 'lucide-react';
-import BranchGridMapView, { type OrientationMode } from '../components/grid/MapViewGrid';
+import BranchGridMapView from '../components/grid/MapViewGrid';
 import DenseBranchSidebar from '../components/DenseBranchSidebar';
-import { buildLanes, lanesFromStoredColumns } from '../components/grid/LayoutGrid';
+import { buildLanes, type NodePositionOverrides } from '../components/grid/LayoutGrid';
 import { computeBranchGridLayout, type BranchGridLayoutModel } from '../components/grid/branchGridLayoutModel';
 import { hydrateBranchGridLayoutModel, serializeBranchGridLayoutModel } from '../components/grid/layoutSnapshot';
 import type { Branch, BranchCommitPreview, BranchPromptMeta, CheckedOutRef, DirectCommit, GitHubAuthStatus, GitHubInfo, GitStashEntry, MergeNode, OpenPR, RepoVisualSnapshot, WorktreeInfo } from '../types';
@@ -16,7 +16,6 @@ import { deriveRepoVisualState } from './repoVisualState';
 
 const PROJECTS_STORAGE_KEY = 'git-visualizer:projects';
 const ACTIVE_PROJECT_STORAGE_KEY = 'git-visualizer:active-project';
-const MAP_ORIENTATION_STORAGE_KEY = 'git-visualizer:map-orientation';
 const MAX_PROJECTS = 12;
 type OpenRepoEventPayload = {
   path: string;
@@ -31,6 +30,7 @@ const COMMIT_SWITCH_FEEDBACK_FADE_MS = 180;
 const SIDEBAR_WIDTH_STORAGE_KEY = 'git-visualizer:sidebar-width';
 const SIDEBAR_COLLAPSED_STORAGE_KEY = 'git-visualizer:sidebar-collapsed';
 const GRID_CLUMPS_STORAGE_KEY = 'git-visualizer:grid-clumps';
+const NODE_POSITIONS_STORAGE_KEY_PREFIX = 'git-visualizer:node-positions:';
 const SIDEBAR_DEFAULT_WIDTH_PX = 360;
 const SIDEBAR_MIN_WIDTH_PX = 180;
 const SIDEBAR_MAX_WIDTH_PX = 360;
@@ -110,15 +110,19 @@ function setSignature(set: Set<string>): string {
   return Array.from(set).sort().join(',');
 }
 
+function nodePositionsStorageKey(repoPath: string): string {
+  return `${NODE_POSITIONS_STORAGE_KEY_PREFIX}${encodeURIComponent(normalizePath(repoPath))}`;
+}
+
 function makeLayoutCacheKey(
   path: string,
-  orientation: OrientationMode,
+  orientation: 'horizontal',
   manuallyOpenedClumps: Set<string>,
   manuallyClosedClumps: Set<string>,
   graphSignature = '',
 ): string {
   return [
-    'layout-v3',
+    'layout-v4',
     path,
     orientation,
     setSignature(manuallyOpenedClumps),
@@ -170,6 +174,54 @@ function toRepoVisualSnapshot(record: ProjectSnapshotRecord | null | undefined):
   return record?.payload?.repoVisualSnapshot ?? null;
 }
 
+/** After commit, the synthetic `WORKING_TREE` id disappears; copy saved card positions to the new HEAD id. */
+function migrateWorkingTreeNodeOverrides(
+  overrides: NodePositionOverrides,
+  branchName: string,
+  newHeadSha: string,
+): NodePositionOverrides {
+  const next = { ...overrides };
+  const candidates = [`${branchName}:WORKING_TREE`, 'WORKING_TREE'] as const;
+  let foundKey: string | null = null;
+  let point: { x: number; y: number } | null = null;
+  for (const key of candidates) {
+    const value = next[key];
+    if (value && Number.isFinite(value.x) && Number.isFinite(value.y)) {
+      foundKey = key;
+      point = value;
+      break;
+    }
+  }
+  if (!foundKey || !point) return next;
+  delete next[foundKey];
+  for (const key of candidates) {
+    if (key !== foundKey) delete next[key];
+  }
+  next[`${branchName}:${newHeadSha}`] = point;
+  if (!next[newHeadSha]) next[newHeadSha] = point;
+  return next;
+}
+
+function parseNodePositionOverrides(payloadJson: string | null | undefined): NodePositionOverrides {
+  if (!payloadJson) return {};
+  try {
+    const parsed = JSON.parse(payloadJson) as unknown;
+    if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) return {};
+    const next: NodePositionOverrides = {};
+    for (const [nodeId, value] of Object.entries(parsed)) {
+      if (!value || typeof value !== 'object' || Array.isArray(value)) continue;
+      const point = value as { x?: unknown; y?: unknown };
+      const x = typeof point.x === 'number' ? point.x : Number(point.x);
+      const y = typeof point.y === 'number' ? point.y : Number(point.y);
+      if (!Number.isFinite(x) || !Number.isFinite(y)) continue;
+      next[nodeId] = { x, y };
+    }
+    return next;
+  } catch {
+    return {};
+  }
+}
+
 function App() {
   const [repoPath, setRepoPath] = useState<string | null>(null);
   const [repoName, setRepoName] = useState<string>('');
@@ -217,6 +269,11 @@ function App() {
   const [branchCommitPreviews, setBranchCommitPreviews] = useState<Record<string, BranchCommitPreview[]>>({});
   const [branchParentByName, setBranchParentByName] = useState<Record<string, string | null>>({});
   const [laneByBranch, setLaneByBranch] = useState<Record<string, number>>({});
+  const [nodePositionOverridesByRepo, setNodePositionOverridesByRepo] = useState<Record<string, NodePositionOverrides>>({});
+  /** Monotonic write tokens prevent older failed/successful saves from changing the dirty state for newer edits. */
+  const nodePositionPersistVersionByRepoRef = useRef<Record<string, number>>({});
+  /** Repo has local card edits not yet flushed to disk; stale `get_repo_node_positions` results must not overwrite them. */
+  const userDirtyNodePositionsRef = useRef<Set<string>>(new Set());
   const [branchUniqueAheadCounts, setBranchUniqueAheadCounts] = useState<Record<string, number>>({});
   const [stashes, setStashes] = useState<GitStashEntry[]>([]);
   const [openPRs, setOpenPRs] = useState<OpenPR[]>([]);
@@ -234,7 +291,7 @@ function App() {
     removeWorktreeInProgress ||
     createBranchFromNodeInProgress;
   const [isMapInteracting, setIsMapInteracting] = useState(false);
-  const [mapGridOrientation, setMapGridOrientation] = useState<OrientationMode>('horizontal');
+  const mapGridOrientation = 'horizontal';
   const [remoteDefaultTipSha] = useState<string | null>(null);
   const [remoteDefaultTipMetadata] = useState<CommitMetadata | null>(null);
   const [remoteDefaultTipParentSha] = useState<string | null>(null);
@@ -265,6 +322,8 @@ function App() {
   const pendingRefreshAfterInteractionRef = useRef(false);
   const hasAttemptedAutoRestoreRef = useRef(false);
   const hasHydratedInitialProjectSnapshotsRef = useRef(false);
+  /** Cancels stale in-flight `get_repo_node_positions` results when a newer load starts. */
+  const loadNodePositionsSeqRef = useRef(0);
   const loadingProjectSnapshotsRef = useRef<Set<string>>(new Set());
   const [initialProjectSnapshotsReady, setInitialProjectSnapshotsReady] = useState(false);
   const latestBranchesRef = useRef<Branch[]>([]);
@@ -398,8 +457,6 @@ function App() {
       gridSearchResultIndex,
       setGridSearchJumpDirection,
       setGridSearchJumpToken,
-      mapGridOrientation,
-      setMapGridOrientation,
       setIsGridDebugOpen,
       githubAuthMessage,
       commitSwitchFeedback,
@@ -415,12 +472,10 @@ function App() {
       gridSearchResultIndex,
       handleGitHubAuthSetup,
       isCommitSwitchFeedbackVisible,
-      mapGridOrientation,
       setGridSearchQuery,
       setGridSearchJumpDirection,
       setGridSearchJumpToken,
       setIsGridDebugOpen,
-      setMapGridOrientation,
     ],
   );
 
@@ -442,6 +497,121 @@ function App() {
     });
     return true;
   }
+
+  const loadNodePositionsForRepo = useCallback(async (targetPath: string) => {
+    const normalizedPath = normalizePath(targetPath);
+    if (!normalizedPath) return;
+    const seq = ++loadNodePositionsSeqRef.current;
+    let localOverrides: NodePositionOverrides | null = null;
+    try {
+      const localPayload = window.localStorage.getItem(nodePositionsStorageKey(normalizedPath));
+      if (localPayload) {
+        localOverrides = parseNodePositionOverrides(localPayload);
+        setNodePositionOverridesByRepo((previous) => ({
+          ...previous,
+          [normalizedPath]: localOverrides ?? {},
+        }));
+      }
+    } catch {
+      // The SQLite cache below remains available when localStorage is blocked.
+    }
+    let payloadJson: string | null = null;
+    try {
+      payloadJson = await invoke<string | null>('get_repo_node_positions', {
+        repoPath: normalizedPath,
+      });
+    } catch (error) {
+      if (localOverrides) return;
+      const message = error instanceof Error ? error.message : String(error);
+      setCommitSwitchFeedback({
+        kind: 'error',
+        message: `Could not load saved node positions: ${message}`,
+      });
+      console.error('Failed to load node positions:', error);
+      return;
+    }
+    if (seq !== loadNodePositionsSeqRef.current) return;
+    if (userDirtyNodePositionsRef.current.has(normalizedPath)) return;
+    if (localOverrides && Object.keys(localOverrides).length > 0) return;
+    const overrides = parseNodePositionOverrides(payloadJson);
+    setNodePositionOverridesByRepo((previous) => ({
+      ...previous,
+      [normalizedPath]: overrides,
+    }));
+    if (Object.keys(overrides).length > 0) {
+      try {
+        window.localStorage.setItem(nodePositionsStorageKey(normalizedPath), JSON.stringify(overrides));
+      } catch {
+        // ignore localStorage failures; SQLite remains the durable backend
+      }
+    }
+  }, []);
+
+  const persistRepoNodePositions = useCallback((normalizedPath: string, overrides: NodePositionOverrides) => {
+    try {
+      window.localStorage.setItem(nodePositionsStorageKey(normalizedPath), JSON.stringify(overrides));
+    } catch {
+      // ignore localStorage failures; the Tauri write below will report errors
+    }
+    const version = (nodePositionPersistVersionByRepoRef.current[normalizedPath] ?? 0) + 1;
+    nodePositionPersistVersionByRepoRef.current = {
+      ...nodePositionPersistVersionByRepoRef.current,
+      [normalizedPath]: version,
+    };
+    void invoke('store_repo_node_positions', {
+      repoPath: normalizedPath,
+      payloadJson: JSON.stringify(overrides),
+    })
+      .then(() => {
+        if (nodePositionPersistVersionByRepoRef.current[normalizedPath] !== version) return;
+        userDirtyNodePositionsRef.current.delete(normalizedPath);
+      })
+      .catch((error) => {
+        if (nodePositionPersistVersionByRepoRef.current[normalizedPath] !== version) return;
+        const message = error instanceof Error ? error.message : String(error);
+        setCommitSwitchFeedback({
+          kind: 'error',
+          message: `Could not save node positions: ${message}`,
+        });
+        console.error('Failed to save node positions:', error);
+      });
+  }, []);
+
+  const handleNodePositionOverridesChange = useCallback(
+    (overrides: NodePositionOverrides) => {
+      if (!repoPath) return;
+      const normalizedPath = normalizePath(repoPath);
+      userDirtyNodePositionsRef.current.add(normalizedPath);
+      setNodePositionOverridesByRepo((previous) => ({
+        ...previous,
+        [normalizedPath]: overrides,
+      }));
+      persistRepoNodePositions(normalizedPath, overrides);
+    },
+    [persistRepoNodePositions, repoPath],
+  );
+
+  const resetProjectNodePositions = useCallback(
+    (targetPath: string) => {
+      const normalizedPath = normalizePath(targetPath);
+      userDirtyNodePositionsRef.current.delete(normalizedPath);
+      nodePositionPersistVersionByRepoRef.current = {
+        ...nodePositionPersistVersionByRepoRef.current,
+        [normalizedPath]: (nodePositionPersistVersionByRepoRef.current[normalizedPath] ?? 0) + 1,
+      };
+      setNodePositionOverridesByRepo((previous) => ({
+        ...previous,
+        [normalizedPath]: {},
+      }));
+      try {
+        window.localStorage.removeItem(nodePositionsStorageKey(normalizedPath));
+      } catch {
+        // ignore localStorage failures
+      }
+      void invoke('clear_repo_node_positions', { repoPath: normalizedPath });
+    },
+    [],
+  );
 
   function fingerprintSignature(fingerprint: RepoRefreshFingerprint): string {
     return [
@@ -507,17 +677,6 @@ function App() {
   }, []);
 
   useEffect(() => {
-    try {
-      const rawOrientation = window.localStorage.getItem(MAP_ORIENTATION_STORAGE_KEY);
-      if (rawOrientation === 'vertical' || rawOrientation === 'horizontal') {
-        setMapGridOrientation(rawOrientation);
-      }
-    } catch {
-      // ignore storage failures
-    }
-  }, []);
-
-  useEffect(() => {
     if (hasAttemptedAutoRestoreRef.current) return;
     if (repoPath) return;
     if (projects.length === 0) return;
@@ -546,14 +705,6 @@ function App() {
       // ignore storage failures
     }
   }, [repoPath]);
-
-  useEffect(() => {
-    try {
-      window.localStorage.setItem(MAP_ORIENTATION_STORAGE_KEY, mapGridOrientation);
-    } catch {
-      // ignore storage failures
-    }
-  }, [mapGridOrientation]);
 
   const mergeTargetBranchByCommitSha = useMemo(
     () =>
@@ -747,6 +898,7 @@ function App() {
           mergeNodes: snapshot.mergeNodes,
           directCommits: snapshot.directCommits,
           unpushedDirectCommits: snapshot.unpushedDirectCommits,
+          unpushedCommitShasByBranch: snapshot.unpushedCommitShasByBranch ?? {},
           defaultBranch: snapshot.defaultBranch,
           branchCommitPreviews: snapshot.branchCommitPreviews,
           branchParentByName: snapshot.branchParentByName,
@@ -875,6 +1027,7 @@ function App() {
       delete next[normalizedPath];
       return next;
     });
+    userDirtyNodePositionsRef.current.delete(normalizedPath);
     if (repoPath === normalizedPath) {
       const nextPath = projects.find((project) => project.path !== normalizedPath)?.path ?? null;
       if (nextPath) {
@@ -1075,15 +1228,18 @@ function App() {
     setMapLoading(true);
     isRepoSwitchingRef.current = true;
     try {
+      const normalizedTarget = normalizePath(targetPath);
+      if (!normalizedTarget) throw new Error('Invalid worktree path');
       const [info, def] = await Promise.all([
-        invoke<{ name: string; path: string }>('get_repo_info', { repoPath: targetPath }),
-        invoke<string>('get_default_branch', { repoPath: targetPath }),
+        invoke<{ name: string; path: string }>('get_repo_info', { repoPath: normalizedTarget }),
+        invoke<string>('get_default_branch', { repoPath: normalizedTarget }),
       ]);
+      await loadNodePositionsForRepo(normalizedTarget);
       setRepoName(info.name);
       setDefaultBranch(def);
-      setRepoPath(targetPath);
-      await refreshRepoGitState(targetPath, def);
-      void fetchGitHubData(targetPath);
+      setRepoPath(normalizedTarget);
+      await refreshRepoGitState(normalizedTarget, def);
+      void fetchGitHubData(normalizedTarget);
       setCommitSwitchFeedback({
         kind: 'success',
         message: `Now targeting worktree at ${targetPath}`,
@@ -1194,6 +1350,7 @@ function App() {
       mergeNodes: snapshot.mergeNodes,
       directCommits: snapshot.directCommits,
       unpushedDirectCommits: snapshot.unpushedDirectCommits,
+      unpushedCommitShasByBranch: snapshot.unpushedCommitShasByBranch ?? {},
       defaultBranch: snapshot.defaultBranch,
       branchCommitPreviews: snapshot.branchCommitPreviews,
       branchParentByName: snapshot.branchParentByName,
@@ -1266,6 +1423,8 @@ function App() {
       if (requestId !== loadRepoRequestIdRef.current) return;
       setHydratedLayoutModel(frozen.model);
       setHydratedLayoutKey(frozen.layoutKey);
+      await loadNodePositionsForRepo(normalizedPath);
+      if (requestId !== loadRepoRequestIdRef.current) return;
       applySnapshotToActiveState(normalizedPath, cachedSnapshot);
       persistProject({
         path: normalizedPath,
@@ -1314,6 +1473,8 @@ function App() {
       if (requestId !== loadRepoRequestIdRef.current) return;
       setHydratedLayoutModel(frozen.model);
       setHydratedLayoutKey(frozen.layoutKey);
+      await loadNodePositionsForRepo(normalizedPath);
+      if (requestId !== loadRepoRequestIdRef.current) return;
       upsertProjectSnapshot(normalizedPath, snapshot);
       projectFingerprintRef.current = {
         ...projectFingerprintRef.current,
@@ -1616,18 +1777,64 @@ function App() {
       nextUniqueAheadCounts[branch.name] = previews.length;
     }
 
-    const commitBranchBySha = new Map<string, string>();
+    const commitBranchesBySha = new Map<string, Set<string>>();
     for (const commit of directCommits) {
-      commitBranchBySha.set(commit.fullSha, commit.branch);
+      const known = commitBranchesBySha.get(commit.fullSha) ?? new Set<string>();
+      known.add(commit.branch);
+      commitBranchesBySha.set(commit.fullSha, known);
     }
+    const knownBranchNames = new Set(branches.map((branch) => branch.name));
+    const isValidParentBranch = (candidate: string | null | undefined, selfName: string): candidate is string => {
+      if (!candidate) return false;
+      if (candidate === selfName) return false;
+      if (candidate === defaultBranch) return true;
+      return knownBranchNames.has(candidate);
+    };
+    const declaredParentByBranch = new Map(branches.map((branch) => [branch.name, branch.parentBranch ?? null]));
+    const branchDepthByName = new Map<string, number>();
+    const resolveBranchDepth = (branchName: string, visiting = new Set<string>()): number => {
+      if (branchName === defaultBranch) return 0;
+      const cached = branchDepthByName.get(branchName);
+      if (cached != null) return cached;
+      if (visiting.has(branchName)) return Number.MAX_SAFE_INTEGER;
+      visiting.add(branchName);
+      const parent = declaredParentByBranch.get(branchName) ?? null;
+      const depth = parent && parent !== branchName
+        ? resolveBranchDepth(parent, visiting) + 1
+        : 1;
+      visiting.delete(branchName);
+      branchDepthByName.set(branchName, depth);
+      return depth;
+    };
+    const branchCreatedAtByName = new Map(
+      branches.map((branch) => [branch.name, new Date(branch.createdDate ?? branch.divergedFromDate ?? branch.lastCommitDate).getTime()]),
+    );
+    const pickCanonicalParentBranch = (candidates: Iterable<string>): string | null => {
+      const valid = Array.from(candidates).filter((candidate) => knownBranchNames.has(candidate));
+      if (valid.length === 0) return null;
+      if (valid.includes(defaultBranch)) return defaultBranch;
+      valid.sort((left, right) => {
+        const depthDelta = resolveBranchDepth(left) - resolveBranchDepth(right);
+        if (depthDelta !== 0) return depthDelta;
+        const leftTime = branchCreatedAtByName.get(left) ?? Number.MAX_SAFE_INTEGER;
+        const rightTime = branchCreatedAtByName.get(right) ?? Number.MAX_SAFE_INTEGER;
+        if (leftTime !== rightTime) return leftTime - rightTime;
+        return left.localeCompare(right);
+      });
+      return valid[0] ?? null;
+    };
     const resolveParentBranchForSha = (sha: string | null | undefined): string | null => {
       if (!sha) return null;
-      const exact = commitBranchBySha.get(sha);
-      if (exact) return exact;
-      for (const [knownSha, branchName] of commitBranchBySha.entries()) {
-        if (knownSha.startsWith(sha) || sha.startsWith(knownSha)) return branchName;
+      const exact = commitBranchesBySha.get(sha);
+      if (exact) return pickCanonicalParentBranch(exact);
+      const prefixMatches = new Set<string>();
+      if (sha.length >= 7) {
+        for (const [knownSha, branchNames] of commitBranchesBySha.entries()) {
+          if (!knownSha.startsWith(sha)) continue;
+          for (const name of branchNames) prefixMatches.add(name);
+        }
       }
-      return null;
+      return pickCanonicalParentBranch(prefixMatches);
     };
     const nextBranchParentByName: Record<string, string | null> = { [defaultBranch]: null };
     for (const branch of branches) {
@@ -1648,10 +1855,20 @@ function App() {
           return a.fullSha.localeCompare(b.fullSha);
         })[0]?.parentSha ?? null;
       const parentFromGraph = resolveParentBranchForSha(graphParentSha);
+      const parentFromForkSha = resolveParentBranchForSha(
+        branch.presidesFromSha ?? branch.divergedFromSha ?? branch.createdFromSha ?? null,
+      );
+      const parentFromBranchMeta = isValidParentBranch(branch.parentBranch ?? null, branch.name)
+        ? branch.parentBranch!
+        : null;
+      const parentFromLatest = isValidParentBranch(latestBranchParentByNameRef.current[branch.name] ?? null, branch.name)
+        ? latestBranchParentByNameRef.current[branch.name]!
+        : null;
       nextBranchParentByName[branch.name] =
         parentFromGraph ??
-        latestBranchParentByNameRef.current[branch.name] ??
-        branch.parentBranch ??
+        parentFromForkSha ??
+        parentFromBranchMeta ??
+        parentFromLatest ??
         null;
     }
 
@@ -1872,6 +2089,23 @@ function App() {
         message: trimmed,
       });
       setCheckedOutRef(nextRef);
+      if (nextRef.branchName && nextRef.headSha) {
+        const normalizedPath = normalizePath(repoPath);
+        userDirtyNodePositionsRef.current.add(normalizedPath);
+        let migrated: NodePositionOverrides = {};
+        setNodePositionOverridesByRepo((previous) => {
+          migrated = migrateWorkingTreeNodeOverrides(
+            previous[normalizedPath] ?? {},
+            nextRef.branchName!,
+            nextRef.headSha!,
+          );
+          return {
+            ...previous,
+            [normalizedPath]: migrated,
+          };
+        });
+        persistRepoNodePositions(normalizedPath, migrated);
+      }
       await yieldToPaint();
       await refreshRepoAfterMutation(repoPath);
       setCommitSwitchFeedback({
@@ -2601,10 +2835,8 @@ function App() {
     return map;
   }, [branchParentByName, defaultBranch, enrichedBranches]);
   const sharedGridLanes = useMemo(
-    () =>
-      lanesFromStoredColumns(enrichedBranches, defaultBranch, enrichedBranchParentByName, laneByBranch)
-      ?? buildLanes(enrichedBranches, defaultBranch, enrichedBranchCommitPreviews, enrichedBranchParentByName),
-    [enrichedBranches, defaultBranch, enrichedBranchCommitPreviews, enrichedBranchParentByName, laneByBranch],
+    () => buildLanes(enrichedBranches, defaultBranch, enrichedBranchCommitPreviews, enrichedBranchParentByName),
+    [enrichedBranches, defaultBranch, enrichedBranchCommitPreviews, enrichedBranchParentByName],
   );
   const openedClumpsSignature = useMemo(
     () => setSignature(manuallyOpenedGridClumps),
@@ -2616,6 +2848,7 @@ function App() {
   );
   const graphLayoutSignature = useMemo(
     () => [
+      'layout-v5-parent-origin-no-reuse',
       defaultBranch,
       visualCheckedOutRef?.branchName ?? '',
       visualCheckedOutRef?.headSha ?? '',
@@ -2692,11 +2925,20 @@ function App() {
   }, [repoPath, sharedGridLayoutCacheKey]);
   const sharedGridLayoutModel: BranchGridLayoutModel = useMemo(
     () => {
+      const hasGraphSourceData =
+        enrichedBranches.length > 0 ||
+        enrichedDirectCommits.length > 0 ||
+        enrichedUnpushedDirectCommits.length > 0;
+      const hydratedLooksEmptyButShouldNot =
+        Boolean(hydratedLayoutModel) &&
+        (hydratedLayoutModel?.allCommits.length ?? 0) === 0 &&
+        hasGraphSourceData;
       if (
         gridSearchQuery.trim().length === 0 &&
         sharedGridLayoutCacheKey &&
         hydratedLayoutKey === sharedGridLayoutCacheKey &&
-        hydratedLayoutModel
+        hydratedLayoutModel &&
+        !hydratedLooksEmptyButShouldNot
       ) {
         return hydratedLayoutModel;
       }
@@ -2713,6 +2955,7 @@ function App() {
         mergeNodes,
         directCommits: enrichedDirectCommits,
         unpushedDirectCommits: enrichedUnpushedDirectCommits,
+        unpushedCommitShasByBranch,
         defaultBranch,
         branchCommitPreviews: enrichedBranchCommitPreviews,
         branchParentByName: enrichedBranchParentByName,
@@ -2732,6 +2975,7 @@ function App() {
       mergeNodes,
       enrichedDirectCommits,
       enrichedUnpushedDirectCommits,
+      unpushedCommitShasByBranch,
       defaultBranch,
       enrichedBranchCommitPreviews,
       enrichedBranchParentByName,
@@ -2748,6 +2992,7 @@ function App() {
       hydratedLayoutKey,
       hydratedLayoutModel,
       mapLoading,
+      hydratedLayoutModel?.allCommits.length ?? 0,
     ],
   );
   useEffect(() => {
@@ -2868,9 +3113,8 @@ function App() {
 
   const handleMapReadyForDisplay = useCallback((epoch: number) => {
     if (epoch !== mapSwitchEpochRef.current) return;
-    if (mapPresentationState !== 'ready') return;
     setMapReadyForDisplay(true);
-  }, [mapPresentationState]);
+  }, []);
 
   const blockMapDisplay = !mapReadyForDisplay || mapPresentationState !== 'ready';
   const blockMapInteraction = mapLoading || loading;
@@ -2910,6 +3154,7 @@ function App() {
               onRemoveProject={removeProject}
               onReorderProjects={reorderProjects}
               onRevealProjectInFinder={revealProjectInFinder}
+              onResetProjectNodePositions={resetProjectNodePositions}
               projectLoading={loading || (projectTreeLoading && repoPath ? !projectSnapshots[repoPath]?.loaded : false)}
               projectError={error}
               checkedOutRef={checkedOutRef}
@@ -2996,6 +3241,10 @@ function App() {
                 setManuallyOpenedClumps={setManuallyOpenedGridClumps}
                 setManuallyClosedClumps={setManuallyClosedGridClumps}
                 layoutModel={sharedGridLayoutModel}
+                nodePositionOverrides={
+                  repoPath ? (nodePositionOverridesByRepo[normalizePath(repoPath)] ?? {}) : {}
+                }
+                onNodePositionOverridesChange={handleNodePositionOverridesChange}
                 orientation={mapGridOrientation}
                   gridHudProps={gridHudProps}
               />

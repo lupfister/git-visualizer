@@ -118,11 +118,14 @@ export function placeStashNode(
     return null;
   })();
 
+  const stashCreatedAtMs = new Date(stash.createdAt).getTime();
   const anchorCommitTimeMs = anchorCommitDate ? new Date(anchorCommitDate).getTime() : Number.NaN;
   const nowTimeMs = Date.now();
-  const stashTimeMs = Number.isFinite(anchorCommitTimeMs)
-    ? Math.max(nowTimeMs, anchorCommitTimeMs + 1 + stash.index)
-    : nowTimeMs + stash.index;
+  const stashTimeMs = Number.isFinite(stashCreatedAtMs)
+    ? stashCreatedAtMs
+    : Number.isFinite(anchorCommitTimeMs)
+      ? Math.max(nowTimeMs, anchorCommitTimeMs + 1 + stash.index)
+      : nowTimeMs + stash.index;
   const stashDate = new Date(stashTimeMs).toISOString();
 
   const trimmedMessage = stash.message.trim();

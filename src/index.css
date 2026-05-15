@@ -533,3 +533,42 @@ body.popover-window #root {
   }
 
 }
+
+/* Toolbar action icons: mask URLs point at /public/*.svg (same idea as @font-face above).
+   Keeping masks in CSS avoids Vite mis-resolving url(...) from inline React `style` props. */
+.toolbar-mask-icon {
+  display: inline-block;
+  flex-shrink: 0;
+  background-color: currentColor;
+  -webkit-mask-position: center;
+  -webkit-mask-repeat: no-repeat;
+  -webkit-mask-size: contain;
+  mask-position: center;
+  mask-repeat: no-repeat;
+  mask-size: contain;
+}
+
+.toolbar-mask-icon--commit {
+  -webkit-mask-image: url('/icon-commit.svg');
+  mask-image: url('/icon-commit.svg');
+}
+
+.toolbar-mask-icon--push-branch {
+  -webkit-mask-image: url('/icon-pushBranch.svg');
+  mask-image: url('/icon-pushBranch.svg');
+}
+
+.toolbar-mask-icon--push-selected {
+  -webkit-mask-image: url('/icon-pushSelected.svg');
+  mask-image: url('/icon-pushSelected.svg');
+}
+
+.toolbar-mask-icon--push-all {
+  -webkit-mask-image: url('/icon-pushAll.svg');
+  mask-image: url('/icon-pushAll.svg');
+}
+
+.toolbar-mask-icon--stash {
+  -webkit-mask-image: url('/icon-stash.svg');
+  mask-image: url('/icon-stash.svg');
+}

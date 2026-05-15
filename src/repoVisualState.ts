@@ -8,6 +8,7 @@ type RepoVisualStateInput = {
   mergeNodes: MergeNode[];
   directCommits: DirectCommit[];
   unpushedDirectCommits: DirectCommit[];
+  unpushedCommitShasByBranch?: Record<string, string[]>;
   defaultBranch: string;
   branchCommitPreviews: Record<string, BranchCommitPreview[]>;
   branchParentByName?: Record<string, string | null>;
@@ -34,6 +35,7 @@ export function deriveRepoVisualState({
   mergeNodes,
   directCommits,
   unpushedDirectCommits,
+  unpushedCommitShasByBranch = {},
   defaultBranch,
   branchCommitPreviews,
   branchParentByName = {},
@@ -144,6 +146,7 @@ export function deriveRepoVisualState({
     mergeNodes,
     directCommits: enrichedDirectCommits,
     unpushedDirectCommits,
+    unpushedCommitShasByBranch,
     defaultBranch,
     branchCommitPreviews: enrichedBranchCommitPreviews,
     branchParentByName: enrichedBranchParentByName,

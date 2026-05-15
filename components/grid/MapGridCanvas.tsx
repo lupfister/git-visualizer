@@ -1,24 +1,34 @@
 import { useEffect, useLayoutEffect, useRef, useState } from 'react';
 import type { CSSProperties, Dispatch, MouseEvent, ReactNode, RefObject, SetStateAction, WheelEvent } from 'react';
 import { CARD_BODY_TOP_OFFSET, CARD_HEIGHT, CARD_WIDTH, CONNECTOR_COLOR } from './LayoutGrid';
-import { buildLooseCablePath } from './gridPathUtils';
-import { cn } from './mapGridUtils';
+import { buildMapGridConnectorPath } from './gridPathUtils';
+import { cn, GRID_RENDER_ZOOM } from './mapGridUtils';
 import type { ConnectorFace, Node } from './LayoutGrid';
+import type { MapGridCameraState } from './useMapGridCamera';
+import { getNodePositionOverride } from './nodePositionOverrides';
 
 function MapGridCommitWrapper({
   fadeIn,
+  isDragPreview,
   className,
   style,
   onClick,
   onPointerDown,
+  onPointerMove,
+  onPointerUp,
+  onPointerCancel,
   dataCommitCard,
   children,
 }: {
   fadeIn: boolean;
+  isDragPreview?: boolean;
   className?: string;
   style?: CSSProperties;
   onClick?: React.MouseEventHandler<HTMLDivElement>;
   onPointerDown?: React.PointerEventHandler<HTMLDivElement>;
+  onPointerMove?: React.PointerEventHandler<HTMLDivElement>;
+  onPointerUp?: React.PointerEventHandler<HTMLDivElement>;
+  onPointerCancel?: React.PointerEventHandler<HTMLDivElement>;
   dataCommitCard?: string;
   children: ReactNode;
 }) {
@@ -44,10 +54,16 @@ function MapGridCommitWrapper({
       data-commit-card={dataCommitCard}
       onClick={onClick}
       onPointerDown={onPointerDown}
+      onPointerMove={onPointerMove}
+      onPointerUp={onPointerUp}
+      onPointerCancel={onPointerCancel}
       style={{
         ...style,
         opacity: opaque ? 1 : 0,
-        transition: fadeIn ? 'opacity 240ms ease-out' : undefined,
+        transition: [
+          fadeIn ? 'opacity 240ms ease-out' : null,
+          isDragPreview ? null : 'left 120ms ease-out, top 120ms ease-out',
+        ].filter(Boolean).join(', ') || undefined,
       }}
     >
       {children}
@@ -55,10 +71,22 @@ function MapGridCommitWrapper({
   );
 }
 
+type RenderConnector = {
+  id: string;
+  fromX: number;
+  fromY: number;
+  toX: number;
+  toY: number;
+  zIndex: number;
+  fromFace?: ConnectorFace;
+  toFace?: ConnectorFace;
+};
+
 type Props = {
   scrollContainerRef: RefObject<HTMLDivElement | null>;
   mapPadHostRef: RefObject<HTMLDivElement | null>;
   transformLayerRef: RefObject<HTMLDivElement | null>;
+  renderedCameraRef: RefObject<MapGridCameraState>;
   isMarqueeSelecting: boolean;
   contentWidth: number;
   contentHeight: number;
@@ -66,6 +94,8 @@ type Props = {
   onWheel: (event: WheelEvent<HTMLDivElement>) => void;
   onMouseDown: (event: MouseEvent<HTMLDivElement>) => void;
   onNodePointerDown: (event: React.PointerEvent<HTMLDivElement>, node: Node) => void;
+  onNodePointerMove: (event: React.PointerEvent<HTMLDivElement>) => void;
+  onNodePointerUp: (event: React.PointerEvent<HTMLDivElement>) => void;
   labelTopPx: number;
   inverseZoomStyle: CSSProperties;
   displayZoom: number;
@@ -92,7 +122,6 @@ type Props = {
   connectorParentAccentClass: string;
   commitCornerRadiusPx: number;
   lineStrokeWidth: number;
-  pointFormatter: (x: number, y: number) => string;
   connectors: Array<{ id: string; fromX: number; fromY: number; toX: number; toY: number; zIndex: number; fromFace?: ConnectorFace; toFace?: ConnectorFace }>;
   mergeConnectors: Array<{ id: string; fromX: number; fromY: number; toX: number; toY: number; zIndex: number; fromFace?: ConnectorFace; toFace?: ConnectorFace }>;
   cullConnectorPath: (connector: { id: string; fromX: number; fromY: number; toX: number; toY: number; fromFace?: ConnectorFace; toFace?: ConnectorFace }) => boolean;
@@ -104,12 +133,16 @@ type Props = {
   remoteCommitShas: Set<string>;
   checkedOutHeadSha: string | null;
   orientation?: 'vertical' | 'horizontal';
+  dragPreviewByNodeId?: Record<string, { x: number; y: number }>;
+  nodePositionOverrides?: Record<string, { x: number; y: number }>;
+  activeDragNodeIds?: Set<string>;
 };
 
 export default function MapGridCanvas({
   scrollContainerRef,
   mapPadHostRef,
   transformLayerRef,
+  renderedCameraRef,
   isMarqueeSelecting,
   contentWidth,
   contentHeight,
@@ -117,6 +150,8 @@ export default function MapGridCanvas({
   onWheel,
   onMouseDown,
   onNodePointerDown,
+  onNodePointerMove,
+  onNodePointerUp,
   labelTopPx,
   inverseZoomStyle,
   displayZoom,
@@ -143,7 +178,6 @@ export default function MapGridCanvas({
   connectorParentAccentClass,
   commitCornerRadiusPx,
   lineStrokeWidth,
-  pointFormatter,
   connectors,
   mergeConnectors,
   cullConnectorPath,
@@ -154,8 +188,14 @@ export default function MapGridCanvas({
   unpushedCommitShasSetByBranch,
   remoteCommitShas,
   checkedOutHeadSha,
+  dragPreviewByNodeId = {},
+  nodePositionOverrides = {},
+  activeDragNodeIds = new Set(),
 }: Props) {
   const [openingClumpAnimations, setOpeningClumpAnimations] = useState<Set<string>>(new Set());
+  const [canvasSize, setCanvasSize] = useState({ width: 0, height: 0 });
+  const connectorCanvasRef = useRef<HTMLCanvasElement | null>(null);
+  const drawnConnectorCameraRef = useRef<{ baseX: number; baseY: number; originX: number; originY: number; scale: number } | null>(null);
   const openClumpsLastFrameRef = useRef<Set<string> | null>(null);
 
   useEffect(() => {
@@ -216,22 +256,199 @@ export default function MapGridCanvas({
     if (byTopY !== 0) return byTopY;
     return left.id.localeCompare(right.id);
   };
-  const sortedVisibleMergeConnectors = mergeConnectors
-    .filter((connector) => cullConnectorPath(connector))
-    .sort(compareConnectorDrawOrder);
-  const sortedVisibleConnectors = connectors
-    .filter((connector) => cullConnectorPath(connector))
-    .sort(compareConnectorDrawOrder);
   const visibleRenderNodes = renderNodes.filter((node) => shouldRenderNode(node));
+  const hasPositionAdjustments =
+    Object.keys(nodePositionOverrides).length > 0 ||
+    Object.keys(dragPreviewByNodeId).length > 0;
+  const anchorForFace = (x: number, y: number, face?: ConnectorFace): { x: number; y: number } => {
+    switch (face) {
+      case 'left':
+        return { x, y: y + CARD_HEIGHT / 2 };
+      case 'right':
+        return { x: x + CARD_WIDTH, y: y + CARD_HEIGHT / 2 };
+      case 'top':
+        return { x: x + CARD_WIDTH / 2, y };
+      case 'bottom':
+        return { x: x + CARD_WIDTH / 2, y: y + CARD_HEIGHT };
+      case 'mid-h':
+        return { x: x + CARD_WIDTH / 2, y: y + CARD_HEIGHT / 2 };
+      default:
+        return { x: x + CARD_WIDTH / 2, y: y + CARD_HEIGHT / 2 };
+    }
+  };
+  const findAdjustedEndpoint = (
+    endpointX: number,
+    endpointY: number,
+    face: ConnectorFace | undefined,
+  ): { x: number; y: number } => {
+    if (!face || !hasPositionAdjustments) return { x: endpointX, y: endpointY };
+    let best: { dist: number; x: number; y: number } | null = null;
+    for (const node of visibleRenderNodes) {
+      const persistedOverride = getNodePositionOverride(nodePositionOverrides, node.commit);
+      const dragPreview = dragPreviewByNodeId[node.commit.visualId];
+      const effectiveX = dragPreview?.x ?? persistedOverride?.x ?? node.x;
+      const effectiveY = dragPreview?.y ?? persistedOverride?.y ?? node.y;
+      if (Math.abs(effectiveX - node.x) < 0.001 && Math.abs(effectiveY - node.y) < 0.001) continue;
+      const originalAnchor = anchorForFace(node.x, node.y, face);
+      const dist = Math.hypot(originalAnchor.x - endpointX, originalAnchor.y - endpointY);
+      if (dist > 1.5) continue;
+      const nextAnchor = anchorForFace(effectiveX, effectiveY, face);
+      if (!best || dist < best.dist) best = { dist, x: nextAnchor.x, y: nextAnchor.y };
+    }
+    return best ? { x: best.x, y: best.y } : { x: endpointX, y: endpointY };
+  };
+  const visibleMergeConnectorCandidates = mergeConnectors.filter((connector) => cullConnectorPath(connector));
+  const visibleConnectorCandidates = connectors.filter((connector) => cullConnectorPath(connector));
+  const adjustedMergeConnectors = visibleMergeConnectorCandidates.map((connector) => {
+    const from = findAdjustedEndpoint(connector.fromX, connector.fromY, connector.fromFace);
+    const to = findAdjustedEndpoint(connector.toX, connector.toY, connector.toFace);
+    return { ...connector, fromX: from.x, fromY: from.y, toX: to.x, toY: to.y };
+  });
+  const adjustedConnectors = visibleConnectorCandidates.map((connector) => {
+    const from = findAdjustedEndpoint(connector.fromX, connector.fromY, connector.fromFace);
+    const to = findAdjustedEndpoint(connector.toX, connector.toY, connector.toFace);
+    return { ...connector, fromX: from.x, fromY: from.y, toX: to.x, toY: to.y };
+  });
+  const sortedVisibleMergeConnectors = adjustedMergeConnectors.sort(compareConnectorDrawOrder);
+  const sortedVisibleConnectors = adjustedConnectors.sort(compareConnectorDrawOrder);
+
+  const getConnectorCameraMetrics = () => {
+    const viewport = scrollContainerRef.current;
+    const host = mapPadHostRef.current;
+    if (!viewport || !host) return null;
+    const viewportRect = viewport.getBoundingClientRect();
+    const hostRect = host.getBoundingClientRect();
+    const computedStyle = getComputedStyle(host);
+    const borderLeft = Number.parseFloat(computedStyle.borderLeftWidth) || 0;
+    const borderTop = Number.parseFloat(computedStyle.borderTopWidth) || 0;
+    const originX = hostRect.left - viewportRect.left + borderLeft + renderedCameraRef.current.panX;
+    const originY = hostRect.top - viewportRect.top + borderTop + renderedCameraRef.current.panY;
+    const scale = renderedCameraRef.current.zoom / GRID_RENDER_ZOOM;
+    if (!Number.isFinite(scale) || scale <= 0) return null;
+    return { originX, originY, scale, computedStyle };
+  };
+
+  useLayoutEffect(() => {
+    const viewport = scrollContainerRef.current;
+    if (!viewport) return;
+    const updateSize = () => {
+      const width = viewport.clientWidth;
+      const height = viewport.clientHeight;
+      setCanvasSize((prev) => (prev.width === width && prev.height === height ? prev : { width, height }));
+    };
+    updateSize();
+    const resizeObserver = new ResizeObserver(updateSize);
+    resizeObserver.observe(viewport);
+    return () => resizeObserver.disconnect();
+  }, [scrollContainerRef]);
+
+  useEffect(() => {
+    const canvas = connectorCanvasRef.current;
+    const viewport = scrollContainerRef.current;
+    const host = mapPadHostRef.current;
+    if (!canvas || !viewport || !host || canvasSize.width <= 0 || canvasSize.height <= 0) return;
+
+    const drawConnectors = () => {
+      const dpr = window.devicePixelRatio || 1;
+      const pixelWidth = Math.max(1, Math.round(canvasSize.width * dpr));
+      const pixelHeight = Math.max(1, Math.round(canvasSize.height * dpr));
+      if (canvas.width !== pixelWidth) canvas.width = pixelWidth;
+      if (canvas.height !== pixelHeight) canvas.height = pixelHeight;
+      const ctx = canvas.getContext('2d');
+      if (!ctx) return;
+      ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+      ctx.clearRect(0, 0, canvasSize.width, canvasSize.height);
+
+      const metrics = getConnectorCameraMetrics();
+      if (!metrics) return;
+      const { originX, originY, scale, computedStyle } = metrics;
+      drawnConnectorCameraRef.current = {
+        baseX: originX - renderedCameraRef.current.panX,
+        baseY: originY - renderedCameraRef.current.panY,
+        originX,
+        originY,
+        scale,
+      };
+      canvas.style.transform = 'translate3d(0, 0, 0) scale(1)';
+
+      const connectorColor = computedStyle.getPropertyValue('--border').trim() || CONNECTOR_COLOR;
+      ctx.strokeStyle = connectorColor;
+      ctx.lineWidth = Math.max(1, lineStrokeWidth * scale);
+      ctx.lineCap = 'round';
+      ctx.lineJoin = 'round';
+
+      const screenPointFormatter = (x: number, y: number) => `${originX + x * scale},${originY + y * scale}`;
+      const drawConnector = (connector: RenderConnector) => {
+        const path = buildMapGridConnectorPath(
+          connector.fromX,
+          connector.fromY,
+          connector.toX,
+          connector.toY,
+          screenPointFormatter,
+          connector.fromFace,
+          connector.toFace,
+          commitCornerRadiusPx,
+        );
+        ctx.stroke(new Path2D(path));
+      };
+
+      for (const connector of sortedVisibleMergeConnectors) drawConnector(connector);
+      for (const connector of sortedVisibleConnectors) drawConnector(connector);
+    };
+
+    drawConnectors();
+  }, [
+    canvasSize.height,
+    canvasSize.width,
+    lineStrokeWidth,
+    commitCornerRadiusPx,
+    mapPadHostRef,
+    renderedCameraRef,
+    scrollContainerRef,
+    sortedVisibleConnectors,
+    sortedVisibleMergeConnectors,
+  ]);
+
+  useEffect(() => {
+    const canvas = connectorCanvasRef.current;
+    if (!canvas || !isCameraMoving) return;
+
+    let animationFrame: number | null = null;
+    const syncConnectorTransform = () => {
+      const drawnCamera = drawnConnectorCameraRef.current;
+      if (drawnCamera) {
+        const currentScale = renderedCameraRef.current.zoom / GRID_RENDER_ZOOM;
+        const currentOriginX = drawnCamera.baseX + renderedCameraRef.current.panX;
+        const currentOriginY = drawnCamera.baseY + renderedCameraRef.current.panY;
+        const scaleRatio = currentScale / drawnCamera.scale;
+        const translateX = currentOriginX - drawnCamera.originX * scaleRatio;
+        const translateY = currentOriginY - drawnCamera.originY * scaleRatio;
+        canvas.style.transformOrigin = 'top left';
+        canvas.style.transform = `translate3d(${translateX}px, ${translateY}px, 0) scale(${scaleRatio})`;
+      }
+      animationFrame = window.requestAnimationFrame(syncConnectorTransform);
+    };
+
+    syncConnectorTransform();
+    return () => {
+      if (animationFrame != null) window.cancelAnimationFrame(animationFrame);
+    };
+  }, [isCameraMoving, renderedCameraRef]);
 
   return (
     <div
       ref={scrollContainerRef}
-      className="flex-1 min-h-0 overflow-hidden"
+      className="relative flex-1 min-h-0 overflow-hidden"
       style={{ cursor: isMarqueeSelecting ? 'crosshair' : 'default' }}
       onWheel={onWheel}
       onMouseDown={onMouseDown}
     >
+      <canvas
+        ref={connectorCanvasRef}
+        className="pointer-events-none absolute left-0 top-0 z-10"
+        aria-hidden="true"
+        style={{ width: canvasSize.width, height: canvasSize.height }}
+      />
       <div
         ref={mapPadHostRef}
         className="relative min-w-full bg-background p-2.5"
@@ -239,7 +456,7 @@ export default function MapGridCanvas({
       >
         <div
           ref={transformLayerRef}
-          className="absolute left-0 top-0"
+          className="absolute left-0 top-0 z-20"
           style={{
             width: contentWidth,
             height: contentHeight,
@@ -318,10 +535,15 @@ export default function MapGridCanvas({
             const unpushedCommitTextStyle = isUnpushedCommit && !checkedOutAccentActive && !isSelectedCommit
               ? { color: 'var(--muted-foreground)' }
               : undefined;
+            const dragPreview = dragPreviewByNodeId[node.commit.visualId];
+            const persistedOverride = getNodePositionOverride(nodePositionOverrides, node.commit);
+            const cardLeft = dragPreview?.x ?? persistedOverride?.x ?? node.x;
+            const cardTop = dragPreview?.y ?? persistedOverride?.y ?? node.y;
             return (
               <MapGridCommitWrapper
                 key={node.commit.visualId}
                 fadeIn={shouldAnimateOpeningClump}
+                isDragPreview={activeDragNodeIds.has(node.commit.visualId)}
                 dataCommitCard="true"
                 className={cn(
                   'group absolute z-20',
@@ -333,9 +555,12 @@ export default function MapGridCanvas({
                   normalizedSearchQuery && matchingNodeIds.has(node.commit.id) ? 'scale-[1.01]' : '',
                   focusedNode?.commit.id === node.commit.id ? 'z-30' : '',
                 )}
-                style={{ left: node.x, top: node.y, width: CARD_WIDTH, height: CARD_BODY_TOP_OFFSET + CARD_HEIGHT + 4, overflow: 'visible' }}
+                style={{ left: cardLeft, top: cardTop, width: CARD_WIDTH, height: CARD_BODY_TOP_OFFSET + CARD_HEIGHT + 4, overflow: 'visible' }}
                 onClick={(event) => onCommitCardClick(event, node)}
                 onPointerDown={(event) => onNodePointerDown(event, node)}
+                onPointerMove={onNodePointerMove}
+                onPointerUp={onNodePointerUp}
+                onPointerCancel={onNodePointerUp}
               >
                 {isDashedOutline ? (
                   <svg
@@ -424,16 +649,18 @@ export default function MapGridCanvas({
                   </div>
                 </div>
                 <div className={cn(
-                    'absolute left-0 h-[176px] w-full cursor-pointer overflow-hidden rounded-tr-xl rounded-br-xl rounded-bl-xl rounded-tl-none border border-border/50',
+                    'absolute left-0 h-[176px] w-full cursor-grab overflow-hidden rounded-tr-xl rounded-br-xl rounded-bl-xl rounded-tl-none border border-border/50 active:cursor-grabbing',
                     checkedOutAccentActive && !isUnpushedCommit && !isStashedCommit && !isEmptyBranchNode
                     ? 'bg-checked-muted'
                     : remoteAccentActive && !isStashedCommit && !isEmptyBranchNode
                         ? 'bg-remote-muted'
                     : isSelectedCommit && !isUnpushedCommit && !isStashedCommit && !isEmptyBranchNode
                         ? 'bg-select-muted'
-                        : isUnpushedCommit || isStashedCommit || isEmptyBranchNode
-                          ? 'bg-transparent'
-                          : 'bg-muted',
+                        : isUnpushedCommit
+                          ? 'bg-background'
+                          : isStashedCommit || isEmptyBranchNode
+                            ? 'bg-transparent'
+                            : 'bg-muted',
                     isDashedOutline ? 'border-solid' : '',
                     branchOffNodeShas.has(node.commit.id) ||
                     branchStartShas.has(node.commit.id) ||
@@ -514,30 +741,6 @@ export default function MapGridCanvas({
               </MapGridCommitWrapper>
             );
           })}
-          <svg
-            className="pointer-events-none absolute inset-0 z-10"
-            width={contentWidth}
-            height={contentHeight}
-            viewBox={`0 0 ${contentWidth} ${contentHeight}`}
-            aria-hidden="true"
-            overflow="visible"
-            style={{ overflow: 'visible' }}
-          >
-            {sortedVisibleMergeConnectors.map((connector) => {
-              const { fromX, fromY, toX, toY } = connector;
-              const path = buildLooseCablePath(fromX, fromY, toX, toY, pointFormatter, connector.fromFace, connector.toFace);
-              return (
-                <path key={connector.id} d={path} fill="none" stroke={CONNECTOR_COLOR} strokeWidth={lineStrokeWidth} strokeLinecap="round" strokeLinejoin="round" />
-              );
-            })}
-            {sortedVisibleConnectors.map((connector) => {
-              const { fromX, fromY, toX, toY } = connector;
-              const path = buildLooseCablePath(fromX, fromY, toX, toY, pointFormatter, connector.fromFace, connector.toFace);
-              return (
-                <path key={connector.id} d={path} fill="none" stroke={CONNECTOR_COLOR} strokeWidth={lineStrokeWidth} strokeLinecap="round" strokeLinejoin="round" />
-              );
-            })}
-          </svg>
         </div>
       </div>
     </div>

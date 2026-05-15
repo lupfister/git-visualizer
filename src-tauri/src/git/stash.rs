@@ -46,6 +46,8 @@ fn checkout_for_stash_base(repo: &Path, commit_sha: &str) -> Result<(), GitError
 pub struct GitStashEntry {
     pub index: u32,
     pub base_sha: String,
+    #[serde(default)]
+    pub created_at: String,
     pub message: String,
 }
 
@@ -65,9 +67,11 @@ pub fn list_stashes(repo: &Path) -> Result<Vec<GitStashEntry>, GitError> {
             .to_string();
         let stash_ref = format!("stash@{{{idx}}}");
         let base_sha = cli::run(repo, &["rev-parse", &format!("{stash_ref}^1")])?;
+        let created_at = cli::run(repo, &["log", "-1", "--format=%cI", &stash_ref])?;
         entries.push(GitStashEntry {
             index: idx as u32,
             base_sha: base_sha.trim().to_string(),
+            created_at: created_at.trim().to_string(),
             message,
         });
     }

@@ -32,6 +32,7 @@ export interface CheckedOutRef {
 export interface GitStashEntry {
   index: number;
   baseSha: string;
+  createdAt: string;
   message: string;
 }
 

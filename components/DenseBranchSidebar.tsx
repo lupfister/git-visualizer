@@ -34,6 +34,7 @@ type Props = {
   onAddProject: () => void;
   onRemoveProject: (path: string) => void;
   onRevealProjectInFinder: (path: string) => Promise<void> | void;
+  onResetProjectNodePositions?: (path: string) => void;
   onReorderProjects?: (nextOrder: string[]) => void;
   projectLoading?: boolean;
   projectError?: string | null;
@@ -534,6 +535,7 @@ export default function DenseBranchSidebar({
   onAddProject,
   onRemoveProject,
   onRevealProjectInFinder,
+  onResetProjectNodePositions,
   onReorderProjects,
   projectLoading = false,
   projectError = null,
@@ -903,6 +905,7 @@ export default function DenseBranchSidebar({
         mergeNodes: project.mergeNodes,
         directCommits: project.directCommits,
         unpushedDirectCommits: project.unpushedDirectCommits,
+        unpushedCommitShasByBranch: project.unpushedCommitShasByBranch,
         defaultBranch: project.defaultBranch,
         branchCommitPreviews: project.branchCommitPreviews,
         branchUniqueAheadCounts: project.branchUniqueAheadCounts,
@@ -1133,6 +1136,20 @@ export default function DenseBranchSidebar({
                     >
                       Open in Finder
                     </button>
+                    {onResetProjectNodePositions ? (
+                      <button
+                        type="button"
+                        role="menuitem"
+                        onPointerDown={(event) => event.stopPropagation()}
+                        onClick={() => {
+                          setOpenProjectMenuPath(null);
+                          onResetProjectNodePositions(project.path);
+                        }}
+                        className="flex w-full items-center rounded-[2px] px-2 py-1.5 text-left text-xs font-medium text-muted-foreground transition-colors hover:bg-muted hover:text-foreground"
+                      >
+                        Reset node positions
+                      </button>
+                    ) : null}
                     <button
                       type="button"
                       role="menuitem"

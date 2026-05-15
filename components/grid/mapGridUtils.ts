@@ -1,5 +1,5 @@
 import { CARD_BODY_TOP_OFFSET, CARD_HEIGHT, CARD_WIDTH, type Node } from './LayoutGrid';
-import { looseCablePathHullPoints } from './gridPathUtils';
+import { mapGridConnectorHullPoints } from './gridPathUtils';
 import type { CableFace } from './gridPathUtils';
 import type { WorktreeInfo } from '../../types';
 
@@ -10,13 +10,12 @@ export const GRID_ZOOM_WHEEL_SENSITIVITY = 0.02;
 export const GRID_RENDER_ZOOM = GRID_ZOOM_MAX;
 export const MAP_GRID_INNER_PADDING_PX = 10;
 export const MAP_GRID_CULL_VIEWPORT_INSET_SCREEN_PX = -100;
-export const MAP_GRID_CAMERA_PAN_REACT_THROTTLE_MS = 0;
+export const MAP_GRID_CAMERA_PAN_REACT_THROTTLE_MS = 120;
 export const CAMERA_PAN_INTERPOLATION = 1;
 export const CAMERA_ZOOM_INTERPOLATION = 0.25;
 export const CAMERA_SETTLE_EPSILON = 0.001;
 export const ZOOM_SETTLE_EPSILON = 0.001;
 export const GRID_CONNECTOR_GAP_PX = 0;
-export const GRID_CONNECTOR_CORNER_RADIUS_BASE_PX = 120;
 export const GRID_COMMIT_CORNER_RADIUS_BASE_PX = 12;
 /** Persisted flag for cubic “loose cable” connectors on the branch map (`localStorage`). */
 export const GRID_LOOSE_CABLE_STORAGE_KEY = 'git-visualizer-loose-cable-connectors';
@@ -177,7 +176,7 @@ export function roundedElbowVerticalFirstConnectorIntersectsViewportBounds(
   return segmentIntersectsViewportBounds(postTurnX, toY, finalX, toY, rect);
 }
 
-/** Viewport cull for {@link import('./gridPathUtils').buildLooseCablePath} (hull of endpoints + Bézier controls). */
+/** Viewport cull for branch-map connectors (hull of orthogonal polyline vertices). */
 export function looseCableConnectorIntersectsViewportBounds(
   fromX: number,
   fromY: number,
@@ -187,7 +186,7 @@ export function looseCableConnectorIntersectsViewportBounds(
   fromFace?: CableFace,
   toFace?: CableFace,
 ): boolean {
-  const pts = looseCablePathHullPoints(fromX, fromY, toX, toY, fromFace, toFace);
+  const pts = mapGridConnectorHullPoints(fromX, fromY, toX, toY, fromFace, toFace);
   const hull = axisAlignedBoundsOfPoints(pts);
   return intersectsVisibleBounds(rect, hull);
 }
