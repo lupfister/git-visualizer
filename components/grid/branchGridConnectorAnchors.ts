@@ -6,7 +6,6 @@ import { CARD_HEIGHT, CARD_WIDTH, type ConnectorFace, type Node } from './Layout
 const GRID_INCOMING_GAP_PX = 0;
 const GRID_MERGE_TARGET_GAP_PX = 0;
 const CONNECTOR_HORIZONTAL_ROW_ALIGN_EPS_PX = 22;
-const CONNECTOR_CHILD_SIDE_FROM_PARENT_CENTER_EPS_PX = 12;
 
 export type ConnectorAnchorPair = {
   fromX: number;
@@ -34,18 +33,13 @@ const horizontalIncomingAnchorFromParent = (
   if (Math.abs(dy) < CONNECTOR_HORIZONTAL_ROW_ALIGN_EPS_PX) {
     return { x: node.x - GRID_INCOMING_GAP_PX, y: node.y + CARD_HEIGHT / 2, face: 'left' };
   }
-  if (dy > 0) {
-    const parentCx = parentNode.x + CARD_WIDTH / 2;
-    const childCx = node.x + CARD_WIDTH / 2;
-    if (childCx - parentCx > CONNECTOR_CHILD_SIDE_FROM_PARENT_CENTER_EPS_PX) {
-      return { x: node.x - GRID_INCOMING_GAP_PX, y: node.y + CARD_HEIGHT / 2, face: 'left' };
-    }
-    if (parentCx - childCx > CONNECTOR_CHILD_SIDE_FROM_PARENT_CENTER_EPS_PX) {
-      return { x: node.x + CARD_WIDTH + GRID_INCOMING_GAP_PX, y: node.y + CARD_HEIGHT / 2, face: 'right' };
-    }
-    return { x: node.x + CARD_WIDTH / 2, y: node.y - GRID_INCOMING_GAP_PX, face: 'top' };
+  // Child above/below: vertical-first L ends at left or right mid-height (see getOutgoing horizontal).
+  const parentCx = parentNode.x + CARD_WIDTH / 2;
+  const childCx = node.x + CARD_WIDTH / 2;
+  if (childCx >= parentCx) {
+    return { x: node.x - GRID_INCOMING_GAP_PX, y: node.y + CARD_HEIGHT / 2, face: 'left' };
   }
-  return { x: node.x + CARD_WIDTH / 2, y: node.y + CARD_HEIGHT + GRID_INCOMING_GAP_PX, face: 'bottom' };
+  return { x: node.x + CARD_WIDTH + GRID_INCOMING_GAP_PX, y: node.y + CARD_HEIGHT / 2, face: 'right' };
 };
 
 const getIncomingAnchor = (isHorizontal: boolean, node: Node, parentNode: Node | null): { x: number; y: number; face: ConnectorFace } => {
@@ -86,14 +80,7 @@ const getOutgoingAnchor = (
     if (dy > 0) {
       return { x: node.x + CARD_WIDTH / 2, y: node.y + CARD_HEIGHT + GRID_INCOMING_GAP_PX, face: 'bottom' };
     }
-    const parentCx = node.x + CARD_WIDTH / 2;
-    const parentCy = node.y + CARD_HEIGHT / 2;
-    const childCx = childNode.x + CARD_WIDTH / 2;
-    const dx = childCx - parentCx;
-    if (dx > CONNECTOR_CHILD_SIDE_FROM_PARENT_CENTER_EPS_PX || dx < -CONNECTOR_CHILD_SIDE_FROM_PARENT_CENTER_EPS_PX) {
-      return { x: parentCx, y: parentCy, face: 'mid-h' };
-    }
-    return { x: parentCx, y: node.y - GRID_INCOMING_GAP_PX, face: 'top' };
+    return { x: node.x + CARD_WIDTH / 2, y: node.y - GRID_INCOMING_GAP_PX, face: 'top' };
   }
   if (childNode && childNode.column === node.column && childNode.commit.branchName !== node.commit.branchName) {
     if (childNode.x > node.x) {
@@ -114,32 +101,29 @@ const getOutgoingAnchor = (
   }
   if (childNode.column > node.column) {
     if (childNode.y + CONNECTOR_HORIZONTAL_ROW_ALIGN_EPS_PX < node.y) {
-      const parentCx = node.x + CARD_WIDTH / 2;
-      const parentCy = node.y + CARD_HEIGHT / 2;
-      const childCx = childNode.x + CARD_WIDTH / 2;
-      const dx = childCx - parentCx;
-      if (dx > CONNECTOR_CHILD_SIDE_FROM_PARENT_CENTER_EPS_PX || dx < -CONNECTOR_CHILD_SIDE_FROM_PARENT_CENTER_EPS_PX) {
-        return { x: parentCx, y: parentCy, face: 'mid-h' };
-      }
-      return { x: parentCx, y: node.y - GRID_INCOMING_GAP_PX, face: 'top' };
+      return { x: node.x + CARD_WIDTH / 2, y: node.y - GRID_INCOMING_GAP_PX, face: 'top' };
     }
     return { x: node.x + CARD_WIDTH / 2, y: node.y + CARD_HEIGHT + GRID_INCOMING_GAP_PX, face: 'bottom' };
   }
   if (childNode.y + CONNECTOR_HORIZONTAL_ROW_ALIGN_EPS_PX < node.y) {
-    const parentCx = node.x + CARD_WIDTH / 2;
-    const parentCy = node.y + CARD_HEIGHT / 2;
-    const childCx = childNode.x + CARD_WIDTH / 2;
-    const dx = childCx - parentCx;
-    if (dx > CONNECTOR_CHILD_SIDE_FROM_PARENT_CENTER_EPS_PX || dx < -CONNECTOR_CHILD_SIDE_FROM_PARENT_CENTER_EPS_PX) {
-      return { x: parentCx, y: parentCy, face: 'mid-h' };
-    }
+    return { x: node.x + CARD_WIDTH / 2, y: node.y - GRID_INCOMING_GAP_PX, face: 'top' };
   }
-  return { x: node.x + CARD_WIDTH / 2, y: node.y - GRID_INCOMING_GAP_PX, face: 'top' };
+  return { x: node.x + CARD_WIDTH / 2, y: node.y + CARD_HEIGHT + GRID_INCOMING_GAP_PX, face: 'bottom' };
 };
 
-const getBranchOutgoingAnchor = (isHorizontal: boolean, node: Node): { x: number; y: number; face: ConnectorFace } => {
+const getBranchOutgoingAnchor = (
+  isHorizontal: boolean,
+  node: Node,
+  childNode: Node | null,
+): { x: number; y: number; face: ConnectorFace } => {
   if (!isHorizontal) {
     return { x: node.x + CARD_WIDTH, y: node.y + CARD_HEIGHT / 2, face: 'right' };
+  }
+  if (childNode && Math.abs(childNode.y - node.y) >= CONNECTOR_HORIZONTAL_ROW_ALIGN_EPS_PX) {
+    if (childNode.y < node.y) {
+      return { x: node.x + CARD_WIDTH / 2, y: node.y - GRID_INCOMING_GAP_PX, face: 'top' };
+    }
+    return { x: node.x + CARD_WIDTH / 2, y: node.y + CARD_HEIGHT + GRID_INCOMING_GAP_PX, face: 'bottom' };
   }
   return { x: node.x + CARD_WIDTH / 2, y: node.y + CARD_HEIGHT + GRID_INCOMING_GAP_PX, face: 'bottom' };
 };
@@ -152,7 +136,7 @@ export function computeParentChildConnectorAnchors(
   childNode: Node,
 ): ConnectorAnchorPair {
   if (useBranchFeedAnchors) {
-    const s = getBranchOutgoingAnchor(isHorizontal, parentNode);
+    const s = getBranchOutgoingAnchor(isHorizontal, parentNode, childNode);
     const t = getBranchIncomingAnchor(isHorizontal, childNode, parentNode);
     return { fromX: s.x, fromY: s.y, fromFace: s.face, toX: t.x, toY: t.y, toFace: t.face };
   }
@@ -173,12 +157,26 @@ export function computeMergeConnectorAnchors(isHorizontal: boolean, sourceNode: 
       toFace: 'right',
     };
   }
+  const srcMidY = sourceNode.y + CARD_HEIGHT / 2;
+  const mergeMidY = mergeTarget.y + CARD_HEIGHT / 2;
+  const fromX = sourceNode.x + CARD_WIDTH + GRID_MERGE_TARGET_GAP_PX;
+  const fromY = sourceNode.y + CARD_HEIGHT / 2;
+  if (mergeMidY >= srcMidY) {
+    return {
+      fromX,
+      fromY,
+      fromFace: 'right',
+      toX: mergeTarget.x + CARD_WIDTH / 2,
+      toY: mergeTarget.y - GRID_MERGE_TARGET_GAP_PX,
+      toFace: 'top',
+    };
+  }
   return {
-    fromX: sourceNode.x + CARD_WIDTH + GRID_MERGE_TARGET_GAP_PX,
-    fromY: sourceNode.y + CARD_HEIGHT / 2,
+    fromX,
+    fromY,
     fromFace: 'right',
     toX: mergeTarget.x + CARD_WIDTH / 2,
-    toY: mergeTarget.y - GRID_MERGE_TARGET_GAP_PX,
-    toFace: 'top',
+    toY: mergeTarget.y + CARD_HEIGHT + GRID_MERGE_TARGET_GAP_PX,
+    toFace: 'bottom',
   };
 }
