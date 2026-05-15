@@ -644,6 +644,21 @@ export function computeBranchGridLayout(input: BranchGridLayoutInput): BranchGri
       }
     }
   }
+  // Branch previews (and the checkout overwrite above) often keep only the first parent; restore full
+  // merge parent lists so cluster segmentation and lane logic see real merges.
+  for (const node of mergeNodes) {
+    const sha = node.fullSha;
+    if (!sha) continue;
+    const existing = visibleCommitBySha.get(sha);
+    if (!existing) continue;
+    const ps = node.parentShas ?? [];
+    if (ps.length <= 1) continue;
+    visibleCommitBySha.set(sha, {
+      ...existing,
+      parentSha: ps[0] ?? existing.parentSha ?? null,
+      parentShas: ps,
+    });
+  }
   const visibleCommits: VisualCommit[] = Array.from(visibleCommitBySha.values()).map((commit) => ({
     ...commit,
     visualId: `${commit.branchName}:${commit.id}`,
@@ -854,6 +869,16 @@ export function computeBranchGridLayout(input: BranchGridLayoutInput): BranchGri
       if (isSyntheticBoundaryChild) {
         continue;
       }
+      const mergeParentCount = mergeParentShasByMergeSha.get(commit.id)?.size ?? 0;
+      const parentShasForMerge = commit.parentShas?.length
+        ? commit.parentShas
+        : commit.parentSha
+          ? [commit.parentSha]
+          : [];
+      const isMergeCommit = parentShasForMerge.length > 1 || mergeParentCount > 0;
+      if (isMergeCommit) {
+        currentKey = null;
+      }
       const boundaryKind = clusterBoundaryKind(commit);
       if (!currentKey || (previousBoundaryKind != null && previousBoundaryKind !== boundaryKind)) {
         segmentIndex += 1;
@@ -1015,6 +1040,13 @@ export function computeBranchGridLayout(input: BranchGridLayoutInput): BranchGri
     }
     if (commit.kind === 'stash' || commit.kind === 'branch-created') continue;
     if (!commit.parentSha) continue;
+    const mergedExtrasEarly = mergeParentShasByMergeSha.get(commit.id);
+    const mergeParentList = commit.parentShas?.length
+      ? commit.parentShas
+      : commit.parentSha
+        ? [commit.parentSha]
+        : [];
+    if (mergeParentList.length > 1 || (mergedExtrasEarly != null && mergedExtrasEarly.size > 0)) continue;
     if (!isShaUnpushedOnBranch(commit.branchName, commit.id)) continue;
     if (isShaUnpushedOnBranch(commit.branchName, commit.parentSha)) continue;
     const parent = findCommitBySha(commit.parentSha);
