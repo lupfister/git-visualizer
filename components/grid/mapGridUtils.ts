@@ -16,7 +16,6 @@ export const CAMERA_ZOOM_INTERPOLATION = 0.25;
 export const CAMERA_SETTLE_EPSILON = 0.001;
 export const ZOOM_SETTLE_EPSILON = 0.001;
 export const GRID_CONNECTOR_GAP_PX = 0;
-export const GRID_CONNECTOR_CORNER_RADIUS_BASE_PX = 100;
 export const GRID_COMMIT_CORNER_RADIUS_BASE_PX = 12;
 /** Persisted flag for cubic “loose cable” connectors on the branch map (`localStorage`). */
 export const GRID_LOOSE_CABLE_STORAGE_KEY = 'git-visualizer-loose-cable-connectors';

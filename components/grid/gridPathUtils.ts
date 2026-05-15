@@ -212,8 +212,10 @@ const axisLegLength = (from: { x: number; y: number }, to: { x: number; y: numbe
 };
 
 /**
- * Rounds each 90° bend of an axis-aligned polyline with quadratic fillets (same geometry as
- * {@link buildRoundedElbowPath} / {@link buildRoundedElbowPathVerticalFirst}).
+ * Rounds each 90° bend of an axis-aligned polyline with quadratic fillets. Uses the same target
+ * radius `cornerR` (content-space px) at every bend—pass the same value as commit card corners
+ * (e.g. `GRID_COMMIT_CORNER_RADIUS_BASE_PX / displayZoom`). When a segment is shorter than `cornerR`,
+ * the fillet for that bend is clamped so the path stays valid.
  */
 export function buildRoundedOrthogonalPolylinePath(
   poly: ReadonlyArray<{ x: number; y: number }>,
@@ -286,6 +288,7 @@ export function buildRoundedOrthogonalPolylinePath(
   return d;
 }
 
+/** SVG path `d` for branch-map connectors; fillet radius matches commit cards when set to the same content-space px. */
 export function buildMapGridConnectorPath(
   fromX: number,
   fromY: number,
