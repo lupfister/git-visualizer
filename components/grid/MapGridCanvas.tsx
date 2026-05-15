@@ -120,6 +120,7 @@ type Props = {
   branchStartAccentClass: string;
   connectorParentAccentClass: string;
   commitCornerRadiusPx: number;
+  connectorCornerRadiusPx: number;
   lineStrokeWidth: number;
   connectors: Array<{ id: string; fromX: number; fromY: number; toX: number; toY: number; zIndex: number; fromFace?: ConnectorFace; toFace?: ConnectorFace }>;
   mergeConnectors: Array<{ id: string; fromX: number; fromY: number; toX: number; toY: number; zIndex: number; fromFace?: ConnectorFace; toFace?: ConnectorFace }>;
@@ -176,6 +177,7 @@ export default function MapGridCanvas({
   branchStartAccentClass,
   connectorParentAccentClass,
   commitCornerRadiusPx,
+  connectorCornerRadiusPx,
   lineStrokeWidth,
   connectors,
   mergeConnectors,
@@ -386,6 +388,7 @@ export default function MapGridCanvas({
           screenPointFormatter,
           connector.fromFace,
           connector.toFace,
+          connectorCornerRadiusPx,
         );
         ctx.stroke(new Path2D(path));
       };
@@ -399,6 +402,7 @@ export default function MapGridCanvas({
     canvasSize.height,
     canvasSize.width,
     lineStrokeWidth,
+    connectorCornerRadiusPx,
     mapPadHostRef,
     renderedCameraRef,
     scrollContainerRef,

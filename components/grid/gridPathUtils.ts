@@ -195,6 +195,97 @@ export function getMapGridConnectorPolyline(
   return dedupeConsecutivePolylinePoints(raw);
 }
 
+const ORTH_EPS = 0.5;
+
+const isHorizontalEdge = (a: { x: number; y: number }, b: { x: number; y: number }): boolean =>
+  Math.abs(a.y - b.y) < ORTH_EPS && Math.abs(a.x - b.x) >= ORTH_EPS;
+
+const isVerticalEdge = (a: { x: number; y: number }, b: { x: number; y: number }): boolean =>
+  Math.abs(a.x - b.x) < ORTH_EPS && Math.abs(a.y - b.y) >= ORTH_EPS;
+
+const axisLegLength = (from: { x: number; y: number }, to: { x: number; y: number }): number => {
+  const dx = Math.abs(to.x - from.x);
+  const dy = Math.abs(to.y - from.y);
+  if (dx < ORTH_EPS) return dy;
+  if (dy < ORTH_EPS) return dx;
+  return Math.hypot(dx, dy);
+};
+
+/**
+ * Rounds each 90° bend of an axis-aligned polyline with quadratic fillets (same geometry as
+ * {@link buildRoundedElbowPath} / {@link buildRoundedElbowPathVerticalFirst}).
+ */
+export function buildRoundedOrthogonalPolylinePath(
+  poly: ReadonlyArray<{ x: number; y: number }>,
+  cornerR: number,
+  pointFormatter: (x: number, y: number) => string,
+): string {
+  if (poly.length === 0) return '';
+  if (poly.length === 1) return `M ${pointFormatter(poly[0].x, poly[0].y)}`;
+  if (cornerR < 0.5) {
+    let d = `M ${pointFormatter(poly[0].x, poly[0].y)}`;
+    for (let i = 1; i < poly.length; i += 1) {
+      d += ` L ${pointFormatter(poly[i].x, poly[i].y)}`;
+    }
+    return d;
+  }
+
+  let curX = poly[0].x;
+  let curY = poly[0].y;
+  let d = `M ${pointFormatter(curX, curY)}`;
+
+  for (let i = 1; i < poly.length - 1; i += 1) {
+    const prev = poly[i - 1];
+    const B = poly[i];
+    const next = poly[i + 1];
+
+    const inH = isHorizontalEdge(prev, B);
+    const inV = isVerticalEdge(prev, B);
+    const outH = isHorizontalEdge(B, next);
+    const outV = isVerticalEdge(B, next);
+
+    const incomingLen = axisLegLength({ x: curX, y: curY }, B);
+    const outgoingLen = axisLegLength(B, next);
+    const is90 = (inH && outV) || (inV && outH);
+    const c = is90 ? Math.max(0, Math.min(cornerR, incomingLen, outgoingLen)) : 0;
+
+    if (c < 0.5) {
+      d += ` L ${pointFormatter(B.x, B.y)}`;
+      curX = B.x;
+      curY = B.y;
+      continue;
+    }
+
+    if (inH && outV) {
+      const h = B.x >= prev.x ? 1 : -1;
+      const v = next.y >= B.y ? 1 : -1;
+      const pinX = B.x - h * c;
+      const pinY = B.y;
+      const poutX = B.x;
+      const poutY = B.y + v * c;
+      d += ` L ${pointFormatter(pinX, pinY)}`;
+      d += ` Q ${pointFormatter(B.x, B.y)} ${pointFormatter(poutX, poutY)}`;
+      curX = poutX;
+      curY = poutY;
+    } else {
+      const v = B.y >= prev.y ? 1 : -1;
+      const h = next.x >= B.x ? 1 : -1;
+      const pinX = B.x;
+      const pinY = B.y - v * c;
+      const poutX = B.x + h * c;
+      const poutY = B.y;
+      d += ` L ${pointFormatter(pinX, pinY)}`;
+      d += ` Q ${pointFormatter(B.x, B.y)} ${pointFormatter(poutX, poutY)}`;
+      curX = poutX;
+      curY = poutY;
+    }
+  }
+
+  const last = poly[poly.length - 1];
+  d += ` L ${pointFormatter(last.x, last.y)}`;
+  return d;
+}
+
 export function buildMapGridConnectorPath(
   fromX: number,
   fromY: number,
@@ -203,14 +294,10 @@ export function buildMapGridConnectorPath(
   pointFormatter: (x: number, y: number) => string,
   fromFace?: CableFace,
   toFace?: CableFace,
+  cornerRadiusContentPx = 0,
 ): string {
   const poly = getMapGridConnectorPolyline(fromX, fromY, toX, toY, fromFace, toFace);
-  if (poly.length === 0) return '';
-  let d = `M ${pointFormatter(poly[0].x, poly[0].y)}`;
-  for (let i = 1; i < poly.length; i += 1) {
-    d += ` L ${pointFormatter(poly[i].x, poly[i].y)}`;
-  }
-  return d;
+  return buildRoundedOrthogonalPolylinePath(poly, cornerRadiusContentPx, pointFormatter);
 }
 
 /** Hull for viewport culling of {@link buildMapGridConnectorPath}. */

@@ -36,6 +36,7 @@ import { useMapGridCamera } from './useMapGridCamera';
 import { useMapGridSelection } from './useMapGridSelection';
 import {
   GRID_COMMIT_CORNER_RADIUS_BASE_PX,
+  GRID_CONNECTOR_CORNER_RADIUS_BASE_PX,
   GRID_RENDER_ZOOM,
   MAP_GRID_CULL_VIEWPORT_INSET_SCREEN_PX,
   MAP_GRID_INNER_PADDING_PX,
@@ -480,6 +481,7 @@ export default function BranchGridMap({
 
   const lineStrokeWidth = 1.25 / displayZoom;
   const commitCornerRadiusPx = GRID_COMMIT_CORNER_RADIUS_BASE_PX / displayZoom;
+  const connectorCornerRadiusPx = GRID_CONNECTOR_CORNER_RADIUS_BASE_PX / displayZoom;
 
   const connectorParentAccentClass =
     'border-border/70';
@@ -1607,6 +1609,7 @@ export default function BranchGridMap({
           branchStartAccentClass={branchStartAccentClass}
           connectorParentAccentClass={connectorParentAccentClass}
           commitCornerRadiusPx={commitCornerRadiusPx}
+          connectorCornerRadiusPx={connectorCornerRadiusPx}
           lineStrokeWidth={lineStrokeWidth}
           connectors={connectorsForView}
           mergeConnectors={mergeConnectorsForView}
