@@ -905,6 +905,7 @@ export default function DenseBranchSidebar({
         mergeNodes: project.mergeNodes,
         directCommits: project.directCommits,
         unpushedDirectCommits: project.unpushedDirectCommits,
+        unpushedCommitShasByBranch: project.unpushedCommitShasByBranch,
         defaultBranch: project.defaultBranch,
         branchCommitPreviews: project.branchCommitPreviews,
         branchUniqueAheadCounts: project.branchUniqueAheadCounts,

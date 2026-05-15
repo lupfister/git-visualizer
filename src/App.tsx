@@ -117,7 +117,7 @@ function makeLayoutCacheKey(
   graphSignature = '',
 ): string {
   return [
-    'layout-v3',
+    'layout-v4',
     path,
     orientation,
     setSignature(manuallyOpenedClumps),
@@ -676,10 +676,11 @@ function App() {
 
   useEffect(() => {
     if (!repoPath) return;
-    const overrides = nodePositionOverridesByRepo[repoPath] ?? {};
+    const normalizedPath = normalizePath(repoPath);
+    const overrides = nodePositionOverridesByRepo[normalizedPath] ?? {};
     const timeoutId = window.setTimeout(() => {
       const payloadJson = JSON.stringify(overrides);
-      void invoke('store_repo_node_positions', { repoPath, payloadJson });
+      void invoke('store_repo_node_positions', { repoPath: normalizedPath, payloadJson });
     }, 500);
     if (nodePositionSaveTimeoutRef.current != null) {
       window.clearTimeout(nodePositionSaveTimeoutRef.current);
@@ -825,6 +826,7 @@ function App() {
           mergeNodes: snapshot.mergeNodes,
           directCommits: snapshot.directCommits,
           unpushedDirectCommits: snapshot.unpushedDirectCommits,
+          unpushedCommitShasByBranch: snapshot.unpushedCommitShasByBranch ?? {},
           defaultBranch: snapshot.defaultBranch,
           branchCommitPreviews: snapshot.branchCommitPreviews,
           branchParentByName: snapshot.branchParentByName,
@@ -1272,6 +1274,7 @@ function App() {
       mergeNodes: snapshot.mergeNodes,
       directCommits: snapshot.directCommits,
       unpushedDirectCommits: snapshot.unpushedDirectCommits,
+      unpushedCommitShasByBranch: snapshot.unpushedCommitShasByBranch ?? {},
       defaultBranch: snapshot.defaultBranch,
       branchCommitPreviews: snapshot.branchCommitPreviews,
       branchParentByName: snapshot.branchParentByName,
@@ -2870,6 +2873,7 @@ function App() {
         mergeNodes,
         directCommits: enrichedDirectCommits,
         unpushedDirectCommits: enrichedUnpushedDirectCommits,
+        unpushedCommitShasByBranch,
         defaultBranch,
         branchCommitPreviews: enrichedBranchCommitPreviews,
         branchParentByName: enrichedBranchParentByName,
@@ -2889,6 +2893,7 @@ function App() {
       mergeNodes,
       enrichedDirectCommits,
       enrichedUnpushedDirectCommits,
+      unpushedCommitShasByBranch,
       defaultBranch,
       enrichedBranchCommitPreviews,
       enrichedBranchParentByName,

@@ -950,7 +950,9 @@ export default function BranchGridMap({
     );
     /* Expanded clumps: spatial cull rects use live zoom while row layout uses GRID_LAYOUT_RENDER_ZOOM — they
      * can disagree, so commits stay out of visibleNodeIds. Always allow laid-out commits for open
-     * multi-commit clusters into the viewport set. */
+     * multi-commit clusters into the viewport set.
+     * Collapsed clumps: only the lead is in renderNodes; if spatial cull misses the lead the card is hidden
+     * while connectors/rows still reserve space — force leads in so the timeline does not show a gap. */
     for (const node of renderNodes) {
       const ck = clusterKeyByCommitId.get(node.commit.visualId);
       if (!ck) continue;
@@ -959,7 +961,13 @@ export default function BranchGridMap({
       const clusterExpanded =
         manuallyOpenedClumps.has(ck) ||
         (!defaultCollapsedClumps.has(ck) && !manuallyClosedClumps.has(ck));
-      if (clusterExpanded) nextVisible.add(node.commit.visualId);
+      if (clusterExpanded) {
+        nextVisible.add(node.commit.visualId);
+        continue;
+      }
+      if (leadByClusterKey.get(ck) === node.commit.visualId) {
+        nextVisible.add(node.commit.visualId);
+      }
     }
 
     setVisibleNodeIds((prev) => (visibleCommitIdSetEquals(prev, nextVisible) ? prev : nextVisible));
@@ -973,6 +981,7 @@ export default function BranchGridMap({
     defaultCollapsedClumps,
     clusterKeyByCommitId,
     clusterCounts,
+    leadByClusterKey,
     renderNodes,
     viewportClientSize,
     commitCullSpatialIndex,

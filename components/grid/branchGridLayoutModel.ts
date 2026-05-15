@@ -598,6 +598,14 @@ export function computeBranchGridLayout(input: BranchGridLayoutInput): BranchGri
   const unpushedCommitShasByBranchSet = new Map(
     Object.entries(unpushedCommitShasByBranch).map(([branchName, shas]) => [branchName, new Set(shas)] as const),
   );
+  const isShaUnpushedOnBranch = (branchName: string, sha: string): boolean => {
+    const set = unpushedCommitShasByBranchSet.get(branchName);
+    if (!set) return false;
+    for (const candidate of set) {
+      if (shasMatch(candidate, sha)) return true;
+    }
+    return false;
+  };
 
   const branchCommitShaSets = new Map<string, Set<string>>(
     Array.from(branchCommitsByLane.entries()).map(([branchName, commits]) => [
@@ -820,8 +828,17 @@ export function computeBranchGridLayout(input: BranchGridLayoutInput): BranchGri
       if (commit.kind === 'uncommitted') return 'uncommitted';
       if (commit.kind === 'stash') return 'stash';
       if (commit.kind === 'branch-created') return 'branch-created';
-      const branchUnpushedShas = unpushedCommitShasByBranchSet.get(commit.branchName);
-      return branchUnpushedShas?.has(commit.id) ? 'unpushed' : 'pushed';
+      const checkedOutBranch = checkedOutRef?.branchName ?? null;
+      const checkedOutHead = checkedOutRef?.headSha ?? null;
+      if (
+        checkedOutBranch &&
+        checkedOutHead &&
+        commit.branchName === checkedOutBranch &&
+        shasMatch(commit.id, checkedOutHead)
+      ) {
+        return 'checked-out-tip';
+      }
+      return isShaUnpushedOnBranch(commit.branchName, commit.id) ? 'unpushed' : 'pushed';
     };
     let previousBoundaryKind: string | null = null;
     for (const commit of ordered) {
@@ -975,14 +992,6 @@ export function computeBranchGridLayout(input: BranchGridLayoutInput): BranchGri
       return left.localeCompare(right);
     })
     .forEach((clusterKey, column) => clusterColumnByKey.set(clusterKey, column));
-  const isShaUnpushedOnBranch = (branchName: string, sha: string): boolean => {
-    const set = unpushedCommitShasByBranchSet.get(branchName);
-    if (!set) return false;
-    for (const candidate of set) {
-      if (shasMatch(candidate, sha)) return true;
-    }
-    return false;
-  };
   // Keep the first real unpushed tip (and the dirty working-tree node) on the same lane column as
   // its parent pushed tail — otherwise committing replaces WORKING_TREE with a new SHA that jumps to a
   // fresh "unpushed" cluster column and no longer matches the opened clump / card position users expect.
@@ -1300,7 +1309,10 @@ export function computeBranchGridLayout(input: BranchGridLayoutInput): BranchGri
   };
   const placedNodes: Node[] = [];
   for (const node of renderNodes) {
-    while (placedNodes.some((placed) => boxesOverlap(node, placed))) {
+    // Same timeline row is shared across lanes (horizontal: same x, different y). Bounding boxes can
+    // intersect between lanes even when layout is intentional — bumping row here consumed a timeline
+    // slot on one lane only, leaving a visible "empty row" before HEAD / uncommitted.
+    while (placedNodes.some((placed) => placed.column === node.column && boxesOverlap(node, placed))) {
       if (isHorizontal) {
         node.row += 1;
         node.x = LEFT_PADDING + (horizontalRightAnchorRowOffset + node.row - 1) * zoomAwareTimelinePitch;
