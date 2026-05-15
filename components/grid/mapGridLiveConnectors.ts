@@ -1,5 +1,6 @@
 import type { Connector, Node, NodePositionOverrides } from './LayoutGrid';
 import { computeMergeConnectorAnchors, computeParentChildConnectorAnchors } from './branchGridConnectorAnchors';
+import { getNodePositionOverride } from './nodePositionOverrides';
 
 const nodeWithEffectivePosition = (
   node: Node,
@@ -8,7 +9,7 @@ const nodeWithEffectivePosition = (
 ): Node => {
   const visualId = node.commit.visualId;
   const drag = dragPreviewByNodeId[visualId];
-  const persisted = nodePositionOverrides[visualId];
+  const persisted = getNodePositionOverride(nodePositionOverrides, node.commit);
   const o = drag ?? persisted;
   if (!o) return node;
   return { ...node, x: o.x, y: o.y };

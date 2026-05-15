@@ -27,6 +27,7 @@ import {
 } from './LayoutGrid';
 import type { Lane } from './LayoutGrid';
 import { computeMergeConnectorAnchors, computeParentChildConnectorAnchors } from './branchGridConnectorAnchors';
+import { getNodePositionOverride, migrateNodePositionOverridesForCommits } from './nodePositionOverrides';
 
 /** Sync with MapGrid GRID_ZOOM_MAX — row pitch is authored in this render space. */
 export const GRID_LAYOUT_RENDER_ZOOM = 2.25;
@@ -1183,8 +1184,9 @@ export function computeBranchGridLayout(input: BranchGridLayoutInput): BranchGri
       y: TOP_PADDING + (maxPreviewRow - row) * previewTimelinePitch,
     };
   });
+  const normalizedNodePositionOverrides = migrateNodePositionOverridesForCommits(nodePositionOverrides, allCommitsWithClusters);
   const applyNodeOverrides = (node: Node): Node => {
-    const override = nodePositionOverrides[node.commit.visualId] ?? nodePositionOverrides[node.commit.id];
+    const override = getNodePositionOverride(normalizedNodePositionOverrides, node.commit);
     if (!override) return node;
     return { ...node, x: override.x, y: override.y };
   };
@@ -1328,12 +1330,12 @@ export function computeBranchGridLayout(input: BranchGridLayoutInput): BranchGri
     const clusterKey = clusterKeyByCommitId.get(node.commit.visualId);
     if (!clusterKey) continue;
     if (leadByClusterKey.get(clusterKey) !== node.commit.visualId) continue;
-    const override = nodePositionOverrides[node.commit.visualId] ?? nodePositionOverrides[node.commit.id];
+    const override = getNodePositionOverride(normalizedNodePositionOverrides, node.commit);
     if (!override) continue;
     movedLeadByClusterKey.set(clusterKey, { node, x: override.x, y: override.y });
   }
   for (const node of renderNodes) {
-    const override = nodePositionOverrides[node.commit.visualId] ?? nodePositionOverrides[node.commit.id];
+    const override = getNodePositionOverride(normalizedNodePositionOverrides, node.commit);
     if (override) {
       node.x = override.x;
       node.y = override.y;

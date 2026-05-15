@@ -7,6 +7,7 @@ import {
   useRef,
   useState,
 } from 'react';
+import { invoke } from '@tauri-apps/api/core';
 import { getCurrentWindow } from '@tauri-apps/api/window';
 import type { BranchCommitPreview, WorktreeInfo } from '../../types';
 import {
@@ -27,6 +28,12 @@ import { GitMerge } from 'lucide-react';
 import { computeBranchGridLayout, GRID_LAYOUT_RENDER_ZOOM } from './branchGridLayoutModel';
 import type { BranchGridLayoutModel } from './branchGridLayoutModel';
 import { connectorsWithEffectivePositions } from './mapGridLiveConnectors';
+import {
+  assignNodePositionOverride,
+  assignNodePositionPreview,
+  canonicalizeNodePositionOverridesForCommits,
+  getNodePositionOverride,
+} from './nodePositionOverrides';
 import CommitControls from './CommitControls';
 import MapGridCanvas from './MapGridCanvas';
 import MapGridDebugPanel from './MapGridDebugPanel';
@@ -85,6 +92,17 @@ function nodePositionOverridesEqual(left: NodePositionOverrides, right: NodePosi
     if (Math.abs(leftPoint.y - rightPoint.y) > 0.001) return false;
   }
   return true;
+}
+
+const NODE_POSITIONS_STORAGE_KEY_PREFIX = 'git-visualizer:node-positions:';
+
+function normalizeRepoPathForNodePositions(path: string): string {
+  if (path === '/') return path;
+  return path.replace(/\/+$/, '');
+}
+
+function nodePositionsStorageKey(repoPath: string): string {
+  return `${NODE_POSITIONS_STORAGE_KEY_PREFIX}${encodeURIComponent(normalizeRepoPathForNodePositions(repoPath))}`;
 }
 
 type Props = BranchGridViewProps & {
@@ -228,7 +246,7 @@ export default function BranchGridMap({
     sourceLane: number;
     baseOverrides: NodePositionOverrides;
     baseNodes: Node[];
-    groupNodes: Array<{ nodeId: string; baseX: number; baseY: number }>;
+    groupNodes: Array<{ nodeId: string; commit: Node['commit']; baseX: number; baseY: number }>;
     moved: boolean;
     pendingX: number;
     pendingY: number;
@@ -400,7 +418,7 @@ export default function BranchGridMap({
       const occupied = dragState.baseNodes
         .filter((node) => !draggedNodeIds.has(node.commit.visualId))
         .map((node) => {
-          const override = dragState.baseOverrides[node.commit.visualId] ?? dragState.baseOverrides[node.commit.id];
+          const override = getNodePositionOverride(dragState.baseOverrides, node.commit);
           return {
             x: override?.x ?? node.x,
             y: override?.y ?? node.y,
@@ -416,10 +434,13 @@ export default function BranchGridMap({
         left.y < right.y + nodeBoxHeight &&
         left.y + nodeBoxHeight > right.y;
       const candidateForGroup = (offset: number) =>
-        dragState.groupNodes.map((groupNode) => ({
-          x: (candidatePositions[groupNode.nodeId]?.x ?? groupNode.baseX) + offset,
-          y: candidatePositions[groupNode.nodeId]?.y ?? groupNode.baseY,
-        }));
+        dragState.groupNodes.map((groupNode) => {
+          const point = getNodePositionOverride(candidatePositions, groupNode.commit);
+          return {
+            x: (point?.x ?? groupNode.baseX) + offset,
+            y: point?.y ?? groupNode.baseY,
+          };
+        });
 
       let offset = 0;
       for (let attempt = 0; attempt < 200; attempt += 1) {
@@ -436,9 +457,9 @@ export default function BranchGridMap({
       if (offset === 0) return candidatePositions;
       const next = { ...candidatePositions };
       for (const groupNode of dragState.groupNodes) {
-        const point = next[groupNode.nodeId];
+        const point = getNodePositionOverride(next, groupNode.commit);
         if (!point) continue;
-        next[groupNode.nodeId] = { x: point.x + offset, y: point.y };
+        assignNodePositionOverride(next, groupNode.commit, { x: point.x + offset, y: point.y });
       }
       return next;
     },
@@ -1125,12 +1146,15 @@ export default function BranchGridMap({
       const deltaY = dragState.pendingY - dragState.baseY;
       const snapDeltaX = snapped.x - dragState.pendingX;
       const snapDeltaY = snapped.y - dragState.pendingY;
-      const next: NodePositionOverrides = { ...dragState.baseOverrides };
+      const next: NodePositionOverrides = canonicalizeNodePositionOverridesForCommits(
+        dragState.baseOverrides,
+        dragState.baseNodes.map((node) => node.commit),
+      );
       for (const groupNode of dragState.groupNodes) {
-        next[groupNode.nodeId] = {
+        assignNodePositionOverride(next, groupNode.commit, {
           x: groupNode.baseX + deltaX + snapDeltaX,
           y: groupNode.baseY + deltaY + snapDeltaY,
-        };
+        });
       }
       return avoidNodeCollisions(dragState, next);
     },
@@ -1141,12 +1165,12 @@ export default function BranchGridMap({
     (dragState: NonNullable<typeof dragNodeRef.current>) => {
       const deltaX = dragState.pendingX - dragState.baseX;
       const deltaY = dragState.pendingY - dragState.baseY;
-      const next: NodePositionOverrides = { ...dragState.baseOverrides };
+      const next: NodePositionOverrides = {};
       for (const groupNode of dragState.groupNodes) {
-        next[groupNode.nodeId] = {
+        assignNodePositionPreview(next, groupNode.commit, {
           x: groupNode.baseX + deltaX,
           y: groupNode.baseY + deltaY,
-        };
+        });
       }
       return next;
     },
@@ -1178,6 +1202,23 @@ export default function BranchGridMap({
     [flushDragPosition, renderedCameraRef],
   );
 
+  const persistNodePositionsDirectly = useCallback((nextOverrides: NodePositionOverrides) => {
+    if (!currentRepoPath) return;
+    const normalizedPath = normalizeRepoPathForNodePositions(currentRepoPath);
+    const payloadJson = JSON.stringify(nextOverrides);
+    try {
+      window.localStorage.setItem(nodePositionsStorageKey(normalizedPath), payloadJson);
+    } catch {
+      // App-level persistence still attempts the Tauri write.
+    }
+    void invoke('store_repo_node_positions', {
+      repoPath: normalizedPath,
+      payloadJson,
+    }).catch((error) => {
+      console.error('Failed to directly save node positions:', error);
+    });
+  }, [currentRepoPath]);
+
   const endDrag = useCallback(() => {
     if (dragRafRef.current != null) {
       window.cancelAnimationFrame(dragRafRef.current);
@@ -1185,8 +1226,10 @@ export default function BranchGridMap({
       flushDragPosition();
     }
     const dragState = dragNodeRef.current;
-    if (dragState) {
-      setNodePositionOverrides(buildSnappedDragOverrides(dragState));
+    if (dragState?.moved) {
+      const nextOverrides = buildSnappedDragOverrides(dragState);
+      setNodePositionOverrides(nextOverrides);
+      persistNodePositionsDirectly(nextOverrides);
     }
     dragNodeRef.current = null;
     setActiveDragNodeIds(new Set());
@@ -1196,7 +1239,7 @@ export default function BranchGridMap({
     window.setTimeout(() => {
       suppressNextCommitClickRef.current = false;
     }, 0);
-  }, [buildSnappedDragOverrides, flushDragPosition]);
+  }, [buildSnappedDragOverrides, flushDragPosition, persistNodePositionsDirectly]);
 
   const handleNodePointerDown = useCallback(
     (event: React.PointerEvent<HTMLDivElement>, node: Node) => {
@@ -1210,7 +1253,7 @@ export default function BranchGridMap({
       document.body.style.setProperty('-webkit-user-select', 'none');
       suppressNextCommitClickRef.current = false;
       event.currentTarget.setPointerCapture(event.pointerId);
-      const currentOverride = nodePositionOverrides[node.commit.visualId] ?? nodePositionOverrides[node.commit.id];
+      const currentOverride = getNodePositionOverride(nodePositionOverrides, node.commit);
       const baseX = currentOverride?.x ?? node.x;
       const baseY = currentOverride?.y ?? node.y;
       const selectedCommitShaSet = new Set(selectedVisibleCommitShas);
@@ -1219,9 +1262,10 @@ export default function BranchGridMap({
         ? renderNodes.filter((renderNode) => selectedCommitShaSet.has(renderNode.commit.id))
         : [node]
       ).map((groupNode) => {
-        const groupOverride = nodePositionOverrides[groupNode.commit.visualId] ?? nodePositionOverrides[groupNode.commit.id];
+        const groupOverride = getNodePositionOverride(nodePositionOverrides, groupNode.commit);
         return {
           nodeId: groupNode.commit.visualId,
+          commit: groupNode.commit,
           baseX: groupOverride?.x ?? groupNode.x,
           baseY: groupOverride?.y ?? groupNode.y,
         };
@@ -1270,6 +1314,29 @@ export default function BranchGridMap({
     },
     [endDrag],
   );
+
+  useEffect(() => {
+    const handleWindowPointerMove = (event: PointerEvent) => {
+      const dragState = dragNodeRef.current;
+      if (!dragState) return;
+      if (dragState.pointerId != null && dragState.pointerId !== event.pointerId) return;
+      updateDragPosition(event.clientX, event.clientY);
+    };
+    const handleWindowPointerEnd = (event: PointerEvent) => {
+      const dragState = dragNodeRef.current;
+      if (!dragState) return;
+      if (dragState.pointerId != null && dragState.pointerId !== event.pointerId) return;
+      endDrag();
+    };
+    window.addEventListener('pointermove', handleWindowPointerMove);
+    window.addEventListener('pointerup', handleWindowPointerEnd);
+    window.addEventListener('pointercancel', handleWindowPointerEnd);
+    return () => {
+      window.removeEventListener('pointermove', handleWindowPointerMove);
+      window.removeEventListener('pointerup', handleWindowPointerEnd);
+      window.removeEventListener('pointercancel', handleWindowPointerEnd);
+    };
+  }, [endDrag, updateDragPosition]);
 
   const confirmCommit = useCallback(async () => {
     if (!onCommitLocalChanges) return;

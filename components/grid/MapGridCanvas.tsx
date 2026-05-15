@@ -5,6 +5,7 @@ import { buildMapGridConnectorPath } from './gridPathUtils';
 import { cn, GRID_RENDER_ZOOM } from './mapGridUtils';
 import type { ConnectorFace, Node } from './LayoutGrid';
 import type { MapGridCameraState } from './useMapGridCamera';
+import { getNodePositionOverride } from './nodePositionOverrides';
 
 function MapGridCommitWrapper({
   fadeIn,
@@ -283,7 +284,7 @@ export default function MapGridCanvas({
     if (!face || !hasPositionAdjustments) return { x: endpointX, y: endpointY };
     let best: { dist: number; x: number; y: number } | null = null;
     for (const node of visibleRenderNodes) {
-      const persistedOverride = nodePositionOverrides[node.commit.visualId] ?? nodePositionOverrides[node.commit.id];
+      const persistedOverride = getNodePositionOverride(nodePositionOverrides, node.commit);
       const dragPreview = dragPreviewByNodeId[node.commit.visualId];
       const effectiveX = dragPreview?.x ?? persistedOverride?.x ?? node.x;
       const effectiveY = dragPreview?.y ?? persistedOverride?.y ?? node.y;
@@ -535,7 +536,7 @@ export default function MapGridCanvas({
               ? { color: 'var(--muted-foreground)' }
               : undefined;
             const dragPreview = dragPreviewByNodeId[node.commit.visualId];
-            const persistedOverride = nodePositionOverrides[node.commit.visualId] ?? nodePositionOverrides[node.commit.id];
+            const persistedOverride = getNodePositionOverride(nodePositionOverrides, node.commit);
             const cardLeft = dragPreview?.x ?? persistedOverride?.x ?? node.x;
             const cardTop = dragPreview?.y ?? persistedOverride?.y ?? node.y;
             return (

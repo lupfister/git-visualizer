@@ -30,6 +30,7 @@ const COMMIT_SWITCH_FEEDBACK_FADE_MS = 180;
 const SIDEBAR_WIDTH_STORAGE_KEY = 'git-visualizer:sidebar-width';
 const SIDEBAR_COLLAPSED_STORAGE_KEY = 'git-visualizer:sidebar-collapsed';
 const GRID_CLUMPS_STORAGE_KEY = 'git-visualizer:grid-clumps';
+const NODE_POSITIONS_STORAGE_KEY_PREFIX = 'git-visualizer:node-positions:';
 const SIDEBAR_DEFAULT_WIDTH_PX = 360;
 const SIDEBAR_MIN_WIDTH_PX = 180;
 const SIDEBAR_MAX_WIDTH_PX = 360;
@@ -107,6 +108,10 @@ function basenameFromPath(path: string | null): string {
 function setSignature(set: Set<string>): string {
   if (set.size === 0) return '__none__';
   return Array.from(set).sort().join(',');
+}
+
+function nodePositionsStorageKey(repoPath: string): string {
+  return `${NODE_POSITIONS_STORAGE_KEY_PREFIX}${encodeURIComponent(normalizePath(repoPath))}`;
 }
 
 function makeLayoutCacheKey(
@@ -265,9 +270,8 @@ function App() {
   const [branchParentByName, setBranchParentByName] = useState<Record<string, string | null>>({});
   const [laneByBranch, setLaneByBranch] = useState<Record<string, number>>({});
   const [nodePositionOverridesByRepo, setNodePositionOverridesByRepo] = useState<Record<string, NodePositionOverrides>>({});
-  /** Debounced write to `store_repo_node_positions` (never triggered by passive state sync — avoids wiping DB with `{}`). */
-  const nodePositionPersistTimerRef = useRef<number | null>(null);
-  const nodePositionPersistPayloadRef = useRef<{ repoPath: string; overrides: NodePositionOverrides } | null>(null);
+  /** Monotonic write tokens prevent older failed/successful saves from changing the dirty state for newer edits. */
+  const nodePositionPersistVersionByRepoRef = useRef<Record<string, number>>({});
   /** Repo has local card edits not yet flushed to disk; stale `get_repo_node_positions` results must not overwrite them. */
   const userDirtyNodePositionsRef = useRef<Set<string>>(new Set());
   const [branchUniqueAheadCounts, setBranchUniqueAheadCounts] = useState<Record<string, number>>({});
@@ -498,36 +502,79 @@ function App() {
     const normalizedPath = normalizePath(targetPath);
     if (!normalizedPath) return;
     const seq = ++loadNodePositionsSeqRef.current;
-    const payloadJson = await invoke<string | null>('get_repo_node_positions', {
-      repoPath: normalizedPath,
-    }).catch(() => null);
+    let localOverrides: NodePositionOverrides | null = null;
+    try {
+      const localPayload = window.localStorage.getItem(nodePositionsStorageKey(normalizedPath));
+      if (localPayload) {
+        localOverrides = parseNodePositionOverrides(localPayload);
+        setNodePositionOverridesByRepo((previous) => ({
+          ...previous,
+          [normalizedPath]: localOverrides ?? {},
+        }));
+      }
+    } catch {
+      // The SQLite cache below remains available when localStorage is blocked.
+    }
+    let payloadJson: string | null = null;
+    try {
+      payloadJson = await invoke<string | null>('get_repo_node_positions', {
+        repoPath: normalizedPath,
+      });
+    } catch (error) {
+      if (localOverrides) return;
+      const message = error instanceof Error ? error.message : String(error);
+      setCommitSwitchFeedback({
+        kind: 'error',
+        message: `Could not load saved node positions: ${message}`,
+      });
+      console.error('Failed to load node positions:', error);
+      return;
+    }
     if (seq !== loadNodePositionsSeqRef.current) return;
     if (userDirtyNodePositionsRef.current.has(normalizedPath)) return;
+    if (localOverrides && Object.keys(localOverrides).length > 0) return;
     const overrides = parseNodePositionOverrides(payloadJson);
     setNodePositionOverridesByRepo((previous) => ({
       ...previous,
       [normalizedPath]: overrides,
     }));
+    if (Object.keys(overrides).length > 0) {
+      try {
+        window.localStorage.setItem(nodePositionsStorageKey(normalizedPath), JSON.stringify(overrides));
+      } catch {
+        // ignore localStorage failures; SQLite remains the durable backend
+      }
+    }
   }, []);
 
-  const schedulePersistRepoNodePositions = useCallback((normalizedPath: string, overrides: NodePositionOverrides) => {
-    nodePositionPersistPayloadRef.current = { repoPath: normalizedPath, overrides };
-    if (nodePositionPersistTimerRef.current != null) {
-      window.clearTimeout(nodePositionPersistTimerRef.current);
+  const persistRepoNodePositions = useCallback((normalizedPath: string, overrides: NodePositionOverrides) => {
+    try {
+      window.localStorage.setItem(nodePositionsStorageKey(normalizedPath), JSON.stringify(overrides));
+    } catch {
+      // ignore localStorage failures; the Tauri write below will report errors
     }
-    nodePositionPersistTimerRef.current = window.setTimeout(() => {
-      nodePositionPersistTimerRef.current = null;
-      const payload = nodePositionPersistPayloadRef.current;
-      if (!payload) return;
-      void invoke('store_repo_node_positions', {
-        repoPath: payload.repoPath,
-        payloadJson: JSON.stringify(payload.overrides),
+    const version = (nodePositionPersistVersionByRepoRef.current[normalizedPath] ?? 0) + 1;
+    nodePositionPersistVersionByRepoRef.current = {
+      ...nodePositionPersistVersionByRepoRef.current,
+      [normalizedPath]: version,
+    };
+    void invoke('store_repo_node_positions', {
+      repoPath: normalizedPath,
+      payloadJson: JSON.stringify(overrides),
+    })
+      .then(() => {
+        if (nodePositionPersistVersionByRepoRef.current[normalizedPath] !== version) return;
+        userDirtyNodePositionsRef.current.delete(normalizedPath);
       })
-        .then(() => {
-          userDirtyNodePositionsRef.current.delete(payload.repoPath);
-        })
-        .catch(console.error);
-    }, 500);
+      .catch((error) => {
+        if (nodePositionPersistVersionByRepoRef.current[normalizedPath] !== version) return;
+        const message = error instanceof Error ? error.message : String(error);
+        setCommitSwitchFeedback({
+          kind: 'error',
+          message: `Could not save node positions: ${message}`,
+        });
+        console.error('Failed to save node positions:', error);
+      });
   }, []);
 
   const handleNodePositionOverridesChange = useCallback(
@@ -539,19 +586,28 @@ function App() {
         ...previous,
         [normalizedPath]: overrides,
       }));
-      schedulePersistRepoNodePositions(normalizedPath, overrides);
+      persistRepoNodePositions(normalizedPath, overrides);
     },
-    [repoPath, schedulePersistRepoNodePositions],
+    [persistRepoNodePositions, repoPath],
   );
 
   const resetProjectNodePositions = useCallback(
     (targetPath: string) => {
       const normalizedPath = normalizePath(targetPath);
       userDirtyNodePositionsRef.current.delete(normalizedPath);
+      nodePositionPersistVersionByRepoRef.current = {
+        ...nodePositionPersistVersionByRepoRef.current,
+        [normalizedPath]: (nodePositionPersistVersionByRepoRef.current[normalizedPath] ?? 0) + 1,
+      };
       setNodePositionOverridesByRepo((previous) => ({
         ...previous,
         [normalizedPath]: {},
       }));
+      try {
+        window.localStorage.removeItem(nodePositionsStorageKey(normalizedPath));
+      } catch {
+        // ignore localStorage failures
+      }
       void invoke('clear_repo_node_positions', { repoPath: normalizedPath });
     },
     [],
@@ -707,15 +763,6 @@ function App() {
     branchUniqueAheadCounts,
     defaultBranch,
   ]);
-
-  useEffect(() => {
-    return () => {
-      if (nodePositionPersistTimerRef.current != null) {
-        window.clearTimeout(nodePositionPersistTimerRef.current);
-        nodePositionPersistTimerRef.current = null;
-      }
-    };
-  }, []);
 
   async function loadProjectSnapshot(path: string, forceRefresh = false) {
     const normalizedPath = normalizePath(path);
@@ -2057,7 +2104,7 @@ function App() {
             [normalizedPath]: migrated,
           };
         });
-        schedulePersistRepoNodePositions(normalizedPath, migrated);
+        persistRepoNodePositions(normalizedPath, migrated);
       }
       await yieldToPaint();
       await refreshRepoAfterMutation(repoPath);
