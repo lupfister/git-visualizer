@@ -1313,12 +1313,16 @@ export function computeBranchGridLayout(input: BranchGridLayoutInput): BranchGri
     const movedLead = clusterKey ? movedLeadByClusterKey.get(clusterKey) : null;
     if (!movedLead) continue;
     if (isHorizontal) {
-      node.x = movedLead.x - Math.max(0, movedLead.node.row - node.row) * zoomAwareTimelinePitch;
+      // Signed row delta: layout x grows with row (newer to the right). Using only max(0, leadRow - row)
+      // collapsed the offset when node.row > lead.row (e.g. working tree newer than a stale lead row),
+      // stacking cards and overlapping absolutely positioned labels.
+      node.x = movedLead.x + (node.row - movedLead.node.row) * zoomAwareTimelinePitch;
       node.y = movedLead.y + (node.column - movedLead.node.column) * zoomAwareLanePitch;
       continue;
     }
     node.x = movedLead.x + (node.column - movedLead.node.column) * COLUMN_WIDTH;
-    node.y = movedLead.y + Math.max(0, movedLead.node.row - node.row) * zoomAwareTimelinePitch;
+    // Vertical: y = TOP_PADDING + (maxResolvedRow - row) * pitch → larger row = smaller y (newer above).
+    node.y = movedLead.y - (node.row - movedLead.node.row) * zoomAwareTimelinePitch;
   }
   const visibleNodesBySha = new Map<string, Node[]>();
   for (const node of renderNodes) {
