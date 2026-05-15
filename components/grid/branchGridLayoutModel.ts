@@ -613,9 +613,21 @@ export function computeBranchGridLayout(input: BranchGridLayoutInput): BranchGri
     if (branchCommitShaUnion.has(commit.id)) continue;
     insertVisibleCommitIfMissing({ ...commit, visualId: `${commit.branchName}:${commit.id}` });
   }
+  const checkedOutBranchName = checkedOutRef?.branchName ?? null;
   for (const [branchName, commits] of branchCommitsByLane.entries()) {
+    if (checkedOutBranchName && branchName === checkedOutBranchName) continue;
     for (const commit of commits) {
       insertVisibleCommitIfMissing({ ...commit, visualId: `${branchName}:${commit.id}` });
+    }
+  }
+  // Same SHA can appear on multiple branch lanes; last writer must be the checked-out branch so
+  // WORKING_TREE pins to the correct lane (horizontal: same column = same Y as HEAD).
+  if (checkedOutBranchName) {
+    const preferredCommits = branchCommitsByLane.get(checkedOutBranchName);
+    if (preferredCommits) {
+      for (const commit of preferredCommits) {
+        visibleCommitBySha.set(commit.id, { ...commit, branchName: checkedOutBranchName, visualId: `${checkedOutBranchName}:${commit.id}` });
+      }
     }
   }
   const visibleCommits: VisualCommit[] = Array.from(visibleCommitBySha.values()).map((commit) => ({
@@ -728,6 +740,17 @@ export function computeBranchGridLayout(input: BranchGridLayoutInput): BranchGri
     );
     return resolved ?? null;
   };
+  /** Resolve a commit on a specific lane (SHA can exist on multiple branches after global de-dupe). */
+  const findCommitByShaSameBranch = (sha: string | null | undefined, branchName: string): VisualCommit | null => {
+    if (!sha) return null;
+    return (
+      allCommits.find(
+        (commit) =>
+          commit.branchName === branchName &&
+          (shasMatch(commit.id, sha) || shasMatch(commit.visualId.split(':').slice(1).join(':'), sha)),
+      ) ?? null
+    );
+  };
   for (const commit of allCommits) {
     if (commit.parentSha) {
       const parentCommit = findCommitBySha(commit.parentSha);
@@ -793,20 +816,8 @@ export function computeBranchGridLayout(input: BranchGridLayoutInput): BranchGri
     let currentKey: string | null = null;
     let segmentIndex = 0;
     const clusterBoundaryKind = (commit: VisualCommit): string => {
-      // Keep the working-tree node in the same lane/cluster segment as the checked-out tip (pushed vs unpushed),
-      // instead of starting a new segment that would assign a fresh column and "float" the card off the branch.
-      if (commit.kind === 'uncommitted') {
-        const parentSha = commit.parentSha ?? null;
-        if (parentSha) {
-          const branchUnpushedShas = unpushedCommitShasByBranchSet.get(commit.branchName);
-          if (branchUnpushedShas) {
-            for (const sha of branchUnpushedShas) {
-              if (shasMatch(sha, parentSha)) return 'unpushed';
-            }
-          }
-        }
-        return 'pushed';
-      }
+      // Working tree is never merged into a pushed/unpushed clump with real commits — it always gets its own segment.
+      if (commit.kind === 'uncommitted') return 'uncommitted';
       if (commit.kind === 'stash') return 'stash';
       if (commit.kind === 'branch-created') return 'branch-created';
       const branchUnpushedShas = unpushedCommitShasByBranchSet.get(commit.branchName);
@@ -972,13 +983,13 @@ export function computeBranchGridLayout(input: BranchGridLayoutInput): BranchGri
     }
     return false;
   };
-  // Keep the first real unpushed tip (and the dirty working-tree cluster) on the same lane column as
+  // Keep the first real unpushed tip (and the dirty working-tree node) on the same lane column as
   // its parent pushed tail — otherwise committing replaces WORKING_TREE with a new SHA that jumps to a
   // fresh "unpushed" cluster column and no longer matches the opened clump / card position users expect.
   for (const commit of allCommitsWithClusters) {
     if (commit.kind === 'uncommitted' && commit.parentSha) {
-      const parent = findCommitBySha(commit.parentSha);
-      if (!parent || parent.branchName !== commit.branchName) continue;
+      const parent = findCommitByShaSameBranch(commit.parentSha, commit.branchName);
+      if (!parent) continue;
       const ck = clusterKeyByCommitId.get(commit.visualId);
       const pk = clusterKeyByCommitId.get(parent.visualId);
       if (!ck || !pk) continue;
@@ -1070,6 +1081,13 @@ export function computeBranchGridLayout(input: BranchGridLayoutInput): BranchGri
     let minimumColumn = Math.max(...parentColumns) + 1;
     const resolvedColumn = findFreeSyntheticColumn(commit, minimumColumn);
     columnByCommitVisualId.set(commit.visualId, resolvedColumn);
+  }
+  for (const commit of allCommitsWithClusters) {
+    if (commit.kind !== 'uncommitted' || !commit.parentSha) continue;
+    const parent = findCommitByShaSameBranch(commit.parentSha, commit.branchName);
+    if (!parent) continue;
+    const parentCol = columnByCommitVisualId.get(parent.visualId);
+    if (parentCol != null) columnByCommitVisualId.set(commit.visualId, parentCol);
   }
   const allRowByVisualId = allocateRowsByColumnAndTime(
     allCommitsWithClusters,
