@@ -133,6 +133,8 @@ function allocateRowsByColumnAndTime(
   columnByCommitVisualId: Map<string, number>,
   extraParentShasByCommitId: Map<string, Set<string>> = new Map(),
   unpushedCommitShasByBranch?: Map<string, Set<string>>,
+  /** Merge commits: second (and further) parents treated as strict row floors so merges sit after merged tips. */
+  mergeSecondParentsForStrictRows?: Map<string, Set<string>>,
 ): Map<string, number> {
   if (commits.length === 0) return new Map();
   // Use strict chronological ordering first; lineage constraints are still enforced by the
@@ -177,6 +179,9 @@ function allocateRowsByColumnAndTime(
     commitColumnsBySha.set(commit.id, columnSet);
     const strictParentShas = new Set<string>();
     if (commit.parentSha) strictParentShas.add(commit.parentSha);
+    for (const mergeParentSha of mergeSecondParentsForStrictRows?.get(commit.id) ?? []) {
+      if (mergeParentSha) strictParentShas.add(mergeParentSha);
+    }
     strictParentShasByCommitId.set(commit.visualId, strictParentShas);
     const lineageParentShas = new Set<string>(strictParentShas);
     for (const extraParentSha of extraParentShasByCommitId.get(commit.id) ?? []) {
@@ -801,6 +806,7 @@ export function computeBranchGridLayout(input: BranchGridLayoutInput): BranchGri
     provisionalColumnByCommitVisualId,
     extraParentShasByCommitId,
     unpushedCommitShasByBranchSet,
+    mergeParentShasByMergeSha,
   );
   const commitsByBranch = new Map<string, VisualCommit[]>();
   for (const commit of allCommitsWithClusters) {
@@ -1104,6 +1110,7 @@ export function computeBranchGridLayout(input: BranchGridLayoutInput): BranchGri
     columnByCommitVisualId,
     extraParentShasByCommitId,
     unpushedCommitShasByBranchSet,
+    mergeParentShasByMergeSha,
   );
   const commitBySha = new Map<string, VisualCommit>();
   for (const commit of allCommitsWithClusters) {
@@ -1242,6 +1249,7 @@ export function computeBranchGridLayout(input: BranchGridLayoutInput): BranchGri
     columnByCommitVisualId,
     extraParentShasByCommitId,
     unpushedCommitShasByBranchSet,
+    mergeParentShasByMergeSha,
   );
   const zoomAwareRowGap = ROW_GAP / GRID_LAYOUT_RENDER_ZOOM;
   const zoomAwareLabelBand = 20 / GRID_LAYOUT_RENDER_ZOOM;
