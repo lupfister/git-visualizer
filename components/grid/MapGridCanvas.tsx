@@ -1,7 +1,7 @@
 import { useEffect, useLayoutEffect, useRef, useState } from 'react';
 import type { CSSProperties, Dispatch, MouseEvent, ReactNode, RefObject, SetStateAction, WheelEvent } from 'react';
 import { CARD_BODY_TOP_OFFSET, CARD_HEIGHT, CARD_WIDTH, CONNECTOR_COLOR } from './LayoutGrid';
-import { buildLooseCablePath } from './gridPathUtils';
+import { buildMapGridConnectorPath } from './gridPathUtils';
 import { cn, GRID_RENDER_ZOOM } from './mapGridUtils';
 import type { ConnectorFace, Node } from './LayoutGrid';
 import type { MapGridCameraState } from './useMapGridCamera';
@@ -269,6 +269,8 @@ export default function MapGridCanvas({
         return { x: x + CARD_WIDTH / 2, y };
       case 'bottom':
         return { x: x + CARD_WIDTH / 2, y: y + CARD_HEIGHT };
+      case 'mid-h':
+        return { x: x + CARD_WIDTH / 2, y: y + CARD_HEIGHT / 2 };
       default:
         return { x: x + CARD_WIDTH / 2, y: y + CARD_HEIGHT / 2 };
     }
@@ -376,7 +378,7 @@ export default function MapGridCanvas({
 
       const screenPointFormatter = (x: number, y: number) => `${originX + x * scale},${originY + y * scale}`;
       const drawConnector = (connector: RenderConnector) => {
-        const path = buildLooseCablePath(
+        const path = buildMapGridConnectorPath(
           connector.fromX,
           connector.fromY,
           connector.toX,

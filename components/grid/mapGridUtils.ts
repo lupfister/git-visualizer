@@ -1,5 +1,5 @@
 import { CARD_BODY_TOP_OFFSET, CARD_HEIGHT, CARD_WIDTH, type Node } from './LayoutGrid';
-import { looseCablePathHullPoints } from './gridPathUtils';
+import { mapGridConnectorHullPoints } from './gridPathUtils';
 import type { CableFace } from './gridPathUtils';
 import type { WorktreeInfo } from '../../types';
 
@@ -177,7 +177,7 @@ export function roundedElbowVerticalFirstConnectorIntersectsViewportBounds(
   return segmentIntersectsViewportBounds(postTurnX, toY, finalX, toY, rect);
 }
 
-/** Viewport cull for {@link import('./gridPathUtils').buildLooseCablePath} (hull of endpoints + Bézier controls). */
+/** Viewport cull for branch-map connectors (hull of orthogonal polyline vertices). */
 export function looseCableConnectorIntersectsViewportBounds(
   fromX: number,
   fromY: number,
@@ -187,7 +187,7 @@ export function looseCableConnectorIntersectsViewportBounds(
   fromFace?: CableFace,
   toFace?: CableFace,
 ): boolean {
-  const pts = looseCablePathHullPoints(fromX, fromY, toX, toY, fromFace, toFace);
+  const pts = mapGridConnectorHullPoints(fromX, fromY, toX, toY, fromFace, toFace);
   const hull = axisAlignedBoundsOfPoints(pts);
   return intersectsVisibleBounds(rect, hull);
 }

@@ -1,3 +1,5 @@
+import type { ConnectorFace } from './LayoutGrid';
+
 /** SVG path `d` for rounded elbow connectors (content space). */
 export function buildRoundedElbowPath(
   fromX: number,
@@ -67,146 +69,41 @@ export function shouldUseVerticalFirstElbow(fromX: number, fromY: number, toX: n
   return Math.abs(toY - fromY) > Math.abs(toX - fromX);
 }
 
-export type CableFace = 'left' | 'right' | 'top' | 'bottom';
+export type CableFace = ConnectorFace;
 
-const LOOSE_CABLE_AXIS_EPS = 8;
-/** When both legs are at least this long (px), use a soft orthogonal elbow instead of one diagonal cubic. */
-const LOOSE_CABLE_DIAG_MIN = 44;
-/** Visual radius target for loose-cable elbow corners. */
-const LOOSE_CABLE_CORNER_RADIUS = 120;
+const CONNECTOR_BUS_OUTSIDE_PX = 40;
 
-type LooseCableGeo =
-  | { kind: 'line' }
-  | { kind: 'chord'; c1x: number; c1y: number; c2x: number; c2y: number }
-  | {
-      kind: 'elbowH';
-      cx: number;
-      cy: number;
-      s1c1x: number;
-      s1c1y: number;
-      s1c2x: number;
-      s1c2y: number;
-      s2c1x: number;
-      s2c1y: number;
-      s2c2x: number;
-      s2c2y: number;
-    }
-  | {
-      kind: 'elbowV';
-      cx: number;
-      cy: number;
-      s1c1x: number;
-      s1c1y: number;
-      s1c2x: number;
-      s1c2y: number;
-      s2c1x: number;
-      s2c1y: number;
-      s2c2x: number;
-      s2c2y: number;
-    };
 
 const axisFromFace = (face: CableFace | undefined): 'h' | 'v' | null => {
-  if (face === 'left' || face === 'right') return 'h';
+  if (face === 'left' || face === 'right' || face === 'mid-h') return 'h';
   if (face === 'top' || face === 'bottom') return 'v';
   return null;
 };
 
-function looseCableGeometry(
-  fromX: number,
-  fromY: number,
-  toX: number,
-  toY: number,
-  fromFace?: CableFace,
-  toFace?: CableFace,
-): LooseCableGeo {
-  const dx = toX - fromX;
-  const dy = toY - fromY;
-  const adx = Math.abs(dx);
-  const ady = Math.abs(dy);
-  const len = Math.hypot(dx, dy);
-  if (len < 0.5) return { kind: 'line' };
+const isVerticalFace = (face: CableFace | undefined): face is 'top' | 'bottom' =>
+  face === 'top' || face === 'bottom';
 
-  const sdx = dx >= 0 ? 1 : -1;
-  const sdy = dy >= 0 ? 1 : -1;
+const isHorizontalFace = (face: CableFace | undefined): face is 'left' | 'right' | 'mid-h' =>
+  face === 'left' || face === 'right' || face === 'mid-h';
 
-  // Nearly axis-aligned: single chord-aligned cubic (soft “straight” run).
-  if (Math.min(adx, ady) < LOOSE_CABLE_AXIS_EPS) {
-    const ux = dx / len;
-    const uy = dy / len;
-    const pull = Math.min(240, Math.max(56, len * 0.42));
-    return {
-      kind: 'chord',
-      c1x: fromX + ux * pull,
-      c1y: fromY + uy * pull,
-      c2x: toX - ux * pull,
-      c2y: toY - uy * pull,
-    };
+const dedupeConsecutivePolylinePoints = (points: Array<{ x: number; y: number }>): Array<{ x: number; y: number }> => {
+  const out: Array<{ x: number; y: number }> = [];
+  for (const p of points) {
+    const prev = out[out.length - 1];
+    if (!prev || Math.abs(prev.x - p.x) >= 0.5 || Math.abs(prev.y - p.y) >= 0.5) out.push(p);
   }
+  return out;
+};
 
-  // Strong diagonal: two cubics with a rounded elbow (horizontal-first or vertical-first).
-  if (Math.min(adx, ady) < LOOSE_CABLE_DIAG_MIN) {
-    const ux = dx / len;
-    const uy = dy / len;
-    const pull = Math.min(240, Math.max(56, len * 0.42));
-    return {
-      kind: 'chord',
-      c1x: fromX + ux * pull,
-      c1y: fromY + uy * pull,
-      c2x: toX - ux * pull,
-      c2y: toY - uy * pull,
-    };
-  }
+const trunkYOutsideForBottomBottom = (fromY: number, toY: number): number => Math.max(fromY, toY) + CONNECTOR_BUS_OUTSIDE_PX;
 
-  const hPull1 = Math.min(160, adx * 0.42);
-  const hPull2 = Math.min(100, adx * 0.22);
-  const vPull1 = Math.min(120, ady * 0.32);
-  const vPull2 = Math.min(160, ady * 0.42);
+const trunkYOutsideForTopTop = (fromY: number, toY: number): number => Math.min(fromY, toY) - CONNECTOR_BUS_OUTSIDE_PX;
 
-  const fromAxis = axisFromFace(fromFace);
-  const toAxis = axisFromFace(toFace);
-  const verticalFirst =
-    (fromAxis === 'v' && toAxis === 'h') ||
-    (fromAxis === 'v' && toAxis == null && ady >= adx) ||
-    (fromAxis == null && toAxis === 'h' && ady >= adx) ||
-    (fromAxis === 'v' && toAxis === 'v') ||
-    (fromAxis == null && toAxis == null && ady > adx);
-  if (!verticalFirst) {
-    const cx = toX;
-    const cy = fromY;
-    return {
-      kind: 'elbowH',
-      cx,
-      cy,
-      s1c1x: fromX + sdx * hPull1,
-      s1c1y: fromY,
-      s1c2x: cx - sdx * hPull2,
-      s1c2y: cy,
-      s2c1x: cx,
-      s2c1y: cy + sdy * vPull1,
-      s2c2x: toX,
-      s2c2y: toY - sdy * vPull2,
-    };
-  }
-
-  const cx = fromX;
-  const cy = toY;
-  return {
-    kind: 'elbowV',
-    cx,
-    cy,
-    s1c1x: fromX,
-    s1c1y: fromY + sdy * vPull2,
-    s1c2x: cx,
-    s1c2y: cy - sdy * vPull1,
-    s2c1x: cx + sdx * hPull1,
-    s2c1y: cy,
-    s2c2x: toX - sdx * hPull2,
-    s2c2y: toY,
-  };
-}
-
-/** All points whose axis-aligned bounding box contains the loose cable path (for viewport cull). */
-export function looseCablePathHullPoints(
+/**
+ * Orthogonal polyline: prefers a single 90° bend (full “long” leg on the first axis, then one turn).
+ * Same-face vertical pairs (bottom/bottom, top/top) need an outside jog (two bends).
+ */
+export function getMapGridConnectorPolyline(
   fromX: number,
   fromY: number,
   toX: number,
@@ -214,48 +111,91 @@ export function looseCablePathHullPoints(
   fromFace?: CableFace,
   toFace?: CableFace,
 ): Array<{ x: number; y: number }> {
-  const g = looseCableGeometry(fromX, fromY, toX, toY, fromFace, toFace);
-  if (g.kind === 'line') {
-    return [
-      { x: fromX, y: fromY },
-      { x: toX, y: toY },
-    ];
+  const adx = Math.abs(toX - fromX);
+  const ady = Math.abs(toY - fromY);
+  const raw: Array<{ x: number; y: number }> = [{ x: fromX, y: fromY }];
+
+  if (isVerticalFace(fromFace) && isVerticalFace(toFace) && fromFace && toFace) {
+    if (adx < 0.5) {
+      raw.push({ x: toX, y: toY });
+      return dedupeConsecutivePolylinePoints(raw);
+    }
+    if (fromFace === 'bottom' && toFace === 'bottom') {
+      const trunkY = trunkYOutsideForBottomBottom(fromY, toY);
+      raw.push({ x: fromX, y: trunkY }, { x: toX, y: trunkY }, { x: toX, y: toY });
+      return dedupeConsecutivePolylinePoints(raw);
+    }
+    if (fromFace === 'top' && toFace === 'top') {
+      const trunkY = trunkYOutsideForTopTop(fromY, toY);
+      raw.push({ x: fromX, y: trunkY }, { x: toX, y: trunkY }, { x: toX, y: toY });
+      return dedupeConsecutivePolylinePoints(raw);
+    }
+    // bottom↔top and other vertical pairs: one bend — run the full first leg, then turn.
+    if (shouldUseVerticalFirstElbow(fromX, fromY, toX, toY)) {
+      raw.push({ x: fromX, y: toY }, { x: toX, y: toY });
+    } else {
+      raw.push({ x: toX, y: fromY }, { x: toX, y: toY });
+    }
+    return dedupeConsecutivePolylinePoints(raw);
   }
-  if (g.kind === 'chord') {
-    return [
-      { x: fromX, y: fromY },
-      { x: toX, y: toY },
-      { x: g.c1x, y: g.c1y },
-      { x: g.c2x, y: g.c2y },
-    ];
+
+  if (fromFace === 'mid-h' && (toFace === 'left' || toFace === 'right')) {
+    if (ady < 0.5) {
+      raw.push({ x: toX, y: toY });
+      return dedupeConsecutivePolylinePoints(raw);
+    }
+    raw.push({ x: toX, y: fromY }, { x: toX, y: toY });
+    return dedupeConsecutivePolylinePoints(raw);
   }
-  if (g.kind === 'elbowH') {
-    return [
-      { x: fromX, y: fromY },
-      { x: toX, y: toY },
-      { x: g.cx, y: g.cy },
-      { x: g.s1c1x, y: g.s1c1y },
-      { x: g.s1c2x, y: g.s1c2y },
-      { x: g.s2c1x, y: g.s2c1y },
-      { x: g.s2c2x, y: g.s2c2y },
-    ];
+
+  if (
+    isHorizontalFace(fromFace) &&
+    isHorizontalFace(toFace) &&
+    fromFace !== 'mid-h' &&
+    toFace !== 'mid-h'
+  ) {
+    if (ady < 0.5) {
+      raw.push({ x: toX, y: toY });
+      return dedupeConsecutivePolylinePoints(raw);
+    }
+    if (shouldUseVerticalFirstElbow(fromX, fromY, toX, toY)) {
+      raw.push({ x: fromX, y: toY }, { x: toX, y: toY });
+    } else {
+      raw.push({ x: toX, y: fromY }, { x: toX, y: toY });
+    }
+    return dedupeConsecutivePolylinePoints(raw);
   }
-  return [
-    { x: fromX, y: fromY },
-    { x: toX, y: toY },
-    { x: g.cx, y: g.cy },
-    { x: g.s1c1x, y: g.s1c1y },
-    { x: g.s1c2x, y: g.s1c2y },
-    { x: g.s2c1x, y: g.s2c1y },
-    { x: g.s2c2x, y: g.s2c2y },
-  ];
+
+  const fromAxis = axisFromFace(fromFace);
+  const toAxis = axisFromFace(toFace);
+  if (fromAxis === 'h' && toAxis === 'v') {
+    raw.push({ x: toX, y: fromY }, { x: toX, y: toY });
+    return dedupeConsecutivePolylinePoints(raw);
+  }
+  if (fromAxis === 'v' && toAxis === 'h') {
+    raw.push({ x: fromX, y: toY }, { x: toX, y: toY });
+    return dedupeConsecutivePolylinePoints(raw);
+  }
+
+  if (adx < 0.5) {
+    raw.push({ x: toX, y: toY });
+    return dedupeConsecutivePolylinePoints(raw);
+  }
+  if (ady < 0.5) {
+    raw.push({ x: toX, y: toY });
+    return dedupeConsecutivePolylinePoints(raw);
+  }
+
+  if (shouldUseVerticalFirstElbow(fromX, fromY, toX, toY)) {
+    raw.push({ x: fromX, y: toY }, { x: toX, y: toY });
+    return dedupeConsecutivePolylinePoints(raw);
+  }
+
+  raw.push({ x: toX, y: fromY }, { x: toX, y: toY });
+  return dedupeConsecutivePolylinePoints(raw);
 }
 
-/**
- * Loose cables: soft cubics, with a smooth horizontal/vertical elbow when both Δx and Δy are large
- * (avoids long pure diagonals while staying curved, not rigid grid elbows).
- */
-export function buildLooseCablePath(
+export function buildMapGridConnectorPath(
   fromX: number,
   fromY: number,
   toX: number,
@@ -264,40 +204,25 @@ export function buildLooseCablePath(
   fromFace?: CableFace,
   toFace?: CableFace,
 ): string {
-  const g = looseCableGeometry(fromX, fromY, toX, toY, fromFace, toFace);
-  if (g.kind === 'line') {
-    return [`M ${pointFormatter(fromX, fromY)}`, `L ${pointFormatter(toX, toY)}`].join(' ');
+  const poly = getMapGridConnectorPolyline(fromX, fromY, toX, toY, fromFace, toFace);
+  if (poly.length === 0) return '';
+  let d = `M ${pointFormatter(poly[0].x, poly[0].y)}`;
+  for (let i = 1; i < poly.length; i += 1) {
+    d += ` L ${pointFormatter(poly[i].x, poly[i].y)}`;
   }
-  if (g.kind === 'chord') {
-    return [
-      `M ${pointFormatter(fromX, fromY)}`,
-      `C ${pointFormatter(g.c1x, g.c1y)} ${pointFormatter(g.c2x, g.c2y)} ${pointFormatter(toX, toY)}`,
-    ].join(' ');
-  }
-  if (g.kind === 'elbowH') {
-    const cornerR = Math.max(8, Math.min(LOOSE_CABLE_CORNER_RADIUS, Math.abs(toX - fromX) * 0.48, Math.abs(toY - fromY) * 0.48));
-    const hDir = toX >= fromX ? 1 : -1;
-    const vDir = toY >= fromY ? 1 : -1;
-    const preCornerX = g.cx - hDir * cornerR;
-    const postCornerY = g.cy + vDir * cornerR;
-    return [
-      `M ${pointFormatter(fromX, fromY)}`,
-      `C ${pointFormatter(g.s1c1x, g.s1c1y)} ${pointFormatter(preCornerX - hDir * cornerR * 0.5, g.cy)} ${pointFormatter(preCornerX, g.cy)}`,
-      `Q ${pointFormatter(g.cx, g.cy)} ${pointFormatter(g.cx, postCornerY)}`,
-      `C ${pointFormatter(g.cx, postCornerY + vDir * cornerR * 0.5)} ${pointFormatter(g.s2c2x, g.s2c2y)} ${pointFormatter(toX, toY)}`,
-    ].join(' ');
-  }
-  const cornerR = Math.max(8, Math.min(LOOSE_CABLE_CORNER_RADIUS, Math.abs(toX - fromX) * 0.48, Math.abs(toY - fromY) * 0.48));
-  const hDir = toX >= fromX ? 1 : -1;
-  const vDir = toY >= fromY ? 1 : -1;
-  const preCornerY = g.cy - vDir * cornerR;
-  const postCornerX = g.cx + hDir * cornerR;
-  return [
-    `M ${pointFormatter(fromX, fromY)}`,
-    `C ${pointFormatter(g.s1c1x, g.s1c1y)} ${pointFormatter(g.cx, preCornerY - vDir * cornerR * 0.5)} ${pointFormatter(g.cx, preCornerY)}`,
-    `Q ${pointFormatter(g.cx, g.cy)} ${pointFormatter(postCornerX, g.cy)}`,
-    `C ${pointFormatter(postCornerX + hDir * cornerR * 0.5, g.cy)} ${pointFormatter(g.s2c2x, g.s2c2y)} ${pointFormatter(toX, toY)}`,
-  ].join(' ');
+  return d;
+}
+
+/** Hull for viewport culling of {@link buildMapGridConnectorPath}. */
+export function mapGridConnectorHullPoints(
+  fromX: number,
+  fromY: number,
+  toX: number,
+  toY: number,
+  fromFace?: CableFace,
+  toFace?: CableFace,
+): Array<{ x: number; y: number }> {
+  return getMapGridConnectorPolyline(fromX, fromY, toX, toY, fromFace, toFace);
 }
 
 export function buildChevronArrowHead(
