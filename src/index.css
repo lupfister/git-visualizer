@@ -539,6 +539,8 @@ body.popover-window #root {
 .toolbar-mask-icon {
   display: inline-block;
   flex-shrink: 0;
+  width: 16px;
+  height: 16px;
   background-color: currentColor;
   -webkit-mask-position: center;
   -webkit-mask-repeat: no-repeat;

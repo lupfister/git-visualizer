@@ -130,7 +130,7 @@ export default function CommitControls({
           disabled: !canPushSelected,
         }
       : null;
-  const renderMaskedIcon = (icon: ToolbarMaskIcon, className: string) => (
+  const renderMaskedIcon = (icon: ToolbarMaskIcon, className?: string) => (
     <span
       aria-hidden="true"
       className={cn('toolbar-mask-icon', `toolbar-mask-icon--${icon}`, className)}
@@ -165,7 +165,7 @@ export default function CommitControls({
             className={cn(controlClassName, 'h-full rounded-r-none border-0 bg-transparent pr-1 hover:bg-muted')}
           >
             <span className="inline-flex items-center gap-1.5">
-              {renderMaskedIcon(primaryAction?.icon ?? 'commit', 'h-4.5 w-4.5')}
+              {renderMaskedIcon(primaryAction?.icon ?? 'commit')}
               {!compactLabels ? <span>{primaryAction?.label ?? 'Commit'}</span> : null}
             </span>
           </button>
@@ -178,7 +178,7 @@ export default function CommitControls({
             className={cn(controlClassName, 'h-full rounded-l-none border-0 bg-transparent pl-1 hover:bg-muted')}
             title="More actions"
           >
-            <ChevronDown className="h-3.5 w-3.5 shrink-0" />
+            <ChevronDown className="h-4 w-4 shrink-0" />
           </button>
           {actionMenuOpen && primaryAction ? (
             <div className="absolute left-[-1px] top-full z-[70] mt-2 inline-flex w-max min-w-0 flex-col overflow-hidden rounded-md border border-border bg-background p-1">
@@ -191,7 +191,7 @@ export default function CommitControls({
                 disabled={!canCommit}
                 className={cn(controlClassName, 'w-full justify-start whitespace-nowrap rounded-[2px] border-0 bg-transparent px-2 hover:bg-muted', !canCommit && 'text-foreground opacity-50')}
               >
-                {renderMaskedIcon('commit', 'mr-1.5 h-4.5 w-4.5')}
+                {renderMaskedIcon('commit', 'mr-1.5')}
                 {commitInProgress ? 'Committing...' : 'Commit'}
               </button>
               <button
@@ -203,7 +203,7 @@ export default function CommitControls({
                 disabled={!canPushCurrent}
                 className={cn(controlClassName, 'w-full justify-start whitespace-nowrap rounded-[2px] border-0 bg-transparent px-2 hover:bg-muted', !canPushCurrent && 'text-foreground opacity-50')}
               >
-                {renderMaskedIcon('push-branch', 'mr-1.5 h-4.5 w-4.5')}
+                {renderMaskedIcon('push-branch', 'mr-1.5')}
                 {pushInProgress ? 'Pushing...' : pushCurrentBranchLabel}
               </button>
               <button
@@ -216,7 +216,7 @@ export default function CommitControls({
                 className={cn(controlClassName, 'w-full justify-start whitespace-nowrap rounded-[2px] border-0 bg-transparent px-2 hover:bg-muted', !canPushSelected && 'text-foreground opacity-50')}
                 title={selectedPushLabel}
               >
-                {renderMaskedIcon('push-selected', 'mr-1.5 h-4.5 w-4.5')}
+                {renderMaskedIcon('push-selected', 'mr-1.5')}
                 {pushSelectedLabel}
               </button>
               <button
@@ -228,7 +228,7 @@ export default function CommitControls({
                 disabled={!canPushAll}
                 className={cn(controlClassName, 'w-full justify-start whitespace-nowrap rounded-[2px] border-0 bg-transparent px-2 hover:bg-muted', !canPushAll && 'text-foreground opacity-50')}
               >
-                {renderMaskedIcon('push-all', 'mr-1.5 h-4.5 w-4.5')}
+                {renderMaskedIcon('push-all', 'mr-1.5')}
                 Push all
               </button>
               <button
@@ -240,7 +240,7 @@ export default function CommitControls({
                 disabled={!canStash}
                 className={cn(controlClassName, 'w-full justify-start whitespace-nowrap rounded-[2px] border-0 bg-transparent px-2 hover:bg-muted', !canStash && 'text-foreground opacity-50')}
               >
-                {renderMaskedIcon('stash', 'mr-1.5 h-4.5 w-4.5')}
+                {renderMaskedIcon('stash', 'mr-1.5')}
                 {stashInProgress ? 'Stashing...' : 'Stash'}
               </button>
             </div>
@@ -258,7 +258,7 @@ export default function CommitControls({
               compactLabels ? 'w-7 justify-center px-0' : '',
             )}
           >
-            <GitBranchPlus className={cn('h-3.5 w-3.5 shrink-0', compactLabels ? '' : 'mr-1.5')} />
+            <GitBranchPlus className={cn('h-[14px] w-[14px] shrink-0', compactLabels ? '' : 'mr-1.5')} />
             {!compactLabels ? (createBranchFromNodeInProgress ? 'Creating...' : 'Branch') : null}
           </button>
         </div>
@@ -292,7 +292,7 @@ export default function CommitControls({
         {worktrees.length > 0 && (onSwitchToWorktree || onRemoveWorktree) ? (
           <div ref={worktreeMenuRef} className="pointer-events-auto relative">
             <button type="button" onClick={() => setWorktreeMenuOpen((open) => !open)} className={cn(controlClassName, '!bg-background !border-border hover:!bg-muted')}>
-              <FolderGit2 className="mr-1.5 h-3.5 w-3.5 shrink-0" />
+              <FolderGit2 className="mr-1.5 h-[14px] w-[14px] shrink-0" />
               {worktrees.length}
               {!compactLabels ? ` ${worktrees.length === 1 ? 'Worktree' : 'Worktrees'}` : null}
             </button>
