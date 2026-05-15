@@ -653,9 +653,11 @@ export default function MapGridCanvas({
                         ? 'bg-remote-muted'
                     : isSelectedCommit && !isUnpushedCommit && !isStashedCommit && !isEmptyBranchNode
                         ? 'bg-select-muted'
-                        : isUnpushedCommit || isStashedCommit || isEmptyBranchNode
-                          ? 'bg-transparent'
-                          : 'bg-muted',
+                        : isUnpushedCommit
+                          ? 'bg-background'
+                          : isStashedCommit || isEmptyBranchNode
+                            ? 'bg-transparent'
+                            : 'bg-muted',
                     isDashedOutline ? 'border-solid' : '',
                     branchOffNodeShas.has(node.commit.id) ||
                     branchStartShas.has(node.commit.id) ||
