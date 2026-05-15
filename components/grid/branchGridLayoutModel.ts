@@ -131,6 +131,7 @@ function allocateRowsByColumnAndTime(
   commits: VisualCommit[],
   columnByCommitVisualId: Map<string, number>,
   extraParentShasByCommitId: Map<string, Set<string>> = new Map(),
+  unpushedCommitShasByBranch?: Map<string, Set<string>>,
 ): Map<string, number> {
   if (commits.length === 0) return new Map();
   // Use strict chronological ordering first; lineage constraints are still enforced by the
@@ -271,6 +272,27 @@ function allocateRowsByColumnAndTime(
         const stashRow = stashRowByParentSha.get(commit.parentSha);
         if (stashRow != null) return Math.max(minTipRow, stashRow + 1);
         return minTipRow;
+      }
+      // First unpushed commit after a pushed parent on this lane (same idea as cluster column pinning):
+      // once WORKING_TREE becomes a real SHA, keep the new tip adjacent instead of letting chronological
+      // packing leave a wide horizontal gap.
+      if (commit.parentSha && unpushedCommitShasByBranch) {
+        const unpushedSet = unpushedCommitShasByBranch.get(commit.branchName);
+        if (unpushedSet) {
+          const shaMarkedUnpushed = (sha: string) => {
+            for (const candidate of unpushedSet) {
+              if (shasMatch(candidate, sha)) return true;
+            }
+            return false;
+          };
+          const parentOnLane = Array.from(branchCommitShas).some((id) => shasMatch(id, commit.parentSha!));
+          if (parentOnLane && shaMarkedUnpushed(commit.id) && !shaMarkedUnpushed(commit.parentSha)) {
+            const minTipRow = Math.max(...parentRows) + 1;
+            const stashRow = stashRowByParentSha.get(commit.parentSha);
+            if (stashRow != null) return Math.max(minTipRow, stashRow + 1);
+            return minTipRow;
+          }
+        }
       }
       return null;
     })();
@@ -746,6 +768,7 @@ export function computeBranchGridLayout(input: BranchGridLayoutInput): BranchGri
     allCommitsWithClusters,
     provisionalColumnByCommitVisualId,
     extraParentShasByCommitId,
+    unpushedCommitShasByBranchSet,
   );
   const commitsByBranch = new Map<string, VisualCommit[]>();
   for (const commit of allCommitsWithClusters) {
@@ -1052,6 +1075,7 @@ export function computeBranchGridLayout(input: BranchGridLayoutInput): BranchGri
     allCommitsWithClusters,
     columnByCommitVisualId,
     extraParentShasByCommitId,
+    unpushedCommitShasByBranchSet,
   );
   const commitBySha = new Map<string, VisualCommit>();
   for (const commit of allCommitsWithClusters) {
@@ -1184,7 +1208,12 @@ export function computeBranchGridLayout(input: BranchGridLayoutInput): BranchGri
       (!defaultCollapsedClumps.has(clusterKey) && !manuallyClosedClumps.has(clusterKey));
     return count <= 1 || isOpen || leadId === commit.visualId;
   });
-  const visibleRows = allocateRowsByColumnAndTime(visibleCommitsList, columnByCommitVisualId, extraParentShasByCommitId);
+  const visibleRows = allocateRowsByColumnAndTime(
+    visibleCommitsList,
+    columnByCommitVisualId,
+    extraParentShasByCommitId,
+    unpushedCommitShasByBranchSet,
+  );
   const zoomAwareRowGap = ROW_GAP / GRID_LAYOUT_RENDER_ZOOM;
   const zoomAwareLabelBand = 20 / GRID_LAYOUT_RENDER_ZOOM;
   const zoomAwareTimelinePitch = isHorizontal
