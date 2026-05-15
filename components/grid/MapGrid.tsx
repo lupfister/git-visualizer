@@ -26,6 +26,7 @@ import {
 import { GitMerge } from 'lucide-react';
 import { computeBranchGridLayout, GRID_LAYOUT_RENDER_ZOOM } from './branchGridLayoutModel';
 import type { BranchGridLayoutModel } from './branchGridLayoutModel';
+import { connectorsWithEffectivePositions } from './mapGridLiveConnectors';
 import CommitControls from './CommitControls';
 import MapGridCanvas from './MapGridCanvas';
 import MapGridDebugPanel from './MapGridDebugPanel';
@@ -339,6 +340,16 @@ export default function BranchGridMap({
     crossBranchOutgoingShas,
     branchBaseCommitByName,
   } = resolvedLayoutModel;
+
+  const isHorizontalLayout = orientation === 'horizontal';
+  const connectorsForView = useMemo(
+    () => connectorsWithEffectivePositions(connectors, renderNodes, dragPreviewByNodeId, nodePositionOverrides, isHorizontalLayout),
+    [connectors, renderNodes, dragPreviewByNodeId, nodePositionOverrides, isHorizontalLayout],
+  );
+  const mergeConnectorsForView = useMemo(
+    () => connectorsWithEffectivePositions(mergeConnectors, renderNodes, dragPreviewByNodeId, nodePositionOverrides, isHorizontalLayout),
+    [mergeConnectors, renderNodes, dragPreviewByNodeId, nodePositionOverrides, isHorizontalLayout],
+  );
 
   const isGridSearchActive = Boolean(normalizedSearchQuery);
 
@@ -985,8 +996,8 @@ export default function BranchGridMap({
   }, [allCommits.length]);
 
   const renderedNodeCount = isDebugOpen ? renderNodes.filter((node) => shouldRenderNode(node)).length : 0;
-  const renderedMergeConnectorCount = isDebugOpen ? mergeConnectors.filter((connector) => cullConnectorPath(connector)).length : 0;
-  const renderedConnectorCount = isDebugOpen ? connectors.filter((connector) => cullConnectorPath(connector)).length : 0;
+  const renderedMergeConnectorCount = isDebugOpen ? mergeConnectorsForView.filter((connector) => cullConnectorPath(connector)).length : 0;
+  const renderedConnectorCount = isDebugOpen ? connectorsForView.filter((connector) => cullConnectorPath(connector)).length : 0;
 
   useLayoutEffect(() => {
     if (isLoading) return;
@@ -1375,9 +1386,9 @@ export default function BranchGridMap({
         renderedNodeCount={renderedNodeCount}
         totalNodeCount={renderNodes.length}
         renderedMergeConnectorCount={renderedMergeConnectorCount}
-        totalMergeConnectorCount={mergeConnectors.length}
+        totalMergeConnectorCount={mergeConnectorsForView.length}
         renderedConnectorCount={renderedConnectorCount}
-        totalConnectorCount={connectors.length}
+        totalConnectorCount={connectorsForView.length}
         mapGridCullViewportInsetScreenPx={MAP_GRID_CULL_VIEWPORT_INSET_SCREEN_PX}
         debugRows={resolvedLayoutModel.debugRows}
         branchDebugRows={resolvedLayoutModel.branchDebugRows}
@@ -1597,8 +1608,8 @@ export default function BranchGridMap({
           connectorParentAccentClass={connectorParentAccentClass}
           commitCornerRadiusPx={commitCornerRadiusPx}
           lineStrokeWidth={lineStrokeWidth}
-          connectors={connectors}
-          mergeConnectors={mergeConnectors}
+          connectors={connectorsForView}
+          mergeConnectors={mergeConnectorsForView}
           cullConnectorPath={cullConnectorPath}
           flushCameraReactTick={flushCameraReactTick}
           setManuallyOpenedClumps={setManuallyOpenedClumps}

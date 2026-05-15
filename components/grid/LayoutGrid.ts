@@ -106,8 +106,23 @@ export type CommitItem = {
 export type VisualCommit = CommitItem & { visualId: string; isRemote?: boolean };
 export type Lane = { name: string; column: number; parentName: string | null };
 export type Node = { commit: VisualCommit; row: number; column: number; x: number; y: number };
-export type ConnectorFace = 'left' | 'right' | 'top' | 'bottom';
-export type Connector = { id: string; fromX: number; fromY: number; toX: number; toY: number; zIndex: number; fromFace?: ConnectorFace; toFace?: ConnectorFace };
+export type ConnectorFace = 'left' | 'right' | 'top' | 'bottom' | 'mid-h';
+export type ConnectorEdgeKind = 'merge' | 'branch' | 'ancestry' | 'chain';
+export type Connector = {
+  id: string;
+  fromX: number;
+  fromY: number;
+  toX: number;
+  toY: number;
+  zIndex: number;
+  fromFace?: ConnectorFace;
+  toFace?: ConnectorFace;
+  /** Stable endpoints for O(edges) drag-time recabling without a full layout pass. */
+  fromCommitVisualId?: string;
+  toCommitVisualId?: string;
+  useBranchFeedAnchors?: boolean;
+  connectorEdgeKind?: ConnectorEdgeKind;
+};
 
 export const ROW_HEIGHT = 200;
 export const ROW_GAP = 240;

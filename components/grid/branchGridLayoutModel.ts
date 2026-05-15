@@ -11,7 +11,6 @@ import {
   CARD_WIDTH,
   type CommitItem,
   type Connector,
-  type ConnectorFace,
   type Node,
   type VisualCommit,
   LEFT_PADDING,
@@ -27,6 +26,7 @@ import {
   toCommit,
 } from './LayoutGrid';
 import type { Lane } from './LayoutGrid';
+import { computeMergeConnectorAnchors, computeParentChildConnectorAnchors } from './branchGridConnectorAnchors';
 
 /** Sync with MapGrid GRID_ZOOM_MAX — row pitch is authored in this render space. */
 export const GRID_LAYOUT_RENDER_ZOOM = 2.25;
@@ -79,7 +79,7 @@ export type BranchGridLayoutModel = {
   contentWidth: number;
   contentHeight: number;
   connectors: Connector[];
-  mergeConnectors: Array<{ id: string; fromX: number; fromY: number; toX: number; toY: number; zIndex: number; fromFace?: ConnectorFace; toFace?: ConnectorFace }>;
+  mergeConnectors: Connector[];
   connectorDecisions: ConnectorDecisionRow[];
   nodeWarnings: Map<string, string[]>;
   connectorParentShas: Set<string>;
@@ -116,8 +116,6 @@ export type BranchGridLayoutInput = {
 };
 
 
-const GRID_INCOMING_GAP_PX = 0;
-const GRID_MERGE_TARGET_GAP_PX = 0;
 const SHARED_ROW_MAX_TIME_DELTA_MS = 60 * 60 * 1000;
 const SHARED_ROW_BRANCH_SIBLING_MAX_TIME_DELTA_MS = 60 * 60 * 1000;
 const safeTimeMs = (value: string | null | undefined): number => {
@@ -1380,63 +1378,10 @@ export function computeBranchGridLayout(input: BranchGridLayoutInput): BranchGri
     return nodeForCommitSha(visibleNodesBySha, sha, preferredBranchName);
   };
 
-  const getIncomingAnchor = (node: Node, _parentNode: Node | null): { x: number; y: number; face: ConnectorFace } => {
-    if (!isHorizontal) {
-      return { x: node.x + CARD_WIDTH / 2, y: node.y + CARD_HEIGHT + GRID_INCOMING_GAP_PX, face: 'bottom' };
-    }
-    // Left edge at mid-height: same-lane ancestry and cross-lane branch/merge feeders both approach along X
-    // (avoids top-ingress + bottom-egress arcs that bulge the wrong way vs a vertical drop then horizontal run).
-    return { x: node.x - GRID_INCOMING_GAP_PX, y: node.y + CARD_HEIGHT / 2, face: 'left' };
-  };
-
-  const getBranchIncomingAnchor = (node: Node): { x: number; y: number; face: ConnectorFace } => {
-    if (!isHorizontal) {
-      return { x: node.x + CARD_WIDTH / 2, y: node.y + CARD_HEIGHT + GRID_INCOMING_GAP_PX, face: 'bottom' };
-    }
-    return { x: node.x - GRID_INCOMING_GAP_PX, y: node.y + CARD_HEIGHT / 2, face: 'left' };
-  };
-
-  /** Lanes can share a column when time ranges do not overlap — column alone misses cross-branch links in horizontal mode. */
   const isConnectorBranching = (parentNode: Node, childNode: Node): boolean => {
     if (parentNode.column !== childNode.column) return true;
     if (!isHorizontal) return false;
     return parentNode.commit.branchName !== childNode.commit.branchName;
-  };
-
-  const getOutgoingAnchor = (node: Node, isBranching: boolean, childNode: Node | null): { x: number; y: number; face: ConnectorFace } => {
-    if (!isHorizontal) {
-      return {
-        x: isBranching ? node.x + CARD_WIDTH : node.x + CARD_WIDTH / 2,
-        y: isBranching ? node.y + CARD_HEIGHT / 2 : node.y,
-        face: isBranching ? 'right' : 'top',
-      };
-    }
-    if (!isBranching) {
-      return { x: node.x + CARD_WIDTH + GRID_INCOMING_GAP_PX, y: node.y + CARD_HEIGHT / 2, face: 'right' };
-    }
-    // Reused lane column (non-overlapping time ranges): same `column` as parent but different branch — fork in time, not sideways on the row.
-    if (childNode && childNode.column === node.column && childNode.commit.branchName !== node.commit.branchName) {
-      if (childNode.x > node.x) {
-        return { x: node.x + CARD_WIDTH / 2, y: node.y + CARD_HEIGHT + GRID_INCOMING_GAP_PX, face: 'bottom' };
-      }
-      if (childNode.x < node.x) {
-        return { x: node.x + CARD_WIDTH / 2, y: node.y - GRID_INCOMING_GAP_PX, face: 'top' };
-      }
-    }
-    if (!childNode || childNode.column === node.column) {
-      return { x: node.x + CARD_WIDTH + GRID_INCOMING_GAP_PX, y: node.y + CARD_HEIGHT / 2, face: 'right' };
-    }
-    if (childNode.column > node.column) {
-      return { x: node.x + CARD_WIDTH / 2, y: node.y + CARD_HEIGHT + GRID_INCOMING_GAP_PX, face: 'bottom' };
-    }
-    return { x: node.x + CARD_WIDTH / 2, y: node.y - GRID_INCOMING_GAP_PX, face: 'top' };
-  };
-
-  const getBranchOutgoingAnchor = (node: Node): { x: number; y: number; face: ConnectorFace } => {
-    if (!isHorizontal) {
-      return { x: node.x + CARD_WIDTH, y: node.y + CARD_HEIGHT / 2, face: 'right' };
-    }
-    return { x: node.x + CARD_WIDTH / 2, y: node.y + CARD_HEIGHT + GRID_INCOMING_GAP_PX, face: 'bottom' };
   };
 
   const resolveParentNode = (parentSha: string, preferredBranchName: string): Node | null => {
@@ -1447,7 +1392,7 @@ export function computeBranchGridLayout(input: BranchGridLayoutInput): BranchGri
     return resolveChildNodeForSha(sha, preferredBranchName);
   };
 
-  const mergeConnectors: Array<{ id: string; fromX: number; fromY: number; toX: number; toY: number; zIndex: number; fromFace?: ConnectorFace; toFace?: ConnectorFace }> = [];
+  const mergeConnectors: Connector[] = [];
   const mergeConnectorGeometryKeySet = new Set<string>();
   for (const destination of mergeDestinations) {
     const mergeTarget =
@@ -1499,52 +1444,42 @@ export function computeBranchGridLayout(input: BranchGridLayoutInput): BranchGri
       });
       continue;
     }
-      let fromX: number;
-      let fromY: number;
-      let fromFace: ConnectorFace;
-      const toX = isHorizontal ? mergeTarget.x + CARD_WIDTH / 2 : mergeTarget.x + CARD_WIDTH - GRID_MERGE_TARGET_GAP_PX;
-      const toY = isHorizontal ? mergeTarget.y + CARD_HEIGHT + GRID_MERGE_TARGET_GAP_PX : mergeTarget.y + CARD_HEIGHT / 2;
-      const toFace: ConnectorFace = isHorizontal ? 'bottom' : 'right';
-      if (!isHorizontal) {
-        fromX = sourceNode.x + CARD_WIDTH / 2;
-        fromY = sourceNode.y;
-        fromFace = 'top';
-      } else {
-        fromX = sourceNode.x + CARD_WIDTH + GRID_MERGE_TARGET_GAP_PX;
-        fromY = sourceNode.y + CARD_HEIGHT / 2;
-        fromFace = 'right';
-      }
-      const geometryKey = `${fromX.toFixed(2)}:${fromY.toFixed(2)}:${toX.toFixed(2)}:${toY.toFixed(2)}`;
-      if (mergeConnectorGeometryKeySet.has(geometryKey)) {
-        pushConnectorDecision({
-          id: decisionId,
-          kind: 'merge',
-          parent: sourceNode.commit.id,
-          child: mergeTarget.commit.id,
-          rendered: false,
-          reason: 'duplicate merge connector geometry',
-        });
-        continue;
-      }
-      mergeConnectorGeometryKeySet.add(geometryKey);
-      mergeConnectors.push({
-        id: decisionId,
-        fromX,
-        fromY,
-        toX,
-        toY,
-        fromFace,
-        toFace,
-        zIndex: branchConnectorZIndex(sourceNode.commit.branchName),
-      });
+    const anchors = computeMergeConnectorAnchors(isHorizontal, sourceNode, mergeTarget);
+    const { fromX, fromY, fromFace, toX, toY, toFace } = anchors;
+    const geometryKey = `${fromX.toFixed(2)}:${fromY.toFixed(2)}:${toX.toFixed(2)}:${toY.toFixed(2)}`;
+    if (mergeConnectorGeometryKeySet.has(geometryKey)) {
       pushConnectorDecision({
         id: decisionId,
         kind: 'merge',
         parent: sourceNode.commit.id,
         child: mergeTarget.commit.id,
-        rendered: true,
-        reason: `merge connector rendered to ${destination.targetBranchName}`,
+        rendered: false,
+        reason: 'duplicate merge connector geometry',
       });
+      continue;
+    }
+    mergeConnectorGeometryKeySet.add(geometryKey);
+    mergeConnectors.push({
+      id: decisionId,
+      fromX,
+      fromY,
+      toX,
+      toY,
+      fromFace,
+      toFace,
+      zIndex: branchConnectorZIndex(sourceNode.commit.branchName),
+      fromCommitVisualId: sourceNode.commit.visualId,
+      toCommitVisualId: mergeTarget.commit.visualId,
+      connectorEdgeKind: 'merge',
+    });
+    pushConnectorDecision({
+      id: decisionId,
+      kind: 'merge',
+      parent: sourceNode.commit.id,
+      child: mergeTarget.commit.id,
+      rendered: true,
+      reason: `merge connector rendered to ${destination.targetBranchName}`,
+    });
   }
 
   const crossBranchOutgoingShas = new Set<string>();
@@ -1626,17 +1561,20 @@ export function computeBranchGridLayout(input: BranchGridLayoutInput): BranchGri
     if (parentNode.commit.branchName !== childNode.commit.branchName) {
       crossBranchOutgoingShas.add(parentNode.commit.id);
     }
-    const sourceAnchor = getBranchOutgoingAnchor(parentNode);
-    const targetAnchor = getBranchIncomingAnchor(childNode);
+    const anchors = computeParentChildConnectorAnchors(isHorizontal, true, parentNode, childNode);
     connectors.push({
       id: key,
-      fromX: sourceAnchor.x,
-      fromY: sourceAnchor.y,
-      toX: targetAnchor.x,
-      toY: targetAnchor.y,
-      fromFace: sourceAnchor.face,
-      toFace: targetAnchor.face,
+      fromX: anchors.fromX,
+      fromY: anchors.fromY,
+      toX: anchors.toX,
+      toY: anchors.toY,
+      fromFace: anchors.fromFace,
+      toFace: anchors.toFace,
       zIndex: branchConnectorZIndex(childNode.commit.branchName),
+      fromCommitVisualId: parentNode.commit.visualId,
+      toCommitVisualId: childNode.commit.visualId,
+      useBranchFeedAnchors: true,
+      connectorEdgeKind: 'branch',
     });
     pushConnectorDecision({
       id: key,
@@ -1705,17 +1643,20 @@ export function computeBranchGridLayout(input: BranchGridLayoutInput): BranchGri
     connectorKeySet.add(key);
     connectorParentShas.add(parentNode.commit.id);
     const isBranching = isConnectorBranching(parentNode, childNode);
-    const sourceAnchor = getOutgoingAnchor(parentNode, isBranching, childNode);
-    const targetAnchor = getIncomingAnchor(childNode, parentNode);
+    const anchors = computeParentChildConnectorAnchors(isHorizontal, false, parentNode, childNode);
     connectors.push({
       id: key,
-      fromX: sourceAnchor.x,
-      fromY: sourceAnchor.y,
-      toX: targetAnchor.x,
-      toY: targetAnchor.y,
-      fromFace: sourceAnchor.face,
-      toFace: targetAnchor.face,
+      fromX: anchors.fromX,
+      fromY: anchors.fromY,
+      toX: anchors.toX,
+      toY: anchors.toY,
+      fromFace: anchors.fromFace,
+      toFace: anchors.toFace,
       zIndex: branchConnectorZIndex(childNode.commit.branchName),
+      fromCommitVisualId: parentNode.commit.visualId,
+      toCommitVisualId: childNode.commit.visualId,
+      useBranchFeedAnchors: false,
+      connectorEdgeKind: 'ancestry',
     });
     pushConnectorDecision({
       id: key,
@@ -1768,18 +1709,20 @@ export function computeBranchGridLayout(input: BranchGridLayoutInput): BranchGri
         continue;
       }
       connectorKeySet.add(key);
-      const isBranching = isConnectorBranching(parentNode, childNode);
-      const sourceAnchor = getOutgoingAnchor(parentNode, isBranching, childNode);
-      const targetAnchor = getIncomingAnchor(childNode, parentNode);
+      const anchors = computeParentChildConnectorAnchors(isHorizontal, false, parentNode, childNode);
       connectors.push({
         id: key,
-        fromX: sourceAnchor.x,
-        fromY: sourceAnchor.y,
-        toX: targetAnchor.x,
-        toY: targetAnchor.y,
-        fromFace: sourceAnchor.face,
-        toFace: targetAnchor.face,
+        fromX: anchors.fromX,
+        fromY: anchors.fromY,
+        toX: anchors.toX,
+        toY: anchors.toY,
+        fromFace: anchors.fromFace,
+        toFace: anchors.toFace,
         zIndex: branchConnectorZIndex(childNode.commit.branchName),
+        fromCommitVisualId: parentNode.commit.visualId,
+        toCommitVisualId: childNode.commit.visualId,
+        useBranchFeedAnchors: false,
+        connectorEdgeKind: 'chain',
       });
       pushConnectorDecision({
         id: key,
