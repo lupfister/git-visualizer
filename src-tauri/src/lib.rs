@@ -417,19 +417,29 @@ fn upsert_repo_layout_snapshot(repo_path: &str, layout_key: &str, payload_json: 
 }
 
 fn load_cached_repo_node_positions(repo_path: &str) -> Result<Option<String>, String> {
+    let id = normalize_repo_path_id(repo_path);
     let conn = open_visual_cache_connection()?;
-    let payload: Option<String> = conn
-        .query_row(
-            "SELECT payload_json FROM repo_node_position_cache WHERE repo_path = ?1",
-            params![repo_path],
-            |row| row.get(0),
-        )
-        .optional()
-        .map_err(|e| format!("Failed to read node position cache row: {e}"))?;
-    Ok(payload)
+    let try_key = |key: &str| -> Result<Option<String>, String> {
+        conn
+            .query_row(
+                "SELECT payload_json FROM repo_node_position_cache WHERE repo_path = ?1",
+                params![key],
+                |row| row.get(0),
+            )
+            .optional()
+            .map_err(|e| format!("Failed to read node position cache row: {e}"))
+    };
+    if let Some(payload) = try_key(&id)? {
+        return Ok(Some(payload));
+    }
+    if repo_path != id {
+        return try_key(repo_path);
+    }
+    Ok(None)
 }
 
 fn upsert_repo_node_positions(repo_path: &str, payload_json: &str) -> Result<(), String> {
+    let id = normalize_repo_path_id(repo_path);
     let conn = open_visual_cache_connection()?;
     conn.execute(
         "
@@ -439,7 +449,7 @@ fn upsert_repo_node_positions(repo_path: &str, payload_json: &str) -> Result<(),
             payload_json = excluded.payload_json,
             updated_at_ms = excluded.updated_at_ms
         ",
-        params![repo_path, payload_json, Utc::now().timestamp_millis()],
+        params![id, payload_json, Utc::now().timestamp_millis()],
     )
     .map_err(|e| format!("Failed to upsert node position cache: {e}"))?;
     Ok(())
@@ -447,9 +457,10 @@ fn upsert_repo_node_positions(repo_path: &str, payload_json: &str) -> Result<(),
 
 fn delete_repo_node_positions(repo_path: &str) -> Result<(), String> {
     let conn = open_visual_cache_connection()?;
+    let id = normalize_repo_path_id(repo_path);
     conn.execute(
-        "DELETE FROM repo_node_position_cache WHERE repo_path = ?1",
-        params![repo_path],
+        "DELETE FROM repo_node_position_cache WHERE repo_path = ?1 OR repo_path = ?2",
+        params![id, repo_path],
     )
     .map_err(|e| format!("Failed to clear node position cache: {e}"))?;
     Ok(())

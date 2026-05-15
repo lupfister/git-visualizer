@@ -206,9 +206,10 @@ function parseNodePositionOverrides(payloadJson: string | null | undefined): Nod
     for (const [nodeId, value] of Object.entries(parsed)) {
       if (!value || typeof value !== 'object' || Array.isArray(value)) continue;
       const point = value as { x?: unknown; y?: unknown };
-      if (typeof point.x !== 'number' || typeof point.y !== 'number') continue;
-      if (!Number.isFinite(point.x) || !Number.isFinite(point.y)) continue;
-      next[nodeId] = { x: point.x, y: point.y };
+      const x = typeof point.x === 'number' ? point.x : Number(point.x);
+      const y = typeof point.y === 'number' ? point.y : Number(point.y);
+      if (!Number.isFinite(x) || !Number.isFinite(y)) continue;
+      next[nodeId] = { x, y };
     }
     return next;
   } catch {
@@ -264,7 +265,11 @@ function App() {
   const [branchParentByName, setBranchParentByName] = useState<Record<string, string | null>>({});
   const [laneByBranch, setLaneByBranch] = useState<Record<string, number>>({});
   const [nodePositionOverridesByRepo, setNodePositionOverridesByRepo] = useState<Record<string, NodePositionOverrides>>({});
-  const nodePositionSaveTimeoutRef = useRef<number | null>(null);
+  /** Debounced write to `store_repo_node_positions` (never triggered by passive state sync — avoids wiping DB with `{}`). */
+  const nodePositionPersistTimerRef = useRef<number | null>(null);
+  const nodePositionPersistPayloadRef = useRef<{ repoPath: string; overrides: NodePositionOverrides } | null>(null);
+  /** Repo has local card edits not yet flushed to disk; stale `get_repo_node_positions` results must not overwrite them. */
+  const userDirtyNodePositionsRef = useRef<Set<string>>(new Set());
   const [branchUniqueAheadCounts, setBranchUniqueAheadCounts] = useState<Record<string, number>>({});
   const [stashes, setStashes] = useState<GitStashEntry[]>([]);
   const [openPRs, setOpenPRs] = useState<OpenPR[]>([]);
@@ -313,6 +318,8 @@ function App() {
   const pendingRefreshAfterInteractionRef = useRef(false);
   const hasAttemptedAutoRestoreRef = useRef(false);
   const hasHydratedInitialProjectSnapshotsRef = useRef(false);
+  /** Cancels stale in-flight `get_repo_node_positions` results when a newer load starts. */
+  const loadNodePositionsSeqRef = useRef(0);
   const loadingProjectSnapshotsRef = useRef<Set<string>>(new Set());
   const [initialProjectSnapshotsReady, setInitialProjectSnapshotsReady] = useState(false);
   const latestBranchesRef = useRef<Branch[]>([]);
@@ -489,9 +496,13 @@ function App() {
 
   const loadNodePositionsForRepo = useCallback(async (targetPath: string) => {
     const normalizedPath = normalizePath(targetPath);
+    if (!normalizedPath) return;
+    const seq = ++loadNodePositionsSeqRef.current;
     const payloadJson = await invoke<string | null>('get_repo_node_positions', {
       repoPath: normalizedPath,
     }).catch(() => null);
+    if (seq !== loadNodePositionsSeqRef.current) return;
+    if (userDirtyNodePositionsRef.current.has(normalizedPath)) return;
     const overrides = parseNodePositionOverrides(payloadJson);
     setNodePositionOverridesByRepo((previous) => ({
       ...previous,
@@ -499,21 +510,44 @@ function App() {
     }));
   }, []);
 
+  const schedulePersistRepoNodePositions = useCallback((normalizedPath: string, overrides: NodePositionOverrides) => {
+    nodePositionPersistPayloadRef.current = { repoPath: normalizedPath, overrides };
+    if (nodePositionPersistTimerRef.current != null) {
+      window.clearTimeout(nodePositionPersistTimerRef.current);
+    }
+    nodePositionPersistTimerRef.current = window.setTimeout(() => {
+      nodePositionPersistTimerRef.current = null;
+      const payload = nodePositionPersistPayloadRef.current;
+      if (!payload) return;
+      void invoke('store_repo_node_positions', {
+        repoPath: payload.repoPath,
+        payloadJson: JSON.stringify(payload.overrides),
+      })
+        .then(() => {
+          userDirtyNodePositionsRef.current.delete(payload.repoPath);
+        })
+        .catch(console.error);
+    }, 500);
+  }, []);
+
   const handleNodePositionOverridesChange = useCallback(
     (overrides: NodePositionOverrides) => {
       if (!repoPath) return;
       const normalizedPath = normalizePath(repoPath);
+      userDirtyNodePositionsRef.current.add(normalizedPath);
       setNodePositionOverridesByRepo((previous) => ({
         ...previous,
         [normalizedPath]: overrides,
       }));
+      schedulePersistRepoNodePositions(normalizedPath, overrides);
     },
-    [repoPath],
+    [repoPath, schedulePersistRepoNodePositions],
   );
 
   const resetProjectNodePositions = useCallback(
     (targetPath: string) => {
       const normalizedPath = normalizePath(targetPath);
+      userDirtyNodePositionsRef.current.delete(normalizedPath);
       setNodePositionOverridesByRepo((previous) => ({
         ...previous,
         [normalizedPath]: {},
@@ -675,22 +709,13 @@ function App() {
   ]);
 
   useEffect(() => {
-    if (!repoPath) return;
-    const normalizedPath = normalizePath(repoPath);
-    const overrides = nodePositionOverridesByRepo[normalizedPath] ?? {};
-    const timeoutId = window.setTimeout(() => {
-      const payloadJson = JSON.stringify(overrides);
-      void invoke('store_repo_node_positions', { repoPath: normalizedPath, payloadJson });
-    }, 500);
-    if (nodePositionSaveTimeoutRef.current != null) {
-      window.clearTimeout(nodePositionSaveTimeoutRef.current);
-    }
-    nodePositionSaveTimeoutRef.current = timeoutId;
     return () => {
-      window.clearTimeout(timeoutId);
-      if (nodePositionSaveTimeoutRef.current === timeoutId) nodePositionSaveTimeoutRef.current = null;
+      if (nodePositionPersistTimerRef.current != null) {
+        window.clearTimeout(nodePositionPersistTimerRef.current);
+        nodePositionPersistTimerRef.current = null;
+      }
     };
-  }, [nodePositionOverridesByRepo, repoPath]);
+  }, []);
 
   async function loadProjectSnapshot(path: string, forceRefresh = false) {
     const normalizedPath = normalizePath(path);
@@ -955,6 +980,7 @@ function App() {
       delete next[normalizedPath];
       return next;
     });
+    userDirtyNodePositionsRef.current.delete(normalizedPath);
     if (repoPath === normalizedPath) {
       const nextPath = projects.find((project) => project.path !== normalizedPath)?.path ?? null;
       if (nextPath) {
@@ -1155,15 +1181,18 @@ function App() {
     setMapLoading(true);
     isRepoSwitchingRef.current = true;
     try {
+      const normalizedTarget = normalizePath(targetPath);
+      if (!normalizedTarget) throw new Error('Invalid worktree path');
       const [info, def] = await Promise.all([
-        invoke<{ name: string; path: string }>('get_repo_info', { repoPath: targetPath }),
-        invoke<string>('get_default_branch', { repoPath: targetPath }),
+        invoke<{ name: string; path: string }>('get_repo_info', { repoPath: normalizedTarget }),
+        invoke<string>('get_default_branch', { repoPath: normalizedTarget }),
       ]);
+      await loadNodePositionsForRepo(normalizedTarget);
       setRepoName(info.name);
       setDefaultBranch(def);
-      setRepoPath(targetPath);
-      await refreshRepoGitState(targetPath, def);
-      void fetchGitHubData(targetPath);
+      setRepoPath(normalizedTarget);
+      await refreshRepoGitState(normalizedTarget, def);
+      void fetchGitHubData(normalizedTarget);
       setCommitSwitchFeedback({
         kind: 'success',
         message: `Now targeting worktree at ${targetPath}`,
@@ -2015,14 +2044,20 @@ function App() {
       setCheckedOutRef(nextRef);
       if (nextRef.branchName && nextRef.headSha) {
         const normalizedPath = normalizePath(repoPath);
-        setNodePositionOverridesByRepo((previous) => ({
-          ...previous,
-          [normalizedPath]: migrateWorkingTreeNodeOverrides(
+        userDirtyNodePositionsRef.current.add(normalizedPath);
+        let migrated: NodePositionOverrides = {};
+        setNodePositionOverridesByRepo((previous) => {
+          migrated = migrateWorkingTreeNodeOverrides(
             previous[normalizedPath] ?? {},
             nextRef.branchName!,
-            nextRef.headSha,
-          ),
-        }));
+            nextRef.headSha!,
+          );
+          return {
+            ...previous,
+            [normalizedPath]: migrated,
+          };
+        });
+        schedulePersistRepoNodePositions(normalizedPath, migrated);
       }
       await yieldToPaint();
       await refreshRepoAfterMutation(repoPath);
@@ -3159,7 +3194,9 @@ function App() {
                 setManuallyOpenedClumps={setManuallyOpenedGridClumps}
                 setManuallyClosedClumps={setManuallyClosedGridClumps}
                 layoutModel={sharedGridLayoutModel}
-                nodePositionOverrides={repoPath ? (nodePositionOverridesByRepo[repoPath] ?? {}) : {}}
+                nodePositionOverrides={
+                  repoPath ? (nodePositionOverridesByRepo[normalizePath(repoPath)] ?? {}) : {}
+                }
                 onNodePositionOverridesChange={handleNodePositionOverridesChange}
                 orientation={mapGridOrientation}
                   gridHudProps={gridHudProps}
