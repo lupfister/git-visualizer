@@ -371,7 +371,7 @@ export default function MapGridCanvas({
       };
       canvas.style.transform = 'translate3d(0, 0, 0) scale(1)';
 
-      const connectorColor = computedStyle.getPropertyValue('--border').trim() || CONNECTOR_COLOR;
+      const connectorColor = computedStyle.getPropertyValue('--muted').trim() || CONNECTOR_COLOR;
       ctx.strokeStyle = connectorColor;
       ctx.lineWidth = Math.max(1, lineStrokeWidth * scale);
       ctx.lineCap = 'round';
@@ -499,6 +499,11 @@ export default function MapGridCanvas({
               !isUnpushedCommit &&
               (isExplicitRemoteCommit || remoteCommitShas.has(node.commit.id));
             const isCheckedOutCommit = isLocalUncommitted || (checkedOutHeadSha != null && node.commit.id === checkedOutHeadSha);
+            const isCheckedOutHeadNode =
+              !isLocalUncommitted &&
+              checkedOutHeadSha != null &&
+              node.commit.id === checkedOutHeadSha;
+            const hideCheckedOutOutline = isCheckedOutHeadNode && !isSelectedCommit;
             const checkedOutAccentActive = isCheckedOutCommit && !isSelectedCommit;
             const remoteAccentActive = isRemoteCommit && !checkedOutAccentActive && !isSelectedCommit;
             const selectedCommitTextClass = checkedOutAccentActive
@@ -516,10 +521,10 @@ export default function MapGridCanvas({
                 ? { color: 'var(--select)' }
                 : undefined;
             const focusedCommitBorderColor = selectedCommitTextStyle?.color ?? 'var(--foreground)';
-            const commitBorderColor = focusedNode?.commit.id === node.commit.id
-              ? focusedCommitBorderColor
-              : checkedOutAccentActive
-                ? 'var(--checked)'
+            const commitBorderColor = hideCheckedOutOutline
+              ? 'transparent'
+              : focusedNode?.commit.id === node.commit.id
+                ? focusedCommitBorderColor
                 : remoteAccentActive
                   ? 'var(--remote)'
                 : isSelectedCommit
@@ -677,8 +682,8 @@ export default function MapGridCanvas({
                   )}
                 style={{
                   top: 0,
-                  borderWidth: `${nodeBorderWidth}px`,
-                  borderColor: isDashedOutline ? 'transparent' : commitBorderColor,
+                  borderWidth: hideCheckedOutOutline ? 0 : `${nodeBorderWidth}px`,
+                  borderColor: isDashedOutline || hideCheckedOutOutline ? 'transparent' : commitBorderColor,
                   borderTopLeftRadius: 0,
                   borderTopRightRadius: `${commitCornerRadiusPx}px`,
                   borderBottomRightRadius: `${commitCornerRadiusPx}px`,

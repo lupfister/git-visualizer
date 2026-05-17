@@ -134,7 +134,8 @@ export const COLUMN_GAP = ROW_GAP / 2;
 export const COLUMN_WIDTH = CARD_WIDTH + COLUMN_GAP;
 export const TOP_PADDING = 18;
 export const LEFT_PADDING = 18;
-export const CONNECTOR_COLOR = 'var(--border)';
+// Default connector + node outline color uses the muted token.
+export const CONNECTOR_COLOR = 'var(--muted)';
 
 export function timeAgo(dateStr: string) {
   const s = (Date.now() - new Date(dateStr).getTime()) / 1000;
