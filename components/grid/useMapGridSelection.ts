@@ -24,8 +24,7 @@ type Params = {
   scrollContainerRef: RefObject<HTMLDivElement | null>;
   renderedCameraRef: MutableRefObject<MapGridCameraState>;
   getTransformLayerOriginScreen: () => { x: number; y: number } | null;
-  renderNodes: Node[];
-  shouldRenderNode: (node: Node) => boolean;
+  visibleRenderNodes: Node[];
   onPointerReleaseNoMarquee: () => void;
 };
 
@@ -33,8 +32,7 @@ export function useMapGridSelection({
   scrollContainerRef,
   renderedCameraRef,
   getTransformLayerOriginScreen,
-  renderNodes,
-  shouldRenderNode,
+  visibleRenderNodes,
   onPointerReleaseNoMarquee,
 }: Params) {
   const marqueeDragRef = useRef<MarqueeDragState | null>(null);
@@ -58,8 +56,7 @@ export function useMapGridSelection({
       const right = rect.left + rect.width;
       const top = rect.top;
       const bottom = rect.top + rect.height;
-      for (const node of renderNodes) {
-        if (!shouldRenderNode(node)) continue;
+      for (const node of visibleRenderNodes) {
         const nodeLeft = origin.x + renderedCameraRef.current.panX + node.x * scale - viewportRect.left;
         const nodeTop = origin.y + renderedCameraRef.current.panY + node.y * scale - viewportRect.top;
         const nodeRight = nodeLeft + CARD_WIDTH * scale;
@@ -69,7 +66,7 @@ export function useMapGridSelection({
       }
       return selected;
     },
-    [getTransformLayerOriginScreen, renderNodes, renderedCameraRef, scrollContainerRef, shouldRenderNode],
+    [getTransformLayerOriginScreen, visibleRenderNodes, renderedCameraRef, scrollContainerRef],
   );
 
   const startMarqueeDrag = useCallback((event: MouseEvent<HTMLDivElement>) => {

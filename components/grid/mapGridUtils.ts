@@ -9,8 +9,16 @@ export const GRID_ZOOM_MIN = 0.45;
 export const GRID_ZOOM_WHEEL_SENSITIVITY = 0.02;
 export const GRID_RENDER_ZOOM = GRID_ZOOM_MAX;
 export const MAP_GRID_INNER_PADDING_PX = 10;
-export const MAP_GRID_CULL_VIEWPORT_INSET_SCREEN_PX = -100;
-export const MAP_GRID_CAMERA_PAN_REACT_THROTTLE_MS = 120;
+export const MAP_GRID_CULL_VIEWPORT_INSET_SCREEN_PX = -200;
+export const MAP_GRID_CAMERA_PAN_REACT_THROTTLE_MS = 250;
+/**
+ * Force-flush a cull tick once the camera has panned this many screen pixels
+ * since the last tick. Guarantees no leading-edge pop-in regardless of how
+ * long a continuous pan lasts; chosen smaller than
+ * `MAP_GRID_CULL_VIEWPORT_INSET_SCREEN_PX` so commits enter `visibleNodeIds`
+ * before they cross into the screen.
+ */
+export const MAP_GRID_CAMERA_PAN_DISTANCE_TICK_PX = 120;
 export const CAMERA_PAN_INTERPOLATION = 1;
 export const CAMERA_ZOOM_INTERPOLATION = 0.25;
 export const CAMERA_SETTLE_EPSILON = 0.001;
@@ -231,18 +239,33 @@ function commitBoundingRectForCull(node: Node, labelTopPxForCull: number) {
   };
 }
 
-export function buildCommitCullSpatialIndex(
-  nodes: readonly Node[],
-  labelTopPxForCull: number,
-): CommitCullSpatialIndex {
+/**
+ * Worst-case (most negative) `labelTopPx` value across all zoom levels.
+ * `labelTopPx = -(20 / displayZoom)` and `displayZoom >= GRID_ZOOM_MIN`, so
+ * the largest absolute label inset is at the minimum zoom. We use this
+ * constant to size the spatial index buckets so the index identity is
+ * independent of zoom.
+ */
+const COMMIT_CULL_LABEL_BAND_MAX_CONTENT_PX = 20 / GRID_ZOOM_MIN;
+
+function commitIndexBoundingRect(node: Node) {
+  return {
+    left: node.x,
+    top: node.y - COMMIT_CULL_LABEL_BAND_MAX_CONTENT_PX,
+    right: node.x + CARD_WIDTH,
+    bottom: node.y + CARD_BODY_TOP_OFFSET + CARD_HEIGHT + 4,
+  };
+}
+
+export function buildCommitCullSpatialIndex(nodes: readonly Node[]): CommitCullSpatialIndex {
   const cellW = COMMIT_CULL_CELL_W;
   const cellH = Math.max(
     120,
-    Math.ceil(CARD_BODY_TOP_OFFSET + CARD_HEIGHT + 4 - labelTopPxForCull + 24),
+    Math.ceil(CARD_BODY_TOP_OFFSET + CARD_HEIGHT + 4 + COMMIT_CULL_LABEL_BAND_MAX_CONTENT_PX + 24),
   );
   const buckets = new Map<string, Set<string>>();
   for (const node of nodes) {
-    const rect = commitBoundingRectForCull(node, labelTopPxForCull);
+    const rect = commitIndexBoundingRect(node);
     const ix0 = Math.floor(rect.left / cellW);
     const ix1 = Math.floor(rect.right / cellW);
     const iy0 = Math.floor(rect.top / cellH);

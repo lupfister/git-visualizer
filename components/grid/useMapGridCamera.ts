@@ -5,11 +5,15 @@ import {
   GRID_RENDER_ZOOM,
   GRID_ZOOM_DEFAULT,
   GRID_ZOOM_WHEEL_SENSITIVITY,
+  MAP_GRID_CAMERA_PAN_DISTANCE_TICK_PX,
   MAP_GRID_CAMERA_PAN_REACT_THROTTLE_MS,
   MAP_GRID_INNER_PADDING_PX,
   ZOOM_SETTLE_EPSILON,
   clampZoom,
 } from './mapGridUtils';
+
+const DISTANCE_TICK_THRESHOLD_SQ =
+  MAP_GRID_CAMERA_PAN_DISTANCE_TICK_PX * MAP_GRID_CAMERA_PAN_DISTANCE_TICK_PX;
 
 type Params = {
   mapPadHostRef: RefObject<HTMLDivElement | null>;
@@ -47,6 +51,7 @@ export function useMapGridCamera({
   const [cameraRenderTick, setCameraRenderTick] = useState(0);
   const panReactTrailingTimeoutRef = useRef<number | null>(null);
   const lastCameraPanReactEmitRef = useRef(0);
+  const lastTickedPanRef = useRef<{ x: number; y: number }>({ x: 0, y: 0 });
   const isInteractionActiveRef = useRef(false);
 
   const getCameraStorageKey = useCallback(() => {
@@ -81,6 +86,10 @@ export function useMapGridCamera({
       setCameraRenderTick((tick) => tick + 1);
     });
     lastCameraPanReactEmitRef.current = performance.now();
+    lastTickedPanRef.current = {
+      x: renderedCameraRef.current.panX,
+      y: renderedCameraRef.current.panY,
+    };
   }, []);
 
   const applyRenderedCamera = useCallback((
@@ -106,6 +115,17 @@ export function useMapGridCamera({
     const zoomChanged = Math.abs(nextZoom - prev.zoom) > ZOOM_SETTLE_EPSILON;
     if (zoomChanged) {
       if (!isInteractionActiveRef.current) flushCameraReactTick();
+      return;
+    }
+
+    // Distance-aware: force a tick if the camera has panned far enough since
+    // the last cull update that the leading buffer is at risk of being eaten,
+    // regardless of elapsed time. Keeps commits visible during fast pans
+    // without paying the React reconcile cost during slow ones.
+    const dxSinceTick = nextPanX - lastTickedPanRef.current.x;
+    const dySinceTick = nextPanY - lastTickedPanRef.current.y;
+    if (dxSinceTick * dxSinceTick + dySinceTick * dySinceTick >= DISTANCE_TICK_THRESHOLD_SQ) {
+      flushCameraReactTick();
       return;
     }
 

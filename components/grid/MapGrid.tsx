@@ -475,29 +475,21 @@ export default function BranchGridMap({
   }, [renderNodes]);
 
   const commitCullSpatialIndex = useMemo(
-    () => buildCommitCullSpatialIndex(renderNodes, labelTopPx),
-    [renderNodes, labelTopPx],
+    () => buildCommitCullSpatialIndex(renderNodes),
+    [renderNodes],
   );
 
-  const shouldRenderNode = (node: Node) => {
-    const commitId = node.commit.id;
-    const visualId = node.commit.visualId;
-    if (isGridSearchActive && matchingNodeIds.has(commitId)) return true;
-    if (focusedNode?.commit.id === commitId) return true;
-    if (visibleNodeIds === null) return true;
-    if (!visibleNodeIds.has(visualId)) return false;
-    const ck = clusterKeyByCommitId.get(visualId);
-    if (ck) {
-      const count = clusterCounts.get(ck) ?? 1;
-      if (count > 1) {
-        const clusterExpanded =
-          manuallyOpenedClumps.has(ck) ||
-          (!defaultCollapsedClumps.has(ck) && !manuallyClosedClumps.has(ck));
-        if (clusterExpanded) return true;
-      }
-    }
-    return true;
-  };
+  const visibleRenderNodes = useMemo(() => {
+    return renderNodes.filter((node) => {
+      const commitId = node.commit.id;
+      const visualId = node.commit.visualId;
+      if (isGridSearchActive && matchingNodeIds.has(commitId)) return true;
+      if (focusedNode?.commit.id === commitId) return true;
+      if (visibleNodeIds === null) return true;
+      if (!visibleNodeIds.has(visualId)) return false;
+      return true;
+    });
+  }, [renderNodes, isGridSearchActive, matchingNodeIds, focusedNode, visibleNodeIds]);
 
   const lineStrokeWidth = 1.25 / displayZoom;
   const commitCornerRadiusPx = GRID_COMMIT_CORNER_RADIUS_BASE_PX / displayZoom;
@@ -569,8 +561,7 @@ export default function BranchGridMap({
     scrollContainerRef,
     renderedCameraRef,
     getTransformLayerOriginScreen,
-    renderNodes,
-    shouldRenderNode,
+    visibleRenderNodes,
     onPointerReleaseNoMarquee: handlePointerReleaseNoMarquee,
   });
   const selectableCommitShaSet = useMemo(() => new Set(renderNodes.map((node) => node.commit.id)), [renderNodes]);
@@ -921,28 +912,44 @@ export default function BranchGridMap({
           innerPaddingPx: MAP_GRID_INNER_PADDING_PX,
         })
       : null;
-  const visibleBounds =
-    rawVisibleBounds != null
-      ? withCullInsetScreenPx(
-          rawVisibleBounds,
-          renderedCameraRef.current.zoom,
-          MAP_GRID_CULL_VIEWPORT_INSET_SCREEN_PX,
-        )
-      : null;
-  const cullConnectorPath = (connector: { id: string; fromX: number; fromY: number; toX: number; toY: number; fromFace?: ConnectorFace; toFace?: ConnectorFace }): boolean => {
-    if (!visibleBounds) return true;
-    const { fromX, fromY, toX, toY } = connector;
-    const pad = 160;
-    if (
-      Math.max(fromX, toX) < visibleBounds.left - pad ||
-      Math.min(fromX, toX) > visibleBounds.right + pad ||
-      Math.max(fromY, toY) < visibleBounds.top - pad ||
-      Math.min(fromY, toY) > visibleBounds.bottom + pad
-    ) {
-      return false;
-    }
-    return looseCableConnectorIntersectsViewportBounds(fromX, fromY, toX, toY, visibleBounds, connector.fromFace, connector.toFace);
-  };
+  const visibleBounds = useMemo(
+    () =>
+      rawVisibleBounds != null
+        ? withCullInsetScreenPx(
+            rawVisibleBounds,
+            renderedCameraRef.current.zoom,
+            MAP_GRID_CULL_VIEWPORT_INSET_SCREEN_PX,
+          )
+        : null,
+    // rawVisibleBounds identity is fresh each render, but its value is stable
+    // across renders that don't change the camera; key on its numeric edges so
+    // the connector pipeline only invalidates on actual viewport changes.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [
+      rawVisibleBounds?.left,
+      rawVisibleBounds?.top,
+      rawVisibleBounds?.right,
+      rawVisibleBounds?.bottom,
+      renderedZoom,
+    ],
+  );
+  const cullConnectorPath = useCallback(
+    (connector: { id: string; fromX: number; fromY: number; toX: number; toY: number; fromFace?: ConnectorFace; toFace?: ConnectorFace }): boolean => {
+      if (!visibleBounds) return true;
+      const { fromX, fromY, toX, toY } = connector;
+      const pad = 160;
+      if (
+        Math.max(fromX, toX) < visibleBounds.left - pad ||
+        Math.min(fromX, toX) > visibleBounds.right + pad ||
+        Math.max(fromY, toY) < visibleBounds.top - pad ||
+        Math.min(fromY, toY) > visibleBounds.bottom + pad
+      ) {
+        return false;
+      }
+      return looseCableConnectorIntersectsViewportBounds(fromX, fromY, toX, toY, visibleBounds, connector.fromFace, connector.toFace);
+    },
+    [visibleBounds],
+  );
 
   useLayoutEffect(() => {
     const viewport = scrollContainerRef.current;
@@ -1025,7 +1032,7 @@ export default function BranchGridMap({
     return () => ro.disconnect();
   }, [allCommits.length]);
 
-  const renderedNodeCount = isDebugOpen ? renderNodes.filter((node) => shouldRenderNode(node)).length : 0;
+  const renderedNodeCount = isDebugOpen ? visibleRenderNodes.length : 0;
   const renderedMergeConnectorCount = isDebugOpen ? mergeConnectorsForView.filter((connector) => cullConnectorPath(connector)).length : 0;
   const renderedConnectorCount = isDebugOpen ? connectorsForView.filter((connector) => cullConnectorPath(connector)).length : 0;
 
@@ -1665,8 +1672,7 @@ export default function BranchGridMap({
           normalizedSearchQuery={normalizedSearchQuery}
           matchingNodeIds={matchingNodeIds}
           focusedNode={focusedRenderNode}
-          renderNodes={renderNodes}
-          shouldRenderNode={shouldRenderNode}
+          visibleRenderNodes={visibleRenderNodes}
           manuallyOpenedClumps={manuallyOpenedClumps}
           manuallyClosedClumps={manuallyClosedClumps}
           defaultCollapsedClumps={defaultCollapsedClumps}

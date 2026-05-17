@@ -1,11 +1,15 @@
-import { useEffect, useLayoutEffect, useRef, useState } from 'react';
+import { memo, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import type { CSSProperties, Dispatch, MouseEvent, ReactNode, RefObject, SetStateAction, WheelEvent } from 'react';
 import { CARD_BODY_TOP_OFFSET, CARD_HEIGHT, CARD_WIDTH, CONNECTOR_COLOR } from './LayoutGrid';
 import { buildMapGridConnectorPath } from './gridPathUtils';
-import { cn, GRID_RENDER_ZOOM } from './mapGridUtils';
-import type { ConnectorFace, Node } from './LayoutGrid';
+import { cn, GRID_RENDER_ZOOM, MAP_GRID_CAMERA_PAN_DISTANCE_TICK_PX } from './mapGridUtils';
+import type { ConnectorFace, Node, NodePositionOverrides } from './LayoutGrid';
 import type { MapGridCameraState } from './useMapGridCamera';
 import { getNodePositionOverride } from './nodePositionOverrides';
+
+const EMPTY_NODE_POSITION_OVERRIDES: NodePositionOverrides = {};
+const EMPTY_DRAG_PREVIEW: Record<string, { x: number; y: number }> = {};
+const EMPTY_DRAG_NODE_IDS: Set<string> = new Set<string>();
 
 function MapGridCommitWrapper({
   fadeIn,
@@ -71,6 +75,304 @@ function MapGridCommitWrapper({
   );
 }
 
+const COMMIT_DATE_FORMATTER = new Intl.DateTimeFormat('en-US', {
+  month: 'long',
+  day: 'numeric',
+  hour: 'numeric',
+  minute: '2-digit',
+});
+
+type CommitCardProps = {
+  node: Node;
+  cardLeft: number;
+  cardTop: number;
+  isSelectedCommit: boolean;
+  isFocused: boolean;
+  isCheckedOutHeadNode: boolean;
+  isUnpushedCommit: boolean;
+  isRemoteCommit: boolean;
+  isStashedCommit: boolean;
+  isLocalUncommitted: boolean;
+  isEmptyBranchNode: boolean;
+  hasRenderedAncestry: boolean;
+  isSearchActive: boolean;
+  isSearchMatch: boolean;
+  isCameraMoving: boolean;
+  clusterKey: string | null;
+  isClusterOpen: boolean;
+  isClusterLead: boolean;
+  clumpCount: number;
+  shouldAnimateOpeningClump: boolean;
+  isDragPreview: boolean;
+  borderAccentClass: string;
+  warningsTitle: string;
+  showDataShapeError: boolean;
+  displayZoom: number;
+  commitCornerRadiusPx: number;
+  lineStrokeWidth: number;
+  labelTopPx: number;
+  inverseZoomStyle: CSSProperties;
+  onCommitCardClick: (event: MouseEvent, node: Node) => void;
+  onNodePointerDown: (event: React.PointerEvent<HTMLDivElement>, node: Node) => void;
+  onNodePointerMove: (event: React.PointerEvent<HTMLDivElement>) => void;
+  onNodePointerUp: (event: React.PointerEvent<HTMLDivElement>) => void;
+  onClusterToggle: (clusterKey: string) => void;
+};
+
+const MapGridCommitCard = memo(function MapGridCommitCard({
+  node,
+  cardLeft,
+  cardTop,
+  isSelectedCommit,
+  isFocused,
+  isCheckedOutHeadNode,
+  isUnpushedCommit,
+  isRemoteCommit,
+  isStashedCommit,
+  isLocalUncommitted,
+  isEmptyBranchNode,
+  hasRenderedAncestry: _hasRenderedAncestry,
+  isSearchActive,
+  isSearchMatch,
+  isCameraMoving,
+  clusterKey,
+  isClusterOpen,
+  isClusterLead,
+  clumpCount,
+  shouldAnimateOpeningClump,
+  isDragPreview,
+  borderAccentClass,
+  warningsTitle,
+  showDataShapeError,
+  displayZoom,
+  commitCornerRadiusPx,
+  lineStrokeWidth,
+  labelTopPx,
+  inverseZoomStyle,
+  onCommitCardClick,
+  onNodePointerDown,
+  onNodePointerMove,
+  onNodePointerUp,
+  onClusterToggle,
+}: CommitCardProps) {
+  const stashIndexMatch = /^STASH:(\d+)$/.exec(node.commit.id);
+  const stashHeaderLabel = stashIndexMatch ? `Stash ${Number.parseInt(stashIndexMatch[1], 10) + 1}` : null;
+  const stashBodyMessage = isStashedCommit
+    ? (node.commit.message.trim() && node.commit.message.trim() !== 'git-visualizer'
+        ? node.commit.message
+        : 'Stashed changes')
+    : node.commit.message;
+
+  const isCheckedOutCommit = isLocalUncommitted || isCheckedOutHeadNode;
+  const hideCheckedOutOutline = isCheckedOutHeadNode && !isSelectedCommit;
+  const checkedOutAccentActive = isCheckedOutCommit && !isSelectedCommit;
+  const remoteAccentActive = isRemoteCommit && !checkedOutAccentActive && !isSelectedCommit;
+
+  const selectedCommitTextClass = checkedOutAccentActive
+    ? 'text-checked'
+    : remoteAccentActive
+      ? 'text-remote'
+      : isSelectedCommit
+        ? 'text-select'
+        : 'text-foreground';
+  const selectedCommitTextStyle: CSSProperties | undefined = checkedOutAccentActive
+    ? { color: 'var(--checked)' }
+    : remoteAccentActive
+      ? { color: 'var(--remote)' }
+      : isSelectedCommit
+        ? { color: 'var(--select)' }
+        : undefined;
+  const focusedCommitBorderColor = selectedCommitTextStyle?.color ?? 'var(--foreground)';
+  const commitBorderColor = hideCheckedOutOutline
+    ? 'transparent'
+    : isFocused
+      ? focusedCommitBorderColor
+      : remoteAccentActive
+        ? 'var(--remote)'
+        : isSelectedCommit
+          ? 'var(--select)'
+          : CONNECTOR_COLOR;
+  const nodeBorderWidth = isStashedCommit || isEmptyBranchNode || isLocalUncommitted
+    ? 1.25 / displayZoom
+    : lineStrokeWidth;
+  const isDashedOutline = isStashedCommit || isLocalUncommitted || isEmptyBranchNode;
+  const dashedStrokeDasharray = `${12 / displayZoom} ${6 / displayZoom}`;
+  const dashedStrokeInset = nodeBorderWidth / 2;
+  const dashedOutlinePath = `M ${dashedStrokeInset} ${dashedStrokeInset} H ${CARD_WIDTH - dashedStrokeInset - commitCornerRadiusPx} Q ${CARD_WIDTH - dashedStrokeInset} ${dashedStrokeInset} ${CARD_WIDTH - dashedStrokeInset} ${dashedStrokeInset + commitCornerRadiusPx} V ${176 - dashedStrokeInset - commitCornerRadiusPx} Q ${CARD_WIDTH - dashedStrokeInset} ${176 - dashedStrokeInset} ${CARD_WIDTH - dashedStrokeInset - commitCornerRadiusPx} ${176 - dashedStrokeInset} H ${dashedStrokeInset + commitCornerRadiusPx} Q ${dashedStrokeInset} ${176 - dashedStrokeInset} ${dashedStrokeInset} ${176 - dashedStrokeInset - commitCornerRadiusPx} V ${dashedStrokeInset}`;
+  const unpushedCommitTextStyle: CSSProperties | undefined =
+    isUnpushedCommit && !checkedOutAccentActive && !isSelectedCommit
+      ? { color: 'var(--muted-foreground)' }
+      : undefined;
+  const cardTextStyle = selectedCommitTextStyle ?? unpushedCommitTextStyle;
+
+  const wrapperClassName = cn(
+    'group absolute z-20',
+    isSearchActive && !isSearchMatch
+      ? isCameraMoving
+        ? 'opacity-10'
+        : 'opacity-10 blur-[0.5px]'
+      : '',
+    isSearchActive && isSearchMatch ? 'scale-[1.01]' : '',
+    isFocused ? 'z-30' : '',
+  );
+
+  const headerLabel = isStashedCommit && stashHeaderLabel
+    ? stashHeaderLabel
+    : node.commit.branchName
+      ? `${node.commit.branchName}/${node.commit.id.slice(0, 7)}`
+      : node.commit.id.slice(0, 7);
+
+  const bodyMessage = isClusterLead && isClusterOpen
+    ? stashBodyMessage
+    : isClusterLead && clumpCount > 1
+      ? `${stashBodyMessage} +${clumpCount - 1}`
+      : stashBodyMessage;
+
+  const handleClick = (event: MouseEvent) => onCommitCardClick(event, node);
+  const handlePointerDown = (event: React.PointerEvent<HTMLDivElement>) => onNodePointerDown(event, node);
+  const handleClusterButtonClick = (event: React.MouseEvent) => {
+    event.stopPropagation();
+    event.preventDefault();
+    if (!clusterKey) return;
+    onClusterToggle(clusterKey);
+  };
+
+  return (
+    <MapGridCommitWrapper
+      fadeIn={shouldAnimateOpeningClump}
+      isDragPreview={isDragPreview}
+      dataCommitCard="true"
+      className={wrapperClassName}
+      style={{ left: cardLeft, top: cardTop, width: CARD_WIDTH, height: CARD_BODY_TOP_OFFSET + CARD_HEIGHT + 4, overflow: 'visible' }}
+      onClick={handleClick}
+      onPointerDown={handlePointerDown}
+      onPointerMove={onNodePointerMove}
+      onPointerUp={onNodePointerUp}
+      onPointerCancel={onNodePointerUp}
+    >
+      {isDashedOutline ? (
+        <svg
+          className="pointer-events-none absolute inset-0 z-20 overflow-visible"
+          aria-hidden="true"
+          viewBox={`0 0 ${CARD_WIDTH} 176`}
+          preserveAspectRatio="none"
+        >
+          <path
+            d={dashedOutlinePath}
+            fill="none"
+            stroke={commitBorderColor}
+            strokeWidth={nodeBorderWidth}
+            strokeDasharray={dashedStrokeDasharray}
+            strokeLinecap="butt"
+            strokeLinejoin="round"
+          />
+        </svg>
+      ) : null}
+      <div className="absolute left-0 z-30 w-full" style={{ ...inverseZoomStyle, top: `${labelTopPx}px` }}>
+        <div className="flex min-w-0 items-baseline justify-between gap-2 bg-transparent pb-0">
+          <div
+            className={cn(
+              'min-w-0 h-4 flex-1 text-sm font-normal leading-none',
+              selectedCommitTextClass,
+              displayZoom <= 0.5 ? 'overflow-hidden text-ellipsis whitespace-nowrap' : 'break-words whitespace-normal',
+            )}
+            style={cardTextStyle}
+          >
+            {headerLabel}
+          </div>
+          {isClusterLead && clumpCount > 1 ? (
+            <button
+              type="button"
+              onMouseDown={(event) => {
+                event.stopPropagation();
+              }}
+              onClick={handleClusterButtonClick}
+              className={cn('inline-flex self-start items-center bg-transparent p-0 text-sm font-normal leading-none', selectedCommitTextClass)}
+              style={cardTextStyle}
+            >
+              {isClusterOpen ? (
+                <span className="-translate-x-[1px] translate-y-[2px] text-base leading-none">⌃</span>
+              ) : (
+                `+${clumpCount - 1}`
+              )}
+            </button>
+          ) : null}
+        </div>
+      </div>
+      <div className={cn(
+          'absolute left-0 h-[176px] w-full cursor-grab overflow-hidden rounded-tr-xl rounded-br-xl rounded-bl-xl rounded-tl-none border border-border/50 active:cursor-grabbing',
+          checkedOutAccentActive && !isUnpushedCommit && !isStashedCommit && !isEmptyBranchNode
+            ? 'bg-checked-muted'
+            : remoteAccentActive && !isStashedCommit && !isEmptyBranchNode
+              ? 'bg-remote-muted'
+              : isSelectedCommit && !isUnpushedCommit && !isStashedCommit && !isEmptyBranchNode
+                ? 'bg-select-muted'
+                : isUnpushedCommit
+                  ? 'bg-background'
+                  : isStashedCommit || isEmptyBranchNode
+                    ? 'bg-transparent'
+                    : 'bg-muted',
+          isDashedOutline ? 'border-solid' : '',
+          borderAccentClass,
+        )}
+        style={{
+          top: 0,
+          borderWidth: hideCheckedOutOutline ? 0 : `${nodeBorderWidth}px`,
+          borderColor: isDashedOutline || hideCheckedOutOutline ? 'transparent' : commitBorderColor,
+          borderTopLeftRadius: 0,
+          borderTopRightRadius: `${commitCornerRadiusPx}px`,
+          borderBottomRightRadius: `${commitCornerRadiusPx}px`,
+          borderBottomLeftRadius: `${commitCornerRadiusPx}px`,
+        }}
+      >
+        <div className="relative z-10 flex h-full min-h-0 flex-col px-2.5 py-2" style={inverseZoomStyle}>
+          <div className="min-h-0 flex-1">
+            <div
+              className={cn(
+                'max-w-[38rem] select-text text-sm font-normal leading-tight tracking-tight text-foreground',
+                selectedCommitTextClass,
+                displayZoom <= 0.5 ? 'overflow-hidden text-ellipsis whitespace-nowrap' : 'break-words whitespace-normal',
+              )}
+              data-selectable-text="true"
+              style={cardTextStyle}
+            >
+              {bodyMessage}
+            </div>
+            <div className="mt-3 flex flex-wrap items-center gap-1.5">
+              {showDataShapeError ? (
+                <span
+                  className="inline-flex items-center gap-1 rounded-lg border border-red-500/25 bg-red-50 px-2 py-0.5 text-sm font-medium uppercase tracking-wide text-foreground dark:bg-red-900/20 dark:text-foreground"
+                  title={warningsTitle}
+                >
+                  Broken ancestry
+                </span>
+              ) : null}
+            </div>
+          </div>
+          {displayZoom > 0.5 && !isStashedCommit ? (
+            <div className="mt-auto flex items-end justify-between gap-4 pt-5">
+              <div
+                className={cn('select-text text-sm font-normal', selectedCommitTextClass)}
+                data-selectable-text="true"
+                style={cardTextStyle}
+              >
+                @{node.commit.author}
+              </div>
+              <div
+                className={cn('select-text text-sm font-normal', selectedCommitTextClass)}
+                data-selectable-text="true"
+                style={cardTextStyle}
+              >
+                {COMMIT_DATE_FORMATTER.format(new Date(node.commit.date))}
+              </div>
+            </div>
+          ) : null}
+        </div>
+      </div>
+    </MapGridCommitWrapper>
+  );
+});
+
 type RenderConnector = {
   id: string;
   fromX: number;
@@ -81,6 +383,76 @@ type RenderConnector = {
   fromFace?: ConnectorFace;
   toFace?: ConnectorFace;
 };
+
+const MID_PAN_CONNECTOR_REDRAW_THRESHOLD_SQ =
+  MAP_GRID_CAMERA_PAN_DISTANCE_TICK_PX * MAP_GRID_CAMERA_PAN_DISTANCE_TICK_PX;
+
+const contentPointFormatter = (x: number, y: number) => `${x},${y}`;
+
+function connectorGeometryCacheKey(connector: RenderConnector, cornerRadiusContentPx: number): string {
+  return [
+    connector.id,
+    connector.fromX.toFixed(2),
+    connector.fromY.toFixed(2),
+    connector.toX.toFixed(2),
+    connector.toY.toFixed(2),
+    connector.fromFace ?? '',
+    connector.toFace ?? '',
+    cornerRadiusContentPx.toFixed(3),
+  ].join(':');
+}
+
+function getOrBuildConnectorPath2D(
+  cache: Map<string, Path2D>,
+  connector: RenderConnector,
+  cornerRadiusContentPx: number,
+): Path2D {
+  const key = connectorGeometryCacheKey(connector, cornerRadiusContentPx);
+  const cached = cache.get(key);
+  if (cached) return cached;
+  const pathString = buildMapGridConnectorPath(
+    connector.fromX,
+    connector.fromY,
+    connector.toX,
+    connector.toY,
+    contentPointFormatter,
+    connector.fromFace,
+    connector.toFace,
+    cornerRadiusContentPx,
+  );
+  const path = new Path2D(pathString);
+  cache.set(key, path);
+  return path;
+}
+
+function pruneConnectorPathCache(cache: Map<string, Path2D>, activeKeys: Set<string>) {
+  for (const key of cache.keys()) {
+    if (!activeKeys.has(key)) cache.delete(key);
+  }
+}
+
+function anchorForFace(x: number, y: number, face?: ConnectorFace): { x: number; y: number } {
+  switch (face) {
+    case 'left':
+      return { x, y: y + CARD_HEIGHT / 2 };
+    case 'right':
+      return { x: x + CARD_WIDTH, y: y + CARD_HEIGHT / 2 };
+    case 'top':
+      return { x: x + CARD_WIDTH / 2, y };
+    case 'bottom':
+      return { x: x + CARD_WIDTH / 2, y: y + CARD_HEIGHT };
+    case 'mid-h':
+      return { x: x + CARD_WIDTH / 2, y: y + CARD_HEIGHT / 2 };
+    default:
+      return { x: x + CARD_WIDTH / 2, y: y + CARD_HEIGHT / 2 };
+  }
+}
+
+const CONNECTOR_FACES: ReadonlyArray<ConnectorFace> = ['left', 'right', 'top', 'bottom', 'mid-h'];
+
+function adjustedAnchorKey(face: ConnectorFace, x: number, y: number): string {
+  return `${face}:${Math.round(x)}:${Math.round(y)}`;
+}
 
 type Props = {
   scrollContainerRef: RefObject<HTMLDivElement | null>;
@@ -103,8 +475,7 @@ type Props = {
   normalizedSearchQuery: string;
   matchingNodeIds: Set<string>;
   focusedNode: Node | null;
-  renderNodes: Node[];
-  shouldRenderNode: (node: Node) => boolean;
+  visibleRenderNodes: Node[];
   manuallyOpenedClumps: Set<string>;
   manuallyClosedClumps: Set<string>;
   defaultCollapsedClumps: Set<string>;
@@ -159,8 +530,7 @@ export default function MapGridCanvas({
   normalizedSearchQuery,
   matchingNodeIds,
   focusedNode,
-  renderNodes,
-  shouldRenderNode,
+  visibleRenderNodes,
   manuallyOpenedClumps,
   manuallyClosedClumps,
   defaultCollapsedClumps,
@@ -188,15 +558,27 @@ export default function MapGridCanvas({
   unpushedCommitShasSetByBranch,
   remoteCommitShas,
   checkedOutHeadSha,
-  dragPreviewByNodeId = {},
-  nodePositionOverrides = {},
-  activeDragNodeIds = new Set(),
+  dragPreviewByNodeId = EMPTY_DRAG_PREVIEW,
+  nodePositionOverrides = EMPTY_NODE_POSITION_OVERRIDES,
+  activeDragNodeIds = EMPTY_DRAG_NODE_IDS,
 }: Props) {
   const [openingClumpAnimations, setOpeningClumpAnimations] = useState<Set<string>>(new Set());
   const [canvasSize, setCanvasSize] = useState({ width: 0, height: 0 });
   const connectorCanvasRef = useRef<HTMLCanvasElement | null>(null);
   const drawnConnectorCameraRef = useRef<{ baseX: number; baseY: number; originX: number; originY: number; scale: number } | null>(null);
+  const connectorPath2dCacheRef = useRef<Map<string, Path2D>>(new Map());
+  const lastVisibleMergeConnectorsRef = useRef<RenderConnector[]>([]);
+  const lastVisibleConnectorsRef = useRef<RenderConnector[]>([]);
+  const lastDrawnPanRef = useRef<{ x: number; y: number }>({ x: 0, y: 0 });
+  const mergeConnectorsRef = useRef(mergeConnectors);
+  const connectorsRef = useRef(connectors);
+  const cullConnectorPathRef = useRef(cullConnectorPath);
   const openClumpsLastFrameRef = useRef<Set<string> | null>(null);
+  mergeConnectorsRef.current = mergeConnectors;
+  connectorsRef.current = connectors;
+  cullConnectorPathRef.current = cullConnectorPath;
+
+  const selectedShaSet = useMemo(() => new Set(selectedVisibleCommitShas), [selectedVisibleCommitShas]);
 
   useEffect(() => {
     const currentlyOpenClumps = new Set<string>();
@@ -242,77 +624,119 @@ export default function MapGridCanvas({
     openClumpsLastFrameRef.current = currentlyOpenClumps;
   }, [clusterCounts, defaultCollapsedClumps, manuallyClosedClumps, manuallyOpenedClumps]);
 
-  const compareConnectorDrawOrder = (
-    left: { id: string; fromY: number; toY: number; zIndex: number },
-    right: { id: string; fromY: number; toY: number; zIndex: number },
-  ): number => {
-    // Newer branches draw first (behind older branches).
-    const byAge = right.zIndex - left.zIndex;
-    if (byAge !== 0) return byAge;
-    // Higher connectors draw first to stay visually underneath lower ones.
-    const leftTopY = Math.min(left.fromY, left.toY);
-    const rightTopY = Math.min(right.fromY, right.toY);
-    const byTopY = leftTopY - rightTopY;
-    if (byTopY !== 0) return byTopY;
-    return left.id.localeCompare(right.id);
-  };
-  const visibleRenderNodes = renderNodes.filter((node) => shouldRenderNode(node));
-  const hasPositionAdjustments =
-    Object.keys(nodePositionOverrides).length > 0 ||
-    Object.keys(dragPreviewByNodeId).length > 0;
-  const anchorForFace = (x: number, y: number, face?: ConnectorFace): { x: number; y: number } => {
-    switch (face) {
-      case 'left':
-        return { x, y: y + CARD_HEIGHT / 2 };
-      case 'right':
-        return { x: x + CARD_WIDTH, y: y + CARD_HEIGHT / 2 };
-      case 'top':
-        return { x: x + CARD_WIDTH / 2, y };
-      case 'bottom':
-        return { x: x + CARD_WIDTH / 2, y: y + CARD_HEIGHT };
-      case 'mid-h':
-        return { x: x + CARD_WIDTH / 2, y: y + CARD_HEIGHT / 2 };
-      default:
-        return { x: x + CARD_WIDTH / 2, y: y + CARD_HEIGHT / 2 };
+  const handleClusterToggle = useCallback((clusterKey: string) => {
+    const isDefaultOpen = !defaultCollapsedClumps.has(clusterKey);
+    if (isDefaultOpen) {
+      setManuallyOpenedClumps((prev) => {
+        if (!prev.has(clusterKey)) return prev;
+        const next = new Set(prev);
+        next.delete(clusterKey);
+        return next;
+      });
+      setManuallyClosedClumps((prev) => {
+        const next = new Set(prev);
+        if (next.has(clusterKey)) next.delete(clusterKey);
+        else next.add(clusterKey);
+        return next;
+      });
+    } else {
+      setManuallyClosedClumps((prev) => {
+        if (!prev.has(clusterKey)) return prev;
+        const next = new Set(prev);
+        next.delete(clusterKey);
+        return next;
+      });
+      setManuallyOpenedClumps((prev) => {
+        const next = new Set(prev);
+        if (next.has(clusterKey)) next.delete(clusterKey);
+        else next.add(clusterKey);
+        return next;
+      });
     }
-  };
-  const findAdjustedEndpoint = (
-    endpointX: number,
-    endpointY: number,
-    face: ConnectorFace | undefined,
-  ): { x: number; y: number } => {
-    if (!face || !hasPositionAdjustments) return { x: endpointX, y: endpointY };
-    let best: { dist: number; x: number; y: number } | null = null;
+    flushCameraReactTick();
+  }, [defaultCollapsedClumps, setManuallyOpenedClumps, setManuallyClosedClumps, flushCameraReactTick]);
+
+  const adjustedAnchorByOriginalKey = useMemo(() => {
+    const map = new Map<string, { x: number; y: number }>();
+    const overrideKeys = Object.keys(nodePositionOverrides);
+    const dragKeys = Object.keys(dragPreviewByNodeId);
+    if (overrideKeys.length === 0 && dragKeys.length === 0) return map;
     for (const node of visibleRenderNodes) {
       const persistedOverride = getNodePositionOverride(nodePositionOverrides, node.commit);
       const dragPreview = dragPreviewByNodeId[node.commit.visualId];
       const effectiveX = dragPreview?.x ?? persistedOverride?.x ?? node.x;
       const effectiveY = dragPreview?.y ?? persistedOverride?.y ?? node.y;
       if (Math.abs(effectiveX - node.x) < 0.001 && Math.abs(effectiveY - node.y) < 0.001) continue;
-      const originalAnchor = anchorForFace(node.x, node.y, face);
-      const dist = Math.hypot(originalAnchor.x - endpointX, originalAnchor.y - endpointY);
-      if (dist > 1.5) continue;
-      const nextAnchor = anchorForFace(effectiveX, effectiveY, face);
-      if (!best || dist < best.dist) best = { dist, x: nextAnchor.x, y: nextAnchor.y };
+      for (const face of CONNECTOR_FACES) {
+        const orig = anchorForFace(node.x, node.y, face);
+        const next = anchorForFace(effectiveX, effectiveY, face);
+        map.set(adjustedAnchorKey(face, orig.x, orig.y), next);
+      }
     }
-    return best ? { x: best.x, y: best.y } : { x: endpointX, y: endpointY };
-  };
-  const visibleMergeConnectorCandidates = mergeConnectors.filter((connector) => cullConnectorPath(connector));
-  const visibleConnectorCandidates = connectors.filter((connector) => cullConnectorPath(connector));
-  const adjustedMergeConnectors = visibleMergeConnectorCandidates.map((connector) => {
-    const from = findAdjustedEndpoint(connector.fromX, connector.fromY, connector.fromFace);
-    const to = findAdjustedEndpoint(connector.toX, connector.toY, connector.toFace);
-    return { ...connector, fromX: from.x, fromY: from.y, toX: to.x, toY: to.y };
-  });
-  const adjustedConnectors = visibleConnectorCandidates.map((connector) => {
-    const from = findAdjustedEndpoint(connector.fromX, connector.fromY, connector.fromFace);
-    const to = findAdjustedEndpoint(connector.toX, connector.toY, connector.toFace);
-    return { ...connector, fromX: from.x, fromY: from.y, toX: to.x, toY: to.y };
-  });
-  const sortedVisibleMergeConnectors = adjustedMergeConnectors.sort(compareConnectorDrawOrder);
-  const sortedVisibleConnectors = adjustedConnectors.sort(compareConnectorDrawOrder);
+    return map;
+  }, [visibleRenderNodes, nodePositionOverrides, dragPreviewByNodeId]);
 
-  const getConnectorCameraMetrics = () => {
+  const adjustEndpoint = useCallback(
+    (endpointX: number, endpointY: number, face: ConnectorFace | undefined): { x: number; y: number } => {
+      if (!face || adjustedAnchorByOriginalKey.size === 0) return { x: endpointX, y: endpointY };
+      const next = adjustedAnchorByOriginalKey.get(adjustedAnchorKey(face, endpointX, endpointY));
+      return next ?? { x: endpointX, y: endpointY };
+    },
+    [adjustedAnchorByOriginalKey],
+  );
+
+  const buildVisibleConnectors = useCallback(
+    (
+      source: Array<{
+        id: string;
+        fromX: number;
+        fromY: number;
+        toX: number;
+        toY: number;
+        zIndex: number;
+        fromFace?: ConnectorFace;
+        toFace?: ConnectorFace;
+      }>,
+      cull: (connector: {
+        id: string;
+        fromX: number;
+        fromY: number;
+        toX: number;
+        toY: number;
+        fromFace?: ConnectorFace;
+        toFace?: ConnectorFace;
+      }) => boolean,
+    ): RenderConnector[] => {
+      const filtered = source.filter(cull);
+      return filtered.map((connector) => {
+        const from = adjustEndpoint(connector.fromX, connector.fromY, connector.fromFace);
+        const to = adjustEndpoint(connector.toX, connector.toY, connector.toFace);
+        return { ...connector, fromX: from.x, fromY: from.y, toX: to.x, toY: to.y };
+      });
+    },
+    [adjustEndpoint],
+  );
+
+  const liveVisibleMergeConnectors = useMemo(() => {
+    if (isCameraMoving) return lastVisibleMergeConnectorsRef.current;
+    const next = buildVisibleConnectors(mergeConnectors, cullConnectorPath);
+    lastVisibleMergeConnectorsRef.current = next;
+    return next;
+  }, [isCameraMoving, mergeConnectors, cullConnectorPath, buildVisibleConnectors]);
+
+  const liveVisibleConnectors = useMemo(() => {
+    if (isCameraMoving) return lastVisibleConnectorsRef.current;
+    const next = buildVisibleConnectors(connectors, cullConnectorPath);
+    lastVisibleConnectorsRef.current = next;
+    return next;
+  }, [isCameraMoving, connectors, cullConnectorPath, buildVisibleConnectors]);
+
+  const visibleMergeConnectors = isCameraMoving
+    ? lastVisibleMergeConnectorsRef.current
+    : liveVisibleMergeConnectors;
+  const visibleConnectors = isCameraMoving ? lastVisibleConnectorsRef.current : liveVisibleConnectors;
+
+  const getConnectorCameraMetrics = useCallback(() => {
     const viewport = scrollContainerRef.current;
     const host = mapPadHostRef.current;
     if (!viewport || !host) return null;
@@ -326,7 +750,68 @@ export default function MapGridCanvas({
     const scale = renderedCameraRef.current.zoom / GRID_RENDER_ZOOM;
     if (!Number.isFinite(scale) || scale <= 0) return null;
     return { originX, originY, scale, computedStyle };
-  };
+  }, [mapPadHostRef, renderedCameraRef, scrollContainerRef]);
+
+  const drawConnectorsToCanvas = useCallback(
+    (
+      mergeList: RenderConnector[],
+      connList: RenderConnector[],
+      metrics: { originX: number; originY: number; scale: number; computedStyle: CSSStyleDeclaration },
+    ) => {
+      const canvas = connectorCanvasRef.current;
+      if (!canvas || canvasSize.width <= 0 || canvasSize.height <= 0) return;
+
+      const dpr = window.devicePixelRatio || 1;
+      const pixelWidth = Math.max(1, Math.round(canvasSize.width * dpr));
+      const pixelHeight = Math.max(1, Math.round(canvasSize.height * dpr));
+      if (canvas.width !== pixelWidth) canvas.width = pixelWidth;
+      if (canvas.height !== pixelHeight) canvas.height = pixelHeight;
+      const ctx = canvas.getContext('2d');
+      if (!ctx) return;
+
+      const { originX, originY, scale, computedStyle } = metrics;
+      drawnConnectorCameraRef.current = {
+        baseX: originX - renderedCameraRef.current.panX,
+        baseY: originY - renderedCameraRef.current.panY,
+        originX,
+        originY,
+        scale,
+      };
+      canvas.style.transform = 'translate3d(0, 0, 0) scale(1)';
+
+      ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+      ctx.clearRect(0, 0, canvasSize.width, canvasSize.height);
+      ctx.setTransform(scale * dpr, 0, 0, scale * dpr, originX * dpr, originY * dpr);
+
+      const connectorColor = computedStyle.getPropertyValue('--muted').trim() || CONNECTOR_COLOR;
+      ctx.strokeStyle = connectorColor;
+      ctx.lineWidth = Math.max(1 / scale, lineStrokeWidth);
+      ctx.lineCap = 'round';
+      ctx.lineJoin = 'round';
+
+      const pathCache = connectorPath2dCacheRef.current;
+      const activeKeys = new Set<string>();
+      const combined = new Path2D();
+      for (const connector of mergeList) {
+        const key = connectorGeometryCacheKey(connector, commitCornerRadiusPx);
+        activeKeys.add(key);
+        combined.addPath(getOrBuildConnectorPath2D(pathCache, connector, commitCornerRadiusPx));
+      }
+      for (const connector of connList) {
+        const key = connectorGeometryCacheKey(connector, commitCornerRadiusPx);
+        activeKeys.add(key);
+        combined.addPath(getOrBuildConnectorPath2D(pathCache, connector, commitCornerRadiusPx));
+      }
+      pruneConnectorPathCache(pathCache, activeKeys);
+      ctx.stroke(combined);
+
+      lastDrawnPanRef.current = {
+        x: renderedCameraRef.current.panX,
+        y: renderedCameraRef.current.panY,
+      };
+    },
+    [canvasSize.height, canvasSize.width, commitCornerRadiusPx, lineStrokeWidth, renderedCameraRef],
+  );
 
   useLayoutEffect(() => {
     const viewport = scrollContainerRef.current;
@@ -343,70 +828,20 @@ export default function MapGridCanvas({
   }, [scrollContainerRef]);
 
   useEffect(() => {
-    const canvas = connectorCanvasRef.current;
-    const viewport = scrollContainerRef.current;
-    const host = mapPadHostRef.current;
-    if (!canvas || !viewport || !host || canvasSize.width <= 0 || canvasSize.height <= 0) return;
-
-    const drawConnectors = () => {
-      const dpr = window.devicePixelRatio || 1;
-      const pixelWidth = Math.max(1, Math.round(canvasSize.width * dpr));
-      const pixelHeight = Math.max(1, Math.round(canvasSize.height * dpr));
-      if (canvas.width !== pixelWidth) canvas.width = pixelWidth;
-      if (canvas.height !== pixelHeight) canvas.height = pixelHeight;
-      const ctx = canvas.getContext('2d');
-      if (!ctx) return;
-      ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
-      ctx.clearRect(0, 0, canvasSize.width, canvasSize.height);
-
-      const metrics = getConnectorCameraMetrics();
-      if (!metrics) return;
-      const { originX, originY, scale, computedStyle } = metrics;
-      drawnConnectorCameraRef.current = {
-        baseX: originX - renderedCameraRef.current.panX,
-        baseY: originY - renderedCameraRef.current.panY,
-        originX,
-        originY,
-        scale,
-      };
-      canvas.style.transform = 'translate3d(0, 0, 0) scale(1)';
-
-      const connectorColor = computedStyle.getPropertyValue('--muted').trim() || CONNECTOR_COLOR;
-      ctx.strokeStyle = connectorColor;
-      ctx.lineWidth = Math.max(1, lineStrokeWidth * scale);
-      ctx.lineCap = 'round';
-      ctx.lineJoin = 'round';
-
-      const screenPointFormatter = (x: number, y: number) => `${originX + x * scale},${originY + y * scale}`;
-      const drawConnector = (connector: RenderConnector) => {
-        const path = buildMapGridConnectorPath(
-          connector.fromX,
-          connector.fromY,
-          connector.toX,
-          connector.toY,
-          screenPointFormatter,
-          connector.fromFace,
-          connector.toFace,
-          commitCornerRadiusPx,
-        );
-        ctx.stroke(new Path2D(path));
-      };
-
-      for (const connector of sortedVisibleMergeConnectors) drawConnector(connector);
-      for (const connector of sortedVisibleConnectors) drawConnector(connector);
-    };
-
-    drawConnectors();
+    if (isCameraMoving) return;
+    const metrics = getConnectorCameraMetrics();
+    if (!metrics) return;
+    drawConnectorsToCanvas(visibleMergeConnectors, visibleConnectors, metrics);
   }, [
+    isCameraMoving,
     canvasSize.height,
     canvasSize.width,
-    lineStrokeWidth,
     commitCornerRadiusPx,
-    mapPadHostRef,
-    renderedCameraRef,
-    scrollContainerRef,
-    sortedVisibleConnectors,
-    sortedVisibleMergeConnectors,
+    lineStrokeWidth,
+    drawConnectorsToCanvas,
+    getConnectorCameraMetrics,
+    visibleMergeConnectors,
+    visibleConnectors,
   ]);
 
   useEffect(() => {
@@ -425,6 +860,19 @@ export default function MapGridCanvas({
         const translateY = currentOriginY - drawnCamera.originY * scaleRatio;
         canvas.style.transformOrigin = 'top left';
         canvas.style.transform = `translate3d(${translateX}px, ${translateY}px, 0) scale(${scaleRatio})`;
+
+        const dx = renderedCameraRef.current.panX - lastDrawnPanRef.current.x;
+        const dy = renderedCameraRef.current.panY - lastDrawnPanRef.current.y;
+        if (dx * dx + dy * dy >= MID_PAN_CONNECTOR_REDRAW_THRESHOLD_SQ) {
+          const metrics = getConnectorCameraMetrics();
+          if (metrics) {
+            const mergeList = buildVisibleConnectors(mergeConnectorsRef.current, cullConnectorPathRef.current);
+            const connList = buildVisibleConnectors(connectorsRef.current, cullConnectorPathRef.current);
+            lastVisibleMergeConnectorsRef.current = mergeList;
+            lastVisibleConnectorsRef.current = connList;
+            drawConnectorsToCanvas(mergeList, connList, metrics);
+          }
+        }
       }
       animationFrame = window.requestAnimationFrame(syncConnectorTransform);
     };
@@ -433,7 +881,150 @@ export default function MapGridCanvas({
     return () => {
       if (animationFrame != null) window.cancelAnimationFrame(animationFrame);
     };
-  }, [isCameraMoving, renderedCameraRef]);
+  }, [
+    isCameraMoving,
+    renderedCameraRef,
+    getConnectorCameraMetrics,
+    buildVisibleConnectors,
+    drawConnectorsToCanvas,
+  ]);
+
+  const cardEntries = useMemo(
+    () =>
+      visibleRenderNodes.map((node) => {
+        const commitId = node.commit.id;
+        const visualId = node.commit.visualId;
+        const branchName = node.commit.branchName;
+        const clusterKey = clusterKeyByCommitId.get(visualId) ?? null;
+        const isClusterOpen = clusterKey
+          ? manuallyOpenedClumps.has(clusterKey) ||
+            (!defaultCollapsedClumps.has(clusterKey) && !manuallyClosedClumps.has(clusterKey))
+          : false;
+        const isClusterLead = clusterKey ? leadByClusterKey.get(clusterKey) === visualId : false;
+        const shouldAnimateOpeningClump =
+          clusterKey != null && isClusterOpen && !isClusterLead && openingClumpAnimations.has(clusterKey);
+        const clumpCount = clusterKey ? clusterCounts.get(clusterKey) ?? 1 : 1;
+        const hasRenderedAncestry = commitIdsWithRenderedAncestry.has(commitId);
+        const nodeWarningsForCard = nodeWarnings.get(commitId) ?? [];
+        const showDataShapeError = nodeWarningsForCard.length > 0 && !hasRenderedAncestry;
+        const isSelectedCommit = selectedShaSet.has(commitId);
+        const isLocalUncommitted = commitId === 'WORKING_TREE' || node.commit.kind === 'uncommitted';
+        const isStashedCommit = node.commit.kind === 'stash' || commitId.startsWith('STASH:');
+        const isEmptyBranchNode = node.commit.kind === 'branch-created' && commitId.startsWith('BRANCH_HEAD:');
+        const isUnpushedCommit =
+          isLocalUncommitted || (unpushedCommitShasSetByBranch.get(branchName)?.has(commitId) ?? false);
+        const isExplicitRemoteCommit = node.commit.isRemote === true;
+        const isRemoteCommit =
+          !isLocalUncommitted &&
+          !isUnpushedCommit &&
+          (isExplicitRemoteCommit || remoteCommitShas.has(commitId));
+        const isCheckedOutHeadNode =
+          !isLocalUncommitted && checkedOutHeadSha != null && commitId === checkedOutHeadSha;
+        const isFocused = focusedNode?.commit.id === commitId;
+        const isSearchActive = !!normalizedSearchQuery;
+        const isSearchMatch = isSearchActive && matchingNodeIds.has(commitId);
+
+        const borderAccentClass =
+          branchOffNodeShas.has(commitId) ||
+          branchStartShas.has(commitId) ||
+          crossBranchOutgoingShas.has(commitId)
+            ? branchStartAccentClass
+            : connectorParentShas.has(commitId)
+              ? connectorParentAccentClass
+              : branchBaseCommitByName.get(branchName)?.id === commitId
+                ? 'border-amber-500'
+                : showDataShapeError
+                  ? 'border-red-500'
+                  : '';
+
+        const dragPreview = dragPreviewByNodeId[visualId];
+        const persistedOverride = getNodePositionOverride(nodePositionOverrides, node.commit);
+        const cardLeft = dragPreview?.x ?? persistedOverride?.x ?? node.x;
+        const cardTop = dragPreview?.y ?? persistedOverride?.y ?? node.y;
+        const isDragPreview = activeDragNodeIds.has(visualId);
+        const warningsTitle = nodeWarningsForCard.join('\n');
+
+        return {
+          key: visualId,
+          props: {
+            node,
+            cardLeft,
+            cardTop,
+            isSelectedCommit,
+            isFocused,
+            isCheckedOutHeadNode,
+            isUnpushedCommit,
+            isRemoteCommit,
+            isStashedCommit,
+            isLocalUncommitted,
+            isEmptyBranchNode,
+            hasRenderedAncestry,
+            isSearchActive,
+            isSearchMatch,
+            isCameraMoving,
+            clusterKey,
+            isClusterOpen,
+            isClusterLead,
+            clumpCount,
+            shouldAnimateOpeningClump,
+            isDragPreview,
+            borderAccentClass,
+            warningsTitle,
+            showDataShapeError,
+            displayZoom,
+            commitCornerRadiusPx,
+            lineStrokeWidth,
+            labelTopPx,
+            inverseZoomStyle,
+            onCommitCardClick,
+            onNodePointerDown,
+            onNodePointerMove,
+            onNodePointerUp,
+            onClusterToggle: handleClusterToggle,
+          } satisfies CommitCardProps,
+        };
+      }),
+    [
+      visibleRenderNodes,
+      selectedShaSet,
+      focusedNode,
+      normalizedSearchQuery,
+      matchingNodeIds,
+      displayZoom,
+      commitCornerRadiusPx,
+      lineStrokeWidth,
+      labelTopPx,
+      inverseZoomStyle,
+      nodePositionOverrides,
+      dragPreviewByNodeId,
+      activeDragNodeIds,
+      unpushedCommitShasSetByBranch,
+      remoteCommitShas,
+      checkedOutHeadSha,
+      branchOffNodeShas,
+      branchStartShas,
+      crossBranchOutgoingShas,
+      connectorParentShas,
+      branchBaseCommitByName,
+      clusterKeyByCommitId,
+      manuallyOpenedClumps,
+      manuallyClosedClumps,
+      defaultCollapsedClumps,
+      leadByClusterKey,
+      clusterCounts,
+      commitIdsWithRenderedAncestry,
+      nodeWarnings,
+      openingClumpAnimations,
+      branchStartAccentClass,
+      connectorParentAccentClass,
+      isCameraMoving,
+      handleClusterToggle,
+      onCommitCardClick,
+      onNodePointerDown,
+      onNodePointerMove,
+      onNodePointerUp,
+    ],
+  );
 
   return (
     <div
@@ -464,288 +1055,9 @@ export default function MapGridCanvas({
             ...(isCameraMoving ? { willChange: 'transform' as const } : {}),
           }}
         >
-          {visibleRenderNodes.map((node) => {
-            const clusterKey = clusterKeyByCommitId.get(node.commit.visualId);
-            const isClusterOpen = clusterKey
-              ? manuallyOpenedClumps.has(clusterKey) || (!defaultCollapsedClumps.has(clusterKey) && !manuallyClosedClumps.has(clusterKey))
-              : false;
-            const isTop = clusterKey ? leadByClusterKey.get(clusterKey) === node.commit.visualId : false;
-            const shouldAnimateOpeningClump =
-              clusterKey != null && isClusterOpen && !isTop && openingClumpAnimations.has(clusterKey);
-            const clumpCount = clusterKey ? clusterCounts.get(clusterKey) ?? 1 : 1;
-            const hasRenderedAncestry = commitIdsWithRenderedAncestry.has(node.commit.id);
-            const nodeWarningsForCard = nodeWarnings.get(node.commit.id) ?? [];
-            const showDataShapeError = nodeWarningsForCard.length > 0 && !hasRenderedAncestry;
-            const isSelectedCommit = selectedVisibleCommitShas.includes(node.commit.id);
-            const isLocalUncommitted =
-              node.commit.id === 'WORKING_TREE' || node.commit.kind === 'uncommitted';
-            const isStashedCommit =
-              node.commit.kind === 'stash' || node.commit.id.startsWith('STASH:');
-            const stashIndexMatch = /^STASH:(\d+)$/.exec(node.commit.id);
-            const stashHeaderLabel = stashIndexMatch ? `Stash ${Number.parseInt(stashIndexMatch[1], 10) + 1}` : null;
-            const stashBodyMessage = isStashedCommit
-              ? (node.commit.message.trim() && node.commit.message.trim() !== 'git-visualizer'
-                  ? node.commit.message
-                  : 'Stashed changes')
-              : node.commit.message;
-            const isEmptyBranchNode =
-              node.commit.kind === 'branch-created' && node.commit.id.startsWith('BRANCH_HEAD:');
-            const isUnpushedCommit =
-              isLocalUncommitted ||
-              (unpushedCommitShasSetByBranch.get(node.commit.branchName)?.has(node.commit.id) ?? false);
-            const isExplicitRemoteCommit = node.commit.isRemote === true;
-            const isRemoteCommit =
-              !isLocalUncommitted &&
-              !isUnpushedCommit &&
-              (isExplicitRemoteCommit || remoteCommitShas.has(node.commit.id));
-            const isCheckedOutCommit = isLocalUncommitted || (checkedOutHeadSha != null && node.commit.id === checkedOutHeadSha);
-            const isCheckedOutHeadNode =
-              !isLocalUncommitted &&
-              checkedOutHeadSha != null &&
-              node.commit.id === checkedOutHeadSha;
-            const hideCheckedOutOutline = isCheckedOutHeadNode && !isSelectedCommit;
-            const checkedOutAccentActive = isCheckedOutCommit && !isSelectedCommit;
-            const remoteAccentActive = isRemoteCommit && !checkedOutAccentActive && !isSelectedCommit;
-            const selectedCommitTextClass = checkedOutAccentActive
-              ? 'text-checked'
-              : remoteAccentActive
-                ? 'text-remote'
-              : isSelectedCommit
-                ? 'text-select'
-                : 'text-foreground';
-            const selectedCommitTextStyle = checkedOutAccentActive
-              ? { color: 'var(--checked)' }
-              : remoteAccentActive
-                ? { color: 'var(--remote)' }
-              : isSelectedCommit
-                ? { color: 'var(--select)' }
-                : undefined;
-            const focusedCommitBorderColor = selectedCommitTextStyle?.color ?? 'var(--foreground)';
-            const commitBorderColor = hideCheckedOutOutline
-              ? 'transparent'
-              : focusedNode?.commit.id === node.commit.id
-                ? focusedCommitBorderColor
-                : remoteAccentActive
-                  ? 'var(--remote)'
-                : isSelectedCommit
-                  ? 'var(--select)'
-                  : CONNECTOR_COLOR;
-            const nodeBorderWidth = isStashedCommit || isEmptyBranchNode || isLocalUncommitted
-              ? 1.25 / displayZoom
-              : lineStrokeWidth;
-            const isDashedOutline = isStashedCommit || isLocalUncommitted || isEmptyBranchNode;
-            const dashedStrokeDasharray = `${12 / displayZoom} ${6 / displayZoom}`;
-            const dashedStrokeInset = nodeBorderWidth / 2;
-            const dashedOutlinePath = `M ${dashedStrokeInset} ${dashedStrokeInset} H ${CARD_WIDTH - dashedStrokeInset - commitCornerRadiusPx} Q ${CARD_WIDTH - dashedStrokeInset} ${dashedStrokeInset} ${CARD_WIDTH - dashedStrokeInset} ${dashedStrokeInset + commitCornerRadiusPx} V ${176 - dashedStrokeInset - commitCornerRadiusPx} Q ${CARD_WIDTH - dashedStrokeInset} ${176 - dashedStrokeInset} ${CARD_WIDTH - dashedStrokeInset - commitCornerRadiusPx} ${176 - dashedStrokeInset} H ${dashedStrokeInset + commitCornerRadiusPx} Q ${dashedStrokeInset} ${176 - dashedStrokeInset} ${dashedStrokeInset} ${176 - dashedStrokeInset - commitCornerRadiusPx} V ${dashedStrokeInset}`;
-            const unpushedCommitTextStyle = isUnpushedCommit && !checkedOutAccentActive && !isSelectedCommit
-              ? { color: 'var(--muted-foreground)' }
-              : undefined;
-            const dragPreview = dragPreviewByNodeId[node.commit.visualId];
-            const persistedOverride = getNodePositionOverride(nodePositionOverrides, node.commit);
-            const cardLeft = dragPreview?.x ?? persistedOverride?.x ?? node.x;
-            const cardTop = dragPreview?.y ?? persistedOverride?.y ?? node.y;
-            return (
-              <MapGridCommitWrapper
-                key={node.commit.visualId}
-                fadeIn={shouldAnimateOpeningClump}
-                isDragPreview={activeDragNodeIds.has(node.commit.visualId)}
-                dataCommitCard="true"
-                className={cn(
-                  'group absolute z-20',
-                  normalizedSearchQuery && !matchingNodeIds.has(node.commit.id)
-                    ? isCameraMoving
-                      ? 'opacity-10'
-                      : 'opacity-10 blur-[0.5px]'
-                    : '',
-                  normalizedSearchQuery && matchingNodeIds.has(node.commit.id) ? 'scale-[1.01]' : '',
-                  focusedNode?.commit.id === node.commit.id ? 'z-30' : '',
-                )}
-                style={{ left: cardLeft, top: cardTop, width: CARD_WIDTH, height: CARD_BODY_TOP_OFFSET + CARD_HEIGHT + 4, overflow: 'visible' }}
-                onClick={(event) => onCommitCardClick(event, node)}
-                onPointerDown={(event) => onNodePointerDown(event, node)}
-                onPointerMove={onNodePointerMove}
-                onPointerUp={onNodePointerUp}
-                onPointerCancel={onNodePointerUp}
-              >
-                {isDashedOutline ? (
-                  <svg
-                    className="pointer-events-none absolute inset-0 z-20 overflow-visible"
-                    aria-hidden="true"
-                    viewBox={`0 0 ${CARD_WIDTH} 176`}
-                    preserveAspectRatio="none"
-                  >
-                    <path
-                      d={dashedOutlinePath}
-                      fill="none"
-                      stroke={commitBorderColor}
-                      strokeWidth={nodeBorderWidth}
-                      strokeDasharray={dashedStrokeDasharray}
-                      strokeLinecap="butt"
-                      strokeLinejoin="round"
-                    />
-                  </svg>
-                ) : null}
-                <div className="absolute left-0 z-30 w-full" style={{ ...inverseZoomStyle, top: `${labelTopPx}px` }}>
-                  <div className="flex min-w-0 items-baseline justify-between gap-2 bg-transparent pb-0">
-                    <div
-                      className={cn(
-                        'min-w-0 h-4 flex-1 text-sm font-normal leading-none',
-                        selectedCommitTextClass,
-                        displayZoom <= 0.5 ? 'overflow-hidden text-ellipsis whitespace-nowrap' : 'break-words whitespace-normal',
-                      )}
-                      style={selectedCommitTextStyle ?? unpushedCommitTextStyle}
-                    >
-                      {isStashedCommit && stashHeaderLabel
-                        ? stashHeaderLabel
-                      : node.commit.branchName
-                        ? `${node.commit.branchName}/${node.commit.id.slice(0, 7)}`
-                        : node.commit.id.slice(0, 7)}
-                    </div>
-                    {isTop && clumpCount > 1 ? (
-                      <button
-                        type="button"
-                        onMouseDown={(event) => {
-                          event.stopPropagation();
-                        }}
-                        onClick={(event) => {
-                          event.stopPropagation();
-                          event.preventDefault();
-                          if (!clusterKey) return;
-                          const isDefaultOpen = !defaultCollapsedClumps.has(clusterKey);
-                          if (isDefaultOpen) {
-                            setManuallyOpenedClumps((prev) => {
-                              if (!prev.has(clusterKey)) return prev;
-                              const next = new Set(prev);
-                              next.delete(clusterKey);
-                              return next;
-                            });
-                            setManuallyClosedClumps((prev) => {
-                              const next = new Set(prev);
-                              if (next.has(clusterKey)) next.delete(clusterKey);
-                              else next.add(clusterKey);
-                              return next;
-                            });
-                          } else {
-                            setManuallyClosedClumps((prev) => {
-                              if (!prev.has(clusterKey)) return prev;
-                              const next = new Set(prev);
-                              next.delete(clusterKey);
-                              return next;
-                            });
-                            setManuallyOpenedClumps((prev) => {
-                              const next = new Set(prev);
-                              if (next.has(clusterKey)) next.delete(clusterKey);
-                              else next.add(clusterKey);
-                              return next;
-                            });
-                          }
-                          flushCameraReactTick();
-                        }}
-                        className={cn('inline-flex self-start items-center bg-transparent p-0 text-sm font-normal leading-none', selectedCommitTextClass)}
-                        style={selectedCommitTextStyle ?? unpushedCommitTextStyle}
-                      >
-                        {isClusterOpen ? (
-                        <span className="-translate-x-[1px] translate-y-[2px] text-base leading-none">⌃</span>
-                        ) : (
-                          `+${clumpCount - 1}`
-                        )}
-                      </button>
-                    ) : null}
-                  </div>
-                </div>
-                <div className={cn(
-                    'absolute left-0 h-[176px] w-full cursor-grab overflow-hidden rounded-tr-xl rounded-br-xl rounded-bl-xl rounded-tl-none border border-border/50 active:cursor-grabbing',
-                    checkedOutAccentActive && !isUnpushedCommit && !isStashedCommit && !isEmptyBranchNode
-                    ? 'bg-checked-muted'
-                    : remoteAccentActive && !isStashedCommit && !isEmptyBranchNode
-                        ? 'bg-remote-muted'
-                    : isSelectedCommit && !isUnpushedCommit && !isStashedCommit && !isEmptyBranchNode
-                        ? 'bg-select-muted'
-                        : isUnpushedCommit
-                          ? 'bg-background'
-                          : isStashedCommit || isEmptyBranchNode
-                            ? 'bg-transparent'
-                            : 'bg-muted',
-                    isDashedOutline ? 'border-solid' : '',
-                    branchOffNodeShas.has(node.commit.id) ||
-                    branchStartShas.has(node.commit.id) ||
-                    crossBranchOutgoingShas.has(node.commit.id)
-                      ? branchStartAccentClass
-                      : connectorParentShas.has(node.commit.id)
-                        ? connectorParentAccentClass
-                      : branchBaseCommitByName.get(node.commit.branchName)?.id === node.commit.id
-                        ? 'border-amber-500'
-                        : showDataShapeError
-                          ? 'border-red-500'
-                          : '',
-                    normalizedSearchQuery && matchingNodeIds.has(node.commit.id) && !isCameraMoving ? '' : '',
-                  )}
-                style={{
-                  top: 0,
-                  borderWidth: hideCheckedOutOutline ? 0 : `${nodeBorderWidth}px`,
-                  borderColor: isDashedOutline || hideCheckedOutOutline ? 'transparent' : commitBorderColor,
-                  borderTopLeftRadius: 0,
-                  borderTopRightRadius: `${commitCornerRadiusPx}px`,
-                  borderBottomRightRadius: `${commitCornerRadiusPx}px`,
-                  borderBottomLeftRadius: `${commitCornerRadiusPx}px`,
-                }}
-                >
-                  <div className="relative z-10 flex h-full min-h-0 flex-col px-2.5 py-2" style={inverseZoomStyle}>
-                    <div className="min-h-0 flex-1">
-                      <div
-                        className={cn(
-                          'max-w-[38rem] select-text text-sm font-normal leading-tight tracking-tight text-foreground',
-                          selectedCommitTextClass,
-                          displayZoom <= 0.5 ? 'overflow-hidden text-ellipsis whitespace-nowrap' : 'break-words whitespace-normal',
-                        )}
-                        data-selectable-text="true"
-                      style={selectedCommitTextStyle ?? unpushedCommitTextStyle}
-                      >
-                        {isTop && isClusterOpen
-                          ? stashBodyMessage
-                          : isTop && clumpCount > 1
-                            ? `${stashBodyMessage} +${clumpCount - 1}`
-                            : stashBodyMessage}
-                      </div>
-                      <div className="mt-3 flex flex-wrap items-center gap-1.5">
-                        {showDataShapeError ? (
-                          <span
-                            className="inline-flex items-center gap-1 rounded-lg border border-red-500/25 bg-red-50 px-2 py-0.5 text-sm font-medium uppercase tracking-wide text-foreground dark:bg-red-900/20 dark:text-foreground"
-                            title={nodeWarningsForCard.join('\n')}
-                          >
-                            Broken ancestry
-                          </span>
-                        ) : null}
-                      </div>
-                    </div>
-                    {displayZoom > 0.5 && !isStashedCommit ? (
-                      <div className="mt-auto flex items-end justify-between gap-4 pt-5">
-                        <div
-                          className={cn('select-text text-sm font-normal', selectedCommitTextClass)}
-                          data-selectable-text="true"
-                          style={selectedCommitTextStyle ?? unpushedCommitTextStyle}
-                        >
-                          @{node.commit.author}
-                        </div>
-                        <div
-                          className={cn('select-text text-sm font-normal', selectedCommitTextClass)}
-                          data-selectable-text="true"
-                          style={selectedCommitTextStyle ?? unpushedCommitTextStyle}
-                        >
-                          {new Date(node.commit.date).toLocaleString('en-US', {
-                            month: 'long',
-                            day: 'numeric',
-                            hour: 'numeric',
-                            minute: '2-digit',
-                          })}
-                        </div>
-                      </div>
-                    ) : null}
-                  </div>
-                </div>
-              </MapGridCommitWrapper>
-            );
-          })}
+          {cardEntries.map(({ key, props }) => (
+            <MapGridCommitCard key={key} {...props} />
+          ))}
         </div>
       </div>
     </div>
