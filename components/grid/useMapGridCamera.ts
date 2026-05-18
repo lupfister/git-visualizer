@@ -53,6 +53,7 @@ export function useMapGridCamera({
   const lastCameraPanReactEmitRef = useRef(0);
   const lastTickedPanRef = useRef<{ x: number; y: number }>({ x: 0, y: 0 });
   const isInteractionActiveRef = useRef(false);
+  const transformLayerOriginScreenRef = useRef<{ x: number; y: number } | null>(null);
 
   const getCameraStorageKey = useCallback(() => {
     const scope = cameraStorageScopeKey?.trim() || window.location.pathname;
@@ -66,6 +67,7 @@ export function useMapGridCamera({
   }, [getCameraStorageKey]);
 
   const getTransformLayerOriginScreen = useCallback((): { x: number; y: number } | null => {
+    if (transformLayerOriginScreenRef.current) return transformLayerOriginScreenRef.current;
     const host = mapPadHostRef.current;
     if (!host) return null;
     const hr = host.getBoundingClientRect();
@@ -74,7 +76,9 @@ export function useMapGridCamera({
     const bt = Number.parseFloat(cs.borderTopWidth) || 0;
     const pl = Number.parseFloat(cs.paddingLeft) || MAP_GRID_INNER_PADDING_PX;
     const pt = Number.parseFloat(cs.paddingTop) || MAP_GRID_INNER_PADDING_PX;
-    return { x: hr.left + bl + pl, y: hr.top + bt + pt };
+    const origin = { x: hr.left + bl + pl, y: hr.top + bt + pt };
+    transformLayerOriginScreenRef.current = origin;
+    return origin;
   }, [mapPadHostRef]);
 
   const flushCameraReactTick = useCallback(() => {
@@ -126,6 +130,14 @@ export function useMapGridCamera({
     const dySinceTick = nextPanY - lastTickedPanRef.current.y;
     if (dxSinceTick * dxSinceTick + dySinceTick * dySinceTick >= DISTANCE_TICK_THRESHOLD_SQ) {
       flushCameraReactTick();
+      return;
+    }
+
+    if (isInteractionActiveRef.current) {
+      if (panReactTrailingTimeoutRef.current != null) {
+        window.clearTimeout(panReactTrailingTimeoutRef.current);
+        panReactTrailingTimeoutRef.current = null;
+      }
       return;
     }
 
@@ -249,6 +261,13 @@ export function useMapGridCamera({
 
   useLayoutEffect(() => {
     if (!isEnabled) return;
+    const host = mapPadHostRef.current;
+    const invalidateOrigin = () => {
+      transformLayerOriginScreenRef.current = null;
+    };
+    const resizeObserver = host ? new ResizeObserver(invalidateOrigin) : null;
+    if (host) resizeObserver?.observe(host);
+    window.addEventListener('resize', invalidateOrigin);
     let initial: MapGridCameraState = { panX: 0, panY: 0, zoom: GRID_ZOOM_DEFAULT };
     try {
       const raw = window.localStorage.getItem(getCameraStorageKey());
@@ -272,6 +291,8 @@ export function useMapGridCamera({
     zoomRef.current = initial.zoom;
     applyRenderedCamera(initial.panX, initial.panY, initial.zoom, { emitTick: false });
     return () => {
+      window.removeEventListener('resize', invalidateOrigin);
+      resizeObserver?.disconnect();
       if (interactionIdleTimeoutRef.current != null) window.clearTimeout(interactionIdleTimeoutRef.current);
       if (cameraFrameRef.current != null) window.cancelAnimationFrame(cameraFrameRef.current);
       if (panReactTrailingTimeoutRef.current != null) {
@@ -280,7 +301,7 @@ export function useMapGridCamera({
       }
       persistCamera(renderedCameraRef.current);
     };
-  }, [applyRenderedCamera, getCameraStorageKey, isEnabled, persistCamera]);
+  }, [applyRenderedCamera, getCameraStorageKey, isEnabled, mapPadHostRef, persistCamera]);
 
   return {
     isCameraMoving,

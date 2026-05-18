@@ -9,23 +9,9 @@ import { getNodePositionOverride } from './nodePositionOverrides';
 
 const EMPTY_NODE_POSITION_OVERRIDES: NodePositionOverrides = {};
 const EMPTY_DRAG_PREVIEW: Record<string, { x: number; y: number }> = {};
-const EMPTY_DRAG_NODE_IDS: Set<string> = new Set<string>();
 
-function MapGridCommitWrapper({
-  fadeIn,
-  isDragPreview,
-  className,
-  style,
-  onClick,
-  onPointerDown,
-  onPointerMove,
-  onPointerUp,
-  onPointerCancel,
-  dataCommitCard,
-  children,
-}: {
+type MapGridCommitWrapperProps = {
   fadeIn: boolean;
-  isDragPreview?: boolean;
   className?: string;
   style?: CSSProperties;
   onClick?: React.MouseEventHandler<HTMLDivElement>;
@@ -35,7 +21,31 @@ function MapGridCommitWrapper({
   onPointerCancel?: React.PointerEventHandler<HTMLDivElement>;
   dataCommitCard?: string;
   children: ReactNode;
-}) {
+};
+
+/*
+ * Non-animating cards must NOT declare any `transition` (or any other
+ * layer-promoting property) — WebKit otherwise promotes every visible card
+ * into its own composition layer and pan composite cost scales linearly
+ * with card count. Only the brief cluster open/close fade window pays for a
+ * transition and a 0→1 opacity ramp.
+ *
+ * We keep this as a single component (rather than swapping components on
+ * `fadeIn`) so the underlying <div> is reused and we don't unmount/remount
+ * the entire card subtree when the fade animation ends.
+ */
+function MapGridCommitWrapper({
+  fadeIn,
+  className,
+  style,
+  onClick,
+  onPointerDown,
+  onPointerMove,
+  onPointerUp,
+  onPointerCancel,
+  dataCommitCard,
+  children,
+}: MapGridCommitWrapperProps) {
   const [opaque, setOpaque] = useState(!fadeIn);
   useLayoutEffect(() => {
     if (!fadeIn) {
@@ -52,6 +62,9 @@ function MapGridCommitWrapper({
       if (innerRaf != null) cancelAnimationFrame(innerRaf);
     };
   }, [fadeIn]);
+  const fadeStyle: CSSProperties | undefined = fadeIn
+    ? { opacity: opaque ? 1 : 0, transition: 'opacity 240ms ease-out' }
+    : undefined;
   return (
     <div
       className={className}
@@ -61,14 +74,7 @@ function MapGridCommitWrapper({
       onPointerMove={onPointerMove}
       onPointerUp={onPointerUp}
       onPointerCancel={onPointerCancel}
-      style={{
-        ...style,
-        opacity: opaque ? 1 : 0,
-        transition: [
-          fadeIn ? 'opacity 240ms ease-out' : null,
-          isDragPreview ? null : 'left 120ms ease-out, top 120ms ease-out',
-        ].filter(Boolean).join(', ') || undefined,
-      }}
+      style={fadeStyle ? { ...style, ...fadeStyle } : style}
     >
       {children}
     </div>
@@ -86,32 +92,33 @@ type CommitCardProps = {
   node: Node;
   cardLeft: number;
   cardTop: number;
-  isSelectedCommit: boolean;
-  isFocused: boolean;
-  isCheckedOutHeadNode: boolean;
-  isUnpushedCommit: boolean;
-  isRemoteCommit: boolean;
-  isStashedCommit: boolean;
-  isLocalUncommitted: boolean;
-  isEmptyBranchNode: boolean;
-  hasRenderedAncestry: boolean;
-  isSearchActive: boolean;
-  isSearchMatch: boolean;
-  isCameraMoving: boolean;
-  clusterKey: string | null;
-  isClusterOpen: boolean;
-  isClusterLead: boolean;
-  clumpCount: number;
-  shouldAnimateOpeningClump: boolean;
-  isDragPreview: boolean;
-  borderAccentClass: string;
-  warningsTitle: string;
-  showDataShapeError: boolean;
   displayZoom: number;
   commitCornerRadiusPx: number;
   lineStrokeWidth: number;
   labelTopPx: number;
-  inverseZoomStyle: CSSProperties;
+  selectedShaSet: Set<string>;
+  normalizedSearchQuery: string;
+  matchingNodeIds: Set<string>;
+  focusedCommitId: string | null;
+  manuallyOpenedClumps: Set<string>;
+  manuallyClosedClumps: Set<string>;
+  defaultCollapsedClumps: Set<string>;
+  leadByClusterKey: Map<string, string>;
+  clusterKeyByCommitId: Map<string, string>;
+  clusterCounts: Map<string, number>;
+  openingClumpAnimations: Set<string>;
+  commitIdsWithRenderedAncestry: Set<string>;
+  nodeWarnings: Map<string, string[]>;
+  connectorParentShas: Set<string>;
+  branchStartShas: Set<string>;
+  branchOffNodeShas: Set<string>;
+  crossBranchOutgoingShas: Set<string>;
+  branchBaseCommitByName: Map<string, { id: string } | undefined>;
+  branchStartAccentClass: string;
+  connectorParentAccentClass: string;
+  unpushedCommitShasSetByBranch: Map<string, Set<string>>;
+  remoteCommitShas: Set<string>;
+  checkedOutHeadSha: string | null;
   onCommitCardClick: (event: MouseEvent, node: Node) => void;
   onNodePointerDown: (event: React.PointerEvent<HTMLDivElement>, node: Node) => void;
   onNodePointerMove: (event: React.PointerEvent<HTMLDivElement>) => void;
@@ -123,38 +130,83 @@ const MapGridCommitCard = memo(function MapGridCommitCard({
   node,
   cardLeft,
   cardTop,
-  isSelectedCommit,
-  isFocused,
-  isCheckedOutHeadNode,
-  isUnpushedCommit,
-  isRemoteCommit,
-  isStashedCommit,
-  isLocalUncommitted,
-  isEmptyBranchNode,
-  hasRenderedAncestry: _hasRenderedAncestry,
-  isSearchActive,
-  isSearchMatch,
-  isCameraMoving,
-  clusterKey,
-  isClusterOpen,
-  isClusterLead,
-  clumpCount,
-  shouldAnimateOpeningClump,
-  isDragPreview,
-  borderAccentClass,
-  warningsTitle,
-  showDataShapeError,
   displayZoom,
   commitCornerRadiusPx,
   lineStrokeWidth,
   labelTopPx,
-  inverseZoomStyle,
+  selectedShaSet,
+  normalizedSearchQuery,
+  matchingNodeIds,
+  focusedCommitId,
+  manuallyOpenedClumps,
+  manuallyClosedClumps,
+  defaultCollapsedClumps,
+  leadByClusterKey,
+  clusterKeyByCommitId,
+  clusterCounts,
+  openingClumpAnimations,
+  commitIdsWithRenderedAncestry,
+  nodeWarnings,
+  connectorParentShas,
+  branchStartShas,
+  branchOffNodeShas,
+  crossBranchOutgoingShas,
+  branchBaseCommitByName,
+  branchStartAccentClass,
+  connectorParentAccentClass,
+  unpushedCommitShasSetByBranch,
+  remoteCommitShas,
+  checkedOutHeadSha,
   onCommitCardClick,
   onNodePointerDown,
   onNodePointerMove,
   onNodePointerUp,
   onClusterToggle,
 }: CommitCardProps) {
+  const commitId = node.commit.id;
+  const visualId = node.commit.visualId;
+  const branchName = node.commit.branchName;
+  const clusterKey = clusterKeyByCommitId.get(visualId) ?? null;
+  const isClusterOpen = clusterKey
+    ? manuallyOpenedClumps.has(clusterKey) ||
+      (!defaultCollapsedClumps.has(clusterKey) && !manuallyClosedClumps.has(clusterKey))
+    : false;
+  const isClusterLead = clusterKey ? leadByClusterKey.get(clusterKey) === visualId : false;
+  const shouldAnimateOpeningClump =
+    clusterKey != null && isClusterOpen && !isClusterLead && openingClumpAnimations.has(clusterKey);
+  const clumpCount = clusterKey ? clusterCounts.get(clusterKey) ?? 1 : 1;
+  const hasRenderedAncestry = commitIdsWithRenderedAncestry.has(commitId);
+  const nodeWarningsForCard = nodeWarnings.get(commitId) ?? [];
+  const showDataShapeError = nodeWarningsForCard.length > 0 && !hasRenderedAncestry;
+  const isSelectedCommit = selectedShaSet.has(commitId);
+  const isLocalUncommitted = commitId === 'WORKING_TREE' || node.commit.kind === 'uncommitted';
+  const isStashedCommit = node.commit.kind === 'stash' || commitId.startsWith('STASH:');
+  const isEmptyBranchNode = node.commit.kind === 'branch-created' && commitId.startsWith('BRANCH_HEAD:');
+  const isUnpushedCommit =
+    isLocalUncommitted || (unpushedCommitShasSetByBranch.get(branchName)?.has(commitId) ?? false);
+  const isExplicitRemoteCommit = node.commit.isRemote === true;
+  const isRemoteCommit =
+    !isLocalUncommitted &&
+    !isUnpushedCommit &&
+    (isExplicitRemoteCommit || remoteCommitShas.has(commitId));
+  const isCheckedOutHeadNode =
+    !isLocalUncommitted && checkedOutHeadSha != null && commitId === checkedOutHeadSha;
+  const isFocused = focusedCommitId === commitId;
+  const isSearchActive = !!normalizedSearchQuery;
+  const isSearchMatch = isSearchActive && matchingNodeIds.has(commitId);
+  const warningsTitle = nodeWarningsForCard.join('\n');
+  const borderAccentClass =
+    branchOffNodeShas.has(commitId) ||
+    branchStartShas.has(commitId) ||
+    crossBranchOutgoingShas.has(commitId)
+      ? branchStartAccentClass
+      : connectorParentShas.has(commitId)
+        ? connectorParentAccentClass
+        : branchBaseCommitByName.get(branchName)?.id === commitId
+          ? 'border-amber-500'
+          : showDataShapeError
+            ? 'border-red-500'
+            : '';
   const stashIndexMatch = /^STASH:(\d+)$/.exec(node.commit.id);
   const stashHeaderLabel = stashIndexMatch ? `Stash ${Number.parseInt(stashIndexMatch[1], 10) + 1}` : null;
   const stashBodyMessage = isStashedCommit
@@ -198,7 +250,10 @@ const MapGridCommitCard = memo(function MapGridCommitCard({
   const isDashedOutline = isStashedCommit || isLocalUncommitted || isEmptyBranchNode;
   const dashedStrokeDasharray = `${12 / displayZoom} ${6 / displayZoom}`;
   const dashedStrokeInset = nodeBorderWidth / 2;
-  const dashedOutlinePath = `M ${dashedStrokeInset} ${dashedStrokeInset} H ${CARD_WIDTH - dashedStrokeInset - commitCornerRadiusPx} Q ${CARD_WIDTH - dashedStrokeInset} ${dashedStrokeInset} ${CARD_WIDTH - dashedStrokeInset} ${dashedStrokeInset + commitCornerRadiusPx} V ${176 - dashedStrokeInset - commitCornerRadiusPx} Q ${CARD_WIDTH - dashedStrokeInset} ${176 - dashedStrokeInset} ${CARD_WIDTH - dashedStrokeInset - commitCornerRadiusPx} ${176 - dashedStrokeInset} H ${dashedStrokeInset + commitCornerRadiusPx} Q ${dashedStrokeInset} ${176 - dashedStrokeInset} ${dashedStrokeInset} ${176 - dashedStrokeInset - commitCornerRadiusPx} V ${dashedStrokeInset}`;
+  const dashedOutlinePath = useMemo(
+    () => `M ${dashedStrokeInset} ${dashedStrokeInset} H ${CARD_WIDTH - dashedStrokeInset - commitCornerRadiusPx} Q ${CARD_WIDTH - dashedStrokeInset} ${dashedStrokeInset} ${CARD_WIDTH - dashedStrokeInset} ${dashedStrokeInset + commitCornerRadiusPx} V ${176 - dashedStrokeInset - commitCornerRadiusPx} Q ${CARD_WIDTH - dashedStrokeInset} ${176 - dashedStrokeInset} ${CARD_WIDTH - dashedStrokeInset - commitCornerRadiusPx} ${176 - dashedStrokeInset} H ${dashedStrokeInset + commitCornerRadiusPx} Q ${dashedStrokeInset} ${176 - dashedStrokeInset} ${dashedStrokeInset} ${176 - dashedStrokeInset - commitCornerRadiusPx} V ${dashedStrokeInset}`,
+    [commitCornerRadiusPx, dashedStrokeInset],
+  );
   const unpushedCommitTextStyle: CSSProperties | undefined =
     isUnpushedCommit && !checkedOutAccentActive && !isSelectedCommit
       ? { color: 'var(--muted-foreground)' }
@@ -207,11 +262,7 @@ const MapGridCommitCard = memo(function MapGridCommitCard({
 
   const wrapperClassName = cn(
     'group absolute z-20',
-    isSearchActive && !isSearchMatch
-      ? isCameraMoving
-        ? 'opacity-10'
-        : 'opacity-10 blur-[0.5px]'
-      : '',
+    isSearchActive && !isSearchMatch ? 'opacity-10' : '',
     isSearchActive && isSearchMatch ? 'scale-[1.01]' : '',
     isFocused ? 'z-30' : '',
   );
@@ -236,14 +287,37 @@ const MapGridCommitCard = memo(function MapGridCommitCard({
     if (!clusterKey) return;
     onClusterToggle(clusterKey);
   };
+  const scaledTextStyle: CSSProperties = {
+    fontSize: 'calc(0.875rem * var(--map-inv-zoom, 1))',
+    lineHeight: 1,
+    ...cardTextStyle,
+  };
+  const scaledBodyTextStyle: CSSProperties = {
+    fontSize: 'calc(0.875rem * var(--map-inv-zoom, 1))',
+    lineHeight: 1.25,
+    ...cardTextStyle,
+  };
+  const scaledBodyInsetStyle: CSSProperties = {
+    padding: 'calc(0.5rem * var(--map-inv-zoom, 1)) calc(0.625rem * var(--map-inv-zoom, 1))',
+  };
+  const scaledMetaTopStyle: CSSProperties = {
+    paddingTop: 'calc(1.25rem * var(--map-inv-zoom, 1))',
+    gap: 'calc(1rem * var(--map-inv-zoom, 1))',
+  };
 
   return (
     <MapGridCommitWrapper
       fadeIn={shouldAnimateOpeningClump}
-      isDragPreview={isDragPreview}
       dataCommitCard="true"
       className={wrapperClassName}
-      style={{ left: cardLeft, top: cardTop, width: CARD_WIDTH, height: CARD_BODY_TOP_OFFSET + CARD_HEIGHT + 4, overflow: 'visible' }}
+      style={{
+        left: cardLeft,
+        top: cardTop,
+        width: CARD_WIDTH,
+        height: CARD_BODY_TOP_OFFSET + CARD_HEIGHT + 4,
+        overflow: 'visible',
+        contain: 'layout style',
+      }}
       onClick={handleClick}
       onPointerDown={handlePointerDown}
       onPointerMove={onNodePointerMove}
@@ -268,15 +342,15 @@ const MapGridCommitCard = memo(function MapGridCommitCard({
           />
         </svg>
       ) : null}
-      <div className="absolute left-0 z-30 w-full" style={{ ...inverseZoomStyle, top: `${labelTopPx}px` }}>
+      <div className="absolute left-0 z-30 w-full" style={{ top: `${labelTopPx}px` }}>
         <div className="flex min-w-0 items-baseline justify-between gap-2 bg-transparent pb-0">
           <div
             className={cn(
-              'min-w-0 h-4 flex-1 text-sm font-normal leading-none',
+              'min-w-0 flex-1 font-normal',
               selectedCommitTextClass,
               displayZoom <= 0.5 ? 'overflow-hidden text-ellipsis whitespace-nowrap' : 'break-words whitespace-normal',
             )}
-            style={cardTextStyle}
+            style={scaledTextStyle}
           >
             {headerLabel}
           </div>
@@ -287,11 +361,11 @@ const MapGridCommitCard = memo(function MapGridCommitCard({
                 event.stopPropagation();
               }}
               onClick={handleClusterButtonClick}
-              className={cn('inline-flex self-start items-center bg-transparent p-0 text-sm font-normal leading-none', selectedCommitTextClass)}
-              style={cardTextStyle}
+              className={cn('inline-flex self-start items-center bg-transparent p-0 font-normal leading-none', selectedCommitTextClass)}
+              style={scaledTextStyle}
             >
               {isClusterOpen ? (
-                <span className="-translate-x-[1px] translate-y-[2px] text-base leading-none">⌃</span>
+                <span className="-translate-x-[1px] translate-y-[2px] leading-none" style={{ fontSize: 'calc(1rem * var(--map-inv-zoom, 1))' }}>⌃</span>
               ) : (
                 `+${clumpCount - 1}`
               )}
@@ -323,26 +397,31 @@ const MapGridCommitCard = memo(function MapGridCommitCard({
           borderTopRightRadius: `${commitCornerRadiusPx}px`,
           borderBottomRightRadius: `${commitCornerRadiusPx}px`,
           borderBottomLeftRadius: `${commitCornerRadiusPx}px`,
+          contain: 'layout paint style',
         }}
       >
-        <div className="relative z-10 flex h-full min-h-0 flex-col px-2.5 py-2" style={inverseZoomStyle}>
+        <div className="relative z-10 flex h-full min-h-0 flex-col" style={scaledBodyInsetStyle}>
           <div className="min-h-0 flex-1">
             <div
               className={cn(
-                'max-w-[38rem] select-text text-sm font-normal leading-tight tracking-tight text-foreground',
+                'max-w-[38rem] select-text font-normal tracking-tight text-foreground',
                 selectedCommitTextClass,
                 displayZoom <= 0.5 ? 'overflow-hidden text-ellipsis whitespace-nowrap' : 'break-words whitespace-normal',
               )}
               data-selectable-text="true"
-              style={cardTextStyle}
+              style={scaledBodyTextStyle}
             >
               {bodyMessage}
             </div>
-            <div className="mt-3 flex flex-wrap items-center gap-1.5">
+            <div className="flex flex-wrap items-center" style={{ marginTop: 'calc(0.75rem * var(--map-inv-zoom, 1))', gap: 'calc(0.375rem * var(--map-inv-zoom, 1))' }}>
               {showDataShapeError ? (
                 <span
-                  className="inline-flex items-center gap-1 rounded-lg border border-red-500/25 bg-red-50 px-2 py-0.5 text-sm font-medium uppercase tracking-wide text-foreground dark:bg-red-900/20 dark:text-foreground"
+                  className="inline-flex items-center gap-1 rounded-lg border border-red-500/25 bg-red-50 font-medium uppercase tracking-wide text-foreground dark:bg-red-900/20 dark:text-foreground"
                   title={warningsTitle}
+                  style={{
+                    fontSize: 'calc(0.875rem * var(--map-inv-zoom, 1))',
+                    padding: 'calc(0.125rem * var(--map-inv-zoom, 1)) calc(0.5rem * var(--map-inv-zoom, 1))',
+                  }}
                 >
                   Broken ancestry
                 </span>
@@ -350,18 +429,18 @@ const MapGridCommitCard = memo(function MapGridCommitCard({
             </div>
           </div>
           {displayZoom > 0.5 && !isStashedCommit ? (
-            <div className="mt-auto flex items-end justify-between gap-4 pt-5">
+            <div className="mt-auto flex items-end justify-between" style={scaledMetaTopStyle}>
               <div
-                className={cn('select-text text-sm font-normal', selectedCommitTextClass)}
+                className={cn('select-text font-normal', selectedCommitTextClass)}
                 data-selectable-text="true"
-                style={cardTextStyle}
+                style={scaledTextStyle}
               >
                 @{node.commit.author}
               </div>
               <div
-                className={cn('select-text text-sm font-normal', selectedCommitTextClass)}
+                className={cn('select-text font-normal', selectedCommitTextClass)}
                 data-selectable-text="true"
-                style={cardTextStyle}
+                style={scaledTextStyle}
               >
                 {COMMIT_DATE_FORMATTER.format(new Date(node.commit.date))}
               </div>
@@ -382,6 +461,19 @@ type RenderConnector = {
   zIndex: number;
   fromFace?: ConnectorFace;
   toFace?: ConnectorFace;
+};
+
+type ConnectorCameraMetrics = {
+  originX: number;
+  originY: number;
+  scale: number;
+  connectorColor: string;
+};
+
+type ConnectorCameraMetricsBase = {
+  baseX: number;
+  baseY: number;
+  connectorColor: string;
 };
 
 const MID_PAN_CONNECTOR_REDRAW_THRESHOLD_SQ =
@@ -469,7 +561,6 @@ type Props = {
   onNodePointerMove: (event: React.PointerEvent<HTMLDivElement>) => void;
   onNodePointerUp: (event: React.PointerEvent<HTMLDivElement>) => void;
   labelTopPx: number;
-  inverseZoomStyle: CSSProperties;
   displayZoom: number;
   selectedVisibleCommitShas: string[];
   normalizedSearchQuery: string;
@@ -506,10 +597,25 @@ type Props = {
   orientation?: 'vertical' | 'horizontal';
   dragPreviewByNodeId?: Record<string, { x: number; y: number }>;
   nodePositionOverrides?: Record<string, { x: number; y: number }>;
-  activeDragNodeIds?: Set<string>;
 };
 
-export default function MapGridCanvas({
+const PAN_STABLE_CONNECTOR_PROPS = new Set<keyof Props>(['connectors', 'mergeConnectors']);
+
+function areMapGridCanvasPropsEqual(prev: Readonly<Props>, next: Readonly<Props>) {
+  const keepConnectorRefsFrozen = prev.isCameraMoving && next.isCameraMoving;
+  for (const key of Object.keys(prev) as Array<keyof Props>) {
+    if (keepConnectorRefsFrozen && PAN_STABLE_CONNECTOR_PROPS.has(key)) continue;
+    if (prev[key] !== next[key]) return false;
+  }
+  for (const key of Object.keys(next) as Array<keyof Props>) {
+    if (key in prev) continue;
+    if (keepConnectorRefsFrozen && PAN_STABLE_CONNECTOR_PROPS.has(key)) continue;
+    return false;
+  }
+  return true;
+}
+
+const MapGridCanvas = memo(function MapGridCanvas({
   scrollContainerRef,
   mapPadHostRef,
   transformLayerRef,
@@ -524,7 +630,6 @@ export default function MapGridCanvas({
   onNodePointerMove,
   onNodePointerUp,
   labelTopPx,
-  inverseZoomStyle,
   displayZoom,
   selectedVisibleCommitShas,
   normalizedSearchQuery,
@@ -560,13 +665,14 @@ export default function MapGridCanvas({
   checkedOutHeadSha,
   dragPreviewByNodeId = EMPTY_DRAG_PREVIEW,
   nodePositionOverrides = EMPTY_NODE_POSITION_OVERRIDES,
-  activeDragNodeIds = EMPTY_DRAG_NODE_IDS,
 }: Props) {
   const [openingClumpAnimations, setOpeningClumpAnimations] = useState<Set<string>>(new Set());
   const [canvasSize, setCanvasSize] = useState({ width: 0, height: 0 });
   const connectorCanvasRef = useRef<HTMLCanvasElement | null>(null);
   const drawnConnectorCameraRef = useRef<{ baseX: number; baseY: number; originX: number; originY: number; scale: number } | null>(null);
+  const connectorCameraMetricsBaseRef = useRef<ConnectorCameraMetricsBase | null>(null);
   const connectorPath2dCacheRef = useRef<Map<string, Path2D>>(new Map());
+  const combinedConnectorPathRef = useRef<{ cacheKey: string; path: Path2D } | null>(null);
   const lastVisibleMergeConnectorsRef = useRef<RenderConnector[]>([]);
   const lastVisibleConnectorsRef = useRef<RenderConnector[]>([]);
   const lastDrawnPanRef = useRef<{ x: number; y: number }>({ x: 0, y: 0 });
@@ -736,27 +842,45 @@ export default function MapGridCanvas({
     : liveVisibleMergeConnectors;
   const visibleConnectors = isCameraMoving ? lastVisibleConnectorsRef.current : liveVisibleConnectors;
 
-  const getConnectorCameraMetrics = useCallback(() => {
-    const viewport = scrollContainerRef.current;
-    const host = mapPadHostRef.current;
-    if (!viewport || !host) return null;
-    const viewportRect = viewport.getBoundingClientRect();
-    const hostRect = host.getBoundingClientRect();
-    const computedStyle = getComputedStyle(host);
-    const borderLeft = Number.parseFloat(computedStyle.borderLeftWidth) || 0;
-    const borderTop = Number.parseFloat(computedStyle.borderTopWidth) || 0;
-    const originX = hostRect.left - viewportRect.left + borderLeft + renderedCameraRef.current.panX;
-    const originY = hostRect.top - viewportRect.top + borderTop + renderedCameraRef.current.panY;
+  const getConnectorCameraMetrics = useCallback((options?: { forceMeasure?: boolean }): ConnectorCameraMetrics | null => {
     const scale = renderedCameraRef.current.zoom / GRID_RENDER_ZOOM;
     if (!Number.isFinite(scale) || scale <= 0) return null;
-    return { originX, originY, scale, computedStyle };
+
+    let base = connectorCameraMetricsBaseRef.current;
+    if (!base || options?.forceMeasure) {
+      const viewport = scrollContainerRef.current;
+      const host = mapPadHostRef.current;
+      if (!viewport || !host) return null;
+      const viewportRect = viewport.getBoundingClientRect();
+      const hostRect = host.getBoundingClientRect();
+      const computedStyle = getComputedStyle(host);
+      const borderLeft = Number.parseFloat(computedStyle.borderLeftWidth) || 0;
+      const borderTop = Number.parseFloat(computedStyle.borderTopWidth) || 0;
+      base = {
+        baseX: hostRect.left - viewportRect.left + borderLeft,
+        baseY: hostRect.top - viewportRect.top + borderTop,
+        connectorColor: computedStyle.getPropertyValue('--muted').trim() || CONNECTOR_COLOR,
+      };
+      connectorCameraMetricsBaseRef.current = base;
+    }
+
+    return {
+      originX: base.baseX + renderedCameraRef.current.panX,
+      originY: base.baseY + renderedCameraRef.current.panY,
+      scale,
+      connectorColor: base.connectorColor,
+    };
   }, [mapPadHostRef, renderedCameraRef, scrollContainerRef]);
+
+  useEffect(() => {
+    connectorCameraMetricsBaseRef.current = null;
+  }, [canvasSize.height, canvasSize.width, contentHeight, contentWidth]);
 
   const drawConnectorsToCanvas = useCallback(
     (
       mergeList: RenderConnector[],
       connList: RenderConnector[],
-      metrics: { originX: number; originY: number; scale: number; computedStyle: CSSStyleDeclaration },
+      metrics: ConnectorCameraMetrics,
     ) => {
       const canvas = connectorCanvasRef.current;
       if (!canvas || canvasSize.width <= 0 || canvasSize.height <= 0) return;
@@ -769,7 +893,7 @@ export default function MapGridCanvas({
       const ctx = canvas.getContext('2d');
       if (!ctx) return;
 
-      const { originX, originY, scale, computedStyle } = metrics;
+      const { originX, originY, scale, connectorColor } = metrics;
       drawnConnectorCameraRef.current = {
         baseX: originX - renderedCameraRef.current.panX,
         baseY: originY - renderedCameraRef.current.panY,
@@ -783,7 +907,6 @@ export default function MapGridCanvas({
       ctx.clearRect(0, 0, canvasSize.width, canvasSize.height);
       ctx.setTransform(scale * dpr, 0, 0, scale * dpr, originX * dpr, originY * dpr);
 
-      const connectorColor = computedStyle.getPropertyValue('--muted').trim() || CONNECTOR_COLOR;
       ctx.strokeStyle = connectorColor;
       ctx.lineWidth = Math.max(1 / scale, lineStrokeWidth);
       ctx.lineCap = 'round';
@@ -791,16 +914,30 @@ export default function MapGridCanvas({
 
       const pathCache = connectorPath2dCacheRef.current;
       const activeKeys = new Set<string>();
-      const combined = new Path2D();
+      const combinedKeyParts: string[] = [];
       for (const connector of mergeList) {
         const key = connectorGeometryCacheKey(connector, commitCornerRadiusPx);
         activeKeys.add(key);
-        combined.addPath(getOrBuildConnectorPath2D(pathCache, connector, commitCornerRadiusPx));
+        combinedKeyParts.push(key);
       }
       for (const connector of connList) {
         const key = connectorGeometryCacheKey(connector, commitCornerRadiusPx);
         activeKeys.add(key);
-        combined.addPath(getOrBuildConnectorPath2D(pathCache, connector, commitCornerRadiusPx));
+        combinedKeyParts.push(key);
+      }
+      const combinedCacheKey = combinedKeyParts.join('|');
+      let combined = combinedConnectorPathRef.current?.cacheKey === combinedCacheKey
+        ? combinedConnectorPathRef.current.path
+        : null;
+      if (!combined) {
+        combined = new Path2D();
+        for (const connector of mergeList) {
+          combined.addPath(getOrBuildConnectorPath2D(pathCache, connector, commitCornerRadiusPx));
+        }
+        for (const connector of connList) {
+          combined.addPath(getOrBuildConnectorPath2D(pathCache, connector, commitCornerRadiusPx));
+        }
+        combinedConnectorPathRef.current = { cacheKey: combinedCacheKey, path: combined };
       }
       pruneConnectorPathCache(pathCache, activeKeys);
       ctx.stroke(combined);
@@ -829,7 +966,7 @@ export default function MapGridCanvas({
 
   useEffect(() => {
     if (isCameraMoving) return;
-    const metrics = getConnectorCameraMetrics();
+    const metrics = getConnectorCameraMetrics({ forceMeasure: true });
     if (!metrics) return;
     drawConnectorsToCanvas(visibleMergeConnectors, visibleConnectors, metrics);
   }, [
@@ -892,57 +1029,11 @@ export default function MapGridCanvas({
   const cardEntries = useMemo(
     () =>
       visibleRenderNodes.map((node) => {
-        const commitId = node.commit.id;
         const visualId = node.commit.visualId;
-        const branchName = node.commit.branchName;
-        const clusterKey = clusterKeyByCommitId.get(visualId) ?? null;
-        const isClusterOpen = clusterKey
-          ? manuallyOpenedClumps.has(clusterKey) ||
-            (!defaultCollapsedClumps.has(clusterKey) && !manuallyClosedClumps.has(clusterKey))
-          : false;
-        const isClusterLead = clusterKey ? leadByClusterKey.get(clusterKey) === visualId : false;
-        const shouldAnimateOpeningClump =
-          clusterKey != null && isClusterOpen && !isClusterLead && openingClumpAnimations.has(clusterKey);
-        const clumpCount = clusterKey ? clusterCounts.get(clusterKey) ?? 1 : 1;
-        const hasRenderedAncestry = commitIdsWithRenderedAncestry.has(commitId);
-        const nodeWarningsForCard = nodeWarnings.get(commitId) ?? [];
-        const showDataShapeError = nodeWarningsForCard.length > 0 && !hasRenderedAncestry;
-        const isSelectedCommit = selectedShaSet.has(commitId);
-        const isLocalUncommitted = commitId === 'WORKING_TREE' || node.commit.kind === 'uncommitted';
-        const isStashedCommit = node.commit.kind === 'stash' || commitId.startsWith('STASH:');
-        const isEmptyBranchNode = node.commit.kind === 'branch-created' && commitId.startsWith('BRANCH_HEAD:');
-        const isUnpushedCommit =
-          isLocalUncommitted || (unpushedCommitShasSetByBranch.get(branchName)?.has(commitId) ?? false);
-        const isExplicitRemoteCommit = node.commit.isRemote === true;
-        const isRemoteCommit =
-          !isLocalUncommitted &&
-          !isUnpushedCommit &&
-          (isExplicitRemoteCommit || remoteCommitShas.has(commitId));
-        const isCheckedOutHeadNode =
-          !isLocalUncommitted && checkedOutHeadSha != null && commitId === checkedOutHeadSha;
-        const isFocused = focusedNode?.commit.id === commitId;
-        const isSearchActive = !!normalizedSearchQuery;
-        const isSearchMatch = isSearchActive && matchingNodeIds.has(commitId);
-
-        const borderAccentClass =
-          branchOffNodeShas.has(commitId) ||
-          branchStartShas.has(commitId) ||
-          crossBranchOutgoingShas.has(commitId)
-            ? branchStartAccentClass
-            : connectorParentShas.has(commitId)
-              ? connectorParentAccentClass
-              : branchBaseCommitByName.get(branchName)?.id === commitId
-                ? 'border-amber-500'
-                : showDataShapeError
-                  ? 'border-red-500'
-                  : '';
-
         const dragPreview = dragPreviewByNodeId[visualId];
         const persistedOverride = getNodePositionOverride(nodePositionOverrides, node.commit);
         const cardLeft = dragPreview?.x ?? persistedOverride?.x ?? node.x;
         const cardTop = dragPreview?.y ?? persistedOverride?.y ?? node.y;
-        const isDragPreview = activeDragNodeIds.has(visualId);
-        const warningsTitle = nodeWarningsForCard.join('\n');
 
         return {
           key: visualId,
@@ -950,32 +1041,33 @@ export default function MapGridCanvas({
             node,
             cardLeft,
             cardTop,
-            isSelectedCommit,
-            isFocused,
-            isCheckedOutHeadNode,
-            isUnpushedCommit,
-            isRemoteCommit,
-            isStashedCommit,
-            isLocalUncommitted,
-            isEmptyBranchNode,
-            hasRenderedAncestry,
-            isSearchActive,
-            isSearchMatch,
-            isCameraMoving,
-            clusterKey,
-            isClusterOpen,
-            isClusterLead,
-            clumpCount,
-            shouldAnimateOpeningClump,
-            isDragPreview,
-            borderAccentClass,
-            warningsTitle,
-            showDataShapeError,
             displayZoom,
             commitCornerRadiusPx,
             lineStrokeWidth,
             labelTopPx,
-            inverseZoomStyle,
+            selectedShaSet,
+            normalizedSearchQuery,
+            matchingNodeIds,
+            focusedCommitId: focusedNode?.commit.id ?? null,
+            manuallyOpenedClumps,
+            manuallyClosedClumps,
+            defaultCollapsedClumps,
+            leadByClusterKey,
+            clusterKeyByCommitId,
+            clusterCounts,
+            openingClumpAnimations,
+            commitIdsWithRenderedAncestry,
+            nodeWarnings,
+            connectorParentShas,
+            branchStartShas,
+            branchOffNodeShas,
+            crossBranchOutgoingShas,
+            branchBaseCommitByName,
+            branchStartAccentClass,
+            connectorParentAccentClass,
+            unpushedCommitShasSetByBranch,
+            remoteCommitShas,
+            checkedOutHeadSha,
             onCommitCardClick,
             onNodePointerDown,
             onNodePointerMove,
@@ -986,18 +1078,16 @@ export default function MapGridCanvas({
       }),
     [
       visibleRenderNodes,
-      selectedShaSet,
-      focusedNode,
-      normalizedSearchQuery,
-      matchingNodeIds,
       displayZoom,
       commitCornerRadiusPx,
       lineStrokeWidth,
       labelTopPx,
-      inverseZoomStyle,
       nodePositionOverrides,
       dragPreviewByNodeId,
-      activeDragNodeIds,
+      selectedShaSet,
+      focusedNode,
+      normalizedSearchQuery,
+      matchingNodeIds,
       unpushedCommitShasSetByBranch,
       remoteCommitShas,
       checkedOutHeadSha,
@@ -1017,7 +1107,6 @@ export default function MapGridCanvas({
       openingClumpAnimations,
       branchStartAccentClass,
       connectorParentAccentClass,
-      isCameraMoving,
       handleClusterToggle,
       onCommitCardClick,
       onNodePointerDown,
@@ -1047,13 +1136,20 @@ export default function MapGridCanvas({
       >
         <div
           ref={transformLayerRef}
-          className="absolute left-0 top-0 z-20"
+          className={cn(
+            'absolute left-0 top-0 z-20',
+            isCameraMoving ? 'map-grid-pan-active' : '',
+          )}
           style={{
             width: contentWidth,
             height: contentHeight,
             transformOrigin: 'top left' as const,
-            ...(isCameraMoving ? { willChange: 'transform' as const } : {}),
-          }}
+            contain: 'layout paint style' as const,
+            '--map-inv-zoom': `${1 / displayZoom}`,
+            ...(isCameraMoving
+              ? { willChange: 'transform' as const, pointerEvents: 'none' as const }
+              : {}),
+          } as CSSProperties}
         >
           {cardEntries.map(({ key, props }) => (
             <MapGridCommitCard key={key} {...props} />
@@ -1062,4 +1158,6 @@ export default function MapGridCanvas({
       </div>
     </div>
   );
-}
+}, areMapGridCanvasPropsEqual);
+
+export default MapGridCanvas;

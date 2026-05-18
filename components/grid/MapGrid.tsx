@@ -55,6 +55,7 @@ import {
   visibleCommitIdSetEquals,
   withCullInsetScreenPx,
 } from './mapGridUtils';
+import type { ViewportContentBounds } from './mapGridUtils';
 
 function MapGridLoadingState() {
   return (
@@ -234,7 +235,7 @@ export default function BranchGridMap({
     [controlledNodePositionOverrides, onNodePositionOverridesChange],
   );
   const [dragPreviewByNodeId, setDragPreviewByNodeId] = useState<NodePositionOverrides>({});
-  const [activeDragNodeIds, setActiveDragNodeIds] = useState<Set<string>>(() => new Set());
+  const [, setActiveDragNodeIds] = useState<Set<string>>(() => new Set());
   const suppressNextCommitClickRef = useRef(false);
   const dragNodeRef = useRef<{
     nodeId: string;
@@ -372,15 +373,6 @@ export default function BranchGridMap({
   const isGridSearchActive = Boolean(normalizedSearchQuery);
 
   const displayZoom = renderedZoom / GRID_RENDER_ZOOM;
-  const inverseZoomStyle = useMemo(
-    () => ({
-      transform: `scale(${1 / displayZoom})`,
-      transformOrigin: 'top left' as const,
-      width: `${100 * displayZoom}%`,
-      height: `${100 * displayZoom}%`,
-    }),
-    [displayZoom],
-  );
   const labelTopPx = -(20 / displayZoom);
   const snapMetrics = useMemo(() => {
     const zoomAwareRowGap = ROW_GAP / GRID_LAYOUT_RENDER_ZOOM;
@@ -904,52 +896,61 @@ export default function BranchGridMap({
     lastHandledViewportFocusRequestRef.current = focusRequestKey;
   }, [gridFocusSha, gridSearchJumpToken, focusedRenderNode, getTransformLayerOriginScreen, syncCamera, renderedCameraRef]);
 
-  const viewportClientW = viewportClientSize?.width ?? scrollContainerRef.current?.clientWidth ?? 0;
-  const viewportClientH = viewportClientSize?.height ?? scrollContainerRef.current?.clientHeight ?? 0;
-  const rawVisibleBounds =
-    viewportClientW > 0 && viewportClientH > 0
-      ? getViewportContentBoundsFromClientSize(viewportClientW, viewportClientH, renderedCameraRef.current, {
-          innerPaddingPx: MAP_GRID_INNER_PADDING_PX,
-        })
-      : null;
-  const visibleBounds = useMemo(
-    () =>
-      rawVisibleBounds != null
-        ? withCullInsetScreenPx(
-            rawVisibleBounds,
-            renderedCameraRef.current.zoom,
-            MAP_GRID_CULL_VIEWPORT_INSET_SCREEN_PX,
-          )
-        : null,
-    // rawVisibleBounds identity is fresh each render, but its value is stable
-    // across renders that don't change the camera; key on its numeric edges so
-    // the connector pipeline only invalidates on actual viewport changes.
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-    [
-      rawVisibleBounds?.left,
-      rawVisibleBounds?.top,
-      rawVisibleBounds?.right,
-      rawVisibleBounds?.bottom,
-      renderedZoom,
-    ],
-  );
+  // visibleBoundsRef is updated inside the cull useLayoutEffect each tick so
+  // cullConnectorPath can read the latest value without becoming a new function
+  // reference on every render (which would force MapGridCanvas to re-render).
+  const visibleBoundsRef = useRef<ViewportContentBounds | null>(null);
+
   const cullConnectorPath = useCallback(
     (connector: { id: string; fromX: number; fromY: number; toX: number; toY: number; fromFace?: ConnectorFace; toFace?: ConnectorFace }): boolean => {
-      if (!visibleBounds) return true;
+      const vb = visibleBoundsRef.current;
+      if (!vb) return true;
       const { fromX, fromY, toX, toY } = connector;
       const pad = 160;
       if (
-        Math.max(fromX, toX) < visibleBounds.left - pad ||
-        Math.min(fromX, toX) > visibleBounds.right + pad ||
-        Math.max(fromY, toY) < visibleBounds.top - pad ||
-        Math.min(fromY, toY) > visibleBounds.bottom + pad
+        Math.max(fromX, toX) < vb.left - pad ||
+        Math.min(fromX, toX) > vb.right + pad ||
+        Math.max(fromY, toY) < vb.top - pad ||
+        Math.min(fromY, toY) > vb.bottom + pad
       ) {
         return false;
       }
-      return looseCableConnectorIntersectsViewportBounds(fromX, fromY, toX, toY, visibleBounds, connector.fromFace, connector.toFace);
+      return looseCableConnectorIntersectsViewportBounds(fromX, fromY, toX, toY, vb, connector.fromFace, connector.toFace);
     },
-    [visibleBounds],
+    // stable forever — reads visibleBoundsRef at call time
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [],
   );
+
+  // Pre-computed set of node ids that must always be visible regardless of camera position:
+  // open cluster members (zoom/layout disagreement) and collapsed cluster leads (prevent row gaps).
+  // Keyed on cluster state only — does not change on camera ticks.
+  const alwaysVisibleNodeIds = useMemo(() => {
+    const ids = new Set<string>();
+    for (const node of renderNodes) {
+      const ck = clusterKeyByCommitId.get(node.commit.visualId);
+      if (!ck) continue;
+      const count = clusterCounts.get(ck) ?? 1;
+      if (count <= 1) continue;
+      const expanded =
+        manuallyOpenedClumps.has(ck) ||
+        (!defaultCollapsedClumps.has(ck) && !manuallyClosedClumps.has(ck));
+      if (expanded) {
+        ids.add(node.commit.visualId);
+        continue;
+      }
+      if (leadByClusterKey.get(ck) === node.commit.visualId) ids.add(node.commit.visualId);
+    }
+    return ids;
+  }, [
+    renderNodes,
+    clusterKeyByCommitId,
+    clusterCounts,
+    manuallyOpenedClumps,
+    manuallyClosedClumps,
+    defaultCollapsedClumps,
+    leadByClusterKey,
+  ]);
 
   useLayoutEffect(() => {
     const viewport = scrollContainerRef.current;
@@ -970,47 +971,41 @@ export default function BranchGridMap({
       renderedCameraRef.current.zoom,
       MAP_GRID_CULL_VIEWPORT_INSET_SCREEN_PX,
     );
+    visibleBoundsRef.current = bounds;
     const nextVisible = collectVisibleCommitIdsFromSpatialIndex(
       commitCullSpatialIndex,
       bounds,
       nodeByVisualId,
       labelTopPx,
     );
-    /* Expanded clumps: spatial cull rects use live zoom while row layout uses GRID_LAYOUT_RENDER_ZOOM — they
-     * can disagree, so commits stay out of visibleNodeIds. Always allow laid-out commits for open
-     * multi-commit clusters into the viewport set.
-     * Collapsed clumps: only the lead is in renderNodes; if spatial cull misses the lead the card is hidden
-     * while connectors/rows still reserve space — force leads in so the timeline does not show a gap. */
-    for (const node of renderNodes) {
-      const ck = clusterKeyByCommitId.get(node.commit.visualId);
-      if (!ck) continue;
-      const count = clusterCounts.get(ck) ?? 1;
-      if (count <= 1) continue;
-      const clusterExpanded =
-        manuallyOpenedClumps.has(ck) ||
-        (!defaultCollapsedClumps.has(ck) && !manuallyClosedClumps.has(ck));
-      if (clusterExpanded) {
-        nextVisible.add(node.commit.visualId);
-        continue;
-      }
-      if (leadByClusterKey.get(ck) === node.commit.visualId) {
-        nextVisible.add(node.commit.visualId);
-      }
-    }
+    for (const id of alwaysVisibleNodeIds) nextVisible.add(id);
 
-    setVisibleNodeIds((prev) => (visibleCommitIdSetEquals(prev, nextVisible) ? prev : nextVisible));
+    if (isCameraMoving) {
+      // While panning, only add to the visible set; never evict mid-pan. Bulk
+      // eviction during deceleration ticks shows up as a visible lag spike
+      // (hundreds of cards unmount in one frame). Trailing cards are clipped
+      // by overflow:hidden and the transform-layer `contain` rule, so the
+      // accumulated cost is a steady composite, not a per-tick spike. The
+      // prune happens once when the camera settles (the else branch below).
+      setVisibleNodeIds((prev) => {
+        if (prev === null) return nextVisible;
+        let hasNew = false;
+        for (const id of nextVisible) {
+          if (!prev.has(id)) { hasNew = true; break; }
+        }
+        if (!hasNew) return prev;
+        return new Set([...prev, ...nextVisible]);
+      });
+    } else {
+      setVisibleNodeIds((prev) => (visibleCommitIdSetEquals(prev, nextVisible) ? prev : nextVisible));
+    }
   }, [
     renderedZoom,
     gridSearchJumpToken,
     gridFocusSha,
     cameraRenderTick,
-    manuallyOpenedClumps,
-    manuallyClosedClumps,
-    defaultCollapsedClumps,
-    clusterKeyByCommitId,
-    clusterCounts,
-    leadByClusterKey,
-    renderNodes,
+    isCameraMoving,
+    alwaysVisibleNodeIds,
     viewportClientSize,
     commitCullSpatialIndex,
     nodeByVisualId,
@@ -1465,7 +1460,7 @@ export default function BranchGridMap({
       <MapGridDebugPanel
         isOpen={isDebugOpen}
         onClose={() => onDebugClose?.()}
-        visibleBounds={visibleBounds}
+        visibleBounds={visibleBoundsRef.current}
         renderedNodeCount={renderedNodeCount}
         totalNodeCount={renderNodes.length}
         renderedMergeConnectorCount={renderedMergeConnectorCount}
@@ -1666,7 +1661,6 @@ export default function BranchGridMap({
           onNodePointerMove={handleNodePointerMove}
           onNodePointerUp={handleNodePointerUp}
           labelTopPx={labelTopPx}
-          inverseZoomStyle={inverseZoomStyle}
           displayZoom={displayZoom}
           selectedVisibleCommitShas={selectedVisibleCommitShas}
           normalizedSearchQuery={normalizedSearchQuery}
@@ -1703,7 +1697,6 @@ export default function BranchGridMap({
           orientation={orientation}
           dragPreviewByNodeId={dragPreviewByNodeId}
           nodePositionOverrides={nodePositionOverrides}
-          activeDragNodeIds={activeDragNodeIds}
         />
       )}
       {blockMapDisplay ? <MapGridBlockingOverlay /> : null}
