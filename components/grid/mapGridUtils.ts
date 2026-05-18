@@ -24,10 +24,8 @@ export const MAP_GRID_CAMERA_PAN_DISTANCE_TICK_PX = 120;
  * paired with the zoom-scaled screen threshold in {@link mapGridPanCullDistanceExceeded}.
  */
 export const MAP_GRID_CAMERA_PAN_CONTENT_TICK_PX = MAP_GRID_CAMERA_PAN_DISTANCE_TICK_PX;
-/** Max commit cards mounted per camera cull tick while interacting. */
-export const MAP_GRID_MAX_NODES_ADDED_PER_PAN_TICK = 48;
-/** Max commit cards mounted per animation frame while panning (RAF drain of the pending queue). */
-export const MAP_GRID_MAX_NODES_ADDED_PER_PAN_FRAME = 24;
+/** Max new commit cards admitted per distance cull tick while panning (~{@link MAP_GRID_CAMERA_PAN_DISTANCE_TICK_PX} screen px). */
+export const MAP_GRID_MAX_NODES_ADDED_PER_PAN_ADMISSION = 12;
 /** Max commit cards unmounted per frame during post-pan settle prune. */
 export const MAP_GRID_MAX_NODES_REMOVED_PER_FRAME = 56;
 
@@ -89,6 +87,59 @@ export function cn(...classes: Array<string | false | null | undefined>): string
 
 export function clampZoom(value: number): number {
   return Math.max(GRID_ZOOM_MIN, Math.min(GRID_ZOOM_MAX, value));
+}
+
+/** Camera zoom ÷ {@link GRID_RENDER_ZOOM}; 0.2 at minimum zoom-out. */
+export const MAP_GRID_MIN_DISPLAY_ZOOM = GRID_ZOOM_MIN / GRID_RENDER_ZOOM;
+
+export function computeMapGridDisplayZoom(cameraZoom: number): number {
+  return cameraZoom / GRID_RENDER_ZOOM;
+}
+
+/** Inverse zoom for card typography (`--map-inv-zoom`); matches camera scale compensation. */
+export function computeMapGridInvZoom(displayZoom: number): number {
+  if (!Number.isFinite(displayZoom) || displayZoom <= 0) return 1;
+  return 1 / displayZoom;
+}
+
+/** Max real commit card DOM slots; aggressively low when zoomed out. */
+export function computeMapGridCardSlotCap(displayZoom: number): number {
+  const maxSlots = 96;
+  const minSlotsZoomedOut = 12;
+  if (displayZoom >= 0.85) return maxSlots;
+  if (displayZoom <= MAP_GRID_MIN_DISPLAY_ZOOM) return minSlotsZoomedOut;
+  const t =
+    (displayZoom - MAP_GRID_MIN_DISPLAY_ZOOM) / (0.85 - MAP_GRID_MIN_DISPLAY_ZOOM);
+  return Math.round(minSlotsZoomedOut + t * (maxSlots - minSlotsZoomedOut));
+}
+
+/** Cap for `visibleNodeIds`; matches DOM slot cap when zoomed out (no extra arbitrary layer). */
+export function mapGridMaxVisibleNodeRetain(displayZoom: number): number {
+  if (displayZoom >= 0.75) return Number.POSITIVE_INFINITY;
+  return computeMapGridCardSlotCap(displayZoom);
+}
+
+/** Pan admission budget scales down when zoomed out. */
+export function mapGridPanAdmissionBudget(displayZoom: number): number {
+  if (displayZoom >= 0.75) return MAP_GRID_MAX_NODES_ADDED_PER_PAN_ADMISSION;
+  if (displayZoom <= MAP_GRID_MIN_DISPLAY_ZOOM) return 2;
+  const t =
+    (displayZoom - MAP_GRID_MIN_DISPLAY_ZOOM) / (0.75 - MAP_GRID_MIN_DISPLAY_ZOOM);
+  return Math.max(
+    2,
+    Math.round(2 + t * (MAP_GRID_MAX_NODES_ADDED_PER_PAN_ADMISSION - 2)),
+  );
+}
+
+/** Lower canvas DPR when zoomed out — lines stay visible, less fill cost. */
+export function mapGridConnectorCanvasDpr(displayZoom: number): number {
+  const device = typeof window !== 'undefined' ? window.devicePixelRatio || 1 : 1;
+  const cappedDevice = Math.min(device, 2);
+  if (displayZoom >= 0.5) return cappedDevice;
+  if (displayZoom <= MAP_GRID_MIN_DISPLAY_ZOOM) return 1;
+  const t =
+    (displayZoom - MAP_GRID_MIN_DISPLAY_ZOOM) / (0.5 - MAP_GRID_MIN_DISPLAY_ZOOM);
+  return 1 + t * (cappedDevice - 1);
 }
 
 export function visibleCommitIdSetEquals(a: Set<string> | null, b: Set<string>): boolean {

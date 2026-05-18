@@ -1,5 +1,4 @@
 import {
-  startTransition,
   useCallback,
   useEffect,
   useLayoutEffect,
@@ -36,6 +35,7 @@ import {
   getNodePositionOverride,
 } from './nodePositionOverrides';
 import CommitControls from './CommitControls';
+import { pickNearestVisibleVisualIds } from './MapGridCardVirtualizer';
 import MapGridCanvas from './MapGridCanvas';
 import MapGridDebugPanel from './MapGridDebugPanel';
 import MapGridDialogs from './MapGridDialogs';
@@ -46,9 +46,8 @@ import {
   GRID_COMMIT_CORNER_RADIUS_BASE_PX,
   GRID_RENDER_ZOOM,
   MAP_GRID_CULL_VIEWPORT_INSET_SCREEN_PX,
-  MAP_GRID_MAX_NODES_ADDED_PER_PAN_FRAME,
-  MAP_GRID_MAX_NODES_ADDED_PER_PAN_TICK,
   MAP_GRID_MAX_NODES_REMOVED_PER_FRAME,
+  mapGridMaxVisibleNodeRetain,
   buildCommitCullSpatialIndex,
   collectVisibleCommitIdsFromSpatialIndex,
   computeViewportCullBounds,
@@ -228,7 +227,6 @@ export default function BranchGridMap({
   /** `p-2.5` wrapper: used to map pointer position to the transform layer origin (padding edge). */
   const mapPadHostRef = useRef<HTMLDivElement | null>(null);
   const transformLayerRef = useRef<HTMLDivElement | null>(null);
-  const lastInteractionStateRef = useRef<boolean | null>(null);
   const lastSearchResultCountRef = useRef<number | null | undefined>(undefined);
   const lastSearchResultIndexRef = useRef<number | null | undefined>(undefined);
   const lastSearchFocusShaRef = useRef<string | null | undefined>(undefined);
@@ -280,23 +278,25 @@ export default function BranchGridMap({
   const manuallyClosedClumps = controlledManuallyClosedClumps ?? localManuallyClosedClumps;
   const setManuallyOpenedClumps = controlledSetManuallyOpenedClumps ?? setLocalManuallyOpenedClumps;
   const setManuallyClosedClumps = controlledSetManuallyClosedClumps ?? setLocalManuallyClosedClumps;
-  const [visibleNodeIds, setVisibleNodeIds] = useState<Set<string> | null>(null);
+  const [visibleNodeIds, setVisibleNodeIds] = useState<Set<string>>(() => new Set());
   const panAdmissionPendingRef = useRef<Set<string>>(new Set());
   const settlePrunePendingRef = useRef(false);
   const settlePruneTargetRef = useRef<Set<string> | null>(null);
   const settlePruneRafRef = useRef<number | null>(null);
-  const onRenderedCameraAppliedRef = useRef<(() => void) | null>(null);
-  const handleRenderedCameraApplied = useCallback(() => {
-    onRenderedCameraAppliedRef.current?.();
-  }, []);
-  const panAdmissionRafRef = useRef<number | null>(null);
+  const visibleRenderNodesRef = useRef<Node[]>([]);
+  const lastInteractionEmittedRef = useRef(false);
+  const isMarqueeSelectingRef = useRef(false);
+  const onRenderedCameraAppliedRef = useRef<() => void>(() => {});
+  const onPanActiveChangeRef = useRef<(active: boolean) => void>(() => {});
   const [viewportClientSize, setViewportClientSize] = useState<{ width: number; height: number } | null>(null);
   const [isCompactHud, setIsCompactHud] = useState(false);
   const [hideSearchBar, setHideSearchBar] = useState(false);
   const autoRecoverRef = useRef<{ key: string; attempts: number } | null>(null);
   const mergeSliderScopeId = useId();
+
   const {
-    isCameraMoving,
+    isCameraMovingRef,
+    panEpoch,
     renderedZoom,
     cameraRenderTick,
     renderedCameraRef,
@@ -310,7 +310,8 @@ export default function BranchGridMap({
     transformLayerRef,
     isEnabled: !blockMapInteraction,
     cameraStorageScopeKey: `${currentRepoPath ?? '__no-repo__'}::${orientation}`,
-    onRenderedCameraApplied: handleRenderedCameraApplied,
+    onRenderedCameraApplied: () => onRenderedCameraAppliedRef.current(),
+    onPanActiveChange: (active) => onPanActiveChangeRef.current(active),
   });
 
   const lastReadyEpochReportedRef = useRef<number>(0);
@@ -510,11 +511,13 @@ export default function BranchGridMap({
       const visualId = node.commit.visualId;
       if (isGridSearchActive && matchingNodeIds.has(commitId)) return true;
       if (focusedNode?.commit.id === commitId) return true;
-      if (visibleNodeIds === null) return true;
+      if (visibleNodeIds.size === 0) return false;
       if (!visibleNodeIds.has(visualId)) return false;
       return true;
     });
   }, [renderNodes, isGridSearchActive, matchingNodeIds, focusedNode, visibleNodeIds]);
+
+  visibleRenderNodesRef.current = visibleRenderNodes;
 
   const lineStrokeWidth = 1.25 / displayZoom;
   const commitCornerRadiusPx = GRID_COMMIT_CORNER_RADIUS_BASE_PX / displayZoom;
@@ -589,6 +592,7 @@ export default function BranchGridMap({
     visibleRenderNodes,
     onPointerReleaseNoMarquee: handlePointerReleaseNoMarquee,
   });
+  isMarqueeSelectingRef.current = isMarqueeSelecting;
   const selectableCommitShaSet = useMemo(() => new Set(renderNodes.map((node) => node.commit.id)), [renderNodes]);
   const selectedVisibleCommitShas = useMemo(
     () => selectedCommitShas.filter((sha) => selectableCommitShaSet.has(sha)),
@@ -822,13 +826,6 @@ export default function BranchGridMap({
   }, []);
 
   useEffect(() => {
-    const next = isCameraMoving || isMarqueeSelecting;
-    if (lastInteractionStateRef.current === next) return;
-    lastInteractionStateRef.current = next;
-    onInteractionChange?.(next);
-  }, [isCameraMoving, isMarqueeSelecting, onInteractionChange]);
-
-  useEffect(() => {
     const next = normalizedSearchQuery ? matchingNodes.length : null;
     if (lastSearchResultCountRef.current === next) return;
     lastSearchResultCountRef.current = next;
@@ -932,67 +929,45 @@ export default function BranchGridMap({
   // Updated on every camera transform (wheel/RAF) and on cull layout ticks so
   // connector culling stays aligned with the viewport during pan.
   const visibleBoundsRef = useRef<ViewportContentBounds | null>(null);
-  const alwaysVisibleNodeIdsRef = useRef<Set<string>>(new Set());
+  const nodeByVisualIdRef = useRef<Map<string, Node>>(new Map());
+  nodeByVisualIdRef.current = nodeByVisualId;
+  const cullViewportCenterRef = useRef({ x: 0, y: 0 });
 
-  const applyPanVisibleAdmission = useCallback(
-    (prev: Set<string> | null, nextVisible: Set<string>, budget: number): Set<string> | null => {
-      if (prev === null) return nextVisible;
-
-      const pending = panAdmissionPendingRef.current;
-      for (const id of [...pending]) {
-        if (!nextVisible.has(id)) pending.delete(id);
-      }
-      for (const id of nextVisible) {
-        if (!prev.has(id)) pending.add(id);
-      }
-
-      const merged = new Set(prev);
-      for (const id of alwaysVisibleNodeIdsRef.current) {
-        if (!nextVisible.has(id)) continue;
-        pending.delete(id);
-        merged.add(id);
-      }
-
-      let remaining = budget;
-      if (remaining > 0 && pending.size > 0) {
-        for (const id of [...pending].sort()) {
-          if (remaining <= 0) break;
-          if (!nextVisible.has(id)) {
-            pending.delete(id);
-            continue;
-          }
-          merged.add(id);
-          pending.delete(id);
-          remaining--;
-        }
-      }
-
-      return visibleCommitIdSetEquals(prev, merged) ? prev : merged;
-    },
-    [],
-  );
-
-  const syncVisibleCullFromCamera = useCallback((): Set<string> | null => {
+  const syncVisibleBoundsFromCamera = useCallback(() => {
     const viewport = scrollContainerRef.current;
-    if (!viewport || viewport.clientWidth <= 0 || viewport.clientHeight <= 0) return null;
+    if (!viewport || viewport.clientWidth <= 0 || viewport.clientHeight <= 0) return;
     const bounds = computeViewportCullBounds(
       viewport.clientWidth,
       viewport.clientHeight,
       renderedCameraRef.current,
     );
-    if (!bounds) return null;
-    visibleBoundsRef.current = bounds;
-    const nextVisible = collectVisibleCommitIdsFromSpatialIndex(
-      commitCullSpatialIndex,
-      bounds,
-      nodeByVisualId,
-      labelTopPx,
-    );
-    for (const id of alwaysVisibleNodeIdsRef.current) nextVisible.add(id);
-    return nextVisible;
-  }, [commitCullSpatialIndex, labelTopPx, nodeByVisualId, renderedCameraRef]);
+    if (bounds) visibleBoundsRef.current = bounds;
+  }, [renderedCameraRef]);
 
-  onRenderedCameraAppliedRef.current = syncVisibleCullFromCamera;
+  onRenderedCameraAppliedRef.current = syncVisibleBoundsFromCamera;
+
+  const emitInteractionChange = useCallback(() => {
+    const next = isCameraMovingRef.current || isMarqueeSelectingRef.current;
+    if (lastInteractionEmittedRef.current === next) return;
+    lastInteractionEmittedRef.current = next;
+    onInteractionChange?.(next);
+  }, [onInteractionChange]);
+
+  const handlePanActiveChange = useCallback(
+    (active: boolean) => {
+      if (active) {
+        panAdmissionPendingRef.current.clear();
+      }
+      emitInteractionChange();
+    },
+    [emitInteractionChange],
+  );
+
+  onPanActiveChangeRef.current = handlePanActiveChange;
+
+  useEffect(() => {
+    emitInteractionChange();
+  }, [isMarqueeSelecting, emitInteractionChange]);
 
   const cullConnectorPath = useCallback(
     (connector: { id: string; fromX: number; fromY: number; toX: number; toY: number; fromFace?: ConnectorFace; toFace?: ConnectorFace }): boolean => {
@@ -1015,37 +990,6 @@ export default function BranchGridMap({
     [],
   );
 
-  // Pre-computed set of node ids that must always be visible regardless of camera position:
-  // open cluster members (zoom/layout disagreement) and collapsed cluster leads (prevent row gaps).
-  // Keyed on cluster state only — does not change on camera ticks.
-  const alwaysVisibleNodeIds = useMemo(() => {
-    const ids = new Set<string>();
-    for (const node of renderNodes) {
-      const ck = clusterKeyByCommitId.get(node.commit.visualId);
-      if (!ck) continue;
-      const count = clusterCounts.get(ck) ?? 1;
-      if (count <= 1) continue;
-      const expanded =
-        manuallyOpenedClumps.has(ck) ||
-        (!defaultCollapsedClumps.has(ck) && !manuallyClosedClumps.has(ck));
-      if (expanded) {
-        ids.add(node.commit.visualId);
-        continue;
-      }
-      if (leadByClusterKey.get(ck) === node.commit.visualId) ids.add(node.commit.visualId);
-    }
-    return ids;
-  }, [
-    renderNodes,
-    clusterKeyByCommitId,
-    clusterCounts,
-    manuallyOpenedClumps,
-    manuallyClosedClumps,
-    defaultCollapsedClumps,
-    leadByClusterKey,
-  ]);
-  alwaysVisibleNodeIdsRef.current = alwaysVisibleNodeIds;
-
   useLayoutEffect(() => {
     const viewport = scrollContainerRef.current;
     if (!viewport) return;
@@ -1055,7 +999,7 @@ export default function BranchGridMap({
     setViewportClientSize((prev) => (prev?.width === w && prev?.height === h ? prev : { width: w, height: h }));
     const bounds = computeViewportCullBounds(w, h, renderedCameraRef.current);
     if (!bounds) {
-      setVisibleNodeIds((prev) => (prev === null ? prev : null));
+      setVisibleNodeIds((prev) => (prev.size === 0 ? prev : new Set()));
       return;
     }
     visibleBoundsRef.current = bounds;
@@ -1065,9 +1009,19 @@ export default function BranchGridMap({
       nodeByVisualId,
       labelTopPx,
     );
-    for (const id of alwaysVisibleNodeIds) nextVisible.add(id);
+    const centerX = (bounds.left + bounds.right) / 2;
+    const centerY = (bounds.top + bounds.bottom) / 2;
+    cullViewportCenterRef.current = { x: centerX, y: centerY };
+    const visibleRetainCap = mapGridMaxVisibleNodeRetain(displayZoom);
+    const cappedVisible = pickNearestVisibleVisualIds(
+      nextVisible,
+      visibleRetainCap,
+      nodeByVisualId,
+      centerX,
+      centerY,
+    );
 
-    if (isCameraMoving) {
+    if (isCameraMovingRef.current) {
       settlePrunePendingRef.current = false;
       settlePruneTargetRef.current = null;
       if (settlePruneRafRef.current != null) {
@@ -1075,15 +1029,9 @@ export default function BranchGridMap({
         settlePruneRafRef.current = null;
       }
 
-      // While panning, only add; never evict mid-pan. Cap mounts per cull tick;
-      // the pan RAF loop drains the pending queue between ticks.
-      setVisibleNodeIds((prev) => {
-        if (prev === null) {
-          panAdmissionPendingRef.current.clear();
-          return nextVisible;
-        }
-        return applyPanVisibleAdmission(prev, nextVisible, MAP_GRID_MAX_NODES_ADDED_PER_PAN_TICK);
-      });
+      setVisibleNodeIds((prev) =>
+        visibleCommitIdSetEquals(prev, cappedVisible) ? prev : cappedVisible,
+      );
     } else {
       setVisibleNodeIds((prev) => {
         const pending = panAdmissionPendingRef.current;
@@ -1093,11 +1041,11 @@ export default function BranchGridMap({
         if (base && pending.size > 0) {
           base = new Set(base);
           for (const id of pending) {
-            if (nextVisible.has(id)) base.add(id);
+            if (cappedVisible.has(id)) base.add(id);
           }
         }
 
-        if (visibleCommitIdSetEquals(base, nextVisible)) {
+        if (visibleCommitIdSetEquals(base, cappedVisible)) {
           settlePrunePendingRef.current = false;
           settlePruneTargetRef.current = null;
           return base;
@@ -1105,19 +1053,19 @@ export default function BranchGridMap({
         if (!base) {
           settlePrunePendingRef.current = false;
           settlePruneTargetRef.current = null;
-          return nextVisible;
+          return cappedVisible;
         }
 
-        const stale = countStaleVisibleNodes(base, nextVisible);
+        const stale = countStaleVisibleNodes(base, cappedVisible);
         if (stale <= MAP_GRID_MAX_NODES_REMOVED_PER_FRAME) {
           settlePrunePendingRef.current = false;
           settlePruneTargetRef.current = null;
-          return nextVisible;
+          return cappedVisible;
         }
 
         settlePrunePendingRef.current = true;
-        settlePruneTargetRef.current = nextVisible;
-        return pruneVisibleNodesTowardTarget(base, nextVisible, MAP_GRID_MAX_NODES_REMOVED_PER_FRAME);
+        settlePruneTargetRef.current = cappedVisible;
+        return pruneVisibleNodesTowardTarget(base, cappedVisible, MAP_GRID_MAX_NODES_REMOVED_PER_FRAME);
       });
     }
   }, [
@@ -1125,48 +1073,16 @@ export default function BranchGridMap({
     gridSearchJumpToken,
     gridFocusSha,
     cameraRenderTick,
-    isCameraMoving,
-    alwaysVisibleNodeIds,
+    panEpoch,
+    displayZoom,
     viewportClientSize,
     commitCullSpatialIndex,
     nodeByVisualId,
     labelTopPx,
-    applyPanVisibleAdmission,
   ]);
 
   useEffect(() => {
-    if (!isCameraMoving) {
-      if (panAdmissionRafRef.current != null) {
-        window.cancelAnimationFrame(panAdmissionRafRef.current);
-        panAdmissionRafRef.current = null;
-      }
-      return;
-    }
-
-    const frame = () => {
-      panAdmissionRafRef.current = null;
-      const nextVisible = syncVisibleCullFromCamera();
-      if (nextVisible) {
-        startTransition(() => {
-          setVisibleNodeIds((prev) =>
-            applyPanVisibleAdmission(prev, nextVisible, MAP_GRID_MAX_NODES_ADDED_PER_PAN_FRAME),
-          );
-        });
-      }
-      panAdmissionRafRef.current = window.requestAnimationFrame(frame);
-    };
-    panAdmissionRafRef.current = window.requestAnimationFrame(frame);
-
-    return () => {
-      if (panAdmissionRafRef.current != null) {
-        window.cancelAnimationFrame(panAdmissionRafRef.current);
-        panAdmissionRafRef.current = null;
-      }
-    };
-  }, [isCameraMoving, syncVisibleCullFromCamera, applyPanVisibleAdmission]);
-
-  useEffect(() => {
-    if (isCameraMoving) return;
+    if (isCameraMovingRef.current) return;
 
     if (!settlePrunePendingRef.current || settlePruneTargetRef.current == null) return;
     if (settlePruneRafRef.current != null) return;
@@ -1197,7 +1113,7 @@ export default function BranchGridMap({
         settlePruneRafRef.current = null;
       }
     };
-  }, [isCameraMoving, visibleNodeIds]);
+  }, [panEpoch, visibleNodeIds]);
 
   useLayoutEffect(() => {
     const viewport = scrollContainerRef.current;
@@ -1222,7 +1138,7 @@ export default function BranchGridMap({
     if (isLoading) return;
     if (blockMapInteraction) return;
     if (renderNodes.length === 0) return;
-    if (visibleNodeIds === null || visibleNodeIds.size > 0) {
+    if (visibleNodeIds.size > 0) {
       autoRecoverRef.current = null;
       return;
     }
@@ -1238,7 +1154,7 @@ export default function BranchGridMap({
 
     if (attempts >= 2) {
       // Safety valve: if culling still reports nothing after recentering, render all commits.
-      setVisibleNodeIds(null);
+      setVisibleNodeIds(new Set(renderNodes.map((node) => node.commit.visualId)));
       return;
     }
 
@@ -1841,7 +1757,10 @@ export default function BranchGridMap({
           isMarqueeSelecting={isMarqueeSelecting}
           contentWidth={contentWidth}
           contentHeight={contentHeight}
-          isCameraMoving={isCameraMoving}
+          isCameraMovingRef={isCameraMovingRef}
+          panEpoch={panEpoch}
+          cameraRenderTick={cameraRenderTick}
+          viewportClientSize={viewportClientSize}
           onWheel={handleWheel}
           onMouseDown={startMarqueeDrag}
           onNodePointerDown={handleNodePointerDown}
@@ -1884,6 +1803,7 @@ export default function BranchGridMap({
           orientation={orientation}
           dragPreviewByNodeId={dragPreviewByNodeId}
           nodePositionOverrides={nodePositionOverrides}
+          connectorPathCacheScopeBase={`${currentRepoPath ?? '__no-repo__'}::${orientation}`}
         />
       )}
       {blockMapDisplay ? <MapGridBlockingOverlay /> : null}

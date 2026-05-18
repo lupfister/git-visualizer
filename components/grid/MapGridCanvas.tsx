@@ -1,8 +1,30 @@
 import { memo, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
-import type { CSSProperties, Dispatch, MouseEvent, ReactNode, RefObject, SetStateAction, WheelEvent } from 'react';
+import type { CSSProperties, Dispatch, MouseEvent, MutableRefObject, ReactNode, RefObject, SetStateAction, WheelEvent } from 'react';
 import { CARD_BODY_TOP_OFFSET, CARD_HEIGHT, CARD_WIDTH, CONNECTOR_COLOR } from './LayoutGrid';
-import { buildMapGridConnectorPath } from './gridPathUtils';
-import { cn, GRID_RENDER_ZOOM, mapGridPanCullDistanceExceeded } from './mapGridUtils';
+import {
+  applyPersistedPathStrings,
+  collectPathStringsForPersistence,
+  connectorGeometryCacheKey,
+  type ConnectorPathCacheEntry,
+  getOrBuildConnectorPath2D,
+  scheduleConnectorPathCacheWarmup,
+  trimConnectorPathCacheIfNeeded,
+} from './mapGridConnectorPathCache';
+import {
+  buildConnectorPathCacheScopeKey,
+  computeConnectorLayoutDigest,
+  mergePersistedConnectorPaths,
+  readPersistedConnectorPaths,
+} from './mapGridConnectorPathPersistence';
+import { buildMapGridCardSlotAssignments, computeMapGridCardSlotCount } from './MapGridCardVirtualizer';
+import {
+  cn,
+  computeMapGridInvZoom,
+  computeViewportCullBounds,
+  GRID_RENDER_ZOOM,
+  mapGridConnectorCanvasDpr,
+  mapGridPanCullDistanceExceeded,
+} from './mapGridUtils';
 import type { ConnectorFace, Node, NodePositionOverrides } from './LayoutGrid';
 import type { MapGridCameraState } from './useMapGridCamera';
 import { getNodePositionOverride } from './nodePositionOverrides';
@@ -87,6 +109,8 @@ const COMMIT_DATE_FORMATTER = new Intl.DateTimeFormat('en-US', {
   hour: 'numeric',
   minute: '2-digit',
 });
+
+const CARD_LAYOUT_HEIGHT = CARD_BODY_TOP_OFFSET + CARD_HEIGHT + 4;
 
 type CommitCardProps = {
   node: Node;
@@ -317,7 +341,7 @@ const MapGridCommitCard = memo(function MapGridCommitCard({
         left: cardLeft,
         top: cardTop,
         width: CARD_WIDTH,
-        height: CARD_BODY_TOP_OFFSET + CARD_HEIGHT + 4,
+        height: CARD_LAYOUT_HEIGHT,
         overflow: 'visible',
         contain: 'layout style',
       }}
@@ -416,15 +440,11 @@ const MapGridCommitCard = memo(function MapGridCommitCard({
             >
               {bodyMessage}
             </div>
-            <div className="flex flex-wrap items-center" style={{ marginTop: 'calc(0.75rem * var(--map-inv-zoom, 1))', gap: 'calc(0.375rem * var(--map-inv-zoom, 1))' }}>
+            <div className="mt-3 flex flex-wrap items-center gap-1.5">
               {showDataShapeError ? (
                 <span
-                  className="inline-flex items-center gap-1 rounded-lg border border-red-500/25 bg-red-50 font-medium uppercase tracking-wide text-foreground dark:bg-red-900/20 dark:text-foreground"
+                  className="inline-flex items-center gap-1 rounded-lg border border-red-500/25 bg-red-50 px-2 py-0.5 text-sm font-medium uppercase tracking-wide text-foreground dark:bg-red-900/20 dark:text-foreground"
                   title={warningsTitle}
-                  style={{
-                    fontSize: 'calc(0.875rem * var(--map-inv-zoom, 1))',
-                    padding: 'calc(0.125rem * var(--map-inv-zoom, 1)) calc(0.5rem * var(--map-inv-zoom, 1))',
-                  }}
                 >
                   Broken ancestry
                 </span>
@@ -479,50 +499,6 @@ type ConnectorCameraMetricsBase = {
   connectorColor: string;
 };
 
-const contentPointFormatter = (x: number, y: number) => `${x},${y}`;
-
-function connectorGeometryCacheKey(connector: RenderConnector, cornerRadiusContentPx: number): string {
-  return [
-    connector.id,
-    connector.fromX.toFixed(2),
-    connector.fromY.toFixed(2),
-    connector.toX.toFixed(2),
-    connector.toY.toFixed(2),
-    connector.fromFace ?? '',
-    connector.toFace ?? '',
-    cornerRadiusContentPx.toFixed(3),
-  ].join(':');
-}
-
-function getOrBuildConnectorPath2D(
-  cache: Map<string, Path2D>,
-  connector: RenderConnector,
-  cornerRadiusContentPx: number,
-): Path2D {
-  const key = connectorGeometryCacheKey(connector, cornerRadiusContentPx);
-  const cached = cache.get(key);
-  if (cached) return cached;
-  const pathString = buildMapGridConnectorPath(
-    connector.fromX,
-    connector.fromY,
-    connector.toX,
-    connector.toY,
-    contentPointFormatter,
-    connector.fromFace,
-    connector.toFace,
-    cornerRadiusContentPx,
-  );
-  const path = new Path2D(pathString);
-  cache.set(key, path);
-  return path;
-}
-
-function pruneConnectorPathCache(cache: Map<string, Path2D>, activeKeys: Set<string>) {
-  for (const key of cache.keys()) {
-    if (!activeKeys.has(key)) cache.delete(key);
-  }
-}
-
 function anchorForFace(x: number, y: number, face?: ConnectorFace): { x: number; y: number } {
   switch (face) {
     case 'left':
@@ -554,7 +530,10 @@ type Props = {
   isMarqueeSelecting: boolean;
   contentWidth: number;
   contentHeight: number;
-  isCameraMoving: boolean;
+  isCameraMovingRef: MutableRefObject<boolean>;
+  panEpoch: number;
+  cameraRenderTick: number;
+  viewportClientSize: { width: number; height: number } | null;
   onWheel: (event: WheelEvent<HTMLDivElement>) => void;
   onMouseDown: (event: MouseEvent<HTMLDivElement>) => void;
   onNodePointerDown: (event: React.PointerEvent<HTMLDivElement>, node: Node) => void;
@@ -597,12 +576,13 @@ type Props = {
   orientation?: 'vertical' | 'horizontal';
   dragPreviewByNodeId?: Record<string, { x: number; y: number }>;
   nodePositionOverrides?: Record<string, { x: number; y: number }>;
+  connectorPathCacheScopeBase: string;
 };
 
 const PAN_STABLE_CONNECTOR_PROPS = new Set<keyof Props>(['connectors', 'mergeConnectors']);
 
 function areMapGridCanvasPropsEqual(prev: Readonly<Props>, next: Readonly<Props>) {
-  const keepConnectorRefsFrozen = prev.isCameraMoving && next.isCameraMoving;
+  const keepConnectorRefsFrozen = prev.isCameraMovingRef.current && next.isCameraMovingRef.current;
   for (const key of Object.keys(prev) as Array<keyof Props>) {
     if (keepConnectorRefsFrozen && PAN_STABLE_CONNECTOR_PROPS.has(key)) continue;
     if (prev[key] !== next[key]) return false;
@@ -623,7 +603,10 @@ const MapGridCanvas = memo(function MapGridCanvas({
   isMarqueeSelecting,
   contentWidth,
   contentHeight,
-  isCameraMoving,
+  isCameraMovingRef,
+  panEpoch,
+  cameraRenderTick,
+  viewportClientSize,
   onWheel,
   onMouseDown,
   onNodePointerDown,
@@ -665,13 +648,17 @@ const MapGridCanvas = memo(function MapGridCanvas({
   checkedOutHeadSha,
   dragPreviewByNodeId = EMPTY_DRAG_PREVIEW,
   nodePositionOverrides = EMPTY_NODE_POSITION_OVERRIDES,
+  connectorPathCacheScopeBase,
 }: Props) {
   const [openingClumpAnimations, setOpeningClumpAnimations] = useState<Set<string>>(new Set());
   const [canvasSize, setCanvasSize] = useState({ width: 0, height: 0 });
   const connectorCanvasRef = useRef<HTMLCanvasElement | null>(null);
   const drawnConnectorCameraRef = useRef<{ baseX: number; baseY: number; originX: number; originY: number; scale: number } | null>(null);
   const connectorCameraMetricsBaseRef = useRef<ConnectorCameraMetricsBase | null>(null);
-  const connectorPath2dCacheRef = useRef<Map<string, Path2D>>(new Map());
+  const connectorPath2dCacheRef = useRef<Map<string, ConnectorPathCacheEntry>>(new Map());
+  const connectorWarmupCancelRef = useRef<(() => void) | null>(null);
+  const connectorPersistScopeRef = useRef<string | null>(null);
+  const connectorPersistTimerRef = useRef<number | null>(null);
   const combinedConnectorPathRef = useRef<{ cacheKey: string; path: Path2D } | null>(null);
   const lastVisibleMergeConnectorsRef = useRef<RenderConnector[]>([]);
   const lastVisibleConnectorsRef = useRef<RenderConnector[]>([]);
@@ -835,6 +822,36 @@ const MapGridCanvas = memo(function MapGridCanvas({
     return next;
   }, [connectors, cullConnectorPath, buildVisibleConnectors, visibleRenderNodes.length]);
 
+  const connectorsForPathCache = useMemo(() => {
+    const admitAll = () => true;
+    return [
+      ...buildVisibleConnectors(mergeConnectors, admitAll),
+      ...buildVisibleConnectors(connectors, admitAll),
+    ];
+  }, [mergeConnectors, connectors, buildVisibleConnectors]);
+
+  const connectorPathCacheScopeKey = useMemo(() => {
+    const digest = computeConnectorLayoutDigest(connectorsForPathCache, commitCornerRadiusPx);
+    return buildConnectorPathCacheScopeKey(connectorPathCacheScopeBase, digest, commitCornerRadiusPx);
+  }, [connectorsForPathCache, commitCornerRadiusPx, connectorPathCacheScopeBase]);
+
+  const flushConnectorPathCachePersist = useCallback(() => {
+    const scopeKey = connectorPersistScopeRef.current;
+    if (!scopeKey) return;
+    const entries = collectPathStringsForPersistence(connectorPath2dCacheRef.current);
+    void mergePersistedConnectorPaths(scopeKey, entries);
+  }, []);
+
+  const scheduleConnectorPathCachePersist = useCallback(() => {
+    if (connectorPersistTimerRef.current != null) {
+      window.clearTimeout(connectorPersistTimerRef.current);
+    }
+    connectorPersistTimerRef.current = window.setTimeout(() => {
+      connectorPersistTimerRef.current = null;
+      flushConnectorPathCachePersist();
+    }, 1500);
+  }, [flushConnectorPathCachePersist]);
+
   const getConnectorCameraMetrics = useCallback((options?: { forceMeasure?: boolean }): ConnectorCameraMetrics | null => {
     const scale = renderedCameraRef.current.zoom / GRID_RENDER_ZOOM;
     if (!Number.isFinite(scale) || scale <= 0) return null;
@@ -878,7 +895,7 @@ const MapGridCanvas = memo(function MapGridCanvas({
       const canvas = connectorCanvasRef.current;
       if (!canvas || canvasSize.width <= 0 || canvasSize.height <= 0) return;
 
-      const dpr = window.devicePixelRatio || 1;
+      const dpr = mapGridConnectorCanvasDpr(displayZoom);
       const pixelWidth = Math.max(1, Math.round(canvasSize.width * dpr));
       const pixelHeight = Math.max(1, Math.round(canvasSize.height * dpr));
       if (canvas.width !== pixelWidth) canvas.width = pixelWidth;
@@ -932,7 +949,7 @@ const MapGridCanvas = memo(function MapGridCanvas({
         }
         combinedConnectorPathRef.current = { cacheKey: combinedCacheKey, path: combined };
       }
-      pruneConnectorPathCache(pathCache, activeKeys);
+      trimConnectorPathCacheIfNeeded(pathCache, activeKeys);
       ctx.stroke(combined);
 
       lastDrawnPanRef.current = {
@@ -940,8 +957,51 @@ const MapGridCanvas = memo(function MapGridCanvas({
         y: renderedCameraRef.current.panY,
       };
     },
-    [canvasSize.height, canvasSize.width, commitCornerRadiusPx, lineStrokeWidth, renderedCameraRef],
+    [canvasSize.height, canvasSize.width, commitCornerRadiusPx, displayZoom, lineStrokeWidth, renderedCameraRef],
   );
+
+  useEffect(() => {
+    connectorPersistScopeRef.current = connectorPathCacheScopeKey;
+    let cancelled = false;
+
+    void readPersistedConnectorPaths(connectorPathCacheScopeKey).then((entries) => {
+      if (cancelled) return;
+      applyPersistedPathStrings(connectorPath2dCacheRef.current, entries);
+    });
+
+    return () => {
+      cancelled = true;
+    };
+  }, [connectorPathCacheScopeKey]);
+
+  useEffect(() => {
+    const handlePageHide = () => flushConnectorPathCachePersist();
+    window.addEventListener('pagehide', handlePageHide);
+    return () => {
+      window.removeEventListener('pagehide', handlePageHide);
+      flushConnectorPathCachePersist();
+    };
+  }, [flushConnectorPathCachePersist]);
+
+  useEffect(() => {
+    connectorWarmupCancelRef.current?.();
+    if (connectorsForPathCache.length === 0) return undefined;
+
+    connectorWarmupCancelRef.current = scheduleConnectorPathCacheWarmup(
+      connectorPath2dCacheRef.current,
+      connectorsForPathCache,
+      commitCornerRadiusPx,
+      {
+        onDone: () => {
+          scheduleConnectorPathCachePersist();
+        },
+      },
+    );
+    return () => {
+      connectorWarmupCancelRef.current?.();
+      connectorWarmupCancelRef.current = null;
+    };
+  }, [connectorsForPathCache, commitCornerRadiusPx, scheduleConnectorPathCachePersist]);
 
   useLayoutEffect(() => {
     const viewport = scrollContainerRef.current;
@@ -958,12 +1018,12 @@ const MapGridCanvas = memo(function MapGridCanvas({
   }, [scrollContainerRef]);
 
   useEffect(() => {
-    if (isCameraMoving) return;
+    if (isCameraMovingRef.current) return;
     const metrics = getConnectorCameraMetrics({ forceMeasure: true });
     if (!metrics) return;
     drawConnectorsToCanvas(visibleMergeConnectors, visibleConnectors, metrics);
   }, [
-    isCameraMoving,
+    panEpoch,
     canvasSize.height,
     canvasSize.width,
     commitCornerRadiusPx,
@@ -976,10 +1036,13 @@ const MapGridCanvas = memo(function MapGridCanvas({
 
   useEffect(() => {
     const canvas = connectorCanvasRef.current;
-    if (!canvas || !isCameraMoving) return;
+    if (!canvas) return;
 
-    // Idle drawing is skipped while `isCameraMoving`; if the user pans/zooms before any idle
-    // frame, `drawnConnectorCameraRef` stays null and connectors stay blank until settle.
+    if (!isCameraMovingRef.current) {
+      canvas.style.transform = '';
+      return;
+    }
+
     if (!drawnConnectorCameraRef.current) {
       const metrics = getConnectorCameraMetrics({ forceMeasure: true });
       if (metrics) {
@@ -993,6 +1056,7 @@ const MapGridCanvas = memo(function MapGridCanvas({
 
     let animationFrame: number | null = null;
     const syncConnectorTransform = () => {
+      if (!isCameraMovingRef.current) return;
       const drawnCamera = drawnConnectorCameraRef.current;
       if (drawnCamera) {
         const currentScale = renderedCameraRef.current.zoom / GRID_RENDER_ZOOM;
@@ -1006,9 +1070,7 @@ const MapGridCanvas = memo(function MapGridCanvas({
 
         const dx = renderedCameraRef.current.panX - lastDrawnPanRef.current.x;
         const dy = renderedCameraRef.current.panY - lastDrawnPanRef.current.y;
-        if (
-          mapGridPanCullDistanceExceeded(dx, dy, renderedCameraRef.current.zoom)
-        ) {
+        if (mapGridPanCullDistanceExceeded(dx, dy, renderedCameraRef.current.zoom)) {
           const metrics = getConnectorCameraMetrics();
           if (metrics) {
             const mergeList = buildVisibleConnectors(mergeConnectorsRef.current, cullConnectorPathRef.current);
@@ -1016,6 +1078,10 @@ const MapGridCanvas = memo(function MapGridCanvas({
             lastVisibleMergeConnectorsRef.current = mergeList;
             lastVisibleConnectorsRef.current = connList;
             drawConnectorsToCanvas(mergeList, connList, metrics);
+            lastDrawnPanRef.current = {
+              x: renderedCameraRef.current.panX,
+              y: renderedCameraRef.current.panY,
+            };
           }
         }
       }
@@ -1025,105 +1091,45 @@ const MapGridCanvas = memo(function MapGridCanvas({
     syncConnectorTransform();
     return () => {
       if (animationFrame != null) window.cancelAnimationFrame(animationFrame);
+      canvas.style.transform = '';
     };
   }, [
-    isCameraMoving,
+    panEpoch,
     renderedCameraRef,
     getConnectorCameraMetrics,
     buildVisibleConnectors,
     drawConnectorsToCanvas,
+    isCameraMovingRef,
   ]);
 
-  const cardEntries = useMemo(
-    () =>
-      visibleRenderNodes.map((node) => {
-        const visualId = node.commit.visualId;
-        const dragPreview = dragPreviewByNodeId[visualId];
-        const persistedOverride = getNodePositionOverride(nodePositionOverrides, node.commit);
-        const cardLeft = dragPreview?.x ?? persistedOverride?.x ?? node.x;
-        const cardTop = dragPreview?.y ?? persistedOverride?.y ?? node.y;
+  const cardSlotAssignments = useMemo(() => {
+    const viewportW = viewportClientSize?.width ?? 0;
+    const viewportH = viewportClientSize?.height ?? 0;
+    const slotCount = computeMapGridCardSlotCount(viewportW, viewportH, displayZoom);
+    const camera = renderedCameraRef.current;
+    const bounds = computeViewportCullBounds(viewportW, viewportH, camera);
+    const centerX = bounds ? (bounds.left + bounds.right) / 2 : 0;
+    const centerY = bounds ? (bounds.top + bounds.bottom) / 2 : 0;
 
-        return {
-          key: visualId,
-          props: {
-            node,
-            cardLeft,
-            cardTop,
-            displayZoom,
-            commitCornerRadiusPx,
-            lineStrokeWidth,
-            labelTopPx,
-            selectedShaSet,
-            normalizedSearchQuery,
-            matchingNodeIds,
-            focusedCommitId: focusedNode?.commit.id ?? null,
-            manuallyOpenedClumps,
-            manuallyClosedClumps,
-            defaultCollapsedClumps,
-            leadByClusterKey,
-            clusterKeyByCommitId,
-            clusterCounts,
-            openingClumpAnimations,
-            commitIdsWithRenderedAncestry,
-            nodeWarnings,
-            connectorParentShas,
-            branchStartShas,
-            branchOffNodeShas,
-            crossBranchOutgoingShas,
-            branchBaseCommitByName,
-            branchStartAccentClass,
-            connectorParentAccentClass,
-            unpushedCommitShasSetByBranch,
-            remoteCommitShas,
-            checkedOutHeadSha,
-            onCommitCardClick,
-            onNodePointerDown,
-            onNodePointerMove,
-            onNodePointerUp,
-            onClusterToggle: handleClusterToggle,
-            suppressSearchMatchScale: isCameraMoving,
-          } satisfies CommitCardProps,
-        };
-      }),
-    [
+    return buildMapGridCardSlotAssignments(
+      slotCount,
       visibleRenderNodes,
-      displayZoom,
-      commitCornerRadiusPx,
-      lineStrokeWidth,
-      labelTopPx,
-      nodePositionOverrides,
       dragPreviewByNodeId,
-      selectedShaSet,
-      focusedNode,
-      normalizedSearchQuery,
-      matchingNodeIds,
-      unpushedCommitShasSetByBranch,
-      remoteCommitShas,
-      checkedOutHeadSha,
-      branchOffNodeShas,
-      branchStartShas,
-      crossBranchOutgoingShas,
-      connectorParentShas,
-      branchBaseCommitByName,
-      clusterKeyByCommitId,
-      manuallyOpenedClumps,
-      manuallyClosedClumps,
-      defaultCollapsedClumps,
-      leadByClusterKey,
-      clusterCounts,
-      commitIdsWithRenderedAncestry,
-      nodeWarnings,
-      openingClumpAnimations,
-      branchStartAccentClass,
-      connectorParentAccentClass,
-      handleClusterToggle,
-      onCommitCardClick,
-      onNodePointerDown,
-      onNodePointerMove,
-      onNodePointerUp,
-      isCameraMoving,
-    ],
-  );
+      nodePositionOverrides,
+      centerX,
+      centerY,
+    );
+  }, [
+    visibleRenderNodes,
+    viewportClientSize,
+    displayZoom,
+    cameraRenderTick,
+    dragPreviewByNodeId,
+    nodePositionOverrides,
+    renderedCameraRef,
+  ]);
+
+  const suppressSearchMatchScale = isCameraMovingRef.current;
 
   return (
     <div
@@ -1146,10 +1152,7 @@ const MapGridCanvas = memo(function MapGridCanvas({
       >
         <div
           ref={transformLayerRef}
-          className={cn(
-            'absolute left-0 top-0 z-20',
-            isCameraMoving ? 'map-grid-pan-active' : '',
-          )}
+          className="absolute left-0 top-0 z-20"
           style={{
             width: contentWidth,
             height: contentHeight,
@@ -1157,15 +1160,54 @@ const MapGridCanvas = memo(function MapGridCanvas({
             // layout + style only: `paint` containment clips descendants that paint above y=0
             // (commit labels use negative `top`), which cropped the first row’s header text.
             contain: 'layout style' as const,
-            '--map-inv-zoom': `${1 / displayZoom}`,
-            ...(isCameraMoving
-              ? { willChange: 'transform' as const, pointerEvents: 'none' as const }
-              : {}),
+            '--map-inv-zoom': `${computeMapGridInvZoom(displayZoom)}`,
           } as CSSProperties}
         >
-          {cardEntries.map(({ key, props }) => (
-            <MapGridCommitCard key={key} {...props} />
-          ))}
+          {cardSlotAssignments.map((assignment, slotIndex) => {
+            if (!assignment) return null;
+            const { node, cardLeft, cardTop } = assignment;
+            return (
+              <MapGridCommitCard
+                key={slotIndex}
+                node={node}
+                cardLeft={cardLeft}
+                cardTop={cardTop}
+                displayZoom={displayZoom}
+                commitCornerRadiusPx={commitCornerRadiusPx}
+                lineStrokeWidth={lineStrokeWidth}
+                labelTopPx={labelTopPx}
+                selectedShaSet={selectedShaSet}
+                normalizedSearchQuery={normalizedSearchQuery}
+                matchingNodeIds={matchingNodeIds}
+                focusedCommitId={focusedNode?.commit.id ?? null}
+                manuallyOpenedClumps={manuallyOpenedClumps}
+                manuallyClosedClumps={manuallyClosedClumps}
+                defaultCollapsedClumps={defaultCollapsedClumps}
+                leadByClusterKey={leadByClusterKey}
+                clusterKeyByCommitId={clusterKeyByCommitId}
+                clusterCounts={clusterCounts}
+                openingClumpAnimations={openingClumpAnimations}
+                commitIdsWithRenderedAncestry={commitIdsWithRenderedAncestry}
+                nodeWarnings={nodeWarnings}
+                connectorParentShas={connectorParentShas}
+                branchStartShas={branchStartShas}
+                branchOffNodeShas={branchOffNodeShas}
+                crossBranchOutgoingShas={crossBranchOutgoingShas}
+                branchBaseCommitByName={branchBaseCommitByName}
+                branchStartAccentClass={branchStartAccentClass}
+                connectorParentAccentClass={connectorParentAccentClass}
+                unpushedCommitShasSetByBranch={unpushedCommitShasSetByBranch}
+                remoteCommitShas={remoteCommitShas}
+                checkedOutHeadSha={checkedOutHeadSha}
+                onCommitCardClick={onCommitCardClick}
+                onNodePointerDown={onNodePointerDown}
+                onNodePointerMove={onNodePointerMove}
+                onNodePointerUp={onNodePointerUp}
+                onClusterToggle={handleClusterToggle}
+                suppressSearchMatchScale={suppressSearchMatchScale}
+              />
+            );
+          })}
         </div>
       </div>
     </div>

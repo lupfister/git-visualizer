@@ -17,8 +17,10 @@ type Params = {
   transformLayerRef: RefObject<HTMLDivElement | null>;
   isEnabled?: boolean;
   onUserCameraChange?: () => void;
-  /** Called after every transform write (pan/zoom); use to sync cull bounds without React. */
+  /** Called after transform writes when idle; pan admission uses distance ticks only. */
   onRenderedCameraApplied?: (camera: MapGridCameraState) => void;
+  /** Fired when pan gesture starts or ends (90ms idle). */
+  onPanActiveChange?: (active: boolean) => void;
   cameraStorageScopeKey?: string;
 };
 
@@ -32,6 +34,7 @@ export function useMapGridCamera({
   isEnabled = true,
   onUserCameraChange,
   onRenderedCameraApplied,
+  onPanActiveChange,
   cameraStorageScopeKey,
 }: Params) {
   const panRef = useRef({ x: 0, y: 0 });
@@ -46,7 +49,8 @@ export function useMapGridCamera({
   const cameraFrameRef = useRef<number | null>(null);
   const renderedZoomRef = useRef(GRID_ZOOM_DEFAULT);
   const interactionIdleTimeoutRef = useRef<number | null>(null);
-  const [isCameraMoving, setIsCameraMoving] = useState(false);
+  const isCameraMovingRef = useRef(false);
+  const [panEpoch, setPanEpoch] = useState(0);
   const [renderedZoom, setRenderedZoom] = useState(GRID_ZOOM_DEFAULT);
   const [cameraRenderTick, setCameraRenderTick] = useState(0);
   const panReactTrailingTimeoutRef = useRef<number | null>(null);
@@ -56,6 +60,8 @@ export function useMapGridCamera({
   const transformLayerOriginScreenRef = useRef<{ x: number; y: number } | null>(null);
   const onRenderedCameraAppliedRef = useRef(onRenderedCameraApplied);
   onRenderedCameraAppliedRef.current = onRenderedCameraApplied;
+  const onPanActiveChangeRef = useRef(onPanActiveChange);
+  onPanActiveChangeRef.current = onPanActiveChange;
 
   const getCameraStorageKey = useCallback(() => {
     const scope = cameraStorageScopeKey?.trim() || window.location.pathname;
@@ -82,6 +88,13 @@ export function useMapGridCamera({
     transformLayerOriginScreenRef.current = origin;
     return origin;
   }, [mapPadHostRef]);
+
+  const applyPanLayerChrome = useCallback((active: boolean) => {
+    const layer = transformLayerRef.current;
+    if (!layer) return;
+    layer.classList.toggle('map-grid-pan-active', active);
+    layer.style.pointerEvents = active ? 'none' : '';
+  }, [transformLayerRef]);
 
   const flushCameraReactTick = useCallback(() => {
     if (panReactTrailingTimeoutRef.current != null) {
@@ -111,7 +124,9 @@ export function useMapGridCamera({
     if (layer) {
       layer.style.transform = `translate3d(${nextPanX}px, ${nextPanY}px, 0) scale(${nextZoom / GRID_RENDER_ZOOM})`;
     }
-    onRenderedCameraAppliedRef.current?.(nextCamera);
+    if (!isInteractionActiveRef.current) {
+      onRenderedCameraAppliedRef.current?.(nextCamera);
+    }
     if (Math.abs(renderedZoomRef.current - nextZoom) > ZOOM_SETTLE_EPSILON) {
       renderedZoomRef.current = nextZoom;
       setRenderedZoom(nextZoom);
@@ -121,16 +136,10 @@ export function useMapGridCamera({
 
     const zoomChanged = Math.abs(nextZoom - prev.zoom) > ZOOM_SETTLE_EPSILON;
     if (zoomChanged) {
-      // Cull after zoom settles; flushing every interpolation frame retriggered
-      // MapGrid effects and (with an unstable callback) reset the camera.
-      if (!isInteractionActiveRef.current) flushCameraReactTick();
+      flushCameraReactTick();
       return;
     }
 
-    // Distance-aware: force a tick if the camera has panned far enough since
-    // the last cull update that the leading buffer is at risk of being eaten,
-    // regardless of elapsed time. Keeps commits visible during fast pans
-    // without paying the React reconcile cost during slow ones.
     const dxSinceTick = nextPanX - lastTickedPanRef.current.x;
     const dySinceTick = nextPanY - lastTickedPanRef.current.y;
     if (mapGridPanCullDistanceExceeded(dxSinceTick, dySinceTick, nextZoom)) {
@@ -164,23 +173,32 @@ export function useMapGridCamera({
   const stepCameraRef: MutableRefObject<(() => void) | null> = useRef(null);
   const scheduleCameraFrame = useCallback(() => {
     if (cameraFrameRef.current != null || !stepCameraRef.current) return;
-    cameraFrameRef.current = window.requestAnimationFrame(stepCameraRef.current);
+    cameraFrameRef.current = requestAnimationFrame(stepCameraRef.current);
   }, []);
 
   const markCameraInteraction = useCallback(() => {
+    const wasActive = isInteractionActiveRef.current;
     isInteractionActiveRef.current = true;
-    setIsCameraMoving(true);
+    if (!wasActive) {
+      isCameraMovingRef.current = true;
+      applyPanLayerChrome(true);
+      onPanActiveChangeRef.current?.(true);
+      setPanEpoch((epoch) => epoch + 1);
+    }
     if (interactionIdleTimeoutRef.current != null) {
       window.clearTimeout(interactionIdleTimeoutRef.current);
     }
     interactionIdleTimeoutRef.current = window.setTimeout(() => {
       interactionIdleTimeoutRef.current = null;
       isInteractionActiveRef.current = false;
-      setIsCameraMoving(false);
+      isCameraMovingRef.current = false;
+      applyPanLayerChrome(false);
+      onPanActiveChangeRef.current?.(false);
+      setPanEpoch((epoch) => epoch + 1);
       flushCameraReactTick();
       persistCamera(renderedCameraRef.current);
     }, 90);
-  }, [flushCameraReactTick, persistCamera]);
+  }, [applyPanLayerChrome, flushCameraReactTick, persistCamera]);
 
   const syncCamera = useCallback((nextPanX: number, nextPanY: number, nextZoom: number) => {
     if (!isEnabled) return;
@@ -212,7 +230,7 @@ export function useMapGridCamera({
 
     if (nextPanX !== targetPanX || nextPanY !== targetPanY || nextZoom !== targetZoom) {
       if (stepCameraRef.current) {
-        cameraFrameRef.current = window.requestAnimationFrame(stepCameraRef.current);
+        cameraFrameRef.current = requestAnimationFrame(stepCameraRef.current);
       }
     } else {
       flushCameraReactTick();
@@ -253,7 +271,6 @@ export function useMapGridCamera({
     }
     onUserCameraChange?.();
     zoomAnchorRef.current = null;
-    // Interrupt any in-flight zoom interpolation so pan takes effect immediately.
     markCameraInteraction();
     const rendered = renderedCameraRef.current;
     panRef.current = { x: rendered.panX, y: rendered.panY };
@@ -302,7 +319,7 @@ export function useMapGridCamera({
       window.removeEventListener('resize', invalidateOrigin);
       resizeObserver?.disconnect();
       if (interactionIdleTimeoutRef.current != null) window.clearTimeout(interactionIdleTimeoutRef.current);
-      if (cameraFrameRef.current != null) window.cancelAnimationFrame(cameraFrameRef.current);
+      if (cameraFrameRef.current != null) cancelAnimationFrame(cameraFrameRef.current);
       if (panReactTrailingTimeoutRef.current != null) {
         window.clearTimeout(panReactTrailingTimeoutRef.current);
         panReactTrailingTimeoutRef.current = null;
@@ -312,7 +329,8 @@ export function useMapGridCamera({
   }, [getCameraStorageKey, isEnabled, mapPadHostRef, persistCamera]);
 
   return {
-    isCameraMoving,
+    isCameraMovingRef,
+    panEpoch,
     renderedZoom,
     cameraRenderTick,
     renderedCameraRef,
