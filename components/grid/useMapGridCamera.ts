@@ -11,6 +11,7 @@ import {
   clampZoom,
   mapGridPanCullDistanceExceeded,
 } from './mapGridUtils';
+import { pulseMapGridBackgroundActivity } from './mapGridBackgroundActivity';
 
 type Params = {
   mapPadHostRef: RefObject<HTMLDivElement | null>;
@@ -101,6 +102,7 @@ export function useMapGridCamera({
       window.clearTimeout(panReactTrailingTimeoutRef.current);
       panReactTrailingTimeoutRef.current = null;
     }
+    pulseMapGridBackgroundActivity('camera-react-tick', 'Camera React tick');
     startTransition(() => {
       setCameraRenderTick((tick) => tick + 1);
     });

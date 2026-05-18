@@ -13,6 +13,7 @@ import { hydrateBranchGridLayoutModel, serializeBranchGridLayoutModel } from '..
 import type { Branch, BranchCommitPreview, BranchPromptMeta, CheckedOutRef, DirectCommit, GitHubAuthStatus, GitHubInfo, GitStashEntry, MergeNode, OpenPR, RepoVisualSnapshot, WorktreeInfo } from '../types';
 import { foldStashNodesIntoGraph } from './placeStashNode';
 import { deriveRepoVisualState } from './repoVisualState';
+import { setMapGridBackgroundActivity } from '../components/grid/mapGridBackgroundActivity';
 
 const PROJECTS_STORAGE_KEY = 'git-visualizer:projects';
 const ACTIVE_PROJECT_STORAGE_KEY = 'git-visualizer:active-project';
@@ -34,6 +35,8 @@ const NODE_POSITIONS_STORAGE_KEY_PREFIX = 'git-visualizer:node-positions:';
 const SIDEBAR_DEFAULT_WIDTH_PX = 360;
 const SIDEBAR_MIN_WIDTH_PX = 180;
 const SIDEBAR_MAX_WIDTH_PX = 360;
+/** Wait this long after map pan/marquee ends before applying background git snapshot updates. */
+const MAP_REPO_REFRESH_SETTLE_MS = 500;
 type PushTarget = {
   branchName: string;
   targetSha?: string;
@@ -320,6 +323,10 @@ function App() {
   const branchMetaLoadKeyRef = useRef<string | null>(null);
   const isMapInteractingRef = useRef(false);
   const mapInteractionEpochRef = useRef(0);
+  /** False while panning and for {@link MAP_REPO_REFRESH_SETTLE_MS} after pan stops. */
+  const canApplyRepoRefreshRef = useRef(true);
+  const mapRefreshSettleTimeoutRef = useRef<number | null>(null);
+  const runPendingRepoRefreshRef = useRef<(() => void) | null>(null);
   const pendingRefreshAfterInteractionRef = useRef(false);
   const hasAttemptedAutoRestoreRef = useRef(false);
   const hasHydratedInitialProjectSnapshotsRef = useRef(false);
@@ -1282,10 +1289,12 @@ function App() {
   }
 
   function applySnapshotToActiveState(path: string, snapshot: RepoVisualSnapshot, options?: { force?: boolean }) {
-    if (!options?.force && isMapInteractingRef.current) {
+    if (!options?.force && (isMapInteractingRef.current || !canApplyRepoRefreshRef.current)) {
       pendingRefreshAfterInteractionRef.current = true;
+      setMapGridBackgroundActivity('git-refresh-pending', 'Git refresh queued', true, 'snapshot deferred');
       return false;
     }
+    setMapGridBackgroundActivity('snapshot-apply', 'Apply repo snapshot', true);
     const signature = getRepoVisualSnapshotSignature(snapshot);
     const force = options?.force === true;
     if (!force && activeSnapshotSignatureRef.current === signature) {
@@ -1316,6 +1325,8 @@ function App() {
     setLaneByBranch(snapshot.laneByBranch ?? {});
     setBranchUniqueAheadCounts(snapshot.branchUniqueAheadCounts);
     setRepoPath(path);
+    setMapGridBackgroundActivity('snapshot-apply', 'Apply repo snapshot', false);
+    setMapGridBackgroundActivity('git-refresh-pending', 'Git refresh queued', false);
     return true;
   }
 
@@ -1621,7 +1632,39 @@ function App() {
     isMapInteractingRef.current = isMapInteracting;
     if (isMapInteracting) {
       mapInteractionEpochRef.current += 1;
+      canApplyRepoRefreshRef.current = false;
+      setMapGridBackgroundActivity('git-refresh-settle', 'Git refresh settle wait', false);
+      if (mapRefreshSettleTimeoutRef.current != null) {
+        window.clearTimeout(mapRefreshSettleTimeoutRef.current);
+        mapRefreshSettleTimeoutRef.current = null;
+      }
+      return;
     }
+
+    if (mapRefreshSettleTimeoutRef.current != null) {
+      window.clearTimeout(mapRefreshSettleTimeoutRef.current);
+    }
+    setMapGridBackgroundActivity(
+      'git-refresh-settle',
+      'Git refresh settle wait',
+      true,
+      `${MAP_REPO_REFRESH_SETTLE_MS}ms after pan`,
+    );
+    mapRefreshSettleTimeoutRef.current = window.setTimeout(() => {
+      mapRefreshSettleTimeoutRef.current = null;
+      canApplyRepoRefreshRef.current = true;
+      setMapGridBackgroundActivity('git-refresh-settle', 'Git refresh settle wait', false);
+      if (pendingRefreshAfterInteractionRef.current) {
+        runPendingRepoRefreshRef.current?.();
+      }
+    }, MAP_REPO_REFRESH_SETTLE_MS);
+
+    return () => {
+      if (mapRefreshSettleTimeoutRef.current != null) {
+        window.clearTimeout(mapRefreshSettleTimeoutRef.current);
+        mapRefreshSettleTimeoutRef.current = null;
+      }
+    };
   }, [isMapInteracting]);
 
   useEffect(() => {
@@ -1632,16 +1675,21 @@ function App() {
     let refreshInFlight = false;
     let pollTimeoutId: number | null = null;
     let unlisten: (() => void) | null = null;
+    const isRepoRefreshBlocked = () =>
+      isMapInteractingRef.current || !canApplyRepoRefreshRef.current;
     const runRefresh = async (reason: 'graph' | 'local' | 'timer' | 'initial' = 'timer') => {
       if (isDisposed || refreshInFlight) return;
-      if (isMapInteractingRef.current) {
+      if (isRepoRefreshBlocked()) {
         pendingRefreshAfterInteractionRef.current = true;
+        setMapGridBackgroundActivity('git-refresh-pending', 'Git refresh queued', true, reason);
         return;
       }
       const refreshEpoch = mapInteractionEpochRef.current;
       refreshInFlight = true;
+      setMapGridBackgroundActivity('git-refresh', 'Git project refresh', true, reason);
       try {
         pendingRefreshAfterInteractionRef.current = false;
+        setMapGridBackgroundActivity('git-refresh-pending', 'Git refresh queued', false);
         if (reason !== 'graph') {
           const quickState = await invoke<RepoQuickState>('get_repo_quick_state', { repoPath }).catch(() => null);
           if (quickState) {
@@ -1659,8 +1707,9 @@ function App() {
         const result = await invoke<RefreshProjectResult>('refresh_project_if_changed', {
           projectId: repoPath,
         });
-        if (refreshEpoch !== mapInteractionEpochRef.current || isMapInteractingRef.current) {
+        if (refreshEpoch !== mapInteractionEpochRef.current || isRepoRefreshBlocked()) {
           pendingRefreshAfterInteractionRef.current = true;
+          setMapGridBackgroundActivity('git-refresh-pending', 'Git refresh queued', true, 'stale or blocked');
           return;
         }
         if (!result.updated) return;
@@ -1672,8 +1721,9 @@ function App() {
           [repoPath]: quickStateSignature(quickStateFromSnapshot(repoPath, nextSnapshot)),
         };
         if (normalizePath(repoPath) === normalizePath(nextSnapshot.path)) {
-          if (isMapInteractingRef.current) {
+          if (isRepoRefreshBlocked()) {
             pendingRefreshAfterInteractionRef.current = true;
+            setMapGridBackgroundActivity('git-refresh-pending', 'Git refresh queued', true, 'awaiting settle');
             return;
           }
           startTransition(() => {
@@ -1684,10 +1734,17 @@ function App() {
         console.warn('Background project refresh failed:', error);
       } finally {
         refreshInFlight = false;
-        if (!isDisposed && pendingRefreshAfterInteractionRef.current && !isMapInteractingRef.current) {
+        setMapGridBackgroundActivity('git-refresh', 'Git project refresh', false);
+        if (!isDisposed && pendingRefreshAfterInteractionRef.current && !isRepoRefreshBlocked()) {
           void runRefresh();
+        } else if (pendingRefreshAfterInteractionRef.current) {
+          setMapGridBackgroundActivity('git-refresh-pending', 'Git refresh queued', true, 'waiting');
         }
       }
+    };
+
+    runPendingRepoRefreshRef.current = () => {
+      void runRefresh();
     };
 
     const scheduleBackgroundProbe = () => {
@@ -1716,6 +1773,7 @@ function App() {
 
     return () => {
       isDisposed = true;
+      runPendingRepoRefreshRef.current = null;
       window.clearTimeout(initialProbeTimeoutId);
       if (pollTimeoutId != null) window.clearTimeout(pollTimeoutId);
       if (unlisten) unlisten();

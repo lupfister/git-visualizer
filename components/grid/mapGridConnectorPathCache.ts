@@ -56,8 +56,18 @@ export function applyPersistedPathStrings(
 
 export function collectPathStringsForPersistence(
   cache: Map<string, ConnectorPathCacheEntry>,
+  connectors?: readonly ConnectorPathCacheInput[],
+  cornerRadiusContentPx?: number,
 ): Record<string, string> {
   const entries: Record<string, string> = {};
+  if (connectors && cornerRadiusContentPx != null) {
+    for (const connector of connectors) {
+      const key = connectorGeometryCacheKey(connector, cornerRadiusContentPx);
+      const entry = cache.get(key);
+      if (entry) entries[key] = entry.d;
+    }
+    return entries;
+  }
   for (const [key, entry] of cache) {
     entries[key] = entry.d;
   }
@@ -121,7 +131,11 @@ export function scheduleConnectorPathCacheWarmup(
   cache: Map<string, ConnectorPathCacheEntry>,
   connectors: readonly ConnectorPathCacheInput[],
   cornerRadiusContentPx: number,
-  options?: { onDone?: () => void },
+  options?: {
+    onDone?: () => void;
+    shouldYield?: () => boolean;
+    onProgress?: (done: number, total: number) => void;
+  },
 ): () => void {
   if (connectors.length === 0) {
     options?.onDone?.();
@@ -133,9 +147,18 @@ export function scheduleConnectorPathCacheWarmup(
 
   const runSlice = (deadline?: IdleDeadline) => {
     if (cancelled) return;
+    if (options?.shouldYield?.()) {
+      if (typeof requestIdleCallback === 'function') {
+        requestIdleCallback(runSlice, { timeout: 400 });
+      } else {
+        window.setTimeout(() => runSlice(), 32);
+      }
+      return;
+    }
     const sliceStart = performance.now();
     while (index < connectors.length) {
       index = warmConnectorPathCacheSlice(cache, connectors, cornerRadiusContentPx, index);
+      options?.onProgress?.(index, connectors.length);
       const elapsed = performance.now() - sliceStart;
       if (deadline && deadline.timeRemaining() < 2) break;
       if (elapsed >= WARM_SLICE_MS) break;

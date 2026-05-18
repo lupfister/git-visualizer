@@ -11,6 +11,10 @@ import {
   trimConnectorPathCacheIfNeeded,
 } from './mapGridConnectorPathCache';
 import {
+  pulseMapGridBackgroundActivity,
+  setMapGridBackgroundActivity,
+} from './mapGridBackgroundActivity';
+import {
   buildConnectorPathCacheScopeKey,
   computeConnectorLayoutDigest,
   mergePersistedConnectorPaths,
@@ -31,6 +35,7 @@ import { getNodePositionOverride } from './nodePositionOverrides';
 
 const EMPTY_NODE_POSITION_OVERRIDES: NodePositionOverrides = {};
 const EMPTY_DRAG_PREVIEW: Record<string, { x: number; y: number }> = {};
+const EMPTY_ADJUSTED_ANCHOR_MAP = new Map<string, { x: number; y: number }>();
 
 type MapGridCommitWrapperProps = {
   fadeIn: boolean;
@@ -546,6 +551,7 @@ type Props = {
   matchingNodeIds: Set<string>;
   focusedNode: Node | null;
   visibleRenderNodes: Node[];
+  layoutNodes: Node[];
   manuallyOpenedClumps: Set<string>;
   manuallyClosedClumps: Set<string>;
   defaultCollapsedClumps: Set<string>;
@@ -619,6 +625,7 @@ const MapGridCanvas = memo(function MapGridCanvas({
   matchingNodeIds,
   focusedNode,
   visibleRenderNodes,
+  layoutNodes,
   manuallyOpenedClumps,
   manuallyClosedClumps,
   defaultCollapsedClumps,
@@ -750,11 +757,11 @@ const MapGridCanvas = memo(function MapGridCanvas({
   }, [defaultCollapsedClumps, setManuallyOpenedClumps, setManuallyClosedClumps, flushCameraReactTick]);
 
   const adjustedAnchorByOriginalKey = useMemo(() => {
-    const map = new Map<string, { x: number; y: number }>();
     const overrideKeys = Object.keys(nodePositionOverrides);
     const dragKeys = Object.keys(dragPreviewByNodeId);
-    if (overrideKeys.length === 0 && dragKeys.length === 0) return map;
-    for (const node of visibleRenderNodes) {
+    if (overrideKeys.length === 0 && dragKeys.length === 0) return EMPTY_ADJUSTED_ANCHOR_MAP;
+    const map = new Map<string, { x: number; y: number }>();
+    for (const node of layoutNodes) {
       const persistedOverride = getNodePositionOverride(nodePositionOverrides, node.commit);
       const dragPreview = dragPreviewByNodeId[node.commit.visualId];
       const effectiveX = dragPreview?.x ?? persistedOverride?.x ?? node.x;
@@ -767,7 +774,7 @@ const MapGridCanvas = memo(function MapGridCanvas({
       }
     }
     return map;
-  }, [visibleRenderNodes, nodePositionOverrides, dragPreviewByNodeId]);
+  }, [layoutNodes, nodePositionOverrides, dragPreviewByNodeId]);
 
   const adjustEndpoint = useCallback(
     (endpointX: number, endpointY: number, face: ConnectorFace | undefined): { x: number; y: number } => {
@@ -814,13 +821,13 @@ const MapGridCanvas = memo(function MapGridCanvas({
     const next = buildVisibleConnectors(mergeConnectors, cullConnectorPath);
     lastVisibleMergeConnectorsRef.current = next;
     return next;
-  }, [mergeConnectors, cullConnectorPath, buildVisibleConnectors, visibleRenderNodes.length]);
+  }, [mergeConnectors, cullConnectorPath, buildVisibleConnectors, cameraRenderTick, panEpoch]);
 
   const visibleConnectors = useMemo(() => {
     const next = buildVisibleConnectors(connectors, cullConnectorPath);
     lastVisibleConnectorsRef.current = next;
     return next;
-  }, [connectors, cullConnectorPath, buildVisibleConnectors, visibleRenderNodes.length]);
+  }, [connectors, cullConnectorPath, buildVisibleConnectors, cameraRenderTick, panEpoch]);
 
   const connectorsForPathCache = useMemo(() => {
     const admitAll = () => true;
@@ -836,11 +843,21 @@ const MapGridCanvas = memo(function MapGridCanvas({
   }, [connectorsForPathCache, commitCornerRadiusPx, connectorPathCacheScopeBase]);
 
   const flushConnectorPathCachePersist = useCallback(() => {
+    if (isCameraMovingRef.current) return;
     const scopeKey = connectorPersistScopeRef.current;
     if (!scopeKey) return;
-    const entries = collectPathStringsForPersistence(connectorPath2dCacheRef.current);
-    void mergePersistedConnectorPaths(scopeKey, entries);
-  }, []);
+    const entries = collectPathStringsForPersistence(
+      connectorPath2dCacheRef.current,
+      connectorsForPathCache,
+      commitCornerRadiusPx,
+    );
+    const count = Object.keys(entries).length;
+    if (count === 0) return;
+    setMapGridBackgroundActivity('connector-idb-write', 'Connector cache save (IDB)', true, `${count} paths`);
+    void mergePersistedConnectorPaths(scopeKey, entries).finally(() => {
+      setMapGridBackgroundActivity('connector-idb-write', 'Connector cache save (IDB)', false);
+    });
+  }, [commitCornerRadiusPx, connectorsForPathCache, isCameraMovingRef]);
 
   const scheduleConnectorPathCachePersist = useCallback(() => {
     if (connectorPersistTimerRef.current != null) {
@@ -951,6 +968,11 @@ const MapGridCanvas = memo(function MapGridCanvas({
       }
       trimConnectorPathCacheIfNeeded(pathCache, activeKeys);
       ctx.stroke(combined);
+      pulseMapGridBackgroundActivity(
+        'connector-draw',
+        'Connector canvas redraw',
+        `${mergeList.length + connList.length} paths`,
+      );
 
       lastDrawnPanRef.current = {
         x: renderedCameraRef.current.panX,
@@ -963,14 +985,22 @@ const MapGridCanvas = memo(function MapGridCanvas({
   useEffect(() => {
     connectorPersistScopeRef.current = connectorPathCacheScopeKey;
     let cancelled = false;
+    setMapGridBackgroundActivity('connector-idb-read', 'Connector cache load (IDB)', true);
 
     void readPersistedConnectorPaths(connectorPathCacheScopeKey).then((entries) => {
       if (cancelled) return;
-      applyPersistedPathStrings(connectorPath2dCacheRef.current, entries);
+      const applied = applyPersistedPathStrings(connectorPath2dCacheRef.current, entries);
+      setMapGridBackgroundActivity(
+        'connector-idb-read',
+        'Connector cache load (IDB)',
+        false,
+        `${applied} paths hydrated`,
+      );
     });
 
     return () => {
       cancelled = true;
+      setMapGridBackgroundActivity('connector-idb-read', 'Connector cache load (IDB)', false);
     };
   }, [connectorPathCacheScopeKey]);
 
@@ -987,12 +1017,28 @@ const MapGridCanvas = memo(function MapGridCanvas({
     connectorWarmupCancelRef.current?.();
     if (connectorsForPathCache.length === 0) return undefined;
 
+    setMapGridBackgroundActivity(
+      'connector-warmup',
+      'Connector path warmup',
+      true,
+      `0/${connectorsForPathCache.length}`,
+    );
     connectorWarmupCancelRef.current = scheduleConnectorPathCacheWarmup(
       connectorPath2dCacheRef.current,
       connectorsForPathCache,
       commitCornerRadiusPx,
       {
+        shouldYield: () => isCameraMovingRef.current,
+        onProgress: (done, total) => {
+          setMapGridBackgroundActivity(
+            'connector-warmup',
+            'Connector path warmup',
+            true,
+            `${done}/${total}`,
+          );
+        },
         onDone: () => {
+          setMapGridBackgroundActivity('connector-warmup', 'Connector path warmup', false, 'complete');
           scheduleConnectorPathCachePersist();
         },
       },
@@ -1000,8 +1046,9 @@ const MapGridCanvas = memo(function MapGridCanvas({
     return () => {
       connectorWarmupCancelRef.current?.();
       connectorWarmupCancelRef.current = null;
+      setMapGridBackgroundActivity('connector-warmup', 'Connector path warmup', false, 'cancelled');
     };
-  }, [connectorsForPathCache, commitCornerRadiusPx, scheduleConnectorPathCachePersist]);
+  }, [connectorsForPathCache, commitCornerRadiusPx, scheduleConnectorPathCachePersist, isCameraMovingRef]);
 
   useLayoutEffect(() => {
     const viewport = scrollContainerRef.current;

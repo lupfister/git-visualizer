@@ -37,7 +37,12 @@ import {
 import CommitControls from './CommitControls';
 import { mergePanStableVisibleNodeIds, pickNearestVisibleVisualIds } from './MapGridCardVirtualizer';
 import MapGridCanvas from './MapGridCanvas';
+import MapGridBackgroundActivityHud from './MapGridBackgroundActivityHud';
 import MapGridDebugPanel from './MapGridDebugPanel';
+import {
+  pulseMapGridBackgroundActivity,
+  setMapGridBackgroundActivity,
+} from './mapGridBackgroundActivity';
 import MapGridDialogs from './MapGridDialogs';
 import MapSearchBar from './MapSearchBar';
 import { useMapGridCamera } from './useMapGridCamera';
@@ -951,6 +956,12 @@ export default function BranchGridMap({
     const next = isCameraMovingRef.current || isMarqueeSelectingRef.current;
     if (lastInteractionEmittedRef.current === next) return;
     lastInteractionEmittedRef.current = next;
+    setMapGridBackgroundActivity(
+      'map-interaction',
+      'Map interaction',
+      next,
+      next ? (isCameraMovingRef.current ? 'pan/zoom' : 'marquee') : 'idle',
+    );
     onInteractionChange?.(next);
   }, [onInteractionChange]);
 
@@ -1025,11 +1036,17 @@ export default function BranchGridMap({
     if (isCameraMovingRef.current) {
       settlePrunePendingRef.current = false;
       settlePruneTargetRef.current = null;
+      setMapGridBackgroundActivity('settle-prune', 'Visible-settle prune', false);
       if (settlePruneRafRef.current != null) {
         window.cancelAnimationFrame(settlePruneRafRef.current);
         settlePruneRafRef.current = null;
       }
 
+      pulseMapGridBackgroundActivity(
+        'spatial-cull',
+        'Spatial cull tick',
+        `${cappedVisible.size} visible`,
+      );
       const admissionBudget = mapGridPanAdmissionBudget(displayZoom);
       setVisibleNodeIds((prev) => {
         const next = mergePanStableVisibleNodeIds(
@@ -1076,6 +1093,7 @@ export default function BranchGridMap({
 
         settlePrunePendingRef.current = true;
         settlePruneTargetRef.current = cappedVisible;
+        setMapGridBackgroundActivity('settle-prune', 'Visible-settle prune', true, 'pruning toward viewport');
         return pruneVisibleNodesTowardTarget(base, cappedVisible, MAP_GRID_MAX_NODES_REMOVED_PER_FRAME);
       });
     }
@@ -1095,7 +1113,10 @@ export default function BranchGridMap({
   useEffect(() => {
     if (isCameraMovingRef.current) return;
 
-    if (!settlePrunePendingRef.current || settlePruneTargetRef.current == null) return;
+    if (!settlePrunePendingRef.current || settlePruneTargetRef.current == null) {
+      setMapGridBackgroundActivity('settle-prune', 'Visible-settle prune', false);
+      return;
+    }
     if (settlePruneRafRef.current != null) return;
 
     settlePruneRafRef.current = window.requestAnimationFrame(() => {
@@ -1571,6 +1592,7 @@ export default function BranchGridMap({
 
   return (
     <div className="relative flex h-full min-h-0 flex-col overflow-hidden border-l border-border bg-background">
+      {!isLoading && allCommits.length > 0 && !blockMapDisplay ? <MapGridBackgroundActivityHud /> : null}
       <MapGridDebugPanel
         isOpen={isDebugOpen}
         onClose={() => onDebugClose?.()}
@@ -1784,6 +1806,7 @@ export default function BranchGridMap({
           matchingNodeIds={matchingNodeIds}
           focusedNode={focusedRenderNode}
           visibleRenderNodes={visibleRenderNodes}
+          layoutNodes={renderNodes}
           manuallyOpenedClumps={manuallyOpenedClumps}
           manuallyClosedClumps={manuallyClosedClumps}
           defaultCollapsedClumps={defaultCollapsedClumps}
