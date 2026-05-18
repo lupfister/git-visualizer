@@ -1102,6 +1102,8 @@ const MapGridCanvas = memo(function MapGridCanvas({
     isCameraMovingRef,
   ]);
 
+  const stickyCardSlotOrderRef = useRef<string[]>([]);
+
   const cardSlotAssignments = useMemo(() => {
     const viewportW = viewportClientSize?.width ?? 0;
     const viewportH = viewportClientSize?.height ?? 0;
@@ -1110,23 +1112,35 @@ const MapGridCanvas = memo(function MapGridCanvas({
     const bounds = computeViewportCullBounds(viewportW, viewportH, camera);
     const centerX = bounds ? (bounds.left + bounds.right) / 2 : 0;
     const centerY = bounds ? (bounds.top + bounds.bottom) / 2 : 0;
+    const panStable = isCameraMovingRef.current;
 
-    return buildMapGridCardSlotAssignments(
+    const assignments = buildMapGridCardSlotAssignments(
       slotCount,
       visibleRenderNodes,
       dragPreviewByNodeId,
       nodePositionOverrides,
       centerX,
       centerY,
+      panStable ? stickyCardSlotOrderRef.current : [],
     );
+
+    if (panStable) {
+      stickyCardSlotOrderRef.current = assignments.map((assignment) => assignment.node.commit.visualId);
+    } else {
+      stickyCardSlotOrderRef.current = [];
+    }
+
+    return assignments;
   }, [
     visibleRenderNodes,
     viewportClientSize,
     displayZoom,
     cameraRenderTick,
+    panEpoch,
     dragPreviewByNodeId,
     nodePositionOverrides,
     renderedCameraRef,
+    isCameraMovingRef,
   ]);
 
   const suppressSearchMatchScale = isCameraMovingRef.current;
@@ -1163,12 +1177,11 @@ const MapGridCanvas = memo(function MapGridCanvas({
             '--map-inv-zoom': `${computeMapGridInvZoom(displayZoom)}`,
           } as CSSProperties}
         >
-          {cardSlotAssignments.map((assignment, slotIndex) => {
-            if (!assignment) return null;
+          {cardSlotAssignments.map((assignment) => {
             const { node, cardLeft, cardTop } = assignment;
             return (
               <MapGridCommitCard
-                key={slotIndex}
+                key={node.commit.visualId}
                 node={node}
                 cardLeft={cardLeft}
                 cardTop={cardTop}

@@ -35,7 +35,7 @@ import {
   getNodePositionOverride,
 } from './nodePositionOverrides';
 import CommitControls from './CommitControls';
-import { pickNearestVisibleVisualIds } from './MapGridCardVirtualizer';
+import { mergePanStableVisibleNodeIds, pickNearestVisibleVisualIds } from './MapGridCardVirtualizer';
 import MapGridCanvas from './MapGridCanvas';
 import MapGridDebugPanel from './MapGridDebugPanel';
 import MapGridDialogs from './MapGridDialogs';
@@ -48,6 +48,7 @@ import {
   MAP_GRID_CULL_VIEWPORT_INSET_SCREEN_PX,
   MAP_GRID_MAX_NODES_REMOVED_PER_FRAME,
   mapGridMaxVisibleNodeRetain,
+  mapGridPanAdmissionBudget,
   buildCommitCullSpatialIndex,
   collectVisibleCommitIdsFromSpatialIndex,
   computeViewportCullBounds,
@@ -1029,9 +1030,19 @@ export default function BranchGridMap({
         settlePruneRafRef.current = null;
       }
 
-      setVisibleNodeIds((prev) =>
-        visibleCommitIdSetEquals(prev, cappedVisible) ? prev : cappedVisible,
-      );
+      const admissionBudget = mapGridPanAdmissionBudget(displayZoom);
+      setVisibleNodeIds((prev) => {
+        const next = mergePanStableVisibleNodeIds(
+          prev,
+          nextVisible,
+          cappedVisible,
+          admissionBudget,
+          nodeByVisualId,
+          centerX,
+          centerY,
+        );
+        return visibleCommitIdSetEquals(prev, next) ? prev : next;
+      });
     } else {
       setVisibleNodeIds((prev) => {
         const pending = panAdmissionPendingRef.current;

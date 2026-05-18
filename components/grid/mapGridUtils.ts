@@ -102,20 +102,21 @@ export function computeMapGridInvZoom(displayZoom: number): number {
   return 1 / displayZoom;
 }
 
-/** Max real commit card DOM slots; aggressively low when zoomed out. */
+/** Minimum commit cards retained / slotted at any zoom (floor when zoomed out). */
+export const MAP_GRID_MIN_CARD_SLOTS = 15;
+
+/** Max real commit card DOM slots; scales up from {@link MAP_GRID_MIN_CARD_SLOTS} when zoomed out. */
 export function computeMapGridCardSlotCap(displayZoom: number): number {
   const maxSlots = 96;
-  const minSlotsZoomedOut = 12;
   if (displayZoom >= 0.85) return maxSlots;
-  if (displayZoom <= MAP_GRID_MIN_DISPLAY_ZOOM) return minSlotsZoomedOut;
+  if (displayZoom <= MAP_GRID_MIN_DISPLAY_ZOOM) return MAP_GRID_MIN_CARD_SLOTS;
   const t =
     (displayZoom - MAP_GRID_MIN_DISPLAY_ZOOM) / (0.85 - MAP_GRID_MIN_DISPLAY_ZOOM);
-  return Math.round(minSlotsZoomedOut + t * (maxSlots - minSlotsZoomedOut));
+  return Math.round(MAP_GRID_MIN_CARD_SLOTS + t * (maxSlots - MAP_GRID_MIN_CARD_SLOTS));
 }
 
-/** Cap for `visibleNodeIds`; matches DOM slot cap when zoomed out (no extra arbitrary layer). */
+/** Cap for `visibleNodeIds`; matches DOM slot cap at every zoom. */
 export function mapGridMaxVisibleNodeRetain(displayZoom: number): number {
-  if (displayZoom >= 0.75) return Number.POSITIVE_INFINITY;
   return computeMapGridCardSlotCap(displayZoom);
 }
 

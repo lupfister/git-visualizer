@@ -1,5 +1,5 @@
 import { CARD_BODY_TOP_OFFSET, CARD_HEIGHT, CARD_WIDTH, type Node } from './LayoutGrid';
-import { computeMapGridCardSlotCap, GRID_RENDER_ZOOM } from './mapGridUtils';
+import { computeMapGridCardSlotCap, GRID_RENDER_ZOOM, MAP_GRID_MIN_CARD_SLOTS } from './mapGridUtils';
 import { getNodePositionOverride } from './nodePositionOverrides';
 import type { NodePositionOverrides } from './LayoutGrid';
 
@@ -9,7 +9,7 @@ export type MapGridCardSlotAssignment = {
   node: Node;
   cardLeft: number;
   cardTop: number;
-} | null;
+};
 
 export function computeMapGridCardSlotCount(
   viewportWidth: number,
@@ -26,8 +26,7 @@ export function computeMapGridCardSlotCount(
   const cardArea = Math.max(1, cardW * cardH);
   const fillFactor = displayZoom <= 0.35 ? 1 : 1.5;
   const estimate = Math.ceil((viewportWidth * viewportHeight) / cardArea) * fillFactor;
-  const minSlots = displayZoom <= 0.35 ? 12 : 16;
-  return Math.max(minSlots, Math.min(slotCap, estimate));
+  return Math.max(MAP_GRID_MIN_CARD_SLOTS, Math.min(slotCap, estimate));
 }
 
 const resolveCardPosition = (
@@ -61,30 +60,47 @@ export function buildMapGridCardSlotAssignments(
   nodePositionOverrides: NodePositionOverrides,
   viewportCenterX: number,
   viewportCenterY: number,
+  stickyVisualIdOrder: readonly string[] = [],
 ): MapGridCardSlotAssignment[] {
-  const slots: MapGridCardSlotAssignment[] = Array.from({ length: slotCount }, () => null);
-  if (visibleNodes.length === 0) {
-    return slots;
+  if (visibleNodes.length === 0 || slotCount <= 0) {
+    return [];
+  }
+
+  const visibleByVisualId = new Map(visibleNodes.map((node) => [node.commit.visualId, node] as const));
+  const assignments: MapGridCardSlotAssignment[] = [];
+  const assigned = new Set<string>();
+
+  const pushNode = (node: Node) => {
+    const { cardLeft, cardTop } = resolveCardPosition(node, dragPreviewByNodeId, nodePositionOverrides);
+    assignments.push({ node, cardLeft, cardTop });
+    assigned.add(node.commit.visualId);
+  };
+
+  for (const visualId of stickyVisualIdOrder) {
+    if (assignments.length >= slotCount) break;
+    if (assigned.has(visualId)) continue;
+    const node = visibleByVisualId.get(visualId);
+    if (!node) continue;
+    pushNode(node);
   }
 
   const ranked = visibleNodes
+    .filter((node) => !assigned.has(node.commit.visualId))
     .map((node) => {
       const { cardLeft, cardTop } = resolveCardPosition(node, dragPreviewByNodeId, nodePositionOverrides);
       return {
         node,
-        cardLeft,
-        cardTop,
         distanceSq: viewportDistanceSq(cardLeft, cardTop, viewportCenterX, viewportCenterY),
       };
     })
     .sort((a, b) => a.distanceSq - b.distanceSq);
 
-  const limit = Math.min(slotCount, ranked.length);
-  for (let i = 0; i < limit; i += 1) {
-    const entry = ranked[i]!;
-    slots[i] = { node: entry.node, cardLeft: entry.cardLeft, cardTop: entry.cardTop };
+  for (const entry of ranked) {
+    if (assignments.length >= slotCount) break;
+    pushNode(entry.node);
   }
-  return slots;
+
+  return assignments;
 }
 
 /** Keep the nearest `maxCount` commits to the viewport center. */
@@ -117,5 +133,47 @@ export function pickNearestVisibleVisualIds(
   for (let i = 0; i < maxCount && i < ranked.length; i += 1) {
     next.add(ranked[i]!.id);
   }
+  return next;
+}
+
+/**
+ * While panning: keep nodes still inside the spatial viewport; admit new nearest
+ * ids up to `admissionBudget` per tick. Nearest-cap pruning runs after pan settles.
+ */
+export function mergePanStableVisibleNodeIds(
+  prev: ReadonlySet<string>,
+  spatiallyVisible: ReadonlySet<string>,
+  nearestCandidates: ReadonlySet<string>,
+  admissionBudget: number,
+  nodeByVisualId: ReadonlyMap<string, Node>,
+  viewportCenterX: number,
+  viewportCenterY: number,
+  nodePositionOverrides: NodePositionOverrides = {},
+  dragPreviewByNodeId: DragPreviewByVisualId = {},
+): Set<string> {
+  const next = new Set<string>();
+  for (const id of prev) {
+    if (spatiallyVisible.has(id)) next.add(id);
+  }
+  if (admissionBudget <= 0 || nearestCandidates.size === 0) {
+    return next;
+  }
+
+  const toAdmit = new Set<string>();
+  for (const id of nearestCandidates) {
+    if (!next.has(id)) toAdmit.add(id);
+  }
+  if (toAdmit.size === 0) return next;
+
+  const admitted = pickNearestVisibleVisualIds(
+    toAdmit,
+    admissionBudget,
+    nodeByVisualId,
+    viewportCenterX,
+    viewportCenterY,
+    nodePositionOverrides,
+    dragPreviewByNodeId,
+  );
+  for (const id of admitted) next.add(id);
   return next;
 }
