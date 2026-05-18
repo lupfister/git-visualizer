@@ -25,6 +25,10 @@
 .DS_Store
 *.pem
 .tmp-video-frames/
+.tmp-video-frames2/
+.tmp-f-*.png
+.tmp-clump-flicker-*.png
+.video-analysis-*/
 
 # debug
 npm-debug.log*
