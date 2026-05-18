@@ -2,7 +2,7 @@ import { memo, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useStat
 import type { CSSProperties, Dispatch, MouseEvent, ReactNode, RefObject, SetStateAction, WheelEvent } from 'react';
 import { CARD_BODY_TOP_OFFSET, CARD_HEIGHT, CARD_WIDTH, CONNECTOR_COLOR } from './LayoutGrid';
 import { buildMapGridConnectorPath } from './gridPathUtils';
-import { cn, GRID_RENDER_ZOOM, MAP_GRID_CAMERA_PAN_DISTANCE_TICK_PX } from './mapGridUtils';
+import { cn, GRID_RENDER_ZOOM, mapGridPanCullDistanceExceeded } from './mapGridUtils';
 import type { ConnectorFace, Node, NodePositionOverrides } from './LayoutGrid';
 import type { MapGridCameraState } from './useMapGridCamera';
 import { getNodePositionOverride } from './nodePositionOverrides';
@@ -124,6 +124,8 @@ type CommitCardProps = {
   onNodePointerMove: (event: React.PointerEvent<HTMLDivElement>) => void;
   onNodePointerUp: (event: React.PointerEvent<HTMLDivElement>) => void;
   onClusterToggle: (clusterKey: string) => void;
+  /** Skip search-hit scale transform during camera motion (reduces compositor layers). */
+  suppressSearchMatchScale?: boolean;
 };
 
 const MapGridCommitCard = memo(function MapGridCommitCard({
@@ -162,6 +164,7 @@ const MapGridCommitCard = memo(function MapGridCommitCard({
   onNodePointerMove,
   onNodePointerUp,
   onClusterToggle,
+  suppressSearchMatchScale = false,
 }: CommitCardProps) {
   const commitId = node.commit.id;
   const visualId = node.commit.visualId;
@@ -263,7 +266,7 @@ const MapGridCommitCard = memo(function MapGridCommitCard({
   const wrapperClassName = cn(
     'group absolute z-20',
     isSearchActive && !isSearchMatch ? 'opacity-10' : '',
-    isSearchActive && isSearchMatch ? 'scale-[1.01]' : '',
+    isSearchActive && isSearchMatch && !suppressSearchMatchScale ? 'scale-[1.01]' : '',
     isFocused ? 'z-30' : '',
   );
 
@@ -475,9 +478,6 @@ type ConnectorCameraMetricsBase = {
   baseY: number;
   connectorColor: string;
 };
-
-const MID_PAN_CONNECTOR_REDRAW_THRESHOLD_SQ =
-  MAP_GRID_CAMERA_PAN_DISTANCE_TICK_PX * MAP_GRID_CAMERA_PAN_DISTANCE_TICK_PX;
 
 const contentPointFormatter = (x: number, y: number) => `${x},${y}`;
 
@@ -823,24 +823,17 @@ const MapGridCanvas = memo(function MapGridCanvas({
     [adjustEndpoint],
   );
 
-  const liveVisibleMergeConnectors = useMemo(() => {
-    if (isCameraMoving) return lastVisibleMergeConnectorsRef.current;
+  const visibleMergeConnectors = useMemo(() => {
     const next = buildVisibleConnectors(mergeConnectors, cullConnectorPath);
     lastVisibleMergeConnectorsRef.current = next;
     return next;
-  }, [isCameraMoving, mergeConnectors, cullConnectorPath, buildVisibleConnectors]);
+  }, [mergeConnectors, cullConnectorPath, buildVisibleConnectors, visibleRenderNodes.length]);
 
-  const liveVisibleConnectors = useMemo(() => {
-    if (isCameraMoving) return lastVisibleConnectorsRef.current;
+  const visibleConnectors = useMemo(() => {
     const next = buildVisibleConnectors(connectors, cullConnectorPath);
     lastVisibleConnectorsRef.current = next;
     return next;
-  }, [isCameraMoving, connectors, cullConnectorPath, buildVisibleConnectors]);
-
-  const visibleMergeConnectors = isCameraMoving
-    ? lastVisibleMergeConnectorsRef.current
-    : liveVisibleMergeConnectors;
-  const visibleConnectors = isCameraMoving ? lastVisibleConnectorsRef.current : liveVisibleConnectors;
+  }, [connectors, cullConnectorPath, buildVisibleConnectors, visibleRenderNodes.length]);
 
   const getConnectorCameraMetrics = useCallback((options?: { forceMeasure?: boolean }): ConnectorCameraMetrics | null => {
     const scale = renderedCameraRef.current.zoom / GRID_RENDER_ZOOM;
@@ -985,6 +978,19 @@ const MapGridCanvas = memo(function MapGridCanvas({
     const canvas = connectorCanvasRef.current;
     if (!canvas || !isCameraMoving) return;
 
+    // Idle drawing is skipped while `isCameraMoving`; if the user pans/zooms before any idle
+    // frame, `drawnConnectorCameraRef` stays null and connectors stay blank until settle.
+    if (!drawnConnectorCameraRef.current) {
+      const metrics = getConnectorCameraMetrics({ forceMeasure: true });
+      if (metrics) {
+        const mergeList = buildVisibleConnectors(mergeConnectorsRef.current, cullConnectorPathRef.current);
+        const connList = buildVisibleConnectors(connectorsRef.current, cullConnectorPathRef.current);
+        lastVisibleMergeConnectorsRef.current = mergeList;
+        lastVisibleConnectorsRef.current = connList;
+        drawConnectorsToCanvas(mergeList, connList, metrics);
+      }
+    }
+
     let animationFrame: number | null = null;
     const syncConnectorTransform = () => {
       const drawnCamera = drawnConnectorCameraRef.current;
@@ -1000,7 +1006,9 @@ const MapGridCanvas = memo(function MapGridCanvas({
 
         const dx = renderedCameraRef.current.panX - lastDrawnPanRef.current.x;
         const dy = renderedCameraRef.current.panY - lastDrawnPanRef.current.y;
-        if (dx * dx + dy * dy >= MID_PAN_CONNECTOR_REDRAW_THRESHOLD_SQ) {
+        if (
+          mapGridPanCullDistanceExceeded(dx, dy, renderedCameraRef.current.zoom)
+        ) {
           const metrics = getConnectorCameraMetrics();
           if (metrics) {
             const mergeList = buildVisibleConnectors(mergeConnectorsRef.current, cullConnectorPathRef.current);
@@ -1073,6 +1081,7 @@ const MapGridCanvas = memo(function MapGridCanvas({
             onNodePointerMove,
             onNodePointerUp,
             onClusterToggle: handleClusterToggle,
+            suppressSearchMatchScale: isCameraMoving,
           } satisfies CommitCardProps,
         };
       }),
@@ -1112,6 +1121,7 @@ const MapGridCanvas = memo(function MapGridCanvas({
       onNodePointerDown,
       onNodePointerMove,
       onNodePointerUp,
+      isCameraMoving,
     ],
   );
 
@@ -1144,7 +1154,9 @@ const MapGridCanvas = memo(function MapGridCanvas({
             width: contentWidth,
             height: contentHeight,
             transformOrigin: 'top left' as const,
-            contain: 'layout paint style' as const,
+            // layout + style only: `paint` containment clips descendants that paint above y=0
+            // (commit labels use negative `top`), which cropped the first row’s header text.
+            contain: 'layout style' as const,
             '--map-inv-zoom': `${1 / displayZoom}`,
             ...(isCameraMoving
               ? { willChange: 'transform' as const, pointerEvents: 'none' as const }

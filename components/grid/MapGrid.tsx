@@ -1,4 +1,5 @@
 import {
+  startTransition,
   useCallback,
   useEffect,
   useLayoutEffect,
@@ -45,17 +46,39 @@ import {
   GRID_COMMIT_CORNER_RADIUS_BASE_PX,
   GRID_RENDER_ZOOM,
   MAP_GRID_CULL_VIEWPORT_INSET_SCREEN_PX,
-  MAP_GRID_INNER_PADDING_PX,
+  MAP_GRID_MAX_NODES_ADDED_PER_PAN_FRAME,
+  MAP_GRID_MAX_NODES_ADDED_PER_PAN_TICK,
+  MAP_GRID_MAX_NODES_REMOVED_PER_FRAME,
   buildCommitCullSpatialIndex,
   collectVisibleCommitIdsFromSpatialIndex,
-  getViewportContentBoundsFromClientSize,
+  computeViewportCullBounds,
   isUsableOtherWorktree,
   looseCableConnectorIntersectsViewportBounds,
   shaMatchesGitRef,
   visibleCommitIdSetEquals,
-  withCullInsetScreenPx,
 } from './mapGridUtils';
 import type { ViewportContentBounds } from './mapGridUtils';
+
+function countStaleVisibleNodes(prev: Set<string>, target: Set<string>): number {
+  let n = 0;
+  for (const id of prev) {
+    if (!target.has(id)) n++;
+  }
+  return n;
+}
+
+function pruneVisibleNodesTowardTarget(prev: Set<string>, target: Set<string>, maxRemove: number): Set<string> {
+  const next = new Set(prev);
+  let removed = 0;
+  for (const id of prev) {
+    if (target.has(id)) continue;
+    next.delete(id);
+    removed++;
+    if (removed >= maxRemove) break;
+  }
+  for (const id of target) next.add(id);
+  return next;
+}
 
 function MapGridLoadingState() {
   return (
@@ -258,6 +281,15 @@ export default function BranchGridMap({
   const setManuallyOpenedClumps = controlledSetManuallyOpenedClumps ?? setLocalManuallyOpenedClumps;
   const setManuallyClosedClumps = controlledSetManuallyClosedClumps ?? setLocalManuallyClosedClumps;
   const [visibleNodeIds, setVisibleNodeIds] = useState<Set<string> | null>(null);
+  const panAdmissionPendingRef = useRef<Set<string>>(new Set());
+  const settlePrunePendingRef = useRef(false);
+  const settlePruneTargetRef = useRef<Set<string> | null>(null);
+  const settlePruneRafRef = useRef<number | null>(null);
+  const onRenderedCameraAppliedRef = useRef<(() => void) | null>(null);
+  const handleRenderedCameraApplied = useCallback(() => {
+    onRenderedCameraAppliedRef.current?.();
+  }, []);
+  const panAdmissionRafRef = useRef<number | null>(null);
   const [viewportClientSize, setViewportClientSize] = useState<{ width: number; height: number } | null>(null);
   const [isCompactHud, setIsCompactHud] = useState(false);
   const [hideSearchBar, setHideSearchBar] = useState(false);
@@ -278,6 +310,7 @@ export default function BranchGridMap({
     transformLayerRef,
     isEnabled: !blockMapInteraction,
     cameraStorageScopeKey: `${currentRepoPath ?? '__no-repo__'}::${orientation}`,
+    onRenderedCameraApplied: handleRenderedCameraApplied,
   });
 
   const lastReadyEpochReportedRef = useRef<number>(0);
@@ -896,10 +929,70 @@ export default function BranchGridMap({
     lastHandledViewportFocusRequestRef.current = focusRequestKey;
   }, [gridFocusSha, gridSearchJumpToken, focusedRenderNode, getTransformLayerOriginScreen, syncCamera, renderedCameraRef]);
 
-  // visibleBoundsRef is updated inside the cull useLayoutEffect each tick so
-  // cullConnectorPath can read the latest value without becoming a new function
-  // reference on every render (which would force MapGridCanvas to re-render).
+  // Updated on every camera transform (wheel/RAF) and on cull layout ticks so
+  // connector culling stays aligned with the viewport during pan.
   const visibleBoundsRef = useRef<ViewportContentBounds | null>(null);
+  const alwaysVisibleNodeIdsRef = useRef<Set<string>>(new Set());
+
+  const applyPanVisibleAdmission = useCallback(
+    (prev: Set<string> | null, nextVisible: Set<string>, budget: number): Set<string> | null => {
+      if (prev === null) return nextVisible;
+
+      const pending = panAdmissionPendingRef.current;
+      for (const id of [...pending]) {
+        if (!nextVisible.has(id)) pending.delete(id);
+      }
+      for (const id of nextVisible) {
+        if (!prev.has(id)) pending.add(id);
+      }
+
+      const merged = new Set(prev);
+      for (const id of alwaysVisibleNodeIdsRef.current) {
+        if (!nextVisible.has(id)) continue;
+        pending.delete(id);
+        merged.add(id);
+      }
+
+      let remaining = budget;
+      if (remaining > 0 && pending.size > 0) {
+        for (const id of [...pending].sort()) {
+          if (remaining <= 0) break;
+          if (!nextVisible.has(id)) {
+            pending.delete(id);
+            continue;
+          }
+          merged.add(id);
+          pending.delete(id);
+          remaining--;
+        }
+      }
+
+      return visibleCommitIdSetEquals(prev, merged) ? prev : merged;
+    },
+    [],
+  );
+
+  const syncVisibleCullFromCamera = useCallback((): Set<string> | null => {
+    const viewport = scrollContainerRef.current;
+    if (!viewport || viewport.clientWidth <= 0 || viewport.clientHeight <= 0) return null;
+    const bounds = computeViewportCullBounds(
+      viewport.clientWidth,
+      viewport.clientHeight,
+      renderedCameraRef.current,
+    );
+    if (!bounds) return null;
+    visibleBoundsRef.current = bounds;
+    const nextVisible = collectVisibleCommitIdsFromSpatialIndex(
+      commitCullSpatialIndex,
+      bounds,
+      nodeByVisualId,
+      labelTopPx,
+    );
+    for (const id of alwaysVisibleNodeIdsRef.current) nextVisible.add(id);
+    return nextVisible;
+  }, [commitCullSpatialIndex, labelTopPx, nodeByVisualId, renderedCameraRef]);
+
+  onRenderedCameraAppliedRef.current = syncVisibleCullFromCamera;
 
   const cullConnectorPath = useCallback(
     (connector: { id: string; fromX: number; fromY: number; toX: number; toY: number; fromFace?: ConnectorFace; toFace?: ConnectorFace }): boolean => {
@@ -951,6 +1044,7 @@ export default function BranchGridMap({
     defaultCollapsedClumps,
     leadByClusterKey,
   ]);
+  alwaysVisibleNodeIdsRef.current = alwaysVisibleNodeIds;
 
   useLayoutEffect(() => {
     const viewport = scrollContainerRef.current;
@@ -959,18 +1053,11 @@ export default function BranchGridMap({
     const w = viewport.clientWidth;
     const h = viewport.clientHeight;
     setViewportClientSize((prev) => (prev?.width === w && prev?.height === h ? prev : { width: w, height: h }));
-    const rawBounds = getViewportContentBoundsFromClientSize(w, h, renderedCameraRef.current, {
-      innerPaddingPx: MAP_GRID_INNER_PADDING_PX,
-    });
-    if (!rawBounds) {
+    const bounds = computeViewportCullBounds(w, h, renderedCameraRef.current);
+    if (!bounds) {
       setVisibleNodeIds((prev) => (prev === null ? prev : null));
       return;
     }
-    const bounds = withCullInsetScreenPx(
-      rawBounds,
-      renderedCameraRef.current.zoom,
-      MAP_GRID_CULL_VIEWPORT_INSET_SCREEN_PX,
-    );
     visibleBoundsRef.current = bounds;
     const nextVisible = collectVisibleCommitIdsFromSpatialIndex(
       commitCullSpatialIndex,
@@ -981,23 +1068,57 @@ export default function BranchGridMap({
     for (const id of alwaysVisibleNodeIds) nextVisible.add(id);
 
     if (isCameraMoving) {
-      // While panning, only add to the visible set; never evict mid-pan. Bulk
-      // eviction during deceleration ticks shows up as a visible lag spike
-      // (hundreds of cards unmount in one frame). Trailing cards are clipped
-      // by overflow:hidden and the transform-layer `contain` rule, so the
-      // accumulated cost is a steady composite, not a per-tick spike. The
-      // prune happens once when the camera settles (the else branch below).
+      settlePrunePendingRef.current = false;
+      settlePruneTargetRef.current = null;
+      if (settlePruneRafRef.current != null) {
+        window.cancelAnimationFrame(settlePruneRafRef.current);
+        settlePruneRafRef.current = null;
+      }
+
+      // While panning, only add; never evict mid-pan. Cap mounts per cull tick;
+      // the pan RAF loop drains the pending queue between ticks.
       setVisibleNodeIds((prev) => {
-        if (prev === null) return nextVisible;
-        let hasNew = false;
-        for (const id of nextVisible) {
-          if (!prev.has(id)) { hasNew = true; break; }
+        if (prev === null) {
+          panAdmissionPendingRef.current.clear();
+          return nextVisible;
         }
-        if (!hasNew) return prev;
-        return new Set([...prev, ...nextVisible]);
+        return applyPanVisibleAdmission(prev, nextVisible, MAP_GRID_MAX_NODES_ADDED_PER_PAN_TICK);
       });
     } else {
-      setVisibleNodeIds((prev) => (visibleCommitIdSetEquals(prev, nextVisible) ? prev : nextVisible));
+      setVisibleNodeIds((prev) => {
+        const pending = panAdmissionPendingRef.current;
+        panAdmissionPendingRef.current.clear();
+
+        let base = prev;
+        if (base && pending.size > 0) {
+          base = new Set(base);
+          for (const id of pending) {
+            if (nextVisible.has(id)) base.add(id);
+          }
+        }
+
+        if (visibleCommitIdSetEquals(base, nextVisible)) {
+          settlePrunePendingRef.current = false;
+          settlePruneTargetRef.current = null;
+          return base;
+        }
+        if (!base) {
+          settlePrunePendingRef.current = false;
+          settlePruneTargetRef.current = null;
+          return nextVisible;
+        }
+
+        const stale = countStaleVisibleNodes(base, nextVisible);
+        if (stale <= MAP_GRID_MAX_NODES_REMOVED_PER_FRAME) {
+          settlePrunePendingRef.current = false;
+          settlePruneTargetRef.current = null;
+          return nextVisible;
+        }
+
+        settlePrunePendingRef.current = true;
+        settlePruneTargetRef.current = nextVisible;
+        return pruneVisibleNodesTowardTarget(base, nextVisible, MAP_GRID_MAX_NODES_REMOVED_PER_FRAME);
+      });
     }
   }, [
     renderedZoom,
@@ -1010,7 +1131,73 @@ export default function BranchGridMap({
     commitCullSpatialIndex,
     nodeByVisualId,
     labelTopPx,
+    applyPanVisibleAdmission,
   ]);
+
+  useEffect(() => {
+    if (!isCameraMoving) {
+      if (panAdmissionRafRef.current != null) {
+        window.cancelAnimationFrame(panAdmissionRafRef.current);
+        panAdmissionRafRef.current = null;
+      }
+      return;
+    }
+
+    const frame = () => {
+      panAdmissionRafRef.current = null;
+      const nextVisible = syncVisibleCullFromCamera();
+      if (nextVisible) {
+        startTransition(() => {
+          setVisibleNodeIds((prev) =>
+            applyPanVisibleAdmission(prev, nextVisible, MAP_GRID_MAX_NODES_ADDED_PER_PAN_FRAME),
+          );
+        });
+      }
+      panAdmissionRafRef.current = window.requestAnimationFrame(frame);
+    };
+    panAdmissionRafRef.current = window.requestAnimationFrame(frame);
+
+    return () => {
+      if (panAdmissionRafRef.current != null) {
+        window.cancelAnimationFrame(panAdmissionRafRef.current);
+        panAdmissionRafRef.current = null;
+      }
+    };
+  }, [isCameraMoving, syncVisibleCullFromCamera, applyPanVisibleAdmission]);
+
+  useEffect(() => {
+    if (isCameraMoving) return;
+
+    if (!settlePrunePendingRef.current || settlePruneTargetRef.current == null) return;
+    if (settlePruneRafRef.current != null) return;
+
+    settlePruneRafRef.current = window.requestAnimationFrame(() => {
+      settlePruneRafRef.current = null;
+      const target = settlePruneTargetRef.current;
+      if (!target || !settlePrunePendingRef.current) return;
+
+      setVisibleNodeIds((prev) => {
+        if (!prev || visibleCommitIdSetEquals(prev, target)) {
+          settlePrunePendingRef.current = false;
+          settlePruneTargetRef.current = null;
+          return prev ?? target;
+        }
+        const next = pruneVisibleNodesTowardTarget(prev, target, MAP_GRID_MAX_NODES_REMOVED_PER_FRAME);
+        if (visibleCommitIdSetEquals(next, target)) {
+          settlePrunePendingRef.current = false;
+          settlePruneTargetRef.current = null;
+        }
+        return visibleCommitIdSetEquals(prev, next) ? prev : next;
+      });
+    });
+
+    return () => {
+      if (settlePruneRafRef.current != null) {
+        window.cancelAnimationFrame(settlePruneRafRef.current);
+        settlePruneRafRef.current = null;
+      }
+    };
+  }, [isCameraMoving, visibleNodeIds]);
 
   useLayoutEffect(() => {
     const viewport = scrollContainerRef.current;

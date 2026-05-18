@@ -5,21 +5,20 @@ import {
   GRID_RENDER_ZOOM,
   GRID_ZOOM_DEFAULT,
   GRID_ZOOM_WHEEL_SENSITIVITY,
-  MAP_GRID_CAMERA_PAN_DISTANCE_TICK_PX,
   MAP_GRID_CAMERA_PAN_REACT_THROTTLE_MS,
   MAP_GRID_INNER_PADDING_PX,
   ZOOM_SETTLE_EPSILON,
   clampZoom,
+  mapGridPanCullDistanceExceeded,
 } from './mapGridUtils';
-
-const DISTANCE_TICK_THRESHOLD_SQ =
-  MAP_GRID_CAMERA_PAN_DISTANCE_TICK_PX * MAP_GRID_CAMERA_PAN_DISTANCE_TICK_PX;
 
 type Params = {
   mapPadHostRef: RefObject<HTMLDivElement | null>;
   transformLayerRef: RefObject<HTMLDivElement | null>;
   isEnabled?: boolean;
   onUserCameraChange?: () => void;
+  /** Called after every transform write (pan/zoom); use to sync cull bounds without React. */
+  onRenderedCameraApplied?: (camera: MapGridCameraState) => void;
   cameraStorageScopeKey?: string;
 };
 
@@ -32,6 +31,7 @@ export function useMapGridCamera({
   transformLayerRef,
   isEnabled = true,
   onUserCameraChange,
+  onRenderedCameraApplied,
   cameraStorageScopeKey,
 }: Params) {
   const panRef = useRef({ x: 0, y: 0 });
@@ -54,6 +54,8 @@ export function useMapGridCamera({
   const lastTickedPanRef = useRef<{ x: number; y: number }>({ x: 0, y: 0 });
   const isInteractionActiveRef = useRef(false);
   const transformLayerOriginScreenRef = useRef<{ x: number; y: number } | null>(null);
+  const onRenderedCameraAppliedRef = useRef(onRenderedCameraApplied);
+  onRenderedCameraAppliedRef.current = onRenderedCameraApplied;
 
   const getCameraStorageKey = useCallback(() => {
     const scope = cameraStorageScopeKey?.trim() || window.location.pathname;
@@ -109,6 +111,7 @@ export function useMapGridCamera({
     if (layer) {
       layer.style.transform = `translate3d(${nextPanX}px, ${nextPanY}px, 0) scale(${nextZoom / GRID_RENDER_ZOOM})`;
     }
+    onRenderedCameraAppliedRef.current?.(nextCamera);
     if (Math.abs(renderedZoomRef.current - nextZoom) > ZOOM_SETTLE_EPSILON) {
       renderedZoomRef.current = nextZoom;
       setRenderedZoom(nextZoom);
@@ -118,6 +121,8 @@ export function useMapGridCamera({
 
     const zoomChanged = Math.abs(nextZoom - prev.zoom) > ZOOM_SETTLE_EPSILON;
     if (zoomChanged) {
+      // Cull after zoom settles; flushing every interpolation frame retriggered
+      // MapGrid effects and (with an unstable callback) reset the camera.
       if (!isInteractionActiveRef.current) flushCameraReactTick();
       return;
     }
@@ -128,7 +133,7 @@ export function useMapGridCamera({
     // without paying the React reconcile cost during slow ones.
     const dxSinceTick = nextPanX - lastTickedPanRef.current.x;
     const dySinceTick = nextPanY - lastTickedPanRef.current.y;
-    if (dxSinceTick * dxSinceTick + dySinceTick * dySinceTick >= DISTANCE_TICK_THRESHOLD_SQ) {
+    if (mapGridPanCullDistanceExceeded(dxSinceTick, dySinceTick, nextZoom)) {
       flushCameraReactTick();
       return;
     }
@@ -259,6 +264,9 @@ export function useMapGridCamera({
     applyRenderedCamera(nextPanX, nextPanY, rendered.zoom);
   }, [applyRenderedCamera, isEnabled, markCameraInteraction, onUserCameraChange, zoomToPoint]);
 
+  const applyRenderedCameraRef = useRef(applyRenderedCamera);
+  applyRenderedCameraRef.current = applyRenderedCamera;
+
   useLayoutEffect(() => {
     if (!isEnabled) return;
     const host = mapPadHostRef.current;
@@ -289,7 +297,7 @@ export function useMapGridCamera({
     } catch {}
     panRef.current = { x: initial.panX, y: initial.panY };
     zoomRef.current = initial.zoom;
-    applyRenderedCamera(initial.panX, initial.panY, initial.zoom, { emitTick: false });
+    applyRenderedCameraRef.current(initial.panX, initial.panY, initial.zoom, { emitTick: false });
     return () => {
       window.removeEventListener('resize', invalidateOrigin);
       resizeObserver?.disconnect();
@@ -301,7 +309,7 @@ export function useMapGridCamera({
       }
       persistCamera(renderedCameraRef.current);
     };
-  }, [applyRenderedCamera, getCameraStorageKey, isEnabled, mapPadHostRef, persistCamera]);
+  }, [getCameraStorageKey, isEnabled, mapPadHostRef, persistCamera]);
 
   return {
     isCameraMoving,

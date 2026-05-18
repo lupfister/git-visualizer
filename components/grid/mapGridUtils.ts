@@ -19,6 +19,52 @@ export const MAP_GRID_CAMERA_PAN_REACT_THROTTLE_MS = 250;
  * before they cross into the screen.
  */
 export const MAP_GRID_CAMERA_PAN_DISTANCE_TICK_PX = 120;
+/**
+ * Minimum layout-space motion (same nominal px as {@link MAP_GRID_CAMERA_PAN_DISTANCE_TICK_PX})
+ * paired with the zoom-scaled screen threshold in {@link mapGridPanCullDistanceExceeded}.
+ */
+export const MAP_GRID_CAMERA_PAN_CONTENT_TICK_PX = MAP_GRID_CAMERA_PAN_DISTANCE_TICK_PX;
+/** Max commit cards mounted per camera cull tick while interacting. */
+export const MAP_GRID_MAX_NODES_ADDED_PER_PAN_TICK = 48;
+/** Max commit cards mounted per animation frame while panning (RAF drain of the pending queue). */
+export const MAP_GRID_MAX_NODES_ADDED_PER_PAN_FRAME = 24;
+/** Max commit cards unmounted per frame during post-pan settle prune. */
+export const MAP_GRID_MAX_NODES_REMOVED_PER_FRAME = 56;
+
+/**
+ * Screen-space pan distance before a cull / React tick. Scales with zoom so
+ * zoomed-out pans (more content per screen pixel) trigger fewer heavy ticks.
+ */
+export function mapGridPanTickThresholdScreenPx(cameraZoom: number): number {
+  const scale = cameraZoom / GRID_RENDER_ZOOM;
+  return MAP_GRID_CAMERA_PAN_DISTANCE_TICK_PX / Math.max(scale, 0.05);
+}
+
+export function mapGridPanTickThresholdSq(cameraZoom: number): number {
+  const thresholdPx = mapGridPanTickThresholdScreenPx(cameraZoom);
+  return thresholdPx * thresholdPx;
+}
+
+const MAP_GRID_CAMERA_PAN_CONTENT_TICK_SQ =
+  MAP_GRID_CAMERA_PAN_CONTENT_TICK_PX * MAP_GRID_CAMERA_PAN_CONTENT_TICK_PX;
+
+/**
+ * True when the camera has moved enough since the last cull tick: either the
+ * zoom-scaled screen threshold or ~{@link MAP_GRID_CAMERA_PAN_CONTENT_TICK_PX} of
+ * layout-space motion (whichever fires first). Using max() here caused multi-hundred-
+ * pixel gaps when zoomed out and delayed node/connector admission until idle.
+ */
+export function mapGridPanCullDistanceExceeded(
+  deltaScreenX: number,
+  deltaScreenY: number,
+  cameraZoom: number,
+): boolean {
+  const scale = cameraZoom / GRID_RENDER_ZOOM;
+  if (!Number.isFinite(scale) || scale <= 0) return false;
+  const screenDistSq = deltaScreenX * deltaScreenX + deltaScreenY * deltaScreenY;
+  if (screenDistSq >= mapGridPanTickThresholdSq(cameraZoom)) return true;
+  return screenDistSq / (scale * scale) >= MAP_GRID_CAMERA_PAN_CONTENT_TICK_SQ;
+}
 export const CAMERA_PAN_INTERPOLATION = 1;
 export const CAMERA_ZOOM_INTERPOLATION = 0.25;
 export const CAMERA_SETTLE_EPSILON = 0.001;
@@ -369,6 +415,20 @@ export function withCullInsetScreenPx(
     return shrinkViewportContentBounds(bounds, insetScreenPx / scale);
   }
   return growViewportContentBounds(bounds, -insetScreenPx / scale);
+}
+
+export function computeViewportCullBounds(
+  viewportWidth: number,
+  viewportHeight: number,
+  camera: { panX: number; panY: number; zoom: number },
+  options?: { innerPaddingPx?: number; cullInsetScreenPx?: number },
+): ViewportContentBounds | null {
+  const raw = getViewportContentBoundsFromClientSize(viewportWidth, viewportHeight, camera, {
+    innerPaddingPx: options?.innerPaddingPx ?? MAP_GRID_INNER_PADDING_PX,
+  });
+  if (!raw) return null;
+  const inset = options?.cullInsetScreenPx ?? MAP_GRID_CULL_VIEWPORT_INSET_SCREEN_PX;
+  return withCullInsetScreenPx(raw, camera.zoom, inset);
 }
 
 export function normalizeRepoPathForCompare(path: string): string {

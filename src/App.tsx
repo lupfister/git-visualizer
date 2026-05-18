@@ -319,6 +319,7 @@ function App() {
 
   const branchMetaLoadKeyRef = useRef<string | null>(null);
   const isMapInteractingRef = useRef(false);
+  const mapInteractionEpochRef = useRef(0);
   const pendingRefreshAfterInteractionRef = useRef(false);
   const hasAttemptedAutoRestoreRef = useRef(false);
   const hasHydratedInitialProjectSnapshotsRef = useRef(false);
@@ -1281,6 +1282,10 @@ function App() {
   }
 
   function applySnapshotToActiveState(path: string, snapshot: RepoVisualSnapshot, options?: { force?: boolean }) {
+    if (!options?.force && isMapInteractingRef.current) {
+      pendingRefreshAfterInteractionRef.current = true;
+      return false;
+    }
     const signature = getRepoVisualSnapshotSignature(snapshot);
     const force = options?.force === true;
     if (!force && activeSnapshotSignatureRef.current === signature) {
@@ -1614,6 +1619,9 @@ function App() {
 
   useEffect(() => {
     isMapInteractingRef.current = isMapInteracting;
+    if (isMapInteracting) {
+      mapInteractionEpochRef.current += 1;
+    }
   }, [isMapInteracting]);
 
   useEffect(() => {
@@ -1630,6 +1638,7 @@ function App() {
         pendingRefreshAfterInteractionRef.current = true;
         return;
       }
+      const refreshEpoch = mapInteractionEpochRef.current;
       refreshInFlight = true;
       try {
         pendingRefreshAfterInteractionRef.current = false;
@@ -1650,6 +1659,10 @@ function App() {
         const result = await invoke<RefreshProjectResult>('refresh_project_if_changed', {
           projectId: repoPath,
         });
+        if (refreshEpoch !== mapInteractionEpochRef.current || isMapInteractingRef.current) {
+          pendingRefreshAfterInteractionRef.current = true;
+          return;
+        }
         if (!result.updated) return;
         const nextSnapshot = toRepoVisualSnapshot(result.snapshot ?? null);
         if (!nextSnapshot) return;
@@ -1659,7 +1672,13 @@ function App() {
           [repoPath]: quickStateSignature(quickStateFromSnapshot(repoPath, nextSnapshot)),
         };
         if (normalizePath(repoPath) === normalizePath(nextSnapshot.path)) {
-          applySnapshotToActiveState(repoPath, nextSnapshot);
+          if (isMapInteractingRef.current) {
+            pendingRefreshAfterInteractionRef.current = true;
+            return;
+          }
+          startTransition(() => {
+            applySnapshotToActiveState(repoPath, nextSnapshot);
+          });
         }
       } catch (error) {
         console.warn('Background project refresh failed:', error);

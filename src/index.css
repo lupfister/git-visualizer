@@ -83,6 +83,16 @@ body,
   height: 100%;
 }
 
+/*
+ * While the map grid camera is actively panning we want to suppress per-card
+ * left/top transitions in a single style invalidation rather than mutating
+ * every card's inline `style.transition`. Toggling a class on the transform
+ * layer is O(1) for style recalc; toggling 200+ inline styles is not.
+ */
+.map-grid-pan-active [data-commit-card="true"] {
+  transition: none !important;
+}
+
 html {
   overflow: hidden;
   overscroll-behavior: none;
