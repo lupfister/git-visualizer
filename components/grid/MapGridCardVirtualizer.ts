@@ -103,7 +103,7 @@ export function buildMapGridCardSlotAssignments(
   return assignments;
 }
 
-/** Keep the nearest `maxCount` commits to the viewport center. */
+/** Keep the nearest `maxCount` commits to the viewport center (O(n·k), no full sort). */
 export function pickNearestVisibleVisualIds(
   candidateIds: ReadonlySet<string>,
   maxCount: number,
@@ -113,38 +113,50 @@ export function pickNearestVisibleVisualIds(
   nodePositionOverrides: NodePositionOverrides = {},
   dragPreviewByNodeId: DragPreviewByVisualId = {},
 ): Set<string> {
-  if (!Number.isFinite(maxCount) || candidateIds.size <= maxCount) {
+  if (!Number.isFinite(maxCount) || maxCount <= 0) {
+    return new Set();
+  }
+  if (candidateIds.size <= maxCount) {
     return new Set(candidateIds);
   }
 
-  const ranked: Array<{ id: string; distanceSq: number }> = [];
+  const cap = Math.floor(maxCount);
+  const farthest: Array<{ id: string; distanceSq: number }> = [];
+
+  const consider = (id: string, distanceSq: number) => {
+    if (farthest.length < cap) {
+      farthest.push({ id, distanceSq });
+      if (farthest.length === cap) {
+        farthest.sort((a, b) => b.distanceSq - a.distanceSq);
+      }
+      return;
+    }
+    if (distanceSq >= farthest[0]!.distanceSq) return;
+    farthest[0] = { id, distanceSq };
+    farthest.sort((a, b) => b.distanceSq - a.distanceSq);
+  };
+
   for (const id of candidateIds) {
     const node = nodeByVisualId.get(id);
     if (!node) continue;
     const { cardLeft, cardTop } = resolveCardPosition(node, dragPreviewByNodeId, nodePositionOverrides);
-    ranked.push({
-      id,
-      distanceSq: viewportDistanceSq(cardLeft, cardTop, viewportCenterX, viewportCenterY),
-    });
+    consider(id, viewportDistanceSq(cardLeft, cardTop, viewportCenterX, viewportCenterY));
   }
-  ranked.sort((a, b) => a.distanceSq - b.distanceSq);
 
-  const next = new Set<string>();
-  for (let i = 0; i < maxCount && i < ranked.length; i += 1) {
-    next.add(ranked[i]!.id);
-  }
-  return next;
+  return new Set(farthest.map((entry) => entry.id));
 }
 
 /**
- * While panning: keep nodes still inside the spatial viewport; admit new nearest
- * ids up to `admissionBudget` per tick. Nearest-cap pruning runs after pan settles.
+ * While panning: keep in-viewport ids, evict at most `maxEvictPerTick` farthest when
+ * over `maxCount`, admit at most `admissionBudget` nearest newcomers. Full cap trim on settle.
  */
 export function mergePanStableVisibleNodeIds(
   prev: ReadonlySet<string>,
   spatiallyVisible: ReadonlySet<string>,
   nearestCandidates: ReadonlySet<string>,
   admissionBudget: number,
+  maxCount: number,
+  maxEvictPerTick: number,
   nodeByVisualId: ReadonlyMap<string, Node>,
   viewportCenterX: number,
   viewportCenterY: number,
@@ -155,9 +167,34 @@ export function mergePanStableVisibleNodeIds(
   for (const id of prev) {
     if (spatiallyVisible.has(id)) next.add(id);
   }
-  if (admissionBudget <= 0 || nearestCandidates.size === 0) {
-    return next;
+
+  const cap = Number.isFinite(maxCount) ? maxCount : next.size;
+  if (next.size > cap && maxEvictPerTick > 0) {
+    const ranked = [...next]
+      .map((id) => {
+        const node = nodeByVisualId.get(id);
+        if (!node) return { id, distanceSq: Number.POSITIVE_INFINITY };
+        const { cardLeft, cardTop } = resolveCardPosition(node, dragPreviewByNodeId, nodePositionOverrides);
+        return {
+          id,
+          distanceSq: viewportDistanceSq(cardLeft, cardTop, viewportCenterX, viewportCenterY),
+        };
+      })
+      .sort((a, b) => b.distanceSq - a.distanceSq);
+    let evicted = 0;
+    for (const entry of ranked) {
+      if (next.size <= cap) break;
+      if (evicted >= maxEvictPerTick) break;
+      next.delete(entry.id);
+      evicted += 1;
+    }
   }
+
+  const admitCap = Math.min(
+    Math.max(0, admissionBudget),
+    Math.max(0, cap - next.size),
+  );
+  if (admitCap <= 0) return next;
 
   const toAdmit = new Set<string>();
   for (const id of nearestCandidates) {
@@ -167,7 +204,7 @@ export function mergePanStableVisibleNodeIds(
 
   const admitted = pickNearestVisibleVisualIds(
     toAdmit,
-    admissionBudget,
+    admitCap,
     nodeByVisualId,
     viewportCenterX,
     viewportCenterY,

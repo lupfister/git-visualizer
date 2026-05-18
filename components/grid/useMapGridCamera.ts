@@ -55,6 +55,7 @@ export function useMapGridCamera({
   const [renderedZoom, setRenderedZoom] = useState(GRID_ZOOM_DEFAULT);
   const [cameraRenderTick, setCameraRenderTick] = useState(0);
   const panReactTrailingTimeoutRef = useRef<number | null>(null);
+  const pendingCameraReactRafRef = useRef<number | null>(null);
   const lastCameraPanReactEmitRef = useRef(0);
   const lastTickedPanRef = useRef<{ x: number; y: number }>({ x: 0, y: 0 });
   const isInteractionActiveRef = useRef(false);
@@ -113,6 +114,14 @@ export function useMapGridCamera({
     };
   }, []);
 
+  const scheduleCoalescedCameraReactTick = useCallback(() => {
+    if (pendingCameraReactRafRef.current != null) return;
+    pendingCameraReactRafRef.current = window.requestAnimationFrame(() => {
+      pendingCameraReactRafRef.current = null;
+      flushCameraReactTick();
+    });
+  }, [flushCameraReactTick]);
+
   const applyRenderedCamera = useCallback((
     nextPanX: number,
     nextPanY: number,
@@ -145,7 +154,11 @@ export function useMapGridCamera({
     const dxSinceTick = nextPanX - lastTickedPanRef.current.x;
     const dySinceTick = nextPanY - lastTickedPanRef.current.y;
     if (mapGridPanCullDistanceExceeded(dxSinceTick, dySinceTick, nextZoom)) {
-      flushCameraReactTick();
+      if (isInteractionActiveRef.current) {
+        scheduleCoalescedCameraReactTick();
+      } else {
+        flushCameraReactTick();
+      }
       return;
     }
 

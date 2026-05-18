@@ -4,12 +4,9 @@ import { CARD_BODY_TOP_OFFSET, CARD_HEIGHT, CARD_WIDTH, CONNECTOR_COLOR } from '
 import {
   applyPersistedPathStrings,
   collectPathStringsForPersistence,
-  connectorGeometryCacheKey,
   type ConnectorPathCacheEntry,
-  getOrBuildConnectorPath2D,
-  scheduleConnectorPathCacheWarmup,
-  trimConnectorPathCacheIfNeeded,
 } from './mapGridConnectorPathCache';
+import { MapGridConnectorLayer } from './MapGridConnectorLayer';
 import {
   pulseMapGridBackgroundActivity,
   setMapGridBackgroundActivity,
@@ -25,9 +22,6 @@ import {
   cn,
   computeMapGridInvZoom,
   computeViewportCullBounds,
-  GRID_RENDER_ZOOM,
-  mapGridConnectorCanvasDpr,
-  mapGridPanCullDistanceExceeded,
 } from './mapGridUtils';
 import type { ConnectorFace, Node, NodePositionOverrides } from './LayoutGrid';
 import type { MapGridCameraState } from './useMapGridCamera';
@@ -491,19 +485,6 @@ type RenderConnector = {
   toFace?: ConnectorFace;
 };
 
-type ConnectorCameraMetrics = {
-  originX: number;
-  originY: number;
-  scale: number;
-  connectorColor: string;
-};
-
-type ConnectorCameraMetricsBase = {
-  baseX: number;
-  baseY: number;
-  connectorColor: string;
-};
-
 function anchorForFace(x: number, y: number, face?: ConnectorFace): { x: number; y: number } {
   switch (face) {
     case 'left':
@@ -585,7 +566,7 @@ type Props = {
   connectorPathCacheScopeBase: string;
 };
 
-const PAN_STABLE_CONNECTOR_PROPS = new Set<keyof Props>(['connectors', 'mergeConnectors']);
+const PAN_STABLE_CONNECTOR_PROPS = new Set<keyof Props>(['connectors', 'mergeConnectors', 'cameraRenderTick']);
 
 function areMapGridCanvasPropsEqual(prev: Readonly<Props>, next: Readonly<Props>) {
   const keepConnectorRefsFrozen = prev.isCameraMovingRef.current && next.isCameraMovingRef.current;
@@ -611,7 +592,7 @@ const MapGridCanvas = memo(function MapGridCanvas({
   contentHeight,
   isCameraMovingRef,
   panEpoch,
-  cameraRenderTick,
+  cameraRenderTick: _cameraRenderTick,
   viewportClientSize,
   onWheel,
   onMouseDown,
@@ -658,25 +639,9 @@ const MapGridCanvas = memo(function MapGridCanvas({
   connectorPathCacheScopeBase,
 }: Props) {
   const [openingClumpAnimations, setOpeningClumpAnimations] = useState<Set<string>>(new Set());
-  const [canvasSize, setCanvasSize] = useState({ width: 0, height: 0 });
-  const connectorCanvasRef = useRef<HTMLCanvasElement | null>(null);
-  const drawnConnectorCameraRef = useRef<{ baseX: number; baseY: number; originX: number; originY: number; scale: number } | null>(null);
-  const connectorCameraMetricsBaseRef = useRef<ConnectorCameraMetricsBase | null>(null);
   const connectorPath2dCacheRef = useRef<Map<string, ConnectorPathCacheEntry>>(new Map());
-  const connectorWarmupCancelRef = useRef<(() => void) | null>(null);
   const connectorPersistScopeRef = useRef<string | null>(null);
-  const connectorPersistTimerRef = useRef<number | null>(null);
-  const combinedConnectorPathRef = useRef<{ cacheKey: string; path: Path2D } | null>(null);
-  const lastVisibleMergeConnectorsRef = useRef<RenderConnector[]>([]);
-  const lastVisibleConnectorsRef = useRef<RenderConnector[]>([]);
-  const lastDrawnPanRef = useRef<{ x: number; y: number }>({ x: 0, y: 0 });
-  const mergeConnectorsRef = useRef(mergeConnectors);
-  const connectorsRef = useRef(connectors);
-  const cullConnectorPathRef = useRef(cullConnectorPath);
   const openClumpsLastFrameRef = useRef<Set<string> | null>(null);
-  mergeConnectorsRef.current = mergeConnectors;
-  connectorsRef.current = connectors;
-  cullConnectorPathRef.current = cullConnectorPath;
 
   const selectedShaSet = useMemo(() => new Set(selectedVisibleCommitShas), [selectedVisibleCommitShas]);
 
@@ -817,17 +782,15 @@ const MapGridCanvas = memo(function MapGridCanvas({
     [adjustEndpoint],
   );
 
-  const visibleMergeConnectors = useMemo(() => {
-    const next = buildVisibleConnectors(mergeConnectors, cullConnectorPath);
-    lastVisibleMergeConnectorsRef.current = next;
-    return next;
-  }, [mergeConnectors, cullConnectorPath, buildVisibleConnectors, cameraRenderTick, panEpoch]);
+  const visibleMergeConnectors = useMemo(
+    () => buildVisibleConnectors(mergeConnectors, cullConnectorPath),
+    [mergeConnectors, cullConnectorPath, buildVisibleConnectors, panEpoch],
+  );
 
-  const visibleConnectors = useMemo(() => {
-    const next = buildVisibleConnectors(connectors, cullConnectorPath);
-    lastVisibleConnectorsRef.current = next;
-    return next;
-  }, [connectors, cullConnectorPath, buildVisibleConnectors, cameraRenderTick, panEpoch]);
+  const visibleConnectors = useMemo(
+    () => buildVisibleConnectors(connectors, cullConnectorPath),
+    [connectors, cullConnectorPath, buildVisibleConnectors, panEpoch],
+  );
 
   const connectorsForPathCache = useMemo(() => {
     const admitAll = () => true;
@@ -858,129 +821,6 @@ const MapGridCanvas = memo(function MapGridCanvas({
       setMapGridBackgroundActivity('connector-idb-write', 'Connector cache save (IDB)', false);
     });
   }, [commitCornerRadiusPx, connectorsForPathCache, isCameraMovingRef]);
-
-  const scheduleConnectorPathCachePersist = useCallback(() => {
-    if (connectorPersistTimerRef.current != null) {
-      window.clearTimeout(connectorPersistTimerRef.current);
-    }
-    connectorPersistTimerRef.current = window.setTimeout(() => {
-      connectorPersistTimerRef.current = null;
-      flushConnectorPathCachePersist();
-    }, 1500);
-  }, [flushConnectorPathCachePersist]);
-
-  const getConnectorCameraMetrics = useCallback((options?: { forceMeasure?: boolean }): ConnectorCameraMetrics | null => {
-    const scale = renderedCameraRef.current.zoom / GRID_RENDER_ZOOM;
-    if (!Number.isFinite(scale) || scale <= 0) return null;
-
-    let base = connectorCameraMetricsBaseRef.current;
-    if (!base || options?.forceMeasure) {
-      const viewport = scrollContainerRef.current;
-      const host = mapPadHostRef.current;
-      if (!viewport || !host) return null;
-      const viewportRect = viewport.getBoundingClientRect();
-      const hostRect = host.getBoundingClientRect();
-      const computedStyle = getComputedStyle(host);
-      const borderLeft = Number.parseFloat(computedStyle.borderLeftWidth) || 0;
-      const borderTop = Number.parseFloat(computedStyle.borderTopWidth) || 0;
-      base = {
-        baseX: hostRect.left - viewportRect.left + borderLeft,
-        baseY: hostRect.top - viewportRect.top + borderTop,
-        connectorColor: computedStyle.getPropertyValue('--muted').trim() || CONNECTOR_COLOR,
-      };
-      connectorCameraMetricsBaseRef.current = base;
-    }
-
-    return {
-      originX: base.baseX + renderedCameraRef.current.panX,
-      originY: base.baseY + renderedCameraRef.current.panY,
-      scale,
-      connectorColor: base.connectorColor,
-    };
-  }, [mapPadHostRef, renderedCameraRef, scrollContainerRef]);
-
-  useEffect(() => {
-    connectorCameraMetricsBaseRef.current = null;
-  }, [canvasSize.height, canvasSize.width, contentHeight, contentWidth]);
-
-  const drawConnectorsToCanvas = useCallback(
-    (
-      mergeList: RenderConnector[],
-      connList: RenderConnector[],
-      metrics: ConnectorCameraMetrics,
-    ) => {
-      const canvas = connectorCanvasRef.current;
-      if (!canvas || canvasSize.width <= 0 || canvasSize.height <= 0) return;
-
-      const dpr = mapGridConnectorCanvasDpr(displayZoom);
-      const pixelWidth = Math.max(1, Math.round(canvasSize.width * dpr));
-      const pixelHeight = Math.max(1, Math.round(canvasSize.height * dpr));
-      if (canvas.width !== pixelWidth) canvas.width = pixelWidth;
-      if (canvas.height !== pixelHeight) canvas.height = pixelHeight;
-      const ctx = canvas.getContext('2d');
-      if (!ctx) return;
-
-      const { originX, originY, scale, connectorColor } = metrics;
-      drawnConnectorCameraRef.current = {
-        baseX: originX - renderedCameraRef.current.panX,
-        baseY: originY - renderedCameraRef.current.panY,
-        originX,
-        originY,
-        scale,
-      };
-      canvas.style.transform = 'translate3d(0, 0, 0) scale(1)';
-
-      ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
-      ctx.clearRect(0, 0, canvasSize.width, canvasSize.height);
-      ctx.setTransform(scale * dpr, 0, 0, scale * dpr, originX * dpr, originY * dpr);
-
-      ctx.strokeStyle = connectorColor;
-      ctx.lineWidth = Math.max(1 / scale, lineStrokeWidth);
-      ctx.lineCap = 'round';
-      ctx.lineJoin = 'round';
-
-      const pathCache = connectorPath2dCacheRef.current;
-      const activeKeys = new Set<string>();
-      const combinedKeyParts: string[] = [];
-      for (const connector of mergeList) {
-        const key = connectorGeometryCacheKey(connector, commitCornerRadiusPx);
-        activeKeys.add(key);
-        combinedKeyParts.push(key);
-      }
-      for (const connector of connList) {
-        const key = connectorGeometryCacheKey(connector, commitCornerRadiusPx);
-        activeKeys.add(key);
-        combinedKeyParts.push(key);
-      }
-      const combinedCacheKey = combinedKeyParts.join('|');
-      let combined = combinedConnectorPathRef.current?.cacheKey === combinedCacheKey
-        ? combinedConnectorPathRef.current.path
-        : null;
-      if (!combined) {
-        combined = new Path2D();
-        for (const connector of mergeList) {
-          combined.addPath(getOrBuildConnectorPath2D(pathCache, connector, commitCornerRadiusPx));
-        }
-        for (const connector of connList) {
-          combined.addPath(getOrBuildConnectorPath2D(pathCache, connector, commitCornerRadiusPx));
-        }
-        combinedConnectorPathRef.current = { cacheKey: combinedCacheKey, path: combined };
-      }
-      trimConnectorPathCacheIfNeeded(pathCache, activeKeys);
-      ctx.stroke(combined);
-      pulseMapGridBackgroundActivity(
-        'connector-draw',
-        'Connector canvas redraw',
-        `${mergeList.length + connList.length} paths`,
-      );
-
-      lastDrawnPanRef.current = {
-        x: renderedCameraRef.current.panX,
-        y: renderedCameraRef.current.panY,
-      };
-    },
-    [canvasSize.height, canvasSize.width, commitCornerRadiusPx, displayZoom, lineStrokeWidth, renderedCameraRef],
-  );
 
   useEffect(() => {
     connectorPersistScopeRef.current = connectorPathCacheScopeKey;
@@ -1014,140 +854,10 @@ const MapGridCanvas = memo(function MapGridCanvas({
   }, [flushConnectorPathCachePersist]);
 
   useEffect(() => {
-    connectorWarmupCancelRef.current?.();
-    if (connectorsForPathCache.length === 0) return undefined;
-
-    setMapGridBackgroundActivity(
-      'connector-warmup',
-      'Connector path warmup',
-      true,
-      `0/${connectorsForPathCache.length}`,
-    );
-    connectorWarmupCancelRef.current = scheduleConnectorPathCacheWarmup(
-      connectorPath2dCacheRef.current,
-      connectorsForPathCache,
-      commitCornerRadiusPx,
-      {
-        shouldYield: () => isCameraMovingRef.current,
-        onProgress: (done, total) => {
-          setMapGridBackgroundActivity(
-            'connector-warmup',
-            'Connector path warmup',
-            true,
-            `${done}/${total}`,
-          );
-        },
-        onDone: () => {
-          setMapGridBackgroundActivity('connector-warmup', 'Connector path warmup', false, 'complete');
-          scheduleConnectorPathCachePersist();
-        },
-      },
-    );
-    return () => {
-      connectorWarmupCancelRef.current?.();
-      connectorWarmupCancelRef.current = null;
-      setMapGridBackgroundActivity('connector-warmup', 'Connector path warmup', false, 'cancelled');
-    };
-  }, [connectorsForPathCache, commitCornerRadiusPx, scheduleConnectorPathCachePersist, isCameraMovingRef]);
-
-  useLayoutEffect(() => {
-    const viewport = scrollContainerRef.current;
-    if (!viewport) return;
-    const updateSize = () => {
-      const width = viewport.clientWidth;
-      const height = viewport.clientHeight;
-      setCanvasSize((prev) => (prev.width === width && prev.height === height ? prev : { width, height }));
-    };
-    updateSize();
-    const resizeObserver = new ResizeObserver(updateSize);
-    resizeObserver.observe(viewport);
-    return () => resizeObserver.disconnect();
-  }, [scrollContainerRef]);
-
-  useEffect(() => {
     if (isCameraMovingRef.current) return;
-    const metrics = getConnectorCameraMetrics({ forceMeasure: true });
-    if (!metrics) return;
-    drawConnectorsToCanvas(visibleMergeConnectors, visibleConnectors, metrics);
-  }, [
-    panEpoch,
-    canvasSize.height,
-    canvasSize.width,
-    commitCornerRadiusPx,
-    lineStrokeWidth,
-    drawConnectorsToCanvas,
-    getConnectorCameraMetrics,
-    visibleMergeConnectors,
-    visibleConnectors,
-  ]);
-
-  useEffect(() => {
-    const canvas = connectorCanvasRef.current;
-    if (!canvas) return;
-
-    if (!isCameraMovingRef.current) {
-      canvas.style.transform = '';
-      return;
-    }
-
-    if (!drawnConnectorCameraRef.current) {
-      const metrics = getConnectorCameraMetrics({ forceMeasure: true });
-      if (metrics) {
-        const mergeList = buildVisibleConnectors(mergeConnectorsRef.current, cullConnectorPathRef.current);
-        const connList = buildVisibleConnectors(connectorsRef.current, cullConnectorPathRef.current);
-        lastVisibleMergeConnectorsRef.current = mergeList;
-        lastVisibleConnectorsRef.current = connList;
-        drawConnectorsToCanvas(mergeList, connList, metrics);
-      }
-    }
-
-    let animationFrame: number | null = null;
-    const syncConnectorTransform = () => {
-      if (!isCameraMovingRef.current) return;
-      const drawnCamera = drawnConnectorCameraRef.current;
-      if (drawnCamera) {
-        const currentScale = renderedCameraRef.current.zoom / GRID_RENDER_ZOOM;
-        const currentOriginX = drawnCamera.baseX + renderedCameraRef.current.panX;
-        const currentOriginY = drawnCamera.baseY + renderedCameraRef.current.panY;
-        const scaleRatio = currentScale / drawnCamera.scale;
-        const translateX = currentOriginX - drawnCamera.originX * scaleRatio;
-        const translateY = currentOriginY - drawnCamera.originY * scaleRatio;
-        canvas.style.transformOrigin = 'top left';
-        canvas.style.transform = `translate3d(${translateX}px, ${translateY}px, 0) scale(${scaleRatio})`;
-
-        const dx = renderedCameraRef.current.panX - lastDrawnPanRef.current.x;
-        const dy = renderedCameraRef.current.panY - lastDrawnPanRef.current.y;
-        if (mapGridPanCullDistanceExceeded(dx, dy, renderedCameraRef.current.zoom)) {
-          const metrics = getConnectorCameraMetrics();
-          if (metrics) {
-            const mergeList = buildVisibleConnectors(mergeConnectorsRef.current, cullConnectorPathRef.current);
-            const connList = buildVisibleConnectors(connectorsRef.current, cullConnectorPathRef.current);
-            lastVisibleMergeConnectorsRef.current = mergeList;
-            lastVisibleConnectorsRef.current = connList;
-            drawConnectorsToCanvas(mergeList, connList, metrics);
-            lastDrawnPanRef.current = {
-              x: renderedCameraRef.current.panX,
-              y: renderedCameraRef.current.panY,
-            };
-          }
-        }
-      }
-      animationFrame = window.requestAnimationFrame(syncConnectorTransform);
-    };
-
-    syncConnectorTransform();
-    return () => {
-      if (animationFrame != null) window.cancelAnimationFrame(animationFrame);
-      canvas.style.transform = '';
-    };
-  }, [
-    panEpoch,
-    renderedCameraRef,
-    getConnectorCameraMetrics,
-    buildVisibleConnectors,
-    drawConnectorsToCanvas,
-    isCameraMovingRef,
-  ]);
+    const count = visibleMergeConnectors.length + visibleConnectors.length;
+    pulseMapGridBackgroundActivity('connector-draw', 'Connector SVG update', `${count} paths`);
+  }, [panEpoch, visibleMergeConnectors, visibleConnectors, isCameraMovingRef]);
 
   const stickyCardSlotOrderRef = useRef<string[]>([]);
 
@@ -1182,7 +892,6 @@ const MapGridCanvas = memo(function MapGridCanvas({
     visibleRenderNodes,
     viewportClientSize,
     displayZoom,
-    cameraRenderTick,
     panEpoch,
     dragPreviewByNodeId,
     nodePositionOverrides,
@@ -1200,12 +909,6 @@ const MapGridCanvas = memo(function MapGridCanvas({
       onWheel={onWheel}
       onMouseDown={onMouseDown}
     >
-      <canvas
-        ref={connectorCanvasRef}
-        className="pointer-events-none absolute left-0 top-0 z-10"
-        aria-hidden="true"
-        style={{ width: canvasSize.width, height: canvasSize.height }}
-      />
       <div
         ref={mapPadHostRef}
         className="relative min-w-full bg-background p-2.5"
@@ -1224,6 +927,15 @@ const MapGridCanvas = memo(function MapGridCanvas({
             '--map-inv-zoom': `${computeMapGridInvZoom(displayZoom)}`,
           } as CSSProperties}
         >
+          <MapGridConnectorLayer
+            mergeConnectors={visibleMergeConnectors}
+            connectors={visibleConnectors}
+            contentWidth={contentWidth}
+            contentHeight={contentHeight}
+            cornerRadiusPx={commitCornerRadiusPx}
+            strokeWidth={lineStrokeWidth}
+            pathCache={connectorPath2dCacheRef.current}
+          />
           {cardSlotAssignments.map((assignment) => {
             const { node, cardLeft, cardTop } = assignment;
             return (

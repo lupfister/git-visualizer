@@ -19,6 +19,8 @@ export const MAP_GRID_CAMERA_PAN_REACT_THROTTLE_MS = 250;
  * before they cross into the screen.
  */
 export const MAP_GRID_CAMERA_PAN_DISTANCE_TICK_PX = 120;
+/** Max cards dropped from the visible set per pan cull tick (hysteresis). */
+export const MAP_GRID_PAN_MAX_VISIBLE_EVICT_PER_TICK = 2;
 /**
  * Minimum layout-space motion (same nominal px as {@link MAP_GRID_CAMERA_PAN_DISTANCE_TICK_PX})
  * paired with the zoom-scaled screen threshold in {@link mapGridPanCullDistanceExceeded}.
@@ -35,7 +37,11 @@ export const MAP_GRID_MAX_NODES_REMOVED_PER_FRAME = 56;
  */
 export function mapGridPanTickThresholdScreenPx(cameraZoom: number): number {
   const scale = cameraZoom / GRID_RENDER_ZOOM;
-  return MAP_GRID_CAMERA_PAN_DISTANCE_TICK_PX / Math.max(scale, 0.05);
+  const displayZoom = cameraZoom / GRID_RENDER_ZOOM;
+  const base = MAP_GRID_CAMERA_PAN_DISTANCE_TICK_PX / Math.max(scale, 0.05);
+  if (displayZoom <= 0.35) return base * 2.5;
+  if (displayZoom <= 0.75) return base * 1.5;
+  return base;
 }
 
 export function mapGridPanTickThresholdSq(cameraZoom: number): number {

@@ -1,4 +1,5 @@
 import {
+  startTransition,
   useCallback,
   useEffect,
   useLayoutEffect,
@@ -52,6 +53,7 @@ import {
   GRID_RENDER_ZOOM,
   MAP_GRID_CULL_VIEWPORT_INSET_SCREEN_PX,
   MAP_GRID_MAX_NODES_REMOVED_PER_FRAME,
+  MAP_GRID_PAN_MAX_VISIBLE_EVICT_PER_TICK,
   mapGridMaxVisibleNodeRetain,
   mapGridPanAdmissionBudget,
   buildCommitCullSpatialIndex,
@@ -1002,19 +1004,23 @@ export default function BranchGridMap({
     [],
   );
 
-  useLayoutEffect(() => {
+  const applyVisibleNodeCull = useCallback(() => {
     const viewport = scrollContainerRef.current;
-    if (!viewport) return;
-    if (viewport.clientWidth <= 0 || viewport.clientHeight <= 0) return;
-    const w = viewport.clientWidth;
-    const h = viewport.clientHeight;
-    setViewportClientSize((prev) => (prev?.width === w && prev?.height === h ? prev : { width: w, height: h }));
-    const bounds = computeViewportCullBounds(w, h, renderedCameraRef.current);
+    if (!viewport || viewport.clientWidth <= 0 || viewport.clientHeight <= 0) return;
+
+    const bounds = computeViewportCullBounds(
+      viewport.clientWidth,
+      viewport.clientHeight,
+      renderedCameraRef.current,
+    );
     if (!bounds) {
-      setVisibleNodeIds((prev) => (prev.size === 0 ? prev : new Set()));
+      startTransition(() => {
+        setVisibleNodeIds((prev) => (prev.size === 0 ? prev : new Set()));
+      });
       return;
     }
     visibleBoundsRef.current = bounds;
+
     const nextVisible = collectVisibleCommitIdsFromSpatialIndex(
       commitCullSpatialIndex,
       bounds,
@@ -1048,19 +1054,26 @@ export default function BranchGridMap({
         `${cappedVisible.size} visible`,
       );
       const admissionBudget = mapGridPanAdmissionBudget(displayZoom);
-      setVisibleNodeIds((prev) => {
-        const next = mergePanStableVisibleNodeIds(
-          prev,
-          nextVisible,
-          cappedVisible,
-          admissionBudget,
-          nodeByVisualId,
-          centerX,
-          centerY,
-        );
-        return visibleCommitIdSetEquals(prev, next) ? prev : next;
+      startTransition(() => {
+        setVisibleNodeIds((prev) => {
+          const next = mergePanStableVisibleNodeIds(
+            prev,
+            nextVisible,
+            cappedVisible,
+            admissionBudget,
+            visibleRetainCap,
+            MAP_GRID_PAN_MAX_VISIBLE_EVICT_PER_TICK,
+            nodeByVisualId,
+            centerX,
+            centerY,
+          );
+          return visibleCommitIdSetEquals(prev, next) ? prev : next;
+        });
       });
-    } else {
+      return;
+    }
+
+    startTransition(() => {
       setVisibleNodeIds((prev) => {
         const pending = panAdmissionPendingRef.current;
         panAdmissionPendingRef.current.clear();
@@ -1096,8 +1109,34 @@ export default function BranchGridMap({
         setMapGridBackgroundActivity('settle-prune', 'Visible-settle prune', true, 'pruning toward viewport');
         return pruneVisibleNodesTowardTarget(base, cappedVisible, MAP_GRID_MAX_NODES_REMOVED_PER_FRAME);
       });
-    }
+    });
   }, [
+    commitCullSpatialIndex,
+    displayZoom,
+    isCameraMovingRef,
+    labelTopPx,
+    nodeByVisualId,
+    renderedCameraRef,
+  ]);
+
+  const spatialCullRafRef = useRef<number | null>(null);
+
+  useEffect(() => {
+    if (spatialCullRafRef.current != null) {
+      window.cancelAnimationFrame(spatialCullRafRef.current);
+    }
+    spatialCullRafRef.current = window.requestAnimationFrame(() => {
+      spatialCullRafRef.current = null;
+      applyVisibleNodeCull();
+    });
+    return () => {
+      if (spatialCullRafRef.current != null) {
+        window.cancelAnimationFrame(spatialCullRafRef.current);
+        spatialCullRafRef.current = null;
+      }
+    };
+  }, [
+    applyVisibleNodeCull,
     renderedZoom,
     gridSearchJumpToken,
     gridFocusSha,
@@ -1105,9 +1144,6 @@ export default function BranchGridMap({
     panEpoch,
     displayZoom,
     viewportClientSize,
-    commitCullSpatialIndex,
-    nodeByVisualId,
-    labelTopPx,
   ]);
 
   useEffect(() => {

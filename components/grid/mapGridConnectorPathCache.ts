@@ -74,14 +74,14 @@ export function collectPathStringsForPersistence(
   return entries;
 }
 
-export function getOrBuildConnectorPath2D(
+function getOrBuildConnectorPathEntry(
   cache: Map<string, ConnectorPathCacheEntry>,
   connector: ConnectorPathCacheInput,
   cornerRadiusContentPx: number,
-): Path2D {
+): ConnectorPathCacheEntry {
   const key = connectorGeometryCacheKey(connector, cornerRadiusContentPx);
   const cached = cache.get(key);
-  if (cached) return cached.path;
+  if (cached) return cached;
   const d = buildMapGridConnectorPath(
     connector.fromX,
     connector.fromY,
@@ -92,9 +92,25 @@ export function getOrBuildConnectorPath2D(
     connector.toFace,
     cornerRadiusContentPx,
   );
-  const path = path2DFromPathString(d);
-  cache.set(key, { path, d });
-  return path;
+  const entry = { path: path2DFromPathString(d), d };
+  cache.set(key, entry);
+  return entry;
+}
+
+export function getOrBuildConnectorPath2D(
+  cache: Map<string, ConnectorPathCacheEntry>,
+  connector: ConnectorPathCacheInput,
+  cornerRadiusContentPx: number,
+): Path2D {
+  return getOrBuildConnectorPathEntry(cache, connector, cornerRadiusContentPx).path;
+}
+
+export function getOrBuildConnectorPathD(
+  cache: Map<string, ConnectorPathCacheEntry>,
+  connector: ConnectorPathCacheInput,
+  cornerRadiusContentPx: number,
+): string {
+  return getOrBuildConnectorPathEntry(cache, connector, cornerRadiusContentPx).d;
 }
 
 /** Evict oldest entries only when the cache grows past the soft cap. */

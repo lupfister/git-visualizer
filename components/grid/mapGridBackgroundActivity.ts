@@ -15,8 +15,15 @@ const listeners = new Set<Listener>();
 const recentPulses: Array<{ id: string; label: string; detail: string; at: number }> = [];
 const MAX_RECENT_PULSES = 8;
 
+let notifyRafId: number | null = null;
+
+/** Coalesce HUD updates to once per frame (avoids 60+ React setStates/sec during pan). */
 const notify = () => {
-  for (const listener of listeners) listener();
+  if (notifyRafId != null) return;
+  notifyRafId = requestAnimationFrame(() => {
+    notifyRafId = null;
+    for (const listener of listeners) listener();
+  });
 };
 
 const upsert = (id: string, patch: Partial<MapGridBackgroundActivity> & Pick<MapGridBackgroundActivity, 'label'>) => {
@@ -68,7 +75,6 @@ export const pulseMapGridBackgroundActivity = (
     if (!entry || entry.lastPulseAt !== now) return;
     upsert(id, { label, active: false, detail: entry.detail, lastPulseAt: now });
   }, 120);
-  notify();
 };
 
 export const subscribeMapGridBackgroundActivity = (listener: Listener): (() => void) => {
