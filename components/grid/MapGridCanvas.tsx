@@ -251,7 +251,7 @@ const MapGridCommitCard = memo(function MapGridCommitCard({
     : node.commit.message;
 
   const isCheckedOutCommit = isLocalUncommitted || isCheckedOutHeadNode;
-  const hideCheckedOutOutline = isCheckedOutHeadNode && !isSelectedCommit;
+  const hideCheckedOutOutline = isCheckedOutHeadNode && !isSelectedCommit && !isUnpushedCommit;
   const checkedOutAccentActive = isCheckedOutCommit && !isSelectedCommit;
   const remoteAccentActive = isRemoteCommit && !checkedOutAccentActive && !isSelectedCommit;
 
@@ -274,11 +274,13 @@ const MapGridCommitCard = memo(function MapGridCommitCard({
     ? 'transparent'
     : isFocused
       ? focusedCommitBorderColor
-      : remoteAccentActive
-        ? 'var(--remote)'
-        : isSelectedCommit
-          ? 'var(--select)'
-          : CONNECTOR_COLOR;
+      : checkedOutAccentActive
+        ? 'var(--checked)'
+        : remoteAccentActive
+          ? 'var(--remote)'
+          : isSelectedCommit
+            ? 'var(--select)'
+            : CONNECTOR_COLOR;
   const nodeBorderWidth = isStashedCommit || isEmptyBranchNode || isLocalUncommitted
     ? 1.25 / displayZoom
     : lineStrokeWidth;
