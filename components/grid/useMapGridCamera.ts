@@ -18,7 +18,7 @@ type Params = {
   mapPadHostRef: RefObject<HTMLDivElement | null>;
   isEnabled?: boolean;
   onUserCameraChange?: () => void;
-  /** Called after transform writes when idle; pan admission uses distance ticks only. */
+  /** Called after each rendered transform write (including during pan) to sync viewport bounds. */
   onRenderedCameraApplied?: (camera: MapGridCameraState) => void;
   /** Fired when pan gesture starts or ends (90ms idle). */
   onPanActiveChange?: (active: boolean) => void;
@@ -167,9 +167,7 @@ export function useMapGridCamera({
     const nextCamera = { panX: nextPanX, panY: nextPanY, zoom: nextZoom };
     renderedCameraRef.current = nextCamera;
     applyCameraTransformToTargets(nextPanX, nextPanY, nextZoom);
-    if (!isInteractionActiveRef.current) {
-      onRenderedCameraAppliedRef.current?.(nextCamera);
-    }
+    onRenderedCameraAppliedRef.current?.(nextCamera);
     if (Math.abs(renderedZoomRef.current - nextZoom) > ZOOM_SETTLE_EPSILON) {
       renderedZoomRef.current = nextZoom;
       // Keep typography/stroke counter-scaling in sync; spatial cull is not keyed on

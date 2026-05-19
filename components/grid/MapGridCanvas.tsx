@@ -576,7 +576,8 @@ type Props = {
   connectorPathCacheScopeBase: string;
 };
 
-const PAN_STABLE_CONNECTOR_PROPS = new Set<keyof Props>(['connectors', 'mergeConnectors', 'cameraRenderTick']);
+// Freeze connector source arrays during pan; cull list still refreshes via cameraRenderTick.
+const PAN_STABLE_CONNECTOR_PROPS = new Set<keyof Props>(['connectors', 'mergeConnectors']);
 
 function areMapGridCanvasPropsEqual(prev: Readonly<Props>, next: Readonly<Props>) {
   const keepConnectorRefsFrozen = prev.isCameraMovingRef.current && next.isCameraMovingRef.current;
@@ -602,7 +603,7 @@ const MapGridCanvas = memo(function MapGridCanvas({
   contentHeight: _contentHeight,
   isCameraMovingRef,
   panEpoch,
-  cameraRenderTick: _cameraRenderTick,
+  cameraRenderTick,
   viewportClientSize,
   onWheel,
   onMouseDown,
@@ -794,12 +795,12 @@ const MapGridCanvas = memo(function MapGridCanvas({
 
   const visibleMergeConnectors = useMemo(
     () => buildVisibleConnectors(mergeConnectors, cullConnectorPath),
-    [mergeConnectors, cullConnectorPath, buildVisibleConnectors, panEpoch],
+    [mergeConnectors, cullConnectorPath, buildVisibleConnectors, cameraRenderTick],
   );
 
   const visibleConnectors = useMemo(
     () => buildVisibleConnectors(connectors, cullConnectorPath),
-    [connectors, cullConnectorPath, buildVisibleConnectors, panEpoch],
+    [connectors, cullConnectorPath, buildVisibleConnectors, cameraRenderTick],
   );
 
   const connectorsForPathCache = useMemo(() => {
@@ -864,10 +865,9 @@ const MapGridCanvas = memo(function MapGridCanvas({
   }, [flushConnectorPathCachePersist]);
 
   useEffect(() => {
-    if (isCameraMovingRef.current) return;
     const count = visibleMergeConnectors.length + visibleConnectors.length;
     pulseMapGridBackgroundActivity('connector-draw', 'Connector SVG update', `${count} paths`);
-  }, [panEpoch, visibleMergeConnectors, visibleConnectors, isCameraMovingRef]);
+  }, [cameraRenderTick, panEpoch, visibleMergeConnectors, visibleConnectors]);
 
   const stickyCardSlotOrderRef = useRef<string[]>([]);
 

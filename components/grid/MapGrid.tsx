@@ -933,8 +933,7 @@ export default function BranchGridMap({
     lastHandledViewportFocusRequestRef.current = focusRequestKey;
   }, [gridFocusSha, gridSearchJumpToken, focusedRenderNode, getTransformLayerOriginScreen, syncCamera, renderedCameraRef]);
 
-  // Updated on every camera transform (wheel/RAF) and on cull layout ticks so
-  // connector culling stays aligned with the viewport during pan.
+  // Updated on every camera transform write so connector culling matches the viewport during pan.
   const visibleBoundsRef = useRef<ViewportContentBounds | null>(null);
   const nodeByVisualIdRef = useRef<Map<string, Node>>(new Map());
   nodeByVisualIdRef.current = nodeByVisualId;
