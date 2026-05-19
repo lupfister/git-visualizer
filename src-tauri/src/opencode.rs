@@ -8,8 +8,8 @@ const MAX_DIFF_CHARS: usize = 80_000;
 const OPENCODE_TIMEOUT: Duration = Duration::from_secs(120);
 const OPENCODE_ATTACH_URL: &str = "http://127.0.0.1:4096";
 
-const INLINE_COMMIT_PROMPT: &str = "Write exactly one short git commit message sentence for the diff below.\n\
-Use imperative mood. Not a run-on sentence. No quotes, markdown, or explanation — only the message.\n\n\
+const INLINE_COMMIT_PROMPT: &str = "Output ONLY the raw git commit message text — nothing else.\n\
+No preamble (never say \"the agent generated\" or similar). No quotes. No markdown. One sentence, imperative mood.\n\n\
 Diff:\n";
 
 fn resolve_opencode_binary() -> Result<PathBuf, String> {
@@ -75,31 +75,97 @@ fn strip_ansi(text: &str) -> String {
     out
 }
 
-fn sanitize_commit_message(raw: &str) -> Result<String, String> {
-    let cleaned = strip_ansi(raw)
-        .replace("```", "")
+fn strip_markdown(text: &str) -> String {
+    text.replace("**", "")
+        .replace("__", "")
+        .replace('`', "")
         .trim()
-        .to_string();
+        .to_string()
+}
 
-    let mut candidate = cleaned
+fn extract_quoted_strings(text: &str) -> Vec<String> {
+    let mut quoted = Vec::new();
+    let chars: Vec<char> = text.chars().collect();
+    let mut index = 0;
+    while index < chars.len() {
+        let quote = chars[index];
+        if quote != '"' && quote != '\'' {
+            index += 1;
+            continue;
+        }
+        index += 1;
+        let start = index;
+        while index < chars.len() && chars[index] != quote {
+            if chars[index] == '\\' && index + 1 < chars.len() {
+                index += 1;
+            }
+            index += 1;
+        }
+        if index < chars.len() {
+            let value: String = chars[start..index].iter().collect();
+            let trimmed = value.trim();
+            if !trimmed.is_empty() {
+                quoted.push(trimmed.to_string());
+            }
+        }
+        index += 1;
+    }
+    quoted
+}
+
+fn strip_meta_prefix(text: &str) -> String {
+    let lower = text.to_lowercase();
+    let meta_markers = [
+        "the agent generated the commit message:",
+        "the agent generated a commit message:",
+        "i generated the commit message:",
+        "here is the commit message:",
+        "here's the commit message:",
+        "generated commit message:",
+        "proposed commit message:",
+        "commit message:",
+        "message:",
+        "commit:",
+    ];
+    for marker in meta_markers {
+        if let Some(index) = lower.find(marker) {
+            return text[index + marker.len()..].trim().to_string();
+        }
+    }
+    text.trim().to_string()
+}
+
+fn sanitize_commit_message(raw: &str) -> Result<String, String> {
+    let cleaned = strip_ansi(raw).replace("```", "").trim().to_string();
+
+    let first_line = cleaned
         .lines()
         .map(str::trim)
         .find(|line| !line.is_empty())
         .unwrap_or("")
         .to_string();
 
-    for prefix in [
-        "commit message:",
-        "message:",
-        "commit:",
-    ] {
-        if let Some(rest) = candidate.strip_prefix(prefix) {
-            candidate = rest.trim().to_string();
-        }
+    let mut candidate = strip_meta_prefix(&first_line);
+    let quoted = extract_quoted_strings(&candidate);
+    if quoted.len() == 1 {
+        candidate = quoted[0].clone();
+    } else if quoted.len() > 1 {
+        candidate = quoted
+            .into_iter()
+            .max_by_key(|value| value.len())
+            .unwrap_or(candidate);
     }
 
+    candidate = strip_markdown(&candidate);
     candidate = candidate.trim_matches('"').trim_matches('\'').trim().to_string();
     candidate = candidate.split('\n').next().unwrap_or("").trim().to_string();
+
+    if candidate.ends_with('.') && candidate.len() > 3 {
+        let words: Vec<&str> = candidate.split_whitespace().collect();
+        if words.len() > 12 {
+            candidate = candidate.trim_end_matches('.').to_string();
+        }
+    }
 
     if candidate.is_empty() {
         return Err("OpenCode returned an empty commit message.".to_string());
@@ -110,6 +176,28 @@ fn sanitize_commit_message(raw: &str) -> Result<String, String> {
     }
 
     Ok(candidate)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::sanitize_commit_message;
+
+    #[test]
+    fn strips_agent_meta_wrapper_and_markdown() {
+        let raw = r#"The agent generated the commit message: **"Add auto-commit support with AI-generated commit messages"**."#;
+        let message = sanitize_commit_message(raw).expect("message");
+        assert_eq!(
+            message,
+            "Add auto-commit support with AI-generated commit messages"
+        );
+    }
+
+    #[test]
+    fn keeps_plain_message() {
+        let raw = "Fix commit button loading state";
+        let message = sanitize_commit_message(raw).expect("message");
+        assert_eq!(message, "Fix commit button loading state");
+    }
 }
 
 fn run_opencode(

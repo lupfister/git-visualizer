@@ -103,19 +103,19 @@ export default function CommitControls({
   const worktreeMenuRef = useRef<HTMLDivElement | null>(null);
   const controlClassName =
     'inline-flex h-7 items-center rounded-md border border-border bg-background px-2 text-[11px] font-medium text-foreground transition-colors hover:bg-muted hover:text-foreground disabled:cursor-not-allowed disabled:opacity-50';
-  const canCommit =
+  const showCommitAsPrimary =
     !!(onAutoCommitLocalChanges ?? onCommitLocalChanges) &&
     hasUncommittedChanges &&
     !commitDisabled &&
-    !commitInProgress &&
     (!hasSelection || hasWorkingTreeSelection);
+  const canCommit = showCommitAsPrimary && !commitInProgress;
   const canPushCurrent = !!onPushCurrentBranch && canPushCurrentBranch && !hasSelection && !pushInProgress;
   const canPushSelected = !!onPushCommitTargets && selectedPushTargets.length > 0 && !pushInProgress;
   const canPushAll = !!onPushAllBranches && pushableRemoteBranchCount >= 2 && !hasSelection && !pushInProgress;
   const canStash = !!onStashLocalChanges && !stashDisabled && !hasSelection && !stashInProgress;
   const pushSelectedLabel = 'Push Selected...';
   const primaryAction =
-    canCommit
+    showCommitAsPrimary
       ? {
           label: commitInProgress ? 'Committing...' : 'Commit',
           icon: 'commit' as const,
@@ -126,7 +126,7 @@ export default function CommitControls({
             }
             setCommitDialogOpen(true);
           },
-          disabled: !canCommit,
+          disabled: commitDisabled || commitInProgress,
         }
       : canPushCurrent
         ? {
@@ -175,17 +175,25 @@ export default function CommitControls({
               primaryAction.run();
             }}
             disabled={!primaryAction || primaryAction.disabled}
+            aria-busy={showCommitAsPrimary && commitInProgress ? true : undefined}
             className={cn(controlClassName, 'h-full rounded-r-none border-0 bg-transparent pr-1 hover:bg-muted')}
           >
             <span className="inline-flex items-center gap-1.5">
-              {renderMaskedIcon(primaryAction?.icon ?? 'commit')}
+              {showCommitAsPrimary && commitInProgress ? (
+                <span
+                  className="h-3.5 w-3.5 shrink-0 rounded-full border-2 border-border border-t-muted-foreground animate-spin"
+                  aria-hidden
+                />
+              ) : (
+                renderMaskedIcon(primaryAction?.icon ?? 'commit')
+              )}
               {!compactLabels ? <span>{primaryAction?.label ?? 'Commit'}</span> : null}
             </span>
           </button>
           <button
             type="button"
             onClick={() => setActionMenuOpen((open: boolean) => !open)}
-            disabled={!primaryAction}
+            disabled={!primaryAction || primaryAction.disabled}
             aria-haspopup="menu"
             aria-expanded={actionMenuOpen}
             className={cn(controlClassName, 'h-full rounded-l-none border-0 bg-transparent pl-1 hover:bg-muted')}
