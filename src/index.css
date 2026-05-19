@@ -39,9 +39,9 @@
   --checked: #38BDF2;
   --select: #158EFC;
   --remote: #8B5CF6;
-  --checked-muted: #F1FAFD;
-  --select-muted: #F0F7FF;
-  --remote-muted: #F5F1FE;
+  --checked-muted: #E8F7FC;
+  --select-muted: #E5F2FF;
+  --remote-muted: #F2ECFD;
   --destructive: #DC2626;
   --font-sans: system-ui, -apple-system, sans-serif;
   --font-space-grotesk: 'Space Grotesk', system-ui, -apple-system, sans-serif;

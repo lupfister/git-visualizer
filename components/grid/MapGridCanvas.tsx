@@ -265,8 +265,12 @@ const MapGridCommitCard = memo(function MapGridCommitCard({
   const dashedStrokeDasharray = `${12 / displayZoom} ${6 / displayZoom}`;
   const dashedStrokeInset = nodeBorderWidth / 2;
   const cardBodyHeight = 176;
-  /** Unpushed branch commits and dashed stash/working-tree nodes keep counterscaled rounded corners. */
-  const useRoundedCardOutline = isDashedOutline || (isUnpushedCommit && !isDashedOutline);
+  /** Pushed/remote history only — no tile motif for unpushed, working tree, or stash. */
+  const showCommitTilePattern =
+    !isUnpushedCommit && !isStashedCommit && !isEmptyBranchNode;
+  /** Counterscaled label-notch corners on pushed, unpushed, and dashed commit bodies. */
+  const useRoundedCardOutline =
+    isDashedOutline || showCommitTilePattern || (isUnpushedCommit && !isDashedOutline);
   const outlineCornerRadiusPx = useRoundedCardOutline ? commitCornerRadiusPx : 0;
   const dashedOutlinePath = useMemo(
     () => buildMapGridCommitOutlinePath(CARD_WIDTH, cardBodyHeight, dashedStrokeInset, outlineCornerRadiusPx),
@@ -327,9 +331,6 @@ const MapGridCommitCard = memo(function MapGridCommitCard({
     gap: 'calc(1rem * var(--map-inv-zoom, 1))',
   };
 
-  /** Pushed/remote history only — no tile motif for unpushed, working tree, or stash. */
-  const showCommitTilePattern =
-    !isUnpushedCommit && !isStashedCommit && !isEmptyBranchNode;
   const commitTileShapeCssVar = !showCommitTilePattern
     ? null
     : checkedOutAccentActive
