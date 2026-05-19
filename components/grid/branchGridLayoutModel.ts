@@ -132,7 +132,6 @@ function allocateRowsByColumnAndTime(
   commits: VisualCommit[],
   columnByCommitVisualId: Map<string, number>,
   extraParentShasByCommitId: Map<string, Set<string>> = new Map(),
-  unpushedCommitShasByBranch?: Map<string, Set<string>>,
   /** Merge commits: second (and further) parents treated as strict row floors so merges sit after merged tips. */
   mergeSecondParentsForStrictRows?: Map<string, Set<string>>,
 ): Map<string, number> {
@@ -278,27 +277,6 @@ function allocateRowsByColumnAndTime(
         const stashRow = stashRowByParentSha.get(commit.parentSha);
         if (stashRow != null) return Math.max(minTipRow, stashRow + 1);
         return minTipRow;
-      }
-      // First unpushed commit after a pushed parent on this lane (same idea as cluster column pinning):
-      // once WORKING_TREE becomes a real SHA, keep the new tip adjacent instead of letting chronological
-      // packing leave a wide horizontal gap.
-      if (commit.parentSha && unpushedCommitShasByBranch) {
-        const unpushedSet = unpushedCommitShasByBranch.get(commit.branchName);
-        if (unpushedSet) {
-          const shaMarkedUnpushed = (sha: string) => {
-            for (const candidate of unpushedSet) {
-              if (shasMatch(candidate, sha)) return true;
-            }
-            return false;
-          };
-          const parentOnLane = Array.from(branchCommitShas).some((id) => shasMatch(id, commit.parentSha!));
-          if (parentOnLane && shaMarkedUnpushed(commit.id) && !shaMarkedUnpushed(commit.parentSha)) {
-            const minTipRow = Math.max(...parentRows) + 1;
-            const stashRow = stashRowByParentSha.get(commit.parentSha);
-            if (stashRow != null) return Math.max(minTipRow, stashRow + 1);
-            return minTipRow;
-          }
-        }
       }
       return null;
     })();
@@ -820,7 +798,6 @@ export function computeBranchGridLayout(input: BranchGridLayoutInput): BranchGri
     allCommitsWithClusters,
     provisionalColumnByCommitVisualId,
     extraParentShasByCommitId,
-    unpushedCommitShasByBranchSet,
     mergeParentShasByMergeSha,
   );
   const commitsByBranch = new Map<string, VisualCommit[]>();
@@ -1024,9 +1001,8 @@ export function computeBranchGridLayout(input: BranchGridLayoutInput): BranchGri
       return left.localeCompare(right);
     })
     .forEach((clusterKey, column) => clusterColumnByKey.set(clusterKey, column));
-  // Keep the first real unpushed tip (and the dirty working-tree node) on the same lane column as
-  // its parent pushed tail — otherwise committing replaces WORKING_TREE with a new SHA that jumps to a
-  // fresh "unpushed" cluster column and no longer matches the opened clump / card position users expect.
+  // Keep the working-tree node on the same lane column as its parent tail — otherwise committing
+  // replaces WORKING_TREE with a new SHA that jumps to a different cluster column position.
   for (const commit of allCommitsWithClusters) {
     if (commit.kind === 'uncommitted' && commit.parentSha) {
       const parent = findCommitByShaSameBranch(commit.parentSha, commit.branchName);
@@ -1038,24 +1014,6 @@ export function computeBranchGridLayout(input: BranchGridLayoutInput): BranchGri
       if (parentCol != null) clusterColumnByKey.set(ck, parentCol);
       continue;
     }
-    if (commit.kind === 'stash' || commit.kind === 'branch-created') continue;
-    if (!commit.parentSha) continue;
-    const mergedExtrasEarly = mergeParentShasByMergeSha.get(commit.id);
-    const mergeParentList = commit.parentShas?.length
-      ? commit.parentShas
-      : commit.parentSha
-        ? [commit.parentSha]
-        : [];
-    if (mergeParentList.length > 1 || (mergedExtrasEarly != null && mergedExtrasEarly.size > 0)) continue;
-    if (!isShaUnpushedOnBranch(commit.branchName, commit.id)) continue;
-    if (isShaUnpushedOnBranch(commit.branchName, commit.parentSha)) continue;
-    const parent = findCommitBySha(commit.parentSha);
-    if (!parent || parent.branchName !== commit.branchName) continue;
-    const ck = clusterKeyByCommitId.get(commit.visualId);
-    const pk = clusterKeyByCommitId.get(parent.visualId);
-    if (!ck || !pk) continue;
-    const parentCol = clusterColumnByKey.get(pk);
-    if (parentCol != null) clusterColumnByKey.set(ck, parentCol);
   }
   const lanes: Lane[] = Array.from(clusterColumnByKey.entries())
     .map(([key, column]) => ({
@@ -1141,7 +1099,6 @@ export function computeBranchGridLayout(input: BranchGridLayoutInput): BranchGri
     allCommitsWithClusters,
     columnByCommitVisualId,
     extraParentShasByCommitId,
-    unpushedCommitShasByBranchSet,
     mergeParentShasByMergeSha,
   );
   const commitBySha = new Map<string, VisualCommit>();
@@ -1280,7 +1237,6 @@ export function computeBranchGridLayout(input: BranchGridLayoutInput): BranchGri
     visibleCommitsList,
     columnByCommitVisualId,
     extraParentShasByCommitId,
-    unpushedCommitShasByBranchSet,
     mergeParentShasByMergeSha,
   );
   const zoomAwareRowGap = ROW_GAP / GRID_LAYOUT_RENDER_ZOOM;
