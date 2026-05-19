@@ -584,3 +584,77 @@ body.popover-window #root {
   -webkit-mask-image: url('/icon-stash.svg');
   mask-image: url('/icon-stash.svg');
 }
+
+@keyframes toolbar-action-shimmer {
+  0% {
+    background-position: 200% 0;
+  }
+
+  100% {
+    background-position: -200% 0;
+  }
+}
+
+.toolbar-action-shimmer__text {
+  background-image: linear-gradient(
+    90deg,
+    var(--muted-foreground) 0%,
+    var(--foreground) 50%,
+    var(--muted-foreground) 100%
+  );
+  background-size: 200% 100%;
+  -webkit-background-clip: text;
+  background-clip: text;
+  color: transparent;
+  animation: toolbar-action-shimmer 1.35s ease-in-out infinite;
+}
+
+.toolbar-action-shimmer__icon {
+  background-color: transparent;
+  background-image: linear-gradient(
+    90deg,
+    color-mix(in srgb, var(--muted-foreground) 50%, transparent) 0%,
+    var(--foreground) 50%,
+    color-mix(in srgb, var(--muted-foreground) 50%, transparent) 100%
+  );
+  background-size: 200% 100%;
+  animation: toolbar-action-shimmer 1.35s ease-in-out infinite;
+}
+
+@keyframes toolbar-action-shimmer-lucide {
+  0%,
+  100% {
+    opacity: 0.45;
+    color: var(--muted-foreground);
+  }
+
+  50% {
+    opacity: 1;
+    color: var(--foreground);
+  }
+}
+
+.toolbar-action-shimmer__lucide {
+  animation: toolbar-action-shimmer-lucide 1.35s ease-in-out infinite;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .toolbar-action-shimmer__text,
+  .toolbar-action-shimmer__icon,
+  .toolbar-action-shimmer__lucide {
+    animation: none;
+    opacity: 0.65;
+  }
+
+  .toolbar-action-shimmer__text {
+    color: var(--muted-foreground);
+    background-image: none;
+    -webkit-background-clip: unset;
+    background-clip: unset;
+  }
+
+  .toolbar-action-shimmer__icon {
+    background-color: var(--muted-foreground);
+    background-image: none;
+  }
+}

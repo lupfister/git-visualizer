@@ -1,10 +1,9 @@
 import type { WorktreeInfo } from '../../types';
 import type { BranchGridViewProps } from './LayoutGrid';
+import ToolbarActionContent from './ToolbarActionContent';
 import { ChevronDown, FolderGit2, GitBranchPlus, GitMerge } from 'lucide-react';
 import { useEffect, useRef, useState } from 'react';
 import { cn, isOtherWorktree, worktreeShortLabel } from './mapGridUtils';
-
-type ToolbarMaskIcon = 'commit' | 'push-branch' | 'push-selected' | 'push-all' | 'stash';
 
 type PushTarget = {
   branchName: string;
@@ -103,52 +102,76 @@ export default function CommitControls({
   const worktreeMenuRef = useRef<HTMLDivElement | null>(null);
   const controlClassName =
     'inline-flex h-7 items-center rounded-md border border-border bg-background px-2 text-[11px] font-medium text-foreground transition-colors hover:bg-muted hover:text-foreground disabled:cursor-not-allowed disabled:opacity-50';
+
   const showCommitAsPrimary =
     !!(onAutoCommitLocalChanges ?? onCommitLocalChanges) &&
     hasUncommittedChanges &&
     !commitDisabled &&
     (!hasSelection || hasWorkingTreeSelection);
-  const canCommit = showCommitAsPrimary && !commitInProgress;
-  const canPushCurrent = !!onPushCurrentBranch && canPushCurrentBranch && !hasSelection && !pushInProgress;
-  const canPushSelected = !!onPushCommitTargets && selectedPushTargets.length > 0 && !pushInProgress;
-  const canPushAll = !!onPushAllBranches && pushableRemoteBranchCount >= 2 && !hasSelection && !pushInProgress;
-  const canStash = !!onStashLocalChanges && !stashDisabled && !hasSelection && !stashInProgress;
+
+  const showPushCurrentAsPrimary =
+    !showCommitAsPrimary &&
+    !!onPushCurrentBranch &&
+    canPushCurrentBranch &&
+    !hasSelection;
+
+  const showPushSelectedAsPrimary =
+    !showCommitAsPrimary &&
+    !showPushCurrentAsPrimary &&
+    !!onPushCommitTargets &&
+    selectedPushTargets.length > 0;
+
+  const showPushCurrentInMenu = !!onPushCurrentBranch && canPushCurrentBranch && !hasSelection;
+  const showPushSelectedInMenu = !!onPushCommitTargets && selectedPushTargets.length > 0;
+  const showPushAllInMenu = !!onPushAllBranches && pushableRemoteBranchCount >= 2 && !hasSelection;
+  const showStashInMenu = !!onStashLocalChanges && !stashDisabled && !hasSelection;
   const pushSelectedLabel = 'Push Selected...';
-  const primaryAction =
-    showCommitAsPrimary
-      ? {
-          label: commitInProgress ? 'Committing...' : 'Commit',
-          icon: 'commit' as const,
-          run: () => {
-            if (onAutoCommitLocalChanges) {
-              void onAutoCommitLocalChanges();
-              return;
-            }
-            setCommitDialogOpen(true);
-          },
-          disabled: commitDisabled || commitInProgress,
-        }
-      : canPushCurrent
-        ? {
-            label: pushInProgress ? 'Pushing...' : pushCurrentBranchLabel,
-            icon: 'push-branch' as const,
-            run: () => void onPushCurrentBranch?.(),
-            disabled: !canPushCurrent,
+
+  const primaryAction = showCommitAsPrimary
+    ? {
+        label: 'Commit',
+        icon: 'commit' as const,
+        run: () => {
+          if (onAutoCommitLocalChanges) {
+            void onAutoCommitLocalChanges();
+            return;
           }
-        : canPushSelected
-          ? {
-              label: pushSelectedLabel,
-              icon: 'push-selected' as const,
-              run: () => void onPushCommitTargets?.(selectedPushTargets.map((target) => ({ branchName: target.branchName, targetSha: target.targetSha }))),
-          disabled: !canPushSelected,
+          setCommitDialogOpen(true);
+        },
+        disabled: commitDisabled || commitInProgress,
+        loading: commitInProgress,
+      }
+    : showPushCurrentAsPrimary
+      ? {
+          label: pushCurrentBranchLabel,
+          icon: 'push-branch' as const,
+          run: () => void onPushCurrentBranch?.(),
+          disabled: pushInProgress,
+          loading: pushInProgress,
         }
-      : null;
-  const renderMaskedIcon = (icon: ToolbarMaskIcon, className?: string) => (
-    <span
-      aria-hidden="true"
-      className={cn('toolbar-mask-icon', `toolbar-mask-icon--${icon}`, className)}
-    />
-  );
+      : showPushSelectedAsPrimary
+        ? {
+            label: pushSelectedLabel,
+            icon: 'push-selected' as const,
+            run: () =>
+              void onPushCommitTargets?.(
+                selectedPushTargets.map((target) => ({
+                  branchName: target.branchName,
+                  targetSha: target.targetSha,
+                })),
+              ),
+            disabled: pushInProgress,
+            loading: pushInProgress,
+          }
+        : null;
+
+  const menuButtonClassName = (enabled: boolean, loading: boolean) =>
+    cn(
+      controlClassName,
+      'w-full justify-start whitespace-nowrap rounded-[2px] border-0 bg-transparent px-2 hover:bg-muted',
+      !enabled && 'text-foreground opacity-50',
+      loading && 'pointer-events-none',
+    );
 
   useEffect(() => {
     const handlePointerDown = (event: PointerEvent) => {
@@ -175,20 +198,19 @@ export default function CommitControls({
               primaryAction.run();
             }}
             disabled={!primaryAction || primaryAction.disabled}
-            aria-busy={showCommitAsPrimary && commitInProgress ? true : undefined}
+            aria-busy={primaryAction?.loading ? true : undefined}
             className={cn(controlClassName, 'h-full rounded-r-none border-0 bg-transparent pr-1 hover:bg-muted')}
           >
-            <span className="inline-flex items-center gap-1.5">
-              {showCommitAsPrimary && commitInProgress ? (
-                <span
-                  className="h-3.5 w-3.5 shrink-0 rounded-full border-2 border-border border-t-muted-foreground animate-spin"
-                  aria-hidden
-                />
-              ) : (
-                renderMaskedIcon(primaryAction?.icon ?? 'commit')
-              )}
-              {!compactLabels ? <span>{primaryAction?.label ?? 'Commit'}</span> : null}
-            </span>
+            {primaryAction ? (
+              <ToolbarActionContent
+                icon={primaryAction.icon}
+                label={primaryAction.label}
+                loading={primaryAction.loading}
+                compactLabels={compactLabels}
+              />
+            ) : (
+              <ToolbarActionContent icon="commit" label="Commit" compactLabels={compactLabels} />
+            )}
           </button>
           <button
             type="button"
@@ -210,62 +232,100 @@ export default function CommitControls({
                     setActionMenuOpen(false);
                     setCommitDialogOpen(true);
                   }}
-                  disabled={!canCommit}
-                  className={cn(controlClassName, 'w-full justify-start whitespace-nowrap rounded-[2px] border-0 bg-transparent px-2 hover:bg-muted', !canCommit && 'text-foreground opacity-50')}
+                  disabled={!showCommitAsPrimary || commitInProgress}
+                  aria-busy={commitInProgress ? true : undefined}
+                  className={menuButtonClassName(showCommitAsPrimary, commitInProgress)}
                 >
-                  {renderMaskedIcon('commit', 'mr-1.5')}
-                  Write commit
+                  <ToolbarActionContent
+                    icon="commit"
+                    label="Write commit"
+                    loading={commitInProgress}
+                    iconClassName="mr-1.5"
+                  />
                 </button>
               ) : null}
-              <button
-                type="button"
-                onClick={() => {
-                  setActionMenuOpen(false);
-                  void onPushCurrentBranch?.();
-                }}
-                disabled={!canPushCurrent}
-                className={cn(controlClassName, 'w-full justify-start whitespace-nowrap rounded-[2px] border-0 bg-transparent px-2 hover:bg-muted', !canPushCurrent && 'text-foreground opacity-50')}
-              >
-                {renderMaskedIcon('push-branch', 'mr-1.5')}
-                {pushInProgress ? 'Pushing...' : pushCurrentBranchLabel}
-              </button>
-              <button
-                type="button"
-                onClick={() => {
-                  setActionMenuOpen(false);
-                  void onPushCommitTargets?.(selectedPushTargets.map((target) => ({ branchName: target.branchName, targetSha: target.targetSha })));
-                }}
-                disabled={!canPushSelected}
-                className={cn(controlClassName, 'w-full justify-start whitespace-nowrap rounded-[2px] border-0 bg-transparent px-2 hover:bg-muted', !canPushSelected && 'text-foreground opacity-50')}
-                title={selectedPushLabel}
-              >
-                {renderMaskedIcon('push-selected', 'mr-1.5')}
-                {pushSelectedLabel}
-              </button>
-              <button
-                type="button"
-                onClick={() => {
-                  setActionMenuOpen(false);
-                  void onPushAllBranches?.();
-                }}
-                disabled={!canPushAll}
-                className={cn(controlClassName, 'w-full justify-start whitespace-nowrap rounded-[2px] border-0 bg-transparent px-2 hover:bg-muted', !canPushAll && 'text-foreground opacity-50')}
-              >
-                {renderMaskedIcon('push-all', 'mr-1.5')}
-                Push all
-              </button>
-              <button
-                type="button"
-                onClick={() => {
-                  setActionMenuOpen(false);
-                  void onStashLocalChanges?.();
-                }}
-                disabled={!canStash}
-                className={cn(controlClassName, 'w-full justify-start whitespace-nowrap rounded-[2px] border-0 bg-transparent px-2 hover:bg-muted', !canStash && 'text-foreground opacity-50')}
-              >
-                {renderMaskedIcon('stash', 'mr-1.5')}
-                {stashInProgress ? 'Stashing...' : 'Stash'}
-              </button>
+              {showPushCurrentInMenu ? (
+                <button
+                  type="button"
+                  onClick={() => {
+                    setActionMenuOpen(false);
+                    void onPushCurrentBranch?.();
+                  }}
+                  disabled={pushInProgress}
+                  aria-busy={pushInProgress ? true : undefined}
+                  className={menuButtonClassName(true, pushInProgress)}
+                >
+                  <ToolbarActionContent
+                    icon="push-branch"
+                    label={pushCurrentBranchLabel}
+                    loading={pushInProgress}
+                    iconClassName="mr-1.5"
+                  />
+                </button>
+              ) : null}
+              {showPushSelectedInMenu ? (
+                <button
+                  type="button"
+                  onClick={() => {
+                    setActionMenuOpen(false);
+                    void onPushCommitTargets?.(
+                      selectedPushTargets.map((target) => ({
+                        branchName: target.branchName,
+                        targetSha: target.targetSha,
+                      })),
+                    );
+                  }}
+                  disabled={pushInProgress}
+                  aria-busy={pushInProgress ? true : undefined}
+                  className={menuButtonClassName(true, pushInProgress)}
+                  title={selectedPushLabel}
+                >
+                  <ToolbarActionContent
+                    icon="push-selected"
+                    label={pushSelectedLabel}
+                    loading={pushInProgress}
+                    iconClassName="mr-1.5"
+                  />
+                </button>
+              ) : null}
+              {showPushAllInMenu ? (
+                <button
+                  type="button"
+                  onClick={() => {
+                    setActionMenuOpen(false);
+                    void onPushAllBranches?.();
+                  }}
+                  disabled={pushInProgress}
+                  aria-busy={pushInProgress ? true : undefined}
+                  className={menuButtonClassName(true, pushInProgress)}
+                >
+                  <ToolbarActionContent
+                    icon="push-all"
+                    label="Push all"
+                    loading={pushInProgress}
+                    iconClassName="mr-1.5"
+                  />
+                </button>
+              ) : null}
+              {showStashInMenu ? (
+                <button
+                  type="button"
+                  onClick={() => {
+                    setActionMenuOpen(false);
+                    void onStashLocalChanges?.();
+                  }}
+                  disabled={stashInProgress}
+                  aria-busy={stashInProgress ? true : undefined}
+                  className={menuButtonClassName(true, stashInProgress)}
+                >
+                  <ToolbarActionContent
+                    icon="stash"
+                    label="Stash"
+                    loading={stashInProgress}
+                    iconClassName="mr-1.5"
+                  />
+                </button>
+              ) : null}
             </div>
           ) : null}
         </div>

@@ -82,10 +82,13 @@ export default function MapGridDialogs({
                 type="button"
                 onClick={onCommitConfirm}
                 disabled={!commitMessageDraft.trim() || commitInProgress}
+                aria-busy={commitInProgress ? true : undefined}
                 className="inline-flex items-center rounded-lg border border-border bg-background px-3 py-1.5 text-xs font-medium text-foreground transition-colors hover:bg-muted disabled:cursor-not-allowed disabled:opacity-50"
               >
-                <GitCommitHorizontal className="mr-1.5 h-3.5 w-3.5 shrink-0" />
-                {commitInProgress ? 'Committing...' : 'Commit'}
+                <GitCommitHorizontal
+                  className={cn('mr-1.5 h-3.5 w-3.5 shrink-0', commitInProgress && 'toolbar-action-shimmer__lucide')}
+                />
+                <span className={cn(commitInProgress && 'toolbar-action-shimmer__text')}>Commit</span>
               </button>
             </div>
           </div>
