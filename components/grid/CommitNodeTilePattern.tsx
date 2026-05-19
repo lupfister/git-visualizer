@@ -1,4 +1,14 @@
-import { memo, useMemo, type ReactNode } from 'react';
+import {
+  forwardRef,
+  memo,
+  useCallback,
+  useEffect,
+  useImperativeHandle,
+  useMemo,
+  useRef,
+  useState,
+  type ReactNode,
+} from 'react';
 import { CARD_HEIGHT, CARD_WIDTH } from './LayoutGrid';
 import { computeMapGridInvZoom, MAP_GRID_MIN_DISPLAY_ZOOM } from './mapGridUtils';
 
@@ -86,16 +96,201 @@ const pickTileShapeKind = (seed: string, col: number, row: number): TileShapeKin
 /** Max blend toward white — `baseFill` is the minimum brightness; tiles only get lighter. */
 const TILE_LUM_MIX_MAX = 0.5;
 
-/** Stable per-cell luminance jitter — `baseFill` is the floor; brighter cells mix in white only. */
-const pickTileFill = (seed: string, col: number, row: number, baseFill: string): string => {
+/** Stable per-cell base luminance mix (0 = token floor). */
+const pickTileBaseLumMix = (seed: string, col: number, row: number): number => {
   const random = createMulberry32(fnv1a32(`${seed}|${col}|${row}|lum`));
   const mix = random() * TILE_LUM_MIX_MAX;
+  return mix < 0.003 ? 0 : mix;
+};
+
+const lumMixToFill = (baseFill: string, mix: number): string => {
   if (mix < 0.003) {
     return baseFill;
   }
   const basePct = (1 - mix) * 100;
   const whitePct = mix * 100;
   return `color-mix(in srgb, ${baseFill} ${basePct}%, white ${whitePct}%)`;
+};
+
+const BOOST_EPSILON = 0.006;
+/** Overlay peak opacity at full boost (`darken` blend — even on mixed tile luminance). */
+const HOVER_OVERLAY_MAX_OPACITY = 0.6;
+/** Cursor-sized hit radius in card layout units. */
+const CURSOR_RADIUS_LAYOUT = 12;
+/** Target boost under cursor while hovering (sustained). */
+const HOVER_CURSOR_CAP = 1;
+/** Per-frame ease toward cursor target — keeps tiles lit under pointer. */
+const HOVER_SUSTAIN_LERP = 0.14;
+/** Light deposit on pointer move — builds a wispy trail. */
+const HOVER_MOVE_DEPOSIT = 0.11;
+/** Single fade rate — trail outside cursor while hovering, and full trail after leave. */
+const HOVER_AMBIENT_DECAY = 0.985;
+
+const cursorFalloff = (dist: number): number => {
+  if (dist >= CURSOR_RADIUS_LAYOUT) {
+    return 0;
+  }
+  const t = 1 - dist / CURSOR_RADIUS_LAYOUT;
+  return t * t * (3 - 2 * t);
+};
+
+/** Opacity scales linearly with boost — same max on every tile at full strength. */
+const boostToOverlayOpacity = (boost: number): number =>
+  Math.max(0, Math.min(1, boost)) * HOVER_OVERLAY_MAX_OPACITY;
+
+const addBoostAt = (
+  boosts: Float32Array,
+  cols: number,
+  rows: number,
+  col: number,
+  row: number,
+  amount: number,
+): boolean => {
+  if (amount <= 0 || col < 0 || row < 0 || col >= cols || row >= rows) {
+    return false;
+  }
+  const index = row * cols + col;
+  const next = Math.min(1, boosts[index] + amount);
+  if (next <= boosts[index]) {
+    return false;
+  }
+  boosts[index] = next;
+  return true;
+};
+
+const sustainCursorBoosts = (
+  boosts: Float32Array,
+  cols: number,
+  cells: TileCellSpec[],
+  layoutX: number,
+  layoutY: number,
+): boolean => {
+  let changed = false;
+
+  for (const cell of cells) {
+    const dist = Math.hypot(layoutX - cell.cx, layoutY - cell.cy);
+    const falloff = cursorFalloff(dist);
+    if (falloff <= 0) {
+      continue;
+    }
+    const target = falloff * HOVER_CURSOR_CAP;
+    const index = cell.row * cols + cell.col;
+    const next = boosts[index] + (target - boosts[index]) * HOVER_SUSTAIN_LERP;
+    if (Math.abs(next - boosts[index]) > 0.001) {
+      boosts[index] = Math.min(1, next);
+      changed = true;
+    }
+  }
+
+  return changed;
+};
+
+const depositAtCursor = (
+  boosts: Float32Array,
+  cols: number,
+  rows: number,
+  cells: TileCellSpec[],
+  layoutX: number,
+  layoutY: number,
+  amount: number,
+): boolean => {
+  let changed = false;
+
+  for (const cell of cells) {
+    const dist = Math.hypot(layoutX - cell.cx, layoutY - cell.cy);
+    const falloff = cursorFalloff(dist);
+    if (falloff <= 0) {
+      continue;
+    }
+    if (addBoostAt(boosts, cols, rows, cell.col, cell.row, falloff * amount)) {
+      changed = true;
+    }
+  }
+
+  return changed;
+};
+
+type TileCellSpec = {
+  key: string;
+  col: number;
+  row: number;
+  cx: number;
+  cy: number;
+  baseLumMix: number;
+  drawAsCircle: boolean;
+  halfSize: number;
+  pathD: string | null;
+};
+
+type TileGridLayout = {
+  cols: number;
+  rows: number;
+  cellW: number;
+  cellH: number;
+  cells: TileCellSpec[];
+};
+
+const computeTileGridLayout = (seed: string, displayZoom: number): TileGridLayout => {
+  const invZ = computeMapGridInvZoom(displayZoom);
+  const nominalCellW = (CARD_WIDTH / TILE_COLS_BASE) * invZ;
+  const nominalCellH = (CARD_HEIGHT / TILE_ROWS_BASE) * invZ;
+  let cols = Math.min(
+    TILE_COLS_MAX,
+    Math.max(TILE_COLS_MIN, Math.round(CARD_WIDTH / nominalCellW)),
+  );
+  let rows = Math.min(
+    TILE_ROWS_MAX,
+    Math.max(TILE_ROWS_MIN, Math.round(CARD_HEIGHT / nominalCellH)),
+  );
+  if (displayZoom <= MAP_GRID_MIN_DISPLAY_ZOOM + 1e-6) {
+    rows = 2;
+  }
+  cols = pickColumnCountNearSquare(cols, rows);
+  const cellW = CARD_WIDTH / cols;
+  const cellH = CARD_HEIGHT / rows;
+  const minCell = Math.min(cellW, cellH);
+  const gap = Math.max(TILE_SHAPE_GAP_FLOOR, minCell * TILE_SHAPE_GAP_RATIO);
+  const shapeSize = Math.max(1.2, Math.min(cellW, cellH) - gap);
+  const halfSize = shapeSize / 2;
+  const cornerRadius = shapeSize * TILE_CORNER_RADIUS_FRACTION;
+  const cells: TileCellSpec[] = [];
+
+  for (let row = 0; row < rows; row++) {
+    for (let col = 0; col < cols; col++) {
+      const cx = (col + 0.5) * cellW;
+      const cy = (row + 0.5) * cellH;
+      const x = cx - halfSize;
+      const y = cy - halfSize;
+      const shapeKind = pickTileShapeKind(seed, col, row);
+      const baseKind = shapeKind === 'circle' ? 'rect' : shapeKind;
+      const radii = applyCardAnchorCornerRadii(
+        cornerRadiiForShape(baseKind, cornerRadius),
+        col,
+        row,
+        cols,
+        rows,
+        cornerRadius,
+      );
+      const drawAsCircle =
+        shapeKind === 'circle' && !isCardAnchorCornerCell(col, row, cols, rows);
+
+      cells.push({
+        key: `${col}:${row}`,
+        col,
+        row,
+        cx,
+        cy,
+        baseLumMix: pickTileBaseLumMix(seed, col, row),
+        drawAsCircle,
+        halfSize,
+        pathD: drawAsCircle
+          ? null
+          : buildRoundedRectPath(x, y, shapeSize, shapeSize, radii),
+      });
+    }
+  }
+
+  return { cols, rows, cellW, cellH, cells };
 };
 
 const cornerRadiiForShape = (kind: TileShapeKind, cornerRadius: number): TileCornerRadii => {
@@ -193,8 +388,19 @@ type CommitNodeTilePatternProps = {
   seed: string;
   /** Muted surface token without `var()`, e.g. `--checked-muted`. */
   shapeFillCssVar: string;
+  /** Matches commit card body text color, e.g. `var(--checked)`. */
+  hoverTintColor: string;
   /** Same pipeline as card typography (`--map-inv-zoom` source). */
   displayZoom: number;
+};
+
+export type CommitNodeTilePatternHandle = {
+  /** Begin sustained hover (no trail decay while active). */
+  startHover: () => void;
+  /** Card-local layout coordinates (`0…CARD_WIDTH`, `0…CARD_HEIGHT`). */
+  applyPointer: (layoutX: number, layoutY: number) => void;
+  /** Pointer left the card — trail fades at the same rate as in-card cool-down. */
+  endHover: () => void;
 };
 
 /** Min gutter in layout units; primary spacing is a fraction of cell size (screen-consistent). */
@@ -207,78 +413,197 @@ const TILE_CORNER_RADIUS_FRACTION = 0.5;
  * Grid of rects, teardrops, half-moons, and circles — random per cell; every tile’s top-left stays sharp;
  * the grid’s bottom-left, bottom-right, and top-right corner cells round their outward corner at 50%.
  */
-export const CommitNodeTilePattern = memo(function CommitNodeTilePattern({
-  seed,
-  shapeFillCssVar,
-  displayZoom,
-}: CommitNodeTilePatternProps) {
-  const shapes = useMemo(() => {
-    const fillValue = `var(${shapeFillCssVar})`;
-    const invZ = computeMapGridInvZoom(displayZoom);
-    const nominalCellW = (CARD_WIDTH / TILE_COLS_BASE) * invZ;
-    const nominalCellH = (CARD_HEIGHT / TILE_ROWS_BASE) * invZ;
-    let cols = Math.min(
-      TILE_COLS_MAX,
-      Math.max(TILE_COLS_MIN, Math.round(CARD_WIDTH / nominalCellW)),
-    );
-    let rows = Math.min(
-      TILE_ROWS_MAX,
-      Math.max(TILE_ROWS_MIN, Math.round(CARD_HEIGHT / nominalCellH)),
-    );
-    if (displayZoom <= MAP_GRID_MIN_DISPLAY_ZOOM + 1e-6) {
-      rows = 2;
+export const CommitNodeTilePattern = memo(
+  forwardRef<CommitNodeTilePatternHandle, CommitNodeTilePatternProps>(function CommitNodeTilePattern(
+    { seed, shapeFillCssVar, hoverTintColor, displayZoom },
+    ref,
+  ) {
+  const fillValue = `var(${shapeFillCssVar})`;
+  const layout = useMemo(() => computeTileGridLayout(seed, displayZoom), [seed, displayZoom]);
+  const layoutRef = useRef(layout);
+  layoutRef.current = layout;
+
+  const [boosts, setBoosts] = useState<Float32Array>(
+    () => new Float32Array(layout.cols * layout.rows),
+  );
+  const boostsRef = useRef(boosts);
+  boostsRef.current = boosts;
+  const isHoveringRef = useRef(false);
+  const pointerRef = useRef<{ x: number; y: number } | null>(null);
+  const rafRef = useRef<number | null>(null);
+
+  const stopHoverLoop = useCallback(() => {
+    if (rafRef.current != null) {
+      cancelAnimationFrame(rafRef.current);
+      rafRef.current = null;
     }
-    cols = pickColumnCountNearSquare(cols, rows);
-    const cellW = CARD_WIDTH / cols;
-    const cellH = CARD_HEIGHT / rows;
-    const minCell = Math.min(cellW, cellH);
-    const gap = Math.max(TILE_SHAPE_GAP_FLOOR, minCell * TILE_SHAPE_GAP_RATIO);
-    const shapeSize = Math.max(1.2, Math.min(cellW, cellH) - gap);
-    const halfSize = shapeSize / 2;
-    const cornerRadius = shapeSize * TILE_CORNER_RADIUS_FRACTION;
-    const nodes: ReactNode[] = [];
+  }, []);
 
-    for (let row = 0; row < rows; row++) {
-      for (let col = 0; col < cols; col++) {
-        const cx = (col + 0.5) * cellW;
-        const cy = (row + 0.5) * cellH;
-        const x = cx - halfSize;
-        const y = cy - halfSize;
-        const key = `${col}:${row}`;
-        const shapeKind = pickTileShapeKind(seed, col, row);
-        const baseKind = shapeKind === 'circle' ? 'rect' : shapeKind;
-        const radii = applyCardAnchorCornerRadii(
-          cornerRadiiForShape(baseKind, cornerRadius),
-          col,
-          row,
-          cols,
-          rows,
-          cornerRadius,
-        );
-        const drawAsCircle =
-          shapeKind === 'circle' && !isCardAnchorCornerCell(col, row, cols, rows);
-        const tileFill = pickTileFill(seed, col, row, fillValue);
+  useEffect(() => {
+    const nextBoosts = new Float32Array(layout.cols * layout.rows);
+    setBoosts(nextBoosts);
+    isHoveringRef.current = false;
+    pointerRef.current = null;
+  }, [layout.cols, layout.rows]);
 
-        if (drawAsCircle) {
-          nodes.push(
-            <circle key={key} cx={cx} cy={cy} r={halfSize} fill={tileFill} stroke="none" />,
-          );
+  const runHoverFrame = useCallback(() => {
+    rafRef.current = null;
+    const { cols, rows, cells, cellW, cellH } = layoutRef.current;
+    const previous = boostsRef.current;
+    const next = new Float32Array(previous);
+    let dirty = false;
+    let keepLooping = false;
+
+    if (isHoveringRef.current && pointerRef.current) {
+      const { x, y } = pointerRef.current;
+      for (let row = 0; row < rows; row++) {
+        for (let col = 0; col < cols; col++) {
+          const index = row * cols + col;
+          if (next[index] <= BOOST_EPSILON) {
+            continue;
+          }
+          const cx = (col + 0.5) * cellW;
+          const cy = (row + 0.5) * cellH;
+          if (Math.hypot(cx - x, cy - y) <= CURSOR_RADIUS_LAYOUT) {
+            continue;
+          }
+          next[index] *= HOVER_AMBIENT_DECAY;
+          dirty = true;
+        }
+      }
+      if (sustainCursorBoosts(next, cols, cells, x, y)) {
+        dirty = true;
+      }
+      keepLooping = true;
+    } else {
+      for (let i = 0; i < next.length; i++) {
+        if (next[i] <= BOOST_EPSILON) {
+          if (next[i] !== 0) {
+            next[i] = 0;
+            dirty = true;
+          }
           continue;
         }
+        next[i] *= HOVER_AMBIENT_DECAY;
+        if (next[i] <= BOOST_EPSILON) {
+          next[i] = 0;
+        } else {
+          keepLooping = true;
+        }
+        dirty = true;
+      }
+    }
 
-        nodes.push(
-          <path
-            key={key}
-            d={buildRoundedRectPath(x, y, shapeSize, shapeSize, radii)}
-            fill={tileFill}
+    if (dirty) {
+      setBoosts(next);
+    }
+    if (keepLooping) {
+      rafRef.current = requestAnimationFrame(runHoverFrame);
+    }
+  }, [seed]);
+
+  const ensureHoverLoop = useCallback(() => {
+    if (rafRef.current != null) {
+      return;
+    }
+    rafRef.current = requestAnimationFrame(runHoverFrame);
+  }, [runHoverFrame]);
+
+  useEffect(() => () => stopHoverLoop(), [stopHoverLoop]);
+
+  useImperativeHandle(
+    ref,
+    () => ({
+      startHover() {
+        isHoveringRef.current = true;
+        ensureHoverLoop();
+      },
+      applyPointer(layoutX: number, layoutY: number) {
+        const { cells, cols, rows } = layoutRef.current;
+        pointerRef.current = { x: layoutX, y: layoutY };
+        isHoveringRef.current = true;
+
+        setBoosts((previous) => {
+          if (previous.length !== cells.length) {
+            return previous;
+          }
+          const next = new Float32Array(previous);
+          if (depositAtCursor(next, cols, rows, cells, layoutX, layoutY, HOVER_MOVE_DEPOSIT)) {
+            return next;
+          }
+          return previous;
+        });
+        ensureHoverLoop();
+      },
+      endHover() {
+        isHoveringRef.current = false;
+        pointerRef.current = null;
+        ensureHoverLoop();
+      },
+    }),
+    [ensureHoverLoop, seed],
+  );
+
+  const { baseShapes, overlayShapes } = useMemo(() => {
+    const base: ReactNode[] = [];
+    const overlay: ReactNode[] = [];
+
+    for (const cell of layout.cells) {
+      const index = cell.row * layout.cols + cell.col;
+      const hoverBoost = boosts[index] ?? 0;
+      const restingFill = lumMixToFill(fillValue, cell.baseLumMix);
+      const overlayOpacity = boostToOverlayOpacity(hoverBoost);
+      const overlayStyle = { mixBlendMode: 'darken' as const };
+
+      if (cell.drawAsCircle) {
+        base.push(
+          <circle
+            key={`${cell.key}:base`}
+            cx={cell.cx}
+            cy={cell.cy}
+            r={cell.halfSize}
+            fill={restingFill}
             stroke="none"
+          />,
+        );
+        if (overlayOpacity >= 0.008) {
+          overlay.push(
+            <circle
+              key={`${cell.key}:fx`}
+              cx={cell.cx}
+              cy={cell.cy}
+              r={cell.halfSize}
+              fill={hoverTintColor}
+              fillOpacity={overlayOpacity}
+              stroke="none"
+              style={overlayStyle}
+            />,
+          );
+        }
+        continue;
+      }
+
+      if (!cell.pathD) {
+        continue;
+      }
+
+      base.push(<path key={`${cell.key}:base`} d={cell.pathD} fill={restingFill} stroke="none" />);
+      if (overlayOpacity >= 0.008) {
+        overlay.push(
+          <path
+            key={`${cell.key}:fx`}
+            d={cell.pathD}
+            fill={hoverTintColor}
+            fillOpacity={overlayOpacity}
+            stroke="none"
+            style={overlayStyle}
           />,
         );
       }
     }
 
-    return nodes;
-  }, [seed, shapeFillCssVar, displayZoom]);
+    return { baseShapes: base, overlayShapes: overlay };
+  }, [boosts, fillValue, hoverTintColor, layout]);
 
   const patternClipId = `commit-tile-clip-${fnv1a32(seed)}`;
   const patternClipInset = 1.5;
@@ -300,7 +625,11 @@ export const CommitNodeTilePattern = memo(function CommitNodeTilePattern({
           />
         </clipPath>
       </defs>
-      <g clipPath={`url(#${patternClipId})`}>{shapes}</g>
+      <g clipPath={`url(#${patternClipId})`}>
+        {baseShapes}
+        {overlayShapes}
+      </g>
     </svg>
   );
-});
+  }),
+);

@@ -27,7 +27,7 @@ import {
 import type { ConnectorFace, Node, NodePositionOverrides } from './LayoutGrid';
 import type { MapGridCameraState, MapGridCameraTargetLayout } from './useMapGridCamera';
 import { getNodePositionOverride } from './nodePositionOverrides';
-import { CommitNodeTilePattern } from './CommitNodeTilePattern';
+import { CommitNodeTilePattern, type CommitNodeTilePatternHandle } from './CommitNodeTilePattern';
 
 const EMPTY_NODE_POSITION_OVERRIDES: NodePositionOverrides = {};
 const EMPTY_DRAG_PREVIEW: Record<string, { x: number; y: number }> = {};
@@ -39,7 +39,9 @@ type MapGridCommitWrapperProps = {
   style?: CSSProperties;
   onClick?: React.MouseEventHandler<HTMLDivElement>;
   onPointerDown?: React.PointerEventHandler<HTMLDivElement>;
+  onPointerEnter?: React.PointerEventHandler<HTMLDivElement>;
   onPointerMove?: React.PointerEventHandler<HTMLDivElement>;
+  onPointerLeave?: React.PointerEventHandler<HTMLDivElement>;
   onPointerUp?: React.PointerEventHandler<HTMLDivElement>;
   onPointerCancel?: React.PointerEventHandler<HTMLDivElement>;
   dataCommitCard?: string;
@@ -63,7 +65,9 @@ const MapGridCommitWrapper = forwardRef<HTMLDivElement, MapGridCommitWrapperProp
   style,
   onClick,
   onPointerDown,
+  onPointerEnter,
   onPointerMove,
+  onPointerLeave,
   onPointerUp,
   onPointerCancel,
   dataCommitCard,
@@ -95,7 +99,9 @@ const MapGridCommitWrapper = forwardRef<HTMLDivElement, MapGridCommitWrapperProp
       data-commit-card={dataCommitCard}
       onClick={onClick}
       onPointerDown={onPointerDown}
+      onPointerEnter={onPointerEnter}
       onPointerMove={onPointerMove}
+      onPointerLeave={onPointerLeave}
       onPointerUp={onPointerUp}
       onPointerCancel={onPointerCancel}
       style={fadeStyle ? { ...style, ...fadeStyle } : style}
@@ -341,6 +347,121 @@ const MapGridCommitCard = memo(function MapGridCommitCard({
           ? '--select-muted'
           : '--muted';
 
+  const commitTileHoverTintColor = !showCommitTilePattern
+    ? null
+    : checkedOutAccentActive
+      ? 'var(--checked)'
+      : remoteAccentActive
+        ? 'var(--remote)'
+        : isSelectedCommit
+          ? 'var(--select)'
+          : 'var(--foreground)';
+
+  const cardBodyRef = useRef<HTMLDivElement>(null);
+  const tilePatternRef = useRef<CommitNodeTilePatternHandle>(null);
+  const isTileHoverTrackingRef = useRef(false);
+
+  const applyTilePatternAtClient = useCallback(
+    (clientX: number, clientY: number) => {
+      if (!commitTileShapeCssVar) {
+        return;
+      }
+      const body = cardBodyRef.current;
+      if (!body) {
+        return;
+      }
+      const rect = body.getBoundingClientRect();
+      if (rect.width <= 0 || rect.height <= 0) {
+        return;
+      }
+      const layoutX = ((clientX - rect.left) / rect.width) * CARD_WIDTH;
+      const layoutY = ((clientY - rect.top) / rect.height) * CARD_HEIGHT;
+      tilePatternRef.current?.applyPointer(layoutX, layoutY);
+    },
+    [commitTileShapeCssVar],
+  );
+
+  const handleCardPointerMove = useCallback(
+    (event: React.PointerEvent<HTMLDivElement>) => {
+      onNodePointerMove(event);
+    },
+    [onNodePointerMove],
+  );
+
+  const stopTileHoverTracking = useCallback(() => {
+    isTileHoverTrackingRef.current = false;
+    tilePatternRef.current?.endHover();
+  }, []);
+
+  const isClientInsideCard = useCallback((clientX: number, clientY: number) => {
+    const card = cardRef.current;
+    if (!card) {
+      return false;
+    }
+    const rect = card.getBoundingClientRect();
+    return (
+      clientX >= rect.left &&
+      clientX <= rect.right &&
+      clientY >= rect.top &&
+      clientY <= rect.bottom
+    );
+  }, []);
+
+  useLayoutEffect(() => {
+    if (!commitTileShapeCssVar) {
+      return;
+    }
+    const card = cardRef.current;
+    if (!card) {
+      return;
+    }
+
+    const handleWindowPointerMove = (event: PointerEvent) => {
+      if (!isTileHoverTrackingRef.current) {
+        return;
+      }
+      if (!isClientInsideCard(event.clientX, event.clientY)) {
+        stopTileHoverTracking();
+        return;
+      }
+      applyTilePatternAtClient(event.clientX, event.clientY);
+    };
+
+    const handleCardPointerEnter = (event: PointerEvent) => {
+      isTileHoverTrackingRef.current = true;
+      tilePatternRef.current?.startHover();
+      applyTilePatternAtClient(event.clientX, event.clientY);
+      window.addEventListener('pointermove', handleWindowPointerMove);
+    };
+
+    const handleCardPointerLeave = (event: PointerEvent) => {
+      const relatedTarget = event.relatedTarget;
+      if (relatedTarget instanceof Node && card.contains(relatedTarget)) {
+        return;
+      }
+      window.removeEventListener('pointermove', handleWindowPointerMove);
+      stopTileHoverTracking();
+    };
+
+    card.addEventListener('pointerenter', handleCardPointerEnter);
+    card.addEventListener('pointerleave', handleCardPointerLeave);
+    return () => {
+      window.removeEventListener('pointermove', handleWindowPointerMove);
+      card.removeEventListener('pointerenter', handleCardPointerEnter);
+      card.removeEventListener('pointerleave', handleCardPointerLeave);
+      if (isTileHoverTrackingRef.current) {
+        isTileHoverTrackingRef.current = false;
+        tilePatternRef.current?.endHover();
+      }
+    };
+  }, [
+    applyTilePatternAtClient,
+    commitTileShapeCssVar,
+    isClientInsideCard,
+    stopTileHoverTracking,
+    visualId,
+  ]);
+
   /** Solid outline for focus/selection/search and unpushed commits (dashed types use `isDashedOutline`). */
   const showCommitNodeStroke =
     isFocused ||
@@ -364,7 +485,7 @@ const MapGridCommitCard = memo(function MapGridCommitCard({
       }}
       onClick={handleClick}
       onPointerDown={handlePointerDown}
-      onPointerMove={onNodePointerMove}
+      onPointerMove={handleCardPointerMove}
       onPointerUp={onNodePointerUp}
       onPointerCancel={onNodePointerUp}
     >
@@ -434,7 +555,9 @@ const MapGridCommitCard = memo(function MapGridCommitCard({
           ) : null}
         </div>
       </div>
-      <div className={cn(
+      <div
+        ref={cardBodyRef}
+        className={cn(
           'absolute left-0 h-[176px] w-full cursor-grab overflow-hidden active:cursor-grabbing',
           useRoundedCardOutline ? 'rounded-tr-xl rounded-br-xl rounded-bl-xl rounded-tl-none' : '',
           showCommitTilePattern
@@ -463,18 +586,23 @@ const MapGridCommitCard = memo(function MapGridCommitCard({
           contain: 'layout paint style',
         }}
       >
-        {commitTileShapeCssVar ? (
+        {commitTileShapeCssVar && commitTileHoverTintColor ? (
           <CommitNodeTilePattern
+            ref={tilePatternRef}
             seed={visualId}
             shapeFillCssVar={commitTileShapeCssVar}
+            hoverTintColor={commitTileHoverTintColor}
             displayZoom={displayZoom}
           />
         ) : null}
-        <div className="relative z-10 flex h-full min-h-0 flex-col" style={scaledBodyInsetStyle}>
+        <div
+          className="pointer-events-none relative z-10 flex h-full min-h-0 flex-col"
+          style={scaledBodyInsetStyle}
+        >
           <div className="min-h-0 flex-1">
             <div
               className={cn(
-                'max-w-[38rem] select-text font-normal tracking-tight text-foreground',
+                'pointer-events-auto max-w-[38rem] select-text font-normal tracking-tight text-foreground',
                 selectedCommitTextClass,
                 displayZoom <= 0.5 ? 'overflow-hidden text-ellipsis whitespace-nowrap' : 'break-words whitespace-normal',
               )}
@@ -497,14 +625,14 @@ const MapGridCommitCard = memo(function MapGridCommitCard({
           {displayZoom > 0.5 && !isStashedCommit ? (
             <div className="mt-auto flex items-end justify-between" style={scaledMetaTopStyle}>
               <div
-                className={cn('select-text font-normal', selectedCommitTextClass)}
+                className={cn('pointer-events-auto select-text font-normal', selectedCommitTextClass)}
                 data-selectable-text="true"
                 style={scaledTextStyle}
               >
                 @{node.commit.author}
               </div>
               <div
-                className={cn('select-text font-normal', selectedCommitTextClass)}
+                className={cn('pointer-events-auto select-text font-normal', selectedCommitTextClass)}
                 data-selectable-text="true"
                 style={scaledTextStyle}
               >
