@@ -254,7 +254,9 @@ const MapGridCommitCard = memo(function MapGridCommitCard({
           ? 'var(--remote)'
           : isSelectedCommit
             ? 'var(--select)'
-            : CONNECTOR_COLOR;
+            : isUnpushedCommit && !isLocalUncommitted
+              ? 'var(--muted-foreground)'
+              : CONNECTOR_COLOR;
   const nodeBorderWidth = isStashedCommit || isEmptyBranchNode || isLocalUncommitted
     ? 1.25 / displayZoom
     : lineStrokeWidth;
@@ -338,8 +340,12 @@ const MapGridCommitCard = memo(function MapGridCommitCard({
           ? '--select-muted'
           : '--muted';
 
-  /** Visible stroke only for explicit user focus/selection — not graph topology markers. */
-  const showCommitNodeStroke = isFocused || isSelectedCommit || isSearchMatch;
+  /** Solid outline for focus/selection/search and unpushed commits (dashed types use `isDashedOutline`). */
+  const showCommitNodeStroke =
+    isFocused ||
+    isSelectedCommit ||
+    isSearchMatch ||
+    (isUnpushedCommit && !isDashedOutline);
 
   return (
     <MapGridCommitWrapper
