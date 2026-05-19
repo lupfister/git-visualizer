@@ -251,8 +251,9 @@ const MapGridCommitCard = memo(function MapGridCommitCard({
     : node.commit.message;
 
   const isCheckedOutCommit = isLocalUncommitted || isCheckedOutHeadNode;
-  const hideCheckedOutOutline = isCheckedOutHeadNode && !isSelectedCommit && !isUnpushedCommit;
   const checkedOutAccentActive = isCheckedOutCommit && !isSelectedCommit;
+  const pushedCheckedOutHeadAccent =
+    isCheckedOutHeadNode && checkedOutAccentActive && !isUnpushedCommit;
   const remoteAccentActive = isRemoteCommit && !checkedOutAccentActive && !isSelectedCommit;
 
   const selectedCommitTextClass = checkedOutAccentActive
@@ -270,10 +271,10 @@ const MapGridCommitCard = memo(function MapGridCommitCard({
         ? { color: 'var(--select)' }
         : undefined;
   const focusedCommitBorderColor = selectedCommitTextStyle?.color ?? 'var(--foreground)';
-  const commitBorderColor = hideCheckedOutOutline
-    ? 'transparent'
-    : isFocused
-      ? focusedCommitBorderColor
+  const commitBorderColor = isFocused
+    ? focusedCommitBorderColor
+    : pushedCheckedOutHeadAccent
+      ? 'var(--checked-muted)'
       : checkedOutAccentActive
         ? 'var(--checked)'
         : remoteAccentActive
@@ -429,8 +430,8 @@ const MapGridCommitCard = memo(function MapGridCommitCard({
         )}
         style={{
           top: 0,
-          borderWidth: hideCheckedOutOutline ? 0 : `${nodeBorderWidth}px`,
-          borderColor: isDashedOutline || hideCheckedOutOutline ? 'transparent' : commitBorderColor,
+          borderWidth: `${nodeBorderWidth}px`,
+          borderColor: isDashedOutline ? 'transparent' : commitBorderColor,
           borderTopLeftRadius: 0,
           borderTopRightRadius: `${commitCornerRadiusPx}px`,
           borderBottomRightRadius: `${commitCornerRadiusPx}px`,
