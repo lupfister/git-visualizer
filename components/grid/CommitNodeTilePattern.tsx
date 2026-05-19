@@ -83,6 +83,21 @@ const pickTileShapeKind = (seed: string, col: number, row: number): TileShapeKin
   return TILE_SHAPE_KINDS[index] ?? 'rect';
 };
 
+/** Max blend toward white — `baseFill` is the minimum brightness; tiles only get lighter. */
+const TILE_LUM_MIX_MAX = 0.5;
+
+/** Stable per-cell luminance jitter — `baseFill` is the floor; brighter cells mix in white only. */
+const pickTileFill = (seed: string, col: number, row: number, baseFill: string): string => {
+  const random = createMulberry32(fnv1a32(`${seed}|${col}|${row}|lum`));
+  const mix = random() * TILE_LUM_MIX_MAX;
+  if (mix < 0.003) {
+    return baseFill;
+  }
+  const basePct = (1 - mix) * 100;
+  const whitePct = mix * 100;
+  return `color-mix(in srgb, ${baseFill} ${basePct}%, white ${whitePct}%)`;
+};
+
 const cornerRadiiForShape = (kind: TileShapeKind, cornerRadius: number): TileCornerRadii => {
   const sharp = 0;
   const round = cornerRadius;
@@ -242,10 +257,11 @@ export const CommitNodeTilePattern = memo(function CommitNodeTilePattern({
         );
         const drawAsCircle =
           shapeKind === 'circle' && !isCardAnchorCornerCell(col, row, cols, rows);
+        const tileFill = pickTileFill(seed, col, row, fillValue);
 
         if (drawAsCircle) {
           nodes.push(
-            <circle key={key} cx={cx} cy={cy} r={halfSize} fill={fillValue} stroke="none" />,
+            <circle key={key} cx={cx} cy={cy} r={halfSize} fill={tileFill} stroke="none" />,
           );
           continue;
         }
@@ -254,7 +270,7 @@ export const CommitNodeTilePattern = memo(function CommitNodeTilePattern({
           <path
             key={key}
             d={buildRoundedRectPath(x, y, shapeSize, shapeSize, radii)}
-            fill={fillValue}
+            fill={tileFill}
             stroke="none"
           />,
         );
