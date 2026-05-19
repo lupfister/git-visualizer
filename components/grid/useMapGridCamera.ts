@@ -172,14 +172,23 @@ export function useMapGridCamera({
     }
     if (Math.abs(renderedZoomRef.current - nextZoom) > ZOOM_SETTLE_EPSILON) {
       renderedZoomRef.current = nextZoom;
-      setRenderedZoom(nextZoom);
+      // Keep typography/stroke counter-scaling in sync; spatial cull is not keyed on
+      // renderedZoom (see MapGrid) so this does not re-trigger the zoom cull storm.
+      if (isInteractionActiveRef.current) {
+        startTransition(() => setRenderedZoom(nextZoom));
+      } else {
+        setRenderedZoom(nextZoom);
+      }
     }
 
     if (options?.emitTick === false) return;
 
     const zoomChanged = Math.abs(nextZoom - prev.zoom) > ZOOM_SETTLE_EPSILON;
     if (zoomChanged) {
-      flushCameraReactTick();
+      // Zoom LERP used to call flushCameraReactTick every frame → 1k+ cull passes.
+      if (!isInteractionActiveRef.current) {
+        flushCameraReactTick();
+      }
       return;
     }
 
@@ -242,6 +251,12 @@ export function useMapGridCamera({
       applyPanLayerChrome(false);
       onPanActiveChangeRef.current?.(false);
       setPanEpoch((epoch) => epoch + 1);
+      const { zoom } = renderedCameraRef.current;
+      if (Math.abs(renderedZoomRef.current - zoom) > ZOOM_SETTLE_EPSILON) {
+        renderedZoomRef.current = zoom;
+        setRenderedZoom(zoom);
+      }
+      onRenderedCameraAppliedRef.current?.(renderedCameraRef.current);
       flushCameraReactTick();
       persistCamera(renderedCameraRef.current);
     }, 90);
@@ -267,9 +282,11 @@ export function useMapGridCamera({
     const targetZoom = zoomRef.current;
     const zoomAnchor = zoomAnchorRef.current;
     const nextZoom =
-      Math.abs(targetZoom - rendered.zoom) <= ZOOM_SETTLE_EPSILON
+      zoomAnchor != null
         ? targetZoom
-        : rendered.zoom + (targetZoom - rendered.zoom) * CAMERA_ZOOM_INTERPOLATION;
+        : Math.abs(targetZoom - rendered.zoom) <= ZOOM_SETTLE_EPSILON
+          ? targetZoom
+          : rendered.zoom + (targetZoom - rendered.zoom) * CAMERA_ZOOM_INTERPOLATION;
     const scale = nextZoom / GRID_RENDER_ZOOM;
     let nextPanX: number;
     let nextPanY: number;
@@ -301,7 +318,7 @@ export function useMapGridCamera({
       if (stepCameraRef.current) {
         cameraFrameRef.current = requestAnimationFrame(stepCameraRef.current);
       }
-    } else {
+    } else if (!isInteractionActiveRef.current) {
       flushCameraReactTick();
     }
   };

@@ -1020,16 +1020,19 @@ export default function BranchGridMap({
     }
     visibleBoundsRef.current = bounds;
 
+    const displayZoomForCull = renderedCameraRef.current.zoom / GRID_RENDER_ZOOM;
+    const labelTopForCull = -(20 / displayZoomForCull);
+
     const nextVisible = collectVisibleCommitIdsFromSpatialIndex(
       commitCullSpatialIndex,
       bounds,
       nodeByVisualId,
-      labelTopPx,
+      labelTopForCull,
     );
     const centerX = (bounds.left + bounds.right) / 2;
     const centerY = (bounds.top + bounds.bottom) / 2;
     cullViewportCenterRef.current = { x: centerX, y: centerY };
-    const visibleRetainCap = mapGridMaxVisibleNodeRetain(displayZoom);
+    const visibleRetainCap = mapGridMaxVisibleNodeRetain(displayZoomForCull);
     const cappedVisible = pickNearestVisibleVisualIds(
       nextVisible,
       visibleRetainCap,
@@ -1052,7 +1055,7 @@ export default function BranchGridMap({
         'Spatial cull tick',
         `${cappedVisible.size} visible`,
       );
-      const admissionBudget = mapGridPanAdmissionBudget(displayZoom);
+      const admissionBudget = mapGridPanAdmissionBudget(displayZoomForCull);
       startTransition(() => {
         setVisibleNodeIds((prev) => {
           const next = mergePanStableVisibleNodeIds(
@@ -1109,14 +1112,7 @@ export default function BranchGridMap({
         return pruneVisibleNodesTowardTarget(base, cappedVisible, MAP_GRID_MAX_NODES_REMOVED_PER_FRAME);
       });
     });
-  }, [
-    commitCullSpatialIndex,
-    displayZoom,
-    isCameraMovingRef,
-    labelTopPx,
-    nodeByVisualId,
-    renderedCameraRef,
-  ]);
+  }, [commitCullSpatialIndex, isCameraMovingRef, nodeByVisualId, renderedCameraRef]);
 
   const spatialCullRafRef = useRef<number | null>(null);
 
@@ -1136,12 +1132,10 @@ export default function BranchGridMap({
     };
   }, [
     applyVisibleNodeCull,
-    renderedZoom,
     gridSearchJumpToken,
     gridFocusSha,
     cameraRenderTick,
     panEpoch,
-    displayZoom,
     viewportClientSize,
   ]);
 
