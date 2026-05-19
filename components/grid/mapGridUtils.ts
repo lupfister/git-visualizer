@@ -32,15 +32,15 @@ export const MAP_GRID_MAX_NODES_ADDED_PER_PAN_ADMISSION = 12;
 export const MAP_GRID_MAX_NODES_REMOVED_PER_FRAME = 56;
 
 /**
- * Screen-space pan distance before a cull / React tick. Scales with zoom so
- * zoomed-out pans (more content per screen pixel) trigger fewer heavy ticks.
+ * Screen-space pan distance before a cull / React tick. At low zoom the viewport
+ * covers more content so we fire ticks more eagerly to surface hidden content.
  */
 export function mapGridPanTickThresholdScreenPx(cameraZoom: number): number {
   const scale = cameraZoom / GRID_RENDER_ZOOM;
   const displayZoom = cameraZoom / GRID_RENDER_ZOOM;
   const base = MAP_GRID_CAMERA_PAN_DISTANCE_TICK_PX / Math.max(scale, 0.05);
-  if (displayZoom <= 0.35) return base * 2.5;
-  if (displayZoom <= 0.75) return base * 1.5;
+  if (displayZoom <= 0.35) return base * 1.4;
+  if (displayZoom <= 0.75) return base * 1.15;
   return base;
 }
 
@@ -110,11 +110,11 @@ export function computeMapGridInvZoom(displayZoom: number): number {
 }
 
 /** Minimum commit cards retained / slotted at any zoom (floor when zoomed out). */
-export const MAP_GRID_MIN_CARD_SLOTS = 15;
+export const MAP_GRID_MIN_CARD_SLOTS = 48;
 
 /** Max real commit card DOM slots; scales up from {@link MAP_GRID_MIN_CARD_SLOTS} when zoomed out. */
 export function computeMapGridCardSlotCap(displayZoom: number): number {
-  const maxSlots = 96;
+  const maxSlots = 128;
   if (displayZoom >= 0.85) return maxSlots;
   if (displayZoom <= MAP_GRID_MIN_DISPLAY_ZOOM) return MAP_GRID_MIN_CARD_SLOTS;
   const t =
@@ -127,15 +127,18 @@ export function mapGridMaxVisibleNodeRetain(displayZoom: number): number {
   return computeMapGridCardSlotCap(displayZoom);
 }
 
-/** Pan admission budget scales down when zoomed out. */
+/** Pan admission budget — admits more per tick when zoomed out (larger content area visible). */
 export function mapGridPanAdmissionBudget(displayZoom: number): number {
   if (displayZoom >= 0.75) return MAP_GRID_MAX_NODES_ADDED_PER_PAN_ADMISSION;
-  if (displayZoom <= MAP_GRID_MIN_DISPLAY_ZOOM) return 2;
+  if (displayZoom <= MAP_GRID_MIN_DISPLAY_ZOOM) return Math.round(MAP_GRID_MAX_NODES_ADDED_PER_PAN_ADMISSION * 1.5);
   const t =
     (displayZoom - MAP_GRID_MIN_DISPLAY_ZOOM) / (0.75 - MAP_GRID_MIN_DISPLAY_ZOOM);
   return Math.max(
-    2,
-    Math.round(2 + t * (MAP_GRID_MAX_NODES_ADDED_PER_PAN_ADMISSION - 2)),
+    MAP_GRID_MAX_NODES_ADDED_PER_PAN_ADMISSION,
+    Math.round(
+      MAP_GRID_MAX_NODES_ADDED_PER_PAN_ADMISSION * 1.5 -
+        t * (MAP_GRID_MAX_NODES_ADDED_PER_PAN_ADMISSION * 1.5 - MAP_GRID_MAX_NODES_ADDED_PER_PAN_ADMISSION),
+    ),
   );
 }
 
