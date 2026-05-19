@@ -1,5 +1,6 @@
 mod git;
 mod github;
+mod opencode;
 
 use tauri::{Emitter, Manager};
 
@@ -1845,6 +1846,18 @@ fn commit_working_tree(repo_path: String, message: String) -> Result<CheckedOutR
     }
     git::commit_working_tree(path, trimmed).map_err(|e| e.to_string())?;
     git::get_checked_out_ref(path).map_err(|e| e.to_string())
+}
+
+#[tauri::command(rename_all = "camelCase")]
+async fn generate_commit_message(repo_path: String) -> Result<String, String> {
+    let path = repo_path.clone();
+    tauri::async_runtime::spawn_blocking(move || {
+        let repo = Path::new(&path);
+        let diff = git::get_working_tree_diff(repo).map_err(|e| e.to_string())?;
+        opencode::generate_commit_message(repo, &diff)
+    })
+    .await
+    .map_err(|e| format!("Commit message task failed: {e}"))?
 }
 
 #[tauri::command(rename_all = "camelCase")]
@@ -5276,6 +5289,7 @@ pub fn run() {
             list_stashes,
             stash_push,
             commit_working_tree,
+            generate_commit_message,
             stage_working_tree,
             apply_stash_restore,
             stash_drop,

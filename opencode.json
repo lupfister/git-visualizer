@@ -1,0 +1,10 @@
+{
+  "$schema": "https://opencode.ai/config.json",
+  "command": {
+    "commit": {
+      "description": "Generate a one-sentence commit message from the working tree diff",
+      "subtask": true,
+      "template": "You write git commit messages for this repository.\n\nUncommitted diff:\n!`git diff HEAD --no-color`\n\nStatus:\n!`git status --short --untracked-files=normal`\n\nRules:\n- Return exactly one sentence (not a run-on sentence)\n- Use imperative mood\n- Prefer under 72 characters when possible\n- No quotes, markdown, or labels\n- Output only the commit message text"
+    }
+  }
+}

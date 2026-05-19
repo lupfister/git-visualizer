@@ -30,6 +30,7 @@ type Props = {
   hasUncommittedChanges: boolean;
   createBranchFromNodeInProgress: boolean;
   onCommitLocalChanges?: BranchGridViewProps['onCommitLocalChanges'];
+  onAutoCommitLocalChanges?: BranchGridViewProps['onAutoCommitLocalChanges'];
   onStageAllChanges?: (() => boolean | void | Promise<void> | Promise<boolean>) | undefined;
   onStashLocalChanges?: BranchGridViewProps['onStashLocalChanges'];
   onPushCurrentBranch?: BranchGridViewProps['onPushCurrentBranch'];
@@ -68,6 +69,7 @@ export default function CommitControls({
   hasUncommittedChanges,
   createBranchFromNodeInProgress,
   onCommitLocalChanges,
+  onAutoCommitLocalChanges,
   onStashLocalChanges,
   onPushCurrentBranch,
   onPushAllBranches,
@@ -101,7 +103,12 @@ export default function CommitControls({
   const worktreeMenuRef = useRef<HTMLDivElement | null>(null);
   const controlClassName =
     'inline-flex h-7 items-center rounded-md border border-border bg-background px-2 text-[11px] font-medium text-foreground transition-colors hover:bg-muted hover:text-foreground disabled:cursor-not-allowed disabled:opacity-50';
-  const canCommit = !!onCommitLocalChanges && hasUncommittedChanges && !commitDisabled && !commitInProgress && (!hasSelection || hasWorkingTreeSelection);
+  const canCommit =
+    !!(onAutoCommitLocalChanges ?? onCommitLocalChanges) &&
+    hasUncommittedChanges &&
+    !commitDisabled &&
+    !commitInProgress &&
+    (!hasSelection || hasWorkingTreeSelection);
   const canPushCurrent = !!onPushCurrentBranch && canPushCurrentBranch && !hasSelection && !pushInProgress;
   const canPushSelected = !!onPushCommitTargets && selectedPushTargets.length > 0 && !pushInProgress;
   const canPushAll = !!onPushAllBranches && pushableRemoteBranchCount >= 2 && !hasSelection && !pushInProgress;
@@ -112,7 +119,13 @@ export default function CommitControls({
       ? {
           label: commitInProgress ? 'Committing...' : 'Commit',
           icon: 'commit' as const,
-          run: () => setCommitDialogOpen(true),
+          run: () => {
+            if (onAutoCommitLocalChanges) {
+              void onAutoCommitLocalChanges();
+              return;
+            }
+            setCommitDialogOpen(true);
+          },
           disabled: !canCommit,
         }
       : canPushCurrent
@@ -182,18 +195,20 @@ export default function CommitControls({
           </button>
           {actionMenuOpen && primaryAction ? (
             <div className="absolute left-[-1px] top-full z-[70] mt-2 inline-flex w-max min-w-0 flex-col overflow-hidden rounded-md border border-border bg-background p-1">
-              <button
-                type="button"
-                onClick={() => {
-                  setActionMenuOpen(false);
-                  setCommitDialogOpen(true);
-                }}
-                disabled={!canCommit}
-                className={cn(controlClassName, 'w-full justify-start whitespace-nowrap rounded-[2px] border-0 bg-transparent px-2 hover:bg-muted', !canCommit && 'text-foreground opacity-50')}
-              >
-                {renderMaskedIcon('commit', 'mr-1.5')}
-                {commitInProgress ? 'Committing...' : 'Commit'}
-              </button>
+              {onCommitLocalChanges ? (
+                <button
+                  type="button"
+                  onClick={() => {
+                    setActionMenuOpen(false);
+                    setCommitDialogOpen(true);
+                  }}
+                  disabled={!canCommit}
+                  className={cn(controlClassName, 'w-full justify-start whitespace-nowrap rounded-[2px] border-0 bg-transparent px-2 hover:bg-muted', !canCommit && 'text-foreground opacity-50')}
+                >
+                  {renderMaskedIcon('commit', 'mr-1.5')}
+                  Write commit
+                </button>
+              ) : null}
               <button
                 type="button"
                 onClick={() => {

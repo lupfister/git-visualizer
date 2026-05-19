@@ -52,6 +52,7 @@ interface Props {
   stashInProgress?: boolean;
   stashDisabled?: boolean;
   onCommitLocalChanges?: (message: string) => Promise<boolean>;
+  onAutoCommitLocalChanges?: () => Promise<boolean>;
   commitInProgress?: boolean;
   commitDisabled?: boolean;
   onStageAllChanges?: () => Promise<boolean> | Promise<void> | boolean | void;
@@ -136,6 +137,7 @@ export default function BranchGridMapView({
   stashInProgress = false,
   stashDisabled = false,
   onCommitLocalChanges,
+  onAutoCommitLocalChanges,
   commitInProgress = false,
   commitDisabled = false,
   onStageAllChanges,
@@ -216,6 +218,7 @@ export default function BranchGridMapView({
             stashInProgress={stashInProgress}
             stashDisabled={stashDisabled}
             onCommitLocalChanges={onCommitLocalChanges}
+            onAutoCommitLocalChanges={onAutoCommitLocalChanges}
             commitInProgress={commitInProgress}
             commitDisabled={commitDisabled}
             onStageAllChanges={onStageAllChanges}

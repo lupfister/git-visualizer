@@ -72,6 +72,7 @@ export type BranchGridViewProps = {
   stashInProgress?: boolean;
   stashDisabled?: boolean;
   onCommitLocalChanges?: (message: string) => Promise<boolean>;
+  onAutoCommitLocalChanges?: () => Promise<boolean>;
   commitInProgress?: boolean;
   commitDisabled?: boolean;
   onStageAllChanges?: () => Promise<boolean> | Promise<void> | boolean | void;

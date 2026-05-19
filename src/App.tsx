@@ -2281,18 +2281,8 @@ function App() {
     }
   }
 
-  async function handleCommitLocalChanges(message: string): Promise<boolean> {
-    if (!repoPath || commitInProgress) return false;
-    const trimmed = message.trim();
-    if (!trimmed) {
-      setCommitSwitchFeedback({
-        kind: 'error',
-        message: 'Enter a commit message.',
-      });
-      return false;
-    }
-    setCommitSwitchFeedback(null);
-    setCommitInProgress(true);
+  async function commitLocalChangesWithMessage(trimmed: string): Promise<boolean> {
+    if (!repoPath) return false;
     try {
       const ref = await invoke<CheckedOutRef>('get_checked_out_ref', { repoPath });
       if (!ref.hasUncommittedChanges) {
@@ -2342,6 +2332,51 @@ function App() {
         message: errText,
       });
       console.error('Failed to commit:', errText);
+      return false;
+    }
+  }
+
+  async function handleCommitLocalChanges(message: string): Promise<boolean> {
+    if (!repoPath || commitInProgress) return false;
+    const trimmed = message.trim();
+    if (!trimmed) {
+      setCommitSwitchFeedback({
+        kind: 'error',
+        message: 'Enter a commit message.',
+      });
+      return false;
+    }
+    setCommitSwitchFeedback(null);
+    setCommitInProgress(true);
+    try {
+      return await commitLocalChangesWithMessage(trimmed);
+    } finally {
+      setCommitInProgress(false);
+    }
+  }
+
+  async function handleAutoCommitLocalChanges(): Promise<boolean> {
+    if (!repoPath || commitInProgress) return false;
+    setCommitSwitchFeedback(null);
+    setCommitInProgress(true);
+    try {
+      const ref = await invoke<CheckedOutRef>('get_checked_out_ref', { repoPath });
+      if (!ref.hasUncommittedChanges) {
+        setCommitSwitchFeedback({
+          kind: 'error',
+          message: 'No local changes to commit.',
+        });
+        return false;
+      }
+      const message = await invoke<string>('generate_commit_message', { repoPath });
+      return await commitLocalChangesWithMessage(message.trim());
+    } catch (e) {
+      const errText = e instanceof Error ? e.message : String(e);
+      setCommitSwitchFeedback({
+        kind: 'error',
+        message: errText,
+      });
+      console.error('Failed to auto-commit:', errText);
       return false;
     } finally {
       setCommitInProgress(false);
@@ -3470,6 +3505,7 @@ function App() {
                 stashInProgress={stashInProgress}
                 stashDisabled={false}
                 onCommitLocalChanges={handleCommitLocalChanges}
+                onAutoCommitLocalChanges={handleAutoCommitLocalChanges}
                 commitInProgress={commitInProgress}
                 commitDisabled={false}
                 onStageAllChanges={handleStageAllChanges}

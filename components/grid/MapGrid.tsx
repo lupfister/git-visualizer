@@ -194,6 +194,7 @@ export default function BranchGridMap({
   stashInProgress = false,
   stashDisabled = false,
   onCommitLocalChanges,
+  onAutoCommitLocalChanges,
   commitInProgress = false,
   commitDisabled = false,
   onStageAllChanges,
@@ -1662,6 +1663,7 @@ export default function BranchGridMap({
                   hasUncommittedChanges={hasUncommittedChanges}
                   createBranchFromNodeInProgress={createBranchFromNodeInProgress}
                   onCommitLocalChanges={onCommitLocalChanges}
+                  onAutoCommitLocalChanges={onAutoCommitLocalChanges}
                   onStageAllChanges={onStageAllChanges ? () => void onStageAllChanges() : undefined}
                   onStashLocalChanges={onStashLocalChanges}
                   onPushCurrentBranch={onPushCurrentBranch}

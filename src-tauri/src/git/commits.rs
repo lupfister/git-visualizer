@@ -620,6 +620,17 @@ fn with_cluster_keys(mut commits: Vec<DirectCommit>) -> Vec<DirectCommit> {
     commits
 }
 
+/// Unified diff of all uncommitted changes (staged and unstaged) plus short status.
+pub fn get_working_tree_diff(repo: &Path) -> Result<String, GitError> {
+    let diff = cli::run(repo, &["diff", "HEAD", "--no-color"]).unwrap_or_default();
+    let status = cli::run(repo, &["status", "--short", "--untracked-files=normal"])
+        .unwrap_or_default();
+    if diff.trim().is_empty() && status.trim().is_empty() {
+        return Ok(String::new());
+    }
+    Ok(format!("{diff}\n\n--- status ---\n{status}"))
+}
+
 /// Stage all changes (`git add -A`) and create a commit with the given message.
 pub fn commit_working_tree(repo: &Path, message: &str) -> Result<(), GitError> {
     cli::run(repo, &["add", "-A"])?;
