@@ -355,11 +355,8 @@ export function useMapGridCamera({
     }
     onUserCameraChange?.();
     zoomAnchorRef.current = null;
-    const wasPanActive = isInteractionActiveRef.current;
-    if (!wasPanActive) {
-      const rendered = renderedCameraRef.current;
-      panRef.current = { x: rendered.panX, y: rendered.panY };
-      zoomRef.current = rendered.zoom;
+    if (!isInteractionActiveRef.current) {
+      zoomRef.current = renderedCameraRef.current.zoom;
     }
     markCameraInteraction();
     panRef.current = {
