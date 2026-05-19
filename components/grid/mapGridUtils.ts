@@ -69,7 +69,8 @@ export function mapGridPanCullDistanceExceeded(
   if (screenDistSq >= mapGridPanTickThresholdSq(cameraZoom)) return true;
   return screenDistSq / (scale * scale) >= MAP_GRID_CAMERA_PAN_CONTENT_TICK_SQ;
 }
-export const CAMERA_PAN_INTERPOLATION = 1;
+/** Smooths async trackpad wheel delivery without feeling floaty. */
+export const CAMERA_PAN_INTERPOLATION = 0.65;
 export const CAMERA_ZOOM_INTERPOLATION = 0.25;
 export const CAMERA_SETTLE_EPSILON = 0.001;
 export const ZOOM_SETTLE_EPSILON = 0.001;

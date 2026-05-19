@@ -69,7 +69,7 @@ export default function MapGridBackgroundActivityHud() {
 
   return (
     <div
-      className="pointer-events-none absolute bottom-3 left-3 z-[90] max-w-[min(26rem,calc(100%-1.5rem))] rounded-lg border border-border/80 bg-background/92 px-2.5 py-2 font-mono text-[10px] shadow-sm backdrop-blur-sm"
+      className="pointer-events-none absolute bottom-3 left-3 z-[90] max-w-[min(26rem,calc(100%-1.5rem))] rounded-lg border border-border/80 bg-background/92 px-2.5 py-2 font-mono text-[10px] shadow-sm"
       aria-live="polite"
       aria-label="Map background activity"
     >

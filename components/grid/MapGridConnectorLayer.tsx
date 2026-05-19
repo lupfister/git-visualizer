@@ -12,13 +12,24 @@ type MapGridConnectorPathProps = {
   cornerRadiusPx: number;
   strokeWidth: number;
   pathCache: Map<string, ConnectorPathCacheEntry>;
+  registerCameraTarget: (element: HTMLElement | SVGElement, layout?: { layoutX: number; layoutY: number }) => () => void;
 };
 
 const MapGridConnectorPath = memo(
-  function MapGridConnectorPath({ connector, cornerRadiusPx, strokeWidth, pathCache }: MapGridConnectorPathProps) {
+  function MapGridConnectorPath({
+    connector,
+    cornerRadiusPx,
+    strokeWidth,
+    pathCache,
+    registerCameraTarget,
+  }: MapGridConnectorPathProps) {
     const d = getOrBuildConnectorPathD(pathCache, connector, cornerRadiusPx);
     return (
       <path
+        ref={(element) => {
+          if (!element) return;
+          return registerCameraTarget(element);
+        }}
         d={d}
         fill="none"
         stroke="currentColor"
@@ -31,6 +42,7 @@ const MapGridConnectorPath = memo(
   (prev, next) =>
     prev.strokeWidth === next.strokeWidth &&
     prev.cornerRadiusPx === next.cornerRadiusPx &&
+    prev.registerCameraTarget === next.registerCameraTarget &&
     connectorGeometryCacheKey(prev.connector, prev.cornerRadiusPx) ===
       connectorGeometryCacheKey(next.connector, next.cornerRadiusPx),
 );
@@ -38,21 +50,19 @@ const MapGridConnectorPath = memo(
 export type MapGridConnectorLayerProps = {
   mergeConnectors: readonly ConnectorPathCacheInput[];
   connectors: readonly ConnectorPathCacheInput[];
-  contentWidth: number;
-  contentHeight: number;
   cornerRadiusPx: number;
   strokeWidth: number;
   pathCache: Map<string, ConnectorPathCacheEntry>;
+  registerCameraTarget: (element: HTMLElement | SVGElement, layout?: { layoutX: number; layoutY: number }) => () => void;
 };
 
 export const MapGridConnectorLayer = memo(function MapGridConnectorLayer({
   mergeConnectors,
   connectors,
-  contentWidth,
-  contentHeight,
   cornerRadiusPx,
   strokeWidth,
   pathCache,
+  registerCameraTarget,
 }: MapGridConnectorLayerProps) {
   useLayoutEffect(() => {
     const activeKeys = new Set<string>();
@@ -67,9 +77,9 @@ export const MapGridConnectorLayer = memo(function MapGridConnectorLayer({
 
   return (
     <svg
-      className="pointer-events-none absolute inset-0 z-0 overflow-visible text-muted"
-      width={contentWidth}
-      height={contentHeight}
+      className="pointer-events-none absolute left-0 top-0 z-0 overflow-visible text-muted"
+      width={0}
+      height={0}
       aria-hidden="true"
     >
       {mergeConnectors.map((connector) => (
@@ -79,6 +89,7 @@ export const MapGridConnectorLayer = memo(function MapGridConnectorLayer({
           cornerRadiusPx={cornerRadiusPx}
           strokeWidth={strokeWidth}
           pathCache={pathCache}
+          registerCameraTarget={registerCameraTarget}
         />
       ))}
       {connectors.map((connector) => (
@@ -88,6 +99,7 @@ export const MapGridConnectorLayer = memo(function MapGridConnectorLayer({
           cornerRadiusPx={cornerRadiusPx}
           strokeWidth={strokeWidth}
           pathCache={pathCache}
+          registerCameraTarget={registerCameraTarget}
         />
       ))}
     </svg>

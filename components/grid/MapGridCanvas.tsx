@@ -1,4 +1,4 @@
-import { memo, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
+import { forwardRef, memo, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import type { CSSProperties, Dispatch, MouseEvent, MutableRefObject, ReactNode, RefObject, SetStateAction, WheelEvent } from 'react';
 import { CARD_BODY_TOP_OFFSET, CARD_HEIGHT, CARD_WIDTH, CONNECTOR_COLOR } from './LayoutGrid';
 import {
@@ -24,7 +24,7 @@ import {
   computeViewportCullBounds,
 } from './mapGridUtils';
 import type { ConnectorFace, Node, NodePositionOverrides } from './LayoutGrid';
-import type { MapGridCameraState } from './useMapGridCamera';
+import type { MapGridCameraState, MapGridCameraTargetLayout } from './useMapGridCamera';
 import { getNodePositionOverride } from './nodePositionOverrides';
 
 const EMPTY_NODE_POSITION_OVERRIDES: NodePositionOverrides = {};
@@ -55,7 +55,7 @@ type MapGridCommitWrapperProps = {
  * `fadeIn`) so the underlying <div> is reused and we don't unmount/remount
  * the entire card subtree when the fade animation ends.
  */
-function MapGridCommitWrapper({
+const MapGridCommitWrapper = forwardRef<HTMLDivElement, MapGridCommitWrapperProps>(function MapGridCommitWrapper({
   fadeIn,
   className,
   style,
@@ -66,7 +66,7 @@ function MapGridCommitWrapper({
   onPointerCancel,
   dataCommitCard,
   children,
-}: MapGridCommitWrapperProps) {
+}, ref) {
   const [opaque, setOpaque] = useState(!fadeIn);
   useLayoutEffect(() => {
     if (!fadeIn) {
@@ -88,6 +88,7 @@ function MapGridCommitWrapper({
     : undefined;
   return (
     <div
+      ref={ref}
       className={className}
       data-commit-card={dataCommitCard}
       onClick={onClick}
@@ -100,7 +101,7 @@ function MapGridCommitWrapper({
       {children}
     </div>
   );
-}
+});
 
 const COMMIT_DATE_FORMATTER = new Intl.DateTimeFormat('en-US', {
   month: 'long',
@@ -149,6 +150,7 @@ type CommitCardProps = {
   onClusterToggle: (clusterKey: string) => void;
   /** Skip search-hit scale transform during camera motion (reduces compositor layers). */
   suppressSearchMatchScale?: boolean;
+  registerCameraTarget: (element: HTMLElement | SVGElement, layout?: MapGridCameraTargetLayout) => () => void;
 };
 
 const MapGridCommitCard = memo(function MapGridCommitCard({
@@ -188,7 +190,14 @@ const MapGridCommitCard = memo(function MapGridCommitCard({
   onNodePointerUp,
   onClusterToggle,
   suppressSearchMatchScale = false,
+  registerCameraTarget,
 }: CommitCardProps) {
+  const cardRef = useRef<HTMLDivElement | null>(null);
+  useLayoutEffect(() => {
+    const element = cardRef.current;
+    if (!element) return;
+    return registerCameraTarget(element, { layoutX: cardLeft, layoutY: cardTop });
+  }, [registerCameraTarget, cardLeft, cardTop]);
   const commitId = node.commit.id;
   const visualId = node.commit.visualId;
   const branchName = node.commit.branchName;
@@ -333,6 +342,7 @@ const MapGridCommitCard = memo(function MapGridCommitCard({
 
   return (
     <MapGridCommitWrapper
+      ref={cardRef}
       fadeIn={shouldAnimateOpeningClump}
       dataCommitCard="true"
       className={wrapperClassName}
@@ -511,7 +521,7 @@ function adjustedAnchorKey(face: ConnectorFace, x: number, y: number): string {
 type Props = {
   scrollContainerRef: RefObject<HTMLDivElement | null>;
   mapPadHostRef: RefObject<HTMLDivElement | null>;
-  transformLayerRef: RefObject<HTMLDivElement | null>;
+  registerCameraTarget: (element: HTMLElement | SVGElement, layout?: MapGridCameraTargetLayout) => () => void;
   renderedCameraRef: RefObject<MapGridCameraState>;
   isMarqueeSelecting: boolean;
   contentWidth: number;
@@ -585,11 +595,11 @@ function areMapGridCanvasPropsEqual(prev: Readonly<Props>, next: Readonly<Props>
 const MapGridCanvas = memo(function MapGridCanvas({
   scrollContainerRef,
   mapPadHostRef,
-  transformLayerRef,
+  registerCameraTarget,
   renderedCameraRef,
   isMarqueeSelecting,
-  contentWidth,
-  contentHeight,
+  contentWidth: _contentWidth,
+  contentHeight: _contentHeight,
   isCameraMovingRef,
   panEpoch,
   cameraRenderTick: _cameraRenderTick,
@@ -905,36 +915,21 @@ const MapGridCanvas = memo(function MapGridCanvas({
     <div
       ref={scrollContainerRef}
       className="relative flex-1 min-h-0 overflow-hidden"
-      style={{ cursor: isMarqueeSelecting ? 'crosshair' : 'default' }}
+      style={{
+        cursor: isMarqueeSelecting ? 'crosshair' : 'default',
+        '--map-inv-zoom': `${computeMapGridInvZoom(displayZoom)}`,
+      } as CSSProperties}
       onWheel={onWheel}
       onMouseDown={onMouseDown}
     >
-      <div
-        ref={mapPadHostRef}
-        className="relative min-w-full bg-background p-2.5"
-        style={{ width: contentWidth, minWidth: '100%', height: contentHeight }}
-      >
-        <div
-          ref={transformLayerRef}
-          className="absolute left-0 top-0 z-20"
-          style={{
-            width: contentWidth,
-            height: contentHeight,
-            transformOrigin: 'top left' as const,
-            // layout + style only: `paint` containment clips descendants that paint above y=0
-            // (commit labels use negative `top`), which cropped the first row’s header text.
-            contain: 'layout style' as const,
-            '--map-inv-zoom': `${computeMapGridInvZoom(displayZoom)}`,
-          } as CSSProperties}
-        >
-          <MapGridConnectorLayer
+      <div ref={mapPadHostRef} className="absolute inset-0 overflow-visible p-2.5">
+        <MapGridConnectorLayer
             mergeConnectors={visibleMergeConnectors}
             connectors={visibleConnectors}
-            contentWidth={contentWidth}
-            contentHeight={contentHeight}
             cornerRadiusPx={commitCornerRadiusPx}
             strokeWidth={lineStrokeWidth}
             pathCache={connectorPath2dCacheRef.current}
+            registerCameraTarget={registerCameraTarget}
           />
           {cardSlotAssignments.map((assignment) => {
             const { node, cardLeft, cardTop } = assignment;
@@ -977,10 +972,10 @@ const MapGridCanvas = memo(function MapGridCanvas({
                 onNodePointerUp={onNodePointerUp}
                 onClusterToggle={handleClusterToggle}
                 suppressSearchMatchScale={suppressSearchMatchScale}
+                registerCameraTarget={registerCameraTarget}
               />
             );
-          })}
-        </div>
+        })}
       </div>
     </div>
   );

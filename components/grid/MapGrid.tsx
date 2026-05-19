@@ -101,7 +101,7 @@ function MapGridLoadingState() {
 
 function MapGridBlockingOverlay() {
   return (
-    <div className="pointer-events-auto absolute inset-0 z-[120] flex min-h-0 items-center justify-center bg-background/80 backdrop-blur-sm">
+    <div className="pointer-events-auto absolute inset-0 z-[120] flex min-h-0 items-center justify-center bg-background/80">
       <div
         role="status"
         aria-label="Preparing map"
@@ -234,7 +234,6 @@ export default function BranchGridMap({
   const hudToolbarRef = useRef<HTMLDivElement | null>(null);
   /** `p-2.5` wrapper: used to map pointer position to the transform layer origin (padding edge). */
   const mapPadHostRef = useRef<HTMLDivElement | null>(null);
-  const transformLayerRef = useRef<HTMLDivElement | null>(null);
   const lastSearchResultCountRef = useRef<number | null | undefined>(undefined);
   const lastSearchResultIndexRef = useRef<number | null | undefined>(undefined);
   const lastSearchFocusShaRef = useRef<string | null | undefined>(undefined);
@@ -313,9 +312,9 @@ export default function BranchGridMap({
     flushCameraReactTick,
     syncCamera,
     handleWheel,
+    registerCameraTarget,
   } = useMapGridCamera({
     mapPadHostRef,
-    transformLayerRef,
     isEnabled: !blockMapInteraction,
     cameraStorageScopeKey: `${currentRepoPath ?? '__no-repo__'}::${orientation}`,
     onRenderedCameraApplied: () => onRenderedCameraAppliedRef.current(),
@@ -1713,13 +1712,13 @@ export default function BranchGridMap({
               <button
                 onClick={gridHudProps.onGitHubAuthSetup}
                 disabled={gridHudProps.githubAuthLoading}
-                className="window-no-drag pointer-events-auto inline-flex h-7 items-center gap-2 rounded-md border border-border/60 bg-background/95 px-2 text-[11px] font-medium text-foreground backdrop-blur-sm transition-colors hover:bg-muted hover:text-foreground disabled:cursor-not-allowed disabled:opacity-50"
+                className="window-no-drag pointer-events-auto inline-flex h-7 items-center gap-2 rounded-md border border-border/60 bg-background/95 px-2 text-[11px] font-medium text-foreground transition-colors hover:bg-muted hover:text-foreground disabled:cursor-not-allowed disabled:opacity-50"
               >
                 {gridHudProps.githubAuthLoading ? 'Connecting GitHub...' : 'Connect GitHub'}
               </button>
             ) : null}
             {gridHudProps.githubAuthStatus && !gridHudProps.githubAuthStatus.ghAvailable ? (
-              <div className="window-no-drag pointer-events-auto inline-flex h-7 items-center gap-2 rounded-md border border-border/60 bg-background/95 px-2 text-[11px] font-medium text-foreground backdrop-blur-sm">
+              <div className="window-no-drag pointer-events-auto inline-flex h-7 items-center gap-2 rounded-md border border-border/60 bg-background/95 px-2 text-[11px] font-medium text-foreground">
                 <p className="shrink-0 text-[10px] font-medium text-foreground">GitHub</p>
                 <p className="max-w-36 truncate text-[11px] text-foreground/90">
                   Install `gh` for private PR data
@@ -1727,7 +1726,7 @@ export default function BranchGridMap({
               </div>
             ) : null}
             {gridHudProps.githubAuthMessage ? (
-              <div className="window-no-drag pointer-events-auto inline-flex h-7 items-center gap-2 rounded-md border border-border/60 bg-background/95 px-2 text-[11px] text-foreground backdrop-blur-sm">
+              <div className="window-no-drag pointer-events-auto inline-flex h-7 items-center gap-2 rounded-md border border-border/60 bg-background/95 px-2 text-[11px] text-foreground">
                 <p className="shrink-0 text-[10px] font-medium text-foreground">GitHub</p>
                 <p className="max-w-36 truncate text-[11px] text-foreground/90" title={gridHudProps.githubAuthMessage}>
                   {gridHudProps.githubAuthMessage}
@@ -1736,7 +1735,7 @@ export default function BranchGridMap({
             ) : null}
             {gridHudProps.commitSwitchFeedback ? (
               <div
-                className={`window-no-drag pointer-events-auto inline-flex h-7 items-center gap-2 rounded-md border px-2 text-[11px] backdrop-blur-sm transition-opacity duration-200 ${
+                className={`window-no-drag pointer-events-auto inline-flex h-7 items-center gap-2 rounded-md border px-2 text-[11px] transition-opacity duration-200 ${
                   gridHudProps.isCommitSwitchFeedbackVisible ? 'opacity-100' : 'opacity-0'
                 } ${
                   gridHudProps.commitSwitchFeedback.kind === 'error'
@@ -1759,7 +1758,7 @@ export default function BranchGridMap({
       {shouldShowMergeMenu ? (
         <div className="pointer-events-none absolute bottom-2.25 left-1/2 z-[80] -translate-x-1/2">
           <div className="pointer-events-auto inline-flex w-fit flex-nowrap items-center gap-2.25">
-            <div className="inline-flex h-7 items-center rounded-md border border-border bg-background/95 pl-[2px] pr-[4px] backdrop-blur-sm">
+            <div className="inline-flex h-7 items-center rounded-md border border-border bg-background/95 pl-[2px] pr-[4px]">
               <span className="px-2 text-[11px] font-medium text-foreground">Merge to...</span>
               <div className="relative inline-flex h-5 items-center rounded-[2px] bg-muted/30 p-0.5">
                 <div className="absolute inset-0.5 overflow-hidden rounded-[1px]">
@@ -1821,7 +1820,7 @@ export default function BranchGridMap({
         <MapGridCanvas
           scrollContainerRef={scrollContainerRef}
           mapPadHostRef={mapPadHostRef}
-          transformLayerRef={transformLayerRef}
+          registerCameraTarget={registerCameraTarget}
           renderedCameraRef={renderedCameraRef}
           isMarqueeSelecting={isMarqueeSelecting}
           contentWidth={contentWidth}
