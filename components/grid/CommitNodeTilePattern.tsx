@@ -48,10 +48,129 @@ const fnv1a32 = (value: string): number => {
   return hash >>> 0;
 };
 
-/** Per-cell circle vs square — stable when zoom changes grid dimensions. */
-const cellUsesCircle = (seed: string, col: number, row: number): boolean => {
-  const h = fnv1a32(`${seed}|${col}|${row}`);
-  return (h & 1) === 0;
+const createMulberry32 = (seed: number) => {
+  let state = seed;
+  return (): number => {
+    state += 0x6d2b79f5;
+    let t = state;
+    t = Math.imul(t ^ (t >>> 15), t | 1);
+    t ^= t + Math.imul(t ^ (t >>> 7), t | 61);
+    return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
+  };
+};
+
+type TileCornerRadii = {
+  tl: number;
+  tr: number;
+  br: number;
+  bl: number;
+};
+
+const TILE_SHAPE_KINDS = [
+  'rect',
+  'teardrop',
+  'halfMoonRight',
+  'halfMoonBottom',
+  'circle',
+] as const;
+
+type TileShapeKind = (typeof TILE_SHAPE_KINDS)[number];
+
+/** Uniform random shape per cell — stable for a given seed and grid position. */
+const pickTileShapeKind = (seed: string, col: number, row: number): TileShapeKind => {
+  const random = createMulberry32(fnv1a32(`${seed}|${col}|${row}|shape`));
+  const index = Math.floor(random() * TILE_SHAPE_KINDS.length);
+  return TILE_SHAPE_KINDS[index] ?? 'rect';
+};
+
+const cornerRadiiForShape = (kind: TileShapeKind, cornerRadius: number): TileCornerRadii => {
+  const sharp = 0;
+  const round = cornerRadius;
+
+  switch (kind) {
+    case 'teardrop':
+      return { tl: sharp, tr: round, br: round, bl: round };
+    case 'halfMoonRight':
+      return { tl: sharp, tr: round, br: round, bl: sharp };
+    case 'halfMoonBottom':
+      return { tl: sharp, tr: sharp, br: round, bl: round };
+    case 'rect':
+    default:
+      return { tl: sharp, tr: sharp, br: sharp, bl: sharp };
+  }
+};
+
+/** Grid corner cells align with the card: BL/BR/TR outward corners rounded at 50%; TL stays sharp. */
+const applyCardAnchorCornerRadii = (
+  radii: TileCornerRadii,
+  col: number,
+  row: number,
+  cols: number,
+  rows: number,
+  cornerRadius: number,
+): TileCornerRadii => {
+  const round = cornerRadius;
+  const isBottomLeftCell = col === 0 && row === rows - 1;
+  const isBottomRightCell = col === cols - 1 && row === rows - 1;
+  const isTopRightCell = col === cols - 1 && row === 0;
+
+  return {
+    tl: 0,
+    tr: isTopRightCell ? round : radii.tr,
+    br: isBottomRightCell ? round : radii.br,
+    bl: isBottomLeftCell ? round : radii.bl,
+  };
+};
+
+const isCardAnchorCornerCell = (col: number, row: number, cols: number, rows: number): boolean =>
+  (col === 0 && row === rows - 1) || (col === cols - 1 && row === rows - 1) || (col === cols - 1 && row === 0);
+
+const buildRoundedRectPath = (
+  x: number,
+  y: number,
+  width: number,
+  height: number,
+  radii: TileCornerRadii,
+): string => {
+  const cap = Math.min(width, height) / 2;
+  const tl = Math.min(radii.tl, cap);
+  const tr = Math.min(radii.tr, cap);
+  const br = Math.min(radii.br, cap);
+  const bl = Math.min(radii.bl, cap);
+  const right = x + width;
+  const bottom = y + height;
+  const parts: string[] = [`M ${x + tl} ${y}`, `H ${right - tr}`];
+
+  if (tr > 0) {
+    parts.push(`A ${tr} ${tr} 0 0 1 ${right} ${y + tr}`);
+  } else {
+    parts.push(`L ${right} ${y}`);
+  }
+
+  parts.push(`V ${bottom - br}`);
+
+  if (br > 0) {
+    parts.push(`A ${br} ${br} 0 0 1 ${right - br} ${bottom}`);
+  } else {
+    parts.push(`L ${right} ${bottom}`);
+  }
+
+  parts.push(`H ${x + bl}`);
+
+  if (bl > 0) {
+    parts.push(`A ${bl} ${bl} 0 0 1 ${x} ${bottom - bl}`);
+  } else {
+    parts.push(`L ${x} ${bottom}`);
+  }
+
+  parts.push(`V ${y + tl}`);
+
+  if (tl > 0) {
+    parts.push(`A ${tl} ${tl} 0 0 1 ${x + tl} ${y}`);
+  }
+
+  parts.push('Z');
+  return parts.join(' ');
 };
 
 type CommitNodeTilePatternProps = {
@@ -66,9 +185,12 @@ type CommitNodeTilePatternProps = {
 /** Min gutter in layout units; primary spacing is a fraction of cell size (screen-consistent). */
 const TILE_SHAPE_GAP_FLOOR = 0.55;
 const TILE_SHAPE_GAP_RATIO = 0.078;
+/** Matches CSS `border-radius: 50%` on a square tile — quarter-circle per corner. */
+const TILE_CORNER_RADIUS_FRACTION = 0.5;
 
 /**
- * Tight grid of circles and sharp squares; fills use muted BG tokens. Pitch counterscales like card text.
+ * Grid of rects, teardrops, half-moons, and circles — random per cell; every tile’s top-left stays sharp;
+ * the grid’s bottom-left, bottom-right, and top-right corner cells round their outward corner at 50%.
  */
 export const CommitNodeTilePattern = memo(function CommitNodeTilePattern({
   seed,
@@ -97,42 +219,45 @@ export const CommitNodeTilePattern = memo(function CommitNodeTilePattern({
     const minCell = Math.min(cellW, cellH);
     const gap = Math.max(TILE_SHAPE_GAP_FLOOR, minCell * TILE_SHAPE_GAP_RATIO);
     const shapeSize = Math.max(1.2, Math.min(cellW, cellH) - gap);
-    const radius = shapeSize / 2;
+    const halfSize = shapeSize / 2;
+    const cornerRadius = shapeSize * TILE_CORNER_RADIUS_FRACTION;
     const nodes: ReactNode[] = [];
 
     for (let row = 0; row < rows; row++) {
       for (let col = 0; col < cols; col++) {
         const cx = (col + 0.5) * cellW;
         const cy = (row + 0.5) * cellH;
-        const useCircle = cellUsesCircle(seed, col, row);
+        const x = cx - halfSize;
+        const y = cy - halfSize;
         const key = `${col}:${row}`;
+        const shapeKind = pickTileShapeKind(seed, col, row);
+        const baseKind = shapeKind === 'circle' ? 'rect' : shapeKind;
+        const radii = applyCardAnchorCornerRadii(
+          cornerRadiiForShape(baseKind, cornerRadius),
+          col,
+          row,
+          cols,
+          rows,
+          cornerRadius,
+        );
+        const drawAsCircle =
+          shapeKind === 'circle' && !isCardAnchorCornerCell(col, row, cols, rows);
 
-        if (useCircle) {
+        if (drawAsCircle) {
           nodes.push(
-            <circle
-              key={key}
-              cx={cx}
-              cy={cy}
-              r={radius}
-              fill={fillValue}
-              stroke="none"
-              strokeWidth={0}
-            />,
+            <circle key={key} cx={cx} cy={cy} r={halfSize} fill={fillValue} stroke="none" />,
           );
-        } else {
-          nodes.push(
-            <rect
-              key={key}
-              x={cx - radius}
-              y={cy - radius}
-              width={shapeSize}
-              height={shapeSize}
-              fill={fillValue}
-              stroke="none"
-              strokeWidth={0}
-            />,
-          );
+          continue;
         }
+
+        nodes.push(
+          <path
+            key={key}
+            d={buildRoundedRectPath(x, y, shapeSize, shapeSize, radii)}
+            fill={fillValue}
+            stroke="none"
+          />,
+        );
       }
     }
 
