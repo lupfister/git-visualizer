@@ -38,7 +38,6 @@ import {
 import CommitControls from './CommitControls';
 import { mergePanStableVisibleNodeIds, pickNearestVisibleVisualIds } from './MapGridCardVirtualizer';
 import MapGridCanvas from './MapGridCanvas';
-import MapGridBackgroundActivityHud from './MapGridBackgroundActivityHud';
 import MapGridDebugPanel from './MapGridDebugPanel';
 import {
   pulseMapGridBackgroundActivity,
@@ -1628,7 +1627,6 @@ export default function BranchGridMap({
 
   return (
     <div className="relative flex h-full min-h-0 flex-col overflow-hidden border-l border-border bg-background">
-      {!isLoading && allCommits.length > 0 && !blockMapDisplay ? <MapGridBackgroundActivityHud /> : null}
       <MapGridDebugPanel
         isOpen={isDebugOpen}
         onClose={() => onDebugClose?.()}
