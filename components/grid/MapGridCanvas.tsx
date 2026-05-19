@@ -26,6 +26,7 @@ import {
 import type { ConnectorFace, Node, NodePositionOverrides } from './LayoutGrid';
 import type { MapGridCameraState, MapGridCameraTargetLayout } from './useMapGridCamera';
 import { getNodePositionOverride } from './nodePositionOverrides';
+import { CommitNodeTilePattern } from './CommitNodeTilePattern';
 
 const EMPTY_NODE_POSITION_OVERRIDES: NodePositionOverrides = {};
 const EMPTY_DRAG_PREVIEW: Record<string, { x: number; y: number }> = {};
@@ -117,7 +118,6 @@ type CommitCardProps = {
   cardLeft: number;
   cardTop: number;
   displayZoom: number;
-  commitCornerRadiusPx: number;
   lineStrokeWidth: number;
   labelTopPx: number;
   selectedShaSet: Set<string>;
@@ -133,13 +133,6 @@ type CommitCardProps = {
   openingClumpAnimations: Set<string>;
   commitIdsWithRenderedAncestry: Set<string>;
   nodeWarnings: Map<string, string[]>;
-  connectorParentShas: Set<string>;
-  branchStartShas: Set<string>;
-  branchOffNodeShas: Set<string>;
-  crossBranchOutgoingShas: Set<string>;
-  branchBaseCommitByName: Map<string, { id: string } | undefined>;
-  branchStartAccentClass: string;
-  connectorParentAccentClass: string;
   unpushedCommitShasSetByBranch: Map<string, Set<string>>;
   remoteCommitShas: Set<string>;
   checkedOutHeadSha: string | null;
@@ -158,7 +151,6 @@ const MapGridCommitCard = memo(function MapGridCommitCard({
   cardLeft,
   cardTop,
   displayZoom,
-  commitCornerRadiusPx,
   lineStrokeWidth,
   labelTopPx,
   selectedShaSet,
@@ -174,13 +166,6 @@ const MapGridCommitCard = memo(function MapGridCommitCard({
   openingClumpAnimations,
   commitIdsWithRenderedAncestry,
   nodeWarnings,
-  connectorParentShas,
-  branchStartShas,
-  branchOffNodeShas,
-  crossBranchOutgoingShas,
-  branchBaseCommitByName,
-  branchStartAccentClass,
-  connectorParentAccentClass,
   unpushedCommitShasSetByBranch,
   remoteCommitShas,
   checkedOutHeadSha,
@@ -230,18 +215,6 @@ const MapGridCommitCard = memo(function MapGridCommitCard({
   const isSearchActive = !!normalizedSearchQuery;
   const isSearchMatch = isSearchActive && matchingNodeIds.has(commitId);
   const warningsTitle = nodeWarningsForCard.join('\n');
-  const borderAccentClass =
-    branchOffNodeShas.has(commitId) ||
-    branchStartShas.has(commitId) ||
-    crossBranchOutgoingShas.has(commitId)
-      ? branchStartAccentClass
-      : connectorParentShas.has(commitId)
-        ? connectorParentAccentClass
-        : branchBaseCommitByName.get(branchName)?.id === commitId
-          ? 'border-amber-500'
-          : showDataShapeError
-            ? 'border-red-500'
-            : '';
   const stashIndexMatch = /^STASH:(\d+)$/.exec(node.commit.id);
   const stashHeaderLabel = stashIndexMatch ? `Stash ${Number.parseInt(stashIndexMatch[1], 10) + 1}` : null;
   const stashBodyMessage = isStashedCommit
@@ -288,10 +261,19 @@ const MapGridCommitCard = memo(function MapGridCommitCard({
   const isDashedOutline = isStashedCommit || isLocalUncommitted || isEmptyBranchNode;
   const dashedStrokeDasharray = `${12 / displayZoom} ${6 / displayZoom}`;
   const dashedStrokeInset = nodeBorderWidth / 2;
-  const dashedOutlinePath = useMemo(
-    () => `M ${dashedStrokeInset} ${dashedStrokeInset} H ${CARD_WIDTH - dashedStrokeInset - commitCornerRadiusPx} Q ${CARD_WIDTH - dashedStrokeInset} ${dashedStrokeInset} ${CARD_WIDTH - dashedStrokeInset} ${dashedStrokeInset + commitCornerRadiusPx} V ${176 - dashedStrokeInset - commitCornerRadiusPx} Q ${CARD_WIDTH - dashedStrokeInset} ${176 - dashedStrokeInset} ${CARD_WIDTH - dashedStrokeInset - commitCornerRadiusPx} ${176 - dashedStrokeInset} H ${dashedStrokeInset + commitCornerRadiusPx} Q ${dashedStrokeInset} ${176 - dashedStrokeInset} ${dashedStrokeInset} ${176 - dashedStrokeInset - commitCornerRadiusPx} V ${dashedStrokeInset}`,
-    [commitCornerRadiusPx, dashedStrokeInset],
-  );
+  const cardBodyHeight = 176;
+  const dashedOutlinePath = useMemo(() => {
+    const inset = dashedStrokeInset;
+    const right = CARD_WIDTH - inset;
+    const bottom = cardBodyHeight - inset;
+    return `M ${inset} ${inset} H ${right} V ${bottom} H ${inset} Z`;
+  }, [dashedStrokeInset, cardBodyHeight]);
+  const solidOutlinePath = useMemo(() => {
+    const inset = nodeBorderWidth / 2;
+    const right = CARD_WIDTH - inset;
+    const bottom = cardBodyHeight - inset;
+    return `M ${inset} ${inset} H ${right} V ${bottom} H ${inset} Z`;
+  }, [nodeBorderWidth, cardBodyHeight]);
   const unpushedCommitTextStyle: CSSProperties | undefined =
     isUnpushedCommit && !checkedOutAccentActive && !isSelectedCommit
       ? { color: 'var(--muted-foreground)' }
@@ -343,6 +325,22 @@ const MapGridCommitCard = memo(function MapGridCommitCard({
     gap: 'calc(1rem * var(--map-inv-zoom, 1))',
   };
 
+  /** Pushed/remote history only — no tile motif for unpushed, working tree, or stash. */
+  const showCommitTilePattern =
+    !isUnpushedCommit && !isStashedCommit && !isEmptyBranchNode;
+  const commitTileShapeCssVar = !showCommitTilePattern
+    ? null
+    : checkedOutAccentActive
+      ? '--checked-muted'
+      : remoteAccentActive
+        ? '--remote-muted'
+        : isSelectedCommit
+          ? '--select-muted'
+          : '--muted';
+
+  /** Visible stroke only for explicit user focus/selection — not graph topology markers. */
+  const showCommitNodeStroke = isFocused || isSelectedCommit || isSearchMatch;
+
   return (
     <MapGridCommitWrapper
       ref={cardRef}
@@ -367,7 +365,7 @@ const MapGridCommitCard = memo(function MapGridCommitCard({
         <svg
           className="pointer-events-none absolute inset-0 z-20 overflow-visible"
           aria-hidden="true"
-          viewBox={`0 0 ${CARD_WIDTH} 176`}
+          viewBox={`0 0 ${CARD_WIDTH} ${cardBodyHeight}`}
           preserveAspectRatio="none"
         >
           <path
@@ -378,6 +376,23 @@ const MapGridCommitCard = memo(function MapGridCommitCard({
             strokeDasharray={dashedStrokeDasharray}
             strokeLinecap="butt"
             strokeLinejoin="round"
+          />
+        </svg>
+      ) : null}
+      {!isDashedOutline && showCommitNodeStroke ? (
+        <svg
+          className="pointer-events-none absolute inset-0 z-20 overflow-visible"
+          aria-hidden="true"
+          viewBox={`0 0 ${CARD_WIDTH} ${cardBodyHeight}`}
+          preserveAspectRatio="none"
+        >
+          <path
+            d={solidOutlinePath}
+            fill="none"
+            stroke={commitBorderColor}
+            strokeWidth={nodeBorderWidth}
+            strokeLinecap="butt"
+            strokeLinejoin="miter"
           />
         </svg>
       ) : null}
@@ -413,32 +428,36 @@ const MapGridCommitCard = memo(function MapGridCommitCard({
         </div>
       </div>
       <div className={cn(
-          'absolute left-0 h-[176px] w-full cursor-grab overflow-hidden rounded-tr-xl rounded-br-xl rounded-bl-xl rounded-tl-none border border-border/50 active:cursor-grabbing',
-          checkedOutAccentActive && !isUnpushedCommit && !isStashedCommit && !isEmptyBranchNode
-            ? 'bg-checked-muted'
-            : remoteAccentActive && !isStashedCommit && !isEmptyBranchNode
-              ? 'bg-remote-muted'
-              : isSelectedCommit && !isUnpushedCommit && !isStashedCommit && !isEmptyBranchNode
-                ? 'bg-select-muted'
-                : isUnpushedCommit
-                  ? 'bg-background'
-                  : isStashedCommit || isEmptyBranchNode
-                    ? 'bg-transparent'
-                    : 'bg-muted',
-          isDashedOutline ? 'border-solid' : '',
-          borderAccentClass,
+          'absolute left-0 h-[176px] w-full cursor-grab overflow-hidden active:cursor-grabbing',
+          showCommitTilePattern
+            ? 'bg-background'
+            : checkedOutAccentActive && !isUnpushedCommit && !isStashedCommit && !isEmptyBranchNode
+              ? 'bg-checked-muted'
+              : remoteAccentActive && !isStashedCommit && !isEmptyBranchNode
+                ? 'bg-remote-muted'
+                : isSelectedCommit && !isUnpushedCommit && !isStashedCommit && !isEmptyBranchNode
+                  ? 'bg-select-muted'
+                  : isUnpushedCommit
+                    ? 'bg-background'
+                    : isStashedCommit || isEmptyBranchNode
+                      ? 'bg-transparent'
+                      : 'bg-muted',
         )}
         style={{
           top: 0,
-          borderWidth: `${nodeBorderWidth}px`,
-          borderColor: isDashedOutline ? 'transparent' : commitBorderColor,
-          borderTopLeftRadius: 0,
-          borderTopRightRadius: `${commitCornerRadiusPx}px`,
-          borderBottomRightRadius: `${commitCornerRadiusPx}px`,
-          borderBottomLeftRadius: `${commitCornerRadiusPx}px`,
+          border: 'none',
+          outline: 'none',
+          boxShadow: 'none',
           contain: 'layout paint style',
         }}
       >
+        {commitTileShapeCssVar ? (
+          <CommitNodeTilePattern
+            seed={visualId}
+            shapeFillCssVar={commitTileShapeCssVar}
+            displayZoom={displayZoom}
+          />
+        ) : null}
         <div className="relative z-10 flex h-full min-h-0 flex-col" style={scaledBodyInsetStyle}>
           <div className="min-h-0 flex-1">
             <div
@@ -554,13 +573,6 @@ type Props = {
   clusterCounts: Map<string, number>;
   commitIdsWithRenderedAncestry: Set<string>;
   nodeWarnings: Map<string, string[]>;
-  connectorParentShas: Set<string>;
-  branchStartShas: Set<string>;
-  branchOffNodeShas: Set<string>;
-  crossBranchOutgoingShas: Set<string>;
-  branchBaseCommitByName: Map<string, { id: string } | undefined>;
-  branchStartAccentClass: string;
-  connectorParentAccentClass: string;
   commitCornerRadiusPx: number;
   lineStrokeWidth: number;
   connectors: Array<{ id: string; fromX: number; fromY: number; toX: number; toY: number; zIndex: number; fromFace?: ConnectorFace; toFace?: ConnectorFace }>;
@@ -629,13 +641,6 @@ const MapGridCanvas = memo(function MapGridCanvas({
   clusterCounts,
   commitIdsWithRenderedAncestry,
   nodeWarnings,
-  connectorParentShas,
-  branchStartShas,
-  branchOffNodeShas,
-  crossBranchOutgoingShas,
-  branchBaseCommitByName,
-  branchStartAccentClass,
-  connectorParentAccentClass,
   commitCornerRadiusPx,
   lineStrokeWidth,
   connectors,
@@ -943,7 +948,6 @@ const MapGridCanvas = memo(function MapGridCanvas({
                 cardLeft={cardLeft}
                 cardTop={cardTop}
                 displayZoom={displayZoom}
-                commitCornerRadiusPx={commitCornerRadiusPx}
                 lineStrokeWidth={lineStrokeWidth}
                 labelTopPx={labelTopPx}
                 selectedShaSet={selectedShaSet}
@@ -959,13 +963,6 @@ const MapGridCanvas = memo(function MapGridCanvas({
                 openingClumpAnimations={openingClumpAnimations}
                 commitIdsWithRenderedAncestry={commitIdsWithRenderedAncestry}
                 nodeWarnings={nodeWarnings}
-                connectorParentShas={connectorParentShas}
-                branchStartShas={branchStartShas}
-                branchOffNodeShas={branchOffNodeShas}
-                crossBranchOutgoingShas={crossBranchOutgoingShas}
-                branchBaseCommitByName={branchBaseCommitByName}
-                branchStartAccentClass={branchStartAccentClass}
-                connectorParentAccentClass={connectorParentAccentClass}
                 unpushedCommitShasSetByBranch={unpushedCommitShasSetByBranch}
                 remoteCommitShas={remoteCommitShas}
                 checkedOutHeadSha={checkedOutHeadSha}

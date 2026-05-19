@@ -48,7 +48,6 @@ import MapSearchBar from './MapSearchBar';
 import { useMapGridCamera } from './useMapGridCamera';
 import { useMapGridSelection } from './useMapGridSelection';
 import {
-  GRID_COMMIT_CORNER_RADIUS_BASE_PX,
   GRID_RENDER_ZOOM,
   MAP_GRID_CULL_VIEWPORT_INSET_SCREEN_PX,
   MAP_GRID_MAX_NODES_REMOVED_PER_FRAME,
@@ -402,11 +401,6 @@ export default function BranchGridMap({
     connectorDecisions,
     nodeWarnings,
     commitIdsWithRenderedAncestry,
-    connectorParentShas,
-    branchStartShas,
-    branchOffNodeShas,
-    crossBranchOutgoingShas,
-    branchBaseCommitByName,
   } = resolvedLayoutModel;
 
   const isHorizontalLayout = orientation === 'horizontal';
@@ -535,12 +529,7 @@ export default function BranchGridMap({
   visibleRenderNodesRef.current = visibleRenderNodes;
 
   const lineStrokeWidth = 1.25 / displayZoom;
-  const commitCornerRadiusPx = GRID_COMMIT_CORNER_RADIUS_BASE_PX / displayZoom;
-
-  const connectorParentAccentClass =
-    'border-border/70';
-  const branchStartAccentClass =
-    'border-select';
+  const commitCornerRadiusPx = 0;
 
   const branchByName = useMemo(() => new Map(branches.map((branch) => [branch.name, branch])), [branches]);
   const hasUncommittedChanges = checkedOutRef?.hasUncommittedChanges ?? false;
@@ -1851,13 +1840,6 @@ export default function BranchGridMap({
           clusterCounts={clusterCounts}
           commitIdsWithRenderedAncestry={commitIdsWithRenderedAncestry}
           nodeWarnings={nodeWarnings}
-          connectorParentShas={connectorParentShas}
-          branchStartShas={branchStartShas}
-          branchOffNodeShas={branchOffNodeShas}
-          crossBranchOutgoingShas={crossBranchOutgoingShas}
-          branchBaseCommitByName={branchBaseCommitByName}
-          branchStartAccentClass={branchStartAccentClass}
-          connectorParentAccentClass={connectorParentAccentClass}
           commitCornerRadiusPx={commitCornerRadiusPx}
           lineStrokeWidth={lineStrokeWidth}
           connectors={connectorsForView}
