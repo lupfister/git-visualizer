@@ -1045,7 +1045,7 @@ export default function DenseBranchSidebar({
             className={cn(
               ghostMode
                 ? 'group flex w-full items-center gap-0 rounded-lg px-0 h-6'
-                : 'group sticky top-0 z-20 flex w-full items-center gap-0 rounded-lg bg-muted px-0 h-6 transition-all duration-100 ease-out hover:bg-border/50 cursor-grab active:cursor-grabbing',
+                : 'group sticky top-0 z-20 flex w-full items-center gap-0 rounded-lg bg-background px-0 h-6 transition-all duration-100 ease-out hover:bg-border/50 cursor-grab active:cursor-grabbing',
               isDraggingProject && !ghostMode ? 'opacity-0' : '',
             )}
             onPointerDownCapture={(event) => {
@@ -1220,7 +1220,7 @@ export default function DenseBranchSidebar({
     <aside
       ref={asideRef}
       aria-label="Dense branch sidebar"
-      className={cn('pointer-events-auto relative z-[120] h-full select-none overflow-hidden bg-muted', className)}
+      className={cn('pointer-events-auto relative z-[120] h-full select-none overflow-hidden bg-background', className)}
       style={style}
     >
       <header data-tauri-drag-region className="absolute inset-x-0 top-0 z-80 h-12" />
@@ -1239,7 +1239,7 @@ export default function DenseBranchSidebar({
               onClick={onAddProject}
               disabled={projectLoading}
               aria-label="Add Repo"
-              className="window-no-drag group flex w-full items-center gap-0 rounded-lg bg-muted px-0 h-6 text-foreground transition-colors hover:bg-border/50 disabled:cursor-not-allowed disabled:opacity-50"
+              className="window-no-drag group flex w-full items-center gap-0 rounded-lg bg-background px-0 h-6 text-foreground transition-colors hover:bg-border/50 disabled:cursor-not-allowed disabled:opacity-50"
             >
               <span className="flex h-6 w-6 shrink-0 items-center justify-center rounded-md transition-colors group-hover:bg-border/50 text-foreground">
                 <svg aria-hidden="true" viewBox="0 0 24 24" fill="none" className="h-4 w-4 shrink-0">

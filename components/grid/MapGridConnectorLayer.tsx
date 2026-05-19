@@ -77,7 +77,7 @@ export const MapGridConnectorLayer = memo(function MapGridConnectorLayer({
 
   return (
     <svg
-      className="pointer-events-none absolute left-0 top-0 z-0 overflow-visible text-muted"
+      className="pointer-events-none absolute left-0 top-0 z-0 overflow-visible text-border"
       width={0}
       height={0}
       aria-hidden="true"

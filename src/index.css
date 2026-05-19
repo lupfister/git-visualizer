@@ -33,15 +33,15 @@
 :root {
   --background: #FBFEFC;
   --foreground: #57524d;
-  --muted: #F1F4F3;
+  --muted: #F2F2F2;
   --muted-foreground: #88817c;
-  --border: #E6EAE6;
+  --border: #F0F0F0;
   --checked: #38BDF2;
   --select: #158EFC;
   --remote: #8B5CF6;
-  --checked-muted: #EBF7FE;
-  --select-muted: #E5F0FF;
-  --remote-muted: #F2EBFF;
+  --checked-muted: #E8F7FC;
+  --select-muted: #E5F2FF;
+  --remote-muted: #F2ECFD;
   --destructive: #DC2626;
   --font-sans: system-ui, -apple-system, sans-serif;
   --font-space-grotesk: 'Space Grotesk', system-ui, -apple-system, sans-serif;

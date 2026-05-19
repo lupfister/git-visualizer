@@ -19,6 +19,7 @@ import {
 } from './mapGridConnectorPathPersistence';
 import { buildMapGridCardSlotAssignments, computeMapGridCardSlotCount } from './MapGridCardVirtualizer';
 import {
+  buildMapGridCommitOutlinePath,
   cn,
   computeMapGridInvZoom,
   computeViewportCullBounds,
@@ -26,6 +27,7 @@ import {
 import type { ConnectorFace, Node, NodePositionOverrides } from './LayoutGrid';
 import type { MapGridCameraState, MapGridCameraTargetLayout } from './useMapGridCamera';
 import { getNodePositionOverride } from './nodePositionOverrides';
+import { CommitNodeTilePattern, type CommitNodeTilePatternHandle } from './CommitNodeTilePattern';
 
 const EMPTY_NODE_POSITION_OVERRIDES: NodePositionOverrides = {};
 const EMPTY_DRAG_PREVIEW: Record<string, { x: number; y: number }> = {};
@@ -37,7 +39,9 @@ type MapGridCommitWrapperProps = {
   style?: CSSProperties;
   onClick?: React.MouseEventHandler<HTMLDivElement>;
   onPointerDown?: React.PointerEventHandler<HTMLDivElement>;
+  onPointerEnter?: React.PointerEventHandler<HTMLDivElement>;
   onPointerMove?: React.PointerEventHandler<HTMLDivElement>;
+  onPointerLeave?: React.PointerEventHandler<HTMLDivElement>;
   onPointerUp?: React.PointerEventHandler<HTMLDivElement>;
   onPointerCancel?: React.PointerEventHandler<HTMLDivElement>;
   dataCommitCard?: string;
@@ -61,7 +65,9 @@ const MapGridCommitWrapper = forwardRef<HTMLDivElement, MapGridCommitWrapperProp
   style,
   onClick,
   onPointerDown,
+  onPointerEnter,
   onPointerMove,
+  onPointerLeave,
   onPointerUp,
   onPointerCancel,
   dataCommitCard,
@@ -93,7 +99,9 @@ const MapGridCommitWrapper = forwardRef<HTMLDivElement, MapGridCommitWrapperProp
       data-commit-card={dataCommitCard}
       onClick={onClick}
       onPointerDown={onPointerDown}
+      onPointerEnter={onPointerEnter}
       onPointerMove={onPointerMove}
+      onPointerLeave={onPointerLeave}
       onPointerUp={onPointerUp}
       onPointerCancel={onPointerCancel}
       style={fadeStyle ? { ...style, ...fadeStyle } : style}
@@ -133,13 +141,6 @@ type CommitCardProps = {
   openingClumpAnimations: Set<string>;
   commitIdsWithRenderedAncestry: Set<string>;
   nodeWarnings: Map<string, string[]>;
-  connectorParentShas: Set<string>;
-  branchStartShas: Set<string>;
-  branchOffNodeShas: Set<string>;
-  crossBranchOutgoingShas: Set<string>;
-  branchBaseCommitByName: Map<string, { id: string } | undefined>;
-  branchStartAccentClass: string;
-  connectorParentAccentClass: string;
   unpushedCommitShasSetByBranch: Map<string, Set<string>>;
   remoteCommitShas: Set<string>;
   checkedOutHeadSha: string | null;
@@ -174,13 +175,6 @@ const MapGridCommitCard = memo(function MapGridCommitCard({
   openingClumpAnimations,
   commitIdsWithRenderedAncestry,
   nodeWarnings,
-  connectorParentShas,
-  branchStartShas,
-  branchOffNodeShas,
-  crossBranchOutgoingShas,
-  branchBaseCommitByName,
-  branchStartAccentClass,
-  connectorParentAccentClass,
   unpushedCommitShasSetByBranch,
   remoteCommitShas,
   checkedOutHeadSha,
@@ -230,18 +224,6 @@ const MapGridCommitCard = memo(function MapGridCommitCard({
   const isSearchActive = !!normalizedSearchQuery;
   const isSearchMatch = isSearchActive && matchingNodeIds.has(commitId);
   const warningsTitle = nodeWarningsForCard.join('\n');
-  const borderAccentClass =
-    branchOffNodeShas.has(commitId) ||
-    branchStartShas.has(commitId) ||
-    crossBranchOutgoingShas.has(commitId)
-      ? branchStartAccentClass
-      : connectorParentShas.has(commitId)
-        ? connectorParentAccentClass
-        : branchBaseCommitByName.get(branchName)?.id === commitId
-          ? 'border-amber-500'
-          : showDataShapeError
-            ? 'border-red-500'
-            : '';
   const stashIndexMatch = /^STASH:(\d+)$/.exec(node.commit.id);
   const stashHeaderLabel = stashIndexMatch ? `Stash ${Number.parseInt(stashIndexMatch[1], 10) + 1}` : null;
   const stashBodyMessage = isStashedCommit
@@ -288,10 +270,22 @@ const MapGridCommitCard = memo(function MapGridCommitCard({
   const isDashedOutline = isStashedCommit || isLocalUncommitted || isEmptyBranchNode;
   const dashedStrokeDasharray = `${12 / displayZoom} ${6 / displayZoom}`;
   const dashedStrokeInset = nodeBorderWidth / 2;
+  const cardBodyHeight = 176;
+  /** Pushed/remote history only — no tile motif for unpushed, working tree, or stash. */
+  const showCommitTilePattern =
+    !isUnpushedCommit && !isStashedCommit && !isEmptyBranchNode;
+  /** Counterscaled label-notch corners on pushed, unpushed, and dashed commit bodies. */
+  const useRoundedCardOutline =
+    isDashedOutline || showCommitTilePattern || (isUnpushedCommit && !isDashedOutline);
+  const outlineCornerRadiusPx = useRoundedCardOutline ? commitCornerRadiusPx : 0;
   const dashedOutlinePath = useMemo(
-    () => `M ${dashedStrokeInset} ${dashedStrokeInset} H ${CARD_WIDTH - dashedStrokeInset - commitCornerRadiusPx} Q ${CARD_WIDTH - dashedStrokeInset} ${dashedStrokeInset} ${CARD_WIDTH - dashedStrokeInset} ${dashedStrokeInset + commitCornerRadiusPx} V ${176 - dashedStrokeInset - commitCornerRadiusPx} Q ${CARD_WIDTH - dashedStrokeInset} ${176 - dashedStrokeInset} ${CARD_WIDTH - dashedStrokeInset - commitCornerRadiusPx} ${176 - dashedStrokeInset} H ${dashedStrokeInset + commitCornerRadiusPx} Q ${dashedStrokeInset} ${176 - dashedStrokeInset} ${dashedStrokeInset} ${176 - dashedStrokeInset - commitCornerRadiusPx} V ${dashedStrokeInset}`,
-    [commitCornerRadiusPx, dashedStrokeInset],
+    () => buildMapGridCommitOutlinePath(CARD_WIDTH, cardBodyHeight, dashedStrokeInset, outlineCornerRadiusPx),
+    [dashedStrokeInset, cardBodyHeight, outlineCornerRadiusPx],
   );
+  const solidOutlinePath = useMemo(() => {
+    const inset = nodeBorderWidth / 2;
+    return buildMapGridCommitOutlinePath(CARD_WIDTH, cardBodyHeight, inset, outlineCornerRadiusPx);
+  }, [nodeBorderWidth, cardBodyHeight, outlineCornerRadiusPx]);
   const unpushedCommitTextStyle: CSSProperties | undefined =
     isUnpushedCommit && !checkedOutAccentActive && !isSelectedCommit
       ? { color: 'var(--muted-foreground)' }
@@ -343,6 +337,138 @@ const MapGridCommitCard = memo(function MapGridCommitCard({
     gap: 'calc(1rem * var(--map-inv-zoom, 1))',
   };
 
+  const commitTileShapeCssVar = !showCommitTilePattern
+    ? null
+    : checkedOutAccentActive
+      ? '--checked-muted'
+      : remoteAccentActive
+        ? '--remote-muted'
+        : isSelectedCommit
+          ? '--select-muted'
+          : '--muted';
+
+  const commitTileHoverTintColor = !showCommitTilePattern
+    ? null
+    : checkedOutAccentActive
+      ? 'var(--checked)'
+      : remoteAccentActive
+        ? 'var(--remote)'
+        : isSelectedCommit
+          ? 'var(--select)'
+          : 'var(--foreground)';
+
+  const cardBodyRef = useRef<HTMLDivElement>(null);
+  const tilePatternRef = useRef<CommitNodeTilePatternHandle>(null);
+  const isTileHoverTrackingRef = useRef(false);
+
+  const applyTilePatternAtClient = useCallback(
+    (clientX: number, clientY: number) => {
+      if (!commitTileShapeCssVar) {
+        return;
+      }
+      const body = cardBodyRef.current;
+      if (!body) {
+        return;
+      }
+      const rect = body.getBoundingClientRect();
+      if (rect.width <= 0 || rect.height <= 0) {
+        return;
+      }
+      const layoutX = ((clientX - rect.left) / rect.width) * CARD_WIDTH;
+      const layoutY = ((clientY - rect.top) / rect.height) * CARD_HEIGHT;
+      tilePatternRef.current?.applyPointer(layoutX, layoutY);
+    },
+    [commitTileShapeCssVar],
+  );
+
+  const handleCardPointerMove = useCallback(
+    (event: React.PointerEvent<HTMLDivElement>) => {
+      onNodePointerMove(event);
+    },
+    [onNodePointerMove],
+  );
+
+  const stopTileHoverTracking = useCallback(() => {
+    isTileHoverTrackingRef.current = false;
+    tilePatternRef.current?.endHover();
+  }, []);
+
+  const isClientInsideCard = useCallback((clientX: number, clientY: number) => {
+    const card = cardRef.current;
+    if (!card) {
+      return false;
+    }
+    const rect = card.getBoundingClientRect();
+    return (
+      clientX >= rect.left &&
+      clientX <= rect.right &&
+      clientY >= rect.top &&
+      clientY <= rect.bottom
+    );
+  }, []);
+
+  useLayoutEffect(() => {
+    if (!commitTileShapeCssVar) {
+      return;
+    }
+    const card = cardRef.current;
+    if (!card) {
+      return;
+    }
+
+    const handleWindowPointerMove = (event: PointerEvent) => {
+      if (!isTileHoverTrackingRef.current) {
+        return;
+      }
+      if (!isClientInsideCard(event.clientX, event.clientY)) {
+        stopTileHoverTracking();
+        return;
+      }
+      applyTilePatternAtClient(event.clientX, event.clientY);
+    };
+
+    const handleCardPointerEnter = (event: PointerEvent) => {
+      isTileHoverTrackingRef.current = true;
+      tilePatternRef.current?.startHover();
+      applyTilePatternAtClient(event.clientX, event.clientY);
+      window.addEventListener('pointermove', handleWindowPointerMove);
+    };
+
+    const handleCardPointerLeave = (event: PointerEvent) => {
+      const relatedTarget = event.relatedTarget;
+      if (relatedTarget instanceof Node && card.contains(relatedTarget)) {
+        return;
+      }
+      window.removeEventListener('pointermove', handleWindowPointerMove);
+      stopTileHoverTracking();
+    };
+
+    card.addEventListener('pointerenter', handleCardPointerEnter);
+    card.addEventListener('pointerleave', handleCardPointerLeave);
+    return () => {
+      window.removeEventListener('pointermove', handleWindowPointerMove);
+      card.removeEventListener('pointerenter', handleCardPointerEnter);
+      card.removeEventListener('pointerleave', handleCardPointerLeave);
+      if (isTileHoverTrackingRef.current) {
+        isTileHoverTrackingRef.current = false;
+        tilePatternRef.current?.endHover();
+      }
+    };
+  }, [
+    applyTilePatternAtClient,
+    commitTileShapeCssVar,
+    isClientInsideCard,
+    stopTileHoverTracking,
+    visualId,
+  ]);
+
+  /** Solid outline for focus/selection/search and unpushed commits (dashed types use `isDashedOutline`). */
+  const showCommitNodeStroke =
+    isFocused ||
+    isSelectedCommit ||
+    isSearchMatch ||
+    (isUnpushedCommit && !isDashedOutline);
+
   return (
     <MapGridCommitWrapper
       ref={cardRef}
@@ -359,7 +485,7 @@ const MapGridCommitCard = memo(function MapGridCommitCard({
       }}
       onClick={handleClick}
       onPointerDown={handlePointerDown}
-      onPointerMove={onNodePointerMove}
+      onPointerMove={handleCardPointerMove}
       onPointerUp={onNodePointerUp}
       onPointerCancel={onNodePointerUp}
     >
@@ -367,7 +493,7 @@ const MapGridCommitCard = memo(function MapGridCommitCard({
         <svg
           className="pointer-events-none absolute inset-0 z-20 overflow-visible"
           aria-hidden="true"
-          viewBox={`0 0 ${CARD_WIDTH} 176`}
+          viewBox={`0 0 ${CARD_WIDTH} ${cardBodyHeight}`}
           preserveAspectRatio="none"
         >
           <path
@@ -378,6 +504,23 @@ const MapGridCommitCard = memo(function MapGridCommitCard({
             strokeDasharray={dashedStrokeDasharray}
             strokeLinecap="butt"
             strokeLinejoin="round"
+          />
+        </svg>
+      ) : null}
+      {!isDashedOutline && showCommitNodeStroke ? (
+        <svg
+          className="pointer-events-none absolute inset-0 z-20 overflow-visible"
+          aria-hidden="true"
+          viewBox={`0 0 ${CARD_WIDTH} ${cardBodyHeight}`}
+          preserveAspectRatio="none"
+        >
+          <path
+            d={solidOutlinePath}
+            fill="none"
+            stroke={commitBorderColor}
+            strokeWidth={nodeBorderWidth}
+            strokeLinecap="butt"
+            strokeLinejoin="miter"
           />
         </svg>
       ) : null}
@@ -412,38 +555,54 @@ const MapGridCommitCard = memo(function MapGridCommitCard({
           ) : null}
         </div>
       </div>
-      <div className={cn(
-          'absolute left-0 h-[176px] w-full cursor-grab overflow-hidden rounded-tr-xl rounded-br-xl rounded-bl-xl rounded-tl-none border border-border/50 active:cursor-grabbing',
-          checkedOutAccentActive && !isUnpushedCommit && !isStashedCommit && !isEmptyBranchNode
-            ? 'bg-checked-muted'
-            : remoteAccentActive && !isStashedCommit && !isEmptyBranchNode
-              ? 'bg-remote-muted'
-              : isSelectedCommit && !isUnpushedCommit && !isStashedCommit && !isEmptyBranchNode
-                ? 'bg-select-muted'
-                : isUnpushedCommit
-                  ? 'bg-background'
-                  : isStashedCommit || isEmptyBranchNode
-                    ? 'bg-transparent'
-                    : 'bg-muted',
-          isDashedOutline ? 'border-solid' : '',
-          borderAccentClass,
+      <div
+        ref={cardBodyRef}
+        className={cn(
+          'absolute left-0 h-[176px] w-full cursor-grab overflow-hidden active:cursor-grabbing',
+          useRoundedCardOutline ? 'rounded-tr-xl rounded-br-xl rounded-bl-xl rounded-tl-none' : '',
+          showCommitTilePattern
+            ? 'bg-background'
+            : checkedOutAccentActive && !isUnpushedCommit && !isStashedCommit && !isEmptyBranchNode
+              ? 'bg-checked-muted'
+              : remoteAccentActive && !isStashedCommit && !isEmptyBranchNode
+                ? 'bg-remote-muted'
+                : isSelectedCommit && !isUnpushedCommit && !isStashedCommit && !isEmptyBranchNode
+                  ? 'bg-select-muted'
+                  : isUnpushedCommit
+                    ? 'bg-background'
+                    : isStashedCommit || isEmptyBranchNode
+                      ? 'bg-transparent'
+                      : 'bg-muted',
         )}
         style={{
           top: 0,
-          borderWidth: `${nodeBorderWidth}px`,
-          borderColor: isDashedOutline ? 'transparent' : commitBorderColor,
+          border: 'none',
+          outline: 'none',
+          boxShadow: 'none',
           borderTopLeftRadius: 0,
-          borderTopRightRadius: `${commitCornerRadiusPx}px`,
-          borderBottomRightRadius: `${commitCornerRadiusPx}px`,
-          borderBottomLeftRadius: `${commitCornerRadiusPx}px`,
+          borderTopRightRadius: useRoundedCardOutline ? `${outlineCornerRadiusPx}px` : 0,
+          borderBottomRightRadius: useRoundedCardOutline ? `${outlineCornerRadiusPx}px` : 0,
+          borderBottomLeftRadius: useRoundedCardOutline ? `${outlineCornerRadiusPx}px` : 0,
           contain: 'layout paint style',
         }}
       >
-        <div className="relative z-10 flex h-full min-h-0 flex-col" style={scaledBodyInsetStyle}>
+        {commitTileShapeCssVar && commitTileHoverTintColor ? (
+          <CommitNodeTilePattern
+            ref={tilePatternRef}
+            seed={visualId}
+            shapeFillCssVar={commitTileShapeCssVar}
+            hoverTintColor={commitTileHoverTintColor}
+            displayZoom={displayZoom}
+          />
+        ) : null}
+        <div
+          className="pointer-events-none relative z-10 flex h-full min-h-0 flex-col"
+          style={scaledBodyInsetStyle}
+        >
           <div className="min-h-0 flex-1">
             <div
               className={cn(
-                'max-w-[38rem] select-text font-normal tracking-tight text-foreground',
+                'pointer-events-auto max-w-[38rem] select-text font-normal tracking-tight text-foreground',
                 selectedCommitTextClass,
                 displayZoom <= 0.5 ? 'overflow-hidden text-ellipsis whitespace-nowrap' : 'break-words whitespace-normal',
               )}
@@ -466,14 +625,14 @@ const MapGridCommitCard = memo(function MapGridCommitCard({
           {displayZoom > 0.5 && !isStashedCommit ? (
             <div className="mt-auto flex items-end justify-between" style={scaledMetaTopStyle}>
               <div
-                className={cn('select-text font-normal', selectedCommitTextClass)}
+                className={cn('pointer-events-auto select-text font-normal', selectedCommitTextClass)}
                 data-selectable-text="true"
                 style={scaledTextStyle}
               >
                 @{node.commit.author}
               </div>
               <div
-                className={cn('select-text font-normal', selectedCommitTextClass)}
+                className={cn('pointer-events-auto select-text font-normal', selectedCommitTextClass)}
                 data-selectable-text="true"
                 style={scaledTextStyle}
               >
@@ -554,13 +713,6 @@ type Props = {
   clusterCounts: Map<string, number>;
   commitIdsWithRenderedAncestry: Set<string>;
   nodeWarnings: Map<string, string[]>;
-  connectorParentShas: Set<string>;
-  branchStartShas: Set<string>;
-  branchOffNodeShas: Set<string>;
-  crossBranchOutgoingShas: Set<string>;
-  branchBaseCommitByName: Map<string, { id: string } | undefined>;
-  branchStartAccentClass: string;
-  connectorParentAccentClass: string;
   commitCornerRadiusPx: number;
   lineStrokeWidth: number;
   connectors: Array<{ id: string; fromX: number; fromY: number; toX: number; toY: number; zIndex: number; fromFace?: ConnectorFace; toFace?: ConnectorFace }>;
@@ -629,13 +781,6 @@ const MapGridCanvas = memo(function MapGridCanvas({
   clusterCounts,
   commitIdsWithRenderedAncestry,
   nodeWarnings,
-  connectorParentShas,
-  branchStartShas,
-  branchOffNodeShas,
-  crossBranchOutgoingShas,
-  branchBaseCommitByName,
-  branchStartAccentClass,
-  connectorParentAccentClass,
   commitCornerRadiusPx,
   lineStrokeWidth,
   connectors,
@@ -959,13 +1104,6 @@ const MapGridCanvas = memo(function MapGridCanvas({
                 openingClumpAnimations={openingClumpAnimations}
                 commitIdsWithRenderedAncestry={commitIdsWithRenderedAncestry}
                 nodeWarnings={nodeWarnings}
-                connectorParentShas={connectorParentShas}
-                branchStartShas={branchStartShas}
-                branchOffNodeShas={branchOffNodeShas}
-                crossBranchOutgoingShas={crossBranchOutgoingShas}
-                branchBaseCommitByName={branchBaseCommitByName}
-                branchStartAccentClass={branchStartAccentClass}
-                connectorParentAccentClass={connectorParentAccentClass}
                 unpushedCommitShasSetByBranch={unpushedCommitShasSetByBranch}
                 remoteCommitShas={remoteCommitShas}
                 checkedOutHeadSha={checkedOutHeadSha}
