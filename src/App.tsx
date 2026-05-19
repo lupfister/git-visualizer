@@ -323,6 +323,9 @@ function App() {
   const branchMetaLoadKeyRef = useRef<string | null>(null);
   const isMapInteractingRef = useRef(false);
   const mapInteractionEpochRef = useRef(0);
+  /** Bumped at the start of local git mutations so in-flight background refreshes cannot apply stale snapshots. */
+  const repoMutationGenerationRef = useRef(0);
+  const hadUncommittedChangesRef = useRef(false);
   /** False while panning and for {@link MAP_REPO_REFRESH_SETTLE_MS} after pan stops. */
   const canApplyRepoRefreshRef = useRef(true);
   const mapRefreshSettleTimeoutRef = useRef<number | null>(null);
@@ -1171,13 +1174,79 @@ function App() {
     });
   }
 
+  function beginRepoMutation() {
+    repoMutationGenerationRef.current += 1;
+  }
+
   async function refreshRepoAfterMutation(path: string, resolvedDefaultBranch?: string) {
-    await refreshRepoGitState(path, resolvedDefaultBranch, {
+    const normalizedPath = normalizePath(path);
+    if (!normalizedPath) return;
+
+    await refreshRepoGitState(normalizedPath, resolvedDefaultBranch, {
       includeMergeNodes: false,
       includeUnpushedShaMap: true,
       includeWorktrees: false,
       includeStashes: false,
     });
+
+    const quickState = await invoke<RepoQuickState>('get_repo_quick_state', {
+      repoPath: normalizedPath,
+    }).catch(() => null);
+
+    if (quickState && sameRepoPath(repoPath, normalizedPath)) {
+      projectQuickStateRef.current = {
+        ...projectQuickStateRef.current,
+        [normalizedPath]: quickStateSignature(quickState),
+      };
+      startTransition(() => {
+        setCheckedOutRef((previous) => {
+          if (!previous) return previous;
+          return {
+            ...previous,
+            headSha: quickState.headSha,
+            hasUncommittedChanges: quickState.hasUncommittedChanges,
+            parentSha: quickState.upstreamSha ?? previous.parentSha,
+          };
+        });
+      });
+      if (!quickState.hasUncommittedChanges) {
+        setHydratedLayoutModel(null);
+        setHydratedLayoutKey(null);
+      }
+    }
+
+    const applyGeneration = repoMutationGenerationRef.current;
+    const result = await invoke<RefreshProjectResult>('refresh_project_if_changed', {
+      projectId: normalizedPath,
+    }).catch(() => null);
+    if (!result || applyGeneration !== repoMutationGenerationRef.current) return;
+    if (!result.updated) return;
+
+    const nextSnapshot = toRepoVisualSnapshot(result.snapshot ?? null);
+    if (!nextSnapshot) return;
+
+    if (quickState && nextSnapshot.checkedOutRef) {
+      nextSnapshot.checkedOutRef = {
+        ...nextSnapshot.checkedOutRef,
+        headSha: quickState.headSha,
+        hasUncommittedChanges: quickState.hasUncommittedChanges,
+        parentSha: quickState.upstreamSha ?? nextSnapshot.checkedOutRef.parentSha,
+      };
+    }
+
+    upsertProjectSnapshot(normalizedPath, nextSnapshot);
+    projectQuickStateRef.current = {
+      ...projectQuickStateRef.current,
+      [normalizedPath]: quickStateSignature(quickStateFromSnapshot(normalizedPath, nextSnapshot)),
+    };
+
+    if (sameRepoPath(repoPath, normalizedPath)) {
+      applySnapshotToActiveState(normalizedPath, nextSnapshot, { force: true });
+      if (quickState && !quickState.hasUncommittedChanges) {
+        setHydratedLayoutModel(null);
+        setHydratedLayoutKey(null);
+      }
+    }
   }
 
   async function refreshRepoAfterPush(path: string, resolvedDefaultBranch?: string) {
@@ -1685,6 +1754,7 @@ function App() {
         return;
       }
       const refreshEpoch = mapInteractionEpochRef.current;
+      const mutationAtStart = repoMutationGenerationRef.current;
       refreshInFlight = true;
       setMapGridBackgroundActivity('git-refresh', 'Git project refresh', true, reason);
       try {
@@ -1713,8 +1783,19 @@ function App() {
           return;
         }
         if (!result.updated) return;
+        if (mutationAtStart !== repoMutationGenerationRef.current) return;
         const nextSnapshot = toRepoVisualSnapshot(result.snapshot ?? null);
         if (!nextSnapshot) return;
+        const quickState = await invoke<RepoQuickState>('get_repo_quick_state', { repoPath }).catch(() => null);
+        if (mutationAtStart !== repoMutationGenerationRef.current) return;
+        if (quickState && nextSnapshot.checkedOutRef) {
+          nextSnapshot.checkedOutRef = {
+            ...nextSnapshot.checkedOutRef,
+            headSha: quickState.headSha,
+            hasUncommittedChanges: quickState.hasUncommittedChanges,
+            parentSha: quickState.upstreamSha ?? nextSnapshot.checkedOutRef.parentSha,
+          };
+        }
         upsertProjectSnapshot(repoPath, nextSnapshot);
         projectQuickStateRef.current = {
           ...projectQuickStateRef.current,
@@ -1726,9 +1807,14 @@ function App() {
             setMapGridBackgroundActivity('git-refresh-pending', 'Git refresh queued', true, 'awaiting settle');
             return;
           }
+          if (mutationAtStart !== repoMutationGenerationRef.current) return;
           startTransition(() => {
             applySnapshotToActiveState(repoPath, nextSnapshot);
           });
+          if (quickState && !quickState.hasUncommittedChanges) {
+            setHydratedLayoutModel(null);
+            setHydratedLayoutKey(null);
+          }
         }
       } catch (error) {
         console.warn('Background project refresh failed:', error);
@@ -2069,6 +2155,7 @@ function App() {
     }
 
     try {
+      beginRepoMutation();
       let stashedPrefix = '';
       const refBefore = await invoke<CheckedOutRef>('get_checked_out_ref', { repoPath });
       if (refBefore.hasUncommittedChanges) {
@@ -2112,6 +2199,7 @@ function App() {
     if (!repoPath || stashInProgress) return;
     setCommitSwitchFeedback(null);
     setStashInProgress(true);
+    beginRepoMutation();
     try {
       const ref = await invoke<CheckedOutRef>('get_checked_out_ref', { repoPath });
       if (!ref.hasUncommittedChanges) {
@@ -2152,6 +2240,7 @@ function App() {
     }
     setCommitSwitchFeedback(null);
     setCommitInProgress(true);
+    beginRepoMutation();
     try {
       const ref = await invoke<CheckedOutRef>('get_checked_out_ref', { repoPath });
       if (!ref.hasUncommittedChanges) {
@@ -2207,6 +2296,7 @@ function App() {
     if (!repoPath || stageInProgress) return false;
     setCommitSwitchFeedback(null);
     setStageInProgress(true);
+    beginRepoMutation();
     try {
       const ref = await invoke<CheckedOutRef>('get_checked_out_ref', { repoPath });
       if (!ref.hasUncommittedChanges) {
@@ -2520,6 +2610,7 @@ function App() {
 
     setCommitSwitchFeedback(null);
     setDeleteInProgress(true);
+    if (shouldDiscardUncommitted) beginRepoMutation();
     try {
       for (const stashIndex of uniqueStashDescending) {
         await invoke('stash_drop', { repoPath, stashIndex });
@@ -2876,6 +2967,15 @@ function App() {
   }, [branches, branchCommitPreviews, branchUniqueAheadCounts, checkedOutRef, defaultBranch, directCommits, remoteDefaultTipMetadata, remoteDefaultTipParentSha, remoteDefaultTipSha, stashes, unpushedDirectCommits]);
 
   useEffect(() => {
+    const hasUncommitted = visualCheckedOutRef?.hasUncommittedChanges ?? false;
+    if (hadUncommittedChangesRef.current && !hasUncommitted) {
+      setHydratedLayoutModel(null);
+      setHydratedLayoutKey(null);
+    }
+    hadUncommittedChangesRef.current = hasUncommitted;
+  }, [visualCheckedOutRef?.hasUncommittedChanges]);
+
+  useEffect(() => {
     const readyForAutoFocus =
       !mapLoading &&
       !loading &&
@@ -3010,12 +3110,17 @@ function App() {
         Boolean(hydratedLayoutModel) &&
         (hydratedLayoutModel?.allCommits.length ?? 0) === 0 &&
         hasGraphSourceData;
+      const hydratedHasWorkingTree =
+        hydratedLayoutModel?.allCommits.some((commit) => commit.id === 'WORKING_TREE') ?? false;
+      const canReuseHydratedLayout =
+        !hydratedHasWorkingTree || (visualCheckedOutRef?.hasUncommittedChanges ?? false);
       if (
         gridSearchQuery.trim().length === 0 &&
         sharedGridLayoutCacheKey &&
         hydratedLayoutKey === sharedGridLayoutCacheKey &&
         hydratedLayoutModel &&
-        !hydratedLooksEmptyButShouldNot
+        !hydratedLooksEmptyButShouldNot &&
+        canReuseHydratedLayout
       ) {
         return hydratedLayoutModel;
       }
@@ -3063,6 +3168,7 @@ function App() {
       gridFocusSha,
       visualCheckedOutRef?.headSha ?? null,
       visualCheckedOutRef?.branchName ?? null,
+      visualCheckedOutRef?.hasUncommittedChanges ?? false,
       mapGridOrientation,
       gridSearchQuery,
       sharedGridLayoutCacheKey,
