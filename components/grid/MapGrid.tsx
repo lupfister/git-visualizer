@@ -48,6 +48,7 @@ import MapSearchBar from './MapSearchBar';
 import { useMapGridCamera } from './useMapGridCamera';
 import { useMapGridSelection } from './useMapGridSelection';
 import {
+  GRID_COMMIT_CORNER_RADIUS_BASE_PX,
   GRID_RENDER_ZOOM,
   MAP_GRID_CULL_VIEWPORT_INSET_SCREEN_PX,
   MAP_GRID_MAX_NODES_REMOVED_PER_FRAME,
@@ -529,7 +530,7 @@ export default function BranchGridMap({
   visibleRenderNodesRef.current = visibleRenderNodes;
 
   const lineStrokeWidth = 1.25 / displayZoom;
-  const commitCornerRadiusPx = 0;
+  const commitCornerRadiusPx = GRID_COMMIT_CORNER_RADIUS_BASE_PX / displayZoom;
 
   const branchByName = useMemo(() => new Map(branches.map((branch) => [branch.name, branch])), [branches]);
   const hasUncommittedChanges = checkedOutRef?.hasUncommittedChanges ?? false;

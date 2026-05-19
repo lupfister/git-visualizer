@@ -19,6 +19,7 @@ import {
 } from './mapGridConnectorPathPersistence';
 import { buildMapGridCardSlotAssignments, computeMapGridCardSlotCount } from './MapGridCardVirtualizer';
 import {
+  buildMapGridCommitOutlinePath,
   cn,
   computeMapGridInvZoom,
   computeViewportCullBounds,
@@ -118,6 +119,7 @@ type CommitCardProps = {
   cardLeft: number;
   cardTop: number;
   displayZoom: number;
+  commitCornerRadiusPx: number;
   lineStrokeWidth: number;
   labelTopPx: number;
   selectedShaSet: Set<string>;
@@ -151,6 +153,7 @@ const MapGridCommitCard = memo(function MapGridCommitCard({
   cardLeft,
   cardTop,
   displayZoom,
+  commitCornerRadiusPx,
   lineStrokeWidth,
   labelTopPx,
   selectedShaSet,
@@ -254,9 +257,7 @@ const MapGridCommitCard = memo(function MapGridCommitCard({
           ? 'var(--remote)'
           : isSelectedCommit
             ? 'var(--select)'
-            : isUnpushedCommit && !isLocalUncommitted
-              ? 'var(--muted-foreground)'
-              : CONNECTOR_COLOR;
+            : CONNECTOR_COLOR;
   const nodeBorderWidth = isStashedCommit || isEmptyBranchNode || isLocalUncommitted
     ? 1.25 / displayZoom
     : lineStrokeWidth;
@@ -264,18 +265,17 @@ const MapGridCommitCard = memo(function MapGridCommitCard({
   const dashedStrokeDasharray = `${12 / displayZoom} ${6 / displayZoom}`;
   const dashedStrokeInset = nodeBorderWidth / 2;
   const cardBodyHeight = 176;
-  const dashedOutlinePath = useMemo(() => {
-    const inset = dashedStrokeInset;
-    const right = CARD_WIDTH - inset;
-    const bottom = cardBodyHeight - inset;
-    return `M ${inset} ${inset} H ${right} V ${bottom} H ${inset} Z`;
-  }, [dashedStrokeInset, cardBodyHeight]);
+  /** Unpushed branch commits and dashed stash/working-tree nodes keep counterscaled rounded corners. */
+  const useRoundedCardOutline = isDashedOutline || (isUnpushedCommit && !isDashedOutline);
+  const outlineCornerRadiusPx = useRoundedCardOutline ? commitCornerRadiusPx : 0;
+  const dashedOutlinePath = useMemo(
+    () => buildMapGridCommitOutlinePath(CARD_WIDTH, cardBodyHeight, dashedStrokeInset, outlineCornerRadiusPx),
+    [dashedStrokeInset, cardBodyHeight, outlineCornerRadiusPx],
+  );
   const solidOutlinePath = useMemo(() => {
     const inset = nodeBorderWidth / 2;
-    const right = CARD_WIDTH - inset;
-    const bottom = cardBodyHeight - inset;
-    return `M ${inset} ${inset} H ${right} V ${bottom} H ${inset} Z`;
-  }, [nodeBorderWidth, cardBodyHeight]);
+    return buildMapGridCommitOutlinePath(CARD_WIDTH, cardBodyHeight, inset, outlineCornerRadiusPx);
+  }, [nodeBorderWidth, cardBodyHeight, outlineCornerRadiusPx]);
   const unpushedCommitTextStyle: CSSProperties | undefined =
     isUnpushedCommit && !checkedOutAccentActive && !isSelectedCommit
       ? { color: 'var(--muted-foreground)' }
@@ -435,6 +435,7 @@ const MapGridCommitCard = memo(function MapGridCommitCard({
       </div>
       <div className={cn(
           'absolute left-0 h-[176px] w-full cursor-grab overflow-hidden active:cursor-grabbing',
+          useRoundedCardOutline ? 'rounded-tr-xl rounded-br-xl rounded-bl-xl rounded-tl-none' : '',
           showCommitTilePattern
             ? 'bg-background'
             : checkedOutAccentActive && !isUnpushedCommit && !isStashedCommit && !isEmptyBranchNode
@@ -454,6 +455,10 @@ const MapGridCommitCard = memo(function MapGridCommitCard({
           border: 'none',
           outline: 'none',
           boxShadow: 'none',
+          borderTopLeftRadius: 0,
+          borderTopRightRadius: useRoundedCardOutline ? `${outlineCornerRadiusPx}px` : 0,
+          borderBottomRightRadius: useRoundedCardOutline ? `${outlineCornerRadiusPx}px` : 0,
+          borderBottomLeftRadius: useRoundedCardOutline ? `${outlineCornerRadiusPx}px` : 0,
           contain: 'layout paint style',
         }}
       >
@@ -954,6 +959,7 @@ const MapGridCanvas = memo(function MapGridCanvas({
                 cardLeft={cardLeft}
                 cardTop={cardTop}
                 displayZoom={displayZoom}
+                commitCornerRadiusPx={commitCornerRadiusPx}
                 lineStrokeWidth={lineStrokeWidth}
                 labelTopPx={labelTopPx}
                 selectedShaSet={selectedShaSet}

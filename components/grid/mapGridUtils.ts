@@ -76,6 +76,35 @@ export const CAMERA_SETTLE_EPSILON = 0.001;
 export const ZOOM_SETTLE_EPSILON = 0.001;
 export const GRID_CONNECTOR_GAP_PX = 0;
 export const GRID_COMMIT_CORNER_RADIUS_BASE_PX = 12;
+
+/**
+ * Commit card outline: sharp top-left (label notch), rounded on the other three corners.
+ * Pass `cornerRadiusPx === 0` for a square outline.
+ */
+export function buildMapGridCommitOutlinePath(
+  width: number,
+  height: number,
+  inset: number,
+  cornerRadiusPx: number,
+): string {
+  const radius = Math.max(0, cornerRadiusPx);
+  if (radius <= 0) {
+    const right = width - inset;
+    const bottom = height - inset;
+    return `M ${inset} ${inset} H ${right} V ${bottom} H ${inset} Z`;
+  }
+  return (
+    `M ${inset} ${inset} ` +
+    `H ${width - inset - radius} ` +
+    `Q ${width - inset} ${inset} ${width - inset} ${inset + radius} ` +
+    `V ${height - inset - radius} ` +
+    `Q ${width - inset} ${height - inset} ${width - inset - radius} ${height - inset} ` +
+    `H ${inset + radius} ` +
+    `Q ${inset} ${height - inset} ${inset} ${height - inset - radius} ` +
+    `V ${inset}`
+  );
+}
+
 /** Persisted flag for cubic “loose cable” connectors on the branch map (`localStorage`). */
 export const GRID_LOOSE_CABLE_STORAGE_KEY = 'git-visualizer-loose-cable-connectors';
 const COMMIT_CULL_CELL_W = CARD_WIDTH + 48;
