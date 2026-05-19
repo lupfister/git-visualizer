@@ -330,7 +330,14 @@ export default function BranchGridMap({
   }, [controlledNodePositionOverrides, optimisticNodePositionOverrides]);
 
   const computedLayoutModel = useMemo(() => {
-    if (providedLayoutModel && Object.keys(nodePositionOverrides).length === 0) return providedLayoutModel;
+    const isDirty = checkedOutRef?.hasUncommittedChanges ?? false;
+    const providedHasWorkingTree =
+      providedLayoutModel?.allCommits.some((commit: { id: string }) => commit.id === 'WORKING_TREE') ?? false;
+    const canUseProvidedLayout =
+      providedLayoutModel &&
+      Object.keys(nodePositionOverrides).length === 0 &&
+      providedHasWorkingTree === isDirty;
+    if (canUseProvidedLayout) return providedLayoutModel;
     const lanes = buildLanes(branches, defaultBranch, branchCommitPreviews, branchParentByName);
     return computeBranchGridLayout({
       lanes,
@@ -370,6 +377,7 @@ export default function BranchGridMap({
     gridFocusSha,
     checkedOutRef?.headSha ?? null,
     checkedOutRef?.branchName ?? null,
+    checkedOutRef?.hasUncommittedChanges ?? false,
     orientation,
     nodePositionOverrides,
   ]);
