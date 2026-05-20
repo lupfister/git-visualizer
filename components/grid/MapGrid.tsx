@@ -27,6 +27,7 @@ import {
 } from './LayoutGrid';
 import { GitMerge } from 'lucide-react';
 import { computeBranchGridLayout, GRID_LAYOUT_RENDER_ZOOM } from './branchGridLayoutModel';
+import { layoutModelHasWorkingTree, stripWorkingTreeFromLayoutModel } from './workingTreeLayout';
 import type { BranchGridLayoutModel } from './branchGridLayoutModel';
 import { connectorsWithEffectivePositions } from './mapGridLiveConnectors';
 import {
@@ -331,13 +332,18 @@ export default function BranchGridMap({
 
   const computedLayoutModel = useMemo(() => {
     const isDirty = checkedOutRef?.hasUncommittedChanges ?? false;
-    const providedHasWorkingTree =
-      providedLayoutModel?.allCommits.some((commit: { id: string }) => commit.id === 'WORKING_TREE') ?? false;
+    const providedHasWorkingTree = layoutModelHasWorkingTree(providedLayoutModel ?? null);
+    const previewsHaveWorkingTree = Object.values(branchCommitPreviews).some((previews) =>
+      previews.some((preview) => preview.fullSha === 'WORKING_TREE' || preview.kind === 'uncommitted'),
+    );
     const canUseProvidedLayout =
       providedLayoutModel &&
       Object.keys(nodePositionOverrides).length === 0 &&
-      providedHasWorkingTree === isDirty;
-    if (canUseProvidedLayout) return providedLayoutModel;
+      providedHasWorkingTree === isDirty &&
+      previewsHaveWorkingTree === isDirty;
+    if (canUseProvidedLayout) {
+      return isDirty ? providedLayoutModel : stripWorkingTreeFromLayoutModel(providedLayoutModel);
+    }
     const lanes = buildLanes(branches, defaultBranch, branchCommitPreviews, branchParentByName);
     return computeBranchGridLayout({
       lanes,
