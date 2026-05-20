@@ -39,6 +39,18 @@ describe('computeTileGridLayout', () => {
     expect(Math.abs(gaps.horizontal - gaps.vertical)).toBeLessThan(0.25);
   });
 
+  it('matches edge gaps on square studio aspect ratio', () => {
+    const layout = computeTileGridLayout({
+      seed: 'test',
+      width: 540,
+      height: 540,
+      displayZoom: 1,
+    });
+    const gaps = tileEdgeGaps(layout);
+    expect(Math.abs(gaps.horizontal - gaps.vertical)).toBeLessThan(0.25);
+    expect(Math.abs(layout.cellW - layout.cellH)).toBeLessThan(0.25);
+  });
+
   it('reaches two rows at minimum display zoom via counterscale', () => {
     const { rows } = pickGridCounts(
       COMMIT_CARD_WIDTH,

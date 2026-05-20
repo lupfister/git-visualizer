@@ -40,7 +40,8 @@ const clampCount = (value: number, min: number, max: number): number =>
 
 /**
  * With square tiles sized from `min(cellW, cellH)`, gutters match only when cells are
- * roughly square. Search near the counterscaled column hint for `|cellW - cellH|` minimum.
+ * square. Rows come from counterscale; search all valid column counts for minimum
+ * `|cellW - cellH|` (±10 was too narrow for square / wide studio aspect ratios).
  */
 const pickColumnCountNearSquare = (
   columnHint: number,
@@ -48,25 +49,22 @@ const pickColumnCountNearSquare = (
   width: number,
   height: number,
 ): number => {
-  const lo = Math.max(TILE_COLS_MIN, columnHint - 10);
-  const hi = Math.min(
-    dynamicColsMax(width),
-    columnHint + 10,
-  );
-  let best = columnHint;
-  let bestDiff = Math.abs(width / columnHint - height / rowCount);
+  const cellH = height / rowCount;
+  const lo = TILE_COLS_MIN;
+  const hi = dynamicColsMax(width);
+  let best = clampCount(columnHint, lo, hi);
+  let bestScore = Infinity;
+
   for (let candidate = lo; candidate <= hi; candidate++) {
-    const diff = Math.abs(width / candidate - height / rowCount);
-    if (diff < bestDiff - 1e-9) {
-      bestDiff = diff;
-      best = candidate;
-    } else if (
-      Math.abs(diff - bestDiff) < 1e-9 &&
-      Math.abs(candidate - columnHint) < Math.abs(best - columnHint)
-    ) {
+    const squareDelta = Math.abs(width / candidate - cellH);
+    const drift = Math.abs(candidate - columnHint);
+    const score = squareDelta + drift * 0.02;
+    if (score < bestScore) {
+      bestScore = score;
       best = candidate;
     }
   }
+
   return best;
 };
 
