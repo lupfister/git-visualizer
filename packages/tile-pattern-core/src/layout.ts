@@ -5,7 +5,6 @@ import {
   TILE_COLS_MAX,
   TILE_COLS_MIN,
   TILE_CORNER_RADIUS_FRACTION,
-  TILE_PATTERN_MIN_DISPLAY_ZOOM,
   TILE_ROWS_BASE,
   TILE_ROWS_MAX,
   TILE_ROWS_MIN,
@@ -40,64 +39,78 @@ const clampCount = (value: number, min: number, max: number): number =>
   Math.max(min, Math.min(max, value));
 
 /**
- * Pick column/row counts so cells stay square (even gaps) while matching canvas size.
- * Uses one pitch for both axes instead of independent 26×9 bases.
+ * With square tiles sized from `min(cellW, cellH)`, gutters match only when cells are
+ * roughly square. Search near the counterscaled column hint for `|cellW - cellH|` minimum.
+ */
+const pickColumnCountNearSquare = (
+  columnHint: number,
+  rowCount: number,
+  width: number,
+  height: number,
+): number => {
+  const lo = Math.max(TILE_COLS_MIN, columnHint - 10);
+  const hi = Math.min(
+    dynamicColsMax(width),
+    columnHint + 10,
+  );
+  let best = columnHint;
+  let bestDiff = Math.abs(width / columnHint - height / rowCount);
+  for (let candidate = lo; candidate <= hi; candidate++) {
+    const diff = Math.abs(width / candidate - height / rowCount);
+    if (diff < bestDiff - 1e-9) {
+      bestDiff = diff;
+      best = candidate;
+    } else if (
+      Math.abs(diff - bestDiff) < 1e-9 &&
+      Math.abs(candidate - columnHint) < Math.abs(best - columnHint)
+    ) {
+      best = candidate;
+    }
+  }
+  return best;
+};
+
+const minCellSize = 6;
+
+const dynamicColsMax = (width: number): number =>
+  Math.min(
+    Math.floor(width / minCellSize),
+    Math.max(TILE_COLS_MAX, Math.round(width / (COMMIT_CARD_WIDTH / TILE_COLS_MAX))),
+  );
+
+const dynamicRowsMax = (height: number): number =>
+  Math.min(
+    Math.floor(height / minCellSize),
+    Math.max(TILE_ROWS_MAX, Math.round(height / (COMMIT_CARD_HEIGHT / TILE_ROWS_MAX))),
+  );
+
+/**
+ * Row/column counts follow independent invZ counterscale (gradual zoom-out).
+ * Only columns are nudged for square cells — rows track zoom smoothly down to two.
  */
 export const pickGridCounts = (
   width: number,
   height: number,
   displayZoom: number,
 ): { cols: number; rows: number } => {
-  const pitch = referenceCellPitch(displayZoom);
-  const colHint = Math.max(1, Math.round(width / pitch));
-  let rowHint = Math.max(1, Math.round(height / pitch));
+  const invZ = computeDisplayZoomInvZoom(displayZoom);
+  const nominalCellW = (width / TILE_COLS_BASE) * invZ;
+  const nominalCellH = (height / TILE_ROWS_BASE) * invZ;
 
-  if (displayZoom <= TILE_PATTERN_MIN_DISPLAY_ZOOM + 1e-6) {
-    rowHint = TILE_ROWS_MIN;
-  }
-
-  const minCellSize = 6;
-  const colsCeiling = Math.min(
-    TILE_COLS_MAX * 4,
-    Math.max(TILE_COLS_MIN, Math.floor(width / minCellSize)),
+  let cols = clampCount(
+    Math.round(width / nominalCellW),
+    TILE_COLS_MIN,
+    dynamicColsMax(width),
   );
-  const rowsCeiling = Math.min(
-    TILE_ROWS_MAX * 4,
-    Math.max(TILE_ROWS_MIN, Math.floor(height / minCellSize)),
+  let rows = clampCount(
+    Math.round(height / nominalCellH),
+    TILE_ROWS_MIN,
+    dynamicRowsMax(height),
   );
 
-  const colsFloor = TILE_COLS_MIN;
-  const rowsFloor =
-    displayZoom <= TILE_PATTERN_MIN_DISPLAY_ZOOM + 1e-6 ? TILE_ROWS_MIN : TILE_ROWS_MIN;
+  cols = pickColumnCountNearSquare(cols, rows, width, height);
 
-  const colsMax = Math.max(TILE_COLS_MAX, Math.min(colsCeiling, colHint + 16));
-  const rowsMax = Math.max(TILE_ROWS_MAX, Math.min(rowsCeiling, rowHint + 12));
-
-  let bestCols = clampCount(colHint, colsFloor, colsMax);
-  let bestRows = clampCount(rowHint, rowsFloor, rowsMax);
-  let bestScore = Infinity;
-
-  const colLo = clampCount(colHint - 16, colsFloor, colsMax);
-  const colHi = clampCount(colHint + 16, colsFloor, colsMax);
-  const rowLo = clampCount(rowHint - 10, rowsFloor, rowsMax);
-  const rowHi = clampCount(rowHint + 10, rowsFloor, rowsMax);
-
-  for (let cols = colLo; cols <= colHi; cols++) {
-    for (let rows = rowLo; rows <= rowHi; rows++) {
-      const cellW = width / cols;
-      const cellH = height / rows;
-      const squareDelta = Math.abs(cellW - cellH);
-      const drift = Math.abs(cols - colHint) + Math.abs(rows - rowHint);
-      const score = squareDelta + drift * 0.02;
-      if (score < bestScore) {
-        bestScore = score;
-        bestCols = cols;
-        bestRows = rows;
-      }
-    }
-  }
-
-  return { cols: bestCols, rows: bestRows };
+  return { cols, rows };
 };
 
 const pickTileShapeKind = (seed: string, col: number, row: number): TileShapeKind => {
