@@ -1,12 +1,11 @@
 ---
-description: Generate a one-sentence git stash message for uncommitted changes
+description: Generate a simple one-sentence git stash message for uncommitted changes
 subtask: true
 ---
 
-Output ONLY the raw git stash message — a single sentence in imperative mood.
+Write one simple grammatical sentence describing what is being stashed.
 
-Never include preamble, explanation, or meta text (e.g. never say "the agent generated").
-Never use quotes, markdown, or labels.
+Output only that sentence — no preamble, explanation, quotes, markdown, file lists, or labels.
 
 Uncommitted diff:
 !`git diff HEAD --no-color`

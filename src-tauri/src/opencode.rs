@@ -1,4 +1,3 @@
-use std::collections::HashSet;
 use std::io::Read;
 use std::net::{SocketAddr, TcpStream};
 use std::path::{Path, PathBuf};
@@ -12,12 +11,12 @@ const MIN_MESSAGE_LEN: usize = 8;
 const OPENCODE_TIMEOUT: Duration = Duration::from_secs(120);
 const OPENCODE_ATTACH_URL: &str = "http://127.0.0.1:4096";
 
-const INLINE_COMMIT_PROMPT: &str = "Output ONLY the raw git commit message text — nothing else.\n\
-No preamble (never say \"the agent generated\" or similar). No quotes. No markdown. One sentence, imperative mood.\n\n\
+const INLINE_COMMIT_PROMPT: &str = "Write one simple grammatical sentence describing what changed in this diff.\n\
+Output only that sentence — no preamble, quotes, markdown, file lists, or labels.\n\n\
 Diff:\n";
 
-const INLINE_STASH_PROMPT: &str = "Output ONLY the raw git stash message text — nothing else.\n\
-No preamble (never say \"the agent generated\" or similar). No quotes. No markdown. One sentence, imperative mood.\n\n\
+const INLINE_STASH_PROMPT: &str = "Write one simple grammatical sentence describing what is being stashed in this diff.\n\
+Output only that sentence — no preamble, quotes, markdown, file lists, or labels.\n\n\
 Diff:\n";
 
 fn resolve_opencode_binary() -> Result<PathBuf, String> {
@@ -62,44 +61,6 @@ fn truncate_diff(diff: &str) -> String {
         "{}\n\n[diff truncated at {} chars]",
         &diff[..MAX_DIFF_CHARS],
         MAX_DIFF_CHARS
-    )
-}
-
-fn path_basename(path: &str) -> &str {
-    path.rsplit(['/', '\\']).next().unwrap_or(path)
-}
-
-fn extract_changed_paths(diff: &str) -> Vec<String> {
-    let mut paths = Vec::new();
-    let mut seen = HashSet::new();
-    for line in diff.lines() {
-        let Some(path) = line.strip_prefix("+++ b/") else {
-            continue;
-        };
-        let path = path.trim();
-        if path.is_empty() || path == "/dev/null" {
-            continue;
-        }
-        if seen.insert(path.to_string()) {
-            paths.push(path.to_string());
-        }
-    }
-    paths
-}
-
-pub fn fallback_message_from_diff(diff: &str) -> String {
-    let paths = extract_changed_paths(diff);
-    if paths.is_empty() {
-        return "Update local changes".to_string();
-    }
-    if paths.len() == 1 {
-        return format!("Update {}", path_basename(&paths[0]));
-    }
-    let extra = paths.len() - 1;
-    let suffix = if extra == 1 { "file" } else { "files" };
-    format!(
-        "Update {} and {extra} more {suffix}",
-        path_basename(&paths[0])
     )
 }
 
@@ -226,6 +187,9 @@ pub fn is_unacceptable_message(text: &str) -> bool {
         "nothing else to output",
         "output only",
         "imperative mood",
+        " more files",
+        " more file",
+        "update local changes",
     ];
     MARKERS.iter().any(|marker| lower.contains(marker))
 }
@@ -296,9 +260,7 @@ fn sanitize_single_line_message(raw: &str, empty_label: &str) -> Result<String, 
 
 #[cfg(test)]
 mod tests {
-    use super::{
-        fallback_message_from_diff, is_unacceptable_message, sanitize_single_line_message,
-    };
+    use super::{is_unacceptable_message, sanitize_single_line_message};
 
     #[test]
     fn strips_agent_meta_wrapper_and_markdown() {
@@ -343,11 +305,6 @@ mod tests {
         assert_eq!(message, "Fix unpushed commit detection");
     }
 
-    #[test]
-    fn fallback_from_diff_uses_paths() {
-        let diff = "diff --git a/src/foo.rs b/src/foo.rs\n+++ b/src/foo.rs\n";
-        assert_eq!(fallback_message_from_diff(diff), "Update foo.rs");
-    }
 }
 
 fn run_opencode(
@@ -458,35 +415,38 @@ fn generate_message_with_retries(
     command: &str,
     inline_prompt_prefix: &str,
     empty_label: &str,
-) -> String {
-    let repo_path = match repo.to_str() {
-        Some(path) => path,
-        None => return fallback_message_from_diff(diff),
-    };
+    failure_label: &str,
+) -> Result<String, String> {
+    let repo_path = repo
+        .to_str()
+        .ok_or_else(|| "Repository path is not valid UTF-8.".to_string())?;
 
     if diff.trim().is_empty() {
-        return "Update local changes".to_string();
+        return Err("No local changes to describe.".to_string());
     }
 
-    let Ok(binary) = resolve_opencode_binary() else {
-        return fallback_message_from_diff(diff);
-    };
-
+    let binary = resolve_opencode_binary()?;
     let truncated = truncate_diff(diff);
+    let mut last_error = String::from("OpenCode did not return a usable message.");
 
     for attempt in 1..=MAX_GENERATION_ATTEMPTS {
-        if let Ok(raw) = run_opencode_once(
+        match run_opencode_once(
             &binary,
             repo_path,
             command,
             inline_prompt_prefix,
             &truncated,
         ) {
-            if let Ok(message) = sanitize_single_line_message(&raw, empty_label) {
-                if !is_unacceptable_message(&message) {
-                    return message;
+            Ok(raw) => match sanitize_single_line_message(&raw, empty_label) {
+                Ok(message) if !is_unacceptable_message(&message) => return Ok(message),
+                Ok(_) => {
+                    last_error = format!(
+                        "OpenCode returned meta text instead of a {empty_label}."
+                    );
                 }
-            }
+                Err(err) => last_error = err,
+            },
+            Err(err) => last_error = err,
         }
 
         if attempt < MAX_GENERATION_ATTEMPTS {
@@ -494,27 +454,31 @@ fn generate_message_with_retries(
         }
     }
 
-    fallback_message_from_diff(diff)
+    Err(format!(
+        "Failed to generate a {failure_label} after {MAX_GENERATION_ATTEMPTS} attempts. {last_error}"
+    ))
 }
 
 pub fn generate_commit_message(repo: &Path, diff: &str) -> Result<String, String> {
-    Ok(generate_message_with_retries(
+    generate_message_with_retries(
         repo,
         diff,
         "commit",
         INLINE_COMMIT_PROMPT,
         "commit message",
-    ))
+        "commit message",
+    )
 }
 
 pub fn generate_stash_message(repo: &Path, diff: &str) -> Result<String, String> {
-    Ok(generate_message_with_retries(
+    generate_message_with_retries(
         repo,
         diff,
         "stash",
         INLINE_STASH_PROMPT,
         "stash message",
-    ))
+        "stash message",
+    )
 }
 
 pub fn validate_generated_message(message: &str, label: &str) -> Result<(), String> {
