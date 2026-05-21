@@ -15,6 +15,7 @@ import {
   stripWorkingTreeFromLayoutModel,
 } from '../components/grid/workingTreeLayout';
 import type { Branch, BranchCommitPreview, BranchPromptMeta, CheckedOutRef, DirectCommit, GitHubAuthStatus, GitHubInfo, GitStashEntry, MergeNode, OpenPR, RepoVisualSnapshot, WorktreeInfo } from '../types';
+import { applyBranchParents, isParallelEmptyBranchParent } from '../lib/branchParents';
 import { foldStashNodesIntoGraph } from './placeStashNode';
 import { deriveRepoVisualState } from './repoVisualState';
 import { setMapGridBackgroundActivity } from '../components/grid/mapGridBackgroundActivity';
@@ -496,9 +497,12 @@ function App() {
         branchUniqueAheadCounts: snapshot.branchUniqueAheadCounts ?? {},
         defaultBranch: snapshot.defaultBranch ?? project.branchName ?? 'main',
         treeLoaded: snapshot.loaded ?? false,
+        branchParentByName: isActiveProject
+          ? branchParentByName
+          : snapshot.branchParentByName ?? {},
       };
     }),
-    [projects, projectSnapshots, repoPath, checkedOutRef],
+    [projects, projectSnapshots, repoPath, checkedOutRef, branchParentByName],
   );
   const gridHudProps = useMemo(
     () => ({
@@ -2134,12 +2138,17 @@ function App() {
       const parentFromLatest = isValidParentBranch(latestBranchParentByNameRef.current[branch.name] ?? null, branch.name)
         ? latestBranchParentByNameRef.current[branch.name]!
         : null;
-      nextBranchParentByName[branch.name] =
+      const branchesByName = new Map(branches.map((item) => [item.name, item] as const));
+      let resolvedParent =
         parentFromGraph ??
         parentFromForkSha ??
         parentFromBranchMeta ??
         parentFromLatest ??
         null;
+      if (isParallelEmptyBranchParent(branch, resolvedParent, branchesByName)) {
+        resolvedParent = defaultBranch;
+      }
+      nextBranchParentByName[branch.name] = resolvedParent;
     }
 
     setBranchPromptMeta({});
@@ -3182,11 +3191,21 @@ function App() {
   const enrichedBranchParentByName = useMemo(() => {
     const map: Record<string, string | null> = { ...branchParentByName };
     map[defaultBranch] = null;
+    const branchesByName = new Map(enrichedBranches.map((branch) => [branch.name, branch] as const));
+    for (const branch of enrichedBranches) {
+      if (branch.name === defaultBranch) continue;
+      const raw = map[branch.name] ?? branch.parentBranch ?? null;
+      map[branch.name] = isParallelEmptyBranchParent(branch, raw, branchesByName) ? defaultBranch : raw;
+    }
     return map;
   }, [branchParentByName, defaultBranch, enrichedBranches]);
+  const branchesForLayout = useMemo(
+    () => applyBranchParents(enrichedBranches, enrichedBranchParentByName, defaultBranch),
+    [enrichedBranches, enrichedBranchParentByName, defaultBranch],
+  );
   const sharedGridLanes = useMemo(
-    () => buildLanes(enrichedBranches, defaultBranch, enrichedBranchCommitPreviews, enrichedBranchParentByName),
-    [enrichedBranches, defaultBranch, enrichedBranchCommitPreviews, enrichedBranchParentByName],
+    () => buildLanes(branchesForLayout, defaultBranch, enrichedBranchCommitPreviews, enrichedBranchParentByName),
+    [branchesForLayout, defaultBranch, enrichedBranchCommitPreviews, enrichedBranchParentByName],
   );
   const openedClumpsSignature = useMemo(
     () => setSignature(manuallyOpenedGridClumps),
@@ -3198,13 +3217,13 @@ function App() {
   );
   const graphLayoutSignature = useMemo(
     () => [
-      'layout-v6-working-tree-epoch',
+      'layout-v9-empty-branch-stash-column',
       layoutEpoch,
       defaultBranch,
       visualCheckedOutRef?.branchName ?? '',
       visualCheckedOutRef?.headSha ?? '',
       visualCheckedOutRef?.hasUncommittedChanges ? '1' : '0',
-      enrichedBranches.map((branch) => `${branch.name}:${branch.headSha}:${branch.commitsAhead}:${branch.commitsBehind}`).join('|'),
+      branchesForLayout.map((branch) => `${branch.name}:${branch.headSha}:${branch.commitsAhead}:${branch.commitsBehind}:${branch.parentBranch ?? ''}`).join('|'),
       enrichedDirectCommits.length,
       enrichedUnpushedDirectCommits.map((commit) => commit.fullSha).sort().join('|'),
       mergeNodes.map((node) => `${node.fullSha}:${node.targetBranch}:${node.targetCommitSha}`).join('|'),
@@ -3215,7 +3234,7 @@ function App() {
       visualCheckedOutRef?.branchName,
       visualCheckedOutRef?.headSha,
       visualCheckedOutRef?.hasUncommittedChanges,
-      enrichedBranches,
+      branchesForLayout,
       enrichedDirectCommits,
       enrichedUnpushedDirectCommits,
       mergeNodes,
@@ -3286,7 +3305,7 @@ function App() {
   const sharedGridLayoutModel: BranchGridLayoutModel = useMemo(
     () => {
       const hasGraphSourceData =
-        enrichedBranches.length > 0 ||
+        branchesForLayout.length > 0 ||
         enrichedDirectCommits.length > 0 ||
         enrichedUnpushedDirectCommits.length > 0;
       const hydratedLooksEmptyButShouldNot =
@@ -3316,7 +3335,7 @@ function App() {
       }
       return computeBranchGridLayout({
         lanes: sharedGridLanes,
-        branches: enrichedBranches,
+        branches: branchesForLayout,
         mergeNodes,
         directCommits: enrichedDirectCommits,
         unpushedDirectCommits: enrichedUnpushedDirectCommits,
@@ -3336,7 +3355,7 @@ function App() {
     },
     [
       sharedGridLanes,
-      enrichedBranches,
+      branchesForLayout,
       mergeNodes,
       enrichedDirectCommits,
       enrichedUnpushedDirectCommits,
@@ -3555,7 +3574,7 @@ function App() {
           <div className="relative min-h-0 min-w-0 flex-1 overflow-hidden">
             <div className="pointer-events-none absolute left-0 right-0 top-0 z-40 h-12" />
               <BranchGridMapView
-                branches={enrichedBranches}
+                branches={branchesForLayout}
                 mergeNodes={mergeNodes}
                 directCommits={enrichedDirectCommits}
                 unpushedDirectCommits={enrichedUnpushedDirectCommits}

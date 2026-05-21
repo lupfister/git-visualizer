@@ -53,7 +53,7 @@ struct DeleteSelectionResult {
 static WATCHER_STATE: OnceLock<Mutex<HashMap<String, notify::RecommendedWatcher>>> = OnceLock::new();
 const GIT_ACTIVITY_LOCAL_MIN_EMIT_MS: u64 = 250;
 const GIT_ACTIVITY_GRAPH_MIN_EMIT_MS: u64 = 120;
-const REPO_VISUAL_CACHE_SCHEMA_VERSION: i32 = 5;
+const REPO_VISUAL_CACHE_SCHEMA_VERSION: i32 = 6;
 const PROJECT_SNAPSHOT_SCHEMA_VERSION: i32 = 1;
 const PROJECT_SNAPSHOT_RETAIN_COUNT: i64 = 2;
 #[cfg(target_os = "macos")]

@@ -120,6 +120,9 @@ pub fn list_branches(repo: &Path, default_branch: &str) -> Result<Vec<Branch>, G
         .collect();
 
     let default_first_parent_shas = get_first_parent_shas(repo, default_branch).unwrap_or_default();
+    let default_head_sha = cli::run(repo, &["rev-parse", default_branch])
+        .map(|output| output.trim().to_string())
+        .unwrap_or_default();
 
     let mut branches: Vec<Branch> = branch_names
         .par_iter()
@@ -129,7 +132,9 @@ pub fn list_branches(repo: &Path, default_branch: &str) -> Result<Vec<Branch>, G
                 Err(_) => build_branch_fallback(repo, name, default_branch),
             }
         })
-        .filter(|branch| !is_fast_forward_merged_into_base(branch, &default_first_parent_shas))
+        .filter(|branch| {
+            !is_fast_forward_merged_into_base(branch, &default_first_parent_shas, &default_head_sha)
+        })
         .collect();
 
     infer_branch_parents(repo, &mut branches, default_branch)?;
@@ -140,15 +145,22 @@ pub fn list_branches(repo: &Path, default_branch: &str) -> Result<Vec<Branch>, G
     Ok(branches)
 }
 
+/// Hide redundant local refs that add no commits vs default (merged/ff duplicates).
+/// Keep branches that sit at an older or newer point than default (e.g. `worktree-agents` at a prior commit).
 fn is_fast_forward_merged_into_base(
     branch: &Branch,
     default_first_parent_shas: &HashSet<String>,
+    default_head_sha: &str,
 ) -> bool {
     if branch.head_sha.is_empty() {
         return false;
     }
-    // A branch is considered FF-merged when its tip is on the default branch
-    // first-parent chain and it has no unique commits ahead of default.
+    if branch.commits_ahead > 0 || branch.commits_behind > 0 {
+        return false;
+    }
+    if !default_head_sha.is_empty() && branch.head_sha == default_head_sha {
+        return true;
+    }
     branch.commits_ahead <= 0 && default_first_parent_shas.contains(&branch.head_sha)
 }
 
@@ -340,6 +352,12 @@ fn infer_branch_parents(
             }
         }
 
+        if let Some(ref proposed_parent) = parent_name {
+            if is_same_tip_empty_peer_parent(branch, proposed_parent, &candidates) {
+                parent_name = default_parent_name.clone();
+            }
+        }
+
         branch.parent_branch = parent_name.clone();
 
         if let Some(parent_ref) = parent_name.as_deref() {
@@ -409,6 +427,23 @@ fn candidate_created_key(
         .unwrap_or_else(|| candidate.last_commit_date.clone())
 }
 
+fn is_same_tip_empty_peer_parent(
+    branch: &Branch,
+    parent_name: &str,
+    candidates: &[ParentCandidate],
+) -> bool {
+    if branch.commits_ahead > 0 {
+        return false;
+    }
+    let Some(parent) = candidates.iter().find(|candidate| candidate.name == parent_name) else {
+        return false;
+    };
+    if branch.head_sha.is_empty() || parent.head_sha.is_empty() {
+        return false;
+    }
+    branch.head_sha == parent.head_sha
+}
+
 fn infer_parent_from_same_head_siblings(
     branch: &Branch,
     created_from_reflog_date: Option<&str>,
@@ -416,6 +451,11 @@ fn infer_parent_from_same_head_siblings(
     creation_info_by_name: &HashMap<String, BranchCreationInfo>,
 ) -> Option<String> {
     if branch.head_sha.is_empty() {
+        return None;
+    }
+    // Parallel refs at the same tip with no unique commits (e.g. worktree-agents + tile-nodebkd)
+    // are siblings under default, not parent/child.
+    if branch.commits_ahead <= 0 {
         return None;
     }
 

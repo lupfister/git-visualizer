@@ -1,6 +1,7 @@
 import { buildLanes } from '../components/grid/LayoutGrid';
 import { computeBranchGridLayout, type BranchGridLayoutModel } from '../components/grid/branchGridLayoutModel';
 import type { Branch, BranchCommitPreview, CheckedOutRef, DirectCommit, GitStashEntry, MergeNode } from '../types';
+import { applyBranchParents } from '../lib/branchParents';
 import { foldStashNodesIntoGraph } from './placeStashNode';
 
 type RepoVisualStateInput = {
@@ -139,10 +140,11 @@ export function deriveRepoVisualState({
 
   const enrichedBranchParentByName: Record<string, string | null> = { ...branchParentByName };
   enrichedBranchParentByName[defaultBranch] = null;
-  const sharedGridLanes = buildLanes(enrichedBranches, defaultBranch, enrichedBranchCommitPreviews, enrichedBranchParentByName);
+  const branchesForLayout = applyBranchParents(enrichedBranches, enrichedBranchParentByName, defaultBranch);
+  const sharedGridLanes = buildLanes(branchesForLayout, defaultBranch, enrichedBranchCommitPreviews, enrichedBranchParentByName);
   const sharedGridLayoutModel = computeBranchGridLayout({
     lanes: sharedGridLanes,
-    branches: enrichedBranches,
+    branches: branchesForLayout,
     mergeNodes,
     directCommits: enrichedDirectCommits,
     unpushedDirectCommits,
@@ -161,7 +163,7 @@ export function deriveRepoVisualState({
   });
 
   return {
-    enrichedBranches,
+    enrichedBranches: branchesForLayout,
     enrichedBranchCommitPreviews,
     enrichedBranchUniqueAheadCounts,
     enrichedDirectCommits,

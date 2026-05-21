@@ -27,6 +27,7 @@ type Props = {
     branchCommitPreviews: Record<string, BranchCommitPreview[]>;
     branchUniqueAheadCounts: Record<string, number>;
     defaultBranch: string;
+    branchParentByName?: Record<string, string | null>;
     treeLoaded?: boolean;
   }>;
   activeProjectPath: string | null;
@@ -54,11 +55,16 @@ type Props = {
   collapsed?: boolean;
 };
 
-function buildChildBranchesByParent(branches: Branch[], defaultBranch: string): Map<string, string[]> {
+function buildChildBranchesByParent(
+  branches: Branch[],
+  defaultBranch: string,
+  branchParentByName: Record<string, string | null> = {},
+): Map<string, string[]> {
   const branchByName = new Map(branches.map((branch) => [branch.name, branch]));
   const childNamesByParent = new Map<string, string[]>();
   for (const branch of branches) {
-    const parent = branch.parentBranch;
+    const mappedParent = branchParentByName[branch.name];
+    const parent = mappedParent !== undefined ? (mappedParent ?? undefined) : branch.parentBranch;
     if (!parent || parent === branch.name) continue;
     const parentIsKnownBranch = branchByName.has(parent) || parent === defaultBranch;
     if (!parentIsKnownBranch) continue;
@@ -908,6 +914,7 @@ export default function DenseBranchSidebar({
         unpushedCommitShasByBranch: project.unpushedCommitShasByBranch,
         defaultBranch: project.defaultBranch,
         branchCommitPreviews: project.branchCommitPreviews,
+        branchParentByName: project.branchParentByName ?? {},
         branchUniqueAheadCounts: project.branchUniqueAheadCounts,
         checkedOutRef: project.checkedOutRef,
         stashes: project.stashes,
@@ -968,7 +975,11 @@ export default function DenseBranchSidebar({
         }
         return [];
       };
-      const childNamesByParent = buildChildBranchesByParent(branchesWithDefault, project.defaultBranch);
+      const childNamesByParent = buildChildBranchesByParent(
+        branchesWithDefault,
+        project.defaultBranch,
+        project.branchParentByName ?? {},
+      );
       const rootBranchNames = buildRootNames(branchesWithDefault, project.defaultBranch, childNamesByParent);
       const branchByName = new Map(branchesWithDefault.map((branch) => [branch.name, branch]));
       const branchAnchorShaByName = new Map<string, string | null>();

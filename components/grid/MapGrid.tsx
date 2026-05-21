@@ -1042,6 +1042,12 @@ export default function BranchGridMap({
       centerX,
       centerY,
     );
+    for (const node of renderNodes) {
+      if (!node.commit.id.startsWith('BRANCH_HEAD:')) continue;
+      if (nextVisible.has(node.commit.visualId)) {
+        cappedVisible.add(node.commit.visualId);
+      }
+    }
 
     if (isCameraMovingRef.current) {
       settlePrunePendingRef.current = false;
@@ -1114,7 +1120,7 @@ export default function BranchGridMap({
         return pruneVisibleNodesTowardTarget(base, cappedVisible, MAP_GRID_MAX_NODES_REMOVED_PER_FRAME);
       });
     });
-  }, [commitCullSpatialIndex, isCameraMovingRef, nodeByVisualId, renderedCameraRef]);
+  }, [commitCullSpatialIndex, isCameraMovingRef, nodeByVisualId, renderedCameraRef, renderNodes]);
 
   const spatialCullRafRef = useRef<number | null>(null);
 

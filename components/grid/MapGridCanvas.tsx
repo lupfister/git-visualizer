@@ -161,7 +161,7 @@ const MapGridCommitCard = memo(function MapGridCommitCard({
   cardLeft,
   cardTop,
   displayZoom,
-  lineStrokeWidth: _lineStrokeWidth,
+  lineStrokeWidth,
   selectedShaSet,
   normalizedSearchQuery,
   matchingNodeIds,
@@ -252,6 +252,7 @@ const MapGridCommitCard = memo(function MapGridCommitCard({
         ? { color: 'var(--select)' }
         : undefined;
   const isDashedOutline = isEmptyBranchNode;
+  const emptyBranchBorderWidthPx = isEmptyBranchNode ? (lineStrokeWidth * 2) / 1.5 : null;
   /** All commit cards except empty-branch placeholders. */
   const showCommitTilePattern = !isEmptyBranchNode;
   /** Animated noisy gaps (working tree, stash). Unpushed uses static gaps only. */
@@ -273,15 +274,17 @@ const MapGridCommitCard = memo(function MapGridCommitCard({
     isFocused ? 'z-30' : '',
   );
 
-  const headerLabel = isLocalUncommitted && branchName
-    ? `${branchName}/uncommitted`
-    : isLocalUncommitted
-      ? 'uncommitted'
-      : isStashedCommit && stashHeaderLabel
-        ? stashHeaderLabel
-        : node.commit.branchName
-          ? `${node.commit.branchName}/${node.commit.id.slice(0, 7)}`
-          : node.commit.id.slice(0, 7);
+  const headerLabel = isEmptyBranchNode
+    ? node.commit.branchName
+    : isLocalUncommitted && branchName
+      ? `${branchName}/uncommitted`
+      : isLocalUncommitted
+        ? 'uncommitted'
+        : isStashedCommit && stashHeaderLabel
+          ? stashHeaderLabel
+          : node.commit.branchName
+            ? `${node.commit.branchName}/${node.commit.id.slice(0, 7)}`
+            : node.commit.id.slice(0, 7);
 
   const bodyMessage = isLocalUncommitted
     ? ''
@@ -514,12 +517,13 @@ const MapGridCommitCard = memo(function MapGridCommitCard({
                     : isEmptyBranchNode
                       ? 'bg-transparent'
                       : 'bg-muted',
+          isEmptyBranchNode ? 'border border-dashed border-border/50' : '',
         )}
         style={{
           top: 0,
-          border: 'none',
-          outline: 'none',
-          boxShadow: 'none',
+          ...(isEmptyBranchNode
+            ? { borderWidth: `${emptyBranchBorderWidthPx}px` }
+            : { border: 'none', outline: 'none', boxShadow: 'none' }),
           borderTopLeftRadius: 0,
           borderTopRightRadius: outlineCornerRadiusCss,
           borderBottomRightRadius: outlineCornerRadiusCss,

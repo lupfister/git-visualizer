@@ -61,7 +61,8 @@ function linkChildToParent(
   };
 }
 
-function resolveAnchorOwningBranchName(
+/** Branch that owns an anchor commit on the graph (stash + empty-branch placeholders use this for lane +1). */
+export function resolveAnchorOwningBranchName(
   anchorSha: string | null | undefined,
   directCommits: DirectCommit[],
   branchCommitPreviews: Record<string, BranchCommitPreview[]>,
