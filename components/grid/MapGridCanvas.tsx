@@ -22,6 +22,7 @@ import {
   cn,
   computeViewportCullBounds,
   GRID_COMMIT_CORNER_RADIUS_BASE_PX,
+  isCommitUnpushedOnBranch,
 } from './mapGridUtils';
 import type { ConnectorFace, Node, NodePositionOverrides } from './LayoutGrid';
 import type { MapGridCameraState, MapGridCameraTargetLayout } from './useMapGridCamera';
@@ -211,7 +212,8 @@ const MapGridCommitCard = memo(function MapGridCommitCard({
   const isStashedCommit = node.commit.kind === 'stash' || commitId.startsWith('STASH:');
   const isEmptyBranchNode = node.commit.kind === 'branch-created' && commitId.startsWith('BRANCH_HEAD:');
   const isUnpushedCommit =
-    isLocalUncommitted || (unpushedCommitShasSetByBranch.get(branchName)?.has(commitId) ?? false);
+    isLocalUncommitted ||
+    isCommitUnpushedOnBranch(commitId, branchName, unpushedCommitShasSetByBranch);
   const isExplicitRemoteCommit = node.commit.isRemote === true;
   const isRemoteCommit =
     !isLocalUncommitted &&

@@ -264,28 +264,6 @@ export const CommitNodeTilePattern = memo(
     const omissionSamplerRef = useRef(omissionSampler);
     omissionSamplerRef.current = omissionSampler;
 
-    const paintCells = useMemo(() => {
-      if (!randomTileGaps) {
-        return layout.cells;
-      }
-      if (animateTileGaps) {
-        return layout.cells;
-      }
-      return layout.cells.filter(
-        (cell) =>
-          !isTileOmittedAt(
-            seed,
-            cell.col,
-            cell.row,
-            TILE_PATTERN_DEFAULT_DISPLAY_ZOOM,
-            tileOmissionRate,
-          ),
-      );
-    }, [animateTileGaps, layout.cells, randomTileGaps, seed, tileOmissionRate, topologyKey]);
-
-    const paintCellsRef = useRef(paintCells);
-    paintCellsRef.current = paintCells;
-
     const shapeRefsByKey = useRef(new Map<string, TileShapeRefs>());
     const presencesRef = useRef<Float32Array>(new Float32Array(layout.cols * layout.rows));
     const gapAnimStartMsRef = useRef(0);
@@ -302,14 +280,13 @@ export const CommitNodeTilePattern = memo(
 
     const paintTiles = useCallback(() => {
       const layoutSnapshot = layoutRef.current;
-      const cells = paintCellsRef.current;
       if (shapeRefsByKey.current.size === 0) {
         return;
       }
 
       applyTileOpacities(
         layoutSnapshot,
-        cells,
+        layoutSnapshot.cells,
         omissionSamplerRef.current ? presencesRef.current : null,
         boostsRef.current,
         shapeRefsByKey.current,
@@ -371,7 +348,7 @@ export const CommitNodeTilePattern = memo(
         return;
       }
       paintTiles();
-    }, [boosts, omissionSampler, paintTiles, paintCells]);
+    }, [boosts, omissionSampler, paintTiles]);
 
     const stopHoverLoop = useCallback(() => {
       if (rafRef.current != null) {

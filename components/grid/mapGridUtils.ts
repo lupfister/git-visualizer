@@ -121,6 +121,32 @@ export function cn(...classes: Array<string | false | null | undefined>): string
   return classes.filter(Boolean).join(' ');
 }
 
+/** Prefix-safe SHA equality (matches branch grid layout). */
+export const shasMatch = (left: string | null | undefined, right: string | null | undefined): boolean => {
+  if (!left || !right) return false;
+  return left === right || left.startsWith(right) || right.startsWith(left);
+};
+
+export const isCommitUnpushedOnBranch = (
+  commitSha: string,
+  branchName: string,
+  unpushedShasByBranch: Map<string, Set<string>>,
+): boolean => {
+  const branchesToCheck = [branchName];
+  const localSuffix = ' (local)';
+  if (branchName.endsWith(localSuffix)) {
+    branchesToCheck.push(branchName.slice(0, -localSuffix.length));
+  }
+  for (const name of branchesToCheck) {
+    const set = unpushedShasByBranch.get(name);
+    if (!set) continue;
+    for (const candidate of set) {
+      if (shasMatch(candidate, commitSha)) return true;
+    }
+  }
+  return false;
+};
+
 export function clampZoom(value: number): number {
   return Math.max(GRID_ZOOM_MIN, Math.min(GRID_ZOOM_MAX, value));
 }
