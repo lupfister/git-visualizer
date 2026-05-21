@@ -631,6 +631,17 @@ pub fn get_working_tree_diff(repo: &Path) -> Result<String, GitError> {
     Ok(format!("{diff}\n\n--- status ---\n{status}"))
 }
 
+/// Compact summary for AI commit/stash titles (`--stat` + status, not full hunks).
+pub fn get_working_tree_summary(repo: &Path) -> Result<String, GitError> {
+    let stat = cli::run(repo, &["diff", "HEAD", "--stat", "--no-color"]).unwrap_or_default();
+    let status = cli::run(repo, &["status", "--short", "--untracked-files=normal"])
+        .unwrap_or_default();
+    if stat.trim().is_empty() && status.trim().is_empty() {
+        return Ok(String::new());
+    }
+    Ok(format!("{stat}\n--- status ---\n{status}"))
+}
+
 /// Stage all changes (`git add -A`) and create a commit with the given message.
 pub fn commit_working_tree(repo: &Path, message: &str) -> Result<(), GitError> {
     cli::run(repo, &["add", "-A"])?;

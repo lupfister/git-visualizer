@@ -1,14 +1,12 @@
 ---
-description: Generate a simple one-sentence git commit message for uncommitted changes
-subtask: true
+description: One-line commit title (max 72 chars)
+subtask: false
 ---
 
-Write one simple grammatical sentence describing what changed.
+Write one git commit title (max 72 characters, imperative, high-level only).
 
-Output only that sentence — no preamble, explanation, quotes, markdown, file lists, or labels.
+Never list files, paths, or diff details. No preamble.
 
-Uncommitted diff:
-!`git diff HEAD --no-color`
+!`git diff HEAD --stat --no-color`
 
-Status:
 !`git status --short --untracked-files=normal`

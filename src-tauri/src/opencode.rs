@@ -4,20 +4,36 @@ use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 use std::time::{Duration, Instant};
 
-const MAX_DIFF_CHARS: usize = 80_000;
-const MAX_GENERATION_ATTEMPTS: u32 = 5;
-const RETRY_DELAY_MS: u64 = 500;
-const MIN_MESSAGE_LEN: usize = 8;
-const OPENCODE_TIMEOUT: Duration = Duration::from_secs(120);
+const MAX_PROMPT_CHARS: usize = 8_000;
+const MAX_GENERATION_ATTEMPTS: u32 = 3;
+const RETRY_DELAY_MS: u64 = 400;
+const MAX_MESSAGE_CHARS: usize = 72;
+const MAX_MESSAGE_WORDS: usize = 12;
+const MIN_MESSAGE_LEN: usize = 6;
+const OPENCODE_TIMEOUT: Duration = Duration::from_secs(90);
 const OPENCODE_ATTACH_URL: &str = "http://127.0.0.1:4096";
 
-const INLINE_COMMIT_PROMPT: &str = "Write one simple grammatical sentence describing what changed in this diff.\n\
-Output only that sentence — no preamble, quotes, markdown, file lists, or labels.\n\n\
-Diff:\n";
+const COMMIT_TITLE_PROMPT: &str = "\
+You write git commit titles only.\n\
+\n\
+Rules:\n\
+- Output exactly one line, at most 72 characters\n\
+- Imperative mood (Fix, Add, Remove, …)\n\
+- High-level purpose only — never list files, paths, or per-hunk details\n\
+- No preamble, explanation, quotes, markdown, or trailing colon\n\
+\n\
+Changes:\n";
 
-const INLINE_STASH_PROMPT: &str = "Write one simple grammatical sentence describing what is being stashed in this diff.\n\
-Output only that sentence — no preamble, quotes, markdown, file lists, or labels.\n\n\
-Diff:\n";
+const STASH_TITLE_PROMPT: &str = "\
+You write git stash titles only.\n\
+\n\
+Rules:\n\
+- Output exactly one line, at most 72 characters\n\
+- Imperative mood (Stash, Save, …)\n\
+- High-level purpose only — never list files, paths, or per-hunk details\n\
+- No preamble, explanation, quotes, markdown, or trailing colon\n\
+\n\
+Changes:\n";
 
 fn resolve_opencode_binary() -> Result<PathBuf, String> {
     let probe = if cfg!(windows) {
@@ -53,14 +69,13 @@ fn opencode_server_available() -> bool {
     TcpStream::connect_timeout(&addr, Duration::from_millis(250)).is_ok()
 }
 
-fn truncate_diff(diff: &str) -> String {
-    if diff.len() <= MAX_DIFF_CHARS {
-        return diff.to_string();
+fn truncate_summary(summary: &str) -> String {
+    if summary.len() <= MAX_PROMPT_CHARS {
+        return summary.to_string();
     }
     format!(
-        "{}\n\n[diff truncated at {} chars]",
-        &diff[..MAX_DIFF_CHARS],
-        MAX_DIFF_CHARS
+        "{}\n\n[summary truncated]",
+        &summary[..MAX_PROMPT_CHARS]
     )
 }
 
@@ -90,63 +105,22 @@ fn strip_markdown(text: &str) -> String {
         .to_string()
 }
 
-fn extract_quoted_strings(text: &str) -> Vec<String> {
-    let mut quoted = Vec::new();
-    let chars: Vec<char> = text.chars().collect();
-    let mut index = 0;
-    while index < chars.len() {
-        let quote = chars[index];
-        if quote != '"' && quote != '\'' {
-            index += 1;
-            continue;
-        }
-        index += 1;
-        let start = index;
-        while index < chars.len() && chars[index] != quote {
-            if chars[index] == '\\' && index + 1 < chars.len() {
-                index += 1;
-            }
-            index += 1;
-        }
-        if index < chars.len() {
-            let value: String = chars[start..index].iter().collect();
-            let trimmed = value.trim();
-            if !trimmed.is_empty() {
-                quoted.push(trimmed.to_string());
-            }
-        }
-        index += 1;
-    }
-    quoted
-}
-
 fn strip_meta_prefix(text: &str) -> String {
     let lower = text.to_lowercase();
     let meta_markers = [
-        "the task returned this commit message for the uncommitted changes:",
-        "the task returned this stash message for the uncommitted changes:",
-        "the task returned this commit message:",
-        "the task returned this stash message:",
+        "commit title:",
+        "stash title:",
         "the task returned",
-        "the agent generated the commit message:",
-        "the agent generated a commit message:",
-        "the agent generated the stash message:",
-        "the agent generated a stash message:",
-        "i generated the commit message:",
-        "i generated the stash message:",
-        "here is the commit message:",
-        "here is the stash message:",
-        "here's the commit message:",
-        "here's the stash message:",
-        "generated commit message:",
-        "generated stash message:",
-        "proposed commit message:",
-        "proposed stash message:",
+        "the agent generated",
+        "here is the",
+        "here's the",
+        "generated commit",
+        "generated stash",
+        "proposed commit",
+        "proposed stash",
         "commit message:",
         "stash message:",
         "message:",
-        "commit:",
-        "stash:",
     ];
     for marker in meta_markers {
         if let Some(index) = lower.find(marker) {
@@ -158,63 +132,75 @@ fn strip_meta_prefix(text: &str) -> String {
 
 pub fn is_unacceptable_message(text: &str) -> bool {
     let trimmed = text.trim();
-    if trimmed.len() < MIN_MESSAGE_LEN {
+    if trimmed.len() < MIN_MESSAGE_LEN || trimmed.len() > MAX_MESSAGE_CHARS {
         return true;
     }
     if trimmed.ends_with(':') {
         return true;
     }
+    if trimmed.split_whitespace().count() > MAX_MESSAGE_WORDS {
+        return true;
+    }
+    if trimmed.contains('/') || trimmed.contains('\\') {
+        return true;
+    }
 
     let lower = trimmed.to_lowercase();
     const MARKERS: &[&str] = &[
-        "returned empty output",
-        "returned this commit message",
-        "returned this stash message",
-        "the task returned",
-        "no commit message was produced",
-        "no stash message was produced",
-        "no message was produced",
+        "returned empty",
+        "returned this",
+        "the task",
+        "no commit message",
+        "no stash message",
         "failed to generate",
-        "could not generate",
-        "unable to generate",
         "generation task",
-        "commit message generation",
-        "stash message generation",
-        "for the uncommitted changes",
-        "uncommitted changes:",
-        "the diff shows",
-        "files changed:",
-        "nothing else to output",
+        "for the uncommitted",
+        "uncommitted changes",
+        "the diff",
+        "diff shows",
+        "files changed",
+        "this covers",
+        "covers the",
+        "changes in the",
+        "three changes",
+        "following changes",
         "output only",
-        "imperative mood",
         " more files",
         " more file",
-        "update local changes",
     ];
     MARKERS.iter().any(|marker| lower.contains(marker))
 }
 
+fn clamp_message(text: &str) -> String {
+    let trimmed = text.trim();
+    if trimmed.len() <= MAX_MESSAGE_CHARS {
+        return trimmed.to_string();
+    }
+    let mut end = MAX_MESSAGE_CHARS;
+    while end > 0 && !trimmed.is_char_boundary(end) {
+        end -= 1;
+    }
+    let slice = trimmed[..end].trim_end();
+    if let Some(space) = slice.rfind(' ') {
+        slice[..space].trim().to_string()
+    } else {
+        slice.to_string()
+    }
+}
+
 fn normalize_line(line: &str) -> String {
     let mut candidate = strip_meta_prefix(line);
-    let quoted = extract_quoted_strings(&candidate);
-    if quoted.len() == 1 {
-        candidate = quoted[0].clone();
-    } else if quoted.len() > 1 {
-        candidate = quoted
-            .into_iter()
-            .max_by_key(|value| value.len())
-            .unwrap_or(candidate);
-    }
     candidate = strip_markdown(&candidate);
     candidate = candidate
         .trim_matches('"')
         .trim_matches('\'')
+        .trim_matches('.')
         .trim()
         .to_string();
     candidate.split('\n').next().unwrap_or("").trim().to_string()
 }
 
-fn sanitize_single_line_message(raw: &str, empty_label: &str) -> Result<String, String> {
+fn sanitize_title(raw: &str, empty_label: &str) -> Result<String, String> {
     let cleaned = strip_ansi(raw).replace("```", "").trim().to_string();
     if cleaned.is_empty() {
         return Err(format!("OpenCode returned an empty {empty_label}."));
@@ -226,30 +212,20 @@ fn sanitize_single_line_message(raw: &str, empty_label: &str) -> Result<String, 
         .filter(|line| !line.is_empty())
         .map(normalize_line)
         .filter(|line| !line.is_empty())
+        .map(|line| clamp_message(&line))
+        .filter(|line| !line.is_empty())
         .collect();
 
     if candidates.is_empty() {
-        candidates.push(normalize_line(&cleaned));
+        candidates.push(clamp_message(&normalize_line(&cleaned)));
     }
 
-    candidates.sort_by_key(|b| std::cmp::Reverse(b.len()));
+    candidates.sort_by_key(|line| line.len());
 
-    for mut candidate in candidates {
-        if candidate.ends_with('.') && candidate.len() > 3 {
-            let words: Vec<&str> = candidate.split_whitespace().collect();
-            if words.len() > 12 {
-                candidate = candidate.trim_end_matches('.').to_string();
-            }
-        }
-
-        if candidate.is_empty() || is_unacceptable_message(&candidate) {
+    for candidate in candidates {
+        if is_unacceptable_message(&candidate) {
             continue;
         }
-
-        if candidate.contains('\n') {
-            candidate = candidate.replace('\n', " ");
-        }
-
         return Ok(candidate);
     }
 
@@ -260,58 +236,37 @@ fn sanitize_single_line_message(raw: &str, empty_label: &str) -> Result<String, 
 
 #[cfg(test)]
 mod tests {
-    use super::{is_unacceptable_message, sanitize_single_line_message};
+    use super::{is_unacceptable_message, sanitize_title};
 
     #[test]
-    fn strips_agent_meta_wrapper_and_markdown() {
-        let raw = r#"The agent generated the commit message: **"Add auto-commit support with AI-generated commit messages"**."#;
-        let message =
-            sanitize_single_line_message(raw, "commit message").expect("message");
-        assert_eq!(
-            message,
-            "Add auto-commit support with AI-generated commit messages"
-        );
-    }
-
-    #[test]
-    fn keeps_plain_message() {
-        let raw = "Fix commit button loading state";
-        let message =
-            sanitize_single_line_message(raw, "commit message").expect("message");
-        assert_eq!(message, "Fix commit button loading state");
-    }
-
-    #[test]
-    fn rejects_failure_meta_message() {
-        let raw = "The commit message generation task returned empty output — no commit message was produced. The diff shows three files changed.";
-        let err = sanitize_single_line_message(raw, "commit message").unwrap_err();
-        assert!(err.contains("meta text"));
-        assert!(is_unacceptable_message(raw));
-    }
-
-    #[test]
-    fn rejects_task_returned_preamble_only() {
-        let raw = "The task returned this commit message for the uncommitted changes:";
-        let err = sanitize_single_line_message(raw, "commit message").unwrap_err();
-        assert!(err.contains("meta text"));
-        assert!(is_unacceptable_message(raw));
-    }
-
-    #[test]
-    fn picks_substantive_line_after_preamble() {
-        let raw = "The task returned this commit message for the uncommitted changes:\n\nFix unpushed commit detection";
-        let message =
-            sanitize_single_line_message(raw, "commit message").expect("message");
+    fn keeps_short_plain_message() {
+        let message = sanitize_title("Fix unpushed commit detection", "commit message").expect("ok");
         assert_eq!(message, "Fix unpushed commit detection");
     }
 
+    #[test]
+    fn rejects_run_on_summary() {
+        let raw = "This covers the three changes in the diff: simplified prompt wording";
+        assert!(is_unacceptable_message(raw));
+        assert!(sanitize_title(raw, "commit message").is_err());
+    }
+
+    #[test]
+    fn picks_shortest_valid_line() {
+        let raw = "Here is a long explanation of every file that was edited in detail\nFix commit prompts";
+        let message = sanitize_title(raw, "commit message").expect("ok");
+        assert_eq!(message, "Fix commit prompts");
+    }
+
+    #[test]
+    fn clamps_overlong_line() {
+        let raw = "Add comprehensive validation and retry logic for OpenCode commit message generation pipeline";
+        let message = sanitize_title(raw, "commit message").expect("ok");
+        assert!(message.len() <= 72);
+    }
 }
 
-fn run_opencode(
-    binary: &Path,
-    repo_path: &str,
-    args: &[&str],
-) -> Result<String, String> {
+fn run_opencode(binary: &Path, repo_path: &str, args: &[&str]) -> Result<String, String> {
     let mut child = Command::new(binary)
         .args(args)
         .current_dir(repo_path)
@@ -330,8 +285,7 @@ fn run_opencode(
                     let _ = child.kill();
                     let _ = child.wait();
                     return Err(
-                        "OpenCode timed out while generating a message. Try again or enter one manually."
-                            .to_string(),
+                        "OpenCode timed out. Use Write commit or try again.".to_string(),
                     );
                 }
                 std::thread::sleep(Duration::from_millis(200));
@@ -362,11 +316,7 @@ fn run_opencode(
     }
 
     let detail = err.trim();
-    let detail = if detail.is_empty() {
-        out.trim()
-    } else {
-        detail
-    };
+    let detail = if detail.is_empty() { out.trim() } else { detail };
     Err(if detail.is_empty() {
         "OpenCode failed to generate a message.".to_string()
     } else {
@@ -374,46 +324,30 @@ fn run_opencode(
     })
 }
 
-fn run_opencode_once(
+fn run_opencode_title(
     binary: &Path,
     repo_path: &str,
-    command: &str,
-    inline_prompt_prefix: &str,
-    truncated_diff: &str,
+    prompt_prefix: &str,
+    summary: &str,
 ) -> Result<String, String> {
+    let prompt = format!("{prompt_prefix}{}", truncate_summary(summary));
     let attach = opencode_server_available();
 
-    let mut command_args: Vec<&str> = vec!["run", "--dir", repo_path, "--command", command];
+    let mut args: Vec<&str> = vec!["run", "--dir", repo_path];
     if attach {
-        command_args.push("--attach");
-        command_args.push(OPENCODE_ATTACH_URL);
+        args.push("--attach");
+        args.push(OPENCODE_ATTACH_URL);
     }
-    command_args.push("--dangerously-skip-permissions");
+    args.push("--dangerously-skip-permissions");
+    args.push(prompt.as_str());
 
-    let command_result = run_opencode(binary, repo_path, &command_args);
-    let raw = match command_result {
-        Ok(text) if !text.trim().is_empty() => text,
-        _ => {
-            let prompt = format!("{inline_prompt_prefix}{truncated_diff}");
-            let mut inline_args: Vec<&str> = vec!["run", "--dir", repo_path];
-            if attach {
-                inline_args.push("--attach");
-                inline_args.push(OPENCODE_ATTACH_URL);
-            }
-            inline_args.push("--dangerously-skip-permissions");
-            inline_args.push(prompt.as_str());
-            run_opencode(binary, repo_path, &inline_args)?
-        }
-    };
-
-    Ok(raw)
+    run_opencode(binary, repo_path, &args)
 }
 
-fn generate_message_with_retries(
+fn generate_title_with_retries(
     repo: &Path,
-    diff: &str,
-    command: &str,
-    inline_prompt_prefix: &str,
+    summary: &str,
+    prompt_prefix: &str,
     empty_label: &str,
     failure_label: &str,
 ) -> Result<String, String> {
@@ -421,28 +355,20 @@ fn generate_message_with_retries(
         .to_str()
         .ok_or_else(|| "Repository path is not valid UTF-8.".to_string())?;
 
-    if diff.trim().is_empty() {
+    if summary.trim().is_empty() {
         return Err("No local changes to describe.".to_string());
     }
 
     let binary = resolve_opencode_binary()?;
-    let truncated = truncate_diff(diff);
-    let mut last_error = String::from("OpenCode did not return a usable message.");
+    let mut last_error = String::from("OpenCode did not return a usable title.");
 
     for attempt in 1..=MAX_GENERATION_ATTEMPTS {
-        match run_opencode_once(
-            &binary,
-            repo_path,
-            command,
-            inline_prompt_prefix,
-            &truncated,
-        ) {
-            Ok(raw) => match sanitize_single_line_message(&raw, empty_label) {
+        match run_opencode_title(&binary, repo_path, prompt_prefix, summary) {
+            Ok(raw) => match sanitize_title(&raw, empty_label) {
                 Ok(message) if !is_unacceptable_message(&message) => return Ok(message),
                 Ok(_) => {
-                    last_error = format!(
-                        "OpenCode returned meta text instead of a {empty_label}."
-                    );
+                    last_error =
+                        format!("OpenCode returned meta text instead of a {empty_label}.");
                 }
                 Err(err) => last_error = err,
             },
@@ -459,23 +385,21 @@ fn generate_message_with_retries(
     ))
 }
 
-pub fn generate_commit_message(repo: &Path, diff: &str) -> Result<String, String> {
-    generate_message_with_retries(
+pub fn generate_commit_message(repo: &Path, summary: &str) -> Result<String, String> {
+    generate_title_with_retries(
         repo,
-        diff,
-        "commit",
-        INLINE_COMMIT_PROMPT,
+        summary,
+        COMMIT_TITLE_PROMPT,
         "commit message",
         "commit message",
     )
 }
 
-pub fn generate_stash_message(repo: &Path, diff: &str) -> Result<String, String> {
-    generate_message_with_retries(
+pub fn generate_stash_message(repo: &Path, summary: &str) -> Result<String, String> {
+    generate_title_with_retries(
         repo,
-        diff,
-        "stash",
-        INLINE_STASH_PROMPT,
+        summary,
+        STASH_TITLE_PROMPT,
         "stash message",
         "stash message",
     )
@@ -488,7 +412,7 @@ pub fn validate_generated_message(message: &str, label: &str) -> Result<(), Stri
     }
     if is_unacceptable_message(trimmed) {
         return Err(format!(
-            "{label} looks like AI preamble, not a real description. Use Write commit or try again."
+            "{label} is too long or looks like AI preamble. Use Write commit or try again."
         ));
     }
     Ok(())

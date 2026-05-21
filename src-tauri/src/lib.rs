@@ -1852,8 +1852,8 @@ async fn generate_commit_message(repo_path: String) -> Result<String, String> {
     let path = repo_path.clone();
     tauri::async_runtime::spawn_blocking(move || {
         let repo = Path::new(&path);
-        let diff = git::get_working_tree_diff(repo).map_err(|e| e.to_string())?;
-        opencode::generate_commit_message(repo, &diff)
+        let summary = git::get_working_tree_summary(repo).map_err(|e| e.to_string())?;
+        opencode::generate_commit_message(repo, &summary)
     })
     .await
     .map_err(|e| format!("Commit message task failed: {e}"))?
@@ -1864,8 +1864,8 @@ async fn generate_stash_message(repo_path: String) -> Result<String, String> {
     let path = repo_path.clone();
     tauri::async_runtime::spawn_blocking(move || {
         let repo = Path::new(&path);
-        let diff = git::get_working_tree_diff(repo).map_err(|e| e.to_string())?;
-        opencode::generate_stash_message(repo, &diff)
+        let summary = git::get_working_tree_summary(repo).map_err(|e| e.to_string())?;
+        opencode::generate_stash_message(repo, &summary)
     })
     .await
     .map_err(|e| format!("Stash message task failed: {e}"))?

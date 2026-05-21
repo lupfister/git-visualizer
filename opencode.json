@@ -2,14 +2,14 @@
   "$schema": "https://opencode.ai/config.json",
   "command": {
     "commit": {
-      "description": "Generate a simple one-sentence commit message for uncommitted changes",
-      "subtask": true,
-      "template": "Write one simple grammatical sentence describing what changed.\n\nOutput only that sentence — no preamble, explanation, quotes, markdown, file lists, or labels.\n\nUncommitted diff:\n!`git diff HEAD --no-color`\n\nStatus:\n!`git status --short --untracked-files=normal`"
+      "description": "One-line commit title (max 72 chars)",
+      "subtask": false,
+      "template": "Write one git commit title (max 72 characters, imperative, high-level only).\n\nNever list files, paths, or diff details. No preamble.\n\n!`git diff HEAD --stat --no-color`\n\n!`git status --short --untracked-files=normal`"
     },
     "stash": {
-      "description": "Generate a simple one-sentence stash message for uncommitted changes",
-      "subtask": true,
-      "template": "Write one simple grammatical sentence describing what is being stashed.\n\nOutput only that sentence — no preamble, explanation, quotes, markdown, file lists, or labels.\n\nUncommitted diff:\n!`git diff HEAD --no-color`\n\nStatus:\n!`git status --short --untracked-files=normal`"
+      "description": "One-line stash title (max 72 chars)",
+      "subtask": false,
+      "template": "Write one git stash title (max 72 characters, imperative, high-level only).\n\nNever list files, paths, or diff details. No preamble.\n\n!`git diff HEAD --stat --no-color`\n\n!`git status --short --untracked-files=normal`"
     }
   }
 }
