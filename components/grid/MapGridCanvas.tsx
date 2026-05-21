@@ -251,17 +251,15 @@ const MapGridCommitCard = memo(function MapGridCommitCard({
       : isSelectedCommit
         ? { color: 'var(--select)' }
         : undefined;
-  const isDashedOutline = isEmptyBranchNode;
-  const emptyBranchBorderWidthPx = isEmptyBranchNode ? (lineStrokeWidth * 2) / 1.5 : null;
-  /** All commit cards except empty-branch placeholders. */
-  const showCommitTilePattern = !isEmptyBranchNode;
-  /** Animated noisy gaps (working tree, stash). Unpushed uses static gaps only. */
-  const commitTileAnimateGaps = isLocalUncommitted || isStashedCommit;
+  /** Stash-like animated tile pattern (working tree, stash, empty branch). */
+  const showCommitTilePattern = true;
+  /** Animated noisy gaps (working tree, stash, empty branch). Unpushed uses static gaps only. */
+  const commitTileAnimateGaps = isLocalUncommitted || isStashedCommit || isEmptyBranchNode;
   const commitTileRandomGaps = commitTileAnimateGaps || isUnpushedCommit;
   const commitTileOmissionRate = commitTileAnimateGaps
     ? TILE_UNCOMMITTED_OMISSION_RATE
     : TILE_DEFAULT_OMISSION_RATE;
-  const useRoundedCardOutline = isDashedOutline || showCommitTilePattern;
+  const useRoundedCardOutline = showCommitTilePattern;
   const outlineCornerRadiusCss = useRoundedCardOutline
     ? `calc(${GRID_COMMIT_CORNER_RADIUS_BASE_PX}px * var(--map-inv-zoom, 1))`
     : '0';
@@ -275,7 +273,7 @@ const MapGridCommitCard = memo(function MapGridCommitCard({
   );
 
   const headerLabel = isEmptyBranchNode
-    ? node.commit.branchName
+    ? `${node.commit.branchName}/empty`
     : isLocalUncommitted && branchName
       ? `${branchName}/uncommitted`
       : isLocalUncommitted
@@ -286,7 +284,7 @@ const MapGridCommitCard = memo(function MapGridCommitCard({
             ? `${node.commit.branchName}/${node.commit.id.slice(0, 7)}`
             : node.commit.id.slice(0, 7);
 
-  const bodyMessage = isLocalUncommitted
+  const bodyMessage = isLocalUncommitted || isEmptyBranchNode
     ? ''
     : isClusterLead && isClusterOpen
       ? stashBodyMessage
@@ -506,24 +504,21 @@ const MapGridCommitCard = memo(function MapGridCommitCard({
           useRoundedCardOutline ? 'rounded-tr-xl rounded-br-xl rounded-bl-xl rounded-tl-none' : '',
           showCommitTilePattern
             ? 'bg-background'
-            : checkedOutAccentActive && !isUnpushedCommit && !isEmptyBranchNode
+            : checkedOutAccentActive && !isUnpushedCommit
               ? 'bg-checked-muted'
-              : remoteAccentActive && !isEmptyBranchNode
+              : remoteAccentActive
                 ? 'bg-remote-muted'
-                : isSelectedCommit && !isUnpushedCommit && !isEmptyBranchNode
+                : isSelectedCommit && !isUnpushedCommit
                   ? 'bg-select-muted'
                   : isUnpushedCommit
                     ? 'bg-background'
-                    : isEmptyBranchNode
-                      ? 'bg-transparent'
-                      : 'bg-muted',
-          isEmptyBranchNode ? 'border border-dashed border-border/50' : '',
+                    : 'bg-muted',
         )}
         style={{
           top: 0,
-          ...(isEmptyBranchNode
-            ? { borderWidth: `${emptyBranchBorderWidthPx}px` }
-            : { border: 'none', outline: 'none', boxShadow: 'none' }),
+          border: 'none',
+          outline: 'none',
+          boxShadow: 'none',
           borderTopLeftRadius: 0,
           borderTopRightRadius: outlineCornerRadiusCss,
           borderBottomRightRadius: outlineCornerRadiusCss,

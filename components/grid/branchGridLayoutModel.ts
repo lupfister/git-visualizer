@@ -215,7 +215,7 @@ function buildEmptyBranchLaneCommit(
   return {
     id: `BRANCH_HEAD:${branch.name}:${laneTipSha}`,
     branchName: branch.name,
-    message: `Branch ${branch.name}`,
+    message: '',
     author: tipMeta?.author ?? branch.lastCommitAuthor,
     date: Number.isFinite(placeholderTimeMs)
       ? new Date(placeholderTimeMs).toISOString()
