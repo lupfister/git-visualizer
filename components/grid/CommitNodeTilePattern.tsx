@@ -1,6 +1,7 @@
 import {
   computeTileGridLayout,
   fnv1a32,
+  isTileOmittedAt,
   lumMixToFillCss,
   type TileCellSpec,
 } from '@git-visualizer/tile-pattern-core';
@@ -114,6 +115,8 @@ type CommitNodeTilePatternProps = {
   shapeFillCssVar: string;
   hoverTintColor: string;
   displayZoom: number;
+  /** Omit a seed-stable random subset of tiles (working tree and stash). */
+  randomTileGaps?: boolean;
 };
 
 export type CommitNodeTilePatternHandle = {
@@ -124,7 +127,7 @@ export type CommitNodeTilePatternHandle = {
 
 export const CommitNodeTilePattern = memo(
   forwardRef<CommitNodeTilePatternHandle, CommitNodeTilePatternProps>(function CommitNodeTilePattern(
-    { seed, shapeFillCssVar, hoverTintColor, displayZoom },
+    { seed, shapeFillCssVar, hoverTintColor, displayZoom, randomTileGaps = false },
     ref,
   ) {
     const fillValue = `var(${shapeFillCssVar})`;
@@ -262,14 +265,19 @@ export const CommitNodeTilePattern = memo(
       [ensureHoverLoop, seed],
     );
 
+    const patternClipId = `commit-tile-clip-${fnv1a32(seed)}`;
+
     const { baseShapes, overlayShapes } = useMemo(() => {
       const base: ReactNode[] = [];
       const overlay: ReactNode[] = [];
 
       for (const cell of layout.cells) {
+        if (randomTileGaps && isTileOmittedAt(seed, cell.col, cell.row, displayZoom)) {
+          continue;
+        }
         const index = cell.row * layout.cols + cell.col;
         const hoverBoost = boosts[index] ?? 0;
-        const restingFill = lumMixToFillCss(fillValue, cell.baseLumMix);
+        const restingColor = lumMixToFillCss(fillValue, cell.baseLumMix);
         const overlayOpacity = boostToOverlayOpacity(hoverBoost);
         const overlayStyle = { mixBlendMode: 'darken' as const };
 
@@ -280,7 +288,7 @@ export const CommitNodeTilePattern = memo(
               cx={cell.cx}
               cy={cell.cy}
               r={cell.halfSize}
-              fill={restingFill}
+              fill={restingColor}
               stroke="none"
             />,
           );
@@ -305,7 +313,7 @@ export const CommitNodeTilePattern = memo(
           continue;
         }
 
-        base.push(<path key={`${cell.key}:base`} d={cell.pathD} fill={restingFill} stroke="none" />);
+        base.push(<path key={`${cell.key}:base`} d={cell.pathD} fill={restingColor} stroke="none" />);
         if (overlayOpacity >= 0.008) {
           overlay.push(
             <path
@@ -321,9 +329,8 @@ export const CommitNodeTilePattern = memo(
       }
 
       return { baseShapes: base, overlayShapes: overlay };
-    }, [boosts, fillValue, hoverTintColor, layout]);
+    }, [boosts, fillValue, hoverTintColor, layout, randomTileGaps, seed]);
 
-    const patternClipId = `commit-tile-clip-${fnv1a32(seed)}`;
     const cardWidth = CARD_WIDTH;
     const cardHeight = CARD_HEIGHT;
 

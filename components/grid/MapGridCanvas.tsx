@@ -1,6 +1,6 @@
 import { forwardRef, memo, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import type { CSSProperties, Dispatch, MouseEvent, MutableRefObject, ReactNode, RefObject, SetStateAction, WheelEvent } from 'react';
-import { CARD_BODY_TOP_OFFSET, CARD_HEIGHT, CARD_WIDTH, CONNECTOR_COLOR } from './LayoutGrid';
+import { CARD_BODY_TOP_OFFSET, CARD_HEIGHT, CARD_WIDTH } from './LayoutGrid';
 import {
   applyPersistedPathStrings,
   collectPathStringsForPersistence,
@@ -19,7 +19,6 @@ import {
 } from './mapGridConnectorPathPersistence';
 import { buildMapGridCardSlotAssignments, computeMapGridCardSlotCount } from './MapGridCardVirtualizer';
 import {
-  buildMapGridCommitOutlinePath,
   cn,
   computeMapGridInvZoom,
   computeViewportCullBounds,
@@ -160,7 +159,7 @@ const MapGridCommitCard = memo(function MapGridCommitCard({
   cardTop,
   displayZoom,
   commitCornerRadiusPx,
-  lineStrokeWidth,
+  lineStrokeWidth: _lineStrokeWidth,
   labelTopPx,
   selectedShaSet,
   normalizedSearchQuery,
@@ -234,8 +233,6 @@ const MapGridCommitCard = memo(function MapGridCommitCard({
 
   const isCheckedOutCommit = isLocalUncommitted || isCheckedOutHeadNode;
   const checkedOutAccentActive = isCheckedOutCommit && !isSelectedCommit;
-  const pushedCheckedOutHeadAccent =
-    isCheckedOutHeadNode && checkedOutAccentActive && !isUnpushedCommit;
   const remoteAccentActive = isRemoteCommit && !checkedOutAccentActive && !isSelectedCommit;
 
   const selectedCommitTextClass = checkedOutAccentActive
@@ -252,45 +249,14 @@ const MapGridCommitCard = memo(function MapGridCommitCard({
       : isSelectedCommit
         ? { color: 'var(--select)' }
         : undefined;
-  const focusedCommitBorderColor = selectedCommitTextStyle?.color ?? 'var(--foreground)';
-  const commitBorderColor = isFocused
-    ? focusedCommitBorderColor
-    : pushedCheckedOutHeadAccent
-      ? 'var(--checked-muted)'
-      : checkedOutAccentActive
-        ? 'var(--checked)'
-        : remoteAccentActive
-          ? 'var(--remote)'
-          : isSelectedCommit
-            ? 'var(--select)'
-            : CONNECTOR_COLOR;
-  const nodeBorderWidth = isStashedCommit || isEmptyBranchNode || isLocalUncommitted
-    ? 1.25 / displayZoom
-    : lineStrokeWidth;
-  const isDashedOutline = isStashedCommit || isLocalUncommitted || isEmptyBranchNode;
-  const dashedStrokeDasharray = `${12 / displayZoom} ${6 / displayZoom}`;
-  const dashedStrokeInset = nodeBorderWidth / 2;
-  const cardBodyHeight = 176;
-  /** Pushed/remote history only — no tile motif for unpushed, working tree, or stash. */
-  const showCommitTilePattern =
-    !isUnpushedCommit && !isStashedCommit && !isEmptyBranchNode;
-  /** Counterscaled label-notch corners on pushed, unpushed, and dashed commit bodies. */
-  const useRoundedCardOutline =
-    isDashedOutline || showCommitTilePattern || (isUnpushedCommit && !isDashedOutline);
+  const isDashedOutline = isEmptyBranchNode;
+  /** All commit cards except empty-branch placeholders. */
+  const showCommitTilePattern = !isEmptyBranchNode;
+  /** Default luminance + checkerboard-biased gaps (working tree and stash). */
+  const commitTileRandomGaps = isLocalUncommitted || isStashedCommit;
+  const useRoundedCardOutline = isDashedOutline || showCommitTilePattern;
   const outlineCornerRadiusPx = useRoundedCardOutline ? commitCornerRadiusPx : 0;
-  const dashedOutlinePath = useMemo(
-    () => buildMapGridCommitOutlinePath(CARD_WIDTH, cardBodyHeight, dashedStrokeInset, outlineCornerRadiusPx),
-    [dashedStrokeInset, cardBodyHeight, outlineCornerRadiusPx],
-  );
-  const solidOutlinePath = useMemo(() => {
-    const inset = nodeBorderWidth / 2;
-    return buildMapGridCommitOutlinePath(CARD_WIDTH, cardBodyHeight, inset, outlineCornerRadiusPx);
-  }, [nodeBorderWidth, cardBodyHeight, outlineCornerRadiusPx]);
-  const unpushedCommitTextStyle: CSSProperties | undefined =
-    isUnpushedCommit && !checkedOutAccentActive && !isSelectedCommit
-      ? { color: 'var(--muted-foreground)' }
-      : undefined;
-  const cardTextStyle = selectedCommitTextStyle ?? unpushedCommitTextStyle;
+  const cardTextStyle = selectedCommitTextStyle;
 
   const wrapperClassName = cn(
     'group absolute z-20',
@@ -462,13 +428,6 @@ const MapGridCommitCard = memo(function MapGridCommitCard({
     visualId,
   ]);
 
-  /** Solid outline for focus/selection/search and unpushed commits (dashed types use `isDashedOutline`). */
-  const showCommitNodeStroke =
-    isFocused ||
-    isSelectedCommit ||
-    isSearchMatch ||
-    (isUnpushedCommit && !isDashedOutline);
-
   return (
     <MapGridCommitWrapper
       ref={cardRef}
@@ -489,41 +448,6 @@ const MapGridCommitCard = memo(function MapGridCommitCard({
       onPointerUp={onNodePointerUp}
       onPointerCancel={onNodePointerUp}
     >
-      {isDashedOutline ? (
-        <svg
-          className="pointer-events-none absolute inset-0 z-20 overflow-visible"
-          aria-hidden="true"
-          viewBox={`0 0 ${CARD_WIDTH} ${cardBodyHeight}`}
-          preserveAspectRatio="none"
-        >
-          <path
-            d={dashedOutlinePath}
-            fill="none"
-            stroke={commitBorderColor}
-            strokeWidth={nodeBorderWidth}
-            strokeDasharray={dashedStrokeDasharray}
-            strokeLinecap="butt"
-            strokeLinejoin="round"
-          />
-        </svg>
-      ) : null}
-      {!isDashedOutline && showCommitNodeStroke ? (
-        <svg
-          className="pointer-events-none absolute inset-0 z-20 overflow-visible"
-          aria-hidden="true"
-          viewBox={`0 0 ${CARD_WIDTH} ${cardBodyHeight}`}
-          preserveAspectRatio="none"
-        >
-          <path
-            d={solidOutlinePath}
-            fill="none"
-            stroke={commitBorderColor}
-            strokeWidth={nodeBorderWidth}
-            strokeLinecap="butt"
-            strokeLinejoin="miter"
-          />
-        </svg>
-      ) : null}
       <div className="absolute left-0 z-30 w-full" style={{ top: `${labelTopPx}px` }}>
         <div className="flex min-w-0 items-baseline justify-between gap-2 bg-transparent pb-0">
           <div
@@ -562,15 +486,15 @@ const MapGridCommitCard = memo(function MapGridCommitCard({
           useRoundedCardOutline ? 'rounded-tr-xl rounded-br-xl rounded-bl-xl rounded-tl-none' : '',
           showCommitTilePattern
             ? 'bg-background'
-            : checkedOutAccentActive && !isUnpushedCommit && !isStashedCommit && !isEmptyBranchNode
+            : checkedOutAccentActive && !isUnpushedCommit && !isEmptyBranchNode
               ? 'bg-checked-muted'
-              : remoteAccentActive && !isStashedCommit && !isEmptyBranchNode
+              : remoteAccentActive && !isEmptyBranchNode
                 ? 'bg-remote-muted'
-                : isSelectedCommit && !isUnpushedCommit && !isStashedCommit && !isEmptyBranchNode
+                : isSelectedCommit && !isUnpushedCommit && !isEmptyBranchNode
                   ? 'bg-select-muted'
                   : isUnpushedCommit
                     ? 'bg-background'
-                    : isStashedCommit || isEmptyBranchNode
+                    : isEmptyBranchNode
                       ? 'bg-transparent'
                       : 'bg-muted',
         )}
@@ -593,6 +517,7 @@ const MapGridCommitCard = memo(function MapGridCommitCard({
             shapeFillCssVar={commitTileShapeCssVar}
             hoverTintColor={commitTileHoverTintColor}
             displayZoom={displayZoom}
+            randomTileGaps={commitTileRandomGaps}
           />
         ) : null}
         <div
@@ -622,7 +547,7 @@ const MapGridCommitCard = memo(function MapGridCommitCard({
               ) : null}
             </div>
           </div>
-          {displayZoom > 0.5 && !isStashedCommit ? (
+          {displayZoom > 0.5 ? (
             <div className="mt-auto flex items-end justify-between" style={scaledMetaTopStyle}>
               <div
                 className={cn('pointer-events-auto select-text font-normal', selectedCommitTextClass)}

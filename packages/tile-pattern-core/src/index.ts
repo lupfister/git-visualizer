@@ -4,6 +4,7 @@ export {
   TILE_PATTERN_MIN_DISPLAY_ZOOM,
   TILE_PATTERN_DEFAULT_DISPLAY_ZOOM,
   TILE_PATTERN_DEFAULT_CLIP_INSET,
+  TILE_RANDOM_OMISSION_RATE,
   MAX_EXPORT_EDGE_PX,
 } from './constants';
 
@@ -21,12 +22,15 @@ export {
 export {
   computeDisplayZoomInvZoom,
   computeTileGridLayout,
+  isTileOmittedAt,
+  computeTileOmissionCheckerWeight,
   pickGridCounts,
   referenceCellPitch,
   tileEdgeGaps,
   type TileCellSpec,
   type TileGridLayout,
   type TileGridLayoutInput,
+  type TileLumMixProfile,
 } from './layout';
 export {
   TILE_PATTERN_COLOR_PRESETS,

@@ -11,6 +11,9 @@ import {
   TILE_SHAPE_GAP_FLOOR,
   TILE_SHAPE_GAP_RATIO,
   TILE_LUM_MIX_MAX,
+  TILE_PATTERN_DEFAULT_DISPLAY_ZOOM,
+  TILE_PATTERN_MIN_DISPLAY_ZOOM,
+  TILE_RANDOM_OMISSION_RATE,
 } from './constants';
 import { createMulberry32, fnv1a32 } from './prng';
 import {
@@ -117,8 +120,70 @@ const pickTileShapeKind = (seed: string, col: number, row: number): TileShapeKin
   return TILE_SHAPE_KINDS[index] ?? 'rect';
 };
 
-const pickTileBaseLumMix = (seed: string, col: number, row: number): number => {
+export type TileLumMixProfile = 'default' | 'bright';
+
+const clamp01 = (value: number): number => Math.max(0, Math.min(1, value));
+
+/**
+ * How strongly omission follows a checkerboard (1) vs random scatter (0).
+ * Ramps up as the map zooms out so the motif reads at low zoom.
+ */
+export const computeTileOmissionCheckerWeight = (displayZoom: number): number => {
+  const highZoom = 0.85;
+  const lowZoom = TILE_PATTERN_MIN_DISPLAY_ZOOM;
+  const minWeight = 0.12;
+  if (!Number.isFinite(displayZoom) || displayZoom >= highZoom) {
+    return minWeight;
+  }
+  if (displayZoom <= lowZoom) {
+    return 1;
+  }
+  const t = (highZoom - displayZoom) / (highZoom - lowZoom);
+  return minWeight + clamp01(t) * (1 - minWeight);
+};
+
+/** Seed-stable omission for working-tree tile patterns (checkerboard-biased). */
+export const isTileOmittedAt = (
+  seed: string,
+  col: number,
+  row: number,
+  displayZoom = TILE_PATTERN_DEFAULT_DISPLAY_ZOOM,
+  omissionRate = TILE_RANDOM_OMISSION_RATE,
+): boolean => {
+  const random = createMulberry32(fnv1a32(`${seed}|${col}|${row}|omit`));
+  const phase = fnv1a32(`${seed}|omit-checker`) % 2;
+  const onChecker = (col + row + phase) % 2 === 0;
+  const checkerWeight = computeTileOmissionCheckerWeight(displayZoom);
+  const checkerOmitProb = Math.min(1, omissionRate * 2);
+  const r = random();
+
+  if (r < checkerWeight) {
+    return onChecker && random() < checkerOmitProb;
+  }
+
+  const r2 = random();
+  const bias = 0.24 * (1 - checkerWeight);
+  const threshold = onChecker
+    ? Math.min(1, omissionRate + bias)
+    : Math.max(0, omissionRate - bias);
+  return r2 < threshold;
+};
+
+const pickTileBaseLumMix = (
+  seed: string,
+  col: number,
+  row: number,
+  profile: TileLumMixProfile,
+): number => {
   const random = createMulberry32(fnv1a32(`${seed}|${col}|${row}|lum`));
+  if (profile === 'bright') {
+    const tier = random();
+    if (tier < 0.1) {
+      return 0;
+    }
+    const accent = random();
+    return 0.2 + accent * (TILE_LUM_MIX_MAX - 0.2);
+  }
   const mix = random() * TILE_LUM_MIX_MAX;
   return mix < 0.003 ? 0 : mix;
 };
@@ -148,6 +213,8 @@ export type TileGridLayoutInput = {
   width: number;
   height: number;
   displayZoom: number;
+  /** Optional luminance distribution (`bright` raises highlight frequency). */
+  lumMixProfile?: TileLumMixProfile;
 };
 
 export const computeTileGridLayout = ({
@@ -155,6 +222,7 @@ export const computeTileGridLayout = ({
   width,
   height,
   displayZoom,
+  lumMixProfile = 'default',
 }: TileGridLayoutInput): TileGridLayout => {
   const { cols, rows } = pickGridCounts(width, height, displayZoom);
   const cellW = width / cols;
@@ -191,7 +259,7 @@ export const computeTileGridLayout = ({
         row,
         cx,
         cy,
-        baseLumMix: pickTileBaseLumMix(seed, col, row),
+        baseLumMix: pickTileBaseLumMix(seed, col, row, lumMixProfile),
         drawAsCircle,
         halfSize,
         pathD: drawAsCircle

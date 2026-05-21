@@ -20,5 +20,7 @@ export const TILE_SHAPE_GAP_FLOOR = 0.55;
 export const TILE_SHAPE_GAP_RATIO = 0.078;
 export const TILE_CORNER_RADIUS_FRACTION = 0.5;
 export const TILE_LUM_MIX_MAX = 0.5;
+/** Share of tiles omitted on working-tree cards (seed-stable per cell). */
+export const TILE_RANDOM_OMISSION_RATE = 0.35;
 
 export const MAX_EXPORT_EDGE_PX = 8192;
