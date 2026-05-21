@@ -246,6 +246,7 @@ struct ParentCandidate {
     name: String,
     head_sha: String,
     last_commit_date: String,
+    commits_ahead: i32,
     is_default: bool,
 }
 
@@ -271,6 +272,7 @@ fn infer_branch_parents(
             name: b.name.clone(),
             head_sha: b.head_sha.clone(),
             last_commit_date: b.last_commit_date.clone(),
+            commits_ahead: b.commits_ahead,
             is_default: false,
         })
         .collect();
@@ -281,6 +283,7 @@ fn infer_branch_parents(
             name: default_branch.to_string(),
             head_sha: default_head_sha,
             last_commit_date: default_date,
+            commits_ahead: 0,
             is_default: true,
         });
     }
@@ -353,8 +356,36 @@ fn infer_branch_parents(
         }
 
         if let Some(ref proposed_parent) = parent_name {
-            if is_same_tip_empty_peer_parent(branch, proposed_parent, &candidates) {
-                parent_name = default_parent_name.clone();
+            if let Some(parent_candidate) =
+                candidates.iter().find(|candidate| candidate.name == *proposed_parent)
+            {
+                let branch_created_key = created_from_reflog_date
+                    .as_deref()
+                    .unwrap_or(branch.last_commit_date.as_str());
+                let parent_created_key = creation_info_by_name
+                    .get(proposed_parent)
+                    .map(|info| info.date.as_str())
+                    .unwrap_or(parent_candidate.last_commit_date.as_str());
+                if is_invalid_branch_to_branch_parent(
+                    branch,
+                    parent_candidate,
+                    default_branch,
+                    branch_created_key,
+                    parent_created_key,
+                ) {
+                    parent_name = default_parent_name.clone();
+                }
+            }
+        }
+
+        if branch.commits_ahead <= 0 {
+            if let Some(ref default_name) = default_parent_name {
+                let parent_is_other_branch = parent_name
+                    .as_deref()
+                    .is_some_and(|parent| parent != default_name.as_str());
+                if parent_is_other_branch {
+                    parent_name = Some(default_name.clone());
+                }
             }
         }
 
@@ -427,21 +458,26 @@ fn candidate_created_key(
         .unwrap_or_else(|| candidate.last_commit_date.clone())
 }
 
-fn is_same_tip_empty_peer_parent(
+fn is_invalid_branch_to_branch_parent(
     branch: &Branch,
-    parent_name: &str,
-    candidates: &[ParentCandidate],
+    parent: &ParentCandidate,
+    default_branch: &str,
+    branch_created_key: &str,
+    parent_created_key: &str,
 ) -> bool {
-    if branch.commits_ahead > 0 {
+    if parent.name == default_branch || branch.commits_ahead > 0 {
         return false;
     }
-    let Some(parent) = candidates.iter().find(|candidate| candidate.name == parent_name) else {
-        return false;
-    };
-    if branch.head_sha.is_empty() || parent.head_sha.is_empty() {
-        return false;
+
+    if !branch.head_sha.is_empty() && branch.head_sha == parent.head_sha {
+        return true;
     }
-    branch.head_sha == parent.head_sha
+
+    if branch.commits_ahead <= 0 && parent.commits_ahead <= 0 {
+        return true;
+    }
+
+    parent_created_key > branch_created_key
 }
 
 fn infer_parent_from_same_head_siblings(

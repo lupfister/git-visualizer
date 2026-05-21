@@ -15,7 +15,11 @@ import {
   stripWorkingTreeFromLayoutModel,
 } from '../components/grid/workingTreeLayout';
 import type { Branch, BranchCommitPreview, BranchPromptMeta, CheckedOutRef, DirectCommit, GitHubAuthStatus, GitHubInfo, GitStashEntry, MergeNode, OpenPR, RepoVisualSnapshot, WorktreeInfo } from '../types';
-import { applyBranchParents, isParallelEmptyBranchParent } from '../lib/branchParents';
+import {
+  applyBranchParents,
+  isNewerBranchAsParent,
+  isParallelEmptyBranchParent,
+} from '../lib/branchParents';
 import { foldStashNodesIntoGraph } from './placeStashNode';
 import { deriveRepoVisualState } from './repoVisualState';
 import { setMapGridBackgroundActivity } from '../components/grid/mapGridBackgroundActivity';
@@ -2140,13 +2144,23 @@ function App() {
         : null;
       const branchesByName = new Map(branches.map((item) => [item.name, item] as const));
       let resolvedParent =
-        parentFromGraph ??
-        parentFromForkSha ??
         parentFromBranchMeta ??
+        parentFromForkSha ??
+        parentFromGraph ??
         parentFromLatest ??
         null;
-      if (isParallelEmptyBranchParent(branch, resolvedParent, branchesByName)) {
+      if (isParallelEmptyBranchParent(branch, resolvedParent, branchesByName, defaultBranch)) {
         resolvedParent = defaultBranch;
+      } else if (
+        resolvedParent &&
+        isNewerBranchAsParent(branch, resolvedParent, branchesByName)
+      ) {
+        resolvedParent = defaultBranch;
+      } else if (branch.commitsAhead <= 0 && resolvedParent && resolvedParent !== defaultBranch) {
+        resolvedParent = defaultBranch;
+      }
+      if (!resolvedParent && isValidParentBranch(branch.parentBranch ?? null, branch.name)) {
+        resolvedParent = branch.parentBranch!;
       }
       nextBranchParentByName[branch.name] = resolvedParent;
     }
@@ -3188,21 +3202,18 @@ function App() {
   useEffect(() => {
     autoFocusSyncKeyRef.current = null;
   }, [repoPath]);
+  const branchesForLayout = useMemo(
+    () => applyBranchParents(enrichedBranches, branchParentByName, defaultBranch),
+    [enrichedBranches, branchParentByName, defaultBranch],
+  );
   const enrichedBranchParentByName = useMemo(() => {
-    const map: Record<string, string | null> = { ...branchParentByName };
-    map[defaultBranch] = null;
-    const branchesByName = new Map(enrichedBranches.map((branch) => [branch.name, branch] as const));
-    for (const branch of enrichedBranches) {
+    const map: Record<string, string | null> = { [defaultBranch]: null };
+    for (const branch of branchesForLayout) {
       if (branch.name === defaultBranch) continue;
-      const raw = map[branch.name] ?? branch.parentBranch ?? null;
-      map[branch.name] = isParallelEmptyBranchParent(branch, raw, branchesByName) ? defaultBranch : raw;
+      map[branch.name] = branch.parentBranch ?? null;
     }
     return map;
-  }, [branchParentByName, defaultBranch, enrichedBranches]);
-  const branchesForLayout = useMemo(
-    () => applyBranchParents(enrichedBranches, enrichedBranchParentByName, defaultBranch),
-    [enrichedBranches, enrichedBranchParentByName, defaultBranch],
-  );
+  }, [branchesForLayout, defaultBranch]);
   const sharedGridLanes = useMemo(
     () => buildLanes(branchesForLayout, defaultBranch, enrichedBranchCommitPreviews, enrichedBranchParentByName),
     [branchesForLayout, defaultBranch, enrichedBranchCommitPreviews, enrichedBranchParentByName],

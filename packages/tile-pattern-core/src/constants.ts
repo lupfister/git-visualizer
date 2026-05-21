@@ -21,7 +21,7 @@ export const TILE_SHAPE_GAP_RATIO = 0.078;
 export const TILE_CORNER_RADIUS_FRACTION = 0.5;
 export const TILE_LUM_MIX_MAX = 0.5;
 /** Share of tiles omitted on pushed / remote cards (static gaps when not animated). */
-export const TILE_DEFAULT_OMISSION_RATE = 0.3;
+export const TILE_DEFAULT_OMISSION_RATE = 0.4;
 /** Share of tiles omitted on working-tree and stash cards (animated). */
 export const TILE_UNCOMMITTED_OMISSION_RATE = 0.7;
 /** Ms between working-tree omission keyframes (interpolated in between). */
