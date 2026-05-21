@@ -1832,9 +1832,9 @@ fn list_stashes(repo_path: String) -> Result<Vec<git::GitStashEntry>, String> {
 }
 
 #[tauri::command(rename_all = "camelCase")]
-fn stash_push(repo_path: String, include_untracked: bool) -> Result<(), String> {
+fn stash_push(repo_path: String, include_untracked: bool, message: String) -> Result<(), String> {
     let path = Path::new(&repo_path);
-    git::stash_push(path, include_untracked).map_err(|e| e.to_string())
+    git::stash_push(path, include_untracked, &message).map_err(|e| e.to_string())
 }
 
 #[tauri::command(rename_all = "camelCase")]
@@ -1858,6 +1858,18 @@ async fn generate_commit_message(repo_path: String) -> Result<String, String> {
     })
     .await
     .map_err(|e| format!("Commit message task failed: {e}"))?
+}
+
+#[tauri::command(rename_all = "camelCase")]
+async fn generate_stash_message(repo_path: String) -> Result<String, String> {
+    let path = repo_path.clone();
+    tauri::async_runtime::spawn_blocking(move || {
+        let repo = Path::new(&path);
+        let diff = git::get_working_tree_diff(repo).map_err(|e| e.to_string())?;
+        opencode::generate_stash_message(repo, &diff)
+    })
+    .await
+    .map_err(|e| format!("Stash message task failed: {e}"))?
 }
 
 #[tauri::command(rename_all = "camelCase")]
@@ -5290,6 +5302,7 @@ pub fn run() {
             stash_push,
             commit_working_tree,
             generate_commit_message,
+            generate_stash_message,
             stage_working_tree,
             apply_stash_restore,
             stash_drop,

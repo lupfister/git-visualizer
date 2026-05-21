@@ -2265,7 +2265,7 @@ function App() {
       let stashedPrefix = '';
       const refBefore = await invoke<CheckedOutRef>('get_checked_out_ref', { repoPath });
       if (refBefore.hasUncommittedChanges) {
-        await invoke('stash_push', { repoPath, includeUntracked: true });
+        await stashLocalChangesWithGeneratedMessage();
         stashedPrefix = 'Stashed local changes (including untracked), then ';
         beginRepoMutation();
         await refreshRepoAfterMutation(repoPath);
@@ -2303,6 +2303,16 @@ function App() {
     }
   }
 
+  async function stashLocalChangesWithGeneratedMessage(): Promise<void> {
+    if (!repoPath) return;
+    const message = await invoke<string>('generate_stash_message', { repoPath });
+    await invoke('stash_push', {
+      repoPath,
+      includeUntracked: true,
+      message: message.trim(),
+    });
+  }
+
   async function handleStashLocalChanges() {
     if (!repoPath || stashInProgress) return;
     setCommitSwitchFeedback(null);
@@ -2316,7 +2326,7 @@ function App() {
         });
         return;
       }
-      await invoke('stash_push', { repoPath, includeUntracked: true });
+      await stashLocalChangesWithGeneratedMessage();
       beginRepoMutation();
       await yieldToPaint();
       await refreshRepoAfterMutation(repoPath);

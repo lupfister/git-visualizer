@@ -5,10 +5,16 @@ use std::process::{Command, Stdio};
 use std::time::{Duration, Instant};
 
 const MAX_DIFF_CHARS: usize = 80_000;
+const MAX_GENERATION_ATTEMPTS: u32 = 3;
+const RETRY_DELAY_MS: u64 = 500;
 const OPENCODE_TIMEOUT: Duration = Duration::from_secs(120);
 const OPENCODE_ATTACH_URL: &str = "http://127.0.0.1:4096";
 
 const INLINE_COMMIT_PROMPT: &str = "Output ONLY the raw git commit message text — nothing else.\n\
+No preamble (never say \"the agent generated\" or similar). No quotes. No markdown. One sentence, imperative mood.\n\n\
+Diff:\n";
+
+const INLINE_STASH_PROMPT: &str = "Output ONLY the raw git stash message text — nothing else.\n\
 No preamble (never say \"the agent generated\" or similar). No quotes. No markdown. One sentence, imperative mood.\n\n\
 Diff:\n";
 
@@ -118,14 +124,23 @@ fn strip_meta_prefix(text: &str) -> String {
     let meta_markers = [
         "the agent generated the commit message:",
         "the agent generated a commit message:",
+        "the agent generated the stash message:",
+        "the agent generated a stash message:",
         "i generated the commit message:",
+        "i generated the stash message:",
         "here is the commit message:",
+        "here is the stash message:",
         "here's the commit message:",
+        "here's the stash message:",
         "generated commit message:",
+        "generated stash message:",
         "proposed commit message:",
+        "proposed stash message:",
         "commit message:",
+        "stash message:",
         "message:",
         "commit:",
+        "stash:",
     ];
     for marker in meta_markers {
         if let Some(index) = lower.find(marker) {
@@ -135,7 +150,27 @@ fn strip_meta_prefix(text: &str) -> String {
     text.trim().to_string()
 }
 
-fn sanitize_commit_message(raw: &str) -> Result<String, String> {
+fn is_generation_failure_meta(text: &str) -> bool {
+    let lower = text.to_lowercase();
+    const MARKERS: &[&str] = &[
+        "returned empty output",
+        "no commit message was produced",
+        "no stash message was produced",
+        "no message was produced",
+        "failed to generate",
+        "could not generate",
+        "unable to generate",
+        "generation task",
+        "commit message generation",
+        "stash message generation",
+        "the diff shows",
+        "files changed:",
+        "nothing else to output",
+    ];
+    MARKERS.iter().any(|marker| lower.contains(marker))
+}
+
+fn sanitize_single_line_message(raw: &str, empty_label: &str) -> Result<String, String> {
     let cleaned = strip_ansi(raw).replace("```", "").trim().to_string();
 
     let first_line = cleaned
@@ -168,7 +203,13 @@ fn sanitize_commit_message(raw: &str) -> Result<String, String> {
     }
 
     if candidate.is_empty() {
-        return Err("OpenCode returned an empty commit message.".to_string());
+        return Err(format!("OpenCode returned an empty {empty_label}."));
+    }
+
+    if is_generation_failure_meta(&candidate) {
+        return Err(format!(
+            "OpenCode returned meta text instead of a {empty_label}."
+        ));
     }
 
     if candidate.contains('\n') {
@@ -180,12 +221,13 @@ fn sanitize_commit_message(raw: &str) -> Result<String, String> {
 
 #[cfg(test)]
 mod tests {
-    use super::sanitize_commit_message;
+    use super::{is_generation_failure_meta, sanitize_single_line_message};
 
     #[test]
     fn strips_agent_meta_wrapper_and_markdown() {
         let raw = r#"The agent generated the commit message: **"Add auto-commit support with AI-generated commit messages"**."#;
-        let message = sanitize_commit_message(raw).expect("message");
+        let message =
+            sanitize_single_line_message(raw, "commit message").expect("message");
         assert_eq!(
             message,
             "Add auto-commit support with AI-generated commit messages"
@@ -195,8 +237,17 @@ mod tests {
     #[test]
     fn keeps_plain_message() {
         let raw = "Fix commit button loading state";
-        let message = sanitize_commit_message(raw).expect("message");
+        let message =
+            sanitize_single_line_message(raw, "commit message").expect("message");
         assert_eq!(message, "Fix commit button loading state");
+    }
+
+    #[test]
+    fn rejects_failure_meta_message() {
+        let raw = "The commit message generation task returned empty output — no commit message was produced. The diff shows three files changed.";
+        let err = sanitize_single_line_message(raw, "commit message").unwrap_err();
+        assert!(err.contains("meta text"));
+        assert!(is_generation_failure_meta(raw));
     }
 }
 
@@ -223,7 +274,7 @@ fn run_opencode(
                     let _ = child.kill();
                     let _ = child.wait();
                     return Err(
-                        "OpenCode timed out while generating a commit message. Try Write commit."
+                        "OpenCode timed out while generating a message. Try again or enter one manually."
                             .to_string(),
                     );
                 }
@@ -261,13 +312,55 @@ fn run_opencode(
         detail
     };
     Err(if detail.is_empty() {
-        "OpenCode failed to generate a commit message.".to_string()
+        "OpenCode failed to generate a message.".to_string()
     } else {
         format!("OpenCode failed: {detail}")
     })
 }
 
-pub fn generate_commit_message(repo: &Path, diff: &str) -> Result<String, String> {
+fn run_opencode_once(
+    binary: &Path,
+    repo_path: &str,
+    command: &str,
+    inline_prompt_prefix: &str,
+    truncated_diff: &str,
+) -> Result<String, String> {
+    let attach = opencode_server_available();
+
+    let mut command_args: Vec<&str> = vec!["run", "--dir", repo_path, "--command", command];
+    if attach {
+        command_args.push("--attach");
+        command_args.push(OPENCODE_ATTACH_URL);
+    }
+    command_args.push("--dangerously-skip-permissions");
+
+    let command_result = run_opencode(binary, repo_path, &command_args);
+    let raw = match command_result {
+        Ok(text) if !text.trim().is_empty() => text,
+        _ => {
+            let prompt = format!("{inline_prompt_prefix}{truncated_diff}");
+            let mut inline_args: Vec<&str> = vec!["run", "--dir", repo_path];
+            if attach {
+                inline_args.push("--attach");
+                inline_args.push(OPENCODE_ATTACH_URL);
+            }
+            inline_args.push("--dangerously-skip-permissions");
+            inline_args.push(prompt.as_str());
+            run_opencode(binary, repo_path, &inline_args)?
+        }
+    };
+
+    Ok(raw)
+}
+
+fn generate_message_with_retries(
+    repo: &Path,
+    diff: &str,
+    command: &str,
+    inline_prompt_prefix: &str,
+    empty_label: &str,
+    failure_label: &str,
+) -> Result<String, String> {
     let repo_path = repo
         .to_str()
         .ok_or_else(|| "Repository path is not valid UTF-8.".to_string())?;
@@ -278,30 +371,51 @@ pub fn generate_commit_message(repo: &Path, diff: &str) -> Result<String, String
 
     let binary = resolve_opencode_binary()?;
     let truncated = truncate_diff(diff);
-    let attach = opencode_server_available();
+    let mut last_error = String::from("OpenCode did not return a usable message.");
 
-    let mut command_args: Vec<&str> = vec!["run", "--dir", repo_path, "--command", "commit"];
-    if attach {
-        command_args.push("--attach");
-        command_args.push(OPENCODE_ATTACH_URL);
-    }
-    command_args.push("--dangerously-skip-permissions");
-
-    let command_result = run_opencode(&binary, repo_path, &command_args);
-    let raw = match command_result {
-        Ok(text) if !text.trim().is_empty() => text,
-        _ => {
-            let prompt = format!("{INLINE_COMMIT_PROMPT}{truncated}");
-            let mut inline_args: Vec<&str> = vec!["run", "--dir", repo_path];
-            if attach {
-                inline_args.push("--attach");
-                inline_args.push(OPENCODE_ATTACH_URL);
-            }
-            inline_args.push("--dangerously-skip-permissions");
-            inline_args.push(prompt.as_str());
-            run_opencode(&binary, repo_path, &inline_args)?
+    for attempt in 1..=MAX_GENERATION_ATTEMPTS {
+        match run_opencode_once(
+            &binary,
+            repo_path,
+            command,
+            inline_prompt_prefix,
+            &truncated,
+        ) {
+            Ok(raw) => match sanitize_single_line_message(&raw, empty_label) {
+                Ok(message) => return Ok(message),
+                Err(err) => last_error = err,
+            },
+            Err(err) => last_error = err,
         }
-    };
 
-    sanitize_commit_message(&raw)
+        if attempt < MAX_GENERATION_ATTEMPTS {
+            std::thread::sleep(Duration::from_millis(RETRY_DELAY_MS * attempt as u64));
+        }
+    }
+
+    Err(format!(
+        "Failed to generate a {failure_label} after {MAX_GENERATION_ATTEMPTS} attempts. {last_error}"
+    ))
+}
+
+pub fn generate_commit_message(repo: &Path, diff: &str) -> Result<String, String> {
+    generate_message_with_retries(
+        repo,
+        diff,
+        "commit",
+        INLINE_COMMIT_PROMPT,
+        "commit message",
+        "commit message",
+    )
+}
+
+pub fn generate_stash_message(repo: &Path, diff: &str) -> Result<String, String> {
+    generate_message_with_retries(
+        repo,
+        diff,
+        "stash",
+        INLINE_STASH_PROMPT,
+        "stash message",
+        "stash message",
+    )
 }
