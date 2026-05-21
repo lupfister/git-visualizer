@@ -273,17 +273,23 @@ const MapGridCommitCard = memo(function MapGridCommitCard({
     isFocused ? 'z-30' : '',
   );
 
-  const headerLabel = isStashedCommit && stashHeaderLabel
-    ? stashHeaderLabel
-    : node.commit.branchName
-      ? `${node.commit.branchName}/${node.commit.id.slice(0, 7)}`
-      : node.commit.id.slice(0, 7);
+  const headerLabel = isLocalUncommitted && branchName
+    ? `${branchName}/uncommitted`
+    : isLocalUncommitted
+      ? 'uncommitted'
+      : isStashedCommit && stashHeaderLabel
+        ? stashHeaderLabel
+        : node.commit.branchName
+          ? `${node.commit.branchName}/${node.commit.id.slice(0, 7)}`
+          : node.commit.id.slice(0, 7);
 
-  const bodyMessage = isClusterLead && isClusterOpen
-    ? stashBodyMessage
-    : isClusterLead && clumpCount > 1
-      ? `${stashBodyMessage} +${clumpCount - 1}`
-      : stashBodyMessage;
+  const bodyMessage = isLocalUncommitted
+    ? ''
+    : isClusterLead && isClusterOpen
+      ? stashBodyMessage
+      : isClusterLead && clumpCount > 1
+        ? `${stashBodyMessage} +${clumpCount - 1}`
+        : stashBodyMessage;
 
   const handleClick = (event: MouseEvent) => onCommitCardClick(event, node);
   const handlePointerDown = (event: React.PointerEvent<HTMLDivElement>) => onNodePointerDown(event, node);

@@ -96,9 +96,9 @@ export function deriveRepoVisualState({
     const uncommittedDate = new Date(uncommittedTimeMs).toISOString();
     const uncommittedNode: BranchCommitPreview = {
       fullSha: 'WORKING_TREE',
-      sha: 'Uncommited Changes',
+      sha: 'uncommitted',
       parentSha: checkedOutAnchorSha,
-      message: 'Local uncommitted changes',
+      message: '',
       author: 'You',
       date: uncommittedDate,
       kind: 'uncommitted',
