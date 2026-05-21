@@ -3228,7 +3228,7 @@ function App() {
   );
   const graphLayoutSignature = useMemo(
     () => [
-      'layout-v9-empty-branch-stash-column',
+      'layout-v10-empty-branch-head-placeholder',
       layoutEpoch,
       defaultBranch,
       visualCheckedOutRef?.branchName ?? '',
