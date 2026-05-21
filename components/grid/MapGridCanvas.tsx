@@ -20,12 +20,16 @@ import {
 import { buildMapGridCardSlotAssignments, computeMapGridCardSlotCount } from './MapGridCardVirtualizer';
 import {
   cn,
-  computeMapGridInvZoom,
   computeViewportCullBounds,
+  GRID_COMMIT_CORNER_RADIUS_BASE_PX,
 } from './mapGridUtils';
 import type { ConnectorFace, Node, NodePositionOverrides } from './LayoutGrid';
 import type { MapGridCameraState, MapGridCameraTargetLayout } from './useMapGridCamera';
 import { getNodePositionOverride } from './nodePositionOverrides';
+import {
+  TILE_DEFAULT_OMISSION_RATE,
+  TILE_UNCOMMITTED_OMISSION_RATE,
+} from '@git-visualizer/tile-pattern-core';
 import { CommitNodeTilePattern, type CommitNodeTilePatternHandle } from './CommitNodeTilePattern';
 
 const EMPTY_NODE_POSITION_OVERRIDES: NodePositionOverrides = {};
@@ -124,9 +128,7 @@ type CommitCardProps = {
   cardLeft: number;
   cardTop: number;
   displayZoom: number;
-  commitCornerRadiusPx: number;
   lineStrokeWidth: number;
-  labelTopPx: number;
   selectedShaSet: Set<string>;
   normalizedSearchQuery: string;
   matchingNodeIds: Set<string>;
@@ -158,9 +160,7 @@ const MapGridCommitCard = memo(function MapGridCommitCard({
   cardLeft,
   cardTop,
   displayZoom,
-  commitCornerRadiusPx,
   lineStrokeWidth: _lineStrokeWidth,
-  labelTopPx,
   selectedShaSet,
   normalizedSearchQuery,
   matchingNodeIds,
@@ -254,8 +254,14 @@ const MapGridCommitCard = memo(function MapGridCommitCard({
   const showCommitTilePattern = !isEmptyBranchNode;
   /** Default luminance + checkerboard-biased gaps (working tree and stash). */
   const commitTileRandomGaps = isLocalUncommitted || isStashedCommit;
+  const commitTileAnimateGaps = isLocalUncommitted;
+  const commitTileOmissionRate = isLocalUncommitted
+    ? TILE_UNCOMMITTED_OMISSION_RATE
+    : TILE_DEFAULT_OMISSION_RATE;
   const useRoundedCardOutline = isDashedOutline || showCommitTilePattern;
-  const outlineCornerRadiusPx = useRoundedCardOutline ? commitCornerRadiusPx : 0;
+  const outlineCornerRadiusCss = useRoundedCardOutline
+    ? `calc(${GRID_COMMIT_CORNER_RADIUS_BASE_PX}px * var(--map-inv-zoom, 1))`
+    : '0';
   const cardTextStyle = selectedCommitTextStyle;
 
   const wrapperClassName = cn(
@@ -448,7 +454,10 @@ const MapGridCommitCard = memo(function MapGridCommitCard({
       onPointerUp={onNodePointerUp}
       onPointerCancel={onNodePointerUp}
     >
-      <div className="absolute left-0 z-30 w-full" style={{ top: `${labelTopPx}px` }}>
+      <div
+        className="absolute left-0 z-30 w-full"
+        style={{ top: 'calc(-20px * var(--map-inv-zoom, 1))' }}
+      >
         <div className="flex min-w-0 items-baseline justify-between gap-2 bg-transparent pb-0">
           <div
             className={cn(
@@ -504,9 +513,9 @@ const MapGridCommitCard = memo(function MapGridCommitCard({
           outline: 'none',
           boxShadow: 'none',
           borderTopLeftRadius: 0,
-          borderTopRightRadius: useRoundedCardOutline ? `${outlineCornerRadiusPx}px` : 0,
-          borderBottomRightRadius: useRoundedCardOutline ? `${outlineCornerRadiusPx}px` : 0,
-          borderBottomLeftRadius: useRoundedCardOutline ? `${outlineCornerRadiusPx}px` : 0,
+          borderTopRightRadius: outlineCornerRadiusCss,
+          borderBottomRightRadius: outlineCornerRadiusCss,
+          borderBottomLeftRadius: outlineCornerRadiusCss,
           contain: 'layout paint style',
         }}
       >
@@ -518,6 +527,8 @@ const MapGridCommitCard = memo(function MapGridCommitCard({
             hoverTintColor={commitTileHoverTintColor}
             displayZoom={displayZoom}
             randomTileGaps={commitTileRandomGaps}
+            animateTileGaps={commitTileAnimateGaps}
+            tileOmissionRate={commitTileOmissionRate}
           />
         ) : null}
         <div
@@ -622,7 +633,6 @@ type Props = {
   onNodePointerDown: (event: React.PointerEvent<HTMLDivElement>, node: Node) => void;
   onNodePointerMove: (event: React.PointerEvent<HTMLDivElement>) => void;
   onNodePointerUp: (event: React.PointerEvent<HTMLDivElement>) => void;
-  labelTopPx: number;
   displayZoom: number;
   selectedVisibleCommitShas: string[];
   normalizedSearchQuery: string;
@@ -690,7 +700,6 @@ const MapGridCanvas = memo(function MapGridCanvas({
   onNodePointerDown,
   onNodePointerMove,
   onNodePointerUp,
-  labelTopPx,
   displayZoom,
   selectedVisibleCommitShas,
   normalizedSearchQuery,
@@ -990,8 +999,7 @@ const MapGridCanvas = memo(function MapGridCanvas({
       className="relative flex-1 min-h-0 overflow-hidden"
       style={{
         cursor: isMarqueeSelecting ? 'crosshair' : 'default',
-        '--map-inv-zoom': `${computeMapGridInvZoom(displayZoom)}`,
-      } as CSSProperties}
+      }}
       onWheel={onWheel}
       onMouseDown={onMouseDown}
     >
@@ -1013,9 +1021,7 @@ const MapGridCanvas = memo(function MapGridCanvas({
                 cardLeft={cardLeft}
                 cardTop={cardTop}
                 displayZoom={displayZoom}
-                commitCornerRadiusPx={commitCornerRadiusPx}
                 lineStrokeWidth={lineStrokeWidth}
-                labelTopPx={labelTopPx}
                 selectedShaSet={selectedShaSet}
                 normalizedSearchQuery={normalizedSearchQuery}
                 matchingNodeIds={matchingNodeIds}

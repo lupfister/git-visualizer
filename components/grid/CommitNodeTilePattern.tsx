@@ -1,9 +1,15 @@
 import {
   computeTileGridLayout,
+  createTileOmissionSampler,
   fnv1a32,
   isTileOmittedAt,
   lumMixToFillCss,
+  pickGridCounts,
+  TILE_DEFAULT_OMISSION_RATE,
+  TILE_PATTERN_DEFAULT_DISPLAY_ZOOM,
   type TileCellSpec,
+  type TileGridLayout,
+  type TileOmissionSampler,
 } from '@git-visualizer/tile-pattern-core';
 import {
   forwardRef,
@@ -11,6 +17,7 @@ import {
   useCallback,
   useEffect,
   useImperativeHandle,
+  useLayoutEffect,
   useMemo,
   useRef,
   useState,
@@ -26,6 +33,7 @@ const HOVER_SUSTAIN_LERP = 0.14;
 const HOVER_MOVE_DEPOSIT = 0.11;
 const HOVER_AMBIENT_DECAY = 0.985;
 const TILE_PATTERN_CLIP_INSET = 1.5;
+const TILE_OMIT_VISIBILITY_EPSILON = 0.02;
 
 const cursorFalloff = (dist: number): number => {
   if (dist >= CURSOR_RADIUS_LAYOUT) {
@@ -114,9 +122,11 @@ type CommitNodeTilePatternProps = {
   seed: string;
   shapeFillCssVar: string;
   hoverTintColor: string;
+  /** Used for grid topology (row/col count). Tile geometry within a topology is zoom-invariant. */
   displayZoom: number;
-  /** Omit a seed-stable random subset of tiles (working tree and stash). */
   randomTileGaps?: boolean;
+  animateTileGaps?: boolean;
+  tileOmissionRate?: number;
 };
 
 export type CommitNodeTilePatternHandle = {
@@ -125,24 +135,161 @@ export type CommitNodeTilePatternHandle = {
   endHover: () => void;
 };
 
+type TileShapeRefs = {
+  base: SVGCircleElement | SVGPathElement | null;
+  overlay: SVGCircleElement | SVGPathElement | null;
+};
+
+const applyTileOpacities = (
+  layout: TileGridLayout,
+  cells: TileCellSpec[],
+  presences: Float32Array | null,
+  boosts: Float32Array,
+  shapeRefsByKey: Map<string, TileShapeRefs>,
+  randomTileGaps: boolean,
+  animateGaps: boolean,
+  seed: string,
+  tileOmissionRate: number,
+): void => {
+  const { cols } = layout;
+
+  for (const cell of cells) {
+    const index = cell.row * cols + cell.col;
+    const tilePresence = !randomTileGaps
+      ? 1
+      : animateGaps
+        ? (presences?.[index] ?? 0)
+        : isTileOmittedAt(
+            seed,
+            cell.col,
+            cell.row,
+            TILE_PATTERN_DEFAULT_DISPLAY_ZOOM,
+            tileOmissionRate,
+          )
+          ? 0
+          : 1;
+    const refs = shapeRefsByKey.get(cell.key);
+    if (!refs?.base) {
+      continue;
+    }
+
+    if (tilePresence <= (animateGaps ? 0 : TILE_OMIT_VISIBILITY_EPSILON)) {
+      refs.base.setAttribute('display', 'none');
+      refs.overlay?.setAttribute('display', 'none');
+      continue;
+    }
+
+    refs.base.removeAttribute('display');
+    refs.base.setAttribute('fill-opacity', String(tilePresence));
+
+    const overlay = refs.overlay;
+    if (!overlay) {
+      continue;
+    }
+
+    const overlayOpacity = boostToOverlayOpacity(boosts[index] ?? 0) * tilePresence;
+    if (overlayOpacity < 0.008) {
+      overlay.setAttribute('display', 'none');
+      continue;
+    }
+
+    overlay.removeAttribute('display');
+    overlay.setAttribute('fill-opacity', String(overlayOpacity));
+  }
+};
+
+const tilePatternPropsEqual = (
+  prev: Readonly<CommitNodeTilePatternProps>,
+  next: Readonly<CommitNodeTilePatternProps>,
+): boolean => {
+  if (prev.seed !== next.seed) return false;
+  if (prev.shapeFillCssVar !== next.shapeFillCssVar) return false;
+  if (prev.hoverTintColor !== next.hoverTintColor) return false;
+  if (prev.randomTileGaps !== next.randomTileGaps) return false;
+  if (prev.animateTileGaps !== next.animateTileGaps) return false;
+  if (prev.tileOmissionRate !== next.tileOmissionRate) return false;
+
+  const prevTopology = pickGridCounts(CARD_WIDTH, CARD_HEIGHT, prev.displayZoom);
+  const nextTopology = pickGridCounts(CARD_WIDTH, CARD_HEIGHT, next.displayZoom);
+  return prevTopology.cols === nextTopology.cols && prevTopology.rows === nextTopology.rows;
+};
+
 export const CommitNodeTilePattern = memo(
   forwardRef<CommitNodeTilePatternHandle, CommitNodeTilePatternProps>(function CommitNodeTilePattern(
-    { seed, shapeFillCssVar, hoverTintColor, displayZoom, randomTileGaps = false },
+    {
+      seed,
+      shapeFillCssVar,
+      hoverTintColor,
+      displayZoom,
+      randomTileGaps = false,
+      animateTileGaps = false,
+      tileOmissionRate = TILE_DEFAULT_OMISSION_RATE,
+    },
     ref,
   ) {
     const fillValue = `var(${shapeFillCssVar})`;
-    const layout = useMemo(
-      () =>
-        computeTileGridLayout({
-          seed,
-          width: CARD_WIDTH,
-          height: CARD_HEIGHT,
-          displayZoom,
-        }),
-      [seed, displayZoom],
+    const displayZoomForLayoutRef = useRef(displayZoom);
+    displayZoomForLayoutRef.current = displayZoom;
+
+    const gridTopology = useMemo(
+      () => pickGridCounts(CARD_WIDTH, CARD_HEIGHT, displayZoom),
+      [displayZoom],
     );
+    const topologyKey = `${gridTopology.cols}x${gridTopology.rows}`;
+
+    const layout = useMemo((): TileGridLayout => {
+      return computeTileGridLayout({
+        seed,
+        width: CARD_WIDTH,
+        height: CARD_HEIGHT,
+        displayZoom: displayZoomForLayoutRef.current,
+      });
+    }, [seed, topologyKey]);
     const layoutRef = useRef(layout);
     layoutRef.current = layout;
+
+    const omissionSampler = useMemo((): TileOmissionSampler | null => {
+      if (!randomTileGaps || !animateTileGaps) {
+        return null;
+      }
+      return createTileOmissionSampler(
+        seed,
+        layout.cols,
+        layout.rows,
+        TILE_PATTERN_DEFAULT_DISPLAY_ZOOM,
+        tileOmissionRate,
+      );
+    }, [animateTileGaps, layout.cols, layout.rows, randomTileGaps, seed, tileOmissionRate, topologyKey]);
+
+    const omissionSamplerRef = useRef(omissionSampler);
+    omissionSamplerRef.current = omissionSampler;
+
+    const paintCells = useMemo(() => {
+      if (!randomTileGaps) {
+        return layout.cells;
+      }
+      if (animateTileGaps) {
+        return layout.cells;
+      }
+      return layout.cells.filter(
+        (cell) =>
+          !isTileOmittedAt(
+            seed,
+            cell.col,
+            cell.row,
+            TILE_PATTERN_DEFAULT_DISPLAY_ZOOM,
+            tileOmissionRate,
+          ),
+      );
+    }, [animateTileGaps, layout.cells, randomTileGaps, seed, tileOmissionRate, topologyKey]);
+
+    const paintCellsRef = useRef(paintCells);
+    paintCellsRef.current = paintCells;
+
+    const shapeRefsByKey = useRef(new Map<string, TileShapeRefs>());
+    const presencesRef = useRef<Float32Array>(new Float32Array(layout.cols * layout.rows));
+    const gapAnimStartMsRef = useRef(0);
+    const gapAnimRafRef = useRef<number | null>(null);
 
     const [boosts, setBoosts] = useState<Float32Array>(
       () => new Float32Array(layout.cols * layout.rows),
@@ -153,19 +300,85 @@ export const CommitNodeTilePattern = memo(
     const pointerRef = useRef<{ x: number; y: number } | null>(null);
     const rafRef = useRef<number | null>(null);
 
+    const paintTiles = useCallback(() => {
+      const layoutSnapshot = layoutRef.current;
+      const cells = paintCellsRef.current;
+      if (shapeRefsByKey.current.size === 0) {
+        return;
+      }
+
+      applyTileOpacities(
+        layoutSnapshot,
+        cells,
+        omissionSamplerRef.current ? presencesRef.current : null,
+        boostsRef.current,
+        shapeRefsByKey.current,
+        randomTileGaps,
+        Boolean(omissionSamplerRef.current),
+        seed,
+        tileOmissionRate,
+      );
+    }, [randomTileGaps, seed, tileOmissionRate]);
+
+    useEffect(() => {
+      presencesRef.current = new Float32Array(layout.cols * layout.rows);
+      const nextBoosts = new Float32Array(layout.cols * layout.rows);
+      boostsRef.current = nextBoosts;
+      setBoosts(nextBoosts);
+      gapAnimStartMsRef.current = performance.now();
+      isHoveringRef.current = false;
+      pointerRef.current = null;
+    }, [layout.cols, layout.rows, topologyKey]);
+
+    useEffect(() => {
+      if (!omissionSampler) {
+        paintTiles();
+        return;
+      }
+      if (typeof window === 'undefined') {
+        return;
+      }
+      if (window.matchMedia('(prefers-reduced-motion: reduce)').matches) {
+        paintTiles();
+        return;
+      }
+
+      const tick = (now: number) => {
+        const sampler = omissionSamplerRef.current;
+        const layoutSnapshot = layoutRef.current;
+        if (sampler && presencesRef.current.length === layoutSnapshot.cols * layoutSnapshot.rows) {
+          sampler.sample(now - gapAnimStartMsRef.current, presencesRef.current);
+        }
+        if (shapeRefsByKey.current.size > 0) {
+          paintTiles();
+        }
+        gapAnimRafRef.current = requestAnimationFrame(tick);
+      };
+
+      gapAnimStartMsRef.current = performance.now();
+      gapAnimRafRef.current = requestAnimationFrame(tick);
+
+      return () => {
+        if (gapAnimRafRef.current != null) {
+          cancelAnimationFrame(gapAnimRafRef.current);
+          gapAnimRafRef.current = null;
+        }
+      };
+    }, [omissionSampler, paintTiles, topologyKey]);
+
+    useEffect(() => {
+      if (omissionSampler) {
+        return;
+      }
+      paintTiles();
+    }, [boosts, omissionSampler, paintTiles, paintCells]);
+
     const stopHoverLoop = useCallback(() => {
       if (rafRef.current != null) {
         cancelAnimationFrame(rafRef.current);
         rafRef.current = null;
       }
     }, []);
-
-    useEffect(() => {
-      const nextBoosts = new Float32Array(layout.cols * layout.rows);
-      setBoosts(nextBoosts);
-      isHoveringRef.current = false;
-      pointerRef.current = null;
-    }, [layout.cols, layout.rows]);
 
     const runHoverFrame = useCallback(() => {
       rafRef.current = null;
@@ -216,12 +429,14 @@ export const CommitNodeTilePattern = memo(
       }
 
       if (dirty) {
+        boostsRef.current = next;
         setBoosts(next);
+        paintTiles();
       }
       if (keepLooping) {
         rafRef.current = requestAnimationFrame(runHoverFrame);
       }
-    }, [seed]);
+    }, [paintTiles]);
 
     const ensureHoverLoop = useCallback(() => {
       if (rafRef.current != null) {
@@ -244,16 +459,12 @@ export const CommitNodeTilePattern = memo(
           pointerRef.current = { x: layoutX, y: layoutY };
           isHoveringRef.current = true;
 
-          setBoosts((previous) => {
-            if (previous.length !== cells.length) {
-              return previous;
-            }
-            const next = new Float32Array(previous);
-            if (depositAtCursor(next, cols, rows, cells, layoutX, layoutY, HOVER_MOVE_DEPOSIT)) {
-              return next;
-            }
-            return previous;
-          });
+          const next = new Float32Array(boostsRef.current);
+          if (depositAtCursor(next, cols, rows, cells, layoutX, layoutY, HOVER_MOVE_DEPOSIT)) {
+            boostsRef.current = next;
+            setBoosts(next);
+            paintTiles();
+          }
           ensureHoverLoop();
         },
         endHover() {
@@ -262,50 +473,56 @@ export const CommitNodeTilePattern = memo(
           ensureHoverLoop();
         },
       }),
-      [ensureHoverLoop, seed],
+      [ensureHoverLoop, paintTiles],
     );
 
     const patternClipId = `commit-tile-clip-${fnv1a32(seed)}`;
 
-    const { baseShapes, overlayShapes } = useMemo(() => {
+    const tileShapes = useMemo(() => {
       const base: ReactNode[] = [];
       const overlay: ReactNode[] = [];
+      const nextRefs = new Map<string, TileShapeRefs>();
 
       for (const cell of layout.cells) {
-        if (randomTileGaps && isTileOmittedAt(seed, cell.col, cell.row, displayZoom)) {
-          continue;
-        }
-        const index = cell.row * layout.cols + cell.col;
-        const hoverBoost = boosts[index] ?? 0;
         const restingColor = lumMixToFillCss(fillValue, cell.baseLumMix);
-        const overlayOpacity = boostToOverlayOpacity(hoverBoost);
         const overlayStyle = { mixBlendMode: 'darken' as const };
+        const assignRefs = (baseEl: SVGCircleElement | SVGPathElement | null) => {
+          const entry = nextRefs.get(cell.key) ?? { base: null, overlay: null };
+          entry.base = baseEl;
+          nextRefs.set(cell.key, entry);
+        };
+        const assignOverlayRef = (overlayEl: SVGCircleElement | SVGPathElement | null) => {
+          const entry = nextRefs.get(cell.key) ?? { base: null, overlay: null };
+          entry.overlay = overlayEl;
+          nextRefs.set(cell.key, entry);
+        };
 
         if (cell.drawAsCircle) {
           base.push(
             <circle
               key={`${cell.key}:base`}
+              ref={assignRefs}
               cx={cell.cx}
               cy={cell.cy}
               r={cell.halfSize}
               fill={restingColor}
+              fillOpacity={1}
               stroke="none"
             />,
           );
-          if (overlayOpacity >= 0.008) {
-            overlay.push(
-              <circle
-                key={`${cell.key}:fx`}
-                cx={cell.cx}
-                cy={cell.cy}
-                r={cell.halfSize}
-                fill={hoverTintColor}
-                fillOpacity={overlayOpacity}
-                stroke="none"
-                style={overlayStyle}
-              />,
-            );
-          }
+          overlay.push(
+            <circle
+              key={`${cell.key}:fx`}
+              ref={assignOverlayRef}
+              cx={cell.cx}
+              cy={cell.cy}
+              r={cell.halfSize}
+              fill={hoverTintColor}
+              fillOpacity={0}
+              stroke="none"
+              style={overlayStyle}
+            />,
+          );
           continue;
         }
 
@@ -313,23 +530,39 @@ export const CommitNodeTilePattern = memo(
           continue;
         }
 
-        base.push(<path key={`${cell.key}:base`} d={cell.pathD} fill={restingColor} stroke="none" />);
-        if (overlayOpacity >= 0.008) {
-          overlay.push(
-            <path
-              key={`${cell.key}:fx`}
-              d={cell.pathD}
-              fill={hoverTintColor}
-              fillOpacity={overlayOpacity}
-              stroke="none"
-              style={overlayStyle}
-            />,
-          );
-        }
+        base.push(
+          <path
+            key={`${cell.key}:base`}
+            ref={assignRefs}
+            d={cell.pathD}
+            fill={restingColor}
+            fillOpacity={1}
+            stroke="none"
+          />,
+        );
+        overlay.push(
+          <path
+            key={`${cell.key}:fx`}
+            ref={assignOverlayRef}
+            d={cell.pathD}
+            fill={hoverTintColor}
+            fillOpacity={0}
+            stroke="none"
+            style={overlayStyle}
+          />,
+        );
       }
 
-      return { baseShapes: base, overlayShapes: overlay };
-    }, [boosts, fillValue, hoverTintColor, layout, randomTileGaps, seed]);
+      shapeRefsByKey.current = nextRefs;
+      return { base, overlay };
+    }, [fillValue, hoverTintColor, layout.cells, topologyKey]);
+
+    useLayoutEffect(() => {
+      if (shapeRefsByKey.current.size === 0) {
+        return;
+      }
+      paintTiles();
+    }, [paintTiles, tileShapes]);
 
     const cardWidth = CARD_WIDTH;
     const cardHeight = CARD_HEIGHT;
@@ -352,12 +585,13 @@ export const CommitNodeTilePattern = memo(
           </clipPath>
         </defs>
         <g clipPath={`url(#${patternClipId})`}>
-          {baseShapes}
-          {overlayShapes}
+          {tileShapes.base}
+          {tileShapes.overlay}
         </g>
       </svg>
     );
   }),
+  tilePatternPropsEqual,
 );
 
 export { COMMIT_CARD_WIDTH, COMMIT_CARD_HEIGHT } from '@git-visualizer/tile-pattern-core';

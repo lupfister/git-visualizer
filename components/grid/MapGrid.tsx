@@ -423,7 +423,6 @@ export default function BranchGridMap({
   const isGridSearchActive = Boolean(normalizedSearchQuery);
 
   const displayZoom = renderedZoom / GRID_RENDER_ZOOM;
-  const labelTopPx = -(20 / displayZoom);
   const snapMetrics = useMemo(() => {
     const zoomAwareRowGap = ROW_GAP / GRID_LAYOUT_RENDER_ZOOM;
     const zoomAwareLabelBand = 20 / GRID_LAYOUT_RENDER_ZOOM;
@@ -1831,7 +1830,6 @@ export default function BranchGridMap({
           onNodePointerDown={handleNodePointerDown}
           onNodePointerMove={handleNodePointerMove}
           onNodePointerUp={handleNodePointerUp}
-          labelTopPx={labelTopPx}
           displayZoom={displayZoom}
           selectedVisibleCommitShas={selectedVisibleCommitShas}
           normalizedSearchQuery={normalizedSearchQuery}

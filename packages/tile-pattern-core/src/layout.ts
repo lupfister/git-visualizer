@@ -13,7 +13,6 @@ import {
   TILE_LUM_MIX_MAX,
   TILE_PATTERN_DEFAULT_DISPLAY_ZOOM,
   TILE_PATTERN_MIN_DISPLAY_ZOOM,
-  TILE_RANDOM_OMISSION_RATE,
 } from './constants';
 import { createMulberry32, fnv1a32 } from './prng';
 import {
@@ -124,50 +123,12 @@ export type TileLumMixProfile = 'default' | 'bright';
 
 const clamp01 = (value: number): number => Math.max(0, Math.min(1, value));
 
-/**
- * How strongly omission follows a checkerboard (1) vs random scatter (0).
- * Ramps up as the map zooms out so the motif reads at low zoom.
- */
-export const computeTileOmissionCheckerWeight = (displayZoom: number): number => {
-  const highZoom = 0.85;
-  const lowZoom = TILE_PATTERN_MIN_DISPLAY_ZOOM;
-  const minWeight = 0.12;
-  if (!Number.isFinite(displayZoom) || displayZoom >= highZoom) {
-    return minWeight;
-  }
-  if (displayZoom <= lowZoom) {
-    return 1;
-  }
-  const t = (highZoom - displayZoom) / (highZoom - lowZoom);
-  return minWeight + clamp01(t) * (1 - minWeight);
-};
-
-/** Seed-stable omission for working-tree tile patterns (checkerboard-biased). */
-export const isTileOmittedAt = (
-  seed: string,
-  col: number,
-  row: number,
-  displayZoom = TILE_PATTERN_DEFAULT_DISPLAY_ZOOM,
-  omissionRate = TILE_RANDOM_OMISSION_RATE,
-): boolean => {
-  const random = createMulberry32(fnv1a32(`${seed}|${col}|${row}|omit`));
-  const phase = fnv1a32(`${seed}|omit-checker`) % 2;
-  const onChecker = (col + row + phase) % 2 === 0;
-  const checkerWeight = computeTileOmissionCheckerWeight(displayZoom);
-  const checkerOmitProb = Math.min(1, omissionRate * 2);
-  const r = random();
-
-  if (r < checkerWeight) {
-    return onChecker && random() < checkerOmitProb;
-  }
-
-  const r2 = random();
-  const bias = 0.24 * (1 - checkerWeight);
-  const threshold = onChecker
-    ? Math.min(1, omissionRate + bias)
-    : Math.max(0, omissionRate - bias);
-  return r2 < threshold;
-};
+export {
+  computeTileOmissionPresence,
+  computeTileOmissionCheckerWeight,
+  isTileOmittedAt,
+} from './tileOmissionFlow';
+export { createTileOmissionSampler, type TileOmissionSampler } from './tileOmissionSampler';
 
 const pickTileBaseLumMix = (
   seed: string,

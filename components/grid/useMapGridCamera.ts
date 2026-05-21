@@ -10,6 +10,7 @@ import {
   MAP_GRID_INNER_PADDING_PX,
   ZOOM_SETTLE_EPSILON,
   clampZoom,
+  computeMapGridInvZoom,
   mapGridPanCullDistanceExceeded,
 } from './mapGridUtils';
 import { pulseMapGridBackgroundActivity } from './mapGridBackgroundActivity';
@@ -107,8 +108,13 @@ export function useMapGridCamera({
   }, [mapPadHostRef]);
 
   const applyCameraTransformToTargets = useCallback((panX: number, panY: number, zoom: number) => {
+    const displayZoom = zoom / GRID_RENDER_ZOOM;
+    const invZoom = String(computeMapGridInvZoom(displayZoom));
+    const transform = (layout: MapGridCameraTargetLayout) =>
+      buildCameraTransformCss(panX, panY, zoom, layout);
     for (const [element, layout] of cameraTargetsRef.current) {
-      element.style.transform = buildCameraTransformCss(panX, panY, zoom, layout);
+      element.style.setProperty('--map-inv-zoom', invZoom);
+      element.style.transform = transform(layout);
     }
   }, []);
 
@@ -119,9 +125,12 @@ export function useMapGridCamera({
     element.style.transformOrigin = 'top left';
     cameraTargetsRef.current.set(element, layout);
     const { panX, panY, zoom } = renderedCameraRef.current;
+    const displayZoom = zoom / GRID_RENDER_ZOOM;
+    element.style.setProperty('--map-inv-zoom', String(computeMapGridInvZoom(displayZoom)));
     element.style.transform = buildCameraTransformCss(panX, panY, zoom, layout);
     return () => {
       cameraTargetsRef.current.delete(element);
+      element.style.removeProperty('--map-inv-zoom');
       element.style.transform = '';
     };
   }, []);
