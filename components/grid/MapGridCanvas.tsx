@@ -252,10 +252,10 @@ const MapGridCommitCard = memo(function MapGridCommitCard({
   const isDashedOutline = isEmptyBranchNode;
   /** All commit cards except empty-branch placeholders. */
   const showCommitTilePattern = !isEmptyBranchNode;
-  /** Default luminance + checkerboard-biased gaps (working tree and stash). */
-  const commitTileRandomGaps = isLocalUncommitted || isStashedCommit;
-  const commitTileAnimateGaps = isLocalUncommitted;
-  const commitTileOmissionRate = isLocalUncommitted
+  /** Animated noisy gaps (working tree, stash). Unpushed uses static gaps only. */
+  const commitTileAnimateGaps = isLocalUncommitted || isStashedCommit;
+  const commitTileRandomGaps = commitTileAnimateGaps || isUnpushedCommit;
+  const commitTileOmissionRate = commitTileAnimateGaps
     ? TILE_UNCOMMITTED_OMISSION_RATE
     : TILE_DEFAULT_OMISSION_RATE;
   const useRoundedCardOutline = isDashedOutline || showCommitTilePattern;
