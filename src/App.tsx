@@ -2436,8 +2436,15 @@ function App() {
         });
         return false;
       }
-      const message = await invoke<string>('generate_commit_message', { repoPath });
-      return await commitLocalChangesWithMessage(message.trim());
+      const message = (await invoke<string>('generate_commit_message', { repoPath })).trim();
+      if (!message) {
+        setCommitSwitchFeedback({
+          kind: 'error',
+          message: 'Could not generate a commit message. Use Write commit.',
+        });
+        return false;
+      }
+      return await commitLocalChangesWithMessage(message);
     } catch (e) {
       const errText = e instanceof Error ? e.message : String(e);
       setCommitSwitchFeedback({

@@ -1,3 +1,4 @@
+use std::collections::HashSet;
 use std::io::Read;
 use std::net::{SocketAddr, TcpStream};
 use std::path::{Path, PathBuf};
@@ -5,8 +6,9 @@ use std::process::{Command, Stdio};
 use std::time::{Duration, Instant};
 
 const MAX_DIFF_CHARS: usize = 80_000;
-const MAX_GENERATION_ATTEMPTS: u32 = 3;
+const MAX_GENERATION_ATTEMPTS: u32 = 5;
 const RETRY_DELAY_MS: u64 = 500;
+const MIN_MESSAGE_LEN: usize = 8;
 const OPENCODE_TIMEOUT: Duration = Duration::from_secs(120);
 const OPENCODE_ATTACH_URL: &str = "http://127.0.0.1:4096";
 
@@ -60,6 +62,44 @@ fn truncate_diff(diff: &str) -> String {
         "{}\n\n[diff truncated at {} chars]",
         &diff[..MAX_DIFF_CHARS],
         MAX_DIFF_CHARS
+    )
+}
+
+fn path_basename(path: &str) -> &str {
+    path.rsplit(['/', '\\']).next().unwrap_or(path)
+}
+
+fn extract_changed_paths(diff: &str) -> Vec<String> {
+    let mut paths = Vec::new();
+    let mut seen = HashSet::new();
+    for line in diff.lines() {
+        let Some(path) = line.strip_prefix("+++ b/") else {
+            continue;
+        };
+        let path = path.trim();
+        if path.is_empty() || path == "/dev/null" {
+            continue;
+        }
+        if seen.insert(path.to_string()) {
+            paths.push(path.to_string());
+        }
+    }
+    paths
+}
+
+pub fn fallback_message_from_diff(diff: &str) -> String {
+    let paths = extract_changed_paths(diff);
+    if paths.is_empty() {
+        return "Update local changes".to_string();
+    }
+    if paths.len() == 1 {
+        return format!("Update {}", path_basename(&paths[0]));
+    }
+    let extra = paths.len() - 1;
+    let suffix = if extra == 1 { "file" } else { "files" };
+    format!(
+        "Update {} and {extra} more {suffix}",
+        path_basename(&paths[0])
     )
 }
 
@@ -122,6 +162,11 @@ fn extract_quoted_strings(text: &str) -> Vec<String> {
 fn strip_meta_prefix(text: &str) -> String {
     let lower = text.to_lowercase();
     let meta_markers = [
+        "the task returned this commit message for the uncommitted changes:",
+        "the task returned this stash message for the uncommitted changes:",
+        "the task returned this commit message:",
+        "the task returned this stash message:",
+        "the task returned",
         "the agent generated the commit message:",
         "the agent generated a commit message:",
         "the agent generated the stash message:",
@@ -150,10 +195,21 @@ fn strip_meta_prefix(text: &str) -> String {
     text.trim().to_string()
 }
 
-fn is_generation_failure_meta(text: &str) -> bool {
-    let lower = text.to_lowercase();
+pub fn is_unacceptable_message(text: &str) -> bool {
+    let trimmed = text.trim();
+    if trimmed.len() < MIN_MESSAGE_LEN {
+        return true;
+    }
+    if trimmed.ends_with(':') {
+        return true;
+    }
+
+    let lower = trimmed.to_lowercase();
     const MARKERS: &[&str] = &[
         "returned empty output",
+        "returned this commit message",
+        "returned this stash message",
+        "the task returned",
         "no commit message was produced",
         "no stash message was produced",
         "no message was produced",
@@ -163,24 +219,19 @@ fn is_generation_failure_meta(text: &str) -> bool {
         "generation task",
         "commit message generation",
         "stash message generation",
+        "for the uncommitted changes",
+        "uncommitted changes:",
         "the diff shows",
         "files changed:",
         "nothing else to output",
+        "output only",
+        "imperative mood",
     ];
     MARKERS.iter().any(|marker| lower.contains(marker))
 }
 
-fn sanitize_single_line_message(raw: &str, empty_label: &str) -> Result<String, String> {
-    let cleaned = strip_ansi(raw).replace("```", "").trim().to_string();
-
-    let first_line = cleaned
-        .lines()
-        .map(str::trim)
-        .find(|line| !line.is_empty())
-        .unwrap_or("")
-        .to_string();
-
-    let mut candidate = strip_meta_prefix(&first_line);
+fn normalize_line(line: &str) -> String {
+    let mut candidate = strip_meta_prefix(line);
     let quoted = extract_quoted_strings(&candidate);
     if quoted.len() == 1 {
         candidate = quoted[0].clone();
@@ -190,38 +241,64 @@ fn sanitize_single_line_message(raw: &str, empty_label: &str) -> Result<String, 
             .max_by_key(|value| value.len())
             .unwrap_or(candidate);
     }
-
     candidate = strip_markdown(&candidate);
-    candidate = candidate.trim_matches('"').trim_matches('\'').trim().to_string();
-    candidate = candidate.split('\n').next().unwrap_or("").trim().to_string();
+    candidate = candidate
+        .trim_matches('"')
+        .trim_matches('\'')
+        .trim()
+        .to_string();
+    candidate.split('\n').next().unwrap_or("").trim().to_string()
+}
 
-    if candidate.ends_with('.') && candidate.len() > 3 {
-        let words: Vec<&str> = candidate.split_whitespace().collect();
-        if words.len() > 12 {
-            candidate = candidate.trim_end_matches('.').to_string();
-        }
-    }
-
-    if candidate.is_empty() {
+fn sanitize_single_line_message(raw: &str, empty_label: &str) -> Result<String, String> {
+    let cleaned = strip_ansi(raw).replace("```", "").trim().to_string();
+    if cleaned.is_empty() {
         return Err(format!("OpenCode returned an empty {empty_label}."));
     }
 
-    if is_generation_failure_meta(&candidate) {
-        return Err(format!(
-            "OpenCode returned meta text instead of a {empty_label}."
-        ));
+    let mut candidates: Vec<String> = cleaned
+        .lines()
+        .map(str::trim)
+        .filter(|line| !line.is_empty())
+        .map(normalize_line)
+        .filter(|line| !line.is_empty())
+        .collect();
+
+    if candidates.is_empty() {
+        candidates.push(normalize_line(&cleaned));
     }
 
-    if candidate.contains('\n') {
-        candidate = candidate.replace('\n', " ");
+    candidates.sort_by_key(|b| std::cmp::Reverse(b.len()));
+
+    for mut candidate in candidates {
+        if candidate.ends_with('.') && candidate.len() > 3 {
+            let words: Vec<&str> = candidate.split_whitespace().collect();
+            if words.len() > 12 {
+                candidate = candidate.trim_end_matches('.').to_string();
+            }
+        }
+
+        if candidate.is_empty() || is_unacceptable_message(&candidate) {
+            continue;
+        }
+
+        if candidate.contains('\n') {
+            candidate = candidate.replace('\n', " ");
+        }
+
+        return Ok(candidate);
     }
 
-    Ok(candidate)
+    Err(format!(
+        "OpenCode returned meta text instead of a {empty_label}."
+    ))
 }
 
 #[cfg(test)]
 mod tests {
-    use super::{is_generation_failure_meta, sanitize_single_line_message};
+    use super::{
+        fallback_message_from_diff, is_unacceptable_message, sanitize_single_line_message,
+    };
 
     #[test]
     fn strips_agent_meta_wrapper_and_markdown() {
@@ -247,7 +324,29 @@ mod tests {
         let raw = "The commit message generation task returned empty output — no commit message was produced. The diff shows three files changed.";
         let err = sanitize_single_line_message(raw, "commit message").unwrap_err();
         assert!(err.contains("meta text"));
-        assert!(is_generation_failure_meta(raw));
+        assert!(is_unacceptable_message(raw));
+    }
+
+    #[test]
+    fn rejects_task_returned_preamble_only() {
+        let raw = "The task returned this commit message for the uncommitted changes:";
+        let err = sanitize_single_line_message(raw, "commit message").unwrap_err();
+        assert!(err.contains("meta text"));
+        assert!(is_unacceptable_message(raw));
+    }
+
+    #[test]
+    fn picks_substantive_line_after_preamble() {
+        let raw = "The task returned this commit message for the uncommitted changes:\n\nFix unpushed commit detection";
+        let message =
+            sanitize_single_line_message(raw, "commit message").expect("message");
+        assert_eq!(message, "Fix unpushed commit detection");
+    }
+
+    #[test]
+    fn fallback_from_diff_uses_paths() {
+        let diff = "diff --git a/src/foo.rs b/src/foo.rs\n+++ b/src/foo.rs\n";
+        assert_eq!(fallback_message_from_diff(diff), "Update foo.rs");
     }
 }
 
@@ -359,33 +458,35 @@ fn generate_message_with_retries(
     command: &str,
     inline_prompt_prefix: &str,
     empty_label: &str,
-    failure_label: &str,
-) -> Result<String, String> {
-    let repo_path = repo
-        .to_str()
-        .ok_or_else(|| "Repository path is not valid UTF-8.".to_string())?;
+) -> String {
+    let repo_path = match repo.to_str() {
+        Some(path) => path,
+        None => return fallback_message_from_diff(diff),
+    };
 
     if diff.trim().is_empty() {
-        return Err("No local changes to describe.".to_string());
+        return "Update local changes".to_string();
     }
 
-    let binary = resolve_opencode_binary()?;
+    let Ok(binary) = resolve_opencode_binary() else {
+        return fallback_message_from_diff(diff);
+    };
+
     let truncated = truncate_diff(diff);
-    let mut last_error = String::from("OpenCode did not return a usable message.");
 
     for attempt in 1..=MAX_GENERATION_ATTEMPTS {
-        match run_opencode_once(
+        if let Ok(raw) = run_opencode_once(
             &binary,
             repo_path,
             command,
             inline_prompt_prefix,
             &truncated,
         ) {
-            Ok(raw) => match sanitize_single_line_message(&raw, empty_label) {
-                Ok(message) => return Ok(message),
-                Err(err) => last_error = err,
-            },
-            Err(err) => last_error = err,
+            if let Ok(message) = sanitize_single_line_message(&raw, empty_label) {
+                if !is_unacceptable_message(&message) {
+                    return message;
+                }
+            }
         }
 
         if attempt < MAX_GENERATION_ATTEMPTS {
@@ -393,29 +494,38 @@ fn generate_message_with_retries(
         }
     }
 
-    Err(format!(
-        "Failed to generate a {failure_label} after {MAX_GENERATION_ATTEMPTS} attempts. {last_error}"
-    ))
+    fallback_message_from_diff(diff)
 }
 
 pub fn generate_commit_message(repo: &Path, diff: &str) -> Result<String, String> {
-    generate_message_with_retries(
+    Ok(generate_message_with_retries(
         repo,
         diff,
         "commit",
         INLINE_COMMIT_PROMPT,
         "commit message",
-        "commit message",
-    )
+    ))
 }
 
 pub fn generate_stash_message(repo: &Path, diff: &str) -> Result<String, String> {
-    generate_message_with_retries(
+    Ok(generate_message_with_retries(
         repo,
         diff,
         "stash",
         INLINE_STASH_PROMPT,
         "stash message",
-        "stash message",
-    )
+    ))
+}
+
+pub fn validate_generated_message(message: &str, label: &str) -> Result<(), String> {
+    let trimmed = message.trim();
+    if trimmed.is_empty() {
+        return Err(format!("{label} cannot be empty."));
+    }
+    if is_unacceptable_message(trimmed) {
+        return Err(format!(
+            "{label} looks like AI preamble, not a real description. Use Write commit or try again."
+        ));
+    }
+    Ok(())
 }

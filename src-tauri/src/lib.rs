@@ -1834,6 +1834,7 @@ fn list_stashes(repo_path: String) -> Result<Vec<git::GitStashEntry>, String> {
 #[tauri::command(rename_all = "camelCase")]
 fn stash_push(repo_path: String, include_untracked: bool, message: String) -> Result<(), String> {
     let path = Path::new(&repo_path);
+    opencode::validate_generated_message(&message, "Stash message")?;
     git::stash_push(path, include_untracked, &message).map_err(|e| e.to_string())
 }
 
@@ -1841,9 +1842,7 @@ fn stash_push(repo_path: String, include_untracked: bool, message: String) -> Re
 fn commit_working_tree(repo_path: String, message: String) -> Result<CheckedOutRef, String> {
     let path = Path::new(&repo_path);
     let trimmed = message.trim();
-    if trimmed.is_empty() {
-        return Err("Commit message cannot be empty.".to_string());
-    }
+    opencode::validate_generated_message(trimmed, "Commit message")?;
     git::commit_working_tree(path, trimmed).map_err(|e| e.to_string())?;
     git::get_checked_out_ref(path).map_err(|e| e.to_string())
 }
