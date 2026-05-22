@@ -1283,6 +1283,10 @@ export default function BranchGridMap({
       autoRecoverRef.current = null;
       return;
     }
+    // Viewport culling can briefly report zero visible nodes while panning; recentering
+    // during an active pan gesture reads as a teleport.
+    if (isCameraMovingRef.current) return;
+
     const viewport = scrollContainerRef.current;
     if (!viewport || viewport.clientWidth <= 0 || viewport.clientHeight <= 0) return;
     const origin = getTransformLayerOriginScreen();
