@@ -25,13 +25,13 @@ export const TILE_DEFAULT_OMISSION_RATE = 0.4;
 /** Share of tiles omitted on working-tree and stash cards (animated). */
 export const TILE_UNCOMMITTED_OMISSION_RATE = 0.7;
 /** Ms between working-tree omission keyframes (interpolated in between). */
-export const TILE_OMISSION_ANIMATION_STEP_MS = 250;
+export const TILE_OMISSION_ANIMATION_STEP_MS = 200;
 /** Ms after a tile is omitted in the pattern before fade-out begins (tile stays fully visible). */
 export const TILE_OMISSION_FADE_OUT_DELAY_MS = 500;
 /** Ms to fade tiles out once the delay elapses (may exceed STEP_MS; not capped to one step). */
 export const TILE_OMISSION_FADE_OUT_MS = 500;
 /** Ms to fade tiles in when a step restores them (shorter than fade-out). */
-export const TILE_OMISSION_FADE_IN_MS = 250;
+export const TILE_OMISSION_FADE_IN_MS = 200;
 /** Ms to scroll the cloud pattern one full card width (toroidal / pac-man loop). */
 export const CLOUD_DRIFT_PERIOD_MS = 30_000;
 
