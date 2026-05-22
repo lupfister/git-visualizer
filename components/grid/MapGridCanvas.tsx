@@ -211,9 +211,10 @@ const MapGridCommitCard = memo(function MapGridCommitCard({
   const isLocalUncommitted = commitId === 'WORKING_TREE' || node.commit.kind === 'uncommitted';
   const isStashedCommit = node.commit.kind === 'stash' || commitId.startsWith('STASH:');
   const isEmptyBranchNode = node.commit.kind === 'branch-created' && commitId.startsWith('BRANCH_HEAD:');
-  const isUnpushedCommit =
-    isLocalUncommitted ||
+  const isUnpushedOnBranch =
+    !isLocalUncommitted &&
     isCommitUnpushedOnBranch(commitId, branchName, unpushedCommitShasSetByBranch);
+  const isUnpushedCommit = isLocalUncommitted || isUnpushedOnBranch;
   const isExplicitRemoteCommit = node.commit.isRemote === true;
   const isRemoteCommit =
     !isLocalUncommitted &&
@@ -235,27 +236,24 @@ const MapGridCommitCard = memo(function MapGridCommitCard({
 
   const isCheckedOutCommit = isLocalUncommitted || isCheckedOutHeadNode;
   const checkedOutAccentActive = isCheckedOutCommit && !isSelectedCommit;
-  const remoteAccentActive = isRemoteCommit && !checkedOutAccentActive && !isSelectedCommit;
 
   const selectedCommitTextClass = checkedOutAccentActive
     ? 'text-checked'
-    : remoteAccentActive
-      ? 'text-remote'
-      : isSelectedCommit
-        ? 'text-select'
-        : 'text-foreground';
+    : isSelectedCommit
+      ? 'text-select'
+      : 'text-foreground';
   const selectedCommitTextStyle: CSSProperties | undefined = checkedOutAccentActive
     ? { color: 'var(--checked)' }
-    : remoteAccentActive
-      ? { color: 'var(--remote)' }
-      : isSelectedCommit
-        ? { color: 'var(--select)' }
-        : undefined;
+    : isSelectedCommit
+      ? { color: 'var(--select)' }
+      : undefined;
   /** Stash-like animated tile pattern (working tree, stash, empty branch). */
   const showCommitTilePattern = true;
   /** Animated noisy gaps (working tree, stash, empty branch). Unpushed uses static gaps only. */
   const commitTileAnimateGaps = isLocalUncommitted || isStashedCommit || isEmptyBranchNode;
-  const commitTileRandomGaps = commitTileAnimateGaps || isUnpushedCommit;
+  const commitTileCloudyGaps = isRemoteCommit;
+  const commitTileRandomGaps =
+    commitTileAnimateGaps || (isUnpushedCommit && !commitTileCloudyGaps);
   const commitTileOmissionRate = commitTileAnimateGaps
     ? TILE_UNCOMMITTED_OMISSION_RATE
     : TILE_DEFAULT_OMISSION_RATE;
@@ -272,6 +270,7 @@ const MapGridCommitCard = memo(function MapGridCommitCard({
     isFocused ? 'z-30' : '',
   );
 
+  const shortSha = node.commit.id.slice(0, 7);
   const headerLabel = isEmptyBranchNode
     ? `${node.commit.branchName}/empty`
     : isLocalUncommitted && branchName
@@ -280,9 +279,11 @@ const MapGridCommitCard = memo(function MapGridCommitCard({
         ? 'uncommitted'
         : isStashedCommit && stashHeaderLabel
           ? stashHeaderLabel
-          : node.commit.branchName
-            ? `${node.commit.branchName}/${node.commit.id.slice(0, 7)}`
-            : node.commit.id.slice(0, 7);
+          : isRemoteCommit && branchName
+            ? `origin/${branchName}/${shortSha}`
+            : node.commit.branchName
+              ? `${node.commit.branchName}/${shortSha}`
+              : shortSha;
 
   const bodyMessage = isLocalUncommitted || isEmptyBranchNode
     ? ''
@@ -322,21 +323,17 @@ const MapGridCommitCard = memo(function MapGridCommitCard({
     ? null
     : checkedOutAccentActive
       ? '--checked-muted'
-      : remoteAccentActive
-        ? '--remote-muted'
-        : isSelectedCommit
-          ? '--select-muted'
-          : '--muted';
+      : isSelectedCommit
+        ? '--select-muted'
+        : '--muted';
 
   const commitTileHoverTintColor = !showCommitTilePattern
     ? null
     : checkedOutAccentActive
       ? 'var(--checked)'
-      : remoteAccentActive
-        ? 'var(--remote)'
-        : isSelectedCommit
-          ? 'var(--select)'
-          : 'var(--foreground)';
+      : isSelectedCommit
+        ? 'var(--select)'
+        : 'var(--foreground)';
 
   const cardBodyRef = useRef<HTMLDivElement>(null);
   const tilePatternRef = useRef<CommitNodeTilePatternHandle>(null);
@@ -504,15 +501,13 @@ const MapGridCommitCard = memo(function MapGridCommitCard({
           useRoundedCardOutline ? 'rounded-tr-xl rounded-br-xl rounded-bl-xl rounded-tl-none' : '',
           showCommitTilePattern
             ? 'bg-background'
-            : checkedOutAccentActive && !isUnpushedCommit
+            : checkedOutAccentActive && !isUnpushedCommit && !commitTileCloudyGaps
               ? 'bg-checked-muted'
-              : remoteAccentActive
-                ? 'bg-remote-muted'
-                : isSelectedCommit && !isUnpushedCommit
-                  ? 'bg-select-muted'
-                  : isUnpushedCommit
-                    ? 'bg-background'
-                    : 'bg-muted',
+              : isSelectedCommit && !isUnpushedCommit && !commitTileCloudyGaps
+                ? 'bg-select-muted'
+                : isUnpushedCommit || commitTileCloudyGaps
+                  ? 'bg-background'
+                  : 'bg-muted',
         )}
         style={{
           top: 0,
@@ -535,6 +530,7 @@ const MapGridCommitCard = memo(function MapGridCommitCard({
             displayZoom={displayZoom}
             randomTileGaps={commitTileRandomGaps}
             animateTileGaps={commitTileAnimateGaps}
+            cloudyTileGaps={commitTileCloudyGaps}
             tileOmissionRate={commitTileOmissionRate}
           />
         ) : null}

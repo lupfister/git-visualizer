@@ -32,5 +32,7 @@ export const TILE_OMISSION_FADE_OUT_DELAY_MS = 500;
 export const TILE_OMISSION_FADE_OUT_MS = 500;
 /** Ms to fade tiles in when a step restores them (shorter than fade-out). */
 export const TILE_OMISSION_FADE_IN_MS = 250;
+/** Ms to scroll the cloud pattern one full card width (toroidal / pac-man loop). */
+export const CLOUD_DRIFT_PERIOD_MS = 30_000;
 
 export const MAX_EXPORT_EDGE_PX = 8192;
