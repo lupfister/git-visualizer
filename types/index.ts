@@ -46,6 +46,8 @@ export interface WorktreeInfo {
   parentSha: string | null;
   isCurrent: boolean;
   isPrunable: boolean;
+  /** Absent in older cached snapshots; treated as false until refreshed. */
+  hasUncommittedChanges?: boolean;
 }
 
 export interface Commit {

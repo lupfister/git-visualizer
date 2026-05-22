@@ -19,10 +19,17 @@ import {
 } from './mapGridConnectorPathPersistence';
 import { buildMapGridCardSlotAssignments, computeMapGridCardSlotCount } from './MapGridCardVirtualizer';
 import {
+  accentCssVars,
+  isWorkingTreeCommitId,
+  type WorktreeAccentToken,
+  type WorktreeSession,
+} from '../../lib/worktreeSessions';
+import {
   cn,
   computeViewportCullBounds,
   GRID_COMMIT_CORNER_RADIUS_BASE_PX,
   isCommitUnpushedOnBranch,
+  worktreeShortLabel,
 } from './mapGridUtils';
 import type { ConnectorFace, Node, NodePositionOverrides } from './LayoutGrid';
 import type { MapGridCameraState, MapGridCameraTargetLayout } from './useMapGridCamera';
@@ -145,7 +152,8 @@ type CommitCardProps = {
   nodeWarnings: Map<string, string[]>;
   unpushedCommitShasSetByBranch: Map<string, Set<string>>;
   remoteCommitShas: Set<string>;
-  checkedOutHeadSha: string | null;
+  worktreeAccentByCommitId: Map<string, WorktreeAccentToken>;
+  worktreeSessions: WorktreeSession[];
   onCommitCardClick: (event: MouseEvent, node: Node) => void;
   onNodePointerDown: (event: React.PointerEvent<HTMLDivElement>, node: Node) => void;
   onNodePointerMove: (event: React.PointerEvent<HTMLDivElement>) => void;
@@ -177,7 +185,8 @@ const MapGridCommitCard = memo(function MapGridCommitCard({
   nodeWarnings,
   unpushedCommitShasSetByBranch,
   remoteCommitShas,
-  checkedOutHeadSha,
+  worktreeAccentByCommitId,
+  worktreeSessions,
   onCommitCardClick,
   onNodePointerDown,
   onNodePointerMove,
@@ -208,7 +217,8 @@ const MapGridCommitCard = memo(function MapGridCommitCard({
   const nodeWarningsForCard = nodeWarnings.get(commitId) ?? [];
   const showDataShapeError = nodeWarningsForCard.length > 0 && !hasRenderedAncestry;
   const isSelectedCommit = selectedShaSet.has(commitId);
-  const isLocalUncommitted = commitId === 'WORKING_TREE' || node.commit.kind === 'uncommitted';
+  const isLocalUncommitted = isWorkingTreeCommitId(commitId) || node.commit.kind === 'uncommitted';
+  const accentToken = worktreeAccentByCommitId.get(commitId) ?? null;
   const isStashedCommit = node.commit.kind === 'stash' || commitId.startsWith('STASH:');
   const isEmptyBranchNode = node.commit.kind === 'branch-created' && commitId.startsWith('BRANCH_HEAD:');
   const isUnpushedOnBranch =
@@ -220,8 +230,7 @@ const MapGridCommitCard = memo(function MapGridCommitCard({
     !isLocalUncommitted &&
     !isUnpushedCommit &&
     (isExplicitRemoteCommit || remoteCommitShas.has(commitId));
-  const isCheckedOutHeadNode =
-    !isLocalUncommitted && checkedOutHeadSha != null && commitId === checkedOutHeadSha;
+  const isCheckedOutHeadNode = !isLocalUncommitted && accentToken != null;
   const isFocused = focusedCommitId === commitId;
   const isSearchActive = !!normalizedSearchQuery;
   const isSearchMatch = isSearchActive && matchingNodeIds.has(commitId);
@@ -235,15 +244,16 @@ const MapGridCommitCard = memo(function MapGridCommitCard({
     : node.commit.message;
 
   const isCheckedOutCommit = isLocalUncommitted || isCheckedOutHeadNode;
-  const checkedOutAccentActive = isCheckedOutCommit && !isSelectedCommit;
+  const checkedOutAccentActive = isCheckedOutCommit && !isSelectedCommit && accentToken != null;
+  const accentColors = accentToken ? accentCssVars(accentToken) : null;
 
   const selectedCommitTextClass = checkedOutAccentActive
-    ? 'text-checked'
+    ? ''
     : isSelectedCommit
       ? 'text-select'
       : 'text-foreground';
-  const selectedCommitTextStyle: CSSProperties | undefined = checkedOutAccentActive
-    ? { color: 'var(--checked)' }
+  const selectedCommitTextStyle: CSSProperties | undefined = checkedOutAccentActive && accentColors
+    ? { color: accentColors.fg }
     : isSelectedCommit
       ? { color: 'var(--select)' }
       : undefined;
@@ -271,12 +281,18 @@ const MapGridCommitCard = memo(function MapGridCommitCard({
   );
 
   const shortSha = node.commit.id.slice(0, 7);
+  const uncommittedSession = isLocalUncommitted
+    ? worktreeSessions.find((session) => session.workingTreeId === commitId)
+    : undefined;
+  const uncommittedWorktreePrefix = uncommittedSession && !uncommittedSession.isCurrent
+    ? `${worktreeShortLabel(uncommittedSession.path)}/`
+    : '';
   const headerLabel = isEmptyBranchNode
     ? `${node.commit.branchName}/empty`
     : isLocalUncommitted && branchName
-      ? `${branchName}/uncommitted`
+      ? `${uncommittedWorktreePrefix}${branchName}/uncommitted`
       : isLocalUncommitted
-        ? 'uncommitted'
+        ? `${uncommittedWorktreePrefix}uncommitted`
         : isStashedCommit && stashHeaderLabel
           ? stashHeaderLabel
           : isRemoteCommit && branchName
@@ -321,16 +337,16 @@ const MapGridCommitCard = memo(function MapGridCommitCard({
 
   const commitTileShapeCssVar = !showCommitTilePattern
     ? null
-    : checkedOutAccentActive
-      ? '--checked-muted'
+    : checkedOutAccentActive && accentToken
+      ? `--${accentToken}-muted`
       : isSelectedCommit
         ? '--select-muted'
         : '--muted';
 
   const commitTileHoverTintColor = !showCommitTilePattern
     ? null
-    : checkedOutAccentActive
-      ? 'var(--checked)'
+    : checkedOutAccentActive && accentColors
+      ? accentColors.fg
       : isSelectedCommit
         ? 'var(--select)'
         : 'var(--foreground)';
@@ -501,8 +517,8 @@ const MapGridCommitCard = memo(function MapGridCommitCard({
           useRoundedCardOutline ? 'rounded-tr-xl rounded-br-xl rounded-bl-xl rounded-tl-none' : '',
           showCommitTilePattern
             ? 'bg-background'
-            : checkedOutAccentActive && !isUnpushedCommit && !commitTileCloudyGaps
-              ? 'bg-checked-muted'
+            : checkedOutAccentActive && accentToken && !isUnpushedCommit && !commitTileCloudyGaps
+              ? ''
               : isSelectedCommit && !isUnpushedCommit && !commitTileCloudyGaps
                 ? 'bg-select-muted'
                 : isUnpushedCommit || commitTileCloudyGaps
@@ -519,6 +535,9 @@ const MapGridCommitCard = memo(function MapGridCommitCard({
           borderBottomRightRadius: outlineCornerRadiusCss,
           borderBottomLeftRadius: outlineCornerRadiusCss,
           contain: 'layout paint style',
+          ...(checkedOutAccentActive && accentToken && !showCommitTilePattern && !isUnpushedCommit && !commitTileCloudyGaps
+            ? { backgroundColor: `var(--${accentToken}-muted)` }
+            : {}),
         }}
       >
         {commitTileShapeCssVar && commitTileHoverTintColor ? (
@@ -662,7 +681,8 @@ type Props = {
   onCommitCardClick: (event: MouseEvent, node: Node) => void;
   unpushedCommitShasSetByBranch: Map<string, Set<string>>;
   remoteCommitShas: Set<string>;
-  checkedOutHeadSha: string | null;
+  worktreeAccentByCommitId: Map<string, WorktreeAccentToken>;
+  worktreeSessions: WorktreeSession[];
   orientation?: 'vertical' | 'horizontal';
   dragPreviewByNodeId?: Record<string, { x: number; y: number }>;
   nodePositionOverrides?: Record<string, { x: number; y: number }>;
@@ -729,7 +749,8 @@ const MapGridCanvas = memo(function MapGridCanvas({
   onCommitCardClick,
   unpushedCommitShasSetByBranch,
   remoteCommitShas,
-  checkedOutHeadSha,
+  worktreeAccentByCommitId,
+  worktreeSessions,
   dragPreviewByNodeId = EMPTY_DRAG_PREVIEW,
   nodePositionOverrides = EMPTY_NODE_POSITION_OVERRIDES,
   connectorPathCacheScopeBase,
@@ -1040,7 +1061,8 @@ const MapGridCanvas = memo(function MapGridCanvas({
                 nodeWarnings={nodeWarnings}
                 unpushedCommitShasSetByBranch={unpushedCommitShasSetByBranch}
                 remoteCommitShas={remoteCommitShas}
-                checkedOutHeadSha={checkedOutHeadSha}
+                worktreeAccentByCommitId={worktreeAccentByCommitId}
+                worktreeSessions={worktreeSessions}
                 onCommitCardClick={onCommitCardClick}
                 onNodePointerDown={onNodePointerDown}
                 onNodePointerMove={onNodePointerMove}

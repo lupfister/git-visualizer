@@ -1,6 +1,8 @@
 import { buildLanes } from '../components/grid/LayoutGrid';
 import { computeBranchGridLayout, type BranchGridLayoutModel } from '../components/grid/branchGridLayoutModel';
-import type { Branch, BranchCommitPreview, CheckedOutRef, DirectCommit, GitStashEntry, MergeNode } from '../types';
+import { injectWorktreeUncommittedPreviews } from '../lib/injectWorktreeUncommitted';
+import { buildWorktreeSessions } from '../lib/worktreeSessions';
+import type { Branch, BranchCommitPreview, CheckedOutRef, DirectCommit, GitStashEntry, MergeNode, WorktreeInfo } from '../types';
 import { applyBranchParents } from '../lib/branchParents';
 import { foldStashNodesIntoGraph } from './placeStashNode';
 
@@ -15,6 +17,8 @@ type RepoVisualStateInput = {
   branchParentByName?: Record<string, string | null>;
   branchUniqueAheadCounts: Record<string, number>;
   checkedOutRef: CheckedOutRef | null;
+  worktrees?: WorktreeInfo[];
+  currentRepoPath?: string;
   stashes: GitStashEntry[];
   manuallyOpenedClumps?: Set<string>;
   manuallyClosedClumps?: Set<string>;
@@ -42,6 +46,8 @@ export function deriveRepoVisualState({
   branchParentByName = {},
   branchUniqueAheadCounts,
   checkedOutRef,
+  worktrees = [],
+  currentRepoPath,
   stashes,
   manuallyOpenedClumps = new Set<string>(),
   manuallyClosedClumps = new Set<string>(),
@@ -49,6 +55,9 @@ export function deriveRepoVisualState({
   gridFocusSha = null,
   orientation = 'horizontal',
 }: RepoVisualStateInput): RepoVisualState {
+  const worktreeSessions = buildWorktreeSessions(worktrees, currentRepoPath, checkedOutRef);
+  const anyDirty = worktreeSessions.some((session) => session.hasUncommittedChanges);
+
   const stashFolded = foldStashNodesIntoGraph(
     stashes,
     branches,
@@ -56,87 +65,22 @@ export function deriveRepoVisualState({
     branchCommitPreviews,
     branchUniqueAheadCounts,
     defaultBranch,
-    checkedOutRef?.hasUncommittedChanges ?? false,
+    anyDirty,
   );
 
-  let enrichedBranches = stashFolded.branches;
-  let enrichedDirectCommits = stashFolded.directCommits;
-  let enrichedBranchCommitPreviews = stashFolded.branchCommitPreviews;
-  let enrichedBranchUniqueAheadCounts = stashFolded.branchUniqueAheadCounts;
+  const injected = injectWorktreeUncommittedPreviews({
+    sessions: worktreeSessions,
+    branches: stashFolded.branches,
+    branchCommitPreviews: stashFolded.branchCommitPreviews,
+    branchUniqueAheadCounts: stashFolded.branchUniqueAheadCounts,
+    directCommits: stashFolded.directCommits,
+    defaultBranch,
+  });
 
-  if (checkedOutRef?.hasUncommittedChanges) {
-    const checkedOutAnchorSha = checkedOutRef.headSha || checkedOutRef.parentSha || null;
-    const shaMatches = (left?: string | null, right?: string | null): boolean => {
-      if (!left || !right) return false;
-      return left === right || left.startsWith(right) || right.startsWith(left);
-    };
-    const targetBranch = checkedOutRef.branchName
-      ? enrichedBranches.find((branch) => branch.name === checkedOutRef.branchName)
-      : undefined;
-    const anchorCommitDate = (() => {
-      if (!checkedOutAnchorSha) return null;
-      const matchingDirectCommit = enrichedDirectCommits.find((commit) => (
-        shaMatches(commit.fullSha, checkedOutAnchorSha) ||
-        shaMatches(commit.sha, checkedOutAnchorSha)
-      ));
-      if (matchingDirectCommit?.date) return matchingDirectCommit.date;
-      if (targetBranch) {
-        const matchingPreviewCommit = (enrichedBranchCommitPreviews[targetBranch.name] ?? []).find((commit) => (
-          shaMatches(commit.fullSha, checkedOutAnchorSha) ||
-          shaMatches(commit.sha, checkedOutAnchorSha)
-        ));
-        if (matchingPreviewCommit?.date) return matchingPreviewCommit.date;
-      }
-      return null;
-    })();
-    const anchorCommitTimeMs = anchorCommitDate ? new Date(anchorCommitDate).getTime() : Number.NaN;
-    const nowTimeMs = Date.now();
-    const uncommittedTimeMs = Number.isFinite(anchorCommitTimeMs)
-      ? Math.max(nowTimeMs, anchorCommitTimeMs + 1)
-      : nowTimeMs;
-    const uncommittedDate = new Date(uncommittedTimeMs).toISOString();
-    const uncommittedNode: BranchCommitPreview = {
-      fullSha: 'WORKING_TREE',
-      sha: 'uncommitted',
-      parentSha: checkedOutAnchorSha,
-      message: '',
-      author: 'You',
-      date: uncommittedDate,
-      kind: 'uncommitted',
-    };
-    if (targetBranch) {
-      enrichedBranches = enrichedBranches.map((branch) => {
-        if (branch.name === targetBranch.name) {
-          return {
-            ...branch,
-            commitsAhead: branch.commitsAhead + 1,
-            unpushedCommits: branch.unpushedCommits + 1,
-            lastCommitDate: uncommittedDate,
-            headSha: 'WORKING_TREE',
-          };
-        }
-        return branch;
-      });
-      enrichedBranchCommitPreviews = {
-        ...enrichedBranchCommitPreviews,
-        [targetBranch.name]: [uncommittedNode, ...(enrichedBranchCommitPreviews[targetBranch.name] || [])],
-      };
-      enrichedBranchUniqueAheadCounts = {
-        ...enrichedBranchUniqueAheadCounts,
-        [targetBranch.name]: Math.max(
-          0,
-          (Object.prototype.hasOwnProperty.call(enrichedBranchUniqueAheadCounts, targetBranch.name)
-            ? enrichedBranchUniqueAheadCounts[targetBranch.name]
-            : targetBranch.commitsAhead) ?? 0,
-        ) + 1,
-      };
-    } else {
-      enrichedBranchCommitPreviews = {
-        ...enrichedBranchCommitPreviews,
-        [defaultBranch]: [uncommittedNode, ...(enrichedBranchCommitPreviews[defaultBranch] || [])],
-      };
-    }
-  }
+  const enrichedBranches = injected.branches;
+  const enrichedBranchCommitPreviews = injected.branchCommitPreviews;
+  const enrichedBranchUniqueAheadCounts = injected.branchUniqueAheadCounts;
+  const enrichedDirectCommits = stashFolded.directCommits;
 
   const enrichedBranchParentByName: Record<string, string | null> = { ...branchParentByName };
   enrichedBranchParentByName[defaultBranch] = null;
@@ -159,6 +103,7 @@ export function deriveRepoVisualState({
     gridSearchQuery,
     gridFocusSha,
     checkedOutRef,
+    worktreeSessions,
     orientation,
   });
 

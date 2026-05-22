@@ -42,6 +42,15 @@
   --checked-muted: #E8F7FC;
   --select-muted: #E5F2FF;
   --remote-muted: #F2ECFD;
+  /* Linked worktree sessions (non-current); not blue — reserved for selection/remote UI */
+  --worktree-violet: #7C3AED;
+  --worktree-violet-muted: #EDE9FE;
+  --worktree-amber: #D97706;
+  --worktree-amber-muted: #FEF3C7;
+  --worktree-emerald: #059669;
+  --worktree-emerald-muted: #D1FAE5;
+  --worktree-rose: #E11D48;
+  --worktree-rose-muted: #FFE4E6;
   --destructive: #DC2626;
   --font-sans: system-ui, -apple-system, sans-serif;
   --font-space-grotesk: 'Space Grotesk', system-ui, -apple-system, sans-serif;
@@ -60,6 +69,14 @@
   --color-checked-muted: var(--checked-muted);
   --color-select-muted: var(--select-muted);
   --color-remote-muted: var(--remote-muted);
+  --color-worktree-violet: var(--worktree-violet);
+  --color-worktree-violet-muted: var(--worktree-violet-muted);
+  --color-worktree-amber: var(--worktree-amber);
+  --color-worktree-amber-muted: var(--worktree-amber-muted);
+  --color-worktree-emerald: var(--worktree-emerald);
+  --color-worktree-emerald-muted: var(--worktree-emerald-muted);
+  --color-worktree-rose: var(--worktree-rose);
+  --color-worktree-rose-muted: var(--worktree-rose-muted);
   --color-destructive: var(--destructive);
   --font-sans: var(--font-sans);
   --font-space-grotesk: var(--font-space-grotesk);

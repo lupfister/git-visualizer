@@ -46,7 +46,11 @@ export type BranchGridViewProps = {
   branchUniqueAheadCounts?: Record<string, number>;
   unpushedCommitShasByBranch?: Record<string, string[]>;
   openPRs?: import('../../types').OpenPR[];
-  onCommitClick?: (target: { commitSha: string; branchName?: string }) => void;
+  onCommitClick?: (target: {
+    commitSha: string;
+    branchName?: string;
+    worktreePath: string;
+  }) => void | Promise<void>;
   onLoadMore?: () => void;
   view?: string;
   staleBranches?: Branch[];
@@ -61,7 +65,13 @@ export type BranchGridViewProps = {
   onPushCurrentBranch?: () => Promise<void> | void;
   onPushCommitTargets?: (targets: Array<{ branchName: string; targetSha: string }>) => Promise<void> | void;
   pushInProgress?: boolean;
-  onDeleteSelection?: (targets: { branchNames: string[]; discardUncommittedChanges: boolean; stashIndices?: number[] }) => Promise<void> | void;
+  onDeleteSelection?: (targets: {
+    branchNames: string[];
+    discardUncommittedChanges: boolean;
+    /** Worktree checkout paths to `reset --hard` / `clean`; defaults to active repo when discarding without this list. */
+    discardUncommittedWorktreePaths?: string[];
+    stashIndices?: number[];
+  }) => Promise<void> | void;
   deleteInProgress?: boolean;
   worktrees?: import('../../types').WorktreeInfo[];
   currentRepoPath?: string;

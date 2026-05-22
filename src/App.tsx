@@ -21,6 +21,12 @@ import {
   isParallelEmptyBranchParent,
 } from '../lib/branchParents';
 import { foldStashNodesIntoGraph } from './placeStashNode';
+import { stripWorkingTreeFromPreviews, injectWorktreeUncommittedPreviews } from '../lib/injectWorktreeUncommitted';
+import {
+  buildWorktreeSessions,
+  currentSessionWorkingTreeId,
+  isWorkingTreeCommitId,
+} from '../lib/worktreeSessions';
 import { deriveRepoVisualState } from './repoVisualState';
 import { setMapGridBackgroundActivity } from '../components/grid/mapGridBackgroundActivity';
 
@@ -126,21 +132,6 @@ function nodePositionsStorageKey(repoPath: string): string {
   return `${NODE_POSITIONS_STORAGE_KEY_PREFIX}${encodeURIComponent(normalizePath(repoPath))}`;
 }
 
-function stripWorkingTreeFromPreviews(
-  previews: Record<string, BranchCommitPreview[]>,
-): Record<string, BranchCommitPreview[]> {
-  let changed = false;
-  const next: Record<string, BranchCommitPreview[]> = {};
-  for (const [branchName, branchPreviews] of Object.entries(previews)) {
-    const filtered = branchPreviews.filter(
-      (preview) => preview.fullSha !== 'WORKING_TREE' && preview.kind !== 'uncommitted',
-    );
-    if (filtered.length !== branchPreviews.length) changed = true;
-    if (filtered.length > 0) next[branchName] = filtered;
-  }
-  return changed ? next : previews;
-}
-
 function purgeWorkingTreeLayoutsFromCache(cache: Map<string, BranchGridLayoutModel>) {
   for (const [key, model] of cache.entries()) {
     if (layoutModelHasWorkingTree(model)) cache.delete(key);
@@ -230,7 +221,7 @@ function migrateWorkingTreeNodeOverrides(
   newHeadSha: string,
 ): NodePositionOverrides {
   const next = { ...overrides };
-  const candidates = [`${branchName}:WORKING_TREE`, 'WORKING_TREE'] as const;
+  const candidates = [`${branchName}:WORKING_TREE`, 'WORKING_TREE', ...Object.keys(overrides).filter((key) => key.includes('WORKING_TREE'))] as const;
   let foundKey: string | null = null;
   let point: { x: number; y: number } | null = null;
   for (const key of candidates) {
@@ -966,6 +957,8 @@ function App() {
           branchParentByName: snapshot.branchParentByName,
           branchUniqueAheadCounts: snapshot.branchUniqueAheadCounts,
           checkedOutRef: snapshot.checkedOutRef,
+          worktrees: snapshot.worktrees,
+          currentRepoPath: normalizedPath,
           stashes: snapshot.stashes,
           manuallyOpenedClumps: projectOpenedClumps,
           manuallyClosedClumps: projectClosedClumps,
@@ -1540,6 +1533,8 @@ function App() {
       branchParentByName: snapshot.branchParentByName,
       branchUniqueAheadCounts: snapshot.branchUniqueAheadCounts,
       checkedOutRef: snapshot.checkedOutRef,
+      worktrees: snapshot.worktrees,
+      currentRepoPath: targetRepoPath,
       stashes: snapshot.stashes,
       manuallyOpenedClumps,
       manuallyClosedClumps,
@@ -2231,20 +2226,47 @@ function App() {
     return () => window.removeEventListener('keydown', handler);
   }, [repoPath, repoName, branches]);
 
-  async function handleMapCommitClick(target: { commitSha: string; branchName?: string }) {
+  async function handleMapCommitClick(target: {
+    commitSha: string;
+    branchName?: string;
+    worktreePath: string;
+  }) {
     if (!repoPath) return;
     setCommitSwitchFeedback(null);
+
+    const pathsProbablyEqual = (left: string, right: string): boolean => {
+      const normalizedLeft = left.replace(/\\/g, '/').replace(/\/+$/, '');
+      const normalizedRight = right.replace(/\\/g, '/').replace(/\/+$/, '');
+      return (
+        normalizedLeft === normalizedRight
+        || normalizedLeft.toLowerCase() === normalizedRight.toLowerCase()
+      );
+    };
+
+    const effectiveRepoPath = target.worktreePath;
+    const shouldSwitchAppToTarget = !pathsProbablyEqual(effectiveRepoPath, repoPath);
+
+    const finishCheckoutMutation = async () => {
+      if (shouldSwitchAppToTarget) {
+        await handleSwitchToWorktree(effectiveRepoPath);
+        return;
+      }
+      beginRepoMutation();
+      await refreshRepoAfterMutation(effectiveRepoPath);
+    };
 
     const stashRestore = /^STASH:(\d+)$/.exec(target.commitSha);
     if (stashRestore) {
       try {
         const stashIndex = parseInt(stashRestore[1], 10);
         const nextRef = await invoke<CheckedOutRef>('apply_stash_restore', {
-          repoPath,
+          repoPath: effectiveRepoPath,
           stashIndex,
         });
-        setCheckedOutRef(nextRef);
-        await refreshRepoAfterMutation(repoPath);
+        if (!shouldSwitchAppToTarget) {
+          setCheckedOutRef(nextRef);
+        }
+        await finishCheckoutMutation();
         const label = `Stash ${stashIndex + 1}`;
         const branchHint = nextRef.branchName
           ? ` on branch ${nextRef.branchName}`
@@ -2264,51 +2286,32 @@ function App() {
       return;
     }
 
-    // Branch refs live in one place: if this branch is checked out in another worktree, switch the app there
-    // instead of `git checkout` (which fails with "already checked out at …").
-    if (target.branchName) {
-      const pathsProbablyEqual = (a: string, b: string) => {
-        const na = a.replace(/\\/g, '/').replace(/\/+$/, '');
-        const nb = b.replace(/\\/g, '/').replace(/\/+$/, '');
-        return na === nb || na.toLowerCase() === nb.toLowerCase();
-      };
-      const other = worktrees.find((wt) => {
-        if (wt.pathExists === false) return false;
-        if (wt.isCurrent) return false;
-        if (repoPath && pathsProbablyEqual(wt.path, repoPath)) return false;
-        return wt.branchName === target.branchName;
-      });
-      if (other) {
-        await handleSwitchToWorktree(other.path);
-        return;
-      }
-    }
-
     try {
       let stashedPrefix = '';
-      const refBefore = await invoke<CheckedOutRef>('get_checked_out_ref', { repoPath });
+      const refBefore = await invoke<CheckedOutRef>('get_checked_out_ref', { repoPath: effectiveRepoPath });
       if (refBefore.hasUncommittedChanges) {
-        await stashLocalChangesWithGeneratedMessage();
+        await stashLocalChangesWithGeneratedMessage(effectiveRepoPath);
         stashedPrefix = 'Stashed local changes (including untracked), then ';
         beginRepoMutation();
-        await refreshRepoAfterMutation(repoPath);
+        await refreshRepoAfterMutation(effectiveRepoPath);
       }
 
       const nextCheckedOutRef = target.branchName
         ? await invoke<CheckedOutRef>('checkout_branch', {
-            repoPath,
+            repoPath: effectiveRepoPath,
             branchName: target.branchName,
           })
         : await invoke<CheckedOutRef>('checkout_ref', {
-            repoPath,
+            repoPath: effectiveRepoPath,
             refName: target.commitSha,
           });
       const confirmedCheckedOutRef = await invoke<CheckedOutRef>('get_checked_out_ref', {
-        repoPath,
+        repoPath: effectiveRepoPath,
       }).catch(() => nextCheckedOutRef);
-      beginRepoMutation();
-      setCheckedOutRef(confirmedCheckedOutRef);
-      await refreshRepoAfterMutation(repoPath);
+      if (!shouldSwitchAppToTarget) {
+        setCheckedOutRef(confirmedCheckedOutRef);
+      }
+      await finishCheckoutMutation();
       const refLabel = confirmedCheckedOutRef.branchName
         ? confirmedCheckedOutRef.branchName
         : `${confirmedCheckedOutRef.headSha.slice(0, 7)} (detached)`;
@@ -2326,11 +2329,12 @@ function App() {
     }
   }
 
-  async function stashLocalChangesWithGeneratedMessage(): Promise<void> {
-    if (!repoPath) return;
-    const message = await invoke<string>('generate_stash_message', { repoPath });
+  async function stashLocalChangesWithGeneratedMessage(stashRepoPath?: string): Promise<void> {
+    const path = stashRepoPath ?? repoPath;
+    if (!path) return;
+    const message = await invoke<string>('generate_stash_message', { repoPath: path });
     await invoke('stash_push', {
-      repoPath,
+      repoPath: path,
       includeUntracked: true,
       message: message.trim(),
     });
@@ -2788,11 +2792,22 @@ function App() {
   async function handleDeleteSelection(targets: {
     branchNames: string[];
     discardUncommittedChanges: boolean;
+    discardUncommittedWorktreePaths?: string[];
     stashIndices?: number[];
   }) {
     if (!repoPath || deleteInProgress) return;
     const uniqueBranchNames = Array.from(new Set(targets.branchNames.filter((branchName) => branchName && branchName !== defaultBranch)));
-    const shouldDiscardUncommitted = !!targets.discardUncommittedChanges;
+    const discardPaths = Array.from(
+      new Set(
+        (targets.discardUncommittedWorktreePaths?.length
+          ? targets.discardUncommittedWorktreePaths
+          : targets.discardUncommittedChanges
+            ? [repoPath]
+            : []
+        ).filter((path) => path.trim().length > 0),
+      ),
+    );
+    const shouldDiscardUncommitted = discardPaths.length > 0;
     const stashIndices = targets.stashIndices ?? [];
     const uniqueStashDescending = Array.from(new Set(stashIndices)).sort((a, b) => b - a);
     if (uniqueBranchNames.length === 0 && !shouldDiscardUncommitted && uniqueStashDescending.length === 0) return;
@@ -2804,14 +2819,27 @@ function App() {
         await invoke('stash_drop', { repoPath, stashIndex });
       }
 
-      const result =
-        uniqueBranchNames.length > 0 || shouldDiscardUncommitted
-          ? await invoke<{ deletedBranches: string[]; discardedUncommittedChanges: boolean }>('delete_selected_elements', {
-              repoPath,
-              branchNames: uniqueBranchNames,
-              discardUncommittedChanges: shouldDiscardUncommitted,
-            })
-          : { deletedBranches: [] as string[], discardedUncommittedChanges: false };
+      let result = { deletedBranches: [] as string[], discardedUncommittedChanges: false };
+      if (uniqueBranchNames.length > 0) {
+        result = await invoke<{ deletedBranches: string[]; discardedUncommittedChanges: boolean }>('delete_selected_elements', {
+          repoPath,
+          branchNames: uniqueBranchNames,
+          discardUncommittedChanges: false,
+        });
+      }
+      for (const worktreePath of discardPaths) {
+        const discardResult = await invoke<{ deletedBranches: string[]; discardedUncommittedChanges: boolean }>(
+          'delete_selected_elements',
+          {
+            repoPath: worktreePath,
+            branchNames: [],
+            discardUncommittedChanges: true,
+          },
+        );
+        if (discardResult.discardedUncommittedChanges) {
+          result = { ...result, discardedUncommittedChanges: true };
+        }
+      }
 
       if (shouldDiscardUncommitted) beginRepoMutation();
       await refreshRepoAfterMutation(repoPath);
@@ -2888,6 +2916,11 @@ function App() {
     setGridSearchJumpToken((token) => token + 1);
   }
 
+  const worktreeSessions = useMemo(
+    () => buildWorktreeSessions(worktrees, repoPath ?? undefined, checkedOutRef),
+    [worktrees, repoPath, checkedOutRef],
+  );
+
   // Synthetic stash nodes (yellow) and optional uncommitted node (blue) — same lane rules as before.
   const {
     enrichedBranches,
@@ -2897,6 +2930,8 @@ function App() {
     enrichedUnpushedDirectCommits,
     visualCheckedOutRef,
   } = useMemo(() => {
+    const sessionsForGraph = buildWorktreeSessions(worktrees, repoPath ?? undefined, checkedOutRef);
+    const anyDirty = sessionsForGraph.some((session) => session.hasUncommittedChanges);
     const stashFolded = foldStashNodesIntoGraph(
       stashes,
       branches,
@@ -2904,7 +2939,7 @@ function App() {
       branchCommitPreviews,
       branchUniqueAheadCounts,
       defaultBranch,
-      checkedOutRef?.hasUncommittedChanges ?? false,
+      anyDirty,
     );
 
     let eb = stashFolded.branches;
@@ -3016,7 +3051,7 @@ function App() {
 
       const defaultPreviews = ebp[defaultBranch] ?? [];
       const localPreviews = defaultPreviews.filter((preview) => (
-        (effectiveCheckedOutRef?.hasUncommittedChanges && preview.fullSha === 'WORKING_TREE')
+        (effectiveCheckedOutRef?.hasUncommittedChanges && isWorkingTreeCommitId(preview.fullSha))
         || localUnpushedShas.has(preview.fullSha)
       ));
       const retainedDefaultPreviews = defaultPreviews.filter((preview) => !localPreviews.includes(preview));
@@ -3039,129 +3074,27 @@ function App() {
       }
     }
 
-    if (!effectiveCheckedOutRef?.hasUncommittedChanges) {
-      return {
-        enrichedBranches: eb.map((branch) => (
-          branch.headSha === 'WORKING_TREE'
-            ? { ...branch, headSha: effectiveCheckedOutRef?.headSha ?? branch.headSha }
-            : branch
-        )),
-        enrichedDirectCommits: edc,
-        enrichedUnpushedDirectCommits: eupdc,
-        enrichedBranchCommitPreviews: stripWorkingTreeFromPreviews(ebp),
-        enrichedBranchUniqueAheadCounts: ebuac,
-        visualCheckedOutRef: effectiveCheckedOutRef,
-      };
-    }
-
-    // Resolve uncommitted placement by lane head ownership (stash-augmented graph).
-    const checkedOutAnchorSha = effectiveCheckedOutRef.headSha || effectiveCheckedOutRef.parentSha || null;
-    const latestMainDirectCommitSha = edc[0]?.fullSha ?? null;
-    const shaMatches = (left?: string | null, right?: string | null): boolean => {
-      if (!left || !right) return false;
-      return left === right || left.startsWith(right) || right.startsWith(left);
-    };
-    type LaneRef = { name: string; headSha: string; isDefault: boolean };
-    const allLanes: LaneRef[] = [
-      { name: defaultBranch, headSha: latestMainDirectCommitSha ?? '', isDefault: true },
-      ...eb.map((b) => ({ name: b.name, headSha: b.headSha, isDefault: false })),
-    ];
-    const explicitLane = effectiveCheckedOutRef.branchName
-      ? allLanes.find((lane) => lane.name === effectiveCheckedOutRef.branchName)
-      : undefined;
-    const tipMatchedLanes = checkedOutAnchorSha
-      ? allLanes.filter((lane) => shaMatches(lane.headSha, checkedOutAnchorSha))
-      : [];
-    const targetLane =
-      explicitLane ??
-      tipMatchedLanes.find((lane) => lane.isDefault) ??
-      tipMatchedLanes[0];
-    const targetBranch = targetLane && !targetLane.isDefault
-      ? eb.find((b) => b.name === targetLane.name)
-      : undefined;
-
-    const anchorCommitDate = (() => {
-      if (!checkedOutAnchorSha) return null;
-      const matchingDirectCommit = edc.find((commit) => (
-        shaMatches(commit.fullSha, checkedOutAnchorSha) ||
-        shaMatches(commit.sha, checkedOutAnchorSha)
-      ));
-      if (matchingDirectCommit?.date) return matchingDirectCommit.date;
-      if (targetBranch) {
-        const matchingPreviewCommit = (ebp[targetBranch.name] ?? []).find((commit) => (
-          shaMatches(commit.fullSha, checkedOutAnchorSha) ||
-          shaMatches(commit.sha, checkedOutAnchorSha)
-        ));
-        if (matchingPreviewCommit?.date) return matchingPreviewCommit.date;
-      }
-      return null;
-    })();
-    const anchorCommitTimeMs = anchorCommitDate ? new Date(anchorCommitDate).getTime() : Number.NaN;
-    const nowTimeMs = Date.now();
-    const uncommittedTimeMs = Number.isFinite(anchorCommitTimeMs)
-      ? Math.max(nowTimeMs, anchorCommitTimeMs + 1)
-      : nowTimeMs;
-    const uncommittedDate = new Date(uncommittedTimeMs).toISOString();
-    const uncommittedNode: BranchCommitPreview = {
-      fullSha: 'WORKING_TREE',
-      sha: 'uncommitted',
-      parentSha: checkedOutAnchorSha,
-      message: '',
-      author: 'You',
-      date: uncommittedDate,
-      kind: 'uncommitted',
-    };
-    if (targetBranch) {
-      const nextBranches = eb.map((b) => {
-        if (b.name === targetBranch.name) {
-          return {
-            ...b,
-            commitsAhead: b.commitsAhead + 1,
-            unpushedCommits: b.unpushedCommits + 1,
-            lastCommitDate: uncommittedDate,
-            headSha: 'WORKING_TREE',
-          };
-        }
-        return b;
-      });
-      return {
-        enrichedBranches: nextBranches,
-        enrichedDirectCommits: edc,
-        enrichedUnpushedDirectCommits: eupdc,
-        enrichedBranchCommitPreviews: {
-          ...ebp,
-          [targetBranch.name]: [uncommittedNode, ...(ebp[targetBranch.name] || [])],
-        },
-        enrichedBranchUniqueAheadCounts: {
-          ...ebuac,
-          [targetBranch.name]: Math.max(
-            0,
-            (Object.prototype.hasOwnProperty.call(ebuac, targetBranch.name)
-              ? ebuac[targetBranch.name]
-              : targetBranch.commitsAhead) ?? 0,
-          ) + 1,
-        },
-        visualCheckedOutRef: effectiveCheckedOutRef,
-      };
-    }
-
+    const sessionsForInject = buildWorktreeSessions(worktrees, repoPath ?? undefined, effectiveCheckedOutRef);
+    const injected = injectWorktreeUncommittedPreviews({
+      sessions: sessionsForInject,
+      branches: eb,
+      branchCommitPreviews: ebp,
+      branchUniqueAheadCounts: ebuac,
+      directCommits: edc,
+      defaultBranch,
+    });
     return {
-      enrichedBranches: eb,
-      enrichedBranchCommitPreviews: {
-        ...ebp,
-        [defaultBranch]: [uncommittedNode, ...(ebp[defaultBranch] || [])],
-      },
-      enrichedBranchUniqueAheadCounts: {
-        ...ebuac,
-      },
+      enrichedBranches: injected.branches,
       enrichedDirectCommits: edc,
       enrichedUnpushedDirectCommits: eupdc,
+      enrichedBranchCommitPreviews: injected.branchCommitPreviews,
+      enrichedBranchUniqueAheadCounts: injected.branchUniqueAheadCounts,
       visualCheckedOutRef: effectiveCheckedOutRef,
     };
-  }, [branches, branchCommitPreviews, branchUniqueAheadCounts, checkedOutRef, defaultBranch, directCommits, remoteDefaultTipMetadata, remoteDefaultTipParentSha, remoteDefaultTipSha, stashes, unpushedDirectCommits]);
+  }, [branches, branchCommitPreviews, branchUniqueAheadCounts, checkedOutRef, defaultBranch, directCommits, remoteDefaultTipMetadata, remoteDefaultTipParentSha, remoteDefaultTipSha, repoPath, stashes, unpushedDirectCommits, worktrees]);
 
   useEffect(() => {
-    const hasUncommitted = visualCheckedOutRef?.hasUncommittedChanges ?? false;
+    const hasUncommitted = worktreeSessions.some((session) => session.hasUncommittedChanges);
     if (hadUncommittedChangesRef.current && !hasUncommitted) {
       setLayoutEpoch((epoch) => epoch + 1);
       setHydratedLayoutModel(null);
@@ -3180,7 +3113,9 @@ function App() {
         (isRemoteTipHydrated && remoteDefaultTipParentSha != null)
       );
     if (!readyForAutoFocus) return;
-    const focusSha = visualCheckedOutRef?.hasUncommittedChanges ? 'WORKING_TREE' : visualCheckedOutRef?.headSha ?? null;
+    const focusSha = visualCheckedOutRef?.hasUncommittedChanges
+      ? currentSessionWorkingTreeId(worktreeSessions)
+      : visualCheckedOutRef?.headSha ?? null;
     if (!focusSha) return;
     const syncKey = `${repoPath ?? '__no-repo__'}|${mapGridOrientation}|${focusSha}`;
     if (autoFocusSyncKeyRef.current === syncKey) return;
@@ -3197,6 +3132,7 @@ function App() {
     repoPath,
     visualCheckedOutRef?.hasUncommittedChanges,
     visualCheckedOutRef?.headSha,
+    worktreeSessions,
   ]);
 
   useEffect(() => {
@@ -3273,7 +3209,7 @@ function App() {
       setHydratedLayoutKey(null);
       return;
     }
-    const isDirty = latestCheckedOutRef.current?.hasUncommittedChanges ?? false;
+    const isDirty = worktreeSessions.some((session) => session.hasUncommittedChanges);
     const inMemory = layoutModelCacheRef.current.get(sharedGridLayoutCacheKey);
     if (inMemory) {
       if (layoutModelHasWorkingTree(inMemory) && !isDirty) {
@@ -3312,7 +3248,7 @@ function App() {
     return () => {
       disposed = true;
     };
-  }, [repoPath, sharedGridLayoutCacheKey]);
+  }, [repoPath, sharedGridLayoutCacheKey, worktreeSessions]);
   const sharedGridLayoutModel: BranchGridLayoutModel = useMemo(
     () => {
       const hasGraphSourceData =
@@ -3323,7 +3259,7 @@ function App() {
         Boolean(hydratedLayoutModel) &&
         (hydratedLayoutModel?.allCommits.length ?? 0) === 0 &&
         hasGraphSourceData;
-      const isDirty = visualCheckedOutRef?.hasUncommittedChanges ?? false;
+      const isDirty = worktreeSessions.some((session) => session.hasUncommittedChanges);
       const hydratedHasWorkingTree = layoutModelHasWorkingTree(hydratedLayoutModel);
       const canReuseHydratedLayout = hydratedHasWorkingTree === isDirty;
       if (
@@ -3361,6 +3297,7 @@ function App() {
         gridSearchQuery,
         gridFocusSha,
         checkedOutRef: visualCheckedOutRef ?? null,
+        worktreeSessions,
         orientation: mapGridOrientation,
       });
     },
@@ -3382,6 +3319,7 @@ function App() {
       visualCheckedOutRef?.headSha ?? null,
       visualCheckedOutRef?.branchName ?? null,
       visualCheckedOutRef?.hasUncommittedChanges ?? false,
+      worktreeSessions,
       mapGridOrientation,
       gridSearchQuery,
       sharedGridLayoutCacheKey,
@@ -3392,10 +3330,10 @@ function App() {
     ],
   );
   const gridLayoutModelForView = useMemo(() => {
-    const isDirty = visualCheckedOutRef?.hasUncommittedChanges ?? false;
+    const isDirty = worktreeSessions.some((session) => session.hasUncommittedChanges);
     if (isDirty) return sharedGridLayoutModel;
     return stripWorkingTreeFromLayoutModel(sharedGridLayoutModel);
-  }, [sharedGridLayoutModel, visualCheckedOutRef?.hasUncommittedChanges]);
+  }, [sharedGridLayoutModel, worktreeSessions]);
   useEffect(() => {
     lastResolvedLayoutModelRef.current = gridLayoutModelForView;
   }, [gridLayoutModelForView]);

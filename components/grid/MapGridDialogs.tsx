@@ -1,3 +1,5 @@
+import { accentCssVars } from '../../lib/worktreeSessions';
+import type { WorktreeSession } from '../../lib/worktreeSessions';
 import { cn } from './mapGridUtils';
 import { GitBranchPlus, GitCommitHorizontal } from 'lucide-react';
 
@@ -24,6 +26,13 @@ type Props = {
   selectedCommitCanCreateBranch: boolean;
   currentCheckedOutCommitCanCreateBranch: boolean;
   createBranchFromNodeInProgress: boolean;
+  checkoutPickerOpen: boolean;
+  checkoutPickerSummary: string;
+  checkoutPickerWorktrees: Array<{ path: string; label: string; detail: string; session: WorktreeSession }>;
+  checkoutPickerSelectedPath: string | null;
+  onCheckoutPickerSelectPath: (path: string) => void;
+  onCheckoutPickerClose: () => void;
+  onCheckoutPickerConfirm: () => void;
 };
 
 export default function MapGridDialogs({
@@ -49,6 +58,13 @@ export default function MapGridDialogs({
   selectedCommitCanCreateBranch,
   currentCheckedOutCommitCanCreateBranch,
   createBranchFromNodeInProgress,
+  checkoutPickerOpen,
+  checkoutPickerSummary,
+  checkoutPickerWorktrees,
+  checkoutPickerSelectedPath,
+  onCheckoutPickerSelectPath,
+  onCheckoutPickerClose,
+  onCheckoutPickerConfirm,
 }: Props) {
   return (
     <>
@@ -121,6 +137,70 @@ export default function MapGridDialogs({
                 className="rounded-lg bg-red-50 px-3 py-1.5 text-xs font-medium text-red-600 transition-colors hover:bg-red-50/80 disabled:cursor-not-allowed disabled:opacity-50 dark:bg-red-900/20 dark:text-red-400 dark:hover:bg-red-900/30"
               >
                 {deleteInProgress ? 'Deleting...' : 'Delete'}
+              </button>
+            </div>
+          </div>
+        </div>
+      ) : null}
+
+      {checkoutPickerOpen ? (
+        <div
+          className="absolute inset-0 z-[80] flex items-center justify-center bg-background/70 p-4 backdrop-blur-sm"
+          onClick={onCheckoutPickerClose}
+        >
+          <div
+            className="w-full max-w-md rounded-2xl border border-border bg-background p-4"
+            onClick={(event) => event.stopPropagation()}
+          >
+            <p className="text-sm font-medium text-foreground">Check out in worktree</p>
+            <p className="mt-1 text-xs text-muted-foreground">{checkoutPickerSummary}</p>
+            <p className="mt-2 text-[10px] uppercase tracking-wide text-muted-foreground font-medium">
+              Worktree
+            </p>
+            <div className="mt-2 max-h-56 space-y-1.5 overflow-auto">
+              {checkoutPickerWorktrees.map((entry) => {
+                const accent = accentCssVars(entry.session.accentToken);
+                const isSelected = checkoutPickerSelectedPath === entry.path;
+                return (
+                  <button
+                    key={entry.path}
+                    type="button"
+                    onClick={() => onCheckoutPickerSelectPath(entry.path)}
+                    className={cn(
+                      'flex w-full items-start gap-2 rounded-lg border px-2.5 py-2 text-left transition-colors',
+                      isSelected
+                        ? 'border-border bg-primary/10'
+                        : 'border-border/50 bg-muted/30 hover:bg-muted',
+                    )}
+                  >
+                    <span
+                      className="mt-1.5 h-2.5 w-2.5 shrink-0 rounded-full"
+                      style={{ backgroundColor: accent.fg }}
+                      aria-hidden
+                    />
+                    <span className="min-w-0 flex-1">
+                      <span className="block truncate text-xs font-medium text-foreground">{entry.label}</span>
+                      <span className="block truncate text-[11px] text-muted-foreground">{entry.detail}</span>
+                    </span>
+                  </button>
+                );
+              })}
+            </div>
+            <div className="mt-4 flex items-center justify-end gap-2">
+              <button
+                type="button"
+                onClick={onCheckoutPickerClose}
+                className="rounded-lg border border-border bg-background px-3 py-1.5 text-xs font-medium text-foreground transition-colors hover:bg-muted"
+              >
+                Cancel
+              </button>
+              <button
+                type="button"
+                onClick={onCheckoutPickerConfirm}
+                disabled={!checkoutPickerSelectedPath}
+                className="rounded-lg border border-border bg-background px-3 py-1.5 text-xs font-medium text-foreground transition-colors hover:bg-muted disabled:cursor-not-allowed disabled:opacity-50"
+              >
+                Check out
               </button>
             </div>
           </div>

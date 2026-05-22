@@ -1,0 +1,173 @@
+import { normalizeRepoPathForCompare } from '../components/grid/mapGridUtils';
+import type { CheckedOutRef, WorktreeInfo } from '../types';
+
+/** Current window only; teal checked-out token. */
+export type WorktreeCurrentAccentToken = 'checked';
+
+/** Non-current linked worktrees — never uses blue (`select` / `remote`). */
+export type WorktreeSessionAccentToken =
+  | 'worktree-violet'
+  | 'worktree-amber'
+  | 'worktree-emerald'
+  | 'worktree-rose';
+
+export type WorktreeAccentToken = WorktreeCurrentAccentToken | WorktreeSessionAccentToken;
+
+export interface WorktreeSession {
+  path: string;
+  pathExists: boolean;
+  branchName: string | null;
+  headSha: string;
+  parentSha: string | null;
+  hasUncommittedChanges: boolean;
+  isCurrent: boolean;
+  accentToken: WorktreeAccentToken;
+  workingTreeId: string;
+}
+
+const NON_CURRENT_ACCENT_CYCLE: WorktreeSessionAccentToken[] = [
+  'worktree-violet',
+  'worktree-amber',
+  'worktree-emerald',
+  'worktree-rose',
+];
+
+export const LEGACY_WORKING_TREE_ID = 'WORKING_TREE';
+
+export const worktreeStableKey = (path: string): string => {
+  const normalized = normalizeRepoPathForCompare(path).toLowerCase();
+  let hash = 2166136261;
+  for (let index = 0; index < normalized.length; index += 1) {
+    hash ^= normalized.charCodeAt(index);
+    hash = Math.imul(hash, 16777619);
+  }
+  return (hash >>> 0).toString(36);
+};
+
+export const workingTreeIdForPath = (path: string, isCurrent: boolean): string => {
+  if (isCurrent) return LEGACY_WORKING_TREE_ID;
+  return `${LEGACY_WORKING_TREE_ID}:${worktreeStableKey(path)}`;
+};
+
+export const isWorkingTreeCommitId = (id: string): boolean =>
+  id === LEGACY_WORKING_TREE_ID || id.startsWith(`${LEGACY_WORKING_TREE_ID}:`);
+
+export const currentSessionWorkingTreeId = (sessions: WorktreeSession[]): string => {
+  const current = sessions.find((session) => session.isCurrent);
+  return current?.workingTreeId ?? LEGACY_WORKING_TREE_ID;
+};
+
+export const selectedUncommittedSessions = (
+  sessions: WorktreeSession[],
+  selectedCommitShas: string[],
+): WorktreeSession[] => {
+  const selected = new Set(selectedCommitShas);
+  return sessions.filter((session) => selected.has(session.workingTreeId));
+};
+
+export const accentCssVars = (token: WorktreeAccentToken): { fg: string; muted: string } => ({
+  fg: `var(--${token})`,
+  muted: `var(--${token}-muted)`,
+});
+
+const isUsableWorktree = (worktree: WorktreeInfo): boolean => worktree.pathExists !== false;
+
+const assignAccentTokens = (sessions: Omit<WorktreeSession, 'accentToken' | 'workingTreeId'>[]): WorktreeSession[] => {
+  const current = sessions.filter((session) => session.isCurrent);
+  const others = sessions
+    .filter((session) => !session.isCurrent)
+    .sort((left, right) => normalizeRepoPathForCompare(left.path).localeCompare(normalizeRepoPathForCompare(right.path)));
+
+  let nonCurrentIndex = 0;
+  const withAccents: WorktreeSession[] = [];
+
+  for (const session of current) {
+    withAccents.push({
+      ...session,
+      accentToken: 'checked',
+      workingTreeId: workingTreeIdForPath(session.path, true),
+    });
+  }
+
+  for (const session of others) {
+    withAccents.push({
+      ...session,
+      accentToken: NON_CURRENT_ACCENT_CYCLE[nonCurrentIndex % NON_CURRENT_ACCENT_CYCLE.length]!,
+      workingTreeId: workingTreeIdForPath(session.path, false),
+    });
+    nonCurrentIndex += 1;
+  }
+
+  return withAccents;
+};
+
+export const buildWorktreeSessions = (
+  worktrees: WorktreeInfo[],
+  currentRepoPath?: string,
+  checkedOutRef?: CheckedOutRef | null,
+): WorktreeSession[] => {
+  const normalizedCurrent = currentRepoPath ? normalizeRepoPathForCompare(currentRepoPath) : null;
+  const base = worktrees
+    .filter(isUsableWorktree)
+    .map((worktree) => {
+      const normalizedPath = normalizeRepoPathForCompare(worktree.path);
+      const isCurrent = normalizedCurrent
+        ? normalizedPath === normalizedCurrent || normalizedPath.toLowerCase() === normalizedCurrent.toLowerCase()
+        : worktree.isCurrent;
+      const hasUncommittedChanges = isCurrent && checkedOutRef
+        ? checkedOutRef.hasUncommittedChanges
+        : (worktree.hasUncommittedChanges ?? false);
+      return {
+        path: worktree.path,
+        pathExists: worktree.pathExists,
+        branchName: worktree.branchName,
+        headSha: worktree.headSha,
+        parentSha: worktree.parentSha,
+        hasUncommittedChanges,
+        isCurrent,
+      };
+    });
+
+  return assignAccentTokens(base);
+};
+
+export const shaMatches = (left?: string | null, right?: string | null): boolean => {
+  if (!left || !right) return false;
+  return left === right || left.startsWith(right) || right.startsWith(left);
+};
+
+export const resolveCommitAccent = (
+  commitId: string,
+  kind: string | null | undefined,
+  sessions: WorktreeSession[],
+): WorktreeAccentToken | null => {
+  if (isWorkingTreeCommitId(commitId) || kind === 'uncommitted') {
+    const byWorkingTree = sessions.find((session) => session.workingTreeId === commitId);
+    if (byWorkingTree) return byWorkingTree.accentToken;
+    if (commitId === LEGACY_WORKING_TREE_ID) {
+      return sessions.find((session) => session.isCurrent)?.accentToken ?? 'checked';
+    }
+    return null;
+  }
+
+  const headMatches = sessions.filter((session) => shaMatches(session.headSha, commitId));
+  if (headMatches.length === 0) return null;
+  const currentMatch = headMatches.find((session) => session.isCurrent);
+  return (currentMatch ?? headMatches[0])!.accentToken;
+};
+
+export const buildWorktreeAccentByCommitId = (sessions: WorktreeSession[]): Map<string, WorktreeAccentToken> => {
+  const map = new Map<string, WorktreeAccentToken>();
+  for (const session of sessions) {
+    if (session.headSha) {
+      const existing = map.get(session.headSha);
+      if (!existing || session.isCurrent) {
+        map.set(session.headSha, session.accentToken);
+      }
+    }
+    if (session.hasUncommittedChanges) {
+      map.set(session.workingTreeId, session.accentToken);
+    }
+  }
+  return map;
+};

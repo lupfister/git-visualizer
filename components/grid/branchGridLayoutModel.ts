@@ -1,3 +1,4 @@
+import type { WorktreeSession } from '../../lib/worktreeSessions';
 import type { Branch } from '../../types';
 import type { BranchCommitPreview } from '../../types';
 import type { CheckedOutRef } from '../../types';
@@ -112,6 +113,7 @@ export type BranchGridLayoutInput = {
   gridSearchQuery: string;
   gridFocusSha: string | null;
   checkedOutRef: CheckedOutRef | null;
+  worktreeSessions?: WorktreeSession[];
   /** `vertical`: newest above; `horizontal`: newest to the right (default). */
   orientation?: 'vertical' | 'horizontal';
   nodePositionOverrides?: NodePositionOverrides;
@@ -588,6 +590,7 @@ export function computeBranchGridLayout(input: BranchGridLayoutInput): BranchGri
     gridSearchQuery,
     gridFocusSha,
     checkedOutRef,
+    worktreeSessions = [],
     orientation = 'horizontal',
     nodePositionOverrides = {},
   } = input;
@@ -770,6 +773,25 @@ export function computeBranchGridLayout(input: BranchGridLayoutInput): BranchGri
     insertVisibleCommitIfMissing({ ...commit, visualId: `${commit.branchName}:${commit.id}` });
   }
   const checkedOutBranchName = checkedOutRef?.branchName ?? null;
+  const sessionBranchesWithPriority = (() => {
+    if (worktreeSessions.length > 0) {
+      const current = worktreeSessions.filter((session) => session.isCurrent && session.branchName);
+      const others = worktreeSessions
+        .filter((session) => !session.isCurrent && session.branchName)
+        .sort((left, right) => left.path.localeCompare(right.path));
+      const seen = new Set<string>();
+      const ordered: string[] = [];
+      for (const session of [...current, ...others]) {
+        const name = session.branchName!;
+        if (seen.has(name)) continue;
+        seen.add(name);
+        ordered.push(name);
+      }
+      return ordered;
+    }
+    return checkedOutBranchName ? [checkedOutBranchName] : [];
+  })();
+  const checkedOutBranchNameSet = new Set(sessionBranchesWithPriority);
   const ingestBranchLaneCommits = (branchName: string, commits: CommitItem[]) => {
     for (const commit of commits) {
       const visualCommit: VisualCommit = { ...commit, branchName, visualId: `${branchName}:${commit.id}` };
@@ -777,14 +799,14 @@ export function computeBranchGridLayout(input: BranchGridLayoutInput): BranchGri
     }
   };
   for (const [branchName, commits] of branchCommitsByLane.entries()) {
-    if (checkedOutBranchName && branchName === checkedOutBranchName) continue;
+    if (checkedOutBranchNameSet.has(branchName)) continue;
     ingestBranchLaneCommits(branchName, commits);
   }
-  // Same SHA can appear on multiple branch lanes; last writer must be the checked-out branch so
+  // Same SHA can appear on multiple branch lanes; last writer must be each checked-out branch so
   // WORKING_TREE pins to the correct lane (horizontal: same column = same Y as HEAD).
-  if (checkedOutBranchName) {
-    const preferredCommits = branchCommitsByLane.get(checkedOutBranchName);
-    if (preferredCommits) ingestBranchLaneCommits(checkedOutBranchName, preferredCommits);
+  for (const branchName of sessionBranchesWithPriority) {
+    const preferredCommits = branchCommitsByLane.get(branchName);
+    if (preferredCommits) ingestBranchLaneCommits(branchName, preferredCommits);
   }
   // Branch previews (and the checkout overwrite above) often keep only the first parent; restore full
   // merge parent lists so cluster segmentation and lane logic see real merges.
@@ -1000,6 +1022,14 @@ export function computeBranchGridLayout(input: BranchGridLayoutInput): BranchGri
       if (commit.kind === 'uncommitted') return 'uncommitted';
       if (commit.kind === 'stash') return 'stash';
       if (commit.kind === 'branch-created') return 'branch-created';
+      const sessionTip = worktreeSessions.find(
+        (session) =>
+          session.branchName &&
+          session.headSha &&
+          commit.branchName === session.branchName &&
+          shasMatch(commit.id, session.headSha),
+      );
+      if (sessionTip) return 'checked-out-tip';
       const checkedOutBranch = checkedOutRef?.branchName ?? null;
       const checkedOutHead = checkedOutRef?.headSha ?? null;
       if (

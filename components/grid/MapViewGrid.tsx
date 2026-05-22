@@ -15,7 +15,11 @@ interface Props {
   unpushedCommitShasByBranch?: Record<string, string[]>;
   openPRs?: OpenPR[];
   defaultBranch: string;
-  onCommitClick?: (target: { commitSha: string; branchName?: string }) => void;
+  onCommitClick?: (target: {
+    commitSha: string;
+    branchName?: string;
+    worktreePath: string;
+  }) => void | Promise<void>;
   onLoadMore?: () => void;
   githubAvailable?: boolean;
   branchPromptMeta?: Record<string, BranchPromptMeta>;
@@ -41,7 +45,12 @@ interface Props {
   onPushCurrentBranch?: () => Promise<void> | void;
   onPushCommitTargets?: (targets: Array<{ branchName: string; targetSha: string }>) => Promise<void> | void;
   pushInProgress?: boolean;
-  onDeleteSelection?: (targets: { branchNames: string[]; discardUncommittedChanges: boolean; stashIndices?: number[] }) => Promise<void> | void;
+  onDeleteSelection?: (targets: {
+    branchNames: string[];
+    discardUncommittedChanges: boolean;
+    discardUncommittedWorktreePaths?: string[];
+    stashIndices?: number[];
+  }) => Promise<void> | void;
   deleteInProgress?: boolean;
   worktrees?: WorktreeInfo[];
   currentRepoPath?: string;

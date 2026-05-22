@@ -503,7 +503,15 @@ fn compute_repo_fingerprint(repo_path: &str) -> Result<(String, RepoRefreshFinge
         .join("|");
     let worktree_sig = worktrees
         .iter()
-        .map(|worktree| format!("{}:{}:{}", worktree.path, worktree.head_sha, worktree.branch_name.clone().unwrap_or_default()))
+        .map(|worktree| {
+            format!(
+                "{}:{}:{}:{}",
+                worktree.path,
+                worktree.head_sha,
+                worktree.branch_name.clone().unwrap_or_default(),
+                if worktree.has_uncommitted_changes { "1" } else { "0" }
+            )
+        })
         .collect::<Vec<_>>()
         .join("|");
     let stash_sig = stashes

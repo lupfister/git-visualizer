@@ -13,6 +13,9 @@ pub struct WorktreeInfo {
     pub parent_sha: Option<String>,
     pub is_current: bool,
     pub is_prunable: bool,
+    /// Omitted in snapshots written before multi-worktree canvas support; defaults to false.
+    #[serde(default)]
+    pub has_uncommitted_changes: bool,
 }
 
 fn worktree_paths_are_same(repo: &Path, wt_path: &Path) -> bool {
@@ -91,6 +94,11 @@ pub fn list_worktrees(repo: &Path) -> Result<Vec<WorktreeInfo>, GitError> {
         };
 
         let is_current = worktree_paths_are_same(repo, wt_path);
+        let has_uncommitted_changes = if path_exists {
+            worktree_has_uncommitted_changes(wt_path)
+        } else {
+            false
+        };
 
         result.push(WorktreeInfo {
             path: partial.path,
@@ -100,6 +108,7 @@ pub fn list_worktrees(repo: &Path) -> Result<Vec<WorktreeInfo>, GitError> {
             parent_sha,
             is_current,
             is_prunable: partial.is_prunable,
+            has_uncommitted_changes,
         });
     }
 
@@ -112,6 +121,15 @@ struct PartialWt {
     head_sha: Option<String>,
     branch_name: Option<String>,
     is_prunable: bool,
+}
+
+fn worktree_has_uncommitted_changes(wt_root: &Path) -> bool {
+    cli::run(
+        wt_root,
+        &["status", "--porcelain", "--untracked-files=normal"],
+    )
+    .map(|output| !output.trim().is_empty())
+    .unwrap_or(false)
 }
 
 fn git_parent_sha(wt_root: &Path) -> Result<Option<String>, GitError> {
@@ -134,4 +152,27 @@ pub fn remove_worktree(repo: &Path, worktree_path: &str, force: bool) -> Result<
     let args_ref: Vec<&str> = args.iter().map(|s| s.as_str()).collect();
     cli::run(repo, &args_ref)?;
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::worktree_has_uncommitted_changes;
+    use std::process::Command;
+
+    #[test]
+    fn porcelain_dirty_detection_matches_git_status() {
+        let repo = std::env::temp_dir().join(format!(
+            "gv-wt-test-{}",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_dir_all(&repo);
+        Command::new("git")
+            .args(["init", repo.to_str().unwrap()])
+            .output()
+            .expect("git init");
+        std::fs::write(repo.join("dirty.txt"), "x").expect("write file");
+        let dirty = worktree_has_uncommitted_changes(&repo);
+        assert!(dirty, "untracked file should mark worktree dirty");
+        let _ = std::fs::remove_dir_all(&repo);
+    }
 }
