@@ -158,9 +158,8 @@ fn is_fast_forward_merged_into_base(
     if branch.commits_ahead > 0 || branch.commits_behind > 0 {
         return false;
     }
-    if !default_head_sha.is_empty() && branch.head_sha == default_head_sha {
-        return true;
-    }
+    // Keep named refs at the default tip (0 ahead / 0 behind) so the map can render
+    // BRANCH_HEAD placeholders; hiding them made empty branches vanish after moving to main.
     branch.commits_ahead <= 0 && default_first_parent_shas.contains(&branch.head_sha)
 }
 

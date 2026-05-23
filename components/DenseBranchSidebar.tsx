@@ -913,6 +913,8 @@ export default function DenseBranchSidebar({
         branchParentByName: project.branchParentByName ?? {},
         branchUniqueAheadCounts: project.branchUniqueAheadCounts,
         checkedOutRef: project.checkedOutRef,
+        worktrees: project.worktrees,
+        currentRepoPath: project.path,
         stashes: project.stashes,
         manuallyOpenedClumps: manuallyOpenedClumpsByProject[project.path] ?? new Set<string>(),
         manuallyClosedClumps: manuallyClosedClumpsByProject[project.path] ?? new Set<string>(),

@@ -10,6 +10,7 @@ export {
   TILE_OMISSION_FADE_OUT_DELAY_MS,
   TILE_OMISSION_FADE_OUT_MS,
   TILE_OMISSION_FADE_IN_MS,
+  CLOUD_DRIFT_PERIOD_MS,
   MAX_EXPORT_EDGE_PX,
 } from './constants';
 
@@ -57,3 +58,19 @@ export {
   type TilePatternCircleShape,
   type TilePatternPathShape,
 } from './scene';
+export {
+  CLOUD_HEIGHT_TILES,
+  CLOUD_WIDTH_MIN_TILES,
+  CLOUD_WIDTH_MAX_TILES,
+  CLOUD_PACKING,
+  CLOUD_CHECKER_HOLE_CHANCE,
+  cloudRowDriftOffset,
+  cloudHash,
+  cloudValueNoise,
+  cloudFbm,
+  cloudSilhouettePresence,
+  findCloudSlotForTile,
+  cloudGridMetrics,
+  computeTileCloudPresence,
+  type CloudGridMetrics,
+} from './tileCloudNoise';

@@ -49,6 +49,15 @@ import MapSearchBar from './MapSearchBar';
 import { useMapGridCamera } from './useMapGridCamera';
 import { useMapGridSelection } from './useMapGridSelection';
 import {
+  buildWorktreeAccentByCommitId,
+  buildWorktreeSessions,
+  currentSessionWorkingTreeId,
+  isWorkingTreeCommitId,
+  selectedUncommittedSessions,
+  type WorktreeSession,
+} from '../../lib/worktreeSessions';
+import { parseMapCheckoutTarget, type MapCheckoutTarget } from './mapCheckoutTarget';
+import {
   GRID_COMMIT_CORNER_RADIUS_BASE_PX,
   GRID_RENDER_ZOOM,
   MAP_GRID_CULL_VIEWPORT_INSET_SCREEN_PX,
@@ -59,10 +68,13 @@ import {
   buildCommitCullSpatialIndex,
   collectVisibleCommitIdsFromSpatialIndex,
   computeViewportCullBounds,
+  isOtherWorktree,
   isUsableOtherWorktree,
+  normalizeRepoPathForCompare,
   looseCableConnectorIntersectsViewportBounds,
   shaMatchesGitRef,
   visibleCommitIdSetEquals,
+  worktreeShortLabel,
 } from './mapGridUtils';
 import type { ViewportContentBounds } from './mapGridUtils';
 
@@ -244,6 +256,9 @@ export default function BranchGridMap({
   const [commitDialogOpen, setCommitDialogOpen] = useState(false);
   const [commitMessageDraft, setCommitMessageDraft] = useState('');
   const [deleteConfirmOpen, setDeleteConfirmOpen] = useState(false);
+  const [checkoutPickerOpen, setCheckoutPickerOpen] = useState(false);
+  const [checkoutPickerTarget, setCheckoutPickerTarget] = useState<MapCheckoutTarget | null>(null);
+  const [checkoutPickerSelectedPath, setCheckoutPickerSelectedPath] = useState<string | null>(null);
   const [newBranchDialogOpen, setNewBranchDialogOpen] = useState(false);
   const [newBranchName, setNewBranchName] = useState('');
   const [newBranchCreateMode, setNewBranchCreateMode] = useState<'from-selected-node' | 'new-root'>(
@@ -330,11 +345,58 @@ export default function BranchGridMap({
     setOptimisticNodePositionOverrides(null);
   }, [controlledNodePositionOverrides, optimisticNodePositionOverrides]);
 
+  const worktreeSessions = useMemo(
+    () => buildWorktreeSessions(worktrees, currentRepoPath, checkedOutRef ?? null),
+    [worktrees, currentRepoPath, checkedOutRef],
+  );
+  const worktreeAccentByCommitId = useMemo(
+    () => buildWorktreeAccentByCommitId(worktreeSessions),
+    [worktreeSessions],
+  );
+  const currentWorkingTreeId = currentSessionWorkingTreeId(worktreeSessions);
+
+  const checkoutPickerWorktrees = useMemo((): Array<{
+    path: string;
+    label: string;
+    detail: string;
+    session: WorktreeSession;
+  }> => {
+    const normalizedCurrent = currentRepoPath ? normalizeRepoPathForCompare(currentRepoPath) : null;
+    return worktrees
+      .filter((worktree) => worktree.pathExists !== false)
+      .map((worktree) => {
+        const normalizedPath = normalizeRepoPathForCompare(worktree.path);
+        const session = worktreeSessions.find((entry) => entry.path === worktree.path)
+          ?? worktreeSessions.find(
+            (entry) => normalizeRepoPathForCompare(entry.path).toLowerCase() === normalizedPath.toLowerCase(),
+          );
+        if (!session) return null;
+        const isCurrentWindow = normalizedCurrent
+          ? normalizedPath === normalizedCurrent || normalizedPath.toLowerCase() === normalizedCurrent.toLowerCase()
+          : !isOtherWorktree(worktree, currentRepoPath);
+        const branchLabel = worktree.branchName ?? 'detached';
+        const headLabel = worktree.headSha.slice(0, 7);
+        return {
+          path: worktree.path,
+          label: isCurrentWindow ? 'This window' : worktreeShortLabel(worktree.path),
+          detail: `${branchLabel} • ${headLabel}`,
+          session,
+        };
+      })
+      .filter((entry): entry is NonNullable<typeof entry> => entry != null)
+      .sort((left, right) => {
+        if (left.session.isCurrent !== right.session.isCurrent) {
+          return left.session.isCurrent ? -1 : 1;
+        }
+        return left.label.localeCompare(right.label);
+      });
+  }, [worktrees, worktreeSessions, currentRepoPath]);
+
   const computedLayoutModel = useMemo(() => {
-    const isDirty = checkedOutRef?.hasUncommittedChanges ?? false;
+    const isDirty = worktreeSessions.some((session) => session.hasUncommittedChanges);
     const providedHasWorkingTree = layoutModelHasWorkingTree(providedLayoutModel ?? null);
     const previewsHaveWorkingTree = Object.values(branchCommitPreviews).some((previews) =>
-      previews.some((preview) => preview.fullSha === 'WORKING_TREE' || preview.kind === 'uncommitted'),
+      previews.some((preview) => isWorkingTreeCommitId(preview.fullSha) || preview.kind === 'uncommitted'),
     );
     const canUseProvidedLayout =
       providedLayoutModel &&
@@ -362,6 +424,7 @@ export default function BranchGridMap({
       gridSearchQuery,
       gridFocusSha,
       checkedOutRef: checkedOutRef ?? null,
+      worktreeSessions,
       orientation,
       nodePositionOverrides,
     });
@@ -384,6 +447,7 @@ export default function BranchGridMap({
     checkedOutRef?.headSha ?? null,
     checkedOutRef?.branchName ?? null,
     checkedOutRef?.hasUncommittedChanges ?? false,
+    worktreeSessions,
     orientation,
     nodePositionOverrides,
   ]);
@@ -812,10 +876,18 @@ export default function BranchGridMap({
       ).sort((a, b) => a - b),
     [selectedVisibleCommitShas],
   );
-  const hasSelectedUncommittedChanges = selectedVisibleCommitShas.includes('WORKING_TREE');
-  const deletableSelectionCount = (hasSelectedUncommittedChanges ? 1 : 0) + selectedStashIndices.length;
+  const uncommittedSessionsToDiscard = useMemo(
+    () => selectedUncommittedSessions(worktreeSessions, selectedVisibleCommitShas),
+    [worktreeSessions, selectedVisibleCommitShas],
+  );
+  const hasSelectedUncommittedChanges = uncommittedSessionsToDiscard.length > 0;
+  const deletableSelectionCount = uncommittedSessionsToDiscard.length + selectedStashIndices.length;
   const deleteSelectionItems = [
-    ...(hasSelectedUncommittedChanges ? ['Uncommitted changes'] : []),
+    ...uncommittedSessionsToDiscard.map((session) => (
+      session.isCurrent
+        ? 'Uncommitted changes'
+        : `Uncommitted · ${worktreeShortLabel(session.path)}`
+    )),
     ...selectedStashIndices.map((idx) => `Stash ${idx + 1}`),
   ];
   const pushableRemoteBranchCount = pushableBranchByName.size;
@@ -1211,6 +1283,10 @@ export default function BranchGridMap({
       autoRecoverRef.current = null;
       return;
     }
+    // Viewport culling can briefly report zero visible nodes while panning; recentering
+    // during an active pan gesture reads as a teleport.
+    if (isCameraMovingRef.current) return;
+
     const viewport = scrollContainerRef.current;
     if (!viewport || viewport.clientWidth <= 0 || viewport.clientHeight <= 0) return;
     const origin = getTransformLayerOriginScreen();
@@ -1286,32 +1362,41 @@ export default function BranchGridMap({
 
       const shouldCheckout = event.metaKey || event.ctrlKey || event.detail >= 2;
       if (!shouldCheckout) return;
-      if (commitSha === 'WORKING_TREE') return;
 
-      const shortSha = commitSha.length >= 40 ? commitSha.slice(0, 7) : commitSha;
-      let otherWorktree: WorktreeInfo | null = null;
-      if (node.commit.branchName) {
-        otherWorktree = findOtherWorktreeForCommit(node.commit.branchName, commitSha, shortSha);
-        if (!otherWorktree) {
-          otherWorktree = findWorktreeWithBranchCheckedOut(node.commit.branchName);
-        }
-      } else {
-        otherWorktree = findOtherWorktreeByHeadSha(commitSha, shortSha);
-      }
-      if (otherWorktree && onSwitchToWorktree) {
-        void onSwitchToWorktree(otherWorktree.path);
+      const checkoutTarget = parseMapCheckoutTarget(node);
+      if (!checkoutTarget || !onCommitClick) return;
+
+      if (checkoutPickerWorktrees.length <= 1) {
+        const onlyPath = checkoutPickerWorktrees[0]?.path ?? currentRepoPath;
+        if (!onlyPath) return;
+        void onCommitClick({
+          ...checkoutTarget,
+          worktreePath: onlyPath,
+        });
         return;
       }
-      onCommitClick?.({ commitSha });
+
+      const defaultPath =
+        checkoutPickerWorktrees.find((entry) => entry.session.isCurrent)?.path
+        ?? checkoutPickerWorktrees[0]?.path
+        ?? null;
+      setCheckoutPickerTarget(checkoutTarget);
+      setCheckoutPickerSelectedPath(defaultPath);
+      setCheckoutPickerOpen(true);
     },
-    [
-      findOtherWorktreeByHeadSha,
-      findOtherWorktreeForCommit,
-      findWorktreeWithBranchCheckedOut,
-      onCommitClick,
-      onSwitchToWorktree,
-    ],
+    [checkoutPickerWorktrees, currentRepoPath, onCommitClick],
   );
+
+  const confirmCheckoutWorktree = useCallback(() => {
+    if (!checkoutPickerTarget || !checkoutPickerSelectedPath || !onCommitClick) return;
+    setCheckoutPickerOpen(false);
+    void onCommitClick({
+      ...checkoutPickerTarget,
+      worktreePath: checkoutPickerSelectedPath,
+    });
+    setCheckoutPickerTarget(null);
+    setCheckoutPickerSelectedPath(null);
+  }, [checkoutPickerSelectedPath, checkoutPickerTarget, onCommitClick]);
 
   const buildSnappedDragOverrides = useCallback(
     (dragState: NonNullable<typeof dragNodeRef.current>) => {
@@ -1526,12 +1611,13 @@ export default function BranchGridMap({
     await onDeleteSelection({
       branchNames: [],
       discardUncommittedChanges: hasSelectedUncommittedChanges,
+      discardUncommittedWorktreePaths: uncommittedSessionsToDiscard.map((session) => session.path),
       stashIndices: selectedStashIndices,
     });
     setDeleteConfirmOpen(false);
     setSelectedCommitShas([]);
     setMergeTargetCommitSha(null);
-  }, [onDeleteSelection, hasSelectedUncommittedChanges, selectedStashIndices]);
+  }, [onDeleteSelection, hasSelectedUncommittedChanges, selectedStashIndices, uncommittedSessionsToDiscard]);
 
   const confirmCreateBranchFromSelection = useCallback(async () => {
     const trimmed = newBranchName.trim();
@@ -1547,7 +1633,7 @@ export default function BranchGridMap({
       if (!target) return;
       if (
         !(
-          target === 'WORKING_TREE' ||
+          isWorkingTreeCommitId(target) ||
           target.startsWith('STASH:') ||
           target === checkedOutRef?.headSha
         )
@@ -1566,7 +1652,7 @@ export default function BranchGridMap({
     selectedVisibleCommitShas.length === 0 && checkedOutCommitCanCreateBranch;
   const selectedCommitCanCreateBranch =
     (selectedVisibleCommitShas.length === 1 &&
-      (selectedVisibleCommitShas[0] === 'WORKING_TREE' || selectedVisibleCommitShas[0].startsWith('STASH:'))) ||
+      (isWorkingTreeCommitId(selectedVisibleCommitShas[0]) || selectedVisibleCommitShas[0].startsWith('STASH:'))) ||
     currentCheckedOutCommitCanCreateBranch;
   const canCreateRootBranch = Boolean(onCreateRootBranch);
 
@@ -1689,6 +1775,7 @@ export default function BranchGridMap({
                   removeWorktreeInProgress={removeWorktreeInProgress}
                   setCommitDialogOpen={setCommitDialogOpen}
                   setNewBranchDialogOpen={setNewBranchDialogOpen}
+                  currentWorkingTreeId={currentWorkingTreeId}
                   hideMergeControls
                 />
               </div>
@@ -1862,7 +1949,8 @@ export default function BranchGridMap({
           onCommitCardClick={handleCommitCardClick}
           unpushedCommitShasSetByBranch={unpushedCommitShasSetByBranch}
           remoteCommitShas={remoteCommitShas}
-          checkedOutHeadSha={checkedOutHeadSha}
+          worktreeAccentByCommitId={worktreeAccentByCommitId}
+          worktreeSessions={worktreeSessions}
           orientation={orientation}
           dragPreviewByNodeId={dragPreviewByNodeId}
           nodePositionOverrides={nodePositionOverrides}
@@ -1910,6 +1998,17 @@ export default function BranchGridMap({
         selectedCommitCanCreateBranch={selectedCommitCanCreateBranch}
         currentCheckedOutCommitCanCreateBranch={currentCheckedOutCommitCanCreateBranch}
         createBranchFromNodeInProgress={createBranchFromNodeInProgress}
+        checkoutPickerOpen={checkoutPickerOpen}
+        checkoutPickerSummary={checkoutPickerTarget?.summary ?? ''}
+        checkoutPickerWorktrees={checkoutPickerWorktrees}
+        checkoutPickerSelectedPath={checkoutPickerSelectedPath}
+        onCheckoutPickerSelectPath={setCheckoutPickerSelectedPath}
+        onCheckoutPickerClose={() => {
+          setCheckoutPickerOpen(false);
+          setCheckoutPickerTarget(null);
+          setCheckoutPickerSelectedPath(null);
+        }}
+        onCheckoutPickerConfirm={() => void confirmCheckoutWorktree()}
       />
     </div>
   );

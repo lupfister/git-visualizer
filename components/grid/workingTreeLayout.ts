@@ -1,8 +1,9 @@
+import { isWorkingTreeCommitId } from '../../lib/worktreeSessions';
 import type { BranchGridLayoutModel } from './branchGridLayoutModel';
 import type { CommitItem, Node, VisualCommit } from './LayoutGrid';
 
 const isWorkingTreeCommit = (commit: { id: string; kind?: string | null }): boolean =>
-  commit.id === 'WORKING_TREE' || commit.kind === 'uncommitted';
+  isWorkingTreeCommitId(commit.id) || commit.kind === 'uncommitted';
 
 export function layoutModelHasWorkingTree(model: BranchGridLayoutModel | null | undefined): boolean {
   if (!model) return false;
@@ -32,11 +33,11 @@ export function stripWorkingTreeFromLayoutModel(model: BranchGridLayoutModel): B
   const focusedNode =
     model.focusedNode && isWorkingTreeCommit(model.focusedNode.commit) ? null : model.focusedNode;
   const matchingNodeIds = new Set(
-    Array.from(model.matchingNodeIds).filter((id) => id !== 'WORKING_TREE'),
+    Array.from(model.matchingNodeIds).filter((id) => !isWorkingTreeCommitId(id)),
   );
   const visibleNodesBySha = new Map(
     Array.from(model.visibleNodesBySha.entries())
-      .filter(([sha]) => sha !== 'WORKING_TREE')
+      .filter(([sha]) => !isWorkingTreeCommitId(sha))
       .map(([sha, nodes]) => [sha, filterNodes(nodes)]),
   );
   const visibleNodeByClusterKey = new Map(
@@ -45,7 +46,7 @@ export function stripWorkingTreeFromLayoutModel(model: BranchGridLayoutModel): B
     ),
   );
   const commitIdsWithRenderedAncestry = new Set(
-    Array.from(model.commitIdsWithRenderedAncestry).filter((id) => id !== 'WORKING_TREE'),
+    Array.from(model.commitIdsWithRenderedAncestry).filter((id) => !isWorkingTreeCommitId(id)),
   );
 
   return {

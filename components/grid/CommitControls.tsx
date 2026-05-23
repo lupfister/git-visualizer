@@ -55,6 +55,7 @@ type Props = {
   setCommitDialogOpen: (open: boolean) => void;
   setNewBranchDialogOpen: (open: boolean) => void;
   hideMergeControls?: boolean;
+  currentWorkingTreeId?: string;
 };
 
 export default function CommitControls({
@@ -92,11 +93,12 @@ export default function CommitControls({
   setCommitDialogOpen,
   setNewBranchDialogOpen,
   hideMergeControls = false,
+  currentWorkingTreeId = 'WORKING_TREE',
 }: Props) {
   const hasSelection = selectedVisibleCommitShas.length > 0;
   const hasWorkingTreeSelection =
     selectedVisibleCommitShas.length > 0 &&
-    selectedVisibleCommitShas.every((sha) => sha === 'WORKING_TREE');
+    selectedVisibleCommitShas.every((sha) => sha === currentWorkingTreeId);
   const [actionMenuOpen, setActionMenuOpen] = useState(false);
   const actionMenuRef = useRef<HTMLDivElement | null>(null);
   const worktreeMenuRef = useRef<HTMLDivElement | null>(null);

@@ -53,7 +53,7 @@ struct DeleteSelectionResult {
 static WATCHER_STATE: OnceLock<Mutex<HashMap<String, notify::RecommendedWatcher>>> = OnceLock::new();
 const GIT_ACTIVITY_LOCAL_MIN_EMIT_MS: u64 = 250;
 const GIT_ACTIVITY_GRAPH_MIN_EMIT_MS: u64 = 120;
-const REPO_VISUAL_CACHE_SCHEMA_VERSION: i32 = 7;
+const REPO_VISUAL_CACHE_SCHEMA_VERSION: i32 = 8;
 const PROJECT_SNAPSHOT_SCHEMA_VERSION: i32 = 1;
 const PROJECT_SNAPSHOT_RETAIN_COUNT: i64 = 2;
 #[cfg(target_os = "macos")]
@@ -503,7 +503,15 @@ fn compute_repo_fingerprint(repo_path: &str) -> Result<(String, RepoRefreshFinge
         .join("|");
     let worktree_sig = worktrees
         .iter()
-        .map(|worktree| format!("{}:{}:{}", worktree.path, worktree.head_sha, worktree.branch_name.clone().unwrap_or_default()))
+        .map(|worktree| {
+            format!(
+                "{}:{}:{}:{}",
+                worktree.path,
+                worktree.head_sha,
+                worktree.branch_name.clone().unwrap_or_default(),
+                if worktree.has_uncommitted_changes { "1" } else { "0" }
+            )
+        })
         .collect::<Vec<_>>()
         .join("|");
     let stash_sig = stashes

@@ -1,9 +1,13 @@
+import { isWorkingTreeCommitId } from '../../lib/worktreeSessions';
 import type { NodePositionOverride, NodePositionOverrides, VisualCommit } from './LayoutGrid';
 
 export type NodePositionCommitIdentity = Pick<VisualCommit, 'id' | 'visualId' | 'kind' | 'parentSha'>;
 
 export const getStableNodePositionKey = (commit: NodePositionCommitIdentity): string => {
-  if (commit.id === 'WORKING_TREE') return 'stable:working-tree';
+  if (isWorkingTreeCommitId(commit.id)) {
+    const suffix = commit.id.includes(':') ? commit.id.slice(commit.id.indexOf(':') + 1) : 'current';
+    return `stable:working-tree:${suffix}`;
+  }
   if (commit.kind === 'branch-created') {
     return `stable:branch-created:${commit.parentSha ?? commit.id}`;
   }

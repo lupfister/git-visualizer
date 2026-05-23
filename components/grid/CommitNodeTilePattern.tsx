@@ -1,5 +1,6 @@
 import {
   computeTileGridLayout,
+  computeTileCloudPresence,
   createTileOmissionSampler,
   fnv1a32,
   isTileOmittedAt,
@@ -126,6 +127,8 @@ type CommitNodeTilePatternProps = {
   displayZoom: number;
   randomTileGaps?: boolean;
   animateTileGaps?: boolean;
+  /** FBM thresholded "cloud" gaps (remote-only commits); same palette as unpushed. */
+  cloudyTileGaps?: boolean;
   tileOmissionRate?: number;
 };
 
@@ -148,26 +151,39 @@ const applyTileOpacities = (
   shapeRefsByKey: Map<string, TileShapeRefs>,
   randomTileGaps: boolean,
   animateGaps: boolean,
+  cloudyTileGaps: boolean,
   seed: string,
   tileOmissionRate: number,
+  displayZoom: number,
+  cloudTimeMs: number | undefined,
 ): void => {
-  const { cols } = layout;
+  const { cols, rows } = layout;
 
   for (const cell of cells) {
     const index = cell.row * cols + cell.col;
-    const tilePresence = !randomTileGaps
-      ? 1
-      : animateGaps
-        ? (presences?.[index] ?? 0)
-        : isTileOmittedAt(
-            seed,
-            cell.col,
-            cell.row,
-            TILE_PATTERN_DEFAULT_DISPLAY_ZOOM,
-            tileOmissionRate,
-          )
-          ? 0
-          : 1;
+    const tilePresence = cloudyTileGaps
+      ? computeTileCloudPresence(
+          seed,
+          cell.col,
+          cell.row,
+          cols,
+          rows,
+          displayZoom,
+          cloudTimeMs,
+        )
+      : !randomTileGaps
+        ? 1
+        : animateGaps
+          ? (presences?.[index] ?? 0)
+          : isTileOmittedAt(
+              seed,
+              cell.col,
+              cell.row,
+              TILE_PATTERN_DEFAULT_DISPLAY_ZOOM,
+              tileOmissionRate,
+            )
+            ? 0
+            : 1;
     const refs = shapeRefsByKey.get(cell.key);
     if (!refs?.base) {
       continue;
@@ -207,6 +223,7 @@ const tilePatternPropsEqual = (
   if (prev.hoverTintColor !== next.hoverTintColor) return false;
   if (prev.randomTileGaps !== next.randomTileGaps) return false;
   if (prev.animateTileGaps !== next.animateTileGaps) return false;
+  if (prev.cloudyTileGaps !== next.cloudyTileGaps) return false;
   if (prev.tileOmissionRate !== next.tileOmissionRate) return false;
 
   const prevTopology = pickGridCounts(CARD_WIDTH, CARD_HEIGHT, prev.displayZoom);
@@ -223,6 +240,7 @@ export const CommitNodeTilePattern = memo(
       displayZoom,
       randomTileGaps = false,
       animateTileGaps = false,
+      cloudyTileGaps = false,
       tileOmissionRate = TILE_DEFAULT_OMISSION_RATE,
     },
     ref,
@@ -249,7 +267,7 @@ export const CommitNodeTilePattern = memo(
     layoutRef.current = layout;
 
     const omissionSampler = useMemo((): TileOmissionSampler | null => {
-      if (!randomTileGaps || !animateTileGaps) {
+      if (cloudyTileGaps || !randomTileGaps || !animateTileGaps) {
         return null;
       }
       return createTileOmissionSampler(
@@ -259,7 +277,7 @@ export const CommitNodeTilePattern = memo(
         TILE_PATTERN_DEFAULT_DISPLAY_ZOOM,
         tileOmissionRate,
       );
-    }, [animateTileGaps, layout.cols, layout.rows, randomTileGaps, seed, tileOmissionRate, topologyKey]);
+    }, [animateTileGaps, cloudyTileGaps, layout.cols, layout.rows, randomTileGaps, seed, tileOmissionRate, topologyKey]);
 
     const omissionSamplerRef = useRef(omissionSampler);
     omissionSamplerRef.current = omissionSampler;
@@ -268,6 +286,9 @@ export const CommitNodeTilePattern = memo(
     const presencesRef = useRef<Float32Array>(new Float32Array(layout.cols * layout.rows));
     const gapAnimStartMsRef = useRef(0);
     const gapAnimRafRef = useRef<number | null>(null);
+    const cloudAnimStartMsRef = useRef(0);
+    const cloudAnimRafRef = useRef<number | null>(null);
+    const cloudTimeMsRef = useRef<number | undefined>(undefined);
 
     const [boosts, setBoosts] = useState<Float32Array>(
       () => new Float32Array(layout.cols * layout.rows),
@@ -292,10 +313,13 @@ export const CommitNodeTilePattern = memo(
         shapeRefsByKey.current,
         randomTileGaps,
         Boolean(omissionSamplerRef.current),
+        cloudyTileGaps,
         seed,
         tileOmissionRate,
+        displayZoomForLayoutRef.current,
+        cloudTimeMsRef.current,
       );
-    }, [randomTileGaps, seed, tileOmissionRate]);
+    }, [cloudyTileGaps, randomTileGaps, seed, tileOmissionRate]);
 
     useEffect(() => {
       presencesRef.current = new Float32Array(layout.cols * layout.rows);
@@ -303,9 +327,50 @@ export const CommitNodeTilePattern = memo(
       boostsRef.current = nextBoosts;
       setBoosts(nextBoosts);
       gapAnimStartMsRef.current = performance.now();
+      cloudAnimStartMsRef.current = performance.now();
+      cloudTimeMsRef.current = undefined;
       isHoveringRef.current = false;
       pointerRef.current = null;
     }, [layout.cols, layout.rows, topologyKey]);
+
+    useEffect(() => {
+      if (!cloudyTileGaps) {
+        cloudTimeMsRef.current = undefined;
+        if (cloudAnimRafRef.current != null) {
+          cancelAnimationFrame(cloudAnimRafRef.current);
+          cloudAnimRafRef.current = null;
+        }
+        return;
+      }
+
+      if (typeof window === 'undefined') {
+        return;
+      }
+
+      if (window.matchMedia('(prefers-reduced-motion: reduce)').matches) {
+        cloudTimeMsRef.current = undefined;
+        paintTiles();
+        return;
+      }
+
+      const tick = (now: number) => {
+        cloudTimeMsRef.current = now - cloudAnimStartMsRef.current;
+        if (shapeRefsByKey.current.size > 0) {
+          paintTiles();
+        }
+        cloudAnimRafRef.current = requestAnimationFrame(tick);
+      };
+
+      cloudAnimStartMsRef.current = performance.now();
+      cloudAnimRafRef.current = requestAnimationFrame(tick);
+
+      return () => {
+        if (cloudAnimRafRef.current != null) {
+          cancelAnimationFrame(cloudAnimRafRef.current);
+          cloudAnimRafRef.current = null;
+        }
+      };
+    }, [cloudyTileGaps, paintTiles, topologyKey]);
 
     useEffect(() => {
       if (!omissionSampler) {

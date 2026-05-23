@@ -1,3 +1,4 @@
+import type { WorktreeSession } from '../../lib/worktreeSessions';
 import type { Branch } from '../../types';
 import type { BranchCommitPreview } from '../../types';
 import type { CheckedOutRef } from '../../types';
@@ -112,6 +113,7 @@ export type BranchGridLayoutInput = {
   gridSearchQuery: string;
   gridFocusSha: string | null;
   checkedOutRef: CheckedOutRef | null;
+  worktreeSessions?: WorktreeSession[];
   /** `vertical`: newest above; `horizontal`: newest to the right (default). */
   orientation?: 'vertical' | 'horizontal';
   nodePositionOverrides?: NodePositionOverrides;
@@ -156,6 +158,41 @@ function findCommitMetaInRepo(
   }
   return null;
 }
+
+function isEmptyPlaceholderBranch(
+  branch: Branch,
+  branchUniqueAheadCounts: Record<string, number>,
+): boolean {
+  const uniqueAhead = Object.prototype.hasOwnProperty.call(branchUniqueAheadCounts, branch.name)
+    ? branchUniqueAheadCounts[branch.name] ?? 0
+    : null;
+  if (uniqueAhead != null) return branch.commitsAhead <= 0 && uniqueAhead <= 0;
+  return branch.commitsAhead <= 0;
+}
+
+function branchHasConcreteVisibleCommit(
+  visibleCommitBySha: Map<string, VisualCommit>,
+  branchName: string,
+): boolean {
+  return Array.from(visibleCommitBySha.values()).some(
+    (commit) =>
+      commit.branchName === branchName &&
+      commit.kind !== 'branch-created' &&
+      !commit.id.startsWith('BRANCH_HEAD:'),
+  );
+}
+
+const setVisibleBranchCommit = (
+  visibleCommitBySha: Map<string, VisualCommit>,
+  visualCommit: VisualCommit,
+): void => {
+  if (visualCommit.kind === 'branch-created' || visualCommit.id.startsWith('BRANCH_HEAD:')) {
+    visibleCommitBySha.set(visualCommit.id, visualCommit);
+    return;
+  }
+  if (visibleCommitBySha.has(visualCommit.id)) return;
+  visibleCommitBySha.set(visualCommit.id, visualCommit);
+};
 
 /** Synthetic lane tip when a branch has no unique commits (e.g. worktree-agents at an older commit). */
 function buildEmptyBranchLaneCommit(
@@ -509,13 +546,17 @@ function ensureBranchLaneRepresentation(
   visibleCommitBySha: Map<string, VisualCommit>,
   directCommits: DirectCommit[],
   branchCommitPreviews: Record<string, BranchCommitPreview[]>,
+  branchUniqueAheadCounts: Record<string, number>,
 ): void {
   for (const branch of branches) {
     if (branch.name === defaultBranch) continue;
-    const hasRepresentation = Array.from(visibleCommitBySha.values()).some(
-      (commit) => commit.branchName === branch.name,
+    if (branchHasConcreteVisibleCommit(visibleCommitBySha, branch.name)) continue;
+    const existingPlaceholder = Array.from(visibleCommitBySha.values()).find(
+      (commit) =>
+        commit.branchName === branch.name &&
+        (commit.kind === 'branch-created' || commit.id.startsWith('BRANCH_HEAD:')),
     );
-    if (hasRepresentation) continue;
+    if (existingPlaceholder) continue;
     const lanePlaceholder =
       branchCommitsByLane.get(branch.name)?.find((commit) => commit.kind === 'branch-created') ??
       buildEmptyBranchLaneCommit(branch, directCommits, branchCommitPreviews);
@@ -549,6 +590,7 @@ export function computeBranchGridLayout(input: BranchGridLayoutInput): BranchGri
     gridSearchQuery,
     gridFocusSha,
     checkedOutRef,
+    worktreeSessions = [],
     orientation = 'horizontal',
     nodePositionOverrides = {},
   } = input;
@@ -577,6 +619,13 @@ export function computeBranchGridLayout(input: BranchGridLayoutInput): BranchGri
     if (branch.name === defaultBranch) continue;
     const branchPreviews = renderableBranchPreviews(branch.name, branchUniqueAheadCounts, branchCommitPreviews);
     branchPreviewSets.set(branch.name, branchPreviews);
+    if (isEmptyPlaceholderBranch(branch, branchUniqueAheadCounts)) {
+      const syntheticBranchNode = buildEmptyBranchLaneCommit(branch, directCommits, branchCommitPreviews);
+      if (syntheticBranchNode) {
+        branchCommitsByLane.set(branch.name, [syntheticBranchNode]);
+      }
+      continue;
+    }
     const commits = sortByDateThenSha(branchPreviews.map((commit) => toCommit(branch.name, commit)));
     if (commits.length > 0) {
       branchCommitsByLane.set(branch.name, commits);
@@ -695,8 +744,7 @@ export function computeBranchGridLayout(input: BranchGridLayoutInput): BranchGri
 
   const visibleCommitBySha = new Map<string, VisualCommit>(canonicalCommitBySha);
   const insertVisibleCommitIfMissing = (commit: VisualCommit) => {
-    if (visibleCommitBySha.has(commit.id)) return;
-    visibleCommitBySha.set(commit.id, commit);
+    setVisibleBranchCommit(visibleCommitBySha, commit);
   };
   const unpushedCommitShasByBranchSet = new Map(
     Object.entries(unpushedCommitShasByBranch).map(([branchName, shas]) => [branchName, new Set(shas)] as const),
@@ -725,26 +773,40 @@ export function computeBranchGridLayout(input: BranchGridLayoutInput): BranchGri
     insertVisibleCommitIfMissing({ ...commit, visualId: `${commit.branchName}:${commit.id}` });
   }
   const checkedOutBranchName = checkedOutRef?.branchName ?? null;
-  for (const [branchName, commits] of branchCommitsByLane.entries()) {
-    if (checkedOutBranchName && branchName === checkedOutBranchName) continue;
+  const sessionBranchesWithPriority = (() => {
+    if (worktreeSessions.length > 0) {
+      const current = worktreeSessions.filter((session) => session.isCurrent && session.branchName);
+      const others = worktreeSessions
+        .filter((session) => !session.isCurrent && session.branchName)
+        .sort((left, right) => left.path.localeCompare(right.path));
+      const seen = new Set<string>();
+      const ordered: string[] = [];
+      for (const session of [...current, ...others]) {
+        const name = session.branchName!;
+        if (seen.has(name)) continue;
+        seen.add(name);
+        ordered.push(name);
+      }
+      return ordered;
+    }
+    return checkedOutBranchName ? [checkedOutBranchName] : [];
+  })();
+  const checkedOutBranchNameSet = new Set(sessionBranchesWithPriority);
+  const ingestBranchLaneCommits = (branchName: string, commits: CommitItem[]) => {
     for (const commit of commits) {
       const visualCommit: VisualCommit = { ...commit, branchName, visualId: `${branchName}:${commit.id}` };
-      if (commit.kind === 'branch-created' || commit.id.startsWith('BRANCH_HEAD:')) {
-        visibleCommitBySha.set(commit.id, visualCommit);
-        continue;
-      }
-      insertVisibleCommitIfMissing(visualCommit);
+      setVisibleBranchCommit(visibleCommitBySha, visualCommit);
     }
+  };
+  for (const [branchName, commits] of branchCommitsByLane.entries()) {
+    if (checkedOutBranchNameSet.has(branchName)) continue;
+    ingestBranchLaneCommits(branchName, commits);
   }
-  // Same SHA can appear on multiple branch lanes; last writer must be the checked-out branch so
+  // Same SHA can appear on multiple branch lanes; last writer must be each checked-out branch so
   // WORKING_TREE pins to the correct lane (horizontal: same column = same Y as HEAD).
-  if (checkedOutBranchName) {
-    const preferredCommits = branchCommitsByLane.get(checkedOutBranchName);
-    if (preferredCommits) {
-      for (const commit of preferredCommits) {
-        visibleCommitBySha.set(commit.id, { ...commit, branchName: checkedOutBranchName, visualId: `${checkedOutBranchName}:${commit.id}` });
-      }
-    }
+  for (const branchName of sessionBranchesWithPriority) {
+    const preferredCommits = branchCommitsByLane.get(branchName);
+    if (preferredCommits) ingestBranchLaneCommits(branchName, preferredCommits);
   }
   // Branch previews (and the checkout overwrite above) often keep only the first parent; restore full
   // merge parent lists so cluster segmentation and lane logic see real merges.
@@ -768,6 +830,7 @@ export function computeBranchGridLayout(input: BranchGridLayoutInput): BranchGri
     visibleCommitBySha,
     directCommits,
     branchCommitPreviews,
+    branchUniqueAheadCounts,
   );
   const visibleCommits: VisualCommit[] = Array.from(visibleCommitBySha.values()).map((commit) => ({
     ...commit,
@@ -959,6 +1022,14 @@ export function computeBranchGridLayout(input: BranchGridLayoutInput): BranchGri
       if (commit.kind === 'uncommitted') return 'uncommitted';
       if (commit.kind === 'stash') return 'stash';
       if (commit.kind === 'branch-created') return 'branch-created';
+      const sessionTip = worktreeSessions.find(
+        (session) =>
+          session.branchName &&
+          session.headSha &&
+          commit.branchName === session.branchName &&
+          shasMatch(commit.id, session.headSha),
+      );
+      if (sessionTip) return 'checked-out-tip';
       const checkedOutBranch = checkedOutRef?.branchName ?? null;
       const checkedOutHead = checkedOutRef?.headSha ?? null;
       if (
@@ -1136,8 +1207,13 @@ export function computeBranchGridLayout(input: BranchGridLayoutInput): BranchGri
   // Keep the working-tree node on the same lane column as its parent tail — otherwise committing
   // replaces WORKING_TREE with a new SHA that jumps to a different cluster column position.
   for (const commit of allCommitsWithClusters) {
-    if (commit.kind === 'uncommitted' && commit.parentSha) {
-      const parent = findCommitByShaSameBranch(commit.parentSha, commit.branchName);
+    if (
+      (commit.kind === 'uncommitted' || commit.kind === 'branch-created' || commit.id.startsWith('BRANCH_HEAD:'))
+      && commit.parentSha
+    ) {
+      const parent =
+        findCommitByShaSameBranch(commit.parentSha, commit.branchName)
+        ?? findCommitBySha(commit.parentSha);
       if (!parent) continue;
       const ck = clusterKeyByCommitId.get(commit.visualId);
       const pk = clusterKeyByCommitId.get(parent.visualId);
