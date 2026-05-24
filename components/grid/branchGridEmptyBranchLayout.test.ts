@@ -363,6 +363,110 @@ describe('computeBranchGridLayout empty branch placeholders', () => {
     expect(Math.max(...openedRows)).toBe(new Set(openedRows).size);
   });
 
+  it('keeps incoming ancestry connector to collapsed clump lead from outside parent', () => {
+    const defaultBranch = 'main';
+    const unpushedA = 'cccccccccccccccccccccccccccccccccccccccc';
+    const unpushedB = 'dddddddddddddddddddddddddddddddddddddddd';
+    const unpushedC = 'eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee';
+    const branches = [
+      makeBranch(defaultBranch, tipSha, 1),
+      makeBranch('feature', unpushedC, 3, defaultBranch),
+    ];
+    const directCommits: DirectCommit[] = [
+      {
+        fullSha: mainSha,
+        sha: mainSha.slice(0, 7),
+        branch: defaultBranch,
+        message: 'root',
+        author: 'test',
+        date: '2024-05-01T12:00:00Z',
+        parentSha: null,
+        parentShas: [],
+      },
+      {
+        fullSha: tipSha,
+        sha: tipSha.slice(0, 7),
+        branch: defaultBranch,
+        message: 'tip',
+        author: 'test',
+        date: '2024-06-02T12:00:00Z',
+        parentSha: mainSha,
+        parentShas: [mainSha],
+      },
+    ];
+    const unpushedDirectCommits: DirectCommit[] = [
+      {
+        fullSha: unpushedA,
+        sha: unpushedA.slice(0, 7),
+        branch: 'feature',
+        message: 'first',
+        author: 'test',
+        date: '2024-06-03T10:00:00Z',
+        parentSha: tipSha,
+        parentShas: [tipSha],
+      },
+      {
+        fullSha: unpushedB,
+        sha: unpushedB.slice(0, 7),
+        branch: 'feature',
+        message: 'second',
+        author: 'test',
+        date: '2024-06-03T11:00:00Z',
+        parentSha: unpushedA,
+        parentShas: [unpushedA],
+      },
+      {
+        fullSha: unpushedC,
+        sha: unpushedC.slice(0, 7),
+        branch: 'feature',
+        message: 'third',
+        author: 'test',
+        date: '2024-06-03T12:00:00Z',
+        parentSha: unpushedB,
+        parentShas: [unpushedB],
+      },
+    ];
+    const layout = computeBranchGridLayout({
+      branches,
+      mergeNodes: [],
+      directCommits,
+      unpushedDirectCommits,
+      unpushedCommitShasByBranch: {
+        feature: [unpushedA, unpushedB, unpushedC],
+      },
+      defaultBranch,
+      branchCommitPreviews: { main: [], feature: [] },
+      branchParentByName: { main: null, feature: 'main' },
+      branchUniqueAheadCounts: { main: 1, feature: 3 },
+      manuallyOpenedClumps: new Set(),
+      manuallyClosedClumps: new Set(),
+      isDebugOpen: false,
+      gridSearchQuery: '',
+      gridFocusSha: null,
+      checkedOutRef: null,
+      orientation: 'horizontal',
+    });
+
+    const clusterKey = [...layout.clusterCounts.entries()].find(([, count]) => count > 1)?.[0];
+    expect(clusterKey).toBeDefined();
+
+    const clumpRenderNodes = layout.renderNodes.filter(
+      (node) => layout.clusterKeyByCommitId.get(node.commit.visualId) === clusterKey,
+    );
+    expect(clumpRenderNodes).toHaveLength(1);
+
+    const leadVisualId = layout.leadByClusterKey.get(clusterKey!)!;
+    expect(clumpRenderNodes[0]!.commit.visualId).toBe(leadVisualId);
+
+    const forkParentVisualId = `${defaultBranch}:${tipSha}`;
+    const incomingToLead = layout.connectors.find(
+      (connector) =>
+        connector.toCommitVisualId === leadVisualId
+        && connector.fromCommitVisualId === forkParentVisualId,
+    );
+    expect(incomingToLead).toBeDefined();
+  });
+
   it('interleaves stash lanes by date between fork parent and newer branch work', () => {
     const defaultBranch = 'main';
     const stashId = 'STASH:0';

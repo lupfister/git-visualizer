@@ -1985,6 +1985,8 @@ export function computeBranchGridLayout(input: BranchGridLayoutInput): BranchGri
   const connectorParentShas = new Set<string>();
   const branchStartShas = new Set<string>();
   const branchOffNodeShas = new Set<string>();
+  const isClusterCollapsed = (clusterKey: string): boolean =>
+    (clusterCounts.get(clusterKey) ?? 1) > 1 && !isClumpOpen(clusterKey);
   // Blue highlights are driven by branch-off metadata, not by connector usage.
   const nodeForConnectorTipSha = (sha: string | null | undefined, preferredBranchName?: string): Node | null => {
     if (!sha) return null;
@@ -2005,6 +2007,9 @@ export function computeBranchGridLayout(input: BranchGridLayoutInput): BranchGri
     );
     const forkNodeInCluster = clusterNodes.find((candidate) => shasMatch(candidate.commit.id, sha));
     if (forkNodeInCluster) return forkNodeInCluster;
+    if (isClusterCollapsed(clusterKey)) {
+      return visibleNodeByClusterKey.get(clusterKey) ?? null;
+    }
     const clusterLeadId = leadByClusterKey.get(clusterKey);
     if (clusterLeadId) {
       const leadNode = renderNodes.find((candidate) => candidate.commit.visualId === clusterLeadId);
@@ -2026,7 +2031,11 @@ export function computeBranchGridLayout(input: BranchGridLayoutInput): BranchGri
     if (!clusterKey) return null;
     const leadId = leadByClusterKey.get(clusterKey);
     if (!leadId) return null;
-    return renderNodes.find((candidate) => candidate.commit.id === leadId) ?? null;
+    return (
+      renderNodes.find((candidate) => candidate.commit.visualId === leadId)
+      ?? visibleNodeByClusterKey.get(clusterKey)
+      ?? null
+    );
   };
 
   const resolveChildNodeForSha = (sha: string | null | undefined, preferredBranchName?: string): Node | null => {
