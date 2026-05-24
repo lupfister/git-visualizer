@@ -54,3 +54,33 @@ export function classifyFingerprintDiff(
   if (segments.length === 0) return { kind: 'none' };
   return { kind: 'patch', segments };
 }
+
+export function formatRepoFingerprint(parts: FingerprintParts): string {
+  return [
+    parts.defaultBranch,
+    parts.headSha,
+    parts.upstreamSha,
+    parts.hasUncommittedChanges ? '1' : '0',
+    parts.branchRefSig,
+    parts.worktreeSig,
+    parts.stashSig,
+  ].join('@@');
+}
+
+export function withRepoFingerprintDirty(
+  fingerprint: string,
+  hasUncommittedChanges: boolean,
+): string | null {
+  const parts = parseRepoFingerprint(fingerprint);
+  if (!parts) return null;
+  return formatRepoFingerprint({ ...parts, hasUncommittedChanges });
+}
+
+export function withRepoFingerprintUpstream(
+  fingerprint: string,
+  upstreamSha: string,
+): string | null {
+  const parts = parseRepoFingerprint(fingerprint);
+  if (!parts) return null;
+  return formatRepoFingerprint({ ...parts, upstreamSha });
+}

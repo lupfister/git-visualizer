@@ -178,6 +178,14 @@ struct RepoQuickState {
 
 #[derive(Serialize, Deserialize, Clone)]
 #[serde(rename_all = "camelCase")]
+struct RepoHeadState {
+    repo_path: String,
+    head_sha: String,
+    upstream_sha: Option<String>,
+}
+
+#[derive(Serialize, Deserialize, Clone)]
+#[serde(rename_all = "camelCase")]
 struct SimpleGraphNode {
     id: String,
     branch_name: String,
@@ -1686,6 +1694,24 @@ fn clear_repo_node_positions(repo_path: String) -> Result<(), String> {
 fn get_repo_refresh_fingerprint(repo_path: String) -> Result<RepoRefreshFingerprint, String> {
     let (_, fingerprint) = compute_repo_fingerprint(&repo_path)?;
     Ok(fingerprint)
+}
+
+#[tauri::command(rename_all = "camelCase")]
+fn get_repo_head_state(repo_path: String) -> Result<RepoHeadState, String> {
+    let path = Path::new(&repo_path);
+    let head_sha = git::cli::run(path, &["rev-parse", "HEAD"])
+        .map_err(|e| e.to_string())?
+        .trim()
+        .to_string();
+    let upstream_sha = git::cli::run(path, &["rev-parse", "--verify", "HEAD@{upstream}"])
+        .ok()
+        .map(|value| value.trim().to_string())
+        .filter(|value| !value.is_empty());
+    Ok(RepoHeadState {
+        repo_path: repo_path.clone(),
+        head_sha,
+        upstream_sha,
+    })
 }
 
 #[tauri::command(rename_all = "camelCase")]
@@ -5468,6 +5494,7 @@ pub fn run() {
             store_repo_node_positions,
             clear_repo_node_positions,
             get_repo_quick_state,
+            get_repo_head_state,
             get_repo_refresh_fingerprint,
             get_remote_branch_head_sha,
             get_commit_subject,

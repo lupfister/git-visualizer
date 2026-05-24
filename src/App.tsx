@@ -28,7 +28,7 @@ import {
   outcomeFromWorktreeRemove,
   outcomeFromWorktreeSync,
 } from './repoMutationPatches';
-import { classifyFingerprintDiff, parseRepoFingerprint, type FingerprintPatchSegment } from './fingerprintDiff';
+import { classifyFingerprintDiff, parseRepoFingerprint, withRepoFingerprintDirty, withRepoFingerprintUpstream, type FingerprintPatchSegment } from './fingerprintDiff';
 import {
   applyBranchParents,
   isNewerBranchAsParent,
@@ -67,7 +67,12 @@ const SIDEBAR_MAX_WIDTH_PX = 360;
 /** Wait this long after map pan/marquee ends before applying background git snapshot updates. */
 const MAP_REPO_REFRESH_SETTLE_MS = 500;
 /** Minimum gap between background fingerprint scans when git state is already synced. */
-const MIN_BACKGROUND_FINGERPRINT_CHECK_MS = 4000;
+const MIN_BACKGROUND_FINGERPRINT_CHECK_MS = 8000;
+/** Minimum gap between full graph rebuild refreshes. */
+const MIN_FULL_GRAPH_REFRESH_MS = 15000;
+const GIT_ACTIVITY_DEBOUNCE_MS = 1500;
+const HEAD_STATE_PROBE_MS = 12000;
+const DIRTY_STATE_PROBE_MS = 45000;
 type PushTarget = {
   branchName: string;
   targetSha?: string;
@@ -98,6 +103,11 @@ type RepoQuickState = {
   headSha: string;
   upstreamSha?: string | null;
   hasUncommittedChanges: boolean;
+};
+type RepoHeadState = {
+  repoPath: string;
+  headSha: string;
+  upstreamSha?: string | null;
 };
 type ProjectSnapshotRecord = {
   projectId: string;
@@ -367,7 +377,9 @@ function App() {
   const lastFingerprintCheckAtRef = useRef<Record<string, number>>({});
   const gitActivityEpochRef = useRef(0);
   const lastHandledGitActivityEpochRef = useRef(0);
+  const lastFullGraphRefreshAtRef = useRef<Record<string, number>>({});
   const wasMapInteractingRef = useRef(false);
+  const projectHeadStateRef = useRef<Record<string, string>>({});
   const projectQuickStateRef = useRef<Record<string, string>>({});
   const isRepoSwitchingRef = useRef(false);
   const sidebarDragRef = useRef<{
@@ -711,6 +723,34 @@ function App() {
       state.upstreamSha ?? '',
       state.hasUncommittedChanges ? '1' : '0',
     ].join('|');
+  }
+
+  function headStateSignature(state: RepoHeadState): string {
+    return [
+      state.repoPath,
+      state.headSha,
+      state.upstreamSha ?? '',
+    ].join('|');
+  }
+
+  function markGitActivityHandled() {
+    lastHandledGitActivityEpochRef.current = gitActivityEpochRef.current;
+    pendingRefreshAfterInteractionRef.current = false;
+  }
+
+  function noteSyncedFingerprintFromQuickState(path: string, quickState: RepoQuickState) {
+    const normalizedPath = normalizePath(path);
+    if (!normalizedPath) return;
+    const lastSynced = lastSyncedRepoFingerprintRef.current[normalizedPath];
+    if (!lastSynced) return;
+    let nextFingerprint = withRepoFingerprintDirty(lastSynced, quickState.hasUncommittedChanges);
+    if (nextFingerprint && (quickState.upstreamSha ?? '') !== (parseRepoFingerprint(lastSynced)?.upstreamSha ?? '')) {
+      nextFingerprint = withRepoFingerprintUpstream(nextFingerprint, quickState.upstreamSha ?? '');
+    }
+    if (nextFingerprint) {
+      noteSyncedRepoFingerprint(normalizedPath, nextFingerprint);
+      ackProjectFingerprint(normalizedPath, nextFingerprint);
+    }
   }
 
   function quickStateFromSnapshot(path: string, snapshot: RepoVisualSnapshot): RepoQuickState {
@@ -1506,6 +1546,77 @@ function App() {
     return outcomes;
   }
 
+  async function tryHeadStateOnlySync(path: string): Promise<boolean> {
+    const normalizedPath = normalizePath(path);
+    if (!normalizedPath) return false;
+
+    const headState = await invoke<RepoHeadState>('get_repo_head_state', { repoPath: path }).catch(() => null);
+    if (!headState) return false;
+
+    projectHeadStateRef.current = {
+      ...projectHeadStateRef.current,
+      [normalizedPath]: headStateSignature(headState),
+    };
+
+    const activeHead = latestCheckedOutRef.current?.headSha ?? '';
+    if (headState.headSha !== activeHead) {
+      return false;
+    }
+
+    markGitActivityHandled();
+    return true;
+  }
+
+  async function tryQuickStateDirtySync(path: string): Promise<boolean> {
+    const normalizedPath = normalizePath(path);
+    if (!normalizedPath) return false;
+
+    const quickState = await invoke<RepoQuickState>('get_repo_quick_state', { repoPath: path }).catch(() => null);
+    if (!quickState) return false;
+
+    const nextSig = quickStateSignature(quickState);
+    const cachedSig = projectQuickStateRef.current[normalizedPath];
+    const activeHead = latestCheckedOutRef.current?.headSha ?? '';
+
+    if (quickState.headSha !== activeHead) {
+      return false;
+    }
+
+    if (cachedSig === nextSig) {
+      markGitActivityHandled();
+      return true;
+    }
+
+    const snapshot = getSnapshotForMutation(normalizedPath);
+    const reconciledRef = reconcileCheckedOutRefFromQuickState(snapshot, quickState);
+    const outcomes: RepoMutationOutcome[] = [];
+    const cachedDirty = cachedSig?.split('|')[3] === '1';
+    const nextDirty = quickState.hasUncommittedChanges;
+    if (cachedDirty !== nextDirty && reconciledRef) {
+      outcomes.push(
+        nextDirty ? outcomeFromMarkDirty(reconciledRef) : outcomeFromDiscardDirty(reconciledRef),
+      );
+    }
+    const cachedUpstream = cachedSig?.split('|')[2] ?? '';
+    const nextUpstream = quickState.upstreamSha ?? '';
+    if (cachedUpstream !== nextUpstream && reconciledRef) {
+      outcomes.push(outcomeFromUpstreamSync(reconciledRef));
+    }
+
+    if (outcomes.length > 0) {
+      const lastSynced = lastSyncedRepoFingerprintRef.current[normalizedPath] ?? '';
+      await applyBackgroundRepoPatch(normalizedPath, lastSynced, ...outcomes);
+      noteSyncedFingerprintFromQuickState(normalizedPath, quickState);
+    }
+
+    projectQuickStateRef.current = {
+      ...projectQuickStateRef.current,
+      [normalizedPath]: nextSig,
+    };
+    markGitActivityHandled();
+    return true;
+  }
+
   async function applyBackgroundRepoPatch(
     path: string,
     currentFingerprint: string,
@@ -1528,7 +1639,9 @@ function App() {
       noteSyncedRepoFingerprint(normalizedPath, currentFingerprint);
 
       if (!snapshotChanged) {
-        ackProjectFingerprint(normalizedPath, currentFingerprint);
+        if (currentFingerprint) {
+          ackProjectFingerprint(normalizedPath, currentFingerprint);
+        }
         return true;
       }
 
@@ -1923,6 +2036,15 @@ function App() {
           lastHandledGitActivityEpochRef.current = gitActivityEpochRef.current;
         })
         .catch(() => undefined);
+      void invoke<RepoHeadState>('get_repo_head_state', { repoPath: normalizedPath })
+        .then((headState) => {
+          if (!headState) return;
+          projectHeadStateRef.current = {
+            ...projectHeadStateRef.current,
+            [normalizedPath]: headStateSignature(headState),
+          };
+        })
+        .catch(() => undefined);
       persistProject({
         path: normalizedPath,
         name: info.name,
@@ -2105,7 +2227,23 @@ function App() {
     let isDisposed = false;
     let refreshInFlight = false;
     let pollTimeoutId: number | null = null;
+    let headPollTimeoutId: number | null = null;
+    let dirtyPollTimeoutId: number | null = null;
+    let fullRefreshCoalesceId: number | null = null;
+    let pendingFullGraphRefresh = false;
     let unlisten: (() => void) | null = null;
+
+    const scheduleCoalescedFullRefresh = () => {
+      pendingFullGraphRefresh = true;
+      if (fullRefreshCoalesceId != null) return;
+      fullRefreshCoalesceId = window.setTimeout(() => {
+        fullRefreshCoalesceId = null;
+        if (!pendingFullGraphRefresh || isDisposed) return;
+        pendingFullGraphRefresh = false;
+        void runRefresh('timer');
+      }, MIN_FULL_GRAPH_REFRESH_MS);
+    };
+
     const isRepoRefreshBlocked = () =>
       isMapInteractingRef.current || !canApplyRepoRefreshRef.current;
     const runRefresh = async (reason: 'graph' | 'local' | 'timer' | 'initial' | 'quick' = 'timer') => {
@@ -2137,10 +2275,17 @@ function App() {
       refreshInFlight = true;
       setMapGridBackgroundActivity('git-refresh', 'Git quick-state sync', true, reason);
       try {
+        if (reason === 'quick') {
+          if (await tryQuickStateDirtySync(repoPath)) {
+            return;
+          }
+        } else if (await tryHeadStateOnlySync(repoPath)) {
+          return;
+        }
+
         const patched = await tryIncrementalBackgroundSync(repoPath);
         if (patched) {
-          pendingRefreshAfterInteractionRef.current = false;
-          lastHandledGitActivityEpochRef.current = gitActivityEpochRef.current;
+          markGitActivityHandled();
           return;
         }
       } catch (error) {
@@ -2150,6 +2295,14 @@ function App() {
         setMapGridBackgroundActivity('git-refresh', 'Git quick-state sync', false);
       }
       if (reason === 'quick') return;
+
+      if (reason === 'graph' && normalizedPath) {
+        const lastFull = lastFullGraphRefreshAtRef.current[normalizedPath] ?? 0;
+        if (Date.now() - lastFull < MIN_FULL_GRAPH_REFRESH_MS) {
+          scheduleCoalescedFullRefresh();
+          return;
+        }
+      }
 
       const refreshEpoch = mapInteractionEpochRef.current;
       const mutationAtStart = repoMutationGenerationRef.current;
@@ -2208,13 +2361,19 @@ function App() {
           }
           if (mutationAtStart !== repoMutationGenerationRef.current) return;
           startTransition(() => {
-            applySnapshotToActiveState(repoPath, nextSnapshot);
-            if (quickState && !quickState.hasUncommittedChanges) {
+            const applied = applySnapshotToActiveState(repoPath, nextSnapshot);
+            if (applied && quickState && !quickState.hasUncommittedChanges) {
               setLayoutEpoch((epoch) => epoch + 1);
               setHydratedLayoutModel(null);
               setHydratedLayoutKey(null);
             }
           });
+          if (normalizedPath) {
+            lastFullGraphRefreshAtRef.current = {
+              ...lastFullGraphRefreshAtRef.current,
+              [normalizedPath]: Date.now(),
+            };
+          }
           void invoke<FingerprintCheckResult>('check_project_fingerprint', { projectId: repoPath })
             .then((check) => noteSyncedRepoFingerprint(repoPath, check?.currentFingerprint))
             .catch(() => undefined);
@@ -2248,13 +2407,11 @@ function App() {
       }, delayMs);
     };
 
-    let quickPollTimeoutId: number | null = null;
-    const QUICK_STATE_PROBE_MS = 15000;
-    const scheduleQuickStateProbe = () => {
+    const scheduleHeadStateProbe = () => {
       if (isDisposed) return;
-      if (quickPollTimeoutId != null) window.clearTimeout(quickPollTimeoutId);
+      if (headPollTimeoutId != null) window.clearTimeout(headPollTimeoutId);
       const hidden = document.visibilityState !== 'visible';
-      quickPollTimeoutId = window.setTimeout(async () => {
+      headPollTimeoutId = window.setTimeout(async () => {
         if (
           !isDisposed
           && !hidden
@@ -2262,17 +2419,37 @@ function App() {
           && Date.now() >= suppressBackgroundRefreshUntilRef.current
           && !repoMutationInFlightRef.current
         ) {
-          const quickState = await invoke<RepoQuickState>('get_repo_quick_state', { repoPath }).catch(() => null);
-          if (quickState) {
-            const signature = quickStateSignature(quickState);
-            const cached = projectQuickStateRef.current[repoPath];
-            if (cached !== signature) {
-              void runRefresh('quick');
+          const headState = await invoke<RepoHeadState>('get_repo_head_state', { repoPath }).catch(() => null);
+          if (headState) {
+            const normalized = normalizePath(repoPath);
+            const signature = headStateSignature(headState);
+            const cached = normalized ? projectHeadStateRef.current[normalized] : undefined;
+            const activeHead = latestCheckedOutRef.current?.headSha ?? '';
+            if (cached !== signature || headState.headSha !== activeHead) {
+              void runRefresh('graph');
             }
           }
         }
-        scheduleQuickStateProbe();
-      }, hidden ? 30000 : QUICK_STATE_PROBE_MS);
+        scheduleHeadStateProbe();
+      }, hidden ? 60000 : HEAD_STATE_PROBE_MS);
+    };
+
+    const scheduleDirtyStateProbe = () => {
+      if (isDisposed) return;
+      if (dirtyPollTimeoutId != null) window.clearTimeout(dirtyPollTimeoutId);
+      const hidden = document.visibilityState !== 'visible';
+      dirtyPollTimeoutId = window.setTimeout(async () => {
+        if (
+          !isDisposed
+          && !hidden
+          && !isRepoRefreshBlocked()
+          && Date.now() >= suppressBackgroundRefreshUntilRef.current
+          && !repoMutationInFlightRef.current
+        ) {
+          void runRefresh('quick');
+        }
+        scheduleDirtyStateProbe();
+      }, hidden ? 120000 : DIRTY_STATE_PROBE_MS);
     };
 
     let gitActivityDebounceId: number | null = null;
@@ -2291,20 +2468,23 @@ function App() {
         const reason = pendingGitActivityReason;
         pendingGitActivityReason = 'graph';
         void runRefresh(reason);
-      }, 800);
+      }, GIT_ACTIVITY_DEBOUNCE_MS);
     }).then((fn) => {
       if (isDisposed) fn();
       else unlisten = fn;
     }).catch(console.error);
 
     scheduleBackgroundProbe();
-    scheduleQuickStateProbe();
+    scheduleHeadStateProbe();
+    scheduleDirtyStateProbe();
 
     return () => {
       isDisposed = true;
       runPendingRepoRefreshRef.current = null;
       if (pollTimeoutId != null) window.clearTimeout(pollTimeoutId);
-      if (quickPollTimeoutId != null) window.clearTimeout(quickPollTimeoutId);
+      if (headPollTimeoutId != null) window.clearTimeout(headPollTimeoutId);
+      if (dirtyPollTimeoutId != null) window.clearTimeout(dirtyPollTimeoutId);
+      if (fullRefreshCoalesceId != null) window.clearTimeout(fullRefreshCoalesceId);
       if (gitActivityDebounceId != null) window.clearTimeout(gitActivityDebounceId);
       if (unlisten) unlisten();
     };
