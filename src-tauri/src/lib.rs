@@ -48,10 +48,51 @@ struct PushResult {
 struct DeleteSelectionResult {
     deleted_branches: Vec<String>,
     discarded_uncommitted_changes: bool,
+    checked_out_ref: Option<CheckedOutRef>,
+}
+
+#[derive(Serialize, Deserialize, Clone)]
+#[serde(rename_all = "camelCase")]
+struct CommitMutationResult {
+    checked_out_ref: CheckedOutRef,
+    branch_name: String,
+    full_sha: String,
+    sha: String,
+    message: String,
+    author: String,
+    date: String,
+    parent_sha: Option<String>,
+    parent_shas: Vec<String>,
+}
+
+#[derive(Serialize, Deserialize, Clone)]
+#[serde(rename_all = "camelCase")]
+struct StashPushResult {
+    stash: git::GitStashEntry,
+    checked_out_ref: CheckedOutRef,
+}
+
+#[derive(Serialize, Deserialize, Clone)]
+#[serde(rename_all = "camelCase")]
+struct StashDropResult {
+    removed_index: u32,
+}
+
+#[derive(Serialize, Deserialize, Clone)]
+#[serde(rename_all = "camelCase")]
+struct StashRestoreResult {
+    removed_index: u32,
+    checked_out_ref: CheckedOutRef,
+}
+
+#[derive(Serialize, Deserialize, Clone)]
+#[serde(rename_all = "camelCase")]
+struct PersistProjectSnapshotResult {
+    persisted: bool,
 }
 
 static WATCHER_STATE: OnceLock<Mutex<HashMap<String, notify::RecommendedWatcher>>> = OnceLock::new();
-const GIT_ACTIVITY_GRAPH_MIN_EMIT_MS: u64 = 120;
+const GIT_ACTIVITY_GRAPH_MIN_EMIT_MS: u64 = 800;
 
 async fn run_blocking<F, T>(f: F) -> Result<T, String>
 where
@@ -1528,6 +1569,29 @@ fn check_project_fingerprint(project_id: String) -> Result<FingerprintCheckResul
     })
 }
 
+#[tauri::command(rename_all = "camelCase")]
+fn ack_project_fingerprint(project_id: String, fingerprint: String) -> Result<(), String> {
+    let normalized_project_id = normalize_repo_path_id(&project_id);
+    let fingerprint = fingerprint.trim();
+    if fingerprint.is_empty() {
+        return Err("Fingerprint must not be empty".to_string());
+    }
+    let conn = open_visual_cache_connection()?;
+    let now_ms = Utc::now().timestamp_millis();
+    conn.execute(
+        "
+        INSERT INTO project_registry(project_id, repo_path, active_snapshot_version, last_fingerprint, last_checked_at_ms)
+        VALUES (?1, ?1, NULL, ?2, ?3)
+        ON CONFLICT(project_id) DO UPDATE SET
+            last_fingerprint = excluded.last_fingerprint,
+            last_checked_at_ms = excluded.last_checked_at_ms
+        ",
+        params![normalized_project_id, fingerprint, now_ms],
+    )
+    .map_err(|e| format!("Failed to ack project fingerprint: {e}"))?;
+    Ok(())
+}
+
 fn refresh_project_if_changed_blocking(
     project_id: String,
     app: tauri::AppHandle,
@@ -1565,6 +1629,32 @@ async fn refresh_project_if_changed(
     app: tauri::AppHandle,
 ) -> Result<RefreshProjectResult, String> {
     run_blocking(move || refresh_project_if_changed_blocking(project_id, app)).await
+}
+
+fn persist_project_snapshot_blocking(project_id: String, app: tauri::AppHandle) -> Result<PersistProjectSnapshotResult, String> {
+    let normalized_project_id = normalize_repo_path_id(&project_id);
+    let check = check_project_fingerprint(normalized_project_id)?;
+    if !check.changed {
+        return Ok(PersistProjectSnapshotResult { persisted: false });
+    }
+    let snapshot = publish_project_snapshot(&check.repo_path, Some(&check.current_fingerprint))?;
+    let _ = app.emit(
+        "project-snapshot-updated",
+        serde_json::json!({
+            "projectId": snapshot.project_id,
+            "repoPath": snapshot.repo_path,
+            "snapshotVersion": snapshot.snapshot_version,
+        }),
+    );
+    Ok(PersistProjectSnapshotResult { persisted: true })
+}
+
+#[tauri::command(rename_all = "camelCase")]
+async fn persist_project_snapshot(
+    project_id: String,
+    app: tauri::AppHandle,
+) -> Result<PersistProjectSnapshotResult, String> {
+    run_blocking(move || persist_project_snapshot_blocking(project_id, app)).await
 }
 
 #[tauri::command(rename_all = "camelCase")]
@@ -1856,23 +1946,60 @@ fn list_stashes(repo_path: String) -> Result<Vec<git::GitStashEntry>, String> {
 }
 
 #[tauri::command(rename_all = "camelCase")]
-async fn stash_push(repo_path: String, include_untracked: bool, message: String) -> Result<(), String> {
+async fn stash_push(repo_path: String, include_untracked: bool, message: String) -> Result<StashPushResult, String> {
     run_blocking(move || {
         let path = Path::new(&repo_path);
         opencode::validate_generated_message(&message, "Stash message")?;
-        git::stash_push(path, include_untracked, &message).map_err(|e| e.to_string())
+        git::stash_push(path, include_untracked, &message).map_err(|e| e.to_string())?;
+        let stashes = git::list_stashes(path).map_err(|e| e.to_string())?;
+        let stash = stashes
+            .into_iter()
+            .find(|entry| entry.index == 0)
+            .ok_or_else(|| "Stash push succeeded but stash@{0} was not found.".to_string())?;
+        let checked_out_ref = git::get_checked_out_ref(path).map_err(|e| e.to_string())?;
+        Ok(StashPushResult {
+            stash,
+            checked_out_ref,
+        })
     })
     .await
 }
 
 #[tauri::command(rename_all = "camelCase")]
-async fn commit_working_tree(repo_path: String, message: String) -> Result<CheckedOutRef, String> {
+async fn commit_working_tree(repo_path: String, message: String) -> Result<CommitMutationResult, String> {
     run_blocking(move || {
         let path = Path::new(&repo_path);
         let trimmed = message.trim();
         opencode::validate_generated_message(trimmed, "Commit message")?;
         git::commit_working_tree(path, trimmed).map_err(|e| e.to_string())?;
-        git::get_checked_out_ref(path).map_err(|e| e.to_string())
+        let checked_out_ref = git::get_checked_out_ref(path).map_err(|e| e.to_string())?;
+        let branch_name = checked_out_ref
+            .branch_name
+            .clone()
+            .ok_or_else(|| "Cannot resolve branch name after commit.".to_string())?;
+        let output = git::cli::run(path, &["log", "-1", "--format=%H%x1f%h%x1f%s%x1f%an%x1f%cI%x1f%P"])
+            .map_err(|e| e.to_string())?;
+        let line = output.lines().next().ok_or_else(|| "Commit succeeded but log output was empty.".to_string())?;
+        let parts: Vec<&str> = line.splitn(6, "\u{1f}").collect();
+        if parts.len() < 6 {
+            return Err("Failed to parse commit metadata.".to_string());
+        }
+        let parent_shas: Vec<String> = parts[5]
+            .split_whitespace()
+            .map(|value| value.to_string())
+            .collect();
+        let parent_sha = parent_shas.first().cloned();
+        Ok(CommitMutationResult {
+            checked_out_ref,
+            branch_name,
+            full_sha: parts[0].to_string(),
+            sha: parts[1].to_string(),
+            message: parts[2].to_string(),
+            author: parts[3].to_string(),
+            date: parts[4].to_string(),
+            parent_sha,
+            parent_shas,
+        })
     })
     .await
 }
@@ -1909,20 +2036,27 @@ fn stage_working_tree(repo_path: String) -> Result<CheckedOutRef, String> {
 }
 
 #[tauri::command(rename_all = "camelCase")]
-async fn apply_stash_restore(repo_path: String, stash_index: u32) -> Result<CheckedOutRef, String> {
+async fn apply_stash_restore(repo_path: String, stash_index: u32) -> Result<StashRestoreResult, String> {
     run_blocking(move || {
         let path = Path::new(&repo_path);
         git::apply_stash_restore(path, stash_index).map_err(|e| e.to_string())?;
-        git::get_checked_out_ref(path).map_err(|e| e.to_string())
+        let checked_out_ref = git::get_checked_out_ref(path).map_err(|e| e.to_string())?;
+        Ok(StashRestoreResult {
+            removed_index: stash_index,
+            checked_out_ref,
+        })
     })
     .await
 }
 
 #[tauri::command(rename_all = "camelCase")]
-async fn stash_drop(repo_path: String, stash_index: u32) -> Result<(), String> {
+async fn stash_drop(repo_path: String, stash_index: u32) -> Result<StashDropResult, String> {
     run_blocking(move || {
         let path = Path::new(&repo_path);
-        git::stash_drop(path, stash_index).map_err(|e| e.to_string())
+        git::stash_drop(path, stash_index).map_err(|e| e.to_string())?;
+        Ok(StashDropResult {
+            removed_index: stash_index,
+        })
     })
     .await
 }
@@ -2050,6 +2184,7 @@ fn delete_selected_elements(
         return Ok(DeleteSelectionResult {
             deleted_branches: vec![],
             discarded_uncommitted_changes: discard_uncommitted_changes,
+            checked_out_ref: git::get_checked_out_ref(path).ok(),
         });
     }
 
@@ -2093,6 +2228,7 @@ fn delete_selected_elements(
     Ok(DeleteSelectionResult {
         deleted_branches: unique_branch_names,
         discarded_uncommitted_changes: discard_uncommitted_changes,
+        checked_out_ref: git::get_checked_out_ref(path).ok(),
     })
 }
 
@@ -5323,7 +5459,9 @@ pub fn run() {
             add_project_and_ingest,
             load_project_snapshot,
             check_project_fingerprint,
+            ack_project_fingerprint,
             refresh_project_if_changed,
+            persist_project_snapshot,
             get_repo_layout_snapshot,
             store_repo_layout_snapshot,
             get_repo_node_positions,

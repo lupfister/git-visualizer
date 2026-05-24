@@ -201,3 +201,113 @@ export interface RepoVisualSnapshot {
   cacheSchemaVersion: number;
   updatedAtMs: number;
 }
+
+/** Metadata returned from commit_working_tree for optimistic graph patching. */
+export interface CommitMutationData {
+  checkedOutRef: CheckedOutRef;
+  branchName: string;
+  fullSha: string;
+  sha: string;
+  message: string;
+  author: string;
+  date: string;
+  parentSha: string | null;
+  parentShas: string[];
+}
+
+export interface StashPushMutationData {
+  stash: GitStashEntry;
+  checkedOutRef: CheckedOutRef;
+}
+
+export interface StashDropMutationData {
+  removedIndex: number;
+}
+
+export interface StashRestoreMutationData {
+  removedIndex: number;
+  checkedOutRef: CheckedOutRef;
+}
+
+export interface DeleteSelectionMutationData {
+  deletedBranches: string[];
+  discardedUncommittedChanges: boolean;
+  checkedOutRef: CheckedOutRef | null;
+  removedWorktreePaths?: string[];
+}
+
+export type RepoMutationOutcome =
+  | {
+      kind: 'commit';
+      layoutTopologyChanged: true;
+      commit: CommitMutationData;
+    }
+  | {
+      kind: 'stashPush';
+      layoutTopologyChanged: true;
+      stash: GitStashEntry;
+      checkedOutRef: CheckedOutRef;
+    }
+  | {
+      kind: 'stashDrop';
+      layoutTopologyChanged: true;
+      removedIndices: number[];
+    }
+  | {
+      kind: 'stashRestore';
+      layoutTopologyChanged: true;
+      removedIndex: number;
+      checkedOutRef: CheckedOutRef;
+    }
+  | {
+      kind: 'push';
+      layoutTopologyChanged: false;
+      pushedBranchNames: string[];
+    }
+  | {
+      kind: 'branchDelete';
+      layoutTopologyChanged: true;
+      deletedBranches: string[];
+      checkedOutRef: CheckedOutRef | null;
+      removedWorktreePaths?: string[];
+      discardedUncommittedChanges?: boolean;
+    }
+  | {
+      kind: 'checkout';
+      layoutTopologyChanged: false;
+      checkedOutRef: CheckedOutRef;
+    }
+  | {
+      kind: 'discardDirty';
+      layoutTopologyChanged: true;
+      checkedOutRef: CheckedOutRef;
+    }
+  | {
+      kind: 'markDirty';
+      layoutTopologyChanged: true;
+      checkedOutRef: CheckedOutRef;
+    }
+  | {
+      kind: 'stashSync';
+      layoutTopologyChanged: true;
+      stashes: GitStashEntry[];
+    }
+  | {
+      kind: 'worktreeSync';
+      layoutTopologyChanged: true;
+      worktrees: WorktreeInfo[];
+    }
+  | {
+      kind: 'upstreamSync';
+      layoutTopologyChanged: false;
+      checkedOutRef: CheckedOutRef;
+    }
+  | {
+      kind: 'worktreeRemove';
+      layoutTopologyChanged: true;
+      worktreePath: string;
+    }
+  | {
+      kind: 'fullRefresh';
+      layoutTopologyChanged: true;
+    };

@@ -11,7 +11,24 @@ import type { NodePositionOverrides } from '../components/grid/LayoutGrid';
 import { computeBranchGridLayout, type BranchGridLayoutModel } from '../components/grid/branchGridLayoutModel';
 import { hydrateBranchGridLayoutModel, serializeBranchGridLayoutModel } from '../components/grid/layoutSnapshot';
 import { layoutModelHasWorkingTree } from '../components/grid/workingTreeLayout';
-import type { Branch, BranchCommitPreview, BranchPromptMeta, CheckedOutRef, DirectCommit, GitHubAuthStatus, GitHubInfo, GitStashEntry, MergeNode, OpenPR, RepoVisualSnapshot, WorktreeInfo } from '../types';
+import type { Branch, BranchCommitPreview, BranchPromptMeta, CheckedOutRef, CommitMutationData, DeleteSelectionMutationData, DirectCommit, GitHubAuthStatus, GitHubInfo, GitStashEntry, MergeNode, OpenPR, RepoMutationOutcome, RepoVisualSnapshot, StashPushMutationData, StashRestoreMutationData, WorktreeInfo } from '../types';
+import {
+  applyMutationPatch,
+  outcomeFromCheckout,
+  outcomeFromCommitData,
+  outcomeFromDeleteSelection,
+  outcomeFromDiscardDirty,
+  outcomeFromMarkDirty,
+  outcomeFromPush,
+  outcomeFromStashDrops,
+  outcomeFromStashPush,
+  outcomeFromStashRestore,
+  outcomeFromStashSync,
+  outcomeFromUpstreamSync,
+  outcomeFromWorktreeRemove,
+  outcomeFromWorktreeSync,
+} from './repoMutationPatches';
+import { classifyFingerprintDiff, parseRepoFingerprint, type FingerprintPatchSegment } from './fingerprintDiff';
 import {
   applyBranchParents,
   isNewerBranchAsParent,
@@ -49,6 +66,8 @@ const SIDEBAR_MIN_WIDTH_PX = 180;
 const SIDEBAR_MAX_WIDTH_PX = 360;
 /** Wait this long after map pan/marquee ends before applying background git snapshot updates. */
 const MAP_REPO_REFRESH_SETTLE_MS = 500;
+/** Minimum gap between background fingerprint scans when git state is already synced. */
+const MIN_BACKGROUND_FINGERPRINT_CHECK_MS = 4000;
 type PushTarget = {
   branchName: string;
   targetSha?: string;
@@ -96,6 +115,13 @@ type RefreshProjectResult = {
   repoPath: string;
   updated: boolean;
   snapshot?: ProjectSnapshotRecord | null;
+};
+type FingerprintCheckResult = {
+  projectId: string;
+  repoPath: string;
+  changed: boolean;
+  currentFingerprint: string;
+  storedFingerprint?: string | null;
 };
 type CommitMetadata = { subject: string; author: string };
 
@@ -167,7 +193,6 @@ function getRepoVisualSnapshotSignature(snapshot: RepoVisualSnapshot): string {
     snapshot.path,
     snapshot.name,
     snapshot.defaultBranch,
-    snapshot.updatedAtMs,
     snapshot.branches.map((branch) => [
       branch.name,
       branch.headSha,
@@ -337,6 +362,12 @@ function App() {
   const projectSnapshotSignatureRef = useRef<Record<string, string>>({});
   const activeSnapshotSignatureRef = useRef<string | null>(null);
   const projectFingerprintRef = useRef<Record<string, string>>({});
+  /** Raw `check_project_fingerprint` string last applied to UI (avoids re-sync loops while DB lags). */
+  const lastSyncedRepoFingerprintRef = useRef<Record<string, string>>({});
+  const lastFingerprintCheckAtRef = useRef<Record<string, number>>({});
+  const gitActivityEpochRef = useRef(0);
+  const lastHandledGitActivityEpochRef = useRef(0);
+  const wasMapInteractingRef = useRef(false);
   const projectQuickStateRef = useRef<Record<string, string>>({});
   const isRepoSwitchingRef = useRef(false);
   const sidebarDragRef = useRef<{
@@ -355,6 +386,8 @@ function App() {
   const repoMutationGenerationRef = useRef(0);
   /** True while a user-initiated git mutation is running through to snapshot apply. */
   const repoMutationInFlightRef = useRef(false);
+  /** Skip background git-activity refresh briefly after a local optimistic patch. */
+  const suppressBackgroundRefreshUntilRef = useRef(0);
   /** False while panning and for {@link MAP_REPO_REFRESH_SETTLE_MS} after pan stops. */
   const canApplyRepoRefreshRef = useRef(true);
   const mapRefreshSettleTimeoutRef = useRef<number | null>(null);
@@ -687,6 +720,37 @@ function App() {
       upstreamSha: snapshot.checkedOutRef?.parentSha ?? null,
       hasUncommittedChanges: snapshot.checkedOutRef?.hasUncommittedChanges ?? false,
     };
+  }
+
+  function noteSyncedRepoFingerprint(path: string, fingerprint: string | null | undefined) {
+    const normalizedPath = normalizePath(path);
+    if (!normalizedPath || !fingerprint) return;
+    lastSyncedRepoFingerprintRef.current = {
+      ...lastSyncedRepoFingerprintRef.current,
+      [normalizedPath]: fingerprint,
+    };
+    lastFingerprintCheckAtRef.current = {
+      ...lastFingerprintCheckAtRef.current,
+      [normalizedPath]: Date.now(),
+    };
+  }
+
+  function ackProjectFingerprint(path: string, fingerprint: string) {
+    const normalizedPath = normalizePath(path);
+    if (!normalizedPath || !fingerprint) return;
+    void invoke('ack_project_fingerprint', { projectId: normalizedPath, fingerprint }).catch((error) => {
+      console.warn('Fingerprint ack failed:', error);
+    });
+  }
+
+  function stashListSignature(stashes: GitStashEntry[]): string {
+    return stashes.map((stash) => `${stash.index}:${stash.message}:${stash.branch ?? ''}`).join('|');
+  }
+
+  function worktreeListSignature(worktrees: WorktreeInfo[]): string {
+    return worktrees
+      .map((worktree) => `${worktree.path}:${worktree.branch ?? ''}:${worktree.hasUncommittedChanges ? '1' : '0'}`)
+      .join('|');
   }
 
   function fingerprintFromSnapshot(path: string, defaultBranchName: string, snapshot: RepoVisualSnapshot): RepoRefreshFingerprint {
@@ -1223,70 +1287,316 @@ function App() {
     pendingRefreshAfterInteractionRef.current = false;
   }
 
-  async function refreshRepoAfterMutation(path: string) {
+  function getSnapshotForMutation(path: string): RepoVisualSnapshot {
     const normalizedPath = normalizePath(path);
-    if (!normalizedPath) {
+    const cached = projectSnapshots[normalizedPath];
+    if (cached?.loaded) {
+      return {
+        ...cached,
+        branches: [...cached.branches],
+        mergeNodes: [...cached.mergeNodes],
+        directCommits: [...cached.directCommits],
+        unpushedDirectCommits: [...cached.unpushedDirectCommits],
+        worktrees: [...cached.worktrees],
+        stashes: [...cached.stashes],
+        branchCommitPreviews: { ...cached.branchCommitPreviews },
+        branchParentByName: { ...cached.branchParentByName },
+        laneByBranch: { ...cached.laneByBranch },
+        branchUniqueAheadCounts: { ...cached.branchUniqueAheadCounts },
+        unpushedCommitShasByBranch: { ...cached.unpushedCommitShasByBranch },
+        mergeTargetBranchByCommitSha: { ...cached.mergeTargetBranchByCommitSha },
+        checkedOutRef: cached.checkedOutRef ? { ...cached.checkedOutRef } : null,
+      };
+    }
+    if (sameRepoPath(repoPath, normalizedPath)) {
+      return {
+        path: normalizedPath,
+        name: repoName,
+        defaultBranch,
+        branches,
+        mergeNodes,
+        directCommits,
+        unpushedDirectCommits,
+        mergeTargetBranchByCommitSha,
+        unpushedCommitShasByBranch,
+        checkedOutRef,
+        worktrees,
+        stashes,
+        branchCommitPreviews,
+        branchParentByName,
+        laneByBranch,
+        branchUniqueAheadCounts,
+        loaded: true,
+        cacheSchemaVersion: cached?.cacheSchemaVersion ?? 1,
+        updatedAtMs: cached?.updatedAtMs ?? Date.now(),
+      };
+    }
+    throw new Error(`No snapshot available for ${normalizedPath}`);
+  }
+
+  function applyPatchedSnapshot(
+    path: string,
+    patched: RepoVisualSnapshot,
+    layoutTopologyChanged: boolean,
+    options?: { force?: boolean },
+  ) {
+    const normalizedPath = normalizePath(path);
+    const force = options?.force === true;
+    upsertProjectSnapshot(normalizedPath, patched, { force });
+    projectQuickStateRef.current = {
+      ...projectQuickStateRef.current,
+      [normalizedPath]: quickStateSignature(quickStateFromSnapshot(normalizedPath, patched)),
+    };
+    if (sameRepoPath(repoPath, normalizedPath)) {
+      const applied = applySnapshotToActiveState(normalizedPath, patched, { force });
+      if (layoutTopologyChanged && applied) {
+        setLayoutEpoch((epoch) => epoch + 1);
+        setHydratedLayoutModel(null);
+        setHydratedLayoutKey(null);
+      }
+    }
+  }
+
+  async function refreshRepoAfterMutationFull(path: string) {
+    const normalizedPath = normalizePath(path);
+    if (!normalizedPath) return;
+
+    const applyGeneration = repoMutationGenerationRef.current;
+    const result = await invoke<RefreshProjectResult>('refresh_project_if_changed', {
+      projectId: normalizedPath,
+    }).catch(() => null);
+    if (!result || applyGeneration !== repoMutationGenerationRef.current) return;
+
+    const quickState = await invoke<RepoQuickState>('get_repo_quick_state', {
+      repoPath: normalizedPath,
+    }).catch(() => null);
+
+    if (!result.updated) {
+      if (quickState && sameRepoPath(repoPath, normalizedPath)) {
+        projectQuickStateRef.current = {
+          ...projectQuickStateRef.current,
+          [normalizedPath]: quickStateSignature(quickState),
+        };
+        startTransition(() => {
+          setCheckedOutRef((previous) => {
+            if (!previous) return previous;
+            return {
+              ...previous,
+              headSha: quickState.headSha,
+              hasUncommittedChanges: quickState.hasUncommittedChanges,
+              parentSha: quickState.upstreamSha ?? previous.parentSha,
+            };
+          });
+        });
+      }
+      return;
+    }
+
+    let nextSnapshot = toRepoVisualSnapshot(result.snapshot ?? null);
+    if (!nextSnapshot) return;
+
+    nextSnapshot = reconcileSnapshotCheckedOutRef(nextSnapshot, quickState);
+    await yieldToPaint();
+    if (applyGeneration !== repoMutationGenerationRef.current) return;
+    startTransition(() => {
+      applyPatchedSnapshot(normalizedPath, nextSnapshot!, true);
+    });
+  }
+
+  async function finalizeRepoMutation(path: string, ...outcomes: RepoMutationOutcome[]) {
+    const normalizedPath = normalizePath(path);
+    if (!normalizedPath || outcomes.length === 0) {
       endRepoMutation();
       return;
     }
 
     const applyGeneration = repoMutationGenerationRef.current;
     try {
-      const result = await invoke<RefreshProjectResult>('refresh_project_if_changed', {
-        projectId: normalizedPath,
-      }).catch(() => null);
-      if (!result || applyGeneration !== repoMutationGenerationRef.current) return;
-
-      const quickState = await invoke<RepoQuickState>('get_repo_quick_state', {
-        repoPath: normalizedPath,
-      }).catch(() => null);
-
-      if (!result.updated) {
-        if (quickState && sameRepoPath(repoPath, normalizedPath)) {
-          projectQuickStateRef.current = {
-            ...projectQuickStateRef.current,
-            [normalizedPath]: quickStateSignature(quickState),
-          };
-          startTransition(() => {
-            setCheckedOutRef((previous) => {
-              if (!previous) return previous;
-              return {
-                ...previous,
-                headSha: quickState.headSha,
-                hasUncommittedChanges: quickState.hasUncommittedChanges,
-                parentSha: quickState.upstreamSha ?? previous.parentSha,
-              };
-            });
-          });
-        }
+      if (outcomes.some((outcome) => outcome.kind === 'fullRefresh')) {
+        await refreshRepoAfterMutationFull(normalizedPath);
         return;
       }
 
-      let nextSnapshot = toRepoVisualSnapshot(result.snapshot ?? null);
-      if (!nextSnapshot) return;
-
-      nextSnapshot = reconcileSnapshotCheckedOutRef(nextSnapshot, quickState);
-
-      upsertProjectSnapshot(normalizedPath, nextSnapshot);
-      projectQuickStateRef.current = {
-        ...projectQuickStateRef.current,
-        [normalizedPath]: quickStateSignature(quickStateFromSnapshot(normalizedPath, nextSnapshot)),
-      };
-
-      if (sameRepoPath(repoPath, normalizedPath)) {
-        await yieldToPaint();
-        startTransition(() => {
-          const applied = applySnapshotToActiveState(normalizedPath, nextSnapshot!, { force: true });
-          if (applied && quickState && !quickState.hasUncommittedChanges) {
-            setLayoutEpoch((epoch) => epoch + 1);
-            setHydratedLayoutModel(null);
-            setHydratedLayoutKey(null);
-          }
-        });
+      let snapshot = getSnapshotForMutation(normalizedPath);
+      for (const outcome of outcomes) {
+        snapshot = applyMutationPatch(snapshot, outcome);
       }
+      const layoutTopologyChanged = outcomes.some((outcome) => outcome.layoutTopologyChanged);
+
+      await yieldToPaint();
+      if (applyGeneration !== repoMutationGenerationRef.current) return;
+
+      startTransition(() => {
+        applyPatchedSnapshot(normalizedPath, snapshot, layoutTopologyChanged, { force: true });
+      });
+
+      suppressBackgroundRefreshUntilRef.current = Date.now() + 2500;
+      void invoke('persist_project_snapshot', { projectId: normalizedPath }).catch((error) => {
+        console.warn('Background snapshot persist failed:', error);
+      });
+      void invoke<FingerprintCheckResult>('check_project_fingerprint', { projectId: normalizedPath })
+        .then((check) => noteSyncedRepoFingerprint(normalizedPath, check?.currentFingerprint))
+        .catch(() => undefined);
     } finally {
       endRepoMutation();
     }
+  }
+
+  function reconcileCheckedOutRefFromQuickState(
+    snapshot: RepoVisualSnapshot,
+    quickState: RepoQuickState | null,
+  ): CheckedOutRef | null {
+    if (!quickState) return snapshot.checkedOutRef;
+    const base = snapshot.checkedOutRef ?? {
+      branchName: null,
+      headSha: quickState.headSha,
+      hasUncommittedChanges: quickState.hasUncommittedChanges,
+    };
+    return {
+      ...base,
+      headSha: quickState.headSha,
+      hasUncommittedChanges: quickState.hasUncommittedChanges,
+      parentSha: quickState.upstreamSha ?? base.parentSha ?? null,
+    };
+  }
+
+  async function buildIncrementalOutcomesFromSegments(
+    path: string,
+    segments: FingerprintPatchSegment[],
+    quickState: RepoQuickState | null,
+  ): Promise<RepoMutationOutcome[]> {
+    const snapshot = getSnapshotForMutation(path);
+    const reconciledRef = reconcileCheckedOutRefFromQuickState(snapshot, quickState);
+    const outcomes: RepoMutationOutcome[] = [];
+
+    for (const segment of segments) {
+      if (segment === 'dirty' && reconciledRef) {
+        const currentDirty = snapshot.checkedOutRef?.hasUncommittedChanges ?? false;
+        if (reconciledRef.hasUncommittedChanges !== currentDirty) {
+          outcomes.push(
+            reconciledRef.hasUncommittedChanges
+              ? outcomeFromMarkDirty(reconciledRef)
+              : outcomeFromDiscardDirty(reconciledRef),
+          );
+        }
+      }
+      if (segment === 'upstream' && reconciledRef) {
+        const currentRef = snapshot.checkedOutRef;
+        if (
+          currentRef?.headSha !== reconciledRef.headSha
+          || (currentRef?.parentSha ?? null) !== (reconciledRef.parentSha ?? null)
+        ) {
+          outcomes.push(outcomeFromUpstreamSync(reconciledRef));
+        }
+      }
+      if (segment === 'stash') {
+        const stashes = await invoke<GitStashEntry[]>('list_stashes', { repoPath: path }).catch(() => []);
+        if (stashListSignature(stashes) !== stashListSignature(snapshot.stashes)) {
+          outcomes.push(outcomeFromStashSync(stashes));
+        }
+      }
+      if (segment === 'worktree') {
+        const worktrees = await invoke<WorktreeInfo[]>('list_worktrees', { repoPath: path }).catch(() => []);
+        if (worktreeListSignature(worktrees) !== worktreeListSignature(snapshot.worktrees)) {
+          outcomes.push(outcomeFromWorktreeSync(worktrees));
+        }
+      }
+    }
+
+    return outcomes;
+  }
+
+  async function applyBackgroundRepoPatch(
+    path: string,
+    currentFingerprint: string,
+    ...outcomes: RepoMutationOutcome[]
+  ): Promise<boolean> {
+    const normalizedPath = normalizePath(path);
+    if (!normalizedPath) return false;
+
+    try {
+      let snapshot = getSnapshotForMutation(normalizedPath);
+      const beforeSignature = getRepoVisualSnapshotSignature(snapshot);
+
+      for (const outcome of outcomes) {
+        snapshot = applyMutationPatch(snapshot, outcome);
+      }
+      const afterSignature = getRepoVisualSnapshotSignature(snapshot);
+      const layoutTopologyChanged = outcomes.some((outcome) => outcome.layoutTopologyChanged);
+      const snapshotChanged = beforeSignature !== afterSignature;
+
+      noteSyncedRepoFingerprint(normalizedPath, currentFingerprint);
+
+      if (!snapshotChanged) {
+        ackProjectFingerprint(normalizedPath, currentFingerprint);
+        return true;
+      }
+
+      startTransition(() => {
+        applyPatchedSnapshot(normalizedPath, snapshot, layoutTopologyChanged);
+      });
+
+      suppressBackgroundRefreshUntilRef.current = Date.now() + 2500;
+      void invoke('persist_project_snapshot', { projectId: normalizedPath }).catch((error) => {
+        console.warn('Background snapshot persist failed:', error);
+      });
+      return true;
+    } catch (error) {
+      console.warn('Incremental background patch failed:', error);
+      return false;
+    }
+  }
+
+  async function tryIncrementalBackgroundSync(path: string): Promise<boolean> {
+    const normalizedPath = normalizePath(path);
+    const lastSynced = normalizedPath ? lastSyncedRepoFingerprintRef.current[normalizedPath] : undefined;
+    const lastCheckAt = normalizedPath ? (lastFingerprintCheckAtRef.current[normalizedPath] ?? 0) : 0;
+    if (
+      lastSynced
+      && gitActivityEpochRef.current === lastHandledGitActivityEpochRef.current
+      && Date.now() - lastCheckAt < MIN_BACKGROUND_FINGERPRINT_CHECK_MS
+    ) {
+      return true;
+    }
+
+    const check = await invoke<FingerprintCheckResult>('check_project_fingerprint', {
+      projectId: path,
+    }).catch(() => null);
+    if (!check) return false;
+
+    if (normalizedPath) {
+      lastFingerprintCheckAtRef.current = {
+        ...lastFingerprintCheckAtRef.current,
+        [normalizedPath]: Date.now(),
+      };
+    }
+
+    if (
+      normalizedPath
+      && lastSyncedRepoFingerprintRef.current[normalizedPath] === check.currentFingerprint
+    ) {
+      return true;
+    }
+    if (!check.changed) {
+      noteSyncedRepoFingerprint(path, check.currentFingerprint);
+      return true;
+    }
+
+    const current = parseRepoFingerprint(check.currentFingerprint);
+    const stored = parseRepoFingerprint(check.storedFingerprint ?? null);
+    if (!current) return false;
+
+    const classification = classifyFingerprintDiff(stored, current);
+    if (classification.kind === 'none') {
+      noteSyncedRepoFingerprint(path, check.currentFingerprint);
+      return true;
+    }
+    if (classification.kind === 'full') return false;
+
+    const quickState = await invoke<RepoQuickState>('get_repo_quick_state', { repoPath: path }).catch(() => null);
+    const outcomes = await buildIncrementalOutcomesFromSegments(path, classification.segments, quickState);
+
+    return applyBackgroundRepoPatch(path, check.currentFingerprint, ...outcomes);
   }
 
   async function yieldToPaint() {
@@ -1354,12 +1664,13 @@ function App() {
     try {
       beginRepoMutation();
       await invoke('remove_worktree', { repoPath, worktreePath, force });
-      await refreshRepoAfterMutation(repoPath);
+      await finalizeRepoMutation(repoPath, outcomeFromWorktreeRemove(worktreePath));
       setCommitSwitchFeedback({
         kind: 'success',
         message: `Removed worktree at ${worktreePath}`,
       });
     } catch (e) {
+      endRepoMutation();
       const message = e instanceof Error ? e.message : String(e);
       setCommitSwitchFeedback({
         kind: 'error',
@@ -1606,6 +1917,12 @@ function App() {
         [normalizedPath]: quickStateSignature(quickStateFromSnapshot(normalizedPath, snapshot)),
       };
       applySnapshotToActiveState(normalizedPath, snapshot);
+      void invoke<FingerprintCheckResult>('check_project_fingerprint', { projectId: normalizedPath })
+        .then((check) => {
+          noteSyncedRepoFingerprint(normalizedPath, check?.currentFingerprint);
+          lastHandledGitActivityEpochRef.current = gitActivityEpochRef.current;
+        })
+        .catch(() => undefined);
       persistProject({
         path: normalizedPath,
         name: info.name,
@@ -1736,6 +2053,7 @@ function App() {
   useEffect(() => {
     isMapInteractingRef.current = isMapInteracting;
     if (isMapInteracting) {
+      wasMapInteractingRef.current = true;
       mapInteractionEpochRef.current += 1;
       canApplyRepoRefreshRef.current = false;
       setMapGridBackgroundActivity('git-refresh-settle', 'Git refresh settle wait', false);
@@ -1745,6 +2063,12 @@ function App() {
       }
       return;
     }
+
+    if (!wasMapInteractingRef.current) {
+      canApplyRepoRefreshRef.current = true;
+      return;
+    }
+    wasMapInteractingRef.current = false;
 
     if (mapRefreshSettleTimeoutRef.current != null) {
       window.clearTimeout(mapRefreshSettleTimeoutRef.current);
@@ -1774,6 +2098,8 @@ function App() {
 
   useEffect(() => {
     if (!repoPath || !defaultBranch) return;
+    gitActivityEpochRef.current = 0;
+    lastHandledGitActivityEpochRef.current = 0;
     invoke('watch_repo', { repoPath }).catch(console.error);
 
     let isDisposed = false;
@@ -1782,8 +2108,9 @@ function App() {
     let unlisten: (() => void) | null = null;
     const isRepoRefreshBlocked = () =>
       isMapInteractingRef.current || !canApplyRepoRefreshRef.current;
-    const runRefresh = async (reason: 'graph' | 'local' | 'timer' | 'initial' = 'timer') => {
+    const runRefresh = async (reason: 'graph' | 'local' | 'timer' | 'initial' | 'quick' = 'timer') => {
       if (isDisposed || refreshInFlight) return;
+      if (Date.now() < suppressBackgroundRefreshUntilRef.current) return;
       if (repoMutationInFlightRef.current) {
         pendingRefreshAfterInteractionRef.current = true;
         setMapGridBackgroundActivity('git-refresh-pending', 'Git refresh queued', true, 'mutation in flight');
@@ -1794,6 +2121,36 @@ function App() {
         setMapGridBackgroundActivity('git-refresh-pending', 'Git refresh queued', true, reason);
         return;
       }
+
+      const normalizedPath = normalizePath(repoPath);
+      if (
+        reason !== 'quick'
+        && normalizedPath
+        && lastSyncedRepoFingerprintRef.current[normalizedPath]
+        && gitActivityEpochRef.current === lastHandledGitActivityEpochRef.current
+        && Date.now() - (lastFingerprintCheckAtRef.current[normalizedPath] ?? 0) < MIN_BACKGROUND_FINGERPRINT_CHECK_MS
+      ) {
+        pendingRefreshAfterInteractionRef.current = false;
+        return;
+      }
+
+      refreshInFlight = true;
+      setMapGridBackgroundActivity('git-refresh', 'Git quick-state sync', true, reason);
+      try {
+        const patched = await tryIncrementalBackgroundSync(repoPath);
+        if (patched) {
+          pendingRefreshAfterInteractionRef.current = false;
+          lastHandledGitActivityEpochRef.current = gitActivityEpochRef.current;
+          return;
+        }
+      } catch (error) {
+        console.warn('Quick-state sync failed:', error);
+      } finally {
+        refreshInFlight = false;
+        setMapGridBackgroundActivity('git-refresh', 'Git quick-state sync', false);
+      }
+      if (reason === 'quick') return;
+
       const refreshEpoch = mapInteractionEpochRef.current;
       const mutationAtStart = repoMutationGenerationRef.current;
       refreshInFlight = true;
@@ -1801,20 +2158,6 @@ function App() {
       try {
         pendingRefreshAfterInteractionRef.current = false;
         setMapGridBackgroundActivity('git-refresh-pending', 'Git refresh queued', false);
-        if (reason !== 'graph') {
-          const quickState = await invoke<RepoQuickState>('get_repo_quick_state', { repoPath }).catch(() => null);
-          if (quickState) {
-            const quickSig = quickStateSignature(quickState);
-            const previousQuickSig = projectQuickStateRef.current[repoPath];
-            if (previousQuickSig && previousQuickSig === quickSig) {
-              return;
-            }
-            projectQuickStateRef.current = {
-              ...projectQuickStateRef.current,
-              [repoPath]: quickSig,
-            };
-          }
-        }
         const result = await invoke<RefreshProjectResult>('refresh_project_if_changed', {
           projectId: repoPath,
         });
@@ -1843,6 +2186,10 @@ function App() {
               });
             });
           }
+          void invoke<FingerprintCheckResult>('check_project_fingerprint', { projectId: repoPath })
+            .then((check) => noteSyncedRepoFingerprint(repoPath, check?.currentFingerprint))
+            .catch(() => undefined);
+          lastHandledGitActivityEpochRef.current = gitActivityEpochRef.current;
           return;
         }
         let nextSnapshot = toRepoVisualSnapshot(result.snapshot ?? null);
@@ -1868,6 +2215,10 @@ function App() {
               setHydratedLayoutKey(null);
             }
           });
+          void invoke<FingerprintCheckResult>('check_project_fingerprint', { projectId: repoPath })
+            .then((check) => noteSyncedRepoFingerprint(repoPath, check?.currentFingerprint))
+            .catch(() => undefined);
+          lastHandledGitActivityEpochRef.current = gitActivityEpochRef.current;
         }
       } catch (error) {
         console.warn('Background project refresh failed:', error);
@@ -1897,24 +2248,64 @@ function App() {
       }, delayMs);
     };
 
+    let quickPollTimeoutId: number | null = null;
+    const QUICK_STATE_PROBE_MS = 15000;
+    const scheduleQuickStateProbe = () => {
+      if (isDisposed) return;
+      if (quickPollTimeoutId != null) window.clearTimeout(quickPollTimeoutId);
+      const hidden = document.visibilityState !== 'visible';
+      quickPollTimeoutId = window.setTimeout(async () => {
+        if (
+          !isDisposed
+          && !hidden
+          && !isRepoRefreshBlocked()
+          && Date.now() >= suppressBackgroundRefreshUntilRef.current
+          && !repoMutationInFlightRef.current
+        ) {
+          const quickState = await invoke<RepoQuickState>('get_repo_quick_state', { repoPath }).catch(() => null);
+          if (quickState) {
+            const signature = quickStateSignature(quickState);
+            const cached = projectQuickStateRef.current[repoPath];
+            if (cached !== signature) {
+              void runRefresh('quick');
+            }
+          }
+        }
+        scheduleQuickStateProbe();
+      }, hidden ? 30000 : QUICK_STATE_PROBE_MS);
+    };
+
+    let gitActivityDebounceId: number | null = null;
+    let pendingGitActivityReason: 'quick' | 'graph' = 'graph';
     listen<GitActivityEventPayload>('git-activity', (event) => {
       if (!sameRepoPath(event.payload.repoPath, repoPath)) return;
-      void runRefresh(event.payload.kind);
+      gitActivityEpochRef.current += 1;
+      if (event.payload.kind === 'local' && pendingGitActivityReason !== 'graph') {
+        pendingGitActivityReason = 'quick';
+      } else if (event.payload.kind !== 'local') {
+        pendingGitActivityReason = 'graph';
+      }
+      if (gitActivityDebounceId != null) window.clearTimeout(gitActivityDebounceId);
+      gitActivityDebounceId = window.setTimeout(() => {
+        gitActivityDebounceId = null;
+        const reason = pendingGitActivityReason;
+        pendingGitActivityReason = 'graph';
+        void runRefresh(reason);
+      }, 800);
     }).then((fn) => {
       if (isDisposed) fn();
       else unlisten = fn;
     }).catch(console.error);
 
-    const initialProbeTimeoutId = window.setTimeout(() => {
-      void runRefresh('initial');
-    }, 250);
     scheduleBackgroundProbe();
+    scheduleQuickStateProbe();
 
     return () => {
       isDisposed = true;
       runPendingRepoRefreshRef.current = null;
-      window.clearTimeout(initialProbeTimeoutId);
       if (pollTimeoutId != null) window.clearTimeout(pollTimeoutId);
+      if (quickPollTimeoutId != null) window.clearTimeout(quickPollTimeoutId);
+      if (gitActivityDebounceId != null) window.clearTimeout(gitActivityDebounceId);
       if (unlisten) unlisten();
     };
   }, [repoPath, defaultBranch]);
@@ -2189,13 +2580,13 @@ function App() {
     const effectiveRepoPath = target.worktreePath;
     const shouldSwitchAppToTarget = !pathsProbablyEqual(effectiveRepoPath, repoPath);
 
-    const finishCheckoutMutation = async () => {
+    const finishCheckoutMutation = async (outcomes: RepoMutationOutcome[]) => {
       if (shouldSwitchAppToTarget) {
         endRepoMutation();
         await handleSwitchToWorktree(effectiveRepoPath);
         return;
       }
-      await refreshRepoAfterMutation(effectiveRepoPath);
+      await finalizeRepoMutation(effectiveRepoPath, ...outcomes);
     };
 
     const stashRestore = /^STASH:(\d+)$/.exec(target.commitSha);
@@ -2203,11 +2594,11 @@ function App() {
       try {
         beginRepoMutation();
         const stashIndex = parseInt(stashRestore[1], 10);
-        await invoke<CheckedOutRef>('apply_stash_restore', {
+        const result = await invoke<StashRestoreMutationData>('apply_stash_restore', {
           repoPath: effectiveRepoPath,
           stashIndex,
         });
-        await finishCheckoutMutation();
+        await finishCheckoutMutation([outcomeFromStashRestore(result)]);
         const label = `Stash ${stashIndex + 1}`;
         setCommitSwitchFeedback({
           kind: 'success',
@@ -2228,13 +2619,19 @@ function App() {
     try {
       beginRepoMutation();
       let stashedPrefix = '';
+      const checkoutOutcomes: RepoMutationOutcome[] = [];
       const refBefore = await invoke<CheckedOutRef>('get_checked_out_ref', { repoPath: effectiveRepoPath });
       if (refBefore.hasUncommittedChanges) {
-        await stashLocalChangesWithGeneratedMessage(effectiveRepoPath);
+        const stashResult = await invoke<StashPushMutationData>('stash_push', {
+          repoPath: effectiveRepoPath,
+          includeUntracked: true,
+          message: (await invoke<string>('generate_stash_message', { repoPath: effectiveRepoPath })).trim(),
+        });
+        checkoutOutcomes.push(outcomeFromStashPush(stashResult));
         stashedPrefix = 'Stashed local changes (including untracked), then ';
       }
 
-      await (target.branchName
+      const checkedOutRef = await (target.branchName
         ? invoke<CheckedOutRef>('checkout_branch', {
             repoPath: effectiveRepoPath,
             branchName: target.branchName,
@@ -2243,7 +2640,8 @@ function App() {
             repoPath: effectiveRepoPath,
             refName: target.commitSha,
           }));
-      await finishCheckoutMutation();
+      checkoutOutcomes.push(outcomeFromCheckout(checkedOutRef));
+      await finishCheckoutMutation(checkoutOutcomes);
       const refLabel = target.branchName
         ? target.branchName
         : `${target.commitSha.slice(0, 7)} (detached)`;
@@ -2262,17 +2660,6 @@ function App() {
     }
   }
 
-  async function stashLocalChangesWithGeneratedMessage(stashRepoPath?: string): Promise<void> {
-    const path = stashRepoPath ?? repoPath;
-    if (!path) return;
-    const message = await invoke<string>('generate_stash_message', { repoPath: path });
-    await invoke('stash_push', {
-      repoPath: path,
-      includeUntracked: true,
-      message: message.trim(),
-    });
-  }
-
   async function handleStashLocalChanges() {
     if (!repoPath || stashInProgress) return;
     setCommitSwitchFeedback(null);
@@ -2287,8 +2674,12 @@ function App() {
         return;
       }
       beginRepoMutation();
-      await stashLocalChangesWithGeneratedMessage();
-      await refreshRepoAfterMutation(repoPath);
+      const stashResult = await invoke<StashPushMutationData>('stash_push', {
+        repoPath,
+        includeUntracked: true,
+        message: (await invoke<string>('generate_stash_message', { repoPath })).trim(),
+      });
+      await finalizeRepoMutation(repoPath, outcomeFromStashPush(stashResult));
       setCommitSwitchFeedback({
         kind: 'success',
         message: 'Stashed local changes (including untracked files).',
@@ -2318,17 +2709,17 @@ function App() {
         return false;
       }
       beginRepoMutation();
-      const nextRef = await invoke<CheckedOutRef>('commit_working_tree', {
+      const commitResult = await invoke<CommitMutationData>('commit_working_tree', {
         repoPath,
         message: trimmed,
       });
-      if (nextRef.branchName && nextRef.headSha) {
+      if (commitResult.branchName && commitResult.fullSha) {
         const normalizedPath = normalizePath(repoPath);
         userDirtyNodePositionsRef.current.add(normalizedPath);
         const migrated = migrateWorkingTreeNodeOverrides(
           nodePositionOverridesByRepo[normalizedPath] ?? {},
-          nextRef.branchName,
-          nextRef.headSha,
+          commitResult.branchName,
+          commitResult.fullSha,
         );
         persistRepoNodePositions(normalizedPath, migrated);
         setNodePositionOverridesByRepo((previous) => ({
@@ -2336,7 +2727,7 @@ function App() {
           [normalizedPath]: migrated,
         }));
       }
-      await refreshRepoAfterMutation(repoPath);
+      await finalizeRepoMutation(repoPath, outcomeFromCommitData(commitResult));
       setCommitSwitchFeedback({
         kind: 'success',
         message: 'Committed local changes.',
@@ -2422,8 +2813,8 @@ function App() {
         return false;
       }
       beginRepoMutation();
-      await invoke<CheckedOutRef>('stage_working_tree', { repoPath });
-      await refreshRepoAfterMutation(repoPath);
+      const nextRef = await invoke<CheckedOutRef>('stage_working_tree', { repoPath });
+      await finalizeRepoMutation(repoPath, outcomeFromCheckout(nextRef));
       setCommitSwitchFeedback({
         kind: 'success',
         message: 'Staged all changes.',
@@ -2463,7 +2854,7 @@ function App() {
           branchName,
         });
       }
-      await refreshRepoAfterMutation(repoPath);
+      await finalizeRepoMutation(repoPath, { kind: 'fullRefresh', layoutTopologyChanged: true });
       setCommitSwitchFeedback({
         kind: 'success',
         message: `Moved to new branch "${branchName}"`,
@@ -2488,7 +2879,7 @@ function App() {
         repoPath,
         branchName,
       });
-      await refreshRepoAfterMutation(repoPath);
+      await finalizeRepoMutation(repoPath, { kind: 'fullRefresh', layoutTopologyChanged: true });
       setCommitSwitchFeedback({
         kind: 'success',
         message: `Created new root branch "${branchName}"`,
@@ -2507,11 +2898,11 @@ function App() {
     setCommitSwitchFeedback(null);
     try {
       beginRepoMutation();
-      await invoke<CheckedOutRef>('checkout_branch', {
+      const checkedOutRef = await invoke<CheckedOutRef>('checkout_branch', {
         repoPath,
         branchName: targetBranchName,
       });
-      await refreshRepoAfterMutation(repoPath);
+      await finalizeRepoMutation(repoPath, outcomeFromCheckout(checkedOutRef));
       setCommitSwitchFeedback({
         kind: 'success',
         message: `Moved back to "${targetBranchName}"`,
@@ -2538,7 +2929,7 @@ function App() {
           targetBranch,
         });
       }
-      await refreshRepoAfterMutation(repoPath);
+      await finalizeRepoMutation(repoPath, { kind: 'fullRefresh', layoutTopologyChanged: true });
       setCommitSwitchFeedback({
         kind: 'success',
         message: uniqueSourceRefs.length === 1
@@ -2564,6 +2955,7 @@ function App() {
     try {
       beginRepoMutation();
       let pushed: Array<{ branchName: string }> = [];
+      let usedPull = false;
       try {
         pushed = await invoke<Array<{ branchName: string }>>('push_all_unpushed_branches', {
           repoPath,
@@ -2578,11 +2970,19 @@ function App() {
           'Push all hit non-fast-forward.\n\nOK: pull --rebase then retry\nCancel: pull --no-rebase then retry',
         );
         await invoke('pull_branch_with_strategy', { repoPath, branchName, rebase: useRebase });
+        usedPull = true;
         pushed = await invoke<Array<{ branchName: string }>>('push_all_unpushed_branches', {
           repoPath,
         });
       }
-      await refreshRepoAfterMutation(repoPath);
+      if (usedPull) {
+        await finalizeRepoMutation(repoPath, { kind: 'fullRefresh', layoutTopologyChanged: true });
+      } else {
+        await finalizeRepoMutation(
+          repoPath,
+          outcomeFromPush(pushed.map((entry) => entry.branchName)),
+        );
+      }
       setCommitSwitchFeedback({
         kind: 'success',
         message: pushed.length > 0
@@ -2613,7 +3013,7 @@ function App() {
       const pushed = await invoke<{ branchName: string }>('push_current_branch', {
         repoPath,
       });
-      await refreshRepoAfterMutation(repoPath);
+      await finalizeRepoMutation(repoPath, outcomeFromPush([pushed.branchName]));
       setCommitSwitchFeedback({
         kind: 'success',
         message: `Pushed ${pushed.branchName}`,
@@ -2630,7 +3030,7 @@ function App() {
           if (!branchName) throw new Error('Cannot resolve current branch for pull.');
           await invoke('pull_branch_with_strategy', { repoPath, branchName, rebase: useRebase });
           const pushed = await invoke<{ branchName: string }>('push_current_branch', { repoPath });
-          await refreshRepoAfterMutation(repoPath);
+          await finalizeRepoMutation(repoPath, { kind: 'fullRefresh', layoutTopologyChanged: true });
           setCommitSwitchFeedback({
             kind: 'success',
             message: `Pulled (${useRebase ? 'rebase' : 'merge'}) and pushed ${pushed.branchName}`,
@@ -2670,6 +3070,7 @@ function App() {
     setPushInProgress(true);
     try {
       beginRepoMutation();
+      let usedPull = false;
       for (const target of uniqueTargets) {
         try {
           await invoke('push_branch', {
@@ -2685,6 +3086,7 @@ function App() {
             `Push rejected for ${target.branchName} (non-fast-forward).\n\nOK: pull --rebase then retry\nCancel: pull --no-rebase then retry`,
           );
           await invoke('pull_branch_with_strategy', { repoPath, branchName: target.branchName, rebase: useRebase });
+          usedPull = true;
           await invoke('push_branch', {
             repoPath,
             branchName: target.branchName,
@@ -2692,7 +3094,14 @@ function App() {
           });
         }
       }
-      await refreshRepoAfterMutation(repoPath);
+      if (usedPull) {
+        await finalizeRepoMutation(repoPath, { kind: 'fullRefresh', layoutTopologyChanged: true });
+      } else {
+        await finalizeRepoMutation(
+          repoPath,
+          outcomeFromPush(uniqueTargets.map((target) => target.branchName)),
+        );
+      }
       setCommitSwitchFeedback({
         kind: 'success',
         message: uniqueTargets.length === 1
@@ -2700,6 +3109,7 @@ function App() {
           : `Pushed ${uniqueTargets.length} selected commit ranges`,
       });
     } catch (e) {
+      endRepoMutation();
       const message = e instanceof Error ? e.message : String(e);
       setCommitSwitchFeedback({
         kind: 'error',
@@ -2737,34 +3147,53 @@ function App() {
     setCommitSwitchFeedback(null);
     setDeleteInProgress(true);
     try {
+      beginRepoMutation();
+      const mutationOutcomes: RepoMutationOutcome[] = [];
+
       for (const stashIndex of uniqueStashDescending) {
         await invoke('stash_drop', { repoPath, stashIndex });
       }
+      if (uniqueStashDescending.length > 0) {
+        mutationOutcomes.push(outcomeFromStashDrops(uniqueStashDescending));
+      }
 
-      let result = { deletedBranches: [] as string[], discardedUncommittedChanges: false };
+      let deleteResult: DeleteSelectionMutationData = {
+        deletedBranches: [],
+        discardedUncommittedChanges: false,
+        checkedOutRef: null,
+      };
       if (uniqueBranchNames.length > 0) {
-        result = await invoke<{ deletedBranches: string[]; discardedUncommittedChanges: boolean }>('delete_selected_elements', {
+        const result = await invoke<DeleteSelectionMutationData>('delete_selected_elements', {
           repoPath,
           branchNames: uniqueBranchNames,
           discardUncommittedChanges: false,
         });
+        deleteResult = {
+          deletedBranches: result.deletedBranches,
+          discardedUncommittedChanges: result.discardedUncommittedChanges,
+          checkedOutRef: result.checkedOutRef,
+        };
       }
       for (const worktreePath of discardPaths) {
-        const discardResult = await invoke<{ deletedBranches: string[]; discardedUncommittedChanges: boolean }>(
-          'delete_selected_elements',
-          {
-            repoPath: worktreePath,
-            branchNames: [],
-            discardUncommittedChanges: true,
-          },
-        );
+        const discardResult = await invoke<DeleteSelectionMutationData>('delete_selected_elements', {
+          repoPath: worktreePath,
+          branchNames: [],
+          discardUncommittedChanges: true,
+        });
         if (discardResult.discardedUncommittedChanges) {
-          result = { ...result, discardedUncommittedChanges: true };
+          deleteResult = {
+            ...deleteResult,
+            discardedUncommittedChanges: true,
+            checkedOutRef: discardResult.checkedOutRef ?? deleteResult.checkedOutRef,
+          };
         }
       }
 
-      if (shouldDiscardUncommitted) beginRepoMutation();
-      await refreshRepoAfterMutation(repoPath);
+      if (deleteResult.deletedBranches.length > 0 || deleteResult.discardedUncommittedChanges) {
+        mutationOutcomes.push(outcomeFromDeleteSelection(deleteResult));
+      }
+
+      await finalizeRepoMutation(repoPath, ...mutationOutcomes);
       const feedbackParts: string[] = [];
       if (uniqueStashDescending.length > 0) {
         feedbackParts.push(
@@ -2773,12 +3202,12 @@ function App() {
             : `removed ${uniqueStashDescending.length} stashes`
         );
       }
-      if (result.discardedUncommittedChanges) feedbackParts.push('discarded local uncommitted changes');
-      if (result.deletedBranches.length > 0) {
+      if (deleteResult.discardedUncommittedChanges) feedbackParts.push('discarded local uncommitted changes');
+      if (deleteResult.deletedBranches.length > 0) {
         feedbackParts.push(
-          result.deletedBranches.length === 1
-            ? `deleted ${result.deletedBranches[0]}`
-            : `deleted ${result.deletedBranches.length} branches`
+          deleteResult.deletedBranches.length === 1
+            ? `deleted ${deleteResult.deletedBranches[0]}`
+            : `deleted ${deleteResult.deletedBranches.length} branches`
         );
       }
       setCommitSwitchFeedback({
@@ -2786,6 +3215,7 @@ function App() {
         message: feedbackParts.length > 0 ? feedbackParts.join(' and ') : 'Nothing to delete.',
       });
     } catch (e) {
+      endRepoMutation();
       const message = e instanceof Error ? e.message : String(e);
       setCommitSwitchFeedback({
         kind: 'error',
