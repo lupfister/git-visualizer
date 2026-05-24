@@ -8,6 +8,7 @@ import {
   isWorkingTreeCommitId,
   resolveBranchCheckoutAccent,
   resolveCommitAccent,
+  selectedUncommittedSessions,
   sessionMatchesBranchCheckout,
   stripEmptyBranchPlaceholdersForWorktreeSessions,
   workingTreeIdForPath,
@@ -73,17 +74,33 @@ describe('worktreeSessions', () => {
     expect(resolveBranchCheckoutAccent('other', undefined, lookups)).toBeNull();
   });
 
-  it('buildWorktreeAccentByCommitId maps empty branch placeholders by checked-out branch', () => {
+  it('buildWorktreeAccentByCommitId skips BRANCH_HEAD when a worktree session covers that branch', () => {
+    const headSha = 'bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb';
     const sessions = buildWorktreeSessions(
       [
-        baseWorktree({ path: '/repo/wt-b', headSha: 'bbbbbbbbbbbb', branchName: 'cursor-sdk', isCurrent: false }),
+        baseWorktree({ path: '/repo/wt-b', headSha, branchName: 'cursor-sdk', isCurrent: false }),
         baseWorktree({ path: '/repo', headSha: 'aaaaaaaaaaaa', branchName: 'main', isCurrent: true }),
       ],
       '/repo',
     );
-    const map = buildWorktreeAccentByCommitId(sessions, ['BRANCH_HEAD:cursor-sdk:bbbbbbbbbbbb']);
-    expect(map.get('BRANCH_HEAD:cursor-sdk:bbbbbbbbbbbb')).toBe('worktree-violet');
+    const map = buildWorktreeAccentByCommitId(sessions, [`BRANCH_HEAD:cursor-sdk:${headSha}`]);
+    expect(map.get(`BRANCH_HEAD:cursor-sdk:${headSha}`)).toBeUndefined();
+    expect(map.get(sessions.find((session) => session.branchName === 'cursor-sdk')!.workingTreeId)).toBe('worktree-violet');
     expect(map.get('WORKING_TREE')).toBe('checked');
+  });
+
+  it('selectedUncommittedSessions only returns dirty selected sessions', () => {
+    const sessions = buildWorktreeSessions(
+      [
+        baseWorktree({ path: '/repo', headSha: 'aaaaaaaaaaaa', branchName: 'main', isCurrent: true, hasUncommittedChanges: true }),
+        baseWorktree({ path: '/repo/wt-b', headSha: 'bbbbbbbbbbbb', branchName: 'feature', isCurrent: false, hasUncommittedChanges: false }),
+      ],
+      '/repo',
+    );
+    const dirtyOther = sessions.find((session) => session.branchName === 'feature')!;
+    const selected = selectedUncommittedSessions(sessions, ['WORKING_TREE', dirtyOther.workingTreeId]);
+    expect(selected).toHaveLength(1);
+    expect(selected[0]?.isCurrent).toBe(true);
   });
 
   it('stripEmptyBranchPlaceholdersForWorktreeSessions removes BRANCH_HEAD when session covers branch', () => {

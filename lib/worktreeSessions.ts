@@ -1,4 +1,4 @@
-import { normalizeRepoPathForCompare } from '../components/grid/mapGridUtils';
+import { normalizeRepoPathForCompare, worktreeDisplayName } from '../components/grid/mapGridUtils';
 import type { Branch, BranchCommitPreview, CheckedOutRef, WorktreeInfo } from '../types';
 
 /** Current window only; teal checked-out token. */
@@ -52,6 +52,16 @@ export const workingTreeIdForPath = (path: string, isCurrent: boolean): string =
 export const isWorkingTreeCommitId = (id: string): boolean =>
   id === LEGACY_WORKING_TREE_ID || id.startsWith(`${LEGACY_WORKING_TREE_ID}:`);
 
+/** Synthetic map lane for a linked worktree (detached or otherwise without a branch ref). */
+export const worktreeLaneBranchName = (path: string, reservedNames: ReadonlySet<string>): string => {
+  const base = `Worktree · ${worktreeDisplayName(path)}`;
+  if (!reservedNames.has(base)) return base;
+  return `Worktree · ${worktreeDisplayName(path)} (${worktreeStableKey(path)})`;
+};
+
+export const isWorktreeLaneBranchName = (branchName: string): boolean =>
+  branchName.startsWith('Worktree · ');
+
 export const currentSessionWorkingTreeId = (sessions: WorktreeSession[]): string => {
   const current = sessions.find((session) => session.isCurrent);
   return current?.workingTreeId ?? LEGACY_WORKING_TREE_ID;
@@ -62,7 +72,30 @@ export const selectedUncommittedSessions = (
   selectedCommitShas: string[],
 ): WorktreeSession[] => {
   const selected = new Set(selectedCommitShas);
-  return sessions.filter((session) => selected.has(session.workingTreeId));
+  return sessions.filter(
+    (session) => selected.has(session.workingTreeId) && session.hasUncommittedChanges,
+  );
+};
+
+export const shouldAnimateWorktreeNode = (session: Pick<WorktreeSession, 'hasUncommittedChanges'>): boolean =>
+  session.hasUncommittedChanges;
+
+/** Tile/header accent for worktree nodes — independent of map selection state. */
+export const worktreeAccentActive = (
+  isWorktreeNode: boolean,
+  accentToken: WorktreeAccentToken | null | undefined,
+): accentToken is WorktreeAccentToken => isWorktreeNode && accentToken != null;
+
+export const resolveWorktreeCommitTileShapeCssVar = (
+  isWorktreeNode: boolean,
+  accentToken: WorktreeAccentToken | null | undefined,
+  isSelectedCommit: boolean,
+  showCommitTilePattern: boolean,
+): string | null => {
+  if (!showCommitTilePattern) return null;
+  if (worktreeAccentActive(isWorktreeNode, accentToken)) return `--${accentToken}-muted`;
+  if (isSelectedCommit) return '--select-muted';
+  return '--muted';
 };
 
 export const accentCssVars = (token: WorktreeAccentToken): { fg: string; muted: string } => ({
@@ -216,6 +249,13 @@ export const buildWorktreeAccentByCommitId = (
     for (const commitId of emptyBranchPlaceholderCommitIds) {
       const branchName = /^BRANCH_HEAD:([^:]+):/.exec(commitId)?.[1];
       if (!branchName) continue;
+      const tipSha = parseBranchHeadTipShaFromCommitId(commitId);
+      if (
+        tipSha
+        && worktreeSessionCoversEmptyBranch(sessions, { name: branchName, headSha: tipSha } as Branch)
+      ) {
+        continue;
+      }
       const token = resolveBranchCheckoutAccent(
         branchName,
         parseBranchHeadTipShaFromCommitId(commitId) ?? undefined,

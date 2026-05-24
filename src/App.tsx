@@ -353,7 +353,6 @@ function App() {
   const mapInteractionEpochRef = useRef(0);
   /** Bumped at the start of local git mutations so in-flight background refreshes cannot apply stale snapshots. */
   const repoMutationGenerationRef = useRef(0);
-  const hadUncommittedChangesRef = useRef(false);
   /** False while panning and for {@link MAP_REPO_REFRESH_SETTLE_MS} after pan stops. */
   const canApplyRepoRefreshRef = useRef(true);
   const mapRefreshSettleTimeoutRef = useRef<number | null>(null);
@@ -3079,16 +3078,6 @@ function App() {
   }, [branches, branchCommitPreviews, branchUniqueAheadCounts, checkedOutRef, defaultBranch, directCommits, remoteDefaultTipMetadata, remoteDefaultTipParentSha, remoteDefaultTipSha, repoPath, stashes, unpushedDirectCommits, worktrees]);
 
   useEffect(() => {
-    const hasUncommitted = worktreeSessions.some((session) => session.hasUncommittedChanges);
-    if (hadUncommittedChangesRef.current && !hasUncommitted) {
-      setLayoutEpoch((epoch) => epoch + 1);
-      setHydratedLayoutModel(null);
-      setHydratedLayoutKey(null);
-    }
-    hadUncommittedChangesRef.current = hasUncommitted;
-  }, [visualCheckedOutRef?.hasUncommittedChanges]);
-
-  useEffect(() => {
     const readyForAutoFocus =
       !mapLoading &&
       !loading &&
@@ -3097,7 +3086,7 @@ function App() {
         (isRemoteTipHydrated && remoteDefaultTipParentSha != null)
       );
     if (!readyForAutoFocus) return;
-    const focusSha = visualCheckedOutRef?.hasUncommittedChanges
+    const focusSha = worktreeSessions.length > 0
       ? currentSessionWorkingTreeId(worktreeSessions)
       : visualCheckedOutRef?.headSha ?? null;
     if (!focusSha) return;
@@ -3114,7 +3103,6 @@ function App() {
     remoteDefaultTipParentSha,
     remoteDefaultTipSha,
     repoPath,
-    visualCheckedOutRef?.hasUncommittedChanges,
     visualCheckedOutRef?.headSha,
     worktreeSessions,
   ]);
@@ -3144,12 +3132,12 @@ function App() {
   );
   const graphLayoutSignature = useMemo(
     () => [
-      'layout-v11-clump-owner-column-band',
+      'layout-v12-worktree-always',
       layoutEpoch,
       defaultBranch,
       visualCheckedOutRef?.branchName ?? '',
       visualCheckedOutRef?.headSha ?? '',
-      visualCheckedOutRef?.hasUncommittedChanges ? '1' : '0',
+      worktreeSessions.length,
       branchesForLayout.map((branch) => `${branch.name}:${branch.headSha}:${branch.commitsAhead}:${branch.commitsBehind}:${branch.parentBranch ?? ''}`).join('|'),
       enrichedDirectCommits.length,
       enrichedUnpushedDirectCommits.map((commit) => commit.fullSha).sort().join('|'),
@@ -3160,7 +3148,7 @@ function App() {
       defaultBranch,
       visualCheckedOutRef?.branchName,
       visualCheckedOutRef?.headSha,
-      visualCheckedOutRef?.hasUncommittedChanges,
+      worktreeSessions.length,
       branchesForLayout,
       enrichedDirectCommits,
       enrichedUnpushedDirectCommits,

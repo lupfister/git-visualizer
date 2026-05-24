@@ -1,5 +1,6 @@
 import {
   isWorkingTreeCommitId,
+  isWorktreeLaneBranchName,
   shaMatches as worktreeShaMatches,
   worktreeSessionCoversEmptyBranch,
   type WorktreeSession,
@@ -1035,6 +1036,7 @@ function ensureBranchLaneRepresentation(
 ): void {
   for (const branch of branches) {
     if (branch.name === defaultBranch) continue;
+    if (isWorktreeLaneBranchName(branch.name)) continue;
     if (worktreeSessionCoversEmptyBranch(worktreeSessions, branch)) continue;
     if (branchHasConcreteVisibleCommit(visibleCommitBySha, branch.name)) continue;
     const existingPlaceholder = Array.from(visibleCommitBySha.values()).find(
@@ -1104,7 +1106,21 @@ export function computeBranchGridLayout(input: BranchGridLayoutInput): BranchGri
     if (branch.name === defaultBranch) continue;
     const branchPreviews = renderableBranchPreviews(branch.name, branchUniqueAheadCounts, branchCommitPreviews);
     branchPreviewSets.set(branch.name, branchPreviews);
+    if (isWorktreeLaneBranchName(branch.name)) {
+      const commits = sortByDateThenSha(branchPreviews.map((commit) => toCommit(branch.name, commit)));
+      if (commits.length > 0) {
+        branchCommitsByLane.set(branch.name, commits);
+      }
+      continue;
+    }
     if (isEmptyPlaceholderBranch(branch, branchUniqueAheadCounts)) {
+      if (worktreeSessionCoversEmptyBranch(worktreeSessions, branch)) {
+        const commits = sortByDateThenSha(branchPreviews.map((commit) => toCommit(branch.name, commit)));
+        if (commits.length > 0) {
+          branchCommitsByLane.set(branch.name, commits);
+        }
+        continue;
+      }
       const syntheticBranchNode = buildEmptyBranchLaneCommit(branch, directCommits, branchCommitPreviews);
       if (syntheticBranchNode) {
         branchCommitsByLane.set(branch.name, [syntheticBranchNode]);
@@ -1114,6 +1130,9 @@ export function computeBranchGridLayout(input: BranchGridLayoutInput): BranchGri
     const commits = sortByDateThenSha(branchPreviews.map((commit) => toCommit(branch.name, commit)));
     if (commits.length > 0) {
       branchCommitsByLane.set(branch.name, commits);
+      continue;
+    }
+    if (worktreeSessionCoversEmptyBranch(worktreeSessions, branch)) {
       continue;
     }
     const syntheticBranchNode = buildEmptyBranchLaneCommit(branch, directCommits, branchCommitPreviews);
@@ -1463,6 +1482,13 @@ export function computeBranchGridLayout(input: BranchGridLayoutInput): BranchGri
   }));
   /** Fork-anchored time for cluster segmentation and provisional rows — not for lane column order. */
   const effectiveCommitTime = (commit: VisualCommit): number => {
+    if (isWorktreeGraphNode(commit) && commit.parentSha) {
+      const parent = findCommitBySha(commit.parentSha);
+      if (parent) {
+        const parentTime = safeTimeMs(parent.date);
+        if (Number.isFinite(parentTime)) return parentTime;
+      }
+    }
     if (
       commit.parentSha
       && (commit.kind === 'branch-created' || isStashGraphCommit(commit))

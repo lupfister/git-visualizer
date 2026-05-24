@@ -583,12 +583,23 @@ export function worktreeDisplayName(path: string): string {
   return parts[parts.length - 1] ?? path;
 }
 
+export const PRIMARY_WORKTREE_DISPLAY_NAME = 'Primary';
+
+/** User-facing worktree name on map cards and actions (primary checkout vs linked worktrees). */
+export function worktreeSessionDisplayName(session: { path: string; isCurrent: boolean }): string {
+  return session.isCurrent ? PRIMARY_WORKTREE_DISPLAY_NAME : worktreeDisplayName(session.path);
+}
+
 export const formatWorktreeNodeHeaderLabel = (
-  session: { path: string; branchName: string | null; hasUncommittedChanges: boolean },
-  branchNameOnNode?: string | null,
+  session: {
+    path: string;
+    branchName: string | null;
+    hasUncommittedChanges: boolean;
+    isCurrent: boolean;
+  },
 ): string => {
-  const name = worktreeDisplayName(session.path);
-  const branch = session.branchName ?? branchNameOnNode ?? 'detached';
+  const name = worktreeSessionDisplayName(session);
+  const branch = session.branchName ?? 'detached';
   const branchPart = session.hasUncommittedChanges ? `${branch}/working...` : branch;
   return `${name} • ${branchPart}`;
 };

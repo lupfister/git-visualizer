@@ -1,8 +1,10 @@
+import { resolveAnchorOwningBranchName } from '../src/placeStashNode';
 import type { Branch, BranchCommitPreview, DirectCommit } from '../types';
 import {
   isWorkingTreeCommitId,
   shaMatches,
   stripEmptyBranchPlaceholdersForWorktreeSessions,
+  worktreeLaneBranchName,
   type WorktreeSession,
 } from './worktreeSessions';
 
@@ -66,6 +68,12 @@ const resolveAnchorCommitDate = (
     ));
     if (matchingPreviewCommit?.date) return matchingPreviewCommit.date;
   }
+  for (const branchPreviews of Object.values(previews)) {
+    const matchingPreviewCommit = branchPreviews.find((commit) => (
+      shaMatches(commit.fullSha, anchorSha) || shaMatches(commit.sha, anchorSha)
+    ));
+    if (matchingPreviewCommit?.date) return matchingPreviewCommit.date;
+  }
   return null;
 };
 
@@ -118,31 +126,73 @@ export const injectWorktreeUncommittedPreviews = ({
   let nextBranches = restoreBranchHeadsFromSessions(branches, sessions);
   let nextPreviews = stripWorkingTreeFromPreviews(branchCommitPreviews);
   let nextUniqueAheadCounts = { ...branchUniqueAheadCounts };
+  const reservedLaneNames = new Set(nextBranches.map((branch) => branch.name));
 
   for (const session of sessions) {
-    const checkedOutAnchorSha = session.headSha || session.parentSha || null;
+    const parentSha = session.headSha || session.parentSha || null;
     const { branch: targetBranch } = resolveTargetLane(
       session,
       nextBranches,
       directCommits,
       defaultBranch,
     );
-    const anchorCommitDate = resolveAnchorCommitDate(
-      checkedOutAnchorSha,
+    const parentCommitDate = resolveAnchorCommitDate(
+      parentSha,
       directCommits,
       targetBranch,
       nextPreviews,
     );
-    const worktreeDate = anchorCommitDate ?? new Date().toISOString();
+    const worktreeDate = parentCommitDate ?? new Date().toISOString();
     const worktreeNode: BranchCommitPreview = {
       fullSha: session.workingTreeId,
       sha: 'uncommitted',
-      parentSha: checkedOutAnchorSha,
+      parentSha,
       message: '',
       author: 'You',
       date: worktreeDate,
       kind: 'uncommitted',
     };
+
+    const useDedicatedLane = !session.branchName;
+
+    if (useDedicatedLane) {
+      const laneName = worktreeLaneBranchName(session.path, reservedLaneNames);
+      reservedLaneNames.add(laneName);
+      const parentBranch =
+        resolveAnchorOwningBranchName(parentSha, directCommits, nextPreviews, defaultBranch)
+        ?? defaultBranch;
+      if (!nextBranches.some((branch) => branch.name === laneName)) {
+        nextBranches = [
+          ...nextBranches,
+          {
+            name: laneName,
+            commitsAhead: session.hasUncommittedChanges ? 1 : 0,
+            commitsBehind: 0,
+            lastCommitDate: worktreeDate,
+            lastCommitAuthor: 'You',
+            status: 'fresh',
+            remoteSyncStatus: 'local-only',
+            unpushedCommits: session.hasUncommittedChanges ? 1 : 0,
+            headSha: session.hasUncommittedChanges ? session.workingTreeId : (parentSha ?? session.workingTreeId),
+            parentBranch,
+            divergedFromSha: parentSha ?? undefined,
+          },
+        ];
+      }
+      if (session.hasUncommittedChanges) {
+        nextUniqueAheadCounts = {
+          ...nextUniqueAheadCounts,
+          [laneName]: Math.max(0, (nextUniqueAheadCounts[laneName] ?? 0)) + 1,
+        };
+      } else if (!Object.prototype.hasOwnProperty.call(nextUniqueAheadCounts, laneName)) {
+        nextUniqueAheadCounts = { ...nextUniqueAheadCounts, [laneName]: 0 };
+      }
+      nextPreviews = {
+        ...nextPreviews,
+        [laneName]: [worktreeNode, ...(nextPreviews[laneName] || [])],
+      };
+      continue;
+    }
 
     if (targetBranch) {
       if (session.hasUncommittedChanges) {

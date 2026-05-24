@@ -21,6 +21,8 @@ import { buildMapGridCardSlotAssignments, computeMapGridCardSlotCount } from './
 import {
   accentCssVars,
   isWorkingTreeCommitId,
+  resolveWorktreeCommitTileShapeCssVar,
+  worktreeAccentActive,
   type WorktreeAccentToken,
   type WorktreeSession,
 } from '../../lib/worktreeSessions';
@@ -237,7 +239,7 @@ const MapGridCommitCard = memo(function MapGridCommitCard({
   const isUnpushedOnBranch =
     !isLocalUncommitted &&
     isCommitUnpushedOnBranch(commitId, branchName, unpushedCommitShasSetByBranch);
-  const isUnpushedCommit = isDirtyWorktreeNode || isUnpushedOnBranch;
+  const isUnpushedCommit = isUnpushedOnBranch;
   const isExplicitRemoteCommit = node.commit.isRemote === true;
   const isRemoteCommit =
     !isLocalUncommitted &&
@@ -255,15 +257,15 @@ const MapGridCommitCard = memo(function MapGridCommitCard({
         : 'Stashed changes')
     : node.commit.message;
 
-  const checkedOutAccentActive = isLocalUncommitted && !isSelectedCommit && accentToken != null;
-  const accentColors = accentToken ? accentCssVars(accentToken) : null;
+  const hasWorktreeAccent = worktreeAccentActive(isLocalUncommitted, accentToken);
+  const accentColors = hasWorktreeAccent ? accentCssVars(accentToken) : null;
 
-  const selectedCommitTextClass = checkedOutAccentActive
+  const selectedCommitTextClass = hasWorktreeAccent
     ? ''
     : isSelectedCommit
       ? 'text-select'
       : 'text-foreground';
-  const selectedCommitTextStyle: CSSProperties | undefined = checkedOutAccentActive && accentColors
+  const selectedCommitTextStyle: CSSProperties | undefined = hasWorktreeAccent && accentColors
     ? { color: accentColors.fg }
     : isSelectedCommit
       ? { color: 'var(--select)' }
@@ -293,9 +295,9 @@ const MapGridCommitCard = memo(function MapGridCommitCard({
 
   const shortSha = node.commit.id.slice(0, 7);
   const headerLabel = isEmptyBranchNode
-    ? `${node.commit.branchName}/empty`
+    ? node.commit.branchName
     : isLocalUncommitted && uncommittedSession
-      ? formatWorktreeNodeHeaderLabel(uncommittedSession, branchName)
+      ? formatWorktreeNodeHeaderLabel(uncommittedSession)
       : isStashedCommit && stashHeaderLabel
           ? stashHeaderLabel
           : isRemoteCommit && branchName
@@ -336,17 +338,16 @@ const MapGridCommitCard = memo(function MapGridCommitCard({
     gap: 'calc(1rem * var(--map-inv-zoom, 1))',
   };
 
-  const commitTileShapeCssVar = !showCommitTilePattern
-    ? null
-    : checkedOutAccentActive && accentToken
-      ? `--${accentToken}-muted`
-      : isSelectedCommit
-        ? '--select-muted'
-        : '--muted';
+  const commitTileShapeCssVar = resolveWorktreeCommitTileShapeCssVar(
+    isLocalUncommitted,
+    accentToken,
+    isSelectedCommit,
+    showCommitTilePattern,
+  );
 
   const commitTileHoverTintColor = !showCommitTilePattern
     ? null
-    : checkedOutAccentActive && accentColors
+    : hasWorktreeAccent && accentColors
       ? accentColors.fg
       : isSelectedCommit
         ? 'var(--select)'
@@ -518,7 +519,7 @@ const MapGridCommitCard = memo(function MapGridCommitCard({
           useRoundedCardOutline ? 'rounded-tr-xl rounded-br-xl rounded-bl-xl rounded-tl-none' : '',
           showCommitTilePattern
             ? 'bg-background'
-            : checkedOutAccentActive && accentToken && !isUnpushedCommit && !commitTileCloudyGaps
+            : hasWorktreeAccent && accentToken && !isUnpushedCommit && !commitTileCloudyGaps
               ? ''
               : isSelectedCommit && !isUnpushedCommit && !commitTileCloudyGaps
                 ? 'bg-select-muted'
@@ -536,7 +537,7 @@ const MapGridCommitCard = memo(function MapGridCommitCard({
           borderBottomRightRadius: outlineCornerRadiusCss,
           borderBottomLeftRadius: outlineCornerRadiusCss,
           contain: 'layout paint style',
-          ...(checkedOutAccentActive && accentToken && !showCommitTilePattern && !isUnpushedCommit && !commitTileCloudyGaps
+          ...(hasWorktreeAccent && accentToken && !showCommitTilePattern && !isUnpushedCommit && !commitTileCloudyGaps
             ? { backgroundColor: `var(--${accentToken}-muted)` }
             : {}),
         }}

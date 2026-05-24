@@ -74,6 +74,7 @@ import {
   looseCableConnectorIntersectsViewportBounds,
   shaMatchesGitRef,
   visibleCommitIdSetEquals,
+  worktreeSessionDisplayName,
   worktreeShortLabel,
 } from './mapGridUtils';
 import type { ViewportContentBounds } from './mapGridUtils';
@@ -444,7 +445,6 @@ export default function BranchGridMap({
     gridFocusSha,
     checkedOutRef?.headSha ?? null,
     checkedOutRef?.branchName ?? null,
-    checkedOutRef?.hasUncommittedChanges ?? false,
     worktreeSessions,
     orientation,
     nodePositionOverrides,
@@ -906,8 +906,8 @@ export default function BranchGridMap({
     ...selectedDeletableBranchNames.map((branchName) => `Branch ${branchName}`),
     ...uncommittedSessionsToDiscard.map((session) => (
       session.isCurrent
-        ? 'Uncommitted changes'
-        : `Uncommitted · ${worktreeShortLabel(session.path)}`
+        ? 'Discard changes'
+        : `Discard changes · ${worktreeSessionDisplayName(session)}`
     )),
     ...selectedStashIndices.map((idx) => `Stash ${idx + 1}`),
   ];
@@ -1136,7 +1136,11 @@ export default function BranchGridMap({
       centerY,
     );
     for (const node of renderNodes) {
-      if (!node.commit.id.startsWith('BRANCH_HEAD:')) continue;
+      const alwaysRetain =
+        node.commit.id.startsWith('BRANCH_HEAD:')
+        || isWorkingTreeCommitId(node.commit.id)
+        || node.commit.kind === 'uncommitted';
+      if (!alwaysRetain) continue;
       if (nextVisible.has(node.commit.visualId)) {
         cappedVisible.add(node.commit.visualId);
       }

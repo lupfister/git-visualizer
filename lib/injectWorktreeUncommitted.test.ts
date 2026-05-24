@@ -114,4 +114,64 @@ describe('injectWorktreeUncommittedPreviews', () => {
     expect(featurePreviews.some((preview) => isEmptyBranchGraphPlaceholder(preview))).toBe(false);
     expect(featurePreviews.some((preview) => preview.kind === 'uncommitted')).toBe(true);
   });
+
+  it('sets worktree node date to the parent commit date', () => {
+    const headSha = 'bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb';
+    const parentDate = '2024-03-15T08:00:00.000Z';
+    const worktrees = [
+      wt({ path: '/repo', branchName: 'main', headSha, isCurrent: true }),
+    ];
+    const sessions = buildWorktreeSessions(worktrees, '/repo');
+    const result = injectWorktreeUncommittedPreviews({
+      sessions,
+      branches: [branch('main', headSha)],
+      branchCommitPreviews: {},
+      branchUniqueAheadCounts: {},
+      directCommits: [
+        {
+          fullSha: headSha,
+          sha: headSha.slice(0, 7),
+          branch: 'main',
+          message: 'tip',
+          author: 'test',
+          date: parentDate,
+          parentSha: null,
+          parentShas: [],
+        },
+      ],
+      defaultBranch: 'main',
+    });
+    const worktreeNode = result.branchCommitPreviews.main?.find((preview) => preview.kind === 'uncommitted');
+    expect(worktreeNode?.date).toBe(parentDate);
+    expect(worktreeNode?.parentSha).toBe(headSha);
+  });
+
+  it('places detached worktrees on a dedicated Worktree lane', () => {
+    const headSha = 'bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb';
+    const worktrees = [
+      wt({ path: '/repo/wt-test1', branchName: null, headSha, isCurrent: false }),
+    ];
+    const sessions = buildWorktreeSessions(worktrees, '/repo');
+    const result = injectWorktreeUncommittedPreviews({
+      sessions,
+      branches: [branch('main', 'aaaaaaaaaaaa1111')],
+      branchCommitPreviews: {},
+      branchUniqueAheadCounts: {},
+      directCommits: [{
+        fullSha: headSha,
+        sha: headSha.slice(0, 7),
+        branch: 'main',
+        message: 'anchor',
+        author: 'test',
+        date: '2024-01-01T00:00:00Z',
+        parentSha: null,
+        parentShas: [],
+      }],
+      defaultBranch: 'main',
+    });
+    const laneName = Object.keys(result.branchCommitPreviews).find((name) => name.startsWith('Worktree · '));
+    expect(laneName).toBe('Worktree · wt-test1');
+    expect(result.branchCommitPreviews[laneName!]?.some((preview) => preview.kind === 'uncommitted')).toBe(true);
+    expect(result.branchCommitPreviews.main?.some((preview) => preview.kind === 'uncommitted')).toBeFalsy();
+  });
 });
