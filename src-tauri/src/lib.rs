@@ -51,8 +51,17 @@ struct DeleteSelectionResult {
 }
 
 static WATCHER_STATE: OnceLock<Mutex<HashMap<String, notify::RecommendedWatcher>>> = OnceLock::new();
-const GIT_ACTIVITY_LOCAL_MIN_EMIT_MS: u64 = 250;
 const GIT_ACTIVITY_GRAPH_MIN_EMIT_MS: u64 = 120;
+
+async fn run_blocking<F, T>(f: F) -> Result<T, String>
+where
+    F: FnOnce() -> Result<T, String> + Send + 'static,
+    T: Send + 'static,
+{
+    tauri::async_runtime::spawn_blocking(f)
+        .await
+        .map_err(|e| format!("Blocking task failed: {e}"))?
+}
 const REPO_VISUAL_CACHE_SCHEMA_VERSION: i32 = 8;
 const PROJECT_SNAPSHOT_SCHEMA_VERSION: i32 = 1;
 const PROJECT_SNAPSHOT_RETAIN_COUNT: i64 = 2;
@@ -1056,14 +1065,14 @@ fn watch_repo(repo_path: String, app: tauri::AppHandle) -> Result<(), String> {
     let (tx, rx) = std::sync::mpsc::channel();
     let mut watcher = notify::recommended_watcher(tx).map_err(|e| e.to_string())?;
 
-    let _ = watcher.watch(repo_root, RecursiveMode::Recursive);
+    // Watch only .git internals — working-tree watches fire constantly during stash/commit
+    // and trigger redundant refreshes while a mutation is already in flight.
     let _ = watcher.watch(&primary_git_dir, RecursiveMode::Recursive);
     if let Some(common_dir) = resolved_git_common_dir.as_ref() {
         if common_dir != &primary_git_dir {
             let _ = watcher.watch(common_dir, RecursiveMode::Recursive);
         }
     }
-    let last_local_emit_ms = std::sync::Arc::new(AtomicU64::new(0));
     let last_graph_emit_ms = std::sync::Arc::new(AtomicU64::new(0));
     let mut git_roots = vec![primary_git_dir.clone()];
     if let Some(common_dir) = resolved_git_common_dir {
@@ -1081,16 +1090,13 @@ fn watch_repo(repo_path: String, app: tauri::AppHandle) -> Result<(), String> {
                 }
 
                 let mut has_graph_change = false;
-                let mut has_local_change = false;
                 for p in &event.paths {
                     if path_contains_noise_dir(p) {
                         continue;
                     }
 
                     let is_git_internal = git_roots.iter().any(|root| p.starts_with(root));
-                    // Working-tree changes are used to refresh local dirty status only.
                     if !is_git_internal {
-                        has_local_change = true;
                         continue;
                     }
 
@@ -1117,19 +1123,6 @@ fn watch_repo(repo_path: String, app: tauri::AppHandle) -> Result<(), String> {
                             GitActivityEventPayload {
                                 repo_path: repo_path_for_events.clone(),
                                 kind: "graph".to_string(),
-                            },
-                        );
-                    }
-                } else if has_local_change {
-                    let now_ms = Utc::now().timestamp_millis().max(0) as u64;
-                    let prev_ms = last_local_emit_ms.load(Ordering::Relaxed);
-                    if now_ms.saturating_sub(prev_ms) >= GIT_ACTIVITY_LOCAL_MIN_EMIT_MS {
-                        last_local_emit_ms.store(now_ms, Ordering::Relaxed);
-                        let _ = app.emit(
-                            "git-activity",
-                            GitActivityEventPayload {
-                                repo_path: repo_path_for_events.clone(),
-                                kind: "local".to_string(),
                             },
                         );
                     }
@@ -1535,8 +1528,10 @@ fn check_project_fingerprint(project_id: String) -> Result<FingerprintCheckResul
     })
 }
 
-#[tauri::command(rename_all = "camelCase")]
-fn refresh_project_if_changed(project_id: String, app: tauri::AppHandle) -> Result<RefreshProjectResult, String> {
+fn refresh_project_if_changed_blocking(
+    project_id: String,
+    app: tauri::AppHandle,
+) -> Result<RefreshProjectResult, String> {
     let normalized_project_id = normalize_repo_path_id(&project_id);
     let check = check_project_fingerprint(normalized_project_id.clone())?;
     if !check.changed {
@@ -1562,6 +1557,14 @@ fn refresh_project_if_changed(project_id: String, app: tauri::AppHandle) -> Resu
         updated: true,
         snapshot: Some(snapshot),
     })
+}
+
+#[tauri::command(rename_all = "camelCase")]
+async fn refresh_project_if_changed(
+    project_id: String,
+    app: tauri::AppHandle,
+) -> Result<RefreshProjectResult, String> {
+    run_blocking(move || refresh_project_if_changed_blocking(project_id, app)).await
 }
 
 #[tauri::command(rename_all = "camelCase")]
@@ -1806,31 +1809,44 @@ fn push_branch_ref(repo: &Path, branch: &str, target_sha: Option<&str>) -> Resul
 }
 
 #[tauri::command(rename_all = "camelCase")]
-fn pull_branch_with_strategy(repo_path: String, branch_name: String, rebase: bool) -> Result<(), String> {
-    let path = Path::new(&repo_path);
-    let mut args = vec!["pull"];
-    if rebase {
-        args.push("--rebase");
-    } else {
-        args.push("--no-rebase");
-    }
-    args.push("origin");
-    args.push(&branch_name);
-    git::cli::run(path, &args).map(|_| ()).map_err(|e| e.to_string())
+async fn pull_branch_with_strategy(
+    repo_path: String,
+    branch_name: String,
+    rebase: bool,
+) -> Result<(), String> {
+    run_blocking(move || {
+        let path = Path::new(&repo_path);
+        let mut args = vec!["pull"];
+        if rebase {
+            args.push("--rebase");
+        } else {
+            args.push("--no-rebase");
+        }
+        args.push("origin");
+        args.push(&branch_name);
+        git::cli::run(path, &args).map(|_| ()).map_err(|e| e.to_string())
+    })
+    .await
 }
 
 #[tauri::command(rename_all = "camelCase")]
-fn checkout_ref(repo_path: String, ref_name: String) -> Result<CheckedOutRef, String> {
-    let path = Path::new(&repo_path);
-    git::cli::run(path, &["checkout", "--detach", &ref_name]).map_err(|e| e.to_string())?;
-    git::get_checked_out_ref(path).map_err(|e| e.to_string())
+async fn checkout_ref(repo_path: String, ref_name: String) -> Result<CheckedOutRef, String> {
+    run_blocking(move || {
+        let path = Path::new(&repo_path);
+        git::cli::run(path, &["checkout", "--detach", &ref_name]).map_err(|e| e.to_string())?;
+        git::get_checked_out_ref(path).map_err(|e| e.to_string())
+    })
+    .await
 }
 
 #[tauri::command(rename_all = "camelCase")]
-fn checkout_branch(repo_path: String, branch_name: String) -> Result<CheckedOutRef, String> {
-    let path = Path::new(&repo_path);
-    git::cli::run(path, &["checkout", &branch_name]).map_err(|e| e.to_string())?;
-    git::get_checked_out_ref(path).map_err(|e| e.to_string())
+async fn checkout_branch(repo_path: String, branch_name: String) -> Result<CheckedOutRef, String> {
+    run_blocking(move || {
+        let path = Path::new(&repo_path);
+        git::cli::run(path, &["checkout", &branch_name]).map_err(|e| e.to_string())?;
+        git::get_checked_out_ref(path).map_err(|e| e.to_string())
+    })
+    .await
 }
 
 #[tauri::command(rename_all = "camelCase")]
@@ -1840,19 +1856,25 @@ fn list_stashes(repo_path: String) -> Result<Vec<git::GitStashEntry>, String> {
 }
 
 #[tauri::command(rename_all = "camelCase")]
-fn stash_push(repo_path: String, include_untracked: bool, message: String) -> Result<(), String> {
-    let path = Path::new(&repo_path);
-    opencode::validate_generated_message(&message, "Stash message")?;
-    git::stash_push(path, include_untracked, &message).map_err(|e| e.to_string())
+async fn stash_push(repo_path: String, include_untracked: bool, message: String) -> Result<(), String> {
+    run_blocking(move || {
+        let path = Path::new(&repo_path);
+        opencode::validate_generated_message(&message, "Stash message")?;
+        git::stash_push(path, include_untracked, &message).map_err(|e| e.to_string())
+    })
+    .await
 }
 
 #[tauri::command(rename_all = "camelCase")]
-fn commit_working_tree(repo_path: String, message: String) -> Result<CheckedOutRef, String> {
-    let path = Path::new(&repo_path);
-    let trimmed = message.trim();
-    opencode::validate_generated_message(trimmed, "Commit message")?;
-    git::commit_working_tree(path, trimmed).map_err(|e| e.to_string())?;
-    git::get_checked_out_ref(path).map_err(|e| e.to_string())
+async fn commit_working_tree(repo_path: String, message: String) -> Result<CheckedOutRef, String> {
+    run_blocking(move || {
+        let path = Path::new(&repo_path);
+        let trimmed = message.trim();
+        opencode::validate_generated_message(trimmed, "Commit message")?;
+        git::commit_working_tree(path, trimmed).map_err(|e| e.to_string())?;
+        git::get_checked_out_ref(path).map_err(|e| e.to_string())
+    })
+    .await
 }
 
 #[tauri::command(rename_all = "camelCase")]
@@ -1887,16 +1909,22 @@ fn stage_working_tree(repo_path: String) -> Result<CheckedOutRef, String> {
 }
 
 #[tauri::command(rename_all = "camelCase")]
-fn apply_stash_restore(repo_path: String, stash_index: u32) -> Result<CheckedOutRef, String> {
-    let path = Path::new(&repo_path);
-    git::apply_stash_restore(path, stash_index).map_err(|e| e.to_string())?;
-    git::get_checked_out_ref(path).map_err(|e| e.to_string())
+async fn apply_stash_restore(repo_path: String, stash_index: u32) -> Result<CheckedOutRef, String> {
+    run_blocking(move || {
+        let path = Path::new(&repo_path);
+        git::apply_stash_restore(path, stash_index).map_err(|e| e.to_string())?;
+        git::get_checked_out_ref(path).map_err(|e| e.to_string())
+    })
+    .await
 }
 
 #[tauri::command(rename_all = "camelCase")]
-fn stash_drop(repo_path: String, stash_index: u32) -> Result<(), String> {
-    let path = Path::new(&repo_path);
-    git::stash_drop(path, stash_index).map_err(|e| e.to_string())
+async fn stash_drop(repo_path: String, stash_index: u32) -> Result<(), String> {
+    run_blocking(move || {
+        let path = Path::new(&repo_path);
+        git::stash_drop(path, stash_index).map_err(|e| e.to_string())
+    })
+    .await
 }
 
 #[tauri::command(rename_all = "camelCase")]
@@ -1926,61 +1954,70 @@ fn start_window_drag(window: tauri::WebviewWindow) -> Result<(), String> {
 }
 
 #[tauri::command(rename_all = "camelCase")]
-fn push_branch(
+async fn push_branch(
     repo_path: String,
     branch_name: String,
     target_sha: Option<String>,
 ) -> Result<PushResult, String> {
-    let path = Path::new(&repo_path);
-    push_branch_ref(path, &branch_name, target_sha.as_deref())?;
-    Ok(PushResult {
-        branch_name,
-        target_sha,
+    run_blocking(move || {
+        let path = Path::new(&repo_path);
+        push_branch_ref(path, &branch_name, target_sha.as_deref())?;
+        Ok(PushResult {
+            branch_name,
+            target_sha,
+        })
     })
+    .await
 }
 
 #[tauri::command(rename_all = "camelCase")]
-fn push_current_branch(repo_path: String) -> Result<PushResult, String> {
-    let path = Path::new(&repo_path);
-    let checked_out = git::get_checked_out_ref(path).map_err(|e| e.to_string())?;
-    let branch_name = checked_out
-        .branch_name
-        .ok_or_else(|| "Cannot push while HEAD is detached.".to_string())?;
-    push_branch_ref(path, &branch_name, None)?;
-    Ok(PushResult {
-        branch_name,
-        target_sha: None,
-    })
-}
-
-#[tauri::command(rename_all = "camelCase")]
-fn push_all_unpushed_branches(repo_path: String) -> Result<Vec<PushResult>, String> {
-    let path = Path::new(&repo_path);
-    let default_branch = git::get_default_branch(path).map_err(|e| e.to_string())?;
-    let mut push_targets: Vec<PushResult> = git::list_branches(path, &default_branch)
-        .map_err(|e| e.to_string())?
-        .into_iter()
-        .filter(|branch| branch.remote_sync_status != "on-github" && branch.unpushed_commits > 0)
-        .map(|branch| PushResult {
-            branch_name: branch.name,
+async fn push_current_branch(repo_path: String) -> Result<PushResult, String> {
+    run_blocking(move || {
+        let path = Path::new(&repo_path);
+        let checked_out = git::get_checked_out_ref(path).map_err(|e| e.to_string())?;
+        let branch_name = checked_out
+            .branch_name
+            .ok_or_else(|| "Cannot push while HEAD is detached.".to_string())?;
+        push_branch_ref(path, &branch_name, None)?;
+        Ok(PushResult {
+            branch_name,
             target_sha: None,
         })
-        .collect();
+    })
+    .await
+}
 
-    if branch_has_unpushed_commits(path, &default_branch)
-        && !push_targets.iter().any(|target| target.branch_name == default_branch)
-    {
-        push_targets.push(PushResult {
-            branch_name: default_branch.clone(),
-            target_sha: None,
-        });
-    }
+#[tauri::command(rename_all = "camelCase")]
+async fn push_all_unpushed_branches(repo_path: String) -> Result<Vec<PushResult>, String> {
+    run_blocking(move || {
+        let path = Path::new(&repo_path);
+        let default_branch = git::get_default_branch(path).map_err(|e| e.to_string())?;
+        let mut push_targets: Vec<PushResult> = git::list_branches(path, &default_branch)
+            .map_err(|e| e.to_string())?
+            .into_iter()
+            .filter(|branch| branch.remote_sync_status != "on-github" && branch.unpushed_commits > 0)
+            .map(|branch| PushResult {
+                branch_name: branch.name,
+                target_sha: None,
+            })
+            .collect();
 
-    for target in &push_targets {
-        push_branch_ref(path, &target.branch_name, None)?;
-    }
+        if branch_has_unpushed_commits(path, &default_branch)
+            && !push_targets.iter().any(|target| target.branch_name == default_branch)
+        {
+            push_targets.push(PushResult {
+                branch_name: default_branch.clone(),
+                target_sha: None,
+            });
+        }
 
-    Ok(push_targets)
+        for target in &push_targets {
+            push_branch_ref(path, &target.branch_name, None)?;
+        }
+
+        Ok(push_targets)
+    })
+    .await
 }
 
 #[tauri::command(rename_all = "camelCase")]
