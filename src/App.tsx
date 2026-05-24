@@ -7,20 +7,17 @@ import { open } from '@tauri-apps/plugin-dialog';
 import { PanelLeftClose, PanelLeftOpen } from 'lucide-react';
 import BranchGridMapView from '../components/grid/MapViewGrid';
 import DenseBranchSidebar from '../components/DenseBranchSidebar';
-import { buildLanes, type NodePositionOverrides } from '../components/grid/LayoutGrid';
+import type { NodePositionOverrides } from '../components/grid/LayoutGrid';
 import { computeBranchGridLayout, type BranchGridLayoutModel } from '../components/grid/branchGridLayoutModel';
 import { hydrateBranchGridLayoutModel, serializeBranchGridLayoutModel } from '../components/grid/layoutSnapshot';
-import {
-  layoutModelHasWorkingTree,
-  stripWorkingTreeFromLayoutModel,
-} from '../components/grid/workingTreeLayout';
+import { layoutModelHasWorkingTree } from '../components/grid/workingTreeLayout';
 import type { Branch, BranchCommitPreview, BranchPromptMeta, CheckedOutRef, DirectCommit, GitHubAuthStatus, GitHubInfo, GitStashEntry, MergeNode, OpenPR, RepoVisualSnapshot, WorktreeInfo } from '../types';
 import {
   applyBranchParents,
   isNewerBranchAsParent,
   isParallelEmptyBranchParent,
 } from '../lib/branchParents';
-import { foldEmptyBranchPlaceholdersIntoGraph, foldStashNodesIntoGraph } from './placeStashNode';
+import { foldStashNodesIntoGraph } from './placeStashNode';
 import { stripWorkingTreeFromPreviews, injectWorktreeUncommittedPreviews } from '../lib/injectWorktreeUncommitted';
 import {
   buildWorktreeSessions,
@@ -132,12 +129,6 @@ function nodePositionsStorageKey(repoPath: string): string {
   return `${NODE_POSITIONS_STORAGE_KEY_PREFIX}${encodeURIComponent(normalizePath(repoPath))}`;
 }
 
-function purgeWorkingTreeLayoutsFromCache(cache: Map<string, BranchGridLayoutModel>) {
-  for (const [key, model] of cache.entries()) {
-    if (layoutModelHasWorkingTree(model)) cache.delete(key);
-  }
-}
-
 function reconcileSnapshotCheckedOutRef(
   snapshot: RepoVisualSnapshot,
   quickState: RepoQuickState | null,
@@ -162,7 +153,7 @@ function makeLayoutCacheKey(
   graphSignature = '',
 ): string {
   return [
-    'layout-v4',
+    'layout-v5-clump-owner-column',
     path,
     orientation,
     setSignature(manuallyOpenedClumps),
@@ -1261,7 +1252,6 @@ function App() {
         setLayoutEpoch((epoch) => epoch + 1);
         setHydratedLayoutModel(null);
         setHydratedLayoutKey(null);
-        purgeWorkingTreeLayoutsFromCache(layoutModelCacheRef.current);
       }
     }
 
@@ -1294,7 +1284,6 @@ function App() {
           setLayoutEpoch((epoch) => epoch + 1);
           setHydratedLayoutModel(null);
           setHydratedLayoutKey(null);
-          purgeWorkingTreeLayoutsFromCache(layoutModelCacheRef.current);
         }
       }
       return;
@@ -1316,7 +1305,6 @@ function App() {
         setLayoutEpoch((epoch) => epoch + 1);
         setHydratedLayoutModel(null);
         setHydratedLayoutKey(null);
-        purgeWorkingTreeLayoutsFromCache(layoutModelCacheRef.current);
       }
     }
   }
@@ -1898,7 +1886,6 @@ function App() {
             setLayoutEpoch((epoch) => epoch + 1);
             setHydratedLayoutModel(null);
             setHydratedLayoutKey(null);
-            purgeWorkingTreeLayoutsFromCache(layoutModelCacheRef.current);
           }
           return;
         }
@@ -1923,7 +1910,6 @@ function App() {
           if (quickState && !quickState.hasUncommittedChanges) {
             setHydratedLayoutModel(null);
             setHydratedLayoutKey(null);
-            purgeWorkingTreeLayoutsFromCache(layoutModelCacheRef.current);
           }
         }
       } catch (error) {
@@ -2921,7 +2907,7 @@ function App() {
     [worktrees, repoPath, checkedOutRef],
   );
 
-  // Synthetic stash nodes (yellow) and optional uncommitted node (blue) — same lane rules as before.
+  // Synthetic stash nodes (yellow) and per-worktree worktree nodes — same lane rules as before.
   const {
     enrichedBranches,
     enrichedBranchCommitPreviews,
@@ -2941,19 +2927,11 @@ function App() {
       defaultBranch,
       anyDirty,
     );
-    const emptyBranchFolded = foldEmptyBranchPlaceholdersIntoGraph(
-      stashFolded.branches,
-      stashFolded.directCommits,
-      stashFolded.branchCommitPreviews,
-      stashFolded.branchUniqueAheadCounts,
-      defaultBranch,
-    );
-
-    let eb = emptyBranchFolded.branches;
-    let edc = emptyBranchFolded.directCommits;
+    let eb = stashFolded.branches;
+    let edc = stashFolded.directCommits;
     let eupdc = unpushedDirectCommits;
-    let ebp = emptyBranchFolded.branchCommitPreviews;
-    let ebuac = emptyBranchFolded.branchUniqueAheadCounts;
+    let ebp = stashFolded.branchCommitPreviews;
+    let ebuac = stashFolded.branchUniqueAheadCounts;
     let effectiveCheckedOutRef = checkedOutRef;
     const hasRemoteTipInLocalGraph = remoteDefaultTipSha
       ? edc.some((commit) => commit.fullSha === remoteDefaultTipSha || commit.sha === remoteDefaultTipSha.slice(0, 7))
@@ -3106,7 +3084,6 @@ function App() {
       setLayoutEpoch((epoch) => epoch + 1);
       setHydratedLayoutModel(null);
       setHydratedLayoutKey(null);
-      purgeWorkingTreeLayoutsFromCache(layoutModelCacheRef.current);
     }
     hadUncommittedChangesRef.current = hasUncommitted;
   }, [visualCheckedOutRef?.hasUncommittedChanges]);
@@ -3157,10 +3134,6 @@ function App() {
     }
     return map;
   }, [branchesForLayout, defaultBranch]);
-  const sharedGridLanes = useMemo(
-    () => buildLanes(branchesForLayout, defaultBranch, enrichedBranchCommitPreviews, enrichedBranchParentByName),
-    [branchesForLayout, defaultBranch, enrichedBranchCommitPreviews, enrichedBranchParentByName],
-  );
   const openedClumpsSignature = useMemo(
     () => setSignature(manuallyOpenedGridClumps),
     [manuallyOpenedGridClumps],
@@ -3171,7 +3144,7 @@ function App() {
   );
   const graphLayoutSignature = useMemo(
     () => [
-      'layout-v10-empty-branch-head-placeholder',
+      'layout-v11-clump-owner-column-band',
       layoutEpoch,
       defaultBranch,
       visualCheckedOutRef?.branchName ?? '',
@@ -3216,17 +3189,16 @@ function App() {
       setHydratedLayoutKey(null);
       return;
     }
-    const isDirty = worktreeSessions.some((session) => session.hasUncommittedChanges);
+    const hasWorktreeNodes = worktreeSessions.length > 0;
     const inMemory = layoutModelCacheRef.current.get(sharedGridLayoutCacheKey);
     if (inMemory) {
-      if (layoutModelHasWorkingTree(inMemory) && !isDirty) {
-        layoutModelCacheRef.current.delete(sharedGridLayoutCacheKey);
-      } else {
+      if (layoutModelHasWorkingTree(inMemory) === hasWorktreeNodes) {
         setHydratedLayoutModel(inMemory);
         setHydratedLayoutKey(sharedGridLayoutCacheKey);
         persistedLayoutKeysRef.current.add(sharedGridLayoutCacheKey);
         return;
       }
+      layoutModelCacheRef.current.delete(sharedGridLayoutCacheKey);
     }
     let disposed = false;
     setHydratedLayoutModel(null);
@@ -3238,9 +3210,9 @@ function App() {
       .then((payloadJson) => {
         if (disposed || !payloadJson) return;
         const parsed = JSON.parse(payloadJson);
-        let hydrated = hydrateBranchGridLayoutModel(parsed);
-        if (layoutModelHasWorkingTree(hydrated) && !isDirty) {
-          hydrated = stripWorkingTreeFromLayoutModel(hydrated);
+        const hydrated = hydrateBranchGridLayoutModel(parsed);
+        if (layoutModelHasWorkingTree(hydrated) !== hasWorktreeNodes) {
+          return;
         }
         layoutModelCacheRef.current.set(sharedGridLayoutCacheKey, hydrated);
         persistedLayoutKeysRef.current.add(sharedGridLayoutCacheKey);
@@ -3266,9 +3238,9 @@ function App() {
         Boolean(hydratedLayoutModel) &&
         (hydratedLayoutModel?.allCommits.length ?? 0) === 0 &&
         hasGraphSourceData;
-      const isDirty = worktreeSessions.some((session) => session.hasUncommittedChanges);
+      const hasWorktreeNodes = worktreeSessions.length > 0;
       const hydratedHasWorkingTree = layoutModelHasWorkingTree(hydratedLayoutModel);
-      const canReuseHydratedLayout = hydratedHasWorkingTree === isDirty;
+      const canReuseHydratedLayout = hydratedHasWorkingTree === hasWorktreeNodes;
       if (
         gridSearchQuery.trim().length === 0 &&
         sharedGridLayoutCacheKey &&
@@ -3283,12 +3255,11 @@ function App() {
         const fromCache = sharedGridLayoutCacheKey
           ? layoutModelCacheRef.current.get(sharedGridLayoutCacheKey) ?? null
           : null;
-        if (fromCache && layoutModelHasWorkingTree(fromCache) === isDirty) return fromCache;
+        if (fromCache && layoutModelHasWorkingTree(fromCache) === hasWorktreeNodes) return fromCache;
         const lastResolved = lastResolvedLayoutModelRef.current;
-        if (lastResolved && layoutModelHasWorkingTree(lastResolved) === isDirty) return lastResolved;
+        if (lastResolved && layoutModelHasWorkingTree(lastResolved) === hasWorktreeNodes) return lastResolved;
       }
       return computeBranchGridLayout({
-        lanes: sharedGridLanes,
         branches: branchesForLayout,
         mergeNodes,
         directCommits: enrichedDirectCommits,
@@ -3309,7 +3280,6 @@ function App() {
       });
     },
     [
-      sharedGridLanes,
       branchesForLayout,
       mergeNodes,
       enrichedDirectCommits,
@@ -3336,11 +3306,7 @@ function App() {
       hydratedLayoutModel?.allCommits.length ?? 0,
     ],
   );
-  const gridLayoutModelForView = useMemo(() => {
-    const isDirty = worktreeSessions.some((session) => session.hasUncommittedChanges);
-    if (isDirty) return sharedGridLayoutModel;
-    return stripWorkingTreeFromLayoutModel(sharedGridLayoutModel);
-  }, [sharedGridLayoutModel, worktreeSessions]);
+  const gridLayoutModelForView = sharedGridLayoutModel;
   useEffect(() => {
     lastResolvedLayoutModelRef.current = gridLayoutModelForView;
   }, [gridLayoutModelForView]);

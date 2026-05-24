@@ -1,5 +1,5 @@
 import { normalizeRepoPathForCompare } from '../components/grid/mapGridUtils';
-import type { CheckedOutRef, WorktreeInfo } from '../types';
+import type { Branch, BranchCommitPreview, CheckedOutRef, WorktreeInfo } from '../types';
 
 /** Current window only; teal checked-out token. */
 export type WorktreeCurrentAccentToken = 'checked';
@@ -136,6 +136,53 @@ export const shaMatches = (left?: string | null, right?: string | null): boolean
   return left === right || left.startsWith(right) || right.startsWith(left);
 };
 
+export const branchTipSha = (branch: Branch): string | null =>
+  branch.headSha || branch.createdFromSha || branch.divergedFromSha || branch.presidesFromSha || null;
+
+export const isEmptyBranchGraphPlaceholder = (preview: BranchCommitPreview): boolean =>
+  preview.fullSha.startsWith('BRANCH_HEAD:')
+  || (preview.kind === 'stash' && preview.sha === 'empty');
+
+/** True when a worktree session is checked out on this branch tip (empty-branch case). */
+export const sessionMatchesBranchCheckout = (
+  session: WorktreeSession,
+  branch: Branch,
+): boolean => {
+  if (!session.branchName || session.branchName !== branch.name) return false;
+  const tipSha = branchTipSha(branch);
+  if (!tipSha) return false;
+  if (shaMatches(session.headSha, tipSha)) return true;
+  if (session.parentSha && shaMatches(session.parentSha, tipSha)) return true;
+  return shaMatches(session.headSha, branch.divergedFromSha)
+    || shaMatches(session.headSha, branch.createdFromSha);
+};
+
+export const worktreeSessionCoversEmptyBranch = (
+  sessions: WorktreeSession[],
+  branch: Branch,
+): boolean => sessions.some((session) => sessionMatchesBranchCheckout(session, branch));
+
+export const stripEmptyBranchPlaceholdersForWorktreeSessions = (
+  sessions: WorktreeSession[],
+  branches: Branch[],
+  branchCommitPreviews: Record<string, BranchCommitPreview[]>,
+): Record<string, BranchCommitPreview[]> => {
+  if (sessions.length === 0) return branchCommitPreviews;
+  let changed = false;
+  const next: Record<string, BranchCommitPreview[]> = {};
+  for (const [branchName, previews] of Object.entries(branchCommitPreviews)) {
+    const branch = branches.find((candidate) => candidate.name === branchName);
+    if (!branch || !worktreeSessionCoversEmptyBranch(sessions, branch)) {
+      next[branchName] = previews;
+      continue;
+    }
+    const filtered = previews.filter((preview) => !isEmptyBranchGraphPlaceholder(preview));
+    if (filtered.length !== previews.length) changed = true;
+    if (filtered.length > 0) next[branchName] = filtered;
+  }
+  return changed ? next : branchCommitPreviews;
+};
+
 export const resolveCommitAccent = (
   commitId: string,
   kind: string | null | undefined,
@@ -156,18 +203,72 @@ export const resolveCommitAccent = (
   return (currentMatch ?? headMatches[0])!.accentToken;
 };
 
-export const buildWorktreeAccentByCommitId = (sessions: WorktreeSession[]): Map<string, WorktreeAccentToken> => {
+export const buildWorktreeAccentByCommitId = (
+  sessions: WorktreeSession[],
+  emptyBranchPlaceholderCommitIds: string[] = [],
+): Map<string, WorktreeAccentToken> => {
   const map = new Map<string, WorktreeAccentToken>();
   for (const session of sessions) {
-    if (session.headSha) {
-      const existing = map.get(session.headSha);
-      if (!existing || session.isCurrent) {
-        map.set(session.headSha, session.accentToken);
-      }
-    }
-    if (session.hasUncommittedChanges) {
-      map.set(session.workingTreeId, session.accentToken);
+    map.set(session.workingTreeId, session.accentToken);
+  }
+  if (emptyBranchPlaceholderCommitIds.length > 0) {
+    const lookups = buildWorktreeAccentLookups(sessions);
+    for (const commitId of emptyBranchPlaceholderCommitIds) {
+      const branchName = /^BRANCH_HEAD:([^:]+):/.exec(commitId)?.[1];
+      if (!branchName) continue;
+      const token = resolveBranchCheckoutAccent(
+        branchName,
+        parseBranchHeadTipShaFromCommitId(commitId) ?? undefined,
+        lookups,
+      );
+      if (token) map.set(commitId, token);
     }
   }
   return map;
+};
+
+export type WorktreeAccentLookups = {
+  byBranchName: Map<string, WorktreeAccentToken>;
+  byHeadSha: Map<string, WorktreeAccentToken>;
+};
+
+/** Branch/HEAD accent for sidebar rows; non-current sessions first so current wins on overlap. */
+export const buildWorktreeAccentLookups = (sessions: WorktreeSession[]): WorktreeAccentLookups => {
+  const byBranchName = new Map<string, WorktreeAccentToken>();
+  const byHeadSha = new Map<string, WorktreeAccentToken>();
+  const ordered = [
+    ...sessions.filter((session) => !session.isCurrent),
+    ...sessions.filter((session) => session.isCurrent),
+  ];
+  for (const session of ordered) {
+    if (session.branchName) {
+      byBranchName.set(session.branchName, session.accentToken);
+    }
+    if (session.headSha) {
+      const existing = byHeadSha.get(session.headSha);
+      if (!existing || session.isCurrent) {
+        byHeadSha.set(session.headSha, session.accentToken);
+      }
+    }
+  }
+  return { byBranchName, byHeadSha };
+};
+
+export const parseBranchHeadTipShaFromCommitId = (commitId: string): string | null => {
+  const match = /^BRANCH_HEAD:[^:]+:(.+)$/.exec(commitId);
+  return match?.[1] ?? null;
+};
+
+export const resolveBranchCheckoutAccent = (
+  branchName: string,
+  headSha: string | undefined,
+  lookups: WorktreeAccentLookups,
+): WorktreeAccentToken | null => {
+  const byName = lookups.byBranchName.get(branchName);
+  if (byName) return byName;
+  if (!headSha) return null;
+  for (const [sessionHeadSha, token] of lookups.byHeadSha.entries()) {
+    if (shaMatches(sessionHeadSha, headSha)) return token;
+  }
+  return null;
 };

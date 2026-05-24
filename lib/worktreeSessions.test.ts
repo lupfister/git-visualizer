@@ -1,10 +1,15 @@
 import { describe, expect, it } from 'vitest';
 import type { WorktreeInfo } from '../types';
+import type { Branch } from '../types';
 import {
   buildWorktreeAccentByCommitId,
+  buildWorktreeAccentLookups,
   buildWorktreeSessions,
   isWorkingTreeCommitId,
+  resolveBranchCheckoutAccent,
   resolveCommitAccent,
+  sessionMatchesBranchCheckout,
+  stripEmptyBranchPlaceholdersForWorktreeSessions,
   workingTreeIdForPath,
 } from './worktreeSessions';
 
@@ -54,7 +59,78 @@ describe('worktreeSessions', () => {
     expect(resolveCommitAccent('same-sha-12345', 'commit', sessions)).toBe('checked');
   });
 
-  it('buildWorktreeAccentByCommitId maps head and working tree ids', () => {
+  it('buildWorktreeAccentLookups colors each checked-out branch', () => {
+    const sessions = buildWorktreeSessions(
+      [
+        baseWorktree({ path: '/repo/wt-b', headSha: 'bbbbbbbbbbbb', branchName: 'feature', isCurrent: false }),
+        baseWorktree({ path: '/repo', headSha: 'aaaaaaaaaaaa', branchName: 'main', isCurrent: true }),
+      ],
+      '/repo',
+    );
+    const lookups = buildWorktreeAccentLookups(sessions);
+    expect(resolveBranchCheckoutAccent('main', 'aaaaaaaaaaaa', lookups)).toBe('checked');
+    expect(resolveBranchCheckoutAccent('feature', 'bbbbbbbbbbbb', lookups)).toBe('worktree-violet');
+    expect(resolveBranchCheckoutAccent('other', undefined, lookups)).toBeNull();
+  });
+
+  it('buildWorktreeAccentByCommitId maps empty branch placeholders by checked-out branch', () => {
+    const sessions = buildWorktreeSessions(
+      [
+        baseWorktree({ path: '/repo/wt-b', headSha: 'bbbbbbbbbbbb', branchName: 'cursor-sdk', isCurrent: false }),
+        baseWorktree({ path: '/repo', headSha: 'aaaaaaaaaaaa', branchName: 'main', isCurrent: true }),
+      ],
+      '/repo',
+    );
+    const map = buildWorktreeAccentByCommitId(sessions, ['BRANCH_HEAD:cursor-sdk:bbbbbbbbbbbb']);
+    expect(map.get('BRANCH_HEAD:cursor-sdk:bbbbbbbbbbbb')).toBe('worktree-violet');
+    expect(map.get('WORKING_TREE')).toBe('checked');
+  });
+
+  it('stripEmptyBranchPlaceholdersForWorktreeSessions removes BRANCH_HEAD when session covers branch', () => {
+    const branch: Branch = {
+      name: 'feature',
+      commitsAhead: 0,
+      commitsBehind: 0,
+      lastCommitDate: '2024-01-01T00:00:00Z',
+      lastCommitAuthor: 'You',
+      status: 'fresh',
+      remoteSyncStatus: 'local-only',
+      unpushedCommits: 0,
+      headSha: 'bbbbbbbbbbbb2222',
+    };
+    const sessions = buildWorktreeSessions(
+      [baseWorktree({ path: '/repo/wt', branchName: 'feature', headSha: 'bbbbbbbbbbbb2222', isCurrent: false })],
+      '/repo',
+    );
+    const previews = {
+      feature: [
+        {
+          fullSha: 'BRANCH_HEAD:feature:bbbbbbbbbbbb2222',
+          sha: 'empty',
+          parentSha: 'aaaaaaaaaaaa1111',
+          message: '',
+          author: 'You',
+          date: '2024-01-01T00:00:00Z',
+          kind: 'stash',
+        },
+        {
+          fullSha: 'WORKING_TREE:abc',
+          sha: 'uncommitted',
+          parentSha: 'bbbbbbbbbbbb2222',
+          message: '',
+          author: 'You',
+          date: '2024-01-01T00:00:00Z',
+          kind: 'uncommitted',
+        },
+      ],
+    };
+    const stripped = stripEmptyBranchPlaceholdersForWorktreeSessions(sessions, [branch], previews);
+    expect(stripped.feature?.some((preview) => preview.fullSha.startsWith('BRANCH_HEAD:'))).toBe(false);
+    expect(stripped.feature?.some((preview) => preview.kind === 'uncommitted')).toBe(true);
+    expect(sessionMatchesBranchCheckout(sessions[0]!, branch)).toBe(true);
+  });
+
+  it('buildWorktreeAccentByCommitId maps working tree id only, not head sha', () => {
     const sessions = buildWorktreeSessions(
       [
         baseWorktree({
@@ -69,7 +145,7 @@ describe('worktreeSessions', () => {
       { branchName: 'main', headSha: 'head1111111111', hasUncommittedChanges: true },
     );
     const map = buildWorktreeAccentByCommitId(sessions);
-    expect(map.get('head1111111111')).toBe('checked');
+    expect(map.get('head1111111111')).toBeUndefined();
     expect(map.get('WORKING_TREE')).toBe('checked');
   });
 });

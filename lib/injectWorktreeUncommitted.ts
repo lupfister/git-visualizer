@@ -1,5 +1,10 @@
 import type { Branch, BranchCommitPreview, DirectCommit } from '../types';
-import { isWorkingTreeCommitId, shaMatches, type WorktreeSession } from './worktreeSessions';
+import {
+  isWorkingTreeCommitId,
+  shaMatches,
+  stripEmptyBranchPlaceholdersForWorktreeSessions,
+  type WorktreeSession,
+} from './worktreeSessions';
 
 export type InjectWorktreeUncommittedInput = {
   sessions: WorktreeSession[];
@@ -30,6 +35,19 @@ export const stripWorkingTreeFromPreviews = (
   }
   return changed ? next : previews;
 };
+
+const restoreBranchHeadsFromSessions = (
+  branches: Branch[],
+  sessions: WorktreeSession[],
+): Branch[] =>
+  branches.map((branch) => {
+    if (!isWorkingTreeCommitId(branch.headSha)) return branch;
+    const sessionAtBranch = sessions.find((session) => session.branchName === branch.name);
+    if (sessionAtBranch && !sessionAtBranch.hasUncommittedChanges) {
+      return { ...branch, headSha: sessionAtBranch.headSha };
+    }
+    return branch;
+  });
 
 const resolveAnchorCommitDate = (
   anchorSha: string | null,
@@ -89,26 +107,19 @@ export const injectWorktreeUncommittedPreviews = ({
   directCommits,
   defaultBranch,
 }: InjectWorktreeUncommittedInput): InjectWorktreeUncommittedResult => {
-  const dirtySessions = sessions.filter((session) => session.hasUncommittedChanges);
-  if (dirtySessions.length === 0) {
+  if (sessions.length === 0) {
     return {
-      branches: branches.map((branch) => {
-        if (!isWorkingTreeCommitId(branch.headSha)) return branch;
-        const sessionAtBranch = sessions.find((session) => session.branchName === branch.name);
-        return sessionAtBranch
-          ? { ...branch, headSha: sessionAtBranch.headSha }
-          : branch;
-      }),
+      branches: restoreBranchHeadsFromSessions(branches, sessions),
       branchCommitPreviews: stripWorkingTreeFromPreviews(branchCommitPreviews),
       branchUniqueAheadCounts,
     };
   }
 
-  let nextBranches = [...branches];
-  let nextPreviews = { ...branchCommitPreviews };
+  let nextBranches = restoreBranchHeadsFromSessions(branches, sessions);
+  let nextPreviews = stripWorkingTreeFromPreviews(branchCommitPreviews);
   let nextUniqueAheadCounts = { ...branchUniqueAheadCounts };
 
-  for (const session of dirtySessions) {
+  for (const session of sessions) {
     const checkedOutAnchorSha = session.headSha || session.parentSha || null;
     const { branch: targetBranch } = resolveTargetLane(
       session,
@@ -122,57 +133,58 @@ export const injectWorktreeUncommittedPreviews = ({
       targetBranch,
       nextPreviews,
     );
-    const anchorCommitTimeMs = anchorCommitDate ? new Date(anchorCommitDate).getTime() : Number.NaN;
-    const nowTimeMs = Date.now();
-    const uncommittedTimeMs = Number.isFinite(anchorCommitTimeMs)
-      ? Math.max(nowTimeMs, anchorCommitTimeMs + 1)
-      : nowTimeMs;
-    const uncommittedDate = new Date(uncommittedTimeMs).toISOString();
-    const uncommittedNode: BranchCommitPreview = {
+    const worktreeDate = anchorCommitDate ?? new Date().toISOString();
+    const worktreeNode: BranchCommitPreview = {
       fullSha: session.workingTreeId,
       sha: 'uncommitted',
       parentSha: checkedOutAnchorSha,
       message: '',
       author: 'You',
-      date: uncommittedDate,
+      date: worktreeDate,
       kind: 'uncommitted',
     };
 
     if (targetBranch) {
-      nextBranches = nextBranches.map((branch) => {
-        if (branch.name !== targetBranch.name) return branch;
-        return {
-          ...branch,
-          commitsAhead: branch.commitsAhead + 1,
-          unpushedCommits: branch.unpushedCommits + 1,
-          lastCommitDate: uncommittedDate,
-          headSha: session.workingTreeId,
+      if (session.hasUncommittedChanges) {
+        nextBranches = nextBranches.map((branch) => {
+          if (branch.name !== targetBranch.name) return branch;
+          return {
+            ...branch,
+            commitsAhead: branch.commitsAhead + 1,
+            unpushedCommits: branch.unpushedCommits + 1,
+            lastCommitDate: worktreeDate,
+            headSha: session.workingTreeId,
+          };
+        });
+        nextUniqueAheadCounts = {
+          ...nextUniqueAheadCounts,
+          [targetBranch.name]: Math.max(
+            0,
+            (Object.prototype.hasOwnProperty.call(nextUniqueAheadCounts, targetBranch.name)
+              ? nextUniqueAheadCounts[targetBranch.name]
+              : targetBranch.commitsAhead) ?? 0,
+          ) + 1,
         };
-      });
+      }
       nextPreviews = {
         ...nextPreviews,
-        [targetBranch.name]: [uncommittedNode, ...(nextPreviews[targetBranch.name] || [])],
-      };
-      nextUniqueAheadCounts = {
-        ...nextUniqueAheadCounts,
-        [targetBranch.name]: Math.max(
-          0,
-          (Object.prototype.hasOwnProperty.call(nextUniqueAheadCounts, targetBranch.name)
-            ? nextUniqueAheadCounts[targetBranch.name]
-            : targetBranch.commitsAhead) ?? 0,
-        ) + 1,
+        [targetBranch.name]: [worktreeNode, ...(nextPreviews[targetBranch.name] || [])],
       };
     } else {
       nextPreviews = {
         ...nextPreviews,
-        [defaultBranch]: [uncommittedNode, ...(nextPreviews[defaultBranch] || [])],
+        [defaultBranch]: [worktreeNode, ...(nextPreviews[defaultBranch] || [])],
       };
     }
   }
 
   return {
     branches: nextBranches,
-    branchCommitPreviews: nextPreviews,
+    branchCommitPreviews: stripEmptyBranchPlaceholdersForWorktreeSessions(
+      sessions,
+      nextBranches,
+      nextPreviews,
+    ),
     branchUniqueAheadCounts: nextUniqueAheadCounts,
   };
 };
