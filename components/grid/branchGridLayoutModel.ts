@@ -274,6 +274,38 @@ const compactTimelineRows = (
   }
 };
 
+/** Dense 1..n row indices for visible render nodes (after collision passes may leave gaps). */
+const compactRenderNodeTimelineRows = (nodes: Node[]): number => {
+  if (nodes.length === 0) return 0;
+  const usedRows = [...new Set(nodes.map((node) => node.row))].sort((left, right) => left - right);
+  const remap = new Map(usedRows.map((row, index) => [row, index + 1] as const));
+  for (const node of nodes) {
+    node.row = remap.get(node.row) ?? node.row;
+  }
+  return Math.max(...nodes.map((node) => node.row));
+};
+
+const syncRenderNodeTimelineCoordinates = (
+  nodes: Node[],
+  isHorizontal: boolean,
+  maxResolvedRow: number,
+  timelineRowLeadOffset: number,
+  zoomAwareTimelinePitch: number,
+  zoomAwareLanePitch: number,
+  hasPositionOverride: (commit: VisualCommit) => boolean,
+): void => {
+  for (const node of nodes) {
+    if (hasPositionOverride(node.commit)) continue;
+    if (isHorizontal) {
+      node.x = LEFT_PADDING + (timelineRowLeadOffset + node.row - 1) * zoomAwareTimelinePitch;
+      node.y = TOP_PADDING + node.column * zoomAwareLanePitch;
+      continue;
+    }
+    node.x = LEFT_PADDING + node.column * COLUMN_WIDTH;
+    node.y = TOP_PADDING + (maxResolvedRow - node.row) * zoomAwareTimelinePitch;
+  }
+};
+
 type AllocateRowsClusterContext = {
   clusterKeyByCommitId: Map<string, string>;
   clusterCounts: Map<string, number>;
@@ -311,7 +343,7 @@ const syncOpenClumpNodePositions = (
   clusterCounts: Map<string, number>,
   isClumpOpen: (clusterKey: string) => boolean,
   isHorizontal: boolean,
-  horizontalRightAnchorRowOffset: number,
+  timelineRowLeadOffset: number,
   zoomAwareTimelinePitch: number,
   maxResolvedRow: number,
 ): void => {
@@ -330,7 +362,7 @@ const syncOpenClumpNodePositions = (
     for (const node of clusterNodes) {
       node.row = sharedRow;
       if (isHorizontal) {
-        node.x = LEFT_PADDING + (horizontalRightAnchorRowOffset + sharedRow - 1) * zoomAwareTimelinePitch;
+        node.x = LEFT_PADDING + (timelineRowLeadOffset + sharedRow - 1) * zoomAwareTimelinePitch;
         continue;
       }
       node.y = TOP_PADDING + (maxResolvedRow - sharedRow) * zoomAwareTimelinePitch;
@@ -347,6 +379,151 @@ const isMultiCommitClusterMember = (
   if (!clusterKey) return null;
   if ((clusterCounts.get(clusterKey) ?? 1) <= 1) return null;
   return clusterKey;
+};
+
+const sortClumpCommitsChronologically = (commits: VisualCommit[]): VisualCommit[] =>
+  [...commits].sort(
+    (left, right) =>
+      safeTimeMs(left.date) - safeTimeMs(right.date)
+      || left.id.localeCompare(right.id)
+      || left.visualId.localeCompare(right.visualId),
+  );
+
+/** Block lane indices [baseColumn, baseColumn + span - 1] for a multi-commit clump. */
+const registerClumpLaneSpan = (
+  occupantsByLaneColumn: Map<number, VisualCommit[]>,
+  leadCommit: VisualCommit,
+  baseColumn: number,
+  span: number,
+): void => {
+  for (let column = baseColumn; column < baseColumn + span; column += 1) {
+    const occupants = occupantsByLaneColumn.get(column) ?? [];
+    if (!occupants.some((occupant) => occupant.visualId === leadCommit.visualId)) {
+      occupants.push(leadCommit);
+    }
+    occupantsByLaneColumn.set(column, occupants);
+  }
+};
+
+/** After lane assignment: non-lead clump members share the lead column until render fan-out. */
+const applyClumpStoredLaneColumns = (
+  commits: VisualCommit[],
+  clusterKeyByCommitId: Map<string, string>,
+  clusterCounts: Map<string, number>,
+  leadByClusterKey: Map<string, string>,
+  columnByCommitVisualId: Map<string, number>,
+): void => {
+  for (const [clusterKey, count] of clusterCounts.entries()) {
+    if (count <= 1) continue;
+    const leadVisualId = leadByClusterKey.get(clusterKey);
+    if (!leadVisualId) continue;
+    const leadColumn = columnByCommitVisualId.get(leadVisualId);
+    if (leadColumn == null) continue;
+    const members = commits.filter((commit) => clusterKeyByCommitId.get(commit.visualId) === clusterKey);
+    for (const member of members) {
+      columnByCommitVisualId.set(member.visualId, leadColumn);
+    }
+  }
+};
+
+/** Collapsed: all members at owner column. Open: owner column + adjacent lanes for older members. */
+const applyClumpRenderColumnLayout = (
+  commits: VisualCommit[],
+  clusterKeyByCommitId: Map<string, string>,
+  clusterCounts: Map<string, number>,
+  leadByClusterKey: Map<string, string>,
+  clumpOwnerColumnByClusterKey: Map<string, number>,
+  columnByCommitVisualId: Map<string, number>,
+  isClumpOpen: (clusterKey: string) => boolean,
+): void => {
+  for (const [clusterKey, count] of clusterCounts.entries()) {
+    if (count <= 1) continue;
+    const leadVisualId = leadByClusterKey.get(clusterKey);
+    if (!leadVisualId) continue;
+    const ownerColumn = clumpOwnerColumnByClusterKey.get(clusterKey);
+    if (ownerColumn == null) continue;
+    const members = sortClumpCommitsChronologically(
+      commits.filter((commit) => clusterKeyByCommitId.get(commit.visualId) === clusterKey),
+    );
+    if (!isClumpOpen(clusterKey)) {
+      for (const member of members) {
+        columnByCommitVisualId.set(member.visualId, ownerColumn);
+      }
+      continue;
+    }
+    // Oldest at owner column; lead (newest) at the bottom/right of the band.
+    let column = ownerColumn;
+    for (const member of members) {
+      columnByCommitVisualId.set(member.visualId, column);
+      column += 1;
+    }
+  }
+};
+
+/** After column compaction, re-anchor the clump band start (owner column). */
+const syncClumpOwnerColumnsFromLeadNodes = (
+  renderNodes: Node[],
+  clusterKeyByCommitId: Map<string, string>,
+  clusterCounts: Map<string, number>,
+  leadByClusterKey: Map<string, string>,
+  clumpOwnerColumnByClusterKey: Map<string, number>,
+  isClumpOpen: (clusterKey: string) => boolean,
+): void => {
+  for (const [clusterKey, count] of clusterCounts.entries()) {
+    if (count <= 1) continue;
+    const leadVisualId = leadByClusterKey.get(clusterKey);
+    if (!leadVisualId) continue;
+    const memberNodes = renderNodes.filter(
+      (node) => clusterKeyByCommitId.get(node.commit.visualId) === clusterKey,
+    );
+    if (memberNodes.length === 0) continue;
+    if (!isClumpOpen(clusterKey)) {
+      const leadNode = memberNodes.find((node) => node.commit.visualId === leadVisualId);
+      if (leadNode != null) clumpOwnerColumnByClusterKey.set(clusterKey, leadNode.column);
+      continue;
+    }
+    const bandStartColumn = Math.min(...memberNodes.map((node) => node.column));
+    clumpOwnerColumnByClusterKey.set(clusterKey, bandStartColumn);
+  }
+};
+
+const finalizeClumpRenderLayout = (
+  renderNodes: Node[],
+  commits: VisualCommit[],
+  clusterKeyByCommitId: Map<string, string>,
+  clusterCounts: Map<string, number>,
+  leadByClusterKey: Map<string, string>,
+  clumpOwnerColumnByClusterKey: Map<string, number>,
+  columnByCommitVisualId: Map<string, number>,
+  isClumpOpen: (clusterKey: string) => boolean,
+  isHorizontal: boolean,
+  maxResolvedRow: number,
+  timelineRowLeadOffset: number,
+  zoomAwareTimelinePitch: number,
+  zoomAwareLanePitch: number,
+): void => {
+  applyClumpRenderColumnLayout(
+    commits,
+    clusterKeyByCommitId,
+    clusterCounts,
+    leadByClusterKey,
+    clumpOwnerColumnByClusterKey,
+    columnByCommitVisualId,
+    isClumpOpen,
+  );
+  for (const node of renderNodes) {
+    const clusterKey = clusterKeyByCommitId.get(node.commit.visualId);
+    if (!clusterKey || (clusterCounts.get(clusterKey) ?? 1) <= 1) continue;
+    const column = columnByCommitVisualId.get(node.commit.visualId);
+    if (column == null) continue;
+    node.column = column;
+    if (isHorizontal) {
+      node.y = TOP_PADDING + column * zoomAwareLanePitch;
+      continue;
+    }
+    node.x = LEFT_PADDING + column * COLUMN_WIDTH;
+    node.y = TOP_PADDING + (maxResolvedRow - node.row) * zoomAwareTimelinePitch;
+  }
 };
 
 /** Horizontal layout: lane Y is always column × pitch (never cluster-lead relative Y). */
@@ -387,6 +564,7 @@ const compactVisibleLaneColumns = (
 const enforceExclusiveRenderLaneColumns = (
   nodes: Node[],
   clusterKeyByCommitId: Map<string, string>,
+  clusterCounts: Map<string, number>,
   columnByCommitVisualId: Map<string, number>,
   isHorizontal: boolean,
   zoomAwareLanePitch: number,
@@ -399,6 +577,8 @@ const enforceExclusiveRenderLaneColumns = (
   });
   for (const node of ordered) {
     if (hasPositionOverride(node.commit)) continue;
+    const clusterKey = clusterKeyByCommitId.get(node.commit.visualId) ?? null;
+    if (clusterKey && (clusterCounts.get(clusterKey) ?? 1) > 1) continue;
     let column = node.column;
     while (
       nodes.some(
@@ -1531,6 +1711,7 @@ export function computeBranchGridLayout(input: BranchGridLayoutInput): BranchGri
     childClustersByParent.set(parent, childKeys);
   }
   const columnByCommitVisualId = new Map<string, number>();
+  const clumpOwnerColumnByClusterKey = new Map<string, number>();
   const occupantsByLaneColumn = new Map<number, VisualCommit[]>();
   const registerLaneColumn = (commit: VisualCommit, column: number): void => {
     columnByCommitVisualId.set(commit.visualId, column);
@@ -1543,9 +1724,23 @@ export function computeBranchGridLayout(input: BranchGridLayoutInput): BranchGri
     const rightCluster = clusterKeyByCommitId.get(right.visualId) ?? null;
     return leftCluster != null && leftCluster === rightCluster;
   };
+  const clumpLaneSpan = (clusterKey: string | null): number =>
+    clusterKey ? clusterCounts.get(clusterKey) ?? 1 : 1;
+  const clumpLeadColumn = (clusterKey: string): number | null => {
+    const leadVisualId = leadByClusterKey.get(clusterKey);
+    if (!leadVisualId) return null;
+    const column = columnByCommitVisualId.get(leadVisualId);
+    return column ?? null;
+  };
   const projectedLaneColumn = (commit: VisualCommit, visiting = new Set<string>()): number => {
     const assigned = columnByCommitVisualId.get(commit.visualId);
     if (assigned != null) return assigned;
+    const clusterKey = clusterKeyByCommitId.get(commit.visualId) ?? null;
+    const span = clumpLaneSpan(clusterKey);
+    if (clusterKey && span > 1) {
+      const leadColumn = clumpLeadColumn(clusterKey);
+      if (leadColumn != null) return leadColumn;
+    }
     if (visiting.has(commit.visualId)) return 0;
     visiting.add(commit.visualId);
     const column = !commit.parentSha
@@ -1563,7 +1758,17 @@ export function computeBranchGridLayout(input: BranchGridLayoutInput): BranchGri
     if (!commit.parentSha) return 0;
     const parents = allCommitsWithClusters.filter((candidate) => shasMatch(candidate.id, commit.parentSha!));
     if (parents.length === 0) return 0;
-    return Math.max(...parents.map((parent) => projectedLaneColumn(parent) + 1));
+    return Math.max(
+      ...parents.map((parent) => {
+        const parentClusterKey = clusterKeyByCommitId.get(parent.visualId) ?? null;
+        const parentSpan = clumpLaneSpan(parentClusterKey);
+        if (parentClusterKey && parentSpan > 1) {
+          const leadColumn = clumpLeadColumn(parentClusterKey);
+          if (leadColumn != null) return leadColumn + parentSpan;
+        }
+        return projectedLaneColumn(parent) + 1;
+      }),
+    );
   };
   const findLaneColumn = (commit: VisualCommit, minColumn: number): number => {
     let candidate = minColumn;
@@ -1580,15 +1785,27 @@ export function computeBranchGridLayout(input: BranchGridLayoutInput): BranchGri
       || left.visualId.localeCompare(right.visualId),
   );
   for (const commit of commitsInLaneOrder) {
-    registerLaneColumn(commit, findLaneColumn(commit, parentMinimumLaneColumn(commit)));
+    const clusterKey = clusterKeyByCommitId.get(commit.visualId) ?? null;
+    const span = clumpLaneSpan(clusterKey);
+    if (clusterKey && span > 1) {
+      const leadVisualId = leadByClusterKey.get(clusterKey);
+      if (leadVisualId && commit.visualId !== leadVisualId) continue;
+    }
+    const column = findLaneColumn(commit, parentMinimumLaneColumn(commit));
+    registerLaneColumn(commit, column);
+    if (clusterKey && span > 1) {
+      clumpOwnerColumnByClusterKey.set(clusterKey, column);
+      registerClumpLaneSpan(occupantsByLaneColumn, commit, column, span);
+    }
   }
-  const clusterColumnByKey = new Map<string, number>();
-  for (const commit of allCommitsWithClusters) {
-    const clusterKey = clusterKeyByCommitId.get(commit.visualId);
-    if (!clusterKey || clusterColumnByKey.has(clusterKey)) continue;
-    const column = columnByCommitVisualId.get(commit.visualId);
-    if (column != null) clusterColumnByKey.set(clusterKey, column);
-  }
+  applyClumpStoredLaneColumns(
+    allCommitsWithClusters,
+    clusterKeyByCommitId,
+    clusterCounts,
+    leadByClusterKey,
+    columnByCommitVisualId,
+  );
+  const clusterColumnByKey = new Map<string, number>(clumpOwnerColumnByClusterKey);
   const lanes: Lane[] = Array.from(clusterColumnByKey.entries())
     .map(([key, column]) => ({
       name: key,
@@ -1753,6 +1970,15 @@ export function computeBranchGridLayout(input: BranchGridLayoutInput): BranchGri
     visibleRows.set(commit.visualId, allRowByVisualId.get(commit.visualId) ?? 1);
   }
   applyWorktreeNodePlacement(isHorizontal, visibleRows, columnByCommitVisualId, allCommitsWithClusters);
+  applyClumpRenderColumnLayout(
+    allCommitsWithClusters,
+    clusterKeyByCommitId,
+    clusterCounts,
+    leadByClusterKey,
+    clumpOwnerColumnByClusterKey,
+    columnByCommitVisualId,
+    isClumpOpen,
+  );
   const zoomAwareRowGap = ROW_GAP / GRID_LAYOUT_RENDER_ZOOM;
   const zoomAwareLabelBand = 20 / GRID_LAYOUT_RENDER_ZOOM;
   const zoomAwareTimelinePitch = isHorizontal
@@ -1761,7 +1987,7 @@ export function computeBranchGridLayout(input: BranchGridLayoutInput): BranchGri
   const zoomAwareLanePitch = isHorizontal ? ROW_HEIGHT + zoomAwareRowGap + zoomAwareLabelBand : COLUMN_WIDTH;
   const maxAllRowForHorizontalAnchor = Math.max(0, ...allCommits.map((commit) => allRowByVisualId.get(commit.visualId) ?? 1));
   const maxVisibleRowForVertical = Math.max(0, ...visibleCommitsList.map((commit) => visibleRows.get(commit.visualId) ?? 1));
-  const horizontalRightAnchorRowOffset = Math.max(0, maxAllRowForHorizontalAnchor - maxVisibleRowForVertical);
+  let timelineRowLeadOffset = Math.max(0, maxAllRowForHorizontalAnchor - maxVisibleRowForVertical);
   const renderNodesRaw: Node[] = visibleCommitsList.map((commit) => {
     const row = visibleRows.get(commit.visualId) ?? 1;
     const column = columnByCommitVisualId.get(commit.visualId) ?? 0;
@@ -1770,7 +1996,7 @@ export function computeBranchGridLayout(input: BranchGridLayoutInput): BranchGri
         commit,
         row,
         column,
-        x: LEFT_PADDING + (horizontalRightAnchorRowOffset + row - 1) * zoomAwareTimelinePitch,
+        x: LEFT_PADDING + (timelineRowLeadOffset + row - 1) * zoomAwareTimelinePitch,
         y: TOP_PADDING + column * zoomAwareLanePitch,
       };
     }
@@ -1798,7 +2024,7 @@ export function computeBranchGridLayout(input: BranchGridLayoutInput): BranchGri
     clusterCounts,
     isClumpOpen,
     isHorizontal,
-    horizontalRightAnchorRowOffset,
+    timelineRowLeadOffset,
     zoomAwareTimelinePitch,
     maxResolvedRow,
   );
@@ -1830,13 +2056,13 @@ export function computeBranchGridLayout(input: BranchGridLayoutInput): BranchGri
     clusterCounts,
     isClumpOpen,
     isHorizontal,
-    horizontalRightAnchorRowOffset,
+    timelineRowLeadOffset,
     zoomAwareTimelinePitch,
     maxResolvedRow,
   );
   for (const node of renderNodes) {
     if (isHorizontal) {
-      node.x = LEFT_PADDING + (horizontalRightAnchorRowOffset + node.row - 1) * zoomAwareTimelinePitch;
+      node.x = LEFT_PADDING + (timelineRowLeadOffset + node.row - 1) * zoomAwareTimelinePitch;
       node.y = TOP_PADDING + node.column * zoomAwareLanePitch;
       continue;
     }
@@ -1866,7 +2092,7 @@ export function computeBranchGridLayout(input: BranchGridLayoutInput): BranchGri
     })) {
       if (isHorizontal) {
         node.row += 1;
-        node.x = LEFT_PADDING + (horizontalRightAnchorRowOffset + node.row - 1) * zoomAwareTimelinePitch;
+        node.x = LEFT_PADDING + (timelineRowLeadOffset + node.row - 1) * zoomAwareTimelinePitch;
       } else {
         node.row += 1;
         node.y = TOP_PADDING + (maxResolvedRow - node.row) * zoomAwareTimelinePitch;
@@ -1881,22 +2107,49 @@ export function computeBranchGridLayout(input: BranchGridLayoutInput): BranchGri
     clusterCounts,
     isClumpOpen,
     isHorizontal,
-    horizontalRightAnchorRowOffset,
+    timelineRowLeadOffset,
+    zoomAwareTimelinePitch,
+    maxResolvedRow,
+  );
+  maxResolvedRow = compactRenderNodeTimelineRows(renderNodes);
+  timelineRowLeadOffset = 0;
+  syncRenderNodeTimelineCoordinates(
+    renderNodes,
+    isHorizontal,
+    maxResolvedRow,
+    timelineRowLeadOffset,
+    zoomAwareTimelinePitch,
+    zoomAwareLanePitch,
+    (commit) => !!getNodePositionOverride(normalizedNodePositionOverrides, commit),
+  );
+  syncOpenClumpNodePositions(
+    renderNodes,
+    clusterKeyByCommitId,
+    leadByClusterKey,
+    clusterCounts,
+    isClumpOpen,
+    isHorizontal,
+    timelineRowLeadOffset,
     zoomAwareTimelinePitch,
     maxResolvedRow,
   );
   enforceExclusiveRenderLaneColumns(
     renderNodes,
     clusterKeyByCommitId,
+    clusterCounts,
     columnByCommitVisualId,
     isHorizontal,
     zoomAwareLanePitch,
     (commit) => !!getNodePositionOverride(normalizedNodePositionOverrides, commit),
   );
   compactVisibleLaneColumns(renderNodes, columnByCommitVisualId, isHorizontal, zoomAwareLanePitch);
-  syncHorizontalLaneYFromColumn(
-    renderNodes.filter((node) => !getNodePositionOverride(normalizedNodePositionOverrides, node.commit)),
-    zoomAwareLanePitch,
+  syncClumpOwnerColumnsFromLeadNodes(
+    renderNodes,
+    clusterKeyByCommitId,
+    clusterCounts,
+    leadByClusterKey,
+    clumpOwnerColumnByClusterKey,
+    isClumpOpen,
   );
   const movedLeadByClusterKey = new Map<string, { node: Node; x: number; y: number }>();
   for (const node of renderNodes) {
@@ -1929,6 +2182,26 @@ export function computeBranchGridLayout(input: BranchGridLayoutInput): BranchGri
     // Vertical: y = TOP_PADDING + (maxResolvedRow - row) * pitch → larger row = smaller y (newer above).
     node.y = movedLead.y - (node.row - movedLead.node.row) * zoomAwareTimelinePitch;
   }
+  maxResolvedRow = Math.max(0, ...renderNodes.map((node) => node.row));
+  finalizeClumpRenderLayout(
+    renderNodes,
+    allCommitsWithClusters,
+    clusterKeyByCommitId,
+    clusterCounts,
+    leadByClusterKey,
+    clumpOwnerColumnByClusterKey,
+    columnByCommitVisualId,
+    isClumpOpen,
+    isHorizontal,
+    maxResolvedRow,
+    timelineRowLeadOffset,
+    zoomAwareTimelinePitch,
+    zoomAwareLanePitch,
+  );
+  syncHorizontalLaneYFromColumn(
+    renderNodes.filter((node) => !getNodePositionOverride(normalizedNodePositionOverrides, node.commit)),
+    zoomAwareLanePitch,
+  );
   const visibleNodesBySha = new Map<string, Node[]>();
   for (const node of renderNodes) {
     const list = visibleNodesBySha.get(node.commit.id) ?? [];
