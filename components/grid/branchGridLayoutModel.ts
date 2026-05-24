@@ -1,4 +1,9 @@
-import type { WorktreeSession } from '../../lib/worktreeSessions';
+import {
+  isWorkingTreeCommitId,
+  shaMatches as worktreeShaMatches,
+  worktreeSessionCoversEmptyBranch,
+  type WorktreeSession,
+} from '../../lib/worktreeSessions';
 import type { Branch } from '../../types';
 import type { BranchCommitPreview } from '../../types';
 import type { CheckedOutRef } from '../../types';
@@ -29,8 +34,6 @@ import {
 import type { Lane } from './LayoutGrid';
 import { computeMergeConnectorAnchors, computeParentChildConnectorAnchors } from './branchGridConnectorAnchors';
 import { getNodePositionOverride, migrateNodePositionOverridesForCommits } from './nodePositionOverrides';
-import { resolveAnchorOwningBranchName } from '../../src/placeStashNode';
-
 /** Sync with MapGrid GRID_ZOOM_MAX — row pitch is authored in this render space. */
 export const GRID_LAYOUT_RENDER_ZOOM = 2.25;
 
@@ -64,6 +67,8 @@ export type BranchGridLayoutModel = {
   clusterKeyByCommitId: Map<string, string>;
   clusterKeyBySha: Map<string, string[]>;
   leadByClusterKey: Map<string, string>;
+  /** Chronologically first commit in each multi-commit clump (clump caret when expanded). */
+  firstByClusterKey: Map<string, string>;
   clusterCounts: Map<string, number>;
   debugRows: string[];
   branchDebugRows: string[];
@@ -97,7 +102,6 @@ export type BranchGridLayoutModel = {
 };
 
 export type BranchGridLayoutInput = {
-  lanes: Lane[];
   branches: Branch[];
   mergeNodes: MergeNode[];
   directCommits: DirectCommit[];
@@ -159,6 +163,309 @@ function findCommitMetaInRepo(
   return null;
 }
 
+const findWorktreeParentCommit = (
+  commits: VisualCommit[],
+  parentSha: string,
+  branchName: string,
+): VisualCommit | undefined =>
+  commits.find(
+    (candidate) =>
+      candidate.branchName === branchName &&
+      (shasMatch(candidate.id, parentSha) || shasMatch(candidate.id.slice(0, 7), parentSha)),
+  ) ??
+  commits.find(
+    (candidate) =>
+      shasMatch(candidate.id, parentSha) || shasMatch(candidate.id.slice(0, 7), parentSha),
+  );
+
+const isWorktreeGraphNode = (commit: { id: string; kind?: string | null }): boolean =>
+  commit.kind === 'uncommitted' || isWorkingTreeCommitId(commit.id);
+
+/** Horizontal: next timeline slot (right). Vertical: next lane column (right), same row. */
+const applyWorktreeNodePlacement = (
+  isHorizontal: boolean,
+  rowByVisualId: Map<string, number>,
+  columnByCommitVisualId: Map<string, number>,
+  commits: VisualCommit[],
+): void => {
+  for (const commit of commits) {
+    if (!isWorktreeGraphNode(commit) || !commit.parentSha) continue;
+    const parent = findWorktreeParentCommit(commits, commit.parentSha, commit.branchName);
+    if (!parent) continue;
+    const parentRow = rowByVisualId.get(parent.visualId);
+    const parentCol = columnByCommitVisualId.get(parent.visualId);
+    if (parentRow == null || parentCol == null) continue;
+    if (isHorizontal) {
+      columnByCommitVisualId.set(commit.visualId, parentCol);
+      rowByVisualId.set(commit.visualId, parentRow + 1);
+    } else {
+      columnByCommitVisualId.set(commit.visualId, parentCol + 1);
+      rowByVisualId.set(commit.visualId, parentRow);
+    }
+  }
+};
+
+const isEmptyBranchHeadCommit = (commit: VisualCommit): boolean => commit.id.startsWith('BRANCH_HEAD:');
+
+const isStashGraphCommit = (commit: VisualCommit): boolean =>
+  commit.kind === 'stash' || commit.id.startsWith('STASH:');
+
+const isSyntheticForkChild = (commit: VisualCommit): boolean =>
+  isEmptyBranchHeadCommit(commit)
+  || isStashGraphCommit(commit)
+  || commit.kind === 'branch-created';
+
+const commitsShareCollapseCluster = (
+  left: VisualCommit,
+  right: VisualCommit,
+  clusterKeyByCommitId: Map<string, string>,
+): boolean => {
+  const leftCluster = clusterKeyByCommitId.get(left.visualId) ?? null;
+  const rightCluster = clusterKeyByCommitId.get(right.visualId) ?? null;
+  return leftCluster != null && leftCluster === rightCluster;
+};
+
+const isClusterClumpOpen = (
+  clusterKey: string,
+  manuallyOpenedClumps: Set<string>,
+  defaultCollapsedClumps: Set<string>,
+  manuallyClosedClumps: Set<string>,
+): boolean =>
+  manuallyOpenedClumps.has(clusterKey) ||
+  (!defaultCollapsedClumps.has(clusterKey) && !manuallyClosedClumps.has(clusterKey));
+
+const nodesShareOpenClump = (
+  left: Node,
+  right: Node,
+  clusterKeyByCommitId: Map<string, string>,
+  clusterCounts: Map<string, number>,
+  isClumpOpen: (clusterKey: string) => boolean,
+): boolean => {
+  const clusterKey = clusterKeyByCommitId.get(left.commit.visualId) ?? null;
+  if (!clusterKey || clusterKey !== clusterKeyByCommitId.get(right.commit.visualId)) return false;
+  if ((clusterCounts.get(clusterKey) ?? 1) <= 1) return false;
+  return isClumpOpen(clusterKey);
+};
+
+const resolveOpenClumpSharedRow = (
+  rowByVisualId: Map<string, number>,
+  clusterCommits: VisualCommit[],
+  leadVisualId: string | undefined,
+): number => {
+  if (leadVisualId) {
+    const leadRow = rowByVisualId.get(leadVisualId);
+    if (leadRow != null) return leadRow;
+  }
+  return Math.max(...clusterCommits.map((commit) => rowByVisualId.get(commit.visualId) ?? 1));
+};
+
+/** Remap row indices to 1..n so clumps that shared a row do not leave empty timeline bands. */
+const compactTimelineRows = (
+  rowByVisualId: Map<string, number>,
+  commits: VisualCommit[],
+): void => {
+  const usedRows = [...new Set(commits.map((commit) => rowByVisualId.get(commit.visualId) ?? 1))].sort(
+    (left, right) => left - right,
+  );
+  const remap = new Map(usedRows.map((row, index) => [row, index + 1] as const));
+  for (const commit of commits) {
+    const row = rowByVisualId.get(commit.visualId) ?? 1;
+    rowByVisualId.set(commit.visualId, remap.get(row) ?? row);
+  }
+};
+
+type AllocateRowsClusterContext = {
+  clusterKeyByCommitId: Map<string, string>;
+  clusterCounts: Map<string, number>;
+};
+
+/** Every clump occupies one timeline row (collapsed or open); members stack on that row. */
+const applyClusterSingleTimelineRow = (
+  rowByVisualId: Map<string, number>,
+  commits: VisualCommit[],
+  clusterKeyByCommitId: Map<string, string>,
+  leadByClusterKey: Map<string, string>,
+  clusterCounts: Map<string, number>,
+): void => {
+  for (const [clusterKey, count] of clusterCounts.entries()) {
+    if (count <= 1) continue;
+    const clusterCommits = commits.filter(
+      (commit) => clusterKeyByCommitId.get(commit.visualId) === clusterKey,
+    );
+    if (clusterCommits.length <= 1) continue;
+    const sharedRow = resolveOpenClumpSharedRow(
+      rowByVisualId,
+      clusterCommits,
+      leadByClusterKey.get(clusterKey),
+    );
+    for (const commit of clusterCommits) {
+      rowByVisualId.set(commit.visualId, sharedRow);
+    }
+  }
+};
+
+const syncOpenClumpNodePositions = (
+  nodes: Node[],
+  clusterKeyByCommitId: Map<string, string>,
+  leadByClusterKey: Map<string, string>,
+  clusterCounts: Map<string, number>,
+  isClumpOpen: (clusterKey: string) => boolean,
+  isHorizontal: boolean,
+  horizontalRightAnchorRowOffset: number,
+  zoomAwareTimelinePitch: number,
+  maxResolvedRow: number,
+): void => {
+  for (const [clusterKey, count] of clusterCounts.entries()) {
+    if (count <= 1) continue;
+    const clusterNodes = nodes.filter(
+      (node) => clusterKeyByCommitId.get(node.commit.visualId) === clusterKey,
+    );
+    if (clusterNodes.length <= 1) continue;
+    const rowByVisualId = new Map(clusterNodes.map((node) => [node.commit.visualId, node.row] as const));
+    const sharedRow = resolveOpenClumpSharedRow(
+      rowByVisualId,
+      clusterNodes.map((node) => node.commit),
+      leadByClusterKey.get(clusterKey),
+    );
+    for (const node of clusterNodes) {
+      node.row = sharedRow;
+      if (isHorizontal) {
+        node.x = LEFT_PADDING + (horizontalRightAnchorRowOffset + sharedRow - 1) * zoomAwareTimelinePitch;
+        continue;
+      }
+      node.y = TOP_PADDING + (maxResolvedRow - sharedRow) * zoomAwareTimelinePitch;
+    }
+  }
+};
+
+const isMultiCommitClusterMember = (
+  commit: VisualCommit,
+  clusterKeyByCommitId: Map<string, string>,
+  clusterCounts: Map<string, number>,
+): string | null => {
+  const clusterKey = clusterKeyByCommitId.get(commit.visualId) ?? null;
+  if (!clusterKey) return null;
+  if ((clusterCounts.get(clusterKey) ?? 1) <= 1) return null;
+  return clusterKey;
+};
+
+/** Horizontal layout: lane Y is always column × pitch (never cluster-lead relative Y). */
+const syncHorizontalLaneYFromColumn = (
+  nodes: Node[],
+  zoomAwareLanePitch: number,
+): void => {
+  for (const node of nodes) {
+    node.y = TOP_PADDING + node.column * zoomAwareLanePitch;
+  }
+};
+
+/** Drop lane indices that only belonged to hidden (e.g. collapsed-clump) commits. */
+const compactVisibleLaneColumns = (
+  nodes: Node[],
+  columnByCommitVisualId: Map<string, number>,
+  isHorizontal: boolean,
+  zoomAwareLanePitch: number,
+): void => {
+  if (nodes.length === 0) return;
+  const sortedUsedColumns = [...new Set(nodes.map((node) => node.column))].sort((left, right) => left - right);
+  const compactColumnByLayoutColumn = new Map(
+    sortedUsedColumns.map((column, index) => [column, index] as const),
+  );
+  for (const node of nodes) {
+    const compactColumn = compactColumnByLayoutColumn.get(node.column) ?? node.column;
+    node.column = compactColumn;
+    columnByCommitVisualId.set(node.commit.visualId, compactColumn);
+    if (isHorizontal) {
+      node.y = TOP_PADDING + compactColumn * zoomAwareLanePitch;
+      continue;
+    }
+    node.x = LEFT_PADDING + compactColumn * COLUMN_WIDTH;
+  }
+};
+
+/** Resolve same (row, column) slot conflicts; different rows may share a lane index. */
+const enforceExclusiveRenderLaneColumns = (
+  nodes: Node[],
+  clusterKeyByCommitId: Map<string, string>,
+  columnByCommitVisualId: Map<string, number>,
+  isHorizontal: boolean,
+  zoomAwareLanePitch: number,
+  hasPositionOverride: (commit: VisualCommit) => boolean,
+): void => {
+  const ordered = [...nodes].sort((left, right) => {
+    if (left.column !== right.column) return left.column - right.column;
+    if (left.row !== right.row) return left.row - right.row;
+    return left.commit.visualId.localeCompare(right.commit.visualId);
+  });
+  for (const node of ordered) {
+    if (hasPositionOverride(node.commit)) continue;
+    let column = node.column;
+    while (
+      nodes.some(
+        (other) =>
+          other !== node
+          && other.column === column
+          && other.row === node.row
+          && !commitsShareCollapseCluster(node.commit, other.commit, clusterKeyByCommitId),
+      )
+    ) {
+      column += 1;
+    }
+    if (column === node.column) continue;
+    node.column = column;
+    columnByCommitVisualId.set(node.commit.visualId, column);
+    if (isHorizontal) {
+      node.y = TOP_PADDING + column * zoomAwareLanePitch;
+    } else {
+      node.x = LEFT_PADDING + column * COLUMN_WIDTH;
+    }
+  }
+};
+
+const isAdjacentWorktreePair = (
+  isHorizontal: boolean,
+  left: Node,
+  right: Node,
+): boolean => {
+  const leftIsWorktree = isWorktreeGraphNode(left.commit);
+  const rightIsWorktree = isWorktreeGraphNode(right.commit);
+  if (leftIsWorktree === rightIsWorktree) return false;
+  const worktreeNode = leftIsWorktree ? left : right;
+  const parentNode = leftIsWorktree ? right : left;
+  const parentSha = worktreeNode.commit.parentSha;
+  if (!parentSha) return false;
+  if (
+    !worktreeShaMatches(parentSha, parentNode.commit.id)
+    && !worktreeShaMatches(parentSha, parentNode.commit.id.slice(0, 7))
+  ) {
+    return false;
+  }
+  if (isHorizontal) {
+    return worktreeNode.column === parentNode.column && worktreeNode.row === parentNode.row + 1;
+  }
+  return worktreeNode.row === parentNode.row && worktreeNode.column === parentNode.column + 1;
+};
+
+const isAdjacentAnchoredLanePair = (
+  left: Node,
+  right: Node,
+): boolean => {
+  const leftIsSyntheticForkChild = isSyntheticForkChild(left.commit);
+  const rightIsSyntheticForkChild = isSyntheticForkChild(right.commit);
+  if (leftIsSyntheticForkChild === rightIsSyntheticForkChild) return false;
+  const childNode = leftIsSyntheticForkChild ? left : right;
+  const parentNode = leftIsSyntheticForkChild ? right : left;
+  const parentSha = childNode.commit.parentSha;
+  if (!parentSha) return false;
+  if (
+    !shasMatch(parentSha, parentNode.commit.id)
+    && !shasMatch(parentSha, parentNode.commit.id.slice(0, 7))
+  ) {
+    return false;
+  }
+  return childNode.row > parentNode.row && childNode.column > parentNode.column;
+};
+
 function isEmptyPlaceholderBranch(
   branch: Branch,
   branchUniqueAheadCounts: Record<string, number>,
@@ -208,55 +515,53 @@ function buildEmptyBranchLaneCommit(
     null;
   if (!laneTipSha) return null;
 
-  const forkAnchorSha =
-    branch.presidesFromSha ??
+  const forkPointSha =
     branch.divergedFromSha ??
     branch.createdFromSha ??
+    branch.presidesFromSha ??
     laneTipSha;
 
   const tipMeta = findCommitMetaInRepo(laneTipSha, directCommits, branchCommitPreviews);
   const forkMeta =
-    forkAnchorSha !== laneTipSha
-      ? findCommitMetaInRepo(forkAnchorSha, directCommits, branchCommitPreviews)
+    forkPointSha !== laneTipSha
+      ? findCommitMetaInRepo(forkPointSha, directCommits, branchCommitPreviews)
       : tipMeta;
 
-  const parentSha =
-    tipMeta?.parentSha ??
-    forkMeta?.parentSha ??
-    (forkAnchorSha !== laneTipSha ? forkAnchorSha : null);
+  // Connect from the fork/tip commit on the parent line (merge-base or branch head), not HEAD's first parent.
+  const parentSha = forkPointSha;
 
-  const parentDateFromDirect = parentSha
-    ? directCommits.find(
-        (commit) => shasMatch(commit.fullSha, parentSha) || shasMatch(commit.sha, parentSha),
-      )?.date
-    : undefined;
-  const parentDateFromPreview =
-    parentSha && !parentDateFromDirect
+  const forkDateFromDirect = directCommits.find(
+    (commit) => shasMatch(commit.fullSha, forkPointSha) || shasMatch(commit.sha, forkPointSha),
+  )?.date;
+  const forkDateFromPreview =
+    !forkDateFromDirect
       ? Object.values(branchCommitPreviews)
           .flat()
-          .find((commit) => shasMatch(commit.fullSha, parentSha) || shasMatch(commit.sha, parentSha))?.date
+          .find((commit) => shasMatch(commit.fullSha, forkPointSha) || shasMatch(commit.sha, forkPointSha))?.date
       : undefined;
   const anchorParentDate =
-    parentDateFromDirect ?? parentDateFromPreview ?? forkMeta?.date ?? tipMeta?.date ?? null;
-  const anchorParentTimeMs = safeTimeMs(anchorParentDate ?? undefined);
-  const placeholderTimeMs = Number.isFinite(anchorParentTimeMs)
-    ? anchorParentTimeMs + 1
-    : safeTimeMs(
-        tipMeta?.date ??
-          forkMeta?.date ??
-          branch.createdDate ??
-          branch.divergedFromDate ??
-          branch.lastCommitDate,
-      );
+    forkDateFromDirect ?? forkDateFromPreview ?? forkMeta?.date ?? tipMeta?.date ?? null;
+  const forkTimeMs = safeTimeMs(anchorParentDate ?? undefined);
+  const tipTimeMs = safeTimeMs(
+    tipMeta?.date ?? branch.lastCommitDate ?? branch.createdDate ?? branch.divergedFromDate,
+  );
+  // Match the fork parent commit's time so row assignment stays adjacent to the branch-off point.
+  const placeholderTimeMs = Number.isFinite(forkTimeMs)
+    ? forkTimeMs
+    : Number.isFinite(tipTimeMs)
+      ? tipTimeMs
+      : safeTimeMs(branch.createdDate ?? branch.divergedFromDate ?? branch.lastCommitDate);
 
   return {
     id: `BRANCH_HEAD:${branch.name}:${laneTipSha}`,
     branchName: branch.name,
     message: '',
     author: tipMeta?.author ?? branch.lastCommitAuthor,
-    date: Number.isFinite(placeholderTimeMs)
-      ? new Date(placeholderTimeMs).toISOString()
-      : branch.lastCommitDate,
+    date:
+      anchorParentDate ??
+      (Number.isFinite(placeholderTimeMs)
+        ? new Date(placeholderTimeMs).toISOString()
+        : branch.lastCommitDate),
     parentSha,
     clusterKey: null,
     childShas: [],
@@ -270,6 +575,7 @@ function allocateRowsByColumnAndTime(
   extraParentShasByCommitId: Map<string, Set<string>> = new Map(),
   /** Merge commits: second (and further) parents treated as strict row floors so merges sit after merged tips. */
   mergeSecondParentsForStrictRows?: Map<string, Set<string>>,
+  clusterContext?: AllocateRowsClusterContext,
 ): Map<string, number> {
   if (commits.length === 0) return new Map();
   // Use strict chronological ordering first; lineage constraints are still enforced by the
@@ -299,7 +605,6 @@ function allocateRowsByColumnAndTime(
   const rowByVisualId = new Map<string, number>();
   const occupiedRowsByRow = new Map<number, Array<{ visualId: string; sha: string; column: number; time: number; branchEntryParentSha: string | null }>>();
   const childRowsByParentSha = new Map<string, number[]>();
-  const stashRowByParentSha = new Map<string, number>();
   const sharedRowBlockedByBranchLine = new Set<number>();
   const branchCommitShasByName = new Map<string, Set<string>>();
   const commitColumnsBySha = new Map<string, Set<number>>();
@@ -389,7 +694,32 @@ function allocateRowsByColumnAndTime(
     }
     return false;
   };
+  const clusterRowByKey = new Map<string, number>();
+  const clusterKeyFor = (commit: VisualCommit): string | null =>
+    clusterContext?.clusterKeyByCommitId.get(commit.visualId) ?? null;
+  const clusterMemberCount = (clusterKey: string | null): number => {
+    if (!clusterKey || !clusterContext) return 1;
+    return clusterContext.clusterCounts.get(clusterKey) ?? 1;
+  };
+  const isMultiCommitCluster = (clusterKey: string | null): boolean =>
+    clusterMemberCount(clusterKey) > 1;
+
   let nextRow = 1;
+  const recordCommitRow = (
+    commit: VisualCommit,
+    assignedRow: number,
+    parentShas: Set<string>,
+  ): void => {
+    for (const parentSha of parentShas) {
+      const existingRowsForParent = childRowsByParentSha.get(parentSha) ?? [];
+      existingRowsForParent.push(assignedRow);
+      childRowsByParentSha.set(parentSha, existingRowsForParent);
+    }
+    const rowsForSha = rowBySha.get(commit.id) ?? [];
+    rowsForSha.push(assignedRow);
+    rowBySha.set(commit.id, rowsForSha);
+  };
+
   const assignCommit = (commit: VisualCommit, parentShas: Set<string>) => {
     const commitColumn = columnByCommitVisualId.get(commit.visualId) ?? 0;
     const branchCommitShas = branchCommitShasByName.get(commit.branchName) ?? new Set<string>();
@@ -398,33 +728,6 @@ function allocateRowsByColumnAndTime(
     const parentRows = Array.from(parentShas).flatMap((parentSha) =>
       resolveKnownShas(parentSha).flatMap((knownParentSha) => rowBySha.get(knownParentSha) ?? []),
     );
-    const forcedImmediateChildRow = (() => {
-      if (parentRows.length === 0) return null;
-      if (commit.kind === 'stash' && commit.parentSha) {
-        const siblingStashRow = stashRowByParentSha.get(commit.parentSha);
-        if (siblingStashRow != null) return siblingStashRow;
-        const target = Math.max(...parentRows) + 1;
-        stashRowByParentSha.set(commit.parentSha, target);
-        return target;
-      }
-      if (commit.kind === 'branch-created' && commit.parentSha) {
-        const siblingRows = Array.from(childShasByParentSha.get(commit.parentSha) ?? [])
-          .map((childSha) => commitById.get(childSha))
-          .filter((child): child is VisualCommit => child != null && child.kind === 'branch-created')
-          .flatMap((child) => rowByVisualId.get(child.visualId) ?? []);
-        const stashRow = stashRowByParentSha.get(commit.parentSha);
-        const baseRow = Math.max(...parentRows, ...siblingRows, ...(stashRow != null ? [stashRow] : []));
-        return baseRow + 1;
-      }
-      // Working tree: always the next timeline slot after HEAD (and after any stash row on the same parent).
-      if (commit.kind === 'uncommitted' && commit.parentSha) {
-        const minTipRow = Math.max(...parentRows) + 1;
-        const stashRow = stashRowByParentSha.get(commit.parentSha);
-        if (stashRow != null) return Math.max(minTipRow, stashRow + 1);
-        return minTipRow;
-      }
-      return null;
-    })();
     const minimumAllowedRow = parentRows.length > 0 ? Math.max(...parentRows) + 1 : 1;
     const childShas = childShasByParentSha.get(commit.id) ?? new Set<string>();
     const childColumns = Array.from(childShas).flatMap((childSha) => Array.from(commitColumnsBySha.get(childSha) ?? []));
@@ -464,7 +767,6 @@ function allocateRowsByColumnAndTime(
       assignedRow = candidateRow;
       break;
     }
-    if (forcedImmediateChildRow != null) assignedRow = forcedImmediateChildRow;
     if (assignedRow == null) assignedRow = Math.max(minimumAllowedRow, nextRow);
     rowByVisualId.set(commit.visualId, assignedRow);
     if (assignedRow >= nextRow) nextRow = assignedRow + 1;
@@ -478,25 +780,46 @@ function allocateRowsByColumnAndTime(
     });
     occupiedRowsByRow.set(assignedRow, occupied);
     if (hasCrossColumnChild) sharedRowBlockedByBranchLine.add(assignedRow);
-    for (const parentSha of parentShas) {
-      const existingRowsForParent = childRowsByParentSha.get(parentSha) ?? [];
-      existingRowsForParent.push(assignedRow);
-      childRowsByParentSha.set(parentSha, existingRowsForParent);
-    }
-    const rowsForSha = rowBySha.get(commit.id) ?? [];
-    rowsForSha.push(assignedRow);
-    rowBySha.set(commit.id, rowsForSha);
+    recordCommitRow(commit, assignedRow, parentShas);
   };
 
   for (const commit of orderedCommits) {
     const parentShas = strictParentShasByCommitId.get(commit.visualId) ?? new Set<string>();
+    const clusterKey = clusterKeyFor(commit);
+    if (isMultiCommitCluster(clusterKey)) {
+      const existingClusterRow = clusterRowByKey.get(clusterKey!);
+      if (existingClusterRow != null) {
+        rowByVisualId.set(commit.visualId, existingClusterRow);
+        recordCommitRow(commit, existingClusterRow, parentShas);
+        continue;
+      }
+    }
     assignCommit(commit, parentShas);
+    if (isMultiCommitCluster(clusterKey)) {
+      const assignedRow = rowByVisualId.get(commit.visualId);
+      if (assignedRow != null) clusterRowByKey.set(clusterKey!, assignedRow);
+    }
   }
   // Final hard invariant: direct children must be strictly after direct parents.
   const maxPasses = Math.max(1, orderedCommits.length * 2);
   for (let pass = 0; pass < maxPasses; pass += 1) {
     let changed = false;
     for (const commit of orderedCommits) {
+      const clusterKey = clusterKeyFor(commit);
+      if (isMultiCommitCluster(clusterKey)) {
+        const clusterRow = clusterRowByKey.get(clusterKey!);
+        if (clusterRow != null) {
+          const currentRow = rowByVisualId.get(commit.visualId) ?? 1;
+          if (currentRow !== clusterRow) {
+            rowByVisualId.set(commit.visualId, clusterRow);
+            const existingRows = rowBySha.get(commit.id) ?? [];
+            if (existingRows.length === 0) rowBySha.set(commit.id, [clusterRow]);
+            else rowBySha.set(commit.id, [...existingRows.slice(0, -1), clusterRow]);
+            changed = true;
+          }
+        }
+        continue;
+      }
       const parentShas = strictParentShasByCommitId.get(commit.visualId) ?? new Set<string>();
       if (parentShas.size === 0) continue;
       const currentRow = rowByVisualId.get(commit.visualId) ?? 1;
@@ -515,25 +838,6 @@ function allocateRowsByColumnAndTime(
     }
     if (!changed) break;
   }
-  // Final stash sibling invariant: same-parent stashes stay on the same row (parent + 1 intent).
-  const stashCommitsByParentSha = new Map<string, VisualCommit[]>();
-  for (const commit of orderedCommits) {
-    if (commit.kind !== 'stash' || !commit.parentSha) continue;
-    const list = stashCommitsByParentSha.get(commit.parentSha) ?? [];
-    list.push(commit);
-    stashCommitsByParentSha.set(commit.parentSha, list);
-  }
-  for (const [parentSha, stashCommits] of stashCommitsByParentSha.entries()) {
-    if (stashCommits.length < 2) continue;
-    const parentRows = resolveKnownShas(parentSha).flatMap((knownParentSha) => rowBySha.get(knownParentSha) ?? []);
-    const targetRowFromParent = parentRows.length > 0 ? Math.max(...parentRows) + 1 : null;
-    const existingRows = stashCommits.map((commit) => rowByVisualId.get(commit.visualId) ?? 1);
-    const targetRow = targetRowFromParent ?? Math.min(...existingRows);
-    for (const stashCommit of stashCommits) {
-      rowByVisualId.set(stashCommit.visualId, targetRow);
-      rowBySha.set(stashCommit.id, [targetRow]);
-    }
-  }
   // Row index increases toward descendants. Pixel mapping in `computeBranchGridLayout`:
   // vertical inverts this row index (newer above); horizontal keeps it direct (newer right).
   return rowByVisualId;
@@ -547,9 +851,11 @@ function ensureBranchLaneRepresentation(
   directCommits: DirectCommit[],
   branchCommitPreviews: Record<string, BranchCommitPreview[]>,
   branchUniqueAheadCounts: Record<string, number>,
+  worktreeSessions: WorktreeSession[],
 ): void {
   for (const branch of branches) {
     if (branch.name === defaultBranch) continue;
+    if (worktreeSessionCoversEmptyBranch(worktreeSessions, branch)) continue;
     if (branchHasConcreteVisibleCommit(visibleCommitBySha, branch.name)) continue;
     const existingPlaceholder = Array.from(visibleCommitBySha.values()).find(
       (commit) =>
@@ -574,7 +880,6 @@ function ensureBranchLaneRepresentation(
 
 export function computeBranchGridLayout(input: BranchGridLayoutInput): BranchGridLayoutModel {
   const {
-    lanes: branchLanes,
     branches,
     mergeNodes,
     directCommits,
@@ -803,7 +1108,7 @@ export function computeBranchGridLayout(input: BranchGridLayoutInput): BranchGri
     ingestBranchLaneCommits(branchName, commits);
   }
   // Same SHA can appear on multiple branch lanes; last writer must be each checked-out branch so
-  // WORKING_TREE pins to the correct lane (horizontal: same column = same Y as HEAD).
+  // Checked-out branch lanes ingest last so WORKING_TREE parents resolve on the correct lane.
   for (const branchName of sessionBranchesWithPriority) {
     const preferredCommits = branchCommitsByLane.get(branchName);
     if (preferredCommits) ingestBranchLaneCommits(branchName, preferredCommits);
@@ -831,6 +1136,7 @@ export function computeBranchGridLayout(input: BranchGridLayoutInput): BranchGri
     directCommits,
     branchCommitPreviews,
     branchUniqueAheadCounts,
+    worktreeSessions,
   );
   const visibleCommits: VisualCommit[] = Array.from(visibleCommitBySha.values()).map((commit) => ({
     ...commit,
@@ -975,8 +1281,12 @@ export function computeBranchGridLayout(input: BranchGridLayoutInput): BranchGri
     ...commit,
     childShas: childShasByCommitId.get(commit.id) ?? commit.childShas ?? [],
   }));
+  /** Fork-anchored time for cluster segmentation and provisional rows — not for lane column order. */
   const effectiveCommitTime = (commit: VisualCommit): number => {
-    if ((commit.kind === 'stash' || commit.kind === 'branch-created') && commit.parentSha) {
+    if (
+      commit.parentSha
+      && (commit.kind === 'branch-created' || isStashGraphCommit(commit))
+    ) {
       const parent = findCommitBySha(commit.parentSha);
       if (parent) {
         const parentTime = safeTimeMs(parent.date);
@@ -985,6 +1295,17 @@ export function computeBranchGridLayout(input: BranchGridLayoutInput): BranchGri
     }
     const time = safeTimeMs(commit.date);
     return Number.isFinite(time) ? time : Number.POSITIVE_INFINITY;
+  };
+  /** Single-pass lane order: real dates, with synthetics at or just after their anchor parent. */
+  const laneAssignmentSortTime = (commit: VisualCommit): number => {
+    const selfMs = safeTimeMs(commit.date);
+    const selfTime = Number.isFinite(selfMs) ? selfMs : Number.POSITIVE_INFINITY;
+    if (!isSyntheticForkChild(commit) || !commit.parentSha) return selfTime;
+    const parent = findCommitBySha(commit.parentSha);
+    if (!parent) return selfTime;
+    const parentMs = safeTimeMs(parent.date);
+    if (!Number.isFinite(parentMs)) return selfTime;
+    return Math.max(selfTime, parentMs + 1);
   };
   const provisionalColumnByCommitVisualId = new Map<string, number>(
     allCommitsWithClusters.map((commit) => [commit.visualId, 0] as const),
@@ -1005,6 +1326,7 @@ export function computeBranchGridLayout(input: BranchGridLayoutInput): BranchGri
   const clusterKeyByCommitId = new Map<string, string>();
   const clusterKeyBySha = new Map<string, string[]>();
   const leadByClusterKey = new Map<string, string>();
+  const firstByClusterKey = new Map<string, string>();
   const clusterCounts = new Map<string, number>();
   const buildClustersForBranch = (branchName: string, commits: VisualCommit[]): GridCluster[] => {
     if (commits.length === 0) return [];
@@ -1044,9 +1366,9 @@ export function computeBranchGridLayout(input: BranchGridLayoutInput): BranchGri
     };
     let previousBoundaryKind: string | null = null;
     for (const commit of ordered) {
-      const isSyntheticBoundaryChild = commit.kind === 'branch-created';
+      const isHiddenSyntheticChild = commit.kind === 'branch-created' || commit.kind === 'stash';
       const isBoundary = boundaryShaByCommitId.has(commit.visualId);
-      if (isSyntheticBoundaryChild) {
+      if (isHiddenSyntheticChild) {
         continue;
       }
       const mergeParentCount = mergeParentShasByMergeSha.get(commit.id)?.size ?? 0;
@@ -1082,6 +1404,11 @@ export function computeBranchGridLayout(input: BranchGridLayoutInput): BranchGri
         return effectiveCommitTime(b) - effectiveCommitTime(a) || b.id.localeCompare(a.id);
       })[0]!;
       const leadId = lead.visualId;
+      const first = [...chunk].sort(
+        (left, right) =>
+          effectiveCommitTime(left) - effectiveCommitTime(right) || left.id.localeCompare(right.id),
+      )[0]!;
+      const firstId = first.visualId;
       const clusterVm = { branchName, key, commitIds: chunk.map((commit) => commit.visualId), leadId, count: chunk.length };
       clusters.push(clusterVm);
       const previousCount = clusterCounts.get(key) ?? 0;
@@ -1094,6 +1421,15 @@ export function computeBranchGridLayout(input: BranchGridLayoutInput): BranchGri
           const currentLeadRow = provisionalRowByVisualId.get(currentLead.visualId) ?? Number.MIN_SAFE_INTEGER;
           const nextLeadRow = provisionalRowByVisualId.get(leadId) ?? Number.MIN_SAFE_INTEGER;
           if (nextLeadRow > currentLeadRow) leadByClusterKey.set(key, leadId);
+        }
+      }
+      if (!firstByClusterKey.has(key)) {
+        firstByClusterKey.set(key, firstId);
+      } else {
+        const currentFirstId = firstByClusterKey.get(key)!;
+        const currentFirst = commits.find((candidate) => candidate.visualId === currentFirstId);
+        if (currentFirst && effectiveCommitTime(first) < effectiveCommitTime(currentFirst)) {
+          firstByClusterKey.set(key, firstId);
         }
       }
       clusterCounts.set(key, Math.max(previousCount, chunk.length));
@@ -1194,34 +1530,64 @@ export function computeBranchGridLayout(input: BranchGridLayoutInput): BranchGri
     });
     childClustersByParent.set(parent, childKeys);
   }
-  const clusterColumnByKey = new Map<string, number>();
-  Array.from(clusterByKey.keys())
-    .sort((left, right) => {
-      const rankDelta = clusterSortRank(left) - clusterSortRank(right);
-      if (rankDelta !== 0) return rankDelta;
-      const rowDelta = clusterSortRowTieBreak(left) - clusterSortRowTieBreak(right);
-      if (rowDelta !== 0) return rowDelta;
-      return left.localeCompare(right);
-    })
-    .forEach((clusterKey, column) => clusterColumnByKey.set(clusterKey, column));
-  // Keep the working-tree node on the same lane column as its parent tail — otherwise committing
-  // replaces WORKING_TREE with a new SHA that jumps to a different cluster column position.
-  for (const commit of allCommitsWithClusters) {
-    if (
-      (commit.kind === 'uncommitted' || commit.kind === 'branch-created' || commit.id.startsWith('BRANCH_HEAD:'))
-      && commit.parentSha
-    ) {
-      const parent =
-        findCommitByShaSameBranch(commit.parentSha, commit.branchName)
-        ?? findCommitBySha(commit.parentSha);
-      if (!parent) continue;
-      const ck = clusterKeyByCommitId.get(commit.visualId);
-      const pk = clusterKeyByCommitId.get(parent.visualId);
-      if (!ck || !pk) continue;
-      const parentCol = clusterColumnByKey.get(pk);
-      if (parentCol != null) clusterColumnByKey.set(ck, parentCol);
-      continue;
+  const columnByCommitVisualId = new Map<string, number>();
+  const occupantsByLaneColumn = new Map<number, VisualCommit[]>();
+  const registerLaneColumn = (commit: VisualCommit, column: number): void => {
+    columnByCommitVisualId.set(commit.visualId, column);
+    const occupants = occupantsByLaneColumn.get(column) ?? [];
+    occupants.push(commit);
+    occupantsByLaneColumn.set(column, occupants);
+  };
+  const canShareLaneColumn = (left: VisualCommit, right: VisualCommit): boolean => {
+    const leftCluster = clusterKeyByCommitId.get(left.visualId) ?? null;
+    const rightCluster = clusterKeyByCommitId.get(right.visualId) ?? null;
+    return leftCluster != null && leftCluster === rightCluster;
+  };
+  const projectedLaneColumn = (commit: VisualCommit, visiting = new Set<string>()): number => {
+    const assigned = columnByCommitVisualId.get(commit.visualId);
+    if (assigned != null) return assigned;
+    if (visiting.has(commit.visualId)) return 0;
+    visiting.add(commit.visualId);
+    const column = !commit.parentSha
+      ? 0
+      : Math.max(
+          0,
+          ...allCommitsWithClusters
+            .filter((candidate) => shasMatch(candidate.id, commit.parentSha!))
+            .map((parent) => projectedLaneColumn(parent, visiting) + 1),
+        );
+    visiting.delete(commit.visualId);
+    return column;
+  };
+  const parentMinimumLaneColumn = (commit: VisualCommit): number => {
+    if (!commit.parentSha) return 0;
+    const parents = allCommitsWithClusters.filter((candidate) => shasMatch(candidate.id, commit.parentSha!));
+    if (parents.length === 0) return 0;
+    return Math.max(...parents.map((parent) => projectedLaneColumn(parent) + 1));
+  };
+  const findLaneColumn = (commit: VisualCommit, minColumn: number): number => {
+    let candidate = minColumn;
+    while (true) {
+      const occupants = occupantsByLaneColumn.get(candidate) ?? [];
+      if (occupants.every((occupant) => canShareLaneColumn(commit, occupant))) return candidate;
+      candidate += 1;
     }
+  };
+  const commitsInLaneOrder = [...allCommitsWithClusters].sort(
+    (left, right) =>
+      laneAssignmentSortTime(left) - laneAssignmentSortTime(right)
+      || left.id.localeCompare(right.id)
+      || left.visualId.localeCompare(right.visualId),
+  );
+  for (const commit of commitsInLaneOrder) {
+    registerLaneColumn(commit, findLaneColumn(commit, parentMinimumLaneColumn(commit)));
+  }
+  const clusterColumnByKey = new Map<string, number>();
+  for (const commit of allCommitsWithClusters) {
+    const clusterKey = clusterKeyByCommitId.get(commit.visualId);
+    if (!clusterKey || clusterColumnByKey.has(clusterKey)) continue;
+    const column = columnByCommitVisualId.get(commit.visualId);
+    if (column != null) clusterColumnByKey.set(clusterKey, column);
   }
   const lanes: Lane[] = Array.from(clusterColumnByKey.entries())
     .map(([key, column]) => ({
@@ -1231,108 +1597,23 @@ export function computeBranchGridLayout(input: BranchGridLayoutInput): BranchGri
     }))
     .sort((a, b) => a.column - b.column || a.name.localeCompare(b.name));
   const laneByName = new Map(lanes.map((lane) => [lane.name, lane] as const));
-  const columnByCommitVisualId = new Map<string, number>();
-  const firstSyntheticColumn = Math.max(0, ...Array.from(clusterColumnByKey.values())) + 1;
-  for (const commit of allCommitsWithClusters) {
-    const clusterKey = clusterKeyByCommitId.get(commit.visualId);
-    columnByCommitVisualId.set(
-      commit.visualId,
-      clusterKey ? (clusterColumnByKey.get(clusterKey) ?? firstSyntheticColumn) : firstSyntheticColumn,
-    );
-  }
-  // Invariant: synthetic branch children must be after their parent lane, never before.
-  const syntheticKinds = new Set<NonNullable<VisualCommit['kind']>>(['branch-created']);
-  const branchLaneColumnByName = new Map(
-    branchLanes.map((lane) => [lane.name, lane.column] as const),
-  );
-  const syntheticLaneGapMs = 60 * 60 * 1000;
-  const syntheticWindowFor = (commit: VisualCommit): { start: number; end: number } => {
-    const center = safeTimeMs(commit.date);
-    if (!Number.isFinite(center)) return { start: Number.NEGATIVE_INFINITY, end: Number.POSITIVE_INFINITY };
-    return { start: center - syntheticLaneGapMs, end: center + syntheticLaneGapMs };
-  };
-  const overlapsWindow = (left: { start: number; end: number }, right: { start: number; end: number }): boolean =>
-    !(left.end < right.start || right.end < left.start);
-  const baseOccupiedByColumn = new Map<number, Array<{ start: number; end: number }>>();
-  for (const other of allCommitsWithClusters) {
-    const column = columnByCommitVisualId.get(other.visualId);
-    if (column == null) continue;
-    const list = baseOccupiedByColumn.get(column) ?? [];
-    list.push(syntheticWindowFor(other));
-    baseOccupiedByColumn.set(column, list);
-  }
-  const findFreeSyntheticColumn = (
-    commit: VisualCommit,
-    minColumn: number,
-  ): number => {
-    const targetWindow = syntheticWindowFor(commit);
-    const maxOccupiedColumn = Math.max(minColumn, ...Array.from(baseOccupiedByColumn.keys()));
-    const searchEnd = maxOccupiedColumn + 1;
-    let contiguousCollisionTop = minColumn - 1;
-    let seenGap = false;
-    let firstFreeAfterContiguous: number | null = null;
-    let candidate = minColumn;
-    while (candidate <= searchEnd) {
-      const collisions = (baseOccupiedByColumn.get(candidate) ?? []).some((window) => overlapsWindow(window, targetWindow));
-      if (collisions && !seenGap) {
-        contiguousCollisionTop = candidate;
-      } else if (!collisions) {
-        seenGap = true;
-        if (firstFreeAfterContiguous == null && candidate > contiguousCollisionTop) {
-          firstFreeAfterContiguous = candidate;
-        }
-      }
-      candidate += 1;
-    }
-    return firstFreeAfterContiguous ?? (contiguousCollisionTop + 1);
-  };
-  for (const commit of allCommitsWithClusters) {
-    if (!commit.kind || !syntheticKinds.has(commit.kind)) continue;
-    const isEmptyBranchHead = commit.id.startsWith('BRANCH_HEAD:');
-    if (!isEmptyBranchHead) {
-      const branchLaneColumn = branchLaneColumnByName.get(commit.branchName);
-      if (branchLaneColumn != null) {
-        columnByCommitVisualId.set(commit.visualId, branchLaneColumn);
-        continue;
-      }
-    }
-    const parentSha = commit.parentSha ?? null;
-    if (!parentSha) continue;
-    const parentColumns = allCommitsWithClusters
-      .filter((candidate) => shasMatch(candidate.id, parentSha))
-      .map((candidate) => columnByCommitVisualId.get(candidate.visualId))
-      .filter((value): value is number => value != null);
-    let minimumColumn = parentColumns.length > 0 ? Math.max(...parentColumns) + 1 : 1;
-    if (isEmptyBranchHead) {
-      const anchorOwningBranch = resolveAnchorOwningBranchName(
-        parentSha,
-        directCommits,
-        branchCommitPreviews,
-        defaultBranch,
-      );
-      if (anchorOwningBranch) {
-        const anchorLaneColumn = branchLaneColumnByName.get(anchorOwningBranch);
-        if (anchorLaneColumn != null) {
-          minimumColumn = Math.max(minimumColumn, anchorLaneColumn + 1);
-        }
-      }
-    }
-    const resolvedColumn = findFreeSyntheticColumn(commit, minimumColumn);
-    columnByCommitVisualId.set(commit.visualId, resolvedColumn);
-  }
-  for (const commit of allCommitsWithClusters) {
-    if (commit.kind !== 'uncommitted' || !commit.parentSha) continue;
-    const parent = findCommitByShaSameBranch(commit.parentSha, commit.branchName);
-    if (!parent) continue;
-    const parentCol = columnByCommitVisualId.get(parent.visualId);
-    if (parentCol != null) columnByCommitVisualId.set(commit.visualId, parentCol);
-  }
   const allRowByVisualId = allocateRowsByColumnAndTime(
     allCommitsWithClusters,
     columnByCommitVisualId,
     extraParentShasByCommitId,
     mergeParentShasByMergeSha,
+    { clusterKeyByCommitId, clusterCounts },
   );
+  applyClusterSingleTimelineRow(
+    allRowByVisualId,
+    allCommitsWithClusters,
+    clusterKeyByCommitId,
+    leadByClusterKey,
+    clusterCounts,
+  );
+  compactTimelineRows(allRowByVisualId, allCommitsWithClusters);
+  applyWorktreeNodePlacement(isHorizontal, allRowByVisualId, columnByCommitVisualId, allCommitsWithClusters);
+  compactTimelineRows(allRowByVisualId, allCommitsWithClusters);
   const commitBySha = new Map<string, VisualCommit>();
   for (const commit of allCommitsWithClusters) {
     commitBySha.set(commit.id, commit);
@@ -1465,12 +1746,13 @@ export function computeBranchGridLayout(input: BranchGridLayoutInput): BranchGri
       (!defaultCollapsedClumps.has(clusterKey) && !manuallyClosedClumps.has(clusterKey));
     return count <= 1 || isOpen || leadId === commit.visualId;
   });
-  const visibleRows = allocateRowsByColumnAndTime(
-    visibleCommitsList,
-    columnByCommitVisualId,
-    extraParentShasByCommitId,
-    mergeParentShasByMergeSha,
-  );
+  const isClumpOpen = (clusterKey: string): boolean =>
+    isClusterClumpOpen(clusterKey, manuallyOpenedClumps, defaultCollapsedClumps, manuallyClosedClumps);
+  const visibleRows = new Map<string, number>();
+  for (const commit of visibleCommitsList) {
+    visibleRows.set(commit.visualId, allRowByVisualId.get(commit.visualId) ?? 1);
+  }
+  applyWorktreeNodePlacement(isHorizontal, visibleRows, columnByCommitVisualId, allCommitsWithClusters);
   const zoomAwareRowGap = ROW_GAP / GRID_LAYOUT_RENDER_ZOOM;
   const zoomAwareLabelBand = 20 / GRID_LAYOUT_RENDER_ZOOM;
   const zoomAwareTimelinePitch = isHorizontal
@@ -1508,8 +1790,29 @@ export function computeBranchGridLayout(input: BranchGridLayoutInput): BranchGri
       return a.commit.visualId.localeCompare(b.commit.visualId);
     })
     .map((node) => ({ ...node }));
+  let maxResolvedRow = Math.max(0, ...renderNodes.map((node) => node.row));
+  syncOpenClumpNodePositions(
+    renderNodes,
+    clusterKeyByCommitId,
+    leadByClusterKey,
+    clusterCounts,
+    isClumpOpen,
+    isHorizontal,
+    horizontalRightAnchorRowOffset,
+    zoomAwareTimelinePitch,
+    maxResolvedRow,
+  );
   const occupiedSlots = new Set<string>();
   for (const node of renderNodes) {
+    const openClumpKey = isMultiCommitClusterMember(
+      node.commit,
+      clusterKeyByCommitId,
+      clusterCounts,
+    );
+    const leadVisualId = openClumpKey ? leadByClusterKey.get(openClumpKey) : null;
+    if (openClumpKey && leadVisualId && node.commit.visualId !== leadVisualId) {
+      continue;
+    }
     let candidateRow = node.row;
     let slotKey = `${node.column}:${candidateRow}`;
     while (occupiedSlots.has(slotKey)) {
@@ -1519,7 +1822,18 @@ export function computeBranchGridLayout(input: BranchGridLayoutInput): BranchGri
     node.row = candidateRow;
     occupiedSlots.add(slotKey);
   }
-  const maxResolvedRow = Math.max(0, ...renderNodes.map((node) => node.row));
+  maxResolvedRow = Math.max(0, ...renderNodes.map((node) => node.row));
+  syncOpenClumpNodePositions(
+    renderNodes,
+    clusterKeyByCommitId,
+    leadByClusterKey,
+    clusterCounts,
+    isClumpOpen,
+    isHorizontal,
+    horizontalRightAnchorRowOffset,
+    zoomAwareTimelinePitch,
+    maxResolvedRow,
+  );
   for (const node of renderNodes) {
     if (isHorizontal) {
       node.x = LEFT_PADDING + (horizontalRightAnchorRowOffset + node.row - 1) * zoomAwareTimelinePitch;
@@ -1542,7 +1856,14 @@ export function computeBranchGridLayout(input: BranchGridLayoutInput): BranchGri
     // Same timeline row is shared across lanes (horizontal: same x, different y). Bounding boxes can
     // intersect between lanes even when layout is intentional — bumping row here consumed a timeline
     // slot on one lane only, leaving a visible "empty row" before HEAD / uncommitted.
-    while (placedNodes.some((placed) => placed.column === node.column && boxesOverlap(node, placed))) {
+    while (placedNodes.some((placed) => {
+      if (placed.column !== node.column) return false;
+      if (!boxesOverlap(node, placed)) return false;
+      if (isAdjacentWorktreePair(isHorizontal, node, placed)) return false;
+      if (isAdjacentAnchoredLanePair(node, placed)) return false;
+      if (nodesShareOpenClump(node, placed, clusterKeyByCommitId, clusterCounts, isClumpOpen)) return false;
+      return true;
+    })) {
       if (isHorizontal) {
         node.row += 1;
         node.x = LEFT_PADDING + (horizontalRightAnchorRowOffset + node.row - 1) * zoomAwareTimelinePitch;
@@ -1553,6 +1874,30 @@ export function computeBranchGridLayout(input: BranchGridLayoutInput): BranchGri
     }
     placedNodes.push(node);
   }
+  syncOpenClumpNodePositions(
+    renderNodes,
+    clusterKeyByCommitId,
+    leadByClusterKey,
+    clusterCounts,
+    isClumpOpen,
+    isHorizontal,
+    horizontalRightAnchorRowOffset,
+    zoomAwareTimelinePitch,
+    maxResolvedRow,
+  );
+  enforceExclusiveRenderLaneColumns(
+    renderNodes,
+    clusterKeyByCommitId,
+    columnByCommitVisualId,
+    isHorizontal,
+    zoomAwareLanePitch,
+    (commit) => !!getNodePositionOverride(normalizedNodePositionOverrides, commit),
+  );
+  compactVisibleLaneColumns(renderNodes, columnByCommitVisualId, isHorizontal, zoomAwareLanePitch);
+  syncHorizontalLaneYFromColumn(
+    renderNodes.filter((node) => !getNodePositionOverride(normalizedNodePositionOverrides, node.commit)),
+    zoomAwareLanePitch,
+  );
   const movedLeadByClusterKey = new Map<string, { node: Node; x: number; y: number }>();
   for (const node of renderNodes) {
     const clusterKey = clusterKeyByCommitId.get(node.commit.visualId);
@@ -1576,8 +1921,8 @@ export function computeBranchGridLayout(input: BranchGridLayoutInput): BranchGri
       // Signed row delta: layout x grows with row (newer to the right). Using only max(0, leadRow - row)
       // collapsed the offset when node.row > lead.row (e.g. working tree newer than a stale lead row),
       // stacking cards and overlapping absolutely positioned labels.
+      // Lane Y stays column × pitch for every node so stashes/placeholders never share a band with main.
       node.x = movedLead.x + (node.row - movedLead.node.row) * zoomAwareTimelinePitch;
-      node.y = movedLead.y + (node.column - movedLead.node.column) * zoomAwareLanePitch;
       continue;
     }
     node.x = movedLead.x + (node.column - movedLead.node.column) * COLUMN_WIDTH;
@@ -1600,7 +1945,7 @@ export function computeBranchGridLayout(input: BranchGridLayoutInput): BranchGri
   }
   const pointFormatter = (x: number, y: number) => `${x.toFixed(1)} ${y.toFixed(1)}`;
   const maxVisibleRow = Math.max(0, ...renderNodes.map((node) => node.row));
-  const maxLaneColumn = Math.max(0, ...Array.from(columnByCommitVisualId.values()));
+  const maxLaneColumn = Math.max(0, ...renderNodes.map((node) => node.column));
   const renderedMaxX = Math.max(0, ...renderNodes.map((node) => node.x + CARD_WIDTH));
   const renderedMaxY = Math.max(0, ...renderNodes.map((node) => node.y + CARD_BODY_TOP_OFFSET + CARD_HEIGHT));
   const contentWidth = Math.max(
@@ -1645,9 +1990,27 @@ export function computeBranchGridLayout(input: BranchGridLayoutInput): BranchGri
     if (!sha) return null;
     const visibleNode = nodeForCommitSha(visibleNodesBySha, sha, preferredBranchName);
     if (visibleNode) return visibleNode;
-    const clusterKey = clusterKeyByCommitId.get(`${preferredBranchName ?? defaultBranch}:${sha}`) ?? clusterKeyByCommitId.get(sha);
+    const exactRenderedNode = renderNodes.find(
+      (candidate) =>
+        shasMatch(candidate.commit.id, sha) &&
+        (!preferredBranchName || candidate.commit.branchName === preferredBranchName),
+    );
+    if (exactRenderedNode) return exactRenderedNode;
+    const clusterKey =
+      clusterKeyByCommitId.get(`${preferredBranchName ?? defaultBranch}:${sha}`) ??
+      clusterKeyByCommitId.get(sha);
     if (!clusterKey) return null;
-    return visibleNodeByClusterKey.get(clusterKey) ?? null;
+    const clusterNodes = renderNodes.filter(
+      (candidate) => clusterKeyByCommitId.get(candidate.commit.visualId) === clusterKey,
+    );
+    const forkNodeInCluster = clusterNodes.find((candidate) => shasMatch(candidate.commit.id, sha));
+    if (forkNodeInCluster) return forkNodeInCluster;
+    const clusterLeadId = leadByClusterKey.get(clusterKey);
+    if (clusterLeadId) {
+      const leadNode = renderNodes.find((candidate) => candidate.commit.visualId === clusterLeadId);
+      if (leadNode && shasMatch(leadNode.commit.id, sha)) return leadNode;
+    }
+    return null;
   };
   const connectorKeySet = new Set<string>();
   for (const branch of branches) {
@@ -2042,6 +2405,7 @@ export function computeBranchGridLayout(input: BranchGridLayoutInput): BranchGri
     clusterKeyByCommitId,
     clusterKeyBySha,
     leadByClusterKey,
+    firstByClusterKey,
     clusterCounts,
     debugRows,
     branchDebugRows,

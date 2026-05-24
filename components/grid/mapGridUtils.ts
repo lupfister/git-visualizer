@@ -576,3 +576,19 @@ export function worktreeShortLabel(path: string): string {
   if (parts.length <= 2) return path;
   return `.../${parts.slice(-2).join('/')}`;
 }
+
+/** Leaf directory name for a worktree checkout path (e.g. `feature-wt` from `/repo/.worktrees/feature-wt`). */
+export function worktreeDisplayName(path: string): string {
+  const parts = path.replace(/\\/g, '/').split('/').filter(Boolean);
+  return parts[parts.length - 1] ?? path;
+}
+
+export const formatWorktreeNodeHeaderLabel = (
+  session: { path: string; branchName: string | null; hasUncommittedChanges: boolean },
+  branchNameOnNode?: string | null,
+): string => {
+  const name = worktreeDisplayName(session.path);
+  const branch = session.branchName ?? branchNameOnNode ?? 'detached';
+  const branchPart = session.hasUncommittedChanges ? `${branch}/working...` : branch;
+  return `${name} • ${branchPart}`;
+};

@@ -12,7 +12,6 @@ import { invoke } from '@tauri-apps/api/core';
 import { getCurrentWindow } from '@tauri-apps/api/window';
 import type { BranchCommitPreview, WorktreeInfo } from '../../types';
 import {
-  buildLanes,
   CARD_HEIGHT,
   CARD_BODY_TOP_OFFSET,
   CARD_WIDTH,
@@ -27,7 +26,7 @@ import {
 } from './LayoutGrid';
 import { GitMerge } from 'lucide-react';
 import { computeBranchGridLayout, GRID_LAYOUT_RENDER_ZOOM } from './branchGridLayoutModel';
-import { layoutModelHasWorkingTree, stripWorkingTreeFromLayoutModel } from './workingTreeLayout';
+import { layoutModelHasWorkingTree } from './workingTreeLayout';
 import type { BranchGridLayoutModel } from './branchGridLayoutModel';
 import { connectorsWithEffectivePositions } from './mapGridLiveConnectors';
 import {
@@ -394,7 +393,7 @@ export default function BranchGridMap({
   }, [worktrees, worktreeSessions, currentRepoPath]);
 
   const computedLayoutModel = useMemo(() => {
-    const isDirty = worktreeSessions.some((session) => session.hasUncommittedChanges);
+    const hasWorktreeNodes = worktreeSessions.length > 0;
     const providedHasWorkingTree = layoutModelHasWorkingTree(providedLayoutModel ?? null);
     const previewsHaveWorkingTree = Object.values(branchCommitPreviews).some((previews) =>
       previews.some((preview) => isWorkingTreeCommitId(preview.fullSha) || preview.kind === 'uncommitted'),
@@ -402,14 +401,12 @@ export default function BranchGridMap({
     const canUseProvidedLayout =
       providedLayoutModel &&
       Object.keys(nodePositionOverrides).length === 0 &&
-      providedHasWorkingTree === isDirty &&
-      previewsHaveWorkingTree === isDirty;
+      providedHasWorkingTree === hasWorktreeNodes &&
+      previewsHaveWorkingTree === hasWorktreeNodes;
     if (canUseProvidedLayout) {
-      return isDirty ? providedLayoutModel : stripWorkingTreeFromLayoutModel(providedLayoutModel);
+      return providedLayoutModel;
     }
-    const lanes = buildLanes(branches, defaultBranch, branchCommitPreviews, branchParentByName);
     return computeBranchGridLayout({
-      lanes,
       branches,
       mergeNodes,
       directCommits,
@@ -458,6 +455,7 @@ export default function BranchGridMap({
     allCommits,
     clusterKeyByCommitId,
     leadByClusterKey,
+    firstByClusterKey,
     clusterCounts,
     matchingNodes,
     matchingNodeIds,
@@ -1963,6 +1961,7 @@ export default function BranchGridMap({
           manuallyClosedClumps={manuallyClosedClumps}
           defaultCollapsedClumps={defaultCollapsedClumps}
           leadByClusterKey={leadByClusterKey}
+          firstByClusterKey={firstByClusterKey}
           clusterKeyByCommitId={clusterKeyByCommitId}
           clusterCounts={clusterCounts}
           commitIdsWithRenderedAncestry={commitIdsWithRenderedAncestry}

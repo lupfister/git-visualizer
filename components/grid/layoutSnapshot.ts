@@ -17,6 +17,7 @@ type SerializedBranchGridLayoutModel = {
   clusterKeyByCommitId: Entry<string>[];
   clusterKeyBySha: Entry<string[]>[];
   leadByClusterKey: Entry<string>[];
+  firstByClusterKey?: Entry<string>[];
   clusterCounts: Entry<number>[];
   debugRows: string[];
   branchDebugRows: string[];
@@ -60,6 +61,7 @@ export function serializeBranchGridLayoutModel(model: BranchGridLayoutModel): Se
     clusterKeyByCommitId: Array.from(model.clusterKeyByCommitId.entries()),
     clusterKeyBySha: Array.from(model.clusterKeyBySha.entries()),
     leadByClusterKey: Array.from(model.leadByClusterKey.entries()),
+    firstByClusterKey: Array.from(model.firstByClusterKey.entries()),
     clusterCounts: Array.from(model.clusterCounts.entries()),
     debugRows: model.debugRows,
     branchDebugRows: model.branchDebugRows,
@@ -119,6 +121,7 @@ export function hydrateBranchGridLayoutModel(
     clusterKeyByCommitId: new Map(snapshot.clusterKeyByCommitId ?? []),
     clusterKeyBySha: new Map(snapshot.clusterKeyBySha ?? []),
     leadByClusterKey: new Map(snapshot.leadByClusterKey ?? []),
+    firstByClusterKey: new Map(snapshot.firstByClusterKey ?? snapshot.leadByClusterKey ?? []),
     clusterCounts: new Map(snapshot.clusterCounts ?? []),
     debugRows: snapshot.debugRows ?? [],
     branchDebugRows: snapshot.branchDebugRows ?? [],

@@ -382,6 +382,7 @@ function BranchRows({
         <ul className="relative space-y-1 pl-4">
           {commitClumps.map((clump) => {
             const clumpCollapsed = clump.count > 1 && !isGridClusterOpen(clump.key);
+            const clumpCaretCommit = clumpCollapsed ? clump.lead : clump.commits[0]!;
             const visibleClumpCommits = clumpCollapsed ? [clump.lead] : clump.commits;
             return visibleClumpCommits.map((commit) => {
               const idx = visibleCommitPreviews.findIndex((candidate) => candidate.fullSha === commit.fullSha);
@@ -407,11 +408,11 @@ function BranchRows({
                         </span>
                       ) : null}
                     </button>
-                    {clump.count > 1 && commit.fullSha === clump.lead.fullSha ? (
+                    {clump.count > 1 && commit.fullSha === clumpCaretCommit.fullSha ? (
                       <button
                         type="button"
-                      data-clump-toggle-id={`${branchName}:${clump.lead.fullSha}`}
-                      onClick={() => onToggleGridCluster(clump.key, `${branchName}:${clump.lead.fullSha}`)}
+                      data-clump-toggle-id={`${branchName}:${clumpCaretCommit.fullSha}`}
+                      onClick={() => onToggleGridCluster(clump.key, `${branchName}:${clumpCaretCommit.fullSha}`)}
                       className={cn(
                         'shrink-0 rounded-md px-2 h-6 text-left text-xs font-normal leading-4 text-muted-foreground/70 transition-colors hover:bg-muted hover:text-muted-foreground',
                         clumpCollapsed ? '' : 'min-w-[2ch] text-center',

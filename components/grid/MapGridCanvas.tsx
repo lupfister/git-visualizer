@@ -29,7 +29,7 @@ import {
   computeViewportCullBounds,
   GRID_COMMIT_CORNER_RADIUS_BASE_PX,
   isCommitUnpushedOnBranch,
-  worktreeShortLabel,
+  formatWorktreeNodeHeaderLabel,
 } from './mapGridUtils';
 import type { ConnectorFace, Node, NodePositionOverrides } from './LayoutGrid';
 import type { MapGridCameraState, MapGridCameraTargetLayout } from './useMapGridCamera';
@@ -145,6 +145,7 @@ type CommitCardProps = {
   manuallyClosedClumps: Set<string>;
   defaultCollapsedClumps: Set<string>;
   leadByClusterKey: Map<string, string>;
+  firstByClusterKey: Map<string, string>;
   clusterKeyByCommitId: Map<string, string>;
   clusterCounts: Map<string, number>;
   openingClumpAnimations: Set<string>;
@@ -178,6 +179,7 @@ const MapGridCommitCard = memo(function MapGridCommitCard({
   manuallyClosedClumps,
   defaultCollapsedClumps,
   leadByClusterKey,
+  firstByClusterKey,
   clusterKeyByCommitId,
   clusterCounts,
   openingClumpAnimations,
@@ -209,10 +211,16 @@ const MapGridCommitCard = memo(function MapGridCommitCard({
     ? manuallyOpenedClumps.has(clusterKey) ||
       (!defaultCollapsedClumps.has(clusterKey) && !manuallyClosedClumps.has(clusterKey))
     : false;
-  const isClusterLead = clusterKey ? leadByClusterKey.get(clusterKey) === visualId : false;
-  const shouldAnimateOpeningClump =
-    clusterKey != null && isClusterOpen && !isClusterLead && openingClumpAnimations.has(clusterKey);
   const clumpCount = clusterKey ? clusterCounts.get(clusterKey) ?? 1 : 1;
+  const isClusterLead = clusterKey ? leadByClusterKey.get(clusterKey) === visualId : false;
+  const isClusterCaretHost =
+    clusterKey != null && clumpCount > 1
+      ? isClusterOpen
+        ? firstByClusterKey.get(clusterKey) === visualId
+        : isClusterLead
+      : false;
+  const shouldAnimateOpeningClump =
+    clusterKey != null && isClusterOpen && !isClusterCaretHost && openingClumpAnimations.has(clusterKey);
   const hasRenderedAncestry = commitIdsWithRenderedAncestry.has(commitId);
   const nodeWarningsForCard = nodeWarnings.get(commitId) ?? [];
   const showDataShapeError = nodeWarningsForCard.length > 0 && !hasRenderedAncestry;
@@ -222,16 +230,19 @@ const MapGridCommitCard = memo(function MapGridCommitCard({
   const isStashedCommit =
     (node.commit.kind === 'stash' || commitId.startsWith('STASH:')) && !commitId.startsWith('BRANCH_HEAD:');
   const isEmptyBranchNode = commitId.startsWith('BRANCH_HEAD:');
+  const uncommittedSession = isLocalUncommitted
+    ? worktreeSessions.find((session) => session.workingTreeId === commitId)
+    : undefined;
+  const isDirtyWorktreeNode = isLocalUncommitted && (uncommittedSession?.hasUncommittedChanges ?? false);
   const isUnpushedOnBranch =
     !isLocalUncommitted &&
     isCommitUnpushedOnBranch(commitId, branchName, unpushedCommitShasSetByBranch);
-  const isUnpushedCommit = isLocalUncommitted || isUnpushedOnBranch;
+  const isUnpushedCommit = isDirtyWorktreeNode || isUnpushedOnBranch;
   const isExplicitRemoteCommit = node.commit.isRemote === true;
   const isRemoteCommit =
     !isLocalUncommitted &&
     !isUnpushedCommit &&
     (isExplicitRemoteCommit || remoteCommitShas.has(commitId));
-  const isCheckedOutHeadNode = !isLocalUncommitted && accentToken != null;
   const isFocused = focusedCommitId === commitId;
   const isSearchActive = !!normalizedSearchQuery;
   const isSearchMatch = isSearchActive && matchingNodeIds.has(commitId);
@@ -244,8 +255,7 @@ const MapGridCommitCard = memo(function MapGridCommitCard({
         : 'Stashed changes')
     : node.commit.message;
 
-  const isCheckedOutCommit = isLocalUncommitted || isCheckedOutHeadNode;
-  const checkedOutAccentActive = isCheckedOutCommit && !isSelectedCommit && accentToken != null;
+  const checkedOutAccentActive = isLocalUncommitted && !isSelectedCommit && accentToken != null;
   const accentColors = accentToken ? accentCssVars(accentToken) : null;
 
   const selectedCommitTextClass = checkedOutAccentActive
@@ -261,7 +271,7 @@ const MapGridCommitCard = memo(function MapGridCommitCard({
   /** Stash-like animated tile pattern (working tree, stash, empty branch). */
   const showCommitTilePattern = true;
   /** Animated noisy gaps (working tree, stash, empty branch). Unpushed uses static gaps only. */
-  const commitTileAnimateGaps = isLocalUncommitted || isStashedCommit || isEmptyBranchNode;
+  const commitTileAnimateGaps = isDirtyWorktreeNode || isStashedCommit || isEmptyBranchNode;
   const commitTileCloudyGaps = isRemoteCommit;
   const commitTileRandomGaps =
     commitTileAnimateGaps || (isUnpushedCommit && !commitTileCloudyGaps);
@@ -282,19 +292,11 @@ const MapGridCommitCard = memo(function MapGridCommitCard({
   );
 
   const shortSha = node.commit.id.slice(0, 7);
-  const uncommittedSession = isLocalUncommitted
-    ? worktreeSessions.find((session) => session.workingTreeId === commitId)
-    : undefined;
-  const uncommittedWorktreePrefix = uncommittedSession && !uncommittedSession.isCurrent
-    ? `${worktreeShortLabel(uncommittedSession.path)}/`
-    : '';
   const headerLabel = isEmptyBranchNode
     ? `${node.commit.branchName}/empty`
-    : isLocalUncommitted && branchName
-      ? `${uncommittedWorktreePrefix}${branchName}/uncommitted`
-      : isLocalUncommitted
-        ? `${uncommittedWorktreePrefix}uncommitted`
-        : isStashedCommit && stashHeaderLabel
+    : isLocalUncommitted && uncommittedSession
+      ? formatWorktreeNodeHeaderLabel(uncommittedSession, branchName)
+      : isStashedCommit && stashHeaderLabel
           ? stashHeaderLabel
           : isRemoteCommit && branchName
             ? `origin/${branchName}/${shortSha}`
@@ -304,11 +306,9 @@ const MapGridCommitCard = memo(function MapGridCommitCard({
 
   const bodyMessage = isLocalUncommitted || isEmptyBranchNode
     ? ''
-    : isClusterLead && isClusterOpen
-      ? stashBodyMessage
-      : isClusterLead && clumpCount > 1
-        ? `${stashBodyMessage} +${clumpCount - 1}`
-        : stashBodyMessage;
+    : !isClusterOpen && isClusterLead && clumpCount > 1
+      ? `${stashBodyMessage} +${clumpCount - 1}`
+      : stashBodyMessage;
 
   const handleClick = (event: MouseEvent) => onCommitCardClick(event, node);
   const handlePointerDown = (event: React.PointerEvent<HTMLDivElement>) => onNodePointerDown(event, node);
@@ -492,7 +492,7 @@ const MapGridCommitCard = memo(function MapGridCommitCard({
           >
             {headerLabel}
           </div>
-          {isClusterLead && clumpCount > 1 ? (
+          {isClusterCaretHost ? (
             <button
               type="button"
               onMouseDown={(event) => {
@@ -667,6 +667,7 @@ type Props = {
   manuallyClosedClumps: Set<string>;
   defaultCollapsedClumps: Set<string>;
   leadByClusterKey: Map<string, string>;
+  firstByClusterKey: Map<string, string>;
   clusterKeyByCommitId: Map<string, string>;
   clusterCounts: Map<string, number>;
   commitIdsWithRenderedAncestry: Set<string>;
@@ -735,6 +736,7 @@ const MapGridCanvas = memo(function MapGridCanvas({
   manuallyClosedClumps,
   defaultCollapsedClumps,
   leadByClusterKey,
+  firstByClusterKey,
   clusterKeyByCommitId,
   clusterCounts,
   commitIdsWithRenderedAncestry,
@@ -1055,6 +1057,7 @@ const MapGridCanvas = memo(function MapGridCanvas({
                 manuallyClosedClumps={manuallyClosedClumps}
                 defaultCollapsedClumps={defaultCollapsedClumps}
                 leadByClusterKey={leadByClusterKey}
+                firstByClusterKey={firstByClusterKey}
                 clusterKeyByCommitId={clusterKeyByCommitId}
                 clusterCounts={clusterCounts}
                 openingClumpAnimations={openingClumpAnimations}
