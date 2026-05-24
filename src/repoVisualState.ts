@@ -4,7 +4,7 @@ import { injectWorktreeUncommittedPreviews } from '../lib/injectWorktreeUncommit
 import { buildWorktreeSessions } from '../lib/worktreeSessions';
 import type { Branch, BranchCommitPreview, CheckedOutRef, DirectCommit, GitStashEntry, MergeNode, WorktreeInfo } from '../types';
 import { applyBranchParents } from '../lib/branchParents';
-import { foldStashNodesIntoGraph } from './placeStashNode';
+import { foldEmptyBranchPlaceholdersIntoGraph, foldStashNodesIntoGraph } from './placeStashNode';
 
 type RepoVisualStateInput = {
   branches: Branch[];
@@ -68,19 +68,27 @@ export function deriveRepoVisualState({
     anyDirty,
   );
 
+  const emptyBranchFolded = foldEmptyBranchPlaceholdersIntoGraph(
+    stashFolded.branches,
+    stashFolded.directCommits,
+    stashFolded.branchCommitPreviews,
+    stashFolded.branchUniqueAheadCounts,
+    defaultBranch,
+  );
+
   const injected = injectWorktreeUncommittedPreviews({
     sessions: worktreeSessions,
-    branches: stashFolded.branches,
-    branchCommitPreviews: stashFolded.branchCommitPreviews,
-    branchUniqueAheadCounts: stashFolded.branchUniqueAheadCounts,
-    directCommits: stashFolded.directCommits,
+    branches: emptyBranchFolded.branches,
+    branchCommitPreviews: emptyBranchFolded.branchCommitPreviews,
+    branchUniqueAheadCounts: emptyBranchFolded.branchUniqueAheadCounts,
+    directCommits: emptyBranchFolded.directCommits,
     defaultBranch,
   });
 
   const enrichedBranches = injected.branches;
   const enrichedBranchCommitPreviews = injected.branchCommitPreviews;
   const enrichedBranchUniqueAheadCounts = injected.branchUniqueAheadCounts;
-  const enrichedDirectCommits = stashFolded.directCommits;
+  const enrichedDirectCommits = emptyBranchFolded.directCommits;
 
   const enrichedBranchParentByName: Record<string, string | null> = { ...branchParentByName };
   enrichedBranchParentByName[defaultBranch] = null;

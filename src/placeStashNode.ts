@@ -209,3 +209,170 @@ export function foldStashNodesIntoGraph(
   }
   return state;
 }
+
+const isStashLaneBranchName = (branchName: string): boolean => /^Stash \d+$/.test(branchName);
+
+const findCommitMetaInRepo = (
+  sha: string,
+  directCommits: DirectCommit[],
+  branchCommitPreviews: Record<string, BranchCommitPreview[]>,
+): { date?: string; author?: string } | null => {
+  const inDirect = directCommits.find(
+    (commit) => shaMatches(commit.fullSha, sha) || shaMatches(commit.sha, sha),
+  );
+  if (inDirect) return { date: inDirect.date, author: inDirect.author };
+  for (const previews of Object.values(branchCommitPreviews)) {
+    const match = previews.find(
+      (commit) => shaMatches(commit.fullSha, sha) || shaMatches(commit.sha, sha),
+    );
+    if (match) return { date: match.date, author: match.author };
+  }
+  return null;
+};
+
+const isEmptyBranchForPlaceholderFold = (
+  branch: Branch,
+  branchUniqueAheadCounts: Record<string, number>,
+  branchCommitPreviews: Record<string, BranchCommitPreview[]>,
+  defaultBranch: string,
+): boolean => {
+  if (branch.name === defaultBranch) return false;
+  if (isStashLaneBranchName(branch.name)) return false;
+  const previews = branchCommitPreviews[branch.name] ?? [];
+  if (previews.some((preview) => preview.fullSha.startsWith('BRANCH_HEAD:'))) return false;
+  const uniqueAhead = Object.prototype.hasOwnProperty.call(branchUniqueAheadCounts, branch.name)
+    ? branchUniqueAheadCounts[branch.name] ?? 0
+    : null;
+  if (uniqueAhead != null && uniqueAhead > 0) return false;
+  if (branch.commitsAhead > 0) return false;
+  const concretePreviews = previews.filter(
+    (preview) => preview.kind !== 'branch-created' && !preview.fullSha.startsWith('BRANCH_HEAD:'),
+  );
+  return concretePreviews.length === 0;
+};
+
+/**
+ * Places one empty branch on its own lane (same graph fold as stashes) so placeholders never share a column.
+ */
+export function placeEmptyBranchPlaceholder(
+  branch: Branch,
+  branches: Branch[],
+  directCommits: DirectCommit[],
+  branchCommitPreviews: Record<string, BranchCommitPreview[]>,
+  branchUniqueAheadCounts: Record<string, number>,
+  defaultBranch: string,
+  laneIndex = 0,
+): StashGraphState {
+  const laneTipSha =
+    branch.headSha ||
+    branch.createdFromSha ||
+    branch.divergedFromSha ||
+    branch.presidesFromSha ||
+    null;
+  if (!laneTipSha) {
+    return { branches, directCommits, branchCommitPreviews, branchUniqueAheadCounts };
+  }
+
+  const forkPointSha =
+    branch.divergedFromSha ??
+    branch.createdFromSha ??
+    branch.presidesFromSha ??
+    laneTipSha;
+  const anchorSha = forkPointSha;
+  const placeholderId = `BRANCH_HEAD:${branch.name}:${laneTipSha}`;
+  const anchorOwningBranchName = resolveAnchorOwningBranchName(
+    anchorSha,
+    directCommits,
+    branchCommitPreviews,
+    defaultBranch,
+  );
+
+  const forkMeta = findCommitMetaInRepo(forkPointSha, directCommits, branchCommitPreviews);
+  const anchorParentDate = forkMeta?.date ?? branch.lastCommitDate ?? null;
+  const forkTimeMs = anchorParentDate ? new Date(anchorParentDate).getTime() : Number.NaN;
+  const nowTimeMs = Date.now();
+  const placeholderTimeMs = Number.isFinite(forkTimeMs)
+    ? Math.max(nowTimeMs, forkTimeMs + 1 + laneIndex)
+    : nowTimeMs + laneIndex;
+  const placeholderDate = new Date(placeholderTimeMs).toISOString();
+
+  const placeholderNode: BranchCommitPreview = {
+    fullSha: placeholderId,
+    sha: 'empty',
+    parentSha: anchorSha,
+    clusterKey: null,
+    childShas: [],
+    message: '',
+    author: forkMeta?.author ?? branch.lastCommitAuthor,
+    date: placeholderDate,
+    kind: 'stash',
+  };
+
+  const linked = linkChildToParent(
+    directCommits,
+    branchCommitPreviews,
+    anchorSha,
+    placeholderId,
+    branch.name,
+    defaultBranch,
+  );
+
+  return {
+    branches: branches.map((candidate) =>
+      candidate.name === branch.name
+        ? {
+            ...candidate,
+            parentBranch: anchorOwningBranchName || candidate.parentBranch || defaultBranch,
+          }
+        : candidate,
+    ),
+    directCommits: linked.directCommits,
+    branchCommitPreviews: {
+      ...linked.branchCommitPreviews,
+      [branch.name]: [placeholderNode],
+    },
+    branchUniqueAheadCounts: {
+      ...branchUniqueAheadCounts,
+      [branch.name]: 1,
+    },
+  };
+}
+
+export function foldEmptyBranchPlaceholdersIntoGraph(
+  branches: Branch[],
+  directCommits: DirectCommit[],
+  branchCommitPreviews: Record<string, BranchCommitPreview[]>,
+  branchUniqueAheadCounts: Record<string, number>,
+  defaultBranch: string,
+): StashGraphState {
+  let state: StashGraphState = {
+    branches,
+    directCommits,
+    branchCommitPreviews,
+    branchUniqueAheadCounts,
+  };
+  let laneIndex = 0;
+  for (const branch of branches) {
+    if (
+      !isEmptyBranchForPlaceholderFold(
+        branch,
+        state.branchUniqueAheadCounts,
+        state.branchCommitPreviews,
+        defaultBranch,
+      )
+    ) {
+      continue;
+    }
+    state = placeEmptyBranchPlaceholder(
+      branch,
+      state.branches,
+      state.directCommits,
+      state.branchCommitPreviews,
+      state.branchUniqueAheadCounts,
+      defaultBranch,
+      laneIndex,
+    );
+    laneIndex += 1;
+  }
+  return state;
+}

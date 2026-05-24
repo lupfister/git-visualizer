@@ -219,8 +219,9 @@ const MapGridCommitCard = memo(function MapGridCommitCard({
   const isSelectedCommit = selectedShaSet.has(commitId);
   const isLocalUncommitted = isWorkingTreeCommitId(commitId) || node.commit.kind === 'uncommitted';
   const accentToken = worktreeAccentByCommitId.get(commitId) ?? null;
-  const isStashedCommit = node.commit.kind === 'stash' || commitId.startsWith('STASH:');
-  const isEmptyBranchNode = node.commit.kind === 'branch-created' && commitId.startsWith('BRANCH_HEAD:');
+  const isStashedCommit =
+    (node.commit.kind === 'stash' || commitId.startsWith('STASH:')) && !commitId.startsWith('BRANCH_HEAD:');
+  const isEmptyBranchNode = commitId.startsWith('BRANCH_HEAD:');
   const isUnpushedOnBranch =
     !isLocalUncommitted &&
     isCommitUnpushedOnBranch(commitId, branchName, unpushedCommitShasSetByBranch);

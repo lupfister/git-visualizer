@@ -57,6 +57,7 @@ import {
   type WorktreeSession,
 } from '../../lib/worktreeSessions';
 import { parseMapCheckoutTarget, type MapCheckoutTarget } from './mapCheckoutTarget';
+import { parseDeletableEmptyBranchFromCommitId } from './mapDeleteTarget';
 import {
   GRID_COMMIT_CORNER_RADIUS_BASE_PX,
   GRID_RENDER_ZOOM,
@@ -881,8 +882,30 @@ export default function BranchGridMap({
     [worktreeSessions, selectedVisibleCommitShas],
   );
   const hasSelectedUncommittedChanges = uncommittedSessionsToDiscard.length > 0;
-  const deletableSelectionCount = uncommittedSessionsToDiscard.length + selectedStashIndices.length;
+  const selectedDeletableBranchNames = useMemo(() => {
+    const names: string[] = [];
+    for (const commitId of selectedVisibleCommitShas) {
+      const branchName = parseDeletableEmptyBranchFromCommitId(
+        commitId,
+        defaultBranch,
+        branchByName,
+        branchUniqueAheadCounts,
+        branchCommitPreviews,
+      );
+      if (branchName) names.push(branchName);
+    }
+    return Array.from(new Set(names));
+  }, [
+    selectedVisibleCommitShas,
+    defaultBranch,
+    branchByName,
+    branchUniqueAheadCounts,
+    branchCommitPreviews,
+  ]);
+  const deletableSelectionCount =
+    uncommittedSessionsToDiscard.length + selectedStashIndices.length + selectedDeletableBranchNames.length;
   const deleteSelectionItems = [
+    ...selectedDeletableBranchNames.map((branchName) => `Branch ${branchName}`),
     ...uncommittedSessionsToDiscard.map((session) => (
       session.isCurrent
         ? 'Uncommitted changes'
@@ -1609,7 +1632,7 @@ export default function BranchGridMap({
   const confirmDeleteSelection = useCallback(async () => {
     if (!onDeleteSelection) return;
     await onDeleteSelection({
-      branchNames: [],
+      branchNames: selectedDeletableBranchNames,
       discardUncommittedChanges: hasSelectedUncommittedChanges,
       discardUncommittedWorktreePaths: uncommittedSessionsToDiscard.map((session) => session.path),
       stashIndices: selectedStashIndices,
@@ -1617,7 +1640,13 @@ export default function BranchGridMap({
     setDeleteConfirmOpen(false);
     setSelectedCommitShas([]);
     setMergeTargetCommitSha(null);
-  }, [onDeleteSelection, hasSelectedUncommittedChanges, selectedStashIndices, uncommittedSessionsToDiscard]);
+  }, [
+    onDeleteSelection,
+    hasSelectedUncommittedChanges,
+    selectedStashIndices,
+    uncommittedSessionsToDiscard,
+    selectedDeletableBranchNames,
+  ]);
 
   const confirmCreateBranchFromSelection = useCallback(async () => {
     const trimmed = newBranchName.trim();
@@ -1687,7 +1716,7 @@ export default function BranchGridMap({
     const handleKeyDown = (event: KeyboardEvent) => {
       if (!onDeleteSelection) return;
       if (deleteConfirmOpen) return;
-      if (selectedVisibleCommitShas.length === 0) return;
+      if (deletableSelectionCount === 0) return;
       const target = event.target as HTMLElement | null;
       if (target?.closest('input, textarea, select, button, [contenteditable="true"]')) return;
       if (event.key !== 'Delete' && event.key !== 'Backspace') return;
@@ -1697,7 +1726,7 @@ export default function BranchGridMap({
 
     window.addEventListener('keydown', handleKeyDown);
     return () => window.removeEventListener('keydown', handleKeyDown);
-  }, [deleteConfirmOpen, onDeleteSelection, selectedVisibleCommitShas.length]);
+  }, [deleteConfirmOpen, deletableSelectionCount, onDeleteSelection]);
 
   void [openPRs, onLoadMore, view, staleBranches, isLoading, scrollRequest, focusedErrorBranch, mapTopInsetPx, visibleNodesBySha, freshCopyBranchNames];
 

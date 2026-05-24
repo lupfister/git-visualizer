@@ -158,9 +158,68 @@ fn is_fast_forward_merged_into_base(
     if branch.commits_ahead > 0 || branch.commits_behind > 0 {
         return false;
     }
-    // Keep named refs at the default tip (0 ahead / 0 behind) so the map can render
+    // Keep named refs at the default tip (0 ahead / 0 behind) so the map and sidebar can render
     // BRANCH_HEAD placeholders; hiding them made empty branches vanish after moving to main.
+    if !default_head_sha.is_empty()
+        && (branch.head_sha == default_head_sha
+            || branch.head_sha.starts_with(default_head_sha)
+            || default_head_sha.starts_with(&branch.head_sha))
+    {
+        return false;
+    }
     branch.commits_ahead <= 0 && default_first_parent_shas.contains(&branch.head_sha)
+}
+
+#[cfg(test)]
+mod fast_forward_filter_tests {
+    use super::is_fast_forward_merged_into_base;
+    use super::Branch;
+    use std::collections::HashSet;
+
+    fn branch_at(sha: &str) -> Branch {
+        Branch {
+            name: "feature".to_string(),
+            commits_ahead: 0,
+            commits_behind: 0,
+            created_from_sha: None,
+            created_date: None,
+            last_commit_date: "2024-01-01T00:00:00Z".to_string(),
+            last_commit_author: "test".to_string(),
+            status: "fresh".to_string(),
+            remote_sync_status: "local-only".to_string(),
+            unpushed_commits: 0,
+            head_sha: sha.to_string(),
+            parent_branch: None,
+            diverged_from_sha: None,
+            diverged_from_date: None,
+        }
+    }
+
+    #[test]
+    fn keeps_empty_branch_at_default_tip() {
+        let main_tip = "abc123def456";
+        let mut first_parents = HashSet::new();
+        first_parents.insert(main_tip.to_string());
+        first_parents.insert("older".to_string());
+        assert!(!is_fast_forward_merged_into_base(
+            &branch_at(main_tip),
+            &first_parents,
+            main_tip,
+        ));
+    }
+
+    #[test]
+    fn hides_stale_ref_on_mainline_behind_tip() {
+        let main_tip = "tip999";
+        let mut first_parents = HashSet::new();
+        first_parents.insert("older".to_string());
+        first_parents.insert(main_tip.to_string());
+        assert!(is_fast_forward_merged_into_base(
+            &branch_at("older"),
+            &first_parents,
+            main_tip,
+        ));
+    }
 }
 
 fn build_branch_fallback(repo: &Path, name: &str, default_branch: &str) -> Option<Branch> {

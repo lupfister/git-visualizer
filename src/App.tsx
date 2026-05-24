@@ -20,7 +20,7 @@ import {
   isNewerBranchAsParent,
   isParallelEmptyBranchParent,
 } from '../lib/branchParents';
-import { foldStashNodesIntoGraph } from './placeStashNode';
+import { foldEmptyBranchPlaceholdersIntoGraph, foldStashNodesIntoGraph } from './placeStashNode';
 import { stripWorkingTreeFromPreviews, injectWorktreeUncommittedPreviews } from '../lib/injectWorktreeUncommitted';
 import {
   buildWorktreeSessions,
@@ -2941,12 +2941,19 @@ function App() {
       defaultBranch,
       anyDirty,
     );
+    const emptyBranchFolded = foldEmptyBranchPlaceholdersIntoGraph(
+      stashFolded.branches,
+      stashFolded.directCommits,
+      stashFolded.branchCommitPreviews,
+      stashFolded.branchUniqueAheadCounts,
+      defaultBranch,
+    );
 
-    let eb = stashFolded.branches;
-    let edc = stashFolded.directCommits;
+    let eb = emptyBranchFolded.branches;
+    let edc = emptyBranchFolded.directCommits;
     let eupdc = unpushedDirectCommits;
-    let ebp = stashFolded.branchCommitPreviews;
-    let ebuac = stashFolded.branchUniqueAheadCounts;
+    let ebp = emptyBranchFolded.branchCommitPreviews;
+    let ebuac = emptyBranchFolded.branchUniqueAheadCounts;
     let effectiveCheckedOutRef = checkedOutRef;
     const hasRemoteTipInLocalGraph = remoteDefaultTipSha
       ? edc.some((commit) => commit.fullSha === remoteDefaultTipSha || commit.sha === remoteDefaultTipSha.slice(0, 7))
