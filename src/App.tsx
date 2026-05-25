@@ -52,6 +52,7 @@ import {
   isWorkingTreeCommitId,
   persistWorktreeFocusSha,
   resolveActiveWorktreeFocusSha,
+  shaMatches,
 } from '../lib/worktreeSessions';
 import { deriveRepoVisualState } from './repoVisualState';
 import { setMapGridBackgroundActivity } from '../components/grid/mapGridBackgroundActivity';
@@ -1713,20 +1714,52 @@ function App() {
   ): boolean {
     const normalizedPath = normalizePath(path);
     const guard = normalizedPath ? postCommitProtectedHeadShaRef.current[normalizedPath] : undefined;
-    if (!guard || !proposedHeadSha || proposedHeadSha === guard) return false;
+    if (!guard || !proposedHeadSha || shaMatches(proposedHeadSha, guard)) return false;
     try {
       const snapshot = getSnapshotForMutation(normalizedPath);
-      return snapshotContainsCommitSha(snapshot, guard);
+      if (snapshotContainsCommitSha(snapshot, guard)) {
+        return !shaMatches(proposedHeadSha, guard);
+      }
+      // Guard commit not on the graph yet — reject stale heads until the new tip lands.
+      return !shaMatches(proposedHeadSha, guard);
     } catch {
       return false;
     }
   }
 
+  function incomingSnapshotMissingProtectedHead(path: string, incoming: RepoVisualSnapshot): boolean {
+    const normalizedPath = normalizePath(path);
+    const guard = normalizedPath ? postCommitProtectedHeadShaRef.current[normalizedPath] : undefined;
+    if (!guard) return false;
+    return !snapshotContainsCommitSha(incoming, guard);
+  }
+
   function shouldBlockIncomingSnapshotApply(path: string, incoming: RepoVisualSnapshot): boolean {
+    if (incomingSnapshotMissingProtectedHead(path, incoming)) return true;
     return (
       shouldRejectRegressionFromProtectedHead(path, incoming.checkedOutRef?.headSha ?? null)
       || incomingSnapshotDropsProtectedHead(path, incoming)
     );
+  }
+
+  async function syncPostCommitProtectionFromQuickState(path: string) {
+    const normalizedPath = normalizePath(path);
+    if (!normalizedPath) return;
+    const quickState = await invoke<RepoQuickState>('get_repo_quick_state', { repoPath: normalizedPath }).catch(
+      () => null,
+    );
+    const quickHead = quickState?.headSha?.trim();
+    if (!quickHead || isWorkingTreeCommitId(quickHead)) return;
+    let liveHead: string | null = null;
+    try {
+      liveHead = getSnapshotForMutation(normalizedPath).checkedOutRef?.headSha ?? null;
+    } catch {
+      return;
+    }
+    if (!liveHead || quickHead === liveHead) return;
+    protectPostCommitHead(normalizedPath, quickHead);
+    suppressBackgroundRefreshUntilRef.current = Date.now() + 2500;
+    invalidateRepoLayoutCacheForPath(normalizedPath);
   }
 
   function mergeOptionsForRepo(path: string): MergeCheckedOutRefOptions | undefined {
@@ -2189,7 +2222,8 @@ function App() {
   ): Promise<boolean> {
     const normalizedPath = normalizePath(path);
     if (!normalizedPath || outcomes.length === 0) return false;
-    if (isPostCommitProtectionActive(normalizedPath)) return false;
+    const includesCommitOutcome = outcomes.some((outcome) => outcome.kind === 'commit');
+    if (isPostCommitProtectionActive(normalizedPath) && !includesCommitOutcome) return false;
     const force = options?.force === true;
 
     try {
@@ -2212,6 +2246,17 @@ function App() {
         return false;
       }
 
+      if (includesCommitOutcome) {
+        const commitOutcome = outcomes.find(
+          (outcome): outcome is RepoMutationOutcome & { kind: 'commit' } => outcome.kind === 'commit',
+        );
+        protectPostCommitHead(
+          normalizedPath,
+          snapshot.checkedOutRef?.headSha ?? commitOutcome?.commit.fullSha ?? null,
+        );
+        suppressBackgroundRefreshUntilRef.current = Date.now() + 2500;
+      }
+
       noteSyncedRepoFingerprint(normalizedPath, currentFingerprint);
       ackProjectFingerprint(normalizedPath, currentFingerprint);
       if (options?.peekSignature) {
@@ -2219,12 +2264,17 @@ function App() {
       }
 
       setMapGridBackgroundActivity('git-refresh', 'Apply repo changes', true, 'patch');
-      startTransition(() => {
+      const applyPatch = () => {
         applyPatchedSnapshot(normalizedPath, snapshot, layoutTopologyChanged, {
           force,
           previousSnapshot,
         });
-      });
+      };
+      if (includesCommitOutcome) {
+        flushSync(applyPatch);
+      } else {
+        startTransition(applyPatch);
+      }
       setMapGridBackgroundActivity('git-refresh', 'Apply repo changes', false);
 
       suppressBackgroundRefreshUntilRef.current = Date.now() + 2500;
@@ -3101,6 +3151,9 @@ function App() {
       }
 
       const normalizedPath = normalizePath(repoPath);
+      if (normalizedPath) {
+        await syncPostCommitProtectionFromQuickState(normalizedPath);
+      }
       const postCommitGuarded = Boolean(
         normalizedPath && isPostCommitProtectionActive(normalizedPath),
       );
