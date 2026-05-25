@@ -91,11 +91,10 @@ const MIN_FULL_GRAPH_REFRESH_MS = 2000;
 /** Keep optimistic post-commit HEAD on the map until background probes catch up. */
 const POST_COMMIT_HEAD_PROTECT_MS = 8000;
 const POST_COMMIT_RELEASE_MAX_ATTEMPTS = 15;
-const GIT_ACTIVITY_DEBOUNCE_MS = 400;
 const HEAD_STATE_PROBE_MS = 12000;
 /** Poll porcelain for unstaged edits — working tree changes do not touch .git. */
 const DIRTY_STATE_PROBE_MS = 2500;
-/** Coalesce dirty probes and index-driven git-activity into one UI apply. */
+/** Coalesce dirty porcelain polls into one UI apply. */
 const DIRTY_SYNC_DEBOUNCE_MS = 350;
 /** Briefly block follow-up refreshes after a dirty-only UI apply. */
 const DIRTY_SYNC_SUPPRESS_MS = 800;
@@ -2031,6 +2030,40 @@ function App() {
     }
   }
 
+  async function applyPublishedSnapshotWhenBehind(path: string, peek?: RepoSyncPeek | null): Promise<boolean> {
+    const normalizedPath = normalizePath(path);
+    if (!normalizedPath || !sameRepoPath(repoPath, normalizedPath)) return false;
+    const resolvedPeek = peek ?? await fetchRepoSyncPeek(normalizedPath);
+    if (resolvedPeek && !isActiveUiBehindPeek(normalizedPath, resolvedPeek)) return false;
+
+    const result = await invoke<RefreshProjectResult>('refresh_project_if_changed', {
+      projectId: normalizedPath,
+    }).catch(() => null);
+    let nextSnapshot = toRepoVisualSnapshot(result?.snapshot ?? null);
+    if (result?.updated && nextSnapshot) {
+      nextSnapshot = await reconcileSnapshotForProjectSwitch(normalizedPath, nextSnapshot);
+      flushSync(() => {
+        applyPatchedSnapshot(normalizedPath, nextSnapshot!, false, {
+          force: true,
+          skipLayoutRebuild: false,
+        });
+      });
+      if (resolvedPeek?.signature) noteSyncedRepoPeek(normalizedPath, resolvedPeek.signature);
+      markGitActivityHandled();
+      return true;
+    }
+
+    await invoke('persist_project_snapshot', { projectId: normalizedPath, force: true }).catch((error) => {
+      console.warn('Background snapshot persist failed:', error);
+    });
+    const loaded = await loadAndApplyPublishedSnapshot(normalizedPath, resolvedPeek);
+    if (loaded) {
+      if (resolvedPeek?.signature) noteSyncedRepoPeek(normalizedPath, resolvedPeek.signature);
+      markGitActivityHandled();
+    }
+    return loaded;
+  }
+
   async function loadAndApplyPublishedSnapshot(path: string, peek?: RepoSyncPeek | null) {
     const normalizedPath = normalizePath(path);
     if (!normalizedPath || !sameRepoPath(repoPath, normalizedPath)) return false;
@@ -2047,7 +2080,7 @@ function App() {
     flushSync(() => {
       applyPatchedSnapshot(normalizedPath, nextSnapshot, false, {
         force: true,
-        skipLayoutRebuild: true,
+        skipLayoutRebuild: false,
       });
     });
     return true;
@@ -2178,17 +2211,7 @@ function App() {
       ?? snapshot.checkedOutRef?.hasUncommittedChanges
       ?? false;
     if (uiDirty === nextDirty) {
-      noteDirtySyncComplete(normalizedPath, quickState, peekSignature);
-      return false;
-    }
-
-    const previousHead = snapshot.checkedOutRef?.headSha ?? '';
-    const nextHead = refForDirty.headSha ?? '';
-    if (
-      nextHead
-      && nextHead !== previousHead
-      && isSnapshotGraphMissingHead(snapshot, nextHead)
-    ) {
+      noteDirtySyncComplete(normalizedPath, quickState, peekSignature, { markGitActivity: false });
       return false;
     }
 
@@ -2205,7 +2228,7 @@ function App() {
         setWorktrees(patched.worktrees);
       });
     }
-    noteDirtySyncComplete(normalizedPath, quickState, peekSignature);
+    noteDirtySyncComplete(normalizedPath, quickState, peekSignature, { markGitActivity: false });
     return true;
   }
 
@@ -3035,12 +3058,6 @@ function App() {
     if (quickState.headSha !== activeHead) {
       const guard = postCommitProtectedHeadShaRef.current[normalizedPath];
       if (!guard || !shaMatches(quickState.headSha, guard)) {
-        if (isSnapshotGraphMissingHead(snapshot, quickState.headSha)) {
-          gitActivityEpochRef.current += 1;
-          const graphSynced = await tryIncrementalBackgroundSync(path, { force: true, peek: resolvedPeek });
-          if (graphSynced) markGitActivityHandled();
-          return graphSynced;
-        }
         return false;
       }
     }
@@ -3110,45 +3127,25 @@ function App() {
       return false;
     }
 
-    const headNeedsGraphSync = Boolean(
-      quickState.headSha
-      && !isWorkingTreeCommitId(quickState.headSha)
-      && isSnapshotGraphMissingHead(snapshot, quickState.headSha),
-    );
-    let graphSynced = false;
-    if (headNeedsGraphSync) {
-      gitActivityEpochRef.current += 1;
-      graphSynced = await tryIncrementalBackgroundSync(path, { force: true, peek: resolvedPeek });
-      if (!graphSynced) {
-        runRepoRefreshRef.current?.('graph');
-      } else {
-        markGitActivityHandled();
-      }
-      try {
-        snapshot = getSnapshotForMutation(normalizedPath);
-      } catch {
-        return graphSynced;
-      }
+    if (resolvedPeek && isActiveUiBehindPeek(normalizedPath, resolvedPeek)) {
+      return applyPublishedSnapshotWhenBehind(path, resolvedPeek);
     }
 
     const uiDirty = latestCheckedOutRef.current?.hasUncommittedChanges
       ?? snapshot.checkedOutRef?.hasUncommittedChanges
       ?? false;
     if (uiDirty === quickState.hasUncommittedChanges) {
-      if (!graphSynced) {
-        noteDirtySyncComplete(normalizedPath, quickState, resolvedPeek?.signature, { markGitActivity: false });
-      }
-      return graphSynced;
+      noteDirtySyncComplete(normalizedPath, quickState, resolvedPeek?.signature, { markGitActivity: false });
+      return false;
     }
 
-    const dirtySynced = applyLiveDirtyStateFromQuickState(
+    return applyLiveDirtyStateFromQuickState(
       path,
       quickState,
       snapshot,
       quickState.hasUncommittedChanges,
       resolvedPeek?.signature,
     );
-    return dirtySynced || graphSynced;
   }
 
   async function probeLiveDirtyState(path: string): Promise<void> {
@@ -3755,7 +3752,11 @@ function App() {
 
     const runRefresh = async (incomingReason: 'graph' | 'local' | 'timer' | 'initial' | 'quick' = 'timer') => {
       let reason = incomingReason;
-      if (isDisposed || refreshInFlight || reconcileInFlightRef.current) return;
+      if (isDisposed) return;
+      if (refreshInFlight || reconcileInFlightRef.current) {
+        pendingRefreshAfterInteractionRef.current = true;
+        return;
+      }
       if (Date.now() < suppressBackgroundRefreshUntilRef.current) {
         scheduleRefreshAfterSuppress('graph');
         return;
@@ -3801,6 +3802,7 @@ function App() {
         peek
         && gitActivityPending
         && !postCommitGuarded
+        && !isActiveUiBehindPeek(repoPath, peek)
         && absorbRedundantGitActivityRefresh(repoPath, peek)
       ) {
         return;
@@ -3837,14 +3839,18 @@ function App() {
         if (reason === 'quick') {
           if (await tryQuickStateDirtySync(repoPath, peek)) {
             pendingRefreshAfterInteractionRef.current = false;
-            return;
+            if (!peek || !isActiveUiBehindPeek(repoPath, peek)) {
+              return;
+            }
           }
         }
 
-        const patched = await tryIncrementalBackgroundSync(repoPath, { force: externalRefresh, peek });
-        if (patched) {
-          pendingRefreshAfterInteractionRef.current = false;
-          return;
+        if (!gitActivityPending) {
+          const patched = await tryIncrementalBackgroundSync(repoPath, { force: externalRefresh, peek });
+          if (patched && (!peek || !isActiveUiBehindPeek(repoPath, peek))) {
+            pendingRefreshAfterInteractionRef.current = false;
+            return;
+          }
         }
       } catch (error) {
         console.warn('Quick-state sync failed:', error);
@@ -3887,15 +3893,7 @@ function App() {
         if (mutationAtStart !== repoMutationGenerationRef.current) return;
         if (!result.updated) {
           if (peek && isActiveUiBehindPeek(repoPath, peek)) {
-            const patched = await tryIncrementalBackgroundSync(repoPath, { force: true, peek });
-            if (!patched) {
-              await invoke('persist_project_snapshot', { projectId: repoPath, force: true }).catch((error) => {
-                console.warn('Background snapshot persist failed:', error);
-              });
-              if (mutationAtStart === repoMutationGenerationRef.current) {
-                await loadAndApplyPublishedSnapshot(repoPath, peek);
-              }
-            }
+            await applyPublishedSnapshotWhenBehind(repoPath, peek);
           } else if (quickState) {
             projectQuickStateRef.current = {
               ...projectQuickStateRef.current,
@@ -3931,7 +3929,9 @@ function App() {
           void invoke<FingerprintCheckResult>('check_project_fingerprint', { projectId: repoPath })
             .then((check) => noteSyncedRepoFingerprint(repoPath, check?.currentFingerprint))
             .catch(() => undefined);
-          lastHandledGitActivityEpochRef.current = gitActivityEpochRef.current;
+          if (!peek || !isActiveUiBehindPeek(repoPath, peek)) {
+            lastHandledGitActivityEpochRef.current = gitActivityEpochRef.current;
+          }
           return;
         }
         let nextSnapshot = toRepoVisualSnapshot(result.snapshot ?? null);
@@ -4022,16 +4022,21 @@ function App() {
             return;
           }
           if (mutationAtStart !== repoMutationGenerationRef.current) return;
-          startTransition(() => {
+          const applySnapshot = () => {
             const applied = applySnapshotToActiveState(repoPath, nextSnapshot, {
-              force: reason === 'graph' || reason === 'local',
+              force: reason === 'graph' || reason === 'local' || gitActivityPending,
               allowIncomingDirty: true,
             });
             if (applied && quickState && !quickState.hasUncommittedChanges) {
               autoFocusSyncKeyRef.current = null;
               focusCameraOnActiveWorktreeRef.current?.();
             }
-          });
+          };
+          if (gitActivityPending) {
+            flushSync(applySnapshot);
+          } else {
+            startTransition(applySnapshot);
+          }
           if (normalizedPath) {
             lastFullGraphRefreshAtRef.current = {
               ...lastFullGraphRefreshAtRef.current,
@@ -4041,7 +4046,9 @@ function App() {
           void invoke<FingerprintCheckResult>('check_project_fingerprint', { projectId: repoPath })
             .then((check) => noteSyncedRepoFingerprint(repoPath, check?.currentFingerprint))
             .catch(() => undefined);
-          lastHandledGitActivityEpochRef.current = gitActivityEpochRef.current;
+          if (!peek || !isActiveUiBehindPeek(repoPath, peek)) {
+            lastHandledGitActivityEpochRef.current = gitActivityEpochRef.current;
+          }
         }
       } catch (error) {
         console.warn('Background project refresh failed:', error);
@@ -4122,27 +4129,10 @@ function App() {
       }, hidden ? 120000 : DIRTY_STATE_PROBE_MS);
     };
 
-    let gitActivityDebounceId: number | null = null;
     listen<GitActivityEventPayload>('git-activity', (event) => {
       if (!sameRepoPath(event.payload.repoPath, repoPath)) return;
-      if (event.payload.kind === 'local') {
-        gitActivityEpochRef.current += 1;
-        if (!shouldSkipDirtyOnlySync(repoPath)) {
-          scheduleCoalescedDirtySync();
-        }
-        if (gitActivityDebounceId != null) window.clearTimeout(gitActivityDebounceId);
-        gitActivityDebounceId = window.setTimeout(() => {
-          gitActivityDebounceId = null;
-          void runRefresh('graph');
-        }, GIT_ACTIVITY_DEBOUNCE_MS);
-        return;
-      }
       gitActivityEpochRef.current += 1;
-      if (gitActivityDebounceId != null) window.clearTimeout(gitActivityDebounceId);
-      gitActivityDebounceId = window.setTimeout(() => {
-        gitActivityDebounceId = null;
-        void runRefresh('graph');
-      }, GIT_ACTIVITY_DEBOUNCE_MS);
+      void runRefresh('graph');
     }).then((fn) => {
       if (isDisposed) fn();
       else unlisten = fn;
@@ -4160,7 +4150,6 @@ function App() {
       if (dirtyPollTimeoutId != null) window.clearTimeout(dirtyPollTimeoutId);
       if (dirtySyncDebounceId != null) window.clearTimeout(dirtySyncDebounceId);
       if (fullRefreshCoalesceId != null) window.clearTimeout(fullRefreshCoalesceId);
-      if (gitActivityDebounceId != null) window.clearTimeout(gitActivityDebounceId);
       if (unlisten) unlisten();
     };
   }, [repoPath, defaultBranch]);
