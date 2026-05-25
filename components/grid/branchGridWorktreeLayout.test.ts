@@ -101,7 +101,7 @@ describe('computeBranchGridLayout worktree nodes', () => {
     expect(worktreeNode).toBeDefined();
     expect(parentNode).toBeDefined();
     expect(worktreeNode!.row).toBe(parentNode!.row + 1);
-    expect(worktreeNode!.column).not.toBe(parentNode!.column);
+    expect(worktreeNode!.column).toBeGreaterThan(parentNode!.column);
     expect(worktreeNode!.commit.date).toBe(parentDate);
   });
 
@@ -263,5 +263,87 @@ describe('computeBranchGridLayout worktree nodes', () => {
     expect(worktreeNode!.column).toBe(headLeadNode!.column);
     expect(worktreeNode!.row).toBe(headLeadNode!.row + 1);
     expect(worktreeNode!.y).toBe(headLeadNode!.y);
+  });
+
+  it('pins primary worktree to HEAD on main when session lane is main (local) but parentSha is on main', () => {
+    const defaultBranch = 'main';
+    const localBranch = `${defaultBranch} (local)`;
+    const parentDate = '2024-06-01T12:00:00Z';
+    const branches = [
+      makeBranch(defaultBranch, tipSha, 0),
+      {
+        ...makeBranch(localBranch, tipSha, 1),
+        parentBranch: defaultBranch,
+        remoteSyncStatus: 'unpushed' as const,
+      },
+    ];
+    const directCommits: DirectCommit[] = [
+      {
+        fullSha: mainSha,
+        sha: mainSha.slice(0, 7),
+        branch: defaultBranch,
+        message: 'root',
+        author: 'test',
+        date: '2024-05-01T12:00:00Z',
+        parentSha: null,
+        parentShas: [],
+      },
+      {
+        fullSha: tipSha,
+        sha: tipSha.slice(0, 7),
+        branch: defaultBranch,
+        message: 'tip',
+        author: 'test',
+        date: parentDate,
+        parentSha: mainSha,
+        parentShas: [mainSha],
+      },
+    ];
+    const sessions = buildWorktreeSessions(
+      [wt({ path: '/repo', branchName: localBranch, headSha: tipSha, isCurrent: true })],
+      '/repo',
+      { branchName: localBranch, headSha: tipSha, hasUncommittedChanges: true },
+    );
+    const worktreePreview: BranchCommitPreview = {
+      fullSha: sessions[0]!.workingTreeId,
+      sha: 'uncommitted',
+      parentSha: tipSha,
+      message: '',
+      author: 'You',
+      date: parentDate,
+      kind: 'uncommitted',
+    };
+    const layout = computeBranchGridLayout({
+      branches,
+      mergeNodes: [],
+      directCommits,
+      unpushedDirectCommits: [],
+      defaultBranch,
+      branchCommitPreviews: {
+        main: [directCommits[1]!],
+        [localBranch]: [worktreePreview],
+      },
+      branchParentByName: { main: null, [localBranch]: defaultBranch },
+      branchUniqueAheadCounts: { main: 0, [localBranch]: 1 },
+      unpushedCommitShasByBranch: { [localBranch]: [tipSha] },
+      manuallyOpenedClumps: new Set(),
+      manuallyClosedClumps: new Set(),
+      isDebugOpen: false,
+      gridSearchQuery: '',
+      gridFocusSha: null,
+      checkedOutRef: { branchName: localBranch, headSha: tipSha, hasUncommittedChanges: true },
+      worktreeSessions: sessions,
+      orientation: 'horizontal',
+    });
+
+    const worktreeNode = layout.renderNodes.find((node) => node.commit.id === sessions[0]!.workingTreeId);
+    const headNode = layout.renderNodes.find(
+      (node) => node.commit.id === tipSha && node.commit.branchName === defaultBranch,
+    );
+    expect(worktreeNode).toBeDefined();
+    expect(headNode).toBeDefined();
+    expect(worktreeNode!.column).toBe(headNode!.column);
+    expect(worktreeNode!.row).toBe(headNode!.row + 1);
+    expect(worktreeNode!.y).toBe(headNode!.y);
   });
 });

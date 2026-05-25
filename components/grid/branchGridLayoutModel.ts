@@ -172,38 +172,40 @@ const commitMatchesSha = (commit: VisualCommit, sha: string | null | undefined):
   return shasMatch(commit.id, sha) || shasMatch(commit.id.slice(0, 7), sha);
 };
 
-/** Pick the visible parent tile the connector should use — rightmost match on the checkout lane. */
+const pickRightmostRenderNode = (nodes: Node[]): Node | null =>
+  nodes.reduce<Node | null>(
+    (best, node) => (!best || node.row > best.row ? node : best),
+    null,
+  );
+
+/** Visible parent tile for a worktree — match by SHA across lanes (HEAD may stay on `main` while the session lane is `main (local)`). */
 const findWorktreeAnchorParentRenderNode = (
   renderNodes: Node[],
   worktree: VisualCommit,
   checkedOutRef: CheckedOutRef | null,
 ): Node | null => {
-  const laneBranch = worktree.branchName ?? checkedOutRef?.branchName ?? null;
-  const isOnLane = (node: Node): boolean => {
-    if (isWorktreeGraphNode(node.commit)) return false;
-    if (laneBranch && node.commit.branchName !== laneBranch) return false;
-    return true;
-  };
-  const pickRightmost = (nodes: Node[]): Node | null =>
-    nodes.reduce<Node | null>(
-      (best, node) => (!best || node.row > best.row ? node : best),
-      null,
-    );
+  const isRenderableParent = (node: Node): boolean => !isWorktreeGraphNode(node.commit);
 
   if (worktree.parentSha) {
     const parentMatches = renderNodes.filter(
-      (node) => isOnLane(node) && commitMatchesSha(node.commit, worktree.parentSha),
+      (node) => isRenderableParent(node) && commitMatchesSha(node.commit, worktree.parentSha),
     );
-    const parent = pickRightmost(parentMatches);
+    const laneBranch = worktree.branchName ?? checkedOutRef?.branchName ?? null;
+    const onWorktreeLane = laneBranch
+      ? parentMatches.filter((node) => node.commit.branchName === laneBranch)
+      : [];
+    const parent = pickRightmostRenderNode(
+      onWorktreeLane.length > 0 ? onWorktreeLane : parentMatches,
+    );
     if (parent) return parent;
   }
 
   const headSha = checkedOutRef?.headSha ?? null;
   if (headSha && !isWorkingTreeCommitId(headSha)) {
     const headMatches = renderNodes.filter(
-      (node) => isOnLane(node) && commitMatchesSha(node.commit, headSha),
+      (node) => isRenderableParent(node) && commitMatchesSha(node.commit, headSha),
     );
-    const head = pickRightmost(headMatches);
+    const head = pickRightmostRenderNode(headMatches);
     if (head) return head;
   }
 
@@ -216,6 +218,7 @@ const pinWorktreeNodesToLayout = (
   renderNodes: Node[],
   columnByCommitVisualId: Map<string, number>,
   checkedOutRef: CheckedOutRef | null,
+  defaultBranch: string,
   timelineRowLeadOffset: number,
   zoomAwareTimelinePitch: number,
   zoomAwareLanePitch: number,
@@ -230,8 +233,16 @@ const pinWorktreeNodesToLayout = (
     const parentNode = findWorktreeAnchorParentRenderNode(renderNodes, node.commit, checkedOutRef);
     if (!parentNode) continue;
     const worktree = node.commit;
+    const parentShaLinksCheckoutTip = !!(
+      worktree.parentSha
+      && commitMatchesSha(parentNode.commit, worktree.parentSha)
+      && parentNode.commit.branchName === defaultBranch
+      && worktree.branchName === `${defaultBranch} (local)`
+    );
     const sameLaneAsParent =
-      !worktree.branchName || worktree.branchName === parentNode.commit.branchName;
+      parentShaLinksCheckoutTip
+      || !worktree.branchName
+      || worktree.branchName === parentNode.commit.branchName;
     const parentKey = `${parentNode.row}:${parentNode.column}`;
     const usedLaneColumns = usedLaneColumnsByParentRow.get(parentKey) ?? new Set<number>();
 
@@ -2318,6 +2329,7 @@ export function computeBranchGridLayout(input: BranchGridLayoutInput): BranchGri
     renderNodes,
     columnByCommitVisualId,
     checkedOutRef,
+    defaultBranch,
     timelineRowLeadOffset,
     zoomAwareTimelinePitch,
     zoomAwareLanePitch,
