@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { formatWorktreeSyncSignature } from './worktreeSignature';
+import { formatWorktreeSyncSignature, formatWorktreeSessionLayoutSignature } from './worktreeSignature';
 import type { WorktreeInfo } from '../types';
 
 const worktree = (overrides: Partial<WorktreeInfo> = {}): WorktreeInfo => ({
@@ -30,5 +30,24 @@ describe('formatWorktreeSyncSignature', () => {
       worktree({ hasUncommittedChanges: true }),
     ]);
     expect(signature).toBe('/repo:abc1234:main:1');
+  });
+});
+
+describe('formatWorktreeSessionLayoutSignature', () => {
+  it('includes parent anchor for layout cache keys', () => {
+    const signature = formatWorktreeSessionLayoutSignature([
+      {
+        path: '/repo-a',
+        pathExists: true,
+        branchName: 'feature',
+        headSha: 'def5678',
+        parentSha: 'abc1234',
+        hasUncommittedChanges: false,
+        isCurrent: false,
+        accentToken: 'worktree-violet',
+        workingTreeId: 'WORKING_TREE:abc',
+      },
+    ]);
+    expect(signature).toBe('/repo-a:def5678:abc1234:feature:0');
   });
 });

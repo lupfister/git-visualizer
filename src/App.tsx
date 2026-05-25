@@ -30,7 +30,7 @@ import {
 } from './repoMutationPatches';
 import { classifyFingerprintDiff, formatRepoFingerprint, parseRepoFingerprint, withRepoFingerprintDirty, withRepoFingerprintUpstream, type FingerprintPatchSegment } from './fingerprintDiff';
 import { buildGraphDeltaOutcomes, fetchRepoGraphDelta } from './externalGraphSync';
-import { formatWorktreeSyncSignature } from './worktreeSignature';
+import { formatWorktreeSyncSignature, formatWorktreeSessionLayoutSignature } from './worktreeSignature';
 import {
   applyBranchParents,
   isNewerBranchAsParent,
@@ -1047,12 +1047,30 @@ function App() {
 
     void (async () => {
       try {
-        await Promise.all(
-          projects.map(async (project) => {
-            await loadProjectSnapshot(project.path, shouldColdRefresh);
-            await invoke('watch_repo', { repoPath: project.path }).catch(console.error);
-          }),
+        const storedActivePath = (() => {
+          try {
+            return window.localStorage.getItem(ACTIVE_PROJECT_STORAGE_KEY);
+          } catch {
+            return null;
+          }
+        })();
+        const activePath = storedActivePath
+          ? projects.find(
+              (project) =>
+                normalizePath(project.path).toLowerCase() === normalizePath(storedActivePath).toLowerCase(),
+            )?.path
+          : projects[0]?.path;
+        const otherProjects = projects.filter(
+          (project) => !activePath || normalizePath(project.path) !== normalizePath(activePath),
         );
+        const hydrateProject = async (projectPath: string) => {
+          await loadProjectSnapshot(projectPath, shouldColdRefresh);
+          await invoke('watch_repo', { repoPath: projectPath }).catch(console.error);
+        };
+        if (activePath) {
+          await hydrateProject(activePath);
+        }
+        await Promise.all(otherProjects.map((project) => hydrateProject(project.path)));
       } catch (error) {
         console.error('Failed to preload project snapshots:', error);
       }
@@ -1595,6 +1613,17 @@ function App() {
     };
   }
 
+  async function buildWorktreeSyncOutcomesIfNeeded(
+    path: string,
+    snapshot: RepoVisualSnapshot,
+  ): Promise<RepoMutationOutcome[]> {
+    const worktrees = await invoke<WorktreeInfo[]>('list_worktrees', { repoPath: path }).catch(() => []);
+    if (worktreeListSignature(worktrees) === worktreeListSignature(snapshot.worktrees)) {
+      return [];
+    }
+    return [outcomeFromWorktreeSync(worktrees)];
+  }
+
   async function buildIncrementalOutcomesFromSegments(
     path: string,
     segments: FingerprintPatchSegment[],
@@ -1780,6 +1809,10 @@ function App() {
         );
         outcomes = [...graphOutcomes, ...segmentOutcomes];
       }
+      const worktreeOutcomes = await buildWorktreeSyncOutcomesIfNeeded(path, snapshot);
+      if (worktreeOutcomes.length > 0) {
+        outcomes = [...outcomes, ...worktreeOutcomes];
+      }
 
       const patched = await applyBackgroundRepoPatch(
         path,
@@ -1791,11 +1824,14 @@ function App() {
       return patched;
     }
 
-    const outcomes = await buildIncrementalOutcomesFromSegments(
+    let outcomes = await buildIncrementalOutcomesFromSegments(
       path,
       classification.segments,
       quickState,
     );
+    if (outcomes.length === 0) {
+      outcomes = await buildWorktreeSyncOutcomesIfNeeded(path, getSnapshotForMutation(path));
+    }
     if (outcomes.length === 0) return false;
 
     const patched = await applyBackgroundRepoPatch(
@@ -1808,6 +1844,52 @@ function App() {
     return patched;
   }
 
+  async function tryWorktreeListSync(
+    path: string,
+    peek?: RepoSyncPeek | null,
+  ): Promise<boolean> {
+    const normalizedPath = normalizePath(path);
+    if (!normalizedPath || !sameRepoPath(repoPath, path)) return false;
+
+    let snapshot: RepoVisualSnapshot;
+    try {
+      snapshot = getSnapshotForMutation(normalizedPath);
+    } catch {
+      return false;
+    }
+
+    const resolvedPeek = peek ?? await fetchRepoSyncPeek(path);
+    const parsedPeek = resolvedPeek ? parsePeekSignature(resolvedPeek.signature) : null;
+    const uiWorktreeSig = worktreeListSignature(snapshot.worktrees);
+    if (parsedPeek?.worktreeSig && parsedPeek.worktreeSig === uiWorktreeSig) {
+      return false;
+    }
+
+    const worktrees = await invoke<WorktreeInfo[]>('list_worktrees', { repoPath: path }).catch(() => null);
+    if (!worktrees) return false;
+    if (worktreeListSignature(worktrees) === uiWorktreeSig) {
+      if (resolvedPeek?.signature) noteSyncedRepoPeek(path, resolvedPeek.signature);
+      return false;
+    }
+
+    const check = await invoke<FingerprintCheckResult>('check_project_fingerprint', {
+      projectId: normalizedPath,
+    }).catch(() => null);
+    const fingerprint = check?.currentFingerprint
+      ?? lastSyncedRepoFingerprintRef.current[normalizedPath]
+      ?? '';
+
+    const patched = await applyBackgroundRepoPatch(
+      normalizedPath,
+      fingerprint,
+      [outcomeFromWorktreeSync(worktrees)],
+      { force: true, peekSignature: resolvedPeek?.signature },
+    );
+    if (!patched) return false;
+    markGitActivityHandled();
+    return true;
+  }
+
   async function tryQuickStateDirtySync(
     path: string,
     peek?: RepoSyncPeek | null,
@@ -1816,6 +1898,10 @@ function App() {
     if (!normalizedPath) return false;
 
     const resolvedPeek = peek ?? await fetchRepoSyncPeek(path);
+    if (await tryWorktreeListSync(path, resolvedPeek)) {
+      return true;
+    }
+
     if (resolvedPeek && shouldSkipBackgroundSync(path, resolvedPeek, false)) {
       markGitActivityHandled();
       return true;
@@ -1833,10 +1919,6 @@ function App() {
     }
 
     if (cachedSig === nextSig) {
-      if (resolvedPeek && !isActiveUiBehindPeek(path, resolvedPeek)) {
-        markGitActivityHandled();
-        return true;
-      }
       return false;
     }
 
@@ -1875,6 +1957,9 @@ function App() {
       ...projectQuickStateRef.current,
       [normalizedPath]: nextSig,
     };
+    if (resolvedPeek && isActiveUiBehindPeek(path, resolvedPeek)) {
+      return false;
+    }
     markGitActivityHandled();
     return true;
   }
@@ -2448,6 +2533,10 @@ function App() {
       const externalRefresh = reason === 'graph' || reason === 'local' || reason === 'quick';
 
       const peek = await fetchRepoSyncPeek(repoPath);
+      if (peek && await tryWorktreeListSync(repoPath, peek)) {
+        pendingRefreshAfterInteractionRef.current = false;
+        return;
+      }
       if (peek && shouldSkipBackgroundSync(repoPath, peek, gitActivityPending)) {
         markGitActivityHandled();
         pendingRefreshAfterInteractionRef.current = false;
@@ -2458,12 +2547,14 @@ function App() {
       try {
         if (reason === 'quick') {
           if (await tryQuickStateDirtySync(repoPath, peek)) {
+            pendingRefreshAfterInteractionRef.current = false;
             return;
           }
         }
 
         const patched = await tryIncrementalBackgroundSync(repoPath, { force: externalRefresh, peek });
         if (patched) {
+          pendingRefreshAfterInteractionRef.current = false;
           return;
         }
       } catch (error) {
@@ -2471,7 +2562,9 @@ function App() {
       } finally {
         refreshInFlight = false;
       }
-      if (reason === 'quick') return;
+      if (reason === 'quick' && !(peek && isActiveUiBehindPeek(repoPath, peek))) {
+        return;
+      }
 
       if (reason === 'graph' && normalizedPath && !gitActivityPending) {
         const lastFull = lastFullGraphRefreshAtRef.current[normalizedPath] ?? 0;
@@ -2918,6 +3011,39 @@ function App() {
     window.addEventListener('keydown', handler);
     return () => window.removeEventListener('keydown', handler);
   }, [repoPath, repoName, branches]);
+
+  useEffect(() => {
+    try {
+      sessionStorage.removeItem('git-visualizer:hard-reload');
+    } catch {
+      // ignore storage failures
+    }
+
+    const handleSoftReload = () => {
+      void (async () => {
+        const path = repoPath;
+        if (!path) {
+          window.location.reload();
+          return;
+        }
+        suppressBackgroundRefreshUntilRef.current = Date.now() + 3000;
+        pendingRefreshAfterInteractionRef.current = false;
+        setLayoutEpoch((epoch) => epoch + 1);
+        setHydratedLayoutModel(null);
+        setHydratedLayoutKey(null);
+        layoutModelCacheRef.current.clear();
+        persistedLayoutKeysRef.current.clear();
+        const peek = await fetchRepoSyncPeek(path);
+        await tryWorktreeListSync(path, peek);
+        await refreshRepoAfterMutationFull(path);
+        await refreshRepoGitState(path, defaultBranch);
+        runPendingRepoRefreshRef.current?.();
+      })();
+    };
+
+    window.addEventListener('git-visualizer:reload', handleSoftReload);
+    return () => window.removeEventListener('git-visualizer:reload', handleSoftReload);
+  }, [repoPath, defaultBranch]);
 
   async function handleMapCommitClick(target: {
     commitSha: string;
@@ -3850,14 +3976,15 @@ function App() {
   }, [branchesForLayout, defaultBranch]);
   const graphLayoutSignature = useMemo(
     () => [
-      'layout-v12-worktree-always',
+      'layout-v13-worktree-session-sig',
       layoutEpoch,
       defaultBranch,
       visualCheckedOutRef?.branchName ?? '',
       visualCheckedOutRef?.headSha ?? '',
-      worktreeSessions.length,
+      formatWorktreeSessionLayoutSignature(worktreeSessions),
       branchesForLayout.map((branch) => `${branch.name}:${branch.headSha}:${branch.commitsAhead}:${branch.commitsBehind}:${branch.parentBranch ?? ''}`).join('|'),
       enrichedDirectCommits.length,
+      enrichedDirectCommits.map((commit) => commit.fullSha).sort().join('|'),
       enrichedUnpushedDirectCommits.map((commit) => commit.fullSha).sort().join('|'),
       mergeNodes.map((node) => `${node.fullSha}:${node.targetBranch}:${node.targetCommitSha}`).join('|'),
     ].join('@@'),
@@ -3866,7 +3993,7 @@ function App() {
       defaultBranch,
       visualCheckedOutRef?.branchName,
       visualCheckedOutRef?.headSha,
-      worktreeSessions.length,
+      worktreeSessions,
       branchesForLayout,
       enrichedDirectCommits,
       enrichedUnpushedDirectCommits,

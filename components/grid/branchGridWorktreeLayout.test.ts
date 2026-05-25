@@ -101,11 +101,11 @@ describe('computeBranchGridLayout worktree nodes', () => {
     expect(worktreeNode).toBeDefined();
     expect(parentNode).toBeDefined();
     expect(worktreeNode!.row).toBe(parentNode!.row + 1);
-    expect(worktreeNode!.column).toBe(parentNode!.column);
+    expect(worktreeNode!.column).not.toBe(parentNode!.column);
     expect(worktreeNode!.commit.date).toBe(parentDate);
   });
 
-  it('keeps the primary worktree on the checked-out branch lane when the parent SHA is shared across lanes', () => {
+  it('steps the primary worktree one timeline slot right when it shares the parent lane', () => {
     const defaultBranch = 'main';
     const parentDate = '2024-06-01T12:00:00Z';
     const branches = [
@@ -171,15 +171,12 @@ describe('computeBranchGridLayout worktree nodes', () => {
     });
 
     const worktreeNode = layout.renderNodes.find((node) => node.commit.id === sessions[0]!.workingTreeId);
-    const mainRootNode = layout.renderNodes.find((node) => node.commit.id === mainSha);
     const featureTipNode = layout.renderNodes.find(
       (node) => node.commit.id === tipSha && node.commit.branchName === 'feature',
     );
     expect(worktreeNode).toBeDefined();
-    expect(mainRootNode).toBeDefined();
     expect(featureTipNode).toBeDefined();
-    expect(worktreeNode!.column).not.toBe(mainRootNode!.column);
-    expect(worktreeNode!.column).toBe(featureTipNode!.column);
-    expect(worktreeNode!.row).toBeGreaterThan(mainRootNode!.row);
+    expect(worktreeNode!.row).toBeGreaterThan(featureTipNode!.row);
+    expect(worktreeNode!.column).toBeLessThan(featureTipNode!.column);
   });
 });

@@ -116,6 +116,7 @@ describe('detached worktree test1', () => {
     expect(test1Render).toBeDefined();
     expect(parentNode).toBeDefined();
     expect(test1Render!.commit.branchName).toBe(test1Lane);
-    expect(test1Render!.row).toBeGreaterThan(parentNode!.row);
+    expect(test1Render!.row).toBe(parentNode!.row + 1);
+    expect(test1Render!.column).toBeGreaterThan(parentNode!.column);
   });
 });
