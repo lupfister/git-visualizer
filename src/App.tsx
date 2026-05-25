@@ -451,6 +451,7 @@ function App() {
   const canApplyRepoRefreshRef = useRef(true);
   const mapRefreshSettleTimeoutRef = useRef<number | null>(null);
   const runRepoRefreshRef = useRef<((reason?: 'graph' | 'local' | 'timer' | 'initial' | 'quick') => void) | null>(null);
+  const reconcileInFlightRef = useRef(false);
   const pendingRefreshAfterInteractionRef = useRef(false);
   const hasAttemptedAutoRestoreRef = useRef(false);
   const hasHydratedInitialProjectSnapshotsRef = useRef(false);
@@ -1944,39 +1945,60 @@ function App() {
   async function reconcileProjectSnapshotAfterMutation(path: string) {
     const normalizedPath = normalizePath(path);
     if (!normalizedPath || !sameRepoPath(repoPath, normalizedPath)) return;
-    if (repoMutationInFlightRef.current) return;
+    if (repoMutationInFlightRef.current || reconcileInFlightRef.current) return;
+    reconcileInFlightRef.current = true;
+    suppressBackgroundRefreshUntilRef.current = Date.now() + 1500;
+    try {
+      const peek = await fetchRepoSyncPeek(normalizedPath);
+      let needsBackendSnapshot = false;
 
-    await invoke('persist_project_snapshot', { projectId: normalizedPath, force: true }).catch((error) => {
-      console.warn('Post-mutation snapshot persist failed:', error);
-    });
-
-    const peek = await fetchRepoSyncPeek(normalizedPath);
-    const uiBehindPeek = peek ? isActiveUiBehindPeek(normalizedPath, peek) : false;
-
-    if (uiBehindPeek) {
-      const snapshot = await loadProjectSnapshot(normalizedPath, true);
-      if (snapshot?.loaded && sameRepoPath(repoPath, normalizedPath)) {
-        startTransition(() => {
-          applyPatchedSnapshot(normalizedPath, snapshot, true, { force: true });
-        });
+      if (peek && isActiveUiBehindPeek(normalizedPath, peek)) {
+        gitActivityEpochRef.current += 1;
+        await tryIncrementalBackgroundSync(normalizedPath, { force: true, peek });
+        needsBackendSnapshot = isActiveUiBehindPeek(normalizedPath, peek);
       }
-    } else {
-      gitActivityEpochRef.current += 1;
-      void runRepoRefreshRef.current?.('graph');
-    }
 
-    void invoke<FingerprintCheckResult>('check_project_fingerprint', { projectId: normalizedPath })
-      .then((check) => {
+      const finalizeMetadata = async () => {
+        const check = await invoke<FingerprintCheckResult>('check_project_fingerprint', {
+          projectId: normalizedPath,
+        }).catch(() => null);
         if (check?.currentFingerprint) {
           noteSyncedRepoFingerprint(normalizedPath, check.currentFingerprint);
           ackProjectFingerprint(normalizedPath, check.currentFingerprint);
         }
-      })
-      .catch(() => undefined);
-    if (peek?.signature) {
-      noteSyncedRepoPeek(normalizedPath, peek.signature);
+        if (peek?.signature) {
+          noteSyncedRepoPeek(normalizedPath, peek.signature);
+        }
+        markGitActivityHandled();
+      };
+
+      if (needsBackendSnapshot) {
+        await invoke('persist_project_snapshot', { projectId: normalizedPath, force: true }).catch((error) => {
+          console.warn('Post-mutation snapshot persist failed:', error);
+        });
+        const result = await invoke<RefreshProjectResult>('refresh_project_if_changed', {
+          projectId: normalizedPath,
+        }).catch(() => null);
+        const nextSnapshot = toRepoVisualSnapshot(result?.snapshot ?? null);
+        if (result?.updated && nextSnapshot && sameRepoPath(repoPath, normalizedPath)) {
+          startTransition(() => {
+            applyPatchedSnapshot(normalizedPath, nextSnapshot, false, {
+              force: true,
+              skipLayoutRebuild: true,
+            });
+          });
+        }
+        await finalizeMetadata();
+      } else {
+        void invoke('persist_project_snapshot', { projectId: normalizedPath, force: true })
+          .then(() => finalizeMetadata())
+          .catch((error) => {
+            console.warn('Post-mutation snapshot persist/sync failed:', error);
+          });
+      }
+    } finally {
+      reconcileInFlightRef.current = false;
     }
-    markGitActivityHandled();
   }
 
   function noteDirtySyncComplete(
@@ -2264,9 +2286,7 @@ function App() {
         }
         suppressBackgroundRefreshUntilRef.current = Date.now() + 2500;
         markGitActivityHandled();
-        if (isCommit) {
-          noteSyncedAfterMutationOutcomes(normalizedPath, ...outcomes);
-        }
+        noteSyncedAfterMutationOutcomes(normalizedPath, ...outcomes);
         schedulePostMutationGraphReconcile(normalizedPath);
       } else {
         suppressBackgroundRefreshUntilRef.current = Date.now() + 2500;
@@ -2284,7 +2304,9 @@ function App() {
   function noteSyncedAfterMutationOutcomes(path: string, ...outcomes: RepoMutationOutcome[]) {
     const normalizedPath = normalizePath(path);
     if (!normalizedPath) return;
-    if (!outcomes.some((outcome) => outcome.kind === 'commit')) return;
+    const syncedCommit = outcomes.some((outcome) => outcome.kind === 'commit');
+    const syncedPush = outcomes.some((outcome) => outcome.kind === 'push');
+    if (!syncedCommit && !syncedPush) return;
     void invoke<RepoSyncPeek>('get_repo_sync_peek', { repoPath: normalizedPath })
       .then((peek) => {
         if (!peek?.signature) return;
@@ -3546,7 +3568,7 @@ function App() {
 
     const runRefresh = async (incomingReason: 'graph' | 'local' | 'timer' | 'initial' | 'quick' = 'timer') => {
       let reason = incomingReason;
-      if (isDisposed || refreshInFlight) return;
+      if (isDisposed || refreshInFlight || reconcileInFlightRef.current) return;
       if (Date.now() < suppressBackgroundRefreshUntilRef.current) {
         scheduleRefreshAfterSuppress('graph');
         return;
@@ -3678,11 +3700,20 @@ function App() {
         if (mutationAtStart !== repoMutationGenerationRef.current) return;
         if (!result.updated) {
           if (peek && isActiveUiBehindPeek(repoPath, peek)) {
-            const reloaded = await loadProjectSnapshot(repoPath, true);
-            if (reloaded?.loaded && mutationAtStart === repoMutationGenerationRef.current) {
-              startTransition(() => {
-                applyPatchedSnapshot(repoPath, reloaded, true, { force: true });
+            const patched = await tryIncrementalBackgroundSync(repoPath, { force: true, peek });
+            if (!patched) {
+              await invoke('persist_project_snapshot', { projectId: repoPath, force: true }).catch((error) => {
+                console.warn('Background snapshot persist failed:', error);
               });
+              const retry = await invoke<RefreshProjectResult>('refresh_project_if_changed', {
+                projectId: repoPath,
+              }).catch(() => null);
+              const reloaded = toRepoVisualSnapshot(retry?.snapshot ?? null);
+              if (retry?.updated && reloaded && mutationAtStart === repoMutationGenerationRef.current) {
+                startTransition(() => {
+                  applyPatchedSnapshot(repoPath, reloaded, false, { force: true, skipLayoutRebuild: true });
+                });
+              }
             }
           } else if (quickState) {
             projectQuickStateRef.current = {
