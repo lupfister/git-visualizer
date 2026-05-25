@@ -104,4 +104,82 @@ describe('computeBranchGridLayout worktree nodes', () => {
     expect(worktreeNode!.column).toBe(parentNode!.column);
     expect(worktreeNode!.commit.date).toBe(parentDate);
   });
+
+  it('keeps the primary worktree on the checked-out branch lane when the parent SHA is shared across lanes', () => {
+    const defaultBranch = 'main';
+    const parentDate = '2024-06-01T12:00:00Z';
+    const branches = [
+      makeBranch(defaultBranch, tipSha, 1),
+      makeBranch('feature', tipSha, 1),
+    ];
+    const directCommits: DirectCommit[] = [
+      {
+        fullSha: mainSha,
+        sha: mainSha.slice(0, 7),
+        branch: defaultBranch,
+        message: 'root',
+        author: 'test',
+        date: '2024-05-01T12:00:00Z',
+        parentSha: null,
+        parentShas: [],
+      },
+      {
+        fullSha: tipSha,
+        sha: tipSha.slice(0, 7),
+        branch: 'feature',
+        message: 'tip',
+        author: 'test',
+        date: parentDate,
+        parentSha: mainSha,
+        parentShas: [mainSha],
+      },
+    ];
+    const sessions = buildWorktreeSessions(
+      [wt({ path: '/repo', branchName: defaultBranch, headSha: tipSha, isCurrent: true })],
+      '/repo',
+      { branchName: defaultBranch, headSha: tipSha, hasUncommittedChanges: true },
+    );
+    const worktreePreview: BranchCommitPreview = {
+      fullSha: sessions[0]!.workingTreeId,
+      sha: 'uncommitted',
+      parentSha: tipSha,
+      message: '',
+      author: 'You',
+      date: parentDate,
+      kind: 'uncommitted',
+    };
+    const layout = computeBranchGridLayout({
+      branches,
+      mergeNodes: [],
+      directCommits,
+      unpushedDirectCommits: [],
+      defaultBranch,
+      branchCommitPreviews: {
+        main: [directCommits[1]!, worktreePreview],
+        feature: [directCommits[1]!],
+      },
+      branchParentByName: { main: null, feature: 'main' },
+      branchUniqueAheadCounts: { main: 1, feature: 1 },
+      manuallyOpenedClumps: new Set(),
+      manuallyClosedClumps: new Set(),
+      isDebugOpen: false,
+      gridSearchQuery: '',
+      gridFocusSha: null,
+      checkedOutRef: { branchName: defaultBranch, headSha: tipSha, hasUncommittedChanges: true },
+      worktreeSessions: sessions,
+      orientation: 'horizontal',
+    });
+
+    const worktreeNode = layout.renderNodes.find((node) => node.commit.id === sessions[0]!.workingTreeId);
+    const mainRootNode = layout.renderNodes.find((node) => node.commit.id === mainSha);
+    const featureTipNode = layout.renderNodes.find(
+      (node) => node.commit.id === tipSha && node.commit.branchName === 'feature',
+    );
+    expect(worktreeNode).toBeDefined();
+    expect(mainRootNode).toBeDefined();
+    expect(featureTipNode).toBeDefined();
+    expect(worktreeNode!.column).not.toBe(mainRootNode!.column);
+    expect(worktreeNode!.column).toBe(featureTipNode!.column);
+    expect(worktreeNode!.row).toBeGreaterThan(mainRootNode!.row);
+  });
 });

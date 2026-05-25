@@ -173,11 +173,38 @@ const findWorktreeParentCommit = (
     (candidate) =>
       candidate.branchName === branchName &&
       (shasMatch(candidate.id, parentSha) || shasMatch(candidate.id.slice(0, 7), parentSha)),
-  ) ??
+  );
+
+const findWorktreeParentCommitAnyLane = (
+  commits: VisualCommit[],
+  parentSha: string,
+): VisualCommit | undefined =>
   commits.find(
     (candidate) =>
-      shasMatch(candidate.id, parentSha) || shasMatch(candidate.id.slice(0, 7), parentSha),
+      !isWorktreeGraphNode(candidate) &&
+      (shasMatch(candidate.id, parentSha) || shasMatch(candidate.id.slice(0, 7), parentSha)),
   );
+
+const findBranchLaneTipCommit = (
+  commits: VisualCommit[],
+  branchName: string,
+  rowByVisualId: Map<string, number>,
+): VisualCommit | null => {
+  let best: VisualCommit | null = null;
+  let bestRow = Number.NEGATIVE_INFINITY;
+  for (const candidate of commits) {
+    if (candidate.branchName !== branchName) continue;
+    if (isWorktreeGraphNode(candidate) || isEmptyBranchHeadCommit(candidate)) continue;
+    if (candidate.kind === 'branch-created' || candidate.kind === 'stash') continue;
+    const row = rowByVisualId.get(candidate.visualId);
+    if (row == null) continue;
+    if (row > bestRow) {
+      bestRow = row;
+      best = candidate;
+    }
+  }
+  return best;
+};
 
 const isWorktreeGraphNode = (commit: { id: string; kind?: string | null }): boolean =>
   commit.kind === 'uncommitted' || isWorkingTreeCommitId(commit.id);
@@ -191,7 +218,11 @@ const applyWorktreeNodePlacement = (
 ): void => {
   for (const commit of commits) {
     if (!isWorktreeGraphNode(commit) || !commit.parentSha) continue;
-    const parent = findWorktreeParentCommit(commits, commit.parentSha, commit.branchName);
+    const parent =
+      findWorktreeParentCommit(commits, commit.parentSha, commit.branchName)
+      ?? findWorktreeParentCommitAnyLane(commits, commit.parentSha)
+      ?? findBranchLaneTipCommit(commits, commit.branchName, rowByVisualId)
+      ?? undefined;
     if (!parent) continue;
     const parentRow = rowByVisualId.get(parent.visualId);
     const parentCol = columnByCommitVisualId.get(parent.visualId);
@@ -659,10 +690,10 @@ function isEmptyPlaceholderBranch(
 }
 
 function branchHasConcreteVisibleCommit(
-  visibleCommitBySha: Map<string, VisualCommit>,
+  visibleCommitByVisualId: Map<string, VisualCommit>,
   branchName: string,
 ): boolean {
-  return Array.from(visibleCommitBySha.values()).some(
+  return Array.from(visibleCommitByVisualId.values()).some(
     (commit) =>
       commit.branchName === branchName &&
       commit.kind !== 'branch-created' &&
@@ -671,15 +702,11 @@ function branchHasConcreteVisibleCommit(
 }
 
 const setVisibleBranchCommit = (
-  visibleCommitBySha: Map<string, VisualCommit>,
+  visibleCommitByVisualId: Map<string, VisualCommit>,
   visualCommit: VisualCommit,
 ): void => {
-  if (visualCommit.kind === 'branch-created' || visualCommit.id.startsWith('BRANCH_HEAD:')) {
-    visibleCommitBySha.set(visualCommit.id, visualCommit);
-    return;
-  }
-  if (visibleCommitBySha.has(visualCommit.id)) return;
-  visibleCommitBySha.set(visualCommit.id, visualCommit);
+  const visualId = visualCommit.visualId || `${visualCommit.branchName}:${visualCommit.id}`;
+  visibleCommitByVisualId.set(visualId, { ...visualCommit, visualId });
 };
 
 /** Synthetic lane tip when a branch has no unique commits (e.g. worktree-agents at an older commit). */
@@ -1028,7 +1055,7 @@ function ensureBranchLaneRepresentation(
   branches: Branch[],
   defaultBranch: string,
   branchCommitsByLane: Map<string, CommitItem[]>,
-  visibleCommitBySha: Map<string, VisualCommit>,
+  visibleCommitByVisualId: Map<string, VisualCommit>,
   directCommits: DirectCommit[],
   branchCommitPreviews: Record<string, BranchCommitPreview[]>,
   branchUniqueAheadCounts: Record<string, number>,
@@ -1038,8 +1065,8 @@ function ensureBranchLaneRepresentation(
     if (branch.name === defaultBranch) continue;
     if (isWorktreeLaneBranchName(branch.name)) continue;
     if (worktreeSessionCoversEmptyBranch(worktreeSessions, branch)) continue;
-    if (branchHasConcreteVisibleCommit(visibleCommitBySha, branch.name)) continue;
-    const existingPlaceholder = Array.from(visibleCommitBySha.values()).find(
+    if (branchHasConcreteVisibleCommit(visibleCommitByVisualId, branch.name)) continue;
+    const existingPlaceholder = Array.from(visibleCommitByVisualId.values()).find(
       (commit) =>
         commit.branchName === branch.name &&
         (commit.kind === 'branch-created' || commit.id.startsWith('BRANCH_HEAD:')),
@@ -1049,10 +1076,11 @@ function ensureBranchLaneRepresentation(
       branchCommitsByLane.get(branch.name)?.find((commit) => commit.kind === 'branch-created') ??
       buildEmptyBranchLaneCommit(branch, directCommits, branchCommitPreviews);
     if (!lanePlaceholder) continue;
-    visibleCommitBySha.set(lanePlaceholder.id, {
+    const visualId = `${branch.name}:${lanePlaceholder.id}`;
+    visibleCommitByVisualId.set(visualId, {
       ...lanePlaceholder,
       branchName: branch.name,
-      visualId: `${branch.name}:${lanePlaceholder.id}`,
+      visualId,
     });
     if (!branchCommitsByLane.has(branch.name)) {
       branchCommitsByLane.set(branch.name, [lanePlaceholder]);
@@ -1236,19 +1264,17 @@ export function computeBranchGridLayout(input: BranchGridLayoutInput): BranchGri
   };
   const blueStartShaForBranch = (branch: Branch): string | null => resolveBranchStartSha(branch);
 
-  // Canonical source of truth: backend-assigned direct commits (already de-duplicated by SHA).
-  const canonicalCommitBySha = new Map<string, VisualCommit>();
+  // Seed from backend direct commits; branch lane ingest below adds per-lane copies for shared SHAs.
+  const visibleCommitByVisualId = new Map<string, VisualCommit>();
   for (const commit of [...directCommits, ...unpushedDirectCommits]) {
     const visualCommit: VisualCommit = {
       ...toCommit(commit.branch || '', commit),
       visualId: `${commit.branch || ''}:${commit.fullSha}`,
     };
-    canonicalCommitBySha.set(commit.fullSha, visualCommit);
+    visibleCommitByVisualId.set(visualCommit.visualId, visualCommit);
   }
-
-  const visibleCommitBySha = new Map<string, VisualCommit>(canonicalCommitBySha);
   const insertVisibleCommitIfMissing = (commit: VisualCommit) => {
-    setVisibleBranchCommit(visibleCommitBySha, commit);
+    setVisibleBranchCommit(visibleCommitByVisualId, commit);
   };
   const unpushedCommitShasByBranchSet = new Map(
     Object.entries(unpushedCommitShasByBranch).map(([branchName, shas]) => [branchName, new Set(shas)] as const),
@@ -1273,7 +1299,7 @@ export function computeBranchGridLayout(input: BranchGridLayoutInput): BranchGri
     for (const sha of shaSet) branchCommitShaUnion.add(sha);
   }
   for (const commit of mainCommits) {
-    if (branchCommitShaUnion.has(commit.id)) continue;
+    if (commit.branchName !== defaultBranch && branchCommitShaUnion.has(commit.id)) continue;
     insertVisibleCommitIfMissing({ ...commit, visualId: `${commit.branchName}:${commit.id}` });
   }
   const checkedOutBranchName = checkedOutRef?.branchName ?? null;
@@ -1299,48 +1325,44 @@ export function computeBranchGridLayout(input: BranchGridLayoutInput): BranchGri
   const ingestBranchLaneCommits = (branchName: string, commits: CommitItem[]) => {
     for (const commit of commits) {
       const visualCommit: VisualCommit = { ...commit, branchName, visualId: `${branchName}:${commit.id}` };
-      setVisibleBranchCommit(visibleCommitBySha, visualCommit);
+      setVisibleBranchCommit(visibleCommitByVisualId, visualCommit);
     }
   };
   for (const [branchName, commits] of branchCommitsByLane.entries()) {
     if (checkedOutBranchNameSet.has(branchName)) continue;
     ingestBranchLaneCommits(branchName, commits);
   }
-  // Same SHA can appear on multiple branch lanes; last writer must be each checked-out branch so
   // Checked-out branch lanes ingest last so WORKING_TREE parents resolve on the correct lane.
   for (const branchName of sessionBranchesWithPriority) {
     const preferredCommits = branchCommitsByLane.get(branchName);
     if (preferredCommits) ingestBranchLaneCommits(branchName, preferredCommits);
   }
-  // Branch previews (and the checkout overwrite above) often keep only the first parent; restore full
-  // merge parent lists so cluster segmentation and lane logic see real merges.
+  // Branch previews often keep only the first parent; restore full merge parent lists per lane.
   for (const node of mergeNodes) {
     const sha = node.fullSha;
     if (!sha) continue;
-    const existing = visibleCommitBySha.get(sha);
-    if (!existing) continue;
     const ps = node.parentShas ?? [];
     if (ps.length <= 1) continue;
-    visibleCommitBySha.set(sha, {
-      ...existing,
-      parentSha: ps[0] ?? existing.parentSha ?? null,
-      parentShas: ps,
-    });
+    for (const [visualId, existing] of visibleCommitByVisualId.entries()) {
+      if (!shasMatch(existing.id, sha)) continue;
+      visibleCommitByVisualId.set(visualId, {
+        ...existing,
+        parentSha: ps[0] ?? existing.parentSha ?? null,
+        parentShas: ps,
+      });
+    }
   }
   ensureBranchLaneRepresentation(
     branches,
     defaultBranch,
     branchCommitsByLane,
-    visibleCommitBySha,
+    visibleCommitByVisualId,
     directCommits,
     branchCommitPreviews,
     branchUniqueAheadCounts,
     worktreeSessions,
   );
-  const visibleCommits: VisualCommit[] = Array.from(visibleCommitBySha.values()).map((commit) => ({
-    ...commit,
-    visualId: `${commit.branchName}:${commit.id}`,
-  }));
+  const visibleCommits: VisualCommit[] = Array.from(visibleCommitByVisualId.values());
 
   const allCommits = [...visibleCommits].sort((a, b) => safeTimeMs(a.date) - safeTimeMs(b.date) || a.id.localeCompare(b.id));
   const commitShasByBranchName = new Map<string, Set<string>>();
@@ -1773,16 +1795,31 @@ export function computeBranchGridLayout(input: BranchGridLayoutInput): BranchGri
       ? 0
       : Math.max(
           0,
-          ...allCommitsWithClusters
-            .filter((candidate) => shasMatch(candidate.id, commit.parentSha!))
-            .map((parent) => projectedLaneColumn(parent, visiting) + 1),
+          ...(() => {
+            const sameBranchParents = allCommitsWithClusters.filter(
+              (candidate) =>
+                candidate.branchName === commit.branchName &&
+                shasMatch(candidate.id, commit.parentSha!),
+            );
+            const parents = sameBranchParents.length > 0
+              ? sameBranchParents
+              : allCommitsWithClusters.filter((candidate) => shasMatch(candidate.id, commit.parentSha!));
+            return parents.map((parent) => projectedLaneColumn(parent, visiting) + 1);
+          })(),
         );
     visiting.delete(commit.visualId);
     return column;
   };
   const parentMinimumLaneColumn = (commit: VisualCommit): number => {
     if (!commit.parentSha) return 0;
-    const parents = allCommitsWithClusters.filter((candidate) => shasMatch(candidate.id, commit.parentSha!));
+    const sameBranchParents = allCommitsWithClusters.filter(
+      (candidate) =>
+        candidate.branchName === commit.branchName &&
+        shasMatch(candidate.id, commit.parentSha!),
+    );
+    const parents = sameBranchParents.length > 0
+      ? sameBranchParents
+      : allCommitsWithClusters.filter((candidate) => shasMatch(candidate.id, commit.parentSha!));
     if (parents.length === 0) return 0;
     return Math.max(
       ...parents.map((parent) => {
