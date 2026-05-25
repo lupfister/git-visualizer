@@ -781,6 +781,31 @@ function App() {
     pendingRefreshAfterInteractionRef.current = false;
   }
 
+  function refreshUiAlreadyMatchesPeek(path: string, peek: RepoSyncPeek): boolean {
+    if (!sameRepoPath(repoPath, path)) return false;
+    try {
+      const parsed = parsePeekSignature(peek.signature);
+      const ref = latestCheckedOutRef.current
+        ?? getSnapshotForMutation(path).checkedOutRef;
+      return (
+        Boolean(ref?.headSha)
+        && parsed.headSha === ref.headSha
+        && parsed.hasUncommittedChanges === (ref.hasUncommittedChanges ?? false)
+        && !isActiveUiBehindPeek(path, peek)
+      );
+    } catch {
+      return false;
+    }
+  }
+
+  function absorbRedundantGitActivityRefresh(path: string, peek: RepoSyncPeek | null): boolean {
+    const normalizedPath = normalizePath(path);
+    if (!normalizedPath || !peek || !refreshUiAlreadyMatchesPeek(path, peek)) return false;
+    noteSyncedRepoPeek(normalizedPath, peek.signature);
+    markGitActivityHandled();
+    return true;
+  }
+
   function noteSyncedFingerprintFromQuickState(path: string, quickState: RepoQuickState) {
     const normalizedPath = normalizePath(path);
     if (!normalizedPath) return;
@@ -1953,6 +1978,18 @@ function App() {
   ) {
     const normalizedPath = normalizePath(path);
     const force = options?.force === true;
+    const patchedSignature = getRepoVisualSnapshotSignature(patched);
+    if (
+      sameRepoPath(repoPath, normalizedPath)
+      && activeSnapshotSignatureRef.current === patchedSignature
+    ) {
+      upsertProjectSnapshot(normalizedPath, patched, { force });
+      projectQuickStateRef.current = {
+        ...projectQuickStateRef.current,
+        [normalizedPath]: quickStateSignature(quickStateFromSnapshot(normalizedPath, patched)),
+      };
+      return;
+    }
     let previousSnapshot = options?.previousSnapshot ?? null;
     if (previousSnapshot === null) {
       try {
@@ -2138,8 +2175,7 @@ function App() {
         if (isCommit) {
           noteSyncedAfterMutationOutcomes(normalizedPath, ...outcomes);
         }
-        void invoke('persist_project_snapshot', { projectId: normalizedPath, force: true })
-          .then(() => invoke<FingerprintCheckResult>('check_project_fingerprint', { projectId: normalizedPath }))
+        void invoke<FingerprintCheckResult>('check_project_fingerprint', { projectId: normalizedPath })
           .then((check) => {
             if (check?.currentFingerprint) {
               noteSyncedRepoFingerprint(normalizedPath, check.currentFingerprint);
@@ -2147,8 +2183,11 @@ function App() {
             }
           })
           .catch((error) => {
-            console.warn('Post-mutation snapshot persist/sync failed:', error);
+            console.warn('Post-mutation fingerprint sync failed:', error);
           });
+        void invoke('persist_project_snapshot', { projectId: normalizedPath, force: true }).catch((error) => {
+          console.warn('Post-mutation snapshot persist failed:', error);
+        });
       } else {
         suppressBackgroundRefreshUntilRef.current = Date.now() + 2500;
         window.setTimeout(() => {
@@ -2920,12 +2959,11 @@ function App() {
       setMapGridBackgroundActivity('git-refresh-pending', 'Git refresh queued', true, 'snapshot deferred');
       return false;
     }
-    setMapGridBackgroundActivity('snapshot-apply', 'Apply repo snapshot', true);
     const signature = getRepoVisualSnapshotSignature(snapshot);
-    const force = options?.force === true;
-    if (!force && activeSnapshotSignatureRef.current === signature) {
+    if (activeSnapshotSignatureRef.current === signature) {
       return false;
     }
+    setMapGridBackgroundActivity('snapshot-apply', 'Apply repo snapshot', true);
     latestBranchesRef.current = snapshot.branches;
     latestDirectCommitsRef.current = snapshot.directCommits;
     latestUnpushedDirectCommitsRef.current = snapshot.unpushedDirectCommits;
@@ -3434,25 +3472,20 @@ function App() {
       const peek = await fetchRepoSyncPeek(repoPath);
       if (
         peek
+        && (gitActivityPending || postCommitGuarded)
+        && absorbRedundantGitActivityRefresh(repoPath, peek)
+      ) {
+        return;
+      }
+      if (
+        peek
         && !gitActivityPending
         && normalizedPath
         && lastSyncedRepoFingerprintRef.current[normalizedPath]
         && projectSyncPeekRef.current[normalizedPath] === peek.signature
       ) {
         try {
-          const parsed = parsePeekSignature(peek.signature);
-          const ref = latestCheckedOutRef.current
-            ?? getSnapshotForMutation(repoPath).checkedOutRef;
-          const peekMatchesLive =
-            Boolean(ref?.headSha)
-            && parsed.headSha === ref.headSha
-            && parsed.hasUncommittedChanges === (ref.hasUncommittedChanges ?? false)
-            && !isActiveUiBehindPeek(repoPath, peek);
-          if (
-            reason !== 'quick'
-            && peekMatchesLive
-            && backgroundSyncCanShortCircuit(gitActivityPending)
-          ) {
+          if (reason !== 'quick' && refreshUiAlreadyMatchesPeek(repoPath, peek)) {
             markGitActivityHandled();
             pendingRefreshAfterInteractionRef.current = false;
             return;
@@ -3492,6 +3525,7 @@ function App() {
       }
       const uiBehindPeek = peek ? isActiveUiBehindPeek(repoPath, peek) : false;
       if (reason === 'quick' && !uiBehindPeek) {
+        if (gitActivityPending) markGitActivityHandled();
         return;
       }
       if (reason === 'quick' && uiBehindPeek) {
@@ -3607,6 +3641,16 @@ function App() {
                 && snapshotContainsCommitSha(nextSnapshot, guard)
               ) {
                 const synced = await reconcileSnapshotWorktreesOnly(repoPath, live);
+                const layoutChanged = mutationChangesWorktreeLayout(live, synced);
+                const liveSignature = getRepoVisualSnapshotSignature(live);
+                const syncedSignature = getRepoVisualSnapshotSignature(synced);
+                if (syncedSignature === liveSignature) {
+                  markGitActivityHandled();
+                  void invoke<FingerprintCheckResult>('check_project_fingerprint', { projectId: repoPath })
+                    .then((check) => noteSyncedRepoFingerprint(repoPath, check?.currentFingerprint))
+                    .catch(() => undefined);
+                  return;
+                }
                 upsertProjectSnapshot(repoPath, synced, { force: true });
                 projectQuickStateRef.current = {
                   ...projectQuickStateRef.current,
@@ -3614,13 +3658,12 @@ function App() {
                 };
                 if (mutationAtStart === repoMutationGenerationRef.current && !isRepoRefreshBlocked()) {
                   startTransition(() => {
-                    applyPatchedSnapshot(repoPath, synced, true, { force: true });
+                    applyPatchedSnapshot(repoPath, synced, layoutChanged, { force: true });
                   });
                 }
                 void invoke<FingerprintCheckResult>('check_project_fingerprint', { projectId: repoPath })
                   .then((check) => noteSyncedRepoFingerprint(repoPath, check?.currentFingerprint))
                   .catch(() => undefined);
-                lastHandledGitActivityEpochRef.current = gitActivityEpochRef.current;
                 markGitActivityHandled();
                 return;
               }
