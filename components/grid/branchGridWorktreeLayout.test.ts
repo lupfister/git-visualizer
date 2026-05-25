@@ -181,4 +181,87 @@ describe('computeBranchGridLayout worktree nodes', () => {
     expect(worktreeNode!.column).toBe(mainTipNode!.column);
     expect(worktreeNode!.y).toBe(mainTipNode!.y);
   });
+
+  it('keeps primary worktree on the checkout lane when HEAD is only visible as a collapsed clump lead', () => {
+    const defaultBranch = 'main';
+    const parentDate = '2024-06-01T12:00:00Z';
+    const olderSha = 'cccccccccccccccccccccccccccccccccccccccc';
+    const branches = [makeBranch(defaultBranch, tipSha, 2)];
+    const directCommits: DirectCommit[] = [
+      {
+        fullSha: mainSha,
+        sha: mainSha.slice(0, 7),
+        branch: defaultBranch,
+        message: 'root',
+        author: 'test',
+        date: '2024-05-01T12:00:00Z',
+        parentSha: null,
+        parentShas: [],
+      },
+      {
+        fullSha: olderSha,
+        sha: olderSha.slice(0, 7),
+        branch: defaultBranch,
+        message: 'older',
+        author: 'test',
+        date: '2024-05-15T12:00:00Z',
+        parentSha: mainSha,
+        parentShas: [mainSha],
+      },
+      {
+        fullSha: tipSha,
+        sha: tipSha.slice(0, 7),
+        branch: defaultBranch,
+        message: 'tip',
+        author: 'test',
+        date: parentDate,
+        parentSha: olderSha,
+        parentShas: [olderSha],
+      },
+    ];
+    const sessions = buildWorktreeSessions(
+      [wt({ path: '/repo', branchName: defaultBranch, headSha: tipSha, isCurrent: true })],
+      '/repo',
+      { branchName: defaultBranch, headSha: tipSha, hasUncommittedChanges: true },
+    );
+    const worktreePreview: BranchCommitPreview = {
+      fullSha: sessions[0]!.workingTreeId,
+      sha: 'uncommitted',
+      parentSha: tipSha,
+      message: '',
+      author: 'You',
+      date: parentDate,
+      kind: 'uncommitted',
+    };
+    const layout = computeBranchGridLayout({
+      branches,
+      mergeNodes: [],
+      directCommits,
+      unpushedDirectCommits: directCommits.slice(1),
+      defaultBranch,
+      branchCommitPreviews: {
+        main: [directCommits[1]!, directCommits[2]!, worktreePreview],
+      },
+      branchParentByName: { main: null },
+      branchUniqueAheadCounts: { main: 2 },
+      unpushedCommitShasByBranch: { main: [olderSha, tipSha] },
+      manuallyOpenedClumps: new Set(),
+      manuallyClosedClumps: new Set(),
+      isDebugOpen: false,
+      gridSearchQuery: '',
+      gridFocusSha: null,
+      checkedOutRef: { branchName: defaultBranch, headSha: tipSha, hasUncommittedChanges: true },
+      worktreeSessions: sessions,
+      orientation: 'horizontal',
+    });
+
+    const worktreeNode = layout.renderNodes.find((node) => node.commit.id === sessions[0]!.workingTreeId);
+    const headLeadNode = layout.renderNodes.find((node) => node.commit.id === tipSha);
+    expect(worktreeNode).toBeDefined();
+    expect(headLeadNode).toBeDefined();
+    expect(worktreeNode!.column).toBeGreaterThanOrEqual(headLeadNode!.column);
+    expect(worktreeNode!.column).toBe(headLeadNode!.column);
+    expect(worktreeNode!.row).toBe(headLeadNode!.row + 1);
+    expect(worktreeNode!.y).toBe(headLeadNode!.y);
+  });
 });

@@ -167,170 +167,91 @@ function findCommitMetaInRepo(
 const isWorktreeGraphNode = (commit: { id: string; kind?: string | null }): boolean =>
   commit.kind === 'uncommitted' || isWorkingTreeCommitId(commit.id);
 
-const resolveWorktreeParentCommit = (
-  commits: VisualCommit[],
+const commitMatchesSha = (commit: VisualCommit, sha: string | null | undefined): boolean => {
+  if (!sha) return false;
+  return shasMatch(commit.id, sha) || shasMatch(commit.id.slice(0, 7), sha);
+};
+
+/** Pick the visible parent tile the connector should use — rightmost match on the checkout lane. */
+const findWorktreeAnchorParentRenderNode = (
+  renderNodes: Node[],
   worktree: VisualCommit,
-): VisualCommit | undefined => {
-  if (!worktree.parentSha) return undefined;
-  const shaMatchesParent = (candidate: VisualCommit): boolean =>
-    shasMatch(candidate.id, worktree.parentSha)
-    || shasMatch(candidate.id.slice(0, 7), worktree.parentSha);
-  if (worktree.branchName) {
-    const laneScoped = commits.find(
-      (candidate) =>
-        !isWorktreeGraphNode(candidate)
-        && candidate.branchName === worktree.branchName
-        && shaMatchesParent(candidate),
+  checkedOutRef: CheckedOutRef | null,
+): Node | null => {
+  const laneBranch = worktree.branchName ?? checkedOutRef?.branchName ?? null;
+  const isOnLane = (node: Node): boolean => {
+    if (isWorktreeGraphNode(node.commit)) return false;
+    if (laneBranch && node.commit.branchName !== laneBranch) return false;
+    return true;
+  };
+  const pickRightmost = (nodes: Node[]): Node | null =>
+    nodes.reduce<Node | null>(
+      (best, node) => (!best || node.row > best.row ? node : best),
+      null,
     );
-    if (laneScoped) return laneScoped;
-  }
-  const matches = commits.filter(
-    (candidate) => !isWorktreeGraphNode(candidate) && shaMatchesParent(candidate),
-  );
-  if (matches.length === 0) return undefined;
-  if (worktree.branchName) {
-    const onCheckoutBranch = matches.find((candidate) => candidate.branchName === worktree.branchName);
-    if (onCheckoutBranch) return onCheckoutBranch;
-  }
-  return matches[0];
-};
 
-const branchLaneColumnFromCommits = (
-  branchName: string,
-  commits: VisualCommit[],
-  columnByCommitVisualId: Map<string, number>,
-): number | null => {
-  let minColumn: number | null = null;
-  for (const commit of commits) {
-    if (commit.branchName !== branchName || isWorktreeGraphNode(commit)) continue;
-    const column = columnByCommitVisualId.get(commit.visualId);
-    if (column == null) continue;
-    minColumn = minColumn == null ? column : Math.min(minColumn, column);
-  }
-  return minColumn;
-};
-
-const resolveWorktreeParentPlacement = (
-  commits: VisualCommit[],
-  worktree: VisualCommit,
-  parentRowByVisualId: Map<string, number>,
-  columnByCommitVisualId: Map<string, number>,
-  renderNodes?: Node[],
-): { parentRow: number; parentCol: number } | null => {
-  const parent = resolveWorktreeParentCommit(commits, worktree);
-  if (!parent || !worktree.parentSha) return null;
-  if (renderNodes) {
-    const visibleParent = renderNodes.find((node) => {
-      if (isWorktreeGraphNode(node.commit)) return false;
-      if (worktree.branchName && node.commit.branchName !== worktree.branchName) return false;
-      return shasMatch(node.commit.id, worktree.parentSha)
-        || shasMatch(node.commit.id.slice(0, 7), worktree.parentSha);
-    });
-    if (visibleParent) {
-      return { parentRow: visibleParent.row, parentCol: visibleParent.column };
-    }
-  }
-  const parentRow = parentRowByVisualId.get(parent.visualId);
-  const parentCol = columnByCommitVisualId.get(parent.visualId);
-  if (parentRow == null || parentCol == null) return null;
-  return { parentRow, parentCol };
-};
-
-/** Worktrees: one timeline step after parent; lane index >= parent lane (same branch lane when possible). */
-const applyWorktreeChildPlacement = (
-  isHorizontal: boolean,
-  rowByVisualId: Map<string, number>,
-  columnByCommitVisualId: Map<string, number>,
-  commits: VisualCommit[],
-  parentRowByVisualId: Map<string, number> = rowByVisualId,
-  renderNodes?: Node[],
-): void => {
-  const worktrees = commits.filter((commit) => isWorktreeGraphNode(commit) && commit.parentSha);
-  const worktreesByParentSha = new Map<string, VisualCommit[]>();
-  for (const worktree of worktrees) {
-    const parentSha = worktree.parentSha!;
-    const group = worktreesByParentSha.get(parentSha) ?? [];
-    group.push(worktree);
-    worktreesByParentSha.set(parentSha, group);
-  }
-  for (const group of worktreesByParentSha.values()) {
-    const placement = resolveWorktreeParentPlacement(
-      commits,
-      group[0]!,
-      parentRowByVisualId,
-      columnByCommitVisualId,
-      renderNodes,
+  if (worktree.parentSha) {
+    const parentMatches = renderNodes.filter(
+      (node) => isOnLane(node) && commitMatchesSha(node.commit, worktree.parentSha),
     );
-    if (!placement) continue;
-    const parent = resolveWorktreeParentCommit(commits, group[0]!);
-    if (!parent) continue;
-    const { parentRow, parentCol } = placement;
-    const timelineRow = parentRow + 1;
-    const ordered = [...group].sort((left, right) => {
-      const leftCol = columnByCommitVisualId.get(left.visualId) ?? 0;
-      const rightCol = columnByCommitVisualId.get(right.visualId) ?? 0;
-      if (leftCol !== rightCol) return leftCol - rightCol;
-      return left.visualId.localeCompare(right.visualId);
-    });
-    const usedLaneColumns = new Set<number>();
-    for (const worktree of ordered) {
-      if (!isHorizontal) {
-        rowByVisualId.set(
-          worktree.visualId,
-          Math.max(rowByVisualId.get(worktree.visualId) ?? 1, timelineRow),
-        );
-        columnByCommitVisualId.set(worktree.visualId, parentCol + 1);
-        continue;
-      }
-      let targetLaneColumn = parentCol;
-      if (worktree.branchName !== parent.branchName) {
-        const branchLaneCol = branchLaneColumnFromCommits(worktree.branchName, commits, columnByCommitVisualId);
-        targetLaneColumn = Math.max(parentCol + 1, branchLaneCol ?? parentCol + 1);
-      }
-      while (usedLaneColumns.has(targetLaneColumn)) targetLaneColumn += 1;
-      usedLaneColumns.add(targetLaneColumn);
-      rowByVisualId.set(worktree.visualId, timelineRow);
-      columnByCommitVisualId.set(worktree.visualId, targetLaneColumn);
-    }
+    const parent = pickRightmost(parentMatches);
+    if (parent) return parent;
   }
+
+  const headSha = checkedOutRef?.headSha ?? null;
+  if (headSha && !isWorkingTreeCommitId(headSha)) {
+    const headMatches = renderNodes.filter(
+      (node) => isOnLane(node) && commitMatchesSha(node.commit, headSha),
+    );
+    const head = pickRightmost(headMatches);
+    if (head) return head;
+  }
+
+  return null;
 };
 
+/** Final pass: anchor each worktree to its visible parent tile (same lane, one step right). */
 const pinWorktreeNodesToLayout = (
   isHorizontal: boolean,
   renderNodes: Node[],
   columnByCommitVisualId: Map<string, number>,
-  commits: VisualCommit[],
-  layoutRowByVisualId: Map<string, number>,
+  checkedOutRef: CheckedOutRef | null,
   timelineRowLeadOffset: number,
   zoomAwareTimelinePitch: number,
   zoomAwareLanePitch: number,
   maxResolvedRow: number,
 ): void => {
-  const rowByVisualId = new Map(
-    renderNodes.map((node) => [node.commit.visualId, node.row] as const),
-  );
-  applyWorktreeChildPlacement(
-    isHorizontal,
-    rowByVisualId,
-    columnByCommitVisualId,
-    commits,
-    layoutRowByVisualId,
-    renderNodes,
-  );
-  for (const node of renderNodes) {
-    if (!isWorktreeGraphNode(node.commit)) continue;
-    const row = rowByVisualId.get(node.commit.visualId);
-    const column = columnByCommitVisualId.get(node.commit.visualId);
-    if (row == null || column == null) continue;
-    node.row = row;
-    node.column = column;
+  const worktrees = renderNodes
+    .filter((node) => isWorktreeGraphNode(node.commit))
+    .sort((left, right) => left.commit.visualId.localeCompare(right.commit.visualId));
+  const usedLaneColumnsByParentRow = new Map<string, Set<number>>();
+
+  for (const node of worktrees) {
+    const parentNode = findWorktreeAnchorParentRenderNode(renderNodes, node.commit, checkedOutRef);
+    if (!parentNode) continue;
+    const worktree = node.commit;
+    const sameLaneAsParent =
+      !worktree.branchName || worktree.branchName === parentNode.commit.branchName;
+    const parentKey = `${parentNode.row}:${parentNode.column}`;
+    const usedLaneColumns = usedLaneColumnsByParentRow.get(parentKey) ?? new Set<number>();
+
     if (isHorizontal) {
-      node.x = LEFT_PADDING + (timelineRowLeadOffset + row - 1) * zoomAwareTimelinePitch;
-      node.y = TOP_PADDING + column * zoomAwareLanePitch;
+      node.row = parentNode.row + 1;
+      let targetColumn = sameLaneAsParent ? parentNode.column : parentNode.column + 1;
+      while (usedLaneColumns.has(targetColumn)) targetColumn += 1;
+      usedLaneColumns.add(targetColumn);
+      usedLaneColumnsByParentRow.set(parentKey, usedLaneColumns);
+      node.column = targetColumn;
+      node.x = LEFT_PADDING + (timelineRowLeadOffset + node.row - 1) * zoomAwareTimelinePitch;
+      node.y = TOP_PADDING + node.column * zoomAwareLanePitch;
+      columnByCommitVisualId.set(node.commit.visualId, node.column);
       continue;
     }
-    node.x = LEFT_PADDING + column * COLUMN_WIDTH;
-    node.y = TOP_PADDING + (maxResolvedRow - row) * zoomAwareTimelinePitch;
+    node.row = Math.max(node.row, parentNode.row + 1);
+    node.column = parentNode.column + 1;
+    node.x = LEFT_PADDING + node.column * COLUMN_WIDTH;
+    node.y = TOP_PADDING + (maxResolvedRow - node.row) * zoomAwareTimelinePitch;
+    columnByCommitVisualId.set(node.commit.visualId, node.column);
   }
 };
 
@@ -641,6 +562,7 @@ const finalizeClumpRenderLayout = (
     isClumpOpen,
   );
   for (const node of renderNodes) {
+    if (isWorktreeGraphNode(node.commit)) continue;
     const clusterKey = clusterKeyByCommitId.get(node.commit.visualId);
     if (!clusterKey || (clusterCounts.get(clusterKey) ?? 1) <= 1) continue;
     const column = columnByCommitVisualId.get(node.commit.visualId);
@@ -2012,8 +1934,6 @@ export function computeBranchGridLayout(input: BranchGridLayoutInput): BranchGri
     clusterCounts,
   );
   compactTimelineRows(allRowByVisualId, allCommitsWithClusters);
-  applyWorktreeChildPlacement(isHorizontal, allRowByVisualId, columnByCommitVisualId, allCommitsWithClusters);
-  compactTimelineRows(allRowByVisualId, allCommitsWithClusters);
   const commitBySha = new Map<string, VisualCommit>();
   for (const commit of allCommitsWithClusters) {
     commitBySha.set(commit.id, commit);
@@ -2152,13 +2072,6 @@ export function computeBranchGridLayout(input: BranchGridLayoutInput): BranchGri
   for (const commit of visibleCommitsList) {
     visibleRows.set(commit.visualId, allRowByVisualId.get(commit.visualId) ?? 1);
   }
-  applyWorktreeChildPlacement(
-    isHorizontal,
-    visibleRows,
-    columnByCommitVisualId,
-    allCommitsWithClusters,
-    allRowByVisualId,
-  );
   applyClumpRenderColumnLayout(
     allCommitsWithClusters,
     clusterKeyByCommitId,
@@ -2404,8 +2317,7 @@ export function computeBranchGridLayout(input: BranchGridLayoutInput): BranchGri
     isHorizontal,
     renderNodes,
     columnByCommitVisualId,
-    allCommitsWithClusters,
-    allRowByVisualId,
+    checkedOutRef,
     timelineRowLeadOffset,
     zoomAwareTimelinePitch,
     zoomAwareLanePitch,
