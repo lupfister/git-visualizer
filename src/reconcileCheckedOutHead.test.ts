@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import type { CheckedOutRef, RepoQuickState, RepoVisualSnapshot } from '../types';
 import {
+  checkedOutRefWithDirtyFromQuickState,
   mergeCheckedOutRefWithQuickState,
   mergeSnapshotCheckedOutRefWithQuickState,
 } from './reconcileCheckedOutHead';
@@ -92,6 +93,26 @@ describe('mergeCheckedOutRefWithQuickState', () => {
       snapshot,
     );
     expect(merged.hasUncommittedChanges).toBe(true);
+  });
+
+  it('applies dirty from quick state when building an explicit dirty outcome ref', () => {
+    const headSha = 'sharedheadhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhh';
+    const snapshot = snapshotWithHead(headSha);
+    const merged = mergeCheckedOutRefWithQuickState(
+      baseRef({ headSha, hasUncommittedChanges: false }),
+      quick({ headSha, hasUncommittedChanges: true }),
+      snapshot,
+      { protectedHeadSha: headSha },
+    );
+    expect(merged.hasUncommittedChanges).toBe(false);
+    const outcomeRef = checkedOutRefWithDirtyFromQuickState(
+      snapshot,
+      quick({ headSha, hasUncommittedChanges: true }),
+      merged,
+      true,
+    );
+    expect(outcomeRef.hasUncommittedChanges).toBe(true);
+    expect(outcomeRef.headSha).toBe(headSha);
   });
 
   it('ignores stale dirty probe only for protected post-commit head', () => {

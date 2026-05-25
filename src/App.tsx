@@ -16,6 +16,7 @@ import { hydrateBranchGridLayoutModel, serializeBranchGridLayoutModel } from '..
 import { layoutModelHasWorkingTree } from '../components/grid/workingTreeLayout';
 import type { Branch, BranchCommitPreview, BranchPromptMeta, CheckedOutRef, CommitMutationData, DeleteSelectionMutationData, DirectCommit, GitHubAuthStatus, GitHubInfo, GitStashEntry, MergeNode, OpenPR, RepoMutationOutcome, RepoVisualSnapshot, StashPushMutationData, StashRestoreMutationData, WorktreeInfo } from '../types';
 import {
+  checkedOutRefWithDirtyFromQuickState,
   mergeCheckedOutRefWithQuickState,
   mergeSnapshotCheckedOutRefWithQuickState,
   snapshotContainsCommitSha,
@@ -87,9 +88,10 @@ const MIN_BACKGROUND_FINGERPRINT_CHECK_MS = 12000;
 const MIN_FULL_GRAPH_REFRESH_MS = 2000;
 /** Keep optimistic post-commit HEAD on the map until background probes catch up. */
 const POST_COMMIT_HEAD_PROTECT_MS = 8000;
+const POST_COMMIT_RELEASE_MAX_ATTEMPTS = 15;
 const GIT_ACTIVITY_DEBOUNCE_MS = 400;
 const HEAD_STATE_PROBE_MS = 12000;
-const DIRTY_STATE_PROBE_MS = 12000;
+const DIRTY_STATE_PROBE_MS = 3000;
 type PushTarget = {
   branchName: string;
   targetSha?: string;
@@ -895,7 +897,13 @@ function App() {
     }
     const worktreeSig = worktreeListSignature(snapshot.worktrees);
     if (parsed.worktreeSig && worktreeSig && parsed.worktreeSig !== worktreeSig) return true;
+    const liveUnpushedCount = String(snapshot.unpushedDirectCommits.length);
+    if (parsed.headUnpushedCount !== liveUnpushedCount) return true;
     return false;
+  }
+
+  function backgroundSyncCanShortCircuit(gitActivityPending: boolean): boolean {
+    return !gitActivityPending;
   }
 
   function isActiveUiBehindPeek(path: string, peek: RepoSyncPeek): boolean {
@@ -1673,7 +1681,6 @@ function App() {
       delete next[normalizedPath];
       lastFullGraphRefreshAtRef.current = next;
     }
-    lastHandledGitActivityEpochRef.current = 0;
   }
 
   async function reloadActiveProjectFromGit(path: string, options?: { bustLayout?: boolean }) {
@@ -1753,7 +1760,11 @@ function App() {
     }
   }
 
-  async function releasePostCommitProtectionAfterReconcile(path: string, protectedSha: string) {
+  async function releasePostCommitProtectionAfterReconcile(
+    path: string,
+    protectedSha: string,
+    attempt = 0,
+  ) {
     const normalizedPath = normalizePath(path);
     if (!normalizedPath || postCommitProtectedHeadShaRef.current[normalizedPath] !== protectedSha) {
       return;
@@ -1761,8 +1772,16 @@ function App() {
     try {
       const snapshot = getSnapshotForMutation(normalizedPath);
       if (!snapshotContainsCommitSha(snapshot, protectedSha)) {
+        if (attempt >= POST_COMMIT_RELEASE_MAX_ATTEMPTS) {
+          clearPostCommitProtectionForPath(normalizedPath);
+          if (sameRepoPath(repoPath, normalizedPath)) {
+            gitActivityEpochRef.current += 1;
+            void runRepoRefreshRef.current?.('graph');
+          }
+          return;
+        }
         window.setTimeout(() => {
-          void releasePostCommitProtectionAfterReconcile(normalizedPath, protectedSha);
+          void releasePostCommitProtectionAfterReconcile(normalizedPath, protectedSha, attempt + 1);
         }, 2000);
         return;
       }
@@ -1772,6 +1791,10 @@ function App() {
     clearPostCommitProtectionForPath(normalizedPath);
     if (sameRepoPath(repoPath, normalizedPath)) {
       focusCameraOnActiveWorktreeRef.current?.();
+      if (pendingRefreshAfterInteractionRef.current) {
+        pendingRefreshAfterInteractionRef.current = false;
+        void runRepoRefreshRef.current?.('quick');
+      }
     }
   }
 
@@ -2206,6 +2229,7 @@ function App() {
     snapshot: RepoVisualSnapshot,
     quickState: RepoQuickState | null,
     path: string,
+    options?: { trustLiveGitDirty?: boolean },
   ): CheckedOutRef | null {
     if (!quickState) return snapshot.checkedOutRef;
     const base = snapshot.checkedOutRef ?? {
@@ -2214,7 +2238,8 @@ function App() {
       hasUncommittedChanges: quickState.hasUncommittedChanges,
       parentSha: quickState.upstreamSha ?? null,
     };
-    return mergeCheckedOutRefWithQuickState(base, quickState, snapshot, mergeOptionsForRepo(path));
+    const mergeOpts = options?.trustLiveGitDirty ? undefined : mergeOptionsForRepo(path);
+    return mergeCheckedOutRefWithQuickState(base, quickState, snapshot, mergeOpts);
   }
 
   async function reconcileSnapshotWorktreesOnly(
@@ -2344,13 +2369,21 @@ function App() {
     const outcomes: RepoMutationOutcome[] = [];
 
     for (const segment of segments) {
-      if (segment === 'dirty' && reconciledRef) {
+      if (segment === 'dirty' && quickState) {
+        const trustedRef = reconcileCheckedOutRefFromQuickState(snapshot, quickState, path, {
+          trustLiveGitDirty: true,
+        });
         const currentDirty = snapshot.checkedOutRef?.hasUncommittedChanges ?? false;
-        if (reconciledRef.hasUncommittedChanges !== currentDirty) {
+        const nextDirty = quickState.hasUncommittedChanges;
+        if (nextDirty !== currentDirty && trustedRef) {
+          const refForDirty = checkedOutRefWithDirtyFromQuickState(
+            snapshot,
+            quickState,
+            trustedRef,
+            nextDirty,
+          );
           outcomes.push(
-            reconciledRef.hasUncommittedChanges
-              ? outcomeFromMarkDirty(reconciledRef)
-              : outcomeFromDiscardDirty(reconciledRef),
+            nextDirty ? outcomeFromMarkDirty(refForDirty) : outcomeFromDiscardDirty(refForDirty),
           );
         }
       }
@@ -2505,7 +2538,8 @@ function App() {
     }
 
     if (
-      normalizedPath
+      backgroundSyncCanShortCircuit(gitActivityPending)
+      && normalizedPath
       && lastSyncedRepoFingerprintRef.current[normalizedPath] === check.currentFingerprint
     ) {
       if (peek && !isActiveUiBehindPeek(path, peek)) {
@@ -2514,7 +2548,7 @@ function App() {
       }
     }
     if (!check.changed) {
-      if (peek && !isActiveUiBehindPeek(path, peek)) {
+      if (backgroundSyncCanShortCircuit(gitActivityPending) && peek && !isActiveUiBehindPeek(path, peek)) {
         noteSyncedRepoFingerprint(path, check.currentFingerprint);
         markGitActivityHandled();
         return true;
@@ -2527,7 +2561,7 @@ function App() {
 
     const classification = classifyFingerprintDiff(stored, current);
     if (classification.kind === 'none') {
-      if (peek && !isActiveUiBehindPeek(path, peek)) {
+      if (backgroundSyncCanShortCircuit(gitActivityPending) && peek && !isActiveUiBehindPeek(path, peek)) {
         noteSyncedRepoFingerprint(path, check.currentFingerprint);
         markGitActivityHandled();
         return true;
@@ -2646,12 +2680,13 @@ function App() {
     const normalizedPath = normalizePath(path);
     if (!normalizedPath) return false;
 
+    const gitActivityPending = gitActivityEpochRef.current !== lastHandledGitActivityEpochRef.current;
     const resolvedPeek = peek ?? await fetchRepoSyncPeek(path);
     if (await tryWorktreeListSync(path, resolvedPeek)) {
       return true;
     }
 
-    if (resolvedPeek && shouldSkipBackgroundSync(path, resolvedPeek, false)) {
+    if (resolvedPeek && shouldSkipBackgroundSync(path, resolvedPeek, gitActivityPending)) {
       markGitActivityHandled();
       return true;
     }
@@ -2659,9 +2694,19 @@ function App() {
     const quickState = await invoke<RepoQuickState>('get_repo_quick_state', { repoPath: path }).catch(() => null);
     if (!quickState) return false;
 
+    if (quickState.hasUncommittedChanges && isPostCommitProtectionActive(normalizedPath)) {
+      clearPostCommitProtectionForPath(normalizedPath);
+    }
+
     const nextSig = quickStateSignature(quickState);
     const cachedSig = projectQuickStateRef.current[normalizedPath];
-    const activeHead = latestCheckedOutRef.current?.headSha ?? '';
+    const snapshot = getSnapshotForMutation(normalizedPath);
+    const activeRef = latestCheckedOutRef.current ?? snapshot.checkedOutRef;
+    const activeHead = activeRef?.headSha && !isWorkingTreeCommitId(activeRef.headSha)
+      ? activeRef.headSha
+      : (snapshot.checkedOutRef?.headSha && !isWorkingTreeCommitId(snapshot.checkedOutRef.headSha)
+        ? snapshot.checkedOutRef.headSha
+        : quickState.headSha);
 
     if (quickState.headSha !== activeHead) {
       const guard = postCommitProtectedHeadShaRef.current[normalizedPath];
@@ -2670,18 +2715,25 @@ function App() {
       }
     }
 
-    if (cachedSig === nextSig) {
+    const nextDirty = quickState.hasUncommittedChanges;
+    const uiDirty = activeRef?.hasUncommittedChanges ?? snapshot.checkedOutRef?.hasUncommittedChanges ?? false;
+    if (cachedSig === nextSig && uiDirty === nextDirty) {
       return false;
     }
 
-    const snapshot = getSnapshotForMutation(normalizedPath);
-    const reconciledRef = reconcileCheckedOutRefFromQuickState(snapshot, quickState, path);
+    const reconciledRef = reconcileCheckedOutRefFromQuickState(snapshot, quickState, path, {
+      trustLiveGitDirty: true,
+    });
     const outcomes: RepoMutationOutcome[] = [];
-    const cachedDirty = cachedSig?.split('|')[3] === '1';
-    const nextDirty = quickState.hasUncommittedChanges;
-    if (cachedDirty !== nextDirty && reconciledRef) {
+    if (uiDirty !== nextDirty && reconciledRef) {
+      const refForDirty = checkedOutRefWithDirtyFromQuickState(
+        snapshot,
+        quickState,
+        reconciledRef,
+        nextDirty,
+      );
       outcomes.push(
-        nextDirty ? outcomeFromMarkDirty(reconciledRef) : outcomeFromDiscardDirty(reconciledRef),
+        nextDirty ? outcomeFromMarkDirty(refForDirty) : outcomeFromDiscardDirty(refForDirty),
       );
     }
     const cachedUpstream = cachedSig?.split('|')[2] ?? '';
@@ -3339,7 +3391,7 @@ function App() {
       const postCommitGuarded = Boolean(
         normalizedPath && isPostCommitProtectionActive(normalizedPath),
       );
-      if (postCommitGuarded && reason !== 'graph') {
+      if (postCommitGuarded && reason !== 'graph' && reason !== 'quick') {
         pendingRefreshAfterInteractionRef.current = true;
         return;
       }
@@ -3374,7 +3426,11 @@ function App() {
             && parsed.headSha === ref.headSha
             && parsed.hasUncommittedChanges === (ref.hasUncommittedChanges ?? false)
             && !isActiveUiBehindPeek(repoPath, peek);
-          if (peekMatchesLive) {
+          if (
+            reason !== 'quick'
+            && peekMatchesLive
+            && backgroundSyncCanShortCircuit(gitActivityPending)
+          ) {
             markGitActivityHandled();
             pendingRefreshAfterInteractionRef.current = false;
             return;
@@ -3650,11 +3706,8 @@ function App() {
           && Date.now() >= suppressBackgroundRefreshUntilRef.current
           && !repoMutationInFlightRef.current
         ) {
-          const peek = await fetchRepoSyncPeek(repoPath);
-          const gitActivityPending = gitActivityEpochRef.current !== lastHandledGitActivityEpochRef.current;
-          if (peek && (gitActivityPending || isActiveUiBehindPeek(repoPath, peek))) {
-            void runRefresh('quick');
-          }
+          // Working-tree edits do not touch .git/index; poll live porcelain on a timer.
+          void runRefresh('quick');
         }
         scheduleDirtyStateProbe();
       }, hidden ? 120000 : DIRTY_STATE_PROBE_MS);

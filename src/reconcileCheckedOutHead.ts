@@ -85,6 +85,27 @@ export function mergeCheckedOutRefWithQuickState(
   };
 }
 
+/** Apply live git dirty flag for markDirty/discardDirty outcomes (ignores post-commit suppression). */
+export function checkedOutRefWithDirtyFromQuickState(
+  snapshot: RepoVisualSnapshot,
+  quickState: RepoQuickState,
+  reconciledRef: CheckedOutRef | null,
+  dirty: boolean,
+): CheckedOutRef {
+  const base = reconciledRef ?? snapshot.checkedOutRef ?? {
+    branchName: null,
+    headSha: quickState.headSha,
+    hasUncommittedChanges: false,
+    parentSha: quickState.upstreamSha ?? null,
+  };
+  return {
+    ...base,
+    headSha: reconciledRef?.headSha ?? quickState.headSha,
+    hasUncommittedChanges: dirty,
+    parentSha: reconciledRef?.parentSha ?? quickState.upstreamSha ?? null,
+  };
+}
+
 export function mergeSnapshotCheckedOutRefWithQuickState(
   snapshot: RepoVisualSnapshot,
   quickState: RepoQuickState | null,
