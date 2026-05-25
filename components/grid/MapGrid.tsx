@@ -252,7 +252,6 @@ export default function BranchGridMap({
   const lastSearchResultIndexRef = useRef<number | null | undefined>(undefined);
   const lastSearchFocusShaRef = useRef<string | null | undefined>(undefined);
   const lastHandledSearchJumpTokenRef = useRef<number>(0);
-  const lastHandledViewportFocusRequestRef = useRef<string | null>(null);
   const [worktreeMenuOpen, setWorktreeMenuOpen] = useState(false);
   const [commitDialogOpen, setCommitDialogOpen] = useState(false);
   const [commitMessageDraft, setCommitMessageDraft] = useState('');
@@ -316,6 +315,13 @@ export default function BranchGridMap({
   const [isCompactHud, setIsCompactHud] = useState(false);
   const [hideSearchBar, setHideSearchBar] = useState(false);
   const autoRecoverRef = useRef<{ key: string; attempts: number } | null>(null);
+  const visibleBoundsRef = useRef<ViewportContentBounds | null>(null);
+  const connectorCullScopeRef = useRef(`${currentRepoPath ?? ''}::${mapReadyEpoch}`);
+  const connectorCullScopeKey = `${currentRepoPath ?? ''}::${mapReadyEpoch}`;
+  if (connectorCullScopeRef.current !== connectorCullScopeKey) {
+    connectorCullScopeRef.current = connectorCullScopeKey;
+    visibleBoundsRef.current = null;
+  }
   const mergeSliderScopeId = useId();
 
   const {
@@ -339,6 +345,12 @@ export default function BranchGridMap({
   });
 
   const lastReadyEpochReportedRef = useRef<number>(0);
+  const lastHandledViewportFocusRequestRef = useRef<string | null>(null);
+
+  useEffect(() => {
+    lastHandledViewportFocusRequestRef.current = null;
+    autoRecoverRef.current = null;
+  }, [mapReadyEpoch, currentRepoPath]);
 
   useEffect(() => {
     if (!optimisticNodePositionOverrides || !controlledNodePositionOverrides) return;
@@ -400,6 +412,7 @@ export default function BranchGridMap({
       previews.some((preview) => isWorkingTreeCommitId(preview.fullSha) || preview.kind === 'uncommitted'),
     );
     const canUseProvidedLayout =
+      worktreeSessions.length === 0 &&
       providedLayoutModel &&
       Object.keys(nodePositionOverrides).length === 0 &&
       providedHasWorkingTree === hasWorktreeNodes &&
@@ -445,6 +458,8 @@ export default function BranchGridMap({
     gridFocusSha,
     checkedOutRef?.headSha ?? null,
     checkedOutRef?.branchName ?? null,
+    checkedOutRef?.hasUncommittedChanges ?? false,
+    checkedOutRef?.parentSha ?? null,
     worktreeSessions,
     orientation,
     nodePositionOverrides,
@@ -1030,7 +1045,6 @@ export default function BranchGridMap({
   }, [gridFocusSha, gridSearchJumpToken, focusedRenderNode, getTransformLayerOriginScreen, syncCamera, renderedCameraRef]);
 
   // Updated on every camera transform write so connector culling matches the viewport during pan.
-  const visibleBoundsRef = useRef<ViewportContentBounds | null>(null);
   const nodeByVisualIdRef = useRef<Map<string, Node>>(new Map());
   nodeByVisualIdRef.current = nodeByVisualId;
   const cullViewportCenterRef = useRef({ x: 0, y: 0 });
@@ -1047,6 +1061,11 @@ export default function BranchGridMap({
   }, [renderedCameraRef]);
 
   onRenderedCameraAppliedRef.current = syncVisibleBoundsFromCamera;
+
+  useLayoutEffect(() => {
+    syncVisibleBoundsFromCamera();
+    flushCameraReactTick({ urgent: true });
+  }, [connectorCullScopeKey, syncVisibleBoundsFromCamera, flushCameraReactTick]);
 
   const emitInteractionChange = useCallback(() => {
     const next = isCameraMovingRef.current || isMarqueeSelectingRef.current;

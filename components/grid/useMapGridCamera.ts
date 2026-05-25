@@ -30,6 +30,10 @@ export type MapGridCameraState = { panX: number; panY: number; zoom: number };
 const CAMERA_STORAGE_KEY_PREFIX = 'git-visualizer:map-grid-camera:';
 const CAMERA_MAX_ABS_PAN_PX = 200_000;
 
+export function mapGridCameraStorageKey(scopeKey: string): string {
+  return `${CAMERA_STORAGE_KEY_PREFIX}${scopeKey}`;
+}
+
 export type MapGridCameraTargetLayout = { layoutX: number; layoutY: number };
 
 function buildCameraTransformCss(
@@ -83,7 +87,7 @@ export function useMapGridCamera({
 
   const getCameraStorageKey = useCallback(() => {
     const scope = cameraStorageScopeKey?.trim() || window.location.pathname;
-    return `${CAMERA_STORAGE_KEY_PREFIX}${scope}`;
+    return mapGridCameraStorageKey(scope);
   }, [cameraStorageScopeKey]);
 
   const persistCamera = useCallback((camera: MapGridCameraState) => {
@@ -142,15 +146,18 @@ export function useMapGridCamera({
     host.style.pointerEvents = active ? 'none' : '';
   }, [mapPadHostRef]);
 
-  const flushCameraReactTick = useCallback(() => {
+  const flushCameraReactTick = useCallback((options?: { urgent?: boolean }) => {
     if (panReactTrailingTimeoutRef.current != null) {
       window.clearTimeout(panReactTrailingTimeoutRef.current);
       panReactTrailingTimeoutRef.current = null;
     }
     pulseMapGridBackgroundActivity('camera-react-tick', 'Camera React tick');
-    startTransition(() => {
-      setCameraRenderTick((tick) => tick + 1);
-    });
+    const bumpTick = () => setCameraRenderTick((tick) => tick + 1);
+    if (options?.urgent) {
+      bumpTick();
+    } else {
+      startTransition(bumpTick);
+    }
     lastCameraPanReactEmitRef.current = performance.now();
     lastTickedPanRef.current = {
       x: renderedCameraRef.current.panX,
@@ -379,7 +386,6 @@ export function useMapGridCamera({
   applyRenderedCameraRef.current = applyRenderedCamera;
 
   useLayoutEffect(() => {
-    if (!isEnabled) return;
     const host = mapPadHostRef.current;
     const invalidateOrigin = () => {
       transformLayerOriginScreenRef.current = null;
@@ -408,7 +414,11 @@ export function useMapGridCamera({
     } catch {}
     panRef.current = { x: initial.panX, y: initial.panY };
     zoomRef.current = initial.zoom;
+    lastTickedPanRef.current = { x: initial.panX, y: initial.panY };
     applyRenderedCameraRef.current(initial.panX, initial.panY, initial.zoom);
+    // Scope restore must refresh connector culling immediately; a deferred transition tick
+    // can leave lines culled with the previous project's viewport until the user pans.
+    flushCameraReactTick({ urgent: true });
     return () => {
       window.removeEventListener('resize', invalidateOrigin);
       resizeObserver?.disconnect();
@@ -420,7 +430,7 @@ export function useMapGridCamera({
       }
       persistCamera(renderedCameraRef.current);
     };
-  }, [getCameraStorageKey, isEnabled, mapPadHostRef, persistCamera]);
+  }, [flushCameraReactTick, getCameraStorageKey, mapPadHostRef, persistCamera]);
 
   return {
     isCameraMovingRef,

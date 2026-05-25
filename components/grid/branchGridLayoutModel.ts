@@ -1834,14 +1834,20 @@ export function computeBranchGridLayout(input: BranchGridLayoutInput): BranchGri
     const column = columnByCommitVisualId.get(leadVisualId);
     return column ?? null;
   };
+  const projectedLaneColumnMemo = new Map<string, number>();
   const projectedLaneColumn = (commit: VisualCommit, visiting = new Set<string>()): number => {
     const assigned = columnByCommitVisualId.get(commit.visualId);
     if (assigned != null) return assigned;
+    const memoized = projectedLaneColumnMemo.get(commit.visualId);
+    if (memoized != null) return memoized;
     const clusterKey = clusterKeyByCommitId.get(commit.visualId) ?? null;
     const span = clumpLaneSpan(clusterKey);
     if (clusterKey && span > 1) {
       const leadColumn = clumpLeadColumn(clusterKey);
-      if (leadColumn != null) return leadColumn;
+      if (leadColumn != null) {
+        projectedLaneColumnMemo.set(commit.visualId, leadColumn);
+        return leadColumn;
+      }
     }
     if (visiting.has(commit.visualId)) return 0;
     visiting.add(commit.visualId);
@@ -1862,6 +1868,7 @@ export function computeBranchGridLayout(input: BranchGridLayoutInput): BranchGri
           })(),
         );
     visiting.delete(commit.visualId);
+    projectedLaneColumnMemo.set(commit.visualId, column);
     return column;
   };
   const parentMinimumLaneColumn = (commit: VisualCommit): number => {
@@ -1889,11 +1896,13 @@ export function computeBranchGridLayout(input: BranchGridLayoutInput): BranchGri
   };
   const findLaneColumn = (commit: VisualCommit, minColumn: number): number => {
     let candidate = minColumn;
-    while (true) {
+    const maxColumn = minColumn + allCommitsWithClusters.length + 8;
+    while (candidate <= maxColumn) {
       const occupants = occupantsByLaneColumn.get(candidate) ?? [];
       if (occupants.every((occupant) => canShareLaneColumn(commit, occupant))) return candidate;
       candidate += 1;
     }
+    return maxColumn;
   };
   const commitsInLaneOrder = [...allCommitsWithClusters].sort(
     (left, right) =>
@@ -2199,15 +2208,19 @@ export function computeBranchGridLayout(input: BranchGridLayoutInput): BranchGri
     // Same timeline row is shared across lanes (horizontal: same x, different y). Bounding boxes can
     // intersect between lanes even when layout is intentional — bumping row here consumed a timeline
     // slot on one lane only, leaving a visible "empty row" before HEAD / uncommitted.
-    while (placedNodes.some((placed) => {
-      if (placed.column !== node.column) return false;
-      if (!boxesOverlap(node, placed)) return false;
-      if (isAdjacentWorktreePair(isHorizontal, node, placed)) return false;
-      if (isWorktreeSiblingPair(node, placed)) return false;
-      if (isAdjacentAnchoredLanePair(node, placed)) return false;
-      if (nodesShareOpenClump(node, placed, clusterKeyByCommitId, clusterCounts, isClumpOpen)) return false;
-      return true;
-    })) {
+    const maxRowBump = renderNodes.length + maxResolvedRow + 8;
+    while (
+      node.row <= maxRowBump
+      && placedNodes.some((placed) => {
+        if (placed.column !== node.column) return false;
+        if (!boxesOverlap(node, placed)) return false;
+        if (isAdjacentWorktreePair(isHorizontal, node, placed)) return false;
+        if (isWorktreeSiblingPair(node, placed)) return false;
+        if (isAdjacentAnchoredLanePair(node, placed)) return false;
+        if (nodesShareOpenClump(node, placed, clusterKeyByCommitId, clusterCounts, isClumpOpen)) return false;
+        return true;
+      })
+    ) {
       if (isHorizontal) {
         node.row += 1;
         node.x = LEFT_PADDING + (timelineRowLeadOffset + node.row - 1) * zoomAwareTimelinePitch;
