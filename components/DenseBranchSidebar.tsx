@@ -2,7 +2,7 @@ import { createPortal } from 'react-dom';
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import type { CSSProperties, Dispatch, PointerEvent as ReactPointerEvent, SetStateAction } from 'react';
 import { ChevronRight, MoreHorizontal } from 'lucide-react';
-import { motion } from 'framer-motion';
+import { AnimatePresence, motion, useReducedMotion } from 'framer-motion';
 import type { Branch, BranchCommitPreview, CheckedOutRef, DirectCommit, GitStashEntry, MergeNode, WorktreeInfo } from '../types';
 import { cn, shaMatchesGitRef } from './grid/mapGridUtils';
 import type { BranchGridLayoutModel } from './grid/branchGridLayoutModel';
@@ -559,6 +559,7 @@ export default function DenseBranchSidebar({
   style,
   collapsed = false,
 }: Props) {
+  const shouldReduceMotion = useReducedMotion();
   const asideRef = useRef<HTMLElement | null>(null);
   const scrollBodyRef = useRef<HTMLDivElement | null>(null);
   const [expandedProjects, setExpandedProjects] = useState<Set<string>>(() => {
@@ -1177,47 +1178,52 @@ export default function DenseBranchSidebar({
             </div>
           </div>
           {isExpanded ? (
-            projectTreeLoaded && projectRender ? (
-              <ul className={cn('relative z-0 space-y-1 pt-0', ghostMode ? 'opacity-70' : '')}>
-                {projectRender.rootBranchNames.map((branchName, idx) => (
-                  <BranchRows
-                    key={`${project.path}:${branchName}`}
-                    branchName={branchName}
-                    depth={0}
-                    isLast={idx === projectRender.rootBranchNames.length - 1}
-                    branchByName={projectRender.branchByName}
-                    branchCommitPreviews={projectRender.branchCommitPreviewsFromLayout}
-                    childNamesByParent={projectRender.childNamesByParent}
-                    branchAnchorShaByName={projectRender.branchAnchorShaByName}
-                    expandedBranchNames={expandedBranchNamesForProject}
-                    onToggleBranch={(branchName) => handleToggleBranch(project.path, branchName)}
-                    checkedOutBranchName={projectRender.checkedOutBranchName}
-                    checkedOutHeadSha={projectRender.checkedOutHeadSha}
-                    ancestors={new Set()}
-                    showCommits={showCommits}
-                    getMergeTargetLabels={projectRender.getMergeTargetLabels}
-                    sourceBranchName={branchName}
-                    clusterKeyByCommitId={projectRender.clusterKeyByCommitId}
-                    unpushedCommitShasByBranch={projectRender.unpushedCommitShasByBranch}
-                    isGridClusterOpen={projectRender.isGridClusterOpen}
-                    onToggleGridCluster={handleToggleGridCluster}
-                    onSelectCommit={async (sha) => {
-                      if (!isActive) await onSelectProject(project.path);
-                      onSelectCommit?.(sha);
-                    }}
-                    onSelectBranch={async (branchName) => {
-                      if (!isActive) await onSelectProject(project.path);
-                      onSelectBranch?.(branchName);
-                    }}
-                    isActiveProject={isActiveProject}
-                  />
-                ))}
-              </ul>
-            ) : (
-              <p className={cn('px-2 py-2 text-xs text-muted-foreground', ghostMode ? 'opacity-70' : '')}>
-                Loading branch tree...
-              </p>
-            )
+            <AnimatePresence>
+              {projectTreeLoaded && projectRender ? (
+                <motion.ul
+                  key={`${project.path}-branch-tree`}
+                  className={cn('relative z-0 space-y-1 pt-0', ghostMode ? 'opacity-70' : '')}
+                  initial={shouldReduceMotion ? false : { opacity: 0, y: -10 }}
+                  animate={shouldReduceMotion ? undefined : { opacity: 1, y: 0 }}
+                  exit={shouldReduceMotion ? undefined : { opacity: 0, y: -6 }}
+                  transition={{ duration: 0.28, ease: [0.22, 1, 0.36, 1] }}
+                >
+                  {projectRender.rootBranchNames.map((branchName, idx) => (
+                    <BranchRows
+                      key={`${project.path}:${branchName}`}
+                      branchName={branchName}
+                      depth={0}
+                      isLast={idx === projectRender.rootBranchNames.length - 1}
+                      branchByName={projectRender.branchByName}
+                      branchCommitPreviews={projectRender.branchCommitPreviewsFromLayout}
+                      childNamesByParent={projectRender.childNamesByParent}
+                      branchAnchorShaByName={projectRender.branchAnchorShaByName}
+                      expandedBranchNames={expandedBranchNamesForProject}
+                      onToggleBranch={(branchName) => handleToggleBranch(project.path, branchName)}
+                      checkedOutBranchName={projectRender.checkedOutBranchName}
+                      checkedOutHeadSha={projectRender.checkedOutHeadSha}
+                      ancestors={new Set()}
+                      showCommits={showCommits}
+                      getMergeTargetLabels={projectRender.getMergeTargetLabels}
+                      sourceBranchName={branchName}
+                      clusterKeyByCommitId={projectRender.clusterKeyByCommitId}
+                      unpushedCommitShasByBranch={projectRender.unpushedCommitShasByBranch}
+                      isGridClusterOpen={projectRender.isGridClusterOpen}
+                      onToggleGridCluster={handleToggleGridCluster}
+                      onSelectCommit={async (sha) => {
+                        if (!isActive) await onSelectProject(project.path);
+                        onSelectCommit?.(sha);
+                      }}
+                      onSelectBranch={async (branchName) => {
+                        if (!isActive) await onSelectProject(project.path);
+                        onSelectBranch?.(branchName);
+                      }}
+                      isActiveProject={isActiveProject}
+                    />
+                  ))}
+                </motion.ul>
+              ) : null}
+            </AnimatePresence>
           ) : null}
         </div>
       </motion.div>
