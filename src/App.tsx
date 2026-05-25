@@ -563,6 +563,26 @@ function App() {
         return left === right;
       })();
       const snapshot = projectSnapshots[project.path] ?? {};
+      if (isActiveProject) {
+        return {
+          ...project,
+          name: repoName || snapshot.name || project.name,
+          branches,
+          mergeNodes,
+          directCommits,
+          unpushedDirectCommits,
+          unpushedCommitShasByBranch,
+          checkedOutRef,
+          worktrees,
+          stashes,
+          branchCommitPreviews,
+          laneByBranch,
+          branchUniqueAheadCounts,
+          branchParentByName,
+          defaultBranch,
+          treeLoaded: snapshot.loaded ?? branches.length > 0,
+        };
+      }
       return {
         ...project,
         ...snapshot,
@@ -571,7 +591,7 @@ function App() {
         directCommits: snapshot.directCommits ?? [],
         unpushedDirectCommits: snapshot.unpushedDirectCommits ?? [],
         unpushedCommitShasByBranch: snapshot.unpushedCommitShasByBranch ?? {},
-        checkedOutRef: isActiveProject ? checkedOutRef : snapshot.checkedOutRef ?? null,
+        checkedOutRef: snapshot.checkedOutRef ?? null,
         worktrees: snapshot.worktrees ?? [],
         stashes: snapshot.stashes ?? [],
         branchCommitPreviews: snapshot.branchCommitPreviews ?? {},
@@ -579,12 +599,28 @@ function App() {
         branchUniqueAheadCounts: snapshot.branchUniqueAheadCounts ?? {},
         defaultBranch: snapshot.defaultBranch ?? project.branchName ?? 'main',
         treeLoaded: snapshot.loaded ?? false,
-        branchParentByName: isActiveProject
-          ? branchParentByName
-          : snapshot.branchParentByName ?? {},
+        branchParentByName: snapshot.branchParentByName ?? {},
       };
     }),
-    [projects, projectSnapshots, repoPath, checkedOutRef, branchParentByName],
+    [
+      projects,
+      projectSnapshots,
+      repoPath,
+      checkedOutRef,
+      branchParentByName,
+      branches,
+      mergeNodes,
+      directCommits,
+      unpushedDirectCommits,
+      unpushedCommitShasByBranch,
+      worktrees,
+      stashes,
+      branchCommitPreviews,
+      laneByBranch,
+      branchUniqueAheadCounts,
+      repoName,
+      defaultBranch,
+    ],
   );
   const gridHudProps = useMemo(
     () => ({

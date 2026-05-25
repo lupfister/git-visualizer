@@ -91,7 +91,6 @@ function linkParentToChild(
 function patchBranchForPush(branch: Branch): Branch {
   return {
     ...branch,
-    commitsAhead: 0,
     unpushedCommits: 0,
     remoteSyncStatus: branch.remoteSyncStatus === 'local-only' ? 'local-only' : 'on-github',
     status: branch.status === 'unknown' ? 'unknown' : 'fresh',
@@ -263,17 +262,11 @@ function patchPush(snapshot: RepoVisualSnapshot, outcome: RepoMutationOutcome & 
     return !pushedShas.has(commit.fullSha);
   });
 
-  const branchUniqueAheadCounts = { ...snapshot.branchUniqueAheadCounts };
-  for (const branchName of outcome.pushedBranchNames) {
-    branchUniqueAheadCounts[branchName] = 0;
-  }
-
   return touchSnapshot({
     ...snapshot,
     branches,
     unpushedCommitShasByBranch,
     unpushedDirectCommits,
-    branchUniqueAheadCounts,
   });
 }
 

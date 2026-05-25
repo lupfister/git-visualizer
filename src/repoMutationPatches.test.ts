@@ -145,9 +145,11 @@ describe('applyMutationPatch push', () => {
     const next = applyMutationPatch(baseSnapshot(), outcomeFromPush(['feature']));
     const feature = next.branches.find((branch) => branch.name === 'feature');
     expect(feature?.unpushedCommits).toBe(0);
+    expect(feature?.commitsAhead).toBe(1);
     expect(feature?.remoteSyncStatus).toBe('on-github');
     expect(next.unpushedCommitShasByBranch.feature).toEqual([]);
     expect(next.unpushedDirectCommits).toHaveLength(0);
+    expect(next.branchUniqueAheadCounts.feature).toBe(1);
   });
 
   it('clears unpushed commits on pushed branches when sha map was stale', () => {

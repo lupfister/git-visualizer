@@ -72,7 +72,8 @@ function buildChildBranchesByParent(branches: Branch[], defaultBranch: string): 
   const sortByDateAsc = (left: string, right: string) => {
     const leftDate = new Date(branchByName.get(left)?.lastCommitDate ?? 0).getTime();
     const rightDate = new Date(branchByName.get(right)?.lastCommitDate ?? 0).getTime();
-    return leftDate - rightDate;
+    if (leftDate !== rightDate) return leftDate - rightDate;
+    return left.localeCompare(right);
   };
   for (const [name, childNames] of childNamesByParent.entries()) {
     void name;
@@ -90,7 +91,8 @@ function buildRootNames(
   const sortByDateAsc = (left: string, right: string) => {
     const leftDate = new Date(branchByName.get(left)?.lastCommitDate ?? 0).getTime();
     const rightDate = new Date(branchByName.get(right)?.lastCommitDate ?? 0).getTime();
-    return leftDate - rightDate;
+    if (leftDate !== rightDate) return leftDate - rightDate;
+    return left.localeCompare(right);
   };
   const attachedChildren = new Set<string>();
   for (const childNames of childNamesByParent.values()) {
