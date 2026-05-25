@@ -906,4 +906,99 @@ describe('computeBranchGridLayout empty branch placeholders', () => {
     const maxColumn = Math.max(...layout.renderNodes.map((node) => node.column));
     expect(stashNode!.column).toBeLessThan(maxColumn);
   });
+
+  it('places simultaneous fork children of the same parent on one timeline row', () => {
+    const defaultBranch = 'main';
+    const forkSha = 'be7d231be7d231be7d231be7d231be7d231be7';
+    const mainChildSha = '5dcf2515dcf2515dcf2515dcf2515dcf2515';
+    const cursorChildOneSha = '2eac3db2eac3db2eac3db2eac3db2eac3db2';
+    const cursorChildTwoSha = '71adc9bf71adc9bf71adc9bf71adc9bf71adc9';
+    const sharedTime = '2026-05-25T15:10:00Z';
+    const branches = [
+      makeBranch(defaultBranch, mainChildSha, 2),
+      makeBranch('cursor/edow', cursorChildOneSha, 1, defaultBranch),
+      makeBranch('cursor/hp17', cursorChildTwoSha, 1, defaultBranch),
+    ];
+    const directCommits: DirectCommit[] = [
+      {
+        fullSha: forkSha,
+        sha: forkSha.slice(0, 7),
+        branch: defaultBranch,
+        message: 'Add camera p…',
+        author: 'test',
+        date: '2026-05-25T15:00:00Z',
+        parentSha: null,
+        parentShas: [],
+      },
+      {
+        fullSha: mainChildSha,
+        sha: mainChildSha.slice(0, 7),
+        branch: defaultBranch,
+        message: 'Keep macOS t…',
+        author: 'test',
+        date: sharedTime,
+        parentSha: forkSha,
+        parentShas: [forkSha],
+      },
+      {
+        fullSha: cursorChildOneSha,
+        sha: cursorChildOneSha.slice(0, 7),
+        branch: 'cursor/edow',
+        message: 'Persist windo…',
+        author: 'test',
+        date: sharedTime,
+        parentSha: forkSha,
+        parentShas: [forkSha],
+      },
+      {
+        fullSha: cursorChildTwoSha,
+        sha: cursorChildTwoSha.slice(0, 7),
+        branch: 'cursor/hp17',
+        message: 'Animate sideb…',
+        author: 'test',
+        date: sharedTime,
+        parentSha: forkSha,
+        parentShas: [forkSha],
+      },
+    ];
+    const branchCommitPreviews = {
+      main: [],
+      'cursor/edow': [],
+      'cursor/hp17': [],
+    };
+    const layout = computeBranchGridLayout({
+      branches,
+      mergeNodes: [],
+      directCommits,
+      unpushedDirectCommits: [],
+      defaultBranch,
+      branchCommitPreviews,
+      branchParentByName: {
+        main: null,
+        'cursor/edow': defaultBranch,
+        'cursor/hp17': defaultBranch,
+      },
+      branchUniqueAheadCounts: { main: 2, 'cursor/edow': 1, 'cursor/hp17': 1 },
+      manuallyOpenedClumps: new Set(),
+      manuallyClosedClumps: new Set(),
+      isDebugOpen: false,
+      gridSearchQuery: '',
+      gridFocusSha: null,
+      checkedOutRef: null,
+      orientation: 'horizontal',
+    });
+
+    const forkNode = layout.renderNodes.find((node) => node.commit.id === forkSha);
+    const mainChildNode = layout.renderNodes.find((node) => node.commit.id === mainChildSha);
+    const cursorOneNode = layout.renderNodes.find((node) => node.commit.id === cursorChildOneSha);
+    const cursorTwoNode = layout.renderNodes.find((node) => node.commit.id === cursorChildTwoSha);
+    expect(forkNode).toBeDefined();
+    expect(mainChildNode).toBeDefined();
+    expect(cursorOneNode).toBeDefined();
+    expect(cursorTwoNode).toBeDefined();
+    expect(mainChildNode!.row).toBeGreaterThan(forkNode!.row);
+    expect(mainChildNode!.row).toBe(cursorOneNode!.row);
+    expect(mainChildNode!.row).toBe(cursorTwoNode!.row);
+    expect(new Set([mainChildNode!.column, cursorOneNode!.column, cursorTwoNode!.column]).size).toBe(3);
+  });
 });

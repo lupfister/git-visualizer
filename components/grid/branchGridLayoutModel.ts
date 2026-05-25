@@ -838,6 +838,94 @@ function buildEmptyBranchLaneCommit(
   };
 }
 
+/** Merge direct children of the same parent that share a commit timestamp onto one timeline row. */
+const coalesceSameTimeForkSiblingRows = (
+  commits: VisualCommit[],
+  rowByVisualId: Map<string, number>,
+  columnByCommitVisualId: Map<string, number>,
+  rowBySha: Map<string, number[]>,
+  resolveKnownShas: (sha: string) => string[],
+  clusterContext?: AllocateRowsClusterContext,
+): void => {
+  const clusterKeyFor = (commit: VisualCommit): string | null =>
+    clusterContext?.clusterKeyByCommitId.get(commit.visualId) ?? null;
+  const isMultiCommitCluster = (clusterKey: string | null): boolean =>
+    !!clusterKey && (clusterContext?.clusterCounts.get(clusterKey) ?? 1) > 1;
+
+  const directChildrenByParentSha = new Map<string, VisualCommit[]>();
+  for (const commit of commits) {
+    if (!commit.parentSha || isWorktreeGraphNode(commit) || isMultiCommitCluster(clusterKeyFor(commit))) {
+      continue;
+    }
+    const parentKey = resolveKnownShas(commit.parentSha)[0] ?? commit.parentSha;
+    const list = directChildrenByParentSha.get(parentKey) ?? [];
+    list.push(commit);
+    directChildrenByParentSha.set(parentKey, list);
+  }
+
+  const recordChildRow = (commit: VisualCommit, row: number): void => {
+    rowByVisualId.set(commit.visualId, row);
+    const existingRows = rowBySha.get(commit.id) ?? [];
+    if (existingRows.length === 0) rowBySha.set(commit.id, [row]);
+    else rowBySha.set(commit.id, [...existingRows.slice(0, -1), row]);
+  };
+
+  for (const [parentSha, children] of directChildrenByParentSha) {
+    if (children.length < 2) continue;
+    const parentRows = resolveKnownShas(parentSha).flatMap((knownParentSha) => rowBySha.get(knownParentSha) ?? []);
+    const floorRow = parentRows.length > 0 ? Math.max(...parentRows) + 1 : 1;
+    const sortedChildren = [...children].sort(
+      (left, right) =>
+        safeTimeMs(left.date) - safeTimeMs(right.date) || left.id.localeCompare(right.id),
+    );
+
+    let group: VisualCommit[] = [];
+    let groupAnchorTime = Number.NaN;
+    const flushGroup = (): void => {
+      if (group.length < 2) {
+        group = [];
+        groupAnchorTime = Number.NaN;
+        return;
+      }
+      const targetRow = Math.max(
+        floorRow,
+        ...group.map((member) => rowByVisualId.get(member.visualId) ?? 1),
+      );
+      const columnsInGroup = new Set(
+        group.map((member) => columnByCommitVisualId.get(member.visualId) ?? 0),
+      );
+      if (columnsInGroup.size < group.length) {
+        group = [];
+        groupAnchorTime = Number.NaN;
+        return;
+      }
+      for (const member of group) recordChildRow(member, targetRow);
+      group = [];
+      groupAnchorTime = Number.NaN;
+    };
+
+    for (const child of sortedChildren) {
+      const childTime = safeTimeMs(child.date);
+      const canJoinGroup =
+        group.length === 0
+        || (
+          Number.isFinite(childTime)
+          && Number.isFinite(groupAnchorTime)
+          && Math.abs(childTime - groupAnchorTime) <= SHARED_ROW_BRANCH_SIBLING_MAX_TIME_DELTA_MS
+        );
+      if (!canJoinGroup) {
+        flushGroup();
+        group = [child];
+        groupAnchorTime = childTime;
+        continue;
+      }
+      if (group.length === 0) groupAnchorTime = childTime;
+      group.push(child);
+    }
+    flushGroup();
+  }
+};
+
 function allocateRowsByColumnAndTime(
   commits: VisualCommit[],
   columnByCommitVisualId: Map<string, number>,
@@ -857,12 +945,16 @@ function allocateRowsByColumnAndTime(
   });
   const commitById = new Map(commits.map((commit) => [commit.id, commit] as const));
   const childShasByParentSha = new Map<string, Set<string>>();
+  const directChildShasByParentSha = new Map<string, Set<string>>();
   for (const commit of commits) {
     const directParentSha = commit.parentSha ?? null;
     if (directParentSha) {
       const children = childShasByParentSha.get(directParentSha) ?? new Set<string>();
       children.add(commit.id);
       childShasByParentSha.set(directParentSha, children);
+      const directChildren = directChildShasByParentSha.get(directParentSha) ?? new Set<string>();
+      directChildren.add(commit.id);
+      directChildShasByParentSha.set(directParentSha, directChildren);
     }
     for (const extraParentSha of extraParentShasByCommitId.get(commit.id) ?? []) {
       if (!extraParentSha) continue;
@@ -872,17 +964,13 @@ function allocateRowsByColumnAndTime(
     }
   }
   const rowByVisualId = new Map<string, number>();
-  const occupiedRowsByRow = new Map<number, Array<{ visualId: string; sha: string; column: number; time: number; branchEntryParentSha: string | null }>>();
+  const occupiedRowsByRow = new Map<number, Array<{ visualId: string; sha: string; column: number; time: number; forkParentSha: string | null }>>();
   const childRowsByParentSha = new Map<string, number[]>();
   const sharedRowBlockedByBranchLine = new Set<number>();
-  const branchCommitShasByName = new Map<string, Set<string>>();
   const commitColumnsBySha = new Map<string, Set<number>>();
   const strictParentShasByCommitId = new Map<string, Set<string>>();
   const lineageParentShasByCommitId = new Map<string, Set<string>>();
   for (const commit of commits) {
-    const set = branchCommitShasByName.get(commit.branchName) ?? new Set<string>();
-    set.add(commit.id);
-    branchCommitShasByName.set(commit.branchName, set);
     const column = columnByCommitVisualId.get(commit.visualId) ?? 0;
     const columnSet = commitColumnsBySha.get(commit.id) ?? new Set<number>();
     columnSet.add(column);
@@ -991,14 +1079,12 @@ function allocateRowsByColumnAndTime(
 
   const assignCommit = (commit: VisualCommit, parentShas: Set<string>) => {
     const commitColumn = columnByCommitVisualId.get(commit.visualId) ?? 0;
-    const branchCommitShas = branchCommitShasByName.get(commit.branchName) ?? new Set<string>();
-    const parentInSameBranch = !!commit.parentSha && branchCommitShas.has(commit.parentSha);
-    const branchEntryParentSha = !parentInSameBranch && commit.parentSha ? commit.parentSha : null;
+    const forkParentSha = commit.parentSha ?? null;
     const parentRows = Array.from(parentShas).flatMap((parentSha) =>
       resolveKnownShas(parentSha).flatMap((knownParentSha) => rowBySha.get(knownParentSha) ?? []),
     );
     const minimumAllowedRow = parentRows.length > 0 ? Math.max(...parentRows) + 1 : 1;
-    const childShas = childShasByParentSha.get(commit.id) ?? new Set<string>();
+    const childShas = directChildShasByParentSha.get(commit.id) ?? new Set<string>();
     const childColumns = Array.from(childShas).flatMap((childSha) => Array.from(commitColumnsBySha.get(childSha) ?? []));
     const hasCrossColumnChild = childColumns.some((column) => column !== commitColumn);
     const commitTime = new Date(commit.date).getTime();
@@ -1007,37 +1093,51 @@ function allocateRowsByColumnAndTime(
     if (isWorktreeGraphNode(commit)) {
       assignedRow = Math.max(minimumAllowedRow, nextRow);
     }
-    for (let candidateRow = rowCursorStart; !isWorktreeGraphNode(commit) && candidateRow < nextRow; candidateRow += 1) {
+    const tryAssignSharedRow = (candidateRow: number): boolean => {
       const rowOccupants = occupiedRowsByRow.get(candidateRow) ?? [];
-      if (rowOccupants.length === 0) continue;
-      if (hasCrossColumnChild) continue;
-      if (sharedRowBlockedByBranchLine.has(candidateRow)) continue;
+      if (rowOccupants.length === 0) return false;
+      if (hasCrossColumnChild) return false;
+      if (sharedRowBlockedByBranchLine.has(candidateRow)) return false;
       const lineageParentShas = lineageParentShasByCommitId.get(commit.visualId) ?? new Set<string>();
       const hasParentChildConflict = rowOccupants.some((occupant) => {
         if (areLineageRelated(commit.id, occupant.sha)) return true;
         const currentIsDirectLineageChild = Array.from(lineageParentShas).some((parentSha) => shasMatch(parentSha, occupant.sha));
         return currentIsDirectLineageChild;
       });
-      if (hasParentChildConflict) continue;
+      if (hasParentChildConflict) return false;
       const laneCollision = rowOccupants.some((occupant) => occupant.column === commitColumn);
-      if (laneCollision) continue;
-      if (!Number.isFinite(commitTime)) continue;
-      const withinSharedWindow = rowOccupants.every(
-        (occupant) => {
-          if (!Number.isFinite(occupant.time)) return false;
-          const isSiblingBranchEntry =
-            !!branchEntryParentSha &&
-            !!occupant.branchEntryParentSha &&
-            branchEntryParentSha === occupant.branchEntryParentSha;
-          const allowedDeltaMs = isSiblingBranchEntry
-            ? SHARED_ROW_BRANCH_SIBLING_MAX_TIME_DELTA_MS
-            : SHARED_ROW_MAX_TIME_DELTA_MS;
-          return Math.abs(occupant.time - commitTime) <= allowedDeltaMs;
-        },
-      );
-      if (!withinSharedWindow) continue;
+      if (laneCollision) return false;
+      if (!Number.isFinite(commitTime)) return false;
+      const withinSharedWindow = rowOccupants.every((occupant) => {
+        if (!Number.isFinite(occupant.time)) return false;
+        const isForkSibling =
+          !!forkParentSha &&
+          !!occupant.forkParentSha &&
+          shasMatch(forkParentSha, occupant.forkParentSha);
+        const allowedDeltaMs = isForkSibling
+          ? SHARED_ROW_BRANCH_SIBLING_MAX_TIME_DELTA_MS
+          : SHARED_ROW_MAX_TIME_DELTA_MS;
+        return Math.abs(occupant.time - commitTime) <= allowedDeltaMs;
+      });
+      if (!withinSharedWindow) return false;
       assignedRow = candidateRow;
-      break;
+      return true;
+    };
+    for (let candidateRow = rowCursorStart; !isWorktreeGraphNode(commit) && candidateRow < nextRow; candidateRow += 1) {
+      if (tryAssignSharedRow(candidateRow)) break;
+    }
+    if (assignedRow == null && forkParentSha && !isWorktreeGraphNode(commit)) {
+      const siblingRows = [...occupiedRowsByRow.keys()]
+        .filter((candidateRow) => candidateRow >= rowCursorStart)
+        .filter((candidateRow) =>
+          (occupiedRowsByRow.get(candidateRow) ?? []).some(
+            (occupant) => occupant.forkParentSha && shasMatch(occupant.forkParentSha, forkParentSha),
+          ),
+        )
+        .sort((left, right) => left - right);
+      for (const candidateRow of siblingRows) {
+        if (tryAssignSharedRow(candidateRow)) break;
+      }
     }
     if (assignedRow == null) assignedRow = Math.max(minimumAllowedRow, nextRow);
     rowByVisualId.set(commit.visualId, assignedRow);
@@ -1048,7 +1148,7 @@ function allocateRowsByColumnAndTime(
       sha: commit.id,
       column: commitColumn,
       time: commitTime,
-      branchEntryParentSha,
+      forkParentSha,
     });
     occupiedRowsByRow.set(assignedRow, occupied);
     if (hasCrossColumnChild) sharedRowBlockedByBranchLine.add(assignedRow);
@@ -1072,6 +1172,14 @@ function allocateRowsByColumnAndTime(
       if (assignedRow != null) clusterRowByKey.set(clusterKey!, assignedRow);
     }
   }
+  coalesceSameTimeForkSiblingRows(
+    commits,
+    rowByVisualId,
+    columnByCommitVisualId,
+    rowBySha,
+    resolveKnownShas,
+    clusterContext,
+  );
   // Final hard invariant: direct children must be strictly after direct parents.
   const maxPasses = Math.max(1, orderedCommits.length * 2);
   for (let pass = 0; pass < maxPasses; pass += 1) {
