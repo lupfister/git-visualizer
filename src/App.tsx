@@ -5575,6 +5575,9 @@ function App() {
     remoteDefaultTipParentSha,
     remoteDefaultTipSha,
     repoPath,
+    branches,
+    directCommits,
+    unpushedDirectCommits,
   ]);
 
   useEffect(() => {
