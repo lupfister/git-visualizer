@@ -1375,10 +1375,9 @@ fn search_directories(
         for dev_folder in DEV_FOLDERS {
             let dev_path = dir.join(dev_folder);
             if dev_path.exists() && dev_path.is_dir() {
-                let should_stop = search_repos_recursive(
+                let should_stop = search_repos_iterative(
                     &dev_path,
                     &query_lower,
-                    0,
                     max_depth,
                     &mut results,
                     collect_limit,
@@ -1392,11 +1391,10 @@ fn search_directories(
             }
         }
     } else {
-        // Normal recursive search for non-home directories
-        search_repos_recursive(
+        // Normal iterative search for non-home directories
+        search_repos_iterative(
             dir,
             &query_lower,
-            0,
             max_depth,
             &mut results,
             collect_limit,
@@ -1425,11 +1423,10 @@ fn search_directories(
     Ok(results)
 }
 
-/// Recursive helper for searching git repositories.
-fn search_repos_recursive(
-    dir: &Path,
+/// Iterative directory walk for searching git repositories (avoids native stack overflow).
+fn search_repos_iterative(
+    root: &Path,
     query: &str,
-    depth: u32,
     max_depth: u32,
     results: &mut Vec<DirEntry>,
     limit: usize,
@@ -1437,78 +1434,60 @@ fn search_repos_recursive(
     max_visited_dirs: usize,
     deadline: Instant,
 ) -> bool {
-    if depth > max_depth || results.len() >= limit {
-        return results.len() >= limit;
-    }
-    if *visited_dirs >= max_visited_dirs || Instant::now() >= deadline {
-        return true;
-    }
-    *visited_dirs += 1;
+    let mut stack = vec![(root.to_path_buf(), 0u32)];
 
-    let entries = match std::fs::read_dir(dir) {
-        Ok(e) => e,
-        Err(_) => return false,
-    };
-
-    for entry in entries.flatten() {
-        let name = entry.file_name().to_string_lossy().to_string();
-
-        // Skip hidden directories
-        if name.starts_with('.') {
-            continue;
+    while let Some((dir, depth)) = stack.pop() {
+        if depth > max_depth || results.len() >= limit {
+            return results.len() >= limit;
         }
-
-        // Skip system/non-project folders
-        if SKIP_FOLDERS.contains(&name.as_str()) {
-            continue;
-        }
-
         if *visited_dirs >= max_visited_dirs || Instant::now() >= deadline {
             return true;
         }
+        *visited_dirs += 1;
 
-        let file_type = match entry.file_type() {
-            Ok(file_type) => file_type,
+        let entries = match std::fs::read_dir(&dir) {
+            Ok(e) => e,
             Err(_) => continue,
         };
-        if !file_type.is_dir() || file_type.is_symlink() {
-            continue;
-        }
-        let entry_path = entry.path();
 
-        // Check if this is a git repository
-        let is_repo = entry_path.join(".git").is_dir();
+        for entry in entries.flatten() {
+            let name = entry.file_name().to_string_lossy().to_string();
 
-        if is_repo {
-            // Only add if name matches query
-            let name_lower = name.to_lowercase();
-            if query.is_empty() || name_lower.starts_with(query) || name_lower.contains(query) {
-                results.push(DirEntry {
-                    name: name.clone(),
-                    path: entry_path.to_string_lossy().to_string(),
-                    is_dir: true,
-                    is_repo: true,
-                });
-
-                if results.len() >= limit {
-                    return true;
-                }
+            if name.starts_with('.') {
+                continue;
             }
-            // Don't recurse into repos (nested repos are rare)
-        } else {
-            // Not a repo, recurse to find repos inside
-            if search_repos_recursive(
-                &entry_path,
-                query,
-                depth + 1,
-                max_depth,
-                results,
-                limit,
-                visited_dirs,
-                max_visited_dirs,
-                deadline,
-            ) {
+            if SKIP_FOLDERS.contains(&name.as_str()) {
+                continue;
+            }
+            if *visited_dirs >= max_visited_dirs || Instant::now() >= deadline {
                 return true;
+            }
+
+            let file_type = match entry.file_type() {
+                Ok(file_type) => file_type,
+                Err(_) => continue,
+            };
+            if !file_type.is_dir() || file_type.is_symlink() {
+                continue;
+            }
+            let entry_path = entry.path();
+            let is_repo = entry_path.join(".git").is_dir();
+
+            if is_repo {
+                let name_lower = name.to_lowercase();
+                if query.is_empty() || name_lower.starts_with(query) || name_lower.contains(query) {
+                    results.push(DirEntry {
+                        name: name.clone(),
+                        path: entry_path.to_string_lossy().to_string(),
+                        is_dir: true,
+                        is_repo: true,
+                    });
+                    if results.len() >= limit {
+                        return true;
+                    }
+                }
+            } else if depth < max_depth {
+                stack.push((entry_path, depth + 1));
             }
         }
     }
@@ -2709,6 +2688,56 @@ struct PromptCache {
 
 static PROMPT_CACHE: OnceLock<Mutex<Option<PromptCache>>> = OnceLock::new();
 const LOG_FIELD_SEPARATOR: &str = "\u{1f}";
+/// Guard against serde / prompt parsing blowing the native stack on deeply nested JSON.
+const MAX_JSON_NESTING_DEPTH: usize = 128;
+
+fn json_nesting_depth_exceeds_limit(raw: &str, max_depth: usize) -> bool {
+    let mut depth = 0usize;
+    let mut max_seen = 0usize;
+    let mut in_string = false;
+    let mut escape = false;
+
+    for ch in raw.chars() {
+        if in_string {
+            if escape {
+                escape = false;
+                continue;
+            }
+            match ch {
+                '\\' => escape = true,
+                '"' => in_string = false,
+                _ => {}
+            }
+            continue;
+        }
+
+        match ch {
+            '"' => in_string = true,
+            '[' | '{' => {
+                depth += 1;
+                if depth > max_seen {
+                    max_seen = depth;
+                    if max_seen > max_depth {
+                        return true;
+                    }
+                }
+            }
+            ']' | '}' => {
+                depth = depth.saturating_sub(1);
+            }
+            _ => {}
+        }
+    }
+
+    false
+}
+
+fn parse_json_value_bounded(raw: &str) -> Option<serde_json::Value> {
+    if json_nesting_depth_exceeds_limit(raw, MAX_JSON_NESTING_DEPTH) {
+        return None;
+    }
+    serde_json::from_str(raw).ok()
+}
 
 fn parse_iso_to_utc(value: &str) -> Option<DateTime<Utc>> {
     DateTime::parse_from_rfc3339(value)
@@ -2783,21 +2812,24 @@ fn normalize_prompt_text(raw: &str) -> Option<String> {
 
 fn extract_text_chunks(content: &serde_json::Value) -> Vec<String> {
     let mut chunks = Vec::new();
+    let mut stack = vec![content];
 
-    if let Some(arr) = content.as_array() {
-        for item in arr {
-            if let Some(text) = item.get("text").and_then(|v| v.as_str()) {
-                chunks.push(text.to_string());
+    while let Some(current) = stack.pop() {
+        if let Some(arr) = current.as_array() {
+            for item in arr {
+                if let Some(text) = item.get("text").and_then(|v| v.as_str()) {
+                    chunks.push(text.to_string());
+                }
+                if let Some(inner) = item.get("content") {
+                    stack.push(inner);
+                }
             }
-            if let Some(inner) = item.get("content") {
-                chunks.extend(extract_text_chunks(inner));
-            }
+            continue;
         }
-        return chunks;
-    }
 
-    if let Some(text) = content.as_str() {
-        chunks.push(text.to_string());
+        if let Some(text) = current.as_str() {
+            chunks.push(text.to_string());
+        }
     }
 
     chunks
@@ -2888,7 +2920,7 @@ fn collect_codex_prompts(
             .to_string();
 
         for line in reader.lines().map_while(Result::ok) {
-            let Ok(value) = serde_json::from_str::<serde_json::Value>(&line) else { continue };
+            let Some(value) = parse_json_value_bounded(&line) else { continue };
             let event_type = value.get("type").and_then(|v| v.as_str()).unwrap_or_default();
 
             if event_type == "session_meta" {
@@ -2951,7 +2983,7 @@ fn collect_claude_prompts(
         }
 
         let Ok(index_raw) = fs::read_to_string(&index_path) else { continue };
-        let Ok(index_json) = serde_json::from_str::<serde_json::Value>(&index_raw) else { continue };
+        let Some(index_json) = parse_json_value_bounded(&index_raw) else { continue };
         let Some(entries) = index_json.get("entries").and_then(|v| v.as_array()) else { continue };
 
         for entry in entries {
@@ -2974,7 +3006,7 @@ fn collect_claude_prompts(
                 .to_string();
 
             for line in reader.lines().map_while(Result::ok) {
-                let Ok(value) = serde_json::from_str::<serde_json::Value>(&line) else { continue };
+                let Some(value) = parse_json_value_bounded(&line) else { continue };
                 let is_user = value.get("type").and_then(|v| v.as_str()) == Some("user")
                     && value.pointer("/message/role").and_then(|v| v.as_str()) == Some("user");
                 if !is_user {
@@ -3068,7 +3100,7 @@ fn collect_cursor_prompts(
 
             let mut prompts = Vec::new();
             for line in reader.lines().map_while(Result::ok) {
-                let Ok(value) = serde_json::from_str::<serde_json::Value>(&line) else { continue };
+                let Some(value) = parse_json_value_bounded(&line) else { continue };
                 if value.get("role").and_then(|v| v.as_str()) != Some("user") {
                     continue;
                 }
@@ -3131,7 +3163,7 @@ fn collect_generic_jsonl_prompts(
                 .to_string();
 
             for line in reader.lines().map_while(Result::ok) {
-                let Ok(value) = serde_json::from_str::<serde_json::Value>(&line) else { continue };
+                let Some(value) = parse_json_value_bounded(&line) else { continue };
 
                 let role = value.get("role").and_then(|v| v.as_str())
                     .or_else(|| value.pointer("/message/role").and_then(|v| v.as_str()))
@@ -4460,22 +4492,34 @@ fn copy_dir_all(src: &Path, dst: &Path) -> std::io::Result<()> {
         "Cache", "Code Cache", "GPUCache", "ShaderCache", "Crashpad",
         "CrashpadMetrics-active.pma", "BrowserMetrics", "GrShaderCache",
     ];
-    std::fs::create_dir_all(dst)?;
-    for entry in std::fs::read_dir(src)? {
-        let entry = entry?;
-        let name = entry.file_name();
-        if SKIP.contains(&name.to_string_lossy().as_ref()) {
-            continue;
+    let mut stack = vec![(src.to_path_buf(), dst.to_path_buf())];
+
+    while let Some((src_dir, dst_dir)) = stack.pop() {
+        std::fs::create_dir_all(&dst_dir)?;
+        let entries = match std::fs::read_dir(&src_dir) {
+            Ok(entries) => entries,
+            Err(_) => continue,
+        };
+        for entry in entries.flatten() {
+            let name = entry.file_name();
+            if SKIP.contains(&name.to_string_lossy().as_ref()) {
+                continue;
+            }
+            let ty = match entry.file_type() {
+                Ok(ty) => ty,
+                Err(_) => continue,
+            };
+            let dst_path = dst_dir.join(&name);
+            if ty.is_dir() {
+                stack.push((entry.path(), dst_path));
+            } else if ty.is_file() {
+                // ty.is_symlink() is false here because is_file() is false for symlinks
+                let _ = std::fs::copy(entry.path(), dst_path);
+            }
+            // Symlinks (SingletonLock, etc.) are skipped — is_dir and is_file both false
         }
-        let ty = entry.file_type()?;
-        if ty.is_dir() {
-            let _ = copy_dir_all(&entry.path(), &dst.join(&name));
-        } else if ty.is_file() {
-            // ty.is_symlink() is false here because is_file() is false for symlinks
-            let _ = std::fs::copy(entry.path(), dst.join(&name));
-        }
-        // Symlinks (SingletonLock, etc.) are skipped — is_dir and is_file both false
     }
+
     Ok(())
 }
 
@@ -5381,7 +5425,7 @@ fn detect_repo_from_editor_storage(home_dir: Option<&PathBuf>) -> Option<PathBuf
         let Ok(raw) = fs::read_to_string(&storage_path) else {
             continue;
         };
-        let Ok(json) = serde_json::from_str::<serde_json::Value>(&raw) else {
+        let Some(json) = parse_json_value_bounded(&raw) else {
             continue;
         };
         let Some(folders) = json
