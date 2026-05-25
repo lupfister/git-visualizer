@@ -8,32 +8,14 @@
   <body>
     <div id="root"></div>
     <script>
-      (function () {
-        var ACTIVE = 'git-visualizer:active-project';
-        var RELOAD = 'git-visualizer:reload';
-        var HARD = 'git-visualizer:hard-reload';
-        function hasActive() {
-          try { return !!localStorage.getItem(ACTIVE); } catch (e) { return false; }
-        }
-        function softReload(bustLayout) {
-          window.dispatchEvent(new CustomEvent(RELOAD, { detail: bustLayout ? { bustLayout: true } : undefined }));
-        }
-        document.addEventListener('keydown', function (event) {
-          var key = event.key.toLowerCase();
-          var isReload = key === 'f5' || ((event.metaKey || event.ctrlKey) && key === 'r');
-          if (!isReload) return;
-          event.preventDefault();
-          if (key === 'f5') { softReload(false); return; }
-          if (event.shiftKey) {
-            if (hasActive()) { softReload(true); return; }
-            if (sessionStorage.getItem(HARD) === '1') return;
-            sessionStorage.setItem(HARD, '1');
-            window.location.reload();
-            return;
-          }
-          softReload(false);
-        }, true);
-      })();
+      document.addEventListener('keydown', function (event) {
+        if (event.shiftKey || event.altKey) return;
+        var key = event.key.toLowerCase();
+        var isReload = key === 'f5' || ((event.metaKey || event.ctrlKey) && key === 'r');
+        if (!isReload) return;
+        event.preventDefault();
+        window.location.reload();
+      }, true);
     </script>
     <script type="module" src="/src/main.tsx"></script>
     <script src="https://mcp.figma.com/mcp/html-to-design/capture.js" async></script>

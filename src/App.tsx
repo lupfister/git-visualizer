@@ -1684,70 +1684,6 @@ function App() {
     }
   }
 
-  async function reloadActiveProjectFromGit(path: string, options?: { bustLayout?: boolean }) {
-    const normalizedPath = normalizePath(path);
-    if (!normalizedPath) return;
-
-    clearPostCommitProtectionForPath(normalizedPath);
-    bustRepoSyncCachesForPath(normalizedPath);
-    invalidateRepoLayoutCacheForPath(normalizedPath);
-    suppressBackgroundRefreshUntilRef.current = 0;
-    pendingRefreshAfterInteractionRef.current = false;
-
-    setMapGridBackgroundActivity('git-refresh', 'Reload project from git', true, 'reload');
-    try {
-      const fresh = await loadProjectSnapshot(normalizedPath, true);
-      if (!fresh?.loaded) {
-        gitActivityEpochRef.current += 1;
-        void runRepoRefreshRef.current?.('graph');
-        return;
-      }
-
-      const reconciled = await reconcileSnapshotForProjectSwitch(normalizedPath, fresh);
-      projectQuickStateRef.current = {
-        ...projectQuickStateRef.current,
-        [normalizedPath]: quickStateSignature(quickStateFromSnapshot(normalizedPath, reconciled)),
-      };
-
-      if (sameRepoPath(repoPath, normalizedPath)) {
-        if (options?.bustLayout === true) {
-          layoutModelCacheRef.current.clear();
-          persistedLayoutKeysRef.current.clear();
-        }
-        flushSync(() => {
-          applySnapshotToActiveState(normalizedPath, reconciled, {
-            force: true,
-            allowIncomingDirty: true,
-          });
-        });
-        setLayoutEpoch((epoch) => epoch + 1);
-        setHydratedLayoutModel(null);
-        setHydratedLayoutKey(null);
-        autoFocusSyncKeyRef.current = null;
-      }
-
-      const check = await invoke<FingerprintCheckResult>('check_project_fingerprint', {
-        projectId: normalizedPath,
-      }).catch(() => null);
-      if (check?.currentFingerprint) {
-        noteSyncedRepoFingerprint(normalizedPath, check.currentFingerprint);
-        ackProjectFingerprint(normalizedPath, check.currentFingerprint);
-      }
-      markGitActivityHandled();
-      gitActivityEpochRef.current += 1;
-      void runRepoRefreshRef.current?.('graph');
-      if (sameRepoPath(repoPath, normalizedPath)) {
-        focusCameraOnActiveWorktreeRef.current?.();
-      }
-    } catch (error) {
-      console.warn('Reload from git failed:', error);
-      gitActivityEpochRef.current += 1;
-      void runRepoRefreshRef.current?.('graph');
-    } finally {
-      setMapGridBackgroundActivity('git-refresh', 'Reload project from git', false);
-    }
-  }
-
   function incomingSnapshotDropsProtectedHead(path: string, incoming: RepoVisualSnapshot): boolean {
     const normalizedPath = normalizePath(path);
     const guard = normalizedPath ? postCommitProtectedHeadShaRef.current[normalizedPath] : undefined;
@@ -4082,29 +4018,6 @@ function App() {
     window.addEventListener('keydown', handler);
     return () => window.removeEventListener('keydown', handler);
   }, [repoPath, repoName, branches]);
-
-  useEffect(() => {
-    try {
-      sessionStorage.removeItem('git-visualizer:hard-reload');
-    } catch {
-      // ignore storage failures
-    }
-
-    const handleSoftReload = (event: Event) => {
-      void (async () => {
-        const path = repoPath;
-        if (!path) {
-          window.location.reload();
-          return;
-        }
-        const bustLayout = (event as CustomEvent<{ bustLayout?: boolean }>).detail?.bustLayout === true;
-        await reloadActiveProjectFromGit(path, { bustLayout });
-      })();
-    };
-
-    window.addEventListener('git-visualizer:reload', handleSoftReload);
-    return () => window.removeEventListener('git-visualizer:reload', handleSoftReload);
-  }, [repoPath]);
 
   async function handleMapCommitClick(target: {
     commitSha: string;
