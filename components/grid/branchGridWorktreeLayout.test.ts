@@ -177,9 +177,8 @@ describe('computeBranchGridLayout worktree nodes', () => {
     expect(worktreeNode).toBeDefined();
     expect(mainTipNode).toBeDefined();
     expect(worktreeNode!.row).toBe(mainTipNode!.row + 1);
-    expect(worktreeNode!.column).toBeGreaterThanOrEqual(mainTipNode!.column);
-    expect(worktreeNode!.column).toBe(mainTipNode!.column);
-    expect(worktreeNode!.y).toBe(mainTipNode!.y);
+    expect(worktreeNode!.column).toBeGreaterThan(mainTipNode!.column);
+    expect(worktreeNode!.y).toBeGreaterThan(mainTipNode!.y);
   });
 
   it('keeps primary worktree on the checkout lane when HEAD is only visible as a collapsed clump lead', () => {
@@ -259,10 +258,9 @@ describe('computeBranchGridLayout worktree nodes', () => {
     const headLeadNode = layout.renderNodes.find((node) => node.commit.id === tipSha);
     expect(worktreeNode).toBeDefined();
     expect(headLeadNode).toBeDefined();
-    expect(worktreeNode!.column).toBeGreaterThanOrEqual(headLeadNode!.column);
-    expect(worktreeNode!.column).toBe(headLeadNode!.column);
+    expect(worktreeNode!.column).toBeGreaterThan(headLeadNode!.column);
     expect(worktreeNode!.row).toBe(headLeadNode!.row + 1);
-    expect(worktreeNode!.y).toBe(headLeadNode!.y);
+    expect(worktreeNode!.y).toBeGreaterThan(headLeadNode!.y);
   });
 
   it('pins primary worktree to HEAD on main when session lane is main (local) but parentSha is on main', () => {
@@ -342,9 +340,9 @@ describe('computeBranchGridLayout worktree nodes', () => {
     );
     expect(worktreeNode).toBeDefined();
     expect(headNode).toBeDefined();
-    expect(worktreeNode!.column).toBe(headNode!.column);
+    expect(worktreeNode!.column).toBeGreaterThan(headNode!.column);
     expect(worktreeNode!.row).toBe(headNode!.row + 1);
-    expect(worktreeNode!.y).toBe(headNode!.y);
+    expect(worktreeNode!.y).toBeGreaterThan(headNode!.y);
   });
 
   it('misaligns primary worktree when sessions use main but layout checkedOutRef uses main (local)', () => {
@@ -430,7 +428,7 @@ describe('computeBranchGridLayout worktree nodes', () => {
     const headNode = aligned.renderNodes.find(
       (node) => node.commit.id === tipSha && node.commit.branchName === defaultBranch,
     );
-    expect(alignedNode!.column).toBe(headNode!.column);
-    expect(misalignedNode!.column).not.toBe(headNode!.column);
+    expect(alignedNode!.column).toBe(headNode!.column + 1);
+    expect(misalignedNode!.column).not.toBe(headNode!.column + 1);
   });
 });

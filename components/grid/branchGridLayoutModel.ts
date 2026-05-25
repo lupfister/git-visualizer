@@ -263,22 +263,12 @@ const pinWorktreeNodesToLayout = (
     const parentNode = findWorktreeAnchorParentRenderNode(renderNodes, node.commit, checkedOutRef, defaultBranch);
     if (!parentNode) continue;
     const worktree = node.commit;
-    const parentShaLinksCheckoutTip = !!(
-      worktree.parentSha
-      && commitMatchesSha(parentNode.commit, worktree.parentSha)
-      && parentNode.commit.branchName === defaultBranch
-      && worktree.branchName === `${defaultBranch} (local)`
-    );
-    const sameLaneAsParent =
-      parentShaLinksCheckoutTip
-      || !worktree.branchName
-      || worktree.branchName === parentNode.commit.branchName;
     const parentKey = `${parentNode.row}:${parentNode.column}`;
     const usedLaneColumns = usedLaneColumnsByParentRow.get(parentKey) ?? new Set<number>();
 
     if (isHorizontal) {
       node.row = parentNode.row + 1;
-      let targetColumn = sameLaneAsParent ? parentNode.column : parentNode.column + 1;
+      let targetColumn = parentNode.column + 1;
       while (usedLaneColumns.has(targetColumn)) targetColumn += 1;
       usedLaneColumns.add(targetColumn);
       usedLaneColumnsByParentRow.set(parentKey, usedLaneColumns);
