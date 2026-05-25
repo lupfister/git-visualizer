@@ -308,6 +308,16 @@ export type RepoMutationOutcome =
       worktreePath: string;
     }
   | {
+      kind: 'branchMetadataSync';
+      layoutTopologyChanged: true;
+      branches: Branch[];
+      defaultBranch: string;
+      removedBranchNames: string[];
+      unpushedCommitShasByBranch: Record<string, string[]>;
+      branchUniqueAheadCounts: Record<string, number>;
+      checkedOutRef: CheckedOutRef | null;
+    }
+  | {
       kind: 'fullRefresh';
       layoutTopologyChanged: true;
     };

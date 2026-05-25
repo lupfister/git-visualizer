@@ -1123,6 +1123,7 @@ fn watch_repo(repo_path: String, app: tauri::AppHandle) -> Result<(), String> {
         }
     }
     let last_graph_emit_ms = std::sync::Arc::new(AtomicU64::new(0));
+    let last_local_emit_ms = std::sync::Arc::new(AtomicU64::new(0));
     let mut git_roots = vec![primary_git_dir.clone()];
     if let Some(common_dir) = resolved_git_common_dir {
         if common_dir != primary_git_dir {
@@ -1139,6 +1140,7 @@ fn watch_repo(repo_path: String, app: tauri::AppHandle) -> Result<(), String> {
                 }
 
                 let mut has_graph_change = false;
+                let mut has_local_change = false;
                 for p in &event.paths {
                     if path_contains_noise_dir(p) {
                         continue;
@@ -1149,8 +1151,16 @@ fn watch_repo(repo_path: String, app: tauri::AppHandle) -> Result<(), String> {
                         continue;
                     }
 
-                    // For .git internals, only react to refs/logs/head updates.
                     let path_str = p.to_string_lossy();
+                    let is_index_path = path_str.ends_with("/index")
+                        || path_str.ends_with("\\index")
+                        || path_str.ends_with("index.lock");
+                    if is_index_path {
+                        has_local_change = true;
+                        continue;
+                    }
+
+                    // For .git internals, only react to refs/logs/head updates.
                     let is_graph_path = path_str.contains("/refs/")
                         || path_str.contains("/logs/")
                         || path_str.ends_with("HEAD")
@@ -1158,6 +1168,21 @@ fn watch_repo(repo_path: String, app: tauri::AppHandle) -> Result<(), String> {
                         || path_str.ends_with("ORIG_HEAD");
                     if is_graph_path {
                         has_graph_change = true;
+                    }
+                }
+
+                if has_local_change {
+                    let now_ms = Utc::now().timestamp_millis().max(0) as u64;
+                    let prev_ms = last_local_emit_ms.load(Ordering::Relaxed);
+                    if now_ms.saturating_sub(prev_ms) >= GIT_ACTIVITY_GRAPH_MIN_EMIT_MS {
+                        last_local_emit_ms.store(now_ms, Ordering::Relaxed);
+                        let _ = app.emit(
+                            "git-activity",
+                            GitActivityEventPayload {
+                                repo_path: repo_path_for_events.clone(),
+                                kind: "local".to_string(),
+                            },
+                        );
                     }
                 }
 
@@ -1539,7 +1564,11 @@ fn load_project_snapshot(project_id: String) -> Result<Option<ProjectSnapshotRec
 }
 
 #[tauri::command(rename_all = "camelCase")]
-fn check_project_fingerprint(project_id: String) -> Result<FingerprintCheckResult, String> {
+async fn check_project_fingerprint(project_id: String) -> Result<FingerprintCheckResult, String> {
+    run_blocking(move || check_project_fingerprint_blocking(project_id)).await
+}
+
+fn check_project_fingerprint_blocking(project_id: String) -> Result<FingerprintCheckResult, String> {
     let normalized_project_id = normalize_repo_path_id(&project_id);
     let conn = open_visual_cache_connection()?;
     let row: Option<(String, Option<String>)> = conn
@@ -1605,7 +1634,7 @@ fn refresh_project_if_changed_blocking(
     app: tauri::AppHandle,
 ) -> Result<RefreshProjectResult, String> {
     let normalized_project_id = normalize_repo_path_id(&project_id);
-    let check = check_project_fingerprint(normalized_project_id.clone())?;
+    let check = check_project_fingerprint_blocking(normalized_project_id.clone())?;
     if !check.changed {
         return Ok(RefreshProjectResult {
             project_id: normalized_project_id,
@@ -1641,7 +1670,7 @@ async fn refresh_project_if_changed(
 
 fn persist_project_snapshot_blocking(project_id: String, app: tauri::AppHandle) -> Result<PersistProjectSnapshotResult, String> {
     let normalized_project_id = normalize_repo_path_id(&project_id);
-    let check = check_project_fingerprint(normalized_project_id)?;
+    let check = check_project_fingerprint_blocking(normalized_project_id)?;
     if !check.changed {
         return Ok(PersistProjectSnapshotResult { persisted: false });
     }
@@ -1696,43 +1725,284 @@ fn get_repo_refresh_fingerprint(repo_path: String) -> Result<RepoRefreshFingerpr
     Ok(fingerprint)
 }
 
-#[tauri::command(rename_all = "camelCase")]
-fn get_repo_head_state(repo_path: String) -> Result<RepoHeadState, String> {
-    let path = Path::new(&repo_path);
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct RepoSyncPeek {
+    repo_path: String,
+    signature: String,
+}
+
+fn compute_repo_sync_peek(repo_path: &str) -> Result<RepoSyncPeek, String> {
+    let path = Path::new(repo_path);
     let head_sha = git::cli::run(path, &["rev-parse", "HEAD"])
         .map_err(|e| e.to_string())?
         .trim()
         .to_string();
-    let upstream_sha = git::cli::run(path, &["rev-parse", "--verify", "HEAD@{upstream}"])
+    let porcelain = git::cli::run(path, &["status", "--porcelain=v1", "--untracked-files=normal"])
+        .map_err(|e| e.to_string())?;
+    let has_uncommitted_changes = !porcelain.trim().is_empty();
+
+    let branch_heads_output = git::cli::run(
+        path,
+        &["for-each-ref", "refs/heads", "--format=%(refname:short):%(objectname)"],
+    )
+    .map_err(|e| e.to_string())?;
+    let mut branch_head_lines: Vec<String> = branch_heads_output
+        .lines()
+        .map(str::trim)
+        .filter(|line| !line.is_empty())
+        .map(str::to_string)
+        .collect();
+    branch_head_lines.sort();
+    let branch_heads_digest = branch_head_lines.join("|");
+
+    let worktrees = git::list_worktrees(path).map_err(|e| e.to_string())?;
+    let worktree_sig = worktrees
+        .iter()
+        .map(|worktree| {
+            format!(
+                "{}:{}:{}:{}",
+                worktree.path,
+                worktree.head_sha,
+                worktree.branch_name.clone().unwrap_or_default(),
+                if worktree.has_uncommitted_changes { "1" } else { "0" }
+            )
+        })
+        .collect::<Vec<_>>()
+        .join("|");
+
+    let stashes = git::list_stashes(path).map_err(|e| e.to_string())?;
+    let stash_sig = stashes
+        .iter()
+        .map(|stash| format!("{}:{}:{}", stash.index, stash.base_sha, stash.message))
+        .collect::<Vec<_>>()
+        .join("|");
+
+    let head_unpushed_count = git::cli::run(path, &["rev-list", "--count", "HEAD@{upstream}..HEAD"])
         .ok()
         .map(|value| value.trim().to_string())
-        .filter(|value| !value.is_empty());
-    Ok(RepoHeadState {
-        repo_path: repo_path.clone(),
+        .filter(|value| !value.is_empty())
+        .unwrap_or_else(|| "0".to_string());
+
+    let signature = format!(
+        "{}@@{}@@{}@@{}@@{}@@{}",
         head_sha,
-        upstream_sha,
+        if has_uncommitted_changes { "1" } else { "0" },
+        branch_heads_digest,
+        worktree_sig,
+        stash_sig,
+        head_unpushed_count,
+    );
+
+    Ok(RepoSyncPeek {
+        repo_path: repo_path.to_string(),
+        signature,
     })
 }
 
 #[tauri::command(rename_all = "camelCase")]
-fn get_repo_quick_state(repo_path: String) -> Result<RepoQuickState, String> {
-    let path = Path::new(&repo_path);
-    let head_sha = git::cli::run(path, &["rev-parse", "HEAD"])
-        .map_err(|e| e.to_string())?
-        .trim()
-        .to_string();
-    let upstream_sha = git::cli::run(path, &["rev-parse", "--verify", "HEAD@{upstream}"])
-        .ok()
-        .map(|value| value.trim().to_string())
-        .filter(|value| !value.is_empty());
-    let porcelain = git::cli::run(path, &["status", "--porcelain=v1", "--untracked-files=normal"])
-        .map_err(|e| e.to_string())?;
-    Ok(RepoQuickState {
-        repo_path: repo_path.clone(),
-        head_sha,
-        upstream_sha,
-        has_uncommitted_changes: !porcelain.trim().is_empty(),
+async fn get_repo_sync_peek(repo_path: String) -> Result<RepoSyncPeek, String> {
+    run_blocking(move || compute_repo_sync_peek(&repo_path)).await
+}
+
+#[tauri::command(rename_all = "camelCase")]
+async fn get_repo_head_state(repo_path: String) -> Result<RepoHeadState, String> {
+    run_blocking(move || {
+        let path = Path::new(&repo_path);
+        let head_sha = git::cli::run(path, &["rev-parse", "HEAD"])
+            .map_err(|e| e.to_string())?
+            .trim()
+            .to_string();
+        let upstream_sha = git::cli::run(path, &["rev-parse", "--verify", "HEAD@{upstream}"])
+            .ok()
+            .map(|value| value.trim().to_string())
+            .filter(|value| !value.is_empty());
+        Ok(RepoHeadState {
+            repo_path: repo_path.clone(),
+            head_sha,
+            upstream_sha,
+        })
     })
+    .await
+}
+
+#[tauri::command(rename_all = "camelCase")]
+async fn get_repo_quick_state(repo_path: String) -> Result<RepoQuickState, String> {
+    run_blocking(move || {
+        let path = Path::new(&repo_path);
+        let head_sha = git::cli::run(path, &["rev-parse", "HEAD"])
+            .map_err(|e| e.to_string())?
+            .trim()
+            .to_string();
+        let upstream_sha = git::cli::run(path, &["rev-parse", "--verify", "HEAD@{upstream}"])
+            .ok()
+            .map(|value| value.trim().to_string())
+            .filter(|value| !value.is_empty());
+        let porcelain = git::cli::run(path, &["status", "--porcelain=v1", "--untracked-files=normal"])
+            .map_err(|e| e.to_string())?;
+        Ok(RepoQuickState {
+            repo_path: repo_path.clone(),
+            head_sha,
+            upstream_sha,
+            has_uncommitted_changes: !porcelain.trim().is_empty(),
+        })
+    })
+    .await
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct ChangedBranchDelta {
+    name: String,
+    old_head_sha: Option<String>,
+    new_head_sha: String,
+    new_commits: Vec<DirectCommit>,
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct RepoGraphDelta {
+    fingerprint: String,
+    checked_out_ref: CheckedOutRef,
+    branches: Vec<Branch>,
+    changed_branches: Vec<ChangedBranchDelta>,
+    removed_branches: Vec<String>,
+    unpushed_commit_shas_by_branch: HashMap<String, Vec<String>>,
+    requires_full_refresh: bool,
+}
+
+fn branch_ref_entry_sig(branch: &Branch) -> String {
+    format!(
+        "{}:{}:{}:{}",
+        branch.head_sha,
+        branch.commits_ahead,
+        branch.unpushed_commits,
+        branch.remote_sync_status
+    )
+}
+
+fn parse_branch_ref_sig_map(sig: &str) -> HashMap<String, String> {
+    sig.split('|')
+        .filter(|entry| !entry.is_empty())
+        .filter_map(|entry| {
+            let name = entry.split(':').next()?.trim();
+            if name.is_empty() {
+                return None;
+            }
+            Some((name.to_string(), entry.to_string()))
+        })
+        .collect()
+}
+
+fn branch_unpushed_shas_for_delta(path: &Path, branch: &str) -> Result<Vec<String>, String> {
+    let range = if let Some(compare_ref) = get_branch_compare_ref(path, branch) {
+        format!("{compare_ref}..{branch}")
+    } else {
+        let default_branch = git::get_default_branch(path).map_err(|e| e.to_string())?;
+        format!("{default_branch}..{branch}")
+    };
+    let output = git::cli::run(path, &["rev-list", "--first-parent", &range]).map_err(|e| e.to_string())?;
+    Ok(output
+        .lines()
+        .map(str::trim)
+        .filter(|line| !line.is_empty())
+        .map(|line| line.to_string())
+        .collect())
+}
+
+fn get_repo_graph_delta_blocking(
+    repo_path: String,
+    stored_branch_ref_sig: Option<String>,
+) -> Result<RepoGraphDelta, String> {
+    let path = Path::new(&repo_path);
+    let (fingerprint, _) = compute_repo_fingerprint(&repo_path)?;
+    let default_branch = git::get_default_branch(path).map_err(|e| e.to_string())?;
+    let branches = git::list_branches(path, &default_branch).map_err(|e| e.to_string())?;
+    let checked_out_ref = git::get_checked_out_ref(path).map_err(|e| e.to_string())?;
+
+    let stored_map = stored_branch_ref_sig
+        .as_deref()
+        .map(parse_branch_ref_sig_map)
+        .unwrap_or_default();
+
+    let current_names: HashSet<String> = branches.iter().map(|branch| branch.name.clone()).collect();
+    let mut removed_branches = Vec::new();
+    for name in stored_map.keys() {
+        if !current_names.contains(name) {
+            removed_branches.push(name.clone());
+        }
+    }
+
+    let mut changed_branches = Vec::new();
+    let mut unpushed_commit_shas_by_branch = HashMap::new();
+    let mut requires_full_refresh = false;
+
+    for branch in &branches {
+        let current_entry = format!("{}:{}", branch.name, branch_ref_entry_sig(branch));
+        let stored_entry = stored_map.get(&branch.name);
+        if stored_entry.map(String::as_str) == Some(current_entry.as_str()) {
+            continue;
+        }
+
+        let old_head_sha = stored_entry.and_then(|entry| {
+            entry
+                .split(':')
+                .nth(1)
+                .map(|value| value.to_string())
+                .filter(|value| !value.is_empty())
+        });
+
+        let new_commits = if old_head_sha.as_deref() != Some(branch.head_sha.as_str()) {
+            match git::get_branch_commits_since(
+                path,
+                &branch.name,
+                old_head_sha.as_deref(),
+                20,
+            ) {
+                Ok(commits) => commits,
+                Err(_) => {
+                    requires_full_refresh = true;
+                    Vec::new()
+                }
+            }
+        } else {
+            Vec::new()
+        };
+
+        if new_commits.iter().any(|commit| commit.parent_shas.len() > 1) {
+            requires_full_refresh = true;
+        }
+
+        unpushed_commit_shas_by_branch.insert(
+            branch.name.clone(),
+            branch_unpushed_shas_for_delta(path, &branch.name)?,
+        );
+
+        changed_branches.push(ChangedBranchDelta {
+            name: branch.name.clone(),
+            old_head_sha,
+            new_head_sha: branch.head_sha.clone(),
+            new_commits,
+        });
+    }
+
+    Ok(RepoGraphDelta {
+        fingerprint,
+        checked_out_ref,
+        branches,
+        changed_branches,
+        removed_branches,
+        unpushed_commit_shas_by_branch,
+        requires_full_refresh,
+    })
+}
+
+#[tauri::command(rename_all = "camelCase")]
+async fn get_repo_graph_delta(
+    repo_path: String,
+    stored_branch_ref_sig: Option<String>,
+) -> Result<RepoGraphDelta, String> {
+    run_blocking(move || get_repo_graph_delta_blocking(repo_path, stored_branch_ref_sig)).await
 }
 
 #[tauri::command(rename_all = "camelCase")]
@@ -5501,6 +5771,8 @@ pub fn run() {
             clear_repo_node_positions,
             get_repo_quick_state,
             get_repo_head_state,
+            get_repo_sync_peek,
+            get_repo_graph_delta,
             get_repo_refresh_fingerprint,
             get_remote_branch_head_sha,
             get_commit_subject,

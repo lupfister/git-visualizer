@@ -1,8 +1,8 @@
 import { describe, expect, it } from 'vitest';
-import { classifyFingerprintDiff, parseRepoFingerprint } from './fingerprintDiff';
+import { classifyFingerprintDiff, parseBranchRefSig, parseRepoFingerprint } from './fingerprintDiff';
 
-const sample = (overrides: Partial<ReturnType<typeof parseRepoFingerprint>> = {}) => {
-  const base = parseRepoFingerprint('main@@abc@@up@@0@@branch-sig@@wt-sig@@stash-sig');
+const sample = (overrides: Partial<NonNullable<ReturnType<typeof parseRepoFingerprint>>> = {}) => {
+  const base = parseRepoFingerprint('main@@abc@@up@@0@@main:abc:1:0:on-github@@wt-sig@@stash-sig');
   return { ...base!, ...overrides };
 };
 
@@ -15,11 +15,41 @@ describe('parseRepoFingerprint', () => {
   });
 });
 
+describe('parseBranchRefSig', () => {
+  it('parses branch ref entries', () => {
+    const map = parseBranchRefSig('main:abc:1:0:on-github|feature:def:2:1:unpushed');
+    expect(map.get('main')?.headSha).toBe('abc');
+    expect(map.get('feature')?.unpushedCommits).toBe(1);
+  });
+});
+
 describe('classifyFingerprintDiff', () => {
-  it('requests full refresh when head moves', () => {
+  it('requests graph delta when head moves', () => {
     const stored = sample({ headSha: 'old' });
     const current = sample({ headSha: 'new' });
-    expect(classifyFingerprintDiff(stored, current)).toEqual({ kind: 'full' });
+    expect(classifyFingerprintDiff(stored, current)).toEqual({
+      kind: 'graphDelta',
+      scope: 'head',
+    });
+  });
+
+  it('requests graph delta when branch refs move without head change', () => {
+    const stored = sample({ branchRefSig: 'main:abc:1:0:on-github|feature:old:1:0:local-only' });
+    const current = sample({ branchRefSig: 'main:abc:1:0:on-github|feature:new:2:1:unpushed' });
+    expect(classifyFingerprintDiff(stored, current)).toEqual({
+      kind: 'graphDelta',
+      scope: 'branches',
+    });
+  });
+
+  it('combines graph delta with dirty segment changes', () => {
+    const stored = sample({ headSha: 'old', hasUncommittedChanges: false });
+    const current = sample({ headSha: 'new', hasUncommittedChanges: true });
+    expect(classifyFingerprintDiff(stored, current)).toEqual({
+      kind: 'graphDelta',
+      scope: 'head',
+      segments: ['dirty'],
+    });
   });
 
   it('patches dirty-only changes', () => {

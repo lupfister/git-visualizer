@@ -10,6 +10,15 @@ export type FingerprintParts = {
 
 export type FingerprintPatchSegment = 'dirty' | 'stash' | 'worktree' | 'upstream';
 
+export type GraphDeltaScope = 'head' | 'branches' | 'full-graph';
+
+export type BranchRefEntry = {
+  headSha: string;
+  commitsAhead: number;
+  unpushedCommits: number;
+  remoteSyncStatus: string;
+};
+
 export function parseRepoFingerprint(raw: string | null | undefined): FingerprintParts | null {
   if (!raw) return null;
   const parts = raw.split('@@');
@@ -25,17 +34,48 @@ export function parseRepoFingerprint(raw: string | null | undefined): Fingerprin
   };
 }
 
+export function parseBranchRefSig(sig: string): Map<string, BranchRefEntry> {
+  const map = new Map<string, BranchRefEntry>();
+  for (const entry of sig.split('|').filter(Boolean)) {
+    const [name, headSha, commitsAhead, unpushedCommits, remoteSyncStatus] = entry.split(':');
+    if (!name || !headSha) continue;
+    map.set(name, {
+      headSha,
+      commitsAhead: Number(commitsAhead) || 0,
+      unpushedCommits: Number(unpushedCommits) || 0,
+      remoteSyncStatus: remoteSyncStatus ?? 'unknown',
+    });
+  }
+  return map;
+}
+
+export function formatBranchRefSig(
+  branches: Array<{
+    name: string;
+    headSha: string;
+    commitsAhead: number;
+    unpushedCommits: number;
+    remoteSyncStatus: string;
+  }>,
+): string {
+  return branches
+    .map(
+      (branch) =>
+        `${branch.name}:${branch.headSha}:${branch.commitsAhead}:${branch.unpushedCommits}:${branch.remoteSyncStatus}`,
+    )
+    .join('|');
+}
+
 export function classifyFingerprintDiff(
   stored: FingerprintParts | null,
   current: FingerprintParts,
 ):
   | { kind: 'none' }
-  | { kind: 'full' }
+  | { kind: 'graphDelta'; scope: GraphDeltaScope; segments?: FingerprintPatchSegment[] }
   | { kind: 'patch'; segments: FingerprintPatchSegment[] } {
-  if (!stored) return { kind: 'full' };
-  if (stored.defaultBranch !== current.defaultBranch) return { kind: 'full' };
-  if (stored.headSha !== current.headSha) return { kind: 'full' };
-  if (stored.branchRefSig !== current.branchRefSig) return { kind: 'full' };
+  if (!stored) {
+    return { kind: 'graphDelta', scope: 'full-graph' };
+  }
 
   const segments: FingerprintPatchSegment[] = [];
   if (stored.hasUncommittedChanges !== current.hasUncommittedChanges) {
@@ -49,6 +89,30 @@ export function classifyFingerprintDiff(
   }
   if (stored.upstreamSha !== current.upstreamSha) {
     segments.push('upstream');
+  }
+
+  const defaultBranchChanged = stored.defaultBranch !== current.defaultBranch;
+  const headChanged = stored.headSha !== current.headSha;
+  const branchRefChanged = stored.branchRefSig !== current.branchRefSig;
+
+  if (defaultBranchChanged) {
+    return {
+      kind: 'graphDelta',
+      scope: 'full-graph',
+      segments: segments.length > 0 ? segments : undefined,
+    };
+  }
+
+  if (headChanged || branchRefChanged) {
+    let scope: GraphDeltaScope;
+    if (headChanged && branchRefChanged) scope = 'full-graph';
+    else if (headChanged) scope = 'head';
+    else scope = 'branches';
+    return {
+      kind: 'graphDelta',
+      scope,
+      segments: segments.length > 0 ? segments : undefined,
+    };
   }
 
   if (segments.length === 0) return { kind: 'none' };

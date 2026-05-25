@@ -74,6 +74,45 @@ pub fn get_direct_commits(
     Ok(commits)
 }
 
+const GRAPH_DELTA_COMMIT_LIMIT: u32 = 20;
+
+/// Commits reachable from `branch` that are not reachable from `since_sha` (when provided).
+pub fn get_branch_commits_since(
+    repo: &Path,
+    branch: &str,
+    since_sha: Option<&str>,
+    limit: u32,
+) -> Result<Vec<DirectCommit>, GitError> {
+    let max_count = limit.max(1);
+    let output = match since_sha.filter(|value| !value.is_empty()) {
+        Some(old_sha) => cli::run(
+            repo,
+            &[
+                "log",
+                &format!("--max-count={max_count}"),
+                "--format=%H%x1f%h%x1f%s%x1f%an%x1f%cI%x1f%P",
+                &format!("{old_sha}..{branch}"),
+            ],
+        )?,
+        None => {
+            return get_direct_commits(repo, branch, Some(max_count));
+        }
+    };
+
+    let parsed_all: Vec<ParsedCommitLine> = output
+        .lines()
+        .filter(|line| !line.is_empty())
+        .filter_map(parse_direct_commit_line)
+        .collect();
+    let mut seen_shas = HashSet::<String>::new();
+    let parsed: Vec<ParsedCommitLine> = parsed_all
+        .into_iter()
+        .filter(|commit| seen_shas.insert(commit.full_sha.clone()))
+        .collect();
+
+    Ok(build_direct_commits(parsed, branch.to_string()))
+}
+
 /// Get every commit reachable from local branch refs, and associate each commit with exactly one branch.
 pub fn get_all_repo_commits(
     repo: &Path,

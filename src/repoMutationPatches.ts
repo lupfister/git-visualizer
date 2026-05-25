@@ -385,6 +385,42 @@ function patchWorktreeRemove(
   });
 }
 
+function patchBranchMetadataSync(
+  snapshot: RepoVisualSnapshot,
+  outcome: RepoMutationOutcome & { kind: 'branchMetadataSync' },
+): RepoVisualSnapshot {
+  const removed = new Set(outcome.removedBranchNames);
+  const branchCommitPreviews = Object.fromEntries(
+    Object.entries(snapshot.branchCommitPreviews).filter(([branchName]) => !removed.has(branchName)),
+  ) as Record<string, BranchCommitPreview[]>;
+  const unpushedCommitShasByBranch = {
+    ...snapshot.unpushedCommitShasByBranch,
+    ...outcome.unpushedCommitShasByBranch,
+  };
+  for (const branchName of outcome.removedBranchNames) {
+    delete unpushedCommitShasByBranch[branchName];
+  }
+  const laneByBranch = Object.fromEntries(
+    Object.entries(snapshot.laneByBranch).filter(([branchName]) => !removed.has(branchName)),
+  ) as Record<string, number>;
+  const branchParentByName = Object.fromEntries(
+    Object.entries(snapshot.branchParentByName).filter(([branchName]) => !removed.has(branchName)),
+  ) as Record<string, string | null>;
+
+  return touchSnapshot({
+    ...snapshot,
+    defaultBranch: outcome.defaultBranch,
+    branches: outcome.branches,
+    branchCommitPreviews,
+    unpushedCommitShasByBranch,
+    branchUniqueAheadCounts: outcome.branchUniqueAheadCounts,
+    checkedOutRef: outcome.checkedOutRef,
+    laneByBranch,
+    branchParentByName,
+    worktrees: syncCurrentWorktreeFromCheckedOutRef(snapshot.worktrees, outcome.checkedOutRef),
+  });
+}
+
 export function applyMutationPatch(
   snapshot: RepoVisualSnapshot,
   outcome: RepoMutationOutcome,
@@ -416,6 +452,8 @@ export function applyMutationPatch(
       return patchUpstreamSync(snapshot, outcome);
     case 'worktreeRemove':
       return patchWorktreeRemove(snapshot, outcome);
+    case 'branchMetadataSync':
+      return patchBranchMetadataSync(snapshot, outcome);
     case 'fullRefresh':
       return snapshot;
     default: {
@@ -539,5 +577,20 @@ export function outcomeFromWorktreeRemove(worktreePath: string): RepoMutationOut
     kind: 'worktreeRemove',
     layoutTopologyChanged: true,
     worktreePath,
+  };
+}
+
+export function outcomeFromBranchMetadataSync(data: {
+  branches: Branch[];
+  defaultBranch: string;
+  removedBranchNames: string[];
+  unpushedCommitShasByBranch: Record<string, string[]>;
+  branchUniqueAheadCounts: Record<string, number>;
+  checkedOutRef: CheckedOutRef | null;
+}): RepoMutationOutcome {
+  return {
+    kind: 'branchMetadataSync',
+    layoutTopologyChanged: true,
+    ...data,
   };
 }
