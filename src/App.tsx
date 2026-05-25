@@ -1101,6 +1101,7 @@ function App() {
         if (forceRefresh) {
           record = await invoke<ProjectSnapshotRecord>('add_project_and_ingest', {
             repoPath: normalizedPath,
+            forceRefresh: true,
           });
         } else {
           record = await invoke<ProjectSnapshotRecord | null>('load_project_snapshot', {
@@ -1109,6 +1110,7 @@ function App() {
           if (!record) {
             record = await invoke<ProjectSnapshotRecord>('add_project_and_ingest', {
               repoPath: normalizedPath,
+              forceRefresh: false,
             });
           }
         }
@@ -1643,6 +1645,101 @@ function App() {
     }
   }
 
+  function bustRepoSyncCachesForPath(path: string) {
+    const normalizedPath = normalizePath(path);
+    if (!normalizedPath) return;
+    if (normalizedPath in lastSyncedRepoFingerprintRef.current) {
+      const next = { ...lastSyncedRepoFingerprintRef.current };
+      delete next[normalizedPath];
+      lastSyncedRepoFingerprintRef.current = next;
+    }
+    if (normalizedPath in projectSyncPeekRef.current) {
+      const next = { ...projectSyncPeekRef.current };
+      delete next[normalizedPath];
+      projectSyncPeekRef.current = next;
+    }
+    if (normalizedPath in lastFingerprintCheckAtRef.current) {
+      const next = { ...lastFingerprintCheckAtRef.current };
+      delete next[normalizedPath];
+      lastFingerprintCheckAtRef.current = next;
+    }
+    if (normalizedPath in projectQuickStateRef.current) {
+      const next = { ...projectQuickStateRef.current };
+      delete next[normalizedPath];
+      projectQuickStateRef.current = next;
+    }
+    if (normalizedPath in lastFullGraphRefreshAtRef.current) {
+      const next = { ...lastFullGraphRefreshAtRef.current };
+      delete next[normalizedPath];
+      lastFullGraphRefreshAtRef.current = next;
+    }
+    lastHandledGitActivityEpochRef.current = 0;
+  }
+
+  async function reloadActiveProjectFromGit(path: string, options?: { bustLayout?: boolean }) {
+    const normalizedPath = normalizePath(path);
+    if (!normalizedPath) return;
+
+    clearPostCommitProtectionForPath(normalizedPath);
+    bustRepoSyncCachesForPath(normalizedPath);
+    invalidateRepoLayoutCacheForPath(normalizedPath);
+    suppressBackgroundRefreshUntilRef.current = 0;
+    pendingRefreshAfterInteractionRef.current = false;
+
+    setMapGridBackgroundActivity('git-refresh', 'Reload project from git', true, 'reload');
+    try {
+      const fresh = await loadProjectSnapshot(normalizedPath, true);
+      if (!fresh?.loaded) {
+        gitActivityEpochRef.current += 1;
+        void runRepoRefreshRef.current?.('graph');
+        return;
+      }
+
+      const reconciled = await reconcileSnapshotForProjectSwitch(normalizedPath, fresh);
+      projectQuickStateRef.current = {
+        ...projectQuickStateRef.current,
+        [normalizedPath]: quickStateSignature(quickStateFromSnapshot(normalizedPath, reconciled)),
+      };
+
+      if (sameRepoPath(repoPath, normalizedPath)) {
+        if (options?.bustLayout === true) {
+          layoutModelCacheRef.current.clear();
+          persistedLayoutKeysRef.current.clear();
+        }
+        flushSync(() => {
+          applySnapshotToActiveState(normalizedPath, reconciled, {
+            force: true,
+            allowIncomingDirty: true,
+          });
+        });
+        setLayoutEpoch((epoch) => epoch + 1);
+        setHydratedLayoutModel(null);
+        setHydratedLayoutKey(null);
+        autoFocusSyncKeyRef.current = null;
+      }
+
+      const check = await invoke<FingerprintCheckResult>('check_project_fingerprint', {
+        projectId: normalizedPath,
+      }).catch(() => null);
+      if (check?.currentFingerprint) {
+        noteSyncedRepoFingerprint(normalizedPath, check.currentFingerprint);
+        ackProjectFingerprint(normalizedPath, check.currentFingerprint);
+      }
+      markGitActivityHandled();
+      gitActivityEpochRef.current += 1;
+      void runRepoRefreshRef.current?.('graph');
+      if (sameRepoPath(repoPath, normalizedPath)) {
+        focusCameraOnActiveWorktreeRef.current?.();
+      }
+    } catch (error) {
+      console.warn('Reload from git failed:', error);
+      gitActivityEpochRef.current += 1;
+      void runRepoRefreshRef.current?.('graph');
+    } finally {
+      setMapGridBackgroundActivity('git-refresh', 'Reload project from git', false);
+    }
+  }
+
   function incomingSnapshotDropsProtectedHead(path: string, incoming: RepoVisualSnapshot): boolean {
     const normalizedPath = normalizePath(path);
     const guard = normalizedPath ? postCommitProtectedHeadShaRef.current[normalizedPath] : undefined;
@@ -1983,6 +2080,7 @@ function App() {
       }
       const layoutTopologyChanged = outcomes.some((outcome) => outcome.layoutTopologyChanged);
       const isCommit = outcomes.some((outcome) => outcome.kind === 'commit');
+      const isPush = outcomes.some((outcome) => outcome.kind === 'push');
       const commitOutcome = isCommit
         ? outcomes.find((outcome): outcome is RepoMutationOutcome & { kind: 'commit' } => outcome.kind === 'commit')
         : undefined;
@@ -2013,21 +2111,25 @@ function App() {
         });
       }
 
-      if (isCommit) {
-        autoFocusSyncKeyRef.current = null;
-        const focusSha = resolveActiveWorktreeFocusSha(
-          buildWorktreeSessions(snapshot.worktrees, normalizedPath, snapshot.checkedOutRef),
-          normalizedPath,
-        ) ?? commitOutcome?.commit.fullSha ?? null;
-        if (focusSha) {
-          setGridFocusSha(focusSha);
-          setGridSearchJumpToken((token) => token + 1);
+      if (isCommit || isPush) {
+        if (isCommit) {
+          autoFocusSyncKeyRef.current = null;
+          const focusSha = resolveActiveWorktreeFocusSha(
+            buildWorktreeSessions(snapshot.worktrees, normalizedPath, snapshot.checkedOutRef),
+            normalizedPath,
+          ) ?? commitOutcome?.commit.fullSha ?? null;
+          if (focusSha) {
+            setGridFocusSha(focusSha);
+            setGridSearchJumpToken((token) => token + 1);
+          }
+          schedulePostCommitQuickReconcile(normalizedPath);
         }
         suppressBackgroundRefreshUntilRef.current = Date.now() + 2500;
         markGitActivityHandled();
-        noteSyncedAfterMutationOutcomes(normalizedPath, ...outcomes);
-        schedulePostCommitQuickReconcile(normalizedPath);
-        void invoke('persist_project_snapshot', { projectId: normalizedPath })
+        if (isCommit) {
+          noteSyncedAfterMutationOutcomes(normalizedPath, ...outcomes);
+        }
+        void invoke('persist_project_snapshot', { projectId: normalizedPath, force: true })
           .then(() => invoke<FingerprintCheckResult>('check_project_fingerprint', { projectId: normalizedPath }))
           .then((check) => {
             if (check?.currentFingerprint) {
@@ -2036,7 +2138,7 @@ function App() {
             }
           })
           .catch((error) => {
-            console.warn('Post-commit snapshot persist/sync failed:', error);
+            console.warn('Post-mutation snapshot persist/sync failed:', error);
           });
       } else {
         suppressBackgroundRefreshUntilRef.current = Date.now() + 2500;
@@ -3861,24 +3963,7 @@ function App() {
           return;
         }
         const bustLayout = (event as CustomEvent<{ bustLayout?: boolean }>).detail?.bustLayout === true;
-        const normalizedPath = normalizePath(path);
-        if (normalizedPath) {
-          clearPostCommitProtectionForPath(normalizedPath);
-          invalidateRepoLayoutCacheForPath(normalizedPath);
-        }
-        suppressBackgroundRefreshUntilRef.current = 0;
-        pendingRefreshAfterInteractionRef.current = false;
-        if (bustLayout) {
-          setLayoutEpoch((epoch) => epoch + 1);
-          setHydratedLayoutModel(null);
-          setHydratedLayoutKey(null);
-          layoutModelCacheRef.current.clear();
-          persistedLayoutKeysRef.current.clear();
-        }
-        autoFocusSyncKeyRef.current = null;
-        gitActivityEpochRef.current += 1;
-        runRepoRefreshRef.current?.('graph');
-        focusCameraOnActiveWorktreeRef.current?.();
+        await reloadActiveProjectFromGit(path, { bustLayout });
       })();
     };
 

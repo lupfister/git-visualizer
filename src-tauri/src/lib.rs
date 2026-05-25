@@ -1551,15 +1551,18 @@ fn get_repo_visual_snapshot(repo_path: String, force_refresh: Option<bool>) -> R
 }
 
 #[tauri::command(rename_all = "camelCase")]
-fn add_project_and_ingest(repo_path: String) -> Result<ProjectSnapshotRecord, String> {
+fn add_project_and_ingest(repo_path: String, force_refresh: Option<bool>) -> Result<ProjectSnapshotRecord, String> {
     let normalized_repo_path = normalize_repo_path_id(&repo_path);
     let project_id = normalized_repo_path.clone();
+    let force_refresh = force_refresh.unwrap_or(false);
     let conn = open_visual_cache_connection()?;
     let existing = load_active_project_snapshot(&conn, &project_id)?;
     let (current_fingerprint, _) = compute_repo_fingerprint(&normalized_repo_path)?;
-    if let Some(active) = existing {
-        if active.fingerprint == current_fingerprint && active.schema_version == PROJECT_SNAPSHOT_SCHEMA_VERSION {
-            return Ok(active);
+    if !force_refresh {
+        if let Some(active) = existing {
+            if active.fingerprint == current_fingerprint && active.schema_version == PROJECT_SNAPSHOT_SCHEMA_VERSION {
+                return Ok(active);
+            }
         }
     }
     publish_project_snapshot(&normalized_repo_path, Some(&current_fingerprint))
@@ -1676,10 +1679,14 @@ async fn refresh_project_if_changed(
     run_blocking(move || refresh_project_if_changed_blocking(project_id, app)).await
 }
 
-fn persist_project_snapshot_blocking(project_id: String, app: tauri::AppHandle) -> Result<PersistProjectSnapshotResult, String> {
+fn persist_project_snapshot_blocking(
+    project_id: String,
+    force: bool,
+    app: tauri::AppHandle,
+) -> Result<PersistProjectSnapshotResult, String> {
     let normalized_project_id = normalize_repo_path_id(&project_id);
     let check = check_project_fingerprint_blocking(normalized_project_id)?;
-    if !check.changed {
+    if !force && !check.changed {
         return Ok(PersistProjectSnapshotResult { persisted: false });
     }
     let snapshot = publish_project_snapshot(&check.repo_path, Some(&check.current_fingerprint))?;
@@ -1697,9 +1704,11 @@ fn persist_project_snapshot_blocking(project_id: String, app: tauri::AppHandle) 
 #[tauri::command(rename_all = "camelCase")]
 async fn persist_project_snapshot(
     project_id: String,
+    force: Option<bool>,
     app: tauri::AppHandle,
 ) -> Result<PersistProjectSnapshotResult, String> {
-    run_blocking(move || persist_project_snapshot_blocking(project_id, app)).await
+    let force = force.unwrap_or(false);
+    run_blocking(move || persist_project_snapshot_blocking(project_id, force, app)).await
 }
 
 #[tauri::command(rename_all = "camelCase")]
