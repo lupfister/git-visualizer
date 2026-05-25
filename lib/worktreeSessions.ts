@@ -150,12 +150,21 @@ export const buildWorktreeSessions = (
       const hasUncommittedChanges = isCurrent && checkedOutRef
         ? checkedOutRef.hasUncommittedChanges
         : (worktree.hasUncommittedChanges ?? false);
+      const headSha = isCurrent && checkedOutRef?.headSha
+        ? checkedOutRef.headSha
+        : worktree.headSha;
+      const parentSha = isCurrent && checkedOutRef
+        ? (checkedOutRef.parentSha ?? worktree.parentSha ?? null)
+        : worktree.parentSha;
+      const branchName = isCurrent && checkedOutRef?.branchName != null
+        ? checkedOutRef.branchName
+        : worktree.branchName;
       return {
         path: worktree.path,
         pathExists: worktree.pathExists,
-        branchName: worktree.branchName,
-        headSha: worktree.headSha,
-        parentSha: worktree.parentSha,
+        branchName,
+        headSha,
+        parentSha,
         hasUncommittedChanges,
         isCurrent,
       };

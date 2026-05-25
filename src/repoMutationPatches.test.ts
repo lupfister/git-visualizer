@@ -152,7 +152,18 @@ describe('applyMutationPatch push', () => {
 
 describe('applyMutationPatch commit', () => {
   it('adds a commit node and updates branch head', () => {
-    const next = applyMutationPatch(baseSnapshot(), {
+    const next = applyMutationPatch(baseSnapshot({
+      worktrees: [{
+        path: '/repo',
+        pathExists: true,
+        headSha: 'bbb2222',
+        branchName: 'feature',
+        parentSha: 'aaa1111',
+        isCurrent: true,
+        isPrunable: false,
+        hasUncommittedChanges: false,
+      }],
+    }), {
       kind: 'commit',
       layoutTopologyChanged: true,
       commit: {
@@ -175,6 +186,7 @@ describe('applyMutationPatch commit', () => {
     expect(next.directCommits.some((commit) => commit.fullSha.startsWith('ccc3333'))).toBe(true);
     expect(next.branches.find((branch) => branch.name === 'feature')?.headSha.startsWith('ccc3333')).toBe(true);
     expect(next.unpushedCommitShasByBranch.feature).toContain('ccc3333fullsha000000000000000000000000');
+    expect(next.worktrees.find((worktree) => worktree.isCurrent)?.headSha).toBe('ccc3333');
   });
 });
 

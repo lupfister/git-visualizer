@@ -49,6 +49,26 @@ describe('worktreeSessions', () => {
     expect(isWorkingTreeCommitId('deadbeef')).toBe(false);
   });
 
+  it('prefers checkedOutRef head for the current worktree session', () => {
+    const sessions = buildWorktreeSessions(
+      [
+        baseWorktree({
+          path: '/repo',
+          headSha: 'old-head-sha-000000000000000000000000',
+          branchName: 'main',
+          isCurrent: true,
+        }),
+      ],
+      '/repo',
+      {
+        branchName: 'main',
+        headSha: 'new-head-sha-111111111111111111111111',
+        hasUncommittedChanges: false,
+      },
+    );
+    expect(sessions[0]?.headSha).toBe('new-head-sha-111111111111111111111111');
+  });
+
   it('resolveCommitAccent prefers current on duplicate head sha', () => {
     const sessions = buildWorktreeSessions(
       [
