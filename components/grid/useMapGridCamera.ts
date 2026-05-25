@@ -34,6 +34,16 @@ export function mapGridCameraStorageKey(scopeKey: string): string {
   return `${CAMERA_STORAGE_KEY_PREFIX}${scopeKey}`;
 }
 
+export function readHasSavedMapGridCamera(repoPath: string, orientation: string): boolean {
+  try {
+    return !!window.localStorage.getItem(mapGridCameraStorageKey(`${repoPath}::${orientation}`));
+  } catch {
+    return false;
+  }
+}
+
+export type SyncCameraOptions = { persist?: boolean };
+
 export type MapGridCameraTargetLayout = { layoutX: number; layoutY: number };
 
 function buildCameraTransformCss(
@@ -276,7 +286,12 @@ export function useMapGridCamera({
     }, 90);
   }, [applyPanLayerChrome, flushCameraReactTick, persistCamera]);
 
-  const syncCamera = useCallback((nextPanX: number, nextPanY: number, nextZoom: number) => {
+  const syncCamera = useCallback((
+    nextPanX: number,
+    nextPanY: number,
+    nextZoom: number,
+    options?: SyncCameraOptions,
+  ) => {
     if (!isEnabled) return;
     panRef.current = { x: nextPanX, y: nextPanY };
     zoomRef.current = nextZoom;
@@ -284,9 +299,13 @@ export function useMapGridCamera({
     if (zoomAnchorRef.current == null) {
       applyRenderedCamera(nextPanX, nextPanY, nextZoom);
     }
-    markCameraInteraction();
+    if (options?.persist === false) {
+      flushCameraReactTick({ urgent: true });
+    } else {
+      markCameraInteraction();
+    }
     scheduleCameraFrame();
-  }, [applyRenderedCamera, isEnabled, markCameraInteraction, scheduleCameraFrame]);
+  }, [applyRenderedCamera, flushCameraReactTick, isEnabled, markCameraInteraction, scheduleCameraFrame]);
 
   stepCameraRef.current = () => {
     cameraFrameRef.current = null;

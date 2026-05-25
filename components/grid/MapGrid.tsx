@@ -1378,6 +1378,7 @@ export default function BranchGridMap({
       targetScreenX - origin.x - centerX * scale,
       targetScreenY - origin.y - centerY * scale,
       targetZoom,
+      { persist: false },
     );
   }, [
     isLoading,

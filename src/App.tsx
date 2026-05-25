@@ -7,7 +7,7 @@ import { getCurrentWindow } from '@tauri-apps/api/window';
 import { open } from '@tauri-apps/plugin-dialog';
 import { PanelLeftClose, PanelLeftOpen } from 'lucide-react';
 import BranchGridMapView from '../components/grid/MapViewGrid';
-import { mapGridCameraStorageKey } from '../components/grid/useMapGridCamera';
+import { mapGridCameraStorageKey, readHasSavedMapGridCamera } from '../components/grid/useMapGridCamera';
 import DenseBranchSidebar from '../components/DenseBranchSidebar';
 import type { NodePositionOverrides } from '../components/grid/LayoutGrid';
 import { stripWorktreeNodePositionOverrides } from '../components/grid/nodePositionOverrides';
@@ -2625,7 +2625,7 @@ function App() {
             buildWorktreeSessions(snapshot.worktrees, normalizedPath, snapshot.checkedOutRef),
             normalizedPath,
           ) ?? commitOutcome?.commit.fullSha ?? null;
-          if (focusSha) {
+          if (focusSha && !readHasSavedMapGridCamera(normalizedPath, mapGridOrientation)) {
             setGridFocusSha(focusSha);
             setGridSearchJumpToken((token) => token + 1);
           }
@@ -5535,12 +5535,11 @@ function App() {
     if (isWorkingTreeCommitId(focusSha)) {
       persistWorktreeFocusSha(repoPath, focusSha);
     }
-    const storageKey = mapGridCameraStorageKey(`${repoPath}::${mapGridOrientation}`);
     const isFirstLoad = isFirstLoadSessionRef.current;
     if (isFirstLoad) {
       isFirstLoadSessionRef.current = false;
       try {
-        window.localStorage.removeItem(storageKey);
+        window.localStorage.removeItem(mapGridCameraStorageKey(`${repoPath}::${mapGridOrientation}`));
       } catch {
         // ignore storage failures
       }
@@ -5548,13 +5547,7 @@ function App() {
       setGridSearchJumpToken((token) => token + 1);
       return;
     }
-    let hasSavedCamera = false;
-    try {
-      hasSavedCamera = !!window.localStorage.getItem(storageKey);
-    } catch {
-      // ignore storage failures
-    }
-    if (!hasSavedCamera) {
+    if (!readHasSavedMapGridCamera(repoPath, mapGridOrientation)) {
       setGridFocusSha(focusSha);
       setGridSearchJumpToken((token) => token + 1);
     }
