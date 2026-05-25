@@ -1937,11 +1937,46 @@ function App() {
     if (!normalizedPath) return;
     const delayMs = Math.max(0, suppressBackgroundRefreshUntilRef.current - Date.now()) + 50;
     window.setTimeout(() => {
-      if (repoMutationInFlightRef.current) return;
-      if (!sameRepoPath(repoPath, normalizedPath)) return;
+      void reconcileProjectSnapshotAfterMutation(normalizedPath);
+    }, delayMs);
+  }
+
+  async function reconcileProjectSnapshotAfterMutation(path: string) {
+    const normalizedPath = normalizePath(path);
+    if (!normalizedPath || !sameRepoPath(repoPath, normalizedPath)) return;
+    if (repoMutationInFlightRef.current) return;
+
+    await invoke('persist_project_snapshot', { projectId: normalizedPath, force: true }).catch((error) => {
+      console.warn('Post-mutation snapshot persist failed:', error);
+    });
+
+    const peek = await fetchRepoSyncPeek(normalizedPath);
+    const uiBehindPeek = peek ? isActiveUiBehindPeek(normalizedPath, peek) : false;
+
+    if (uiBehindPeek) {
+      const snapshot = await loadProjectSnapshot(normalizedPath, true);
+      if (snapshot?.loaded && sameRepoPath(repoPath, normalizedPath)) {
+        startTransition(() => {
+          applyPatchedSnapshot(normalizedPath, snapshot, true, { force: true });
+        });
+      }
+    } else {
       gitActivityEpochRef.current += 1;
       void runRepoRefreshRef.current?.('graph');
-    }, delayMs);
+    }
+
+    void invoke<FingerprintCheckResult>('check_project_fingerprint', { projectId: normalizedPath })
+      .then((check) => {
+        if (check?.currentFingerprint) {
+          noteSyncedRepoFingerprint(normalizedPath, check.currentFingerprint);
+          ackProjectFingerprint(normalizedPath, check.currentFingerprint);
+        }
+      })
+      .catch(() => undefined);
+    if (peek?.signature) {
+      noteSyncedRepoPeek(normalizedPath, peek.signature);
+    }
+    markGitActivityHandled();
   }
 
   function noteDirtySyncComplete(
@@ -2085,6 +2120,7 @@ function App() {
   const mutationOutcomeNeedsImmediateApply = (outcomes: RepoMutationOutcome[]): boolean =>
     outcomes.some((outcome) => (
       outcome.kind === 'commit'
+      || outcome.kind === 'push'
       || outcome.kind === 'discardDirty'
       || outcome.kind === 'markDirty'
       || outcome.kind === 'checkout'
@@ -2231,19 +2267,6 @@ function App() {
         if (isCommit) {
           noteSyncedAfterMutationOutcomes(normalizedPath, ...outcomes);
         }
-        void invoke<FingerprintCheckResult>('check_project_fingerprint', { projectId: normalizedPath })
-          .then((check) => {
-            if (check?.currentFingerprint) {
-              noteSyncedRepoFingerprint(normalizedPath, check.currentFingerprint);
-              ackProjectFingerprint(normalizedPath, check.currentFingerprint);
-            }
-          })
-          .catch((error) => {
-            console.warn('Post-mutation fingerprint sync failed:', error);
-          });
-        void invoke('persist_project_snapshot', { projectId: normalizedPath, force: true }).catch((error) => {
-          console.warn('Post-mutation snapshot persist failed:', error);
-        });
         schedulePostMutationGraphReconcile(normalizedPath);
       } else {
         suppressBackgroundRefreshUntilRef.current = Date.now() + 2500;
@@ -3654,7 +3677,14 @@ function App() {
         const quickState = await invoke<RepoQuickState>('get_repo_quick_state', { repoPath }).catch(() => null);
         if (mutationAtStart !== repoMutationGenerationRef.current) return;
         if (!result.updated) {
-          if (quickState) {
+          if (peek && isActiveUiBehindPeek(repoPath, peek)) {
+            const reloaded = await loadProjectSnapshot(repoPath, true);
+            if (reloaded?.loaded && mutationAtStart === repoMutationGenerationRef.current) {
+              startTransition(() => {
+                applyPatchedSnapshot(repoPath, reloaded, true, { force: true });
+              });
+            }
+          } else if (quickState) {
             projectQuickStateRef.current = {
               ...projectQuickStateRef.current,
               [repoPath]: quickStateSignature(quickState),
