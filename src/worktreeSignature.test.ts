@@ -48,6 +48,6 @@ describe('formatWorktreeSessionLayoutSignature', () => {
         workingTreeId: 'WORKING_TREE:abc',
       },
     ]);
-    expect(signature).toBe('/repo-a:def5678:abc1234:feature:0');
+    expect(signature).toBe('/repo-a:def5678:abc1234:feature');
   });
 });

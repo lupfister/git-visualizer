@@ -12,12 +12,12 @@ export function formatWorktreeSyncSignature(worktrees: WorktreeInfo[]): string {
     .join('|');
 }
 
-/** Layout cache input — includes parent anchor used for worktree node placement. */
+/** Layout cache input — anchor geometry only; dirty is visual-only on the canvas. */
 export function formatWorktreeSessionLayoutSignature(sessions: WorktreeSession[]): string {
   return sessions
     .map(
       (session) =>
-        `${session.path}:${session.headSha}:${session.parentSha ?? ''}:${session.branchName ?? ''}:${session.hasUncommittedChanges ? '1' : '0'}`,
+        `${session.path}:${session.headSha}:${session.parentSha ?? ''}:${session.branchName ?? ''}`,
     )
     .sort()
     .join('|');

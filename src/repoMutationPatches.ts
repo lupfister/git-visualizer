@@ -555,7 +555,7 @@ export function outcomeFromCheckout(checkedOutRef: CheckedOutRef): RepoMutationO
 export function outcomeFromDiscardDirty(checkedOutRef: CheckedOutRef): RepoMutationOutcome {
   return {
     kind: 'discardDirty',
-    layoutTopologyChanged: true,
+    layoutTopologyChanged: false,
     checkedOutRef,
   };
 }
@@ -563,9 +563,14 @@ export function outcomeFromDiscardDirty(checkedOutRef: CheckedOutRef): RepoMutat
 export function outcomeFromMarkDirty(checkedOutRef: CheckedOutRef): RepoMutationOutcome {
   return {
     kind: 'markDirty',
-    layoutTopologyChanged: true,
+    layoutTopologyChanged: false,
     checkedOutRef,
   };
+}
+
+export function isDirtyOnlyMutationOutcomes(outcomes: RepoMutationOutcome[]): boolean {
+  return outcomes.length > 0
+    && outcomes.every((outcome) => outcome.kind === 'markDirty' || outcome.kind === 'discardDirty');
 }
 
 export function outcomeFromStashSync(stashes: GitStashEntry[]): RepoMutationOutcome {
