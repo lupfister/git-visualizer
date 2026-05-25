@@ -346,4 +346,91 @@ describe('computeBranchGridLayout worktree nodes', () => {
     expect(worktreeNode!.row).toBe(headNode!.row + 1);
     expect(worktreeNode!.y).toBe(headNode!.y);
   });
+
+  it('misaligns primary worktree when sessions use main but layout checkedOutRef uses main (local)', () => {
+    const defaultBranch = 'main';
+    const localBranch = `${defaultBranch} (local)`;
+    const parentDate = '2024-06-01T12:00:00Z';
+    const branches = [
+      makeBranch(defaultBranch, tipSha, 0),
+      { ...makeBranch(localBranch, tipSha, 1), parentBranch: defaultBranch, remoteSyncStatus: 'unpushed' as const },
+    ];
+    const directCommits: DirectCommit[] = [
+      {
+        fullSha: mainSha,
+        sha: mainSha.slice(0, 7),
+        branch: defaultBranch,
+        message: 'root',
+        author: 'test',
+        date: '2024-05-01T12:00:00Z',
+        parentSha: null,
+        parentShas: [],
+      },
+      {
+        fullSha: tipSha,
+        sha: tipSha.slice(0, 7),
+        branch: defaultBranch,
+        message: 'tip',
+        author: 'test',
+        date: parentDate,
+        parentSha: mainSha,
+        parentShas: [mainSha],
+      },
+    ];
+    const worktreePreview: BranchCommitPreview = {
+      fullSha: 'WORKING_TREE',
+      sha: 'uncommitted',
+      parentSha: tipSha,
+      message: '',
+      author: 'You',
+      date: parentDate,
+      kind: 'uncommitted',
+    };
+    const layoutInputs = {
+      branches,
+      mergeNodes: [],
+      directCommits,
+      unpushedDirectCommits: [],
+      defaultBranch,
+      branchCommitPreviews: {
+        main: [directCommits[1]!],
+        [localBranch]: [worktreePreview],
+      },
+      branchParentByName: { main: null, [localBranch]: defaultBranch },
+      branchUniqueAheadCounts: { main: 0, [localBranch]: 1 },
+      unpushedCommitShasByBranch: { [localBranch]: [tipSha] },
+      manuallyOpenedClumps: new Set<string>(),
+      manuallyClosedClumps: new Set<string>(),
+      isDebugOpen: false,
+      gridSearchQuery: '',
+      gridFocusSha: null,
+      checkedOutRef: { branchName: localBranch, headSha: tipSha, hasUncommittedChanges: false },
+      orientation: 'horizontal' as const,
+    };
+    const alignedSessions = buildWorktreeSessions(
+      [wt({ path: '/repo', branchName: localBranch, headSha: tipSha, isCurrent: true })],
+      '/repo',
+      { branchName: localBranch, headSha: tipSha, hasUncommittedChanges: false },
+    );
+    const misalignedSessions = buildWorktreeSessions(
+      [wt({ path: '/repo', branchName: defaultBranch, headSha: tipSha, isCurrent: true })],
+      '/repo',
+      { branchName: defaultBranch, headSha: tipSha, hasUncommittedChanges: false },
+    );
+    const aligned = computeBranchGridLayout({
+      ...layoutInputs,
+      worktreeSessions: alignedSessions,
+    });
+    const misaligned = computeBranchGridLayout({
+      ...layoutInputs,
+      worktreeSessions: misalignedSessions,
+    });
+    const alignedNode = aligned.renderNodes.find((node) => node.commit.id === 'WORKING_TREE');
+    const misalignedNode = misaligned.renderNodes.find((node) => node.commit.id === 'WORKING_TREE');
+    const headNode = aligned.renderNodes.find(
+      (node) => node.commit.id === tipSha && node.commit.branchName === defaultBranch,
+    );
+    expect(alignedNode!.column).toBe(headNode!.column);
+    expect(misalignedNode!.column).not.toBe(headNode!.column);
+  });
 });

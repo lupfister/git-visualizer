@@ -1617,14 +1617,40 @@ function App() {
     throw new Error(`No snapshot available for ${normalizedPath}`);
   }
 
+  function mutationChangesWorktreeLayout(
+    previous: RepoVisualSnapshot | null,
+    next: RepoVisualSnapshot,
+  ): boolean {
+    if ((previous?.worktrees.length ?? 0) === 0 && next.worktrees.length === 0) return false;
+    const prevRef = previous?.checkedOutRef;
+    const nextRef = next.checkedOutRef;
+    if (!prevRef || !nextRef) return next.worktrees.length > 0;
+    return (
+      prevRef.headSha !== nextRef.headSha
+      || prevRef.hasUncommittedChanges !== nextRef.hasUncommittedChanges
+      || prevRef.branchName !== nextRef.branchName
+      || (prevRef.parentSha ?? null) !== (nextRef.parentSha ?? null)
+    );
+  }
+
   function applyPatchedSnapshot(
     path: string,
     patched: RepoVisualSnapshot,
     layoutTopologyChanged: boolean,
-    options?: { force?: boolean },
+    options?: { force?: boolean; previousSnapshot?: RepoVisualSnapshot | null },
   ) {
     const normalizedPath = normalizePath(path);
     const force = options?.force === true;
+    let previousSnapshot = options?.previousSnapshot ?? null;
+    if (previousSnapshot === null) {
+      try {
+        previousSnapshot = getSnapshotForMutation(normalizedPath);
+      } catch {
+        previousSnapshot = null;
+      }
+    }
+    const needsLayoutRebuild = layoutTopologyChanged
+      || mutationChangesWorktreeLayout(previousSnapshot, patched);
     upsertProjectSnapshot(normalizedPath, patched, { force });
     projectQuickStateRef.current = {
       ...projectQuickStateRef.current,
@@ -1635,7 +1661,7 @@ function App() {
         force,
         allowIncomingDirty: force,
       });
-      if (layoutTopologyChanged && applied) {
+      if (needsLayoutRebuild && applied) {
         setLayoutEpoch((epoch) => epoch + 1);
         setHydratedLayoutModel(null);
         setHydratedLayoutKey(null);
@@ -1736,7 +1762,8 @@ function App() {
         return;
       }
 
-      let snapshot = getSnapshotForMutation(normalizedPath);
+      const previousSnapshot = getSnapshotForMutation(normalizedPath);
+      let snapshot = previousSnapshot;
       for (const outcome of outcomes) {
         snapshot = applyMutationPatch(snapshot, outcome);
       }
@@ -1754,13 +1781,14 @@ function App() {
       if (!isCommit && applyGeneration !== repoMutationGenerationRef.current) return;
 
       const immediateApply = mutationOutcomeNeedsImmediateApply(outcomes);
+      const patchApplyOptions = { force: true as const, previousSnapshot };
       if (immediateApply) {
         flushSync(() => {
-          applyPatchedSnapshot(normalizedPath, snapshot, layoutTopologyChanged, { force: true });
+          applyPatchedSnapshot(normalizedPath, snapshot, layoutTopologyChanged, patchApplyOptions);
         });
       } else {
         startTransition(() => {
-          applyPatchedSnapshot(normalizedPath, snapshot, layoutTopologyChanged, { force: true });
+          applyPatchedSnapshot(normalizedPath, snapshot, layoutTopologyChanged, patchApplyOptions);
         });
       }
 
@@ -2047,7 +2075,8 @@ function App() {
     const force = options?.force === true;
 
     try {
-      let snapshot = getSnapshotForMutation(normalizedPath);
+      const previousSnapshot = getSnapshotForMutation(normalizedPath);
+      let snapshot = previousSnapshot;
       const beforeSignature = getRepoVisualSnapshotSignature(snapshot);
 
       for (const outcome of outcomes) {
@@ -2069,7 +2098,10 @@ function App() {
 
       setMapGridBackgroundActivity('git-refresh', 'Apply repo changes', true, 'patch');
       startTransition(() => {
-        applyPatchedSnapshot(normalizedPath, snapshot, layoutTopologyChanged, { force });
+        applyPatchedSnapshot(normalizedPath, snapshot, layoutTopologyChanged, {
+          force,
+          previousSnapshot,
+        });
       });
       setMapGridBackgroundActivity('git-refresh', 'Apply repo changes', false);
 
@@ -4214,11 +4246,6 @@ function App() {
     setGridSearchJumpToken((token) => token + 1);
   }
 
-  const worktreeSessions = useMemo(
-    () => buildWorktreeSessions(worktrees, repoPath ?? undefined, checkedOutRef),
-    [worktrees, repoPath, checkedOutRef],
-  );
-
   // Synthetic stash nodes (yellow) and per-worktree worktree nodes — same lane rules as before.
   const {
     enrichedBranches,
@@ -4389,6 +4416,12 @@ function App() {
       visualCheckedOutRef: effectiveCheckedOutRef,
     };
   }, [branches, branchCommitPreviews, branchUniqueAheadCounts, checkedOutRef, defaultBranch, directCommits, remoteDefaultTipMetadata, remoteDefaultTipParentSha, remoteDefaultTipSha, repoPath, stashes, unpushedDirectCommits, worktrees]);
+
+  /** Must match `visualCheckedOutRef` (lane split) so layout pin + inject agree after incremental patches. */
+  const worktreeSessions = useMemo(
+    () => buildWorktreeSessions(worktrees, repoPath ?? undefined, visualCheckedOutRef ?? checkedOutRef),
+    [worktrees, repoPath, visualCheckedOutRef, checkedOutRef],
+  );
 
   const focusCameraOnActiveWorktree = useCallback(() => {
     if (!repoPath) return;
