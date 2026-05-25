@@ -2,7 +2,7 @@ import { createPortal } from 'react-dom';
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import type { CSSProperties, Dispatch, PointerEvent as ReactPointerEvent, SetStateAction } from 'react';
 import { ChevronRight, MoreHorizontal } from 'lucide-react';
-import { motion } from 'framer-motion';
+import { AnimatePresence, motion, useReducedMotion } from 'framer-motion';
 import type { Branch, BranchCommitPreview, CheckedOutRef, DirectCommit, GitStashEntry, MergeNode, WorktreeInfo } from '../types';
 import { cn, shaMatchesGitRef } from './grid/mapGridUtils';
 import type { BranchGridLayoutModel } from './grid/branchGridLayoutModel';
@@ -10,6 +10,28 @@ import { deriveRepoVisualState } from '../src/repoVisualState';
 
 const EXPANDED_PROJECTS_STORAGE_KEY = 'git-visualizer:expanded-projects';
 const EXPANDED_BRANCHES_STORAGE_KEY = 'git-visualizer:expanded-branches';
+
+function loadExpandedBranchesFromStorage(): Record<string, Set<string>> {
+  if (typeof window === 'undefined') return {};
+  try {
+    const raw = window.localStorage.getItem(EXPANDED_BRANCHES_STORAGE_KEY);
+    if (!raw) return {};
+    const parsed = JSON.parse(raw);
+    if (!parsed || typeof parsed !== 'object') return {};
+    const next: Record<string, Set<string>> = {};
+    for (const [projectPath, branchNames] of Object.entries(parsed as Record<string, unknown>)) {
+      if (!Array.isArray(branchNames)) continue;
+      const set = new Set<string>();
+      for (const value of branchNames) {
+        if (typeof value === 'string') set.add(value);
+      }
+      next[projectPath] = set;
+    }
+    return next;
+  } catch {
+    return {};
+  }
+}
 
 type Props = {
   projects: Array<{
@@ -559,6 +581,7 @@ export default function DenseBranchSidebar({
   style,
   collapsed = false,
 }: Props) {
+  const shouldReduceMotion = useReducedMotion();
   const asideRef = useRef<HTMLElement | null>(null);
   const scrollBodyRef = useRef<HTMLDivElement | null>(null);
   const [expandedProjects, setExpandedProjects] = useState<Set<string>>(() => {
@@ -580,7 +603,7 @@ export default function DenseBranchSidebar({
     }
     return new Set<string>();
   });
-  const [expandedBranchNamesByProject, setExpandedBranchNamesByProject] = useState<Record<string, Set<string>>>({});
+  const [expandedBranchNamesByProject, setExpandedBranchNamesByProject] = useState(loadExpandedBranchesFromStorage);
   const [localManuallyOpenedClumps, setLocalManuallyOpenedClumps] = useState<Set<string>>(() => new Set());
   const [localManuallyClosedClumps, setLocalManuallyClosedClumps] = useState<Set<string>>(() => new Set());
   const [openProjectMenuPath, setOpenProjectMenuPath] = useState<string | null>(null);
@@ -628,26 +651,6 @@ export default function DenseBranchSidebar({
   useEffect(() => {
     persistExpandedProjects(expandedProjects);
   }, [expandedProjects]);
-  useEffect(() => {
-    try {
-      const raw = window.localStorage.getItem(EXPANDED_BRANCHES_STORAGE_KEY);
-      if (!raw) return;
-      const parsed = JSON.parse(raw);
-      if (!parsed || typeof parsed !== 'object') return;
-      const next: Record<string, Set<string>> = {};
-      for (const [projectPath, branchNames] of Object.entries(parsed as Record<string, unknown>)) {
-        if (!Array.isArray(branchNames)) continue;
-        const set = new Set<string>();
-        for (const value of branchNames) {
-          if (typeof value === 'string') set.add(value);
-        }
-        next[projectPath] = set;
-      }
-      setExpandedBranchNamesByProject(next);
-    } catch {
-      // ignore storage failures
-    }
-  }, []);
   useEffect(() => {
     persistExpandedBranches(expandedBranchNamesByProject);
   }, [expandedBranchNamesByProject]);
@@ -1018,7 +1021,7 @@ export default function DenseBranchSidebar({
     const hideLive = options.hideLive ?? false;
     const isActive = pathsProbablyEqual(project.path, activeProjectPath);
     const isExpanded = expandedProjects.has(project.path);
-    const projectTreeLoaded = project.treeLoaded ?? project.branches.length > 0;
+    const projectTreeLoaded = project.treeLoaded === true;
     const projectRender = projectRenderDataByPath.get(project.path);
     const expandedBranchNamesForProject = expandedBranchNamesByProject[project.path] ??
       (projectRender
@@ -1034,13 +1037,13 @@ export default function DenseBranchSidebar({
     return (
       <motion.div
         key={project.path}
-        layout="position"
+        layout={draggingProjectPath != null ? 'position' : false}
         transition={{ duration: 0.12, ease: 'easeOut' }}
         data-project-path={project.path}
         data-active-project={isActiveProject ? 'true' : 'false'}
         className={cn(
           'project-row relative z-10 flex flex-col gap-1 transition-colors',
-          isExpanded && projectRender ? 'mb-2.5' : '',
+          isExpanded ? 'mb-2.5' : '',
         )}
       >
         {dragPreviewIndex !== null && draggingProjectPath !== project.path && renderedProjects[dragPreviewIndex]?.path === project.path ? (
@@ -1177,47 +1180,56 @@ export default function DenseBranchSidebar({
             </div>
           </div>
           {isExpanded ? (
-            projectTreeLoaded && projectRender ? (
-              <ul className={cn('relative z-0 space-y-1 pt-0', ghostMode ? 'opacity-70' : '')}>
-                {projectRender.rootBranchNames.map((branchName, idx) => (
-                  <BranchRows
-                    key={`${project.path}:${branchName}`}
-                    branchName={branchName}
-                    depth={0}
-                    isLast={idx === projectRender.rootBranchNames.length - 1}
-                    branchByName={projectRender.branchByName}
-                    branchCommitPreviews={projectRender.branchCommitPreviewsFromLayout}
-                    childNamesByParent={projectRender.childNamesByParent}
-                    branchAnchorShaByName={projectRender.branchAnchorShaByName}
-                    expandedBranchNames={expandedBranchNamesForProject}
-                    onToggleBranch={(branchName) => handleToggleBranch(project.path, branchName)}
-                    checkedOutBranchName={projectRender.checkedOutBranchName}
-                    checkedOutHeadSha={projectRender.checkedOutHeadSha}
-                    ancestors={new Set()}
-                    showCommits={showCommits}
-                    getMergeTargetLabels={projectRender.getMergeTargetLabels}
-                    sourceBranchName={branchName}
-                    clusterKeyByCommitId={projectRender.clusterKeyByCommitId}
-                    unpushedCommitShasByBranch={projectRender.unpushedCommitShasByBranch}
-                    isGridClusterOpen={projectRender.isGridClusterOpen}
-                    onToggleGridCluster={handleToggleGridCluster}
-                    onSelectCommit={async (sha) => {
-                      if (!isActive) await onSelectProject(project.path);
-                      onSelectCommit?.(sha);
-                    }}
-                    onSelectBranch={async (branchName) => {
-                      if (!isActive) await onSelectProject(project.path);
-                      onSelectBranch?.(branchName);
-                    }}
-                    isActiveProject={isActiveProject}
-                  />
-                ))}
-              </ul>
-            ) : (
-              <p className={cn('px-2 py-2 text-xs text-muted-foreground', ghostMode ? 'opacity-70' : '')}>
-                Loading branch tree...
-              </p>
-            )
+            <AnimatePresence>
+              {projectTreeLoaded && projectRender ? (
+                <motion.div
+                  key={`${project.path}-branch-tree`}
+                  className="grid min-h-0"
+                  initial={shouldReduceMotion ? false : { gridTemplateRows: '0fr', opacity: 0 }}
+                  animate={shouldReduceMotion ? undefined : { gridTemplateRows: '1fr', opacity: 1 }}
+                  exit={shouldReduceMotion ? undefined : { gridTemplateRows: '0fr', opacity: 0 }}
+                  transition={{ duration: 0.3, ease: [0.22, 1, 0.36, 1] }}
+                >
+                  <div className="min-h-0 overflow-hidden">
+                  <ul className={cn('relative z-0 space-y-1 pt-0', ghostMode ? 'opacity-70' : '')}>
+                    {projectRender.rootBranchNames.map((branchName, idx) => (
+                      <BranchRows
+                        key={`${project.path}:${branchName}`}
+                        branchName={branchName}
+                        depth={0}
+                        isLast={idx === projectRender.rootBranchNames.length - 1}
+                        branchByName={projectRender.branchByName}
+                        branchCommitPreviews={projectRender.branchCommitPreviewsFromLayout}
+                        childNamesByParent={projectRender.childNamesByParent}
+                        branchAnchorShaByName={projectRender.branchAnchorShaByName}
+                        expandedBranchNames={expandedBranchNamesForProject}
+                        onToggleBranch={(branchName) => handleToggleBranch(project.path, branchName)}
+                        checkedOutBranchName={projectRender.checkedOutBranchName}
+                        checkedOutHeadSha={projectRender.checkedOutHeadSha}
+                        ancestors={new Set()}
+                        showCommits={showCommits}
+                        getMergeTargetLabels={projectRender.getMergeTargetLabels}
+                        sourceBranchName={branchName}
+                        clusterKeyByCommitId={projectRender.clusterKeyByCommitId}
+                        unpushedCommitShasByBranch={projectRender.unpushedCommitShasByBranch}
+                        isGridClusterOpen={projectRender.isGridClusterOpen}
+                        onToggleGridCluster={handleToggleGridCluster}
+                        onSelectCommit={async (sha) => {
+                          if (!isActive) await onSelectProject(project.path);
+                          onSelectCommit?.(sha);
+                        }}
+                        onSelectBranch={async (branchName) => {
+                          if (!isActive) await onSelectProject(project.path);
+                          onSelectBranch?.(branchName);
+                        }}
+                        isActiveProject={isActiveProject}
+                      />
+                    ))}
+                  </ul>
+                  </div>
+                </motion.div>
+              ) : null}
+            </AnimatePresence>
           ) : null}
         </div>
       </motion.div>

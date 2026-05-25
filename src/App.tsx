@@ -579,7 +579,7 @@ function App() {
           branchUniqueAheadCounts,
           branchParentByName,
           defaultBranch,
-          treeLoaded: snapshot.loaded ?? branches.length > 0,
+          treeLoaded: snapshot.loaded === true,
         };
       }
       return {
