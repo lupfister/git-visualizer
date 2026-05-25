@@ -5756,6 +5756,8 @@ pub fn run() {
     let builder = tauri::Builder::default()
         .plugin(tauri_plugin_global_shortcut::Builder::new().build())
         .plugin(tauri_plugin_dialog::init());
+    #[cfg(not(any(target_os = "android", target_os = "ios")))]
+    let builder = builder.plugin(tauri_plugin_window_state::Builder::default().build());
     #[cfg(target_os = "macos")]
     let builder = builder.plugin(
         tauri::plugin::Builder::<_, ()>::new("macos-fps-unlock")
