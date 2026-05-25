@@ -1628,23 +1628,45 @@ function App() {
 
   async function refreshRepoAfterMutationFull(
     path: string,
-    options?: { immediate?: boolean },
+    options?: { immediate?: boolean; forceApply?: boolean },
   ) {
     const normalizedPath = normalizePath(path);
     if (!normalizedPath) return;
     const immediate = options?.immediate === true;
+    const forceApply = options?.forceApply === true;
 
     const applyGeneration = repoMutationGenerationRef.current;
     const result = await invoke<RefreshProjectResult>('refresh_project_if_changed', {
       projectId: normalizedPath,
     }).catch(() => null);
-    if (!result || applyGeneration !== repoMutationGenerationRef.current) return;
+    if (!result) return;
+    if (!forceApply && applyGeneration !== repoMutationGenerationRef.current) return;
 
     const quickState = await invoke<RepoQuickState>('get_repo_quick_state', {
       repoPath: normalizedPath,
     }).catch(() => null);
 
+    const applyReconciledSnapshot = async (base: RepoVisualSnapshot, layoutTopologyChanged = true) => {
+      const nextSnapshot = await reconcileSnapshotForProjectSwitch(normalizedPath, base);
+      if (!forceApply && applyGeneration !== repoMutationGenerationRef.current) return;
+      await yieldToPaint();
+      if (!forceApply && applyGeneration !== repoMutationGenerationRef.current) return;
+      const applySnapshot = () => {
+        applyPatchedSnapshot(normalizedPath, nextSnapshot, layoutTopologyChanged, { force: true });
+      };
+      if (immediate) flushSync(applySnapshot);
+      else startTransition(applySnapshot);
+    };
+
     if (!result.updated) {
+      if (forceApply && sameRepoPath(repoPath, normalizedPath)) {
+        try {
+          await applyReconciledSnapshot(getSnapshotForMutation(normalizedPath), true);
+          return;
+        } catch {
+          // fall through to quick ref sync
+        }
+      }
       if (quickState && sameRepoPath(repoPath, normalizedPath)) {
         projectQuickStateRef.current = {
           ...projectQuickStateRef.current,
@@ -1667,17 +1689,10 @@ function App() {
       return;
     }
 
-    let nextSnapshot = toRepoVisualSnapshot(result.snapshot ?? null);
-    if (!nextSnapshot) return;
+    const incoming = toRepoVisualSnapshot(result.snapshot ?? null);
+    if (!incoming) return;
 
-    nextSnapshot = reconcileSnapshotCheckedOutRef(nextSnapshot, quickState);
-    await yieldToPaint();
-    if (applyGeneration !== repoMutationGenerationRef.current) return;
-    const applySnapshot = () => {
-      applyPatchedSnapshot(normalizedPath, nextSnapshot!, true);
-    };
-    if (immediate) flushSync(applySnapshot);
-    else startTransition(applySnapshot);
+    await applyReconciledSnapshot(incoming, true);
   }
 
   async function finalizeRepoMutation(path: string, ...outcomes: RepoMutationOutcome[]) {
@@ -1699,9 +1714,17 @@ function App() {
         snapshot = applyMutationPatch(snapshot, outcome);
       }
       const layoutTopologyChanged = outcomes.some((outcome) => outcome.layoutTopologyChanged);
+      const isCommit = outcomes.some((outcome) => outcome.kind === 'commit');
+      const commitOutcome = isCommit
+        ? outcomes.find((outcome): outcome is RepoMutationOutcome & { kind: 'commit' } => outcome.kind === 'commit')
+        : undefined;
+
+      if (isCommit) {
+        snapshot = await reconcileSnapshotForProjectSwitch(normalizedPath, snapshot);
+      }
 
       await yieldToPaint();
-      if (applyGeneration !== repoMutationGenerationRef.current) return;
+      if (!isCommit && applyGeneration !== repoMutationGenerationRef.current) return;
 
       const immediateApply = mutationOutcomeNeedsImmediateApply(outcomes);
       if (immediateApply) {
@@ -1714,11 +1737,14 @@ function App() {
         });
       }
 
-      const isCommit = outcomes.some((outcome) => outcome.kind === 'commit');
       if (isCommit) {
+        if (commitOutcome?.commit.fullSha) {
+          setGridFocusSha(commitOutcome.commit.fullSha);
+          setGridSearchJumpToken((token) => token + 1);
+        }
         suppressBackgroundRefreshUntilRef.current = 0;
         noteSyncedAfterMutationOutcomes(normalizedPath, ...outcomes);
-        void refreshRepoAfterMutationFull(normalizedPath, { immediate: true });
+        await refreshRepoAfterMutationFull(normalizedPath, { immediate: true, forceApply: true });
       } else {
         suppressBackgroundRefreshUntilRef.current = Date.now() + 2500;
         window.setTimeout(() => {
