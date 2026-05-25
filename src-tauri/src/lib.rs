@@ -1,6 +1,8 @@
 mod git;
 mod github;
 mod opencode;
+#[cfg(target_os = "macos")]
+mod macos_traffic_lights;
 
 use tauri::{Emitter, Manager};
 
@@ -4939,6 +4941,8 @@ fn screenshot(app: tauri::AppHandle, path: String) -> Result<(), String> {
         .args(["-x", "-R", &region, &path]) // -x = silent, -R = region
         .status()
         .map_err(|e| e.to_string())?;
+    #[cfg(target_os = "macos")]
+    macos_traffic_lights::schedule_reapply_after_screen_capture(&app);
     Ok(())
 }
 
@@ -5757,7 +5761,9 @@ pub fn run() {
         .plugin(tauri_plugin_global_shortcut::Builder::new().build())
         .plugin(tauri_plugin_dialog::init());
     #[cfg(target_os = "macos")]
-    let builder = builder.plugin(
+    let builder = builder
+        .plugin(macos_traffic_lights::init_plugin())
+        .plugin(
         tauri::plugin::Builder::<_, ()>::new("macos-fps-unlock")
             .on_webview_ready(|webview| {
                 let _ = webview.unlock_fps();
@@ -5770,6 +5776,9 @@ pub fn run() {
             #[cfg(target_os = "macos")]
             {
                 app.set_activation_policy(tauri::ActivationPolicy::Regular);
+                if let Some(window) = app.get_webview_window("main") {
+                    macos_traffic_lights::install(&window);
+                }
                 let shortcut = Shortcut::new(Some(Modifiers::SUPER), Code::KeyG);
                 app.global_shortcut()
                     .on_shortcut(shortcut, move |app_handle, _shortcut, event| {
