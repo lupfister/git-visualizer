@@ -14,16 +14,13 @@ import { CARD_HEIGHT, CARD_WIDTH } from './LayoutGrid';
 
 const LOADING_TILE_SEED = 'map-grid-loading';
 const LOADING_SHAPE_FILL = 'var(--muted)';
-const PINWHEEL_ROTATION_MS = 3400;
-const PINWHEEL_ARMS = 3;
-/** Angular width of each arm as a fraction of the arm period. */
-const PINWHEEL_ARM_SPAN = 0.62;
-/** Leading segment held near peak brightness before the long tail fades. */
-const PINWHEEL_ARM_PLATEAU = 0.14;
-/** Max angular lag at the viewport edge — outer tiles trail the hub. */
-const PINWHEEL_MAX_DRAG_MS = 900;
-/** Extra luminance mixed toward white at the peak of each pinwheel arm. */
-const PINWHEEL_PEAK_LUM_MIX = 0.55;
+const SHIMMER_SPEED_PX_PER_MS = 1;
+/** Core ramp width along the diagonal axis (px). */
+const SHIMMER_BAND_WIDTH_PX = 1600;
+/** Soft falloff after the bright edge (px). */
+const SHIMMER_FADE_TAIL_PX = 800;
+/** Extra luminance mixed toward white at the peak of the shimmer band. */
+const SHIMMER_PEAK_LUM_MIX = 0.55;
 const MIN_VIEWPORT_PX = 64;
 
 type LoadingPatch = {
@@ -93,46 +90,33 @@ const flattenPaintedCells = (patches: LoadingPatch[]): PaintedLoadingCell[] => {
   return painted;
 };
 
-const pinwheelBoostAt = (
+const shimmerBoostAt = (
   cellCx: number,
   cellCy: number,
-  originX: number,
-  originY: number,
-  maxDragRadius: number,
+  shimmerSpanPx: number,
   timeMs: number,
 ): number => {
-  const dx = cellCx - originX;
-  const dy = cellCy - originY;
-  const dist = Math.hypot(dx, dy);
-  const angle = Math.atan2(dy, dx);
-  const dragMs =
-    maxDragRadius > 0 ? (dist / maxDragRadius) * PINWHEEL_MAX_DRAG_MS : 0;
-  const laggedTimeMs = timeMs - dragMs;
-  const rotation = (laggedTimeMs / PINWHEEL_ROTATION_MS) * Math.PI * 2;
-  const armPeriod = (Math.PI * 2) / PINWHEEL_ARMS;
-  const armSpan = armPeriod * PINWHEEL_ARM_SPAN;
-
-  let phase = angle - rotation;
-  phase = ((phase % armPeriod) + armPeriod) % armPeriod;
-  if (phase > armSpan) {
+  const diag = cellCx + cellCy;
+  const travel = timeMs * SHIMMER_SPEED_PX_PER_MS;
+  const totalBandPx = SHIMMER_BAND_WIDTH_PX + SHIMMER_FADE_TAIL_PX;
+  const phase = ((diag - travel) % shimmerSpanPx + shimmerSpanPx) % shimmerSpanPx;
+  if (phase > totalBandPx) {
     return 0;
   }
 
-  const t = phase / armSpan;
-  if (t <= PINWHEEL_ARM_PLATEAU) {
-    return 1;
+  if (phase <= SHIMMER_BAND_WIDTH_PX) {
+    const t = phase / SHIMMER_BAND_WIDTH_PX;
+    return t * t * (3 - 2 * t);
   }
 
-  const fade = (t - PINWHEEL_ARM_PLATEAU) / (1 - PINWHEEL_ARM_PLATEAU);
-  return Math.pow(Math.cos((fade * Math.PI) / 2), 0.65);
+  const fadeT = (phase - SHIMMER_BAND_WIDTH_PX) / SHIMMER_FADE_TAIL_PX;
+  return Math.pow(Math.cos((fadeT * Math.PI) / 2), 0.8);
 };
 
 const applyLoadingTileOpacities = (
   paintedCells: PaintedLoadingCell[],
   shapeRefsByKey: Map<string, SVGCircleElement | SVGPathElement>,
-  originX: number,
-  originY: number,
-  maxDragRadius: number,
+  shimmerSpanPx: number,
   timeMs: number | null,
 ): void => {
   for (const painted of paintedCells) {
@@ -161,15 +145,8 @@ const applyLoadingTileOpacities = (
     const boost =
       timeMs == null
         ? 0
-        : pinwheelBoostAt(
-            painted.globalCx,
-            painted.globalCy,
-            originX,
-            originY,
-            maxDragRadius,
-            timeMs,
-          );
-    const highlightMix = Math.min(1, painted.baseLumMix + boost * PINWHEEL_PEAK_LUM_MIX);
+        : shimmerBoostAt(painted.globalCx, painted.globalCy, shimmerSpanPx, timeMs);
+    const highlightMix = Math.min(1, painted.baseLumMix + boost * SHIMMER_PEAK_LUM_MIX);
     shape.setAttribute('fill', lumMixToFillCss(LOADING_SHAPE_FILL, highlightMix));
   }
 };
@@ -222,7 +199,7 @@ export default function MapGridLoadingTiles() {
   const [viewportSize, setViewportSize] = useState<{ width: number; height: number } | null>(null);
   const shapeRefsByKey = useRef(new Map<string, SVGCircleElement | SVGPathElement>());
   const paintedCellsRef = useRef<PaintedLoadingCell[]>([]);
-  const spinOriginRef = useRef({ x: 0, y: 0, maxDragRadius: 1 });
+  const shimmerSpanPxRef = useRef(1);
   const animStartMsRef = useRef(0);
   const animRafRef = useRef<number | null>(null);
 
@@ -238,11 +215,7 @@ export default function MapGridLoadingTiles() {
       setViewportSize((prev) =>
         prev?.width === width && prev?.height === height ? prev : { width, height },
       );
-      spinOriginRef.current = {
-        x: width / 2,
-        y: height / 2,
-        maxDragRadius: Math.hypot(width / 2, height / 2),
-      };
+      shimmerSpanPxRef.current = width + height + SHIMMER_BAND_WIDTH_PX + SHIMMER_FADE_TAIL_PX;
     };
 
     syncSize();
@@ -314,13 +287,10 @@ export default function MapGridLoadingTiles() {
     if (shapeRefsByKey.current.size === 0 || paintedCellsRef.current.length === 0) {
       return;
     }
-    const { x, y, maxDragRadius } = spinOriginRef.current;
     applyLoadingTileOpacities(
       paintedCellsRef.current,
       shapeRefsByKey.current,
-      x,
-      y,
-      maxDragRadius,
+      shimmerSpanPxRef.current,
       timeMs,
     );
   };
