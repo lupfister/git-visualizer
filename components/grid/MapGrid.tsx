@@ -306,6 +306,7 @@ export default function BranchGridMap({
   const [isCompactHud, setIsCompactHud] = useState(false);
   const [hideSearchBar, setHideSearchBar] = useState(false);
   const autoRecoverRef = useRef<{ key: string; attempts: number } | null>(null);
+  const hasCullRunRef = useRef(false);
   const visibleBoundsRef = useRef<ViewportContentBounds | null>(null);
   const connectorCullScopeRef = useRef(`${currentRepoPath ?? ''}::${mapReadyEpoch}`);
   const connectorCullScopeKey = `${currentRepoPath ?? ''}::${mapReadyEpoch}`;
@@ -341,6 +342,7 @@ export default function BranchGridMap({
   useEffect(() => {
     lastHandledViewportFocusRequestRef.current = null;
     autoRecoverRef.current = null;
+    hasCullRunRef.current = false;
   }, [mapReadyEpoch, currentRepoPath]);
 
   useEffect(() => {
@@ -588,6 +590,10 @@ export default function BranchGridMap({
     () => buildCommitCullSpatialIndex(renderNodes),
     [renderNodes],
   );
+
+  useLayoutEffect(() => {
+    hasCullRunRef.current = false;
+  }, [renderNodes]);
 
   const visibleRenderNodes = useMemo(() => {
     return renderNodes.filter((node) => {
@@ -1119,6 +1125,7 @@ export default function BranchGridMap({
   );
 
   const applyVisibleNodeCull = useCallback(() => {
+    hasCullRunRef.current = true;
     const viewport = scrollContainerRef.current;
     if (!viewport || viewport.clientWidth <= 0 || viewport.clientHeight <= 0) return;
 
@@ -1328,6 +1335,7 @@ export default function BranchGridMap({
       autoRecoverRef.current = null;
       return;
     }
+    if (!hasCullRunRef.current) return;
     // Viewport culling can briefly report zero visible nodes while panning; recentering
     // during an active pan gesture reads as a teleport.
     if (isCameraMovingRef.current) return;

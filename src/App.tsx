@@ -91,7 +91,7 @@ const MIN_FULL_GRAPH_REFRESH_MS = 2000;
 /** Keep optimistic post-commit HEAD on the map until background probes catch up. */
 const POST_COMMIT_HEAD_PROTECT_MS = 8000;
 const POST_COMMIT_RELEASE_MAX_ATTEMPTS = 15;
-const HEAD_STATE_PROBE_MS = 12000;
+const HEAD_STATE_PROBE_MS = 30000;
 /** Poll porcelain for unstaged edits — working tree changes do not touch .git. */
 const DIRTY_STATE_PROBE_MS = 2500;
 /** Coalesce dirty porcelain polls into one UI apply. */
@@ -2340,6 +2340,7 @@ function App() {
       }
     } finally {
       reconcileInFlightRef.current = false;
+      pendingRefreshAfterInteractionRef.current = false;
     }
   }
 
@@ -3290,8 +3291,6 @@ function App() {
     if (shouldSkipDirtyOnlySync(path)) return false;
 
     const resolvedPeek = options?.peek ?? await fetchRepoSyncPeek(path);
-    const quickState = await invoke<RepoQuickState>('get_repo_quick_state', { repoPath: path }).catch(() => null);
-    if (!quickState) return false;
 
     let snapshot: RepoVisualSnapshot;
     try {
@@ -3303,6 +3302,19 @@ function App() {
     if (resolvedPeek && isActiveUiBehindPeek(normalizedPath, resolvedPeek)) {
       return applyPublishedSnapshotWhenBehind(path, resolvedPeek);
     }
+
+    if (resolvedPeek?.signature) {
+      const parsed = parsePeekSignature(resolvedPeek.signature);
+      const uiDirty = latestCheckedOutRef.current?.hasUncommittedChanges
+        ?? snapshot.checkedOutRef?.hasUncommittedChanges
+        ?? false;
+      if (uiDirty === parsed.hasUncommittedChanges) {
+        return false;
+      }
+    }
+
+    const quickState = await invoke<RepoQuickState>('get_repo_quick_state', { repoPath: path }).catch(() => null);
+    if (!quickState) return false;
 
     const uiDirty = latestCheckedOutRef.current?.hasUncommittedChanges
       ?? snapshot.checkedOutRef?.hasUncommittedChanges
@@ -3456,7 +3468,7 @@ function App() {
       return false;
     }
     const signature = getRepoVisualSnapshotSignature(snapshot);
-    if (activeSnapshotSignatureRef.current === signature && options?.force !== true) {
+    if (activeSnapshotSignatureRef.current === signature) {
       return false;
     }
     setMapGridBackgroundActivity('snapshot-apply', 'Apply repo snapshot', true);
