@@ -183,8 +183,31 @@ const findWorktreeAnchorParentRenderNode = (
   renderNodes: Node[],
   worktree: VisualCommit,
   checkedOutRef: CheckedOutRef | null,
+  defaultBranch: string,
 ): Node | null => {
   const isRenderableParent = (node: Node): boolean => !isWorktreeGraphNode(node.commit);
+  const checkoutHead = checkedOutRef?.headSha ?? null;
+
+  if (
+    worktree.parentSha
+    && checkoutHead
+    && !isWorkingTreeCommitId(checkoutHead)
+    && worktreeShaMatches(worktree.parentSha, checkoutHead)
+  ) {
+    const tipMatches = renderNodes.filter(
+      (node) => isRenderableParent(node) && commitMatchesSha(node.commit, checkoutHead),
+    );
+    const laneBranch = worktree.branchName ?? checkedOutRef?.branchName ?? null;
+    const localLane = `${defaultBranch} (local)`;
+    for (const lane of [laneBranch, localLane, defaultBranch]) {
+      if (!lane) continue;
+      const onLane = tipMatches.filter((node) => node.commit.branchName === lane);
+      const onPreferredLane = pickRightmostRenderNode(onLane);
+      if (onPreferredLane) return onPreferredLane;
+    }
+    const head = pickRightmostRenderNode(tipMatches);
+    if (head) return head;
+  }
 
   if (worktree.parentSha) {
     const parentMatches = renderNodes.filter(
@@ -200,11 +223,18 @@ const findWorktreeAnchorParentRenderNode = (
     if (parent) return parent;
   }
 
-  const headSha = checkedOutRef?.headSha ?? null;
-  if (headSha && !isWorkingTreeCommitId(headSha)) {
+  if (checkoutHead && !isWorkingTreeCommitId(checkoutHead)) {
     const headMatches = renderNodes.filter(
-      (node) => isRenderableParent(node) && commitMatchesSha(node.commit, headSha),
+      (node) => isRenderableParent(node) && commitMatchesSha(node.commit, checkoutHead),
     );
+    const laneBranch = worktree.branchName ?? checkedOutRef?.branchName ?? null;
+    const localLane = `${defaultBranch} (local)`;
+    for (const lane of [laneBranch, localLane, defaultBranch]) {
+      if (!lane) continue;
+      const onLane = headMatches.filter((node) => node.commit.branchName === lane);
+      const onPreferredLane = pickRightmostRenderNode(onLane);
+      if (onPreferredLane) return onPreferredLane;
+    }
     const head = pickRightmostRenderNode(headMatches);
     if (head) return head;
   }
@@ -230,7 +260,7 @@ const pinWorktreeNodesToLayout = (
   const usedLaneColumnsByParentRow = new Map<string, Set<number>>();
 
   for (const node of worktrees) {
-    const parentNode = findWorktreeAnchorParentRenderNode(renderNodes, node.commit, checkedOutRef);
+    const parentNode = findWorktreeAnchorParentRenderNode(renderNodes, node.commit, checkedOutRef, defaultBranch);
     if (!parentNode) continue;
     const worktree = node.commit;
     const parentShaLinksCheckoutTip = !!(

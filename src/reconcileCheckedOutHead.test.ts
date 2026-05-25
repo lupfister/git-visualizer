@@ -83,13 +83,25 @@ describe('mergeCheckedOutRefWithQuickState', () => {
     expect(merged.hasUncommittedChanges).toBe(false);
   });
 
-  it('does not re-dirty a clean ref when quick probe is stale at the same head', () => {
+  it('shows dirty when snapshot is clean but git quick state is dirty at the same head', () => {
     const headSha = 'sharedheadeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee';
     const snapshot = snapshotWithHead(headSha);
     const merged = mergeCheckedOutRefWithQuickState(
       baseRef({ headSha, hasUncommittedChanges: false }),
       quick({ headSha, hasUncommittedChanges: true }),
       snapshot,
+    );
+    expect(merged.hasUncommittedChanges).toBe(true);
+  });
+
+  it('ignores stale dirty probe only for protected post-commit head', () => {
+    const headSha = 'sharedheadffffffffffffffffffffffffffffffff';
+    const snapshot = snapshotWithHead(headSha);
+    const merged = mergeCheckedOutRefWithQuickState(
+      baseRef({ headSha, hasUncommittedChanges: false }),
+      quick({ headSha, hasUncommittedChanges: true }),
+      snapshot,
+      { protectedHeadSha: headSha },
     );
     expect(merged.hasUncommittedChanges).toBe(false);
   });

@@ -1,5 +1,10 @@
-import { isWorkingTreeCommitId } from '../lib/worktreeSessions';
+import { isWorkingTreeCommitId, shaMatches } from '../lib/worktreeSessions';
 import type { CheckedOutRef, RepoQuickState, RepoVisualSnapshot } from '../types';
+
+export type MergeCheckedOutRefOptions = {
+  /** After commit: ignore a stale dirty quick probe while HEAD matches this sha. */
+  protectedHeadSha?: string | null;
+};
 
 export function snapshotContainsCommitSha(
   snapshot: RepoVisualSnapshot,
@@ -21,6 +26,7 @@ export function mergeCheckedOutRefWithQuickState(
   base: CheckedOutRef,
   quickState: RepoQuickState,
   snapshot: RepoVisualSnapshot,
+  options?: MergeCheckedOutRefOptions,
 ): CheckedOutRef {
   const refHead = base.headSha ?? '';
   const quickHead = quickState.headSha ?? '';
@@ -44,11 +50,23 @@ export function mergeCheckedOutRefWithQuickState(
   }
 
   const headAlignedWithQuick = headSha === quickHead;
+  const protectedHead = options?.protectedHeadSha ?? null;
+  const suppressStaleDirtyProbe = Boolean(
+    protectedHead
+    && headAlignedWithQuick
+    && !base.hasUncommittedChanges
+    && quickState.hasUncommittedChanges
+    && shaMatches(headSha, protectedHead),
+  );
   let hasUncommittedChanges = base.hasUncommittedChanges;
   if (headAlignedWithQuick) {
-    hasUncommittedChanges = base.hasUncommittedChanges
-      ? quickState.hasUncommittedChanges
-      : false;
+    if (base.hasUncommittedChanges) {
+      hasUncommittedChanges = quickState.hasUncommittedChanges;
+    } else if (suppressStaleDirtyProbe) {
+      hasUncommittedChanges = false;
+    } else {
+      hasUncommittedChanges = quickState.hasUncommittedChanges;
+    }
   } else if (headSha === refHead) {
     hasUncommittedChanges = base.hasUncommittedChanges;
   } else {
@@ -70,6 +88,7 @@ export function mergeCheckedOutRefWithQuickState(
 export function mergeSnapshotCheckedOutRefWithQuickState(
   snapshot: RepoVisualSnapshot,
   quickState: RepoQuickState | null,
+  options?: MergeCheckedOutRefOptions,
 ): RepoVisualSnapshot {
   if (!quickState || !snapshot.checkedOutRef) return snapshot;
   return {
@@ -78,6 +97,7 @@ export function mergeSnapshotCheckedOutRefWithQuickState(
       snapshot.checkedOutRef,
       quickState,
       snapshot,
+      options,
     ),
   };
 }
