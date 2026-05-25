@@ -98,6 +98,14 @@ function patchBranchForPush(branch: Branch): Branch {
   };
 }
 
+function syncUnpushedDirectCommits(
+  unpushedDirectCommits: DirectCommit[],
+  unpushedCommitShasByBranch: Record<string, string[]>,
+): DirectCommit[] {
+  const allowedShas = new Set(Object.values(unpushedCommitShasByBranch).flat());
+  return unpushedDirectCommits.filter((commit) => allowedShas.has(commit.fullSha));
+}
+
 function patchCommit(snapshot: RepoVisualSnapshot, commit: RepoMutationOutcome & { kind: 'commit' }): RepoVisualSnapshot {
   const { branchName, fullSha, sha, message, author, date, parentSha, parentShas, checkedOutRef } = commit.commit;
   const parentShaValue = parentSha ?? parentShas[0] ?? null;
@@ -247,9 +255,13 @@ function patchPush(snapshot: RepoVisualSnapshot, outcome: RepoMutationOutcome & 
     }
   }
 
-  const unpushedDirectCommits = snapshot.unpushedDirectCommits.filter(
-    (commit) => !pushedShas.has(commit.fullSha),
-  );
+  const unpushedDirectCommits = snapshot.unpushedDirectCommits.filter((commit) => {
+    const branchRemaining = unpushedCommitShasByBranch[commit.branch] ?? [];
+    if (pushed.has(commit.branch)) {
+      return branchRemaining.includes(commit.fullSha);
+    }
+    return !pushedShas.has(commit.fullSha);
+  });
 
   const branchUniqueAheadCounts = { ...snapshot.branchUniqueAheadCounts };
   for (const branchName of outcome.pushedBranchNames) {
@@ -440,6 +452,7 @@ function patchBranchMetadataSync(
     branches: outcome.branches,
     branchCommitPreviews,
     unpushedCommitShasByBranch,
+    unpushedDirectCommits: syncUnpushedDirectCommits(snapshot.unpushedDirectCommits, unpushedCommitShasByBranch),
     branchUniqueAheadCounts: outcome.branchUniqueAheadCounts,
     checkedOutRef: outcome.checkedOutRef,
     laneByBranch,

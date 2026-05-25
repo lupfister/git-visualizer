@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest';
 import type { RepoVisualSnapshot } from '../types';
 import {
   applyMutationPatch,
+  outcomeFromBranchMetadataSync,
   outcomeFromPush,
   outcomeFromStashDrop,
   outcomeFromStashDrops,
@@ -146,6 +147,37 @@ describe('applyMutationPatch push', () => {
     expect(feature?.unpushedCommits).toBe(0);
     expect(feature?.remoteSyncStatus).toBe('on-github');
     expect(next.unpushedCommitShasByBranch.feature).toEqual([]);
+    expect(next.unpushedDirectCommits).toHaveLength(0);
+  });
+
+  it('clears unpushed commits on pushed branches when sha map was stale', () => {
+    const next = applyMutationPatch(
+      baseSnapshot({
+        unpushedCommitShasByBranch: {
+          main: [],
+          feature: [],
+        },
+      }),
+      outcomeFromPush(['feature']),
+    );
+    expect(next.unpushedDirectCommits).toHaveLength(0);
+  });
+});
+
+describe('applyMutationPatch branchMetadataSync', () => {
+  it('reconciles unpushedDirectCommits from branch sha map', () => {
+    const next = applyMutationPatch(baseSnapshot(), outcomeFromBranchMetadataSync({
+      branches: baseSnapshot().branches.map((branch) => (
+        branch.name === 'feature'
+          ? { ...branch, commitsAhead: 0, unpushedCommits: 0, remoteSyncStatus: 'on-github' as const }
+          : branch
+      )),
+      defaultBranch: 'main',
+      removedBranchNames: [],
+      unpushedCommitShasByBranch: { main: [], feature: [] },
+      branchUniqueAheadCounts: { feature: 0 },
+      checkedOutRef: baseSnapshot().checkedOutRef,
+    }));
     expect(next.unpushedDirectCommits).toHaveLength(0);
   });
 });
