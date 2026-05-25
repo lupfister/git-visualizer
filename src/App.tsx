@@ -844,6 +844,25 @@ function App() {
     }
   }
 
+  function isGitActivityGraphCaughtUp(path: string, peek: RepoSyncPeek | null): boolean {
+    if (!peek || !sameRepoPath(repoPath, path)) return true;
+    try {
+      if (isActiveUiBehindPeek(path, peek)) return false;
+      const parsed = parsePeekSignature(peek.signature);
+      if (!parsed.headSha || isWorkingTreeCommitId(parsed.headSha)) return true;
+      const snapshot = getSnapshotForMutation(path);
+      return snapshotContainsCommitSha(snapshot, parsed.headSha);
+    } catch {
+      return false;
+    }
+  }
+
+  function noteGitActivityHandledIfCaughtUp(path: string, peek: RepoSyncPeek | null) {
+    if (isGitActivityGraphCaughtUp(path, peek)) {
+      markGitActivityHandled();
+    }
+  }
+
   function absorbRedundantGitActivityRefresh(path: string, peek: RepoSyncPeek | null): boolean {
     const normalizedPath = normalizePath(path);
     if (!normalizedPath || !peek || !refreshUiAlreadyMatchesPeek(path, peek)) return false;
@@ -2030,11 +2049,17 @@ function App() {
     }
   }
 
-  async function applyPublishedSnapshotWhenBehind(path: string, peek?: RepoSyncPeek | null): Promise<boolean> {
+  async function applyPublishedSnapshotWhenBehind(
+    path: string,
+    peek?: RepoSyncPeek | null,
+    options?: { force?: boolean },
+  ): Promise<boolean> {
     const normalizedPath = normalizePath(path);
     if (!normalizedPath || !sameRepoPath(repoPath, normalizedPath)) return false;
     const resolvedPeek = peek ?? await fetchRepoSyncPeek(normalizedPath);
-    if (resolvedPeek && !isActiveUiBehindPeek(normalizedPath, resolvedPeek)) return false;
+    if (!options?.force && resolvedPeek && !isActiveUiBehindPeek(normalizedPath, resolvedPeek)) {
+      return false;
+    }
 
     const result = await invoke<RefreshProjectResult>('refresh_project_if_changed', {
       projectId: normalizedPath,
@@ -2049,7 +2074,7 @@ function App() {
         });
       });
       if (resolvedPeek?.signature) noteSyncedRepoPeek(normalizedPath, resolvedPeek.signature);
-      markGitActivityHandled();
+      noteGitActivityHandledIfCaughtUp(normalizedPath, resolvedPeek);
       return true;
     }
 
@@ -2059,9 +2084,27 @@ function App() {
     const loaded = await loadAndApplyPublishedSnapshot(normalizedPath, resolvedPeek);
     if (loaded) {
       if (resolvedPeek?.signature) noteSyncedRepoPeek(normalizedPath, resolvedPeek.signature);
-      markGitActivityHandled();
+      noteGitActivityHandledIfCaughtUp(normalizedPath, resolvedPeek);
+      return true;
     }
-    return loaded;
+
+    if (options?.force) {
+      try {
+        const live = buildActiveRepoSnapshot(normalizedPath);
+        flushSync(() => {
+          applyPatchedSnapshot(normalizedPath, live, false, {
+            force: true,
+            skipLayoutRebuild: false,
+          });
+        });
+        if (resolvedPeek?.signature) noteSyncedRepoPeek(normalizedPath, resolvedPeek.signature);
+        noteGitActivityHandledIfCaughtUp(normalizedPath, resolvedPeek);
+        return true;
+      } catch (error) {
+        console.warn('Live snapshot sync failed:', error);
+      }
+    }
+    return false;
   }
 
   async function loadAndApplyPublishedSnapshot(path: string, peek?: RepoSyncPeek | null) {
@@ -3800,7 +3843,7 @@ function App() {
       const peek = await fetchRepoSyncPeek(repoPath);
       if (
         peek
-        && gitActivityPending
+        && !gitActivityPending
         && !postCommitGuarded
         && !isActiveUiBehindPeek(repoPath, peek)
         && absorbRedundantGitActivityRefresh(repoPath, peek)
@@ -3824,7 +3867,7 @@ function App() {
           // continue with refresh when peek/live comparison is unavailable
         }
       }
-      if (peek && !postCommitGuarded && await tryWorktreeListSync(repoPath, peek)) {
+      if (peek && !postCommitGuarded && !gitActivityPending && await tryWorktreeListSync(repoPath, peek)) {
         pendingRefreshAfterInteractionRef.current = false;
         return;
       }
@@ -3859,7 +3902,7 @@ function App() {
       }
       const uiBehindPeek = peek ? isActiveUiBehindPeek(repoPath, peek) : false;
       if (reason === 'quick' && !uiBehindPeek) {
-        if (gitActivityPending) markGitActivityHandled();
+        noteGitActivityHandledIfCaughtUp(repoPath, peek);
         return;
       }
       if (reason === 'quick' && uiBehindPeek) {
@@ -3874,6 +3917,7 @@ function App() {
         }
       }
 
+      const refreshGitActivityPending = gitActivityEpochRef.current !== lastHandledGitActivityEpochRef.current;
       const refreshEpoch = mapInteractionEpochRef.current;
       const mutationAtStart = repoMutationGenerationRef.current;
       refreshInFlight = true;
@@ -3892,7 +3936,9 @@ function App() {
         const quickState = await invoke<RepoQuickState>('get_repo_quick_state', { repoPath }).catch(() => null);
         if (mutationAtStart !== repoMutationGenerationRef.current) return;
         if (!result.updated) {
-          if (peek && isActiveUiBehindPeek(repoPath, peek)) {
+          if (refreshGitActivityPending) {
+            await applyPublishedSnapshotWhenBehind(repoPath, peek, { force: true });
+          } else if (peek && isActiveUiBehindPeek(repoPath, peek)) {
             await applyPublishedSnapshotWhenBehind(repoPath, peek);
           } else if (quickState) {
             projectQuickStateRef.current = {
@@ -3929,9 +3975,7 @@ function App() {
           void invoke<FingerprintCheckResult>('check_project_fingerprint', { projectId: repoPath })
             .then((check) => noteSyncedRepoFingerprint(repoPath, check?.currentFingerprint))
             .catch(() => undefined);
-          if (!peek || !isActiveUiBehindPeek(repoPath, peek)) {
-            lastHandledGitActivityEpochRef.current = gitActivityEpochRef.current;
-          }
+          noteGitActivityHandledIfCaughtUp(repoPath, peek);
           return;
         }
         let nextSnapshot = toRepoVisualSnapshot(result.snapshot ?? null);
@@ -3948,7 +3992,11 @@ function App() {
           return;
         }
         if (shouldPreferLiveSnapshotOverIncoming(repoPath, nextSnapshot, peek)) {
-          markGitActivityHandled();
+          if (refreshGitActivityPending) {
+            await applyPublishedSnapshotWhenBehind(repoPath, peek, { force: true });
+          } else {
+            markGitActivityHandled();
+          }
           window.setTimeout(() => {
             void invoke('persist_project_snapshot', { projectId: repoPath }).catch((error) => {
               console.warn('Background snapshot persist failed:', error);
@@ -3960,7 +4008,15 @@ function App() {
           try {
             const live = buildActiveRepoSnapshot(repoPath);
             if (isIncomingSnapshotStaleComparedToLive(nextSnapshot, live)) {
-              markGitActivityHandled();
+              if (refreshGitActivityPending) {
+                flushSync(() => {
+                  applyPatchedSnapshot(repoPath, live, false, {
+                    force: true,
+                    skipLayoutRebuild: false,
+                  });
+                });
+              }
+              noteGitActivityHandledIfCaughtUp(repoPath, peek);
               autoFocusSyncKeyRef.current = null;
               focusCameraOnActiveWorktreeRef.current?.();
               return;
@@ -4024,7 +4080,7 @@ function App() {
           if (mutationAtStart !== repoMutationGenerationRef.current) return;
           const applySnapshot = () => {
             const applied = applySnapshotToActiveState(repoPath, nextSnapshot, {
-              force: reason === 'graph' || reason === 'local' || gitActivityPending,
+              force: reason === 'graph' || reason === 'local' || refreshGitActivityPending,
               allowIncomingDirty: true,
             });
             if (applied && quickState && !quickState.hasUncommittedChanges) {
@@ -4032,7 +4088,7 @@ function App() {
               focusCameraOnActiveWorktreeRef.current?.();
             }
           };
-          if (gitActivityPending) {
+          if (refreshGitActivityPending) {
             flushSync(applySnapshot);
           } else {
             startTransition(applySnapshot);
@@ -4046,16 +4102,23 @@ function App() {
           void invoke<FingerprintCheckResult>('check_project_fingerprint', { projectId: repoPath })
             .then((check) => noteSyncedRepoFingerprint(repoPath, check?.currentFingerprint))
             .catch(() => undefined);
-          if (!peek || !isActiveUiBehindPeek(repoPath, peek)) {
-            lastHandledGitActivityEpochRef.current = gitActivityEpochRef.current;
-          }
+          noteGitActivityHandledIfCaughtUp(repoPath, peek);
         }
       } catch (error) {
         console.warn('Background project refresh failed:', error);
       } finally {
         refreshInFlight = false;
         setMapGridBackgroundActivity('git-refresh', 'Git project refresh', false);
-        if (!isDisposed && pendingRefreshAfterInteractionRef.current && !isRepoRefreshBlocked()) {
+        const stillPending = gitActivityEpochRef.current !== lastHandledGitActivityEpochRef.current;
+        if (
+          !isDisposed
+          && stillPending
+          && peek
+          && !isGitActivityGraphCaughtUp(repoPath, peek)
+          && !isRepoRefreshBlocked()
+        ) {
+          void runRefresh('graph');
+        } else if (!isDisposed && pendingRefreshAfterInteractionRef.current && !isRepoRefreshBlocked()) {
           void runRefresh();
         } else if (pendingRefreshAfterInteractionRef.current) {
           setMapGridBackgroundActivity('git-refresh-pending', 'Git refresh queued', true, 'waiting');
@@ -4132,6 +4195,9 @@ function App() {
     listen<GitActivityEventPayload>('git-activity', (event) => {
       if (!sameRepoPath(event.payload.repoPath, repoPath)) return;
       gitActivityEpochRef.current += 1;
+      if (event.payload.kind === 'local' && !shouldSkipDirtyOnlySync(repoPath)) {
+        scheduleCoalescedDirtySync();
+      }
       void runRefresh('graph');
     }).then((fn) => {
       if (isDisposed) fn();
