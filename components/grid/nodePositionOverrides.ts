@@ -30,15 +30,41 @@ const findLegacyNodePositionOverride = (
   return undefined;
 };
 
+/** Worktree tiles are positioned by layout pin — persisted drag coords go stale after HEAD/lane changes. */
+const isLayoutPinnedWorktreeCommit = (commit: NodePositionCommitIdentity): boolean =>
+  isWorkingTreeCommitId(commit.id) || commit.kind === 'uncommitted';
+
+export const stripWorktreeNodePositionOverrides = (
+  overrides: NodePositionOverrides,
+): NodePositionOverrides => {
+  let changed = false;
+  const next: NodePositionOverrides = {};
+  for (const [key, value] of Object.entries(overrides)) {
+    if (
+      key.includes('WORKING_TREE')
+      || key.includes('working-tree')
+      || key.includes('uncommitted')
+    ) {
+      changed = true;
+      continue;
+    }
+    next[key] = value;
+  }
+  return changed ? next : overrides;
+};
+
 export const getNodePositionOverride = (
   overrides: NodePositionOverrides,
   commit: NodePositionCommitIdentity,
-): NodePositionOverride | undefined => (
-  overrides[getStableNodePositionKey(commit)]
-  ?? overrides[commit.visualId]
-  ?? overrides[commit.id]
-  ?? findLegacyNodePositionOverride(overrides, commit)
-);
+): NodePositionOverride | undefined => {
+  if (isLayoutPinnedWorktreeCommit(commit)) return undefined;
+  return (
+    overrides[getStableNodePositionKey(commit)]
+    ?? overrides[commit.visualId]
+    ?? overrides[commit.id]
+    ?? findLegacyNodePositionOverride(overrides, commit)
+  );
+};
 
 export const assignNodePositionOverride = (
   overrides: NodePositionOverrides,

@@ -10,6 +10,7 @@ import BranchGridMapView from '../components/grid/MapViewGrid';
 import { mapGridCameraStorageKey } from '../components/grid/useMapGridCamera';
 import DenseBranchSidebar from '../components/DenseBranchSidebar';
 import type { NodePositionOverrides } from '../components/grid/LayoutGrid';
+import { stripWorktreeNodePositionOverrides } from '../components/grid/nodePositionOverrides';
 import { computeBranchGridLayout, type BranchGridLayoutModel } from '../components/grid/branchGridLayoutModel';
 import { hydrateBranchGridLayoutModel, serializeBranchGridLayoutModel } from '../components/grid/layoutSnapshot';
 import { layoutModelHasWorkingTree } from '../components/grid/workingTreeLayout';
@@ -634,7 +635,7 @@ function App() {
     try {
       const localPayload = window.localStorage.getItem(nodePositionsStorageKey(normalizedPath));
       if (localPayload) {
-        localOverrides = parseNodePositionOverrides(localPayload);
+        localOverrides = stripWorktreeNodePositionOverrides(parseNodePositionOverrides(localPayload));
         setNodePositionOverridesByRepo((previous) => ({
           ...previous,
           [normalizedPath]: localOverrides ?? {},
@@ -661,7 +662,7 @@ function App() {
     if (seq !== loadNodePositionsSeqRef.current) return;
     if (userDirtyNodePositionsRef.current.has(normalizedPath)) return;
     if (localOverrides && Object.keys(localOverrides).length > 0) return;
-    const overrides = parseNodePositionOverrides(payloadJson);
+    const overrides = stripWorktreeNodePositionOverrides(parseNodePositionOverrides(payloadJson));
     setNodePositionOverridesByRepo((previous) => ({
       ...previous,
       [normalizedPath]: overrides,
@@ -1665,6 +1666,13 @@ function App() {
         setLayoutEpoch((epoch) => epoch + 1);
         setHydratedLayoutModel(null);
         setHydratedLayoutKey(null);
+        setNodePositionOverridesByRepo((previous) => {
+          const current = previous[normalizedPath] ?? {};
+          const stripped = stripWorktreeNodePositionOverrides(current);
+          if (stripped === current) return previous;
+          persistRepoNodePositions(normalizedPath, stripped);
+          return { ...previous, [normalizedPath]: stripped };
+        });
       }
     }
   }
@@ -2981,6 +2989,18 @@ function App() {
       const externalRefresh = reason === 'graph' || reason === 'local' || reason === 'quick';
 
       const peek = await fetchRepoSyncPeek(repoPath);
+      if (
+        peek
+        && !gitActivityPending
+        && !isActiveUiBehindPeek(repoPath, peek)
+        && normalizedPath
+        && lastSyncedRepoFingerprintRef.current[normalizedPath]
+        && projectSyncPeekRef.current[normalizedPath] === peek.signature
+      ) {
+        markGitActivityHandled();
+        pendingRefreshAfterInteractionRef.current = false;
+        return;
+      }
       if (peek && await tryWorktreeListSync(repoPath, peek)) {
         pendingRefreshAfterInteractionRef.current = false;
         return;
@@ -4558,11 +4578,15 @@ function App() {
   );
   const deferredLayoutRevision = useDeferredValue(layoutRevision);
   const layoutRevisionForView = useMemo(
-    () => (
-      mapLoading || deferredLayoutRevision.repoPath !== (repoPath ?? '')
-        ? layoutRevision
-        : deferredLayoutRevision
-    ),
+    () => {
+      if (mapLoading || deferredLayoutRevision.repoPath !== (repoPath ?? '')) {
+        return layoutRevision;
+      }
+      if (deferredLayoutRevision.graphLayoutSignature !== layoutRevision.graphLayoutSignature) {
+        return layoutRevision;
+      }
+      return deferredLayoutRevision;
+    },
     [deferredLayoutRevision, layoutRevision, mapLoading, repoPath],
   );
   const sharedGridLayoutCacheKey = useMemo(() => {
