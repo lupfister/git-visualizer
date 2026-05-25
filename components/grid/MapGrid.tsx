@@ -38,6 +38,7 @@ import {
 import CommitControls from './CommitControls';
 import { mergePanStableVisibleNodeIds, pickNearestVisibleVisualIds } from './MapGridCardVirtualizer';
 import MapGridCanvas from './MapGridCanvas';
+import MapGridLoadingTiles from './MapGridLoadingTiles';
 import MapGridDebugPanel from './MapGridDebugPanel';
 import {
   pulseMapGridBackgroundActivity,
@@ -101,26 +102,16 @@ function pruneVisibleNodesTowardTarget(prev: Set<string>, target: Set<string>, m
 }
 
 function MapGridLoadingState() {
-  return (
-    <div className="flex flex-1 min-h-0 items-center justify-center">
-      <div
-        role="status"
-        aria-label="Loading commits"
-        className="h-5 w-5 rounded-full border-2 border-border border-t-muted-foreground animate-spin"
-      />
-    </div>
-  );
+  return <MapGridLoadingTiles />;
 }
 
 function MapGridBlockingOverlay() {
   return (
-    <div className="pointer-events-auto absolute inset-0 z-[120] flex min-h-0 items-center justify-center bg-background/80">
-      <div
-        role="status"
-        aria-label="Preparing map"
-        className="h-5 w-5 rounded-full border-2 border-border border-t-muted-foreground animate-spin"
-      />
-    </div>
+    <div
+      role="status"
+      aria-label="Preparing map"
+      className="pointer-events-auto absolute inset-0 z-[120] bg-background/80"
+    />
   );
 }
 
@@ -1744,6 +1735,16 @@ export default function BranchGridMap({
     return () => window.cancelAnimationFrame(rafId);
   }, [allCommits.length, isLoading, blockMapInteraction, mapReadyEpoch, onMapReadyForDisplay]);
 
+  const showLoadingTiles = isLoading || allCommits.length === 0;
+
+  if (showLoadingTiles) {
+    return (
+      <div className="relative flex h-full min-h-0 flex-col overflow-hidden border-l border-border bg-background">
+        <MapGridLoadingState />
+      </div>
+    );
+  }
+
   return (
     <div className="relative flex h-full min-h-0 flex-col overflow-hidden border-l border-border bg-background">
       <MapGridDebugPanel
@@ -1934,10 +1935,7 @@ export default function BranchGridMap({
           </div>
         </div>
       ) : null}
-      {isLoading || allCommits.length === 0 ? (
-        <MapGridLoadingState />
-      ) : (
-        <MapGridCanvas
+      <MapGridCanvas
           scrollContainerRef={scrollContainerRef}
           mapPadHostRef={mapPadHostRef}
           registerCameraTarget={registerCameraTarget}
@@ -1988,7 +1986,6 @@ export default function BranchGridMap({
           nodePositionOverrides={nodePositionOverrides}
           connectorPathCacheScopeBase={`${currentRepoPath ?? '__no-repo__'}::${orientation}`}
         />
-      )}
       {blockMapDisplay ? <MapGridBlockingOverlay /> : null}
 
       {marqueeRect && isMarqueeSelecting ? (
