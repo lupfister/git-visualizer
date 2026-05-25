@@ -438,6 +438,16 @@ function patchBranchMetadataSync(
   const branchParentByName = Object.fromEntries(
     Object.entries(snapshot.branchParentByName).filter(([branchName]) => !removed.has(branchName)),
   ) as Record<string, string | null>;
+  for (const branch of outcome.branches) {
+    if (branch.name === outcome.defaultBranch) {
+      branchParentByName[branch.name] = null;
+      continue;
+    }
+    const parent = branch.parentBranch;
+    if (parent && parent !== branch.name) {
+      branchParentByName[branch.name] = parent;
+    }
+  }
 
   return touchSnapshot({
     ...snapshot,

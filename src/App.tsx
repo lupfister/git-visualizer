@@ -470,6 +470,7 @@ function App() {
   const latestUnpushedCommitShasByBranchRef = useRef<Record<string, string[]>>({});
   const latestMergeNodesRef = useRef<MergeNode[]>([]);
   const latestBranchParentByNameRef = useRef<Record<string, string | null>>({});
+  const branchHeadByNameRef = useRef<Record<string, string>>({});
   const layoutModelCacheRef = useRef<Map<string, BranchGridLayoutModel>>(new Map());
   const persistedLayoutKeysRef = useRef<Set<string>>(new Set());
   const lastResolvedLayoutModelRef = useRef<BranchGridLayoutModel | null>(null);
@@ -828,8 +829,11 @@ function App() {
     if (!sameRepoPath(repoPath, path)) return false;
     try {
       const parsed = parsePeekSignature(peek.signature);
+      const snapshot = getSnapshotForMutation(path);
       const ref = latestCheckedOutRef.current
-        ?? getSnapshotForMutation(path).checkedOutRef;
+        ?? snapshot.checkedOutRef;
+      if (parsed.headSha && isSnapshotGraphMissingHead(snapshot, parsed.headSha)) return false;
+      if (ref?.headSha && isSnapshotGraphMissingHead(snapshot, ref.headSha)) return false;
       return (
         Boolean(ref?.headSha)
         && parsed.headSha === ref.headSha
@@ -955,8 +959,14 @@ function App() {
     return false;
   }
 
+  function isSnapshotGraphMissingHead(snapshot: RepoVisualSnapshot, headSha: string | null | undefined): boolean {
+    if (!headSha || isWorkingTreeCommitId(headSha)) return false;
+    return !snapshotContainsCommitSha(snapshot, headSha);
+  }
+
   function isSnapshotBehindPeek(snapshot: RepoVisualSnapshot, peek: RepoSyncPeek): boolean {
     const parsed = parsePeekSignature(peek.signature);
+    if (parsed.headSha && isSnapshotGraphMissingHead(snapshot, parsed.headSha)) return true;
     const ref = snapshot.checkedOutRef;
     if (parsed.headSha && ref?.headSha && parsed.headSha !== ref.headSha) return true;
     if (parsed.hasUncommittedChanges !== (ref?.hasUncommittedChanges ?? false)) return true;
@@ -2172,6 +2182,16 @@ function App() {
       return false;
     }
 
+    const previousHead = snapshot.checkedOutRef?.headSha ?? '';
+    const nextHead = refForDirty.headSha ?? '';
+    if (
+      nextHead
+      && nextHead !== previousHead
+      && isSnapshotGraphMissingHead(snapshot, nextHead)
+    ) {
+      return false;
+    }
+
     const patched = applyMutationPatch(
       snapshot,
       nextDirty ? outcomeFromMarkDirty(refForDirty) : outcomeFromDiscardDirty(refForDirty),
@@ -3015,6 +3035,12 @@ function App() {
     if (quickState.headSha !== activeHead) {
       const guard = postCommitProtectedHeadShaRef.current[normalizedPath];
       if (!guard || !shaMatches(quickState.headSha, guard)) {
+        if (isSnapshotGraphMissingHead(snapshot, quickState.headSha)) {
+          gitActivityEpochRef.current += 1;
+          const graphSynced = await tryIncrementalBackgroundSync(path, { force: true, peek: resolvedPeek });
+          if (graphSynced) markGitActivityHandled();
+          return graphSynced;
+        }
         return false;
       }
     }
@@ -3084,21 +3110,45 @@ function App() {
       return false;
     }
 
+    const headNeedsGraphSync = Boolean(
+      quickState.headSha
+      && !isWorkingTreeCommitId(quickState.headSha)
+      && isSnapshotGraphMissingHead(snapshot, quickState.headSha),
+    );
+    let graphSynced = false;
+    if (headNeedsGraphSync) {
+      gitActivityEpochRef.current += 1;
+      graphSynced = await tryIncrementalBackgroundSync(path, { force: true, peek: resolvedPeek });
+      if (!graphSynced) {
+        runRepoRefreshRef.current?.('graph');
+      } else {
+        markGitActivityHandled();
+      }
+      try {
+        snapshot = getSnapshotForMutation(normalizedPath);
+      } catch {
+        return graphSynced;
+      }
+    }
+
     const uiDirty = latestCheckedOutRef.current?.hasUncommittedChanges
       ?? snapshot.checkedOutRef?.hasUncommittedChanges
       ?? false;
     if (uiDirty === quickState.hasUncommittedChanges) {
-      noteDirtySyncComplete(normalizedPath, quickState, resolvedPeek?.signature, { markGitActivity: false });
-      return false;
+      if (!graphSynced) {
+        noteDirtySyncComplete(normalizedPath, quickState, resolvedPeek?.signature, { markGitActivity: false });
+      }
+      return graphSynced;
     }
 
-    return applyLiveDirtyStateFromQuickState(
+    const dirtySynced = applyLiveDirtyStateFromQuickState(
       path,
       quickState,
       snapshot,
       quickState.hasUncommittedChanges,
       resolvedPeek?.signature,
     );
+    return dirtySynced || graphSynced;
   }
 
   async function probeLiveDirtyState(path: string): Promise<void> {
@@ -4076,9 +4126,15 @@ function App() {
     listen<GitActivityEventPayload>('git-activity', (event) => {
       if (!sameRepoPath(event.payload.repoPath, repoPath)) return;
       if (event.payload.kind === 'local') {
-        if (shouldSkipDirtyOnlySync(repoPath)) return;
         gitActivityEpochRef.current += 1;
-        scheduleCoalescedDirtySync();
+        if (!shouldSkipDirtyOnlySync(repoPath)) {
+          scheduleCoalescedDirtySync();
+        }
+        if (gitActivityDebounceId != null) window.clearTimeout(gitActivityDebounceId);
+        gitActivityDebounceId = window.setTimeout(() => {
+          gitActivityDebounceId = null;
+          void runRefresh('graph');
+        }, GIT_ACTIVITY_DEBOUNCE_MS);
         return;
       }
       gitActivityEpochRef.current += 1;
@@ -4135,6 +4191,7 @@ function App() {
     // We only clear ephemeral UI state that should not carry over.
     setBranchPromptMeta({});
     branchMetaLoadKeyRef.current = null;
+    branchHeadByNameRef.current = {};
     setGithubAuthLoading(false);
     setGithubAuthStatus(null);
     setGithubAuthMessage(null);
@@ -4150,16 +4207,18 @@ function App() {
       setLaneByBranch({});
       setBranchUniqueAheadCounts({});
       branchMetaLoadKeyRef.current = null;
+      branchHeadByNameRef.current = {};
       return;
     }
 
     const branchHeadKey = branches
-      .map((branch) => `${branch.name}:${branch.headSha}:${branch.parentBranch ?? ''}:${branch.commitsAhead}`)
+      .map((branch) => `${branch.name}:${branch.headSha}`)
       .join('|');
     const mergeNodesKey = mergeNodes
       .map((node) => `${node.fullSha}:${node.parentShas?.[1] ?? ''}`)
       .join('|');
-    const branchMetaLoadKey = `${repoPath}|${defaultBranch}|${branchHeadKey}|${mergeNodesKey}`;
+    const directCommitsKey = String(directCommits.length);
+    const branchMetaLoadKey = `${repoPath}|${defaultBranch}|${branchHeadKey}|${mergeNodesKey}|${directCommitsKey}`;
     if (branchMetaLoadKeyRef.current === branchMetaLoadKey) {
       return;
     }
@@ -4243,9 +4302,21 @@ function App() {
       return pickCanonicalParentBranch(prefixMatches);
     };
     const nextBranchParentByName: Record<string, string | null> = { [defaultBranch]: null };
+    const nextBranchHeadByName: Record<string, string> = {};
     for (const branch of branches) {
+      nextBranchHeadByName[branch.name] = branch.headSha;
       if (branch.name === defaultBranch) {
         nextBranchParentByName[branch.name] = null;
+        continue;
+      }
+      const previousHead = branchHeadByNameRef.current[branch.name];
+      const previousParent = latestBranchParentByNameRef.current[branch.name];
+      if (
+        previousHead === branch.headSha
+        && previousParent !== undefined
+        && isValidParentBranch(previousParent, branch.name)
+      ) {
+        nextBranchParentByName[branch.name] = previousParent;
         continue;
       }
       const branchCommits = directCommits.filter((commit) => commit.branch === branch.name);
@@ -4293,6 +4364,7 @@ function App() {
       nextBranchParentByName[branch.name] = resolvedParent;
     }
 
+    branchHeadByNameRef.current = nextBranchHeadByName;
     setBranchPromptMeta({});
     setBranchCommitPreviews(nextCommitPreviews);
     setBranchParentByName(nextBranchParentByName);
