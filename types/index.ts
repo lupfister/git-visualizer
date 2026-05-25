@@ -309,11 +309,12 @@ export type RepoMutationOutcome =
     }
   | {
       kind: 'branchMetadataSync';
-      layoutTopologyChanged: true;
+      layoutTopologyChanged: boolean;
       branches: Branch[];
       defaultBranch: string;
       removedBranchNames: string[];
       unpushedCommitShasByBranch: Record<string, string[]>;
+      unpushedDirectCommits?: DirectCommit[];
       branchUniqueAheadCounts: Record<string, number>;
       checkedOutRef: CheckedOutRef | null;
     }

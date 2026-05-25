@@ -180,6 +180,20 @@ describe('applyMutationPatch branchMetadataSync', () => {
     }));
     expect(next.unpushedDirectCommits).toHaveLength(0);
   });
+
+  it('uses explicit unpushedDirectCommits when provided', () => {
+    const next = applyMutationPatch(baseSnapshot(), outcomeFromBranchMetadataSync({
+      branches: baseSnapshot().branches,
+      defaultBranch: 'main',
+      removedBranchNames: [],
+      unpushedCommitShasByBranch: { main: [], feature: ['bbb2222'] },
+      unpushedDirectCommits: baseSnapshot().unpushedDirectCommits,
+      branchUniqueAheadCounts: { feature: 1 },
+      checkedOutRef: baseSnapshot().checkedOutRef,
+      layoutTopologyChanged: false,
+    }));
+    expect(next.unpushedDirectCommits).toHaveLength(1);
+  });
 });
 
 describe('applyMutationPatch commit', () => {

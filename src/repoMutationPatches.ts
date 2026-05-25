@@ -452,7 +452,8 @@ function patchBranchMetadataSync(
     branches: outcome.branches,
     branchCommitPreviews,
     unpushedCommitShasByBranch,
-    unpushedDirectCommits: syncUnpushedDirectCommits(snapshot.unpushedDirectCommits, unpushedCommitShasByBranch),
+    unpushedDirectCommits: outcome.unpushedDirectCommits
+      ?? syncUnpushedDirectCommits(snapshot.unpushedDirectCommits, unpushedCommitShasByBranch),
     branchUniqueAheadCounts: outcome.branchUniqueAheadCounts,
     checkedOutRef: outcome.checkedOutRef,
     laneByBranch,
@@ -630,12 +631,15 @@ export function outcomeFromBranchMetadataSync(data: {
   defaultBranch: string;
   removedBranchNames: string[];
   unpushedCommitShasByBranch: Record<string, string[]>;
+  unpushedDirectCommits?: DirectCommit[];
   branchUniqueAheadCounts: Record<string, number>;
   checkedOutRef: CheckedOutRef | null;
+  layoutTopologyChanged?: boolean;
 }): RepoMutationOutcome {
+  const { layoutTopologyChanged = true, ...rest } = data;
   return {
     kind: 'branchMetadataSync',
-    layoutTopologyChanged: true,
-    ...data,
+    layoutTopologyChanged,
+    ...rest,
   };
 }

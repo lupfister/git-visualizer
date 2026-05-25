@@ -24,6 +24,7 @@ import {
 } from './reconcileCheckedOutHead';
 import {
   applyMutationPatch,
+  outcomeFromBranchMetadataSync,
   outcomeFromCheckout,
   outcomeFromCommitData,
   outcomeFromDeleteSelection,
@@ -1942,6 +1943,48 @@ function App() {
     }, delayMs);
   }
 
+  async function buildPushSyncOutcomeFromGit(
+    path: string,
+    snapshot: RepoVisualSnapshot,
+  ): Promise<RepoMutationOutcome | null> {
+    try {
+      const [branchList, unpushedDirectCommits] = await Promise.all([
+        invoke<Branch[]>('get_branches', { repoPath: path }),
+        invoke<DirectCommit[]>('get_unpushed_direct_commits', {
+          repoPath: path,
+          branch: snapshot.defaultBranch,
+        }).catch(() => [] as DirectCommit[]),
+      ]);
+      const branchNames = [...new Set([
+        snapshot.defaultBranch,
+        ...branchList.map((branch) => branch.name),
+      ])];
+      const unpushedShaEntries = await Promise.all(
+        branchNames.map(async (branchName) => {
+          const shas = await invoke<string[]>('get_branch_unpushed_commit_shas', {
+            repoPath: path,
+            branch: branchName,
+          }).catch(() => []);
+          return [branchName, shas] as const;
+        }),
+      );
+      return outcomeFromBranchMetadataSync({
+        branches: branchList,
+        defaultBranch: snapshot.defaultBranch,
+        removedBranchNames: [],
+        unpushedCommitShasByBranch: Object.fromEntries(unpushedShaEntries),
+        unpushedDirectCommits,
+        branchUniqueAheadCounts: Object.fromEntries(
+          branchList.map((branch) => [branch.name, Math.max(0, branch.commitsAhead)]),
+        ),
+        checkedOutRef: snapshot.checkedOutRef,
+        layoutTopologyChanged: false,
+      });
+    } catch {
+      return null;
+    }
+  }
+
   async function loadAndApplyPublishedSnapshot(path: string, peek?: RepoSyncPeek | null) {
     const normalizedPath = normalizePath(path);
     if (!normalizedPath || !sameRepoPath(repoPath, normalizedPath)) return false;
@@ -1955,7 +1998,7 @@ function App() {
     const behindPeek = peek ? isSnapshotBehindPeek(nextSnapshot, peek) : false;
     const uiBehind = peek ? isActiveUiBehindPeek(normalizedPath, peek) : uiSignature !== nextSignature;
     if (!uiBehind && !behindPeek && uiSignature === nextSignature) return false;
-    startTransition(() => {
+    flushSync(() => {
       applyPatchedSnapshot(normalizedPath, nextSnapshot, false, {
         force: true,
         skipLayoutRebuild: true,
@@ -2000,7 +2043,7 @@ function App() {
         }).catch(() => null);
         let nextSnapshot = toRepoVisualSnapshot(result?.snapshot ?? null);
         if (result?.updated && nextSnapshot && sameRepoPath(repoPath, normalizedPath)) {
-          startTransition(() => {
+          flushSync(() => {
             applyPatchedSnapshot(normalizedPath, nextSnapshot!, false, {
               force: true,
               skipLayoutRebuild: true,
@@ -2141,6 +2184,11 @@ function App() {
     }
     const needsLayoutRebuild = !options?.skipLayoutRebuild
       && (layoutTopologyChanged || mutationChangesWorktreeLayout(previousSnapshot, patched));
+    const previousUnpushedSignature = previousSnapshot
+      ? previousSnapshot.unpushedDirectCommits.map((commit) => commit.fullSha).sort().join('|')
+      : '';
+    const nextUnpushedSignature = patched.unpushedDirectCommits.map((commit) => commit.fullSha).sort().join('|');
+    const unpushedStateChanged = previousUnpushedSignature !== nextUnpushedSignature;
     upsertProjectSnapshot(normalizedPath, patched, { force });
     projectQuickStateRef.current = {
       ...projectQuickStateRef.current,
@@ -2163,6 +2211,10 @@ function App() {
           persistRepoNodePositions(normalizedPath, stripped);
           return { ...previous, [normalizedPath]: stripped };
         });
+      } else if (applied && unpushedStateChanged && sameRepoPath(repoPath, normalizedPath)) {
+        invalidateRepoLayoutCacheForPath(normalizedPath);
+        setHydratedLayoutModel(null);
+        setHydratedLayoutKey(null);
       }
     }
   }
@@ -2284,8 +2336,15 @@ function App() {
         );
       }
 
+      if (isPush) {
+        const gitPushSync = await buildPushSyncOutcomeFromGit(normalizedPath, snapshot);
+        if (gitPushSync) {
+          snapshot = applyMutationPatch(snapshot, gitPushSync);
+        }
+      }
+
       await yieldToPaint();
-      if (!isCommit && applyGeneration !== repoMutationGenerationRef.current) return;
+      if (!isCommit && !isPush && applyGeneration !== repoMutationGenerationRef.current) return;
 
       const immediateApply = mutationOutcomeNeedsImmediateApply(outcomes);
       const patchApplyOptions = { force: true as const, previousSnapshot };
@@ -2313,7 +2372,15 @@ function App() {
           schedulePostCommitQuickReconcile(normalizedPath);
         }
         suppressBackgroundRefreshUntilRef.current = Date.now() + 2500;
-        markGitActivityHandled();
+        if (isCommit) {
+          markGitActivityHandled();
+        } else {
+          void fetchRepoSyncPeek(normalizedPath).then((postPushPeek) => {
+            if (postPushPeek && !isActiveUiBehindPeek(normalizedPath, postPushPeek)) {
+              markGitActivityHandled();
+            }
+          }).catch(() => undefined);
+        }
         noteSyncedAfterMutationOutcomes(normalizedPath, ...outcomes);
         schedulePostMutationGraphReconcile(normalizedPath);
       } else {
