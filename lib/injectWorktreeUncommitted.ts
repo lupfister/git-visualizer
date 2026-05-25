@@ -130,10 +130,8 @@ export const injectWorktreeUncommittedPreviews = ({
 
   for (const session of sessions) {
     const useDedicatedLane = !session.branchName;
-    // Detached / dirty branch: anchor at checkout tip. Clean non-current branch: marker at tip.
-    const parentSha = useDedicatedLane || session.hasUncommittedChanges
-      ? (session.headSha || session.parentSha || null)
-      : (session.headSha || session.parentSha || null);
+    // Same timeline anchor for clean and dirty: one step after the checked-out tip commit.
+    const parentSha = session.headSha || session.parentSha || null;
     const { branch: targetBranch } = resolveTargetLane(
       session,
       nextBranches,
@@ -197,35 +195,27 @@ export const injectWorktreeUncommittedPreviews = ({
     }
 
     if (targetBranch) {
-      if (!session.hasUncommittedChanges) {
-        if (session.isCurrent) {
-          continue;
-        }
-        nextPreviews = {
-          ...nextPreviews,
-          [targetBranch.name]: [worktreeNode, ...(nextPreviews[targetBranch.name] || [])],
+      if (session.hasUncommittedChanges) {
+        nextBranches = nextBranches.map((branch) => {
+          if (branch.name !== targetBranch.name) return branch;
+          return {
+            ...branch,
+            commitsAhead: branch.commitsAhead + 1,
+            unpushedCommits: branch.unpushedCommits + 1,
+            lastCommitDate: worktreeDate,
+            headSha: session.workingTreeId,
+          };
+        });
+        nextUniqueAheadCounts = {
+          ...nextUniqueAheadCounts,
+          [targetBranch.name]: Math.max(
+            0,
+            (Object.prototype.hasOwnProperty.call(nextUniqueAheadCounts, targetBranch.name)
+              ? nextUniqueAheadCounts[targetBranch.name]
+              : targetBranch.commitsAhead) ?? 0,
+          ) + 1,
         };
-        continue;
       }
-      nextBranches = nextBranches.map((branch) => {
-        if (branch.name !== targetBranch.name) return branch;
-        return {
-          ...branch,
-          commitsAhead: branch.commitsAhead + 1,
-          unpushedCommits: branch.unpushedCommits + 1,
-          lastCommitDate: worktreeDate,
-          headSha: session.workingTreeId,
-        };
-      });
-      nextUniqueAheadCounts = {
-        ...nextUniqueAheadCounts,
-        [targetBranch.name]: Math.max(
-          0,
-          (Object.prototype.hasOwnProperty.call(nextUniqueAheadCounts, targetBranch.name)
-            ? nextUniqueAheadCounts[targetBranch.name]
-            : targetBranch.commitsAhead) ?? 0,
-        ) + 1,
-      };
       nextPreviews = {
         ...nextPreviews,
         [targetBranch.name]: [worktreeNode, ...(nextPreviews[targetBranch.name] || [])],

@@ -58,7 +58,7 @@ describe('injectWorktreeUncommittedPreviews', () => {
     expect(result.branches.find((b) => b.name === 'feature')?.headSha).toMatch(/^WORKING_TREE:/);
   });
 
-  it('hides clean current-checkout worktree tile but keeps other clean worktrees', () => {
+  it('injects worktree markers for all branch worktrees including clean current checkout', () => {
     const worktrees = [
       wt({ path: '/repo', branchName: 'main', headSha: 'aaaaaaaaaaaa1111', isCurrent: true }),
       wt({
@@ -79,8 +79,9 @@ describe('injectWorktreeUncommittedPreviews', () => {
     });
     const allPreviews = Object.values(result.branchCommitPreviews).flat();
     const worktreeNodes = allPreviews.filter((preview) => preview.kind === 'uncommitted');
-    expect(worktreeNodes).toHaveLength(1);
-    expect(worktreeNodes[0]?.fullSha.startsWith('WORKING_TREE:')).toBe(true);
+    expect(worktreeNodes).toHaveLength(2);
+    expect(worktreeNodes.some((preview) => preview.fullSha === 'WORKING_TREE')).toBe(true);
+    expect(worktreeNodes.some((preview) => preview.fullSha.startsWith('WORKING_TREE:'))).toBe(true);
     expect(result.branches.find((b) => b.name === 'main')?.headSha).toBe('aaaaaaaaaaaa1111');
     expect(result.branches.find((b) => b.name === 'feature')?.headSha).toBe('bbbbbbbbbbbb2222');
   });

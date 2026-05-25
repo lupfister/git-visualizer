@@ -172,16 +172,12 @@ function patchCommit(snapshot: RepoVisualSnapshot, commit: RepoMutationOutcome &
         : branch
     ))
     : branches;
-  const cleanedPreviews = !checkedOutRef.hasUncommittedChanges
-    ? stripWorkingTreeFromPreviews(branchCommitPreviews)
-    : branchCommitPreviews;
-
   return touchSnapshot({
     ...snapshot,
     checkedOutRef,
     branches: cleanedBranches,
     directCommits,
-    branchCommitPreviews: cleanedPreviews,
+    branchCommitPreviews,
     unpushedDirectCommits,
     unpushedCommitShasByBranch,
     branchUniqueAheadCounts,

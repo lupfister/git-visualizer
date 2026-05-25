@@ -1744,7 +1744,19 @@ function App() {
         }
         suppressBackgroundRefreshUntilRef.current = 0;
         noteSyncedAfterMutationOutcomes(normalizedPath, ...outcomes);
-        await refreshRepoAfterMutationFull(normalizedPath, { immediate: true, forceApply: true });
+        void invoke<FingerprintCheckResult>('check_project_fingerprint', { projectId: normalizedPath })
+          .then((check) => {
+            if (check?.currentFingerprint) {
+              noteSyncedRepoFingerprint(normalizedPath, check.currentFingerprint);
+              ackProjectFingerprint(normalizedPath, check.currentFingerprint);
+            }
+          })
+          .catch(() => undefined);
+        window.setTimeout(() => {
+          void invoke('persist_project_snapshot', { projectId: normalizedPath }).catch((error) => {
+            console.warn('Background snapshot persist failed:', error);
+          });
+        }, 0);
       } else {
         suppressBackgroundRefreshUntilRef.current = Date.now() + 2500;
         window.setTimeout(() => {
@@ -2395,11 +2407,7 @@ function App() {
     setCheckedOutRef(nextCheckedOutRef);
     setWorktrees(snapshot.worktrees);
     setStashes(snapshot.stashes);
-    setBranchCommitPreviews(
-      !isProjectSwitch && nextCheckedOutRef && !nextCheckedOutRef.hasUncommittedChanges
-        ? stripWorkingTreeFromPreviews(snapshot.branchCommitPreviews)
-        : snapshot.branchCommitPreviews,
-    );
+    setBranchCommitPreviews(stripWorkingTreeFromPreviews(snapshot.branchCommitPreviews));
     setBranchParentByName(snapshot.branchParentByName ?? {});
     setLaneByBranch(snapshot.laneByBranch ?? {});
     setBranchUniqueAheadCounts(snapshot.branchUniqueAheadCounts);

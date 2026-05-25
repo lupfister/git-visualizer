@@ -126,7 +126,7 @@ describe('computeBranchGridLayout worktree nodes', () => {
       {
         fullSha: tipSha,
         sha: tipSha.slice(0, 7),
-        branch: 'feature',
+        branch: defaultBranch,
         message: 'tip',
         author: 'test',
         date: parentDate,
@@ -171,12 +171,13 @@ describe('computeBranchGridLayout worktree nodes', () => {
     });
 
     const worktreeNode = layout.renderNodes.find((node) => node.commit.id === sessions[0]!.workingTreeId);
-    const featureTipNode = layout.renderNodes.find(
-      (node) => node.commit.id === tipSha && node.commit.branchName === 'feature',
+    const mainTipNode = layout.nodes.find(
+      (node) => node.commit.id === tipSha && node.commit.branchName === 'main',
     );
     expect(worktreeNode).toBeDefined();
-    expect(featureTipNode).toBeDefined();
-    expect(worktreeNode!.row).toBeGreaterThan(featureTipNode!.row);
-    expect(worktreeNode!.column).toBeLessThan(featureTipNode!.column);
+    expect(mainTipNode).toBeDefined();
+    expect(worktreeNode!.row).toBe(mainTipNode!.row + 1);
+    expect(worktreeNode!.column).toBeGreaterThanOrEqual(mainTipNode!.column);
+    expect(worktreeNode!.column).toBe(mainTipNode!.column);
   });
 });
