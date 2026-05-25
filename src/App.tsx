@@ -1617,6 +1617,82 @@ function App() {
     throw new Error(`No snapshot available for ${normalizedPath}`);
   }
 
+  function isPostCommitProtectionActive(path: string): boolean {
+    const normalizedPath = normalizePath(path);
+    return Boolean(normalizedPath && postCommitProtectedHeadShaRef.current[normalizedPath]);
+  }
+
+  function invalidateRepoLayoutCacheForPath(path: string) {
+    const normalizedPath = normalizePath(path);
+    if (!normalizedPath) return;
+    for (const key of layoutModelCacheRef.current.keys()) {
+      if (key.split('|')[1] === normalizedPath) {
+        layoutModelCacheRef.current.delete(key);
+      }
+    }
+    for (const key of persistedLayoutKeysRef.current) {
+      if (key.split('|')[1] === normalizedPath) {
+        persistedLayoutKeysRef.current.delete(key);
+      }
+    }
+    if (sameRepoPath(repoPath, normalizedPath)) {
+      setHydratedLayoutModel(null);
+      setHydratedLayoutKey(null);
+    }
+  }
+
+  function incomingSnapshotDropsProtectedHead(path: string, incoming: RepoVisualSnapshot): boolean {
+    const normalizedPath = normalizePath(path);
+    const guard = normalizedPath ? postCommitProtectedHeadShaRef.current[normalizedPath] : undefined;
+    if (!guard) return false;
+    try {
+      const live = getSnapshotForMutation(normalizedPath);
+      if (!snapshotContainsCommitSha(live, guard)) return false;
+      return !snapshotContainsCommitSha(incoming, guard);
+    } catch {
+      return false;
+    }
+  }
+
+  async function releasePostCommitProtectionAfterReconcile(path: string, protectedSha: string) {
+    const normalizedPath = normalizePath(path);
+    if (!normalizedPath || postCommitProtectedHeadShaRef.current[normalizedPath] !== protectedSha) {
+      return;
+    }
+    try {
+      const snapshot = getSnapshotForMutation(normalizedPath);
+      if (!snapshotContainsCommitSha(snapshot, protectedSha)) {
+        window.setTimeout(() => {
+          void releasePostCommitProtectionAfterReconcile(normalizedPath, protectedSha);
+        }, 2000);
+        return;
+      }
+    } catch {
+      return;
+    }
+    const next = { ...postCommitProtectedHeadShaRef.current };
+    delete next[normalizedPath];
+    postCommitProtectedHeadShaRef.current = next;
+    if (sameRepoPath(repoPath, normalizedPath)) {
+      focusCameraOnActiveWorktreeRef.current?.();
+    }
+  }
+
+  function schedulePostCommitGraphReconcile(path: string, protectedSha: string) {
+    const normalizedPath = normalizePath(path);
+    if (!normalizedPath) return;
+    suppressBackgroundRefreshUntilRef.current = 0;
+    pendingRefreshAfterInteractionRef.current = false;
+    invalidateRepoLayoutCacheForPath(normalizedPath);
+    if (!sameRepoPath(repoPath, normalizedPath)) return;
+    setLayoutEpoch((epoch) => epoch + 1);
+    autoFocusSyncKeyRef.current = null;
+    gitActivityEpochRef.current += 1;
+    void runRepoRefreshRef.current?.('graph').then(() => {
+      void releasePostCommitProtectionAfterReconcile(normalizedPath, protectedSha);
+    });
+  }
+
   function protectPostCommitHead(path: string, headSha: string | null | undefined) {
     const normalizedPath = normalizePath(path);
     const sha = headSha?.trim();
@@ -1627,9 +1703,7 @@ function App() {
     };
     window.setTimeout(() => {
       if (postCommitProtectedHeadShaRef.current[normalizedPath] !== sha) return;
-      const next = { ...postCommitProtectedHeadShaRef.current };
-      delete next[normalizedPath];
-      postCommitProtectedHeadShaRef.current = next;
+      schedulePostCommitGraphReconcile(normalizedPath, sha);
     }, POST_COMMIT_HEAD_PROTECT_MS);
   }
 
@@ -1649,7 +1723,10 @@ function App() {
   }
 
   function shouldBlockIncomingSnapshotApply(path: string, incoming: RepoVisualSnapshot): boolean {
-    return shouldRejectRegressionFromProtectedHead(path, incoming.checkedOutRef?.headSha ?? null);
+    return (
+      shouldRejectRegressionFromProtectedHead(path, incoming.checkedOutRef?.headSha ?? null)
+      || incomingSnapshotDropsProtectedHead(path, incoming)
+    );
   }
 
   function mergeOptionsForRepo(path: string): MergeCheckedOutRefOptions | undefined {
@@ -1704,6 +1781,7 @@ function App() {
         allowIncomingDirty: force,
       });
       if (needsLayoutRebuild && applied) {
+        invalidateRepoLayoutCacheForPath(normalizedPath);
         setLayoutEpoch((epoch) => epoch + 1);
         setHydratedLayoutModel(null);
         setHydratedLayoutKey(null);
@@ -1858,7 +1936,7 @@ function App() {
           setGridFocusSha(focusSha);
           setGridSearchJumpToken((token) => token + 1);
         }
-        suppressBackgroundRefreshUntilRef.current = Date.now() + POST_COMMIT_HEAD_PROTECT_MS;
+        suppressBackgroundRefreshUntilRef.current = Date.now() + 2500;
         markGitActivityHandled();
         noteSyncedAfterMutationOutcomes(normalizedPath, ...outcomes);
         schedulePostCommitQuickReconcile(normalizedPath);
@@ -2111,6 +2189,7 @@ function App() {
   ): Promise<boolean> {
     const normalizedPath = normalizePath(path);
     if (!normalizedPath || outcomes.length === 0) return false;
+    if (isPostCommitProtectionActive(normalizedPath)) return false;
     const force = options?.force === true;
 
     try {
@@ -3022,6 +3101,13 @@ function App() {
       }
 
       const normalizedPath = normalizePath(repoPath);
+      const postCommitGuarded = Boolean(
+        normalizedPath && isPostCommitProtectionActive(normalizedPath),
+      );
+      if (postCommitGuarded && reason !== 'graph') {
+        pendingRefreshAfterInteractionRef.current = true;
+        return;
+      }
       const gitActivityPending = gitActivityEpochRef.current !== lastHandledGitActivityEpochRef.current;
       if (
         reason !== 'quick'
@@ -3062,7 +3148,7 @@ function App() {
           // continue with refresh when peek/live comparison is unavailable
         }
       }
-      if (peek && await tryWorktreeListSync(repoPath, peek)) {
+      if (peek && !postCommitGuarded && await tryWorktreeListSync(repoPath, peek)) {
         pendingRefreshAfterInteractionRef.current = false;
         return;
       }
@@ -3170,7 +3256,9 @@ function App() {
           markGitActivityHandled();
           return;
         }
-        nextSnapshot = await reconcileSnapshotForProjectSwitch(repoPath, nextSnapshot);
+        nextSnapshot = postCommitGuarded
+          ? nextSnapshot
+          : await reconcileSnapshotForProjectSwitch(repoPath, nextSnapshot);
         if (shouldBlockIncomingSnapshotApply(repoPath, nextSnapshot)) {
           markGitActivityHandled();
           return;
@@ -3608,6 +3696,13 @@ function App() {
           return;
         }
         const bustLayout = (event as CustomEvent<{ bustLayout?: boolean }>).detail?.bustLayout === true;
+        const normalizedPath = normalizePath(path);
+        if (normalizedPath) {
+          const nextProtected = { ...postCommitProtectedHeadShaRef.current };
+          delete nextProtected[normalizedPath];
+          postCommitProtectedHeadShaRef.current = nextProtected;
+          invalidateRepoLayoutCacheForPath(normalizedPath);
+        }
         suppressBackgroundRefreshUntilRef.current = 0;
         pendingRefreshAfterInteractionRef.current = false;
         if (bustLayout) {
@@ -4682,6 +4777,12 @@ function App() {
       setHydratedLayoutKey(null);
       return;
     }
+    const normalizedRepoPath = normalizePath(repoPath);
+    if (normalizedRepoPath && isPostCommitProtectionActive(normalizedRepoPath)) {
+      setHydratedLayoutModel(null);
+      setHydratedLayoutKey(null);
+      return;
+    }
     const hasWorktreeNodes = worktreeSessions.length > 0;
     const inMemory = layoutModelCacheRef.current.get(sharedGridLayoutCacheKey);
     if (inMemory) {
@@ -4823,6 +4924,8 @@ function App() {
   }, [gridLayoutModelForView]);
   useEffect(() => {
     if (!repoPath || !sharedGridLayoutCacheKey) return;
+    const normalizedRepoPath = normalizePath(repoPath);
+    if (normalizedRepoPath && isPostCommitProtectionActive(normalizedRepoPath)) return;
     layoutModelCacheRef.current.set(sharedGridLayoutCacheKey, sharedGridLayoutModel);
     if (persistedLayoutKeysRef.current.has(sharedGridLayoutCacheKey)) return;
     persistedLayoutKeysRef.current.add(sharedGridLayoutCacheKey);
