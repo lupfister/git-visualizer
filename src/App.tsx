@@ -785,10 +785,7 @@ function App() {
     void invoke<RepoSyncPeek>('get_repo_sync_peek', { repoPath: normalizedPath })
       .then((peek) => {
         if (!peek?.signature) return;
-        projectSyncPeekRef.current = {
-          ...projectSyncPeekRef.current,
-          [normalizedPath]: peek.signature,
-        };
+        noteSyncedRepoPeek(normalizedPath, peek.signature);
       })
       .catch(() => undefined);
   }
@@ -797,13 +794,65 @@ function App() {
     return invoke<RepoSyncPeek>('get_repo_sync_peek', { repoPath: path }).catch(() => null);
   }
 
-  function isRepoSyncPeekUnchanged(path: string, peek: RepoSyncPeek, gitActivityPending: boolean): boolean {
+  function parsePeekSignature(signature: string) {
+    const [headSha, dirty, branchHeadsDigest, worktreeSig, stashSig, headUnpushedCount] = signature.split('@@');
+    return {
+      headSha: headSha ?? '',
+      hasUncommittedChanges: dirty === '1',
+      branchHeadsDigest: branchHeadsDigest ?? '',
+      worktreeSig: worktreeSig ?? '',
+      stashSig: stashSig ?? '',
+      headUnpushedCount: headUnpushedCount ?? '0',
+    };
+  }
+
+  function branchHeadsDigestFromSnapshot(snapshot: RepoVisualSnapshot): string {
+    const lines = snapshot.branches.map((branch) => `${branch.name}:${branch.headSha}`);
+    if (!lines.some((line) => line.startsWith(`${snapshot.defaultBranch}:`))) {
+      const head = snapshot.checkedOutRef?.headSha ?? '';
+      if (head) lines.push(`${snapshot.defaultBranch}:${head}`);
+    }
+    return lines.sort().join('|');
+  }
+
+  function isActiveUiBehindPeek(path: string, peek: RepoSyncPeek): boolean {
+    if (!sameRepoPath(repoPath, path)) return false;
+    let snapshot: RepoVisualSnapshot;
+    try {
+      snapshot = getSnapshotForMutation(path);
+    } catch {
+      return true;
+    }
+    const parsed = parsePeekSignature(peek.signature);
+    const ref = latestCheckedOutRef.current ?? snapshot.checkedOutRef;
+    if (parsed.headSha && ref?.headSha && parsed.headSha !== ref.headSha) return true;
+    if (parsed.hasUncommittedChanges !== (ref?.hasUncommittedChanges ?? false)) return true;
+    const uiBranchDigest = branchHeadsDigestFromSnapshot(snapshot);
+    if (parsed.branchHeadsDigest && uiBranchDigest && parsed.branchHeadsDigest !== uiBranchDigest) {
+      return true;
+    }
+    const uiWorktreeSig = worktreeListSignature(snapshot.worktrees);
+    if (parsed.worktreeSig && uiWorktreeSig && parsed.worktreeSig !== uiWorktreeSig) return true;
+    return false;
+  }
+
+  function shouldSkipBackgroundSync(path: string, peek: RepoSyncPeek, gitActivityPending: boolean): boolean {
     if (gitActivityPending) return false;
+    if (isActiveUiBehindPeek(path, peek)) return false;
     const normalizedPath = normalizePath(path);
     if (!normalizedPath) return false;
     const cachedPeek = projectSyncPeekRef.current[normalizedPath];
     const lastSynced = lastSyncedRepoFingerprintRef.current[normalizedPath];
     return Boolean(cachedPeek && lastSynced && cachedPeek === peek.signature);
+  }
+
+  function noteSyncedRepoPeek(path: string, peekSignature: string) {
+    const normalizedPath = normalizePath(path);
+    if (!normalizedPath || !peekSignature) return;
+    projectSyncPeekRef.current = {
+      ...projectSyncPeekRef.current,
+      [normalizedPath]: peekSignature,
+    };
   }
 
   function ackProjectFingerprint(path: string, fingerprint: string) {
@@ -1596,7 +1645,7 @@ function App() {
     path: string,
     currentFingerprint: string,
     outcomes: RepoMutationOutcome[],
-    options?: { force?: boolean },
+    options?: { force?: boolean; peekSignature?: string },
   ): Promise<boolean> {
     const normalizedPath = normalizePath(path);
     if (!normalizedPath || outcomes.length === 0) return false;
@@ -1613,11 +1662,14 @@ function App() {
       const layoutTopologyChanged = outcomes.some((outcome) => outcome.layoutTopologyChanged);
       const snapshotChanged = beforeSignature !== afterSignature;
 
+      if (!snapshotChanged) {
+        return false;
+      }
+
       noteSyncedRepoFingerprint(normalizedPath, currentFingerprint);
       ackProjectFingerprint(normalizedPath, currentFingerprint);
-
-      if (!snapshotChanged) {
-        return true;
+      if (options?.peekSignature) {
+        noteSyncedRepoPeek(normalizedPath, options.peekSignature);
       }
 
       setMapGridBackgroundActivity('git-refresh', 'Apply repo changes', true, 'patch');
@@ -1649,7 +1701,7 @@ function App() {
     const gitActivityPending = gitActivityEpochRef.current !== lastHandledGitActivityEpochRef.current;
 
     const peek = options?.peek ?? await fetchRepoSyncPeek(path);
-    if (peek && isRepoSyncPeekUnchanged(path, peek, gitActivityPending)) {
+    if (peek && shouldSkipBackgroundSync(path, peek, gitActivityPending)) {
       markGitActivityHandled();
       return true;
     }
@@ -1659,7 +1711,7 @@ function App() {
       && !gitActivityPending
       && Date.now() - lastCheckAt < MIN_BACKGROUND_FINGERPRINT_CHECK_MS
     ) {
-      return true;
+      return false;
     }
 
     const check = await invoke<FingerprintCheckResult>('check_project_fingerprint', {
@@ -1678,13 +1730,17 @@ function App() {
       normalizedPath
       && lastSyncedRepoFingerprintRef.current[normalizedPath] === check.currentFingerprint
     ) {
-      markGitActivityHandled();
-      return true;
+      if (peek && !isActiveUiBehindPeek(path, peek)) {
+        markGitActivityHandled();
+        return true;
+      }
     }
     if (!check.changed) {
-      noteSyncedRepoFingerprint(path, check.currentFingerprint);
-      markGitActivityHandled();
-      return true;
+      if (peek && !isActiveUiBehindPeek(path, peek)) {
+        noteSyncedRepoFingerprint(path, check.currentFingerprint);
+        markGitActivityHandled();
+        return true;
+      }
     }
 
     const current = parseRepoFingerprint(check.currentFingerprint);
@@ -1693,16 +1749,23 @@ function App() {
 
     const classification = classifyFingerprintDiff(stored, current);
     if (classification.kind === 'none') {
-      noteSyncedRepoFingerprint(path, check.currentFingerprint);
-      markGitActivityHandled();
-      return true;
+      if (peek && !isActiveUiBehindPeek(path, peek)) {
+        noteSyncedRepoFingerprint(path, check.currentFingerprint);
+        markGitActivityHandled();
+        return true;
+      }
+      return false;
     }
 
     const quickState = await invoke<RepoQuickState>('get_repo_quick_state', { repoPath: path }).catch(() => null);
-    const patchOptions = { force: options?.force === true };
+    const patchOptions = {
+      force: options?.force === true,
+      peekSignature: peek?.signature,
+    };
 
     if (classification.kind === 'graphDelta') {
-      const delta = await fetchRepoGraphDelta(path, stored?.branchRefSig ?? null);
+      const baselineFingerprint = stored ?? parseRepoFingerprint(lastSynced ?? null);
+      const delta = await fetchRepoGraphDelta(path, baselineFingerprint?.branchRefSig ?? null);
       if (!delta) return false;
       const snapshot = getSnapshotForMutation(path);
       const graphOutcomes = buildGraphDeltaOutcomes(delta, snapshot, stored);
@@ -1753,7 +1816,7 @@ function App() {
     if (!normalizedPath) return false;
 
     const resolvedPeek = peek ?? await fetchRepoSyncPeek(path);
-    if (resolvedPeek && isRepoSyncPeekUnchanged(path, resolvedPeek, false)) {
+    if (resolvedPeek && shouldSkipBackgroundSync(path, resolvedPeek, false)) {
       markGitActivityHandled();
       return true;
     }
@@ -1770,8 +1833,11 @@ function App() {
     }
 
     if (cachedSig === nextSig) {
-      markGitActivityHandled();
-      return true;
+      if (resolvedPeek && !isActiveUiBehindPeek(path, resolvedPeek)) {
+        markGitActivityHandled();
+        return true;
+      }
+      return false;
     }
 
     const snapshot = getSnapshotForMutation(normalizedPath);
@@ -1797,7 +1863,11 @@ function App() {
       const fingerprint = check?.currentFingerprint
         ?? lastSyncedRepoFingerprintRef.current[normalizedPath]
         ?? '';
-      await applyBackgroundRepoPatch(normalizedPath, fingerprint, outcomes, { force: true });
+      const patched = await applyBackgroundRepoPatch(normalizedPath, fingerprint, outcomes, {
+        force: true,
+        peekSignature: resolvedPeek?.signature,
+      });
+      if (!patched) return false;
       noteSyncedFingerprintFromQuickState(normalizedPath, quickState);
     }
 
@@ -2378,7 +2448,7 @@ function App() {
       const externalRefresh = reason === 'graph' || reason === 'local' || reason === 'quick';
 
       const peek = await fetchRepoSyncPeek(repoPath);
-      if (peek && isRepoSyncPeekUnchanged(repoPath, peek, gitActivityPending)) {
+      if (peek && shouldSkipBackgroundSync(repoPath, peek, gitActivityPending)) {
         markGitActivityHandled();
         pendingRefreshAfterInteractionRef.current = false;
         return;
@@ -2531,7 +2601,7 @@ function App() {
         ) {
           const peek = await fetchRepoSyncPeek(repoPath);
           const gitActivityPending = gitActivityEpochRef.current !== lastHandledGitActivityEpochRef.current;
-          if (peek && !isRepoSyncPeekUnchanged(repoPath, peek, gitActivityPending)) {
+          if (peek && (gitActivityPending || isActiveUiBehindPeek(repoPath, peek))) {
             void runRefresh('graph');
           }
         }
@@ -2553,7 +2623,7 @@ function App() {
         ) {
           const peek = await fetchRepoSyncPeek(repoPath);
           const gitActivityPending = gitActivityEpochRef.current !== lastHandledGitActivityEpochRef.current;
-          if (peek && !isRepoSyncPeekUnchanged(repoPath, peek, gitActivityPending)) {
+          if (peek && (gitActivityPending || isActiveUiBehindPeek(repoPath, peek))) {
             void runRefresh('quick');
           }
         }
