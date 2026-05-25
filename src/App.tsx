@@ -30,6 +30,7 @@ import {
 } from './repoMutationPatches';
 import { classifyFingerprintDiff, formatRepoFingerprint, parseRepoFingerprint, withRepoFingerprintDirty, withRepoFingerprintUpstream, type FingerprintPatchSegment } from './fingerprintDiff';
 import { buildGraphDeltaOutcomes, fetchRepoGraphDelta } from './externalGraphSync';
+import { formatWorktreeSyncSignature } from './worktreeSignature';
 import {
   applyBranchParents,
   isNewerBranchAsParent,
@@ -240,6 +241,7 @@ function getRepoVisualSnapshotSignature(snapshot: RepoVisualSnapshot): string {
     Object.entries(snapshot.branchParentByName).map(([branchName, parentName]) => `${branchName}:${parentName ?? ''}`).join('|'),
     Object.entries(snapshot.laneByBranch).map(([branchName, lane]) => `${branchName}:${lane}`).join('|'),
     Object.entries(snapshot.branchUniqueAheadCounts).map(([branchName, count]) => `${branchName}:${count}`).join('|'),
+    formatWorktreeSyncSignature(snapshot.worktrees),
   ].join('@@');
 }
 
@@ -868,9 +870,7 @@ function App() {
   }
 
   function worktreeListSignature(worktrees: WorktreeInfo[]): string {
-    return worktrees
-      .map((worktree) => `${worktree.path}:${worktree.branch ?? ''}:${worktree.hasUncommittedChanges ? '1' : '0'}`)
-      .join('|');
+    return formatWorktreeSyncSignature(worktrees);
   }
 
   function fingerprintFromSnapshot(path: string, defaultBranchName: string, snapshot: RepoVisualSnapshot): RepoRefreshFingerprint {

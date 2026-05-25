@@ -559,7 +559,7 @@ fn compute_repo_fingerprint(repo_path: &str) -> Result<(String, RepoRefreshFinge
         })
         .collect::<Vec<_>>()
         .join("|");
-    let worktree_sig = worktrees
+    let mut worktree_lines: Vec<String> = worktrees
         .iter()
         .map(|worktree| {
             format!(
@@ -570,8 +570,9 @@ fn compute_repo_fingerprint(repo_path: &str) -> Result<(String, RepoRefreshFinge
                 if worktree.has_uncommitted_changes { "1" } else { "0" }
             )
         })
-        .collect::<Vec<_>>()
-        .join("|");
+        .collect();
+    worktree_lines.sort();
+    let worktree_sig = worktree_lines.join("|");
     let stash_sig = stashes
         .iter()
         .map(|stash| format!("{}:{}:{}", stash.index, stash.base_sha, stash.message))
@@ -1157,6 +1158,13 @@ fn watch_repo(repo_path: String, app: tauri::AppHandle) -> Result<(), String> {
                         || path_str.ends_with("index.lock");
                     if is_index_path {
                         has_local_change = true;
+                        continue;
+                    }
+
+                    let is_worktree_path = path_str.contains("/worktrees/")
+                        || path_str.contains("\\worktrees\\");
+                    if is_worktree_path {
+                        has_graph_change = true;
                         continue;
                     }
 
@@ -1757,7 +1765,7 @@ fn compute_repo_sync_peek(repo_path: &str) -> Result<RepoSyncPeek, String> {
     let branch_heads_digest = branch_head_lines.join("|");
 
     let worktrees = git::list_worktrees(path).map_err(|e| e.to_string())?;
-    let worktree_sig = worktrees
+    let mut worktree_lines: Vec<String> = worktrees
         .iter()
         .map(|worktree| {
             format!(
@@ -1768,8 +1776,9 @@ fn compute_repo_sync_peek(repo_path: &str) -> Result<RepoSyncPeek, String> {
                 if worktree.has_uncommitted_changes { "1" } else { "0" }
             )
         })
-        .collect::<Vec<_>>()
-        .join("|");
+        .collect();
+    worktree_lines.sort();
+    let worktree_sig = worktree_lines.join("|");
 
     let stashes = git::list_stashes(path).map_err(|e| e.to_string())?;
     let stash_sig = stashes
