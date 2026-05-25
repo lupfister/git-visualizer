@@ -1,3 +1,5 @@
+import { stripWorkingTreeFromPreviews } from '../lib/injectWorktreeUncommitted';
+import { isWorkingTreeCommitId } from '../lib/worktreeSessions';
 import type {
   Branch,
   BranchCommitPreview,
@@ -160,12 +162,26 @@ function patchCommit(snapshot: RepoVisualSnapshot, commit: RepoMutationOutcome &
     [branchName]: (snapshot.branchUniqueAheadCounts[branchName] ?? 0) + 1,
   };
 
+  const cleanedBranches = !checkedOutRef.hasUncommittedChanges
+    ? branches.map((branch) => (
+      isWorkingTreeCommitId(branch.headSha)
+        ? {
+            ...branch,
+            headSha: branch.name === branchName ? fullSha : (checkedOutRef.headSha || branch.headSha),
+          }
+        : branch
+    ))
+    : branches;
+  const cleanedPreviews = !checkedOutRef.hasUncommittedChanges
+    ? stripWorkingTreeFromPreviews(branchCommitPreviews)
+    : branchCommitPreviews;
+
   return touchSnapshot({
     ...snapshot,
     checkedOutRef,
-    branches,
+    branches: cleanedBranches,
     directCommits,
-    branchCommitPreviews,
+    branchCommitPreviews: cleanedPreviews,
     unpushedDirectCommits,
     unpushedCommitShasByBranch,
     branchUniqueAheadCounts,
@@ -320,12 +336,20 @@ function patchDiscardDirty(
   snapshot: RepoVisualSnapshot,
   outcome: RepoMutationOutcome & { kind: 'discardDirty' },
 ): RepoVisualSnapshot {
+  const checkedOutRef = outcome.checkedOutRef;
+  const branches = snapshot.branches.map((branch) => (
+    isWorkingTreeCommitId(branch.headSha) && branch.name === checkedOutRef.branchName
+      ? { ...branch, headSha: checkedOutRef.headSha }
+      : branch
+  ));
   return touchSnapshot({
     ...snapshot,
-    checkedOutRef: outcome.checkedOutRef,
+    checkedOutRef,
+    branches,
+    branchCommitPreviews: stripWorkingTreeFromPreviews(snapshot.branchCommitPreviews),
     worktrees: syncCurrentWorktreeFromCheckedOutRef(
       clearWorktreeDirtyFlags(snapshot.worktrees),
-      outcome.checkedOutRef,
+      checkedOutRef,
     ),
   });
 }

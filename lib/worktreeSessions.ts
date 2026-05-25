@@ -67,6 +67,54 @@ export const currentSessionWorkingTreeId = (sessions: WorktreeSession[]): string
   return current?.workingTreeId ?? LEGACY_WORKING_TREE_ID;
 };
 
+const LAST_WORKTREE_FOCUS_STORAGE_PREFIX = 'git-visualizer:last-worktree-focus:';
+
+export const lastWorktreeFocusStorageKey = (repoPath: string): string =>
+  `${LAST_WORKTREE_FOCUS_STORAGE_PREFIX}${normalizeRepoPathForCompare(repoPath)}`;
+
+const worktreeFocusStorage = (): Storage | null => {
+  try {
+    return globalThis.localStorage ?? null;
+  } catch {
+    return null;
+  }
+};
+
+export const readPersistedWorktreeFocusSha = (repoPath: string): string | null => {
+  const storage = worktreeFocusStorage();
+  if (!storage) return null;
+  try {
+    const raw = storage.getItem(lastWorktreeFocusStorageKey(repoPath));
+    return raw && isWorkingTreeCommitId(raw) ? raw : null;
+  } catch {
+    return null;
+  }
+};
+
+export const persistWorktreeFocusSha = (repoPath: string, workingTreeId: string): void => {
+  if (!isWorkingTreeCommitId(workingTreeId)) return;
+  const storage = worktreeFocusStorage();
+  if (!storage) return;
+  try {
+    storage.setItem(lastWorktreeFocusStorageKey(repoPath), workingTreeId);
+  } catch {
+    // ignore storage failures
+  }
+};
+
+/** Map camera should center this worktree node on project load/reload. */
+export const resolveActiveWorktreeFocusSha = (
+  sessions: WorktreeSession[],
+  repoPath?: string,
+): string | null => {
+  if (sessions.length === 0) return null;
+  const persisted = repoPath ? readPersistedWorktreeFocusSha(repoPath) : null;
+  if (persisted && sessions.some((session) => session.workingTreeId === persisted)) {
+    return persisted;
+  }
+  return currentSessionWorkingTreeId(sessions);
+};
+
 export const selectedUncommittedSessions = (
   sessions: WorktreeSession[],
   selectedCommitShas: string[],

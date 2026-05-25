@@ -41,8 +41,9 @@ import { foldStashNodesIntoGraph } from './placeStashNode';
 import { stripWorkingTreeFromPreviews, injectWorktreeUncommittedPreviews } from '../lib/injectWorktreeUncommitted';
 import {
   buildWorktreeSessions,
-  currentSessionWorkingTreeId,
   isWorkingTreeCommitId,
+  persistWorktreeFocusSha,
+  resolveActiveWorktreeFocusSha,
 } from '../lib/worktreeSessions';
 import { deriveRepoVisualState } from './repoVisualState';
 import { setMapGridBackgroundActivity } from '../components/grid/mapGridBackgroundActivity';
@@ -402,6 +403,7 @@ function App() {
   const [sidebarWidthPx, setSidebarWidthPx] = useState(SIDEBAR_DEFAULT_WIDTH_PX);
   const [isSidebarCollapsed, setIsSidebarCollapsed] = useState(false);
   const autoFocusSyncKeyRef = useRef<string | null>(null);
+  const focusCameraOnActiveWorktreeRef = useRef<(() => void) | null>(null);
   const loadRepoRequestIdRef = useRef(0);
   const mapSwitchEpochRef = useRef(0);
   const githubFetchRequestIdRef = useRef(0);
@@ -1700,11 +1702,17 @@ function App() {
     const normalizedPath = normalizePath(path);
     if (!normalizedPath) return;
     if (!outcomes.some((outcome) => outcome.kind === 'commit')) return;
-    void invoke<FingerprintCheckResult>('check_project_fingerprint', { projectId: normalizedPath })
-      .then((check) => {
+    void Promise.all([
+      invoke<FingerprintCheckResult>('check_project_fingerprint', { projectId: normalizedPath }),
+      invoke<RepoSyncPeek>('get_repo_sync_peek', { repoPath: normalizedPath }),
+    ])
+      .then(([check, peek]) => {
         if (check?.currentFingerprint) {
           noteSyncedRepoFingerprint(normalizedPath, check.currentFingerprint);
           ackProjectFingerprint(normalizedPath, check.currentFingerprint);
+        }
+        if (peek?.signature) {
+          noteSyncedRepoPeek(normalizedPath, peek.signature);
         }
       })
       .catch(() => undefined);
@@ -2736,9 +2744,27 @@ function App() {
 
     const isRepoRefreshBlocked = () =>
       isMapInteractingRef.current || !canApplyRepoRefreshRef.current;
-    const runRefresh = async (reason: 'graph' | 'local' | 'timer' | 'initial' | 'quick' = 'timer') => {
+    const scheduleRefreshAfterSuppress = (refreshReason: 'graph' | 'quick' = 'graph') => {
+      const delayMs = Math.max(0, suppressBackgroundRefreshUntilRef.current - Date.now()) + 50;
+      pendingRefreshAfterInteractionRef.current = true;
+      window.setTimeout(() => {
+        if (isDisposed || repoMutationInFlightRef.current) return;
+        if (Date.now() < suppressBackgroundRefreshUntilRef.current) {
+          scheduleRefreshAfterSuppress(refreshReason);
+          return;
+        }
+        if (!pendingRefreshAfterInteractionRef.current || isRepoRefreshBlocked()) return;
+        void runRefresh(refreshReason);
+      }, delayMs);
+    };
+
+    const runRefresh = async (incomingReason: 'graph' | 'local' | 'timer' | 'initial' | 'quick' = 'timer') => {
+      let reason = incomingReason;
       if (isDisposed || refreshInFlight) return;
-      if (Date.now() < suppressBackgroundRefreshUntilRef.current) return;
+      if (Date.now() < suppressBackgroundRefreshUntilRef.current) {
+        scheduleRefreshAfterSuppress('graph');
+        return;
+      }
       if (repoMutationInFlightRef.current) {
         pendingRefreshAfterInteractionRef.current = true;
         setMapGridBackgroundActivity('git-refresh-pending', 'Git refresh queued', true, 'mutation in flight');
@@ -2795,8 +2821,12 @@ function App() {
       } finally {
         refreshInFlight = false;
       }
-      if (reason === 'quick' && !(peek && isActiveUiBehindPeek(repoPath, peek))) {
+      const uiBehindPeek = peek ? isActiveUiBehindPeek(repoPath, peek) : false;
+      if (reason === 'quick' && !uiBehindPeek) {
         return;
+      }
+      if (reason === 'quick' && uiBehindPeek) {
+        reason = 'graph';
       }
 
       if (reason === 'graph' && normalizedPath && !gitActivityPending) {
@@ -3286,14 +3316,16 @@ function App() {
           layoutModelCacheRef.current.clear();
           persistedLayoutKeysRef.current.clear();
         }
+        autoFocusSyncKeyRef.current = null;
         gitActivityEpochRef.current += 1;
         runRepoRefreshRef.current?.('graph');
+        focusCameraOnActiveWorktreeRef.current?.();
       })();
     };
 
     window.addEventListener('git-visualizer:reload', handleSoftReload);
     return () => window.removeEventListener('git-visualizer:reload', handleSoftReload);
-  }, [repoPath, defaultBranch]);
+  }, [repoPath]);
 
   async function handleMapCommitClick(target: {
     commitSha: string;
@@ -3991,9 +4023,16 @@ function App() {
     handleDeleteSelection,
   ];
 
+  const handleGridFocusChange = useCallback((sha: string | null) => {
+    setGridFocusSha(sha);
+    if (sha && repoPath && isWorkingTreeCommitId(sha)) {
+      persistWorktreeFocusSha(repoPath, sha);
+    }
+  }, [repoPath]);
+
   function handleSidebarSelectCommit(sha: string) {
     if (!sha) return;
-    setGridFocusSha(sha);
+    handleGridFocusChange(sha);
     setGridSearchJumpToken((token) => token + 1);
   }
 
@@ -4179,47 +4218,59 @@ function App() {
     };
   }, [branches, branchCommitPreviews, branchUniqueAheadCounts, checkedOutRef, defaultBranch, directCommits, remoteDefaultTipMetadata, remoteDefaultTipParentSha, remoteDefaultTipSha, repoPath, stashes, unpushedDirectCommits, worktrees]);
 
-  useEffect(() => {
-    const readyForAutoFocus =
-      !mapLoading &&
-      !loading &&
-      (
-        remoteDefaultTipSha == null ||
-        (isRemoteTipHydrated && remoteDefaultTipParentSha != null)
-      );
-    if (!readyForAutoFocus) return;
+  const focusCameraOnActiveWorktree = useCallback(() => {
+    if (!repoPath) return;
     const focusSha = worktreeSessions.length > 0
-      ? currentSessionWorkingTreeId(worktreeSessions)
+      ? resolveActiveWorktreeFocusSha(worktreeSessions, repoPath)
       : visualCheckedOutRef?.headSha ?? null;
     if (!focusSha) return;
-    const syncKey = `${repoPath ?? '__no-repo__'}|${mapGridOrientation}|${focusSha}`;
+    const syncKey = `${repoPath}|${mapGridOrientation}|${mapSwitchEpoch}|${focusSha}`;
     if (autoFocusSyncKeyRef.current === syncKey) return;
-    const cameraScope = `${repoPath ?? '__no-repo__'}::${mapGridOrientation}`;
-    let hasSavedCamera = false;
+    autoFocusSyncKeyRef.current = syncKey;
+    if (isWorkingTreeCommitId(focusSha)) {
+      persistWorktreeFocusSha(repoPath, focusSha);
+    }
     try {
-      hasSavedCamera = Boolean(window.localStorage.getItem(mapGridCameraStorageKey(cameraScope)));
+      window.localStorage.removeItem(mapGridCameraStorageKey(`${repoPath}::${mapGridOrientation}`));
     } catch {
       // ignore storage failures
     }
-    autoFocusSyncKeyRef.current = syncKey;
-    if (hasSavedCamera) return;
     setGridFocusSha(focusSha);
     setGridSearchJumpToken((token) => token + 1);
   }, [
-    isRemoteTipHydrated,
-    loading,
     mapGridOrientation,
-    mapLoading,
-    remoteDefaultTipParentSha,
-    remoteDefaultTipSha,
+    mapSwitchEpoch,
     repoPath,
     visualCheckedOutRef?.headSha,
     worktreeSessions,
   ]);
+  focusCameraOnActiveWorktreeRef.current = focusCameraOnActiveWorktree;
+
+  useEffect(() => {
+    const readyForAutoFocus =
+      !mapLoading &&
+      !loading &&
+      mapReadyForDisplay &&
+      (
+        remoteDefaultTipSha == null ||
+        (isRemoteTipHydrated && remoteDefaultTipParentSha != null)
+      );
+    if (!readyForAutoFocus || !repoPath) return;
+    focusCameraOnActiveWorktree();
+  }, [
+    focusCameraOnActiveWorktree,
+    isRemoteTipHydrated,
+    loading,
+    mapReadyForDisplay,
+    mapLoading,
+    remoteDefaultTipParentSha,
+    remoteDefaultTipSha,
+    repoPath,
+  ]);
 
   useEffect(() => {
     autoFocusSyncKeyRef.current = null;
-  }, [repoPath]);
+  }, [repoPath, mapSwitchEpoch]);
   const branchesForLayout = useMemo(
     () => applyBranchParents(enrichedBranches, branchParentByName, defaultBranch),
     [enrichedBranches, branchParentByName, defaultBranch],
@@ -4671,7 +4722,7 @@ function App() {
                 onMapReadyForDisplay={handleMapReadyForDisplay}
                 onGridSearchResultCountChange={setGridSearchResultCount}
                 onGridSearchResultIndexChange={setGridSearchResultIndex}
-                onGridSearchFocusChange={setGridFocusSha}
+                onGridSearchFocusChange={handleGridFocusChange}
                 checkedOutRef={visualCheckedOutRef}
                 onCommitClick={handleMapCommitClick}
                 onMergeRefsIntoBranch={handleMergeRefsIntoBranch}

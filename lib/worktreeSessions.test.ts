@@ -1,4 +1,4 @@
-import { describe, expect, it } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { WorktreeInfo } from '../types';
 import type { Branch } from '../types';
 import {
@@ -12,6 +12,9 @@ import {
   sessionMatchesBranchCheckout,
   stripEmptyBranchPlaceholdersForWorktreeSessions,
   workingTreeIdForPath,
+  persistWorktreeFocusSha,
+  readPersistedWorktreeFocusSha,
+  resolveActiveWorktreeFocusSha,
 } from './worktreeSessions';
 
 const baseWorktree = (overrides: Partial<WorktreeInfo>): WorktreeInfo => ({
@@ -27,6 +30,25 @@ const baseWorktree = (overrides: Partial<WorktreeInfo>): WorktreeInfo => ({
 });
 
 describe('worktreeSessions', () => {
+  const storage = new Map<string, string>();
+
+  beforeEach(() => {
+    storage.clear();
+    vi.stubGlobal('localStorage', {
+      getItem: (key: string) => storage.get(key) ?? null,
+      setItem: (key: string, value: string) => {
+        storage.set(key, value);
+      },
+      removeItem: (key: string) => {
+        storage.delete(key);
+      },
+    });
+  });
+
+  afterEach(() => {
+    vi.unstubAllGlobals();
+  });
+
   it('assigns checked accent to current worktree and worktree-violet to first other', () => {
     const sessions = buildWorktreeSessions(
       [
@@ -39,6 +61,23 @@ describe('worktreeSessions', () => {
     const other = sessions.find((session) => !session.isCurrent);
     expect(current?.accentToken).toBe('checked');
     expect(other?.accentToken).toBe('worktree-violet');
+  });
+
+  it('resolves active worktree focus from persistence then current session', () => {
+    const sessions = buildWorktreeSessions(
+      [
+        baseWorktree({ path: '/repo/wt-b', headSha: 'bbbbbbbbbbbb', branchName: 'feature', isCurrent: false }),
+        baseWorktree({ path: '/repo', headSha: 'aaaaaaaaaaaa', branchName: 'main', isCurrent: true }),
+      ],
+      '/repo',
+    );
+    const other = sessions.find((session) => !session.isCurrent)!;
+    persistWorktreeFocusSha('/repo', other.workingTreeId);
+    expect(readPersistedWorktreeFocusSha('/repo')).toBe(other.workingTreeId);
+    expect(resolveActiveWorktreeFocusSha(sessions, '/repo')).toBe(other.workingTreeId);
+    expect(resolveActiveWorktreeFocusSha(sessions, '/other-repo')).toBe(
+      sessions.find((session) => session.isCurrent)!.workingTreeId,
+    );
   });
 
   it('uses stable working tree ids', () => {

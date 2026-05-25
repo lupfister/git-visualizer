@@ -1042,7 +1042,17 @@ export default function BranchGridMap({
       targetZoom,
     );
     lastHandledViewportFocusRequestRef.current = focusRequestKey;
-  }, [gridFocusSha, gridSearchJumpToken, focusedRenderNode, getTransformLayerOriginScreen, syncCamera, renderedCameraRef]);
+  }, [
+    gridFocusSha,
+    gridSearchJumpToken,
+    focusedRenderNode,
+    getTransformLayerOriginScreen,
+    syncCamera,
+    renderedCameraRef,
+    mapReadyEpoch,
+    renderNodes.length,
+    blockMapInteraction,
+  ]);
 
   // Updated on every camera transform write so connector culling matches the viewport during pan.
   const nodeByVisualIdRef = useRef<Map<string, Node>>(new Map());
