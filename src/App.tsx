@@ -1757,6 +1757,55 @@ function App() {
     }
   }
 
+  /** Drop cached layout/clumps and recompute the map from current React graph state. */
+  function redrawRepoGraph(path: string) {
+    const normalizedPath = normalizePath(path);
+    if (!normalizedPath) return;
+    invalidateRepoLayoutCacheForPath(normalizedPath);
+    lastResolvedLayoutModelRef.current = null;
+    setLayoutEpoch((epoch) => epoch + 1);
+    if (!sameRepoPath(repoPath, normalizedPath)) return;
+    setNodePositionOverridesByRepo((previous) => {
+      const current = previous[normalizedPath] ?? {};
+      const stripped = stripWorktreeNodePositionOverrides(current);
+      if (stripped === current) return previous;
+      persistRepoNodePositions(normalizedPath, stripped);
+      return { ...previous, [normalizedPath]: stripped };
+    });
+  }
+
+  async function syncCheckedOutRefFromQuickGitState(path: string) {
+    const normalizedPath = normalizePath(path);
+    if (!normalizedPath || !sameRepoPath(repoPath, normalizedPath)) return;
+    const quickState = await invoke<RepoQuickState>('get_repo_quick_state', { repoPath: path }).catch(() => null);
+    if (!quickState) return;
+    flushSync(() => {
+      setCheckedOutRef((previous) => {
+        if (!previous) return previous;
+        let snapshot: RepoVisualSnapshot;
+        try {
+          snapshot = getSnapshotForMutation(normalizedPath);
+        } catch {
+          return previous;
+        }
+        const merged = mergeCheckedOutRefWithQuickState(previous, quickState, snapshot);
+        if (
+          previous.headSha === merged.headSha
+          && previous.hasUncommittedChanges === merged.hasUncommittedChanges
+          && (previous.parentSha ?? null) === (merged.parentSha ?? null)
+        ) {
+          return previous;
+        }
+        latestCheckedOutRef.current = merged;
+        return merged;
+      });
+    });
+    projectQuickStateRef.current = {
+      ...projectQuickStateRef.current,
+      [normalizedPath]: quickStateSignature(quickState),
+    };
+  }
+
   function bustRepoSyncCachesForPath(path: string) {
     const normalizedPath = normalizePath(path);
     if (!normalizedPath) return;
@@ -2321,19 +2370,9 @@ function App() {
         force,
         allowIncomingDirty: force,
       });
-      if (needsLayoutRebuild && applied) {
-        invalidateRepoLayoutCacheForPath(normalizedPath);
-        setLayoutEpoch((epoch) => epoch + 1);
-        setHydratedLayoutModel(null);
-        setHydratedLayoutKey(null);
-        setNodePositionOverridesByRepo((previous) => {
-          const current = previous[normalizedPath] ?? {};
-          const stripped = stripWorktreeNodePositionOverrides(current);
-          if (stripped === current) return previous;
-          persistRepoNodePositions(normalizedPath, stripped);
-          return { ...previous, [normalizedPath]: stripped };
-        });
-      } else if (applied && unpushedStateChanged && sameRepoPath(repoPath, normalizedPath)) {
+      if (applied && !force && needsLayoutRebuild) {
+        redrawRepoGraph(normalizedPath);
+      } else if (applied && unpushedStateChanged && !force) {
         invalidateRepoLayoutCacheForPath(normalizedPath);
         setHydratedLayoutModel(null);
         setHydratedLayoutKey(null);
@@ -3380,6 +3419,10 @@ function App() {
     setRepoPath(path);
     setMapGridBackgroundActivity('snapshot-apply', 'Apply repo snapshot', false);
     setMapGridBackgroundActivity('git-refresh-pending', 'Git refresh queued', false);
+    if (options?.force === true && sameRepoPath(repoPath, path)) {
+      redrawRepoGraph(path);
+      void syncCheckedOutRefFromQuickGitState(path);
+    }
     return true;
   }
 
@@ -4090,6 +4133,7 @@ function App() {
           };
           if (refreshGitActivityPending) {
             flushSync(applySnapshot);
+            await syncCheckedOutRefFromQuickGitState(repoPath);
           } else {
             startTransition(applySnapshot);
           }
@@ -5641,15 +5685,6 @@ function App() {
         if (fromCache && layoutModelHasWorkingTree(fromCache) === hasWorktreeNodes) {
           return fromCache;
         }
-      }
-      const lastResolved = lastResolvedLayoutModelRef.current;
-      if (
-        lastResolved
-        && layoutModelHasWorkingTree(lastResolved) === hasWorktreeNodes
-        && layoutRevisionForView !== layoutRevision
-        && hydratedLayoutKey === sharedGridLayoutCacheKey
-      ) {
-        return lastResolved;
       }
       return computeBranchGridLayout({
         branches: revision.branchesForLayout,
