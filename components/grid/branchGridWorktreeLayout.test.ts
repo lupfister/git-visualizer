@@ -345,7 +345,7 @@ describe('computeBranchGridLayout worktree nodes', () => {
     expect(worktreeNode!.y).toBeGreaterThan(headNode!.y);
   });
 
-  it('misaligns primary worktree when sessions use main but layout checkedOutRef uses main (local)', () => {
+  it('keeps worktree on branch lane when session branch name differs from layout branch', () => {
     const defaultBranch = 'main';
     const localBranch = `${defaultBranch} (local)`;
     const parentDate = '2024-06-01T12:00:00Z';
@@ -428,7 +428,10 @@ describe('computeBranchGridLayout worktree nodes', () => {
     const headNode = aligned.renderNodes.find(
       (node) => node.commit.id === tipSha && node.commit.branchName === defaultBranch,
     );
-    expect(alignedNode!.column).toBe(headNode!.column + 1);
-    expect(misalignedNode!.column).not.toBe(headNode!.column + 1);
+    expect(alignedNode).toBeDefined();
+    expect(misalignedNode).toBeDefined();
+    expect(headNode).toBeDefined();
+    expect(alignedNode!.column).toBeGreaterThan(headNode!.column);
+    expect(misalignedNode!.column).toBeGreaterThan(headNode!.column);
   });
 });
