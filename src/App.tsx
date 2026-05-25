@@ -1664,21 +1664,10 @@ function App() {
     try {
       const snapshot = getSnapshotForMutation(normalizedPath);
       if (!snapshotContainsCommitSha(snapshot, protectedSha)) {
-        const quickState = await invoke<RepoQuickState>('get_repo_quick_state', { repoPath: normalizedPath }).catch(
-          () => null,
-        );
-        const liveHead = snapshot.checkedOutRef?.headSha ?? null;
-        const quickAligned =
-          Boolean(quickState?.headSha)
-          && shaMatches(quickState.headSha, protectedSha)
-          && Boolean(liveHead)
-          && shaMatches(liveHead, protectedSha);
-        if (!quickAligned) {
-          window.setTimeout(() => {
-            void releasePostCommitProtectionAfterReconcile(normalizedPath, protectedSha);
-          }, 2000);
-          return;
-        }
+        window.setTimeout(() => {
+          void releasePostCommitProtectionAfterReconcile(normalizedPath, protectedSha);
+        }, 2000);
+        return;
       }
     } catch {
       return;
@@ -1695,6 +1684,20 @@ function App() {
     suppressBackgroundRefreshUntilRef.current = 0;
     pendingRefreshAfterInteractionRef.current = false;
     invalidateRepoLayoutCacheForPath(normalizedPath);
+    if (sameRepoPath(repoPath, normalizedPath)) {
+      try {
+        const live = getSnapshotForMutation(normalizedPath);
+        if (snapshotContainsCommitSha(live, protectedSha)) {
+          clearPostCommitProtectionForPath(normalizedPath);
+          setLayoutEpoch((epoch) => epoch + 1);
+          autoFocusSyncKeyRef.current = null;
+          focusCameraOnActiveWorktreeRef.current?.();
+          return;
+        }
+      } catch {
+        // fall through to graph refresh when live snapshot is unavailable
+      }
+    }
     if (!sameRepoPath(repoPath, normalizedPath)) return;
     setLayoutEpoch((epoch) => epoch + 1);
     autoFocusSyncKeyRef.current = null;
@@ -2112,6 +2115,16 @@ function App() {
     return mergeCheckedOutRefWithQuickState(base, quickState, snapshot, mergeOptionsForRepo(path));
   }
 
+  async function reconcileSnapshotWorktreesOnly(
+    path: string,
+    snapshot: RepoVisualSnapshot,
+  ): Promise<RepoVisualSnapshot> {
+    const worktrees = await invoke<WorktreeInfo[]>('list_worktrees', { repoPath: path }).catch(
+      () => [] as WorktreeInfo[],
+    );
+    return applyMutationPatch(snapshot, outcomeFromWorktreeSync(worktrees));
+  }
+
   async function reconcileSnapshotForProjectSwitch(
     path: string,
     snapshot: RepoVisualSnapshot,
@@ -2288,6 +2301,12 @@ function App() {
       for (const outcome of outcomes) {
         snapshot = applyMutationPatch(snapshot, outcome);
       }
+      if (includesCommitOutcome) {
+        const worktrees = await invoke<WorktreeInfo[]>('list_worktrees', { repoPath: normalizedPath }).catch(
+          () => [] as WorktreeInfo[],
+        );
+        snapshot = applyMutationPatch(snapshot, outcomeFromWorktreeSync(worktrees));
+      }
       const afterSignature = getRepoVisualSnapshotSignature(snapshot);
       const layoutTopologyChanged = outcomes.some((outcome) => outcome.layoutTopologyChanged);
       const snapshotChanged = beforeSignature !== afterSignature;
@@ -2326,6 +2345,10 @@ function App() {
       };
       if (includesCommitOutcome) {
         flushSync(applyPatch);
+        if (sameRepoPath(repoPath, normalizedPath)) {
+          autoFocusSyncKeyRef.current = null;
+          focusCameraOnActiveWorktreeRef.current?.();
+        }
       } else {
         startTransition(applyPatch);
       }
@@ -3367,7 +3390,7 @@ function App() {
           return;
         }
         nextSnapshot = postCommitGuarded
-          ? nextSnapshot
+          ? await reconcileSnapshotWorktreesOnly(repoPath, nextSnapshot)
           : await reconcileSnapshotForProjectSwitch(repoPath, nextSnapshot);
         if (shouldBlockIncomingSnapshotApply(repoPath, nextSnapshot)) {
           markGitActivityHandled();
@@ -3393,6 +3416,38 @@ function App() {
             }
           } catch {
             // apply incoming when live snapshot is unavailable
+          }
+        }
+        if (postCommitGuarded && normalizedPath) {
+          const guard = postCommitProtectedHeadShaRef.current[normalizedPath];
+          if (guard) {
+            try {
+              const live = getSnapshotForMutation(repoPath);
+              if (
+                snapshotContainsCommitSha(live, guard)
+                && snapshotContainsCommitSha(nextSnapshot, guard)
+              ) {
+                const synced = await reconcileSnapshotWorktreesOnly(repoPath, live);
+                upsertProjectSnapshot(repoPath, synced, { force: true });
+                projectQuickStateRef.current = {
+                  ...projectQuickStateRef.current,
+                  [repoPath]: quickStateSignature(quickStateFromSnapshot(repoPath, synced)),
+                };
+                if (mutationAtStart === repoMutationGenerationRef.current && !isRepoRefreshBlocked()) {
+                  startTransition(() => {
+                    applyPatchedSnapshot(repoPath, synced, true, { force: true });
+                  });
+                }
+                void invoke<FingerprintCheckResult>('check_project_fingerprint', { projectId: repoPath })
+                  .then((check) => noteSyncedRepoFingerprint(repoPath, check?.currentFingerprint))
+                  .catch(() => undefined);
+                lastHandledGitActivityEpochRef.current = gitActivityEpochRef.current;
+                markGitActivityHandled();
+                return;
+              }
+            } catch {
+              // fall through to full snapshot apply
+            }
           }
         }
         upsertProjectSnapshot(repoPath, nextSnapshot);
