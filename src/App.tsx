@@ -1,4 +1,5 @@
 import { useState, useEffect, useRef, useMemo, useCallback, startTransition, useDeferredValue } from 'react';
+import { flushSync } from 'react-dom';
 import type { SetStateAction } from 'react';
 import { invoke } from '@tauri-apps/api/core';
 import { listen } from '@tauri-apps/api/event';
@@ -1609,13 +1610,29 @@ function App() {
       });
       if (layoutTopologyChanged && applied) {
         setLayoutEpoch((epoch) => epoch + 1);
+        setHydratedLayoutModel(null);
+        setHydratedLayoutKey(null);
       }
     }
   }
 
-  async function refreshRepoAfterMutationFull(path: string) {
+  const mutationOutcomeNeedsImmediateApply = (outcomes: RepoMutationOutcome[]): boolean =>
+    outcomes.some((outcome) => (
+      outcome.kind === 'commit'
+      || outcome.kind === 'discardDirty'
+      || outcome.kind === 'markDirty'
+      || outcome.kind === 'checkout'
+      || outcome.kind === 'stashPush'
+      || outcome.kind === 'stashRestore'
+    ));
+
+  async function refreshRepoAfterMutationFull(
+    path: string,
+    options?: { immediate?: boolean },
+  ) {
     const normalizedPath = normalizePath(path);
     if (!normalizedPath) return;
+    const immediate = options?.immediate === true;
 
     const applyGeneration = repoMutationGenerationRef.current;
     const result = await invoke<RefreshProjectResult>('refresh_project_if_changed', {
@@ -1633,7 +1650,7 @@ function App() {
           ...projectQuickStateRef.current,
           [normalizedPath]: quickStateSignature(quickState),
         };
-        startTransition(() => {
+        const syncRef = () => {
           setCheckedOutRef((previous) => {
             if (!previous) return previous;
             return {
@@ -1643,7 +1660,9 @@ function App() {
               parentSha: quickState.upstreamSha ?? previous.parentSha,
             };
           });
-        });
+        };
+        if (immediate) flushSync(syncRef);
+        else startTransition(syncRef);
       }
       return;
     }
@@ -1654,9 +1673,11 @@ function App() {
     nextSnapshot = reconcileSnapshotCheckedOutRef(nextSnapshot, quickState);
     await yieldToPaint();
     if (applyGeneration !== repoMutationGenerationRef.current) return;
-    startTransition(() => {
+    const applySnapshot = () => {
       applyPatchedSnapshot(normalizedPath, nextSnapshot!, true);
-    });
+    };
+    if (immediate) flushSync(applySnapshot);
+    else startTransition(applySnapshot);
   }
 
   async function finalizeRepoMutation(path: string, ...outcomes: RepoMutationOutcome[]) {
@@ -1682,17 +1703,30 @@ function App() {
       await yieldToPaint();
       if (applyGeneration !== repoMutationGenerationRef.current) return;
 
-      startTransition(() => {
-        applyPatchedSnapshot(normalizedPath, snapshot, layoutTopologyChanged, { force: true });
-      });
-
-      suppressBackgroundRefreshUntilRef.current = Date.now() + 2500;
-      window.setTimeout(() => {
-        void invoke('persist_project_snapshot', { projectId: normalizedPath }).catch((error) => {
-          console.warn('Background snapshot persist failed:', error);
+      const immediateApply = mutationOutcomeNeedsImmediateApply(outcomes);
+      if (immediateApply) {
+        flushSync(() => {
+          applyPatchedSnapshot(normalizedPath, snapshot, layoutTopologyChanged, { force: true });
         });
-      }, PERSIST_SNAPSHOT_DEFER_MS);
-      noteSyncedAfterMutationOutcomes(normalizedPath, ...outcomes);
+      } else {
+        startTransition(() => {
+          applyPatchedSnapshot(normalizedPath, snapshot, layoutTopologyChanged, { force: true });
+        });
+      }
+
+      const isCommit = outcomes.some((outcome) => outcome.kind === 'commit');
+      if (isCommit) {
+        suppressBackgroundRefreshUntilRef.current = 0;
+        noteSyncedAfterMutationOutcomes(normalizedPath, ...outcomes);
+        void refreshRepoAfterMutationFull(normalizedPath, { immediate: true });
+      } else {
+        suppressBackgroundRefreshUntilRef.current = Date.now() + 2500;
+        window.setTimeout(() => {
+          void invoke('persist_project_snapshot', { projectId: normalizedPath }).catch((error) => {
+            console.warn('Background snapshot persist failed:', error);
+          });
+        }, PERSIST_SNAPSHOT_DEFER_MS);
+      }
     } finally {
       endRepoMutation();
     }
@@ -1702,18 +1736,9 @@ function App() {
     const normalizedPath = normalizePath(path);
     if (!normalizedPath) return;
     if (!outcomes.some((outcome) => outcome.kind === 'commit')) return;
-    void Promise.all([
-      invoke<FingerprintCheckResult>('check_project_fingerprint', { projectId: normalizedPath }),
-      invoke<RepoSyncPeek>('get_repo_sync_peek', { repoPath: normalizedPath }),
-    ])
-      .then(([check, peek]) => {
-        if (check?.currentFingerprint) {
-          noteSyncedRepoFingerprint(normalizedPath, check.currentFingerprint);
-          ackProjectFingerprint(normalizedPath, check.currentFingerprint);
-        }
-        if (peek?.signature) {
-          noteSyncedRepoPeek(normalizedPath, peek.signature);
-        }
+    void invoke<RepoSyncPeek>('get_repo_sync_peek', { repoPath: normalizedPath })
+      .then((peek) => {
+        if (peek?.signature) noteSyncedRepoPeek(normalizedPath, peek.signature);
       })
       .catch(() => undefined);
   }

@@ -239,6 +239,7 @@ export const sessionMatchesBranchCheckout = (
   branch: Branch,
 ): boolean => {
   if (!session.branchName || session.branchName !== branch.name) return false;
+  if (isWorkingTreeCommitId(branch.headSha)) return true;
   const tipSha = branchTipSha(branch);
   if (!tipSha) return false;
   if (shaMatches(session.headSha, tipSha)) return true;

@@ -58,7 +58,7 @@ describe('injectWorktreeUncommittedPreviews', () => {
     expect(result.branches.find((b) => b.name === 'feature')?.headSha).toMatch(/^WORKING_TREE:/);
   });
 
-  it('injects worktree nodes for clean worktrees without mutating branch headSha', () => {
+  it('hides clean current-checkout worktree tile but keeps other clean worktrees', () => {
     const worktrees = [
       wt({ path: '/repo', branchName: 'main', headSha: 'aaaaaaaaaaaa1111', isCurrent: true }),
       wt({
@@ -79,7 +79,8 @@ describe('injectWorktreeUncommittedPreviews', () => {
     });
     const allPreviews = Object.values(result.branchCommitPreviews).flat();
     const worktreeNodes = allPreviews.filter((preview) => preview.kind === 'uncommitted');
-    expect(worktreeNodes).toHaveLength(2);
+    expect(worktreeNodes).toHaveLength(1);
+    expect(worktreeNodes[0]?.fullSha.startsWith('WORKING_TREE:')).toBe(true);
     expect(result.branches.find((b) => b.name === 'main')?.headSha).toBe('aaaaaaaaaaaa1111');
     expect(result.branches.find((b) => b.name === 'feature')?.headSha).toBe('bbbbbbbbbbbb2222');
   });
@@ -87,7 +88,13 @@ describe('injectWorktreeUncommittedPreviews', () => {
   it('strips empty branch placeholder when injecting worktree on same branch', () => {
     const headSha = 'bbbbbbbbbbbb2222';
     const worktrees = [
-      wt({ path: '/repo/wt', branchName: 'feature', headSha, isCurrent: false }),
+      wt({
+        path: '/repo/wt',
+        branchName: 'feature',
+        headSha,
+        isCurrent: false,
+        hasUncommittedChanges: true,
+      }),
     ];
     const sessions = buildWorktreeSessions(worktrees, '/repo');
     const result = injectWorktreeUncommittedPreviews({
@@ -119,9 +126,20 @@ describe('injectWorktreeUncommittedPreviews', () => {
     const headSha = 'bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb';
     const parentDate = '2024-03-15T08:00:00.000Z';
     const worktrees = [
-      wt({ path: '/repo', branchName: 'main', headSha, isCurrent: true }),
+      wt({
+        path: '/repo',
+        branchName: 'main',
+        headSha,
+        isCurrent: true,
+        hasUncommittedChanges: true,
+      }),
     ];
-    const sessions = buildWorktreeSessions(worktrees, '/repo');
+    const sessions = buildWorktreeSessions(worktrees, '/repo', {
+      branchName: 'main',
+      headSha,
+      hasUncommittedChanges: true,
+      parentSha: null,
+    });
     const result = injectWorktreeUncommittedPreviews({
       sessions,
       branches: [branch('main', headSha)],
