@@ -1825,9 +1825,22 @@ fn get_default_branch(repo_path: String) -> Result<String, String> {
 }
 
 #[tauri::command]
-fn get_checked_out_ref(repo_path: String) -> Result<CheckedOutRef, String> {
-    let path = Path::new(&repo_path);
-    git::get_checked_out_ref(path).map_err(|e| e.to_string())
+async fn get_checked_out_ref(repo_path: String) -> Result<CheckedOutRef, String> {
+    run_blocking(move || {
+        let path = Path::new(&repo_path);
+        git::get_checked_out_ref(path).map_err(|e| e.to_string())
+    })
+    .await
+}
+
+#[tauri::command(rename_all = "camelCase")]
+async fn stage_working_tree(repo_path: String) -> Result<CheckedOutRef, String> {
+    run_blocking(move || {
+        let path = Path::new(&repo_path);
+        git::stage_working_tree(path).map_err(|e| e.to_string())?;
+        git::get_checked_out_ref(path).map_err(|e| e.to_string())
+    })
+    .await
 }
 
 #[tauri::command]
@@ -2052,13 +2065,6 @@ async fn generate_stash_message(repo_path: String) -> Result<String, String> {
     })
     .await
     .map_err(|e| format!("Stash message task failed: {e}"))?
-}
-
-#[tauri::command(rename_all = "camelCase")]
-fn stage_working_tree(repo_path: String) -> Result<CheckedOutRef, String> {
-    let path = Path::new(&repo_path);
-    git::stage_working_tree(path).map_err(|e| e.to_string())?;
-    git::get_checked_out_ref(path).map_err(|e| e.to_string())
 }
 
 #[tauri::command(rename_all = "camelCase")]

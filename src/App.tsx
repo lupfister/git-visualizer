@@ -1,4 +1,4 @@
-import { useState, useEffect, useRef, useMemo, useCallback, startTransition } from 'react';
+import { useState, useEffect, useRef, useMemo, useCallback, startTransition, useDeferredValue } from 'react';
 import type { SetStateAction } from 'react';
 import { invoke } from '@tauri-apps/api/core';
 import { listen } from '@tauri-apps/api/event';
@@ -28,7 +28,7 @@ import {
   outcomeFromWorktreeRemove,
   outcomeFromWorktreeSync,
 } from './repoMutationPatches';
-import { classifyFingerprintDiff, parseRepoFingerprint, withRepoFingerprintDirty, withRepoFingerprintUpstream, type FingerprintPatchSegment } from './fingerprintDiff';
+import { classifyFingerprintDiff, formatRepoFingerprint, parseRepoFingerprint, withRepoFingerprintDirty, withRepoFingerprintUpstream, type FingerprintPatchSegment } from './fingerprintDiff';
 import {
   applyBranchParents,
   isNewerBranchAsParent,
@@ -66,6 +66,8 @@ const SIDEBAR_MIN_WIDTH_PX = 180;
 const SIDEBAR_MAX_WIDTH_PX = 360;
 /** Wait this long after map pan/marquee ends before applying background git snapshot updates. */
 const MAP_REPO_REFRESH_SETTLE_MS = 500;
+/** Defer SQLite snapshot persist so git CPU work does not contend with map layout. */
+const PERSIST_SNAPSHOT_DEFER_MS = 3000;
 /** Minimum gap between background fingerprint scans when git state is already synced. */
 const MIN_BACKGROUND_FINGERPRINT_CHECK_MS = 8000;
 /** Minimum gap between full graph rebuild refreshes. */
@@ -1391,8 +1393,6 @@ function App() {
       const applied = applySnapshotToActiveState(normalizedPath, patched, { force });
       if (layoutTopologyChanged && applied) {
         setLayoutEpoch((epoch) => epoch + 1);
-        setHydratedLayoutModel(null);
-        setHydratedLayoutKey(null);
       }
     }
   }
@@ -1471,14 +1471,32 @@ function App() {
       });
 
       suppressBackgroundRefreshUntilRef.current = Date.now() + 2500;
-      void invoke('persist_project_snapshot', { projectId: normalizedPath }).catch((error) => {
-        console.warn('Background snapshot persist failed:', error);
-      });
-      void invoke<FingerprintCheckResult>('check_project_fingerprint', { projectId: normalizedPath })
-        .then((check) => noteSyncedRepoFingerprint(normalizedPath, check?.currentFingerprint))
-        .catch(() => undefined);
+      window.setTimeout(() => {
+        void invoke('persist_project_snapshot', { projectId: normalizedPath }).catch((error) => {
+          console.warn('Background snapshot persist failed:', error);
+        });
+      }, PERSIST_SNAPSHOT_DEFER_MS);
+      noteSyncedAfterMutationOutcomes(normalizedPath, ...outcomes);
     } finally {
       endRepoMutation();
+    }
+  }
+
+  function noteSyncedAfterMutationOutcomes(path: string, ...outcomes: RepoMutationOutcome[]) {
+    const normalizedPath = normalizePath(path);
+    if (!normalizedPath) return;
+    for (const outcome of outcomes) {
+      if (outcome.kind !== 'commit') continue;
+      const lastSynced = lastSyncedRepoFingerprintRef.current[normalizedPath];
+      const parts = parseRepoFingerprint(lastSynced ?? null);
+      if (!parts) return;
+      const nextFingerprint = formatRepoFingerprint({
+        ...parts,
+        headSha: outcome.commit.fullSha,
+        hasUncommittedChanges: false,
+      });
+      noteSyncedRepoFingerprint(normalizedPath, nextFingerprint);
+      ackProjectFingerprint(normalizedPath, nextFingerprint);
     }
   }
 
@@ -3669,14 +3687,6 @@ function App() {
     }
     return map;
   }, [branchesForLayout, defaultBranch]);
-  const openedClumpsSignature = useMemo(
-    () => setSignature(manuallyOpenedGridClumps),
-    [manuallyOpenedGridClumps],
-  );
-  const closedClumpsSignature = useMemo(
-    () => setSignature(manuallyClosedGridClumps),
-    [manuallyClosedGridClumps],
-  );
   const graphLayoutSignature = useMemo(
     () => [
       'layout-v12-worktree-always',
@@ -3702,22 +3712,57 @@ function App() {
       mergeNodes,
     ],
   );
+  const layoutRevision = useMemo(
+    () => ({
+      graphLayoutSignature,
+      branchesForLayout,
+      mergeNodes,
+      enrichedDirectCommits,
+      enrichedUnpushedDirectCommits,
+      unpushedCommitShasByBranch,
+      defaultBranch,
+      enrichedBranchCommitPreviews,
+      enrichedBranchParentByName,
+      enrichedBranchUniqueAheadCounts,
+      manuallyOpenedGridClumps,
+      manuallyClosedGridClumps,
+      gridSearchQuery,
+      gridFocusSha,
+      visualCheckedOutRef,
+      worktreeSessions,
+      mapGridOrientation,
+    }),
+    [
+      graphLayoutSignature,
+      branchesForLayout,
+      mergeNodes,
+      enrichedDirectCommits,
+      enrichedUnpushedDirectCommits,
+      unpushedCommitShasByBranch,
+      defaultBranch,
+      enrichedBranchCommitPreviews,
+      enrichedBranchParentByName,
+      enrichedBranchUniqueAheadCounts,
+      manuallyOpenedGridClumps,
+      manuallyClosedGridClumps,
+      gridSearchQuery,
+      gridFocusSha,
+      visualCheckedOutRef,
+      worktreeSessions,
+      mapGridOrientation,
+    ],
+  );
+  const deferredLayoutRevision = useDeferredValue(layoutRevision);
   const sharedGridLayoutCacheKey = useMemo(() => {
     if (!repoPath) return null;
     return makeLayoutCacheKey(
       repoPath,
-      mapGridOrientation,
-      manuallyOpenedGridClumps,
-      manuallyClosedGridClumps,
-      graphLayoutSignature,
+      deferredLayoutRevision.mapGridOrientation,
+      deferredLayoutRevision.manuallyOpenedGridClumps,
+      deferredLayoutRevision.manuallyClosedGridClumps,
+      deferredLayoutRevision.graphLayoutSignature,
     );
-  }, [
-    repoPath,
-    mapGridOrientation,
-    openedClumpsSignature,
-    closedClumpsSignature,
-    graphLayoutSignature,
-  ]);
+  }, [repoPath, deferredLayoutRevision]);
   useEffect(() => {
     if (!repoPath || !sharedGridLayoutCacheKey) {
       setHydratedLayoutModel(null);
@@ -3765,19 +3810,20 @@ function App() {
   }, [repoPath, sharedGridLayoutCacheKey, worktreeSessions]);
   const sharedGridLayoutModel: BranchGridLayoutModel = useMemo(
     () => {
+      const revision = deferredLayoutRevision;
       const hasGraphSourceData =
-        branchesForLayout.length > 0 ||
-        enrichedDirectCommits.length > 0 ||
-        enrichedUnpushedDirectCommits.length > 0;
+        revision.branchesForLayout.length > 0 ||
+        revision.enrichedDirectCommits.length > 0 ||
+        revision.enrichedUnpushedDirectCommits.length > 0;
       const hydratedLooksEmptyButShouldNot =
         Boolean(hydratedLayoutModel) &&
         (hydratedLayoutModel?.allCommits.length ?? 0) === 0 &&
         hasGraphSourceData;
-      const hasWorktreeNodes = worktreeSessions.length > 0;
+      const hasWorktreeNodes = revision.worktreeSessions.length > 0;
       const hydratedHasWorkingTree = layoutModelHasWorkingTree(hydratedLayoutModel);
       const canReuseHydratedLayout = hydratedHasWorkingTree === hasWorktreeNodes;
       if (
-        gridSearchQuery.trim().length === 0 &&
+        revision.gridSearchQuery.trim().length === 0 &&
         sharedGridLayoutCacheKey &&
         hydratedLayoutKey === sharedGridLayoutCacheKey &&
         hydratedLayoutModel &&
@@ -3794,46 +3840,43 @@ function App() {
         const lastResolved = lastResolvedLayoutModelRef.current;
         if (lastResolved && layoutModelHasWorkingTree(lastResolved) === hasWorktreeNodes) return lastResolved;
       }
+      if (sharedGridLayoutCacheKey) {
+        const fromCache = layoutModelCacheRef.current.get(sharedGridLayoutCacheKey);
+        if (fromCache && layoutModelHasWorkingTree(fromCache) === hasWorktreeNodes) {
+          return fromCache;
+        }
+      }
+      const lastResolved = lastResolvedLayoutModelRef.current;
+      if (
+        lastResolved
+        && layoutModelHasWorkingTree(lastResolved) === hasWorktreeNodes
+        && deferredLayoutRevision !== layoutRevision
+      ) {
+        return lastResolved;
+      }
       return computeBranchGridLayout({
-        branches: branchesForLayout,
-        mergeNodes,
-        directCommits: enrichedDirectCommits,
-        unpushedDirectCommits: enrichedUnpushedDirectCommits,
-        unpushedCommitShasByBranch,
-        defaultBranch,
-        branchCommitPreviews: enrichedBranchCommitPreviews,
-        branchParentByName: enrichedBranchParentByName,
-        branchUniqueAheadCounts: enrichedBranchUniqueAheadCounts,
-        manuallyOpenedClumps: manuallyOpenedGridClumps,
-        manuallyClosedClumps: manuallyClosedGridClumps,
+        branches: revision.branchesForLayout,
+        mergeNodes: revision.mergeNodes,
+        directCommits: revision.enrichedDirectCommits,
+        unpushedDirectCommits: revision.enrichedUnpushedDirectCommits,
+        unpushedCommitShasByBranch: revision.unpushedCommitShasByBranch,
+        defaultBranch: revision.defaultBranch,
+        branchCommitPreviews: revision.enrichedBranchCommitPreviews,
+        branchParentByName: revision.enrichedBranchParentByName,
+        branchUniqueAheadCounts: revision.enrichedBranchUniqueAheadCounts,
+        manuallyOpenedClumps: revision.manuallyOpenedGridClumps,
+        manuallyClosedClumps: revision.manuallyClosedGridClumps,
         isDebugOpen: false,
-        gridSearchQuery,
-        gridFocusSha,
-        checkedOutRef: visualCheckedOutRef ?? null,
-        worktreeSessions,
-        orientation: mapGridOrientation,
+        gridSearchQuery: revision.gridSearchQuery,
+        gridFocusSha: revision.gridFocusSha,
+        checkedOutRef: revision.visualCheckedOutRef ?? null,
+        worktreeSessions: revision.worktreeSessions,
+        orientation: revision.mapGridOrientation,
       });
     },
     [
-      branchesForLayout,
-      mergeNodes,
-      enrichedDirectCommits,
-      enrichedUnpushedDirectCommits,
-      unpushedCommitShasByBranch,
-      defaultBranch,
-      enrichedBranchCommitPreviews,
-      enrichedBranchParentByName,
-      enrichedBranchUniqueAheadCounts,
-      manuallyOpenedGridClumps,
-      manuallyClosedGridClumps,
-      gridSearchQuery,
-      gridFocusSha,
-      visualCheckedOutRef?.headSha ?? null,
-      visualCheckedOutRef?.branchName ?? null,
-      visualCheckedOutRef?.hasUncommittedChanges ?? false,
-      worktreeSessions,
-      mapGridOrientation,
-      gridSearchQuery,
+      deferredLayoutRevision,
+      layoutRevision,
       sharedGridLayoutCacheKey,
       hydratedLayoutKey,
       hydratedLayoutModel,
