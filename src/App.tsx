@@ -438,6 +438,7 @@ function App() {
   const suppressBackgroundRefreshUntilRef = useRef(0);
   /** Optimistic commit HEAD — blocks stale quick-state / DB refresh from regressing the checkout tip. */
   const postCommitProtectedHeadShaRef = useRef<Record<string, string>>({});
+  const postCommitProtectTimeoutRef = useRef<Record<string, number>>({});
   /** False while panning and for {@link MAP_REPO_REFRESH_SETTLE_MS} after pan stops. */
   const canApplyRepoRefreshRef = useRef(true);
   const mapRefreshSettleTimeoutRef = useRef<number | null>(null);
@@ -1663,17 +1664,26 @@ function App() {
     try {
       const snapshot = getSnapshotForMutation(normalizedPath);
       if (!snapshotContainsCommitSha(snapshot, protectedSha)) {
-        window.setTimeout(() => {
-          void releasePostCommitProtectionAfterReconcile(normalizedPath, protectedSha);
-        }, 2000);
-        return;
+        const quickState = await invoke<RepoQuickState>('get_repo_quick_state', { repoPath: normalizedPath }).catch(
+          () => null,
+        );
+        const liveHead = snapshot.checkedOutRef?.headSha ?? null;
+        const quickAligned =
+          Boolean(quickState?.headSha)
+          && shaMatches(quickState.headSha, protectedSha)
+          && Boolean(liveHead)
+          && shaMatches(liveHead, protectedSha);
+        if (!quickAligned) {
+          window.setTimeout(() => {
+            void releasePostCommitProtectionAfterReconcile(normalizedPath, protectedSha);
+          }, 2000);
+          return;
+        }
       }
     } catch {
       return;
     }
-    const next = { ...postCommitProtectedHeadShaRef.current };
-    delete next[normalizedPath];
-    postCommitProtectedHeadShaRef.current = next;
+    clearPostCommitProtectionForPath(normalizedPath);
     if (sameRepoPath(repoPath, normalizedPath)) {
       focusCameraOnActiveWorktreeRef.current?.();
     }
@@ -1694,15 +1704,36 @@ function App() {
     });
   }
 
+  function clearPostCommitProtectionTimeout(path: string) {
+    const normalizedPath = normalizePath(path);
+    if (!normalizedPath) return;
+    const timeoutId = postCommitProtectTimeoutRef.current[normalizedPath];
+    if (timeoutId == null) return;
+    window.clearTimeout(timeoutId);
+    delete postCommitProtectTimeoutRef.current[normalizedPath];
+  }
+
+  function clearPostCommitProtectionForPath(path: string) {
+    const normalizedPath = normalizePath(path);
+    if (!normalizedPath) return;
+    clearPostCommitProtectionTimeout(normalizedPath);
+    const next = { ...postCommitProtectedHeadShaRef.current };
+    delete next[normalizedPath];
+    postCommitProtectedHeadShaRef.current = next;
+  }
+
   function protectPostCommitHead(path: string, headSha: string | null | undefined) {
     const normalizedPath = normalizePath(path);
     const sha = headSha?.trim();
     if (!normalizedPath || !sha || isWorkingTreeCommitId(sha)) return;
+    if (postCommitProtectedHeadShaRef.current[normalizedPath] === sha) return;
+    clearPostCommitProtectionTimeout(normalizedPath);
     postCommitProtectedHeadShaRef.current = {
       ...postCommitProtectedHeadShaRef.current,
       [normalizedPath]: sha,
     };
-    window.setTimeout(() => {
+    postCommitProtectTimeoutRef.current[normalizedPath] = window.setTimeout(() => {
+      delete postCommitProtectTimeoutRef.current[normalizedPath];
       if (postCommitProtectedHeadShaRef.current[normalizedPath] !== sha) return;
       schedulePostCommitGraphReconcile(normalizedPath, sha);
     }, POST_COMMIT_HEAD_PROTECT_MS);
@@ -1720,7 +1751,10 @@ function App() {
       if (snapshotContainsCommitSha(snapshot, guard)) {
         return !shaMatches(proposedHeadSha, guard);
       }
-      // Guard commit not on the graph yet — reject stale heads until the new tip lands.
+      const liveHead = snapshot.checkedOutRef?.headSha ?? null;
+      if (liveHead && shaMatches(proposedHeadSha, liveHead)) {
+        return false;
+      }
       return !shaMatches(proposedHeadSha, guard);
     } catch {
       return false;
@@ -1731,7 +1765,21 @@ function App() {
     const normalizedPath = normalizePath(path);
     const guard = normalizedPath ? postCommitProtectedHeadShaRef.current[normalizedPath] : undefined;
     if (!guard) return false;
-    return !snapshotContainsCommitSha(incoming, guard);
+    try {
+      const live = getSnapshotForMutation(normalizedPath);
+      if (!snapshotContainsCommitSha(live, guard)) return false;
+      return !snapshotContainsCommitSha(incoming, guard);
+    } catch {
+      return false;
+    }
+  }
+
+  function outcomeAllowedDuringPostCommitProtection(outcome: RepoMutationOutcome): boolean {
+    return outcome.kind === 'markDirty'
+      || outcome.kind === 'discardDirty'
+      || outcome.kind === 'upstreamSync'
+      || outcome.kind === 'worktreeSync'
+      || outcome.kind === 'checkout';
   }
 
   function shouldBlockIncomingSnapshotApply(path: string, incoming: RepoVisualSnapshot): boolean {
@@ -1743,6 +1791,8 @@ function App() {
   }
 
   async function syncPostCommitProtectionFromQuickState(path: string) {
+    const gitActivityPending = gitActivityEpochRef.current !== lastHandledGitActivityEpochRef.current;
+    if (!gitActivityPending) return;
     const normalizedPath = normalizePath(path);
     if (!normalizedPath) return;
     const quickState = await invoke<RepoQuickState>('get_repo_quick_state', { repoPath: normalizedPath }).catch(
@@ -1750,6 +1800,7 @@ function App() {
     );
     const quickHead = quickState?.headSha?.trim();
     if (!quickHead || isWorkingTreeCommitId(quickHead)) return;
+    if (postCommitProtectedHeadShaRef.current[normalizedPath] === quickHead) return;
     let liveHead: string | null = null;
     try {
       liveHead = getSnapshotForMutation(normalizedPath).checkedOutRef?.headSha ?? null;
@@ -2223,7 +2274,10 @@ function App() {
     const normalizedPath = normalizePath(path);
     if (!normalizedPath || outcomes.length === 0) return false;
     const includesCommitOutcome = outcomes.some((outcome) => outcome.kind === 'commit');
-    if (isPostCommitProtectionActive(normalizedPath) && !includesCommitOutcome) return false;
+    const protectionSafePatch = outcomes.every(outcomeAllowedDuringPostCommitProtection);
+    if (isPostCommitProtectionActive(normalizedPath) && !includesCommitOutcome && !protectionSafePatch) {
+      return false;
+    }
     const force = options?.force === true;
 
     try {
@@ -2485,7 +2539,10 @@ function App() {
     const activeHead = latestCheckedOutRef.current?.headSha ?? '';
 
     if (quickState.headSha !== activeHead) {
-      return false;
+      const guard = postCommitProtectedHeadShaRef.current[normalizedPath];
+      if (!guard || !shaMatches(quickState.headSha, guard)) {
+        return false;
+      }
     }
 
     if (cachedSig === nextSig) {
@@ -3751,9 +3808,7 @@ function App() {
         const bustLayout = (event as CustomEvent<{ bustLayout?: boolean }>).detail?.bustLayout === true;
         const normalizedPath = normalizePath(path);
         if (normalizedPath) {
-          const nextProtected = { ...postCommitProtectedHeadShaRef.current };
-          delete nextProtected[normalizedPath];
-          postCommitProtectedHeadShaRef.current = nextProtected;
+          clearPostCommitProtectionForPath(normalizedPath);
           invalidateRepoLayoutCacheForPath(normalizedPath);
         }
         suppressBackgroundRefreshUntilRef.current = 0;
