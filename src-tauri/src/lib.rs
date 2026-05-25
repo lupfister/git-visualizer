@@ -860,14 +860,14 @@ fn compute_repo_visual_snapshot(repo_path: &str) -> Result<RepoVisualSnapshot, S
         &merge_target_branch_by_commit_sha,
     )
         .map_err(|e| e.to_string())?;
-    let unpushed_direct_commits = get_unpushed_direct_commits(resolved_path.clone(), default_branch.clone())?;
+    let unpushed_direct_commits = get_unpushed_direct_commits_blocking(resolved_path.clone(), default_branch.clone())?;
     let checked_out_ref = git::get_checked_out_ref(path).ok();
     let worktrees = git::list_worktrees(path).unwrap_or_default();
     let stashes = git::list_stashes(path).unwrap_or_default();
 
     let mut unpushed_commit_shas_by_branch = HashMap::new();
     for branch_name in std::iter::once(default_branch.clone()).chain(branches.iter().map(|branch| branch.name.clone())) {
-        let shas = get_branch_unpushed_commit_shas(resolved_path.clone(), branch_name.clone()).unwrap_or_default();
+        let shas = get_branch_unpushed_commit_shas_blocking(resolved_path.clone(), branch_name.clone()).unwrap_or_default();
         unpushed_commit_shas_by_branch.insert(branch_name, shas);
     }
 
@@ -1516,46 +1516,58 @@ pub struct MergeNodesResponse {
 }
 
 #[tauri::command]
-fn get_branches(repo_path: String) -> Result<Vec<Branch>, String> {
-    let path = Path::new(&repo_path);
-    let default = git::get_default_branch(path).unwrap_or_else(|_| "main".to_string());
-    git::list_branches(path, &default).map_err(|e| e.to_string())
+async fn get_branches(repo_path: String) -> Result<Vec<Branch>, String> {
+    run_blocking(move || {
+        let path = Path::new(&repo_path);
+        let default = git::get_default_branch(path).unwrap_or_else(|_| "main".to_string());
+        git::list_branches(path, &default).map_err(|e| e.to_string())
+    })
+    .await
 }
 
 #[tauri::command(rename_all = "camelCase")]
-fn get_repo_visual_snapshot(repo_path: String, force_refresh: Option<bool>) -> Result<RepoVisualSnapshot, String> {
-    if !force_refresh.unwrap_or(false) {
-        if let Some(cached) = load_cached_repo_visual_snapshot(&repo_path)? {
-            return Ok(cached);
-        }
-    }
-    let snapshot = compute_repo_visual_snapshot(&repo_path)?;
-    store_repo_visual_snapshot(&snapshot)?;
-    Ok(snapshot)
-}
-
-#[tauri::command(rename_all = "camelCase")]
-fn add_project_and_ingest(repo_path: String, force_refresh: Option<bool>) -> Result<ProjectSnapshotRecord, String> {
-    let normalized_repo_path = normalize_repo_path_id(&repo_path);
-    let project_id = normalized_repo_path.clone();
-    let force_refresh = force_refresh.unwrap_or(false);
-    let conn = open_visual_cache_connection()?;
-    let existing = load_active_project_snapshot(&conn, &project_id)?;
-    let (current_fingerprint, _) = compute_repo_fingerprint(&normalized_repo_path)?;
-    if !force_refresh {
-        if let Some(active) = existing {
-            if active.fingerprint == current_fingerprint && active.schema_version == PROJECT_SNAPSHOT_SCHEMA_VERSION {
-                return Ok(active);
+async fn get_repo_visual_snapshot(repo_path: String, force_refresh: Option<bool>) -> Result<RepoVisualSnapshot, String> {
+    run_blocking(move || {
+        if !force_refresh.unwrap_or(false) {
+            if let Some(cached) = load_cached_repo_visual_snapshot(&repo_path)? {
+                return Ok(cached);
             }
         }
-    }
-    publish_project_snapshot(&normalized_repo_path, Some(&current_fingerprint))
+        let snapshot = compute_repo_visual_snapshot(&repo_path)?;
+        store_repo_visual_snapshot(&snapshot)?;
+        Ok(snapshot)
+    })
+    .await
 }
 
 #[tauri::command(rename_all = "camelCase")]
-fn load_project_snapshot(project_id: String) -> Result<Option<ProjectSnapshotRecord>, String> {
-    let conn = open_visual_cache_connection()?;
-    load_active_project_snapshot(&conn, &normalize_repo_path_id(&project_id))
+async fn add_project_and_ingest(repo_path: String, force_refresh: Option<bool>) -> Result<ProjectSnapshotRecord, String> {
+    run_blocking(move || {
+        let normalized_repo_path = normalize_repo_path_id(&repo_path);
+        let project_id = normalized_repo_path.clone();
+        let force_refresh = force_refresh.unwrap_or(false);
+        let conn = open_visual_cache_connection()?;
+        let existing = load_active_project_snapshot(&conn, &project_id)?;
+        let (current_fingerprint, _) = compute_repo_fingerprint(&normalized_repo_path)?;
+        if !force_refresh {
+            if let Some(active) = existing {
+                if active.fingerprint == current_fingerprint && active.schema_version == PROJECT_SNAPSHOT_SCHEMA_VERSION {
+                    return Ok(active);
+                }
+            }
+        }
+        publish_project_snapshot(&normalized_repo_path, Some(&current_fingerprint))
+    })
+    .await
+}
+
+#[tauri::command(rename_all = "camelCase")]
+async fn load_project_snapshot(project_id: String) -> Result<Option<ProjectSnapshotRecord>, String> {
+    run_blocking(move || {
+        let conn = open_visual_cache_connection()?;
+        load_active_project_snapshot(&conn, &normalize_repo_path_id(&project_id))
+    })
+    .await
 }
 
 #[tauri::command(rename_all = "camelCase")]
@@ -2069,31 +2081,40 @@ fn get_commit_metadata(repo_path: String, sha: String) -> Result<Option<CommitMe
 }
 
 #[tauri::command(rename_all = "camelCase")]
-fn get_merge_base(repo_path: String, left_sha: String, right_sha: String) -> Result<Option<String>, String> {
-    let path = Path::new(&repo_path);
-    let output = git::cli::run(path, &["merge-base", &left_sha, &right_sha]).map_err(|e| e.to_string())?;
-    let sha = output.lines().next().map(str::trim).filter(|line| !line.is_empty()).map(|line| line.to_string());
-    Ok(sha)
+async fn get_merge_base(repo_path: String, left_sha: String, right_sha: String) -> Result<Option<String>, String> {
+    run_blocking(move || {
+        let path = Path::new(&repo_path);
+        let output = git::cli::run(path, &["merge-base", &left_sha, &right_sha]).map_err(|e| e.to_string())?;
+        let sha = output.lines().next().map(str::trim).filter(|line| !line.is_empty()).map(|line| line.to_string());
+        Ok(sha)
+    })
+    .await
 }
 
 #[tauri::command]
-fn get_merge_nodes(
+async fn get_merge_nodes(
     repo_path: String,
     branch: String,
     exclude_ref: Option<String>,
     page: u32,
     per_page: u32,
 ) -> Result<MergeNodesResponse, String> {
-    let path = Path::new(&repo_path);
-    let (nodes, has_more) = git::get_merge_commits(path, &branch, exclude_ref.as_deref(), page, per_page)
-        .map_err(|e| e.to_string())?;
-    Ok(MergeNodesResponse { nodes, has_more })
+    run_blocking(move || {
+        let path = Path::new(&repo_path);
+        let (nodes, has_more) = git::get_merge_commits(path, &branch, exclude_ref.as_deref(), page, per_page)
+            .map_err(|e| e.to_string())?;
+        Ok(MergeNodesResponse { nodes, has_more })
+    })
+    .await
 }
 
 #[tauri::command]
-fn get_default_branch(repo_path: String) -> Result<String, String> {
-    let path = Path::new(&repo_path);
-    git::get_default_branch(path).map_err(|e| e.to_string())
+async fn get_default_branch(repo_path: String) -> Result<String, String> {
+    run_blocking(move || {
+        let path = Path::new(&repo_path);
+        git::get_default_branch(path).map_err(|e| e.to_string())
+    })
+    .await
 }
 
 #[tauri::command]
@@ -2116,15 +2137,21 @@ async fn stage_working_tree(repo_path: String) -> Result<CheckedOutRef, String> 
 }
 
 #[tauri::command]
-fn list_worktrees(repo_path: String) -> Result<Vec<git::WorktreeInfo>, String> {
-    let path = Path::new(&repo_path);
-    git::list_worktrees(path).map_err(|e| e.to_string())
+async fn list_worktrees(repo_path: String) -> Result<Vec<git::WorktreeInfo>, String> {
+    run_blocking(move || {
+        let path = Path::new(&repo_path);
+        git::list_worktrees(path).map_err(|e| e.to_string())
+    })
+    .await
 }
 
 #[tauri::command(rename_all = "camelCase")]
-fn remove_worktree(repo_path: String, worktree_path: String, force: bool) -> Result<(), String> {
-    let path = Path::new(&repo_path);
-    git::remove_git_worktree(path, &worktree_path, force).map_err(|e| e.to_string())
+async fn remove_worktree(repo_path: String, worktree_path: String, force: bool) -> Result<(), String> {
+    run_blocking(move || {
+        let path = Path::new(&repo_path);
+        git::remove_git_worktree(path, &worktree_path, force).map_err(|e| e.to_string())
+    })
+    .await
 }
 
 fn list_git_remotes(repo: &Path) -> Result<Vec<String>, String> {
@@ -3438,8 +3465,7 @@ fn get_all_repo_commits(repo_path: String) -> Result<Vec<DirectCommit>, String> 
     .map_err(|e| e.to_string())
 }
 
-#[tauri::command(rename_all = "camelCase")]
-fn get_unpushed_direct_commits(
+fn get_unpushed_direct_commits_blocking(
     repo_path: String,
     branch: String,
 ) -> Result<Vec<DirectCommit>, String> {
@@ -3510,7 +3536,14 @@ fn get_unpushed_direct_commits(
 }
 
 #[tauri::command(rename_all = "camelCase")]
-fn get_branch_unpushed_commit_shas(
+async fn get_unpushed_direct_commits(
+    repo_path: String,
+    branch: String,
+) -> Result<Vec<DirectCommit>, String> {
+    run_blocking(move || get_unpushed_direct_commits_blocking(repo_path, branch)).await
+}
+
+fn get_branch_unpushed_commit_shas_blocking(
     repo_path: String,
     branch: String,
 ) -> Result<Vec<String>, String> {
@@ -3518,8 +3551,8 @@ fn get_branch_unpushed_commit_shas(
     let range = if let Some(compare_ref) = get_branch_compare_ref(path, &branch) {
         format!("{compare_ref}..{branch}")
     } else {
-    let default_branch = git::get_default_branch(path).map_err(|e| e.to_string())?;
-    format!("{default_branch}..{branch}")
+        let default_branch = git::get_default_branch(path).map_err(|e| e.to_string())?;
+        format!("{default_branch}..{branch}")
     };
     let output = git::cli::run(path, &["rev-list", "--first-parent", &range])
         .map_err(|e| e.to_string())?;
@@ -3529,6 +3562,14 @@ fn get_branch_unpushed_commit_shas(
         .filter(|line| !line.is_empty())
         .map(|line| line.to_string())
         .collect())
+}
+
+#[tauri::command(rename_all = "camelCase")]
+async fn get_branch_unpushed_commit_shas(
+    repo_path: String,
+    branch: String,
+) -> Result<Vec<String>, String> {
+    run_blocking(move || get_branch_unpushed_commit_shas_blocking(repo_path, branch)).await
 }
 
 /// Recent commits on a branch (no base filtering — just git log -N <branch>).

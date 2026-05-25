@@ -4134,6 +4134,7 @@ function App() {
           try {
             const live = buildActiveRepoSnapshot(repoPath);
             if (isIncomingSnapshotStaleComparedToLive(nextSnapshot, live)) {
+              const prevCheckedOutRef = latestCheckedOutRef.current;
               if (refreshGitActivityPending) {
                 flushSync(() => {
                   applyPatchedSnapshot(repoPath, live, false, {
@@ -4143,8 +4144,12 @@ function App() {
                 });
               }
               noteGitActivityHandledIfCaughtUp(repoPath, peek);
-              autoFocusSyncKeyRef.current = null;
-              focusCameraOnActiveWorktreeRef.current?.();
+              const headChanged = prevCheckedOutRef && live.checkedOutRef?.headSha !== prevCheckedOutRef.headSha;
+              const branchChanged = prevCheckedOutRef && live.checkedOutRef?.branchName !== prevCheckedOutRef.branchName;
+              if (headChanged || branchChanged) {
+                autoFocusSyncKeyRef.current = null;
+                focusCameraOnActiveWorktreeRef.current?.();
+              }
               return;
             }
           } catch {
@@ -4205,13 +4210,18 @@ function App() {
           }
           if (mutationAtStart !== repoMutationGenerationRef.current) return;
           const applySnapshot = () => {
+            const prevCheckedOutRef = latestCheckedOutRef.current;
             const applied = applySnapshotToActiveState(repoPath, nextSnapshot, {
               force: reason === 'graph' || reason === 'local' || refreshGitActivityPending,
               allowIncomingDirty: true,
             });
             if (applied && quickState && !quickState.hasUncommittedChanges) {
-              autoFocusSyncKeyRef.current = null;
-              focusCameraOnActiveWorktreeRef.current?.();
+              const headChanged = prevCheckedOutRef && quickState.headSha !== prevCheckedOutRef.headSha;
+              const branchChanged = prevCheckedOutRef && quickState.branchName !== prevCheckedOutRef.branchName;
+              if (headChanged || branchChanged) {
+                autoFocusSyncKeyRef.current = null;
+                focusCameraOnActiveWorktreeRef.current?.();
+              }
             }
           };
           if (refreshGitActivityPending) {
