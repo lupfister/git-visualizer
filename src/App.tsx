@@ -449,6 +449,8 @@ function App() {
   const runRepoRefreshRef = useRef<((reason?: 'graph' | 'local' | 'timer' | 'initial' | 'quick') => void) | null>(null);
   const reconcileInFlightRef = useRef(false);
   const pendingRefreshAfterInteractionRef = useRef(false);
+  const reloadRepoSnapshotInFlightRef = useRef(false);
+  const reloadRepoSnapshotPendingRef = useRef(false);
   const hasAttemptedAutoRestoreRef = useRef(false);
   const hasHydratedInitialProjectSnapshotsRef = useRef(false);
   /** Cancels stale in-flight `get_repo_node_positions` results when a newer load starts. */
@@ -2097,6 +2099,12 @@ function App() {
   ): Promise<boolean> {
     const normalizedPath = normalizePath(path);
     if (!normalizedPath || !sameRepoPath(repoPath, normalizedPath)) return false;
+
+    if (reloadRepoSnapshotInFlightRef.current) {
+      reloadRepoSnapshotPendingRef.current = true;
+      return false;
+    }
+
     if (repoMutationInFlightRef.current || reconcileInFlightRef.current) {
       pendingRefreshAfterInteractionRef.current = true;
       return false;
@@ -2106,6 +2114,8 @@ function App() {
       setMapGridBackgroundActivity('git-refresh-pending', 'Git refresh queued', true, 'blocked');
       return false;
     }
+
+    reloadRepoSnapshotInFlightRef.current = true;
     bustRepoSyncCachesForPath(normalizedPath);
     setMapGridBackgroundActivity('git-refresh', 'Reload repo from git', true, 'git-activity');
 
@@ -2120,12 +2130,22 @@ function App() {
       let nextSnapshot = toRepoVisualSnapshot(record);
       if (!nextSnapshot) return false;
 
+      // Abort if a mutation started during the async database call
+      if (repoMutationInFlightRef.current || reconcileInFlightRef.current) {
+        return false;
+      }
+
       if (shouldBlockIncomingSnapshotApply(normalizedPath, nextSnapshot)) {
         return false;
       }
 
       nextSnapshot = await reconcileSnapshotForProjectSwitch(normalizedPath, nextSnapshot);
       if (shouldBlockIncomingSnapshotApply(normalizedPath, nextSnapshot)) {
+        return false;
+      }
+
+      // Abort if a mutation started during the async reconciliation call
+      if (repoMutationInFlightRef.current || reconcileInFlightRef.current) {
         return false;
       }
 
@@ -2153,6 +2173,13 @@ function App() {
       return false;
     } finally {
       setMapGridBackgroundActivity('git-refresh', 'Reload repo from git', false);
+      reloadRepoSnapshotInFlightRef.current = false;
+      if (reloadRepoSnapshotPendingRef.current) {
+        reloadRepoSnapshotPendingRef.current = false;
+        window.setTimeout(() => {
+          void reloadRepoSnapshotFromGit(path);
+        }, 50);
+      }
     }
   }
 
@@ -2166,38 +2193,67 @@ function App() {
     }
     const normalizedPath = normalizePath(path);
     if (!normalizedPath || !sameRepoPath(repoPath, normalizedPath)) return false;
+
+    if (reloadRepoSnapshotInFlightRef.current) {
+      reloadRepoSnapshotPendingRef.current = true;
+      return false;
+    }
+    if (repoMutationInFlightRef.current || reconcileInFlightRef.current) {
+      return false;
+    }
+
     const resolvedPeek = peek ?? await fetchRepoSyncPeek(normalizedPath);
     if (!options?.force && resolvedPeek && !isActiveUiBehindPeek(normalizedPath, resolvedPeek)) {
       return false;
     }
 
-    const result = await invoke<RefreshProjectResult>('refresh_project_if_changed', {
-      projectId: normalizedPath,
-    }).catch(() => null);
-    let nextSnapshot = toRepoVisualSnapshot(result?.snapshot ?? null);
-    if (result?.updated && nextSnapshot) {
-      nextSnapshot = await reconcileSnapshotForProjectSwitch(normalizedPath, nextSnapshot);
-      flushSync(() => {
-        applyPatchedSnapshot(normalizedPath, nextSnapshot!, false, {
-          force: true,
-          skipLayoutRebuild: false,
+    reloadRepoSnapshotInFlightRef.current = true;
+    try {
+      const result = await invoke<RefreshProjectResult>('refresh_project_if_changed', {
+        projectId: normalizedPath,
+      }).catch(() => null);
+      let nextSnapshot = toRepoVisualSnapshot(result?.snapshot ?? null);
+      if (result?.updated && nextSnapshot) {
+        if (repoMutationInFlightRef.current || reconcileInFlightRef.current) {
+          return false;
+        }
+        nextSnapshot = await reconcileSnapshotForProjectSwitch(normalizedPath, nextSnapshot);
+        if (repoMutationInFlightRef.current || reconcileInFlightRef.current) {
+          return false;
+        }
+        flushSync(() => {
+          applyPatchedSnapshot(normalizedPath, nextSnapshot!, false, {
+            force: true,
+            skipLayoutRebuild: false,
+          });
         });
-      });
-      if (resolvedPeek?.signature) noteSyncedRepoPeek(normalizedPath, resolvedPeek.signature);
-      noteGitActivityHandledIfCaughtUp(normalizedPath, resolvedPeek);
-      return true;
-    }
+        if (resolvedPeek?.signature) noteSyncedRepoPeek(normalizedPath, resolvedPeek.signature);
+        noteGitActivityHandledIfCaughtUp(normalizedPath, resolvedPeek);
+        return true;
+      }
 
-    await invoke('persist_project_snapshot', { projectId: normalizedPath, force: true }).catch((error) => {
-      console.warn('Background snapshot persist failed:', error);
-    });
-    const loaded = await loadAndApplyPublishedSnapshot(normalizedPath, resolvedPeek);
-    if (loaded) {
-      if (resolvedPeek?.signature) noteSyncedRepoPeek(normalizedPath, resolvedPeek.signature);
-      noteGitActivityHandledIfCaughtUp(normalizedPath, resolvedPeek);
-      return true;
+      await invoke('persist_project_snapshot', { projectId: normalizedPath, force: true }).catch((error) => {
+        console.warn('Background snapshot persist failed:', error);
+      });
+      if (repoMutationInFlightRef.current || reconcileInFlightRef.current) {
+        return false;
+      }
+      const loaded = await loadAndApplyPublishedSnapshot(normalizedPath, resolvedPeek);
+      if (loaded) {
+        if (resolvedPeek?.signature) noteSyncedRepoPeek(normalizedPath, resolvedPeek.signature);
+        noteGitActivityHandledIfCaughtUp(normalizedPath, resolvedPeek);
+        return true;
+      }
+      return false;
+    } finally {
+      reloadRepoSnapshotInFlightRef.current = false;
+      if (reloadRepoSnapshotPendingRef.current) {
+        reloadRepoSnapshotPendingRef.current = false;
+        window.setTimeout(() => {
+          void reloadRepoSnapshotFromGit(path);
+        }, 50);
+      }
     }
-    return false;
   }
 
   async function loadAndApplyPublishedSnapshot(path: string, peek?: RepoSyncPeek | null) {

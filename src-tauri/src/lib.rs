@@ -1170,10 +1170,15 @@ fn watch_repo(repo_path: String, app: tauri::AppHandle) -> Result<(), String> {
 
                     // For .git internals, only react to refs/logs/head updates.
                     let is_graph_path = path_str.contains("/refs/")
+                        || path_str.contains("\\refs\\")
                         || path_str.contains("/logs/")
+                        || path_str.contains("\\logs\\")
                         || path_str.ends_with("HEAD")
                         || path_str.ends_with("FETCH_HEAD")
-                        || path_str.ends_with("ORIG_HEAD");
+                        || path_str.ends_with("ORIG_HEAD")
+                        || path_str.ends_with("packed-refs")
+                        || path_str.contains("/packed-refs")
+                        || path_str.contains("\\packed-refs");
                     if is_graph_path {
                         has_graph_change = true;
                     }
