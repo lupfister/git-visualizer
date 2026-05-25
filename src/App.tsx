@@ -1932,7 +1932,24 @@ function App() {
     );
   }
 
-  function noteDirtySyncComplete(path: string, quickState: RepoQuickState, peekSignature?: string | null) {
+  function schedulePostMutationGraphReconcile(path: string) {
+    const normalizedPath = normalizePath(path);
+    if (!normalizedPath) return;
+    const delayMs = Math.max(0, suppressBackgroundRefreshUntilRef.current - Date.now()) + 50;
+    window.setTimeout(() => {
+      if (repoMutationInFlightRef.current) return;
+      if (!sameRepoPath(repoPath, normalizedPath)) return;
+      gitActivityEpochRef.current += 1;
+      void runRepoRefreshRef.current?.('graph');
+    }, delayMs);
+  }
+
+  function noteDirtySyncComplete(
+    path: string,
+    quickState: RepoQuickState,
+    peekSignature?: string | null,
+    options?: { markGitActivity?: boolean },
+  ) {
     const normalizedPath = normalizePath(path);
     if (!normalizedPath) return;
     projectQuickStateRef.current = {
@@ -1947,8 +1964,19 @@ function App() {
         if (peek?.signature) noteSyncedRepoPeek(normalizedPath, peek.signature);
       }).catch(() => undefined);
     }
-    markGitActivityHandled();
+    if (options?.markGitActivity !== false) {
+      markGitActivityHandled();
+    }
     suppressBackgroundRefreshUntilRef.current = Date.now() + DIRTY_SYNC_SUPPRESS_MS;
+  }
+
+  function shouldSkipDirtyOnlySync(path: string): boolean {
+    const normalizedPath = normalizePath(path);
+    if (!normalizedPath) return true;
+    if (Date.now() < suppressBackgroundRefreshUntilRef.current) return true;
+    if (isPostCommitProtectionActive(normalizedPath)) return true;
+    if (repoMutationInFlightRef.current) return true;
+    return false;
   }
 
   function applyLiveDirtyStateFromQuickState(
@@ -1985,7 +2013,6 @@ function App() {
       nextDirty ? outcomeFromMarkDirty(refForDirty) : outcomeFromDiscardDirty(refForDirty),
     );
     upsertProjectSnapshot(normalizedPath, patched, { force: true });
-    activeSnapshotSignatureRef.current = getRepoVisualSnapshotSignature(patched);
     if (sameRepoPath(repoPath, normalizedPath)) {
       latestCheckedOutRef.current = refForDirty;
       latestWorktreesRef.current = patched.worktrees;
@@ -2008,7 +2035,8 @@ function App() {
     const force = options?.force === true;
     const patchedSignature = getRepoVisualSnapshotSignature(patched);
     if (
-      sameRepoPath(repoPath, normalizedPath)
+      !force
+      && sameRepoPath(repoPath, normalizedPath)
       && activeSnapshotSignatureRef.current === patchedSignature
     ) {
       upsertProjectSnapshot(normalizedPath, patched, { force });
@@ -2216,6 +2244,7 @@ function App() {
         void invoke('persist_project_snapshot', { projectId: normalizedPath, force: true }).catch((error) => {
           console.warn('Post-mutation snapshot persist failed:', error);
         });
+        schedulePostMutationGraphReconcile(normalizedPath);
       } else {
         suppressBackgroundRefreshUntilRef.current = Date.now() + 2500;
         window.setTimeout(() => {
@@ -2788,7 +2817,7 @@ function App() {
     if (!quickState) return false;
 
     if (quickState.hasUncommittedChanges && isPostCommitProtectionActive(normalizedPath)) {
-      clearPostCommitProtectionForPath(normalizedPath);
+      return false;
     }
 
     const nextSig = quickStateSignature(quickState);
@@ -2816,6 +2845,7 @@ function App() {
     }
 
     if (uiDirty !== nextDirty) {
+      if (shouldSkipDirtyOnlySync(path)) return false;
       if (applyLiveDirtyStateFromQuickState(
         path,
         quickState,
@@ -2859,16 +2889,11 @@ function App() {
     const normalizedPath = normalizePath(path);
     if (!normalizedPath || !sameRepoPath(repoPath, path)) return false;
     if (isMapInteractingRef.current || !canApplyRepoRefreshRef.current) return false;
-    if (repoMutationInFlightRef.current) return false;
-    if (Date.now() < suppressBackgroundRefreshUntilRef.current) return false;
+    if (shouldSkipDirtyOnlySync(path)) return false;
 
     const resolvedPeek = options?.peek ?? await fetchRepoSyncPeek(path);
     const quickState = await invoke<RepoQuickState>('get_repo_quick_state', { repoPath: path }).catch(() => null);
     if (!quickState) return false;
-
-    if (quickState.hasUncommittedChanges && isPostCommitProtectionActive(normalizedPath)) {
-      clearPostCommitProtectionForPath(normalizedPath);
-    }
 
     let snapshot: RepoVisualSnapshot;
     try {
@@ -2881,7 +2906,7 @@ function App() {
       ?? snapshot.checkedOutRef?.hasUncommittedChanges
       ?? false;
     if (uiDirty === quickState.hasUncommittedChanges) {
-      noteDirtySyncComplete(normalizedPath, quickState, resolvedPeek?.signature);
+      noteDirtySyncComplete(normalizedPath, quickState, resolvedPeek?.signature, { markGitActivity: false });
       return false;
     }
 
@@ -3029,7 +3054,7 @@ function App() {
       return false;
     }
     const signature = getRepoVisualSnapshotSignature(snapshot);
-    if (activeSnapshotSignatureRef.current === signature) {
+    if (activeSnapshotSignatureRef.current === signature && options?.force !== true) {
       return false;
     }
     setMapGridBackgroundActivity('snapshot-apply', 'Apply repo snapshot', true);
@@ -3542,7 +3567,8 @@ function App() {
       const peek = await fetchRepoSyncPeek(repoPath);
       if (
         peek
-        && (gitActivityPending || postCommitGuarded)
+        && gitActivityPending
+        && !postCommitGuarded
         && absorbRedundantGitActivityRefresh(repoPath, peek)
       ) {
         return;
@@ -3845,6 +3871,7 @@ function App() {
           && !isRepoRefreshBlocked()
           && Date.now() >= suppressBackgroundRefreshUntilRef.current
           && !repoMutationInFlightRef.current
+          && !isPostCommitProtectionActive(normalizePath(repoPath) ?? '')
         ) {
           // Working-tree edits do not touch .git/index; lightweight porcelain poll only.
           scheduleCoalescedDirtySync();
@@ -3857,6 +3884,7 @@ function App() {
     listen<GitActivityEventPayload>('git-activity', (event) => {
       if (!sameRepoPath(event.payload.repoPath, repoPath)) return;
       if (event.payload.kind === 'local') {
+        if (shouldSkipDirtyOnlySync(repoPath)) return;
         gitActivityEpochRef.current += 1;
         scheduleCoalescedDirtySync();
         return;
