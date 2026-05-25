@@ -92,7 +92,12 @@ const POST_COMMIT_HEAD_PROTECT_MS = 8000;
 const POST_COMMIT_RELEASE_MAX_ATTEMPTS = 15;
 const GIT_ACTIVITY_DEBOUNCE_MS = 400;
 const HEAD_STATE_PROBE_MS = 12000;
-const DIRTY_STATE_PROBE_MS = 8000;
+/** Poll porcelain for unstaged edits — working tree changes do not touch .git. */
+const DIRTY_STATE_PROBE_MS = 2500;
+/** Coalesce dirty probes and index-driven git-activity into one UI apply. */
+const DIRTY_SYNC_DEBOUNCE_MS = 350;
+/** Briefly block follow-up refreshes after a dirty-only UI apply. */
+const DIRTY_SYNC_SUPPRESS_MS = 800;
 type PushTarget = {
   branchName: string;
   targetSha?: string;
@@ -1631,7 +1636,14 @@ function App() {
       throw new Error(`Invalid repo path: ${path}`);
     }
     if (sameRepoPath(repoPath, normalizedPath)) {
-      return buildActiveRepoSnapshot(normalizedPath);
+      const snapshot = buildActiveRepoSnapshot(normalizedPath);
+      if (latestCheckedOutRef.current) {
+        snapshot.checkedOutRef = latestCheckedOutRef.current;
+      }
+      if (latestWorktreesRef.current.length > 0) {
+        snapshot.worktrees = latestWorktreesRef.current;
+      }
+      return snapshot;
     }
     const cached = projectSnapshots[normalizedPath];
     if (cached?.loaded) {
@@ -1920,11 +1932,31 @@ function App() {
     );
   }
 
+  function noteDirtySyncComplete(path: string, quickState: RepoQuickState, peekSignature?: string | null) {
+    const normalizedPath = normalizePath(path);
+    if (!normalizedPath) return;
+    projectQuickStateRef.current = {
+      ...projectQuickStateRef.current,
+      [normalizedPath]: quickStateSignature(quickState),
+    };
+    noteSyncedFingerprintFromQuickState(normalizedPath, quickState);
+    if (peekSignature) {
+      noteSyncedRepoPeek(normalizedPath, peekSignature);
+    } else {
+      void fetchRepoSyncPeek(normalizedPath).then((peek) => {
+        if (peek?.signature) noteSyncedRepoPeek(normalizedPath, peek.signature);
+      }).catch(() => undefined);
+    }
+    markGitActivityHandled();
+    suppressBackgroundRefreshUntilRef.current = Date.now() + DIRTY_SYNC_SUPPRESS_MS;
+  }
+
   function applyLiveDirtyStateFromQuickState(
     path: string,
     quickState: RepoQuickState,
     snapshot: RepoVisualSnapshot,
     nextDirty: boolean,
+    peekSignature?: string | null,
   ): boolean {
     const normalizedPath = normalizePath(path);
     if (!normalizedPath) return false;
@@ -1944,10 +1976,7 @@ function App() {
       ?? snapshot.checkedOutRef?.hasUncommittedChanges
       ?? false;
     if (uiDirty === nextDirty) {
-      projectQuickStateRef.current = {
-        ...projectQuickStateRef.current,
-        [normalizedPath]: quickStateSignature(quickState),
-      };
+      noteDirtySyncComplete(normalizedPath, quickState, peekSignature);
       return false;
     }
 
@@ -1956,17 +1985,16 @@ function App() {
       nextDirty ? outcomeFromMarkDirty(refForDirty) : outcomeFromDiscardDirty(refForDirty),
     );
     upsertProjectSnapshot(normalizedPath, patched, { force: true });
-    projectQuickStateRef.current = {
-      ...projectQuickStateRef.current,
-      [normalizedPath]: quickStateSignature(quickState),
-    };
+    activeSnapshotSignatureRef.current = getRepoVisualSnapshotSignature(patched);
     if (sameRepoPath(repoPath, normalizedPath)) {
       latestCheckedOutRef.current = refForDirty;
-      startTransition(() => {
+      latestWorktreesRef.current = patched.worktrees;
+      flushSync(() => {
         setCheckedOutRef(refForDirty);
         setWorktrees(patched.worktrees);
       });
     }
+    noteDirtySyncComplete(normalizedPath, quickState, peekSignature);
     return true;
   }
 
@@ -2471,6 +2499,20 @@ function App() {
       const layoutTopologyChanged = outcomes.some((outcome) => outcome.layoutTopologyChanged);
       const snapshotChanged = beforeSignature !== afterSignature;
 
+      const dirtyOnly = isDirtyOnlyMutationOutcomes(outcomes);
+      if (
+        dirtyOnly
+        && sameRepoPath(repoPath, normalizedPath)
+        && activeSnapshotSignatureRef.current === afterSignature
+      ) {
+        noteSyncedRepoFingerprint(normalizedPath, currentFingerprint);
+        ackProjectFingerprint(normalizedPath, currentFingerprint);
+        if (options?.peekSignature) {
+          noteSyncedRepoPeek(normalizedPath, options.peekSignature);
+        }
+        return false;
+      }
+
       if (!snapshotChanged) {
         return false;
       }
@@ -2496,7 +2538,6 @@ function App() {
         noteSyncedRepoPeek(normalizedPath, options.peekSignature);
       }
 
-      const dirtyOnly = isDirtyOnlyMutationOutcomes(outcomes);
       if (!dirtyOnly) {
         setMapGridBackgroundActivity('git-refresh', 'Apply repo changes', true, 'patch');
       }
@@ -2520,7 +2561,9 @@ function App() {
         setMapGridBackgroundActivity('git-refresh', 'Apply repo changes', false);
       }
 
-      suppressBackgroundRefreshUntilRef.current = Date.now() + 2500;
+      suppressBackgroundRefreshUntilRef.current = Date.now() + (
+        dirtyOnly ? DIRTY_SYNC_SUPPRESS_MS : 2500
+      );
       window.setTimeout(() => {
         void invoke('persist_project_snapshot', { projectId: normalizedPath }).catch((error) => {
           console.warn('Background snapshot persist failed:', error);
@@ -2605,6 +2648,25 @@ function App() {
       force: options?.force === true,
       peekSignature: peek?.signature,
     };
+
+    if (
+      classification.kind === 'patch'
+      && classification.segments.length === 1
+      && classification.segments[0] === 'dirty'
+      && quickState
+    ) {
+      const snapshot = getSnapshotForMutation(path);
+      const uiDirty = latestCheckedOutRef.current?.hasUncommittedChanges
+        ?? snapshot.checkedOutRef?.hasUncommittedChanges
+        ?? false;
+      if (uiDirty === quickState.hasUncommittedChanges) {
+        noteSyncedRepoFingerprint(path, check.currentFingerprint);
+        ackProjectFingerprint(path, check.currentFingerprint);
+        if (peek?.signature) noteSyncedRepoPeek(path, peek.signature);
+        markGitActivityHandled();
+        return true;
+      }
+    }
 
     if (classification.kind === 'graphDelta') {
       const baselineFingerprint = stored ?? parseRepoFingerprint(lastSynced ?? null);
@@ -2749,12 +2811,20 @@ function App() {
     const nextDirty = quickState.hasUncommittedChanges;
     const uiDirty = activeRef?.hasUncommittedChanges ?? snapshot.checkedOutRef?.hasUncommittedChanges ?? false;
     if (cachedSig === nextSig && uiDirty === nextDirty) {
-      return false;
+      markGitActivityHandled();
+      return true;
     }
 
-    let applied = false;
     if (uiDirty !== nextDirty) {
-      applied = applyLiveDirtyStateFromQuickState(path, quickState, snapshot, nextDirty);
+      if (applyLiveDirtyStateFromQuickState(
+        path,
+        quickState,
+        snapshot,
+        nextDirty,
+        resolvedPeek?.signature,
+      )) {
+        return true;
+      }
     }
 
     const reconciledRef = reconcileCheckedOutRefFromQuickState(snapshot, quickState, path, {
@@ -2762,6 +2832,7 @@ function App() {
     });
     const cachedUpstream = cachedSig?.split('|')[2] ?? '';
     const nextUpstream = quickState.upstreamSha ?? '';
+    let applied = false;
     if (cachedUpstream !== nextUpstream && reconciledRef) {
       const check = await invoke<FingerprintCheckResult>('check_project_fingerprint', {
         projectId: normalizedPath,
@@ -2778,31 +2849,22 @@ function App() {
       applied = upstreamPatched || applied;
     }
 
-    if (!applied) {
-      projectQuickStateRef.current = {
-        ...projectQuickStateRef.current,
-        [normalizedPath]: nextSig,
-      };
-      return false;
-    }
-
-    noteSyncedFingerprintFromQuickState(normalizedPath, quickState);
-    if (resolvedPeek && isActiveUiBehindPeek(path, resolvedPeek)) {
-      return false;
-    }
-    markGitActivityHandled();
-    return true;
+    return applied;
   }
 
-  async function probeLiveDirtyState(path: string): Promise<void> {
+  async function syncLiveDirtyState(
+    path: string,
+    options?: { peek?: RepoSyncPeek | null },
+  ): Promise<boolean> {
     const normalizedPath = normalizePath(path);
-    if (!normalizedPath || !sameRepoPath(repoPath, path)) return;
-    if (isMapInteractingRef.current || !canApplyRepoRefreshRef.current) return;
-    if (repoMutationInFlightRef.current) return;
-    if (Date.now() < suppressBackgroundRefreshUntilRef.current) return;
+    if (!normalizedPath || !sameRepoPath(repoPath, path)) return false;
+    if (isMapInteractingRef.current || !canApplyRepoRefreshRef.current) return false;
+    if (repoMutationInFlightRef.current) return false;
+    if (Date.now() < suppressBackgroundRefreshUntilRef.current) return false;
 
+    const resolvedPeek = options?.peek ?? await fetchRepoSyncPeek(path);
     const quickState = await invoke<RepoQuickState>('get_repo_quick_state', { repoPath: path }).catch(() => null);
-    if (!quickState) return;
+    if (!quickState) return false;
 
     if (quickState.hasUncommittedChanges && isPostCommitProtectionActive(normalizedPath)) {
       clearPostCommitProtectionForPath(normalizedPath);
@@ -2812,21 +2874,28 @@ function App() {
     try {
       snapshot = getSnapshotForMutation(normalizedPath);
     } catch {
-      return;
+      return false;
     }
 
     const uiDirty = latestCheckedOutRef.current?.hasUncommittedChanges
       ?? snapshot.checkedOutRef?.hasUncommittedChanges
       ?? false;
     if (uiDirty === quickState.hasUncommittedChanges) {
-      projectQuickStateRef.current = {
-        ...projectQuickStateRef.current,
-        [normalizedPath]: quickStateSignature(quickState),
-      };
-      return;
+      noteDirtySyncComplete(normalizedPath, quickState, resolvedPeek?.signature);
+      return false;
     }
 
-    applyLiveDirtyStateFromQuickState(path, quickState, snapshot, quickState.hasUncommittedChanges);
+    return applyLiveDirtyStateFromQuickState(
+      path,
+      quickState,
+      snapshot,
+      quickState.hasUncommittedChanges,
+      resolvedPeek?.signature,
+    );
+  }
+
+  async function probeLiveDirtyState(path: string): Promise<void> {
+    await syncLiveDirtyState(path);
   }
 
   async function yieldToPaint() {
@@ -3395,6 +3464,7 @@ function App() {
     let pollTimeoutId: number | null = null;
     let headPollTimeoutId: number | null = null;
     let dirtyPollTimeoutId: number | null = null;
+    let dirtySyncDebounceId: number | null = null;
     let fullRefreshCoalesceId: number | null = null;
     let pendingFullGraphRefresh = false;
     let unlisten: (() => void) | null = null;
@@ -3755,6 +3825,15 @@ function App() {
       }, hidden ? 60000 : HEAD_STATE_PROBE_MS);
     };
 
+    const scheduleCoalescedDirtySync = () => {
+      if (isDisposed) return;
+      if (dirtySyncDebounceId != null) window.clearTimeout(dirtySyncDebounceId);
+      dirtySyncDebounceId = window.setTimeout(() => {
+        dirtySyncDebounceId = null;
+        void syncLiveDirtyState(repoPath);
+      }, DIRTY_SYNC_DEBOUNCE_MS);
+    };
+
     const scheduleDirtyStateProbe = () => {
       if (isDisposed) return;
       if (dirtyPollTimeoutId != null) window.clearTimeout(dirtyPollTimeoutId);
@@ -3768,28 +3847,25 @@ function App() {
           && !repoMutationInFlightRef.current
         ) {
           // Working-tree edits do not touch .git/index; lightweight porcelain poll only.
-          void probeLiveDirtyState(repoPath);
+          scheduleCoalescedDirtySync();
         }
         scheduleDirtyStateProbe();
       }, hidden ? 120000 : DIRTY_STATE_PROBE_MS);
     };
 
     let gitActivityDebounceId: number | null = null;
-    let pendingGitActivityReason: 'quick' | 'graph' = 'graph';
     listen<GitActivityEventPayload>('git-activity', (event) => {
       if (!sameRepoPath(event.payload.repoPath, repoPath)) return;
-      gitActivityEpochRef.current += 1;
-      if (event.payload.kind === 'local' && pendingGitActivityReason !== 'graph') {
-        pendingGitActivityReason = 'quick';
-      } else if (event.payload.kind !== 'local') {
-        pendingGitActivityReason = 'graph';
+      if (event.payload.kind === 'local') {
+        gitActivityEpochRef.current += 1;
+        scheduleCoalescedDirtySync();
+        return;
       }
+      gitActivityEpochRef.current += 1;
       if (gitActivityDebounceId != null) window.clearTimeout(gitActivityDebounceId);
       gitActivityDebounceId = window.setTimeout(() => {
         gitActivityDebounceId = null;
-        const reason = pendingGitActivityReason;
-        pendingGitActivityReason = 'graph';
-        void runRefresh(reason);
+        void runRefresh('graph');
       }, GIT_ACTIVITY_DEBOUNCE_MS);
     }).then((fn) => {
       if (isDisposed) fn();
@@ -3806,6 +3882,7 @@ function App() {
       if (pollTimeoutId != null) window.clearTimeout(pollTimeoutId);
       if (headPollTimeoutId != null) window.clearTimeout(headPollTimeoutId);
       if (dirtyPollTimeoutId != null) window.clearTimeout(dirtyPollTimeoutId);
+      if (dirtySyncDebounceId != null) window.clearTimeout(dirtySyncDebounceId);
       if (fullRefreshCoalesceId != null) window.clearTimeout(fullRefreshCoalesceId);
       if (gitActivityDebounceId != null) window.clearTimeout(gitActivityDebounceId);
       if (unlisten) unlisten();
