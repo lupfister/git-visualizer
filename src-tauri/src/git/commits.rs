@@ -74,8 +74,6 @@ pub fn get_direct_commits(
     Ok(commits)
 }
 
-const GRAPH_DELTA_COMMIT_LIMIT: u32 = 20;
-
 /// Commits reachable from `branch` that are not reachable from `since_sha` (when provided).
 pub fn get_branch_commits_since(
     repo: &Path,
@@ -285,7 +283,7 @@ pub fn get_all_repo_commits(
 
     // Enforce branch ownership boundaries: a branch can only own commits that are
     // descendants of (or equal to) that branch's child/root commit on its first-parent line.
-    let mut branch_by_commit_sha: HashMap<String, String> = commits
+    let branch_by_commit_sha: HashMap<String, String> = commits
         .iter()
         .map(|commit| (commit.full_sha.clone(), commit.branch.clone()))
         .collect();
@@ -657,17 +655,6 @@ fn with_cluster_keys(mut commits: Vec<DirectCommit>) -> Vec<DirectCommit> {
     }
 
     commits
-}
-
-/// Unified diff of all uncommitted changes (staged and unstaged) plus short status.
-pub fn get_working_tree_diff(repo: &Path) -> Result<String, GitError> {
-    let diff = cli::run(repo, &["diff", "HEAD", "--no-color"]).unwrap_or_default();
-    let status = cli::run(repo, &["status", "--short", "--untracked-files=normal"])
-        .unwrap_or_default();
-    if diff.trim().is_empty() && status.trim().is_empty() {
-        return Ok(String::new());
-    }
-    Ok(format!("{diff}\n\n--- status ---\n{status}"))
 }
 
 /// Compact summary for AI commit/stash titles (`--stat` + status, not full hunks).

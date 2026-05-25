@@ -12,7 +12,7 @@ use serde::{Deserialize, Serialize};
 use std::{
     collections::{HashMap, HashSet},
     fs::{self, File},
-    io::{BufRead, BufReader, Write},
+    io::{BufRead, BufReader},
     path::{Path, PathBuf},
     sync::{
         atomic::{AtomicBool, AtomicU64, Ordering},
@@ -23,7 +23,7 @@ use std::{
 use notify::{Watcher, RecursiveMode};
 
 #[cfg(target_os = "macos")]
-use objc2_app_kit::{NSRunningApplication, NSWorkspace};
+use objc2_app_kit::NSWorkspace;
 #[cfg(target_os = "macos")]
 use tauri_plugin_global_shortcut::{Code, GlobalShortcutExt, Modifiers, Shortcut, ShortcutState};
 #[cfg(target_os = "macos")]
@@ -3387,54 +3387,6 @@ fn get_branch_commits(
     Ok(commits)
 }
 
-fn get_branch_unique_commits_from_default(
-    repo_path: &str,
-    default_branch: &str,
-    branch: &str,
-) -> Result<Vec<CommitInfo>, String> {
-    let path = Path::new(repo_path);
-    let merge_base = git::cli::run(path, &["merge-base", default_branch, branch])
-        .ok()
-        .map(|output| output.trim().to_string())
-        .filter(|sha| !sha.is_empty());
-
-    let range = if let Some(base) = merge_base {
-        format!("{base}..{branch}")
-    } else {
-        branch.to_string()
-    };
-    let output = git::cli::run(
-        path,
-        &["log", &range, "--format=%H%x1f%h%x1f%s%x1f%an%x1f%cI%x1f%P"],
-    )
-    .map_err(|e| e.to_string())?;
-
-    Ok(output
-        .lines()
-        .filter(|l| !l.is_empty())
-        .filter_map(|line| {
-            let parts: Vec<&str> = line.splitn(6, LOG_FIELD_SEPARATOR).collect();
-            if parts.len() < 6 {
-                return None;
-            }
-            let parent_sha = parts[5]
-                .split_whitespace()
-                .next()
-                .map(|p| p.to_string());
-            Some(CommitInfo {
-                full_sha: parts[0].to_string(),
-                sha: parts[1].to_string(),
-                parent_sha,
-                message: parts[2].to_string(),
-                author: parts[3].to_string(),
-                date: parts[4].to_string(),
-                prompt_window_start: None,
-                prompt_window_end: None,
-                agent_prompts: Vec::new(),
-            })
-        })
-        .collect())
-}
 
 #[tauri::command(rename_all = "camelCase")]
 fn get_commit_diff(
@@ -5756,16 +5708,6 @@ fn detect_repo_from_frontmost_process() -> Option<OpenRepoEventPayload> {
     })
 }
 
-#[cfg(target_os = "macos")]
-fn append_shortcut_debug_log(message: &str) {
-    let mut path = std::env::temp_dir();
-    path.push("git-visualizer-shortcut.log");
-
-    if let Ok(mut file) = fs::OpenOptions::new().create(true).append(true).open(path) {
-        let timestamp = chrono::Local::now().format("%Y-%m-%d %H:%M:%S");
-        let _ = writeln!(file, "[{timestamp}] {message}");
-    }
-}
 
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]

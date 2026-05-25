@@ -364,7 +364,7 @@ fn infer_branch_parents(
         })
         .collect();
 
-    let mut creation_info_by_name: HashMap<String, BranchCreationInfo> = HashMap::from_iter(creation_info_list);
+    let creation_info_by_name: HashMap<String, BranchCreationInfo> = HashMap::from_iter(creation_info_list);
 
     branches.par_iter_mut().for_each(|branch| {
         let created_from_reflog = creation_info_by_name.get(&branch.name).cloned();

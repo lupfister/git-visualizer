@@ -11,7 +11,7 @@ pub use stash::{
 };
 pub use commits::{
     DirectCommit, MergeNode, commit_working_tree, get_all_repo_commits, get_branch_commits_since,
-    get_direct_commits, get_merge_commits, get_working_tree_diff, get_working_tree_summary,
+    get_direct_commits, get_merge_commits, get_working_tree_summary,
     stage_working_tree,
 };
 pub use worktrees::{WorktreeInfo, list_worktrees, remove_worktree as remove_git_worktree};
