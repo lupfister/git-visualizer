@@ -96,8 +96,6 @@ const HEAD_STATE_PROBE_MS = 12000;
 const DIRTY_STATE_PROBE_MS = 2500;
 /** Coalesce dirty porcelain polls into one UI apply. */
 const DIRTY_SYNC_DEBOUNCE_MS = 350;
-/** Briefly block follow-up refreshes after a dirty-only UI apply. */
-const DIRTY_SYNC_SUPPRESS_MS = 800;
 type PushTarget = {
   branchName: string;
   targetSha?: string;
@@ -442,8 +440,6 @@ function App() {
   const repoMutationGenerationRef = useRef(0);
   /** True while a user-initiated git mutation is running through to snapshot apply. */
   const repoMutationInFlightRef = useRef(false);
-  /** Skip background git-activity refresh briefly after a local optimistic patch. */
-  const suppressBackgroundRefreshUntilRef = useRef(0);
   /** Optimistic commit HEAD — blocks stale quick-state / DB refresh from regressing the checkout tip. */
   const postCommitProtectedHeadShaRef = useRef<Record<string, string>>({});
   const postCommitProtectTimeoutRef = useRef<Record<string, number>>({});
@@ -1890,7 +1886,6 @@ function App() {
   function schedulePostCommitGraphReconcile(path: string, protectedSha: string) {
     const normalizedPath = normalizePath(path);
     if (!normalizedPath) return;
-    suppressBackgroundRefreshUntilRef.current = 0;
     pendingRefreshAfterInteractionRef.current = false;
     invalidateRepoLayoutCacheForPath(normalizedPath);
     if (sameRepoPath(repoPath, normalizedPath)) {
@@ -2021,7 +2016,6 @@ function App() {
     }
     if (!liveHead || quickHead === liveHead) return;
     protectPostCommitHead(normalizedPath, quickHead);
-    suppressBackgroundRefreshUntilRef.current = Date.now() + 2500;
     invalidateRepoLayoutCacheForPath(normalizedPath);
   }
 
@@ -2050,10 +2044,9 @@ function App() {
   function schedulePostMutationGraphReconcile(path: string) {
     const normalizedPath = normalizePath(path);
     if (!normalizedPath) return;
-    const delayMs = Math.max(0, suppressBackgroundRefreshUntilRef.current - Date.now()) + 50;
     window.setTimeout(() => {
       void reconcileProjectSnapshotAfterMutation(normalizedPath);
-    }, delayMs);
+    }, 50);
   }
 
   async function buildPushSyncOutcomeFromGit(
@@ -2113,15 +2106,6 @@ function App() {
       setMapGridBackgroundActivity('git-refresh-pending', 'Git refresh queued', true, 'blocked');
       return false;
     }
-    if (Date.now() < suppressBackgroundRefreshUntilRef.current) {
-      pendingRefreshAfterInteractionRef.current = true;
-      const delayMs = Math.max(0, suppressBackgroundRefreshUntilRef.current - Date.now()) + 50;
-      window.setTimeout(() => {
-        void reloadRepoSnapshotFromGit(path, peek);
-      }, delayMs);
-      return false;
-    }
-
     bustRepoSyncCachesForPath(normalizedPath);
     setMapGridBackgroundActivity('git-refresh', 'Reload repo from git', true, 'git-activity');
 
@@ -2243,7 +2227,6 @@ function App() {
     if (!normalizedPath || !sameRepoPath(repoPath, normalizedPath)) return;
     if (repoMutationInFlightRef.current || reconcileInFlightRef.current) return;
     reconcileInFlightRef.current = true;
-    suppressBackgroundRefreshUntilRef.current = Date.now() + 1500;
     try {
       const peek = await fetchRepoSyncPeek(normalizedPath);
       let needsBackendSnapshot = false;
@@ -2326,13 +2309,11 @@ function App() {
     if (options?.markGitActivity !== false) {
       markGitActivityHandled();
     }
-    suppressBackgroundRefreshUntilRef.current = Date.now() + DIRTY_SYNC_SUPPRESS_MS;
   }
 
   function shouldSkipDirtyOnlySync(path: string): boolean {
     const normalizedPath = normalizePath(path);
     if (!normalizedPath) return true;
-    if (Date.now() < suppressBackgroundRefreshUntilRef.current) return true;
     if (isPostCommitProtectionActive(normalizedPath)) return true;
     if (repoMutationInFlightRef.current) return true;
     return false;
@@ -2592,7 +2573,6 @@ function App() {
           }
           schedulePostCommitQuickReconcile(normalizedPath);
         }
-        suppressBackgroundRefreshUntilRef.current = Date.now() + 2500;
         if (isCommit) {
           markGitActivityHandled();
         } else {
@@ -2605,7 +2585,6 @@ function App() {
         noteSyncedAfterMutationOutcomes(normalizedPath, ...outcomes);
         schedulePostMutationGraphReconcile(normalizedPath);
       } else {
-        suppressBackgroundRefreshUntilRef.current = Date.now() + 2500;
         window.setTimeout(() => {
           void invoke('persist_project_snapshot', { projectId: normalizedPath }).catch((error) => {
             console.warn('Background snapshot persist failed:', error);
@@ -2776,7 +2755,6 @@ function App() {
       ...projectQuickStateRef.current,
       [normalizedPath]: quickStateSignature(quickStateFromSnapshot(normalizedPath, snapshot)),
     };
-    suppressBackgroundRefreshUntilRef.current = Date.now() + 2500;
     lastHandledGitActivityEpochRef.current = gitActivityEpochRef.current;
     void fetchRepoSyncPeek(normalizedPath).then((peek) => {
       if (peek?.signature) noteSyncedRepoPeek(normalizedPath, peek.signature);
@@ -2923,7 +2901,6 @@ function App() {
           normalizedPath,
           snapshot.checkedOutRef?.headSha ?? commitOutcome?.commit.fullSha ?? null,
         );
-        suppressBackgroundRefreshUntilRef.current = Date.now() + 2500;
       }
 
       noteSyncedRepoFingerprint(normalizedPath, currentFingerprint);
@@ -2957,9 +2934,6 @@ function App() {
         setMapGridBackgroundActivity('git-refresh', 'Apply repo changes', false);
       }
 
-      suppressBackgroundRefreshUntilRef.current = Date.now() + (
-        dirtyOnly ? DIRTY_SYNC_SUPPRESS_MS : 2500
-      );
       window.setTimeout(() => {
         void invoke('persist_project_snapshot', { projectId: normalizedPath }).catch((error) => {
           console.warn('Background snapshot persist failed:', error);
@@ -3887,29 +3861,12 @@ function App() {
 
     const isRepoRefreshBlocked = () =>
       isMapInteractingRef.current || !canApplyRepoRefreshRef.current;
-    const scheduleRefreshAfterSuppress = (refreshReason: 'graph' | 'quick' = 'graph') => {
-      const delayMs = Math.max(0, suppressBackgroundRefreshUntilRef.current - Date.now()) + 50;
-      pendingRefreshAfterInteractionRef.current = true;
-      window.setTimeout(() => {
-        if (isDisposed || repoMutationInFlightRef.current) return;
-        if (Date.now() < suppressBackgroundRefreshUntilRef.current) {
-          scheduleRefreshAfterSuppress(refreshReason);
-          return;
-        }
-        if (!pendingRefreshAfterInteractionRef.current || isRepoRefreshBlocked()) return;
-        void runRefresh(refreshReason);
-      }, delayMs);
-    };
 
     const runRefresh = async (incomingReason: 'graph' | 'local' | 'timer' | 'initial' | 'quick' = 'timer') => {
       let reason = incomingReason;
       if (isDisposed) return;
       if (refreshInFlight || reconcileInFlightRef.current) {
         pendingRefreshAfterInteractionRef.current = true;
-        return;
-      }
-      if (Date.now() < suppressBackgroundRefreshUntilRef.current) {
-        scheduleRefreshAfterSuppress('graph');
         return;
       }
       if (repoMutationInFlightRef.current) {
@@ -4264,7 +4221,6 @@ function App() {
           !isDisposed
           && !hidden
           && !isRepoRefreshBlocked()
-          && Date.now() >= suppressBackgroundRefreshUntilRef.current
           && !repoMutationInFlightRef.current
         ) {
           const peek = await fetchRepoSyncPeek(repoPath);
@@ -4295,7 +4251,6 @@ function App() {
           !isDisposed
           && !hidden
           && !isRepoRefreshBlocked()
-          && Date.now() >= suppressBackgroundRefreshUntilRef.current
           && !repoMutationInFlightRef.current
           && !isPostCommitProtectionActive(normalizePath(repoPath) ?? '')
         ) {
