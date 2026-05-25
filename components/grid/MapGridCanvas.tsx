@@ -46,6 +46,21 @@ const EMPTY_NODE_POSITION_OVERRIDES: NodePositionOverrides = {};
 const EMPTY_DRAG_PREVIEW: Record<string, { x: number; y: number }> = {};
 const EMPTY_ADJUSTED_ANCHOR_MAP = new Map<string, { x: number; y: number }>();
 
+const WORKING_DOT_CYCLE_MS = 450;
+
+const WorkingDots = () => {
+  const [dotCount, setDotCount] = useState(0);
+
+  useEffect(() => {
+    const intervalId = window.setInterval(() => {
+      setDotCount((previous) => (previous + 1) % 4);
+    }, WORKING_DOT_CYCLE_MS);
+    return () => window.clearInterval(intervalId);
+  }, []);
+
+  return <span className="inline-block min-w-[0.75em]" aria-hidden="true">{'.'.repeat(dotCount)}</span>;
+};
+
 type MapGridCommitWrapperProps = {
   fadeIn: boolean;
   className?: string;
@@ -306,11 +321,18 @@ const MapGridCommitCard = memo(function MapGridCommitCard({
               ? `${node.commit.branchName}/${shortSha}`
               : shortSha;
 
-  const bodyMessage = isLocalUncommitted || isEmptyBranchNode
-    ? ''
-    : !isClusterOpen && isClusterLead && clumpCount > 1
-      ? `${stashBodyMessage} +${clumpCount - 1}`
-      : stashBodyMessage;
+  const bodyContent: ReactNode = isDirtyWorktreeNode
+    ? (
+        <>
+          Building
+          <WorkingDots />
+        </>
+      )
+    : isLocalUncommitted || isEmptyBranchNode
+      ? ''
+      : !isClusterOpen && isClusterLead && clumpCount > 1
+        ? `${stashBodyMessage} +${clumpCount - 1}`
+        : stashBodyMessage;
 
   const handleClick = (event: MouseEvent) => onCommitCardClick(event, node);
   const handlePointerDown = (event: React.PointerEvent<HTMLDivElement>) => onNodePointerDown(event, node);
@@ -568,8 +590,9 @@ const MapGridCommitCard = memo(function MapGridCommitCard({
               )}
               data-selectable-text="true"
               style={scaledBodyTextStyle}
+              aria-label={isDirtyWorktreeNode ? 'Building' : undefined}
             >
-              {bodyMessage}
+              {bodyContent}
             </div>
             <div className="mt-3 flex flex-wrap items-center gap-1.5">
               {showDataShapeError ? (

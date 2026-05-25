@@ -13,7 +13,7 @@ describe('formatWorktreeNodeHeaderLabel', () => {
     ).toBe('feature-wt • cursor-sdk');
   });
 
-  it('appends /working... when dirty', () => {
+  it('keeps branch label unchanged when dirty', () => {
     expect(
       formatWorktreeNodeHeaderLabel({
         path: '/repo/.worktrees/feature-wt',
@@ -21,7 +21,7 @@ describe('formatWorktreeNodeHeaderLabel', () => {
         hasUncommittedChanges: true,
         isCurrent: false,
       }),
-    ).toBe('feature-wt • cursor-sdk/working...');
+    ).toBe('feature-wt • cursor-sdk');
   });
 
   it('shows detached when session has no branch ref', () => {

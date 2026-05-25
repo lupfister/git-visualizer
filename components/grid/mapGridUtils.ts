@@ -600,6 +600,5 @@ export const formatWorktreeNodeHeaderLabel = (
 ): string => {
   const name = worktreeSessionDisplayName(session);
   const branch = session.branchName ?? 'detached';
-  const branchPart = session.hasUncommittedChanges ? `${branch}/working...` : branch;
-  return `${name} • ${branchPart}`;
+  return `${name} • ${branch}`;
 };
