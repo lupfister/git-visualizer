@@ -406,6 +406,7 @@ function App() {
   const [isSidebarCollapsed, setIsSidebarCollapsed] = useState(false);
   const autoFocusSyncKeyRef = useRef<string | null>(null);
   const focusCameraOnActiveWorktreeRef = useRef<(() => void) | null>(null);
+  const isFirstLoadSessionRef = useRef(true);
   const loadRepoRequestIdRef = useRef(0);
   const mapSwitchEpochRef = useRef(0);
   const githubFetchRequestIdRef = useRef(0);
@@ -5522,13 +5523,29 @@ function App() {
     if (isWorkingTreeCommitId(focusSha)) {
       persistWorktreeFocusSha(repoPath, focusSha);
     }
+    const storageKey = mapGridCameraStorageKey(`${repoPath}::${mapGridOrientation}`);
+    const isFirstLoad = isFirstLoadSessionRef.current;
+    if (isFirstLoad) {
+      isFirstLoadSessionRef.current = false;
+      try {
+        window.localStorage.removeItem(storageKey);
+      } catch {
+        // ignore storage failures
+      }
+      setGridFocusSha(focusSha);
+      setGridSearchJumpToken((token) => token + 1);
+      return;
+    }
+    let hasSavedCamera = false;
     try {
-      window.localStorage.removeItem(mapGridCameraStorageKey(`${repoPath}::${mapGridOrientation}`));
+      hasSavedCamera = !!window.localStorage.getItem(storageKey);
     } catch {
       // ignore storage failures
     }
-    setGridFocusSha(focusSha);
-    setGridSearchJumpToken((token) => token + 1);
+    if (!hasSavedCamera) {
+      setGridFocusSha(focusSha);
+      setGridSearchJumpToken((token) => token + 1);
+    }
   }, [
     mapGridOrientation,
     mapSwitchEpoch,
@@ -5562,6 +5579,7 @@ function App() {
 
   useEffect(() => {
     autoFocusSyncKeyRef.current = null;
+    setGridFocusSha(null);
   }, [repoPath, mapSwitchEpoch]);
   const branchesForLayout = useMemo(
     () => applyBranchParents(enrichedBranches, branchParentByName, defaultBranch),
