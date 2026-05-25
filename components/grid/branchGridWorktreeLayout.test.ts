@@ -179,5 +179,6 @@ describe('computeBranchGridLayout worktree nodes', () => {
     expect(worktreeNode!.row).toBe(mainTipNode!.row + 1);
     expect(worktreeNode!.column).toBeGreaterThanOrEqual(mainTipNode!.column);
     expect(worktreeNode!.column).toBe(mainTipNode!.column);
+    expect(worktreeNode!.y).toBe(mainTipNode!.y);
   });
 });

@@ -869,6 +869,32 @@ function App() {
     return lines.sort().join('|');
   }
 
+  function snapshotContainsCommitSha(snapshot: RepoVisualSnapshot, sha: string | null | undefined): boolean {
+    if (!sha || isWorkingTreeCommitId(sha)) return false;
+    if (snapshot.directCommits.some((commit) => commit.fullSha === sha)) return true;
+    for (const previews of Object.values(snapshot.branchCommitPreviews)) {
+      if (previews.some((preview) => preview.fullSha === sha)) return true;
+    }
+    return false;
+  }
+
+  function isIncomingSnapshotStaleComparedToLive(
+    incoming: RepoVisualSnapshot,
+    live: RepoVisualSnapshot,
+  ): boolean {
+    const liveHead = live.checkedOutRef?.headSha ?? null;
+    if (!liveHead || isWorkingTreeCommitId(liveHead)) return false;
+    if (!snapshotContainsCommitSha(incoming, liveHead) && snapshotContainsCommitSha(live, liveHead)) {
+      return true;
+    }
+    const liveClean = !(live.checkedOutRef?.hasUncommittedChanges ?? false);
+    const incomingDirty = incoming.checkedOutRef?.hasUncommittedChanges ?? false;
+    if (liveClean && incomingDirty && liveHead === incoming.checkedOutRef?.headSha) {
+      return true;
+    }
+    return false;
+  }
+
   function isSnapshotBehindPeek(snapshot: RepoVisualSnapshot, peek: RepoSyncPeek): boolean {
     const parsed = parsePeekSignature(peek.signature);
     const ref = snapshot.checkedOutRef;
@@ -1738,25 +1764,29 @@ function App() {
       }
 
       if (isCommit) {
-        if (commitOutcome?.commit.fullSha) {
-          setGridFocusSha(commitOutcome.commit.fullSha);
+        autoFocusSyncKeyRef.current = null;
+        const focusSha = resolveActiveWorktreeFocusSha(
+          buildWorktreeSessions(snapshot.worktrees, normalizedPath, snapshot.checkedOutRef),
+          normalizedPath,
+        ) ?? commitOutcome?.commit.fullSha ?? null;
+        if (focusSha) {
+          setGridFocusSha(focusSha);
           setGridSearchJumpToken((token) => token + 1);
         }
-        suppressBackgroundRefreshUntilRef.current = 0;
+        suppressBackgroundRefreshUntilRef.current = Date.now() + 8000;
+        markGitActivityHandled();
         noteSyncedAfterMutationOutcomes(normalizedPath, ...outcomes);
-        void invoke<FingerprintCheckResult>('check_project_fingerprint', { projectId: normalizedPath })
+        void invoke('persist_project_snapshot', { projectId: normalizedPath })
+          .then(() => invoke<FingerprintCheckResult>('check_project_fingerprint', { projectId: normalizedPath }))
           .then((check) => {
             if (check?.currentFingerprint) {
               noteSyncedRepoFingerprint(normalizedPath, check.currentFingerprint);
               ackProjectFingerprint(normalizedPath, check.currentFingerprint);
             }
           })
-          .catch(() => undefined);
-        window.setTimeout(() => {
-          void invoke('persist_project_snapshot', { projectId: normalizedPath }).catch((error) => {
-            console.warn('Background snapshot persist failed:', error);
+          .catch((error) => {
+            console.warn('Post-commit snapshot persist/sync failed:', error);
           });
-        }, 0);
       } else {
         suppressBackgroundRefreshUntilRef.current = Date.now() + 2500;
         window.setTimeout(() => {
@@ -2357,6 +2387,20 @@ function App() {
     snapshot: RepoVisualSnapshot,
     options?: { force?: boolean; allowIncomingDirty?: boolean },
   ) {
+    if (
+      sameRepoPath(repoPath, path)
+      && options?.force !== true
+    ) {
+      try {
+        const live = buildActiveRepoSnapshot(path);
+        if (isIncomingSnapshotStaleComparedToLive(snapshot, live)) {
+          setMapGridBackgroundActivity('snapshot-apply', 'Apply repo snapshot', false);
+          return false;
+        }
+      } catch {
+        // keep applying when live snapshot cannot be built
+      }
+    }
     if (!options?.force && (isMapInteractingRef.current || !canApplyRepoRefreshRef.current)) {
       pendingRefreshAfterInteractionRef.current = true;
       setMapGridBackgroundActivity('git-refresh-pending', 'Git refresh queued', true, 'snapshot deferred');
@@ -2957,6 +3001,19 @@ function App() {
           }, PERSIST_SNAPSHOT_DEFER_MS);
           return;
         }
+        if (sameRepoPath(repoPath, repoPath)) {
+          try {
+            const live = buildActiveRepoSnapshot(repoPath);
+            if (isIncomingSnapshotStaleComparedToLive(nextSnapshot, live)) {
+              markGitActivityHandled();
+              autoFocusSyncKeyRef.current = null;
+              focusCameraOnActiveWorktreeRef.current?.();
+              return;
+            }
+          } catch {
+            // apply incoming when live snapshot is unavailable
+          }
+        }
         upsertProjectSnapshot(repoPath, nextSnapshot);
         projectQuickStateRef.current = {
           ...projectQuickStateRef.current,
@@ -2978,6 +3035,8 @@ function App() {
               setLayoutEpoch((epoch) => epoch + 1);
               setHydratedLayoutModel(null);
               setHydratedLayoutKey(null);
+              autoFocusSyncKeyRef.current = null;
+              focusCameraOnActiveWorktreeRef.current?.();
             }
           });
           if (normalizedPath) {

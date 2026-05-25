@@ -210,6 +210,32 @@ const branchLaneColumnFromCommits = (
   return minColumn;
 };
 
+const resolveWorktreeParentPlacement = (
+  commits: VisualCommit[],
+  worktree: VisualCommit,
+  parentRowByVisualId: Map<string, number>,
+  columnByCommitVisualId: Map<string, number>,
+  renderNodes?: Node[],
+): { parentRow: number; parentCol: number } | null => {
+  const parent = resolveWorktreeParentCommit(commits, worktree);
+  if (!parent || !worktree.parentSha) return null;
+  if (renderNodes) {
+    const visibleParent = renderNodes.find((node) => {
+      if (isWorktreeGraphNode(node.commit)) return false;
+      if (worktree.branchName && node.commit.branchName !== worktree.branchName) return false;
+      return shasMatch(node.commit.id, worktree.parentSha)
+        || shasMatch(node.commit.id.slice(0, 7), worktree.parentSha);
+    });
+    if (visibleParent) {
+      return { parentRow: visibleParent.row, parentCol: visibleParent.column };
+    }
+  }
+  const parentRow = parentRowByVisualId.get(parent.visualId);
+  const parentCol = columnByCommitVisualId.get(parent.visualId);
+  if (parentRow == null || parentCol == null) return null;
+  return { parentRow, parentCol };
+};
+
 /** Worktrees: one timeline step after parent; lane index >= parent lane (same branch lane when possible). */
 const applyWorktreeChildPlacement = (
   isHorizontal: boolean,
@@ -217,6 +243,7 @@ const applyWorktreeChildPlacement = (
   columnByCommitVisualId: Map<string, number>,
   commits: VisualCommit[],
   parentRowByVisualId: Map<string, number> = rowByVisualId,
+  renderNodes?: Node[],
 ): void => {
   const worktrees = commits.filter((commit) => isWorktreeGraphNode(commit) && commit.parentSha);
   const worktreesByParentSha = new Map<string, VisualCommit[]>();
@@ -227,11 +254,17 @@ const applyWorktreeChildPlacement = (
     worktreesByParentSha.set(parentSha, group);
   }
   for (const group of worktreesByParentSha.values()) {
+    const placement = resolveWorktreeParentPlacement(
+      commits,
+      group[0]!,
+      parentRowByVisualId,
+      columnByCommitVisualId,
+      renderNodes,
+    );
+    if (!placement) continue;
     const parent = resolveWorktreeParentCommit(commits, group[0]!);
     if (!parent) continue;
-    const parentRow = parentRowByVisualId.get(parent.visualId);
-    const parentCol = columnByCommitVisualId.get(parent.visualId);
-    if (parentRow == null || parentCol == null) continue;
+    const { parentRow, parentCol } = placement;
     const timelineRow = parentRow + 1;
     const ordered = [...group].sort((left, right) => {
       const leftCol = columnByCommitVisualId.get(left.visualId) ?? 0;
@@ -282,6 +315,7 @@ const pinWorktreeNodesToLayout = (
     columnByCommitVisualId,
     commits,
     layoutRowByVisualId,
+    renderNodes,
   );
   for (const node of renderNodes) {
     if (!isWorktreeGraphNode(node.commit)) continue;
