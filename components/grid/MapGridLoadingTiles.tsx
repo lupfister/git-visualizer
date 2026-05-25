@@ -14,7 +14,8 @@ import { CARD_HEIGHT, CARD_WIDTH } from './LayoutGrid';
 
 const LOADING_TILE_SEED = 'map-grid-loading';
 const LOADING_SHAPE_FILL = 'var(--muted)';
-const SHIMMER_SPEED_PX_PER_MS = 1;
+/** Duration of one eased pulse sweep across the diagonal. */
+const SHIMMER_PULSE_MS = 3200;
 /** Core ramp width along the diagonal axis (px). */
 const SHIMMER_BAND_WIDTH_PX = 1600;
 /** Soft falloff after the bright edge (px). */
@@ -90,6 +91,13 @@ const flattenPaintedCells = (patches: LoadingPatch[]): PaintedLoadingCell[] => {
   return painted;
 };
 
+const easeInOutSine = (t: number): number => (1 - Math.cos(Math.PI * t)) / 2;
+
+const pulsedTravelPx = (timeMs: number, shimmerSpanPx: number): number => {
+  const cycleT = (timeMs % SHIMMER_PULSE_MS) / SHIMMER_PULSE_MS;
+  return easeInOutSine(cycleT) * shimmerSpanPx;
+};
+
 const shimmerBoostAt = (
   cellCx: number,
   cellCy: number,
@@ -97,7 +105,7 @@ const shimmerBoostAt = (
   timeMs: number,
 ): number => {
   const diag = cellCx + cellCy;
-  const travel = timeMs * SHIMMER_SPEED_PX_PER_MS;
+  const travel = pulsedTravelPx(timeMs, shimmerSpanPx);
   const totalBandPx = SHIMMER_BAND_WIDTH_PX + SHIMMER_FADE_TAIL_PX;
   const phase = ((diag - travel) % shimmerSpanPx + shimmerSpanPx) % shimmerSpanPx;
   if (phase > totalBandPx) {
