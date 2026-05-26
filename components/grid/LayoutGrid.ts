@@ -70,6 +70,7 @@ export type BranchGridViewProps = {
     discardUncommittedChanges: boolean;
     /** Worktree checkout paths to `reset --hard` / `clean`; defaults to active repo when discarding without this list. */
     discardUncommittedWorktreePaths?: string[];
+    removeWorktrees?: Array<{ path: string; force: boolean }>;
     stashIndices?: number[];
   }) => Promise<void> | void;
   deleteInProgress?: boolean;

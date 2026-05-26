@@ -235,14 +235,15 @@ const MapGridCommitCard = memo(function MapGridCommitCard({
     : node.commit.message;
 
   const hasWorktreeAccent = worktreeAccentActive(isLocalUncommitted, accentToken);
-  const accentColors = hasWorktreeAccent ? accentCssVars(accentToken) : null;
+  const showWorktreeAccent = hasWorktreeAccent && !isSelectedCommit;
+  const accentColors = accentToken ? accentCssVars(accentToken) : null;
 
-  const selectedCommitTextClass = hasWorktreeAccent
+  const selectedCommitTextClass = showWorktreeAccent
     ? ''
     : isSelectedCommit
       ? 'text-select'
       : 'text-foreground';
-  const selectedCommitTextStyle: CSSProperties | undefined = hasWorktreeAccent && accentColors
+  const selectedCommitTextStyle: CSSProperties | undefined = showWorktreeAccent && accentColors
     ? { color: accentColors.fg }
     : isSelectedCommit
       ? { color: 'var(--select)' }
@@ -323,7 +324,6 @@ const MapGridCommitCard = memo(function MapGridCommitCard({
   };
 
   const commitTileShapeCssVar = resolveWorktreeCommitTileShapeCssVar(
-    isLocalUncommitted,
     accentToken,
     isSelectedCommit,
     showCommitTilePattern,
@@ -331,10 +331,10 @@ const MapGridCommitCard = memo(function MapGridCommitCard({
 
   const commitTileHoverTintColor = !showCommitTilePattern
     ? null
-    : hasWorktreeAccent && accentColors
-      ? accentColors.fg
-      : isSelectedCommit
-        ? 'var(--select)'
+    : isSelectedCommit
+      ? 'var(--select)'
+      : accentColors
+        ? accentColors.fg
         : 'var(--foreground)';
 
   const cardBodyRef = useRef<HTMLDivElement>(null);
@@ -502,7 +502,7 @@ const MapGridCommitCard = memo(function MapGridCommitCard({
           useRoundedCardOutline ? 'rounded-tr-xl rounded-br-xl rounded-bl-xl rounded-tl-none' : '',
           showCommitTilePattern
             ? 'bg-background'
-            : hasWorktreeAccent && accentToken && !isUnpushedCommit && !commitTileCloudyGaps
+            : showWorktreeAccent && accentToken && !isUnpushedCommit && !commitTileCloudyGaps
               ? ''
               : isSelectedCommit && !isUnpushedCommit && !commitTileCloudyGaps
                 ? 'bg-select-muted'
@@ -520,7 +520,7 @@ const MapGridCommitCard = memo(function MapGridCommitCard({
           borderBottomRightRadius: outlineCornerRadiusCss,
           borderBottomLeftRadius: outlineCornerRadiusCss,
           contain: 'layout paint style',
-          ...(hasWorktreeAccent && accentToken && !showCommitTilePattern && !isUnpushedCommit && !commitTileCloudyGaps
+          ...(showWorktreeAccent && accentToken && !showCommitTilePattern && !isUnpushedCommit && !commitTileCloudyGaps
             ? { backgroundColor: `var(--${accentToken}-muted)` }
             : {}),
         }}

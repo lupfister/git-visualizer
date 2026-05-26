@@ -5185,9 +5185,10 @@ function App() {
     branchNames: string[];
     discardUncommittedChanges: boolean;
     discardUncommittedWorktreePaths?: string[];
+    removeWorktrees?: Array<{ path: string; force: boolean }>;
     stashIndices?: number[];
   }) {
-    if (!repoPath || deleteInProgress) return;
+    if (!repoPath || deleteInProgress || removeWorktreeInProgress) return;
     const uniqueBranchNames = Array.from(new Set(targets.branchNames.filter((branchName) => branchName && branchName !== defaultBranch)));
     const discardPaths = Array.from(
       new Set(
@@ -5202,7 +5203,16 @@ function App() {
     const shouldDiscardUncommitted = discardPaths.length > 0;
     const stashIndices = targets.stashIndices ?? [];
     const uniqueStashDescending = Array.from(new Set(stashIndices)).sort((a, b) => b - a);
-    if (uniqueBranchNames.length === 0 && !shouldDiscardUncommitted && uniqueStashDescending.length === 0) return;
+    const removeWorktrees = targets.removeWorktrees ?? [];
+    const uniqueRemoveWorktrees = Array.from(
+      new Map(removeWorktrees.map((entry) => [entry.path, entry] as const)).values(),
+    );
+    if (
+      uniqueBranchNames.length === 0
+      && !shouldDiscardUncommitted
+      && uniqueStashDescending.length === 0
+      && uniqueRemoveWorktrees.length === 0
+    ) return;
 
     setCommitSwitchFeedback(null);
     setDeleteInProgress(true);
@@ -5249,6 +5259,11 @@ function App() {
         }
       }
 
+      for (const { path: worktreePath, force } of uniqueRemoveWorktrees) {
+        await invoke('remove_worktree', { repoPath, worktreePath, force });
+        mutationOutcomes.push(outcomeFromWorktreeRemove(worktreePath));
+      }
+
       if (deleteResult.deletedBranches.length > 0 || deleteResult.discardedUncommittedChanges) {
         mutationOutcomes.push(outcomeFromDeleteSelection(deleteResult));
       }
@@ -5268,6 +5283,13 @@ function App() {
           deleteResult.deletedBranches.length === 1
             ? `deleted ${deleteResult.deletedBranches[0]}`
             : `deleted ${deleteResult.deletedBranches.length} branches`
+        );
+      }
+      if (uniqueRemoveWorktrees.length > 0) {
+        feedbackParts.push(
+          uniqueRemoveWorktrees.length === 1
+            ? 'removed 1 worktree'
+            : `removed ${uniqueRemoveWorktrees.length} worktrees`
         );
       }
       setCommitSwitchFeedback({

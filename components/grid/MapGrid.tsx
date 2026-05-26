@@ -52,9 +52,11 @@ import {
   buildWorktreeSessions,
   currentSessionWorkingTreeId,
   isWorkingTreeCommitId,
+  selectedRemovableWorktreeSessions,
   selectedUncommittedSessions,
   type WorktreeSession,
 } from '../../lib/worktreeSessions';
+import type { WorktreeInfo } from '../../types';
 import { parseMapCheckoutTarget, type MapCheckoutTarget } from './mapCheckoutTarget';
 import { parseDeletableEmptyBranchFromCommitId } from './mapDeleteTarget';
 import {
@@ -815,9 +817,32 @@ export default function BranchGridMap({
       ).sort((a, b) => a - b),
     [selectedVisibleCommitShas],
   );
+  const worktreeInfoByNormalizedPath = useMemo(() => {
+    const map = new Map<string, WorktreeInfo>();
+    for (const worktree of worktrees) {
+      map.set(normalizeRepoPathForCompare(worktree.path).toLowerCase(), worktree);
+    }
+    return map;
+  }, [worktrees]);
   const uncommittedSessionsToDiscard = useMemo(
     () => selectedUncommittedSessions(worktreeSessions, selectedVisibleCommitShas),
     [worktreeSessions, selectedVisibleCommitShas],
+  );
+  const removableWorktreeSessions = useMemo(
+    () => selectedRemovableWorktreeSessions(worktreeSessions, selectedVisibleCommitShas),
+    [worktreeSessions, selectedVisibleCommitShas],
+  );
+  const removeWorktreeTargets = useMemo(
+    () =>
+      removableWorktreeSessions
+        .filter((session) => session.pathExists)
+        .map((session) => {
+          const info = worktreeInfoByNormalizedPath.get(
+            normalizeRepoPathForCompare(session.path).toLowerCase(),
+          );
+          return { path: session.path, force: info?.isPrunable ?? false };
+        }),
+    [removableWorktreeSessions, worktreeInfoByNormalizedPath],
   );
   const hasSelectedUncommittedChanges = uncommittedSessionsToDiscard.length > 0;
   const selectedDeletableBranchNames = useMemo(() => {
@@ -841,7 +866,10 @@ export default function BranchGridMap({
     branchCommitPreviews,
   ]);
   const deletableSelectionCount =
-    uncommittedSessionsToDiscard.length + selectedStashIndices.length + selectedDeletableBranchNames.length;
+    uncommittedSessionsToDiscard.length
+    + removeWorktreeTargets.length
+    + selectedStashIndices.length
+    + selectedDeletableBranchNames.length;
   const deleteSelectionItems = [
     ...selectedDeletableBranchNames.map((branchName) => `Branch ${branchName}`),
     ...uncommittedSessionsToDiscard.map((session) => (
@@ -849,6 +877,12 @@ export default function BranchGridMap({
         ? 'Discard changes'
         : `Discard changes · ${worktreeSessionDisplayName(session)}`
     )),
+    ...removeWorktreeTargets.map(({ path }) => {
+      const session = removableWorktreeSessions.find((entry) => entry.path === path);
+      return session
+        ? `Remove worktree · ${worktreeSessionDisplayName(session)}`
+        : `Remove worktree · ${worktreeShortLabel(path)}`;
+    }),
     ...selectedStashIndices.map((idx) => `Stash ${idx + 1}`),
   ];
   const pushableRemoteBranchCount = pushableBranchByName.size;
@@ -1594,6 +1628,7 @@ export default function BranchGridMap({
       branchNames: selectedDeletableBranchNames,
       discardUncommittedChanges: hasSelectedUncommittedChanges,
       discardUncommittedWorktreePaths: uncommittedSessionsToDiscard.map((session) => session.path),
+      removeWorktrees: removeWorktreeTargets,
       stashIndices: selectedStashIndices,
     });
     setDeleteConfirmOpen(false);
@@ -1604,6 +1639,7 @@ export default function BranchGridMap({
     hasSelectedUncommittedChanges,
     selectedStashIndices,
     uncommittedSessionsToDiscard,
+    removeWorktreeTargets,
     selectedDeletableBranchNames,
   ]);
 

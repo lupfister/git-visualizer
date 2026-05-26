@@ -12,12 +12,15 @@ describe('shouldAnimateWorktreeNode', () => {
 });
 
 describe('resolveWorktreeCommitTileShapeCssVar', () => {
-  it('keeps worktree accent when the node is selected', () => {
+  it('uses select accent when selected, worktree accent otherwise', () => {
     expect(
-      resolveWorktreeCommitTileShapeCssVar(true, 'worktree-violet', true, true),
+      resolveWorktreeCommitTileShapeCssVar('worktree-violet', true, true),
+    ).toBe('--select-muted');
+    expect(
+      resolveWorktreeCommitTileShapeCssVar('worktree-violet', false, true),
     ).toBe('--worktree-violet-muted');
     expect(
-      resolveWorktreeCommitTileShapeCssVar(false, 'worktree-violet', true, true),
+      resolveWorktreeCommitTileShapeCssVar(null, true, true),
     ).toBe('--select-muted');
   });
 });

@@ -115,15 +115,30 @@ export const resolveActiveWorktreeFocusSha = (
   return currentSessionWorkingTreeId(sessions);
 };
 
-export const selectedUncommittedSessions = (
+export const selectedWorktreeSessions = (
   sessions: WorktreeSession[],
   selectedCommitShas: string[],
 ): WorktreeSession[] => {
   const selected = new Set(selectedCommitShas);
-  return sessions.filter(
-    (session) => selected.has(session.workingTreeId) && session.hasUncommittedChanges,
-  );
+  return sessions.filter((session) => selected.has(session.workingTreeId));
 };
+
+export const selectedUncommittedSessions = (
+  sessions: WorktreeSession[],
+  selectedCommitShas: string[],
+): WorktreeSession[] =>
+  selectedWorktreeSessions(sessions, selectedCommitShas).filter(
+    (session) => session.hasUncommittedChanges,
+  );
+
+/** Linked worktrees selected on the map without uncommitted changes — remove the checkout. */
+export const selectedRemovableWorktreeSessions = (
+  sessions: WorktreeSession[],
+  selectedCommitShas: string[],
+): WorktreeSession[] =>
+  selectedWorktreeSessions(sessions, selectedCommitShas).filter(
+    (session) => !session.isCurrent && !session.hasUncommittedChanges,
+  );
 
 export const shouldAnimateWorktreeNode = (session: Pick<WorktreeSession, 'hasUncommittedChanges'>): boolean =>
   session.hasUncommittedChanges;
@@ -135,14 +150,13 @@ export const worktreeAccentActive = (
 ): accentToken is WorktreeAccentToken => isWorktreeNode && accentToken != null;
 
 export const resolveWorktreeCommitTileShapeCssVar = (
-  isWorktreeNode: boolean,
   accentToken: WorktreeAccentToken | null | undefined,
   isSelectedCommit: boolean,
   showCommitTilePattern: boolean,
 ): string | null => {
   if (!showCommitTilePattern) return null;
-  if (worktreeAccentActive(isWorktreeNode, accentToken)) return `--${accentToken}-muted`;
   if (isSelectedCommit) return '--select-muted';
+  if (accentToken != null) return `--${accentToken}-muted`;
   return '--muted';
 };
 

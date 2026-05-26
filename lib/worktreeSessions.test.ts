@@ -8,7 +8,9 @@ import {
   isWorkingTreeCommitId,
   resolveBranchCheckoutAccent,
   resolveCommitAccent,
+  selectedRemovableWorktreeSessions,
   selectedUncommittedSessions,
+  selectedWorktreeSessions,
   sessionMatchesBranchCheckout,
   stripEmptyBranchPlaceholdersForWorktreeSessions,
   workingTreeIdForPath,
@@ -160,6 +162,22 @@ describe('worktreeSessions', () => {
     const selected = selectedUncommittedSessions(sessions, ['WORKING_TREE', dirtyOther.workingTreeId]);
     expect(selected).toHaveLength(1);
     expect(selected[0]?.isCurrent).toBe(true);
+  });
+
+  it('selectedRemovableWorktreeSessions returns clean linked worktrees only', () => {
+    const sessions = buildWorktreeSessions(
+      [
+        baseWorktree({ path: '/repo', headSha: 'aaaaaaaaaaaa', branchName: 'main', isCurrent: true, hasUncommittedChanges: true }),
+        baseWorktree({ path: '/repo/wt-b', headSha: 'bbbbbbbbbbbb', branchName: 'feature', isCurrent: false, hasUncommittedChanges: false }),
+        baseWorktree({ path: '/repo/wt-c', headSha: 'cccccccccccc', branchName: 'other', isCurrent: false, hasUncommittedChanges: true }),
+      ],
+      '/repo',
+    );
+    const cleanLinked = sessions.find((session) => session.branchName === 'feature')!;
+    const dirtyLinked = sessions.find((session) => session.branchName === 'other')!;
+    expect(selectedWorktreeSessions(sessions, ['WORKING_TREE', cleanLinked.workingTreeId, dirtyLinked.workingTreeId])).toHaveLength(3);
+    expect(selectedRemovableWorktreeSessions(sessions, ['WORKING_TREE', cleanLinked.workingTreeId, dirtyLinked.workingTreeId])).toEqual([cleanLinked]);
+    expect(selectedUncommittedSessions(sessions, ['WORKING_TREE', cleanLinked.workingTreeId, dirtyLinked.workingTreeId])).toHaveLength(2);
   });
 
   it('stripEmptyBranchPlaceholdersForWorktreeSessions removes BRANCH_HEAD when session covers branch', () => {

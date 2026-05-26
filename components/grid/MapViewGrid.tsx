@@ -49,6 +49,7 @@ interface Props {
     branchNames: string[];
     discardUncommittedChanges: boolean;
     discardUncommittedWorktreePaths?: string[];
+    removeWorktrees?: Array<{ path: string; force: boolean }>;
     stashIndices?: number[];
   }) => Promise<void> | void;
   deleteInProgress?: boolean;
