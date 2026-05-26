@@ -2506,14 +2506,32 @@ export function computeBranchGridLayout(input: BranchGridLayoutInput): BranchGri
     clumpOwnerColumnByClusterKey,
     isClumpOpen,
   );
+  const bestOverrideByClusterKey = new Map<string, { x: number; y: number; row: number }>();
+  for (const commit of allCommitsWithClusters) {
+    const clusterKey = clusterKeyByCommitId.get(commit.visualId);
+    if (!clusterKey) continue;
+    const override = getNodePositionOverride(normalizedNodePositionOverrides, commit);
+    if (!override) continue;
+    const row = allRowByVisualId.get(commit.visualId) ?? 0;
+    const current = bestOverrideByClusterKey.get(clusterKey);
+    if (!current || row > current.row) {
+      bestOverrideByClusterKey.set(clusterKey, { x: override.x, y: override.y, row });
+    }
+  }
+
   const movedLeadByClusterKey = new Map<string, { node: Node; x: number; y: number }>();
   for (const node of renderNodes) {
     const clusterKey = clusterKeyByCommitId.get(node.commit.visualId);
     if (!clusterKey) continue;
     if (leadByClusterKey.get(clusterKey) !== node.commit.visualId) continue;
-    const override = getNodePositionOverride(normalizedNodePositionOverrides, node.commit);
-    if (!override) continue;
-    movedLeadByClusterKey.set(clusterKey, { node, x: override.x, y: override.y });
+    const directOverride = getNodePositionOverride(normalizedNodePositionOverrides, node.commit);
+    if (directOverride) {
+      movedLeadByClusterKey.set(clusterKey, { node, x: directOverride.x, y: directOverride.y });
+      continue;
+    }
+    const inherited = bestOverrideByClusterKey.get(clusterKey);
+    if (!inherited) continue;
+    movedLeadByClusterKey.set(clusterKey, { node, x: inherited.x, y: inherited.y });
   }
   for (const node of renderNodes) {
     const override = getNodePositionOverride(normalizedNodePositionOverrides, node.commit);
