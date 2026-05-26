@@ -53,6 +53,8 @@ describe('applyNodePositionOverrides', () => {
       overrides,
       isHorizontal: false,
       zoomAwareTimelinePitch: 40,
+      zoomAwareLanePitch: 120,
+      maxResolvedRow: 3,
     });
 
     expect(leadNode.x).toBe(200);

@@ -35,6 +35,7 @@ import {
 import type { Lane } from './LayoutGrid';
 import { computeMergeConnectorAnchors, computeParentChildConnectorAnchors } from './branchGridConnectorAnchors';
 import { applyNodePositionOverrides } from './applyNodePositionOverrides';
+import { propagateOverrideRelativeLayout } from './overrideLayoutPropagation';
 import { getNodePositionOverride, migrateNodePositionOverridesForCommits } from './nodePositionOverrides';
 import {
   branchSiblingSharedRowMaxDeltaMs,
@@ -2506,6 +2507,28 @@ export function computeBranchGridLayout(input: BranchGridLayoutInput): BranchGri
     clumpOwnerColumnByClusterKey,
     isClumpOpen,
   );
+  maxResolvedRow = Math.max(0, ...renderNodes.map((node) => node.row));
+  propagateOverrideRelativeLayout({
+    renderNodes,
+    overrides: normalizedNodePositionOverrides,
+    metrics: {
+      isHorizontal,
+      timelineRowLeadOffset,
+      zoomAwareTimelinePitch,
+      zoomAwareLanePitch,
+      maxResolvedRow,
+    },
+  });
+  maxResolvedRow = Math.max(0, ...renderNodes.map((node) => node.row));
+  syncRenderNodeTimelineCoordinates(
+    renderNodes,
+    isHorizontal,
+    maxResolvedRow,
+    timelineRowLeadOffset,
+    zoomAwareTimelinePitch,
+    zoomAwareLanePitch,
+    (commit) => !!getNodePositionOverride(normalizedNodePositionOverrides, commit),
+  );
   applyNodePositionOverrides({
     renderNodes,
     allCommitsWithClusters,
@@ -2515,6 +2538,9 @@ export function computeBranchGridLayout(input: BranchGridLayoutInput): BranchGri
     overrides: normalizedNodePositionOverrides,
     isHorizontal,
     zoomAwareTimelinePitch,
+    timelineRowLeadOffset,
+    zoomAwareLanePitch,
+    maxResolvedRow,
   });
   maxResolvedRow = Math.max(0, ...renderNodes.map((node) => node.row));
   finalizeClumpRenderLayout(

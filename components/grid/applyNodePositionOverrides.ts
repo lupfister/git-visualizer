@@ -1,5 +1,9 @@
 import { COLUMN_WIDTH, type Node, type NodePositionOverrides, type VisualCommit } from './LayoutGrid';
 import { getNodePositionOverride } from './nodePositionOverrides';
+import {
+  inferLayoutIndicesFromOverride,
+  type OverrideLayoutMetrics,
+} from './overrideLayoutPropagation';
 
 export type ApplyNodePositionOverridesInput = {
   renderNodes: Node[];
@@ -10,6 +14,9 @@ export type ApplyNodePositionOverridesInput = {
   overrides: NodePositionOverrides;
   isHorizontal: boolean;
   zoomAwareTimelinePitch: number;
+  timelineRowLeadOffset?: number;
+  zoomAwareLanePitch?: number;
+  maxResolvedRow?: number;
 };
 
 type ClusterDragAnchor = { node: Node; x: number; y: number };
@@ -27,7 +34,22 @@ export const applyNodePositionOverrides = ({
   overrides,
   isHorizontal,
   zoomAwareTimelinePitch,
+  timelineRowLeadOffset = 0,
+  zoomAwareLanePitch = COLUMN_WIDTH,
+  maxResolvedRow = 0,
 }: ApplyNodePositionOverridesInput): void => {
+  const layoutMetrics: OverrideLayoutMetrics = {
+    isHorizontal,
+    timelineRowLeadOffset,
+    zoomAwareTimelinePitch,
+    zoomAwareLanePitch,
+    maxResolvedRow: Math.max(
+      maxResolvedRow,
+      ...renderNodes.map((node) => node.row),
+      1,
+    ),
+  };
+
   const bestOverrideByClusterKey = new Map<string, { x: number; y: number; row: number }>();
   for (const commit of allCommitsWithClusters) {
     const clusterKey = clusterKeyByCommitId.get(commit.visualId);
@@ -48,6 +70,9 @@ export const applyNodePositionOverrides = ({
     if (leadByClusterKey.get(clusterKey) !== node.commit.visualId) continue;
     const directOverride = getNodePositionOverride(overrides, node.commit);
     if (directOverride) {
+      const indices = inferLayoutIndicesFromOverride(directOverride.x, directOverride.y, layoutMetrics);
+      node.row = indices.row;
+      node.column = indices.column;
       clusterDragAnchorByKey.set(clusterKey, { node, x: directOverride.x, y: directOverride.y });
       continue;
     }
@@ -59,6 +84,9 @@ export const applyNodePositionOverrides = ({
   for (const node of renderNodes) {
     const override = getNodePositionOverride(overrides, node.commit);
     if (override) {
+      const indices = inferLayoutIndicesFromOverride(override.x, override.y, layoutMetrics);
+      node.row = indices.row;
+      node.column = indices.column;
       node.x = override.x;
       node.y = override.y;
       continue;
