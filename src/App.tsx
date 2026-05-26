@@ -1313,6 +1313,7 @@ function App() {
 
     listen<GitActivityEventPayload>('git-activity', (event) => {
       if (isDisposed) return;
+      if (event.payload.kind === 'local') return;
       const changedPath = normalizePath(event.payload.repoPath);
       if (!changedPath || sameRepoPath(changedPath, repoPath)) return;
       // Keep sidebar/project cache DB-first; active repo updates use snapshot refresh commands.
@@ -3290,8 +3291,6 @@ function App() {
     if (isMapInteractingRef.current || !canApplyRepoRefreshRef.current) return false;
     if (shouldSkipDirtyOnlySync(path)) return false;
 
-    const resolvedPeek = options?.peek ?? await fetchRepoSyncPeek(path);
-
     let snapshot: RepoVisualSnapshot;
     try {
       snapshot = getSnapshotForMutation(normalizedPath);
@@ -3299,15 +3298,26 @@ function App() {
       return false;
     }
 
+    const uiDirty = latestCheckedOutRef.current?.hasUncommittedChanges
+      ?? snapshot.checkedOutRef?.hasUncommittedChanges
+      ?? false;
+
+    if (!options?.peek) {
+      const isDirty = await invoke<boolean>('get_repo_dirty_state', { repoPath: path }).catch(() => null);
+      if (isDirty === null) return false;
+      if (uiDirty === isDirty) {
+        return false;
+      }
+    }
+
+    const resolvedPeek = options?.peek ?? await fetchRepoSyncPeek(path);
+
     if (resolvedPeek && isActiveUiBehindPeek(normalizedPath, resolvedPeek)) {
       return applyPublishedSnapshotWhenBehind(path, resolvedPeek);
     }
 
     if (resolvedPeek?.signature) {
       const parsed = parsePeekSignature(resolvedPeek.signature);
-      const uiDirty = latestCheckedOutRef.current?.hasUncommittedChanges
-        ?? snapshot.checkedOutRef?.hasUncommittedChanges
-        ?? false;
       if (uiDirty === parsed.hasUncommittedChanges) {
         return false;
       }
@@ -3316,10 +3326,8 @@ function App() {
     const quickState = await invoke<RepoQuickState>('get_repo_quick_state', { repoPath: path }).catch(() => null);
     if (!quickState) return false;
 
-    const uiDirty = latestCheckedOutRef.current?.hasUncommittedChanges
-      ?? snapshot.checkedOutRef?.hasUncommittedChanges
-      ?? false;
-    if (uiDirty === quickState.hasUncommittedChanges) {
+    const nextDirty = quickState.hasUncommittedChanges;
+    if (uiDirty === nextDirty) {
       noteDirtySyncComplete(normalizedPath, quickState, resolvedPeek?.signature, { markGitActivity: false });
       return false;
     }
@@ -3328,7 +3336,7 @@ function App() {
       path,
       quickState,
       snapshot,
-      quickState.hasUncommittedChanges,
+      nextDirty,
       resolvedPeek?.signature,
     );
   }
@@ -4343,7 +4351,11 @@ function App() {
     listen<GitActivityEventPayload>('git-activity', (event) => {
       if (!sameRepoPath(event.payload.repoPath, repoPath)) return;
       gitActivityEpochRef.current += 1;
-      void reloadRepoSnapshotFromGit(repoPath);
+      if (event.payload.kind === 'local') {
+        void syncLiveDirtyState(repoPath);
+      } else {
+        void reloadRepoSnapshotFromGit(repoPath);
+      }
     }).then((fn) => {
       if (isDisposed) fn();
       else unlisten = fn;

@@ -1866,6 +1866,18 @@ async fn get_repo_quick_state(repo_path: String) -> Result<RepoQuickState, Strin
     .await
 }
 
+#[tauri::command(rename_all = "camelCase")]
+async fn get_repo_dirty_state(repo_path: String) -> Result<bool, String> {
+    run_blocking(move || {
+        let path = Path::new(&repo_path);
+        let porcelain = git::cli::run(path, &["status", "--porcelain=v1", "--untracked-files=normal"])
+            .map_err(|e| e.to_string())?;
+        Ok(!porcelain.trim().is_empty())
+    })
+    .await
+}
+
+
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
 struct ChangedBranchDelta {
@@ -5831,6 +5843,7 @@ pub fn run() {
             store_repo_node_positions,
             clear_repo_node_positions,
             get_repo_quick_state,
+            get_repo_dirty_state,
             get_repo_head_state,
             get_repo_sync_peek,
             get_repo_graph_delta,
