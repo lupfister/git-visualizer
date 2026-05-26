@@ -253,6 +253,7 @@ const pinWorktreeNodesToLayout = (
   zoomAwareTimelinePitch: number,
   zoomAwareLanePitch: number,
   maxResolvedRow: number,
+  nodePositionOverrides: NodePositionOverrides,
 ): void => {
   const worktrees = renderNodes
     .filter((node) => isWorktreeGraphNode(node.commit))
@@ -260,6 +261,7 @@ const pinWorktreeNodesToLayout = (
   const usedLaneColumnsByParentRow = new Map<string, Set<number>>();
 
   for (const node of worktrees) {
+    if (getNodePositionOverride(nodePositionOverrides, node.commit)) continue;
     const parentNode = findWorktreeAnchorParentRenderNode(renderNodes, node.commit, checkedOutRef, defaultBranch);
     if (!parentNode) continue;
     const worktree = node.commit;
@@ -2565,6 +2567,7 @@ export function computeBranchGridLayout(input: BranchGridLayoutInput): BranchGri
     zoomAwareTimelinePitch,
     zoomAwareLanePitch,
     maxResolvedRow,
+    normalizedNodePositionOverrides,
   );
   const visibleNodesBySha = new Map<string, Node[]>();
   for (const node of renderNodes) {

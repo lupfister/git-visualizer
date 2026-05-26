@@ -60,7 +60,7 @@ describe('node position override keys', () => {
     expect(migrated[getStableNodePositionKey(target)]).toEqual({ x: 50, y: 75 });
   });
 
-  it('ignores persisted overrides for worktree tiles so layout pin stays authoritative', () => {
+  it('resolves persisted overrides for worktree tiles via stable keys', () => {
     const worktree = commit({
       id: 'WORKING_TREE',
       visualId: 'main:WORKING_TREE',
@@ -72,7 +72,7 @@ describe('node position override keys', () => {
       'main:WORKING_TREE': { x: 777, y: 666 },
     };
 
-    expect(getNodePositionOverride(overrides, worktree)).toBeUndefined();
+    expect(getNodePositionOverride(overrides, worktree)).toEqual({ x: 999, y: 888 });
   });
 
   it('canonicalizes mixed persisted data down to current durable aliases for visible commits', () => {

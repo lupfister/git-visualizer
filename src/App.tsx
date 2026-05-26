@@ -10,7 +10,6 @@ import BranchGridMapView from '../components/grid/MapViewGrid';
 import { mapGridCameraStorageKey, readHasSavedMapGridCamera } from '../components/grid/useMapGridCamera';
 import DenseBranchSidebar from '../components/DenseBranchSidebar';
 import type { NodePositionOverrides } from '../components/grid/LayoutGrid';
-import { stripWorktreeNodePositionOverrides } from '../components/grid/nodePositionOverrides';
 import { computeBranchGridLayout, type BranchGridLayoutModel } from '../components/grid/branchGridLayoutModel';
 import { hydrateBranchGridLayoutModel, serializeBranchGridLayoutModel } from '../components/grid/layoutSnapshot';
 import { layoutModelHasWorkingTree } from '../components/grid/workingTreeLayout';
@@ -680,7 +679,7 @@ function App() {
     try {
       const localPayload = window.localStorage.getItem(nodePositionsStorageKey(normalizedPath));
       if (localPayload) {
-        localOverrides = stripWorktreeNodePositionOverrides(parseNodePositionOverrides(localPayload));
+        localOverrides = parseNodePositionOverrides(localPayload);
         setNodePositionOverridesByRepo((previous) => ({
           ...previous,
           [normalizedPath]: localOverrides ?? {},
@@ -707,7 +706,7 @@ function App() {
     if (seq !== loadNodePositionsSeqRef.current) return;
     if (userDirtyNodePositionsRef.current.has(normalizedPath)) return;
     if (localOverrides && Object.keys(localOverrides).length > 0) return;
-    const overrides = stripWorktreeNodePositionOverrides(parseNodePositionOverrides(payloadJson));
+    const overrides = parseNodePositionOverrides(payloadJson);
     setNodePositionOverridesByRepo((previous) => ({
       ...previous,
       [normalizedPath]: overrides,
@@ -1763,14 +1762,6 @@ function App() {
     invalidateRepoLayoutCacheForPath(normalizedPath);
     lastResolvedLayoutModelRef.current = null;
     setLayoutEpoch((epoch) => epoch + 1);
-    if (!sameRepoPath(repoPath, normalizedPath)) return;
-    setNodePositionOverridesByRepo((previous) => {
-      const current = previous[normalizedPath] ?? {};
-      const stripped = stripWorktreeNodePositionOverrides(current);
-      if (stripped === current) return previous;
-      persistRepoNodePositions(normalizedPath, stripped);
-      return { ...previous, [normalizedPath]: stripped };
-    });
   }
 
   async function syncCheckedOutRefFromQuickGitState(path: string) {
