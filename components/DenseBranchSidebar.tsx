@@ -807,21 +807,24 @@ export default function DenseBranchSidebar({
       setPendingClumpAnchor(null);
     }
     setPendingClumpFocusTargetId(focusTargetId);
+    const currentlyOpen = isGridClusterOpen(clumpKey);
     setManuallyOpenedClumps((previousOpened) => {
       const nextOpened = new Set(previousOpened);
-      const currentlyOpen = isGridClusterOpen(clumpKey);
-      setManuallyClosedClumps((previousClosed) => {
-        const nextClosed = new Set(previousClosed);
-        if (currentlyOpen) {
-          nextOpened.delete(clumpKey);
-          nextClosed.add(clumpKey);
-        } else {
-          nextClosed.delete(clumpKey);
-          nextOpened.add(clumpKey);
-        }
-        return nextClosed;
-      });
+      if (currentlyOpen) {
+        nextOpened.delete(clumpKey);
+      } else {
+        nextOpened.add(clumpKey);
+      }
       return nextOpened;
+    });
+    setManuallyClosedClumps((previousClosed) => {
+      const nextClosed = new Set(previousClosed);
+      if (currentlyOpen) {
+        nextClosed.add(clumpKey);
+      } else {
+        nextClosed.delete(clumpKey);
+      }
+      return nextClosed;
     });
   };
   useLayoutEffect(() => {
@@ -903,27 +906,20 @@ export default function DenseBranchSidebar({
       if (!isActiveProject && !isExpandedProject) {
         continue;
       }
-      const visualState = deriveRepoVisualState({
-        branches: project.branches,
-        mergeNodes: project.mergeNodes,
-        directCommits: project.directCommits,
-        unpushedDirectCommits: project.unpushedDirectCommits,
-        unpushedCommitShasByBranch: project.unpushedCommitShasByBranch,
-        defaultBranch: project.defaultBranch,
-        branchCommitPreviews: project.branchCommitPreviews,
-        branchParentByName: project.branchParentByName ?? {},
-        branchUniqueAheadCounts: project.branchUniqueAheadCounts,
-        checkedOutRef: project.checkedOutRef,
-        worktrees: project.worktrees,
-        currentRepoPath: project.path,
-        stashes: project.stashes,
-        manuallyOpenedClumps: manuallyOpenedClumpsByProject[project.path] ?? new Set<string>(),
-        manuallyClosedClumps: manuallyClosedClumpsByProject[project.path] ?? new Set<string>(),
-      });
 
-      const branchesWithDefault: Branch[] = visualState.enrichedBranches.some((branch) => branch.name === project.defaultBranch)
-        ? visualState.enrichedBranches
-        : [{
+      let branchesWithDefault: Branch[];
+      let branchByName: Map<string, Branch>;
+      let branchCommitPreviewsFromLayout: Record<string, BranchCommitPreview[]>;
+      let branchAnchorShaByName = new Map<string, string | null>();
+      let clusterKeyByCommitId: Map<string, string>;
+      let getMergeTargetLabels: (sha: string, sourceBranchName: string) => string[];
+      let isGridClusterOpen: (clusterKey: string) => boolean;
+
+      if (isActiveProject && gridLayoutModel) {
+        branchByName = gridLayoutModel.branchByName;
+        branchesWithDefault = Array.from(branchByName.values());
+        if (!branchesWithDefault.some((branch) => branch.name === project.defaultBranch)) {
+          const defaultBranchObj = {
             name: project.defaultBranch,
             commitsAhead: 0,
             commitsBehind: 0,
@@ -936,59 +932,181 @@ export default function DenseBranchSidebar({
             parentBranch: undefined,
             divergedFromSha: undefined,
             divergedFromDate: undefined,
-          } as Branch, ...visualState.enrichedBranches];
-      const rowByVisualId = new Map<string, number>(visualState.sharedGridLayoutModel.nodes.map((node) => [node.commit.visualId, node.row]));
-      const branchCommitPreviewsFromLayout: Record<string, BranchCommitPreview[]> = {};
-      for (const commit of visualState.sharedGridLayoutModel.allCommits) {
-        const bucket = branchCommitPreviewsFromLayout[commit.branchName] ?? [];
-        bucket.push({
-          fullSha: commit.id,
-          sha: commit.id.slice(0, 7),
-          parentSha: commit.parentSha ?? null,
-          message: commit.message,
-          author: commit.author,
-          date: commit.date,
-          kind: commit.kind ?? 'commit',
-        });
-        branchCommitPreviewsFromLayout[commit.branchName] = bucket;
-      }
-      for (const branchName of Object.keys(branchCommitPreviewsFromLayout)) {
-        branchCommitPreviewsFromLayout[branchName] = branchCommitPreviewsFromLayout[branchName]!.sort((left, right) => {
-          const leftTime = new Date(left.date).getTime();
-          const rightTime = new Date(right.date).getTime();
-          if (leftTime !== rightTime) return leftTime - rightTime;
-          const leftRow = rowByVisualId.get(`${branchName}:${left.fullSha}`) ?? Number.MAX_SAFE_INTEGER;
-          const rightRow = rowByVisualId.get(`${branchName}:${right.fullSha}`) ?? Number.MAX_SAFE_INTEGER;
-          if (leftRow !== rightRow) return leftRow - rightRow;
-          return left.fullSha.localeCompare(right.fullSha);
-        });
-      }
-      const mergeTargetLabelsBySourceAndCommitSha =
-        visualState.sharedGridLayoutModel.mergeTargetBranchesBySourceBranchAndCommitSha ?? new Map<string, Map<string, Set<string>>>();
-      const getMergeTargetLabels = (sha: string, sourceBranchName: string): string[] => {
-        const byCommitSha = mergeTargetLabelsBySourceAndCommitSha.get(sourceBranchName);
-        if (!byCommitSha) return [];
-        for (const [commitSha, labels] of byCommitSha.entries()) {
-          if (!shaMatchesGitRef(sha, commitSha)) continue;
-          return Array.from(labels).sort();
+          } as Branch;
+          branchesWithDefault = [defaultBranchObj, ...branchesWithDefault];
+          branchByName = new Map([[project.defaultBranch, defaultBranchObj], ...branchByName.entries()]);
         }
-        return [];
-      };
+
+        for (const branch of branchesWithDefault) {
+          const fromModel = gridLayoutModel.firstBranchCommitByName.get(branch.name)?.parentSha ?? null;
+          branchAnchorShaByName.set(branch.name, fromModel);
+        }
+
+        branchCommitPreviewsFromLayout = {};
+        for (const commit of gridLayoutModel.allCommits) {
+          const bucket = branchCommitPreviewsFromLayout[commit.branchName] ?? [];
+          bucket.push({
+            fullSha: commit.id,
+            sha: commit.id.slice(0, 7),
+            parentSha: commit.parentSha ?? null,
+            message: commit.message,
+            author: commit.author,
+            date: commit.date,
+            kind: commit.kind ?? 'commit',
+          });
+          branchCommitPreviewsFromLayout[commit.branchName] = bucket;
+        }
+
+        const rowByVisualId = new Map<string, number>(gridLayoutModel.nodes.map((node) => [node.commit.visualId, node.row]));
+        for (const branchName of Object.keys(branchCommitPreviewsFromLayout)) {
+          branchCommitPreviewsFromLayout[branchName] = branchCommitPreviewsFromLayout[branchName]!.sort((left, right) => {
+            const leftTime = new Date(left.date).getTime();
+            const rightTime = new Date(right.date).getTime();
+            if (leftTime !== rightTime) return leftTime - rightTime;
+            const leftRow = rowByVisualId.get(`${branchName}:${left.fullSha}`) ?? Number.MAX_SAFE_INTEGER;
+            const rightRow = rowByVisualId.get(`${branchName}:${right.fullSha}`) ?? Number.MAX_SAFE_INTEGER;
+            if (leftRow !== rightRow) return leftRow - rightRow;
+            return left.fullSha.localeCompare(right.fullSha);
+          });
+        }
+
+        const mergeTargetLabelsBySourceAndCommitSha =
+          gridLayoutModel.mergeTargetBranchesBySourceBranchAndCommitSha ?? new Map<string, Map<string, Set<string>>>();
+        getMergeTargetLabels = (sha: string, sourceBranchName: string): string[] => {
+          const byCommitSha = mergeTargetLabelsBySourceAndCommitSha.get(sourceBranchName);
+          if (!byCommitSha) return [];
+          for (const [commitSha, labels] of byCommitSha.entries()) {
+            if (!shaMatchesGitRef(sha, commitSha)) continue;
+            return Array.from(labels).sort();
+          }
+          return [];
+        };
+
+        clusterKeyByCommitId = gridLayoutModel.clusterKeyByCommitId ?? new Map<string, string>();
+
+        const defaultCollapsedClumps = gridLayoutModel.defaultCollapsedClumps ?? new Set<string>();
+        const localManuallyOpenedClumps = manuallyOpenedClumpsByProject[project.path] ?? new Set<string>();
+        const localManuallyClosedClumps = manuallyClosedClumpsByProject[project.path] ?? new Set<string>();
+        isGridClusterOpen = (clusterKey: string): boolean =>
+          localManuallyOpenedClumps.has(clusterKey) ||
+          (!defaultCollapsedClumps.has(clusterKey) && !localManuallyClosedClumps.has(clusterKey));
+      } else if (!showCommits) {
+        branchesWithDefault = project.branches.some((branch) => branch.name === project.defaultBranch)
+          ? project.branches
+          : [{
+              name: project.defaultBranch,
+              commitsAhead: 0,
+              commitsBehind: 0,
+              lastCommitDate: new Date(0).toISOString(),
+              lastCommitAuthor: 'Unknown',
+              status: 'unknown',
+              remoteSyncStatus: 'on-github',
+              unpushedCommits: 0,
+              headSha: '',
+              parentBranch: undefined,
+              divergedFromSha: undefined,
+              divergedFromDate: undefined,
+            } as Branch, ...project.branches];
+
+        branchByName = new Map(branchesWithDefault.map((branch) => [branch.name, branch]));
+        branchCommitPreviewsFromLayout = {};
+        clusterKeyByCommitId = new Map();
+        getMergeTargetLabels = () => [];
+        isGridClusterOpen = () => true;
+      } else {
+        const visualState = deriveRepoVisualState({
+          branches: project.branches,
+          mergeNodes: project.mergeNodes,
+          directCommits: project.directCommits,
+          unpushedDirectCommits: project.unpushedDirectCommits,
+          unpushedCommitShasByBranch: project.unpushedCommitShasByBranch,
+          defaultBranch: project.defaultBranch,
+          branchCommitPreviews: project.branchCommitPreviews,
+          branchParentByName: project.branchParentByName ?? {},
+          branchUniqueAheadCounts: project.branchUniqueAheadCounts,
+          checkedOutRef: project.checkedOutRef,
+          worktrees: project.worktrees,
+          currentRepoPath: project.path,
+          stashes: project.stashes,
+          manuallyOpenedClumps: manuallyOpenedClumpsByProject[project.path] ?? new Set<string>(),
+          manuallyClosedClumps: manuallyClosedClumpsByProject[project.path] ?? new Set<string>(),
+        });
+
+        branchesWithDefault = visualState.enrichedBranches.some((branch) => branch.name === project.defaultBranch)
+          ? visualState.enrichedBranches
+          : [{
+              name: project.defaultBranch,
+              commitsAhead: 0,
+              commitsBehind: 0,
+              lastCommitDate: new Date(0).toISOString(),
+              lastCommitAuthor: 'Unknown',
+              status: 'unknown',
+              remoteSyncStatus: 'on-github',
+              unpushedCommits: 0,
+              headSha: '',
+              parentBranch: undefined,
+              divergedFromSha: undefined,
+              divergedFromDate: undefined,
+            } as Branch, ...visualState.enrichedBranches];
+        branchByName = new Map(branchesWithDefault.map((branch) => [branch.name, branch]));
+
+        for (const branch of branchesWithDefault) {
+          const fromModel = visualState.sharedGridLayoutModel.firstBranchCommitByName.get(branch.name)?.parentSha ?? null;
+          branchAnchorShaByName.set(branch.name, fromModel);
+        }
+
+        branchCommitPreviewsFromLayout = {};
+        for (const commit of visualState.sharedGridLayoutModel.allCommits) {
+          const bucket = branchCommitPreviewsFromLayout[commit.branchName] ?? [];
+          bucket.push({
+            fullSha: commit.id,
+            sha: commit.id.slice(0, 7),
+            parentSha: commit.parentSha ?? null,
+            message: commit.message,
+            author: commit.author,
+            date: commit.date,
+            kind: commit.kind ?? 'commit',
+          });
+          branchCommitPreviewsFromLayout[commit.branchName] = bucket;
+        }
+
+        const rowByVisualId = new Map<string, number>(visualState.sharedGridLayoutModel.nodes.map((node) => [node.commit.visualId, node.row]));
+        for (const branchName of Object.keys(branchCommitPreviewsFromLayout)) {
+          branchCommitPreviewsFromLayout[branchName] = branchCommitPreviewsFromLayout[branchName]!.sort((left, right) => {
+            const leftTime = new Date(left.date).getTime();
+            const rightTime = new Date(right.date).getTime();
+            if (leftTime !== rightTime) return leftTime - rightTime;
+            const leftRow = rowByVisualId.get(`${branchName}:${left.fullSha}`) ?? Number.MAX_SAFE_INTEGER;
+            const rightRow = rowByVisualId.get(`${branchName}:${right.fullSha}`) ?? Number.MAX_SAFE_INTEGER;
+            if (leftRow !== rightRow) return leftRow - rightRow;
+            return left.fullSha.localeCompare(right.fullSha);
+          });
+        }
+
+        const mergeTargetLabelsBySourceAndCommitSha =
+          visualState.sharedGridLayoutModel.mergeTargetBranchesBySourceBranchAndCommitSha ?? new Map<string, Map<string, Set<string>>>();
+        getMergeTargetLabels = (sha: string, sourceBranchName: string): string[] => {
+          const byCommitSha = mergeTargetLabelsBySourceAndCommitSha.get(sourceBranchName);
+          if (!byCommitSha) return [];
+          for (const [commitSha, labels] of byCommitSha.entries()) {
+            if (!shaMatchesGitRef(sha, commitSha)) continue;
+            return Array.from(labels).sort();
+          }
+          return [];
+        };
+
+        clusterKeyByCommitId = visualState.sharedGridLayoutModel.clusterKeyByCommitId ?? new Map<string, string>();
+
+        const defaultCollapsedClumps = visualState.sharedGridLayoutModel.defaultCollapsedClumps ?? new Set<string>();
+        const localManuallyOpenedClumps = manuallyOpenedClumpsByProject[project.path] ?? new Set<string>();
+        const localManuallyClosedClumps = manuallyClosedClumpsByProject[project.path] ?? new Set<string>();
+        isGridClusterOpen = (clusterKey: string): boolean =>
+          localManuallyOpenedClumps.has(clusterKey) ||
+          (!defaultCollapsedClumps.has(clusterKey) && !localManuallyClosedClumps.has(clusterKey));
+      }
+
       const childNamesByParent = buildChildBranchesByParent(branchesWithDefault, project.defaultBranch);
       const rootBranchNames = buildRootNames(branchesWithDefault, project.defaultBranch, childNamesByParent);
-      const branchByName = new Map(branchesWithDefault.map((branch) => [branch.name, branch]));
-      const branchAnchorShaByName = new Map<string, string | null>();
-      for (const branch of branchesWithDefault) {
-        const fromModel = visualState.sharedGridLayoutModel.firstBranchCommitByName.get(branch.name)?.parentSha ?? null;
-        const resolved = fromModel ?? null;
-        branchAnchorShaByName.set(branch.name, resolved);
-      }
-      const defaultCollapsedClumps = visualState.sharedGridLayoutModel.defaultCollapsedClumps ?? new Set<string>();
-      const localManuallyOpenedClumps = manuallyOpenedClumpsByProject[project.path] ?? new Set<string>();
-      const localManuallyClosedClumps = manuallyClosedClumpsByProject[project.path] ?? new Set<string>();
-      const isGridClusterOpen = (clusterKey: string): boolean =>
-        localManuallyOpenedClumps.has(clusterKey) ||
-        (!defaultCollapsedClumps.has(clusterKey) && !localManuallyClosedClumps.has(clusterKey));
 
       next.set(project.path, {
         rootBranchNames,
@@ -999,14 +1117,14 @@ export default function DenseBranchSidebar({
         unpushedCommitShasByBranch: project.unpushedCommitShasByBranch,
         checkedOutBranchName: project.checkedOutRef?.branchName ?? null,
         checkedOutHeadSha: project.checkedOutRef?.headSha ?? null,
-        clusterKeyByCommitId: visualState.sharedGridLayoutModel.clusterKeyByCommitId ?? new Map<string, string>(),
+        clusterKeyByCommitId,
         getMergeTargetLabels,
         isGridClusterOpen,
       });
     }
 
     return next;
-  }, [activeProjectPath, expandedProjects, manuallyClosedClumpsByProject, manuallyOpenedClumpsByProject, projects]);
+  }, [activeProjectPath, expandedProjects, manuallyClosedClumpsByProject, manuallyOpenedClumpsByProject, projects, showCommits, gridLayoutModel]);
 
   const renderProject = (
     project: Props['projects'][number],

@@ -396,7 +396,7 @@ function App() {
     removeWorktreeInProgress ||
     createBranchFromNodeInProgress;
   const [isMapInteracting, setIsMapInteracting] = useState(false);
-  const mapGridOrientation = 'horizontal';
+  const mapGridOrientation = 'horizontal' as const;
   const [remoteDefaultTipSha] = useState<string | null>(null);
   const [remoteDefaultTipMetadata] = useState<CommitMetadata | null>(null);
   const [remoteDefaultTipParentSha] = useState<string | null>(null);
@@ -519,7 +519,10 @@ function App() {
     }
   }, []);
   useEffect(() => {
-    persistGridClumps(manuallyOpenedGridClumpsByRepo, manuallyClosedGridClumpsByRepo);
+    const timer = setTimeout(() => {
+      persistGridClumps(manuallyOpenedGridClumpsByRepo, manuallyClosedGridClumpsByRepo);
+    }, 500);
+    return () => clearTimeout(timer);
   }, [manuallyClosedGridClumpsByRepo, manuallyOpenedGridClumpsByRepo]);
   const manuallyOpenedGridClumps = useMemo(
     () => manuallyOpenedGridClumpsByRepo[activeRepoScopedKey] ?? new Set<string>(),
@@ -534,24 +537,20 @@ function App() {
       setManuallyOpenedGridClumpsByRepo((previous) => {
         const previousSet = previous[activeRepoScopedKey] ?? new Set<string>();
         const nextSet = typeof updater === 'function' ? updater(previousSet) : updater;
-        const nextState = { ...previous, [activeRepoScopedKey]: new Set(nextSet) };
-        persistGridClumps(nextState, manuallyClosedGridClumpsByRepo);
-        return nextState;
+        return { ...previous, [activeRepoScopedKey]: new Set(nextSet) };
       });
     },
-    [activeRepoScopedKey, manuallyClosedGridClumpsByRepo],
+    [activeRepoScopedKey],
   );
   const setManuallyClosedGridClumps = useCallback(
     (updater: SetStateAction<Set<string>>) => {
       setManuallyClosedGridClumpsByRepo((previous) => {
         const previousSet = previous[activeRepoScopedKey] ?? new Set<string>();
         const nextSet = typeof updater === 'function' ? updater(previousSet) : updater;
-        const nextState = { ...previous, [activeRepoScopedKey]: new Set(nextSet) };
-        persistGridClumps(manuallyOpenedGridClumpsByRepo, nextState);
-        return nextState;
+        return { ...previous, [activeRepoScopedKey]: new Set(nextSet) };
       });
     },
-    [activeRepoScopedKey, manuallyOpenedGridClumpsByRepo],
+    [activeRepoScopedKey],
   );
   const projectCards = useMemo(
     () => projects.map((project) => {
@@ -5656,6 +5655,7 @@ function App() {
       manuallyClosedGridClumps,
       gridSearchQuery,
       gridFocusSha,
+      nodePositionOverrides: repoPath ? (nodePositionOverridesByRepo[normalizePath(repoPath)] ?? {}) : {},
       visualCheckedOutRef,
       worktreeSessions,
       mapGridOrientation,
@@ -5676,6 +5676,7 @@ function App() {
       manuallyClosedGridClumps,
       gridSearchQuery,
       gridFocusSha,
+      nodePositionOverridesByRepo,
       visualCheckedOutRef,
       worktreeSessions,
       mapGridOrientation,
@@ -5688,6 +5689,14 @@ function App() {
         return layoutRevision;
       }
       if (deferredLayoutRevision.graphLayoutSignature !== layoutRevision.graphLayoutSignature) {
+        return layoutRevision;
+      }
+      if (
+        deferredLayoutRevision.manuallyOpenedGridClumps !== layoutRevision.manuallyOpenedGridClumps ||
+        deferredLayoutRevision.manuallyClosedGridClumps !== layoutRevision.manuallyClosedGridClumps ||
+        deferredLayoutRevision.mapGridOrientation !== layoutRevision.mapGridOrientation ||
+        deferredLayoutRevision.gridFocusSha !== layoutRevision.gridFocusSha
+      ) {
         return layoutRevision;
       }
       return deferredLayoutRevision;
@@ -5778,6 +5787,7 @@ function App() {
           checkedOutRef: revision.visualCheckedOutRef ?? null,
           worktreeSessions: revision.worktreeSessions,
           orientation: revision.mapGridOrientation,
+          nodePositionOverrides: revision.nodePositionOverrides,
         });
       }
       const hasGraphSourceData =
@@ -5830,11 +5840,11 @@ function App() {
         checkedOutRef: revision.visualCheckedOutRef ?? null,
         worktreeSessions: revision.worktreeSessions,
         orientation: revision.mapGridOrientation,
+        nodePositionOverrides: revision.nodePositionOverrides,
       });
     },
     [
       layoutRevisionForView,
-      layoutRevision,
       sharedGridLayoutCacheKey,
       hydratedLayoutKey,
       hydratedLayoutModel,
@@ -5852,15 +5862,22 @@ function App() {
     if (normalizedRepoPath && isPostCommitProtectionActive(normalizedRepoPath)) return;
     layoutModelCacheRef.current.set(sharedGridLayoutCacheKey, sharedGridLayoutModel);
     if (persistedLayoutKeysRef.current.has(sharedGridLayoutCacheKey)) return;
-    persistedLayoutKeysRef.current.add(sharedGridLayoutCacheKey);
-    const payloadJson = JSON.stringify(serializeBranchGridLayoutModel(sharedGridLayoutModel));
-    void invoke('store_repo_layout_snapshot', {
-      repoPath,
-      layoutKey: sharedGridLayoutCacheKey,
-      payloadJson,
-    }).catch(() => {
-      persistedLayoutKeysRef.current.delete(sharedGridLayoutCacheKey);
-    });
+    const timer = setTimeout(() => {
+      persistedLayoutKeysRef.current.add(sharedGridLayoutCacheKey);
+      try {
+        const payloadJson = JSON.stringify(serializeBranchGridLayoutModel(sharedGridLayoutModel));
+        void invoke('store_repo_layout_snapshot', {
+          repoPath,
+          layoutKey: sharedGridLayoutCacheKey,
+          payloadJson,
+        }).catch(() => {
+          persistedLayoutKeysRef.current.delete(sharedGridLayoutCacheKey);
+        });
+      } catch {
+        persistedLayoutKeysRef.current.delete(sharedGridLayoutCacheKey);
+      }
+    }, 1000);
+    return () => clearTimeout(timer);
   }, [repoPath, sharedGridLayoutCacheKey, sharedGridLayoutModel]);
 
   useEffect(() => {

@@ -10,7 +10,7 @@ import {
 } from 'react';
 import { invoke } from '@tauri-apps/api/core';
 import { getCurrentWindow } from '@tauri-apps/api/window';
-import type { BranchCommitPreview, WorktreeInfo } from '../../types';
+import type { BranchCommitPreview } from '../../types';
 import {
   CARD_HEIGHT,
   CARD_BODY_TOP_OFFSET,
@@ -25,8 +25,7 @@ import {
   type Node,
 } from './LayoutGrid';
 import { GitMerge } from 'lucide-react';
-import { computeBranchGridLayout, GRID_LAYOUT_RENDER_ZOOM } from './branchGridLayoutModel';
-import { layoutModelHasWorkingTree } from './workingTreeLayout';
+import { GRID_LAYOUT_RENDER_ZOOM } from './branchGridLayoutModel';
 import type { BranchGridLayoutModel } from './branchGridLayoutModel';
 import { connectorsWithEffectivePositions } from './mapGridLiveConnectors';
 import {
@@ -70,10 +69,8 @@ import {
   collectVisibleCommitIdsFromSpatialIndex,
   computeViewportCullBounds,
   isOtherWorktree,
-  isUsableOtherWorktree,
   normalizeRepoPathForCompare,
   looseCableConnectorIntersectsViewportBounds,
-  shaMatchesGitRef,
   visibleCommitIdSetEquals,
   worktreeSessionDisplayName,
   worktreeShortLabel,
@@ -168,7 +165,7 @@ type Props = BranchGridViewProps & {
 
 export default function BranchGridMap({
   branches,
-  mergeNodes = [],
+  mergeNodes: _mergeNodes = [],
   directCommits = [],
   unpushedDirectCommits = [],
   unpushedCommitShasByBranch = {},
@@ -211,9 +208,9 @@ export default function BranchGridMap({
   onDebugClose,
   orientation = 'horizontal',
   branchCommitPreviews = {},
-  branchParentByName = {},
+  branchParentByName: _branchParentByName = {},
   branchUniqueAheadCounts = {},
-  gridSearchQuery = '',
+  gridSearchQuery: _gridSearchQuery = '',
   gridSearchJumpToken = 0,
   gridSearchJumpDirection = 1,
   gridFocusSha = null,
@@ -398,66 +395,49 @@ export default function BranchGridMap({
       });
   }, [worktrees, worktreeSessions, currentRepoPath]);
 
-  const computedLayoutModel = useMemo(() => {
-    const hasWorktreeNodes = worktreeSessions.length > 0;
-    const providedHasWorkingTree = layoutModelHasWorkingTree(providedLayoutModel ?? null);
-    const previewsHaveWorkingTree = Object.values(branchCommitPreviews).some((previews) =>
-      previews.some((preview) => isWorkingTreeCommitId(preview.fullSha) || preview.kind === 'uncommitted'),
-    );
-    const canUseProvidedLayout =
-      worktreeSessions.length === 0 &&
-      providedLayoutModel &&
-      Object.keys(nodePositionOverrides).length === 0 &&
-      providedHasWorkingTree === hasWorktreeNodes &&
-      previewsHaveWorkingTree === hasWorktreeNodes;
-    if (canUseProvidedLayout) {
-      return providedLayoutModel;
-    }
-    return computeBranchGridLayout({
-      branches,
-      mergeNodes,
-      directCommits,
-      unpushedDirectCommits,
-      unpushedCommitShasByBranch,
-      defaultBranch,
-      branchCommitPreviews,
-      branchParentByName,
-      branchUniqueAheadCounts,
-      manuallyOpenedClumps,
-      manuallyClosedClumps,
-      isDebugOpen,
-      gridSearchQuery,
-      gridFocusSha,
-      checkedOutRef: checkedOutRef ?? null,
-      worktreeSessions,
-      orientation,
-      nodePositionOverrides,
-    });
-  }, [
-    providedLayoutModel,
-    branches,
-    mergeNodes,
-    directCommits,
-    unpushedDirectCommits,
-    unpushedCommitShasByBranch,
-    defaultBranch,
-    branchCommitPreviews,
-    branchParentByName,
-    branchUniqueAheadCounts,
-    manuallyOpenedClumps,
-    manuallyClosedClumps,
-    isDebugOpen,
-    gridSearchQuery,
-    gridFocusSha,
-    checkedOutRef?.headSha ?? null,
-    checkedOutRef?.branchName ?? null,
-    checkedOutRef?.hasUncommittedChanges ?? false,
-    checkedOutRef?.parentSha ?? null,
-    worktreeSessions,
-    orientation,
-    nodePositionOverrides,
-  ]);
-  const resolvedLayoutModel: BranchGridLayoutModel = computedLayoutModel;
+  const resolvedLayoutModel: BranchGridLayoutModel = providedLayoutModel ?? {
+    branchByName: new Map(),
+    laneByName: new Map(),
+    mainCommits: [],
+    branchCommitsByLane: new Map(),
+    branchPreviewSets: new Map(),
+    allCommits: [],
+    clustersByBranch: new Map(),
+    clusterKeyByCommitId: new Map(),
+    clusterKeyBySha: new Map(),
+    leadByClusterKey: new Map(),
+    firstByClusterKey: new Map(),
+    clusterCounts: new Map(),
+    debugRows: [],
+    branchDebugRows: [],
+    nodes: [],
+    normalizedSearchQuery: '',
+    matchingNodes: [],
+    matchingNodeIds: new Set(),
+    focusedNode: null,
+    checkedOutClusterKey: null,
+    defaultCollapsedClumps: new Set(),
+    visibleCommitsList: [],
+    renderNodes: [],
+    visibleNodesBySha: new Map(),
+    visibleNodeByClusterKey: new Map(),
+    pointFormatter: () => '',
+    contentWidth: 0,
+    contentHeight: 0,
+    connectors: [],
+    mergeConnectors: [],
+    connectorDecisions: [],
+    nodeWarnings: new Map(),
+    connectorParentShas: new Set(),
+    branchStartShas: new Set(),
+    branchOffNodeShas: new Set(),
+    crossBranchOutgoingShas: new Set(),
+    commitIdsWithRenderedAncestry: new Set(),
+    branchBaseCommitByName: new Map(),
+    firstBranchCommitByName: new Map(),
+    mergeDestinations: [],
+    mergeTargetBranchesBySourceBranchAndCommitSha: new Map(),
+  };
 
   const {
     allCommits,
@@ -683,17 +663,7 @@ export default function BranchGridMap({
     () => selectedCommitShas.filter((sha) => selectableCommitShaSet.has(sha)),
     [selectedCommitShas, selectableCommitShaSet],
   );
-  const branchPreviewContainsSha = useCallback(
-    (branchName: string, sha: string): boolean => {
-      if (!sha) return false;
-      const previews = branchCommitPreviews[branchName] ?? [];
-      if (previews.some((preview) => shaMatchesGitRef(preview.fullSha, sha) || shaMatchesGitRef(preview.sha, sha))) return true;
-      const branch = branchByName.get(branchName);
-      if (branch?.headSha && shaMatchesGitRef(branch.headSha, sha)) return true;
-      return false;
-    },
-    [branchCommitPreviews, branchByName],
-  );
+
   const checkedOutBranchName = checkedOutRef?.branchName ?? null;
   const checkedOutHeadSha = checkedOutRef?.headSha ?? null;
   const checkedOutIsDetached = checkedOutBranchName == null;
@@ -709,49 +679,7 @@ export default function BranchGridMap({
     });
   }, [gridFocusSha, renderNodes, focusedNode]);
 
-  const findOtherWorktreeForCommit = useCallback(
-    (branchName: string, commitFullSha: string, commitShortSha: string): WorktreeInfo | null => {
-      for (const wt of worktrees) {
-        if (!isUsableOtherWorktree(wt, currentRepoPath)) continue;
-        if (wt.branchName) {
-          if (wt.branchName === branchName && shaMatchesGitRef(wt.headSha, commitFullSha)) return wt;
-          continue;
-        }
-        if (!shaMatchesGitRef(wt.headSha, commitFullSha) && !shaMatchesGitRef(wt.headSha, commitShortSha)) continue;
-        if (wt.parentSha && branchPreviewContainsSha(branchName, wt.parentSha)) return wt;
-        if (branchPreviewContainsSha(branchName, wt.headSha)) return wt;
-        const branch = branchByName.get(branchName);
-        if (branch && shaMatchesGitRef(branch.headSha, wt.headSha)) return wt;
-        if (branchName === defaultBranch && directCommits.some((commit) => shaMatchesGitRef(commit.fullSha, wt.headSha))) {
-          return wt;
-        }
-      }
-      return null;
-    },
-    [worktrees, currentRepoPath, branchPreviewContainsSha, branchByName, defaultBranch, directCommits],
-  );
 
-  const findWorktreeWithBranchCheckedOut = useCallback(
-    (branchName: string): WorktreeInfo | null => {
-      for (const wt of worktrees) {
-        if (!isUsableOtherWorktree(wt, currentRepoPath)) continue;
-        if (wt.branchName === branchName) return wt;
-      }
-      return null;
-    },
-    [worktrees, currentRepoPath],
-  );
-
-  const findOtherWorktreeByHeadSha = useCallback(
-    (commitFullSha: string, commitShortSha: string): WorktreeInfo | null => {
-      for (const wt of worktrees) {
-        if (!isUsableOtherWorktree(wt, currentRepoPath)) continue;
-        if (shaMatchesGitRef(wt.headSha, commitFullSha) || shaMatchesGitRef(wt.headSha, commitShortSha)) return wt;
-      }
-      return null;
-    },
-    [worktrees, currentRepoPath],
-  );
 
   const branchCandidatesForCommit = useCallback(
     (sha: string): string[] => Array.from(commitShaToBranchNames.get(sha) ?? []),

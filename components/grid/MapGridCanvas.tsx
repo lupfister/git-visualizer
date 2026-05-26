@@ -62,7 +62,6 @@ const WorkingDots = () => {
 };
 
 type MapGridCommitWrapperProps = {
-  fadeIn: boolean;
   className?: string;
   style?: CSSProperties;
   onClick?: React.MouseEventHandler<HTMLDivElement>;
@@ -76,19 +75,7 @@ type MapGridCommitWrapperProps = {
   children: ReactNode;
 };
 
-/*
- * Non-animating cards must NOT declare any `transition` (or any other
- * layer-promoting property) — WebKit otherwise promotes every visible card
- * into its own composition layer and pan composite cost scales linearly
- * with card count. Only the brief cluster open/close fade window pays for a
- * transition and a 0→1 opacity ramp.
- *
- * We keep this as a single component (rather than swapping components on
- * `fadeIn`) so the underlying <div> is reused and we don't unmount/remount
- * the entire card subtree when the fade animation ends.
- */
 const MapGridCommitWrapper = forwardRef<HTMLDivElement, MapGridCommitWrapperProps>(function MapGridCommitWrapper({
-  fadeIn,
   className,
   style,
   onClick,
@@ -101,25 +88,6 @@ const MapGridCommitWrapper = forwardRef<HTMLDivElement, MapGridCommitWrapperProp
   dataCommitCard,
   children,
 }, ref) {
-  const [opaque, setOpaque] = useState(!fadeIn);
-  useLayoutEffect(() => {
-    if (!fadeIn) {
-      setOpaque(true);
-      return;
-    }
-    setOpaque(false);
-    let innerRaf: number | null = null;
-    const outerRaf = requestAnimationFrame(() => {
-      innerRaf = requestAnimationFrame(() => setOpaque(true));
-    });
-    return () => {
-      cancelAnimationFrame(outerRaf);
-      if (innerRaf != null) cancelAnimationFrame(innerRaf);
-    };
-  }, [fadeIn]);
-  const fadeStyle: CSSProperties | undefined = fadeIn
-    ? { opacity: opaque ? 1 : 0, transition: 'opacity 240ms ease-out' }
-    : undefined;
   return (
     <div
       ref={ref}
@@ -132,7 +100,7 @@ const MapGridCommitWrapper = forwardRef<HTMLDivElement, MapGridCommitWrapperProp
       onPointerLeave={onPointerLeave}
       onPointerUp={onPointerUp}
       onPointerCancel={onPointerCancel}
-      style={fadeStyle ? { ...style, ...fadeStyle } : style}
+      style={style}
     >
       {children}
     </div>
@@ -153,7 +121,6 @@ type CommitCardProps = {
   cardLeft: number;
   cardTop: number;
   displayZoom: number;
-  lineStrokeWidth: number;
   selectedShaSet: Set<string>;
   normalizedSearchQuery: string;
   matchingNodeIds: Set<string>;
@@ -165,7 +132,6 @@ type CommitCardProps = {
   firstByClusterKey: Map<string, string>;
   clusterKeyByCommitId: Map<string, string>;
   clusterCounts: Map<string, number>;
-  openingClumpAnimations: Set<string>;
   commitIdsWithRenderedAncestry: Set<string>;
   nodeWarnings: Map<string, string[]>;
   unpushedCommitShasSetByBranch: Map<string, Set<string>>;
@@ -187,7 +153,6 @@ const MapGridCommitCard = memo(function MapGridCommitCard({
   cardLeft,
   cardTop,
   displayZoom,
-  lineStrokeWidth,
   selectedShaSet,
   normalizedSearchQuery,
   matchingNodeIds,
@@ -199,7 +164,6 @@ const MapGridCommitCard = memo(function MapGridCommitCard({
   firstByClusterKey,
   clusterKeyByCommitId,
   clusterCounts,
-  openingClumpAnimations,
   commitIdsWithRenderedAncestry,
   nodeWarnings,
   unpushedCommitShasSetByBranch,
@@ -236,8 +200,6 @@ const MapGridCommitCard = memo(function MapGridCommitCard({
         ? firstByClusterKey.get(clusterKey) === visualId
         : isClusterLead
       : false;
-  const shouldAnimateOpeningClump =
-    clusterKey != null && isClusterOpen && !isClusterCaretHost && openingClumpAnimations.has(clusterKey);
   const hasRenderedAncestry = commitIdsWithRenderedAncestry.has(commitId);
   const nodeWarningsForCard = nodeWarnings.get(commitId) ?? [];
   const showDataShapeError = nodeWarningsForCard.length > 0 && !hasRenderedAncestry;
@@ -483,7 +445,6 @@ const MapGridCommitCard = memo(function MapGridCommitCard({
   return (
     <MapGridCommitWrapper
       ref={cardRef}
-      fadeIn={shouldAnimateOpeningClump}
       dataCommitCard="true"
       className={wrapperClassName}
       style={{
@@ -782,56 +743,10 @@ const MapGridCanvas = memo(function MapGridCanvas({
   nodePositionOverrides = EMPTY_NODE_POSITION_OVERRIDES,
   connectorPathCacheScopeBase,
 }: Props) {
-  const [openingClumpAnimations, setOpeningClumpAnimations] = useState<Set<string>>(new Set());
   const connectorPath2dCacheRef = useRef<Map<string, ConnectorPathCacheEntry>>(new Map());
   const connectorPersistScopeRef = useRef<string | null>(null);
-  const openClumpsLastFrameRef = useRef<Set<string> | null>(null);
 
   const selectedShaSet = useMemo(() => new Set(selectedVisibleCommitShas), [selectedVisibleCommitShas]);
-
-  useEffect(() => {
-    const currentlyOpenClumps = new Set<string>();
-    clusterCounts.forEach((_, clusterKey) => {
-      const isClusterOpen =
-        manuallyOpenedClumps.has(clusterKey) ||
-        (!defaultCollapsedClumps.has(clusterKey) && !manuallyClosedClumps.has(clusterKey));
-      if (isClusterOpen) currentlyOpenClumps.add(clusterKey);
-    });
-
-    const previousOpenClumps = openClumpsLastFrameRef.current;
-    if (previousOpenClumps == null) {
-      openClumpsLastFrameRef.current = currentlyOpenClumps;
-      return;
-    }
-
-    const newlyOpenedClumps: string[] = [];
-    currentlyOpenClumps.forEach((clusterKey) => {
-      if (!previousOpenClumps.has(clusterKey)) newlyOpenedClumps.push(clusterKey);
-    });
-
-    if (newlyOpenedClumps.length > 0) {
-      setOpeningClumpAnimations((prev) => {
-        const next = new Set(prev);
-        newlyOpenedClumps.forEach((clusterKey) => next.add(clusterKey));
-        return next;
-      });
-
-      const timeoutHandle = window.setTimeout(() => {
-        setOpeningClumpAnimations((prev) => {
-          const next = new Set(prev);
-          newlyOpenedClumps.forEach((clusterKey) => next.delete(clusterKey));
-          return next;
-        });
-      }, 260);
-
-      openClumpsLastFrameRef.current = currentlyOpenClumps;
-      return () => {
-        window.clearTimeout(timeoutHandle);
-      };
-    }
-
-    openClumpsLastFrameRef.current = currentlyOpenClumps;
-  }, [clusterCounts, defaultCollapsedClumps, manuallyClosedClumps, manuallyOpenedClumps]);
 
   const handleClusterToggle = useCallback((clusterKey: string) => {
     const isDefaultOpen = !defaultCollapsedClumps.has(clusterKey);
@@ -1072,7 +987,6 @@ const MapGridCanvas = memo(function MapGridCanvas({
                 cardLeft={cardLeft}
                 cardTop={cardTop}
                 displayZoom={displayZoom}
-                lineStrokeWidth={lineStrokeWidth}
                 selectedShaSet={selectedShaSet}
                 normalizedSearchQuery={normalizedSearchQuery}
                 matchingNodeIds={matchingNodeIds}
@@ -1084,7 +998,6 @@ const MapGridCanvas = memo(function MapGridCanvas({
                 firstByClusterKey={firstByClusterKey}
                 clusterKeyByCommitId={clusterKeyByCommitId}
                 clusterCounts={clusterCounts}
-                openingClumpAnimations={openingClumpAnimations}
                 commitIdsWithRenderedAncestry={commitIdsWithRenderedAncestry}
                 nodeWarnings={nodeWarnings}
                 unpushedCommitShasSetByBranch={unpushedCommitShasSetByBranch}
