@@ -101,24 +101,35 @@ export const isWorktreePositionOverrideKeyFor = (key: string, workingTreeId: str
   return false;
 };
 
+/** Resolve a dragged working-tree position (any lane alias or stable key). */
+export const resolveWorktreePositionOverride = (
+  overrides: NodePositionOverrides,
+  workingTreeId: string,
+  laneBranchNames: readonly string[],
+): NodePositionOverride | undefined => {
+  for (const branchName of laneBranchNames) {
+    const point = getNodePositionOverride(overrides, {
+      id: workingTreeId,
+      visualId: `${branchName}:${workingTreeId}`,
+      kind: 'uncommitted',
+    });
+    if (point) return point;
+  }
+  return getNodePositionOverride(overrides, { id: workingTreeId, visualId: workingTreeId });
+};
+
 /**
- * After commit: move the dragged working-tree position onto the new HEAD commit and drop
+ * After commit: when the working tree had a drag override, move that position onto the new
+ * HEAD (including local-divergence lanes and collapsed-clump leads via stable:sha) and drop
  * worktree overrides so layout can re-pin the fresh working-tree tile beside HEAD.
  */
 export const migrateWorkingTreeOverrideToNewHead = (
   overrides: NodePositionOverrides,
-  branchName: string,
   newHeadSha: string,
   workingTreeId: string,
+  laneBranchNames: readonly string[],
 ): NodePositionOverrides => {
-  let point: NodePositionOverride | undefined;
-  for (const [key, value] of Object.entries(overrides)) {
-    if (!isWorktreePositionOverrideKeyFor(key, workingTreeId)) continue;
-    if (value && Number.isFinite(value.x) && Number.isFinite(value.y)) {
-      point = value;
-      break;
-    }
-  }
+  const point = resolveWorktreePositionOverride(overrides, workingTreeId, laneBranchNames);
   if (!point) return overrides;
 
   const next: NodePositionOverrides = {};
@@ -127,6 +138,12 @@ export const migrateWorkingTreeOverrideToNewHead = (
       next[key] = value;
     }
   }
-  assignNodePositionOverride(next, { id: newHeadSha, visualId: `${branchName}:${newHeadSha}` }, point);
+  const uniqueLaneNames = [...new Set(laneBranchNames.filter((name) => name.length > 0))];
+  for (const branchName of uniqueLaneNames) {
+    assignNodePositionOverride(next, { id: newHeadSha, visualId: `${branchName}:${newHeadSha}` }, point);
+  }
+  if (uniqueLaneNames.length === 0) {
+    assignNodePositionOverride(next, { id: newHeadSha, visualId: newHeadSha }, point);
+  }
   return next;
 };

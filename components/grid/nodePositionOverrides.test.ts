@@ -87,12 +87,16 @@ describe('node position override keys', () => {
 
     const migrated = migrateWorkingTreeOverrideToNewHead(
       overrides,
-      'main',
       'newsha1',
       LEGACY_WORKING_TREE_ID,
+      ['main', 'main (local)'],
     );
 
     expect(getNodePositionOverride(migrated, { id: 'newsha1', visualId: 'main:newsha1' })).toEqual({
+      x: 100,
+      y: 200,
+    });
+    expect(getNodePositionOverride(migrated, { id: 'newsha1', visualId: 'main (local):newsha1' })).toEqual({
       x: 100,
       y: 200,
     });
@@ -103,6 +107,41 @@ describe('node position override keys', () => {
     })).toBeUndefined();
     expect(migrated['stable:working-tree:current']).toBeUndefined();
     expect(migrated['stable:sha:oldhead']).toEqual({ x: 1, y: 2 });
+  });
+
+  it('migrates when the worktree override only exists on a local-divergence lane visual id', () => {
+    const overrides: NodePositionOverrides = {
+      'main (local):WORKING_TREE': { x: 50, y: 60 },
+    };
+
+    const migrated = migrateWorkingTreeOverrideToNewHead(
+      overrides,
+      'newsha1',
+      LEGACY_WORKING_TREE_ID,
+      ['main', 'main (local)'],
+    );
+
+    expect(getNodePositionOverride(migrated, { id: 'newsha1', visualId: 'main (local):newsha1' })).toEqual({
+      x: 50,
+      y: 60,
+    });
+    expect(migrated['main (local):WORKING_TREE']).toBeUndefined();
+  });
+
+  it('does not migrate when the worktree was never dragged', () => {
+    const overrides: NodePositionOverrides = {
+      'stable:sha:existing': { x: 1, y: 2 },
+    };
+
+    const migrated = migrateWorkingTreeOverrideToNewHead(
+      overrides,
+      'newsha1',
+      LEGACY_WORKING_TREE_ID,
+      ['main'],
+    );
+
+    expect(migrated).toBe(overrides);
+    expect(migrated['stable:sha:existing']).toEqual({ x: 1, y: 2 });
   });
 
   it('canonicalizes mixed persisted data down to current durable aliases for visible commits', () => {

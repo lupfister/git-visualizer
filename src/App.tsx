@@ -4763,11 +4763,21 @@ function App() {
       if (commitResult.branchName && commitResult.fullSha) {
         const normalizedPath = normalizePath(repoPath);
         userDirtyNodePositionsRef.current.add(normalizedPath);
+        const worktreeSession = buildWorktreeSessions(worktrees, normalizedPath, ref).find((session) =>
+          sameRepoPath(session.path, normalizedPath),
+        );
+        const laneBranchNames = [
+          commitResult.branchName,
+          ref.branchName,
+          worktreeSession?.branchName,
+          defaultBranch,
+          `${defaultBranch} (local)`,
+        ].filter((name): name is string => Boolean(name));
         const migrated = migrateWorkingTreeOverrideToNewHead(
           nodePositionOverridesByRepo[normalizedPath] ?? {},
-          commitResult.branchName,
           commitResult.fullSha,
           workingTreeIdForPath(normalizedPath, true),
+          laneBranchNames,
         );
         persistRepoNodePositions(normalizedPath, migrated);
         setNodePositionOverridesByRepo((previous) => ({
@@ -5661,7 +5671,8 @@ function App() {
         deferredLayoutRevision.manuallyOpenedGridClumps !== layoutRevision.manuallyOpenedGridClumps ||
         deferredLayoutRevision.manuallyClosedGridClumps !== layoutRevision.manuallyClosedGridClumps ||
         deferredLayoutRevision.mapGridOrientation !== layoutRevision.mapGridOrientation ||
-        deferredLayoutRevision.gridFocusSha !== layoutRevision.gridFocusSha
+        deferredLayoutRevision.gridFocusSha !== layoutRevision.gridFocusSha ||
+        deferredLayoutRevision.nodePositionOverrides !== layoutRevision.nodePositionOverrides
       ) {
         return layoutRevision;
       }
