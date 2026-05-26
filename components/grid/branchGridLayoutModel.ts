@@ -917,7 +917,7 @@ const forkTipCommitsByParentSha = (
 
 /**
  * Merge fork siblings onto one timeline row. Cross-lane forks ignore timestamps and clump
- * membership so layout stays stable across push/sync when dates or unpushed boundaries change.
+ * membership so layout stays stable across push/sync when dates change.
  */
 const coalesceForkSiblingRows = (
   commits: VisualCommit[],
@@ -1546,17 +1546,6 @@ export function computeBranchGridLayout(input: BranchGridLayoutInput): BranchGri
   const insertVisibleCommitIfMissing = (commit: VisualCommit) => {
     setVisibleBranchCommit(visibleCommitByVisualId, commit);
   };
-  const unpushedCommitShasByBranchSet = new Map(
-    Object.entries(unpushedCommitShasByBranch).map(([branchName, shas]) => [branchName, new Set(shas)] as const),
-  );
-  const isShaUnpushedOnBranch = (branchName: string, sha: string): boolean => {
-    const set = unpushedCommitShasByBranchSet.get(branchName);
-    if (!set) return false;
-    for (const candidate of set) {
-      if (shasMatch(candidate, sha)) return true;
-    }
-    return false;
-  };
 
   const branchCommitShaSets = new Map<string, Set<string>>(
     Array.from(branchCommitsByLane.entries()).map(([branchName, commits]) => [
@@ -1838,7 +1827,7 @@ export function computeBranchGridLayout(input: BranchGridLayoutInput): BranchGri
     let currentKey: string | null = null;
     let segmentIndex = 0;
     const clusterBoundaryKind = (commit: VisualCommit): string => {
-      // Working tree is never merged into a pushed/unpushed clump with real commits — it always gets its own segment.
+      // Working tree is never merged into a real-commit clump — it always gets its own segment.
       if (commit.kind === 'uncommitted') return 'uncommitted';
       if (commit.kind === 'stash') return 'stash';
       if (commit.kind === 'branch-created') return 'branch-created';
@@ -1860,7 +1849,7 @@ export function computeBranchGridLayout(input: BranchGridLayoutInput): BranchGri
       ) {
         return 'checked-out-tip';
       }
-      return isShaUnpushedOnBranch(commit.branchName, commit.id) ? 'unpushed' : 'pushed';
+      return 'commit';
     };
     let previousBoundaryKind: string | null = null;
     for (const commit of ordered) {

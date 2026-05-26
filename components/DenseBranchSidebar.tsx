@@ -198,7 +198,6 @@ function BranchRows({
   getMergeTargetLabels,
   sourceBranchName,
   clusterKeyByCommitId,
-  unpushedCommitShasByBranch,
   isGridClusterOpen,
   onToggleGridCluster,
   onSelectCommit,
@@ -221,7 +220,6 @@ function BranchRows({
   getMergeTargetLabels: (sha: string, sourceBranchName: string) => string[];
   sourceBranchName?: string;
   clusterKeyByCommitId: Map<string, string>;
-  unpushedCommitShasByBranch: Record<string, string[]>;
   isGridClusterOpen: (clusterKey: string) => boolean;
   onToggleGridCluster: (clusterKey: string, focusTargetId: string) => void;
   onSelectCommit?: (sha: string) => void;
@@ -287,8 +285,7 @@ function BranchRows({
     };
     visibleCommitPreviews.forEach((commit) => {
       const clusterKey = clusterKeyByCommitId.get(`${branchName}:${commit.fullSha}`) ?? null;
-      const isUnpushedCommit = (unpushedCommitShasByBranch[branchName] ?? []).includes(commit.fullSha);
-      const nextClusterKey = `${clusterKey ?? `sidebar-single-${branchName}-${commit.fullSha}`}:${isUnpushedCommit ? 'unpushed' : 'pushed'}`;
+      const nextClusterKey = clusterKey ?? `sidebar-single-${branchName}-${commit.fullSha}`;
       if (current.length === 0) {
         current = [commit];
         currentClusterKey = nextClusterKey;
@@ -304,7 +301,7 @@ function BranchRows({
     });
     flushCurrent();
     return clumps;
-  }, [branchName, showCommits, visibleCommitPreviews, clusterKeyByCommitId, unpushedCommitShasByBranch]);
+  }, [branchName, showCommits, visibleCommitPreviews, clusterKeyByCommitId]);
 
     return (
       <li
@@ -467,7 +464,6 @@ function BranchRows({
                           getMergeTargetLabels={getMergeTargetLabels}
                           sourceBranchName={childName}
                           clusterKeyByCommitId={clusterKeyByCommitId}
-                          unpushedCommitShasByBranch={unpushedCommitShasByBranch}
                           isGridClusterOpen={isGridClusterOpen}
                           onToggleGridCluster={onToggleGridCluster}
                           onSelectCommit={onSelectCommit}
@@ -505,7 +501,6 @@ function BranchRows({
               getMergeTargetLabels={getMergeTargetLabels}
               sourceBranchName={childName}
               clusterKeyByCommitId={clusterKeyByCommitId}
-              unpushedCommitShasByBranch={unpushedCommitShasByBranch}
               isGridClusterOpen={isGridClusterOpen}
               onToggleGridCluster={onToggleGridCluster}
               onSelectCommit={onSelectCommit}
@@ -1211,7 +1206,6 @@ export default function DenseBranchSidebar({
                         getMergeTargetLabels={projectRender.getMergeTargetLabels}
                         sourceBranchName={branchName}
                         clusterKeyByCommitId={projectRender.clusterKeyByCommitId}
-                        unpushedCommitShasByBranch={projectRender.unpushedCommitShasByBranch}
                         isGridClusterOpen={projectRender.isGridClusterOpen}
                         onToggleGridCluster={handleToggleGridCluster}
                         onSelectCommit={async (sha) => {
