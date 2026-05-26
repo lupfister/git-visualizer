@@ -88,3 +88,45 @@ export const canonicalizeNodePositionOverridesForCommits = (
   }
   return next;
 };
+
+const workingTreeStableKeySuffix = (workingTreeId: string): string =>
+  workingTreeId.includes(':') ? workingTreeId.slice(workingTreeId.indexOf(':') + 1) : 'current';
+
+/** Whether a persisted override key belongs to a specific synthetic working-tree node. */
+export const isWorktreePositionOverrideKeyFor = (key: string, workingTreeId: string): boolean => {
+  if (key === workingTreeId) return true;
+  if (key === `stable:working-tree:${workingTreeStableKeySuffix(workingTreeId)}`) return true;
+  if (key.startsWith('stable:working-tree:')) return false;
+  if (!key.startsWith('stable:') && getLegacyVisualIdSuffix(key) === workingTreeId) return true;
+  return false;
+};
+
+/**
+ * After commit: move the dragged working-tree position onto the new HEAD commit and drop
+ * worktree overrides so layout can re-pin the fresh working-tree tile beside HEAD.
+ */
+export const migrateWorkingTreeOverrideToNewHead = (
+  overrides: NodePositionOverrides,
+  branchName: string,
+  newHeadSha: string,
+  workingTreeId: string,
+): NodePositionOverrides => {
+  let point: NodePositionOverride | undefined;
+  for (const [key, value] of Object.entries(overrides)) {
+    if (!isWorktreePositionOverrideKeyFor(key, workingTreeId)) continue;
+    if (value && Number.isFinite(value.x) && Number.isFinite(value.y)) {
+      point = value;
+      break;
+    }
+  }
+  if (!point) return overrides;
+
+  const next: NodePositionOverrides = {};
+  for (const [key, value] of Object.entries(overrides)) {
+    if (!isWorktreePositionOverrideKeyFor(key, workingTreeId)) {
+      next[key] = value;
+    }
+  }
+  assignNodePositionOverride(next, { id: newHeadSha, visualId: `${branchName}:${newHeadSha}` }, point);
+  return next;
+};

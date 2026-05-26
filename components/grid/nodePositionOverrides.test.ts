@@ -6,7 +6,9 @@ import {
   getNodePositionOverride,
   getStableNodePositionKey,
   migrateNodePositionOverridesForCommits,
+  migrateWorkingTreeOverrideToNewHead,
 } from './nodePositionOverrides';
+import { LEGACY_WORKING_TREE_ID } from '../../lib/worktreeSessions';
 import type { NodePositionOverrides, VisualCommit } from './LayoutGrid';
 
 const commit = (overrides: Partial<VisualCommit> = {}): VisualCommit => ({
@@ -73,6 +75,34 @@ describe('node position override keys', () => {
     };
 
     expect(getNodePositionOverride(overrides, worktree)).toEqual({ x: 999, y: 888 });
+  });
+
+  it('moves working-tree drag position to new HEAD and clears worktree overrides on commit', () => {
+    const overrides: NodePositionOverrides = {
+      WORKING_TREE: { x: 100, y: 200 },
+      'main:WORKING_TREE': { x: 100, y: 200 },
+      'stable:working-tree:current': { x: 100, y: 200 },
+      'stable:sha:oldhead': { x: 1, y: 2 },
+    };
+
+    const migrated = migrateWorkingTreeOverrideToNewHead(
+      overrides,
+      'main',
+      'newsha1',
+      LEGACY_WORKING_TREE_ID,
+    );
+
+    expect(getNodePositionOverride(migrated, { id: 'newsha1', visualId: 'main:newsha1' })).toEqual({
+      x: 100,
+      y: 200,
+    });
+    expect(getNodePositionOverride(migrated, {
+      id: 'WORKING_TREE',
+      visualId: 'main:WORKING_TREE',
+      kind: 'uncommitted',
+    })).toBeUndefined();
+    expect(migrated['stable:working-tree:current']).toBeUndefined();
+    expect(migrated['stable:sha:oldhead']).toEqual({ x: 1, y: 2 });
   });
 
   it('canonicalizes mixed persisted data down to current durable aliases for visible commits', () => {

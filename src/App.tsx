@@ -10,6 +10,7 @@ import BranchGridMapView from '../components/grid/MapViewGrid';
 import { mapGridCameraStorageKey, readHasSavedMapGridCamera } from '../components/grid/useMapGridCamera';
 import DenseBranchSidebar from '../components/DenseBranchSidebar';
 import type { NodePositionOverrides } from '../components/grid/LayoutGrid';
+import { migrateWorkingTreeOverrideToNewHead } from '../components/grid/nodePositionOverrides';
 import { computeBranchGridLayout, type BranchGridLayoutModel } from '../components/grid/branchGridLayoutModel';
 import { hydrateBranchGridLayoutModel, serializeBranchGridLayoutModel } from '../components/grid/layoutSnapshot';
 import { layoutModelHasWorkingTree } from '../components/grid/workingTreeLayout';
@@ -55,6 +56,7 @@ import {
   persistWorktreeFocusSha,
   resolveActiveWorktreeFocusSha,
   shaMatches,
+  workingTreeIdForPath,
 } from '../lib/worktreeSessions';
 import { deriveRepoVisualState } from './repoVisualState';
 import { setMapGridBackgroundActivity } from '../components/grid/mapGridBackgroundActivity';
@@ -276,34 +278,6 @@ function getRepoVisualSnapshotSignature(snapshot: RepoVisualSnapshot): string {
 
 function toRepoVisualSnapshot(record: ProjectSnapshotRecord | null | undefined): RepoVisualSnapshot | null {
   return record?.payload?.repoVisualSnapshot ?? null;
-}
-
-/** After commit, the synthetic `WORKING_TREE` id disappears; copy saved card positions to the new HEAD id. */
-function migrateWorkingTreeNodeOverrides(
-  overrides: NodePositionOverrides,
-  branchName: string,
-  newHeadSha: string,
-): NodePositionOverrides {
-  const next = { ...overrides };
-  const candidates = [`${branchName}:WORKING_TREE`, 'WORKING_TREE', ...Object.keys(overrides).filter((key) => key.includes('WORKING_TREE'))] as const;
-  let foundKey: string | null = null;
-  let point: { x: number; y: number } | null = null;
-  for (const key of candidates) {
-    const value = next[key];
-    if (value && Number.isFinite(value.x) && Number.isFinite(value.y)) {
-      foundKey = key;
-      point = value;
-      break;
-    }
-  }
-  if (!foundKey || !point) return next;
-  delete next[foundKey];
-  for (const key of candidates) {
-    if (key !== foundKey) delete next[key];
-  }
-  next[`${branchName}:${newHeadSha}`] = point;
-  if (!next[newHeadSha]) next[newHeadSha] = point;
-  return next;
 }
 
 function parseNodePositionOverrides(payloadJson: string | null | undefined): NodePositionOverrides {
@@ -4789,10 +4763,11 @@ function App() {
       if (commitResult.branchName && commitResult.fullSha) {
         const normalizedPath = normalizePath(repoPath);
         userDirtyNodePositionsRef.current.add(normalizedPath);
-        const migrated = migrateWorkingTreeNodeOverrides(
+        const migrated = migrateWorkingTreeOverrideToNewHead(
           nodePositionOverridesByRepo[normalizedPath] ?? {},
           commitResult.branchName,
           commitResult.fullSha,
+          workingTreeIdForPath(normalizedPath, true),
         );
         persistRepoNodePositions(normalizedPath, migrated);
         setNodePositionOverridesByRepo((previous) => ({
