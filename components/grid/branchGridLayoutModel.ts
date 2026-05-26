@@ -1699,10 +1699,12 @@ export function computeBranchGridLayout(input: BranchGridLayoutInput): BranchGri
     set.add(branchStartAncestorSha);
     extraParentShasByCommitId.set(commit.id, set);
   }
-  const childShasByParentSha = new Map<string, Set<string>>();
   const commitById = new Map<string, VisualCommit>();
   for (const commit of allCommits) {
     commitById.set(commit.id, commit);
+  }
+  const childShasByParentSha = new Map<string, Set<string>>();
+  for (const commit of allCommits) {
     if (commit.parentSha) {
       const children = childShasByParentSha.get(commit.parentSha) ?? new Set<string>();
       children.add(commit.id);
@@ -1748,8 +1750,12 @@ export function computeBranchGridLayout(input: BranchGridLayoutInput): BranchGri
       }
     }
     const childShas = childShasByParentSha.get(commit.id) ?? new Set<string>();
+    const realChildShas = Array.from(childShas).filter((sha) => {
+      const child = commitById.get(sha);
+      return !child || !isWorktreeGraphNode(child);
+    });
     if (
-      childShas.size > 1 ||
+      realChildShas.length > 1 ||
       Array.from(childShas)
         .map((sha) => commitById.get(sha))
         .some((child) => child != null && child.kind != null && specialClusterChildKinds.has(child.kind))
@@ -1827,16 +1833,15 @@ export function computeBranchGridLayout(input: BranchGridLayoutInput): BranchGri
     let currentKey: string | null = null;
     let segmentIndex = 0;
     const clusterBoundaryKind = (commit: VisualCommit): string => {
-      // Working tree is never merged into a real-commit clump — it always gets its own segment.
+      // Working tree is never merged into a real-commit clump — it always gets own segment.
       if (commit.kind === 'uncommitted') return 'uncommitted';
       if (commit.kind === 'stash') return 'stash';
       if (commit.kind === 'branch-created') return 'branch-created';
       const sessionTip = worktreeSessions.find(
         (session) =>
-          session.branchName &&
           session.headSha &&
-          commit.branchName === session.branchName &&
-          shasMatch(commit.id, session.headSha),
+          shasMatch(commit.id, session.headSha) &&
+          (!session.branchName || commit.branchName === session.branchName),
       );
       if (sessionTip) return 'checked-out-tip';
       const checkedOutBranch = checkedOutRef?.branchName ?? null;
@@ -1869,7 +1874,18 @@ export function computeBranchGridLayout(input: BranchGridLayoutInput): BranchGri
         currentKey = null;
       }
       const boundaryKind = clusterBoundaryKind(commit);
-      if (!currentKey || (previousBoundaryKind != null && previousBoundaryKind !== boundaryKind)) {
+      const shouldReset = 
+        !currentKey || 
+        (previousBoundaryKind != null && (
+          // Always reset if either is a special non-commit kind
+          previousBoundaryKind === 'uncommitted' || boundaryKind === 'uncommitted' ||
+          previousBoundaryKind === 'stash' || boundaryKind === 'stash' ||
+          previousBoundaryKind === 'branch-created' || boundaryKind === 'branch-created' ||
+          // Reset if transitioning from a checked-out-tip to anything else
+          previousBoundaryKind === 'checked-out-tip'
+        ));
+
+      if (shouldReset) {
         segmentIndex += 1;
         currentKey = `cluster:${branchName}:segment:${segmentIndex}`;
       }
