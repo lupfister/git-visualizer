@@ -6,6 +6,7 @@ import {
   getNodePositionOverride,
   getStableNodePositionKey,
   migrateNodePositionOverridesForCommits,
+  laneBranchNamesForPositionOverrides,
   migrateWorkingTreeOverrideToNewHead,
 } from './nodePositionOverrides';
 import { LEGACY_WORKING_TREE_ID } from '../../lib/worktreeSessions';
@@ -75,6 +76,17 @@ describe('node position override keys', () => {
     };
 
     expect(getNodePositionOverride(overrides, worktree)).toEqual({ x: 999, y: 888 });
+  });
+
+  it('collects lane branch names for override migration', () => {
+    expect(
+      laneBranchNamesForPositionOverrides({
+        defaultBranch: 'main',
+        commitBranchName: 'feature',
+        checkedOutBranchName: 'main',
+        extraBranchNames: ['cursor-sdk'],
+      }),
+    ).toEqual(['feature', 'main', 'cursor-sdk', 'main (local)']);
   });
 
   it('moves working-tree drag position to new HEAD and clears worktree overrides on commit', () => {

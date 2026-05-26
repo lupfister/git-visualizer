@@ -34,7 +34,13 @@ import {
 } from './LayoutGrid';
 import type { Lane } from './LayoutGrid';
 import { computeMergeConnectorAnchors, computeParentChildConnectorAnchors } from './branchGridConnectorAnchors';
+import { applyNodePositionOverrides } from './applyNodePositionOverrides';
 import { getNodePositionOverride, migrateNodePositionOverridesForCommits } from './nodePositionOverrides';
+import {
+  branchSiblingSharedRowMaxDeltaMs,
+  localDivergenceLaneBranchName,
+  sharedRowMaxDeltaMs,
+} from './sharedRowPolicy';
 /** Sync with MapGrid GRID_ZOOM_MAX — row pitch is authored in this render space. */
 export const GRID_LAYOUT_RENDER_ZOOM = 2.25;
 
@@ -125,8 +131,6 @@ export type BranchGridLayoutInput = {
 };
 
 
-const SHARED_ROW_MAX_TIME_DELTA_MS = 60 * 60 * 1000;
-const SHARED_ROW_BRANCH_SIBLING_MAX_TIME_DELTA_MS = 60 * 60 * 1000;
 const safeTimeMs = (value: string | null | undefined): number => {
   const time = value ? new Date(value).getTime() : Number.NaN;
   return Number.isFinite(time) ? time : Number.NEGATIVE_INFINITY;
@@ -198,7 +202,7 @@ const findWorktreeAnchorParentRenderNode = (
       (node) => isRenderableParent(node) && commitMatchesSha(node.commit, checkoutHead),
     );
     const laneBranch = worktree.branchName ?? checkedOutRef?.branchName ?? null;
-    const localLane = `${defaultBranch} (local)`;
+    const localLane = localDivergenceLaneBranchName(defaultBranch);
     for (const lane of [laneBranch, localLane, defaultBranch]) {
       if (!lane) continue;
       const onLane = tipMatches.filter((node) => node.commit.branchName === lane);
@@ -228,7 +232,7 @@ const findWorktreeAnchorParentRenderNode = (
       (node) => isRenderableParent(node) && commitMatchesSha(node.commit, checkoutHead),
     );
     const laneBranch = worktree.branchName ?? checkedOutRef?.branchName ?? null;
-    const localLane = `${defaultBranch} (local)`;
+    const localLane = localDivergenceLaneBranchName(defaultBranch);
     for (const lane of [laneBranch, localLane, defaultBranch]) {
       if (!lane) continue;
       const onLane = headMatches.filter((node) => node.commit.branchName === lane);
@@ -849,16 +853,6 @@ const registerForkParentSha = (
   for (const knownSha of resolveKnownShas(parentSha)) forkParentShas.add(knownSha);
 };
 
-const isForkPointParentSha = (
-  parentSha: string | null | undefined,
-  forkParentShas: Set<string>,
-  resolveKnownShas: (sha: string) => string[],
-): boolean => {
-  if (!parentSha) return false;
-  if (forkParentShas.has(parentSha)) return true;
-  return resolveKnownShas(parentSha).some((knownSha) => forkParentShas.has(knownSha));
-};
-
 /** Parents with direct children spanning multiple lanes (true branch forks). */
 const collectForkPointParentShas = (
   directChildShasByParentSha: Map<string, Set<string>>,
@@ -952,12 +946,12 @@ const coalesceForkSiblingRows = (
 
   for (const [parentSha, children] of forkTipsByParentSha) {
     if (children.length < 2) continue;
-    const parentRows = resolveKnownShas(parentSha).flatMap((knownParentSha) => rowBySha.get(knownParentSha) ?? []);
+    const resolvedParent = resolveKnownShas(parentSha);
+    if (resolvedParent.length === 0) continue;
+    const parentRows = resolvedParent.flatMap((knownParentSha) => rowBySha.get(knownParentSha) ?? []);
     const floorRow = parentRows.length > 0 ? Math.max(...parentRows) + 1 : 1;
-    if (isForkPointParentSha(parentSha, forkParentShas, resolveKnownShas)) {
-      assignGroupRow(children, floorRow);
-      continue;
-    }
+
+    const maxDelta = branchSiblingSharedRowMaxDeltaMs(parentSha, forkParentShas, resolveKnownShas);
 
     const sortedChildren = [...children].sort(
       (left, right) =>
@@ -983,7 +977,7 @@ const coalesceForkSiblingRows = (
         || (
           Number.isFinite(childTime)
           && Number.isFinite(groupAnchorTime)
-          && Math.abs(childTime - groupAnchorTime) <= SHARED_ROW_BRANCH_SIBLING_MAX_TIME_DELTA_MS
+          && Math.abs(childTime - groupAnchorTime) <= maxDelta
         );
       if (!canJoinGroup) {
         flushGroup();
@@ -1157,7 +1151,6 @@ function allocateRowsByColumnAndTime(
   const assignCommit = (commit: VisualCommit, parentShas: Set<string>) => {
     const commitColumn = columnByCommitVisualId.get(commit.visualId) ?? 0;
     const forkParentSha = commit.parentSha ?? null;
-    const commitParentIsForkPoint = isForkPointParentSha(forkParentSha, forkParentShas, resolveKnownShas);
     const parentRows = Array.from(parentShas).flatMap((parentSha) =>
       resolveKnownShas(parentSha).flatMap((knownParentSha) => rowBySha.get(knownParentSha) ?? []),
     );
@@ -1186,16 +1179,14 @@ function allocateRowsByColumnAndTime(
       const laneCollision = rowOccupants.some((occupant) => occupant.column === commitColumn);
       if (laneCollision) return false;
       const withinSharedWindow = rowOccupants.every((occupant) => {
-        const isForkSibling =
-          !!forkParentSha &&
-          !!occupant.forkParentSha &&
-          shasMatch(forkParentSha, occupant.forkParentSha);
-        if (isForkSibling && commitParentIsForkPoint) return true;
         if (!Number.isFinite(commitTime)) return false;
         if (!Number.isFinite(occupant.time)) return false;
-        const allowedDeltaMs = isForkSibling
-          ? SHARED_ROW_BRANCH_SIBLING_MAX_TIME_DELTA_MS
-          : SHARED_ROW_MAX_TIME_DELTA_MS;
+        const allowedDeltaMs = sharedRowMaxDeltaMs(
+          forkParentSha,
+          occupant.forkParentSha,
+          forkParentShas,
+          resolveKnownShas,
+        );
         return Math.abs(occupant.time - commitTime) <= allowedDeltaMs;
       });
       if (!withinSharedWindow) return false;
@@ -2127,6 +2118,7 @@ export function computeBranchGridLayout(input: BranchGridLayoutInput): BranchGri
     }
     return maxColumn;
   };
+  let maxColumnAssigned = -1;
   const commitsInLaneOrder = [...allCommitsWithClusters].sort(
     (left, right) =>
       laneAssignmentSortTime(left) - laneAssignmentSortTime(right)
@@ -2140,8 +2132,16 @@ export function computeBranchGridLayout(input: BranchGridLayoutInput): BranchGri
       const leadVisualId = leadByClusterKey.get(clusterKey);
       if (leadVisualId && commit.visualId !== leadVisualId) continue;
     }
-    const column = findLaneColumn(commit, parentMinimumLaneColumn(commit));
+    let minColumn = parentMinimumLaneColumn(commit);
+    const isRoot = clusterKey
+      ? parentClusterByClusterKey.get(clusterKey) === null
+      : (!commit.parentSha || !findCommitBySha(commit.parentSha));
+    if (isRoot) {
+      minColumn = Math.max(minColumn, maxColumnAssigned + 1);
+    }
+    const column = findLaneColumn(commit, minColumn);
     registerLaneColumn(commit, column);
+    maxColumnAssigned = Math.max(maxColumnAssigned, column + span - 1);
     if (clusterKey && span > 1) {
       clumpOwnerColumnByClusterKey.set(clusterKey, column);
       registerClumpLaneSpan(occupantsByLaneColumn, commit, column, span);
@@ -2506,55 +2506,16 @@ export function computeBranchGridLayout(input: BranchGridLayoutInput): BranchGri
     clumpOwnerColumnByClusterKey,
     isClumpOpen,
   );
-  const bestOverrideByClusterKey = new Map<string, { x: number; y: number; row: number }>();
-  for (const commit of allCommitsWithClusters) {
-    const clusterKey = clusterKeyByCommitId.get(commit.visualId);
-    if (!clusterKey) continue;
-    const override = getNodePositionOverride(normalizedNodePositionOverrides, commit);
-    if (!override) continue;
-    const row = allRowByVisualId.get(commit.visualId) ?? 0;
-    const current = bestOverrideByClusterKey.get(clusterKey);
-    if (!current || row > current.row) {
-      bestOverrideByClusterKey.set(clusterKey, { x: override.x, y: override.y, row });
-    }
-  }
-
-  const movedLeadByClusterKey = new Map<string, { node: Node; x: number; y: number }>();
-  for (const node of renderNodes) {
-    const clusterKey = clusterKeyByCommitId.get(node.commit.visualId);
-    if (!clusterKey) continue;
-    if (leadByClusterKey.get(clusterKey) !== node.commit.visualId) continue;
-    const directOverride = getNodePositionOverride(normalizedNodePositionOverrides, node.commit);
-    if (directOverride) {
-      movedLeadByClusterKey.set(clusterKey, { node, x: directOverride.x, y: directOverride.y });
-      continue;
-    }
-    const inherited = bestOverrideByClusterKey.get(clusterKey);
-    if (!inherited) continue;
-    movedLeadByClusterKey.set(clusterKey, { node, x: inherited.x, y: inherited.y });
-  }
-  for (const node of renderNodes) {
-    const override = getNodePositionOverride(normalizedNodePositionOverrides, node.commit);
-    if (override) {
-      node.x = override.x;
-      node.y = override.y;
-      continue;
-    }
-    const clusterKey = clusterKeyByCommitId.get(node.commit.visualId);
-    const movedLead = clusterKey ? movedLeadByClusterKey.get(clusterKey) : null;
-    if (!movedLead) continue;
-    if (isHorizontal) {
-      // Signed row delta: layout x grows with row (newer to the right). Using only max(0, leadRow - row)
-      // collapsed the offset when node.row > lead.row (e.g. working tree newer than a stale lead row),
-      // stacking cards and overlapping absolutely positioned labels.
-      // Lane Y stays column × pitch for every node so stashes/placeholders never share a band with main.
-      node.x = movedLead.x + (node.row - movedLead.node.row) * zoomAwareTimelinePitch;
-      continue;
-    }
-    node.x = movedLead.x + (node.column - movedLead.node.column) * COLUMN_WIDTH;
-    // Vertical: y = TOP_PADDING + (maxResolvedRow - row) * pitch → larger row = smaller y (newer above).
-    node.y = movedLead.y - (node.row - movedLead.node.row) * zoomAwareTimelinePitch;
-  }
+  applyNodePositionOverrides({
+    renderNodes,
+    allCommitsWithClusters,
+    clusterKeyByCommitId,
+    leadByClusterKey,
+    rowByVisualId: allRowByVisualId,
+    overrides: normalizedNodePositionOverrides,
+    isHorizontal,
+    zoomAwareTimelinePitch,
+  });
   maxResolvedRow = Math.max(0, ...renderNodes.map((node) => node.row));
   finalizeClumpRenderLayout(
     renderNodes,

@@ -10,7 +10,10 @@ import BranchGridMapView from '../components/grid/MapViewGrid';
 import { mapGridCameraStorageKey, readHasSavedMapGridCamera } from '../components/grid/useMapGridCamera';
 import DenseBranchSidebar from '../components/DenseBranchSidebar';
 import type { NodePositionOverrides } from '../components/grid/LayoutGrid';
-import { migrateWorkingTreeOverrideToNewHead } from '../components/grid/nodePositionOverrides';
+import {
+  laneBranchNamesForPositionOverrides,
+  migrateWorkingTreeOverrideToNewHead,
+} from '../components/grid/nodePositionOverrides';
 import { computeBranchGridLayout, type BranchGridLayoutModel } from '../components/grid/branchGridLayoutModel';
 import { hydrateBranchGridLayoutModel, serializeBranchGridLayoutModel } from '../components/grid/layoutSnapshot';
 import { layoutModelHasWorkingTree } from '../components/grid/workingTreeLayout';
@@ -4766,13 +4769,12 @@ function App() {
         const worktreeSession = buildWorktreeSessions(worktrees, normalizedPath, ref).find((session) =>
           sameRepoPath(session.path, normalizedPath),
         );
-        const laneBranchNames = [
-          commitResult.branchName,
-          ref.branchName,
-          worktreeSession?.branchName,
+        const laneBranchNames = laneBranchNamesForPositionOverrides({
           defaultBranch,
-          `${defaultBranch} (local)`,
-        ].filter((name): name is string => Boolean(name));
+          commitBranchName: commitResult.branchName,
+          checkedOutBranchName: ref.branchName,
+          extraBranchNames: worktreeSession?.branchName ? [worktreeSession.branchName] : [],
+        });
         const migrated = migrateWorkingTreeOverrideToNewHead(
           nodePositionOverridesByRepo[normalizedPath] ?? {},
           commitResult.fullSha,

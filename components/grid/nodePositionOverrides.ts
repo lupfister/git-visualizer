@@ -89,16 +89,45 @@ export const canonicalizeNodePositionOverridesForCommits = (
   return next;
 };
 
-const workingTreeStableKeySuffix = (workingTreeId: string): string =>
-  workingTreeId.includes(':') ? workingTreeId.slice(workingTreeId.indexOf(':') + 1) : 'current';
+const worktreeStableOverrideKey = (workingTreeId: string): string =>
+  getStableNodePositionKey({
+    id: workingTreeId,
+    visualId: workingTreeId,
+    kind: 'uncommitted',
+  });
 
 /** Whether a persisted override key belongs to a specific synthetic working-tree node. */
 export const isWorktreePositionOverrideKeyFor = (key: string, workingTreeId: string): boolean => {
   if (key === workingTreeId) return true;
-  if (key === `stable:working-tree:${workingTreeStableKeySuffix(workingTreeId)}`) return true;
+  if (key === worktreeStableOverrideKey(workingTreeId)) return true;
+  // Other worktrees' stable:working-tree:* keys — not this session.
   if (key.startsWith('stable:working-tree:')) return false;
   if (!key.startsWith('stable:') && getLegacyVisualIdSuffix(key) === workingTreeId) return true;
   return false;
+};
+
+export const localDivergenceLaneBranchName = (defaultBranch: string): string =>
+  `${defaultBranch} (local)`;
+
+/** Lane name prefixes used in visual ids — keep in sync with layout ingest. */
+export const laneBranchNamesForPositionOverrides = (options: {
+  defaultBranch: string;
+  commitBranchName?: string | null;
+  checkedOutBranchName?: string | null;
+  extraBranchNames?: readonly string[];
+}): string[] => {
+  const { defaultBranch, commitBranchName, checkedOutBranchName, extraBranchNames = [] } = options;
+  return [
+    ...new Set(
+      [
+        commitBranchName,
+        checkedOutBranchName,
+        ...extraBranchNames,
+        defaultBranch,
+        localDivergenceLaneBranchName(defaultBranch),
+      ].filter((name): name is string => Boolean(name && name.length > 0)),
+    ),
+  ];
 };
 
 /** Resolve a dragged working-tree position (any lane alias or stable key). */
