@@ -161,7 +161,7 @@ describe('computeBranchGridLayout empty branch placeholders', () => {
     expect(tipNode).toBeDefined();
     expect(placeholderNode!.row).toBeGreaterThan(forkNode!.row);
     expect(placeholderNode!.column).toBeGreaterThan(forkNode!.column);
-    expect(tipNode!.row).toBeGreaterThan(placeholderNode!.row);
+    expect(tipNode!.row).toBe(placeholderNode!.row);
     expect(placeholderNode!.commit.date).toBe(forkNode!.commit.date);
   });
 
