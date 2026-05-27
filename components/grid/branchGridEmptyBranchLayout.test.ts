@@ -361,6 +361,38 @@ describe('computeBranchGridLayout empty branch placeholders', () => {
 
     const openedRows = opened.renderNodes.map((node) => node.row);
     expect(Math.max(...openedRows)).toBe(new Set(openedRows).size);
+
+    const nonClumpNodeIds = (nodes: typeof collapsed.renderNodes) =>
+      nodes
+        .filter((node) => opened.clusterKeyByCommitId.get(node.commit.visualId) !== clusterKey)
+        .map((node) => node.commit.visualId)
+        .sort();
+    const collapsedIds = nonClumpNodeIds(collapsed.renderNodes);
+    const openedIds = nonClumpNodeIds(opened.renderNodes);
+    expect(openedIds).toEqual(collapsedIds);
+    for (const visualId of collapsedIds) {
+      const collapsedNode = collapsed.renderNodes.find((node) => node.commit.visualId === visualId)!;
+      const openedNode = opened.renderNodes.find((node) => node.commit.visualId === visualId)!;
+      expect(openedNode.row).toBe(collapsedNode.row);
+    }
+
+    // Opening a clump may insert exclusive lane columns; non-clump nodes can shift,
+    // but their relative ordering by lane should not change (no swapping/jitter).
+    const orderKey = (node: (typeof collapsed.renderNodes)[number]) =>
+      `${node.row.toString().padStart(4, '0')}:${node.column.toString().padStart(4, '0')}:${node.commit.visualId}`;
+    const collapsedOrder = collapsed.renderNodes
+      .filter((node) => collapsed.clusterKeyByCommitId.get(node.commit.visualId) !== clusterKey)
+      .slice()
+      .sort((a, b) => a.column - b.column || a.row - b.row || a.commit.visualId.localeCompare(b.commit.visualId))
+      .map((node) => orderKey(node));
+    const openedOrder = opened.renderNodes
+      .filter((node) => opened.clusterKeyByCommitId.get(node.commit.visualId) !== clusterKey)
+      .slice()
+      .sort((a, b) => a.column - b.column || a.row - b.row || a.commit.visualId.localeCompare(b.commit.visualId))
+      .map((node) => orderKey(node));
+    expect(openedOrder.map((key) => key.split(':').slice(2).join(':'))).toEqual(
+      collapsedOrder.map((key) => key.split(':').slice(2).join(':')),
+    );
   });
 
   it('assigns open clump members to contiguous columns owned by the lead', () => {

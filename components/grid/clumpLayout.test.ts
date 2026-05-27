@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest';
 import type { VisualCommit } from './LayoutGrid';
 import {
   clumpLaneSpan,
+  clumpLayoutReservationSpan,
   deriveClumpMemberLayout,
   sortClumpCommitsChronologically,
 } from './clumpLayout';
@@ -20,6 +21,10 @@ describe('clumpLayout', () => {
   it('spans one lane when collapsed and count when open', () => {
     expect(clumpLaneSpan(3, false)).toBe(1);
     expect(clumpLaneSpan(3, true)).toBe(3);
+  });
+
+  it('reserves full band width in the column pass', () => {
+    expect(clumpLayoutReservationSpan(3)).toBe(3);
   });
 
   it('derives open clump columns from owner with shared row', () => {

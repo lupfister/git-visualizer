@@ -18,6 +18,14 @@ export const isMultiClump = (
   clusterCounts: Map<string, number>,
 ): boolean => !!clusterKey && (clusterCounts.get(clusterKey) ?? 1) > 1;
 
+/**
+ * Lanes reserved in the column pass.
+ *
+ * We always reserve the full band width so that when a clump is expanded the newly
+ * revealed lanes are exclusive to that clump (no other nodes were placed there).
+ */
+export const clumpLayoutReservationSpan = (count: number): number => count;
+
 export const clumpLaneSpan = (count: number, isOpen: boolean): number => (isOpen ? count : 1);
 
 export const isClumpLeadCommit = (
@@ -151,7 +159,7 @@ export const effectiveLayoutParentColumn = (
     ?? columnByCommitVisualId.get(leadByClusterKey.get(clusterKey!) ?? '')
     ?? columnByCommitVisualId.get(parent.visualId)
     ?? -1;
-  const span = clumpLaneSpan(count, isClumpOpen(clusterKey!));
+  const span = clumpLayoutReservationSpan(count);
   return ownerColumn + span - 1;
 };
 
