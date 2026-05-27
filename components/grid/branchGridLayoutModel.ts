@@ -1075,24 +1075,87 @@ export function computeBranchGridLayout(input: BranchGridLayoutInput): BranchGri
     }
   }
 
+  /** Git parents only — excludes branch-start layout ancestors; resolves merged tips on source branches. */
+  const gitParentsForCommit = (commit: VisualCommit): VisualCommit[] => {
+    const parents: VisualCommit[] = [];
+    const addParent = (parent: VisualCommit | null) => {
+      if (parent && !parents.some((candidate) => candidate.visualId === parent.visualId)) {
+        parents.push(parent);
+      }
+    };
+
+    const primarySha = commit.parentSha ?? commit.parentShas?.[0] ?? null;
+    if (primarySha) addParent(findCommitNode(primarySha, commit.branchName));
+
+    const mergedParentShas = mergeParentShasByMergeSha.get(commit.id);
+    if (mergedParentShas) {
+      for (const sha of mergedParentShas) {
+        const sourceBranchName = resolveSourceBranchName(sha, commit.branchName);
+        addParent(findCommitNode(sha, sourceBranchName));
+      }
+    }
+
+    const listedParentShas = commit.parentShas?.length
+      ? commit.parentShas
+      : commit.parentSha
+        ? [commit.parentSha]
+        : [];
+    for (const sha of listedParentShas.slice(1)) {
+      if (!sha || shasMatch(sha, primarySha)) continue;
+      const sourceBranchName = resolveSourceBranchName(sha, commit.branchName);
+      addParent(findCommitNode(sha, sourceBranchName));
+    }
+
+    return parents;
+  };
+
+  const isGitMergeCommit = (commit: VisualCommit): boolean => gitParentsForCommit(commit).length > 1;
+
+  const rowAfterAllGitParents = (commit: VisualCommit, fallbackRow: number): number => {
+    let row = fallbackRow;
+    for (const parent of gitParentsForCommit(commit)) {
+      const parentRow = rowByVisualId.get(parent.visualId);
+      if (parentRow != null) row = Math.max(row, parentRow + 1);
+    }
+    return row;
+  };
+
+  const rowAfterLayoutParents = (commit: VisualCommit, fallbackRow: number): number => {
+    let row = fallbackRow;
+    for (const parent of parentsMap.get(commit.visualId) ?? []) {
+      const parentRow = rowByVisualId.get(parent.visualId);
+      if (parentRow != null) row = Math.max(row, parentRow + 1);
+    }
+    return row;
+  };
+
   const assignRows = (u: VisualCommit, uRow: number) => {
     rowByVisualId.set(u.visualId, uRow);
     const children = primaryChildrenMap.get(u.visualId) ?? [];
     children.sort((a, b) => {
       return effectiveCommitTime(a) - effectiveCommitTime(b) || a.id.localeCompare(b.id);
     });
-    if (children.length > 0) {
-      let maxChildRow = uRow + 1;
-      for (const child of children) {
-        const parents = parentsMap.get(child.visualId) ?? [];
-        for (const p of parents) {
-          const pRow = rowByVisualId.get(p.visualId);
-          if (pRow != null) maxChildRow = Math.max(maxChildRow, pRow + 1);
-        }
+    if (children.length === 0) return;
+
+    const rowSharingChildren: VisualCommit[] = [];
+    const mergeChildren: VisualCommit[] = [];
+    for (const child of children) {
+      if (isGitMergeCommit(child)) mergeChildren.push(child);
+      else rowSharingChildren.push(child);
+    }
+
+    if (rowSharingChildren.length > 0) {
+      let sharedSiblingRow = uRow + 1;
+      for (const child of rowSharingChildren) {
+        sharedSiblingRow = rowAfterLayoutParents(child, sharedSiblingRow);
       }
-      for (const child of children) {
-        assignRows(child, maxChildRow);
+      for (const child of rowSharingChildren) {
+        assignRows(child, sharedSiblingRow);
       }
+    }
+
+    for (const child of mergeChildren) {
+      assignRows(child, rowAfterAllGitParents(child, uRow + 1));
     }
   };
 
@@ -1129,11 +1192,28 @@ export function computeBranchGridLayout(input: BranchGridLayoutInput): BranchGri
   roots.sort((a, b) => effectiveCommitTime(a) - effectiveCommitTime(b) || a.id.localeCompare(b.id));
 
   for (const root of roots) {
-    const parents = parentsMap.get(root.visualId) ?? [];
-    const parentRows = parents.map((p) => rowByVisualId.get(p.visualId) ?? -1);
-    const rootRow = Math.max(0, ...parentRows.map((r) => r + 1));
+    const rootParents = isGitMergeCommit(root) ? gitParentsForCommit(root) : (parentsMap.get(root.visualId) ?? []);
+    const parentRows = rootParents.map((parent) => rowByVisualId.get(parent.visualId) ?? -1);
+    const rootRow = parentRows.length === 0 ? 0 : Math.max(0, ...parentRows.map((row) => row + 1));
     assignRows(root, rootRow);
   }
+
+  const enforceMergeRowsAfterAllGitParents = (): void => {
+    let changed = true;
+    while (changed) {
+      changed = false;
+      for (const commit of allCommitsWithClusters) {
+        if (!isGitMergeCommit(commit)) continue;
+        const requiredRow = rowAfterAllGitParents(commit, rowByVisualId.get(commit.visualId) ?? 1);
+        const currentRow = rowByVisualId.get(commit.visualId) ?? 1;
+        if (requiredRow > currentRow) {
+          rowByVisualId.set(commit.visualId, requiredRow);
+          changed = true;
+        }
+      }
+    }
+  };
+  enforceMergeRowsAfterAllGitParents();
 
   const inDegree = new Map<string, number>();
   for (const commit of allCommitsWithClusters) {
@@ -1247,6 +1327,18 @@ export function computeBranchGridLayout(input: BranchGridLayoutInput): BranchGri
     }
   }
 
+  for (const commit of allCommitsWithClusters) {
+    if (!isGitMergeCommit(commit)) continue;
+    const gitParents = gitParentsForCommit(commit);
+    if (gitParents.length === 0) continue;
+    const requiredColumn =
+      Math.max(...gitParents.map((parent) => columnByCommitVisualId.get(parent.visualId) ?? -1)) + 1;
+    const currentColumn = columnByCommitVisualId.get(commit.visualId) ?? 0;
+    if (requiredColumn > currentColumn) {
+      columnByCommitVisualId.set(commit.visualId, requiredColumn);
+    }
+  }
+
   const clusterColumnByKey = new Map<string, number>(clumpOwnerColumnByClusterKey);
   const lanes: Lane[] = Array.from(clusterColumnByKey.entries())
     .map(([key, column]) => ({
@@ -1257,6 +1349,18 @@ export function computeBranchGridLayout(input: BranchGridLayoutInput): BranchGri
     .sort((a, b) => a.column - b.column || a.name.localeCompare(b.name));
   const laneByName = new Map(lanes.map((lane) => [lane.name, lane] as const));
 
+  compactTimelineRows(rowByVisualId, allCommitsWithClusters);
+  for (const [clusterKey, count] of clusterCounts.entries()) {
+    if (count <= 1) continue;
+    const leadVisualId = leadByClusterKey.get(clusterKey);
+    if (!leadVisualId) continue;
+    const leadRow = rowByVisualId.get(leadVisualId) ?? 1;
+    for (const commit of allCommitsWithClusters) {
+      if (clusterKeyByCommitId.get(commit.visualId) === clusterKey) {
+        rowByVisualId.set(commit.visualId, leadRow);
+      }
+    }
+  }
   compactTimelineRows(rowByVisualId, allCommitsWithClusters);
   const allRowByVisualId = rowByVisualId;
   const commitBySha = new Map<string, VisualCommit>();
@@ -1416,6 +1520,26 @@ export function computeBranchGridLayout(input: BranchGridLayoutInput): BranchGri
     isHorizontal,
     zoomAwareLanePitch,
   );
+  for (const node of renderNodes) {
+    if (!isGitMergeCommit(node.commit)) continue;
+    const gitParents = gitParentsForCommit(node.commit);
+    if (gitParents.length === 0) continue;
+    const requiredColumn = Math.max(
+      ...gitParents.map((parent) => {
+        const parentNode = renderNodes.find((candidate) => candidate.commit.visualId === parent.visualId);
+        return parentNode?.column ?? columnByCommitVisualId.get(parent.visualId) ?? -1;
+      }),
+    ) + 1;
+    if (requiredColumn > node.column) {
+      node.column = requiredColumn;
+      columnByCommitVisualId.set(node.commit.visualId, requiredColumn);
+      if (isHorizontal) {
+        node.y = TOP_PADDING + requiredColumn * zoomAwareLanePitch;
+      } else {
+        node.x = LEFT_PADDING + requiredColumn * COLUMN_WIDTH;
+      }
+    }
+  }
   syncClumpOwnerColumnsFromLeadNodes(
     renderNodes,
     clusterKeyByCommitId,
