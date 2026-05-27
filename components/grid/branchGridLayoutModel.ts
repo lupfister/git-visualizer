@@ -34,6 +34,7 @@ import {
 import type { Lane } from './LayoutGrid';
 import { computeMergeConnectorAnchors, computeParentChildConnectorAnchors } from './branchGridConnectorAnchors';
 import { applyNodePositionOverrides } from './applyNodePositionOverrides';
+import { deriveAllClumpsFromOwners, syncClumpCoordinatesToRenderNodes } from './clumpLayout';
 import { propagateOverrideRelativeLayout } from './overrideLayoutPropagation';
 import { getNodePositionOverride, migrateNodePositionOverridesForCommits } from './nodePositionOverrides';
 
@@ -251,48 +252,6 @@ const compactVisibleLaneColumns = (
 
 
 
-const sortClumpCommitsChronologically = (commits: VisualCommit[]): VisualCommit[] =>
-  [...commits].sort(
-    (left, right) =>
-      safeTimeMs(left.date) - safeTimeMs(right.date)
-      || left.id.localeCompare(right.id)
-      || left.visualId.localeCompare(right.visualId),
-  );
-
-/** Collapsed: all members at owner column. Open: owner column + adjacent lanes for older members. */
-const applyClumpRenderColumnLayout = (
-  commits: VisualCommit[],
-  clusterKeyByCommitId: Map<string, string>,
-  clusterCounts: Map<string, number>,
-  leadByClusterKey: Map<string, string>,
-  clumpOwnerColumnByClusterKey: Map<string, number>,
-  columnByCommitVisualId: Map<string, number>,
-  isClumpOpen: (clusterKey: string) => boolean,
-): void => {
-  for (const [clusterKey, count] of clusterCounts.entries()) {
-    if (count <= 1) continue;
-    const leadVisualId = leadByClusterKey.get(clusterKey);
-    if (!leadVisualId) continue;
-    const ownerColumn = clumpOwnerColumnByClusterKey.get(clusterKey);
-    if (ownerColumn == null) continue;
-    const members = sortClumpCommitsChronologically(
-      commits.filter((commit) => clusterKeyByCommitId.get(commit.visualId) === clusterKey),
-    );
-    if (!isClumpOpen(clusterKey)) {
-      for (const member of members) {
-        columnByCommitVisualId.set(member.visualId, ownerColumn);
-      }
-      continue;
-    }
-    // Oldest at owner column; lead (newest) at the bottom/right of the band.
-    let column = ownerColumn;
-    for (const member of members) {
-      columnByCommitVisualId.set(member.visualId, column);
-      column += 1;
-    }
-  }
-};
-
 /** After column compaction, re-anchor the clump band start (owner column). */
 const syncClumpOwnerColumnsFromLeadNodes = (
   renderNodes: Node[],
@@ -317,46 +276,6 @@ const syncClumpOwnerColumnsFromLeadNodes = (
     }
     const bandStartColumn = Math.min(...memberNodes.map((node) => node.column));
     clumpOwnerColumnByClusterKey.set(clusterKey, bandStartColumn);
-  }
-};
-
-const finalizeClumpRenderLayout = (
-  renderNodes: Node[],
-  commits: VisualCommit[],
-  clusterKeyByCommitId: Map<string, string>,
-  clusterCounts: Map<string, number>,
-  leadByClusterKey: Map<string, string>,
-  clumpOwnerColumnByClusterKey: Map<string, number>,
-  columnByCommitVisualId: Map<string, number>,
-  isClumpOpen: (clusterKey: string) => boolean,
-  isHorizontal: boolean,
-  maxResolvedRow: number,
-  _timelineRowLeadOffset: number,
-  zoomAwareTimelinePitch: number,
-  zoomAwareLanePitch: number,
-): void => {
-  applyClumpRenderColumnLayout(
-    commits,
-    clusterKeyByCommitId,
-    clusterCounts,
-    leadByClusterKey,
-    clumpOwnerColumnByClusterKey,
-    columnByCommitVisualId,
-    isClumpOpen,
-  );
-  for (const node of renderNodes) {
-    if (isWorktreeGraphNode(node.commit)) continue;
-    const clusterKey = clusterKeyByCommitId.get(node.commit.visualId);
-    if (!clusterKey || (clusterCounts.get(clusterKey) ?? 1) <= 1) continue;
-    const column = columnByCommitVisualId.get(node.commit.visualId);
-    if (column == null) continue;
-    node.column = column;
-    if (isHorizontal) {
-      node.y = TOP_PADDING + column * zoomAwareLanePitch;
-      continue;
-    }
-    node.x = LEFT_PADDING + column * COLUMN_WIDTH;
-    node.y = TOP_PADDING + (maxResolvedRow - node.row) * zoomAwareTimelinePitch;
   }
 };
 
@@ -1003,11 +922,18 @@ export function computeBranchGridLayout(input: BranchGridLayoutInput): BranchGri
       }
       previousBoundaryKind = boundaryKind;
     }
+    const leadPriority = (commit: VisualCommit): number => {
+      if (commit.kind === 'uncommitted') return 3;
+      if (clusterBoundaryKind(commit) === 'checked-out-tip') return 2;
+      return 1;
+    };
     const clusters: GridCluster[] = [];
     for (const [key, chunk] of entriesByKey.entries()) {
       if (chunk.length === 0) continue;
       const lead = [...chunk].sort((a, b) => {
-        return effectiveCommitTime(b) - effectiveCommitTime(a) || b.id.localeCompare(b.id);
+        return leadPriority(b) - leadPriority(a)
+          || effectiveCommitTime(b) - effectiveCommitTime(a)
+          || b.id.localeCompare(a.id);
       })[0]!;
       const leadId = lead.visualId;
       const first = [...chunk].sort(
@@ -1056,6 +982,29 @@ export function computeBranchGridLayout(input: BranchGridLayoutInput): BranchGri
   for (const clusters of clustersByBranch.values()) {
     for (const cluster of clusters) clusterByKey.set(cluster.key, cluster);
   }
+
+  const checkedOutSha = checkedOutRef?.headSha ?? null;
+  const checkedOutClusterKey = (() => {
+    const checkedOutBranchName = checkedOutRef?.branchName ?? null;
+    if (!checkedOutSha || !checkedOutBranchName) return null;
+    const directKey = clusterKeyByCommitId.get(`${checkedOutBranchName}:${checkedOutSha}`);
+    if (directKey) return directKey;
+    for (const [visualId, clusterKey] of clusterKeyByCommitId.entries()) {
+      const colon = visualId.indexOf(':');
+      if (colon <= 0) continue;
+      const branch = visualId.slice(0, colon);
+      const shaPart = visualId.slice(colon + 1);
+      if (branch !== checkedOutBranchName) continue;
+      if (shasMatch(shaPart, checkedOutSha)) return clusterKey;
+    }
+    return null;
+  })();
+  const defaultCollapsedClumps = new Set<string>();
+  for (const [clusterKey, count] of clusterCounts.entries()) {
+    if (count > 1 && clusterKey !== checkedOutClusterKey) defaultCollapsedClumps.add(clusterKey);
+  }
+  const isClumpOpen = (clusterKey: string): boolean =>
+    isClusterClumpOpen(clusterKey, manuallyOpenedClumps, defaultCollapsedClumps, manuallyClosedClumps);
 
   const columnByCommitVisualId = new Map<string, number>();
   const rowByVisualId = new Map<string, number>();
@@ -1138,9 +1087,7 @@ export function computeBranchGridLayout(input: BranchGridLayoutInput): BranchGri
         const parents = parentsMap.get(child.visualId) ?? [];
         for (const p of parents) {
           const pRow = rowByVisualId.get(p.visualId);
-          if (pRow != null) {
-            maxChildRow = Math.max(maxChildRow, pRow + 1);
-          }
+          if (pRow != null) maxChildRow = Math.max(maxChildRow, pRow + 1);
         }
       }
       for (const child of children) {
@@ -1207,8 +1154,8 @@ export function computeBranchGridLayout(input: BranchGridLayoutInput): BranchGri
     const u = layoutQueue.shift()!;
 
     const parents = parentsMap.get(u.visualId) ?? [];
-    const parentCols = parents.map((p) => columnByCommitVisualId.get(p.visualId) ?? -1);
-    
+    const parentCols = parents.map((parent) => columnByCommitVisualId.get(parent.visualId) ?? -1);
+
     let minCol = 0;
     if (parents.length === 0) {
       minCol = colCursor;
@@ -1223,7 +1170,14 @@ export function computeBranchGridLayout(input: BranchGridLayoutInput): BranchGri
       minCol += 1;
     }
 
+    const clusterKey = clusterKeyByCommitId.get(u.visualId);
+    const count = clusterKey ? clusterCounts.get(clusterKey) ?? 1 : 1;
+    const isClumpLead = !!clusterKey && count > 1 && leadByClusterKey.get(clusterKey) === u.visualId;
     columnByCommitVisualId.set(u.visualId, minCol);
+    if (isClumpLead) {
+      clumpOwnerColumnByClusterKey.set(clusterKey, minCol);
+    }
+
     reserveBlock(r, minCol, size);
 
     if (parents.length === 0) {
@@ -1247,8 +1201,8 @@ export function computeBranchGridLayout(input: BranchGridLayoutInput): BranchGri
     remaining.sort(compareNodes);
     for (const u of remaining) {
       const parents = parentsMap.get(u.visualId) ?? [];
-      const parentCols = parents.map((p) => columnByCommitVisualId.get(p.visualId) ?? -1);
-      
+      const parentCols = parents.map((parent) => columnByCommitVisualId.get(parent.visualId) ?? -1);
+
       let minCol = 0;
       if (parents.length === 0) {
         minCol = colCursor;
@@ -1263,7 +1217,14 @@ export function computeBranchGridLayout(input: BranchGridLayoutInput): BranchGri
         minCol += 1;
       }
 
+      const clusterKey = clusterKeyByCommitId.get(u.visualId);
+      const count = clusterKey ? clusterCounts.get(clusterKey) ?? 1 : 1;
+      const isClumpLead = !!clusterKey && count > 1 && leadByClusterKey.get(clusterKey) === u.visualId;
       columnByCommitVisualId.set(u.visualId, minCol);
+      if (isClumpLead) {
+        clumpOwnerColumnByClusterKey.set(clusterKey, minCol);
+      }
+
       reserveBlock(r, minCol, size);
 
       if (parents.length === 0) {
@@ -1279,7 +1240,7 @@ export function computeBranchGridLayout(input: BranchGridLayoutInput): BranchGri
       const leadVisualId = leadByClusterKey.get(clusterKey);
       if (leadVisualId) {
         const column = columnByCommitVisualId.get(leadVisualId);
-        if (column != null) {
+        if (column != null && !clumpOwnerColumnByClusterKey.has(clusterKey)) {
           clumpOwnerColumnByClusterKey.set(clusterKey, column);
         }
       }
@@ -1397,28 +1358,6 @@ export function computeBranchGridLayout(input: BranchGridLayoutInput): BranchGri
   const matchingNodeIds = new Set(matchingNodes.map((node) => node.commit.id));
 
 
-  const checkedOutSha = checkedOutRef?.headSha ?? null;
-  const checkedOutClusterKey = (() => {
-    const checkedOutBranchName = checkedOutRef?.branchName ?? null;
-    if (!checkedOutSha || !checkedOutBranchName) return null;
-    const directKey = clusterKeyByCommitId.get(`${checkedOutBranchName}:${checkedOutSha}`);
-    if (directKey) return directKey;
-    for (const [visualId, clusterKey] of clusterKeyByCommitId.entries()) {
-      const colon = visualId.indexOf(':');
-      if (colon <= 0) continue;
-      const branch = visualId.slice(0, colon);
-      const shaPart = visualId.slice(colon + 1);
-      if (branch !== checkedOutBranchName) continue;
-      if (shasMatch(shaPart, checkedOutSha)) return clusterKey;
-    }
-    return null;
-  })();
-  const defaultCollapsedClumps = new Set<string>();
-  for (const [clusterKey, count] of clusterCounts.entries()) {
-    if (count > 1 && clusterKey !== checkedOutClusterKey) defaultCollapsedClumps.add(clusterKey);
-  }
-
-
   const visibleCommitsList = [...allCommits].filter((commit) => {
     const clusterKey = clusterKeyByCommitId.get(commit.visualId);
     if (!clusterKey) return true;
@@ -1429,8 +1368,6 @@ export function computeBranchGridLayout(input: BranchGridLayoutInput): BranchGri
       (!defaultCollapsedClumps.has(clusterKey) && !manuallyClosedClumps.has(clusterKey));
     return count <= 1 || isOpen || leadId === commit.visualId;
   });
-  const isClumpOpen = (clusterKey: string): boolean =>
-    isClusterClumpOpen(clusterKey, manuallyOpenedClumps, defaultCollapsedClumps, manuallyClosedClumps);
   const visibleRows = new Map<string, number>();
   for (const commit of visibleCommitsList) {
     visibleRows.set(commit.visualId, allRowByVisualId.get(commit.visualId) ?? 1);
@@ -1487,6 +1424,16 @@ export function computeBranchGridLayout(input: BranchGridLayoutInput): BranchGri
     clumpOwnerColumnByClusterKey,
     isClumpOpen,
   );
+  deriveAllClumpsFromOwners({
+    commits: allCommitsWithClusters,
+    clusterKeyByCommitId,
+    clusterCounts,
+    leadByClusterKey,
+    clumpOwnerColumnByClusterKey,
+    rowByVisualId,
+    columnByCommitVisualId,
+    isClumpOpen,
+  });
   propagateOverrideRelativeLayout({
     renderNodes,
     overrides: normalizedNodePositionOverrides,
@@ -1522,18 +1469,13 @@ export function computeBranchGridLayout(input: BranchGridLayoutInput): BranchGri
     maxResolvedRow,
   });
   maxResolvedRow = Math.max(0, ...renderNodes.map((node) => node.row));
-  finalizeClumpRenderLayout(
+  syncClumpCoordinatesToRenderNodes(
     renderNodes,
-    allCommitsWithClusters,
     clusterKeyByCommitId,
     clusterCounts,
-    leadByClusterKey,
-    clumpOwnerColumnByClusterKey,
     columnByCommitVisualId,
-    isClumpOpen,
     isHorizontal,
     maxResolvedRow,
-    timelineRowLeadOffset,
     zoomAwareTimelinePitch,
     zoomAwareLanePitch,
   );
