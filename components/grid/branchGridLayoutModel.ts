@@ -1306,9 +1306,21 @@ export function computeBranchGridLayout(input: BranchGridLayoutInput): BranchGri
   for (const [clusterKey, members] of clumpMembersByKey.entries()) {
     clumpMembersByKey.set(clusterKey, sortByDateThenSha(members));
   }
+  const mergeSourceVisualIds = new Set<string>();
+  for (const commit of allCommitsWithClusters) {
+    if (
+      mergeDestinations.some(
+        (destination) =>
+          shasMatch(destination.sourceCommitSha, commit.id)
+          && !shasMatch(destination.targetCommitSha, commit.id),
+      )
+    ) {
+      mergeSourceVisualIds.add(commit.visualId);
+    }
+  }
   const mergeClumpKeys = new Set<string>();
   for (const [clusterKey, members] of clumpMembersByKey.entries()) {
-    if (members.some((member) => isGitMergeCommit(member))) {
+    if (members.some((member) => isGitMergeCommit(member) || mergeSourceVisualIds.has(member.visualId))) {
       mergeClumpKeys.add(clusterKey);
     }
   }
@@ -1887,6 +1899,7 @@ export function computeBranchGridLayout(input: BranchGridLayoutInput): BranchGri
     const clusterKey = clusterKeyByCommitId.get(node.commit.visualId);
     if (clusterKey && mergeClumpKeys.has(clusterKey)) return `cluster:${clusterKey}`;
     if (isGitMergeCommit(node.commit)) return `commit:${node.commit.visualId}`;
+    if (mergeSourceVisualIds.has(node.commit.visualId)) return `commit:${node.commit.visualId}`;
     return null;
   };
   const enforceExclusiveMergeColumns = (): Set<string> => {
@@ -2381,7 +2394,12 @@ export function computeBranchGridLayout(input: BranchGridLayoutInput): BranchGri
     return changedVisualIds;
   };
   const connectorClearanceChangedVisualIds = enforceConnectorClearance();
-  if (connectorClearanceChangedVisualIds.size > 0) {
+  const postClearanceExclusiveChangedVisualIds = enforceExclusiveMergeColumns();
+  const postConnectorChangedVisualIds = new Set([
+    ...connectorClearanceChangedVisualIds,
+    ...postClearanceExclusiveChangedVisualIds,
+  ]);
+  if (postConnectorChangedVisualIds.size > 0) {
     maxResolvedRow = Math.max(0, ...renderNodes.map((node) => node.row));
     syncRenderNodeTimelineCoordinates(
       renderNodes,
@@ -2392,7 +2410,7 @@ export function computeBranchGridLayout(input: BranchGridLayoutInput): BranchGri
       zoomAwareLanePitch,
       (commit) =>
         !!getNodePositionOverride(normalizedNodePositionOverrides, commit)
-        && !connectorClearanceChangedVisualIds.has(commit.visualId),
+        && !postConnectorChangedVisualIds.has(commit.visualId),
     );
     syncClumpOwnerColumnsFromLeadNodes(
       renderNodes,

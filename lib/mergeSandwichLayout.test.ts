@@ -168,6 +168,13 @@ describe('merge sandwich row layout', () => {
         (node) => node.column === mergeNode!.column && node.commit.visualId !== mergeNode!.commit.visualId,
       ),
     ).toHaveLength(0);
+    expect(
+      layout.renderNodes.filter(
+        (node) =>
+          node.column === worktreeParentNode!.column
+          && node.commit.visualId !== worktreeParentNode!.commit.visualId,
+      ),
+    ).toHaveLength(0);
 
     const usedColumns = [...new Set(layout.renderNodes.map((node) => node.column))].sort((a, b) => a - b);
     expect(usedColumns).toEqual(usedColumns.map((_, index) => index));
