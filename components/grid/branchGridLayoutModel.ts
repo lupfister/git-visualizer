@@ -2269,14 +2269,19 @@ export function computeBranchGridLayout(input: BranchGridLayoutInput): BranchGri
     }
     return false;
   };
-  const parentChildConnectorIntersectsNode = (parentNode: Node, childNode: Node, blocker: Node): boolean => {
+  const parentChildConnectorIntersectsNode = (
+    useBranchFeedAnchors: boolean,
+    parentNode: Node,
+    childNode: Node,
+    blocker: Node,
+  ): boolean => {
     if (blocker.commit.visualId === parentNode.commit.visualId || blocker.commit.visualId === childNode.commit.visualId) {
       return false;
     }
     if (getNodePositionOverride(normalizedNodePositionOverrides, blocker.commit)) return false;
     const anchors = computeParentChildConnectorAnchors(
       isHorizontal,
-      parentNode.commit.branchName !== childNode.commit.branchName,
+      useBranchFeedAnchors,
       parentNode,
       childNode,
     );
@@ -2338,7 +2343,12 @@ export function computeBranchGridLayout(input: BranchGridLayoutInput): BranchGri
       const key = `${parentNode.commit.visualId}->${childNode.commit.visualId}`;
       if (seen.has(key)) continue;
       seen.add(key);
-      pairs.push({ sourceNode: parentNode, targetNode: childNode, intersects: parentChildConnectorIntersectsNode });
+      pairs.push({
+        sourceNode: parentNode,
+        targetNode: childNode,
+        intersects: (sourceNode, targetNode, blocker) =>
+          parentChildConnectorIntersectsNode(false, sourceNode, targetNode, blocker),
+      });
     }
     for (const destination of mergeDestinations) {
       const sourceNode = renderedNodeForSha(destination.sourceCommitSha, destination.sourceBranchName);
