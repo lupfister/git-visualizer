@@ -56,6 +56,34 @@ describe('clumpLayout', () => {
     expect(new Set(commits.map((commit) => rowByVisualId.get(commit.visualId)))).toEqual(new Set([3]));
   });
 
+  it('orders open clump columns chronologically, independent of lead', () => {
+    const clusterKey = 'cluster:feature:segment:1';
+    const commits = [
+      makeCommit('feature:newest', '2024-01-03T00:00:00Z'),
+      makeCommit('feature:oldest', '2024-01-01T00:00:00Z'),
+      makeCommit('feature:middle', '2024-01-02T00:00:00Z'),
+    ];
+    const clusterKeyByCommitId = new Map(commits.map((commit) => [commit.visualId, clusterKey]));
+    const rowByVisualId = new Map<string, number>();
+    const columnByCommitVisualId = new Map<string, number>();
+
+    deriveClumpMemberLayout({
+      clusterKey,
+      row: 4,
+      ownerColumn: 5,
+      isOpen: true,
+      leadVisualId: 'feature:middle',
+      commits,
+      clusterKeyByCommitId,
+      rowByVisualId,
+      columnByCommitVisualId,
+    });
+
+    expect(columnByCommitVisualId.get('feature:oldest')).toBe(5);
+    expect(columnByCommitVisualId.get('feature:middle')).toBe(6);
+    expect(columnByCommitVisualId.get('feature:newest')).toBe(7);
+  });
+
   it('derives collapsed clump at owner column only', () => {
     const clusterKey = 'cluster:feature:segment:1';
     const commits = [

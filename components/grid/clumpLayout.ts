@@ -62,13 +62,13 @@ export type DeriveClumpMemberLayoutInput = {
   columnByCommitVisualId: Map<string, number>;
 };
 
-/** Lead anchors row + owner column; members inherit (same row, band columns when open). */
+/** Members share a row; open clumps assign lanes oldest-to-newest from top to bottom. */
 export const deriveClumpMemberLayout = ({
   clusterKey,
   row,
   ownerColumn,
   isOpen,
-  leadVisualId,
+  leadVisualId: _leadVisualId,
   commits,
   clusterKeyByCommitId,
   rowByVisualId,
@@ -90,13 +90,9 @@ export const deriveClumpMemberLayout = ({
     return;
   }
 
-  const nonLeadMembers = members.filter((member) => member.visualId !== leadVisualId);
-  let column = ownerColumn;
-  for (const member of nonLeadMembers) {
-    columnByCommitVisualId.set(member.visualId, column);
-    column += 1;
-  }
-  columnByCommitVisualId.set(leadVisualId, ownerColumn + members.length - 1);
+  members.forEach((member, index) => {
+    columnByCommitVisualId.set(member.visualId, ownerColumn + index);
+  });
 };
 
 export type DeriveAllClumpsInput = {

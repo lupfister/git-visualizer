@@ -1785,9 +1785,8 @@ export function computeBranchGridLayout(input: BranchGridLayoutInput): BranchGri
     zoomAwareLanePitch,
   );
   /**
-   * Expanding a clump should *insert* exclusive columns adjacent to the clump.
-   * This means shifting any non-clump nodes that would otherwise occupy those
-   * columns, so the newly revealed lanes contain only clump members.
+   * Expanding a clump inserts an exclusive lane band. Non-clump nodes at or after
+   * the band start move past the entire band so no clump lane is shared.
    */
   const applyOpenClumpColumnInsertions = (): void => {
     const openClumps = [...clusterCounts.entries()]
@@ -1806,7 +1805,7 @@ export function computeBranchGridLayout(input: BranchGridLayoutInput): BranchGri
       .sort((a, b) => a.ownerColumn - b.ownerColumn || a.clusterKey.localeCompare(b.clusterKey));
 
     for (const clump of openClumps) {
-      const delta = clump.count - 1;
+      const delta = clump.count;
       if (delta <= 0) continue;
       const memberSet = new Set(
         renderNodes
@@ -1815,7 +1814,7 @@ export function computeBranchGridLayout(input: BranchGridLayoutInput): BranchGri
       );
       for (const node of renderNodes) {
         if (memberSet.has(node.commit.visualId)) continue;
-        if (node.column <= clump.ownerColumn) continue;
+        if (node.column < clump.ownerColumn) continue;
         const nextColumn = node.column + delta;
         node.column = nextColumn;
         columnByCommitVisualId.set(node.commit.visualId, nextColumn);

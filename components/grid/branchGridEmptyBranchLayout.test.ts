@@ -516,7 +516,7 @@ describe('computeBranchGridLayout empty branch placeholders', () => {
     expect(leadNode!.x).toBeGreaterThan(firstNode!.x);
   });
 
-  it('places open clump on adjacent horizontal lanes with the lead at the bottom', () => {
+  it('places open horizontal clump lanes oldest at top and newest at bottom with exclusive lanes', () => {
     const defaultBranch = 'main';
     const unpushedA = 'cccccccccccccccccccccccccccccccccccccccc';
     const unpushedB = 'dddddddddddddddddddddddddddddddddddddddd';
@@ -620,6 +620,18 @@ describe('computeBranchGridLayout empty branch placeholders', () => {
     );
     expect(leadNode!.column).toBe(bandStartColumn + 2);
     expect(leadNode!.y).toBeGreaterThan(firstNode!.y);
+    const chronologicalNodes = [...clumpNodes].sort(
+      (left, right) => new Date(left.commit.date).getTime() - new Date(right.commit.date).getTime(),
+    );
+    expect(chronologicalNodes.map((node) => node.column)).toEqual([bandStartColumn, bandStartColumn + 1, bandStartColumn + 2]);
+    expect(chronologicalNodes.map((node) => node.y)).toEqual([...chronologicalNodes].map((node) => node.y).sort((a, b) => a - b));
+    const clumpColumns = new Set(clumpNodes.map((node) => node.column));
+    const nonClumpNodesInBand = opened.renderNodes.filter(
+      (node) =>
+        opened.clusterKeyByCommitId.get(node.commit.visualId) !== clusterKey
+        && clumpColumns.has(node.column),
+    );
+    expect(nonClumpNodesInBand).toHaveLength(0);
     expect(new Set(clumpNodes.map((node) => node.x)).size).toBe(1);
     expect(new Set(clumpNodes.map((node) => node.y)).size).toBe(3);
   });
