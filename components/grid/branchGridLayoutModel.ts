@@ -1200,12 +1200,18 @@ export function computeBranchGridLayout(input: BranchGridLayoutInput): BranchGri
     assignRows(root, rootRow);
   }
 
+  const isInMultiCommitClump = (commit: VisualCommit): boolean => {
+    const clusterKey = clusterKeyByCommitId.get(commit.visualId);
+    return !!clusterKey && (clusterCounts.get(clusterKey) ?? 1) > 1;
+  };
+
   const enforceMergeRowsAfterAllGitParents = (): void => {
     let changed = true;
     while (changed) {
       changed = false;
       for (const commit of allCommitsWithClusters) {
         if (!isGitMergeCommit(commit)) continue;
+        if (isInMultiCommitClump(commit)) continue;
         const requiredRow = rowAfterAllGitParents(commit, rowByVisualId.get(commit.visualId) ?? 1);
         const currentRow = rowByVisualId.get(commit.visualId) ?? 1;
         if (requiredRow > currentRow) {
@@ -1216,6 +1222,93 @@ export function computeBranchGridLayout(input: BranchGridLayoutInput): BranchGri
     }
   };
   enforceMergeRowsAfterAllGitParents();
+
+  const clumpMembersByKey = new Map<string, VisualCommit[]>();
+  for (const commit of allCommitsWithClusters) {
+    const clusterKey = clusterKeyByCommitId.get(commit.visualId);
+    if (!clusterKey || (clusterCounts.get(clusterKey) ?? 1) <= 1) continue;
+    const members = clumpMembersByKey.get(clusterKey) ?? [];
+    members.push(commit);
+    clumpMembersByKey.set(clusterKey, members);
+  }
+  for (const [clusterKey, members] of clumpMembersByKey.entries()) {
+    clumpMembersByKey.set(clusterKey, sortByDateThenSha(members));
+  }
+
+  const firstClumpMember = (clusterKey: string): VisualCommit | null => {
+    const firstVisualId = firstByClusterKey.get(clusterKey);
+    return (
+      (firstVisualId ? allCommitsWithClusters.find((commit) => commit.visualId === firstVisualId) : null)
+      ?? clumpMembersByKey.get(clusterKey)?.[0]
+      ?? null
+    );
+  };
+
+  const clumpRow = (clusterKey: string): number => {
+    const members = clumpMembersByKey.get(clusterKey) ?? [];
+    return Math.max(0, ...members.map((member) => rowByVisualId.get(member.visualId) ?? 0));
+  };
+
+  const setClumpRow = (clusterKey: string, row: number): void => {
+    for (const member of clumpMembersByKey.get(clusterKey) ?? []) {
+      rowByVisualId.set(member.visualId, row);
+    }
+  };
+
+  const parentRowForConstraint = (parent: VisualCommit): number | null => {
+    const parentClusterKey = clusterKeyByCommitId.get(parent.visualId);
+    if (parentClusterKey && (clusterCounts.get(parentClusterKey) ?? 1) > 1) {
+      return clumpRow(parentClusterKey);
+    }
+    return rowByVisualId.get(parent.visualId) ?? null;
+  };
+
+  const enforceRowsAfterVirtualClumpParents = (): void => {
+    let changed = true;
+    while (changed) {
+      changed = false;
+
+      for (const clusterKey of clumpMembersByKey.keys()) {
+        const firstMember = firstClumpMember(clusterKey);
+        if (!firstMember) continue;
+
+        let requiredRow = clumpRow(clusterKey);
+        const parentCandidates = isGitMergeCommit(firstMember)
+          ? gitParentsForCommit(firstMember)
+          : parentsMap.get(firstMember.visualId) ?? [];
+        for (const parent of parentCandidates) {
+          const parentRow = parentRowForConstraint(parent);
+          if (parentRow != null) requiredRow = Math.max(requiredRow, parentRow + 1);
+        }
+
+        if (requiredRow > clumpRow(clusterKey)) {
+          setClumpRow(clusterKey, requiredRow);
+          changed = true;
+        }
+      }
+
+      for (const commit of allCommitsWithClusters) {
+        const clusterKey = clusterKeyByCommitId.get(commit.visualId);
+        if (clusterKey && (clusterCounts.get(clusterKey) ?? 1) > 1) continue;
+
+        let requiredRow = rowByVisualId.get(commit.visualId) ?? 0;
+        const parentCandidates = isGitMergeCommit(commit)
+          ? gitParentsForCommit(commit)
+          : parentsMap.get(commit.visualId) ?? [];
+        for (const parent of parentCandidates) {
+          const parentRow = parentRowForConstraint(parent);
+          if (parentRow != null) requiredRow = Math.max(requiredRow, parentRow + 1);
+        }
+
+        const currentRow = rowByVisualId.get(commit.visualId) ?? 0;
+        if (requiredRow > currentRow) {
+          rowByVisualId.set(commit.visualId, requiredRow);
+          changed = true;
+        }
+      }
+    }
+  };
+  enforceRowsAfterVirtualClumpParents();
 
   const inDegree = new Map<string, number>();
   for (const commit of allCommitsWithClusters) {
@@ -1373,18 +1466,6 @@ export function computeBranchGridLayout(input: BranchGridLayoutInput): BranchGri
   const laneByName = new Map(lanes.map((lane) => [lane.name, lane] as const));
 
   compactTimelineRows(rowByVisualId, allCommitsWithClusters);
-  for (const [clusterKey, count] of clusterCounts.entries()) {
-    if (count <= 1) continue;
-    const leadVisualId = leadByClusterKey.get(clusterKey);
-    if (!leadVisualId) continue;
-    const leadRow = rowByVisualId.get(leadVisualId) ?? 1;
-    for (const commit of allCommitsWithClusters) {
-      if (clusterKeyByCommitId.get(commit.visualId) === clusterKey) {
-        rowByVisualId.set(commit.visualId, leadRow);
-      }
-    }
-  }
-  compactTimelineRows(rowByVisualId, allCommitsWithClusters);
   deriveAllClumpsFromOwners({
     commits: allCommitsWithClusters,
     clusterKeyByCommitId,
@@ -1397,10 +1478,14 @@ export function computeBranchGridLayout(input: BranchGridLayoutInput): BranchGri
   });
   for (const commit of allCommitsWithClusters) {
     if (commit.kind !== 'uncommitted' && !isWorkingTreeCommitId(commit.id)) continue;
+    let row = rowByVisualId.get(commit.visualId) ?? 0;
     let column = columnByCommitVisualId.get(commit.visualId) ?? 0;
     for (const parent of parentsMap.get(commit.visualId) ?? []) {
+      const parentRow = parentRowForConstraint(parent);
+      if (parentRow != null) row = Math.max(row, parentRow + 1);
       column = Math.max(column, layoutParentColumn(parent) + 1);
     }
+    rowByVisualId.set(commit.visualId, row);
     columnByCommitVisualId.set(commit.visualId, column);
   }
   const allRowByVisualId = rowByVisualId;
@@ -1554,6 +1639,51 @@ export function computeBranchGridLayout(input: BranchGridLayoutInput): BranchGri
     })
     .map((node) => ({ ...node }));
   let maxResolvedRow = compactRenderNodeTimelineRows(renderNodes);
+  const renderNodeByVisualId = new Map(renderNodes.map((node) => [node.commit.visualId, node] as const));
+  const allNodeByVisualId = new Map(nodes.map((node) => [node.commit.visualId, node] as const));
+  for (const node of renderNodes) {
+    let requiredRow = node.row;
+    const nodeClusterKey = clusterKeyByCommitId.get(node.commit.visualId);
+    const parentCandidates = [...(parentsMap.get(node.commit.visualId) ?? [])];
+    if (node.commit.parentSha && !parentCandidates.some((parent) => shasMatch(parent.id, node.commit.parentSha))) {
+      const parent = findCommitNode(node.commit.parentSha, node.commit.branchName);
+      if (parent) parentCandidates.push(parent);
+    }
+    for (const parent of parentCandidates) {
+      const parentClusterKey = clusterKeyByCommitId.get(parent.visualId);
+      const isWorkingTreeNode = node.commit.kind === 'uncommitted' || isWorkingTreeCommitId(node.commit.id);
+      if (
+        !isWorkingTreeNode
+        && nodeClusterKey
+        && nodeClusterKey === parentClusterKey
+        && (clusterCounts.get(nodeClusterKey) ?? 1) > 1
+      ) {
+        continue;
+      }
+      const parentIsAlsoRenderedOnAnotherBranch = Object.entries(branchCommitPreviews).some(
+        ([branchName, previews]) =>
+          branchName !== node.commit.branchName
+          && previews.some((preview) => shasMatch(preview.fullSha, parent.id)),
+      );
+      const shouldUseAllNodeParentRow =
+        isWorkingTreeNode
+        && checkedOutRef?.hasUncommittedChanges
+        && checkedOutRef.branchName === node.commit.branchName
+        && node.commit.branchName === defaultBranch
+        && parentIsAlsoRenderedOnAnotherBranch;
+      const parentRow =
+        shouldUseAllNodeParentRow
+          ? (allNodeByVisualId.get(parent.visualId)?.row
+            ?? renderNodeByVisualId.get(parent.visualId)?.row
+            ?? allRowByVisualId.get(parent.visualId))
+          : (renderNodeByVisualId.get(parent.visualId)?.row
+            ?? allNodeByVisualId.get(parent.visualId)?.row
+            ?? allRowByVisualId.get(parent.visualId));
+      if (parentRow != null) requiredRow = Math.max(requiredRow, parentRow + 1);
+    }
+    node.row = requiredRow;
+  }
+  maxResolvedRow = Math.max(0, ...renderNodes.map((node) => node.row));
   timelineRowLeadOffset = 0;
   compactVisibleLaneColumns(
     renderNodes,
