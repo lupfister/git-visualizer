@@ -46,6 +46,7 @@ import {
 import { classifyFingerprintDiff, formatRepoFingerprint, parseRepoFingerprint, withRepoFingerprintDirty, withRepoFingerprintUpstream, type FingerprintPatchSegment } from './fingerprintDiff';
 import { buildGraphDeltaOutcomes, fetchRepoGraphDelta } from './externalGraphSync';
 import { formatWorktreeSyncSignature, formatWorktreeSessionLayoutSignature } from './worktreeSignature';
+import { canApplyActiveRepoSnapshot } from './activeRepoGuard';
 import {
   applyBranchParents,
   isNewerBranchAsParent,
@@ -401,6 +402,7 @@ function App() {
   /** Lightweight git digest — skips heavy fingerprint when unchanged. */
   const projectSyncPeekRef = useRef<Record<string, string>>({});
   const isRepoSwitchingRef = useRef(false);
+  const currentRepoPathRef = useRef<string | null>(null);
   const sidebarDragRef = useRef<{
     startX: number;
     startWidth: number;
@@ -3356,6 +3358,7 @@ function App() {
         applySnapshotToActiveState(normalizedTarget, reconciledSnapshot, {
           force: true,
           allowIncomingDirty: true,
+          allowProjectSwitch: true,
         });
         finalizeProjectSwitchSnapshot(normalizedTarget, reconciledSnapshot);
         void fetchGitHubData(normalizedTarget);
@@ -3421,8 +3424,14 @@ function App() {
   function applySnapshotToActiveState(
     path: string,
     snapshot: RepoVisualSnapshot,
-    options?: { force?: boolean; allowIncomingDirty?: boolean },
+    options?: { force?: boolean; allowIncomingDirty?: boolean; allowProjectSwitch?: boolean },
   ) {
+    if (!canApplyActiveRepoSnapshot(path, currentRepoPathRef.current, options?.allowProjectSwitch === true)) {
+      return false;
+    }
+    if (options?.allowProjectSwitch === true) {
+      currentRepoPathRef.current = normalizePath(path);
+    }
     if (
       sameRepoPath(repoPath, path)
       && options?.force !== true
@@ -3624,6 +3633,7 @@ function App() {
       applySnapshotToActiveState(normalizedPath, cachedSnapshot, {
         force: true,
         allowIncomingDirty: true,
+        allowProjectSwitch: true,
       });
       finalizeProjectSwitchSnapshot(normalizedPath, cachedSnapshot);
       persistProject({
@@ -3682,6 +3692,7 @@ function App() {
       applySnapshotToActiveState(normalizedPath, snapshot, {
         force: true,
         allowIncomingDirty: true,
+        allowProjectSwitch: true,
       });
       void invoke<FingerprintCheckResult>('check_project_fingerprint', { projectId: normalizedPath })
         .then((check) => {
@@ -3790,6 +3801,10 @@ function App() {
   }, [repoPath]);
 
   useEffect(() => {
+    currentRepoPathRef.current = repoPath;
+  }, [repoPath]);
+
+  useEffect(() => {
     latestBranchesRef.current = branches;
   }, [branches]);
 
@@ -3891,6 +3906,8 @@ function App() {
     let fullRefreshCoalesceId: number | null = null;
     let pendingFullGraphRefresh = false;
     let unlisten: (() => void) | null = null;
+    const isStaleRepoRefresh = () =>
+      isDisposed || isRepoSwitchingRef.current || !sameRepoPath(currentRepoPathRef.current, repoPath);
 
     const scheduleCoalescedFullRefresh = () => {
       pendingFullGraphRefresh = true;
@@ -3908,7 +3925,7 @@ function App() {
 
     const runRefresh = async (incomingReason: 'graph' | 'local' | 'timer' | 'initial' | 'quick' = 'timer') => {
       let reason = incomingReason;
-      if (isDisposed) return;
+      if (isStaleRepoRefresh()) return;
       if (refreshInFlight || reconcileInFlightRef.current) {
         pendingRefreshAfterInteractionRef.current = true;
         return;
@@ -3927,6 +3944,7 @@ function App() {
       const normalizedPath = normalizePath(repoPath);
       if (normalizedPath) {
         await syncPostCommitProtectionFromQuickState(normalizedPath);
+        if (isStaleRepoRefresh()) return;
       }
       const postCommitGuarded = Boolean(
         normalizedPath && isPostCommitProtectionActive(normalizedPath),
@@ -3950,6 +3968,7 @@ function App() {
       const externalRefresh = reason === 'graph' || reason === 'local' || reason === 'quick';
 
       const peek = await fetchRepoSyncPeek(repoPath);
+      if (isStaleRepoRefresh()) return;
       const gitActivityPendingNow = gitActivityEpochRef.current !== lastHandledGitActivityEpochRef.current;
       if (gitActivityPendingNow && (reason === 'graph' || reason === 'local')) {
         await reloadRepoSnapshotFromGit(repoPath, peek);
@@ -4042,12 +4061,14 @@ function App() {
         const result = await invoke<RefreshProjectResult>('refresh_project_if_changed', {
           projectId: repoPath,
         });
+        if (isStaleRepoRefresh()) return;
         if (refreshEpoch !== mapInteractionEpochRef.current || isRepoRefreshBlocked()) {
           pendingRefreshAfterInteractionRef.current = true;
           setMapGridBackgroundActivity('git-refresh-pending', 'Git refresh queued', true, 'stale or blocked');
           return;
         }
         const quickState = await invoke<RepoQuickState>('get_repo_quick_state', { repoPath }).catch(() => null);
+        if (isStaleRepoRefresh()) return;
         if (mutationAtStart !== repoMutationGenerationRef.current) return;
         if (!result.updated) {
           if (refreshGitActivityPending) {
@@ -4101,6 +4122,7 @@ function App() {
         nextSnapshot = postCommitGuarded
           ? await reconcileSnapshotWorktreesOnly(repoPath, nextSnapshot)
           : await reconcileSnapshotForProjectSwitch(repoPath, nextSnapshot);
+        if (isStaleRepoRefresh()) return;
         if (shouldBlockIncomingSnapshotApply(repoPath, nextSnapshot)) {
           markGitActivityHandled();
           return;
@@ -4154,6 +4176,7 @@ function App() {
                 && snapshotContainsCommitSha(nextSnapshot, guard)
               ) {
                 const synced = await reconcileSnapshotWorktreesOnly(repoPath, live);
+                if (isStaleRepoRefresh()) return;
                 const layoutChanged = mutationChangesWorktreeLayout(live, synced);
                 const liveSignature = getRepoVisualSnapshotSignature(live);
                 const syncedSignature = getRepoVisualSnapshotSignature(synced);
@@ -4198,6 +4221,7 @@ function App() {
           }
           if (mutationAtStart !== repoMutationGenerationRef.current) return;
           const applySnapshot = () => {
+            if (isStaleRepoRefresh()) return;
             const prevCheckedOutRef = latestCheckedOutRef.current;
             const applied = applySnapshotToActiveState(repoPath, nextSnapshot, {
               force: reason === 'graph' || reason === 'local' || refreshGitActivityPending,
@@ -4213,9 +4237,11 @@ function App() {
             }
           };
           if (refreshGitActivityPending) {
+            if (isStaleRepoRefresh()) return;
             flushSync(applySnapshot);
             await syncCheckedOutRefFromQuickGitState(repoPath);
           } else {
+            if (isStaleRepoRefresh()) return;
             startTransition(applySnapshot);
           }
           if (normalizedPath) {
