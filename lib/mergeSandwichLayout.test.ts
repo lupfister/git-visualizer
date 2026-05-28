@@ -163,6 +163,11 @@ describe('merge sandwich row layout', () => {
 
     const latestParentColumn = Math.max(mainParentNode!.column, worktreeParentNode!.column);
     expect(mergeNode!.column).toBeGreaterThan(latestParentColumn);
+    expect(
+      layout.renderNodes.filter(
+        (node) => node.column === mergeNode!.column && node.commit.visualId !== mergeNode!.commit.visualId,
+      ),
+    ).toHaveLength(0);
 
     const usedColumns = [...new Set(layout.renderNodes.map((node) => node.column))].sort((a, b) => a - b);
     expect(usedColumns).toEqual(usedColumns.map((_, index) => index));

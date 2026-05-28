@@ -1305,6 +1305,12 @@ export function computeBranchGridLayout(input: BranchGridLayoutInput): BranchGri
   for (const [clusterKey, members] of clumpMembersByKey.entries()) {
     clumpMembersByKey.set(clusterKey, sortByDateThenSha(members));
   }
+  const mergeClumpKeys = new Set<string>();
+  for (const [clusterKey, members] of clumpMembersByKey.entries()) {
+    if (members.some((member) => isGitMergeCommit(member))) {
+      mergeClumpKeys.add(clusterKey);
+    }
+  }
 
   const firstClumpMember = (clusterKey: string): VisualCommit | null => {
     const firstVisualId = firstByClusterKey.get(clusterKey);
@@ -1876,6 +1882,50 @@ export function computeBranchGridLayout(input: BranchGridLayoutInput): BranchGri
       clumpOwnerColumnByClusterKey.set(clump.clusterKey, ownerColumn);
     }
   };
+  const exclusiveColumnKeyForNode = (node: Node): string | null => {
+    const clusterKey = clusterKeyByCommitId.get(node.commit.visualId);
+    if (clusterKey && mergeClumpKeys.has(clusterKey)) return `cluster:${clusterKey}`;
+    if (isGitMergeCommit(node.commit)) return `commit:${node.commit.visualId}`;
+    return null;
+  };
+  const enforceExclusiveMergeColumns = (): Set<string> => {
+    const changedVisualIds = new Set<string>();
+    for (let pass = 0; pass < Math.max(1, renderNodes.length * 2); pass += 1) {
+      const orderedNodes = [...renderNodes].sort((a, b) => {
+        if (a.column !== b.column) return a.column - b.column;
+        if (a.row !== b.row) return a.row - b.row;
+        return a.commit.visualId.localeCompare(b.commit.visualId);
+      });
+
+      let conflictColumn: number | null = null;
+      let ownerKey: string | null = null;
+      for (const node of orderedNodes) {
+        const key = exclusiveColumnKeyForNode(node);
+        if (!key) continue;
+        const columnNodes = orderedNodes.filter((candidate) => candidate.column === node.column);
+        if (columnNodes.every((candidate) => exclusiveColumnKeyForNode(candidate) === key)) continue;
+        conflictColumn = node.column;
+        ownerKey = key;
+        break;
+      }
+      if (conflictColumn == null || ownerKey == null) break;
+
+      for (const node of renderNodes) {
+        if (node.column < conflictColumn) continue;
+        if (exclusiveColumnKeyForNode(node) === ownerKey) continue;
+        const nextColumn = node.column + 1;
+        node.column = nextColumn;
+        columnByCommitVisualId.set(node.commit.visualId, nextColumn);
+        changedVisualIds.add(node.commit.visualId);
+        if (isHorizontal) {
+          node.y = TOP_PADDING + nextColumn * zoomAwareLanePitch;
+        } else {
+          node.x = LEFT_PADDING + nextColumn * COLUMN_WIDTH;
+        }
+      }
+    }
+    return changedVisualIds;
+  };
   const enforceVisibleColumnsAfterParents = (): Set<string> => {
     const changedVisualIds = new Set<string>();
     const orderedNodes = [...renderNodes].sort((a, b) => {
@@ -2070,6 +2120,25 @@ export function computeBranchGridLayout(input: BranchGridLayoutInput): BranchGri
     zoomAwareLanePitch,
   );
   applyOpenClumpColumnInsertions();
+  for (let pass = 0; pass < Math.max(1, renderNodes.length * 2); pass += 1) {
+    const columnChangedVisualIds = enforceVisibleColumnsAfterParents();
+    const collisionChangedVisualIds = resolveVisibleNodeColumnCollisions(
+      renderNodes,
+      columnByCommitVisualId,
+      isHorizontal,
+      zoomAwareLanePitch,
+      clusterKeyByCommitId,
+      clusterCounts,
+    );
+    const exclusiveChangedVisualIds = enforceExclusiveMergeColumns();
+    if (
+      columnChangedVisualIds.size === 0
+      && collisionChangedVisualIds.size === 0
+      && exclusiveChangedVisualIds.size === 0
+    ) {
+      break;
+    }
+  }
   maxResolvedRow = Math.max(0, ...renderNodes.map((node) => node.row));
   syncRenderNodeTimelineCoordinates(
     renderNodes,

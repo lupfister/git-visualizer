@@ -945,6 +945,13 @@ describe('computeBranchGridLayout empty branch placeholders', () => {
     expect(clumpNode!.row).toBeGreaterThan(sideParentNode!.row);
     expect(clumpNode!.column).toBeGreaterThan(mainParentNode!.column);
     expect(clumpNode!.column).toBeGreaterThan(sideParentNode!.column);
+    expect(
+      layout.renderNodes.filter(
+        (node) =>
+          node.column === clumpNode!.column
+          && layout.clusterKeyByCommitId.get(node.commit.visualId) !== clusterKey,
+      ),
+    ).toHaveLength(0);
 
     const usedColumns = [...new Set(layout.renderNodes.map((node) => node.column))].sort((a, b) => a - b);
     expect(usedColumns).toEqual(usedColumns.map((_, index) => index));
