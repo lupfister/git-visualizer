@@ -175,6 +175,11 @@ describe('merge sandwich row layout', () => {
           && node.commit.visualId !== worktreeParentNode!.commit.visualId,
       ),
     ).toHaveLength(0);
+    expect(
+      layout.renderNodes.filter(
+        (node) => node.row === worktreeParentNode!.row && node.commit.visualId !== worktreeParentNode!.commit.visualId,
+      ),
+    ).toHaveLength(0);
 
     const usedColumns = [...new Set(layout.renderNodes.map((node) => node.column))].sort((a, b) => a - b);
     expect(usedColumns).toEqual(usedColumns.map((_, index) => index));

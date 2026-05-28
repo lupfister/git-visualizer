@@ -306,7 +306,7 @@ const resolveVisibleNodeColumnCollisions = (
 
 
 /** After column compaction, re-anchor the clump band start (owner column). */
-const syncClumpOwnerColumnsFromLeadNodes = (
+  const syncClumpOwnerColumnsFromLeadNodes = (
   renderNodes: Node[],
   clusterKeyByCommitId: Map<string, string>,
   clusterCounts: Map<string, number>,
@@ -331,6 +331,20 @@ const syncClumpOwnerColumnsFromLeadNodes = (
     }
     const leadNode = memberNodes.find((node) => node.commit.visualId === leadVisualId);
     if (leadNode != null) clumpOwnerColumnByClusterKey.set(clusterKey, leadNode.column);
+  }
+};
+
+const syncRenderNodeRowCoordinate = (
+  node: Node,
+  isHorizontal: boolean,
+  maxResolvedRow: number,
+  timelineRowLeadOffset: number,
+  zoomAwareTimelinePitch: number,
+): void => {
+  if (isHorizontal) {
+    node.x = LEFT_PADDING + (timelineRowLeadOffset + node.row - 1) * zoomAwareTimelinePitch;
+  } else {
+    node.y = TOP_PADDING + (maxResolvedRow - node.row) * zoomAwareTimelinePitch;
   }
 };
 
@@ -1902,6 +1916,45 @@ export function computeBranchGridLayout(input: BranchGridLayoutInput): BranchGri
     if (mergeSourceVisualIds.has(node.commit.visualId)) return `commit:${node.commit.visualId}`;
     return null;
   };
+  const exclusiveRowKeyForNode = (node: Node): string | null => exclusiveColumnKeyForNode(node);
+  const enforceExclusiveMergeRows = (): Set<string> => {
+    const changedVisualIds = new Set<string>();
+    for (let pass = 0; pass < Math.max(1, renderNodes.length * 2); pass += 1) {
+      const orderedNodes = [...renderNodes].sort((a, b) => {
+        if (a.row !== b.row) return a.row - b.row;
+        if (a.column !== b.column) return a.column - b.column;
+        return a.commit.visualId.localeCompare(b.commit.visualId);
+      });
+
+      let conflictRow: number | null = null;
+      let ownerKey: string | null = null;
+      for (const node of orderedNodes) {
+        const key = exclusiveRowKeyForNode(node);
+        if (!key) continue;
+        const rowNodes = orderedNodes.filter((candidate) => candidate.row === node.row);
+        if (rowNodes.every((candidate) => exclusiveRowKeyForNode(candidate) === key)) continue;
+        conflictRow = node.row;
+        ownerKey = key;
+        break;
+      }
+      if (conflictRow == null || ownerKey == null) break;
+
+      for (const node of renderNodes) {
+        if (node.row < conflictRow) continue;
+        if (exclusiveRowKeyForNode(node) === ownerKey) continue;
+        node.row += 1;
+        changedVisualIds.add(node.commit.visualId);
+        syncRenderNodeRowCoordinate(
+          node,
+          isHorizontal,
+          maxResolvedRow,
+          timelineRowLeadOffset,
+          zoomAwareTimelinePitch,
+        );
+      }
+    }
+    return changedVisualIds;
+  };
   const enforceExclusiveMergeColumns = (): Set<string> => {
     const changedVisualIds = new Set<string>();
     for (let pass = 0; pass < Math.max(1, renderNodes.length * 2); pass += 1) {
@@ -2135,6 +2188,7 @@ export function computeBranchGridLayout(input: BranchGridLayoutInput): BranchGri
   );
   applyOpenClumpColumnInsertions();
   for (let pass = 0; pass < Math.max(1, renderNodes.length * 2); pass += 1) {
+    const rowChangedVisualIds = enforceExclusiveMergeRows();
     const columnChangedVisualIds = enforceVisibleColumnsAfterParents();
     const collisionChangedVisualIds = resolveVisibleNodeColumnCollisions(
       renderNodes,
@@ -2146,7 +2200,8 @@ export function computeBranchGridLayout(input: BranchGridLayoutInput): BranchGri
     );
     const exclusiveChangedVisualIds = enforceExclusiveMergeColumns();
     if (
-      columnChangedVisualIds.size === 0
+      rowChangedVisualIds.size === 0
+      && columnChangedVisualIds.size === 0
       && collisionChangedVisualIds.size === 0
       && exclusiveChangedVisualIds.size === 0
     ) {
@@ -2394,9 +2449,11 @@ export function computeBranchGridLayout(input: BranchGridLayoutInput): BranchGri
     return changedVisualIds;
   };
   const connectorClearanceChangedVisualIds = enforceConnectorClearance();
+  const postClearanceExclusiveRowChangedVisualIds = enforceExclusiveMergeRows();
   const postClearanceExclusiveChangedVisualIds = enforceExclusiveMergeColumns();
   const postConnectorChangedVisualIds = new Set([
     ...connectorClearanceChangedVisualIds,
+    ...postClearanceExclusiveRowChangedVisualIds,
     ...postClearanceExclusiveChangedVisualIds,
   ]);
   if (postConnectorChangedVisualIds.size > 0) {
