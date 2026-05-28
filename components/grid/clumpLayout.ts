@@ -19,12 +19,10 @@ export const isMultiClump = (
 ): boolean => !!clusterKey && (clusterCounts.get(clusterKey) ?? 1) > 1;
 
 /**
- * Lanes reserved in the column pass.
- *
- * We always reserve the full band width so that when a clump is expanded the newly
- * revealed lanes are exclusive to that clump (no other nodes were placed there).
+ * Lanes reserved in the column pass. A clump lays out as a single virtual node;
+ * opening it inserts member columns later in the render pass.
  */
-export const clumpLayoutReservationSpan = (count: number): number => count;
+export const clumpLayoutReservationSpan = (_count: number): number => 1;
 
 export const clumpLaneSpan = (count: number, isOpen: boolean): number => (isOpen ? count : 1);
 
@@ -62,12 +60,12 @@ export type DeriveClumpMemberLayoutInput = {
   columnByCommitVisualId: Map<string, number>;
 };
 
-/** Members share a row; open clumps assign lanes oldest-to-newest from top to bottom. */
+/** Members share a row and column until the render expansion pass opens the clump. */
 export const deriveClumpMemberLayout = ({
   clusterKey,
   row,
   ownerColumn,
-  isOpen,
+  isOpen: _isOpen,
   leadVisualId: _leadVisualId,
   commits,
   clusterKeyByCommitId,
@@ -83,16 +81,9 @@ export const deriveClumpMemberLayout = ({
     rowByVisualId.set(member.visualId, row);
   }
 
-  if (!isOpen) {
-    for (const member of members) {
-      columnByCommitVisualId.set(member.visualId, ownerColumn);
-    }
-    return;
+  for (const member of members) {
+    columnByCommitVisualId.set(member.visualId, ownerColumn);
   }
-
-  members.forEach((member, index) => {
-    columnByCommitVisualId.set(member.visualId, ownerColumn + index);
-  });
 };
 
 export type DeriveAllClumpsInput = {
@@ -143,7 +134,7 @@ export const effectiveLayoutParentColumn = (
   leadByClusterKey: Map<string, string>,
   clumpOwnerColumnByClusterKey: Map<string, number>,
   columnByCommitVisualId: Map<string, number>,
-  isClumpOpen: (clusterKey: string) => boolean,
+  _isClumpOpen: (clusterKey: string) => boolean,
 ): number => {
   const clusterKey = clusterKeyByCommitId.get(parent.visualId);
   const count = clusterKey ? clusterCounts.get(clusterKey) ?? 1 : 1;

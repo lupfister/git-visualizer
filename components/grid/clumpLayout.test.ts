@@ -4,7 +4,6 @@ import {
   clumpLaneSpan,
   clumpLayoutReservationSpan,
   deriveClumpMemberLayout,
-  sortClumpCommitsChronologically,
 } from './clumpLayout';
 
 const makeCommit = (visualId: string, date: string): VisualCommit => ({
@@ -23,11 +22,11 @@ describe('clumpLayout', () => {
     expect(clumpLaneSpan(3, true)).toBe(3);
   });
 
-  it('reserves full band width in the column pass', () => {
-    expect(clumpLayoutReservationSpan(3)).toBe(3);
+  it('reserves one lane in the column pass', () => {
+    expect(clumpLayoutReservationSpan(3)).toBe(1);
   });
 
-  it('derives open clump columns from owner with shared row', () => {
+  it('keeps open clump columns on the owner until render expansion', () => {
     const clusterKey = 'cluster:feature:segment:1';
     const commits = [
       makeCommit('feature:aaaa', '2024-01-01T00:00:00Z'),
@@ -51,12 +50,12 @@ describe('clumpLayout', () => {
     });
 
     expect(columnByCommitVisualId.get('feature:aaaa')).toBe(2);
-    expect(columnByCommitVisualId.get('feature:bbbb')).toBe(3);
-    expect(columnByCommitVisualId.get('feature:cccc')).toBe(4);
+    expect(columnByCommitVisualId.get('feature:bbbb')).toBe(2);
+    expect(columnByCommitVisualId.get('feature:cccc')).toBe(2);
     expect(new Set(commits.map((commit) => rowByVisualId.get(commit.visualId)))).toEqual(new Set([3]));
   });
 
-  it('orders open clump columns chronologically, independent of lead', () => {
+  it('orders clump rows chronologically, independent of lead', () => {
     const clusterKey = 'cluster:feature:segment:1';
     const commits = [
       makeCommit('feature:newest', '2024-01-03T00:00:00Z'),
@@ -80,8 +79,8 @@ describe('clumpLayout', () => {
     });
 
     expect(columnByCommitVisualId.get('feature:oldest')).toBe(5);
-    expect(columnByCommitVisualId.get('feature:middle')).toBe(6);
-    expect(columnByCommitVisualId.get('feature:newest')).toBe(7);
+    expect(columnByCommitVisualId.get('feature:middle')).toBe(5);
+    expect(columnByCommitVisualId.get('feature:newest')).toBe(5);
   });
 
   it('derives collapsed clump at owner column only', () => {
