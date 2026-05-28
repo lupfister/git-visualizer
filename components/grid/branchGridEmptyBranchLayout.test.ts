@@ -821,6 +821,123 @@ describe('computeBranchGridLayout empty branch placeholders', () => {
     expect(incomingToLead).toBeDefined();
   });
 
+  it('places collapsed clump after every source parent of the earliest member', () => {
+    const defaultBranch = 'main';
+    const sideSha = 'cccccccccccccccccccccccccccccccccccccccc';
+    const mergeFirstSha = 'dddddddddddddddddddddddddddddddddddddddd';
+    const clumpMiddleSha = 'eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee';
+    const clumpTipSha = 'ffffffffffffffffffffffffffffffffffffffff';
+    const branches = [
+      makeBranch(defaultBranch, tipSha, 1),
+      makeBranch('side', sideSha, 1, defaultBranch),
+      makeBranch('feature', clumpTipSha, 3, defaultBranch),
+    ];
+    const directCommits: DirectCommit[] = [
+      {
+        fullSha: mainSha,
+        sha: mainSha.slice(0, 7),
+        branch: defaultBranch,
+        message: 'root',
+        author: 'test',
+        date: '2024-05-01T12:00:00Z',
+        parentSha: null,
+        parentShas: [],
+      },
+      {
+        fullSha: tipSha,
+        sha: tipSha.slice(0, 7),
+        branch: defaultBranch,
+        message: 'main tip',
+        author: 'test',
+        date: '2024-06-01T12:00:00Z',
+        parentSha: mainSha,
+        parentShas: [mainSha],
+      },
+      {
+        fullSha: sideSha,
+        sha: sideSha.slice(0, 7),
+        branch: 'side',
+        message: 'side parent',
+        author: 'test',
+        date: '2024-06-02T12:00:00Z',
+        parentSha: tipSha,
+        parentShas: [tipSha],
+      },
+    ];
+    const unpushedDirectCommits: DirectCommit[] = [
+      {
+        fullSha: mergeFirstSha,
+        sha: mergeFirstSha.slice(0, 7),
+        branch: 'feature',
+        message: 'merge first',
+        author: 'test',
+        date: '2024-06-03T10:00:00Z',
+        parentSha: tipSha,
+        parentShas: [tipSha, sideSha],
+      },
+      {
+        fullSha: clumpMiddleSha,
+        sha: clumpMiddleSha.slice(0, 7),
+        branch: 'feature',
+        message: 'middle',
+        author: 'test',
+        date: '2024-06-03T11:00:00Z',
+        parentSha: mergeFirstSha,
+        parentShas: [mergeFirstSha],
+      },
+      {
+        fullSha: clumpTipSha,
+        sha: clumpTipSha.slice(0, 7),
+        branch: 'feature',
+        message: 'tip',
+        author: 'test',
+        date: '2024-06-03T12:00:00Z',
+        parentSha: clumpMiddleSha,
+        parentShas: [clumpMiddleSha],
+      },
+    ];
+    const layout = computeBranchGridLayout({
+      branches,
+      mergeNodes: [],
+      directCommits,
+      unpushedDirectCommits,
+      unpushedCommitShasByBranch: {
+        feature: [mergeFirstSha, clumpMiddleSha, clumpTipSha],
+      },
+      defaultBranch,
+      branchCommitPreviews: { main: [], side: [], feature: [] },
+      branchParentByName: { main: null, side: 'main', feature: 'main' },
+      branchUniqueAheadCounts: { main: 1, side: 1, feature: 3 },
+      manuallyOpenedClumps: new Set(),
+      manuallyClosedClumps: new Set(),
+      isDebugOpen: false,
+      gridSearchQuery: '',
+      gridFocusSha: null,
+      checkedOutRef: null,
+      orientation: 'horizontal',
+    });
+
+    const clusterKey = [...layout.clusterCounts.entries()].find(([, count]) => count > 1)?.[0];
+    expect(clusterKey).toBeDefined();
+    expect(layout.firstByClusterKey.get(clusterKey!)).toBe(`feature:${mergeFirstSha}`);
+
+    const clumpNode = layout.renderNodes.find(
+      (node) => layout.clusterKeyByCommitId.get(node.commit.visualId) === clusterKey,
+    );
+    const mainParentNode = layout.renderNodes.find((node) => node.commit.id === tipSha);
+    const sideParentNode = layout.renderNodes.find((node) => node.commit.id === sideSha);
+    expect(clumpNode).toBeDefined();
+    expect(mainParentNode).toBeDefined();
+    expect(sideParentNode).toBeDefined();
+    expect(clumpNode!.row).toBeGreaterThan(mainParentNode!.row);
+    expect(clumpNode!.row).toBeGreaterThan(sideParentNode!.row);
+    expect(clumpNode!.column).toBeGreaterThan(mainParentNode!.column);
+    expect(clumpNode!.column).toBeGreaterThan(sideParentNode!.column);
+
+    const usedColumns = [...new Set(layout.renderNodes.map((node) => node.column))].sort((a, b) => a - b);
+    expect(usedColumns).toEqual(usedColumns.map((_, index) => index));
+  });
+
   it('interleaves stash lanes by date between fork parent and newer branch work', () => {
     const defaultBranch = 'main';
     const stashId = 'STASH:0';

@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import type { Branch, DirectCommit } from '../types';
+import type { Branch } from '../types';
 import { computeBranchGridLayout } from '../components/grid/branchGridLayoutModel';
 
 /**
@@ -163,6 +163,9 @@ describe('merge sandwich row layout', () => {
 
     const latestParentColumn = Math.max(mainParentNode!.column, worktreeParentNode!.column);
     expect(mergeNode!.column).toBeGreaterThan(latestParentColumn);
+
+    const usedColumns = [...new Set(layout.renderNodes.map((node) => node.column))].sort((a, b) => a - b);
+    expect(usedColumns).toEqual(usedColumns.map((_, index) => index));
 
     const worktreeMiddleNode = layout.renderNodes.find(
       (node) => node.commit.branchName === 'worktree-agents' && node.commit.id === worktreeMiddleSha,
