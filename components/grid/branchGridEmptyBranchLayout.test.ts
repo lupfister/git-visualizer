@@ -1324,4 +1324,133 @@ describe('computeBranchGridLayout empty branch placeholders', () => {
     expect(mainChildNode!.row).toBe(cursorOneNode!.row);
     expect(mainChildNode!.row).toBe(cursorTwoNode!.row);
   });
+
+  it('forms clumps based on user/author', () => {
+    const defaultBranch = 'main';
+    const branches = [
+      makeBranch(defaultBranch, tipSha, 1),
+      makeBranch('feature', 'sha3', 3, defaultBranch),
+    ];
+    const directCommits: DirectCommit[] = [
+      {
+        fullSha: mainSha,
+        sha: mainSha.slice(0, 7),
+        branch: defaultBranch,
+        message: 'root',
+        author: 'Alice',
+        date: '2024-05-01T12:00:00Z',
+        parentSha: null,
+        parentShas: [],
+      },
+      {
+        fullSha: tipSha,
+        sha: tipSha.slice(0, 7),
+        branch: defaultBranch,
+        message: 'tip',
+        author: 'Alice',
+        date: '2024-06-02T12:00:00Z',
+        parentSha: mainSha,
+        parentShas: [mainSha],
+      },
+    ];
+    const unpushedDirectCommits: DirectCommit[] = [
+      {
+        fullSha: 'sha1',
+        sha: 'sha1'.padEnd(7, '0'),
+        branch: 'feature',
+        message: 'commit 1',
+        author: 'Alice',
+        date: '2024-06-03T10:00:00Z',
+        parentSha: tipSha,
+        parentShas: [tipSha],
+      },
+      {
+        fullSha: 'sha2',
+        sha: 'sha2'.padEnd(7, '0'),
+        branch: 'feature',
+        message: 'commit 2',
+        author: 'Bob',
+        date: '2024-06-03T11:00:00Z',
+        parentSha: 'sha1',
+        parentShas: ['sha1'],
+      },
+      {
+        fullSha: 'sha3',
+        sha: 'sha3'.padEnd(7, '0'),
+        branch: 'feature',
+        message: 'commit 3',
+        author: 'Alice',
+        date: '2024-06-03T12:00:00Z',
+        parentSha: 'sha2',
+        parentShas: ['sha2'],
+      },
+    ];
+
+    const layout = computeBranchGridLayout({
+      branches,
+      mergeNodes: [],
+      directCommits,
+      unpushedDirectCommits,
+      unpushedCommitShasByBranch: {
+        feature: ['sha1', 'sha2', 'sha3'],
+      },
+      defaultBranch,
+      branchCommitPreviews: { main: [], feature: [] },
+      branchParentByName: { main: null, feature: 'main' },
+      branchUniqueAheadCounts: { main: 1, feature: 3 },
+      manuallyClosedClumps: new Set(),
+      manuallyOpenedClumps: new Set(),
+      isDebugOpen: false,
+      gridSearchQuery: '',
+      gridFocusSha: null,
+      checkedOutRef: null,
+      orientation: 'horizontal',
+    });
+
+    // Check cluster counts
+    // 'sha1', 'sha2', and 'sha3' are on 'feature' branch.
+    // Since they have different authors (Alice, Bob, Alice), they should NOT group into a single cluster.
+    // Instead, they should be in separate clusters (of count 1).
+    const key1 = layout.clusterKeyByCommitId.get('feature:sha1');
+    const key2 = layout.clusterKeyByCommitId.get('feature:sha2');
+    const key3 = layout.clusterKeyByCommitId.get('feature:sha3');
+
+    expect(key1).toBeDefined();
+    expect(key2).toBeDefined();
+    expect(key3).toBeDefined();
+    expect(key1).not.toBe(key2);
+    expect(key2).not.toBe(key3);
+    expect(key1).not.toBe(key3);
+
+    // Let's verify that if they had the same author, they would clump
+    const unpushedSameAuthor = unpushedDirectCommits.map(c => ({ ...c, author: 'Alice' }));
+    const layoutSame = computeBranchGridLayout({
+      branches,
+      mergeNodes: [],
+      directCommits,
+      unpushedDirectCommits: unpushedSameAuthor,
+      unpushedCommitShasByBranch: {
+        feature: ['sha1', 'sha2', 'sha3'],
+      },
+      defaultBranch,
+      branchCommitPreviews: { main: [], feature: [] },
+      branchParentByName: { main: null, feature: 'main' },
+      branchUniqueAheadCounts: { main: 1, feature: 3 },
+      manuallyClosedClumps: new Set(),
+      manuallyOpenedClumps: new Set(),
+      isDebugOpen: false,
+      gridSearchQuery: '',
+      gridFocusSha: null,
+      checkedOutRef: null,
+      orientation: 'horizontal',
+    });
+
+    const keySame1 = layoutSame.clusterKeyByCommitId.get('feature:sha1');
+    const keySame2 = layoutSame.clusterKeyByCommitId.get('feature:sha2');
+    const keySame3 = layoutSame.clusterKeyByCommitId.get('feature:sha3');
+
+    expect(keySame1).toBeDefined();
+    expect(keySame1).toBe(keySame2);
+    expect(keySame1).toBe(keySame3);
+  });
 });

@@ -950,6 +950,7 @@ export function computeBranchGridLayout(input: BranchGridLayoutInput): BranchGri
       return 'commit';
     };
     let previousBoundaryKind: string | null = null;
+    let previousAuthor: string | null = null;
     for (const commit of ordered) {
       const isHiddenSyntheticChild = commit.kind === 'branch-created' || commit.kind === 'stash';
       const isBoundary = boundaryShaByCommitId.has(commit.visualId);
@@ -976,7 +977,8 @@ export function computeBranchGridLayout(input: BranchGridLayoutInput): BranchGri
           previousBoundaryKind === 'branch-created' || boundaryKind === 'branch-created' ||
           // Reset if transitioning from a checked-out-tip to anything else
           previousBoundaryKind === 'checked-out-tip'
-        ));
+        )) ||
+        (previousAuthor != null && commit.author !== previousAuthor);
 
       if (shouldReset) {
         segmentIndex += 1;
@@ -990,6 +992,7 @@ export function computeBranchGridLayout(input: BranchGridLayoutInput): BranchGri
         currentKey = null;
       }
       previousBoundaryKind = boundaryKind;
+      previousAuthor = commit.author;
     }
     const leadPriority = (commit: VisualCommit): number => {
       if (commit.kind === 'uncommitted') return 3;
