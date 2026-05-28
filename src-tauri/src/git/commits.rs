@@ -479,6 +479,154 @@ fn assign_commit_branch(
     String::new()
 }
 
+#[cfg(test)]
+mod branch_assignment_tests {
+    use super::get_all_repo_commits;
+    use std::collections::HashMap;
+    use std::fs;
+    use std::path::{Path, PathBuf};
+    use std::process::Command;
+    use std::time::{SystemTime, UNIX_EPOCH};
+
+    struct TestRepo {
+        path: PathBuf,
+    }
+
+    impl Drop for TestRepo {
+        fn drop(&mut self) {
+            let _ = fs::remove_dir_all(&self.path);
+        }
+    }
+
+    fn run_git(repo: &Path, args: &[&str]) -> String {
+        let output = Command::new("git")
+            .args(args)
+            .current_dir(repo)
+            .output()
+            .unwrap_or_else(|error| panic!("git {:?} failed to start: {error}", args));
+        if !output.status.success() {
+            panic!(
+                "git {:?} failed: {}",
+                args,
+                String::from_utf8_lossy(&output.stderr)
+            );
+        }
+        String::from_utf8_lossy(&output.stdout).trim().to_string()
+    }
+
+    fn new_repo() -> TestRepo {
+        let suffix = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .expect("system time before unix epoch")
+            .as_nanos();
+        let path = std::env::temp_dir().join(format!(
+            "git-visualizer-branch-assignment-{}-{suffix}",
+            std::process::id()
+        ));
+        fs::create_dir_all(&path).expect("create temp repo");
+        run_git(&path, &["init", "-b", "main"]);
+        run_git(&path, &["config", "user.email", "test@example.com"]);
+        run_git(&path, &["config", "user.name", "Test User"]);
+        TestRepo { path }
+    }
+
+    fn commit_file(repo: &Path, file_name: &str, content: &str, message: &str) -> String {
+        fs::write(repo.join(file_name), content).expect("write test file");
+        run_git(repo, &["add", file_name]);
+        run_git(repo, &["commit", "-m", message]);
+        run_git(repo, &["rev-parse", "HEAD"])
+    }
+
+    #[test]
+    fn assigns_deleted_fast_forward_branch_commits_to_default() {
+        let repo = new_repo();
+        commit_file(&repo.path, "main.txt", "base", "base");
+        run_git(&repo.path, &["checkout", "-b", "feature"]);
+        let feature_sha = commit_file(&repo.path, "feature.txt", "feature", "feature work");
+
+        run_git(&repo.path, &["checkout", "main"]);
+        run_git(&repo.path, &["merge", "--ff-only", "feature"]);
+        run_git(&repo.path, &["branch", "-D", "feature"]);
+        run_git(&repo.path, &["checkout", "-b", "other"]);
+        commit_file(&repo.path, "other.txt", "other", "other work");
+
+        let commits = get_all_repo_commits(
+            &repo.path,
+            "main",
+            &["main".to_string(), "other".to_string()],
+            &HashMap::new(),
+        )
+        .expect("load commits");
+
+        let feature_commit = commits
+            .iter()
+            .find(|commit| commit.full_sha == feature_sha)
+            .expect("feature commit is reachable");
+        assert_eq!(feature_commit.branch, "main");
+    }
+
+    #[test]
+    fn assigns_deleted_merged_branch_commits_to_default_not_nearby_branch() {
+        let repo = new_repo();
+        commit_file(&repo.path, "main.txt", "base", "base");
+        run_git(&repo.path, &["checkout", "-b", "feature"]);
+        let feature_sha = commit_file(&repo.path, "feature.txt", "feature", "feature work");
+
+        run_git(&repo.path, &["checkout", "main"]);
+        run_git(&repo.path, &["merge", "--no-ff", "--no-edit", "feature"]);
+        run_git(&repo.path, &["branch", "-D", "feature"]);
+        run_git(&repo.path, &["checkout", "-b", "other"]);
+        commit_file(&repo.path, "other.txt", "other", "other work");
+
+        let commits = get_all_repo_commits(
+            &repo.path,
+            "main",
+            &["main".to_string(), "other".to_string()],
+            &HashMap::new(),
+        )
+        .expect("load commits");
+
+        let feature_commit = commits
+            .iter()
+            .find(|commit| commit.full_sha == feature_sha)
+            .expect("feature commit is reachable");
+        assert_eq!(feature_commit.branch, "main");
+    }
+
+    #[test]
+    fn assigns_nested_deleted_branch_commits_in_fast_forwarded_history_to_default() {
+        let repo = new_repo();
+        commit_file(&repo.path, "main.txt", "base", "base");
+        run_git(&repo.path, &["checkout", "-b", "feature"]);
+        commit_file(&repo.path, "feature.txt", "feature", "feature work");
+        run_git(&repo.path, &["checkout", "-b", "nested"]);
+        let nested_sha = commit_file(&repo.path, "nested.txt", "nested", "nested work");
+
+        run_git(&repo.path, &["checkout", "feature"]);
+        run_git(&repo.path, &["merge", "--no-ff", "--no-edit", "nested"]);
+        run_git(&repo.path, &["branch", "-D", "nested"]);
+        run_git(&repo.path, &["checkout", "main"]);
+        run_git(&repo.path, &["merge", "--ff-only", "feature"]);
+        run_git(&repo.path, &["branch", "-D", "feature"]);
+        run_git(&repo.path, &["checkout", "-b", "other"]);
+        commit_file(&repo.path, "other.txt", "other", "other work");
+
+        let commits = get_all_repo_commits(
+            &repo.path,
+            "main",
+            &["main".to_string(), "other".to_string()],
+            &HashMap::new(),
+        )
+        .expect("load commits");
+
+        let nested_commit = commits
+            .iter()
+            .find(|commit| commit.full_sha == nested_sha)
+            .expect("nested commit is reachable");
+        assert_eq!(nested_commit.branch, "main");
+    }
+}
+
 fn parse_direct_commit_line(line: &str) -> Option<ParsedCommitLine> {
     let parts: Vec<&str> = line.splitn(6, LOG_FIELD_SEPARATOR).collect();
     if parts.len() < 6 {

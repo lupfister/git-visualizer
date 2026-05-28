@@ -20,6 +20,73 @@ const makeBranch = (name: string, headSha: string, commitsAhead: number, parentB
 });
 
 describe('computeBranchGridLayout empty branch placeholders', () => {
+  it('ignores stale branch previews when branch has no unique commits', () => {
+    const defaultBranch = 'main';
+    const branches = [
+      makeBranch(defaultBranch, tipSha, 1),
+      makeBranch('deleted-feature-stale', tipSha, 0),
+    ];
+    const directCommits: DirectCommit[] = [
+      {
+        fullSha: mainSha,
+        sha: mainSha.slice(0, 7),
+        branch: defaultBranch,
+        message: 'root',
+        author: 'test',
+        date: '2024-05-01T12:00:00Z',
+        parentSha: null,
+        parentShas: [],
+      },
+      {
+        fullSha: tipSha,
+        sha: tipSha.slice(0, 7),
+        branch: defaultBranch,
+        message: 'ff merged work',
+        author: 'test',
+        date: '2024-06-01T12:00:00Z',
+        parentSha: mainSha,
+        parentShas: [mainSha],
+      },
+    ];
+    const layout = computeBranchGridLayout({
+      branches,
+      mergeNodes: [],
+      directCommits,
+      unpushedDirectCommits: [],
+      defaultBranch,
+      branchCommitPreviews: {
+        main: [],
+        'deleted-feature-stale': [{
+          fullSha: tipSha,
+          sha: tipSha.slice(0, 7),
+          message: 'stale feature preview',
+          author: 'test',
+          date: '2024-06-01T12:00:00Z',
+          parentSha: mainSha,
+          parentShas: [mainSha],
+          childShas: [],
+          kind: 'commit',
+        }],
+      },
+      branchParentByName: { main: null, 'deleted-feature-stale': 'main' },
+      branchUniqueAheadCounts: { main: 1, 'deleted-feature-stale': 0 },
+      manuallyOpenedClumps: new Set(),
+      manuallyClosedClumps: new Set(),
+      isDebugOpen: false,
+      gridSearchQuery: '',
+      gridFocusSha: null,
+      checkedOutRef: null,
+      orientation: 'horizontal',
+    });
+
+    expect(layout.renderNodes.some((node) =>
+      node.commit.branchName === 'deleted-feature-stale' && node.commit.id === tipSha,
+    )).toBe(false);
+    expect(layout.renderNodes.some((node) =>
+      node.commit.branchName === defaultBranch && node.commit.id === tipSha,
+    )).toBe(true);
+  });
+
   it('places BRANCH_HEAD one row ahead and one lane below the fork parent', () => {
     const defaultBranch = 'main';
     const branches = [
