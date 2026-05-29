@@ -1,18 +1,48 @@
 # git-visualizer — Project Rules
 
+## Goal & vibe
+
+Git Visualizer is a **native desktop app** for exploring local git repos as a spatial branch map. The experience should feel calm, precise, and fast — refined minimalism with subtle depth, not a generic git GUI.
+
+Core ideas:
+- The **branch grid map** is the primary interface; sidebar and dialogs support it, not the other way around
+- **Local git first** — operations run against the user's repos via the Tauri/Rust backend
+- **Worktree-aware** — linked checkouts and dirty state belong on the map
+- **Performance matters** — virtualized rendering, layout workers, debounced sync, and background fingerprinting
+
 ## Stack
-- Next.js 16 App Router, TypeScript, Tailwind CSS
-- SVG-based branch map canvas (custom, no React Flow)
-- GitHub REST API v3 via server components + API routes
-- `GITHUB_PAT` env var for authentication
+- Tauri 2 (Rust backend), React 19, Vite, TypeScript, Tailwind CSS 4
+- SVG-based branch grid map (custom layout — no React Flow)
+- Local `git` CLI via Rust (`src-tauri/src/git/`)
+- GitHub via `gh` CLI (`src-tauri/src/github.rs`) — not a `GITHUB_PAT` env var
+- OpenCode CLI for optional AI commit/stash titles (`src-tauri/src/opencode.rs`)
+- SQLite for project snapshot persistence
 
 ## Key Files
-- `components/BranchMap.tsx` — main SVG canvas, all layout constants at top
-- `lib/github.ts` — all GitHub API wrappers
+- `src/App.tsx` — main app shell, repo sync orchestration, project state
+- `components/grid/MapGrid.tsx` — map canvas, interactions, virtualization
+- `components/grid/MapViewGrid.tsx` — map view wrapper and props boundary
+- `components/grid/branchGridLayoutModel.ts` — layout model and constants
+- `components/grid/useBranchGridLayoutFromRevision.ts` — layout computation hook
+- `components/DenseBranchSidebar.tsx` — multi-project sidebar
+- `src/repoVisualState.ts` — derived visual state from git data
+- `src/orchestratedRepoSync.ts` — coordinated refresh pipeline
+- `src-tauri/src/lib.rs` — Tauri commands, watchers, SQLite
+- `lib/git.ts` — frontend invoke wrappers for git commands
 - `types/index.ts` — shared TypeScript types
-- `app/repo/[owner]/[repo]/page.tsx` — server component, initial data fetch
-- `app/api/commits/route.ts` — paginated commit history API route
-- `app/globals.css` — global styles including custom scrollbar
+- `src/index.css` — design tokens, global styles, Space Grotesk
+
+## Development
+
+Preview and run the app with:
+
+```bash
+pnpm tauri dev
+```
+
+Do **not** use `pnpm dev` as the primary preview — that serves the Vite frontend only without Tauri APIs or the native shell.
+
+Other useful commands: `pnpm test`, `pnpm build`, `pnpm tauri build`.
 
 ## Design System — BossUI Principles
 
@@ -103,7 +133,7 @@ Glassmorphism for overlays: `bg-card/80 backdrop-blur-sm rounded-2xl border shad
 
 ## Workflow Rules
 - Do NOT auto-commit — only commit when explicitly asked
-- Do NOT open or refresh the browser
+- Do NOT open or refresh the browser — this is a Tauri desktop app; use `pnpm tauri dev` to preview
 - Always use `cn()` for conditional class merging
 - Use `shrink-0` on icons to prevent squishing
 - Include hover/active states on all interactive elements
@@ -115,3 +145,4 @@ Glassmorphism for overlays: `bg-card/80 backdrop-blur-sm rounded-2xl border shad
 - No shadows without purpose
 - No new patterns when existing ones apply
 - No mixing button/input styles within the same view
+- No Next.js/server-component assumptions — all git work goes through Tauri invoke
