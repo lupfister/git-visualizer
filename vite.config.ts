@@ -18,4 +18,7 @@ export default defineConfig({
     target: ['es2021', 'chrome100', 'safari13'],
     outDir: 'dist',
   },
+  worker: {
+    format: 'es',
+  },
 });

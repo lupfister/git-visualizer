@@ -27,6 +27,7 @@ import {
 import { GitMerge } from 'lucide-react';
 import { GRID_LAYOUT_RENDER_ZOOM } from './branchGridLayoutModel';
 import type { BranchGridLayoutModel } from './branchGridLayoutModel';
+import { deriveGridSearchMatch } from './gridSearchMatch';
 import { connectorsWithEffectivePositions } from './mapGridLiveConnectors';
 import {
   assignNodePositionOverride,
@@ -212,7 +213,7 @@ export default function BranchGridMap({
   branchCommitPreviews = {},
   branchParentByName: _branchParentByName = {},
   branchUniqueAheadCounts = {},
-  gridSearchQuery: _gridSearchQuery = '',
+  gridSearchQuery = '',
   gridSearchJumpToken = 0,
   gridSearchJumpDirection = 1,
   gridFocusSha = null,
@@ -447,9 +448,6 @@ export default function BranchGridMap({
     leadByClusterKey,
     firstByClusterKey,
     clusterCounts,
-    matchingNodes,
-    matchingNodeIds,
-    normalizedSearchQuery,
     focusedNode,
     defaultCollapsedClumps,
     renderNodes,
@@ -462,6 +460,12 @@ export default function BranchGridMap({
     nodeWarnings,
     commitIdsWithRenderedAncestry,
   } = resolvedLayoutModel;
+
+  const gridSearchMatch = useMemo(
+    () => deriveGridSearchMatch(resolvedLayoutModel.nodes, gridSearchQuery),
+    [gridSearchQuery, resolvedLayoutModel.nodes],
+  );
+  const { matchingNodes, matchingNodeIds, normalizedSearchQuery } = gridSearchMatch;
 
   const isHorizontalLayout = orientation === 'horizontal';
   const connectorsForView = useMemo(

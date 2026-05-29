@@ -6,7 +6,7 @@ import type { CommitItem, Lane, Node, VisualCommit } from './LayoutGrid';
 type Entry<T> = [string, T];
 type NestedSetEntry = [string, Array<[string, string[]]>];
 
-type SerializedBranchGridLayoutModel = {
+export type SerializedBranchGridLayoutModel = {
   branchByName: Entry<Branch>[];
   laneByName: Entry<Lane>[];
   mainCommits: CommitItem[];
