@@ -2,6 +2,7 @@ import { Branch, BranchCommitPreview, BranchPromptMeta, CheckedOutRef, DirectCom
 import type { Dispatch, SetStateAction } from 'react';
 import BranchGridMap from './MapGrid';
 import type { BranchGridLayoutModel } from './branchGridLayoutModel';
+import type { WorktreeDraftDisplay } from '../../src/worktreeDraftMessages';
 import type { NodePositionOverrides } from './LayoutGrid';
 
 export type ViewMode = 'time' | 'grid';
@@ -102,7 +103,7 @@ interface Props {
   onMapReadyForDisplay?: (epoch: number) => void;
   nodePositionOverrides?: NodePositionOverrides;
   onNodePositionOverridesChange?: (overrides: NodePositionOverrides) => void;
-  worktreeDraftByWorkingTreeId?: ReadonlyMap<string, { status: 'idle' | 'pending' | 'ready' | 'error'; message: string }>;
+  worktreeDraftByWorkingTreeId?: ReadonlyMap<string, WorktreeDraftDisplay>;
 }
 
 export default function BranchGridMapView({

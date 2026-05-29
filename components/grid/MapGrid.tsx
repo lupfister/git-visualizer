@@ -58,6 +58,7 @@ import {
   type WorktreeSession,
 } from '../../lib/worktreeSessions';
 import type { WorktreeInfo } from '../../types';
+import type { WorktreeDraftDisplay } from '../../src/worktreeDraftMessages';
 import { parseMapCheckoutTarget, type MapCheckoutTarget } from './mapCheckoutTarget';
 import { parseDeletableEmptyBranchFromCommitId } from './mapDeleteTarget';
 import {
@@ -164,7 +165,7 @@ type Props = BranchGridViewProps & {
   onMapReadyForDisplay?: (epoch: number) => void;
   nodePositionOverrides?: NodePositionOverrides;
   onNodePositionOverridesChange?: (overrides: NodePositionOverrides) => void;
-  worktreeDraftByWorkingTreeId?: ReadonlyMap<string, { status: 'idle' | 'pending' | 'ready' | 'error'; message: string }>;
+  worktreeDraftByWorkingTreeId?: ReadonlyMap<string, WorktreeDraftDisplay>;
 };
 
 export default function BranchGridMap({
@@ -452,6 +453,7 @@ export default function BranchGridMap({
     clusterCounts,
     focusedNode,
     defaultCollapsedClumps,
+    nodes: layoutNodes,
     renderNodes,
     visibleNodesBySha,
     contentWidth,
@@ -675,19 +677,6 @@ export default function BranchGridMap({
   const checkedOutBranchName = checkedOutRef?.branchName ?? null;
   const checkedOutHeadSha = checkedOutRef?.headSha ?? null;
   const checkedOutIsDetached = checkedOutBranchName == null;
-  const focusedRenderNode = useMemo(() => {
-    if (!gridFocusSha) return null;
-    const candidates = renderNodes.filter((node) => node.commit.id === gridFocusSha);
-    if (candidates.length === 0) return null;
-    if (candidates.length === 1 || !focusedNode) return candidates[0];
-    return candidates.reduce((best, candidate) => {
-      const bestDistance = (best.x - focusedNode.x) ** 2 + (best.y - focusedNode.y) ** 2;
-      const candidateDistance = (candidate.x - focusedNode.x) ** 2 + (candidate.y - focusedNode.y) ** 2;
-      return candidateDistance < bestDistance ? candidate : best;
-    });
-  }, [gridFocusSha, renderNodes, focusedNode]);
-
-
 
   const branchCandidatesForCommit = useCallback(
     (sha: string): string[] => Array.from(commitShaToBranchNames.get(sha) ?? []),
@@ -915,19 +904,6 @@ export default function BranchGridMap({
     onGridSearchResultCountChange?.(next);
   }, [matchingNodes.length, normalizedSearchQuery, onGridSearchResultCountChange]);
 
-  useEffect(() => {
-    const next =
-      normalizedSearchQuery && gridFocusSha
-        ? (() => {
-            const index = matchingNodes.findIndex((node) => node.commit.id === gridFocusSha);
-            return index >= 0 ? index : null;
-          })()
-        : null;
-    if (lastSearchResultIndexRef.current === next) return;
-    lastSearchResultIndexRef.current = next;
-    onGridSearchResultIndexChange?.(next);
-  }, [gridFocusSha, matchingNodes, normalizedSearchQuery, onGridSearchResultIndexChange]);
-
   const searchMatchedBranchHeadSha = useMemo(() => {
     if (!normalizedSearchQuery) return null;
     const query = normalizedSearchQuery;
@@ -952,6 +928,74 @@ export default function BranchGridMap({
     return null;
   }, [normalizedSearchQuery, branches, branchCommitPreviews, defaultBranch, directCommits]);
 
+  const searchJumpFocusSha = useMemo(() => {
+    if (!normalizedSearchQuery || gridSearchJumpToken <= 0) return null;
+    const currentIndex = gridFocusSha
+      ? matchingNodes.findIndex((node) => node.commit.id === gridFocusSha)
+      : -1;
+    const nextIndex = matchingNodes.length > 0
+      ? (currentIndex < 0
+          ? 0
+          : (currentIndex + gridSearchJumpDirection + matchingNodes.length) % matchingNodes.length)
+      : -1;
+    return matchingNodes[nextIndex]?.commit.id ?? searchMatchedBranchHeadSha ?? null;
+  }, [
+    normalizedSearchQuery,
+    gridSearchJumpToken,
+    gridSearchJumpDirection,
+    matchingNodes,
+    gridFocusSha,
+    searchMatchedBranchHeadSha,
+  ]);
+
+  const viewportFocusSha = isGridSearchActive && gridSearchJumpToken > 0
+    ? (searchJumpFocusSha ?? gridFocusSha)
+    : gridFocusSha;
+
+  useEffect(() => {
+    const next =
+      normalizedSearchQuery && viewportFocusSha
+        ? (() => {
+            const index = matchingNodes.findIndex((node) => node.commit.id === viewportFocusSha);
+            return index >= 0 ? index : null;
+          })()
+        : null;
+    if (lastSearchResultIndexRef.current === next) return;
+    lastSearchResultIndexRef.current = next;
+    onGridSearchResultIndexChange?.(next);
+  }, [viewportFocusSha, matchingNodes, normalizedSearchQuery, onGridSearchResultIndexChange]);
+
+  const resolveFocusRenderNode = useCallback((sha: string | null): Node | null => {
+    if (!sha) return null;
+    const renderCandidates = renderNodes.filter((node) => node.commit.id === sha);
+    if (renderCandidates.length > 0) {
+      if (renderCandidates.length === 1 || !focusedNode) return renderCandidates[0];
+      return renderCandidates.reduce((best, candidate) => {
+        const bestDistance = (best.x - focusedNode.x) ** 2 + (best.y - focusedNode.y) ** 2;
+        const candidateDistance = (candidate.x - focusedNode.x) ** 2 + (candidate.y - focusedNode.y) ** 2;
+        return candidateDistance < bestDistance ? candidate : best;
+      });
+    }
+    const layoutNode = layoutNodes.find((node) => node.commit.id === sha);
+    if (layoutNode) return layoutNode;
+    return matchingNodes.find((node) => node.commit.id === sha) ?? null;
+  }, [renderNodes, focusedNode, layoutNodes, matchingNodes]);
+
+  const viewportFocusRenderNode = useMemo(
+    () => resolveFocusRenderNode(viewportFocusSha),
+    [resolveFocusRenderNode, viewportFocusSha],
+  );
+
+  const resolveNodeCardCenter = useCallback((node: Node): { x: number; y: number } => {
+    const override = getNodePositionOverride(nodePositionOverrides, node.commit);
+    const cardLeft = override?.x ?? node.x;
+    const cardTop = override?.y ?? node.y;
+    return {
+      x: cardLeft + CARD_WIDTH / 2,
+      y: cardTop + CARD_BODY_TOP_OFFSET + CARD_HEIGHT / 2,
+    };
+  }, [nodePositionOverrides]);
+
   useEffect(() => {
     if (!normalizedSearchQuery) {
       lastHandledSearchJumpTokenRef.current = gridSearchJumpToken;
@@ -965,40 +1009,30 @@ export default function BranchGridMap({
     if (lastHandledSearchJumpTokenRef.current === gridSearchJumpToken) return;
     lastHandledSearchJumpTokenRef.current = gridSearchJumpToken;
 
-    let nextFocusSha: string | null;
-    const currentIndex = gridFocusSha ? matchingNodes.findIndex((node) => node.commit.id === gridFocusSha) : -1;
-    const nextIndex = matchingNodes.length > 0
-      ? (currentIndex < 0
-          ? 0
-          : (currentIndex + gridSearchJumpDirection + matchingNodes.length) % matchingNodes.length)
-      : -1;
-    nextFocusSha = matchingNodes[nextIndex]?.commit.id ?? searchMatchedBranchHeadSha ?? null;
+    const nextFocusSha = searchJumpFocusSha;
     if (lastSearchFocusShaRef.current === nextFocusSha) return;
     lastSearchFocusShaRef.current = nextFocusSha;
     onGridSearchFocusChange?.(nextFocusSha);
   }, [
-    matchingNodes,
     normalizedSearchQuery,
     onGridSearchFocusChange,
-    searchMatchedBranchHeadSha,
+    searchJumpFocusSha,
     gridSearchJumpToken,
-    gridSearchJumpDirection,
   ]);
 
   useLayoutEffect(() => {
-    if (!gridFocusSha) return;
-    const focusRequestKey = `${gridFocusSha}:${gridSearchJumpToken}`;
+    if (!viewportFocusSha) return;
+    const focusRequestKey = `${viewportFocusSha}:${gridSearchJumpToken}:${normalizedSearchQuery}`;
     if (lastHandledViewportFocusRequestRef.current === focusRequestKey) return;
     const viewport = scrollContainerRef.current;
-    const focusNode = focusedRenderNode;
+    const focusNode = viewportFocusRenderNode;
     if (!viewport || !focusNode) return;
     const origin = getTransformLayerOriginScreen();
     if (!origin) return;
     const viewportRect = viewport.getBoundingClientRect();
     const targetZoom = renderedCameraRef.current.zoom;
     const scale = targetZoom / GRID_RENDER_ZOOM;
-    const nodeCenterX = focusNode.x + CARD_WIDTH / 2;
-    const nodeCenterY = focusNode.y + CARD_BODY_TOP_OFFSET + CARD_HEIGHT / 2;
+    const { x: nodeCenterX, y: nodeCenterY } = resolveNodeCardCenter(focusNode);
     const targetScreenX = viewportRect.left + viewportRect.width / 2;
     const targetScreenY = viewportRect.top + viewportRect.height / 2;
     syncCamera(
@@ -1008,9 +1042,11 @@ export default function BranchGridMap({
     );
     lastHandledViewportFocusRequestRef.current = focusRequestKey;
   }, [
-    gridFocusSha,
+    viewportFocusSha,
+    viewportFocusRenderNode,
+    normalizedSearchQuery,
     gridSearchJumpToken,
-    focusedRenderNode,
+    resolveNodeCardCenter,
     getTransformLayerOriginScreen,
     syncCamera,
     renderedCameraRef,
@@ -1964,7 +2000,7 @@ export default function BranchGridMap({
           selectedVisibleCommitShas={selectedVisibleCommitShas}
           normalizedSearchQuery={normalizedSearchQuery}
           matchingNodeIds={matchingNodeIds}
-          focusedNode={focusedRenderNode}
+          focusedNode={viewportFocusRenderNode}
           visibleRenderNodes={visibleRenderNodes}
           layoutNodes={renderNodes}
           manuallyOpenedClumps={manuallyOpenedClumps}

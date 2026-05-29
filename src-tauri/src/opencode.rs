@@ -20,9 +20,7 @@ Rules:\n\
 - Output exactly one line, at most 72 characters\n\
 - Imperative mood (Fix, Add, Remove, …)\n\
 - High-level purpose only — never list files, paths, or per-hunk details\n\
-- No preamble, explanation, quotes, markdown, or trailing colon\n\
-\n\
-Changes:\n";
+- No preamble, explanation, quotes, markdown, or trailing colon\n";
 
 const STASH_TITLE_PROMPT: &str = "\
 You write git stash titles only.\n\
@@ -31,9 +29,22 @@ Rules:\n\
 - Output exactly one line, at most 72 characters\n\
 - Imperative mood (Stash, Save, …)\n\
 - High-level purpose only — never list files, paths, or per-hunk details\n\
-- No preamble, explanation, quotes, markdown, or trailing colon\n\
-\n\
-Changes:\n";
+- No preamble, explanation, quotes, markdown, or trailing colon\n";
+
+fn compose_title_prompt(base: &str, summary: &str, previous_title: Option<&str>) -> String {
+    let mut prompt = base.to_string();
+    if let Some(previous) = previous_title.map(str::trim).filter(|value| !value.is_empty()) {
+        prompt.push_str(
+            "\nPrevious title (ongoing work in this worktree — write a fresh title for the diff below; \
+             keep the same intent when still accurate, do not copy verbatim unless it still fits):\n",
+        );
+        prompt.push_str(previous);
+        prompt.push('\n');
+    }
+    prompt.push_str("\nChanges:\n");
+    prompt.push_str(&truncate_summary(summary));
+    prompt
+}
 
 fn resolve_opencode_binary() -> Result<PathBuf, String> {
     let probe = if cfg!(windows) {
@@ -327,10 +338,8 @@ fn run_opencode(binary: &Path, repo_path: &str, args: &[&str]) -> Result<String,
 fn run_opencode_title(
     binary: &Path,
     repo_path: &str,
-    prompt_prefix: &str,
-    summary: &str,
+    prompt: &str,
 ) -> Result<String, String> {
-    let prompt = format!("{prompt_prefix}{}", truncate_summary(summary));
     let attach = opencode_server_available();
 
     let mut args: Vec<&str> = vec!["run", "--dir", repo_path];
@@ -339,7 +348,7 @@ fn run_opencode_title(
         args.push(OPENCODE_ATTACH_URL);
     }
     args.push("--dangerously-skip-permissions");
-    args.push(prompt.as_str());
+    args.push(prompt);
 
     run_opencode(binary, repo_path, &args)
 }
@@ -348,6 +357,7 @@ fn generate_title_with_retries(
     repo: &Path,
     summary: &str,
     prompt_prefix: &str,
+    previous_title: Option<&str>,
     empty_label: &str,
     failure_label: &str,
 ) -> Result<String, String> {
@@ -360,10 +370,11 @@ fn generate_title_with_retries(
     }
 
     let binary = resolve_opencode_binary()?;
+    let prompt = compose_title_prompt(prompt_prefix, summary, previous_title);
     let mut last_error = String::from("OpenCode did not return a usable title.");
 
     for attempt in 1..=MAX_GENERATION_ATTEMPTS {
-        match run_opencode_title(&binary, repo_path, prompt_prefix, summary) {
+        match run_opencode_title(&binary, repo_path, &prompt) {
             Ok(raw) => match sanitize_title(&raw, empty_label) {
                 Ok(message) if !is_unacceptable_message(&message) => return Ok(message),
                 Ok(_) => {
@@ -385,21 +396,31 @@ fn generate_title_with_retries(
     ))
 }
 
-pub fn generate_commit_message(repo: &Path, summary: &str) -> Result<String, String> {
+pub fn generate_commit_message(
+    repo: &Path,
+    summary: &str,
+    previous_title: Option<&str>,
+) -> Result<String, String> {
     generate_title_with_retries(
         repo,
         summary,
         COMMIT_TITLE_PROMPT,
+        previous_title,
         "commit message",
         "commit message",
     )
 }
 
-pub fn generate_stash_message(repo: &Path, summary: &str) -> Result<String, String> {
+pub fn generate_stash_message(
+    repo: &Path,
+    summary: &str,
+    previous_title: Option<&str>,
+) -> Result<String, String> {
     generate_title_with_retries(
         repo,
         summary,
         STASH_TITLE_PROMPT,
+        previous_title,
         "stash message",
         "stash message",
     )

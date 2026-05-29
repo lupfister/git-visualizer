@@ -26,6 +26,7 @@ import {
   type WorktreeAccentToken,
   type WorktreeSession,
 } from '../../lib/worktreeSessions';
+import { DIRTY_WORKTREE_BUILDING_LABEL, resolveWorktreeDraftDisplayLabel, type WorktreeDraftDisplay } from '../../src/worktreeDraftMessages';
 import {
   cn,
   computeViewportCullBounds,
@@ -138,7 +139,7 @@ type CommitCardProps = {
   remoteCommitShas: Set<string>;
   worktreeAccentByCommitId: Map<string, WorktreeAccentToken>;
   worktreeSessions: WorktreeSession[];
-  worktreeDraftByWorkingTreeId?: ReadonlyMap<string, { status: 'idle' | 'pending' | 'ready' | 'error'; message: string }>;
+  worktreeDraftByWorkingTreeId?: ReadonlyMap<string, WorktreeDraftDisplay>;
   onCommitCardClick: (event: MouseEvent, node: Node) => void;
   onNodePointerDown: (event: React.PointerEvent<HTMLDivElement>, node: Node) => void;
   onNodePointerMove: (event: React.PointerEvent<HTMLDivElement>) => void;
@@ -268,8 +269,8 @@ const MapGridCommitCard = memo(function MapGridCommitCard({
 
   const wrapperClassName = cn(
     'group absolute z-20',
-    isSearchActive && !isSearchMatch ? 'opacity-10' : '',
-    isSearchActive && isSearchMatch && !suppressSearchMatchScale ? 'scale-[1.01]' : '',
+    isSearchActive && !isSearchMatch && !isFocused ? 'opacity-10' : '',
+    isSearchActive && isSearchMatch && !suppressSearchMatchScale && !isFocused ? 'scale-[1.01]' : '',
     isFocused ? 'z-30' : '',
   );
 
@@ -289,21 +290,16 @@ const MapGridCommitCard = memo(function MapGridCommitCard({
   const draftPreview = isDirtyWorktreeNode
     ? worktreeDraftByWorkingTreeId?.get(commitId)
     : undefined;
-  const draftMessage = draftPreview?.message.trim() ?? '';
+  const displayLabel = draftPreview
+    ? resolveWorktreeDraftDisplayLabel(draftPreview)
+    : DIRTY_WORKTREE_BUILDING_LABEL;
   const bodyContent: ReactNode = isDirtyWorktreeNode
-    ? draftMessage
-      ? (
-          <>
-            {draftMessage}
-            <WorkingDots />
-          </>
-        )
-      : (
-          <>
-            Building
-            <WorkingDots />
-          </>
-        )
+    ? (
+        <>
+          {displayLabel}
+          <WorkingDots />
+        </>
+      )
     : isLocalUncommitted || isEmptyBranchNode
       ? ''
       : !isClusterOpen && isClusterLead && clumpCount > 1
@@ -564,7 +560,7 @@ const MapGridCommitCard = memo(function MapGridCommitCard({
               )}
               data-selectable-text="true"
               style={scaledBodyTextStyle}
-              aria-label={isDirtyWorktreeNode ? (draftMessage || 'Building') : undefined}
+              aria-label={isDirtyWorktreeNode ? displayLabel : undefined}
             >
               {bodyContent}
             </div>
@@ -683,7 +679,7 @@ type Props = {
   remoteCommitShas: Set<string>;
   worktreeAccentByCommitId: Map<string, WorktreeAccentToken>;
   worktreeSessions: WorktreeSession[];
-  worktreeDraftByWorkingTreeId?: ReadonlyMap<string, { status: 'idle' | 'pending' | 'ready' | 'error'; message: string }>;
+  worktreeDraftByWorkingTreeId?: ReadonlyMap<string, WorktreeDraftDisplay>;
   orientation?: 'vertical' | 'horizontal';
   dragPreviewByNodeId?: Record<string, { x: number; y: number }>;
   nodePositionOverrides?: Record<string, { x: number; y: number }>;

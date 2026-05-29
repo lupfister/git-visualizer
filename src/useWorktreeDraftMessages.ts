@@ -4,12 +4,25 @@ import { normalizeRepoPathForCompare } from '../components/grid/mapGridUtils';
 import type { WorktreeSession } from '../lib/worktreeSessions';
 import {
   buildWorktreeDraftDisplayMap,
+  draftNeedsRegeneration,
+  formatWorktreeSummaryFallback,
   hashWorktreeSummary,
+  resolvePreviousCommitTitleForRegeneration,
+  resolvePreviousStashTitleForRegeneration,
+  resolvePreparedCommitMessage,
+  resolvePreparedStashMessage,
   WORKTREE_DRAFT_DEBOUNCE_MS,
   type WorktreeDraftEntry,
+  type WorktreeDraftDisplay,
 } from './worktreeDraftMessages';
+import {
+  readPersistedWorktreeDraft,
+  removePersistedWorktreeDraft,
+  writePersistedWorktreeDraft,
+} from './worktreeDraftStorage';
 
 const SUMMARY_PROBE_MS = 3000;
+const PERSIST_DEBOUNCE_MS = 400;
 
 const normalizeWorktreePath = (path: string): string =>
   normalizeRepoPathForCompare(path);
@@ -36,7 +49,7 @@ type UseWorktreeDraftMessagesOptions = {
 
 type UseWorktreeDraftMessagesResult = {
   draftsByPath: Readonly<Record<string, WorktreeDraftEntry>>;
-  draftsByWorkingTreeId: ReadonlyMap<string, { status: WorktreeDraftEntry['status']; message: string }>;
+  draftsByWorkingTreeId: ReadonlyMap<string, WorktreeDraftDisplay>;
   pathByWorkingTreeId: Readonly<Record<string, string>>;
   getPreparedCommitMessage: (worktreePath: string) => string | null;
   getPreparedStashMessage: (worktreePath: string) => string | null;
@@ -56,10 +69,17 @@ export const useWorktreeDraftMessages = ({
   const generationTokenRef = useRef<Map<string, number>>(new Map());
   const lastSummaryFingerprintRef = useRef<Map<string, string>>(new Map());
   const inFlightRef = useRef<Set<string>>(new Set());
+  const hydratedPathsRef = useRef<Set<string>>(new Set());
+  const persistTimerRef = useRef<number | null>(null);
 
   const dirtySessions = useMemo(
     () => worktreeSessions.filter((session) => session.hasUncommittedChanges && session.pathExists !== false),
     [worktreeSessions],
+  );
+
+  const dirtyWorkingTreeIds = useMemo(
+    () => dirtySessions.map((session) => session.workingTreeId),
+    [dirtySessions],
   );
 
   const pathByWorkingTreeId = useMemo(() => {
@@ -84,6 +104,8 @@ export const useWorktreeDraftMessages = ({
     generationTokenRef.current.set(normalizedPath, (generationTokenRef.current.get(normalizedPath) ?? 0) + 1);
     inFlightRef.current.delete(normalizedPath);
     lastSummaryFingerprintRef.current.delete(normalizedPath);
+    hydratedPathsRef.current.delete(normalizedPath);
+    removePersistedWorktreeDraft(normalizedPath);
     setDraftsByPath((previous) => {
       if (!(normalizedPath in previous)) return previous;
       const next = { ...previous };
@@ -97,10 +119,9 @@ export const useWorktreeDraftMessages = ({
 
     const existing = draftsByPathRef.current[normalizedPath];
     if (
-      existing?.status === 'ready'
+      existing
+      && !draftNeedsRegeneration(existing)
       && existing.summaryFingerprint === summaryFingerprint
-      && existing.commitMessage.trim()
-      && existing.stashMessage.trim()
     ) {
       return;
     }
@@ -116,27 +137,40 @@ export const useWorktreeDraftMessages = ({
         commitMessage: existing?.commitMessage ?? '',
         stashMessage: existing?.stashMessage ?? '',
         summaryFingerprint,
+        messageFingerprint: existing?.messageFingerprint ?? '',
+        fallbackLabel: existing?.fallbackLabel ?? formatWorktreeSummaryFallback(''),
       },
     }));
 
     try {
+      const previousCommit = resolvePreviousCommitTitleForRegeneration(existing);
+      const previousStash = resolvePreviousStashTitleForRegeneration(existing);
       const [commitMessage, stashMessage] = await Promise.all([
-        invoke<string>('generate_commit_message', { repoPath: normalizedPath }).catch(() => ''),
-        invoke<string>('generate_stash_message', { repoPath: normalizedPath }).catch(() => ''),
+        invoke<string>('generate_commit_message', {
+          repoPath: normalizedPath,
+          previousMessage: previousCommit ?? null,
+        }).catch(() => ''),
+        invoke<string>('generate_stash_message', {
+          repoPath: normalizedPath,
+          previousMessage: previousStash ?? null,
+        }).catch(() => ''),
       ]);
 
       if (generation !== generationTokenRef.current.get(normalizedPath)) return;
 
       const trimmedCommit = commitMessage.trim();
       const trimmedStash = stashMessage.trim();
+      const latest = draftsByPathRef.current[normalizedPath];
       if (!trimmedCommit && !trimmedStash) {
         setDraftsByPath((previous) => ({
           ...previous,
           [normalizedPath]: {
             status: 'error',
-            commitMessage: '',
-            stashMessage: '',
+            commitMessage: existing?.commitMessage ?? '',
+            stashMessage: existing?.stashMessage ?? '',
             summaryFingerprint,
+            messageFingerprint: existing?.messageFingerprint ?? '',
+            fallbackLabel: latest?.fallbackLabel ?? formatWorktreeSummaryFallback(''),
           },
         }));
         return;
@@ -149,10 +183,13 @@ export const useWorktreeDraftMessages = ({
           commitMessage: trimmedCommit,
           stashMessage: trimmedStash || trimmedCommit,
           summaryFingerprint,
+          messageFingerprint: summaryFingerprint,
+          fallbackLabel: latest?.fallbackLabel ?? formatWorktreeSummaryFallback(''),
         },
       }));
     } catch {
       if (generation !== generationTokenRef.current.get(normalizedPath)) return;
+      const latest = draftsByPathRef.current[normalizedPath];
       setDraftsByPath((previous) => ({
         ...previous,
         [normalizedPath]: {
@@ -160,6 +197,8 @@ export const useWorktreeDraftMessages = ({
           commitMessage: existing?.commitMessage ?? '',
           stashMessage: existing?.stashMessage ?? '',
           summaryFingerprint,
+          messageFingerprint: existing?.messageFingerprint ?? '',
+          fallbackLabel: latest?.fallbackLabel ?? formatWorktreeSummaryFallback(''),
         },
       }));
     } finally {
@@ -167,30 +206,126 @@ export const useWorktreeDraftMessages = ({
     }
   }, [isPaused]);
 
-  const scheduleDraftGeneration = useCallback((normalizedPath: string, summaryFingerprint: string) => {
+  const scheduleDraftGeneration = useCallback((
+    normalizedPath: string,
+    summaryFingerprint: string,
+    delayMs: number = WORKTREE_DRAFT_DEBOUNCE_MS,
+  ) => {
     clearDebounceTimer(normalizedPath);
     const timerId = window.setTimeout(() => {
       debounceTimersRef.current.delete(normalizedPath);
       void runDraftGeneration(normalizedPath, summaryFingerprint);
-    }, WORKTREE_DRAFT_DEBOUNCE_MS);
+    }, delayMs);
     debounceTimersRef.current.set(normalizedPath, timerId);
   }, [clearDebounceTimer, runDraftGeneration]);
+
+  const maybeScheduleDraftGeneration = useCallback((
+    normalizedPath: string,
+    summaryFingerprint: string,
+    options?: { immediate?: boolean },
+  ) => {
+    const existing = draftsByPathRef.current[normalizedPath];
+    if (existing && !draftNeedsRegeneration(existing) && existing.summaryFingerprint === summaryFingerprint) {
+      return;
+    }
+    if (debounceTimersRef.current.has(normalizedPath) || inFlightRef.current.has(normalizedPath)) {
+      return;
+    }
+    const delayMs = options?.immediate ? 0 : WORKTREE_DRAFT_DEBOUNCE_MS;
+    scheduleDraftGeneration(normalizedPath, summaryFingerprint, delayMs);
+  }, [scheduleDraftGeneration]);
 
   const probeDirtySession = useCallback(async (session: WorktreeSession) => {
     if (!enabled || isPaused()) return;
     const normalizedPath = normalizeWorktreePath(session.path);
     const summary = await invoke<string>('get_working_tree_summary', { repoPath: normalizedPath }).catch(() => null);
     if (summary == null) return;
+
     const fingerprint = hashWorktreeSummary(summary);
+    const fallbackLabel = formatWorktreeSummaryFallback(summary);
     if (!fingerprint) {
       clearDraftForPath(normalizedPath);
       return;
     }
+
     const previousFingerprint = lastSummaryFingerprintRef.current.get(normalizedPath);
+    const isFirstFingerprint = previousFingerprint == null;
     lastSummaryFingerprintRef.current.set(normalizedPath, fingerprint);
-    if (previousFingerprint === fingerprint) return;
-    scheduleDraftGeneration(normalizedPath, fingerprint);
-  }, [clearDraftForPath, enabled, isPaused, scheduleDraftGeneration]);
+    const treeChangedSinceLastProbe = previousFingerprint != null && previousFingerprint !== fingerprint;
+
+    setDraftsByPath((previous) => {
+      const existing = previous[normalizedPath];
+      const treeChangedSinceMessage = existing != null && existing.messageFingerprint !== fingerprint;
+      const nextEntry: WorktreeDraftEntry = {
+        status: treeChangedSinceMessage || treeChangedSinceLastProbe
+          ? 'pending'
+          : (existing?.status ?? 'pending'),
+        commitMessage: existing?.commitMessage ?? '',
+        stashMessage: existing?.stashMessage ?? '',
+        summaryFingerprint: fingerprint,
+        messageFingerprint: existing?.messageFingerprint ?? '',
+        fallbackLabel,
+      };
+      if (
+        existing
+        && existing.fallbackLabel === nextEntry.fallbackLabel
+        && existing.status === nextEntry.status
+        && existing.commitMessage === nextEntry.commitMessage
+        && existing.stashMessage === nextEntry.stashMessage
+        && existing.summaryFingerprint === nextEntry.summaryFingerprint
+        && existing.messageFingerprint === nextEntry.messageFingerprint
+      ) {
+        return previous;
+      }
+      return {
+        ...previous,
+        [normalizedPath]: nextEntry,
+      };
+    });
+
+    const current = draftsByPathRef.current[normalizedPath];
+    if (current && !draftNeedsRegeneration(current) && current.summaryFingerprint === fingerprint) {
+      return;
+    }
+
+    if (previousFingerprint === fingerprint) {
+      maybeScheduleDraftGeneration(normalizedPath, fingerprint);
+      return;
+    }
+
+    const staleMessage = current != null && current.messageFingerprint !== fingerprint;
+    const delayMs = isFirstFingerprint || staleMessage ? 0 : WORKTREE_DRAFT_DEBOUNCE_MS;
+    scheduleDraftGeneration(normalizedPath, fingerprint, delayMs);
+  }, [
+    clearDraftForPath,
+    enabled,
+    isPaused,
+    maybeScheduleDraftGeneration,
+    scheduleDraftGeneration,
+  ]);
+
+  useEffect(() => {
+    if (!enabled) return;
+
+    setDraftsByPath((previous) => {
+      let changed = false;
+      const next = { ...previous };
+      for (const session of dirtySessions) {
+        const normalizedPath = normalizeWorktreePath(session.path);
+        if (hydratedPathsRef.current.has(normalizedPath) || next[normalizedPath]) {
+          hydratedPathsRef.current.add(normalizedPath);
+          continue;
+        }
+        const stored = readPersistedWorktreeDraft(normalizedPath);
+        hydratedPathsRef.current.add(normalizedPath);
+        if (!stored) continue;
+        next[normalizedPath] = stored;
+        lastSummaryFingerprintRef.current.set(normalizedPath, stored.summaryFingerprint);
+        changed = true;
+      }
+      return changed ? next : previous;
+    });
+  }, [dirtySessions, enabled]);
 
   useEffect(() => {
     if (!enabled) return;
@@ -221,6 +356,27 @@ export const useWorktreeDraftMessages = ({
     };
   }, [clearDraftForPath, dirtySessions, enabled, isPaused, probeDirtySession]);
 
+  useEffect(() => {
+    if (!enabled) return;
+    if (persistTimerRef.current != null) {
+      window.clearTimeout(persistTimerRef.current);
+    }
+    persistTimerRef.current = window.setTimeout(() => {
+      persistTimerRef.current = null;
+      for (const [path, entry] of Object.entries(draftsByPathRef.current)) {
+        if (entry.commitMessage.trim() || entry.summaryFingerprint) {
+          writePersistedWorktreeDraft(path, entry);
+        }
+      }
+    }, PERSIST_DEBOUNCE_MS);
+
+    return () => {
+      if (persistTimerRef.current != null) {
+        window.clearTimeout(persistTimerRef.current);
+      }
+    };
+  }, [draftsByPath, enabled]);
+
   useEffect(() => () => {
     for (const timerId of debounceTimersRef.current.values()) {
       window.clearTimeout(timerId);
@@ -229,22 +385,16 @@ export const useWorktreeDraftMessages = ({
   }, []);
 
   const draftsByWorkingTreeId = useMemo(
-    () => buildWorktreeDraftDisplayMap(draftsByPath, pathByWorkingTreeId),
-    [draftsByPath, pathByWorkingTreeId],
+    () => buildWorktreeDraftDisplayMap(draftsByPath, pathByWorkingTreeId, dirtyWorkingTreeIds),
+    [draftsByPath, dirtyWorkingTreeIds, pathByWorkingTreeId],
   );
 
   const getPreparedCommitMessage = useCallback((worktreePath: string): string | null => {
-    const entry = findDraftEntry(draftsByPathRef.current, worktreePath);
-    if (entry?.status !== 'ready') return null;
-    const message = entry.commitMessage.trim();
-    return message || null;
+    return resolvePreparedCommitMessage(findDraftEntry(draftsByPathRef.current, worktreePath));
   }, []);
 
   const getPreparedStashMessage = useCallback((worktreePath: string): string | null => {
-    const entry = findDraftEntry(draftsByPathRef.current, worktreePath);
-    if (entry?.status !== 'ready') return null;
-    const message = (entry.stashMessage || entry.commitMessage).trim();
-    return message || null;
+    return resolvePreparedStashMessage(findDraftEntry(draftsByPathRef.current, worktreePath));
   }, []);
 
   return {

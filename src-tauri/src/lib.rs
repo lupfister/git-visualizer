@@ -2366,24 +2366,38 @@ async fn get_working_tree_summary(repo_path: String) -> Result<String, String> {
 }
 
 #[tauri::command(rename_all = "camelCase")]
-async fn generate_commit_message(repo_path: String) -> Result<String, String> {
+async fn generate_commit_message(
+    repo_path: String,
+    previous_message: Option<String>,
+) -> Result<String, String> {
     let path = repo_path.clone();
     tauri::async_runtime::spawn_blocking(move || {
         let repo = Path::new(&path);
         let summary = git::get_working_tree_summary(repo).map_err(|e| e.to_string())?;
-        opencode::generate_commit_message(repo, &summary)
+        let previous = previous_message
+            .as_deref()
+            .map(str::trim)
+            .filter(|value| !value.is_empty());
+        opencode::generate_commit_message(repo, &summary, previous)
     })
     .await
     .map_err(|e| format!("Commit message task failed: {e}"))?
 }
 
 #[tauri::command(rename_all = "camelCase")]
-async fn generate_stash_message(repo_path: String) -> Result<String, String> {
+async fn generate_stash_message(
+    repo_path: String,
+    previous_message: Option<String>,
+) -> Result<String, String> {
     let path = repo_path.clone();
     tauri::async_runtime::spawn_blocking(move || {
         let repo = Path::new(&path);
         let summary = git::get_working_tree_summary(repo).map_err(|e| e.to_string())?;
-        opencode::generate_stash_message(repo, &summary)
+        let previous = previous_message
+            .as_deref()
+            .map(str::trim)
+            .filter(|value| !value.is_empty());
+        opencode::generate_stash_message(repo, &summary, previous)
     })
     .await
     .map_err(|e| format!("Stash message task failed: {e}"))?
