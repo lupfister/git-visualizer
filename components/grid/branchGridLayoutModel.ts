@@ -1094,7 +1094,24 @@ export function computeBranchGridLayout(input: BranchGridLayoutInput): BranchGri
   for (const [clusterKey, count] of clusterCounts.entries()) {
     if (count > 1 && clusterKey !== checkedOutClusterKey) defaultCollapsedClumps.add(clusterKey);
   }
+  const searchOpenedClumps = new Set<string>();
+  const addSearchOpenedClump = (clusterKey: string | undefined): void => {
+    if (!clusterKey || (clusterCounts.get(clusterKey) ?? 1) <= 1) return;
+    searchOpenedClumps.add(clusterKey);
+  };
+  if (gridFocusSha) {
+    const directClusterKeys = clusterKeyBySha.get(gridFocusSha) ?? [];
+    if (directClusterKeys.length > 0) {
+      for (const clusterKey of directClusterKeys) addSearchOpenedClump(clusterKey);
+    } else {
+      for (const [sha, clusterKeys] of clusterKeyBySha.entries()) {
+        if (!shasMatch(sha, gridFocusSha)) continue;
+        for (const clusterKey of clusterKeys) addSearchOpenedClump(clusterKey);
+      }
+    }
+  }
   const isClumpOpen = (clusterKey: string): boolean =>
+    searchOpenedClumps.has(clusterKey) ||
     isClusterClumpOpen(clusterKey, manuallyOpenedClumps, defaultCollapsedClumps, manuallyClosedClumps);
 
   const columnByCommitVisualId = new Map<string, number>();
@@ -1703,9 +1720,7 @@ export function computeBranchGridLayout(input: BranchGridLayoutInput): BranchGri
     if (!clusterKey) return true;
     const leadId = leadByClusterKey.get(clusterKey);
     const count = clusterCounts.get(clusterKey) ?? 1;
-    const isOpen =
-      manuallyOpenedClumps.has(clusterKey) ||
-      (!defaultCollapsedClumps.has(clusterKey) && !manuallyClosedClumps.has(clusterKey));
+    const isOpen = isClumpOpen(clusterKey);
     return count <= 1 || isOpen || leadId === commit.visualId;
   });
   const visibleRows = new Map<string, number>();

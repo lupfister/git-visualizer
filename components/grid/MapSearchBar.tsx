@@ -1,5 +1,5 @@
 import { ChevronDown, ChevronUp, Search } from 'lucide-react';
-import { useRef } from 'react';
+import { useEffect, useRef, useState } from 'react';
 
 type Props = {
   query: string;
@@ -17,28 +17,30 @@ export default function MapSearchBar({
   onJump,
 }: Props) {
   const inputRef = useRef<HTMLInputElement | null>(null);
+  const [draftQuery, setDraftQuery] = useState(query);
+
+  useEffect(() => {
+    setDraftQuery(query);
+  }, [query]);
 
   return (
     <div className="window-no-drag flex h-7 w-[12rem] shrink-0 items-center gap-2 rounded-full border border-border bg-background pl-1.5 pr-2.5">
       <Search className="h-3.5 w-3.5 shrink-0 text-foreground" />
       <input
         ref={inputRef}
-        value={query}
-        onChange={(event) => onQueryChange(event.target.value)}
-        onBlur={(event) => {
-          const relatedTarget = event.relatedTarget as HTMLElement | null;
-          if (
-            relatedTarget?.closest('button, a, input, textarea, select, [contenteditable="true"]')
-          ) {
-            return;
-          }
-          window.setTimeout(() => {
-            inputRef.current?.focus();
-          }, 0);
+        value={draftQuery}
+        onChange={(event) => {
+          const nextQuery = event.target.value;
+          setDraftQuery(nextQuery);
+          window.clearTimeout(inputRef.current?.dataset.searchDebounceTimer ? Number(inputRef.current.dataset.searchDebounceTimer) : undefined);
+          const timer = window.setTimeout(() => onQueryChange(nextQuery), 300);
+          if (inputRef.current) inputRef.current.dataset.searchDebounceTimer = String(timer);
         }}
         onKeyDown={(event) => {
           if (event.key === 'Enter') {
             event.preventDefault();
+            window.clearTimeout(inputRef.current?.dataset.searchDebounceTimer ? Number(inputRef.current.dataset.searchDebounceTimer) : undefined);
+            onQueryChange(draftQuery);
             onJump(1);
           }
         }}

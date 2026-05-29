@@ -127,6 +127,7 @@ type CommitCardProps = {
   matchingNodeIds: Set<string>;
   focusedCommitId: string | null;
   manuallyOpenedClumps: Set<string>;
+  renderedOpenClumps: Set<string>;
   manuallyClosedClumps: Set<string>;
   defaultCollapsedClumps: Set<string>;
   leadByClusterKey: Map<string, string>;
@@ -160,6 +161,7 @@ const MapGridCommitCard = memo(function MapGridCommitCard({
   matchingNodeIds,
   focusedCommitId,
   manuallyOpenedClumps,
+  renderedOpenClumps,
   manuallyClosedClumps,
   defaultCollapsedClumps,
   leadByClusterKey,
@@ -192,7 +194,8 @@ const MapGridCommitCard = memo(function MapGridCommitCard({
   const branchName = node.commit.branchName;
   const clusterKey = clusterKeyByCommitId.get(visualId) ?? null;
   const isClusterOpen = clusterKey
-    ? manuallyOpenedClumps.has(clusterKey) ||
+    ? renderedOpenClumps.has(clusterKey) ||
+      manuallyOpenedClumps.has(clusterKey) ||
       (!defaultCollapsedClumps.has(clusterKey) && !manuallyClosedClumps.has(clusterKey))
     : false;
   const clumpCount = clusterKey ? clusterCounts.get(clusterKey) ?? 1 : 1;
@@ -654,10 +657,11 @@ type Props = {
   selectedVisibleCommitShas: string[];
   normalizedSearchQuery: string;
   matchingNodeIds: Set<string>;
-  focusedNode: Node | null;
+  focusedCommitId: string | null;
   visibleRenderNodes: Node[];
   layoutNodes: Node[];
   manuallyOpenedClumps: Set<string>;
+  renderedOpenClumps: Set<string>;
   manuallyClosedClumps: Set<string>;
   defaultCollapsedClumps: Set<string>;
   leadByClusterKey: Map<string, string>;
@@ -724,10 +728,11 @@ const MapGridCanvas = memo(function MapGridCanvas({
   selectedVisibleCommitShas,
   normalizedSearchQuery,
   matchingNodeIds,
-  focusedNode,
+  focusedCommitId,
   visibleRenderNodes,
   layoutNodes,
   manuallyOpenedClumps,
+  renderedOpenClumps,
   manuallyClosedClumps,
   defaultCollapsedClumps,
   leadByClusterKey,
@@ -1001,8 +1006,9 @@ const MapGridCanvas = memo(function MapGridCanvas({
                 selectedShaSet={selectedShaSet}
                 normalizedSearchQuery={normalizedSearchQuery}
                 matchingNodeIds={matchingNodeIds}
-                focusedCommitId={focusedNode?.commit.id ?? null}
+                focusedCommitId={focusedCommitId}
                 manuallyOpenedClumps={manuallyOpenedClumps}
+                renderedOpenClumps={renderedOpenClumps}
                 manuallyClosedClumps={manuallyClosedClumps}
                 defaultCollapsedClumps={defaultCollapsedClumps}
                 leadByClusterKey={leadByClusterKey}

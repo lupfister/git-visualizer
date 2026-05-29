@@ -5428,7 +5428,10 @@ function App() {
 
   function handleSidebarSelectCommit(sha: string) {
     if (!sha) return;
-    handleGridFocusChange(sha);
+    setGridFocusSha(sha);
+    if (repoPath && isWorkingTreeCommitId(sha)) {
+      persistWorktreeFocusSha(repoPath, sha);
+    }
     setGridSearchJumpToken((token) => token + 1);
   }
 
@@ -5810,7 +5813,7 @@ function App() {
       layoutRevisionForView.mapGridOrientation,
       layoutRevisionForView.manuallyOpenedGridClumps,
       layoutRevisionForView.manuallyClosedGridClumps,
-      layoutRevisionForView.graphLayoutSignature,
+      `${layoutRevisionForView.graphLayoutSignature}::focus:${layoutRevisionForView.gridFocusSha ?? ''}`,
     );
   }, [repoPath, layoutRevisionForView]);
   useEffect(() => {
@@ -5899,6 +5902,11 @@ function App() {
   }, [gridLayoutModelForView]);
   useEffect(() => {
     if (!repoPath || !sharedGridLayoutCacheKey) return;
+    const hasGraphSourceData =
+      layoutRevisionForView.branchesForLayout.length > 0 ||
+      layoutRevisionForView.enrichedDirectCommits.length > 0 ||
+      layoutRevisionForView.enrichedUnpushedDirectCommits.length > 0;
+    if (hasGraphSourceData && sharedGridLayoutModel.allCommits.length === 0) return;
     const normalizedRepoPath = normalizePath(repoPath);
     if (normalizedRepoPath && isPostCommitProtectionActive(normalizedRepoPath)) return;
     layoutModelCacheRef.current.set(sharedGridLayoutCacheKey, sharedGridLayoutModel);
@@ -5929,7 +5937,7 @@ function App() {
       });
     }, 1000);
     return () => clearTimeout(timer);
-  }, [repoPath, sharedGridLayoutCacheKey, sharedGridLayoutModel]);
+  }, [repoPath, sharedGridLayoutCacheKey, sharedGridLayoutModel, layoutRevisionForView]);
 
   useEffect(() => {
     try {

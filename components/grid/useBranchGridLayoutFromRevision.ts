@@ -91,6 +91,8 @@ const resolveCachedLayoutModel = (
     Boolean(hydratedLayoutModel)
     && (hydratedLayoutModel?.allCommits.length ?? 0) === 0
     && hasGraphSourceData;
+  const layoutLooksEmptyButShouldNot = (model: BranchGridLayoutModel | null): boolean =>
+    Boolean(model) && (model?.allCommits.length ?? 0) === 0 && hasGraphSourceData;
   const hydratedHasWorkingTree = layoutModelHasWorkingTree(hydratedLayoutModel);
   const canReuseHydratedLayout = hydratedHasWorkingTree === hasWorktreeNodes;
 
@@ -106,14 +108,22 @@ const resolveCachedLayoutModel = (
   }
   if (mapLoading && sharedGridLayoutCacheKey) {
     const fromCache = layoutModelCacheRef.current.get(sharedGridLayoutCacheKey) ?? null;
-    if (fromCache && layoutModelHasWorkingTree(fromCache) === hasWorktreeNodes) {
+    if (
+      fromCache
+      && !layoutLooksEmptyButShouldNot(fromCache)
+      && layoutModelHasWorkingTree(fromCache) === hasWorktreeNodes
+    ) {
       markLayoutCacheHit('memory');
       return { model: fromCache, source: 'memory' };
     }
   }
   if (sharedGridLayoutCacheKey) {
     const fromCache = layoutModelCacheRef.current.get(sharedGridLayoutCacheKey);
-    if (fromCache && layoutModelHasWorkingTree(fromCache) === hasWorktreeNodes) {
+    if (
+      fromCache
+      && !layoutLooksEmptyButShouldNot(fromCache)
+      && layoutModelHasWorkingTree(fromCache) === hasWorktreeNodes
+    ) {
       markLayoutCacheHit('memory');
       return { model: fromCache, source: 'memory' };
     }

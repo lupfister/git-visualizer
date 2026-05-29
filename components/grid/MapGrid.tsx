@@ -131,6 +131,7 @@ function nodePositionOverridesEqual(left: NodePositionOverrides, right: NodePosi
 }
 
 const NODE_POSITIONS_STORAGE_KEY_PREFIX = 'git-visualizer:node-positions:';
+const SEARCH_FOCUS_PAN_CLEAR_THRESHOLD_PX = 48;
 
 function normalizeRepoPathForNodePositions(path: string): string {
   if (path === '/') return path;
@@ -245,7 +246,7 @@ export default function BranchGridMap({
   const lastSearchResultCountRef = useRef<number | null | undefined>(undefined);
   const lastSearchResultIndexRef = useRef<number | null | undefined>(undefined);
   const lastSearchFocusShaRef = useRef<string | null | undefined>(undefined);
-  const lastHandledSearchJumpTokenRef = useRef<number>(0);
+  const lastHandledSearchJumpKeyRef = useRef<string>('');
   const [worktreeMenuOpen, setWorktreeMenuOpen] = useState(false);
   const [commitDialogOpen, setCommitDialogOpen] = useState(false);
   const [commitMessageDraft, setCommitMessageDraft] = useState('');
@@ -309,6 +310,8 @@ export default function BranchGridMap({
   const [isCompactHud, setIsCompactHud] = useState(false);
   const [hideSearchBar, setHideSearchBar] = useState(false);
   const autoRecoverRef = useRef<{ key: string; attempts: number } | null>(null);
+  const searchFocusPanDistanceRef = useRef(0);
+  const isSearchPanDismissedRef = useRef(false);
   const hasCullRunRef = useRef(false);
   const visibleBoundsRef = useRef<ViewportContentBounds | null>(null);
   const connectorCullScopeRef = useRef(`${currentRepoPath ?? ''}::${mapReadyEpoch}`);
@@ -318,6 +321,24 @@ export default function BranchGridMap({
     visibleBoundsRef.current = null;
   }
   const mergeSliderScopeId = useId();
+
+  const handleUserCameraPan = useCallback((deltaX: number, deltaY: number) => {
+    if (isSearchPanDismissedRef.current) return;
+    if (!gridFocusSha || !gridSearchQuery.trim()) {
+      searchFocusPanDistanceRef.current = 0;
+      return;
+    }
+
+    searchFocusPanDistanceRef.current += Math.hypot(deltaX, deltaY);
+    if (searchFocusPanDistanceRef.current < SEARCH_FOCUS_PAN_CLEAR_THRESHOLD_PX) return;
+
+    searchFocusPanDistanceRef.current = 0;
+    isSearchPanDismissedRef.current = true;
+    lastSearchFocusShaRef.current = null;
+    lastHandledViewportFocusRequestRef.current = null;
+    gridHudProps?.setGridSearchQuery('');
+    onGridSearchFocusChange?.(null);
+  }, [gridFocusSha, gridHudProps, gridSearchQuery, onGridSearchFocusChange]);
 
   const {
     isCameraMovingRef,
@@ -335,6 +356,7 @@ export default function BranchGridMap({
     mapPadHostRef,
     isEnabled: !blockMapInteraction,
     cameraStorageScopeKey: `${currentRepoPath ?? '__no-repo__'}::${orientation}`,
+    onUserCameraPan: handleUserCameraPan,
     onRenderedCameraApplied: () => onRenderedCameraAppliedRef.current(),
     onPanActiveChange: (active) => onPanActiveChangeRef.current(active),
   });
@@ -346,7 +368,18 @@ export default function BranchGridMap({
     lastHandledViewportFocusRequestRef.current = null;
     autoRecoverRef.current = null;
     hasCullRunRef.current = false;
+    searchFocusPanDistanceRef.current = 0;
+    isSearchPanDismissedRef.current = false;
   }, [mapReadyEpoch, currentRepoPath]);
+
+  useEffect(() => {
+    searchFocusPanDistanceRef.current = 0;
+  }, [gridFocusSha]);
+
+  useEffect(() => {
+    searchFocusPanDistanceRef.current = 0;
+    isSearchPanDismissedRef.current = false;
+  }, [gridSearchQuery, gridSearchJumpToken]);
 
   useEffect(() => {
     if (!optimisticNodePositionOverrides || !controlledNodePositionOverrides) return;
@@ -598,6 +631,20 @@ export default function BranchGridMap({
   }, [renderNodes, isGridSearchActive, matchingNodeIds, focusedNode, visibleNodeIds]);
 
   visibleRenderNodesRef.current = visibleRenderNodes;
+
+  const renderedOpenClumps = useMemo(() => {
+    const renderedCountByClusterKey = new Map<string, number>();
+    for (const node of renderNodes) {
+      const clusterKey = clusterKeyByCommitId.get(node.commit.visualId);
+      if (!clusterKey || (clusterCounts.get(clusterKey) ?? 1) <= 1) continue;
+      renderedCountByClusterKey.set(clusterKey, (renderedCountByClusterKey.get(clusterKey) ?? 0) + 1);
+    }
+    const next = new Set<string>();
+    for (const [clusterKey, count] of renderedCountByClusterKey.entries()) {
+      if (count > 1) next.add(clusterKey);
+    }
+    return next;
+  }, [clusterCounts, clusterKeyByCommitId, renderNodes]);
 
   const lineStrokeWidth = 1.25 / displayZoom;
   const commitCornerRadiusPx = GRID_COMMIT_CORNER_RADIUS_BASE_PX / displayZoom;
@@ -977,9 +1024,13 @@ export default function BranchGridMap({
       });
     }
     const layoutNode = layoutNodes.find((node) => node.commit.id === sha);
-    if (layoutNode) return layoutNode;
+    if (layoutNode) {
+      const clusterKey = clusterKeyByCommitId.get(layoutNode.commit.visualId);
+      if (clusterKey && (clusterCounts.get(clusterKey) ?? 1) > 1) return null;
+      return layoutNode;
+    }
     return matchingNodes.find((node) => node.commit.id === sha) ?? null;
-  }, [renderNodes, focusedNode, layoutNodes, matchingNodes]);
+  }, [renderNodes, focusedNode, layoutNodes, clusterKeyByCommitId, clusterCounts, matchingNodes]);
 
   const viewportFocusRenderNode = useMemo(
     () => resolveFocusRenderNode(viewportFocusSha),
@@ -998,18 +1049,22 @@ export default function BranchGridMap({
 
   useEffect(() => {
     if (!normalizedSearchQuery) {
-      lastHandledSearchJumpTokenRef.current = gridSearchJumpToken;
+      lastHandledSearchJumpKeyRef.current = `${gridSearchJumpToken}:`;
       if (lastSearchFocusShaRef.current === null) return;
       lastSearchFocusShaRef.current = null;
       onGridSearchFocusChange?.(null);
       return;
     }
 
-    if (gridSearchJumpToken <= 0) return;
-    if (lastHandledSearchJumpTokenRef.current === gridSearchJumpToken) return;
-    lastHandledSearchJumpTokenRef.current = gridSearchJumpToken;
+    if (gridSearchJumpToken > 0) {
+      const searchJumpKey = `${gridSearchJumpToken}:${normalizedSearchQuery}`;
+      if (lastHandledSearchJumpKeyRef.current === searchJumpKey) return;
+      lastHandledSearchJumpKeyRef.current = searchJumpKey;
+    }
 
-    const nextFocusSha = searchJumpFocusSha;
+    const nextFocusSha = gridSearchJumpToken > 0
+      ? searchJumpFocusSha
+      : (matchingNodes[0]?.commit.id ?? searchMatchedBranchHeadSha ?? null);
     if (lastSearchFocusShaRef.current === nextFocusSha) return;
     lastSearchFocusShaRef.current = nextFocusSha;
     onGridSearchFocusChange?.(nextFocusSha);
@@ -1017,6 +1072,8 @@ export default function BranchGridMap({
     normalizedSearchQuery,
     onGridSearchFocusChange,
     searchJumpFocusSha,
+    searchMatchedBranchHeadSha,
+    matchingNodes,
     gridSearchJumpToken,
   ]);
 
@@ -1039,6 +1096,7 @@ export default function BranchGridMap({
       targetScreenX - origin.x - nodeCenterX * scale,
       targetScreenY - origin.y - nodeCenterY * scale,
       targetZoom,
+      { animate: true },
     );
     lastHandledViewportFocusRequestRef.current = focusRequestKey;
   }, [
@@ -2000,10 +2058,11 @@ export default function BranchGridMap({
           selectedVisibleCommitShas={selectedVisibleCommitShas}
           normalizedSearchQuery={normalizedSearchQuery}
           matchingNodeIds={matchingNodeIds}
-          focusedNode={viewportFocusRenderNode}
+          focusedCommitId={viewportFocusSha}
           visibleRenderNodes={visibleRenderNodes}
           layoutNodes={renderNodes}
           manuallyOpenedClumps={manuallyOpenedClumps}
+          renderedOpenClumps={renderedOpenClumps}
           manuallyClosedClumps={manuallyClosedClumps}
           defaultCollapsedClumps={defaultCollapsedClumps}
           leadByClusterKey={leadByClusterKey}

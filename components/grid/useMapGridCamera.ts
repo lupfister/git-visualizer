@@ -23,6 +23,7 @@ type Params = {
   onRenderedCameraApplied?: (camera: MapGridCameraState) => void;
   /** Fired when pan gesture starts or ends (90ms idle). */
   onPanActiveChange?: (active: boolean) => void;
+  onUserCameraPan?: (deltaX: number, deltaY: number) => void;
   cameraStorageScopeKey?: string;
 };
 
@@ -42,7 +43,7 @@ export function readHasSavedMapGridCamera(repoPath: string, orientation: string)
   }
 }
 
-export type SyncCameraOptions = { persist?: boolean };
+export type SyncCameraOptions = { animate?: boolean; persist?: boolean };
 
 export type MapGridCameraTargetLayout = { layoutX: number; layoutY: number };
 
@@ -65,6 +66,7 @@ export function useMapGridCamera({
   onUserCameraChange,
   onRenderedCameraApplied,
   onPanActiveChange,
+  onUserCameraPan,
   cameraStorageScopeKey,
 }: Params) {
   const panRef = useRef({ x: 0, y: 0 });
@@ -94,6 +96,8 @@ export function useMapGridCamera({
   onRenderedCameraAppliedRef.current = onRenderedCameraApplied;
   const onPanActiveChangeRef = useRef(onPanActiveChange);
   onPanActiveChangeRef.current = onPanActiveChange;
+  const onUserCameraPanRef = useRef(onUserCameraPan);
+  onUserCameraPanRef.current = onUserCameraPan;
 
   const getCameraStorageKey = useCallback(() => {
     const scope = cameraStorageScopeKey?.trim() || window.location.pathname;
@@ -295,8 +299,8 @@ export function useMapGridCamera({
     if (!isEnabled) return;
     panRef.current = { x: nextPanX, y: nextPanY };
     zoomRef.current = nextZoom;
-    // Snap pan immediately so viewport culling and recovery see the target view.
-    if (zoomAnchorRef.current == null) {
+    // Most programmatic camera moves snap so viewport culling and recovery see the target view.
+    if (zoomAnchorRef.current == null && !options?.animate) {
       applyRenderedCamera(nextPanX, nextPanY, nextZoom);
     }
     if (options?.persist === false) {
@@ -388,11 +392,16 @@ export function useMapGridCamera({
       zoomToPoint(event.clientX, event.clientY, zoomRef.current * factor);
       return;
     }
-    onUserCameraChange?.();
     zoomAnchorRef.current = null;
     if (!isInteractionActiveRef.current) {
+      panRef.current = {
+        x: renderedCameraRef.current.panX,
+        y: renderedCameraRef.current.panY,
+      };
       zoomRef.current = renderedCameraRef.current.zoom;
     }
+    onUserCameraChange?.();
+    onUserCameraPanRef.current?.(event.deltaX, event.deltaY);
     markCameraInteraction();
     panRef.current = {
       x: panRef.current.x - event.deltaX,
