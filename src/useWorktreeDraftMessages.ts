@@ -12,6 +12,8 @@ import {
   resolvePreparedCommitMessage,
   resolvePreparedStashMessage,
   WORKTREE_DRAFT_DEBOUNCE_MS,
+  hasAiCommitMessageReady,
+  resolveAiCommitMessageForCommit,
   type WorktreeDraftEntry,
   type WorktreeDraftDisplay,
 } from './worktreeDraftMessages';
@@ -23,6 +25,9 @@ import {
 
 const SUMMARY_PROBE_MS = 3000;
 const PERSIST_DEBOUNCE_MS = 400;
+/** Max wait when user commits while the node still shows Building. */
+const COMMIT_MESSAGE_WAIT_MS = 95_000;
+const COMMIT_MESSAGE_POLL_MS = 150;
 
 const normalizeWorktreePath = (path: string): string =>
   normalizeRepoPathForCompare(path);
@@ -53,6 +58,7 @@ type UseWorktreeDraftMessagesResult = {
   pathByWorkingTreeId: Readonly<Record<string, string>>;
   getPreparedCommitMessage: (worktreePath: string) => string | null;
   getPreparedStashMessage: (worktreePath: string) => string | null;
+  waitForPreparedCommitMessage: (worktreePath: string) => Promise<string | null>;
   clearDraftForPath: (worktreePath: string) => void;
 };
 
@@ -218,6 +224,70 @@ export const useWorktreeDraftMessages = ({
     }, delayMs);
     debounceTimersRef.current.set(normalizedPath, timerId);
   }, [clearDebounceTimer, runDraftGeneration]);
+
+  const kickDraftGenerationForCommit = useCallback(async (normalizedPath: string) => {
+    clearDebounceTimer(normalizedPath);
+    const summary = await invoke<string>('get_working_tree_summary', { repoPath: normalizedPath }).catch(() => null);
+    if (summary == null) return;
+
+    const fingerprint = hashWorktreeSummary(summary);
+    const fallbackLabel = formatWorktreeSummaryFallback(summary);
+    if (!fingerprint) return;
+
+    lastSummaryFingerprintRef.current.set(normalizedPath, fingerprint);
+    const existing = draftsByPathRef.current[normalizedPath];
+
+    setDraftsByPath((previous) => ({
+      ...previous,
+      [normalizedPath]: {
+        status: 'pending',
+        commitMessage: existing?.commitMessage ?? '',
+        stashMessage: existing?.stashMessage ?? '',
+        summaryFingerprint: fingerprint,
+        messageFingerprint: existing?.messageFingerprint ?? '',
+        fallbackLabel,
+      },
+    }));
+
+    if (hasAiCommitMessageReady(draftsByPathRef.current[normalizedPath])) {
+      return;
+    }
+    if (inFlightRef.current.has(normalizedPath)) {
+      return;
+    }
+    await runDraftGeneration(normalizedPath, fingerprint);
+  }, [clearDebounceTimer, runDraftGeneration]);
+
+  const waitForPreparedCommitMessage = useCallback(async (worktreePath: string): Promise<string | null> => {
+    const normalizedPath = normalizeWorktreePath(worktreePath);
+    const readReady = (): string | null =>
+      resolveAiCommitMessageForCommit(findDraftEntry(draftsByPathRef.current, worktreePath));
+
+    let ready = readReady();
+    if (ready) return ready;
+
+    await kickDraftGenerationForCommit(normalizedPath);
+
+    const deadline = Date.now() + COMMIT_MESSAGE_WAIT_MS;
+    while (Date.now() < deadline) {
+      await new Promise<void>((resolve) => {
+        window.setTimeout(resolve, COMMIT_MESSAGE_POLL_MS);
+      });
+      ready = readReady();
+      if (ready) return ready;
+
+      const entry = findDraftEntry(draftsByPathRef.current, worktreePath);
+      if (
+        entry?.status === 'error'
+        && !inFlightRef.current.has(normalizedPath)
+        && !debounceTimersRef.current.has(normalizedPath)
+      ) {
+        break;
+      }
+    }
+
+    return readReady();
+  }, [kickDraftGenerationForCommit]);
 
   const maybeScheduleDraftGeneration = useCallback((
     normalizedPath: string,
@@ -403,6 +473,7 @@ export const useWorktreeDraftMessages = ({
     pathByWorkingTreeId,
     getPreparedCommitMessage,
     getPreparedStashMessage,
+    waitForPreparedCommitMessage,
     clearDraftForPath,
   };
 };

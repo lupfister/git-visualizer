@@ -3,6 +3,8 @@ import {
   applyWorktreeDraftMessagesToPreviews,
   buildWorktreeDraftDisplayMap,
   draftNeedsRegeneration,
+  hasAiCommitMessageReady,
+  resolveAiCommitMessageForCommit,
   formatWorktreeSummaryFallback,
   hashWorktreeSummary,
   resolvePreparedCommitMessage,
@@ -101,6 +103,33 @@ describe('worktreeDraftMessages', () => {
       messageFingerprint: 'old',
       fallbackLabel: 'Update foo.ts',
     })).toBe(true);
+  });
+
+  it('requires ready ai title for commit wait flow', () => {
+    expect(hasAiCommitMessageReady({
+      status: 'ready',
+      commitMessage: 'Add feature',
+      stashMessage: 'WIP',
+      summaryFingerprint: 'abc',
+      messageFingerprint: 'abc',
+      fallbackLabel: 'Update foo.ts',
+    })).toBe(true);
+    expect(resolveAiCommitMessageForCommit({
+      status: 'pending',
+      commitMessage: '',
+      stashMessage: '',
+      summaryFingerprint: 'abc',
+      messageFingerprint: '',
+      fallbackLabel: 'Update foo.ts',
+    })).toBeNull();
+    expect(resolveAiCommitMessageForCommit({
+      status: 'ready',
+      commitMessage: 'Add feature',
+      stashMessage: 'WIP',
+      summaryFingerprint: 'new',
+      messageFingerprint: 'old',
+      fallbackLabel: 'Update foo.ts',
+    })).toBeNull();
   });
 
   it('resolves prepared commit and stash messages with fallback', () => {

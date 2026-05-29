@@ -425,6 +425,9 @@ function App() {
   /** True while a user-initiated git mutation is running through to snapshot apply. */
   const repoMutationInFlightRef = useRef(false);
   const getPreparedCommitMessageRef = useRef<(worktreePath: string) => string | null>(() => null);
+  const waitForPreparedCommitMessageRef = useRef<(worktreePath: string) => Promise<string | null>>(
+    async () => null,
+  );
   const getPreparedStashMessageRef = useRef<(worktreePath: string) => string | null>(() => null);
   const clearWorktreeDraftForPathRef = useRef<(worktreePath: string) => void>(() => {});
   /** Optimistic commit HEAD — blocks stale quick-state / DB refresh from regressing the checkout tip. */
@@ -4980,39 +4983,42 @@ function App() {
     setCommitSwitchFeedback(null);
     setCommitInProgress(true);
     try {
-      beginRepoMutation();
-      const mutationOutcomes: RepoMutationOutcome[] = [];
-      let committedCount = 0;
-
+      const messagesByPath = new Map<string, string>();
       for (const worktreePath of uniquePaths) {
         const ref = await invoke<CheckedOutRef>('get_checked_out_ref', { repoPath: worktreePath });
         if (!ref.hasUncommittedChanges) continue;
 
-        const preparedCommitMessage = getPreparedCommitMessageRef.current(worktreePath);
-        const message = preparedCommitMessage
-          ?? (await invoke<string>('generate_commit_message', { repoPath: worktreePath })).trim();
+        const message = await waitForPreparedCommitMessageRef.current(worktreePath);
         if (!message) {
           setCommitSwitchFeedback({
             kind: 'error',
-            message: 'Could not generate a commit message. Use Write commit.',
+            message: 'Commit message is still generating. Try again in a moment.',
           });
-          endRepoMutation();
           return false;
         }
-
-        const commitResult = await commitWorktreeAtPath(worktreePath, message);
-        if (!commitResult) continue;
-        mutationOutcomes.push(outcomeFromCommitData(commitResult));
-        committedCount += 1;
+        messagesByPath.set(worktreePath, message);
       }
 
-      if (committedCount === 0) {
-        endRepoMutation();
+      if (messagesByPath.size === 0) {
         setCommitSwitchFeedback({
           kind: 'error',
           message: 'No local changes to commit.',
         });
         return false;
+      }
+
+      beginRepoMutation();
+      const mutationOutcomes: RepoMutationOutcome[] = [];
+      let committedCount = 0;
+
+      for (const worktreePath of uniquePaths) {
+        const message = messagesByPath.get(worktreePath);
+        if (!message) continue;
+
+        const commitResult = await commitWorktreeAtPath(worktreePath, message);
+        if (!commitResult) continue;
+        mutationOutcomes.push(outcomeFromCommitData(commitResult));
+        committedCount += 1;
       }
 
       await finalizeRepoMutation(repoPath, ...mutationOutcomes);
@@ -5717,6 +5723,7 @@ function App() {
     draftsByWorkingTreeId: worktreeDraftByWorkingTreeId,
     getPreparedCommitMessage,
     getPreparedStashMessage,
+    waitForPreparedCommitMessage,
     clearDraftForPath,
   } = useWorktreeDraftMessages({
     worktreeSessions,
@@ -5727,6 +5734,7 @@ function App() {
   });
 
   getPreparedCommitMessageRef.current = getPreparedCommitMessage;
+  waitForPreparedCommitMessageRef.current = waitForPreparedCommitMessage;
   getPreparedStashMessageRef.current = getPreparedStashMessage;
   clearWorktreeDraftForPathRef.current = clearDraftForPath;
 

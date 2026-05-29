@@ -101,6 +101,18 @@ export const resolveWorktreeDraftDisplayLabel = (display: WorktreeDraftDisplay):
   return DIRTY_WORKTREE_BUILDING_LABEL;
 };
 
+export const hasAiCommitMessageReady = (entry: WorktreeDraftEntry | undefined): boolean =>
+  !!entry
+  && entry.status === 'ready'
+  && entry.commitMessage.trim().length > 0
+  && entry.messageFingerprint === entry.summaryFingerprint;
+
+/** AI commit title only — not the git-derived fallback used while Building. */
+export const resolveAiCommitMessageForCommit = (entry: WorktreeDraftEntry | undefined): string | null => {
+  if (!hasAiCommitMessageReady(entry)) return null;
+  return entry!.commitMessage.trim();
+};
+
 export const resolvePreparedCommitMessage = (entry: WorktreeDraftEntry | undefined): string | null => {
   if (!entry) return null;
   const aiMessage = entry.commitMessage.trim();
