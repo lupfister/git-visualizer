@@ -78,19 +78,25 @@ export default function CommitControls({
   const hasSelection = selectedVisibleCommitShas.length > 0;
   const hasWorktreeSelection = selectedVisibleCommitShas.some((sha) => isWorkingTreeCommitId(sha));
   const hasAnyDirtyWorktrees = dirtyWorktreePaths.length > 0;
-  const commitTargetPaths = hasWorktreeSelection ? selectedDirtyWorktreePaths : dirtyWorktreePaths;
   const stashTargetPaths = selectedDirtyWorktreePaths;
-  const commitPrimaryLabel = hasWorktreeSelection ? 'Commit selected' : 'Commit all';
+  const canCommitAll = dirtyWorktreePaths.length > 0;
+  const canCommitSelected = hasWorktreeSelection && selectedDirtyWorktreePaths.length > 0;
+  const showCommitSelectedAsPrimary =
+    !!onAutoCommitLocalChanges &&
+    !commitDisabled &&
+    canCommitSelected;
+  const showCommitAllAsPrimary =
+    !!onAutoCommitLocalChanges &&
+    !commitDisabled &&
+    canCommitAll &&
+    !showCommitSelectedAsPrimary;
+  const showCommitAsPrimary = showCommitAllAsPrimary || showCommitSelectedAsPrimary;
+  const commitPrimaryLabel = showCommitSelectedAsPrimary ? 'Commit selected' : 'Commit all';
+  const commitTargetPaths = showCommitSelectedAsPrimary ? selectedDirtyWorktreePaths : dirtyWorktreePaths;
   const [actionMenuOpen, setActionMenuOpen] = useState(false);
   const actionMenuRef = useRef<HTMLDivElement | null>(null);
   const controlClassName =
     'inline-flex h-7 items-center rounded-md border border-border bg-background px-2 text-[11px] font-medium text-foreground transition-colors hover:bg-muted hover:text-foreground disabled:cursor-not-allowed disabled:opacity-50';
-
-  const showCommitAsPrimary =
-    !!onAutoCommitLocalChanges &&
-    !commitDisabled &&
-    commitTargetPaths.length > 0 &&
-    (!hasSelection || hasWorktreeSelection);
 
   const showWriteCommitInMenu =
     !!onCommitLocalChanges &&
@@ -111,6 +117,17 @@ export default function CommitControls({
     hasWorktreeSelection &&
     stashTargetPaths.length > 0;
   const pushSelectedLabel = 'Push Selected...';
+  const showCommitAllInMenu =
+    !!onAutoCommitLocalChanges &&
+    !commitDisabled &&
+    canCommitAll &&
+    !showCommitAsPrimary;
+  const hasActionsMenu =
+    showWriteCommitInMenu ||
+    showCommitAllInMenu ||
+    showPushSelectedInMenu ||
+    showPushAllInMenu ||
+    showStashInMenu;
 
   const primaryAction = showCommitAsPrimary
     ? {
@@ -137,6 +154,8 @@ export default function CommitControls({
           loading: pushInProgress,
         }
       : null;
+
+  const canOpenActionsMenu = Boolean(primaryAction) || hasActionsMenu;
 
   const menuButtonClassName = (enabled: boolean, loading: boolean) =>
     cn(
@@ -190,7 +209,7 @@ export default function CommitControls({
           <button
             type="button"
             onClick={() => setActionMenuOpen((open: boolean) => !open)}
-            disabled={!primaryAction || primaryAction.disabled}
+            disabled={!canOpenActionsMenu || (primaryAction?.disabled ?? false)}
             aria-haspopup="menu"
             aria-expanded={actionMenuOpen}
             className={cn(controlClassName, 'h-full rounded-l-none border-0 bg-transparent pl-1 hover:bg-muted')}
@@ -198,8 +217,27 @@ export default function CommitControls({
           >
             <ChevronDown className="h-4 w-4 shrink-0" />
           </button>
-          {actionMenuOpen && primaryAction ? (
+          {actionMenuOpen && canOpenActionsMenu ? (
             <div className="absolute left-[-1px] top-full z-[70] mt-2 inline-flex w-max min-w-0 flex-col overflow-hidden rounded-md border border-border bg-background p-1">
+              {showCommitAllInMenu ? (
+                <button
+                  type="button"
+                  onClick={() => {
+                    setActionMenuOpen(false);
+                    void onAutoCommitLocalChanges?.(dirtyWorktreePaths);
+                  }}
+                  disabled={commitDisabled || commitInProgress}
+                  aria-busy={commitInProgress ? true : undefined}
+                  className={menuButtonClassName(!commitDisabled, commitInProgress)}
+                >
+                  <ToolbarActionContent
+                    icon="commit"
+                    label="Commit all"
+                    loading={commitInProgress}
+                    iconClassName="mr-1.5"
+                  />
+                </button>
+              ) : null}
               {showWriteCommitInMenu ? (
                 <button
                   type="button"
