@@ -56,11 +56,11 @@ interface Props {
   deleteInProgress?: boolean;
   worktrees?: WorktreeInfo[];
   currentRepoPath?: string;
-  onStashLocalChanges?: () => Promise<void> | void;
+  onStashLocalChanges?: (worktreePaths: string[]) => Promise<void> | void;
   stashInProgress?: boolean;
   stashDisabled?: boolean;
   onCommitLocalChanges?: (message: string) => Promise<boolean>;
-  onAutoCommitLocalChanges?: () => Promise<boolean>;
+  onAutoCommitLocalChanges?: (worktreePaths: string[]) => Promise<boolean>;
   commitInProgress?: boolean;
   commitDisabled?: boolean;
   onStageAllChanges?: () => Promise<boolean> | Promise<void> | boolean | void;

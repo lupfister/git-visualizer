@@ -5,6 +5,7 @@ import {
   buildWorktreeAccentByCommitId,
   buildWorktreeAccentLookups,
   buildWorktreeSessions,
+  dirtyWorktreeSessions,
   isWorkingTreeCommitId,
   resolveBranchCheckoutAccent,
   resolveCommitAccent,
@@ -148,6 +149,19 @@ describe('worktreeSessions', () => {
     expect(map.get(`BRANCH_HEAD:cursor-sdk:${headSha}`)).toBeUndefined();
     expect(map.get(sessions.find((session) => session.branchName === 'cursor-sdk')!.workingTreeId)).toBe('worktree-violet');
     expect(map.get('WORKING_TREE')).toBe('checked');
+  });
+
+  it('dirtyWorktreeSessions returns dirty linked worktrees with existing paths', () => {
+    const sessions = buildWorktreeSessions(
+      [
+        baseWorktree({ path: '/repo', headSha: 'aaaaaaaaaaaa', branchName: 'main', isCurrent: true, hasUncommittedChanges: true }),
+        baseWorktree({ path: '/repo/wt-b', headSha: 'bbbbbbbbbbbb', branchName: 'feature', isCurrent: false, hasUncommittedChanges: false }),
+        baseWorktree({ path: '/repo/wt-c', headSha: 'cccccccccccc', branchName: 'other', isCurrent: false, hasUncommittedChanges: true }),
+      ],
+      '/repo',
+    );
+    const dirty = dirtyWorktreeSessions(sessions);
+    expect(dirty.map((session) => session.branchName)).toEqual(['main', 'other']);
   });
 
   it('selectedUncommittedSessions only returns dirty selected sessions', () => {

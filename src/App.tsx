@@ -4779,32 +4779,67 @@ function App() {
     }
   }
 
-  async function handleStashLocalChanges() {
+  async function stashWorktreeAtPath(worktreePath: string): Promise<StashPushMutationData | null> {
+    const ref = await invoke<CheckedOutRef>('get_checked_out_ref', { repoPath: worktreePath });
+    if (!ref.hasUncommittedChanges) return null;
+
+    const preparedStashMessage = getPreparedStashMessageRef.current(worktreePath);
+    const stashResult = await invoke<StashPushMutationData>('stash_push', {
+      repoPath: worktreePath,
+      includeUntracked: true,
+      message: preparedStashMessage
+        ?? (await invoke<string>('generate_stash_message', { repoPath: worktreePath })).trim(),
+    });
+    clearWorktreeDraftForPathRef.current(worktreePath);
+    return stashResult;
+  }
+
+  async function handleStashLocalChanges(worktreePaths: string[]) {
     if (!repoPath || stashInProgress) return;
+    const uniquePaths = Array.from(
+      new Set(
+        worktreePaths
+          .map((path) => path.trim())
+          .filter((path) => path.length > 0),
+      ),
+    );
+    if (uniquePaths.length === 0) {
+      setCommitSwitchFeedback({
+        kind: 'error',
+        message: 'No local changes to stash.',
+      });
+      return;
+    }
+
     setCommitSwitchFeedback(null);
     setStashInProgress(true);
     try {
-      const ref = await invoke<CheckedOutRef>('get_checked_out_ref', { repoPath });
-      if (!ref.hasUncommittedChanges) {
+      beginRepoMutation();
+      const mutationOutcomes: RepoMutationOutcome[] = [];
+      let stashedCount = 0;
+
+      for (const worktreePath of uniquePaths) {
+        const stashResult = await stashWorktreeAtPath(worktreePath);
+        if (!stashResult) continue;
+        mutationOutcomes.push(outcomeFromStashPush(stashResult));
+        stashedCount += 1;
+      }
+
+      if (stashedCount === 0) {
+        endRepoMutation();
         setCommitSwitchFeedback({
           kind: 'error',
           message: 'No local changes to stash.',
         });
         return;
       }
-      beginRepoMutation();
-      const preparedStashMessage = getPreparedStashMessageRef.current(repoPath);
-      const stashResult = await invoke<StashPushMutationData>('stash_push', {
-        repoPath,
-        includeUntracked: true,
-        message: preparedStashMessage
-          ?? (await invoke<string>('generate_stash_message', { repoPath })).trim(),
-      });
-      clearWorktreeDraftForPathRef.current(repoPath);
-      await finalizeRepoMutation(repoPath, outcomeFromStashPush(stashResult));
+
+      await finalizeRepoMutation(repoPath, ...mutationOutcomes);
       setCommitSwitchFeedback({
         kind: 'success',
-        message: 'Stashed local changes (including untracked files).',
+        message: stashedCount === 1
+          ? 'Stashed local changes (including untracked files).'
+          : `Stashed ${stashedCount} worktrees (including untracked files).`,
       });
     } catch (e) {
       endRepoMutation();
@@ -4819,48 +4854,56 @@ function App() {
     }
   }
 
+  async function commitWorktreeAtPath(worktreePath: string, trimmed: string): Promise<CommitMutationData | null> {
+    const ref = await invoke<CheckedOutRef>('get_checked_out_ref', { repoPath: worktreePath });
+    if (!ref.hasUncommittedChanges) return null;
+
+    const commitResult = await invoke<CommitMutationData>('commit_working_tree', {
+      repoPath: worktreePath,
+      message: trimmed,
+    });
+    if (commitResult.branchName && commitResult.fullSha) {
+      const normalizedPath = normalizePath(worktreePath);
+      userDirtyNodePositionsRef.current.add(normalizedPath);
+      const worktreeSession = buildWorktreeSessions(worktrees, repoPath ?? undefined, ref).find((session) =>
+        sameRepoPath(session.path, normalizedPath),
+      );
+      const laneBranchNames = laneBranchNamesForPositionOverrides({
+        defaultBranch,
+        commitBranchName: commitResult.branchName,
+        checkedOutBranchName: ref.branchName,
+        extraBranchNames: worktreeSession?.branchName ? [worktreeSession.branchName] : [],
+      });
+      const migrated = migrateWorkingTreeOverrideToNewHead(
+        nodePositionOverridesByRepo[normalizedPath] ?? {},
+        commitResult.fullSha,
+        workingTreeIdForPath(normalizedPath, worktreeSession?.isCurrent ?? sameRepoPath(normalizedPath, repoPath)),
+        laneBranchNames,
+      );
+      persistRepoNodePositions(normalizedPath, migrated);
+      setNodePositionOverridesByRepo((previous) => ({
+        ...previous,
+        [normalizedPath]: migrated,
+      }));
+    }
+    clearWorktreeDraftForPathRef.current(worktreePath);
+    return commitResult;
+  }
+
   async function commitLocalChangesWithMessage(trimmed: string): Promise<boolean> {
     if (!repoPath) return false;
     try {
-      const ref = await invoke<CheckedOutRef>('get_checked_out_ref', { repoPath });
-      if (!ref.hasUncommittedChanges) {
+      beginRepoMutation();
+      const commitResult = await commitWorktreeAtPath(repoPath, trimmed);
+      if (!commitResult) {
+        endRepoMutation();
         setCommitSwitchFeedback({
           kind: 'error',
           message: 'No local changes to commit.',
         });
         return false;
       }
-      beginRepoMutation();
-      const commitResult = await invoke<CommitMutationData>('commit_working_tree', {
-        repoPath,
-        message: trimmed,
-      });
-      if (commitResult.branchName && commitResult.fullSha) {
-        const normalizedPath = normalizePath(repoPath);
-        userDirtyNodePositionsRef.current.add(normalizedPath);
-        const worktreeSession = buildWorktreeSessions(worktrees, normalizedPath, ref).find((session) =>
-          sameRepoPath(session.path, normalizedPath),
-        );
-        const laneBranchNames = laneBranchNamesForPositionOverrides({
-          defaultBranch,
-          commitBranchName: commitResult.branchName,
-          checkedOutBranchName: ref.branchName,
-          extraBranchNames: worktreeSession?.branchName ? [worktreeSession.branchName] : [],
-        });
-        const migrated = migrateWorkingTreeOverrideToNewHead(
-          nodePositionOverridesByRepo[normalizedPath] ?? {},
-          commitResult.fullSha,
-          workingTreeIdForPath(normalizedPath, true),
-          laneBranchNames,
-        );
-        persistRepoNodePositions(normalizedPath, migrated);
-        setNodePositionOverridesByRepo((previous) => ({
-          ...previous,
-          [normalizedPath]: migrated,
-        }));
-      }
       await finalizeRepoMutation(repoPath, outcomeFromCommitData(commitResult));
-      clearWorktreeDraftForPathRef.current(repoPath);
       setCommitSwitchFeedback({
         kind: 'success',
         message: 'Committed local changes.',
@@ -4897,31 +4940,71 @@ function App() {
     }
   }
 
-  async function handleAutoCommitLocalChanges(): Promise<boolean> {
+  async function handleAutoCommitLocalChanges(worktreePaths: string[]): Promise<boolean> {
     if (!repoPath || commitInProgress) return false;
+    const uniquePaths = Array.from(
+      new Set(
+        worktreePaths
+          .map((path) => path.trim())
+          .filter((path) => path.length > 0),
+      ),
+    );
+    if (uniquePaths.length === 0) {
+      setCommitSwitchFeedback({
+        kind: 'error',
+        message: 'No local changes to commit.',
+      });
+      return false;
+    }
+
     setCommitSwitchFeedback(null);
     setCommitInProgress(true);
     try {
-      const ref = await invoke<CheckedOutRef>('get_checked_out_ref', { repoPath });
-      if (!ref.hasUncommittedChanges) {
+      beginRepoMutation();
+      const mutationOutcomes: RepoMutationOutcome[] = [];
+      let committedCount = 0;
+
+      for (const worktreePath of uniquePaths) {
+        const ref = await invoke<CheckedOutRef>('get_checked_out_ref', { repoPath: worktreePath });
+        if (!ref.hasUncommittedChanges) continue;
+
+        const preparedCommitMessage = getPreparedCommitMessageRef.current(worktreePath);
+        const message = preparedCommitMessage
+          ?? (await invoke<string>('generate_commit_message', { repoPath: worktreePath })).trim();
+        if (!message) {
+          setCommitSwitchFeedback({
+            kind: 'error',
+            message: 'Could not generate a commit message. Use Write commit.',
+          });
+          endRepoMutation();
+          return false;
+        }
+
+        const commitResult = await commitWorktreeAtPath(worktreePath, message);
+        if (!commitResult) continue;
+        mutationOutcomes.push(outcomeFromCommitData(commitResult));
+        committedCount += 1;
+      }
+
+      if (committedCount === 0) {
+        endRepoMutation();
         setCommitSwitchFeedback({
           kind: 'error',
           message: 'No local changes to commit.',
         });
         return false;
       }
-      const preparedCommitMessage = getPreparedCommitMessageRef.current(repoPath);
-      const message = preparedCommitMessage
-        ?? (await invoke<string>('generate_commit_message', { repoPath })).trim();
-      if (!message) {
-        setCommitSwitchFeedback({
-          kind: 'error',
-          message: 'Could not generate a commit message. Use Write commit.',
-        });
-        return false;
-      }
-      return await commitLocalChangesWithMessage(message);
+
+      await finalizeRepoMutation(repoPath, ...mutationOutcomes);
+      setCommitSwitchFeedback({
+        kind: 'success',
+        message: committedCount === 1
+          ? 'Committed local changes.'
+          : `Committed ${committedCount} worktrees.`,
+      });
+      return true;
     } catch (e) {
+      endRepoMutation();
       const errText = e instanceof Error ? e.message : String(e);
       setCommitSwitchFeedback({
         kind: 'error',

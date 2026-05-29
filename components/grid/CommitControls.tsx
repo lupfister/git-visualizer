@@ -1,4 +1,5 @@
 import type { BranchGridViewProps } from './LayoutGrid';
+import { isWorkingTreeCommitId } from '../../lib/worktreeSessions';
 import ToolbarActionContent from './ToolbarActionContent';
 import { ChevronDown, GitBranchPlus, GitMerge } from 'lucide-react';
 import { useEffect, useRef, useState } from 'react';
@@ -25,7 +26,6 @@ type Props = {
   stashInProgress: boolean;
   stashDisabled: boolean;
   pushInProgress: boolean;
-  hasUncommittedChanges: boolean;
   createBranchFromNodeInProgress: boolean;
   onCommitLocalChanges?: BranchGridViewProps['onCommitLocalChanges'];
   onAutoCommitLocalChanges?: BranchGridViewProps['onAutoCommitLocalChanges'];
@@ -47,7 +47,8 @@ type Props = {
   setCommitDialogOpen: (open: boolean) => void;
   setNewBranchDialogOpen: (open: boolean) => void;
   hideMergeControls?: boolean;
-  currentWorkingTreeId?: string;
+  dirtyWorktreePaths?: string[];
+  selectedDirtyWorktreePaths?: string[];
 };
 
 export default function CommitControls({
@@ -58,7 +59,6 @@ export default function CommitControls({
   stashInProgress,
   stashDisabled,
   pushInProgress,
-  hasUncommittedChanges,
   createBranchFromNodeInProgress,
   onCommitLocalChanges,
   onAutoCommitLocalChanges,
@@ -78,12 +78,15 @@ export default function CommitControls({
   setCommitDialogOpen,
   setNewBranchDialogOpen,
   hideMergeControls = false,
-  currentWorkingTreeId = 'WORKING_TREE',
+  dirtyWorktreePaths = [],
+  selectedDirtyWorktreePaths = [],
 }: Props) {
   const hasSelection = selectedVisibleCommitShas.length > 0;
-  const hasWorkingTreeSelection =
-    selectedVisibleCommitShas.length > 0 &&
-    selectedVisibleCommitShas.every((sha) => sha === currentWorkingTreeId);
+  const hasWorktreeSelection = selectedVisibleCommitShas.some((sha) => isWorkingTreeCommitId(sha));
+  const hasAnyDirtyWorktrees = dirtyWorktreePaths.length > 0;
+  const commitTargetPaths = hasWorktreeSelection ? selectedDirtyWorktreePaths : dirtyWorktreePaths;
+  const stashTargetPaths = selectedDirtyWorktreePaths;
+  const commitPrimaryLabel = hasWorktreeSelection ? 'Commit selected' : 'Commit all';
   const [actionMenuOpen, setActionMenuOpen] = useState(false);
   const actionMenuRef = useRef<HTMLDivElement | null>(null);
   const controlClassName =
@@ -91,9 +94,9 @@ export default function CommitControls({
 
   const showCommitAsPrimary =
     !!(onAutoCommitLocalChanges ?? onCommitLocalChanges) &&
-    hasUncommittedChanges &&
     !commitDisabled &&
-    (!hasSelection || hasWorkingTreeSelection);
+    commitTargetPaths.length > 0 &&
+    (!hasSelection || hasWorktreeSelection);
 
   const showPushCurrentAsPrimary =
     !showCommitAsPrimary &&
@@ -110,16 +113,20 @@ export default function CommitControls({
   const showPushCurrentInMenu = !!onPushCurrentBranch && canPushCurrentBranch && !hasSelection;
   const showPushSelectedInMenu = !!onPushCommitTargets && selectedPushTargets.length > 0;
   const showPushAllInMenu = !!onPushAllBranches && pushableRemoteBranchCount >= 2 && !hasSelection;
-  const showStashInMenu = !!onStashLocalChanges && !stashDisabled && !hasSelection;
+  const showStashInMenu =
+    !!onStashLocalChanges &&
+    !stashDisabled &&
+    hasWorktreeSelection &&
+    stashTargetPaths.length > 0;
   const pushSelectedLabel = 'Push Selected...';
 
   const primaryAction = showCommitAsPrimary
     ? {
-        label: 'Commit',
+        label: commitPrimaryLabel,
         icon: 'commit' as const,
         run: () => {
           if (onAutoCommitLocalChanges) {
-            void onAutoCommitLocalChanges();
+            void onAutoCommitLocalChanges(commitTargetPaths);
             return;
           }
           setCommitDialogOpen(true);
@@ -193,7 +200,11 @@ export default function CommitControls({
                 compactLabels={compactLabels}
               />
             ) : (
-              <ToolbarActionContent icon="commit" label="Commit" compactLabels={compactLabels} />
+              <ToolbarActionContent
+                icon="commit"
+                label={hasAnyDirtyWorktrees ? 'Commit all' : 'Commit'}
+                compactLabels={compactLabels}
+              />
             )}
           </button>
           <button
@@ -296,7 +307,7 @@ export default function CommitControls({
                   type="button"
                   onClick={() => {
                     setActionMenuOpen(false);
-                    void onStashLocalChanges?.();
+                    void onStashLocalChanges?.(stashTargetPaths);
                   }}
                   disabled={stashInProgress}
                   aria-busy={stashInProgress ? true : undefined}
@@ -304,7 +315,7 @@ export default function CommitControls({
                 >
                   <ToolbarActionContent
                     icon="stash"
-                    label="Stash"
+                    label="Stash selected..."
                     loading={stashInProgress}
                     iconClassName="mr-1.5"
                   />

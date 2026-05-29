@@ -54,6 +54,7 @@ import {
   currentSessionWorkingTreeId,
   isWorkingTreeCommitId,
   selectedRemovableWorktreeSessions,
+  dirtyWorktreeSessions,
   selectedUncommittedSessions,
   type WorktreeSession,
 } from '../../lib/worktreeSessions';
@@ -655,7 +656,6 @@ export default function BranchGridMap({
   const commitCornerRadiusPx = GRID_COMMIT_CORNER_RADIUS_BASE_PX / displayZoom;
 
   const branchByName = useMemo(() => new Map(branches.map((branch) => [branch.name, branch])), [branches]);
-  const hasUncommittedChanges = checkedOutRef?.hasUncommittedChanges ?? false;
   const freshCopyBranchNames = useMemo(
     () => new Set(branches.filter((branch) => branch.commitsAhead === 0 && !branch.name.startsWith('*')).map((branch) => branch.name)),
     [branches],
@@ -871,9 +871,21 @@ export default function BranchGridMap({
     }
     return map;
   }, [worktrees]);
+  const dirtyWorktrees = useMemo(
+    () => dirtyWorktreeSessions(worktreeSessions),
+    [worktreeSessions],
+  );
+  const dirtyWorktreePaths = useMemo(
+    () => dirtyWorktrees.map((session) => session.path),
+    [dirtyWorktrees],
+  );
   const uncommittedSessionsToDiscard = useMemo(
     () => selectedUncommittedSessions(worktreeSessions, selectedVisibleCommitShas),
     [worktreeSessions, selectedVisibleCommitShas],
+  );
+  const selectedDirtyWorktreePaths = useMemo(
+    () => uncommittedSessionsToDiscard.map((session) => session.path),
+    [uncommittedSessionsToDiscard],
   );
   const removableWorktreeSessions = useMemo(
     () => selectedRemovableWorktreeSessions(worktreeSessions, selectedVisibleCommitShas),
@@ -1893,7 +1905,6 @@ export default function BranchGridMap({
                   stashInProgress={stashInProgress}
                   stashDisabled={stashDisabled}
                   pushInProgress={pushInProgress}
-                  hasUncommittedChanges={hasUncommittedChanges}
                   createBranchFromNodeInProgress={createBranchFromNodeInProgress}
                   onCommitLocalChanges={onCommitLocalChanges}
                   onAutoCommitLocalChanges={onAutoCommitLocalChanges}
@@ -1914,7 +1925,8 @@ export default function BranchGridMap({
                   setMergeTargetCommitSha={setMergeTargetCommitSha}
                   setCommitDialogOpen={setCommitDialogOpen}
                   setNewBranchDialogOpen={setNewBranchDialogOpen}
-                  currentWorkingTreeId={currentWorkingTreeId}
+                  dirtyWorktreePaths={dirtyWorktreePaths}
+                  selectedDirtyWorktreePaths={selectedDirtyWorktreePaths}
                   hideMergeControls
                 />
               </div>

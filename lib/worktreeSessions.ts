@@ -123,6 +123,9 @@ export const selectedWorktreeSessions = (
   return sessions.filter((session) => selected.has(session.workingTreeId));
 };
 
+export const dirtyWorktreeSessions = (sessions: WorktreeSession[]): WorktreeSession[] =>
+  sessions.filter((session) => session.hasUncommittedChanges && session.pathExists !== false);
+
 export const selectedUncommittedSessions = (
   sessions: WorktreeSession[],
   selectedCommitShas: string[],
