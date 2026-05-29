@@ -46,6 +46,8 @@ type Props = {
   hideMergeControls?: boolean;
   dirtyWorktreePaths?: string[];
   selectedDirtyWorktreePaths?: string[];
+  onOpenPreviewAuth?: () => void | Promise<void>;
+  hasAuthLikePreviewFailures?: boolean;
 };
 
 export default function CommitControls({
@@ -74,6 +76,8 @@ export default function CommitControls({
   hideMergeControls = false,
   dirtyWorktreePaths = [],
   selectedDirtyWorktreePaths = [],
+  onOpenPreviewAuth,
+  hasAuthLikePreviewFailures = false,
 }: Props) {
   const hasSelection = selectedVisibleCommitShas.length > 0;
   const hasWorktreeSelection = selectedVisibleCommitShas.some((sha) => isWorkingTreeCommitId(sha));
@@ -338,6 +342,21 @@ export default function CommitControls({
             <GitBranchPlus className={cn('h-[14px] w-[14px] shrink-0', compactLabels ? '' : 'mr-1.5')} />
             {!compactLabels ? (createBranchFromNodeInProgress ? 'Creating...' : 'Branch') : null}
           </button>
+          {onOpenPreviewAuth ? (
+            <button
+              type="button"
+              onClick={() => void onOpenPreviewAuth()}
+              className={cn(
+                controlClassName,
+                'pointer-events-auto relative z-10 !bg-background !border-border hover:!bg-muted',
+                hasAuthLikePreviewFailures ? 'border-amber-500/40 text-amber-600 dark:text-amber-400' : '',
+                compactLabels ? 'max-w-[7rem] truncate' : '',
+              )}
+              title="Open the app in Chrome to log in; preview screenshots will reuse this session"
+            >
+              {!compactLabels ? 'Preview login' : 'Login'}
+            </button>
+          ) : null}
         </div>
 
         {!hideMergeControls && selectedVisibleCommitShas.length > 1 && selectedCommitTargetOption.options.length > 0 && selectedCommitTargetOption.targetBranch && onMergeRefsIntoBranch ? (

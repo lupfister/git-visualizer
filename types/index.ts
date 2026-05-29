@@ -85,6 +85,30 @@ export interface BranchCommitPreview {
   isRemote?: boolean;
 }
 
+export type CommitAppPreviewStatus = 'idle' | 'pending' | 'ready' | 'failed' | 'skipped';
+
+export interface CommitAppPreview {
+  commitKey: string;
+  status: CommitAppPreviewStatus;
+  imageSrc?: string;
+  route?: string;
+  error?: string;
+  gitRef?: string;
+}
+
+export interface EnsureCommitAppPreviewOpts {
+  fullSha?: string;
+  parentSha?: string | null;
+  kind?: BranchCommitPreview['kind'];
+  worktreePath?: string;
+  worktreeHeadSha?: string;
+  worktreeHasUncommitted?: boolean;
+  stashIndex?: number;
+  stashBaseSha?: string;
+  branchName?: string;
+  priority?: number;
+}
+
 export interface AgentPrompt {
   id: string;
   agent: string;

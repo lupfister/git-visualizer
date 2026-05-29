@@ -35,6 +35,7 @@ import {
   formatWorktreeNodeHeaderLabel,
 } from './mapGridUtils';
 import type { ConnectorFace, Node, NodePositionOverrides } from './LayoutGrid';
+import type { CommitAppPreview } from '../../types';
 import type { MapGridCameraState, MapGridCameraTargetLayout } from './useMapGridCamera';
 import { getNodePositionOverride } from './nodePositionOverrides';
 import {
@@ -149,6 +150,7 @@ type CommitCardProps = {
   /** Skip search-hit scale transform during camera motion (reduces compositor layers). */
   suppressSearchMatchScale?: boolean;
   registerCameraTarget: (element: HTMLElement | SVGElement, layout?: MapGridCameraTargetLayout) => () => void;
+  commitAppPreview?: CommitAppPreview;
 };
 
 const MapGridCommitCard = memo(function MapGridCommitCard({
@@ -182,6 +184,7 @@ const MapGridCommitCard = memo(function MapGridCommitCard({
   onClusterToggle,
   suppressSearchMatchScale = false,
   registerCameraTarget,
+  commitAppPreview,
 }: CommitCardProps) {
   const cardRef = useRef<HTMLDivElement | null>(null);
   useLayoutEffect(() => {
@@ -254,8 +257,7 @@ const MapGridCommitCard = memo(function MapGridCommitCard({
     : isSelectedCommit
       ? { color: 'var(--select)' }
       : undefined;
-  /** Stash-like animated tile pattern (working tree, stash, empty branch). */
-  const showCommitTilePattern = true;
+  const showCommitTilePattern = commitAppPreview?.status !== 'ready';
   /** Animated noisy gaps (working tree, stash, empty branch). Unpushed uses static gaps only. */
   const commitTileAnimateGaps = isDirtyWorktreeNode || isStashedCommit || isEmptyBranchNode;
   const commitTileCloudyGaps = isRemoteCommit;
@@ -488,6 +490,14 @@ const MapGridCommitCard = memo(function MapGridCommitCard({
           >
             {headerLabel}
           </div>
+          {commitAppPreview?.status === 'ready' && commitAppPreview.route ? (
+            <div
+              className={cn('shrink-0 font-normal text-muted-foreground', selectedCommitTextClass)}
+              style={scaledTextStyle}
+            >
+              {commitAppPreview.route}
+            </div>
+          ) : null}
           {isClusterCaretHost ? (
             <button
               type="button"
@@ -537,6 +547,20 @@ const MapGridCommitCard = memo(function MapGridCommitCard({
             : {}),
         }}
       >
+        {commitAppPreview?.status === 'ready' && commitAppPreview.imageSrc ? (
+          <>
+            <img
+              src={commitAppPreview.imageSrc}
+              alt=""
+              className="pointer-events-none absolute inset-0 h-full w-full object-cover object-top"
+              draggable={false}
+            />
+            <div
+              className="pointer-events-none absolute inset-x-0 bottom-0 h-2/3 bg-gradient-to-t from-background/95 via-background/55 to-transparent"
+              aria-hidden="true"
+            />
+          </>
+        ) : null}
         {commitTileShapeCssVar && commitTileHoverTintColor ? (
           <CommitNodeTilePattern
             ref={tilePatternRef}
@@ -688,6 +712,7 @@ type Props = {
   dragPreviewByNodeId?: Record<string, { x: number; y: number }>;
   nodePositionOverrides?: Record<string, { x: number; y: number }>;
   connectorPathCacheScopeBase: string;
+  commitAppPreviews?: Record<string, CommitAppPreview>;
 };
 
 // Freeze connector source arrays during pan; cull list still refreshes via cameraRenderTick.
@@ -758,6 +783,7 @@ const MapGridCanvas = memo(function MapGridCanvas({
   dragPreviewByNodeId = EMPTY_DRAG_PREVIEW,
   nodePositionOverrides = EMPTY_NODE_POSITION_OVERRIDES,
   connectorPathCacheScopeBase,
+  commitAppPreviews = {},
 }: Props) {
   const connectorPath2dCacheRef = useRef<Map<string, ConnectorPathCacheEntry>>(new Map());
   const connectorPersistScopeRef = useRef<string | null>(null);
@@ -1029,6 +1055,7 @@ const MapGridCanvas = memo(function MapGridCanvas({
                 onClusterToggle={handleClusterToggle}
                 suppressSearchMatchScale={suppressSearchMatchScale}
                 registerCameraTarget={registerCameraTarget}
+                commitAppPreview={commitAppPreviews[node.commit.id]}
               />
             );
         })}

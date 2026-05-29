@@ -20,6 +20,7 @@ import { buildGraphLayoutFingerprint, hashCommitShaList } from '../components/gr
 import { useBranchGridLayoutFromRevision } from '../components/grid/useBranchGridLayoutFromRevision';
 import { layoutModelHasWorkingTree } from '../components/grid/workingTreeLayout';
 import type { Branch, BranchCommitPreview, BranchPromptMeta, CheckedOutRef, CommitMutationData, DeleteSelectionMutationData, DirectCommit, GitHubAuthStatus, GitHubInfo, GitStashEntry, MergeNode, OpenPR, RepoMutationOutcome, RepoVisualSnapshot, StashPushMutationData, StashRestoreMutationData, WorktreeInfo } from '../types';
+import { useCommitAppPreviewManager } from '../lib/commitAppPreview';
 import {
   checkedOutRefWithDirtyFromQuickState,
   mergeCheckedOutRefWithQuickState,
@@ -333,6 +334,7 @@ function App() {
   const [gridSearchResultCount, setGridSearchResultCount] = useState<number | null>(null);
   const [gridSearchResultIndex, setGridSearchResultIndex] = useState<number | null>(null);
   const [gridFocusSha, setGridFocusSha] = useState<string | null>(null);
+  const [visibleCommitKeys, setVisibleCommitKeys] = useState<string[]>([]);
   const [loading, setLoading] = useState(false);
   const [mapLoading, setMapLoading] = useState(false);
   const [mapSwitchEpoch, setMapSwitchEpoch] = useState(0);
@@ -5738,6 +5740,32 @@ function App() {
   getPreparedStashMessageRef.current = getPreparedStashMessage;
   clearWorktreeDraftForPathRef.current = clearDraftForPath;
 
+  const handleVisibleCommitKeysChange = useCallback((commitKeys: string[]) => {
+    setVisibleCommitKeys((previous) => {
+      if (previous.length === commitKeys.length && previous.every((key, index) => key === commitKeys[index])) {
+        return previous;
+      }
+      return commitKeys;
+    });
+  }, []);
+
+  const {
+    commitAppPreviews,
+    hasAuthLikePreviewFailures,
+    handleOpenPreviewAuth,
+  } = useCommitAppPreviewManager(
+    {
+      repoPath,
+      directCommits: enrichedDirectCommits,
+      worktrees,
+      stashes,
+      checkedOutRef: visualCheckedOutRef ?? checkedOutRef,
+      branchCommitPreviews: enrichedBranchCommitPreviews,
+      defaultBranch,
+    },
+    visibleCommitKeys,
+  );
+
   const focusCameraOnActiveWorktree = useCallback(() => {
     if (!repoPath) return;
     const focusSha = worktreeSessions.length > 0
@@ -6275,6 +6303,10 @@ function App() {
                 orientation={mapGridOrientation}
                 worktreeDraftByWorkingTreeId={worktreeDraftByWorkingTreeId}
                   gridHudProps={gridHudProps}
+                commitAppPreviews={commitAppPreviews}
+                onVisibleCommitKeysChange={handleVisibleCommitKeysChange}
+                onOpenPreviewAuth={handleOpenPreviewAuth}
+                hasAuthLikePreviewFailures={hasAuthLikePreviewFailures}
               />
           </div>
 

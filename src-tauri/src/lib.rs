@@ -1,3 +1,4 @@
+mod commit_app_preview;
 mod git;
 mod github;
 mod opencode;
@@ -380,7 +381,7 @@ fn visual_cache_db_path() -> Result<PathBuf, String> {
     Ok(base_dir.join("git-visualizer").join("repo-visual-cache.sqlite3"))
 }
 
-fn open_visual_cache_connection() -> Result<Connection, String> {
+pub(crate) fn open_visual_cache_connection() -> Result<Connection, String> {
     let db_path = visual_cache_db_path()?;
     if let Some(parent) = db_path.parent() {
         fs::create_dir_all(parent).map_err(|e| format!("Failed to create cache directory: {e}"))?;
@@ -429,6 +430,7 @@ fn open_visual_cache_connection() -> Result<Connection, String> {
         ",
     )
     .map_err(|e| format!("Failed to initialize cache schema: {e}"))?;
+    commit_app_preview::init_commit_app_preview_schema(&conn)?;
     Ok(conn)
 }
 
@@ -3771,11 +3773,11 @@ fn normalize_name(s: &str) -> String {
         .collect()
 }
 
-/// All page routes that exist in the repo at HEAD (used for fuzzy matching).
-fn all_page_routes(repo_path: &Path) -> Vec<String> {
+/// All page routes that exist in the repo at a git ref (used for fuzzy matching).
+fn all_page_routes_at_ref(repo_path: &Path, git_ref: &str) -> Vec<String> {
     let Ok(output) = git::cli::run(
         repo_path,
-        &["ls-tree", "-r", "--name-only", "HEAD", "--",
+        &["ls-tree", "-r", "--name-only", git_ref, "--",
           "app", "pages", "src/app", "src/pages", "src/routes"],
     ) else {
         return Vec::new();
@@ -3787,6 +3789,11 @@ fn all_page_routes(repo_path: &Path) -> Vec<String> {
         .filter_map(file_to_route)
         .filter(|r| seen.insert(r.clone()))
         .collect()
+}
+
+/// All page routes that exist in the repo at HEAD (used for fuzzy matching).
+fn all_page_routes(repo_path: &Path) -> Vec<String> {
+    all_page_routes_at_ref(repo_path, "HEAD")
 }
 
 /// For changed files that aren't page files themselves, fuzzy-match their
@@ -4004,8 +4011,8 @@ fn get_changed_routes_for_commit(
         }
     }
 
-    // Pass 3: fuzzy-match filenames and directory segments against all repo routes.
-    let all_routes = all_page_routes(path);
+    // Pass 3: fuzzy-match filenames and directory segments against all repo routes at commit.
+    let all_routes = all_page_routes_at_ref(path, &commit_sha);
     for r in fuzzy_matched_routes(&changed_files, &all_routes) {
         if seen.insert(r.clone()) {
             routes.push(r.clone());
@@ -4017,7 +4024,31 @@ fn get_changed_routes_for_commit(
     }
 
     if routes.is_empty() {
-        return Ok(vec!["/".to_string()]);
+        let skip = ["login", "signin", "signup", "register", "auth", "logout",
+                    "callback", "verify", "reset", "forgot", "404", "500",
+                    "error", "not-found", "api", "onboarding"];
+
+        let mut candidates: Vec<&String> = all_routes
+            .iter()
+            .filter(|r| {
+                let segs: Vec<&str> = r.split('/').filter(|s| !s.is_empty()).collect();
+                if segs.len() != 1 {
+                    return false;
+                }
+                let lower = r.to_lowercase();
+                !skip.iter().any(|k| lower.contains(k))
+            })
+            .collect();
+        candidates.sort_by_key(|r| r.len());
+
+        let mut fallback = vec!["/".to_string()];
+        for route in candidates {
+            if fallback.len() >= 4 {
+                break;
+            }
+            fallback.push(route.clone());
+        }
+        return Ok(fallback);
     }
 
     Ok(routes)
@@ -4122,7 +4153,19 @@ fn app_route_to_url(path: &str) -> Option<String> {
 #[tauri::command(rename_all = "camelCase")]
 async fn generate_preview(repo_path: String, branch: String, port: u16, path: Option<String>) -> Result<String, String> {
     let paths = vec![path.unwrap_or_else(|| "/".to_string())];
-    let mut results = tauri::async_runtime::spawn_blocking(move || run_previews_blocking(repo_path, branch, port, paths))
+    let config = PreviewRunConfig {
+        repo_path: repo_path.clone(),
+        git_ref: branch.clone(),
+        slug: branch.chars()
+            .map(|c| if c.is_alphanumeric() || c == '-' || c == '_' { c } else { '-' })
+            .collect(),
+        port,
+        paths,
+        live_source_dir: None,
+        preserve_source_dir: false,
+        single_output_path: None,
+    };
+    let mut results = tauri::async_runtime::spawn_blocking(move || run_previews_blocking(config))
         .await
         .map_err(|e| format!("Spawn error: {e}"))??;
     results.pop().filter(|s| !s.is_empty()).ok_or_else(|| "No screenshot generated".to_string())
@@ -4132,7 +4175,19 @@ async fn generate_preview(repo_path: String, branch: String, port: u16, path: Op
 /// Empty-string entries indicate a screenshot failure for that specific route.
 #[tauri::command(rename_all = "camelCase")]
 async fn generate_preview_routes(repo_path: String, branch: String, port: u16, paths: Vec<String>) -> Result<Vec<String>, String> {
-    tauri::async_runtime::spawn_blocking(move || run_previews_blocking(repo_path, branch, port, paths))
+    let config = PreviewRunConfig {
+        repo_path: repo_path.clone(),
+        git_ref: branch.clone(),
+        slug: branch.chars()
+            .map(|c| if c.is_alphanumeric() || c == '-' || c == '_' { c } else { '-' })
+            .collect(),
+        port,
+        paths,
+        live_source_dir: None,
+        preserve_source_dir: false,
+        single_output_path: None,
+    };
+    tauri::async_runtime::spawn_blocking(move || run_previews_blocking(config))
         .await
         .map_err(|e| format!("Spawn error: {e}"))?
 }
@@ -4677,71 +4732,131 @@ fn uses_hash_routing(dir: &Path) -> bool {
     false
 }
 
-/// Blocking core: starts a dev server for `branch`, screenshots each `path` in
+pub(crate) struct PreviewRunConfig {
+    pub repo_path: String,
+    pub git_ref: String,
+    pub slug: String,
+    pub port: u16,
+    pub paths: Vec<String>,
+    pub live_source_dir: Option<PathBuf>,
+    pub preserve_source_dir: bool,
+    pub single_output_path: Option<PathBuf>,
+}
+
+fn resolve_chrome_path() -> Option<String> {
+    #[cfg(target_os = "macos")]
+    {
+        let mac_path = "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome";
+        if Path::new(mac_path).exists() {
+            return Some(mac_path.to_string());
+        }
+    }
+
+    for candidate in &[
+        "google-chrome",
+        "google-chrome-stable",
+        "chromium",
+        "chromium-browser",
+        "/usr/bin/google-chrome",
+        "/usr/bin/chromium",
+        "/usr/bin/chromium-browser",
+    ] {
+        if candidate.starts_with('/') {
+            if Path::new(candidate).exists() {
+                return Some(candidate.to_string());
+            }
+            continue;
+        }
+        if std::process::Command::new(candidate)
+            .arg("--version")
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .status()
+            .map(|status| status.success())
+            .unwrap_or(false)
+        {
+            return Some(candidate.to_string());
+        }
+    }
+    None
+}
+
+/// Blocking core: starts a dev server for `git_ref`, screenshots each `path` in
 /// sequence via the CDP script, and returns one base64 data URL per path.
 /// Empty strings indicate that a particular screenshot failed.
-fn run_previews_blocking(repo_path: String, branch: String, port: u16, paths: Vec<String>) -> Result<Vec<String>, String> {
+pub(crate) fn run_previews_blocking(config: PreviewRunConfig) -> Result<Vec<String>, String> {
     use std::process::Stdio;
     use std::time::{Duration, Instant};
     use base64::Engine;
 
+    let PreviewRunConfig {
+        repo_path,
+        git_ref,
+        slug,
+        port,
+        paths,
+        live_source_dir,
+        preserve_source_dir,
+        single_output_path,
+    } = config;
+
     let repo = Path::new(&repo_path);
+    let using_live_source = live_source_dir.is_some();
+    let preview_dir = if let Some(source_dir) = live_source_dir {
+        source_dir
+    } else {
+        std::env::temp_dir().join(format!("git-viz-preview-{slug}-{port}"))
+    };
 
-    // Sanitise branch name for the temp directory name
-    let slug: String = branch.chars()
-        .map(|c| if c.is_alphanumeric() || c == '-' || c == '_' { c } else { '-' })
-        .collect();
-    // Include port in the dir name so concurrent calls for the same branch
-    // (e.g. from React StrictMode double-effect) use separate directories.
-    let preview_dir = std::env::temp_dir().join(format!("git-viz-preview-{slug}-{port}"));
-
-    // Always start clean
-    let _ = std::fs::remove_dir_all(&preview_dir);
-    std::fs::create_dir_all(&preview_dir)
-        .map_err(|e| format!("Failed to create preview dir: {e}"))?;
-
-    // ── Extract branch files via git archive ─────────────────────────────────
-    // More reliable than git worktrees (no locking, no registration state).
-    // We buffer to a temp .tar file instead of piping, avoiding macOS pipe
-    // edge cases where tar can exit before git flushes its stdout.
-    let archive_path = std::env::temp_dir().join(format!("git-viz-archive-{port}.tar"));
-    let _ = std::fs::remove_file(&archive_path);
-
-    let arch_out = std::process::Command::new("git")
-        .args(["-C", &repo_path, "archive", "--format=tar", &branch])
-        .output()
-        .map_err(|e| format!("git archive failed to start: {e}"))?;
-
-    if !arch_out.status.success() {
+    if !using_live_source {
         let _ = std::fs::remove_dir_all(&preview_dir);
-        return Err(format!(
-            "git archive failed for branch '{}': {}",
-            branch,
-            String::from_utf8_lossy(&arch_out.stderr).trim()
-        ));
+        std::fs::create_dir_all(&preview_dir)
+            .map_err(|e| format!("Failed to create preview dir: {e}"))?;
     }
 
-    std::fs::write(&archive_path, &arch_out.stdout)
-        .map_err(|e| format!("Failed to write archive: {e}"))?;
+    if !using_live_source {
+        // ── Extract commit/branch files via git archive ───────────────────────
+        let archive_path = std::env::temp_dir().join(format!("git-viz-archive-{port}.tar"));
+        let _ = std::fs::remove_file(&archive_path);
 
-    let tar_out = std::process::Command::new("tar")
-        .args(["-xf", archive_path.to_str().unwrap_or(""), "-C", preview_dir.to_str().unwrap_or("")])
-        .output()
-        .map_err(|e| format!("tar failed to start: {e}"))?;
+        let arch_out = std::process::Command::new("git")
+            .args(["-C", &repo_path, "archive", "--format=tar", &git_ref])
+            .output()
+            .map_err(|e| format!("git archive failed to start: {e}"))?;
 
-    let _ = std::fs::remove_file(&archive_path);
+        if !arch_out.status.success() {
+            let _ = std::fs::remove_dir_all(&preview_dir);
+            return Err(format!(
+                "git archive failed for ref '{}': {}",
+                git_ref,
+                String::from_utf8_lossy(&arch_out.stderr).trim()
+            ));
+        }
 
-    if !tar_out.status.success() {
-        let _ = std::fs::remove_dir_all(&preview_dir);
-        return Err(format!(
-            "tar extraction failed: {}",
-            String::from_utf8_lossy(&tar_out.stderr).trim()
-        ));
+        std::fs::write(&archive_path, &arch_out.stdout)
+            .map_err(|e| format!("Failed to write archive: {e}"))?;
+
+        let tar_out = std::process::Command::new("tar")
+            .args(["-xf", archive_path.to_str().unwrap_or(""), "-C", preview_dir.to_str().unwrap_or("")])
+            .output()
+            .map_err(|e| format!("tar failed to start: {e}"))?;
+
+        let _ = std::fs::remove_file(&archive_path);
+
+        if !tar_out.status.success() {
+            let _ = std::fs::remove_dir_all(&preview_dir);
+            return Err(format!(
+                "tar extraction failed: {}",
+                String::from_utf8_lossy(&tar_out.stderr).trim()
+            ));
+        }
     }
 
     // Must be a Node.js project
     if !preview_dir.join("package.json").exists() {
-        let _ = std::fs::remove_dir_all(&preview_dir);
+        if !using_live_source && !preserve_source_dir {
+            let _ = std::fs::remove_dir_all(&preview_dir);
+        }
         return Err("No package.json — not a Node.js project".to_string());
     }
 
@@ -4846,7 +4961,9 @@ fn run_previews_blocking(repo_path: String, branch: String, port: u16, paths: Ve
         .stderr(stderr_sink)
         .spawn()
         .map_err(|e| {
-            let _ = std::fs::remove_dir_all(&preview_dir);
+            if !using_live_source && !preserve_source_dir {
+                let _ = std::fs::remove_dir_all(&preview_dir);
+            }
             format!("Failed to start dev server ({pm}): {e}")
         })?;
 
@@ -4865,7 +4982,9 @@ fn run_previews_blocking(repo_path: String, branch: String, port: u16, paths: Ve
             let tail = log.lines().rev().take(15)
                 .collect::<Vec<_>>().into_iter().rev().collect::<Vec<_>>().join("\n");
             let _ = std::fs::remove_file(&log_path);
-            let _ = std::fs::remove_dir_all(&preview_dir);
+            if !using_live_source && !preserve_source_dir {
+                let _ = std::fs::remove_dir_all(&preview_dir);
+            }
             return Err(format!("Dev server crashed.\nLog:\n{tail}"));
         }
 
@@ -4894,7 +5013,9 @@ fn run_previews_blocking(repo_path: String, branch: String, port: u16, paths: Ve
             let tail = log.lines().rev().take(15)
                 .collect::<Vec<_>>().into_iter().rev().collect::<Vec<_>>().join("\n");
             let _ = std::fs::remove_file(&log_path);
-            let _ = std::fs::remove_dir_all(&preview_dir);
+            if !using_live_source && !preserve_source_dir {
+                let _ = std::fs::remove_dir_all(&preview_dir);
+            }
             return Err(if tail.is_empty() {
                 format!("Dev server did not respond within 90s (tried port {port})")
             } else {
@@ -4904,13 +5025,13 @@ fn run_previews_blocking(repo_path: String, branch: String, port: u16, paths: Ve
     };
     let _ = std::fs::remove_file(&log_path);
 
-    // Locate Chrome
-    let chrome = "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome";
-    if !Path::new(chrome).exists() {
+    let chrome = resolve_chrome_path().ok_or_else(|| {
         let _ = server.kill();
-        let _ = std::fs::remove_dir_all(&preview_dir);
-        return Err("Google Chrome not found — install Chrome to generate previews".to_string());
-    }
+        if !using_live_source && !preserve_source_dir {
+            let _ = std::fs::remove_dir_all(&preview_dir);
+        }
+        "Chrome not found — install Google Chrome or Chromium to generate previews".to_string()
+    })?;
 
     // Locate Node.js — check common macOS install paths
     let node_bin = [
@@ -4937,7 +5058,9 @@ fn run_previews_blocking(repo_path: String, branch: String, port: u16, paths: Ve
 
     if node_bin.is_none() {
         let _ = server.kill();
-        let _ = std::fs::remove_dir_all(&preview_dir);
+        if !using_live_source && !preserve_source_dir {
+            let _ = std::fs::remove_dir_all(&preview_dir);
+        }
         return Err("Node.js not found — install Node.js to generate previews".to_string());
     }
     let node_bin = node_bin.unwrap();
@@ -5000,7 +5123,7 @@ fn run_previews_blocking(repo_path: String, branch: String, port: u16, paths: Ve
         .args([
             script_path.to_str().unwrap_or(""),
             &urls_json,
-            chrome,
+            &chrome,
             out_dir.to_str().unwrap_or(""),
             &cdp_port,
         ])
@@ -5010,7 +5133,9 @@ fn run_previews_blocking(repo_path: String, branch: String, port: u16, paths: Ve
 
     let _ = std::fs::remove_file(&script_path);
     let _ = server.kill();
-    let _ = std::fs::remove_dir_all(&preview_dir);
+    if !using_live_source && !preserve_source_dir {
+        let _ = std::fs::remove_dir_all(&preview_dir);
+    }
 
     match node_out {
         Ok(out) => {
@@ -5018,6 +5143,17 @@ fn run_previews_blocking(repo_path: String, branch: String, port: u16, paths: Ve
             for i in 0..full_urls.len() {
                 let png = out_dir.join(format!("{i}.png"));
                 if png.exists() {
+                    if let Some(output_path) = single_output_path.as_ref() {
+                        if i == 0 {
+                            if let Some(parent) = output_path.parent() {
+                                let _ = std::fs::create_dir_all(parent);
+                            }
+                            let _ = std::fs::copy(&png, output_path);
+                            let _ = std::fs::remove_file(&png);
+                            results.push(String::from("file://ready"));
+                            continue;
+                        }
+                    }
                     match std::fs::read(&png) {
                         Ok(bytes) if !bytes.is_empty() => {
                             let _ = std::fs::remove_file(&png);
@@ -5026,7 +5162,7 @@ fn run_previews_blocking(repo_path: String, branch: String, port: u16, paths: Ve
                                 base64::engine::general_purpose::STANDARD.encode(&bytes)
                             ));
                         }
-                        Ok(_) => results.push(String::new()), // 0-byte = skip
+                        Ok(_) => results.push(String::new()),
                         Err(_) => results.push(String::new()),
                     }
                 } else {
@@ -6016,6 +6152,10 @@ pub fn run() {
             open_preview_browser,
             get_changed_routes,
             get_changed_routes_for_commit,
+            commit_app_preview::get_commit_app_preview,
+            commit_app_preview::get_commit_app_previews_batch,
+            commit_app_preview::ensure_commit_app_preview,
+            commit_app_preview::clear_commit_app_preview_cache,
             debug_diff_files,
             take_pending_open_repo,
             reveal_in_finder,
