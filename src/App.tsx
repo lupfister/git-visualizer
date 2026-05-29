@@ -72,6 +72,7 @@ import {
 import { deriveRepoVisualState } from './repoVisualState';
 import { setMapGridBackgroundActivity } from '../components/grid/mapGridBackgroundActivity';
 import { useWorktreeDraftMessages } from './useWorktreeDraftMessages';
+import { createRepoSyncScheduler } from './repoSyncScheduler';
 
 const PROJECTS_STORAGE_KEY = 'git-visualizer:projects';
 const ACTIVE_PROJECT_STORAGE_KEY = 'git-visualizer:active-project';
@@ -97,18 +98,15 @@ const SIDEBAR_MAX_WIDTH_PX = 360;
 const MAP_REPO_REFRESH_SETTLE_MS = 500;
 /** Defer SQLite snapshot persist so git CPU work does not contend with map layout. */
 const PERSIST_SNAPSHOT_DEFER_MS = 3000;
-/** Minimum gap between background fingerprint scans when git state is already synced. */
-const MIN_BACKGROUND_FINGERPRINT_CHECK_MS = 12000;
 /** Minimum gap between full graph rebuild refreshes (burst coalesce only). */
 const MIN_FULL_GRAPH_REFRESH_MS = 2000;
 /** Keep optimistic post-commit HEAD on the map until background probes catch up. */
 const POST_COMMIT_HEAD_PROTECT_MS = 8000;
 const POST_COMMIT_RELEASE_MAX_ATTEMPTS = 15;
-const HEAD_STATE_PROBE_MS = 30000;
-/** Poll porcelain for unstaged edits — working tree changes do not touch .git. */
-const DIRTY_STATE_PROBE_MS = 2500;
 /** Coalesce dirty porcelain polls into one UI apply. */
 const DIRTY_SYNC_DEBOUNCE_MS = 350;
+/** Background fingerprint scans (timer lane only); focus/graph/local/quick bypass. */
+const MIN_BACKGROUND_FINGERPRINT_CHECK_MS = 6000;
 type PushTarget = {
   branchName: string;
   targetSha?: string;
@@ -436,7 +434,7 @@ function App() {
   /** False while panning and for {@link MAP_REPO_REFRESH_SETTLE_MS} after pan stops. */
   const canApplyRepoRefreshRef = useRef(true);
   const mapRefreshSettleTimeoutRef = useRef<number | null>(null);
-  const runRepoRefreshRef = useRef<((reason?: 'graph' | 'local' | 'timer' | 'initial' | 'quick') => void) | null>(null);
+  const runRepoRefreshRef = useRef<((reason?: 'graph' | 'local' | 'timer' | 'initial' | 'quick' | 'focus') => void) | null>(null);
   const reconcileInFlightRef = useRef(false);
   const pendingRefreshAfterInteractionRef = useRef(false);
   const reloadRepoSnapshotInFlightRef = useRef(false);
@@ -3014,7 +3012,8 @@ function App() {
     }
 
     if (
-      lastSynced
+      !options?.force
+      && lastSynced
       && !gitActivityPending
       && Date.now() - lastCheckAt < MIN_BACKGROUND_FINGERPRINT_CHECK_MS
     ) {
@@ -3943,9 +3942,6 @@ function App() {
 
     let isDisposed = false;
     let refreshInFlight = false;
-    let pollTimeoutId: number | null = null;
-    let headPollTimeoutId: number | null = null;
-    let dirtyPollTimeoutId: number | null = null;
     let dirtySyncDebounceId: number | null = null;
     let fullRefreshCoalesceId: number | null = null;
     let pendingFullGraphRefresh = false;
@@ -3967,7 +3963,7 @@ function App() {
     const isRepoRefreshBlocked = () =>
       isMapInteractingRef.current || !canApplyRepoRefreshRef.current;
 
-    const runRefresh = async (incomingReason: 'graph' | 'local' | 'timer' | 'initial' | 'quick' = 'timer') => {
+    const runRefresh = async (incomingReason: 'graph' | 'local' | 'timer' | 'initial' | 'quick' | 'focus' = 'timer') => {
       let reason = incomingReason;
       if (isStaleRepoRefresh()) return;
       if (refreshInFlight || reconcileInFlightRef.current) {
@@ -3993,13 +3989,16 @@ function App() {
       const postCommitGuarded = Boolean(
         normalizedPath && isPostCommitProtectionActive(normalizedPath),
       );
-      if (postCommitGuarded && reason !== 'graph' && reason !== 'quick') {
+      if (postCommitGuarded && reason !== 'graph' && reason !== 'quick' && reason !== 'focus') {
         pendingRefreshAfterInteractionRef.current = true;
         return;
       }
       const gitActivityPending = gitActivityEpochRef.current !== lastHandledGitActivityEpochRef.current;
       if (
         reason !== 'quick'
+        && reason !== 'focus'
+        && reason !== 'graph'
+        && reason !== 'local'
         && normalizedPath
         && lastSyncedRepoFingerprintRef.current[normalizedPath]
         && !gitActivityPending
@@ -4066,7 +4065,7 @@ function App() {
         }
 
         if (!gitActivityPending) {
-          const patched = await tryIncrementalBackgroundSync(repoPath, { force: externalRefresh, peek });
+          const patched = await tryIncrementalBackgroundSync(repoPath, { force: externalRefresh || reason === 'focus', peek });
           if (patched && (!peek || !isActiveUiBehindPeek(repoPath, peek))) {
             pendingRefreshAfterInteractionRef.current = false;
             return;
@@ -4326,38 +4325,6 @@ function App() {
       void runRefresh(reason);
     };
 
-    const scheduleBackgroundProbe = () => {
-      if (isDisposed) return;
-      if (pollTimeoutId != null) window.clearTimeout(pollTimeoutId);
-      const hidden = document.visibilityState !== 'visible';
-      const delayMs = hidden ? 300000 : 120000;
-      pollTimeoutId = window.setTimeout(() => {
-        void runRefresh('timer');
-        scheduleBackgroundProbe();
-      }, delayMs);
-    };
-
-    const scheduleHeadStateProbe = () => {
-      if (isDisposed) return;
-      if (headPollTimeoutId != null) window.clearTimeout(headPollTimeoutId);
-      const hidden = document.visibilityState !== 'visible';
-      headPollTimeoutId = window.setTimeout(async () => {
-        if (
-          !isDisposed
-          && !hidden
-          && !isRepoRefreshBlocked()
-          && !repoMutationInFlightRef.current
-        ) {
-          const peek = await fetchRepoSyncPeek(repoPath);
-          const gitActivityPending = gitActivityEpochRef.current !== lastHandledGitActivityEpochRef.current;
-          if (peek && (gitActivityPending || isActiveUiBehindPeek(repoPath, peek))) {
-            void reloadRepoSnapshotFromGit(repoPath, peek);
-          }
-        }
-        scheduleHeadStateProbe();
-      }, hidden ? 60000 : HEAD_STATE_PROBE_MS);
-    };
-
     const scheduleCoalescedDirtySync = () => {
       if (isDisposed) return;
       if (dirtySyncDebounceId != null) window.clearTimeout(dirtySyncDebounceId);
@@ -4368,24 +4335,67 @@ function App() {
       }, DIRTY_SYNC_DEBOUNCE_MS);
     };
 
-    const scheduleDirtyStateProbe = () => {
-      if (isDisposed) return;
-      if (dirtyPollTimeoutId != null) window.clearTimeout(dirtyPollTimeoutId);
-      const hidden = document.visibilityState !== 'visible';
-      dirtyPollTimeoutId = window.setTimeout(async () => {
-        if (
-          !isDisposed
-          && !hidden
-          && !isRepoRefreshBlocked()
-          && !repoMutationInFlightRef.current
-          && !isPostCommitProtectionActive(normalizePath(repoPath) ?? '')
-        ) {
-          // Working-tree edits do not touch .git/index; lightweight porcelain poll only.
-          scheduleCoalescedDirtySync();
-        }
-        scheduleDirtyStateProbe();
-      }, hidden ? 120000 : DIRTY_STATE_PROBE_MS);
+    const runPeekLane = async () => {
+      if (
+        isDisposed
+        || document.visibilityState !== 'visible'
+        || isRepoRefreshBlocked()
+        || repoMutationInFlightRef.current
+      ) {
+        return;
+      }
+      const peek = await fetchRepoSyncPeek(repoPath);
+      if (isStaleRepoRefresh()) return;
+      const gitActivityPending = gitActivityEpochRef.current !== lastHandledGitActivityEpochRef.current;
+      if (peek && (gitActivityPending || isActiveUiBehindPeek(repoPath, peek))) {
+        void reloadRepoSnapshotFromGit(repoPath, peek);
+      }
     };
+
+    const runVisibilityCatchUp = async () => {
+      if (isStaleRepoRefresh()) return;
+      if (repoMutationInFlightRef.current || reconcileInFlightRef.current) {
+        pendingRefreshAfterInteractionRef.current = true;
+        return;
+      }
+      if (isRepoRefreshBlocked()) {
+        pendingRefreshAfterInteractionRef.current = true;
+        setMapGridBackgroundActivity('git-refresh-pending', 'Git refresh queued', true, 'tab visible');
+        return;
+      }
+      const peek = await fetchRepoSyncPeek(repoPath);
+      if (isStaleRepoRefresh()) return;
+      const gitActivityPending = gitActivityEpochRef.current !== lastHandledGitActivityEpochRef.current;
+      if (peek && (gitActivityPending || isActiveUiBehindPeek(repoPath, peek))) {
+        void reloadRepoSnapshotFromGit(repoPath, peek);
+      }
+      void runRefresh('focus');
+      scheduleCoalescedDirtySync();
+    };
+
+    const repoSyncScheduler = createRepoSyncScheduler({
+      isDisposed: () => isDisposed,
+      onDirtyLane: () => {
+        if (
+          document.visibilityState !== 'visible'
+          || isRepoRefreshBlocked()
+          || repoMutationInFlightRef.current
+          || isPostCommitProtectionActive(normalizePath(repoPath) ?? '')
+        ) {
+          return;
+        }
+        scheduleCoalescedDirtySync();
+      },
+      onPeekLane: () => {
+        void runPeekLane();
+      },
+      onFullLane: () => {
+        void runRefresh('timer');
+      },
+      onVisibilityCatchUp: () => {
+        void runVisibilityCatchUp();
+      },
+    });
 
     listen<GitActivityEventPayload>('git-activity', (event) => {
       if (!sameRepoPath(event.payload.repoPath, repoPath)) return;
@@ -4400,16 +4410,13 @@ function App() {
       else unlisten = fn;
     }).catch(console.error);
 
-    scheduleBackgroundProbe();
-    scheduleHeadStateProbe();
-    scheduleDirtyStateProbe();
+    repoSyncScheduler.start();
+    repoSyncScheduler.kickVisibleCatchUp();
 
     return () => {
       isDisposed = true;
       runRepoRefreshRef.current = null;
-      if (pollTimeoutId != null) window.clearTimeout(pollTimeoutId);
-      if (headPollTimeoutId != null) window.clearTimeout(headPollTimeoutId);
-      if (dirtyPollTimeoutId != null) window.clearTimeout(dirtyPollTimeoutId);
+      repoSyncScheduler.dispose();
       if (dirtySyncDebounceId != null) window.clearTimeout(dirtySyncDebounceId);
       if (fullRefreshCoalesceId != null) window.clearTimeout(fullRefreshCoalesceId);
       if (unlisten) unlisten();

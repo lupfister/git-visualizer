@@ -1,0 +1,164 @@
+/**
+ * Staggered repo sync timers with Page Visibility API catch-up.
+ *
+ * Design (aligned with MDN visibility guidance + event-driven git watching):
+ * - Primary path: `.git` file watcher → immediate handling in App.
+ * - Visible tab: fast dirty lane, medium peek lane, slower full reconcile lane (staggered).
+ * - Hidden tab: stretch intervals to save CPU; no work until tab is visible again.
+ * - Tab becomes visible: cancel hidden timers, reschedule visible intervals, run catch-up immediately.
+ */
+
+export type RepoSyncLane = 'dirty' | 'peek' | 'full';
+
+export type RepoSyncSchedulerIntervals = {
+  dirtyMs: number;
+  peekMs: number;
+  fullMs: number;
+};
+
+export const REPO_SYNC_INTERVALS_VISIBLE: RepoSyncSchedulerIntervals = {
+  dirtyMs: 2500,
+  peekMs: 12_000,
+  fullMs: 60_000,
+};
+
+export const REPO_SYNC_INTERVALS_HIDDEN: RepoSyncSchedulerIntervals = {
+  dirtyMs: 120_000,
+  peekMs: 60_000,
+  fullMs: 300_000,
+};
+
+/** Stagger lane starts so dirty / peek / full rarely fire in the same tick. */
+export const REPO_SYNC_LANE_STAGGER_MS: Record<RepoSyncLane, number> = {
+  dirty: 0,
+  peek: 4_000,
+  full: 8_000,
+};
+
+export type RepoSyncSchedulerHandlers = {
+  onDirtyLane: () => void;
+  onPeekLane: () => void;
+  onFullLane: () => void;
+  /** Runs immediately when the document becomes visible (user returned to the tab). */
+  onVisibilityCatchUp: () => void;
+  isDisposed?: () => boolean;
+};
+
+export type RepoSyncScheduler = {
+  start: () => void;
+  dispose: () => void;
+  /** Force visible-interval timers and run catch-up (e.g. after repo switch). */
+  kickVisibleCatchUp: () => void;
+};
+
+function isDocumentHidden(): boolean {
+  if (typeof document === 'undefined') return false;
+  return document.visibilityState !== 'visible';
+}
+
+export function resolveRepoSyncIntervals(hidden = isDocumentHidden()): RepoSyncSchedulerIntervals {
+  return hidden ? REPO_SYNC_INTERVALS_HIDDEN : REPO_SYNC_INTERVALS_VISIBLE;
+}
+
+export function createRepoSyncScheduler(handlers: RepoSyncSchedulerHandlers): RepoSyncScheduler {
+  const timeoutIds: Partial<Record<RepoSyncLane, number>> = {};
+  let visibilityListener: (() => void) | null = null;
+  let started = false;
+
+  const clearLane = (lane: RepoSyncLane) => {
+    const id = timeoutIds[lane];
+    if (id != null) {
+      window.clearTimeout(id);
+      delete timeoutIds[lane];
+    }
+  };
+
+  const clearAllLanes = () => {
+    for (const lane of ['dirty', 'peek', 'full'] as const) {
+      clearLane(lane);
+    }
+  };
+
+  const scheduleLane = (lane: RepoSyncLane) => {
+    if (handlers.isDisposed?.()) return;
+    clearLane(lane);
+    const intervals = resolveRepoSyncIntervals();
+    const delayMs =
+      lane === 'dirty' ? intervals.dirtyMs : lane === 'peek' ? intervals.peekMs : intervals.fullMs;
+
+    timeoutIds[lane] = window.setTimeout(() => {
+      delete timeoutIds[lane];
+      if (handlers.isDisposed?.()) return;
+
+      if (lane === 'dirty') handlers.onDirtyLane();
+      else if (lane === 'peek') handlers.onPeekLane();
+      else handlers.onFullLane();
+
+      scheduleLane(lane);
+    }, delayMs);
+  };
+
+  const scheduleAllLanes = () => {
+    clearAllLanes();
+    if (handlers.isDisposed?.()) return;
+    const intervals = resolveRepoSyncIntervals();
+    const hidden = intervals === REPO_SYNC_INTERVALS_HIDDEN;
+
+    for (const lane of ['dirty', 'peek', 'full'] as const) {
+      const delayMs =
+        (lane === 'dirty' ? intervals.dirtyMs : lane === 'peek' ? intervals.peekMs : intervals.fullMs)
+        + (hidden ? 0 : REPO_SYNC_LANE_STAGGER_MS[lane]);
+      timeoutIds[lane] = window.setTimeout(() => {
+        delete timeoutIds[lane];
+        if (handlers.isDisposed?.()) return;
+        if (lane === 'dirty') handlers.onDirtyLane();
+        else if (lane === 'peek') handlers.onPeekLane();
+        else handlers.onFullLane();
+        scheduleLane(lane);
+      }, delayMs);
+    }
+  };
+
+  const runVisibilityCatchUp = () => {
+    if (handlers.isDisposed?.()) return;
+    handlers.onVisibilityCatchUp();
+  };
+
+  const onVisibilityChange = () => {
+    if (handlers.isDisposed?.()) return;
+    if (document.visibilityState === 'visible') {
+      scheduleAllLanes();
+      runVisibilityCatchUp();
+    } else {
+      scheduleAllLanes();
+    }
+  };
+
+  const start = () => {
+    if (started) return;
+    started = true;
+    scheduleAllLanes();
+    if (typeof document !== 'undefined') {
+      visibilityListener = onVisibilityChange;
+      document.addEventListener('visibilitychange', visibilityListener);
+    }
+  };
+
+  const dispose = () => {
+    started = false;
+    clearAllLanes();
+    if (visibilityListener && typeof document !== 'undefined') {
+      document.removeEventListener('visibilitychange', visibilityListener);
+      visibilityListener = null;
+    }
+  };
+
+  const kickVisibleCatchUp = () => {
+    scheduleAllLanes();
+    if (!isDocumentHidden()) {
+      runVisibilityCatchUp();
+    }
+  };
+
+  return { start, dispose, kickVisibleCatchUp };
+}
