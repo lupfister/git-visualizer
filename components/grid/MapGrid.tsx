@@ -58,7 +58,7 @@ import {
   type WorktreeSession,
 } from '../../lib/worktreeSessions';
 import type { WorktreeInfo } from '../../types';
-import type { WorktreeDraftDisplay } from '../../src/worktreeDraftMessages';
+import { resolveWorktreeDraftDisplayLabel, type WorktreeDraftDisplay } from '../../src/worktreeDraftMessages';
 import { parseMapCheckoutTarget, type MapCheckoutTarget } from './mapCheckoutTarget';
 import { parseDeletableEmptyBranchFromCommitId } from './mapDeleteTarget';
 import {
@@ -498,9 +498,18 @@ export default function BranchGridMap({
     commitIdsWithRenderedAncestry,
   } = resolvedLayoutModel;
 
+  const worktreeSearchLabelsByCommitId = useMemo(() => {
+    if (!worktreeDraftByWorkingTreeId || worktreeDraftByWorkingTreeId.size === 0) return undefined;
+    const labels = new Map<string, string>();
+    for (const [commitId, draft] of worktreeDraftByWorkingTreeId) {
+      labels.set(commitId, resolveWorktreeDraftDisplayLabel(draft));
+    }
+    return labels;
+  }, [worktreeDraftByWorkingTreeId]);
+
   const gridSearchMatch = useMemo(
-    () => deriveGridSearchMatch(resolvedLayoutModel.nodes, gridSearchQuery),
-    [gridSearchQuery, resolvedLayoutModel.nodes],
+    () => deriveGridSearchMatch(resolvedLayoutModel.nodes, gridSearchQuery, worktreeSearchLabelsByCommitId),
+    [gridSearchQuery, resolvedLayoutModel.nodes, worktreeSearchLabelsByCommitId],
   );
   const { matchingNodes, matchingNodeIds, normalizedSearchQuery } = gridSearchMatch;
 
