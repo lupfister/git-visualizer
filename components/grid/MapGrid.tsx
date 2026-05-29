@@ -195,9 +195,6 @@ export default function BranchGridMap({
   deleteInProgress = false,
   worktrees = [],
   currentRepoPath,
-  onRemoveWorktree,
-  removeWorktreeInProgress = false,
-  onSwitchToWorktree,
   onStashLocalChanges,
   stashInProgress = false,
   stashDisabled = false,
@@ -240,14 +237,13 @@ export default function BranchGridMap({
   worktreeDraftByWorkingTreeId,
 }: Props) {
   const scrollContainerRef = useRef<HTMLDivElement | null>(null);
-  const hudToolbarRef = useRef<HTMLDivElement | null>(null);
+  const hudHeaderRef = useRef<HTMLElement | null>(null);
   /** `p-2.5` wrapper: used to map pointer position to the transform layer origin (padding edge). */
   const mapPadHostRef = useRef<HTMLDivElement | null>(null);
   const lastSearchResultCountRef = useRef<number | null | undefined>(undefined);
   const lastSearchResultIndexRef = useRef<number | null | undefined>(undefined);
   const lastSearchFocusShaRef = useRef<string | null | undefined>(undefined);
   const lastHandledSearchJumpKeyRef = useRef<string>('');
-  const [worktreeMenuOpen, setWorktreeMenuOpen] = useState(false);
   const [commitDialogOpen, setCommitDialogOpen] = useState(false);
   const [commitMessageDraft, setCommitMessageDraft] = useState('');
   const [deleteConfirmOpen, setDeleteConfirmOpen] = useState(false);
@@ -1800,8 +1796,14 @@ export default function BranchGridMap({
     }
   }, [canCreateRootBranch, currentCheckedOutCommitCanCreateBranch, newBranchDialogOpen, selectedCommitCanCreateBranch]);
 
-  useEffect(() => {
-    const element = hudToolbarRef.current;
+  const mapHudVisible =
+    Boolean(gridHudProps)
+    && !isLoading
+    && !(allCommits.length === 0 && blockMapInteraction);
+
+  useLayoutEffect(() => {
+    if (!mapHudVisible) return;
+    const element = hudHeaderRef.current;
     if (!element) return;
     const compactThresholdPx = 640;
     const searchHideThresholdPx = 440;
@@ -1814,7 +1816,7 @@ export default function BranchGridMap({
     const observer = new ResizeObserver(() => update());
     observer.observe(element);
     return () => observer.disconnect();
-  }, []);
+  }, [mapHudVisible]);
 
   useEffect(() => {
     const handleKeyDown = (event: KeyboardEvent) => {
@@ -1875,11 +1877,12 @@ export default function BranchGridMap({
       />
       {gridHudProps ? (
         <header
+          ref={hudHeaderRef}
           data-tauri-drag-region
           onPointerDown={handleHeaderPointerDown}
           className="window-drag-region pointer-events-none absolute inset-x-0 top-0 z-[70] flex w-full select-none"
         >
-          <div ref={hudToolbarRef} className="pointer-events-auto ml-auto flex w-full max-w-[calc(100vw-116px)] min-w-0 items-start justify-between gap-3 p-2.25 select-none">
+          <div className="pointer-events-auto ml-auto flex w-full max-w-[calc(100vw-116px)] min-w-0 items-start justify-between gap-3 p-2.25 select-none">
               <div className="flex min-w-0 flex-nowrap items-center justify-start gap-3 overflow-visible">
                 <CommitControls
                   compactLabels={isCompactHud}
@@ -1909,13 +1912,6 @@ export default function BranchGridMap({
                   mergeInProgress={mergeInProgress}
                   mergeTargetCommitSha={mergeTargetCommitSha}
                   setMergeTargetCommitSha={setMergeTargetCommitSha}
-                  worktrees={worktrees}
-                  currentRepoPath={currentRepoPath}
-                  worktreeMenuOpen={worktreeMenuOpen}
-                  setWorktreeMenuOpen={setWorktreeMenuOpen}
-                  onSwitchToWorktree={onSwitchToWorktree}
-                  onRemoveWorktree={onRemoveWorktree}
-                  removeWorktreeInProgress={removeWorktreeInProgress}
                   setCommitDialogOpen={setCommitDialogOpen}
                   setNewBranchDialogOpen={setNewBranchDialogOpen}
                   currentWorkingTreeId={currentWorkingTreeId}

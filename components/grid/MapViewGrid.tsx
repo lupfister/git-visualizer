@@ -56,9 +56,6 @@ interface Props {
   deleteInProgress?: boolean;
   worktrees?: WorktreeInfo[];
   currentRepoPath?: string;
-  onRemoveWorktree?: (worktreePath: string, force: boolean) => Promise<void> | void;
-  removeWorktreeInProgress?: boolean;
-  onSwitchToWorktree?: (worktreePath: string) => void | Promise<void>;
   onStashLocalChanges?: () => Promise<void> | void;
   stashInProgress?: boolean;
   stashDisabled?: boolean;
@@ -142,9 +139,6 @@ export default function BranchGridMapView({
   onDeleteSelection,
   worktrees = [],
   currentRepoPath,
-  onRemoveWorktree,
-  removeWorktreeInProgress = false,
-  onSwitchToWorktree,
   onStashLocalChanges,
   stashInProgress = false,
   stashDisabled = false,
@@ -224,9 +218,6 @@ export default function BranchGridMapView({
             onDeleteSelection={onDeleteSelection}
             worktrees={worktrees}
             currentRepoPath={currentRepoPath}
-            onRemoveWorktree={onRemoveWorktree}
-            removeWorktreeInProgress={removeWorktreeInProgress}
-            onSwitchToWorktree={onSwitchToWorktree}
             onStashLocalChanges={onStashLocalChanges}
             stashInProgress={stashInProgress}
             stashDisabled={stashDisabled}

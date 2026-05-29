@@ -325,7 +325,6 @@ function App() {
   const [defaultBranch, setDefaultBranch] = useState<string>('main');
   const [checkedOutRef, setCheckedOutRef] = useState<CheckedOutRef | null>(null);
   const [worktrees, setWorktrees] = useState<WorktreeInfo[]>([]);
-  const [removeWorktreeInProgress, setRemoveWorktreeInProgress] = useState(false);
   const [gridSearchQuery, setGridSearchQuery] = useState('');
   const [gridSearchJumpToken, setGridSearchJumpToken] = useState(0);
   const [gridSearchJumpDirection, setGridSearchJumpDirection] = useState<1 | -1>(1);
@@ -377,7 +376,6 @@ function App() {
     pushInProgress ||
     deleteInProgress ||
     mergeInProgress ||
-    removeWorktreeInProgress ||
     createBranchFromNodeInProgress;
   const [isMapInteracting, setIsMapInteracting] = useState(false);
   const mapGridOrientation = 'horizontal' as const;
@@ -3421,31 +3419,6 @@ function App() {
     }
   }
 
-  async function handleRemoveWorktree(worktreePath: string, force: boolean) {
-    if (!repoPath || removeWorktreeInProgress) return;
-    setRemoveWorktreeInProgress(true);
-    setCommitSwitchFeedback(null);
-    try {
-      beginRepoMutation();
-      await invoke('remove_worktree', { repoPath, worktreePath, force });
-      await finalizeRepoMutation(repoPath, outcomeFromWorktreeRemove(worktreePath));
-      setCommitSwitchFeedback({
-        kind: 'success',
-        message: `Removed worktree at ${worktreePath}`,
-      });
-    } catch (e) {
-      endRepoMutation();
-      const message = e instanceof Error ? e.message : String(e);
-      setCommitSwitchFeedback({
-        kind: 'error',
-        message,
-      });
-      console.error('Failed to remove worktree:', message);
-    } finally {
-      setRemoveWorktreeInProgress(false);
-    }
-  }
-
   function applySnapshotToActiveState(
     path: string,
     snapshot: RepoVisualSnapshot,
@@ -5290,7 +5263,7 @@ function App() {
     removeWorktrees?: Array<{ path: string; force: boolean }>;
     stashIndices?: number[];
   }) {
-    if (!repoPath || deleteInProgress || removeWorktreeInProgress) return;
+    if (!repoPath || deleteInProgress) return;
     const uniqueBranchNames = Array.from(new Set(targets.branchNames.filter((branchName) => branchName && branchName !== defaultBranch)));
     const discardPaths = Array.from(
       new Set(
@@ -5414,7 +5387,6 @@ function App() {
   void [
     mapLoading,
     worktrees,
-    removeWorktreeInProgress,
     scrollRequest,
     focusedErrorBranch,
     mergeInProgress,
@@ -5426,7 +5398,6 @@ function App() {
     stageInProgress,
     createBranchFromNodeInProgress,
     handleMapCommitClick,
-    handleRemoveWorktree,
     handleStashLocalChanges,
     handleCommitLocalChanges,
     handleStageAllChanges,
@@ -6165,9 +6136,6 @@ function App() {
                 deleteInProgress={deleteInProgress}
                 worktrees={worktrees}
                 currentRepoPath={repoPath ?? undefined}
-                onRemoveWorktree={handleRemoveWorktree}
-                removeWorktreeInProgress={removeWorktreeInProgress}
-                onSwitchToWorktree={handleSwitchToWorktree}
                 onStashLocalChanges={handleStashLocalChanges}
                 stashInProgress={stashInProgress}
                 stashDisabled={false}

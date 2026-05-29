@@ -1,9 +1,8 @@
-import type { WorktreeInfo } from '../../types';
 import type { BranchGridViewProps } from './LayoutGrid';
 import ToolbarActionContent from './ToolbarActionContent';
-import { ChevronDown, FolderGit2, GitBranchPlus, GitMerge } from 'lucide-react';
+import { ChevronDown, GitBranchPlus, GitMerge } from 'lucide-react';
 import { useEffect, useRef, useState } from 'react';
-import { cn, isOtherWorktree, worktreeShortLabel } from './mapGridUtils';
+import { cn } from './mapGridUtils';
 
 type PushTarget = {
   branchName: string;
@@ -45,13 +44,6 @@ type Props = {
   mergeInProgress: boolean;
   mergeTargetCommitSha: string | null;
   setMergeTargetCommitSha: (sha: string | null) => void;
-  worktrees: WorktreeInfo[];
-  currentRepoPath?: string;
-  worktreeMenuOpen: boolean;
-  setWorktreeMenuOpen: (open: boolean | ((open: boolean) => boolean)) => void;
-  onSwitchToWorktree?: BranchGridViewProps['onSwitchToWorktree'];
-  onRemoveWorktree?: BranchGridViewProps['onRemoveWorktree'];
-  removeWorktreeInProgress: boolean;
   setCommitDialogOpen: (open: boolean) => void;
   setNewBranchDialogOpen: (open: boolean) => void;
   hideMergeControls?: boolean;
@@ -83,13 +75,6 @@ export default function CommitControls({
   selectedCommitTargetOption,
   mergeInProgress,
   setMergeTargetCommitSha,
-  worktrees,
-  currentRepoPath,
-  worktreeMenuOpen,
-  setWorktreeMenuOpen,
-  onSwitchToWorktree,
-  onRemoveWorktree,
-  removeWorktreeInProgress,
   setCommitDialogOpen,
   setNewBranchDialogOpen,
   hideMergeControls = false,
@@ -101,7 +86,6 @@ export default function CommitControls({
     selectedVisibleCommitShas.every((sha) => sha === currentWorkingTreeId);
   const [actionMenuOpen, setActionMenuOpen] = useState(false);
   const actionMenuRef = useRef<HTMLDivElement | null>(null);
-  const worktreeMenuRef = useRef<HTMLDivElement | null>(null);
   const controlClassName =
     'inline-flex h-7 items-center rounded-md border border-border bg-background px-2 text-[11px] font-medium text-foreground transition-colors hover:bg-muted hover:text-foreground disabled:cursor-not-allowed disabled:opacity-50';
 
@@ -180,14 +164,12 @@ export default function CommitControls({
       const target = event.target as Node | null;
       if (!target) return;
       if (actionMenuRef.current?.contains(target)) return;
-      if (worktreeMenuRef.current?.contains(target)) return;
       setActionMenuOpen(false);
-      setWorktreeMenuOpen(false);
     };
 
     window.addEventListener('pointerdown', handlePointerDown);
     return () => window.removeEventListener('pointerdown', handlePointerDown);
-  }, [setWorktreeMenuOpen]);
+  }, []);
 
   const toolbar = (
     <div className="window-no-drag pointer-events-none z-[60] flex w-full justify-start">
@@ -371,46 +353,6 @@ export default function CommitControls({
             <GitMerge className="mr-1 inline h-3 w-3 shrink-0 align-text-bottom" />
             {mergeInProgress ? 'Merging...' : 'Confirm'}
           </button>
-          </div>
-        ) : null}
-
-        {worktrees.length > 0 && (onSwitchToWorktree || onRemoveWorktree) ? (
-          <div ref={worktreeMenuRef} className="pointer-events-auto relative">
-            <button type="button" onClick={() => setWorktreeMenuOpen((open) => !open)} className={cn(controlClassName, '!bg-background !border-border hover:!bg-muted')}>
-              <FolderGit2 className="mr-1.5 h-[14px] w-[14px] shrink-0" />
-              {worktrees.length}
-              {!compactLabels ? ` ${worktrees.length === 1 ? 'Worktree' : 'Worktrees'}` : null}
-            </button>
-            {worktreeMenuOpen ? (
-              <div className="absolute left-0 top-full z-[70] mt-2 w-[22rem] max-h-64 overflow-auto rounded-md border border-border bg-background p-1">
-                {worktrees.map((worktree) => (
-                  <div key={worktree.path} className="mb-1 flex items-start justify-between gap-2 rounded-lg px-2 py-1.5 hover:bg-muted/30">
-                    <div className="min-w-0">
-                      <div className="truncate text-xs font-medium text-foreground" title={worktree.path}>
-                        {isOtherWorktree(worktree, currentRepoPath) ? worktreeShortLabel(worktree.path) : 'This window'}
-                      </div>
-                      <div className="truncate text-[11px] text-foreground">
-                        {worktree.branchName ?? 'detached'} • {worktree.headSha.slice(0, 7)}
-                      </div>
-                    </div>
-                    {isOtherWorktree(worktree, currentRepoPath) ? (
-                      <div className="flex items-center gap-1">
-                        {onSwitchToWorktree ? (
-                          <button type="button" onClick={() => { setWorktreeMenuOpen(false); void onSwitchToWorktree(worktree.path); }} disabled={removeWorktreeInProgress || worktree.pathExists === false} className="rounded-md border border-border/60 px-2 h-7 text-[11px] font-medium text-foreground transition-colors hover:bg-muted hover:text-foreground disabled:cursor-not-allowed disabled:opacity-50">
-                            Switch
-                          </button>
-                        ) : null}
-                        {onRemoveWorktree ? (
-                          <button type="button" onClick={() => void onRemoveWorktree(worktree.path, worktree.isPrunable)} disabled={removeWorktreeInProgress} className="rounded-md border border-border/60 px-2 h-7 text-[11px] font-medium text-foreground transition-colors hover:bg-muted hover:text-foreground disabled:cursor-not-allowed disabled:opacity-50">
-                            {removeWorktreeInProgress ? '...' : 'Remove'}
-                          </button>
-                        ) : null}
-                      </div>
-                    ) : null}
-                  </div>
-                ))}
-              </div>
-            ) : null}
           </div>
         ) : null}
       </div>

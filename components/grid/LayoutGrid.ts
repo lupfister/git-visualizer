@@ -76,9 +76,6 @@ export type BranchGridViewProps = {
   deleteInProgress?: boolean;
   worktrees?: import('../../types').WorktreeInfo[];
   currentRepoPath?: string;
-  onRemoveWorktree?: (worktreePath: string, force: boolean) => Promise<void> | void;
-  removeWorktreeInProgress?: boolean;
-  onSwitchToWorktree?: (worktreePath: string) => void | Promise<void>;
   onStashLocalChanges?: () => Promise<void> | void;
   stashInProgress?: boolean;
   stashDisabled?: boolean;
