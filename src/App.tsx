@@ -4890,12 +4890,46 @@ function App() {
     return commitResult;
   }
 
-  async function commitLocalChangesWithMessage(trimmed: string): Promise<boolean> {
-    if (!repoPath) return false;
+  async function handleCommitLocalChanges(message: string, worktreePaths: string[]): Promise<boolean> {
+    if (!repoPath || commitInProgress) return false;
+    const trimmed = message.trim();
+    if (!trimmed) {
+      setCommitSwitchFeedback({
+        kind: 'error',
+        message: 'Enter a commit message.',
+      });
+      return false;
+    }
+    const uniquePaths = Array.from(
+      new Set(
+        worktreePaths
+          .map((path) => path.trim())
+          .filter((path) => path.length > 0),
+      ),
+    );
+    if (uniquePaths.length === 0) {
+      setCommitSwitchFeedback({
+        kind: 'error',
+        message: 'Select a worktree with uncommitted changes.',
+      });
+      return false;
+    }
+
+    setCommitSwitchFeedback(null);
+    setCommitInProgress(true);
     try {
       beginRepoMutation();
-      const commitResult = await commitWorktreeAtPath(repoPath, trimmed);
-      if (!commitResult) {
+      const mutationOutcomes: RepoMutationOutcome[] = [];
+      let committedCount = 0;
+
+      for (const worktreePath of uniquePaths) {
+        const commitResult = await commitWorktreeAtPath(worktreePath, trimmed);
+        if (!commitResult) continue;
+        mutationOutcomes.push(outcomeFromCommitData(commitResult));
+        committedCount += 1;
+      }
+
+      if (committedCount === 0) {
         endRepoMutation();
         setCommitSwitchFeedback({
           kind: 'error',
@@ -4903,10 +4937,13 @@ function App() {
         });
         return false;
       }
-      await finalizeRepoMutation(repoPath, outcomeFromCommitData(commitResult));
+
+      await finalizeRepoMutation(repoPath, ...mutationOutcomes);
       setCommitSwitchFeedback({
         kind: 'success',
-        message: 'Committed local changes.',
+        message: committedCount === 1
+          ? 'Committed local changes.'
+          : `Committed ${committedCount} worktrees.`,
       });
       return true;
     } catch (e) {
@@ -4918,23 +4955,6 @@ function App() {
       });
       console.error('Failed to commit:', errText);
       return false;
-    }
-  }
-
-  async function handleCommitLocalChanges(message: string): Promise<boolean> {
-    if (!repoPath || commitInProgress) return false;
-    const trimmed = message.trim();
-    if (!trimmed) {
-      setCommitSwitchFeedback({
-        kind: 'error',
-        message: 'Enter a commit message.',
-      });
-      return false;
-    }
-    setCommitSwitchFeedback(null);
-    setCommitInProgress(true);
-    try {
-      return await commitLocalChangesWithMessage(trimmed);
     } finally {
       setCommitInProgress(false);
     }

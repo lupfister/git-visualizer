@@ -5,6 +5,7 @@ import { GitBranchPlus, GitCommitHorizontal } from 'lucide-react';
 
 type Props = {
   commitDialogOpen: boolean;
+  commitDialogSummary: string;
   commitMessageDraft: string;
   onCommitMessageDraftChange: (value: string) => void;
   onCommitDialogClose: () => void;
@@ -37,6 +38,7 @@ type Props = {
 
 export default function MapGridDialogs({
   commitDialogOpen,
+  commitDialogSummary,
   commitMessageDraft,
   onCommitMessageDraftChange,
   onCommitDialogClose,
@@ -72,7 +74,7 @@ export default function MapGridDialogs({
         <div className="absolute inset-0 z-[80] flex items-center justify-center bg-background/70 p-4 backdrop-blur-sm" onClick={onCommitDialogClose}>
           <div className="w-full max-w-md rounded-2xl border border-border bg-background p-4" onClick={(event) => event.stopPropagation()}>
             <p className="text-sm font-medium text-foreground">Create commit</p>
-            <p className="mt-1 text-xs text-muted-foreground">Stage all changes, then commit on current HEAD.</p>
+            <p className="mt-1 text-xs text-muted-foreground">{commitDialogSummary}</p>
             <textarea
               value={commitMessageDraft}
               onChange={(event) => onCommitMessageDraftChange(event.target.value)}

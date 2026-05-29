@@ -189,7 +189,6 @@ export default function BranchGridMap({
   onMergeRefsIntoBranch,
   mergeInProgress = false,
   onPushAllBranches,
-  onPushCurrentBranch,
   onPushCommitTargets,
   pushInProgress = false,
   onDeleteSelection,
@@ -246,6 +245,7 @@ export default function BranchGridMap({
   const lastSearchFocusShaRef = useRef<string | null | undefined>(undefined);
   const lastHandledSearchJumpKeyRef = useRef<string>('');
   const [commitDialogOpen, setCommitDialogOpen] = useState(false);
+  const [commitDialogWorktreePaths, setCommitDialogWorktreePaths] = useState<string[]>([]);
   const [commitMessageDraft, setCommitMessageDraft] = useState('');
   const [deleteConfirmOpen, setDeleteConfirmOpen] = useState(false);
   const [checkoutPickerOpen, setCheckoutPickerOpen] = useState(false);
@@ -945,8 +945,6 @@ export default function BranchGridMap({
     ...selectedStashIndices.map((idx) => `Stash ${idx + 1}`),
   ];
   const pushableRemoteBranchCount = pushableBranchByName.size;
-  const canPushCurrentBranch = !checkedOutIsDetached && !!checkedOutBranchName && pushableBranchByName.has(checkedOutBranchName);
-  const pushCurrentBranchLabel = checkedOutBranchName ? `Push ${checkedOutBranchName}` : 'Push current branch';
   const selectedPushLabel = selectedPushTargets.length === 1
     ? selectedPushTargets[0].commitCount > 1
       ? `Push ${selectedPushTargets[0].commitCount} commits on ${selectedPushTargets[0].branchName}`
@@ -1730,14 +1728,51 @@ export default function BranchGridMap({
     };
   }, [endDrag, updateDragPosition]);
 
-  const confirmCommit = useCallback(async () => {
-    if (!onCommitLocalChanges) return;
-    const ok = await onCommitLocalChanges(commitMessageDraft);
-    if (ok) {
-      setCommitDialogOpen(false);
-      setCommitMessageDraft('');
+  const commitDialogSummary = useMemo(() => {
+    if (commitDialogWorktreePaths.length === 0) {
+      return 'Select a worktree with uncommitted changes.';
     }
-  }, [onCommitLocalChanges, commitMessageDraft]);
+    if (commitDialogWorktreePaths.length === 1) {
+      const session = uncommittedSessionsToDiscard.find(
+        (entry) => entry.path === commitDialogWorktreePaths[0],
+      );
+      if (session) {
+        return `Stage all changes, then commit in ${worktreeSessionDisplayName(session)}.`;
+      }
+      return 'Stage all changes, then commit in the selected worktree.';
+    }
+    return `Stage all changes, then commit in ${commitDialogWorktreePaths.length} selected worktrees.`;
+  }, [commitDialogWorktreePaths, uncommittedSessionsToDiscard]);
+
+  const handleOpenWriteCommit = useCallback(() => {
+    const paths = selectedDirtyWorktreePaths;
+    if (paths.length === 0) return;
+    setCommitDialogWorktreePaths(paths);
+    const firstSession = uncommittedSessionsToDiscard[0];
+    const draftMessage = firstSession
+      ? worktreeDraftByWorkingTreeId?.get(firstSession.workingTreeId)?.message.trim()
+      : '';
+    setCommitMessageDraft(draftMessage ?? '');
+    setCommitDialogOpen(true);
+  }, [
+    selectedDirtyWorktreePaths,
+    uncommittedSessionsToDiscard,
+    worktreeDraftByWorkingTreeId,
+  ]);
+
+  const handleCloseCommitDialog = useCallback(() => {
+    setCommitDialogOpen(false);
+    setCommitDialogWorktreePaths([]);
+    setCommitMessageDraft('');
+  }, []);
+
+  const confirmCommit = useCallback(async () => {
+    if (!onCommitLocalChanges || commitDialogWorktreePaths.length === 0) return;
+    const ok = await onCommitLocalChanges(commitMessageDraft, commitDialogWorktreePaths);
+    if (ok) {
+      handleCloseCommitDialog();
+    }
+  }, [onCommitLocalChanges, commitMessageDraft, commitDialogWorktreePaths, handleCloseCommitDialog]);
 
   const confirmDeleteSelection = useCallback(async () => {
     if (!onDeleteSelection) return;
@@ -1910,20 +1945,17 @@ export default function BranchGridMap({
                   onAutoCommitLocalChanges={onAutoCommitLocalChanges}
                   onStageAllChanges={onStageAllChanges ? () => void onStageAllChanges() : undefined}
                   onStashLocalChanges={onStashLocalChanges}
-                  onPushCurrentBranch={onPushCurrentBranch}
                   onPushAllBranches={onPushAllBranches}
                   onPushCommitTargets={onPushCommitTargets}
                   onMergeRefsIntoBranch={onMergeRefsIntoBranch}
                   selectedPushTargets={selectedPushTargets}
                   selectedPushLabel={selectedPushLabel}
-                  canPushCurrentBranch={canPushCurrentBranch}
-                  pushCurrentBranchLabel={pushCurrentBranchLabel}
                   pushableRemoteBranchCount={pushableRemoteBranchCount}
                   selectedCommitTargetOption={selectedCommitTargetOption}
                   mergeInProgress={mergeInProgress}
                   mergeTargetCommitSha={mergeTargetCommitSha}
                   setMergeTargetCommitSha={setMergeTargetCommitSha}
-                  setCommitDialogOpen={setCommitDialogOpen}
+                  onWriteCommit={handleOpenWriteCommit}
                   setNewBranchDialogOpen={setNewBranchDialogOpen}
                   dirtyWorktreePaths={dirtyWorktreePaths}
                   selectedDirtyWorktreePaths={selectedDirtyWorktreePaths}
@@ -2127,9 +2159,10 @@ export default function BranchGridMap({
 
       <MapGridDialogs
         commitDialogOpen={commitDialogOpen}
+        commitDialogSummary={commitDialogSummary}
         commitMessageDraft={commitMessageDraft}
         onCommitMessageDraftChange={setCommitMessageDraft}
-        onCommitDialogClose={() => setCommitDialogOpen(false)}
+        onCommitDialogClose={handleCloseCommitDialog}
         onCommitConfirm={() => void confirmCommit()}
         commitInProgress={commitInProgress}
         deleteConfirmOpen={deleteConfirmOpen}

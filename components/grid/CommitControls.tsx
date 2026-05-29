@@ -31,20 +31,17 @@ type Props = {
   onAutoCommitLocalChanges?: BranchGridViewProps['onAutoCommitLocalChanges'];
   onStageAllChanges?: (() => boolean | void | Promise<void> | Promise<boolean>) | undefined;
   onStashLocalChanges?: BranchGridViewProps['onStashLocalChanges'];
-  onPushCurrentBranch?: BranchGridViewProps['onPushCurrentBranch'];
   onPushAllBranches?: BranchGridViewProps['onPushAllBranches'];
   onPushCommitTargets?: BranchGridViewProps['onPushCommitTargets'];
   onMergeRefsIntoBranch?: BranchGridViewProps['onMergeRefsIntoBranch'];
   selectedPushTargets: PushTarget[];
   selectedPushLabel: string;
-  canPushCurrentBranch: boolean;
-  pushCurrentBranchLabel: string;
   pushableRemoteBranchCount: number;
   selectedCommitTargetOption: SelectedCommitTargetOption;
   mergeInProgress: boolean;
   mergeTargetCommitSha: string | null;
   setMergeTargetCommitSha: (sha: string | null) => void;
-  setCommitDialogOpen: (open: boolean) => void;
+  onWriteCommit?: () => void;
   setNewBranchDialogOpen: (open: boolean) => void;
   hideMergeControls?: boolean;
   dirtyWorktreePaths?: string[];
@@ -63,19 +60,16 @@ export default function CommitControls({
   onCommitLocalChanges,
   onAutoCommitLocalChanges,
   onStashLocalChanges,
-  onPushCurrentBranch,
   onPushAllBranches,
   onPushCommitTargets,
   onMergeRefsIntoBranch,
   selectedPushTargets,
   selectedPushLabel,
-  canPushCurrentBranch,
-  pushCurrentBranchLabel,
   pushableRemoteBranchCount,
   selectedCommitTargetOption,
   mergeInProgress,
   setMergeTargetCommitSha,
-  setCommitDialogOpen,
+  onWriteCommit,
   setNewBranchDialogOpen,
   hideMergeControls = false,
   dirtyWorktreePaths = [],
@@ -93,24 +87,22 @@ export default function CommitControls({
     'inline-flex h-7 items-center rounded-md border border-border bg-background px-2 text-[11px] font-medium text-foreground transition-colors hover:bg-muted hover:text-foreground disabled:cursor-not-allowed disabled:opacity-50';
 
   const showCommitAsPrimary =
-    !!(onAutoCommitLocalChanges ?? onCommitLocalChanges) &&
+    !!onAutoCommitLocalChanges &&
     !commitDisabled &&
     commitTargetPaths.length > 0 &&
     (!hasSelection || hasWorktreeSelection);
 
-  const showPushCurrentAsPrimary =
-    !showCommitAsPrimary &&
-    !!onPushCurrentBranch &&
-    canPushCurrentBranch &&
-    !hasSelection;
+  const showWriteCommitInMenu =
+    !!onCommitLocalChanges &&
+    !!onWriteCommit &&
+    hasWorktreeSelection &&
+    stashTargetPaths.length > 0;
 
   const showPushSelectedAsPrimary =
     !showCommitAsPrimary &&
-    !showPushCurrentAsPrimary &&
     !!onPushCommitTargets &&
     selectedPushTargets.length > 0;
 
-  const showPushCurrentInMenu = !!onPushCurrentBranch && canPushCurrentBranch && !hasSelection;
   const showPushSelectedInMenu = !!onPushCommitTargets && selectedPushTargets.length > 0;
   const showPushAllInMenu = !!onPushAllBranches && pushableRemoteBranchCount >= 2 && !hasSelection;
   const showStashInMenu =
@@ -125,38 +117,26 @@ export default function CommitControls({
         label: commitPrimaryLabel,
         icon: 'commit' as const,
         run: () => {
-          if (onAutoCommitLocalChanges) {
-            void onAutoCommitLocalChanges(commitTargetPaths);
-            return;
-          }
-          setCommitDialogOpen(true);
+          void onAutoCommitLocalChanges?.(commitTargetPaths);
         },
         disabled: commitDisabled || commitInProgress,
         loading: commitInProgress,
       }
-    : showPushCurrentAsPrimary
+    : showPushSelectedAsPrimary
       ? {
-          label: pushCurrentBranchLabel,
-          icon: 'push-branch' as const,
-          run: () => void onPushCurrentBranch?.(),
+          label: pushSelectedLabel,
+          icon: 'push-selected' as const,
+          run: () =>
+            void onPushCommitTargets?.(
+              selectedPushTargets.map((target) => ({
+                branchName: target.branchName,
+                targetSha: target.targetSha,
+              })),
+            ),
           disabled: pushInProgress,
           loading: pushInProgress,
         }
-      : showPushSelectedAsPrimary
-        ? {
-            label: pushSelectedLabel,
-            icon: 'push-selected' as const,
-            run: () =>
-              void onPushCommitTargets?.(
-                selectedPushTargets.map((target) => ({
-                  branchName: target.branchName,
-                  targetSha: target.targetSha,
-                })),
-              ),
-            disabled: pushInProgress,
-            loading: pushInProgress,
-          }
-        : null;
+      : null;
 
   const menuButtonClassName = (enabled: boolean, loading: boolean) =>
     cn(
@@ -220,40 +200,21 @@ export default function CommitControls({
           </button>
           {actionMenuOpen && primaryAction ? (
             <div className="absolute left-[-1px] top-full z-[70] mt-2 inline-flex w-max min-w-0 flex-col overflow-hidden rounded-md border border-border bg-background p-1">
-              {onCommitLocalChanges ? (
+              {showWriteCommitInMenu ? (
                 <button
                   type="button"
                   onClick={() => {
                     setActionMenuOpen(false);
-                    setCommitDialogOpen(true);
+                    onWriteCommit();
                   }}
-                  disabled={!showCommitAsPrimary || commitInProgress}
+                  disabled={commitInProgress}
                   aria-busy={commitInProgress ? true : undefined}
-                  className={menuButtonClassName(showCommitAsPrimary, commitInProgress)}
+                  className={menuButtonClassName(true, commitInProgress)}
                 >
                   <ToolbarActionContent
                     icon="commit"
                     label="Write commit"
                     loading={commitInProgress}
-                    iconClassName="mr-1.5"
-                  />
-                </button>
-              ) : null}
-              {showPushCurrentInMenu ? (
-                <button
-                  type="button"
-                  onClick={() => {
-                    setActionMenuOpen(false);
-                    void onPushCurrentBranch?.();
-                  }}
-                  disabled={pushInProgress}
-                  aria-busy={pushInProgress ? true : undefined}
-                  className={menuButtonClassName(true, pushInProgress)}
-                >
-                  <ToolbarActionContent
-                    icon="push-branch"
-                    label={pushCurrentBranchLabel}
-                    loading={pushInProgress}
                     iconClassName="mr-1.5"
                   />
                 </button>
