@@ -199,6 +199,24 @@ const assignAccentTokens = (sessions: Omit<WorktreeSession, 'accentToken' | 'wor
   return withAccents;
 };
 
+/**
+ * Resolve dirty for a worktree session. A refreshed worktree list that says "clean"
+ * wins over a stale checkedOutRef dirty flag on the current tree.
+ */
+export const resolveWorktreeSessionDirty = (
+  worktree: WorktreeInfo,
+  isCurrent: boolean,
+  checkedOutRef?: CheckedOutRef | null,
+): boolean => {
+  const worktreeDirty = worktree.hasUncommittedChanges;
+  if (!isCurrent || !checkedOutRef) {
+    return worktreeDirty ?? false;
+  }
+  if (worktreeDirty === false) return false;
+  if (worktreeDirty === true) return true;
+  return checkedOutRef.hasUncommittedChanges;
+};
+
 export const buildWorktreeSessions = (
   worktrees: WorktreeInfo[],
   currentRepoPath?: string,
@@ -212,9 +230,7 @@ export const buildWorktreeSessions = (
       const isCurrent = normalizedCurrent
         ? normalizedPath === normalizedCurrent || normalizedPath.toLowerCase() === normalizedCurrent.toLowerCase()
         : worktree.isCurrent;
-      const hasUncommittedChanges = isCurrent && checkedOutRef
-        ? checkedOutRef.hasUncommittedChanges
-        : (worktree.hasUncommittedChanges ?? false);
+      const hasUncommittedChanges = resolveWorktreeSessionDirty(worktree, isCurrent, checkedOutRef);
       const headSha = isCurrent && checkedOutRef?.headSha
         ? checkedOutRef.headSha
         : worktree.headSha;

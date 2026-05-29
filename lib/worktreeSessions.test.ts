@@ -111,6 +111,48 @@ describe('worktreeSessions', () => {
     expect(sessions[0]?.headSha).toBe('new-head-sha-111111111111111111111111');
   });
 
+  it('prefers an explicit clean worktree flag over a stale checkedOutRef dirty flag', () => {
+    const sessions = buildWorktreeSessions(
+      [
+        baseWorktree({
+          path: '/repo',
+          headSha: 'aaaaaaaaaaaa',
+          branchName: 'main',
+          isCurrent: true,
+          hasUncommittedChanges: false,
+        }),
+      ],
+      '/repo',
+      {
+        branchName: 'main',
+        headSha: 'aaaaaaaaaaaa',
+        hasUncommittedChanges: true,
+      },
+    );
+    expect(sessions[0]?.hasUncommittedChanges).toBe(false);
+  });
+
+  it('uses checkedOutRef dirty when the worktree list omits a dirty flag', () => {
+    const sessions = buildWorktreeSessions(
+      [
+        baseWorktree({
+          path: '/repo',
+          headSha: 'aaaaaaaaaaaa',
+          branchName: 'main',
+          isCurrent: true,
+          hasUncommittedChanges: undefined,
+        }),
+      ],
+      '/repo',
+      {
+        branchName: 'main',
+        headSha: 'aaaaaaaaaaaa',
+        hasUncommittedChanges: true,
+      },
+    );
+    expect(sessions[0]?.hasUncommittedChanges).toBe(true);
+  });
+
   it('resolveCommitAccent prefers current on duplicate head sha', () => {
     const sessions = buildWorktreeSessions(
       [
