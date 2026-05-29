@@ -2,7 +2,7 @@
  * Staggered repo sync timers with Page Visibility API catch-up.
  *
  * Design (aligned with MDN visibility guidance + event-driven git watching):
- * - Primary path: `.git` file watcher → immediate handling in App.
+ * - Primary path: `.git` + working-tree file watcher (debounced) → immediate handling in App.
  * - Visible tab: fast dirty lane, medium peek lane, slower full reconcile lane (staggered).
  * - Hidden tab: stretch intervals to save CPU; no work until tab is visible again.
  * - Tab becomes visible: cancel hidden timers, reschedule visible intervals, run catch-up immediately.

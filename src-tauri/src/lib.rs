@@ -95,6 +95,8 @@ struct PersistProjectSnapshotResult {
 
 static WATCHER_STATE: OnceLock<Mutex<HashMap<String, notify::RecommendedWatcher>>> = OnceLock::new();
 const GIT_ACTIVITY_GRAPH_MIN_EMIT_MS: u64 = 800;
+/// Debounce bursty editor saves before emitting working-tree `local` activity.
+const GIT_ACTIVITY_WORKTREE_DEBOUNCE_MS: u64 = 500;
 
 async fn run_blocking<F, T>(f: F) -> Result<T, String>
 where
@@ -339,9 +341,36 @@ fn path_contains_noise_dir(path: &Path) -> bool {
         let name = component.as_os_str().to_string_lossy();
         matches!(
             name.as_ref(),
-            "node_modules" | ".next" | "dist" | "build" | "target" | ".turbo" | "out"
+            "node_modules"
+                | ".next"
+                | "dist"
+                | "build"
+                | "target"
+                | ".turbo"
+                | "out"
+                | "__pycache__"
+                | ".venv"
+                | "venv"
+                | ".pytest_cache"
+                | "coverage"
+                | ".gradle"
+                | "DerivedData"
         )
     })
+}
+
+fn worktree_watch_roots_same(a: &Path, b: &Path) -> bool {
+    match (std::fs::canonicalize(a), std::fs::canonicalize(b)) {
+        (Ok(left), Ok(right)) => left == right,
+        _ => {
+            let trim = |p: &Path| {
+                p.to_string_lossy()
+                    .trim_end_matches(|c| c == '/' || c == '\\')
+                    .to_string()
+            };
+            trim(a) == trim(b)
+        }
+    }
 }
 
 fn visual_cache_db_path() -> Result<PathBuf, String> {
@@ -1114,19 +1143,33 @@ fn watch_repo(repo_path: String, app: tauri::AppHandle) -> Result<(), String> {
         }
     }
 
+    let linked_worktree_roots: Vec<PathBuf> = git::list_worktrees(repo_root)
+        .unwrap_or_default()
+        .into_iter()
+        .filter(|wt| wt.path_exists)
+        .map(|wt| PathBuf::from(wt.path))
+        .filter(|path| path.exists())
+        .filter(|path| !worktree_watch_roots_same(repo_root, path))
+        .collect();
+
     let (tx, rx) = std::sync::mpsc::channel();
+    let (worktree_signal_tx, worktree_signal_rx) = std::sync::mpsc::channel::<()>();
     let mut watcher = notify::recommended_watcher(tx).map_err(|e| e.to_string())?;
 
-    // Watch only .git internals — working-tree watches fire constantly during stash/commit
-    // and trigger redundant refreshes while a mutation is already in flight.
+    let _ = watcher.watch(repo_root, RecursiveMode::Recursive);
     let _ = watcher.watch(&primary_git_dir, RecursiveMode::Recursive);
     if let Some(common_dir) = resolved_git_common_dir.as_ref() {
         if common_dir != &primary_git_dir {
             let _ = watcher.watch(common_dir, RecursiveMode::Recursive);
         }
     }
+    for linked_root in &linked_worktree_roots {
+        let _ = watcher.watch(linked_root, RecursiveMode::Recursive);
+    }
+
     let last_graph_emit_ms = std::sync::Arc::new(AtomicU64::new(0));
     let last_local_emit_ms = std::sync::Arc::new(AtomicU64::new(0));
+    let last_worktree_emit_ms = std::sync::Arc::new(AtomicU64::new(0));
     let mut git_roots = vec![primary_git_dir.clone()];
     if let Some(common_dir) = resolved_git_common_dir {
         if common_dir != primary_git_dir {
@@ -1134,6 +1177,41 @@ fn watch_repo(repo_path: String, app: tauri::AppHandle) -> Result<(), String> {
         }
     }
     let repo_path_for_events = normalized_repo_path.clone();
+    let repo_root_for_events = repo_root.to_path_buf();
+    let linked_worktree_roots_for_events = linked_worktree_roots.clone();
+    let app_for_worktree_debounce = app.clone();
+    let repo_path_for_worktree_debounce = repo_path_for_events.clone();
+    let last_worktree_emit_for_debounce = last_worktree_emit_ms.clone();
+
+    std::thread::spawn(move || {
+        loop {
+            match worktree_signal_rx.recv() {
+                Ok(()) => {}
+                Err(_) => break,
+            }
+            loop {
+                match worktree_signal_rx.recv_timeout(std::time::Duration::from_millis(
+                    GIT_ACTIVITY_WORKTREE_DEBOUNCE_MS,
+                )) {
+                    Ok(()) => continue,
+                    Err(std::sync::mpsc::RecvTimeoutError::Timeout) => break,
+                    Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => return,
+                }
+            }
+            let now_ms = Utc::now().timestamp_millis().max(0) as u64;
+            let prev_ms = last_worktree_emit_for_debounce.load(Ordering::Relaxed);
+            if now_ms.saturating_sub(prev_ms) >= GIT_ACTIVITY_GRAPH_MIN_EMIT_MS {
+                last_worktree_emit_for_debounce.store(now_ms, Ordering::Relaxed);
+                let _ = app_for_worktree_debounce.emit(
+                    "git-activity",
+                    GitActivityEventPayload {
+                        repo_path: repo_path_for_worktree_debounce.clone(),
+                        kind: "local".to_string(),
+                    },
+                );
+            }
+        }
+    });
 
     std::thread::spawn(move || {
         for res in rx {
@@ -1144,45 +1222,52 @@ fn watch_repo(repo_path: String, app: tauri::AppHandle) -> Result<(), String> {
 
                 let mut has_graph_change = false;
                 let mut has_local_change = false;
+                let mut has_worktree_file_change = false;
                 for p in &event.paths {
                     if path_contains_noise_dir(p) {
                         continue;
                     }
 
                     let is_git_internal = git_roots.iter().any(|root| p.starts_with(root));
-                    if !is_git_internal {
+                    if is_git_internal {
+                        let path_str = p.to_string_lossy();
+                        let is_index_path = path_str.ends_with("/index")
+                            || path_str.ends_with("\\index")
+                            || path_str.ends_with("index.lock");
+                        if is_index_path {
+                            has_local_change = true;
+                            continue;
+                        }
+
+                        let is_worktree_path = path_str.contains("/worktrees/")
+                            || path_str.contains("\\worktrees\\");
+                        if is_worktree_path {
+                            has_graph_change = true;
+                            continue;
+                        }
+
+                        let is_graph_path = path_str.contains("/refs/")
+                            || path_str.contains("\\refs\\")
+                            || path_str.contains("/logs/")
+                            || path_str.contains("\\logs\\")
+                            || path_str.ends_with("HEAD")
+                            || path_str.ends_with("FETCH_HEAD")
+                            || path_str.ends_with("ORIG_HEAD")
+                            || path_str.ends_with("packed-refs")
+                            || path_str.contains("/packed-refs")
+                            || path_str.contains("\\packed-refs");
+                        if is_graph_path {
+                            has_graph_change = true;
+                        }
                         continue;
                     }
 
-                    let path_str = p.to_string_lossy();
-                    let is_index_path = path_str.ends_with("/index")
-                        || path_str.ends_with("\\index")
-                        || path_str.ends_with("index.lock");
-                    if is_index_path {
-                        has_local_change = true;
-                        continue;
-                    }
-
-                    let is_worktree_path = path_str.contains("/worktrees/")
-                        || path_str.contains("\\worktrees\\");
-                    if is_worktree_path {
-                        has_graph_change = true;
-                        continue;
-                    }
-
-                    // For .git internals, only react to refs/logs/head updates.
-                    let is_graph_path = path_str.contains("/refs/")
-                        || path_str.contains("\\refs\\")
-                        || path_str.contains("/logs/")
-                        || path_str.contains("\\logs\\")
-                        || path_str.ends_with("HEAD")
-                        || path_str.ends_with("FETCH_HEAD")
-                        || path_str.ends_with("ORIG_HEAD")
-                        || path_str.ends_with("packed-refs")
-                        || path_str.contains("/packed-refs")
-                        || path_str.contains("\\packed-refs");
-                    if is_graph_path {
-                        has_graph_change = true;
+                    let in_worktree = p.starts_with(&repo_root_for_events)
+                        || linked_worktree_roots_for_events
+                            .iter()
+                            .any(|root| p.starts_with(root));
+                    if in_worktree {
+                        has_worktree_file_change = true;
                     }
                 }
 
@@ -1215,6 +1300,10 @@ fn watch_repo(repo_path: String, app: tauri::AppHandle) -> Result<(), String> {
                             },
                         );
                     }
+                }
+
+                if has_worktree_file_change && !has_graph_change && !has_local_change {
+                    let _ = worktree_signal_tx.send(());
                 }
             }
         }

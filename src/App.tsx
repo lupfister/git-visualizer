@@ -73,6 +73,7 @@ import { deriveRepoVisualState } from './repoVisualState';
 import { setMapGridBackgroundActivity } from '../components/grid/mapGridBackgroundActivity';
 import { useWorktreeDraftMessages } from './useWorktreeDraftMessages';
 import { createRepoSyncScheduler } from './repoSyncScheduler';
+import { runOrchestratedRepoSync } from './orchestratedRepoSync';
 
 const PROJECTS_STORAGE_KEY = 'git-visualizer:projects';
 const ACTIVE_PROJECT_STORAGE_KEY = 'git-visualizer:active-project';
@@ -3963,7 +3964,10 @@ function App() {
     const isRepoRefreshBlocked = () =>
       isMapInteractingRef.current || !canApplyRepoRefreshRef.current;
 
-    const runRefresh = async (incomingReason: 'graph' | 'local' | 'timer' | 'initial' | 'quick' | 'focus' = 'timer') => {
+    const runRefresh = async (
+      incomingReason: 'graph' | 'local' | 'timer' | 'initial' | 'quick' | 'focus' = 'timer',
+      refreshOptions?: { preloadedPeek?: RepoSyncPeek | null },
+    ) => {
       let reason = incomingReason;
       if (isStaleRepoRefresh()) return;
       if (refreshInFlight || reconcileInFlightRef.current) {
@@ -4010,7 +4014,9 @@ function App() {
 
       const externalRefresh = reason === 'graph' || reason === 'local' || reason === 'quick';
 
-      const peek = await fetchRepoSyncPeek(repoPath);
+      const peek = refreshOptions?.preloadedPeek !== undefined
+        ? refreshOptions.preloadedPeek
+        : await fetchRepoSyncPeek(repoPath);
       if (isStaleRepoRefresh()) return;
       const gitActivityPendingNow = gitActivityEpochRef.current !== lastHandledGitActivityEpochRef.current;
       if (gitActivityPendingNow && (reason === 'graph' || reason === 'local')) {
@@ -4335,42 +4341,50 @@ function App() {
       }, DIRTY_SYNC_DEBOUNCE_MS);
     };
 
-    const runPeekLane = async () => {
-      if (
-        isDisposed
-        || document.visibilityState !== 'visible'
-        || isRepoRefreshBlocked()
-        || repoMutationInFlightRef.current
-      ) {
-        return;
-      }
-      const peek = await fetchRepoSyncPeek(repoPath);
-      if (isStaleRepoRefresh()) return;
-      const gitActivityPending = gitActivityEpochRef.current !== lastHandledGitActivityEpochRef.current;
-      if (peek && (gitActivityPending || isActiveUiBehindPeek(repoPath, peek))) {
-        void reloadRepoSnapshotFromGit(repoPath, peek);
-      }
-    };
-
-    const runVisibilityCatchUp = async () => {
+    const runOrchestratedSync = async (mode: 'catchUp' | 'peekLane') => {
       if (isStaleRepoRefresh()) return;
       if (repoMutationInFlightRef.current || reconcileInFlightRef.current) {
         pendingRefreshAfterInteractionRef.current = true;
         return;
       }
-      if (isRepoRefreshBlocked()) {
+      if (
+        mode === 'peekLane'
+        && (
+          isDisposed
+          || document.visibilityState !== 'visible'
+          || isRepoRefreshBlocked()
+          || repoMutationInFlightRef.current
+        )
+      ) {
+        return;
+      }
+      if (mode === 'catchUp' && isRepoRefreshBlocked()) {
         pendingRefreshAfterInteractionRef.current = true;
         setMapGridBackgroundActivity('git-refresh-pending', 'Git refresh queued', true, 'tab visible');
         return;
       }
+
       const peek = await fetchRepoSyncPeek(repoPath);
       if (isStaleRepoRefresh()) return;
       const gitActivityPending = gitActivityEpochRef.current !== lastHandledGitActivityEpochRef.current;
-      if (peek && (gitActivityPending || isActiveUiBehindPeek(repoPath, peek))) {
-        void reloadRepoSnapshotFromGit(repoPath, peek);
-      }
-      void runRefresh('focus');
-      scheduleCoalescedDirtySync();
+      const isBehindPeek = Boolean(peek && isActiveUiBehindPeek(repoPath, peek));
+
+      await runOrchestratedRepoSync(
+        { peek, gitActivityPending, isBehindPeek },
+        mode,
+        {
+          reloadFromGit: () => reloadRepoSnapshotFromGit(repoPath, peek),
+          runFullRefresh: () => runRefresh('focus', { preloadedPeek: peek }),
+        },
+      );
+    };
+
+    const runPeekLane = () => {
+      void runOrchestratedSync('peekLane');
+    };
+
+    const runVisibilityCatchUp = () => {
+      void runOrchestratedSync('catchUp');
     };
 
     const repoSyncScheduler = createRepoSyncScheduler({
@@ -4387,13 +4401,13 @@ function App() {
         scheduleCoalescedDirtySync();
       },
       onPeekLane: () => {
-        void runPeekLane();
+        runPeekLane();
       },
       onFullLane: () => {
         void runRefresh('timer');
       },
       onVisibilityCatchUp: () => {
-        void runVisibilityCatchUp();
+        runVisibilityCatchUp();
       },
     });
 
