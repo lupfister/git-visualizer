@@ -164,6 +164,7 @@ type Props = BranchGridViewProps & {
   onMapReadyForDisplay?: (epoch: number) => void;
   nodePositionOverrides?: NodePositionOverrides;
   onNodePositionOverridesChange?: (overrides: NodePositionOverrides) => void;
+  worktreeDraftByWorkingTreeId?: ReadonlyMap<string, { status: 'idle' | 'pending' | 'ready' | 'error'; message: string }>;
 };
 
 export default function BranchGridMap({
@@ -234,6 +235,7 @@ export default function BranchGridMap({
   onMapReadyForDisplay,
   nodePositionOverrides: controlledNodePositionOverrides,
   onNodePositionOverridesChange,
+  worktreeDraftByWorkingTreeId,
 }: Props) {
   const scrollContainerRef = useRef<HTMLDivElement | null>(null);
   const hudToolbarRef = useRef<HTMLDivElement | null>(null);
@@ -1987,6 +1989,7 @@ export default function BranchGridMap({
           remoteCommitShas={remoteCommitShas}
           worktreeAccentByCommitId={worktreeAccentByCommitId}
           worktreeSessions={worktreeSessions}
+          worktreeDraftByWorkingTreeId={worktreeDraftByWorkingTreeId}
           orientation={orientation}
           dragPreviewByNodeId={dragPreviewByNodeId}
           nodePositionOverrides={nodePositionOverrides}

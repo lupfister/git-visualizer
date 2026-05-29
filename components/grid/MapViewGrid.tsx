@@ -102,6 +102,7 @@ interface Props {
   onMapReadyForDisplay?: (epoch: number) => void;
   nodePositionOverrides?: NodePositionOverrides;
   onNodePositionOverridesChange?: (overrides: NodePositionOverrides) => void;
+  worktreeDraftByWorkingTreeId?: ReadonlyMap<string, { status: 'idle' | 'pending' | 'ready' | 'error'; message: string }>;
 }
 
 export default function BranchGridMapView({
@@ -173,6 +174,7 @@ export default function BranchGridMapView({
   onMapReadyForDisplay,
   nodePositionOverrides,
   onNodePositionOverridesChange,
+  worktreeDraftByWorkingTreeId,
 }: Props) {
   const openPRBranchNames = new Set(openPRs.map(p => p.branchName));
   const ACTIVE_MS = 14 * 86400000;
@@ -254,6 +256,7 @@ export default function BranchGridMapView({
             onMapReadyForDisplay={onMapReadyForDisplay}
             nodePositionOverrides={nodePositionOverrides}
             onNodePositionOverridesChange={onNodePositionOverridesChange}
+            worktreeDraftByWorkingTreeId={worktreeDraftByWorkingTreeId}
           />
         </div>
       ) : view === 'grid' ? (
@@ -292,6 +295,7 @@ export default function BranchGridMapView({
             onMapReadyForDisplay={onMapReadyForDisplay}
             nodePositionOverrides={nodePositionOverrides}
             onNodePositionOverridesChange={onNodePositionOverridesChange}
+            worktreeDraftByWorkingTreeId={worktreeDraftByWorkingTreeId}
           />
         </div>
       ) : null}

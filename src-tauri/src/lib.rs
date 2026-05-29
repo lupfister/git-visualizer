@@ -2357,6 +2357,15 @@ async fn commit_working_tree(repo_path: String, message: String) -> Result<Commi
 }
 
 #[tauri::command(rename_all = "camelCase")]
+async fn get_working_tree_summary(repo_path: String) -> Result<String, String> {
+    run_blocking(move || {
+        let path = Path::new(&repo_path);
+        git::get_working_tree_summary(path).map_err(|e| e.to_string())
+    })
+    .await
+}
+
+#[tauri::command(rename_all = "camelCase")]
 async fn generate_commit_message(repo_path: String) -> Result<String, String> {
     let path = repo_path.clone();
     tauri::async_runtime::spawn_blocking(move || {
@@ -5862,6 +5871,7 @@ pub fn run() {
             list_stashes,
             stash_push,
             commit_working_tree,
+            get_working_tree_summary,
             generate_commit_message,
             generate_stash_message,
             stage_working_tree,

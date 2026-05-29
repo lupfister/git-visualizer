@@ -71,6 +71,7 @@ import {
 } from '../lib/worktreeSessions';
 import { deriveRepoVisualState } from './repoVisualState';
 import { setMapGridBackgroundActivity } from '../components/grid/mapGridBackgroundActivity';
+import { useWorktreeDraftMessages } from './useWorktreeDraftMessages';
 
 const PROJECTS_STORAGE_KEY = 'git-visualizer:projects';
 const ACTIVE_PROJECT_STORAGE_KEY = 'git-visualizer:active-project';
@@ -426,6 +427,9 @@ function App() {
   const repoMutationGenerationRef = useRef(0);
   /** True while a user-initiated git mutation is running through to snapshot apply. */
   const repoMutationInFlightRef = useRef(false);
+  const getPreparedCommitMessageRef = useRef<(worktreePath: string) => string | null>(() => null);
+  const getPreparedStashMessageRef = useRef<(worktreePath: string) => string | null>(() => null);
+  const clearWorktreeDraftForPathRef = useRef<(worktreePath: string) => void>(() => {});
   /** Optimistic commit HEAD — blocks stale quick-state / DB refresh from regressing the checkout tip. */
   const postCommitProtectedHeadShaRef = useRef<Record<string, string>>({});
   const postCommitProtectTimeoutRef = useRef<Record<string, number>>({});
@@ -4359,6 +4363,7 @@ function App() {
       if (dirtySyncDebounceId != null) window.clearTimeout(dirtySyncDebounceId);
       dirtySyncDebounceId = window.setTimeout(() => {
         dirtySyncDebounceId = null;
+        void tryWorktreeListSync(repoPath);
         void syncLiveDirtyState(repoPath);
       }, DIRTY_SYNC_DEBOUNCE_MS);
     };
@@ -4739,11 +4744,14 @@ function App() {
       const checkoutOutcomes: RepoMutationOutcome[] = [];
       const refBefore = await invoke<CheckedOutRef>('get_checked_out_ref', { repoPath: effectiveRepoPath });
       if (refBefore.hasUncommittedChanges) {
+        const preparedStashMessage = getPreparedStashMessageRef.current(effectiveRepoPath);
         const stashResult = await invoke<StashPushMutationData>('stash_push', {
           repoPath: effectiveRepoPath,
           includeUntracked: true,
-          message: (await invoke<string>('generate_stash_message', { repoPath: effectiveRepoPath })).trim(),
+          message: preparedStashMessage
+            ?? (await invoke<string>('generate_stash_message', { repoPath: effectiveRepoPath })).trim(),
         });
+        clearWorktreeDraftForPathRef.current(effectiveRepoPath);
         checkoutOutcomes.push(outcomeFromStashPush(stashResult));
         stashedPrefix = 'Stashed local changes (including untracked), then ';
       }
@@ -4791,11 +4799,14 @@ function App() {
         return;
       }
       beginRepoMutation();
+      const preparedStashMessage = getPreparedStashMessageRef.current(repoPath);
       const stashResult = await invoke<StashPushMutationData>('stash_push', {
         repoPath,
         includeUntracked: true,
-        message: (await invoke<string>('generate_stash_message', { repoPath })).trim(),
+        message: preparedStashMessage
+          ?? (await invoke<string>('generate_stash_message', { repoPath })).trim(),
       });
+      clearWorktreeDraftForPathRef.current(repoPath);
       await finalizeRepoMutation(repoPath, outcomeFromStashPush(stashResult));
       setCommitSwitchFeedback({
         kind: 'success',
@@ -4855,6 +4866,7 @@ function App() {
         }));
       }
       await finalizeRepoMutation(repoPath, outcomeFromCommitData(commitResult));
+      clearWorktreeDraftForPathRef.current(repoPath);
       setCommitSwitchFeedback({
         kind: 'success',
         message: 'Committed local changes.',
@@ -4904,7 +4916,9 @@ function App() {
         });
         return false;
       }
-      const message = (await invoke<string>('generate_commit_message', { repoPath })).trim();
+      const preparedCommitMessage = getPreparedCommitMessageRef.current(repoPath);
+      const message = preparedCommitMessage
+        ?? (await invoke<string>('generate_commit_message', { repoPath })).trim();
       if (!message) {
         setCommitSwitchFeedback({
           kind: 'error',
@@ -5601,6 +5615,23 @@ function App() {
     [worktrees, repoPath, visualCheckedOutRef, checkedOutRef],
   );
 
+  const {
+    draftsByWorkingTreeId: worktreeDraftByWorkingTreeId,
+    getPreparedCommitMessage,
+    getPreparedStashMessage,
+    clearDraftForPath,
+  } = useWorktreeDraftMessages({
+    worktreeSessions,
+    isPaused: () =>
+      repoMutationInFlightRef.current
+      || isPostCommitProtectionActive(normalizePath(repoPath ?? '') ?? ''),
+    enabled: Boolean(repoPath),
+  });
+
+  getPreparedCommitMessageRef.current = getPreparedCommitMessage;
+  getPreparedStashMessageRef.current = getPreparedStashMessage;
+  clearWorktreeDraftForPathRef.current = clearDraftForPath;
+
   const focusCameraOnActiveWorktree = useCallback(() => {
     if (!repoPath) return;
     const focusSha = worktreeSessions.length > 0
@@ -6134,6 +6165,7 @@ function App() {
                 }
                 onNodePositionOverridesChange={handleNodePositionOverridesChange}
                 orientation={mapGridOrientation}
+                worktreeDraftByWorkingTreeId={worktreeDraftByWorkingTreeId}
                   gridHudProps={gridHudProps}
               />
           </div>

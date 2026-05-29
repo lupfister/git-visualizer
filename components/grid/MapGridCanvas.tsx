@@ -138,6 +138,7 @@ type CommitCardProps = {
   remoteCommitShas: Set<string>;
   worktreeAccentByCommitId: Map<string, WorktreeAccentToken>;
   worktreeSessions: WorktreeSession[];
+  worktreeDraftByWorkingTreeId?: ReadonlyMap<string, { status: 'idle' | 'pending' | 'ready' | 'error'; message: string }>;
   onCommitCardClick: (event: MouseEvent, node: Node) => void;
   onNodePointerDown: (event: React.PointerEvent<HTMLDivElement>, node: Node) => void;
   onNodePointerMove: (event: React.PointerEvent<HTMLDivElement>) => void;
@@ -170,6 +171,7 @@ const MapGridCommitCard = memo(function MapGridCommitCard({
   remoteCommitShas,
   worktreeAccentByCommitId,
   worktreeSessions,
+  worktreeDraftByWorkingTreeId,
   onCommitCardClick,
   onNodePointerDown,
   onNodePointerMove,
@@ -284,13 +286,24 @@ const MapGridCommitCard = memo(function MapGridCommitCard({
               ? `${node.commit.branchName}/${shortSha}`
               : shortSha;
 
+  const draftPreview = isDirtyWorktreeNode
+    ? worktreeDraftByWorkingTreeId?.get(commitId)
+    : undefined;
+  const draftMessage = draftPreview?.message.trim() ?? '';
   const bodyContent: ReactNode = isDirtyWorktreeNode
-    ? (
-        <>
-          Building
-          <WorkingDots />
-        </>
-      )
+    ? draftMessage
+      ? (
+          <>
+            {draftMessage}
+            <WorkingDots />
+          </>
+        )
+      : (
+          <>
+            Building
+            <WorkingDots />
+          </>
+        )
     : isLocalUncommitted || isEmptyBranchNode
       ? ''
       : !isClusterOpen && isClusterLead && clumpCount > 1
@@ -551,7 +564,7 @@ const MapGridCommitCard = memo(function MapGridCommitCard({
               )}
               data-selectable-text="true"
               style={scaledBodyTextStyle}
-              aria-label={isDirtyWorktreeNode ? 'Building' : undefined}
+              aria-label={isDirtyWorktreeNode ? (draftMessage || 'Building') : undefined}
             >
               {bodyContent}
             </div>
@@ -670,6 +683,7 @@ type Props = {
   remoteCommitShas: Set<string>;
   worktreeAccentByCommitId: Map<string, WorktreeAccentToken>;
   worktreeSessions: WorktreeSession[];
+  worktreeDraftByWorkingTreeId?: ReadonlyMap<string, { status: 'idle' | 'pending' | 'ready' | 'error'; message: string }>;
   orientation?: 'vertical' | 'horizontal';
   dragPreviewByNodeId?: Record<string, { x: number; y: number }>;
   nodePositionOverrides?: Record<string, { x: number; y: number }>;
@@ -739,6 +753,7 @@ const MapGridCanvas = memo(function MapGridCanvas({
   remoteCommitShas,
   worktreeAccentByCommitId,
   worktreeSessions,
+  worktreeDraftByWorkingTreeId,
   dragPreviewByNodeId = EMPTY_DRAG_PREVIEW,
   nodePositionOverrides = EMPTY_NODE_POSITION_OVERRIDES,
   connectorPathCacheScopeBase,
@@ -1004,6 +1019,7 @@ const MapGridCanvas = memo(function MapGridCanvas({
                 remoteCommitShas={remoteCommitShas}
                 worktreeAccentByCommitId={worktreeAccentByCommitId}
                 worktreeSessions={worktreeSessions}
+                worktreeDraftByWorkingTreeId={worktreeDraftByWorkingTreeId}
                 onCommitCardClick={onCommitCardClick}
                 onNodePointerDown={onNodePointerDown}
                 onNodePointerMove={onNodePointerMove}
