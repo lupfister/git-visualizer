@@ -5813,7 +5813,7 @@ function App() {
       layoutRevisionForView.mapGridOrientation,
       layoutRevisionForView.manuallyOpenedGridClumps,
       layoutRevisionForView.manuallyClosedGridClumps,
-      `${layoutRevisionForView.graphLayoutSignature}::focus:${layoutRevisionForView.gridFocusSha ?? ''}`,
+      layoutRevisionForView.graphLayoutSignature,
     );
   }, [repoPath, layoutRevisionForView]);
   useEffect(() => {

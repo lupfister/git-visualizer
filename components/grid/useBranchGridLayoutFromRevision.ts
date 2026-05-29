@@ -131,6 +131,14 @@ const resolveCachedLayoutModel = (
   return { model: null, source: 'needs-compute' };
 };
 
+const buildLayoutComputeKey = (
+  sharedGridLayoutCacheKey: string | null,
+  gridFocusSha: string | null,
+): string | null => {
+  if (!sharedGridLayoutCacheKey) return null;
+  return `${sharedGridLayoutCacheKey}::focus:${gridFocusSha ?? ''}`;
+};
+
 export const useBranchGridLayoutFromRevision = (params: {
   layoutRevisionForView: BranchGridLayoutRevision;
   sharedGridLayoutCacheKey: string | null;
@@ -149,29 +157,42 @@ export const useBranchGridLayoutFromRevision = (params: {
   } = params;
 
   const lastGoodModelRef = useRef<BranchGridLayoutModel>(EMPTY_LAYOUT_MODEL);
-  const lastGoodCacheKeyRef = useRef<string | null>(null);
+  const lastGoodStorageKeyRef = useRef<string | null>(null);
+  const lastServedComputeKeyRef = useRef<string | null>(null);
   const [asyncLayoutModel, setAsyncLayoutModel] = useState<BranchGridLayoutModel | null>(null);
   const jobIdRef = useRef(0);
 
-  const resolved = useMemo(
-    () =>
-      resolveCachedLayoutModel(
-        layoutRevisionForView,
-        sharedGridLayoutCacheKey,
-        hydratedLayoutModel,
-        hydratedLayoutKey,
-        mapLoading,
-        layoutModelCacheRef,
-      ),
-    [
+  const layoutComputeKey = useMemo(
+    () => buildLayoutComputeKey(sharedGridLayoutCacheKey, layoutRevisionForView.gridFocusSha),
+    [layoutRevisionForView.gridFocusSha, sharedGridLayoutCacheKey],
+  );
+
+  const resolved = useMemo(() => {
+    const cached = resolveCachedLayoutModel(
       layoutRevisionForView,
       sharedGridLayoutCacheKey,
       hydratedLayoutModel,
       hydratedLayoutKey,
       mapLoading,
       layoutModelCacheRef,
-    ],
-  );
+    );
+    if (cached.source === 'needs-compute') return cached;
+    if (!layoutComputeKey) return cached;
+    if (lastServedComputeKeyRef.current === null) {
+      lastServedComputeKeyRef.current = layoutComputeKey;
+      return cached;
+    }
+    if (layoutComputeKey === lastServedComputeKeyRef.current) return cached;
+    return { model: null, source: 'needs-compute' as const };
+  }, [
+    layoutRevisionForView,
+    sharedGridLayoutCacheKey,
+    hydratedLayoutModel,
+    hydratedLayoutKey,
+    mapLoading,
+    layoutModelCacheRef,
+    layoutComputeKey,
+  ]);
 
   const layoutInput = useMemo(
     () => buildBranchGridLayoutInput(layoutRevisionForView),
@@ -181,6 +202,9 @@ export const useBranchGridLayoutFromRevision = (params: {
   useEffect(() => {
     if (resolved.source !== 'needs-compute') {
       setAsyncLayoutModel(null);
+      if (resolved.model && layoutComputeKey) {
+        lastServedComputeKeyRef.current = layoutComputeKey;
+      }
       return undefined;
     }
 
@@ -190,6 +214,12 @@ export const useBranchGridLayoutFromRevision = (params: {
 
     const applyModel = (model: BranchGridLayoutModel) => {
       if (jobId !== jobIdRef.current) return;
+      if (sharedGridLayoutCacheKey) {
+        layoutModelCacheRef.current.set(sharedGridLayoutCacheKey, model);
+      }
+      if (layoutComputeKey) {
+        lastServedComputeKeyRef.current = layoutComputeKey;
+      }
       startTransition(() => {
         setAsyncLayoutModel(model);
       });
@@ -218,23 +248,26 @@ export const useBranchGridLayoutFromRevision = (params: {
 
     applyModel(computeBranchGridLayoutWithPerf(layoutInput));
     return undefined;
-  }, [resolved.source, layoutInput]);
+  }, [layoutComputeKey, resolved.source, layoutInput]);
 
   const layoutModel =
-    resolved.model
-    ?? asyncLayoutModel
+    asyncLayoutModel
+    ?? resolved.model
     ?? (
-      sharedGridLayoutCacheKey && lastGoodCacheKeyRef.current === sharedGridLayoutCacheKey
+      sharedGridLayoutCacheKey
+      && lastGoodStorageKeyRef.current === sharedGridLayoutCacheKey
+      && lastGoodModelRef.current.allCommits.length > 0
         ? lastGoodModelRef.current
         : EMPTY_LAYOUT_MODEL
     );
 
   if (resolved.model || asyncLayoutModel) {
     lastGoodModelRef.current = layoutModel;
-    lastGoodCacheKeyRef.current = sharedGridLayoutCacheKey;
-  } else if (sharedGridLayoutCacheKey !== lastGoodCacheKeyRef.current) {
+    lastGoodStorageKeyRef.current = sharedGridLayoutCacheKey;
+  } else if (sharedGridLayoutCacheKey !== lastGoodStorageKeyRef.current) {
     lastGoodModelRef.current = EMPTY_LAYOUT_MODEL;
-    lastGoodCacheKeyRef.current = sharedGridLayoutCacheKey;
+    lastGoodStorageKeyRef.current = sharedGridLayoutCacheKey;
+    lastServedComputeKeyRef.current = null;
   }
   return layoutModel;
 };

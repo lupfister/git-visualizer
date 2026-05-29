@@ -6,6 +6,7 @@ import { CARD_HEIGHT, CARD_WIDTH, type ConnectorFace, type Node } from './Layout
 const GRID_INCOMING_GAP_PX = 0;
 const GRID_MERGE_TARGET_GAP_PX = 0;
 const CONNECTOR_HORIZONTAL_ROW_ALIGN_EPS_PX = 22;
+const CONNECTOR_VERTICAL_STACK_ALIGN_EPS_PX = 1;
 
 export type ConnectorAnchorPair = {
   fromX: number;
@@ -36,6 +37,12 @@ const horizontalIncomingAnchorFromParent = (
   // Child above/below: vertical-first L ends at left or right mid-height (see getOutgoing horizontal).
   const parentCx = parentNode.x + CARD_WIDTH / 2;
   const childCx = node.x + CARD_WIDTH / 2;
+  if (Math.abs(childCx - parentCx) < CONNECTOR_VERTICAL_STACK_ALIGN_EPS_PX) {
+    if (dy > 0) {
+      return { x: childCx, y: node.y - GRID_INCOMING_GAP_PX, face: 'top' };
+    }
+    return { x: childCx, y: node.y + CARD_HEIGHT + GRID_INCOMING_GAP_PX, face: 'bottom' };
+  }
   if (childCx >= parentCx) {
     return { x: node.x - GRID_INCOMING_GAP_PX, y: node.y + CARD_HEIGHT / 2, face: 'left' };
   }
@@ -44,6 +51,9 @@ const horizontalIncomingAnchorFromParent = (
 
 const getIncomingAnchor = (isHorizontal: boolean, node: Node, parentNode: Node | null): { x: number; y: number; face: ConnectorFace } => {
   if (!isHorizontal) {
+    if (parentNode && parentNode.column === node.column) {
+      return { x: node.x + CARD_WIDTH / 2, y: node.y - GRID_INCOMING_GAP_PX, face: 'top' };
+    }
     return { x: node.x + CARD_WIDTH / 2, y: node.y + CARD_HEIGHT + GRID_INCOMING_GAP_PX, face: 'bottom' };
   }
   return horizontalIncomingAnchorFromParent(node, parentNode);
@@ -51,6 +61,9 @@ const getIncomingAnchor = (isHorizontal: boolean, node: Node, parentNode: Node |
 
 const getBranchIncomingAnchor = (isHorizontal: boolean, node: Node, parentNode: Node | null): { x: number; y: number; face: ConnectorFace } => {
   if (!isHorizontal) {
+    if (parentNode && parentNode.column === node.column) {
+      return { x: node.x + CARD_WIDTH / 2, y: node.y - GRID_INCOMING_GAP_PX, face: 'top' };
+    }
     return { x: node.x + CARD_WIDTH / 2, y: node.y + CARD_HEIGHT + GRID_INCOMING_GAP_PX, face: 'bottom' };
   }
   return horizontalIncomingAnchorFromParent(node, parentNode);
@@ -65,8 +78,8 @@ const getOutgoingAnchor = (
   if (!isHorizontal) {
     return {
       x: isBranching ? node.x + CARD_WIDTH : node.x + CARD_WIDTH / 2,
-      y: isBranching ? node.y + CARD_HEIGHT / 2 : node.y,
-      face: isBranching ? 'right' : 'top',
+      y: isBranching ? node.y + CARD_HEIGHT / 2 : node.y + CARD_HEIGHT + GRID_INCOMING_GAP_PX,
+      face: isBranching ? 'right' : 'bottom',
     };
   }
   if (!isBranching) {

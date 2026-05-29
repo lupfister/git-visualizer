@@ -1846,7 +1846,7 @@ export default function BranchGridMap({
     return () => window.cancelAnimationFrame(rafId);
   }, [allCommits.length, isLoading, blockMapInteraction, mapReadyEpoch, onMapReadyForDisplay]);
 
-  const showLoadingTiles = isLoading || allCommits.length === 0;
+  const showLoadingTiles = isLoading || (allCommits.length === 0 && blockMapInteraction);
 
   if (showLoadingTiles) {
     return (
