@@ -75,6 +75,42 @@ import { setMapGridBackgroundActivity } from '../components/grid/mapGridBackgrou
 import { useWorktreeDraftMessages } from './useWorktreeDraftMessages';
 import { createRepoSyncScheduler } from './repoSyncScheduler';
 import { runOrchestratedRepoSync } from './orchestratedRepoSync';
+import PreviewLogPanel, { type PreviewPanelState } from '../components/PreviewLogPanel';
+import {
+  formatPreviewUrl,
+  listCommitPreviews,
+  openCommitPreview,
+  readCommitPreviewLog,
+  removeProjectPreviewWorktree,
+  startCommitPreview,
+  stopCommitPreview,
+} from '../lib/preview';
+
+const summarizePreviewError = (raw: string): string => {
+  const lines = raw
+    .split('\n')
+    .map((line) => line.trim())
+    .filter(
+      (line) =>
+        line.length > 0
+        && !line.startsWith('at ')
+        && !line.includes('processTicksAndRejections')
+        && !line.includes('node:internal/'),
+    );
+  const actionable = lines.find(
+    (line) =>
+      line.includes('pnpm install')
+      || line.includes('Vite is not installed')
+      || line.includes('already in use')
+      || line.includes('Cannot find module')
+      || line.includes('error when starting dev server')
+      || line.includes('Dev server exited')
+      || line.includes('Dev server timed out'),
+  );
+  if (actionable) return actionable;
+  if (lines.length > 0) return lines[0];
+  return raw.length > 180 ? `${raw.slice(0, 177)}…` : raw;
+};
 
 const PROJECTS_STORAGE_KEY = 'git-visualizer:projects';
 const ACTIVE_PROJECT_STORAGE_KEY = 'git-visualizer:active-project';
@@ -353,6 +389,10 @@ function App() {
   const [isCommitSwitchFeedbackVisible, setIsCommitSwitchFeedbackVisible] = useState(false);
   const [mergeInProgress, setMergeInProgress] = useState(false);
   const [pushInProgress, setPushInProgress] = useState(false);
+  const [previewInProgress, setPreviewInProgress] = useState(false);
+  const [activePreviewShortShas, setActivePreviewShortShas] = useState<string[]>([]);
+  const [previewPanel, setPreviewPanel] = useState<PreviewPanelState | null>(null);
+  const [previewLogText, setPreviewLogText] = useState('');
   const [deleteInProgress, setDeleteInProgress] = useState(false);
   const [branchPromptMeta, setBranchPromptMeta] = useState<Record<string, BranchPromptMeta>>({});
   const [branchCommitPreviews, setBranchCommitPreviews] = useState<Record<string, BranchCommitPreview[]>>({});
@@ -377,7 +417,8 @@ function App() {
     pushInProgress ||
     deleteInProgress ||
     mergeInProgress ||
-    createBranchFromNodeInProgress;
+    createBranchFromNodeInProgress ||
+    previewInProgress;
   const [isMapInteracting, setIsMapInteracting] = useState(false);
   const mapGridOrientation = 'horizontal' as const;
   const [remoteDefaultTipSha, setRemoteDefaultTipSha] = useState<string | null>(null);
@@ -1519,6 +1560,8 @@ function App() {
   function removeProject(path: string) {
     const normalizedPath = normalizePath(path);
     if (!normalizedPath) return;
+    void stopCommitPreview(normalizedPath, '').catch(() => undefined);
+    void removeProjectPreviewWorktree(normalizedPath).catch(console.error);
     setProjects((previous) => {
       const next = previous.filter((project) => project.path !== normalizedPath);
       try {
@@ -4762,6 +4805,124 @@ function App() {
     return () => window.removeEventListener('keydown', handler);
   }, [repoPath, repoName, branches]);
 
+  const refreshActivePreviews = useCallback(async () => {
+    if (!repoPath) {
+      setActivePreviewShortShas([]);
+      return;
+    }
+    try {
+      const previews = await listCommitPreviews(repoPath);
+      setActivePreviewShortShas(previews.map((preview) => preview.shortSha.toLowerCase()));
+    } catch {
+      setActivePreviewShortShas([]);
+    }
+  }, [repoPath]);
+
+  useEffect(() => {
+    void refreshActivePreviews();
+  }, [refreshActivePreviews]);
+
+  useEffect(() => {
+    if (!previewPanel || !repoPath) {
+      setPreviewLogText('');
+      return undefined;
+    }
+
+    let cancelled = false;
+    const pollLog = async () => {
+      try {
+        const text = await readCommitPreviewLog(repoPath, previewPanel.commitSha);
+        if (cancelled) return;
+        setPreviewLogText(text);
+        const urlMatch = text.match(/https?:\/\/(?:127\.0\.0\.1|localhost):\d{4,5}\/?[^\s)"']*/);
+        if (urlMatch) {
+          setPreviewPanel((prev) =>
+            prev && prev.commitSha === previewPanel.commitSha
+              ? { ...prev, browserUrl: urlMatch[0].replace(/\/$/, '') + '/' }
+              : prev,
+          );
+        }
+      } catch {
+        if (!cancelled) setPreviewLogText('');
+      }
+    };
+
+    void pollLog();
+    const intervalId = window.setInterval(() => {
+      void pollLog();
+    }, 600);
+
+    return () => {
+      cancelled = true;
+      window.clearInterval(intervalId);
+    };
+  }, [previewPanel?.commitSha, repoPath]);
+
+  const handlePreviewCommit = useCallback(
+    async (commitSha: string) => {
+      if (!repoPath) return;
+      const shortSha = commitSha.slice(0, 7).toLowerCase();
+      const isActive = activePreviewShortShas.includes(shortSha);
+      setPreviewInProgress(true);
+      try {
+        if (isActive) {
+          await stopCommitPreview(repoPath, commitSha);
+          await refreshActivePreviews();
+          setPreviewPanel(null);
+          setPreviewLogText('');
+          setCommitSwitchFeedback({
+            kind: 'success',
+            message: `Preview stopped (${formatPreviewUrl(shortSha)})`,
+          });
+          return;
+        }
+        setPreviewPanel({
+          commitSha,
+          shortSha,
+          browserUrl: null,
+        });
+        setPreviewLogText('');
+        const result = await startCommitPreview(repoPath, commitSha);
+        setPreviewPanel({
+          commitSha,
+          shortSha: result.shortSha,
+          browserUrl: result.previewUrl ?? null,
+        });
+        await refreshActivePreviews();
+        setCommitSwitchFeedback({
+          kind: 'success',
+          message:
+            result.status === 'already_running'
+              ? `Preview already running at ${result.canonicalUrl}`
+              : `Preview started at ${result.canonicalUrl}`,
+        });
+      } catch (error) {
+        const raw = error instanceof Error ? error.message : String(error);
+        const message = summarizePreviewError(raw);
+        setPreviewPanel(null);
+        setPreviewLogText('');
+        setCommitSwitchFeedback({
+          kind: 'error',
+          message,
+        });
+        console.error('Failed to start commit preview:', raw);
+      } finally {
+        setPreviewInProgress(false);
+      }
+    },
+    [repoPath, refreshActivePreviews, activePreviewShortShas],
+  );
+
+  const handleClosePreviewPanel = useCallback(() => {
+    setPreviewPanel(null);
+    setPreviewLogText('');
+  }, []);
+
+  const handleOpenPreviewInBrowser = useCallback(() => {
+    if (!repoPath || !previewPanel) return;
+    void openCommitPreview(repoPath, previewPanel.commitSha);
+  }, [repoPath, previewPanel]);
+
   async function handleMapCommitClick(target: {
     commitSha: string;
     branchName?: string;
@@ -6430,12 +6591,25 @@ function App() {
                 onNodePositionOverridesChange={handleNodePositionOverridesChange}
                 orientation={mapGridOrientation}
                 worktreeDraftByWorkingTreeId={worktreeDraftByWorkingTreeId}
+                onPreviewCommit={handlePreviewCommit}
+                previewInProgress={previewInProgress}
+                activePreviewShortShas={activePreviewShortShas}
                   gridHudProps={gridHudProps}
               />
           </div>
 
         </div>
       </div>
+
+      {previewPanel ? (
+        <PreviewLogPanel
+          panel={previewPanel}
+          logText={previewLogText}
+          isStarting={previewInProgress}
+          onClose={handleClosePreviewPanel}
+          onOpenInBrowser={handleOpenPreviewInBrowser}
+        />
+      ) : null}
     </div>
   );
 }

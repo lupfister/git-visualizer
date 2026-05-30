@@ -1,6 +1,7 @@
 mod git;
 mod github;
 mod opencode;
+mod preview;
 #[cfg(target_os = "macos")]
 mod macos_traffic_lights;
 
@@ -1679,11 +1680,14 @@ async fn add_project_and_ingest(repo_path: String, force_refresh: Option<bool>) 
         if !force_refresh {
             if let Some(active) = existing {
                 if active.fingerprint == current_fingerprint && active.schema_version == PROJECT_SNAPSHOT_SCHEMA_VERSION {
+                    let _ = preview::ensure_project_preview_worktree(&normalized_repo_path, None);
                     return Ok(active);
                 }
             }
         }
-        publish_project_snapshot(&normalized_repo_path, Some(&current_fingerprint))
+        let snapshot = publish_project_snapshot(&normalized_repo_path, Some(&current_fingerprint))?;
+        let _ = preview::ensure_project_preview_worktree(&normalized_repo_path, None);
+        Ok(snapshot)
     })
     .await
 }
@@ -3857,11 +3861,7 @@ fn get_recent_log(
 /// Works for Vite ("Local: http://localhost:5175/") and
 /// Next.js ("- Local: http://localhost:3000").
 fn parse_localhost_url(log: &str) -> Option<String> {
-    let start = log.find("localhost:")?;
-    let after = &log[start + 10..]; // skip "localhost:"
-    let end = after.find(|c: char| !c.is_ascii_digit()).unwrap_or(after.len());
-    let port: u16 = after[..end].parse().ok()?;
-    Some(format!("http://localhost:{port}"))
+    preview::parse_localhost_url(log)
 }
 
 /// Normalize any naming convention to lowercase alphanumeric only, so that
@@ -5981,6 +5981,53 @@ fn detect_repo_from_frontmost_process() -> Option<OpenRepoEventPayload> {
 
 
 
+#[tauri::command(rename_all = "camelCase")]
+fn ensure_project_preview_worktree(repo_path: String) -> Result<(), String> {
+    preview::ensure_project_preview_worktree(&repo_path, None).map(|_| ())
+}
+
+#[tauri::command(rename_all = "camelCase")]
+fn remove_project_preview_worktree(repo_path: String) -> Result<(), String> {
+    preview::remove_project_preview_worktree(&repo_path)
+}
+
+#[tauri::command(rename_all = "camelCase")]
+fn check_preview_eligibility(repo_path: String, commit_sha: String) -> preview::PreviewEligibility {
+    preview::check_preview_eligibility(&repo_path, &commit_sha)
+}
+
+#[tauri::command(rename_all = "camelCase")]
+async fn start_commit_preview(
+    repo_path: String,
+    commit_sha: String,
+) -> Result<preview::PreviewStartResult, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        preview::start_commit_preview(repo_path, commit_sha)
+    })
+    .await
+    .map_err(|e| format!("Spawn error: {e}"))?
+}
+
+#[tauri::command(rename_all = "camelCase")]
+fn stop_commit_preview(repo_path: String, commit_sha: String) -> Result<(), String> {
+    preview::stop_commit_preview(repo_path, commit_sha)
+}
+
+#[tauri::command(rename_all = "camelCase")]
+fn list_commit_previews(repo_path: String) -> Vec<preview::PreviewInfo> {
+    preview::list_commit_previews(repo_path)
+}
+
+#[tauri::command(rename_all = "camelCase")]
+fn open_commit_preview(repo_path: String, commit_sha: String) -> Result<(), String> {
+    preview::open_commit_preview(repo_path, commit_sha)
+}
+
+#[tauri::command(rename_all = "camelCase")]
+fn read_commit_preview_log(repo_path: String, commit_sha: String) -> Result<String, String> {
+    preview::get_preview_log(repo_path, commit_sha)
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     let builder = tauri::Builder::default()
@@ -6123,12 +6170,25 @@ pub fn run() {
             get_changed_routes,
             get_changed_routes_for_commit,
             debug_diff_files,
+            ensure_project_preview_worktree,
+            remove_project_preview_worktree,
+            check_preview_eligibility,
+            start_commit_preview,
+            stop_commit_preview,
+            list_commit_previews,
+            open_commit_preview,
+            read_commit_preview_log,
             take_pending_open_repo,
             reveal_in_finder,
             watch_repo,
         ])
-        .run(tauri::generate_context!())
-        .expect("error running tauri application");
+        .build(tauri::generate_context!())
+        .expect("error building tauri application")
+        .run(|_app_handle, event| {
+            if let tauri::RunEvent::Exit = event {
+                preview::cleanup_all_previews();
+            }
+        });
 }
 
 static PENDING_OPEN_REPO: OnceLock<Mutex<Option<OpenRepoEventPayload>>> = OnceLock::new();

@@ -1,7 +1,8 @@
 import type { BranchGridViewProps } from './LayoutGrid';
 import { isWorkingTreeCommitId } from '../../lib/worktreeSessions';
 import ToolbarActionContent from './ToolbarActionContent';
-import { ChevronDown, GitBranchPlus, GitMerge } from 'lucide-react';
+import { ChevronDown, GitBranchPlus, GitMerge, MonitorPlay, Square } from 'lucide-react';
+import { formatPreviewUrl, isPreviewableCommitId } from '../../lib/preview';
 import { useEffect, useRef, useState } from 'react';
 import { cn } from './mapGridUtils';
 
@@ -46,6 +47,10 @@ type Props = {
   hideMergeControls?: boolean;
   dirtyWorktreePaths?: string[];
   selectedDirtyWorktreePaths?: string[];
+  onPreviewCommit?: (commitSha: string) => void;
+  previewInProgress?: boolean;
+  previewActiveShortSha?: string | null;
+  previewDisabledReason?: string | null;
 };
 
 export default function CommitControls({
@@ -74,8 +79,25 @@ export default function CommitControls({
   hideMergeControls = false,
   dirtyWorktreePaths = [],
   selectedDirtyWorktreePaths = [],
+  onPreviewCommit,
+  previewInProgress = false,
+  previewActiveShortSha = null,
+  previewDisabledReason = null,
 }: Props) {
   const hasSelection = selectedVisibleCommitShas.length > 0;
+  const previewTargetSha =
+    selectedVisibleCommitShas.length === 1 && isPreviewableCommitId(selectedVisibleCommitShas[0])
+      ? selectedVisibleCommitShas[0]
+      : null;
+  const previewShortSha = previewTargetSha
+    ? previewTargetSha.slice(0, 7).toLowerCase()
+    : null;
+  const isPreviewActive =
+    !!previewShortSha && previewActiveShortSha === previewShortSha;
+  const canPreview =
+    !!onPreviewCommit &&
+    !!previewTargetSha &&
+    !previewDisabledReason;
   const hasWorktreeSelection = selectedVisibleCommitShas.some((sha) => isWorkingTreeCommitId(sha));
   const hasAnyDirtyWorktrees = dirtyWorktreePaths.length > 0;
   const stashTargetPaths = selectedDirtyWorktreePaths;
@@ -325,6 +347,48 @@ export default function CommitControls({
         </div>
 
         <div className="flex w-fit flex-nowrap items-center gap-[9px]">
+          {onPreviewCommit ? (
+            <button
+              type="button"
+              onClick={() => {
+                if (!previewTargetSha || !canPreview) return;
+                onPreviewCommit(previewTargetSha);
+              }}
+              disabled={!canPreview || previewInProgress}
+              title={
+                previewDisabledReason
+                  ? previewDisabledReason
+                  : previewTargetSha
+                    ? isPreviewActive
+                      ? `Stop preview at ${formatPreviewUrl(previewShortSha ?? '')}`
+                      : `Preview at ${formatPreviewUrl(previewShortSha ?? '')}`
+                    : 'Select a commit to preview'
+              }
+              aria-busy={previewInProgress ? true : undefined}
+              aria-pressed={isPreviewActive ? true : undefined}
+              className={cn(
+                controlClassName,
+                'pointer-events-auto relative z-10',
+                isPreviewActive && 'bg-primary/10 text-primary',
+                compactLabels ? 'w-7 justify-center px-0' : '',
+              )}
+            >
+              {isPreviewActive ? (
+                <Square className={cn('h-[14px] w-[14px] shrink-0', compactLabels ? '' : 'mr-1.5')} />
+              ) : (
+                <MonitorPlay className={cn('h-[14px] w-[14px] shrink-0', compactLabels ? '' : 'mr-1.5')} />
+              )}
+              {!compactLabels
+                ? previewInProgress
+                  ? isPreviewActive
+                    ? 'Stopping...'
+                    : 'Starting...'
+                  : isPreviewActive
+                    ? 'Stop'
+                    : 'Preview'
+                : null}
+            </button>
+          ) : null}
           <button
             type="button"
             onClick={() => setNewBranchDialogOpen(true)}

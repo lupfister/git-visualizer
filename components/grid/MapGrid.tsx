@@ -63,6 +63,7 @@ import { resolveWorktreeDraftDisplayLabel, type WorktreeDraftDisplay } from '../
 import { parseMapCheckoutTarget, type MapCheckoutTarget } from './mapCheckoutTarget';
 import { parseDeletableEmptyBranchFromCommitId } from './mapDeleteTarget';
 import {
+  cn,
   GRID_COMMIT_CORNER_RADIUS_BASE_PX,
   GRID_RENDER_ZOOM,
   MAP_GRID_CULL_VIEWPORT_INSET_SCREEN_PX,
@@ -168,6 +169,10 @@ type Props = BranchGridViewProps & {
   nodePositionOverrides?: NodePositionOverrides;
   onNodePositionOverridesChange?: (overrides: NodePositionOverrides) => void;
   worktreeDraftByWorkingTreeId?: ReadonlyMap<string, WorktreeDraftDisplay>;
+  onPreviewCommit?: (commitSha: string) => void;
+  previewInProgress?: boolean;
+  activePreviewShortShas?: string[];
+  previewDisabledReason?: string | null;
 };
 
 export default function BranchGridMap({
@@ -235,6 +240,10 @@ export default function BranchGridMap({
   nodePositionOverrides: controlledNodePositionOverrides,
   onNodePositionOverridesChange,
   worktreeDraftByWorkingTreeId,
+  onPreviewCommit,
+  previewInProgress = false,
+  activePreviewShortShas = [],
+  previewDisabledReason = null,
 }: Props) {
   const scrollContainerRef = useRef<HTMLDivElement | null>(null);
   const hudHeaderRef = useRef<HTMLElement | null>(null);
@@ -728,6 +737,12 @@ export default function BranchGridMap({
     () => selectedCommitShas.filter((sha) => selectableCommitShaSet.has(sha)),
     [selectedCommitShas, selectableCommitShaSet],
   );
+  const previewActiveShortSha = useMemo(() => {
+    const selected = selectedVisibleCommitShas[0];
+    if (!selected || selected.length < 7) return null;
+    const short = selected.slice(0, 7).toLowerCase();
+    return activePreviewShortShas.some((sha) => sha.toLowerCase() === short) ? short : null;
+  }, [activePreviewShortShas, selectedVisibleCommitShas]);
 
   const checkedOutBranchName = checkedOutRef?.branchName ?? null;
   const checkedOutHeadSha = checkedOutRef?.headSha ?? null;
@@ -1963,6 +1978,10 @@ export default function BranchGridMap({
                   dirtyWorktreePaths={dirtyWorktreePaths}
                   selectedDirtyWorktreePaths={selectedDirtyWorktreePaths}
                   hideMergeControls
+                  onPreviewCommit={onPreviewCommit}
+                  previewInProgress={previewInProgress}
+                  previewActiveShortSha={previewActiveShortSha}
+                  previewDisabledReason={previewDisabledReason}
                 />
               </div>
             <div className="flex min-w-0 shrink-0 items-center justify-end gap-2">
@@ -2022,7 +2041,14 @@ export default function BranchGridMap({
                 <p className="shrink-0 text-[10px] font-medium opacity-70">
                   {gridHudProps.commitSwitchFeedback.kind === 'error' ? 'Alert' : 'Update'}
                 </p>
-                <p className="truncate text-[11px]">
+                <p
+                  className={cn(
+                    'text-[11px]',
+                    gridHudProps.commitSwitchFeedback.kind === 'error'
+                      ? 'max-w-md line-clamp-3 whitespace-pre-wrap'
+                      : 'truncate',
+                  )}
+                >
                   {gridHudProps.commitSwitchFeedback.message}
                 </p>
               </div>

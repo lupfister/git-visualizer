@@ -101,6 +101,10 @@ interface Props {
   nodePositionOverrides?: NodePositionOverrides;
   onNodePositionOverridesChange?: (overrides: NodePositionOverrides) => void;
   worktreeDraftByWorkingTreeId?: ReadonlyMap<string, WorktreeDraftDisplay>;
+  onPreviewCommit?: (commitSha: string) => void;
+  previewInProgress?: boolean;
+  activePreviewShortShas?: string[];
+  previewDisabledReason?: string | null;
 }
 
 export default function BranchGridMapView({
@@ -170,6 +174,10 @@ export default function BranchGridMapView({
   nodePositionOverrides,
   onNodePositionOverridesChange,
   worktreeDraftByWorkingTreeId,
+  onPreviewCommit,
+  previewInProgress = false,
+  activePreviewShortShas = [],
+  previewDisabledReason = null,
 }: Props) {
   const openPRBranchNames = new Set(openPRs.map(p => p.branchName));
   const ACTIVE_MS = 14 * 86400000;
@@ -249,6 +257,10 @@ export default function BranchGridMapView({
             nodePositionOverrides={nodePositionOverrides}
             onNodePositionOverridesChange={onNodePositionOverridesChange}
             worktreeDraftByWorkingTreeId={worktreeDraftByWorkingTreeId}
+            onPreviewCommit={onPreviewCommit}
+            previewInProgress={previewInProgress}
+            activePreviewShortShas={activePreviewShortShas}
+            previewDisabledReason={previewDisabledReason}
           />
         </div>
       ) : view === 'grid' ? (
@@ -288,6 +300,10 @@ export default function BranchGridMapView({
             nodePositionOverrides={nodePositionOverrides}
             onNodePositionOverridesChange={onNodePositionOverridesChange}
             worktreeDraftByWorkingTreeId={worktreeDraftByWorkingTreeId}
+            onPreviewCommit={onPreviewCommit}
+            previewInProgress={previewInProgress}
+            activePreviewShortShas={activePreviewShortShas}
+            previewDisabledReason={previewDisabledReason}
           />
         </div>
       ) : null}
