@@ -158,6 +158,7 @@ export const useBranchGridLayoutFromRevision = (params: {
 
   const lastGoodModelRef = useRef<BranchGridLayoutModel>(EMPTY_LAYOUT_MODEL);
   const lastGoodStorageKeyRef = useRef<string | null>(null);
+  const lastGoodGraphSignatureRef = useRef<string | null>(null);
   const lastServedComputeKeyRef = useRef<string | null>(null);
   const [asyncLayoutModel, setAsyncLayoutModel] = useState<BranchGridLayoutModel | null>(null);
   const jobIdRef = useRef(0);
@@ -195,6 +196,13 @@ export const useBranchGridLayoutFromRevision = (params: {
     [layoutRevisionForView],
   );
 
+  const immediateLayoutModel = useMemo(() => {
+    if (resolved.source !== 'needs-compute') return null;
+    if (lastGoodModelRef.current.allCommits.length === 0) return null;
+    if (lastGoodGraphSignatureRef.current !== layoutRevisionForView.graphLayoutSignature) return null;
+    return computeBranchGridLayoutWithPerf(layoutInput);
+  }, [layoutInput, layoutRevisionForView.graphLayoutSignature, resolved.source]);
+
   useEffect(() => {
     if (resolved.source !== 'needs-compute') {
       setAsyncLayoutModel(null);
@@ -206,6 +214,20 @@ export const useBranchGridLayoutFromRevision = (params: {
 
     const jobId = jobIdRef.current + 1;
     jobIdRef.current = jobId;
+
+    if (immediateLayoutModel) {
+      if (sharedGridLayoutCacheKey) {
+        layoutModelCacheRef.current.set(sharedGridLayoutCacheKey, immediateLayoutModel);
+      }
+      if (layoutComputeKey) {
+        lastServedComputeKeyRef.current = layoutComputeKey;
+      }
+      startTransition(() => {
+        setAsyncLayoutModel(immediateLayoutModel);
+      });
+      return undefined;
+    }
+
     const worker = getLayoutWorker();
 
     const applyModel = (model: BranchGridLayoutModel) => {
@@ -244,10 +266,11 @@ export const useBranchGridLayoutFromRevision = (params: {
 
     applyModel(computeBranchGridLayoutWithPerf(layoutInput));
     return undefined;
-  }, [layoutComputeKey, resolved.source, layoutInput]);
+  }, [layoutComputeKey, resolved.source, layoutInput, immediateLayoutModel]);
 
   const layoutModel =
     asyncLayoutModel
+    ?? immediateLayoutModel
     ?? resolved.model
     ?? (
       sharedGridLayoutCacheKey
@@ -260,8 +283,8 @@ export const useBranchGridLayoutFromRevision = (params: {
   if (resolved.model || asyncLayoutModel) {
     lastGoodModelRef.current = layoutModel;
     lastGoodStorageKeyRef.current = sharedGridLayoutCacheKey;
+    lastGoodGraphSignatureRef.current = layoutRevisionForView.graphLayoutSignature;
   } else if (sharedGridLayoutCacheKey !== lastGoodStorageKeyRef.current) {
-    lastGoodModelRef.current = EMPTY_LAYOUT_MODEL;
     lastGoodStorageKeyRef.current = sharedGridLayoutCacheKey;
     lastServedComputeKeyRef.current = null;
   }
