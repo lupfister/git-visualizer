@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { formatWorktreeNodeHeaderLabel } from './mapGridUtils';
+import { formatRemoteCommitHeaderLabel, formatWorktreeNodeHeaderLabel } from './mapGridUtils';
 
 describe('formatWorktreeNodeHeaderLabel', () => {
   it('uses worktree folder name and branch when clean', () => {
@@ -44,5 +44,16 @@ describe('formatWorktreeNodeHeaderLabel', () => {
         isCurrent: true,
       }),
     ).toBe('Primary • main');
+  });
+});
+
+describe('formatRemoteCommitHeaderLabel', () => {
+  it('matches worktree header pattern with Origin source and branch/sha', () => {
+    expect(
+      formatRemoteCommitHeaderLabel(
+        'cursor/commit-app-previews-7896',
+        'c131b6f10b7737b2974df51887149d9127b2a648',
+      ),
+    ).toBe('Origin • cursor/commit-app-previews-7896/c131b6f');
   });
 });

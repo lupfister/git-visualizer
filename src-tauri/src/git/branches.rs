@@ -955,6 +955,10 @@ fn get_remote_sync_status(repo: &Path, branch: &str, commits_ahead: i32) -> (Str
     ("local-only".to_string(), commits_ahead.max(0))
 }
 
+pub fn resolve_branch_upstream_ref(repo: &Path, branch: &str) -> Option<String> {
+    get_branch_upstream(repo, branch).or_else(|| find_remote_branch_ref(repo, branch))
+}
+
 fn get_branch_upstream(repo: &Path, branch: &str) -> Option<String> {
     let ref_query = format!("{branch}@{{upstream}}");
     let output = cli::run(repo, &["rev-parse", "--abbrev-ref", &ref_query]).ok()?;
@@ -988,6 +992,127 @@ fn find_remote_branch_ref(repo: &Path, branch: &str) -> Option<String> {
 
 fn remote_ref_exists(repo: &Path, full_ref: &str) -> bool {
     cli::run(repo, &["show-ref", "--verify", "--quiet", full_ref]).is_ok()
+}
+
+/// Fetch updates from configured remotes (`--prune`). Returns false when no remotes exist.
+pub fn fetch_remotes(repo: &Path) -> Result<bool, GitError> {
+    let remotes_output = cli::run(repo, &["remote"])?;
+    let remotes: Vec<&str> = remotes_output
+        .lines()
+        .map(str::trim)
+        .filter(|line| !line.is_empty())
+        .collect();
+    if remotes.is_empty() {
+        return Ok(false);
+    }
+    if remotes.iter().any(|remote| *remote == "origin") {
+        cli::run(repo, &["fetch", "--prune", "origin"])?;
+    } else {
+        cli::run(repo, &["fetch", "--prune", "--all"])?;
+    }
+    Ok(true)
+}
+
+/// Fast-forward pull on the current branch when the working tree is clean.
+pub fn try_fast_forward_pull(repo: &Path) -> Result<bool, GitError> {
+    let porcelain = cli::run(repo, &["status", "--porcelain=v1", "--untracked-files=no"])?;
+    if !porcelain.trim().is_empty() {
+        return Ok(false);
+    }
+    if cli::run(repo, &["symbolic-ref", "-q", "HEAD"]).is_err() {
+        return Ok(false);
+    }
+    match cli::run(repo, &["pull", "--ff-only", "--quiet"]) {
+        Ok(_) => Ok(true),
+        Err(GitError::CommandFailed(_)) => Ok(false),
+        Err(error) => Err(error),
+    }
+}
+
+pub fn list_origin_branch_heads(repo: &Path) -> Result<Vec<(String, String)>, GitError> {
+    let output = cli::run(
+        repo,
+        &[
+            "for-each-ref",
+            "refs/remotes/origin",
+            "--format=%(refname:short)|%(objectname)",
+        ],
+    )?;
+    Ok(output
+        .lines()
+        .filter_map(|line| {
+            let (refname, sha) = line.split_once('|')?;
+            let refname = refname.trim();
+            let sha = sha.trim();
+            if sha.is_empty() {
+                return None;
+            }
+            let branch_name = refname.strip_prefix("origin/")?;
+            if branch_name == "HEAD" {
+                return None;
+            }
+            Some((branch_name.to_string(), sha.to_string()))
+        })
+        .collect())
+}
+
+pub fn compute_remote_heads_digest(repo: &Path) -> Result<String, GitError> {
+    let mut lines: Vec<String> = list_origin_branch_heads(repo)?
+        .into_iter()
+        .map(|(name, sha)| format!("{name}:{sha}"))
+        .collect();
+    lines.sort();
+    Ok(lines.join("|"))
+}
+
+pub fn build_remote_only_branch(
+    repo: &Path,
+    branch_name: &str,
+    head_sha: &str,
+    default_branch: &str,
+) -> Option<Branch> {
+    let log_output = cli::run(repo, &["log", "-1", "--format=%an|%cI", head_sha]).ok()?;
+    let parts: Vec<&str> = log_output.trim().split('|').collect();
+    let last_commit_author = parts.first().unwrap_or(&"Unknown").to_string();
+    let last_commit_date = parts
+        .get(1)
+        .copied()
+        .unwrap_or("1970-01-01T00:00:00Z")
+        .to_string();
+    let diverged_from_sha = cli::run(repo, &["merge-base", default_branch, head_sha])
+        .ok()
+        .map(|output| output.trim().to_string())
+        .filter(|value| !value.is_empty());
+    let commits_ahead = diverged_from_sha.as_ref().and_then(|base| {
+        cli::run(
+            repo,
+            &["rev-list", "--count", &format!("{base}..{head_sha}")],
+        )
+        .ok()
+        .and_then(|output| output.trim().parse::<i32>().ok())
+    }).unwrap_or(1).max(1);
+    let diverged_from_date = diverged_from_sha.as_ref().and_then(|sha| {
+        cli::run(repo, &["log", "-1", "--format=%cI", sha])
+            .ok()
+            .map(|output| output.trim().to_string())
+            .filter(|value| !value.is_empty())
+    });
+    Some(Branch {
+        name: branch_name.to_string(),
+        commits_ahead,
+        commits_behind: 0,
+        created_from_sha: diverged_from_sha.clone(),
+        created_date: diverged_from_date.clone(),
+        last_commit_date,
+        last_commit_author,
+        status: "fresh".to_string(),
+        remote_sync_status: "on-github".to_string(),
+        unpushed_commits: 0,
+        head_sha: head_sha.to_string(),
+        parent_branch: Some(default_branch.to_string()),
+        diverged_from_sha,
+        diverged_from_date,
+    })
 }
 
 fn normalize_git_date(value: &str) -> Option<String> {

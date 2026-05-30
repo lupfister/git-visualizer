@@ -417,11 +417,35 @@ function patchWorktreeRemove(
   });
 }
 
+function isRemoteOnlySnapshotBranch(branch: Branch, localBranchNames: Set<string>): boolean {
+  return branch.remoteSyncStatus === 'on-github' && !localBranchNames.has(branch.name);
+}
+
+function preserveRemoteOnlyBranches(
+  snapshot: RepoVisualSnapshot,
+  incomingBranches: Branch[],
+  defaultBranch: string,
+): Branch[] {
+  const localBranchNames = new Set(incomingBranches.map((branch) => branch.name));
+  const remoteOnlyBranches = snapshot.branches.filter(
+    (branch) => branch.name !== defaultBranch && isRemoteOnlySnapshotBranch(branch, localBranchNames),
+  );
+  if (remoteOnlyBranches.length === 0) return incomingBranches;
+  return [...incomingBranches, ...remoteOnlyBranches];
+}
+
 function patchBranchMetadataSync(
   snapshot: RepoVisualSnapshot,
   outcome: RepoMutationOutcome & { kind: 'branchMetadataSync' },
 ): RepoVisualSnapshot {
-  const removed = new Set(outcome.removedBranchNames);
+  const localBranchNames = new Set(outcome.branches.map((branch) => branch.name));
+  const removed = new Set(
+    outcome.removedBranchNames.filter((branchName) => {
+      const existing = snapshot.branches.find((branch) => branch.name === branchName);
+      return !existing || !isRemoteOnlySnapshotBranch(existing, localBranchNames);
+    }),
+  );
+  const mergedBranches = preserveRemoteOnlyBranches(snapshot, outcome.branches, outcome.defaultBranch);
   const branchCommitPreviews = Object.fromEntries(
     Object.entries(snapshot.branchCommitPreviews).filter(([branchName]) => !removed.has(branchName)),
   ) as Record<string, BranchCommitPreview[]>;
@@ -438,9 +462,16 @@ function patchBranchMetadataSync(
   const branchParentByName = Object.fromEntries(
     Object.entries(snapshot.branchParentByName).filter(([branchName]) => !removed.has(branchName)),
   ) as Record<string, string | null>;
-  for (const branch of outcome.branches) {
+  for (const branch of mergedBranches) {
     if (branch.name === outcome.defaultBranch) {
       branchParentByName[branch.name] = null;
+      continue;
+    }
+    if (isRemoteOnlySnapshotBranch(branch, localBranchNames)) {
+      const preservedParent = snapshot.branchParentByName[branch.name];
+      if (preservedParent !== undefined) {
+        branchParentByName[branch.name] = preservedParent;
+      }
       continue;
     }
     const parent = branch.parentBranch;
@@ -449,15 +480,25 @@ function patchBranchMetadataSync(
     }
   }
 
+  const branchUniqueAheadCounts = { ...snapshot.branchUniqueAheadCounts, ...outcome.branchUniqueAheadCounts };
+  for (const branch of mergedBranches) {
+    if (!isRemoteOnlySnapshotBranch(branch, localBranchNames)) continue;
+    if (Object.prototype.hasOwnProperty.call(branchUniqueAheadCounts, branch.name)) continue;
+    branchUniqueAheadCounts[branch.name] = Math.max(
+      1,
+      snapshot.branchUniqueAheadCounts[branch.name] ?? branch.commitsAhead,
+    );
+  }
+
   return touchSnapshot({
     ...snapshot,
     defaultBranch: outcome.defaultBranch,
-    branches: outcome.branches,
+    branches: mergedBranches,
     branchCommitPreviews,
     unpushedCommitShasByBranch,
     unpushedDirectCommits: outcome.unpushedDirectCommits
       ?? syncUnpushedDirectCommits(snapshot.unpushedDirectCommits, unpushedCommitShasByBranch),
-    branchUniqueAheadCounts: outcome.branchUniqueAheadCounts,
+    branchUniqueAheadCounts,
     checkedOutRef: outcome.checkedOutRef,
     laneByBranch,
     branchParentByName,

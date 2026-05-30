@@ -32,6 +32,7 @@ import {
   computeViewportCullBounds,
   GRID_COMMIT_CORNER_RADIUS_BASE_PX,
   isCommitUnpushedOnBranch,
+  formatRemoteCommitHeaderLabel,
   formatWorktreeNodeHeaderLabel,
 } from './mapGridUtils';
 import type { ConnectorFace, Node, NodePositionOverrides } from './LayoutGrid';
@@ -285,7 +286,7 @@ const MapGridCommitCard = memo(function MapGridCommitCard({
       : isStashedCommit && stashHeaderLabel
           ? stashHeaderLabel
           : isRemoteCommit && branchName
-            ? `origin/${branchName}/${shortSha}`
+            ? formatRemoteCommitHeaderLabel(branchName, node.commit.id)
             : node.commit.branchName
               ? `${node.commit.branchName}/${shortSha}`
               : shortSha;

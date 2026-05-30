@@ -1453,4 +1453,80 @@ describe('computeBranchGridLayout empty branch placeholders', () => {
     expect(keySame1).toBe(keySame2);
     expect(keySame1).toBe(keySame3);
   });
+
+  it('renders remote-only branch commit from previews when directCommits are missing', () => {
+    const defaultBranch = 'main';
+    const forkSha = '137b96427d9da931373c1d7bf368cbd2b237f913';
+    const remoteTipSha = 'c131b6f10b7737b2974df51887149d9127b2a648';
+    const remoteBranchName = 'cursor/commit-app-previews-7896';
+    const branches: Branch[] = [
+      {
+        ...makeBranch(defaultBranch, 'dddddddddddddddddddddddddddddddddddddddd', 32),
+        headSha: 'dddddddddddddddddddddddddddddddddddddddd',
+      },
+      {
+        name: remoteBranchName,
+        commitsAhead: 1,
+        commitsBehind: 0,
+        lastCommitDate: '2026-05-28T12:00:00Z',
+        lastCommitAuthor: 'dev',
+        status: 'fresh',
+        remoteSyncStatus: 'on-github',
+        unpushedCommits: 0,
+        headSha: remoteTipSha,
+        parentBranch: defaultBranch,
+        divergedFromSha: forkSha,
+      },
+    ];
+    const directCommits: DirectCommit[] = [
+      {
+        fullSha: forkSha,
+        sha: forkSha.slice(0, 7),
+        branch: defaultBranch,
+        message: 'origin/main tip',
+        author: 'dev',
+        date: '2026-05-20T12:00:00Z',
+        parentSha: null,
+        parentShas: [],
+      },
+    ];
+    const layout = computeBranchGridLayout({
+      branches,
+      mergeNodes: [],
+      directCommits,
+      unpushedDirectCommits: [],
+      defaultBranch,
+      branchCommitPreviews: {
+        [remoteBranchName]: [{
+          fullSha: remoteTipSha,
+          sha: remoteTipSha.slice(0, 7),
+          parentSha: forkSha,
+          message: 'Add static app preview screenshots per commit',
+          author: 'dev',
+          date: '2026-05-28T12:00:00Z',
+          kind: 'commit',
+          isRemote: true,
+        }],
+      },
+      branchParentByName: {
+        main: null,
+        [remoteBranchName]: defaultBranch,
+      },
+      branchUniqueAheadCounts: {
+        [remoteBranchName]: 1,
+      },
+      manuallyOpenedClumps: new Set(),
+      manuallyClosedClumps: new Set(),
+      isDebugOpen: false,
+      gridSearchQuery: '',
+      gridFocusSha: null,
+      checkedOutRef: null,
+      orientation: 'horizontal',
+    });
+
+    const remoteNode = layout.renderNodes.find(
+      (node) => node.commit.branchName === remoteBranchName && node.commit.id === remoteTipSha,
+    );
+    expect(remoteNode).toBeDefined();
+  });
 });

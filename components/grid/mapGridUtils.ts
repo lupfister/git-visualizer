@@ -602,3 +602,14 @@ export const formatWorktreeNodeHeaderLabel = (
   const branch = session.branchName ?? 'detached';
   return `${name} • ${branch}`;
 };
+
+export const REMOTE_COMMIT_SOURCE_LABEL = 'Origin';
+
+/** Map card header for commits that exist on the remote but not locally (matches worktree `Name • branch` pattern). */
+export const formatRemoteCommitHeaderLabel = (
+  branchName: string,
+  commitSha: string,
+): string => {
+  const shortSha = commitSha.slice(0, 7);
+  return `${REMOTE_COMMIT_SOURCE_LABEL} • ${branchName}/${shortSha}`;
+};

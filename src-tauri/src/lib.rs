@@ -108,7 +108,7 @@ where
         .map_err(|e| format!("Blocking task failed: {e}"))?
 }
 const REPO_VISUAL_CACHE_SCHEMA_VERSION: i32 = 8;
-const PROJECT_SNAPSHOT_SCHEMA_VERSION: i32 = 1;
+const PROJECT_SNAPSHOT_SCHEMA_VERSION: i32 = 2;
 const PROJECT_SNAPSHOT_RETAIN_COUNT: i64 = 2;
 #[cfg(target_os = "macos")]
 const OPEN_REPO_DETECTION_CACHE_TTL: StdDuration = StdDuration::from_secs(8);
@@ -132,6 +132,8 @@ struct BranchCommitPreviewEntry {
     author: String,
     date: String,
     kind: String,
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    is_remote: bool,
 }
 
 #[derive(Serialize, Deserialize, Clone)]
@@ -571,10 +573,11 @@ fn compute_repo_fingerprint(repo_path: &str) -> Result<(String, RepoRefreshFinge
     let checked_out_ref = git::get_checked_out_ref(path).map_err(|e| e.to_string())?;
     let worktrees = git::list_worktrees(path).map_err(|e| e.to_string())?;
     let stashes = git::list_stashes(path).map_err(|e| e.to_string())?;
-    let upstream_sha = git::cli::run(path, &["rev-parse", &format!("{default_branch}@{{upstream}}")])
-        .ok()
-        .map(|value| value.trim().to_string())
+    let upstream_sha = git::resolve_branch_upstream_ref(path, &default_branch)
+        .and_then(|upstream_ref| git::cli::run(path, &["rev-parse", &upstream_ref]).ok())
+        .map(|output| output.trim().to_string())
         .filter(|value| !value.is_empty());
+    let remote_heads_digest = git::compute_remote_heads_digest(path).unwrap_or_default();
 
     let branch_ref_sig = branches
         .iter()
@@ -609,7 +612,13 @@ fn compute_repo_fingerprint(repo_path: &str) -> Result<(String, RepoRefreshFinge
         .map(|stash| format!("{}:{}:{}", stash.index, stash.base_sha, stash.message))
         .collect::<Vec<_>>()
         .join("|");
-    let upstream_part = upstream_sha.clone().unwrap_or_default();
+    let upstream_part = if remote_heads_digest.is_empty() {
+        upstream_sha.clone().unwrap_or_default()
+    } else if let Some(upstream_sha) = upstream_sha.as_ref() {
+        format!("{upstream_sha}|{remote_heads_digest}")
+    } else {
+        remote_heads_digest.clone()
+    };
     let fingerprint = format!(
         "{}@@{}@@{}@@{}@@{}@@{}@@{}",
         default_branch,
@@ -873,9 +882,10 @@ fn fetch_all_merge_nodes_for_branches_internal(
 
 fn compute_repo_visual_snapshot(repo_path: &str) -> Result<RepoVisualSnapshot, String> {
     let path = Path::new(repo_path);
+    let _ = git::fetch_remotes(path);
     let (name, resolved_path) = git::get_repo_info(path).map_err(|e| e.to_string())?;
     let default_branch = git::get_default_branch(path).map_err(|e| e.to_string())?;
-    let branches = git::list_branches(path, &default_branch).map_err(|e| e.to_string())?;
+    let mut branches = git::list_branches(path, &default_branch).map_err(|e| e.to_string())?;
     let merge_nodes = fetch_all_merge_nodes_for_branches_internal(&resolved_path, &branches, &default_branch)?;
     let merge_target_branch_by_commit_sha: HashMap<String, String> = merge_nodes
         .iter()
@@ -891,6 +901,31 @@ fn compute_repo_visual_snapshot(repo_path: &str) -> Result<RepoVisualSnapshot, S
         &merge_target_branch_by_commit_sha,
     )
         .map_err(|e| e.to_string())?;
+    let mut direct_commits = direct_commits;
+    let mut local_branch_names: HashSet<String> = branches.iter().map(|branch| branch.name.clone()).collect();
+    local_branch_names.insert(default_branch.clone());
+    let mut remote_only_branches = Vec::new();
+    for (branch_name, remote_head) in git::list_origin_branch_heads(path).map_err(|e| e.to_string())? {
+        let upstream_ref = format!("origin/{branch_name}");
+        if local_branch_names.contains(&branch_name) {
+            git::merge_upstream_ahead_commits(path, &branch_name, &upstream_ref, &mut direct_commits)
+                .map_err(|e| e.to_string())?;
+            continue;
+        }
+        git::merge_remote_only_branch_commits(
+            path,
+            &default_branch,
+            &branch_name,
+            &upstream_ref,
+            &mut direct_commits,
+        )
+        .map_err(|e| e.to_string())?;
+        if let Some(branch) = git::build_remote_only_branch(path, &branch_name, &remote_head, &default_branch) {
+            remote_only_branches.push(branch);
+        }
+    }
+    branches.extend(remote_only_branches);
+    branches.sort_by(|left, right| right.last_commit_date.cmp(&left.last_commit_date));
     let unpushed_direct_commits = get_unpushed_direct_commits_blocking(resolved_path.clone(), default_branch.clone())?;
     let checked_out_ref = git::get_checked_out_ref(path).ok();
     let worktrees = git::list_worktrees(path).unwrap_or_default();
@@ -996,6 +1031,7 @@ fn compute_repo_visual_snapshot(repo_path: &str) -> Result<RepoVisualSnapshot, S
                 author: commit.author.clone(),
                 date: commit.date.clone(),
                 kind: "commit".to_string(),
+                is_remote: commit.is_remote,
             })
             .collect();
         history_commits.sort_by(|left, right| {
@@ -1888,15 +1924,17 @@ fn compute_repo_sync_peek(repo_path: &str) -> Result<RepoSyncPeek, String> {
         .map(|value| value.trim().to_string())
         .filter(|value| !value.is_empty())
         .unwrap_or_else(|| "0".to_string());
+    let remote_heads_digest = git::compute_remote_heads_digest(path).unwrap_or_default();
 
     let signature = format!(
-        "{}@@{}@@{}@@{}@@{}@@{}",
+        "{}@@{}@@{}@@{}@@{}@@{}@@{}",
         head_sha,
         if has_uncommitted_changes { "1" } else { "0" },
         branch_heads_digest,
         worktree_sig,
         stash_sig,
         head_unpushed_count,
+        remote_heads_digest,
     );
 
     Ok(RepoSyncPeek {
@@ -2123,8 +2161,71 @@ async fn get_repo_graph_delta(
 }
 
 #[tauri::command(rename_all = "camelCase")]
+fn get_branch_head_sha(repo_path: String, branch: String) -> Result<String, String> {
+    let path = Path::new(&repo_path);
+    git::cli::run(path, &["rev-parse", &branch])
+        .map(|output| output.trim().to_string())
+        .map_err(|error| error.to_string())
+}
+
+#[tauri::command(rename_all = "camelCase")]
+fn get_commit_parent_sha(repo_path: String, sha: String) -> Result<Option<String>, String> {
+    let path = Path::new(&repo_path);
+    let output = git::cli::run(path, &["rev-parse", &format!("{sha}^")]).map_err(|error| error.to_string())?;
+    let parent = output.trim().to_string();
+    if parent.is_empty() {
+        Ok(None)
+    } else {
+        Ok(Some(parent))
+    }
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct RemoteSyncResult {
+    fetched: bool,
+    pulled: bool,
+    changed: bool,
+    remote_heads_digest: String,
+}
+
+#[tauri::command(rename_all = "camelCase")]
+fn sync_remote_repository(repo_path: String, pull_ff_only: Option<bool>) -> Result<RemoteSyncResult, String> {
+    let path = Path::new(&repo_path);
+    let digest_before = git::compute_remote_heads_digest(path).unwrap_or_default();
+    let fetched = git::fetch_remotes(path).unwrap_or(false);
+    let pulled = if pull_ff_only.unwrap_or(true) {
+        git::try_fast_forward_pull(path).unwrap_or(false)
+    } else {
+        false
+    };
+    let remote_heads_digest = git::compute_remote_heads_digest(path).unwrap_or_default();
+    Ok(RemoteSyncResult {
+        fetched,
+        pulled,
+        changed: fetched || pulled || remote_heads_digest != digest_before,
+        remote_heads_digest,
+    })
+}
+
+#[tauri::command(rename_all = "camelCase")]
+fn fetch_repo_remotes(repo_path: String) -> Result<bool, String> {
+    let path = Path::new(&repo_path);
+    git::fetch_remotes(path).map_err(|e| e.to_string())
+}
+
+#[tauri::command(rename_all = "camelCase")]
 fn get_remote_branch_head_sha(repo_path: String, branch: String) -> Result<Option<String>, String> {
     let path = Path::new(&repo_path);
+    if let Some(upstream_ref) = git::resolve_branch_upstream_ref(path, &branch) {
+        if let Ok(output) = git::cli::run(path, &["rev-parse", &upstream_ref]) {
+            let sha = output.trim().to_string();
+            if !sha.is_empty() {
+                return Ok(Some(sha));
+            }
+        }
+    }
+
     let (remote, has_upstream) = get_branch_push_remote(path, &branch)?;
     let remote_branch = if has_upstream {
         match git::cli::run(path, &["rev-parse", "--abbrev-ref", &format!("{branch}@{{upstream}}")]) {
@@ -3635,6 +3736,7 @@ fn get_unpushed_direct_commits_blocking(
                 message: parts[2].to_string(),
                 author: parts[3].to_string(),
                 date: parts[4].to_string(),
+                is_remote: false,
             })
         })
         .collect();
@@ -5960,6 +6062,10 @@ pub fn run() {
             get_repo_sync_peek,
             get_repo_graph_delta,
             get_repo_refresh_fingerprint,
+            sync_remote_repository,
+            fetch_repo_remotes,
+            get_branch_head_sha,
+            get_commit_parent_sha,
             get_remote_branch_head_sha,
             get_commit_subject,
             get_commit_metadata,
@@ -6051,5 +6157,73 @@ fn reveal_in_finder(path: String) -> Result<(), String> {
         Ok(())
     } else {
         Err(String::from_utf8_lossy(&output.stderr).trim().to_string())
+    }
+}
+
+#[cfg(test)]
+mod snapshot_remote_branch_tests {
+    use super::compute_repo_visual_snapshot;
+    use std::path::PathBuf;
+
+    fn repo_root() -> PathBuf {
+        PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("..")
+    }
+
+    #[test]
+    fn snapshot_includes_remote_cursor_branch_commit() {
+        let repo = repo_root();
+        if crate::git::cli::run(
+            &repo,
+            &["rev-parse", "--verify", "origin/cursor/commit-app-previews-7896"],
+        )
+        .is_err()
+        {
+            return;
+        }
+
+        let snapshot = compute_repo_visual_snapshot(repo.to_string_lossy().as_ref())
+            .expect("repo visual snapshot");
+        let branch_name = "cursor/commit-app-previews-7896";
+        let branch = snapshot
+            .branches
+            .iter()
+            .find(|branch| branch.name == branch_name)
+            .unwrap_or_else(|| panic!("missing remote branch {branch_name} in {:?}", snapshot.branches.iter().map(|b| &b.name).collect::<Vec<_>>()));
+        assert!(branch.commits_ahead >= 1, "expected commits_ahead >= 1, got {}", branch.commits_ahead);
+
+        let remote_commit = snapshot
+            .direct_commits
+            .iter()
+            .find(|commit| commit.branch == branch_name && commit.is_remote);
+        assert!(
+            remote_commit.is_some(),
+            "missing remote commit on {branch_name}"
+        );
+        assert!(
+            remote_commit
+                .unwrap()
+                .full_sha
+                .starts_with("c131b6f"),
+            "unexpected remote tip {}",
+            remote_commit.unwrap().full_sha
+        );
+
+        let previews = snapshot
+            .branch_commit_previews
+            .get(branch_name)
+            .cloned()
+            .unwrap_or_default();
+        assert!(
+            previews.iter().any(|preview| preview.full_sha.starts_with("c131b6f") && preview.is_remote),
+            "missing remote preview for {branch_name}"
+        );
+        assert!(
+            snapshot
+                .branch_unique_ahead_counts
+                .get(branch_name)
+                .copied()
+                .unwrap_or(0)
+                >= 1
+        );
     }
 }

@@ -196,6 +196,76 @@ describe('applyMutationPatch branchMetadataSync', () => {
     }));
     expect(next.unpushedDirectCommits).toHaveLength(1);
   });
+
+  it('preserves remote-only branches when local metadata sync omits them', () => {
+    const remoteBranch = {
+      name: 'cursor/commit-app-previews-7896',
+      commitsAhead: 1,
+      commitsBehind: 0,
+      lastCommitDate: '2024-01-03T00:00:00Z',
+      lastCommitAuthor: 'dev',
+      status: 'fresh' as const,
+      remoteSyncStatus: 'on-github' as const,
+      unpushedCommits: 0,
+      headSha: 'c131b6f10b7737b2974df51887149d9127b2a648',
+      parentBranch: 'main',
+    };
+    const snapshot = baseSnapshot({
+      branches: [...baseSnapshot().branches, remoteBranch],
+      directCommits: [
+        ...baseSnapshot().directCommits,
+        {
+          fullSha: 'c131b6f10b7737b2974df51887149d9127b2a648',
+          sha: 'c131b6f1',
+          parentSha: 'aaa1111',
+          parentShas: ['aaa1111'],
+          childShas: [],
+          branch: remoteBranch.name,
+          message: 'Add static app preview screenshots per commit',
+          author: 'dev',
+          date: '2024-01-03T00:00:00Z',
+          kind: 'commit',
+          isRemote: true,
+        },
+      ],
+      branchCommitPreviews: {
+        ...baseSnapshot().branchCommitPreviews,
+        [remoteBranch.name]: [{
+          fullSha: 'c131b6f10b7737b2974df51887149d9127b2a648',
+          sha: 'c131b6f1',
+          parentSha: 'aaa1111',
+          message: 'Add static app preview screenshots per commit',
+          author: 'dev',
+          date: '2024-01-03T00:00:00Z',
+          kind: 'commit',
+          isRemote: true,
+        }],
+      },
+      branchUniqueAheadCounts: {
+        feature: 1,
+        [remoteBranch.name]: 1,
+      },
+      branchParentByName: {
+        main: null,
+        feature: 'main',
+        [remoteBranch.name]: 'main',
+      },
+    });
+
+    const next = applyMutationPatch(snapshot, outcomeFromBranchMetadataSync({
+      branches: baseSnapshot().branches,
+      defaultBranch: 'main',
+      removedBranchNames: [],
+      unpushedCommitShasByBranch: { main: [], feature: [] },
+      branchUniqueAheadCounts: { feature: 1 },
+      checkedOutRef: baseSnapshot().checkedOutRef,
+    }));
+
+    expect(next.branches.some((branch) => branch.name === remoteBranch.name)).toBe(true);
+    expect(next.branchCommitPreviews[remoteBranch.name]).toHaveLength(1);
+    expect(next.branchUniqueAheadCounts[remoteBranch.name]).toBe(1);
+    expect(next.directCommits.some((commit) => commit.fullSha === remoteBranch.headSha)).toBe(true);
+  });
 });
 
 describe('applyMutationPatch commit', () => {

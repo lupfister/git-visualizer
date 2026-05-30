@@ -29,6 +29,7 @@ import {
   ROW_GAP,
   ROW_HEIGHT,
   sortByDateThenSha,
+  sortedConcreteBranchPreviews,
   toCommit,
 } from './LayoutGrid';
 import type { Lane } from './LayoutGrid';
@@ -352,11 +353,37 @@ function isEmptyPlaceholderBranch(
   branch: Branch,
   branchUniqueAheadCounts: Record<string, number>,
 ): boolean {
+  if (branch.remoteSyncStatus === 'on-github' && branch.headSha) {
+    return false;
+  }
   const uniqueAhead = Object.prototype.hasOwnProperty.call(branchUniqueAheadCounts, branch.name)
     ? branchUniqueAheadCounts[branch.name] ?? 0
     : null;
   if (uniqueAhead != null) return branch.commitsAhead <= 0 && uniqueAhead <= 0;
   return branch.commitsAhead <= 0;
+}
+
+function laneCommitsForBranch(
+  branch: Branch,
+  branchCommitPreviews: Record<string, BranchCommitPreview[]>,
+  branchUniqueAheadCounts: Record<string, number>,
+  directCommits: DirectCommit[],
+): CommitItem[] {
+  const branchPreviews = renderableBranchPreviews(branch.name, branchUniqueAheadCounts, branchCommitPreviews);
+  let commits = sortByDateThenSha(branchPreviews.map((commit) => toCommit(branch.name, commit)));
+  if (commits.length === 0) {
+    commits = sortByDateThenSha(
+      sortedConcreteBranchPreviews(branch.name, branchCommitPreviews).map((commit) => toCommit(branch.name, commit)),
+    );
+  }
+  if (commits.length === 0) {
+    commits = sortByDateThenSha(
+      directCommits
+        .filter((commit) => commit.branch === branch.name)
+        .map((commit) => toCommit(branch.name, commit)),
+    );
+  }
+  return commits;
 }
 
 /** Synthetic lane tip when a branch has no unique commits (e.g. worktree-agents at an older commit). */
@@ -531,7 +558,7 @@ export function computeBranchGridLayout(input: BranchGridLayoutInput): BranchGri
     const branchPreviews = renderableBranchPreviews(branch.name, branchUniqueAheadCounts, branchCommitPreviews);
     branchPreviewSets.set(branch.name, branchPreviews);
     if (isWorktreeLaneBranchName(branch.name)) {
-      const commits = sortByDateThenSha(branchPreviews.map((commit) => toCommit(branch.name, commit)));
+      const commits = laneCommitsForBranch(branch, branchCommitPreviews, branchUniqueAheadCounts, directCommits);
       if (commits.length > 0) {
         branchCommitsByLane.set(branch.name, commits);
       }
@@ -539,7 +566,7 @@ export function computeBranchGridLayout(input: BranchGridLayoutInput): BranchGri
     }
     if (isEmptyPlaceholderBranch(branch, branchUniqueAheadCounts)) {
       if (worktreeSessionCoversEmptyBranch(worktreeSessions, branch)) {
-        const commits = sortByDateThenSha(branchPreviews.map((commit) => toCommit(branch.name, commit)));
+        const commits = laneCommitsForBranch(branch, branchCommitPreviews, branchUniqueAheadCounts, directCommits);
         if (commits.length > 0) {
           branchCommitsByLane.set(branch.name, commits);
         }
@@ -551,7 +578,7 @@ export function computeBranchGridLayout(input: BranchGridLayoutInput): BranchGri
       }
       continue;
     }
-    const commits = sortByDateThenSha(branchPreviews.map((commit) => toCommit(branch.name, commit)));
+    const commits = laneCommitsForBranch(branch, branchCommitPreviews, branchUniqueAheadCounts, directCommits);
     if (commits.length > 0) {
       branchCommitsByLane.set(branch.name, commits);
       continue;

@@ -18,6 +18,8 @@ pub struct DirectCommit {
     pub message: String,
     pub author: String,
     pub date: String,
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub is_remote: bool,
 }
 
 #[derive(Debug, Clone)]
@@ -69,7 +71,7 @@ pub fn get_direct_commits(
         .filter(|commit| seen_shas.insert(commit.full_sha.clone()))
         .collect();
 
-    let commits = build_direct_commits(parsed, branch.to_string());
+    let commits = build_direct_commits(parsed, branch.to_string(), false);
 
     Ok(commits)
 }
@@ -108,7 +110,88 @@ pub fn get_branch_commits_since(
         .filter(|commit| seen_shas.insert(commit.full_sha.clone()))
         .collect();
 
-    Ok(build_direct_commits(parsed, branch.to_string()))
+    Ok(build_direct_commits(parsed, branch.to_string(), false))
+}
+
+/// Commits on `upstream_ref` that are not reachable from the local `branch` tip.
+pub fn merge_upstream_ahead_commits(
+    repo: &Path,
+    branch: &str,
+    upstream_ref: &str,
+    commits: &mut Vec<DirectCommit>,
+) -> Result<(), GitError> {
+    let local_head = cli::run(repo, &["rev-parse", branch])?
+        .trim()
+        .to_string();
+    if local_head.is_empty() {
+        return Ok(());
+    }
+    let remote_head = cli::run(repo, &["rev-parse", upstream_ref])
+        .map(|output| output.trim().to_string())
+        .unwrap_or_default();
+    if remote_head.is_empty() || local_head == remote_head {
+        return Ok(());
+    }
+
+    let range = format!("{local_head}..{upstream_ref}");
+    append_commits_from_log_range(repo, &range, branch, true, commits)
+}
+
+/// Commits on a remote-only branch tip that are not already in the graph.
+pub fn merge_remote_only_branch_commits(
+    repo: &Path,
+    default_branch: &str,
+    branch_name: &str,
+    upstream_ref: &str,
+    commits: &mut Vec<DirectCommit>,
+) -> Result<(), GitError> {
+    let merge_base = cli::run(repo, &["merge-base", default_branch, upstream_ref])?
+        .trim()
+        .to_string();
+    if merge_base.is_empty() {
+        return Ok(());
+    }
+    let remote_head = cli::run(repo, &["rev-parse", upstream_ref])?
+        .trim()
+        .to_string();
+    if remote_head.is_empty() || merge_base == remote_head {
+        return Ok(());
+    }
+    let range = format!("{merge_base}..{upstream_ref}");
+    append_commits_from_log_range(repo, &range, branch_name, true, commits)
+}
+
+fn append_commits_from_log_range(
+    repo: &Path,
+    range: &str,
+    branch: &str,
+    is_remote: bool,
+    commits: &mut Vec<DirectCommit>,
+) -> Result<(), GitError> {
+    let existing_shas: HashSet<String> = commits.iter().map(|commit| commit.full_sha.clone()).collect();
+    let output = cli::run(
+        repo,
+        &[
+            "log",
+            range,
+            "--format=%H%x1f%h%x1f%s%x1f%an%x1f%cI%x1f%P",
+        ],
+    )?;
+    let parsed: Vec<ParsedCommitLine> = output
+        .lines()
+        .filter(|line| !line.is_empty())
+        .filter_map(parse_direct_commit_line)
+        .filter(|commit| !existing_shas.contains(&commit.full_sha))
+        .collect();
+    if parsed.is_empty() {
+        return Ok(());
+    }
+
+    let mut remote_commits = build_direct_commits(parsed, branch.to_string(), is_remote);
+    commits.append(&mut remote_commits);
+    let merged = std::mem::take(commits);
+    *commits = with_child_links(merged);
+    Ok(())
 }
 
 /// Get every commit reachable from local branch refs, and associate each commit with exactly one branch.
@@ -248,6 +331,7 @@ pub fn get_all_repo_commits(
             message: commit.message,
             author: commit.author,
             date: commit.date,
+            is_remote: false,
         })
         .collect::<Vec<_>>();
 
@@ -650,7 +734,7 @@ fn parse_direct_commit_line(line: &str) -> Option<ParsedCommitLine> {
     })
 }
 
-fn build_direct_commits(parsed: Vec<ParsedCommitLine>, branch: String) -> Vec<DirectCommit> {
+fn build_direct_commits(parsed: Vec<ParsedCommitLine>, branch: String, is_remote: bool) -> Vec<DirectCommit> {
     let commits = parsed
         .into_iter()
         .map(|commit| DirectCommit {
@@ -664,6 +748,7 @@ fn build_direct_commits(parsed: Vec<ParsedCommitLine>, branch: String) -> Vec<Di
             message: commit.message,
             author: commit.author,
             date: commit.date,
+            is_remote,
         })
         .collect::<Vec<_>>();
     with_child_links(commits)
@@ -975,4 +1060,72 @@ fn parse_pr_info(subject: &str) -> (Option<i32>, Option<String>) {
     }
 
     (None, None)
+}
+
+#[cfg(test)]
+mod remote_merge_tests {
+    use super::*;
+    use crate::git::branches::{build_remote_only_branch, list_origin_branch_heads};
+    use std::path::PathBuf;
+
+    fn repo_root() -> PathBuf {
+        PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("..")
+    }
+
+    #[test]
+    fn merges_remote_only_cursor_branch_commit() {
+        let repo = repo_root();
+        if super::cli::run(&repo, &["rev-parse", "--verify", "origin/cursor/commit-app-previews-7896"]).is_err() {
+            return;
+        }
+
+        let default_branch = "main";
+        let branch_name = "cursor/commit-app-previews-7896";
+        let upstream_ref = format!("origin/{branch_name}");
+        let mut commits = get_all_repo_commits(&repo, default_branch, &[], &HashMap::new())
+            .expect("local commits");
+
+        merge_remote_only_branch_commits(
+            &repo,
+            default_branch,
+            &branch_name,
+            &upstream_ref,
+            &mut commits,
+        )
+        .expect("remote-only merge");
+
+        let remote_commit = commits
+            .iter()
+            .find(|commit| commit.branch == branch_name && commit.is_remote);
+        assert!(
+            remote_commit.is_some(),
+            "expected remote commit on {branch_name}, got branches: {:?}",
+            commits
+                .iter()
+                .filter(|commit| commit.full_sha.starts_with("c131b6f"))
+                .map(|commit| (&commit.branch, commit.is_remote))
+                .collect::<Vec<_>>()
+        );
+
+        let branch = build_remote_only_branch(
+            &repo,
+            &branch_name,
+            remote_commit.unwrap().full_sha.as_str(),
+            default_branch,
+        )
+        .expect("remote branch metadata");
+        assert!(branch.commits_ahead >= 1);
+        assert_eq!(branch.remote_sync_status, "on-github");
+    }
+
+    #[test]
+    fn lists_origin_cursor_branch_head() {
+        let repo = repo_root();
+        let heads = list_origin_branch_heads(&repo).expect("origin heads");
+        assert!(
+            heads.iter().any(|(name, _)| name == "cursor/commit-app-previews-7896"),
+            "missing origin cursor branch in {:?}",
+            heads.iter().take(5).collect::<Vec<_>>()
+        );
+    }
 }

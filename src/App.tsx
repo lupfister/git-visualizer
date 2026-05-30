@@ -47,6 +47,7 @@ import {
 } from './repoMutationPatches';
 import { classifyFingerprintDiff, formatRepoFingerprint, parseRepoFingerprint, withRepoFingerprintDirty, withRepoFingerprintUpstream, type FingerprintPatchSegment } from './fingerprintDiff';
 import { buildGraphDeltaOutcomes, fetchRepoGraphDelta } from './externalGraphSync';
+import { syncRemoteRepo } from './remoteRepoSync';
 import { formatWorktreeSyncSignature, formatWorktreeSessionLayoutSignature } from './worktreeSignature';
 import { canApplyActiveRepoSnapshot } from './activeRepoGuard';
 import {
@@ -379,10 +380,10 @@ function App() {
     createBranchFromNodeInProgress;
   const [isMapInteracting, setIsMapInteracting] = useState(false);
   const mapGridOrientation = 'horizontal' as const;
-  const [remoteDefaultTipSha] = useState<string | null>(null);
-  const [remoteDefaultTipMetadata] = useState<CommitMetadata | null>(null);
-  const [remoteDefaultTipParentSha] = useState<string | null>(null);
-  const [isRemoteTipHydrated] = useState(false);
+  const [remoteDefaultTipSha, setRemoteDefaultTipSha] = useState<string | null>(null);
+  const [remoteDefaultTipMetadata, setRemoteDefaultTipMetadata] = useState<CommitMetadata | null>(null);
+  const [remoteDefaultTipParentSha, setRemoteDefaultTipParentSha] = useState<string | null>(null);
+  const [isRemoteTipHydrated, setIsRemoteTipHydrated] = useState(false);
   const [isGridDebugOpen, setIsGridDebugOpen] = useState(false);
   const [sidebarWidthPx, setSidebarWidthPx] = useState(SIDEBAR_DEFAULT_WIDTH_PX);
   const [isSidebarCollapsed, setIsSidebarCollapsed] = useState(false);
@@ -441,6 +442,9 @@ function App() {
   const pendingRefreshAfterInteractionRef = useRef(false);
   const reloadRepoSnapshotInFlightRef = useRef(false);
   const reloadRepoSnapshotPendingRef = useRef(false);
+  const lastRemoteTipShaRef = useRef<string | null>(null);
+  const lastRemoteHeadsDigestRef = useRef<string | null>(null);
+  const remoteSyncInFlightRef = useRef(false);
   const hasAttemptedAutoRestoreRef = useRef(false);
   const hasHydratedInitialProjectSnapshotsRef = useRef(false);
   /** Cancels stale in-flight `get_repo_node_positions` results when a newer load starts. */
@@ -450,6 +454,7 @@ function App() {
   const [initialProjectSnapshotsReady, setInitialProjectSnapshotsReady] = useState(false);
   const latestBranchesRef = useRef<Branch[]>([]);
   const latestDirectCommitsRef = useRef<DirectCommit[]>([]);
+  const latestBranchCommitPreviewsRef = useRef<Record<string, BranchCommitPreview[]>>({});
   const latestCheckedOutRef = useRef<CheckedOutRef | null>(null);
   const latestUnpushedDirectCommitsRef = useRef<DirectCommit[]>([]);
   const latestWorktreesRef = useRef<WorktreeInfo[]>([]);
@@ -3460,6 +3465,7 @@ function App() {
     setMapGridBackgroundActivity('snapshot-apply', 'Apply repo snapshot', true);
     latestBranchesRef.current = snapshot.branches;
     latestDirectCommitsRef.current = snapshot.directCommits;
+    latestBranchCommitPreviewsRef.current = stripWorkingTreeFromPreviews(snapshot.branchCommitPreviews);
     latestUnpushedDirectCommitsRef.current = snapshot.unpushedDirectCommits;
     latestWorktreesRef.current = snapshot.worktrees;
     latestStashesRef.current = snapshot.stashes;
@@ -4317,6 +4323,43 @@ function App() {
       }, DIRTY_SYNC_DEBOUNCE_MS);
     };
 
+    const syncRemoteFromOrigin = async (): Promise<boolean> => {
+      if (isDisposed || !defaultBranch || remoteSyncInFlightRef.current) return false;
+      if (document.visibilityState !== 'visible') return false;
+      remoteSyncInFlightRef.current = true;
+      try {
+        const checkedOutHead = latestCheckedOutRef.current?.headSha ?? null;
+        const result = await syncRemoteRepo(
+          repoPath,
+          defaultBranch,
+          lastRemoteHeadsDigestRef.current,
+          checkedOutHead,
+        );
+        lastRemoteHeadsDigestRef.current = result.sync.remoteHeadsDigest || lastRemoteHeadsDigestRef.current;
+        lastRemoteTipShaRef.current = result.tipState.tipSha;
+        setRemoteDefaultTipSha(result.tipState.tipSha);
+        setRemoteDefaultTipMetadata(result.tipState.metadata);
+        setRemoteDefaultTipParentSha(result.tipState.parentSha);
+        setIsRemoteTipHydrated(result.tipState.hydrated);
+        if (!result.sync.changed) {
+          return false;
+        }
+        const normalizedPath = normalizePath(repoPath);
+        if (normalizedPath) {
+          await invoke('persist_project_snapshot', { projectId: normalizedPath, force: true }).catch((error) => {
+            console.warn('Remote snapshot persist failed:', error);
+          });
+          await reloadRepoSnapshotFromGit(normalizedPath);
+        }
+        return true;
+      } catch (error) {
+        console.warn('Remote repo sync failed:', error);
+        return false;
+      } finally {
+        remoteSyncInFlightRef.current = false;
+      }
+    };
+
     const runOrchestratedSync = async (mode: 'catchUp' | 'peekLane') => {
       if (isStaleRepoRefresh()) return;
       if (repoMutationInFlightRef.current || reconcileInFlightRef.current) {
@@ -4356,11 +4399,19 @@ function App() {
     };
 
     const runPeekLane = () => {
-      void runOrchestratedSync('peekLane');
+      void syncRemoteFromOrigin().then((remoteChanged) => {
+        if (!remoteChanged) {
+          void runOrchestratedSync('peekLane');
+        }
+      });
     };
 
     const runVisibilityCatchUp = () => {
-      void runOrchestratedSync('catchUp');
+      void syncRemoteFromOrigin().then((remoteChanged) => {
+        if (!remoteChanged) {
+          void runOrchestratedSync('catchUp');
+        }
+      });
     };
 
     const repoSyncScheduler = createRepoSyncScheduler({
@@ -4380,7 +4431,11 @@ function App() {
         runPeekLane();
       },
       onFullLane: () => {
-        void runRefresh('timer');
+        void syncRemoteFromOrigin().then((remoteChanged) => {
+          if (!remoteChanged) {
+            void runRefresh('timer');
+          }
+        });
       },
       onVisibilityCatchUp: () => {
         runVisibilityCatchUp();
@@ -4401,7 +4456,11 @@ function App() {
     }).catch(console.error);
 
     repoSyncScheduler.start();
-    repoSyncScheduler.kickVisibleCatchUp();
+    void syncRemoteFromOrigin().then((remoteChanged) => {
+      if (!remoteChanged) {
+        repoSyncScheduler.kickVisibleCatchUp();
+      }
+    });
 
     return () => {
       isDisposed = true;
@@ -4445,6 +4504,12 @@ function App() {
     setGithubAuthMessage(null);
     setOpenPRs([]);
     setCommitSwitchFeedback(null);
+    lastRemoteTipShaRef.current = null;
+    lastRemoteHeadsDigestRef.current = null;
+    setRemoteDefaultTipSha(null);
+    setRemoteDefaultTipMetadata(null);
+    setRemoteDefaultTipParentSha(null);
+    setIsRemoteTipHydrated(false);
   }, [repoPath]);
 
   useEffect(() => {
@@ -4475,7 +4540,7 @@ function App() {
     const nextUniqueAheadCounts: Record<string, number> = {};
     for (const branch of branches) {
       if (branch.name === defaultBranch) continue;
-      const previews = directCommits
+      const previewsFromDirect = directCommits
         .filter((commit) => commit.branch === branch.name)
         .map((commit) => ({
           fullSha: commit.fullSha,
@@ -4485,9 +4550,21 @@ function App() {
           author: commit.author,
           date: commit.date,
           kind: 'commit' as const,
+          isRemote: commit.isRemote ?? false,
         }));
-      nextCommitPreviews[branch.name] = previews;
-      nextUniqueAheadCounts[branch.name] = previews.length;
+      const preservedPreviews = (latestBranchCommitPreviewsRef.current[branch.name] ?? []).filter(
+        (preview) =>
+          preview.kind !== 'branch-created'
+          && (preview.isRemote || branch.remoteSyncStatus === 'on-github')
+          && !previewsFromDirect.some((candidate) => candidate.fullSha === preview.fullSha),
+      );
+      const mergedPreviews = [...previewsFromDirect, ...preservedPreviews];
+      nextCommitPreviews[branch.name] = mergedPreviews;
+      nextUniqueAheadCounts[branch.name] = Math.max(
+        mergedPreviews.length,
+        branch.remoteSyncStatus === 'on-github' ? Math.max(1, branch.commitsAhead) : 0,
+        branchUniqueAheadCounts[branch.name] ?? 0,
+      );
     }
 
     const commitBranchesBySha = new Map<string, Set<string>>();
@@ -4603,7 +4680,12 @@ function App() {
         isNewerBranchAsParent(branch, resolvedParent, branchesByName)
       ) {
         resolvedParent = defaultBranch;
-      } else if (branch.commitsAhead <= 0 && resolvedParent && resolvedParent !== defaultBranch) {
+      } else if (
+        branch.commitsAhead <= 0
+        && branch.remoteSyncStatus !== 'on-github'
+        && resolvedParent
+        && resolvedParent !== defaultBranch
+      ) {
         resolvedParent = defaultBranch;
       }
       if (!resolvedParent && isValidParentBranch(branch.parentBranch ?? null, branch.name)) {
@@ -4614,6 +4696,7 @@ function App() {
 
     branchHeadByNameRef.current = nextBranchHeadByName;
     setBranchPromptMeta({});
+    latestBranchCommitPreviewsRef.current = nextCommitPreviews;
     setBranchCommitPreviews(nextCommitPreviews);
     setBranchParentByName(nextBranchParentByName);
     setLaneByBranch((previous) => {
@@ -5571,16 +5654,22 @@ function App() {
     const hasRemoteTipInLocalGraph = remoteDefaultTipSha
       ? edc.some((commit) => commit.fullSha === remoteDefaultTipSha || commit.sha === remoteDefaultTipSha.slice(0, 7))
       : true;
-    if (remoteDefaultTipSha && remoteDefaultTipParentSha && !hasRemoteTipInLocalGraph) {
+    const resolvedRemoteParentSha =
+      remoteDefaultTipParentSha
+      ?? eb.find((branch) => branch.name === defaultBranch)?.headSha
+      ?? (checkedOutRef?.branchName === defaultBranch ? checkedOutRef.headSha : null)
+      ?? edc.find((commit) => commit.branch === defaultBranch)?.fullSha
+      ?? null;
+    if (remoteDefaultTipSha && resolvedRemoteParentSha && !hasRemoteTipInLocalGraph) {
       const parentDate =
-        edc.find((commit) => commit.fullSha === remoteDefaultTipParentSha || commit.sha === remoteDefaultTipParentSha.slice(0, 7))?.date ??
-        ebp[defaultBranch]?.find((commit) => commit.fullSha === remoteDefaultTipParentSha || commit.sha === remoteDefaultTipParentSha.slice(0, 7))?.date ??
+        edc.find((commit) => commit.fullSha === resolvedRemoteParentSha || commit.sha === resolvedRemoteParentSha.slice(0, 7))?.date ??
+        ebp[defaultBranch]?.find((commit) => commit.fullSha === resolvedRemoteParentSha || commit.sha === resolvedRemoteParentSha.slice(0, 7))?.date ??
         null;
       const remoteDate = parentDate
         ? new Date(new Date(parentDate).getTime() + 1000).toISOString()
         : new Date().toISOString();
       const previousDefaultHeadSha =
-        remoteDefaultTipParentSha ??
+        resolvedRemoteParentSha ??
         eb.find((branch) => branch.name === defaultBranch)?.headSha ??
         (edc[0]?.fullSha ?? null);
       const remotePreviewNode: BranchCommitPreview = {
@@ -5624,7 +5713,7 @@ function App() {
 
     const hasActiveRemoteOnlyDivergence =
       !!remoteDefaultTipSha &&
-      !!remoteDefaultTipParentSha &&
+      !!resolvedRemoteParentSha &&
       !hasRemoteTipInLocalGraph;
     const shouldSplitLocalDivergenceLane =
       hasActiveRemoteOnlyDivergence &&
@@ -5692,6 +5781,73 @@ function App() {
           branchName: localBranchName,
         };
       }
+    }
+
+    const remoteLaneCommitShas = new Set(edc.map((commit) => commit.fullSha));
+    for (const branch of eb) {
+      if (branch.remoteSyncStatus !== 'on-github') continue;
+      const lanePreviews = (ebp[branch.name] ?? []).filter((preview) => preview.kind !== 'branch-created');
+      for (const preview of lanePreviews) {
+        if (remoteLaneCommitShas.has(preview.fullSha)) continue;
+        edc = [
+          ...edc,
+          {
+            fullSha: preview.fullSha,
+            sha: preview.sha,
+            parentSha: preview.parentSha ?? null,
+            parentShas: preview.parentShas ?? (preview.parentSha ? [preview.parentSha] : []),
+            childShas: preview.childShas ?? [],
+            branch: branch.name,
+            message: preview.message,
+            author: preview.author,
+            date: preview.date,
+            kind: 'commit' as const,
+            isRemote: preview.isRemote ?? true,
+          },
+        ];
+        remoteLaneCommitShas.add(preview.fullSha);
+      }
+      if (lanePreviews.length === 0 && branch.headSha && !remoteLaneCommitShas.has(branch.headSha)) {
+        const syntheticPreview: BranchCommitPreview = {
+          fullSha: branch.headSha,
+          sha: branch.headSha.slice(0, 7),
+          parentSha: branch.divergedFromSha ?? branch.createdFromSha ?? null,
+          message: 'Remote branch tip',
+          author: branch.lastCommitAuthor || 'Unknown',
+          date: branch.lastCommitDate,
+          kind: 'commit',
+          isRemote: true,
+        };
+        ebp = {
+          ...ebp,
+          [branch.name]: [...(ebp[branch.name] ?? []), syntheticPreview],
+        };
+        edc = [
+          ...edc,
+          {
+            fullSha: branch.headSha,
+            sha: branch.headSha.slice(0, 7),
+            parentSha: syntheticPreview.parentSha,
+            parentShas: syntheticPreview.parentSha ? [syntheticPreview.parentSha] : [],
+            childShas: [],
+            branch: branch.name,
+            message: syntheticPreview.message,
+            author: syntheticPreview.author,
+            date: syntheticPreview.date,
+            kind: 'commit' as const,
+            isRemote: true,
+          },
+        ];
+        remoteLaneCommitShas.add(branch.headSha);
+      }
+      ebuac = {
+        ...ebuac,
+        [branch.name]: Math.max(
+          ebuac[branch.name] ?? 0,
+          lanePreviews.length || (branch.headSha ? 1 : 0),
+          Math.max(1, branch.commitsAhead),
+        ),
+      };
     }
 
     const sessionsForInject = buildWorktreeSessions(worktrees, repoPath ?? undefined, effectiveCheckedOutRef);

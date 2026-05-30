@@ -131,7 +131,11 @@ export function applyBranchParents(
       parent = defaultBranch;
     } else if (parent && isNewerBranchAsParent(branch, parent, byName)) {
       parent = defaultBranch;
-    } else if (branch.commitsAhead <= 0 && parent !== defaultBranch) {
+    } else if (
+      branch.commitsAhead <= 0
+      && branch.remoteSyncStatus !== 'on-github'
+      && parent !== defaultBranch
+    ) {
       // No unique commits: only default is a valid parent (matches map lane rules).
       parent = defaultBranch;
     }

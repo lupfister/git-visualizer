@@ -690,13 +690,16 @@ export default function BranchGridMap({
       remoteShas.add(sha.slice(0, 7));
     };
     for (const branch of branches) {
-      if (branch.commitsBehind <= 0) continue;
+      if (branch.commitsBehind <= 0 && branch.remoteSyncStatus !== 'on-github') continue;
       const previews = branchCommitPreviews[branch.name] ?? [];
       for (const preview of previews) {
         if (preview.kind === 'branch-created' || preview.kind === 'uncommitted' || preview.kind === 'stash') continue;
-        if (!localCommitShas.has(preview.fullSha)) addSha(preview.fullSha);
+        if (preview.isRemote || !localCommitShas.has(preview.fullSha)) addSha(preview.fullSha);
       }
       if (branch.headSha && !localCommitShas.has(branch.headSha)) addSha(branch.headSha);
+    }
+    for (const commit of directCommits) {
+      if (commit.isRemote) addSha(commit.fullSha);
     }
     return remoteShas;
   }, [branches, branchCommitPreviews, directCommits]);
