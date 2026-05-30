@@ -97,16 +97,16 @@ const SIDEBAR_DEFAULT_WIDTH_PX = 360;
 const SIDEBAR_MIN_WIDTH_PX = 180;
 const SIDEBAR_MAX_WIDTH_PX = 360;
 /** Wait this long after map pan/marquee ends before applying background git snapshot updates. */
-const MAP_REPO_REFRESH_SETTLE_MS = 500;
+const MAP_REPO_REFRESH_SETTLE_MS = 200;
 /** Defer SQLite snapshot persist so git CPU work does not contend with map layout. */
 const PERSIST_SNAPSHOT_DEFER_MS = 3000;
 /** Minimum gap between full graph rebuild refreshes (burst coalesce only). */
-const MIN_FULL_GRAPH_REFRESH_MS = 2000;
+const MIN_FULL_GRAPH_REFRESH_MS = 1000;
 /** Keep optimistic post-commit HEAD on the map until background probes catch up. */
 const POST_COMMIT_HEAD_PROTECT_MS = 8000;
 const POST_COMMIT_RELEASE_MAX_ATTEMPTS = 15;
 /** Coalesce dirty porcelain polls into one UI apply. */
-const DIRTY_SYNC_DEBOUNCE_MS = 350;
+const DIRTY_SYNC_DEBOUNCE_MS = 150;
 /** Background fingerprint scans (timer lane only); focus/graph/local/quick bypass. */
 const MIN_BACKGROUND_FINGERPRINT_CHECK_MS = 6000;
 type PushTarget = {
@@ -4345,7 +4345,9 @@ function App() {
         { peek, gitActivityPending, isBehindPeek },
         mode,
         {
-          reloadFromGit: () => reloadRepoSnapshotFromGit(repoPath, peek),
+          reloadFromGit: async () => {
+            await reloadRepoSnapshotFromGit(repoPath, peek);
+          },
           runFullRefresh: () => runRefresh('focus', { preloadedPeek: peek }),
         },
       );
@@ -4372,10 +4374,13 @@ function App() {
       onDirtyLane: () => {
         if (
           document.visibilityState !== 'visible'
-          || isRepoRefreshBlocked()
-          || repoMutationInFlightRef.current
           || isPostCommitProtectionActive(normalizePath(repoPath) ?? '')
         ) {
+          return;
+        }
+        if (isRepoRefreshBlocked() || repoMutationInFlightRef.current) {
+          pendingRefreshAfterInteractionRef.current = true;
+          setMapGridBackgroundActivity('git-refresh-pending', 'Git refresh queued', true, 'dirty lane');
           return;
         }
         scheduleCoalescedDirtySync();
@@ -4399,7 +4404,10 @@ function App() {
       if (!sameRepoPath(event.payload.repoPath, repoPath)) return;
       gitActivityEpochRef.current += 1;
       if (event.payload.kind === 'local') {
-        void syncLiveDirtyState(repoPath);
+        scheduleCoalescedDirtySync();
+        void syncLiveDirtyState(repoPath).then((applied) => {
+          if (!applied) void runRefresh('quick');
+        });
       } else {
         void reloadRepoSnapshotFromGit(repoPath);
       }
@@ -6123,8 +6131,10 @@ function App() {
     if (normalizedRepoPath && isPostCommitProtectionActive(normalizedRepoPath)) return;
     layoutModelCacheRef.current.set(sharedGridLayoutCacheKey, sharedGridLayoutModel);
     if (persistedLayoutKeysRef.current.has(sharedGridLayoutCacheKey)) return;
+    let idleId: number | null = null;
+    let fallbackId: number | null = null;
     const timer = setTimeout(() => {
-      startTransition(() => {
+      const persistLayoutSnapshot = () => {
         try {
           const payloadJson = JSON.stringify(serializeBranchGridLayoutModel(sharedGridLayoutModel));
           const previousPayload = persistedLayoutPayloadHashRef.current.get(sharedGridLayoutCacheKey);
@@ -6146,9 +6156,18 @@ function App() {
           persistedLayoutKeysRef.current.delete(sharedGridLayoutCacheKey);
           persistedLayoutPayloadHashRef.current.delete(sharedGridLayoutCacheKey);
         }
-      });
+      };
+      if ('requestIdleCallback' in window) {
+        idleId = window.requestIdleCallback(persistLayoutSnapshot, { timeout: 2500 });
+      } else {
+        fallbackId = globalThis.setTimeout(persistLayoutSnapshot, 0);
+      }
     }, 1000);
-    return () => clearTimeout(timer);
+    return () => {
+      clearTimeout(timer);
+      if (idleId != null && 'cancelIdleCallback' in window) window.cancelIdleCallback(idleId);
+      if (fallbackId != null) globalThis.clearTimeout(fallbackId);
+    };
   }, [repoPath, sharedGridLayoutCacheKey, sharedGridLayoutModel, layoutRevisionForView]);
 
   useEffect(() => {

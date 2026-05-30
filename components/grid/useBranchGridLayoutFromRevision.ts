@@ -176,14 +176,10 @@ export const useBranchGridLayoutFromRevision = (params: {
       mapLoading,
       layoutModelCacheRef,
     );
-    if (cached.source === 'needs-compute') return cached;
-    if (!layoutComputeKey) return cached;
-    if (lastServedComputeKeyRef.current === null) {
+    if (cached.source !== 'needs-compute' && layoutComputeKey) {
       lastServedComputeKeyRef.current = layoutComputeKey;
-      return cached;
     }
-    if (layoutComputeKey === lastServedComputeKeyRef.current) return cached;
-    return { model: null, source: 'needs-compute' as const };
+    return cached;
   }, [
     layoutRevisionForView,
     sharedGridLayoutCacheKey,
