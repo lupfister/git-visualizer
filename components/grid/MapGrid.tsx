@@ -58,7 +58,7 @@ import {
   selectedUncommittedSessions,
   type WorktreeSession,
 } from '../../lib/worktreeSessions';
-import type { WorktreeInfo } from '../../types';
+import type { WorktreeInfo, CommitAppPreview } from '../../types';
 import { resolveWorktreeDraftDisplayLabel, type WorktreeDraftDisplay } from '../../src/worktreeDraftMessages';
 import { parseMapCheckoutTarget, type MapCheckoutTarget } from './mapCheckoutTarget';
 import { parseDeletableEmptyBranchFromCommitId } from './mapDeleteTarget';
@@ -168,6 +168,10 @@ type Props = BranchGridViewProps & {
   nodePositionOverrides?: NodePositionOverrides;
   onNodePositionOverridesChange?: (overrides: NodePositionOverrides) => void;
   worktreeDraftByWorkingTreeId?: ReadonlyMap<string, WorktreeDraftDisplay>;
+  commitAppPreviews?: Record<string, CommitAppPreview>;
+  onVisibleCommitKeysChange?: (commitKeys: string[]) => void;
+  onOpenPreviewAuth?: () => void | Promise<void>;
+  hasAuthLikePreviewFailures?: boolean;
 };
 
 export default function BranchGridMap({
@@ -235,6 +239,10 @@ export default function BranchGridMap({
   nodePositionOverrides: controlledNodePositionOverrides,
   onNodePositionOverridesChange,
   worktreeDraftByWorkingTreeId,
+  commitAppPreviews = {},
+  onVisibleCommitKeysChange,
+  onOpenPreviewAuth,
+  hasAuthLikePreviewFailures = false,
 }: Props) {
   const scrollContainerRef = useRef<HTMLDivElement | null>(null);
   const hudHeaderRef = useRef<HTMLElement | null>(null);
@@ -651,6 +659,12 @@ export default function BranchGridMap({
     }
     return next;
   }, [clusterCounts, clusterKeyByCommitId, renderNodes]);
+
+  useEffect(() => {
+    if (!onVisibleCommitKeysChange) return;
+    const commitKeys = visibleRenderNodes.map((node) => node.commit.id);
+    onVisibleCommitKeysChange(commitKeys);
+  }, [onVisibleCommitKeysChange, visibleRenderNodes]);
 
   const lineStrokeWidth = 1.25 / displayZoom;
   const commitCornerRadiusPx = GRID_COMMIT_CORNER_RADIUS_BASE_PX / displayZoom;
@@ -1960,6 +1974,8 @@ export default function BranchGridMap({
                   dirtyWorktreePaths={dirtyWorktreePaths}
                   selectedDirtyWorktreePaths={selectedDirtyWorktreePaths}
                   hideMergeControls
+                  onOpenPreviewAuth={onOpenPreviewAuth}
+                  hasAuthLikePreviewFailures={hasAuthLikePreviewFailures}
                 />
               </div>
             <div className="flex min-w-0 shrink-0 items-center justify-end gap-2">
@@ -2138,6 +2154,7 @@ export default function BranchGridMap({
           dragPreviewByNodeId={dragPreviewByNodeId}
           nodePositionOverrides={nodePositionOverrides}
           connectorPathCacheScopeBase={`${currentRepoPath ?? '__no-repo__'}::${orientation}`}
+          commitAppPreviews={commitAppPreviews}
         />
       {blockMapDisplay ? <MapGridBlockingOverlay /> : null}
 

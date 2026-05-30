@@ -1,4 +1,4 @@
-import { Branch, BranchCommitPreview, BranchPromptMeta, CheckedOutRef, DirectCommit, MergeNode, OpenPR, WorktreeInfo } from '../../types';
+import { Branch, BranchCommitPreview, BranchPromptMeta, CheckedOutRef, CommitAppPreview, DirectCommit, MergeNode, OpenPR, WorktreeInfo } from '../../types';
 import type { Dispatch, SetStateAction } from 'react';
 import BranchGridMap from './MapGrid';
 import type { BranchGridLayoutModel } from './branchGridLayoutModel';
@@ -101,6 +101,10 @@ interface Props {
   nodePositionOverrides?: NodePositionOverrides;
   onNodePositionOverridesChange?: (overrides: NodePositionOverrides) => void;
   worktreeDraftByWorkingTreeId?: ReadonlyMap<string, WorktreeDraftDisplay>;
+  commitAppPreviews?: Record<string, CommitAppPreview>;
+  onVisibleCommitKeysChange?: (commitKeys: string[]) => void;
+  onOpenPreviewAuth?: () => void | Promise<void>;
+  hasAuthLikePreviewFailures?: boolean;
 }
 
 export default function BranchGridMapView({
@@ -170,6 +174,10 @@ export default function BranchGridMapView({
   nodePositionOverrides,
   onNodePositionOverridesChange,
   worktreeDraftByWorkingTreeId,
+  commitAppPreviews = {},
+  onVisibleCommitKeysChange,
+  onOpenPreviewAuth,
+  hasAuthLikePreviewFailures = false,
 }: Props) {
   const openPRBranchNames = new Set(openPRs.map(p => p.branchName));
   const ACTIVE_MS = 14 * 86400000;
@@ -249,6 +257,10 @@ export default function BranchGridMapView({
             nodePositionOverrides={nodePositionOverrides}
             onNodePositionOverridesChange={onNodePositionOverridesChange}
             worktreeDraftByWorkingTreeId={worktreeDraftByWorkingTreeId}
+            commitAppPreviews={commitAppPreviews}
+            onVisibleCommitKeysChange={onVisibleCommitKeysChange}
+            onOpenPreviewAuth={onOpenPreviewAuth}
+            hasAuthLikePreviewFailures={hasAuthLikePreviewFailures}
           />
         </div>
       ) : view === 'grid' ? (
@@ -288,6 +300,10 @@ export default function BranchGridMapView({
             nodePositionOverrides={nodePositionOverrides}
             onNodePositionOverridesChange={onNodePositionOverridesChange}
             worktreeDraftByWorkingTreeId={worktreeDraftByWorkingTreeId}
+            commitAppPreviews={commitAppPreviews}
+            onVisibleCommitKeysChange={onVisibleCommitKeysChange}
+            onOpenPreviewAuth={onOpenPreviewAuth}
+            hasAuthLikePreviewFailures={hasAuthLikePreviewFailures}
           />
         </div>
       ) : null}

@@ -36,7 +36,14 @@
       }
     ],
     "security": {
-      "csp": null
+      "csp": null,
+      "assetProtocol": {
+        "enable": true,
+        "scope": [
+          "$HOME/.git-viz-preview-cache/**",
+          "$HOME/**/.git-viz-preview-cache/**"
+        ]
+      }
     }
   },
   "bundle": {
