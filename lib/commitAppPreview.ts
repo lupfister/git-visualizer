@@ -249,8 +249,13 @@ export const useCommitAppPreviewManager = (
   );
 
   const handleOpenPreviewAuth = useCallback(async () => {
-    if (!context.repoPath) return;
+    if (!context.repoPath) {
+      throw new Error('No repository open');
+    }
     const branch = context.checkedOutRef?.branchName ?? context.defaultBranch;
+    if (!branch) {
+      throw new Error('Could not determine the current branch for preview login');
+    }
     await openPreviewAuthBrowser(context.repoPath, branch);
   }, [context.checkedOutRef?.branchName, context.defaultBranch, context.repoPath]);
 

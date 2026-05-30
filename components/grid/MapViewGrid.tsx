@@ -104,6 +104,7 @@ interface Props {
   commitAppPreviews?: Record<string, CommitAppPreview>;
   onVisibleCommitKeysChange?: (commitKeys: string[]) => void;
   onOpenPreviewAuth?: () => void | Promise<void>;
+  previewAuthInProgress?: boolean;
   hasAuthLikePreviewFailures?: boolean;
 }
 
@@ -177,6 +178,7 @@ export default function BranchGridMapView({
   commitAppPreviews = {},
   onVisibleCommitKeysChange,
   onOpenPreviewAuth,
+  previewAuthInProgress = false,
   hasAuthLikePreviewFailures = false,
 }: Props) {
   const openPRBranchNames = new Set(openPRs.map(p => p.branchName));
@@ -260,6 +262,7 @@ export default function BranchGridMapView({
             commitAppPreviews={commitAppPreviews}
             onVisibleCommitKeysChange={onVisibleCommitKeysChange}
             onOpenPreviewAuth={onOpenPreviewAuth}
+            previewAuthInProgress={previewAuthInProgress}
             hasAuthLikePreviewFailures={hasAuthLikePreviewFailures}
           />
         </div>
@@ -303,6 +306,7 @@ export default function BranchGridMapView({
             commitAppPreviews={commitAppPreviews}
             onVisibleCommitKeysChange={onVisibleCommitKeysChange}
             onOpenPreviewAuth={onOpenPreviewAuth}
+            previewAuthInProgress={previewAuthInProgress}
             hasAuthLikePreviewFailures={hasAuthLikePreviewFailures}
           />
         </div>

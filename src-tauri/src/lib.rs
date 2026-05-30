@@ -4192,73 +4192,21 @@ async fn generate_preview_routes(repo_path: String, branch: String, port: u16, p
         .map_err(|e| format!("Spawn error: {e}"))?
 }
 
-/// Opens a visible Chrome window pointed at the branch's dev server so the user
-/// can authenticate. The session is stored in `~/.git-viz-preview-auth/setup`
+/// Opens a visible Chrome window pointed at the repo's dev server so the user
+/// can authenticate. Uses the live checkout (not git archive) so workspace deps
+/// and node_modules stay intact. Session is stored in `~/.git-viz-preview-auth/setup`
 /// and is automatically seeded into CDP screenshot profiles on the next run.
-fn run_open_browser_blocking(repo_path: String, branch: String, port: u16) -> Result<(), String> {
+fn run_open_browser_blocking(repo_path: String, _branch: String, port: u16) -> Result<(), String> {
     use std::process::Stdio;
     use std::time::{Duration, Instant};
 
     let repo = Path::new(&repo_path);
-
-    let slug: String = branch.chars()
-        .map(|c| if c.is_alphanumeric() || c == '-' || c == '_' { c } else { '-' })
-        .collect();
-    let preview_dir = std::env::temp_dir().join(format!("git-viz-preview-{slug}-{port}"));
-
-    let _ = std::fs::remove_dir_all(&preview_dir);
-    std::fs::create_dir_all(&preview_dir)
-        .map_err(|e| format!("Failed to create preview dir: {e}"))?;
-
-    let archive_path = std::env::temp_dir().join(format!("git-viz-archive-{port}.tar"));
-    let _ = std::fs::remove_file(&archive_path);
-
-    let arch_out = std::process::Command::new("git")
-        .args(["-C", &repo_path, "archive", "--format=tar", &branch])
-        .output()
-        .map_err(|e| format!("git archive failed to start: {e}"))?;
-
-    if !arch_out.status.success() {
-        let _ = std::fs::remove_dir_all(&preview_dir);
-        return Err(format!(
-            "git archive failed for branch '{}': {}",
-            branch,
-            String::from_utf8_lossy(&arch_out.stderr).trim()
-        ));
-    }
-
-    std::fs::write(&archive_path, &arch_out.stdout)
-        .map_err(|e| format!("Failed to write archive: {e}"))?;
-
-    let tar_out = std::process::Command::new("tar")
-        .args(["-xf", archive_path.to_str().unwrap_or(""), "-C", preview_dir.to_str().unwrap_or("")])
-        .output()
-        .map_err(|e| format!("tar failed to start: {e}"))?;
-
-    let _ = std::fs::remove_file(&archive_path);
-
-    if !tar_out.status.success() {
-        let _ = std::fs::remove_dir_all(&preview_dir);
-        return Err(format!(
-            "tar extraction failed: {}",
-            String::from_utf8_lossy(&tar_out.stderr).trim()
-        ));
-    }
-
-    if !preview_dir.join("package.json").exists() {
-        let _ = std::fs::remove_dir_all(&preview_dir);
+    if !repo.join("package.json").exists() {
         return Err("No package.json — not a Node.js project".to_string());
     }
 
-    for name in &[
-        ".env", ".env.local", ".env.development", ".env.development.local",
-        ".env.production", ".env.production.local",
-    ] {
-        let src = repo.join(name);
-        if src.exists() {
-            let _ = std::fs::copy(&src, preview_dir.join(name));
-        }
-    }
+    let preview_dir = repo.to_path_buf();
+    let port = find_available_preview_port(port);
 
     let pm = if preview_dir.join("bun.lockb").exists() { "bun" }
         else if preview_dir.join("pnpm-lock.yaml").exists() { "pnpm" }
@@ -4268,10 +4216,6 @@ fn run_open_browser_blocking(repo_path: String, branch: String, port: u16) -> Re
     let main_modules = repo.join("node_modules");
     if main_modules.exists() {
         let _ = std::fs::remove_dir_all(main_modules.join(".vite"));
-        let link = preview_dir.join("node_modules");
-        if !link.exists() {
-            let _ = std::os::unix::fs::symlink(&main_modules, &link);
-        }
     }
 
     let port_str = port.to_string();
@@ -4293,7 +4237,6 @@ fn run_open_browser_blocking(repo_path: String, branch: String, port: u16) -> Re
     let mut server = std::process::Command::new(pm)
         .args(&pm_args)
         .env("PORT", &port_str)
-        // Prevent framework dev servers from auto-opening a browser window/tab.
         .env("BROWSER", "none")
         .env("NO_OPEN", "1")
         .env("npm_config_open", "false")
@@ -4302,22 +4245,20 @@ fn run_open_browser_blocking(repo_path: String, branch: String, port: u16) -> Re
         .stdout(stdout_sink)
         .stderr(stderr_sink)
         .spawn()
-        .map_err(|e| {
-            let _ = std::fs::remove_dir_all(&preview_dir);
-            format!("Failed to start dev server ({pm}): {e}")
-        })?;
+        .map_err(|e| format!("Failed to start dev server ({pm}): {e}"))?;
 
     let requested_url = format!("http://localhost:{port}");
     let start = Instant::now();
     let live_url: Option<String> = loop {
-        if start.elapsed() > Duration::from_secs(90) { break None; }
+        if start.elapsed() > Duration::from_secs(90) {
+            break None;
+        }
 
         if let Ok(Some(_)) = server.try_wait() {
             let log = std::fs::read_to_string(&log_path).unwrap_or_default();
             let tail = log.lines().rev().take(15)
                 .collect::<Vec<_>>().into_iter().rev().collect::<Vec<_>>().join("\n");
             let _ = std::fs::remove_file(&log_path);
-            let _ = std::fs::remove_dir_all(&preview_dir);
             return Err(format!("Dev server crashed.\nLog:\n{tail}"));
         }
 
@@ -4335,28 +4276,33 @@ fn run_open_browser_blocking(repo_path: String, branch: String, port: u16) -> Re
         }
     };
 
-    let _ = std::fs::remove_file(&log_path);
-
     let url = match live_url {
         Some(u) => u,
         None => {
             let _ = server.kill();
-            let _ = std::fs::remove_dir_all(&preview_dir);
-            return Err(format!("Dev server did not respond within 90s (tried port {port})"));
+            let log = std::fs::read_to_string(&log_path).unwrap_or_default();
+            let _ = std::fs::remove_file(&log_path);
+            let tail = log.lines().rev().take(15)
+                .collect::<Vec<_>>().into_iter().rev().collect::<Vec<_>>().join("\n");
+            return Err(if tail.is_empty() {
+                format!("Dev server did not respond within 90s (tried port {port})")
+            } else {
+                format!("Dev server timed out. Last log output:\n{tail}")
+            });
         }
     };
+    let _ = std::fs::remove_file(&log_path);
 
-    let chrome = "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome";
-    if !Path::new(chrome).exists() {
+    let chrome = resolve_chrome_path().ok_or_else(|| {
         let _ = server.kill();
-        let _ = std::fs::remove_dir_all(&preview_dir);
-        return Err("Google Chrome not found — install Chrome to generate previews".to_string());
-    }
+        "Chrome not found — install Google Chrome or Chromium to generate previews".to_string()
+    })?;
 
     let home = std::env::var("HOME").unwrap_or_else(|_| "/tmp".to_string());
     let auth_dir = format!("{home}/.git-viz-preview-auth/setup");
+    let _ = std::fs::create_dir_all(&auth_dir);
 
-    let mut chrome_proc = std::process::Command::new(chrome)
+    let mut chrome_proc = std::process::Command::new(&chrome)
         .args([
             "--no-sandbox",
             "--disable-extensions",
@@ -4368,7 +4314,6 @@ fn run_open_browser_blocking(repo_path: String, branch: String, port: u16) -> Re
         .spawn()
         .map_err(|e| {
             let _ = server.kill();
-            let _ = std::fs::remove_dir_all(&preview_dir);
             format!("Failed to launch Chrome: {e}")
         })?;
 
@@ -4376,7 +4321,6 @@ fn run_open_browser_blocking(repo_path: String, branch: String, port: u16) -> Re
     let _ = chrome_proc.wait();
 
     let _ = server.kill();
-    let _ = std::fs::remove_dir_all(&preview_dir);
     Ok(())
 }
 
@@ -4385,9 +4329,12 @@ fn run_open_browser_blocking(repo_path: String, branch: String, port: u16) -> Re
 /// seed its profile from `~/.git-viz-preview-auth/setup`.
 #[tauri::command(rename_all = "camelCase")]
 async fn open_preview_browser(repo_path: String, branch: String) -> Result<(), String> {
-    tauri::async_runtime::spawn_blocking(move || run_open_browser_blocking(repo_path, branch, 3493))
-        .await
-        .map_err(|e| format!("Spawn error: {e}"))?
+    tauri::async_runtime::spawn_blocking(move || {
+        let port = find_available_preview_port(3493);
+        run_open_browser_blocking(repo_path, branch, port)
+    })
+    .await
+    .map_err(|e| format!("Spawn error: {e}"))?
 }
 
 /// Node.js script that uses Chrome DevTools Protocol to screenshot a URL.
@@ -4741,6 +4688,17 @@ pub(crate) struct PreviewRunConfig {
     pub live_source_dir: Option<PathBuf>,
     pub preserve_source_dir: bool,
     pub single_output_path: Option<PathBuf>,
+}
+
+/// Pick the first free TCP port in `[preferred, preferred + 99]`.
+fn find_available_preview_port(preferred: u16) -> u16 {
+    for offset in 0..100u16 {
+        let port = preferred.saturating_add(offset);
+        if std::net::TcpListener::bind(("127.0.0.1", port)).is_ok() {
+            return port;
+        }
+    }
+    preferred
 }
 
 fn resolve_chrome_path() -> Option<String> {

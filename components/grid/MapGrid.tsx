@@ -171,6 +171,7 @@ type Props = BranchGridViewProps & {
   commitAppPreviews?: Record<string, CommitAppPreview>;
   onVisibleCommitKeysChange?: (commitKeys: string[]) => void;
   onOpenPreviewAuth?: () => void | Promise<void>;
+  previewAuthInProgress?: boolean;
   hasAuthLikePreviewFailures?: boolean;
 };
 
@@ -242,6 +243,7 @@ export default function BranchGridMap({
   commitAppPreviews = {},
   onVisibleCommitKeysChange,
   onOpenPreviewAuth,
+  previewAuthInProgress = false,
   hasAuthLikePreviewFailures = false,
 }: Props) {
   const scrollContainerRef = useRef<HTMLDivElement | null>(null);
@@ -1975,6 +1977,7 @@ export default function BranchGridMap({
                   selectedDirtyWorktreePaths={selectedDirtyWorktreePaths}
                   hideMergeControls
                   onOpenPreviewAuth={onOpenPreviewAuth}
+                  previewAuthInProgress={previewAuthInProgress}
                   hasAuthLikePreviewFailures={hasAuthLikePreviewFailures}
                 />
               </div>

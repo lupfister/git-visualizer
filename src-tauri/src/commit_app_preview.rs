@@ -1,7 +1,7 @@
 use crate::{
     get_changed_routes_for_commit, open_visual_cache_connection, run_previews_blocking, PreviewRunConfig,
 };
-use git::cli;
+use crate::git::cli;
 use rusqlite::{params, OptionalExtension};
 use serde::{Deserialize, Serialize};
 use std::{

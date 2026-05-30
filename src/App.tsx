@@ -5749,10 +5749,12 @@ function App() {
     });
   }, []);
 
+  const [previewAuthInProgress, setPreviewAuthInProgress] = useState(false);
+
   const {
     commitAppPreviews,
     hasAuthLikePreviewFailures,
-    handleOpenPreviewAuth,
+    handleOpenPreviewAuth: runPreviewAuth,
   } = useCommitAppPreviewManager(
     {
       repoPath,
@@ -5765,6 +5767,28 @@ function App() {
     },
     visibleCommitKeys,
   );
+
+  const handleOpenPreviewAuth = useCallback(async () => {
+    if (previewAuthInProgress) return;
+    setPreviewAuthInProgress(true);
+    setCommitSwitchFeedback({
+      kind: 'success',
+      message: 'Starting preview dev server…',
+    });
+    try {
+      await runPreviewAuth();
+      setCommitSwitchFeedback({
+        kind: 'success',
+        message: 'Preview login saved — close Chrome, then scroll commits to refresh screenshots',
+      });
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      setCommitSwitchFeedback({ kind: 'error', message });
+      console.error('Preview login failed:', error);
+    } finally {
+      setPreviewAuthInProgress(false);
+    }
+  }, [previewAuthInProgress, runPreviewAuth]);
 
   const focusCameraOnActiveWorktree = useCallback(() => {
     if (!repoPath) return;
@@ -6306,6 +6330,7 @@ function App() {
                 commitAppPreviews={commitAppPreviews}
                 onVisibleCommitKeysChange={handleVisibleCommitKeysChange}
                 onOpenPreviewAuth={handleOpenPreviewAuth}
+                previewAuthInProgress={previewAuthInProgress}
                 hasAuthLikePreviewFailures={hasAuthLikePreviewFailures}
               />
           </div>
