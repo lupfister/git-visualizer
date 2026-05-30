@@ -4,6 +4,7 @@ import { defineConfig } from 'vite';
 import react from '@vitejs/plugin-react';
 
 const rootDir = path.dirname(fileURLToPath(import.meta.url));
+const devPort = Number(process.env.VITE_DEV_PORT) || 1420;
 
 export default defineConfig({
   root: rootDir,
@@ -11,8 +12,10 @@ export default defineConfig({
   plugins: [react()],
   clearScreen: false,
   server: {
-    port: 1420,
-    strictPort: true,
+    port: devPort,
+    // When launched via `pnpm tauri dev`, the wrapper pre-picks a free port.
+    // For standalone `pnpm dev`, fall through to the next available port.
+    strictPort: Boolean(process.env.VITE_DEV_PORT),
   },
   build: {
     target: ['es2021', 'chrome100', 'safari13'],
