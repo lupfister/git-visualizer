@@ -45,10 +45,11 @@ function projectTouchesActivePath(projectPath: string, worktrees: WorktreeInfo[]
   return worktrees.some((worktree) => pathsProbablyEqual(worktree.path, activePath));
 }
 
-function formatWorktreeSidebarLabel(worktree: WorktreeInfo): string {
-  const name = worktreeSessionDisplayName(worktree);
-  const refLabel = worktree.branchName ?? worktree.headSha.slice(0, 7);
-  return `${name} · ${refLabel}`;
+function getSidebarRowLabel(worktree: WorktreeInfo): { sidebar: string; sessionsSidebar: string } {
+  return {
+    sidebar: worktreeSessionDisplayName(worktree),
+    sessionsSidebar: worktree.branchName ?? worktree.headSha.slice(0, 7),
+  };
 }
 
 function sortWorktreesForSidebar(worktrees: WorktreeInfo[]): WorktreeInfo[] {
@@ -117,7 +118,7 @@ function ProjectIcon({ open }: { open: boolean }) {
   );
 }
 
-function WorktreeRow({
+function SidebarRow({
   worktree,
   isActiveProject,
   isActiveWorktree,
@@ -128,14 +129,15 @@ function WorktreeRow({
   isActiveWorktree: boolean;
   onSelect: () => void;
 }) {
-  const label = formatWorktreeSidebarLabel(worktree);
+  const { sidebar, sessionsSidebar } = getSidebarRowLabel(worktree);
+  const ariaLabel = `${sidebar} · ${sessionsSidebar}`;
   const disabled = worktree.pathExists === false;
 
   return (
     <li>
       <div
         className={cn(
-          'branch-row',
+          'sidebar-row',
           'group flex min-w-0 items-center gap-0 rounded-md px-2 h-6 text-left text-sm font-normal transition-colors',
           disabled
             ? 'cursor-not-allowed opacity-50'
@@ -152,7 +154,7 @@ function WorktreeRow({
         }}
         role="button"
         tabIndex={disabled ? -1 : 0}
-        aria-label={label}
+        aria-label={ariaLabel}
         aria-disabled={disabled}
         onClick={() => {
           if (disabled) return;
@@ -166,15 +168,21 @@ function WorktreeRow({
           }
         }}
       >
-        <span className="branch-label min-w-0 flex-1 truncate font-normal whitespace-nowrap overflow-hidden">
-          {label}
+        <span className="sidebar min-w-0 truncate font-normal whitespace-nowrap overflow-hidden">
+          {sidebar}
+        </span>
+        <span className="shrink-0 px-1 text-muted-foreground/70" aria-hidden="true">
+          ·
+        </span>
+        <span className="sessions-sidebar min-w-0 flex-1 truncate font-normal whitespace-nowrap overflow-hidden text-muted-foreground/80">
+          {sessionsSidebar}
         </span>
       </div>
     </li>
   );
 }
 
-export default function DenseBranchSidebar({
+export default function Sidebar({
   projects,
   activeProjectPath,
   onSelectProject,
@@ -522,7 +530,7 @@ export default function DenseBranchSidebar({
                 <div className="min-h-0 overflow-hidden">
                   <ul className={cn('relative z-0 space-y-1 pt-0 pl-4', ghostMode ? 'opacity-70' : '')}>
                     {sortedWorktrees.map((worktree) => (
-                      <WorktreeRow
+                      <SidebarRow
                         key={worktree.path}
                         worktree={worktree}
                         isActiveProject={isActiveProject}

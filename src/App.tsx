@@ -5345,18 +5345,6 @@ function App() {
     }
   }, [repoPath]);
 
-  function handleSidebarSelectCommit(sha: string) {
-    if (!sha) return;
-    handleGridFocusChange(sha);
-    setGridSearchJumpToken((token) => token + 1);
-  }
-
-  function handleSidebarSelectBranch(branchName: string) {
-    if (!branchName) return;
-    setGridSearchQuery(branchName);
-    setGridSearchJumpToken((token) => token + 1);
-  }
-
   // Synthetic stash nodes (yellow) and per-worktree worktree nodes — same lane rules as before.
   const {
     enrichedBranches,
@@ -6018,6 +6006,7 @@ function App() {
               projects={projectCards}
               activeProjectPath={repoPath}
               onSelectProject={loadRepo}
+              onSelectWorktree={handleSwitchToWorktree}
               onAddProject={handleAddProject}
               onRemoveProject={removeProject}
               onReorderProjects={reorderProjects}
@@ -6025,17 +6014,6 @@ function App() {
               onResetProjectNodePositions={resetProjectNodePositions}
               projectLoading={loading || (projectTreeLoading && repoPath ? !projectSnapshots[repoPath]?.loaded : false)}
               projectError={error}
-              checkedOutRef={checkedOutRef}
-              showCommits={false}
-              manuallyOpenedClumpsByProject={manuallyOpenedGridClumpsByRepo}
-              manuallyClosedClumpsByProject={manuallyClosedGridClumpsByRepo}
-              manuallyOpenedClumps={manuallyOpenedGridClumps}
-              manuallyClosedClumps={manuallyClosedGridClumps}
-              setManuallyOpenedClumps={setManuallyOpenedGridClumps}
-              setManuallyClosedClumps={setManuallyClosedGridClumps}
-              gridLayoutModel={gridLayoutModelForView}
-              onSelectCommit={handleSidebarSelectCommit}
-              onSelectBranch={handleSidebarSelectBranch}
             />
             {!isSidebarCollapsed ? (
               <div

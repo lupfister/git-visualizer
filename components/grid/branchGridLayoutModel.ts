@@ -1200,12 +1200,18 @@ export function computeBranchGridLayout(input: BranchGridLayoutInput): BranchGri
     assignRows(root, rootRow);
   }
 
+  const isInMultiCommitClump = (commit: VisualCommit): boolean => {
+    const clusterKey = clusterKeyByCommitId.get(commit.visualId);
+    return !!clusterKey && (clusterCounts.get(clusterKey) ?? 1) > 1;
+  };
+
   const enforceMergeRowsAfterAllGitParents = (): void => {
     let changed = true;
     while (changed) {
       changed = false;
       for (const commit of allCommitsWithClusters) {
         if (!isGitMergeCommit(commit)) continue;
+        if (isInMultiCommitClump(commit)) continue;
         const requiredRow = rowAfterAllGitParents(commit, rowByVisualId.get(commit.visualId) ?? 1);
         const currentRow = rowByVisualId.get(commit.visualId) ?? 1;
         if (requiredRow > currentRow) {
@@ -1378,9 +1384,16 @@ export function computeBranchGridLayout(input: BranchGridLayoutInput): BranchGri
     const leadVisualId = leadByClusterKey.get(clusterKey);
     if (!leadVisualId) continue;
     const leadRow = rowByVisualId.get(leadVisualId) ?? 1;
+    const firstVisualId = firstByClusterKey.get(clusterKey);
+    const anchorVisualId = firstVisualId ?? leadVisualId;
+    const anchorCommit = allCommitsWithClusters.find((commit) => commit.visualId === anchorVisualId);
+    const clumpRow =
+      anchorCommit && isGitMergeCommit(anchorCommit)
+        ? rowAfterAllGitParents(anchorCommit, rowByVisualId.get(anchorCommit.visualId) ?? leadRow)
+        : leadRow;
     for (const commit of allCommitsWithClusters) {
       if (clusterKeyByCommitId.get(commit.visualId) === clusterKey) {
-        rowByVisualId.set(commit.visualId, leadRow);
+        rowByVisualId.set(commit.visualId, clumpRow);
       }
     }
   }
