@@ -7,31 +7,44 @@ import { fileURLToPath } from 'node:url';
 
 const rootDir = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const DEFAULT_DEV_PORT = 1420;
+const MAX_PORT_ATTEMPTS = 100;
 const tauriCliPath = path.join(rootDir, 'node_modules', '@tauri-apps', 'cli', 'tauri.js');
 
-const findAvailablePort = (startPort) =>
-  new Promise((resolve, reject) => {
-    const server = net.createServer();
-    server.unref();
-    server.on('error', (err) => {
-      if (err.code === 'EADDRINUSE') {
-        resolve(findAvailablePort(startPort + 1));
-        return;
-      }
-      reject(err);
-    });
-    server.listen(startPort, '127.0.0.1', () => {
-      const address = server.address();
-      const port = typeof address === 'object' && address ? address.port : startPort;
-      server.close(() => resolve(port));
-    });
+const portHasListener = (port, host) =>
+  new Promise((resolve) => {
+    const socket = net.createConnection({ port, host });
+    const finish = (inUse) => {
+      socket.removeAllListeners();
+      socket.destroy();
+      resolve(inUse);
+    };
+
+    socket.setTimeout(300);
+    socket.on('connect', () => finish(true));
+    socket.on('timeout', () => finish(false));
+    socket.on('error', (error) => finish(error.code !== 'ECONNREFUSED'));
   });
 
-const runTauriCli = (args, env = process.env) =>
+const isPortInUse = async (port) => {
+  const [ipv4InUse, ipv6InUse] = await Promise.all([
+    portHasListener(port, '127.0.0.1'),
+    portHasListener(port, '::1'),
+  ]);
+  return ipv4InUse || ipv6InUse;
+};
+
+const findAvailablePort = async (startPort) => {
+  for (let port = startPort; port < startPort + MAX_PORT_ATTEMPTS; port++) {
+    if (!(await isPortInUse(port))) return port;
+  }
+  throw new Error(`No free port found in range ${startPort}-${startPort + MAX_PORT_ATTEMPTS - 1}`);
+};
+
+const runTauriCli = (args) =>
   new Promise((resolve, reject) => {
     const child = spawn(process.execPath, [tauriCliPath, ...args], {
       cwd: rootDir,
-      env,
+      env: process.env,
       stdio: 'inherit',
     });
 
@@ -56,16 +69,19 @@ const main = async () => {
 
   const port = await findAvailablePort(DEFAULT_DEV_PORT);
   const devUrl = `http://localhost:${port}`;
-  const configPatch = JSON.stringify({ build: { devUrl } });
+  const beforeDevCommand = `node scripts/vite-dev.mjs --port ${port}`;
+  const configPatch = JSON.stringify({
+    build: {
+      devUrl,
+      beforeDevCommand,
+    },
+  });
 
   if (port !== DEFAULT_DEV_PORT) {
     console.log(`Port ${DEFAULT_DEV_PORT} is in use — using ${port} for this dev session.`);
   }
 
-  const code = await runTauriCli(
-    ['dev', '--config', configPatch, ...restArgs],
-    { ...process.env, VITE_DEV_PORT: String(port) },
-  );
+  const code = await runTauriCli(['dev', '--config', configPatch, ...restArgs]);
   process.exitCode = code;
 };
 
