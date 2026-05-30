@@ -2506,6 +2506,61 @@ fn push_branch_ref(repo: &Path, branch: &str, target_sha: Option<&str>) -> Resul
     Ok(())
 }
 
+fn branch_name_from_commit_message(message: &str) -> String {
+    let subject = message.lines().next().unwrap_or(message);
+    let mut name = String::new();
+    let mut previous_was_separator = false;
+
+    for ch in subject.chars().flat_map(char::to_lowercase) {
+        if ch.is_ascii_alphanumeric() {
+            name.push(ch);
+            previous_was_separator = false;
+        } else if !previous_was_separator && !name.is_empty() {
+            name.push('-');
+            previous_was_separator = true;
+        }
+
+        if name.len() >= 48 {
+            break;
+        }
+    }
+
+    let trimmed = name.trim_matches('-').to_string();
+    if trimmed.is_empty() {
+        "changes".to_string()
+    } else {
+        trimmed
+    }
+}
+
+fn local_branch_exists(repo: &Path, branch_name: &str) -> bool {
+    git::cli::run(
+        repo,
+        &[
+            "show-ref",
+            "--verify",
+            "--quiet",
+            &format!("refs/heads/{branch_name}"),
+        ],
+    )
+    .is_ok()
+}
+
+fn unique_local_branch_name(repo: &Path, base_name: &str) -> String {
+    if !local_branch_exists(repo, base_name) {
+        return base_name.to_string();
+    }
+
+    for suffix in 2..1000 {
+        let candidate = format!("{base_name}-{suffix}");
+        if !local_branch_exists(repo, &candidate) {
+            return candidate;
+        }
+    }
+
+    format!("{base_name}-{}", Utc::now().timestamp())
+}
+
 #[tauri::command(rename_all = "camelCase")]
 async fn pull_branch_with_strategy(
     repo_path: String,
@@ -2579,6 +2634,12 @@ async fn commit_working_tree(repo_path: String, message: String) -> Result<Commi
         let path = Path::new(&repo_path);
         let trimmed = message.trim();
         opencode::validate_generated_message(trimmed, "Commit message")?;
+        let before_commit_ref = git::get_checked_out_ref(path).map_err(|e| e.to_string())?;
+        if before_commit_ref.branch_name.is_none() {
+            let branch_name =
+                unique_local_branch_name(path, &branch_name_from_commit_message(trimmed));
+            git::cli::run(path, &["checkout", "-b", &branch_name]).map_err(|e| e.to_string())?;
+        }
         git::commit_working_tree(path, trimmed).map_err(|e| e.to_string())?;
         let checked_out_ref = git::get_checked_out_ref(path).map_err(|e| e.to_string())?;
         let branch_name = checked_out_ref
