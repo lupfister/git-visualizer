@@ -2396,8 +2396,14 @@ fn get_branch_push_remote(repo: &Path, branch: &str) -> Result<(String, bool), S
 }
 
 fn branch_has_unpushed_commits(repo: &Path, branch: &str) -> bool {
-    let compare_ref = get_branch_compare_ref(repo, branch);
+    branch_has_unpushed_commits_vs_ref(repo, branch, get_branch_compare_ref(repo, branch).as_deref())
+}
 
+fn branch_has_unpushed_commits_vs_ref(
+    repo: &Path,
+    branch: &str,
+    compare_ref: Option<&str>,
+) -> bool {
     let Some(compare_ref) = compare_ref else {
         return true;
     };
@@ -2407,6 +2413,66 @@ fn branch_has_unpushed_commits(repo: &Path, branch: &str) -> bool {
         Ok(output) => output.trim().parse::<u32>().map(|ahead| ahead > 0).unwrap_or(false),
         Err(_) => false,
     }
+}
+
+fn list_local_branch_names(repo: &Path) -> Result<Vec<String>, String> {
+    let output = git::cli::run(repo, &["branch", "--format=%(refname:short)"])
+        .map_err(|e| e.to_string())?;
+    Ok(output
+        .lines()
+        .map(str::trim)
+        .filter(|line| !line.is_empty())
+        .map(str::to_string)
+        .collect())
+}
+
+/// Whether a local branch should be included in push-all (matches list_branches unpushed filter).
+fn branch_needs_push(repo: &Path, branch: &str, default_branch: &str) -> bool {
+    if let Some(compare_ref) = get_branch_compare_ref(repo, branch) {
+        return branch_has_unpushed_commits_vs_ref(repo, branch, Some(compare_ref.as_str()));
+    }
+    if branch == default_branch {
+        return false;
+    }
+    let range = format!("{default_branch}..{branch}");
+    match git::cli::run(repo, &["rev-list", "--count", &range]) {
+        Ok(output) => output.trim().parse::<u32>().map(|ahead| ahead > 0).unwrap_or(false),
+        Err(_) => false,
+    }
+}
+
+fn push_branch_refs_batched(repo: &Path, targets: &[PushResult]) -> Result<(), String> {
+    if targets.is_empty() {
+        return Ok(());
+    }
+
+    let mut groups: HashMap<(String, bool), Vec<String>> = HashMap::new();
+    for target in targets {
+        if target.target_sha.is_some() {
+            push_branch_ref(repo, &target.branch_name, target.target_sha.as_deref())?;
+            continue;
+        }
+        let (remote, has_upstream) = get_branch_push_remote(repo, &target.branch_name)?;
+        groups
+            .entry((remote, has_upstream))
+            .or_default()
+            .push(target.branch_name.clone());
+    }
+
+    for ((remote, has_upstream), branches) in groups {
+        let mut args = vec!["push".to_string()];
+        if !has_upstream {
+            args.push("-u".to_string());
+        }
+        args.push(remote);
+        for branch in branches {
+            args.push(branch);
+        }
+        let arg_refs: Vec<&str> = args.iter().map(|value| value.as_str()).collect();
+        git::cli::run(repo, &arg_refs).map_err(|e| e.to_string())?;
+    }
+
+    Ok(())
 }
 
 fn get_branch_compare_ref(repo: &Path, branch: &str) -> Option<String> {
@@ -2684,12 +2750,11 @@ async fn push_all_unpushed_branches(repo_path: String) -> Result<Vec<PushResult>
     run_blocking(move || {
         let path = Path::new(&repo_path);
         let default_branch = git::get_default_branch(path).map_err(|e| e.to_string())?;
-        let mut push_targets: Vec<PushResult> = git::list_branches(path, &default_branch)
-            .map_err(|e| e.to_string())?
+        let mut push_targets: Vec<PushResult> = list_local_branch_names(path)?
             .into_iter()
-            .filter(|branch| branch.remote_sync_status != "on-github" && branch.unpushed_commits > 0)
-            .map(|branch| PushResult {
-                branch_name: branch.name,
+            .filter(|branch| branch_needs_push(path, branch, &default_branch))
+            .map(|branch_name| PushResult {
+                branch_name,
                 target_sha: None,
             })
             .collect();
@@ -2703,9 +2768,7 @@ async fn push_all_unpushed_branches(repo_path: String) -> Result<Vec<PushResult>
             });
         }
 
-        for target in &push_targets {
-            push_branch_ref(path, &target.branch_name, None)?;
-        }
+        push_branch_refs_batched(path, &push_targets)?;
 
         Ok(push_targets)
     })

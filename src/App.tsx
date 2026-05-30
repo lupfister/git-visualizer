@@ -2050,48 +2050,6 @@ function App() {
     }, 50);
   }
 
-  async function buildPushSyncOutcomeFromGit(
-    path: string,
-    snapshot: RepoVisualSnapshot,
-  ): Promise<RepoMutationOutcome | null> {
-    try {
-      const [branchList, unpushedDirectCommits] = await Promise.all([
-        invoke<Branch[]>('get_branches', { repoPath: path }),
-        invoke<DirectCommit[]>('get_unpushed_direct_commits', {
-          repoPath: path,
-          branch: snapshot.defaultBranch,
-        }).catch(() => [] as DirectCommit[]),
-      ]);
-      const branchNames = [...new Set([
-        snapshot.defaultBranch,
-        ...branchList.map((branch) => branch.name),
-      ])];
-      const unpushedShaEntries = await Promise.all(
-        branchNames.map(async (branchName) => {
-          const shas = await invoke<string[]>('get_branch_unpushed_commit_shas', {
-            repoPath: path,
-            branch: branchName,
-          }).catch(() => []);
-          return [branchName, shas] as const;
-        }),
-      );
-      return outcomeFromBranchMetadataSync({
-        branches: branchList,
-        defaultBranch: snapshot.defaultBranch,
-        removedBranchNames: [],
-        unpushedCommitShasByBranch: Object.fromEntries(unpushedShaEntries),
-        unpushedDirectCommits,
-        branchUniqueAheadCounts: Object.fromEntries(
-          branchList.map((branch) => [branch.name, Math.max(0, branch.commitsAhead)]),
-        ),
-        checkedOutRef: snapshot.checkedOutRef,
-        layoutTopologyChanged: false,
-      });
-    } catch {
-      return null;
-    }
-  }
-
   async function reloadRepoSnapshotFromGit(
     path: string,
     peek?: RepoSyncPeek | null,
@@ -2595,12 +2553,7 @@ function App() {
         );
       }
 
-      if (isPush) {
-        const gitPushSync = await buildPushSyncOutcomeFromGit(normalizedPath, snapshot);
-        if (gitPushSync) {
-          snapshot = applyMutationPatch(snapshot, gitPushSync);
-        }
-      }
+      // Push uses optimistic patchPush; background reconcile refreshes metadata without blocking here.
 
       await yieldToPaint();
       if (!isCommit && !isPush && applyGeneration !== repoMutationGenerationRef.current) return;
