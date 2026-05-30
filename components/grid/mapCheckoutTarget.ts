@@ -43,10 +43,12 @@ export const parseMapCheckoutTarget = (node: Node): MapCheckoutTarget | null => 
   }
 
   const shortSha = commitId.slice(0, 7);
+  // Specific commit nodes always detach at that SHA. Branch checkout is only for
+  // BRANCH_HEAD / branch-created placeholders above — otherwise checkout_branch
+  // would jump to branch tip instead of the clicked clump member.
   if (branchName) {
     return {
       commitSha: commitId,
-      branchName,
       summary: `Check out ${branchName}/${shortSha}`,
     };
   }

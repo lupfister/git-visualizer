@@ -105,6 +105,84 @@ describe('computeBranchGridLayout worktree nodes', () => {
     expect(worktreeNode!.commit.date).toBe(parentDate);
   });
 
+  it('draws only an incoming connector from the checkout parent to the worktree node', () => {
+    const defaultBranch = 'main';
+    const parentDate = '2024-06-01T12:00:00Z';
+    const branches = [
+      makeBranch(defaultBranch, tipSha, 1),
+      makeBranch('cursor-sdk', tipSha, 0),
+    ];
+    const directCommits: DirectCommit[] = [
+      {
+        fullSha: mainSha,
+        sha: mainSha.slice(0, 7),
+        branch: defaultBranch,
+        message: 'root',
+        author: 'test',
+        date: '2024-05-01T12:00:00Z',
+        parentSha: null,
+        parentShas: [],
+      },
+      {
+        fullSha: tipSha,
+        sha: tipSha.slice(0, 7),
+        branch: defaultBranch,
+        message: 'tip',
+        author: 'test',
+        date: parentDate,
+        parentSha: mainSha,
+        parentShas: [mainSha],
+      },
+    ];
+    const sessions = buildWorktreeSessions([wt({ path: '/repo/wt-feature' })], '/repo');
+    const worktreePreview: BranchCommitPreview = {
+      fullSha: sessions[0]!.workingTreeId,
+      sha: 'uncommitted',
+      parentSha: tipSha,
+      message: '',
+      author: 'You',
+      date: parentDate,
+      kind: 'uncommitted',
+    };
+    const layout = computeBranchGridLayout({
+      branches,
+      mergeNodes: [],
+      directCommits,
+      unpushedDirectCommits: [],
+      defaultBranch,
+      branchCommitPreviews: {
+        main: [],
+        'cursor-sdk': [worktreePreview],
+      },
+      branchParentByName: { main: null, 'cursor-sdk': 'main' },
+      branchUniqueAheadCounts: { main: 1, 'cursor-sdk': 0 },
+      manuallyOpenedClumps: new Set(),
+      manuallyClosedClumps: new Set(),
+      isDebugOpen: false,
+      gridSearchQuery: '',
+      gridFocusSha: null,
+      checkedOutRef: null,
+      worktreeSessions: sessions,
+      orientation: 'horizontal',
+    });
+
+    const worktreeId = sessions[0]!.workingTreeId;
+    const worktreeVisualId = layout.renderNodes.find((node) => node.commit.id === worktreeId)?.commit.visualId;
+    const parentVisualId = layout.renderNodes.find((node) => node.commit.id === tipSha)?.commit.visualId;
+    expect(worktreeVisualId).toBeDefined();
+    expect(parentVisualId).toBeDefined();
+
+    const incoming = layout.connectors.filter((connector) => connector.toCommitVisualId === worktreeVisualId);
+    const outgoing = layout.connectors.filter((connector) => connector.fromCommitVisualId === worktreeVisualId);
+    const mergeOutgoing = layout.mergeConnectors.filter(
+      (connector) => connector.fromCommitVisualId === worktreeVisualId,
+    );
+
+    expect(incoming.some((connector) => connector.fromCommitVisualId === parentVisualId)).toBe(true);
+    expect(outgoing).toHaveLength(0);
+    expect(mergeOutgoing).toHaveLength(0);
+  });
+
   it('steps the primary worktree one timeline slot right when it shares the parent lane', () => {
     const defaultBranch = 'main';
     const parentDate = '2024-06-01T12:00:00Z';

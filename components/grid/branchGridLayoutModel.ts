@@ -180,6 +180,9 @@ function findCommitMetaInRepo(
 
 const isWorktreeGraphNode = (commit: { id: string; kind?: string | null }): boolean =>
   commit.kind === 'uncommitted' || isWorkingTreeCommitId(commit.id);
+/** Worktree tiles are checkout leaves: incoming edge from parent only, no outgoing graph edges. */
+const isWorktreeConnectorSource = (commit: { id: string; kind?: string | null }): boolean =>
+  isWorktreeGraphNode(commit);
 const isStashGraphCommit = (commit: VisualCommit): boolean =>
   commit.kind === 'stash' || commit.id.startsWith('STASH:');
 
@@ -2707,6 +2710,17 @@ export function computeBranchGridLayout(input: BranchGridLayoutInput): BranchGri
       });
       continue;
     }
+    if (isWorktreeConnectorSource(sourceNode.commit)) {
+      pushConnectorDecision({
+        id: decisionId,
+        kind: 'merge',
+        parent: sourceNode.commit.id,
+        child: mergeTarget.commit.id,
+        rendered: false,
+        reason: 'worktree nodes have no outgoing connectors',
+      });
+      continue;
+    }
     if (sourceNode.commit.id === mergeTarget.commit.id) {
       pushConnectorDecision({
         id: decisionId,
@@ -2799,6 +2813,17 @@ export function computeBranchGridLayout(input: BranchGridLayoutInput): BranchGri
         child: childNode?.commit.id ?? 'null',
         rendered: false,
         reason: !parentNode ? 'missing parent node' : !childNode ? 'missing child node' : 'parent and child are the same node',
+      });
+      continue;
+    }
+    if (isWorktreeConnectorSource(parentNode.commit)) {
+      pushConnectorDecision({
+        id: `branch:${parentNode.commit.id}->${childNode.commit.id}`,
+        kind: 'branch',
+        parent: parentNode.commit.id,
+        child: childNode.commit.id,
+        rendered: false,
+        reason: 'worktree nodes have no outgoing connectors',
       });
       continue;
     }
@@ -2900,6 +2925,17 @@ export function computeBranchGridLayout(input: BranchGridLayoutInput): BranchGri
       });
       continue;
     }
+    if (isWorktreeConnectorSource(parentNode.commit)) {
+      pushConnectorDecision({
+        id: `${parentNode.commit.id}->${childNode.commit.id}`,
+        kind: 'ancestry',
+        parent: parentNode.commit.id,
+        child: childNode.commit.id,
+        rendered: false,
+        reason: 'worktree nodes have no outgoing connectors',
+      });
+      continue;
+    }
     const key = `${commit.branchName}:${parentNode.commit.visualId ?? parentNode.commit.id}->${childNode.commit.visualId}`;
     if (connectorKeySet.has(key)) {
       addNodeWarning(parentNode.commit.id, 'Duplicate connector key');
@@ -2967,6 +3003,17 @@ export function computeBranchGridLayout(input: BranchGridLayoutInput): BranchGri
       if (realParentSha) {
         const resolvedRealParent = resolveParentNode(realParentSha, childNode.commit.branchName);
         if (resolvedRealParent) continue;
+      }
+      if (isWorktreeConnectorSource(parentNode.commit)) {
+        pushConnectorDecision({
+          id: `chain:${branchName}:${parentNode.commit.id}->${childNode.commit.id}`,
+          kind: 'ancestry',
+          parent: parentNode.commit.id,
+          child: childNode.commit.id,
+          rendered: false,
+          reason: 'worktree nodes have no outgoing connectors',
+        });
+        continue;
       }
       const key = `chain:${branchName}:${parentNode.commit.id}->${childNode.commit.id}`;
       if (connectorKeySet.has(key)) {

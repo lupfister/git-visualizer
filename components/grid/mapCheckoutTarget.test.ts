@@ -35,4 +35,11 @@ describe('parseMapCheckoutTarget', () => {
   it('rejects working tree nodes', () => {
     expect(parseMapCheckoutTarget(node('WORKING_TREE', 'main', 'uncommitted'))).toBeNull();
   });
+
+  it('checks out specific commits by SHA even when branch is known', () => {
+    expect(parseMapCheckoutTarget(node('abc1234567890abcdef1234567890abcdef123456', 'feature'))).toEqual({
+      commitSha: 'abc1234567890abcdef1234567890abcdef123456',
+      summary: 'Check out feature/abc1234',
+    });
+  });
 });
