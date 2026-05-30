@@ -4,6 +4,7 @@ import BranchGridMap from './MapGrid';
 import type { BranchGridLayoutModel } from './branchGridLayoutModel';
 import type { WorktreeDraftDisplay } from '../../src/worktreeDraftMessages';
 import type { NodePositionOverrides } from './LayoutGrid';
+import type { PreviewTarget } from '../../lib/git';
 
 export type ViewMode = 'time' | 'grid';
 export type OrientationMode = 'horizontal';
@@ -74,6 +75,9 @@ interface Props {
   onDebugClose?: () => void;
   orientation?: OrientationMode;
   onInteractionChange?: (isInteracting: boolean) => void;
+  onPreviewNode?: (target: PreviewTarget, nodeId: string) => Promise<void> | void;
+  previewInProgress?: boolean;
+  previewedNodeId?: string | null;
   manuallyOpenedClumps?: Set<string>;
   manuallyClosedClumps?: Set<string>;
   setManuallyOpenedClumps?: Dispatch<SetStateAction<Set<string>>>;
@@ -157,6 +161,9 @@ export default function BranchGridMapView({
   onDebugClose,
   orientation = 'horizontal',
   onInteractionChange,
+  onPreviewNode,
+  previewInProgress = false,
+  previewedNodeId = null,
   manuallyOpenedClumps,
   manuallyClosedClumps,
   setManuallyOpenedClumps,
@@ -236,6 +243,9 @@ export default function BranchGridMapView({
             onDebugClose={onDebugClose}
             orientation={orientation}
             onInteractionChange={onInteractionChange}
+            onPreviewNode={onPreviewNode}
+            previewInProgress={previewInProgress}
+            previewedNodeId={previewedNodeId}
             manuallyOpenedClumps={manuallyOpenedClumps}
             manuallyClosedClumps={manuallyClosedClumps}
             setManuallyOpenedClumps={setManuallyOpenedClumps}
@@ -272,6 +282,9 @@ export default function BranchGridMapView({
             onGridSearchResultIndexChange={onGridSearchResultIndexChange}
             onGridSearchFocusChange={onGridSearchFocusChange}
             onInteractionChange={onInteractionChange}
+            onPreviewNode={onPreviewNode}
+            previewInProgress={previewInProgress}
+            previewedNodeId={previewedNodeId}
             manuallyOpenedClumps={manuallyOpenedClumps}
             manuallyClosedClumps={manuallyClosedClumps}
             setManuallyOpenedClumps={setManuallyOpenedClumps}

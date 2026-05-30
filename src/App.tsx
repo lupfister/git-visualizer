@@ -75,6 +75,15 @@ import { setMapGridBackgroundActivity } from '../components/grid/mapGridBackgrou
 import { useWorktreeDraftMessages } from './useWorktreeDraftMessages';
 import { createRepoSyncScheduler } from './repoSyncScheduler';
 import { runOrchestratedRepoSync } from './orchestratedRepoSync';
+import {
+  detectProjectPreviewDefaults,
+  getProjectPreviewStatus,
+  startProjectPreview,
+  stopProjectPreview,
+  type PreviewTarget,
+  type ProjectPreviewConfig,
+  type ProjectPreviewResult,
+} from '../lib/git';
 
 const PROJECTS_STORAGE_KEY = 'git-visualizer:projects';
 const ACTIVE_PROJECT_STORAGE_KEY = 'git-visualizer:active-project';
@@ -121,6 +130,7 @@ type ProjectRecord = {
   name: string;
   lastOpenedAt: number;
   branchName?: string;
+  previewConfig?: ProjectPreviewConfig;
 };
 
 type ProjectSnapshot = RepoVisualSnapshot;
@@ -340,6 +350,13 @@ function App() {
   const [mapReadyForDisplay, setMapReadyForDisplay] = useState(false);
   const [mapPresentationState, setMapPresentationState] = useState<MapPresentationState>('loading');
   const [error, setError] = useState<string | null>(null);
+  const [previewSetupOpen, setPreviewSetupOpen] = useState(false);
+  const [previewDraftConfig, setPreviewDraftConfig] = useState<ProjectPreviewConfig | null>(null);
+  const [pendingPreviewTarget, setPendingPreviewTarget] = useState<PreviewTarget | null>(null);
+  const [pendingPreviewNodeId, setPendingPreviewNodeId] = useState<string | null>(null);
+  const [previewStatus, setPreviewStatus] = useState<ProjectPreviewResult | null>(null);
+  const [previewInProgress, setPreviewInProgress] = useState(false);
+  const [previewedNodeId, setPreviewedNodeId] = useState<string | null>(null);
   // scrollRequest.seq increments on each click so the same branch re-triggers the effect
   const scrollRequest: { branch: Branch; seq: number } | null = null;
   const focusedErrorBranch: Branch | null = null;
@@ -1460,6 +1477,10 @@ function App() {
         ...project,
         path: normalizedPath,
       };
+      const existing = previous.find((item) => item.path === normalizedPath);
+      if (!normalizedProject.previewConfig && existing?.previewConfig) {
+        normalizedProject.previewConfig = existing.previewConfig;
+      }
       const next = previous.some((item) => item.path === normalizedPath)
         ? previous.map((item) => (item.path === normalizedPath ? normalizedProject : item))
         : [...previous, normalizedProject];
@@ -1470,6 +1491,21 @@ function App() {
         // ignore storage failures
       }
       return trimmed;
+    });
+  }
+
+  function updateProjectPreviewConfig(path: string, previewConfig: ProjectPreviewConfig) {
+    const normalizedPath = normalizePath(path);
+    setProjects((previous) => {
+      const next = previous.map((project) => (
+        normalizePath(project.path) === normalizedPath ? { ...project, previewConfig } : project
+      ));
+      try {
+        localStorage.setItem(PROJECTS_STORAGE_KEY, JSON.stringify(next.slice(0, MAX_PROJECTS)));
+      } catch {
+        // ignore storage failures
+      }
+      return next;
     });
   }
 
@@ -6273,6 +6309,101 @@ function App() {
     setMapReadyForDisplay(true);
   }, []);
 
+  const activeProject = repoPath
+    ? projects.find((project) => normalizePath(project.path) === normalizePath(repoPath))
+    : null;
+
+  const runPreviewForTarget = useCallback(async (
+    target: PreviewTarget,
+    nodeId: string,
+    config: ProjectPreviewConfig,
+  ) => {
+    if (!repoPath) return;
+    setPreviewInProgress(true);
+    setPreviewStatus(null);
+    try {
+      const result = await startProjectPreview(repoPath, target, config);
+      setPreviewStatus(result);
+      setPreviewedNodeId(nodeId);
+    } catch (error) {
+      setPreviewStatus({
+        previewPath: '',
+        targetId: nodeId,
+        status: 'exited',
+        logs: error instanceof Error ? error.message : String(error),
+        previewMode: config.runCommand.toLowerCase().includes('tauri dev') ? 'native' : 'web',
+      });
+    } finally {
+      setPreviewInProgress(false);
+    }
+  }, [repoPath]);
+
+  const handlePreviewNode = useCallback(async (target: PreviewTarget, nodeId: string) => {
+    if (!repoPath) return;
+    const config = activeProject?.previewConfig;
+    if (config?.runCommand.trim()) {
+      await runPreviewForTarget(target, nodeId, config);
+      return;
+    }
+    const defaults = await detectProjectPreviewDefaults(repoPath).catch(() => ({
+      installCommand: 'npm install',
+      runCommand: 'npm run dev',
+    }));
+    setPendingPreviewTarget(target);
+    setPendingPreviewNodeId(nodeId);
+    setPreviewedNodeId(nodeId);
+    setPreviewDraftConfig({
+      installCommand: defaults.installCommand,
+      runCommand: defaults.runCommand,
+      lastConfirmedAt: Date.now(),
+    });
+    setPreviewSetupOpen(true);
+  }, [activeProject?.previewConfig, repoPath, runPreviewForTarget]);
+
+  const handleConfirmPreviewSetup = useCallback(async () => {
+    if (!repoPath || !pendingPreviewTarget || !previewDraftConfig) return;
+    const config = {
+      ...previewDraftConfig,
+      lastConfirmedAt: Date.now(),
+    };
+    updateProjectPreviewConfig(repoPath, config);
+    setPreviewSetupOpen(false);
+    await runPreviewForTarget(
+      pendingPreviewTarget,
+      pendingPreviewNodeId ?? (pendingPreviewTarget.kind === 'commit' ? pendingPreviewTarget.sha : pendingPreviewTarget.workingTreeId),
+      config,
+    );
+    setPendingPreviewTarget(null);
+    setPendingPreviewNodeId(null);
+  }, [pendingPreviewNodeId, pendingPreviewTarget, previewDraftConfig, repoPath, runPreviewForTarget]);
+
+  const handleStopPreview = useCallback(async () => {
+    if (!repoPath) return;
+    await stopProjectPreview(repoPath).catch(() => undefined);
+    setPreviewStatus(null);
+    setPreviewedNodeId(null);
+  }, [repoPath]);
+
+  useEffect(() => {
+    if (!repoPath || !previewStatus || previewStatus.status !== 'running') return;
+    let disposed = false;
+    const intervalId = window.setInterval(() => {
+      void getProjectPreviewStatus(repoPath)
+        .then((status) => {
+          if (disposed || !status) return;
+          setPreviewStatus(status);
+          if (status.status !== 'running') {
+            window.clearInterval(intervalId);
+          }
+        })
+        .catch(() => undefined);
+    }, 1000);
+    return () => {
+      disposed = true;
+      window.clearInterval(intervalId);
+    };
+  }, [previewStatus, repoPath]);
+
   const blockMapDisplay = !mapReadyForDisplay || mapPresentationState !== 'ready';
   const blockMapInteraction = mapLoading || loading;
 
@@ -6391,6 +6522,9 @@ function App() {
                 isDebugOpen={isGridDebugOpen}
                 onDebugClose={() => setIsGridDebugOpen(false)}
                 onInteractionChange={setIsMapInteracting}
+                onPreviewNode={handlePreviewNode}
+                previewInProgress={previewInProgress}
+                previewedNodeId={previewedNodeId}
                 manuallyOpenedClumps={manuallyOpenedGridClumps}
                 manuallyClosedClumps={manuallyClosedGridClumps}
                 setManuallyOpenedClumps={setManuallyOpenedGridClumps}
@@ -6404,6 +6538,100 @@ function App() {
                 worktreeDraftByWorkingTreeId={worktreeDraftByWorkingTreeId}
                   gridHudProps={gridHudProps}
               />
+              {previewSetupOpen && previewDraftConfig ? (
+                <div className="absolute inset-0 z-[90] flex items-center justify-center bg-background/70 p-4 backdrop-blur-sm">
+                  <div className="w-full max-w-md rounded-2xl border border-border bg-background p-4 shadow-lg">
+                    <p className="text-sm font-medium text-foreground">Preview commands</p>
+                    <p className="mt-1 text-xs text-muted-foreground">Confirm the commands used to build and run this project preview.</p>
+                    <label className="mt-3 block text-[10px] font-medium uppercase tracking-wide text-muted-foreground">
+                      Install
+                    </label>
+                    <input
+                      value={previewDraftConfig.installCommand}
+                      onChange={(event) => setPreviewDraftConfig({ ...previewDraftConfig, installCommand: event.target.value })}
+                      className="mt-1 w-full rounded-lg border border-border bg-background px-3 py-2 text-sm text-foreground placeholder:text-muted-foreground focus:outline-none"
+                    />
+                    <label className="mt-3 block text-[10px] font-medium uppercase tracking-wide text-muted-foreground">
+                      Run
+                    </label>
+                    <input
+                      value={previewDraftConfig.runCommand}
+                      onChange={(event) => setPreviewDraftConfig({ ...previewDraftConfig, runCommand: event.target.value })}
+                      className="mt-1 w-full rounded-lg border border-border bg-background px-3 py-2 text-sm text-foreground placeholder:text-muted-foreground focus:outline-none"
+                    />
+                    <div className="mt-4 flex items-center justify-end gap-2">
+                      <button
+                        type="button"
+                        onClick={() => {
+                          setPreviewSetupOpen(false);
+                          setPendingPreviewTarget(null);
+                          setPendingPreviewNodeId(null);
+                          setPreviewedNodeId(null);
+                        }}
+                        className="rounded-lg border border-border bg-background px-3 py-1.5 text-xs font-medium text-foreground transition-colors hover:bg-muted"
+                      >
+                        Cancel
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => void handleConfirmPreviewSetup()}
+                        disabled={!previewDraftConfig.runCommand.trim() || previewInProgress}
+                        className="rounded-lg border border-border bg-background px-3 py-1.5 text-xs font-medium text-foreground transition-colors hover:bg-muted disabled:cursor-not-allowed disabled:opacity-50"
+                      >
+                        {previewInProgress ? 'Starting...' : 'Save and preview'}
+                      </button>
+                    </div>
+                  </div>
+                </div>
+              ) : null}
+              {previewStatus ? (
+                <div className="pointer-events-none absolute bottom-4 right-4 z-[85] w-[min(28rem,calc(100vw-2rem))]">
+                  <div className="pointer-events-auto rounded-2xl border border-border bg-card/95 p-3 shadow-lg backdrop-blur-sm">
+                    <div className="flex items-start justify-between gap-3">
+                      <div className="min-w-0">
+                        <p className="text-sm font-medium text-foreground">Preview {previewStatus.status === 'running' ? 'running' : previewStatus.status}</p>
+                        {previewStatus.previewMode === 'native' ? (
+                          <p className="mt-1 text-xs text-muted-foreground">Native app launched from the preview worktree.</p>
+                        ) : previewStatus.url ? (
+                          <p className="mt-1 truncate text-xs text-muted-foreground">{previewStatus.url}</p>
+                        ) : (
+                          <p className="mt-1 text-xs text-muted-foreground">No localhost URL detected yet.</p>
+                        )}
+                      </div>
+                      <div className="flex shrink-0 items-center gap-1.5">
+                        {previewStatus.url ? (
+                          <>
+                            <button
+                              type="button"
+                              onClick={() => void navigator.clipboard?.writeText(previewStatus.url ?? '')}
+                              className="rounded-lg border border-border bg-background px-2 py-1 text-xs font-medium text-foreground transition-colors hover:bg-muted"
+                            >
+                              Copy
+                            </button>
+                            <button
+                              type="button"
+                              onClick={() => previewStatus.url ? window.open(previewStatus.url, '_blank') : undefined}
+                              className="rounded-lg border border-border bg-background px-2 py-1 text-xs font-medium text-foreground transition-colors hover:bg-muted"
+                            >
+                              Open
+                            </button>
+                          </>
+                        ) : null}
+                        <button
+                          type="button"
+                          onClick={() => void handleStopPreview()}
+                          className="rounded-lg border border-border bg-background px-2 py-1 text-xs font-medium text-foreground transition-colors hover:bg-muted"
+                        >
+                          Stop
+                        </button>
+                      </div>
+                    </div>
+                    {previewStatus.logs ? (
+                      <pre className="mt-2 max-h-28 overflow-auto rounded-lg border border-border/50 bg-muted/30 p-2 text-[11px] text-muted-foreground">{previewStatus.logs}</pre>
+                    ) : null}
+                  </div>
+                </div>
+              ) : null}
           </div>
 
         </div>

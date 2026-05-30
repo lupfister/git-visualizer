@@ -1,7 +1,7 @@
 import type { BranchGridViewProps } from './LayoutGrid';
 import { isWorkingTreeCommitId } from '../../lib/worktreeSessions';
 import ToolbarActionContent from './ToolbarActionContent';
-import { ChevronDown, GitBranchPlus, GitMerge } from 'lucide-react';
+import { ChevronDown, GitBranchPlus, GitMerge, MonitorPlay } from 'lucide-react';
 import { useEffect, useRef, useState } from 'react';
 import { cn } from './mapGridUtils';
 
@@ -33,6 +33,8 @@ type Props = {
   onStashLocalChanges?: BranchGridViewProps['onStashLocalChanges'];
   onPushAllBranches?: BranchGridViewProps['onPushAllBranches'];
   onPushCommitTargets?: BranchGridViewProps['onPushCommitTargets'];
+  onPreviewSelectedNode?: () => Promise<void> | void;
+  previewInProgress?: boolean;
   onMergeRefsIntoBranch?: BranchGridViewProps['onMergeRefsIntoBranch'];
   selectedPushTargets: PushTarget[];
   selectedPushLabel: string;
@@ -62,6 +64,8 @@ export default function CommitControls({
   onStashLocalChanges,
   onPushAllBranches,
   onPushCommitTargets,
+  onPreviewSelectedNode,
+  previewInProgress = false,
   onMergeRefsIntoBranch,
   selectedPushTargets,
   selectedPushLabel,
@@ -325,6 +329,21 @@ export default function CommitControls({
         </div>
 
         <div className="flex w-fit flex-nowrap items-center gap-[9px]">
+          <button
+            type="button"
+            onClick={() => void onPreviewSelectedNode?.()}
+            disabled={!onPreviewSelectedNode || previewInProgress}
+            aria-busy={previewInProgress ? true : undefined}
+            className={cn(
+              controlClassName,
+              'pointer-events-auto relative z-10 !border-border !bg-background hover:!bg-muted',
+              compactLabels ? 'w-7 justify-center px-0' : '',
+            )}
+            title="Preview selected node"
+          >
+            <MonitorPlay className={cn('h-[14px] w-[14px] shrink-0', compactLabels ? '' : 'mr-1.5', previewInProgress && 'toolbar-action-shimmer__lucide')} />
+            {!compactLabels ? (previewInProgress ? 'Starting...' : 'Preview') : null}
+          </button>
           <button
             type="button"
             onClick={() => setNewBranchDialogOpen(true)}

@@ -1,14 +1,15 @@
 mod git;
 mod github;
-mod opencode;
 #[cfg(target_os = "macos")]
 mod macos_traffic_lights;
+mod opencode;
 
 use tauri::{Emitter, Manager};
 
+use chrono::{DateTime, Duration, Utc};
 use git::{Branch, CheckedOutRef, DirectCommit, MergeNode};
 use github::{GitHubAuthStatus, GitHubInfo, MergedPR, OpenPR};
-use chrono::{DateTime, Duration, Utc};
+use notify::{RecursiveMode, Watcher};
 use rusqlite::{params, Connection, OptionalExtension};
 use serde::{Deserialize, Serialize};
 use std::{
@@ -16,13 +17,15 @@ use std::{
     fs::{self, File},
     io::{BufRead, BufReader},
     path::{Path, PathBuf},
+    process::{Child, Stdio},
     sync::{
         atomic::{AtomicBool, AtomicU64, Ordering},
         Mutex, OnceLock,
     },
     time::{Duration as StdDuration, Instant},
 };
-use notify::{Watcher, RecursiveMode};
+#[cfg(unix)]
+use std::os::unix::process::CommandExt;
 
 #[cfg(target_os = "macos")]
 use objc2_app_kit::NSWorkspace;
@@ -93,7 +96,43 @@ struct PersistProjectSnapshotResult {
     persisted: bool,
 }
 
-static WATCHER_STATE: OnceLock<Mutex<HashMap<String, notify::RecommendedWatcher>>> = OnceLock::new();
+#[derive(Serialize, Deserialize, Clone)]
+#[serde(rename_all = "camelCase")]
+struct ProjectPreviewConfig {
+    install_command: String,
+    run_command: String,
+    last_confirmed_at: i64,
+}
+
+#[derive(Serialize, Deserialize, Clone)]
+#[serde(rename_all = "camelCase")]
+struct ProjectPreviewDefaults {
+    install_command: String,
+    run_command: String,
+}
+
+#[derive(Serialize, Deserialize, Clone)]
+#[serde(rename_all = "camelCase")]
+struct ProjectPreviewResult {
+    preview_path: String,
+    target_id: String,
+    url: Option<String>,
+    status: String,
+    logs: String,
+    preview_mode: String,
+}
+
+struct PreviewProcess {
+    child: Child,
+    log_path: PathBuf,
+    preview_path: String,
+    target_id: String,
+    preview_mode: String,
+}
+
+static WATCHER_STATE: OnceLock<Mutex<HashMap<String, notify::RecommendedWatcher>>> =
+    OnceLock::new();
+static PREVIEW_PROCESS_STATE: OnceLock<Mutex<HashMap<String, PreviewProcess>>> = OnceLock::new();
 const GIT_ACTIVITY_GRAPH_MIN_EMIT_MS: u64 = 800;
 /// Debounce bursty editor saves before emitting working-tree `local` activity.
 const GIT_ACTIVITY_WORKTREE_DEBOUNCE_MS: u64 = 500;
@@ -277,27 +316,37 @@ fn compute_lane_by_branch(
             .into_iter()
             .flat_map(|previews| previews.iter())
             .filter(|preview| preview.kind != "branch-created")
-            .filter_map(|preview| chrono::DateTime::parse_from_rfc3339(&preview.date).ok().map(|dt| dt.timestamp_millis()))
+            .filter_map(|preview| {
+                chrono::DateTime::parse_from_rfc3339(&preview.date)
+                    .ok()
+                    .map(|dt| dt.timestamp_millis())
+            })
             .min();
         if let Some(time) = first_time {
             first_commit_time_by_branch.insert(branch.name.clone(), time);
         }
     }
     let branch_start_time = |branch: &Branch| -> i64 {
-        first_commit_time_by_branch.get(&branch.name).copied().unwrap_or_else(|| {
-            parse_time_ms(
-                branch
-                    .created_date
-                    .as_deref()
-                    .or(branch.diverged_from_date.as_deref())
-                    .or(Some(branch.last_commit_date.as_str())),
-            )
-        })
+        first_commit_time_by_branch
+            .get(&branch.name)
+            .copied()
+            .unwrap_or_else(|| {
+                parse_time_ms(
+                    branch
+                        .created_date
+                        .as_deref()
+                        .or(branch.diverged_from_date.as_deref())
+                        .or(Some(branch.last_commit_date.as_str())),
+                )
+            })
     };
     let resolve_parent = |branch: &Branch| -> Option<String> {
-        let mapped = branch_parent_by_name.get(&branch.name).and_then(|value| value.clone());
+        let mapped = branch_parent_by_name
+            .get(&branch.name)
+            .and_then(|value| value.clone());
         if let Some(parent) = mapped {
-            if parent != branch.name && (parent == default_branch || by_name.contains_key(&parent)) {
+            if parent != branch.name && (parent == default_branch || by_name.contains_key(&parent))
+            {
                 return Some(parent);
             }
         }
@@ -379,7 +428,16 @@ fn visual_cache_db_path() -> Result<PathBuf, String> {
     let base_dir = dirs::data_local_dir()
         .or_else(dirs::cache_dir)
         .ok_or_else(|| "Could not determine local data directory".to_string())?;
-    Ok(base_dir.join("git-visualizer").join("repo-visual-cache.sqlite3"))
+    Ok(base_dir
+        .join("git-visualizer")
+        .join("repo-visual-cache.sqlite3"))
+}
+
+fn preview_worktree_storage_root() -> Result<PathBuf, String> {
+    let base_dir = dirs::data_local_dir()
+        .or_else(dirs::cache_dir)
+        .ok_or_else(|| "Could not determine local data directory".to_string())?;
+    Ok(base_dir.join("git-visualizer").join("preview-worktrees"))
 }
 
 fn open_visual_cache_connection() -> Result<Connection, String> {
@@ -387,7 +445,8 @@ fn open_visual_cache_connection() -> Result<Connection, String> {
     if let Some(parent) = db_path.parent() {
         fs::create_dir_all(parent).map_err(|e| format!("Failed to create cache directory: {e}"))?;
     }
-    let conn = Connection::open(db_path).map_err(|e| format!("Failed to open cache database: {e}"))?;
+    let conn =
+        Connection::open(db_path).map_err(|e| format!("Failed to open cache database: {e}"))?;
     conn.execute_batch(
         "
         CREATE TABLE IF NOT EXISTS repo_visual_cache (
@@ -479,7 +538,10 @@ fn store_repo_visual_snapshot(snapshot: &RepoVisualSnapshot) -> Result<(), Strin
     Ok(())
 }
 
-fn load_cached_repo_layout_snapshot(repo_path: &str, layout_key: &str) -> Result<Option<String>, String> {
+fn load_cached_repo_layout_snapshot(
+    repo_path: &str,
+    layout_key: &str,
+) -> Result<Option<String>, String> {
     let conn = open_visual_cache_connection()?;
     let payload: Option<String> = conn
         .query_row(
@@ -492,7 +554,11 @@ fn load_cached_repo_layout_snapshot(repo_path: &str, layout_key: &str) -> Result
     Ok(payload)
 }
 
-fn upsert_repo_layout_snapshot(repo_path: &str, layout_key: &str, payload_json: &str) -> Result<(), String> {
+fn upsert_repo_layout_snapshot(
+    repo_path: &str,
+    layout_key: &str,
+    payload_json: &str,
+) -> Result<(), String> {
     let conn = open_visual_cache_connection()?;
     conn.execute(
         "
@@ -502,7 +568,12 @@ fn upsert_repo_layout_snapshot(repo_path: &str, layout_key: &str, payload_json: 
             payload_json = excluded.payload_json,
             updated_at_ms = excluded.updated_at_ms
         ",
-        params![repo_path, layout_key, payload_json, Utc::now().timestamp_millis()],
+        params![
+            repo_path,
+            layout_key,
+            payload_json,
+            Utc::now().timestamp_millis()
+        ],
     )
     .map_err(|e| format!("Failed to upsert layout snapshot: {e}"))?;
     Ok(())
@@ -512,14 +583,13 @@ fn load_cached_repo_node_positions(repo_path: &str) -> Result<Option<String>, St
     let id = normalize_repo_path_id(repo_path);
     let conn = open_visual_cache_connection()?;
     let try_key = |key: &str| -> Result<Option<String>, String> {
-        conn
-            .query_row(
-                "SELECT payload_json FROM repo_node_position_cache WHERE repo_path = ?1",
-                params![key],
-                |row| row.get(0),
-            )
-            .optional()
-            .map_err(|e| format!("Failed to read node position cache row: {e}"))
+        conn.query_row(
+            "SELECT payload_json FROM repo_node_position_cache WHERE repo_path = ?1",
+            params![key],
+            |row| row.get(0),
+        )
+        .optional()
+        .map_err(|e| format!("Failed to read node position cache row: {e}"))
     };
     if let Some(payload) = try_key(&id)? {
         return Ok(Some(payload));
@@ -601,7 +671,11 @@ fn compute_repo_fingerprint(repo_path: &str) -> Result<(String, RepoRefreshFinge
                 worktree.path,
                 worktree.head_sha,
                 worktree.branch_name.clone().unwrap_or_default(),
-                if worktree.has_uncommitted_changes { "1" } else { "0" }
+                if worktree.has_uncommitted_changes {
+                    "1"
+                } else {
+                    "0"
+                }
             )
         })
         .collect();
@@ -624,7 +698,11 @@ fn compute_repo_fingerprint(repo_path: &str) -> Result<(String, RepoRefreshFinge
         default_branch,
         checked_out_ref.head_sha,
         upstream_part,
-        if checked_out_ref.has_uncommitted_changes { "1" } else { "0" },
+        if checked_out_ref.has_uncommitted_changes {
+            "1"
+        } else {
+            "0"
+        },
         branch_ref_sig,
         worktree_sig,
         stash_sig
@@ -645,7 +723,9 @@ fn compute_repo_fingerprint(repo_path: &str) -> Result<(String, RepoRefreshFinge
     ))
 }
 
-fn build_simple_graph_projection(snapshot: &RepoVisualSnapshot) -> (Vec<SimpleGraphClump>, Vec<SimpleGraphNode>) {
+fn build_simple_graph_projection(
+    snapshot: &RepoVisualSnapshot,
+) -> (Vec<SimpleGraphClump>, Vec<SimpleGraphNode>) {
     let mut branch_order: Vec<String> = std::iter::once(snapshot.default_branch.clone())
         .chain(snapshot.branches.iter().map(|branch| branch.name.clone()))
         .collect::<HashSet<_>>()
@@ -688,8 +768,12 @@ fn build_simple_graph_projection(snapshot: &RepoVisualSnapshot) -> (Vec<SimpleGr
         };
         for (chunk_idx, chunk) in commits.chunks(chunk_size).enumerate() {
             let clump_id = format!("clump:{}:{}", branch_name, chunk_idx);
-            let lead_sha = chunk.first().map(|commit| commit.full_sha.clone()).unwrap_or_default();
-            let commit_shas: Vec<String> = chunk.iter().map(|commit| commit.full_sha.clone()).collect();
+            let lead_sha = chunk
+                .first()
+                .map(|commit| commit.full_sha.clone())
+                .unwrap_or_default();
+            let commit_shas: Vec<String> =
+                chunk.iter().map(|commit| commit.full_sha.clone()).collect();
             clumps.push(SimpleGraphClump {
                 id: clump_id.clone(),
                 branch_name: branch_name.clone(),
@@ -715,7 +799,10 @@ fn build_simple_graph_projection(snapshot: &RepoVisualSnapshot) -> (Vec<SimpleGr
     (clumps, nodes)
 }
 
-fn load_active_project_snapshot(conn: &Connection, project_id: &str) -> Result<Option<ProjectSnapshotRecord>, String> {
+fn load_active_project_snapshot(
+    conn: &Connection,
+    project_id: &str,
+) -> Result<Option<ProjectSnapshotRecord>, String> {
     let row: Option<(String, String, i64, String, i32, i64, String)> = conn
         .query_row(
             "
@@ -730,7 +817,16 @@ fn load_active_project_snapshot(conn: &Connection, project_id: &str) -> Result<O
         )
         .optional()
         .map_err(|e| format!("Failed to query active project snapshot: {e}"))?;
-    let Some((project_id, repo_path, snapshot_version, fingerprint, schema_version, created_at_ms, payload_json)) = row else {
+    let Some((
+        project_id,
+        repo_path,
+        snapshot_version,
+        fingerprint,
+        schema_version,
+        created_at_ms,
+        payload_json,
+    )) = row
+    else {
         return Ok(None);
     };
     let payload = serde_json::from_str::<ProjectGraphSnapshotPayload>(&payload_json)
@@ -746,7 +842,10 @@ fn load_active_project_snapshot(conn: &Connection, project_id: &str) -> Result<O
     }))
 }
 
-fn publish_project_snapshot(repo_path: &str, fingerprint_override: Option<&str>) -> Result<ProjectSnapshotRecord, String> {
+fn publish_project_snapshot(
+    repo_path: &str,
+    fingerprint_override: Option<&str>,
+) -> Result<ProjectSnapshotRecord, String> {
     let normalized_repo_path = normalize_repo_path_id(repo_path);
     let project_id = normalized_repo_path.clone();
     let snapshot = compute_repo_visual_snapshot(&normalized_repo_path)?;
@@ -820,7 +919,12 @@ fn publish_project_snapshot(repo_path: &str, fingerprint_override: Option<&str>)
         SET active_snapshot_version = ?2, last_fingerprint = ?3, last_checked_at_ms = ?4
         WHERE project_id = ?1
         ",
-        params![normalize_repo_path_id(repo_path), next_version, fingerprint, now_ms],
+        params![
+            normalize_repo_path_id(repo_path),
+            next_version,
+            fingerprint,
+            now_ms
+        ],
     )
     .map_err(|e| format!("Failed to update project registry active snapshot: {e}"))?;
     tx.execute(
@@ -834,7 +938,10 @@ fn publish_project_snapshot(repo_path: &str, fingerprint_override: Option<&str>)
             LIMIT ?2
           )
         ",
-        params![normalize_repo_path_id(repo_path), PROJECT_SNAPSHOT_RETAIN_COUNT],
+        params![
+            normalize_repo_path_id(repo_path),
+            PROJECT_SNAPSHOT_RETAIN_COUNT
+        ],
     )
     .map_err(|e| format!("Failed to prune old project snapshots: {e}"))?;
     tx.commit()
@@ -886,7 +993,8 @@ fn compute_repo_visual_snapshot(repo_path: &str) -> Result<RepoVisualSnapshot, S
     let (name, resolved_path) = git::get_repo_info(path).map_err(|e| e.to_string())?;
     let default_branch = git::get_default_branch(path).map_err(|e| e.to_string())?;
     let mut branches = git::list_branches(path, &default_branch).map_err(|e| e.to_string())?;
-    let merge_nodes = fetch_all_merge_nodes_for_branches_internal(&resolved_path, &branches, &default_branch)?;
+    let merge_nodes =
+        fetch_all_merge_nodes_for_branches_internal(&resolved_path, &branches, &default_branch)?;
     let merge_target_branch_by_commit_sha: HashMap<String, String> = merge_nodes
         .iter()
         .map(|node| (node.target_commit_sha.clone(), node.target_branch.clone()))
@@ -900,16 +1008,24 @@ fn compute_repo_visual_snapshot(repo_path: &str) -> Result<RepoVisualSnapshot, S
         &all_branch_names,
         &merge_target_branch_by_commit_sha,
     )
-        .map_err(|e| e.to_string())?;
+    .map_err(|e| e.to_string())?;
     let mut direct_commits = direct_commits;
-    let mut local_branch_names: HashSet<String> = branches.iter().map(|branch| branch.name.clone()).collect();
+    let mut local_branch_names: HashSet<String> =
+        branches.iter().map(|branch| branch.name.clone()).collect();
     local_branch_names.insert(default_branch.clone());
     let mut remote_only_branches = Vec::new();
-    for (branch_name, remote_head) in git::list_origin_branch_heads(path).map_err(|e| e.to_string())? {
+    for (branch_name, remote_head) in
+        git::list_origin_branch_heads(path).map_err(|e| e.to_string())?
+    {
         let upstream_ref = format!("origin/{branch_name}");
         if local_branch_names.contains(&branch_name) {
-            git::merge_upstream_ahead_commits(path, &branch_name, &upstream_ref, &mut direct_commits)
-                .map_err(|e| e.to_string())?;
+            git::merge_upstream_ahead_commits(
+                path,
+                &branch_name,
+                &upstream_ref,
+                &mut direct_commits,
+            )
+            .map_err(|e| e.to_string())?;
             continue;
         }
         git::merge_remote_only_branch_commits(
@@ -920,20 +1036,27 @@ fn compute_repo_visual_snapshot(repo_path: &str) -> Result<RepoVisualSnapshot, S
             &mut direct_commits,
         )
         .map_err(|e| e.to_string())?;
-        if let Some(branch) = git::build_remote_only_branch(path, &branch_name, &remote_head, &default_branch) {
+        if let Some(branch) =
+            git::build_remote_only_branch(path, &branch_name, &remote_head, &default_branch)
+        {
             remote_only_branches.push(branch);
         }
     }
     branches.extend(remote_only_branches);
     branches.sort_by(|left, right| right.last_commit_date.cmp(&left.last_commit_date));
-    let unpushed_direct_commits = get_unpushed_direct_commits_blocking(resolved_path.clone(), default_branch.clone())?;
+    let unpushed_direct_commits =
+        get_unpushed_direct_commits_blocking(resolved_path.clone(), default_branch.clone())?;
     let checked_out_ref = git::get_checked_out_ref(path).ok();
     let worktrees = git::list_worktrees(path).unwrap_or_default();
     let stashes = git::list_stashes(path).unwrap_or_default();
 
     let mut unpushed_commit_shas_by_branch = HashMap::new();
-    for branch_name in std::iter::once(default_branch.clone()).chain(branches.iter().map(|branch| branch.name.clone())) {
-        let shas = get_branch_unpushed_commit_shas_blocking(resolved_path.clone(), branch_name.clone()).unwrap_or_default();
+    for branch_name in std::iter::once(default_branch.clone())
+        .chain(branches.iter().map(|branch| branch.name.clone()))
+    {
+        let shas =
+            get_branch_unpushed_commit_shas_blocking(resolved_path.clone(), branch_name.clone())
+                .unwrap_or_default();
         unpushed_commit_shas_by_branch.insert(branch_name, shas);
     }
 
@@ -955,7 +1078,9 @@ fn compute_repo_visual_snapshot(repo_path: &str) -> Result<RepoVisualSnapshot, S
     for branch in &active_branches {
         if let Some(parent) = branch.parent_branch.as_ref() {
             if parent != &branch.name {
-                *child_branch_count_by_parent.entry(parent.clone()).or_insert(0) += 1;
+                *child_branch_count_by_parent
+                    .entry(parent.clone())
+                    .or_insert(0) += 1;
             }
         }
     }
@@ -988,7 +1113,11 @@ fn compute_repo_visual_snapshot(repo_path: &str) -> Result<RepoVisualSnapshot, S
             left_date.cmp(&right_date)
         });
         for branch in sorted.into_iter().skip(1) {
-            let has_children = child_branch_count_by_parent.get(&branch.name).copied().unwrap_or(0) > 0;
+            let has_children = child_branch_count_by_parent
+                .get(&branch.name)
+                .copied()
+                .unwrap_or(0)
+                > 0;
             let head_matches_origin = !branch.head_sha.is_empty()
                 && (branch.head_sha == branch.created_from_sha.clone().unwrap_or_default()
                     || branch.head_sha == branch.diverged_from_sha.clone().unwrap_or_default());
@@ -1002,7 +1131,11 @@ fn compute_repo_visual_snapshot(repo_path: &str) -> Result<RepoVisualSnapshot, S
         }
     }
     for branch in &active_branches {
-        let has_children = child_branch_count_by_parent.get(&branch.name).copied().unwrap_or(0) > 0;
+        let has_children = child_branch_count_by_parent
+            .get(&branch.name)
+            .copied()
+            .unwrap_or(0)
+            > 0;
         let head_matches_origin = !branch.head_sha.is_empty()
             && (branch.head_sha == branch.created_from_sha.clone().unwrap_or_default()
                 || branch.head_sha == branch.diverged_from_sha.clone().unwrap_or_default());
@@ -1052,15 +1185,12 @@ fn compute_repo_visual_snapshot(repo_path: &str) -> Result<RepoVisualSnapshot, S
         if sha.is_empty() {
             return None;
         }
-        commit_branch_by_sha
-            .get(sha)
-            .cloned()
-            .or_else(|| {
-                commit_branch_by_sha
-                    .iter()
-                    .find(|(commit_sha, _)| commit_sha.starts_with(sha) || sha.starts_with(*commit_sha))
-                    .map(|(_, branch_name)| branch_name.clone())
-            })
+        commit_branch_by_sha.get(sha).cloned().or_else(|| {
+            commit_branch_by_sha
+                .iter()
+                .find(|(commit_sha, _)| commit_sha.starts_with(sha) || sha.starts_with(*commit_sha))
+                .map(|(_, branch_name)| branch_name.clone())
+        })
     };
     let branch_parent_by_name = {
         let mut map = HashMap::<String, Option<String>>::new();
@@ -1074,8 +1204,10 @@ fn compute_repo_visual_snapshot(repo_path: &str) -> Result<RepoVisualSnapshot, S
                 .iter()
                 .filter(|commit| commit.branch == branch.name)
                 .collect();
-            let branch_commit_shas: HashSet<&str> =
-                branch_commits.iter().map(|commit| commit.full_sha.as_str()).collect();
+            let branch_commit_shas: HashSet<&str> = branch_commits
+                .iter()
+                .map(|commit| commit.full_sha.as_str())
+                .collect();
             let graph_parent_sha = branch_commits
                 .iter()
                 .filter(|commit| {
@@ -1161,7 +1293,11 @@ fn watch_repo(repo_path: String, app: tauri::AppHandle) -> Result<(), String> {
         .filter(|value| !value.is_empty())
         .map(|value| {
             let path = PathBuf::from(value);
-            if path.is_absolute() { path } else { repo_root.join(path) }
+            if path.is_absolute() {
+                path
+            } else {
+                repo_root.join(path)
+            }
         })
         .filter(|path| path.exists());
     let Some(primary_git_dir) = resolved_git_dir else {
@@ -1219,33 +1355,31 @@ fn watch_repo(repo_path: String, app: tauri::AppHandle) -> Result<(), String> {
     let repo_path_for_worktree_debounce = repo_path_for_events.clone();
     let last_worktree_emit_for_debounce = last_worktree_emit_ms.clone();
 
-    std::thread::spawn(move || {
+    std::thread::spawn(move || loop {
+        match worktree_signal_rx.recv() {
+            Ok(()) => {}
+            Err(_) => break,
+        }
         loop {
-            match worktree_signal_rx.recv() {
-                Ok(()) => {}
-                Err(_) => break,
+            match worktree_signal_rx.recv_timeout(std::time::Duration::from_millis(
+                GIT_ACTIVITY_WORKTREE_DEBOUNCE_MS,
+            )) {
+                Ok(()) => continue,
+                Err(std::sync::mpsc::RecvTimeoutError::Timeout) => break,
+                Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => return,
             }
-            loop {
-                match worktree_signal_rx.recv_timeout(std::time::Duration::from_millis(
-                    GIT_ACTIVITY_WORKTREE_DEBOUNCE_MS,
-                )) {
-                    Ok(()) => continue,
-                    Err(std::sync::mpsc::RecvTimeoutError::Timeout) => break,
-                    Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => return,
-                }
-            }
-            let now_ms = Utc::now().timestamp_millis().max(0) as u64;
-            let prev_ms = last_worktree_emit_for_debounce.load(Ordering::Relaxed);
-            if now_ms.saturating_sub(prev_ms) >= GIT_ACTIVITY_GRAPH_MIN_EMIT_MS {
-                last_worktree_emit_for_debounce.store(now_ms, Ordering::Relaxed);
-                let _ = app_for_worktree_debounce.emit(
-                    "git-activity",
-                    GitActivityEventPayload {
-                        repo_path: repo_path_for_worktree_debounce.clone(),
-                        kind: "local".to_string(),
-                    },
-                );
-            }
+        }
+        let now_ms = Utc::now().timestamp_millis().max(0) as u64;
+        let prev_ms = last_worktree_emit_for_debounce.load(Ordering::Relaxed);
+        if now_ms.saturating_sub(prev_ms) >= GIT_ACTIVITY_GRAPH_MIN_EMIT_MS {
+            last_worktree_emit_for_debounce.store(now_ms, Ordering::Relaxed);
+            let _ = app_for_worktree_debounce.emit(
+                "git-activity",
+                GitActivityEventPayload {
+                    repo_path: repo_path_for_worktree_debounce.clone(),
+                    kind: "local".to_string(),
+                },
+            );
         }
     });
 
@@ -1275,8 +1409,8 @@ fn watch_repo(repo_path: String, app: tauri::AppHandle) -> Result<(), String> {
                             continue;
                         }
 
-                        let is_worktree_path = path_str.contains("/worktrees/")
-                            || path_str.contains("\\worktrees\\");
+                        let is_worktree_path =
+                            path_str.contains("/worktrees/") || path_str.contains("\\worktrees\\");
                         if is_worktree_path {
                             has_graph_change = true;
                             continue;
@@ -1653,7 +1787,10 @@ async fn get_branches(repo_path: String) -> Result<Vec<Branch>, String> {
 }
 
 #[tauri::command(rename_all = "camelCase")]
-async fn get_repo_visual_snapshot(repo_path: String, force_refresh: Option<bool>) -> Result<RepoVisualSnapshot, String> {
+async fn get_repo_visual_snapshot(
+    repo_path: String,
+    force_refresh: Option<bool>,
+) -> Result<RepoVisualSnapshot, String> {
     run_blocking(move || {
         if !force_refresh.unwrap_or(false) {
             if let Some(cached) = load_cached_repo_visual_snapshot(&repo_path)? {
@@ -1668,7 +1805,10 @@ async fn get_repo_visual_snapshot(repo_path: String, force_refresh: Option<bool>
 }
 
 #[tauri::command(rename_all = "camelCase")]
-async fn add_project_and_ingest(repo_path: String, force_refresh: Option<bool>) -> Result<ProjectSnapshotRecord, String> {
+async fn add_project_and_ingest(
+    repo_path: String,
+    force_refresh: Option<bool>,
+) -> Result<ProjectSnapshotRecord, String> {
     run_blocking(move || {
         let normalized_repo_path = normalize_repo_path_id(&repo_path);
         let project_id = normalized_repo_path.clone();
@@ -1678,7 +1818,9 @@ async fn add_project_and_ingest(repo_path: String, force_refresh: Option<bool>) 
         let (current_fingerprint, _) = compute_repo_fingerprint(&normalized_repo_path)?;
         if !force_refresh {
             if let Some(active) = existing {
-                if active.fingerprint == current_fingerprint && active.schema_version == PROJECT_SNAPSHOT_SCHEMA_VERSION {
+                if active.fingerprint == current_fingerprint
+                    && active.schema_version == PROJECT_SNAPSHOT_SCHEMA_VERSION
+                {
                     return Ok(active);
                 }
             }
@@ -1689,7 +1831,9 @@ async fn add_project_and_ingest(repo_path: String, force_refresh: Option<bool>) 
 }
 
 #[tauri::command(rename_all = "camelCase")]
-async fn load_project_snapshot(project_id: String) -> Result<Option<ProjectSnapshotRecord>, String> {
+async fn load_project_snapshot(
+    project_id: String,
+) -> Result<Option<ProjectSnapshotRecord>, String> {
     run_blocking(move || {
         let conn = open_visual_cache_connection()?;
         load_active_project_snapshot(&conn, &normalize_repo_path_id(&project_id))
@@ -1702,7 +1846,9 @@ async fn check_project_fingerprint(project_id: String) -> Result<FingerprintChec
     run_blocking(move || check_project_fingerprint_blocking(project_id)).await
 }
 
-fn check_project_fingerprint_blocking(project_id: String) -> Result<FingerprintCheckResult, String> {
+fn check_project_fingerprint_blocking(
+    project_id: String,
+) -> Result<FingerprintCheckResult, String> {
     let normalized_project_id = normalize_repo_path_id(&project_id);
     let conn = open_visual_cache_connection()?;
     let row: Option<(String, Option<String>)> = conn
@@ -1719,7 +1865,10 @@ fn check_project_fingerprint_blocking(project_id: String) -> Result<FingerprintC
         .unwrap_or_else(|| normalized_project_id.clone());
     let stored_fingerprint = row.and_then(|(_, fingerprint)| fingerprint);
     let (current_fingerprint, _) = compute_repo_fingerprint(&repo_path)?;
-    let changed = stored_fingerprint.as_ref().map(|value| value != &current_fingerprint).unwrap_or(true);
+    let changed = stored_fingerprint
+        .as_ref()
+        .map(|value| value != &current_fingerprint)
+        .unwrap_or(true);
     conn.execute(
         "
         INSERT INTO project_registry(project_id, repo_path, active_snapshot_version, last_fingerprint, last_checked_at_ms)
@@ -1835,12 +1984,19 @@ async fn persist_project_snapshot(
 }
 
 #[tauri::command(rename_all = "camelCase")]
-fn get_repo_layout_snapshot(repo_path: String, layout_key: String) -> Result<Option<String>, String> {
+fn get_repo_layout_snapshot(
+    repo_path: String,
+    layout_key: String,
+) -> Result<Option<String>, String> {
     load_cached_repo_layout_snapshot(&repo_path, &layout_key)
 }
 
 #[tauri::command(rename_all = "camelCase")]
-fn store_repo_layout_snapshot(repo_path: String, layout_key: String, payload_json: String) -> Result<(), String> {
+fn store_repo_layout_snapshot(
+    repo_path: String,
+    layout_key: String,
+    payload_json: String,
+) -> Result<(), String> {
     upsert_repo_layout_snapshot(&repo_path, &layout_key, &payload_json)
 }
 
@@ -1878,13 +2034,20 @@ fn compute_repo_sync_peek(repo_path: &str) -> Result<RepoSyncPeek, String> {
         .map_err(|e| e.to_string())?
         .trim()
         .to_string();
-    let porcelain = git::cli::run(path, &["status", "--porcelain=v1", "--untracked-files=normal"])
-        .map_err(|e| e.to_string())?;
+    let porcelain = git::cli::run(
+        path,
+        &["status", "--porcelain=v1", "--untracked-files=normal"],
+    )
+    .map_err(|e| e.to_string())?;
     let has_uncommitted_changes = !porcelain.trim().is_empty();
 
     let branch_heads_output = git::cli::run(
         path,
-        &["for-each-ref", "refs/heads", "--format=%(refname:short):%(objectname)"],
+        &[
+            "for-each-ref",
+            "refs/heads",
+            "--format=%(refname:short):%(objectname)",
+        ],
     )
     .map_err(|e| e.to_string())?;
     let mut branch_head_lines: Vec<String> = branch_heads_output
@@ -1905,7 +2068,11 @@ fn compute_repo_sync_peek(repo_path: &str) -> Result<RepoSyncPeek, String> {
                 worktree.path,
                 worktree.head_sha,
                 worktree.branch_name.clone().unwrap_or_default(),
-                if worktree.has_uncommitted_changes { "1" } else { "0" }
+                if worktree.has_uncommitted_changes {
+                    "1"
+                } else {
+                    "0"
+                }
             )
         })
         .collect();
@@ -1919,11 +2086,12 @@ fn compute_repo_sync_peek(repo_path: &str) -> Result<RepoSyncPeek, String> {
         .collect::<Vec<_>>()
         .join("|");
 
-    let head_unpushed_count = git::cli::run(path, &["rev-list", "--count", "HEAD@{upstream}..HEAD"])
-        .ok()
-        .map(|value| value.trim().to_string())
-        .filter(|value| !value.is_empty())
-        .unwrap_or_else(|| "0".to_string());
+    let head_unpushed_count =
+        git::cli::run(path, &["rev-list", "--count", "HEAD@{upstream}..HEAD"])
+            .ok()
+            .map(|value| value.trim().to_string())
+            .filter(|value| !value.is_empty())
+            .unwrap_or_else(|| "0".to_string());
     let remote_heads_digest = git::compute_remote_heads_digest(path).unwrap_or_default();
 
     let signature = format!(
@@ -1981,8 +2149,11 @@ async fn get_repo_quick_state(repo_path: String) -> Result<RepoQuickState, Strin
             .ok()
             .map(|value| value.trim().to_string())
             .filter(|value| !value.is_empty());
-        let porcelain = git::cli::run(path, &["status", "--porcelain=v1", "--untracked-files=normal"])
-            .map_err(|e| e.to_string())?;
+        let porcelain = git::cli::run(
+            path,
+            &["status", "--porcelain=v1", "--untracked-files=normal"],
+        )
+        .map_err(|e| e.to_string())?;
         Ok(RepoQuickState {
             repo_path: repo_path.clone(),
             head_sha,
@@ -1997,13 +2168,15 @@ async fn get_repo_quick_state(repo_path: String) -> Result<RepoQuickState, Strin
 async fn get_repo_dirty_state(repo_path: String) -> Result<bool, String> {
     run_blocking(move || {
         let path = Path::new(&repo_path);
-        let porcelain = git::cli::run(path, &["status", "--porcelain=v1", "--untracked-files=normal"])
-            .map_err(|e| e.to_string())?;
+        let porcelain = git::cli::run(
+            path,
+            &["status", "--porcelain=v1", "--untracked-files=normal"],
+        )
+        .map_err(|e| e.to_string())?;
         Ok(!porcelain.trim().is_empty())
     })
     .await
 }
-
 
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -2029,10 +2202,7 @@ struct RepoGraphDelta {
 fn branch_ref_entry_sig(branch: &Branch) -> String {
     format!(
         "{}:{}:{}:{}",
-        branch.head_sha,
-        branch.commits_ahead,
-        branch.unpushed_commits,
-        branch.remote_sync_status
+        branch.head_sha, branch.commits_ahead, branch.unpushed_commits, branch.remote_sync_status
     )
 }
 
@@ -2056,7 +2226,8 @@ fn branch_unpushed_shas_for_delta(path: &Path, branch: &str) -> Result<Vec<Strin
         let default_branch = git::get_default_branch(path).map_err(|e| e.to_string())?;
         format!("{default_branch}..{branch}")
     };
-    let output = git::cli::run(path, &["rev-list", "--first-parent", &range]).map_err(|e| e.to_string())?;
+    let output =
+        git::cli::run(path, &["rev-list", "--first-parent", &range]).map_err(|e| e.to_string())?;
     Ok(output
         .lines()
         .map(str::trim)
@@ -2080,7 +2251,8 @@ fn get_repo_graph_delta_blocking(
         .map(parse_branch_ref_sig_map)
         .unwrap_or_default();
 
-    let current_names: HashSet<String> = branches.iter().map(|branch| branch.name.clone()).collect();
+    let current_names: HashSet<String> =
+        branches.iter().map(|branch| branch.name.clone()).collect();
     let mut removed_branches = Vec::new();
     for name in stored_map.keys() {
         if !current_names.contains(name) {
@@ -2108,12 +2280,7 @@ fn get_repo_graph_delta_blocking(
         });
 
         let new_commits = if old_head_sha.as_deref() != Some(branch.head_sha.as_str()) {
-            match git::get_branch_commits_since(
-                path,
-                &branch.name,
-                old_head_sha.as_deref(),
-                20,
-            ) {
+            match git::get_branch_commits_since(path, &branch.name, old_head_sha.as_deref(), 20) {
                 Ok(commits) => commits,
                 Err(_) => {
                     requires_full_refresh = true;
@@ -2124,7 +2291,10 @@ fn get_repo_graph_delta_blocking(
             Vec::new()
         };
 
-        if new_commits.iter().any(|commit| commit.parent_shas.len() > 1) {
+        if new_commits
+            .iter()
+            .any(|commit| commit.parent_shas.len() > 1)
+        {
             requires_full_refresh = true;
         }
 
@@ -2171,7 +2341,8 @@ fn get_branch_head_sha(repo_path: String, branch: String) -> Result<String, Stri
 #[tauri::command(rename_all = "camelCase")]
 fn get_commit_parent_sha(repo_path: String, sha: String) -> Result<Option<String>, String> {
     let path = Path::new(&repo_path);
-    let output = git::cli::run(path, &["rev-parse", &format!("{sha}^")]).map_err(|error| error.to_string())?;
+    let output = git::cli::run(path, &["rev-parse", &format!("{sha}^")])
+        .map_err(|error| error.to_string())?;
     let parent = output.trim().to_string();
     if parent.is_empty() {
         Ok(None)
@@ -2190,7 +2361,10 @@ struct RemoteSyncResult {
 }
 
 #[tauri::command(rename_all = "camelCase")]
-fn sync_remote_repository(repo_path: String, pull_ff_only: Option<bool>) -> Result<RemoteSyncResult, String> {
+fn sync_remote_repository(
+    repo_path: String,
+    pull_ff_only: Option<bool>,
+) -> Result<RemoteSyncResult, String> {
     let path = Path::new(&repo_path);
     let digest_before = git::compute_remote_heads_digest(path).unwrap_or_default();
     let fetched = git::fetch_remotes(path).unwrap_or(false);
@@ -2228,7 +2402,14 @@ fn get_remote_branch_head_sha(repo_path: String, branch: String) -> Result<Optio
 
     let (remote, has_upstream) = get_branch_push_remote(path, &branch)?;
     let remote_branch = if has_upstream {
-        match git::cli::run(path, &["rev-parse", "--abbrev-ref", &format!("{branch}@{{upstream}}")]) {
+        match git::cli::run(
+            path,
+            &[
+                "rev-parse",
+                "--abbrev-ref",
+                &format!("{branch}@{{upstream}}"),
+            ],
+        ) {
             Ok(output) => output
                 .trim()
                 .split_once('/')
@@ -2240,8 +2421,11 @@ fn get_remote_branch_head_sha(repo_path: String, branch: String) -> Result<Optio
         branch
     };
 
-    let output = git::cli::run(path, &["ls-remote", &remote, &format!("refs/heads/{remote_branch}")])
-        .map_err(|e| e.to_string())?;
+    let output = git::cli::run(
+        path,
+        &["ls-remote", &remote, &format!("refs/heads/{remote_branch}")],
+    )
+    .map_err(|e| e.to_string())?;
     let sha = output
         .lines()
         .next()
@@ -2254,7 +2438,8 @@ fn get_remote_branch_head_sha(repo_path: String, branch: String) -> Result<Optio
 #[tauri::command(rename_all = "camelCase")]
 fn get_commit_subject(repo_path: String, sha: String) -> Result<Option<String>, String> {
     let path = Path::new(&repo_path);
-    let output = git::cli::run(path, &["show", "-s", "--format=%s", &sha]).map_err(|e| e.to_string())?;
+    let output =
+        git::cli::run(path, &["show", "-s", "--format=%s", &sha]).map_err(|e| e.to_string())?;
     let subject = output.trim().to_string();
     if subject.is_empty() {
         Ok(None)
@@ -2273,7 +2458,8 @@ struct CommitMetadata {
 #[tauri::command(rename_all = "camelCase")]
 fn get_commit_metadata(repo_path: String, sha: String) -> Result<Option<CommitMetadata>, String> {
     let path = Path::new(&repo_path);
-    let output = git::cli::run(path, &["show", "-s", "--format=%s%n%an", &sha]).map_err(|e| e.to_string())?;
+    let output = git::cli::run(path, &["show", "-s", "--format=%s%n%an", &sha])
+        .map_err(|e| e.to_string())?;
     let mut lines = output.lines();
     let subject = lines.next().unwrap_or("").trim().to_string();
     let author = lines.next().unwrap_or("").trim().to_string();
@@ -2285,11 +2471,21 @@ fn get_commit_metadata(repo_path: String, sha: String) -> Result<Option<CommitMe
 }
 
 #[tauri::command(rename_all = "camelCase")]
-async fn get_merge_base(repo_path: String, left_sha: String, right_sha: String) -> Result<Option<String>, String> {
+async fn get_merge_base(
+    repo_path: String,
+    left_sha: String,
+    right_sha: String,
+) -> Result<Option<String>, String> {
     run_blocking(move || {
         let path = Path::new(&repo_path);
-        let output = git::cli::run(path, &["merge-base", &left_sha, &right_sha]).map_err(|e| e.to_string())?;
-        let sha = output.lines().next().map(str::trim).filter(|line| !line.is_empty()).map(|line| line.to_string());
+        let output = git::cli::run(path, &["merge-base", &left_sha, &right_sha])
+            .map_err(|e| e.to_string())?;
+        let sha = output
+            .lines()
+            .next()
+            .map(str::trim)
+            .filter(|line| !line.is_empty())
+            .map(|line| line.to_string());
         Ok(sha)
     })
     .await
@@ -2305,8 +2501,9 @@ async fn get_merge_nodes(
 ) -> Result<MergeNodesResponse, String> {
     run_blocking(move || {
         let path = Path::new(&repo_path);
-        let (nodes, has_more) = git::get_merge_commits(path, &branch, exclude_ref.as_deref(), page, per_page)
-            .map_err(|e| e.to_string())?;
+        let (nodes, has_more) =
+            git::get_merge_commits(path, &branch, exclude_ref.as_deref(), page, per_page)
+                .map_err(|e| e.to_string())?;
         Ok(MergeNodesResponse { nodes, has_more })
     })
     .await
@@ -2350,12 +2547,330 @@ async fn list_worktrees(repo_path: String) -> Result<Vec<git::WorktreeInfo>, Str
 }
 
 #[tauri::command(rename_all = "camelCase")]
-async fn remove_worktree(repo_path: String, worktree_path: String, force: bool) -> Result<(), String> {
+async fn remove_worktree(
+    repo_path: String,
+    worktree_path: String,
+    force: bool,
+) -> Result<(), String> {
     run_blocking(move || {
         let path = Path::new(&repo_path);
         git::remove_git_worktree(path, &worktree_path, force).map_err(|e| e.to_string())
     })
     .await
+}
+
+#[tauri::command(rename_all = "camelCase")]
+async fn prepare_preview_target(
+    repo_path: String,
+    target: git::PreviewTarget,
+) -> Result<git::PreparePreviewTargetResult, String> {
+    run_blocking(move || {
+        let storage_root = preview_worktree_storage_root()?;
+        let path = Path::new(&repo_path);
+        git::prepare_preview_target(path, &storage_root, target).map_err(|e| e.to_string())
+    })
+    .await
+}
+
+fn preview_processes() -> &'static Mutex<HashMap<String, PreviewProcess>> {
+    PREVIEW_PROCESS_STATE.get_or_init(|| Mutex::new(HashMap::new()))
+}
+
+fn stop_project_preview_blocking(repo_path: &str) -> Result<(), String> {
+    let key = normalize_repo_path_id(repo_path);
+    let mut processes = preview_processes()
+        .lock()
+        .map_err(|_| "Preview process state is unavailable".to_string())?;
+    if let Some(mut process) = processes.remove(&key) {
+        terminate_preview_process(&mut process.child);
+        let _ = process.child.wait();
+    }
+    Ok(())
+}
+
+fn terminate_preview_process(child: &mut Child) {
+    #[cfg(unix)]
+    {
+        let pgid = format!("-{}", child.id());
+        let _ = std::process::Command::new("kill")
+            .args(["-TERM", &pgid])
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .status();
+        std::thread::sleep(StdDuration::from_millis(150));
+    }
+    let _ = child.kill();
+}
+
+fn preview_log_tail(path: &Path) -> String {
+    let raw = fs::read_to_string(path).unwrap_or_default();
+    let mut lines: Vec<&str> = raw.lines().rev().take(40).collect();
+    lines.reverse();
+    lines.join("\n")
+}
+
+fn command_has_port(command: &str) -> bool {
+    command.contains("--port") || command.contains("PORT=") || command.contains(" port ")
+}
+
+fn is_native_preview_command(command: &str) -> bool {
+    command.to_ascii_lowercase().contains("tauri dev")
+}
+
+fn shell_command(
+    command: &str,
+    cwd: &Path,
+    log: Option<&Path>,
+    detached_group: bool,
+) -> Result<std::process::Command, String> {
+    let mut cmd = std::process::Command::new("zsh");
+    cmd.args(["-lc", command]);
+    cmd.current_dir(cwd)
+        .env("BROWSER", "none")
+        .env("NO_OPEN", "1")
+        .env("npm_config_open", "false")
+        .env("npm_config_browser", "none");
+    if !command_has_port(command) {
+        cmd.env("PORT", "4173");
+    }
+    if let Some(log_path) = log {
+        let file =
+            File::create(log_path).map_err(|e| format!("Failed to create preview log: {e}"))?;
+        let err = file
+            .try_clone()
+            .map_err(|e| format!("Failed to clone preview log: {e}"))?;
+        cmd.stdout(Stdio::from(file)).stderr(Stdio::from(err));
+    }
+    #[cfg(unix)]
+    if detached_group {
+        cmd.process_group(0);
+    }
+    Ok(cmd)
+}
+
+fn detect_project_preview_defaults_blocking(
+    repo_path: String,
+) -> Result<ProjectPreviewDefaults, String> {
+    let repo = Path::new(&repo_path);
+    let package_json = repo.join("package.json");
+    if repo.join("src-tauri/tauri.conf.json").exists() && package_json.exists() {
+        if let Ok(raw) = fs::read_to_string(&package_json) {
+            if raw.contains("\"tauri\"") {
+                let install = if repo.join("pnpm-lock.yaml").exists() {
+                    "pnpm install"
+                } else if repo.join("yarn.lock").exists() {
+                    "yarn install"
+                } else if repo.join("bun.lockb").exists() {
+                    "bun install"
+                } else {
+                    "npm install"
+                };
+                return Ok(ProjectPreviewDefaults {
+                    install_command: install.to_string(),
+                    run_command: match install {
+                        "pnpm install" => "pnpm tauri dev",
+                        "yarn install" => "yarn tauri dev",
+                        "bun install" => "bun run tauri dev",
+                        _ => "npm run tauri dev",
+                    }
+                    .to_string(),
+                });
+            }
+        }
+    }
+    if repo.join("pnpm-lock.yaml").exists() {
+        return Ok(ProjectPreviewDefaults {
+            install_command: "pnpm install".to_string(),
+            run_command: "pnpm run dev".to_string(),
+        });
+    }
+    if repo.join("yarn.lock").exists() {
+        return Ok(ProjectPreviewDefaults {
+            install_command: "yarn install".to_string(),
+            run_command: "yarn dev".to_string(),
+        });
+    }
+    if repo.join("bun.lockb").exists() {
+        return Ok(ProjectPreviewDefaults {
+            install_command: "bun install".to_string(),
+            run_command: "bun run dev".to_string(),
+        });
+    }
+    Ok(ProjectPreviewDefaults {
+        install_command: "npm install".to_string(),
+        run_command: "npm run dev".to_string(),
+    })
+}
+
+fn start_project_preview_blocking(
+    repo_path: String,
+    target: git::PreviewTarget,
+    config: ProjectPreviewConfig,
+) -> Result<ProjectPreviewResult, String> {
+    stop_project_preview_blocking(&repo_path)?;
+    let storage_root = preview_worktree_storage_root()?;
+    let repo = Path::new(&repo_path);
+    let target_id = target.target_id();
+    let is_native_preview = is_native_preview_command(&config.run_command);
+    let preview_mode = if is_native_preview { "native" } else { "web" }.to_string();
+    let prepared =
+        git::prepare_preview_target(repo, &storage_root, target).map_err(|e| e.to_string())?;
+    let preview_path = PathBuf::from(&prepared.preview_path);
+
+    if git::should_run_install(&storage_root, repo, prepared.dependency_files_changed)
+        && !config.install_command.trim().is_empty()
+    {
+        let output = shell_command(&config.install_command, &preview_path, None, false)?
+            .output()
+            .map_err(|e| format!("Failed to run install command: {e}"))?;
+        if !output.status.success() {
+            let logs = format!(
+                "{}\n{}",
+                String::from_utf8_lossy(&output.stdout),
+                String::from_utf8_lossy(&output.stderr)
+            );
+            return Ok(ProjectPreviewResult {
+                preview_path: prepared.preview_path,
+                target_id,
+                url: git::detect_localhost_url(&logs),
+                status: "installFailed".to_string(),
+                logs,
+                preview_mode,
+            });
+        }
+        git::mark_install_success(&storage_root, repo).map_err(|e| e.to_string())?;
+    }
+
+    let state_path = storage_root.join("logs");
+    fs::create_dir_all(&state_path)
+        .map_err(|e| format!("Failed to create preview log directory: {e}"))?;
+    let log_path = state_path.join(format!(
+        "{}.log",
+        normalize_repo_path_id(&repo_path).replace('/', "_")
+    ));
+    let _ = fs::remove_file(&log_path);
+    let mut child = shell_command(
+        &config.run_command,
+        &preview_path,
+        Some(&log_path),
+        is_native_preview,
+    )?
+        .spawn()
+        .map_err(|e| format!("Failed to start preview command: {e}"))?;
+
+    let started = Instant::now();
+    let mut status = "running".to_string();
+    let mut logs = String::new();
+    let mut url = None;
+    while started.elapsed() < StdDuration::from_millis(2500) {
+        if let Ok(Some(_)) = child.try_wait() {
+            status = "exited".to_string();
+            break;
+        }
+        logs = preview_log_tail(&log_path);
+        url = if is_native_preview {
+            None
+        } else {
+            git::detect_localhost_url(&logs)
+        };
+        if url.is_some() || is_native_preview {
+            break;
+        }
+        std::thread::sleep(StdDuration::from_millis(150));
+    }
+    if logs.is_empty() {
+        logs = preview_log_tail(&log_path);
+    }
+    if url.is_none() {
+        url = if is_native_preview {
+            None
+        } else {
+            git::detect_localhost_url(&logs)
+        };
+    }
+
+    preview_processes()
+        .lock()
+        .map_err(|_| "Preview process state is unavailable".to_string())?
+        .insert(
+            normalize_repo_path_id(&repo_path),
+            PreviewProcess {
+                child,
+                log_path: log_path.clone(),
+                preview_path: prepared.preview_path.clone(),
+                target_id: target_id.clone(),
+                preview_mode: preview_mode.clone(),
+            },
+        );
+
+    Ok(ProjectPreviewResult {
+        preview_path: prepared.preview_path,
+        target_id,
+        url,
+        status,
+        logs,
+        preview_mode,
+    })
+}
+
+fn get_project_preview_status_blocking(repo_path: String) -> Result<Option<ProjectPreviewResult>, String> {
+    let key = normalize_repo_path_id(&repo_path);
+    let mut processes = preview_processes()
+        .lock()
+        .map_err(|_| "Preview process state is unavailable".to_string())?;
+    let Some(process) = processes.get_mut(&key) else {
+        return Ok(None);
+    };
+    let logs = preview_log_tail(&process.log_path);
+    let url = if process.preview_mode == "native" {
+        None
+    } else {
+        git::detect_localhost_url(&logs)
+    };
+    let status = match process.child.try_wait() {
+        Ok(Some(_)) => "exited",
+        Ok(None) => "running",
+        Err(_) => "exited",
+    }
+    .to_string();
+    let result = ProjectPreviewResult {
+        preview_path: process.preview_path.clone(),
+        target_id: process.target_id.clone(),
+        url,
+        status: status.clone(),
+        logs,
+        preview_mode: process.preview_mode.clone(),
+    };
+    if status == "exited" {
+        processes.remove(&key);
+    }
+    Ok(Some(result))
+}
+
+#[tauri::command(rename_all = "camelCase")]
+async fn detect_project_preview_defaults(
+    repo_path: String,
+) -> Result<ProjectPreviewDefaults, String> {
+    run_blocking(move || detect_project_preview_defaults_blocking(repo_path)).await
+}
+
+#[tauri::command(rename_all = "camelCase")]
+async fn start_project_preview(
+    repo_path: String,
+    target: git::PreviewTarget,
+    config: ProjectPreviewConfig,
+) -> Result<ProjectPreviewResult, String> {
+    run_blocking(move || start_project_preview_blocking(repo_path, target, config)).await
+}
+
+#[tauri::command(rename_all = "camelCase")]
+async fn get_project_preview_status(repo_path: String) -> Result<Option<ProjectPreviewResult>, String> {
+    run_blocking(move || get_project_preview_status_blocking(repo_path)).await
+}
+
+#[tauri::command(rename_all = "camelCase")]
+async fn stop_project_preview(repo_path: String) -> Result<(), String> {
+    run_blocking(move || stop_project_preview_blocking(&repo_path)).await
 }
 
 fn list_git_remotes(repo: &Path) -> Result<Vec<String>, String> {
@@ -2396,7 +2911,11 @@ fn get_branch_push_remote(repo: &Path, branch: &str) -> Result<(String, bool), S
 }
 
 fn branch_has_unpushed_commits(repo: &Path, branch: &str) -> bool {
-    branch_has_unpushed_commits_vs_ref(repo, branch, get_branch_compare_ref(repo, branch).as_deref())
+    branch_has_unpushed_commits_vs_ref(
+        repo,
+        branch,
+        get_branch_compare_ref(repo, branch).as_deref(),
+    )
 }
 
 fn branch_has_unpushed_commits_vs_ref(
@@ -2410,14 +2929,18 @@ fn branch_has_unpushed_commits_vs_ref(
 
     let range = format!("{compare_ref}..{branch}");
     match git::cli::run(repo, &["rev-list", "--count", &range]) {
-        Ok(output) => output.trim().parse::<u32>().map(|ahead| ahead > 0).unwrap_or(false),
+        Ok(output) => output
+            .trim()
+            .parse::<u32>()
+            .map(|ahead| ahead > 0)
+            .unwrap_or(false),
         Err(_) => false,
     }
 }
 
 fn list_local_branch_names(repo: &Path) -> Result<Vec<String>, String> {
-    let output = git::cli::run(repo, &["branch", "--format=%(refname:short)"])
-        .map_err(|e| e.to_string())?;
+    let output =
+        git::cli::run(repo, &["branch", "--format=%(refname:short)"]).map_err(|e| e.to_string())?;
     Ok(output
         .lines()
         .map(str::trim)
@@ -2436,7 +2959,11 @@ fn branch_needs_push(repo: &Path, branch: &str, default_branch: &str) -> bool {
     }
     let range = format!("{default_branch}..{branch}");
     match git::cli::run(repo, &["rev-list", "--count", &range]) {
-        Ok(output) => output.trim().parse::<u32>().map(|ahead| ahead > 0).unwrap_or(false),
+        Ok(output) => output
+            .trim()
+            .parse::<u32>()
+            .map(|ahead| ahead > 0)
+            .unwrap_or(false),
         Err(_) => false,
     }
 }
@@ -2476,9 +3003,14 @@ fn push_branch_refs_batched(repo: &Path, targets: &[PushResult]) -> Result<(), S
 }
 
 fn get_branch_compare_ref(repo: &Path, branch: &str) -> Option<String> {
-    if let Ok(output) =
-        git::cli::run(repo, &["rev-parse", "--abbrev-ref", &format!("{branch}@{{upstream}}")])
-    {
+    if let Ok(output) = git::cli::run(
+        repo,
+        &[
+            "rev-parse",
+            "--abbrev-ref",
+            &format!("{branch}@{{upstream}}"),
+        ],
+    ) {
         let upstream = output.trim();
         if !upstream.is_empty() {
             return Some(upstream.to_string());
@@ -2577,7 +3109,9 @@ async fn pull_branch_with_strategy(
         }
         args.push("origin");
         args.push(&branch_name);
-        git::cli::run(path, &args).map(|_| ()).map_err(|e| e.to_string())
+        git::cli::run(path, &args)
+            .map(|_| ())
+            .map_err(|e| e.to_string())
     })
     .await
 }
@@ -2609,7 +3143,11 @@ fn list_stashes(repo_path: String) -> Result<Vec<git::GitStashEntry>, String> {
 }
 
 #[tauri::command(rename_all = "camelCase")]
-async fn stash_push(repo_path: String, include_untracked: bool, message: String) -> Result<StashPushResult, String> {
+async fn stash_push(
+    repo_path: String,
+    include_untracked: bool,
+    message: String,
+) -> Result<StashPushResult, String> {
     run_blocking(move || {
         let path = Path::new(&repo_path);
         opencode::validate_generated_message(&message, "Stash message")?;
@@ -2629,7 +3167,10 @@ async fn stash_push(repo_path: String, include_untracked: bool, message: String)
 }
 
 #[tauri::command(rename_all = "camelCase")]
-async fn commit_working_tree(repo_path: String, message: String) -> Result<CommitMutationResult, String> {
+async fn commit_working_tree(
+    repo_path: String,
+    message: String,
+) -> Result<CommitMutationResult, String> {
     run_blocking(move || {
         let path = Path::new(&repo_path);
         let trimmed = message.trim();
@@ -2646,9 +3187,15 @@ async fn commit_working_tree(repo_path: String, message: String) -> Result<Commi
             .branch_name
             .clone()
             .ok_or_else(|| "Cannot resolve branch name after commit.".to_string())?;
-        let output = git::cli::run(path, &["log", "-1", "--format=%H%x1f%h%x1f%s%x1f%an%x1f%cI%x1f%P"])
-            .map_err(|e| e.to_string())?;
-        let line = output.lines().next().ok_or_else(|| "Commit succeeded but log output was empty.".to_string())?;
+        let output = git::cli::run(
+            path,
+            &["log", "-1", "--format=%H%x1f%h%x1f%s%x1f%an%x1f%cI%x1f%P"],
+        )
+        .map_err(|e| e.to_string())?;
+        let line = output
+            .lines()
+            .next()
+            .ok_or_else(|| "Commit succeeded but log output was empty.".to_string())?;
         let parts: Vec<&str> = line.splitn(6, "\u{1f}").collect();
         if parts.len() < 6 {
             return Err("Failed to parse commit metadata.".to_string());
@@ -2721,7 +3268,10 @@ async fn generate_stash_message(
 }
 
 #[tauri::command(rename_all = "camelCase")]
-async fn apply_stash_restore(repo_path: String, stash_index: u32) -> Result<StashRestoreResult, String> {
+async fn apply_stash_restore(
+    repo_path: String,
+    stash_index: u32,
+) -> Result<StashRestoreResult, String> {
     run_blocking(move || {
         let path = Path::new(&repo_path);
         git::apply_stash_restore(path, stash_index).map_err(|e| e.to_string())?;
@@ -2747,14 +3297,21 @@ async fn stash_drop(repo_path: String, stash_index: u32) -> Result<StashDropResu
 }
 
 #[tauri::command(rename_all = "camelCase")]
-fn create_branch_from_uncommitted(repo_path: String, branch_name: String) -> Result<CheckedOutRef, String> {
+fn create_branch_from_uncommitted(
+    repo_path: String,
+    branch_name: String,
+) -> Result<CheckedOutRef, String> {
     let path = Path::new(&repo_path);
     git::create_branch_from_uncommitted(path, &branch_name).map_err(|e| e.to_string())?;
     git::get_checked_out_ref(path).map_err(|e| e.to_string())
 }
 
 #[tauri::command(rename_all = "camelCase")]
-fn move_stash_to_new_branch(repo_path: String, stash_index: u32, branch_name: String) -> Result<CheckedOutRef, String> {
+fn move_stash_to_new_branch(
+    repo_path: String,
+    stash_index: u32,
+    branch_name: String,
+) -> Result<CheckedOutRef, String> {
     let path = Path::new(&repo_path);
     git::move_stash_to_new_branch(path, stash_index, &branch_name).map_err(|e| e.to_string())?;
     git::get_checked_out_ref(path).map_err(|e| e.to_string())
@@ -2821,7 +3378,9 @@ async fn push_all_unpushed_branches(repo_path: String) -> Result<Vec<PushResult>
             .collect();
 
         if branch_has_unpushed_commits(path, &default_branch)
-            && !push_targets.iter().any(|target| target.branch_name == default_branch)
+            && !push_targets
+                .iter()
+                .any(|target| target.branch_name == default_branch)
         {
             push_targets.push(PushResult {
                 branch_name: default_branch.clone(),
@@ -2872,7 +3431,10 @@ fn delete_selected_elements(
 
     let checked_out = git::get_checked_out_ref(path).map_err(|e| e.to_string())?;
     if let Some(current_branch) = checked_out.branch_name {
-        if unique_branch_names.iter().any(|branch_name| branch_name == &current_branch) {
+        if unique_branch_names
+            .iter()
+            .any(|branch_name| branch_name == &current_branch)
+        {
             git::cli::run(path, &["checkout", &default_branch]).map_err(|e| e.to_string())?;
         }
     }
@@ -2937,11 +3499,8 @@ fn merge_ref_into_branch(
     }
     let path = Path::new(&repo_path);
     git::cli::run(path, &["checkout", &target_branch]).map_err(|e| e.to_string())?;
-    git::cli::run(
-        path,
-        &["merge", "--no-ff", "--no-edit", &source_ref],
-    )
-    .map_err(|e| e.to_string())?;
+    git::cli::run(path, &["merge", "--no-ff", "--no-edit", &source_ref])
+        .map_err(|e| e.to_string())?;
     git::get_checked_out_ref(path).map_err(|e| e.to_string())
 }
 
@@ -3011,17 +3570,19 @@ fn get_branch_diff(
     let diff = if let Some(sha) = merge_commit_sha {
         // Historical diff: show what this PR added when it was merged
         let parent = format!("{}^1", sha);
-        git::cli::run(path, &["diff", &parent, &sha, "--unified=3"])
-            .map_err(|e| e.to_string())?
+        git::cli::run(path, &["diff", &parent, &sha, "--unified=3"]).map_err(|e| e.to_string())?
     } else {
         // Current diff: unmerged changes ahead of base branch
         let range = format!("{}...{}", base_branch, branch);
-        git::cli::run(path, &["diff", &range, "--unified=3"])
-            .map_err(|e| e.to_string())?
+        git::cli::run(path, &["diff", &range, "--unified=3"]).map_err(|e| e.to_string())?
     };
     const MAX_CHARS: usize = 60_000;
     if diff.len() > MAX_CHARS {
-        Ok(format!("{}\n\n[diff truncated at {} chars]", &diff[..MAX_CHARS], MAX_CHARS))
+        Ok(format!(
+            "{}\n\n[diff truncated at {} chars]",
+            &diff[..MAX_CHARS],
+            MAX_CHARS
+        ))
     } else {
         Ok(diff)
     }
@@ -3248,7 +3809,14 @@ fn insert_prompt(
 }
 
 fn parse_generic_timestamp(value: &serde_json::Value) -> Option<DateTime<Utc>> {
-    for key in ["timestamp", "time", "createdAt", "created_at", "updatedAt", "updated_at"] {
+    for key in [
+        "timestamp",
+        "time",
+        "createdAt",
+        "created_at",
+        "updatedAt",
+        "updated_at",
+    ] {
         if let Some(ts) = value.get(key).and_then(|v| v.as_str()) {
             if let Some(parsed) = parse_iso_to_utc(ts) {
                 return Some(parsed);
@@ -3265,7 +3833,9 @@ fn collect_jsonl_files(root: &Path, out: &mut Vec<PathBuf>) {
 
     let mut stack = vec![root.to_path_buf()];
     while let Some(dir) = stack.pop() {
-        let Ok(entries) = fs::read_dir(&dir) else { continue };
+        let Ok(entries) = fs::read_dir(&dir) else {
+            continue;
+        };
         for entry in entries.flatten() {
             let path = entry.path();
             if path.is_dir() {
@@ -3285,7 +3855,10 @@ fn collect_codex_prompts(
     seen: &mut HashSet<String>,
 ) {
     let Some(home) = dirs::home_dir() else { return };
-    let roots = [home.join(".codex/sessions"), home.join(".codex/archived_sessions")];
+    let roots = [
+        home.join(".codex/sessions"),
+        home.join(".codex/archived_sessions"),
+    ];
 
     let mut files = Vec::new();
     for root in roots {
@@ -3293,7 +3866,9 @@ fn collect_codex_prompts(
     }
 
     for path in files {
-        let Ok(file) = File::open(&path) else { continue };
+        let Ok(file) = File::open(&path) else {
+            continue;
+        };
         let reader = BufReader::new(file);
         let mut matches_repo = false;
         let source = path
@@ -3303,8 +3878,13 @@ fn collect_codex_prompts(
             .to_string();
 
         for line in reader.lines().map_while(Result::ok) {
-            let Some(value) = parse_json_value_bounded(&line) else { continue };
-            let event_type = value.get("type").and_then(|v| v.as_str()).unwrap_or_default();
+            let Some(value) = parse_json_value_bounded(&line) else {
+                continue;
+            };
+            let event_type = value
+                .get("type")
+                .and_then(|v| v.as_str())
+                .unwrap_or_default();
 
             if event_type == "session_meta" {
                 let cwd = value
@@ -3332,7 +3912,9 @@ fn collect_codex_prompts(
                     continue;
                 }
 
-                let content = value.pointer("/payload/content").unwrap_or(&serde_json::Value::Null);
+                let content = value
+                    .pointer("/payload/content")
+                    .unwrap_or(&serde_json::Value::Null);
                 for chunk in extract_text_chunks(content) {
                     if let Some(prompt) = normalize_prompt_text(&chunk) {
                         insert_prompt(out, seen, "Codex", &source, ts, prompt);
@@ -3352,7 +3934,9 @@ fn collect_claude_prompts(
 ) {
     let Some(home) = dirs::home_dir() else { return };
     let projects_root = home.join(".claude/projects");
-    let Ok(project_dirs) = fs::read_dir(projects_root) else { return };
+    let Ok(project_dirs) = fs::read_dir(projects_root) else {
+        return;
+    };
 
     for dir_entry in project_dirs.flatten() {
         let project_dir = dir_entry.path();
@@ -3365,9 +3949,15 @@ fn collect_claude_prompts(
             continue;
         }
 
-        let Ok(index_raw) = fs::read_to_string(&index_path) else { continue };
-        let Some(index_json) = parse_json_value_bounded(&index_raw) else { continue };
-        let Some(entries) = index_json.get("entries").and_then(|v| v.as_array()) else { continue };
+        let Ok(index_raw) = fs::read_to_string(&index_path) else {
+            continue;
+        };
+        let Some(index_json) = parse_json_value_bounded(&index_raw) else {
+            continue;
+        };
+        let Some(entries) = index_json.get("entries").and_then(|v| v.as_array()) else {
+            continue;
+        };
 
         for entry in entries {
             let project_path = entry
@@ -3378,9 +3968,13 @@ fn collect_claude_prompts(
                 continue;
             }
 
-            let Some(full_path) = entry.get("fullPath").and_then(|v| v.as_str()) else { continue };
+            let Some(full_path) = entry.get("fullPath").and_then(|v| v.as_str()) else {
+                continue;
+            };
             let session_path = Path::new(full_path);
-            let Ok(file) = File::open(session_path) else { continue };
+            let Ok(file) = File::open(session_path) else {
+                continue;
+            };
             let reader = BufReader::new(file);
             let source = session_path
                 .file_name()
@@ -3389,14 +3983,19 @@ fn collect_claude_prompts(
                 .to_string();
 
             for line in reader.lines().map_while(Result::ok) {
-                let Some(value) = parse_json_value_bounded(&line) else { continue };
+                let Some(value) = parse_json_value_bounded(&line) else {
+                    continue;
+                };
                 let is_user = value.get("type").and_then(|v| v.as_str()) == Some("user")
                     && value.pointer("/message/role").and_then(|v| v.as_str()) == Some("user");
                 if !is_user {
                     continue;
                 }
 
-                let cwd = value.get("cwd").and_then(|v| v.as_str()).unwrap_or_default();
+                let cwd = value
+                    .get("cwd")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or_default();
                 if !cwd.is_empty() && !paths_match(repo_path, cwd) {
                     continue;
                 }
@@ -3410,7 +4009,9 @@ fn collect_claude_prompts(
                     continue;
                 }
 
-                let content = value.pointer("/message/content").unwrap_or(&serde_json::Value::Null);
+                let content = value
+                    .pointer("/message/content")
+                    .unwrap_or(&serde_json::Value::Null);
                 for chunk in extract_text_chunks(content) {
                     if let Some(prompt) = normalize_prompt_text(&chunk) {
                         insert_prompt(out, seen, "Claude Code", &source, ts, prompt);
@@ -3436,7 +4037,9 @@ fn collect_cursor_prompts(
 ) {
     let Some(home) = dirs::home_dir() else { return };
     let projects_root = home.join(".cursor/projects");
-    let Ok(project_dirs) = fs::read_dir(&projects_root) else { return };
+    let Ok(project_dirs) = fs::read_dir(&projects_root) else {
+        return;
+    };
 
     let canonical_repo = fs::canonicalize(repo_path).unwrap_or_else(|_| repo_path.to_path_buf());
     let mut candidates = HashSet::new();
@@ -3453,7 +4056,9 @@ fn collect_cursor_prompts(
         if !project_dir.is_dir() {
             continue;
         }
-        let Some(project_name) = project_dir.file_name().and_then(|n| n.to_str()) else { continue };
+        let Some(project_name) = project_dir.file_name().and_then(|n| n.to_str()) else {
+            continue;
+        };
         let project_name_lc = project_name.to_lowercase();
         let maybe_matches_leaf = !repo_leaf.is_empty() && project_name_lc.contains(&repo_leaf);
         if !candidates.contains(project_name) && !maybe_matches_leaf {
@@ -3473,7 +4078,9 @@ fn collect_cursor_prompts(
 
             // Cursor transcript lines currently do not include message timestamps.
             // We anchor prompts to file mtime and spread entries backward.
-            let Ok(file) = File::open(&path) else { continue };
+            let Ok(file) = File::open(&path) else {
+                continue;
+            };
             let reader = BufReader::new(file);
             let source = path
                 .file_name()
@@ -3483,11 +4090,15 @@ fn collect_cursor_prompts(
 
             let mut prompts = Vec::new();
             for line in reader.lines().map_while(Result::ok) {
-                let Some(value) = parse_json_value_bounded(&line) else { continue };
+                let Some(value) = parse_json_value_bounded(&line) else {
+                    continue;
+                };
                 if value.get("role").and_then(|v| v.as_str()) != Some("user") {
                     continue;
                 }
-                let content = value.pointer("/message/content").unwrap_or(&serde_json::Value::Null);
+                let content = value
+                    .pointer("/message/content")
+                    .unwrap_or(&serde_json::Value::Null);
                 for chunk in extract_text_chunks(content) {
                     if let Some(prompt) = normalize_prompt_text(&chunk) {
                         prompts.push(prompt);
@@ -3537,7 +4148,9 @@ fn collect_generic_jsonl_prompts(
         let mut files = Vec::new();
         collect_jsonl_files(&root, &mut files);
         for path in files {
-            let Ok(file) = File::open(&path) else { continue };
+            let Ok(file) = File::open(&path) else {
+                continue;
+            };
             let reader = BufReader::new(file);
             let source = path
                 .file_name()
@@ -3546,9 +4159,13 @@ fn collect_generic_jsonl_prompts(
                 .to_string();
 
             for line in reader.lines().map_while(Result::ok) {
-                let Some(value) = parse_json_value_bounded(&line) else { continue };
+                let Some(value) = parse_json_value_bounded(&line) else {
+                    continue;
+                };
 
-                let role = value.get("role").and_then(|v| v.as_str())
+                let role = value
+                    .get("role")
+                    .and_then(|v| v.as_str())
                     .or_else(|| value.pointer("/message/role").and_then(|v| v.as_str()))
                     .or_else(|| value.pointer("/payload/role").and_then(|v| v.as_str()));
                 if role != Some("user") {
@@ -3641,11 +4258,14 @@ fn hydrate_commit_prompt_windows(path: &Path, commits: &mut [CommitInfo]) {
 
     let mut parent_dates: HashMap<String, DateTime<Utc>> = HashMap::new();
     for commit in commits.iter() {
-        let Some(parent_sha) = &commit.parent_sha else { continue };
+        let Some(parent_sha) = &commit.parent_sha else {
+            continue;
+        };
         if parent_dates.contains_key(parent_sha) {
             continue;
         }
-        let Ok(parent_date_raw) = git::cli::run(path, &["log", "-1", "--format=%cI", parent_sha]) else {
+        let Ok(parent_date_raw) = git::cli::run(path, &["log", "-1", "--format=%cI", parent_sha])
+        else {
             continue;
         };
         let parsed = parse_iso_to_utc(parent_date_raw.trim());
@@ -3654,7 +4274,8 @@ fn hydrate_commit_prompt_windows(path: &Path, commits: &mut [CommitInfo]) {
         }
     }
 
-    let mut windows: Vec<(Option<DateTime<Utc>>, Option<DateTime<Utc>>)> = Vec::with_capacity(commits.len());
+    let mut windows: Vec<(Option<DateTime<Utc>>, Option<DateTime<Utc>>)> =
+        Vec::with_capacity(commits.len());
     let mut global_start: Option<DateTime<Utc>> = None;
     let mut global_end: Option<DateTime<Utc>> = None;
 
@@ -3739,11 +4360,10 @@ fn get_branch_commits(
         .filter(|l| !l.is_empty())
         .filter_map(|line| {
             let parts: Vec<&str> = line.splitn(6, LOG_FIELD_SEPARATOR).collect();
-            if parts.len() < 6 { return None; }
-            let parent_sha = parts[5]
-                .split_whitespace()
-                .next()
-                .map(|p| p.to_string());
+            if parts.len() < 6 {
+                return None;
+            }
+            let parent_sha = parts[5].split_whitespace().next().map(|p| p.to_string());
             Some(CommitInfo {
                 full_sha: parts[0].to_string(),
                 sha: parts[1].to_string(),
@@ -3765,7 +4385,6 @@ fn get_branch_commits(
     Ok(commits)
 }
 
-
 #[tauri::command(rename_all = "camelCase")]
 fn get_commit_diff(
     repo_path: String,
@@ -3778,7 +4397,11 @@ fn get_commit_diff(
         .map_err(|e| e.to_string())?;
     const MAX_CHARS: usize = 60_000;
     if diff.len() > MAX_CHARS {
-        Ok(format!("{}\n\n[diff truncated at {} chars]", &diff[..MAX_CHARS], MAX_CHARS))
+        Ok(format!(
+            "{}\n\n[diff truncated at {} chars]",
+            &diff[..MAX_CHARS],
+            MAX_CHARS
+        ))
     } else {
         Ok(diff)
     }
@@ -3799,7 +4422,8 @@ fn get_all_repo_commits(repo_path: String) -> Result<Vec<DirectCommit>, String> 
     let path = Path::new(&repo_path);
     let default_branch = git::get_default_branch(path).map_err(|e| e.to_string())?;
     let branches = git::list_branches(path, &default_branch).map_err(|e| e.to_string())?;
-    let merge_nodes = fetch_all_merge_nodes_for_branches_internal(&repo_path, &branches, &default_branch)?;
+    let merge_nodes =
+        fetch_all_merge_nodes_for_branches_internal(&repo_path, &branches, &default_branch)?;
     let merge_target_branch_by_commit_sha: HashMap<String, String> = merge_nodes
         .iter()
         .map(|node| (node.target_commit_sha.clone(), node.target_branch.clone()))
@@ -3853,7 +4477,10 @@ fn get_unpushed_direct_commits_blocking(
                 full_sha: parts[0].to_string(),
                 sha: parts[1].to_string(),
                 parent_sha,
-                parent_shas: parts[5].split_whitespace().map(|value| value.to_string()).collect(),
+                parent_shas: parts[5]
+                    .split_whitespace()
+                    .map(|value| value.to_string())
+                    .collect(),
                 child_shas: Vec::new(),
                 cluster_key: None,
                 branch: branch.clone(),
@@ -3906,8 +4533,8 @@ fn get_branch_unpushed_commit_shas_blocking(
         let default_branch = git::get_default_branch(path).map_err(|e| e.to_string())?;
         format!("{default_branch}..{branch}")
     };
-    let output = git::cli::run(path, &["rev-list", "--first-parent", &range])
-        .map_err(|e| e.to_string())?;
+    let output =
+        git::cli::run(path, &["rev-list", "--first-parent", &range]).map_err(|e| e.to_string())?;
     Ok(output
         .lines()
         .map(str::trim)
@@ -3949,11 +4576,10 @@ fn get_recent_log(
         .filter(|l| !l.is_empty())
         .filter_map(|line| {
             let parts: Vec<&str> = line.splitn(6, LOG_FIELD_SEPARATOR).collect();
-            if parts.len() < 6 { return None; }
-            let parent_sha = parts[5]
-                .split_whitespace()
-                .next()
-                .map(|p| p.to_string());
+            if parts.len() < 6 {
+                return None;
+            }
+            let parent_sha = parts[5].split_whitespace().next().map(|p| p.to_string());
             Some(CommitInfo {
                 full_sha: parts[0].to_string(),
                 sha: parts[1].to_string(),
@@ -3983,7 +4609,9 @@ fn get_recent_log(
 fn parse_localhost_url(log: &str) -> Option<String> {
     let start = log.find("localhost:")?;
     let after = &log[start + 10..]; // skip "localhost:"
-    let end = after.find(|c: char| !c.is_ascii_digit()).unwrap_or(after.len());
+    let end = after
+        .find(|c: char| !c.is_ascii_digit())
+        .unwrap_or(after.len());
     let port: u16 = after[..end].parse().ok()?;
     Some(format!("http://localhost:{port}"))
 }
@@ -4001,8 +4629,18 @@ fn normalize_name(s: &str) -> String {
 fn all_page_routes(repo_path: &Path) -> Vec<String> {
     let Ok(output) = git::cli::run(
         repo_path,
-        &["ls-tree", "-r", "--name-only", "HEAD", "--",
-          "app", "pages", "src/app", "src/pages", "src/routes"],
+        &[
+            "ls-tree",
+            "-r",
+            "--name-only",
+            "HEAD",
+            "--",
+            "app",
+            "pages",
+            "src/app",
+            "src/pages",
+            "src/routes",
+        ],
     ) else {
         return Vec::new();
     };
@@ -4025,7 +4663,9 @@ fn fuzzy_matched_routes<'a>(changed_files: &[&str], all_routes: &'a [String]) ->
     let mut seen = std::collections::HashSet::new();
 
     for &file in changed_files {
-        if file_to_route(file).is_some() { continue; } // already handled directly
+        if file_to_route(file).is_some() {
+            continue;
+        } // already handled directly
 
         // Build candidate names to match against route segments:
         //   (a) file stem — catches component files e.g. TarotCard.tsx → "tarotcard"
@@ -4052,20 +4692,20 @@ fn fuzzy_matched_routes<'a>(changed_files: &[&str], all_routes: &'a [String]) ->
             }
         }
 
-        if names.is_empty() { continue; }
+        if names.is_empty() {
+            continue;
+        }
 
         for route in all_routes {
-            if seen.contains(route.as_str()) { continue; }
-            let hit = route
-                .split('/')
-                .filter(|s| !s.is_empty())
-                .any(|seg| {
-                    let norm_seg = normalize_name(seg);
-                    names.iter().any(|n| {
-                        norm_seg == *n
-                            || (norm_seg.len() >= 8 && n.starts_with(&norm_seg))
-                    })
-                });
+            if seen.contains(route.as_str()) {
+                continue;
+            }
+            let hit = route.split('/').filter(|s| !s.is_empty()).any(|seg| {
+                let norm_seg = normalize_name(seg);
+                names
+                    .iter()
+                    .any(|n| norm_seg == *n || (norm_seg.len() >= 8 && n.starts_with(&norm_seg)))
+            });
             if hit {
                 seen.insert(route.as_str());
                 matched.push(route);
@@ -4094,8 +4734,11 @@ fn debug_diff_files(repo_path: String, branch: String, base_branch: String) -> S
 ///   app/design-onboarding/components/Card.tsx         →  /design-onboarding
 ///   app/api/users/route.ts                             →  None (api skipped)
 fn app_dir_to_route(file: &str) -> Option<String> {
-    if file_to_route(file).is_some() { return None; } // already a page file
-    let rest = file.strip_prefix("app/")
+    if file_to_route(file).is_some() {
+        return None;
+    } // already a page file
+    let rest = file
+        .strip_prefix("app/")
         .or_else(|| file.strip_prefix("src/app/"))?;
     let slash_pos = rest.find('/')?; // must be inside a subdirectory
     let first_seg = &rest[..slash_pos];
@@ -4127,7 +4770,11 @@ fn get_changed_routes(
     let path = Path::new(&repo_path);
     let output = git::cli::run(
         path,
-        &["diff", "--name-only", &format!("{}...{}", base_branch, branch)],
+        &[
+            "diff",
+            "--name-only",
+            &format!("{}...{}", base_branch, branch),
+        ],
     )
     .map_err(|e| e.to_string())?;
 
@@ -4161,23 +4808,42 @@ fn get_changed_routes(
     }
 
     // Cap at 4 routes to avoid starting excessive dev servers
-    if routes.len() > 4 { routes.truncate(4); }
+    if routes.len() > 4 {
+        routes.truncate(4);
+    }
 
     // Pass 4: fallback — if nothing was detected, sample the repo's top-level
     // routes so broad changes (shared components, utils, styles) still get
     // multiple screenshots instead of just '/'.
     if routes.is_empty() {
         // Routes likely behind auth or not useful to screenshot
-        let skip = ["login", "signin", "signup", "register", "auth", "logout",
-                    "callback", "verify", "reset", "forgot", "404", "500",
-                    "error", "not-found", "api", "onboarding"];
+        let skip = [
+            "login",
+            "signin",
+            "signup",
+            "register",
+            "auth",
+            "logout",
+            "callback",
+            "verify",
+            "reset",
+            "forgot",
+            "404",
+            "500",
+            "error",
+            "not-found",
+            "api",
+            "onboarding",
+        ];
 
         // Collect top-level routes only (one non-empty path segment)
         let mut candidates: Vec<&String> = all_routes
             .iter()
             .filter(|r| {
                 let segs: Vec<&str> = r.split('/').filter(|s| !s.is_empty()).collect();
-                if segs.len() != 1 { return false; }
+                if segs.len() != 1 {
+                    return false;
+                }
                 let lower = r.to_lowercase();
                 !skip.iter().any(|k| lower.contains(k))
             })
@@ -4188,7 +4854,9 @@ fn get_changed_routes(
 
         let mut fallback = vec!["/".to_string()];
         for route in candidates {
-            if fallback.len() >= 4 { break; }
+            if fallback.len() >= 4 {
+                break;
+            }
             fallback.push(route.clone());
         }
         return Ok(fallback);
@@ -4254,7 +4922,8 @@ fn file_to_route(file: &str) -> Option<String> {
     const PAGE_EXTS: &[&str] = &["page.tsx", "page.jsx", "page.ts", "page.js"];
 
     // Next.js App Router: app/**/page.{tsx,jsx,ts,js}  (also src/app/**)
-    let app_rest = file.strip_prefix("app/")
+    let app_rest = file
+        .strip_prefix("app/")
         .or_else(|| file.strip_prefix("src/app/"));
     if let Some(rest) = app_rest {
         for &suffix in PAGE_EXTS {
@@ -4268,7 +4937,8 @@ fn file_to_route(file: &str) -> Option<String> {
     }
 
     // Next.js Pages Router: pages/**/*.{tsx,jsx,ts,js}  (also src/pages/**)
-    let pages_rest = file.strip_prefix("pages/")
+    let pages_rest = file
+        .strip_prefix("pages/")
         .or_else(|| file.strip_prefix("src/pages/"));
     if let Some(rest) = pages_rest {
         if rest.starts_with('_') || rest.starts_with("api/") {
@@ -4346,21 +5016,38 @@ fn app_route_to_url(path: &str) -> Option<String> {
 
 /// Screenshot a single path (convenience wrapper around `generate_preview_routes`).
 #[tauri::command(rename_all = "camelCase")]
-async fn generate_preview(repo_path: String, branch: String, port: u16, path: Option<String>) -> Result<String, String> {
+async fn generate_preview(
+    repo_path: String,
+    branch: String,
+    port: u16,
+    path: Option<String>,
+) -> Result<String, String> {
     let paths = vec![path.unwrap_or_else(|| "/".to_string())];
-    let mut results = tauri::async_runtime::spawn_blocking(move || run_previews_blocking(repo_path, branch, port, paths))
-        .await
-        .map_err(|e| format!("Spawn error: {e}"))??;
-    results.pop().filter(|s| !s.is_empty()).ok_or_else(|| "No screenshot generated".to_string())
+    let mut results = tauri::async_runtime::spawn_blocking(move || {
+        run_previews_blocking(repo_path, branch, port, paths)
+    })
+    .await
+    .map_err(|e| format!("Spawn error: {e}"))??;
+    results
+        .pop()
+        .filter(|s| !s.is_empty())
+        .ok_or_else(|| "No screenshot generated".to_string())
 }
 
 /// Screenshot multiple paths in a single server startup — one data URL per path.
 /// Empty-string entries indicate a screenshot failure for that specific route.
 #[tauri::command(rename_all = "camelCase")]
-async fn generate_preview_routes(repo_path: String, branch: String, port: u16, paths: Vec<String>) -> Result<Vec<String>, String> {
-    tauri::async_runtime::spawn_blocking(move || run_previews_blocking(repo_path, branch, port, paths))
-        .await
-        .map_err(|e| format!("Spawn error: {e}"))?
+async fn generate_preview_routes(
+    repo_path: String,
+    branch: String,
+    port: u16,
+    paths: Vec<String>,
+) -> Result<Vec<String>, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        run_previews_blocking(repo_path, branch, port, paths)
+    })
+    .await
+    .map_err(|e| format!("Spawn error: {e}"))?
 }
 
 /// Opens a visible Chrome window pointed at the branch's dev server so the user
@@ -4372,8 +5059,15 @@ fn run_open_browser_blocking(repo_path: String, branch: String, port: u16) -> Re
 
     let repo = Path::new(&repo_path);
 
-    let slug: String = branch.chars()
-        .map(|c| if c.is_alphanumeric() || c == '-' || c == '_' { c } else { '-' })
+    let slug: String = branch
+        .chars()
+        .map(|c| {
+            if c.is_alphanumeric() || c == '-' || c == '_' {
+                c
+            } else {
+                '-'
+            }
+        })
         .collect();
     let preview_dir = std::env::temp_dir().join(format!("git-viz-preview-{slug}-{port}"));
 
@@ -4402,7 +5096,12 @@ fn run_open_browser_blocking(repo_path: String, branch: String, port: u16) -> Re
         .map_err(|e| format!("Failed to write archive: {e}"))?;
 
     let tar_out = std::process::Command::new("tar")
-        .args(["-xf", archive_path.to_str().unwrap_or(""), "-C", preview_dir.to_str().unwrap_or("")])
+        .args([
+            "-xf",
+            archive_path.to_str().unwrap_or(""),
+            "-C",
+            preview_dir.to_str().unwrap_or(""),
+        ])
         .output()
         .map_err(|e| format!("tar failed to start: {e}"))?;
 
@@ -4422,8 +5121,12 @@ fn run_open_browser_blocking(repo_path: String, branch: String, port: u16) -> Re
     }
 
     for name in &[
-        ".env", ".env.local", ".env.development", ".env.development.local",
-        ".env.production", ".env.production.local",
+        ".env",
+        ".env.local",
+        ".env.development",
+        ".env.development.local",
+        ".env.production",
+        ".env.production.local",
     ] {
         let src = repo.join(name);
         if src.exists() {
@@ -4431,10 +5134,15 @@ fn run_open_browser_blocking(repo_path: String, branch: String, port: u16) -> Re
         }
     }
 
-    let pm = if preview_dir.join("bun.lockb").exists() { "bun" }
-        else if preview_dir.join("pnpm-lock.yaml").exists() { "pnpm" }
-        else if preview_dir.join("yarn.lock").exists() { "yarn" }
-        else { "npm" };
+    let pm = if preview_dir.join("bun.lockb").exists() {
+        "bun"
+    } else if preview_dir.join("pnpm-lock.yaml").exists() {
+        "pnpm"
+    } else if preview_dir.join("yarn.lock").exists() {
+        "yarn"
+    } else {
+        "npm"
+    };
 
     let main_modules = repo.join("node_modules");
     if main_modules.exists() {
@@ -4449,13 +5157,15 @@ fn run_open_browser_blocking(repo_path: String, branch: String, port: u16) -> Re
     let pm_args: Vec<&str> = match pm {
         "yarn" => vec!["dev", "--port", &port_str],
         "pnpm" => vec!["run", "dev", "--port", &port_str],
-        _      => vec!["run", "dev", "--", "--port", &port_str],
+        _ => vec!["run", "dev", "--", "--port", &port_str],
     };
 
     let log_path = std::env::temp_dir().join(format!("git-viz-dev-{port}.log"));
     let (stdout_sink, stderr_sink) = match std::fs::File::create(&log_path) {
         Ok(f) => {
-            let f2 = f.try_clone().unwrap_or_else(|_| std::fs::File::create("/dev/null").unwrap());
+            let f2 = f
+                .try_clone()
+                .unwrap_or_else(|_| std::fs::File::create("/dev/null").unwrap());
             (Stdio::from(f), Stdio::from(f2))
         }
         Err(_) => (Stdio::null(), Stdio::null()),
@@ -4481,12 +5191,21 @@ fn run_open_browser_blocking(repo_path: String, branch: String, port: u16) -> Re
     let requested_url = format!("http://localhost:{port}");
     let start = Instant::now();
     let live_url: Option<String> = loop {
-        if start.elapsed() > Duration::from_secs(90) { break None; }
+        if start.elapsed() > Duration::from_secs(90) {
+            break None;
+        }
 
         if let Ok(Some(_)) = server.try_wait() {
             let log = std::fs::read_to_string(&log_path).unwrap_or_default();
-            let tail = log.lines().rev().take(15)
-                .collect::<Vec<_>>().into_iter().rev().collect::<Vec<_>>().join("\n");
+            let tail = log
+                .lines()
+                .rev()
+                .take(15)
+                .collect::<Vec<_>>()
+                .into_iter()
+                .rev()
+                .collect::<Vec<_>>()
+                .join("\n");
             let _ = std::fs::remove_file(&log_path);
             let _ = std::fs::remove_dir_all(&preview_dir);
             return Err(format!("Dev server crashed.\nLog:\n{tail}"));
@@ -4513,7 +5232,9 @@ fn run_open_browser_blocking(repo_path: String, branch: String, port: u16) -> Re
         None => {
             let _ = server.kill();
             let _ = std::fs::remove_dir_all(&preview_dir);
-            return Err(format!("Dev server did not respond within 90s (tried port {port})"));
+            return Err(format!(
+                "Dev server did not respond within 90s (tried port {port})"
+            ));
         }
     };
 
@@ -4839,8 +5560,14 @@ main();
 /// preserving web-app session state.
 fn copy_dir_all(src: &Path, dst: &Path) -> std::io::Result<()> {
     const SKIP: &[&str] = &[
-        "Cache", "Code Cache", "GPUCache", "ShaderCache", "Crashpad",
-        "CrashpadMetrics-active.pma", "BrowserMetrics", "GrShaderCache",
+        "Cache",
+        "Code Cache",
+        "GPUCache",
+        "ShaderCache",
+        "Crashpad",
+        "CrashpadMetrics-active.pma",
+        "BrowserMetrics",
+        "GrShaderCache",
     ];
     let mut stack = vec![(src.to_path_buf(), dst.to_path_buf())];
 
@@ -4881,17 +5608,28 @@ fn uses_hash_routing(dir: &Path) -> bool {
         "createHashRouter",
         "HashRouter",
         "createHashHistory",
-        "createWebHashHistory",  // Vue Router
+        "createWebHashHistory", // Vue Router
         "useHash: true",
-        "\"hash\"",              // generic router hash mode config
+        "\"hash\"", // generic router hash mode config
         "'hash'",
     ];
     let candidates = [
-        "src/main.tsx", "src/main.ts", "src/main.jsx", "src/main.js",
-        "src/App.tsx",  "src/App.ts",  "src/App.jsx",  "src/App.js",
-        "src/router.ts", "src/router.tsx", "src/router/index.ts", "src/router/index.tsx",
-        "src/routes.ts", "src/routes.tsx",
-        "app/router.ts", "app/router.tsx",
+        "src/main.tsx",
+        "src/main.ts",
+        "src/main.jsx",
+        "src/main.js",
+        "src/App.tsx",
+        "src/App.ts",
+        "src/App.jsx",
+        "src/App.js",
+        "src/router.ts",
+        "src/router.tsx",
+        "src/router/index.ts",
+        "src/router/index.tsx",
+        "src/routes.ts",
+        "src/routes.tsx",
+        "app/router.ts",
+        "app/router.tsx",
     ];
     for rel in &candidates {
         if let Ok(content) = std::fs::read_to_string(dir.join(rel)) {
@@ -4906,16 +5644,28 @@ fn uses_hash_routing(dir: &Path) -> bool {
 /// Blocking core: starts a dev server for `branch`, screenshots each `path` in
 /// sequence via the CDP script, and returns one base64 data URL per path.
 /// Empty strings indicate that a particular screenshot failed.
-fn run_previews_blocking(repo_path: String, branch: String, port: u16, paths: Vec<String>) -> Result<Vec<String>, String> {
+fn run_previews_blocking(
+    repo_path: String,
+    branch: String,
+    port: u16,
+    paths: Vec<String>,
+) -> Result<Vec<String>, String> {
+    use base64::Engine;
     use std::process::Stdio;
     use std::time::{Duration, Instant};
-    use base64::Engine;
 
     let repo = Path::new(&repo_path);
 
     // Sanitise branch name for the temp directory name
-    let slug: String = branch.chars()
-        .map(|c| if c.is_alphanumeric() || c == '-' || c == '_' { c } else { '-' })
+    let slug: String = branch
+        .chars()
+        .map(|c| {
+            if c.is_alphanumeric() || c == '-' || c == '_' {
+                c
+            } else {
+                '-'
+            }
+        })
         .collect();
     // Include port in the dir name so concurrent calls for the same branch
     // (e.g. from React StrictMode double-effect) use separate directories.
@@ -4951,7 +5701,12 @@ fn run_previews_blocking(repo_path: String, branch: String, port: u16, paths: Ve
         .map_err(|e| format!("Failed to write archive: {e}"))?;
 
     let tar_out = std::process::Command::new("tar")
-        .args(["-xf", archive_path.to_str().unwrap_or(""), "-C", preview_dir.to_str().unwrap_or("")])
+        .args([
+            "-xf",
+            archive_path.to_str().unwrap_or(""),
+            "-C",
+            preview_dir.to_str().unwrap_or(""),
+        ])
         .output()
         .map_err(|e| format!("tar failed to start: {e}"))?;
 
@@ -5018,10 +5773,15 @@ fn run_previews_blocking(repo_path: String, branch: String, port: u16, paths: Ve
     }
 
     // Detect package manager from lockfile
-    let pm = if preview_dir.join("bun.lockb").exists() { "bun" }
-        else if preview_dir.join("pnpm-lock.yaml").exists() { "pnpm" }
-        else if preview_dir.join("yarn.lock").exists() { "yarn" }
-        else { "npm" };
+    let pm = if preview_dir.join("bun.lockb").exists() {
+        "bun"
+    } else if preview_dir.join("pnpm-lock.yaml").exists() {
+        "pnpm"
+    } else if preview_dir.join("yarn.lock").exists() {
+        "yarn"
+    } else {
+        "npm"
+    };
 
     // Symlink node_modules from the live repo checkout to skip install
     let main_modules = repo.join("node_modules");
@@ -5045,7 +5805,7 @@ fn run_previews_blocking(repo_path: String, branch: String, port: u16, paths: Ve
     let pm_args: Vec<&str> = match pm {
         "yarn" => vec!["dev", "--port", &port_str],
         "pnpm" => vec!["run", "dev", "--port", &port_str],
-        _      => vec!["run", "dev", "--", "--port", &port_str],
+        _ => vec!["run", "dev", "--", "--port", &port_str],
     };
 
     // Capture BOTH stdout and stderr to a log file.
@@ -5053,7 +5813,9 @@ fn run_previews_blocking(repo_path: String, branch: String, port: u16, paths: Ve
     let log_path = std::env::temp_dir().join(format!("git-viz-dev-{port}.log"));
     let (stdout_sink, stderr_sink) = match std::fs::File::create(&log_path) {
         Ok(f) => {
-            let f2 = f.try_clone().unwrap_or_else(|_| std::fs::File::create("/dev/null").unwrap());
+            let f2 = f
+                .try_clone()
+                .unwrap_or_else(|_| std::fs::File::create("/dev/null").unwrap());
             (Stdio::from(f), Stdio::from(f2))
         }
         Err(_) => (Stdio::null(), Stdio::null()),
@@ -5083,13 +5845,22 @@ fn run_previews_blocking(repo_path: String, branch: String, port: u16, paths: Ve
     let requested_url = format!("http://localhost:{port}");
     let start = Instant::now();
     let live_url: Option<String> = loop {
-        if start.elapsed() > Duration::from_secs(90) { break None; }
+        if start.elapsed() > Duration::from_secs(90) {
+            break None;
+        }
 
         // Bail early on crash rather than waiting the full 90s
         if let Ok(Some(_)) = server.try_wait() {
             let log = std::fs::read_to_string(&log_path).unwrap_or_default();
-            let tail = log.lines().rev().take(15)
-                .collect::<Vec<_>>().into_iter().rev().collect::<Vec<_>>().join("\n");
+            let tail = log
+                .lines()
+                .rev()
+                .take(15)
+                .collect::<Vec<_>>()
+                .into_iter()
+                .rev()
+                .collect::<Vec<_>>()
+                .join("\n");
             let _ = std::fs::remove_file(&log_path);
             let _ = std::fs::remove_dir_all(&preview_dir);
             return Err(format!("Dev server crashed.\nLog:\n{tail}"));
@@ -5117,8 +5888,15 @@ fn run_previews_blocking(repo_path: String, branch: String, port: u16, paths: Ve
         None => {
             let _ = server.kill();
             let log = std::fs::read_to_string(&log_path).unwrap_or_default();
-            let tail = log.lines().rev().take(15)
-                .collect::<Vec<_>>().into_iter().rev().collect::<Vec<_>>().join("\n");
+            let tail = log
+                .lines()
+                .rev()
+                .take(15)
+                .collect::<Vec<_>>()
+                .into_iter()
+                .rev()
+                .collect::<Vec<_>>()
+                .join("\n");
             let _ = std::fs::remove_file(&log_path);
             let _ = std::fs::remove_dir_all(&preview_dir);
             return Err(if tail.is_empty() {
@@ -5191,26 +5969,31 @@ fn run_previews_blocking(repo_path: String, branch: String, port: u16, paths: Ve
     let hash_routing = uses_hash_routing(&preview_dir);
 
     // Build the full URL for each requested path.
-    let nav_paths = if paths.is_empty() { vec!["/".to_string()] } else { paths };
-    let full_urls: Vec<String> = nav_paths.iter().map(|p| {
-        let p = if p.starts_with('/') { p.as_str() } else { "/" };
-        if p == "/" {
-            url.clone()
-        } else if hash_routing {
-            format!("{url}/#{p}")   // e.g. http://localhost:3492/#/tarot
-        } else {
-            format!("{url}{p}")     // e.g. http://localhost:3492/tarot
-        }
-    }).collect();
+    let nav_paths = if paths.is_empty() {
+        vec!["/".to_string()]
+    } else {
+        paths
+    };
+    let full_urls: Vec<String> = nav_paths
+        .iter()
+        .map(|p| {
+            let p = if p.starts_with('/') { p.as_str() } else { "/" };
+            if p == "/" {
+                url.clone()
+            } else if hash_routing {
+                format!("{url}/#{p}") // e.g. http://localhost:3492/#/tarot
+            } else {
+                format!("{url}{p}") // e.g. http://localhost:3492/tarot
+            }
+        })
+        .collect();
 
-    let urls_json = serde_json::to_string(&full_urls)
-        .map_err(|e| format!("JSON error: {e}"))?;
+    let urls_json = serde_json::to_string(&full_urls).map_err(|e| format!("JSON error: {e}"))?;
 
     // Output directory: one PNG per path (0.png, 1.png, …)
     let out_dir = std::env::temp_dir().join(format!("git-viz-shots-{port}"));
     let _ = std::fs::remove_dir_all(&out_dir);
-    std::fs::create_dir_all(&out_dir)
-        .map_err(|e| format!("Failed to create output dir: {e}"))?;
+    std::fs::create_dir_all(&out_dir).map_err(|e| format!("Failed to create output dir: {e}"))?;
 
     // Write CDP script and invoke it.
     // The script starts Chrome with --remote-debugging-port, navigates to each
@@ -5327,7 +6110,10 @@ fn summarize_diff(diff: String, api_key: String) -> Result<String, String> {
             let data: serde_json::Value = resp
                 .into_json()
                 .map_err(|e| format!("Failed to parse response: {e}"))?;
-            Ok(data["content"][0]["text"].as_str().unwrap_or("").to_string())
+            Ok(data["content"][0]["text"]
+                .as_str()
+                .unwrap_or("")
+                .to_string())
         }
         Err(ureq::Error::Status(code, resp)) => {
             let body: serde_json::Value = resp.into_json().unwrap_or_default();
@@ -5571,7 +6357,16 @@ fn lsof_paths_for_pids(pids: &[i32], descriptor_filter: &str) -> HashMap<i32, Ve
         .join(",");
 
     let output = std::process::Command::new("lsof")
-        .args(["-n", "-P", "-a", "-p", &pid_list, "-d", descriptor_filter, "-Fn"])
+        .args([
+            "-n",
+            "-P",
+            "-a",
+            "-p",
+            &pid_list,
+            "-d",
+            descriptor_filter,
+            "-Fn",
+        ])
         .output();
     let Ok(output) = output else {
         return HashMap::new();
@@ -6103,8 +6898,6 @@ fn detect_repo_from_frontmost_process() -> Option<OpenRepoEventPayload> {
     })
 }
 
-
-
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     let builder = tauri::Builder::default()
@@ -6113,9 +6906,7 @@ pub fn run() {
     #[cfg(not(any(target_os = "android", target_os = "ios")))]
     let builder = builder.plugin(tauri_plugin_window_state::Builder::default().build());
     #[cfg(target_os = "macos")]
-    let builder = builder
-        .plugin(macos_traffic_lights::init_plugin())
-        .plugin(
+    let builder = builder.plugin(macos_traffic_lights::init_plugin()).plugin(
         tauri::plugin::Builder::<_, ()>::new("macos-fps-unlock")
             .on_webview_ready(|webview| {
                 let _ = webview.unlock_fps();
@@ -6199,6 +6990,11 @@ pub fn run() {
             get_checked_out_ref,
             list_worktrees,
             remove_worktree,
+            prepare_preview_target,
+            detect_project_preview_defaults,
+            start_project_preview,
+            get_project_preview_status,
+            stop_project_preview,
             checkout_ref,
             checkout_branch,
             list_stashes,
@@ -6298,7 +7094,11 @@ mod snapshot_remote_branch_tests {
         let repo = repo_root();
         if crate::git::cli::run(
             &repo,
-            &["rev-parse", "--verify", "origin/cursor/commit-app-previews-7896"],
+            &[
+                "rev-parse",
+                "--verify",
+                "origin/cursor/commit-app-previews-7896",
+            ],
         )
         .is_err()
         {
@@ -6312,8 +7112,21 @@ mod snapshot_remote_branch_tests {
             .branches
             .iter()
             .find(|branch| branch.name == branch_name)
-            .unwrap_or_else(|| panic!("missing remote branch {branch_name} in {:?}", snapshot.branches.iter().map(|b| &b.name).collect::<Vec<_>>()));
-        assert!(branch.commits_ahead >= 1, "expected commits_ahead >= 1, got {}", branch.commits_ahead);
+            .unwrap_or_else(|| {
+                panic!(
+                    "missing remote branch {branch_name} in {:?}",
+                    snapshot
+                        .branches
+                        .iter()
+                        .map(|b| &b.name)
+                        .collect::<Vec<_>>()
+                )
+            });
+        assert!(
+            branch.commits_ahead >= 1,
+            "expected commits_ahead >= 1, got {}",
+            branch.commits_ahead
+        );
 
         let remote_commit = snapshot
             .direct_commits
@@ -6324,10 +7137,7 @@ mod snapshot_remote_branch_tests {
             "missing remote commit on {branch_name}"
         );
         assert!(
-            remote_commit
-                .unwrap()
-                .full_sha
-                .starts_with("c131b6f"),
+            remote_commit.unwrap().full_sha.starts_with("c131b6f"),
             "unexpected remote tip {}",
             remote_commit.unwrap().full_sha
         );
@@ -6338,7 +7148,9 @@ mod snapshot_remote_branch_tests {
             .cloned()
             .unwrap_or_default();
         assert!(
-            previews.iter().any(|preview| preview.full_sha.starts_with("c131b6f") && preview.is_remote),
+            previews
+                .iter()
+                .any(|preview| preview.full_sha.starts_with("c131b6f") && preview.is_remote),
             "missing remote preview for {branch_name}"
         );
         assert!(

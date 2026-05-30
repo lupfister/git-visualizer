@@ -33,7 +33,10 @@ Rules:\n\
 
 fn compose_title_prompt(base: &str, summary: &str, previous_title: Option<&str>) -> String {
     let mut prompt = base.to_string();
-    if let Some(previous) = previous_title.map(str::trim).filter(|value| !value.is_empty()) {
+    if let Some(previous) = previous_title
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+    {
         prompt.push_str(
             "\nPrevious title (ongoing work in this worktree — write a fresh title for the diff below; \
              keep the same intent when still accurate, do not copy verbatim unless it still fits):\n",
@@ -84,10 +87,7 @@ fn truncate_summary(summary: &str) -> String {
     if summary.len() <= MAX_PROMPT_CHARS {
         return summary.to_string();
     }
-    format!(
-        "{}\n\n[summary truncated]",
-        &summary[..MAX_PROMPT_CHARS]
-    )
+    format!("{}\n\n[summary truncated]", &summary[..MAX_PROMPT_CHARS])
 }
 
 fn strip_ansi(text: &str) -> String {
@@ -208,7 +208,12 @@ fn normalize_line(line: &str) -> String {
         .trim_matches('.')
         .trim()
         .to_string();
-    candidate.split('\n').next().unwrap_or("").trim().to_string()
+    candidate
+        .split('\n')
+        .next()
+        .unwrap_or("")
+        .trim()
+        .to_string()
 }
 
 fn sanitize_title(raw: &str, empty_label: &str) -> Result<String, String> {
@@ -251,7 +256,8 @@ mod tests {
 
     #[test]
     fn keeps_short_plain_message() {
-        let message = sanitize_title("Fix unpushed commit detection", "commit message").expect("ok");
+        let message =
+            sanitize_title("Fix unpushed commit detection", "commit message").expect("ok");
         assert_eq!(message, "Fix unpushed commit detection");
     }
 
@@ -295,9 +301,7 @@ fn run_opencode(binary: &Path, repo_path: &str, args: &[&str]) -> Result<String,
                 if started.elapsed() > OPENCODE_TIMEOUT {
                     let _ = child.kill();
                     let _ = child.wait();
-                    return Err(
-                        "OpenCode timed out. Use Write commit or try again.".to_string(),
-                    );
+                    return Err("OpenCode timed out. Use Write commit or try again.".to_string());
                 }
                 std::thread::sleep(Duration::from_millis(200));
             }
@@ -327,7 +331,11 @@ fn run_opencode(binary: &Path, repo_path: &str, args: &[&str]) -> Result<String,
     }
 
     let detail = err.trim();
-    let detail = if detail.is_empty() { out.trim() } else { detail };
+    let detail = if detail.is_empty() {
+        out.trim()
+    } else {
+        detail
+    };
     Err(if detail.is_empty() {
         "OpenCode failed to generate a message.".to_string()
     } else {
@@ -335,11 +343,7 @@ fn run_opencode(binary: &Path, repo_path: &str, args: &[&str]) -> Result<String,
     })
 }
 
-fn run_opencode_title(
-    binary: &Path,
-    repo_path: &str,
-    prompt: &str,
-) -> Result<String, String> {
+fn run_opencode_title(binary: &Path, repo_path: &str, prompt: &str) -> Result<String, String> {
     let attach = opencode_server_available();
 
     let mut args: Vec<&str> = vec!["run", "--dir", repo_path];
@@ -378,8 +382,7 @@ fn generate_title_with_retries(
             Ok(raw) => match sanitize_title(&raw, empty_label) {
                 Ok(message) if !is_unacceptable_message(&message) => return Ok(message),
                 Ok(_) => {
-                    last_error =
-                        format!("OpenCode returned meta text instead of a {empty_label}.");
+                    last_error = format!("OpenCode returned meta text instead of a {empty_label}.");
                 }
                 Err(err) => last_error = err,
             },

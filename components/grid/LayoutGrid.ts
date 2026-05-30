@@ -33,6 +33,7 @@ export function commitRectSize(baseNodeSize: number, clusterBoost = 0): { width:
 
 // Grid-side copies of the data/layout helpers used by the canvas view.
 import { Branch, BranchCommitPreview, DirectCommit, MergeNode } from '../../types';
+import type { PreviewTarget } from '../../lib/git';
 
 export type BranchGridViewProps = {
   [key: string]: any;
@@ -93,6 +94,9 @@ export type BranchGridViewProps = {
   onDebugClose?: () => void;
   orientation?: 'vertical' | 'horizontal';
   onInteractionChange?: (isInteracting: boolean) => void;
+  onPreviewNode?: (target: PreviewTarget, nodeId: string) => Promise<void> | void;
+  previewInProgress?: boolean;
+  previewedNodeId?: string | null;
 };
 
 export type NodePositionOverride = { x: number; y: number };

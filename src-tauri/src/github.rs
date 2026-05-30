@@ -107,8 +107,12 @@ pub fn get_github_info(repo_path: &Path) -> Result<GitHubInfo, String> {
     let remote_url = git::cli::run(repo_path, &["remote", "get-url", "origin"])
         .map_err(|e| format!("Failed to get remote URL: {e}"))?;
 
-    let (owner, repo) = parse_remote_url(&remote_url)
-        .ok_or_else(|| format!("Could not parse GitHub info from remote URL: {}", remote_url.trim()))?;
+    let (owner, repo) = parse_remote_url(&remote_url).ok_or_else(|| {
+        format!(
+            "Could not parse GitHub info from remote URL: {}",
+            remote_url.trim()
+        )
+    })?;
 
     // Check if gh CLI is available
     let gh_available = Command::new("gh")
@@ -342,8 +346,7 @@ pub fn get_merged_prs(
         return Err(format!("gh api failed: {stderr}"));
     }
 
-    let stdout = String::from_utf8(output.stdout)
-        .map_err(|_| "Invalid UTF-8 in gh output")?;
+    let stdout = String::from_utf8(output.stdout).map_err(|_| "Invalid UTF-8 in gh output")?;
 
     let prs: Vec<GitHubPR> = serde_json::from_str(&stdout)
         .map_err(|e| format!("Failed to parse GitHub response: {e}"))?;
@@ -390,8 +393,7 @@ pub fn get_open_prs(owner: &str, repo: &str) -> Result<Vec<OpenPR>, String> {
         return Err(format!("gh api failed: {stderr}"));
     }
 
-    let stdout = String::from_utf8(output.stdout)
-        .map_err(|_| "Invalid UTF-8 in gh output")?;
+    let stdout = String::from_utf8(output.stdout).map_err(|_| "Invalid UTF-8 in gh output")?;
 
     let prs: Vec<GitHubPR> = serde_json::from_str(&stdout)
         .map_err(|e| format!("Failed to parse GitHub response: {e}"))?;

@@ -161,10 +161,7 @@ mod tests {
 
     #[test]
     fn porcelain_dirty_detection_matches_git_status() {
-        let repo = std::env::temp_dir().join(format!(
-            "gv-wt-test-{}",
-            std::process::id()
-        ));
+        let repo = std::env::temp_dir().join(format!("gv-wt-test-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&repo);
         Command::new("git")
             .args(["init", repo.to_str().unwrap()])

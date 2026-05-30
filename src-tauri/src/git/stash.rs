@@ -121,7 +121,11 @@ pub fn create_branch_from_uncommitted(repo: &Path, branch_name: &str) -> Result<
 
 /// Create a new branch at the stash's base commit (`stash@{n}^1`), check it out,
 /// then apply and drop the stash — leaving changes as uncommitted on the new branch.
-pub fn move_stash_to_new_branch(repo: &Path, stash_index: u32, branch_name: &str) -> Result<(), GitError> {
+pub fn move_stash_to_new_branch(
+    repo: &Path,
+    stash_index: u32,
+    branch_name: &str,
+) -> Result<(), GitError> {
     let stash_ref = format!("stash@{{{stash_index}}}");
     let base_sha = cli::run(repo, &["rev-parse", &format!("{stash_ref}^1")])?;
     let base_sha = base_sha.trim().to_string();
