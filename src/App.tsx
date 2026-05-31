@@ -7,6 +7,7 @@ import { getCurrentWindow } from '@tauri-apps/api/window';
 import { open } from '@tauri-apps/plugin-dialog';
 import { PanelLeftClose, PanelLeftOpen } from 'lucide-react';
 import BranchGridMapView from '../components/grid/MapViewGrid';
+import PreviewTerminalPanel from '../components/PreviewTerminalPanel';
 import { mapGridCameraStorageKey, readHasSavedMapGridCamera } from '../components/grid/useMapGridCamera';
 import DenseBranchSidebar from '../components/DenseBranchSidebar';
 import type { NodePositionOverrides } from '../components/grid/LayoutGrid';
@@ -77,12 +78,11 @@ import { createRepoSyncScheduler } from './repoSyncScheduler';
 import { runOrchestratedRepoSync } from './orchestratedRepoSync';
 import {
   detectProjectPreviewDefaults,
-  getProjectPreviewStatus,
+  getActiveProjectPreviewTarget,
   startProjectPreview,
   stopProjectPreview,
   type PreviewTarget,
   type ProjectPreviewConfig,
-  type ProjectPreviewResult,
 } from '../lib/git';
 
 const PROJECTS_STORAGE_KEY = 'git-visualizer:projects';
@@ -354,7 +354,8 @@ function App() {
   const [previewDraftConfig, setPreviewDraftConfig] = useState<ProjectPreviewConfig | null>(null);
   const [pendingPreviewTarget, setPendingPreviewTarget] = useState<PreviewTarget | null>(null);
   const [pendingPreviewNodeId, setPendingPreviewNodeId] = useState<string | null>(null);
-  const [previewStatus, setPreviewStatus] = useState<ProjectPreviewResult | null>(null);
+  const [previewActive, setPreviewActive] = useState(false);
+  const [previewTerminalOpen, setPreviewTerminalOpen] = useState(false);
   const [previewInProgress, setPreviewInProgress] = useState(false);
   const [previewedNodeId, setPreviewedNodeId] = useState<string | null>(null);
   // scrollRequest.seq increments on each click so the same branch re-triggers the effect
@@ -2728,6 +2729,7 @@ function App() {
     path: string,
     snapshot: RepoVisualSnapshot,
   ): Promise<RepoVisualSnapshot> {
+    void syncActivePreviewTarget(path);
     const [quickState, worktrees] = await Promise.all([
       invoke<RepoQuickState>('get_repo_quick_state', { repoPath: path }).catch(() => null),
       invoke<WorktreeInfo[]>('list_worktrees', { repoPath: path }).catch(() => [] as WorktreeInfo[]),
@@ -6320,19 +6322,16 @@ function App() {
   ) => {
     if (!repoPath) return;
     setPreviewInProgress(true);
-    setPreviewStatus(null);
+    setPreviewActive(false);
     try {
       const result = await startProjectPreview(repoPath, target, config);
-      setPreviewStatus(result);
-      setPreviewedNodeId(nodeId);
+      setPreviewedNodeId(result.targetId || nodeId);
+      setPreviewActive(result.status === 'running');
+      setPreviewTerminalOpen(result.status === 'running');
     } catch (error) {
-      setPreviewStatus({
-        previewPath: '',
-        targetId: nodeId,
-        status: 'exited',
-        logs: error instanceof Error ? error.message : String(error),
-        previewMode: config.runCommand.toLowerCase().includes('tauri dev') ? 'native' : 'web',
-      });
+      console.warn('Preview failed:', error);
+      setPreviewActive(false);
+      setPreviewTerminalOpen(false);
     } finally {
       setPreviewInProgress(false);
     }
@@ -6380,29 +6379,27 @@ function App() {
   const handleStopPreview = useCallback(async () => {
     if (!repoPath) return;
     await stopProjectPreview(repoPath).catch(() => undefined);
-    setPreviewStatus(null);
+    setPreviewActive(false);
+    setPreviewTerminalOpen(false);
     setPreviewedNodeId(null);
   }, [repoPath]);
 
+  const syncActivePreviewTarget = useCallback(async (path: string) => {
+    const target = await getActiveProjectPreviewTarget(path).catch(() => null);
+    if (!sameRepoPath(repoPath, path)) return;
+    setPreviewedNodeId((current) => (current === (target?.targetId ?? null) ? current : (target?.targetId ?? null)));
+    setPreviewActive(Boolean(target));
+  }, [repoPath]);
+
   useEffect(() => {
-    if (!repoPath || !previewStatus || previewStatus.status !== 'running') return;
-    let disposed = false;
-    const intervalId = window.setInterval(() => {
-      void getProjectPreviewStatus(repoPath)
-        .then((status) => {
-          if (disposed || !status) return;
-          setPreviewStatus(status);
-          if (status.status !== 'running') {
-            window.clearInterval(intervalId);
-          }
-        })
-        .catch(() => undefined);
-    }, 1000);
-    return () => {
-      disposed = true;
-      window.clearInterval(intervalId);
-    };
-  }, [previewStatus, repoPath]);
+    if (!repoPath) {
+      setPreviewedNodeId(null);
+      setPreviewActive(false);
+      setPreviewTerminalOpen(false);
+      return;
+    }
+    void syncActivePreviewTarget(repoPath);
+  }, [repoPath, syncActivePreviewTarget]);
 
   const blockMapDisplay = !mapReadyForDisplay || mapPresentationState !== 'ready';
   const blockMapInteraction = mapLoading || loading;
@@ -6584,54 +6581,13 @@ function App() {
                   </div>
                 </div>
               ) : null}
-              {previewStatus ? (
-                <div className="pointer-events-none absolute bottom-4 right-4 z-[85] w-[min(28rem,calc(100vw-2rem))]">
-                  <div className="pointer-events-auto rounded-2xl border border-border bg-card/95 p-3 shadow-lg backdrop-blur-sm">
-                    <div className="flex items-start justify-between gap-3">
-                      <div className="min-w-0">
-                        <p className="text-sm font-medium text-foreground">Preview {previewStatus.status === 'running' ? 'running' : previewStatus.status}</p>
-                        {previewStatus.previewMode === 'native' ? (
-                          <p className="mt-1 text-xs text-muted-foreground">Native app launched from the preview worktree.</p>
-                        ) : previewStatus.url ? (
-                          <p className="mt-1 truncate text-xs text-muted-foreground">{previewStatus.url}</p>
-                        ) : (
-                          <p className="mt-1 text-xs text-muted-foreground">No localhost URL detected yet.</p>
-                        )}
-                      </div>
-                      <div className="flex shrink-0 items-center gap-1.5">
-                        {previewStatus.url ? (
-                          <>
-                            <button
-                              type="button"
-                              onClick={() => void navigator.clipboard?.writeText(previewStatus.url ?? '')}
-                              className="rounded-lg border border-border bg-background px-2 py-1 text-xs font-medium text-foreground transition-colors hover:bg-muted"
-                            >
-                              Copy
-                            </button>
-                            <button
-                              type="button"
-                              onClick={() => previewStatus.url ? window.open(previewStatus.url, '_blank') : undefined}
-                              className="rounded-lg border border-border bg-background px-2 py-1 text-xs font-medium text-foreground transition-colors hover:bg-muted"
-                            >
-                              Open
-                            </button>
-                          </>
-                        ) : null}
-                        <button
-                          type="button"
-                          onClick={() => void handleStopPreview()}
-                          className="rounded-lg border border-border bg-background px-2 py-1 text-xs font-medium text-foreground transition-colors hover:bg-muted"
-                        >
-                          Stop
-                        </button>
-                      </div>
-                    </div>
-                    {previewStatus.logs ? (
-                      <pre className="mt-2 max-h-28 overflow-auto rounded-lg border border-border/50 bg-muted/30 p-2 text-[11px] text-muted-foreground">{previewStatus.logs}</pre>
-                    ) : null}
-                  </div>
-                </div>
-              ) : null}
+              <PreviewTerminalPanel
+                repoPath={repoPath}
+                active={previewActive}
+                open={previewTerminalOpen}
+                onOpenChange={setPreviewTerminalOpen}
+                onStop={() => void handleStopPreview()}
+              />
           </div>
 
         </div>

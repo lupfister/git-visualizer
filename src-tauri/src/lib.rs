@@ -12,10 +12,13 @@ use github::{GitHubAuthStatus, GitHubInfo, MergedPR, OpenPR};
 use notify::{RecursiveMode, Watcher};
 use rusqlite::{params, Connection, OptionalExtension};
 use serde::{Deserialize, Serialize};
+#[cfg(unix)]
+use std::os::unix::process::CommandExt;
 use std::{
     collections::{HashMap, HashSet},
     fs::{self, File},
     io::{BufRead, BufReader},
+    net::TcpListener,
     path::{Path, PathBuf},
     process::{Child, Stdio},
     sync::{
@@ -24,8 +27,6 @@ use std::{
     },
     time::{Duration as StdDuration, Instant},
 };
-#[cfg(unix)]
-use std::os::unix::process::CommandExt;
 
 #[cfg(target_os = "macos")]
 use objc2_app_kit::NSWorkspace;
@@ -120,6 +121,12 @@ struct ProjectPreviewResult {
     status: String,
     logs: String,
     preview_mode: String,
+}
+
+#[derive(Serialize, Deserialize, Clone)]
+#[serde(rename_all = "camelCase")]
+struct ProjectPreviewLogTail {
+    logs: String,
 }
 
 struct PreviewProcess {
@@ -2578,19 +2585,38 @@ fn preview_processes() -> &'static Mutex<HashMap<String, PreviewProcess>> {
 
 fn stop_project_preview_blocking(repo_path: &str) -> Result<(), String> {
     let key = normalize_repo_path_id(repo_path);
-    let mut processes = preview_processes()
-        .lock()
-        .map_err(|_| "Preview process state is unavailable".to_string())?;
-    if let Some(mut process) = processes.remove(&key) {
+    {
+        let mut processes = preview_processes()
+            .lock()
+            .map_err(|_| "Preview process state is unavailable".to_string())?;
+        if let Some(mut process) = processes.remove(&key) {
+            terminate_preview_process(&mut process.child);
+            let _ = process.child.wait();
+        }
+    }
+    let storage_root = preview_worktree_storage_root()?;
+    terminate_orphaned_preview_processes(&storage_root);
+    git::clear_active_preview_target(&storage_root, Path::new(repo_path));
+    Ok(())
+}
+
+fn stop_all_preview_processes() {
+    let Ok(mut processes) = preview_processes().lock() else {
+        return;
+    };
+    for (_, mut process) in processes.drain() {
         terminate_preview_process(&mut process.child);
         let _ = process.child.wait();
     }
-    Ok(())
+    if let Ok(storage_root) = preview_worktree_storage_root() {
+        terminate_orphaned_preview_processes(&storage_root);
+    }
 }
 
 fn terminate_preview_process(child: &mut Child) {
     #[cfg(unix)]
     {
+        let pid = child.id().to_string();
         let pgid = format!("-{}", child.id());
         let _ = std::process::Command::new("kill")
             .args(["-TERM", &pgid])
@@ -2598,8 +2624,83 @@ fn terminate_preview_process(child: &mut Child) {
             .stderr(Stdio::null())
             .status();
         std::thread::sleep(StdDuration::from_millis(150));
+        let _ = std::process::Command::new("kill")
+            .args(["-KILL", &pgid])
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .status();
+        let _ = std::process::Command::new("kill")
+            .args(["-KILL", &pid])
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .status();
     }
     let _ = child.kill();
+}
+
+fn terminate_process_id(pid: i32) {
+    if pid <= 0 {
+        return;
+    }
+    #[cfg(unix)]
+    {
+        let pgid = format!("-{pid}");
+        let _ = std::process::Command::new("kill")
+            .args(["-TERM", &pgid])
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .status();
+        let _ = std::process::Command::new("kill")
+            .args(["-TERM", &pid.to_string()])
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .status();
+        std::thread::sleep(StdDuration::from_millis(150));
+        let _ = std::process::Command::new("kill")
+            .args(["-KILL", &pgid])
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .status();
+        let _ = std::process::Command::new("kill")
+            .args(["-KILL", &pid.to_string()])
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .status();
+    }
+}
+
+fn terminate_orphaned_preview_processes(storage_root: &Path) {
+    let output = std::process::Command::new("ps")
+        .args(["-axo", "pid="])
+        .output();
+    let Ok(output) = output else {
+        return;
+    };
+    let Ok(raw) = std::str::from_utf8(&output.stdout) else {
+        return;
+    };
+    let mut pids = raw
+        .lines()
+        .filter_map(|line| line.trim().parse::<i32>().ok())
+        .filter(|pid| *pid > 0 && *pid != std::process::id() as i32)
+        .collect::<Vec<_>>();
+    pids.sort_unstable();
+    pids.dedup();
+    let cwd_by_pid = lsof_paths_for_pids(&pids, "cwd");
+    let mut pids_to_kill = HashSet::<i32>::new();
+    for (pid, paths) in cwd_by_pid {
+        if paths.iter().any(|path| path.starts_with(storage_root)) {
+            pids_to_kill.insert(pid);
+            for child_pid in collect_descendant_pids(pid, 512) {
+                pids_to_kill.insert(child_pid);
+            }
+        }
+    }
+    let mut ordered = pids_to_kill.into_iter().collect::<Vec<_>>();
+    ordered.sort_unstable_by(|a, b| b.cmp(a));
+    for pid in ordered {
+        terminate_process_id(pid);
+    }
 }
 
 fn preview_log_tail(path: &Path) -> String {
@@ -2609,8 +2710,29 @@ fn preview_log_tail(path: &Path) -> String {
     lines.join("\n")
 }
 
-fn command_has_port(command: &str) -> bool {
-    command.contains("--port") || command.contains("PORT=") || command.contains(" port ")
+fn command_declares_port(command: &str) -> bool {
+    let lowered = command.to_ascii_lowercase();
+    lowered.contains("--port")
+        || lowered.contains(" port ")
+        || lowered.contains("port=")
+        || lowered.contains("port:")
+        || lowered.contains("vite --host")
+}
+
+fn find_available_preview_port() -> Option<u16> {
+    for port in 4173..4300 {
+        if preview_port_is_available(port) {
+            return Some(port);
+        }
+    }
+    TcpListener::bind(("127.0.0.1", 0))
+        .ok()
+        .and_then(|listener| listener.local_addr().ok())
+        .map(|addr| addr.port())
+}
+
+fn preview_port_is_available(port: u16) -> bool {
+    TcpListener::bind(("::", port)).is_ok() && TcpListener::bind(("0.0.0.0", port)).is_ok()
 }
 
 fn is_native_preview_command(command: &str) -> bool {
@@ -2622,16 +2744,18 @@ fn shell_command(
     cwd: &Path,
     log: Option<&Path>,
     detached_group: bool,
+    port: Option<u16>,
 ) -> Result<std::process::Command, String> {
     let mut cmd = std::process::Command::new("zsh");
     cmd.args(["-lc", command]);
     cmd.current_dir(cwd)
         .env("BROWSER", "none")
         .env("NO_OPEN", "1")
-        .env("npm_config_open", "false")
-        .env("npm_config_browser", "none");
-    if !command_has_port(command) {
-        cmd.env("PORT", "4173");
+        .env_remove("npm_config_open")
+        .env_remove("npm_config_verify_deps_before_run")
+        .env_remove("npm_config__jsr_registry");
+    if let Some(port) = port {
+        cmd.env("PORT", port.to_string());
     }
     if let Some(log_path) = log {
         let file =
@@ -2646,6 +2770,21 @@ fn shell_command(
         cmd.process_group(0);
     }
     Ok(cmd)
+}
+
+fn run_preview_step_to_log(
+    command: &str,
+    cwd: &Path,
+    log_path: &Path,
+    port: Option<u16>,
+) -> Result<bool, String> {
+    let mut child = shell_command(command, cwd, Some(log_path), true, port)?
+        .spawn()
+        .map_err(|e| format!("Failed to start preview command: {e}"))?;
+    let status = child
+        .wait()
+        .map_err(|e| format!("Failed to wait for preview command: {e}"))?;
+    Ok(status.success())
 }
 
 fn detect_project_preview_defaults_blocking(
@@ -2707,8 +2846,9 @@ fn start_project_preview_blocking(
     target: git::PreviewTarget,
     config: ProjectPreviewConfig,
 ) -> Result<ProjectPreviewResult, String> {
-    stop_project_preview_blocking(&repo_path)?;
+    stop_all_preview_processes();
     let storage_root = preview_worktree_storage_root()?;
+    terminate_orphaned_preview_processes(&storage_root);
     let repo = Path::new(&repo_path);
     let target_id = target.target_id();
     let is_native_preview = is_native_preview_command(&config.run_command);
@@ -2716,19 +2856,45 @@ fn start_project_preview_blocking(
     let prepared =
         git::prepare_preview_target(repo, &storage_root, target).map_err(|e| e.to_string())?;
     let preview_path = PathBuf::from(&prepared.preview_path);
+    let state_path = storage_root.join("logs");
+    fs::create_dir_all(&state_path)
+        .map_err(|e| format!("Failed to create preview log directory: {e}"))?;
+    let log_path = state_path.join(format!(
+        "{}.log",
+        normalize_repo_path_id(&repo_path).replace('/', "_")
+    ));
+    let install_log_path = state_path.join(format!(
+        "{}.install.log",
+        normalize_repo_path_id(&repo_path).replace('/', "_")
+    ));
 
-    if git::should_run_install(&storage_root, repo, prepared.dependency_files_changed)
-        && !config.install_command.trim().is_empty()
-    {
-        let output = shell_command(&config.install_command, &preview_path, None, false)?
-            .output()
-            .map_err(|e| format!("Failed to run install command: {e}"))?;
-        if !output.status.success() {
-            let logs = format!(
-                "{}\n{}",
-                String::from_utf8_lossy(&output.stdout),
-                String::from_utf8_lossy(&output.stderr)
-            );
+    let install_needed = git::should_run_install(
+        &storage_root,
+        repo,
+        &preview_path,
+        prepared.dependency_files_changed,
+    );
+    if install_needed && config.install_command.trim().is_empty() {
+        return Ok(ProjectPreviewResult {
+            preview_path: prepared.preview_path,
+            target_id,
+            url: None,
+            status: "installFailed".to_string(),
+            logs: "Install is required for this preview worktree, but no install command is configured.".to_string(),
+            preview_mode,
+        });
+    }
+
+    if install_needed {
+        let _ = fs::remove_file(&install_log_path);
+        let install_ok = run_preview_step_to_log(
+            &config.install_command,
+            &preview_path,
+            &install_log_path,
+            None,
+        )?;
+        if !install_ok {
+            let logs = preview_log_tail(&install_log_path);
             return Ok(ProjectPreviewResult {
                 preview_path: prepared.preview_path,
                 target_id,
@@ -2741,22 +2907,21 @@ fn start_project_preview_blocking(
         git::mark_install_success(&storage_root, repo).map_err(|e| e.to_string())?;
     }
 
-    let state_path = storage_root.join("logs");
-    fs::create_dir_all(&state_path)
-        .map_err(|e| format!("Failed to create preview log directory: {e}"))?;
-    let log_path = state_path.join(format!(
-        "{}.log",
-        normalize_repo_path_id(&repo_path).replace('/', "_")
-    ));
     let _ = fs::remove_file(&log_path);
+    let preview_port = if is_native_preview || command_declares_port(&config.run_command) {
+        None
+    } else {
+        find_available_preview_port()
+    };
     let mut child = shell_command(
         &config.run_command,
         &preview_path,
         Some(&log_path),
-        is_native_preview,
+        true,
+        preview_port,
     )?
-        .spawn()
-        .map_err(|e| format!("Failed to start preview command: {e}"))?;
+    .spawn()
+    .map_err(|e| format!("Failed to start preview command: {e}"))?;
 
     let started = Instant::now();
     let mut status = "running".to_string();
@@ -2813,7 +2978,9 @@ fn start_project_preview_blocking(
     })
 }
 
-fn get_project_preview_status_blocking(repo_path: String) -> Result<Option<ProjectPreviewResult>, String> {
+fn get_project_preview_status_blocking(
+    repo_path: String,
+) -> Result<Option<ProjectPreviewResult>, String> {
     let key = normalize_repo_path_id(&repo_path);
     let mut processes = preview_processes()
         .lock()
@@ -2847,6 +3014,48 @@ fn get_project_preview_status_blocking(repo_path: String) -> Result<Option<Proje
     Ok(Some(result))
 }
 
+fn get_project_preview_log_tail_blocking(
+    repo_path: String,
+) -> Result<ProjectPreviewLogTail, String> {
+    let key = normalize_repo_path_id(&repo_path);
+    let processes = preview_processes()
+        .lock()
+        .map_err(|_| "Preview process state is unavailable".to_string())?;
+    let log_path = processes.get(&key).map(|process| process.log_path.clone());
+    drop(processes);
+
+    let Some(log_path) = log_path else {
+        return Ok(ProjectPreviewLogTail {
+            logs: String::new(),
+        });
+    };
+    Ok(ProjectPreviewLogTail {
+        logs: preview_log_tail(&log_path),
+    })
+}
+
+fn get_active_project_preview_target_blocking(
+    repo_path: String,
+) -> Result<Option<git::ActivePreviewTarget>, String> {
+    let key = normalize_repo_path_id(&repo_path);
+    let mut processes = preview_processes()
+        .lock()
+        .map_err(|_| "Preview process state is unavailable".to_string())?;
+    let Some(process) = processes.get_mut(&key) else {
+        return Ok(None);
+    };
+    if matches!(process.child.try_wait(), Ok(Some(_)) | Err(_)) {
+        processes.remove(&key);
+        let storage_root = preview_worktree_storage_root()?;
+        terminate_orphaned_preview_processes(&storage_root);
+        git::clear_active_preview_target(&storage_root, Path::new(&repo_path));
+        return Ok(None);
+    }
+    drop(processes);
+    let storage_root = preview_worktree_storage_root()?;
+    git::get_active_preview_target(&storage_root, Path::new(&repo_path)).map_err(|e| e.to_string())
+}
+
 #[tauri::command(rename_all = "camelCase")]
 async fn detect_project_preview_defaults(
     repo_path: String,
@@ -2864,8 +3073,22 @@ async fn start_project_preview(
 }
 
 #[tauri::command(rename_all = "camelCase")]
-async fn get_project_preview_status(repo_path: String) -> Result<Option<ProjectPreviewResult>, String> {
+async fn get_project_preview_status(
+    repo_path: String,
+) -> Result<Option<ProjectPreviewResult>, String> {
     run_blocking(move || get_project_preview_status_blocking(repo_path)).await
+}
+
+#[tauri::command(rename_all = "camelCase")]
+async fn get_project_preview_log_tail(repo_path: String) -> Result<ProjectPreviewLogTail, String> {
+    run_blocking(move || get_project_preview_log_tail_blocking(repo_path)).await
+}
+
+#[tauri::command(rename_all = "camelCase")]
+async fn get_active_project_preview_target(
+    repo_path: String,
+) -> Result<Option<git::ActivePreviewTarget>, String> {
+    run_blocking(move || get_active_project_preview_target_blocking(repo_path)).await
 }
 
 #[tauri::command(rename_all = "camelCase")]
@@ -6915,6 +7138,12 @@ pub fn run() {
     );
 
     builder
+        .on_window_event(|_, event| match event {
+            tauri::WindowEvent::CloseRequested { .. } | tauri::WindowEvent::Destroyed => {
+                stop_all_preview_processes();
+            }
+            _ => {}
+        })
         .setup(|app| {
             #[cfg(target_os = "macos")]
             {
@@ -6994,6 +7223,8 @@ pub fn run() {
             detect_project_preview_defaults,
             start_project_preview,
             get_project_preview_status,
+            get_project_preview_log_tail,
+            get_active_project_preview_target,
             stop_project_preview,
             checkout_ref,
             checkout_branch,
@@ -7047,8 +7278,16 @@ pub fn run() {
             reveal_in_finder,
             watch_repo,
         ])
-        .run(tauri::generate_context!())
-        .expect("error running tauri application");
+        .build(tauri::generate_context!())
+        .expect("error building tauri application")
+        .run(|_, event| {
+            if matches!(
+                event,
+                tauri::RunEvent::ExitRequested { .. } | tauri::RunEvent::Exit
+            ) {
+                stop_all_preview_processes();
+            }
+        });
 }
 
 static PENDING_OPEN_REPO: OnceLock<Mutex<Option<OpenRepoEventPayload>>> = OnceLock::new();

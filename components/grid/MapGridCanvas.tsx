@@ -123,6 +123,7 @@ type CommitCardProps = {
   cardLeft: number;
   cardTop: number;
   displayZoom: number;
+  lineStrokeWidth: number;
   selectedShaSet: Set<string>;
   normalizedSearchQuery: string;
   matchingNodeIds: Set<string>;
@@ -158,6 +159,7 @@ const MapGridCommitCard = memo(function MapGridCommitCard({
   cardLeft,
   cardTop,
   displayZoom,
+  lineStrokeWidth,
   selectedShaSet,
   normalizedSearchQuery,
   matchingNodeIds,
@@ -529,9 +531,9 @@ const MapGridCommitCard = memo(function MapGridCommitCard({
         style={{
           top: 0,
           border: 'none',
-          boxShadow: isPreviewedCommit ? '0 0 0 calc(5px * var(--map-inv-zoom, 1)) var(--select-muted)' : 'none',
-          outline: isPreviewedCommit ? 'calc(2px * var(--map-inv-zoom, 1)) solid var(--select)' : 'none',
-          outlineOffset: 'calc(3px * var(--map-inv-zoom, 1))',
+          boxShadow: 'none',
+          outline: isPreviewedCommit ? `${lineStrokeWidth}px solid var(--select)` : 'none',
+          outlineOffset: 0,
           borderTopLeftRadius: 0,
           borderTopRightRadius: outlineCornerRadiusCss,
           borderBottomRightRadius: outlineCornerRadiusCss,
@@ -1010,6 +1012,7 @@ const MapGridCanvas = memo(function MapGridCanvas({
                 cardLeft={cardLeft}
                 cardTop={cardTop}
                 displayZoom={displayZoom}
+                lineStrokeWidth={lineStrokeWidth}
                 selectedShaSet={selectedShaSet}
                 normalizedSearchQuery={normalizedSearchQuery}
                 matchingNodeIds={matchingNodeIds}

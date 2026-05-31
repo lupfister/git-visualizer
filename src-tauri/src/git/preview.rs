@@ -35,6 +35,16 @@ pub struct PreparePreviewTargetResult {
     pub dependency_files_changed: bool,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ActivePreviewTarget {
+    pub preview_path: String,
+    pub target_id: String,
+    pub target_kind: String,
+    pub effective_head_sha: String,
+    pub overlay_applied: bool,
+}
+
 impl PreviewTarget {
     pub fn target_id(&self) -> String {
         match self {
@@ -54,6 +64,9 @@ struct OverlayManifest {
 
 const OVERLAY_MANIFEST_FILE: &str = "overlay-manifest.json";
 const OVERLAY_PATCH_FILE: &str = "overlay.patch";
+const ACTIVE_PREVIEW_TARGET_FILE: &str = "active-preview-target.json";
+const PREVIEW_WORKTREE_DIR: &str = "preview";
+const LEGACY_PREVIEW_WORKTREE_DIR: &str = "worktree";
 
 pub fn prepare_preview_target(
     repo: &Path,
@@ -62,12 +75,14 @@ pub fn prepare_preview_target(
 ) -> Result<PreparePreviewTargetResult, GitError> {
     let repo_id = repo_storage_id(repo);
     let project_root = storage_root.join(repo_id);
-    let preview_path = project_root.join("worktree");
+    let preview_path = project_root.join(PREVIEW_WORKTREE_DIR);
     let state_path = project_root.join("state");
     fs::create_dir_all(&state_path).map_err(|e| {
         GitError::CommandFailed(format!("failed to create preview state directory: {e}"))
     })?;
+    remove_legacy_preview_worktree(repo, &project_root)?;
 
+    let target_id = target.target_id();
     let (target_kind, checkout_sha, source_worktree) = match target {
         PreviewTarget::Commit { sha } => ("commit".to_string(), sha, None),
         PreviewTarget::Worktree {
@@ -126,6 +141,16 @@ pub fn prepare_preview_target(
         .trim()
         .to_string();
     let dependency_files_changed = dependency_files_changed(&preview_path)?;
+    write_active_preview_target(
+        &state_path,
+        &ActivePreviewTarget {
+            preview_path: preview_path.to_string_lossy().to_string(),
+            target_id,
+            target_kind: target_kind.clone(),
+            effective_head_sha: effective_head_sha.clone(),
+            overlay_applied,
+        },
+    )?;
 
     Ok(PreparePreviewTargetResult {
         preview_path: preview_path.to_string_lossy().to_string(),
@@ -136,18 +161,73 @@ pub fn prepare_preview_target(
     })
 }
 
+pub fn get_active_preview_target(
+    storage_root: &Path,
+    repo: &Path,
+) -> Result<Option<ActivePreviewTarget>, GitError> {
+    let state_path = preview_state_path(storage_root, repo);
+    let target_path = state_path.join(ACTIVE_PREVIEW_TARGET_FILE);
+    if let Ok(raw) = fs::read_to_string(target_path) {
+        let target: ActivePreviewTarget = serde_json::from_str(&raw).map_err(|e| {
+            GitError::CommandFailed(format!("failed to decode active preview target: {e}"))
+        })?;
+        return Ok(Some(target));
+    }
+
+    let preview_path = storage_root
+        .join(repo_storage_id(repo))
+        .join(PREVIEW_WORKTREE_DIR);
+    if !preview_path.join(".git").exists() {
+        return Ok(None);
+    }
+    let effective_head_sha = git_run(&preview_path, &["rev-parse", "HEAD"])?
+        .trim()
+        .to_string();
+    Ok(Some(ActivePreviewTarget {
+        preview_path: preview_path.to_string_lossy().to_string(),
+        target_id: effective_head_sha.clone(),
+        target_kind: "commit".to_string(),
+        effective_head_sha,
+        overlay_applied: false,
+    }))
+}
+
+pub fn clear_active_preview_target(storage_root: &Path, repo: &Path) {
+    let _ =
+        fs::remove_file(preview_state_path(storage_root, repo).join(ACTIVE_PREVIEW_TARGET_FILE));
+}
+
+fn write_active_preview_target(
+    state_path: &Path,
+    target: &ActivePreviewTarget,
+) -> Result<(), GitError> {
+    let raw = serde_json::to_string_pretty(target).map_err(|e| {
+        GitError::CommandFailed(format!("failed to encode active preview target: {e}"))
+    })?;
+    fs::write(state_path.join(ACTIVE_PREVIEW_TARGET_FILE), raw).map_err(|e| {
+        GitError::CommandFailed(format!("failed to write active preview target: {e}"))
+    })?;
+    Ok(())
+}
+
 fn ensure_preview_worktree(repo: &Path, preview_path: &Path, sha: &str) -> Result<(), GitError> {
     if preview_path.join(".git").exists() {
         return Ok(());
     }
     let preview_arg = path_to_string(preview_path)?;
     if preview_path.exists() {
-        let _ = git_run(repo, &["worktree", "remove", "--force", &preview_arg]);
+        let _ = git_run(
+            repo,
+            &["worktree", "remove", "--force", "--force", &preview_arg],
+        );
         fs::remove_dir_all(preview_path).map_err(|e| {
             GitError::CommandFailed(format!("failed to replace invalid preview worktree: {e}"))
         })?;
     } else {
-        let _ = git_run(repo, &["worktree", "remove", "--force", &preview_arg]);
+        let _ = git_run(
+            repo,
+            &["worktree", "remove", "--force", "--force", &preview_arg],
+        );
     }
     if let Some(parent) = preview_path.parent() {
         fs::create_dir_all(parent).map_err(|e| {
@@ -166,6 +246,19 @@ fn ensure_preview_worktree(repo: &Path, preview_path: &Path, sha: &str) -> Resul
         ],
     )
     .or_else(|_| Ok(String::new()))?;
+    Ok(())
+}
+
+fn remove_legacy_preview_worktree(repo: &Path, project_root: &Path) -> Result<(), GitError> {
+    let legacy_path = project_root.join(LEGACY_PREVIEW_WORKTREE_DIR);
+    let legacy_arg = path_to_string(&legacy_path)?;
+    let _ = git_run(
+        repo,
+        &["worktree", "remove", "--force", "--force", &legacy_arg],
+    );
+    if legacy_path.exists() {
+        let _ = fs::remove_dir_all(&legacy_path);
+    }
     Ok(())
 }
 
@@ -293,9 +386,16 @@ pub fn install_marker_path(storage_root: &Path, repo: &Path) -> PathBuf {
 pub fn should_run_install(
     storage_root: &Path,
     repo: &Path,
+    preview_path: &Path,
     dependency_files_changed: bool,
 ) -> bool {
-    dependency_files_changed || !install_marker_path(storage_root, repo).exists()
+    dependency_files_changed
+        || !install_marker_path(storage_root, repo).exists()
+        || preview_needs_javascript_install(preview_path)
+}
+
+fn preview_needs_javascript_install(preview_path: &Path) -> bool {
+    preview_path.join("package.json").exists() && !preview_path.join("node_modules").exists()
 }
 
 pub fn mark_install_success(storage_root: &Path, repo: &Path) -> Result<(), GitError> {
@@ -438,8 +538,8 @@ fn git_run_with_stdin(repo: &Path, args: &[&str], stdin: &[u8]) -> Result<(), Gi
 #[cfg(test)]
 mod tests {
     use super::{
-        detect_localhost_url, mark_install_success, prepare_preview_target, should_run_install,
-        PreviewTarget,
+        detect_localhost_url, get_active_preview_target, mark_install_success,
+        prepare_preview_target, should_run_install, PreviewTarget,
     };
     use std::{fs, path::Path, process::Command};
 
@@ -534,6 +634,48 @@ mod tests {
             .join("state")
             .join("overlay-manifest.json")
             .exists());
+    }
+
+    #[test]
+    fn managed_preview_worktree_directory_is_named_preview() {
+        let repo = TestRepo::new("preview-name");
+        let result = prepare_preview_target(
+            &repo.root,
+            &repo.storage,
+            PreviewTarget::Commit { sha: repo.head() },
+        )
+        .expect("prepare preview");
+
+        assert_eq!(
+            Path::new(&result.preview_path)
+                .file_name()
+                .and_then(|name| name.to_str()),
+            Some("preview")
+        );
+    }
+
+    #[test]
+    fn active_preview_target_persists_for_reload_outline() {
+        let repo = TestRepo::new("active-target");
+        let head = repo.head();
+        prepare_preview_target(
+            &repo.root,
+            &repo.storage,
+            PreviewTarget::Commit { sha: head.clone() },
+        )
+        .expect("prepare preview");
+
+        let active = get_active_preview_target(&repo.storage, &repo.root)
+            .expect("read active")
+            .expect("active target");
+        assert_eq!(active.target_id, head);
+        assert_eq!(active.target_kind, "commit");
+        assert_eq!(
+            Path::new(&active.preview_path)
+                .file_name()
+                .and_then(|name| name.to_str()),
+            Some("preview")
+        );
     }
 
     #[test]
@@ -670,9 +812,25 @@ mod tests {
     #[test]
     fn install_marker_controls_install_skip() {
         let repo = TestRepo::new("install-marker");
-        assert!(should_run_install(&repo.storage, &repo.root, false));
+        assert!(should_run_install(
+            &repo.storage,
+            &repo.root,
+            &repo.root,
+            false
+        ));
         mark_install_success(&repo.storage, &repo.root).expect("mark install");
-        assert!(!should_run_install(&repo.storage, &repo.root, false));
-        assert!(should_run_install(&repo.storage, &repo.root, true));
+        fs::create_dir_all(repo.root.join("node_modules")).expect("create node_modules");
+        assert!(!should_run_install(
+            &repo.storage,
+            &repo.root,
+            &repo.root,
+            false
+        ));
+        assert!(should_run_install(
+            &repo.storage,
+            &repo.root,
+            &repo.root,
+            true
+        ));
     }
 }

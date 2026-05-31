@@ -16,7 +16,8 @@ pub use commits::{
     merge_upstream_ahead_commits, stage_working_tree, DirectCommit, MergeNode,
 };
 pub use preview::{
-    detect_localhost_url, mark_install_success, prepare_preview_target, should_run_install,
+    clear_active_preview_target, detect_localhost_url, get_active_preview_target,
+    mark_install_success, prepare_preview_target, should_run_install, ActivePreviewTarget,
     PreparePreviewTargetResult, PreviewTarget,
 };
 pub use stash::{

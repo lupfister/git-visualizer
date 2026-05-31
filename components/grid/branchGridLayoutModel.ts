@@ -1165,13 +1165,13 @@ export function computeBranchGridLayout(input: BranchGridLayoutInput): BranchGri
     const parents: VisualCommit[] = [];
     if (commit.parentSha) {
       const p = findCommitNode(commit.parentSha, commit.branchName);
-      if (p) parents.push(p);
+      if (p && p.visualId !== commit.visualId) parents.push(p);
     }
     const extraParents = extraParentShasByCommitId.get(commit.id) ?? new Set<string>();
     for (const extraSha of extraParents) {
       if (extraSha && (!commit.parentSha || !shasMatch(commit.parentSha, extraSha))) {
         const p = findCommitNode(extraSha, commit.branchName);
-        if (p && !parents.some((x) => x.visualId === p.visualId)) parents.push(p);
+        if (p && p.visualId !== commit.visualId && !parents.some((x) => x.visualId === p.visualId)) parents.push(p);
       }
     }
     parentsMap.set(commit.visualId, parents);
@@ -1204,7 +1204,7 @@ export function computeBranchGridLayout(input: BranchGridLayoutInput): BranchGri
 
     if (parentSha) {
       const p = findCommitNode(parentSha, preferredBranch);
-      if (p) {
+      if (p && p.visualId !== commit.visualId) {
         primaryParentMap.set(commit.visualId, p);
         const list = primaryChildrenMap.get(p.visualId) ?? [];
         list.push(commit);
@@ -1267,7 +1267,9 @@ export function computeBranchGridLayout(input: BranchGridLayoutInput): BranchGri
     return row;
   };
 
-  const assignRows = (u: VisualCommit, uRow: number) => {
+  const assignRows = (u: VisualCommit, uRow: number, visiting = new Set<string>()) => {
+    if (visiting.has(u.visualId)) return;
+    visiting.add(u.visualId);
     rowByVisualId.set(u.visualId, uRow);
     const children = primaryChildrenMap.get(u.visualId) ?? [];
     children.sort((a, b) => {
@@ -1285,25 +1287,28 @@ export function computeBranchGridLayout(input: BranchGridLayoutInput): BranchGri
     if (rowSharingChildren.length > 0) {
       let sharedSiblingRow = uRow + 1;
       for (const child of rowSharingChildren) {
+        if (visiting.has(child.visualId)) continue;
         sharedSiblingRow = rowAfterLayoutParents(child, sharedSiblingRow);
       }
       for (const child of rowSharingChildren) {
-        assignRows(child, sharedSiblingRow);
+        assignRows(child, sharedSiblingRow, new Set(visiting));
       }
     }
 
     for (const child of mergeChildren) {
-      assignRows(child, rowAfterAllGitParents(child, uRow + 1));
+      assignRows(child, rowAfterAllGitParents(child, uRow + 1), new Set(visiting));
     }
   };
 
   const subtreeSizes = new Map<string, number>();
-  const getSubtreeSize = (visualId: string): number => {
+  const getSubtreeSize = (visualId: string, visiting = new Set<string>()): number => {
     if (subtreeSizes.has(visualId)) return subtreeSizes.get(visualId)!;
+    if (visiting.has(visualId)) return 0;
+    visiting.add(visualId);
     const children = primaryChildrenMap.get(visualId) ?? [];
     let size = 1;
     for (const child of children) {
-      size += getSubtreeSize(child.visualId);
+      size += getSubtreeSize(child.visualId, new Set(visiting));
     }
     subtreeSizes.set(visualId, size);
     return size;
@@ -1343,7 +1348,10 @@ export function computeBranchGridLayout(input: BranchGridLayoutInput): BranchGri
 
   const enforceMergeRowsAfterAllGitParents = (): void => {
     let changed = true;
-    while (changed) {
+    let passes = 0;
+    const maxPasses = Math.max(1, allCommitsWithClusters.length * 2);
+    while (changed && passes < maxPasses) {
+      passes += 1;
       changed = false;
       for (const commit of allCommitsWithClusters) {
         if (!isGitMergeCommit(commit)) continue;
@@ -1437,7 +1445,10 @@ export function computeBranchGridLayout(input: BranchGridLayoutInput): BranchGri
 
   const enforceRowsAfterVirtualClumpParents = (): void => {
     let changed = true;
-    while (changed) {
+    let passes = 0;
+    const maxPasses = Math.max(1, allCommitsWithClusters.length * 2);
+    while (changed && passes < maxPasses) {
+      passes += 1;
       changed = false;
 
       for (const clusterKey of clumpMembersByKey.keys()) {
@@ -1504,12 +1515,14 @@ export function computeBranchGridLayout(input: BranchGridLayoutInput): BranchGri
 
   let colCursor = 0;
 
-  const layoutExternalParents = (commit: VisualCommit): VisualCommit[] => {
+  const layoutExternalParents = (commit: VisualCommit, visiting = new Set<string>()): VisualCommit[] => {
+    if (visiting.has(commit.visualId)) return [];
+    visiting.add(commit.visualId);
     const clusterKey = clusterKeyByCommitId.get(commit.visualId);
     const external: VisualCommit[] = [];
     for (const parent of parentsMap.get(commit.visualId) ?? []) {
       if (clusterKey && clusterKeyByCommitId.get(parent.visualId) === clusterKey) {
-        external.push(...layoutExternalParents(parent));
+        external.push(...layoutExternalParents(parent, new Set(visiting)));
         continue;
       }
       external.push(parent);

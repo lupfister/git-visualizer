@@ -759,7 +759,7 @@ export default function BranchGridMap({
     }
     if (!commitId) return null;
     return {
-      nodeId: selectedPreviewNode.commit.visualId,
+      nodeId: commitId,
       target: { kind: 'commit', sha: commitId },
     };
   }, [selectedPreviewNode, worktreeSessions]);

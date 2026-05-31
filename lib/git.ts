@@ -43,6 +43,18 @@ export interface ProjectPreviewResult {
   previewMode: 'web' | 'native';
 }
 
+export interface ActiveProjectPreviewTarget {
+  previewPath: string;
+  targetId: string;
+  targetKind: 'commit' | 'worktree';
+  effectiveHeadSha: string;
+  overlayApplied: boolean;
+}
+
+export interface ProjectPreviewLogTail {
+  logs: string;
+}
+
 export async function getBranches(repoPath: string): Promise<Branch[]> {
   return invoke('get_branches', { repoPath });
 }
@@ -86,6 +98,14 @@ export async function startProjectPreview(
 
 export async function getProjectPreviewStatus(repoPath: string): Promise<ProjectPreviewResult | null> {
   return invoke('get_project_preview_status', { repoPath });
+}
+
+export async function getProjectPreviewLogTail(repoPath: string): Promise<ProjectPreviewLogTail> {
+  return invoke('get_project_preview_log_tail', { repoPath });
+}
+
+export async function getActiveProjectPreviewTarget(repoPath: string): Promise<ActiveProjectPreviewTarget | null> {
+  return invoke('get_active_project_preview_target', { repoPath });
 }
 
 export async function stopProjectPreview(repoPath: string): Promise<void> {

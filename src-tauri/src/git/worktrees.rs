@@ -81,6 +81,9 @@ pub fn list_worktrees(repo: &Path) -> Result<Vec<WorktreeInfo>, GitError> {
         if partial.path.is_empty() {
             continue;
         }
+        if is_git_visualizer_preview_worktree(&partial.path) {
+            continue;
+        }
         let Some(head_sha) = partial.head_sha.filter(|h| !h.is_empty()) else {
             continue;
         };
@@ -113,6 +116,13 @@ pub fn list_worktrees(repo: &Path) -> Result<Vec<WorktreeInfo>, GitError> {
     }
 
     Ok(result)
+}
+
+fn is_git_visualizer_preview_worktree(path: &str) -> bool {
+    let normalized = path.replace('\\', "/");
+    let marker = "/git-visualizer/preview-worktrees/";
+    normalized.contains(marker)
+        && (normalized.ends_with("/preview") || normalized.ends_with("/worktree"))
 }
 
 #[derive(Default)]
@@ -156,7 +166,7 @@ pub fn remove_worktree(repo: &Path, worktree_path: &str, force: bool) -> Result<
 
 #[cfg(test)]
 mod tests {
-    use super::worktree_has_uncommitted_changes;
+    use super::{is_git_visualizer_preview_worktree, worktree_has_uncommitted_changes};
     use std::process::Command;
 
     #[test]
@@ -171,5 +181,18 @@ mod tests {
         let dirty = worktree_has_uncommitted_changes(&repo);
         assert!(dirty, "untracked file should mark worktree dirty");
         let _ = std::fs::remove_dir_all(&repo);
+    }
+
+    #[test]
+    fn detects_managed_preview_worktree_paths() {
+        assert!(is_git_visualizer_preview_worktree(
+            "/Users/luca/Library/Application Support/git-visualizer/preview-worktrees/abc123/preview"
+        ));
+        assert!(is_git_visualizer_preview_worktree(
+            "/Users/luca/Library/Application Support/git-visualizer/preview-worktrees/abc123/worktree"
+        ));
+        assert!(!is_git_visualizer_preview_worktree(
+            "/Users/luca/cursor/git-visualizer"
+        ));
     }
 }
