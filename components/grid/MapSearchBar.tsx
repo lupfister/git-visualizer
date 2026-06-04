@@ -1,5 +1,5 @@
 import { ChevronDown, ChevronUp, Search } from 'lucide-react';
-import { useEffect, useRef, useState } from 'react';
+import { useRef, useState } from 'react';
 
 type Props = {
   query: string;
@@ -17,11 +17,12 @@ export default function MapSearchBar({
   onJump,
 }: Props) {
   const inputRef = useRef<HTMLInputElement | null>(null);
-  const [draftQuery, setDraftQuery] = useState(query);
-
-  useEffect(() => {
+  const prevQueryRef = useRef(query);
+  const [draftQuery, setDraftQuery] = useState(() => query);
+  if (query !== prevQueryRef.current) {
+    prevQueryRef.current = query;
     setDraftQuery(query);
-  }, [query]);
+  }
 
   return (
     <div className="window-no-drag flex h-7 w-[12rem] shrink-0 items-center gap-2 rounded-full border border-border bg-background pl-1.5 pr-2.5">
