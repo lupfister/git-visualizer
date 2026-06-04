@@ -1009,7 +1009,7 @@ function App() {
     const parsed = parsePeekSignature(peek.signature);
     if (parsed.headSha && isSnapshotGraphMissingHead(snapshot, parsed.headSha)) return true;
     const ref = snapshot.checkedOutRef;
-    if (parsed.headSha && ref?.headSha && parsed.headSha !== ref.headSha) return true;
+    if (parsed.headSha && parsed.headSha !== (ref?.headSha ?? '')) return true;
     if (parsed.hasUncommittedChanges !== (ref?.hasUncommittedChanges ?? false)) return true;
     const branchDigest = branchRefDigestFromSnapshot(snapshot);
     if (parsed.branchRefDigest && branchDigest && parsed.branchRefDigest !== branchDigest) {
@@ -4330,6 +4330,10 @@ function App() {
           const dirtySynced = await syncLiveDirtyState(repoPath);
           if (!worktreeSynced && !dirtySynced) {
             runRepoRefreshRef.current?.('quick');
+          } else {
+            window.setTimeout(() => {
+              runRepoRefreshRef.current?.('graph');
+            }, 250);
           }
         })();
       }, DIRTY_SYNC_DEBOUNCE_MS);
@@ -4463,9 +4467,6 @@ function App() {
       gitActivityEpochRef.current += 1;
       if (event.payload.kind === 'local') {
         scheduleCoalescedDirtySync();
-        void syncLiveDirtyState(repoPath).then((applied) => {
-          if (!applied) void runRefresh('quick');
-        });
       } else {
         void runRefresh('graph');
       }
