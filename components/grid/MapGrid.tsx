@@ -25,6 +25,7 @@ import {
   type Node,
 } from './LayoutGrid';
 import { GitMerge } from 'lucide-react';
+import type { PreviewTarget } from '../../lib/git';
 import { GRID_LAYOUT_RENDER_ZOOM } from './branchGridLayoutModel';
 import type { BranchGridLayoutModel } from './branchGridLayoutModel';
 import { deriveGridSearchMatch } from './gridSearchMatch';
@@ -222,6 +223,10 @@ export default function BranchGridMap({
   onGridSearchResultIndexChange,
   onGridSearchFocusChange,
   onInteractionChange,
+  onPreviewNode,
+  previewInProgress = false,
+  previewedNodeId = null,
+  previewedWorktreeNodeIds = [],
   manuallyOpenedClumps: controlledManuallyOpenedClumps,
   manuallyClosedClumps: controlledManuallyClosedClumps,
   setManuallyOpenedClumps: controlledSetManuallyOpenedClumps,
@@ -728,6 +733,37 @@ export default function BranchGridMap({
     () => selectedCommitShas.filter((sha) => selectableCommitShaSet.has(sha)),
     [selectedCommitShas, selectableCommitShaSet],
   );
+
+  const selectedPreviewNode = useMemo(() => {
+    if (selectedVisibleCommitShas.length !== 1) return null;
+    const selectedSha = selectedVisibleCommitShas[0];
+    return renderNodes.find((node) => node.commit.id === selectedSha) ?? null;
+  }, [renderNodes, selectedVisibleCommitShas]);
+
+  const selectedPreviewTarget = useMemo((): { target: PreviewTarget; nodeId: string } | null => {
+    if (!selectedPreviewNode) return null;
+    const commitId = selectedPreviewNode.commit.id;
+    if (commitId.startsWith('STASH:') || commitId.startsWith('BRANCH_HEAD:')) return null;
+    if (selectedPreviewNode.commit.kind === 'stash' || selectedPreviewNode.commit.kind === 'branch-created') return null;
+    if (isWorkingTreeCommitId(commitId) || selectedPreviewNode.commit.kind === 'uncommitted') {
+      const session = worktreeSessions.find((entry) => entry.workingTreeId === commitId);
+      if (!session) return null;
+      return {
+        nodeId: commitId,
+        target: {
+          kind: 'worktree',
+          worktreePath: session.path,
+          headSha: session.headSha,
+          workingTreeId: session.workingTreeId,
+        },
+      };
+    }
+    if (!commitId) return null;
+    return {
+      nodeId: commitId,
+      target: { kind: 'commit', sha: commitId },
+    };
+  }, [selectedPreviewNode, worktreeSessions]);
 
   const checkedOutBranchName = checkedOutRef?.branchName ?? null;
   const checkedOutHeadSha = checkedOutRef?.headSha ?? null;
@@ -1950,6 +1986,8 @@ export default function BranchGridMap({
                   onStashLocalChanges={onStashLocalChanges}
                   onPushAllBranches={onPushAllBranches}
                   onPushCommitTargets={onPushCommitTargets}
+                  onPreviewSelectedNode={selectedPreviewTarget && onPreviewNode ? () => onPreviewNode(selectedPreviewTarget.target, selectedPreviewTarget.nodeId) : undefined}
+                  previewInProgress={previewInProgress}
                   onMergeRefsIntoBranch={onMergeRefsIntoBranch}
                   selectedPushTargets={selectedPushTargets}
                   selectedPushLabel={selectedPushLabel}
@@ -2137,6 +2175,8 @@ export default function BranchGridMap({
           worktreeAccentByCommitId={worktreeAccentByCommitId}
           worktreeSessions={worktreeSessions}
           worktreeDraftByWorkingTreeId={worktreeDraftByWorkingTreeId}
+          previewedNodeId={previewedNodeId}
+          previewedWorktreeNodeIds={previewedWorktreeNodeIds}
           orientation={orientation}
           dragPreviewByNodeId={dragPreviewByNodeId}
           nodePositionOverrides={nodePositionOverrides}

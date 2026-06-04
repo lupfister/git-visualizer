@@ -1,21 +1,27 @@
-pub mod cli;
 mod branches;
+pub mod cli;
 mod commits;
+mod preview;
 mod stash;
 mod worktrees;
 
 pub use branches::{
-    Branch, CheckedOutRef, build_remote_only_branch, compute_remote_heads_digest, fetch_remotes,
-    get_checked_out_ref, get_default_branch, get_repo_info, list_branches, list_origin_branch_heads,
-    resolve_branch_upstream_ref, try_fast_forward_pull,
-};
-pub use stash::{
-    GitStashEntry, apply_stash_restore, create_branch_from_uncommitted, create_root_branch,
-    list_stashes, move_stash_to_new_branch, stash_drop, stash_push,
+    build_remote_only_branch, compute_remote_heads_digest, fetch_remotes, get_checked_out_ref,
+    get_default_branch, get_repo_info, list_branches, list_origin_branch_heads,
+    resolve_branch_upstream_ref, try_fast_forward_pull, Branch, CheckedOutRef,
 };
 pub use commits::{
-    DirectCommit, MergeNode, commit_working_tree, get_all_repo_commits, get_branch_commits_since,
-    get_direct_commits, get_merge_commits, get_working_tree_summary,
-    merge_remote_only_branch_commits, merge_upstream_ahead_commits, stage_working_tree,
+    commit_working_tree, get_all_repo_commits, get_branch_commits_since, get_direct_commits,
+    get_merge_commits, get_working_tree_summary, merge_remote_only_branch_commits,
+    merge_upstream_ahead_commits, stage_working_tree, DirectCommit, MergeNode,
 };
-pub use worktrees::{WorktreeInfo, list_worktrees, remove_worktree as remove_git_worktree};
+pub use preview::{
+    clear_active_preview_target, detect_localhost_url, mark_install_success,
+    prepare_preview_target, should_run_install, ActivePreviewTarget, PreparePreviewTargetResult,
+    PreviewTarget,
+};
+pub use stash::{
+    apply_stash_restore, create_branch_from_uncommitted, create_root_branch, list_stashes,
+    move_stash_to_new_branch, stash_drop, stash_push, GitStashEntry,
+};
+pub use worktrees::{list_worktrees, remove_worktree as remove_git_worktree, WorktreeInfo};

@@ -126,11 +126,9 @@ pub fn list_branches(repo: &Path, default_branch: &str) -> Result<Vec<Branch>, G
 
     let mut branches: Vec<Branch> = branch_names
         .par_iter()
-        .filter_map(|name| {
-            match get_branch_info(repo, name, default_branch) {
-                Ok(branch) => Some(branch),
-                Err(_) => build_branch_fallback(repo, name, default_branch),
-            }
+        .filter_map(|name| match get_branch_info(repo, name, default_branch) {
+            Ok(branch) => Some(branch),
+            Err(_) => build_branch_fallback(repo, name, default_branch),
         })
         .filter(|branch| {
             !is_fast_forward_merged_into_base(branch, &default_first_parent_shas, &default_head_sha)
@@ -359,12 +357,15 @@ fn infer_branch_parents(
     let creation_info_list: Vec<(String, BranchCreationInfo)> = branches
         .par_iter()
         .filter_map(|branch| {
-            let info = get_branch_reflog_created_entry(repo, &branch.name).ok().flatten()?;
+            let info = get_branch_reflog_created_entry(repo, &branch.name)
+                .ok()
+                .flatten()?;
             Some((branch.name.clone(), info))
         })
         .collect();
 
-    let creation_info_by_name: HashMap<String, BranchCreationInfo> = HashMap::from_iter(creation_info_list);
+    let creation_info_by_name: HashMap<String, BranchCreationInfo> =
+        HashMap::from_iter(creation_info_list);
 
     branches.par_iter_mut().for_each(|branch| {
         let created_from_reflog = creation_info_by_name.get(&branch.name).cloned();
@@ -414,8 +415,9 @@ fn infer_branch_parents(
         }
 
         if let Some(ref proposed_parent) = parent_name {
-            if let Some(parent_candidate) =
-                candidates.iter().find(|candidate| candidate.name == *proposed_parent)
+            if let Some(parent_candidate) = candidates
+                .iter()
+                .find(|candidate| candidate.name == *proposed_parent)
             {
                 let branch_created_key = created_from_reflog_date
                     .as_deref()
@@ -461,7 +463,8 @@ fn infer_branch_parents(
                 .ok()
                 .flatten()
         });
-        let is_unrelated_root = branch.parent_branch.is_none() && branch.diverged_from_sha.is_none();
+        let is_unrelated_root =
+            branch.parent_branch.is_none() && branch.diverged_from_sha.is_none();
         branch.created_from_sha = created_from_reflog_sha
             .clone()
             .or_else(|| branch.diverged_from_sha.clone())
@@ -1083,14 +1086,18 @@ pub fn build_remote_only_branch(
         .ok()
         .map(|output| output.trim().to_string())
         .filter(|value| !value.is_empty());
-    let commits_ahead = diverged_from_sha.as_ref().and_then(|base| {
-        cli::run(
-            repo,
-            &["rev-list", "--count", &format!("{base}..{head_sha}")],
-        )
-        .ok()
-        .and_then(|output| output.trim().parse::<i32>().ok())
-    }).unwrap_or(1).max(1);
+    let commits_ahead = diverged_from_sha
+        .as_ref()
+        .and_then(|base| {
+            cli::run(
+                repo,
+                &["rev-list", "--count", &format!("{base}..{head_sha}")],
+            )
+            .ok()
+            .and_then(|output| output.trim().parse::<i32>().ok())
+        })
+        .unwrap_or(1)
+        .max(1);
     let diverged_from_date = diverged_from_sha.as_ref().and_then(|sha| {
         cli::run(repo, &["log", "-1", "--format=%cI", sha])
             .ok()

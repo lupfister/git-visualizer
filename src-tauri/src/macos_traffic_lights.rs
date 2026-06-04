@@ -49,11 +49,9 @@ fn inset_traffic_lights(window: &NSWindow, x: f64, y: f64) {
 }
 
 pub fn reapply_for_window<R: Runtime>(window: &WebviewWindow<R>) {
-    let _ = window.with_webview(|webview| {
-        unsafe {
-            let ns_window = &*(webview.ns_window().cast::<NSWindow>());
-            inset_traffic_lights(ns_window, TRAFFIC_LIGHT_X, TRAFFIC_LIGHT_Y);
-        }
+    let _ = window.with_webview(|webview| unsafe {
+        let ns_window = &*(webview.ns_window().cast::<NSWindow>());
+        inset_traffic_lights(ns_window, TRAFFIC_LIGHT_X, TRAFFIC_LIGHT_Y);
     });
 }
 

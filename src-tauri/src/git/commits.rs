@@ -52,11 +52,7 @@ pub fn get_direct_commits(
     } else {
         cli::run(
             repo,
-            &[
-                "log",
-                "--format=%H%x1f%h%x1f%s%x1f%an%x1f%cI%x1f%P",
-                branch,
-            ],
+            &["log", "--format=%H%x1f%h%x1f%s%x1f%an%x1f%cI%x1f%P", branch],
         )?
     };
 
@@ -120,9 +116,7 @@ pub fn merge_upstream_ahead_commits(
     upstream_ref: &str,
     commits: &mut Vec<DirectCommit>,
 ) -> Result<(), GitError> {
-    let local_head = cli::run(repo, &["rev-parse", branch])?
-        .trim()
-        .to_string();
+    let local_head = cli::run(repo, &["rev-parse", branch])?.trim().to_string();
     if local_head.is_empty() {
         return Ok(());
     }
@@ -168,14 +162,13 @@ fn append_commits_from_log_range(
     is_remote: bool,
     commits: &mut Vec<DirectCommit>,
 ) -> Result<(), GitError> {
-    let existing_shas: HashSet<String> = commits.iter().map(|commit| commit.full_sha.clone()).collect();
+    let existing_shas: HashSet<String> = commits
+        .iter()
+        .map(|commit| commit.full_sha.clone())
+        .collect();
     let output = cli::run(
         repo,
-        &[
-            "log",
-            range,
-            "--format=%H%x1f%h%x1f%s%x1f%an%x1f%cI%x1f%P",
-        ],
+        &["log", range, "--format=%H%x1f%h%x1f%s%x1f%an%x1f%cI%x1f%P"],
     )?;
     let parsed: Vec<ParsedCommitLine> = output
         .lines()
@@ -259,7 +252,8 @@ pub fn get_all_repo_commits(
     }
 
     let mut distance_by_commit_sha_and_branch = HashMap::<(String, String), usize>::new();
-    let mut first_parent_distance_by_commit_sha_and_branch = HashMap::<(String, String), usize>::new();
+    let mut first_parent_distance_by_commit_sha_and_branch =
+        HashMap::<(String, String), usize>::new();
     for branch_name in &branch_order {
         let Some(head_sha) = head_sha_by_branch.get(branch_name) else {
             continue;
@@ -482,16 +476,35 @@ pub fn get_all_repo_commits(
             };
             let is_default_branch = branch_name == default_branch;
             match &best_match {
-                None => best_match = Some((branch_name.clone(), distance, branch_index, is_default_branch)),
+                None => {
+                    best_match = Some((
+                        branch_name.clone(),
+                        distance,
+                        branch_index,
+                        is_default_branch,
+                    ))
+                }
                 Some((_, best_distance, best_index, best_is_default_branch)) => {
                     if is_default_branch != *best_is_default_branch {
                         if !is_default_branch {
-                            best_match = Some((branch_name.clone(), distance, branch_index, is_default_branch));
+                            best_match = Some((
+                                branch_name.clone(),
+                                distance,
+                                branch_index,
+                                is_default_branch,
+                            ));
                         }
                         continue;
                     }
-                    if distance < *best_distance || (distance == *best_distance && branch_index < *best_index) {
-                        best_match = Some((branch_name.clone(), distance, branch_index, is_default_branch));
+                    if distance < *best_distance
+                        || (distance == *best_distance && branch_index < *best_index)
+                    {
+                        best_match = Some((
+                            branch_name.clone(),
+                            distance,
+                            branch_index,
+                            is_default_branch,
+                        ));
                     }
                 }
             }
@@ -524,13 +537,18 @@ fn assign_commit_branch(
     let mut first_parent_best_match: Option<(&str, usize, usize)> = None;
     for (branch_index, branch_name) in branch_order.iter().enumerate() {
         let key = (sha.to_string(), branch_name.clone());
-        let Some(distance) = first_parent_distance_by_commit_sha_and_branch.get(&key).copied() else {
+        let Some(distance) = first_parent_distance_by_commit_sha_and_branch
+            .get(&key)
+            .copied()
+        else {
             continue;
         };
         match first_parent_best_match {
             None => first_parent_best_match = Some((branch_name.as_str(), distance, branch_index)),
             Some((_, best_distance, best_index)) => {
-                if distance < best_distance || (distance == best_distance && branch_index < best_index) {
+                if distance < best_distance
+                    || (distance == best_distance && branch_index < best_index)
+                {
                     first_parent_best_match = Some((branch_name.as_str(), distance, branch_index));
                 }
             }
@@ -550,7 +568,9 @@ fn assign_commit_branch(
         match best_match {
             None => best_match = Some((branch_name.as_str(), distance, branch_index)),
             Some((_, best_distance, best_index)) => {
-                if distance < best_distance || (distance == best_distance && branch_index < best_index) {
+                if distance < best_distance
+                    || (distance == best_distance && branch_index < best_index)
+                {
                     best_match = Some((branch_name.as_str(), distance, branch_index));
                 }
             }
@@ -734,7 +754,11 @@ fn parse_direct_commit_line(line: &str) -> Option<ParsedCommitLine> {
     })
 }
 
-fn build_direct_commits(parsed: Vec<ParsedCommitLine>, branch: String, is_remote: bool) -> Vec<DirectCommit> {
+fn build_direct_commits(
+    parsed: Vec<ParsedCommitLine>,
+    branch: String,
+    is_remote: bool,
+) -> Vec<DirectCommit> {
     let commits = parsed
         .into_iter()
         .map(|commit| DirectCommit {
@@ -841,8 +865,9 @@ fn with_cluster_keys(mut commits: Vec<DirectCommit>) -> Vec<DirectCommit> {
                     let previous_has_single_child = previous
                         .map(|prev| prev.child_shas.len() == 1)
                         .unwrap_or(false);
-                    let strict_continuity =
-                        parent_matches_previous && parent_branch_matches && previous_has_single_child;
+                    let strict_continuity = parent_matches_previous
+                        && parent_branch_matches
+                        && previous_has_single_child;
                     if strict_continuity {
                         false
                     } else {
@@ -893,8 +918,8 @@ fn with_cluster_keys(mut commits: Vec<DirectCommit>) -> Vec<DirectCommit> {
 /// Compact summary for AI commit/stash titles (`--stat` + status, not full hunks).
 pub fn get_working_tree_summary(repo: &Path) -> Result<String, GitError> {
     let stat = cli::run(repo, &["diff", "HEAD", "--stat", "--no-color"]).unwrap_or_default();
-    let status = cli::run(repo, &["status", "--short", "--untracked-files=normal"])
-        .unwrap_or_default();
+    let status =
+        cli::run(repo, &["status", "--short", "--untracked-files=normal"]).unwrap_or_default();
     if stat.trim().is_empty() && status.trim().is_empty() {
         return Ok(String::new());
     }
@@ -1025,11 +1050,9 @@ fn parse_pr_info(subject: &str) -> (Option<i32>, Option<String>) {
             if let Some(num_str) = parts.first() {
                 if let Ok(num) = num_str.parse::<i32>() {
                     // Extract title from "from user/branch-name"
-                    let title = parts.get(1).map(|s| {
-                        s.strip_prefix("from ")
-                            .unwrap_or(s)
-                            .to_string()
-                    });
+                    let title = parts
+                        .get(1)
+                        .map(|s| s.strip_prefix("from ").unwrap_or(s).to_string());
                     return (Some(num), title);
                 }
             }
@@ -1051,7 +1074,9 @@ fn parse_pr_info(subject: &str) -> (Option<i32>, Option<String>) {
     // Try "#123" anywhere
     for (i, _) in subject.match_indices('#') {
         let rest = &subject[i + 1..];
-        let num_end = rest.find(|c: char| !c.is_ascii_digit()).unwrap_or(rest.len());
+        let num_end = rest
+            .find(|c: char| !c.is_ascii_digit())
+            .unwrap_or(rest.len());
         if num_end > 0 {
             if let Ok(num) = rest[..num_end].parse::<i32>() {
                 return (Some(num), None);
@@ -1075,7 +1100,16 @@ mod remote_merge_tests {
     #[test]
     fn merges_remote_only_cursor_branch_commit() {
         let repo = repo_root();
-        if super::cli::run(&repo, &["rev-parse", "--verify", "origin/cursor/commit-app-previews-7896"]).is_err() {
+        if super::cli::run(
+            &repo,
+            &[
+                "rev-parse",
+                "--verify",
+                "origin/cursor/commit-app-previews-7896",
+            ],
+        )
+        .is_err()
+        {
             return;
         }
 
@@ -1123,7 +1157,9 @@ mod remote_merge_tests {
         let repo = repo_root();
         let heads = list_origin_branch_heads(&repo).expect("origin heads");
         assert!(
-            heads.iter().any(|(name, _)| name == "cursor/commit-app-previews-7896"),
+            heads
+                .iter()
+                .any(|(name, _)| name == "cursor/commit-app-previews-7896"),
             "missing origin cursor branch in {:?}",
             heads.iter().take(5).collect::<Vec<_>>()
         );
