@@ -2057,13 +2057,18 @@ fn compute_repo_sync_peek(repo_path: &str) -> Result<RepoSyncPeek, String> {
     let mut branch_ref_lines: Vec<String> = branches
         .iter()
         .map(|branch| {
+            let mut unpushed_shas =
+                branch_unpushed_shas_for_delta(path, &branch.name).unwrap_or_default();
+            unpushed_shas.sort();
             format!(
-                "{}:{}:{}:{}:{}",
+                "{}:{}:{}:{}:{}:{}:{}",
                 branch.name,
                 branch.head_sha,
                 branch.commits_ahead,
+                branch.commits_behind,
                 branch.unpushed_commits,
-                branch.remote_sync_status
+                branch.remote_sync_status,
+                unpushed_shas.join(",")
             )
         })
         .collect();
@@ -2388,7 +2393,7 @@ fn sync_remote_repository(
     Ok(RemoteSyncResult {
         fetched,
         pulled,
-        changed: fetched || pulled || remote_heads_digest != digest_before,
+        changed: pulled || remote_heads_digest != digest_before,
         remote_heads_digest,
     })
 }

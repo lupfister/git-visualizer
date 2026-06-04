@@ -98,7 +98,7 @@ export function createRepoSyncScheduler(handlers: RepoSyncSchedulerHandlers): Re
     clearAllLanes();
     if (handlers.isDisposed?.()) return;
     const intervals = resolveRepoSyncIntervals();
-    const hidden = intervals === REPO_SYNC_INTERVALS_HIDDEN;
+    const hidden = isDocumentHidden();
 
     for (const lane of ['dirty', 'peek', 'full'] as const) {
       const delayMs =

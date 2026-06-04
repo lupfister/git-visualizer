@@ -75,7 +75,10 @@ import { deriveRepoVisualState } from './repoVisualState';
 import { setMapGridBackgroundActivity } from '../components/grid/mapGridBackgroundActivity';
 import { useWorktreeDraftMessages } from './useWorktreeDraftMessages';
 import { createRepoSyncScheduler } from './repoSyncScheduler';
-import { runOrchestratedRepoSync } from './orchestratedRepoSync';
+import {
+  isRepoSnapshotBehindPeek,
+  parseRepoSyncPeekSignature,
+} from './repoSyncPeek';
 import {
   detectProjectPreviewDefaults,
   getActiveProjectPreviewTargets,
@@ -456,7 +459,7 @@ function App() {
   /** False while panning and for {@link MAP_REPO_REFRESH_SETTLE_MS} after pan stops. */
   const canApplyRepoRefreshRef = useRef(true);
   const mapRefreshSettleTimeoutRef = useRef<number | null>(null);
-  const runRepoRefreshRef = useRef<((reason?: 'graph' | 'local' | 'timer' | 'initial' | 'quick' | 'focus') => void) | null>(null);
+  const runRepoRefreshRef = useRef<((reason?: 'graph' | 'local' | 'timer' | 'initial' | 'quick' | 'focus') => Promise<void>) | null>(null);
   const reconcileInFlightRef = useRef(false);
   const pendingRefreshAfterInteractionRef = useRef(false);
   const reloadRepoSnapshotInFlightRef = useRef(false);
@@ -952,35 +955,7 @@ function App() {
   }
 
   function parsePeekSignature(signature: string) {
-    const [
-      headSha,
-      dirty,
-      branchRefDigest,
-      worktreeSig,
-      stashSig,
-      headUnpushedCount,
-      remoteHeadsDigest,
-    ] = signature.split('@@');
-    return {
-      headSha: headSha ?? '',
-      hasUncommittedChanges: dirty === '1',
-      branchRefDigest: branchRefDigest ?? '',
-      worktreeSig: worktreeSig ?? '',
-      stashSig: stashSig ?? '',
-      headUnpushedCount: headUnpushedCount ?? '0',
-      remoteHeadsDigest: remoteHeadsDigest ?? '',
-    };
-  }
-
-  function branchRefDigestFromSnapshot(snapshot: RepoVisualSnapshot): string {
-    const lines = snapshot.branches.map((branch) => (
-      `${branch.name}:${branch.headSha}:${branch.commitsAhead}:${branch.unpushedCommits}:${branch.remoteSyncStatus}`
-    ));
-    if (!lines.some((line) => line.startsWith(`${snapshot.defaultBranch}:`))) {
-      const head = snapshot.checkedOutRef?.headSha ?? '';
-      if (head) lines.push(`${snapshot.defaultBranch}:${head}:0:0:on-github`);
-    }
-    return lines.sort().join('|');
+    return parseRepoSyncPeekSignature(signature);
   }
 
   function isIncomingSnapshotStaleComparedToLive(
@@ -1006,20 +981,7 @@ function App() {
   }
 
   function isSnapshotBehindPeek(snapshot: RepoVisualSnapshot, peek: RepoSyncPeek): boolean {
-    const parsed = parsePeekSignature(peek.signature);
-    if (parsed.headSha && isSnapshotGraphMissingHead(snapshot, parsed.headSha)) return true;
-    const ref = snapshot.checkedOutRef;
-    if (parsed.headSha && parsed.headSha !== (ref?.headSha ?? '')) return true;
-    if (parsed.hasUncommittedChanges !== (ref?.hasUncommittedChanges ?? false)) return true;
-    const branchDigest = branchRefDigestFromSnapshot(snapshot);
-    if (parsed.branchRefDigest && branchDigest && parsed.branchRefDigest !== branchDigest) {
-      return true;
-    }
-    const worktreeSig = worktreeListSignature(snapshot.worktrees);
-    if (parsed.worktreeSig && worktreeSig && parsed.worktreeSig !== worktreeSig) return true;
-    const liveUnpushedCount = String(snapshot.unpushedDirectCommits.length);
-    if (parsed.headUnpushedCount !== liveUnpushedCount) return true;
-    return false;
+    return isRepoSnapshotBehindPeek(snapshot, peek);
   }
 
   function backgroundSyncCanShortCircuit(gitActivityPending: boolean): boolean {
@@ -4316,32 +4278,17 @@ function App() {
       }
     };
 
-    runRepoRefreshRef.current = (reason = 'timer') => {
-      void runRefresh(reason);
-    };
-
     const scheduleCoalescedDirtySync = () => {
       if (isDisposed) return;
       if (dirtySyncDebounceId != null) window.clearTimeout(dirtySyncDebounceId);
       dirtySyncDebounceId = window.setTimeout(() => {
         dirtySyncDebounceId = null;
-        void (async () => {
-          const worktreeSynced = await tryWorktreeListSync(repoPath);
-          const dirtySynced = await syncLiveDirtyState(repoPath);
-          if (!worktreeSynced && !dirtySynced) {
-            runRepoRefreshRef.current?.('quick');
-          } else {
-            window.setTimeout(() => {
-              runRepoRefreshRef.current?.('graph');
-            }, 250);
-          }
-        })();
+        void runAuthoritativeRepoSync('local');
       }, DIRTY_SYNC_DEBOUNCE_MS);
     };
 
     const syncRemoteFromOrigin = async (): Promise<boolean> => {
       if (isDisposed || !defaultBranch || remoteSyncInFlightRef.current) return false;
-      if (document.visibilityState !== 'visible') return false;
       remoteSyncInFlightRef.current = true;
       try {
         const checkedOutHead = latestCheckedOutRef.current?.headSha ?? null;
@@ -4350,6 +4297,7 @@ function App() {
           defaultBranch,
           lastRemoteHeadsDigestRef.current,
           checkedOutHead,
+          { pullFfOnly: false },
         );
         lastRemoteHeadsDigestRef.current = result.sync.remoteHeadsDigest || lastRemoteHeadsDigestRef.current;
         lastRemoteTipShaRef.current = result.tipState.tipSha;
@@ -4376,86 +4324,77 @@ function App() {
       }
     };
 
-    const runOrchestratedSync = async (mode: 'catchUp' | 'peekLane') => {
+    const runAuthoritativeRepoSync = async (
+      reason: 'local' | 'remote' | 'full' | 'watch',
+      options?: { fetchRemote?: boolean; forceSnapshot?: boolean },
+    ) => {
       if (isStaleRepoRefresh()) return;
       if (repoMutationInFlightRef.current || reconcileInFlightRef.current) {
         pendingRefreshAfterInteractionRef.current = true;
         return;
       }
-      if (
-        mode === 'peekLane'
-        && (
-          isDisposed
-          || isRepoRefreshBlocked()
-          || repoMutationInFlightRef.current
-        )
-      ) {
+      if (isRepoRefreshBlocked()) {
+        pendingRefreshAfterInteractionRef.current = true;
+        setMapGridBackgroundActivity('git-refresh-pending', 'Git refresh queued', true, reason);
         return;
       }
-      if (mode === 'catchUp' && isRepoRefreshBlocked()) {
-        pendingRefreshAfterInteractionRef.current = true;
-        setMapGridBackgroundActivity('git-refresh-pending', 'Git refresh queued', true, 'tab visible');
-        return;
+
+      if (options?.fetchRemote) {
+        const remoteChanged = await syncRemoteFromOrigin();
+        if (remoteChanged || isStaleRepoRefresh()) return;
       }
 
       const peek = await fetchRepoSyncPeek(repoPath);
       if (isStaleRepoRefresh()) return;
-      const gitActivityPending = gitActivityEpochRef.current !== lastHandledGitActivityEpochRef.current;
-      const isBehindPeek = Boolean(peek && isActiveUiBehindPeek(repoPath, peek));
+      if (
+        reason === 'local'
+        || reason === 'watch'
+        || options?.forceSnapshot
+        || !peek
+        || isActiveUiBehindPeek(repoPath, peek)
+      ) {
+        await reloadRepoSnapshotFromGit(repoPath, peek);
+        return;
+      }
 
-      await runOrchestratedRepoSync(
-        { peek, gitActivityPending, isBehindPeek },
-        mode,
-        {
-          reloadFromGit: async () => {
-            await reloadRepoSnapshotFromGit(repoPath, peek);
-          },
-          runFullRefresh: () => runRefresh('focus', { preloadedPeek: peek }),
-        },
-      );
+      if (peek.signature) {
+        noteSyncedRepoPeek(repoPath, peek.signature);
+      }
+      noteGitActivityHandledIfCaughtUp(repoPath, peek);
+      pendingRefreshAfterInteractionRef.current = false;
+    };
+
+    runRepoRefreshRef.current = (reason = 'timer') => {
+      if (reason === 'graph' || reason === 'local' || reason === 'quick') {
+        return runAuthoritativeRepoSync('watch');
+      }
+      if (reason === 'focus') {
+        return runAuthoritativeRepoSync('remote', { fetchRemote: true });
+      }
+      if (reason === 'timer') {
+        return runAuthoritativeRepoSync('full', { fetchRemote: true, forceSnapshot: true });
+      }
+      return runAuthoritativeRepoSync('local');
     };
 
     const runPeekLane = () => {
-      void syncRemoteFromOrigin().then((remoteChanged) => {
-        if (!remoteChanged) {
-          void runOrchestratedSync('peekLane');
-        }
-      });
+      void runAuthoritativeRepoSync('remote', { fetchRemote: true });
     };
 
     const runVisibilityCatchUp = () => {
-      void syncRemoteFromOrigin().then((remoteChanged) => {
-        if (!remoteChanged) {
-          void runOrchestratedSync('catchUp');
-        }
-      });
+      void runAuthoritativeRepoSync('remote', { fetchRemote: true });
     };
 
     const repoSyncScheduler = createRepoSyncScheduler({
       isDisposed: () => isDisposed,
       onDirtyLane: () => {
-        if (
-          document.visibilityState !== 'visible'
-          || isPostCommitProtectionActive(normalizePath(repoPath) ?? '')
-        ) {
-          return;
-        }
-        if (isRepoRefreshBlocked() || repoMutationInFlightRef.current) {
-          pendingRefreshAfterInteractionRef.current = true;
-          setMapGridBackgroundActivity('git-refresh-pending', 'Git refresh queued', true, 'dirty lane');
-          return;
-        }
         scheduleCoalescedDirtySync();
       },
       onPeekLane: () => {
         runPeekLane();
       },
       onFullLane: () => {
-        void syncRemoteFromOrigin().then((remoteChanged) => {
-          if (!remoteChanged) {
-            void runRefresh('timer');
-          }
-        });
+        void runAuthoritativeRepoSync('full', { fetchRemote: true, forceSnapshot: true });
       },
       onVisibilityCatchUp: () => {
         runVisibilityCatchUp();
@@ -4468,7 +4407,7 @@ function App() {
       if (event.payload.kind === 'local') {
         scheduleCoalescedDirtySync();
       } else {
-        void runRefresh('graph');
+        void runAuthoritativeRepoSync('watch');
       }
     }).then((fn) => {
       if (isDisposed) fn();
@@ -4476,11 +4415,7 @@ function App() {
     }).catch(console.error);
 
     repoSyncScheduler.start();
-    void syncRemoteFromOrigin().then((remoteChanged) => {
-      if (!remoteChanged) {
-        repoSyncScheduler.kickVisibleCatchUp();
-      }
-    });
+    repoSyncScheduler.kickVisibleCatchUp();
 
     return () => {
       isDisposed = true;

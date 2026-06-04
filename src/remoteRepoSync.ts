@@ -115,7 +115,7 @@ export async function syncRemoteRepo(
 ): Promise<SyncRemoteRepoResult> {
   const sync = await invoke<RemoteSyncResult>('sync_remote_repository', {
     repoPath,
-    pullFfOnly: options?.pullFfOnly ?? true,
+    pullFfOnly: options?.pullFfOnly ?? false,
   }).catch(() => ({
     fetched: false,
     pulled: false,
