@@ -4,8 +4,8 @@
  * Design (aligned with MDN visibility guidance + event-driven git watching):
  * - Primary path: `.git` + working-tree file watcher (debounced) → immediate handling in App.
  * - Visible tab: fast dirty lane, medium peek lane, slower full reconcile lane (staggered).
- * - Hidden tab: stretch intervals to save CPU; no work until tab is visible again.
- * - Tab becomes visible: cancel hidden timers, reschedule visible intervals, run catch-up immediately.
+ * - Hidden tab: keep the same cadence; desktop windows should stay current while unfocused.
+ * - Tab becomes visible: reschedule timers and run catch-up immediately.
  */
 
 export type RepoSyncLane = 'dirty' | 'peek' | 'full';
@@ -22,11 +22,7 @@ export const REPO_SYNC_INTERVALS_VISIBLE: RepoSyncSchedulerIntervals = {
   fullMs: 30_000,
 };
 
-export const REPO_SYNC_INTERVALS_HIDDEN: RepoSyncSchedulerIntervals = {
-  dirtyMs: 120_000,
-  peekMs: 60_000,
-  fullMs: 300_000,
-};
+export const REPO_SYNC_INTERVALS_HIDDEN: RepoSyncSchedulerIntervals = REPO_SYNC_INTERVALS_VISIBLE;
 
 /** Stagger lane starts so dirty / peek / full rarely fire in the same tick. */
 export const REPO_SYNC_LANE_STAGGER_MS: Record<RepoSyncLane, number> = {

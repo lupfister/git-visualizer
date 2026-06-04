@@ -11,8 +11,9 @@ describe('resolveRepoSyncIntervals', () => {
     expect(resolveRepoSyncIntervals(false)).toEqual(REPO_SYNC_INTERVALS_VISIBLE);
   });
 
-  it('uses slow intervals when the document is hidden', () => {
+  it('keeps fast intervals when the document is hidden', () => {
     expect(resolveRepoSyncIntervals(true)).toEqual(REPO_SYNC_INTERVALS_HIDDEN);
+    expect(REPO_SYNC_INTERVALS_HIDDEN).toEqual(REPO_SYNC_INTERVALS_VISIBLE);
   });
 });
 

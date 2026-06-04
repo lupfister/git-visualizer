@@ -4310,8 +4310,13 @@ function App() {
       if (dirtySyncDebounceId != null) window.clearTimeout(dirtySyncDebounceId);
       dirtySyncDebounceId = window.setTimeout(() => {
         dirtySyncDebounceId = null;
-        void tryWorktreeListSync(repoPath);
-        void syncLiveDirtyState(repoPath);
+        void (async () => {
+          const worktreeSynced = await tryWorktreeListSync(repoPath);
+          const dirtySynced = await syncLiveDirtyState(repoPath);
+          if (!worktreeSynced && !dirtySynced) {
+            runRepoRefreshRef.current?.('quick');
+          }
+        })();
       }, DIRTY_SYNC_DEBOUNCE_MS);
     };
 
@@ -4362,7 +4367,6 @@ function App() {
         mode === 'peekLane'
         && (
           isDisposed
-          || document.visibilityState !== 'visible'
           || isRepoRefreshBlocked()
           || repoMutationInFlightRef.current
         )
