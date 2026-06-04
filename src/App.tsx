@@ -4064,6 +4064,10 @@ function App() {
       if (reason === 'quick' && uiBehindPeek) {
         reason = 'graph';
       }
+      if (reason === 'graph' && peek && isActiveUiBehindPeek(repoPath, peek)) {
+        await reloadRepoSnapshotFromGit(repoPath, peek);
+        return;
+      }
 
       if (reason === 'graph' && normalizedPath && !gitActivityPending) {
         const lastFull = lastFullGraphRefreshAtRef.current[normalizedPath] ?? 0;
@@ -4452,7 +4456,7 @@ function App() {
           if (!applied) void runRefresh('quick');
         });
       } else {
-        void reloadRepoSnapshotFromGit(repoPath);
+        void runRefresh('graph');
       }
     }).then((fn) => {
       if (isDisposed) fn();
