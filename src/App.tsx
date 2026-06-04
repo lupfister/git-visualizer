@@ -952,22 +952,33 @@ function App() {
   }
 
   function parsePeekSignature(signature: string) {
-    const [headSha, dirty, branchHeadsDigest, worktreeSig, stashSig, headUnpushedCount] = signature.split('@@');
+    const [
+      headSha,
+      dirty,
+      branchRefDigest,
+      worktreeSig,
+      stashSig,
+      headUnpushedCount,
+      remoteHeadsDigest,
+    ] = signature.split('@@');
     return {
       headSha: headSha ?? '',
       hasUncommittedChanges: dirty === '1',
-      branchHeadsDigest: branchHeadsDigest ?? '',
+      branchRefDigest: branchRefDigest ?? '',
       worktreeSig: worktreeSig ?? '',
       stashSig: stashSig ?? '',
       headUnpushedCount: headUnpushedCount ?? '0',
+      remoteHeadsDigest: remoteHeadsDigest ?? '',
     };
   }
 
-  function branchHeadsDigestFromSnapshot(snapshot: RepoVisualSnapshot): string {
-    const lines = snapshot.branches.map((branch) => `${branch.name}:${branch.headSha}`);
+  function branchRefDigestFromSnapshot(snapshot: RepoVisualSnapshot): string {
+    const lines = snapshot.branches.map((branch) => (
+      `${branch.name}:${branch.headSha}:${branch.commitsAhead}:${branch.unpushedCommits}:${branch.remoteSyncStatus}`
+    ));
     if (!lines.some((line) => line.startsWith(`${snapshot.defaultBranch}:`))) {
       const head = snapshot.checkedOutRef?.headSha ?? '';
-      if (head) lines.push(`${snapshot.defaultBranch}:${head}`);
+      if (head) lines.push(`${snapshot.defaultBranch}:${head}:0:0:on-github`);
     }
     return lines.sort().join('|');
   }
@@ -1000,8 +1011,8 @@ function App() {
     const ref = snapshot.checkedOutRef;
     if (parsed.headSha && ref?.headSha && parsed.headSha !== ref.headSha) return true;
     if (parsed.hasUncommittedChanges !== (ref?.hasUncommittedChanges ?? false)) return true;
-    const branchDigest = branchHeadsDigestFromSnapshot(snapshot);
-    if (parsed.branchHeadsDigest && branchDigest && parsed.branchHeadsDigest !== branchDigest) {
+    const branchDigest = branchRefDigestFromSnapshot(snapshot);
+    if (parsed.branchRefDigest && branchDigest && parsed.branchRefDigest !== branchDigest) {
       return true;
     }
     const worktreeSig = worktreeListSignature(snapshot.worktrees);

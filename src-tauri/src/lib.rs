@@ -2052,23 +2052,23 @@ fn compute_repo_sync_peek(repo_path: &str) -> Result<RepoSyncPeek, String> {
     .map_err(|e| e.to_string())?;
     let has_uncommitted_changes = !porcelain.trim().is_empty();
 
-    let branch_heads_output = git::cli::run(
-        path,
-        &[
-            "for-each-ref",
-            "refs/heads",
-            "--format=%(refname:short):%(objectname)",
-        ],
-    )
-    .map_err(|e| e.to_string())?;
-    let mut branch_head_lines: Vec<String> = branch_heads_output
-        .lines()
-        .map(str::trim)
-        .filter(|line| !line.is_empty())
-        .map(str::to_string)
+    let default_branch = git::get_default_branch(path).map_err(|e| e.to_string())?;
+    let branches = git::list_branches(path, &default_branch).map_err(|e| e.to_string())?;
+    let mut branch_ref_lines: Vec<String> = branches
+        .iter()
+        .map(|branch| {
+            format!(
+                "{}:{}:{}:{}:{}",
+                branch.name,
+                branch.head_sha,
+                branch.commits_ahead,
+                branch.unpushed_commits,
+                branch.remote_sync_status
+            )
+        })
         .collect();
-    branch_head_lines.sort();
-    let branch_heads_digest = branch_head_lines.join("|");
+    branch_ref_lines.sort();
+    let branch_ref_digest = branch_ref_lines.join("|");
 
     let worktrees = git::list_worktrees(path).map_err(|e| e.to_string())?;
     let mut worktree_lines: Vec<String> = worktrees
@@ -2109,7 +2109,7 @@ fn compute_repo_sync_peek(repo_path: &str) -> Result<RepoSyncPeek, String> {
         "{}@@{}@@{}@@{}@@{}@@{}@@{}",
         head_sha,
         if has_uncommitted_changes { "1" } else { "0" },
-        branch_heads_digest,
+        branch_ref_digest,
         worktree_sig,
         stash_sig,
         head_unpushed_count,
