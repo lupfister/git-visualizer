@@ -152,6 +152,8 @@ type CommitCardProps = {
   onClusterToggle: (clusterKey: string) => void;
   /** Skip search-hit scale transform during camera motion (reduces compositor layers). */
   suppressSearchMatchScale?: boolean;
+  /** Suspend decorative tile RAF loops during camera motion to keep panning responsive. */
+  suspendTileAnimations?: boolean;
   registerCameraTarget: (element: HTMLElement | SVGElement, layout?: MapGridCameraTargetLayout) => () => void;
 };
 
@@ -188,6 +190,7 @@ const MapGridCommitCard = memo(function MapGridCommitCard({
   onNodePointerUp,
   onClusterToggle,
   suppressSearchMatchScale = false,
+  suspendTileAnimations = false,
   registerCameraTarget,
 }: CommitCardProps) {
   const cardRef = useRef<HTMLDivElement | null>(null);
@@ -558,6 +561,7 @@ const MapGridCommitCard = memo(function MapGridCommitCard({
             animateTileGaps={commitTileAnimateGaps}
             cloudyTileGaps={commitTileCloudyGaps}
             tileOmissionRate={commitTileOmissionRate}
+            suspendAnimations={suspendTileAnimations}
           />
         ) : null}
         <div
@@ -987,7 +991,8 @@ const MapGridCanvas = memo(function MapGridCanvas({
     isCameraMovingRef,
   ]);
 
-  const suppressSearchMatchScale = isCameraMovingRef.current;
+  const isCameraMoving = isCameraMovingRef.current;
+  const suppressSearchMatchScale = isCameraMoving;
 
   return (
     <div
@@ -1045,6 +1050,7 @@ const MapGridCanvas = memo(function MapGridCanvas({
                 onNodePointerUp={onNodePointerUp}
                 onClusterToggle={handleClusterToggle}
                 suppressSearchMatchScale={suppressSearchMatchScale}
+                suspendTileAnimations={isCameraMoving}
                 registerCameraTarget={registerCameraTarget}
               />
             );
