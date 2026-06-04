@@ -49,9 +49,19 @@ fn inset_traffic_lights(window: &NSWindow, x: f64, y: f64) {
 }
 
 pub fn reapply_for_window<R: Runtime>(window: &WebviewWindow<R>) {
-    let _ = window.with_webview(|webview| unsafe {
-        let ns_window = &*(webview.ns_window().cast::<NSWindow>());
-        inset_traffic_lights(ns_window, TRAFFIC_LIGHT_X, TRAFFIC_LIGHT_Y);
+    let _ = window.with_webview(|webview| {
+        let ns_window = webview.ns_window().cast::<NSWindow>();
+        if ns_window.is_null() {
+            return;
+        }
+
+        // AppKit objects are only safe to touch from the main thread. The
+        // callers in this module schedule re-application from the main thread;
+        // keep this unsafe block as small as possible and bail out if Tauri has
+        // already torn the native window down.
+        unsafe {
+            inset_traffic_lights(&*ns_window, TRAFFIC_LIGHT_X, TRAFFIC_LIGHT_Y);
+        }
     });
 }
 
@@ -96,18 +106,21 @@ pub fn install<R: Runtime>(window: &WebviewWindow<R>) {
 }
 
 pub fn schedule_reapply_after_screen_capture<R: Runtime>(app: &AppHandle<R>) {
-    reapply_for_main_window(app);
+    reapply_for_main_window_on_main_thread(app);
 
     let app_handle = app.clone();
     std::thread::spawn(move || {
         for delay in [Duration::from_millis(250), Duration::from_secs(1)] {
             std::thread::sleep(delay);
-            let app = app_handle.clone();
-            let app_for_thread = app.clone();
-            let _ = app.run_on_main_thread(move || {
-                reapply_for_main_window(&app_for_thread);
-            });
+            reapply_for_main_window_on_main_thread(&app_handle);
         }
+    });
+}
+
+fn reapply_for_main_window_on_main_thread<R: Runtime>(app: &AppHandle<R>) {
+    let app_handle = app.clone();
+    let _ = app.run_on_main_thread(move || {
+        reapply_for_main_window(&app_handle);
     });
 }
 
