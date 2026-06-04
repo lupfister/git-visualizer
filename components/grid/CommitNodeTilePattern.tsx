@@ -130,6 +130,8 @@ type CommitNodeTilePatternProps = {
   /** FBM thresholded "cloud" gaps (remote-only commits); same palette as unpushed. */
   cloudyTileGaps?: boolean;
   tileOmissionRate?: number;
+  /** Pause decorative per-frame animation while the map camera is moving. */
+  suspendAnimations?: boolean;
 };
 
 export type CommitNodeTilePatternHandle = {
@@ -156,6 +158,7 @@ const applyTileOpacities = (
   tileOmissionRate: number,
   displayZoom: number,
   cloudTimeMs: number | undefined,
+  suspendAnimations: boolean,
 ): void => {
   const { cols, rows } = layout;
 
@@ -173,7 +176,7 @@ const applyTileOpacities = (
         )
       : !randomTileGaps
         ? 1
-        : animateGaps
+        : animateGaps && !suspendAnimations
           ? (presences?.[index] ?? 0)
           : isTileOmittedAt(
               seed,
@@ -225,6 +228,7 @@ const tilePatternPropsEqual = (
   if (prev.animateTileGaps !== next.animateTileGaps) return false;
   if (prev.cloudyTileGaps !== next.cloudyTileGaps) return false;
   if (prev.tileOmissionRate !== next.tileOmissionRate) return false;
+  if (prev.suspendAnimations !== next.suspendAnimations) return false;
 
   const prevTopology = pickGridCounts(CARD_WIDTH, CARD_HEIGHT, prev.displayZoom);
   const nextTopology = pickGridCounts(CARD_WIDTH, CARD_HEIGHT, next.displayZoom);
@@ -242,6 +246,7 @@ export const CommitNodeTilePattern = memo(
       animateTileGaps = false,
       cloudyTileGaps = false,
       tileOmissionRate = TILE_DEFAULT_OMISSION_RATE,
+      suspendAnimations = false,
     },
     ref,
   ) {
@@ -318,8 +323,9 @@ export const CommitNodeTilePattern = memo(
         tileOmissionRate,
         displayZoomForLayoutRef.current,
         cloudTimeMsRef.current,
+        suspendAnimations,
       );
-    }, [cloudyTileGaps, randomTileGaps, seed, tileOmissionRate]);
+    }, [cloudyTileGaps, randomTileGaps, seed, suspendAnimations, tileOmissionRate]);
 
     useEffect(() => {
       presencesRef.current = new Float32Array(layout.cols * layout.rows);
@@ -334,7 +340,7 @@ export const CommitNodeTilePattern = memo(
     }, [layout.cols, layout.rows, topologyKey]);
 
     useEffect(() => {
-      if (!cloudyTileGaps) {
+      if (!cloudyTileGaps || suspendAnimations) {
         cloudTimeMsRef.current = undefined;
         if (cloudAnimRafRef.current != null) {
           cancelAnimationFrame(cloudAnimRafRef.current);
@@ -370,10 +376,10 @@ export const CommitNodeTilePattern = memo(
           cloudAnimRafRef.current = null;
         }
       };
-    }, [cloudyTileGaps, paintTiles, topologyKey]);
+    }, [cloudyTileGaps, paintTiles, suspendAnimations, topologyKey]);
 
     useEffect(() => {
-      if (!omissionSampler) {
+      if (!omissionSampler || suspendAnimations) {
         paintTiles();
         return;
       }
@@ -406,14 +412,14 @@ export const CommitNodeTilePattern = memo(
           gapAnimRafRef.current = null;
         }
       };
-    }, [omissionSampler, paintTiles, topologyKey]);
+    }, [omissionSampler, paintTiles, suspendAnimations, topologyKey]);
 
     useEffect(() => {
-      if (omissionSampler) {
+      if (omissionSampler && !suspendAnimations) {
         return;
       }
       paintTiles();
-    }, [boosts, omissionSampler, paintTiles]);
+    }, [boosts, omissionSampler, paintTiles, suspendAnimations]);
 
     const stopHoverLoop = useCallback(() => {
       if (rafRef.current != null) {
@@ -421,6 +427,13 @@ export const CommitNodeTilePattern = memo(
         rafRef.current = null;
       }
     }, []);
+
+    useEffect(() => {
+      if (!suspendAnimations) return;
+      isHoveringRef.current = false;
+      pointerRef.current = null;
+      stopHoverLoop();
+    }, [stopHoverLoop, suspendAnimations]);
 
     const runHoverFrame = useCallback(() => {
       rafRef.current = null;
@@ -493,10 +506,12 @@ export const CommitNodeTilePattern = memo(
       ref,
       () => ({
         startHover() {
+          if (suspendAnimations) return;
           isHoveringRef.current = true;
           ensureHoverLoop();
         },
         applyPointer(layoutX: number, layoutY: number) {
+          if (suspendAnimations) return;
           const { cells, cols, rows } = layoutRef.current;
           pointerRef.current = { x: layoutX, y: layoutY };
           isHoveringRef.current = true;
@@ -515,7 +530,7 @@ export const CommitNodeTilePattern = memo(
           ensureHoverLoop();
         },
       }),
-      [ensureHoverLoop, paintTiles],
+      [ensureHoverLoop, paintTiles, suspendAnimations],
     );
 
     const patternClipId = `commit-tile-clip-${fnv1a32(seed)}`;
