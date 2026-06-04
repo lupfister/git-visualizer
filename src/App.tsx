@@ -78,7 +78,7 @@ import { createRepoSyncScheduler } from './repoSyncScheduler';
 import { runOrchestratedRepoSync } from './orchestratedRepoSync';
 import {
   detectProjectPreviewDefaults,
-  getActiveProjectPreviewTarget,
+  getActiveProjectPreviewTargets,
   startProjectPreview,
   stopProjectPreview,
   type PreviewTarget,
@@ -355,6 +355,7 @@ function App() {
   const [pendingPreviewTarget, setPendingPreviewTarget] = useState<PreviewTarget | null>(null);
   const [pendingPreviewNodeId, setPendingPreviewNodeId] = useState<string | null>(null);
   const [previewActive, setPreviewActive] = useState(false);
+  const [previewedWorktreeNodeIds, setPreviewedWorktreeNodeIds] = useState<string[]>([]);
   const [previewTerminalOpen, setPreviewTerminalOpen] = useState(false);
   const [previewInProgress, setPreviewInProgress] = useState(false);
   const [previewedNodeId, setPreviewedNodeId] = useState<string | null>(null);
@@ -6325,7 +6326,11 @@ function App() {
     setPreviewActive(false);
     try {
       const result = await startProjectPreview(repoPath, target, config);
-      setPreviewedNodeId(result.targetId || nodeId);
+      if (target.kind === 'worktree') {
+        setPreviewedWorktreeNodeIds((current) => current.includes(result.targetId) ? current : [...current, result.targetId]);
+      } else {
+        setPreviewedNodeId(result.targetId || nodeId);
+      }
       setPreviewActive(result.status === 'running');
       setPreviewTerminalOpen(result.status === 'running');
     } catch (error) {
@@ -6382,18 +6387,25 @@ function App() {
     setPreviewActive(false);
     setPreviewTerminalOpen(false);
     setPreviewedNodeId(null);
+    setPreviewedWorktreeNodeIds([]);
   }, [repoPath]);
 
   const syncActivePreviewTarget = useCallback(async (path: string) => {
-    const target = await getActiveProjectPreviewTarget(path).catch(() => null);
+    const targets = await getActiveProjectPreviewTargets(path).catch(() => []);
     if (!sameRepoPath(repoPath, path)) return;
-    setPreviewedNodeId((current) => (current === (target?.targetId ?? null) ? current : (target?.targetId ?? null)));
-    setPreviewActive(Boolean(target));
+    const commitTarget = targets.find((target) => target.targetKind !== 'worktree') ?? null;
+    const worktreeTargets = targets
+      .filter((target) => target.targetKind === 'worktree')
+      .map((target) => target.targetId);
+    setPreviewedNodeId((current) => (current === (commitTarget?.targetId ?? null) ? current : (commitTarget?.targetId ?? null)));
+    setPreviewedWorktreeNodeIds(worktreeTargets);
+    setPreviewActive(targets.length > 0);
   }, [repoPath]);
 
   useEffect(() => {
     if (!repoPath) {
       setPreviewedNodeId(null);
+      setPreviewedWorktreeNodeIds([]);
       setPreviewActive(false);
       setPreviewTerminalOpen(false);
       return;
@@ -6522,6 +6534,7 @@ function App() {
                 onPreviewNode={handlePreviewNode}
                 previewInProgress={previewInProgress}
                 previewedNodeId={previewedNodeId}
+                previewedWorktreeNodeIds={previewedWorktreeNodeIds}
                 manuallyOpenedClumps={manuallyOpenedGridClumps}
                 manuallyClosedClumps={manuallyClosedGridClumps}
                 setManuallyOpenedClumps={setManuallyOpenedGridClumps}

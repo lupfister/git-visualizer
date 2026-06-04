@@ -16,8 +16,8 @@ use serde::{Deserialize, Serialize};
 use std::os::unix::process::CommandExt;
 use std::{
     collections::{HashMap, HashSet},
-    fs::{self, File},
-    io::{BufRead, BufReader},
+    fs::{self, File, OpenOptions},
+    io::{BufRead, BufReader, Read, Seek, SeekFrom, Write},
     net::TcpListener,
     path::{Path, PathBuf},
     process::{Child, Stdio},
@@ -141,6 +141,10 @@ static WATCHER_STATE: OnceLock<Mutex<HashMap<String, notify::RecommendedWatcher>
     OnceLock::new();
 static PREVIEW_PROCESS_STATE: OnceLock<Mutex<HashMap<String, PreviewProcess>>> = OnceLock::new();
 const GIT_ACTIVITY_GRAPH_MIN_EMIT_MS: u64 = 800;
+const PREVIEW_LOG_TAIL_BYTES: u64 = 64 * 1024;
+const PREVIEW_LOG_MAX_LINES: usize = 200;
+const PREVIEW_LOG_COMPACT_THRESHOLD_BYTES: u64 = 2 * 1024 * 1024;
+const PREVIEW_LOG_COMPACT_KEEP_BYTES: u64 = 1024 * 1024;
 /// Debounce bursty editor saves before emitting working-tree `local` activity.
 const GIT_ACTIVITY_WORKTREE_DEBOUNCE_MS: u64 = 500;
 
@@ -2583,13 +2587,34 @@ fn preview_processes() -> &'static Mutex<HashMap<String, PreviewProcess>> {
     PREVIEW_PROCESS_STATE.get_or_init(|| Mutex::new(HashMap::new()))
 }
 
+fn preview_process_key(repo_path: &str, target_id: &str, target_kind: &str) -> String {
+    let repo_key = normalize_repo_path_id(repo_path);
+    if target_kind == "worktree" {
+        format!("{repo_key}::worktree::{target_id}")
+    } else {
+        format!("{repo_key}::commit")
+    }
+}
+
+fn preview_process_key_is_for_repo(key: &str, repo_path: &str) -> bool {
+    let repo_key = normalize_repo_path_id(repo_path);
+    key == repo_key || key.starts_with(&format!("{repo_key}::"))
+}
+
 fn stop_project_preview_blocking(repo_path: &str) -> Result<(), String> {
-    let key = normalize_repo_path_id(repo_path);
     {
         let mut processes = preview_processes()
             .lock()
             .map_err(|_| "Preview process state is unavailable".to_string())?;
-        if let Some(mut process) = processes.remove(&key) {
+        let keys = processes
+            .keys()
+            .filter(|key| preview_process_key_is_for_repo(key, repo_path))
+            .cloned()
+            .collect::<Vec<_>>();
+        for key in keys {
+            let Some(mut process) = processes.remove(&key) else {
+                continue;
+            };
             terminate_preview_process(&mut process.child);
             let _ = process.child.wait();
         }
@@ -2704,10 +2729,52 @@ fn terminate_orphaned_preview_processes(storage_root: &Path) {
 }
 
 fn preview_log_tail(path: &Path) -> String {
-    let raw = fs::read_to_string(path).unwrap_or_default();
-    let mut lines: Vec<&str> = raw.lines().rev().take(40).collect();
+    compact_preview_log_if_needed(path);
+    read_bounded_log_tail(path, PREVIEW_LOG_TAIL_BYTES, PREVIEW_LOG_MAX_LINES)
+}
+
+fn read_bounded_log_tail(path: &Path, max_bytes: u64, max_lines: usize) -> String {
+    let Ok(mut file) = File::open(path) else {
+        return String::new();
+    };
+    let Ok(metadata) = file.metadata() else {
+        return String::new();
+    };
+    let len = metadata.len();
+    let start = len.saturating_sub(max_bytes);
+    if file.seek(SeekFrom::Start(start)).is_err() {
+        return String::new();
+    }
+    let mut buffer = Vec::with_capacity((len - start).min(max_bytes) as usize);
+    if file.take(max_bytes).read_to_end(&mut buffer).is_err() {
+        return String::new();
+    }
+    if start > 0 {
+        if let Some(newline_index) = buffer.iter().position(|byte| *byte == b'\n') {
+            if newline_index + 1 < buffer.len() {
+                buffer.drain(..=newline_index);
+            }
+        }
+    }
+    let raw = String::from_utf8_lossy(&buffer);
+    let mut lines = raw.lines().rev().take(max_lines).collect::<Vec<_>>();
     lines.reverse();
     lines.join("\n")
+}
+
+fn compact_preview_log_if_needed(path: &Path) {
+    let Ok(metadata) = fs::metadata(path) else {
+        return;
+    };
+    if metadata.len() <= PREVIEW_LOG_COMPACT_THRESHOLD_BYTES {
+        return;
+    }
+    let tail = read_bounded_log_tail(path, PREVIEW_LOG_COMPACT_KEEP_BYTES, usize::MAX);
+    let Ok(mut file) = OpenOptions::new().write(true).truncate(true).open(path) else {
+        return;
+    };
+    let _ = file.write_all(tail.as_bytes());
+    let _ = file.write_all(b"\n");
 }
 
 fn command_declares_port(command: &str) -> bool {
@@ -2846,37 +2913,59 @@ fn start_project_preview_blocking(
     target: git::PreviewTarget,
     config: ProjectPreviewConfig,
 ) -> Result<ProjectPreviewResult, String> {
-    stop_all_preview_processes();
     let storage_root = preview_worktree_storage_root()?;
     terminate_orphaned_preview_processes(&storage_root);
     let repo = Path::new(&repo_path);
     let target_id = target.target_id();
     let is_native_preview = is_native_preview_command(&config.run_command);
     let preview_mode = if is_native_preview { "native" } else { "web" }.to_string();
-    let prepared =
-        git::prepare_preview_target(repo, &storage_root, target).map_err(|e| e.to_string())?;
-    let preview_path = PathBuf::from(&prepared.preview_path);
+    let (preview_path, preview_path_string, target_kind, dependency_files_changed) = match target {
+        git::PreviewTarget::Worktree { worktree_path, .. } => (
+            PathBuf::from(&worktree_path),
+            worktree_path,
+            "worktree".to_string(),
+            false,
+        ),
+        commit_target => {
+            let prepared = git::prepare_preview_target(repo, &storage_root, commit_target)
+                .map_err(|e| e.to_string())?;
+            (
+                PathBuf::from(&prepared.preview_path),
+                prepared.preview_path,
+                prepared.target_kind,
+                prepared.dependency_files_changed,
+            )
+        }
+    };
+    let process_key = preview_process_key(&repo_path, &target_id, &target_kind);
+    {
+        let mut processes = preview_processes()
+            .lock()
+            .map_err(|_| "Preview process state is unavailable".to_string())?;
+        if let Some(mut process) = processes.remove(&process_key) {
+            terminate_preview_process(&mut process.child);
+            let _ = process.child.wait();
+        }
+    }
     let state_path = storage_root.join("logs");
     fs::create_dir_all(&state_path)
         .map_err(|e| format!("Failed to create preview log directory: {e}"))?;
     let log_path = state_path.join(format!(
-        "{}.log",
-        normalize_repo_path_id(&repo_path).replace('/', "_")
+        "{}-{}.log",
+        normalize_repo_path_id(&repo_path).replace('/', "_"),
+        target_id.replace(['/', ':'], "_")
     ));
     let install_log_path = state_path.join(format!(
-        "{}.install.log",
-        normalize_repo_path_id(&repo_path).replace('/', "_")
+        "{}-{}.install.log",
+        normalize_repo_path_id(&repo_path).replace('/', "_"),
+        target_id.replace(['/', ':'], "_")
     ));
 
-    let install_needed = git::should_run_install(
-        &storage_root,
-        repo,
-        &preview_path,
-        prepared.dependency_files_changed,
-    );
+    let install_needed =
+        git::should_run_install(&storage_root, repo, &preview_path, dependency_files_changed);
     if install_needed && config.install_command.trim().is_empty() {
         return Ok(ProjectPreviewResult {
-            preview_path: prepared.preview_path,
+            preview_path: preview_path_string,
             target_id,
             url: None,
             status: "installFailed".to_string(),
@@ -2896,7 +2985,7 @@ fn start_project_preview_blocking(
         if !install_ok {
             let logs = preview_log_tail(&install_log_path);
             return Ok(ProjectPreviewResult {
-                preview_path: prepared.preview_path,
+                preview_path: preview_path_string,
                 target_id,
                 url: git::detect_localhost_url(&logs),
                 status: "installFailed".to_string(),
@@ -2958,18 +3047,18 @@ fn start_project_preview_blocking(
         .lock()
         .map_err(|_| "Preview process state is unavailable".to_string())?
         .insert(
-            normalize_repo_path_id(&repo_path),
+            process_key,
             PreviewProcess {
                 child,
                 log_path: log_path.clone(),
-                preview_path: prepared.preview_path.clone(),
+                preview_path: preview_path_string.clone(),
                 target_id: target_id.clone(),
                 preview_mode: preview_mode.clone(),
             },
         );
 
     Ok(ProjectPreviewResult {
-        preview_path: prepared.preview_path,
+        preview_path: preview_path_string,
         target_id,
         url,
         status,
@@ -3017,11 +3106,13 @@ fn get_project_preview_status_blocking(
 fn get_project_preview_log_tail_blocking(
     repo_path: String,
 ) -> Result<ProjectPreviewLogTail, String> {
-    let key = normalize_repo_path_id(&repo_path);
     let processes = preview_processes()
         .lock()
         .map_err(|_| "Preview process state is unavailable".to_string())?;
-    let log_path = processes.get(&key).map(|process| process.log_path.clone());
+    let log_path = processes
+        .iter()
+        .find(|(key, _)| preview_process_key_is_for_repo(key, &repo_path))
+        .map(|(_, process)| process.log_path.clone());
     drop(processes);
 
     let Some(log_path) = log_path else {
@@ -3037,23 +3128,53 @@ fn get_project_preview_log_tail_blocking(
 fn get_active_project_preview_target_blocking(
     repo_path: String,
 ) -> Result<Option<git::ActivePreviewTarget>, String> {
-    let key = normalize_repo_path_id(&repo_path);
+    Ok(get_active_project_preview_targets_blocking(repo_path)?
+        .into_iter()
+        .next())
+}
+
+fn get_active_project_preview_targets_blocking(
+    repo_path: String,
+) -> Result<Vec<git::ActivePreviewTarget>, String> {
     let mut processes = preview_processes()
         .lock()
         .map_err(|_| "Preview process state is unavailable".to_string())?;
-    let Some(process) = processes.get_mut(&key) else {
-        return Ok(None);
-    };
-    if matches!(process.child.try_wait(), Ok(Some(_)) | Err(_)) {
-        processes.remove(&key);
+    let keys = processes
+        .keys()
+        .filter(|key| preview_process_key_is_for_repo(key, &repo_path))
+        .cloned()
+        .collect::<Vec<_>>();
+    let mut active = Vec::new();
+    let mut removed_any = false;
+    for key in keys {
+        let Some(process) = processes.get_mut(&key) else {
+            continue;
+        };
+        if matches!(process.child.try_wait(), Ok(Some(_)) | Err(_)) {
+            processes.remove(&key);
+            removed_any = true;
+            continue;
+        }
+        let target_kind = if key.contains("::worktree::") {
+            "worktree"
+        } else {
+            "commit"
+        };
+        active.push(git::ActivePreviewTarget {
+            preview_path: process.preview_path.clone(),
+            target_id: process.target_id.clone(),
+            target_kind: target_kind.to_string(),
+            effective_head_sha: process.target_id.clone(),
+            overlay_applied: false,
+        });
+    }
+    drop(processes);
+    if removed_any {
         let storage_root = preview_worktree_storage_root()?;
         terminate_orphaned_preview_processes(&storage_root);
         git::clear_active_preview_target(&storage_root, Path::new(&repo_path));
-        return Ok(None);
     }
-    drop(processes);
-    let storage_root = preview_worktree_storage_root()?;
-    git::get_active_preview_target(&storage_root, Path::new(&repo_path)).map_err(|e| e.to_string())
+    Ok(active)
 }
 
 #[tauri::command(rename_all = "camelCase")]
@@ -3089,6 +3210,13 @@ async fn get_active_project_preview_target(
     repo_path: String,
 ) -> Result<Option<git::ActivePreviewTarget>, String> {
     run_blocking(move || get_active_project_preview_target_blocking(repo_path)).await
+}
+
+#[tauri::command(rename_all = "camelCase")]
+async fn get_active_project_preview_targets(
+    repo_path: String,
+) -> Result<Vec<git::ActivePreviewTarget>, String> {
+    run_blocking(move || get_active_project_preview_targets_blocking(repo_path)).await
 }
 
 #[tauri::command(rename_all = "camelCase")]
@@ -7225,6 +7353,7 @@ pub fn run() {
             get_project_preview_status,
             get_project_preview_log_tail,
             get_active_project_preview_target,
+            get_active_project_preview_targets,
             stop_project_preview,
             checkout_ref,
             checkout_branch,
@@ -7316,6 +7445,88 @@ fn reveal_in_finder(path: String) -> Result<(), String> {
         Ok(())
     } else {
         Err(String::from_utf8_lossy(&output.stderr).trim().to_string())
+    }
+}
+
+#[cfg(test)]
+mod preview_log_tests {
+    use super::{compact_preview_log_if_needed, read_bounded_log_tail};
+    use std::{
+        fs,
+        io::{Seek, SeekFrom, Write},
+    };
+
+    fn temp_log(name: &str) -> std::path::PathBuf {
+        let path = std::env::temp_dir().join(format!(
+            "gv-preview-log-{name}-{}-{}.log",
+            std::process::id(),
+            chrono::Utc::now().timestamp_nanos_opt().unwrap_or_default()
+        ));
+        let _ = fs::remove_file(&path);
+        path
+    }
+
+    #[test]
+    fn bounded_log_tail_returns_small_log_unchanged() {
+        let path = temp_log("small");
+        fs::write(&path, "one\ntwo\nthree\n").expect("write log");
+        assert_eq!(
+            read_bounded_log_tail(&path, 64 * 1024, 200),
+            "one\ntwo\nthree"
+        );
+        let _ = fs::remove_file(path);
+    }
+
+    #[test]
+    fn bounded_log_tail_caps_huge_log() {
+        let path = temp_log("huge");
+        let mut file = fs::File::create(&path).expect("create log");
+        for index in 0..10_000 {
+            writeln!(file, "line-{index:05}").expect("write line");
+        }
+        let tail = read_bounded_log_tail(&path, 64 * 1024, 200);
+        assert!(tail.len() <= 64 * 1024);
+        assert!(tail.lines().count() <= 200);
+        assert!(tail.contains("line-09999"));
+        let _ = fs::remove_file(path);
+    }
+
+    #[test]
+    fn bounded_log_tail_caps_huge_single_line() {
+        let path = temp_log("single-line");
+        fs::write(&path, vec![b'x'; 2 * 1024 * 1024]).expect("write log");
+        let tail = read_bounded_log_tail(&path, 64 * 1024, 200);
+        assert!(tail.len() <= 64 * 1024);
+        let _ = fs::remove_file(path);
+    }
+
+    #[test]
+    fn bounded_log_tail_tolerates_invalid_utf8() {
+        let path = temp_log("invalid-utf8");
+        fs::write(&path, [0xff, b'\n', b'o', b'k']).expect("write log");
+        let tail = read_bounded_log_tail(&path, 64 * 1024, 200);
+        assert!(tail.contains("ok"));
+        let _ = fs::remove_file(path);
+    }
+
+    #[test]
+    fn bounded_log_tail_missing_file_is_empty() {
+        let path = temp_log("missing");
+        assert_eq!(read_bounded_log_tail(&path, 64 * 1024, 200), "");
+    }
+
+    #[test]
+    fn compact_preview_log_keeps_recent_output() {
+        let path = temp_log("compact");
+        let mut file = fs::File::create(&path).expect("create log");
+        file.seek(SeekFrom::Start(3 * 1024 * 1024)).expect("seek");
+        writeln!(file, "recent-line").expect("write line");
+        drop(file);
+        compact_preview_log_if_needed(&path);
+        let metadata = fs::metadata(&path).expect("metadata");
+        assert!(metadata.len() <= 1024 * 1024 + 128);
+        assert!(read_bounded_log_tail(&path, 64 * 1024, 200).contains("recent-line"));
+        let _ = fs::remove_file(path);
     }
 }
 

@@ -78,6 +78,7 @@ interface Props {
   onPreviewNode?: (target: PreviewTarget, nodeId: string) => Promise<void> | void;
   previewInProgress?: boolean;
   previewedNodeId?: string | null;
+  previewedWorktreeNodeIds?: string[];
   manuallyOpenedClumps?: Set<string>;
   manuallyClosedClumps?: Set<string>;
   setManuallyOpenedClumps?: Dispatch<SetStateAction<Set<string>>>;
@@ -164,6 +165,7 @@ export default function BranchGridMapView({
   onPreviewNode,
   previewInProgress = false,
   previewedNodeId = null,
+  previewedWorktreeNodeIds = [],
   manuallyOpenedClumps,
   manuallyClosedClumps,
   setManuallyOpenedClumps,
@@ -246,6 +248,7 @@ export default function BranchGridMapView({
             onPreviewNode={onPreviewNode}
             previewInProgress={previewInProgress}
             previewedNodeId={previewedNodeId}
+            previewedWorktreeNodeIds={previewedWorktreeNodeIds}
             manuallyOpenedClumps={manuallyOpenedClumps}
             manuallyClosedClumps={manuallyClosedClumps}
             setManuallyOpenedClumps={setManuallyOpenedClumps}
@@ -285,6 +288,7 @@ export default function BranchGridMapView({
             onPreviewNode={onPreviewNode}
             previewInProgress={previewInProgress}
             previewedNodeId={previewedNodeId}
+            previewedWorktreeNodeIds={previewedWorktreeNodeIds}
             manuallyOpenedClumps={manuallyOpenedClumps}
             manuallyClosedClumps={manuallyClosedClumps}
             setManuallyOpenedClumps={setManuallyOpenedClumps}

@@ -226,6 +226,7 @@ export default function BranchGridMap({
   onPreviewNode,
   previewInProgress = false,
   previewedNodeId = null,
+  previewedWorktreeNodeIds = [],
   manuallyOpenedClumps: controlledManuallyOpenedClumps,
   manuallyClosedClumps: controlledManuallyClosedClumps,
   setManuallyOpenedClumps: controlledSetManuallyOpenedClumps,
@@ -746,7 +747,7 @@ export default function BranchGridMap({
     if (selectedPreviewNode.commit.kind === 'stash' || selectedPreviewNode.commit.kind === 'branch-created') return null;
     if (isWorkingTreeCommitId(commitId) || selectedPreviewNode.commit.kind === 'uncommitted') {
       const session = worktreeSessions.find((entry) => entry.workingTreeId === commitId);
-      if (!session?.hasUncommittedChanges) return null;
+      if (!session) return null;
       return {
         nodeId: commitId,
         target: {
@@ -2175,6 +2176,7 @@ export default function BranchGridMap({
           worktreeSessions={worktreeSessions}
           worktreeDraftByWorkingTreeId={worktreeDraftByWorkingTreeId}
           previewedNodeId={previewedNodeId}
+          previewedWorktreeNodeIds={previewedWorktreeNodeIds}
           orientation={orientation}
           dragPreviewByNodeId={dragPreviewByNodeId}
           nodePositionOverrides={nodePositionOverrides}

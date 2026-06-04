@@ -144,6 +144,7 @@ type CommitCardProps = {
   worktreeSessions: WorktreeSession[];
   worktreeDraftByWorkingTreeId?: ReadonlyMap<string, WorktreeDraftDisplay>;
   previewedNodeId?: string | null;
+  previewedWorktreeNodeIds?: string[];
   onCommitCardClick: (event: MouseEvent, node: Node) => void;
   onNodePointerDown: (event: React.PointerEvent<HTMLDivElement>, node: Node) => void;
   onNodePointerMove: (event: React.PointerEvent<HTMLDivElement>) => void;
@@ -180,6 +181,7 @@ const MapGridCommitCard = memo(function MapGridCommitCard({
   worktreeSessions,
   worktreeDraftByWorkingTreeId,
   previewedNodeId,
+  previewedWorktreeNodeIds = [],
   onCommitCardClick,
   onNodePointerDown,
   onNodePointerMove,
@@ -215,7 +217,8 @@ const MapGridCommitCard = memo(function MapGridCommitCard({
   const nodeWarningsForCard = nodeWarnings.get(commitId) ?? [];
   const showDataShapeError = nodeWarningsForCard.length > 0 && !hasRenderedAncestry;
   const isSelectedCommit = selectedShaSet.has(commitId);
-  const isPreviewedCommit = previewedNodeId === visualId || previewedNodeId === commitId;
+  const isPreviewedWorktreeCommit = previewedWorktreeNodeIds.includes(commitId);
+  const isPreviewedCommit = previewedNodeId === visualId || previewedNodeId === commitId || isPreviewedWorktreeCommit;
   const isLocalUncommitted = isWorkingTreeCommitId(commitId) || node.commit.kind === 'uncommitted';
   const accentToken = worktreeAccentByCommitId.get(commitId) ?? null;
   const isStashedCommit =
@@ -532,7 +535,7 @@ const MapGridCommitCard = memo(function MapGridCommitCard({
           top: 0,
           border: 'none',
           boxShadow: 'none',
-          outline: isPreviewedCommit ? `${lineStrokeWidth}px solid var(--select)` : 'none',
+          outline: isPreviewedCommit ? `${lineStrokeWidth}px solid ${isPreviewedWorktreeCommit ? 'var(--foreground)' : 'var(--select)'}` : 'none',
           outlineOffset: 0,
           borderTopLeftRadius: 0,
           borderTopRightRadius: outlineCornerRadiusCss,
@@ -692,6 +695,7 @@ type Props = {
   worktreeSessions: WorktreeSession[];
   worktreeDraftByWorkingTreeId?: ReadonlyMap<string, WorktreeDraftDisplay>;
   previewedNodeId?: string | null;
+  previewedWorktreeNodeIds?: string[];
   orientation?: 'vertical' | 'horizontal';
   dragPreviewByNodeId?: Record<string, { x: number; y: number }>;
   nodePositionOverrides?: Record<string, { x: number; y: number }>;
@@ -764,6 +768,7 @@ const MapGridCanvas = memo(function MapGridCanvas({
   worktreeSessions,
   worktreeDraftByWorkingTreeId,
   previewedNodeId,
+  previewedWorktreeNodeIds,
   dragPreviewByNodeId = EMPTY_DRAG_PREVIEW,
   nodePositionOverrides = EMPTY_NODE_POSITION_OVERRIDES,
   connectorPathCacheScopeBase,
@@ -1033,6 +1038,7 @@ const MapGridCanvas = memo(function MapGridCanvas({
                 worktreeSessions={worktreeSessions}
                 worktreeDraftByWorkingTreeId={worktreeDraftByWorkingTreeId}
                 previewedNodeId={previewedNodeId}
+                previewedWorktreeNodeIds={previewedWorktreeNodeIds}
                 onCommitCardClick={onCommitCardClick}
                 onNodePointerDown={onNodePointerDown}
                 onNodePointerMove={onNodePointerMove}

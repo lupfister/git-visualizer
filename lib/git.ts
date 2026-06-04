@@ -108,6 +108,10 @@ export async function getActiveProjectPreviewTarget(repoPath: string): Promise<A
   return invoke('get_active_project_preview_target', { repoPath });
 }
 
+export async function getActiveProjectPreviewTargets(repoPath: string): Promise<ActiveProjectPreviewTarget[]> {
+  return invoke('get_active_project_preview_targets', { repoPath });
+}
+
 export async function stopProjectPreview(repoPath: string): Promise<void> {
   return invoke('stop_project_preview', { repoPath });
 }

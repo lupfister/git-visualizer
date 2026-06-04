@@ -10,7 +10,7 @@ type PreviewTerminalPanelProps = {
   onStop: () => void;
 };
 
-const MAX_LOG_CHARS = 24_000;
+const MAX_LOG_CHARS = 64 * 1024;
 
 function PreviewTerminalPanel({
   repoPath,
