@@ -639,6 +639,42 @@ fn delete_repo_node_positions(repo_path: &str) -> Result<(), String> {
     Ok(())
 }
 
+fn delete_project_cache_rows(repo_path: &str) -> Result<(), String> {
+    let id = normalize_repo_path_id(repo_path);
+    let mut conn = open_visual_cache_connection()?;
+    let tx = conn
+        .transaction()
+        .map_err(|e| format!("Failed to begin project delete transaction: {e}"))?;
+    tx.execute(
+        "DELETE FROM project_snapshot WHERE project_id = ?1 OR repo_path = ?1 OR repo_path = ?2",
+        params![id, repo_path],
+    )
+    .map_err(|e| format!("Failed to delete project snapshots: {e}"))?;
+    tx.execute(
+        "DELETE FROM project_registry WHERE project_id = ?1 OR repo_path = ?1 OR repo_path = ?2",
+        params![id, repo_path],
+    )
+    .map_err(|e| format!("Failed to delete project registry row: {e}"))?;
+    tx.execute(
+        "DELETE FROM repo_layout_cache WHERE repo_path = ?1 OR repo_path = ?2",
+        params![id, repo_path],
+    )
+    .map_err(|e| format!("Failed to delete project layout cache: {e}"))?;
+    tx.execute(
+        "DELETE FROM repo_node_position_cache WHERE repo_path = ?1 OR repo_path = ?2",
+        params![id, repo_path],
+    )
+    .map_err(|e| format!("Failed to delete project node position cache: {e}"))?;
+    tx.execute(
+        "DELETE FROM repo_visual_cache WHERE repo_path = ?1 OR repo_path = ?2",
+        params![id, repo_path],
+    )
+    .map_err(|e| format!("Failed to delete project visual cache: {e}"))?;
+    tx.commit()
+        .map_err(|e| format!("Failed to commit project delete transaction: {e}"))?;
+    Ok(())
+}
+
 fn normalize_repo_path_id(repo_path: &str) -> String {
     if repo_path == "/" {
         "/".to_string()
@@ -1850,6 +1886,11 @@ async fn load_project_snapshot(
         load_active_project_snapshot(&conn, &normalize_repo_path_id(&project_id))
     })
     .await
+}
+
+#[tauri::command(rename_all = "camelCase")]
+async fn delete_project_cache(project_id: String) -> Result<(), String> {
+    run_blocking(move || delete_project_cache_rows(&project_id)).await
 }
 
 #[tauri::command(rename_all = "camelCase")]
@@ -7324,6 +7365,7 @@ pub fn run() {
             get_repo_visual_snapshot,
             add_project_and_ingest,
             load_project_snapshot,
+            delete_project_cache,
             check_project_fingerprint,
             ack_project_fingerprint,
             refresh_project_if_changed,

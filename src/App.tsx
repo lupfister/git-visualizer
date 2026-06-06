@@ -1530,6 +1530,9 @@ function App() {
   function removeProject(path: string) {
     const normalizedPath = normalizePath(path);
     if (!normalizedPath) return;
+    void invoke('delete_project_cache', { projectId: normalizedPath }).catch((error) => {
+      console.error('Failed to delete project cache:', error);
+    });
     setProjects((previous) => {
       const next = previous.filter((project) => project.path !== normalizedPath);
       try {
@@ -1553,6 +1556,11 @@ function App() {
       return next;
     });
     userDirtyNodePositionsRef.current.delete(normalizedPath);
+    delete projectSnapshotSignatureRef.current[normalizedPath];
+    delete projectFingerprintRef.current[normalizedPath];
+    delete projectHeadStateRef.current[normalizedPath];
+    delete projectQuickStateRef.current[normalizedPath];
+    delete projectSyncPeekRef.current[normalizedPath];
     if (repoPath === normalizedPath) {
       const nextPath = projects.find((project) => project.path !== normalizedPath)?.path ?? null;
       if (nextPath) {
