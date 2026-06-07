@@ -444,7 +444,7 @@ function App() {
   /** False while panning and for {@link MAP_REPO_REFRESH_SETTLE_MS} after pan stops. */
   const canApplyRepoRefreshRef = useRef(true);
   const mapRefreshSettleTimeoutRef = useRef<number | null>(null);
-  const runRepoRefreshRef = useRef<((reason?: 'graph' | 'local' | 'timer' | 'initial' | 'quick' | 'focus') => Promise<void>) | null>(null);
+  const runRepoRefreshRef = useRef<((reason?: 'graph' | 'local' | 'timer' | 'initial' | 'quick' | 'focus' | 'clean-detected') => Promise<void>) | null>(null);
   const reconcileInFlightRef = useRef(false);
   const pendingRefreshAfterInteractionRef = useRef(false);
   const reloadRepoSnapshotInFlightRef = useRef(false);
@@ -4333,6 +4333,9 @@ function App() {
     };
 
     runRepoRefreshRef.current = (reason = 'timer') => {
+      if (reason === 'clean-detected') {
+        return runAuthoritativeRepoSync('watch', { forceSnapshot: true });
+      }
       if (reason === 'graph' || reason === 'local' || reason === 'quick') {
         return runAuthoritativeRepoSync('watch');
       }
@@ -5820,6 +5823,10 @@ function App() {
     worktreeSessions,
     isPaused: () => repoMutationInFlightRef.current,
     enabled: Boolean(repoPath),
+    onWorktreeCleanStateDetected: (worktreePath) => {
+      console.log(`[ChangeDetection] Worktree clean state detected via draft messages probe for path: ${worktreePath}. Refreshing...`);
+      runRepoRefreshRef.current?.('clean-detected');
+    },
   });
 
   getPreparedCommitMessageRef.current = getPreparedCommitMessage;
