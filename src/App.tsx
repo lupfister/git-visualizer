@@ -85,6 +85,8 @@ import {
   getActiveProjectPreviewTargets,
   startProjectPreview,
   stopProjectPreview,
+  getRepoWatcherEpochs,
+  getRepoFastSignature,
   type PreviewTarget,
   type ProjectPreviewConfig,
 } from '../lib/git';
@@ -422,6 +424,9 @@ function App() {
   /** Raw `check_project_fingerprint` string last applied to UI (avoids re-sync loops while DB lags). */
   const lastSyncedRepoFingerprintRef = useRef<Record<string, string>>({});
   const lastFingerprintCheckAtRef = useRef<Record<string, number>>({});
+  const lastSyncedFastSignatureRef = useRef<Record<string, string>>({});
+  const lastSyncedGitEpochRef = useRef<Record<string, number>>({});
+  const lastSyncedWorktreeEpochRef = useRef<Record<string, number>>({});
   const gitActivityEpochRef = useRef(0);
   const lastHandledGitActivityEpochRef = useRef(0);
   const lastFullGraphRefreshAtRef = useRef<Record<string, number>>({});
@@ -4391,6 +4396,54 @@ function App() {
       }
     };
 
+    const performCheapChangeDetectionCheck = async (force?: boolean): Promise<{
+      changed: boolean;
+      gitChanged: boolean;
+      worktreeChanged: boolean;
+    }> => {
+      const normalizedPath = normalizePath(repoPath);
+      if (!normalizedPath) return { changed: false, gitChanged: false, worktreeChanged: false };
+
+      const startTime = performance.now();
+      try {
+        const epochs = await getRepoWatcherEpochs(repoPath);
+        const sig = await getRepoFastSignature(repoPath);
+
+        const lastGitEpoch = lastSyncedGitEpochRef.current[normalizedPath] ?? 0;
+        const lastWorktreeEpoch = lastSyncedWorktreeEpochRef.current[normalizedPath] ?? 0;
+        const lastSig = lastSyncedFastSignatureRef.current[normalizedPath] ?? '';
+
+        const gitEpochChanged = epochs.gitEpoch !== lastGitEpoch;
+        const worktreeEpochChanged = epochs.worktreeEpoch !== lastWorktreeEpoch;
+        const sigChanged = sig !== lastSig;
+
+        const gitChanged = gitEpochChanged || sigChanged || !!force;
+        const worktreeChanged = worktreeEpochChanged || !!force;
+        const changed = gitChanged || worktreeChanged;
+
+        const duration = (performance.now() - startTime).toFixed(2);
+        
+        if (changed || !!force) {
+          console.log(
+            `[ChangeDetection] Detected change in ${repoPath} (${duration}ms):`,
+            { gitEpochChanged, worktreeEpochChanged, sigChanged, force }
+          );
+        } else {
+          console.debug(`[ChangeDetection] Check completed in ${duration}ms: no change`);
+        }
+
+        // Cache the current values
+        lastSyncedGitEpochRef.current[normalizedPath] = epochs.gitEpoch;
+        lastSyncedWorktreeEpochRef.current[normalizedPath] = epochs.worktreeEpoch;
+        lastSyncedFastSignatureRef.current[normalizedPath] = sig;
+
+        return { changed, gitChanged, worktreeChanged };
+      } catch (err) {
+        console.warn(`[ChangeDetection] Cheap check failed in ${(performance.now() - startTime).toFixed(2)}ms:`, err);
+        return { changed: true, gitChanged: true, worktreeChanged: true };
+      }
+    };
+
     const runAuthoritativeRepoSync = async (
       reason: 'local' | 'remote' | 'full' | 'watch',
       options?: { fetchRemote?: boolean; forceSnapshot?: boolean },
@@ -4411,23 +4464,60 @@ function App() {
         if (remoteChanged || isStaleRepoRefresh()) return;
       }
 
+      // 1. Perform cheap filesystem change detection check first
+      const checkResult = await performCheapChangeDetectionCheck(options?.forceSnapshot);
+      if (!checkResult.changed) {
+        console.log(`[ChangeDetection] No changes detected for ${repoPath}. Skipping sync.`);
+        markGitActivityHandled();
+        pendingRefreshAfterInteractionRef.current = false;
+        return;
+      }
+
+      // 2. Something changed. Fetch sync peek to inspect details
       const peek = await fetchRepoSyncPeek(repoPath);
       if (isStaleRepoRefresh()) return;
-      if (
-        reason === 'local'
-        || options?.forceSnapshot
-        || !peek
-        || isActiveUiBehindPeek(repoPath, peek)
-      ) {
+
+      if (!peek) {
         await reloadRepoSnapshotFromGit(repoPath, peek);
         return;
       }
 
-      if (peek.signature) {
-        noteSyncedRepoPeek(repoPath, peek.signature);
+      // 3. Granular feelers: check worktree modifications first if refs/heads haven't changed
+      if (!checkResult.gitChanged && checkResult.worktreeChanged) {
+        console.log(`[ChangeDetection] Running quick dirty state feeler...`);
+        const dirtySynced = await tryQuickStateDirtySync(repoPath, peek);
+        if (dirtySynced && !isActiveUiBehindPeek(repoPath, peek)) {
+          console.log(`[ChangeDetection] Quick dirty state update succeeded.`);
+          if (peek.signature) {
+            noteSyncedRepoPeek(repoPath, peek.signature);
+          }
+          noteGitActivityHandledIfCaughtUp(repoPath, peek);
+          pendingRefreshAfterInteractionRef.current = false;
+          return;
+        }
       }
-      noteGitActivityHandledIfCaughtUp(repoPath, peek);
-      pendingRefreshAfterInteractionRef.current = false;
+
+      // 4. Try incremental background sync if references or HEAD changed
+      if (checkResult.gitChanged) {
+        console.log(`[ChangeDetection] Running incremental background sync feeler...`);
+        const incrementallyPatched = await tryIncrementalBackgroundSync(repoPath, {
+          force: reason === 'local' || options?.forceSnapshot,
+          peek,
+        });
+        if (incrementallyPatched && !isActiveUiBehindPeek(repoPath, peek)) {
+          console.log(`[ChangeDetection] Incremental background sync succeeded.`);
+          if (peek.signature) {
+            noteSyncedRepoPeek(repoPath, peek.signature);
+          }
+          noteGitActivityHandledIfCaughtUp(repoPath, peek);
+          pendingRefreshAfterInteractionRef.current = false;
+          return;
+        }
+      }
+
+      // 5. Fallback: Full reload from git snapshot
+      console.log(`[ChangeDetection] Falling back to full repository reload.`);
+      await reloadRepoSnapshotFromGit(repoPath, peek);
     };
 
     runRepoRefreshRef.current = (reason = 'timer') => {
@@ -4540,6 +4630,9 @@ function App() {
     setRemoteDefaultTipMetadata(null);
     setRemoteDefaultTipParentSha(null);
     setIsRemoteTipHydrated(false);
+    lastSyncedFastSignatureRef.current = {};
+    lastSyncedGitEpochRef.current = {};
+    lastSyncedWorktreeEpochRef.current = {};
   }, [repoPath]);
 
   useEffect(() => {

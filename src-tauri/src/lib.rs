@@ -135,6 +135,34 @@ struct PreviewProcess {
     preview_mode: String,
 }
 
+struct RepoWatcherActivity {
+    last_git_event_epoch: AtomicU64,
+    last_worktree_event_epoch: AtomicU64,
+}
+
+static WATCHER_ACTIVITY: OnceLock<Mutex<HashMap<String, std::sync::Arc<RepoWatcherActivity>>>> = OnceLock::new();
+
+fn increment_watcher_activity(repo_path: &str, is_git: bool) {
+    let normalized = normalize_repo_path_id(repo_path);
+    let mut map = WATCHER_ACTIVITY
+        .get_or_init(|| Mutex::new(HashMap::new()))
+        .lock()
+        .unwrap();
+    let entry = map.entry(normalized.clone()).or_insert_with(|| {
+        std::sync::Arc::new(RepoWatcherActivity {
+            last_git_event_epoch: AtomicU64::new(0),
+            last_worktree_event_epoch: AtomicU64::new(0),
+        })
+    });
+    if is_git {
+        let val = entry.last_git_event_epoch.fetch_add(1, Ordering::Relaxed) + 1;
+        println!("[WatcherActivity] Repo {} ({}) git_epoch bumped to {}", repo_path, normalized, val);
+    } else {
+        let val = entry.last_worktree_event_epoch.fetch_add(1, Ordering::Relaxed) + 1;
+        println!("[WatcherActivity] Repo {} ({}) worktree_epoch bumped to {}", repo_path, normalized, val);
+    }
+}
+
 static WATCHER_STATE: OnceLock<Mutex<HashMap<String, notify::RecommendedWatcher>>> =
     OnceLock::new();
 static PREVIEW_PROCESS_STATE: OnceLock<Mutex<HashMap<String, PreviewProcess>>> = OnceLock::new();
@@ -1611,6 +1639,7 @@ fn watch_repo(repo_path: String, app: tauri::AppHandle) -> Result<(), String> {
         let prev_ms = last_worktree_emit_for_debounce.load(Ordering::Relaxed);
         if now_ms.saturating_sub(prev_ms) >= GIT_ACTIVITY_GRAPH_MIN_EMIT_MS {
             last_worktree_emit_for_debounce.store(now_ms, Ordering::Relaxed);
+            increment_watcher_activity(&repo_path_for_worktree_debounce, false);
             let _ = app_for_worktree_debounce.emit(
                 "git-activity",
                 GitActivityEventPayload {
@@ -1688,6 +1717,7 @@ fn watch_repo(repo_path: String, app: tauri::AppHandle) -> Result<(), String> {
                     let prev_ms = last_local_emit_ms.load(Ordering::Relaxed);
                     if now_ms.saturating_sub(prev_ms) >= GIT_ACTIVITY_GRAPH_MIN_EMIT_MS {
                         last_local_emit_ms.store(now_ms, Ordering::Relaxed);
+                        increment_watcher_activity(&repo_path_for_events, true);
                         let _ = app.emit(
                             "git-activity",
                             GitActivityEventPayload {
@@ -1703,6 +1733,7 @@ fn watch_repo(repo_path: String, app: tauri::AppHandle) -> Result<(), String> {
                     let prev_ms = last_graph_emit_ms.load(Ordering::Relaxed);
                     if now_ms.saturating_sub(prev_ms) >= GIT_ACTIVITY_GRAPH_MIN_EMIT_MS {
                         last_graph_emit_ms.store(now_ms, Ordering::Relaxed);
+                        increment_watcher_activity(&repo_path_for_events, true);
                         let _ = app.emit(
                             "git-activity",
                             GitActivityEventPayload {
@@ -2339,6 +2370,116 @@ fn compute_repo_sync_peek(
     repo_git_gate::with_repo_git_lock(repo_path, || {
         compute_repo_sync_peek_inner(repo_path, unchanged_against)
     })
+}
+
+#[derive(serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+struct RepoWatcherActivityEpochs {
+    git_epoch: u64,
+    worktree_epoch: u64,
+}
+
+#[tauri::command(rename_all = "camelCase")]
+fn get_repo_watcher_epochs(repo_path: String) -> Result<RepoWatcherActivityEpochs, String> {
+    let normalized = normalize_repo_path_id(&repo_path);
+    let map = WATCHER_ACTIVITY
+        .get_or_init(|| Mutex::new(HashMap::new()))
+        .lock()
+        .unwrap();
+    if let Some(entry) = map.get(&normalized) {
+        Ok(RepoWatcherActivityEpochs {
+            git_epoch: entry.last_git_event_epoch.load(Ordering::Relaxed),
+            worktree_epoch: entry.last_worktree_event_epoch.load(Ordering::Relaxed),
+        })
+    } else {
+        Ok(RepoWatcherActivityEpochs {
+            git_epoch: 0,
+            worktree_epoch: 0,
+        })
+    }
+}
+
+fn compute_fast_fs_signature(repo_path: &str) -> String {
+    let repo_root = Path::new(repo_path);
+    let git_dir_hint = repo_root.join(".git");
+    let git_dir = if git_dir_hint.is_file() {
+        if let Ok(content) = std::fs::read_to_string(&git_dir_hint) {
+            if let Some(path_str) = content.strip_prefix("gitdir: ") {
+                let trimmed = path_str.trim();
+                let p = PathBuf::from(trimmed);
+                if p.is_absolute() {
+                    p
+                } else {
+                    repo_root.join(p)
+                }
+            } else {
+                git_dir_hint
+            }
+        } else {
+            git_dir_hint
+        }
+    } else {
+        git_dir_hint
+    };
+
+    if !git_dir.exists() {
+        return String::new();
+    }
+
+    let mut parts = Vec::new();
+
+    let check_file = |path: PathBuf, label: &str, parts: &mut Vec<String>| {
+        if let Ok(metadata) = std::fs::metadata(&path) {
+            if let Ok(modified) = metadata.modified() {
+                if let Ok(duration) = modified.duration_since(std::time::SystemTime::UNIX_EPOCH) {
+                    parts.push(format!("{}:{}:{}", label, duration.as_millis(), metadata.len()));
+                }
+            }
+        }
+    };
+
+    check_file(git_dir.join("HEAD"), "HEAD", &mut parts);
+    check_file(git_dir.join("index"), "index", &mut parts);
+    check_file(git_dir.join("packed-refs"), "packed-refs", &mut parts);
+    check_file(git_dir.join("refs/stash"), "stash", &mut parts);
+
+    let heads_dir = git_dir.join("refs/heads");
+    if heads_dir.is_dir() {
+        let mut entries = Vec::new();
+        let mut stack = vec![heads_dir];
+        while let Some(dir) = stack.pop() {
+            if let Ok(read_dir) = std::fs::read_dir(dir) {
+                for entry in read_dir.flatten() {
+                    let path = entry.path();
+                    if path.is_dir() {
+                        stack.push(path);
+                    } else if path.is_file() {
+                        if let Ok(metadata) = entry.metadata() {
+                            if let Ok(modified) = metadata.modified() {
+                                if let Ok(duration) = modified.duration_since(std::time::SystemTime::UNIX_EPOCH) {
+                                    let rel_path = path.to_string_lossy().to_string();
+                                    entries.push(format!("{}:{}:{}", rel_path, duration.as_millis(), metadata.len()));
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        entries.sort();
+        parts.extend(entries);
+    }
+
+    parts.join("|")
+}
+
+#[tauri::command(rename_all = "camelCase")]
+fn get_repo_fast_signature(repo_path: String) -> Result<String, String> {
+    let start = Instant::now();
+    let sig = compute_fast_fs_signature(&repo_path);
+    let elapsed = start.elapsed();
+    println!("[FastSignature] Check for {} took {:?}", repo_path, elapsed);
+    Ok(sig)
 }
 
 #[tauri::command(rename_all = "camelCase")]
@@ -7717,6 +7858,8 @@ pub fn run() {
             take_pending_open_repo,
             reveal_in_finder,
             watch_repo,
+            get_repo_watcher_epochs,
+            get_repo_fast_signature,
         ])
         .build(tauri::generate_context!())
         .expect("error building tauri application")

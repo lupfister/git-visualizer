@@ -115,3 +115,16 @@ export async function getActiveProjectPreviewTargets(repoPath: string): Promise<
 export async function stopProjectPreview(repoPath: string): Promise<void> {
   return invoke('stop_project_preview', { repoPath });
 }
+
+export interface RepoWatcherActivityEpochs {
+  gitEpoch: number;
+  worktreeEpoch: number;
+}
+
+export async function getRepoWatcherEpochs(repoPath: string): Promise<RepoWatcherActivityEpochs> {
+  return invoke('get_repo_watcher_epochs', { repoPath });
+}
+
+export async function getRepoFastSignature(repoPath: string): Promise<string> {
+  return invoke('get_repo_fast_signature', { repoPath });
+}
