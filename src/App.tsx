@@ -1,7 +1,7 @@
 import { useState, useEffect, useRef, useMemo, useCallback, startTransition, useDeferredValue } from 'react';
 import { flushSync } from 'react-dom';
 import type { SetStateAction } from 'react';
-import { invoke } from '@tauri-apps/api/core';
+import { invoke } from './timedInvoke';
 import { listen } from '@tauri-apps/api/event';
 import { getCurrentWindow } from '@tauri-apps/api/window';
 import { open } from '@tauri-apps/plugin-dialog';

@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { invoke } from '@tauri-apps/api/core';
+import { invoke } from './timedInvoke';
 import { normalizeRepoPathForCompare } from '../components/grid/mapGridUtils';
 import type { WorktreeSession } from '../lib/worktreeSessions';
 import {
