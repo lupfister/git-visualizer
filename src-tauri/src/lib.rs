@@ -2438,12 +2438,21 @@ async fn get_repo_change_token(repo_path: String) -> Result<String, String> {
             .map_err(|error| error.to_string())?;
         let refs = git::cli::run(path, &["for-each-ref", "--format=%(refname):%(objectname)", "refs/heads", "refs/remotes", "refs/stash"])
             .map_err(|error| error.to_string())?;
+        let key = normalize_repo_path_id(&repo_path);
+        let watcher_generation = {
+            let mut states = REPO_CHANGE_STATE
+                .get_or_init(|| Mutex::new(HashMap::new()))
+                .lock()
+                .expect("repo change state mutex poisoned");
+            states.entry(key).or_default().generation
+        };
         Ok(format!(
-            "{}@@{}@@{}@@{}",
+            "{}@@{}@@{}@@{}@@{}",
             head.trim(),
             refs.trim(),
             metadata_stamp(&git_dir.join("index")),
             metadata_stamp(path),
+            watcher_generation,
         ))
     })
     .await

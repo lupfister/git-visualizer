@@ -4565,6 +4565,18 @@ function App() {
       },
     });
 
+    let unlistenActivity: (() => void) | null = null;
+    listen<GitActivityEventPayload>('git-activity', (event) => {
+      if (isDisposed) return;
+      const changedPath = normalizePath(event.payload.repoPath);
+      if (!changedPath || !sameRepoPath(changedPath, repoPath)) return;
+      console.info('[repo-sync] active repo git-activity event received:', event.payload.kind);
+      void pollRepoChangeSignal();
+    }).then((fn) => {
+      if (isDisposed) fn();
+      else unlistenActivity = fn;
+    }).catch(console.error);
+
     repoSyncScheduler.start();
     repoSyncScheduler.kickVisibleCatchUp();
 
@@ -4572,6 +4584,7 @@ function App() {
       isDisposed = true;
       runRepoRefreshRef.current = null;
       repoSyncScheduler.dispose();
+      if (unlistenActivity) unlistenActivity();
       if (fullRefreshCoalesceId != null) window.clearTimeout(fullRefreshCoalesceId);
     };
   }, [repoPath]);
