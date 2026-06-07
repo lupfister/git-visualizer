@@ -290,8 +290,8 @@ export const useBranchGridLayoutFromRevision = (params: {
   if (resolved.model || asyncLayoutModel) {
     lastGoodModelRef.current = layoutModel;
     lastGoodStorageKeyRef.current = sharedGridLayoutCacheKey;
-    lastGoodGraphSignatureRef.current = layoutRevisionForView.graphLayoutSignature;
-    lastGoodRepoPathRef.current = layoutRevisionForView.repoPath;
+    lastGoodGraphSignatureRef.current = layoutRevisionForView.graphLayoutSignature ?? null;
+    lastGoodRepoPathRef.current = layoutRevisionForView.repoPath ?? null;
   } else if (sharedGridLayoutCacheKey !== lastGoodStorageKeyRef.current) {
     lastGoodStorageKeyRef.current = sharedGridLayoutCacheKey;
     lastServedComputeKeyRef.current = null;
