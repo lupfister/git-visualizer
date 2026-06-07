@@ -4,6 +4,7 @@ mod repo_git_gate;
 #[cfg(target_os = "macos")]
 mod macos_traffic_lights;
 mod opencode;
+mod terminal_ai_titles;
 mod terminal_host;
 
 pub fn run_terminal_host() -> Result<(), String> {
@@ -7998,6 +7999,7 @@ pub fn run() {
             _ => {}
         })
         .setup(|app| {
+            terminal_ai_titles::start_terminal_ai_title_loop();
             #[cfg(target_os = "macos")]
             {
                 app.set_activation_policy(tauri::ActivationPolicy::Regular);

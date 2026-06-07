@@ -12,20 +12,21 @@ use std::{
     path::{Path, PathBuf},
     process::{Command, Stdio},
     sync::{
-        atomic::{AtomicBool, AtomicU64, Ordering},
+        atomic::{AtomicU64, Ordering},
         Arc, Mutex,
     },
     thread,
     time::{Duration, Instant, SystemTime, UNIX_EPOCH},
 };
 
-use crate::opencode;
-
+pub(crate) const OUTPUT_TAIL_BYTES: usize = 3 * 1024;
+pub(crate) const OUTPUT_IDLE: Duration = Duration::from_secs(10);
+pub(crate) const AI_TITLE_TICK: Duration = Duration::from_secs(2);
+const OUTPUT_ACTIVE_WINDOW: Duration = Duration::from_millis(1200);
+const OUTPUT_SETTLE_AFTER: Duration = Duration::from_secs(2);
 const MAX_OUTPUT_BYTES: usize = 2 * 1024 * 1024;
-const OUTPUT_TAIL_BYTES: usize = 3 * 1024;
-const OUTPUT_IDLE: Duration = Duration::from_secs(10);
-const AI_TITLE_TICK: Duration = Duration::from_secs(2);
 const MIN_OUTPUT_ALPHA_CHARS: usize = 20;
+const TERMINAL_HOST_PROTOCOL: u32 = 2;
 static SESSION_COUNTER: AtomicU64 = AtomicU64::new(1);
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -48,6 +49,8 @@ pub struct TerminalSession {
     pub ai_label_fingerprint: Option<String>,
     #[serde(default)]
     pub ai_label_at: Option<u64>,
+    #[serde(default)]
+    pub output_active: bool,
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -59,6 +62,12 @@ enum HostRequest {
     Write { id: String, data: String },
     Resize { id: String, cols: u16, rows: u16 },
     SetLabel { id: String, label: String },
+    SetAiLabel {
+        id: String,
+        ai_label: String,
+        ai_label_fingerprint: String,
+        ai_label_at: u64,
+    },
     Terminate { id: String },
 }
 
@@ -94,14 +103,20 @@ impl HostResponse {
     }
 }
 
+struct OutputActivityState {
+    last_fingerprint: String,
+    last_fingerprint_change_at: Instant,
+    settled: bool,
+    last_active_at: Option<Instant>,
+}
+
 struct LiveSession {
     metadata: Mutex<TerminalSession>,
     master: Mutex<Box<dyn MasterPty + Send>>,
     writer: Mutex<Box<dyn Write + Send>>,
     child: Mutex<Box<dyn portable_pty::Child + Send + Sync>>,
     output: Arc<Mutex<Vec<u8>>>,
-    last_output_change_at: Arc<Mutex<Instant>>,
-    ai_generation_in_flight: AtomicBool,
+    output_activity: Mutex<OutputActivityState>,
 }
 
 type Sessions = Arc<Mutex<HashMap<String, Arc<LiveSession>>>>;
@@ -132,6 +147,69 @@ fn persist_metadata(sessions: &Sessions) {
     if let Ok(raw) = serde_json::to_vec_pretty(&values) {
         let _ = fs::write(path, raw);
     }
+}
+
+fn load_persisted_metadata() -> Vec<TerminalSession> {
+    let Ok(path) = metadata_path() else {
+        return Vec::new();
+    };
+    let Ok(raw) = fs::read(&path) else {
+        return Vec::new();
+    };
+    serde_json::from_slice(&raw).unwrap_or_default()
+}
+
+fn sync_session_counter_from(metadata: &[TerminalSession]) {
+    for session in metadata {
+        let Some(counter) = session
+            .id
+            .rsplit('-')
+            .next()
+            .and_then(|value| value.parse::<u64>().ok())
+        else {
+            continue;
+        };
+        SESSION_COUNTER.fetch_max(counter.saturating_add(1), Ordering::Relaxed);
+    }
+}
+
+fn restore_persisted_sessions(sessions: &Sessions) {
+    let persisted = load_persisted_metadata();
+    if persisted.is_empty() {
+        return;
+    }
+    sync_session_counter_from(&persisted);
+    for mut metadata in persisted {
+        if metadata.status != "running" || metadata.id.is_empty() {
+            continue;
+        }
+        if metadata.kind != "shell" {
+            continue;
+        }
+        if !PathBuf::from(&metadata.worktree_path).exists() {
+            continue;
+        }
+        metadata.status = "running".to_string();
+        metadata.output_active = false;
+        let _ = spawn_session(metadata, sessions);
+    }
+}
+
+fn exit_host_if_empty(sessions: &Sessions) {
+    let is_empty = sessions
+        .lock()
+        .ok()
+        .is_some_and(|guard| guard.is_empty());
+    if !is_empty {
+        return;
+    }
+    if let Ok(path) = metadata_path() {
+        let _ = fs::write(path, b"[]");
+    }
+    if let Ok(socket) = socket_path() {
+        let _ = fs::remove_file(&socket);
+    }
+    std::process::exit(0);
 }
 
 fn generate_session_id() -> String {
@@ -182,9 +260,7 @@ fn spawn_session(
         .take_writer()
         .map_err(|error| format!("Failed to attach terminal input: {error}"))?;
     let output = Arc::new(Mutex::new(Vec::<u8>::new()));
-    let last_output_change_at = Arc::new(Mutex::new(Instant::now()));
     let output_for_reader = output.clone();
-    let last_output_change_at_for_reader = last_output_change_at.clone();
     thread::spawn(move || {
         let mut buffer = [0_u8; 8192];
         while let Ok(count) = reader.read(&mut buffer) {
@@ -199,10 +275,6 @@ fn spawn_session(
                 let remove = accumulated.len() - MAX_OUTPUT_BYTES;
                 accumulated.drain(..remove);
             }
-            drop(accumulated);
-            if let Ok(mut changed_at) = last_output_change_at_for_reader.lock() {
-                *changed_at = Instant::now();
-            }
         }
     });
 
@@ -213,8 +285,12 @@ fn spawn_session(
         writer: Mutex::new(writer),
         child: Mutex::new(child),
         output,
-        last_output_change_at,
-        ai_generation_in_flight: AtomicBool::new(false),
+        output_activity: Mutex::new(OutputActivityState {
+            last_fingerprint: String::new(),
+            last_fingerprint_change_at: Instant::now(),
+            settled: false,
+            last_active_at: None,
+        }),
     });
     sessions
         .lock()
@@ -262,50 +338,13 @@ fn strip_ansi(input: &str) -> String {
     result
 }
 
-fn extract_agent_task(output_bytes: &[u8]) -> Option<String> {
-    let start = output_bytes.len().saturating_sub(3000);
-    let tail = &output_bytes[start..];
-    let raw = String::from_utf8_lossy(tail);
-    let clean = strip_ansi(&raw);
-    let skip_chars: &[char] = &[
-        '─', '━', '═', '╔', '╗', '╚', '╝', '╠', '╣', '╦', '╩', '╪',
-        '│', '┼', '┤', '├', '┬', '┴', '┐', '└', '┘', '┌', '|', '+', '=', '-', '·', '•', '▶', '●',
-    ];
-    let candidate = clean
-        .lines()
-        .rev()
-        .map(str::trim)
-        .filter(|line| {
-            if line.len() < 4 {
-                return false;
-            }
-            let alpha_count = line.chars().filter(|c| c.is_alphabetic()).count();
-            if alpha_count < 3 {
-                return false;
-            }
-            // Skip shell prompts and box-drawing lines
-            let first = line.chars().next().unwrap_or(' ');
-            !skip_chars.contains(&first)
-                && !matches!(first, '$' | '%' | '>' | '#')
-                && !line.starts_with("╭")
-                && !line.starts_with("╰")
-        })
-        .find(|line| line.len() >= 4)?;
-    let text = if candidate.len() > 55 {
-        format!("{}…", candidate.chars().take(54).collect::<String>())
-    } else {
-        candidate.to_string()
-    };
-    Some(text)
-}
-
-fn extract_output_tail_for_ai(output_bytes: &[u8]) -> String {
+pub fn extract_output_tail_for_ai(output_bytes: &[u8]) -> String {
     let start = output_bytes.len().saturating_sub(OUTPUT_TAIL_BYTES);
     let raw = String::from_utf8_lossy(&output_bytes[start..]);
-    opencode::redact_terminal_secrets(&strip_ansi(&raw))
+    crate::opencode::redact_terminal_secrets(&strip_ansi(&raw))
 }
 
-pub(crate) fn compute_output_fingerprint(output_bytes: &[u8], process_hint: Option<&str>) -> String {
+pub fn compute_output_fingerprint(output_bytes: &[u8], process_hint: Option<&str>) -> String {
     let tail = extract_output_tail_for_ai(output_bytes);
     let mut hasher = DefaultHasher::new();
     tail.hash(&mut hasher);
@@ -315,7 +354,7 @@ pub(crate) fn compute_output_fingerprint(output_bytes: &[u8], process_hint: Opti
     format!("{:x}", hasher.finish())
 }
 
-fn output_has_meaningful_content(output_bytes: &[u8]) -> bool {
+pub fn output_has_meaningful_content(output_bytes: &[u8]) -> bool {
     extract_output_tail_for_ai(output_bytes)
         .chars()
         .filter(|character| character.is_alphabetic())
@@ -323,24 +362,21 @@ fn output_has_meaningful_content(output_bytes: &[u8]) -> bool {
         >= MIN_OUTPUT_ALPHA_CHARS
 }
 
-fn heuristic_label(
-    process_info: Option<(usize, String)>,
-    output_bytes: &[u8],
-) -> Option<String> {
-    let (priority, name) = process_info?;
-    if priority >= 100 {
-        extract_agent_task(output_bytes)
-            .map(|task| format!("{name} · {task}"))
-            .or(Some(name))
-    } else {
-        Some(name)
+fn terminal_number_from_label(label: &str) -> Option<u32> {
+    label.strip_prefix("Terminal ")?.trim().parse().ok()
+}
+
+fn interim_display_label(process_name: Option<&str>, stored_label: &str) -> String {
+    match (process_name, terminal_number_from_label(stored_label)) {
+        (Some(name), Some(number)) => format!("{name} {number}"),
+        (Some(name), None) => name.to_string(),
+        _ => stored_label.to_string(),
     }
 }
 
 fn merge_display_label(
     metadata: &TerminalSession,
     process_name: Option<String>,
-    heuristic: Option<String>,
     current_fingerprint: &str,
 ) -> String {
     let ai_fresh = metadata.ai_label_fingerprint.as_deref() == Some(current_fingerprint)
@@ -350,14 +386,10 @@ fn merge_display_label(
             .is_some_and(|label| !label.trim().is_empty());
 
     if ai_fresh {
-        let ai = metadata.ai_label.as_ref().expect("fresh ai label");
-        return match process_name {
-            Some(process) => format!("{process} · {ai}"),
-            None => ai.clone(),
-        };
+        return metadata.ai_label.as_ref().expect("fresh ai label").clone();
     }
 
-    heuristic.unwrap_or_else(|| metadata.label.clone())
+    interim_display_label(process_name.as_deref(), &metadata.label)
 }
 
 fn session_process_info(session: &Arc<LiveSession>, exited: bool) -> Option<(usize, String)> {
@@ -372,99 +404,36 @@ fn session_process_info(session: &Arc<LiveSession>, exited: bool) -> Option<(usi
     detect_foreground_command(process_id)
 }
 
-fn check_ai_title_generation(sessions: &Sessions) {
-    let candidates: Vec<Arc<LiveSession>> = sessions
-        .lock()
-        .ok()
-        .map(|guard| guard.values().cloned().collect())
-        .unwrap_or_default();
-
-    for session in candidates {
-        maybe_generate_ai_title(session, sessions);
-    }
+fn output_content_fingerprint(output_bytes: &[u8]) -> String {
+    compute_output_fingerprint(output_bytes, None)
 }
 
-fn maybe_generate_ai_title(session: Arc<LiveSession>, sessions: &Sessions) {
-    let snapshot = session.metadata.lock().ok().map(|metadata| {
-        (
-            metadata.kind.clone(),
-            metadata.status.clone(),
-            metadata.worktree_path.clone(),
-            metadata.ai_label.clone(),
-            metadata.ai_label_fingerprint.clone(),
-        )
-    });
-    let Some((kind, status, worktree_path, previous_title, stored_fingerprint)) = snapshot else {
-        return;
+fn refresh_output_active(session: &Arc<LiveSession>, output_bytes: &[u8], exited: bool) -> bool {
+    if exited {
+        return false;
+    }
+
+    let fingerprint = output_content_fingerprint(output_bytes);
+    let Ok(mut activity) = session.output_activity.lock() else {
+        return false;
     };
-    if kind != "shell" || status == "exited" {
-        return;
-    }
 
-    if session
-        .ai_generation_in_flight
-        .compare_exchange(false, true, Ordering::AcqRel, Ordering::Relaxed)
-        .is_err()
-    {
-        return;
-    }
-
-    let idle_ok = session
-        .last_output_change_at
-        .lock()
-        .ok()
-        .is_some_and(|changed_at| changed_at.elapsed() >= OUTPUT_IDLE);
-    if !idle_ok {
-        session.ai_generation_in_flight.store(false, Ordering::Relaxed);
-        return;
-    }
-
-    let output_bytes = session
-        .output
-        .lock()
-        .ok()
-        .map(|buffer| buffer.clone())
-        .unwrap_or_default();
-    if !output_has_meaningful_content(&output_bytes) {
-        session.ai_generation_in_flight.store(false, Ordering::Relaxed);
-        return;
-    }
-
-    let process_name = session_process_info(&session, false).map(|(_, name)| name);
-    let fingerprint = compute_output_fingerprint(&output_bytes, process_name.as_deref());
-    if stored_fingerprint.as_deref() == Some(fingerprint.as_str()) {
-        session.ai_generation_in_flight.store(false, Ordering::Relaxed);
-        return;
-    }
-
-    let summary = extract_output_tail_for_ai(&output_bytes);
-    let sessions = sessions.clone();
-    thread::spawn(move || {
-        let result = opencode::generate_terminal_title(
-            Path::new(&worktree_path),
-            &summary,
-            process_name.as_deref(),
-            previous_title.as_deref(),
-        );
-
-        if let Ok(title) = result {
-            if let Ok(mut metadata) = session.metadata.lock() {
-                metadata.ai_label = Some(title);
-                metadata.ai_label_fingerprint = Some(fingerprint.clone());
-                metadata.ai_label_at = Some(
-                    SystemTime::now()
-                        .duration_since(UNIX_EPOCH)
-                        .unwrap_or_default()
-                        .as_millis() as u64,
-                );
-            }
-            persist_metadata(&sessions);
+    if fingerprint != activity.last_fingerprint {
+        activity.last_fingerprint = fingerprint;
+        activity.last_fingerprint_change_at = Instant::now();
+        if activity.settled {
+            activity.last_active_at = Some(Instant::now());
         }
+    } else if !activity.settled
+        && activity.last_fingerprint_change_at.elapsed() >= OUTPUT_SETTLE_AFTER
+    {
+        activity.settled = true;
+    }
 
-        session
-            .ai_generation_in_flight
-            .store(false, Ordering::Relaxed);
-    });
+    activity.settled
+        && activity
+            .last_active_at
+            .is_some_and(|changed_at| changed_at.elapsed() < OUTPUT_ACTIVE_WINDOW)
 }
 
 fn refresh_status(session: &Arc<LiveSession>) -> TerminalSession {
@@ -492,11 +461,6 @@ fn refresh_status(session: &Arc<LiveSession>) -> TerminalSession {
         .unwrap_or_default();
     let process_info = session_process_info(session, exited);
     let process_name = process_info.as_ref().map(|(_, name)| name.clone());
-    let heuristic = if !exited && metadata.kind == "shell" {
-        heuristic_label(process_info, &output_bytes)
-    } else {
-        None
-    };
     let current_fingerprint =
         compute_output_fingerprint(&output_bytes, process_name.as_deref());
 
@@ -505,10 +469,10 @@ fn refresh_status(session: &Arc<LiveSession>) -> TerminalSession {
         response_metadata.label = merge_display_label(
             &metadata,
             process_name,
-            heuristic,
             &current_fingerprint,
         );
     }
+    response_metadata.output_active = refresh_output_active(session, &output_bytes, exited);
     response_metadata
 }
 
@@ -698,6 +662,27 @@ fn handle_request(request: HostRequest, sessions: &Sessions) -> HostResponse {
             persist_metadata(sessions);
             HostResponse::ok()
         }
+        HostRequest::SetAiLabel {
+            id,
+            ai_label,
+            ai_label_fingerprint,
+            ai_label_at,
+        } => {
+            let session = sessions
+                .lock()
+                .ok()
+                .and_then(|values| values.get(&id).cloned());
+            let Some(session) = session else {
+                return HostResponse::error("Terminal session not found");
+            };
+            if let Ok(mut metadata) = session.metadata.lock() {
+                metadata.ai_label = Some(ai_label);
+                metadata.ai_label_fingerprint = Some(ai_label_fingerprint);
+                metadata.ai_label_at = Some(ai_label_at);
+            }
+            persist_metadata(sessions);
+            HostResponse::ok()
+        }
         HostRequest::Terminate { id } => {
             let session = sessions
                 .lock()
@@ -711,6 +696,7 @@ fn handle_request(request: HostRequest, sessions: &Sessions) -> HostResponse {
                 let _ = child.wait();
             }
             persist_metadata(sessions);
+            exit_host_if_empty(sessions);
             HostResponse::ok()
         }
     }
@@ -749,16 +735,44 @@ pub fn run_terminal_host() -> Result<(), String> {
     }
     let listener = UnixListener::bind(&socket)
         .map_err(|error| format!("Failed to bind terminal host: {error}"))?;
+    let protocol_path = root.join("protocol_version");
+    let _ = fs::write(&protocol_path, TERMINAL_HOST_PROTOCOL.to_string());
     let sessions: Sessions = Arc::new(Mutex::new(HashMap::new()));
-    let sessions_for_scheduler = sessions.clone();
-    thread::spawn(move || loop {
-        thread::sleep(AI_TITLE_TICK);
-        check_ai_title_generation(&sessions_for_scheduler);
-    });
+    restore_persisted_sessions(&sessions);
     for stream in listener.incoming().flatten() {
         let sessions = sessions.clone();
         thread::spawn(move || handle_connection(stream, sessions));
     }
+    Ok(())
+}
+
+fn augment_path_for_subprocess(command: &mut Command) {
+    if std::env::var_os("PATH").is_some() {
+        return;
+    }
+    if let Ok(output) = Command::new("zsh").args(["-lc", "echo -n $PATH"]).output() {
+        if output.status.success() {
+            command.env(
+                "PATH",
+                String::from_utf8_lossy(&output.stdout).trim().to_string(),
+            );
+        }
+    }
+}
+
+fn spawn_terminal_host_process(executable: &Path) -> Result<(), String> {
+    let mut command = Command::new(executable);
+    command
+        .arg("--terminal-host")
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null());
+    augment_path_for_subprocess(&mut command);
+    #[cfg(unix)]
+    command.process_group(0);
+    command
+        .spawn()
+        .map_err(|error| format!("Failed to start terminal host: {error}"))?;
     Ok(())
 }
 
@@ -769,17 +783,7 @@ fn send_request(request: HostRequest) -> Result<HostResponse, String> {
         Ok(stream) => stream,
         Err(_) => {
             let executable = std::env::current_exe().map_err(|error| error.to_string())?;
-            let mut command = Command::new(executable);
-            command
-                .arg("--terminal-host")
-                .stdin(Stdio::null())
-                .stdout(Stdio::null())
-                .stderr(Stdio::null());
-            #[cfg(unix)]
-            command.process_group(0);
-            command
-                .spawn()
-                .map_err(|error| format!("Failed to start terminal host: {error}"))?;
+            spawn_terminal_host_process(&executable)?;
             let mut connected = None;
             for _ in 0..40 {
                 thread::sleep(Duration::from_millis(50));
@@ -845,6 +849,24 @@ pub fn set_session_label(id: String, label: String) -> Result<(), String> {
     send_request(HostRequest::SetLabel { id, label }).map(|_| ())
 }
 
+pub fn set_session_ai_label(
+    id: String,
+    ai_label: String,
+    ai_label_fingerprint: String,
+) -> Result<(), String> {
+    let ai_label_at = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_millis() as u64;
+    send_request(HostRequest::SetAiLabel {
+        id,
+        ai_label,
+        ai_label_fingerprint,
+        ai_label_at,
+    })
+    .map(|_| ())
+}
+
 pub fn terminate_session(id: String) -> Result<(), String> {
     send_request(HostRequest::Terminate { id }).map(|_| ())
 }
@@ -872,6 +894,7 @@ mod tests {
                 ai_label: None,
                 ai_label_fingerprint: None,
                 ai_label_at: None,
+                output_active: false,
             },
             &sessions,
         )
@@ -951,14 +974,27 @@ mod tests {
             ai_label: Some("Run test suite".to_string()),
             ai_label_fingerprint: Some("abc123".to_string()),
             ai_label_at: Some(1),
+            output_active: false,
         };
         let merged = merge_display_label(
             &metadata,
-            Some("pnpm".to_string()),
-            Some("pnpm".to_string()),
+            Some("OpenCode".to_string()),
             "abc123",
         );
-        assert_eq!(merged, "pnpm · Run test suite");
+        assert_eq!(merged, "Run test suite");
+    }
+
+    #[test]
+    fn interim_display_label_uses_process_header_and_number() {
+        assert_eq!(
+            interim_display_label(Some("OpenCode"), "Terminal 1"),
+            "OpenCode 1",
+        );
+        assert_eq!(
+            interim_display_label(Some("pnpm"), "Terminal 2"),
+            "pnpm 2",
+        );
+        assert_eq!(interim_display_label(None, "Terminal 1"), "Terminal 1");
     }
 
     #[test]
@@ -978,13 +1014,13 @@ mod tests {
             ai_label: Some("Old task".to_string()),
             ai_label_fingerprint: Some("old".to_string()),
             ai_label_at: Some(1),
+            output_active: false,
         };
         let merged = merge_display_label(
             &metadata,
             Some("pnpm".to_string()),
-            Some("pnpm".to_string()),
             "new",
         );
-        assert_eq!(merged, "pnpm");
+        assert_eq!(merged, "pnpm 1");
     }
 }

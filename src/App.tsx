@@ -134,6 +134,7 @@ function terminalSessionsEqual(left: readonly TerminalSession[], right: readonly
       && session.cols === candidate.cols
       && session.rows === candidate.rows
       && session.status === candidate.status
+      && (session.outputActive ?? false) === (candidate.outputActive ?? false)
       && (session.targetId ?? null) === (candidate.targetId ?? null)
       && (session.targetKind ?? null) === (candidate.targetKind ?? null);
   });

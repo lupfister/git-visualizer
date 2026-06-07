@@ -67,6 +67,8 @@ export interface TerminalSession {
   aiLabel?: string | null;
   aiLabelFingerprint?: string | null;
   aiLabelAt?: number | null;
+  /** True while the PTY is actively emitting output (not idle at prompt). */
+  outputActive?: boolean;
 }
 
 export interface Commit {
