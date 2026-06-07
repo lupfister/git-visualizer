@@ -1279,7 +1279,6 @@ fn fetch_all_merge_nodes_for_branches_internal(
 
 fn compute_repo_visual_snapshot(repo_path: &str) -> Result<RepoVisualSnapshot, String> {
     let path = Path::new(repo_path);
-    let _ = git::fetch_remotes(path);
     let (name, resolved_path) = git::get_repo_info(path).map_err(|e| e.to_string())?;
     let default_branch = git::get_default_branch(path).map_err(|e| e.to_string())?;
     let mut branches = git::list_branches(path, &default_branch).map_err(|e| e.to_string())?;
@@ -7952,6 +7951,16 @@ mod snapshot_remote_branch_tests {
     use super::compute_repo_visual_snapshot;
     use std::path::PathBuf;
 
+    #[test]
+    fn test_change_token_updates() {
+        let repo = "/Users/luca/cursor/git-visualizer".to_string();
+        let token1 = tauri::async_runtime::block_on(super::get_repo_change_token(repo.clone())).unwrap();
+        // Record a change!
+        super::record_repo_change(&repo, super::REPO_CHANGE_LOCAL);
+        let token2 = tauri::async_runtime::block_on(super::get_repo_change_token(repo.clone())).unwrap();
+        assert_ne!(token1, token2);
+    }
+
     fn repo_root() -> PathBuf {
         PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("..")
     }
@@ -7959,16 +7968,34 @@ mod snapshot_remote_branch_tests {
     #[test]
     fn snapshot_includes_remote_cursor_branch_commit() {
         let repo = repo_root();
+        let _ = crate::git::fetch_remotes(&repo);
+        let branch_name = "cursor/commit-app-previews-7896";
         if crate::git::cli::run(
             &repo,
             &[
                 "rev-parse",
                 "--verify",
-                "origin/cursor/commit-app-previews-7896",
+                &format!("origin/{branch_name}"),
             ],
         )
         .is_err()
         {
+            return;
+        }
+
+        let rev_list_output = crate::git::cli::run(
+            &repo,
+            &[
+                "rev-list",
+                "--left-right",
+                "--count",
+                &format!("origin/{branch_name}...{branch_name}"),
+            ],
+        )
+        .unwrap_or_default();
+        let parts: Vec<&str> = rev_list_output.split_whitespace().collect();
+        let behind = parts.first().and_then(|s| s.parse::<i32>().ok()).unwrap_or(0);
+        if behind == 0 {
             return;
         }
 

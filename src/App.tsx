@@ -3562,6 +3562,15 @@ function App() {
       redrawRepoGraph(path);
       void syncCheckedOutRefFromQuickGitState(path);
     }
+    if (normalizedPath) {
+      void invoke<string>('get_repo_change_token', { repoPath: normalizedPath })
+        .then((token) => {
+          if (sameRepoPath(currentRepoPathRef.current, normalizedPath)) {
+            appliedRepoChangeTokenRef.current[normalizedPath] = token;
+          }
+        })
+        .catch((err) => console.warn('[repo-sync] failed to fetch change token after apply', err));
+    }
     return true;
   }
 
@@ -4451,12 +4460,12 @@ function App() {
         console.warn('[repo-sync] tick skipped: missing repo path');
         return;
       }
+      if (liveFingerprintCheckInFlightRef.current) {
+        console.debug('[repo-sync] tick skipped: check already in flight');
+        return;
+      }
       console.debug('[repo-sync] tick', { repoPath: normalizedPath, at: new Date().toISOString() });
       try {
-        if (liveFingerprintCheckInFlightRef.current) {
-          console.warn('[repo-sync] replacing stalled fingerprint check');
-          liveFingerprintCheckInFlightRef.current = false;
-        }
         liveFingerprintCheckInFlightRef.current = true;
         const withTimeout = async <T,>(promise: Promise<T>, label: string, timeoutMs = 8_000): Promise<T> => {
           let timeoutId: number | null = null;
