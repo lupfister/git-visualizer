@@ -159,6 +159,7 @@ export const useBranchGridLayoutFromRevision = (params: {
   const lastGoodModelRef = useRef<BranchGridLayoutModel>(EMPTY_LAYOUT_MODEL);
   const lastGoodStorageKeyRef = useRef<string | null>(null);
   const lastGoodGraphSignatureRef = useRef<string | null>(null);
+  const lastGoodRepoPathRef = useRef<string | null>(null);
   const lastServedComputeKeyRef = useRef<string | null>(null);
   const [asyncLayout, setAsyncLayout] = useState<{
     computeKey: string | null;
@@ -272,13 +273,15 @@ export const useBranchGridLayoutFromRevision = (params: {
   }, [layoutComputeKey, resolved.source, layoutInput, immediateLayoutModel]);
 
   const asyncLayoutModel = asyncLayout?.computeKey === layoutComputeKey ? asyncLayout.model : null;
+  const isSameRepo =
+    layoutRevisionForView.repoPath &&
+    lastGoodRepoPathRef.current === layoutRevisionForView.repoPath;
   const layoutModel =
     asyncLayoutModel
     ?? immediateLayoutModel
     ?? resolved.model
     ?? (
-      sharedGridLayoutCacheKey
-      && lastGoodStorageKeyRef.current === sharedGridLayoutCacheKey
+      isSameRepo
       && lastGoodModelRef.current.allCommits.length > 0
         ? lastGoodModelRef.current
         : EMPTY_LAYOUT_MODEL
@@ -288,6 +291,7 @@ export const useBranchGridLayoutFromRevision = (params: {
     lastGoodModelRef.current = layoutModel;
     lastGoodStorageKeyRef.current = sharedGridLayoutCacheKey;
     lastGoodGraphSignatureRef.current = layoutRevisionForView.graphLayoutSignature;
+    lastGoodRepoPathRef.current = layoutRevisionForView.repoPath;
   } else if (sharedGridLayoutCacheKey !== lastGoodStorageKeyRef.current) {
     lastGoodStorageKeyRef.current = sharedGridLayoutCacheKey;
     lastServedComputeKeyRef.current = null;

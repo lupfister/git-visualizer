@@ -753,15 +753,15 @@ fn normalize_repo_path_id(repo_path: &str) -> String {
 }
 
 #[derive(Clone, Debug)]
-struct RepoChangeProbe {
-    signature: String,
-    branch_head_digest: String,
-    head_sha: String,
-    has_uncommitted_changes: bool,
-    worktree_sig: String,
-    stash_sig: String,
-    remote_heads_digest: String,
-    head_unpushed_count: String,
+pub(crate) struct RepoChangeProbe {
+    pub(crate) signature: String,
+    pub(crate) branch_head_digest: String,
+    pub(crate) head_sha: String,
+    pub(crate) has_uncommitted_changes: bool,
+    pub(crate) worktree_sig: String,
+    pub(crate) stash_sig: String,
+    pub(crate) remote_heads_digest: String,
+    pub(crate) head_unpushed_count: String,
 }
 
 fn format_worktree_sig(worktrees: &[git::WorktreeInfo]) -> String {
@@ -846,7 +846,7 @@ fn compute_repo_change_probe_inner(repo_path: &str) -> Result<RepoChangeProbe, S
         head_unpushed_count,
     };
     probe.signature = compose_probe_signature(&probe);
-    repo_git_gate::store_probe_signature(repo_path, &probe.signature);
+    repo_git_gate::store_probe(repo_path, &probe);
     Ok(probe)
 }
 
@@ -2153,7 +2153,11 @@ fn check_project_fingerprint_blocking(
     let stored_fingerprint = row.and_then(|(_, fingerprint)| fingerprint);
 
     repo_git_gate::with_repo_git_lock(&repo_path, || {
-        let probe = compute_repo_change_probe_inner(&repo_path)?;
+        let probe = if let Some(cached) = repo_git_gate::cached_probe(&repo_path) {
+            cached
+        } else {
+            compute_repo_change_probe_inner(&repo_path)?
+        };
         let (current_fingerprint, changed) = if let Some(ref stored) = stored_fingerprint {
             if fingerprint_unchanged_via_probe(&repo_path, stored, &probe)? {
                 (stored.clone(), false)
@@ -2339,16 +2343,20 @@ fn compute_repo_sync_peek_inner(
     unchanged_against: Option<&str>,
 ) -> Result<RepoSyncPeek, String> {
     if let Some(stored) = unchanged_against {
-        if let Some(cached) = repo_git_gate::cached_probe_signature(repo_path) {
-            if cached == stored {
+        if let Some(cached) = repo_git_gate::cached_probe(repo_path) {
+            if cached.signature == stored {
                 return Ok(RepoSyncPeek {
                     repo_path: repo_path.to_string(),
-                    signature: cached,
+                    signature: cached.signature,
                 });
             }
         }
     }
-    let probe = compute_repo_change_probe_inner(repo_path)?;
+    let probe = if let Some(cached) = repo_git_gate::cached_probe(repo_path) {
+        cached
+    } else {
+        compute_repo_change_probe_inner(repo_path)?
+    };
     if let Some(stored) = unchanged_against {
         if probe.signature == stored {
             return Ok(RepoSyncPeek {
