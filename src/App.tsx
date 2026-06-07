@@ -3966,7 +3966,6 @@ function App() {
     let fullRefreshCoalesceId: number | null = null;
     let changeSignalInFlight = false;
     let pendingFullGraphRefresh = false;
-    let unlisten: (() => void) | null = null;
     const isStaleRepoRefresh = () =>
       isDisposed || isRepoSwitchingRef.current || !sameRepoPath(currentRepoPathRef.current, repoPath);
 
@@ -4440,10 +4439,6 @@ function App() {
       return runAuthoritativeRepoSync('local');
     };
 
-    const runPeekLane = () => {
-      void runAuthoritativeRepoSync('watch');
-    };
-
     const pollRepoChangeSignal = async () => {
       if (changeSignalInFlight || isDisposed) return;
       const normalizedPath = normalizePath(repoPath);
@@ -4510,38 +4505,15 @@ function App() {
       }
     };
 
-    const runVisibilityCatchUp = () => {
-      void runAuthoritativeRepoSync('remote', { fetchRemote: true });
-    };
-
     const repoSyncScheduler = createRepoSyncScheduler({
       isDisposed: () => isDisposed,
-      onDirtyLane: () => {
+      onReconcile: () => {
         void pollRepoChangeSignal();
       },
-      onPeekLane: () => {
-        runPeekLane();
-      },
-      onFullLane: () => {
+      onRepair: () => {
         void runAuthoritativeRepoSync('full', { fetchRemote: true, forceSnapshot: true });
       },
-      onVisibilityCatchUp: () => {
-        runVisibilityCatchUp();
-      },
     });
-
-    listen<GitActivityEventPayload>('git-activity', (event) => {
-      if (!sameRepoPath(event.payload.repoPath, repoPath)) return;
-      gitActivityEpochRef.current += 1;
-      if (event.payload.kind === 'local') {
-        void runRefresh('quick');
-      } else {
-        void runRefresh('graph');
-      }
-    }).then((fn) => {
-      if (isDisposed) fn();
-      else unlisten = fn;
-    }).catch(console.error);
 
     repoSyncScheduler.start();
     repoSyncScheduler.kickVisibleCatchUp();
@@ -4551,7 +4523,6 @@ function App() {
       runRepoRefreshRef.current = null;
       repoSyncScheduler.dispose();
       if (fullRefreshCoalesceId != null) window.clearTimeout(fullRefreshCoalesceId);
-      if (unlisten) unlisten();
     };
   }, [repoPath, defaultBranch]);
 

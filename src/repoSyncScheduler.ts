@@ -1,49 +1,29 @@
 /**
- * Staggered repo sync timers with Page Visibility API catch-up.
- *
- * Design (aligned with MDN visibility guidance + event-driven git watching):
- * - Primary path: `.git` + working-tree file watcher (debounced) → immediate handling in App.
- * - Visible tab: fast dirty lane (quick state), medium peek lane (lite probe), slower full reconcile (may fetch remote).
- * - Hidden tab: keep the same cadence; desktop windows should stay current while unfocused.
- * - Tab becomes visible: reschedule timers and run catch-up immediately.
+ * One frequent local reconcile timer plus a slow repair/remote timer.
+ * The reconcile handler owns change detection and must be cheap when unchanged.
  */
 
-export type RepoSyncLane = 'dirty' | 'peek' | 'full';
-
 export type RepoSyncSchedulerIntervals = {
-  dirtyMs: number;
-  peekMs: number;
-  fullMs: number;
+  reconcileMs: number;
+  repairMs: number;
 };
 
 export const REPO_SYNC_INTERVALS_VISIBLE: RepoSyncSchedulerIntervals = {
-  dirtyMs: 400,
-  peekMs: 5_000,
-  fullMs: 30_000,
+  reconcileMs: 1_000,
+  repairMs: 30_000,
 };
 
 export const REPO_SYNC_INTERVALS_HIDDEN: RepoSyncSchedulerIntervals = REPO_SYNC_INTERVALS_VISIBLE;
 
-/** Stagger lane starts so dirty / peek / full rarely fire in the same tick. */
-export const REPO_SYNC_LANE_STAGGER_MS: Record<RepoSyncLane, number> = {
-  dirty: 0,
-  peek: 2_000,
-  full: 4_000,
-};
-
 export type RepoSyncSchedulerHandlers = {
-  onDirtyLane: () => void;
-  onPeekLane: () => void;
-  onFullLane: () => void;
-  /** Runs immediately when the document becomes visible (user returned to the tab). */
-  onVisibilityCatchUp: () => void;
+  onReconcile: () => void;
+  onRepair: () => void;
   isDisposed?: () => boolean;
 };
 
 export type RepoSyncScheduler = {
   start: () => void;
   dispose: () => void;
-  /** Force visible-interval timers and run catch-up (e.g. after repo switch). */
   kickVisibleCatchUp: () => void;
 };
 
@@ -57,83 +37,53 @@ export function resolveRepoSyncIntervals(hidden = isDocumentHidden()): RepoSyncS
 }
 
 export function createRepoSyncScheduler(handlers: RepoSyncSchedulerHandlers): RepoSyncScheduler {
-  const timeoutIds: Partial<Record<RepoSyncLane, number>> = {};
+  let reconcileId: number | null = null;
+  let repairId: number | null = null;
   let visibilityListener: (() => void) | null = null;
   let started = false;
 
-  const clearLane = (lane: RepoSyncLane) => {
-    const id = timeoutIds[lane];
-    if (id != null) {
-      window.clearTimeout(id);
-      delete timeoutIds[lane];
-    }
+  const clearTimers = () => {
+    if (reconcileId != null) window.clearTimeout(reconcileId);
+    if (repairId != null) window.clearTimeout(repairId);
+    reconcileId = null;
+    repairId = null;
   };
 
-  const clearAllLanes = () => {
-    for (const lane of ['dirty', 'peek', 'full'] as const) {
-      clearLane(lane);
-    }
-  };
-
-  const scheduleLane = (lane: RepoSyncLane) => {
+  const scheduleReconcile = () => {
     if (handlers.isDisposed?.()) return;
-    clearLane(lane);
-    const intervals = resolveRepoSyncIntervals();
-    const delayMs =
-      lane === 'dirty' ? intervals.dirtyMs : lane === 'peek' ? intervals.peekMs : intervals.fullMs;
-
-    timeoutIds[lane] = window.setTimeout(() => {
-      delete timeoutIds[lane];
+    reconcileId = window.setTimeout(() => {
+      reconcileId = null;
       if (handlers.isDisposed?.()) return;
-
-      if (lane === 'dirty') handlers.onDirtyLane();
-      else if (lane === 'peek') handlers.onPeekLane();
-      else handlers.onFullLane();
-
-      scheduleLane(lane);
-    }, delayMs);
+      handlers.onReconcile();
+      scheduleReconcile();
+    }, resolveRepoSyncIntervals().reconcileMs);
   };
 
-  const scheduleAllLanes = () => {
-    clearAllLanes();
+  const scheduleRepair = () => {
     if (handlers.isDisposed?.()) return;
-    const intervals = resolveRepoSyncIntervals();
-    const hidden = isDocumentHidden();
-
-    for (const lane of ['dirty', 'peek', 'full'] as const) {
-      const delayMs =
-        (lane === 'dirty' ? intervals.dirtyMs : lane === 'peek' ? intervals.peekMs : intervals.fullMs)
-        + (hidden ? 0 : REPO_SYNC_LANE_STAGGER_MS[lane]);
-      timeoutIds[lane] = window.setTimeout(() => {
-        delete timeoutIds[lane];
-        if (handlers.isDisposed?.()) return;
-        if (lane === 'dirty') handlers.onDirtyLane();
-        else if (lane === 'peek') handlers.onPeekLane();
-        else handlers.onFullLane();
-        scheduleLane(lane);
-      }, delayMs);
-    }
+    repairId = window.setTimeout(() => {
+      repairId = null;
+      if (handlers.isDisposed?.()) return;
+      handlers.onRepair();
+      scheduleRepair();
+    }, resolveRepoSyncIntervals().repairMs);
   };
 
-  const runVisibilityCatchUp = () => {
-    if (handlers.isDisposed?.()) return;
-    handlers.onVisibilityCatchUp();
+  const scheduleAll = () => {
+    clearTimers();
+    scheduleReconcile();
+    scheduleRepair();
   };
 
   const onVisibilityChange = () => {
-    if (handlers.isDisposed?.()) return;
-    if (document.visibilityState === 'visible') {
-      scheduleAllLanes();
-      runVisibilityCatchUp();
-    } else {
-      scheduleAllLanes();
-    }
+    scheduleAll();
+    if (!isDocumentHidden() && !handlers.isDisposed?.()) handlers.onReconcile();
   };
 
   const start = () => {
     if (started) return;
     started = true;
-    scheduleAllLanes();
+    scheduleAll();
     if (typeof document !== 'undefined') {
       visibilityListener = onVisibilityChange;
       document.addEventListener('visibilitychange', visibilityListener);
@@ -142,7 +92,7 @@ export function createRepoSyncScheduler(handlers: RepoSyncSchedulerHandlers): Re
 
   const dispose = () => {
     started = false;
-    clearAllLanes();
+    clearTimers();
     if (visibilityListener && typeof document !== 'undefined') {
       document.removeEventListener('visibilitychange', visibilityListener);
       visibilityListener = null;
@@ -150,10 +100,8 @@ export function createRepoSyncScheduler(handlers: RepoSyncSchedulerHandlers): Re
   };
 
   const kickVisibleCatchUp = () => {
-    scheduleAllLanes();
-    if (!isDocumentHidden()) {
-      runVisibilityCatchUp();
-    }
+    scheduleAll();
+    if (!isDocumentHidden()) handlers.onReconcile();
   };
 
   return { start, dispose, kickVisibleCatchUp };
