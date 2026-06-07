@@ -4480,14 +4480,19 @@ function App() {
       }
 
       runAuthoritativeRepoSyncInFlightRef.current = true;
+      console.log(`[ChangeDetection] runAuthoritativeRepoSync started: reason=${reason}, options=`, options);
       try {
         if (options?.fetchRemote) {
+          console.log(`[ChangeDetection] syncRemoteFromOrigin starting...`);
           const remoteChanged = await syncRemoteFromOrigin();
+          console.log(`[ChangeDetection] syncRemoteFromOrigin completed: remoteChanged=${remoteChanged}`);
           if (remoteChanged || isStaleRepoRefresh()) return;
         }
 
         // 1. Perform cheap filesystem change detection check first
+        console.log(`[ChangeDetection] performCheapChangeDetectionCheck starting...`);
         const checkResult = await performCheapChangeDetectionCheck(options?.forceSnapshot);
+        console.log(`[ChangeDetection] performCheapChangeDetectionCheck completed:`, checkResult);
         if (!checkResult.changed) {
           console.log(`[ChangeDetection] No changes detected for ${repoPath}. Skipping sync.`);
           markGitActivityHandled();
@@ -4496,10 +4501,13 @@ function App() {
         }
 
         // 2. Something changed. Fetch sync peek to inspect details
+        console.log(`[ChangeDetection] fetchRepoSyncPeek starting...`);
         const peek = await fetchRepoSyncPeek(repoPath);
+        console.log(`[ChangeDetection] fetchRepoSyncPeek completed:`, peek);
         if (isStaleRepoRefresh()) return;
 
         if (!peek) {
+          console.log(`[ChangeDetection] No peek signature found. Bypassing feelers and reloading snapshot.`);
           await reloadRepoSnapshotFromGit(repoPath, peek);
           return;
         }
@@ -4540,7 +4548,10 @@ function App() {
         // 5. Fallback: Full reload from git snapshot
         console.log(`[ChangeDetection] Falling back to full repository reload.`);
         await reloadRepoSnapshotFromGit(repoPath, peek);
+      } catch (err) {
+        console.error(`[ChangeDetection] runAuthoritativeRepoSync failed with error:`, err);
       } finally {
+        console.log(`[ChangeDetection] runAuthoritativeRepoSync finished: reason=${reason}`);
         runAuthoritativeRepoSyncInFlightRef.current = false;
         if (runAuthoritativeRepoSyncPendingRef.current) {
           runAuthoritativeRepoSyncPendingRef.current = false;
