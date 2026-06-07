@@ -4442,19 +4442,38 @@ function App() {
     };
 
     const pollRepoChangeSignal = async () => {
-      if (changeSignalInFlight || isDisposed) return;
+      if (changeSignalInFlight || isDisposed) {
+        console.debug('[repo-sync] tick skipped', { changeSignalInFlight, isDisposed });
+        return;
+      }
       const normalizedPath = normalizePath(repoPath);
-      if (!normalizedPath) return;
+      if (!normalizedPath) {
+        console.warn('[repo-sync] tick skipped: missing repo path');
+        return;
+      }
+      console.debug('[repo-sync] tick', { repoPath: normalizedPath, at: new Date().toISOString() });
       changeSignalInFlight = true;
       try {
-        if (liveFingerprintCheckInFlightRef.current) return;
+        if (liveFingerprintCheckInFlightRef.current) {
+          console.debug('[repo-sync] fingerprint check already in flight');
+          return;
+        }
         liveFingerprintCheckInFlightRef.current = true;
         try {
           const liveFingerprint = await invoke<string>('get_repo_live_fingerprint', {
             repoPath: normalizedPath,
           });
-          if (isStaleRepoRefresh()) return;
+          if (isStaleRepoRefresh()) {
+            console.warn('[repo-sync] live fingerprint ignored: stale repo refresh');
+            return;
+          }
           const mapFingerprint = appliedMapFingerprintRef.current[normalizedPath];
+          console.debug('[repo-sync] fingerprint comparison', {
+            repoPath: normalizedPath,
+            matches: Boolean(mapFingerprint && liveFingerprint === mapFingerprint),
+            mapFingerprint,
+            liveFingerprint,
+          });
           if (mapFingerprint && liveFingerprint === mapFingerprint) return;
           pendingLiveFingerprintRef.current = {
             ...pendingLiveFingerprintRef.current,
@@ -4466,18 +4485,40 @@ function App() {
             || isMapInteractingRef.current
             || !canApplyRepoRefreshRef.current
           ) {
+            console.warn('[repo-sync] mismatch blocked', {
+              repoMutationInFlight: repoMutationInFlightRef.current,
+              reconcileInFlight: reconcileInFlightRef.current,
+              mapInteracting: isMapInteractingRef.current,
+              canApplyRepoRefresh: canApplyRepoRefreshRef.current,
+            });
             pendingRefreshAfterInteractionRef.current = true;
             return;
           }
           gitActivityEpochRef.current += 1;
+          console.info('[repo-sync] mismatch detected; refreshing snapshot', { repoPath: normalizedPath });
           const freshSnapshot = await refreshProjectSnapshotFromGit(normalizedPath, { force: true });
-          if (!freshSnapshot || isStaleRepoRefresh()) return;
+          if (!freshSnapshot || isStaleRepoRefresh()) {
+            console.error('[repo-sync] snapshot refresh produced no applicable snapshot', {
+              hasSnapshot: Boolean(freshSnapshot),
+              stale: isStaleRepoRefresh(),
+            });
+            return;
+          }
           invalidateRepoLayoutCacheForPath(normalizedPath);
-          applySnapshotToActiveState(normalizedPath, freshSnapshot, {
+          const applied = applySnapshotToActiveState(normalizedPath, freshSnapshot, {
             force: true,
             allowIncomingDirty: true,
             needsLayoutRebuild: true,
           });
+          console.info('[repo-sync] snapshot apply finished', {
+            repoPath: normalizedPath,
+            applied,
+            snapshotUpdatedAtMs: freshSnapshot.updatedAtMs,
+          });
+          if (!applied) {
+            pendingRefreshAfterInteractionRef.current = true;
+            return;
+          }
           appliedMapFingerprintRef.current = {
             ...appliedMapFingerprintRef.current,
             [normalizedPath]: liveFingerprint,
@@ -4489,7 +4530,7 @@ function App() {
           liveFingerprintCheckInFlightRef.current = false;
         }
       } catch (error) {
-        console.warn('Repo change signal poll failed:', error);
+        console.error('[repo-sync] reconcile failed', error);
       } finally {
         changeSignalInFlight = false;
       }
@@ -4501,6 +4542,7 @@ function App() {
         void pollRepoChangeSignal();
       },
       onRepair: () => {
+        console.info('[repo-sync] 30s repair refresh');
         void runAuthoritativeRepoSync('full', { fetchRemote: true, forceSnapshot: true });
       },
     });
