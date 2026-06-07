@@ -124,8 +124,6 @@ const MIN_FULL_GRAPH_REFRESH_MS = 1000;
 /** Keep optimistic post-commit HEAD on the map until background probes catch up. */
 const POST_COMMIT_HEAD_PROTECT_MS = 8000;
 const POST_COMMIT_RELEASE_MAX_ATTEMPTS = 15;
-/** Coalesce dirty porcelain polls into one UI apply. */
-const DIRTY_SYNC_DEBOUNCE_MS = 150;
 /** Background fingerprint scans (timer lane only); focus/graph/local/quick bypass. */
 const MIN_BACKGROUND_FINGERPRINT_CHECK_MS = 6000;
 type PushTarget = {
@@ -3963,7 +3961,6 @@ function App() {
 
     let isDisposed = false;
     let refreshInFlight = false;
-    let graphSyncDebounceId: number | null = null;
     let fullRefreshCoalesceId: number | null = null;
     let changeSignalInFlight = false;
     let pendingFullGraphRefresh = false;
@@ -4463,9 +4460,9 @@ function App() {
         if (!signal.localChanged && !signal.graphChanged) return;
         gitActivityEpochRef.current += 1;
         if (signal.graphChanged) {
-          scheduleCoalescedGraphSync();
+          void runRefresh('graph');
         } else {
-          void tryQuickStateDirtySync(normalizedPath);
+          void runRefresh('quick');
         }
       } catch (error) {
         console.warn('Repo change signal poll failed:', error);
@@ -4476,14 +4473,6 @@ function App() {
 
     const runVisibilityCatchUp = () => {
       void runAuthoritativeRepoSync('remote', { fetchRemote: true });
-    };
-
-    const scheduleCoalescedGraphSync = () => {
-      if (graphSyncDebounceId != null) window.clearTimeout(graphSyncDebounceId);
-      graphSyncDebounceId = window.setTimeout(() => {
-        graphSyncDebounceId = null;
-        void runAuthoritativeRepoSync('watch');
-      }, DIRTY_SYNC_DEBOUNCE_MS);
     };
 
     const repoSyncScheduler = createRepoSyncScheduler({
@@ -4506,9 +4495,9 @@ function App() {
       if (!sameRepoPath(event.payload.repoPath, repoPath)) return;
       gitActivityEpochRef.current += 1;
       if (event.payload.kind === 'local') {
-        void tryQuickStateDirtySync(repoPath);
+        void runRefresh('quick');
       } else {
-        scheduleCoalescedGraphSync();
+        void runRefresh('graph');
       }
     }).then((fn) => {
       if (isDisposed) fn();
@@ -4522,7 +4511,6 @@ function App() {
       isDisposed = true;
       runRepoRefreshRef.current = null;
       repoSyncScheduler.dispose();
-      if (graphSyncDebounceId != null) window.clearTimeout(graphSyncDebounceId);
       if (fullRefreshCoalesceId != null) window.clearTimeout(fullRefreshCoalesceId);
       if (unlisten) unlisten();
     };
