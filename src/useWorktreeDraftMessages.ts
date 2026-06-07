@@ -77,6 +77,9 @@ export const useWorktreeDraftMessages = ({
   const inFlightRef = useRef<Set<string>>(new Set());
   const hydratedPathsRef = useRef<Set<string>>(new Set());
   const persistTimerRef = useRef<number | null>(null);
+  const runDraftGenerationRef = useRef<(normalizedPath: string, summaryFingerprint: string) => Promise<void>>(
+    async () => {},
+  );
 
   const dirtySessions = useMemo(
     () => worktreeSessions.filter((session) => session.hasUncommittedChanges && session.pathExists !== false),
@@ -121,7 +124,24 @@ export const useWorktreeDraftMessages = ({
   }, [clearDebounceTimer]);
 
   const runDraftGeneration = useCallback(async (normalizedPath: string, summaryFingerprint: string) => {
-    if (isPaused() || inFlightRef.current.has(normalizedPath)) return;
+    if (inFlightRef.current.has(normalizedPath)) {
+      clearDebounceTimer(normalizedPath);
+      const timerId = window.setTimeout(() => {
+        debounceTimersRef.current.delete(normalizedPath);
+        void runDraftGenerationRef.current(normalizedPath, summaryFingerprint);
+      }, WORKTREE_DRAFT_DEBOUNCE_MS);
+      debounceTimersRef.current.set(normalizedPath, timerId);
+      return;
+    }
+    if (isPaused()) {
+      clearDebounceTimer(normalizedPath);
+      const timerId = window.setTimeout(() => {
+        debounceTimersRef.current.delete(normalizedPath);
+        void runDraftGenerationRef.current(normalizedPath, summaryFingerprint);
+      }, WORKTREE_DRAFT_DEBOUNCE_MS);
+      debounceTimersRef.current.set(normalizedPath, timerId);
+      return;
+    }
 
     const existing = draftsByPathRef.current[normalizedPath];
     if (
@@ -136,81 +156,122 @@ export const useWorktreeDraftMessages = ({
     generationTokenRef.current.set(normalizedPath, generation);
     inFlightRef.current.add(normalizedPath);
 
-    setDraftsByPath((previous) => ({
-      ...previous,
-      [normalizedPath]: {
-        status: 'pending',
-        commitMessage: existing?.commitMessage ?? '',
-        stashMessage: existing?.stashMessage ?? '',
-        summaryFingerprint,
-        messageFingerprint: existing?.messageFingerprint ?? '',
-        fallbackLabel: existing?.fallbackLabel ?? formatWorktreeSummaryFallback(''),
-      },
-    }));
+    setDraftsByPath((previous) => {
+      const latest = previous[normalizedPath];
+      const preservedCommit = latest?.commitMessage.trim() || existing?.commitMessage.trim() || '';
+      const preservedStash = latest?.stashMessage.trim() || existing?.stashMessage.trim() || '';
+      const keepReady = latest?.status === 'ready' && Boolean(preservedCommit);
+      return {
+        ...previous,
+        [normalizedPath]: {
+          status: keepReady ? 'ready' : 'pending',
+          commitMessage: preservedCommit,
+          stashMessage: preservedStash,
+          summaryFingerprint,
+          messageFingerprint: latest?.messageFingerprint ?? existing?.messageFingerprint ?? '',
+          fallbackLabel: latest?.fallbackLabel ?? existing?.fallbackLabel ?? formatWorktreeSummaryFallback(''),
+        },
+      };
+    });
 
     try {
       const previousCommit = resolvePreviousCommitTitleForRegeneration(existing);
-      const previousStash = resolvePreviousStashTitleForRegeneration(existing);
-      const [commitMessage, stashMessage] = await Promise.all([
-        invoke<string>('generate_commit_message', {
-          repoPath: normalizedPath,
-          previousMessage: previousCommit ?? null,
-        }).catch(() => ''),
-        invoke<string>('generate_stash_message', {
-          repoPath: normalizedPath,
-          previousMessage: previousStash ?? null,
-        }).catch(() => ''),
-      ]);
+      const commitSettled = await invoke<string>('generate_commit_message', {
+        repoPath: normalizedPath,
+        previousMessage: previousCommit ?? null,
+      }).then(
+        (value) => ({ status: 'fulfilled' as const, value }),
+        (reason) => ({ status: 'rejected' as const, reason }),
+      );
 
       if (generation !== generationTokenRef.current.get(normalizedPath)) return;
 
-      const trimmedCommit = commitMessage.trim();
-      const trimmedStash = stashMessage.trim();
+      const trimmedCommit = commitSettled.status === 'fulfilled' ? commitSettled.value.trim() : '';
+      if (import.meta.env.DEV && commitSettled.status === 'rejected') {
+        console.warn('[worktree-draft] commit title failed', normalizedPath, commitSettled.reason);
+      }
       const latest = draftsByPathRef.current[normalizedPath];
-      if (!trimmedCommit && !trimmedStash) {
-        setDraftsByPath((previous) => ({
-          ...previous,
-          [normalizedPath]: {
-            status: 'error',
-            commitMessage: existing?.commitMessage ?? '',
-            stashMessage: existing?.stashMessage ?? '',
-            summaryFingerprint,
-            messageFingerprint: existing?.messageFingerprint ?? '',
-            fallbackLabel: latest?.fallbackLabel ?? formatWorktreeSummaryFallback(''),
-          },
-        }));
+      if (!trimmedCommit) {
+        setDraftsByPath((previous) => {
+          const current = previous[normalizedPath];
+          return {
+            ...previous,
+            [normalizedPath]: {
+              status: 'error',
+              commitMessage: current?.commitMessage ?? existing?.commitMessage ?? '',
+              stashMessage: current?.stashMessage ?? existing?.stashMessage ?? '',
+              summaryFingerprint,
+              messageFingerprint: current?.messageFingerprint ?? existing?.messageFingerprint ?? '',
+              fallbackLabel: latest?.fallbackLabel ?? current?.fallbackLabel ?? formatWorktreeSummaryFallback(''),
+            },
+          };
+        });
         return;
       }
 
-      setDraftsByPath((previous) => ({
-        ...previous,
-        [normalizedPath]: {
-          status: 'ready',
-          commitMessage: trimmedCommit,
-          stashMessage: trimmedStash || trimmedCommit,
-          summaryFingerprint,
-          messageFingerprint: summaryFingerprint,
-          fallbackLabel: latest?.fallbackLabel ?? formatWorktreeSummaryFallback(''),
-        },
-      }));
-    } catch {
+      setDraftsByPath((previous) => {
+        const current = previous[normalizedPath];
+        return {
+          ...previous,
+          [normalizedPath]: {
+            status: 'ready',
+            commitMessage: trimmedCommit,
+            stashMessage: current?.stashMessage.trim() || existing?.stashMessage.trim() || trimmedCommit,
+            summaryFingerprint,
+            messageFingerprint: summaryFingerprint,
+            fallbackLabel: latest?.fallbackLabel ?? current?.fallbackLabel ?? formatWorktreeSummaryFallback(''),
+          },
+        };
+      });
+
+      const previousStash = resolvePreviousStashTitleForRegeneration(existing);
+      void invoke<string>('generate_stash_message', {
+        repoPath: normalizedPath,
+        previousMessage: previousStash ?? null,
+      }).then((stashMessage) => {
+        const trimmedStash = stashMessage.trim();
+        if (!trimmedStash || generation !== generationTokenRef.current.get(normalizedPath)) return;
+        setDraftsByPath((previous) => {
+          const current = previous[normalizedPath];
+          if (!current || current.summaryFingerprint !== summaryFingerprint) return previous;
+          return {
+            ...previous,
+            [normalizedPath]: {
+              ...current,
+              stashMessage: trimmedStash,
+            },
+          };
+        });
+      }).catch((reason) => {
+        if (import.meta.env.DEV) {
+          console.warn('[worktree-draft] stash title failed', normalizedPath, reason);
+        }
+      });
+    } catch (error) {
       if (generation !== generationTokenRef.current.get(normalizedPath)) return;
       const latest = draftsByPathRef.current[normalizedPath];
-      setDraftsByPath((previous) => ({
-        ...previous,
-        [normalizedPath]: {
-          status: 'error',
-          commitMessage: existing?.commitMessage ?? '',
-          stashMessage: existing?.stashMessage ?? '',
-          summaryFingerprint,
-          messageFingerprint: existing?.messageFingerprint ?? '',
-          fallbackLabel: latest?.fallbackLabel ?? formatWorktreeSummaryFallback(''),
-        },
-      }));
+      if (import.meta.env.DEV) {
+        console.warn('[worktree-draft] generation failed', normalizedPath, error);
+      }
+      setDraftsByPath((previous) => {
+        const current = previous[normalizedPath];
+        return {
+          ...previous,
+          [normalizedPath]: {
+            status: 'error',
+            commitMessage: current?.commitMessage ?? existing?.commitMessage ?? '',
+            stashMessage: current?.stashMessage ?? existing?.stashMessage ?? '',
+            summaryFingerprint,
+            messageFingerprint: current?.messageFingerprint ?? existing?.messageFingerprint ?? '',
+            fallbackLabel: latest?.fallbackLabel ?? current?.fallbackLabel ?? formatWorktreeSummaryFallback(''),
+          },
+        };
+      });
     } finally {
       inFlightRef.current.delete(normalizedPath);
     }
-  }, [isPaused]);
+  }, [clearDebounceTimer, isPaused]);
+  runDraftGenerationRef.current = runDraftGeneration;
 
   const scheduleDraftGeneration = useCallback((
     normalizedPath: string,
@@ -287,7 +348,7 @@ export const useWorktreeDraftMessages = ({
     }
 
     return readReady();
-  }, [kickDraftGenerationForCommit]);
+  }, [clearDebounceTimer, kickDraftGenerationForCommit]);
 
   const maybeScheduleDraftGeneration = useCallback((
     normalizedPath: string,
@@ -319,17 +380,23 @@ export const useWorktreeDraftMessages = ({
     }
 
     const previousFingerprint = lastSummaryFingerprintRef.current.get(normalizedPath);
-    const isFirstFingerprint = previousFingerprint == null;
     lastSummaryFingerprintRef.current.set(normalizedPath, fingerprint);
     const treeChangedSinceLastProbe = previousFingerprint != null && previousFingerprint !== fingerprint;
 
     setDraftsByPath((previous) => {
       const existing = previous[normalizedPath];
       const treeChangedSinceMessage = existing != null && existing.messageFingerprint !== fingerprint;
+      const hasDisplayableTitle = Boolean(existing?.commitMessage.trim());
+      const keepReadyWhileRegenerating =
+        existing?.status === 'ready'
+        && hasDisplayableTitle
+        && (treeChangedSinceMessage || treeChangedSinceLastProbe);
       const nextEntry: WorktreeDraftEntry = {
-        status: treeChangedSinceMessage || treeChangedSinceLastProbe
-          ? 'pending'
-          : (existing?.status ?? 'pending'),
+        status: keepReadyWhileRegenerating
+          ? 'ready'
+          : treeChangedSinceMessage || treeChangedSinceLastProbe
+            ? 'pending'
+            : (existing?.status ?? 'pending'),
         commitMessage: existing?.commitMessage ?? '',
         stashMessage: existing?.stashMessage ?? '',
         summaryFingerprint: fingerprint,
@@ -363,9 +430,15 @@ export const useWorktreeDraftMessages = ({
       return;
     }
 
-    const staleMessage = current != null && current.messageFingerprint !== fingerprint;
-    const delayMs = isFirstFingerprint || staleMessage ? 0 : WORKTREE_DRAFT_DEBOUNCE_MS;
-    scheduleDraftGeneration(normalizedPath, fingerprint, delayMs);
+    if (
+      current?.status === 'ready'
+      && current.commitMessage.trim()
+      && current.messageFingerprint === fingerprint
+    ) {
+      return;
+    }
+
+    scheduleDraftGeneration(normalizedPath, fingerprint, WORKTREE_DRAFT_DEBOUNCE_MS);
   }, [
     clearDraftForPath,
     enabled,
@@ -397,13 +470,24 @@ export const useWorktreeDraftMessages = ({
     });
   }, [dirtySessions, enabled]);
 
+  const verifyAndClearDraftIfClean = useCallback(async (normalizedPath: string) => {
+    if (dirtySessions.some((session) => normalizeWorktreePath(session.path) === normalizedPath)) {
+      return;
+    }
+    const summary = await invoke<string>('get_working_tree_summary', { repoPath: normalizedPath }).catch(() => null);
+    if (summary == null) return;
+    if (!hashWorktreeSummary(summary)) {
+      clearDraftForPath(normalizedPath);
+    }
+  }, [clearDraftForPath, dirtySessions]);
+
   useEffect(() => {
     if (!enabled) return;
 
     const dirtyPaths = new Set(dirtySessions.map((session) => normalizeWorktreePath(session.path)));
     for (const path of Object.keys(draftsByPathRef.current)) {
       if (!dirtyPaths.has(path)) {
-        clearDraftForPath(path);
+        void verifyAndClearDraftIfClean(path);
       }
     }
 
@@ -424,7 +508,7 @@ export const useWorktreeDraftMessages = ({
       disposed = true;
       window.clearInterval(intervalId);
     };
-  }, [clearDraftForPath, dirtySessions, enabled, isPaused, probeDirtySession]);
+  }, [clearDraftForPath, dirtySessions, enabled, isPaused, probeDirtySession, verifyAndClearDraftIfClean]);
 
   useEffect(() => {
     if (!enabled) return;

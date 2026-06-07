@@ -7,6 +7,7 @@ import {
   resolveAiCommitMessageForCommit,
   formatWorktreeSummaryFallback,
   hashWorktreeSummary,
+  normalizeSummaryForFingerprint,
   resolvePreparedCommitMessage,
   resolvePreparedStashMessage,
   resolvePreviousCommitTitleForRegeneration,
@@ -25,6 +26,39 @@ describe('worktreeDraftMessages', () => {
     const summary = ' file.ts | 2 ++\n--- status ---\n M file.ts';
     expect(hashWorktreeSummary(summary)).toBe(hashWorktreeSummary(summary));
     expect(hashWorktreeSummary(summary)).not.toBe(hashWorktreeSummary(`${summary}\nextra`));
+  });
+
+  it('sorts status lines when fingerprinting', () => {
+    const first = [
+      ' src/a.ts | 1 +',
+      WORKTREE_SUMMARY_STATUS_MARKER,
+      ' M src/a.ts',
+      ' M src/b.ts',
+    ].join('\n');
+    const second = [
+      ' src/a.ts | 1 +',
+      WORKTREE_SUMMARY_STATUS_MARKER,
+      ' M src/b.ts',
+      ' M src/a.ts',
+    ].join('\n');
+    expect(hashWorktreeSummary(first)).toBe(hashWorktreeSummary(second));
+  });
+
+  it('ignores diff stat line counts when fingerprinting', () => {
+    const base = [
+      ' src/foo.ts | 4 +++--',
+      ' 1 file changed, 4 insertions(+), 2 deletions(-)',
+      WORKTREE_SUMMARY_STATUS_MARKER,
+      ' M src/foo.ts',
+    ].join('\n');
+    const moreLines = [
+      ' src/foo.ts | 9 +++---',
+      ' 1 file changed, 9 insertions(+), 3 deletions(-)',
+      WORKTREE_SUMMARY_STATUS_MARKER,
+      ' M src/foo.ts',
+    ].join('\n');
+    expect(hashWorktreeSummary(base)).toBe(hashWorktreeSummary(moreLines));
+    expect(normalizeSummaryForFingerprint(base)).toBe(normalizeSummaryForFingerprint(moreLines));
   });
 
   it('formats fallback labels from git status', () => {
@@ -47,12 +81,28 @@ describe('worktreeDraftMessages', () => {
     expect(formatWorktreeSummaryFallback(summary)).toBe('Update foo.ts');
   });
 
-  it('uses Building on the node while ai message is missing', () => {
+  it('uses Building when ai generation failed instead of git fallback', () => {
+    expect(resolveWorktreeDraftDisplayLabel({
+      status: 'error',
+      message: '',
+      fallbackLabel: 'Update foo.ts',
+    })).toBe('Building');
+  });
+
+  it('uses Building while ai message is missing', () => {
     expect(resolveWorktreeDraftDisplayLabel({
       status: 'pending',
       message: '',
       fallbackLabel: 'Update foo.ts',
     })).toBe('Building');
+    expect(resolveWorktreeDraftDisplayLabel({
+      status: 'pending',
+      message: '',
+      fallbackLabel: 'Uncommitted changes',
+    })).toBe('Building');
+  });
+
+  it('uses Building on the node while ai message is missing', () => {
     expect(resolveWorktreeDraftDisplayLabel({
       status: 'ready',
       message: 'Add feature',
@@ -132,7 +182,7 @@ describe('worktreeDraftMessages', () => {
     })).toBeNull();
   });
 
-  it('resolves prepared commit and stash messages with fallback', () => {
+  it('resolves prepared commit and stash messages from ai only', () => {
     const pending = {
       status: 'pending' as const,
       commitMessage: '',
@@ -141,8 +191,8 @@ describe('worktreeDraftMessages', () => {
       messageFingerprint: '',
       fallbackLabel: 'Update foo.ts',
     };
-    expect(resolvePreparedCommitMessage(pending)).toBe('Update foo.ts');
-    expect(resolvePreparedStashMessage(pending)).toBe('WIP: Update foo.ts');
+    expect(resolvePreparedCommitMessage(pending)).toBeNull();
+    expect(resolvePreparedStashMessage(pending)).toBeNull();
     expect(resolvePreparedCommitMessage({
       ...pending,
       status: 'ready',
@@ -157,7 +207,7 @@ describe('worktreeDraftMessages', () => {
       summaryFingerprint: 'new',
       messageFingerprint: 'old',
       fallbackLabel: 'Update foo.ts',
-    })).toBe('Update foo.ts');
+    })).toBeNull();
   });
 
   it('builds display map for dirty worktrees even before ai is ready', () => {
@@ -202,7 +252,7 @@ describe('worktreeDraftMessages', () => {
     expect(next.main?.[0]?.message).toBe('Draft title');
   });
 
-  it('applies Building to uncommitted previews when ai is pending without text', () => {
+  it('applies Building to uncommitted previews when ai is pending', () => {
     const previews = {
       main: [{
         fullSha: 'WORKING_TREE:abc',

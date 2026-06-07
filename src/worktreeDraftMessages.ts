@@ -2,7 +2,7 @@ import type { BranchCommitPreview } from '../types';
 import { isWorkingTreeCommitId } from '../lib/worktreeSessions';
 
 /** Wait after the last detected working-tree change before calling AI. */
-export const WORKTREE_DRAFT_DEBOUNCE_MS = 6000;
+export const WORKTREE_DRAFT_DEBOUNCE_MS = 15_000;
 
 export const WORKTREE_SUMMARY_STATUS_MARKER = '--- status ---';
 
@@ -31,7 +31,7 @@ export type WorktreeDraftDisplay = {
 };
 
 export const hashWorktreeSummary = (summary: string): string => {
-  const normalized = summary.trim();
+  const normalized = normalizeSummaryForFingerprint(summary);
   if (!normalized) return '';
   let hash = 2166136261;
   for (let index = 0; index < normalized.length; index += 1) {
@@ -39,6 +39,47 @@ export const hashWorktreeSummary = (summary: string): string => {
     hash = Math.imul(hash, 16777619);
   }
   return (hash >>> 0).toString(36);
+};
+
+/** Stable fingerprint — file paths only, not diff stat line counts that change while typing. */
+export const normalizeSummaryForFingerprint = (summary: string): string => {
+  const trimmed = summary.trim();
+  if (!trimmed) return '';
+
+  const statusMarkerIndex = trimmed.indexOf(WORKTREE_SUMMARY_STATUS_MARKER);
+  const statusSection = statusMarkerIndex >= 0
+    ? trimmed.slice(statusMarkerIndex).trim()
+    : '';
+  const statSection = statusMarkerIndex >= 0
+    ? trimmed.slice(0, statusMarkerIndex).trim()
+    : trimmed;
+
+  const statFiles = statSection
+    .split('\n')
+    .map((line) => line.split('|')[0]?.trim() ?? '')
+    .filter((line) => line.length > 0 && !/files? changed/.test(line))
+    .sort();
+
+  const statusLines = statusSection
+    .split('\n')
+    .map((line) => line.replace(/\r$/, '').trim())
+    .filter(Boolean)
+    .sort();
+
+  return [...statFiles, ...statusLines].join('\n');
+};
+
+export const findDraftEntryByPath = (
+  draftsByPath: Readonly<Record<string, WorktreeDraftEntry>>,
+  normalizedPath: string,
+): WorktreeDraftEntry | undefined => {
+  const direct = draftsByPath[normalizedPath];
+  if (direct) return direct;
+  const lower = normalizedPath.toLowerCase();
+  for (const [path, entry] of Object.entries(draftsByPath)) {
+    if (path.toLowerCase() === lower) return entry;
+  }
+  return undefined;
 };
 
 const basenameFromPath = (path: string): string => {
@@ -120,8 +161,7 @@ export const resolvePreparedCommitMessage = (entry: WorktreeDraftEntry | undefin
   if (aiMessage && messageMatchesTree && (entry.status === 'ready' || entry.status === 'pending')) {
     return aiMessage;
   }
-  const fallback = entry.fallbackLabel.trim();
-  return fallback || null;
+  return null;
 };
 
 export const resolvePreparedStashMessage = (entry: WorktreeDraftEntry | undefined): string | null => {
@@ -131,9 +171,7 @@ export const resolvePreparedStashMessage = (entry: WorktreeDraftEntry | undefine
   if (aiMessage && messageMatchesTree && (entry.status === 'ready' || entry.status === 'pending')) {
     return aiMessage;
   }
-  const fallback = entry.fallbackLabel.trim();
-  if (!fallback) return null;
-  return fallback.startsWith('WIP:') ? fallback : `WIP: ${fallback}`;
+  return null;
 };
 
 export const draftNeedsRegeneration = (entry: WorktreeDraftEntry | undefined): boolean => {
@@ -175,11 +213,18 @@ export const buildWorktreeDraftDisplayMap = (
   dirtyWorkingTreeIds: readonly string[] = [],
 ): ReadonlyMap<string, WorktreeDraftDisplay> => {
   const map = new Map<string, WorktreeDraftDisplay>();
+  const workingTreeIds = new Set(dirtyWorkingTreeIds);
 
-  for (const workingTreeId of dirtyWorkingTreeIds) {
+  for (const [workingTreeId, path] of Object.entries(pathByWorkingTreeId)) {
+    if (findDraftEntryByPath(draftsByPath, path)?.commitMessage.trim()) {
+      workingTreeIds.add(workingTreeId);
+    }
+  }
+
+  for (const workingTreeId of workingTreeIds) {
     const path = pathByWorkingTreeId[workingTreeId];
     if (!path) continue;
-    const entry = draftsByPath[path];
+    const entry = findDraftEntryByPath(draftsByPath, path);
     map.set(workingTreeId, {
       status: entry?.status ?? 'pending',
       message: entry?.commitMessage.trim() ?? '',

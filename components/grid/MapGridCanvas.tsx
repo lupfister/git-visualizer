@@ -302,17 +302,21 @@ const MapGridCommitCard = memo(function MapGridCommitCard({
               ? `${node.commit.branchName}/${shortSha}`
               : shortSha;
 
-  const draftPreview = isDirtyWorktreeNode
+  const draftPreview = isLocalUncommitted
     ? worktreeDraftByWorkingTreeId?.get(commitId)
     : undefined;
   const displayLabel = draftPreview
     ? resolveWorktreeDraftDisplayLabel(draftPreview)
-    : DIRTY_WORKTREE_BUILDING_LABEL;
+    : isDirtyWorktreeNode
+      ? DIRTY_WORKTREE_BUILDING_LABEL
+      : '';
+  const showWorkingDots = isDirtyWorktreeNode
+    && displayLabel === DIRTY_WORKTREE_BUILDING_LABEL;
   const bodyContent: ReactNode = isDirtyWorktreeNode
     ? (
         <>
           {displayLabel}
-          <WorkingDots />
+          {showWorkingDots ? <WorkingDots /> : null}
         </>
       )
     : isLocalUncommitted || isEmptyBranchNode

@@ -81,11 +81,14 @@ gh auth login
 
 ## OpenCode (optional)
 
-For AI-generated commit and stash titles, install the OpenCode CLI and ensure its server is reachable (default `http://127.0.0.1:4096`):
+For AI-generated commit and stash titles, install the **latest** OpenCode CLI (1.16+ recommended):
 
 ```bash
-npm i -g opencode-ai
+npm i -g opencode-ai@latest
+opencode --version
 ```
+
+Git Visualizer starts its own OpenCode server on port **47123** (separate from OpenCode Desktop on 4096). Free Zen models work without login.
 
 The app also ships OpenCode command templates in `.opencode/commands/`.
 

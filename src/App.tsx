@@ -5913,9 +5913,7 @@ function App() {
     clearDraftForPath,
   } = useWorktreeDraftMessages({
     worktreeSessions,
-    isPaused: () =>
-      repoMutationInFlightRef.current
-      || isPostCommitProtectionActive(normalizePath(repoPath ?? '') ?? ''),
+    isPaused: () => repoMutationInFlightRef.current,
     enabled: Boolean(repoPath),
   });
 

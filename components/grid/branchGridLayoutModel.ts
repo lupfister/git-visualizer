@@ -1564,6 +1564,31 @@ export function computeBaseLayout(input: BranchGridLayoutInput): BaseLayoutModel
     return columnByCommitVisualId.get(parent.visualId) ?? -1;
   };
 
+  const getBranchColumn = (branchName: string): number => {
+    for (const commit of allCommitsWithClusters) {
+      if (commit.branchName === branchName) {
+        const col = columnByCommitVisualId.get(commit.visualId);
+        if (col != null) return col;
+      }
+    }
+    return 0;
+  };
+
+  const resolveParentColumnForCommit = (commit: VisualCommit): number => {
+    for (const parent of parentsMap.get(commit.visualId) ?? []) {
+      const parentCol = layoutParentColumn(parent);
+      if (parentCol >= 0) return parentCol;
+    }
+    const branch = branchByName.get(commit.branchName);
+    if (branch) {
+      const parentBranchName = resolveBranchStartParentName(branch);
+      if (parentBranchName) {
+        return getBranchColumn(parentBranchName);
+      }
+    }
+    return getBranchColumn(defaultBranch);
+  };
+
   const enqueueLayoutChildren = (u: VisualCommit): void => {
     for (const child of childrenMap.get(u.visualId) ?? []) {
       const remaining = (inDegree.get(child.visualId) ?? 1) - 1;
@@ -1588,7 +1613,11 @@ export function computeBaseLayout(input: BranchGridLayoutInput): BaseLayoutModel
 
     let minCol = 0;
     if (parents.length === 0) {
-      minCol = colCursor;
+      if (u.kind === 'stash' || u.kind === 'branch-created') {
+        minCol = resolveParentColumnForCommit(u) + 1;
+      } else {
+        minCol = colCursor;
+      }
     } else {
       minCol = Math.max(...parentCols.map((column) => column + 1));
     }
@@ -1606,7 +1635,11 @@ export function computeBaseLayout(input: BranchGridLayoutInput): BaseLayoutModel
     reserveBlock(r, minCol, reservationSize);
 
     if (parents.length === 0) {
-      colCursor = Math.max(colCursor, minCol + reservationSize);
+      if (u.kind === 'stash' || u.kind === 'branch-created') {
+        colCursor = Math.max(colCursor, minCol + 1);
+      } else {
+        colCursor = Math.max(colCursor, minCol + reservationSize);
+      }
     } else if (isClumpLead) {
       colCursor = Math.max(colCursor, minCol + 1);
     } else {
@@ -1664,14 +1697,27 @@ export function computeBaseLayout(input: BranchGridLayoutInput): BaseLayoutModel
   });
 
   for (const commit of allCommitsWithClusters) {
-    if (commit.kind !== 'uncommitted' && !isWorkingTreeCommitId(commit.id)) continue;
+    if (
+      commit.kind !== 'uncommitted' &&
+      commit.kind !== 'stash' &&
+      commit.kind !== 'branch-created' &&
+      !isWorkingTreeCommitId(commit.id)
+    ) {
+      continue;
+    }
     let row = rowByVisualId.get(commit.visualId) ?? 0;
     let column = columnByCommitVisualId.get(commit.visualId) ?? 0;
+    let parentCol = -1;
     for (const parent of parentsMap.get(commit.visualId) ?? []) {
       const parentRow = parentRowForConstraint(parent);
       if (parentRow != null) row = Math.max(row, parentRow + 1);
-      column = Math.max(column, layoutParentColumn(parent) + 1);
+      const col = layoutParentColumn(parent);
+      if (col >= 0) parentCol = Math.max(parentCol, col);
     }
+    if (parentCol < 0) {
+      parentCol = resolveParentColumnForCommit(commit);
+    }
+    column = Math.max(column, parentCol + 1);
     rowByVisualId.set(commit.visualId, row);
     columnByCommitVisualId.set(commit.visualId, column);
   }

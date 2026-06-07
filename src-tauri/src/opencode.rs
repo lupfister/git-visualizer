@@ -1,7 +1,8 @@
 use std::io::Read;
 use std::net::{SocketAddr, TcpStream};
 use std::path::{Path, PathBuf};
-use std::process::{Command, Stdio};
+use std::process::{Child, Command, Stdio};
+use std::sync::{Mutex, OnceLock};
 use std::time::{Duration, Instant};
 
 const MAX_PROMPT_CHARS: usize = 8_000;
@@ -11,7 +12,16 @@ const MAX_MESSAGE_CHARS: usize = 72;
 const MAX_MESSAGE_WORDS: usize = 12;
 const MIN_MESSAGE_LEN: usize = 6;
 const OPENCODE_TIMEOUT: Duration = Duration::from_secs(90);
-const OPENCODE_ATTACH_URL: &str = "http://127.0.0.1:4096";
+/// Dedicated port so we never attach to a stale OpenCode Desktop / old CLI server on 4096.
+const OPENCODE_SERVER_PORT: u16 = 47123;
+/// Minimum CLI version — 1.15.x had broken big-pickle routing; keep OpenCode up to date.
+const OPENCODE_MIN_VERSION: (u32, u32, u32) = (1, 16, 0);
+/// OpenCode Zen free models — no API key or login required. See https://opencode.ai/docs/zen/
+const OPENCODE_TITLE_MODELS: &[&str] = &[
+    "opencode/deepseek-v4-flash-free",
+    "opencode/minimax-m2.5-free",
+    "opencode/big-pickle",
+];
 
 const COMMIT_TITLE_PROMPT: &str = "\
 You write git commit titles only.\n\
@@ -75,12 +85,146 @@ fn resolve_opencode_binary() -> Result<PathBuf, String> {
 }
 
 fn opencode_missing_message() -> String {
-    "OpenCode CLI not found. Install with: npm i -g opencode-ai".to_string()
+    "OpenCode CLI not found. Install or update with: npm i -g opencode-ai@latest".to_string()
+}
+
+static OPENCODE_SERVER: OnceLock<Mutex<Option<Child>>> = OnceLock::new();
+
+fn opencode_server_addr() -> SocketAddr {
+    format!("127.0.0.1:{OPENCODE_SERVER_PORT}")
+        .parse()
+        .expect("valid opencode server addr")
+}
+
+fn opencode_attach_url() -> String {
+    format!("http://127.0.0.1:{OPENCODE_SERVER_PORT}")
+}
+
+fn parse_opencode_version(raw: &str) -> Option<(u32, u32, u32)> {
+    let digits: Vec<u32> = raw
+        .split('.')
+        .filter_map(|part| part.chars().take_while(|ch| ch.is_ascii_digit()).collect::<String>().parse().ok())
+        .collect();
+    match digits.as_slice() {
+        [major, minor, patch] => Some((*major, *minor, *patch)),
+        [major, minor] => Some((*major, *minor, 0)),
+        _ => None,
+    }
+}
+
+fn read_opencode_version(binary: &Path) -> Option<(u32, u32, u32)> {
+    let output = Command::new(binary).arg("--version").output().ok()?;
+    if !output.status.success() {
+        return None;
+    }
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    parse_opencode_version(&stdout).or_else(|| parse_opencode_version(&stderr))
+}
+
+fn version_at_least(found: (u32, u32, u32), minimum: (u32, u32, u32)) -> bool {
+    found.0 > minimum.0
+        || (found.0 == minimum.0 && found.1 > minimum.1)
+        || (found.0 == minimum.0 && found.1 == minimum.1 && found.2 >= minimum.2)
+}
+
+fn ensure_opencode_version(binary: &Path) -> Result<(), String> {
+    let Some(version) = read_opencode_version(binary) else {
+        return Ok(());
+    };
+    if version_at_least(version, OPENCODE_MIN_VERSION) {
+        return Ok(());
+    }
+    Err(format!(
+        "OpenCode {}.{}.{} is outdated (need {}.{}.{} or newer). Run: npm i -g opencode-ai@latest",
+        version.0,
+        version.1,
+        version.2,
+        OPENCODE_MIN_VERSION.0,
+        OPENCODE_MIN_VERSION.1,
+        OPENCODE_MIN_VERSION.2,
+    ))
 }
 
 fn opencode_server_available() -> bool {
-    let addr: SocketAddr = "127.0.0.1:4096".parse().unwrap();
-    TcpStream::connect_timeout(&addr, Duration::from_millis(250)).is_ok()
+    TcpStream::connect_timeout(&opencode_server_addr(), Duration::from_millis(250)).is_ok()
+}
+
+fn kill_processes_on_port(port: u16) {
+    #[cfg(unix)]
+    {
+        let Ok(output) = Command::new("lsof")
+            .args(["-ti", &format!(":{port}")])
+            .output()
+        else {
+            return;
+        };
+        if !output.status.success() {
+            return;
+        }
+        let pids = String::from_utf8_lossy(&output.stdout);
+        for pid in pids.split_whitespace() {
+            let _ = Command::new("kill").arg(pid).status();
+        }
+        if !pids.trim().is_empty() {
+            std::thread::sleep(Duration::from_millis(300));
+        }
+    }
+}
+
+fn ensure_opencode_server(binary: &Path) -> Result<(), String> {
+    ensure_opencode_version(binary)?;
+
+    let lock = OPENCODE_SERVER.get_or_init(|| Mutex::new(None));
+    let mut guard = lock
+        .lock()
+        .map_err(|_| "OpenCode server lock poisoned.".to_string())?;
+
+    if let Some(child) = guard.as_mut() {
+        if child.try_wait().ok().flatten().is_some() {
+            *guard = None;
+        }
+    }
+
+    if guard.is_some() && opencode_server_available() {
+        return Ok(());
+    }
+
+    if guard.is_some() {
+        if let Some(mut child) = guard.take() {
+            let _ = child.kill();
+            let _ = child.wait();
+        }
+    }
+
+    kill_processes_on_port(OPENCODE_SERVER_PORT);
+
+    let child = Command::new(binary)
+        .args([
+            "serve",
+            "--port",
+            &OPENCODE_SERVER_PORT.to_string(),
+            "--hostname",
+            "127.0.0.1",
+        ])
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .spawn()
+        .map_err(|e| format!("Failed to start OpenCode server: {e}"))?;
+    *guard = Some(child);
+
+    for _ in 0..40 {
+        if opencode_server_available() {
+            return Ok(());
+        }
+        std::thread::sleep(Duration::from_millis(200));
+    }
+
+    Err(format!(
+        "OpenCode server failed to start on {}.",
+        opencode_attach_url()
+    ))
 }
 
 fn truncate_summary(summary: &str) -> String {
@@ -252,7 +396,20 @@ fn sanitize_title(raw: &str, empty_label: &str) -> Result<String, String> {
 
 #[cfg(test)]
 mod tests {
-    use super::{is_unacceptable_message, sanitize_title};
+    use super::{is_unacceptable_message, parse_opencode_version, sanitize_title, version_at_least};
+
+    #[test]
+    fn parses_opencode_version() {
+        assert_eq!(parse_opencode_version("1.16.2\n"), Some((1, 16, 2)));
+        assert_eq!(parse_opencode_version("1.15.5"), Some((1, 15, 5)));
+    }
+
+    #[test]
+    fn compares_opencode_versions() {
+        assert!(version_at_least((1, 16, 0), (1, 16, 0)));
+        assert!(version_at_least((1, 16, 2), (1, 16, 0)));
+        assert!(!version_at_least((1, 15, 5), (1, 16, 0)));
+    }
 
     #[test]
     fn keeps_short_plain_message() {
@@ -343,16 +500,27 @@ fn run_opencode(binary: &Path, repo_path: &str, args: &[&str]) -> Result<String,
     })
 }
 
-fn run_opencode_title(binary: &Path, repo_path: &str, prompt: &str) -> Result<String, String> {
-    let attach = opencode_server_available();
+fn run_opencode_title(
+    binary: &Path,
+    repo_path: &str,
+    model: &str,
+    prompt: &str,
+) -> Result<String, String> {
+    ensure_opencode_server(binary)?;
 
-    let mut args: Vec<&str> = vec!["run", "--dir", repo_path];
-    if attach {
-        args.push("--attach");
-        args.push(OPENCODE_ATTACH_URL);
-    }
-    args.push("--dangerously-skip-permissions");
-    args.push(prompt);
+    let attach = opencode_attach_url();
+    let args = [
+        "run",
+        "--dir",
+        repo_path,
+        "--attach",
+        attach.as_str(),
+        "--dangerously-skip-permissions",
+        "--pure",
+        "-m",
+        model,
+        prompt,
+    ];
 
     run_opencode(binary, repo_path, &args)
 }
@@ -378,7 +546,9 @@ fn generate_title_with_retries(
     let mut last_error = String::from("OpenCode did not return a usable title.");
 
     for attempt in 1..=MAX_GENERATION_ATTEMPTS {
-        match run_opencode_title(&binary, repo_path, &prompt) {
+        let model = OPENCODE_TITLE_MODELS
+            [(attempt as usize - 1) % OPENCODE_TITLE_MODELS.len()];
+        match run_opencode_title(&binary, repo_path, model, &prompt) {
             Ok(raw) => match sanitize_title(&raw, empty_label) {
                 Ok(message) if !is_unacceptable_message(&message) => return Ok(message),
                 Ok(_) => {
