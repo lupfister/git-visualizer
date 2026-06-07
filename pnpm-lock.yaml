@@ -17,6 +17,12 @@ importers:
       '@tauri-apps/plugin-dialog':
         specifier: ^2
         version: 2.7.0
+      '@xterm/addon-fit':
+        specifier: ^0.11.0
+        version: 0.11.0
+      '@xterm/xterm':
+        specifier: ^6.0.0
+        version: 6.0.0
       dialkit:
         specifier: ^1.2.0
         version: 1.2.0(motion@12.38.0(react-dom@19.2.4(react@19.2.4))(react@19.2.4))(react-dom@19.2.4(react@19.2.4))(react@19.2.4)
@@ -65,7 +71,7 @@ importers:
         version: 8.5.6
       tailwindcss:
         specifier: ^4
-        version: 4.2.1
+        version: 4.3.0
       typescript:
         specifier: ^5
         version: 5.9.3
@@ -105,7 +111,7 @@ importers:
         version: 4.7.0(vite@6.4.1(@types/node@20.19.33)(jiti@2.6.1)(lightningcss@1.32.0))
       tailwindcss:
         specifier: ^4
-        version: 4.2.1
+        version: 4.3.0
       typescript:
         specifier: ^5
         version: 5.9.3
@@ -845,6 +851,12 @@ packages:
 
   '@vitest/utils@4.1.6':
     resolution: {integrity: sha512-FxIY+U81R3LGKCxaHHFRQ5+g6/iRgGLmeHWdp2Amj4ljQRrEIWHmZyDfDYBRZlpyqA7qKxtS9DD1dhk8RnRIVQ==}
+
+  '@xterm/addon-fit@0.11.0':
+    resolution: {integrity: sha512-jYcgT6xtVYhnhgxh3QgYDnnNMYTcf8ElbxxFzX0IZo+vabQqSPAjC3c1wJrKB5E19VwQei89QCiZZP86DCPF7g==}
+
+  '@xterm/xterm@6.0.0':
+    resolution: {integrity: sha512-TQwDdQGtwwDt+2cgKDLn0IRaSxYu1tSUjgKarSDkUM0ZNiSRXFpjxEsvc/Zgc5kq5omJ+V0a8/kIM2WD3sMOYg==}
 
   agentation@3.0.2:
     resolution: {integrity: sha512-iGzBxFVTuZEIKzLY6AExSLAQH6i6SwxV4pAu7v7m3X6bInZ7qlZXAwrEqyc4+EfP4gM7z2RXBF6SF4DeH0f2lA==}
@@ -1964,6 +1976,10 @@ snapshots:
       '@vitest/pretty-format': 4.1.6
       convert-source-map: 2.0.0
       tinyrainbow: 3.1.0
+
+  '@xterm/addon-fit@0.11.0': {}
+
+  '@xterm/xterm@6.0.0': {}
 
   agentation@3.0.2(react-dom@19.2.4(react@19.2.4))(react@19.2.4):
     optionalDependencies:

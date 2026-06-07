@@ -50,6 +50,22 @@ export interface WorktreeInfo {
   hasUncommittedChanges?: boolean;
 }
 
+export type TerminalSessionKind = 'shell' | 'preview';
+
+export interface TerminalSession {
+  id: string;
+  projectPath: string;
+  worktreePath: string;
+  kind: TerminalSessionKind;
+  label: string;
+  command: string;
+  cols: number;
+  rows: number;
+  status: 'running' | 'exited';
+  targetId?: string | null;
+  targetKind?: 'commit' | 'worktree' | null;
+}
+
 export interface Commit {
   fullSha: string;
   sha: string;

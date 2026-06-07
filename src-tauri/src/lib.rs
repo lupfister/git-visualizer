@@ -4,6 +4,11 @@ mod repo_git_gate;
 #[cfg(target_os = "macos")]
 mod macos_traffic_lights;
 mod opencode;
+mod terminal_host;
+
+pub fn run_terminal_host() -> Result<(), String> {
+    terminal_host::run_terminal_host()
+}
 
 use tauri::{Emitter, Manager};
 
@@ -3183,6 +3188,49 @@ async fn prepare_preview_target(
     .await
 }
 
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct TerminalReadResult {
+    session: terminal_host::TerminalSession,
+    output: String,
+}
+
+#[tauri::command]
+async fn list_terminal_sessions() -> Result<Vec<terminal_host::TerminalSession>, String> {
+    run_blocking(terminal_host::list_sessions).await
+}
+
+#[tauri::command(rename_all = "camelCase")]
+async fn create_terminal_session(
+    session: terminal_host::TerminalSession,
+) -> Result<terminal_host::TerminalSession, String> {
+    run_blocking(move || terminal_host::create_session(session)).await
+}
+
+#[tauri::command(rename_all = "camelCase")]
+async fn read_terminal_session(id: String) -> Result<TerminalReadResult, String> {
+    run_blocking(move || {
+        let (session, output) = terminal_host::read_session(id)?;
+        Ok(TerminalReadResult { session, output })
+    })
+    .await
+}
+
+#[tauri::command(rename_all = "camelCase")]
+async fn write_terminal_session(id: String, data: String) -> Result<(), String> {
+    run_blocking(move || terminal_host::write_session(id, data)).await
+}
+
+#[tauri::command(rename_all = "camelCase")]
+async fn resize_terminal_session(id: String, cols: u16, rows: u16) -> Result<(), String> {
+    run_blocking(move || terminal_host::resize_session(id, cols, rows)).await
+}
+
+#[tauri::command(rename_all = "camelCase")]
+async fn terminate_terminal_session(id: String) -> Result<(), String> {
+    run_blocking(move || terminal_host::terminate_session(id)).await
+}
+
 fn preview_processes() -> &'static Mutex<HashMap<String, PreviewProcess>> {
     PREVIEW_PROCESS_STATE.get_or_init(|| Mutex::new(HashMap::new()))
 }
@@ -3232,9 +3280,6 @@ fn stop_all_preview_processes() {
     for (_, mut process) in processes.drain() {
         terminate_preview_process(&mut process.child);
         let _ = process.child.wait();
-    }
-    if let Ok(storage_root) = preview_worktree_storage_root() {
-        terminate_orphaned_preview_processes(&storage_root);
     }
 }
 
@@ -7975,6 +8020,12 @@ pub fn run() {
             list_worktrees,
             remove_worktree,
             prepare_preview_target,
+            list_terminal_sessions,
+            create_terminal_session,
+            read_terminal_session,
+            write_terminal_session,
+            resize_terminal_session,
+            terminate_terminal_session,
             detect_project_preview_defaults,
             start_project_preview,
             get_project_preview_status,

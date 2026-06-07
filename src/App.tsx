@@ -7,7 +7,7 @@ import { getCurrentWindow } from '@tauri-apps/api/window';
 import { open } from '@tauri-apps/plugin-dialog';
 import { PanelLeftClose, PanelLeftOpen } from 'lucide-react';
 import BranchGridMapView from '../components/grid/MapViewGrid';
-import PreviewTerminalPanel from '../components/PreviewTerminalPanel';
+import TerminalPanel from '../components/TerminalPanel';
 import { mapGridCameraStorageKey, readHasSavedMapGridCamera } from '../components/grid/useMapGridCamera';
 import DenseBranchSidebar from '../components/DenseBranchSidebar';
 import type { NodePositionOverrides } from '../components/grid/LayoutGrid';
@@ -20,7 +20,7 @@ import { hydrateBranchGridLayoutModel, serializeBranchGridLayoutModel } from '..
 import { buildGraphLayoutFingerprint, hashCommitShaList } from '../components/grid/graphLayoutFingerprint';
 import { useBranchGridLayoutFromRevision } from '../components/grid/useBranchGridLayoutFromRevision';
 import { layoutModelHasWorkingTree } from '../components/grid/workingTreeLayout';
-import type { Branch, BranchCommitPreview, BranchPromptMeta, CheckedOutRef, CommitMutationData, DeleteSelectionMutationData, DirectCommit, GitHubAuthStatus, GitHubInfo, GitStashEntry, MergeNode, OpenPR, RepoMutationOutcome, RepoVisualSnapshot, StashPushMutationData, StashRestoreMutationData, WorktreeInfo } from '../types';
+import type { Branch, BranchCommitPreview, BranchPromptMeta, CheckedOutRef, CommitMutationData, DeleteSelectionMutationData, DirectCommit, GitHubAuthStatus, GitHubInfo, GitStashEntry, MergeNode, OpenPR, RepoMutationOutcome, RepoVisualSnapshot, StashPushMutationData, StashRestoreMutationData, TerminalSession, WorktreeInfo } from '../types';
 import {
   checkedOutRefWithDirtyFromQuickState,
   mergeCheckedOutRefWithQuickState,
@@ -82,14 +82,13 @@ import {
 } from './repoSyncPeek';
 import {
   detectProjectPreviewDefaults,
-  getActiveProjectPreviewTargets,
-  startProjectPreview,
-  stopProjectPreview,
+  preparePreviewTarget,
   getRepoWatcherEpochs,
   getRepoFastSignature,
   type PreviewTarget,
   type ProjectPreviewConfig,
 } from '../lib/git';
+import { createTerminalSession, listTerminalSessions, terminateTerminalSession } from '../lib/terminal';
 
 const PROJECTS_STORAGE_KEY = 'git-visualizer:projects';
 const ACTIVE_PROJECT_STORAGE_KEY = 'git-visualizer:active-project';
@@ -334,11 +333,11 @@ function App() {
   const [previewDraftConfig, setPreviewDraftConfig] = useState<ProjectPreviewConfig | null>(null);
   const [pendingPreviewTarget, setPendingPreviewTarget] = useState<PreviewTarget | null>(null);
   const [pendingPreviewNodeId, setPendingPreviewNodeId] = useState<string | null>(null);
-  const [previewActive, setPreviewActive] = useState(false);
   const [previewedWorktreeNodeIds, setPreviewedWorktreeNodeIds] = useState<string[]>([]);
-  const [previewTerminalOpen, setPreviewTerminalOpen] = useState(false);
   const [previewInProgress, setPreviewInProgress] = useState(false);
   const [previewedNodeId, setPreviewedNodeId] = useState<string | null>(null);
+  const [terminalSessions, setTerminalSessions] = useState<TerminalSession[]>([]);
+  const [activeTerminalId, setActiveTerminalId] = useState<string | null>(null);
   // scrollRequest.seq increments on each click so the same branch re-triggers the effect
   const scrollRequest: { branch: Branch; seq: number } | null = null;
   const focusedErrorBranch: Branch | null = null;
@@ -1491,28 +1490,6 @@ function App() {
         // ignore storage failures
       }
       return next;
-    });
-  }
-
-  function reorderProjects(nextOrder: string[]) {
-    setProjects((previous) => {
-      const byPath = new Map(previous.map((project) => [project.path, project]));
-      const next: ProjectRecord[] = [];
-      for (const path of nextOrder) {
-        const project = byPath.get(path);
-        if (!project) continue;
-        next.push(project);
-        byPath.delete(path);
-      }
-      for (const project of previous) {
-        if (byPath.has(project.path)) next.push(project);
-      }
-      try {
-        localStorage.setItem(PROJECTS_STORAGE_KEY, JSON.stringify(next.slice(0, MAX_PROJECTS)));
-      } catch {
-        // ignore storage failures
-      }
-      return next.slice(0, MAX_PROJECTS);
     });
   }
 
@@ -5659,12 +5636,6 @@ function App() {
     setGridSearchJumpToken((token) => token + 1);
   }
 
-  function handleSidebarSelectBranch(branchName: string) {
-    if (!branchName) return;
-    setGridSearchQuery(branchName);
-    setGridSearchJumpToken((token) => token + 1);
-  }
-
   // Synthetic stash nodes (yellow) and per-worktree worktree nodes — same lane rules as before.
   const {
     enrichedBranches,
@@ -6365,20 +6336,31 @@ function App() {
   ) => {
     if (!repoPath) return;
     setPreviewInProgress(true);
-    setPreviewActive(false);
     try {
-      const result = await startProjectPreview(repoPath, target, config);
+      const prepared = await preparePreviewTarget(repoPath, target);
+      const command = config.installCommand.trim()
+        ? `${config.installCommand.trim()} && ${config.runCommand.trim()}`
+        : config.runCommand.trim();
+      const result = await createTerminalSession({
+        projectPath: repoPath,
+        worktreePath: prepared.previewPath,
+        kind: 'preview',
+        label: 'Preview',
+        command,
+        cols: 100,
+        rows: 30,
+        targetId: target.kind === 'commit' ? target.sha : target.workingTreeId,
+        targetKind: target.kind,
+      });
+      setTerminalSessions((current) => [...current.filter((session) => session.id !== result.id), result]);
+      setActiveTerminalId(result.id);
       if (target.kind === 'worktree') {
-        setPreviewedWorktreeNodeIds((current) => current.includes(result.targetId) ? current : [...current, result.targetId]);
+        setPreviewedWorktreeNodeIds((current) => current.includes(target.workingTreeId) ? current : [...current, target.workingTreeId]);
       } else {
-        setPreviewedNodeId(result.targetId || nodeId);
+        setPreviewedNodeId(target.sha || nodeId);
       }
-      setPreviewActive(result.status === 'running');
-      setPreviewTerminalOpen(result.status === 'running');
     } catch (error) {
       console.warn('Preview failed:', error);
-      setPreviewActive(false);
-      setPreviewTerminalOpen(false);
     } finally {
       setPreviewInProgress(false);
     }
@@ -6423,37 +6405,69 @@ function App() {
     setPendingPreviewNodeId(null);
   }, [pendingPreviewNodeId, pendingPreviewTarget, previewDraftConfig, repoPath, runPreviewForTarget]);
 
-  const handleStopPreview = useCallback(async () => {
-    if (!repoPath) return;
-    await stopProjectPreview(repoPath).catch(() => undefined);
-    setPreviewActive(false);
-    setPreviewTerminalOpen(false);
-    setPreviewedNodeId(null);
-    setPreviewedWorktreeNodeIds([]);
-  }, [repoPath]);
-
   const syncActivePreviewTarget = useCallback(async (path: string) => {
-    const targets = await getActiveProjectPreviewTargets(path).catch(() => []);
+    const targets = terminalSessions.filter((session) => sameRepoPath(session.projectPath, path) && session.kind === 'preview' && session.status === 'running');
     if (!sameRepoPath(repoPath, path)) return;
-    const commitTarget = targets.find((target) => target.targetKind !== 'worktree') ?? null;
+    const commitTarget = targets.find((target) => target.targetKind === 'commit') ?? null;
     const worktreeTargets = targets
       .filter((target) => target.targetKind === 'worktree')
-      .map((target) => target.targetId);
+      .map((target) => target.targetId ?? '');
     setPreviewedNodeId((current) => (current === (commitTarget?.targetId ?? null) ? current : (commitTarget?.targetId ?? null)));
     setPreviewedWorktreeNodeIds(worktreeTargets);
-    setPreviewActive(targets.length > 0);
-  }, [repoPath]);
+  }, [repoPath, terminalSessions]);
 
   useEffect(() => {
     if (!repoPath) {
       setPreviewedNodeId(null);
       setPreviewedWorktreeNodeIds([]);
-      setPreviewActive(false);
-      setPreviewTerminalOpen(false);
       return;
     }
     void syncActivePreviewTarget(repoPath);
   }, [repoPath, syncActivePreviewTarget]);
+
+  useEffect(() => {
+    let disposed = false;
+    const refresh = () => {
+      void listTerminalSessions().then((sessions) => {
+        if (!disposed) setTerminalSessions(sessions);
+      }).catch(() => undefined);
+    };
+    refresh();
+    const interval = window.setInterval(refresh, 1000);
+    return () => {
+      disposed = true;
+      window.clearInterval(interval);
+    };
+  }, []);
+
+  const activeTerminal = terminalSessions.find((session) => session.id === activeTerminalId) ?? null;
+
+  const handleCreateTerminal = useCallback(async (projectPath: string, worktreePath: string) => {
+    const number = terminalSessions.filter((session) => sameRepoPath(session.worktreePath, worktreePath) && session.kind === 'shell').length + 1;
+    const session = await createTerminalSession({
+      projectPath,
+      worktreePath,
+      kind: 'shell',
+      label: `Terminal ${number}`,
+      command: '',
+      cols: 100,
+      rows: 30,
+      targetId: null,
+      targetKind: null,
+    });
+    setTerminalSessions((current) => [...current, session]);
+    setActiveTerminalId(session.id);
+  }, [terminalSessions]);
+
+  const handleTerminateTerminal = useCallback(async (id: string) => {
+    await terminateTerminalSession(id).catch(() => undefined);
+    setTerminalSessions((current) => current.filter((session) => session.id !== id));
+    setActiveTerminalId((current) => current === id ? null : current);
+  }, []);
+
+  const handleTerminalSessionChange = useCallback((session: TerminalSession) => {
+    setTerminalSessions((current) => current.map((candidate) => candidate.id === session.id ? session : candidate));
+  }, []);
 
   const blockMapDisplay = !mapReadyForDisplay || mapPresentationState !== 'ready';
   const blockMapInteraction = mapLoading || loading;
@@ -6491,22 +6505,18 @@ function App() {
               onSelectProject={loadRepo}
               onAddProject={handleAddProject}
               onRemoveProject={removeProject}
-              onReorderProjects={reorderProjects}
               onRevealProjectInFinder={revealProjectInFinder}
               onResetProjectNodePositions={resetProjectNodePositions}
               projectLoading={loading || (projectTreeLoading && repoPath ? !projectSnapshots[repoPath]?.loaded : false)}
               projectError={error}
-              checkedOutRef={checkedOutRef}
-              showCommits={false}
-              manuallyOpenedClumpsByProject={manuallyOpenedGridClumpsByRepo}
-              manuallyClosedClumpsByProject={manuallyClosedGridClumpsByRepo}
-              manuallyOpenedClumps={manuallyOpenedGridClumps}
-              manuallyClosedClumps={manuallyClosedGridClumps}
-              setManuallyOpenedClumps={setManuallyOpenedGridClumps}
-              setManuallyClosedClumps={setManuallyClosedGridClumps}
-              gridLayoutModel={gridLayoutModelForView}
-              onSelectCommit={handleSidebarSelectCommit}
-              onSelectBranch={handleSidebarSelectBranch}
+              terminalSessions={terminalSessions}
+              activeTerminalId={activeTerminalId}
+              onCreateTerminal={handleCreateTerminal}
+              onSelectTerminal={(session) => setActiveTerminalId(session.id)}
+              onSelectWorktree={async (projectPath, workingTreeId) => {
+                if (!repoPath || !sameRepoPath(repoPath, projectPath)) await loadRepo(projectPath);
+                handleSidebarSelectCommit(workingTreeId);
+              }}
             />
             {!isSidebarCollapsed ? (
               <div
@@ -6636,15 +6646,13 @@ function App() {
                   </div>
                 </div>
               ) : null}
-              <PreviewTerminalPanel
-                repoPath={repoPath}
-                active={previewActive}
-                open={previewTerminalOpen}
-                onOpenChange={setPreviewTerminalOpen}
-                onStop={() => void handleStopPreview()}
-              />
           </div>
-
+          <TerminalPanel
+            session={activeTerminal}
+            onClose={() => setActiveTerminalId(null)}
+            onTerminate={(id) => void handleTerminateTerminal(id)}
+            onSessionChange={handleTerminalSessionChange}
+          />
         </div>
       </div>
     </div>
