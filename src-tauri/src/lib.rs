@@ -2639,11 +2639,10 @@ async fn get_repo_change_token(repo_path: String) -> Result<String, String> {
             states.entry(key).or_default().generation
         };
         Ok(format!(
-            "{}@@{}@@{}@@{}@@{}",
+            "{}@@{}@@{}@@{}",
             head.trim(),
             refs.trim(),
             metadata_stamp(&git_dir.join("index")),
-            metadata_stamp(path),
             watcher_generation,
         ))
     })

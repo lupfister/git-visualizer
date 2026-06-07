@@ -2425,8 +2425,7 @@ function App() {
     const force = options?.force === true;
     const patchedSignature = getRepoVisualSnapshotSignature(patched);
     if (
-      !force
-      && sameRepoPath(repoPath, normalizedPath)
+      sameRepoPath(repoPath, normalizedPath)
       && activeSnapshotSignatureRef.current === patchedSignature
     ) {
       upsertProjectSnapshot(normalizedPath, patched, { force });
@@ -4450,6 +4449,14 @@ function App() {
               hasSnapshot: Boolean(freshSnapshot),
               stale: isStaleRepoRefresh(),
             });
+            return;
+          }
+          const signature = getRepoVisualSnapshotSignature(freshSnapshot);
+          if (activeSnapshotSignatureRef.current === signature) {
+            console.debug('[repo-sync] snapshot signature is identical. Skipping apply.', { repoPath: normalizedPath });
+            appliedRepoChangeTokenRef.current[normalizedPath] = liveChangeToken;
+            delete pendingLiveFingerprintRef.current[normalizedPath];
+            markGitActivityHandled();
             return;
           }
           invalidateRepoLayoutCacheForPath(normalizedPath);
