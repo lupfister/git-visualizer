@@ -3,7 +3,7 @@ use std::sync::{Arc, Condvar, Mutex, OnceLock};
 use std::time::{Duration, Instant};
 
 const MAX_CONCURRENT_GIT_OPS: usize = 8;
-const PROBE_CACHE_TTL: Duration = Duration::from_millis(400);
+const PROBE_CACHE_TTL: Duration = Duration::from_millis(1500);
 
 struct ProbeCacheEntry {
     probe: super::RepoChangeProbe,
@@ -29,7 +29,7 @@ fn probe_cache() -> &'static Mutex<HashMap<String, ProbeCacheEntry>> {
 }
 
 pub fn normalize_repo_gate_key(repo_path: &str) -> String {
-    repo_path.trim_end_matches('/').to_string()
+    repo_path.trim_end_matches('/').to_lowercase()
 }
 
 pub fn with_git_work_permit<T, F>(f: F) -> T

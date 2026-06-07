@@ -1439,27 +1439,6 @@ pub fn try_fast_forward_pull(repo: &Path) -> Result<bool, GitError> {
     }
 }
 
-/// Branch ref signature without parent inference — sequential, safe under concurrency.
-pub fn compute_quick_branch_ref_sig(
-    repo: &Path,
-    default_branch: &str,
-) -> Result<String, GitError> {
-    let heads = list_local_branch_heads(repo)?;
-    let mut lines = Vec::with_capacity(heads.len());
-    for (name, head_sha) in heads {
-        if name == default_branch {
-            continue;
-        }
-        let (commits_ahead, _) = get_ahead_behind(repo, &name, default_branch).unwrap_or((0, 0));
-        let (remote_sync_status, unpushed_commits) =
-            get_remote_sync_status(repo, &name, commits_ahead);
-        lines.push(format!(
-            "{name}:{head_sha}:{commits_ahead}:{unpushed_commits}:{remote_sync_status}"
-        ));
-    }
-    lines.sort();
-    Ok(lines.join("|"))
-}
 
 pub fn list_origin_branch_heads(repo: &Path) -> Result<Vec<(String, String)>, GitError> {
     let output = cli::run(

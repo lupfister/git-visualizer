@@ -751,7 +751,7 @@ fn normalize_repo_path_id(repo_path: &str) -> String {
     if repo_path == "/" {
         "/".to_string()
     } else {
-        repo_path.trim_end_matches('/').to_string()
+        repo_path.trim_end_matches('/').to_lowercase()
     }
 }
 
@@ -932,19 +932,53 @@ fn compose_repo_fingerprint(
 }
 
 fn fingerprint_unchanged_via_probe(
-    repo_path: &str,
+    _repo_path: &str,
     stored_fp: &str,
     probe: &RepoChangeProbe,
 ) -> Result<bool, String> {
-    if !probe_lite_matches_fingerprint(probe, stored_fp) {
-        return Ok(false);
-    }
+    Ok(probe_lite_matches_fingerprint(probe, stored_fp))
+}
+
+fn fingerprint_patch_via_probe(
+    stored_fp: &str,
+    probe: &RepoChangeProbe,
+) -> Option<String> {
     let parts: Vec<&str> = stored_fp.split("@@").collect();
-    let path = Path::new(repo_path);
-    let default_branch = git::get_default_branch(path).map_err(|e| e.to_string())?;
-    let quick_sig =
-        git::compute_quick_branch_ref_sig(path, &default_branch).map_err(|e| e.to_string())?;
-    Ok(quick_sig == parts[4])
+    if parts.len() < 7 {
+        return None;
+    }
+    if probe.head_sha != parts[1] {
+        return None;
+    }
+    if probe.branch_head_digest != git::branch_head_digest_from_ref_sig(parts[4]) {
+        return None;
+    }
+    let upstream_part = parts[2];
+    if !probe.remote_heads_digest.is_empty() {
+        let remote_from_fp = upstream_part.split('|').nth(1).unwrap_or("");
+        if !remote_from_fp.is_empty() && probe.remote_heads_digest != remote_from_fp {
+            return None;
+        }
+    }
+    let default_branch = parts[0];
+    let head_sha = parts[1];
+    let upstream_part = parts[2];
+    let branch_ref_sig = parts[4];
+
+    let has_uncommitted_changes = if probe.has_uncommitted_changes { "1" } else { "0" };
+    let worktree_sig = &probe.worktree_sig;
+    let stash_sig = &probe.stash_sig;
+
+    Some(format!(
+        "{}@@{}@@{}@@{}@@{}@@{}@@{}",
+        default_branch,
+        head_sha,
+        upstream_part,
+        has_uncommitted_changes,
+        branch_ref_sig,
+        worktree_sig,
+        stash_sig
+    ))
 }
 
 fn compute_repo_fingerprint_inner(repo_path: &str) -> Result<(String, RepoRefreshFingerprint), String> {
@@ -2163,6 +2197,8 @@ fn check_project_fingerprint_blocking(
         let (current_fingerprint, changed) = if let Some(ref stored) = stored_fingerprint {
             if fingerprint_unchanged_via_probe(&repo_path, stored, &probe)? {
                 (stored.clone(), false)
+            } else if let Some(patched) = fingerprint_patch_via_probe(stored, &probe) {
+                (patched.clone(), patched != *stored)
             } else {
                 let (current, _) = compute_repo_fingerprint_inner(&repo_path)?;
                 (current.clone(), current != *stored)
