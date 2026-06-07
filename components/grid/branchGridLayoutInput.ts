@@ -44,6 +44,7 @@ export const buildBranchGridLayoutInput = (
   worktreeSessions: revision.worktreeSessions,
   orientation: revision.mapGridOrientation,
   nodePositionOverrides: revision.nodePositionOverrides,
+  graphLayoutSignature: revision.graphLayoutSignature,
 });
 
 export const toWorkerBranchGridLayoutInput = (
