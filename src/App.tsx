@@ -438,6 +438,7 @@ function App() {
   const repoSyncPeekDeduperRef = useRef(createInFlightDeduper<RepoSyncPeek | null>());
   const fingerprintCheckDeduperRef = useRef(createInFlightDeduper<FingerprintCheckResult | null>());
   const liveFingerprintCheckInFlightRef = useRef(false);
+  const pendingLiveFingerprintRef = useRef<Record<string, string>>({});
   const isRepoSwitchingRef = useRef(false);
   const currentRepoPathRef = useRef<string | null>(null);
   const sidebarDragRef = useRef<{
@@ -4467,8 +4468,35 @@ function App() {
           if (isStaleRepoRefresh()) return;
           const mapFingerprint = lastSyncedRepoFingerprintRef.current[normalizedPath];
           if (mapFingerprint && liveFingerprint === mapFingerprint) return;
+          pendingLiveFingerprintRef.current = {
+            ...pendingLiveFingerprintRef.current,
+            [normalizedPath]: liveFingerprint,
+          };
+          if (
+            repoMutationInFlightRef.current
+            || reconcileInFlightRef.current
+            || isMapInteractingRef.current
+            || !canApplyRepoRefreshRef.current
+          ) {
+            pendingRefreshAfterInteractionRef.current = true;
+            return;
+          }
           gitActivityEpochRef.current += 1;
-          const applied = await reloadRepoSnapshotFromGit(normalizedPath);
+          const freshSnapshot = await invoke<RepoVisualSnapshot>('get_repo_visual_snapshot', {
+            repoPath: normalizedPath,
+            forceRefresh: true,
+          }).catch(() => null);
+          if (!freshSnapshot || isStaleRepoRefresh()) return;
+          const applied = applySnapshotToActiveState(normalizedPath, freshSnapshot, {
+            force: true,
+            allowIncomingDirty: true,
+            needsLayoutRebuild: true,
+          });
+          if (applied) {
+            noteSyncedRepoFingerprint(normalizedPath, liveFingerprint);
+            delete pendingLiveFingerprintRef.current[normalizedPath];
+            markGitActivityHandled();
+          }
           if (!applied) {
             pendingRefreshAfterInteractionRef.current = true;
           }
