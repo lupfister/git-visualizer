@@ -4,7 +4,7 @@ import { Terminal } from '@xterm/xterm';
 import { FitAddon } from '@xterm/addon-fit';
 import '@xterm/xterm/css/xterm.css';
 import type { TerminalSession } from '../types';
-import { readTerminalSession, resizeTerminalSession, saveTerminalAttachment, writeTerminalSession } from '../lib/terminal';
+import { readTerminalSession, resizeTerminalSession, saveTerminalAttachment, setTerminalSessionLabel, writeTerminalSession } from '../lib/terminal';
 
 type Props = {
   session: TerminalSession | null;
@@ -21,12 +21,15 @@ const blobToBase64 = (blob: Blob): Promise<string> => new Promise((resolve, reje
 });
 
 const shellQuote = (value: string): string => `'${value.split("'").join("'\\''")}'`;
+const isGenericTerminalLabel = (label: string): boolean => /^Terminal \d+$/.test(label);
 
 export default function TerminalPanel({ session, onClose, onTerminate, onSessionChange }: Props) {
   const hostRef = useRef<HTMLDivElement | null>(null);
   const terminalRef = useRef<Terminal | null>(null);
   const renderedOutputRef = useRef('');
+  const sessionLabelRef = useRef('');
   const [width, setWidth] = useState(560);
+  sessionLabelRef.current = session?.label ?? '';
 
   useEffect(() => {
     const host = hostRef.current;
@@ -53,6 +56,13 @@ export default function TerminalPanel({ session, onClose, onTerminate, onSession
 
     const dataDisposable = terminal.onData((data) => {
       void writeTerminalSession(session.id, data);
+    });
+    const titleDisposable = terminal.onTitleChange((title) => {
+      const label = title.trim().split(/\s+[—-]\s+/).at(-1)?.trim() ?? '';
+      if (!isGenericTerminalLabel(sessionLabelRef.current) || !label || label.length > 80) return;
+      sessionLabelRef.current = label;
+      void setTerminalSessionLabel(session.id, label);
+      onSessionChange({ ...session, label });
     });
     const handlePaste = (event: ClipboardEvent) => {
       const files = Array.from(event.clipboardData?.files ?? []).filter((file) =>
@@ -97,6 +107,7 @@ export default function TerminalPanel({ session, onClose, onTerminate, onSession
       observer.disconnect();
       host.removeEventListener('paste', handlePaste, true);
       dataDisposable.dispose();
+      titleDisposable.dispose();
       terminal.dispose();
       terminalRef.current = null;
     };

@@ -1,5 +1,4 @@
 import { memo, useLayoutEffect } from 'react';
-import { motion, useReducedMotion } from 'framer-motion';
 import {
   connectorGeometryCacheKey,
   type ConnectorPathCacheEntry,
@@ -13,7 +12,6 @@ type MapGridConnectorPathProps = {
   cornerRadiusPx: number;
   strokeWidth: number;
   pathCache: Map<string, ConnectorPathCacheEntry>;
-  suspendAnimations?: boolean;
   registerCameraTarget: (element: HTMLElement | SVGElement, layout?: { layoutX: number; layoutY: number }) => () => void;
 };
 
@@ -23,20 +21,16 @@ const MapGridConnectorPath = memo(
     cornerRadiusPx,
     strokeWidth,
     pathCache,
-    suspendAnimations = false,
     registerCameraTarget,
   }: MapGridConnectorPathProps) {
     const d = getOrBuildConnectorPathD(pathCache, connector, cornerRadiusPx);
-    const reduceMotion = useReducedMotion() ?? false;
     return (
-      <motion.path
+      <path
         ref={(element) => {
           if (!element) return;
           return registerCameraTarget(element);
         }}
-        initial={false}
-        animate={{ d }}
-        transition={reduceMotion || suspendAnimations ? { duration: 0 } : { duration: 0.17, ease: [0.16, 1, 0.3, 1] }}
+        d={d}
         fill="none"
         stroke="currentColor"
         strokeWidth={strokeWidth}
@@ -59,7 +53,6 @@ export type MapGridConnectorLayerProps = {
   cornerRadiusPx: number;
   strokeWidth: number;
   pathCache: Map<string, ConnectorPathCacheEntry>;
-  suspendAnimations?: boolean;
   registerCameraTarget: (element: HTMLElement | SVGElement, layout?: { layoutX: number; layoutY: number }) => () => void;
 };
 
@@ -69,7 +62,6 @@ export const MapGridConnectorLayer = memo(function MapGridConnectorLayer({
   cornerRadiusPx,
   strokeWidth,
   pathCache,
-  suspendAnimations = false,
   registerCameraTarget,
 }: MapGridConnectorLayerProps) {
   useLayoutEffect(() => {
@@ -97,7 +89,6 @@ export const MapGridConnectorLayer = memo(function MapGridConnectorLayer({
           cornerRadiusPx={cornerRadiusPx}
           strokeWidth={strokeWidth}
           pathCache={pathCache}
-          suspendAnimations={suspendAnimations}
           registerCameraTarget={registerCameraTarget}
         />
       ))}
@@ -108,7 +99,6 @@ export const MapGridConnectorLayer = memo(function MapGridConnectorLayer({
           cornerRadiusPx={cornerRadiusPx}
           strokeWidth={strokeWidth}
           pathCache={pathCache}
-          suspendAnimations={suspendAnimations}
           registerCameraTarget={registerCameraTarget}
         />
       ))}

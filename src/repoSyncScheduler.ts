@@ -9,20 +9,19 @@ export type RepoSyncSchedulerIntervals = {
 };
 
 export const REPO_SYNC_INTERVALS_VISIBLE: RepoSyncSchedulerIntervals = {
-  dirtyMs: 8_000,
-  peekMs: 20_000,
-  fullMs: 60_000,
+  reconcileMs: 1_000,
+  repairMs: 60_000,
 };
 
 export const REPO_SYNC_INTERVALS_HIDDEN: RepoSyncSchedulerIntervals = {
-  dirtyMs: 30_000,
-  peekMs: 60_000,
-  fullMs: 180_000,
+  reconcileMs: 30_000,
+  repairMs: 180_000,
 };
 
 export type RepoSyncSchedulerHandlers = {
   onReconcile: () => void;
   onRepair: () => void;
+  canRun?: () => boolean;
   isDisposed?: () => boolean;
 };
 
@@ -59,7 +58,7 @@ export function createRepoSyncScheduler(handlers: RepoSyncSchedulerHandlers): Re
     reconcileId = window.setTimeout(() => {
       reconcileId = null;
       if (handlers.isDisposed?.()) return;
-      handlers.onReconcile();
+      if (handlers.canRun?.() ?? true) handlers.onReconcile();
       scheduleReconcile();
     }, resolveRepoSyncIntervals().reconcileMs);
   };
@@ -69,7 +68,7 @@ export function createRepoSyncScheduler(handlers: RepoSyncSchedulerHandlers): Re
     repairId = window.setTimeout(() => {
       repairId = null;
       if (handlers.isDisposed?.()) return;
-      handlers.onRepair();
+      if (handlers.canRun?.() ?? true) handlers.onRepair();
       scheduleRepair();
     }, resolveRepoSyncIntervals().repairMs);
   };
@@ -82,7 +81,7 @@ export function createRepoSyncScheduler(handlers: RepoSyncSchedulerHandlers): Re
 
   const onVisibilityChange = () => {
     scheduleAll();
-    if (!isDocumentHidden() && !handlers.isDisposed?.()) handlers.onReconcile();
+    if (!isDocumentHidden() && !handlers.isDisposed?.() && (handlers.canRun?.() ?? true)) handlers.onReconcile();
   };
 
   const start = () => {
@@ -106,7 +105,7 @@ export function createRepoSyncScheduler(handlers: RepoSyncSchedulerHandlers): Re
 
   const kickVisibleCatchUp = () => {
     scheduleAll();
-    if (!isDocumentHidden()) handlers.onReconcile();
+    if (!isDocumentHidden() && (handlers.canRun?.() ?? true)) handlers.onReconcile();
   };
 
   return { start, dispose, kickVisibleCatchUp };

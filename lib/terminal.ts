@@ -29,6 +29,9 @@ export const writeTerminalSession = (id: string, data: string): Promise<void> =>
 export const resizeTerminalSession = (id: string, cols: number, rows: number): Promise<void> =>
   invoke('resize_terminal_session', { id, cols, rows });
 
+export const setTerminalSessionLabel = (id: string, label: string): Promise<void> =>
+  invoke('set_terminal_session_label', { id, label });
+
 export const terminateTerminalSession = (id: string): Promise<void> =>
   invoke('terminate_terminal_session', { id });
 

@@ -79,6 +79,7 @@ interface Props {
   previewInProgress?: boolean;
   previewedNodeId?: string | null;
   previewedWorktreeNodeIds?: string[];
+  terminalCountByWorkingTreeId?: Readonly<Record<string, number>>;
   manuallyOpenedClumps?: Set<string>;
   manuallyClosedClumps?: Set<string>;
   setManuallyOpenedClumps?: Dispatch<SetStateAction<Set<string>>>;
@@ -166,6 +167,7 @@ export default function BranchGridMapView({
   previewInProgress = false,
   previewedNodeId = null,
   previewedWorktreeNodeIds = [],
+  terminalCountByWorkingTreeId = {},
   manuallyOpenedClumps,
   manuallyClosedClumps,
   setManuallyOpenedClumps,
@@ -249,6 +251,7 @@ export default function BranchGridMapView({
             previewInProgress={previewInProgress}
             previewedNodeId={previewedNodeId}
             previewedWorktreeNodeIds={previewedWorktreeNodeIds}
+            terminalCountByWorkingTreeId={terminalCountByWorkingTreeId}
             manuallyOpenedClumps={manuallyOpenedClumps}
             manuallyClosedClumps={manuallyClosedClumps}
             setManuallyOpenedClumps={setManuallyOpenedClumps}
@@ -289,6 +292,7 @@ export default function BranchGridMapView({
             previewInProgress={previewInProgress}
             previewedNodeId={previewedNodeId}
             previewedWorktreeNodeIds={previewedWorktreeNodeIds}
+            terminalCountByWorkingTreeId={terminalCountByWorkingTreeId}
             manuallyOpenedClumps={manuallyOpenedClumps}
             manuallyClosedClumps={manuallyClosedClumps}
             setManuallyOpenedClumps={setManuallyOpenedClumps}

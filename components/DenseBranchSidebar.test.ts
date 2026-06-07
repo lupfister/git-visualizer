@@ -30,14 +30,27 @@ describe('worktree sidebar model', () => {
     } satisfies WorktreeInfo)).toBe('main/abcdefg');
   });
 
-  it('shows running worktree previews and all shell sessions, but not commit previews', () => {
+  it('shows persisted worktree previews and all shell sessions, but not commit previews', () => {
     const values = visibleNestedSessions([
       session({ id: 'shell' }),
       session({ id: 'preview', kind: 'preview', targetKind: 'worktree' }),
       session({ id: 'stopped-preview', kind: 'preview', targetKind: 'worktree', status: 'exited' }),
       session({ id: 'commit-preview', kind: 'preview', targetKind: 'commit' }),
-    ], '/repo');
-    expect(values.map((value) => value.id)).toEqual(['shell', 'preview']);
+    ], '/repo', 'WORKING_TREE');
+    expect(values.map((value) => value.id)).toEqual(['shell', 'preview', 'stopped-preview']);
+  });
+
+  it('nests a worktree preview by target id when it runs from a generated preview checkout', () => {
+    const values = visibleNestedSessions([
+      session({
+        id: 'worktree-preview',
+        kind: 'preview',
+        worktreePath: '/tmp/generated-preview',
+        targetKind: 'worktree',
+        targetId: 'WORKING_TREE:/repo-feature',
+      }),
+    ], '/repo-feature', 'WORKING_TREE:/repo-feature');
+    expect(values.map((value) => value.id)).toEqual(['worktree-preview']);
   });
 
   it('labels high-level commit previews with branch and sha', () => {

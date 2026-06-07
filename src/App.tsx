@@ -118,6 +118,29 @@ const PERSIST_SNAPSHOT_DEFER_MS = 3000;
 const MIN_FULL_GRAPH_REFRESH_MS = 1000;
 /** Keep optimistic post-commit HEAD on the map until background probes catch up. */
 const POST_COMMIT_HEAD_PROTECT_MS = 8000;
+
+function terminalSessionsEqual(left: readonly TerminalSession[], right: readonly TerminalSession[]): boolean {
+  if (left.length !== right.length) return false;
+  return left.every((session, index) => {
+    const candidate = right[index];
+    return candidate != null
+      && session.id === candidate.id
+      && session.projectPath === candidate.projectPath
+      && session.worktreePath === candidate.worktreePath
+      && session.kind === candidate.kind
+      && session.label === candidate.label
+      && session.command === candidate.command
+      && session.cols === candidate.cols
+      && session.rows === candidate.rows
+      && session.status === candidate.status
+      && (session.targetId ?? null) === (candidate.targetId ?? null)
+      && (session.targetKind ?? null) === (candidate.targetKind ?? null);
+  });
+}
+
+function stringArraysEqual(left: readonly string[], right: readonly string[]): boolean {
+  return left.length === right.length && left.every((value, index) => value === right[index]);
+}
 const POST_COMMIT_RELEASE_MAX_ATTEMPTS = 15;
 /** Background fingerprint scans (timer lane only); focus/graph/local/quick bypass. */
 const MIN_BACKGROUND_FINGERPRINT_CHECK_MS = 6000;
@@ -4166,7 +4189,12 @@ function App() {
         lastRemoteHeadsDigestRef.current = result.sync.remoteHeadsDigest || lastRemoteHeadsDigestRef.current;
         lastRemoteTipShaRef.current = result.tipState.tipSha;
         setRemoteDefaultTipSha(result.tipState.tipSha);
-        setRemoteDefaultTipMetadata(result.tipState.metadata);
+        setRemoteDefaultTipMetadata((current) => {
+          const next = result.tipState.metadata;
+          if (current === next) return current;
+          if (!current || !next) return next;
+          return current.subject === next.subject && current.author === next.author ? current : next;
+        });
         setRemoteDefaultTipParentSha(result.tipState.parentSha);
         setIsRemoteTipHydrated(result.tipState.hydrated);
         if (!result.sync.changed) {
@@ -4333,7 +4361,7 @@ function App() {
         return runAuthoritativeRepoSync('remote', { fetchRemote: true });
       }
       if (reason === 'timer') {
-        return runAuthoritativeRepoSync('full', { fetchRemote: true, forceSnapshot: true });
+        return runAuthoritativeRepoSync('full', { fetchRemote: true });
       }
       return runAuthoritativeRepoSync('local');
     };
@@ -4341,6 +4369,15 @@ function App() {
     const pollRepoChangeSignal = async () => {
       if (isDisposed) {
         console.debug('[repo-sync] tick skipped', { isDisposed });
+        return;
+      }
+      if (
+        isMapInteractingRef.current
+        || !canApplyRepoRefreshRef.current
+        || repoMutationInFlightRef.current
+        || reconcileInFlightRef.current
+      ) {
+        pendingRefreshAfterInteractionRef.current = true;
         return;
       }
       const normalizedPath = normalizePath(repoPath);
@@ -4453,12 +4490,17 @@ function App() {
 
     const repoSyncScheduler = createRepoSyncScheduler({
       isDisposed: () => isDisposed,
+      canRun: () =>
+        !isMapInteractingRef.current
+        && canApplyRepoRefreshRef.current
+        && !repoMutationInFlightRef.current
+        && !reconcileInFlightRef.current,
       onReconcile: () => {
         void pollRepoChangeSignal();
       },
       onRepair: () => {
-        console.info('[repo-sync] 30s repair refresh');
-        void runAuthoritativeRepoSync('full', { fetchRemote: true, forceSnapshot: true });
+        console.info('[repo-sync] idle repair check');
+        void runAuthoritativeRepoSync('full', { fetchRemote: true });
       },
     });
 
@@ -6411,9 +6453,10 @@ function App() {
     const commitTarget = targets.find((target) => target.targetKind === 'commit') ?? null;
     const worktreeTargets = targets
       .filter((target) => target.targetKind === 'worktree')
-      .map((target) => target.targetId ?? '');
+      .map((target) => target.targetId ?? '')
+      .sort();
     setPreviewedNodeId((current) => (current === (commitTarget?.targetId ?? null) ? current : (commitTarget?.targetId ?? null)));
-    setPreviewedWorktreeNodeIds(worktreeTargets);
+    setPreviewedWorktreeNodeIds((current) => stringArraysEqual(current, worktreeTargets) ? current : worktreeTargets);
   }, [repoPath, terminalSessions]);
 
   useEffect(() => {
@@ -6428,8 +6471,11 @@ function App() {
   useEffect(() => {
     let disposed = false;
     const refresh = () => {
+      if (isMapInteractingRef.current || repoMutationInFlightRef.current) return;
       void listTerminalSessions().then((sessions) => {
-        if (!disposed) setTerminalSessions(sessions);
+        if (!disposed) {
+          setTerminalSessions((current) => terminalSessionsEqual(current, sessions) ? current : sessions);
+        }
       }).catch(() => undefined);
     };
     refresh();
@@ -6441,6 +6487,21 @@ function App() {
   }, []);
 
   const activeTerminal = terminalSessions.find((session) => session.id === activeTerminalId) ?? null;
+  const terminalCountByWorkingTreeId = useMemo(() => {
+    const counts: Record<string, number> = {};
+    if (!repoPath) return counts;
+    for (const worktreeSession of buildWorktreeSessions(worktrees, repoPath, checkedOutRef)) {
+      const count = terminalSessions.filter((session) =>
+        session.kind === 'shell'
+        && session.status === 'running'
+        && sameRepoPath(session.worktreePath, worktreeSession.path),
+      ).length;
+      if (count > 0) {
+        counts[worktreeSession.workingTreeId] = count;
+      }
+    }
+    return counts;
+  }, [checkedOutRef, repoPath, terminalSessions, worktrees]);
 
   const handleCreateTerminal = useCallback(async (projectPath: string, worktreePath: string) => {
     const number = terminalSessions.filter((session) => sameRepoPath(session.worktreePath, worktreePath) && session.kind === 'shell').length + 1;
@@ -6466,7 +6527,10 @@ function App() {
   }, []);
 
   const handleTerminalSessionChange = useCallback((session: TerminalSession) => {
-    setTerminalSessions((current) => current.map((candidate) => candidate.id === session.id ? session : candidate));
+    setTerminalSessions((current) => {
+      const next = current.map((candidate) => candidate.id === session.id ? session : candidate);
+      return terminalSessionsEqual(current, next) ? current : next;
+    });
   }, []);
 
   const blockMapDisplay = !mapReadyForDisplay || mapPresentationState !== 'ready';
@@ -6513,6 +6577,7 @@ function App() {
               activeTerminalId={activeTerminalId}
               onCreateTerminal={handleCreateTerminal}
               onSelectTerminal={(session) => setActiveTerminalId(session.id)}
+              onTerminateTerminal={handleTerminateTerminal}
               onSelectWorktree={async (projectPath, workingTreeId) => {
                 if (!repoPath || !sameRepoPath(repoPath, projectPath)) await loadRepo(projectPath);
                 handleSidebarSelectCommit(workingTreeId);
@@ -6587,6 +6652,7 @@ function App() {
                 previewInProgress={previewInProgress}
                 previewedNodeId={previewedNodeId}
                 previewedWorktreeNodeIds={previewedWorktreeNodeIds}
+                terminalCountByWorkingTreeId={terminalCountByWorkingTreeId}
                 manuallyOpenedClumps={manuallyOpenedGridClumps}
                 manuallyClosedClumps={manuallyClosedGridClumps}
                 setManuallyOpenedClumps={setManuallyOpenedGridClumps}

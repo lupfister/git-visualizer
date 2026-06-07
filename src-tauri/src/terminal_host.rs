@@ -45,6 +45,7 @@ enum HostRequest {
     Read { id: String },
     Write { id: String, data: String },
     Resize { id: String, cols: u16, rows: u16 },
+    SetLabel { id: String, label: String },
     Terminate { id: String },
 }
 
@@ -215,12 +216,19 @@ fn refresh_status(session: &Arc<LiveSession>) -> TerminalSession {
     let mut metadata = session.metadata.lock().expect("terminal metadata lock");
     if exited {
         metadata.status = "exited".to_string();
-    } else if metadata.kind == "shell" {
+    } else if metadata.kind == "shell" && is_generic_terminal_label(&metadata.label) {
         if let Some(command) = process_id.and_then(detect_foreground_command) {
             metadata.label = command;
         }
     }
     metadata.clone()
+}
+
+fn is_generic_terminal_label(label: &str) -> bool {
+    let Some(number) = label.strip_prefix("Terminal ") else {
+        return false;
+    };
+    !number.is_empty() && number.chars().all(|character| character.is_ascii_digit())
 }
 
 fn detect_foreground_command(root_pid: u32) -> Option<String> {
@@ -395,6 +403,22 @@ fn handle_request(request: HostRequest, sessions: &Sessions) -> HostResponse {
                 HostResponse::error(result.unwrap_err())
             }
         }
+        HostRequest::SetLabel { id, label } => {
+            let session = sessions
+                .lock()
+                .ok()
+                .and_then(|values| values.get(&id).cloned());
+            let Some(session) = session else {
+                return HostResponse::error("Terminal session not found");
+            };
+            if let Ok(mut metadata) = session.metadata.lock() {
+                if metadata.kind == "shell" && is_generic_terminal_label(&metadata.label) {
+                    metadata.label = label;
+                }
+            }
+            persist_metadata(sessions);
+            HostResponse::ok()
+        }
         HostRequest::Terminate { id } => {
             let session = sessions
                 .lock()
@@ -533,6 +557,10 @@ pub fn resize_session(id: String, cols: u16, rows: u16) -> Result<(), String> {
     send_request(HostRequest::Resize { id, cols, rows }).map(|_| ())
 }
 
+pub fn set_session_label(id: String, label: String) -> Result<(), String> {
+    send_request(HostRequest::SetLabel { id, label }).map(|_| ())
+}
+
 pub fn terminate_session(id: String) -> Result<(), String> {
     send_request(HostRequest::Terminate { id }).map(|_| ())
 }
@@ -608,5 +636,12 @@ mod tests {
             Some("pnpm".to_string())
         );
         assert_eq!(detect_foreground_command_from_ps(101, ps), None);
+    }
+
+    #[test]
+    fn identifies_only_numbered_default_terminal_labels_as_generic() {
+        assert!(is_generic_terminal_label("Terminal 1"));
+        assert!(!is_generic_terminal_label("Terminal"));
+        assert!(!is_generic_terminal_label("Codex"));
     }
 }

@@ -52,7 +52,6 @@ import { useMapGridSelection } from './useMapGridSelection';
 import {
   buildWorktreeAccentByCommitId,
   buildWorktreeSessions,
-  currentSessionWorkingTreeId,
   isWorkingTreeCommitId,
   selectedRemovableWorktreeSessions,
   dirtyWorktreeSessions,
@@ -169,6 +168,7 @@ type Props = BranchGridViewProps & {
   nodePositionOverrides?: NodePositionOverrides;
   onNodePositionOverridesChange?: (overrides: NodePositionOverrides) => void;
   worktreeDraftByWorkingTreeId?: ReadonlyMap<string, WorktreeDraftDisplay>;
+  terminalCountByWorkingTreeId?: Readonly<Record<string, number>>;
 };
 
 export default function BranchGridMap({
@@ -240,6 +240,7 @@ export default function BranchGridMap({
   nodePositionOverrides: controlledNodePositionOverrides,
   onNodePositionOverridesChange,
   worktreeDraftByWorkingTreeId,
+  terminalCountByWorkingTreeId = {},
 }: Props) {
   const scrollContainerRef = useRef<HTMLDivElement | null>(null);
   const hudHeaderRef = useRef<HTMLElement | null>(null);
@@ -397,7 +398,6 @@ export default function BranchGridMap({
     () => buildWorktreeAccentByCommitId(worktreeSessions),
     [worktreeSessions],
   );
-  const currentWorkingTreeId = currentSessionWorkingTreeId(worktreeSessions);
 
   const checkoutPickerWorktrees = useMemo((): Array<{
     path: string;
@@ -767,7 +767,6 @@ export default function BranchGridMap({
 
   const checkedOutBranchName = checkedOutRef?.branchName ?? null;
   const checkedOutHeadSha = checkedOutRef?.headSha ?? null;
-  const checkedOutIsDetached = checkedOutBranchName == null;
 
   const branchCandidatesForCommit = useCallback(
     (sha: string): string[] => Array.from(commitShaToBranchNames.get(sha) ?? []),
@@ -1250,12 +1249,7 @@ export default function BranchGridMap({
       viewport.clientHeight,
       renderedCameraRef.current,
     );
-    if (!bounds) {
-      startTransition(() => {
-        setVisibleNodeIds((prev) => (prev.size === 0 ? prev : new Set()));
-      });
-      return;
-    }
+    if (!bounds) return;
     visibleBoundsRef.current = bounds;
 
     const displayZoomForCull = renderedCameraRef.current.zoom / GRID_RENDER_ZOOM;
@@ -1306,6 +1300,7 @@ export default function BranchGridMap({
       const admissionBudget = mapGridPanAdmissionBudget(displayZoomForCull);
       startTransition(() => {
         setVisibleNodeIds((prev) => {
+          if (cappedVisible.size === 0 && prev.size > 0) return prev;
           const next = mergePanStableVisibleNodeIds(
             prev,
             nextVisible,
@@ -1325,6 +1320,7 @@ export default function BranchGridMap({
 
     startTransition(() => {
       setVisibleNodeIds((prev) => {
+        if (cappedVisible.size === 0 && prev.size > 0) return prev;
         const pending = panAdmissionPendingRef.current;
         panAdmissionPendingRef.current.clear();
 
@@ -2176,6 +2172,7 @@ export default function BranchGridMap({
           worktreeAccentByCommitId={worktreeAccentByCommitId}
           worktreeSessions={worktreeSessions}
           worktreeDraftByWorkingTreeId={worktreeDraftByWorkingTreeId}
+          terminalCountByWorkingTreeId={terminalCountByWorkingTreeId}
           previewedNodeId={previewedNodeId}
           previewedWorktreeNodeIds={previewedWorktreeNodeIds}
           orientation={orientation}

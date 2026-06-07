@@ -3280,6 +3280,11 @@ async fn resize_terminal_session(id: String, cols: u16, rows: u16) -> Result<(),
 }
 
 #[tauri::command(rename_all = "camelCase")]
+async fn set_terminal_session_label(id: String, label: String) -> Result<(), String> {
+    run_blocking(move || terminal_host::set_session_label(id, label)).await
+}
+
+#[tauri::command(rename_all = "camelCase")]
 async fn terminate_terminal_session(id: String) -> Result<(), String> {
     run_blocking(move || terminal_host::terminate_session(id)).await
 }
@@ -8079,6 +8084,7 @@ pub fn run() {
             read_terminal_session,
             write_terminal_session,
             resize_terminal_session,
+            set_terminal_session_label,
             terminate_terminal_session,
             detect_project_preview_defaults,
             start_project_preview,
