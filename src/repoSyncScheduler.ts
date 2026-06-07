@@ -9,11 +9,16 @@ export type RepoSyncSchedulerIntervals = {
 };
 
 export const REPO_SYNC_INTERVALS_VISIBLE: RepoSyncSchedulerIntervals = {
-  reconcileMs: 1_000,
-  repairMs: 30_000,
+  dirtyMs: 8_000,
+  peekMs: 20_000,
+  fullMs: 60_000,
 };
 
-export const REPO_SYNC_INTERVALS_HIDDEN: RepoSyncSchedulerIntervals = REPO_SYNC_INTERVALS_VISIBLE;
+export const REPO_SYNC_INTERVALS_HIDDEN: RepoSyncSchedulerIntervals = {
+  dirtyMs: 30_000,
+  peekMs: 60_000,
+  fullMs: 180_000,
+};
 
 export type RepoSyncSchedulerHandlers = {
   onReconcile: () => void;

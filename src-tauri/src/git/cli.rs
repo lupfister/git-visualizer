@@ -29,6 +29,9 @@ pub fn run(repo: &Path, args: &[&str]) -> Result<String, GitError> {
     let output = Command::new("git")
         .args(["-C", repo_str])
         .args(args)
+        .env("GIT_TERMINAL_PROMPT", "0")
+        .env("GIT_ASKPASS", "")
+        .env("SSH_ASKPASS", "")
         .output()
         .map_err(|e| {
             if e.kind() == std::io::ErrorKind::NotFound {

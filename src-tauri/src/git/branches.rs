@@ -108,35 +108,278 @@ pub fn get_repo_info(repo: &Path) -> Result<(String, String), GitError> {
 }
 
 /// List all branches with their metadata
+struct GitQueryCache {
+    merge_bases: HashMap<(String, String), Option<String>>,
+    distances: HashMap<(String, String), i32>,
+    fork_points: HashMap<(String, String), (Option<String>, Option<String>)>,
+    unique_commit_dates: HashMap<(String, String), Option<String>>,
+    date_cache: HashMap<String, String>,
+}
+
+fn get_fork_point_optimized(
+    repo: &Path,
+    branch: &str,
+    base: &str,
+    commits_ahead: i32,
+    commits_behind: i32,
+    branch_head_sha: &str,
+    base_head_sha: &str,
+    date_cache: &mut HashMap<String, String>,
+) -> Result<(Option<String>, Option<String>), GitError> {
+    let sha = if commits_behind == 0 {
+        base_head_sha.to_string()
+    } else if commits_ahead == 0 {
+        branch_head_sha.to_string()
+    } else {
+        let merge_base = match cli::run(repo, &["merge-base", base, branch]) {
+            Ok(value) => value,
+            Err(error) if is_no_merge_base_error(&error) => return Ok((None, None)),
+            Err(error) => return Err(error),
+        };
+        merge_base.trim().to_string()
+    };
+
+    if sha.is_empty() {
+        return Ok((None, None));
+    }
+
+    let date = if let Some(cached_date) = date_cache.get(&sha) {
+        cached_date.clone()
+    } else {
+        let date_output = cli::run(repo, &["log", "-1", "--format=%cI", &sha])?;
+        let date_str = date_output.trim().to_string();
+        date_cache.insert(sha.clone(), date_str.clone());
+        date_str
+    };
+
+    Ok((Some(sha), Some(date)))
+}
+
+fn get_fork_point_cached(
+    repo: &Path,
+    branch: &str,
+    base: &str,
+    cache: &mut GitQueryCache,
+) -> Result<(Option<String>, Option<String>), GitError> {
+    let key = (branch.to_string(), base.to_string());
+    if let Some(res) = cache.fork_points.get(&key) {
+        return Ok(res.clone());
+    }
+    let res = get_fork_point_raw(repo, branch, base, &mut cache.date_cache)?;
+    cache.fork_points.insert(key, res.clone());
+    Ok(res)
+}
+
+fn get_merge_base_sha_cached(
+    repo: &Path,
+    left: &str,
+    right: &str,
+    cache: &mut GitQueryCache,
+) -> Result<Option<String>, GitError> {
+    let key = if left < right {
+        (left.to_string(), right.to_string())
+    } else {
+        (right.to_string(), left.to_string())
+    };
+    if let Some(res) = cache.merge_bases.get(&key) {
+        return Ok(res.clone());
+    }
+    let res = get_merge_base_sha(repo, left, right)?;
+    cache.merge_bases.insert(key, res.clone());
+    Ok(res)
+}
+
+fn commit_distance_cached(
+    repo: &Path,
+    from: &str,
+    to: &str,
+    cache: &mut GitQueryCache,
+) -> Result<i32, GitError> {
+    let key = (from.to_string(), to.to_string());
+    if let Some(&dist) = cache.distances.get(&key) {
+        return Ok(dist);
+    }
+    let dist = commit_distance(repo, from, to)?;
+    cache.distances.insert(key, dist);
+    Ok(dist)
+}
+
+fn get_first_unique_commit_date_cached(
+    repo: &Path,
+    base: &str,
+    branch: &str,
+    cache: &mut GitQueryCache,
+) -> Result<Option<String>, GitError> {
+    let key = (base.to_string(), branch.to_string());
+    if let Some(res) = cache.unique_commit_dates.get(&key) {
+        return Ok(res.clone());
+    }
+    let res = get_first_unique_commit_date(repo, base, branch)?;
+    cache.unique_commit_dates.insert(key, res.clone());
+    Ok(res)
+}
+
+/// List all branches with their metadata
 pub fn list_branches(repo: &Path, default_branch: &str) -> Result<Vec<Branch>, GitError> {
-    // Get all local branches
-    let output = cli::run(repo, &["branch", "--format=%(refname:short)"])?;
-
-    let branch_names: Vec<String> = output
-        .lines()
-        .filter(|s| !s.is_empty() && *s != default_branch)
-        .map(|s| s.to_string())
-        .collect();
-
-    let default_first_parent_shas = get_first_parent_shas(repo, default_branch).unwrap_or_default();
     let default_head_sha = cli::run(repo, &["rev-parse", default_branch])
         .map(|output| output.trim().to_string())
         .unwrap_or_default();
 
-    let mut branches: Vec<Branch> = branch_names
-        .iter()
-        .filter_map(|name| match get_branch_info(repo, name, default_branch) {
-            Ok(branch) => Some(branch),
-            Err(_) => build_branch_fallback(repo, name, default_branch),
-        })
-        .filter(|branch| {
-            !is_fast_forward_merged_into_base(branch, &default_first_parent_shas, &default_head_sha)
-        })
-        .collect();
+    let format_str = format!(
+        "%(refname:short)|%(objectname)|%(committerdate:iso-strict)|%(authorname)|%(upstream:short)|%(ahead-behind:refs/heads/{})|%(upstream:track,nobracket)",
+        default_branch
+    );
+    let output = cli::run(
+        repo,
+        &["for-each-ref", "refs/heads/", &format!("--format={}", format_str)],
+    )?;
 
-    infer_branch_parents(repo, &mut branches, default_branch)?;
+    let remote_refs_output = cli::run(
+        repo,
+        &["for-each-ref", "refs/remotes/", "--format=%(refname:short)|%(objectname)"],
+    ).unwrap_or_default();
+    let mut remote_shas_by_name = HashMap::new();
+    for line in remote_refs_output.lines() {
+        let line = line.trim();
+        if line.is_empty() {
+            continue;
+        }
+        if let Some((name, sha)) = line.split_once('|') {
+            remote_shas_by_name.insert(name.trim().to_string(), sha.trim().to_string());
+        }
+    }
 
-    // Sort by last commit date (most recent first)
+    let mut branches = Vec::new();
+    let default_first_parent_shas = get_first_parent_shas(repo, default_branch).unwrap_or_default();
+    let mut cache = GitQueryCache {
+        merge_bases: HashMap::new(),
+        distances: HashMap::new(),
+        fork_points: HashMap::new(),
+        unique_commit_dates: HashMap::new(),
+        date_cache: HashMap::new(),
+    };
+
+    for line in output.lines() {
+        let line = line.trim();
+        if line.is_empty() {
+            continue;
+        }
+
+        let parts: Vec<&str> = line.split('|').collect();
+        if parts.len() < 7 {
+            continue;
+        }
+
+        let name = parts[0].trim().to_string();
+        if name == default_branch {
+            continue;
+        }
+
+        let head_sha = parts[1].trim().to_string();
+        let last_commit_date = parts[2].trim().to_string();
+        let last_commit_author = parts[3].trim().to_string();
+        let upstream = parts[4].trim().to_string();
+        let ahead_behind_str = parts[5].trim();
+        let upstream_track = parts[6].trim();
+
+        let mut commits_ahead = 0;
+        let mut commits_behind = 0;
+        if !ahead_behind_str.is_empty() {
+            let ab_parts: Vec<&str> = ahead_behind_str.split_whitespace().collect();
+            if ab_parts.len() == 2 {
+                commits_ahead = ab_parts[0].parse().unwrap_or(0);
+                commits_behind = ab_parts[1].parse().unwrap_or(0);
+            }
+        }
+
+        let mut unpushed_commits = 0;
+        if !upstream_track.is_empty() {
+            if let Some(pos) = upstream_track.find("ahead ") {
+                let tail = &upstream_track[pos + 6..];
+                let count_str: String = tail.chars().take_while(|c| c.is_ascii_digit()).collect();
+                unpushed_commits = count_str.parse().unwrap_or(0);
+            }
+        }
+
+        let remote_sync_status = if !upstream.is_empty() {
+            if unpushed_commits > 0 {
+                "unpushed".to_string()
+            } else {
+                "on-github".to_string()
+            }
+        } else {
+            let mut found_ref = None;
+            let origin_ref = format!("origin/{}", name);
+            if remote_shas_by_name.contains_key(&origin_ref) {
+                found_ref = Some(origin_ref);
+            } else {
+                for remote_ref_name in remote_shas_by_name.keys() {
+                    if remote_ref_name.ends_with(&format!("/{}", name)) {
+                        found_ref = Some(remote_ref_name.clone());
+                        break;
+                    }
+                }
+            }
+
+            if let Some(ref_name) = found_ref {
+                if let Some(remote_sha) = remote_shas_by_name.get(&ref_name) {
+                    if head_sha == *remote_sha {
+                        "on-github".to_string()
+                    } else {
+                        let (ahead, _) = get_ahead_behind(repo, &name, &ref_name).unwrap_or((0, 0));
+                        unpushed_commits = ahead;
+                        if ahead > 0 {
+                            "unpushed".to_string()
+                        } else {
+                            "on-github".to_string()
+                        }
+                    }
+                } else {
+                    "local-only".to_string()
+                }
+            } else {
+                unpushed_commits = commits_ahead;
+                "local-only".to_string()
+            }
+        };
+
+        let status = calculate_status(commits_behind, &last_commit_date);
+
+        let (diverged_from_sha, diverged_from_date) = get_fork_point_optimized(
+            repo,
+            &name,
+            default_branch,
+            commits_ahead,
+            commits_behind,
+            &head_sha,
+            &default_head_sha,
+            &mut cache.date_cache,
+        ).unwrap_or((None, None));
+
+        let branch = Branch {
+            name,
+            commits_ahead,
+            commits_behind,
+            created_from_sha: None,
+            created_date: None,
+            last_commit_date,
+            last_commit_author,
+            status,
+            remote_sync_status,
+            unpushed_commits,
+            head_sha,
+            parent_branch: None,
+            diverged_from_sha,
+            diverged_from_date,
+        };
+
+        if !is_fast_forward_merged_into_base(&branch, &default_first_parent_shas, &default_head_sha) {
+            branches.push(branch);
+        }
+    }
+
+    infer_branch_parents(repo, &mut branches, default_branch, &mut cache)?;
+
     branches.sort_by(|a, b| b.last_commit_date.cmp(&a.last_commit_date));
 
     Ok(branches)
@@ -464,6 +707,7 @@ fn infer_branch_parents(
     repo: &Path,
     branches: &mut [Branch],
     default_branch: &str,
+    cache: &mut GitQueryCache,
 ) -> Result<(), GitError> {
     if branches.is_empty() {
         return Ok(());
@@ -544,14 +788,14 @@ fn infer_branch_parents(
             );
         }
         if parent_name.is_none() {
-            parent_name = infer_parent_by_merge_base(repo, branch, &candidates);
+            parent_name = infer_parent_by_merge_base(repo, branch, &candidates, cache);
         }
 
         if parent_name.is_none() {
             if let (Some(default_name), Some(default_sha)) =
                 (default_parent_name.clone(), default_head_sha.clone())
             {
-                let has_shared_history = get_merge_base_sha(repo, &default_sha, &branch.head_sha)
+                let has_shared_history = get_merge_base_sha_cached(repo, &default_sha, &branch.head_sha, cache)
                     .ok()
                     .flatten()
                     .is_some();
@@ -599,14 +843,14 @@ fn infer_branch_parents(
         branch.parent_branch = parent_name.clone();
 
         if let Some(parent_ref) = parent_name.as_deref() {
-            if let Ok((sha, date)) = get_fork_point(repo, &branch.name, &parent_ref) {
+            if let Ok((sha, date)) = get_fork_point_cached(repo, &branch.name, parent_ref, cache) {
                 branch.diverged_from_sha = sha;
                 branch.diverged_from_date = date;
             }
         }
 
         let created_from_unique_commit = branch.parent_branch.as_deref().and_then(|parent| {
-            get_first_unique_commit_date(repo, parent, &branch.name)
+            get_first_unique_commit_date_cached(repo, parent, &branch.name, cache)
                 .ok()
                 .flatten()
         });
@@ -623,7 +867,6 @@ fn infer_branch_parents(
             .or_else(|| Some(branch.last_commit_date.clone()));
     }
 
-    // Final sanitization: break any parent cycles by anchoring cycle participants to default.
     if let Some(default_parent) = default_parent_name {
         let parent_by_name: HashMap<String, Option<String>> = branches
             .iter()
@@ -645,7 +888,7 @@ fn infer_branch_parents(
 
             if has_cycle {
                 branch.parent_branch = Some(default_parent.clone());
-                if let Ok((sha, date)) = get_fork_point(repo, &branch.name, &default_parent) {
+                if let Ok((sha, date)) = get_fork_point_cached(repo, &branch.name, &default_parent, cache) {
                     branch.diverged_from_sha = sha;
                     branch.diverged_from_date = date;
                 }
@@ -752,6 +995,7 @@ fn infer_parent_by_merge_base(
     repo: &Path,
     branch: &Branch,
     candidates: &[ParentCandidate],
+    cache: &mut GitQueryCache,
 ) -> Option<String> {
     let mut best_by_branch_point: Option<(ParentCandidate, i32, i32)> = None;
 
@@ -763,7 +1007,7 @@ fn infer_parent_by_merge_base(
             continue;
         }
 
-        let Ok(merge_base_sha) = get_merge_base_sha(repo, &candidate.head_sha, &branch.head_sha)
+        let Ok(merge_base_sha) = get_merge_base_sha_cached(repo, &candidate.head_sha, &branch.head_sha, cache)
         else {
             continue;
         };
@@ -772,7 +1016,7 @@ fn infer_parent_by_merge_base(
         };
 
         let Ok(branch_distance_from_base) =
-            commit_distance(repo, &merge_base_sha, &branch.head_sha)
+            commit_distance_cached(repo, &merge_base_sha, &branch.head_sha, cache)
         else {
             continue;
         };
@@ -781,7 +1025,7 @@ fn infer_parent_by_merge_base(
         }
 
         let candidate_distance_from_base =
-            commit_distance(repo, &merge_base_sha, &candidate.head_sha).unwrap_or(i32::MAX);
+            commit_distance_cached(repo, &merge_base_sha, &candidate.head_sha, cache).unwrap_or(i32::MAX);
 
         match &best_by_branch_point {
             None => {
@@ -878,10 +1122,20 @@ fn get_ahead_behind(repo: &Path, branch: &str, base: &str) -> Result<(i32, i32),
     Ok((ahead, behind))
 }
 
-fn get_fork_point(
+pub fn get_fork_point(
     repo: &Path,
     branch: &str,
     base: &str,
+) -> Result<(Option<String>, Option<String>), GitError> {
+    let mut cache = HashMap::new();
+    get_fork_point_raw(repo, branch, base, &mut cache)
+}
+
+fn get_fork_point_raw(
+    repo: &Path,
+    branch: &str,
+    base: &str,
+    date_cache: &mut HashMap<String, String>,
 ) -> Result<(Option<String>, Option<String>), GitError> {
     let merge_base = match cli::run(repo, &["merge-base", base, branch]) {
         Ok(value) => value,
@@ -894,8 +1148,14 @@ fn get_fork_point(
         return Ok((None, None));
     }
 
-    let date_output = cli::run(repo, &["log", "-1", "--format=%cI", sha])?;
-    let date = date_output.trim().to_string();
+    let date = if let Some(cached_date) = date_cache.get(sha) {
+        cached_date.clone()
+    } else {
+        let date_output = cli::run(repo, &["log", "-1", "--format=%cI", sha])?;
+        let date_str = date_output.trim().to_string();
+        date_cache.insert(sha.to_string(), date_str.clone());
+        date_str
+    };
 
     Ok((Some(sha.to_string()), Some(date)))
 }
@@ -1179,27 +1439,6 @@ pub fn try_fast_forward_pull(repo: &Path) -> Result<bool, GitError> {
     }
 }
 
-/// Branch ref signature without parent inference — sequential, safe under concurrency.
-pub fn compute_quick_branch_ref_sig(
-    repo: &Path,
-    default_branch: &str,
-) -> Result<String, GitError> {
-    let heads = list_local_branch_heads(repo)?;
-    let mut lines = Vec::with_capacity(heads.len());
-    for (name, head_sha) in heads {
-        if name == default_branch {
-            continue;
-        }
-        let (commits_ahead, _) = get_ahead_behind(repo, &name, default_branch).unwrap_or((0, 0));
-        let (remote_sync_status, unpushed_commits) =
-            get_remote_sync_status(repo, &name, commits_ahead);
-        lines.push(format!(
-            "{name}:{head_sha}:{commits_ahead}:{unpushed_commits}:{remote_sync_status}"
-        ));
-    }
-    lines.sort();
-    Ok(lines.join("|"))
-}
 
 pub fn list_origin_branch_heads(repo: &Path) -> Result<Vec<(String, String)>, GitError> {
     let output = cli::run(

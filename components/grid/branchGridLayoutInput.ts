@@ -21,6 +21,8 @@ export type BranchGridLayoutRevision = {
   worktreeSessions: WorktreeSession[];
   mapGridOrientation: 'vertical' | 'horizontal';
   nodePositionOverrides: NodePositionOverrides;
+  repoPath?: string;
+  graphLayoutSignature?: string;
 };
 
 export const buildBranchGridLayoutInput = (

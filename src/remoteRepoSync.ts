@@ -1,4 +1,4 @@
-import { invoke } from '@tauri-apps/api/core';
+import { invoke } from './timedInvoke';
 
 export type RemoteTipMetadata = {
   subject: string;

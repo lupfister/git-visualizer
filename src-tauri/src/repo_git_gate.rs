@@ -3,10 +3,10 @@ use std::sync::{Arc, Condvar, Mutex, OnceLock};
 use std::time::{Duration, Instant};
 
 const MAX_CONCURRENT_GIT_OPS: usize = 8;
-const PROBE_CACHE_TTL: Duration = Duration::from_millis(400);
+const PROBE_CACHE_TTL: Duration = Duration::from_millis(1500);
 
 struct ProbeCacheEntry {
-    signature: String,
+    probe: super::RepoChangeProbe,
     fetched_at: Instant,
 }
 
@@ -29,7 +29,7 @@ fn probe_cache() -> &'static Mutex<HashMap<String, ProbeCacheEntry>> {
 }
 
 pub fn normalize_repo_gate_key(repo_path: &str) -> String {
-    repo_path.trim_end_matches('/').to_string()
+    repo_path.trim_end_matches('/').to_lowercase()
 }
 
 pub fn with_git_work_permit<T, F>(f: F) -> T
@@ -71,23 +71,23 @@ where
     with_git_work_permit(f)
 }
 
-pub fn cached_probe_signature(repo_path: &str) -> Option<String> {
+pub fn cached_probe(repo_path: &str) -> Option<super::RepoChangeProbe> {
     let key = normalize_repo_gate_key(repo_path);
     let cache = probe_cache().lock().expect("probe cache mutex poisoned");
     let entry = cache.get(&key)?;
     if entry.fetched_at.elapsed() > PROBE_CACHE_TTL {
         return None;
     }
-    Some(entry.signature.clone())
+    Some(entry.probe.clone())
 }
 
-pub fn store_probe_signature(repo_path: &str, signature: &str) {
+pub fn store_probe(repo_path: &str, probe: &super::RepoChangeProbe) {
     let key = normalize_repo_gate_key(repo_path);
     let mut cache = probe_cache().lock().expect("probe cache mutex poisoned");
     cache.insert(
         key,
         ProbeCacheEntry {
-            signature: signature.to_string(),
+            probe: probe.clone(),
             fetched_at: Instant::now(),
         },
     );

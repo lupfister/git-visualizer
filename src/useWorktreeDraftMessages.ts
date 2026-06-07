@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { invoke } from '@tauri-apps/api/core';
+import { invoke } from './timedInvoke';
 import { normalizeRepoPathForCompare } from '../components/grid/mapGridUtils';
 import type { WorktreeSession } from '../lib/worktreeSessions';
 import {
@@ -50,6 +50,7 @@ type UseWorktreeDraftMessagesOptions = {
   worktreeSessions: WorktreeSession[];
   isPaused: () => boolean;
   enabled?: boolean;
+  onWorktreeCleanStateDetected?: (worktreePath: string) => void;
 };
 
 type UseWorktreeDraftMessagesResult = {
@@ -66,6 +67,7 @@ export const useWorktreeDraftMessages = ({
   worktreeSessions,
   isPaused,
   enabled = true,
+  onWorktreeCleanStateDetected,
 }: UseWorktreeDraftMessagesOptions): UseWorktreeDraftMessagesResult => {
   const [draftsByPath, setDraftsByPath] = useState<Record<string, WorktreeDraftEntry>>({});
   const draftsByPathRef = useRef(draftsByPath);
@@ -375,7 +377,12 @@ export const useWorktreeDraftMessages = ({
     const fingerprint = hashWorktreeSummary(summary);
     const fallbackLabel = formatWorktreeSummaryFallback(summary);
     if (!fingerprint) {
+      const wasDirty = draftsByPathRef.current[normalizedPath] !== undefined ||
+        dirtySessions.some((session) => normalizeWorktreePath(session.path) === normalizedPath);
       clearDraftForPath(normalizedPath);
+      if (wasDirty && onWorktreeCleanStateDetected) {
+        onWorktreeCleanStateDetected(normalizedPath);
+      }
       return;
     }
 
@@ -445,6 +452,7 @@ export const useWorktreeDraftMessages = ({
     isPaused,
     maybeScheduleDraftGeneration,
     scheduleDraftGeneration,
+    onWorktreeCleanStateDetected,
   ]);
 
   useEffect(() => {
@@ -477,9 +485,13 @@ export const useWorktreeDraftMessages = ({
     const summary = await invoke<string>('get_working_tree_summary', { repoPath: normalizedPath }).catch(() => null);
     if (summary == null) return;
     if (!hashWorktreeSummary(summary)) {
+      const wasDirty = draftsByPathRef.current[normalizedPath] !== undefined;
       clearDraftForPath(normalizedPath);
+      if (wasDirty && onWorktreeCleanStateDetected) {
+        onWorktreeCleanStateDetected(normalizedPath);
+      }
     }
-  }, [clearDraftForPath, dirtySessions]);
+  }, [clearDraftForPath, dirtySessions, onWorktreeCleanStateDetected]);
 
   useEffect(() => {
     if (!enabled) return;

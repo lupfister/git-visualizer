@@ -135,13 +135,40 @@ struct PreviewProcess {
     preview_mode: String,
 }
 
+struct RepoWatcherActivity {
+    last_git_event_epoch: AtomicU64,
+    last_worktree_event_epoch: AtomicU64,
+}
+
+static WATCHER_ACTIVITY: OnceLock<Mutex<HashMap<String, std::sync::Arc<RepoWatcherActivity>>>> = OnceLock::new();
+
+fn increment_watcher_activity(repo_path: &str, is_git: bool) {
+    let normalized = normalize_repo_path_id(repo_path);
+    let mut map = WATCHER_ACTIVITY
+        .get_or_init(|| Mutex::new(HashMap::new()))
+        .lock()
+        .unwrap();
+    let entry = map.entry(normalized.clone()).or_insert_with(|| {
+        std::sync::Arc::new(RepoWatcherActivity {
+            last_git_event_epoch: AtomicU64::new(0),
+            last_worktree_event_epoch: AtomicU64::new(0),
+        })
+    });
+    if is_git {
+        let val = entry.last_git_event_epoch.fetch_add(1, Ordering::Relaxed) + 1;
+        println!("[WatcherActivity] Repo {} ({}) git_epoch bumped to {}", repo_path, normalized, val);
+    } else {
+        let val = entry.last_worktree_event_epoch.fetch_add(1, Ordering::Relaxed) + 1;
+        println!("[WatcherActivity] Repo {} ({}) worktree_epoch bumped to {}", repo_path, normalized, val);
+    }
+}
+
 static WATCHER_STATE: OnceLock<Mutex<HashMap<String, notify::RecommendedWatcher>>> =
     OnceLock::new();
 static REPO_CHANGE_STATE: OnceLock<Mutex<HashMap<String, RepoChangeState>>> = OnceLock::new();
 static PREVIEW_PROCESS_STATE: OnceLock<Mutex<HashMap<String, PreviewProcess>>> = OnceLock::new();
 static DELETED_PROJECTS: OnceLock<Mutex<HashSet<String>>> = OnceLock::new();
 static PREVIEW_SHUTDOWN_STARTED: AtomicBool = AtomicBool::new(false);
-const GIT_ACTIVITY_GRAPH_MIN_EMIT_MS: u64 = 800;
 const MAX_LAYOUT_SNAPSHOTS_PER_REPO: i64 = 12;
 const PREVIEW_LOG_TAIL_BYTES: u64 = 64 * 1024;
 const PREVIEW_LOG_MAX_LINES: usize = 200;
@@ -519,6 +546,9 @@ fn open_visual_cache_connection() -> Result<Connection, String> {
     }
     let conn =
         Connection::open(db_path).map_err(|e| format!("Failed to open cache database: {e}"))?;
+    let _ = conn.busy_timeout(std::time::Duration::from_secs(5));
+    let _ = conn.pragma_update(None, "journal_mode", &"WAL");
+    let _ = conn.pragma_update(None, "synchronous", &"NORMAL");
     conn.execute_batch(
         "
         CREATE TABLE IF NOT EXISTS repo_visual_cache (
@@ -772,20 +802,20 @@ fn normalize_repo_path_id(repo_path: &str) -> String {
     if repo_path == "/" {
         "/".to_string()
     } else {
-        repo_path.trim_end_matches('/').to_string()
+        repo_path.trim_end_matches('/').to_lowercase()
     }
 }
 
 #[derive(Clone, Debug)]
-struct RepoChangeProbe {
-    signature: String,
-    branch_head_digest: String,
-    head_sha: String,
-    has_uncommitted_changes: bool,
-    worktree_sig: String,
-    stash_sig: String,
-    remote_heads_digest: String,
-    head_unpushed_count: String,
+pub(crate) struct RepoChangeProbe {
+    pub(crate) signature: String,
+    pub(crate) branch_head_digest: String,
+    pub(crate) head_sha: String,
+    pub(crate) has_uncommitted_changes: bool,
+    pub(crate) worktree_sig: String,
+    pub(crate) stash_sig: String,
+    pub(crate) remote_heads_digest: String,
+    pub(crate) head_unpushed_count: String,
 }
 
 fn format_worktree_sig(worktrees: &[git::WorktreeInfo]) -> String {
@@ -870,7 +900,7 @@ fn compute_repo_change_probe_inner(repo_path: &str) -> Result<RepoChangeProbe, S
         head_unpushed_count,
     };
     probe.signature = compose_probe_signature(&probe);
-    repo_git_gate::store_probe_signature(repo_path, &probe.signature);
+    repo_git_gate::store_probe(repo_path, &probe);
     Ok(probe)
 }
 
@@ -953,19 +983,53 @@ fn compose_repo_fingerprint(
 }
 
 fn fingerprint_unchanged_via_probe(
-    repo_path: &str,
+    _repo_path: &str,
     stored_fp: &str,
     probe: &RepoChangeProbe,
 ) -> Result<bool, String> {
-    if !probe_lite_matches_fingerprint(probe, stored_fp) {
-        return Ok(false);
-    }
+    Ok(probe_lite_matches_fingerprint(probe, stored_fp))
+}
+
+fn fingerprint_patch_via_probe(
+    stored_fp: &str,
+    probe: &RepoChangeProbe,
+) -> Option<String> {
     let parts: Vec<&str> = stored_fp.split("@@").collect();
-    let path = Path::new(repo_path);
-    let default_branch = git::get_default_branch(path).map_err(|e| e.to_string())?;
-    let quick_sig =
-        git::compute_quick_branch_ref_sig(path, &default_branch).map_err(|e| e.to_string())?;
-    Ok(quick_sig == parts[4])
+    if parts.len() < 7 {
+        return None;
+    }
+    if probe.head_sha != parts[1] {
+        return None;
+    }
+    if probe.branch_head_digest != git::branch_head_digest_from_ref_sig(parts[4]) {
+        return None;
+    }
+    let upstream_part = parts[2];
+    if !probe.remote_heads_digest.is_empty() {
+        let remote_from_fp = upstream_part.split('|').nth(1).unwrap_or("");
+        if !remote_from_fp.is_empty() && probe.remote_heads_digest != remote_from_fp {
+            return None;
+        }
+    }
+    let default_branch = parts[0];
+    let head_sha = parts[1];
+    let upstream_part = parts[2];
+    let branch_ref_sig = parts[4];
+
+    let has_uncommitted_changes = if probe.has_uncommitted_changes { "1" } else { "0" };
+    let worktree_sig = &probe.worktree_sig;
+    let stash_sig = &probe.stash_sig;
+
+    Some(format!(
+        "{}@@{}@@{}@@{}@@{}@@{}@@{}",
+        default_branch,
+        head_sha,
+        upstream_part,
+        has_uncommitted_changes,
+        branch_ref_sig,
+        worktree_sig,
+        stash_sig
+    ))
 }
 
 fn compute_repo_fingerprint_inner(repo_path: &str) -> Result<(String, RepoRefreshFingerprint), String> {
@@ -1628,9 +1692,7 @@ fn watch_repo(repo_path: String, app: tauri::AppHandle) -> Result<(), String> {
         let _ = watcher.watch(linked_root, RecursiveMode::Recursive);
     }
 
-    let last_graph_emit_ms = std::sync::Arc::new(AtomicU64::new(0));
-    let last_local_emit_ms = std::sync::Arc::new(AtomicU64::new(0));
-    let last_worktree_emit_ms = std::sync::Arc::new(AtomicU64::new(0));
+    let (git_signal_tx, git_signal_rx) = std::sync::mpsc::channel::<(bool, bool)>();
     let mut git_roots = vec![primary_git_dir.clone()];
     if let Some(common_dir) = resolved_git_common_dir {
         if common_dir != primary_git_dir {
@@ -1642,7 +1704,6 @@ fn watch_repo(repo_path: String, app: tauri::AppHandle) -> Result<(), String> {
     let linked_worktree_roots_for_events = linked_worktree_roots.clone();
     let app_for_worktree_debounce = app.clone();
     let repo_path_for_worktree_debounce = repo_path_for_events.clone();
-    let last_worktree_emit_for_debounce = last_worktree_emit_ms.clone();
 
     std::thread::spawn(move || loop {
         match worktree_signal_rx.recv() {
@@ -1658,14 +1719,49 @@ fn watch_repo(repo_path: String, app: tauri::AppHandle) -> Result<(), String> {
                 Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => return,
             }
         }
-        let now_ms = Utc::now().timestamp_millis().max(0) as u64;
-        let prev_ms = last_worktree_emit_for_debounce.load(Ordering::Relaxed);
-        if now_ms.saturating_sub(prev_ms) >= GIT_ACTIVITY_GRAPH_MIN_EMIT_MS {
-            last_worktree_emit_for_debounce.store(now_ms, Ordering::Relaxed);
-            let _ = app_for_worktree_debounce.emit(
+        increment_watcher_activity(&repo_path_for_worktree_debounce, false);
+        let _ = app_for_worktree_debounce.emit(
+            "git-activity",
+            GitActivityEventPayload {
+                repo_path: repo_path_for_worktree_debounce.clone(),
+                kind: "local".to_string(),
+            },
+        );
+    });
+
+    let app_for_git_debounce = app.clone();
+    let repo_path_for_git_debounce = repo_path_for_events.clone();
+    std::thread::spawn(move || loop {
+        let mut first_signal = match git_signal_rx.recv() {
+            Ok(sig) => sig,
+            Err(_) => break,
+        };
+        loop {
+            match git_signal_rx.recv_timeout(std::time::Duration::from_millis(150)) {
+                Ok(sig) => {
+                    first_signal.0 = first_signal.0 || sig.0; // accumulate graph change
+                    first_signal.1 = first_signal.1 || sig.1; // accumulate local change
+                    continue;
+                }
+                Err(std::sync::mpsc::RecvTimeoutError::Timeout) => break,
+                Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => return,
+            }
+        }
+        increment_watcher_activity(&repo_path_for_git_debounce, true);
+        if first_signal.0 {
+            let _ = app_for_git_debounce.emit(
                 "git-activity",
                 GitActivityEventPayload {
-                    repo_path: repo_path_for_worktree_debounce.clone(),
+                    repo_path: repo_path_for_git_debounce.clone(),
+                    kind: "graph".to_string(),
+                },
+            );
+        }
+        if first_signal.1 {
+            let _ = app_for_git_debounce.emit(
+                "git-activity",
+                GitActivityEventPayload {
+                    repo_path: repo_path_for_git_debounce.clone(),
                     kind: "local".to_string(),
                 },
             );
@@ -1734,36 +1830,8 @@ fn watch_repo(repo_path: String, app: tauri::AppHandle) -> Result<(), String> {
                     }
                 }
 
-                if has_local_change {
-                    record_repo_change(&repo_path_for_events, REPO_CHANGE_LOCAL);
-                    let now_ms = Utc::now().timestamp_millis().max(0) as u64;
-                    let prev_ms = last_local_emit_ms.load(Ordering::Relaxed);
-                    if now_ms.saturating_sub(prev_ms) >= GIT_ACTIVITY_GRAPH_MIN_EMIT_MS {
-                        last_local_emit_ms.store(now_ms, Ordering::Relaxed);
-                        let _ = app.emit(
-                            "git-activity",
-                            GitActivityEventPayload {
-                                repo_path: repo_path_for_events.clone(),
-                                kind: "local".to_string(),
-                            },
-                        );
-                    }
-                }
-
-                if has_graph_change {
-                    record_repo_change(&repo_path_for_events, REPO_CHANGE_GRAPH);
-                    let now_ms = Utc::now().timestamp_millis().max(0) as u64;
-                    let prev_ms = last_graph_emit_ms.load(Ordering::Relaxed);
-                    if now_ms.saturating_sub(prev_ms) >= GIT_ACTIVITY_GRAPH_MIN_EMIT_MS {
-                        last_graph_emit_ms.store(now_ms, Ordering::Relaxed);
-                        let _ = app.emit(
-                            "git-activity",
-                            GitActivityEventPayload {
-                                repo_path: repo_path_for_events.clone(),
-                                kind: "graph".to_string(),
-                            },
-                        );
-                    }
+                if has_graph_change || has_local_change {
+                    let _ = git_signal_tx.send((has_graph_change, has_local_change));
                 }
 
                 if has_worktree_file_change && !has_graph_change && !has_local_change {
@@ -2176,10 +2244,16 @@ fn check_project_fingerprint_blocking(
     let stored_fingerprint = row.and_then(|(_, fingerprint)| fingerprint);
 
     repo_git_gate::with_repo_git_lock(&repo_path, || {
-        let probe = compute_repo_change_probe_inner(&repo_path)?;
+        let probe = if let Some(cached) = repo_git_gate::cached_probe(&repo_path) {
+            cached
+        } else {
+            compute_repo_change_probe_inner(&repo_path)?
+        };
         let (current_fingerprint, changed) = if let Some(ref stored) = stored_fingerprint {
             if fingerprint_unchanged_via_probe(&repo_path, stored, &probe)? {
                 (stored.clone(), false)
+            } else if let Some(patched) = fingerprint_patch_via_probe(stored, &probe) {
+                (patched.clone(), patched != *stored)
             } else {
                 let (current, _) = compute_repo_fingerprint_inner(&repo_path)?;
                 (current.clone(), current != *stored)
@@ -2362,16 +2436,20 @@ fn compute_repo_sync_peek_inner(
     unchanged_against: Option<&str>,
 ) -> Result<RepoSyncPeek, String> {
     if let Some(stored) = unchanged_against {
-        if let Some(cached) = repo_git_gate::cached_probe_signature(repo_path) {
-            if cached == stored {
+        if let Some(cached) = repo_git_gate::cached_probe(repo_path) {
+            if cached.signature == stored {
                 return Ok(RepoSyncPeek {
                     repo_path: repo_path.to_string(),
-                    signature: cached,
+                    signature: cached.signature,
                 });
             }
         }
     }
-    let probe = compute_repo_change_probe_inner(repo_path)?;
+    let probe = if let Some(cached) = repo_git_gate::cached_probe(repo_path) {
+        cached
+    } else {
+        compute_repo_change_probe_inner(repo_path)?
+    };
     if let Some(stored) = unchanged_against {
         if probe.signature == stored {
             return Ok(RepoSyncPeek {
@@ -2393,6 +2471,116 @@ fn compute_repo_sync_peek(
     repo_git_gate::with_repo_git_lock(repo_path, || {
         compute_repo_sync_peek_inner(repo_path, unchanged_against)
     })
+}
+
+#[derive(serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+struct RepoWatcherActivityEpochs {
+    git_epoch: u64,
+    worktree_epoch: u64,
+}
+
+#[tauri::command(rename_all = "camelCase")]
+fn get_repo_watcher_epochs(repo_path: String) -> Result<RepoWatcherActivityEpochs, String> {
+    let normalized = normalize_repo_path_id(&repo_path);
+    let map = WATCHER_ACTIVITY
+        .get_or_init(|| Mutex::new(HashMap::new()))
+        .lock()
+        .unwrap();
+    if let Some(entry) = map.get(&normalized) {
+        Ok(RepoWatcherActivityEpochs {
+            git_epoch: entry.last_git_event_epoch.load(Ordering::Relaxed),
+            worktree_epoch: entry.last_worktree_event_epoch.load(Ordering::Relaxed),
+        })
+    } else {
+        Ok(RepoWatcherActivityEpochs {
+            git_epoch: 0,
+            worktree_epoch: 0,
+        })
+    }
+}
+
+fn compute_fast_fs_signature(repo_path: &str) -> String {
+    let repo_root = Path::new(repo_path);
+    let git_dir_hint = repo_root.join(".git");
+    let git_dir = if git_dir_hint.is_file() {
+        if let Ok(content) = std::fs::read_to_string(&git_dir_hint) {
+            if let Some(path_str) = content.strip_prefix("gitdir: ") {
+                let trimmed = path_str.trim();
+                let p = PathBuf::from(trimmed);
+                if p.is_absolute() {
+                    p
+                } else {
+                    repo_root.join(p)
+                }
+            } else {
+                git_dir_hint
+            }
+        } else {
+            git_dir_hint
+        }
+    } else {
+        git_dir_hint
+    };
+
+    if !git_dir.exists() {
+        return String::new();
+    }
+
+    let mut parts = Vec::new();
+
+    let check_file = |path: PathBuf, label: &str, parts: &mut Vec<String>| {
+        if let Ok(metadata) = std::fs::metadata(&path) {
+            if let Ok(modified) = metadata.modified() {
+                if let Ok(duration) = modified.duration_since(std::time::SystemTime::UNIX_EPOCH) {
+                    parts.push(format!("{}:{}:{}", label, duration.as_millis(), metadata.len()));
+                }
+            }
+        }
+    };
+
+    check_file(git_dir.join("HEAD"), "HEAD", &mut parts);
+    check_file(git_dir.join("index"), "index", &mut parts);
+    check_file(git_dir.join("packed-refs"), "packed-refs", &mut parts);
+    check_file(git_dir.join("refs/stash"), "stash", &mut parts);
+
+    let heads_dir = git_dir.join("refs/heads");
+    if heads_dir.is_dir() {
+        let mut entries = Vec::new();
+        let mut stack = vec![heads_dir];
+        while let Some(dir) = stack.pop() {
+            if let Ok(read_dir) = std::fs::read_dir(dir) {
+                for entry in read_dir.flatten() {
+                    let path = entry.path();
+                    if path.is_dir() {
+                        stack.push(path);
+                    } else if path.is_file() {
+                        if let Ok(metadata) = entry.metadata() {
+                            if let Ok(modified) = metadata.modified() {
+                                if let Ok(duration) = modified.duration_since(std::time::SystemTime::UNIX_EPOCH) {
+                                    let rel_path = path.to_string_lossy().to_string();
+                                    entries.push(format!("{}:{}:{}", rel_path, duration.as_millis(), metadata.len()));
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        entries.sort();
+        parts.extend(entries);
+    }
+
+    parts.join("|")
+}
+
+#[tauri::command(rename_all = "camelCase")]
+fn get_repo_fast_signature(repo_path: String) -> Result<String, String> {
+    let start = Instant::now();
+    let sig = compute_fast_fs_signature(&repo_path);
+    let elapsed = start.elapsed();
+    println!("[FastSignature] Check for {} took {:?}", repo_path, elapsed);
+    Ok(sig)
 }
 
 #[tauri::command(rename_all = "camelCase")]
@@ -5849,6 +6037,9 @@ fn run_open_browser_blocking(repo_path: String, branch: String, port: u16) -> Re
 
     let arch_out = std::process::Command::new("git")
         .args(["-C", &repo_path, "archive", "--format=tar", &branch])
+        .env("GIT_TERMINAL_PROMPT", "0")
+        .env("GIT_ASKPASS", "")
+        .env("SSH_ASKPASS", "")
         .output()
         .map_err(|e| format!("git archive failed to start: {e}"))?;
 
@@ -6454,6 +6645,9 @@ fn run_previews_blocking(
 
     let arch_out = std::process::Command::new("git")
         .args(["-C", &repo_path, "archive", "--format=tar", &branch])
+        .env("GIT_TERMINAL_PROMPT", "0")
+        .env("GIT_ASKPASS", "")
+        .env("SSH_ASKPASS", "")
         .output()
         .map_err(|e| format!("git archive failed to start: {e}"))?;
 
@@ -7822,6 +8016,8 @@ pub fn run() {
             take_pending_open_repo,
             reveal_in_finder,
             watch_repo,
+            get_repo_watcher_epochs,
+            get_repo_fast_signature,
         ])
         .build(tauri::generate_context!())
         .expect("error building tauri application")
@@ -7983,22 +8179,7 @@ mod snapshot_remote_branch_tests {
             return;
         }
 
-        let rev_list_output = crate::git::cli::run(
-            &repo,
-            &[
-                "rev-list",
-                "--left-right",
-                "--count",
-                &format!("origin/{branch_name}...{branch_name}"),
-            ],
-        )
-        .unwrap_or_default();
-        let parts: Vec<&str> = rev_list_output.split_whitespace().collect();
-        let behind = parts.first().and_then(|s| s.parse::<i32>().ok()).unwrap_or(0);
-        if behind == 0 {
-            return;
-        }
-
+        let _ = crate::git::fetch_remotes(&repo);
         let snapshot = compute_repo_visual_snapshot(repo.to_string_lossy().as_ref())
             .expect("repo visual snapshot");
         let branch_name = "cursor/commit-app-previews-7896";
@@ -8022,6 +8203,17 @@ mod snapshot_remote_branch_tests {
             branch.commits_ahead
         );
 
+        let expected_sha = crate::git::cli::run(
+            &repo,
+            &[
+                "rev-parse",
+                "origin/cursor/commit-app-previews-7896",
+            ],
+        )
+        .expect("rev-parse origin head")
+        .trim()
+        .to_string();
+
         let remote_commit = snapshot
             .direct_commits
             .iter()
@@ -8030,10 +8222,10 @@ mod snapshot_remote_branch_tests {
             remote_commit.is_some(),
             "missing remote commit on {branch_name}"
         );
-        assert!(
-            remote_commit.unwrap().full_sha.starts_with("c131b6f"),
-            "unexpected remote tip {}",
-            remote_commit.unwrap().full_sha
+        assert_eq!(
+            remote_commit.unwrap().full_sha,
+            expected_sha,
+            "unexpected remote tip"
         );
 
         let previews = snapshot
@@ -8044,7 +8236,7 @@ mod snapshot_remote_branch_tests {
         assert!(
             previews
                 .iter()
-                .any(|preview| preview.full_sha.starts_with("c131b6f") && preview.is_remote),
+                .any(|preview| preview.full_sha == expected_sha && preview.is_remote),
             "missing remote preview for {branch_name}"
         );
         assert!(
