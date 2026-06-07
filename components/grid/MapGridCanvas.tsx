@@ -1156,14 +1156,37 @@ const MapGridCanvas = memo(function MapGridCanvas({
   const suppressSearchMatchScale = isCameraMoving;
   const reduceMotion = useReducedMotion() ?? false;
   const previousOpenClumpsRef = useRef<Set<string> | null>(null);
-  const newlyOpenedClumps = useMemo(() => {
-    const previous = previousOpenClumpsRef.current;
-    if (!previous) return new Set<string>();
-    return new Set([...renderedOpenClumps].filter((clusterKey) => !previous.has(clusterKey)));
-  }, [renderedOpenClumps]);
+  const [openingClumps, setOpeningClumps] = useState<Set<string>>(() => new Set());
+  const openingClumpTimeoutsRef = useRef(new Map<string, number>());
   useEffect(() => {
+    const previous = previousOpenClumpsRef.current;
     previousOpenClumpsRef.current = new Set(renderedOpenClumps);
-  }, [renderedOpenClumps]);
+    if (!previous) return;
+    const newlyOpened = [...renderedOpenClumps].filter((clusterKey) => !previous.has(clusterKey));
+    if (newlyOpened.length === 0) return;
+    setOpeningClumps((current) => {
+      const next = new Set(current);
+      newlyOpened.forEach((clusterKey) => next.add(clusterKey));
+      return next;
+    });
+    for (const clusterKey of newlyOpened) {
+      const existing = openingClumpTimeoutsRef.current.get(clusterKey);
+      if (existing != null) window.clearTimeout(existing);
+      const count = clusterCounts.get(clusterKey) ?? 1;
+      const timeout = window.setTimeout(() => {
+        openingClumpTimeoutsRef.current.delete(clusterKey);
+        setOpeningClumps((current) => {
+          const next = new Set(current);
+          next.delete(clusterKey);
+          return next;
+        });
+      }, 110 + Math.min(Math.max(0, count - 1), 5) * 16);
+      openingClumpTimeoutsRef.current.set(clusterKey, timeout);
+    }
+  }, [clusterCounts, renderedOpenClumps]);
+  useEffect(() => () => {
+    for (const timeout of openingClumpTimeoutsRef.current.values()) window.clearTimeout(timeout);
+  }, []);
 
   const clumpAnimationLayout = useMemo(() => {
     const assignmentsByClump = new Map<string, typeof cardSlotAssignments>();
@@ -1216,6 +1239,7 @@ const MapGridCanvas = memo(function MapGridCanvas({
             cornerRadiusPx={commitCornerRadiusPx}
             strokeWidth={lineStrokeWidth}
             pathCache={connectorPath2dCacheRef.current}
+            suspendAnimations={isCameraMoving}
             registerCameraTarget={registerCameraTarget}
           />
           <AnimatePresence initial={false}>
@@ -1259,7 +1283,7 @@ const MapGridCanvas = memo(function MapGridCanvas({
                 onNodePointerUp={onNodePointerUp}
                 onClusterToggle={handleClusterToggle}
                 suppressSearchMatchScale={suppressSearchMatchScale}
-                animateClumpEntry={isClumpMember && newlyOpenedClumps.has(clusterKey)}
+                animateClumpEntry={!isCameraMoving && isClumpMember && openingClumps.has(clusterKey)}
                 animateClumpExit={clusterKey != null && closingClumps.has(clusterKey)}
                 clumpAnimationIndex={animationLayout?.entryIndex ?? 0}
                 clumpExitAnimationIndex={animationLayout?.exitIndex ?? 0}
