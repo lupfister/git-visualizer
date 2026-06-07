@@ -1,4 +1,4 @@
-import { useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import type { CSSProperties } from 'react';
 import { ChevronRight, MoreHorizontal, Plus, Trash2 } from 'lucide-react';
 import type { Branch, BranchCommitPreview, TerminalSession, WorktreeInfo } from '../types';
@@ -370,59 +370,6 @@ export default function DenseBranchSidebar({
   );
 }
 
-function TerminalLiveShimmer({
-  label,
-  kind,
-}: {
-  label: string;
-  kind: TerminalSession['kind'];
-}) {
-  const wrapRef = useRef<HTMLSpanElement>(null);
-  const [metrics, setMetrics] = useState({ span: '200%', labelX: '0px' });
-
-  useLayoutEffect(() => {
-    const wrap = wrapRef.current;
-    if (!wrap) return;
-
-    const update = () => {
-      const width = wrap.offsetWidth;
-      const labelEl = wrap.querySelector<HTMLElement>('[data-terminal-shimmer-label]');
-      const labelX = labelEl?.offsetLeft ?? 0;
-      setMetrics({
-        span: width > 0 ? `${width * 2}px` : '200%',
-        labelX: `${labelX}px`,
-      });
-    };
-
-    update();
-    const observer = new ResizeObserver(update);
-    observer.observe(wrap);
-    return () => observer.disconnect();
-  }, [label]);
-
-  const style = useMemo(() => ({
-    '--terminal-shimmer-span': metrics.span,
-    '--terminal-shimmer-label-x': metrics.labelX,
-  }) as CSSProperties, [metrics.labelX, metrics.span]);
-
-  return (
-    <span
-      ref={wrapRef}
-      className="terminal-live-shimmer"
-      style={style}
-    >
-      <span
-        aria-hidden="true"
-        className={cn(
-          'terminal-live-shimmer__icon',
-          kind === 'preview' ? 'terminal-live-shimmer__icon--preview' : 'terminal-live-shimmer__icon--shell',
-        )}
-      />
-      <span className="terminal-live-shimmer__label" data-terminal-shimmer-label>{label}</span>
-    </span>
-  );
-}
-
 function TerminalRow({
   session,
   label,
@@ -484,14 +431,8 @@ function TerminalRow({
           !accent && !active && 'text-muted-foreground group-hover/terminal:text-foreground',
         )}
       >
-        {showLivePulse ? (
-          <TerminalLiveShimmer label={displayLabel} kind={session.kind} />
-        ) : (
-          <>
-            <Icon className="h-3.5 w-3.5 shrink-0" />
-            <span className="min-w-0 flex-1 truncate">{displayLabel}</span>
-          </>
-        )}
+        <Icon className={cn('h-3.5 w-3.5 shrink-0', showLivePulse && 'terminal-row-shimmer__icon')} />
+        <span className={cn('min-w-0 flex-1 truncate', showLivePulse && 'terminal-row-shimmer__text')}>{displayLabel}</span>
         {session.status === 'exited' ? (
           <span className="text-[10px] uppercase tracking-wide group-hover/terminal:opacity-0 transition-opacity duration-150 shrink-0">Exited</span>
         ) : null}

@@ -674,91 +674,27 @@ body.popover-window #root {
   }
 }
 
-/* Live terminal shimmer — one gradient sweep across icon + label (commit-button style) */
-@property --terminal-shimmer-x {
-  syntax: '<length>';
-  inherits: true;
-  initial-value: 0px;
-}
-
-@keyframes terminal-live-shimmer {
-  0% {
-    --terminal-shimmer-x: var(--terminal-shimmer-span, 200px);
-  }
-
+/* Live terminal row — pulse icon + label in sync, inherits row color */
+@keyframes terminal-row-shimmer-pulse {
+  0%,
   100% {
-    --terminal-shimmer-x: calc(-1 * var(--terminal-shimmer-span, 200px));
+    opacity: 0.45;
+  }
+
+  50% {
+    opacity: 1;
   }
 }
 
-.terminal-live-shimmer {
-  --terminal-shimmer-base: currentcolor;
-  display: inline-flex;
-  min-width: 0;
-  flex: 1;
-  align-items: center;
-  gap: 0.375rem;
-  animation: terminal-live-shimmer 1.35s ease-in-out infinite;
-}
-
-.terminal-live-shimmer__icon,
-.terminal-live-shimmer__label {
-  background-image: linear-gradient(
-    90deg,
-    color-mix(in srgb, var(--terminal-shimmer-base) 50%, transparent) 0%,
-    var(--terminal-shimmer-base) 50%,
-    color-mix(in srgb, var(--terminal-shimmer-base) 50%, transparent) 100%
-  );
-  background-size: var(--terminal-shimmer-span, 200%) 100%;
-  background-repeat: no-repeat;
-}
-
-.terminal-live-shimmer__icon {
-  width: 0.875rem;
-  height: 0.875rem;
-  flex-shrink: 0;
-  background-position: var(--terminal-shimmer-x) 0;
-  -webkit-mask-repeat: no-repeat;
-  mask-repeat: no-repeat;
-  -webkit-mask-position: center;
-  mask-position: center;
-  -webkit-mask-size: contain;
-  mask-size: contain;
-}
-
-.terminal-live-shimmer__icon--shell {
-  -webkit-mask-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 14 14' fill='none'%3E%3Cpath d='M10.7272 2.33331H3.27208C2.10812 2.33331 1.16455 3.27688 1.16455 4.44084V9.55912C1.16455 10.7231 2.10812 11.6666 3.27208 11.6666H10.7272C11.8911 11.6666 12.8347 10.7231 12.8347 9.55912V4.44084C12.8347 3.27688 11.8911 2.33331 10.7272 2.33331Z' stroke='white' stroke-width='1.2' stroke-linecap='round' stroke-linejoin='round'/%3E%3Cpath d='M3.79736 5.01288L5.78446 6.99998L3.79736 8.98707M7.44037 8.98707H10.0898' stroke='white' stroke-width='1.2' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E");
-  mask-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 14 14' fill='none'%3E%3Cpath d='M10.7272 2.33331H3.27208C2.10812 2.33331 1.16455 3.27688 1.16455 4.44084V9.55912C1.16455 10.7231 2.10812 11.6666 3.27208 11.6666H10.7272C11.8911 11.6666 12.8347 10.7231 12.8347 9.55912V4.44084C12.8347 3.27688 11.8911 2.33331 10.7272 2.33331Z' stroke='white' stroke-width='1.2' stroke-linecap='round' stroke-linejoin='round'/%3E%3Cpath d='M3.79736 5.01288L5.78446 6.99998L3.79736 8.98707M7.44037 8.98707H10.0898' stroke='white' stroke-width='1.2' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E");
-}
-
-.terminal-live-shimmer__icon--preview {
-  -webkit-mask-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 14 14' fill='none'%3E%3Cpath d='M4.21449 11.4349L10.8684 7.76319C11.4716 7.43033 11.4713 6.56324 10.8679 6.23073L4.21404 2.56418C3.63088 2.24284 2.91675 2.6647 2.91675 3.33053L2.91675 10.6688C2.91675 11.3348 3.63132 11.7567 4.21449 11.4349Z' stroke='white' stroke-width='1.2' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E");
-  mask-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 14 14' fill='none'%3E%3Cpath d='M4.21449 11.4349L10.8684 7.76319C11.4716 7.43033 11.4713 6.56324 10.8679 6.23073L4.21404 2.56418C3.63088 2.24284 2.91675 2.6647 2.91675 3.33053L2.91675 10.6688C2.91675 11.3348 3.63132 11.7567 4.21449 11.4349Z' stroke='white' stroke-width='1.2' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E");
-}
-
-.terminal-live-shimmer__label {
-  min-width: 0;
-  flex: 1;
-  background-position: calc(var(--terminal-shimmer-x) - var(--terminal-shimmer-label-x, 0px)) 0;
-  -webkit-background-clip: text;
-  background-clip: text;
-  color: transparent;
+.terminal-row-shimmer__text,
+.terminal-row-shimmer__icon {
+  animation: terminal-row-shimmer-pulse 1.35s ease-in-out infinite;
 }
 
 @media (prefers-reduced-motion: reduce) {
-  .terminal-live-shimmer {
+  .terminal-row-shimmer__text,
+  .terminal-row-shimmer__icon {
     animation: none;
-  }
-
-  .terminal-live-shimmer__icon,
-  .terminal-live-shimmer__label {
-    background-image: none;
-    color: inherit;
-    -webkit-background-clip: unset;
-    background-clip: unset;
-  }
-
-  .terminal-live-shimmer__icon {
-    background-color: currentcolor;
+    opacity: 0.75;
   }
 }
