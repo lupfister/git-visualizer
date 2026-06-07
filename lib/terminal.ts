@@ -31,3 +31,9 @@ export const resizeTerminalSession = (id: string, cols: number, rows: number): P
 
 export const terminateTerminalSession = (id: string): Promise<void> =>
   invoke('terminate_terminal_session', { id });
+
+export const saveTerminalAttachment = (
+  fileName: string,
+  mimeType: string,
+  dataBase64: string,
+): Promise<string> => invoke('save_terminal_attachment', { fileName, mimeType, dataBase64 });

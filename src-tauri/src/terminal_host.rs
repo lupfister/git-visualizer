@@ -225,30 +225,81 @@ fn refresh_status(session: &Arc<LiveSession>) -> TerminalSession {
 
 fn detect_foreground_command(root_pid: u32) -> Option<String> {
     let output = Command::new("ps")
-        .args(["-axo", "pid=,ppid=,comm="])
+        .args(["-axo", "pid=,ppid=,state=,command="])
         .output()
         .ok()?;
-    let raw = String::from_utf8_lossy(&output.stdout);
+    detect_foreground_command_from_ps(root_pid, &String::from_utf8_lossy(&output.stdout))
+}
+
+fn detect_foreground_command_from_ps(root_pid: u32, raw: &str) -> Option<String> {
     let mut children = HashMap::<u32, Vec<(u32, String)>>::new();
     for line in raw.lines() {
         let mut parts = line.split_whitespace();
-        let pid = parts.next()?.parse::<u32>().ok()?;
-        let parent = parts.next()?.parse::<u32>().ok()?;
-        let command = parts.collect::<Vec<_>>().join(" ");
-        children.entry(parent).or_default().push((pid, command));
-    }
-    let mut current = root_pid;
-    let mut detected = None;
-    for _ in 0..16 {
-        let Some(next) = children.get(&current).and_then(|values| values.last()) else {
-            break;
+        let Some(pid) = parts.next().and_then(|value| value.parse::<u32>().ok()) else {
+            continue;
         };
-        current = next.0;
-        detected = PathBuf::from(&next.1)
-            .file_name()
-            .map(|value| value.to_string_lossy().to_string());
+        let Some(parent) = parts.next().and_then(|value| value.parse::<u32>().ok()) else {
+            continue;
+        };
+        let state = parts.next().unwrap_or_default();
+        if state.starts_with('Z') {
+            continue;
+        }
+        children
+            .entry(parent)
+            .or_default()
+            .push((pid, parts.collect::<Vec<_>>().join(" ")));
     }
-    detected.filter(|name| !matches!(name.as_str(), "zsh" | "bash" | "sh" | "fish" | "login"))
+
+    let mut stack = vec![(root_pid, 0_usize)];
+    let mut best: Option<(usize, usize, String)> = None;
+    while let Some((parent, depth)) = stack.pop() {
+        for (pid, command) in children.get(&parent).into_iter().flatten() {
+            let next_depth = depth + 1;
+            stack.push((*pid, next_depth));
+            let Some((priority, label)) = terminal_process_label(command) else {
+                continue;
+            };
+            if best
+                .as_ref()
+                .is_none_or(|current| (priority, next_depth) > (current.0, current.1))
+            {
+                best = Some((priority, next_depth, label));
+            }
+        }
+    }
+    best.map(|(_, _, label)| label)
+}
+
+fn terminal_process_label(command: &str) -> Option<(usize, String)> {
+    let lower = command.to_ascii_lowercase();
+    for (needle, label) in [
+        ("opencode", "OpenCode"),
+        ("claude", "Claude"),
+        ("codex", "Codex"),
+        ("gemini", "Gemini"),
+        ("aider", "Aider"),
+    ] {
+        if lower.contains(needle) {
+            return Some((100, label.to_string()));
+        }
+    }
+
+    let executable = command.split_whitespace().next()?;
+    let name = PathBuf::from(executable)
+        .file_name()?
+        .to_string_lossy()
+        .trim_start_matches('-')
+        .to_string();
+    if name.is_empty()
+        || matches!(
+            name.as_str(),
+            "zsh" | "bash" | "sh" | "fish" | "login" | "node" | "nodejs" | "env" | "script"
+        )
+    {
+        return None;
+    }
+    Some((1, name))
 }
 
 fn handle_request(request: HostRequest, sessions: &Sessions) -> HostResponse {
@@ -531,5 +582,31 @@ mod tests {
         }
         assert!(captured);
         assert!(handle_request(HostRequest::Terminate { id: session.id }, &sessions).ok);
+    }
+
+    #[test]
+    fn detects_cli_agent_behind_node_wrapper() {
+        let ps = "\
+100 1 S /bin/zsh -l
+101 100 S node /opt/homebrew/lib/node_modules/@openai/codex/bin/codex.js
+102 101 S /opt/homebrew/lib/node_modules/@openai/codex/vendor/codex
+";
+        assert_eq!(
+            detect_foreground_command_from_ps(100, ps),
+            Some("Codex".to_string())
+        );
+    }
+
+    #[test]
+    fn detects_arbitrary_foreground_command_but_ignores_shells() {
+        let ps = "\
+100 1 S /bin/zsh -l
+101 100 S pnpm dev
+";
+        assert_eq!(
+            detect_foreground_command_from_ps(100, ps),
+            Some("pnpm".to_string())
+        );
+        assert_eq!(detect_foreground_command_from_ps(101, ps), None);
     }
 }

@@ -31,7 +31,7 @@ use std::{
         atomic::{AtomicBool, AtomicU64, Ordering},
         Mutex, OnceLock,
     },
-    time::{Duration as StdDuration, Instant},
+    time::{Duration as StdDuration, Instant, SystemTime, UNIX_EPOCH},
 };
 
 #[cfg(target_os = "macos")]
@@ -3193,6 +3193,59 @@ async fn prepare_preview_target(
 struct TerminalReadResult {
     session: terminal_host::TerminalSession,
     output: String,
+}
+
+#[tauri::command(rename_all = "camelCase")]
+async fn save_terminal_attachment(
+    file_name: String,
+    mime_type: String,
+    data_base64: String,
+) -> Result<String, String> {
+    run_blocking(move || {
+        let base = dirs::data_local_dir()
+            .or_else(dirs::cache_dir)
+            .ok_or_else(|| "Unable to resolve terminal attachment directory".to_string())?;
+        let directory = base.join("git-visualizer").join("terminal-attachments");
+        fs::create_dir_all(&directory)
+            .map_err(|error| format!("Failed to create terminal attachment directory: {error}"))?;
+        let extension = Path::new(&file_name)
+            .extension()
+            .and_then(|value| value.to_str())
+            .filter(|value| value.len() <= 12 && value.chars().all(|character| character.is_ascii_alphanumeric()))
+            .map(str::to_ascii_lowercase)
+            .or_else(|| match mime_type.as_str() {
+                "image/png" => Some("png".to_string()),
+                "image/jpeg" => Some("jpg".to_string()),
+                "image/gif" => Some("gif".to_string()),
+                "image/webp" => Some("webp".to_string()),
+                "video/mp4" => Some("mp4".to_string()),
+                "video/quicktime" => Some("mov".to_string()),
+                "video/webm" => Some("webm".to_string()),
+                _ => None,
+            })
+            .unwrap_or_else(|| "bin".to_string());
+        let stem = Path::new(&file_name)
+            .file_stem()
+            .and_then(|value| value.to_str())
+            .unwrap_or("attachment")
+            .chars()
+            .map(|character| if character.is_ascii_alphanumeric() || matches!(character, '-' | '_') { character } else { '-' })
+            .collect::<String>();
+        let timestamp = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_millis();
+        let path = directory.join(format!("{}-{}.{}", stem.trim_matches('-'), timestamp, extension));
+        let data = base64::Engine::decode(
+            &base64::engine::general_purpose::STANDARD,
+            data_base64,
+        )
+        .map_err(|error| format!("Failed to decode terminal attachment: {error}"))?;
+        fs::write(&path, data)
+            .map_err(|error| format!("Failed to save terminal attachment: {error}"))?;
+        Ok(path.to_string_lossy().to_string())
+    })
+    .await
 }
 
 #[tauri::command]
@@ -8020,6 +8073,7 @@ pub fn run() {
             list_worktrees,
             remove_worktree,
             prepare_preview_target,
+            save_terminal_attachment,
             list_terminal_sessions,
             create_terminal_session,
             read_terminal_session,

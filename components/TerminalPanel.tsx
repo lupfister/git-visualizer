@@ -4,7 +4,7 @@ import { Terminal } from '@xterm/xterm';
 import { FitAddon } from '@xterm/addon-fit';
 import '@xterm/xterm/css/xterm.css';
 import type { TerminalSession } from '../types';
-import { readTerminalSession, resizeTerminalSession, writeTerminalSession } from '../lib/terminal';
+import { readTerminalSession, resizeTerminalSession, saveTerminalAttachment, writeTerminalSession } from '../lib/terminal';
 
 type Props = {
   session: TerminalSession | null;
@@ -12,6 +12,15 @@ type Props = {
   onTerminate: (id: string) => void;
   onSessionChange: (session: TerminalSession) => void;
 };
+
+const blobToBase64 = (blob: Blob): Promise<string> => new Promise((resolve, reject) => {
+  const reader = new FileReader();
+  reader.onerror = () => reject(reader.error);
+  reader.onload = () => resolve(String(reader.result).split(',', 2)[1] ?? '');
+  reader.readAsDataURL(blob);
+});
+
+const shellQuote = (value: string): string => `'${value.split("'").join("'\\''")}'`;
 
 export default function TerminalPanel({ session, onClose, onTerminate, onSessionChange }: Props) {
   const hostRef = useRef<HTMLDivElement | null>(null);
@@ -45,6 +54,19 @@ export default function TerminalPanel({ session, onClose, onTerminate, onSession
     const dataDisposable = terminal.onData((data) => {
       void writeTerminalSession(session.id, data);
     });
+    const handlePaste = (event: ClipboardEvent) => {
+      const files = Array.from(event.clipboardData?.files ?? []).filter((file) =>
+        file.type.startsWith('image/') || file.type.startsWith('video/'),
+      );
+      if (files.length === 0) return;
+      event.preventDefault();
+      event.stopPropagation();
+      void Promise.all(files.map(async (file, index) => {
+        const fallbackName = file.type.startsWith('video/') ? `video-${index + 1}` : `image-${index + 1}`;
+        return saveTerminalAttachment(file.name || fallbackName, file.type, await blobToBase64(file));
+      })).then((paths) => writeTerminalSession(session.id, `${paths.map(shellQuote).join(' ')} `));
+    };
+    host.addEventListener('paste', handlePaste, true);
     const resize = () => {
       fit.fit();
       void resizeTerminalSession(session.id, terminal.cols, terminal.rows);
@@ -73,6 +95,7 @@ export default function TerminalPanel({ session, onClose, onTerminate, onSession
       disposed = true;
       window.clearInterval(interval);
       observer.disconnect();
+      host.removeEventListener('paste', handlePaste, true);
       dataDisposable.dispose();
       terminal.dispose();
       terminalRef.current = null;
