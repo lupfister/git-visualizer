@@ -9,8 +9,11 @@ const MAX_PROMPT_CHARS: usize = 8_000;
 const MAX_GENERATION_ATTEMPTS: u32 = 3;
 const RETRY_DELAY_MS: u64 = 400;
 const MAX_MESSAGE_CHARS: usize = 72;
+const MAX_TERMINAL_MESSAGE_CHARS: usize = 40;
 const MAX_MESSAGE_WORDS: usize = 12;
+const MAX_TERMINAL_MESSAGE_WORDS: usize = 8;
 const MIN_MESSAGE_LEN: usize = 6;
+const MIN_TERMINAL_MESSAGE_LEN: usize = 3;
 const OPENCODE_TIMEOUT: Duration = Duration::from_secs(90);
 /// Dedicated port so we never attach to a stale OpenCode Desktop / old CLI server on 4096.
 const OPENCODE_SERVER_PORT: u16 = 47123;
@@ -41,6 +44,15 @@ Rules:\n\
 - High-level purpose only — never list files, paths, or per-hunk details\n\
 - No preamble, explanation, quotes, markdown, or trailing colon\n";
 
+const TERMINAL_TITLE_PROMPT: &str = "\
+You write short terminal session titles only.\n\
+\n\
+Rules:\n\
+- Output exactly one line, at most 40 characters\n\
+- Describe what the session is doing right now (task/intent)\n\
+- No paths, file lists, shell prompts, or AI meta text\n\
+- No quotes, markdown, or trailing colon\n";
+
 fn compose_title_prompt(base: &str, summary: &str, previous_title: Option<&str>) -> String {
     let mut prompt = base.to_string();
     if let Some(previous) = previous_title
@@ -57,6 +69,52 @@ fn compose_title_prompt(base: &str, summary: &str, previous_title: Option<&str>)
     prompt.push_str("\nChanges:\n");
     prompt.push_str(&truncate_summary(summary));
     prompt
+}
+
+fn compose_terminal_title_prompt(
+    summary: &str,
+    process_hint: Option<&str>,
+    previous_title: Option<&str>,
+) -> String {
+    let mut prompt = TERMINAL_TITLE_PROMPT.to_string();
+    if let Some(hint) = process_hint.map(str::trim).filter(|value| !value.is_empty()) {
+        prompt.push_str("\nForeground process: ");
+        prompt.push_str(hint);
+        prompt.push('\n');
+    }
+    if let Some(previous) = previous_title
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+    {
+        prompt.push_str(
+            "\nPrevious title (ongoing session — write a fresh title for the context below; \
+             keep the same intent when still accurate, do not copy verbatim unless it still fits):\n",
+        );
+        prompt.push_str(previous);
+        prompt.push('\n');
+    }
+    prompt.push_str("\nTerminal context:\n");
+    prompt.push_str(&truncate_summary(summary));
+    prompt
+}
+
+pub fn redact_terminal_secrets(text: &str) -> String {
+    text.lines()
+        .map(|line| {
+            let lower = line.to_ascii_lowercase();
+            if lower.contains("password=")
+                || lower.contains("token=")
+                || lower.contains("secret=")
+                || lower.contains("api_key=")
+                || lower.contains("apikey=")
+            {
+                "[redacted]".to_string()
+            } else {
+                line.to_string()
+            }
+        })
+        .collect::<Vec<_>>()
+        .join("\n")
 }
 
 fn resolve_opencode_binary() -> Result<PathBuf, String> {
@@ -265,6 +323,8 @@ fn strip_meta_prefix(text: &str) -> String {
     let meta_markers = [
         "commit title:",
         "stash title:",
+        "terminal title:",
+        "session title:",
         "the task returned",
         "the agent generated",
         "here is the",
@@ -286,14 +346,37 @@ fn strip_meta_prefix(text: &str) -> String {
 }
 
 pub fn is_unacceptable_message(text: &str) -> bool {
+    is_unacceptable_message_with_limits(
+        text,
+        MIN_MESSAGE_LEN,
+        MAX_MESSAGE_CHARS,
+        MAX_MESSAGE_WORDS,
+    )
+}
+
+pub fn is_unacceptable_terminal_message(text: &str) -> bool {
+    is_unacceptable_message_with_limits(
+        text,
+        MIN_TERMINAL_MESSAGE_LEN,
+        MAX_TERMINAL_MESSAGE_CHARS,
+        MAX_TERMINAL_MESSAGE_WORDS,
+    )
+}
+
+fn is_unacceptable_message_with_limits(
+    text: &str,
+    min_len: usize,
+    max_chars: usize,
+    max_words: usize,
+) -> bool {
     let trimmed = text.trim();
-    if trimmed.len() < MIN_MESSAGE_LEN || trimmed.len() > MAX_MESSAGE_CHARS {
+    if trimmed.len() < min_len || trimmed.len() > max_chars {
         return true;
     }
     if trimmed.ends_with(':') {
         return true;
     }
-    if trimmed.split_whitespace().count() > MAX_MESSAGE_WORDS {
+    if trimmed.split_whitespace().count() > max_words {
         return true;
     }
     if trimmed.contains('/') || trimmed.contains('\\') {
@@ -327,11 +410,15 @@ pub fn is_unacceptable_message(text: &str) -> bool {
 }
 
 fn clamp_message(text: &str) -> String {
+    clamp_message_with_limit(text, MAX_MESSAGE_CHARS)
+}
+
+fn clamp_message_with_limit(text: &str, max_chars: usize) -> String {
     let trimmed = text.trim();
-    if trimmed.len() <= MAX_MESSAGE_CHARS {
+    if trimmed.len() <= max_chars {
         return trimmed.to_string();
     }
-    let mut end = MAX_MESSAGE_CHARS;
+    let mut end = max_chars;
     while end > 0 && !trimmed.is_char_boundary(end) {
         end -= 1;
     }
@@ -361,6 +448,32 @@ fn normalize_line(line: &str) -> String {
 }
 
 fn sanitize_title(raw: &str, empty_label: &str) -> Result<String, String> {
+    sanitize_title_with_limits(
+        raw,
+        empty_label,
+        MAX_MESSAGE_CHARS,
+        is_unacceptable_message,
+        clamp_message,
+    )
+}
+
+fn sanitize_terminal_title(raw: &str, empty_label: &str) -> Result<String, String> {
+    sanitize_title_with_limits(
+        raw,
+        empty_label,
+        MAX_TERMINAL_MESSAGE_CHARS,
+        is_unacceptable_terminal_message,
+        |text| clamp_message_with_limit(text, MAX_TERMINAL_MESSAGE_CHARS),
+    )
+}
+
+fn sanitize_title_with_limits(
+    raw: &str,
+    empty_label: &str,
+    _max_chars: usize,
+    is_unacceptable: fn(&str) -> bool,
+    clamp: fn(&str) -> String,
+) -> Result<String, String> {
     let cleaned = strip_ansi(raw).replace("```", "").trim().to_string();
     if cleaned.is_empty() {
         return Err(format!("OpenCode returned an empty {empty_label}."));
@@ -372,18 +485,18 @@ fn sanitize_title(raw: &str, empty_label: &str) -> Result<String, String> {
         .filter(|line| !line.is_empty())
         .map(normalize_line)
         .filter(|line| !line.is_empty())
-        .map(|line| clamp_message(&line))
+        .map(|line| clamp(&line))
         .filter(|line| !line.is_empty())
         .collect();
 
     if candidates.is_empty() {
-        candidates.push(clamp_message(&normalize_line(&cleaned)));
+        candidates.push(clamp(&normalize_line(&cleaned)));
     }
 
     candidates.sort_by_key(|line| line.len());
 
     for candidate in candidates {
-        if is_unacceptable_message(&candidate) {
+        if is_unacceptable(&candidate) {
             continue;
         }
         return Ok(candidate);
@@ -396,7 +509,10 @@ fn sanitize_title(raw: &str, empty_label: &str) -> Result<String, String> {
 
 #[cfg(test)]
 mod tests {
-    use super::{is_unacceptable_message, parse_opencode_version, sanitize_title, version_at_least};
+    use super::{
+        is_unacceptable_message, is_unacceptable_terminal_message, parse_opencode_version,
+        redact_terminal_secrets, sanitize_terminal_title, sanitize_title, version_at_least,
+    };
 
     #[test]
     fn parses_opencode_version() {
@@ -437,6 +553,27 @@ mod tests {
         let raw = "Add comprehensive validation and retry logic for OpenCode commit message generation pipeline";
         let message = sanitize_title(raw, "commit message").expect("ok");
         assert!(message.len() <= 72);
+    }
+
+    #[test]
+    fn keeps_short_terminal_title() {
+        let message = sanitize_terminal_title("Run test suite", "terminal title").expect("ok");
+        assert_eq!(message, "Run test suite");
+        assert!(message.len() <= 40);
+    }
+
+    #[test]
+    fn rejects_overlong_terminal_title() {
+        let raw = "Investigate and fix sidebar terminal label generation pipeline";
+        assert!(is_unacceptable_terminal_message(raw));
+    }
+
+    #[test]
+    fn redacts_secret_lines() {
+        let raw = "export TOKEN=abc123\npnpm test";
+        let redacted = redact_terminal_secrets(raw);
+        assert!(redacted.contains("[redacted]"));
+        assert!(redacted.contains("pnpm test"));
     }
 }
 
@@ -597,6 +734,58 @@ pub fn generate_stash_message(
         "stash message",
         "stash message",
     )
+}
+
+fn generate_terminal_title_with_retries(
+    repo: &Path,
+    summary: &str,
+    process_hint: Option<&str>,
+    previous_title: Option<&str>,
+) -> Result<String, String> {
+    let repo_path = repo
+        .to_str()
+        .ok_or_else(|| "Repository path is not valid UTF-8.".to_string())?;
+
+    if summary.trim().is_empty() {
+        return Err("No terminal context to describe.".to_string());
+    }
+
+    let binary = resolve_opencode_binary()?;
+    let prompt = compose_terminal_title_prompt(summary, process_hint, previous_title);
+    let mut last_error = String::from("OpenCode did not return a usable title.");
+
+    for attempt in 1..=MAX_GENERATION_ATTEMPTS {
+        let model = OPENCODE_TITLE_MODELS
+            [(attempt as usize - 1) % OPENCODE_TITLE_MODELS.len()];
+        match run_opencode_title(&binary, repo_path, model, &prompt) {
+            Ok(raw) => match sanitize_terminal_title(&raw, "terminal title") {
+                Ok(message) if !is_unacceptable_terminal_message(&message) => return Ok(message),
+                Ok(_) => {
+                    last_error =
+                        "OpenCode returned meta text instead of a terminal title.".to_string();
+                }
+                Err(err) => last_error = err,
+            },
+            Err(err) => last_error = err,
+        }
+
+        if attempt < MAX_GENERATION_ATTEMPTS {
+            std::thread::sleep(Duration::from_millis(RETRY_DELAY_MS * attempt as u64));
+        }
+    }
+
+    Err(format!(
+        "Failed to generate a terminal title after {MAX_GENERATION_ATTEMPTS} attempts. {last_error}"
+    ))
+}
+
+pub fn generate_terminal_title(
+    repo: &Path,
+    summary: &str,
+    process_hint: Option<&str>,
+    previous_title: Option<&str>,
+) -> Result<String, String> {
+    generate_terminal_title_with_retries(repo, summary, process_hint, previous_title)
 }
 
 pub fn validate_generated_message(message: &str, label: &str) -> Result<(), String> {

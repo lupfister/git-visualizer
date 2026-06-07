@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import type { CSSProperties } from 'react';
 import { ChevronRight, MoreHorizontal, Plus, Trash2 } from 'lucide-react';
 import type { Branch, BranchCommitPreview, TerminalSession, WorktreeInfo } from '../types';
@@ -104,6 +104,19 @@ export default function DenseBranchSidebar({
   const [expandedWorktrees, setExpandedWorktrees] = useState<Set<string>>(() => loadSet(EXPANDED_WORKTREES_KEY));
   const [expandedProjects, setExpandedProjects] = useState<Set<string>>(() => loadSet(EXPANDED_PROJECTS_KEY));
   const [openProjectMenu, setOpenProjectMenu] = useState<string | null>(null);
+  const menuRef = useRef<HTMLDivElement | null>(null);
+
+  useEffect(() => {
+    if (!openProjectMenu) return;
+    const handlePointerDown = (event: PointerEvent) => {
+      const target = event.target as Node | null;
+      if (!target) return;
+      if (menuRef.current?.contains(target)) return;
+      setOpenProjectMenu(null);
+    };
+    window.addEventListener('pointerdown', handlePointerDown);
+    return () => window.removeEventListener('pointerdown', handlePointerDown);
+  }, [openProjectMenu]);
 
   useEffect(() => {
     if (!activeProjectPath) return;
@@ -142,6 +155,35 @@ export default function DenseBranchSidebar({
       return next;
     });
   };
+
+  useEffect(() => {
+    if (!activeTerminalId) return;
+    const session = terminalSessions.find((candidate) => candidate.id === activeTerminalId);
+    if (!session) return;
+
+    const project = projects.find((candidate) => samePath(candidate.path, session.projectPath));
+    if (!project) return;
+
+    setExpandedProjects((current) => {
+      if (current.has(project.path)) return current;
+      const next = new Set(current);
+      next.add(project.path);
+      persistSet(EXPANDED_PROJECTS_KEY, next);
+      return next;
+    });
+
+    for (const worktree of project.worktrees) {
+      const workingTreeId = workingTreeIdForPath(worktree.path, worktree.isCurrent);
+      const nested = visibleNestedSessions(
+        sessionsByProject.get(normalizeRepoPathForCompare(project.path).toLowerCase()) ?? [],
+        worktree.path,
+        workingTreeId,
+      );
+      if (!nested.some((candidate) => candidate.id === activeTerminalId)) continue;
+      expandWorktree(`${project.path}:${worktree.path}`);
+      return;
+    }
+  }, [activeTerminalId, projects, sessionsByProject, terminalSessions]);
 
   return (
     <aside
@@ -218,7 +260,7 @@ export default function DenseBranchSidebar({
                     <MoreHorizontal className="h-4 w-4 shrink-0" />
                   </button>
                   {openProjectMenu === project.path ? (
-                    <div className="absolute right-0 top-8 z-50 w-40 rounded-lg border border-border bg-background p-1">
+                    <div ref={menuRef} className="absolute right-0 top-8 z-50 w-40 rounded-lg border border-border bg-background p-1">
                       <button type="button" onClick={() => void onRevealProjectInFinder(project.path)} className="w-full rounded-lg px-2 py-1.5 text-left text-xs transition-colors hover:bg-muted">Open in Finder</button>
                       {onResetProjectNodePositions ? <button type="button" onClick={() => onResetProjectNodePositions(project.path)} className="w-full rounded-lg px-2 py-1.5 text-left text-xs transition-colors hover:bg-muted">Reset node positions</button> : null}
                       <button type="button" onClick={() => onRemoveProject(project.path)} className="w-full rounded-lg px-2 py-1.5 text-left text-xs text-red-600 transition-colors hover:bg-red-50 dark:text-red-400 dark:hover:bg-red-900/20">Remove</button>
@@ -403,8 +445,8 @@ function TerminalRow({
           className={cn(
             'absolute right-0 top-0 inline-flex h-7 w-7 shrink-0 items-center justify-center rounded-lg opacity-0 transition-opacity duration-150 group-hover/terminal:opacity-100',
             accent
-              ? 'text-[var(--worktree-fg)] hover:bg-[var(--worktree-fg)]/10'
-              : 'text-muted-foreground hover:text-foreground hover:bg-accent',
+              ? 'text-[var(--worktree-fg)]'
+              : 'text-muted-foreground',
           )}
           aria-label="Terminate session"
           title="Terminate session"

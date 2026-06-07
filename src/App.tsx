@@ -68,6 +68,7 @@ import {
   isWorkingTreeCommitId,
   persistWorktreeFocusSha,
   resolveActiveWorktreeFocusSha,
+  resolveTerminalSessionFocusId,
   shaMatches,
   workingTreeIdForPath,
 } from '../lib/worktreeSessions';
@@ -5676,13 +5677,18 @@ function App() {
     }
   }, [repoPath]);
 
-  function handleSidebarSelectCommit(sha: string) {
+  const focusMapOnNode = useCallback((projectPath: string, sha: string) => {
     if (!sha) return;
     setGridFocusSha(sha);
-    if (repoPath && isWorkingTreeCommitId(sha)) {
-      persistWorktreeFocusSha(repoPath, sha);
+    if (isWorkingTreeCommitId(sha)) {
+      persistWorktreeFocusSha(projectPath, sha);
     }
     setGridSearchJumpToken((token) => token + 1);
+  }, []);
+
+  function handleSidebarSelectCommit(sha: string) {
+    if (!repoPath) return;
+    focusMapOnNode(repoPath, sha);
   }
 
   // Synthetic stash nodes (yellow) and per-worktree worktree nodes — same lane rules as before.
@@ -6525,7 +6531,11 @@ function App() {
     });
     setTerminalSessions((current) => [...current, session]);
     setActiveTerminalId(session.id);
-  }, [terminalSessions]);
+    const focusId = resolveTerminalSessionFocusId(session);
+    if (focusId) {
+      focusMapOnNode(projectPath, focusId);
+    }
+  }, [focusMapOnNode, terminalSessions]);
 
   const handleTerminateTerminal = useCallback(async (id: string) => {
     await terminateTerminalSession(id).catch(() => undefined);
@@ -6585,25 +6595,12 @@ function App() {
               onCreateTerminal={handleCreateTerminal}
               onSelectTerminal={async (session) => {
                 setActiveTerminalId(session.id);
-                // Switch project if the session belongs to a different repo
                 if (!sameRepoPath(repoPath, session.projectPath)) {
                   await loadRepo(session.projectPath);
                 }
-                // Focus the corresponding map node
-                const focusId =
-                  session.targetId ??
-                  (session.worktreePath
-                    ? workingTreeIdForPath(
-                        session.worktreePath,
-                        sameRepoPath(session.worktreePath, session.projectPath),
-                      )
-                    : null);
+                const focusId = resolveTerminalSessionFocusId(session);
                 if (focusId) {
-                  if (isWorkingTreeCommitId(focusId)) {
-                    persistWorktreeFocusSha(session.projectPath, focusId);
-                  }
-                  setGridFocusSha(focusId);
-                  setGridSearchJumpToken((token) => token + 1);
+                  focusMapOnNode(session.projectPath, focusId);
                 }
               }}
               onTerminateTerminal={handleTerminateTerminal}

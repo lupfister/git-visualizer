@@ -146,7 +146,7 @@ export default function TerminalPanel({ session, onClose, onTerminate, onSession
         <button
           type="button"
           onClick={() => onTerminate(session.id)}
-          className="inline-flex h-7 w-7 shrink-0 items-center justify-center rounded-lg text-muted-foreground transition-colors hover:bg-muted hover:text-foreground"
+          className="inline-flex h-7 w-7 shrink-0 items-center justify-center rounded-lg text-muted-foreground"
           aria-label="Terminate terminal"
           title="Terminate terminal"
         >

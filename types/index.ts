@@ -64,6 +64,9 @@ export interface TerminalSession {
   status: 'running' | 'exited';
   targetId?: string | null;
   targetKind?: 'commit' | 'worktree' | null;
+  aiLabel?: string | null;
+  aiLabelFingerprint?: string | null;
+  aiLabelAt?: number | null;
 }
 
 export interface Commit {

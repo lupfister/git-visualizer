@@ -1,24 +1,31 @@
 use portable_pty::{native_pty_system, CommandBuilder, MasterPty, PtySize};
 use serde::{Deserialize, Serialize};
 use std::{
-    collections::HashMap,
+    collections::{HashMap, hash_map::DefaultHasher},
     fs,
+    hash::{Hash, Hasher},
     io::{BufRead, BufReader, Read, Write},
     os::unix::{
         net::{UnixListener, UnixStream},
         process::CommandExt,
     },
-    path::PathBuf,
+    path::{Path, PathBuf},
     process::{Command, Stdio},
     sync::{
-        atomic::{AtomicU64, Ordering},
+        atomic::{AtomicBool, AtomicU64, Ordering},
         Arc, Mutex,
     },
     thread,
-    time::{Duration, SystemTime, UNIX_EPOCH},
+    time::{Duration, Instant, SystemTime, UNIX_EPOCH},
 };
 
+use crate::opencode;
+
 const MAX_OUTPUT_BYTES: usize = 2 * 1024 * 1024;
+const OUTPUT_TAIL_BYTES: usize = 3 * 1024;
+const OUTPUT_IDLE: Duration = Duration::from_secs(10);
+const AI_TITLE_TICK: Duration = Duration::from_secs(2);
+const MIN_OUTPUT_ALPHA_CHARS: usize = 20;
 static SESSION_COUNTER: AtomicU64 = AtomicU64::new(1);
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -35,6 +42,12 @@ pub struct TerminalSession {
     pub status: String,
     pub target_id: Option<String>,
     pub target_kind: Option<String>,
+    #[serde(default)]
+    pub ai_label: Option<String>,
+    #[serde(default)]
+    pub ai_label_fingerprint: Option<String>,
+    #[serde(default)]
+    pub ai_label_at: Option<u64>,
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -87,6 +100,8 @@ struct LiveSession {
     writer: Mutex<Box<dyn Write + Send>>,
     child: Mutex<Box<dyn portable_pty::Child + Send + Sync>>,
     output: Arc<Mutex<Vec<u8>>>,
+    last_output_change_at: Arc<Mutex<Instant>>,
+    ai_generation_in_flight: AtomicBool,
 }
 
 type Sessions = Arc<Mutex<HashMap<String, Arc<LiveSession>>>>;
@@ -167,7 +182,9 @@ fn spawn_session(
         .take_writer()
         .map_err(|error| format!("Failed to attach terminal input: {error}"))?;
     let output = Arc::new(Mutex::new(Vec::<u8>::new()));
+    let last_output_change_at = Arc::new(Mutex::new(Instant::now()));
     let output_for_reader = output.clone();
+    let last_output_change_at_for_reader = last_output_change_at.clone();
     thread::spawn(move || {
         let mut buffer = [0_u8; 8192];
         while let Ok(count) = reader.read(&mut buffer) {
@@ -182,6 +199,10 @@ fn spawn_session(
                 let remove = accumulated.len() - MAX_OUTPUT_BYTES;
                 accumulated.drain(..remove);
             }
+            drop(accumulated);
+            if let Ok(mut changed_at) = last_output_change_at_for_reader.lock() {
+                *changed_at = Instant::now();
+            }
         }
     });
 
@@ -192,6 +213,8 @@ fn spawn_session(
         writer: Mutex::new(writer),
         child: Mutex::new(child),
         output,
+        last_output_change_at,
+        ai_generation_in_flight: AtomicBool::new(false),
     });
     sessions
         .lock()
@@ -276,8 +299,176 @@ fn extract_agent_task(output_bytes: &[u8]) -> Option<String> {
     Some(text)
 }
 
+fn extract_output_tail_for_ai(output_bytes: &[u8]) -> String {
+    let start = output_bytes.len().saturating_sub(OUTPUT_TAIL_BYTES);
+    let raw = String::from_utf8_lossy(&output_bytes[start..]);
+    opencode::redact_terminal_secrets(&strip_ansi(&raw))
+}
+
+pub(crate) fn compute_output_fingerprint(output_bytes: &[u8], process_hint: Option<&str>) -> String {
+    let tail = extract_output_tail_for_ai(output_bytes);
+    let mut hasher = DefaultHasher::new();
+    tail.hash(&mut hasher);
+    if let Some(hint) = process_hint {
+        hint.hash(&mut hasher);
+    }
+    format!("{:x}", hasher.finish())
+}
+
+fn output_has_meaningful_content(output_bytes: &[u8]) -> bool {
+    extract_output_tail_for_ai(output_bytes)
+        .chars()
+        .filter(|character| character.is_alphabetic())
+        .count()
+        >= MIN_OUTPUT_ALPHA_CHARS
+}
+
+fn heuristic_label(
+    process_info: Option<(usize, String)>,
+    output_bytes: &[u8],
+) -> Option<String> {
+    let (priority, name) = process_info?;
+    if priority >= 100 {
+        extract_agent_task(output_bytes)
+            .map(|task| format!("{name} · {task}"))
+            .or(Some(name))
+    } else {
+        Some(name)
+    }
+}
+
+fn merge_display_label(
+    metadata: &TerminalSession,
+    process_name: Option<String>,
+    heuristic: Option<String>,
+    current_fingerprint: &str,
+) -> String {
+    let ai_fresh = metadata.ai_label_fingerprint.as_deref() == Some(current_fingerprint)
+        && metadata
+            .ai_label
+            .as_ref()
+            .is_some_and(|label| !label.trim().is_empty());
+
+    if ai_fresh {
+        let ai = metadata.ai_label.as_ref().expect("fresh ai label");
+        return match process_name {
+            Some(process) => format!("{process} · {ai}"),
+            None => ai.clone(),
+        };
+    }
+
+    heuristic.unwrap_or_else(|| metadata.label.clone())
+}
+
+fn session_process_info(session: &Arc<LiveSession>, exited: bool) -> Option<(usize, String)> {
+    if exited {
+        return None;
+    }
+    let process_id = session
+        .child
+        .lock()
+        .ok()
+        .and_then(|child| child.process_id())?;
+    detect_foreground_command(process_id)
+}
+
+fn check_ai_title_generation(sessions: &Sessions) {
+    let candidates: Vec<Arc<LiveSession>> = sessions
+        .lock()
+        .ok()
+        .map(|guard| guard.values().cloned().collect())
+        .unwrap_or_default();
+
+    for session in candidates {
+        maybe_generate_ai_title(session, sessions);
+    }
+}
+
+fn maybe_generate_ai_title(session: Arc<LiveSession>, sessions: &Sessions) {
+    let snapshot = session.metadata.lock().ok().map(|metadata| {
+        (
+            metadata.kind.clone(),
+            metadata.status.clone(),
+            metadata.worktree_path.clone(),
+            metadata.ai_label.clone(),
+            metadata.ai_label_fingerprint.clone(),
+        )
+    });
+    let Some((kind, status, worktree_path, previous_title, stored_fingerprint)) = snapshot else {
+        return;
+    };
+    if kind != "shell" || status == "exited" {
+        return;
+    }
+
+    if session
+        .ai_generation_in_flight
+        .compare_exchange(false, true, Ordering::AcqRel, Ordering::Relaxed)
+        .is_err()
+    {
+        return;
+    }
+
+    let idle_ok = session
+        .last_output_change_at
+        .lock()
+        .ok()
+        .is_some_and(|changed_at| changed_at.elapsed() >= OUTPUT_IDLE);
+    if !idle_ok {
+        session.ai_generation_in_flight.store(false, Ordering::Relaxed);
+        return;
+    }
+
+    let output_bytes = session
+        .output
+        .lock()
+        .ok()
+        .map(|buffer| buffer.clone())
+        .unwrap_or_default();
+    if !output_has_meaningful_content(&output_bytes) {
+        session.ai_generation_in_flight.store(false, Ordering::Relaxed);
+        return;
+    }
+
+    let process_name = session_process_info(&session, false).map(|(_, name)| name);
+    let fingerprint = compute_output_fingerprint(&output_bytes, process_name.as_deref());
+    if stored_fingerprint.as_deref() == Some(fingerprint.as_str()) {
+        session.ai_generation_in_flight.store(false, Ordering::Relaxed);
+        return;
+    }
+
+    let summary = extract_output_tail_for_ai(&output_bytes);
+    let sessions = sessions.clone();
+    thread::spawn(move || {
+        let result = opencode::generate_terminal_title(
+            Path::new(&worktree_path),
+            &summary,
+            process_name.as_deref(),
+            previous_title.as_deref(),
+        );
+
+        if let Ok(title) = result {
+            if let Ok(mut metadata) = session.metadata.lock() {
+                metadata.ai_label = Some(title);
+                metadata.ai_label_fingerprint = Some(fingerprint.clone());
+                metadata.ai_label_at = Some(
+                    SystemTime::now()
+                        .duration_since(UNIX_EPOCH)
+                        .unwrap_or_default()
+                        .as_millis() as u64,
+                );
+            }
+            persist_metadata(&sessions);
+        }
+
+        session
+            .ai_generation_in_flight
+            .store(false, Ordering::Relaxed);
+    });
+}
+
 fn refresh_status(session: &Arc<LiveSession>) -> TerminalSession {
-    let (exited, process_id) = session
+    let (exited, _) = session
         .child
         .lock()
         .ok()
@@ -292,24 +483,31 @@ fn refresh_status(session: &Arc<LiveSession>) -> TerminalSession {
     if exited {
         metadata.status = "exited".to_string();
     }
+
+    let output_bytes = session
+        .output
+        .lock()
+        .ok()
+        .map(|buffer| buffer.clone())
+        .unwrap_or_default();
+    let process_info = session_process_info(session, exited);
+    let process_name = process_info.as_ref().map(|(_, name)| name.clone());
+    let heuristic = if !exited && metadata.kind == "shell" {
+        heuristic_label(process_info, &output_bytes)
+    } else {
+        None
+    };
+    let current_fingerprint =
+        compute_output_fingerprint(&output_bytes, process_name.as_deref());
+
     let mut response_metadata = metadata.clone();
-    if !exited && response_metadata.kind == "shell" {
-        if let Some((priority, name)) = process_id.and_then(detect_foreground_command) {
-            if priority >= 100 {
-                // AI agent — enrich with a task snippet from recent output
-                let task = session
-                    .output
-                    .lock()
-                    .ok()
-                    .and_then(|buf| extract_agent_task(&buf));
-                response_metadata.label = match task {
-                    Some(t) => format!("{name} · {t}"),
-                    None => name,
-                };
-            } else {
-                response_metadata.label = name;
-            }
-        }
+    if response_metadata.kind == "shell" {
+        response_metadata.label = merge_display_label(
+            &metadata,
+            process_name,
+            heuristic,
+            &current_fingerprint,
+        );
     }
     response_metadata
 }
@@ -552,6 +750,11 @@ pub fn run_terminal_host() -> Result<(), String> {
     let listener = UnixListener::bind(&socket)
         .map_err(|error| format!("Failed to bind terminal host: {error}"))?;
     let sessions: Sessions = Arc::new(Mutex::new(HashMap::new()));
+    let sessions_for_scheduler = sessions.clone();
+    thread::spawn(move || loop {
+        thread::sleep(AI_TITLE_TICK);
+        check_ai_title_generation(&sessions_for_scheduler);
+    });
     for stream in listener.incoming().flatten() {
         let sessions = sessions.clone();
         thread::spawn(move || handle_connection(stream, sessions));
@@ -666,6 +869,9 @@ mod tests {
                 status: "running".to_string(),
                 target_id: None,
                 target_kind: None,
+                ai_label: None,
+                ai_label_fingerprint: None,
+                ai_label_at: None,
             },
             &sessions,
         )
@@ -719,4 +925,66 @@ mod tests {
         assert_eq!(detect_foreground_command_from_ps(101, ps), None);
     }
 
+    #[test]
+    fn output_fingerprint_changes_when_tail_changes() {
+        let first = compute_output_fingerprint(b"running unit tests now", Some("pnpm"));
+        let second = compute_output_fingerprint(b"running unit tests now", Some("pnpm"));
+        let third = compute_output_fingerprint(b"building release artifacts", Some("pnpm"));
+        assert_eq!(first, second);
+        assert_ne!(first, third);
+    }
+
+    #[test]
+    fn merge_display_label_prefers_fresh_ai_title() {
+        let metadata = TerminalSession {
+            id: "terminal-1".to_string(),
+            project_path: "/tmp".to_string(),
+            worktree_path: "/tmp".to_string(),
+            kind: "shell".to_string(),
+            label: "Terminal 1".to_string(),
+            command: String::new(),
+            cols: 80,
+            rows: 24,
+            status: "running".to_string(),
+            target_id: None,
+            target_kind: None,
+            ai_label: Some("Run test suite".to_string()),
+            ai_label_fingerprint: Some("abc123".to_string()),
+            ai_label_at: Some(1),
+        };
+        let merged = merge_display_label(
+            &metadata,
+            Some("pnpm".to_string()),
+            Some("pnpm".to_string()),
+            "abc123",
+        );
+        assert_eq!(merged, "pnpm · Run test suite");
+    }
+
+    #[test]
+    fn merge_display_label_falls_back_when_ai_title_is_stale() {
+        let metadata = TerminalSession {
+            id: "terminal-1".to_string(),
+            project_path: "/tmp".to_string(),
+            worktree_path: "/tmp".to_string(),
+            kind: "shell".to_string(),
+            label: "Terminal 1".to_string(),
+            command: String::new(),
+            cols: 80,
+            rows: 24,
+            status: "running".to_string(),
+            target_id: None,
+            target_kind: None,
+            ai_label: Some("Old task".to_string()),
+            ai_label_fingerprint: Some("old".to_string()),
+            ai_label_at: Some(1),
+        };
+        let merged = merge_display_label(
+            &metadata,
+            Some("pnpm".to_string()),
+            Some("pnpm".to_string()),
+            "new",
+        );
+        assert_eq!(merged, "pnpm");
+    }
 }
