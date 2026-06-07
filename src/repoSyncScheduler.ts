@@ -17,8 +17,8 @@ export type RepoSyncSchedulerIntervals = {
 };
 
 export const REPO_SYNC_INTERVALS_VISIBLE: RepoSyncSchedulerIntervals = {
-  dirtyMs: 1500,
-  peekMs: 6_000,
+  dirtyMs: 400,
+  peekMs: 5_000,
   fullMs: 30_000,
 };
 

@@ -92,3 +92,9 @@ pub fn store_probe_signature(repo_path: &str, signature: &str) {
         },
     );
 }
+
+pub fn invalidate_probe_signature(repo_path: &str) {
+    let key = normalize_repo_gate_key(repo_path);
+    let mut cache = probe_cache().lock().expect("probe cache mutex poisoned");
+    cache.remove(&key);
+}

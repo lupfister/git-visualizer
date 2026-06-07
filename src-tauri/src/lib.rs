@@ -137,6 +137,7 @@ struct PreviewProcess {
 
 static WATCHER_STATE: OnceLock<Mutex<HashMap<String, notify::RecommendedWatcher>>> =
     OnceLock::new();
+static REPO_CHANGE_STATE: OnceLock<Mutex<HashMap<String, RepoChangeState>>> = OnceLock::new();
 static PREVIEW_PROCESS_STATE: OnceLock<Mutex<HashMap<String, PreviewProcess>>> = OnceLock::new();
 static DELETED_PROJECTS: OnceLock<Mutex<HashSet<String>>> = OnceLock::new();
 static PREVIEW_SHUTDOWN_STARTED: AtomicBool = AtomicBool::new(false);
@@ -156,6 +157,57 @@ const PREVIEW_LOG_COMPACT_THRESHOLD_BYTES: u64 = 2 * 1024 * 1024;
 const PREVIEW_LOG_COMPACT_KEEP_BYTES: u64 = 1024 * 1024;
 /// Debounce bursty editor saves before emitting working-tree `local` activity.
 const GIT_ACTIVITY_WORKTREE_DEBOUNCE_MS: u64 = 500;
+
+const REPO_CHANGE_LOCAL: u8 = 1;
+const REPO_CHANGE_GRAPH: u8 = 2;
+
+#[derive(Clone, Copy, Default)]
+struct RepoChangeState {
+    generation: u64,
+    reasons: u8,
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct RepoChangeSignal {
+    repo_path: String,
+    generation: u64,
+    local_changed: bool,
+    graph_changed: bool,
+}
+
+fn record_repo_change(repo_path: &str, reasons: u8) {
+    let key = normalize_repo_path_id(repo_path);
+    repo_git_gate::invalidate_probe_signature(&key);
+    let mut states = REPO_CHANGE_STATE
+        .get_or_init(|| Mutex::new(HashMap::new()))
+        .lock()
+        .expect("repo change state mutex poisoned");
+    let state = states.entry(key).or_default();
+    state.generation = state.generation.wrapping_add(1).max(1);
+    state.reasons |= reasons;
+}
+
+#[tauri::command(rename_all = "camelCase")]
+fn get_repo_change_signal(repo_path: String, after_generation: Option<u64>) -> RepoChangeSignal {
+    let key = normalize_repo_path_id(&repo_path);
+    let mut states = REPO_CHANGE_STATE
+        .get_or_init(|| Mutex::new(HashMap::new()))
+        .lock()
+        .expect("repo change state mutex poisoned");
+    let state = states.entry(key.clone()).or_default();
+    let changed = after_generation.map_or(true, |generation| generation != state.generation);
+    let reasons = if changed { state.reasons } else { 0 };
+    if changed {
+        state.reasons = 0;
+    }
+    RepoChangeSignal {
+        repo_path: key,
+        generation: state.generation,
+        local_changed: reasons & REPO_CHANGE_LOCAL != 0,
+        graph_changed: reasons & REPO_CHANGE_GRAPH != 0,
+    }
+}
 
 async fn run_blocking<F, T>(f: F) -> Result<T, String>
 where
@@ -1684,6 +1736,7 @@ fn watch_repo(repo_path: String, app: tauri::AppHandle) -> Result<(), String> {
                 }
 
                 if has_local_change {
+                    record_repo_change(&repo_path_for_events, REPO_CHANGE_LOCAL);
                     let now_ms = Utc::now().timestamp_millis().max(0) as u64;
                     let prev_ms = last_local_emit_ms.load(Ordering::Relaxed);
                     if now_ms.saturating_sub(prev_ms) >= GIT_ACTIVITY_GRAPH_MIN_EMIT_MS {
@@ -1699,6 +1752,7 @@ fn watch_repo(repo_path: String, app: tauri::AppHandle) -> Result<(), String> {
                 }
 
                 if has_graph_change {
+                    record_repo_change(&repo_path_for_events, REPO_CHANGE_GRAPH);
                     let now_ms = Utc::now().timestamp_millis().max(0) as u64;
                     let prev_ms = last_graph_emit_ms.load(Ordering::Relaxed);
                     if now_ms.saturating_sub(prev_ms) >= GIT_ACTIVITY_GRAPH_MIN_EMIT_MS {
@@ -1714,6 +1768,7 @@ fn watch_repo(repo_path: String, app: tauri::AppHandle) -> Result<(), String> {
                 }
 
                 if has_worktree_file_change && !has_graph_change && !has_local_change {
+                    record_repo_change(&repo_path_for_events, REPO_CHANGE_LOCAL);
                     let _ = worktree_signal_tx.send(());
                 }
             }
@@ -7643,6 +7698,7 @@ pub fn run() {
             get_repo_dirty_state,
             get_repo_head_state,
             get_repo_sync_peek,
+            get_repo_change_signal,
             get_repo_graph_delta,
             get_repo_refresh_fingerprint,
             sync_remote_repository,

@@ -100,6 +100,12 @@ type GitActivityEventPayload = {
   repoPath: string;
   kind: 'graph' | 'local';
 };
+type RepoChangeSignal = {
+  repoPath: string;
+  generation: number;
+  localChanged: boolean;
+  graphChanged: boolean;
+};
 const COMMIT_SWITCH_FEEDBACK_VISIBLE_MS = 1400;
 const COMMIT_SWITCH_FEEDBACK_FADE_MS = 180;
 const SIDEBAR_WIDTH_STORAGE_KEY = 'git-visualizer:sidebar-width';
@@ -424,6 +430,7 @@ function App() {
   const lastFingerprintCheckAtRef = useRef<Record<string, number>>({});
   const gitActivityEpochRef = useRef(0);
   const lastHandledGitActivityEpochRef = useRef(0);
+  const repoChangeGenerationRef = useRef<Record<string, number>>({});
   const lastFullGraphRefreshAtRef = useRef<Record<string, number>>({});
   const wasMapInteractingRef = useRef(false);
   const projectHeadStateRef = useRef<Record<string, string>>({});
@@ -3956,9 +3963,9 @@ function App() {
 
     let isDisposed = false;
     let refreshInFlight = false;
-    let dirtySyncDebounceId: number | null = null;
     let graphSyncDebounceId: number | null = null;
     let fullRefreshCoalesceId: number | null = null;
+    let changeSignalInFlight = false;
     let pendingFullGraphRefresh = false;
     let unlisten: (() => void) | null = null;
     const isStaleRepoRefresh = () =>
@@ -4345,15 +4352,6 @@ function App() {
       }
     };
 
-    const scheduleCoalescedDirtySync = () => {
-      if (isDisposed) return;
-      if (dirtySyncDebounceId != null) window.clearTimeout(dirtySyncDebounceId);
-      dirtySyncDebounceId = window.setTimeout(() => {
-        dirtySyncDebounceId = null;
-        void runAuthoritativeRepoSync('local');
-      }, DIRTY_SYNC_DEBOUNCE_MS);
-    };
-
     const syncRemoteFromOrigin = async (): Promise<boolean> => {
       if (isDisposed || !defaultBranch || remoteSyncInFlightRef.current) return false;
       remoteSyncInFlightRef.current = true;
@@ -4447,6 +4445,35 @@ function App() {
       void runAuthoritativeRepoSync('watch');
     };
 
+    const pollRepoChangeSignal = async () => {
+      if (changeSignalInFlight || isDisposed) return;
+      const normalizedPath = normalizePath(repoPath);
+      if (!normalizedPath) return;
+      changeSignalInFlight = true;
+      try {
+        const signal = await invoke<RepoChangeSignal>('get_repo_change_signal', {
+          repoPath: normalizedPath,
+          afterGeneration: repoChangeGenerationRef.current[normalizedPath],
+        });
+        if (isStaleRepoRefresh()) return;
+        repoChangeGenerationRef.current = {
+          ...repoChangeGenerationRef.current,
+          [normalizedPath]: signal.generation,
+        };
+        if (!signal.localChanged && !signal.graphChanged) return;
+        gitActivityEpochRef.current += 1;
+        if (signal.graphChanged) {
+          scheduleCoalescedGraphSync();
+        } else {
+          void tryQuickStateDirtySync(normalizedPath);
+        }
+      } catch (error) {
+        console.warn('Repo change signal poll failed:', error);
+      } finally {
+        changeSignalInFlight = false;
+      }
+    };
+
     const runVisibilityCatchUp = () => {
       void runAuthoritativeRepoSync('remote', { fetchRemote: true });
     };
@@ -4462,7 +4489,7 @@ function App() {
     const repoSyncScheduler = createRepoSyncScheduler({
       isDisposed: () => isDisposed,
       onDirtyLane: () => {
-        scheduleCoalescedDirtySync();
+        void pollRepoChangeSignal();
       },
       onPeekLane: () => {
         runPeekLane();
@@ -4479,7 +4506,7 @@ function App() {
       if (!sameRepoPath(event.payload.repoPath, repoPath)) return;
       gitActivityEpochRef.current += 1;
       if (event.payload.kind === 'local') {
-        scheduleCoalescedDirtySync();
+        void tryQuickStateDirtySync(repoPath);
       } else {
         scheduleCoalescedGraphSync();
       }
@@ -4495,7 +4522,6 @@ function App() {
       isDisposed = true;
       runRepoRefreshRef.current = null;
       repoSyncScheduler.dispose();
-      if (dirtySyncDebounceId != null) window.clearTimeout(dirtySyncDebounceId);
       if (graphSyncDebounceId != null) window.clearTimeout(graphSyncDebounceId);
       if (fullRefreshCoalesceId != null) window.clearTimeout(fullRefreshCoalesceId);
       if (unlisten) unlisten();

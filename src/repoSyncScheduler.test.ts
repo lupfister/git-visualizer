@@ -27,4 +27,8 @@ describe('repo sync lane stagger', () => {
   it('visible peek interval is faster than the old 30s head probe', () => {
     expect(REPO_SYNC_INTERVALS_VISIBLE.peekMs).toBeLessThan(30_000);
   });
+
+  it('polls the in-memory repo generation frequently', () => {
+    expect(REPO_SYNC_INTERVALS_VISIBLE.dirtyMs).toBeLessThanOrEqual(500);
+  });
 });
