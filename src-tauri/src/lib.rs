@@ -168,7 +168,6 @@ static WATCHER_STATE: OnceLock<Mutex<HashMap<String, notify::RecommendedWatcher>
 static PREVIEW_PROCESS_STATE: OnceLock<Mutex<HashMap<String, PreviewProcess>>> = OnceLock::new();
 static DELETED_PROJECTS: OnceLock<Mutex<HashSet<String>>> = OnceLock::new();
 static PREVIEW_SHUTDOWN_STARTED: AtomicBool = AtomicBool::new(false);
-const GIT_ACTIVITY_GRAPH_MIN_EMIT_MS: u64 = 800;
 const MAX_LAYOUT_SNAPSHOTS_PER_REPO: i64 = 12;
 const PREVIEW_LOG_TAIL_BYTES: u64 = 64 * 1024;
 const PREVIEW_LOG_MAX_LINES: usize = 200;
@@ -1641,9 +1640,7 @@ fn watch_repo(repo_path: String, app: tauri::AppHandle) -> Result<(), String> {
         let _ = watcher.watch(linked_root, RecursiveMode::Recursive);
     }
 
-    let last_graph_emit_ms = std::sync::Arc::new(AtomicU64::new(0));
-    let last_local_emit_ms = std::sync::Arc::new(AtomicU64::new(0));
-    let last_worktree_emit_ms = std::sync::Arc::new(AtomicU64::new(0));
+    let (git_signal_tx, git_signal_rx) = std::sync::mpsc::channel::<(bool, bool)>();
     let mut git_roots = vec![primary_git_dir.clone()];
     if let Some(common_dir) = resolved_git_common_dir {
         if common_dir != primary_git_dir {
@@ -1655,7 +1652,6 @@ fn watch_repo(repo_path: String, app: tauri::AppHandle) -> Result<(), String> {
     let linked_worktree_roots_for_events = linked_worktree_roots.clone();
     let app_for_worktree_debounce = app.clone();
     let repo_path_for_worktree_debounce = repo_path_for_events.clone();
-    let last_worktree_emit_for_debounce = last_worktree_emit_ms.clone();
 
     std::thread::spawn(move || loop {
         match worktree_signal_rx.recv() {
@@ -1671,15 +1667,49 @@ fn watch_repo(repo_path: String, app: tauri::AppHandle) -> Result<(), String> {
                 Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => return,
             }
         }
-        let now_ms = Utc::now().timestamp_millis().max(0) as u64;
-        let prev_ms = last_worktree_emit_for_debounce.load(Ordering::Relaxed);
-        if now_ms.saturating_sub(prev_ms) >= GIT_ACTIVITY_GRAPH_MIN_EMIT_MS {
-            last_worktree_emit_for_debounce.store(now_ms, Ordering::Relaxed);
-            increment_watcher_activity(&repo_path_for_worktree_debounce, false);
-            let _ = app_for_worktree_debounce.emit(
+        increment_watcher_activity(&repo_path_for_worktree_debounce, false);
+        let _ = app_for_worktree_debounce.emit(
+            "git-activity",
+            GitActivityEventPayload {
+                repo_path: repo_path_for_worktree_debounce.clone(),
+                kind: "local".to_string(),
+            },
+        );
+    });
+
+    let app_for_git_debounce = app.clone();
+    let repo_path_for_git_debounce = repo_path_for_events.clone();
+    std::thread::spawn(move || loop {
+        let mut first_signal = match git_signal_rx.recv() {
+            Ok(sig) => sig,
+            Err(_) => break,
+        };
+        loop {
+            match git_signal_rx.recv_timeout(std::time::Duration::from_millis(150)) {
+                Ok(sig) => {
+                    first_signal.0 = first_signal.0 || sig.0; // accumulate graph change
+                    first_signal.1 = first_signal.1 || sig.1; // accumulate local change
+                    continue;
+                }
+                Err(std::sync::mpsc::RecvTimeoutError::Timeout) => break,
+                Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => return,
+            }
+        }
+        increment_watcher_activity(&repo_path_for_git_debounce, true);
+        if first_signal.0 {
+            let _ = app_for_git_debounce.emit(
                 "git-activity",
                 GitActivityEventPayload {
-                    repo_path: repo_path_for_worktree_debounce.clone(),
+                    repo_path: repo_path_for_git_debounce.clone(),
+                    kind: "graph".to_string(),
+                },
+            );
+        }
+        if first_signal.1 {
+            let _ = app_for_git_debounce.emit(
+                "git-activity",
+                GitActivityEventPayload {
+                    repo_path: repo_path_for_git_debounce.clone(),
                     kind: "local".to_string(),
                 },
             );
@@ -1748,36 +1778,8 @@ fn watch_repo(repo_path: String, app: tauri::AppHandle) -> Result<(), String> {
                     }
                 }
 
-                if has_local_change {
-                    let now_ms = Utc::now().timestamp_millis().max(0) as u64;
-                    let prev_ms = last_local_emit_ms.load(Ordering::Relaxed);
-                    if now_ms.saturating_sub(prev_ms) >= GIT_ACTIVITY_GRAPH_MIN_EMIT_MS {
-                        last_local_emit_ms.store(now_ms, Ordering::Relaxed);
-                        increment_watcher_activity(&repo_path_for_events, true);
-                        let _ = app.emit(
-                            "git-activity",
-                            GitActivityEventPayload {
-                                repo_path: repo_path_for_events.clone(),
-                                kind: "local".to_string(),
-                            },
-                        );
-                    }
-                }
-
-                if has_graph_change {
-                    let now_ms = Utc::now().timestamp_millis().max(0) as u64;
-                    let prev_ms = last_graph_emit_ms.load(Ordering::Relaxed);
-                    if now_ms.saturating_sub(prev_ms) >= GIT_ACTIVITY_GRAPH_MIN_EMIT_MS {
-                        last_graph_emit_ms.store(now_ms, Ordering::Relaxed);
-                        increment_watcher_activity(&repo_path_for_events, true);
-                        let _ = app.emit(
-                            "git-activity",
-                            GitActivityEventPayload {
-                                repo_path: repo_path_for_events.clone(),
-                                kind: "graph".to_string(),
-                            },
-                        );
-                    }
+                if has_graph_change || has_local_change {
+                    let _ = git_signal_tx.send((has_graph_change, has_local_change));
                 }
 
                 if has_worktree_file_change && !has_graph_change && !has_local_change {
