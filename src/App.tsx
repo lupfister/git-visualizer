@@ -4470,29 +4470,21 @@ function App() {
             return;
           }
           gitActivityEpochRef.current += 1;
-          const freshSnapshot = await invoke<RepoVisualSnapshot>('get_repo_visual_snapshot', {
-            repoPath: normalizedPath,
-            forceRefresh: true,
-          }).catch(() => null);
+          const freshSnapshot = await refreshProjectSnapshotFromGit(normalizedPath, { force: true });
           if (!freshSnapshot || isStaleRepoRefresh()) return;
           invalidateRepoLayoutCacheForPath(normalizedPath);
-          const applied = applySnapshotToActiveState(normalizedPath, freshSnapshot, {
+          applySnapshotToActiveState(normalizedPath, freshSnapshot, {
             force: true,
             allowIncomingDirty: true,
             needsLayoutRebuild: true,
           });
-          if (applied) {
-            appliedMapFingerprintRef.current = {
-              ...appliedMapFingerprintRef.current,
-              [normalizedPath]: liveFingerprint,
-            };
-            noteSyncedRepoFingerprint(normalizedPath, liveFingerprint);
-            delete pendingLiveFingerprintRef.current[normalizedPath];
-            markGitActivityHandled();
-          }
-          if (!applied) {
-            pendingRefreshAfterInteractionRef.current = true;
-          }
+          appliedMapFingerprintRef.current = {
+            ...appliedMapFingerprintRef.current,
+            [normalizedPath]: liveFingerprint,
+          };
+          noteSyncedRepoFingerprint(normalizedPath, liveFingerprint);
+          delete pendingLiveFingerprintRef.current[normalizedPath];
+          markGitActivityHandled();
         } finally {
           liveFingerprintCheckInFlightRef.current = false;
         }
@@ -4522,7 +4514,7 @@ function App() {
       repoSyncScheduler.dispose();
       if (fullRefreshCoalesceId != null) window.clearTimeout(fullRefreshCoalesceId);
     };
-  }, [repoPath, defaultBranch]);
+  }, [repoPath]);
 
   async function handleGitHubAuthSetup() {
     if (!repoPath) return;
