@@ -227,7 +227,7 @@ function makeLayoutCacheKey(
   graphSignature = '',
 ): string {
   return [
-    'layout-v7-switch-reconcile',
+    'layout-v10-final-clump-expansion',
     path,
     orientation,
     setSignature(manuallyOpenedClumps),
@@ -1521,18 +1521,62 @@ function App() {
         lastOpenedAt: Date.now(),
         branchName: resolvedDefaultBranch,
       });
-      await loadProjectSnapshot(normalizedPath, false);
+      inflightProjectSnapshotsRef.current.delete(normalizedPath);
+      loadingProjectSnapshotsRef.current.delete(normalizedPath);
+      setProjectSnapshots((previous) => {
+        if (!(normalizedPath in previous)) return previous;
+        const next = { ...previous };
+        delete next[normalizedPath];
+        return next;
+      });
+      invalidateRepoLayoutCacheForPath(normalizedPath);
+      await loadProjectSnapshot(normalizedPath, true);
+      await loadRepo(normalizedPath);
     } catch (e) {
       setError(e instanceof Error ? e.message : String(e));
     }
   }
 
-  function removeProject(path: string) {
+  async function removeProject(path: string) {
     const normalizedPath = normalizePath(path);
     if (!normalizedPath) return;
-    void invoke('delete_project_cache', { projectId: normalizedPath }).catch((error) => {
+    try {
+      await invoke('delete_project_cache', { projectId: normalizedPath });
+    } catch (error) {
       console.error('Failed to delete project cache:', error);
+      setError(`Could not remove project: ${error instanceof Error ? error.message : String(error)}`);
+      return;
+    }
+    invalidateRepoLayoutCacheForPath(normalizedPath);
+    loadNodePositionsSeqRef.current += 1;
+    userDirtyNodePositionsRef.current.delete(normalizedPath);
+    nodePositionPersistVersionByRepoRef.current = {
+      ...nodePositionPersistVersionByRepoRef.current,
+      [normalizedPath]: (nodePositionPersistVersionByRepoRef.current[normalizedPath] ?? 0) + 1,
+    };
+    setNodePositionOverridesByRepo((previous) => {
+      if (!(normalizedPath in previous)) return previous;
+      const next = { ...previous };
+      delete next[normalizedPath];
+      return next;
     });
+    setManuallyOpenedGridClumpsByRepo((previous) => {
+      if (!(normalizedPath in previous)) return previous;
+      const next = { ...previous };
+      delete next[normalizedPath];
+      return next;
+    });
+    setManuallyClosedGridClumpsByRepo((previous) => {
+      if (!(normalizedPath in previous)) return previous;
+      const next = { ...previous };
+      delete next[normalizedPath];
+      return next;
+    });
+    try {
+      window.localStorage.removeItem(nodePositionsStorageKey(normalizedPath));
+    } catch {
+      // ignore storage failures
+    }
     setProjects((previous) => {
       const next = previous.filter((project) => project.path !== normalizedPath);
       try {
@@ -1555,7 +1599,6 @@ function App() {
       delete next[normalizedPath];
       return next;
     });
-    userDirtyNodePositionsRef.current.delete(normalizedPath);
     delete projectSnapshotSignatureRef.current[normalizedPath];
     delete projectFingerprintRef.current[normalizedPath];
     delete projectHeadStateRef.current[normalizedPath];
@@ -1791,6 +1834,11 @@ function App() {
     for (const key of persistedLayoutKeysRef.current) {
       if (key.split('|')[1] === normalizedPath) {
         persistedLayoutKeysRef.current.delete(key);
+      }
+    }
+    for (const key of persistedLayoutPayloadHashRef.current.keys()) {
+      if (key.split('|')[1] === normalizedPath) {
+        persistedLayoutPayloadHashRef.current.delete(key);
       }
     }
     if (sameRepoPath(repoPath, normalizedPath)) {
@@ -3899,6 +3947,7 @@ function App() {
     let isDisposed = false;
     let refreshInFlight = false;
     let dirtySyncDebounceId: number | null = null;
+    let graphSyncDebounceId: number | null = null;
     let fullRefreshCoalesceId: number | null = null;
     let pendingFullGraphRefresh = false;
     let unlisten: (() => void) | null = null;
@@ -4356,7 +4405,6 @@ function App() {
       if (isStaleRepoRefresh()) return;
       if (
         reason === 'local'
-        || reason === 'watch'
         || options?.forceSnapshot
         || !peek
         || isActiveUiBehindPeek(repoPath, peek)
@@ -4393,6 +4441,14 @@ function App() {
       void runAuthoritativeRepoSync('remote', { fetchRemote: true });
     };
 
+    const scheduleCoalescedGraphSync = () => {
+      if (graphSyncDebounceId != null) window.clearTimeout(graphSyncDebounceId);
+      graphSyncDebounceId = window.setTimeout(() => {
+        graphSyncDebounceId = null;
+        void runAuthoritativeRepoSync('watch');
+      }, DIRTY_SYNC_DEBOUNCE_MS);
+    };
+
     const repoSyncScheduler = createRepoSyncScheduler({
       isDisposed: () => isDisposed,
       onDirtyLane: () => {
@@ -4415,7 +4471,7 @@ function App() {
       if (event.payload.kind === 'local') {
         scheduleCoalescedDirtySync();
       } else {
-        void runAuthoritativeRepoSync('watch');
+        scheduleCoalescedGraphSync();
       }
     }).then((fn) => {
       if (isDisposed) fn();
@@ -4430,6 +4486,7 @@ function App() {
       runRepoRefreshRef.current = null;
       repoSyncScheduler.dispose();
       if (dirtySyncDebounceId != null) window.clearTimeout(dirtySyncDebounceId);
+      if (graphSyncDebounceId != null) window.clearTimeout(graphSyncDebounceId);
       if (fullRefreshCoalesceId != null) window.clearTimeout(fullRefreshCoalesceId);
       if (unlisten) unlisten();
     };

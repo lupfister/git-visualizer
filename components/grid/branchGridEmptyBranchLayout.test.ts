@@ -443,22 +443,28 @@ describe('computeBranchGridLayout empty branch placeholders', () => {
       expect(openedNode.row).toBe(collapsedNode.row);
     }
 
-    // Opening a clump may insert exclusive lane columns; non-clump nodes can shift,
-    // but their relative ordering by lane should not change (no swapping/jitter).
-    const orderKey = (node: (typeof collapsed.renderNodes)[number]) =>
-      `${node.row.toString().padStart(4, '0')}:${node.column.toString().padStart(4, '0')}:${node.commit.visualId}`;
-    const collapsedOrder = collapsed.renderNodes
-      .filter((node) => collapsed.clusterKeyByCommitId.get(node.commit.visualId) !== clusterKey)
-      .slice()
-      .sort((a, b) => a.column - b.column || a.row - b.row || a.commit.visualId.localeCompare(b.commit.visualId))
-      .map((node) => orderKey(node));
-    const openedOrder = opened.renderNodes
-      .filter((node) => opened.clusterKeyByCommitId.get(node.commit.visualId) !== clusterKey)
-      .slice()
-      .sort((a, b) => a.column - b.column || a.row - b.row || a.commit.visualId.localeCompare(b.commit.visualId))
-      .map((node) => orderKey(node));
-    expect(openedOrder.map((key) => key.split(':').slice(2).join(':'))).toEqual(
-      collapsedOrder.map((key) => key.split(':').slice(2).join(':')),
+    const collapsedClumpNode = collapsed.renderNodes.find(
+      (node) => collapsed.clusterKeyByCommitId.get(node.commit.visualId) === clusterKey,
+    )!;
+    const insertedColumns = clumpNodes.length - 1;
+    for (const visualId of collapsedIds) {
+      const collapsedNode = collapsed.renderNodes.find((node) => node.commit.visualId === visualId)!;
+      const openedNode = opened.renderNodes.find((node) => node.commit.visualId === visualId)!;
+      const expectedColumn =
+        collapsedNode.column > collapsedClumpNode.column
+          ? collapsedNode.column + insertedColumns
+          : collapsedNode.column;
+      expect(openedNode.column).toBe(expectedColumn);
+    }
+
+    const closedAgain = computeBranchGridLayout({
+      ...baseInput,
+      manuallyOpenedClumps: new Set<string>(),
+    });
+    expect(
+      closedAgain.renderNodes.map((node) => [node.commit.visualId, node.row, node.column]),
+    ).toEqual(
+      collapsed.renderNodes.map((node) => [node.commit.visualId, node.row, node.column]),
     );
   });
 

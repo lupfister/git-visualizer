@@ -1779,8 +1779,17 @@ export function computeBranchGridLayout(input: BranchGridLayoutInput): BranchGri
   const maxAllRowForHorizontalAnchor = Math.max(0, ...allCommits.map((commit) => allRowByVisualId.get(commit.visualId) ?? 1));
   const maxVisibleRowForVertical = Math.max(0, ...visibleCommitsList.map((commit) => visibleRows.get(commit.visualId) ?? 1));
   let timelineRowLeadOffset = Math.max(0, maxAllRowForHorizontalAnchor - maxVisibleRowForVertical);
-  const renderNodesRaw: Node[] = visibleCommitsList.map((commit) => {
-    const row = visibleRows.get(commit.visualId) ?? 1;
+  /**
+   * Collision solving must be independent of clump visibility. Resolve the full graph first,
+   * then project the requested open/collapsed clump state after every invariant pass completes.
+   */
+  const baseLayoutCommits = allCommits.filter((commit) => {
+    const clusterKey = clusterKeyByCommitId.get(commit.visualId);
+    if (!clusterKey || (clusterCounts.get(clusterKey) ?? 1) <= 1) return true;
+    return leadByClusterKey.get(clusterKey) === commit.visualId;
+  });
+  const renderNodesRaw: Node[] = baseLayoutCommits.map((commit) => {
+    const row = allRowByVisualId.get(commit.visualId) ?? 1;
     const column = columnByCommitVisualId.get(commit.visualId) ?? 0;
     if (isHorizontal) {
       return {
@@ -2247,7 +2256,6 @@ export function computeBranchGridLayout(input: BranchGridLayoutInput): BranchGri
     zoomAwareTimelinePitch,
     zoomAwareLanePitch,
   );
-  applyOpenClumpColumnInsertions();
   for (let pass = 0; pass < Math.max(1, renderNodes.length * 2); pass += 1) {
     const rowChangedVisualIds = enforceExclusiveMergeRows();
     const columnChangedVisualIds = enforceVisibleColumnsAfterParents();
@@ -2550,7 +2558,52 @@ export function computeBranchGridLayout(input: BranchGridLayoutInput): BranchGri
       isClumpOpen,
     );
   }
+  const visibleCommitVisualIds = new Set(visibleCommitsList.map((commit) => commit.visualId));
+  for (let index = renderNodes.length - 1; index >= 0; index -= 1) {
+    if (!visibleCommitVisualIds.has(renderNodes[index]!.commit.visualId)) {
+      renderNodes.splice(index, 1);
+    }
+  }
+  const projectedNodeByVisualId = new Map(
+    renderNodes.map((node) => [node.commit.visualId, node] as const),
+  );
+  for (const commit of visibleCommitsList) {
+    if (projectedNodeByVisualId.has(commit.visualId)) continue;
+    const clusterKey = clusterKeyByCommitId.get(commit.visualId);
+    const leadVisualId = clusterKey ? leadByClusterKey.get(clusterKey) : null;
+    const ownerNode = leadVisualId ? projectedNodeByVisualId.get(leadVisualId) : null;
+    if (!ownerNode) continue;
+    const projectedNode = { ...ownerNode, commit };
+    renderNodes.push(projectedNode);
+    projectedNodeByVisualId.set(commit.visualId, projectedNode);
+    columnByCommitVisualId.set(commit.visualId, projectedNode.column);
+  }
+  compactVisibleLaneColumns(
+    renderNodes,
+    columnByCommitVisualId,
+    isHorizontal,
+    zoomAwareLanePitch,
+  );
+  syncClumpOwnerColumnsFromLeadNodes(
+    renderNodes,
+    clusterKeyByCommitId,
+    clusterCounts,
+    leadByClusterKey,
+    firstByClusterKey,
+    clumpOwnerColumnByClusterKey,
+    isClumpOpen,
+  );
+  applyOpenClumpColumnInsertions();
   maxResolvedRow = Math.max(0, ...renderNodes.map((node) => node.row));
+  syncRenderNodeTimelineCoordinates(
+    renderNodes,
+    isHorizontal,
+    maxResolvedRow,
+    timelineRowLeadOffset,
+    zoomAwareTimelinePitch,
+    zoomAwareLanePitch,
+    (commit) => !!getNodePositionOverride(normalizedNodePositionOverrides, commit),
+  );
   const visibleNodesBySha = new Map<string, Node[]>();
   for (const node of renderNodes) {
     const list = visibleNodesBySha.get(node.commit.id) ?? [];

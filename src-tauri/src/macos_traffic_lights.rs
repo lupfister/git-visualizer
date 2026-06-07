@@ -80,12 +80,6 @@ fn should_reapply_now() -> bool {
     true
 }
 
-pub fn reapply_if_due<R: Runtime>(window: &WebviewWindow<R>) {
-    if should_reapply_now() {
-        reapply_for_window(window);
-    }
-}
-
 pub fn install<R: Runtime>(window: &WebviewWindow<R>) {
     reapply_for_window(window);
 
@@ -133,9 +127,9 @@ fn reapply_for_main_window<R: Runtime>(app: &AppHandle<R>) {
 pub fn init_plugin<R: tauri::Runtime>() -> tauri::plugin::TauriPlugin<R> {
     tauri::plugin::Builder::<R, ()>::new("traffic-light-guard")
         .on_event(|app, event| {
-            if matches!(event, RunEvent::MainEventsCleared) {
+            if matches!(event, RunEvent::MainEventsCleared) && should_reapply_now() {
                 if let Some(window) = app.get_webview_window("main") {
-                    reapply_if_due(&window);
+                    reapply_for_window(&window);
                 }
             }
         })

@@ -32,9 +32,6 @@ use std::{
 use objc2_app_kit::NSWorkspace;
 #[cfg(target_os = "macos")]
 use tauri_plugin_global_shortcut::{Code, GlobalShortcutExt, Modifiers, Shortcut, ShortcutState};
-#[cfg(target_os = "macos")]
-use tauri_plugin_macos_fps::MacFpsExt;
-
 #[derive(serde::Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct RepoInfo {
@@ -140,9 +137,20 @@ struct PreviewProcess {
 static WATCHER_STATE: OnceLock<Mutex<HashMap<String, notify::RecommendedWatcher>>> =
     OnceLock::new();
 static PREVIEW_PROCESS_STATE: OnceLock<Mutex<HashMap<String, PreviewProcess>>> = OnceLock::new();
+static DELETED_PROJECTS: OnceLock<Mutex<HashSet<String>>> = OnceLock::new();
+static PREVIEW_SHUTDOWN_STARTED: AtomicBool = AtomicBool::new(false);
 const GIT_ACTIVITY_GRAPH_MIN_EMIT_MS: u64 = 800;
+const MAX_LAYOUT_SNAPSHOTS_PER_REPO: i64 = 12;
 const PREVIEW_LOG_TAIL_BYTES: u64 = 64 * 1024;
 const PREVIEW_LOG_MAX_LINES: usize = 200;
+
+fn project_is_deleted(id: &str) -> Result<bool, String> {
+    DELETED_PROJECTS
+        .get_or_init(|| Mutex::new(HashSet::new()))
+        .lock()
+        .map(|deleted| deleted.contains(id))
+        .map_err(|_| "Deleted project state lock poisoned".to_string())
+}
 const PREVIEW_LOG_COMPACT_THRESHOLD_BYTES: u64 = 2 * 1024 * 1024;
 const PREVIEW_LOG_COMPACT_KEEP_BYTES: u64 = 1024 * 1024;
 /// Debounce bursty editor saves before emitting working-tree `local` activity.
@@ -526,6 +534,10 @@ fn load_cached_repo_visual_snapshot(repo_path: &str) -> Result<Option<RepoVisual
 }
 
 fn store_repo_visual_snapshot(snapshot: &RepoVisualSnapshot) -> Result<(), String> {
+    let id = normalize_repo_path_id(&snapshot.path);
+    if project_is_deleted(&id)? {
+        return Ok(());
+    }
     let conn = open_visual_cache_connection()?;
     let payload_json = serde_json::to_string(snapshot)
         .map_err(|e| format!("Failed to encode repo snapshot: {e}"))?;
@@ -570,6 +582,10 @@ fn upsert_repo_layout_snapshot(
     layout_key: &str,
     payload_json: &str,
 ) -> Result<(), String> {
+    let id = normalize_repo_path_id(repo_path);
+    if project_is_deleted(&id)? {
+        return Ok(());
+    }
     let conn = open_visual_cache_connection()?;
     conn.execute(
         "
@@ -587,6 +603,21 @@ fn upsert_repo_layout_snapshot(
         ],
     )
     .map_err(|e| format!("Failed to upsert layout snapshot: {e}"))?;
+    conn.execute(
+        "
+        DELETE FROM repo_layout_cache
+        WHERE repo_path = ?1
+          AND layout_key NOT IN (
+            SELECT layout_key
+            FROM repo_layout_cache
+            WHERE repo_path = ?1
+            ORDER BY updated_at_ms DESC
+            LIMIT ?2
+          )
+        ",
+        params![repo_path, MAX_LAYOUT_SNAPSHOTS_PER_REPO],
+    )
+    .map_err(|e| format!("Failed to prune layout snapshots: {e}"))?;
     Ok(())
 }
 
@@ -613,6 +644,9 @@ fn load_cached_repo_node_positions(repo_path: &str) -> Result<Option<String>, St
 
 fn upsert_repo_node_positions(repo_path: &str, payload_json: &str) -> Result<(), String> {
     let id = normalize_repo_path_id(repo_path);
+    if project_is_deleted(&id)? {
+        return Ok(());
+    }
     let conn = open_visual_cache_connection()?;
     conn.execute(
         "
@@ -641,6 +675,12 @@ fn delete_repo_node_positions(repo_path: &str) -> Result<(), String> {
 
 fn delete_project_cache_rows(repo_path: &str) -> Result<(), String> {
     let id = normalize_repo_path_id(repo_path);
+    let deleted_projects = DELETED_PROJECTS.get_or_init(|| Mutex::new(HashSet::new()));
+    let mut deleted_projects = deleted_projects
+        .lock()
+        .map_err(|_| "Deleted project state lock poisoned".to_string())?;
+    deleted_projects.insert(id.clone());
+    drop(deleted_projects);
     let mut conn = open_visual_cache_connection()?;
     let tx = conn
         .transaction()
@@ -894,6 +934,9 @@ fn publish_project_snapshot(
     fingerprint_override: Option<&str>,
 ) -> Result<ProjectSnapshotRecord, String> {
     let normalized_repo_path = normalize_repo_path_id(repo_path);
+    if project_is_deleted(&normalized_repo_path)? {
+        return Err("Project was removed".to_string());
+    }
     let project_id = normalized_repo_path.clone();
     let snapshot = compute_repo_visual_snapshot(&normalized_repo_path)?;
     let fingerprint = match fingerprint_override {
@@ -1433,7 +1476,11 @@ fn watch_repo(repo_path: String, app: tauri::AppHandle) -> Result<(), String> {
     std::thread::spawn(move || {
         for res in rx {
             if let Ok(event) = res {
-                if matches!(event.kind, notify::EventKind::Access(_)) {
+                if matches!(
+                    event.kind,
+                    notify::EventKind::Access(_)
+                        | notify::EventKind::Modify(notify::event::ModifyKind::Metadata(_))
+                ) {
                     continue;
                 }
 
@@ -1508,7 +1555,6 @@ fn watch_repo(repo_path: String, app: tauri::AppHandle) -> Result<(), String> {
                     let prev_ms = last_graph_emit_ms.load(Ordering::Relaxed);
                     if now_ms.saturating_sub(prev_ms) >= GIT_ACTIVITY_GRAPH_MIN_EMIT_MS {
                         last_graph_emit_ms.store(now_ms, Ordering::Relaxed);
-                        println!("Git activity detected: {:?}", event.kind);
                         let _ = app.emit(
                             "git-activity",
                             GitActivityEventPayload {
@@ -1858,6 +1904,11 @@ async fn add_project_and_ingest(
 ) -> Result<ProjectSnapshotRecord, String> {
     run_blocking(move || {
         let normalized_repo_path = normalize_repo_path_id(&repo_path);
+        DELETED_PROJECTS
+            .get_or_init(|| Mutex::new(HashSet::new()))
+            .lock()
+            .map_err(|_| "Deleted project state lock poisoned".to_string())?
+            .remove(&normalized_repo_path);
         let project_id = normalized_repo_path.clone();
         let force_refresh = force_refresh.unwrap_or(false);
         let conn = open_visual_cache_connection()?;
@@ -1902,6 +1953,9 @@ fn check_project_fingerprint_blocking(
     project_id: String,
 ) -> Result<FingerprintCheckResult, String> {
     let normalized_project_id = normalize_repo_path_id(&project_id);
+    if project_is_deleted(&normalized_project_id)? {
+        return Err("Project was removed".to_string());
+    }
     let conn = open_visual_cache_connection()?;
     let row: Option<(String, Option<String>)> = conn
         .query_row(
@@ -1944,6 +1998,9 @@ fn check_project_fingerprint_blocking(
 #[tauri::command(rename_all = "camelCase")]
 fn ack_project_fingerprint(project_id: String, fingerprint: String) -> Result<(), String> {
     let normalized_project_id = normalize_repo_path_id(&project_id);
+    if project_is_deleted(&normalized_project_id)? {
+        return Ok(());
+    }
     let fingerprint = fingerprint.trim();
     if fingerprint.is_empty() {
         return Err("Fingerprint must not be empty".to_string());
@@ -2682,6 +2739,13 @@ fn stop_all_preview_processes() {
     if let Ok(storage_root) = preview_worktree_storage_root() {
         terminate_orphaned_preview_processes(&storage_root);
     }
+}
+
+fn schedule_stop_all_preview_processes() {
+    if PREVIEW_SHUTDOWN_STARTED.swap(true, Ordering::AcqRel) {
+        return;
+    }
+    std::thread::spawn(stop_all_preview_processes);
 }
 
 fn terminate_preview_process(child: &mut Child) {
@@ -7303,18 +7367,12 @@ pub fn run() {
     #[cfg(not(any(target_os = "android", target_os = "ios")))]
     let builder = builder.plugin(tauri_plugin_window_state::Builder::default().build());
     #[cfg(target_os = "macos")]
-    let builder = builder.plugin(macos_traffic_lights::init_plugin()).plugin(
-        tauri::plugin::Builder::<_, ()>::new("macos-fps-unlock")
-            .on_webview_ready(|webview| {
-                let _ = webview.unlock_fps();
-            })
-            .build(),
-    );
+    let builder = builder.plugin(macos_traffic_lights::init_plugin());
 
     builder
         .on_window_event(|_, event| match event {
             tauri::WindowEvent::CloseRequested { .. } | tauri::WindowEvent::Destroyed => {
-                stop_all_preview_processes();
+                schedule_stop_all_preview_processes();
             }
             _ => {}
         })
@@ -7461,7 +7519,7 @@ pub fn run() {
                 event,
                 tauri::RunEvent::ExitRequested { .. } | tauri::RunEvent::Exit
             ) {
-                stop_all_preview_processes();
+                schedule_stop_all_preview_processes();
             }
         });
 }

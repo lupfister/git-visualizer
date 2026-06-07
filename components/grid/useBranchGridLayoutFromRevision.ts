@@ -160,7 +160,10 @@ export const useBranchGridLayoutFromRevision = (params: {
   const lastGoodStorageKeyRef = useRef<string | null>(null);
   const lastGoodGraphSignatureRef = useRef<string | null>(null);
   const lastServedComputeKeyRef = useRef<string | null>(null);
-  const [asyncLayoutModel, setAsyncLayoutModel] = useState<BranchGridLayoutModel | null>(null);
+  const [asyncLayout, setAsyncLayout] = useState<{
+    computeKey: string | null;
+    model: BranchGridLayoutModel;
+  } | null>(null);
   const jobIdRef = useRef(0);
 
   const layoutComputeKey = useMemo(
@@ -205,7 +208,7 @@ export const useBranchGridLayoutFromRevision = (params: {
 
   useEffect(() => {
     if (resolved.source !== 'needs-compute') {
-      setAsyncLayoutModel(null);
+      setAsyncLayout(null);
       if (resolved.model && layoutComputeKey) {
         lastServedComputeKeyRef.current = layoutComputeKey;
       }
@@ -223,7 +226,7 @@ export const useBranchGridLayoutFromRevision = (params: {
         lastServedComputeKeyRef.current = layoutComputeKey;
       }
       startTransition(() => {
-        setAsyncLayoutModel(immediateLayoutModel);
+        setAsyncLayout({ computeKey: layoutComputeKey, model: immediateLayoutModel });
       });
       return undefined;
     }
@@ -239,7 +242,7 @@ export const useBranchGridLayoutFromRevision = (params: {
         lastServedComputeKeyRef.current = layoutComputeKey;
       }
       startTransition(() => {
-        setAsyncLayoutModel(model);
+        setAsyncLayout({ computeKey: layoutComputeKey, model });
       });
     };
 
@@ -268,6 +271,7 @@ export const useBranchGridLayoutFromRevision = (params: {
     return undefined;
   }, [layoutComputeKey, resolved.source, layoutInput, immediateLayoutModel]);
 
+  const asyncLayoutModel = asyncLayout?.computeKey === layoutComputeKey ? asyncLayout.model : null;
   const layoutModel =
     asyncLayoutModel
     ?? immediateLayoutModel
