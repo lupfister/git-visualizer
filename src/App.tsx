@@ -427,6 +427,8 @@ function App() {
   const lastSyncedFastSignatureRef = useRef<Record<string, string>>({});
   const lastSyncedGitEpochRef = useRef<Record<string, number>>({});
   const lastSyncedWorktreeEpochRef = useRef<Record<string, number>>({});
+  const runAuthoritativeRepoSyncInFlightRef = useRef(false);
+  const runAuthoritativeRepoSyncPendingRef = useRef(false);
   const gitActivityEpochRef = useRef(0);
   const lastHandledGitActivityEpochRef = useRef(0);
   const lastFullGraphRefreshAtRef = useRef<Record<string, number>>({});
@@ -4407,17 +4409,27 @@ function App() {
       const startTime = performance.now();
       try {
         const epochs = await getRepoWatcherEpochs(repoPath);
-        const sig = await getRepoFastSignature(repoPath);
 
         const lastGitEpoch = lastSyncedGitEpochRef.current[normalizedPath] ?? 0;
         const lastWorktreeEpoch = lastSyncedWorktreeEpochRef.current[normalizedPath] ?? 0;
-        const lastSig = lastSyncedFastSignatureRef.current[normalizedPath] ?? '';
 
         const gitEpochChanged = epochs.gitEpoch !== lastGitEpoch;
         const worktreeEpochChanged = epochs.worktreeEpoch !== lastWorktreeEpoch;
+
+        // 1. Short-circuit: If backend watcher reports no changes, return immediately without file IO
+        if (!gitEpochChanged && !worktreeEpochChanged && !force) {
+          const duration = (performance.now() - startTime).toFixed(2);
+          console.debug(`[ChangeDetection] Epochs unchanged. Check completed in ${duration}ms: no change`);
+          return { changed: false, gitChanged: false, worktreeChanged: false };
+        }
+
+        // 2. Something changed, fetch filesystem signature to detect precise ref/HEAD/index/stash updates
+        const sig = await getRepoFastSignature(repoPath);
+        const lastSig = lastSyncedFastSignatureRef.current[normalizedPath] ?? '';
         const sigChanged = sig !== lastSig;
 
-        const gitChanged = gitEpochChanged || sigChanged || !!force;
+        // If sigChanged is false, then refs/HEAD/index didn't change (only transient write in .git dir did)
+        const gitChanged = sigChanged || !!force;
         const worktreeChanged = worktreeEpochChanged || !!force;
         const changed = gitChanged || worktreeChanged;
 
@@ -4429,7 +4441,7 @@ function App() {
             { gitEpochChanged, worktreeEpochChanged, sigChanged, force }
           );
         } else {
-          console.debug(`[ChangeDetection] Check completed in ${duration}ms: no change`);
+          console.debug(`[ChangeDetection] Epochs changed but signature matches. Completed in ${duration}ms: no change`);
         }
 
         // Cache the current values
@@ -4449,6 +4461,14 @@ function App() {
       options?: { fetchRemote?: boolean; forceSnapshot?: boolean },
     ) => {
       if (isStaleRepoRefresh()) return;
+
+      // Concurrency protection: serialize sync requests
+      if (runAuthoritativeRepoSyncInFlightRef.current) {
+        runAuthoritativeRepoSyncPendingRef.current = true;
+        console.log(`[ChangeDetection] Sync in flight. Queueing request for reason: ${reason}`);
+        return;
+      }
+
       if (repoMutationInFlightRef.current || reconcileInFlightRef.current) {
         pendingRefreshAfterInteractionRef.current = true;
         return;
@@ -4459,65 +4479,75 @@ function App() {
         return;
       }
 
-      if (options?.fetchRemote) {
-        const remoteChanged = await syncRemoteFromOrigin();
-        if (remoteChanged || isStaleRepoRefresh()) return;
-      }
+      runAuthoritativeRepoSyncInFlightRef.current = true;
+      try {
+        if (options?.fetchRemote) {
+          const remoteChanged = await syncRemoteFromOrigin();
+          if (remoteChanged || isStaleRepoRefresh()) return;
+        }
 
-      // 1. Perform cheap filesystem change detection check first
-      const checkResult = await performCheapChangeDetectionCheck(options?.forceSnapshot);
-      if (!checkResult.changed) {
-        console.log(`[ChangeDetection] No changes detected for ${repoPath}. Skipping sync.`);
-        markGitActivityHandled();
-        pendingRefreshAfterInteractionRef.current = false;
-        return;
-      }
+        // 1. Perform cheap filesystem change detection check first
+        const checkResult = await performCheapChangeDetectionCheck(options?.forceSnapshot);
+        if (!checkResult.changed) {
+          console.log(`[ChangeDetection] No changes detected for ${repoPath}. Skipping sync.`);
+          markGitActivityHandled();
+          pendingRefreshAfterInteractionRef.current = false;
+          return;
+        }
 
-      // 2. Something changed. Fetch sync peek to inspect details
-      const peek = await fetchRepoSyncPeek(repoPath);
-      if (isStaleRepoRefresh()) return;
+        // 2. Something changed. Fetch sync peek to inspect details
+        const peek = await fetchRepoSyncPeek(repoPath);
+        if (isStaleRepoRefresh()) return;
 
-      if (!peek) {
+        if (!peek) {
+          await reloadRepoSnapshotFromGit(repoPath, peek);
+          return;
+        }
+
+        // 3. Granular feelers: check worktree modifications first if refs/heads haven't changed
+        if (!checkResult.gitChanged && checkResult.worktreeChanged) {
+          console.log(`[ChangeDetection] Running quick dirty state feeler...`);
+          const dirtySynced = await tryQuickStateDirtySync(repoPath, peek);
+          if (dirtySynced && !isActiveUiBehindPeek(repoPath, peek)) {
+            console.log(`[ChangeDetection] Quick dirty state update succeeded.`);
+            if (peek.signature) {
+              noteSyncedRepoPeek(repoPath, peek.signature);
+            }
+            noteGitActivityHandledIfCaughtUp(repoPath, peek);
+            pendingRefreshAfterInteractionRef.current = false;
+            return;
+          }
+        }
+
+        // 4. Try incremental background sync if references or HEAD changed
+        if (checkResult.gitChanged) {
+          console.log(`[ChangeDetection] Running incremental background sync feeler...`);
+          const incrementallyPatched = await tryIncrementalBackgroundSync(repoPath, {
+            force: reason === 'local' || options?.forceSnapshot,
+            peek,
+          });
+          if (incrementallyPatched && !isActiveUiBehindPeek(repoPath, peek)) {
+            console.log(`[ChangeDetection] Incremental background sync succeeded.`);
+            if (peek.signature) {
+              noteSyncedRepoPeek(repoPath, peek.signature);
+            }
+            noteGitActivityHandledIfCaughtUp(repoPath, peek);
+            pendingRefreshAfterInteractionRef.current = false;
+            return;
+          }
+        }
+
+        // 5. Fallback: Full reload from git snapshot
+        console.log(`[ChangeDetection] Falling back to full repository reload.`);
         await reloadRepoSnapshotFromGit(repoPath, peek);
-        return;
-      }
-
-      // 3. Granular feelers: check worktree modifications first if refs/heads haven't changed
-      if (!checkResult.gitChanged && checkResult.worktreeChanged) {
-        console.log(`[ChangeDetection] Running quick dirty state feeler...`);
-        const dirtySynced = await tryQuickStateDirtySync(repoPath, peek);
-        if (dirtySynced && !isActiveUiBehindPeek(repoPath, peek)) {
-          console.log(`[ChangeDetection] Quick dirty state update succeeded.`);
-          if (peek.signature) {
-            noteSyncedRepoPeek(repoPath, peek.signature);
-          }
-          noteGitActivityHandledIfCaughtUp(repoPath, peek);
-          pendingRefreshAfterInteractionRef.current = false;
-          return;
+      } finally {
+        runAuthoritativeRepoSyncInFlightRef.current = false;
+        if (runAuthoritativeRepoSyncPendingRef.current) {
+          runAuthoritativeRepoSyncPendingRef.current = false;
+          console.log(`[ChangeDetection] Running pending queued sync request...`);
+          void runAuthoritativeRepoSync('watch');
         }
       }
-
-      // 4. Try incremental background sync if references or HEAD changed
-      if (checkResult.gitChanged) {
-        console.log(`[ChangeDetection] Running incremental background sync feeler...`);
-        const incrementallyPatched = await tryIncrementalBackgroundSync(repoPath, {
-          force: reason === 'local' || options?.forceSnapshot,
-          peek,
-        });
-        if (incrementallyPatched && !isActiveUiBehindPeek(repoPath, peek)) {
-          console.log(`[ChangeDetection] Incremental background sync succeeded.`);
-          if (peek.signature) {
-            noteSyncedRepoPeek(repoPath, peek.signature);
-          }
-          noteGitActivityHandledIfCaughtUp(repoPath, peek);
-          pendingRefreshAfterInteractionRef.current = false;
-          return;
-        }
-      }
-
-      // 5. Fallback: Full reload from git snapshot
-      console.log(`[ChangeDetection] Falling back to full repository reload.`);
-      await reloadRepoSnapshotFromGit(repoPath, peek);
     };
 
     runRepoRefreshRef.current = (reason = 'timer') => {
