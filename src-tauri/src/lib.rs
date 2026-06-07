@@ -3214,7 +3214,6 @@ fn start_project_preview_blocking(
     config: ProjectPreviewConfig,
 ) -> Result<ProjectPreviewResult, String> {
     let storage_root = preview_worktree_storage_root()?;
-    terminate_orphaned_preview_processes(&storage_root);
     let repo = Path::new(&repo_path);
     let target_id = target.target_id();
     let is_native_preview = is_native_preview_command(&config.run_command);
@@ -3242,9 +3241,26 @@ fn start_project_preview_blocking(
         let mut processes = preview_processes()
             .lock()
             .map_err(|_| "Preview process state is unavailable".to_string())?;
-        if let Some(mut process) = processes.remove(&process_key) {
-            terminate_preview_process(&mut process.child);
-            let _ = process.child.wait();
+        if let Some(process) = processes.get_mut(&process_key) {
+            if matches!(process.child.try_wait(), Ok(None)) {
+                process.target_id = target_id.clone();
+                process.preview_path = preview_path_string.clone();
+                let logs = preview_log_tail(&process.log_path);
+                let url = if process.preview_mode == "native" {
+                    None
+                } else {
+                    git::detect_localhost_url(&logs)
+                };
+                return Ok(ProjectPreviewResult {
+                    preview_path: preview_path_string,
+                    target_id,
+                    url,
+                    status: "running".to_string(),
+                    logs,
+                    preview_mode: process.preview_mode.clone(),
+                });
+            }
+            processes.remove(&process_key);
         }
     }
     let state_path = storage_root.join("logs");

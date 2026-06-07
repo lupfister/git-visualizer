@@ -1,6 +1,6 @@
 import { forwardRef, memo, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import type { CSSProperties, Dispatch, MouseEvent, MutableRefObject, ReactNode, RefObject, SetStateAction, WheelEvent } from 'react';
-import { AnimatePresence, motion, useReducedMotion } from 'framer-motion';
+import { AnimatePresence, useReducedMotion } from 'framer-motion';
 import { CARD_BODY_TOP_OFFSET, CARD_HEIGHT, CARD_WIDTH } from './LayoutGrid';
 import {
   applyPersistedPathStrings,
@@ -78,10 +78,6 @@ type MapGridCommitWrapperProps = {
   dataCommitVisualId?: string;
   dataClusterKey?: string;
   visualRef?: RefObject<HTMLDivElement | null>;
-  animateClumpEntry?: boolean;
-  animateClumpExit?: boolean;
-  clumpAnimationIndex?: number;
-  reduceMotion?: boolean;
   children: ReactNode;
 };
 
@@ -99,14 +95,8 @@ const MapGridCommitWrapper = forwardRef<HTMLDivElement, MapGridCommitWrapperProp
   dataCommitVisualId,
   dataClusterKey,
   visualRef,
-  animateClumpEntry = false,
-  animateClumpExit = false,
-  clumpAnimationIndex = 0,
-  reduceMotion = false,
   children,
 }, ref) {
-  const entryDelay = Math.min(clumpAnimationIndex, 5) * 0.025;
-  const exitDelay = Math.min(clumpAnimationIndex, 5) * 0.025;
   return (
     <div
       ref={ref}
@@ -123,24 +113,12 @@ const MapGridCommitWrapper = forwardRef<HTMLDivElement, MapGridCommitWrapperProp
       onPointerCancel={onPointerCancel}
       style={style}
     >
-      <motion.div
+      <div
         ref={visualRef}
         className="h-full w-full"
-      initial={animateClumpEntry && !reduceMotion
-        ? { opacity: 0 }
-        : false}
-      animate={{ opacity: 1 }}
-      exit={animateClumpExit && !reduceMotion
-        ? { opacity: 0 }
-        : undefined}
-      transition={animateClumpEntry
-        ? { duration: 0.16, delay: entryDelay, ease: [0.16, 1, 0.3, 1] }
-        : animateClumpExit
-          ? { duration: 0.16, delay: exitDelay, ease: [0.7, 0, 0.84, 0] }
-          : { duration: 0 }}
       >
         {children}
-      </motion.div>
+      </div>
     </div>
   );
 });
@@ -193,6 +171,7 @@ type CommitCardProps = {
   animateClumpEntry?: boolean;
   animateClumpExit?: boolean;
   clumpAnimationIndex?: number;
+  clumpExitAnimationIndex?: number;
   reduceMotion?: boolean;
   registerCameraTarget: (element: HTMLElement | SVGElement, layout?: MapGridCameraTargetLayout) => () => void;
 };
@@ -234,6 +213,7 @@ const MapGridCommitCard = memo(function MapGridCommitCard({
   animateClumpEntry = false,
   animateClumpExit = false,
   clumpAnimationIndex = 0,
+  clumpExitAnimationIndex = 0,
   reduceMotion = false,
   registerCameraTarget,
 }: CommitCardProps) {
@@ -255,10 +235,41 @@ const MapGridCommitCard = memo(function MapGridCommitCard({
     if (Math.abs(x) < 0.5 && Math.abs(y) < 0.5) return;
     const animation = visual.animate(
       [{ transform: `translate3d(${x}px, ${y}px, 0)` }, { transform: 'translate3d(0, 0, 0)' }],
-      { duration: 220, easing: 'cubic-bezier(0.16, 1, 0.3, 1)' },
+      { duration: 170, easing: 'cubic-bezier(0.16, 1, 0.3, 1)' },
     );
     return () => animation.cancel();
   }, [cardLeft, cardTop, reduceMotion, suspendTileAnimations]);
+  useEffect(() => {
+    const visual = cardVisualRef.current;
+    if (!visual || reduceMotion) return;
+    if (animateClumpEntry) {
+      const animation = visual.animate(
+        [{ opacity: 0 }, { opacity: 1 }],
+        {
+          duration: 110,
+          delay: Math.min(clumpAnimationIndex, 5) * 16,
+          easing: 'cubic-bezier(0.16, 1, 0.3, 1)',
+          fill: 'both',
+        },
+      );
+      return () => animation.cancel();
+    }
+    visual.style.opacity = '1';
+  }, [animateClumpEntry, clumpAnimationIndex, reduceMotion]);
+  useEffect(() => {
+    const visual = cardVisualRef.current;
+    if (!visual || reduceMotion || !animateClumpExit) return;
+    const animation = visual.animate(
+      [{ opacity: 1 }, { opacity: 0 }],
+      {
+        duration: 110,
+        delay: Math.min(clumpExitAnimationIndex, 5) * 16,
+        easing: 'cubic-bezier(0.7, 0, 0.84, 0)',
+        fill: 'forwards',
+      },
+    );
+    return () => animation.cancel();
+  }, [animateClumpExit, clumpExitAnimationIndex, reduceMotion]);
   const commitId = node.commit.id;
   const visualId = node.commit.visualId;
   const branchName = node.commit.branchName;
@@ -538,10 +549,6 @@ const MapGridCommitCard = memo(function MapGridCommitCard({
       dataCommitVisualId={visualId}
       dataClusterKey={clusterKey ?? undefined}
       visualRef={cardVisualRef}
-      animateClumpEntry={animateClumpEntry}
-      animateClumpExit={animateClumpExit}
-      clumpAnimationIndex={clumpAnimationIndex}
-      reduceMotion={reduceMotion}
       className={wrapperClassName}
       style={{
         left: cardLeft,
@@ -856,9 +863,51 @@ const MapGridCanvas = memo(function MapGridCanvas({
   const selectedShaSet = useMemo(() => new Set(selectedVisibleCommitShas), [selectedVisibleCommitShas]);
 
   const pendingClumpCameraAnchorRef = useRef<{ clusterKey: string; x: number; y: number } | null>(null);
+  const [closingClumps, setClosingClumps] = useState<Set<string>>(() => new Set());
+  const closingClumpTimeoutsRef = useRef(new Map<string, number>());
+  useEffect(() => () => {
+    for (const timeout of closingClumpTimeoutsRef.current.values()) window.clearTimeout(timeout);
+  }, []);
   const handleClusterToggle = useCallback((clusterKey: string, anchor: { x: number; y: number }) => {
     pendingClumpCameraAnchorRef.current = { clusterKey, ...anchor };
     const isDefaultOpen = !defaultCollapsedClumps.has(clusterKey);
+    const isOpen =
+      renderedOpenClumps.has(clusterKey) ||
+      manuallyOpenedClumps.has(clusterKey) ||
+      (isDefaultOpen && !manuallyClosedClumps.has(clusterKey));
+    if (isOpen) {
+      setClosingClumps((previous) => new Set(previous).add(clusterKey));
+      const count = clusterCounts.get(clusterKey) ?? 1;
+      const timeout = window.setTimeout(() => {
+        closingClumpTimeoutsRef.current.delete(clusterKey);
+        setClosingClumps((previous) => {
+          const next = new Set(previous);
+          next.delete(clusterKey);
+          return next;
+        });
+        if (isDefaultOpen) {
+          setManuallyOpenedClumps((previous) => {
+            const next = new Set(previous);
+            next.delete(clusterKey);
+            return next;
+          });
+          setManuallyClosedClumps((previous) => new Set(previous).add(clusterKey));
+        } else {
+          setManuallyClosedClumps((previous) => {
+            const next = new Set(previous);
+            next.delete(clusterKey);
+            return next;
+          });
+          setManuallyOpenedClumps((previous) => {
+            const next = new Set(previous);
+            next.delete(clusterKey);
+            return next;
+          });
+        }
+      }, 110 + Math.min(Math.max(0, count - 1), 5) * 16);
+      closingClumpTimeoutsRef.current.set(clusterKey, timeout);
+      return;
+    }
     if (isDefaultOpen) {
       setManuallyOpenedClumps((prev) => {
         if (!prev.has(clusterKey)) return prev;
@@ -886,7 +935,15 @@ const MapGridCanvas = memo(function MapGridCanvas({
         return next;
       });
     }
-  }, [defaultCollapsedClumps, setManuallyOpenedClumps, setManuallyClosedClumps]);
+  }, [
+    clusterCounts,
+    defaultCollapsedClumps,
+    manuallyClosedClumps,
+    manuallyOpenedClumps,
+    renderedOpenClumps,
+    setManuallyOpenedClumps,
+    setManuallyClosedClumps,
+  ]);
 
   useLayoutEffect(() => {
     const pending = pendingClumpCameraAnchorRef.current;
@@ -1118,22 +1175,29 @@ const MapGridCanvas = memo(function MapGridCanvas({
       assignmentsByClump.set(clusterKey, assignments);
     }
 
-    const layout = new Map<string, { index: number }>();
+    const layout = new Map<string, { entryIndex: number; exitIndex: number }>();
     for (const [clusterKey, assignments] of assignmentsByClump) {
-      const firstVisualId = firstByClusterKey.get(clusterKey);
-      const anchor = assignments.find((assignment) => assignment.node.commit.visualId === firstVisualId)
-        ?? assignments[0];
-      if (!anchor) continue;
-      assignments
-        .sort((left, right) => left.cardTop - right.cardTop || left.cardLeft - right.cardLeft)
-        .forEach((assignment, index) => {
-          layout.set(assignment.node.commit.visualId, {
-            index,
-          });
+      const leadVisualId = leadByClusterKey.get(clusterKey);
+      const openingOrder = [...assignments].sort((left, right) =>
+          new Date(left.node.commit.date).getTime() - new Date(right.node.commit.date).getTime()
+          || left.node.commit.id.localeCompare(right.node.commit.id)
+          || left.node.commit.visualId.localeCompare(right.node.commit.visualId));
+      const closingOrder = [...openingOrder].reverse();
+      if (leadVisualId) {
+        const leadIndex = closingOrder.findIndex((assignment) => assignment.node.commit.visualId === leadVisualId);
+        if (leadIndex > 0) closingOrder.unshift(...closingOrder.splice(leadIndex, 1));
+      }
+      openingOrder.forEach((assignment, entryIndex) => {
+        layout.set(assignment.node.commit.visualId, {
+          entryIndex,
+          exitIndex: closingOrder.findIndex(
+            (candidate) => candidate.node.commit.visualId === assignment.node.commit.visualId,
+          ),
         });
+      });
     }
     return layout;
-  }, [cardSlotAssignments, clusterKeyByCommitId, firstByClusterKey, renderedOpenClumps]);
+  }, [cardSlotAssignments, clusterKeyByCommitId, leadByClusterKey, renderedOpenClumps]);
 
   return (
     <div
@@ -1196,8 +1260,9 @@ const MapGridCanvas = memo(function MapGridCanvas({
                 onClusterToggle={handleClusterToggle}
                 suppressSearchMatchScale={suppressSearchMatchScale}
                 animateClumpEntry={isClumpMember && newlyOpenedClumps.has(clusterKey)}
-                animateClumpExit={isClumpMember}
-                clumpAnimationIndex={animationLayout?.index ?? 0}
+                animateClumpExit={clusterKey != null && closingClumps.has(clusterKey)}
+                clumpAnimationIndex={animationLayout?.entryIndex ?? 0}
+                clumpExitAnimationIndex={animationLayout?.exitIndex ?? 0}
                 reduceMotion={reduceMotion}
                 registerCameraTarget={registerCameraTarget}
               />

@@ -34,7 +34,7 @@ const MapGridConnectorPath = memo(
         }}
         initial={false}
         animate={{ d }}
-        transition={reduceMotion ? { duration: 0 } : { duration: 0.22, ease: [0.16, 1, 0.3, 1] }}
+        transition={reduceMotion ? { duration: 0 } : { duration: 0.17, ease: [0.16, 1, 0.3, 1] }}
         fill="none"
         stroke="currentColor"
         strokeWidth={strokeWidth}
