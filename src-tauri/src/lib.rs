@@ -19,7 +19,7 @@ use std::{
     collections::{HashMap, HashSet},
     fs::{self, File, OpenOptions},
     io::{BufRead, BufReader, Read, Seek, SeekFrom, Write},
-    net::TcpListener,
+    net::{TcpListener, TcpStream, ToSocketAddrs},
     path::{Path, PathBuf},
     process::{Child, Stdio},
     sync::{
@@ -3040,6 +3040,23 @@ fn get_commit_subject(repo_path: String, sha: String) -> Result<Option<String>, 
     } else {
         Ok(Some(subject))
     }
+}
+
+#[tauri::command(rename_all = "camelCase")]
+fn check_network_available() -> bool {
+    let hosts = [
+        ("github.com", 443u16),
+        ("1.1.1.1", 53),
+        ("8.8.8.8", 53),
+    ];
+    let timeout = StdDuration::from_secs(2);
+    hosts.iter().any(|(host, port)| {
+        let addr = (*host, *port).to_socket_addrs().ok().and_then(|mut a| a.next());
+        match addr {
+            Some(ref a) => TcpStream::connect_timeout(a, timeout).is_ok(),
+            None => false,
+        }
+    })
 }
 
 #[derive(Serialize)]
@@ -8018,6 +8035,7 @@ pub fn run() {
             watch_repo,
             get_repo_watcher_epochs,
             get_repo_fast_signature,
+            check_network_available,
         ])
         .build(tauri::generate_context!())
         .expect("error building tauri application")

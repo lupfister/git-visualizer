@@ -47,6 +47,7 @@ import {
 } from './repoMutationPatches';
 import { classifyFingerprintDiff, parseRepoFingerprint, withRepoFingerprintDirty, withRepoFingerprintUpstream, type FingerprintPatchSegment } from './fingerprintDiff';
 import { buildGraphDeltaOutcomes, fetchRepoGraphDelta } from './externalGraphSync';
+import { isNetworkAvailable } from './isNetworkAvailable';
 import { syncRemoteRepo } from './remoteRepoSync';
 import { formatWorktreeSyncSignature, formatWorktreeSessionLayoutSignature } from './worktreeSignature';
 import { canApplyActiveRepoSnapshot } from './activeRepoGuard';
@@ -4170,6 +4171,11 @@ function App() {
 
     const syncRemoteFromOrigin = async (): Promise<boolean> => {
       if (isDisposed || !defaultBranch || remoteSyncInFlightRef.current) return false;
+      const online = await isNetworkAvailable();
+      if (!online) {
+        console.log('[RemoteSync] No network available, skipping remote sync');
+        return false;
+      }
       remoteSyncInFlightRef.current = true;
       try {
         const checkedOutHead = latestCheckedOutRef.current?.headSha ?? null;

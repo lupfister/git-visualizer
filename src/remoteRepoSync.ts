@@ -1,4 +1,5 @@
 import { invoke } from './timedInvoke';
+import { isNetworkAvailable } from './isNetworkAvailable';
 
 export type RemoteTipMetadata = {
   subject: string;
@@ -113,6 +114,24 @@ export async function syncRemoteRepo(
   checkedOutHeadSha: string | null | undefined,
   options?: { pullFfOnly?: boolean },
 ): Promise<SyncRemoteRepoResult> {
+  const online = await isNetworkAvailable();
+  if (!online) {
+    return {
+      sync: {
+        fetched: false,
+        pulled: false,
+        changed: false,
+        remoteHeadsDigest: previousDigest ?? '',
+      },
+      tipState: {
+        tipSha: null,
+        metadata: null,
+        parentSha: null,
+        hydrated: true,
+      },
+    };
+  }
+
   const sync = await invoke<RemoteSyncResult>('sync_remote_repository', {
     repoPath,
     pullFfOnly: options?.pullFfOnly ?? false,
