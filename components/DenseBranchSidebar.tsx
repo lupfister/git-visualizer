@@ -2,7 +2,7 @@ import { useMemo, useState } from 'react';
 import type { CSSProperties } from 'react';
 import { ChevronRight, Eye, MoreHorizontal, Plus, TerminalSquare } from 'lucide-react';
 import type { Branch, BranchCommitPreview, TerminalSession, WorktreeInfo } from '../types';
-import { workingTreeIdForPath } from '../lib/worktreeSessions';
+import { accentCssVars, buildWorktreeSessions, workingTreeIdForPath } from '../lib/worktreeSessions';
 import { cn, normalizeRepoPathForCompare, worktreeDisplayName } from './grid/mapGridUtils';
 
 const EXPANDED_WORKTREES_KEY = 'git-visualizer:expanded-worktrees';
@@ -147,6 +147,12 @@ export default function DenseBranchSidebar({
             const isExpanded = expandedProjects.has(project.path) || isActive;
             const projectSessions = sessionsByProject.get(normalizeRepoPathForCompare(project.path).toLowerCase()) ?? [];
             const commitPreviews = projectSessions.filter((session) => session.kind === 'preview' && session.targetKind === 'commit' && session.status === 'running');
+            const worktreeAccentByPath = new Map(
+              buildWorktreeSessions(project.worktrees, project.path).map((session) => [
+                normalizeRepoPathForCompare(session.path).toLowerCase(),
+                accentCssVars(session.accentToken).fg,
+              ]),
+            );
             return (
               <section key={project.path}>
                 <div
@@ -202,10 +208,17 @@ export default function DenseBranchSidebar({
                       const sessions = visibleNestedSessions(projectSessions, worktree.path);
                       const label = worktree.isCurrent ? 'Primary' : worktreeDisplayName(worktree.path);
                       const refLabel = worktreeRefLabel(worktree);
+                      const accentColor = worktreeAccentByPath.get(
+                        normalizeRepoPathForCompare(worktree.path).toLowerCase(),
+                      );
                       return (
                         <div key={worktree.path}>
                           <div
-                            className="group flex h-7 items-center rounded-lg text-muted-foreground transition-colors hover:bg-muted hover:text-foreground"
+                            className={cn(
+                              'group flex h-7 items-center rounded-lg transition-colors hover:bg-muted',
+                              !accentColor && 'text-muted-foreground hover:text-foreground',
+                            )}
+                            style={accentColor ? { color: accentColor } : undefined}
                             onClick={() => void onSelectWorktree(project.path, workingTreeIdForPath(worktree.path, worktree.isCurrent))}
                           >
                             <button
