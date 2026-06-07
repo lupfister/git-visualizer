@@ -1,5 +1,6 @@
 import { forwardRef, memo, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import type { CSSProperties, Dispatch, MouseEvent, MutableRefObject, ReactNode, RefObject, SetStateAction, WheelEvent } from 'react';
+import { AnimatePresence, motion, useReducedMotion } from 'framer-motion';
 import { CARD_BODY_TOP_OFFSET, CARD_HEIGHT, CARD_WIDTH } from './LayoutGrid';
 import {
   applyPersistedPathStrings,
@@ -74,6 +75,13 @@ type MapGridCommitWrapperProps = {
   onPointerUp?: React.PointerEventHandler<HTMLDivElement>;
   onPointerCancel?: React.PointerEventHandler<HTMLDivElement>;
   dataCommitCard?: string;
+  dataCommitVisualId?: string;
+  dataClusterKey?: string;
+  visualRef?: RefObject<HTMLDivElement | null>;
+  animateClumpEntry?: boolean;
+  animateClumpExit?: boolean;
+  clumpAnimationIndex?: number;
+  reduceMotion?: boolean;
   children: ReactNode;
 };
 
@@ -88,13 +96,24 @@ const MapGridCommitWrapper = forwardRef<HTMLDivElement, MapGridCommitWrapperProp
   onPointerUp,
   onPointerCancel,
   dataCommitCard,
+  dataCommitVisualId,
+  dataClusterKey,
+  visualRef,
+  animateClumpEntry = false,
+  animateClumpExit = false,
+  clumpAnimationIndex = 0,
+  reduceMotion = false,
   children,
 }, ref) {
+  const entryDelay = Math.min(clumpAnimationIndex, 5) * 0.025;
+  const exitDelay = Math.min(clumpAnimationIndex, 5) * 0.025;
   return (
     <div
       ref={ref}
       className={className}
       data-commit-card={dataCommitCard}
+      data-commit-visual-id={dataCommitVisualId}
+      data-cluster-key={dataClusterKey}
       onClick={onClick}
       onPointerDown={onPointerDown}
       onPointerEnter={onPointerEnter}
@@ -104,7 +123,24 @@ const MapGridCommitWrapper = forwardRef<HTMLDivElement, MapGridCommitWrapperProp
       onPointerCancel={onPointerCancel}
       style={style}
     >
-      {children}
+      <motion.div
+        ref={visualRef}
+        className="h-full w-full"
+      initial={animateClumpEntry && !reduceMotion
+        ? { opacity: 0 }
+        : false}
+      animate={{ opacity: 1 }}
+      exit={animateClumpExit && !reduceMotion
+        ? { opacity: 0 }
+        : undefined}
+      transition={animateClumpEntry
+        ? { duration: 0.16, delay: entryDelay, ease: [0.16, 1, 0.3, 1] }
+        : animateClumpExit
+          ? { duration: 0.16, delay: exitDelay, ease: [0.7, 0, 0.84, 0] }
+          : { duration: 0 }}
+      >
+        {children}
+      </motion.div>
     </div>
   );
 });
@@ -152,8 +188,12 @@ type CommitCardProps = {
   onClusterToggle: (clusterKey: string, anchor: { x: number; y: number }) => void;
   /** Skip search-hit scale transform during camera motion (reduces compositor layers). */
   suppressSearchMatchScale?: boolean;
-  /** Suspend decorative tile RAF loops during camera motion to keep panning responsive. */
+  /** Disable layout transitions while the camera is moving. */
   suspendTileAnimations?: boolean;
+  animateClumpEntry?: boolean;
+  animateClumpExit?: boolean;
+  clumpAnimationIndex?: number;
+  reduceMotion?: boolean;
   registerCameraTarget: (element: HTMLElement | SVGElement, layout?: MapGridCameraTargetLayout) => () => void;
 };
 
@@ -191,14 +231,34 @@ const MapGridCommitCard = memo(function MapGridCommitCard({
   onClusterToggle,
   suppressSearchMatchScale = false,
   suspendTileAnimations = false,
+  animateClumpEntry = false,
+  animateClumpExit = false,
+  clumpAnimationIndex = 0,
+  reduceMotion = false,
   registerCameraTarget,
 }: CommitCardProps) {
   const cardRef = useRef<HTMLDivElement | null>(null);
+  const cardVisualRef = useRef<HTMLDivElement | null>(null);
+  const previousPositionRef = useRef<{ left: number; top: number } | null>(null);
   useLayoutEffect(() => {
     const element = cardRef.current;
     if (!element) return;
     return registerCameraTarget(element, { layoutX: cardLeft, layoutY: cardTop });
   }, [registerCameraTarget, cardLeft, cardTop]);
+  useLayoutEffect(() => {
+    const previous = previousPositionRef.current;
+    previousPositionRef.current = { left: cardLeft, top: cardTop };
+    const visual = cardVisualRef.current;
+    if (!previous || !visual || suspendTileAnimations || reduceMotion) return;
+    const x = previous.left - cardLeft;
+    const y = previous.top - cardTop;
+    if (Math.abs(x) < 0.5 && Math.abs(y) < 0.5) return;
+    const animation = visual.animate(
+      [{ transform: `translate3d(${x}px, ${y}px, 0)` }, { transform: 'translate3d(0, 0, 0)' }],
+      { duration: 220, easing: 'cubic-bezier(0.16, 1, 0.3, 1)' },
+    );
+    return () => animation.cancel();
+  }, [cardLeft, cardTop, reduceMotion, suspendTileAnimations]);
   const commitId = node.commit.id;
   const visualId = node.commit.visualId;
   const branchName = node.commit.branchName;
@@ -475,7 +535,13 @@ const MapGridCommitCard = memo(function MapGridCommitCard({
     <MapGridCommitWrapper
       ref={cardRef}
       dataCommitCard="true"
+      dataCommitVisualId={visualId}
       dataClusterKey={clusterKey ?? undefined}
+      visualRef={cardVisualRef}
+      animateClumpEntry={animateClumpEntry}
+      animateClumpExit={animateClumpExit}
+      clumpAnimationIndex={clumpAnimationIndex}
+      reduceMotion={reduceMotion}
       className={wrapperClassName}
       style={{
         left: cardLeft,
@@ -567,7 +633,6 @@ const MapGridCommitCard = memo(function MapGridCommitCard({
             animateTileGaps={commitTileAnimateGaps}
             cloudyTileGaps={commitTileCloudyGaps}
             tileOmissionRate={commitTileOmissionRate}
-            suspendAnimations={suspendTileAnimations}
           />
         ) : null}
         <div
@@ -826,12 +891,11 @@ const MapGridCanvas = memo(function MapGridCanvas({
   useLayoutEffect(() => {
     const pending = pendingClumpCameraAnchorRef.current;
     if (!pending) return;
-    const anchorNode = visibleRenderNodes.find(
-      (node) => clusterKeyByCommitId.get(node.commit.visualId) === pending.clusterKey,
-    );
+    const firstVisualId = firstByClusterKey.get(pending.clusterKey);
+    const anchorNode = visibleRenderNodes.find((node) => node.commit.visualId === firstVisualId);
     if (!anchorNode) return;
     const element = document.querySelector<HTMLElement>(
-      `[data-cluster-key="${CSS.escape(pending.clusterKey)}"][data-commit-card="true"]`,
+      `[data-commit-visual-id="${CSS.escape(anchorNode.commit.visualId)}"][data-commit-card="true"]`,
     );
     if (!element) return;
     const rect = element.getBoundingClientRect();
@@ -841,7 +905,7 @@ const MapGridCanvas = memo(function MapGridCanvas({
     if (Math.abs(deltaX) < 0.5 && Math.abs(deltaY) < 0.5) return;
     const camera = renderedCameraRef.current;
     syncCamera(camera.panX + deltaX, camera.panY + deltaY, camera.zoom, { persist: false });
-  }, [clusterKeyByCommitId, renderedCameraRef, syncCamera, visibleRenderNodes]);
+  }, [firstByClusterKey, renderedCameraRef, syncCamera, visibleRenderNodes]);
 
   const adjustedAnchorByOriginalKey = useMemo(() => {
     const overrideKeys = Object.keys(nodePositionOverrides);
@@ -1033,6 +1097,43 @@ const MapGridCanvas = memo(function MapGridCanvas({
 
   const isCameraMoving = isCameraMovingRef.current;
   const suppressSearchMatchScale = isCameraMoving;
+  const reduceMotion = useReducedMotion() ?? false;
+  const previousOpenClumpsRef = useRef<Set<string> | null>(null);
+  const newlyOpenedClumps = useMemo(() => {
+    const previous = previousOpenClumpsRef.current;
+    if (!previous) return new Set<string>();
+    return new Set([...renderedOpenClumps].filter((clusterKey) => !previous.has(clusterKey)));
+  }, [renderedOpenClumps]);
+  useEffect(() => {
+    previousOpenClumpsRef.current = new Set(renderedOpenClumps);
+  }, [renderedOpenClumps]);
+
+  const clumpAnimationLayout = useMemo(() => {
+    const assignmentsByClump = new Map<string, typeof cardSlotAssignments>();
+    for (const assignment of cardSlotAssignments) {
+      const clusterKey = clusterKeyByCommitId.get(assignment.node.commit.visualId);
+      if (!clusterKey || !renderedOpenClumps.has(clusterKey)) continue;
+      const assignments = assignmentsByClump.get(clusterKey) ?? [];
+      assignments.push(assignment);
+      assignmentsByClump.set(clusterKey, assignments);
+    }
+
+    const layout = new Map<string, { index: number }>();
+    for (const [clusterKey, assignments] of assignmentsByClump) {
+      const firstVisualId = firstByClusterKey.get(clusterKey);
+      const anchor = assignments.find((assignment) => assignment.node.commit.visualId === firstVisualId)
+        ?? assignments[0];
+      if (!anchor) continue;
+      assignments
+        .sort((left, right) => left.cardTop - right.cardTop || left.cardLeft - right.cardLeft)
+        .forEach((assignment, index) => {
+          layout.set(assignment.node.commit.visualId, {
+            index,
+          });
+        });
+    }
+    return layout;
+  }, [cardSlotAssignments, clusterKeyByCommitId, firstByClusterKey, renderedOpenClumps]);
 
   return (
     <div
@@ -1053,8 +1154,12 @@ const MapGridCanvas = memo(function MapGridCanvas({
             pathCache={connectorPath2dCacheRef.current}
             registerCameraTarget={registerCameraTarget}
           />
+          <AnimatePresence initial={false}>
           {cardSlotAssignments.map((assignment) => {
             const { node, cardLeft, cardTop } = assignment;
+            const clusterKey = clusterKeyByCommitId.get(node.commit.visualId);
+            const isClumpMember = clusterKey != null && renderedOpenClumps.has(clusterKey);
+            const animationLayout = clumpAnimationLayout.get(node.commit.visualId);
             return (
               <MapGridCommitCard
                 key={node.commit.visualId}
@@ -1090,11 +1195,15 @@ const MapGridCanvas = memo(function MapGridCanvas({
                 onNodePointerUp={onNodePointerUp}
                 onClusterToggle={handleClusterToggle}
                 suppressSearchMatchScale={suppressSearchMatchScale}
-                suspendTileAnimations={isCameraMoving}
+                animateClumpEntry={isClumpMember && newlyOpenedClumps.has(clusterKey)}
+                animateClumpExit={isClumpMember}
+                clumpAnimationIndex={animationLayout?.index ?? 0}
+                reduceMotion={reduceMotion}
                 registerCameraTarget={registerCameraTarget}
               />
             );
         })}
+          </AnimatePresence>
       </div>
     </div>
   );

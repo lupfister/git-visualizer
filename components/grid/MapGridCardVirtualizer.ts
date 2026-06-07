@@ -82,6 +82,7 @@ export function buildMapGridCardSlotAssignments(
       nodePositionOverrides,
       ignorePersistedOverrideVisualIds,
     );
+    if (!Number.isFinite(cardLeft) || !Number.isFinite(cardTop)) return;
     assignments.push({ node, cardLeft, cardTop });
     assigned.add(node.commit.visualId);
   };

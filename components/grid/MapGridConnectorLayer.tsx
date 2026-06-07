@@ -1,4 +1,5 @@
 import { memo, useLayoutEffect } from 'react';
+import { motion, useReducedMotion } from 'framer-motion';
 import {
   connectorGeometryCacheKey,
   type ConnectorPathCacheEntry,
@@ -24,13 +25,16 @@ const MapGridConnectorPath = memo(
     registerCameraTarget,
   }: MapGridConnectorPathProps) {
     const d = getOrBuildConnectorPathD(pathCache, connector, cornerRadiusPx);
+    const reduceMotion = useReducedMotion() ?? false;
     return (
-      <path
+      <motion.path
         ref={(element) => {
           if (!element) return;
           return registerCameraTarget(element);
         }}
-        d={d}
+        initial={false}
+        animate={{ d }}
+        transition={reduceMotion ? { duration: 0 } : { duration: 0.22, ease: [0.16, 1, 0.3, 1] }}
         fill="none"
         stroke="currentColor"
         strokeWidth={strokeWidth}
@@ -84,7 +88,7 @@ export const MapGridConnectorLayer = memo(function MapGridConnectorLayer({
     >
       {mergeConnectors.map((connector) => (
         <MapGridConnectorPath
-          key={`merge:${connectorGeometryCacheKey(connector, cornerRadiusPx)}`}
+          key={`merge:${connector.id}`}
           connector={connector}
           cornerRadiusPx={cornerRadiusPx}
           strokeWidth={strokeWidth}
@@ -94,7 +98,7 @@ export const MapGridConnectorLayer = memo(function MapGridConnectorLayer({
       ))}
       {connectors.map((connector) => (
         <MapGridConnectorPath
-          key={connectorGeometryCacheKey(connector, cornerRadiusPx)}
+          key={connector.id}
           connector={connector}
           cornerRadiusPx={cornerRadiusPx}
           strokeWidth={strokeWidth}
