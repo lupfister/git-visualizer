@@ -1,4 +1,4 @@
-import { useMemo, useState } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 import type { CSSProperties } from 'react';
 import { ChevronRight, Eye, MoreHorizontal, Plus, TerminalSquare } from 'lucide-react';
 import type { Branch, BranchCommitPreview, TerminalSession, WorktreeInfo } from '../types';
@@ -100,6 +100,17 @@ export default function DenseBranchSidebar({
   const [expandedProjects, setExpandedProjects] = useState<Set<string>>(() => loadSet(EXPANDED_PROJECTS_KEY));
   const [openProjectMenu, setOpenProjectMenu] = useState<string | null>(null);
 
+  useEffect(() => {
+    if (!activeProjectPath) return;
+    setExpandedProjects((current) => {
+      if (current.has(activeProjectPath)) return current;
+      const next = new Set(current);
+      next.add(activeProjectPath);
+      persistSet(EXPANDED_PROJECTS_KEY, next);
+      return next;
+    });
+  }, [activeProjectPath]);
+
   const sessionsByProject = useMemo(() => {
     const grouped = new Map<string, TerminalSession[]>();
     for (const session of terminalSessions) {
@@ -144,7 +155,7 @@ export default function DenseBranchSidebar({
         <div className="sidebar-scrollbar min-h-0 flex-1 space-y-3 overflow-y-auto px-2">
           {projects.map((project) => {
             const isActive = activeProjectPath != null && samePath(project.path, activeProjectPath);
-            const isExpanded = expandedProjects.has(project.path) || isActive;
+            const isExpanded = expandedProjects.has(project.path);
             const projectSessions = sessionsByProject.get(normalizeRepoPathForCompare(project.path).toLowerCase()) ?? [];
             const commitPreviews = projectSessions.filter((session) => session.kind === 'preview' && session.targetKind === 'commit' && session.status === 'running');
             const worktreeAccentByPath = new Map(
