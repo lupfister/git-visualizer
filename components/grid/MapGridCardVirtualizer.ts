@@ -33,10 +33,14 @@ const resolveCardPosition = (
   node: Node,
   dragPreviewByNodeId: DragPreviewByVisualId,
   nodePositionOverrides: NodePositionOverrides,
+  ignorePersistedOverrideVisualIds?: ReadonlySet<string>,
 ): { cardLeft: number; cardTop: number } => {
   const dragPreview = dragPreviewByNodeId[node.commit.visualId];
   if (dragPreview) {
     return { cardLeft: dragPreview.x, cardTop: dragPreview.y };
+  }
+  if (ignorePersistedOverrideVisualIds?.has(node.commit.visualId)) {
+    return { cardLeft: node.x, cardTop: node.y };
   }
   const persisted = getNodePositionOverride(nodePositionOverrides, node.commit);
   if (persisted) {
@@ -61,6 +65,7 @@ export function buildMapGridCardSlotAssignments(
   viewportCenterX: number,
   viewportCenterY: number,
   stickyVisualIdOrder: readonly string[] = [],
+  ignorePersistedOverrideVisualIds?: ReadonlySet<string>,
 ): MapGridCardSlotAssignment[] {
   if (visibleNodes.length === 0 || slotCount <= 0) {
     return [];
@@ -71,7 +76,12 @@ export function buildMapGridCardSlotAssignments(
   const assigned = new Set<string>();
 
   const pushNode = (node: Node) => {
-    const { cardLeft, cardTop } = resolveCardPosition(node, dragPreviewByNodeId, nodePositionOverrides);
+    const { cardLeft, cardTop } = resolveCardPosition(
+      node,
+      dragPreviewByNodeId,
+      nodePositionOverrides,
+      ignorePersistedOverrideVisualIds,
+    );
     assignments.push({ node, cardLeft, cardTop });
     assigned.add(node.commit.visualId);
   };
@@ -87,7 +97,12 @@ export function buildMapGridCardSlotAssignments(
   const ranked = visibleNodes
     .filter((node) => !assigned.has(node.commit.visualId))
     .map((node) => {
-      const { cardLeft, cardTop } = resolveCardPosition(node, dragPreviewByNodeId, nodePositionOverrides);
+      const { cardLeft, cardTop } = resolveCardPosition(
+        node,
+        dragPreviewByNodeId,
+        nodePositionOverrides,
+        ignorePersistedOverrideVisualIds,
+      );
       return {
         node,
         distanceSq: viewportDistanceSq(cardLeft, cardTop, viewportCenterX, viewportCenterY),

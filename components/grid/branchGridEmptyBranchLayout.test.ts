@@ -446,6 +446,10 @@ describe('computeBranchGridLayout empty branch placeholders', () => {
     const collapsedClumpNode = collapsed.renderNodes.find(
       (node) => collapsed.clusterKeyByCommitId.get(node.commit.visualId) === clusterKey,
     )!;
+    const openedFirstClumpNode = clumpNodes.find(
+      (node) => node.commit.visualId === opened.firstByClusterKey.get(clusterKey!),
+    )!;
+    expect(openedFirstClumpNode.column).toBe(collapsedClumpNode.column);
     const insertedColumns = clumpNodes.length - 1;
     for (const visualId of collapsedIds) {
       const collapsedNode = collapsed.renderNodes.find((node) => node.commit.visualId === visualId)!;

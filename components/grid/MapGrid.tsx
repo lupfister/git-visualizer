@@ -2167,6 +2167,7 @@ export default function BranchGridMap({
           mergeConnectors={mergeConnectorsForView}
           cullConnectorPath={cullConnectorPath}
           flushCameraReactTick={flushCameraReactTick}
+          syncCamera={syncCamera}
           setManuallyOpenedClumps={setManuallyOpenedClumps}
           setManuallyClosedClumps={setManuallyClosedClumps}
           onCommitCardClick={handleCommitCardClick}

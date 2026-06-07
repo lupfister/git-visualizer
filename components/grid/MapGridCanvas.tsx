@@ -149,7 +149,7 @@ type CommitCardProps = {
   onNodePointerDown: (event: React.PointerEvent<HTMLDivElement>, node: Node) => void;
   onNodePointerMove: (event: React.PointerEvent<HTMLDivElement>) => void;
   onNodePointerUp: (event: React.PointerEvent<HTMLDivElement>) => void;
-  onClusterToggle: (clusterKey: string) => void;
+  onClusterToggle: (clusterKey: string, anchor: { x: number; y: number }) => void;
   /** Skip search-hit scale transform during camera motion (reduces compositor layers). */
   suppressSearchMatchScale?: boolean;
   /** Suspend decorative tile RAF loops during camera motion to keep panning responsive. */
@@ -327,7 +327,8 @@ const MapGridCommitCard = memo(function MapGridCommitCard({
     event.stopPropagation();
     event.preventDefault();
     if (!clusterKey) return;
-    onClusterToggle(clusterKey);
+    const rect = cardRef.current?.getBoundingClientRect();
+    onClusterToggle(clusterKey, { x: rect?.left ?? event.clientX, y: rect?.top ?? event.clientY });
   };
   const scaledTextStyle: CSSProperties = {
     fontSize: 'calc(0.875rem * var(--map-inv-zoom, 1))',
@@ -470,6 +471,7 @@ const MapGridCommitCard = memo(function MapGridCommitCard({
     <MapGridCommitWrapper
       ref={cardRef}
       dataCommitCard="true"
+      dataClusterKey={clusterKey ?? undefined}
       className={wrapperClassName}
       style={{
         left: cardLeft,
@@ -690,6 +692,7 @@ type Props = {
   mergeConnectors: Array<{ id: string; fromX: number; fromY: number; toX: number; toY: number; zIndex: number; fromFace?: ConnectorFace; toFace?: ConnectorFace }>;
   cullConnectorPath: (connector: { id: string; fromX: number; fromY: number; toX: number; toY: number; fromFace?: ConnectorFace; toFace?: ConnectorFace }) => boolean;
   flushCameraReactTick: () => void;
+  syncCamera: (panX: number, panY: number, zoom: number, options?: { animate?: boolean; persist?: boolean }) => void;
   setManuallyOpenedClumps: Dispatch<SetStateAction<Set<string>>>;
   setManuallyClosedClumps: Dispatch<SetStateAction<Set<string>>>;
   onCommitCardClick: (event: MouseEvent, node: Node) => void;
@@ -763,6 +766,7 @@ const MapGridCanvas = memo(function MapGridCanvas({
   mergeConnectors,
   cullConnectorPath,
   flushCameraReactTick,
+  syncCamera,
   setManuallyOpenedClumps,
   setManuallyClosedClumps,
   onCommitCardClick,
@@ -782,7 +786,9 @@ const MapGridCanvas = memo(function MapGridCanvas({
 
   const selectedShaSet = useMemo(() => new Set(selectedVisibleCommitShas), [selectedVisibleCommitShas]);
 
-  const handleClusterToggle = useCallback((clusterKey: string) => {
+  const pendingClumpCameraAnchorRef = useRef<{ clusterKey: string; x: number; y: number } | null>(null);
+  const handleClusterToggle = useCallback((clusterKey: string, anchor: { x: number; y: number }) => {
+    pendingClumpCameraAnchorRef.current = { clusterKey, ...anchor };
     const isDefaultOpen = !defaultCollapsedClumps.has(clusterKey);
     if (isDefaultOpen) {
       setManuallyOpenedClumps((prev) => {
@@ -811,8 +817,27 @@ const MapGridCanvas = memo(function MapGridCanvas({
         return next;
       });
     }
-    flushCameraReactTick();
-  }, [defaultCollapsedClumps, setManuallyOpenedClumps, setManuallyClosedClumps, flushCameraReactTick]);
+  }, [defaultCollapsedClumps, setManuallyOpenedClumps, setManuallyClosedClumps]);
+
+  useLayoutEffect(() => {
+    const pending = pendingClumpCameraAnchorRef.current;
+    if (!pending) return;
+    const anchorNode = visibleRenderNodes.find(
+      (node) => clusterKeyByCommitId.get(node.commit.visualId) === pending.clusterKey,
+    );
+    if (!anchorNode) return;
+    const element = document.querySelector<HTMLElement>(
+      `[data-cluster-key="${CSS.escape(pending.clusterKey)}"][data-commit-card="true"]`,
+    );
+    if (!element) return;
+    const rect = element.getBoundingClientRect();
+    const deltaX = pending.x - rect.left;
+    const deltaY = pending.y - rect.top;
+    pendingClumpCameraAnchorRef.current = null;
+    if (Math.abs(deltaX) < 0.5 && Math.abs(deltaY) < 0.5) return;
+    const camera = renderedCameraRef.current;
+    syncCamera(camera.panX + deltaX, camera.panY + deltaY, camera.zoom, { persist: false });
+  }, [clusterKeyByCommitId, renderedCameraRef, syncCamera, visibleRenderNodes]);
 
   const adjustedAnchorByOriginalKey = useMemo(() => {
     const overrideKeys = Object.keys(nodePositionOverrides);
@@ -952,6 +977,15 @@ const MapGridCanvas = memo(function MapGridCanvas({
   }, [cameraRenderTick, panEpoch, visibleMergeConnectors, visibleConnectors]);
 
   const stickyCardSlotOrderRef = useRef<string[]>([]);
+  const projectedClumpVisualIds = useMemo(() => {
+    const ids = new Set<string>();
+    for (const node of visibleRenderNodes) {
+      const clusterKey = clusterKeyByCommitId.get(node.commit.visualId);
+      if (!clusterKey || !renderedOpenClumps.has(clusterKey)) continue;
+      ids.add(node.commit.visualId);
+    }
+    return ids;
+  }, [clusterKeyByCommitId, renderedOpenClumps, visibleRenderNodes]);
 
   const cardSlotAssignments = useMemo(() => {
     const viewportW = viewportClientSize?.width ?? 0;
@@ -971,6 +1005,7 @@ const MapGridCanvas = memo(function MapGridCanvas({
       centerX,
       centerY,
       panStable ? stickyCardSlotOrderRef.current : [],
+      projectedClumpVisualIds,
     );
 
     if (panStable) {
@@ -987,6 +1022,7 @@ const MapGridCanvas = memo(function MapGridCanvas({
     panEpoch,
     dragPreviewByNodeId,
     nodePositionOverrides,
+    projectedClumpVisualIds,
     renderedCameraRef,
     isCameraMovingRef,
   ]);

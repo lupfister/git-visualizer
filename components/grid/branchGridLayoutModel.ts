@@ -2578,12 +2578,8 @@ export function computeBranchGridLayout(input: BranchGridLayoutInput): BranchGri
     projectedNodeByVisualId.set(commit.visualId, projectedNode);
     columnByCommitVisualId.set(commit.visualId, projectedNode.column);
   }
-  compactVisibleLaneColumns(
-    renderNodes,
-    columnByCommitVisualId,
-    isHorizontal,
-    zoomAwareLanePitch,
-  );
+  // Preserve solved base columns during visibility projection. Compacting here would renumber
+  // lanes whenever a clump opens or closes, causing unrelated nodes to jump vertically.
   syncClumpOwnerColumnsFromLeadNodes(
     renderNodes,
     clusterKeyByCommitId,
