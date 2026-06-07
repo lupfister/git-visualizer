@@ -75,6 +75,7 @@ import { deriveRepoVisualState } from './repoVisualState';
 import { setMapGridBackgroundActivity } from '../components/grid/mapGridBackgroundActivity';
 import { useWorktreeDraftMessages } from './useWorktreeDraftMessages';
 import { createRepoSyncScheduler } from './repoSyncScheduler';
+import { createInFlightDeduper } from './inFlightInvoke';
 import {
   isRepoSnapshotBehindPeek,
   parseRepoSyncPeekSignature,
@@ -429,6 +430,8 @@ function App() {
   const projectQuickStateRef = useRef<Record<string, string>>({});
   /** Lightweight git digest — skips heavy fingerprint when unchanged. */
   const projectSyncPeekRef = useRef<Record<string, string>>({});
+  const repoSyncPeekDeduperRef = useRef(createInFlightDeduper<RepoSyncPeek | null>());
+  const fingerprintCheckDeduperRef = useRef(createInFlightDeduper<FingerprintCheckResult | null>());
   const isRepoSwitchingRef = useRef(false);
   const currentRepoPathRef = useRef<string | null>(null);
   const sidebarDragRef = useRef<{
@@ -942,16 +945,33 @@ function App() {
       ...lastFingerprintCheckAtRef.current,
       [normalizedPath]: Date.now(),
     };
-    void invoke<RepoSyncPeek>('get_repo_sync_peek', { repoPath: normalizedPath })
+    void fetchRepoSyncPeek(normalizedPath)
       .then((peek) => {
-        if (!peek?.signature) return;
-        noteSyncedRepoPeek(normalizedPath, peek.signature);
+        if (peek?.signature) noteSyncedRepoPeek(normalizedPath, peek.signature);
       })
       .catch(() => undefined);
   }
 
   async function fetchRepoSyncPeek(path: string): Promise<RepoSyncPeek | null> {
-    return invoke<RepoSyncPeek>('get_repo_sync_peek', { repoPath: path }).catch(() => null);
+    const normalizedPath = normalizePath(path);
+    if (!normalizedPath) return null;
+    const unchangedAgainst = projectSyncPeekRef.current[normalizedPath];
+    return repoSyncPeekDeduperRef.current(normalizedPath, () =>
+      invoke<RepoSyncPeek>('get_repo_sync_peek', {
+        repoPath: normalizedPath,
+        unchangedAgainst: unchangedAgainst || undefined,
+      }).catch(() => null),
+    );
+  }
+
+  async function fetchProjectFingerprint(path: string): Promise<FingerprintCheckResult | null> {
+    const normalizedPath = normalizePath(path);
+    if (!normalizedPath) return null;
+    return fingerprintCheckDeduperRef.current(normalizedPath, () =>
+      invoke<FingerprintCheckResult>('check_project_fingerprint', {
+        projectId: normalizedPath,
+      }).catch(() => null),
+    );
   }
 
   function parsePeekSignature(signature: string) {
@@ -1235,9 +1255,7 @@ function App() {
     if (!normalizedPath) return null;
 
     const requestedReloadSync = options?.honorReloadSync === true && consumeReloadSyncRequest();
-    const check = await invoke<FingerprintCheckResult>('check_project_fingerprint', {
-      projectId: normalizedPath,
-    }).catch(() => null);
+    const check = await fetchProjectFingerprint(normalizedPath);
     if (!options?.force && !requestedReloadSync && !check?.changed) {
       return projectSnapshots[normalizedPath] ?? null;
     }
@@ -2185,7 +2203,7 @@ function App() {
       if (resolvedPeek?.signature) {
         noteSyncedRepoPeek(normalizedPath, resolvedPeek.signature);
       }
-      void invoke<FingerprintCheckResult>('check_project_fingerprint', { projectId: normalizedPath })
+      void fetchProjectFingerprint(normalizedPath)
         .then((check) => noteSyncedRepoFingerprint(normalizedPath, check?.currentFingerprint))
         .catch(() => undefined);
 
@@ -2318,9 +2336,7 @@ function App() {
       }
 
       const finalizeMetadata = async () => {
-        const check = await invoke<FingerprintCheckResult>('check_project_fingerprint', {
-          projectId: normalizedPath,
-        }).catch(() => null);
+        const check = await fetchProjectFingerprint(normalizedPath);
         if (check?.currentFingerprint) {
           noteSyncedRepoFingerprint(normalizedPath, check.currentFingerprint);
           ackProjectFingerprint(normalizedPath, check.currentFingerprint);
@@ -2679,7 +2695,7 @@ function App() {
     const syncedCommit = outcomes.some((outcome) => outcome.kind === 'commit');
     const syncedPush = outcomes.some((outcome) => outcome.kind === 'push');
     if (!syncedCommit && !syncedPush) return;
-    void invoke<RepoSyncPeek>('get_repo_sync_peek', { repoPath: normalizedPath })
+    void fetchRepoSyncPeek(normalizedPath)
       .then((peek) => {
         if (!peek?.signature) return;
         try {
@@ -2837,7 +2853,7 @@ function App() {
     void fetchRepoSyncPeek(normalizedPath).then((peek) => {
       if (peek?.signature) noteSyncedRepoPeek(normalizedPath, peek.signature);
     });
-    void invoke<FingerprintCheckResult>('check_project_fingerprint', { projectId: normalizedPath })
+    void fetchProjectFingerprint(normalizedPath)
       .then((check) => {
         if (check?.currentFingerprint) {
           noteSyncedRepoFingerprint(normalizedPath, check.currentFingerprint);
@@ -3048,9 +3064,7 @@ function App() {
       return false;
     }
 
-    const check = await invoke<FingerprintCheckResult>('check_project_fingerprint', {
-      projectId: path,
-    }).catch(() => null);
+    const check = await fetchProjectFingerprint(path);
     if (!check) return false;
 
     if (normalizedPath) {
@@ -3197,9 +3211,7 @@ function App() {
       return false;
     }
 
-    const check = await invoke<FingerprintCheckResult>('check_project_fingerprint', {
-      projectId: normalizedPath,
-    }).catch(() => null);
+    const check = await fetchProjectFingerprint(normalizedPath);
     const fingerprint = check?.currentFingerprint
       ?? lastSyncedRepoFingerprintRef.current[normalizedPath]
       ?? '';
@@ -3284,9 +3296,7 @@ function App() {
     const nextUpstream = quickState.upstreamSha ?? '';
     let applied = false;
     if (cachedUpstream !== nextUpstream && reconciledRef) {
-      const check = await invoke<FingerprintCheckResult>('check_project_fingerprint', {
-        projectId: normalizedPath,
-      }).catch(() => null);
+      const check = await fetchProjectFingerprint(normalizedPath);
       const fingerprint = check?.currentFingerprint
         ?? lastSyncedRepoFingerprintRef.current[normalizedPath]
         ?? '';
@@ -3741,7 +3751,7 @@ function App() {
         allowIncomingDirty: true,
         allowProjectSwitch: true,
       });
-      void invoke<FingerprintCheckResult>('check_project_fingerprint', { projectId: normalizedPath })
+      void fetchProjectFingerprint(normalizedPath)
         .then((check) => {
           noteSyncedRepoFingerprint(normalizedPath, check?.currentFingerprint);
           lastHandledGitActivityEpochRef.current = gitActivityEpochRef.current;
@@ -4164,7 +4174,7 @@ function App() {
               });
             }
           }
-          void invoke<FingerprintCheckResult>('check_project_fingerprint', { projectId: repoPath })
+          void fetchProjectFingerprint(repoPath)
             .then((check) => noteSyncedRepoFingerprint(repoPath, check?.currentFingerprint))
             .catch(() => undefined);
           noteGitActivityHandledIfCaughtUp(repoPath, peek);
@@ -4239,7 +4249,7 @@ function App() {
                 const syncedSignature = getRepoVisualSnapshotSignature(synced);
                 if (syncedSignature === liveSignature) {
                   markGitActivityHandled();
-                  void invoke<FingerprintCheckResult>('check_project_fingerprint', { projectId: repoPath })
+                  void fetchProjectFingerprint(repoPath)
                     .then((check) => noteSyncedRepoFingerprint(repoPath, check?.currentFingerprint))
                     .catch(() => undefined);
                   return;
@@ -4254,7 +4264,7 @@ function App() {
                     applyPatchedSnapshot(repoPath, synced, layoutChanged, { force: true });
                   });
                 }
-                void invoke<FingerprintCheckResult>('check_project_fingerprint', { projectId: repoPath })
+                void fetchProjectFingerprint(repoPath)
                   .then((check) => noteSyncedRepoFingerprint(repoPath, check?.currentFingerprint))
                   .catch(() => undefined);
                 markGitActivityHandled();
@@ -4308,7 +4318,7 @@ function App() {
               [normalizedPath]: Date.now(),
             };
           }
-          void invoke<FingerprintCheckResult>('check_project_fingerprint', { projectId: repoPath })
+          void fetchProjectFingerprint(repoPath)
             .then((check) => noteSyncedRepoFingerprint(repoPath, check?.currentFingerprint))
             .catch(() => undefined);
           noteGitActivityHandledIfCaughtUp(repoPath, peek);
@@ -4434,7 +4444,7 @@ function App() {
     };
 
     const runPeekLane = () => {
-      void runAuthoritativeRepoSync('remote', { fetchRemote: true });
+      void runAuthoritativeRepoSync('watch');
     };
 
     const runVisibilityCatchUp = () => {

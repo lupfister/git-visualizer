@@ -1,5 +1,6 @@
 mod git;
 mod github;
+mod repo_git_gate;
 #[cfg(target_os = "macos")]
 mod macos_traffic_lights;
 mod opencode;
@@ -723,33 +724,19 @@ fn normalize_repo_path_id(repo_path: &str) -> String {
     }
 }
 
-fn compute_repo_fingerprint(repo_path: &str) -> Result<(String, RepoRefreshFingerprint), String> {
-    let path = Path::new(repo_path);
-    let default_branch = git::get_default_branch(path).map_err(|e| e.to_string())?;
-    let branches = git::list_branches(path, &default_branch).map_err(|e| e.to_string())?;
-    let checked_out_ref = git::get_checked_out_ref(path).map_err(|e| e.to_string())?;
-    let worktrees = git::list_worktrees(path).map_err(|e| e.to_string())?;
-    let stashes = git::list_stashes(path).map_err(|e| e.to_string())?;
-    let upstream_sha = git::resolve_branch_upstream_ref(path, &default_branch)
-        .and_then(|upstream_ref| git::cli::run(path, &["rev-parse", &upstream_ref]).ok())
-        .map(|output| output.trim().to_string())
-        .filter(|value| !value.is_empty());
-    let remote_heads_digest = git::compute_remote_heads_digest(path).unwrap_or_default();
+#[derive(Clone, Debug)]
+struct RepoChangeProbe {
+    signature: String,
+    branch_head_digest: String,
+    head_sha: String,
+    has_uncommitted_changes: bool,
+    worktree_sig: String,
+    stash_sig: String,
+    remote_heads_digest: String,
+    head_unpushed_count: String,
+}
 
-    let branch_ref_sig = branches
-        .iter()
-        .map(|branch| {
-            format!(
-                "{}:{}:{}:{}:{}",
-                branch.name,
-                branch.head_sha,
-                branch.commits_ahead,
-                branch.unpushed_commits,
-                branch.remote_sync_status
-            )
-        })
-        .collect::<Vec<_>>()
-        .join("|");
+fn format_worktree_sig(worktrees: &[git::WorktreeInfo]) -> String {
     let mut worktree_lines: Vec<String> = worktrees
         .iter()
         .map(|worktree| {
@@ -767,20 +754,137 @@ fn compute_repo_fingerprint(repo_path: &str) -> Result<(String, RepoRefreshFinge
         })
         .collect();
     worktree_lines.sort();
-    let worktree_sig = worktree_lines.join("|");
-    let stash_sig = stashes
+    worktree_lines.join("|")
+}
+
+fn format_stash_sig(stashes: &[git::GitStashEntry]) -> String {
+    stashes
         .iter()
         .map(|stash| format!("{}:{}:{}", stash.index, stash.base_sha, stash.message))
         .collect::<Vec<_>>()
+        .join("|")
+}
+
+fn compose_probe_signature(probe: &RepoChangeProbe) -> String {
+    format!(
+        "{}@@{}@@{}@@{}@@{}@@{}@@{}",
+        probe.head_sha,
+        if probe.has_uncommitted_changes {
+            "1"
+        } else {
+            "0"
+        },
+        probe.branch_head_digest,
+        probe.worktree_sig,
+        probe.stash_sig,
+        probe.head_unpushed_count,
+        probe.remote_heads_digest,
+    )
+}
+
+fn compute_repo_change_probe_inner(repo_path: &str) -> Result<RepoChangeProbe, String> {
+    let path = Path::new(repo_path);
+    let head_sha = git::cli::run(path, &["rev-parse", "HEAD"])
+        .map_err(|e| e.to_string())?
+        .trim()
+        .to_string();
+    let porcelain = git::cli::run(
+        path,
+        &["status", "--porcelain=v1", "--untracked-files=normal"],
+    )
+    .map_err(|e| e.to_string())?;
+    let has_uncommitted_changes = !porcelain.trim().is_empty();
+    let heads = git::list_local_branch_heads(path).map_err(|e| e.to_string())?;
+    let branch_head_digest = git::format_branch_head_digest(&heads);
+    let worktrees = git::list_worktrees(path).map_err(|e| e.to_string())?;
+    let worktree_sig = format_worktree_sig(&worktrees);
+    let stashes = git::list_stashes(path).map_err(|e| e.to_string())?;
+    let stash_sig = format_stash_sig(&stashes);
+    let remote_heads_digest = git::compute_remote_heads_digest(path).unwrap_or_default();
+    let head_unpushed_count =
+        git::cli::run(path, &["rev-list", "--count", "HEAD@{upstream}..HEAD"])
+            .ok()
+            .map(|value| value.trim().to_string())
+            .filter(|value| !value.is_empty())
+            .unwrap_or_else(|| "0".to_string());
+    let mut probe = RepoChangeProbe {
+        signature: String::new(),
+        branch_head_digest,
+        head_sha,
+        has_uncommitted_changes,
+        worktree_sig,
+        stash_sig,
+        remote_heads_digest,
+        head_unpushed_count,
+    };
+    probe.signature = compose_probe_signature(&probe);
+    repo_git_gate::store_probe_signature(repo_path, &probe.signature);
+    Ok(probe)
+}
+
+fn probe_lite_matches_fingerprint(probe: &RepoChangeProbe, stored_fp: &str) -> bool {
+    let parts: Vec<&str> = stored_fp.split("@@").collect();
+    if parts.len() < 7 {
+        return false;
+    }
+    if probe.head_sha != parts[1] {
+        return false;
+    }
+    if probe.has_uncommitted_changes != (parts[3] == "1") {
+        return false;
+    }
+    if probe.branch_head_digest != git::branch_head_digest_from_ref_sig(parts[4]) {
+        return false;
+    }
+    if probe.worktree_sig != parts[5] {
+        return false;
+    }
+    if probe.stash_sig != parts[6] {
+        return false;
+    }
+    let upstream_part = parts[2];
+    if !probe.remote_heads_digest.is_empty() {
+        let remote_from_fp = upstream_part.split('|').nth(1).unwrap_or("");
+        if !remote_from_fp.is_empty() && probe.remote_heads_digest != remote_from_fp {
+            return false;
+        }
+    }
+    true
+}
+
+fn compose_repo_fingerprint(
+    default_branch: &str,
+    checked_out_ref: &CheckedOutRef,
+    branches: &[Branch],
+    worktrees: &[git::WorktreeInfo],
+    stashes: &[git::GitStashEntry],
+    upstream_sha: Option<String>,
+    remote_heads_digest: String,
+) -> String {
+    let branch_ref_sig = branches
+        .iter()
+        .map(|branch| {
+            format!(
+                "{}:{}:{}:{}:{}",
+                branch.name,
+                branch.head_sha,
+                branch.commits_ahead,
+                branch.unpushed_commits,
+                branch.remote_sync_status
+            )
+        })
+        .collect::<Vec<_>>()
         .join("|");
+    let worktree_sig = format_worktree_sig(worktrees);
+    let stash_sig = format_stash_sig(stashes);
     let upstream_part = if remote_heads_digest.is_empty() {
-        upstream_sha.clone().unwrap_or_default()
-    } else if let Some(upstream_sha) = upstream_sha.as_ref() {
+        upstream_sha.unwrap_or_default()
+    } else if let Some(upstream_sha) = upstream_sha {
         format!("{upstream_sha}|{remote_heads_digest}")
     } else {
-        remote_heads_digest.clone()
+        remote_heads_digest
     };
-    let fingerprint = format!(
+    format!(
         "{}@@{}@@{}@@{}@@{}@@{}@@{}",
         default_branch,
         checked_out_ref.head_sha,
@@ -793,6 +897,46 @@ fn compute_repo_fingerprint(repo_path: &str) -> Result<(String, RepoRefreshFinge
         branch_ref_sig,
         worktree_sig,
         stash_sig
+    )
+}
+
+fn fingerprint_unchanged_via_probe(
+    repo_path: &str,
+    stored_fp: &str,
+    probe: &RepoChangeProbe,
+) -> Result<bool, String> {
+    if !probe_lite_matches_fingerprint(probe, stored_fp) {
+        return Ok(false);
+    }
+    let parts: Vec<&str> = stored_fp.split("@@").collect();
+    let path = Path::new(repo_path);
+    let default_branch = git::get_default_branch(path).map_err(|e| e.to_string())?;
+    let quick_sig =
+        git::compute_quick_branch_ref_sig(path, &default_branch).map_err(|e| e.to_string())?;
+    Ok(quick_sig == parts[4])
+}
+
+fn compute_repo_fingerprint_inner(repo_path: &str) -> Result<(String, RepoRefreshFingerprint), String> {
+    let path = Path::new(repo_path);
+    let default_branch = git::get_default_branch(path).map_err(|e| e.to_string())?;
+    let branches = git::list_branches(path, &default_branch).map_err(|e| e.to_string())?;
+    let checked_out_ref = git::get_checked_out_ref(path).map_err(|e| e.to_string())?;
+    let worktrees = git::list_worktrees(path).map_err(|e| e.to_string())?;
+    let stashes = git::list_stashes(path).map_err(|e| e.to_string())?;
+    let upstream_sha = git::resolve_branch_upstream_ref(path, &default_branch)
+        .and_then(|upstream_ref| git::cli::run(path, &["rev-parse", &upstream_ref]).ok())
+        .map(|output| output.trim().to_string())
+        .filter(|value| !value.is_empty());
+    let remote_heads_digest = git::compute_remote_heads_digest(path).unwrap_or_default();
+
+    let fingerprint = compose_repo_fingerprint(
+        &default_branch,
+        &checked_out_ref,
+        &branches,
+        &worktrees,
+        &stashes,
+        upstream_sha.clone(),
+        remote_heads_digest,
     );
 
     Ok((
@@ -808,6 +952,10 @@ fn compute_repo_fingerprint(repo_path: &str) -> Result<(String, RepoRefreshFinge
             stash_count: stashes.len(),
         },
     ))
+}
+
+fn compute_repo_fingerprint(repo_path: &str) -> Result<(String, RepoRefreshFingerprint), String> {
+    repo_git_gate::with_repo_git_lock(repo_path, || compute_repo_fingerprint_inner(repo_path))
 }
 
 fn build_simple_graph_projection(
@@ -1904,26 +2052,28 @@ async fn add_project_and_ingest(
 ) -> Result<ProjectSnapshotRecord, String> {
     run_blocking(move || {
         let normalized_repo_path = normalize_repo_path_id(&repo_path);
-        DELETED_PROJECTS
-            .get_or_init(|| Mutex::new(HashSet::new()))
-            .lock()
-            .map_err(|_| "Deleted project state lock poisoned".to_string())?
-            .remove(&normalized_repo_path);
-        let project_id = normalized_repo_path.clone();
-        let force_refresh = force_refresh.unwrap_or(false);
-        let conn = open_visual_cache_connection()?;
-        let existing = load_active_project_snapshot(&conn, &project_id)?;
-        let (current_fingerprint, _) = compute_repo_fingerprint(&normalized_repo_path)?;
-        if !force_refresh {
-            if let Some(active) = existing {
-                if active.fingerprint == current_fingerprint
-                    && active.schema_version == PROJECT_SNAPSHOT_SCHEMA_VERSION
-                {
-                    return Ok(active);
+        repo_git_gate::with_repo_git_lock(&normalized_repo_path, || {
+            DELETED_PROJECTS
+                .get_or_init(|| Mutex::new(HashSet::new()))
+                .lock()
+                .map_err(|_| "Deleted project state lock poisoned".to_string())?
+                .remove(&normalized_repo_path);
+            let project_id = normalized_repo_path.clone();
+            let force_refresh = force_refresh.unwrap_or(false);
+            let conn = open_visual_cache_connection()?;
+            let existing = load_active_project_snapshot(&conn, &project_id)?;
+            let (current_fingerprint, _) = compute_repo_fingerprint_inner(&normalized_repo_path)?;
+            if !force_refresh {
+                if let Some(active) = existing {
+                    if active.fingerprint == current_fingerprint
+                        && active.schema_version == PROJECT_SNAPSHOT_SCHEMA_VERSION
+                    {
+                        return Ok(active);
+                    }
                 }
             }
-        }
-        publish_project_snapshot(&normalized_repo_path, Some(&current_fingerprint))
+            publish_project_snapshot(&normalized_repo_path, Some(&current_fingerprint))
+        })
     })
     .await
 }
@@ -1970,28 +2120,44 @@ fn check_project_fingerprint_blocking(
         .map(|(path, _)| path.clone())
         .unwrap_or_else(|| normalized_project_id.clone());
     let stored_fingerprint = row.and_then(|(_, fingerprint)| fingerprint);
-    let (current_fingerprint, _) = compute_repo_fingerprint(&repo_path)?;
-    let changed = stored_fingerprint
-        .as_ref()
-        .map(|value| value != &current_fingerprint)
-        .unwrap_or(true);
-    conn.execute(
-        "
-        INSERT INTO project_registry(project_id, repo_path, active_snapshot_version, last_fingerprint, last_checked_at_ms)
-        VALUES (?1, ?2, NULL, ?3, ?4)
-        ON CONFLICT(project_id) DO UPDATE SET
-            repo_path = excluded.repo_path,
-            last_checked_at_ms = excluded.last_checked_at_ms
-        ",
-        params![normalized_project_id, repo_path, stored_fingerprint, Utc::now().timestamp_millis()],
-    )
-    .map_err(|e| format!("Failed to update project registry timestamp: {e}"))?;
-    Ok(FingerprintCheckResult {
-        project_id: normalize_repo_path_id(&project_id),
-        repo_path,
-        changed,
-        current_fingerprint,
-        stored_fingerprint,
+
+    repo_git_gate::with_repo_git_lock(&repo_path, || {
+        let probe = compute_repo_change_probe_inner(&repo_path)?;
+        let (current_fingerprint, changed) = if let Some(ref stored) = stored_fingerprint {
+            if fingerprint_unchanged_via_probe(&repo_path, stored, &probe)? {
+                (stored.clone(), false)
+            } else {
+                let (current, _) = compute_repo_fingerprint_inner(&repo_path)?;
+                (current.clone(), current != *stored)
+            }
+        } else {
+            let (current, _) = compute_repo_fingerprint_inner(&repo_path)?;
+            (current, true)
+        };
+
+        conn.execute(
+            "
+            INSERT INTO project_registry(project_id, repo_path, active_snapshot_version, last_fingerprint, last_checked_at_ms)
+            VALUES (?1, ?2, NULL, ?3, ?4)
+            ON CONFLICT(project_id) DO UPDATE SET
+                repo_path = excluded.repo_path,
+                last_checked_at_ms = excluded.last_checked_at_ms
+            ",
+            params![
+                normalized_project_id,
+                repo_path,
+                stored_fingerprint,
+                Utc::now().timestamp_millis()
+            ],
+        )
+        .map_err(|e| format!("Failed to update project registry timestamp: {e}"))?;
+        Ok(FingerprintCheckResult {
+            project_id: normalize_repo_path_id(&project_id),
+            repo_path: repo_path.clone(),
+            changed,
+            current_fingerprint,
+            stored_fingerprint,
+        })
     })
 }
 
@@ -2137,97 +2303,56 @@ struct RepoSyncPeek {
     signature: String,
 }
 
-fn compute_repo_sync_peek(repo_path: &str) -> Result<RepoSyncPeek, String> {
-    let path = Path::new(repo_path);
-    let head_sha = git::cli::run(path, &["rev-parse", "HEAD"])
-        .map_err(|e| e.to_string())?
-        .trim()
-        .to_string();
-    let porcelain = git::cli::run(
-        path,
-        &["status", "--porcelain=v1", "--untracked-files=normal"],
-    )
-    .map_err(|e| e.to_string())?;
-    let has_uncommitted_changes = !porcelain.trim().is_empty();
-
-    let default_branch = git::get_default_branch(path).map_err(|e| e.to_string())?;
-    let branches = git::list_branches(path, &default_branch).map_err(|e| e.to_string())?;
-    let mut branch_ref_lines: Vec<String> = branches
-        .iter()
-        .map(|branch| {
-            let mut unpushed_shas =
-                branch_unpushed_shas_for_delta(path, &branch.name).unwrap_or_default();
-            unpushed_shas.sort();
-            format!(
-                "{}:{}:{}:{}:{}:{}:{}",
-                branch.name,
-                branch.head_sha,
-                branch.commits_ahead,
-                branch.commits_behind,
-                branch.unpushed_commits,
-                branch.remote_sync_status,
-                unpushed_shas.join(",")
-            )
-        })
-        .collect();
-    branch_ref_lines.sort();
-    let branch_ref_digest = branch_ref_lines.join("|");
-
-    let worktrees = git::list_worktrees(path).map_err(|e| e.to_string())?;
-    let mut worktree_lines: Vec<String> = worktrees
-        .iter()
-        .map(|worktree| {
-            format!(
-                "{}:{}:{}:{}",
-                worktree.path,
-                worktree.head_sha,
-                worktree.branch_name.clone().unwrap_or_default(),
-                if worktree.has_uncommitted_changes {
-                    "1"
-                } else {
-                    "0"
-                }
-            )
-        })
-        .collect();
-    worktree_lines.sort();
-    let worktree_sig = worktree_lines.join("|");
-
-    let stashes = git::list_stashes(path).map_err(|e| e.to_string())?;
-    let stash_sig = stashes
-        .iter()
-        .map(|stash| format!("{}:{}:{}", stash.index, stash.base_sha, stash.message))
-        .collect::<Vec<_>>()
-        .join("|");
-
-    let head_unpushed_count =
-        git::cli::run(path, &["rev-list", "--count", "HEAD@{upstream}..HEAD"])
-            .ok()
-            .map(|value| value.trim().to_string())
-            .filter(|value| !value.is_empty())
-            .unwrap_or_else(|| "0".to_string());
-    let remote_heads_digest = git::compute_remote_heads_digest(path).unwrap_or_default();
-
-    let signature = format!(
-        "{}@@{}@@{}@@{}@@{}@@{}@@{}",
-        head_sha,
-        if has_uncommitted_changes { "1" } else { "0" },
-        branch_ref_digest,
-        worktree_sig,
-        stash_sig,
-        head_unpushed_count,
-        remote_heads_digest,
-    );
-
+fn compute_repo_sync_peek_inner(
+    repo_path: &str,
+    unchanged_against: Option<&str>,
+) -> Result<RepoSyncPeek, String> {
+    if let Some(stored) = unchanged_against {
+        if let Some(cached) = repo_git_gate::cached_probe_signature(repo_path) {
+            if cached == stored {
+                return Ok(RepoSyncPeek {
+                    repo_path: repo_path.to_string(),
+                    signature: cached,
+                });
+            }
+        }
+    }
+    let probe = compute_repo_change_probe_inner(repo_path)?;
+    if let Some(stored) = unchanged_against {
+        if probe.signature == stored {
+            return Ok(RepoSyncPeek {
+                repo_path: repo_path.to_string(),
+                signature: probe.signature,
+            });
+        }
+    }
     Ok(RepoSyncPeek {
         repo_path: repo_path.to_string(),
-        signature,
+        signature: probe.signature,
+    })
+}
+
+fn compute_repo_sync_peek(
+    repo_path: &str,
+    unchanged_against: Option<&str>,
+) -> Result<RepoSyncPeek, String> {
+    repo_git_gate::with_repo_git_lock(repo_path, || {
+        compute_repo_sync_peek_inner(repo_path, unchanged_against)
     })
 }
 
 #[tauri::command(rename_all = "camelCase")]
-async fn get_repo_sync_peek(repo_path: String) -> Result<RepoSyncPeek, String> {
-    run_blocking(move || compute_repo_sync_peek(&repo_path)).await
+async fn get_repo_sync_peek(
+    repo_path: String,
+    unchanged_against: Option<String>,
+) -> Result<RepoSyncPeek, String> {
+    run_blocking(move || {
+        compute_repo_sync_peek(
+            &repo_path,
+            unchanged_against.as_deref(),
+        )
+    })
+    .await
 }
 
 #[tauri::command(rename_all = "camelCase")]
@@ -2354,19 +2479,31 @@ fn get_repo_graph_delta_blocking(
     repo_path: String,
     stored_branch_ref_sig: Option<String>,
 ) -> Result<RepoGraphDelta, String> {
-    let path = Path::new(&repo_path);
-    let (fingerprint, _) = compute_repo_fingerprint(&repo_path)?;
+    repo_git_gate::with_repo_git_lock(&repo_path, || {
+        get_repo_graph_delta_inner(&repo_path, stored_branch_ref_sig)
+    })
+}
+
+fn get_repo_graph_delta_inner(
+    repo_path: &str,
+    stored_branch_ref_sig: Option<String>,
+) -> Result<RepoGraphDelta, String> {
+    let path = Path::new(repo_path);
     let default_branch = git::get_default_branch(path).map_err(|e| e.to_string())?;
-    let branches = git::list_branches(path, &default_branch).map_err(|e| e.to_string())?;
     let checked_out_ref = git::get_checked_out_ref(path).map_err(|e| e.to_string())?;
+    let current_heads = git::list_local_branch_heads(path).map_err(|e| e.to_string())?;
 
     let stored_map = stored_branch_ref_sig
         .as_deref()
         .map(parse_branch_ref_sig_map)
         .unwrap_or_default();
 
-    let current_names: HashSet<String> =
-        branches.iter().map(|branch| branch.name.clone()).collect();
+    let current_names: HashSet<String> = current_heads
+        .iter()
+        .filter(|(name, _)| name != &default_branch)
+        .map(|(name, _)| name.clone())
+        .collect();
+
     let mut removed_branches = Vec::new();
     for name in stored_map.keys() {
         if !current_names.contains(name) {
@@ -2377,15 +2514,19 @@ fn get_repo_graph_delta_blocking(
     let mut changed_branches = Vec::new();
     let mut unpushed_commit_shas_by_branch = HashMap::new();
     let mut requires_full_refresh = false;
+    let mut branches = Vec::new();
 
-    for branch in &branches {
-        let current_entry = format!("{}:{}", branch.name, branch_ref_entry_sig(branch));
-        let stored_entry = stored_map.get(&branch.name);
-        if stored_entry.map(String::as_str) == Some(current_entry.as_str()) {
+    for (name, head_sha) in current_heads {
+        if name == default_branch {
             continue;
         }
 
-        let old_head_sha = stored_entry.and_then(|entry| {
+        let stored_entry = stored_map.get(&name);
+        if stored_entry.is_none() {
+            requires_full_refresh = true;
+        }
+
+        let stored_head = stored_entry.and_then(|entry| {
             entry
                 .split(':')
                 .nth(1)
@@ -2393,6 +2534,37 @@ fn get_repo_graph_delta_blocking(
                 .filter(|value| !value.is_empty())
         });
 
+        let branch = if stored_entry.is_some() && stored_head.as_deref() == Some(head_sha.as_str())
+        {
+            if let Some(entry) = stored_entry {
+                if let Some(partial) = git::branch_from_ref_sig_entry(&name, entry) {
+                    let current_entry = format!("{}:{}", partial.name, branch_ref_entry_sig(&partial));
+                    if stored_entry.map(String::as_str) == Some(current_entry.as_str()) {
+                        partial
+                    } else {
+                        git::get_branch_info_for_name(path, &name, &default_branch)
+                            .map_err(|e| e.to_string())?
+                    }
+                } else {
+                    git::get_branch_info_for_name(path, &name, &default_branch)
+                        .map_err(|e| e.to_string())?
+                }
+            } else {
+                git::get_branch_info_for_name(path, &name, &default_branch)
+                    .map_err(|e| e.to_string())?
+            }
+        } else {
+            git::get_branch_info_for_name(path, &name, &default_branch)
+                .map_err(|e| e.to_string())?
+        };
+
+        let current_entry = format!("{}:{}", branch.name, branch_ref_entry_sig(&branch));
+        if stored_entry.map(String::as_str) == Some(current_entry.as_str()) {
+            branches.push(branch);
+            continue;
+        }
+
+        let old_head_sha = stored_head;
         let new_commits = if old_head_sha.as_deref() != Some(branch.head_sha.as_str()) {
             match git::get_branch_commits_since(path, &branch.name, old_head_sha.as_deref(), 20) {
                 Ok(commits) => commits,
@@ -2423,7 +2595,25 @@ fn get_repo_graph_delta_blocking(
             new_head_sha: branch.head_sha.clone(),
             new_commits,
         });
+        branches.push(branch);
     }
+
+    let worktrees = git::list_worktrees(path).map_err(|e| e.to_string())?;
+    let stashes = git::list_stashes(path).map_err(|e| e.to_string())?;
+    let upstream_sha = git::resolve_branch_upstream_ref(path, &default_branch)
+        .and_then(|upstream_ref| git::cli::run(path, &["rev-parse", &upstream_ref]).ok())
+        .map(|output| output.trim().to_string())
+        .filter(|value| !value.is_empty());
+    let remote_heads_digest = git::compute_remote_heads_digest(path).unwrap_or_default();
+    let fingerprint = compose_repo_fingerprint(
+        &default_branch,
+        &checked_out_ref,
+        &branches,
+        &worktrees,
+        &stashes,
+        upstream_sha,
+        remote_heads_digest,
+    );
 
     Ok(RepoGraphDelta {
         fingerprint,

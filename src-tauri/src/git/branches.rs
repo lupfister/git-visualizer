@@ -1,5 +1,4 @@
 use super::cli::{self, GitError};
-use rayon::prelude::*;
 use serde::{Deserialize, Serialize};
 use std::collections::{HashMap, HashSet};
 use std::path::Path;
@@ -125,7 +124,7 @@ pub fn list_branches(repo: &Path, default_branch: &str) -> Result<Vec<Branch>, G
         .unwrap_or_default();
 
     let mut branches: Vec<Branch> = branch_names
-        .par_iter()
+        .iter()
         .filter_map(|name| match get_branch_info(repo, name, default_branch) {
             Ok(branch) => Some(branch),
             Err(_) => build_branch_fallback(repo, name, default_branch),
@@ -297,6 +296,154 @@ fn get_branch_info(repo: &Path, name: &str, default_branch: &str) -> Result<Bran
     })
 }
 
+/// Fetch metadata for a single branch (used by incremental graph delta).
+pub fn get_branch_info_for_name(
+    repo: &Path,
+    name: &str,
+    default_branch: &str,
+) -> Result<Branch, GitError> {
+    get_branch_info(repo, name, default_branch)
+        .or_else(|_| build_branch_fallback(repo, name, default_branch).ok_or(GitError::CommandFailed(
+            format!("Failed to resolve branch metadata for {name}"),
+        )))
+}
+
+/// Lightweight local branch listing: one `for-each-ref` call, name + head SHA only.
+pub fn list_local_branch_heads(repo: &Path) -> Result<Vec<(String, String)>, GitError> {
+    let output = cli::run(
+        repo,
+        &[
+            "for-each-ref",
+            "refs/heads",
+            "--format=%(refname:short)|%(objectname)",
+        ],
+    )?;
+    Ok(parse_branch_head_lines(&output))
+}
+
+pub fn format_branch_head_digest(heads: &[(String, String)]) -> String {
+    let mut lines: Vec<String> = heads
+        .iter()
+        .map(|(name, sha)| format!("{name}:{sha}"))
+        .collect();
+    lines.sort();
+    lines.join("|")
+}
+
+pub fn branch_head_digest_from_ref_sig(branch_ref_sig: &str) -> String {
+    let mut lines: Vec<String> = branch_ref_sig
+        .split('|')
+        .filter(|entry| !entry.is_empty())
+        .filter_map(|entry| {
+            let mut parts = entry.split(':');
+            let name = parts.next()?.trim();
+            let head_sha = parts.next()?.trim();
+            if name.is_empty() || head_sha.is_empty() {
+                return None;
+            }
+            Some(format!("{name}:{head_sha}"))
+        })
+        .collect();
+    lines.sort();
+    lines.join("|")
+}
+
+/// Reconstruct a partial branch record from a stored fingerprint ref entry.
+pub fn branch_from_ref_sig_entry(name: &str, entry: &str) -> Option<Branch> {
+    let mut parts = entry.split(':');
+    let entry_name = parts.next()?.trim();
+    if entry_name != name {
+        return None;
+    }
+    let head_sha = parts.next()?.trim().to_string();
+    if head_sha.is_empty() {
+        return None;
+    }
+    let commits_ahead = parts
+        .next()
+        .and_then(|value| value.parse::<i32>().ok())
+        .unwrap_or(0);
+    let unpushed_commits = parts
+        .next()
+        .and_then(|value| value.parse::<i32>().ok())
+        .unwrap_or(0);
+    let remote_sync_status = parts.next().unwrap_or("unknown").to_string();
+    Some(Branch {
+        name: name.to_string(),
+        commits_ahead,
+        commits_behind: 0,
+        created_from_sha: None,
+        created_date: None,
+        last_commit_date: String::new(),
+        last_commit_author: String::new(),
+        status: "fresh".to_string(),
+        remote_sync_status,
+        unpushed_commits,
+        head_sha,
+        parent_branch: None,
+        diverged_from_sha: None,
+        diverged_from_date: None,
+    })
+}
+
+fn parse_branch_head_lines(output: &str) -> Vec<(String, String)> {
+    output
+        .lines()
+        .filter_map(|line| {
+            let (name, sha) = line.split_once('|')?;
+            let name = name.trim().to_string();
+            let sha = sha.trim().to_string();
+            if name.is_empty() || sha.is_empty() {
+                return None;
+            }
+            Some((name, sha))
+        })
+        .collect()
+}
+
+#[cfg(test)]
+mod branch_head_tests {
+    use super::{
+        branch_from_ref_sig_entry, branch_head_digest_from_ref_sig, format_branch_head_digest,
+        parse_branch_head_lines,
+    };
+
+    #[test]
+    fn parses_for_each_ref_lines() {
+        let output = "main|abc123\nfeature/x|def456\n";
+        let heads = parse_branch_head_lines(output);
+        assert_eq!(heads.len(), 2);
+        assert_eq!(heads[0], ("main".to_string(), "abc123".to_string()));
+    }
+
+    #[test]
+    fn head_digest_from_full_ref_sig_strips_metadata() {
+        let full = "main:abc:2:1:unpushed|feature:def:0:0:on-github";
+        assert_eq!(
+            branch_head_digest_from_ref_sig(full),
+            "feature:def|main:abc"
+        );
+    }
+
+    #[test]
+    fn branch_from_ref_sig_entry_roundtrip() {
+        let entry = "main:abc123:2:1:unpushed";
+        let branch = branch_from_ref_sig_entry("main", entry).expect("branch");
+        assert_eq!(branch.head_sha, "abc123");
+        assert_eq!(branch.commits_ahead, 2);
+        assert_eq!(branch.unpushed_commits, 1);
+    }
+
+    #[test]
+    fn format_branch_head_digest_sorts() {
+        let digest = format_branch_head_digest(&[
+            ("feature".to_string(), "bbb".to_string()),
+            ("main".to_string(), "aaa".to_string()),
+        ]);
+        assert_eq!(digest, "feature:bbb|main:aaa");
+    }
+}
+
 #[derive(Clone)]
 struct ParentCandidate {
     name: String,
@@ -355,7 +502,7 @@ fn infer_branch_parents(
         .map(|c| c.head_sha.clone());
 
     let creation_info_list: Vec<(String, BranchCreationInfo)> = branches
-        .par_iter()
+        .iter()
         .filter_map(|branch| {
             let info = get_branch_reflog_created_entry(repo, &branch.name)
                 .ok()
@@ -367,7 +514,7 @@ fn infer_branch_parents(
     let creation_info_by_name: HashMap<String, BranchCreationInfo> =
         HashMap::from_iter(creation_info_list);
 
-    branches.par_iter_mut().for_each(|branch| {
+    for branch in branches.iter_mut() {
         let created_from_reflog = creation_info_by_name.get(&branch.name).cloned();
         let created_from_reflog_sha = created_from_reflog.as_ref().map(|info| info.sha.clone());
         let created_from_reflog_date = created_from_reflog.as_ref().map(|info| info.date.clone());
@@ -474,7 +621,7 @@ fn infer_branch_parents(
             .or(created_from_unique_commit)
             .or_else(|| branch.diverged_from_date.clone())
             .or_else(|| Some(branch.last_commit_date.clone()));
-    });
+    }
 
     // Final sanitization: break any parent cycles by anchoring cycle participants to default.
     if let Some(default_parent) = default_parent_name {
@@ -1030,6 +1177,28 @@ pub fn try_fast_forward_pull(repo: &Path) -> Result<bool, GitError> {
         Err(GitError::CommandFailed(_)) => Ok(false),
         Err(error) => Err(error),
     }
+}
+
+/// Branch ref signature without parent inference — sequential, safe under concurrency.
+pub fn compute_quick_branch_ref_sig(
+    repo: &Path,
+    default_branch: &str,
+) -> Result<String, GitError> {
+    let heads = list_local_branch_heads(repo)?;
+    let mut lines = Vec::with_capacity(heads.len());
+    for (name, head_sha) in heads {
+        if name == default_branch {
+            continue;
+        }
+        let (commits_ahead, _) = get_ahead_behind(repo, &name, default_branch).unwrap_or((0, 0));
+        let (remote_sync_status, unpushed_commits) =
+            get_remote_sync_status(repo, &name, commits_ahead);
+        lines.push(format!(
+            "{name}:{head_sha}:{commits_ahead}:{unpushed_commits}:{remote_sync_status}"
+        ));
+    }
+    lines.sort();
+    Ok(lines.join("|"))
 }
 
 pub fn list_origin_branch_heads(repo: &Path) -> Result<Vec<(String, String)>, GitError> {

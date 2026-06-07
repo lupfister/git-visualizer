@@ -3,7 +3,7 @@
  *
  * Design (aligned with MDN visibility guidance + event-driven git watching):
  * - Primary path: `.git` + working-tree file watcher (debounced) → immediate handling in App.
- * - Visible tab: fast dirty lane, medium peek lane, slower full reconcile lane (staggered).
+ * - Visible tab: fast dirty lane (quick state), medium peek lane (lite probe), slower full reconcile (may fetch remote).
  * - Hidden tab: keep the same cadence; desktop windows should stay current while unfocused.
  * - Tab becomes visible: reschedule timers and run catch-up immediately.
  */

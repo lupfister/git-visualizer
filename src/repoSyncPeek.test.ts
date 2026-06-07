@@ -1,7 +1,9 @@
 import { describe, expect, it } from 'vitest';
 import type { RepoVisualSnapshot } from '../types';
 import {
+  branchHeadDigestFromSnapshot,
   branchRefDigestFromSnapshot,
+  isLiteBranchHeadDigest,
   isRepoSnapshotBehindPeek,
 } from './repoSyncPeek';
 import { formatWorktreeSyncSignature } from './worktreeSignature';
@@ -90,7 +92,7 @@ function peekFor(snapshotValue: RepoVisualSnapshot, overrides: Partial<ReturnTyp
   const parts = {
     headSha: snapshotValue.checkedOutRef?.headSha ?? '',
     dirty: snapshotValue.checkedOutRef?.hasUncommittedChanges ? '1' : '0',
-    branchRefDigest: branchRefDigestFromSnapshot(snapshotValue),
+    branchRefDigest: branchHeadDigestFromSnapshot(snapshotValue),
     worktreeSig: formatWorktreeSyncSignature(snapshotValue.worktrees),
     stashSig: '',
     headUnpushedCount: String(snapshotValue.unpushedDirectCommits.length),
@@ -156,5 +158,26 @@ describe('isRepoSnapshotBehindPeek', () => {
   it('does not report behind when snapshot matches peek', () => {
     const current = snapshot();
     expect(isRepoSnapshotBehindPeek(current, peekFor(current))).toBe(false);
+  });
+
+  it('detects lite branch head digest format', () => {
+    expect(isLiteBranchHeadDigest('main:abc|feature:def')).toBe(true);
+    expect(isLiteBranchHeadDigest('main:abc:1:0:0:on-github:')).toBe(false);
+  });
+
+  it('compares legacy full branch digest when peek uses old format', () => {
+    const current = snapshot();
+    const legacyPeek = {
+      signature: [
+        current.checkedOutRef?.headSha ?? '',
+        '1',
+        branchRefDigestFromSnapshot(current),
+        formatWorktreeSyncSignature(current.worktrees),
+        '',
+        String(current.unpushedDirectCommits.length),
+        'remote-a',
+      ].join('@@'),
+    };
+    expect(isRepoSnapshotBehindPeek(current, legacyPeek)).toBe(false);
   });
 });

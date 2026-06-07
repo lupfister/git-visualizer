@@ -27,6 +27,24 @@ export function parseRepoSyncPeekSignature(signature: string) {
   };
 }
 
+export function branchHeadDigestFromSnapshot(snapshot: RepoVisualSnapshot): string {
+  const lines = snapshot.branches.map((branch) => `${branch.name}:${branch.headSha}`);
+  const defaultHead = snapshot.checkedOutRef?.headSha ?? '';
+  if (
+    defaultHead
+    && !lines.some((line) => line.startsWith(`${snapshot.defaultBranch}:`))
+  ) {
+    lines.push(`${snapshot.defaultBranch}:${defaultHead}`);
+  }
+  return lines.sort().join('|');
+}
+
+export function isLiteBranchHeadDigest(digest: string): boolean {
+  if (!digest) return true;
+  const first = digest.split('|').find(Boolean) ?? '';
+  return first.split(':').length <= 2;
+}
+
 export function branchRefDigestFromSnapshot(snapshot: RepoVisualSnapshot): string {
   const lines = snapshot.branches.map((branch) => {
     const unpushedShas = [...(snapshot.unpushedCommitShasByBranch[branch.name] ?? [])].sort();
@@ -56,7 +74,9 @@ export function isRepoSnapshotBehindPeek(
   const ref = snapshot.checkedOutRef;
   if (parsed.headSha && parsed.headSha !== (ref?.headSha ?? '')) return true;
   if (parsed.hasUncommittedChanges !== (ref?.hasUncommittedChanges ?? false)) return true;
-  const branchDigest = branchRefDigestFromSnapshot(snapshot);
+  const branchDigest = isLiteBranchHeadDigest(parsed.branchRefDigest)
+    ? branchHeadDigestFromSnapshot(snapshot)
+    : branchRefDigestFromSnapshot(snapshot);
   if (parsed.branchRefDigest && branchDigest && parsed.branchRefDigest !== branchDigest) {
     return true;
   }
