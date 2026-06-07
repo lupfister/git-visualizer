@@ -100,12 +100,6 @@ type GitActivityEventPayload = {
   repoPath: string;
   kind: 'graph' | 'local';
 };
-type RepoChangeSignal = {
-  repoPath: string;
-  generation: number;
-  localChanged: boolean;
-  graphChanged: boolean;
-};
 const COMMIT_SWITCH_FEEDBACK_VISIBLE_MS = 1400;
 const COMMIT_SWITCH_FEEDBACK_FADE_MS = 180;
 const SIDEBAR_WIDTH_STORAGE_KEY = 'git-visualizer:sidebar-width';
@@ -425,10 +419,11 @@ function App() {
   const projectFingerprintRef = useRef<Record<string, string>>({});
   /** Raw `check_project_fingerprint` string last applied to UI (avoids re-sync loops while DB lags). */
   const lastSyncedRepoFingerprintRef = useRef<Record<string, string>>({});
+  /** Fingerprint of the snapshot actually applied to the rendered map. */
+  const appliedMapFingerprintRef = useRef<Record<string, string>>({});
   const lastFingerprintCheckAtRef = useRef<Record<string, number>>({});
   const gitActivityEpochRef = useRef(0);
   const lastHandledGitActivityEpochRef = useRef(0);
-  const repoChangeGenerationRef = useRef<Record<string, number>>({});
   const lastFullGraphRefreshAtRef = useRef<Record<string, number>>({});
   const wasMapInteractingRef = useRef(false);
   const projectHeadStateRef = useRef<Record<string, string>>({});
@@ -928,6 +923,10 @@ function App() {
     if (record.fingerprint) {
       lastSyncedRepoFingerprintRef.current = {
         ...lastSyncedRepoFingerprintRef.current,
+        [normalizedPath]: record.fingerprint,
+      };
+      appliedMapFingerprintRef.current = {
+        ...appliedMapFingerprintRef.current,
         [normalizedPath]: record.fingerprint,
       };
       lastFingerprintCheckAtRef.current = {
@@ -3493,7 +3492,10 @@ function App() {
       return false;
     }
     const signature = getRepoVisualSnapshotSignature(snapshot);
-    if (activeSnapshotSignatureRef.current === signature) {
+    if (
+      activeSnapshotSignatureRef.current === signature
+      && options?.force !== true
+    ) {
       return false;
     }
     if (shouldBlockIncomingSnapshotApply(path, snapshot)) {
@@ -4445,15 +4447,6 @@ function App() {
       if (!normalizedPath) return;
       changeSignalInFlight = true;
       try {
-        const signal = await invoke<RepoChangeSignal>('get_repo_change_signal', {
-          repoPath: normalizedPath,
-          afterGeneration: repoChangeGenerationRef.current[normalizedPath],
-        });
-        if (isStaleRepoRefresh()) return;
-        repoChangeGenerationRef.current = {
-          ...repoChangeGenerationRef.current,
-          [normalizedPath]: signal.generation,
-        };
         if (liveFingerprintCheckInFlightRef.current) return;
         liveFingerprintCheckInFlightRef.current = true;
         try {
@@ -4461,7 +4454,7 @@ function App() {
             repoPath: normalizedPath,
           });
           if (isStaleRepoRefresh()) return;
-          const mapFingerprint = lastSyncedRepoFingerprintRef.current[normalizedPath];
+          const mapFingerprint = appliedMapFingerprintRef.current[normalizedPath];
           if (mapFingerprint && liveFingerprint === mapFingerprint) return;
           pendingLiveFingerprintRef.current = {
             ...pendingLiveFingerprintRef.current,
@@ -4482,12 +4475,17 @@ function App() {
             forceRefresh: true,
           }).catch(() => null);
           if (!freshSnapshot || isStaleRepoRefresh()) return;
+          invalidateRepoLayoutCacheForPath(normalizedPath);
           const applied = applySnapshotToActiveState(normalizedPath, freshSnapshot, {
             force: true,
             allowIncomingDirty: true,
             needsLayoutRebuild: true,
           });
           if (applied) {
+            appliedMapFingerprintRef.current = {
+              ...appliedMapFingerprintRef.current,
+              [normalizedPath]: liveFingerprint,
+            };
             noteSyncedRepoFingerprint(normalizedPath, liveFingerprint);
             delete pendingLiveFingerprintRef.current[normalizedPath];
             markGitActivityHandled();
