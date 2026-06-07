@@ -2411,6 +2411,16 @@ async fn get_repo_sync_peek(
 }
 
 #[tauri::command(rename_all = "camelCase")]
+async fn get_repo_live_fingerprint(repo_path: String) -> Result<String, String> {
+    run_blocking(move || {
+        repo_git_gate::with_repo_git_lock(&repo_path, || {
+            compute_repo_fingerprint_inner(&repo_path).map(|(fingerprint, _)| fingerprint)
+        })
+    })
+    .await
+}
+
+#[tauri::command(rename_all = "camelCase")]
 async fn get_repo_head_state(repo_path: String) -> Result<RepoHeadState, String> {
     run_blocking(move || {
         let path = Path::new(&repo_path);
@@ -7698,6 +7708,7 @@ pub fn run() {
             get_repo_dirty_state,
             get_repo_head_state,
             get_repo_sync_peek,
+            get_repo_live_fingerprint,
             get_repo_change_signal,
             get_repo_graph_delta,
             get_repo_refresh_fingerprint,

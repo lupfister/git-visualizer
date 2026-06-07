@@ -437,6 +437,7 @@ function App() {
   const projectSyncPeekRef = useRef<Record<string, string>>({});
   const repoSyncPeekDeduperRef = useRef(createInFlightDeduper<RepoSyncPeek | null>());
   const fingerprintCheckDeduperRef = useRef(createInFlightDeduper<FingerprintCheckResult | null>());
+  const liveFingerprintCheckInFlightRef = useRef(false);
   const isRepoSwitchingRef = useRef(false);
   const currentRepoPathRef = useRef<string | null>(null);
   const sidebarDragRef = useRef<{
@@ -4457,12 +4458,22 @@ function App() {
           ...repoChangeGenerationRef.current,
           [normalizedPath]: signal.generation,
         };
-        if (!signal.localChanged && !signal.graphChanged) return;
-        gitActivityEpochRef.current += 1;
-        if (signal.graphChanged) {
-          void runRefresh('graph');
-        } else {
-          void runRefresh('quick');
+        if (liveFingerprintCheckInFlightRef.current) return;
+        liveFingerprintCheckInFlightRef.current = true;
+        try {
+          const liveFingerprint = await invoke<string>('get_repo_live_fingerprint', {
+            repoPath: normalizedPath,
+          });
+          if (isStaleRepoRefresh()) return;
+          const mapFingerprint = lastSyncedRepoFingerprintRef.current[normalizedPath];
+          if (mapFingerprint && liveFingerprint === mapFingerprint) return;
+          gitActivityEpochRef.current += 1;
+          const applied = await reloadRepoSnapshotFromGit(normalizedPath);
+          if (!applied) {
+            pendingRefreshAfterInteractionRef.current = true;
+          }
+        } finally {
+          liveFingerprintCheckInFlightRef.current = false;
         }
       } catch (error) {
         console.warn('Repo change signal poll failed:', error);
