@@ -5,6 +5,7 @@ import { FitAddon } from '@xterm/addon-fit';
 import '@xterm/xterm/css/xterm.css';
 import type { TerminalSession } from '../types';
 import { readTerminalSession, resizeTerminalSession, saveTerminalAttachment, writeTerminalSession } from '../lib/terminal';
+import { cn } from './grid/mapGridUtils';
 
 type Props = {
   session: TerminalSession | null;
@@ -27,6 +28,19 @@ export default function TerminalPanel({ session, onClose, onTerminate, onSession
   const terminalRef = useRef<Terminal | null>(null);
   const renderedOutputRef = useRef('');
   const [width, setWidth] = useState(560);
+  const [entered, setEntered] = useState(false);
+
+  useEffect(() => {
+    if (!session) {
+      setEntered(false);
+      return;
+    }
+    const frame = requestAnimationFrame(() => setEntered(true));
+    return () => {
+      cancelAnimationFrame(frame);
+      setEntered(false);
+    };
+  }, [session?.id]);
 
   useEffect(() => {
     const host = hostRef.current;
@@ -105,7 +119,13 @@ export default function TerminalPanel({ session, onClose, onTerminate, onSession
   if (!session) return null;
 
   return (
-    <aside className="relative flex h-full min-h-0 shrink-0 flex-col border-l border-border bg-background" style={{ width }}>
+    <aside
+      className={cn(
+        'relative flex h-full min-h-0 shrink-0 flex-col border-l border-border bg-background transition-[opacity,transform] duration-200 ease-out',
+        entered ? 'opacity-100 translate-x-0' : 'opacity-0 translate-x-2',
+      )}
+      style={{ width }}
+    >
       <div
         aria-hidden="true"
         className="absolute bottom-0 left-[-5px] top-0 z-20 w-2 cursor-col-resize"

@@ -133,6 +133,16 @@ export default function DenseBranchSidebar({
     persistSet(storageKey, next);
   };
 
+  const expandWorktree = (key: string) => {
+    setExpandedWorktrees((current) => {
+      if (current.has(key)) return current;
+      const next = new Set(current);
+      next.add(key);
+      persistSet(EXPANDED_WORKTREES_KEY, next);
+      return next;
+    });
+  };
+
   return (
     <aside
       aria-label="Worktree sidebar"
@@ -242,11 +252,10 @@ export default function DenseBranchSidebar({
                         <div key={worktree.path}>
                           <div
                             className={cn(
-                              'group/row flex h-7 flex-1 min-w-0 items-center rounded-lg transition-all duration-200 pl-2 pr-0 cursor-pointer',
+                              'group/row flex h-7 flex-1 min-w-0 items-center rounded-lg pl-2 pr-0 cursor-pointer transition-colors',
                               accent ? 'hover:bg-[var(--worktree-muted)]' : 'hover:bg-muted',
                               !accentColor && 'text-muted-foreground hover:text-foreground',
-                              !isActive && 'opacity-80 transition-opacity duration-200 hover:opacity-100',
-                              sessions.length === 0 && 'ml-4',
+                              !isActive && 'opacity-80 hover:opacity-100',
                             )}
                             style={accent ? ({
                               color: accent.fg,
@@ -255,32 +264,33 @@ export default function DenseBranchSidebar({
                             } as React.CSSProperties) : undefined}
                             onClick={() => void onSelectWorktree(project.path, workingTreeId)}
                           >
-                            {sessions.length > 0 ? (
-                              <button
-                                type="button"
-                                onClick={(event) => {
-                                  event.stopPropagation();
-                                  toggle(key, expandedWorktrees, setExpandedWorktrees, EXPANDED_WORKTREES_KEY);
-                                }}
-                                className="inline-flex h-7 w-3 shrink-0 items-center justify-center rounded-lg transition-colors mr-1"
-                                aria-label={`${expanded ? 'Collapse' : 'Expand'} ${label}`}
-                              >
-                                <ChevronRight className={cn('h-3.5 w-3.5 shrink-0 transition-transform', expanded && 'rotate-90')} />
-                              </button>
-                            ) : null}
+                            <button
+                              type="button"
+                              disabled={sessions.length === 0}
+                              onClick={(event) => {
+                                event.stopPropagation();
+                                toggle(key, expandedWorktrees, setExpandedWorktrees, EXPANDED_WORKTREES_KEY);
+                              }}
+                              className={cn(
+                                'inline-flex h-7 w-4 shrink-0 items-center justify-center rounded-lg transition-colors',
+                                sessions.length === 0 && 'pointer-events-none invisible',
+                              )}
+                              aria-label={`${expanded ? 'Collapse' : 'Expand'} ${label}`}
+                              aria-hidden={sessions.length === 0}
+                              tabIndex={sessions.length === 0 ? -1 : 0}
+                            >
+                              <ChevronRight className={cn('h-3.5 w-3.5 shrink-0 transition-transform duration-200', expanded && 'rotate-90')} />
+                            </button>
                             <span className="min-w-0 flex-1 truncate text-sm">{label} · {refLabel}</span>
                             <button
                               type="button"
                               disabled={!worktree.pathExists}
                               onClick={(event) => {
                                 event.stopPropagation();
-                                if (!expandedWorktrees.has(key)) {
-                                  const next = new Set(expandedWorktrees);
-                                  next.add(key);
-                                  setExpandedWorktrees(next);
-                                  persistSet(EXPANDED_WORKTREES_KEY, next);
-                                }
-                                void onCreateTerminal(project.path, worktree.path);
+                                void (async () => {
+                                  await onCreateTerminal(project.path, worktree.path);
+                                  expandWorktree(key);
+                                })();
                               }}
                               className="inline-flex h-7 w-7 shrink-0 items-center justify-center rounded-lg opacity-0 transition-colors group-hover/row:opacity-100 disabled:cursor-not-allowed disabled:opacity-30"
                               aria-label={`New terminal in ${label}`}
@@ -336,6 +346,7 @@ function TerminalRow({
   onTerminate?: (id: string) => void | Promise<void>;
 }) {
   const Icon = session.kind === 'preview' ? PreviewIcon : TerminalIcon;
+  const [displayLabel, setDisplayLabel] = useState(label);
   const style = accent
     ? ({
         '--worktree-fg': accent.fg,
@@ -343,11 +354,17 @@ function TerminalRow({
       } as React.CSSProperties)
     : undefined;
 
+  useEffect(() => {
+    if (label === displayLabel) return;
+    const timeout = window.setTimeout(() => setDisplayLabel(label), 350);
+    return () => window.clearTimeout(timeout);
+  }, [displayLabel, label]);
+
   return (
     <div
       style={style}
       className={cn(
-        'group/terminal relative flex h-7 items-center w-full rounded-lg transition-all duration-200',
+        'group/terminal relative flex h-7 items-center w-full rounded-lg transition-colors',
         accent
           ? active
             ? 'bg-[var(--worktree-muted)]'
@@ -371,7 +388,7 @@ function TerminalRow({
         )}
       >
         <Icon className="h-3.5 w-3.5 shrink-0" />
-        <span className="min-w-0 flex-1 truncate">{label}</span>
+        <span className="min-w-0 flex-1 truncate">{displayLabel}</span>
         {session.status === 'exited' ? (
           <span className="text-[10px] uppercase tracking-wide group-hover/terminal:opacity-0 transition-opacity duration-150 shrink-0">Exited</span>
         ) : null}
@@ -384,7 +401,7 @@ function TerminalRow({
             void onTerminate(session.id);
           }}
           className={cn(
-            'absolute right-0 top-0 inline-flex h-7 w-7 shrink-0 items-center justify-center rounded-lg opacity-0 transition-all duration-200 group-hover/terminal:opacity-100',
+            'absolute right-0 top-0 inline-flex h-7 w-7 shrink-0 items-center justify-center rounded-lg opacity-0 transition-opacity duration-150 group-hover/terminal:opacity-100',
             accent
               ? 'text-[var(--worktree-fg)] hover:bg-[var(--worktree-fg)]/10'
               : 'text-muted-foreground hover:text-foreground hover:bg-accent',

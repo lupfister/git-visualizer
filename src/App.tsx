@@ -6583,7 +6583,29 @@ function App() {
               terminalSessions={terminalSessions}
               activeTerminalId={activeTerminalId}
               onCreateTerminal={handleCreateTerminal}
-              onSelectTerminal={(session) => setActiveTerminalId(session.id)}
+              onSelectTerminal={async (session) => {
+                setActiveTerminalId(session.id);
+                // Switch project if the session belongs to a different repo
+                if (!sameRepoPath(repoPath, session.projectPath)) {
+                  await loadRepo(session.projectPath);
+                }
+                // Focus the corresponding map node
+                const focusId =
+                  session.targetId ??
+                  (session.worktreePath
+                    ? workingTreeIdForPath(
+                        session.worktreePath,
+                        sameRepoPath(session.worktreePath, session.projectPath),
+                      )
+                    : null);
+                if (focusId) {
+                  if (isWorkingTreeCommitId(focusId)) {
+                    persistWorktreeFocusSha(session.projectPath, focusId);
+                  }
+                  setGridFocusSha(focusId);
+                  setGridSearchJumpToken((token) => token + 1);
+                }
+              }}
               onTerminateTerminal={handleTerminateTerminal}
               onSelectWorktree={async (projectPath, workingTreeId) => {
                 if (!repoPath || !sameRepoPath(repoPath, projectPath)) await loadRepo(projectPath);

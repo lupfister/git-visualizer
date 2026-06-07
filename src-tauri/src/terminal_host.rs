@@ -201,6 +201,81 @@ fn spawn_session(
     Ok(metadata)
 }
 
+fn strip_ansi(input: &str) -> String {
+    let mut result = String::with_capacity(input.len());
+    let mut chars = input.chars().peekable();
+    while let Some(c) = chars.next() {
+        if c == '\x1b' {
+            match chars.peek().copied() {
+                Some('[') => {
+                    chars.next();
+                    for next in chars.by_ref() {
+                        if next.is_ascii_alphabetic() {
+                            break;
+                        }
+                    }
+                }
+                Some(']') => {
+                    chars.next();
+                    let mut prev = ' ';
+                    for next in chars.by_ref() {
+                        if next == '\x07' {
+                            break;
+                        }
+                        if prev == '\x1b' && next == '\\' {
+                            break;
+                        }
+                        prev = next;
+                    }
+                }
+                _ => {
+                    chars.next();
+                }
+            }
+        } else if !c.is_control() || c == '\n' {
+            result.push(c);
+        }
+    }
+    result
+}
+
+fn extract_agent_task(output_bytes: &[u8]) -> Option<String> {
+    let start = output_bytes.len().saturating_sub(3000);
+    let tail = &output_bytes[start..];
+    let raw = String::from_utf8_lossy(tail);
+    let clean = strip_ansi(&raw);
+    let skip_chars: &[char] = &[
+        '─', '━', '═', '╔', '╗', '╚', '╝', '╠', '╣', '╦', '╩', '╪',
+        '│', '┼', '┤', '├', '┬', '┴', '┐', '└', '┘', '┌', '|', '+', '=', '-', '·', '•', '▶', '●',
+    ];
+    let candidate = clean
+        .lines()
+        .rev()
+        .map(str::trim)
+        .filter(|line| {
+            if line.len() < 4 {
+                return false;
+            }
+            let alpha_count = line.chars().filter(|c| c.is_alphabetic()).count();
+            if alpha_count < 3 {
+                return false;
+            }
+            // Skip shell prompts and box-drawing lines
+            let first = line.chars().next().unwrap_or(' ');
+            !skip_chars.contains(&first)
+                && !matches!(first, '$' | '%' | '>' | '#')
+                && !line.starts_with("╭")
+                && !line.starts_with("╰")
+        })
+        .find(|line| line.len() >= 4)?;
+    let text = if candidate.len() > 55 {
+        format!("{}…", candidate.chars().take(54).collect::<String>())
+    } else {
+        candidate.to_string()
+    };
+    Some(text)
+}
+
 fn refresh_status(session: &Arc<LiveSession>) -> TerminalSession {
     let (exited, process_id) = session
         .child
@@ -219,14 +294,27 @@ fn refresh_status(session: &Arc<LiveSession>) -> TerminalSession {
     }
     let mut response_metadata = metadata.clone();
     if !exited && response_metadata.kind == "shell" {
-        if let Some(command) = process_id.and_then(detect_foreground_command) {
-            response_metadata.label = format!("{} ({})", response_metadata.label, command);
+        if let Some((priority, name)) = process_id.and_then(detect_foreground_command) {
+            if priority >= 100 {
+                // AI agent — enrich with a task snippet from recent output
+                let task = session
+                    .output
+                    .lock()
+                    .ok()
+                    .and_then(|buf| extract_agent_task(&buf));
+                response_metadata.label = match task {
+                    Some(t) => format!("{name} · {t}"),
+                    None => name,
+                };
+            } else {
+                response_metadata.label = name;
+            }
         }
     }
     response_metadata
 }
 
-fn detect_foreground_command(root_pid: u32) -> Option<String> {
+fn detect_foreground_command(root_pid: u32) -> Option<(usize, String)> {
     let output = Command::new("ps")
         .args(["-axo", "pid=,ppid=,state=,command="])
         .output()
@@ -234,7 +322,7 @@ fn detect_foreground_command(root_pid: u32) -> Option<String> {
     detect_foreground_command_from_ps(root_pid, &String::from_utf8_lossy(&output.stdout))
 }
 
-fn detect_foreground_command_from_ps(root_pid: u32, raw: &str) -> Option<String> {
+fn detect_foreground_command_from_ps(root_pid: u32, raw: &str) -> Option<(usize, String)> {
     let mut children = HashMap::<u32, Vec<(u32, String)>>::new();
     for line in raw.lines() {
         let mut parts = line.split_whitespace();
@@ -271,7 +359,7 @@ fn detect_foreground_command_from_ps(root_pid: u32, raw: &str) -> Option<String>
             }
         }
     }
-    best.map(|(_, _, label)| label)
+    best.map(|(priority, _, label)| (priority, label))
 }
 
 fn terminal_process_label(command: &str) -> Option<(usize, String)> {
@@ -614,7 +702,7 @@ mod tests {
 ";
         assert_eq!(
             detect_foreground_command_from_ps(100, ps),
-            Some("Codex".to_string())
+            Some((100, "Codex".to_string()))
         );
     }
 
@@ -626,7 +714,7 @@ mod tests {
 ";
         assert_eq!(
             detect_foreground_command_from_ps(100, ps),
-            Some("pnpm".to_string())
+            Some((1, "pnpm".to_string()))
         );
         assert_eq!(detect_foreground_command_from_ps(101, ps), None);
     }
