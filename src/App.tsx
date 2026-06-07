@@ -421,6 +421,7 @@ function App() {
   const lastSyncedRepoFingerprintRef = useRef<Record<string, string>>({});
   /** Fingerprint of the snapshot actually applied to the rendered map. */
   const appliedMapFingerprintRef = useRef<Record<string, string>>({});
+  const appliedRepoChangeTokenRef = useRef<Record<string, string>>({});
   const lastFingerprintCheckAtRef = useRef<Record<string, number>>({});
   const gitActivityEpochRef = useRef(0);
   const lastHandledGitActivityEpochRef = useRef(0);
@@ -3966,7 +3967,6 @@ function App() {
     let isDisposed = false;
     let refreshInFlight = false;
     let fullRefreshCoalesceId: number | null = null;
-    let changeSignalInFlight = false;
     let pendingFullGraphRefresh = false;
     const isStaleRepoRefresh = () =>
       isDisposed || isRepoSwitchingRef.current || !sameRepoPath(currentRepoPathRef.current, repoPath);
@@ -4442,8 +4442,8 @@ function App() {
     };
 
     const pollRepoChangeSignal = async () => {
-      if (changeSignalInFlight || isDisposed) {
-        console.debug('[repo-sync] tick skipped', { changeSignalInFlight, isDisposed });
+      if (isDisposed) {
+        console.debug('[repo-sync] tick skipped', { isDisposed });
         return;
       }
       const normalizedPath = normalizePath(repoPath);
@@ -4452,33 +4452,40 @@ function App() {
         return;
       }
       console.debug('[repo-sync] tick', { repoPath: normalizedPath, at: new Date().toISOString() });
-      changeSignalInFlight = true;
       try {
         if (liveFingerprintCheckInFlightRef.current) {
-          console.debug('[repo-sync] fingerprint check already in flight');
-          return;
+          console.warn('[repo-sync] replacing stalled fingerprint check');
+          liveFingerprintCheckInFlightRef.current = false;
         }
         liveFingerprintCheckInFlightRef.current = true;
+        const withTimeout = async <T,>(promise: Promise<T>, label: string, timeoutMs = 8_000): Promise<T> => {
+          let timeoutId: number | null = null;
+          try {
+            return await Promise.race([
+              promise,
+              new Promise<T>((_, reject) => {
+                timeoutId = window.setTimeout(() => reject(new Error(`${label} timed out after ${timeoutMs}ms`)), timeoutMs);
+              }),
+            ]);
+          } finally {
+            if (timeoutId != null) window.clearTimeout(timeoutId);
+          }
+        };
         try {
-          const liveFingerprint = await invoke<string>('get_repo_live_fingerprint', {
-            repoPath: normalizedPath,
-          });
+          const liveChangeToken = await withTimeout(
+            invoke<string>('get_repo_change_token', { repoPath: normalizedPath }),
+            'get_repo_change_token',
+          );
           if (isStaleRepoRefresh()) {
             console.warn('[repo-sync] live fingerprint ignored: stale repo refresh');
             return;
           }
-          const mapFingerprint = appliedMapFingerprintRef.current[normalizedPath];
-          console.debug('[repo-sync] fingerprint comparison', {
+          const appliedChangeToken = appliedRepoChangeTokenRef.current[normalizedPath];
+          console.debug('[repo-sync] change token comparison', {
             repoPath: normalizedPath,
-            matches: Boolean(mapFingerprint && liveFingerprint === mapFingerprint),
-            mapFingerprint,
-            liveFingerprint,
+            matches: Boolean(appliedChangeToken && liveChangeToken === appliedChangeToken),
           });
-          if (mapFingerprint && liveFingerprint === mapFingerprint) return;
-          pendingLiveFingerprintRef.current = {
-            ...pendingLiveFingerprintRef.current,
-            [normalizedPath]: liveFingerprint,
-          };
+          if (appliedChangeToken && liveChangeToken === appliedChangeToken) return;
           if (
             repoMutationInFlightRef.current
             || reconcileInFlightRef.current
@@ -4496,7 +4503,14 @@ function App() {
           }
           gitActivityEpochRef.current += 1;
           console.info('[repo-sync] mismatch detected; refreshing snapshot', { repoPath: normalizedPath });
-          const freshSnapshot = await refreshProjectSnapshotFromGit(normalizedPath, { force: true });
+          const freshSnapshot = await withTimeout(
+            invoke<RepoVisualSnapshot>('get_repo_visual_snapshot', {
+              repoPath: normalizedPath,
+              forceRefresh: true,
+            }),
+            'get_repo_visual_snapshot',
+            20_000,
+          );
           if (!freshSnapshot || isStaleRepoRefresh()) {
             console.error('[repo-sync] snapshot refresh produced no applicable snapshot', {
               hasSnapshot: Boolean(freshSnapshot),
@@ -4521,18 +4535,22 @@ function App() {
           }
           appliedMapFingerprintRef.current = {
             ...appliedMapFingerprintRef.current,
-            [normalizedPath]: liveFingerprint,
+            [normalizedPath]: lastSyncedRepoFingerprintRef.current[normalizedPath] ?? '',
           };
-          noteSyncedRepoFingerprint(normalizedPath, liveFingerprint);
+          appliedRepoChangeTokenRef.current = {
+            ...appliedRepoChangeTokenRef.current,
+            [normalizedPath]: liveChangeToken,
+          };
           delete pendingLiveFingerprintRef.current[normalizedPath];
           markGitActivityHandled();
+          void invoke('persist_project_snapshot', { projectId: normalizedPath, force: true }).catch((error) => {
+            console.warn('[repo-sync] background snapshot persist failed', error);
+          });
         } finally {
           liveFingerprintCheckInFlightRef.current = false;
         }
       } catch (error) {
         console.error('[repo-sync] reconcile failed', error);
-      } finally {
-        changeSignalInFlight = false;
       }
     };
 

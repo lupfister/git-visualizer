@@ -2413,9 +2413,38 @@ async fn get_repo_sync_peek(
 #[tauri::command(rename_all = "camelCase")]
 async fn get_repo_live_fingerprint(repo_path: String) -> Result<String, String> {
     run_blocking(move || {
-        repo_git_gate::with_repo_git_lock(&repo_path, || {
-            compute_repo_fingerprint_inner(&repo_path).map(|(fingerprint, _)| fingerprint)
-        })
+        compute_repo_fingerprint_inner(&repo_path).map(|(fingerprint, _)| fingerprint)
+    })
+    .await
+}
+
+fn metadata_stamp(path: &Path) -> String {
+    std::fs::metadata(path)
+        .ok()
+        .and_then(|metadata| metadata.modified().ok())
+        .and_then(|modified| modified.duration_since(std::time::UNIX_EPOCH).ok())
+        .map(|duration| format!("{}:{}", duration.as_secs(), duration.subsec_nanos()))
+        .unwrap_or_default()
+}
+
+#[tauri::command(rename_all = "camelCase")]
+async fn get_repo_change_token(repo_path: String) -> Result<String, String> {
+    run_blocking(move || {
+        let path = Path::new(&repo_path);
+        let git_dir = git::cli::run(path, &["rev-parse", "--absolute-git-dir"])
+            .map_err(|error| error.to_string())?;
+        let git_dir = PathBuf::from(git_dir.trim());
+        let head = git::cli::run(path, &["rev-parse", "HEAD"])
+            .map_err(|error| error.to_string())?;
+        let refs = git::cli::run(path, &["for-each-ref", "--format=%(refname):%(objectname)", "refs/heads", "refs/remotes", "refs/stash"])
+            .map_err(|error| error.to_string())?;
+        Ok(format!(
+            "{}@@{}@@{}@@{}",
+            head.trim(),
+            refs.trim(),
+            metadata_stamp(&git_dir.join("index")),
+            metadata_stamp(path),
+        ))
     })
     .await
 }
@@ -7709,6 +7738,7 @@ pub fn run() {
             get_repo_head_state,
             get_repo_sync_peek,
             get_repo_live_fingerprint,
+            get_repo_change_token,
             get_repo_change_signal,
             get_repo_graph_delta,
             get_repo_refresh_fingerprint,
