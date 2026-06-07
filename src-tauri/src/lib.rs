@@ -495,6 +495,9 @@ fn open_visual_cache_connection() -> Result<Connection, String> {
     }
     let conn =
         Connection::open(db_path).map_err(|e| format!("Failed to open cache database: {e}"))?;
+    let _ = conn.busy_timeout(std::time::Duration::from_secs(5));
+    let _ = conn.pragma_update(None, "journal_mode", &"WAL");
+    let _ = conn.pragma_update(None, "synchronous", &"NORMAL");
     conn.execute_batch(
         "
         CREATE TABLE IF NOT EXISTS repo_visual_cache (
@@ -1255,7 +1258,6 @@ fn fetch_all_merge_nodes_for_branches_internal(
 
 fn compute_repo_visual_snapshot(repo_path: &str) -> Result<RepoVisualSnapshot, String> {
     let path = Path::new(repo_path);
-    let _ = git::fetch_remotes(path);
     let (name, resolved_path) = git::get_repo_info(path).map_err(|e| e.to_string())?;
     let default_branch = git::get_default_branch(path).map_err(|e| e.to_string())?;
     let mut branches = git::list_branches(path, &default_branch).map_err(|e| e.to_string())?;
@@ -5896,6 +5898,9 @@ fn run_open_browser_blocking(repo_path: String, branch: String, port: u16) -> Re
 
     let arch_out = std::process::Command::new("git")
         .args(["-C", &repo_path, "archive", "--format=tar", &branch])
+        .env("GIT_TERMINAL_PROMPT", "0")
+        .env("GIT_ASKPASS", "")
+        .env("SSH_ASKPASS", "")
         .output()
         .map_err(|e| format!("git archive failed to start: {e}"))?;
 
@@ -6501,6 +6506,9 @@ fn run_previews_blocking(
 
     let arch_out = std::process::Command::new("git")
         .args(["-C", &repo_path, "archive", "--format=tar", &branch])
+        .env("GIT_TERMINAL_PROMPT", "0")
+        .env("GIT_ASKPASS", "")
+        .env("SSH_ASKPASS", "")
         .output()
         .map_err(|e| format!("git archive failed to start: {e}"))?;
 
@@ -8017,6 +8025,7 @@ mod snapshot_remote_branch_tests {
             return;
         }
 
+        let _ = crate::git::fetch_remotes(&repo);
         let snapshot = compute_repo_visual_snapshot(repo.to_string_lossy().as_ref())
             .expect("repo visual snapshot");
         let branch_name = "cursor/commit-app-previews-7896";
@@ -8040,6 +8049,17 @@ mod snapshot_remote_branch_tests {
             branch.commits_ahead
         );
 
+        let expected_sha = crate::git::cli::run(
+            &repo,
+            &[
+                "rev-parse",
+                "origin/cursor/commit-app-previews-7896",
+            ],
+        )
+        .expect("rev-parse origin head")
+        .trim()
+        .to_string();
+
         let remote_commit = snapshot
             .direct_commits
             .iter()
@@ -8048,10 +8068,10 @@ mod snapshot_remote_branch_tests {
             remote_commit.is_some(),
             "missing remote commit on {branch_name}"
         );
-        assert!(
-            remote_commit.unwrap().full_sha.starts_with("c131b6f"),
-            "unexpected remote tip {}",
-            remote_commit.unwrap().full_sha
+        assert_eq!(
+            remote_commit.unwrap().full_sha,
+            expected_sha,
+            "unexpected remote tip"
         );
 
         let previews = snapshot
@@ -8062,7 +8082,7 @@ mod snapshot_remote_branch_tests {
         assert!(
             previews
                 .iter()
-                .any(|preview| preview.full_sha.starts_with("c131b6f") && preview.is_remote),
+                .any(|preview| preview.full_sha == expected_sha && preview.is_remote),
             "missing remote preview for {branch_name}"
         );
         assert!(

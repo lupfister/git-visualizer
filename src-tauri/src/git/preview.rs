@@ -492,6 +492,9 @@ fn git_run_bytes(repo: &Path, args: &[&str]) -> Result<Vec<u8>, GitError> {
     let output = Command::new("git")
         .args(["-C", &repo_str])
         .args(args)
+        .env("GIT_TERMINAL_PROMPT", "0")
+        .env("GIT_ASKPASS", "")
+        .env("SSH_ASKPASS", "")
         .output()
         .map_err(|e| GitError::CommandFailed(e.to_string()))?;
     if !output.status.success() {
@@ -514,6 +517,9 @@ fn git_run_with_stdin(repo: &Path, args: &[&str], stdin: &[u8]) -> Result<(), Gi
     let mut child = Command::new("git")
         .args(["-C", &repo_str])
         .args(args)
+        .env("GIT_TERMINAL_PROMPT", "0")
+        .env("GIT_ASKPASS", "")
+        .env("SSH_ASKPASS", "")
         .stdin(Stdio::piped())
         .stderr(Stdio::piped())
         .spawn()
