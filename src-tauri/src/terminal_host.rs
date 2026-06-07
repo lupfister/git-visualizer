@@ -216,19 +216,14 @@ fn refresh_status(session: &Arc<LiveSession>) -> TerminalSession {
     let mut metadata = session.metadata.lock().expect("terminal metadata lock");
     if exited {
         metadata.status = "exited".to_string();
-    } else if metadata.kind == "shell" && is_generic_terminal_label(&metadata.label) {
+    }
+    let mut response_metadata = metadata.clone();
+    if !exited && response_metadata.kind == "shell" {
         if let Some(command) = process_id.and_then(detect_foreground_command) {
-            metadata.label = command;
+            response_metadata.label = format!("{} ({})", response_metadata.label, command);
         }
     }
-    metadata.clone()
-}
-
-fn is_generic_terminal_label(label: &str) -> bool {
-    let Some(number) = label.strip_prefix("Terminal ") else {
-        return false;
-    };
-    !number.is_empty() && number.chars().all(|character| character.is_ascii_digit())
+    response_metadata
 }
 
 fn detect_foreground_command(root_pid: u32) -> Option<String> {
@@ -412,9 +407,7 @@ fn handle_request(request: HostRequest, sessions: &Sessions) -> HostResponse {
                 return HostResponse::error("Terminal session not found");
             };
             if let Ok(mut metadata) = session.metadata.lock() {
-                if metadata.kind == "shell" && is_generic_terminal_label(&metadata.label) {
-                    metadata.label = label;
-                }
+                metadata.label = label;
             }
             persist_metadata(sessions);
             HostResponse::ok()
@@ -638,10 +631,4 @@ mod tests {
         assert_eq!(detect_foreground_command_from_ps(101, ps), None);
     }
 
-    #[test]
-    fn identifies_only_numbered_default_terminal_labels_as_generic() {
-        assert!(is_generic_terminal_label("Terminal 1"));
-        assert!(!is_generic_terminal_label("Terminal"));
-        assert!(!is_generic_terminal_label("Codex"));
-    }
 }
