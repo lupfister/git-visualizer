@@ -17,12 +17,16 @@ export type RepoSyncSchedulerIntervals = {
 };
 
 export const REPO_SYNC_INTERVALS_VISIBLE: RepoSyncSchedulerIntervals = {
-  dirtyMs: 1500,
-  peekMs: 6_000,
-  fullMs: 30_000,
+  dirtyMs: 8_000,
+  peekMs: 20_000,
+  fullMs: 60_000,
 };
 
-export const REPO_SYNC_INTERVALS_HIDDEN: RepoSyncSchedulerIntervals = REPO_SYNC_INTERVALS_VISIBLE;
+export const REPO_SYNC_INTERVALS_HIDDEN: RepoSyncSchedulerIntervals = {
+  dirtyMs: 30_000,
+  peekMs: 60_000,
+  fullMs: 180_000,
+};
 
 /** Stagger lane starts so dirty / peek / full rarely fire in the same tick. */
 export const REPO_SYNC_LANE_STAGGER_MS: Record<RepoSyncLane, number> = {

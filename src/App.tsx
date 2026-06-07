@@ -4464,8 +4464,12 @@ function App() {
 
       // Concurrency protection: serialize sync requests
       if (runAuthoritativeRepoSyncInFlightRef.current) {
-        runAuthoritativeRepoSyncPendingRef.current = true;
-        console.log(`[ChangeDetection] Sync in flight. Queueing request for reason: ${reason}`);
+        if (reason === 'local' || reason === 'watch') {
+          runAuthoritativeRepoSyncPendingRef.current = true;
+          console.log(`[ChangeDetection] Sync in flight. Queueing request for reason: ${reason}`);
+        } else {
+          console.log(`[ChangeDetection] Sync in flight. Skipping queueing for scheduled reason: ${reason}`);
+        }
         return;
       }
 
@@ -4555,8 +4559,13 @@ function App() {
         runAuthoritativeRepoSyncInFlightRef.current = false;
         if (runAuthoritativeRepoSyncPendingRef.current) {
           runAuthoritativeRepoSyncPendingRef.current = false;
-          console.log(`[ChangeDetection] Running pending queued sync request...`);
-          void runAuthoritativeRepoSync('watch');
+          const stillPending = gitActivityEpochRef.current !== lastHandledGitActivityEpochRef.current;
+          if (stillPending) {
+            console.log(`[ChangeDetection] Running pending queued sync request because git activity is pending (epoch ${gitActivityEpochRef.current} vs handled ${lastHandledGitActivityEpochRef.current}).`);
+            void runAuthoritativeRepoSync('watch');
+          } else {
+            console.log(`[ChangeDetection] Skipping pending queued sync request because git activity is already handled.`);
+          }
         }
       }
     };

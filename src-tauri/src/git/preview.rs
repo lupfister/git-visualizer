@@ -161,6 +161,7 @@ pub fn prepare_preview_target(
     })
 }
 
+#[allow(dead_code)]
 pub fn get_active_preview_target(
     storage_root: &Path,
     repo: &Path,
