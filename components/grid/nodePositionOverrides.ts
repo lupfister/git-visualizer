@@ -1,24 +1,12 @@
 import { isWorkingTreeCommitId } from '../../lib/worktreeSessions';
 import type { NodePositionOverride, NodePositionOverrides, VisualCommit } from './LayoutGrid';
 
-export type NodePositionCommitIdentity = Pick<VisualCommit, 'id' | 'visualId' | 'kind' | 'parentSha'>
-  & Partial<Pick<VisualCommit, 'date' | 'message'>>;
-
-const isStashPositionIdentity = (commit: NodePositionCommitIdentity): boolean =>
-  commit.kind === 'stash' || commit.id.startsWith('STASH:');
+export type NodePositionCommitIdentity = Pick<VisualCommit, 'id' | 'visualId' | 'kind' | 'parentSha'>;
 
 export const getStableNodePositionKey = (commit: NodePositionCommitIdentity): string => {
   if (isWorkingTreeCommitId(commit.id)) {
     const suffix = commit.id.includes(':') ? commit.id.slice(commit.id.indexOf(':') + 1) : 'current';
     return `stable:working-tree:${suffix}`;
-  }
-  if (isStashPositionIdentity(commit)) {
-    return `stable:stash:${encodeURIComponent([
-      commit.id,
-      commit.parentSha ?? '',
-      commit.date ?? '',
-      commit.message ?? '',
-    ].join('|'))}`;
   }
   if (commit.kind === 'branch-created') {
     return `stable:branch-created:${commit.parentSha ?? commit.id}`;
@@ -46,9 +34,6 @@ export const getNodePositionOverride = (
   overrides: NodePositionOverrides,
   commit: NodePositionCommitIdentity,
 ): NodePositionOverride | undefined => {
-  if (isStashPositionIdentity(commit)) {
-    return overrides[getStableNodePositionKey(commit)];
-  }
   return (
     overrides[getStableNodePositionKey(commit)]
     ?? overrides[commit.visualId]
@@ -62,10 +47,6 @@ export const assignNodePositionOverride = (
   commit: NodePositionCommitIdentity,
   point: NodePositionOverride,
 ) => {
-  if (isStashPositionIdentity(commit)) {
-    overrides[getStableNodePositionKey(commit)] = point;
-    return;
-  }
   overrides[commit.id] = point;
   overrides[commit.visualId] = point;
   overrides[getStableNodePositionKey(commit)] = point;
@@ -76,10 +57,6 @@ export const assignNodePositionPreview = (
   commit: NodePositionCommitIdentity,
   point: NodePositionOverride,
 ) => {
-  if (isStashPositionIdentity(commit)) {
-    overrides[getStableNodePositionKey(commit)] = point;
-    return;
-  }
   overrides[commit.visualId] = point;
 };
 
@@ -91,7 +68,6 @@ export const migrateNodePositionOverridesForCommits = (
   for (const commit of commits) {
     const stableKey = getStableNodePositionKey(commit);
     if (next[stableKey]) continue;
-    if (isStashPositionIdentity(commit)) continue;
     const legacyValue = next[commit.visualId] ?? next[commit.id] ?? findLegacyNodePositionOverride(next, commit);
     if (!legacyValue) continue;
     if (next === overrides) next = { ...overrides };

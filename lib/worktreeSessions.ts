@@ -270,40 +270,6 @@ export const shaMatches = (left?: string | null, right?: string | null): boolean
   return left === right || left.startsWith(right) || right.startsWith(left);
 };
 
-/**
- * Branch that owns a worktree's checkout anchor. Detached sessions prefer a child
- * branch over default when the same SHA appears on multiple lanes.
- */
-export const resolveWorktreeAnchorBranchName = (
-  session: Pick<WorktreeSession, 'branchName' | 'headSha' | 'parentSha'>,
-  branches: ReadonlyArray<Pick<Branch, 'name' | 'headSha' | 'parentBranch' | 'divergedFromSha' | 'createdFromSha' | 'presidesFromSha'>>,
-  defaultBranch: string,
-  branchCommitPreviews: Readonly<Record<string, ReadonlyArray<{ fullSha: string }>>> = {},
-): string | null => {
-  if (session.branchName) return session.branchName;
-  const anchorSha = session.headSha || session.parentSha;
-  if (!anchorSha) return null;
-  const branchMatchesAnchor = (
-    branch: Pick<Branch, 'name' | 'headSha' | 'parentBranch' | 'divergedFromSha' | 'createdFromSha' | 'presidesFromSha'>,
-  ): boolean => {
-    if (shaMatches(branch.headSha, anchorSha) || shaMatches(branch.headSha, session.headSha)) return true;
-    if (shaMatches(branch.divergedFromSha, anchorSha)) return true;
-    if (shaMatches(branch.createdFromSha, anchorSha)) return true;
-    if (shaMatches(branch.presidesFromSha, anchorSha)) return true;
-    const previews = branchCommitPreviews[branch.name] ?? [];
-    return previews.some((preview) => shaMatches(preview.fullSha, anchorSha));
-  };
-  const matching = branches.filter(branchMatchesAnchor);
-  const childBranches = matching.filter(
-    (branch) => branch.name !== defaultBranch && branch.parentBranch,
-  );
-  if (childBranches.length > 0) {
-    return [...childBranches].sort((left, right) => left.name.localeCompare(right.name))[0]!.name;
-  }
-  if (matching.some((branch) => branch.name === defaultBranch)) return defaultBranch;
-  return matching[0]?.name ?? null;
-};
-
 export const branchTipSha = (branch: Branch): string | null =>
   branch.headSha || branch.createdFromSha || branch.divergedFromSha || branch.presidesFromSha || null;
 

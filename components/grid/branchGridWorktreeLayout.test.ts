@@ -2,7 +2,6 @@ import { describe, expect, it } from 'vitest';
 import type { Branch, BranchCommitPreview, DirectCommit } from '../../types';
 import { buildWorktreeSessions } from '../../lib/worktreeSessions';
 import type { WorktreeInfo } from '../../types';
-import { injectWorktreeUncommittedPreviews } from '../../lib/injectWorktreeUncommitted';
 import { computeBranchGridLayout } from './branchGridLayoutModel';
 
 const mainSha = 'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa';
@@ -512,112 +511,5 @@ describe('computeBranchGridLayout worktree nodes', () => {
     expect(headNode).toBeDefined();
     expect(alignedNode!.column).toBeGreaterThan(headNode!.column);
     expect(misalignedNode!.column).toBeGreaterThan(headNode!.column);
-  });
-
-  it('keeps primary detached worktree below the child-branch tip when another worktree dirties that branch', () => {
-    const cursorBranch = 'cursor/2ae24b52-agent';
-    const olderSha = 'cccccccccccccccccccccccccccccccccccccccc';
-    const parentDate = '2024-06-01T12:00:00Z';
-    const directCommits: DirectCommit[] = [
-      {
-        fullSha: mainSha,
-        sha: mainSha.slice(0, 7),
-        branch: 'main',
-        message: 'root',
-        author: 'test',
-        date: '2024-05-01T12:00:00Z',
-        parentSha: null,
-        parentShas: [],
-      },
-      {
-        fullSha: olderSha,
-        sha: olderSha.slice(0, 7),
-        branch: 'main',
-        message: 'older',
-        author: 'test',
-        date: '2024-05-15T12:00:00Z',
-        parentSha: mainSha,
-        parentShas: [mainSha],
-      },
-      {
-        fullSha: tipSha,
-        sha: tipSha.slice(0, 7),
-        branch: 'main',
-        message: 'tip',
-        author: 'test',
-        date: parentDate,
-        parentSha: olderSha,
-        parentShas: [olderSha],
-      },
-    ];
-    const sessions = buildWorktreeSessions(
-      [
-        wt({
-          path: '/repo',
-          branchName: null,
-          headSha: tipSha,
-          parentSha: olderSha,
-          isCurrent: true,
-          hasUncommittedChanges: true,
-        }),
-        wt({ path: '/repo/wt-090a', branchName: cursorBranch, headSha: tipSha }),
-      ],
-      '/repo',
-      { branchName: null, headSha: tipSha, hasUncommittedChanges: true, parentSha: olderSha },
-    );
-    const injected = injectWorktreeUncommittedPreviews({
-      sessions,
-      branches: [
-        makeBranch('main', tipSha, 2),
-        makeBranch(cursorBranch, tipSha, 2),
-      ],
-      branchCommitPreviews: {
-        main: [directCommits[1]!, directCommits[2]!],
-        [cursorBranch]: [directCommits[1]!, directCommits[2]!],
-      },
-      branchUniqueAheadCounts: { main: 2, [cursorBranch]: 2 },
-      directCommits,
-      defaultBranch: 'main',
-    });
-    const worktreeLane = injected.branches.find((branch) => branch.name.startsWith('Worktree · '));
-    expect(worktreeLane?.parentBranch).toBe(cursorBranch);
-
-    const layout = computeBranchGridLayout({
-      branches: injected.branches,
-      mergeNodes: [],
-      directCommits,
-      unpushedDirectCommits: directCommits.slice(1),
-      unpushedCommitShasByBranch: { main: [olderSha, tipSha], [cursorBranch]: [olderSha, tipSha] },
-      defaultBranch: 'main',
-      branchCommitPreviews: injected.branchCommitPreviews,
-      branchParentByName: {
-        main: null,
-        [cursorBranch]: 'main',
-        ...(worktreeLane ? { [worktreeLane.name]: worktreeLane.parentBranch ?? null } : {}),
-      },
-      branchUniqueAheadCounts: injected.branchUniqueAheadCounts,
-      manuallyOpenedClumps: new Set(),
-      manuallyClosedClumps: new Set(),
-      isDebugOpen: false,
-      gridSearchQuery: '',
-      gridFocusSha: null,
-      checkedOutRef: { branchName: null, headSha: tipSha, hasUncommittedChanges: true, parentSha: olderSha },
-      worktreeSessions: sessions,
-      orientation: 'horizontal',
-    });
-
-    const primaryId = sessions.find((session) => session.isCurrent)!.workingTreeId;
-    const worktreeNode = layout.renderNodes.find((node) => node.commit.id === primaryId);
-    const parentNode = layout.renderNodes.find(
-      (node) => node.commit.id === tipSha && node.commit.branchName === cursorBranch,
-    );
-    expect(worktreeNode?.commit.branchName.startsWith('Worktree · ')).toBe(true);
-    expect(worktreeNode).toBeDefined();
-    expect(parentNode).toBeDefined();
-    expect(worktreeNode!.row).toBeGreaterThan(parentNode!.row);
-    expect(worktreeNode!.column).toBeGreaterThan(parentNode!.column);
-    expect(worktreeNode!.y).toBeGreaterThan(parentNode!.y);
-    const usedRows = [...new Set(layout.renderNodes.map((node) => node.row))].sort((a, b) => a - b);
-    expect(usedRows).toEqual(usedRows.map((_, index) => index + 1));
   });
 });

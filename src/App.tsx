@@ -259,7 +259,7 @@ function makeLayoutCacheKey(
   graphSignature = '',
 ): string {
   return [
-    'layout-v12-direct-sibling-lanes',
+    'layout-v10-final-clump-expansion',
     path,
     orientation,
     setSignature(manuallyOpenedClumps),

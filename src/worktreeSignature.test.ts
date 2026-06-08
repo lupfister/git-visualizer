@@ -33,59 +33,6 @@ describe('formatWorktreeSyncSignature', () => {
   });
 });
 
-const tipSha = 'bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb';
-
-describe('resolveWorktreeAnchorBranchName', () => {
-  it('prefers a child branch over default when detached at a shared tip sha', async () => {
-    const { resolveWorktreeAnchorBranchName } = await import('../lib/worktreeSessions');
-    const branch = resolveWorktreeAnchorBranchName(
-      {
-        path: '/repo',
-        pathExists: true,
-        branchName: null,
-        headSha: tipSha,
-        parentSha: 'older',
-        hasUncommittedChanges: true,
-        isCurrent: true,
-        accentToken: 'checked',
-        workingTreeId: 'WORKING_TREE',
-      },
-      [
-        { name: 'main', headSha: tipSha, parentBranch: null },
-        { name: 'cursor/feature', headSha: tipSha, parentBranch: 'main' },
-      ],
-      'main',
-    );
-    expect(branch).toBe('cursor/feature');
-  });
-
-  it('still resolves the child branch when its head was replaced by a worktree id', async () => {
-    const { resolveWorktreeAnchorBranchName } = await import('../lib/worktreeSessions');
-    const branch = resolveWorktreeAnchorBranchName(
-      {
-        path: '/repo',
-        pathExists: true,
-        branchName: null,
-        headSha: tipSha,
-        parentSha: 'older',
-        hasUncommittedChanges: true,
-        isCurrent: true,
-        accentToken: 'checked',
-        workingTreeId: 'WORKING_TREE',
-      },
-      [
-        { name: 'main', headSha: tipSha, parentBranch: null },
-        { name: 'cursor/feature', headSha: 'WORKING_TREE:abc', parentBranch: 'main' },
-      ],
-      'main',
-      {
-        'cursor/feature': [{ fullSha: tipSha }],
-      },
-    );
-    expect(branch).toBe('cursor/feature');
-  });
-});
-
 describe('formatWorktreeSessionLayoutSignature', () => {
   it('includes parent anchor for layout cache keys', () => {
     const signature = formatWorktreeSessionLayoutSignature([
