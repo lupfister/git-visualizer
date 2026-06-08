@@ -7,7 +7,7 @@ import { getCurrentWindow } from '@tauri-apps/api/window';
 import { open } from '@tauri-apps/plugin-dialog';
 import { PanelLeftClose, PanelLeftOpen } from 'lucide-react';
 import BranchGridMapView from '../components/grid/MapViewGrid';
-import TerminalPanel from '../components/TerminalPanel';
+import TerminalPanel, { type TerminalPanelPlacement } from '../components/TerminalPanel';
 import { mapGridCameraStorageKey, readHasSavedMapGridCamera } from '../components/grid/useMapGridCamera';
 import DenseBranchSidebar from '../components/DenseBranchSidebar';
 import type { NodePositionOverrides } from '../components/grid/LayoutGrid';
@@ -106,6 +106,7 @@ const COMMIT_SWITCH_FEEDBACK_VISIBLE_MS = 1400;
 const COMMIT_SWITCH_FEEDBACK_FADE_MS = 180;
 const SIDEBAR_WIDTH_STORAGE_KEY = 'git-visualizer:sidebar-width';
 const SIDEBAR_COLLAPSED_STORAGE_KEY = 'git-visualizer:sidebar-collapsed';
+const TERMINAL_PANEL_PLACEMENT_STORAGE_KEY = 'git-visualizer:terminal-panel-placement';
 const GRID_CLUMPS_STORAGE_KEY = 'git-visualizer:grid-clumps';
 const NODE_POSITIONS_STORAGE_KEY_PREFIX = 'git-visualizer:node-positions:';
 const SIDEBAR_DEFAULT_WIDTH_PX = 360;
@@ -363,6 +364,7 @@ function App() {
   const [previewedNodeId, setPreviewedNodeId] = useState<string | null>(null);
   const [terminalSessions, setTerminalSessions] = useState<TerminalSession[]>([]);
   const [activeTerminalId, setActiveTerminalId] = useState<string | null>(null);
+  const [terminalPanelPlacement, setTerminalPanelPlacement] = useState<TerminalPanelPlacement>('right');
   // scrollRequest.seq increments on each click so the same branch re-triggers the effect
   const scrollRequest: { branch: Branch; seq: number } | null = null;
   const focusedErrorBranch: Branch | null = null;
@@ -6289,6 +6291,10 @@ function App() {
       }
       const rawCollapsed = window.localStorage.getItem(SIDEBAR_COLLAPSED_STORAGE_KEY);
       if (rawCollapsed != null) setIsSidebarCollapsed(rawCollapsed === 'true');
+      const rawTerminalPlacement = window.localStorage.getItem(TERMINAL_PANEL_PLACEMENT_STORAGE_KEY);
+      if (rawTerminalPlacement === 'right' || rawTerminalPlacement === 'bottom') {
+        setTerminalPanelPlacement(rawTerminalPlacement);
+      }
     } catch {
       // ignore storage failures
     }
@@ -6311,6 +6317,14 @@ function App() {
       // ignore storage failures
     }
   }, [isSidebarCollapsed]);
+
+  useEffect(() => {
+    try {
+      window.localStorage.setItem(TERMINAL_PANEL_PLACEMENT_STORAGE_KEY, terminalPanelPlacement);
+    } catch {
+      // ignore storage failures
+    }
+  }, [terminalPanelPlacement]);
 
   const updateSidebarWidthFromPointer = (clientX: number) => {
     const drag = sidebarDragRef.current;
@@ -6501,6 +6515,7 @@ function App() {
   }, []);
 
   const activeTerminal = terminalSessions.find((session) => session.id === activeTerminalId) ?? null;
+  const useBottomTerminal = activeTerminal != null && terminalPanelPlacement === 'bottom';
   const terminalCountByWorkingTreeId = useMemo(() => {
     const counts: Record<string, number> = {};
     if (!repoPath) return counts;
@@ -6557,7 +6572,13 @@ function App() {
   return (
     <div className="relative flex h-screen min-h-0 flex-col bg-background text-foreground">
       <div className="relative z-30 flex h-full min-h-0 flex-col">
-        <div className="relative flex h-full min-h-0 flex-1 overflow-hidden">
+        <div
+          className={cn(
+            'relative flex h-full min-h-0 flex-1 overflow-hidden',
+            useBottomTerminal && 'flex-col',
+          )}
+        >
+          <div className="relative flex min-h-0 min-w-0 flex-1 overflow-hidden">
           <div
             ref={sidebarShellRef}
             className="relative z-[60] flex h-full min-h-0 flex-none overflow-visible"
@@ -6740,8 +6761,11 @@ function App() {
                 </div>
               ) : null}
           </div>
+          </div>
           <TerminalPanel
             session={activeTerminal}
+            placement={terminalPanelPlacement}
+            onPlacementChange={setTerminalPanelPlacement}
             onClose={() => setActiveTerminalId(null)}
             onTerminate={(id) => void handleTerminateTerminal(id)}
             onSessionChange={handleTerminalSessionChange}
