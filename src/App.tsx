@@ -6366,7 +6366,12 @@ function App() {
     if (!repoPath) return;
     setPreviewInProgress(true);
     try {
-      const prepared = await preparePreviewTarget(repoPath, target);
+      const prepared = target.kind === 'worktree'
+        ? {
+            previewPath: target.worktreePath,
+            dependencyFilesChanged: false,
+          }
+        : await preparePreviewTarget(repoPath, target);
       const command = prepared.dependencyFilesChanged && config.installCommand.trim()
         ? `${config.installCommand.trim()} && ${config.runCommand.trim()}`
         : config.runCommand.trim();

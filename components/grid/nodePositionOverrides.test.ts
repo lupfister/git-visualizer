@@ -63,6 +63,19 @@ describe('node position override keys', () => {
     expect(migrated[getStableNodePositionKey(target)]).toEqual({ x: 50, y: 75 });
   });
 
+  it('refreshes a stale stable key from the current visual alias', () => {
+    const target = commit();
+    const migrated = migrateNodePositionOverridesForCommits(
+      {
+        [getStableNodePositionKey(target)]: { x: 10, y: 20 },
+        [target.visualId]: { x: 50, y: 75 },
+      },
+      [target],
+    );
+
+    expect(migrated[getStableNodePositionKey(target)]).toEqual({ x: 50, y: 75 });
+  });
+
   it('resolves persisted overrides for worktree tiles via stable keys', () => {
     const worktree = commit({
       id: 'WORKING_TREE',
@@ -75,7 +88,21 @@ describe('node position override keys', () => {
       'main:WORKING_TREE': { x: 777, y: 666 },
     };
 
-    expect(getNodePositionOverride(overrides, worktree)).toEqual({ x: 999, y: 888 });
+    expect(getNodePositionOverride(overrides, worktree)).toEqual({ x: 777, y: 666 });
+  });
+
+  it('prefers newer exact aliases over stale stable override values', () => {
+    const target = commit();
+    const overrides: NodePositionOverrides = {
+      [getStableNodePositionKey(target)]: { x: 10, y: 20 },
+      [target.id]: { x: 30, y: 40 },
+      [target.visualId]: { x: 50, y: 60 },
+    };
+
+    expect(getNodePositionOverride(overrides, target)).toEqual({ x: 50, y: 60 });
+
+    const canonical = canonicalizeNodePositionOverridesForCommits(overrides, [target]);
+    expect(canonical[getStableNodePositionKey(target)]).toEqual({ x: 50, y: 60 });
   });
 
   it('collects lane branch names for override migration', () => {
