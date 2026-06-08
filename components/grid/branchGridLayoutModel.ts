@@ -332,7 +332,12 @@ const resolveVisibleNodeColumnCollisions = (
     const collisionKey =
       clusterKey && (clusterCounts?.get(clusterKey) ?? 1) > 1 ? clusterKey : null;
     let column = node.column;
-    while (occupiedColumns.has(column) && occupiedColumns.get(column) !== collisionKey) column += 1;
+    while (
+      occupiedColumns.has(column) &&
+      (collisionKey === null || occupiedColumns.get(column) !== collisionKey)
+    ) {
+      column += 1;
+    }
     occupiedColumns.set(column, collisionKey);
     occupiedByRow.set(node.row, occupiedColumns);
     if (column === node.column) continue;
@@ -1696,13 +1701,9 @@ export function computeBaseLayout(input: BranchGridLayoutInput): BaseLayoutModel
     isClumpOpen: () => false,
   });
 
+  // Stash and branch-created are synthetic leaves; uncommitted worktrees use placeLayoutNode like other commits.
   for (const commit of allCommitsWithClusters) {
-    if (
-      commit.kind !== 'uncommitted' &&
-      commit.kind !== 'stash' &&
-      commit.kind !== 'branch-created' &&
-      !isWorkingTreeCommitId(commit.id)
-    ) {
+    if (commit.kind !== 'stash' && commit.kind !== 'branch-created') {
       continue;
     }
     let row = rowByVisualId.get(commit.visualId) ?? 0;
@@ -2553,57 +2554,14 @@ export function projectVisibility(
     );
   };
 
-  const renderedParentNodeForCommit = (commit: VisualCommit): Node | null => {
-    const parentSha = actualWorktreeParentSha(commit);
-    if (!parentSha) return null;
-    if (isWorktreeGraphNode(commit)) {
-      const latestClumpNode = latestOpenClumpNodeForSha(parentSha, commit.branchName);
-      if (latestClumpNode) return latestClumpNode;
-    }
-    const preferred =
-      renderNodes.find((node) => node.commit.branchName === commit.branchName && shasMatch(node.commit.id, parentSha))
-      ?? null;
-    return preferred ?? renderNodes.find((node) => shasMatch(node.commit.id, parentSha)) ?? null;
-  };
-
-  const baseNodeForCommit = (commit: VisualCommit): Node | null => {
-    const direct = baseNodes.find((node) => node.commit.visualId === commit.visualId);
-    if (direct) return direct;
-    const clusterKey = clusterKeyByCommitId.get(commit.visualId);
-    if (!clusterKey) return null;
-    return baseNodes.find((node) => clusterKeyByCommitId.get(node.commit.visualId) === clusterKey) ?? null;
-  };
-
-  for (const node of renderNodes) {
-    if (!isWorktreeGraphNode(node.commit)) continue;
-    if (getNodePositionOverride(nodePositionOverrides, node.commit)) continue;
-    const parentNode = renderedParentNodeForCommit(node.commit);
-    if (!parentNode) continue;
-    const baseWorktreeNode = baseNodeForCommit(node.commit);
-    const baseParentNode = baseNodeForCommit(parentNode.commit);
-    const parentColumnDelta =
-      baseParentNode && baseWorktreeNode
-        ? parentNode.column - baseParentNode.column
-        : 0;
-    const translatedColumn =
-      baseWorktreeNode
-        ? baseWorktreeNode.column + parentColumnDelta
-        : parentNode.column + 1;
-    const parentClusterKey = clusterKeyByCommitId.get(parentNode.commit.visualId);
-    const openParentClumpColumns =
-      parentClusterKey && isClumpOpen(parentClusterKey)
-        ? renderNodes
-            .filter((candidate) => clusterKeyByCommitId.get(candidate.commit.visualId) === parentClusterKey)
-            .map((candidate) => candidate.column)
-        : [];
-    const firstFreeParentLane =
-      openParentClumpColumns.length > 0
-        ? Math.max(...openParentClumpColumns) + 1
-        : parentNode.column + 1;
-    node.row = parentNode.row + 1;
-    node.column = Math.max(translatedColumn, firstFreeParentLane);
-    columnByCommitVisualId.set(node.commit.visualId, node.column);
-  }
+  resolveVisibleNodeColumnCollisions(
+    renderNodes,
+    columnByCommitVisualId,
+    isHorizontal,
+    zoomAwareLanePitch,
+    clusterKeyByCommitId,
+    clusterCounts,
+  );
 
   // Re-sync final visual node coordinates
   let maxResolvedRow = Math.max(0, ...renderNodes.map((node) => node.row));

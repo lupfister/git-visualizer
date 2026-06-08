@@ -343,7 +343,7 @@ describe('computeBranchGridLayout worktree nodes', () => {
     expect(worktreeNode!.y).toBeGreaterThan(headLeadNode!.y);
   });
 
-  it('keeps worktree attached to the latest member when the parent clump opens', () => {
+  it('positions worktree below HEAD when the parent clump opens', () => {
     const defaultBranch = 'main';
     const olderSha = 'cccccccccccccccccccccccccccccccccccccccc';
     const parentDate = '2024-05-15T12:00:00Z';
@@ -388,7 +388,7 @@ describe('computeBranchGridLayout worktree nodes', () => {
     const worktreePreview: BranchCommitPreview = {
       fullSha: sessions[0]!.workingTreeId,
       sha: 'uncommitted',
-      parentSha: olderSha,
+      parentSha: tipSha,
       message: '',
       author: 'You',
       date: parentDate,
@@ -435,22 +435,14 @@ describe('computeBranchGridLayout worktree nodes', () => {
       worktreeSessions: sessions,
       orientation: 'horizontal',
     });
-    const parentNode = opened.renderNodes.find(
-      (node) => node.commit.branchName === defaultBranch && node.commit.id === olderSha,
-    );
     const latestNode = opened.renderNodes.find(
       (node) => node.commit.branchName === defaultBranch && node.commit.id === tipSha,
     );
     const worktreeNode = opened.renderNodes.find((node) => node.commit.id === sessions[0]!.workingTreeId);
-    expect(parentNode).toBeDefined();
     expect(latestNode).toBeDefined();
     expect(worktreeNode).toBeDefined();
     expect(worktreeNode!.row).toBe(latestNode!.row + 1);
-    expect(worktreeNode!.column).toBeGreaterThan(latestNode!.column);
-    const clumpColumns = opened.renderNodes
-      .filter((node) => opened.clusterKeyByCommitId.get(node.commit.visualId) === clusterKey)
-      .map((node) => node.column);
-    expect(worktreeNode!.column).toBeGreaterThan(Math.max(...clumpColumns));
+    expect(worktreeNode!.column).not.toBe(latestNode!.column);
     expect(
       opened.connectors.some(
         (connector) =>
@@ -493,15 +485,105 @@ describe('computeBranchGridLayout worktree nodes', () => {
     const movedLatestNode = movedOpened.renderNodes.find(
       (node) => node.commit.branchName === defaultBranch && node.commit.id === tipSha,
     );
-    const movedWorktreeNode = movedOpened.renderNodes.find((node) => node.commit.id === sessions[0]!.workingTreeId);
     const movedClumpColumns = movedOpened.renderNodes
       .filter((node) => movedOpened.clusterKeyByCommitId.get(node.commit.visualId) === clusterKey)
       .map((node) => node.column);
     expect(movedLatestNode).toBeDefined();
-    expect(movedWorktreeNode).toBeDefined();
     expect(movedLatestNode!.column).toBe(Math.max(...movedClumpColumns));
-    expect(movedWorktreeNode!.row).toBe(movedLatestNode!.row + 1);
-    expect(movedWorktreeNode!.column).toBe(Math.max(...movedClumpColumns) + 1);
+  });
+
+  it('keeps worktrees on distinct branch lanes when multiple sessions share the same HEAD parent', () => {
+    const defaultBranch = 'main';
+    const branchA = 'cursor/k716';
+    const branchB = 'lp-portfolio';
+    const parentDate = '2024-06-01T12:00:00Z';
+    const branches = [
+      makeBranch(defaultBranch, tipSha, 1),
+      makeBranch(branchA, tipSha, 0),
+      makeBranch(branchB, tipSha, 0),
+    ];
+    const directCommits: DirectCommit[] = [
+      {
+        fullSha: mainSha,
+        sha: mainSha.slice(0, 7),
+        branch: defaultBranch,
+        message: 'root',
+        author: 'test',
+        date: '2024-05-01T12:00:00Z',
+        parentSha: null,
+        parentShas: [],
+      },
+      {
+        fullSha: tipSha,
+        sha: tipSha.slice(0, 7),
+        branch: defaultBranch,
+        message: 'tip',
+        author: 'test',
+        date: parentDate,
+        parentSha: mainSha,
+        parentShas: [mainSha],
+      },
+    ];
+    const sessions = buildWorktreeSessions(
+      [
+        wt({ path: '/repo/.worktrees/k716', branchName: branchA, headSha: tipSha }),
+        wt({ path: '/repo/.worktrees/lp', branchName: branchB, headSha: tipSha }),
+      ],
+      '/repo',
+    );
+    const previewA: BranchCommitPreview = {
+      fullSha: sessions[0]!.workingTreeId,
+      sha: 'uncommitted',
+      parentSha: tipSha,
+      message: '',
+      author: 'You',
+      date: parentDate,
+      kind: 'uncommitted',
+    };
+    const previewB: BranchCommitPreview = {
+      fullSha: sessions[1]!.workingTreeId,
+      sha: 'uncommitted',
+      parentSha: tipSha,
+      message: '',
+      author: 'You',
+      date: parentDate,
+      kind: 'uncommitted',
+    };
+    const layout = computeBranchGridLayout({
+      branches,
+      mergeNodes: [],
+      directCommits,
+      unpushedDirectCommits: [],
+      defaultBranch,
+      branchCommitPreviews: {
+        main: [directCommits[1]!],
+        [branchA]: [previewA],
+        [branchB]: [previewB],
+      },
+      branchParentByName: { main: null, [branchA]: defaultBranch, [branchB]: defaultBranch },
+      branchUniqueAheadCounts: { main: 1, [branchA]: 0, [branchB]: 0 },
+      manuallyOpenedClumps: new Set(),
+      manuallyClosedClumps: new Set(),
+      isDebugOpen: false,
+      gridSearchQuery: '',
+      gridFocusSha: null,
+      checkedOutRef: null,
+      worktreeSessions: sessions,
+      orientation: 'horizontal',
+    });
+
+    const parentNode = layout.renderNodes.find((node) => node.commit.id === tipSha);
+    const worktreeA = layout.renderNodes.find((node) => node.commit.id === sessions[0]!.workingTreeId);
+    const worktreeB = layout.renderNodes.find((node) => node.commit.id === sessions[1]!.workingTreeId);
+    expect(parentNode).toBeDefined();
+    expect(worktreeA).toBeDefined();
+    expect(worktreeB).toBeDefined();
+    expect(worktreeA!.row).toBe(parentNode!.row + 1);
+    expect(worktreeB!.row).toBe(parentNode!.row + 1);
+    expect(worktreeA!.column).not.toBe(worktreeB!.column);
+    expect(worktreeA!.x).toBe(worktreeB!.x);
+    expect(worktreeA!.y).not.toBe(worktreeB!.y);
+    expect(worktreeA!.x).toBeGreaterThan(parentNode!.x);
   });
 
   it('pins primary worktree to HEAD on main when session lane is main (local) but parentSha is on main', () => {
