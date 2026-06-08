@@ -61,15 +61,11 @@ describe('worktree sidebar model', () => {
     expect(values.map((value) => value.id)).toEqual(['active-preview']);
   });
 
-  it('labels high-level commit previews with branch and sha', () => {
-    expect(previewLabel({
-      path: '/repo',
-      name: 'repo',
-      branches: [],
-      worktrees: [],
-      branchCommitPreviews: {
-        feature: [{ fullSha: 'abcdefg123', sha: 'abcdefg', message: 'x', author: 'a', date: '2026-01-01' }],
-      },
-    }, session({ kind: 'preview', targetKind: 'commit', targetId: 'abcdefg123' }))).toBe('Preview · feature/abcdefg');
+  it('uses a minimal label while a preview starts', () => {
+    expect(previewLabel(session({ kind: 'preview', targetKind: 'commit', targetId: 'abcdefg123' }))).toBe('Preview');
+  });
+
+  it('labels ready web previews with only their port', () => {
+    expect(previewLabel(session({ kind: 'preview', previewUrl: 'http://localhost:5173/dashboard' }))).toBe('5173');
   });
 });

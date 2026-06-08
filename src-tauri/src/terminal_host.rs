@@ -44,6 +44,10 @@ pub struct TerminalSession {
     pub target_id: Option<String>,
     pub target_kind: Option<String>,
     #[serde(default)]
+    pub preview_url: Option<String>,
+    #[serde(default)]
+    pub preview_app_name: Option<String>,
+    #[serde(default)]
     pub ai_label: Option<String>,
     #[serde(default)]
     pub ai_label_fingerprint: Option<String>,
@@ -487,6 +491,10 @@ fn refresh_status(session: &Arc<LiveSession>) -> TerminalSession {
             process_name,
             &current_fingerprint,
         );
+    } else if response_metadata.kind == "preview" {
+        response_metadata.preview_url =
+            crate::git::detect_localhost_url(&String::from_utf8_lossy(&output_bytes));
+        response_metadata.preview_app_name = process_name;
     }
     response_metadata.output_active = refresh_output_active(session, &output_bytes, exited);
     response_metadata.has_recognized_output = session_has_recognized_output(session);
@@ -995,6 +1003,8 @@ mod tests {
                 status: "running".to_string(),
                 target_id: None,
                 target_kind: None,
+                preview_url: None,
+                preview_app_name: None,
                 ai_label: None,
                 ai_label_fingerprint: None,
                 ai_label_at: None,
@@ -1076,6 +1086,8 @@ mod tests {
             status: "running".to_string(),
             target_id: None,
             target_kind: None,
+            preview_url: None,
+            preview_app_name: None,
             ai_label: Some("Run test suite".to_string()),
             ai_label_fingerprint: Some("abc123".to_string()),
             ai_label_at: Some(1),
@@ -1132,6 +1144,8 @@ mod tests {
             status: "running".to_string(),
             target_id: None,
             target_kind: None,
+            preview_url: None,
+            preview_app_name: None,
             ai_label: Some("Old task".to_string()),
             ai_label_fingerprint: Some("old".to_string()),
             ai_label_at: Some(1),

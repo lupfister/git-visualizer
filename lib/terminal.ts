@@ -8,6 +8,9 @@ export interface TerminalReadResult {
   output: string;
 }
 
+export const isNativePreviewCommand = (command: string): boolean =>
+  command.toLowerCase().includes('tauri dev');
+
 export const listTerminalSessions = (): Promise<TerminalSession[]> =>
   invoke('list_terminal_sessions');
 
@@ -44,6 +47,13 @@ export const restartTerminalSession = (id: string, command: string): Promise<Ter
 
 export const terminateTerminalSession = (id: string): Promise<void> =>
   invoke('terminate_terminal_session', { id });
+
+export const activatePreviewTarget = (session: Pick<TerminalSession, 'id' | 'previewUrl' | 'previewAppName'>): Promise<void> =>
+  invoke('activate_preview_target', {
+    id: session.id,
+    url: session.previewUrl ?? null,
+    appName: session.previewAppName ?? null,
+  });
 
 export const saveTerminalAttachment = (
   fileName: string,

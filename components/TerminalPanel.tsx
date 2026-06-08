@@ -42,6 +42,18 @@ const blobToBase64 = (blob: Blob): Promise<string> => new Promise((resolve, reje
 
 const shellQuote = (value: string): string => `'${value.split("'").join("'\\''")}'`;
 
+const terminalPanelLabel = (session: TerminalSession): string => {
+  if (session.kind !== 'preview') return session.label;
+  if (session.previewUrl) {
+    try {
+      return new URL(session.previewUrl).port;
+    } catch {
+      return 'Preview';
+    }
+  }
+  return 'Preview';
+};
+
 export default function TerminalPanel({
   session,
   placement,
@@ -219,7 +231,7 @@ export default function TerminalPanel({
         />
       )}
       <header className="flex h-10 shrink-0 items-center gap-2 border-b border-border/50 px-2">
-        <span className="min-w-0 flex-1 truncate text-xs font-medium text-foreground">{session.label}</span>
+        <span className="min-w-0 flex-1 truncate text-xs font-medium text-foreground">{terminalPanelLabel(session)}</span>
         <button
           type="button"
           onClick={handleTogglePlacement}

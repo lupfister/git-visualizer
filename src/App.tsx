@@ -91,7 +91,9 @@ import {
 } from '../lib/git';
 import {
   createTerminalSession,
+  isNativePreviewCommand,
   listTerminalSessions,
+  activatePreviewTarget,
   restartTerminalSession,
   setTerminalSessionTarget,
   terminateTerminalSession,
@@ -143,7 +145,9 @@ function terminalSessionsEqual(left: readonly TerminalSession[], right: readonly
       && session.status === candidate.status
       && (session.outputActive ?? false) === (candidate.outputActive ?? false)
       && (session.targetId ?? null) === (candidate.targetId ?? null)
-      && (session.targetKind ?? null) === (candidate.targetKind ?? null);
+      && (session.targetKind ?? null) === (candidate.targetKind ?? null)
+      && (session.previewUrl ?? null) === (candidate.previewUrl ?? null)
+      && (session.previewAppName ?? null) === (candidate.previewAppName ?? null);
   });
 }
 
@@ -6425,6 +6429,8 @@ function App() {
         rows: 30,
         targetId,
         targetKind: target.kind,
+        previewUrl: null,
+        previewAppName: null,
       });
       setTerminalSessions((current) => {
         const withoutDuplicates = target.kind === 'commit'
@@ -6529,6 +6535,18 @@ function App() {
   }, []);
 
   const activeTerminal = terminalSessions.find((session) => session.id === activeTerminalId) ?? null;
+  const openedPreviewUrlsRef = useRef(new Map<string, string>());
+
+  useEffect(() => {
+    for (const session of terminalSessions) {
+      if (session.kind !== 'preview' || !session.previewUrl || session.status !== 'running') continue;
+      if (isNativePreviewCommand(session.command)) continue;
+      if (openedPreviewUrlsRef.current.get(session.id) === session.previewUrl) continue;
+      openedPreviewUrlsRef.current.set(session.id, session.previewUrl);
+      void activatePreviewTarget(session).catch(() => undefined);
+    }
+  }, [terminalSessions]);
+
   const useBottomTerminal = activeTerminal != null && terminalPanelPlacement === 'bottom';
   const terminalCountByWorkingTreeId = useMemo(() => {
     const counts: Record<string, number> = {};
@@ -6558,6 +6576,8 @@ function App() {
       rows: 30,
       targetId: null,
       targetKind: null,
+      previewUrl: null,
+      previewAppName: null,
     });
     setTerminalSessions((current) => [...current, session]);
     setActiveTerminalId(session.id);
@@ -6631,6 +6651,12 @@ function App() {
               onCreateTerminal={handleCreateTerminal}
               onSelectTerminal={async (session) => {
                 setActiveTerminalId(session.id);
+                if (session.kind === 'preview') {
+                  void activatePreviewTarget(session).catch((error) => {
+                    console.warn('Failed to activate preview:', error);
+                  });
+                  return;
+                }
                 if (!sameRepoPath(repoPath, session.projectPath)) {
                   await loadRepo(session.projectPath);
                 }

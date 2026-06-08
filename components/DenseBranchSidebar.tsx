@@ -63,12 +63,15 @@ export const commitPreviewSessions = (sessions: TerminalSession[]): TerminalSess
   return running ? [running] : [commitPreviews[commitPreviews.length - 1]!];
 };
 
-export const previewLabel = (project: SidebarProject, session: TerminalSession): string => {
-  const sha = session.targetId ?? '';
-  const branch = Object.entries(project.branchCommitPreviews).find(([, commits]) =>
-    commits.some((commit) => commit.fullSha === sha || commit.sha === sha),
-  )?.[0] ?? project.branches.find((candidate) => candidate.headSha === sha)?.name;
-  return `Preview · ${branch ? `${branch}/` : ''}${sha.slice(0, 7)}`;
+export const previewLabel = (session: TerminalSession): string => {
+  if (session.previewUrl) {
+    try {
+      return new URL(session.previewUrl).port;
+    } catch {
+      return 'Preview';
+    }
+  }
+  return 'Preview';
 };
 
 export const worktreeRefLabel = (worktree: WorktreeInfo): string =>
@@ -279,7 +282,7 @@ export default function DenseBranchSidebar({
                       <TerminalRow
                         key={session.id}
                         session={session}
-                        label={previewLabel(project, session)}
+                        label={previewLabel(session)}
                         active={activeTerminalId === session.id}
                         onSelect={onSelectTerminal}
                         isActiveProject={isActive}
@@ -377,7 +380,7 @@ export default function DenseBranchSidebar({
                                 <TerminalRow
                                   key={session.id}
                                   session={session}
-                                  label={session.kind === 'preview' ? 'Preview' : session.label}
+                                  label={session.kind === 'preview' ? previewLabel(session) : session.label}
                                   active={activeTerminalId === session.id}
                                   onSelect={onSelectTerminal}
                                   accent={accent}
