@@ -89,7 +89,13 @@ import {
   type PreviewTarget,
   type ProjectPreviewConfig,
 } from '../lib/git';
-import { createTerminalSession, listTerminalSessions, terminateTerminalSession } from '../lib/terminal';
+import {
+  createTerminalSession,
+  listTerminalSessions,
+  restartTerminalSession,
+  setTerminalSessionTarget,
+  terminateTerminalSession,
+} from '../lib/terminal';
 
 const PROJECTS_STORAGE_KEY = 'git-visualizer:projects';
 const ACTIVE_PROJECT_STORAGE_KEY = 'git-visualizer:active-project';
@@ -253,7 +259,7 @@ function makeLayoutCacheKey(
   graphSignature = '',
 ): string {
   return [
-    'layout-v10-final-clump-expansion',
+    'layout-v12-direct-sibling-lanes',
     path,
     orientation,
     setSignature(manuallyOpenedClumps),
@@ -4176,7 +4182,6 @@ function App() {
       if (isDisposed || !defaultBranch || remoteSyncInFlightRef.current) return false;
       const online = await isNetworkAvailable();
       if (!online) {
-        console.log('[RemoteSync] No network available, skipping remote sync');
         return false;
       }
       remoteSyncInFlightRef.current = true;
@@ -4239,8 +4244,6 @@ function App() {
 
         // 1. Short-circuit: If backend watcher reports no changes, return immediately without file IO
         if (!gitEpochChanged && !worktreeEpochChanged && !force) {
-          const duration = (performance.now() - startTime).toFixed(2);
-          console.debug(`[ChangeDetection] Epochs unchanged. Check completed in ${duration}ms: no change`);
           return { changed: false, gitChanged: false, worktreeChanged: false };
         }
 
@@ -4253,17 +4256,6 @@ function App() {
         const gitChanged = sigChanged || !!force;
         const worktreeChanged = worktreeEpochChanged || !!force;
         const changed = gitChanged || worktreeChanged;
-
-        const duration = (performance.now() - startTime).toFixed(2);
-        
-        if (changed || !!force) {
-          console.log(
-            `[ChangeDetection] Detected change in ${repoPath} (${duration}ms):`,
-            { gitEpochChanged, worktreeEpochChanged, sigChanged, force }
-          );
-        } else {
-          console.debug(`[ChangeDetection] Epochs changed but signature matches. Completed in ${duration}ms: no change`);
-        }
 
         // Cache the current values
         lastSyncedGitEpochRef.current[normalizedPath] = epochs.gitEpoch;
@@ -4287,9 +4279,6 @@ function App() {
       if (runAuthoritativeRepoSyncInFlightRef.current) {
         if (reason === 'local' || reason === 'watch') {
           runAuthoritativeRepoSyncPendingRef.current = true;
-          console.log(`[ChangeDetection] Sync in flight. Queueing request for reason: ${reason}`);
-        } else {
-          console.log(`[ChangeDetection] Sync in flight. Skipping queueing for scheduled reason: ${reason}`);
         }
         return;
       }
@@ -4305,49 +4294,36 @@ function App() {
       }
 
       runAuthoritativeRepoSyncInFlightRef.current = true;
-      console.log(`[ChangeDetection] runAuthoritativeRepoSync started: reason=${reason}, options=`, options);
       try {
         if (options?.fetchRemote) {
-          console.log(`[ChangeDetection] syncRemoteFromOrigin starting...`);
           const remoteChanged = await syncRemoteFromOrigin();
-          console.log(`[ChangeDetection] syncRemoteFromOrigin completed: remoteChanged=${remoteChanged}`);
           if (remoteChanged || isStaleRepoRefresh()) return;
         }
 
         // 1. Perform cheap filesystem change detection check first
-        console.log(`[ChangeDetection] performCheapChangeDetectionCheck starting...`);
         const checkResult = await performCheapChangeDetectionCheck(options?.forceSnapshot);
-        console.log(`[ChangeDetection] performCheapChangeDetectionCheck completed:`, checkResult);
         if (!checkResult.changed) {
-          console.log(`[ChangeDetection] No changes detected for ${repoPath}. Skipping sync.`);
           markGitActivityHandled();
           pendingRefreshAfterInteractionRef.current = false;
           return;
         }
 
         // 2. Something changed. Fetch sync peek to inspect details
-        console.log(`[ChangeDetection] fetchRepoSyncPeek starting...`);
         const peek = await fetchRepoSyncPeek(repoPath);
-        console.log(`[ChangeDetection] fetchRepoSyncPeek completed:`, peek);
         if (isStaleRepoRefresh()) return;
 
         // 3. Always perform full repository reload from git (hard refresh equivalent on the data level)
-        console.log(`[ChangeDetection] Performing full repository reload from git.`);
         await reloadRepoSnapshotFromGit(repoPath, peek);
         pendingRefreshAfterInteractionRef.current = false;
       } catch (err) {
         console.error(`[ChangeDetection] runAuthoritativeRepoSync failed with error:`, err);
       } finally {
-        console.log(`[ChangeDetection] runAuthoritativeRepoSync finished: reason=${reason}`);
         runAuthoritativeRepoSyncInFlightRef.current = false;
         if (runAuthoritativeRepoSyncPendingRef.current) {
           runAuthoritativeRepoSyncPendingRef.current = false;
           const stillPending = gitActivityEpochRef.current !== lastHandledGitActivityEpochRef.current;
           if (stillPending) {
-            console.log(`[ChangeDetection] Running pending queued sync request because git activity is pending (epoch ${gitActivityEpochRef.current} vs handled ${lastHandledGitActivityEpochRef.current}).`);
             void runAuthoritativeRepoSync('watch');
-          } else {
-            console.log(`[ChangeDetection] Skipping pending queued sync request because git activity is already handled.`);
           }
         }
       }
@@ -4371,7 +4347,6 @@ function App() {
 
     const pollRepoChangeSignal = async () => {
       if (isDisposed) {
-        console.debug('[repo-sync] tick skipped', { isDisposed });
         return;
       }
       if (
@@ -4389,10 +4364,8 @@ function App() {
         return;
       }
       if (liveFingerprintCheckInFlightRef.current) {
-        console.debug('[repo-sync] tick skipped: check already in flight');
         return;
       }
-      console.debug('[repo-sync] tick', { repoPath: normalizedPath, at: new Date().toISOString() });
       try {
         liveFingerprintCheckInFlightRef.current = true;
         const withTimeout = async <T,>(promise: Promise<T>, label: string, timeoutMs = 8_000): Promise<T> => {
@@ -4418,10 +4391,6 @@ function App() {
             return;
           }
           const appliedChangeToken = appliedRepoChangeTokenRef.current[normalizedPath];
-          console.debug('[repo-sync] change token comparison', {
-            repoPath: normalizedPath,
-            matches: Boolean(appliedChangeToken && liveChangeToken === appliedChangeToken),
-          });
           if (appliedChangeToken && liveChangeToken === appliedChangeToken) return;
           if (
             repoMutationInFlightRef.current
@@ -4439,7 +4408,6 @@ function App() {
             return;
           }
           gitActivityEpochRef.current += 1;
-          console.info('[repo-sync] mismatch detected; refreshing snapshot', { repoPath: normalizedPath });
           const freshSnapshot = await withTimeout(
             invoke<RepoVisualSnapshot>('get_repo_visual_snapshot', {
               repoPath: normalizedPath,
@@ -4457,7 +4425,6 @@ function App() {
           }
           const signature = getRepoVisualSnapshotSignature(freshSnapshot);
           if (activeSnapshotSignatureRef.current === signature) {
-            console.debug('[repo-sync] snapshot signature is identical. Skipping apply.', { repoPath: normalizedPath });
             appliedRepoChangeTokenRef.current[normalizedPath] = liveChangeToken;
             delete pendingLiveFingerprintRef.current[normalizedPath];
             markGitActivityHandled();
@@ -4468,11 +4435,6 @@ function App() {
             force: true,
             allowIncomingDirty: true,
             needsLayoutRebuild: true,
-          });
-          console.info('[repo-sync] snapshot apply finished', {
-            repoPath: normalizedPath,
-            applied,
-            snapshotUpdatedAtMs: freshSnapshot.updatedAtMs,
           });
           if (!applied) {
             pendingRefreshAfterInteractionRef.current = true;
@@ -4510,7 +4472,6 @@ function App() {
         void pollRepoChangeSignal();
       },
       onRepair: () => {
-        console.info('[repo-sync] idle repair check');
         void runAuthoritativeRepoSync('full', { fetchRemote: true });
       },
     });
@@ -4520,7 +4481,6 @@ function App() {
       if (isDisposed) return;
       const changedPath = normalizePath(event.payload.repoPath);
       if (!changedPath || !sameRepoPath(changedPath, repoPath)) return;
-      console.info('[repo-sync] active repo git-activity event received:', event.payload.kind);
       void pollRepoChangeSignal();
     }).then((fn) => {
       if (isDisposed) fn();
@@ -5954,8 +5914,7 @@ function App() {
     worktreeSessions,
     isPaused: () => repoMutationInFlightRef.current,
     enabled: Boolean(repoPath),
-    onWorktreeCleanStateDetected: (worktreePath) => {
-      console.log(`[ChangeDetection] Worktree clean state detected via draft messages probe for path: ${worktreePath}. Refreshing...`);
+    onWorktreeCleanStateDetected: () => {
       runRepoRefreshRef.current?.('clean-detected');
     },
   });
@@ -6408,9 +6367,49 @@ function App() {
     setPreviewInProgress(true);
     try {
       const prepared = await preparePreviewTarget(repoPath, target);
-      const command = config.installCommand.trim()
+      const command = prepared.dependencyFilesChanged && config.installCommand.trim()
         ? `${config.installCommand.trim()} && ${config.runCommand.trim()}`
         : config.runCommand.trim();
+      const targetId = target.kind === 'commit' ? target.sha : target.workingTreeId;
+
+      if (target.kind === 'commit') {
+        const commitPreviews = terminalSessions.filter((session) =>
+          sameRepoPath(session.projectPath, repoPath)
+          && session.kind === 'preview'
+          && session.targetKind === 'commit',
+        );
+        const runningPreview = commitPreviews.find((session) => session.status === 'running') ?? null;
+        const stalePreviewIds = commitPreviews
+          .filter((session) => session.id !== runningPreview?.id)
+          .map((session) => session.id);
+
+        for (const staleId of stalePreviewIds) {
+          await terminateTerminalSession(staleId).catch(() => undefined);
+        }
+
+        if (runningPreview) {
+          let nextSession = runningPreview;
+          if (runningPreview.targetId !== targetId) {
+            nextSession = await setTerminalSessionTarget(runningPreview.id, targetId, 'commit');
+            nextSession = await restartTerminalSession(runningPreview.id, command);
+          }
+          nextSession = {
+            ...nextSession,
+            worktreePath: prepared.previewPath,
+            command,
+            targetId,
+            targetKind: 'commit',
+          };
+          setTerminalSessions((current) => [
+            ...current.filter((session) => session.id !== nextSession.id && !stalePreviewIds.includes(session.id)),
+            nextSession,
+          ]);
+          setActiveTerminalId(nextSession.id);
+          setPreviewedNodeId(target.sha || nodeId);
+          return;
+        }
+      }
+
       const result = await createTerminalSession({
         projectPath: repoPath,
         worktreePath: prepared.previewPath,
@@ -6419,10 +6418,20 @@ function App() {
         command,
         cols: 100,
         rows: 30,
-        targetId: target.kind === 'commit' ? target.sha : target.workingTreeId,
+        targetId,
         targetKind: target.kind,
       });
-      setTerminalSessions((current) => [...current.filter((session) => session.id !== result.id), result]);
+      setTerminalSessions((current) => {
+        const withoutDuplicates = target.kind === 'commit'
+          ? current.filter((session) => !(
+            sameRepoPath(session.projectPath, repoPath)
+            && session.kind === 'preview'
+            && session.targetKind === 'commit'
+            && session.id !== result.id
+          ))
+          : current;
+        return [...withoutDuplicates.filter((session) => session.id !== result.id), result];
+      });
       setActiveTerminalId(result.id);
       if (target.kind === 'worktree') {
         setPreviewedWorktreeNodeIds((current) => current.includes(target.workingTreeId) ? current : [...current, target.workingTreeId]);
@@ -6434,7 +6443,7 @@ function App() {
     } finally {
       setPreviewInProgress(false);
     }
-  }, [repoPath]);
+  }, [repoPath, terminalSessions]);
 
   const handlePreviewNode = useCallback(async (target: PreviewTarget, nodeId: string) => {
     if (!repoPath) return;
@@ -6586,14 +6595,14 @@ function App() {
           >
             <button
               type="button"
-              className="window-no-drag absolute right-2.5 left-22 top-2.25 z-[9999] inline-flex h-7 w-7 items-center justify-center rounded-md text-foreground transition-colors hover:bg-muted"
+              className="window-no-drag absolute right-2.5 left-22 top-2.25 z-[9999] inline-flex h-7 w-7 shrink-0 items-center justify-center rounded-lg text-muted-foreground transition-colors hover:bg-muted hover:text-foreground"
               aria-label={isSidebarCollapsed ? 'Open sidebar' : 'Collapse sidebar'}
               onClick={() => setIsSidebarCollapsed((value) => !value)}
             >
               {isSidebarCollapsed ? (
-                <PanelLeftOpen className="h-4 w-4 shrink-0" />
+                <PanelLeftOpen className="h-3.5 w-3.5 shrink-0" />
               ) : (
-                <PanelLeftClose className="h-4 w-4 shrink-0" />
+                <PanelLeftClose className="h-3.5 w-3.5 shrink-0" />
               )}
             </button>
             <DenseBranchSidebar

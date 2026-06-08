@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import type { TerminalSession, WorktreeInfo } from '../types';
-import { previewLabel, visibleNestedSessions, worktreeRefLabel } from './DenseBranchSidebar';
+import { commitPreviewSessions, previewLabel, visibleNestedSessions, worktreeRefLabel } from './DenseBranchSidebar';
 
 const session = (overrides: Partial<TerminalSession>): TerminalSession => ({
   id: 'terminal-1',
@@ -51,6 +51,14 @@ describe('worktree sidebar model', () => {
       }),
     ], '/repo-feature', 'WORKING_TREE:/repo-feature');
     expect(values.map((value) => value.id)).toEqual(['worktree-preview']);
+  });
+
+  it('keeps only one commit preview row, preferring the running session', () => {
+    const values = commitPreviewSessions([
+      session({ id: 'old-preview', kind: 'preview', targetKind: 'commit', targetId: '1111111', status: 'exited' }),
+      session({ id: 'active-preview', kind: 'preview', targetKind: 'commit', targetId: '2222222', status: 'running' }),
+    ]);
+    expect(values.map((value) => value.id)).toEqual(['active-preview']);
   });
 
   it('labels high-level commit previews with branch and sha', () => {

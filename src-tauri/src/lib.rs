@@ -161,11 +161,9 @@ fn increment_watcher_activity(repo_path: &str, is_git: bool) {
         })
     });
     if is_git {
-        let val = entry.last_git_event_epoch.fetch_add(1, Ordering::Relaxed) + 1;
-        println!("[WatcherActivity] Repo {} ({}) git_epoch bumped to {}", repo_path, normalized, val);
+        entry.last_git_event_epoch.fetch_add(1, Ordering::Relaxed);
     } else {
-        let val = entry.last_worktree_event_epoch.fetch_add(1, Ordering::Relaxed) + 1;
-        println!("[WatcherActivity] Repo {} ({}) worktree_epoch bumped to {}", repo_path, normalized, val);
+        entry.last_worktree_event_epoch.fetch_add(1, Ordering::Relaxed);
     }
 }
 
@@ -2582,11 +2580,7 @@ fn compute_fast_fs_signature(repo_path: &str) -> String {
 
 #[tauri::command(rename_all = "camelCase")]
 fn get_repo_fast_signature(repo_path: String) -> Result<String, String> {
-    let start = Instant::now();
-    let sig = compute_fast_fs_signature(&repo_path);
-    let elapsed = start.elapsed();
-    println!("[FastSignature] Check for {} took {:?}", repo_path, elapsed);
-    Ok(sig)
+    Ok(compute_fast_fs_signature(&repo_path))
 }
 
 #[tauri::command(rename_all = "camelCase")]
@@ -3282,6 +3276,23 @@ async fn resize_terminal_session(id: String, cols: u16, rows: u16) -> Result<(),
 #[tauri::command(rename_all = "camelCase")]
 async fn set_terminal_session_label(id: String, label: String) -> Result<(), String> {
     run_blocking(move || terminal_host::set_session_label(id, label)).await
+}
+
+#[tauri::command(rename_all = "camelCase")]
+async fn set_terminal_session_target(
+    id: String,
+    target_id: String,
+    target_kind: String,
+) -> Result<terminal_host::TerminalSession, String> {
+    run_blocking(move || terminal_host::set_session_target(id, target_id, target_kind)).await
+}
+
+#[tauri::command(rename_all = "camelCase")]
+async fn restart_terminal_session(
+    id: String,
+    command: String,
+) -> Result<terminal_host::TerminalSession, String> {
+    run_blocking(move || terminal_host::restart_session_command(id, command)).await
 }
 
 #[tauri::command(rename_all = "camelCase")]
@@ -8086,6 +8097,8 @@ pub fn run() {
             write_terminal_session,
             resize_terminal_session,
             set_terminal_session_label,
+            set_terminal_session_target,
+            restart_terminal_session,
             terminate_terminal_session,
             detect_project_preview_defaults,
             start_project_preview,

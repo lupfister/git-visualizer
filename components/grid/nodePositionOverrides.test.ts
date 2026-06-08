@@ -44,6 +44,50 @@ describe('node position override keys', () => {
     expect(overrides[getStableNodePositionKey(target)]).toBeUndefined();
   });
 
+  it('does not reuse a persisted stash position after stash indexes change', () => {
+    const oldStash = commit({
+      id: 'STASH:0',
+      visualId: 'Stash 1:STASH:0',
+      branchName: 'Stash 1',
+      kind: 'stash',
+      parentSha: 'old-parent',
+      date: '2026-01-01T00:00:00.000Z',
+      message: 'old stash',
+    });
+    const currentStash = commit({
+      ...oldStash,
+      parentSha: 'new-parent',
+      date: '2026-01-02T00:00:00.000Z',
+      message: 'current stash',
+    });
+    const overrides: NodePositionOverrides = {
+      [oldStash.id]: { x: 10, y: 9999 },
+      [oldStash.visualId]: { x: 10, y: 9999 },
+      [getStableNodePositionKey(oldStash)]: { x: 10, y: 9999 },
+    };
+
+    expect(getNodePositionOverride(overrides, currentStash)).toBeUndefined();
+    expect(canonicalizeNodePositionOverridesForCommits(overrides, [currentStash])).toEqual({});
+  });
+
+  it('persists and previews stash positions with content-specific stable keys only', () => {
+    const stash = commit({
+      id: 'STASH:0',
+      visualId: 'Stash 1:STASH:0',
+      kind: 'stash',
+      parentSha: 'parent',
+      message: 'stash',
+    });
+    const persisted: NodePositionOverrides = {};
+    const preview: NodePositionOverrides = {};
+
+    assignNodePositionOverride(persisted, stash, { x: 10, y: 20 });
+    assignNodePositionPreview(preview, stash, { x: 12, y: 24 });
+
+    expect(persisted).toEqual({ [getStableNodePositionKey(stash)]: { x: 10, y: 20 } });
+    expect(preview).toEqual({ [getStableNodePositionKey(stash)]: { x: 12, y: 24 } });
+  });
+
   it('finds old branch-qualified keys after branch identity changes', () => {
     const target = commit({ visualId: 'renamed:abc123', branchName: 'renamed' });
     const overrides: NodePositionOverrides = {

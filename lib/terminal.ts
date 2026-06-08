@@ -32,6 +32,16 @@ export const resizeTerminalSession = (id: string, cols: number, rows: number): P
 export const setTerminalSessionLabel = (id: string, label: string): Promise<void> =>
   invoke('set_terminal_session_label', { id, label });
 
+export const setTerminalSessionTarget = (
+  id: string,
+  targetId: string,
+  targetKind: 'commit' | 'worktree',
+): Promise<TerminalSession> =>
+  invoke('set_terminal_session_target', { id, targetId, targetKind });
+
+export const restartTerminalSession = (id: string, command: string): Promise<TerminalSession> =>
+  invoke('restart_terminal_session', { id, command });
+
 export const terminateTerminalSession = (id: string): Promise<void> =>
   invoke('terminate_terminal_session', { id });
 

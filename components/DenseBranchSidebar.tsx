@@ -56,6 +56,13 @@ type Props = {
   collapsed?: boolean;
 };
 
+export const commitPreviewSessions = (sessions: TerminalSession[]): TerminalSession[] => {
+  const commitPreviews = sessions.filter((session) => session.kind === 'preview' && session.targetKind === 'commit');
+  if (commitPreviews.length <= 1) return commitPreviews;
+  const running = commitPreviews.find((session) => session.status === 'running');
+  return running ? [running] : [commitPreviews[commitPreviews.length - 1]!];
+};
+
 export const previewLabel = (project: SidebarProject, session: TerminalSession): string => {
   const sha = session.targetId ?? '';
   const branch = Object.entries(project.branchCommitPreviews).find(([, commits]) =>
@@ -214,7 +221,7 @@ export default function DenseBranchSidebar({
             const isActive = activeProjectPath != null && samePath(project.path, activeProjectPath);
             const isExpanded = expandedProjects.has(project.path);
             const projectSessions = sessionsByProject.get(normalizeRepoPathForCompare(project.path).toLowerCase()) ?? [];
-            const commitPreviews = projectSessions.filter((session) => session.kind === 'preview' && session.targetKind === 'commit');
+            const commitPreviews = commitPreviewSessions(projectSessions);
             const worktreeAccentByPath = new Map(
               buildWorktreeSessions(project.worktrees, project.path).map((session) => [
                 normalizeRepoPathForCompare(session.path).toLowerCase(),
@@ -267,7 +274,7 @@ export default function DenseBranchSidebar({
                     </div>
                   ) : null}
                 </div>
-                {isExpanded ? <div className="mt-1 space-y-1 pl-1">
+                {isExpanded ? <div className="mt-1 space-y-1">
                     {commitPreviews.map((session) => (
                       <TerminalRow
                         key={session.id}
@@ -277,8 +284,10 @@ export default function DenseBranchSidebar({
                         onSelect={onSelectTerminal}
                         isActiveProject={isActive}
                         onTerminate={onTerminateTerminal}
+                        alignWithProjectRow
                       />
                     ))}
+                    <div className="space-y-1 pl-1">
                     {project.worktrees.map((worktree) => {
                       const key = `${project.path}:${worktree.path}`;
                       const expanded = expandedWorktrees.has(key);
@@ -381,6 +390,7 @@ export default function DenseBranchSidebar({
                         </div>
                       );
                     })}
+                    </div>
                 </div> : null}
               </section>
             );
@@ -401,6 +411,7 @@ function TerminalRow({
   accent,
   isActiveProject,
   onTerminate,
+  alignWithProjectRow,
 }: {
   session: TerminalSession;
   label: string;
@@ -409,6 +420,7 @@ function TerminalRow({
   accent?: { fg: string; muted: string };
   isActiveProject?: boolean;
   onTerminate?: (id: string) => void | Promise<void>;
+  alignWithProjectRow?: boolean;
 }) {
   const Icon = session.kind === 'preview' ? PreviewIcon : TerminalIcon;
   const [displayLabel, setDisplayLabel] = useState(label);
@@ -492,7 +504,8 @@ function TerminalRow({
         onClick={() => onSelect(session)}
         aria-busy={pulseVisible || undefined}
         className={cn(
-          'flex h-7 flex-1 items-center gap-1.5 rounded-lg px-2 text-left text-sm min-w-0 pr-8',
+          'flex h-7 flex-1 items-center rounded-lg text-left text-sm min-w-0 pr-8',
+          alignWithProjectRow ? 'pl-0' : 'gap-1.5 px-2',
           !pulseVisible && accent && 'text-[var(--worktree-fg)]',
           !pulseVisible && !accent && active && 'text-primary',
           !pulseVisible && !accent && !active && 'text-muted-foreground group-hover/terminal:text-foreground',
@@ -505,24 +518,39 @@ function TerminalRow({
         {pulseVisible ? (
           <span
             className={cn(
-              'terminal-row-shimmer__content flex min-w-0 flex-1 items-center gap-1.5',
+              'terminal-row-shimmer__content flex min-w-0 flex-1 items-center',
+              !alignWithProjectRow && 'gap-1.5',
               isSettling && 'terminal-row-shimmer__content--settling',
             )}
           >
             <span
               aria-hidden
               className={cn(
-                'terminal-row-shimmer__icon shrink-0',
-                session.kind === 'preview'
-                  ? 'terminal-row-shimmer__icon--preview'
-                  : 'terminal-row-shimmer__icon--terminal',
+                'inline-flex shrink-0 items-center justify-center',
+                alignWithProjectRow ? 'h-7 w-7' : 'h-3.5 w-3.5',
               )}
-            />
+            >
+              <span
+                className={cn(
+                  'terminal-row-shimmer__icon shrink-0',
+                  session.kind === 'preview'
+                    ? 'terminal-row-shimmer__icon--preview'
+                    : 'terminal-row-shimmer__icon--terminal',
+                )}
+              />
+            </span>
             <span className="terminal-row-shimmer__text min-w-0 flex-1 truncate">{displayLabel}</span>
           </span>
         ) : (
           <>
-            <Icon className="h-3.5 w-3.5 shrink-0" />
+            <span
+              className={cn(
+                'inline-flex shrink-0 items-center justify-center',
+                alignWithProjectRow ? 'h-7 w-7' : 'h-3.5 w-3.5',
+              )}
+            >
+              <Icon className="h-3.5 w-3.5 shrink-0" />
+            </span>
             <span className="min-w-0 flex-1 truncate">{displayLabel}</span>
           </>
         )}

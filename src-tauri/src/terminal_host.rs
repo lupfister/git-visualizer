@@ -71,6 +71,12 @@ enum HostRequest {
         ai_label_fingerprint: String,
         ai_label_at: u64,
     },
+    SetTarget {
+        id: String,
+        target_id: String,
+        target_kind: String,
+    },
+    Restart { id: String, command: String },
     Terminate { id: String },
 }
 
@@ -694,6 +700,35 @@ fn handle_request(request: HostRequest, sessions: &Sessions) -> HostResponse {
             persist_metadata(sessions);
             HostResponse::ok()
         }
+        HostRequest::SetTarget {
+            id,
+            target_id,
+            target_kind,
+        } => {
+            let session = sessions
+                .lock()
+                .ok()
+                .and_then(|values| values.get(&id).cloned());
+            let Some(session) = session else {
+                return HostResponse::error("Terminal session not found");
+            };
+            if let Ok(mut metadata) = session.metadata.lock() {
+                metadata.target_id = Some(target_id);
+                metadata.target_kind = Some(target_kind);
+            }
+            persist_metadata(sessions);
+            let mut response = HostResponse::ok();
+            response.session = Some(refresh_status(&session));
+            response
+        }
+        HostRequest::Restart { id, command } => match restart_session(id, command, sessions) {
+            Ok(session) => {
+                let mut response = HostResponse::ok();
+                response.session = Some(session);
+                response
+            }
+            Err(error) => HostResponse::error(error),
+        },
         HostRequest::Terminate { id } => {
             let session = sessions
                 .lock()
@@ -711,6 +746,44 @@ fn handle_request(request: HostRequest, sessions: &Sessions) -> HostResponse {
             HostResponse::ok()
         }
     }
+}
+
+fn restart_session(
+    id: String,
+    command: String,
+    sessions: &Sessions,
+) -> Result<TerminalSession, String> {
+    let metadata = {
+        let guard = sessions
+            .lock()
+            .map_err(|_| "Terminal session state is unavailable".to_string())?;
+        let session = guard
+            .get(&id)
+            .cloned()
+            .ok_or_else(|| "Terminal session not found".to_string())?;
+        let mut metadata = session
+            .metadata
+            .lock()
+            .map_err(|_| "Terminal metadata is unavailable".to_string())?
+            .clone();
+        metadata.command = command;
+        metadata.status = "running".to_string();
+        metadata.output_active = false;
+        metadata.has_recognized_output = false;
+        metadata
+    };
+    {
+        let mut guard = sessions
+            .lock()
+            .map_err(|_| "Terminal session state is unavailable".to_string())?;
+        if let Some(session) = guard.remove(&id) {
+            if let Ok(mut child) = session.child.lock() {
+                let _ = child.kill();
+                let _ = child.wait();
+            }
+        }
+    }
+    spawn_session(metadata, sessions)
 }
 
 fn handle_connection(stream: UnixStream, sessions: Sessions) {
@@ -858,6 +931,26 @@ pub fn resize_session(id: String, cols: u16, rows: u16) -> Result<(), String> {
 
 pub fn set_session_label(id: String, label: String) -> Result<(), String> {
     send_request(HostRequest::SetLabel { id, label }).map(|_| ())
+}
+
+pub fn set_session_target(
+    id: String,
+    target_id: String,
+    target_kind: String,
+) -> Result<TerminalSession, String> {
+    send_request(HostRequest::SetTarget {
+        id,
+        target_id,
+        target_kind,
+    })?
+    .session
+    .ok_or_else(|| "Terminal host did not return a session".to_string())
+}
+
+pub fn restart_session_command(id: String, command: String) -> Result<TerminalSession, String> {
+    send_request(HostRequest::Restart { id, command })?
+        .session
+        .ok_or_else(|| "Terminal host did not return a session".to_string())
 }
 
 pub fn set_session_ai_label(

@@ -2,6 +2,7 @@ import { resolveAnchorOwningBranchName } from '../src/placeStashNode';
 import type { Branch, BranchCommitPreview, DirectCommit } from '../types';
 import {
   isWorkingTreeCommitId,
+  resolveWorktreeAnchorBranchName,
   shaMatches,
   stripEmptyBranchPlaceholdersForWorktreeSessions,
   worktreeLaneBranchName,
@@ -99,6 +100,7 @@ const resolveTargetLane = (
     : [];
   const targetLane =
     explicitLane ??
+    tipMatchedLanes.find((lane) => !lane.isDefault) ??
     tipMatchedLanes.find((lane) => lane.isDefault) ??
     tipMatchedLanes[0];
   const targetBranch = targetLane
@@ -159,7 +161,8 @@ export const injectWorktreeUncommittedPreviews = ({
       const laneName = worktreeLaneBranchName(session.path, reservedLaneNames);
       reservedLaneNames.add(laneName);
       const parentBranch =
-        resolveAnchorOwningBranchName(parentSha, directCommits, nextPreviews, defaultBranch)
+        resolveWorktreeAnchorBranchName(session, nextBranches, defaultBranch, nextPreviews)
+        ?? resolveAnchorOwningBranchName(parentSha, directCommits, nextPreviews, defaultBranch)
         ?? defaultBranch;
       if (!nextBranches.some((branch) => branch.name === laneName)) {
         nextBranches = [

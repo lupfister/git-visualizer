@@ -1,7 +1,7 @@
 import type { BranchGridViewProps } from './LayoutGrid';
 import { isWorkingTreeCommitId } from '../../lib/worktreeSessions';
 import ToolbarActionContent from './ToolbarActionContent';
-import { ChevronDown, GitBranchPlus, GitMerge, MonitorPlay } from 'lucide-react';
+import { ChevronDown, GitMerge } from 'lucide-react';
 import { useEffect, useRef, useState } from 'react';
 import { cn } from './mapGridUtils';
 
@@ -341,8 +341,12 @@ export default function CommitControls({
             )}
             title="Preview selected node"
           >
-            <MonitorPlay className={cn('h-[14px] w-[14px] shrink-0', compactLabels ? '' : 'mr-1.5', previewInProgress && 'toolbar-action-shimmer__lucide')} />
-            {!compactLabels ? (previewInProgress ? 'Starting...' : 'Preview') : null}
+            <ToolbarActionContent
+              icon="preview"
+              label={previewInProgress ? 'Starting...' : 'Preview'}
+              loading={previewInProgress}
+              compactLabels={compactLabels}
+            />
           </button>
           <button
             type="button"
@@ -354,8 +358,12 @@ export default function CommitControls({
               compactLabels ? 'w-7 justify-center px-0' : '',
             )}
           >
-            <GitBranchPlus className={cn('h-[14px] w-[14px] shrink-0', compactLabels ? '' : 'mr-1.5')} />
-            {!compactLabels ? (createBranchFromNodeInProgress ? 'Creating...' : 'Branch') : null}
+            <ToolbarActionContent
+              icon="branch"
+              label={createBranchFromNodeInProgress ? 'Creating...' : 'Branch'}
+              loading={createBranchFromNodeInProgress}
+              compactLabels={compactLabels}
+            />
           </button>
         </div>
 

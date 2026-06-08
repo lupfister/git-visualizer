@@ -600,6 +600,20 @@ body.popover-window #root {
   mask-image: url('/icon-stash.svg');
 }
 
+.toolbar-mask-icon--preview {
+  width: 14px;
+  height: 14px;
+  -webkit-mask-image: url('/icon-preview.svg');
+  mask-image: url('/icon-preview.svg');
+}
+
+.toolbar-mask-icon--branch {
+  width: 14px;
+  height: 14px;
+  -webkit-mask-image: url('/icon-branch.svg');
+  mask-image: url('/icon-branch.svg');
+}
+
 @keyframes toolbar-action-shimmer {
   0% {
     background-position: 200% 0;
