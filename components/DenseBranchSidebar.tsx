@@ -290,57 +290,78 @@ export default function DenseBranchSidebar({
                         normalizeRepoPathForCompare(worktree.path).toLowerCase(),
                       );
                       const accentColor = accent?.fg;
+                      const hasNestedSessions = sessions.length > 0;
+                      const rowAccentStyle = accent ? ({
+                        color: accent.fg,
+                        '--worktree-fg': accent.fg,
+                        '--worktree-muted': accent.muted,
+                      } as React.CSSProperties) : undefined;
+                      const rowSurfaceClass = cn(
+                        accent ? 'hover:bg-[var(--worktree-muted)]' : 'hover:bg-muted',
+                        !accentColor && 'text-muted-foreground hover:text-foreground',
+                        !isActive && 'opacity-80 hover:opacity-100',
+                      );
+                      const plusButton = (
+                        <button
+                          type="button"
+                          disabled={!worktree.pathExists}
+                          onClick={(event) => {
+                            event.stopPropagation();
+                            void (async () => {
+                              await onCreateTerminal(project.path, worktree.path);
+                              expandWorktree(key);
+                            })();
+                          }}
+                          className="inline-flex h-7 w-7 shrink-0 items-center justify-center rounded-lg opacity-0 transition-colors group-hover/row:opacity-100 disabled:cursor-not-allowed disabled:opacity-30"
+                          aria-label={`New terminal in ${label}`}
+                          title="New terminal"
+                        >
+                          <Plus className="h-3.5 w-3.5 shrink-0" />
+                        </button>
+                      );
                       return (
                         <div key={worktree.path}>
-                          <div
-                            className={cn(
-                              'group/row flex h-7 flex-1 min-w-0 items-center rounded-lg pl-2 pr-0 cursor-pointer transition-colors',
-                              accent ? 'hover:bg-[var(--worktree-muted)]' : 'hover:bg-muted',
-                              !accentColor && 'text-muted-foreground hover:text-foreground',
-                              !isActive && 'opacity-80 hover:opacity-100',
-                            )}
-                            style={accent ? ({
-                              color: accent.fg,
-                              '--worktree-fg': accent.fg,
-                              '--worktree-muted': accent.muted,
-                            } as React.CSSProperties) : undefined}
-                            onClick={() => void onSelectWorktree(project.path, workingTreeId)}
-                          >
-                            <button
-                              type="button"
-                              disabled={sessions.length === 0}
-                              onClick={(event) => {
-                                event.stopPropagation();
-                                toggle(key, expandedWorktrees, setExpandedWorktrees, EXPANDED_WORKTREES_KEY);
-                              }}
+                          {hasNestedSessions ? (
+                            <div
                               className={cn(
-                                'inline-flex h-7 w-4 shrink-0 items-center justify-center rounded-lg transition-colors',
-                                sessions.length === 0 && 'pointer-events-none invisible',
+                                'group/row flex h-7 flex-1 min-w-0 cursor-pointer items-center rounded-lg pl-2 pr-0 transition-colors',
+                                rowSurfaceClass,
                               )}
-                              aria-label={`${expanded ? 'Collapse' : 'Expand'} ${label}`}
-                              aria-hidden={sessions.length === 0}
-                              tabIndex={sessions.length === 0 ? -1 : 0}
+                              style={rowAccentStyle}
+                              onClick={() => void onSelectWorktree(project.path, workingTreeId)}
                             >
-                              <ChevronRight className={cn('h-3.5 w-3.5 shrink-0 transition-transform duration-200', expanded && 'rotate-90')} />
-                            </button>
-                            <span className="min-w-0 flex-1 truncate text-sm">{label} · {refLabel}</span>
-                            <button
-                              type="button"
-                              disabled={!worktree.pathExists}
-                              onClick={(event) => {
-                                event.stopPropagation();
-                                void (async () => {
-                                  await onCreateTerminal(project.path, worktree.path);
-                                  expandWorktree(key);
-                                })();
-                              }}
-                              className="inline-flex h-7 w-7 shrink-0 items-center justify-center rounded-lg opacity-0 transition-colors group-hover/row:opacity-100 disabled:cursor-not-allowed disabled:opacity-30"
-                              aria-label={`New terminal in ${label}`}
-                              title="New terminal"
+                              <button
+                                type="button"
+                                onClick={(event) => {
+                                  event.stopPropagation();
+                                  toggle(key, expandedWorktrees, setExpandedWorktrees, EXPANDED_WORKTREES_KEY);
+                                }}
+                                className="inline-flex h-7 w-4 shrink-0 items-center justify-center rounded-lg transition-colors"
+                                aria-label={`${expanded ? 'Collapse' : 'Expand'} ${label}`}
+                              >
+                                <ChevronRight className={cn('h-3.5 w-3.5 shrink-0 transition-transform duration-200', expanded && 'rotate-90')} />
+                              </button>
+                              <span className="min-w-0 flex-1 truncate text-sm">{label} · {refLabel}</span>
+                              {plusButton}
+                            </div>
+                          ) : (
+                            <div
+                              className="flex h-7 min-w-0 flex-1 cursor-pointer items-center pl-2 pr-0"
+                              onClick={() => void onSelectWorktree(project.path, workingTreeId)}
                             >
-                              <Plus className="h-3.5 w-3.5 shrink-0" />
-                            </button>
-                          </div>
+                              <span className="w-4 shrink-0" aria-hidden="true" />
+                              <div
+                                className={cn(
+                                  'group/row -ml-2 flex min-w-0 flex-1 items-center rounded-lg pl-2 pr-0 transition-colors',
+                                  rowSurfaceClass,
+                                )}
+                                style={rowAccentStyle}
+                              >
+                                <span className="min-w-0 flex-1 truncate text-sm">{label} · {refLabel}</span>
+                                {plusButton}
+                              </div>
+                            </div>
+                          )}
                           {expanded ? (
                             <div className="space-y-1 pl-4">
                               {sessions.map((session) => (
