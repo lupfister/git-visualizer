@@ -6493,7 +6493,7 @@ function App() {
       }).catch(() => undefined);
     };
     refresh();
-    const interval = window.setInterval(refresh, 1000);
+    const interval = window.setInterval(refresh, 500);
     return () => {
       disposed = true;
       window.clearInterval(interval);

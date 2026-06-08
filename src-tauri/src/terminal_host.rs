@@ -22,7 +22,7 @@ use std::{
 pub(crate) const OUTPUT_TAIL_BYTES: usize = 3 * 1024;
 pub(crate) const OUTPUT_IDLE: Duration = Duration::from_secs(10);
 pub(crate) const AI_TITLE_TICK: Duration = Duration::from_secs(2);
-const OUTPUT_ACTIVE_WINDOW: Duration = Duration::from_millis(1200);
+const OUTPUT_ACTIVE_WINDOW: Duration = Duration::from_millis(8000);
 const OUTPUT_SETTLE_AFTER: Duration = Duration::from_secs(2);
 const MAX_OUTPUT_BYTES: usize = 2 * 1024 * 1024;
 const MIN_OUTPUT_ALPHA_CHARS: usize = 20;
@@ -104,10 +104,10 @@ impl HostResponse {
 }
 
 struct OutputActivityState {
-    last_fingerprint: String,
-    last_fingerprint_change_at: Instant,
+    last_output_len: usize,
     settled: bool,
     last_active_at: Option<Instant>,
+    created_at: Instant,
 }
 
 struct LiveSession {
@@ -286,10 +286,10 @@ fn spawn_session(
         child: Mutex::new(child),
         output,
         output_activity: Mutex::new(OutputActivityState {
-            last_fingerprint: String::new(),
-            last_fingerprint_change_at: Instant::now(),
+            last_output_len: 0,
             settled: false,
             last_active_at: None,
+            created_at: Instant::now(),
         }),
     });
     sessions
@@ -404,36 +404,34 @@ fn session_process_info(session: &Arc<LiveSession>, exited: bool) -> Option<(usi
     detect_foreground_command(process_id)
 }
 
-fn output_content_fingerprint(output_bytes: &[u8]) -> String {
-    compute_output_fingerprint(output_bytes, None)
-}
 
 fn refresh_output_active(session: &Arc<LiveSession>, output_bytes: &[u8], exited: bool) -> bool {
     if exited {
         return false;
     }
 
-    let fingerprint = output_content_fingerprint(output_bytes);
+    let len = output_bytes.len();
     let Ok(mut activity) = session.output_activity.lock() else {
         return false;
     };
 
-    if fingerprint != activity.last_fingerprint {
-        activity.last_fingerprint = fingerprint;
-        activity.last_fingerprint_change_at = Instant::now();
+    if !activity.settled && activity.created_at.elapsed() >= OUTPUT_SETTLE_AFTER {
+        activity.settled = true;
+    }
+
+    if len > activity.last_output_len {
         if activity.settled {
             activity.last_active_at = Some(Instant::now());
         }
-    } else if !activity.settled
-        && activity.last_fingerprint_change_at.elapsed() >= OUTPUT_SETTLE_AFTER
-    {
-        activity.settled = true;
+        activity.last_output_len = len;
+    } else if len < activity.last_output_len {
+        activity.last_output_len = len;
     }
 
     activity.settled
         && activity
             .last_active_at
-            .is_some_and(|changed_at| changed_at.elapsed() < OUTPUT_ACTIVE_WINDOW)
+            .is_some_and(|active_at| active_at.elapsed() < OUTPUT_ACTIVE_WINDOW)
 }
 
 fn refresh_status(session: &Arc<LiveSession>) -> TerminalSession {

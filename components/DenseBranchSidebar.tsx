@@ -370,6 +370,8 @@ export default function DenseBranchSidebar({
   );
 }
 
+const OUTPUT_PULSE_SETTLE_MS = 1200;
+
 function TerminalRow({
   session,
   label,
@@ -403,7 +405,51 @@ function TerminalRow({
   }, [displayLabel, label]);
 
   const isRunning = session.status === 'running';
-  const showLivePulse = isRunning && session.outputActive === true;
+  const outputActive = isRunning && session.outputActive === true;
+  const [pulseVisible, setPulseVisible] = useState(false);
+  const [isSettling, setIsSettling] = useState(false);
+  const pulseVisibleRef = useRef(false);
+  const settlingRef = useRef(false);
+
+  useEffect(() => {
+    pulseVisibleRef.current = pulseVisible;
+  }, [pulseVisible]);
+
+  useEffect(() => {
+    if (!isRunning) {
+      settlingRef.current = false;
+      pulseVisibleRef.current = false;
+      setPulseVisible(false);
+      setIsSettling(false);
+      return;
+    }
+
+    if (outputActive) {
+      settlingRef.current = false;
+      pulseVisibleRef.current = true;
+      setPulseVisible(true);
+      setIsSettling(false);
+      return;
+    }
+
+    if (!pulseVisibleRef.current || settlingRef.current) return;
+
+    settlingRef.current = true;
+    setIsSettling(true);
+  }, [isRunning, outputActive]);
+
+  useEffect(() => {
+    if (!isSettling) return;
+
+    const timeout = window.setTimeout(() => {
+      settlingRef.current = false;
+      pulseVisibleRef.current = false;
+      setPulseVisible(false);
+      setIsSettling(false);
+    }, OUTPUT_PULSE_SETTLE_MS);
+
+    return () => window.clearTimeout(timeout);
+  }, [isSettling]);
 
   return (
     <div
@@ -423,16 +469,42 @@ function TerminalRow({
       <button
         type="button"
         onClick={() => onSelect(session)}
-        aria-busy={showLivePulse || undefined}
+        aria-busy={pulseVisible || undefined}
         className={cn(
           'flex h-7 flex-1 items-center gap-1.5 rounded-lg px-2 text-left text-sm min-w-0 pr-8',
-          accent && 'text-[var(--worktree-fg)]',
-          !accent && active && 'text-primary',
-          !accent && !active && 'text-muted-foreground group-hover/terminal:text-foreground',
+          !pulseVisible && accent && 'text-[var(--worktree-fg)]',
+          !pulseVisible && !accent && active && 'text-primary',
+          !pulseVisible && !accent && !active && 'text-muted-foreground group-hover/terminal:text-foreground',
+          pulseVisible && 'terminal-row-shimmer',
+          pulseVisible && accent && 'terminal-row-shimmer--accent',
+          pulseVisible && !accent && active && 'terminal-row-shimmer--primary',
+          pulseVisible && !accent && !active && 'terminal-row-shimmer--default',
         )}
       >
-        <Icon className={cn('h-3.5 w-3.5 shrink-0', showLivePulse && 'terminal-row-shimmer__icon')} />
-        <span className={cn('min-w-0 flex-1 truncate', showLivePulse && 'terminal-row-shimmer__text')}>{displayLabel}</span>
+        {pulseVisible ? (
+          <span
+            className={cn(
+              'terminal-row-shimmer__content flex min-w-0 flex-1 items-center gap-1.5',
+              isSettling && 'terminal-row-shimmer__content--settling',
+            )}
+          >
+            <span
+              aria-hidden
+              className={cn(
+                'terminal-row-shimmer__icon shrink-0',
+                session.kind === 'preview'
+                  ? 'terminal-row-shimmer__icon--preview'
+                  : 'terminal-row-shimmer__icon--terminal',
+              )}
+            />
+            <span className="terminal-row-shimmer__text min-w-0 flex-1 truncate">{displayLabel}</span>
+          </span>
+        ) : (
+          <>
+            <Icon className="h-3.5 w-3.5 shrink-0" />
+            <span className="min-w-0 flex-1 truncate">{displayLabel}</span>
+          </>
+        )}
         {session.status === 'exited' ? (
           <span className="text-[10px] uppercase tracking-wide group-hover/terminal:opacity-0 transition-opacity duration-150 shrink-0">Exited</span>
         ) : null}
