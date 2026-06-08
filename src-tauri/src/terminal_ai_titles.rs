@@ -75,7 +75,7 @@ fn maybe_generate_for_session(session: TerminalSession) {
         return;
     };
     let output_bytes = output.as_bytes();
-    if !output_has_meaningful_content(output_bytes) {
+    if !refreshed.has_recognized_output || !output_has_meaningful_content(output_bytes) {
         return;
     }
 

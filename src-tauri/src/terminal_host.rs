@@ -51,6 +51,9 @@ pub struct TerminalSession {
     pub ai_label_at: Option<u64>,
     #[serde(default)]
     pub output_active: bool,
+    /// True once the PTY has emitted new output after the initial shell settle window.
+    #[serde(default)]
+    pub has_recognized_output: bool,
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -191,6 +194,7 @@ fn restore_persisted_sessions(sessions: &Sessions) {
         }
         metadata.status = "running".to_string();
         metadata.output_active = false;
+        metadata.has_recognized_output = false;
         let _ = spawn_session(metadata, sessions);
     }
 }
@@ -405,6 +409,14 @@ fn session_process_info(session: &Arc<LiveSession>, exited: bool) -> Option<(usi
 }
 
 
+fn session_has_recognized_output(session: &Arc<LiveSession>) -> bool {
+    session
+        .output_activity
+        .lock()
+        .ok()
+        .is_some_and(|activity| activity.last_active_at.is_some())
+}
+
 fn refresh_output_active(session: &Arc<LiveSession>, output_bytes: &[u8], exited: bool) -> bool {
     if exited {
         return false;
@@ -471,6 +483,7 @@ fn refresh_status(session: &Arc<LiveSession>) -> TerminalSession {
         );
     }
     response_metadata.output_active = refresh_output_active(session, &output_bytes, exited);
+    response_metadata.has_recognized_output = session_has_recognized_output(session);
     response_metadata
 }
 
@@ -893,6 +906,7 @@ mod tests {
                 ai_label_fingerprint: None,
                 ai_label_at: None,
                 output_active: false,
+                has_recognized_output: false,
             },
             &sessions,
         )
@@ -973,6 +987,7 @@ mod tests {
             ai_label_fingerprint: Some("abc123".to_string()),
             ai_label_at: Some(1),
             output_active: false,
+            has_recognized_output: false,
         };
         let merged = merge_display_label(
             &metadata,
@@ -996,6 +1011,21 @@ mod tests {
     }
 
     #[test]
+    fn recognized_output_requires_growth_after_settle() {
+        let activity = OutputActivityState {
+            last_output_len: 120,
+            settled: true,
+            last_active_at: None,
+            created_at: Instant::now(),
+        };
+        assert!(!activity.last_active_at.is_some());
+
+        let mut after_activity = activity;
+        after_activity.last_active_at = Some(Instant::now());
+        assert!(after_activity.last_active_at.is_some());
+    }
+
+    #[test]
     fn merge_display_label_falls_back_when_ai_title_is_stale() {
         let metadata = TerminalSession {
             id: "terminal-1".to_string(),
@@ -1013,6 +1043,7 @@ mod tests {
             ai_label_fingerprint: Some("old".to_string()),
             ai_label_at: Some(1),
             output_active: false,
+            has_recognized_output: false,
         };
         let merged = merge_display_label(
             &metadata,
