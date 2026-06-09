@@ -71,6 +71,8 @@ export interface TerminalSession {
   aiLabelAt?: number | null;
   /** True while the PTY is actively emitting output (not idle at prompt). */
   outputActive?: boolean;
+  /** True once the PTY has emitted output after the initial shell settle window. */
+  hasRecognizedOutput?: boolean;
 }
 
 export interface Commit {

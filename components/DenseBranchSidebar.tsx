@@ -404,7 +404,11 @@ export default function DenseBranchSidebar({
   );
 }
 
+const GENERIC_TERMINAL_LABEL = /^Terminal \d+$/;
+const LABEL_STABILIZE_MS = 1200;
 const OUTPUT_PULSE_SETTLE_MS = 1200;
+/** Hold shimmer through brief output pauses before starting the settle animation. */
+const OUTPUT_PULSE_IDLE_MS = 4000;
 
 function TerminalRow({
   session,
@@ -427,6 +431,7 @@ function TerminalRow({
 }) {
   const Icon = session.kind === 'preview' ? PreviewIcon : TerminalIcon;
   const [displayLabel, setDisplayLabel] = useState(label);
+  const stableLabelRef = useRef(label);
   const style = accent
     ? ({
         '--worktree-fg': accent.fg,
@@ -435,10 +440,17 @@ function TerminalRow({
     : undefined;
 
   useEffect(() => {
-    if (label === displayLabel) return;
-    const timeout = window.setTimeout(() => setDisplayLabel(label), 350);
+    if (label === stableLabelRef.current) return;
+    // Never regress from a process/AI label back to generic "Terminal N".
+    if (GENERIC_TERMINAL_LABEL.test(label) && !GENERIC_TERMINAL_LABEL.test(stableLabelRef.current)) {
+      return;
+    }
+    const timeout = window.setTimeout(() => {
+      stableLabelRef.current = label;
+      setDisplayLabel(label);
+    }, LABEL_STABILIZE_MS);
     return () => window.clearTimeout(timeout);
-  }, [displayLabel, label]);
+  }, [label]);
 
   const isRunning = session.status === 'running';
   const outputActive = isRunning && session.outputActive === true;
@@ -446,12 +458,18 @@ function TerminalRow({
   const [isSettling, setIsSettling] = useState(false);
   const pulseVisibleRef = useRef(false);
   const settlingRef = useRef(false);
+  const idleTimerRef = useRef<number | null>(null);
 
   useEffect(() => {
     pulseVisibleRef.current = pulseVisible;
   }, [pulseVisible]);
 
   useEffect(() => {
+    if (idleTimerRef.current != null) {
+      window.clearTimeout(idleTimerRef.current);
+      idleTimerRef.current = null;
+    }
+
     if (!isRunning) {
       settlingRef.current = false;
       pulseVisibleRef.current = false;
@@ -470,8 +488,19 @@ function TerminalRow({
 
     if (!pulseVisibleRef.current || settlingRef.current) return;
 
-    settlingRef.current = true;
-    setIsSettling(true);
+    idleTimerRef.current = window.setTimeout(() => {
+      idleTimerRef.current = null;
+      if (!pulseVisibleRef.current || settlingRef.current) return;
+      settlingRef.current = true;
+      setIsSettling(true);
+    }, OUTPUT_PULSE_IDLE_MS);
+
+    return () => {
+      if (idleTimerRef.current != null) {
+        window.clearTimeout(idleTimerRef.current);
+        idleTimerRef.current = null;
+      }
+    };
   }, [isRunning, outputActive]);
 
   useEffect(() => {
@@ -518,22 +547,23 @@ function TerminalRow({
           pulseVisible && !accent && !active && 'terminal-row-shimmer--default',
         )}
       >
-        {pulseVisible ? (
+        <span
+          className={cn(
+            'flex min-w-0 flex-1 items-center',
+            !alignWithProjectRow && 'gap-1.5',
+            pulseVisible && 'terminal-row-shimmer__content',
+            pulseVisible && isSettling && 'terminal-row-shimmer__content--settling',
+          )}
+        >
           <span
             className={cn(
-              'terminal-row-shimmer__content flex min-w-0 flex-1 items-center',
-              !alignWithProjectRow && 'gap-1.5',
-              isSettling && 'terminal-row-shimmer__content--settling',
+              'inline-flex shrink-0 items-center justify-center',
+              alignWithProjectRow ? 'h-7 w-7' : 'h-3.5 w-3.5',
             )}
           >
-            <span
-              aria-hidden
-              className={cn(
-                'inline-flex shrink-0 items-center justify-center',
-                alignWithProjectRow ? 'h-7 w-7' : 'h-3.5 w-3.5',
-              )}
-            >
+            {pulseVisible ? (
               <span
+                aria-hidden
                 className={cn(
                   'terminal-row-shimmer__icon shrink-0',
                   session.kind === 'preview'
@@ -541,22 +571,14 @@ function TerminalRow({
                     : 'terminal-row-shimmer__icon--terminal',
                 )}
               />
-            </span>
-            <span className="terminal-row-shimmer__text min-w-0 flex-1 truncate">{displayLabel}</span>
-          </span>
-        ) : (
-          <>
-            <span
-              className={cn(
-                'inline-flex shrink-0 items-center justify-center',
-                alignWithProjectRow ? 'h-7 w-7' : 'h-3.5 w-3.5',
-              )}
-            >
+            ) : (
               <Icon className="h-3.5 w-3.5 shrink-0" />
-            </span>
-            <span className="min-w-0 flex-1 truncate">{displayLabel}</span>
-          </>
-        )}
+            )}
+          </span>
+          <span className={cn('min-w-0 flex-1 truncate', pulseVisible && 'terminal-row-shimmer__text')}>
+            {displayLabel}
+          </span>
+        </span>
         {session.status === 'exited' ? (
           <span className="text-[10px] uppercase tracking-wide group-hover/terminal:opacity-0 transition-opacity duration-150 shrink-0">Exited</span>
         ) : null}

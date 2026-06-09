@@ -98,6 +98,7 @@ import {
   setTerminalSessionTarget,
   terminateTerminalSession,
   readTerminalSession,
+  terminalSessionMetadataEqual,
 } from '../lib/terminal';
 
 const PROJECTS_STORAGE_KEY = 'git-visualizer:projects';
@@ -134,21 +135,7 @@ function terminalSessionsEqual(left: readonly TerminalSession[], right: readonly
   if (left.length !== right.length) return false;
   return left.every((session, index) => {
     const candidate = right[index];
-    return candidate != null
-      && session.id === candidate.id
-      && session.projectPath === candidate.projectPath
-      && session.worktreePath === candidate.worktreePath
-      && session.kind === candidate.kind
-      && session.label === candidate.label
-      && session.command === candidate.command
-      && session.cols === candidate.cols
-      && session.rows === candidate.rows
-      && session.status === candidate.status
-      && (session.outputActive ?? false) === (candidate.outputActive ?? false)
-      && (session.targetId ?? null) === (candidate.targetId ?? null)
-      && (session.targetKind ?? null) === (candidate.targetKind ?? null)
-      && (session.previewUrl ?? null) === (candidate.previewUrl ?? null)
-      && (session.previewAppName ?? null) === (candidate.previewAppName ?? null);
+    return candidate != null && terminalSessionMetadataEqual(session, candidate);
   });
 }
 

@@ -4,7 +4,7 @@ import { Terminal } from '@xterm/xterm';
 import { FitAddon } from '@xterm/addon-fit';
 import '@xterm/xterm/css/xterm.css';
 import type { TerminalSession } from '../types';
-import { readTerminalSession, resizeTerminalSession, saveTerminalAttachment, writeTerminalSession } from '../lib/terminal';
+import { readTerminalSession, resizeTerminalSession, saveTerminalAttachment, terminalSessionMetadataEqual, writeTerminalSession } from '../lib/terminal';
 import { cn } from './grid/mapGridUtils';
 
 export type TerminalPanelPlacement = 'right' | 'bottom';
@@ -42,6 +42,46 @@ const blobToBase64 = (blob: Blob): Promise<string> => new Promise((resolve, reje
 
 const shellQuote = (value: string): string => `'${value.split("'").join("'\\''")}'`;
 
+const applyTerminalOutput = (
+  terminal: Terminal,
+  renderedOutputRef: { current: string },
+  next: string,
+): void => {
+  const previous = renderedOutputRef.current;
+  if (next === previous) return;
+
+  // Out-of-order poll: ignore stale reads that are strict prefixes of what we already rendered.
+  if (next.length < previous.length && previous.startsWith(next)) {
+    return;
+  }
+
+  if (next.startsWith(previous)) {
+    terminal.write(next.slice(previous.length));
+    renderedOutputRef.current = next;
+    return;
+  }
+
+  const trimmedAtHost = previous.length > next.length && previous.endsWith(next);
+  if (trimmedAtHost) {
+    terminal.reset();
+    terminal.write(next);
+    renderedOutputRef.current = next;
+    return;
+  }
+
+  // Non-monotonic update without a host trim — likely a stale read; skip to avoid xterm flash.
+  if (next.length < previous.length) {
+    return;
+  }
+
+  terminal.reset();
+  terminal.write(next);
+  renderedOutputRef.current = next;
+};
+
+const GENERIC_TERMINAL_LABEL = /^Terminal \d+$/;
+const LABEL_STABILIZE_MS = 1200;
+
 const terminalPanelLabel = (session: TerminalSession): string => {
   if (session.kind !== 'preview') return session.label;
   if (session.previewUrl) {
@@ -65,10 +105,33 @@ export default function TerminalPanel({
   const hostRef = useRef<HTMLDivElement | null>(null);
   const terminalRef = useRef<Terminal | null>(null);
   const renderedOutputRef = useRef('');
+  const sessionMetaRef = useRef<TerminalSession | null>(session);
+  const refreshInFlightRef = useRef(false);
+  const refreshQueuedRef = useRef(false);
+  const [headerLabel, setHeaderLabel] = useState(() => (session ? terminalPanelLabel(session) : ''));
+  const stableHeaderLabelRef = useRef(headerLabel);
+
+  useEffect(() => {
+    if (!session) return;
+    const next = terminalPanelLabel(session);
+    if (next === stableHeaderLabelRef.current) return;
+    if (GENERIC_TERMINAL_LABEL.test(next) && !GENERIC_TERMINAL_LABEL.test(stableHeaderLabelRef.current)) {
+      return;
+    }
+    const timeout = window.setTimeout(() => {
+      stableHeaderLabelRef.current = next;
+      setHeaderLabel(next);
+    }, LABEL_STABILIZE_MS);
+    return () => window.clearTimeout(timeout);
+  }, [session?.id, session?.label, session?.kind, session?.previewUrl]);
   const [width, setWidth] = useState(() => readStoredPanelSize(TERMINAL_PANEL_WIDTH_STORAGE_KEY, DEFAULT_TERMINAL_PANEL_WIDTH, 320));
   const [height, setHeight] = useState(() => readStoredPanelSize(TERMINAL_PANEL_HEIGHT_STORAGE_KEY, DEFAULT_TERMINAL_PANEL_HEIGHT, 160));
   const [entered, setEntered] = useState(false);
   const isBottom = placement === 'bottom';
+
+  useEffect(() => {
+    sessionMetaRef.current = session;
+  }, [session]);
 
   useEffect(() => {
     try {
@@ -146,18 +209,30 @@ export default function TerminalPanel({
 
     let disposed = false;
     const refresh = () => {
+      if (refreshInFlightRef.current) {
+        refreshQueuedRef.current = true;
+        return;
+      }
+      refreshInFlightRef.current = true;
       void readTerminalSession(session.id).then((result) => {
         if (disposed) return;
-        onSessionChange(result.session);
-        const previous = renderedOutputRef.current;
-        if (result.output.startsWith(previous)) {
-          terminal.write(result.output.slice(previous.length));
-        } else if (result.output !== previous) {
-          terminal.reset();
-          terminal.write(result.output);
+        const terminal = terminalRef.current;
+        if (!terminal) return;
+
+        applyTerminalOutput(terminal, renderedOutputRef, result.output);
+
+        const latestMeta = sessionMetaRef.current;
+        if (latestMeta && !terminalSessionMetadataEqual(latestMeta, result.session)) {
+          sessionMetaRef.current = result.session;
+          onSessionChange(result.session);
         }
-        renderedOutputRef.current = result.output;
-      }).catch(() => undefined);
+      }).catch(() => undefined).finally(() => {
+        refreshInFlightRef.current = false;
+        if (!disposed && refreshQueuedRef.current) {
+          refreshQueuedRef.current = false;
+          refresh();
+        }
+      });
     };
     refresh();
     const interval = window.setInterval(refresh, 100);
@@ -231,7 +306,7 @@ export default function TerminalPanel({
         />
       )}
       <header className="flex h-10 shrink-0 items-center gap-2 border-b border-border/50 px-2">
-        <span className="min-w-0 flex-1 truncate text-xs font-medium text-foreground">{terminalPanelLabel(session)}</span>
+        <span className="min-w-0 flex-1 truncate text-xs font-medium text-foreground">{headerLabel}</span>
         <button
           type="button"
           onClick={handleTogglePlacement}

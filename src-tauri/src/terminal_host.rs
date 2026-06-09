@@ -22,7 +22,9 @@ use std::{
 pub(crate) const OUTPUT_TAIL_BYTES: usize = 3 * 1024;
 pub(crate) const OUTPUT_IDLE: Duration = Duration::from_secs(10);
 pub(crate) const AI_TITLE_TICK: Duration = Duration::from_secs(2);
-const OUTPUT_ACTIVE_WINDOW: Duration = Duration::from_millis(8000);
+const OUTPUT_ACTIVE_WINDOW: Duration = Duration::from_secs(30);
+const OUTPUT_ACTIVE_RELEASE: Duration = Duration::from_secs(8);
+const PROCESS_LABEL_STABLE: Duration = Duration::from_millis(1500);
 const OUTPUT_SETTLE_AFTER: Duration = Duration::from_secs(2);
 const MAX_OUTPUT_BYTES: usize = 2 * 1024 * 1024;
 const MIN_OUTPUT_ALPHA_CHARS: usize = 20;
@@ -121,6 +123,14 @@ struct OutputActivityState {
     settled: bool,
     last_active_at: Option<Instant>,
     created_at: Instant,
+    /// Sticky active flag — avoids sidebar pulse flicker on brief output pauses.
+    output_active_latched: bool,
+}
+
+struct ProcessLabelState {
+    candidate: Option<String>,
+    stable: Option<String>,
+    candidate_since: Instant,
 }
 
 struct LiveSession {
@@ -130,6 +140,7 @@ struct LiveSession {
     child: Mutex<Box<dyn portable_pty::Child + Send + Sync>>,
     output: Arc<Mutex<Vec<u8>>>,
     output_activity: Mutex<OutputActivityState>,
+    process_label: Mutex<ProcessLabelState>,
 }
 
 type Sessions = Arc<Mutex<HashMap<String, Arc<LiveSession>>>>;
@@ -304,6 +315,12 @@ fn spawn_session(
             settled: false,
             last_active_at: None,
             created_at: Instant::now(),
+            output_active_latched: false,
+        }),
+        process_label: Mutex::new(ProcessLabelState {
+            candidate: None,
+            stable: None,
+            candidate_since: Instant::now(),
         }),
     });
     sessions
@@ -403,6 +420,16 @@ fn merge_display_label(
         return metadata.ai_label.as_ref().expect("fresh ai label").clone();
     }
 
+    // Keep the last AI title visible until a new one arrives — falling back to the
+    // interim process label while output is still changing causes sidebar flicker.
+    if metadata
+        .ai_label
+        .as_ref()
+        .is_some_and(|label| !label.trim().is_empty())
+    {
+        return metadata.ai_label.as_ref().expect("stored ai label").clone();
+    }
+
     interim_display_label(process_name.as_deref(), &metadata.label)
 }
 
@@ -427,7 +454,44 @@ fn session_has_recognized_output(session: &Arc<LiveSession>) -> bool {
         .is_some_and(|activity| activity.last_active_at.is_some())
 }
 
-fn refresh_output_active(session: &Arc<LiveSession>, output_bytes: &[u8], exited: bool) -> bool {
+fn is_cli_agent_process(name: &str) -> bool {
+    matches!(
+        name,
+        "OpenCode" | "Claude" | "Codex" | "Gemini" | "Aider"
+    )
+}
+
+fn stable_process_name(session: &Arc<LiveSession>, detected: Option<String>) -> Option<String> {
+    let Ok(mut state) = session.process_label.lock() else {
+        return detected;
+    };
+    let now = Instant::now();
+    match (&detected, &state.candidate) {
+        (Some(next), Some(current)) if next == current => {
+            if state.stable.as_deref() == Some(next.as_str()) {
+                return state.stable.clone();
+            }
+            if now.duration_since(state.candidate_since) >= PROCESS_LABEL_STABLE {
+                state.stable = Some(next.clone());
+                return Some(next.clone());
+            }
+            return state.stable.clone().or_else(|| detected.clone());
+        }
+        (Some(next), _) => {
+            state.candidate = Some(next.clone());
+            state.candidate_since = now;
+            return state.stable.clone().or_else(|| detected.clone());
+        }
+        (None, _) => state.stable.clone(),
+    }
+}
+
+fn refresh_output_active(
+    session: &Arc<LiveSession>,
+    output_bytes: &[u8],
+    exited: bool,
+    process_name: Option<&str>,
+) -> bool {
     if exited {
         return false;
     }
@@ -444,16 +508,40 @@ fn refresh_output_active(session: &Arc<LiveSession>, output_bytes: &[u8], exited
     if len > activity.last_output_len {
         if activity.settled {
             activity.last_active_at = Some(Instant::now());
+            activity.output_active_latched = true;
         }
         activity.last_output_len = len;
     } else if len < activity.last_output_len {
+        // Buffer trimmed at the front — keep latch, just track the new length.
         activity.last_output_len = len;
     }
 
-    activity.settled
-        && activity
+    let recently_active = activity
+        .last_active_at
+        .is_some_and(|active_at| active_at.elapsed() < OUTPUT_ACTIVE_WINDOW);
+
+    if recently_active {
+        activity.output_active_latched = true;
+        return activity.settled;
+    }
+
+    if activity.output_active_latched {
+        let idle_long_enough = activity
             .last_active_at
-            .is_some_and(|active_at| active_at.elapsed() < OUTPUT_ACTIVE_WINDOW)
+            .is_none_or(|active_at| active_at.elapsed() >= OUTPUT_ACTIVE_RELEASE);
+        if !idle_long_enough {
+            return activity.settled;
+        }
+        // CLI agents often pause between tokens — stay active while the agent process runs.
+        if process_name.is_some_and(is_cli_agent_process)
+            && session_has_recognized_output(session)
+        {
+            return activity.settled;
+        }
+        activity.output_active_latched = false;
+    }
+
+    false
 }
 
 fn refresh_status(session: &Arc<LiveSession>) -> TerminalSession {
@@ -480,7 +568,8 @@ fn refresh_status(session: &Arc<LiveSession>) -> TerminalSession {
         .map(|buffer| buffer.clone())
         .unwrap_or_default();
     let process_info = session_process_info(session, exited);
-    let process_name = process_info.as_ref().map(|(_, name)| name.clone());
+    let detected_process = process_info.as_ref().map(|(_, name)| name.clone());
+    let process_name = stable_process_name(session, detected_process);
     let current_fingerprint =
         compute_output_fingerprint(&output_bytes, process_name.as_deref());
 
@@ -488,15 +577,16 @@ fn refresh_status(session: &Arc<LiveSession>) -> TerminalSession {
     if response_metadata.kind == "shell" {
         response_metadata.label = merge_display_label(
             &metadata,
-            process_name,
+            process_name.clone(),
             &current_fingerprint,
         );
     } else if response_metadata.kind == "preview" {
         response_metadata.preview_url =
             crate::git::detect_localhost_url(&String::from_utf8_lossy(&output_bytes));
-        response_metadata.preview_app_name = process_name;
+        response_metadata.preview_app_name = process_name.clone();
     }
-    response_metadata.output_active = refresh_output_active(session, &output_bytes, exited);
+    response_metadata.output_active =
+        refresh_output_active(session, &output_bytes, exited, process_name.as_deref());
     response_metadata.has_recognized_output = session_has_recognized_output(session);
     response_metadata
 }
@@ -1122,6 +1212,7 @@ mod tests {
             settled: true,
             last_active_at: None,
             created_at: Instant::now(),
+            output_active_latched: false,
         };
         assert!(!activity.last_active_at.is_some());
 
@@ -1131,7 +1222,7 @@ mod tests {
     }
 
     #[test]
-    fn merge_display_label_falls_back_when_ai_title_is_stale() {
+    fn merge_display_label_keeps_stale_ai_title_until_replaced() {
         let metadata = TerminalSession {
             id: "terminal-1".to_string(),
             project_path: "/tmp".to_string(),
@@ -1157,6 +1248,6 @@ mod tests {
             Some("pnpm".to_string()),
             "new",
         );
-        assert_eq!(merged, "pnpm 1");
+        assert_eq!(merged, "Old task");
     }
 }

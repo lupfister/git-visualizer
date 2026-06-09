@@ -64,3 +64,25 @@ export const saveTerminalAttachment = (
   mimeType: string,
   dataBase64: string,
 ): Promise<string> => invoke('save_terminal_attachment', { fileName, mimeType, dataBase64 });
+
+/** Compare session metadata for poll-driven UI updates (ignores PTY output). */
+export const terminalSessionMetadataEqual = (
+  left: TerminalSession,
+  right: TerminalSession,
+): boolean =>
+  left.id === right.id
+  && left.projectPath === right.projectPath
+  && left.worktreePath === right.worktreePath
+  && left.kind === right.kind
+  && left.label === right.label
+  && left.command === right.command
+  && left.cols === right.cols
+  && left.rows === right.rows
+  && left.status === right.status
+  && (left.outputActive ?? false) === (right.outputActive ?? false)
+  && (left.hasRecognizedOutput ?? false) === (right.hasRecognizedOutput ?? false)
+  && (left.targetId ?? null) === (right.targetId ?? null)
+  && (left.targetKind ?? null) === (right.targetKind ?? null)
+  && (left.previewUrl ?? null) === (right.previewUrl ?? null)
+  && (left.previewAppName ?? null) === (right.previewAppName ?? null)
+  && (left.aiLabel ?? null) === (right.aiLabel ?? null);
