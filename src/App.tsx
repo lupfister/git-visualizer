@@ -10,7 +10,7 @@ import BranchGridMapView from '../components/grid/MapViewGrid';
 import TerminalPanel, { type TerminalPanelPlacement } from '../components/TerminalPanel';
 import { mapGridCameraStorageKey, readHasSavedMapGridCamera } from '../components/grid/useMapGridCamera';
 import DenseBranchSidebar from '../components/DenseBranchSidebar';
-import type { NodePositionOverrides } from '../components/grid/LayoutGrid';
+import type { Node, NodePositionOverrides } from '../components/grid/LayoutGrid';
 import {
   laneBranchNamesForPositionOverrides,
   migrateWorkingTreeOverrideToNewHead,
@@ -97,6 +97,7 @@ import {
   restartTerminalSession,
   setTerminalSessionTarget,
   terminateTerminalSession,
+  readTerminalSession,
 } from '../lib/terminal';
 
 const PROJECTS_STORAGE_KEY = 'git-visualizer:projects';
@@ -374,6 +375,7 @@ function App() {
   const [previewedNodeId, setPreviewedNodeId] = useState<string | null>(null);
   const [terminalSessions, setTerminalSessions] = useState<TerminalSession[]>([]);
   const [activeTerminalId, setActiveTerminalId] = useState<string | null>(null);
+  const lastActiveTerminalIdByWorktreePathRef = useRef<Map<string, string>>(new Map());
   const [terminalPanelPlacement, setTerminalPanelPlacement] = useState<TerminalPanelPlacement>('right');
   // scrollRequest.seq increments on each click so the same branch re-triggers the effect
   const scrollRequest: { branch: Branch; seq: number } | null = null;
@@ -484,6 +486,7 @@ function App() {
   /** False while panning and for {@link MAP_REPO_REFRESH_SETTLE_MS} after pan stops. */
   const canApplyRepoRefreshRef = useRef(true);
   const mapRefreshSettleTimeoutRef = useRef<number | null>(null);
+  const rebuildPollIntervalsRef = useRef<Map<string, any>>(new Map());
   const runRepoRefreshRef = useRef<((reason?: 'graph' | 'local' | 'timer' | 'initial' | 'quick' | 'focus' | 'clean-detected') => Promise<void>) | null>(null);
   const reconcileInFlightRef = useRef(false);
   const pendingRefreshAfterInteractionRef = useRef(false);
@@ -6366,9 +6369,31 @@ function App() {
     target: PreviewTarget,
     nodeId: string,
     config: ProjectPreviewConfig,
+    options?: { focusTerminal?: boolean },
   ) => {
     if (!repoPath) return;
     setPreviewInProgress(true);
+    const targetId = target.kind === 'commit' ? target.sha : target.workingTreeId;
+    if (target.kind === 'worktree') {
+      setPreviewedWorktreeNodeIds((current) => current.includes(target.workingTreeId) ? current : [...current, target.workingTreeId]);
+    } else {
+      setPreviewedNodeId(targetId || nodeId);
+    }
+    // Find running commit preview session and capture its current output length BEFORE checkout starts
+    let initialLength = 0;
+    if (target.kind === 'commit') {
+      const commitPreviews = terminalSessions.filter((session) =>
+        sameRepoPath(session.projectPath, repoPath)
+        && session.kind === 'preview'
+        && session.targetKind === 'commit',
+      );
+      const runningPreview = commitPreviews.find((session) => session.status === 'running') ?? null;
+      if (runningPreview) {
+        const initialResult = await readTerminalSession(runningPreview.id).catch(() => null);
+        initialLength = initialResult ? initialResult.output.length : 0;
+      }
+    }
+
     try {
       const prepared = target.kind === 'worktree'
         ? {
@@ -6398,9 +6423,17 @@ function App() {
 
         if (runningPreview) {
           let nextSession = runningPreview;
-          if (runningPreview.targetId !== targetId) {
-            nextSession = await setTerminalSessionTarget(runningPreview.id, targetId, 'commit');
-            nextSession = await restartTerminalSession(runningPreview.id, command);
+          const targetChanged = runningPreview.targetId !== targetId;
+          let restarted = false;
+          if (targetChanged) {
+            if (runningPreview.command !== command) {
+              openedPreviewUrlsRef.current.delete(runningPreview.id);
+              nextSession = await setTerminalSessionTarget(runningPreview.id, targetId, 'commit');
+              nextSession = await restartTerminalSession(runningPreview.id, command);
+              restarted = true;
+            } else {
+              nextSession = await setTerminalSessionTarget(runningPreview.id, targetId, 'commit');
+            }
           }
           nextSession = {
             ...nextSession,
@@ -6413,8 +6446,79 @@ function App() {
             ...current.filter((session) => session.id !== nextSession.id && !stalePreviewIds.includes(session.id)),
             nextSession,
           ]);
-          setActiveTerminalId(nextSession.id);
+          if (options?.focusTerminal !== false) {
+            setActiveTerminalId(nextSession.id);
+          }
           setPreviewedNodeId(target.sha || nodeId);
+          if (targetChanged && !restarted && nextSession.status === 'running') {
+            const sessionId = nextSession.id;
+            const sessionForActivation = nextSession;
+
+            // Clear any existing poll for this session
+            const existingInterval = rebuildPollIntervalsRef.current.get(sessionId);
+            if (existingInterval) {
+              clearInterval(existingInterval);
+              rebuildPollIntervalsRef.current.delete(sessionId);
+            }
+
+            const startPolling = async () => {
+              try {
+                const startTime = Date.now();
+                const timeoutMs = 2500; // 2.5 seconds maximum wait
+
+                const pollInterval = setInterval(async () => {
+                  const elapsed = Date.now() - startTime;
+                  if (elapsed >= timeoutMs) {
+                    clearInterval(pollInterval);
+                    rebuildPollIntervalsRef.current.delete(sessionId);
+                    void activatePreviewTarget(sessionForActivation, true).catch(() => undefined);
+                    return;
+                  }
+
+                  try {
+                    const currentResult = await readTerminalSession(sessionId);
+                    const currentOutput = currentResult.output;
+                    const newOutput = currentOutput.length >= initialLength
+                      ? currentOutput.slice(initialLength)
+                      : currentOutput;
+
+                    // Strip ANSI escape sequences
+                    const cleanOutput = newOutput.replace(/[\u001b\u009b][[()#;?]*(?:[0-9]{1,4}(?:;[0-9]{0,4})*)?[0-9A-ORZcf-nqry=><]/g, '').toLowerCase();
+
+                    const hasCompleted = [
+                      'built in',
+                      'ready in',
+                      'compiled successfully',
+                      'compiled',
+                      'compilation finished',
+                      'compiled with',
+                      'hmr update',
+                      'page reload',
+                      'rebuilt',
+                      'hot update',
+                      'ready'
+                    ].some(pattern => cleanOutput.includes(pattern));
+
+                    if (hasCompleted) {
+                      clearInterval(pollInterval);
+                      rebuildPollIntervalsRef.current.delete(sessionId);
+                      void activatePreviewTarget(sessionForActivation, true).catch(() => undefined);
+                    }
+                  } catch (e) {
+                    clearInterval(pollInterval);
+                    rebuildPollIntervalsRef.current.delete(sessionId);
+                    void activatePreviewTarget(sessionForActivation, true).catch(() => undefined);
+                  }
+                }, 150);
+
+                rebuildPollIntervalsRef.current.set(sessionId, pollInterval);
+              } catch {
+                void activatePreviewTarget(sessionForActivation, true).catch(() => undefined);
+              }
+            };
+
+            void startPolling();
+          }
           return;
         }
       }
@@ -6443,7 +6547,9 @@ function App() {
           : current;
         return [...withoutDuplicates.filter((session) => session.id !== result.id), result];
       });
-      setActiveTerminalId(result.id);
+      if (options?.focusTerminal !== false) {
+        setActiveTerminalId(result.id);
+      }
       if (target.kind === 'worktree') {
         setPreviewedWorktreeNodeIds((current) => current.includes(target.workingTreeId) ? current : [...current, target.workingTreeId]);
       } else {
@@ -6456,11 +6562,16 @@ function App() {
     }
   }, [repoPath, terminalSessions]);
 
-  const handlePreviewNode = useCallback(async (target: PreviewTarget, nodeId: string) => {
+  const handlePreviewNode = useCallback(async (
+    target: PreviewTarget,
+    nodeId: string,
+    options?: { focusTerminal?: boolean },
+  ) => {
     if (!repoPath) return;
+    if (previewInProgress) return;
     const config = activeProject?.previewConfig;
     if (config?.runCommand.trim()) {
-      await runPreviewForTarget(target, nodeId, config);
+      await runPreviewForTarget(target, nodeId, config, options);
       return;
     }
     const defaults = await detectProjectPreviewDefaults(repoPath).catch(() => ({
@@ -6476,7 +6587,7 @@ function App() {
       lastConfirmedAt: Date.now(),
     });
     setPreviewSetupOpen(true);
-  }, [activeProject?.previewConfig, repoPath, runPreviewForTarget]);
+  }, [activeProject?.previewConfig, repoPath, runPreviewForTarget, previewInProgress]);
 
   const handleConfirmPreviewSetup = useCallback(async () => {
     if (!repoPath || !pendingPreviewTarget || !previewDraftConfig) return;
@@ -6534,6 +6645,15 @@ function App() {
     };
   }, []);
 
+  useEffect(() => {
+    return () => {
+      for (const interval of rebuildPollIntervalsRef.current.values()) {
+        clearInterval(interval);
+      }
+      rebuildPollIntervalsRef.current.clear();
+    };
+  }, []);
+
   const activeTerminal = terminalSessions.find((session) => session.id === activeTerminalId) ?? null;
   const openedPreviewUrlsRef = useRef(new Map<string, string>());
 
@@ -6546,6 +6666,102 @@ function App() {
       void activatePreviewTarget(session).catch(() => undefined);
     }
   }, [terminalSessions]);
+
+  useEffect(() => {
+    if (!activeTerminalId) return;
+    const session = terminalSessions.find((s) => s.id === activeTerminalId);
+    if (session && session.kind === 'shell' && session.worktreePath) {
+      const normalizedPath = normalizePath(session.worktreePath).toLowerCase();
+      lastActiveTerminalIdByWorktreePathRef.current.set(normalizedPath, session.id);
+    }
+  }, [activeTerminalId, terminalSessions]);
+
+  const handleNodeDoubleClick = useCallback((node: Node) => {
+    if (previewInProgress) return;
+    const commitId = node.commit.id;
+    const isWT = isWorkingTreeCommitId(commitId) || node.commit.kind === 'uncommitted';
+    const isRegularCommit =
+      !isWT &&
+      node.commit.kind !== 'stash' &&
+      !commitId.startsWith('STASH:') &&
+      node.commit.kind !== 'branch-created' &&
+      !commitId.startsWith('BRANCH_HEAD:');
+
+    const wtSessions = buildWorktreeSessions(worktrees, repoPath ?? undefined, checkedOutRef);
+    
+    let targetWorktreePath: string | null = null;
+    let targetSession: typeof wtSessions[0] | null = null;
+    if (isWT) {
+      const session = wtSessions.find((entry) => entry.workingTreeId === commitId);
+      if (session) {
+        targetWorktreePath = session.path;
+        targetSession = session;
+      }
+    } else {
+      const session = wtSessions.find((entry) => shaMatches(entry.headSha, commitId));
+      if (session) {
+        targetWorktreePath = session.path;
+        targetSession = session;
+      }
+    }
+
+    // Find preview session matching this node
+    const previewSession = terminalSessions.find((session) => {
+      if (session.kind !== 'preview') return false;
+      if (!repoPath || !sameRepoPath(session.projectPath, repoPath)) return false;
+      if (isWT) {
+        return (
+          session.targetKind === 'worktree' &&
+          (session.targetId === commitId || (targetWorktreePath && sameRepoPath(session.worktreePath, targetWorktreePath)))
+        );
+      } else {
+        return session.targetKind === 'commit' && session.targetId === commitId;
+      }
+    });
+
+    if (isRegularCommit) {
+      setActiveTerminalId(null);
+      if (previewSession && previewSession.status === 'running') {
+        void activatePreviewTarget(previewSession, true).catch(() => undefined);
+      } else {
+        const target: PreviewTarget = { kind: 'commit', sha: commitId };
+        void handlePreviewNode(target, commitId, { focusTerminal: false });
+      }
+      return;
+    }
+
+    let focusedTerminalId: string | null = null;
+    if (targetWorktreePath) {
+      const normalizedPath = normalizePath(targetWorktreePath).toLowerCase();
+      const lastUsedId = lastActiveTerminalIdByWorktreePathRef.current.get(normalizedPath);
+      const worktreeShellSessions = terminalSessions.filter((session) =>
+        session.kind === 'shell' &&
+        sameRepoPath(session.worktreePath, targetWorktreePath)
+      );
+      if (worktreeShellSessions.length > 0) {
+        const stillExists = worktreeShellSessions.find((s) => s.id === lastUsedId);
+        focusedTerminalId = stillExists ? stillExists.id : worktreeShellSessions[0].id;
+      }
+    }
+
+    if (previewSession && previewSession.status === 'running') {
+      void activatePreviewTarget(previewSession, true).catch(() => undefined);
+    } else if (targetSession) {
+      const target: PreviewTarget = {
+        kind: 'worktree',
+        worktreePath: targetSession.path,
+        headSha: targetSession.headSha || commitId,
+        workingTreeId: targetSession.workingTreeId,
+      };
+      void handlePreviewNode(target, commitId, { focusTerminal: !focusedTerminalId });
+    }
+
+    if (focusedTerminalId) {
+      setActiveTerminalId(focusedTerminalId);
+    } else if (previewSession) {
+      setActiveTerminalId(previewSession.id);
+    }
+  }, [repoPath, terminalSessions, worktrees, checkedOutRef, handlePreviewNode, previewInProgress]);
 
   const useBottomTerminal = activeTerminal != null && terminalPanelPlacement === 'bottom';
   const terminalCountByWorkingTreeId = useMemo(() => {
@@ -6710,6 +6926,7 @@ function App() {
                 onGridSearchFocusChange={handleGridFocusChange}
                 checkedOutRef={visualCheckedOutRef}
                 onCommitClick={handleMapCommitClick}
+                onNodeDoubleClick={handleNodeDoubleClick}
                 onMergeRefsIntoBranch={handleMergeRefsIntoBranch}
                 mergeInProgress={mergeInProgress}
                 onPushAllBranches={handlePushAllBranches}

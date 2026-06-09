@@ -241,6 +241,7 @@ export default function BranchGridMap({
   onNodePositionOverridesChange,
   worktreeDraftByWorkingTreeId,
   terminalCountByWorkingTreeId = {},
+  onNodeDoubleClick,
 }: Props) {
   const scrollContainerRef = useRef<HTMLDivElement | null>(null);
   const hudHeaderRef = useRef<HTMLElement | null>(null);
@@ -1526,7 +1527,22 @@ export default function BranchGridMap({
         setMergeTargetCommitSha((current) => (current === commitSha ? null : commitSha));
       }
 
-      const shouldCheckout = event.metaKey || event.ctrlKey || event.detail >= 2;
+      const isRegularCommit =
+        !isWorkingTreeCommitId(commitSha) &&
+        node.commit.kind !== 'uncommitted' &&
+        node.commit.kind !== 'stash' &&
+        !commitSha.startsWith('STASH:') &&
+        node.commit.kind !== 'branch-created' &&
+        !commitSha.startsWith('BRANCH_HEAD:');
+
+      const isDoubleClick = event.detail >= 2;
+      const isCmdOrCtrl = event.metaKey || event.ctrlKey;
+      const shouldCheckout = isCmdOrCtrl || (isDoubleClick && !isRegularCommit);
+
+      if (isDoubleClick) {
+        onNodeDoubleClick?.(node);
+      }
+
       if (!shouldCheckout) return;
 
       const checkoutTarget = parseMapCheckoutTarget(node);
@@ -1550,7 +1566,7 @@ export default function BranchGridMap({
       setCheckoutPickerSelectedPath(defaultPath);
       setCheckoutPickerOpen(true);
     },
-    [checkoutPickerWorktrees, currentRepoPath, onCommitClick],
+    [checkoutPickerWorktrees, currentRepoPath, onCommitClick, onNodeDoubleClick],
   );
 
   const confirmCheckoutWorktree = useCallback(() => {

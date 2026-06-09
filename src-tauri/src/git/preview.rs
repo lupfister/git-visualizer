@@ -97,6 +97,26 @@ pub fn prepare_preview_target(
     };
 
     ensure_preview_worktree(repo, &preview_path, &checkout_sha)?;
+
+    let active_target = get_active_preview_target(storage_root, repo).ok().flatten();
+    let already_prepared = active_target.as_ref().map_or(false, |active| {
+        active.target_id == target_id
+            && active.target_kind == target_kind
+            && active.effective_head_sha == checkout_sha
+            && !active.overlay_applied
+            && source_worktree.is_none()
+    });
+
+    if already_prepared {
+        return Ok(PreparePreviewTargetResult {
+            preview_path: preview_path.to_string_lossy().to_string(),
+            target_kind,
+            effective_head_sha: checkout_sha,
+            overlay_applied: false,
+            dependency_files_changed: false,
+        });
+    }
+
     remove_previous_overlay(&preview_path, &state_path)?;
     git_run(&preview_path, &["reset", "--hard"])?;
     git_run(&preview_path, &["clean", "-fd"])?;

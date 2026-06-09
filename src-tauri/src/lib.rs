@@ -3331,7 +3331,9 @@ async fn activate_preview_target(
     id: String,
     url: Option<String>,
     app_name: Option<String>,
+    reload: Option<bool>,
 ) -> Result<(), String> {
+    let reload = reload.unwrap_or(false);
     run_blocking(move || {
         let (url, app_name) = match terminal_host::read_session(id) {
             Ok((mut session, output)) => {
@@ -3354,7 +3356,7 @@ async fn activate_preview_target(
             {
                 return Err("Only loopback preview URLs can be opened".to_string());
             }
-            if focus_existing_browser_tab(&url) {
+            if focus_existing_browser_tab(&url, reload) {
                 return Ok(());
             }
             let output = std::process::Command::new("open")
@@ -3375,8 +3377,23 @@ async fn activate_preview_target(
     .await
 }
 
-fn focus_existing_browser_tab(url: &str) -> bool {
-    if focus_existing_dia_tab(url) {
+fn focus_existing_browser_tab(url: &str, reload: bool) -> bool {
+    if try_focus_browser_tab(url, reload) {
+        return true;
+    }
+    // Try the alternative loopback form (localhost <-> 127.0.0.1)
+    let alt_url = if url.contains("://localhost:") {
+        url.replace("://localhost:", "://127.0.0.1:")
+    } else if url.contains("://127.0.0.1:") {
+        url.replace("://127.0.0.1:", "://localhost:")
+    } else {
+        return false;
+    };
+    try_focus_browser_tab(&alt_url, reload)
+}
+
+fn try_focus_browser_tab(url: &str, reload: bool) -> bool {
+    if focus_existing_dia_tab(url, reload) {
         return true;
     }
     for app_name in [
@@ -3386,14 +3403,14 @@ fn focus_existing_browser_tab(url: &str) -> bool {
         "Microsoft Edge",
         "Chromium",
     ] {
-        if focus_existing_chromium_tab(app_name, url) {
+        if focus_existing_chromium_tab(app_name, url, reload) {
             return true;
         }
     }
-    focus_existing_safari_tab(url)
+    focus_existing_safari_tab(url, reload)
 }
 
-fn focus_existing_dia_tab(url: &str) -> bool {
+fn focus_existing_dia_tab(url: &str, reload: bool) -> bool {
     if !browser_process_is_running("Dia") {
         return false;
     }
@@ -3401,12 +3418,25 @@ fn focus_existing_dia_tab(url: &str) -> bool {
         r#"{match_handler}
 on run argv
   set targetUrl to item 1 of argv
+  set shouldReload to (item 2 of argv is "true")
   tell application "Dia"
     repeat with browserWindow in windows
       repeat with browserTab in tabs of browserWindow
         if my urlMatches(URL of browserTab, targetUrl) then
           focus browserTab
           activate
+          if shouldReload then
+            try
+              set origUrl to URL of browserTab
+              if origUrl contains "?" then
+                set URL of browserTab to (origUrl & "&_gv_reload")
+              else
+                set URL of browserTab to (origUrl & "?_gv_reload")
+              end if
+              delay 0.05
+              set URL of browserTab to origUrl
+            end try
+          end if
           return "focused"
         end if
       end repeat
@@ -3416,12 +3446,20 @@ on run argv
 end run"#,
         match_handler = browser_tab_match_script(),
     );
-    run_browser_tab_focus_script(&script, url)
+    run_browser_tab_focus_script(&script, url, reload)
 }
 
 fn browser_tab_match_script() -> &'static str {
     r##"on urlMatches(tabUrl, targetUrl)
-  return tabUrl is targetUrl or tabUrl starts with targetUrl & "/" or tabUrl starts with targetUrl & "?" or tabUrl starts with targetUrl & "#"
+  set cleanTab to tabUrl
+  if cleanTab ends with "/" then
+    set cleanTab to text 1 thru -2 of cleanTab
+  end if
+  set cleanTarget to targetUrl
+  if cleanTarget ends with "/" then
+    set cleanTarget to text 1 thru -2 of cleanTarget
+  end if
+  return cleanTab is cleanTarget or cleanTab starts with cleanTarget & "/" or cleanTab starts with cleanTarget & "?" or cleanTab starts with cleanTarget & "#"
 end urlMatches"##
 }
 
@@ -3432,7 +3470,7 @@ fn browser_process_is_running(app_name: &str) -> bool {
         .is_ok_and(|status| status.success())
 }
 
-fn focus_existing_chromium_tab(app_name: &str, url: &str) -> bool {
+fn focus_existing_chromium_tab(app_name: &str, url: &str, reload: bool) -> bool {
     if !browser_process_is_running(app_name) {
         return false;
     }
@@ -3440,6 +3478,7 @@ fn focus_existing_chromium_tab(app_name: &str, url: &str) -> bool {
         r#"{match_handler}
 on run argv
   set targetUrl to item 1 of argv
+  set shouldReload to (item 2 of argv is "true")
   tell application "{app_name}"
     repeat with browserWindow in windows
       set tabIndex to 0
@@ -3449,6 +3488,22 @@ on run argv
           set active tab index of browserWindow to tabIndex
           set index of browserWindow to 1
           activate
+          if shouldReload then
+            try
+              reload browserTab
+            on error
+              try
+                set origUrl to URL of browserTab
+                if origUrl contains "?" then
+                  set URL of browserTab to (origUrl & "&_gv_reload")
+                else
+                  set URL of browserTab to (origUrl & "?_gv_reload")
+                end if
+                delay 0.05
+                set URL of browserTab to origUrl
+              end try
+            end try
+          end if
           return "focused"
         end if
       end repeat
@@ -3458,10 +3513,10 @@ on run argv
 end run"#,
         match_handler = browser_tab_match_script(),
     );
-    run_browser_tab_focus_script(&script, url)
+    run_browser_tab_focus_script(&script, url, reload)
 }
 
-fn focus_existing_safari_tab(url: &str) -> bool {
+fn focus_existing_safari_tab(url: &str, reload: bool) -> bool {
     if !browser_process_is_running("Safari") {
         return false;
     }
@@ -3469,6 +3524,7 @@ fn focus_existing_safari_tab(url: &str) -> bool {
         r#"{match_handler}
 on run argv
   set targetUrl to item 1 of argv
+  set shouldReload to (item 2 of argv is "true")
   tell application "Safari"
     repeat with browserWindow in windows
       repeat with browserTab in tabs of browserWindow
@@ -3476,6 +3532,18 @@ on run argv
           set current tab of browserWindow to browserTab
           set index of browserWindow to 1
           activate
+          if shouldReload then
+            try
+              set origUrl to URL of browserTab
+              if origUrl contains "?" then
+                set URL of browserTab to (origUrl & "&_gv_reload")
+              else
+                set URL of browserTab to (origUrl & "?_gv_reload")
+              end if
+              delay 0.05
+              set URL of browserTab to origUrl
+            end try
+          end if
           return "focused"
         end if
       end repeat
@@ -3485,12 +3553,13 @@ on run argv
 end run"#,
         match_handler = browser_tab_match_script(),
     );
-    run_browser_tab_focus_script(&script, url)
+    run_browser_tab_focus_script(&script, url, reload)
 }
 
-fn run_browser_tab_focus_script(script: &str, url: &str) -> bool {
+fn run_browser_tab_focus_script(script: &str, url: &str, reload: bool) -> bool {
+    let reload_str = if reload { "true" } else { "false" };
     std::process::Command::new("osascript")
-        .args(["-e", script, url])
+        .args(["-e", script, url, reload_str])
         .output()
         .is_ok_and(|output| output.status.success() && output.stdout.starts_with(b"focused"))
 }
@@ -3636,6 +3705,11 @@ fn stop_all_preview_processes() {
     for (_, mut process) in processes.drain() {
         terminate_preview_process(&mut process.child);
         let _ = process.child.wait();
+    }
+    if let Ok(sessions) = terminal_host::list_sessions() {
+        for session in sessions {
+            let _ = terminal_host::terminate_session(session.id);
+        }
     }
 }
 
