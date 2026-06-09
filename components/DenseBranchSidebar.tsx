@@ -91,6 +91,41 @@ export const visibleNestedSessions = (
   && session.targetKind !== 'commit'
 );
 
+type PreviewSidebarExpansionTarget = {
+  path: string;
+  worktrees: WorktreeInfo[];
+};
+
+/** Expand project + worktree rows so running preview sessions stay visible in the sidebar. */
+export const resolvePreviewSidebarExpansion = (
+  projects: PreviewSidebarExpansionTarget[],
+  sessionsByProject: Map<string, TerminalSession[]>,
+): { projectPaths: string[]; worktreeKeys: string[] } => {
+  const projectPaths: string[] = [];
+  const worktreeKeys: string[] = [];
+
+  for (const project of projects) {
+    const projectSessions = sessionsByProject.get(normalizeRepoPathForCompare(project.path).toLowerCase()) ?? [];
+    const runningPreviews = projectSessions.filter(
+      (candidate) => candidate.kind === 'preview' && candidate.status === 'running',
+    );
+    if (runningPreviews.length === 0) continue;
+
+    projectPaths.push(project.path);
+
+    for (const preview of runningPreviews) {
+      if (preview.targetKind !== 'worktree' || !preview.targetId) continue;
+      for (const worktree of project.worktrees) {
+        const workingTreeId = workingTreeIdForPath(worktree.path, worktree.isCurrent);
+        if (preview.targetId !== workingTreeId) continue;
+        worktreeKeys.push(`${project.path}:${worktree.path}`);
+      }
+    }
+  }
+
+  return { projectPaths, worktreeKeys };
+};
+
 export default function DenseBranchSidebar({
   projects,
   activeProjectPath,
@@ -165,6 +200,27 @@ export default function DenseBranchSidebar({
       return next;
     });
   };
+
+  useEffect(() => {
+    const { projectPaths, worktreeKeys } = resolvePreviewSidebarExpansion(projects, sessionsByProject);
+    if (projectPaths.length > 0) {
+      setExpandedProjects((current) => {
+        let changed = false;
+        const next = new Set(current);
+        for (const projectPath of projectPaths) {
+          if (next.has(projectPath)) continue;
+          next.add(projectPath);
+          changed = true;
+        }
+        if (!changed) return current;
+        persistSet(EXPANDED_PROJECTS_KEY, next);
+        return next;
+      });
+    }
+    for (const worktreeKey of worktreeKeys) {
+      expandWorktree(worktreeKey);
+    }
+  }, [projects, sessionsByProject, terminalSessions]);
 
   useEffect(() => {
     if (!activeTerminalId) return;

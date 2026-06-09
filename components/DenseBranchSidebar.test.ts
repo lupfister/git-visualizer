@@ -1,6 +1,12 @@
 import { describe, expect, it } from 'vitest';
 import type { TerminalSession, WorktreeInfo } from '../types';
-import { commitPreviewSessions, previewLabel, visibleNestedSessions, worktreeRefLabel } from './DenseBranchSidebar';
+import {
+  commitPreviewSessions,
+  previewLabel,
+  resolvePreviewSidebarExpansion,
+  visibleNestedSessions,
+  worktreeRefLabel,
+} from './DenseBranchSidebar';
 
 const session = (overrides: Partial<TerminalSession>): TerminalSession => ({
   id: 'terminal-1',
@@ -67,5 +73,67 @@ describe('worktree sidebar model', () => {
 
   it('labels ready web previews with only their port', () => {
     expect(previewLabel(session({ kind: 'preview', previewUrl: 'http://localhost:5173/dashboard' }))).toBe('5173');
+  });
+
+  it('expands the owning project and worktree for a running worktree preview', () => {
+    const sessionsByProject = new Map<string, TerminalSession[]>([
+      ['/repo', [
+        session({
+          id: 'tauri-preview',
+          kind: 'preview',
+          targetKind: 'worktree',
+          targetId: 'WORKING_TREE',
+          command: 'pnpm tauri dev',
+          status: 'running',
+        }),
+      ]],
+    ]);
+    const expansion = resolvePreviewSidebarExpansion([
+      {
+        path: '/repo',
+        worktrees: [{
+          path: '/repo',
+          pathExists: true,
+          headSha: 'abcdefg123',
+          branchName: 'main',
+          parentSha: null,
+          isCurrent: true,
+          isPrunable: false,
+        }],
+      },
+    ], sessionsByProject);
+    expect(expansion.projectPaths).toEqual(['/repo']);
+    expect(expansion.worktreeKeys).toEqual(['/repo:/repo']);
+  });
+
+  it('does not expand worktrees for commit previews', () => {
+    const sessionsByProject = new Map<string, TerminalSession[]>([
+      ['/repo', [
+        session({
+          id: 'commit-preview',
+          kind: 'preview',
+          targetKind: 'commit',
+          targetId: 'abcdefg123',
+          command: 'pnpm tauri dev',
+          status: 'running',
+        }),
+      ]],
+    ]);
+    const expansion = resolvePreviewSidebarExpansion([
+      {
+        path: '/repo',
+        worktrees: [{
+          path: '/repo',
+          pathExists: true,
+          headSha: 'abcdefg123',
+          branchName: 'main',
+          parentSha: null,
+          isCurrent: true,
+          isPrunable: false,
+        }],
+      },
+    ], sessionsByProject);
+    expect(expansion.projectPaths).toEqual(['/repo']);
+    expect(expansion.worktreeKeys).toEqual([]);
   });
 });
