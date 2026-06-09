@@ -1,5 +1,5 @@
-import { useEffect, useMemo, useRef, useState } from 'react';
-import type { CSSProperties } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import type { CSSProperties, PointerEvent as ReactPointerEvent } from 'react';
 import { ChevronRight, MoreHorizontal, Plus, Trash2 } from 'lucide-react';
 import type { Branch, BranchCommitPreview, TerminalSession, WorktreeInfo } from '../types';
 import { accentCssVars, buildWorktreeSessions, workingTreeIdForPath } from '../lib/worktreeSessions';
@@ -58,6 +58,7 @@ type Props = {
   onSelectProject: (path: string) => void | Promise<void>;
   onAddProject: () => void;
   onRemoveProject: (path: string) => void;
+  onReorderProjects?: (nextOrder: string[]) => void;
   onRevealProjectInFinder: (path: string) => Promise<void> | void;
   onResetProjectNodePositions?: (path: string) => void;
   onSelectWorktree: (projectPath: string, workingTreeId: string) => void | Promise<void>;
@@ -145,6 +146,7 @@ export default function DenseBranchSidebar({
   onSelectProject,
   onAddProject,
   onRemoveProject,
+  onReorderProjects,
   onRevealProjectInFinder,
   onResetProjectNodePositions,
   onSelectWorktree,
@@ -160,7 +162,24 @@ export default function DenseBranchSidebar({
   const [expandedWorktrees, setExpandedWorktrees] = useState<Set<string>>(() => loadSet(EXPANDED_WORKTREES_KEY));
   const [expandedProjects, setExpandedProjects] = useState<Set<string>>(() => loadSet(EXPANDED_PROJECTS_KEY));
   const [openProjectMenu, setOpenProjectMenu] = useState<string | null>(null);
+  const [dragPendingProjectPath, setDragPendingProjectPath] = useState<string | null>(null);
+  const [draggingProjectPath, setDraggingProjectPath] = useState<string | null>(null);
+  const [dragPreviewIndex, setDragPreviewIndex] = useState<number | null>(null);
+  const [dragGhostRect, setDragGhostRect] = useState<{ x: number; y: number; width: number } | null>(null);
   const menuRef = useRef<HTMLDivElement | null>(null);
+  const scrollBodyRef = useRef<HTMLDivElement | null>(null);
+  const suppressProjectSelectRef = useRef(false);
+  const dragStateRef = useRef<{
+    active: boolean;
+    path: string;
+    startX: number;
+    startY: number;
+    offsetX: number;
+    offsetY: number;
+    width: number;
+    moved: boolean;
+  } | null>(null);
+  const dragRafRef = useRef<number | null>(null);
 
   useEffect(() => {
     if (!openProjectMenu) return;
@@ -234,6 +253,360 @@ export default function DenseBranchSidebar({
     }
   }, [projects, sessionsByProject, terminalSessions]);
 
+  const orderedProjects = projects;
+  const renderedProjects = useMemo(() => {
+    if (!draggingProjectPath) return orderedProjects;
+    const movingProject = orderedProjects.find((project) => project.path === draggingProjectPath);
+    if (!movingProject) return orderedProjects;
+    const baseProjects = orderedProjects.filter((project) => project.path !== draggingProjectPath);
+    if (dragPreviewIndex == null) return baseProjects;
+    const next = [...baseProjects];
+    const boundedIndex = Math.max(0, Math.min(dragPreviewIndex, next.length));
+    next.splice(boundedIndex, 0, movingProject);
+    return next;
+  }, [dragPreviewIndex, draggingProjectPath, orderedProjects]);
+
+  const commitProjectOrder = useCallback((nextOrder: string[]) => {
+    onReorderProjects?.(nextOrder);
+  }, [onReorderProjects]);
+
+  const clearDragPreview = useCallback(() => {
+    setDragPendingProjectPath(null);
+    setDraggingProjectPath(null);
+    setDragPreviewIndex(null);
+    setDragGhostRect(null);
+  }, []);
+
+  useEffect(() => {
+    if (!dragPendingProjectPath) return;
+    const handlePointerMove = (event: PointerEvent) => {
+      const dragState = dragStateRef.current;
+      if (!dragState || !dragState.active) return;
+      if (Math.abs(event.clientX - dragState.startX) <= 4 && Math.abs(event.clientY - dragState.startY) <= 4) return;
+      if (dragRafRef.current != null) return;
+      dragRafRef.current = window.requestAnimationFrame(() => {
+        dragRafRef.current = null;
+        const currentDragState = dragStateRef.current;
+        if (!currentDragState || !currentDragState.active) return;
+        if (Math.abs(event.clientX - currentDragState.startX) > 4 || Math.abs(event.clientY - currentDragState.startY) > 4) {
+          currentDragState.moved = true;
+          setDraggingProjectPath(currentDragState.path);
+        }
+        setDragGhostRect({
+          x: event.clientX - currentDragState.offsetX,
+          y: event.clientY - currentDragState.offsetY,
+          width: currentDragState.width,
+        });
+
+        const rows = Array.from(scrollBodyRef.current?.querySelectorAll<HTMLElement>('[data-project-path]') ?? []);
+        const targetRows = rows.filter((row) => row.dataset.projectPath && row.dataset.projectPath !== currentDragState.path);
+        let nextPreviewIndex = targetRows.length;
+        if (targetRows.length > 0) {
+          for (let index = 0; index < targetRows.length; index += 1) {
+            const rect = targetRows[index]!.getBoundingClientRect();
+            const midpoint = rect.top + rect.height / 2;
+            if (event.clientY < midpoint) {
+              nextPreviewIndex = index;
+              break;
+            }
+          }
+        }
+        setDragPreviewIndex(nextPreviewIndex);
+      });
+    };
+    const handlePointerUp = () => {
+      const dragState = dragStateRef.current;
+      dragStateRef.current = null;
+      if (dragRafRef.current != null) {
+        window.cancelAnimationFrame(dragRafRef.current);
+        dragRafRef.current = null;
+      }
+      if (!dragState) {
+        clearDragPreview();
+        return;
+      }
+      if (!dragState.moved) {
+        clearDragPreview();
+        return;
+      }
+      suppressProjectSelectRef.current = true;
+      const currentOrder = orderedProjects.map((project) => project.path);
+      const fromIndex = currentOrder.indexOf(dragState.path);
+      if (fromIndex < 0) {
+        clearDragPreview();
+        return;
+      }
+      const previewIndex = dragPreviewIndex;
+      if (previewIndex == null) {
+        clearDragPreview();
+        return;
+      }
+      const nextOrder = currentOrder.filter((path) => path !== dragState.path);
+      const boundedIndex = Math.max(0, Math.min(previewIndex, nextOrder.length));
+      nextOrder.splice(boundedIndex, 0, dragState.path);
+      commitProjectOrder(nextOrder);
+      clearDragPreview();
+      window.requestAnimationFrame(() => {
+        suppressProjectSelectRef.current = false;
+        setOpenProjectMenu(null);
+      });
+    };
+    window.addEventListener('pointermove', handlePointerMove);
+    window.addEventListener('pointerup', handlePointerUp);
+    window.addEventListener('pointercancel', handlePointerUp);
+    return () => {
+      window.removeEventListener('pointermove', handlePointerMove);
+      window.removeEventListener('pointerup', handlePointerUp);
+      window.removeEventListener('pointercancel', handlePointerUp);
+    };
+  }, [
+    clearDragPreview,
+    commitProjectOrder,
+    dragPendingProjectPath,
+    dragPreviewIndex,
+    orderedProjects,
+  ]);
+
+  const startProjectDrag = useCallback((event: ReactPointerEvent<HTMLDivElement>, path: string) => {
+    if (!onReorderProjects || event.button !== 0) return;
+    const section = event.currentTarget.closest<HTMLElement>('[data-project-path]');
+    const rect = (section ?? event.currentTarget).getBoundingClientRect();
+    dragStateRef.current = {
+      active: true,
+      path,
+      startX: event.clientX,
+      startY: event.clientY,
+      offsetX: event.clientX - rect.left,
+      offsetY: event.clientY - rect.top,
+      width: rect.width,
+      moved: false,
+    };
+    setDragPendingProjectPath(path);
+    setDraggingProjectPath(null);
+    setDragPreviewIndex(null);
+    setDragGhostRect({
+      x: event.clientX - rect.left,
+      y: event.clientY - rect.top,
+      width: rect.width,
+    });
+  }, [onReorderProjects]);
+
+  const draggingProject = draggingProjectPath
+    ? projects.find((project) => project.path === draggingProjectPath)
+    : null;
+
+  const renderProjectBlock = (
+    project: SidebarProject,
+    options: { ghostMode?: boolean; hideLive?: boolean } = {},
+  ) => {
+    const ghostMode = options.ghostMode ?? false;
+    const hideLive = options.hideLive ?? false;
+    const isActive = activeProjectPath != null && samePath(project.path, activeProjectPath);
+    const projectKey = projectExpansionKey(project.path);
+    const isExpanded = expandedProjects.has(projectKey);
+    const projectSessions = sessionsByProject.get(normalizeRepoPathForCompare(project.path).toLowerCase()) ?? [];
+    const commitPreviews = commitPreviewSessions(projectSessions);
+    const worktreeAccentByPath = new Map(
+      buildWorktreeSessions(project.worktrees, project.path).map((session) => [
+        normalizeRepoPathForCompare(session.path).toLowerCase(),
+        accentCssVars(session.accentToken),
+      ]),
+    );
+
+    return (
+      <div className={cn(hideLive && 'pointer-events-none opacity-0')}>
+        <div
+          className={cn(
+            'group relative flex h-7 items-center rounded-lg transition-colors',
+            !ghostMode && 'hover:bg-muted',
+            !ghostMode && onReorderProjects && 'cursor-grab active:cursor-grabbing',
+            isActive && 'text-foreground',
+            !isActive && 'text-muted-foreground',
+            !ghostMode && openProjectMenu === project.path && 'z-40',
+          )}
+          onPointerDownCapture={ghostMode ? undefined : (event) => {
+            const target = event.target as HTMLElement | null;
+            if (target?.closest('.window-no-drag, button, input, textarea, select, [contenteditable="true"]')) return;
+            startProjectDrag(event, project.path);
+          }}
+          onClick={ghostMode ? undefined : (event) => {
+            if (isActive) return;
+            if (draggingProjectPath === project.path || suppressProjectSelectRef.current) return;
+            const target = event.target as HTMLElement | null;
+            if (target?.closest('button, input, textarea, select, [contenteditable="true"]')) return;
+            void onSelectProject(project.path);
+          }}
+        >
+          <button
+            type="button"
+            onPointerDown={ghostMode ? undefined : (event) => event.stopPropagation()}
+            onClick={ghostMode ? undefined : (event) => {
+              event.stopPropagation();
+              toggle(projectKey, expandedProjects, setExpandedProjects, EXPANDED_PROJECTS_KEY);
+            }}
+            className="window-no-drag inline-flex h-7 w-7 shrink-0 items-center justify-center rounded-lg transition-colors"
+            aria-label={`${isExpanded ? 'Collapse' : 'Expand'} ${project.name}`}
+            tabIndex={ghostMode ? -1 : undefined}
+          >
+            {isExpanded ? (
+              <ProjectOpenIcon className="h-4 w-4 shrink-0" />
+            ) : (
+              <ProjectClosedIcon className="h-4 w-4 shrink-0" />
+            )}
+          </button>
+          <span className="min-w-0 flex-1 truncate text-sm font-medium">{project.name}</span>
+          {!ghostMode ? (
+            <button
+              type="button"
+              onPointerDown={(event) => event.stopPropagation()}
+              onClick={(event) => {
+                event.stopPropagation();
+                setOpenProjectMenu((current) => current === project.path ? null : project.path);
+              }}
+              className="window-no-drag inline-flex h-7 w-7 shrink-0 items-center justify-center rounded-lg opacity-0 transition-colors group-hover:opacity-100"
+              aria-label={`Project actions for ${project.name}`}
+            >
+              <MoreHorizontal className="h-4 w-4 shrink-0" />
+            </button>
+          ) : null}
+          {!ghostMode && openProjectMenu === project.path ? (
+            <div ref={menuRef} className="absolute right-0 top-8 z-50 w-40 rounded-lg border border-border bg-background p-1">
+              <button type="button" onClick={() => void onRevealProjectInFinder(project.path)} className="w-full rounded-lg px-2 py-1.5 text-left text-xs transition-colors hover:bg-muted">Open in Finder</button>
+              {onResetProjectNodePositions ? <button type="button" onClick={() => onResetProjectNodePositions(project.path)} className="w-full rounded-lg px-2 py-1.5 text-left text-xs transition-colors hover:bg-muted">Reset node positions</button> : null}
+              <button type="button" onClick={() => onRemoveProject(project.path)} className="w-full rounded-lg px-2 py-1.5 text-left text-xs text-red-600 transition-colors hover:bg-red-50 dark:text-red-400 dark:hover:bg-red-900/20">Remove</button>
+            </div>
+          ) : null}
+        </div>
+        {isExpanded ? (
+          <div className="mt-1 space-y-1">
+            {commitPreviews.map((session) => (
+              <TerminalRow
+                key={session.id}
+                session={session}
+                label={previewLabel(session)}
+                active={activeTerminalId === session.id}
+                onSelect={onSelectTerminal}
+                isActiveProject={isActive}
+                onTerminate={onTerminateTerminal}
+                alignWithProjectRow
+                ghostMode={ghostMode}
+              />
+            ))}
+            <div className="space-y-1 pl-1">
+              {project.worktrees.map((worktree) => {
+                const key = worktreeExpansionKey(project.path, worktree.path);
+                const expanded = expandedWorktrees.has(key);
+                const workingTreeId = workingTreeIdForPath(worktree.path, worktree.isCurrent);
+                const sessions = visibleNestedSessions(projectSessions, worktree.path, workingTreeId);
+                const hasNestedSessions = sessions.length > 0;
+                const label = worktree.isCurrent ? 'Primary' : worktreeDisplayName(worktree.path);
+                const refLabel = worktreeRefLabel(worktree);
+                const accent = worktreeAccentByPath.get(
+                  normalizeRepoPathForCompare(worktree.path).toLowerCase(),
+                );
+                const accentColor = accent?.fg;
+                const rowAccentStyle = accent ? ({
+                  color: accent.fg,
+                  '--worktree-fg': accent.fg,
+                  '--worktree-muted': accent.muted,
+                } as React.CSSProperties) : undefined;
+                const rowSurfaceClass = cn(
+                  !ghostMode && (accent ? 'hover:bg-[var(--worktree-muted)]' : 'hover:bg-muted'),
+                  !accentColor && 'text-muted-foreground',
+                  !ghostMode && !accentColor && 'hover:text-foreground',
+                  !isActive && 'opacity-80',
+                  !ghostMode && !isActive && 'hover:opacity-100',
+                );
+                const plusButton = ghostMode ? null : (
+                  <button
+                    type="button"
+                    disabled={!worktree.pathExists}
+                    onClick={(event) => {
+                      event.stopPropagation();
+                      void (async () => {
+                        await onCreateTerminal(project.path, worktree.path);
+                        expandWorktree(key);
+                      })();
+                    }}
+                    className="inline-flex h-7 w-7 shrink-0 items-center justify-center rounded-lg opacity-0 transition-colors group-hover/row:opacity-100 disabled:cursor-not-allowed disabled:opacity-30"
+                    aria-label={`New terminal in ${label}`}
+                    title="New terminal"
+                  >
+                    <Plus className="h-3.5 w-3.5 shrink-0" />
+                  </button>
+                );
+                return (
+                  <div key={worktree.path}>
+                    {hasNestedSessions ? (
+                      <div
+                        className={cn(
+                          'group/row flex h-7 flex-1 min-w-0 items-center rounded-lg pl-2 pr-0 transition-colors',
+                          !ghostMode && 'cursor-pointer',
+                          rowSurfaceClass,
+                        )}
+                        style={rowAccentStyle}
+                        onClick={ghostMode ? undefined : () => void onSelectWorktree(project.path, workingTreeId)}
+                      >
+                        <button
+                          type="button"
+                          onClick={ghostMode ? undefined : (event) => {
+                            event.stopPropagation();
+                            toggle(key, expandedWorktrees, setExpandedWorktrees, EXPANDED_WORKTREES_KEY);
+                          }}
+                          className="inline-flex h-7 w-4 shrink-0 items-center justify-center rounded-lg transition-colors"
+                          aria-label={`${expanded ? 'Collapse' : 'Expand'} ${label}`}
+                          tabIndex={ghostMode ? -1 : undefined}
+                        >
+                          <ChevronRight className={cn('h-3.5 w-3.5 shrink-0 transition-transform duration-200', expanded && 'rotate-90')} />
+                        </button>
+                        <span className="min-w-0 flex-1 truncate text-sm">{label} · {refLabel}</span>
+                        {plusButton}
+                      </div>
+                    ) : (
+                      <div
+                        className={cn('flex h-7 min-w-0 flex-1 items-center pl-2 pr-0', !ghostMode && 'cursor-pointer')}
+                        onClick={ghostMode ? undefined : () => void onSelectWorktree(project.path, workingTreeId)}
+                      >
+                        <span className="w-4 shrink-0" aria-hidden="true" />
+                        <div
+                          className={cn(
+                            'group/row -ml-2 flex min-w-0 flex-1 items-center rounded-lg pl-2 pr-0 transition-colors',
+                            rowSurfaceClass,
+                          )}
+                          style={rowAccentStyle}
+                        >
+                          <span className="min-w-0 flex-1 truncate text-sm">{label} · {refLabel}</span>
+                          {plusButton}
+                        </div>
+                      </div>
+                    )}
+                    {expanded ? (
+                      <div className="space-y-1 pl-4">
+                        {sessions.map((session) => (
+                          <TerminalRow
+                            key={session.id}
+                            session={session}
+                            label={session.kind === 'preview' ? previewLabel(session) : session.label}
+                            active={activeTerminalId === session.id}
+                            onSelect={onSelectTerminal}
+                            accent={accent}
+                            isActiveProject={isActive}
+                            onTerminate={onTerminateTerminal}
+                            ghostMode={ghostMode}
+                          />
+                        ))}
+                      </div>
+                    ) : null}
+                  </div>
+                );
+              })}
+            </div>
+          </div>
+        ) : null}
+      </div>
+    );
+  };
+
   return (
     <aside
       aria-label="Worktree sidebar"
@@ -258,188 +631,31 @@ export default function DenseBranchSidebar({
             <span>New Project</span>
           </button>
         </div>
-        <div className="sidebar-scrollbar min-h-0 flex-1 space-y-3 overflow-y-auto px-2">
-          {projects.map((project) => {
-            const isActive = activeProjectPath != null && samePath(project.path, activeProjectPath);
-            const projectKey = projectExpansionKey(project.path);
-            const isExpanded = expandedProjects.has(projectKey);
-            const projectSessions = sessionsByProject.get(normalizeRepoPathForCompare(project.path).toLowerCase()) ?? [];
-            const commitPreviews = commitPreviewSessions(projectSessions);
-            const worktreeAccentByPath = new Map(
-              buildWorktreeSessions(project.worktrees, project.path).map((session) => [
-                normalizeRepoPathForCompare(session.path).toLowerCase(),
-                accentCssVars(session.accentToken),
-              ]),
-            );
-            return (
-              <section key={project.path}>
-                <div
-                  className={cn(
-                    'group relative flex h-7 items-center rounded-lg transition-colors hover:bg-muted',
-                    isActive && 'text-foreground',
-                    !isActive && 'text-muted-foreground',
-                    openProjectMenu === project.path && 'z-40',
-                  )}
-                  onClick={() => void onSelectProject(project.path)}
-                >
-                  <button
-                    type="button"
-                    onClick={(event) => {
-                      event.stopPropagation();
-                      toggle(projectKey, expandedProjects, setExpandedProjects, EXPANDED_PROJECTS_KEY);
-                    }}
-                    className="inline-flex h-7 w-7 shrink-0 items-center justify-center rounded-lg transition-colors"
-                    aria-label={`${isExpanded ? 'Collapse' : 'Expand'} ${project.name}`}
-                  >
-                    {isExpanded ? (
-                      <ProjectOpenIcon className="h-4 w-4 shrink-0" />
-                    ) : (
-                      <ProjectClosedIcon className="h-4 w-4 shrink-0" />
-                    )}
-                  </button>
-                  <span className="min-w-0 flex-1 truncate text-sm font-medium">{project.name}</span>
-                  <button
-                    type="button"
-                    onClick={(event) => {
-                      event.stopPropagation();
-                      setOpenProjectMenu((current) => current === project.path ? null : project.path);
-                    }}
-                    className="inline-flex h-7 w-7 shrink-0 items-center justify-center rounded-lg opacity-0 transition-colors group-hover:opacity-100"
-                    aria-label={`Project actions for ${project.name}`}
-                  >
-                    <MoreHorizontal className="h-4 w-4 shrink-0" />
-                  </button>
-                  {openProjectMenu === project.path ? (
-                    <div ref={menuRef} className="absolute right-0 top-8 z-50 w-40 rounded-lg border border-border bg-background p-1">
-                      <button type="button" onClick={() => void onRevealProjectInFinder(project.path)} className="w-full rounded-lg px-2 py-1.5 text-left text-xs transition-colors hover:bg-muted">Open in Finder</button>
-                      {onResetProjectNodePositions ? <button type="button" onClick={() => onResetProjectNodePositions(project.path)} className="w-full rounded-lg px-2 py-1.5 text-left text-xs transition-colors hover:bg-muted">Reset node positions</button> : null}
-                      <button type="button" onClick={() => onRemoveProject(project.path)} className="w-full rounded-lg px-2 py-1.5 text-left text-xs text-red-600 transition-colors hover:bg-red-50 dark:text-red-400 dark:hover:bg-red-900/20">Remove</button>
-                    </div>
-                  ) : null}
+        <div ref={scrollBodyRef} className="sidebar-scrollbar min-h-0 flex-1 space-y-3 overflow-y-auto px-2">
+          {renderedProjects.map((project) => (
+            <section key={project.path} data-project-path={project.path}>
+              {dragPreviewIndex !== null && draggingProjectPath !== project.path && renderedProjects[dragPreviewIndex]?.path === project.path ? (
+                <div className="h-px" aria-hidden="true">
+                  <div className="mx-1 h-px bg-foreground/60" />
                 </div>
-                {isExpanded ? <div className="mt-1 space-y-1">
-                    {commitPreviews.map((session) => (
-                      <TerminalRow
-                        key={session.id}
-                        session={session}
-                        label={previewLabel(session)}
-                        active={activeTerminalId === session.id}
-                        onSelect={onSelectTerminal}
-                        isActiveProject={isActive}
-                        onTerminate={onTerminateTerminal}
-                        alignWithProjectRow
-                      />
-                    ))}
-                    <div className="space-y-1 pl-1">
-                    {project.worktrees.map((worktree) => {
-                      const key = worktreeExpansionKey(project.path, worktree.path);
-                      const expanded = expandedWorktrees.has(key);
-                      const workingTreeId = workingTreeIdForPath(worktree.path, worktree.isCurrent);
-                      const sessions = visibleNestedSessions(projectSessions, worktree.path, workingTreeId);
-                      const label = worktree.isCurrent ? 'Primary' : worktreeDisplayName(worktree.path);
-                      const refLabel = worktreeRefLabel(worktree);
-                      const accent = worktreeAccentByPath.get(
-                        normalizeRepoPathForCompare(worktree.path).toLowerCase(),
-                      );
-                      const accentColor = accent?.fg;
-                      const hasNestedSessions = sessions.length > 0;
-                      const rowAccentStyle = accent ? ({
-                        color: accent.fg,
-                        '--worktree-fg': accent.fg,
-                        '--worktree-muted': accent.muted,
-                      } as React.CSSProperties) : undefined;
-                      const rowSurfaceClass = cn(
-                        accent ? 'hover:bg-[var(--worktree-muted)]' : 'hover:bg-muted',
-                        !accentColor && 'text-muted-foreground hover:text-foreground',
-                        !isActive && 'opacity-80 hover:opacity-100',
-                      );
-                      const plusButton = (
-                        <button
-                          type="button"
-                          disabled={!worktree.pathExists}
-                          onClick={(event) => {
-                            event.stopPropagation();
-                            void (async () => {
-                              await onCreateTerminal(project.path, worktree.path);
-                              expandWorktree(key);
-                            })();
-                          }}
-                          className="inline-flex h-7 w-7 shrink-0 items-center justify-center rounded-lg opacity-0 transition-colors group-hover/row:opacity-100 disabled:cursor-not-allowed disabled:opacity-30"
-                          aria-label={`New terminal in ${label}`}
-                          title="New terminal"
-                        >
-                          <Plus className="h-3.5 w-3.5 shrink-0" />
-                        </button>
-                      );
-                      return (
-                        <div key={worktree.path}>
-                          {hasNestedSessions ? (
-                            <div
-                              className={cn(
-                                'group/row flex h-7 flex-1 min-w-0 cursor-pointer items-center rounded-lg pl-2 pr-0 transition-colors',
-                                rowSurfaceClass,
-                              )}
-                              style={rowAccentStyle}
-                              onClick={() => void onSelectWorktree(project.path, workingTreeId)}
-                            >
-                              <button
-                                type="button"
-                                onClick={(event) => {
-                                  event.stopPropagation();
-                                  toggle(key, expandedWorktrees, setExpandedWorktrees, EXPANDED_WORKTREES_KEY);
-                                }}
-                                className="inline-flex h-7 w-4 shrink-0 items-center justify-center rounded-lg transition-colors"
-                                aria-label={`${expanded ? 'Collapse' : 'Expand'} ${label}`}
-                              >
-                                <ChevronRight className={cn('h-3.5 w-3.5 shrink-0 transition-transform duration-200', expanded && 'rotate-90')} />
-                              </button>
-                              <span className="min-w-0 flex-1 truncate text-sm">{label} · {refLabel}</span>
-                              {plusButton}
-                            </div>
-                          ) : (
-                            <div
-                              className="flex h-7 min-w-0 flex-1 cursor-pointer items-center pl-2 pr-0"
-                              onClick={() => void onSelectWorktree(project.path, workingTreeId)}
-                            >
-                              <span className="w-4 shrink-0" aria-hidden="true" />
-                              <div
-                                className={cn(
-                                  'group/row -ml-2 flex min-w-0 flex-1 items-center rounded-lg pl-2 pr-0 transition-colors',
-                                  rowSurfaceClass,
-                                )}
-                                style={rowAccentStyle}
-                              >
-                                <span className="min-w-0 flex-1 truncate text-sm">{label} · {refLabel}</span>
-                                {plusButton}
-                              </div>
-                            </div>
-                          )}
-                          {expanded ? (
-                            <div className="space-y-1 pl-4">
-                              {sessions.map((session) => (
-                                <TerminalRow
-                                  key={session.id}
-                                  session={session}
-                                  label={session.kind === 'preview' ? previewLabel(session) : session.label}
-                                  active={activeTerminalId === session.id}
-                                  onSelect={onSelectTerminal}
-                                  accent={accent}
-                                  isActiveProject={isActive}
-                                  onTerminate={onTerminateTerminal}
-                                />
-                              ))}
-                            </div>
-                          ) : null}
-                        </div>
-                      );
-                    })}
-                    </div>
-                </div> : null}
-              </section>
-            );
-          })}
+              ) : null}
+              {renderProjectBlock(project, { hideLive: draggingProjectPath === project.path })}
+            </section>
+          ))}
         </div>
       </div>
+      {draggingProject && dragGhostRect ? (
+        <div
+          aria-hidden="true"
+          className="pointer-events-none fixed left-0 top-0 z-[90]"
+          style={{
+            transform: `translate3d(${dragGhostRect.x}px, ${dragGhostRect.y}px, 0)`,
+            width: `${dragGhostRect.width}px`,
+          }}
+        >
+          {renderProjectBlock(draggingProject, { ghostMode: true })}
+        </div>
+      ) : null}
     </aside>
   );
 }
@@ -459,6 +675,7 @@ function TerminalRow({
   isActiveProject,
   onTerminate,
   alignWithProjectRow,
+  ghostMode,
 }: {
   session: TerminalSession;
   label: string;
@@ -468,6 +685,7 @@ function TerminalRow({
   isActiveProject?: boolean;
   onTerminate?: (id: string) => void | Promise<void>;
   alignWithProjectRow?: boolean;
+  ghostMode?: boolean;
 }) {
   const Icon = session.kind === 'preview' ? PreviewIcon : TerminalIcon;
   const [displayLabel, setDisplayLabel] = useState(label);
@@ -556,74 +774,93 @@ function TerminalRow({
     return () => window.clearTimeout(timeout);
   }, [isSettling]);
 
+  const rowContentClass = cn(
+    'flex h-7 flex-1 items-center rounded-lg text-left text-sm min-w-0',
+    ghostMode ? 'pr-2' : 'pr-8',
+    alignWithProjectRow ? 'pl-0' : 'gap-1.5 px-2',
+    !pulseVisible && accent && 'text-[var(--worktree-fg)]',
+    !pulseVisible && !accent && active && 'text-primary',
+    !pulseVisible && !accent && !active && 'text-muted-foreground',
+    !ghostMode && !pulseVisible && !accent && !active && 'group-hover/terminal:text-foreground',
+    pulseVisible && 'terminal-row-shimmer',
+    pulseVisible && accent && 'terminal-row-shimmer--accent',
+    pulseVisible && !accent && active && 'terminal-row-shimmer--primary',
+    pulseVisible && !accent && !active && 'terminal-row-shimmer--default',
+  );
+
+  const rowInner = (
+    <>
+      <span
+        className={cn(
+          'flex min-w-0 flex-1 items-center',
+          !alignWithProjectRow && 'gap-1.5',
+          pulseVisible && 'terminal-row-shimmer__content',
+          pulseVisible && isSettling && 'terminal-row-shimmer__content--settling',
+        )}
+      >
+        <span
+          className={cn(
+            'inline-flex shrink-0 items-center justify-center',
+            alignWithProjectRow ? 'h-7 w-7' : 'h-3.5 w-3.5',
+          )}
+        >
+          {pulseVisible ? (
+            <span
+              aria-hidden
+              className={cn(
+                'terminal-row-shimmer__icon shrink-0',
+                session.kind === 'preview'
+                  ? 'terminal-row-shimmer__icon--preview'
+                  : 'terminal-row-shimmer__icon--terminal',
+              )}
+            />
+          ) : (
+            <Icon className="h-3.5 w-3.5 shrink-0" />
+          )}
+        </span>
+        <span className={cn('min-w-0 flex-1 truncate', pulseVisible && 'terminal-row-shimmer__text')}>
+          {displayLabel}
+        </span>
+      </span>
+      {session.status === 'exited' ? (
+        <span className={cn(
+          'text-[10px] uppercase tracking-wide shrink-0',
+          !ghostMode && 'group-hover/terminal:opacity-0 transition-opacity duration-150',
+        )}>Exited</span>
+      ) : null}
+    </>
+  );
+
   return (
     <div
       style={style}
       className={cn(
         'group/terminal relative flex h-7 items-center w-full rounded-lg transition-colors',
-        accent
+        !ghostMode && accent
           ? active
             ? 'bg-[var(--worktree-muted)]'
             : 'hover:bg-[var(--worktree-muted)]'
           : active
-            ? 'bg-primary/10 hover:bg-muted'
+            ? 'bg-primary/10'
             : 'hover:bg-muted',
-        isActiveProject === false && 'opacity-80 hover:opacity-100',
+        !ghostMode && active && !accent && 'hover:bg-muted',
+        isActiveProject === false && 'opacity-80',
+        !ghostMode && isActiveProject === false && 'hover:opacity-100',
       )}
     >
-      <button
-        type="button"
-        onClick={() => onSelect(session)}
-        aria-busy={pulseVisible || undefined}
-        className={cn(
-          'flex h-7 flex-1 items-center rounded-lg text-left text-sm min-w-0 pr-8',
-          alignWithProjectRow ? 'pl-0' : 'gap-1.5 px-2',
-          !pulseVisible && accent && 'text-[var(--worktree-fg)]',
-          !pulseVisible && !accent && active && 'text-primary',
-          !pulseVisible && !accent && !active && 'text-muted-foreground group-hover/terminal:text-foreground',
-          pulseVisible && 'terminal-row-shimmer',
-          pulseVisible && accent && 'terminal-row-shimmer--accent',
-          pulseVisible && !accent && active && 'terminal-row-shimmer--primary',
-          pulseVisible && !accent && !active && 'terminal-row-shimmer--default',
-        )}
-      >
-        <span
-          className={cn(
-            'flex min-w-0 flex-1 items-center',
-            !alignWithProjectRow && 'gap-1.5',
-            pulseVisible && 'terminal-row-shimmer__content',
-            pulseVisible && isSettling && 'terminal-row-shimmer__content--settling',
-          )}
+      {ghostMode ? (
+        <div className={rowContentClass}>{rowInner}</div>
+      ) : (
+        <button
+          type="button"
+          onClick={() => onSelect(session)}
+          aria-busy={pulseVisible || undefined}
+          className={rowContentClass}
         >
-          <span
-            className={cn(
-              'inline-flex shrink-0 items-center justify-center',
-              alignWithProjectRow ? 'h-7 w-7' : 'h-3.5 w-3.5',
-            )}
-          >
-            {pulseVisible ? (
-              <span
-                aria-hidden
-                className={cn(
-                  'terminal-row-shimmer__icon shrink-0',
-                  session.kind === 'preview'
-                    ? 'terminal-row-shimmer__icon--preview'
-                    : 'terminal-row-shimmer__icon--terminal',
-                )}
-              />
-            ) : (
-              <Icon className="h-3.5 w-3.5 shrink-0" />
-            )}
-          </span>
-          <span className={cn('min-w-0 flex-1 truncate', pulseVisible && 'terminal-row-shimmer__text')}>
-            {displayLabel}
-          </span>
-        </span>
-        {session.status === 'exited' ? (
-          <span className="text-[10px] uppercase tracking-wide group-hover/terminal:opacity-0 transition-opacity duration-150 shrink-0">Exited</span>
-        ) : null}
-      </button>
-      {onTerminate ? (
+          {rowInner}
+        </button>
+      )}
+      {!ghostMode && onTerminate ? (
         <button
           type="button"
           onClick={(event) => {

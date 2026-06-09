@@ -1520,6 +1520,28 @@ function App() {
     });
   }
 
+  function reorderProjects(nextOrder: string[]) {
+    setProjects((previous) => {
+      const byPath = new Map(previous.map((project) => [project.path, project]));
+      const next: ProjectRecord[] = [];
+      for (const path of nextOrder) {
+        const project = byPath.get(path);
+        if (!project) continue;
+        next.push(project);
+        byPath.delete(path);
+      }
+      for (const project of previous) {
+        if (byPath.has(project.path)) next.push(project);
+      }
+      try {
+        localStorage.setItem(PROJECTS_STORAGE_KEY, JSON.stringify(next.slice(0, MAX_PROJECTS)));
+      } catch {
+        // ignore storage failures
+      }
+      return next.slice(0, MAX_PROJECTS);
+    });
+  }
+
   async function addProject(path: string) {
     const normalizedPath = normalizePath(path);
     if (!normalizedPath) return;
@@ -6845,6 +6867,7 @@ function App() {
               onSelectProject={loadRepo}
               onAddProject={handleAddProject}
               onRemoveProject={removeProject}
+              onReorderProjects={reorderProjects}
               onRevealProjectInFinder={revealProjectInFinder}
               onResetProjectNodePositions={resetProjectNodePositions}
               projectLoading={loading || (projectTreeLoading && repoPath ? !projectSnapshots[repoPath]?.loaded : false)}
