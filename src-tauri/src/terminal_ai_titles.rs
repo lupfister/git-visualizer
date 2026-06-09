@@ -6,7 +6,7 @@ use std::{
         Mutex, OnceLock,
     },
     thread,
-    time::{Duration, Instant},
+    time::Instant,
 };
 
 use crate::opencode;
@@ -106,7 +106,7 @@ fn maybe_generate_for_session(session: TerminalSession) {
         return;
     }
 
-    let Ok(mut guard) = tracks().lock() else {
+    let Ok(guard) = tracks().lock() else {
         return;
     };
     let Some(track) = guard.get(&session.id) else {

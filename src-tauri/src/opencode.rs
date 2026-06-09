@@ -753,21 +753,18 @@ fn generate_title_with_retries(
     let prompt = compose_title_prompt(prompt_prefix, summary, previous_title);
     let mut models = resolve_title_models(&binary, false)?;
     let mut refreshed = false;
-    let mut last_error = String::from("OpenCode did not return a usable title.");
 
     loop {
-        match try_title_models(&binary, repo_path, &models, |binary, repo_path, model| {
+        let attempt_error = match try_title_models(&binary, repo_path, &models, |binary, repo_path, model| {
             run_opencode_for_title(binary, repo_path, command, model, &prompt)
         }) {
             Ok(raw) => match sanitize_title(&raw, empty_label) {
                 Ok(message) if !is_unacceptable_message(&message) => return Ok(message),
-                Ok(_) => {
-                    last_error = format!("OpenCode returned meta text instead of a {empty_label}.");
-                }
-                Err(err) => last_error = err,
+                Ok(_) => format!("OpenCode returned meta text instead of a {empty_label}."),
+                Err(err) => err,
             },
-            Err(err) => last_error = err,
-        }
+            Err(err) => err,
+        };
 
         if !refreshed {
             refreshed = true;
@@ -775,13 +772,11 @@ fn generate_title_with_retries(
             continue;
         }
 
-        break;
+        return Err(format!(
+            "Failed to generate a {failure_label} after trying {} model(s). {attempt_error}",
+            models.len().min(MAX_TITLE_MODEL_ATTEMPTS)
+        ));
     }
-
-    Err(format!(
-        "Failed to generate a {failure_label} after trying {} model(s). {last_error}",
-        models.len().min(MAX_TITLE_MODEL_ATTEMPTS)
-    ))
 }
 
 pub fn generate_commit_message(
@@ -834,22 +829,18 @@ fn generate_terminal_title_with_retries(
     let prompt = compose_terminal_title_prompt(summary, process_hint, previous_title);
     let mut models = resolve_title_models(&binary, false)?;
     let mut refreshed = false;
-    let mut last_error = String::from("OpenCode did not return a usable title.");
 
     loop {
-        match try_title_models(&binary, repo_path, &models, |binary, repo_path, model| {
+        let attempt_error = match try_title_models(&binary, repo_path, &models, |binary, repo_path, model| {
             run_opencode_prompt(binary, repo_path, model, &prompt)
         }) {
             Ok(raw) => match sanitize_terminal_title(&raw, "terminal title") {
                 Ok(message) if !is_unacceptable_terminal_message(&message) => return Ok(message),
-                Ok(_) => {
-                    last_error =
-                        "OpenCode returned meta text instead of a terminal title.".to_string();
-                }
-                Err(err) => last_error = err,
+                Ok(_) => "OpenCode returned meta text instead of a terminal title.".to_string(),
+                Err(err) => err,
             },
-            Err(err) => last_error = err,
-        }
+            Err(err) => err,
+        };
 
         if !refreshed {
             refreshed = true;
@@ -857,13 +848,11 @@ fn generate_terminal_title_with_retries(
             continue;
         }
 
-        break;
+        return Err(format!(
+            "Failed to generate a terminal title after trying {} model(s). {attempt_error}",
+            models.len().min(MAX_TITLE_MODEL_ATTEMPTS)
+        ));
     }
-
-    Err(format!(
-        "Failed to generate a terminal title after trying {} model(s). {last_error}",
-        models.len().min(MAX_TITLE_MODEL_ATTEMPTS)
-    ))
 }
 
 pub fn generate_terminal_title(
