@@ -1,8 +1,54 @@
 use serde::{Deserialize, Serialize};
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::process::Command;
 
 use crate::git;
+
+const GH_CANDIDATE_PATHS: &[&str] = &[
+    "/opt/homebrew/bin/gh",
+    "/usr/local/bin/gh",
+    "/opt/local/bin/gh",
+];
+
+fn gh_executable() -> PathBuf {
+    for candidate in GH_CANDIDATE_PATHS {
+        let path = Path::new(candidate);
+        if path.is_file() {
+            return path.to_path_buf();
+        }
+    }
+    PathBuf::from("gh")
+}
+
+fn gh_command() -> Command {
+    Command::new(gh_executable())
+}
+
+/// Wire `gh` into git's credential helper so non-interactive pushes can use the logged-in token.
+pub fn ensure_github_git_credentials() -> Result<(), String> {
+    let status = get_github_auth_status();
+    if !status.gh_available || !status.authenticated {
+        return Ok(());
+    }
+
+    let output = gh_command()
+        .args(["auth", "setup-git"])
+        .output()
+        .map_err(|e| format!("Failed to run gh auth setup-git: {e}"))?;
+
+    if output.status.success() {
+        return Ok(());
+    }
+
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let msg = format!("{stderr}\n{stdout}").trim().to_string();
+    Err(if msg.is_empty() {
+        "Failed to configure git to use GitHub CLI credentials.".to_string()
+    } else {
+        msg
+    })
+}
 
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -115,7 +161,7 @@ pub fn get_github_info(repo_path: &Path) -> Result<GitHubInfo, String> {
     })?;
 
     // Check if gh CLI is available
-    let gh_available = Command::new("gh")
+    let gh_available = gh_command()
         .arg("--version")
         .output()
         .map(|o| o.status.success())
@@ -130,7 +176,7 @@ pub fn get_github_info(repo_path: &Path) -> Result<GitHubInfo, String> {
 
 /// Check whether `gh` is installed and authenticated for github.com.
 pub fn get_github_auth_status() -> GitHubAuthStatus {
-    let output = Command::new("gh")
+    let output = gh_command()
         .args(["auth", "status", "--hostname", "github.com"])
         .output();
 
@@ -188,7 +234,7 @@ pub fn authenticate_github() -> Result<(), String> {
         return Err("GitHub CLI (`gh`) is not installed.".to_string());
     }
 
-    let output = Command::new("gh")
+    let output = gh_command()
         .args([
             "auth",
             "login",
@@ -216,7 +262,7 @@ pub fn authenticate_github() -> Result<(), String> {
     }
 
     // If already logged in but missing scopes, this ensures private repo access.
-    let refresh = Command::new("gh")
+    let refresh = gh_command()
         .args([
             "auth",
             "refresh",
@@ -243,7 +289,7 @@ pub fn authenticate_github() -> Result<(), String> {
         }
     }
 
-    Ok(())
+    ensure_github_git_credentials()
 }
 
 fn extract_gh_username(status_output: &str) -> Option<String> {
@@ -284,7 +330,7 @@ pub fn get_pr_commits(
             let owner = owner.to_string();
             let repo = repo.to_string();
             thread::spawn(move || {
-                let output = Command::new("gh")
+                let output = gh_command()
                     .args([
                         "api",
                         &format!("repos/{owner}/{repo}/pulls/{num}/commits?per_page=100"),
@@ -331,7 +377,7 @@ pub fn get_merged_prs(
     // We fetch more than we need since not all closed PRs are merged
     let fetch_limit = limit * 2;
 
-    let output = Command::new("gh")
+    let output = gh_command()
         .args([
             "api",
             &format!(
@@ -380,7 +426,7 @@ pub fn get_merged_prs(
 /// Fetch all currently open PRs for a repo using the gh CLI.
 /// Returns the PR number and head branch name for each open PR.
 pub fn get_open_prs(owner: &str, repo: &str) -> Result<Vec<OpenPR>, String> {
-    let output = Command::new("gh")
+    let output = gh_command()
         .args([
             "api",
             &format!("repos/{owner}/{repo}/pulls?state=open&per_page=100"),

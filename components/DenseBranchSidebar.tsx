@@ -8,9 +8,24 @@ import { cn, normalizeRepoPathForCompare, worktreeDisplayName } from './grid/map
 const EXPANDED_WORKTREES_KEY = 'git-visualizer:expanded-worktrees';
 const EXPANDED_PROJECTS_KEY = 'git-visualizer:expanded-projects';
 
+const projectExpansionKey = (path: string): string =>
+  normalizeRepoPathForCompare(path).toLowerCase();
+
+const worktreeExpansionKey = (projectPath: string, worktreePath: string): string =>
+  `${projectExpansionKey(projectPath)}:${projectExpansionKey(worktreePath)}`;
+
 const loadSet = (key: string): Set<string> => {
   try {
-    return new Set(JSON.parse(localStorage.getItem(key) ?? '[]') as string[]);
+    const raw = JSON.parse(localStorage.getItem(key) ?? '[]') as string[];
+    return new Set(raw.map((value) => {
+      if (key === EXPANDED_WORKTREES_KEY && value.includes(':')) {
+        const [projectPath, worktreePath] = value.split(':', 2);
+        if (projectPath && worktreePath) {
+          return worktreeExpansionKey(projectPath, worktreePath);
+        }
+      }
+      return projectExpansionKey(value);
+    }));
   } catch {
     return new Set();
   }
@@ -91,39 +106,35 @@ export const visibleNestedSessions = (
   && session.targetKind !== 'commit'
 );
 
-type PreviewSidebarExpansionTarget = {
+type SessionSidebarExpansionTarget = {
   path: string;
   worktrees: WorktreeInfo[];
 };
 
-/** Expand project + worktree rows so running preview sessions stay visible in the sidebar. */
-export const resolvePreviewSidebarExpansion = (
-  projects: PreviewSidebarExpansionTarget[],
+/** Expand project + worktree rows whenever they contain visible terminal/preview sessions. */
+export const resolveSessionSidebarExpansion = (
+  projects: SessionSidebarExpansionTarget[],
   sessionsByProject: Map<string, TerminalSession[]>,
-): { projectPaths: string[]; worktreeKeys: string[] } => {
-  const projectPaths: string[] = [];
+): { projectKeys: string[]; worktreeKeys: string[] } => {
+  const projectKeys: string[] = [];
   const worktreeKeys: string[] = [];
 
   for (const project of projects) {
-    const projectSessions = sessionsByProject.get(normalizeRepoPathForCompare(project.path).toLowerCase()) ?? [];
-    const runningPreviews = projectSessions.filter(
-      (candidate) => candidate.kind === 'preview' && candidate.status === 'running',
-    );
-    if (runningPreviews.length === 0) continue;
+    const projectKey = projectExpansionKey(project.path);
+    const projectSessions = sessionsByProject.get(projectKey) ?? [];
+    if (projectSessions.length === 0) continue;
 
-    projectPaths.push(project.path);
+    projectKeys.push(projectKey);
 
-    for (const preview of runningPreviews) {
-      if (preview.targetKind !== 'worktree' || !preview.targetId) continue;
-      for (const worktree of project.worktrees) {
-        const workingTreeId = workingTreeIdForPath(worktree.path, worktree.isCurrent);
-        if (preview.targetId !== workingTreeId) continue;
-        worktreeKeys.push(`${project.path}:${worktree.path}`);
-      }
+    for (const worktree of project.worktrees) {
+      const workingTreeId = workingTreeIdForPath(worktree.path, worktree.isCurrent);
+      const nested = visibleNestedSessions(projectSessions, worktree.path, workingTreeId);
+      if (nested.length === 0) continue;
+      worktreeKeys.push(worktreeExpansionKey(project.path, worktree.path));
     }
   }
 
-  return { projectPaths, worktreeKeys };
+  return { projectKeys, worktreeKeys };
 };
 
 export default function DenseBranchSidebar({
@@ -165,10 +176,11 @@ export default function DenseBranchSidebar({
 
   useEffect(() => {
     if (!activeProjectPath) return;
+    const projectKey = projectExpansionKey(activeProjectPath);
     setExpandedProjects((current) => {
-      if (current.has(activeProjectPath)) return current;
+      if (current.has(projectKey)) return current;
       const next = new Set(current);
-      next.add(activeProjectPath);
+      next.add(projectKey);
       persistSet(EXPANDED_PROJECTS_KEY, next);
       return next;
     });
@@ -202,14 +214,14 @@ export default function DenseBranchSidebar({
   };
 
   useEffect(() => {
-    const { projectPaths, worktreeKeys } = resolvePreviewSidebarExpansion(projects, sessionsByProject);
-    if (projectPaths.length > 0) {
+    const { projectKeys, worktreeKeys } = resolveSessionSidebarExpansion(projects, sessionsByProject);
+    if (projectKeys.length > 0) {
       setExpandedProjects((current) => {
         let changed = false;
         const next = new Set(current);
-        for (const projectPath of projectPaths) {
-          if (next.has(projectPath)) continue;
-          next.add(projectPath);
+        for (const projectKey of projectKeys) {
+          if (next.has(projectKey)) continue;
+          next.add(projectKey);
           changed = true;
         }
         if (!changed) return current;
@@ -221,35 +233,6 @@ export default function DenseBranchSidebar({
       expandWorktree(worktreeKey);
     }
   }, [projects, sessionsByProject, terminalSessions]);
-
-  useEffect(() => {
-    if (!activeTerminalId) return;
-    const session = terminalSessions.find((candidate) => candidate.id === activeTerminalId);
-    if (!session) return;
-
-    const project = projects.find((candidate) => samePath(candidate.path, session.projectPath));
-    if (!project) return;
-
-    setExpandedProjects((current) => {
-      if (current.has(project.path)) return current;
-      const next = new Set(current);
-      next.add(project.path);
-      persistSet(EXPANDED_PROJECTS_KEY, next);
-      return next;
-    });
-
-    for (const worktree of project.worktrees) {
-      const workingTreeId = workingTreeIdForPath(worktree.path, worktree.isCurrent);
-      const nested = visibleNestedSessions(
-        sessionsByProject.get(normalizeRepoPathForCompare(project.path).toLowerCase()) ?? [],
-        worktree.path,
-        workingTreeId,
-      );
-      if (!nested.some((candidate) => candidate.id === activeTerminalId)) continue;
-      expandWorktree(`${project.path}:${worktree.path}`);
-      return;
-    }
-  }, [activeTerminalId, projects, sessionsByProject, terminalSessions]);
 
   return (
     <aside
@@ -278,7 +261,8 @@ export default function DenseBranchSidebar({
         <div className="sidebar-scrollbar min-h-0 flex-1 space-y-3 overflow-y-auto px-2">
           {projects.map((project) => {
             const isActive = activeProjectPath != null && samePath(project.path, activeProjectPath);
-            const isExpanded = expandedProjects.has(project.path);
+            const projectKey = projectExpansionKey(project.path);
+            const isExpanded = expandedProjects.has(projectKey);
             const projectSessions = sessionsByProject.get(normalizeRepoPathForCompare(project.path).toLowerCase()) ?? [];
             const commitPreviews = commitPreviewSessions(projectSessions);
             const worktreeAccentByPath = new Map(
@@ -302,7 +286,7 @@ export default function DenseBranchSidebar({
                     type="button"
                     onClick={(event) => {
                       event.stopPropagation();
-                      toggle(project.path, expandedProjects, setExpandedProjects, EXPANDED_PROJECTS_KEY);
+                      toggle(projectKey, expandedProjects, setExpandedProjects, EXPANDED_PROJECTS_KEY);
                     }}
                     className="inline-flex h-7 w-7 shrink-0 items-center justify-center rounded-lg transition-colors"
                     aria-label={`${isExpanded ? 'Collapse' : 'Expand'} ${project.name}`}
@@ -348,7 +332,7 @@ export default function DenseBranchSidebar({
                     ))}
                     <div className="space-y-1 pl-1">
                     {project.worktrees.map((worktree) => {
-                      const key = `${project.path}:${worktree.path}`;
+                      const key = worktreeExpansionKey(project.path, worktree.path);
                       const expanded = expandedWorktrees.has(key);
                       const workingTreeId = workingTreeIdForPath(worktree.path, worktree.isCurrent);
                       const sessions = visibleNestedSessions(projectSessions, worktree.path, workingTreeId);

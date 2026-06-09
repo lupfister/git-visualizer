@@ -3,7 +3,7 @@ import type { TerminalSession, WorktreeInfo } from '../types';
 import {
   commitPreviewSessions,
   previewLabel,
-  resolvePreviewSidebarExpansion,
+  resolveSessionSidebarExpansion,
   visibleNestedSessions,
   worktreeRefLabel,
 } from './DenseBranchSidebar';
@@ -88,7 +88,7 @@ describe('worktree sidebar model', () => {
         }),
       ]],
     ]);
-    const expansion = resolvePreviewSidebarExpansion([
+    const expansion = resolveSessionSidebarExpansion([
       {
         path: '/repo',
         worktrees: [{
@@ -102,7 +102,29 @@ describe('worktree sidebar model', () => {
         }],
       },
     ], sessionsByProject);
-    expect(expansion.projectPaths).toEqual(['/repo']);
+    expect(expansion.projectKeys).toEqual(['/repo']);
+    expect(expansion.worktreeKeys).toEqual(['/repo:/repo']);
+  });
+
+  it('expands the owning worktree for shell sessions', () => {
+    const sessionsByProject = new Map<string, TerminalSession[]>([
+      ['/repo', [session({ id: 'shell-1' })]],
+    ]);
+    const expansion = resolveSessionSidebarExpansion([
+      {
+        path: '/repo',
+        worktrees: [{
+          path: '/repo',
+          pathExists: true,
+          headSha: 'abcdefg123',
+          branchName: 'main',
+          parentSha: null,
+          isCurrent: true,
+          isPrunable: false,
+        }],
+      },
+    ], sessionsByProject);
+    expect(expansion.projectKeys).toEqual(['/repo']);
     expect(expansion.worktreeKeys).toEqual(['/repo:/repo']);
   });
 
@@ -119,7 +141,7 @@ describe('worktree sidebar model', () => {
         }),
       ]],
     ]);
-    const expansion = resolvePreviewSidebarExpansion([
+    const expansion = resolveSessionSidebarExpansion([
       {
         path: '/repo',
         worktrees: [{
@@ -133,7 +155,7 @@ describe('worktree sidebar model', () => {
         }],
       },
     ], sessionsByProject);
-    expect(expansion.projectPaths).toEqual(['/repo']);
+    expect(expansion.projectKeys).toEqual(['/repo']);
     expect(expansion.worktreeKeys).toEqual([]);
   });
 });

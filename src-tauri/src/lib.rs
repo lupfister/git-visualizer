@@ -4417,10 +4417,23 @@ fn branch_needs_push(repo: &Path, branch: &str, default_branch: &str) -> bool {
     }
 }
 
+fn ensure_github_remote_git_auth(repo: &Path) -> Result<(), String> {
+    let remote_url = match git::cli::run(repo, &["remote", "get-url", "origin"]) {
+        Ok(url) => url,
+        Err(_) => return Ok(()),
+    };
+    if !remote_url.contains("github.com") {
+        return Ok(());
+    }
+    github::ensure_github_git_credentials()
+}
+
 fn push_branch_refs_batched(repo: &Path, targets: &[PushResult]) -> Result<(), String> {
     if targets.is_empty() {
         return Ok(());
     }
+
+    ensure_github_remote_git_auth(repo)?;
 
     let mut groups: HashMap<(String, bool), Vec<String>> = HashMap::new();
     for target in targets {
@@ -4550,6 +4563,7 @@ async fn pull_branch_with_strategy(
 ) -> Result<(), String> {
     run_blocking(move || {
         let path = Path::new(&repo_path);
+        ensure_github_remote_git_auth(path)?;
         let mut args = vec!["pull"];
         if rebase {
             args.push("--rebase");
@@ -4975,7 +4989,11 @@ fn get_github_info(repo_path: String) -> Result<GitHubInfo, String> {
 
 #[tauri::command]
 fn get_github_auth_status() -> Result<GitHubAuthStatus, String> {
-    Ok(github::get_github_auth_status())
+    let status = github::get_github_auth_status();
+    if status.authenticated {
+        github::ensure_github_git_credentials()?;
+    }
+    Ok(status)
 }
 
 #[tauri::command]
