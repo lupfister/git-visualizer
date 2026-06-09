@@ -50,6 +50,29 @@ export interface WorktreeInfo {
   hasUncommittedChanges?: boolean;
 }
 
+export type TerminalSessionKind = 'shell' | 'preview';
+
+export interface TerminalSession {
+  id: string;
+  projectPath: string;
+  worktreePath: string;
+  kind: TerminalSessionKind;
+  label: string;
+  command: string;
+  cols: number;
+  rows: number;
+  status: 'running' | 'exited';
+  targetId?: string | null;
+  targetKind?: 'commit' | 'worktree' | null;
+  previewUrl?: string | null;
+  previewAppName?: string | null;
+  aiLabel?: string | null;
+  aiLabelFingerprint?: string | null;
+  aiLabelAt?: number | null;
+  /** True while the PTY is actively emitting output (not idle at prompt). */
+  outputActive?: boolean;
+}
+
 export interface Commit {
   fullSha: string;
   sha: string;

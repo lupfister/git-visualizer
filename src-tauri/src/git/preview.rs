@@ -97,6 +97,26 @@ pub fn prepare_preview_target(
     };
 
     ensure_preview_worktree(repo, &preview_path, &checkout_sha)?;
+
+    let active_target = get_active_preview_target(storage_root, repo).ok().flatten();
+    let already_prepared = active_target.as_ref().map_or(false, |active| {
+        active.target_id == target_id
+            && active.target_kind == target_kind
+            && active.effective_head_sha == checkout_sha
+            && !active.overlay_applied
+            && source_worktree.is_none()
+    });
+
+    if already_prepared {
+        return Ok(PreparePreviewTargetResult {
+            preview_path: preview_path.to_string_lossy().to_string(),
+            target_kind,
+            effective_head_sha: checkout_sha,
+            overlay_applied: false,
+            dependency_files_changed: false,
+        });
+    }
+
     remove_previous_overlay(&preview_path, &state_path)?;
     git_run(&preview_path, &["reset", "--hard"])?;
     git_run(&preview_path, &["clean", "-fd"])?;
@@ -416,7 +436,8 @@ pub fn mark_install_success(storage_root: &Path, repo: &Path) -> Result<(), GitE
 }
 
 pub fn detect_localhost_url(log: &str) -> Option<String> {
-    for token in log
+    let cleaned_log = strip_ansi_escape_sequences(log);
+    for token in cleaned_log
         .split(|ch: char| ch.is_whitespace() || ch == '"' || ch == '\'' || ch == ')' || ch == '(')
     {
         let cleaned = token.trim_matches(|ch: char| ch == ',' || ch == ';' || ch == '.');
@@ -427,14 +448,36 @@ pub fn detect_localhost_url(log: &str) -> Option<String> {
             return Some(cleaned.trim_end_matches('/').to_string());
         }
     }
-    if let Some(index) = log.find("localhost:") {
-        let after = &log[index + "localhost:".len()..];
-        let digits: String = after.chars().take_while(|ch| ch.is_ascii_digit()).collect();
-        if !digits.is_empty() {
-            return Some(format!("http://localhost:{digits}"));
+    for host in ["localhost:", "127.0.0.1:", "0.0.0.0:"] {
+        if let Some(index) = cleaned_log.find(host) {
+            let after = &cleaned_log[index + host.len()..];
+            let digits: String = after.chars().take_while(|ch| ch.is_ascii_digit()).collect();
+            if !digits.is_empty() {
+                return Some(format!("http://localhost:{digits}"));
+            }
         }
     }
     None
+}
+
+fn strip_ansi_escape_sequences(value: &str) -> String {
+    let mut output = String::with_capacity(value.len());
+    let mut chars = value.chars().peekable();
+    while let Some(ch) = chars.next() {
+        if ch != '\u{1b}' {
+            output.push(ch);
+            continue;
+        }
+        if chars.next_if_eq(&'[').is_none() {
+            continue;
+        }
+        for sequence_char in chars.by_ref() {
+            if ('@'..='~').contains(&sequence_char) {
+                break;
+            }
+        }
+    }
+    output
 }
 
 fn parse_porcelain_z(output: &[u8]) -> Vec<String> {
@@ -813,6 +856,14 @@ mod tests {
         assert_eq!(
             detect_localhost_url("Local: localhost:1420"),
             Some("http://localhost:1420".to_string())
+        );
+        assert_eq!(
+            detect_localhost_url("\u{1b}[32mLocal: http://127.0.0.1:5173/\u{1b}[39m"),
+            Some("http://127.0.0.1:5173".to_string())
+        );
+        assert_eq!(
+            detect_localhost_url("ready on 0.0.0.0:3000"),
+            Some("http://localhost:3000".to_string())
         );
     }
 

@@ -52,7 +52,6 @@ import { useMapGridSelection } from './useMapGridSelection';
 import {
   buildWorktreeAccentByCommitId,
   buildWorktreeSessions,
-  currentSessionWorkingTreeId,
   isWorkingTreeCommitId,
   selectedRemovableWorktreeSessions,
   dirtyWorktreeSessions,
@@ -169,6 +168,7 @@ type Props = BranchGridViewProps & {
   nodePositionOverrides?: NodePositionOverrides;
   onNodePositionOverridesChange?: (overrides: NodePositionOverrides) => void;
   worktreeDraftByWorkingTreeId?: ReadonlyMap<string, WorktreeDraftDisplay>;
+  terminalCountByWorkingTreeId?: Readonly<Record<string, number>>;
 };
 
 export default function BranchGridMap({
@@ -240,6 +240,8 @@ export default function BranchGridMap({
   nodePositionOverrides: controlledNodePositionOverrides,
   onNodePositionOverridesChange,
   worktreeDraftByWorkingTreeId,
+  terminalCountByWorkingTreeId = {},
+  onNodeDoubleClick,
 }: Props) {
   const scrollContainerRef = useRef<HTMLDivElement | null>(null);
   const hudHeaderRef = useRef<HTMLElement | null>(null);
@@ -397,7 +399,6 @@ export default function BranchGridMap({
     () => buildWorktreeAccentByCommitId(worktreeSessions),
     [worktreeSessions],
   );
-  const currentWorkingTreeId = currentSessionWorkingTreeId(worktreeSessions);
 
   const checkoutPickerWorktrees = useMemo((): Array<{
     path: string;
@@ -767,7 +768,6 @@ export default function BranchGridMap({
 
   const checkedOutBranchName = checkedOutRef?.branchName ?? null;
   const checkedOutHeadSha = checkedOutRef?.headSha ?? null;
-  const checkedOutIsDetached = checkedOutBranchName == null;
 
   const branchCandidatesForCommit = useCallback(
     (sha: string): string[] => Array.from(commitShaToBranchNames.get(sha) ?? []),
@@ -1250,12 +1250,7 @@ export default function BranchGridMap({
       viewport.clientHeight,
       renderedCameraRef.current,
     );
-    if (!bounds) {
-      startTransition(() => {
-        setVisibleNodeIds((prev) => (prev.size === 0 ? prev : new Set()));
-      });
-      return;
-    }
+    if (!bounds) return;
     visibleBoundsRef.current = bounds;
 
     const displayZoomForCull = renderedCameraRef.current.zoom / GRID_RENDER_ZOOM;
@@ -1306,6 +1301,7 @@ export default function BranchGridMap({
       const admissionBudget = mapGridPanAdmissionBudget(displayZoomForCull);
       startTransition(() => {
         setVisibleNodeIds((prev) => {
+          if (cappedVisible.size === 0 && prev.size > 0) return prev;
           const next = mergePanStableVisibleNodeIds(
             prev,
             nextVisible,
@@ -1325,6 +1321,7 @@ export default function BranchGridMap({
 
     startTransition(() => {
       setVisibleNodeIds((prev) => {
+        if (cappedVisible.size === 0 && prev.size > 0) return prev;
         const pending = panAdmissionPendingRef.current;
         panAdmissionPendingRef.current.clear();
 
@@ -1530,7 +1527,22 @@ export default function BranchGridMap({
         setMergeTargetCommitSha((current) => (current === commitSha ? null : commitSha));
       }
 
-      const shouldCheckout = event.metaKey || event.ctrlKey || event.detail >= 2;
+      const isRegularCommit =
+        !isWorkingTreeCommitId(commitSha) &&
+        node.commit.kind !== 'uncommitted' &&
+        node.commit.kind !== 'stash' &&
+        !commitSha.startsWith('STASH:') &&
+        node.commit.kind !== 'branch-created' &&
+        !commitSha.startsWith('BRANCH_HEAD:');
+
+      const isDoubleClick = event.detail >= 2;
+      const isCmdOrCtrl = event.metaKey || event.ctrlKey;
+      const shouldCheckout = isCmdOrCtrl || (isDoubleClick && !isRegularCommit);
+
+      if (isDoubleClick) {
+        onNodeDoubleClick?.(node);
+      }
+
       if (!shouldCheckout) return;
 
       const checkoutTarget = parseMapCheckoutTarget(node);
@@ -1554,7 +1566,7 @@ export default function BranchGridMap({
       setCheckoutPickerSelectedPath(defaultPath);
       setCheckoutPickerOpen(true);
     },
-    [checkoutPickerWorktrees, currentRepoPath, onCommitClick],
+    [checkoutPickerWorktrees, currentRepoPath, onCommitClick, onNodeDoubleClick],
   );
 
   const confirmCheckoutWorktree = useCallback(() => {
@@ -2176,6 +2188,7 @@ export default function BranchGridMap({
           worktreeAccentByCommitId={worktreeAccentByCommitId}
           worktreeSessions={worktreeSessions}
           worktreeDraftByWorkingTreeId={worktreeDraftByWorkingTreeId}
+          terminalCountByWorkingTreeId={terminalCountByWorkingTreeId}
           previewedNodeId={previewedNodeId}
           previewedWorktreeNodeIds={previewedWorktreeNodeIds}
           orientation={orientation}

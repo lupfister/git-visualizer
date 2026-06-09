@@ -1,5 +1,5 @@
 import { normalizeRepoPathForCompare, worktreeDisplayName } from '../components/grid/mapGridUtils';
-import type { Branch, BranchCommitPreview, CheckedOutRef, WorktreeInfo } from '../types';
+import type { Branch, BranchCommitPreview, CheckedOutRef, TerminalSession, WorktreeInfo } from '../types';
 
 /** Current window only; teal checked-out token. */
 export type WorktreeCurrentAccentToken = 'checked';
@@ -47,6 +47,17 @@ export const worktreeStableKey = (path: string): string => {
 export const workingTreeIdForPath = (path: string, isCurrent: boolean): string => {
   if (isCurrent) return LEGACY_WORKING_TREE_ID;
   return `${LEGACY_WORKING_TREE_ID}:${worktreeStableKey(path)}`;
+};
+
+/** Map node id to focus when a sidebar terminal session is selected. */
+export const resolveTerminalSessionFocusId = (
+  session: Pick<TerminalSession, 'targetId' | 'worktreePath' | 'projectPath'>,
+): string | null => {
+  if (session.targetId) return session.targetId;
+  if (!session.worktreePath) return null;
+  const isCurrent = normalizeRepoPathForCompare(session.worktreePath).toLowerCase()
+    === normalizeRepoPathForCompare(session.projectPath).toLowerCase();
+  return workingTreeIdForPath(session.worktreePath, isCurrent);
 };
 
 export const isWorkingTreeCommitId = (id: string): boolean =>

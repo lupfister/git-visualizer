@@ -12,9 +12,8 @@ describe('resolveRepoSyncIntervals', () => {
 
   it('uses slower intervals when the document is hidden', () => {
     expect(resolveRepoSyncIntervals(true)).toEqual(REPO_SYNC_INTERVALS_HIDDEN);
-    expect(REPO_SYNC_INTERVALS_HIDDEN.dirtyMs).toBe(30_000);
-    expect(REPO_SYNC_INTERVALS_HIDDEN.peekMs).toBe(60_000);
-    expect(REPO_SYNC_INTERVALS_HIDDEN.fullMs).toBe(180_000);
+    expect(REPO_SYNC_INTERVALS_HIDDEN.reconcileMs).toBe(30_000);
+    expect(REPO_SYNC_INTERVALS_HIDDEN.repairMs).toBe(180_000);
   });
 });
 

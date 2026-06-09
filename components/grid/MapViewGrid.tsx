@@ -3,7 +3,7 @@ import type { Dispatch, SetStateAction } from 'react';
 import BranchGridMap from './MapGrid';
 import type { BranchGridLayoutModel } from './branchGridLayoutModel';
 import type { WorktreeDraftDisplay } from '../../src/worktreeDraftMessages';
-import type { NodePositionOverrides } from './LayoutGrid';
+import type { Node, NodePositionOverrides } from './LayoutGrid';
 import type { PreviewTarget } from '../../lib/git';
 
 export type ViewMode = 'time' | 'grid';
@@ -79,6 +79,7 @@ interface Props {
   previewInProgress?: boolean;
   previewedNodeId?: string | null;
   previewedWorktreeNodeIds?: string[];
+  terminalCountByWorkingTreeId?: Readonly<Record<string, number>>;
   manuallyOpenedClumps?: Set<string>;
   manuallyClosedClumps?: Set<string>;
   setManuallyOpenedClumps?: Dispatch<SetStateAction<Set<string>>>;
@@ -106,6 +107,7 @@ interface Props {
   nodePositionOverrides?: NodePositionOverrides;
   onNodePositionOverridesChange?: (overrides: NodePositionOverrides) => void;
   worktreeDraftByWorkingTreeId?: ReadonlyMap<string, WorktreeDraftDisplay>;
+  onNodeDoubleClick?: (node: Node) => void;
 }
 
 export default function BranchGridMapView({
@@ -166,6 +168,7 @@ export default function BranchGridMapView({
   previewInProgress = false,
   previewedNodeId = null,
   previewedWorktreeNodeIds = [],
+  terminalCountByWorkingTreeId = {},
   manuallyOpenedClumps,
   manuallyClosedClumps,
   setManuallyOpenedClumps,
@@ -179,6 +182,7 @@ export default function BranchGridMapView({
   nodePositionOverrides,
   onNodePositionOverridesChange,
   worktreeDraftByWorkingTreeId,
+  onNodeDoubleClick,
 }: Props) {
   const openPRBranchNames = new Set(openPRs.map(p => p.branchName));
   const ACTIVE_MS = 14 * 86400000;
@@ -200,6 +204,7 @@ export default function BranchGridMapView({
             openPRs={openPRs}
             defaultBranch={defaultBranch}
             onCommitClick={onCommitClick}
+            onNodeDoubleClick={onNodeDoubleClick}
             onLoadMore={onLoadMore}
             branchPromptMeta={branchPromptMeta}
             branchCommitPreviews={branchCommitPreviews}
@@ -249,6 +254,7 @@ export default function BranchGridMapView({
             previewInProgress={previewInProgress}
             previewedNodeId={previewedNodeId}
             previewedWorktreeNodeIds={previewedWorktreeNodeIds}
+            terminalCountByWorkingTreeId={terminalCountByWorkingTreeId}
             manuallyOpenedClumps={manuallyOpenedClumps}
             manuallyClosedClumps={manuallyClosedClumps}
             setManuallyOpenedClumps={setManuallyOpenedClumps}
@@ -289,6 +295,7 @@ export default function BranchGridMapView({
             previewInProgress={previewInProgress}
             previewedNodeId={previewedNodeId}
             previewedWorktreeNodeIds={previewedWorktreeNodeIds}
+            terminalCountByWorkingTreeId={terminalCountByWorkingTreeId}
             manuallyOpenedClumps={manuallyOpenedClumps}
             manuallyClosedClumps={manuallyClosedClumps}
             setManuallyOpenedClumps={setManuallyOpenedClumps}
@@ -305,6 +312,7 @@ export default function BranchGridMapView({
             nodePositionOverrides={nodePositionOverrides}
             onNodePositionOverridesChange={onNodePositionOverridesChange}
             worktreeDraftByWorkingTreeId={worktreeDraftByWorkingTreeId}
+            onNodeDoubleClick={onNodeDoubleClick}
           />
         </div>
       ) : null}

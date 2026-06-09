@@ -98,6 +98,7 @@ export type BranchGridViewProps = {
   previewInProgress?: boolean;
   previewedNodeId?: string | null;
   previewedWorktreeNodeIds?: string[];
+  onNodeDoubleClick?: (node: Node) => void;
 };
 
 export type NodePositionOverride = { x: number; y: number };

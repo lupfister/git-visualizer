@@ -600,6 +600,20 @@ body.popover-window #root {
   mask-image: url('/icon-stash.svg');
 }
 
+.toolbar-mask-icon--preview {
+  width: 14px;
+  height: 14px;
+  -webkit-mask-image: url('/icon-preview.svg');
+  mask-image: url('/icon-preview.svg');
+}
+
+.toolbar-mask-icon--branch {
+  width: 14px;
+  height: 14px;
+  -webkit-mask-image: url('/icon-branch.svg');
+  mask-image: url('/icon-branch.svg');
+}
+
 @keyframes toolbar-action-shimmer {
   0% {
     background-position: 200% 0;
@@ -671,5 +685,77 @@ body.popover-window #root {
   .toolbar-action-shimmer__icon {
     background-color: var(--muted-foreground);
     background-image: none;
+  }
+}
+
+/* Live terminal row — pulse peaks mid-cycle; endpoints match static row color */
+.terminal-row-shimmer--default {
+  --terminal-shimmer-rest: var(--muted-foreground);
+  --terminal-shimmer-pulse: var(--foreground);
+}
+
+.terminal-row-shimmer--primary {
+  --terminal-shimmer-rest: var(--primary);
+  --terminal-shimmer-pulse: color-mix(in srgb, var(--primary) 45%, var(--background));
+}
+
+.terminal-row-shimmer--accent {
+  --terminal-shimmer-rest: var(--worktree-fg);
+  --terminal-shimmer-pulse: color-mix(in srgb, var(--worktree-fg) 45%, var(--background));
+}
+
+@keyframes terminal-row-shimmer {
+  0%,
+  100% {
+    color: var(--terminal-shimmer-rest);
+  }
+
+  50% {
+    color: var(--terminal-shimmer-pulse);
+  }
+}
+
+.terminal-row-shimmer__content {
+  color: var(--terminal-shimmer-rest);
+  animation: terminal-row-shimmer 1.75s cubic-bezier(0.37, 0, 0.63, 1) infinite;
+}
+
+.terminal-row-shimmer__content--settling {
+  animation: none;
+  transition: color 1.2s cubic-bezier(0.37, 0, 0.63, 1);
+  color: var(--terminal-shimmer-rest);
+}
+
+.terminal-row-shimmer__icon {
+  display: inline-block;
+  width: 14px;
+  height: 14px;
+  background-color: currentColor;
+  -webkit-mask-position: center;
+  -webkit-mask-repeat: no-repeat;
+  -webkit-mask-size: contain;
+  mask-position: center;
+  mask-repeat: no-repeat;
+  mask-size: contain;
+}
+
+.terminal-row-shimmer__icon--terminal {
+  -webkit-mask-image: url('/icon-terminal.svg');
+  mask-image: url('/icon-terminal.svg');
+}
+
+.terminal-row-shimmer__icon--preview {
+  -webkit-mask-image: url('/icon-preview.svg');
+  mask-image: url('/icon-preview.svg');
+}
+
+.terminal-row-shimmer__text {
+  color: inherit;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .terminal-row-shimmer__content {
+    animation: none;
+    color: var(--terminal-shimmer-rest);
   }
 }

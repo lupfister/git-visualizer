@@ -4,6 +4,12 @@ mod repo_git_gate;
 #[cfg(target_os = "macos")]
 mod macos_traffic_lights;
 mod opencode;
+mod terminal_ai_titles;
+mod terminal_host;
+
+pub fn run_terminal_host() -> Result<(), String> {
+    terminal_host::run_terminal_host()
+}
 
 use tauri::{Emitter, Manager};
 
@@ -26,11 +32,11 @@ use std::{
         atomic::{AtomicBool, AtomicU64, Ordering},
         Mutex, OnceLock,
     },
-    time::{Duration as StdDuration, Instant},
+    time::{Duration as StdDuration, Instant, SystemTime, UNIX_EPOCH},
 };
 
 #[cfg(target_os = "macos")]
-use objc2_app_kit::NSWorkspace;
+use objc2_app_kit::{NSApplicationActivationOptions, NSRunningApplication, NSWorkspace};
 #[cfg(target_os = "macos")]
 use tauri_plugin_global_shortcut::{Code, GlobalShortcutExt, Modifiers, Shortcut, ShortcutState};
 #[derive(serde::Serialize)]
@@ -155,11 +161,9 @@ fn increment_watcher_activity(repo_path: &str, is_git: bool) {
         })
     });
     if is_git {
-        let val = entry.last_git_event_epoch.fetch_add(1, Ordering::Relaxed) + 1;
-        println!("[WatcherActivity] Repo {} ({}) git_epoch bumped to {}", repo_path, normalized, val);
+        entry.last_git_event_epoch.fetch_add(1, Ordering::Relaxed);
     } else {
-        let val = entry.last_worktree_event_epoch.fetch_add(1, Ordering::Relaxed) + 1;
-        println!("[WatcherActivity] Repo {} ({}) worktree_epoch bumped to {}", repo_path, normalized, val);
+        entry.last_worktree_event_epoch.fetch_add(1, Ordering::Relaxed);
     }
 }
 
@@ -2576,11 +2580,7 @@ fn compute_fast_fs_signature(repo_path: &str) -> String {
 
 #[tauri::command(rename_all = "camelCase")]
 fn get_repo_fast_signature(repo_path: String) -> Result<String, String> {
-    let start = Instant::now();
-    let sig = compute_fast_fs_signature(&repo_path);
-    let elapsed = start.elapsed();
-    println!("[FastSignature] Check for {} took {:?}", repo_path, elapsed);
-    Ok(sig)
+    Ok(compute_fast_fs_signature(&repo_path))
 }
 
 #[tauri::command(rename_all = "camelCase")]
@@ -2634,11 +2634,10 @@ async fn get_repo_change_token(repo_path: String) -> Result<String, String> {
             states.entry(key).or_default().generation
         };
         Ok(format!(
-            "{}@@{}@@{}@@{}@@{}",
+            "{}@@{}@@{}@@{}",
             head.trim(),
             refs.trim(),
             metadata_stamp(&git_dir.join("index")),
-            metadata_stamp(path),
             watcher_generation,
         ))
     })
@@ -3183,6 +3182,480 @@ async fn prepare_preview_target(
     .await
 }
 
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct TerminalReadResult {
+    session: terminal_host::TerminalSession,
+    output: String,
+}
+
+#[tauri::command(rename_all = "camelCase")]
+async fn save_terminal_attachment(
+    file_name: String,
+    mime_type: String,
+    data_base64: String,
+) -> Result<String, String> {
+    run_blocking(move || {
+        let base = dirs::data_local_dir()
+            .or_else(dirs::cache_dir)
+            .ok_or_else(|| "Unable to resolve terminal attachment directory".to_string())?;
+        let directory = base.join("git-visualizer").join("terminal-attachments");
+        fs::create_dir_all(&directory)
+            .map_err(|error| format!("Failed to create terminal attachment directory: {error}"))?;
+        let extension = Path::new(&file_name)
+            .extension()
+            .and_then(|value| value.to_str())
+            .filter(|value| value.len() <= 12 && value.chars().all(|character| character.is_ascii_alphanumeric()))
+            .map(str::to_ascii_lowercase)
+            .or_else(|| match mime_type.as_str() {
+                "image/png" => Some("png".to_string()),
+                "image/jpeg" => Some("jpg".to_string()),
+                "image/gif" => Some("gif".to_string()),
+                "image/webp" => Some("webp".to_string()),
+                "video/mp4" => Some("mp4".to_string()),
+                "video/quicktime" => Some("mov".to_string()),
+                "video/webm" => Some("webm".to_string()),
+                _ => None,
+            })
+            .unwrap_or_else(|| "bin".to_string());
+        let stem = Path::new(&file_name)
+            .file_stem()
+            .and_then(|value| value.to_str())
+            .unwrap_or("attachment")
+            .chars()
+            .map(|character| if character.is_ascii_alphanumeric() || matches!(character, '-' | '_') { character } else { '-' })
+            .collect::<String>();
+        let timestamp = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_millis();
+        let path = directory.join(format!("{}-{}.{}", stem.trim_matches('-'), timestamp, extension));
+        let data = base64::Engine::decode(
+            &base64::engine::general_purpose::STANDARD,
+            data_base64,
+        )
+        .map_err(|error| format!("Failed to decode terminal attachment: {error}"))?;
+        fs::write(&path, data)
+            .map_err(|error| format!("Failed to save terminal attachment: {error}"))?;
+        Ok(path.to_string_lossy().to_string())
+    })
+    .await
+}
+
+#[tauri::command]
+async fn list_terminal_sessions() -> Result<Vec<terminal_host::TerminalSession>, String> {
+    run_blocking(|| {
+        let mut sessions = terminal_host::list_sessions()?;
+        for session in &mut sessions {
+            hydrate_preview_session_target(session);
+        }
+        Ok(sessions)
+    })
+    .await
+}
+
+#[tauri::command(rename_all = "camelCase")]
+async fn create_terminal_session(
+    session: terminal_host::TerminalSession,
+) -> Result<terminal_host::TerminalSession, String> {
+    run_blocking(move || terminal_host::create_session(session)).await
+}
+
+#[tauri::command(rename_all = "camelCase")]
+async fn read_terminal_session(id: String) -> Result<TerminalReadResult, String> {
+    run_blocking(move || {
+        let (mut session, output) = terminal_host::read_session(id)?;
+        hydrate_preview_session_target_from_output(&mut session, &output);
+        Ok(TerminalReadResult { session, output })
+    })
+    .await
+}
+
+#[tauri::command(rename_all = "camelCase")]
+async fn write_terminal_session(id: String, data: String) -> Result<(), String> {
+    run_blocking(move || terminal_host::write_session(id, data)).await
+}
+
+#[tauri::command(rename_all = "camelCase")]
+async fn resize_terminal_session(id: String, cols: u16, rows: u16) -> Result<(), String> {
+    run_blocking(move || terminal_host::resize_session(id, cols, rows)).await
+}
+
+#[tauri::command(rename_all = "camelCase")]
+async fn set_terminal_session_label(id: String, label: String) -> Result<(), String> {
+    run_blocking(move || terminal_host::set_session_label(id, label)).await
+}
+
+#[tauri::command(rename_all = "camelCase")]
+async fn set_terminal_session_target(
+    id: String,
+    target_id: String,
+    target_kind: String,
+) -> Result<terminal_host::TerminalSession, String> {
+    run_blocking(move || terminal_host::set_session_target(id, target_id, target_kind)).await
+}
+
+#[tauri::command(rename_all = "camelCase")]
+async fn restart_terminal_session(
+    id: String,
+    command: String,
+) -> Result<terminal_host::TerminalSession, String> {
+    run_blocking(move || terminal_host::restart_session_command(id, command)).await
+}
+
+#[tauri::command(rename_all = "camelCase")]
+async fn terminate_terminal_session(id: String) -> Result<(), String> {
+    run_blocking(move || terminal_host::terminate_session(id)).await
+}
+
+fn hydrate_preview_session_target(session: &mut terminal_host::TerminalSession) {
+    if session.kind != "preview" {
+        return;
+    }
+    if let Ok((_, output)) = terminal_host::read_session(session.id.clone()) {
+        hydrate_preview_session_target_from_output(session, &output);
+    }
+}
+
+fn hydrate_preview_session_target_from_output(
+    session: &mut terminal_host::TerminalSession,
+    output: &str,
+) {
+    if session.kind == "preview" && session.preview_url.is_none() {
+        session.preview_url = git::detect_localhost_url(output);
+    }
+}
+
+#[tauri::command(rename_all = "camelCase")]
+async fn activate_preview_target(
+    id: String,
+    url: Option<String>,
+    app_name: Option<String>,
+    reload: Option<bool>,
+) -> Result<(), String> {
+    let reload = reload.unwrap_or(false);
+    run_blocking(move || {
+        let (url, app_name) = match terminal_host::read_session(id) {
+            Ok((mut session, output)) => {
+                hydrate_preview_session_target_from_output(&mut session, &output);
+                if is_native_preview_command(&session.command) {
+                    return activate_native_preview_for_path(Path::new(&session.worktree_path));
+                }
+                (
+                    session.preview_url.or(url),
+                    session.preview_app_name.or(app_name),
+                )
+            }
+            Err(_) => (url, app_name),
+        };
+        if let Some(url) = url {
+            if !url.starts_with("http://localhost:")
+                && !url.starts_with("https://localhost:")
+                && !url.starts_with("http://127.0.0.1:")
+                && !url.starts_with("https://127.0.0.1:")
+            {
+                return Err("Only loopback preview URLs can be opened".to_string());
+            }
+            if focus_existing_browser_tab(&url, reload) {
+                return Ok(());
+            }
+            let output = std::process::Command::new("open")
+                .arg(&url)
+                .output()
+                .map_err(|error| format!("Failed to open preview: {error}"))?;
+            return if output.status.success() {
+                Ok(())
+            } else {
+                Err(String::from_utf8_lossy(&output.stderr).trim().to_string())
+            };
+        }
+
+        let app_name = app_name.filter(|value| !value.trim().is_empty())
+            .ok_or_else(|| "Preview target is not ready yet".to_string())?;
+        activate_preview_app(&app_name)
+    })
+    .await
+}
+
+fn focus_existing_browser_tab(url: &str, reload: bool) -> bool {
+    if try_focus_browser_tab(url, reload) {
+        return true;
+    }
+    // Try the alternative loopback form (localhost <-> 127.0.0.1)
+    let alt_url = if url.contains("://localhost:") {
+        url.replace("://localhost:", "://127.0.0.1:")
+    } else if url.contains("://127.0.0.1:") {
+        url.replace("://127.0.0.1:", "://localhost:")
+    } else {
+        return false;
+    };
+    try_focus_browser_tab(&alt_url, reload)
+}
+
+fn try_focus_browser_tab(url: &str, reload: bool) -> bool {
+    if focus_existing_dia_tab(url, reload) {
+        return true;
+    }
+    for app_name in [
+        "Google Chrome",
+        "Google Chrome Canary",
+        "Brave Browser",
+        "Microsoft Edge",
+        "Chromium",
+    ] {
+        if focus_existing_chromium_tab(app_name, url, reload) {
+            return true;
+        }
+    }
+    focus_existing_safari_tab(url, reload)
+}
+
+fn focus_existing_dia_tab(url: &str, reload: bool) -> bool {
+    if !browser_process_is_running("Dia") {
+        return false;
+    }
+    let script = format!(
+        r#"{match_handler}
+on run argv
+  set targetUrl to item 1 of argv
+  set shouldReload to (item 2 of argv is "true")
+  tell application "Dia"
+    repeat with browserWindow in windows
+      repeat with browserTab in tabs of browserWindow
+        if my urlMatches(URL of browserTab, targetUrl) then
+          focus browserTab
+          activate
+          if shouldReload then
+            try
+              set origUrl to URL of browserTab
+              if origUrl contains "?" then
+                set URL of browserTab to (origUrl & "&_gv_reload")
+              else
+                set URL of browserTab to (origUrl & "?_gv_reload")
+              end if
+              delay 0.05
+              set URL of browserTab to origUrl
+            end try
+          end if
+          return "focused"
+        end if
+      end repeat
+    end repeat
+  end tell
+  return "missing"
+end run"#,
+        match_handler = browser_tab_match_script(),
+    );
+    run_browser_tab_focus_script(&script, url, reload)
+}
+
+fn browser_tab_match_script() -> &'static str {
+    r##"on urlMatches(tabUrl, targetUrl)
+  set cleanTab to tabUrl
+  if cleanTab ends with "/" then
+    set cleanTab to text 1 thru -2 of cleanTab
+  end if
+  set cleanTarget to targetUrl
+  if cleanTarget ends with "/" then
+    set cleanTarget to text 1 thru -2 of cleanTarget
+  end if
+  return cleanTab is cleanTarget or cleanTab starts with cleanTarget & "/" or cleanTab starts with cleanTarget & "?" or cleanTab starts with cleanTarget & "#"
+end urlMatches"##
+}
+
+fn browser_process_is_running(app_name: &str) -> bool {
+    std::process::Command::new("pgrep")
+        .args(["-x", app_name])
+        .status()
+        .is_ok_and(|status| status.success())
+}
+
+fn focus_existing_chromium_tab(app_name: &str, url: &str, reload: bool) -> bool {
+    if !browser_process_is_running(app_name) {
+        return false;
+    }
+    let script = format!(
+        r#"{match_handler}
+on run argv
+  set targetUrl to item 1 of argv
+  set shouldReload to (item 2 of argv is "true")
+  tell application "{app_name}"
+    repeat with browserWindow in windows
+      set tabIndex to 0
+      repeat with browserTab in tabs of browserWindow
+        set tabIndex to tabIndex + 1
+        if my urlMatches(URL of browserTab, targetUrl) then
+          set active tab index of browserWindow to tabIndex
+          set index of browserWindow to 1
+          activate
+          if shouldReload then
+            try
+              reload browserTab
+            on error
+              try
+                set origUrl to URL of browserTab
+                if origUrl contains "?" then
+                  set URL of browserTab to (origUrl & "&_gv_reload")
+                else
+                  set URL of browserTab to (origUrl & "?_gv_reload")
+                end if
+                delay 0.05
+                set URL of browserTab to origUrl
+              end try
+            end try
+          end if
+          return "focused"
+        end if
+      end repeat
+    end repeat
+  end tell
+  return "missing"
+end run"#,
+        match_handler = browser_tab_match_script(),
+    );
+    run_browser_tab_focus_script(&script, url, reload)
+}
+
+fn focus_existing_safari_tab(url: &str, reload: bool) -> bool {
+    if !browser_process_is_running("Safari") {
+        return false;
+    }
+    let script = format!(
+        r#"{match_handler}
+on run argv
+  set targetUrl to item 1 of argv
+  set shouldReload to (item 2 of argv is "true")
+  tell application "Safari"
+    repeat with browserWindow in windows
+      repeat with browserTab in tabs of browserWindow
+        if my urlMatches(URL of browserTab, targetUrl) then
+          set current tab of browserWindow to browserTab
+          set index of browserWindow to 1
+          activate
+          if shouldReload then
+            try
+              set origUrl to URL of browserTab
+              if origUrl contains "?" then
+                set URL of browserTab to (origUrl & "&_gv_reload")
+              else
+                set URL of browserTab to (origUrl & "?_gv_reload")
+              end if
+              delay 0.05
+              set URL of browserTab to origUrl
+            end try
+          end if
+          return "focused"
+        end if
+      end repeat
+    end repeat
+  end tell
+  return "missing"
+end run"#,
+        match_handler = browser_tab_match_script(),
+    );
+    run_browser_tab_focus_script(&script, url, reload)
+}
+
+fn run_browser_tab_focus_script(script: &str, url: &str, reload: bool) -> bool {
+    let reload_str = if reload { "true" } else { "false" };
+    std::process::Command::new("osascript")
+        .args(["-e", script, url, reload_str])
+        .output()
+        .is_ok_and(|output| output.status.success() && output.stdout.starts_with(b"focused"))
+}
+
+fn activate_native_preview_for_path(worktree_path: &Path) -> Result<(), String> {
+    let output = std::process::Command::new("ps")
+        .args(["-axo", "pid=,command="])
+        .output()
+        .map_err(|error| format!("Failed to inspect Tauri preview processes: {error}"))?;
+    let mut candidates = Vec::<i32>::new();
+    for line in String::from_utf8_lossy(&output.stdout).lines() {
+        let mut parts = line.trim().splitn(2, char::is_whitespace);
+        let Some(pid) = parts.next().and_then(|value| value.parse::<i32>().ok()) else {
+            continue;
+        };
+        let command = parts.next().unwrap_or_default();
+        if command.contains("target/debug/") || command.contains("target/release/") {
+            candidates.push(pid);
+        }
+    }
+    let cwd_by_pid = lsof_paths_for_pids(&candidates, "cwd");
+    let pid = candidates.into_iter().find(|pid| {
+        cwd_by_pid.get(pid).is_some_and(|paths| {
+            paths.iter().any(|path| path == worktree_path || path.starts_with(worktree_path))
+        })
+    }).ok_or_else(|| "Tauri preview app is not ready yet".to_string())?;
+    activate_preview_pid(pid)
+}
+
+fn activate_preview_pid(pid: i32) -> Result<(), String> {
+    #[cfg(target_os = "macos")]
+    {
+        let app = NSRunningApplication::runningApplicationWithProcessIdentifier(pid)
+            .ok_or_else(|| "Tauri preview app is not registered with macOS".to_string())?;
+        let _ = app.unhide();
+        let _ = app.activateWithOptions(NSApplicationActivationOptions::ActivateAllWindows);
+        for _ in 0..5 {
+            std::thread::sleep(StdDuration::from_millis(40));
+            if app.isActive() {
+                return Ok(());
+            }
+        }
+    }
+
+    let output = std::process::Command::new("osascript")
+        .args([
+            "-e",
+            "on run argv",
+            "-e",
+            "tell application \"System Events\" to set frontmost of first process whose unix id is (item 1 of argv as integer) to true",
+            "-e",
+            "end run",
+            &pid.to_string(),
+        ])
+        .output()
+        .map_err(|error| format!("Failed to activate preview process: {error}"))?;
+    if !output.status.success() {
+        return Err(String::from_utf8_lossy(&output.stderr).trim().to_string());
+    }
+    #[cfg(target_os = "macos")]
+    {
+        for _ in 0..5 {
+            std::thread::sleep(StdDuration::from_millis(40));
+            if NSWorkspace::sharedWorkspace()
+                .frontmostApplication()
+                .is_some_and(|app| app.processIdentifier() == pid)
+            {
+                return Ok(());
+            }
+        }
+        return Err("Tauri preview app did not become frontmost".to_string());
+    }
+    #[cfg(not(target_os = "macos"))]
+    Ok(())
+}
+
+fn activate_preview_app(app_name: &str) -> Result<(), String> {
+    let output = std::process::Command::new("osascript")
+        .args([
+            "-e",
+            "on run argv",
+            "-e",
+            "tell application \"System Events\" to set frontmost of first process whose name is item 1 of argv to true",
+            "-e",
+            "end run",
+            app_name,
+        ])
+        .output()
+        .map_err(|error| format!("Failed to activate preview app: {error}"))?;
+    if output.status.success() {
+        Ok(())
+    } else {
+        Err(String::from_utf8_lossy(&output.stderr).trim().to_string())
+    }
+}
+
 fn preview_processes() -> &'static Mutex<HashMap<String, PreviewProcess>> {
     PREVIEW_PROCESS_STATE.get_or_init(|| Mutex::new(HashMap::new()))
 }
@@ -3233,8 +3706,10 @@ fn stop_all_preview_processes() {
         terminate_preview_process(&mut process.child);
         let _ = process.child.wait();
     }
-    if let Ok(storage_root) = preview_worktree_storage_root() {
-        terminate_orphaned_preview_processes(&storage_root);
+    if let Ok(sessions) = terminal_host::list_sessions() {
+        for session in sessions {
+            let _ = terminal_host::terminate_session(session.id);
+        }
     }
 }
 
@@ -7896,6 +8371,7 @@ pub fn run() {
             _ => {}
         })
         .setup(|app| {
+            terminal_ai_titles::start_terminal_ai_title_loop();
             #[cfg(target_os = "macos")]
             {
                 app.set_activation_policy(tauri::ActivationPolicy::Regular);
@@ -7975,6 +8451,17 @@ pub fn run() {
             list_worktrees,
             remove_worktree,
             prepare_preview_target,
+            save_terminal_attachment,
+            list_terminal_sessions,
+            create_terminal_session,
+            read_terminal_session,
+            write_terminal_session,
+            resize_terminal_session,
+            set_terminal_session_label,
+            set_terminal_session_target,
+            restart_terminal_session,
+            terminate_terminal_session,
+            activate_preview_target,
             detect_project_preview_defaults,
             start_project_preview,
             get_project_preview_status,

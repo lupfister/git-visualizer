@@ -1,6 +1,8 @@
 import { describe, expect, it } from 'vitest';
 import type { Branch, DirectCommit } from '../../types';
-import { computeBranchGridLayout } from './branchGridLayoutModel';
+import { ROW_GAP, ROW_HEIGHT, TOP_PADDING } from './LayoutGrid';
+import { computeBranchGridLayout, GRID_LAYOUT_RENDER_ZOOM } from './branchGridLayoutModel';
+import { assignNodePositionOverride, getStableNodePositionKey } from './nodePositionOverrides';
 
 const mainSha = 'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa';
 const tipSha = 'bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb';
@@ -711,6 +713,46 @@ describe('computeBranchGridLayout empty branch placeholders', () => {
     expect(nonClumpNodesInBand).toHaveLength(0);
     expect(new Set(clumpNodes.map((node) => node.x)).size).toBe(1);
     expect(new Set(clumpNodes.map((node) => node.y)).size).toBe(3);
+
+    const collapsedClumpNode = collapsed.renderNodes.find(
+      (node) => collapsed.clusterKeyByCommitId.get(node.commit.visualId) === clusterKey,
+    )!;
+    const lanePitch = ROW_HEIGHT + ROW_GAP / GRID_LAYOUT_RENDER_ZOOM + 20 / GRID_LAYOUT_RENDER_ZOOM;
+    const movedOwnerColumn = collapsedClumpNode.column + 4;
+    const movedOrigin = {
+      x: collapsedClumpNode.x,
+      y: TOP_PADDING + movedOwnerColumn * lanePitch,
+    };
+    const overriddenMember = collapsed.allCommits.find(
+      (commit) =>
+        collapsed.clusterKeyByCommitId.get(commit.visualId) === clusterKey
+        && commit.visualId !== collapsed.leadByClusterKey.get(clusterKey!),
+    )!;
+    const nodePositionOverrides = {};
+    assignNodePositionOverride(nodePositionOverrides, overriddenMember, movedOrigin);
+    nodePositionOverrides[getStableNodePositionKey(overriddenMember)] = {
+      x: collapsedClumpNode.x,
+      y: collapsedClumpNode.y,
+    };
+    const movedOpened = computeBranchGridLayout({
+      ...baseInput,
+      manuallyOpenedClumps: new Set([clusterKey!]),
+      nodePositionOverrides,
+    });
+    const movedClumpNodes = movedOpened.renderNodes.filter(
+      (node) => movedOpened.clusterKeyByCommitId.get(node.commit.visualId) === clusterKey,
+    );
+    const movedFirstNode = movedClumpNodes.find(
+      (node) => node.commit.visualId === movedOpened.firstByClusterKey.get(clusterKey!),
+    )!;
+    const movedLeadNode = movedClumpNodes.find(
+      (node) => node.commit.visualId === movedOpened.leadByClusterKey.get(clusterKey!),
+    )!;
+    expect(movedFirstNode.column).toBe(movedOwnerColumn);
+    expect(movedFirstNode.x).toBe(movedOrigin.x);
+    expect(movedFirstNode.y).toBe(movedOrigin.y);
+    expect(movedLeadNode.column).toBe(movedOwnerColumn + movedClumpNodes.length - 1);
+    expect(movedLeadNode.y).toBeGreaterThan(movedFirstNode.y);
   });
 
   it('keeps collapsed clump on a single lane column', () => {

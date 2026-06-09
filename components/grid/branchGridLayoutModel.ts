@@ -37,7 +37,7 @@ import { computeMergeConnectorAnchors, computeParentChildConnectorAnchors } from
 import { getMapGridConnectorPolyline } from './gridPathUtils';
 import { applyNodePositionOverrides } from './applyNodePositionOverrides';
 import { deriveAllClumpsFromOwners, syncClumpCoordinatesToRenderNodes } from './clumpLayout';
-import { propagateOverrideRelativeLayout } from './overrideLayoutPropagation';
+import { inferLayoutIndicesFromOverride, propagateOverrideRelativeLayout } from './overrideLayoutPropagation';
 import { getNodePositionOverride, migrateNodePositionOverridesForCommits } from './nodePositionOverrides';
 
 /** Sync with MapGrid GRID_ZOOM_MAX — row pitch is authored in this render space. */
@@ -332,7 +332,12 @@ const resolveVisibleNodeColumnCollisions = (
     const collisionKey =
       clusterKey && (clusterCounts?.get(clusterKey) ?? 1) > 1 ? clusterKey : null;
     let column = node.column;
-    while (occupiedColumns.has(column) && occupiedColumns.get(column) !== collisionKey) column += 1;
+    while (
+      occupiedColumns.has(column) &&
+      (collisionKey === null || occupiedColumns.get(column) !== collisionKey)
+    ) {
+      column += 1;
+    }
     occupiedColumns.set(column, collisionKey);
     occupiedByRow.set(node.row, occupiedColumns);
     if (column === node.column) continue;
@@ -1696,13 +1701,9 @@ export function computeBaseLayout(input: BranchGridLayoutInput): BaseLayoutModel
     isClumpOpen: () => false,
   });
 
+  // Stash and branch-created are synthetic leaves; uncommitted worktrees use placeLayoutNode like other commits.
   for (const commit of allCommitsWithClusters) {
-    if (
-      commit.kind !== 'uncommitted' &&
-      commit.kind !== 'stash' &&
-      commit.kind !== 'branch-created' &&
-      !isWorkingTreeCommitId(commit.id)
-    ) {
+    if (commit.kind !== 'stash' && commit.kind !== 'branch-created') {
       continue;
     }
     let row = rowByVisualId.get(commit.visualId) ?? 0;
@@ -2436,10 +2437,46 @@ export function projectVisibility(
     isClumpOpen,
   );
 
+  const openClumpOverrideAnchorByKey = new Map<string, { row: number; column: number }>();
+  const bestOverrideByOpenClusterKey = new Map<string, { x: number; y: number; row: number }>();
+  for (const commit of allCommits) {
+    const clusterKey = clusterKeyByCommitId.get(commit.visualId);
+    if (!clusterKey || (clusterCounts.get(clusterKey) ?? 1) <= 1 || !isClumpOpen(clusterKey)) continue;
+    const override = getNodePositionOverride(nodePositionOverrides, commit);
+    if (!override) continue;
+    const row = allRowByVisualId.get(commit.visualId) ?? 0;
+    const current = bestOverrideByOpenClusterKey.get(clusterKey);
+    if (!current || row > current.row) {
+      bestOverrideByOpenClusterKey.set(clusterKey, { x: override.x, y: override.y, row });
+    }
+  }
+  for (const [clusterKey, count] of clusterCounts.entries()) {
+    if (count <= 1 || !isClumpOpen(clusterKey)) continue;
+    const leadVisualId = leadByClusterKey.get(clusterKey);
+    const leadNode = leadVisualId ? projectedNodeByVisualId.get(leadVisualId) : null;
+    if (!leadNode) continue;
+    const directOverride = getNodePositionOverride(nodePositionOverrides, leadNode.commit);
+    const inheritedOverride = bestOverrideByOpenClusterKey.get(clusterKey);
+    const override = directOverride ?? inheritedOverride;
+    if (!override) continue;
+    openClumpOverrideAnchorByKey.set(
+      clusterKey,
+      inferLayoutIndicesFromOverride(override.x, override.y, {
+        isHorizontal,
+        timelineRowLeadOffset: 0,
+        zoomAwareTimelinePitch,
+        zoomAwareLanePitch,
+        maxResolvedRow: Math.max(0, ...renderNodes.map((node) => node.row)),
+      }),
+    );
+  }
+
   const openClumps = [...clusterCounts.entries()]
     .filter(([clusterKey, count]) => count > 1 && isClumpOpen(clusterKey))
     .map(([clusterKey, count]) => {
-      const ownerColumn = projectedClumpOwnerColumn.get(clusterKey);
+      const ownerColumn =
+        openClumpOverrideAnchorByKey.get(clusterKey)?.column
+        ?? projectedClumpOwnerColumn.get(clusterKey);
       return ownerColumn == null ? null : { clusterKey, count, ownerColumn };
     })
     .filter((value): value is { clusterKey: string; count: number; ownerColumn: number } => value != null)
@@ -2453,7 +2490,11 @@ export function projectVisibility(
     );
     const firstVisualId = firstByClusterKey.get(clump.clusterKey);
     const firstNode = memberNodes.find((node) => node.commit.visualId === firstVisualId);
-    const ownerColumn = firstNode?.column ?? projectedClumpOwnerColumn.get(clump.clusterKey);
+    const overrideAnchor = openClumpOverrideAnchorByKey.get(clump.clusterKey);
+    const ownerColumn =
+      overrideAnchor?.column
+      ?? firstNode?.column
+      ?? projectedClumpOwnerColumn.get(clump.clusterKey);
     if (ownerColumn == null) continue;
     const memberSet = new Set(memberNodes.map((node) => node.commit.visualId));
     
@@ -2475,18 +2516,63 @@ export function projectVisibility(
     );
     orderedMembers.forEach((node, index) => {
       const nextColumn = ownerColumn + index;
+      if (overrideAnchor) node.row = overrideAnchor.row;
       node.column = nextColumn;
       columnByCommitVisualId.set(node.commit.visualId, nextColumn);
     });
     projectedClumpOwnerColumn.set(clump.clusterKey, ownerColumn);
   }
 
+  const latestOpenClumpNodeForSha = (
+    sha: string | null | undefined,
+    preferredBranchName?: string,
+  ): Node | null => {
+    if (!sha) return null;
+    const directClusterKey = preferredBranchName
+      ? clusterKeyByCommitId.get(`${preferredBranchName}:${sha}`)
+      : null;
+    const clusterKeys = [
+      directClusterKey,
+      ...(clusterKeyBySha.get(sha) ?? []),
+    ].filter((key): key is string => !!key);
+    for (const clusterKey of [...new Set(clusterKeys)]) {
+      if ((clusterCounts.get(clusterKey) ?? 1) <= 1 || !isClumpOpen(clusterKey)) continue;
+      const leadVisualId = leadByClusterKey.get(clusterKey);
+      const leadNode = leadVisualId ? renderNodes.find((node) => node.commit.visualId === leadVisualId) : null;
+      if (leadNode) return leadNode;
+    }
+    return null;
+  };
+
+  const actualWorktreeParentSha = (commit: VisualCommit): string | null => {
+    if (!isWorktreeGraphNode(commit)) return commit.parentSha ?? commit.parentShas?.[0] ?? null;
+    return (
+      worktreeSessions.find((session) => session.workingTreeId === commit.id)?.headSha
+      ?? commit.parentSha
+      ?? commit.parentShas?.[0]
+      ?? null
+    );
+  };
+
+  resolveVisibleNodeColumnCollisions(
+    renderNodes,
+    columnByCommitVisualId,
+    isHorizontal,
+    zoomAwareLanePitch,
+    clusterKeyByCommitId,
+    clusterCounts,
+  );
+
   // Re-sync final visual node coordinates
   let maxResolvedRow = Math.max(0, ...renderNodes.map((node) => node.row));
   const timelineRowLeadOffset = 0;
   
-  const hasOverride = (commit: VisualCommit) => 
-    !!getNodePositionOverride(nodePositionOverrides, commit);
+  const belongsToOpenClumpOverrideAnchor = (commit: VisualCommit): boolean => {
+    const clusterKey = clusterKeyByCommitId.get(commit.visualId);
+    return !!clusterKey && openClumpOverrideAnchorByKey.has(clusterKey);
+  };
+  const hasOverride = (commit: VisualCommit) =>
+    !!getNodePositionOverride(nodePositionOverrides, commit) && !belongsToOpenClumpOverrideAnchor(commit);
 
   for (const node of renderNodes) {
     if (hasOverride(node.commit)) continue;
@@ -2513,6 +2599,7 @@ export function projectVisibility(
 
   // Apply overrides for overridden nodes
   for (const node of renderNodes) {
+    if (belongsToOpenClumpOverrideAnchor(node.commit)) continue;
     const override = getNodePositionOverride(nodePositionOverrides, node.commit);
     if (override) {
       node.x = override.x;
@@ -2913,10 +3000,11 @@ export function projectVisibility(
   for (const commit of allCommits) {
     const childNode = resolveConnectorNode(commit);
     if (!childNode) continue;
-    const parentSha = commit.parentSha ?? null;
+    const parentSha = actualWorktreeParentSha(commit);
     if (!parentSha) continue;
     const parentNode =
-      nodeForConnectorTipSha(parentSha, commit.branchName)
+      (isWorktreeGraphNode(commit) ? latestOpenClumpNodeForSha(parentSha, commit.branchName) : null)
+      ?? nodeForConnectorTipSha(parentSha, commit.branchName)
       ?? resolveParentNode(parentSha, commit.branchName);
     if (!parentNode) {
       const parentClusterKey =
@@ -3189,7 +3277,17 @@ const generateFallbackGraphSignature = (input: BranchGridLayoutInput): string =>
   const branchSig = input.branches.map(b => `${b.name}:${b.headSha}`).join('|');
   const commitSig = input.directCommits.map(c => `${c.fullSha}:${c.author}:${c.date}`).join('|');
   const unpushedSig = (input.unpushedDirectCommits ?? []).map(c => `${c.fullSha}:${c.author}:${c.date}`).join('|');
-  return `${branchSig}::${commitSig}::${unpushedSig}`;
+  const previewSig = Object.entries(input.branchCommitPreviews)
+    .sort(([left], [right]) => left.localeCompare(right))
+    .map(([branchName, previews]) =>
+      `${branchName}:${previews.map((preview) => `${preview.fullSha}:${preview.parentSha ?? ''}:${preview.kind ?? ''}:${preview.date}`).join(',')}`,
+    )
+    .join('|');
+  const checkoutSig = `${input.checkedOutRef?.branchName ?? ''}:${input.checkedOutRef?.headSha ?? ''}:${input.checkedOutRef?.hasUncommittedChanges ? 'dirty' : 'clean'}`;
+  const worktreeSig = (input.worktreeSessions ?? [])
+    .map((session) => `${session.workingTreeId}:${session.branchName ?? ''}:${session.headSha}:${session.parentSha ?? ''}:${session.isCurrent ? 'current' : 'linked'}:${session.hasUncommittedChanges ? 'dirty' : 'clean'}`)
+    .join('|');
+  return `${branchSig}::${commitSig}::${unpushedSig}::${previewSig}::${checkoutSig}::${worktreeSig}`;
 };
 
 const setCachedBaseLayout = (key: string, model: BaseLayoutModel) => {

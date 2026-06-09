@@ -18,6 +18,7 @@ import {
   persistWorktreeFocusSha,
   readPersistedWorktreeFocusSha,
   resolveActiveWorktreeFocusSha,
+  resolveTerminalSessionFocusId,
 } from './worktreeSessions';
 
 const baseWorktree = (overrides: Partial<WorktreeInfo>): WorktreeInfo => ({
@@ -89,6 +90,24 @@ describe('worktreeSessions', () => {
     expect(isWorkingTreeCommitId('WORKING_TREE')).toBe(true);
     expect(isWorkingTreeCommitId('WORKING_TREE:abc')).toBe(true);
     expect(isWorkingTreeCommitId('deadbeef')).toBe(false);
+  });
+
+  it('resolves terminal session focus ids from target or worktree path', () => {
+    expect(resolveTerminalSessionFocusId({
+      projectPath: '/repo',
+      worktreePath: '/repo',
+      targetId: null,
+    })).toBe('WORKING_TREE');
+    expect(resolveTerminalSessionFocusId({
+      projectPath: '/repo',
+      worktreePath: '/repo/wt-b',
+      targetId: null,
+    })).toMatch(/^WORKING_TREE:/);
+    expect(resolveTerminalSessionFocusId({
+      projectPath: '/repo',
+      worktreePath: '/repo/wt-b',
+      targetId: 'abc1234567890',
+    })).toBe('abc1234567890');
   });
 
   it('prefers checkedOutRef head for the current worktree session', () => {

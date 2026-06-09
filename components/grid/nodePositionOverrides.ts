@@ -35,9 +35,9 @@ export const getNodePositionOverride = (
   commit: NodePositionCommitIdentity,
 ): NodePositionOverride | undefined => {
   return (
-    overrides[getStableNodePositionKey(commit)]
-    ?? overrides[commit.visualId]
+    overrides[commit.visualId]
     ?? overrides[commit.id]
+    ?? overrides[getStableNodePositionKey(commit)]
     ?? findLegacyNodePositionOverride(overrides, commit)
   );
 };
@@ -67,11 +67,11 @@ export const migrateNodePositionOverridesForCommits = (
   let next = overrides;
   for (const commit of commits) {
     const stableKey = getStableNodePositionKey(commit);
-    if (next[stableKey]) continue;
-    const legacyValue = next[commit.visualId] ?? next[commit.id] ?? findLegacyNodePositionOverride(next, commit);
-    if (!legacyValue) continue;
+    const exactValue = next[commit.visualId] ?? next[commit.id];
+    const resolvedValue = exactValue ?? next[stableKey] ?? findLegacyNodePositionOverride(next, commit);
+    if (!resolvedValue || next[stableKey] === resolvedValue) continue;
     if (next === overrides) next = { ...overrides };
-    next[stableKey] = legacyValue;
+    next[stableKey] = resolvedValue;
   }
   return next;
 };

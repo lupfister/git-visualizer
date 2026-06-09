@@ -2,7 +2,9 @@ import { describe, expect, it } from 'vitest';
 import type { Branch, BranchCommitPreview, DirectCommit } from '../../types';
 import { buildWorktreeSessions } from '../../lib/worktreeSessions';
 import type { WorktreeInfo } from '../../types';
-import { computeBranchGridLayout } from './branchGridLayoutModel';
+import { ROW_GAP, ROW_HEIGHT, TOP_PADDING } from './LayoutGrid';
+import { computeBranchGridLayout, GRID_LAYOUT_RENDER_ZOOM } from './branchGridLayoutModel';
+import { assignNodePositionOverride } from './nodePositionOverrides';
 
 const mainSha = 'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa';
 const tipSha = 'bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb';
@@ -339,6 +341,249 @@ describe('computeBranchGridLayout worktree nodes', () => {
     expect(worktreeNode!.column).toBeGreaterThan(headLeadNode!.column);
     expect(worktreeNode!.row).toBe(headLeadNode!.row + 1);
     expect(worktreeNode!.y).toBeGreaterThan(headLeadNode!.y);
+  });
+
+  it('positions worktree below HEAD when the parent clump opens', () => {
+    const defaultBranch = 'main';
+    const olderSha = 'cccccccccccccccccccccccccccccccccccccccc';
+    const parentDate = '2024-05-15T12:00:00Z';
+    const branches = [makeBranch(defaultBranch, tipSha, 2)];
+    const directCommits: DirectCommit[] = [
+      {
+        fullSha: mainSha,
+        sha: mainSha.slice(0, 7),
+        branch: defaultBranch,
+        message: 'root',
+        author: 'test',
+        date: '2024-05-01T12:00:00Z',
+        parentSha: null,
+        parentShas: [],
+      },
+      {
+        fullSha: olderSha,
+        sha: olderSha.slice(0, 7),
+        branch: defaultBranch,
+        message: 'checked out parent',
+        author: 'test',
+        date: parentDate,
+        parentSha: mainSha,
+        parentShas: [mainSha],
+      },
+      {
+        fullSha: tipSha,
+        sha: tipSha.slice(0, 7),
+        branch: defaultBranch,
+        message: 'newer clump member',
+        author: 'test',
+        date: '2024-06-01T12:00:00Z',
+        parentSha: olderSha,
+        parentShas: [olderSha],
+      },
+    ];
+    const sessions = buildWorktreeSessions(
+      [wt({ path: '/repo', branchName: defaultBranch, headSha: tipSha, isCurrent: true })],
+      '/repo',
+      { branchName: defaultBranch, headSha: tipSha, hasUncommittedChanges: true },
+    );
+    const worktreePreview: BranchCommitPreview = {
+      fullSha: sessions[0]!.workingTreeId,
+      sha: 'uncommitted',
+      parentSha: tipSha,
+      message: '',
+      author: 'You',
+      date: parentDate,
+      kind: 'uncommitted',
+    };
+    const collapsed = computeBranchGridLayout({
+      branches,
+      mergeNodes: [],
+      directCommits,
+      unpushedDirectCommits: directCommits.slice(1),
+      defaultBranch,
+      branchCommitPreviews: { main: [directCommits[1]!, directCommits[2]!, worktreePreview] },
+      branchParentByName: { main: null },
+      branchUniqueAheadCounts: { main: 2 },
+      unpushedCommitShasByBranch: { main: [olderSha, tipSha] },
+      manuallyOpenedClumps: new Set(),
+      manuallyClosedClumps: new Set(),
+      isDebugOpen: false,
+      gridSearchQuery: '',
+      gridFocusSha: null,
+      checkedOutRef: { branchName: defaultBranch, headSha: tipSha, hasUncommittedChanges: true },
+      worktreeSessions: sessions,
+      orientation: 'horizontal',
+    });
+    const clusterKey = collapsed.clusterKeyByCommitId.get(`${defaultBranch}:${tipSha}`);
+    expect(clusterKey).toBeDefined();
+
+    const opened = computeBranchGridLayout({
+      branches,
+      mergeNodes: [],
+      directCommits,
+      unpushedDirectCommits: directCommits.slice(1),
+      defaultBranch,
+      branchCommitPreviews: { main: [directCommits[1]!, directCommits[2]!, worktreePreview] },
+      branchParentByName: { main: null },
+      branchUniqueAheadCounts: { main: 2 },
+      unpushedCommitShasByBranch: { main: [olderSha, tipSha] },
+      manuallyOpenedClumps: new Set([clusterKey!]),
+      manuallyClosedClumps: new Set(),
+      isDebugOpen: false,
+      gridSearchQuery: '',
+      gridFocusSha: null,
+      checkedOutRef: { branchName: defaultBranch, headSha: tipSha, hasUncommittedChanges: true },
+      worktreeSessions: sessions,
+      orientation: 'horizontal',
+    });
+    const latestNode = opened.renderNodes.find(
+      (node) => node.commit.branchName === defaultBranch && node.commit.id === tipSha,
+    );
+    const worktreeNode = opened.renderNodes.find((node) => node.commit.id === sessions[0]!.workingTreeId);
+    expect(latestNode).toBeDefined();
+    expect(worktreeNode).toBeDefined();
+    expect(worktreeNode!.row).toBe(latestNode!.row + 1);
+    expect(worktreeNode!.column).not.toBe(latestNode!.column);
+    expect(
+      opened.connectors.some(
+        (connector) =>
+          connector.fromCommitVisualId === latestNode!.commit.visualId
+          && connector.toCommitVisualId === worktreeNode!.commit.visualId,
+      ),
+    ).toBe(true);
+
+    const collapsedParentNode = collapsed.renderNodes.find(
+      (node) => collapsed.clusterKeyByCommitId.get(node.commit.visualId) === clusterKey,
+    )!;
+    const lanePitch = ROW_HEIGHT + ROW_GAP / GRID_LAYOUT_RENDER_ZOOM + 20 / GRID_LAYOUT_RENDER_ZOOM;
+    const movedOwnerColumn = collapsedParentNode.column + 5;
+    const nodePositionOverrides = {};
+    assignNodePositionOverride(nodePositionOverrides, latestNode!.commit, {
+      x: collapsedParentNode.x,
+      y: TOP_PADDING + movedOwnerColumn * lanePitch,
+    });
+
+    const movedOpened = computeBranchGridLayout({
+      branches,
+      mergeNodes: [],
+      directCommits,
+      unpushedDirectCommits: directCommits.slice(1),
+      defaultBranch,
+      branchCommitPreviews: { main: [directCommits[1]!, directCommits[2]!, worktreePreview] },
+      branchParentByName: { main: null },
+      branchUniqueAheadCounts: { main: 2 },
+      unpushedCommitShasByBranch: { main: [olderSha, tipSha] },
+      manuallyOpenedClumps: new Set([clusterKey!]),
+      manuallyClosedClumps: new Set(),
+      isDebugOpen: false,
+      gridSearchQuery: '',
+      gridFocusSha: null,
+      checkedOutRef: { branchName: defaultBranch, headSha: tipSha, hasUncommittedChanges: true },
+      worktreeSessions: sessions,
+      orientation: 'horizontal',
+      nodePositionOverrides,
+    });
+    const movedLatestNode = movedOpened.renderNodes.find(
+      (node) => node.commit.branchName === defaultBranch && node.commit.id === tipSha,
+    );
+    const movedClumpColumns = movedOpened.renderNodes
+      .filter((node) => movedOpened.clusterKeyByCommitId.get(node.commit.visualId) === clusterKey)
+      .map((node) => node.column);
+    expect(movedLatestNode).toBeDefined();
+    expect(movedLatestNode!.column).toBe(Math.max(...movedClumpColumns));
+  });
+
+  it('keeps worktrees on distinct branch lanes when multiple sessions share the same HEAD parent', () => {
+    const defaultBranch = 'main';
+    const branchA = 'cursor/k716';
+    const branchB = 'lp-portfolio';
+    const parentDate = '2024-06-01T12:00:00Z';
+    const branches = [
+      makeBranch(defaultBranch, tipSha, 1),
+      makeBranch(branchA, tipSha, 0),
+      makeBranch(branchB, tipSha, 0),
+    ];
+    const directCommits: DirectCommit[] = [
+      {
+        fullSha: mainSha,
+        sha: mainSha.slice(0, 7),
+        branch: defaultBranch,
+        message: 'root',
+        author: 'test',
+        date: '2024-05-01T12:00:00Z',
+        parentSha: null,
+        parentShas: [],
+      },
+      {
+        fullSha: tipSha,
+        sha: tipSha.slice(0, 7),
+        branch: defaultBranch,
+        message: 'tip',
+        author: 'test',
+        date: parentDate,
+        parentSha: mainSha,
+        parentShas: [mainSha],
+      },
+    ];
+    const sessions = buildWorktreeSessions(
+      [
+        wt({ path: '/repo/.worktrees/k716', branchName: branchA, headSha: tipSha }),
+        wt({ path: '/repo/.worktrees/lp', branchName: branchB, headSha: tipSha }),
+      ],
+      '/repo',
+    );
+    const previewA: BranchCommitPreview = {
+      fullSha: sessions[0]!.workingTreeId,
+      sha: 'uncommitted',
+      parentSha: tipSha,
+      message: '',
+      author: 'You',
+      date: parentDate,
+      kind: 'uncommitted',
+    };
+    const previewB: BranchCommitPreview = {
+      fullSha: sessions[1]!.workingTreeId,
+      sha: 'uncommitted',
+      parentSha: tipSha,
+      message: '',
+      author: 'You',
+      date: parentDate,
+      kind: 'uncommitted',
+    };
+    const layout = computeBranchGridLayout({
+      branches,
+      mergeNodes: [],
+      directCommits,
+      unpushedDirectCommits: [],
+      defaultBranch,
+      branchCommitPreviews: {
+        main: [directCommits[1]!],
+        [branchA]: [previewA],
+        [branchB]: [previewB],
+      },
+      branchParentByName: { main: null, [branchA]: defaultBranch, [branchB]: defaultBranch },
+      branchUniqueAheadCounts: { main: 1, [branchA]: 0, [branchB]: 0 },
+      manuallyOpenedClumps: new Set(),
+      manuallyClosedClumps: new Set(),
+      isDebugOpen: false,
+      gridSearchQuery: '',
+      gridFocusSha: null,
+      checkedOutRef: null,
+      worktreeSessions: sessions,
+      orientation: 'horizontal',
+    });
+
+    const parentNode = layout.renderNodes.find((node) => node.commit.id === tipSha);
+    const worktreeA = layout.renderNodes.find((node) => node.commit.id === sessions[0]!.workingTreeId);
+    const worktreeB = layout.renderNodes.find((node) => node.commit.id === sessions[1]!.workingTreeId);
+    expect(parentNode).toBeDefined();
+    expect(worktreeA).toBeDefined();
+    expect(worktreeB).toBeDefined();
+    expect(worktreeA!.row).toBe(parentNode!.row + 1);
+    expect(worktreeB!.row).toBe(parentNode!.row + 1);
+    expect(worktreeA!.column).not.toBe(worktreeB!.column);
+    expect(worktreeA!.x).toBe(worktreeB!.x);
+    expect(worktreeA!.y).not.toBe(worktreeB!.y);
+    expect(worktreeA!.x).toBeGreaterThan(parentNode!.x);
   });
 
   it('pins primary worktree to HEAD on main when session lane is main (local) but parentSha is on main', () => {

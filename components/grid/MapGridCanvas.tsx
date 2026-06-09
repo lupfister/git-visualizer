@@ -36,6 +36,7 @@ import {
   formatRemoteCommitHeaderLabel,
   formatWorktreeNodeHeaderLabel,
 } from './mapGridUtils';
+
 import type { ConnectorFace, Node, NodePositionOverrides } from './LayoutGrid';
 import type { MapGridCameraState, MapGridCameraTargetLayout } from './useMapGridCamera';
 import { getNodePositionOverride } from './nodePositionOverrides';
@@ -137,7 +138,6 @@ type CommitCardProps = {
   cardLeft: number;
   cardTop: number;
   displayZoom: number;
-  lineStrokeWidth: number;
   selectedShaSet: Set<string>;
   normalizedSearchQuery: string;
   matchingNodeIds: Set<string>;
@@ -159,6 +159,7 @@ type CommitCardProps = {
   worktreeDraftByWorkingTreeId?: ReadonlyMap<string, WorktreeDraftDisplay>;
   previewedNodeId?: string | null;
   previewedWorktreeNodeIds?: string[];
+  terminalCountByWorkingTreeId: Readonly<Record<string, number>>;
   onCommitCardClick: (event: MouseEvent, node: Node) => void;
   onNodePointerDown: (event: React.PointerEvent<HTMLDivElement>, node: Node) => void;
   onNodePointerMove: (event: React.PointerEvent<HTMLDivElement>) => void;
@@ -181,7 +182,6 @@ const MapGridCommitCard = memo(function MapGridCommitCard({
   cardLeft,
   cardTop,
   displayZoom,
-  lineStrokeWidth,
   selectedShaSet,
   normalizedSearchQuery,
   matchingNodeIds,
@@ -203,6 +203,7 @@ const MapGridCommitCard = memo(function MapGridCommitCard({
   worktreeDraftByWorkingTreeId,
   previewedNodeId,
   previewedWorktreeNodeIds = [],
+  terminalCountByWorkingTreeId,
   onCommitCardClick,
   onNodePointerDown,
   onNodePointerMove,
@@ -293,6 +294,7 @@ const MapGridCommitCard = memo(function MapGridCommitCard({
   const isSelectedCommit = selectedShaSet.has(commitId);
   const isPreviewedWorktreeCommit = previewedWorktreeNodeIds.includes(commitId);
   const isPreviewedCommit = previewedNodeId === visualId || previewedNodeId === commitId || isPreviewedWorktreeCommit;
+  const terminalCount = terminalCountByWorkingTreeId[commitId] ?? 0;
   const isLocalUncommitted = isWorkingTreeCommitId(commitId) || node.commit.kind === 'uncommitted';
   const accentToken = worktreeAccentByCommitId.get(commitId) ?? null;
   const isStashedCommit =
@@ -565,37 +567,67 @@ const MapGridCommitCard = memo(function MapGridCommitCard({
       onPointerCancel={onNodePointerUp}
     >
       <div
-        className="absolute left-0 z-30 w-full"
-        style={{ top: 'calc(-20px * var(--map-inv-zoom, 1))' }}
+        className={cn("absolute left-0 z-30 w-full", selectedCommitTextClass)}
+        style={{
+          fontSize: 'calc(0.875rem * var(--map-inv-zoom, 1))',
+          top: 'calc(-1.1rem * var(--map-inv-zoom, 1))',
+          ...cardTextStyle,
+        }}
       >
-        <div className="flex min-w-0 items-baseline justify-between gap-2 bg-transparent pb-0">
+        <div
+          className="flex w-full min-w-0 items-center justify-between bg-transparent pb-0"
+          style={{ gap: 'calc(2px * var(--map-inv-zoom, 1))' }}
+        >
           <div
-            className={cn(
-              'min-w-0 flex-1 font-normal',
-              selectedCommitTextClass,
-              displayZoom <= 0.5 ? 'overflow-hidden text-ellipsis whitespace-nowrap' : 'break-words whitespace-normal',
-            )}
-            style={scaledTextStyle}
+            className="flex min-w-0 flex-1 items-center"
+            style={{ gap: 'calc(2px * var(--map-inv-zoom, 1))' }}
           >
-            {headerLabel}
-          </div>
-          {isClusterCaretHost ? (
-            <button
-              type="button"
-              onMouseDown={(event) => {
-                event.stopPropagation();
-              }}
-              onClick={handleClusterButtonClick}
-              className={cn('inline-flex self-start items-center bg-transparent p-0 font-normal leading-none', selectedCommitTextClass)}
-              style={scaledTextStyle}
-            >
-              {isClusterOpen ? (
-                <span className="-translate-x-[1px] translate-y-[2px] leading-none" style={{ fontSize: 'calc(1rem * var(--map-inv-zoom, 1))' }}>⌃</span>
-              ) : (
-                `+${clumpCount - 1}`
+            {isPreviewedCommit ? (
+              <PreviewIcon
+                aria-label="Preview running"
+                className="h-[1em] w-[1em] shrink-0"
+              />
+            ) : null}
+            <div
+              className={cn(
+                'min-w-0 flex-1 font-normal',
+                displayZoom <= 0.5 ? 'overflow-hidden text-ellipsis whitespace-nowrap' : 'break-words whitespace-normal',
               )}
-            </button>
-          ) : null}
+            >
+              {headerLabel}
+            </div>
+          </div>
+          <div
+            className="flex shrink-0 items-center"
+            style={{ gap: 'calc(2px * var(--map-inv-zoom, 1))' }}
+          >
+            {terminalCount > 0 ? (
+              <span
+                aria-label={`${terminalCount} running terminal${terminalCount === 1 ? '' : 's'}`}
+                className="inline-flex items-center font-normal leading-none"
+              >
+                {terminalCount > 1 ? terminalCount : null}
+                <TerminalIcon className="h-[1em] w-[1em] shrink-0 ml-[0.15em]" />
+              </span>
+            ) : null}
+            {isClusterCaretHost ? (
+              <button
+                type="button"
+                onMouseDown={(event) => {
+                  event.stopPropagation();
+                }}
+                onClick={handleClusterButtonClick}
+                className="inline-flex items-center bg-transparent p-0 font-normal leading-none"
+                style={scaledTextStyle}
+              >
+                {isClusterOpen ? (
+                  <span className="-translate-x-[1px] translate-y-[2px] leading-none" style={{ fontSize: 'calc(1rem * var(--map-inv-zoom, 1))' }}>⌃</span>
+                ) : (
+                  `+${clumpCount - 1}`
+                )}
+              </button>
+            ) : null}
+          </div>
         </div>
       </div>
       <div
@@ -617,8 +649,6 @@ const MapGridCommitCard = memo(function MapGridCommitCard({
           top: 0,
           border: 'none',
           boxShadow: 'none',
-          outline: isPreviewedCommit ? `${lineStrokeWidth}px solid ${isPreviewedWorktreeCommit ? 'var(--foreground)' : 'var(--select)'}` : 'none',
-          outlineOffset: 0,
           borderTopLeftRadius: 0,
           borderTopRightRadius: outlineCornerRadiusCss,
           borderBottomRightRadius: outlineCornerRadiusCss,
@@ -779,6 +809,7 @@ type Props = {
   worktreeDraftByWorkingTreeId?: ReadonlyMap<string, WorktreeDraftDisplay>;
   previewedNodeId?: string | null;
   previewedWorktreeNodeIds?: string[];
+  terminalCountByWorkingTreeId: Readonly<Record<string, number>>;
   orientation?: 'vertical' | 'horizontal';
   dragPreviewByNodeId?: Record<string, { x: number; y: number }>;
   nodePositionOverrides?: Record<string, { x: number; y: number }>;
@@ -841,7 +872,6 @@ const MapGridCanvas = memo(function MapGridCanvas({
   connectors,
   mergeConnectors,
   cullConnectorPath,
-  flushCameraReactTick,
   syncCamera,
   setManuallyOpenedClumps,
   setManuallyClosedClumps,
@@ -853,6 +883,7 @@ const MapGridCanvas = memo(function MapGridCanvas({
   worktreeDraftByWorkingTreeId,
   previewedNodeId,
   previewedWorktreeNodeIds,
+  terminalCountByWorkingTreeId,
   dragPreviewByNodeId = EMPTY_DRAG_PREVIEW,
   nodePositionOverrides = EMPTY_NODE_POSITION_OVERRIDES,
   connectorPathCacheScopeBase,
@@ -1239,7 +1270,6 @@ const MapGridCanvas = memo(function MapGridCanvas({
             cornerRadiusPx={commitCornerRadiusPx}
             strokeWidth={lineStrokeWidth}
             pathCache={connectorPath2dCacheRef.current}
-            suspendAnimations={isCameraMoving}
             registerCameraTarget={registerCameraTarget}
           />
           <AnimatePresence initial={false}>
@@ -1255,7 +1285,6 @@ const MapGridCanvas = memo(function MapGridCanvas({
                 cardLeft={cardLeft}
                 cardTop={cardTop}
                 displayZoom={displayZoom}
-                lineStrokeWidth={lineStrokeWidth}
                 selectedShaSet={selectedShaSet}
                 normalizedSearchQuery={normalizedSearchQuery}
                 matchingNodeIds={matchingNodeIds}
@@ -1277,6 +1306,7 @@ const MapGridCanvas = memo(function MapGridCanvas({
                 worktreeDraftByWorkingTreeId={worktreeDraftByWorkingTreeId}
                 previewedNodeId={previewedNodeId}
                 previewedWorktreeNodeIds={previewedWorktreeNodeIds}
+                terminalCountByWorkingTreeId={terminalCountByWorkingTreeId}
                 onCommitCardClick={onCommitCardClick}
                 onNodePointerDown={onNodePointerDown}
                 onNodePointerMove={onNodePointerMove}
@@ -1299,3 +1329,50 @@ const MapGridCanvas = memo(function MapGridCanvas({
 }, areMapGridCanvasPropsEqual);
 
 export default MapGridCanvas;
+
+function TerminalIcon({ className, style }: { className?: string; style?: React.CSSProperties }) {
+  return (
+    <svg
+      viewBox="0 0 14 14"
+      fill="none"
+      xmlns="http://www.w3.org/2000/svg"
+      className={className}
+      style={style}
+    >
+      <path
+        d="M10.7272 2.33331H3.27208C2.10812 2.33331 1.16455 3.27688 1.16455 4.44084V9.55912C1.16455 10.7231 2.10812 11.6666 3.27208 11.6666H10.7272C11.8911 11.6666 12.8347 10.7231 12.8347 9.55912V4.44084C12.8347 3.27688 11.8911 2.33331 10.7272 2.33331Z"
+        stroke="currentColor"
+        strokeWidth="1.2"
+        strokeLinecap="round"
+        strokeLinejoin="round"
+      />
+      <path
+        d="M3.79736 5.01288L5.78446 6.99998L3.79736 8.98707M7.44037 8.98707H10.0898"
+        stroke="currentColor"
+        strokeWidth="1.2"
+        strokeLinecap="round"
+        strokeLinejoin="round"
+      />
+    </svg>
+  );
+}
+
+function PreviewIcon({ className, style }: { className?: string; style?: React.CSSProperties }) {
+  return (
+    <svg
+      viewBox="0 0 14 14"
+      fill="none"
+      xmlns="http://www.w3.org/2000/svg"
+      className={className}
+      style={style}
+    >
+      <path
+        d="M4.21449 11.4349L10.8684 7.76319C11.4716 7.43033 11.4713 6.56324 10.8679 6.23073L4.21404 2.56418C3.63088 2.24284 2.91675 2.6647 2.91675 3.33053L2.91675 10.6688C2.91675 11.3348 3.63132 11.7567 4.21449 11.4349Z"
+        stroke="currentColor"
+        strokeWidth="1.2"
+        strokeLinecap="round"
+        strokeLinejoin="round"
+      />
+    </svg>
+  );
+}
