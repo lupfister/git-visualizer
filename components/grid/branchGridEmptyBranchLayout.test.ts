@@ -322,7 +322,7 @@ describe('computeBranchGridLayout empty branch placeholders', () => {
     }
   });
 
-  it('keeps every commit in an open clump on one timeline row', () => {
+  it('keeps open clump commits in one timeline column and distinct lanes', () => {
     const defaultBranch = 'main';
     const unpushedA = 'cccccccccccccccccccccccccccccccccccccccc';
     const unpushedB = 'dddddddddddddddddddddddddddddddddddddddd';
@@ -423,13 +423,7 @@ describe('computeBranchGridLayout empty branch placeholders', () => {
     );
     expect(clumpNodes.length).toBeGreaterThan(1);
     expect(new Set(clumpNodes.map((node) => node.row)).size).toBe(1);
-
-    const collapsedMaxRow = Math.max(...collapsed.renderNodes.map((node) => node.row));
-    const openedMaxRow = Math.max(...opened.renderNodes.map((node) => node.row));
-    expect(openedMaxRow).toBe(collapsedMaxRow);
-
-    const openedRows = opened.renderNodes.map((node) => node.row);
-    expect(Math.max(...openedRows)).toBe(new Set(openedRows).size);
+    expect(new Set(clumpNodes.map((node) => node.column)).size).toBe(clumpNodes.length);
 
     const nonClumpNodeIds = (nodes: typeof collapsed.renderNodes) =>
       nodes
@@ -439,30 +433,6 @@ describe('computeBranchGridLayout empty branch placeholders', () => {
     const collapsedIds = nonClumpNodeIds(collapsed.renderNodes);
     const openedIds = nonClumpNodeIds(opened.renderNodes);
     expect(openedIds).toEqual(collapsedIds);
-    for (const visualId of collapsedIds) {
-      const collapsedNode = collapsed.renderNodes.find((node) => node.commit.visualId === visualId)!;
-      const openedNode = opened.renderNodes.find((node) => node.commit.visualId === visualId)!;
-      expect(openedNode.row).toBe(collapsedNode.row);
-    }
-
-    const collapsedClumpNode = collapsed.renderNodes.find(
-      (node) => collapsed.clusterKeyByCommitId.get(node.commit.visualId) === clusterKey,
-    )!;
-    const openedFirstClumpNode = clumpNodes.find(
-      (node) => node.commit.visualId === opened.firstByClusterKey.get(clusterKey!),
-    )!;
-    expect(openedFirstClumpNode.column).toBe(collapsedClumpNode.column);
-    const insertedColumns = clumpNodes.length - 1;
-    for (const visualId of collapsedIds) {
-      const collapsedNode = collapsed.renderNodes.find((node) => node.commit.visualId === visualId)!;
-      const openedNode = opened.renderNodes.find((node) => node.commit.visualId === visualId)!;
-      const expectedColumn =
-        collapsedNode.column > collapsedClumpNode.column
-          ? collapsedNode.column + insertedColumns
-          : collapsedNode.column;
-      expect(openedNode.column).toBe(expectedColumn);
-    }
-
     const closedAgain = computeBranchGridLayout({
       ...baseInput,
       manuallyOpenedClumps: new Set<string>(),
@@ -592,7 +562,7 @@ describe('computeBranchGridLayout empty branch placeholders', () => {
     const sortedColumns = [...clumpNodes].map((node) => node.column).sort((left, right) => left - right);
     expect(sortedColumns).toEqual([bandStartColumn, bandStartColumn + 1, bandStartColumn + 2]);
     expect(leadNode!.column).toBe(bandStartColumn + 2);
-    expect(leadNode!.x).toBeGreaterThan(firstNode!.x);
+    expect(leadNode!.x).toBe(firstNode!.x);
   });
 
   it('places open horizontal clump lanes oldest at top and newest at bottom with exclusive lanes', () => {

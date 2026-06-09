@@ -133,6 +133,7 @@ function nodePositionOverridesEqual(left: NodePositionOverrides, right: NodePosi
 
 const NODE_POSITIONS_STORAGE_KEY_PREFIX = 'git-visualizer:node-positions:';
 const SEARCH_FOCUS_PAN_CLEAR_THRESHOLD_PX = 48;
+const EMPTY_SOLVED_POSITION_OVERRIDES: NodePositionOverrides = {};
 
 function normalizeRepoPathForNodePositions(path: string): string {
   if (path === '/') return path;
@@ -518,12 +519,12 @@ export default function BranchGridMap({
 
   const isHorizontalLayout = orientation === 'horizontal';
   const connectorsForView = useMemo(
-    () => connectorsWithEffectivePositions(connectors, renderNodes, dragPreviewByNodeId, nodePositionOverrides, isHorizontalLayout),
-    [connectors, renderNodes, dragPreviewByNodeId, nodePositionOverrides, isHorizontalLayout],
+    () => connectorsWithEffectivePositions(connectors, renderNodes, dragPreviewByNodeId, EMPTY_SOLVED_POSITION_OVERRIDES, isHorizontalLayout),
+    [connectors, renderNodes, dragPreviewByNodeId, isHorizontalLayout],
   );
   const mergeConnectorsForView = useMemo(
-    () => connectorsWithEffectivePositions(mergeConnectors, renderNodes, dragPreviewByNodeId, nodePositionOverrides, isHorizontalLayout),
-    [mergeConnectors, renderNodes, dragPreviewByNodeId, nodePositionOverrides, isHorizontalLayout],
+    () => connectorsWithEffectivePositions(mergeConnectors, renderNodes, dragPreviewByNodeId, EMPTY_SOLVED_POSITION_OVERRIDES, isHorizontalLayout),
+    [mergeConnectors, renderNodes, dragPreviewByNodeId, isHorizontalLayout],
   );
 
   const isGridSearchActive = Boolean(normalizedSearchQuery);
@@ -543,18 +544,12 @@ export default function BranchGridMap({
   );
   const snapNodePosition = useCallback(
     (x: number, y: number) => {
-      if (orientation !== 'horizontal') {
-        return {
-          x: LEFT_PADDING + Math.max(0, Math.round((x - LEFT_PADDING) / snapMetrics.lanePitch)) * snapMetrics.lanePitch,
-          y: TOP_PADDING + Math.max(0, Math.round((y - TOP_PADDING) / snapMetrics.timelinePitch)) * snapMetrics.timelinePitch,
-        };
-      }
       return {
         x: LEFT_PADDING + Math.max(0, Math.round((x - LEFT_PADDING) / snapMetrics.timelinePitch)) * snapMetrics.timelinePitch,
         y: TOP_PADDING + laneFromY(y) * snapMetrics.lanePitch,
       };
     },
-    [laneFromY, orientation, snapMetrics.lanePitch, snapMetrics.timelinePitch],
+    [laneFromY, snapMetrics.timelinePitch],
   );
   const avoidNodeCollisions = useCallback(
     (
@@ -599,7 +594,7 @@ export default function BranchGridMap({
           groupCandidates.some((other, otherIndex) => otherIndex > index && overlaps(candidate, other)),
         );
         if (!hitsOccupied && !hitsGroup) break;
-        offset += orientation === 'horizontal' ? snapMetrics.timelinePitch : snapMetrics.lanePitch;
+        offset += snapMetrics.timelinePitch;
       }
       if (offset === 0) return candidatePositions;
       const next = { ...candidatePositions };
@@ -610,7 +605,7 @@ export default function BranchGridMap({
       }
       return next;
     },
-    [orientation, snapMetrics.lanePitch, snapMetrics.timelinePitch],
+    [snapMetrics.timelinePitch],
   );
 
   const nodeByVisualId = useMemo(() => {
@@ -1580,6 +1575,55 @@ export default function BranchGridMap({
     setCheckoutPickerSelectedPath(null);
   }, [checkoutPickerSelectedPath, checkoutPickerTarget, onCommitClick]);
 
+  const clampDragOverridesToTopology = useCallback(
+    (
+      dragState: NonNullable<typeof dragNodeRef.current>,
+      candidatePositions: NodePositionOverrides,
+    ): NodePositionOverrides => {
+      const draggedIds = new Set(dragState.groupNodes.map((groupNode) => groupNode.nodeId));
+      const allConnectors = [...connectors, ...mergeConnectors];
+      const next = { ...candidatePositions };
+      for (const groupNode of dragState.groupNodes) {
+        const point = getNodePositionOverride(next, groupNode.commit);
+        if (!point) continue;
+        let minX = 0;
+        let minY = 0;
+        let maxX = Number.POSITIVE_INFINITY;
+        let maxY = Number.POSITIVE_INFINITY;
+        for (const connector of allConnectors) {
+          if (
+            connector.toCommitVisualId === groupNode.nodeId
+            && connector.fromCommitVisualId
+            && !draggedIds.has(connector.fromCommitVisualId)
+          ) {
+            const parent = nodeByVisualId.get(connector.fromCommitVisualId);
+            if (parent) {
+              minX = Math.max(minX, parent.x + snapMetrics.timelinePitch);
+              minY = Math.max(minY, parent.y + snapMetrics.lanePitch);
+            }
+          }
+          if (
+            connector.fromCommitVisualId === groupNode.nodeId
+            && connector.toCommitVisualId
+            && !draggedIds.has(connector.toCommitVisualId)
+          ) {
+            const child = nodeByVisualId.get(connector.toCommitVisualId);
+            if (child) {
+              maxX = Math.min(maxX, child.x - snapMetrics.timelinePitch);
+              maxY = Math.min(maxY, child.y - snapMetrics.lanePitch);
+            }
+          }
+        }
+        assignNodePositionOverride(next, groupNode.commit, {
+          x: Math.min(maxX, Math.max(minX, point.x)),
+          y: Math.min(maxY, Math.max(minY, point.y)),
+        });
+      }
+      return next;
+    },
+    [connectors, mergeConnectors, nodeByVisualId, snapMetrics.lanePitch, snapMetrics.timelinePitch],
+  );
+
   const buildSnappedDragOverrides = useCallback(
     (dragState: NonNullable<typeof dragNodeRef.current>) => {
       const snapped = snapNodePosition(dragState.pendingX, dragState.pendingY);
@@ -1597,9 +1641,9 @@ export default function BranchGridMap({
           y: groupNode.baseY + deltaY + snapDeltaY,
         });
       }
-      return avoidNodeCollisions(dragState, next);
+      return clampDragOverridesToTopology(dragState, avoidNodeCollisions(dragState, next));
     },
-    [avoidNodeCollisions, snapNodePosition],
+    [avoidNodeCollisions, clampDragOverridesToTopology, snapNodePosition],
   );
 
   const buildLiveDragPreviewOverrides = useCallback(
@@ -1613,9 +1657,9 @@ export default function BranchGridMap({
           y: groupNode.baseY + deltaY,
         });
       }
-      return next;
+      return clampDragOverridesToTopology(dragState, next);
     },
-    [],
+    [clampDragOverridesToTopology],
   );
 
   const flushDragPosition = useCallback(() => {
@@ -1719,7 +1763,7 @@ export default function BranchGridMap({
         startY: event.clientY,
         baseX,
         baseY,
-        sourceLane: orientation === 'horizontal' ? laneFromY(baseY) : node.column,
+        sourceLane: laneFromY(baseY),
         baseOverrides: nodePositionOverrides,
         baseNodes: renderNodes,
         groupNodes,
@@ -1728,7 +1772,7 @@ export default function BranchGridMap({
         pendingY: baseY,
       };
     },
-    [laneFromY, nodePositionOverrides, orientation, renderNodes, selectedVisibleCommitShas],
+    [laneFromY, nodePositionOverrides, renderNodes, selectedVisibleCommitShas],
   );
 
   const handleNodePointerMove = useCallback(
@@ -2193,7 +2237,7 @@ export default function BranchGridMap({
           previewedWorktreeNodeIds={previewedWorktreeNodeIds}
           orientation={orientation}
           dragPreviewByNodeId={dragPreviewByNodeId}
-          nodePositionOverrides={nodePositionOverrides}
+          nodePositionOverrides={EMPTY_SOLVED_POSITION_OVERRIDES}
           connectorPathCacheScopeBase={`${currentRepoPath ?? '__no-repo__'}::${orientation}`}
         />
       {blockMapDisplay ? <MapGridBlockingOverlay /> : null}

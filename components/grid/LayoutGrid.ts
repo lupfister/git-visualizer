@@ -354,5 +354,11 @@ export function lanesFromStoredColumns(
     });
   }
   if (!entries.some((lane) => lane.name === defaultBranch && lane.column === 0)) return null;
+  const columnByName = new Map(entries.map((lane) => [lane.name, lane.column] as const));
+  for (const lane of entries) {
+    if (!lane.parentName) continue;
+    const parentColumn = columnByName.get(lane.parentName);
+    if (parentColumn == null || lane.column <= parentColumn) return null;
+  }
   return entries.sort((a, b) => a.column - b.column || a.name.localeCompare(b.name));
 }

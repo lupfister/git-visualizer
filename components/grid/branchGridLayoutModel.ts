@@ -98,8 +98,6 @@ export type BaseLayoutModel = {
   clumpOwnerColumnByClusterKey: Map<string, number>;
   
   // Graph relations & helper maps
-  parentsMap: Map<string, VisualCommit[]>;
-  extraParentShasByCommitId: Map<string, Set<string>>;
   branchStartParentShaByName: Map<string, string>;
   branchBaseCommitByName: Map<string, CommitItem>;
   firstBranchCommitByName: Map<string, CommitItem>;
@@ -379,20 +377,6 @@ const syncClumpOwnerColumnsFromLeadNodes = (
     }
     const leadNode = memberNodes.find((node) => node.commit.visualId === leadVisualId);
     if (leadNode != null) clumpOwnerColumnByClusterKey.set(clusterKey, leadNode.column);
-  }
-};
-
-const syncRenderNodeRowCoordinate = (
-  node: Node,
-  isHorizontal: boolean,
-  maxResolvedRow: number,
-  timelineRowLeadOffset: number,
-  zoomAwareTimelinePitch: number,
-): void => {
-  if (isHorizontal) {
-    node.x = LEFT_PADDING + (timelineRowLeadOffset + node.row - 1) * zoomAwareTimelinePitch;
-  } else {
-    node.y = TOP_PADDING + (maxResolvedRow - node.row) * zoomAwareTimelinePitch;
   }
 };
 
@@ -1728,12 +1712,6 @@ export function computeBaseLayout(input: BranchGridLayoutInput): BaseLayoutModel
     commitBySha.set(commit.id, commit);
   }
 
-  const zoomAwareRowGapPreview = ROW_GAP / GRID_LAYOUT_RENDER_ZOOM;
-  const zoomAwareLabelBandPreview = 20 / GRID_LAYOUT_RENDER_ZOOM;
-  const previewTimelinePitch = isHorizontal
-    ? CARD_WIDTH + zoomAwareRowGapPreview + zoomAwareLabelBandPreview
-    : ROW_HEIGHT + zoomAwareRowGapPreview + zoomAwareLabelBandPreview;
-  const previewLanePitch = isHorizontal ? ROW_HEIGHT + zoomAwareRowGapPreview + zoomAwareLabelBandPreview : COLUMN_WIDTH;
   const maxPreviewRow = Math.max(0, ...allCommitsWithClusters.map((commit) => rowByVisualId.get(commit.visualId) ?? 1));
 
   const baseLayoutCommits = allCommits.filter((commit) => {
@@ -2285,8 +2263,6 @@ export function computeBaseLayout(input: BranchGridLayoutInput): BaseLayoutModel
     rowByVisualId: allRowByVisualId,
     columnByCommitVisualId,
     clumpOwnerColumnByClusterKey,
-    parentsMap,
-    extraParentShasByCommitId,
     branchStartParentShaByName,
     branchBaseCommitByName,
     firstBranchCommitByName,
@@ -2338,8 +2314,6 @@ export function projectVisibility(
     baseNodes,
     rowByVisualId: allRowByVisualId,
     clumpOwnerColumnByClusterKey,
-    parentsMap,
-    extraParentShasByCommitId,
     branchStartParentShaByName,
     branchBaseCommitByName,
     firstBranchCommitByName,
@@ -2562,48 +2536,296 @@ export function projectVisibility(
     clusterKeyByCommitId,
     clusterCounts,
   );
+  const projectedNodeForSha = (sha: string, preferredBranchName: string): Node | null =>
+    renderNodes.find((node) => node.commit.branchName === preferredBranchName && shasMatch(node.commit.id, sha))
+    ?? renderNodes.find((node) => shasMatch(node.commit.id, sha))
+    ?? null;
+  for (let pass = 0; pass < renderNodes.length; pass += 1) {
+    let changed = false;
+    for (const node of renderNodes) {
+      const nodeClusterKey = clusterKeyByCommitId.get(node.commit.visualId);
+      const parentShas = new Set([
+        actualWorktreeParentSha(node.commit),
+        ...(node.commit.parentShas ?? []),
+      ].filter((sha): sha is string => !!sha));
+      let requiredColumn = node.column;
+      for (const parentSha of parentShas) {
+        const parentNode = projectedNodeForSha(parentSha, node.commit.branchName);
+        if (!parentNode) continue;
+        const parentClusterKey = clusterKeyByCommitId.get(parentNode.commit.visualId);
+        if (nodeClusterKey && nodeClusterKey === parentClusterKey) continue;
+        requiredColumn = Math.max(requiredColumn, parentNode.column + 1);
+      }
+      if (requiredColumn <= node.column) continue;
+      node.column = requiredColumn;
+      columnByCommitVisualId.set(node.commit.visualId, requiredColumn);
+      changed = true;
+    }
+    if (!changed) break;
+  }
+  for (let pass = 0; pass < branches.length; pass += 1) {
+    let changed = false;
+    for (const branch of branches) {
+      if (branch.name === defaultBranch) continue;
+      const branchBaseCommit = branchBaseCommitByName.get(branch.name);
+      if (!branchBaseCommit) continue;
+      const receivingCommit = branchReceivingCommitByName.get(branch.name) ?? branchBaseCommit;
+      const parentSha = receivingCommit.parentSha ?? branchStartParentShaByName.get(branch.name) ?? null;
+      if (!parentSha) continue;
+      const parentBranchName = resolveBranchStartParentName(branch);
+      const parentNode = projectedNodeForSha(parentSha, parentBranchName);
+      const childNode = projectedNodeForSha(receivingCommit.id, branch.name);
+      if (!parentNode || !childNode || parentNode.commit.visualId === childNode.commit.visualId) continue;
+      const requiredRow = parentNode.row + 1;
+      if (childNode.row >= requiredRow) continue;
+      childNode.row = requiredRow;
+      changed = true;
+    }
+    if (!changed) break;
+  }
+
+  type CanonicalEdge = { parent: Node; child: Node; sharesTimelineColumn: boolean };
+  const canonicalEdges: CanonicalEdge[] = [];
+  const canonicalEdgeKeys = new Set<string>();
+  const canonicalChildrenByVisualId = new Map<string, Set<string>>();
+  const addCanonicalEdge = (parent: Node | null, child: Node | null): void => {
+    if (!parent || !child || parent.commit.visualId === child.commit.visualId) return;
+    const key = `${parent.commit.visualId}->${child.commit.visualId}`;
+    if (canonicalEdgeKeys.has(key)) return;
+    const reaches = (fromVisualId: string, targetVisualId: string, seen = new Set<string>()): boolean => {
+      if (fromVisualId === targetVisualId) return true;
+      if (seen.has(fromVisualId)) return false;
+      seen.add(fromVisualId);
+      for (const nextVisualId of canonicalChildrenByVisualId.get(fromVisualId) ?? []) {
+        if (reaches(nextVisualId, targetVisualId, seen)) return true;
+      }
+      return false;
+    };
+    if (reaches(child.commit.visualId, parent.commit.visualId)) return;
+    canonicalEdgeKeys.add(key);
+    const parentClusterKey = clusterKeyByCommitId.get(parent.commit.visualId);
+    const childClusterKey = clusterKeyByCommitId.get(child.commit.visualId);
+    canonicalEdges.push({
+      parent,
+      child,
+      sharesTimelineColumn:
+        !!parentClusterKey
+        && parentClusterKey === childClusterKey
+        && isClumpOpen(parentClusterKey)
+        && !isWorktreeGraphNode(parent.commit)
+        && !isWorktreeGraphNode(child.commit)
+        && parent.commit.kind !== 'stash'
+        && child.commit.kind !== 'stash'
+        && parent.commit.kind !== 'branch-created'
+        && child.commit.kind !== 'branch-created',
+    });
+    const children = canonicalChildrenByVisualId.get(parent.commit.visualId) ?? new Set<string>();
+    children.add(child.commit.visualId);
+    canonicalChildrenByVisualId.set(parent.commit.visualId, children);
+  };
+  const collapsedClumpExternalParents = (clusterKey: string): VisualCommit[] => {
+    const firstVisualId = firstByClusterKey.get(clusterKey);
+    const firstMember = firstVisualId
+      ? allCommits.find((commit) => commit.visualId === firstVisualId)
+      : null;
+    if (!firstMember) return [];
+    const parents: VisualCommit[] = [];
+    const addParent = (parent: VisualCommit | null) => {
+      if (
+        parent
+        && clusterKeyByCommitId.get(parent.visualId) !== clusterKey
+        && !parents.some((candidate) => candidate.visualId === parent.visualId)
+      ) {
+        parents.push(parent);
+      }
+    };
+    for (const parent of gitParentsForCommit(firstMember)) addParent(parent);
+    const parentSha = actualWorktreeParentSha(firstMember);
+    if (parentSha) {
+      const parentNode = projectedNodeForSha(parentSha, firstMember.branchName);
+      addParent(parentNode?.commit ?? null);
+    }
+    return parents;
+  };
+
+  for (const child of renderNodes) {
+    const childClusterKey = clusterKeyByCommitId.get(child.commit.visualId);
+    const childIsCollapsedClump =
+      !!childClusterKey
+      && (clusterCounts.get(childClusterKey) ?? 1) > 1
+      && !isClumpOpen(childClusterKey);
+    const canonicalParents = childIsCollapsedClump
+      ? collapsedClumpExternalParents(childClusterKey)
+      : gitParentsForCommit(child.commit);
+    for (const parent of canonicalParents) {
+      addCanonicalEdge(
+        projectedNodeForSha(parent.id, parent.branchName),
+        child,
+      );
+    }
+    const parentSha = childIsCollapsedClump ? null : actualWorktreeParentSha(child.commit);
+    if (parentSha) addCanonicalEdge(projectedNodeForSha(parentSha, child.commit.branchName), child);
+  }
+  for (const branch of branches) {
+    if (branch.name === defaultBranch) continue;
+    const branchBaseCommit = branchBaseCommitByName.get(branch.name);
+    if (!branchBaseCommit) continue;
+    const receivingCommit = branchReceivingCommitByName.get(branch.name) ?? branchBaseCommit;
+    const parentSha = receivingCommit.parentSha ?? branchStartParentShaByName.get(branch.name) ?? null;
+    if (!parentSha) continue;
+    addCanonicalEdge(
+      projectedNodeForSha(parentSha, resolveBranchStartParentName(branch)),
+      projectedNodeForSha(receivingCommit.id, branch.name),
+    );
+  }
+  for (const destination of mergeDestinations) {
+    addCanonicalEdge(
+      projectedNodeForSha(destination.sourceCommitSha, destination.sourceBranchName),
+      projectedNodeForSha(destination.targetCommitSha, destination.targetBranchName),
+    );
+  }
+  const visibleByBranch = new Map<string, Node[]>();
+  for (const node of renderNodes) {
+    const list = visibleByBranch.get(node.commit.branchName) ?? [];
+    list.push(node);
+    visibleByBranch.set(node.commit.branchName, list);
+  }
+  for (const branchNodes of visibleByBranch.values()) {
+    const chainNodes = branchNodes.filter((node) => !isWorktreeGraphNode(node.commit));
+    chainNodes.sort(
+      (left, right) =>
+        safeTimeMs(left.commit.date) - safeTimeMs(right.commit.date)
+        || left.commit.id.localeCompare(right.commit.id),
+    );
+    for (let index = 1; index < chainNodes.length; index += 1) {
+      addCanonicalEdge(chainNodes[index - 1]!, chainNodes[index]!);
+    }
+  }
+  for (const child of renderNodes) {
+    if (!isWorktreeGraphNode(child.commit)) continue;
+    const visibleParent = [...(visibleByBranch.get(child.commit.branchName) ?? [])]
+      .filter((candidate) => !isWorktreeGraphNode(candidate.commit) && candidate.commit.visualId !== child.commit.visualId)
+      .sort(
+        (left, right) =>
+          safeTimeMs(right.commit.date) - safeTimeMs(left.commit.date)
+          || right.commit.visualId.localeCompare(left.commit.visualId),
+      )[0] ?? null;
+    addCanonicalEdge(visibleParent, child);
+  }
+
+  const incomingByVisualId = new Map<string, CanonicalEdge[]>();
+  const childrenByVisualId = new Map<string, Node[]>();
+  for (const edge of canonicalEdges) {
+    const incoming = incomingByVisualId.get(edge.child.commit.visualId) ?? [];
+    incoming.push(edge);
+    incomingByVisualId.set(edge.child.commit.visualId, incoming);
+    const children = childrenByVisualId.get(edge.parent.commit.visualId) ?? [];
+    if (!children.some((child) => child.commit.visualId === edge.child.commit.visualId)) children.push(edge.child);
+    childrenByVisualId.set(edge.parent.commit.visualId, children);
+  }
+  const canonicalOrder = [...renderNodes].sort(
+    (left, right) =>
+      safeTimeMs(left.commit.date) - safeTimeMs(right.commit.date)
+      || left.commit.visualId.localeCompare(right.commit.visualId),
+  );
+  for (let pass = 0; pass < renderNodes.length * 2; pass += 1) {
+    let changed = false;
+    for (const node of canonicalOrder) {
+      const incoming = incomingByVisualId.get(node.commit.visualId) ?? [];
+      if (incoming.length === 0) continue;
+      const requiredRow = Math.max(
+        ...incoming.map((edge) => edge.parent.row + (edge.sharesTimelineColumn ? 0 : 1)),
+      );
+      const requiredColumn = Math.max(...incoming.map((edge) => edge.parent.column + 1));
+      if (node.row < requiredRow) {
+        node.row = requiredRow;
+        changed = true;
+      }
+      if (node.column < requiredColumn) {
+        node.column = requiredColumn;
+        changed = true;
+      }
+    }
+    for (const children of childrenByVisualId.values()) {
+      children.sort(
+        (left, right) =>
+          left.column - right.column
+          || safeTimeMs(left.commit.date) - safeTimeMs(right.commit.date)
+          || left.commit.visualId.localeCompare(right.commit.visualId),
+      );
+      const used = new Set<number>();
+      for (const child of children) {
+        while (used.has(child.column)) {
+          child.column += 1;
+          changed = true;
+        }
+        used.add(child.column);
+      }
+    }
+    const occupied = new Set<string>();
+    for (const node of canonicalOrder) {
+      while (occupied.has(`${node.row}:${node.column}`)) {
+        node.column += 1;
+        changed = true;
+      }
+      occupied.add(`${node.row}:${node.column}`);
+    }
+    if (!changed) break;
+  }
+  for (const [clusterKey, count] of clusterCounts) {
+    if (count <= 1 || !isClumpOpen(clusterKey)) continue;
+    const memberNodes = renderNodes.filter(
+      (node) =>
+        clusterKeyByCommitId.get(node.commit.visualId) === clusterKey
+        && !isWorktreeGraphNode(node.commit)
+        && node.commit.kind !== 'stash'
+        && node.commit.kind !== 'branch-created',
+    );
+    if (memberNodes.length <= 1) continue;
+    const sharedRow = Math.max(...memberNodes.map((node) => node.row));
+    for (const node of memberNodes) node.row = sharedRow;
+  }
+  for (let pass = 0; pass < renderNodes.length; pass += 1) {
+    let changed = false;
+    for (const node of canonicalOrder) {
+      const incoming = incomingByVisualId.get(node.commit.visualId) ?? [];
+      if (incoming.length === 0) continue;
+      const requiredRow = Math.max(
+        ...incoming.map((edge) => edge.parent.row + (edge.sharesTimelineColumn ? 0 : 1)),
+      );
+      const requiredColumn = Math.max(...incoming.map((edge) => edge.parent.column + 1));
+      if (node.row < requiredRow) {
+        node.row = requiredRow;
+        changed = true;
+      }
+      if (node.column < requiredColumn) {
+        node.column = requiredColumn;
+        changed = true;
+      }
+    }
+    if (!changed) break;
+  }
+  const minSolvedRow = Math.min(...renderNodes.map((node) => node.row));
+  const minSolvedColumn = Math.min(...renderNodes.map((node) => node.column));
+  for (const node of renderNodes) {
+    node.row -= minSolvedRow;
+    node.column -= minSolvedColumn;
+  }
+  for (const node of renderNodes) {
+    columnByCommitVisualId.set(node.commit.visualId, node.column);
+  }
 
   // Re-sync final visual node coordinates
   let maxResolvedRow = Math.max(0, ...renderNodes.map((node) => node.row));
   const timelineRowLeadOffset = 0;
   
-  const belongsToOpenClumpOverrideAnchor = (commit: VisualCommit): boolean => {
-    const clusterKey = clusterKeyByCommitId.get(commit.visualId);
-    return !!clusterKey && openClumpOverrideAnchorByKey.has(clusterKey);
-  };
-  const hasOverride = (commit: VisualCommit) =>
-    !!getNodePositionOverride(nodePositionOverrides, commit) && !belongsToOpenClumpOverrideAnchor(commit);
-
   for (const node of renderNodes) {
-    if (hasOverride(node.commit)) continue;
     if (isHorizontal) {
       node.x = LEFT_PADDING + (timelineRowLeadOffset + node.row - 1) * zoomAwareTimelinePitch;
       node.y = TOP_PADDING + node.column * zoomAwareLanePitch;
     } else {
       node.x = LEFT_PADDING + node.column * COLUMN_WIDTH;
       node.y = TOP_PADDING + (maxResolvedRow - node.row) * zoomAwareTimelinePitch;
-    }
-  }
-
-  // Sync clump coordinates to render nodes
-  syncClumpCoordinatesToRenderNodes(
-    renderNodes,
-    clusterKeyByCommitId,
-    clusterCounts,
-    columnByCommitVisualId,
-    isHorizontal,
-    maxResolvedRow,
-    zoomAwareTimelinePitch,
-    zoomAwareLanePitch,
-  );
-
-  // Apply overrides for overridden nodes
-  for (const node of renderNodes) {
-    if (belongsToOpenClumpOverrideAnchor(node.commit)) continue;
-    const override = getNodePositionOverride(nodePositionOverrides, node.commit);
-    if (override) {
-      node.x = override.x;
-      node.y = override.y;
     }
   }
 
@@ -3262,7 +3484,7 @@ export function projectVisibility(
   };
 }
 
-// Struct-level cache keyed by graph fingerprint, orientation, and overrides
+// Struct-level cache keyed by graph fingerprint and requested grid positions.
 const baseLayoutCache = new Map<string, BaseLayoutModel>();
 const MAX_CACHE_SIZE = 5;
 
@@ -3270,7 +3492,7 @@ const getBaseLayoutCacheKey = (input: BranchGridLayoutInput): string => {
   const overridesKey = input.nodePositionOverrides ? JSON.stringify(input.nodePositionOverrides) : '';
   const graphKey = input.graphLayoutSignature ?? '';
   const fallbackKey = generateFallbackGraphSignature(input);
-  return `${graphKey}::${fallbackKey}::${input.orientation ?? 'horizontal'}::${overridesKey}`;
+  return `${graphKey}::${fallbackKey}::horizontal::${overridesKey}`;
 };
 
 const generateFallbackGraphSignature = (input: BranchGridLayoutInput): string => {

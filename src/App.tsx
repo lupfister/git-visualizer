@@ -118,7 +118,7 @@ const SIDEBAR_WIDTH_STORAGE_KEY = 'git-visualizer:sidebar-width';
 const SIDEBAR_COLLAPSED_STORAGE_KEY = 'git-visualizer:sidebar-collapsed';
 const TERMINAL_PANEL_PLACEMENT_STORAGE_KEY = 'git-visualizer:terminal-panel-placement';
 const GRID_CLUMPS_STORAGE_KEY = 'git-visualizer:grid-clumps';
-const NODE_POSITIONS_STORAGE_KEY_PREFIX = 'git-visualizer:node-positions:';
+const NODE_POSITIONS_STORAGE_KEY_PREFIX = 'git-visualizer:node-positions:v2:';
 const SIDEBAR_DEFAULT_WIDTH_PX = 360;
 const SIDEBAR_MIN_WIDTH_PX = 180;
 const SIDEBAR_MAX_WIDTH_PX = 360;
@@ -245,7 +245,7 @@ function nodePositionsStorageKey(repoPath: string): string {
 
 function makeLayoutCacheKey(
   path: string,
-  orientation: 'horizontal',
+  _orientation: 'horizontal',
   manuallyOpenedClumps: Set<string>,
   manuallyClosedClumps: Set<string>,
   graphSignature = '',
@@ -253,7 +253,7 @@ function makeLayoutCacheKey(
   return [
     'layout-v10-final-clump-expansion',
     path,
-    orientation,
+    'horizontal',
     setSignature(manuallyOpenedClumps),
     setSignature(manuallyClosedClumps),
     graphSignature,
