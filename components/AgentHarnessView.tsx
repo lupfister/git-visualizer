@@ -73,6 +73,60 @@ export default function AgentHarnessView({
     }
   };
 
+  const hasNoSuccessfulOutput = isTerminated && (
+    blocks.length <= 1 && (
+      output.toLowerCase().includes('not found') || 
+      output.toLowerCase().includes('no such file') ||
+      output.trim().length < 50
+    )
+  );
+
+  const renderExitedHelp = () => {
+    let installCommand = '';
+    let url = '';
+    if (agentType === 'claude') {
+      installCommand = 'npm install -g @anthropic-ai/claude-code';
+      url = 'https://claudecode.com';
+    } else if (agentType === 'aider') {
+      installCommand = 'pip install aider-chat';
+      url = 'https://aider.chat';
+    } else if (agentType === 'opencode') {
+      installCommand = 'npm install -g opencode-cli';
+      url = 'https://github.com/opencode-cli';
+    }
+
+    return (
+      <div className="h-full flex items-center justify-center p-4">
+        <div className="rounded-xl border border-red-500/20 bg-red-50 dark:bg-red-900/10 p-5 max-w-sm space-y-4 shadow-sm">
+          <div className="flex items-start gap-3">
+            <ShieldAlert className="h-5 w-5 text-red-600 dark:text-red-400 shrink-0 mt-0.5" />
+            <div className="space-y-1">
+              <p className="text-sm font-semibold text-foreground">Agent exited unexpectedly</p>
+              <p className="text-xs text-muted-foreground">
+                This usually means the CLI tool <strong>{agentLabel()}</strong> is not installed in your shell PATH or failed to start.
+              </p>
+            </div>
+          </div>
+          {installCommand && (
+            <div className="bg-muted/50 rounded-lg p-2.5 font-mono text-[11px] border border-border/50 select-all">
+              {installCommand}
+            </div>
+          )}
+          <div className="flex items-center gap-4 text-[10px] uppercase tracking-wide font-semibold">
+            {url && (
+              <a href={url} target="_blank" rel="noreferrer" className="text-primary hover:underline">
+                Documentation
+              </a>
+            )}
+            <button type="button" onClick={onToggleRaw} className="text-muted-foreground hover:text-foreground transition-colors">
+              View Raw Console Logs
+            </button>
+          </div>
+        </div>
+      </div>
+    );
+  };
+
   return (
     <div className="flex h-full min-h-0 flex-col bg-background">
       {/* Thread Content Area */}
@@ -80,7 +134,9 @@ export default function AgentHarnessView({
         ref={scrollRef}
         className="min-h-0 flex-1 overflow-y-auto px-4 py-3 space-y-4"
       >
-        {blocks.length === 0 ? (
+        {hasNoSuccessfulOutput ? (
+          renderExitedHelp()
+        ) : blocks.length === 0 ? (
           <div className="h-full bg-muted/30 shadow-inner rounded-xl flex items-center justify-center p-6">
             <div className="text-center space-y-2 max-w-xs">
               <Sparkles className="h-8 w-8 text-muted-foreground mx-auto shrink-0 animate-pulse" />

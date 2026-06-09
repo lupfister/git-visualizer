@@ -116,19 +116,23 @@ export default function DenseBranchSidebar({
   const [expandedWorktrees, setExpandedWorktrees] = useState<Set<string>>(() => loadSet(EXPANDED_WORKTREES_KEY));
   const [expandedProjects, setExpandedProjects] = useState<Set<string>>(() => loadSet(EXPANDED_PROJECTS_KEY));
   const [openProjectMenu, setOpenProjectMenu] = useState<string | null>(null);
+  const [openAgentMenu, setOpenAgentMenu] = useState<string | null>(null);
   const menuRef = useRef<HTMLDivElement | null>(null);
+  const agentMenuRef = useRef<HTMLDivElement | null>(null);
 
   useEffect(() => {
-    if (!openProjectMenu) return;
+    if (!openProjectMenu && !openAgentMenu) return;
     const handlePointerDown = (event: PointerEvent) => {
       const target = event.target as Node | null;
       if (!target) return;
       if (menuRef.current?.contains(target)) return;
+      if (agentMenuRef.current?.contains(target)) return;
       setOpenProjectMenu(null);
+      setOpenAgentMenu(null);
     };
     window.addEventListener('pointerdown', handlePointerDown);
     return () => window.removeEventListener('pointerdown', handlePointerDown);
-  }, [openProjectMenu]);
+  }, [openProjectMenu, openAgentMenu]);
 
   useEffect(() => {
     if (!activeProjectPath) return;
@@ -334,24 +338,75 @@ export default function DenseBranchSidebar({
                         </button>
                       );
                       const agentButton = (
-                        <button
-                          type="button"
-                          disabled={!worktree.pathExists}
-                          onClick={(event) => {
-                            event.stopPropagation();
-                            void (async () => {
-                              if (onCreateAgent) {
-                                await onCreateAgent(project.path, worktree.path, 'claude');
-                                expandWorktree(key);
-                              }
-                            })();
-                          }}
-                          className="inline-flex h-7 w-7 shrink-0 items-center justify-center rounded-lg transition-colors hover:bg-muted disabled:cursor-not-allowed disabled:opacity-30 text-muted-foreground hover:text-foreground"
-                          aria-label={`Spawn AI Agent in ${label}`}
-                          title="Spawn AI Agent"
-                        >
-                          <Sparkles className="h-3.5 w-3.5 shrink-0" />
-                        </button>
+                        <div className="relative">
+                          <button
+                            type="button"
+                            disabled={!worktree.pathExists}
+                            onClick={(event) => {
+                              event.stopPropagation();
+                              setOpenAgentMenu((current) => current === key ? null : key);
+                            }}
+                            className={cn(
+                              "inline-flex h-7 w-7 shrink-0 items-center justify-center rounded-lg transition-colors disabled:cursor-not-allowed disabled:opacity-30",
+                              openAgentMenu === key 
+                                ? "bg-primary/10 text-primary border border-primary/20" 
+                                : "text-muted-foreground hover:bg-muted hover:text-foreground"
+                            )}
+                            aria-label={`Spawn AI Agent in ${label}`}
+                            title="Spawn AI Agent"
+                          >
+                            <Sparkles className="h-3.5 w-3.5 shrink-0" />
+                          </button>
+                          {openAgentMenu === key ? (
+                            <div 
+                              ref={agentMenuRef} 
+                              className="absolute right-0 top-8 z-50 w-32 rounded-lg border border-border bg-card p-1 shadow-lg text-foreground"
+                            >
+                              <button
+                                type="button"
+                                onClick={(event) => {
+                                  event.stopPropagation();
+                                  setOpenAgentMenu(null);
+                                  if (onCreateAgent) {
+                                    void onCreateAgent(project.path, worktree.path, 'claude');
+                                    expandWorktree(key);
+                                  }
+                                }}
+                                className="w-full rounded-lg px-2 py-1 text-left text-xs font-medium hover:bg-muted transition-colors"
+                              >
+                                Claude Code
+                              </button>
+                              <button
+                                type="button"
+                                onClick={(event) => {
+                                  event.stopPropagation();
+                                  setOpenAgentMenu(null);
+                                  if (onCreateAgent) {
+                                    void onCreateAgent(project.path, worktree.path, 'aider');
+                                    expandWorktree(key);
+                                  }
+                                }}
+                                className="w-full rounded-lg px-2 py-1 text-left text-xs font-medium hover:bg-muted transition-colors"
+                              >
+                                Aider
+                              </button>
+                              <button
+                                type="button"
+                                onClick={(event) => {
+                                  event.stopPropagation();
+                                  setOpenAgentMenu(null);
+                                  if (onCreateAgent) {
+                                    void onCreateAgent(project.path, worktree.path, 'opencode');
+                                    expandWorktree(key);
+                                  }
+                                }}
+                                className="w-full rounded-lg px-2 py-1 text-left text-xs font-medium hover:bg-muted transition-colors"
+                              >
+                                OpenCode
+                              </button>
+                            </div>
+                          ) : null}
+                        </div>
                       );
                       return (
                         <div key={worktree.path}>
