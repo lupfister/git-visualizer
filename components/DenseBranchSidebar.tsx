@@ -47,7 +47,7 @@ type Props = {
   onResetProjectNodePositions?: (path: string) => void;
   onSelectWorktree: (projectPath: string, workingTreeId: string) => void | Promise<void>;
   onCreateTerminal: (projectPath: string, worktreePath: string) => void | Promise<void>;
-  onCreateAgent?: (projectPath: string, worktreePath: string, agentType: 'claude' | 'aider' | 'opencode') => void | Promise<void>;
+  onCreateAgent?: (projectPath: string, worktreePath: string, agentType: 'claude' | 'aider' | 'opencode' | 'codex' | 'antigravity' | 'cursor') => void | Promise<void>;
   onSelectTerminal: (session: TerminalSession) => void;
   onTerminateTerminal?: (id: string) => void | Promise<void>;
   projectLoading?: boolean;
@@ -403,6 +403,48 @@ export default function DenseBranchSidebar({
                                 className="w-full rounded-lg px-2 py-1 text-left text-xs font-medium hover:bg-muted transition-colors"
                               >
                                 OpenCode
+                              </button>
+                              <button
+                                type="button"
+                                onClick={(event) => {
+                                  event.stopPropagation();
+                                  setOpenAgentMenu(null);
+                                  if (onCreateAgent) {
+                                    void onCreateAgent(project.path, worktree.path, 'codex');
+                                    expandWorktree(key);
+                                  }
+                                }}
+                                className="w-full rounded-lg px-2 py-1 text-left text-xs font-medium hover:bg-muted transition-colors"
+                              >
+                                Codex
+                              </button>
+                              <button
+                                type="button"
+                                onClick={(event) => {
+                                  event.stopPropagation();
+                                  setOpenAgentMenu(null);
+                                  if (onCreateAgent) {
+                                    void onCreateAgent(project.path, worktree.path, 'antigravity');
+                                    expandWorktree(key);
+                                  }
+                                }}
+                                className="w-full rounded-lg px-2 py-1 text-left text-xs font-medium hover:bg-muted transition-colors"
+                              >
+                                Antigravity
+                              </button>
+                              <button
+                                type="button"
+                                onClick={(event) => {
+                                  event.stopPropagation();
+                                  setOpenAgentMenu(null);
+                                  if (onCreateAgent) {
+                                    void onCreateAgent(project.path, worktree.path, 'cursor');
+                                    expandWorktree(key);
+                                  }
+                                }}
+                                className="w-full rounded-lg px-2 py-1 text-left text-xs font-medium hover:bg-muted transition-colors"
+                              >
+                                Cursor CLI
                               </button>
                             </div>
                           ) : null}

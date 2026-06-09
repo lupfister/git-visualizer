@@ -6776,69 +6776,88 @@ function App() {
   }, [checkedOutRef, repoPath, terminalSessions, worktrees]);
 
   const handleCreateTerminal = useCallback(async (projectPath: string, worktreePath: string) => {
-    const number = terminalSessions.filter((session) => sameRepoPath(session.worktreePath, worktreePath) && session.kind === 'shell').length + 1;
-    const session = await createTerminalSession({
-      projectPath,
-      worktreePath,
-      kind: 'shell',
-      label: `Terminal ${number}`,
-      command: '',
-      cols: 100,
-      rows: 30,
-      targetId: null,
-      targetKind: null,
-      previewUrl: null,
-      previewAppName: null,
-    });
-    setTerminalSessions((current) => [...current, session]);
-    setActiveTerminalId(session.id);
-    const focusId = resolveTerminalSessionFocusId(session);
-    if (focusId) {
-      focusMapOnNode(projectPath, focusId);
+    try {
+      const number = terminalSessions.filter((session) => sameRepoPath(session.worktreePath, worktreePath) && session.kind === 'shell').length + 1;
+      const session = await createTerminalSession({
+        projectPath,
+        worktreePath,
+        kind: 'shell',
+        label: `Terminal ${number}`,
+        command: '',
+        cols: 100,
+        rows: 30,
+        targetId: null,
+        targetKind: null,
+        previewUrl: null,
+        previewAppName: null,
+      });
+      setTerminalSessions((current) => [...current, session]);
+      setActiveTerminalId(session.id);
+      const focusId = resolveTerminalSessionFocusId(session);
+      if (focusId) {
+        focusMapOnNode(projectPath, focusId);
+      }
+    } catch (error) {
+      console.error('Failed to create terminal session:', error);
+      alert(`Failed to create terminal session: ${error instanceof Error ? error.message : String(error)}`);
     }
   }, [focusMapOnNode, terminalSessions]);
 
   const handleCreateAgent = useCallback(async (
     projectPath: string,
     worktreePath: string,
-    agentType: 'claude' | 'aider' | 'opencode'
+    agentType: 'claude' | 'aider' | 'opencode' | 'codex' | 'antigravity' | 'cursor'
   ) => {
-    const number = terminalSessions.filter((session) =>
-      sameRepoPath(session.worktreePath, worktreePath) &&
-      session.kind === 'agent' &&
-      session.agentType === agentType
-    ).length + 1;
+    try {
+      const number = terminalSessions.filter((session) =>
+        sameRepoPath(session.worktreePath, worktreePath) &&
+        session.kind === 'agent' &&
+        session.agentType === agentType
+      ).length + 1;
 
-    let defaultCommand = 'claude';
-    let label = `Claude Agent ${number}`;
-    if (agentType === 'aider') {
-      defaultCommand = 'aider';
-      label = `Aider Agent ${number}`;
-    } else if (agentType === 'opencode') {
-      defaultCommand = 'opencode';
-      label = `OpenCode Agent ${number}`;
-    }
+      let defaultCommand = 'claude';
+      let label = `Claude Agent ${number}`;
+      if (agentType === 'aider') {
+        defaultCommand = 'aider';
+        label = `Aider Agent ${number}`;
+      } else if (agentType === 'opencode') {
+        defaultCommand = 'opencode';
+        label = `OpenCode Agent ${number}`;
+      } else if (agentType === 'codex') {
+        defaultCommand = 'codex';
+        label = `Codex Agent ${number}`;
+      } else if (agentType === 'antigravity') {
+        defaultCommand = 'agy';
+        label = `Antigravity Agent ${number}`;
+      } else if (agentType === 'cursor') {
+        defaultCommand = 'cursor-agent';
+        label = `Cursor Agent ${number}`;
+      }
 
-    const session = await createTerminalSession({
-      projectPath,
-      worktreePath,
-      kind: 'agent',
-      label,
-      command: defaultCommand,
-      cols: 100,
-      rows: 30,
-      targetId: null,
-      targetKind: null,
-      previewUrl: null,
-      previewAppName: null,
-      agentType,
-      activeApprovalId: null,
-    });
-    setTerminalSessions((current) => [...current, session]);
-    setActiveTerminalId(session.id);
-    const focusId = resolveTerminalSessionFocusId(session);
-    if (focusId) {
-      focusMapOnNode(projectPath, focusId);
+      const session = await createTerminalSession({
+        projectPath,
+        worktreePath,
+        kind: 'agent',
+        label,
+        command: defaultCommand,
+        cols: 100,
+        rows: 30,
+        targetId: null,
+        targetKind: null,
+        previewUrl: null,
+        previewAppName: null,
+        agentType,
+        activeApprovalId: null,
+      });
+      setTerminalSessions((current) => [...current, session]);
+      setActiveTerminalId(session.id);
+      const focusId = resolveTerminalSessionFocusId(session);
+      if (focusId) {
+        focusMapOnNode(projectPath, focusId);
+      }
+    } catch (error) {
+      console.error('Failed to create agent session:', error);
+      alert(`Failed to create agent session: ${error instanceof Error ? error.message : String(error)}`);
     }
   }, [focusMapOnNode, terminalSessions]);
 

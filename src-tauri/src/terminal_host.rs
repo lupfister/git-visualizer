@@ -257,9 +257,9 @@ fn spawn_session(
 
     let mut command = CommandBuilder::new("zsh");
     if metadata.command.trim().is_empty() {
-        command.arg("-l");
+        command.args(["-li"]);
     } else {
-        command.args(["-lc", &metadata.command]);
+        command.args(["-lic", &metadata.command]);
     }
     command.cwd(&metadata.worktree_path);
     command.env("TERM", "xterm-256color");
@@ -846,7 +846,7 @@ fn augment_path_for_subprocess(command: &mut Command) {
     if std::env::var_os("PATH").is_some() {
         return;
     }
-    if let Ok(output) = Command::new("zsh").args(["-lc", "echo -n $PATH"]).output() {
+    if let Ok(output) = Command::new("zsh").args(["-lic", "echo -n $PATH"]).output() {
         if output.status.success() {
             command.env(
                 "PATH",
@@ -1014,6 +1014,8 @@ mod tests {
                 ai_label_at: None,
                 output_active: false,
                 has_recognized_output: false,
+                agent_type: None,
+                active_approval_id: None,
             },
             &sessions,
         )
@@ -1097,6 +1099,8 @@ mod tests {
             ai_label_at: Some(1),
             output_active: false,
             has_recognized_output: false,
+            agent_type: None,
+            active_approval_id: None,
         };
         let merged = merge_display_label(
             &metadata,
@@ -1155,6 +1159,8 @@ mod tests {
             ai_label_at: Some(1),
             output_active: false,
             has_recognized_output: false,
+            agent_type: None,
+            active_approval_id: None,
         };
         let merged = merge_display_label(
             &metadata,

@@ -8,7 +8,7 @@ interface Props {
   output: string;
   onWrite: (data: string) => Promise<void>;
   status: 'running' | 'exited';
-  agentType?: 'claude' | 'aider' | 'opencode' | 'shell' | null;
+  agentType?: 'claude' | 'aider' | 'opencode' | 'codex' | 'antigravity' | 'cursor' | 'shell' | null;
   onToggleRaw: () => void;
 }
 
@@ -29,6 +29,33 @@ export default function AgentHarnessView({
 
   // Check if last block is an approval request
   const activeApproval = blocks.find((block) => block.type === 'approval_request');
+
+  const renderFormattedContent = (content: string) => {
+    const trimmed = content.trim();
+    if (!trimmed) return null;
+    
+    // Split by divider token
+    const parts = trimmed.split('__DIVIDER__');
+    
+    return parts.map((part, index) => {
+      const partTrimmed = part.trim();
+      if (!partTrimmed) {
+        if (index > 0 && index < parts.length - 1) {
+          return <hr key={index} className="my-3 border-border/30" />;
+        }
+        return null;
+      }
+      
+      return (
+        <div key={index}>
+          {index > 0 && <hr className="my-3 border-border/30" />}
+          <p className="whitespace-pre-wrap leading-relaxed break-words text-sm text-foreground">
+            {partTrimmed}
+          </p>
+        </div>
+      );
+    });
+  };
 
   useEffect(() => {
     if (scrollRef.current) {
@@ -68,6 +95,12 @@ export default function AgentHarnessView({
         return 'Aider';
       case 'opencode':
         return 'OpenCode AI';
+      case 'codex':
+        return 'Codex';
+      case 'antigravity':
+        return 'Antigravity';
+      case 'cursor':
+        return 'Cursor CLI';
       default:
         return 'AI Agent';
     }
@@ -91,8 +124,17 @@ export default function AgentHarnessView({
       installCommand = 'pip install aider-chat';
       url = 'https://aider.chat';
     } else if (agentType === 'opencode') {
-      installCommand = 'npm install -g opencode-cli';
-      url = 'https://github.com/opencode-cli';
+      installCommand = 'npm install -g opencode-ai@latest';
+      url = 'https://opencode.ai';
+    } else if (agentType === 'codex') {
+      installCommand = 'npm install -g codex';
+      url = 'https://github.com/openai/codex';
+    } else if (agentType === 'antigravity') {
+      installCommand = 'npm install -g antigravity-cli';
+      url = 'https://github.com/google-deepmind/antigravity';
+    } else if (agentType === 'cursor') {
+      installCommand = 'curl https://cursor.com/install -fsS | bash';
+      url = 'https://cursor.com';
     }
 
     return (
@@ -132,7 +174,7 @@ export default function AgentHarnessView({
       {/* Thread Content Area */}
       <div 
         ref={scrollRef}
-        className="min-h-0 flex-1 overflow-y-auto px-4 py-3 space-y-4"
+        className="min-h-0 flex-1 overflow-y-auto overflow-x-hidden px-4 py-3 space-y-4"
       >
         {hasNoSuccessfulOutput ? (
           renderExitedHelp()
@@ -150,21 +192,26 @@ export default function AgentHarnessView({
               case 'user':
                 return (
                   <div key={block.id} className="flex justify-end">
-                    <div className="max-w-[85%] rounded-2xl bg-primary/10 border border-border/50 px-4 py-2.5 shadow-sm text-sm text-foreground">
-                      <p className="text-xs text-muted-foreground font-medium mb-1 uppercase tracking-wide">User</p>
-                      <p className="whitespace-pre-wrap">{block.content}</p>
+                    <div className="max-w-[85%] w-fit rounded-2xl bg-primary/10 border border-border/50 px-4.5 py-2.5 shadow-sm text-sm text-foreground flex flex-col gap-1">
+                      <p className="text-[10px] uppercase tracking-wider text-primary font-medium">User</p>
+                      <p className="whitespace-pre-wrap leading-relaxed">{block.content.trim()}</p>
                     </div>
                   </div>
                 );
 
               case 'thinking':
+                const thinkingText = block.content.replace(/^Thinking\.\.\.\s*/i, '').trim();
                 return (
                   <div key={block.id} className="flex justify-start">
-                    <div className="max-w-[85%] rounded-2xl bg-card border border-border/50 px-4 py-2.5 shadow-sm text-sm text-muted-foreground flex items-start gap-3">
-                      <Loader2 className="h-4 w-4 shrink-0 text-muted-foreground animate-spin mt-0.5" />
-                      <div>
-                        <p className="text-xs text-muted-foreground font-medium mb-1 uppercase tracking-wide">Thinking</p>
-                        <p className="whitespace-pre-wrap italic">{block.content}</p>
+                    <div className="max-w-[85%] w-fit rounded-2xl bg-muted/40 border border-border/50 px-4.5 py-2.5 shadow-sm text-sm text-muted-foreground flex items-start gap-3">
+                      <Loader2 className="h-4 w-4 shrink-0 text-muted-foreground animate-spin mt-1" />
+                      <div className="flex flex-col gap-1">
+                        <p className="text-[10px] uppercase tracking-wider text-muted-foreground font-medium">Thinking</p>
+                        {thinkingText ? (
+                          <p className="whitespace-pre-wrap italic leading-relaxed">{thinkingText}</p>
+                        ) : (
+                          <p className="italic text-xs text-muted-foreground/85">Analyzing codebase...</p>
+                        )}
                       </div>
                     </div>
                   </div>
@@ -173,10 +220,10 @@ export default function AgentHarnessView({
               case 'tool_call':
                 return (
                   <div key={block.id} className="flex justify-start">
-                    <div className="max-w-[85%] rounded-2xl bg-muted/30 border border-border/50 px-4 py-2.5 shadow-sm text-sm text-foreground flex items-center gap-3">
+                    <div className="max-w-[85%] w-fit rounded-2xl bg-muted/30 border border-border/50 px-4.5 py-2.5 shadow-sm text-sm text-foreground flex items-center gap-3">
                       <Cpu className="h-4 w-4 shrink-0 text-muted-foreground" />
                       <div className="min-w-0">
-                        <p className="text-xs text-muted-foreground font-medium uppercase tracking-wide">Tool Executing</p>
+                        <p className="text-[10px] uppercase tracking-wider text-muted-foreground font-medium">Tool Executing</p>
                         <p className="truncate font-mono text-xs text-foreground mt-0.5">{block.toolName || 'system task'}</p>
                         {block.command && (
                           <code className="block mt-1 font-mono text-[11px] bg-card px-1.5 py-0.5 rounded border border-border/50 truncate">
@@ -235,9 +282,9 @@ export default function AgentHarnessView({
               default:
                 return (
                   <div key={block.id} className="flex justify-start">
-                    <div className="max-w-[85%] rounded-2xl bg-card border border-border/50 px-4 py-2.5 shadow-sm text-sm text-foreground">
-                      <p className="text-xs text-muted-foreground font-medium mb-1 uppercase tracking-wide">{agentLabel()}</p>
-                      <p className="whitespace-pre-wrap">{block.content}</p>
+                    <div className="max-w-[85%] w-fit rounded-2xl bg-card border border-border/50 px-4.5 py-3 shadow-sm text-sm text-foreground flex flex-col gap-1.5">
+                      <p className="text-[10px] uppercase tracking-wider text-muted-foreground font-medium">{agentLabel()}</p>
+                      <div className="w-full">{renderFormattedContent(block.content)}</div>
                     </div>
                   </div>
                 );

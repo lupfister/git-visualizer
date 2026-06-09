@@ -79,7 +79,7 @@ export interface TerminalSession {
   aiLabelAt?: number | null;
   /** True while the PTY is actively emitting output (not idle at prompt). */
   outputActive?: boolean;
-  agentType?: 'claude' | 'aider' | 'opencode' | 'shell' | null;
+  agentType?: 'claude' | 'aider' | 'opencode' | 'codex' | 'antigravity' | 'cursor' | 'shell' | null;
   activeApprovalId?: string | null;
 }
 
