@@ -8396,7 +8396,7 @@ pub fn run() {
                 if let Some(window) = app.get_webview_window("main") {
                     macos_traffic_lights::install(&window);
                 }
-                let shortcut = Shortcut::new(Some(Modifiers::SUPER), Code::KeyG);
+                let shortcut = Shortcut::new(Some(Modifiers::ALT), Code::KeyM);
                 app.global_shortcut()
                     .on_shortcut(shortcut, move |app_handle, _shortcut, event| {
                         if event.state() != ShortcutState::Pressed {
@@ -8426,7 +8426,7 @@ pub fn run() {
                             }
                         });
                     })
-                    .map_err(|e| format!("Failed to register Cmd+G: {e}"))?;
+                    .map_err(|e| format!("Failed to register Option+M: {e}"))?;
             }
             Ok(())
         })
