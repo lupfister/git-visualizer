@@ -28,6 +28,14 @@ export interface CheckedOutRef {
   hasUncommittedChanges: boolean;
 }
 
+export interface RepoQuickState {
+  repoPath: string;
+  headSha: string;
+  upstreamSha?: string | null;
+  hasUncommittedChanges: boolean;
+}
+
+
 /** One entry from `git stash list` (index 0 = stash@{0}, the newest). */
 export interface GitStashEntry {
   index: number;
@@ -50,7 +58,7 @@ export interface WorktreeInfo {
   hasUncommittedChanges?: boolean;
 }
 
-export type TerminalSessionKind = 'shell' | 'preview';
+export type TerminalSessionKind = 'shell' | 'preview' | 'agent';
 
 export interface TerminalSession {
   id: string;
@@ -71,6 +79,8 @@ export interface TerminalSession {
   aiLabelAt?: number | null;
   /** True while the PTY is actively emitting output (not idle at prompt). */
   outputActive?: boolean;
+  agentType?: 'claude' | 'aider' | 'opencode' | 'shell' | null;
+  activeApprovalId?: string | null;
 }
 
 export interface Commit {

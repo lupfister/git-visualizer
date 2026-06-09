@@ -58,6 +58,10 @@ pub struct TerminalSession {
     /// True once the PTY has emitted new output after the initial shell settle window.
     #[serde(default)]
     pub has_recognized_output: bool,
+    #[serde(default)]
+    pub agent_type: Option<String>,
+    #[serde(default)]
+    pub active_approval_id: Option<String>,
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -485,7 +489,7 @@ fn refresh_status(session: &Arc<LiveSession>) -> TerminalSession {
         compute_output_fingerprint(&output_bytes, process_name.as_deref());
 
     let mut response_metadata = metadata.clone();
-    if response_metadata.kind == "shell" {
+    if response_metadata.kind == "shell" || response_metadata.kind == "agent" {
         response_metadata.label = merge_display_label(
             &metadata,
             process_name,

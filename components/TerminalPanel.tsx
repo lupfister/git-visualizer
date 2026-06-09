@@ -1,11 +1,12 @@
 import { useEffect, useRef, useState } from 'react';
-import { PanelBottom, PanelBottomClose, PanelRight, PanelRightClose, Trash2 } from 'lucide-react';
+import { PanelBottom, PanelBottomClose, PanelRight, PanelRightClose, Trash2, Sparkles } from 'lucide-react';
 import { Terminal } from '@xterm/xterm';
 import { FitAddon } from '@xterm/addon-fit';
 import '@xterm/xterm/css/xterm.css';
 import type { TerminalSession } from '../types';
 import { readTerminalSession, resizeTerminalSession, saveTerminalAttachment, writeTerminalSession } from '../lib/terminal';
 import { cn } from './grid/mapGridUtils';
+import AgentHarnessView from './AgentHarnessView';
 
 export type TerminalPanelPlacement = 'right' | 'bottom';
 
@@ -68,6 +69,8 @@ export default function TerminalPanel({
   const [width, setWidth] = useState(() => readStoredPanelSize(TERMINAL_PANEL_WIDTH_STORAGE_KEY, DEFAULT_TERMINAL_PANEL_WIDTH, 320));
   const [height, setHeight] = useState(() => readStoredPanelSize(TERMINAL_PANEL_HEIGHT_STORAGE_KEY, DEFAULT_TERMINAL_PANEL_HEIGHT, 160));
   const [entered, setEntered] = useState(false);
+  const [viewMode, setViewMode] = useState<'structured' | 'raw'>('structured');
+  const [output, setOutput] = useState('');
   const isBottom = placement === 'bottom';
 
   useEffect(() => {
@@ -98,9 +101,39 @@ export default function TerminalPanel({
     };
   }, [session?.id]);
 
+  // Set default view mode to structured whenever a new agent session is loaded
+  useEffect(() => {
+    if (session?.kind === 'agent') {
+      setViewMode('structured');
+    }
+  }, [session?.id, session?.kind]);
+
+  // Polling effect: reads the terminal session data and updates the output state and calls parent onSessionChange
+  useEffect(() => {
+    if (!session) return;
+    let disposed = false;
+    const refresh = () => {
+      readTerminalSession(session.id).then((result) => {
+        if (disposed) return;
+        onSessionChange(result.session);
+        setOutput(result.output);
+      }).catch(() => undefined);
+    };
+    refresh();
+    const interval = window.setInterval(refresh, 200);
+    return () => {
+      disposed = true;
+      window.clearInterval(interval);
+    };
+  }, [session?.id, onSessionChange]);
+
+  const shouldRenderXterm = session && (session.kind !== 'agent' || viewMode === 'raw');
+
+  // Xterm setup effect
   useEffect(() => {
     const host = hostRef.current;
-    if (!host || !session) return;
+    if (!host || !session || !shouldRenderXterm) return;
+
     const terminal = new Terminal({
       cursorBlink: true,
       convertEol: true,
@@ -120,6 +153,10 @@ export default function TerminalPanel({
     terminal.focus();
     terminalRef.current = terminal;
     renderedOutputRef.current = '';
+
+    // Write initial output
+    terminal.write(output);
+    renderedOutputRef.current = output;
 
     const dataDisposable = terminal.onData((data) => {
       void writeTerminalSession(session.id, data);
@@ -144,33 +181,28 @@ export default function TerminalPanel({
     const observer = new ResizeObserver(resize);
     observer.observe(host);
 
-    let disposed = false;
-    const refresh = () => {
-      void readTerminalSession(session.id).then((result) => {
-        if (disposed) return;
-        onSessionChange(result.session);
-        const previous = renderedOutputRef.current;
-        if (result.output.startsWith(previous)) {
-          terminal.write(result.output.slice(previous.length));
-        } else if (result.output !== previous) {
-          terminal.reset();
-          terminal.write(result.output);
-        }
-        renderedOutputRef.current = result.output;
-      }).catch(() => undefined);
-    };
-    refresh();
-    const interval = window.setInterval(refresh, 100);
     return () => {
-      disposed = true;
-      window.clearInterval(interval);
       observer.disconnect();
       host.removeEventListener('paste', handlePaste, true);
       dataDisposable.dispose();
       terminal.dispose();
       terminalRef.current = null;
     };
-  }, [onSessionChange, session?.id]);
+  }, [session?.id, shouldRenderXterm]);
+
+  // Xterm output writer effect
+  useEffect(() => {
+    if (terminalRef.current && shouldRenderXterm) {
+      const previous = renderedOutputRef.current;
+      if (output.startsWith(previous)) {
+        terminalRef.current.write(output.slice(previous.length));
+      } else if (output !== previous) {
+        terminalRef.current.reset();
+        terminalRef.current.write(output);
+      }
+      renderedOutputRef.current = output;
+    }
+  }, [output, shouldRenderXterm]);
 
   if (!session) return null;
 
@@ -232,6 +264,19 @@ export default function TerminalPanel({
       )}
       <header className="flex h-10 shrink-0 items-center gap-2 border-b border-border/50 px-2">
         <span className="min-w-0 flex-1 truncate text-xs font-medium text-foreground">{terminalPanelLabel(session)}</span>
+        
+        {session.kind === 'agent' && viewMode === 'raw' && (
+          <button
+            type="button"
+            onClick={() => setViewMode('structured')}
+            className="inline-flex h-7 px-2 items-center justify-center rounded-lg text-[10px] uppercase tracking-wide font-medium text-primary bg-primary/10 border border-border/50 hover:bg-muted hover:text-foreground transition-colors gap-1 shrink-0"
+            title="Switch to Structured Chat"
+          >
+            <Sparkles className="h-3 w-3 shrink-0" />
+            Chat
+          </button>
+        )}
+
         <button
           type="button"
           onClick={handleTogglePlacement}
@@ -268,7 +313,23 @@ export default function TerminalPanel({
           )}
         </button>
       </header>
-      <div ref={hostRef} className="min-h-0 flex-1 overflow-hidden p-2" />
+      
+      {session.kind === 'agent' && viewMode === 'structured' ? (
+        <div className="min-h-0 flex-1 overflow-hidden">
+          <AgentHarnessView
+            sessionId={session.id}
+            output={output}
+            onWrite={async (data) => {
+              await writeTerminalSession(session.id, data);
+            }}
+            status={session.status}
+            agentType={session.agentType}
+            onToggleRaw={() => setViewMode('raw')}
+          />
+        </div>
+      ) : (
+        <div ref={hostRef} className="min-h-0 flex-1 overflow-hidden p-2" />
+      )}
     </aside>
   );
 }

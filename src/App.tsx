@@ -20,7 +20,7 @@ import { hydrateBranchGridLayoutModel, serializeBranchGridLayoutModel } from '..
 import { buildGraphLayoutFingerprint, hashCommitShaList } from '../components/grid/graphLayoutFingerprint';
 import { useBranchGridLayoutFromRevision } from '../components/grid/useBranchGridLayoutFromRevision';
 import { layoutModelHasWorkingTree } from '../components/grid/workingTreeLayout';
-import type { Branch, BranchCommitPreview, BranchPromptMeta, CheckedOutRef, CommitMutationData, DeleteSelectionMutationData, DirectCommit, GitHubAuthStatus, GitHubInfo, GitStashEntry, MergeNode, OpenPR, RepoMutationOutcome, RepoVisualSnapshot, StashPushMutationData, StashRestoreMutationData, TerminalSession, WorktreeInfo } from '../types';
+import type { Branch, BranchCommitPreview, BranchPromptMeta, CheckedOutRef, CommitMutationData, DeleteSelectionMutationData, DirectCommit, GitHubAuthStatus, GitHubInfo, GitStashEntry, MergeNode, OpenPR, RepoMutationOutcome, RepoVisualSnapshot, StashPushMutationData, StashRestoreMutationData, TerminalSession, WorktreeInfo, RepoQuickState } from '../types';
 import {
   checkedOutRefWithDirtyFromQuickState,
   mergeCheckedOutRefWithQuickState,
@@ -184,12 +184,7 @@ type RepoRefreshFingerprint = {
   worktreeCount: number;
   stashCount: number;
 };
-type RepoQuickState = {
-  repoPath: string;
-  headSha: string;
-  upstreamSha?: string | null;
-  hasUncommittedChanges: boolean;
-};
+
 type RepoHeadState = {
   repoPath: string;
   headSha: string;
@@ -6803,6 +6798,50 @@ function App() {
     }
   }, [focusMapOnNode, terminalSessions]);
 
+  const handleCreateAgent = useCallback(async (
+    projectPath: string,
+    worktreePath: string,
+    agentType: 'claude' | 'aider' | 'opencode'
+  ) => {
+    const number = terminalSessions.filter((session) =>
+      sameRepoPath(session.worktreePath, worktreePath) &&
+      session.kind === 'agent' &&
+      session.agentType === agentType
+    ).length + 1;
+
+    let defaultCommand = 'claude';
+    let label = `Claude Agent ${number}`;
+    if (agentType === 'aider') {
+      defaultCommand = 'aider';
+      label = `Aider Agent ${number}`;
+    } else if (agentType === 'opencode') {
+      defaultCommand = 'opencode';
+      label = `OpenCode Agent ${number}`;
+    }
+
+    const session = await createTerminalSession({
+      projectPath,
+      worktreePath,
+      kind: 'agent',
+      label,
+      command: defaultCommand,
+      cols: 100,
+      rows: 30,
+      targetId: null,
+      targetKind: null,
+      previewUrl: null,
+      previewAppName: null,
+      agentType,
+      activeApprovalId: null,
+    });
+    setTerminalSessions((current) => [...current, session]);
+    setActiveTerminalId(session.id);
+    const focusId = resolveTerminalSessionFocusId(session);
+    if (focusId) {
+      focusMapOnNode(projectPath, focusId);
+    }
+  }, [focusMapOnNode, terminalSessions]);
+
   const handleTerminateTerminal = useCallback(async (id: string) => {
     await terminateTerminalSession(id).catch(() => undefined);
     setTerminalSessions((current) => current.filter((session) => session.id !== id));
@@ -6865,6 +6904,7 @@ function App() {
               terminalSessions={terminalSessions}
               activeTerminalId={activeTerminalId}
               onCreateTerminal={handleCreateTerminal}
+              onCreateAgent={handleCreateAgent}
               onSelectTerminal={async (session) => {
                 setActiveTerminalId(session.id);
                 if (session.kind === 'preview') {

@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 import type { CSSProperties } from 'react';
-import { ChevronRight, MoreHorizontal, Plus, Trash2 } from 'lucide-react';
+import { ChevronRight, MoreHorizontal, Plus, Trash2, Sparkles } from 'lucide-react';
 import type { Branch, BranchCommitPreview, TerminalSession, WorktreeInfo } from '../types';
 import { accentCssVars, buildWorktreeSessions, workingTreeIdForPath } from '../lib/worktreeSessions';
 import { cn, normalizeRepoPathForCompare, worktreeDisplayName } from './grid/mapGridUtils';
@@ -47,6 +47,7 @@ type Props = {
   onResetProjectNodePositions?: (path: string) => void;
   onSelectWorktree: (projectPath: string, workingTreeId: string) => void | Promise<void>;
   onCreateTerminal: (projectPath: string, worktreePath: string) => void | Promise<void>;
+  onCreateAgent?: (projectPath: string, worktreePath: string, agentType: 'claude' | 'aider' | 'opencode') => void | Promise<void>;
   onSelectTerminal: (session: TerminalSession) => void;
   onTerminateTerminal?: (id: string) => void | Promise<void>;
   projectLoading?: boolean;
@@ -103,6 +104,7 @@ export default function DenseBranchSidebar({
   onResetProjectNodePositions,
   onSelectWorktree,
   onCreateTerminal,
+  onCreateAgent,
   onSelectTerminal,
   onTerminateTerminal,
   projectLoading,
@@ -324,11 +326,31 @@ export default function DenseBranchSidebar({
                               expandWorktree(key);
                             })();
                           }}
-                          className="inline-flex h-7 w-7 shrink-0 items-center justify-center rounded-lg opacity-0 transition-colors group-hover/row:opacity-100 disabled:cursor-not-allowed disabled:opacity-30"
+                          className="inline-flex h-7 w-7 shrink-0 items-center justify-center rounded-lg transition-colors hover:bg-muted disabled:cursor-not-allowed disabled:opacity-30 text-muted-foreground hover:text-foreground"
                           aria-label={`New terminal in ${label}`}
                           title="New terminal"
                         >
                           <Plus className="h-3.5 w-3.5 shrink-0" />
+                        </button>
+                      );
+                      const agentButton = (
+                        <button
+                          type="button"
+                          disabled={!worktree.pathExists}
+                          onClick={(event) => {
+                            event.stopPropagation();
+                            void (async () => {
+                              if (onCreateAgent) {
+                                await onCreateAgent(project.path, worktree.path, 'claude');
+                                expandWorktree(key);
+                              }
+                            })();
+                          }}
+                          className="inline-flex h-7 w-7 shrink-0 items-center justify-center rounded-lg transition-colors hover:bg-muted disabled:cursor-not-allowed disabled:opacity-30 text-muted-foreground hover:text-foreground"
+                          aria-label={`Spawn AI Agent in ${label}`}
+                          title="Spawn AI Agent"
+                        >
+                          <Sparkles className="h-3.5 w-3.5 shrink-0" />
                         </button>
                       );
                       return (
@@ -354,7 +376,10 @@ export default function DenseBranchSidebar({
                                 <ChevronRight className={cn('h-3.5 w-3.5 shrink-0 transition-transform duration-200', expanded && 'rotate-90')} />
                               </button>
                               <span className="min-w-0 flex-1 truncate text-sm">{label} · {refLabel}</span>
-                              {plusButton}
+                              <div className="flex gap-0.5 shrink-0 opacity-0 group-hover/row:opacity-100">
+                                {onCreateAgent && agentButton}
+                                {plusButton}
+                              </div>
                             </div>
                           ) : (
                             <div
@@ -370,7 +395,10 @@ export default function DenseBranchSidebar({
                                 style={rowAccentStyle}
                               >
                                 <span className="min-w-0 flex-1 truncate text-sm">{label} · {refLabel}</span>
-                                {plusButton}
+                                <div className="flex gap-0.5 shrink-0 opacity-0 group-hover/row:opacity-100">
+                                  {onCreateAgent && agentButton}
+                                  {plusButton}
+                                </div>
                               </div>
                             </div>
                           )}
@@ -425,7 +453,11 @@ function TerminalRow({
   onTerminate?: (id: string) => void | Promise<void>;
   alignWithProjectRow?: boolean;
 }) {
-  const Icon = session.kind === 'preview' ? PreviewIcon : TerminalIcon;
+  const Icon = session.kind === 'preview' 
+    ? PreviewIcon 
+    : session.kind === 'agent' 
+      ? SparklesIcon 
+      : TerminalIcon;
   const [displayLabel, setDisplayLabel] = useState(label);
   const style = accent
     ? ({
@@ -640,6 +672,26 @@ function PreviewIcon({ className, style }: { className?: string; style?: React.C
     >
       <path
         d="M4.21449 11.4349L10.8684 7.76319C11.4716 7.43033 11.4713 6.56324 10.8679 6.23073L4.21404 2.56418C3.63088 2.24284 2.91675 2.6647 2.91675 3.33053L2.91675 10.6688C2.91675 11.3348 3.63132 11.7567 4.21449 11.4349Z"
+        stroke="currentColor"
+        strokeWidth="1.2"
+        strokeLinecap="round"
+        strokeLinejoin="round"
+      />
+    </svg>
+  );
+}
+
+function SparklesIcon({ className, style }: { className?: string; style?: React.CSSProperties }) {
+  return (
+    <svg
+      viewBox="0 0 14 14"
+      fill="none"
+      xmlns="http://www.w3.org/2000/svg"
+      className={className}
+      style={style}
+    >
+      <path
+        d="M7 1.16669L8.06417 4.70835L11.6667 5.25002L9.06417 7.79169L9.68083 11.375L7 9.58335L4.31917 11.375L4.93583 7.79169L2.33333 5.25002L5.93583 4.70835L7 1.16669Z"
         stroke="currentColor"
         strokeWidth="1.2"
         strokeLinecap="round"
