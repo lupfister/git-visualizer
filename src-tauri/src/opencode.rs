@@ -1,30 +1,22 @@
 use std::io::Read;
-use std::net::{SocketAddr, TcpStream};
 use std::path::{Path, PathBuf};
-use std::process::{Child, Command, Stdio};
+use std::process::{Command, Stdio};
 use std::sync::{Mutex, OnceLock};
 use std::time::{Duration, Instant};
 
 const MAX_PROMPT_CHARS: usize = 8_000;
-const MAX_GENERATION_ATTEMPTS: u32 = 3;
-const RETRY_DELAY_MS: u64 = 400;
+const RETRY_DELAY_MS: u64 = 300;
 const MAX_MESSAGE_CHARS: usize = 72;
 const MAX_TERMINAL_MESSAGE_CHARS: usize = 40;
 const MAX_MESSAGE_WORDS: usize = 12;
 const MAX_TERMINAL_MESSAGE_WORDS: usize = 8;
 const MIN_MESSAGE_LEN: usize = 6;
 const MIN_TERMINAL_MESSAGE_LEN: usize = 3;
-const OPENCODE_TIMEOUT: Duration = Duration::from_secs(90);
-/// Dedicated port so we never attach to a stale OpenCode Desktop / old CLI server on 4096.
-const OPENCODE_SERVER_PORT: u16 = 47123;
+const OPENCODE_TIMEOUT: Duration = Duration::from_secs(25);
+const MODEL_CACHE_TTL: Duration = Duration::from_secs(600);
+const MAX_TITLE_MODEL_ATTEMPTS: usize = 8;
 /// Minimum CLI version — 1.15.x had broken big-pickle routing; keep OpenCode up to date.
 const OPENCODE_MIN_VERSION: (u32, u32, u32) = (1, 16, 0);
-/// OpenCode Zen free models — no API key or login required. See https://opencode.ai/docs/zen/
-const OPENCODE_TITLE_MODELS: &[&str] = &[
-    "opencode/deepseek-v4-flash-free",
-    "opencode/minimax-m2.5-free",
-    "opencode/big-pickle",
-];
 
 const COMMIT_TITLE_PROMPT: &str = "\
 You write git commit titles only.\n\
@@ -146,18 +138,6 @@ fn opencode_missing_message() -> String {
     "OpenCode CLI not found. Install or update with: npm i -g opencode-ai@latest".to_string()
 }
 
-static OPENCODE_SERVER: OnceLock<Mutex<Option<Child>>> = OnceLock::new();
-
-fn opencode_server_addr() -> SocketAddr {
-    format!("127.0.0.1:{OPENCODE_SERVER_PORT}")
-        .parse()
-        .expect("valid opencode server addr")
-}
-
-fn opencode_attach_url() -> String {
-    format!("http://127.0.0.1:{OPENCODE_SERVER_PORT}")
-}
-
 fn parse_opencode_version(raw: &str) -> Option<(u32, u32, u32)> {
     let digits: Vec<u32> = raw
         .split('.')
@@ -204,85 +184,91 @@ fn ensure_opencode_version(binary: &Path) -> Result<(), String> {
     ))
 }
 
-fn opencode_server_available() -> bool {
-    TcpStream::connect_timeout(&opencode_server_addr(), Duration::from_millis(250)).is_ok()
+static TITLE_MODEL_CACHE: OnceLock<Mutex<Option<(Instant, Vec<String>)>>> = OnceLock::new();
+
+fn parse_models_from_output(raw: &str) -> Vec<String> {
+    strip_ansi(raw)
+        .lines()
+        .map(str::trim)
+        .filter(|line| !line.is_empty())
+        .filter(|line| line.contains('/'))
+        .filter(|line| !line.starts_with('{'))
+        .map(str::to_string)
+        .collect()
 }
 
-fn kill_processes_on_port(port: u16) {
-    #[cfg(unix)]
-    {
-        let Ok(output) = Command::new("lsof")
-            .args(["-ti", &format!(":{port}")])
-            .output()
-        else {
-            return;
-        };
-        if !output.status.success() {
-            return;
-        }
-        let pids = String::from_utf8_lossy(&output.stdout);
-        for pid in pids.split_whitespace() {
-            let _ = Command::new("kill").arg(pid).status();
-        }
-        if !pids.trim().is_empty() {
-            std::thread::sleep(Duration::from_millis(300));
-        }
-    }
+fn rank_title_model(model: &str) -> (u8, u8, u8, String) {
+    let (provider, id) = model.split_once('/').unwrap_or(("", model));
+    let provider_rank = if provider == "opencode" { 0 } else { 1 };
+    let free_rank = if id.contains("-free") { 0 } else { 1 };
+    let speed_rank = if id.contains("flash") {
+        0
+    } else if id.contains("mini") || id.contains("mimo") || id.contains("nano") {
+        1
+    } else {
+        2
+    };
+    (provider_rank, free_rank, speed_rank, id.to_string())
 }
 
-fn ensure_opencode_server(binary: &Path) -> Result<(), String> {
+fn sort_title_models(mut models: Vec<String>) -> Vec<String> {
+    models.sort_by_key(|model| rank_title_model(model));
+    models.dedup();
+    models
+}
+
+fn list_title_models(binary: &Path, refresh: bool) -> Result<Vec<String>, String> {
     ensure_opencode_version(binary)?;
 
-    let lock = OPENCODE_SERVER.get_or_init(|| Mutex::new(None));
-    let mut guard = lock
-        .lock()
-        .map_err(|_| "OpenCode server lock poisoned.".to_string())?;
-
-    if let Some(child) = guard.as_mut() {
-        if child.try_wait().ok().flatten().is_some() {
-            *guard = None;
-        }
+    let mut args = vec!["models", "--pure"];
+    if refresh {
+        args.push("--refresh");
     }
 
-    if guard.is_some() && opencode_server_available() {
-        return Ok(());
-    }
-
-    if guard.is_some() {
-        if let Some(mut child) = guard.take() {
-            let _ = child.kill();
-            let _ = child.wait();
-        }
-    }
-
-    kill_processes_on_port(OPENCODE_SERVER_PORT);
-
-    let child = Command::new(binary)
-        .args([
-            "serve",
-            "--port",
-            &OPENCODE_SERVER_PORT.to_string(),
-            "--hostname",
-            "127.0.0.1",
-        ])
+    let output = Command::new(binary)
+        .args(&args)
         .stdin(Stdio::null())
-        .stdout(Stdio::null())
-        .stderr(Stdio::null())
-        .spawn()
-        .map_err(|e| format!("Failed to start OpenCode server: {e}"))?;
-    *guard = Some(child);
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .output()
+        .map_err(|e| format!("Failed to list OpenCode models: {e}"))?;
 
-    for _ in 0..40 {
-        if opencode_server_available() {
-            return Ok(());
-        }
-        std::thread::sleep(Duration::from_millis(200));
+    if !output.status.success() {
+        let detail = String::from_utf8_lossy(&output.stderr).trim().to_string();
+        return Err(if detail.is_empty() {
+            "Failed to list OpenCode models.".to_string()
+        } else {
+            format!("Failed to list OpenCode models: {detail}")
+        });
     }
 
-    Err(format!(
-        "OpenCode server failed to start on {}.",
-        opencode_attach_url()
-    ))
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let models = sort_title_models(parse_models_from_output(&stdout));
+    if models.is_empty() {
+        return Err(
+            "OpenCode returned no models. Connect a provider with: opencode providers".to_string(),
+        );
+    }
+    Ok(models)
+}
+
+fn resolve_title_models(binary: &Path, force_refresh: bool) -> Result<Vec<String>, String> {
+    let cache = TITLE_MODEL_CACHE.get_or_init(|| Mutex::new(None));
+    let mut guard = cache
+        .lock()
+        .map_err(|_| "OpenCode model cache lock poisoned.".to_string())?;
+
+    if !force_refresh {
+        if let Some((fetched_at, models)) = guard.as_ref() {
+            if fetched_at.elapsed() < MODEL_CACHE_TTL && !models.is_empty() {
+                return Ok(models.clone());
+            }
+        }
+    }
+
+    let models = list_title_models(binary, true)?;
+    *guard = Some((Instant::now(), models.clone()));
+    Ok(models)
 }
 
 fn truncate_summary(summary: &str) -> String {
@@ -510,8 +496,9 @@ fn sanitize_title_with_limits(
 #[cfg(test)]
 mod tests {
     use super::{
-        is_unacceptable_message, is_unacceptable_terminal_message, parse_opencode_version,
-        redact_terminal_secrets, sanitize_terminal_title, sanitize_title, version_at_least,
+        is_unacceptable_message, is_unacceptable_terminal_message, parse_models_from_output,
+        parse_opencode_version, rank_title_model, redact_terminal_secrets, sanitize_terminal_title,
+        sanitize_title, sort_title_models, version_at_least,
     };
 
     #[test]
@@ -575,6 +562,33 @@ mod tests {
         assert!(redacted.contains("[redacted]"));
         assert!(redacted.contains("pnpm test"));
     }
+
+    #[test]
+    fn parses_models_from_cli_output() {
+        let raw = "\u{1b}[92mModels cache refreshed\u{1b}[0m\nopencode/big-pickle\nopencode/deepseek-v4-flash-free\n";
+        let models = parse_models_from_output(raw);
+        assert_eq!(models.len(), 2);
+        assert!(models.contains(&"opencode/big-pickle".to_string()));
+    }
+
+    #[test]
+    fn prefers_free_opencode_models() {
+        let models = sort_title_models(vec![
+            "opencode/big-pickle".to_string(),
+            "opencode/deepseek-v4-flash-free".to_string(),
+            "anthropic/claude-haiku-4-5".to_string(),
+        ]);
+        assert_eq!(models[0], "opencode/deepseek-v4-flash-free");
+        assert_eq!(models[1], "opencode/big-pickle");
+        assert_eq!(models[2], "anthropic/claude-haiku-4-5");
+    }
+
+    #[test]
+    fn ranks_flash_models_before_heavier_free_models() {
+        let (_, _, flash_rank, _) = rank_title_model("opencode/deepseek-v4-flash-free");
+        let (_, _, mimo_rank, _) = rank_title_model("opencode/mimo-v2.5-free");
+        assert!(flash_rank <= mimo_rank);
+    }
 }
 
 fn run_opencode(binary: &Path, repo_path: &str, args: &[&str]) -> Result<String, String> {
@@ -637,34 +651,91 @@ fn run_opencode(binary: &Path, repo_path: &str, args: &[&str]) -> Result<String,
     })
 }
 
-fn run_opencode_title(
+fn run_opencode_prompt(
     binary: &Path,
     repo_path: &str,
     model: &str,
     prompt: &str,
 ) -> Result<String, String> {
-    ensure_opencode_server(binary)?;
+    ensure_opencode_version(binary)?;
 
-    let attach = opencode_attach_url();
-    let args = [
+    let inline_args = [
         "run",
         "--dir",
         repo_path,
-        "--attach",
-        attach.as_str(),
         "--dangerously-skip-permissions",
         "--pure",
         "-m",
         model,
         prompt,
     ];
+    run_opencode(binary, repo_path, &inline_args)
+}
 
-    run_opencode(binary, repo_path, &args)
+fn run_opencode_for_title(
+    binary: &Path,
+    repo_path: &str,
+    command: &str,
+    model: &str,
+    prompt: &str,
+) -> Result<String, String> {
+    ensure_opencode_version(binary)?;
+
+    let command_args = [
+        "run",
+        "--dir",
+        repo_path,
+        "--command",
+        command,
+        "--dangerously-skip-permissions",
+        "--pure",
+        "-m",
+        model,
+    ];
+    match run_opencode(binary, repo_path, &command_args) {
+        Ok(raw) if !raw.trim().is_empty() => Ok(raw),
+        _ => {
+            let inline_args = [
+                "run",
+                "--dir",
+                repo_path,
+                "--dangerously-skip-permissions",
+                "--pure",
+                "-m",
+                model,
+                prompt,
+            ];
+            run_opencode(binary, repo_path, &inline_args)
+        }
+    }
+}
+
+fn try_title_models<F>(
+    binary: &Path,
+    repo_path: &str,
+    models: &[String],
+    mut attempt: F,
+) -> Result<String, String>
+where
+    F: FnMut(&Path, &str, &str) -> Result<String, String>,
+{
+    let mut last_error = String::from("OpenCode did not return a usable title.");
+    for (index, model) in models.iter().take(MAX_TITLE_MODEL_ATTEMPTS).enumerate() {
+        match attempt(binary, repo_path, model) {
+            Ok(raw) => return Ok(raw),
+            Err(err) => last_error = err,
+        }
+        if index + 1 < models.len().min(MAX_TITLE_MODEL_ATTEMPTS) {
+            std::thread::sleep(Duration::from_millis(RETRY_DELAY_MS * (index as u64 + 1)));
+        }
+    }
+    Err(last_error)
 }
 
 fn generate_title_with_retries(
     repo: &Path,
     summary: &str,
+    command: &str,
     prompt_prefix: &str,
     previous_title: Option<&str>,
     empty_label: &str,
@@ -680,12 +751,14 @@ fn generate_title_with_retries(
 
     let binary = resolve_opencode_binary()?;
     let prompt = compose_title_prompt(prompt_prefix, summary, previous_title);
+    let mut models = resolve_title_models(&binary, false)?;
+    let mut refreshed = false;
     let mut last_error = String::from("OpenCode did not return a usable title.");
 
-    for attempt in 1..=MAX_GENERATION_ATTEMPTS {
-        let model = OPENCODE_TITLE_MODELS
-            [(attempt as usize - 1) % OPENCODE_TITLE_MODELS.len()];
-        match run_opencode_title(&binary, repo_path, model, &prompt) {
+    loop {
+        match try_title_models(&binary, repo_path, &models, |binary, repo_path, model| {
+            run_opencode_for_title(binary, repo_path, command, model, &prompt)
+        }) {
             Ok(raw) => match sanitize_title(&raw, empty_label) {
                 Ok(message) if !is_unacceptable_message(&message) => return Ok(message),
                 Ok(_) => {
@@ -696,13 +769,18 @@ fn generate_title_with_retries(
             Err(err) => last_error = err,
         }
 
-        if attempt < MAX_GENERATION_ATTEMPTS {
-            std::thread::sleep(Duration::from_millis(RETRY_DELAY_MS * attempt as u64));
+        if !refreshed {
+            refreshed = true;
+            models = resolve_title_models(&binary, true)?;
+            continue;
         }
+
+        break;
     }
 
     Err(format!(
-        "Failed to generate a {failure_label} after {MAX_GENERATION_ATTEMPTS} attempts. {last_error}"
+        "Failed to generate a {failure_label} after trying {} model(s). {last_error}",
+        models.len().min(MAX_TITLE_MODEL_ATTEMPTS)
     ))
 }
 
@@ -714,6 +792,7 @@ pub fn generate_commit_message(
     generate_title_with_retries(
         repo,
         summary,
+        "commit",
         COMMIT_TITLE_PROMPT,
         previous_title,
         "commit message",
@@ -729,6 +808,7 @@ pub fn generate_stash_message(
     generate_title_with_retries(
         repo,
         summary,
+        "stash",
         STASH_TITLE_PROMPT,
         previous_title,
         "stash message",
@@ -752,12 +832,14 @@ fn generate_terminal_title_with_retries(
 
     let binary = resolve_opencode_binary()?;
     let prompt = compose_terminal_title_prompt(summary, process_hint, previous_title);
+    let mut models = resolve_title_models(&binary, false)?;
+    let mut refreshed = false;
     let mut last_error = String::from("OpenCode did not return a usable title.");
 
-    for attempt in 1..=MAX_GENERATION_ATTEMPTS {
-        let model = OPENCODE_TITLE_MODELS
-            [(attempt as usize - 1) % OPENCODE_TITLE_MODELS.len()];
-        match run_opencode_title(&binary, repo_path, model, &prompt) {
+    loop {
+        match try_title_models(&binary, repo_path, &models, |binary, repo_path, model| {
+            run_opencode_prompt(binary, repo_path, model, &prompt)
+        }) {
             Ok(raw) => match sanitize_terminal_title(&raw, "terminal title") {
                 Ok(message) if !is_unacceptable_terminal_message(&message) => return Ok(message),
                 Ok(_) => {
@@ -769,13 +851,18 @@ fn generate_terminal_title_with_retries(
             Err(err) => last_error = err,
         }
 
-        if attempt < MAX_GENERATION_ATTEMPTS {
-            std::thread::sleep(Duration::from_millis(RETRY_DELAY_MS * attempt as u64));
+        if !refreshed {
+            refreshed = true;
+            models = resolve_title_models(&binary, true)?;
+            continue;
         }
+
+        break;
     }
 
     Err(format!(
-        "Failed to generate a terminal title after {MAX_GENERATION_ATTEMPTS} attempts. {last_error}"
+        "Failed to generate a terminal title after trying {} model(s). {last_error}",
+        models.len().min(MAX_TITLE_MODEL_ATTEMPTS)
     ))
 }
 

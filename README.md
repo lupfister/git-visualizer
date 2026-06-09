@@ -88,7 +88,7 @@ npm i -g opencode-ai@latest
 opencode --version
 ```
 
-Git Visualizer starts its own OpenCode server on port **47123** (separate from OpenCode Desktop on 4096). Free Zen models work without login.
+Git Visualizer calls OpenCode directly for AI titles. Models are discovered at runtime via `opencode models --refresh` (cached for 10 minutes), preferring free OpenCode Zen models when available.
 
 The app also ships OpenCode command templates in `.opencode/commands/`.
 
