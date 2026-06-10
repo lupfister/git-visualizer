@@ -181,11 +181,26 @@ export const accentCssVars = (token: WorktreeAccentToken): { fg: string; muted: 
 
 const isUsableWorktree = (worktree: WorktreeInfo): boolean => worktree.pathExists !== false;
 
-const assignAccentTokens = (sessions: Omit<WorktreeSession, 'accentToken' | 'workingTreeId'>[]): WorktreeSession[] => {
+const assignAccentTokens = (
+  sessions: Omit<WorktreeSession, 'accentToken' | 'workingTreeId'>[],
+  worktreeOrder?: string[],
+): WorktreeSession[] => {
   const current = sessions.filter((session) => session.isCurrent);
-  const others = sessions
-    .filter((session) => !session.isCurrent)
-    .sort((left, right) => normalizeRepoPathForCompare(left.path).localeCompare(normalizeRepoPathForCompare(right.path)));
+  const others = sessions.filter((session) => !session.isCurrent);
+
+  if (worktreeOrder && worktreeOrder.length > 0) {
+    const orderMap = new Map(worktreeOrder.map((path, idx) => [normalizeRepoPathForCompare(path).toLowerCase(), idx]));
+    others.sort((left, right) => {
+      const leftKey = normalizeRepoPathForCompare(left.path).toLowerCase();
+      const rightKey = normalizeRepoPathForCompare(right.path).toLowerCase();
+      const leftIdx = orderMap.has(leftKey) ? orderMap.get(leftKey)! : Infinity;
+      const rightIdx = orderMap.has(rightKey) ? orderMap.get(rightKey)! : Infinity;
+      if (leftIdx !== rightIdx) return leftIdx - rightIdx;
+      return leftKey.localeCompare(rightKey);
+    });
+  } else {
+    others.sort((left, right) => normalizeRepoPathForCompare(left.path).localeCompare(normalizeRepoPathForCompare(right.path)));
+  }
 
   let nonCurrentIndex = 0;
   const withAccents: WorktreeSession[] = [];
@@ -232,6 +247,7 @@ export const buildWorktreeSessions = (
   worktrees: WorktreeInfo[],
   currentRepoPath?: string,
   checkedOutRef?: CheckedOutRef | null,
+  worktreeOrder?: string[],
 ): WorktreeSession[] => {
   const normalizedCurrent = currentRepoPath ? normalizeRepoPathForCompare(currentRepoPath) : null;
   const base = worktrees
@@ -262,7 +278,7 @@ export const buildWorktreeSessions = (
       };
     });
 
-  return assignAccentTokens(base);
+  return assignAccentTokens(base, worktreeOrder);
 };
 
 export const shaMatches = (left?: string | null, right?: string | null): boolean => {

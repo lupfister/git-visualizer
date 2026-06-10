@@ -317,4 +317,22 @@ describe('worktreeSessions', () => {
     expect(map.get('head1111111111')).toBeUndefined();
     expect(map.get('WORKING_TREE')).toBe('checked');
   });
+
+  it('respects worktreeOrder when building worktree sessions and assigning accents', () => {
+    const sessions = buildWorktreeSessions(
+      [
+        baseWorktree({ path: '/repo/wt-c', headSha: 'cccccccccccc', branchName: 'wt-c', isCurrent: false }),
+        baseWorktree({ path: '/repo/wt-b', headSha: 'bbbbbbbbbbbb', branchName: 'wt-b', isCurrent: false }),
+        baseWorktree({ path: '/repo', headSha: 'aaaaaaaaaaaa', branchName: 'main', isCurrent: true }),
+      ],
+      '/repo',
+      null,
+      ['/repo/wt-c', '/repo/wt-b']
+    );
+    const nonCurrent = sessions.filter((s) => !s.isCurrent);
+    expect(nonCurrent[0]?.path).toBe('/repo/wt-c');
+    expect(nonCurrent[0]?.accentToken).toBe('worktree-violet');
+    expect(nonCurrent[1]?.path).toBe('/repo/wt-b');
+    expect(nonCurrent[1]?.accentToken).toBe('worktree-amber');
+  });
 });

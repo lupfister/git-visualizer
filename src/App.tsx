@@ -158,6 +158,8 @@ type ProjectRecord = {
   lastOpenedAt: number;
   branchName?: string;
   previewConfig?: ProjectPreviewConfig;
+  worktreeOrder?: string[];
+  terminalOrderMap?: Record<string, string[]>;
 };
 
 type ProjectSnapshot = RepoVisualSnapshot;
@@ -220,6 +222,21 @@ function normalizePath(path: string): string {
 function sameRepoPath(left: string | null | undefined, right: string | null | undefined): boolean {
   if (!left || !right) return false;
   return normalizePath(left).toLowerCase() === normalizePath(right).toLowerCase();
+}
+
+function sortWorktrees(worktrees: WorktreeInfo[], order?: string[]): WorktreeInfo[] {
+  if (!order || order.length === 0) return worktrees;
+  const orderMap = new Map(order.map((path, idx) => [normalizePath(path).toLowerCase(), idx]));
+  return [...worktrees].sort((left, right) => {
+    const leftPath = normalizePath(left.path).toLowerCase();
+    const rightPath = normalizePath(right.path).toLowerCase();
+    const leftIdx = orderMap.has(leftPath) ? orderMap.get(leftPath)! : Infinity;
+    const rightIdx = orderMap.has(rightPath) ? orderMap.get(rightPath)! : Infinity;
+    if (leftIdx !== rightIdx) {
+      return leftIdx - rightIdx;
+    }
+    return leftPath.localeCompare(rightPath);
+  });
 }
 
 function cn(...classes: Array<string | false | null | undefined>) {
@@ -509,6 +526,12 @@ function App() {
   /** Bumped when the working tree becomes clean so layout cache keys and MapGrid fully refresh. */
   const [layoutEpoch, setLayoutEpoch] = useState(0);
   const activeRepoScopedKey = repoPath ?? '__no-repo__';
+  const activeProject = useMemo(() => {
+    return repoPath ? projects.find((project) => sameRepoPath(project.path, repoPath)) ?? null : null;
+  }, [projects, repoPath]);
+  const sortedWorktrees = useMemo(() => {
+    return sortWorktrees(worktrees, activeProject?.worktreeOrder);
+  }, [worktrees, activeProject?.worktreeOrder]);
   const persistGridClumps = (opened: RepoScopedClumpState, closed: RepoScopedClumpState) => {
     try {
       const serialized = {
@@ -593,6 +616,9 @@ function App() {
         return left === right;
       })();
       const snapshot = projectSnapshots[project.path] ?? {};
+      const rawWorktrees = isActiveProject ? worktrees : (snapshot.worktrees ?? []);
+      const sortedProjectWorktrees = sortWorktrees(rawWorktrees, project.worktreeOrder);
+
       if (isActiveProject) {
         return {
           ...project,
@@ -603,7 +629,7 @@ function App() {
           unpushedDirectCommits,
           unpushedCommitShasByBranch,
           checkedOutRef,
-          worktrees,
+          worktrees: sortedProjectWorktrees,
           stashes,
           branchCommitPreviews,
           laneByBranch,
@@ -611,6 +637,8 @@ function App() {
           branchParentByName,
           defaultBranch,
           treeLoaded: snapshot.loaded === true,
+          worktreeOrder: project.worktreeOrder,
+          terminalOrderMap: project.terminalOrderMap,
         };
       }
       return {
@@ -622,7 +650,7 @@ function App() {
         unpushedDirectCommits: snapshot.unpushedDirectCommits ?? [],
         unpushedCommitShasByBranch: snapshot.unpushedCommitShasByBranch ?? {},
         checkedOutRef: snapshot.checkedOutRef ?? null,
-        worktrees: snapshot.worktrees ?? [],
+        worktrees: sortedProjectWorktrees,
         stashes: snapshot.stashes ?? [],
         branchCommitPreviews: snapshot.branchCommitPreviews ?? {},
         laneByBranch: snapshot.laneByBranch ?? {},
@@ -630,6 +658,8 @@ function App() {
         defaultBranch: snapshot.defaultBranch ?? project.branchName ?? 'main',
         treeLoaded: snapshot.loaded ?? false,
         branchParentByName: snapshot.branchParentByName ?? {},
+        worktreeOrder: project.worktreeOrder,
+        terminalOrderMap: project.terminalOrderMap,
       };
     }),
     [
@@ -1492,6 +1522,12 @@ function App() {
       if (!normalizedProject.previewConfig && existing?.previewConfig) {
         normalizedProject.previewConfig = existing.previewConfig;
       }
+      if (!normalizedProject.worktreeOrder && existing?.worktreeOrder) {
+        normalizedProject.worktreeOrder = existing.worktreeOrder;
+      }
+      if (!normalizedProject.terminalOrderMap && existing?.terminalOrderMap) {
+        normalizedProject.terminalOrderMap = existing.terminalOrderMap;
+      }
       const next = previous.some((item) => item.path === normalizedPath)
         ? previous.map((item) => (item.path === normalizedPath ? normalizedProject : item))
         : [...previous, normalizedProject];
@@ -1539,6 +1575,44 @@ function App() {
         // ignore storage failures
       }
       return next.slice(0, MAX_PROJECTS);
+    });
+  }
+
+  function reorderWorktrees(projectPath: string, nextOrder: string[]) {
+    const normalizedPath = normalizePath(projectPath);
+    setProjects((previous) => {
+      const next = previous.map((project) => {
+        if (normalizePath(project.path) === normalizedPath) {
+          return { ...project, worktreeOrder: nextOrder };
+        }
+        return project;
+      });
+      try {
+        localStorage.setItem(PROJECTS_STORAGE_KEY, JSON.stringify(next.slice(0, MAX_PROJECTS)));
+      } catch {
+        // ignore storage failures
+      }
+      return next;
+    });
+  }
+
+  function reorderTerminals(projectPath: string, worktreePath: string, nextOrder: string[]) {
+    const normalizedPath = normalizePath(projectPath);
+    setProjects((previous) => {
+      const next = previous.map((project) => {
+        if (normalizePath(project.path) === normalizedPath) {
+          const terminalOrderMap = { ...(project.terminalOrderMap ?? {}) };
+          terminalOrderMap[worktreePath] = nextOrder;
+          return { ...project, terminalOrderMap };
+        }
+        return project;
+      });
+      try {
+        localStorage.setItem(PROJECTS_STORAGE_KEY, JSON.stringify(next.slice(0, MAX_PROJECTS)));
+      } catch {
+        // ignore storage failures
+      }
+      return next;
     });
   }
 
@@ -4997,7 +5071,7 @@ function App() {
     if (commitResult.branchName && commitResult.fullSha) {
       const normalizedPath = normalizePath(worktreePath);
       userDirtyNodePositionsRef.current.add(normalizedPath);
-      const worktreeSession = buildWorktreeSessions(worktrees, repoPath ?? undefined, ref).find((session) =>
+      const worktreeSession = buildWorktreeSessions(sortedWorktrees, repoPath ?? undefined, ref, activeProject?.worktreeOrder).find((session) =>
         sameRepoPath(session.path, normalizedPath),
       );
       const laneBranchNames = laneBranchNamesForPositionOverrides({
@@ -5679,7 +5753,7 @@ function App() {
     enrichedUnpushedDirectCommits,
     visualCheckedOutRef,
   } = useMemo(() => {
-    const sessionsForGraph = buildWorktreeSessions(worktrees, repoPath ?? undefined, checkedOutRef);
+    const sessionsForGraph = buildWorktreeSessions(sortedWorktrees, repoPath ?? undefined, checkedOutRef, activeProject?.worktreeOrder);
     const anyDirty = sessionsForGraph.some((session) => session.hasUncommittedChanges);
     const stashFolded = foldStashNodesIntoGraph(
       stashes,
@@ -5895,7 +5969,7 @@ function App() {
       };
     }
 
-    const sessionsForInject = buildWorktreeSessions(worktrees, repoPath ?? undefined, effectiveCheckedOutRef);
+    const sessionsForInject = buildWorktreeSessions(sortedWorktrees, repoPath ?? undefined, effectiveCheckedOutRef, activeProject?.worktreeOrder);
     const injected = injectWorktreeUncommittedPreviews({
       sessions: sessionsForInject,
       branches: eb,
@@ -5912,12 +5986,12 @@ function App() {
       enrichedBranchUniqueAheadCounts: injected.branchUniqueAheadCounts,
       visualCheckedOutRef: effectiveCheckedOutRef,
     };
-  }, [branches, branchCommitPreviews, branchUniqueAheadCounts, checkedOutRef, defaultBranch, directCommits, remoteDefaultTipMetadata, remoteDefaultTipParentSha, remoteDefaultTipSha, repoPath, stashes, unpushedDirectCommits, worktrees]);
+  }, [branches, branchCommitPreviews, branchUniqueAheadCounts, checkedOutRef, defaultBranch, directCommits, remoteDefaultTipMetadata, remoteDefaultTipParentSha, remoteDefaultTipSha, repoPath, stashes, unpushedDirectCommits, sortedWorktrees]);
 
   /** Must match `visualCheckedOutRef` (lane split) so layout pin + inject agree after incremental patches. */
   const worktreeSessions = useMemo(
-    () => buildWorktreeSessions(worktrees, repoPath ?? undefined, visualCheckedOutRef ?? checkedOutRef),
-    [worktrees, repoPath, visualCheckedOutRef, checkedOutRef],
+    () => buildWorktreeSessions(sortedWorktrees, repoPath ?? undefined, visualCheckedOutRef ?? checkedOutRef, activeProject?.worktreeOrder),
+    [sortedWorktrees, repoPath, visualCheckedOutRef, checkedOutRef],
   );
 
   const {
@@ -6370,10 +6444,6 @@ function App() {
     setMapReadyForDisplay(true);
   }, []);
 
-  const activeProject = repoPath
-    ? projects.find((project) => normalizePath(project.path) === normalizePath(repoPath))
-    : null;
-
   const runPreviewForTarget = useCallback(async (
     target: PreviewTarget,
     nodeId: string,
@@ -6696,7 +6766,7 @@ function App() {
       node.commit.kind !== 'branch-created' &&
       !commitId.startsWith('BRANCH_HEAD:');
 
-    const wtSessions = buildWorktreeSessions(worktrees, repoPath ?? undefined, checkedOutRef);
+    const wtSessions = buildWorktreeSessions(sortedWorktrees, repoPath ?? undefined, checkedOutRef, activeProject?.worktreeOrder);
     
     let targetWorktreePath: string | null = null;
     let targetSession: typeof wtSessions[0] | null = null;
@@ -6770,13 +6840,13 @@ function App() {
     } else if (previewSession) {
       setActiveTerminalId(previewSession.id);
     }
-  }, [repoPath, terminalSessions, worktrees, checkedOutRef, handlePreviewNode, previewInProgress]);
+  }, [repoPath, terminalSessions, sortedWorktrees, checkedOutRef, handlePreviewNode, previewInProgress]);
 
   const useBottomTerminal = activeTerminal != null && terminalPanelPlacement === 'bottom';
   const terminalCountByWorkingTreeId = useMemo(() => {
     const counts: Record<string, number> = {};
     if (!repoPath) return counts;
-    for (const worktreeSession of buildWorktreeSessions(worktrees, repoPath, checkedOutRef)) {
+    for (const worktreeSession of buildWorktreeSessions(sortedWorktrees, repoPath, checkedOutRef, activeProject?.worktreeOrder)) {
       const count = terminalSessions.filter((session) =>
         session.kind === 'shell'
         && session.status === 'running'
@@ -6787,7 +6857,7 @@ function App() {
       }
     }
     return counts;
-  }, [checkedOutRef, repoPath, terminalSessions, worktrees]);
+  }, [checkedOutRef, repoPath, terminalSessions, sortedWorktrees]);
 
   const handleCreateTerminal = useCallback(async (projectPath: string, worktreePath: string) => {
     const number = terminalSessions.filter((session) => sameRepoPath(session.worktreePath, worktreePath) && session.kind === 'shell').length + 1;
@@ -6896,6 +6966,8 @@ function App() {
                 if (!repoPath || !sameRepoPath(repoPath, projectPath)) await loadRepo(projectPath);
                 handleSidebarSelectCommit(workingTreeId);
               }}
+              onReorderWorktrees={reorderWorktrees}
+              onReorderTerminals={reorderTerminals}
             />
             {!isSidebarCollapsed ? (
               <div
@@ -6945,7 +7017,7 @@ function App() {
                 pushInProgress={pushInProgress}
                 onDeleteSelection={handleDeleteSelection}
                 deleteInProgress={deleteInProgress}
-                worktrees={worktrees}
+                worktrees={sortedWorktrees}
                 currentRepoPath={repoPath ?? undefined}
                 onStashLocalChanges={handleStashLocalChanges}
                 stashInProgress={stashInProgress}
