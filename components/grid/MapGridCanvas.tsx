@@ -1,5 +1,6 @@
 import { forwardRef, memo, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import type { CSSProperties, Dispatch, MouseEvent, MutableRefObject, ReactNode, RefObject, SetStateAction, WheelEvent } from 'react';
+import type { WorktreeInfo } from '../../types';
 import { AnimatePresence, useReducedMotion } from 'framer-motion';
 import { CARD_BODY_TOP_OFFSET, CARD_HEIGHT, CARD_WIDTH } from './LayoutGrid';
 import {
@@ -22,8 +23,10 @@ import { buildMapGridCardSlotAssignments, computeMapGridCardSlotCount } from './
 import {
   accentCssVars,
   isWorkingTreeCommitId,
+  LEGACY_WORKING_TREE_ID,
   resolveWorktreeCommitTileShapeCssVar,
   worktreeAccentActive,
+  worktreeStableKey,
   type WorktreeAccentToken,
   type WorktreeSession,
 } from '../../lib/worktreeSessions';
@@ -75,6 +78,7 @@ type MapGridCommitWrapperProps = {
   onPointerLeave?: React.PointerEventHandler<HTMLDivElement>;
   onPointerUp?: React.PointerEventHandler<HTMLDivElement>;
   onPointerCancel?: React.PointerEventHandler<HTMLDivElement>;
+  onContextMenu?: React.MouseEventHandler<HTMLDivElement>;
   dataCommitCard?: string;
   dataCommitVisualId?: string;
   dataClusterKey?: string;
@@ -92,6 +96,7 @@ const MapGridCommitWrapper = forwardRef<HTMLDivElement, MapGridCommitWrapperProp
   onPointerLeave,
   onPointerUp,
   onPointerCancel,
+  onContextMenu,
   dataCommitCard,
   dataCommitVisualId,
   dataClusterKey,
@@ -112,6 +117,7 @@ const MapGridCommitWrapper = forwardRef<HTMLDivElement, MapGridCommitWrapperProp
       onPointerLeave={onPointerLeave}
       onPointerUp={onPointerUp}
       onPointerCancel={onPointerCancel}
+      onContextMenu={onContextMenu}
       style={style}
     >
       <div
@@ -160,6 +166,19 @@ type CommitCardProps = {
   previewedNodeId?: string | null;
   previewedWorktreeNodeIds?: string[];
   terminalCountByWorkingTreeId: Readonly<Record<string, number>>;
+  worktrees: WorktreeInfo[];
+  currentRepoPath?: string;
+  onShowContextMenu?: (
+    event: React.MouseEvent,
+    type: 'project' | 'worktree' | 'worktree-plus' | 'commit' | 'stash' | 'empty-branch',
+    projectPath: string,
+    worktreePath?: string,
+    worktree?: WorktreeInfo,
+    commitSha?: string,
+    commitLabel?: string,
+    commitText?: string,
+    branchName?: string
+  ) => void;
   onCommitCardClick: (event: MouseEvent, node: Node) => void;
   onNodePointerDown: (event: React.PointerEvent<HTMLDivElement>, node: Node) => void;
   onNodePointerMove: (event: React.PointerEvent<HTMLDivElement>) => void;
@@ -204,6 +223,9 @@ const MapGridCommitCard = memo(function MapGridCommitCard({
   previewedNodeId,
   previewedWorktreeNodeIds = [],
   terminalCountByWorkingTreeId,
+  worktrees,
+  currentRepoPath,
+  onShowContextMenu,
   onCommitCardClick,
   onNodePointerDown,
   onNodePointerMove,
@@ -565,6 +587,76 @@ const MapGridCommitCard = memo(function MapGridCommitCard({
       onPointerMove={handleCardPointerMove}
       onPointerUp={onNodePointerUp}
       onPointerCancel={onNodePointerUp}
+      onContextMenu={(event) => {
+        if (!onShowContextMenu) return;
+        event.preventDefault();
+        event.stopPropagation();
+        
+        if (!isSelectedCommit) {
+          onCommitCardClick(event as any, node);
+        }
+        
+        if (isLocalUncommitted) {
+          let wtInfo = undefined;
+          if (uncommittedSession) {
+            const targetNorm = uncommittedSession.path.replace(/\\/g, '/').replace(/\/+$/, '').toLowerCase();
+            wtInfo = worktrees.find((w) => w.path.replace(/\\/g, '/').replace(/\/+$/, '').toLowerCase() === targetNorm);
+          }
+          if (!wtInfo) {
+            if (commitId === LEGACY_WORKING_TREE_ID) {
+              wtInfo = worktrees.find((w) => w.isCurrent);
+            } else if (commitId.startsWith(`${LEGACY_WORKING_TREE_ID}:`)) {
+              const stableKey = commitId.substring(LEGACY_WORKING_TREE_ID.length + 1);
+              wtInfo = worktrees.find((w) => worktreeStableKey(w.path) === stableKey);
+            }
+          }
+          onShowContextMenu(
+            event,
+            'worktree',
+            currentRepoPath || '',
+            wtInfo?.path,
+            wtInfo,
+            commitId,
+            headerLabel,
+            displayLabel
+          );
+        } else if (isEmptyBranchNode) {
+          onShowContextMenu(
+            event,
+            'empty-branch',
+            currentRepoPath || '',
+            undefined,
+            undefined,
+            commitId,
+            headerLabel,
+            undefined,
+            node.commit.branchName
+          );
+        } else if (isStashedCommit) {
+          onShowContextMenu(
+            event,
+            'stash',
+            currentRepoPath || '',
+            undefined,
+            undefined,
+            commitId,
+            headerLabel,
+            node.commit.message
+          );
+        } else {
+          onShowContextMenu(
+            event,
+            'commit',
+            currentRepoPath || '',
+            undefined,
+            undefined,
+            commitId,
+            headerLabel,
+            node.commit.message,
+            node.commit.branchName
+          );
+        }
+      }}
     >
       <div
         className={cn("absolute left-0 z-30 w-full", selectedCommitTextClass)}
@@ -679,11 +771,10 @@ const MapGridCommitCard = memo(function MapGridCommitCard({
           <div className="min-h-0 flex-1">
             <div
               className={cn(
-                'pointer-events-auto max-w-[38rem] select-text font-normal tracking-tight text-foreground',
+                'pointer-events-auto max-w-[38rem] select-none font-normal tracking-tight text-foreground',
                 selectedCommitTextClass,
                 displayZoom <= 0.5 ? 'overflow-hidden text-ellipsis whitespace-nowrap' : 'break-words whitespace-normal',
               )}
-              data-selectable-text="true"
               style={scaledBodyTextStyle}
               aria-label={isDirtyWorktreeNode ? displayLabel : undefined}
             >
@@ -703,15 +794,13 @@ const MapGridCommitCard = memo(function MapGridCommitCard({
           {displayZoom > 0.5 ? (
             <div className="mt-auto flex items-end justify-between" style={scaledMetaTopStyle}>
               <div
-                className={cn('pointer-events-auto select-text font-normal', selectedCommitTextClass)}
-                data-selectable-text="true"
+                className={cn('pointer-events-auto select-none font-normal', selectedCommitTextClass)}
                 style={scaledTextStyle}
               >
                 @{node.commit.author}
               </div>
               <div
-                className={cn('pointer-events-auto select-text font-normal', selectedCommitTextClass)}
-                data-selectable-text="true"
+                className={cn('pointer-events-auto select-none font-normal', selectedCommitTextClass)}
                 style={scaledTextStyle}
               >
                 {COMMIT_DATE_FORMATTER.format(new Date(node.commit.date))}
@@ -810,6 +899,15 @@ type Props = {
   previewedNodeId?: string | null;
   previewedWorktreeNodeIds?: string[];
   terminalCountByWorkingTreeId: Readonly<Record<string, number>>;
+  worktrees: WorktreeInfo[];
+  currentRepoPath?: string;
+  onShowContextMenu?: (
+    event: React.MouseEvent,
+    type: 'project' | 'worktree' | 'worktree-plus',
+    projectPath: string,
+    worktreePath?: string,
+    worktree?: WorktreeInfo
+  ) => void;
   orientation?: 'vertical' | 'horizontal';
   dragPreviewByNodeId?: Record<string, { x: number; y: number }>;
   nodePositionOverrides?: Record<string, { x: number; y: number }>;
@@ -884,6 +982,9 @@ const MapGridCanvas = memo(function MapGridCanvas({
   previewedNodeId,
   previewedWorktreeNodeIds,
   terminalCountByWorkingTreeId,
+  worktrees,
+  currentRepoPath,
+  onShowContextMenu,
   dragPreviewByNodeId = EMPTY_DRAG_PREVIEW,
   nodePositionOverrides = EMPTY_NODE_POSITION_OVERRIDES,
   connectorPathCacheScopeBase,
@@ -1307,6 +1408,9 @@ const MapGridCanvas = memo(function MapGridCanvas({
                 previewedNodeId={previewedNodeId}
                 previewedWorktreeNodeIds={previewedWorktreeNodeIds}
                 terminalCountByWorkingTreeId={terminalCountByWorkingTreeId}
+                worktrees={worktrees}
+                currentRepoPath={currentRepoPath}
+                onShowContextMenu={onShowContextMenu}
                 onCommitCardClick={onCommitCardClick}
                 onNodePointerDown={onNodePointerDown}
                 onNodePointerMove={onNodePointerMove}

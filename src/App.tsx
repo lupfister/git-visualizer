@@ -393,6 +393,84 @@ function App() {
   } | null>(null);
   const [isCommitSwitchFeedbackVisible, setIsCommitSwitchFeedbackVisible] = useState(false);
   const [mergeInProgress, setMergeInProgress] = useState(false);
+  const [contextMenu, setContextMenu] = useState<{
+    x: number;
+    y: number;
+    type: 'project' | 'worktree' | 'worktree-plus' | 'commit' | 'stash' | 'empty-branch';
+    projectPath: string;
+    worktreePath?: string;
+    worktree?: WorktreeInfo;
+    commitSha?: string;
+    commitLabel?: string;
+    commitText?: string;
+    branchName?: string;
+  } | null>(null);
+
+  const menuRef = useRef<HTMLDivElement | null>(null);
+
+  useEffect(() => {
+    if (!contextMenu) return;
+    const handlePointerDown = (event: PointerEvent) => {
+      const target = event.target as globalThis.Node | null;
+      if (!target) return;
+      if (menuRef.current?.contains(target)) return;
+      setContextMenu(null);
+    };
+    window.addEventListener('pointerdown', handlePointerDown);
+    return () => window.removeEventListener('pointerdown', handlePointerDown);
+  }, [contextMenu]);
+
+  const showContextMenu = useCallback((
+    event: React.MouseEvent,
+    type: 'project' | 'worktree' | 'worktree-plus' | 'commit' | 'stash' | 'empty-branch',
+    projectPath: string,
+    worktreePath?: string,
+    worktree?: WorktreeInfo,
+    commitSha?: string,
+    commitLabel?: string,
+    commitText?: string,
+    branchName?: string
+  ) => {
+    event.preventDefault();
+    event.stopPropagation();
+    
+    const menuWidth = 192;
+    const menuHeight = (() => {
+      if (type === 'project') return 140;
+      if (type === 'commit') return 140;
+      if (type === 'stash') return 110;
+      if (type === 'worktree') {
+        let buttons = 5;
+        if (worktree?.branchName) buttons++;
+        if (commitText) buttons++;
+        return buttons * 28 + 30;
+      }
+      return 80;
+    })();
+    
+    let x = event.clientX;
+    let y = event.clientY;
+    
+    if (x + menuWidth > window.innerWidth) {
+      x = window.innerWidth - menuWidth - 8;
+    }
+    if (y + menuHeight > window.innerHeight) {
+      y = window.innerHeight - menuHeight - 8;
+    }
+    
+    setContextMenu({
+      x,
+      y,
+      type,
+      projectPath,
+      worktreePath,
+      worktree,
+      commitSha,
+      commitLabel,
+      commitText,
+      branchName,
+    });
+  }, []);
   const [pushInProgress, setPushInProgress] = useState(false);
   const [deleteInProgress, setDeleteInProgress] = useState(false);
   const [branchPromptMeta, setBranchPromptMeta] = useState<Record<string, BranchPromptMeta>>({});
@@ -6898,16 +6976,189 @@ function App() {
   const blockMapDisplay = !mapReadyForDisplay || mapPresentationState !== 'ready';
   const blockMapInteraction = mapLoading || loading;
 
+  const handleCreateWorktree = useCallback(async (projectPath: string, branchOrCommitInput?: string, worktreePathInput?: string) => {
+    let branchOrCommit = branchOrCommitInput;
+    if (branchOrCommit === undefined) {
+      const answer = window.prompt("Enter branch or commit to checkout in the new worktree (leave empty for HEAD):", "");
+      if (answer === null) return;
+      branchOrCommit = answer.trim();
+    }
+
+    let worktreePath = worktreePathInput;
+    if (!worktreePath) {
+      const parentDir = await open({
+        directory: true,
+        multiple: false,
+        title: 'Select parent directory for the new worktree',
+        defaultPath: projectPath,
+      });
+      if (!parentDir) return;
+
+      const folderName = window.prompt("Enter name for the new worktree folder:");
+      if (!folderName) return;
+      worktreePath = `${parentDir}/${folderName.trim()}`;
+    }
+
+    const project = projectCards.find((p) => sameRepoPath(p.path, projectPath));
+    const branch = project?.branches.find((b) => b.name === branchOrCommit);
+    const headSha = branch?.headSha || project?.checkedOutRef?.headSha || '0000000000000000000000000000000000000000';
+
+    const tempWorktree: WorktreeInfo = {
+      path: worktreePath,
+      pathExists: true,
+      headSha,
+      branchName: branchOrCommit || null,
+      parentSha: null,
+      isCurrent: false,
+      isPrunable: false,
+      hasUncommittedChanges: false,
+    };
+
+    beginRepoMutation();
+
+    if (sameRepoPath(projectPath, repoPath)) {
+      setWorktrees((prev) => [...prev, tempWorktree]);
+    } else {
+      setProjectSnapshots((prev) => {
+        const snapshot = prev[projectPath];
+        if (!snapshot) return prev;
+        return {
+          ...prev,
+          [projectPath]: {
+            ...snapshot,
+            worktrees: [...(snapshot.worktrees || []), tempWorktree],
+          },
+        };
+      });
+    }
+
+    try {
+      await invoke('add_worktree', {
+        repoPath: projectPath,
+        worktreePath,
+        branchOrCommit: branchOrCommit || null,
+      });
+
+      const updatedWorktrees = await invoke<WorktreeInfo[]>('list_worktrees', { repoPath: projectPath }).catch(
+        () => [] as WorktreeInfo[],
+      );
+
+      if (sameRepoPath(projectPath, repoPath)) {
+        setWorktrees(updatedWorktrees);
+        await finalizeRepoMutation(projectPath, outcomeFromWorktreeSync(updatedWorktrees));
+      } else {
+        setProjectSnapshots((prev) => {
+          const snapshot = prev[projectPath];
+          if (!snapshot) return prev;
+          return {
+            ...prev,
+            [projectPath]: {
+              ...snapshot,
+              worktrees: updatedWorktrees,
+            },
+          };
+        });
+        endRepoMutation();
+      }
+    } catch (e) {
+      endRepoMutation();
+      if (sameRepoPath(projectPath, repoPath)) {
+        setWorktrees((prev) => prev.filter((wt) => wt.path !== worktreePath));
+      } else {
+        setProjectSnapshots((prev) => {
+          const snapshot = prev[projectPath];
+          if (!snapshot) return prev;
+          return {
+            ...prev,
+            [projectPath]: {
+              ...snapshot,
+              worktrees: (snapshot.worktrees || []).filter((wt) => wt.path !== worktreePath),
+            },
+          };
+        });
+      }
+      const errText = e instanceof Error ? e.message : String(e);
+      setError(errText);
+      console.error('Failed to create worktree:', errText);
+    }
+  }, [projectCards, repoPath]);
+
+  const handleDeleteWorktree = useCallback(async (projectPath: string, worktreePath: string) => {
+    const confirm = window.confirm(`Are you sure you want to delete the worktree at ${worktreePath}?`);
+    if (!confirm) return;
+
+    beginRepoMutation();
+
+    if (sameRepoPath(projectPath, repoPath)) {
+      setWorktrees((prev) => prev.filter((wt) => wt.path !== worktreePath));
+    } else {
+      setProjectSnapshots((prev) => {
+        const snapshot = prev[projectPath];
+        if (!snapshot) return prev;
+        return {
+          ...prev,
+          [projectPath]: {
+            ...snapshot,
+            worktrees: (snapshot.worktrees || []).filter((wt) => wt.path !== worktreePath),
+          },
+        };
+      });
+    }
+
+    try {
+      await invoke('remove_worktree', { repoPath: projectPath, worktreePath, force: true });
+
+      const updatedWorktrees = await invoke<WorktreeInfo[]>('list_worktrees', { repoPath: projectPath }).catch(
+        () => [] as WorktreeInfo[],
+      );
+
+      if (sameRepoPath(projectPath, repoPath)) {
+        setWorktrees(updatedWorktrees);
+        await finalizeRepoMutation(projectPath, outcomeFromWorktreeSync(updatedWorktrees));
+      } else {
+        setProjectSnapshots((prev) => {
+          const snapshot = prev[projectPath];
+          if (!snapshot) return prev;
+          return {
+            ...prev,
+            [projectPath]: {
+              ...snapshot,
+              worktrees: updatedWorktrees,
+            },
+          };
+        });
+        endRepoMutation();
+      }
+    } catch (e) {
+      endRepoMutation();
+      const updatedWorktrees = await invoke<WorktreeInfo[]>('list_worktrees', { repoPath: projectPath }).catch(
+        () => [] as WorktreeInfo[],
+      );
+      if (sameRepoPath(projectPath, repoPath)) {
+        setWorktrees(updatedWorktrees);
+      } else {
+        setProjectSnapshots((prev) => {
+          const snapshot = prev[projectPath];
+          if (!snapshot) return prev;
+          return {
+            ...prev,
+            [projectPath]: {
+              ...snapshot,
+              worktrees: updatedWorktrees,
+            },
+          };
+        });
+      }
+      const errText = e instanceof Error ? e.message : String(e);
+      setError(errText);
+      console.error('Failed to delete worktree:', errText);
+    }
+  }, [repoPath]);
+
   return (
     <div className="relative flex h-screen min-h-0 flex-col bg-background text-foreground">
       <div className="relative z-30 flex h-full min-h-0 flex-col">
-        <div
-          className={cn(
-            'relative flex h-full min-h-0 flex-1 overflow-hidden',
-            useBottomTerminal && 'flex-col',
-          )}
-        >
-          <div className="relative flex min-h-0 min-w-0 flex-1 overflow-hidden">
+        <div className="relative flex h-full min-h-0 flex-1 overflow-hidden">
           <div
             ref={sidebarShellRef}
             className="relative z-[60] flex h-full min-h-0 flex-none overflow-visible"
@@ -6968,6 +7219,20 @@ function App() {
               }}
               onReorderWorktrees={reorderWorktrees}
               onReorderTerminals={reorderTerminals}
+              onCreateWorktree={handleCreateWorktree}
+              onDeleteWorktree={handleDeleteWorktree}
+              onPreviewWorktree={async (projectPath, worktree) => {
+                if (!repoPath || !sameRepoPath(repoPath, projectPath)) await loadRepo(projectPath);
+                const workingTreeId = workingTreeIdForPath(worktree.path, worktree.isCurrent);
+                handlePreviewNode({
+                  kind: 'worktree',
+                  worktreePath: worktree.path,
+                  headSha: worktree.headSha,
+                  workingTreeId,
+                }, workingTreeId);
+              }}
+              onShowContextMenu={showContextMenu}
+              onCloseContextMenu={() => setContextMenu(null)}
             />
             {!isSidebarCollapsed ? (
               <div
@@ -6981,8 +7246,14 @@ function App() {
             ) : null}
           </div>
 
-          <div className="relative min-h-0 min-w-0 flex-1 overflow-hidden">
-            <div className="pointer-events-none absolute left-0 right-0 top-0 z-40 h-12" />
+          <div
+            className={cn(
+              'relative flex min-h-0 min-w-0 flex-1 overflow-hidden',
+              useBottomTerminal ? 'flex-col' : 'flex-row',
+            )}
+          >
+            <div className="relative min-h-0 min-w-0 flex-1 overflow-hidden">
+              <div className="pointer-events-none absolute left-0 right-0 top-0 z-40 h-12" />
               <BranchGridMapView
                 branches={branchesForLayout}
                 mergeNodes={mergeNodes}
@@ -7051,7 +7322,8 @@ function App() {
                 onNodePositionOverridesChange={handleNodePositionOverridesChange}
                 orientation={mapGridOrientation}
                 worktreeDraftByWorkingTreeId={worktreeDraftByWorkingTreeId}
-                  gridHudProps={gridHudProps}
+                gridHudProps={gridHudProps}
+                onShowContextMenu={showContextMenu}
               />
               {previewSetupOpen && previewDraftConfig ? (
                 <div className="absolute inset-0 z-[90] flex items-center justify-center bg-background/70 p-4 backdrop-blur-sm">
@@ -7099,21 +7371,385 @@ function App() {
                   </div>
                 </div>
               ) : null}
+            </div>
+            <TerminalPanel
+              session={activeTerminal}
+              placement={terminalPanelPlacement}
+              onPlacementChange={setTerminalPanelPlacement}
+              onClose={() => setActiveTerminalId(null)}
+              onTerminate={(id) => void handleTerminateTerminal(id)}
+              onSessionChange={handleTerminalSessionChange}
+            />
           </div>
-          </div>
-          <TerminalPanel
-            session={activeTerminal}
-            placement={terminalPanelPlacement}
-            onPlacementChange={setTerminalPanelPlacement}
-            onClose={() => setActiveTerminalId(null)}
-            onTerminate={(id) => void handleTerminateTerminal(id)}
-            onSessionChange={handleTerminalSessionChange}
-          />
         </div>
       </div>
+      {contextMenu ? (
+        <div
+          ref={menuRef}
+          className="context-menu-panel fixed z-[100] w-max min-w-[120px] rounded-lg border border-border bg-background p-1"
+          style={{
+            top: `${contextMenu.y}px`,
+            left: `${contextMenu.x}px`,
+          }}
+          onPointerDown={(e) => e.stopPropagation()}
+        >
+          {contextMenu.type === 'project' && (
+            <>
+              <button
+                type="button"
+                onClick={() => {
+                  setContextMenu(null);
+                  void revealProjectInFinder(contextMenu.projectPath);
+                }}
+                className="w-full rounded-lg px-2 py-1.5 text-left text-xs transition-colors hover:bg-muted"
+              >
+                Open in Finder
+              </button>
+              <button
+                type="button"
+                onClick={async () => {
+                  setContextMenu(null);
+                  try {
+                    await navigator.clipboard.writeText(contextMenu.projectPath);
+                  } catch (err) {
+                    console.error('Failed to copy path:', err);
+                  }
+                }}
+                className="w-full rounded-lg px-2 py-1.5 text-left text-xs transition-colors hover:bg-muted"
+              >
+                Copy file path
+              </button>
+              <button
+                type="button"
+                onClick={() => {
+                  setContextMenu(null);
+                  void handleCreateWorktree(contextMenu.projectPath);
+                }}
+                className="w-full rounded-lg px-2 py-1.5 text-left text-xs transition-colors hover:bg-muted"
+              >
+                New worktree
+              </button>
+              <button
+                type="button"
+                onClick={() => {
+                  setContextMenu(null);
+                  removeProject(contextMenu.projectPath);
+                }}
+                className="w-full rounded-lg px-2 py-1.5 text-left text-xs text-red-600 transition-colors hover:bg-red-50 dark:text-red-400 dark:hover:bg-red-900/20"
+              >
+                Remove
+              </button>
+            </>
+          )}
+          {contextMenu.type === 'worktree' && (
+            <>
+              <button
+                type="button"
+                onClick={() => {
+                  setContextMenu(null);
+                  if (contextMenu.worktreePath) {
+                    void revealProjectInFinder(contextMenu.worktreePath);
+                  }
+                }}
+                className="w-full rounded-lg px-2 py-1.5 text-left text-xs transition-colors hover:bg-muted"
+              >
+                Open in Finder
+              </button>
+              <button
+                type="button"
+                onClick={async () => {
+                  setContextMenu(null);
+                  if (contextMenu.worktreePath) {
+                    try {
+                      await navigator.clipboard.writeText(contextMenu.worktreePath);
+                    } catch (err) {
+                      console.error('Failed to copy path:', err);
+                    }
+                  }
+                }}
+                className="w-full rounded-lg px-2 py-1.5 text-left text-xs transition-colors hover:bg-muted"
+              >
+                Copy file path
+              </button>
+              {contextMenu.worktree?.branchName && (
+                <button
+                  type="button"
+                  onClick={async () => {
+                    setContextMenu(null);
+                    if (contextMenu.worktree?.branchName) {
+                      try {
+                        await navigator.clipboard.writeText(contextMenu.worktree.branchName);
+                      } catch (err) {
+                        console.error('Failed to copy worktree label:', err);
+                      }
+                    }
+                  }}
+                  className="w-full rounded-lg px-2 py-1.5 text-left text-xs transition-colors hover:bg-muted"
+                >
+                  Copy worktree label
+                </button>
+              )}
+              {contextMenu.commitText && (
+                <button
+                  type="button"
+                  onClick={async () => {
+                    setContextMenu(null);
+                    if (contextMenu.commitText) {
+                      try {
+                        await navigator.clipboard.writeText(contextMenu.commitText);
+                      } catch (err) {
+                        console.error('Failed to copy message:', err);
+                      }
+                    }
+                  }}
+                  className="w-full rounded-lg px-2 py-1.5 text-left text-xs transition-colors hover:bg-muted"
+                >
+                  Copy message
+                </button>
+              )}
+              <button
+                type="button"
+                onClick={() => {
+                  setContextMenu(null);
+                  if (contextMenu.worktreePath) {
+                    void handleCreateTerminal(contextMenu.projectPath, contextMenu.worktreePath);
+                  }
+                }}
+                className="w-full rounded-lg px-2 py-1.5 text-left text-xs transition-colors hover:bg-muted"
+              >
+                New terminal
+              </button>
+              <button
+                type="button"
+                onClick={async () => {
+                  setContextMenu(null);
+                  if (contextMenu.worktree) {
+                    if (!repoPath || !sameRepoPath(repoPath, contextMenu.projectPath)) await loadRepo(contextMenu.projectPath);
+                    const workingTreeId = workingTreeIdForPath(contextMenu.worktree.path, contextMenu.worktree.isCurrent);
+                    handlePreviewNode({
+                      kind: 'worktree',
+                      worktreePath: contextMenu.worktree.path,
+                      headSha: contextMenu.worktree.headSha,
+                      workingTreeId,
+                    }, workingTreeId);
+                  }
+                }}
+                className="w-full rounded-lg px-2 py-1.5 text-left text-xs transition-colors hover:bg-muted"
+              >
+                Preview
+              </button>
+              <button
+                type="button"
+                onClick={() => {
+                  setContextMenu(null);
+                  if (contextMenu.worktreePath) {
+                    void handleDeleteWorktree(contextMenu.projectPath, contextMenu.worktreePath);
+                  }
+                }}
+                className="w-full rounded-lg px-2 py-1.5 text-left text-xs text-red-600 transition-colors hover:bg-red-50 dark:text-red-400 dark:hover:bg-red-900/20"
+              >
+                Delete
+              </button>
+            </>
+          )}
+          {contextMenu.type === 'worktree-plus' && (
+            <>
+              <button
+                type="button"
+                onClick={async () => {
+                  setContextMenu(null);
+                  if (contextMenu.worktree) {
+                    if (!repoPath || !sameRepoPath(repoPath, contextMenu.projectPath)) await loadRepo(contextMenu.projectPath);
+                    const workingTreeId = workingTreeIdForPath(contextMenu.worktree.path, contextMenu.worktree.isCurrent);
+                    handlePreviewNode({
+                      kind: 'worktree',
+                      worktreePath: contextMenu.worktree.path,
+                      headSha: contextMenu.worktree.headSha,
+                      workingTreeId,
+                    }, workingTreeId);
+                  }
+                }}
+                className="w-full rounded-lg px-2 py-1.5 text-left text-xs transition-colors hover:bg-muted"
+              >
+                Preview
+              </button>
+              <button
+                type="button"
+                onClick={() => {
+                  setContextMenu(null);
+                  if (contextMenu.worktreePath) {
+                    void handleCreateTerminal(contextMenu.projectPath, contextMenu.worktreePath);
+                  }
+                }}
+                className="w-full rounded-lg px-2 py-1.5 text-left text-xs transition-colors hover:bg-muted"
+              >
+                Terminal
+              </button>
+            </>
+          )}
+          {contextMenu.type === 'commit' && (
+            <>
+              <button
+                type="button"
+                onClick={async () => {
+                  setContextMenu(null);
+                  if (contextMenu.commitLabel) {
+                    try {
+                      await navigator.clipboard.writeText(contextMenu.commitLabel);
+                    } catch (err) {
+                      console.error('Failed to copy label:', err);
+                    }
+                  }
+                }}
+                className="w-full rounded-lg px-2 py-1.5 text-left text-xs transition-colors hover:bg-muted"
+              >
+                Copy commit label
+              </button>
+              <button
+                type="button"
+                onClick={async () => {
+                  setContextMenu(null);
+                  if (contextMenu.commitText) {
+                    try {
+                      await navigator.clipboard.writeText(contextMenu.commitText);
+                    } catch (err) {
+                      console.error('Failed to copy message:', err);
+                    }
+                  }
+                }}
+                className="w-full rounded-lg px-2 py-1.5 text-left text-xs transition-colors hover:bg-muted"
+              >
+                Copy commit message
+              </button>
+              <button
+                type="button"
+                onClick={async () => {
+                  setContextMenu(null);
+                  if (contextMenu.commitSha) {
+                    void handlePreviewNode({
+                      kind: 'commit',
+                      sha: contextMenu.commitSha,
+                      branchName: contextMenu.branchName,
+                    }, contextMenu.commitSha);
+                  }
+                }}
+                className="w-full rounded-lg px-2 py-1.5 text-left text-xs transition-colors hover:bg-muted"
+              >
+                Preview
+              </button>
+              <button
+                type="button"
+                onClick={async () => {
+                  setContextMenu(null);
+                  if (contextMenu.commitSha && repoPath) {
+                    void handleMapCommitClick({
+                      commitSha: contextMenu.commitSha,
+                      branchName: contextMenu.branchName,
+                      worktreePath: repoPath,
+                    });
+                  }
+                }}
+                className="w-full rounded-lg px-2 py-1.5 text-left text-xs transition-colors hover:bg-muted"
+              >
+                Checkout
+              </button>
+            </>
+          )}
+          {contextMenu.type === 'stash' && (
+            <>
+              <button
+                type="button"
+                onClick={async () => {
+                  setContextMenu(null);
+                  if (contextMenu.commitText) {
+                    try {
+                      await navigator.clipboard.writeText(contextMenu.commitText);
+                    } catch (err) {
+                      console.error('Failed to copy stash message:', err);
+                    }
+                  }
+                }}
+                className="w-full rounded-lg px-2 py-1.5 text-left text-xs transition-colors hover:bg-muted"
+              >
+                Copy stash message
+              </button>
+              <button
+                type="button"
+                onClick={async () => {
+                  setContextMenu(null);
+                  if (contextMenu.commitSha && repoPath) {
+                    void handleMapCommitClick({
+                      commitSha: contextMenu.commitSha,
+                      worktreePath: repoPath,
+                    });
+                  }
+                }}
+                className="w-full rounded-lg px-2 py-1.5 text-left text-xs transition-colors hover:bg-muted"
+              >
+                Checkout
+              </button>
+              <button
+                type="button"
+                onClick={async () => {
+                  setContextMenu(null);
+                  if (contextMenu.commitSha) {
+                    const stashMatch = /^STASH:(\d+)$/.exec(contextMenu.commitSha);
+                    if (stashMatch) {
+                      const stashIndex = parseInt(stashMatch[1], 10);
+                      void handleDeleteSelection({
+                        branchNames: [],
+                        discardUncommittedChanges: false,
+                        stashIndices: [stashIndex],
+                      });
+                    }
+                  }
+                }}
+                className="w-full rounded-lg px-2 py-1.5 text-left text-xs text-red-600 transition-colors hover:bg-red-50 dark:text-red-400 dark:hover:bg-red-900/20"
+              >
+                Delete
+              </button>
+            </>
+          )}
+          {contextMenu.type === 'empty-branch' && (
+            <>
+              <button
+                type="button"
+                onClick={async () => {
+                  setContextMenu(null);
+                  if (contextMenu.branchName && repoPath) {
+                    const commitSha = contextMenu.commitSha || '';
+                    void handleMapCommitClick({
+                      commitSha,
+                      branchName: contextMenu.branchName,
+                      worktreePath: repoPath,
+                    });
+                  }
+                }}
+                className="w-full rounded-lg px-2 py-1.5 text-left text-xs transition-colors hover:bg-muted"
+              >
+                Checkout
+              </button>
+              <button
+                type="button"
+                onClick={async () => {
+                  setContextMenu(null);
+                  if (contextMenu.branchName) {
+                    void handleDeleteSelection({
+                      branchNames: [contextMenu.branchName],
+                      discardUncommittedChanges: false,
+                    });
+                  }
+                }}
+                className="w-full rounded-lg px-2 py-1.5 text-left text-xs text-red-600 transition-colors hover:bg-red-50 dark:text-red-400 dark:hover:bg-red-900/20"
+              >
+                Delete
+              </button>
+            </>
+          )}
+        </div>
+      ) : null}
     </div>
   );
 }
-
 
 export default App;

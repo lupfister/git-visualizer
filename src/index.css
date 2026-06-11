@@ -759,3 +759,19 @@ body.popover-window #root {
     color: var(--terminal-shimmer-rest);
   }
 }
+
+.mapgrid-viewport,
+.mapgrid-viewport * {
+  user-select: none !important;
+  -webkit-user-select: none !important;
+}
+
+.context-menu-panel {
+  display: flex !important;
+  flex-direction: column !important;
+}
+
+.context-menu-panel button {
+  white-space: nowrap !important;
+  width: auto !important;
+}

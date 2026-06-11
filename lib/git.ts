@@ -1,5 +1,5 @@
 import { invoke } from '../src/timedInvoke';
-import type { Branch, MergeNode } from '../types';
+import type { Branch, MergeNode, WorktreeInfo } from '../types';
 
 export interface RepoInfo {
   name: string;
@@ -127,4 +127,12 @@ export async function getRepoWatcherEpochs(repoPath: string): Promise<RepoWatche
 
 export async function getRepoFastSignature(repoPath: string): Promise<string> {
   return invoke('get_repo_fast_signature', { repoPath });
+}
+
+export async function addWorktree(
+  repoPath: string,
+  worktreePath: string,
+  branchOrCommit: string | null
+): Promise<WorktreeInfo> {
+  return invoke('add_worktree', { repoPath, worktreePath, branchOrCommit });
 }

@@ -170,6 +170,17 @@ type Props = BranchGridViewProps & {
   onNodePositionOverridesChange?: (overrides: NodePositionOverrides) => void;
   worktreeDraftByWorkingTreeId?: ReadonlyMap<string, WorktreeDraftDisplay>;
   terminalCountByWorkingTreeId?: Readonly<Record<string, number>>;
+  onShowContextMenu?: (
+    event: React.MouseEvent,
+    type: 'project' | 'worktree' | 'worktree-plus' | 'commit' | 'stash' | 'empty-branch',
+    projectPath: string,
+    worktreePath?: string,
+    worktree?: WorktreeInfo,
+    commitSha?: string,
+    commitLabel?: string,
+    commitText?: string,
+    branchName?: string
+  ) => void;
 };
 
 export default function BranchGridMap({
@@ -181,6 +192,7 @@ export default function BranchGridMap({
   openPRs = [],
   defaultBranch,
   onCommitClick,
+  onShowContextMenu,
   onLoadMore,
   view,
   staleBranches = [],
@@ -2001,7 +2013,7 @@ export default function BranchGridMap({
   }
 
   return (
-    <div className="relative flex h-full min-h-0 flex-col overflow-hidden border-l border-border bg-background">
+    <div className="mapgrid-viewport relative flex h-full min-h-0 flex-col overflow-hidden border-l border-border bg-background select-none">
       <MapGridDebugPanel
         isOpen={isDebugOpen}
         onClose={() => onDebugClose?.()}
@@ -2233,6 +2245,9 @@ export default function BranchGridMap({
           worktreeSessions={worktreeSessions}
           worktreeDraftByWorkingTreeId={worktreeDraftByWorkingTreeId}
           terminalCountByWorkingTreeId={terminalCountByWorkingTreeId}
+          worktrees={worktrees}
+          currentRepoPath={currentRepoPath}
+          onShowContextMenu={onShowContextMenu}
           previewedNodeId={previewedNodeId}
           previewedWorktreeNodeIds={previewedWorktreeNodeIds}
           orientation={orientation}

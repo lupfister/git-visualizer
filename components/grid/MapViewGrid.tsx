@@ -108,6 +108,17 @@ interface Props {
   onNodePositionOverridesChange?: (overrides: NodePositionOverrides) => void;
   worktreeDraftByWorkingTreeId?: ReadonlyMap<string, WorktreeDraftDisplay>;
   onNodeDoubleClick?: (node: Node) => void;
+  onShowContextMenu?: (
+    event: React.MouseEvent,
+    type: 'project' | 'worktree' | 'worktree-plus' | 'commit' | 'stash' | 'empty-branch',
+    projectPath: string,
+    worktreePath?: string,
+    worktree?: WorktreeInfo,
+    commitSha?: string,
+    commitLabel?: string,
+    commitText?: string,
+    branchName?: string
+  ) => void;
 }
 
 export default function BranchGridMapView({
@@ -183,6 +194,7 @@ export default function BranchGridMapView({
   onNodePositionOverridesChange,
   worktreeDraftByWorkingTreeId,
   onNodeDoubleClick,
+  onShowContextMenu,
 }: Props) {
   const openPRBranchNames = new Set(openPRs.map(p => p.branchName));
   const ACTIVE_MS = 14 * 86400000;
@@ -268,6 +280,7 @@ export default function BranchGridMapView({
             nodePositionOverrides={nodePositionOverrides}
             onNodePositionOverridesChange={onNodePositionOverridesChange}
             worktreeDraftByWorkingTreeId={worktreeDraftByWorkingTreeId}
+            onShowContextMenu={onShowContextMenu}
           />
         </div>
       ) : view === 'grid' ? (
@@ -313,6 +326,7 @@ export default function BranchGridMapView({
             onNodePositionOverridesChange={onNodePositionOverridesChange}
             worktreeDraftByWorkingTreeId={worktreeDraftByWorkingTreeId}
             onNodeDoubleClick={onNodeDoubleClick}
+            onShowContextMenu={onShowContextMenu}
           />
         </div>
       ) : null}

@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import type { CSSProperties, PointerEvent as ReactPointerEvent } from 'react';
-import { ChevronRight, MoreHorizontal, Plus, Trash2 } from 'lucide-react';
+import { ChevronRight, Plus, Trash2 } from 'lucide-react';
 import type { Branch, BranchCommitPreview, TerminalSession, WorktreeInfo } from '../types';
 import { accentCssVars, buildWorktreeSessions, workingTreeIdForPath } from '../lib/worktreeSessions';
 import { cn, normalizeRepoPathForCompare, worktreeDisplayName } from './grid/mapGridUtils';
@@ -69,6 +69,17 @@ type Props = {
   onCreateTerminal: (projectPath: string, worktreePath: string) => void | Promise<void>;
   onSelectTerminal: (session: TerminalSession) => void;
   onTerminateTerminal?: (id: string) => void | Promise<void>;
+  onCreateWorktree?: (projectPath: string) => void | Promise<void>;
+  onDeleteWorktree?: (projectPath: string, worktreePath: string) => void | Promise<void>;
+  onPreviewWorktree?: (projectPath: string, worktree: WorktreeInfo) => void | Promise<void>;
+  onShowContextMenu?: (
+    event: React.MouseEvent,
+    type: 'project' | 'worktree' | 'worktree-plus',
+    projectPath: string,
+    worktreePath?: string,
+    worktree?: WorktreeInfo
+  ) => void;
+  onCloseContextMenu?: () => void;
   projectLoading?: boolean;
   projectError?: string | null;
   className?: string;
@@ -159,6 +170,11 @@ export default function DenseBranchSidebar({
   onCreateTerminal,
   onSelectTerminal,
   onTerminateTerminal,
+  onCreateWorktree,
+  onDeleteWorktree,
+  onPreviewWorktree,
+  onShowContextMenu,
+  onCloseContextMenu,
   projectLoading,
   projectError,
   className,
@@ -167,7 +183,16 @@ export default function DenseBranchSidebar({
 }: Props) {
   const [expandedWorktrees, setExpandedWorktrees] = useState<Set<string>>(() => loadSet(EXPANDED_WORKTREES_KEY));
   const [expandedProjects, setExpandedProjects] = useState<Set<string>>(() => loadSet(EXPANDED_PROJECTS_KEY));
-  const [openProjectMenu, setOpenProjectMenu] = useState<string | null>(null);
+
+  const showContextMenu = (
+    event: React.MouseEvent,
+    type: 'project' | 'worktree' | 'worktree-plus',
+    projectPath: string,
+    worktreePath?: string,
+    worktree?: WorktreeInfo
+  ) => {
+    onShowContextMenu?.(event, type, projectPath, worktreePath, worktree);
+  };
   
   // Project drag state
   const [dragPendingProjectPath, setDragPendingProjectPath] = useState<string | null>(null);
@@ -219,22 +244,9 @@ export default function DenseBranchSidebar({
     moved: boolean;
   } | null>(null);
 
-  const menuRef = useRef<HTMLDivElement | null>(null);
   const scrollBodyRef = useRef<HTMLDivElement | null>(null);
   const suppressProjectSelectRef = useRef(false);
   const dragRafRef = useRef<number | null>(null);
-
-  useEffect(() => {
-    if (!openProjectMenu) return;
-    const handlePointerDown = (event: PointerEvent) => {
-      const target = event.target as Node | null;
-      if (!target) return;
-      if (menuRef.current?.contains(target)) return;
-      setOpenProjectMenu(null);
-    };
-    window.addEventListener('pointerdown', handlePointerDown);
-    return () => window.removeEventListener('pointerdown', handlePointerDown);
-  }, [openProjectMenu]);
 
   useEffect(() => {
     if (!activeProjectPath) return;
@@ -391,7 +403,7 @@ export default function DenseBranchSidebar({
       clearDragPreview();
       window.requestAnimationFrame(() => {
         suppressProjectSelectRef.current = false;
-        setOpenProjectMenu(null);
+        onCloseContextMenu?.();
       });
     };
     window.addEventListener('pointermove', handlePointerMove);
@@ -558,7 +570,7 @@ export default function DenseBranchSidebar({
       clearDragWorktree();
       window.requestAnimationFrame(() => {
         suppressProjectSelectRef.current = false;
-        setOpenProjectMenu(null);
+        onCloseContextMenu?.();
       });
     };
     window.addEventListener('pointermove', handlePointerMove);
@@ -698,7 +710,7 @@ export default function DenseBranchSidebar({
       clearDragTerminal();
       window.requestAnimationFrame(() => {
         suppressProjectSelectRef.current = false;
-        setOpenProjectMenu(null);
+        onCloseContextMenu?.();
       });
     };
     window.addEventListener('pointermove', handlePointerMove);
@@ -827,14 +839,24 @@ export default function DenseBranchSidebar({
         disabled={!worktree.pathExists}
         onClick={(event) => {
           event.stopPropagation();
-          void (async () => {
-            await onCreateTerminal(project.path, worktree.path);
-            expandWorktree(key);
-          })();
+          const hasPreview = rawSessions.some(
+            (session) => session.kind === 'preview' && session.status === 'running'
+          );
+          if (hasPreview) {
+            void (async () => {
+              await onCreateTerminal(project.path, worktree.path);
+              expandWorktree(key);
+            })();
+          } else {
+            showContextMenu(event, 'worktree-plus', project.path, worktree.path, worktree);
+          }
         }}
-        className="inline-flex h-7 w-7 shrink-0 items-center justify-center rounded-lg opacity-0 transition-colors group-hover/row:opacity-100 disabled:cursor-not-allowed disabled:opacity-30"
-        aria-label={`New terminal in ${label}`}
-        title="New terminal"
+        className={cn(
+          "inline-flex h-7 w-7 shrink-0 items-center justify-center rounded-lg opacity-0 transition-all group-hover/row:opacity-100 disabled:cursor-not-allowed disabled:opacity-30",
+          accent ? "hover:brightness-75" : "text-muted-foreground hover:text-foreground"
+        )}
+        aria-label={`Actions in ${label}`}
+        title="New terminal or preview"
       >
         <Plus className="h-3.5 w-3.5 shrink-0" />
       </button>
@@ -860,6 +882,9 @@ export default function DenseBranchSidebar({
             )}
             style={rowAccentStyle}
             onClick={ghostMode ? undefined : () => void onSelectWorktree(project.path, workingTreeId)}
+            onContextMenu={ghostMode ? undefined : (event) => {
+              showContextMenu(event, 'worktree', project.path, worktree.path, worktree);
+            }}
           >
             <button
               type="button"
@@ -889,6 +914,9 @@ export default function DenseBranchSidebar({
                 rowSurfaceClass,
               )}
               style={rowAccentStyle}
+              onContextMenu={ghostMode ? undefined : (event) => {
+                showContextMenu(event, 'worktree', project.path, worktree.path, worktree);
+              }}
             >
               <span className="min-w-0 flex-1 truncate text-sm">{label} · {refLabel}</span>
               {plusButton}
@@ -961,7 +989,6 @@ export default function DenseBranchSidebar({
             !ghostMode && onReorderProjects && 'cursor-grab active:cursor-grabbing',
             isActive && 'text-foreground',
             !isActive && 'text-muted-foreground',
-            !ghostMode && openProjectMenu === project.path && 'z-40',
           )}
           onPointerDownCapture={ghostMode ? undefined : (event) => {
             const target = event.target as HTMLElement | null;
@@ -974,6 +1001,9 @@ export default function DenseBranchSidebar({
             const target = event.target as HTMLElement | null;
             if (target?.closest('button, input, textarea, select, [contenteditable="true"]')) return;
             void onSelectProject(project.path);
+          }}
+          onContextMenu={ghostMode ? undefined : (event) => {
+            showContextMenu(event, 'project', project.path);
           }}
         >
           <button
@@ -1000,20 +1030,14 @@ export default function DenseBranchSidebar({
               onPointerDown={(event) => event.stopPropagation()}
               onClick={(event) => {
                 event.stopPropagation();
-                setOpenProjectMenu((current) => current === project.path ? null : project.path);
+                void onCreateWorktree?.(project.path);
               }}
-              className="window-no-drag inline-flex h-7 w-7 shrink-0 items-center justify-center rounded-lg opacity-0 transition-colors group-hover:opacity-100"
-              aria-label={`Project actions for ${project.name}`}
+              className="window-no-drag inline-flex h-7 w-7 shrink-0 items-center justify-center rounded-lg opacity-0 transition-colors group-hover:opacity-100 text-muted-foreground hover:text-foreground"
+              aria-label={`New worktree for ${project.name}`}
+              title="New worktree"
             >
-              <MoreHorizontal className="h-4 w-4 shrink-0" />
+              <WorktreePlusIcon className="h-4 w-4 shrink-0" />
             </button>
-          ) : null}
-          {!ghostMode && openProjectMenu === project.path ? (
-            <div ref={menuRef} className="absolute right-0 top-8 z-50 w-40 rounded-lg border border-border bg-background p-1">
-              <button type="button" onClick={() => void onRevealProjectInFinder(project.path)} className="w-full rounded-lg px-2 py-1.5 text-left text-xs transition-colors hover:bg-muted">Open in Finder</button>
-              {onResetProjectNodePositions ? <button type="button" onClick={() => onResetProjectNodePositions(project.path)} className="w-full rounded-lg px-2 py-1.5 text-left text-xs transition-colors hover:bg-muted">Reset node positions</button> : null}
-              <button type="button" onClick={() => onRemoveProject(project.path)} className="w-full rounded-lg px-2 py-1.5 text-left text-xs text-red-600 transition-colors hover:bg-red-50 dark:text-red-400 dark:hover:bg-red-900/20">Remove</button>
-            </div>
           ) : null}
         </div>
         {isExpanded ? (
@@ -1159,6 +1183,19 @@ export default function DenseBranchSidebar({
         );
       })() : null}
     </aside>
+  );
+}
+
+function WorktreePlusIcon({ className }: { className?: string }) {
+  return (
+    <svg width="16" height="16" viewBox="0 0 16 16" fill="none" xmlns="http://www.w3.org/2000/svg" className={className}>
+      <path d="M3 2V14" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" />
+      <circle cx="3" cy="5" r="1" fill="currentColor" />
+      <path d="M3 9C5 9 6 10 6 12V13" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" />
+      <rect x="8" y="10" width="5" height="4" rx="0.5" stroke="currentColor" strokeWidth="1.5" />
+      <path d="M8 11.5H13" stroke="currentColor" strokeWidth="1.5" />
+      <path d="M10 4H14M12 2V6" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" />
+    </svg>
   );
 }
 

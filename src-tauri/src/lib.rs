@@ -3170,6 +3170,32 @@ async fn remove_worktree(
 }
 
 #[tauri::command(rename_all = "camelCase")]
+async fn add_worktree(
+    repo_path: String,
+    worktree_path: String,
+    branch_or_commit: Option<String>,
+) -> Result<git::WorktreeInfo, String> {
+    run_blocking(move || {
+        let repo = Path::new(&repo_path);
+        let mut args: Vec<&str> = vec!["worktree", "add"];
+        args.push(&worktree_path);
+        
+        let branch_ref = branch_or_commit.as_deref().unwrap_or("").trim();
+        if !branch_ref.is_empty() {
+            args.push(branch_ref);
+        }
+        
+        git::cli::run(repo, &args).map_err(|e| e.to_string())?;
+        
+        let worktrees = git::list_worktrees(repo).map_err(|e| e.to_string())?;
+        let new_wt = worktrees.into_iter().find(|wt| wt.path == worktree_path)
+            .ok_or_else(|| "Worktree was created but not found in list".to_string())?;
+        Ok(new_wt)
+    })
+    .await
+}
+
+#[tauri::command(rename_all = "camelCase")]
 async fn prepare_preview_target(
     repo_path: String,
     target: git::PreviewTarget,
@@ -8468,6 +8494,7 @@ pub fn run() {
             get_checked_out_ref,
             list_worktrees,
             remove_worktree,
+            add_worktree,
             prepare_preview_target,
             save_terminal_attachment,
             list_terminal_sessions,
