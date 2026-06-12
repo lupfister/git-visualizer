@@ -382,6 +382,7 @@ export default function BranchGridMap({
 
   const {
     isCameraMovingRef,
+    cameraStateRef,
     panEpoch,
     renderedZoom,
     cameraRenderTick,
@@ -1365,8 +1366,11 @@ export default function BranchGridMap({
       return;
     }
 
+    if (cameraStateRef.current === 'PANNING') return;
+
     startTransition(() => {
       setVisibleNodeIds((prev) => {
+        if (cameraStateRef.current === 'PANNING') return prev;
         if (cappedVisible.size === 0 && prev.size > 0) return prev;
         const pending = panAdmissionPendingRef.current;
         panAdmissionPendingRef.current.clear();
@@ -1432,6 +1436,7 @@ export default function BranchGridMap({
 
   useEffect(() => {
     if (isCameraMovingRef.current) return;
+    if (cameraStateRef.current === 'PANNING') return;
 
     if (!settlePrunePendingRef.current || settlePruneTargetRef.current == null) {
       setMapGridBackgroundActivity('settle-prune', 'Visible-settle prune', false);
@@ -1441,6 +1446,7 @@ export default function BranchGridMap({
 
     settlePruneRafRef.current = window.requestAnimationFrame(() => {
       settlePruneRafRef.current = null;
+      if (cameraStateRef.current === 'PANNING') return;
       const target = settlePruneTargetRef.current;
       if (!target || !settlePrunePendingRef.current) return;
 

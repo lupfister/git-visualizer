@@ -45,6 +45,9 @@ export function readHasSavedMapGridCamera(repoPath: string, orientation: string)
 
 export type SyncCameraOptions = { animate?: boolean; persist?: boolean };
 
+/** Camera interaction state machine. */
+export type CameraSettleState = 'PANNING' | 'SETTLING' | 'IDLE';
+
 export type MapGridCameraTargetLayout = { layoutX: number; layoutY: number };
 
 function buildCameraTransformCss(
@@ -84,6 +87,9 @@ export function useMapGridCamera({
   const renderedZoomRef = useRef(GRID_ZOOM_DEFAULT);
   const interactionIdleTimeoutRef = useRef<number | null>(null);
   const isCameraMovingRef = useRef(false);
+  const cameraStateRef = useRef<CameraSettleState>('IDLE');
+  const currentSettleJobIdRef = useRef(0);
+  const cameraPersistTimerRef = useRef<number | null>(null);
   const [panEpoch, setPanEpoch] = useState(0);
   const [renderedZoom, setRenderedZoom] = useState(GRID_ZOOM_DEFAULT);
   const [cameraRenderTick, setCameraRenderTick] = useState(0);
@@ -189,6 +195,17 @@ export function useMapGridCamera({
     });
   }, [flushCameraReactTick]);
 
+  const scheduleDebouncedCameraPersist = useCallback(() => {
+    if (cameraPersistTimerRef.current != null) {
+      window.clearTimeout(cameraPersistTimerRef.current);
+    }
+    cameraPersistTimerRef.current = window.setTimeout(() => {
+      cameraPersistTimerRef.current = null;
+      if (cameraStateRef.current === 'PANNING') return;
+      persistCamera(renderedCameraRef.current);
+    }, 500);
+  }, [persistCamera]);
+
   const applyRenderedCamera = useCallback((
     nextPanX: number,
     nextPanY: number,
@@ -263,9 +280,15 @@ export function useMapGridCamera({
   }, []);
 
   const markCameraInteraction = useCallback(() => {
-    const wasActive = isInteractionActiveRef.current;
+    const prevState = cameraStateRef.current;
+
+    // Hard-cancel any settle in progress
+    currentSettleJobIdRef.current += 1;
+    cameraStateRef.current = 'PANNING';
     isInteractionActiveRef.current = true;
-    if (!wasActive) {
+
+    const wasIdle = prevState !== 'PANNING';
+    if (wasIdle) {
       isCameraMovingRef.current = true;
       applyPanLayerChrome(true);
       onPanActiveChangeRef.current?.(true);
@@ -276,6 +299,8 @@ export function useMapGridCamera({
     }
     interactionIdleTimeoutRef.current = window.setTimeout(() => {
       interactionIdleTimeoutRef.current = null;
+
+      // Immediate: flip state refs and emit
       isInteractionActiveRef.current = false;
       isCameraMovingRef.current = false;
       applyPanLayerChrome(false);
@@ -287,10 +312,24 @@ export function useMapGridCamera({
         setRenderedZoom(zoom);
       }
       onRenderedCameraAppliedRef.current?.(renderedCameraRef.current);
-      flushCameraReactTick();
-      persistCamera(renderedCameraRef.current);
+
+      // Schedule debounced camera persist (independent of settle job)
+      scheduleDebouncedCameraPersist();
+
+      // Start cancelable settle job for flushCameraReactTick
+      const jobId = currentSettleJobIdRef.current + 1;
+      currentSettleJobIdRef.current = jobId;
+      cameraStateRef.current = 'SETTLING';
+
+      requestAnimationFrame(() => {
+        if (jobId !== currentSettleJobIdRef.current) return;
+        if (cameraStateRef.current !== 'SETTLING') return;
+
+        flushCameraReactTick();
+        cameraStateRef.current = 'IDLE';
+      });
     }, 90);
-  }, [applyPanLayerChrome, flushCameraReactTick, persistCamera]);
+  }, [applyPanLayerChrome, flushCameraReactTick, scheduleDebouncedCameraPersist]);
 
   const syncCamera = useCallback((
     nextPanX: number,
@@ -458,12 +497,17 @@ export function useMapGridCamera({
         window.clearTimeout(panReactTrailingTimeoutRef.current);
         panReactTrailingTimeoutRef.current = null;
       }
+      if (cameraPersistTimerRef.current != null) {
+        window.clearTimeout(cameraPersistTimerRef.current);
+        cameraPersistTimerRef.current = null;
+      }
       persistCamera(renderedCameraRef.current);
     };
   }, [flushCameraReactTick, getCameraStorageKey, mapPadHostRef, persistCamera]);
 
   return {
     isCameraMovingRef,
+    cameraStateRef,
     panEpoch,
     renderedZoom,
     cameraRenderTick,

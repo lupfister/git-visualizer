@@ -276,15 +276,12 @@ export const useBranchGridLayoutFromRevision = (params: {
   const isSameRepo =
     layoutRevisionForView.repoPath &&
     lastGoodRepoPathRef.current === layoutRevisionForView.repoPath;
-  const isSameGraphSignature =
-    lastGoodGraphSignatureRef.current === (layoutRevisionForView.graphLayoutSignature ?? null);
   const layoutModel =
     asyncLayoutModel
     ?? immediateLayoutModel
     ?? resolved.model
     ?? (
       isSameRepo
-      && isSameGraphSignature
       && lastGoodModelRef.current.allCommits.length > 0
         ? lastGoodModelRef.current
         : EMPTY_LAYOUT_MODEL
