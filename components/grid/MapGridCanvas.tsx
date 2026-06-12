@@ -193,6 +193,7 @@ type CommitCardProps = {
   clumpAnimationIndex?: number;
   clumpExitAnimationIndex?: number;
   reduceMotion?: boolean;
+  commitInProgress?: boolean;
   registerCameraTarget: (element: HTMLElement | SVGElement, layout?: MapGridCameraTargetLayout) => () => void;
 };
 
@@ -238,6 +239,7 @@ const MapGridCommitCard = memo(function MapGridCommitCard({
   clumpAnimationIndex = 0,
   clumpExitAnimationIndex = 0,
   reduceMotion = false,
+  commitInProgress = false,
   registerCameraTarget,
 }: CommitCardProps) {
   const cardRef = useRef<HTMLDivElement | null>(null);
@@ -364,7 +366,7 @@ const MapGridCommitCard = memo(function MapGridCommitCard({
   /** Stash-like animated tile pattern (working tree, stash, empty branch). */
   const showCommitTilePattern = true;
   /** Animated noisy gaps (working tree, stash, empty branch). Unpushed uses static gaps only. */
-  const commitTileAnimateGaps = isDirtyWorktreeNode || isStashedCommit || isEmptyBranchNode;
+  const commitTileAnimateGaps = (isDirtyWorktreeNode && !commitInProgress) || isStashedCommit || isEmptyBranchNode;
   const commitTileCloudyGaps = isRemoteCommit;
   const commitTileRandomGaps =
     commitTileAnimateGaps || (isUnpushedCommit && !commitTileCloudyGaps);
@@ -914,6 +916,7 @@ type Props = {
   dragPreviewByNodeId?: Record<string, { x: number; y: number }>;
   nodePositionOverrides?: Record<string, { x: number; y: number }>;
   connectorPathCacheScopeBase: string;
+  commitInProgress?: boolean;
 };
 
 // Freeze connector source arrays during pan; cull list still refreshes via cameraRenderTick.
@@ -990,6 +993,7 @@ const MapGridCanvas = memo(function MapGridCanvas({
   dragPreviewByNodeId = EMPTY_DRAG_PREVIEW,
   nodePositionOverrides = EMPTY_NODE_POSITION_OVERRIDES,
   connectorPathCacheScopeBase,
+  commitInProgress = false,
 }: Props) {
   const connectorPath2dCacheRef = useRef<Map<string, ConnectorPathCacheEntry>>(new Map());
   const connectorPersistScopeRef = useRef<string | null>(null);
@@ -1424,6 +1428,7 @@ const MapGridCanvas = memo(function MapGridCanvas({
                 clumpAnimationIndex={animationLayout?.entryIndex ?? 0}
                 clumpExitAnimationIndex={animationLayout?.exitIndex ?? 0}
                 reduceMotion={reduceMotion}
+                commitInProgress={commitInProgress}
                 registerCameraTarget={registerCameraTarget}
               />
             );

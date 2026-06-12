@@ -2305,6 +2305,7 @@ export default function BranchGridMap({
           dragPreviewByNodeId={dragPreviewByNodeId}
           nodePositionOverrides={EMPTY_SOLVED_POSITION_OVERRIDES}
           connectorPathCacheScopeBase={`${currentRepoPath ?? '__no-repo__'}::${orientation}`}
+          commitInProgress={commitInProgress}
         />
       {blockMapDisplay ? <MapGridBlockingOverlay /> : null}
       {isSyncing && hasUsableMap && !blockMapDisplay ? (
