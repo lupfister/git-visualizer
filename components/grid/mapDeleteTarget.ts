@@ -1,7 +1,7 @@
 import type { Branch, BranchCommitPreview } from '../../types';
 
 export const parseBranchHeadBranchName = (commitId: string): string | null => {
-  const match = /^BRANCH_HEAD:([^:]+):/.exec(commitId);
+  const match = /^BRANCH_HEAD:([^:]+)/.exec(commitId);
   return match?.[1] ?? null;
 };
 
@@ -16,23 +16,22 @@ export const isEmptyBranchPlaceholder = (
   const concretePreviewCount = (branchCommitPreviews[branchName] ?? []).filter(
     (preview) => preview.kind !== 'branch-created',
   ).length;
-  if (branch.commitsAhead > 0 || concretePreviewCount > 0) return false;
+  if (concretePreviewCount > 0) return false;
   const uniqueAhead = branchUniqueAheadCounts[branchName];
-  if (uniqueAhead != null && uniqueAhead > 0) return false;
-  return true;
+  if (uniqueAhead != null) {
+    return uniqueAhead === 0;
+  }
+  return branch.commitsAhead === 0;
 };
 
 export const parseDeletableEmptyBranchFromCommitId = (
   commitId: string,
   defaultBranch: string,
-  branchByName: Map<string, Branch>,
-  branchUniqueAheadCounts: Record<string, number>,
-  branchCommitPreviews: Record<string, BranchCommitPreview[]>,
+  _branchByName: Map<string, Branch>,
+  _branchUniqueAheadCounts: Record<string, number>,
+  _branchCommitPreviews: Record<string, BranchCommitPreview[]>,
 ): string | null => {
   const branchName = parseBranchHeadBranchName(commitId);
   if (!branchName || branchName === defaultBranch) return null;
-  if (!isEmptyBranchPlaceholder(branchName, branchByName, branchUniqueAheadCounts, branchCommitPreviews)) {
-    return null;
-  }
   return branchName;
 };

@@ -192,6 +192,7 @@ pub fn get_all_repo_commits(
     repo: &Path,
     default_branch: &str,
     other_branches: &[String],
+    branch_created_dates: &HashMap<String, String>,
     merge_target_branch_by_commit_sha: &HashMap<String, String>,
 ) -> Result<Vec<DirectCommit>, GitError> {
     let mut refs: Vec<String> = std::iter::once(default_branch.to_string())
@@ -305,6 +306,35 @@ pub fn get_all_repo_commits(
         }
     }
 
+    let mut disabled_branches = HashSet::<String>::new();
+    for (b_index, b_name) in branch_order.iter().enumerate() {
+        if b_name == default_branch {
+            continue;
+        }
+        let Some(b_head) = head_sha_by_branch.get(b_name) else {
+            continue;
+        };
+        for (a_index, a_name) in branch_order.iter().enumerate() {
+            if a_name == b_name {
+                continue;
+            }
+            if !head_sha_by_branch.contains_key(a_name) {
+                continue;
+            }
+            let key = (b_head.clone(), a_name.clone());
+            if let Some(&dist) = first_parent_distance_by_commit_sha_and_branch.get(&key) {
+                let is_a_older = match (branch_created_dates.get(a_name), branch_created_dates.get(b_name)) {
+                    (Some(a_date), Some(b_date)) => a_date < b_date || (a_date == b_date && a_name < b_name),
+                    _ => a_index < b_index,
+                };
+                if dist > 0 || (dist == 0 && is_a_older) {
+                    disabled_branches.insert(b_name.clone());
+                    break;
+                }
+            }
+        }
+    }
+
     let mut commits = parsed
         .into_iter()
         .map(|commit| DirectCommit {
@@ -312,6 +342,8 @@ pub fn get_all_repo_commits(
                 &commit.full_sha,
                 default_branch,
                 &branch_order,
+                &disabled_branches,
+                branch_created_dates,
                 &default_first_parent_set,
                 &first_parent_distance_by_commit_sha_and_branch,
                 &distance_by_commit_sha_and_branch,
@@ -484,7 +516,7 @@ pub fn get_all_repo_commits(
                         is_default_branch,
                     ))
                 }
-                Some((_, best_distance, best_index, best_is_default_branch)) => {
+                Some((best_branch_name, best_distance, best_index, best_is_default_branch)) => {
                     if is_default_branch != *best_is_default_branch {
                         if !is_default_branch {
                             best_match = Some((
@@ -496,8 +528,12 @@ pub fn get_all_repo_commits(
                         }
                         continue;
                     }
+                    let is_candidate_older = match (branch_created_dates.get(branch_name), branch_created_dates.get(best_branch_name)) {
+                        (Some(cand_date), Some(best_date)) => cand_date < best_date || (cand_date == best_date && branch_name < best_branch_name),
+                        _ => branch_index < *best_index,
+                    };
                     if distance < *best_distance
-                        || (distance == *best_distance && branch_index < *best_index)
+                        || (distance == *best_distance && is_candidate_older)
                     {
                         best_match = Some((
                             branch_name.clone(),
@@ -523,6 +559,8 @@ fn assign_commit_branch(
     sha: &str,
     default_branch: &str,
     branch_order: &[String],
+    disabled_branches: &HashSet<String>,
+    branch_created_dates: &HashMap<String, String>,
     default_first_parent_set: &HashSet<String>,
     first_parent_distance_by_commit_sha_and_branch: &HashMap<(String, String), usize>,
     distance_by_commit_sha_and_branch: &HashMap<(String, String), usize>,
@@ -536,6 +574,9 @@ fn assign_commit_branch(
     // pulling feature commits onto unrelated branches (especially default/main).
     let mut first_parent_best_match: Option<(&str, usize, usize)> = None;
     for (branch_index, branch_name) in branch_order.iter().enumerate() {
+        if disabled_branches.contains(branch_name) {
+            continue;
+        }
         let key = (sha.to_string(), branch_name.clone());
         let Some(distance) = first_parent_distance_by_commit_sha_and_branch
             .get(&key)
@@ -545,9 +586,13 @@ fn assign_commit_branch(
         };
         match first_parent_best_match {
             None => first_parent_best_match = Some((branch_name.as_str(), distance, branch_index)),
-            Some((_, best_distance, best_index)) => {
+            Some((best_branch_name, best_distance, best_index)) => {
+                let is_candidate_older = match (branch_created_dates.get(branch_name), branch_created_dates.get(best_branch_name)) {
+                    (Some(cand_date), Some(best_date)) => cand_date < best_date || (cand_date == best_date && branch_name.as_str() < best_branch_name),
+                    _ => branch_index < best_index,
+                };
                 if distance < best_distance
-                    || (distance == best_distance && branch_index < best_index)
+                    || (distance == best_distance && is_candidate_older)
                 {
                     first_parent_best_match = Some((branch_name.as_str(), distance, branch_index));
                 }
@@ -561,15 +606,22 @@ fn assign_commit_branch(
     // Otherwise, choose the branch head with shortest graph distance to this commit.
     let mut best_match: Option<(&str, usize, usize)> = None;
     for (branch_index, branch_name) in branch_order.iter().enumerate() {
+        if disabled_branches.contains(branch_name) {
+            continue;
+        }
         let key = (sha.to_string(), branch_name.clone());
         let Some(distance) = distance_by_commit_sha_and_branch.get(&key).copied() else {
             continue;
         };
         match best_match {
             None => best_match = Some((branch_name.as_str(), distance, branch_index)),
-            Some((_, best_distance, best_index)) => {
+            Some((best_branch_name, best_distance, best_index)) => {
+                let is_candidate_older = match (branch_created_dates.get(branch_name), branch_created_dates.get(best_branch_name)) {
+                    (Some(cand_date), Some(best_date)) => cand_date < best_date || (cand_date == best_date && branch_name.as_str() < best_branch_name),
+                    _ => branch_index < best_index,
+                };
                 if distance < best_distance
-                    || (distance == best_distance && branch_index < best_index)
+                    || (distance == best_distance && is_candidate_older)
                 {
                     best_match = Some((branch_name.as_str(), distance, branch_index));
                 }
@@ -659,6 +711,7 @@ mod branch_assignment_tests {
             "main",
             &["main".to_string(), "other".to_string()],
             &HashMap::new(),
+            &HashMap::new(),
         )
         .expect("load commits");
 
@@ -686,6 +739,7 @@ mod branch_assignment_tests {
             &repo.path,
             "main",
             &["main".to_string(), "other".to_string()],
+            &HashMap::new(),
             &HashMap::new(),
         )
         .expect("load commits");
@@ -719,6 +773,7 @@ mod branch_assignment_tests {
             &repo.path,
             "main",
             &["main".to_string(), "other".to_string()],
+            &HashMap::new(),
             &HashMap::new(),
         )
         .expect("load commits");
@@ -1116,7 +1171,7 @@ mod remote_merge_tests {
         let default_branch = "main";
         let branch_name = "cursor/commit-app-previews-7896";
         let upstream_ref = format!("origin/{branch_name}");
-        let mut commits = get_all_repo_commits(&repo, default_branch, &[], &HashMap::new())
+        let mut commits = get_all_repo_commits(&repo, default_branch, &[], &HashMap::new(), &HashMap::new())
             .expect("local commits");
 
         merge_remote_only_branch_commits(

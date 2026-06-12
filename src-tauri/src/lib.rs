@@ -249,8 +249,8 @@ where
         .await
         .map_err(|e| format!("Blocking task failed: {e}"))?
 }
-const REPO_VISUAL_CACHE_SCHEMA_VERSION: i32 = 8;
-const PROJECT_SNAPSHOT_SCHEMA_VERSION: i32 = 2;
+const REPO_VISUAL_CACHE_SCHEMA_VERSION: i32 = 9;
+const PROJECT_SNAPSHOT_SCHEMA_VERSION: i32 = 3;
 const PROJECT_SNAPSHOT_RETAIN_COUNT: i64 = 2;
 #[cfg(target_os = "macos")]
 const OPEN_REPO_DETECTION_CACHE_TTL: StdDuration = StdDuration::from_secs(8);
@@ -1350,6 +1350,16 @@ fn compute_repo_visual_snapshot(repo_path: &str) -> Result<RepoVisualSnapshot, S
     let (name, resolved_path) = git::get_repo_info(path).map_err(|e| e.to_string())?;
     let default_branch = git::get_default_branch(path).map_err(|e| e.to_string())?;
     let mut branches = git::list_branches(path, &default_branch).map_err(|e| e.to_string())?;
+    // Sort branches by creation date (oldest first) so that older branches retain
+    // commit ownership priority in case of identical HEAD commits.
+    branches.sort_by(|a, b| {
+        let a_date = a.created_date.as_ref().unwrap_or(&a.last_commit_date);
+        let b_date = b.created_date.as_ref().unwrap_or(&b.last_commit_date);
+        match a_date.cmp(b_date) {
+            std::cmp::Ordering::Equal => a.name.cmp(&b.name),
+            other => other,
+        }
+    });
     let merge_nodes =
         fetch_all_merge_nodes_for_branches_internal(&resolved_path, &branches, &default_branch)?;
     let merge_target_branch_by_commit_sha: HashMap<String, String> = merge_nodes
@@ -1359,10 +1369,22 @@ fn compute_repo_visual_snapshot(repo_path: &str) -> Result<RepoVisualSnapshot, S
     let all_branch_names: Vec<String> = std::iter::once(default_branch.clone())
         .chain(branches.iter().map(|branch| branch.name.clone()))
         .collect();
+    let mut branch_created_dates = HashMap::<String, String>::new();
+    for branch in &branches {
+        let date = branch.created_date.as_ref().unwrap_or(&branch.last_commit_date).clone();
+        branch_created_dates.insert(branch.name.clone(), date);
+    }
+    if let Ok(default_date_output) = git::cli::run(path, &["show", "-s", "--format=%cI", &default_branch]) {
+        let default_date = default_date_output.trim().to_string();
+        if !default_date.is_empty() {
+            branch_created_dates.insert(default_branch.clone(), default_date);
+        }
+    }
     let direct_commits = git::get_all_repo_commits(
         path,
         &default_branch,
         &all_branch_names,
+        &branch_created_dates,
         &merge_target_branch_by_commit_sha,
     )
     .map_err(|e| e.to_string())?;
@@ -5997,7 +6019,17 @@ fn get_direct_commits(
 fn get_all_repo_commits(repo_path: String) -> Result<Vec<DirectCommit>, String> {
     let path = Path::new(&repo_path);
     let default_branch = git::get_default_branch(path).map_err(|e| e.to_string())?;
-    let branches = git::list_branches(path, &default_branch).map_err(|e| e.to_string())?;
+    let mut branches = git::list_branches(path, &default_branch).map_err(|e| e.to_string())?;
+    // Sort branches by creation date (oldest first) so that older branches retain
+    // commit ownership priority in case of identical HEAD commits.
+    branches.sort_by(|a, b| {
+        let a_date = a.created_date.as_ref().unwrap_or(&a.last_commit_date);
+        let b_date = b.created_date.as_ref().unwrap_or(&b.last_commit_date);
+        match a_date.cmp(b_date) {
+            std::cmp::Ordering::Equal => a.name.cmp(&b.name),
+            other => other,
+        }
+    });
     let merge_nodes =
         fetch_all_merge_nodes_for_branches_internal(&repo_path, &branches, &default_branch)?;
     let merge_target_branch_by_commit_sha: HashMap<String, String> = merge_nodes
@@ -6007,10 +6039,22 @@ fn get_all_repo_commits(repo_path: String) -> Result<Vec<DirectCommit>, String> 
     let all_branch_names: Vec<String> = std::iter::once(default_branch.clone())
         .chain(branches.iter().map(|branch| branch.name.clone()))
         .collect();
+    let mut branch_created_dates = HashMap::<String, String>::new();
+    for branch in &branches {
+        let date = branch.created_date.as_ref().unwrap_or(&branch.last_commit_date).clone();
+        branch_created_dates.insert(branch.name.clone(), date);
+    }
+    if let Ok(default_date_output) = git::cli::run(path, &["show", "-s", "--format=%cI", &default_branch]) {
+        let default_date = default_date_output.trim().to_string();
+        if !default_date.is_empty() {
+            branch_created_dates.insert(default_branch.clone(), default_date);
+        }
+    }
     git::get_all_repo_commits(
         path,
         &default_branch,
         &all_branch_names,
+        &branch_created_dates,
         &merge_target_branch_by_commit_sha,
     )
     .map_err(|e| e.to_string())

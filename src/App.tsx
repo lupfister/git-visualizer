@@ -7167,7 +7167,28 @@ function App() {
   }, [projectCards, repoPath, worktreePromptProjectPath, worktreePromptBranchOrCommit, worktreePromptFolderName, worktreePromptCreateBranch]);
 
   const handleDeleteWorktree = useCallback(async (projectPath: string, worktreePath: string) => {
-    const confirm = window.confirm(`Are you sure you want to delete the worktree at ${worktreePath}?`);
+    let wtInfo: WorktreeInfo | undefined;
+    let targetDefaultBranch = 'main';
+    if (sameRepoPath(projectPath, repoPath)) {
+      wtInfo = worktrees.find((wt) => wt.path === worktreePath);
+      targetDefaultBranch = defaultBranch || 'main';
+    } else {
+      const snapshot = projectSnapshots[projectPath];
+      if (snapshot) {
+        wtInfo = (snapshot.worktrees || []).find((wt) => wt.path === worktreePath);
+        targetDefaultBranch = snapshot.defaultBranch || 'main';
+      }
+    }
+
+    const branchName = wtInfo?.branchName;
+    const canDeleteBranch = branchName && branchName !== targetDefaultBranch;
+
+    let confirmMsg = `Are you sure you want to delete the worktree at ${worktreePath}?`;
+    if (canDeleteBranch) {
+      confirmMsg = `Are you sure you want to delete the worktree at ${worktreePath} and its local branch "${branchName}"?`;
+    }
+
+    const confirm = window.confirm(confirmMsg);
     if (!confirm) return;
 
     beginRepoMutation();
@@ -7191,6 +7212,14 @@ function App() {
     try {
       await invoke('remove_worktree', { repoPath: projectPath, worktreePath, force: true });
 
+      if (canDeleteBranch) {
+        await invoke('delete_selected_elements', {
+          repoPath: projectPath,
+          branchNames: [branchName],
+          discardUncommittedChanges: false,
+        });
+      }
+
       const updatedWorktrees = await invoke<WorktreeInfo[]>('list_worktrees', { repoPath: projectPath }).catch(
         () => [] as WorktreeInfo[],
       );
@@ -7211,6 +7240,9 @@ function App() {
           };
         });
         endRepoMutation();
+        if (canDeleteBranch) {
+          void refreshProjectSnapshotFromGit(projectPath, { force: true });
+        }
       }
     } catch (e) {
       endRepoMutation();
@@ -7231,12 +7263,15 @@ function App() {
             },
           };
         });
+        if (canDeleteBranch) {
+          void refreshProjectSnapshotFromGit(projectPath, { force: true });
+        }
       }
       const errText = e instanceof Error ? e.message : String(e);
       setError(errText);
       console.error('Failed to delete worktree:', errText);
     }
-  }, [repoPath]);
+  }, [repoPath, worktrees, projectSnapshots, defaultBranch, refreshProjectSnapshotFromGit]);
 
   return (
     <div className="relative flex h-screen min-h-0 flex-col bg-background text-foreground">

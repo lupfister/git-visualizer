@@ -38,9 +38,20 @@ describe('mapDeleteTarget', () => {
         emptyPreviews,
       ),
     ).toBe('cursor-sdk');
+
+    // Test without trailing colon/SHA
+    expect(
+      parseDeletableEmptyBranchFromCommitId(
+        'BRANCH_HEAD:cursor-sdk',
+        defaultBranch,
+        branchByName,
+        { 'cursor-sdk': 0 },
+        emptyPreviews,
+      ),
+    ).toBe('cursor-sdk');
   });
 
-  it('rejects default branch and branches with unique commits', () => {
+  it('rejects default branch', () => {
     expect(
       parseDeletableEmptyBranchFromCommitId(
         'BRANCH_HEAD:main:abc1234567890',
@@ -50,6 +61,9 @@ describe('mapDeleteTarget', () => {
         {},
       ),
     ).toBeNull();
+  });
+
+  it('allows deleting branch placeholder node even if it has unique commits', () => {
     expect(
       parseDeletableEmptyBranchFromCommitId(
         'BRANCH_HEAD:feature:abc1234567890',
@@ -69,7 +83,20 @@ describe('mapDeleteTarget', () => {
           ],
         },
       ),
-    ).toBeNull();
+    ).toBe('feature');
+  });
+
+  it('allows deleting branch that is ahead of default branch but has zero unique ahead commits', () => {
+    // feature has commitsAhead = 2 in branchByName, but unique ahead is 0
+    expect(
+      parseDeletableEmptyBranchFromCommitId(
+        'BRANCH_HEAD:feature:abc1234567890',
+        defaultBranch,
+        branchByName,
+        { feature: 0 },
+        {},
+      ),
+    ).toBe('feature');
   });
 
   it('detects empty placeholders from branch metadata', () => {
@@ -77,5 +104,7 @@ describe('mapDeleteTarget', () => {
       true,
     );
     expect(isEmptyBranchPlaceholder('feature', branchByName, { feature: 1 }, {})).toBe(false);
+    // feature is ahead of main by 2 commits but has 0 unique ahead commits
+    expect(isEmptyBranchPlaceholder('feature', branchByName, { feature: 0 }, {})).toBe(true);
   });
 });
