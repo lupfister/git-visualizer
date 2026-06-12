@@ -263,6 +263,7 @@ function makeLayoutCacheKey(
   manuallyOpenedClumps: Set<string>,
   manuallyClosedClumps: Set<string>,
   graphSignature = '',
+  nodePositionOverrides: NodePositionOverrides = {},
 ): string {
   return [
     'layout-v10-final-clump-expansion',
@@ -271,6 +272,7 @@ function makeLayoutCacheKey(
     setSignature(manuallyOpenedClumps),
     setSignature(manuallyClosedClumps),
     graphSignature,
+    JSON.stringify(Object.entries(nodePositionOverrides).sort(([left], [right]) => left.localeCompare(right))),
   ].join('|');
 }
 
@@ -327,7 +329,13 @@ function parseNodePositionOverrides(payloadJson: string | null | undefined): Nod
     const next: NodePositionOverrides = {};
     for (const [nodeId, value] of Object.entries(parsed)) {
       if (!value || typeof value !== 'object' || Array.isArray(value)) continue;
-      const point = value as { x?: unknown; y?: unknown };
+      const point = value as { row?: unknown; column?: unknown; x?: unknown; y?: unknown };
+      const row = typeof point.row === 'number' ? point.row : Number(point.row);
+      const column = typeof point.column === 'number' ? point.column : Number(point.column);
+      if (Number.isFinite(row) && Number.isFinite(column)) {
+        next[nodeId] = { row, column };
+        continue;
+      }
       const x = typeof point.x === 'number' ? point.x : Number(point.x);
       const y = typeof point.y === 'number' ? point.y : Number(point.y);
       if (!Number.isFinite(x) || !Number.isFinite(y)) continue;
@@ -440,7 +448,7 @@ function App() {
     
     const menuWidth = 192;
     const menuHeight = (() => {
-      if (type === 'project') return 140;
+      if (type === 'project') return 170;
       if (type === 'commit') return 140;
       if (type === 'stash') return 110;
       if (type === 'worktree') {
@@ -6302,6 +6310,7 @@ function App() {
       layoutRevisionForView.manuallyOpenedGridClumps,
       layoutRevisionForView.manuallyClosedGridClumps,
       layoutRevisionForView.graphLayoutSignature,
+      layoutRevisionForView.nodePositionOverrides,
     );
   }, [repoPath, layoutRevisionForView]);
   useEffect(() => {
@@ -7504,6 +7513,16 @@ function App() {
                 className="w-full rounded-lg px-2 py-1.5 text-left text-xs transition-colors hover:bg-muted"
               >
                 New worktree
+              </button>
+              <button
+                type="button"
+                onClick={() => {
+                  setContextMenu(null);
+                  resetProjectNodePositions(contextMenu.projectPath);
+                }}
+                className="w-full rounded-lg px-2 py-1.5 text-left text-xs transition-colors hover:bg-muted"
+              >
+                Reset layout
               </button>
               <button
                 type="button"

@@ -38,7 +38,7 @@ describe('applyNodePositionOverrides', () => {
       [member.visualId, 3],
     ]);
     const overrides = {};
-    assignNodePositionOverride(overrides, member, { x: 200, y: 300 });
+    assignNodePositionOverride(overrides, member, { row: 4, column: 2 });
 
     const leadNode = nodeFor(lead, 1, 0);
     const memberNode = nodeFor(member, 3, 0);
@@ -57,9 +57,9 @@ describe('applyNodePositionOverrides', () => {
       maxResolvedRow: 3,
     });
 
-    expect(leadNode.x).toBe(200);
-    expect(leadNode.y).toBe(300);
-    expect(memberNode.x).toBe(200);
-    expect(memberNode.y).toBe(300);
+    expect(leadNode.row).toBe(4);
+    expect(leadNode.column).toBe(2);
+    expect(memberNode.row).toBe(4);
+    expect(memberNode.column).toBe(2);
   });
 });

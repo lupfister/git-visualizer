@@ -1,7 +1,7 @@
 import { COLUMN_WIDTH, type Node, type NodePositionOverrides, type VisualCommit } from './LayoutGrid';
 import { getNodePositionOverride } from './nodePositionOverrides';
 import {
-  inferLayoutIndicesFromOverride,
+  layoutIndicesForOverride,
   type OverrideLayoutMetrics,
 } from './overrideLayoutPropagation';
 
@@ -19,7 +19,7 @@ export type ApplyNodePositionOverridesInput = {
   maxResolvedRow?: number;
 };
 
-type ClusterDragAnchor = { node: Node; x: number; y: number };
+type ClusterDragAnchor = { node: Node };
 
 /**
  * Applies persisted drag positions. Collapsed clumps inherit the override from the member
@@ -50,7 +50,7 @@ export const applyNodePositionOverrides = ({
     ),
   };
 
-  const bestOverrideByClusterKey = new Map<string, { x: number; y: number; row: number }>();
+  const bestOverrideByClusterKey = new Map<string, { override: NodePositionOverrides[string]; row: number }>();
   for (const commit of allCommitsWithClusters) {
     const clusterKey = clusterKeyByCommitId.get(commit.visualId);
     if (!clusterKey) continue;
@@ -59,7 +59,7 @@ export const applyNodePositionOverrides = ({
     const row = rowByVisualId.get(commit.visualId) ?? 0;
     const current = bestOverrideByClusterKey.get(clusterKey);
     if (!current || row > current.row) {
-      bestOverrideByClusterKey.set(clusterKey, { x: override.x, y: override.y, row });
+      bestOverrideByClusterKey.set(clusterKey, { override, row });
     }
   }
 
@@ -70,35 +70,32 @@ export const applyNodePositionOverrides = ({
     if (leadByClusterKey.get(clusterKey) !== node.commit.visualId) continue;
     const directOverride = getNodePositionOverride(overrides, node.commit);
     if (directOverride) {
-      const indices = inferLayoutIndicesFromOverride(directOverride.x, directOverride.y, layoutMetrics);
+      const indices = layoutIndicesForOverride(directOverride, layoutMetrics);
       node.row = indices.row;
       node.column = indices.column;
-      clusterDragAnchorByKey.set(clusterKey, { node, x: directOverride.x, y: directOverride.y });
+      clusterDragAnchorByKey.set(clusterKey, { node });
       continue;
     }
     const inherited = bestOverrideByClusterKey.get(clusterKey);
     if (!inherited) continue;
-    clusterDragAnchorByKey.set(clusterKey, { node, x: inherited.x, y: inherited.y });
+    const indices = layoutIndicesForOverride(inherited.override, layoutMetrics);
+    node.row = indices.row;
+    node.column = indices.column;
+    clusterDragAnchorByKey.set(clusterKey, { node });
   }
 
   for (const node of renderNodes) {
     const override = getNodePositionOverride(overrides, node.commit);
     if (override) {
-      const indices = inferLayoutIndicesFromOverride(override.x, override.y, layoutMetrics);
+      const indices = layoutIndicesForOverride(override, layoutMetrics);
       node.row = indices.row;
       node.column = indices.column;
-      node.x = override.x;
-      node.y = override.y;
       continue;
     }
     const clusterKey = clusterKeyByCommitId.get(node.commit.visualId);
     const anchor = clusterKey ? clusterDragAnchorByKey.get(clusterKey) : null;
     if (!anchor) continue;
-    if (isHorizontal) {
-      node.x = anchor.x + (node.row - anchor.node.row) * zoomAwareTimelinePitch;
-      continue;
-    }
-    node.x = anchor.x + (node.column - anchor.node.column) * COLUMN_WIDTH;
-    node.y = anchor.y - (node.row - anchor.node.row) * zoomAwareTimelinePitch;
+    if (isHorizontal) node.row = Math.max(node.row, anchor.node.row);
+    else node.column = Math.max(node.column, anchor.node.column);
   }
 };

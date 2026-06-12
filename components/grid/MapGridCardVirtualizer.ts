@@ -1,9 +1,9 @@
 import { CARD_BODY_TOP_OFFSET, CARD_HEIGHT, CARD_WIDTH, type Node } from './LayoutGrid';
 import { computeMapGridCardSlotCap, GRID_RENDER_ZOOM, MAP_GRID_MIN_CARD_SLOTS } from './mapGridUtils';
-import { getNodePositionOverride } from './nodePositionOverrides';
+import { getNodePositionOverride, isPixelNodePositionOverride } from './nodePositionOverrides';
 import type { NodePositionOverrides } from './LayoutGrid';
 
-type DragPreviewByVisualId = Record<string, { x: number; y: number }>;
+type DragPreviewByVisualId = NodePositionOverrides;
 
 export type MapGridCardSlotAssignment = {
   node: Node;
@@ -36,14 +36,14 @@ const resolveCardPosition = (
   ignorePersistedOverrideVisualIds?: ReadonlySet<string>,
 ): { cardLeft: number; cardTop: number } => {
   const dragPreview = dragPreviewByNodeId[node.commit.visualId];
-  if (dragPreview) {
+  if (isPixelNodePositionOverride(dragPreview)) {
     return { cardLeft: dragPreview.x, cardTop: dragPreview.y };
   }
   if (ignorePersistedOverrideVisualIds?.has(node.commit.visualId)) {
     return { cardLeft: node.x, cardTop: node.y };
   }
   const persisted = getNodePositionOverride(nodePositionOverrides, node.commit);
-  if (persisted) {
+  if (isPixelNodePositionOverride(persisted)) {
     return { cardLeft: persisted.x, cardTop: persisted.y };
   }
   return { cardLeft: node.x, cardTop: node.y };

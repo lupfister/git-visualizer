@@ -3,6 +3,11 @@ import type { NodePositionOverride, NodePositionOverrides, VisualCommit } from '
 
 export type NodePositionCommitIdentity = Pick<VisualCommit, 'id' | 'visualId' | 'kind' | 'parentSha'>;
 
+export const isPixelNodePositionOverride = (
+  override: NodePositionOverride | undefined,
+): override is Extract<NodePositionOverride, { x: number; y: number }> =>
+  override != null && typeof override.x === 'number' && typeof override.y === 'number';
+
 export const getStableNodePositionKey = (commit: NodePositionCommitIdentity): string => {
   if (isWorkingTreeCommitId(commit.id)) {
     const suffix = commit.id.includes(':') ? commit.id.slice(commit.id.indexOf(':') + 1) : 'current';

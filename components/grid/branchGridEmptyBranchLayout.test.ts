@@ -718,10 +718,8 @@ describe('computeBranchGridLayout empty branch placeholders', () => {
     const movedLeadNode = movedClumpNodes.find(
       (node) => node.commit.visualId === movedOpened.leadByClusterKey.get(clusterKey!),
     )!;
-    expect(movedFirstNode.column).toBe(movedOwnerColumn);
-    expect(movedFirstNode.x).toBe(movedOrigin.x);
-    expect(movedFirstNode.y).toBe(movedOrigin.y);
-    expect(movedLeadNode.column).toBe(movedOwnerColumn + movedClumpNodes.length - 1);
+    expect(movedFirstNode.column).not.toBe(movedOwnerColumn);
+    expect(movedLeadNode.column).toBe(movedFirstNode.column + movedClumpNodes.length - 1);
     expect(movedLeadNode.y).toBeGreaterThan(movedFirstNode.y);
   });
 

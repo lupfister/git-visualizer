@@ -45,7 +45,7 @@ describe('overrideLayoutPropagation', () => {
     expect(indices).toEqual({ row: 2, column: 2 });
   });
 
-  it('shifts a child row/column when its parent was dragged', () => {
+  it('anchors only the dragged parent', () => {
     const parent = commit({ id: 'parent', visualId: 'main:parent' });
     const child = commit({
       id: 'child',
@@ -68,8 +68,7 @@ describe('overrideLayoutPropagation', () => {
     });
 
     expect(parentNode.row).toBe(4);
-    expect(childNode.row).toBeGreaterThanOrEqual(parentNode.row + 1);
-    expect(childNode.row).toBe(5);
+    expect(childNode.row).toBe(2);
     expect(childNode.column).toBe(0);
   });
 });

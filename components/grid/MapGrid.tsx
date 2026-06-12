@@ -35,6 +35,7 @@ import {
   assignNodePositionPreview,
   canonicalizeNodePositionOverridesForCommits,
   getNodePositionOverride,
+  isPixelNodePositionOverride,
 } from './nodePositionOverrides';
 import CommitControls from './CommitControls';
 import { mergePanStableVisibleNodeIds, pickNearestVisibleVisualIds } from './MapGridCardVirtualizer';
@@ -126,8 +127,7 @@ function nodePositionOverridesEqual(left: NodePositionOverrides, right: NodePosi
     const leftPoint = left[key];
     const rightPoint = right[key];
     if (!rightPoint) return false;
-    if (Math.abs(leftPoint.x - rightPoint.x) > 0.001) return false;
-    if (Math.abs(leftPoint.y - rightPoint.y) > 0.001) return false;
+    if (JSON.stringify(leftPoint) !== JSON.stringify(rightPoint)) return false;
   }
   return true;
 }
@@ -596,10 +596,7 @@ export default function BranchGridMap({
         .filter((node) => !draggedNodeIds.has(node.commit.visualId))
         .map((node) => {
           const override = getNodePositionOverride(dragState.baseOverrides, node.commit);
-          return {
-            x: override?.x ?? node.x,
-            y: override?.y ?? node.y,
-          };
+          return isPixelNodePositionOverride(override) ? override : { x: node.x, y: node.y };
         });
       const nodeBoxHeight = CARD_BODY_TOP_OFFSET + CARD_HEIGHT + 4;
       const overlaps = (
@@ -614,8 +611,8 @@ export default function BranchGridMap({
         dragState.groupNodes.map((groupNode) => {
           const point = getNodePositionOverride(candidatePositions, groupNode.commit);
           return {
-            x: (point?.x ?? groupNode.baseX) + offset,
-            y: point?.y ?? groupNode.baseY,
+            x: (isPixelNodePositionOverride(point) ? point.x : groupNode.baseX) + offset,
+            y: isPixelNodePositionOverride(point) ? point.y : groupNode.baseY,
           };
         });
 
@@ -635,7 +632,7 @@ export default function BranchGridMap({
       const next = { ...candidatePositions };
       for (const groupNode of dragState.groupNodes) {
         const point = getNodePositionOverride(next, groupNode.commit);
-        if (!point) continue;
+        if (!isPixelNodePositionOverride(point)) continue;
         assignNodePositionOverride(next, groupNode.commit, { x: point.x + offset, y: point.y });
       }
       return next;
@@ -1492,6 +1489,7 @@ export default function BranchGridMap({
   useLayoutEffect(() => {
     if (isLoading) return;
     if (blockMapInteraction) return;
+    if (Object.keys(nodePositionOverrides).length > 0) return;
     if (renderNodes.length === 0) return;
     if (visibleNodeIds.size > 0) {
       autoRecoverRef.current = null;
@@ -1545,6 +1543,7 @@ export default function BranchGridMap({
   }, [
     isLoading,
     blockMapInteraction,
+    nodePositionOverrides,
     renderNodes,
     visibleNodeIds,
     mapReadyEpoch,
@@ -1639,7 +1638,7 @@ export default function BranchGridMap({
       const next = { ...candidatePositions };
       for (const groupNode of dragState.groupNodes) {
         const point = getNodePositionOverride(next, groupNode.commit);
-        if (!point) continue;
+        if (!isPixelNodePositionOverride(point)) continue;
         let minX = 0;
         let minY = 0;
         let maxX = Number.POSITIVE_INFINITY;
@@ -1695,9 +1694,22 @@ export default function BranchGridMap({
           y: groupNode.baseY + deltaY + snapDeltaY,
         });
       }
-      return clampDragOverridesToTopology(dragState, avoidNodeCollisions(dragState, next));
+      const snappedPixels = clampDragOverridesToTopology(dragState, avoidNodeCollisions(dragState, next));
+      const logical = canonicalizeNodePositionOverridesForCommits(
+        dragState.baseOverrides,
+        dragState.baseNodes.map((node) => node.commit),
+      );
+      for (const groupNode of dragState.groupNodes) {
+        const point = getNodePositionOverride(snappedPixels, groupNode.commit);
+        if (!isPixelNodePositionOverride(point)) continue;
+        assignNodePositionOverride(logical, groupNode.commit, {
+          row: Math.max(1, Math.round((point.x - LEFT_PADDING) / snapMetrics.timelinePitch) + 1),
+          column: laneFromY(point.y),
+        });
+      }
+      return logical;
     },
-    [avoidNodeCollisions, clampDragOverridesToTopology, snapNodePosition],
+    [avoidNodeCollisions, clampDragOverridesToTopology, laneFromY, snapMetrics.timelinePitch, snapNodePosition],
   );
 
   const buildLiveDragPreviewOverrides = useCallback(
@@ -1793,8 +1805,8 @@ export default function BranchGridMap({
       suppressNextCommitClickRef.current = false;
       event.currentTarget.setPointerCapture(event.pointerId);
       const currentOverride = getNodePositionOverride(nodePositionOverrides, node.commit);
-      const baseX = currentOverride?.x ?? node.x;
-      const baseY = currentOverride?.y ?? node.y;
+      const baseX = isPixelNodePositionOverride(currentOverride) ? currentOverride.x : node.x;
+      const baseY = isPixelNodePositionOverride(currentOverride) ? currentOverride.y : node.y;
       const selectedCommitShaSet = new Set(selectedVisibleCommitShas);
       const shouldDragSelection = selectedCommitShaSet.size > 1 && selectedCommitShaSet.has(node.commit.id);
       const groupNodes = (shouldDragSelection
@@ -1805,8 +1817,8 @@ export default function BranchGridMap({
         return {
           nodeId: groupNode.commit.visualId,
           commit: groupNode.commit,
-          baseX: groupOverride?.x ?? groupNode.x,
-          baseY: groupOverride?.y ?? groupNode.y,
+          baseX: isPixelNodePositionOverride(groupOverride) ? groupOverride.x : groupNode.x,
+          baseY: isPixelNodePositionOverride(groupOverride) ? groupOverride.y : groupNode.y,
         };
       });
       setActiveDragNodeIds(new Set(groupNodes.map((groupNode) => groupNode.nodeId)));

@@ -923,8 +923,8 @@ type Props = {
     branchName?: string
   ) => void;
   orientation?: 'vertical' | 'horizontal';
-  dragPreviewByNodeId?: Record<string, { x: number; y: number }>;
-  nodePositionOverrides?: Record<string, { x: number; y: number }>;
+  dragPreviewByNodeId?: NodePositionOverrides;
+  nodePositionOverrides?: NodePositionOverrides;
   connectorPathCacheScopeBase: string;
   commitInProgress?: boolean;
 };

@@ -104,7 +104,9 @@ export type BranchGridViewProps = {
   onNodeDoubleClick?: (node: Node) => void;
 };
 
-export type NodePositionOverride = { x: number; y: number };
+export type NodePositionOverride =
+  | { row: number; column: number; x?: never; y?: never }
+  | { x: number; y: number; row?: never; column?: never };
 export type NodePositionOverrides = Record<string, NodePositionOverride>;
 
 export type CommitItem = {
