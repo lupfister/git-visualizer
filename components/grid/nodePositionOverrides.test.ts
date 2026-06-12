@@ -147,6 +147,32 @@ describe('node position override keys', () => {
     expect(migrated['stable:sha:oldhead']).toEqual({ x: 1, y: 2 });
   });
 
+  it('places refreshed worktree one row and column after migrated logical HEAD', () => {
+    const overrides: NodePositionOverrides = {
+      WORKING_TREE: { row: 7, column: 4 },
+    };
+
+    const migrated = migrateWorkingTreeOverrideToNewHead(
+      overrides,
+      'newsha1',
+      LEGACY_WORKING_TREE_ID,
+      ['main'],
+    );
+
+    expect(getNodePositionOverride(migrated, { id: 'newsha1', visualId: 'main:newsha1' })).toEqual({
+      row: 7,
+      column: 4,
+    });
+    expect(getNodePositionOverride(migrated, {
+      id: LEGACY_WORKING_TREE_ID,
+      visualId: `main:${LEGACY_WORKING_TREE_ID}`,
+      kind: 'uncommitted',
+    })).toEqual({
+      row: 8,
+      column: 5,
+    });
+  });
+
   it('migrates when the worktree override only exists on a local-divergence lane visual id', () => {
     const overrides: NodePositionOverrides = {
       'main (local):WORKING_TREE': { x: 50, y: 60 },
