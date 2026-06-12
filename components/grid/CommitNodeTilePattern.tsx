@@ -294,6 +294,8 @@ export const CommitNodeTilePattern = memo(
     const cloudAnimStartMsRef = useRef(0);
     const cloudAnimRafRef = useRef<number | null>(null);
     const cloudTimeMsRef = useRef<number | undefined>(undefined);
+    const previousAnimateTileGapsRef = useRef(animateTileGaps);
+    const staticHandoffRef = useRef(false);
 
     const [boosts, setBoosts] = useState<Float32Array>(
       () => new Float32Array(layout.cols * layout.rows),
@@ -380,6 +382,7 @@ export const CommitNodeTilePattern = memo(
 
     useEffect(() => {
       if (!omissionSampler || suspendAnimations) {
+        if (staticHandoffRef.current) return;
         paintTiles();
         return;
       }
@@ -414,10 +417,45 @@ export const CommitNodeTilePattern = memo(
       };
     }, [omissionSampler, paintTiles, suspendAnimations, topologyKey]);
 
+    useLayoutEffect(() => {
+      const wasAnimating = previousAnimateTileGapsRef.current;
+      previousAnimateTileGapsRef.current = animateTileGaps;
+      if (!wasAnimating || animateTileGaps || suspendAnimations) return;
+      staticHandoffRef.current = true;
+
+      const shapes = Array.from(shapeRefsByKey.current.values()).flatMap(({ base, overlay }) =>
+        [base, overlay].filter((shape): shape is SVGCircleElement | SVGPathElement => shape != null),
+      );
+      for (const shape of shapes) {
+        if (shape.getAttribute('display') === 'none') {
+          shape.removeAttribute('display');
+          shape.setAttribute('fill-opacity', '0');
+        }
+        shape.style.transition = 'fill-opacity 180ms cubic-bezier(0.16, 1, 0.3, 1)';
+      }
+
+      const rafId = requestAnimationFrame(() => paintTiles());
+      const timeoutId = window.setTimeout(() => {
+        staticHandoffRef.current = false;
+        for (const shape of shapes) {
+          shape.style.removeProperty('transition');
+        }
+      }, 220);
+      return () => {
+        cancelAnimationFrame(rafId);
+        window.clearTimeout(timeoutId);
+        staticHandoffRef.current = false;
+        for (const shape of shapes) {
+          shape.style.removeProperty('transition');
+        }
+      };
+    }, [animateTileGaps, paintTiles, suspendAnimations]);
+
     useEffect(() => {
       if (omissionSampler && !suspendAnimations) {
         return;
       }
+      if (staticHandoffRef.current) return;
       paintTiles();
     }, [boosts, omissionSampler, paintTiles, suspendAnimations]);
 
