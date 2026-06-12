@@ -6357,6 +6357,8 @@ function App() {
   }, [repoPath, sharedGridLayoutCacheKey, worktreeSessions]);
   const layoutGridRevision = useMemo(
     () => ({
+      repoPath: layoutRevisionForView.repoPath,
+      graphLayoutSignature: layoutRevisionForView.graphLayoutSignature,
       branchesForLayout: layoutRevisionForView.branchesForLayout,
       mergeNodes: layoutRevisionForView.mergeNodes,
       enrichedDirectCommits: layoutRevisionForView.enrichedDirectCommits,
