@@ -414,7 +414,7 @@ export const CommitNodeTilePattern = memo(
       };
     }, [omissionSampler, paintTiles, suspendAnimations, topologyKey]);
 
-    useEffect(() => {
+    useLayoutEffect(() => {
       if (omissionSampler && !suspendAnimations) {
         return;
       }
