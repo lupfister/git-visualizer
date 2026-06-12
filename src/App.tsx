@@ -381,6 +381,8 @@ function App() {
   const [worktreePromptBranchOrCommit, setWorktreePromptBranchOrCommit] = useState('');
   const [worktreePromptBranchOrCommitEditable, setWorktreePromptBranchOrCommitEditable] = useState(false);
   const [worktreePromptFolderName, setWorktreePromptFolderName] = useState('');
+  const [worktreePromptCreateBranch, setWorktreePromptCreateBranch] = useState(false);
+  const [worktreePromptCreateBranchDisabled, setWorktreePromptCreateBranchDisabled] = useState(false);
   const lastActiveTerminalIdByWorktreePathRef = useRef<Map<string, string>>(new Map());
   const [terminalPanelPlacement, setTerminalPanelPlacement] = useState<TerminalPanelPlacement>('right');
   // scrollRequest.seq increments on each click so the same branch re-triggers the effect
@@ -7020,25 +7022,58 @@ function App() {
       }
     }
 
+    // Resolve commit SHA to branch name if it is the head of a branch
+    // Also resolve HEAD/WORKING_TREE to the current branch name if attached
+    let resolvedTarget = branchOrCommitInput;
+    if (resolvedTarget === 'HEAD' || resolvedTarget === 'WORKING_TREE' || (resolvedTarget && resolvedTarget.startsWith('WORKING_TREE:'))) {
+      if (checkedOutRef?.branchName) {
+        resolvedTarget = checkedOutRef.branchName;
+      }
+    } else if (resolvedTarget && /^[0-9a-fA-F]{7,40}$/.test(resolvedTarget)) {
+      const matchingBranch = branches.find((b) => shaMatches(b.headSha, resolvedTarget));
+      if (matchingBranch) {
+        resolvedTarget = matchingBranch.name;
+      }
+    }
+
     let defaultName = '';
 
-    if (branchOrCommitInput === undefined) {
+    if (resolvedTarget === undefined) {
       setWorktreePromptBranchOrCommit('');
       setWorktreePromptBranchOrCommitEditable(true);
       defaultName = generateEsotericWorktreeName(existingNames);
+      setWorktreePromptCreateBranch(true);
+      setWorktreePromptCreateBranchDisabled(true);
     } else {
-      setWorktreePromptBranchOrCommit(branchOrCommitInput);
+      setWorktreePromptBranchOrCommit(resolvedTarget);
       setWorktreePromptBranchOrCommitEditable(false);
-      const cleaned = branchOrCommitInput.replace(/[^a-zA-Z0-9._-]/g, '_') || 'HEAD';
-      if (cleaned === 'HEAD' || /^[0-9a-fA-F]{7,40}$/.test(cleaned)) {
+      const cleaned = resolvedTarget.replace(/[^a-zA-Z0-9._-]/g, '_') || 'HEAD';
+      
+      const isSha = /^[0-9a-fA-F]{7,40}$/.test(cleaned);
+      const isHead = cleaned === 'HEAD';
+
+      if (isHead || isSha) {
         defaultName = generateEsotericWorktreeName(existingNames);
+        setWorktreePromptCreateBranch(true);
+        setWorktreePromptCreateBranchDisabled(false);
       } else {
         defaultName = cleaned;
+        // Check if the branch is already checked out in any worktree
+        const isBranchCheckedOut = sortedWorktrees.some(
+          (w) => w.branchName && w.branchName === resolvedTarget
+        );
+        if (isBranchCheckedOut) {
+          setWorktreePromptCreateBranch(true);
+          setWorktreePromptCreateBranchDisabled(true);
+        } else {
+          setWorktreePromptCreateBranch(false);
+          setWorktreePromptCreateBranchDisabled(false);
+        }
       }
     }
 
     setWorktreePromptFolderName(defaultName);
-  }, [branches, sortedWorktrees]);
+  }, [branches, sortedWorktrees, checkedOutRef]);
 
   const confirmCreateWorktreePrompt = useCallback(async () => {
     const projectPath = worktreePromptProjectPath;
@@ -7063,7 +7098,7 @@ function App() {
       path: worktreePath,
       pathExists: true,
       headSha,
-      branchName: branchOrCommit || null,
+      branchName: worktreePromptCreateBranch ? branchFolderName : (branchOrCommit || null),
       parentSha: null,
       isCurrent: false,
       isPrunable: false,
@@ -7093,6 +7128,7 @@ function App() {
         repoPath: projectPath,
         worktreePath,
         branchOrCommit: branchOrCommit || null,
+        newBranchName: worktreePromptCreateBranch ? branchFolderName : null,
       });
 
       const updatedWorktrees = await invoke<WorktreeInfo[]>('list_worktrees', { repoPath: projectPath }).catch(
@@ -7136,7 +7172,7 @@ function App() {
       const message = e instanceof Error ? e.message : String(e);
       console.error('Failed to create worktree:', message);
     }
-  }, [projectCards, repoPath, worktreePromptProjectPath, worktreePromptBranchOrCommit, worktreePromptFolderName]);
+  }, [projectCards, repoPath, worktreePromptProjectPath, worktreePromptBranchOrCommit, worktreePromptFolderName, worktreePromptCreateBranch]);
 
   const handleDeleteWorktree = useCallback(async (projectPath: string, worktreePath: string) => {
     const confirm = window.confirm(`Are you sure you want to delete the worktree at ${worktreePath}?`);
@@ -7847,6 +7883,27 @@ function App() {
                 placeholder="my-worktree-folder"
                 className="mt-1.5 w-full rounded-lg border border-border bg-background px-3 py-2 text-sm text-foreground placeholder:text-muted-foreground focus:outline-none select-text"
               />
+            </div>
+
+            <div className="mt-4 flex items-center gap-2">
+              <input
+                type="checkbox"
+                id="create-branch-checkbox"
+                checked={worktreePromptCreateBranch}
+                disabled={worktreePromptCreateBranchDisabled}
+                onChange={(event) => setWorktreePromptCreateBranch(event.target.checked)}
+                className="h-3.5 w-3.5 rounded border-border bg-background text-primary focus:ring-0 cursor-pointer disabled:cursor-not-allowed"
+              />
+              <label
+                htmlFor="create-branch-checkbox"
+                className={`text-xs font-medium cursor-pointer ${
+                  worktreePromptCreateBranchDisabled
+                    ? 'text-muted-foreground cursor-not-allowed'
+                    : 'text-foreground'
+                }`}
+              >
+                Create a new branch (shares folder name)
+              </label>
             </div>
 
             <div className="mt-4 flex items-center justify-end gap-2">

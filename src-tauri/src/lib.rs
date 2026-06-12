@@ -3174,10 +3174,18 @@ async fn add_worktree(
     repo_path: String,
     worktree_path: String,
     branch_or_commit: Option<String>,
+    new_branch_name: Option<String>,
 ) -> Result<git::WorktreeInfo, String> {
     run_blocking(move || {
         let repo = Path::new(&repo_path);
         let mut args: Vec<&str> = vec!["worktree", "add"];
+        
+        let new_branch = new_branch_name.as_deref().unwrap_or("").trim();
+        if !new_branch.is_empty() {
+            args.push("-b");
+            args.push(new_branch);
+        }
+        
         args.push(&worktree_path);
         
         let branch_ref = branch_or_commit.as_deref().unwrap_or("").trim();

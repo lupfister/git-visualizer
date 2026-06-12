@@ -132,9 +132,10 @@ export async function getRepoFastSignature(repoPath: string): Promise<string> {
 export async function addWorktree(
   repoPath: string,
   worktreePath: string,
-  branchOrCommit: string | null
+  branchOrCommit: string | null,
+  newBranchName?: string | null
 ): Promise<WorktreeInfo> {
-  return invoke('add_worktree', { repoPath, worktreePath, branchOrCommit });
+  return invoke('add_worktree', { repoPath, worktreePath, branchOrCommit, newBranchName });
 }
 
 export async function overhaulCreateBranch(
