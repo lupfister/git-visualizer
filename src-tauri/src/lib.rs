@@ -5058,7 +5058,26 @@ fn delete_selected_elements(
     }
 
     for branch_name in &unique_branch_names {
-        git::cli::run(path, &["branch", "-D", branch_name]).map_err(|e| e.to_string())?;
+        let local_ref = format!("refs/heads/{}", branch_name);
+        let has_local = git::cli::run(path, &["show-ref", "--verify", "--quiet", &local_ref]).is_ok();
+        if has_local {
+            git::cli::run(path, &["branch", "-D", branch_name]).map_err(|e| e.to_string())?;
+        }
+
+        if let Ok(output) = git::cli::run(path, &["for-each-ref", "--format=%(refname)", "refs/remotes"]) {
+            for ref_line in output.lines() {
+                let ref_name = ref_line.trim();
+                if ref_name.starts_with("refs/remotes/") {
+                    let stripped = &ref_name["refs/remotes/".len()..];
+                    if let Some(slash_idx) = stripped.find('/') {
+                        let remote_branch_name = &stripped[slash_idx + 1..];
+                        if remote_branch_name == branch_name {
+                            let _ = git::cli::run(path, &["update-ref", "-d", ref_name]);
+                        }
+                    }
+                }
+            }
+        }
     }
 
     let _ = git::cli::run(path, &["worktree", "prune"]);
