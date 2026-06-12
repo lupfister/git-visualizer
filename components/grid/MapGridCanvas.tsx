@@ -369,10 +369,19 @@ const MapGridCommitCard = memo(function MapGridCommitCard({
   const commitTileAnimateGaps = (isDirtyWorktreeNode && !commitInProgress) || isStashedCommit || isEmptyBranchNode;
   const commitTileCloudyGaps = isRemoteCommit;
   const commitTileRandomGaps =
-    commitTileAnimateGaps || (isUnpushedCommit && !commitTileCloudyGaps);
+    commitTileAnimateGaps
+    || (isUnpushedCommit && !commitTileCloudyGaps)
+    || (isDirtyWorktreeNode && !commitInProgress);
   const commitTileOmissionRate = commitTileAnimateGaps
     ? TILE_UNCOMMITTED_OMISSION_RATE
     : TILE_DEFAULT_OMISSION_RATE;
+  const commitTilePatternMode = commitTileAnimateGaps
+    ? 'animated'
+    : commitTileCloudyGaps
+      ? 'cloudy'
+      : commitTileRandomGaps
+        ? 'gapped'
+        : 'solid';
   const useRoundedCardOutline = showCommitTilePattern;
   const outlineCornerRadiusCss = useRoundedCardOutline
     ? `calc(${GRID_COMMIT_CORNER_RADIUS_BASE_PX}px * var(--map-inv-zoom, 1))`
@@ -753,6 +762,7 @@ const MapGridCommitCard = memo(function MapGridCommitCard({
       >
         {commitTileShapeCssVar && commitTileHoverTintColor ? (
           <CommitNodeTilePattern
+            key={`${visualId}:${commitTilePatternMode}`}
             ref={tilePatternRef}
             seed={visualId}
             shapeFillCssVar={commitTileShapeCssVar}
