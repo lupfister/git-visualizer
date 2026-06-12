@@ -57,7 +57,9 @@ function buildCameraTransformCss(
   // Match parent-layer `translate(pan) scale(s)` for children at (layoutX, layoutY).
   const tx = panX + layout.layoutX * (scale - 1);
   const ty = panY + layout.layoutY * (scale - 1);
-  return `translate3d(${tx}px, ${ty}px, 0) scale(${scale})`;
+  // Keep this transform 2D so WebKit repaints HTML/SVG content at the current
+  // scale instead of resampling a cached GPU texture while zooming.
+  return `translate(${tx}px, ${ty}px) scale(${scale})`;
 }
 
 export function useMapGridCamera({

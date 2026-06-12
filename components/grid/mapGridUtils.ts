@@ -3,11 +3,11 @@ import { mapGridConnectorHullPoints } from './gridPathUtils';
 import type { CableFace } from './gridPathUtils';
 import type { WorktreeInfo } from '../../types';
 
-export const GRID_ZOOM_MAX = 2.25;
-export const GRID_ZOOM_DEFAULT = GRID_ZOOM_MAX / 2;
+export const GRID_RENDER_ZOOM = 2.25;
+export const GRID_ZOOM_MAX = 4.5;
+export const GRID_ZOOM_DEFAULT = GRID_RENDER_ZOOM / 2;
 export const GRID_ZOOM_MIN = 0.45;
 export const GRID_ZOOM_WHEEL_SENSITIVITY = 0.02;
-export const GRID_RENDER_ZOOM = GRID_ZOOM_MAX;
 export const MAP_GRID_INNER_PADDING_PX = 10;
 export const MAP_GRID_CULL_VIEWPORT_INSET_SCREEN_PX = -200;
 export const MAP_GRID_CAMERA_PAN_REACT_THROTTLE_MS = 250;

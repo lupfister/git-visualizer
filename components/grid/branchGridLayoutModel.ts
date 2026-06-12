@@ -40,7 +40,7 @@ import { deriveAllClumpsFromOwners, syncClumpCoordinatesToRenderNodes } from './
 import { inferLayoutIndicesFromOverride, propagateOverrideRelativeLayout } from './overrideLayoutPropagation';
 import { getNodePositionOverride, migrateNodePositionOverridesForCommits } from './nodePositionOverrides';
 
-/** Sync with MapGrid GRID_ZOOM_MAX — row pitch is authored in this render space. */
+/** Sync with MapGrid GRID_RENDER_ZOOM — row pitch is authored in this render space. */
 export const GRID_LAYOUT_RENDER_ZOOM = 2.25;
 
 export type GridCluster = {
