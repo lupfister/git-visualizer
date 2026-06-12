@@ -179,21 +179,5 @@ export const migrateWorkingTreeOverrideToNewHead = (
   if (uniqueLaneNames.length === 0) {
     assignNodePositionOverride(next, { id: newHeadSha, visualId: newHeadSha }, point);
   }
-  if (typeof point.row === 'number' && typeof point.column === 'number') {
-    const worktreePoint: NodePositionOverride = {
-      row: point.row + 1,
-      column: point.column + 1,
-    };
-    for (const branchName of uniqueLaneNames) {
-      assignNodePositionOverride(next, {
-        id: workingTreeId,
-        visualId: `${branchName}:${workingTreeId}`,
-        kind: 'uncommitted',
-      }, worktreePoint);
-    }
-    if (uniqueLaneNames.length === 0) {
-      assignNodePositionOverride(next, { id: workingTreeId, visualId: workingTreeId, kind: 'uncommitted' }, worktreePoint);
-    }
-  }
   return next;
 };
