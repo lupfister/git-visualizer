@@ -146,6 +146,7 @@ function nodePositionsStorageKey(repoPath: string): string {
 }
 
 type Props = BranchGridViewProps & {
+  isSyncing?: boolean;
   isDebugOpen?: boolean;
   onDebugClose?: () => void;
   gridHudProps?: {
@@ -198,6 +199,7 @@ export default function BranchGridMap({
   view,
   staleBranches = [],
   isLoading = false,
+  isSyncing = false,
   scrollRequest,
   focusedErrorBranch,
   mapTopInsetPx = 0,
@@ -2043,7 +2045,8 @@ export default function BranchGridMap({
     return () => window.cancelAnimationFrame(rafId);
   }, [allCommits.length, isLoading, blockMapInteraction, mapReadyEpoch, onMapReadyForDisplay]);
 
-  const showLoadingTiles = isLoading || (allCommits.length === 0 && blockMapInteraction);
+  const hasUsableMap = allCommits.length > 0;
+  const showLoadingTiles = !hasUsableMap && (isLoading || blockMapInteraction);
 
   if (showLoadingTiles) {
     return (
@@ -2304,6 +2307,15 @@ export default function BranchGridMap({
           connectorPathCacheScopeBase={`${currentRepoPath ?? '__no-repo__'}::${orientation}`}
         />
       {blockMapDisplay ? <MapGridBlockingOverlay /> : null}
+      {isSyncing && hasUsableMap && !blockMapDisplay ? (
+        <div
+          role="status"
+          aria-label="Syncing repository"
+          className="pointer-events-none absolute right-3 top-3 z-[70] rounded-lg border border-border/50 bg-card/80 px-2.5 py-1 text-[10px] font-medium uppercase tracking-wide text-muted-foreground shadow-sm backdrop-blur-sm"
+        >
+          Syncing
+        </div>
+      ) : null}
 
       {marqueeRect && isMarqueeSelecting ? (
         <div

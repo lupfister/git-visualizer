@@ -7361,6 +7361,7 @@ function App() {
                 gridSearchJumpDirection={gridSearchJumpDirection}
                 gridFocusSha={gridFocusSha}
                 isLoading={mapLoading || loading}
+                isSyncing={isMutationBusy || projectTreeLoading}
                 blockMapDisplay={blockMapDisplay}
                 blockMapInteraction={blockMapInteraction}
                 mapReadyEpoch={mapSwitchEpoch}

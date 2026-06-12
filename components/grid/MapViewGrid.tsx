@@ -37,6 +37,7 @@ interface Props {
   onGridSearchFocusChange?: (sha: string | null) => void;
   view?: ViewMode;
   isLoading?: boolean;
+  isSyncing?: boolean;
   scrollRequest?: { branch: Branch; seq: number } | null;
   focusedErrorBranch?: Branch | null;
   checkedOutRef?: CheckedOutRef | null;
@@ -146,6 +147,7 @@ export default function BranchGridMapView({
   onGridSearchFocusChange,
   view = 'time',
   isLoading = false,
+  isSyncing = false,
   scrollRequest,
   focusedErrorBranch,
   checkedOutRef = null,
@@ -235,6 +237,7 @@ export default function BranchGridMapView({
             onGridSearchFocusChange={onGridSearchFocusChange}
             staleBranches={staleBranches}
             isLoading={isLoading}
+            isSyncing={isSyncing}
             scrollRequest={scrollRequest}
             focusedErrorBranch={focusedErrorBranch}
             checkedOutRef={checkedOutRef}
@@ -297,6 +300,7 @@ export default function BranchGridMapView({
             directCommits={directCommits}
             unpushedDirectCommits={unpushedDirectCommits}
             isLoading={isLoading}
+            isSyncing={isSyncing}
             defaultBranch={defaultBranch}
             branchCommitPreviews={branchCommitPreviews}
             branchParentByName={branchParentByName}

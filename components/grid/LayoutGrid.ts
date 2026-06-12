@@ -56,6 +56,7 @@ export type BranchGridViewProps = {
   view?: string;
   staleBranches?: Branch[];
   isLoading?: boolean;
+  isSyncing?: boolean;
   scrollRequest?: { branch: Branch; seq: number } | null;
   focusedErrorBranch?: Branch | null;
   checkedOutRef?: import('../../types').CheckedOutRef | null;
