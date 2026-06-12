@@ -95,7 +95,7 @@ export default function CommitControls({
   const menuButtonClassName = (enabled: boolean, loading: boolean) =>
     cn(
       controlClassName,
-      'w-full justify-start whitespace-nowrap rounded-[2px] border-0 bg-transparent px-2 hover:bg-muted',
+      'w-full justify-start whitespace-nowrap border-0 bg-transparent px-2 hover:bg-muted',
       !enabled && 'text-foreground opacity-50',
       loading && 'pointer-events-none',
     );
@@ -259,7 +259,7 @@ export default function CommitControls({
                 <ChevronDown className="h-4 w-4 shrink-0 text-foreground" />
               </button>
               {activeDropdown === 'commit' && (
-                <div className="absolute left-[-1px] top-full z-[70] mt-2 inline-flex w-max min-w-0 flex-col overflow-hidden rounded-md border border-border bg-background p-1">
+                <div className="context-menu-panel absolute left-[-1px] top-full z-[70] mt-2 inline-flex w-max min-w-0 flex-col overflow-hidden rounded-md border border-border bg-background p-1" data-outer-radius="md">
                   <button
                     type="button"
                     onClick={() => {
@@ -352,7 +352,7 @@ export default function CommitControls({
                 <ChevronDown className="h-4 w-4 shrink-0 text-foreground" />
               </button>
               {activeDropdown === 'preview' && (
-                <div className="absolute left-[-1px] top-full z-[70] mt-2 inline-flex w-max min-w-0 flex-col overflow-hidden rounded-md border border-border bg-background p-1">
+                <div className="context-menu-panel absolute left-[-1px] top-full z-[70] mt-2 inline-flex w-max min-w-0 flex-col overflow-hidden rounded-md border border-border bg-background p-1" data-outer-radius="md">
                   <button
                     type="button"
                     onClick={() => {
@@ -405,7 +405,7 @@ export default function CommitControls({
               <ChevronDown className="h-4 w-4 shrink-0 text-foreground" />
             </button>
             {activeDropdown === 'checkout' && (
-              <div className="absolute left-[-1px] top-full z-[70] mt-2 inline-flex w-max min-w-0 flex-col overflow-hidden rounded-md border border-border bg-background p-1">
+              <div className="context-menu-panel absolute left-[-1px] top-full z-[70] mt-2 inline-flex w-max min-w-0 flex-col overflow-hidden rounded-md border border-border bg-background p-1" data-outer-radius="md">
                 <button
                   type="button"
                   onClick={() => {
@@ -496,7 +496,7 @@ export default function CommitControls({
                 <ChevronDown className="h-4 w-4 shrink-0 text-foreground" />
               </button>
               {activeDropdown === 'checkout' && (
-                <div className="absolute left-[-1px] top-full z-[70] mt-2 inline-flex w-max min-w-0 flex-col overflow-hidden rounded-md border border-border bg-background p-1">
+                <div className="context-menu-panel absolute left-[-1px] top-full z-[70] mt-2 inline-flex w-max min-w-0 flex-col overflow-hidden rounded-md border border-border bg-background p-1" data-outer-radius="md">
                   <button
                     type="button"
                     onClick={() => {

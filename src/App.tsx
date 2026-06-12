@@ -7507,7 +7507,7 @@ function App() {
       {contextMenu ? (
         <div
           ref={menuRef}
-          className="context-menu-panel fixed z-[100] w-max min-w-[120px] rounded-lg border border-border bg-background p-1"
+          className="context-menu-panel fixed z-[100] w-max min-w-[120px] rounded-md border border-border bg-background p-1"
           style={{
             top: `${contextMenu.y}px`,
             left: `${contextMenu.x}px`,
@@ -7522,7 +7522,7 @@ function App() {
                   setContextMenu(null);
                   void revealProjectInFinder(contextMenu.projectPath);
                 }}
-                className="w-full rounded-lg px-2 py-1.5 text-left text-xs transition-colors hover:bg-muted"
+                className="w-full px-2 py-1.5 text-left text-xs transition-colors hover:bg-muted"
               >
                 Open in Finder
               </button>
@@ -7536,7 +7536,7 @@ function App() {
                     console.error('Failed to copy path:', err);
                   }
                 }}
-                className="w-full rounded-lg px-2 py-1.5 text-left text-xs transition-colors hover:bg-muted"
+                className="w-full px-2 py-1.5 text-left text-xs transition-colors hover:bg-muted"
               >
                 Copy file path
               </button>
@@ -7546,7 +7546,7 @@ function App() {
                   setContextMenu(null);
                   void handleCreateWorktree(contextMenu.projectPath);
                 }}
-                className="w-full rounded-lg px-2 py-1.5 text-left text-xs transition-colors hover:bg-muted"
+                className="w-full px-2 py-1.5 text-left text-xs transition-colors hover:bg-muted"
               >
                 New worktree
               </button>
@@ -7556,7 +7556,7 @@ function App() {
                   setContextMenu(null);
                   resetProjectNodePositions(contextMenu.projectPath);
                 }}
-                className="w-full rounded-lg px-2 py-1.5 text-left text-xs transition-colors hover:bg-muted"
+                className="w-full px-2 py-1.5 text-left text-xs transition-colors hover:bg-muted"
               >
                 Reset layout
               </button>
@@ -7566,7 +7566,7 @@ function App() {
                   setContextMenu(null);
                   removeProject(contextMenu.projectPath);
                 }}
-                className="w-full rounded-lg px-2 py-1.5 text-left text-xs text-red-600 transition-colors hover:bg-red-50 dark:text-red-400 dark:hover:bg-red-900/20"
+                className="w-full px-2 py-1.5 text-left text-xs text-red-600 transition-colors hover:bg-red-50 dark:text-red-400 dark:hover:bg-red-900/20"
               >
                 Remove
               </button>
@@ -7582,7 +7582,7 @@ function App() {
                     void revealProjectInFinder(contextMenu.worktreePath);
                   }
                 }}
-                className="w-full rounded-lg px-2 py-1.5 text-left text-xs transition-colors hover:bg-muted"
+                className="w-full px-2 py-1.5 text-left text-xs transition-colors hover:bg-muted"
               >
                 Open in Finder
               </button>
@@ -7598,7 +7598,7 @@ function App() {
                     }
                   }
                 }}
-                className="w-full rounded-lg px-2 py-1.5 text-left text-xs transition-colors hover:bg-muted"
+                className="w-full px-2 py-1.5 text-left text-xs transition-colors hover:bg-muted"
               >
                 Copy file path
               </button>
@@ -7615,7 +7615,7 @@ function App() {
                       }
                     }
                   }}
-                  className="w-full rounded-lg px-2 py-1.5 text-left text-xs transition-colors hover:bg-muted"
+                  className="w-full px-2 py-1.5 text-left text-xs transition-colors hover:bg-muted"
                 >
                   Copy worktree label
                 </button>
@@ -7633,7 +7633,7 @@ function App() {
                       }
                     }
                   }}
-                  className="w-full rounded-lg px-2 py-1.5 text-left text-xs transition-colors hover:bg-muted"
+                  className="w-full px-2 py-1.5 text-left text-xs transition-colors hover:bg-muted"
                 >
                   Copy message
                 </button>
@@ -7646,7 +7646,7 @@ function App() {
                     void handleCreateTerminal(contextMenu.projectPath, contextMenu.worktreePath);
                   }
                 }}
-                className="w-full rounded-lg px-2 py-1.5 text-left text-xs transition-colors hover:bg-muted"
+                className="w-full px-2 py-1.5 text-left text-xs transition-colors hover:bg-muted"
               >
                 New terminal
               </button>
@@ -7665,7 +7665,7 @@ function App() {
                     }, workingTreeId);
                   }
                 }}
-                className="w-full rounded-lg px-2 py-1.5 text-left text-xs transition-colors hover:bg-muted"
+                className="w-full px-2 py-1.5 text-left text-xs transition-colors hover:bg-muted"
               >
                 Preview
               </button>
@@ -7677,7 +7677,7 @@ function App() {
                     void handleDeleteWorktree(contextMenu.projectPath, contextMenu.worktreePath);
                   }
                 }}
-                className="w-full rounded-lg px-2 py-1.5 text-left text-xs text-red-600 transition-colors hover:bg-red-50 dark:text-red-400 dark:hover:bg-red-900/20"
+                className="w-full px-2 py-1.5 text-left text-xs text-red-600 transition-colors hover:bg-red-50 dark:text-red-400 dark:hover:bg-red-900/20"
               >
                 Delete
               </button>
@@ -7700,7 +7700,7 @@ function App() {
                     }, workingTreeId);
                   }
                 }}
-                className="w-full rounded-lg px-2 py-1.5 text-left text-xs transition-colors hover:bg-muted"
+                className="w-full px-2 py-1.5 text-left text-xs transition-colors hover:bg-muted"
               >
                 Preview
               </button>
@@ -7712,7 +7712,7 @@ function App() {
                     void handleCreateTerminal(contextMenu.projectPath, contextMenu.worktreePath);
                   }
                 }}
-                className="w-full rounded-lg px-2 py-1.5 text-left text-xs transition-colors hover:bg-muted"
+                className="w-full px-2 py-1.5 text-left text-xs transition-colors hover:bg-muted"
               >
                 Terminal
               </button>
@@ -7732,7 +7732,7 @@ function App() {
                     }
                   }
                 }}
-                className="w-full rounded-lg px-2 py-1.5 text-left text-xs transition-colors hover:bg-muted"
+                className="w-full px-2 py-1.5 text-left text-xs transition-colors hover:bg-muted"
               >
                 Copy commit label
               </button>
@@ -7748,7 +7748,7 @@ function App() {
                     }
                   }
                 }}
-                className="w-full rounded-lg px-2 py-1.5 text-left text-xs transition-colors hover:bg-muted"
+                className="w-full px-2 py-1.5 text-left text-xs transition-colors hover:bg-muted"
               >
                 Copy commit message
               </button>
@@ -7763,7 +7763,7 @@ function App() {
                     }, contextMenu.commitSha);
                   }
                 }}
-                className="w-full rounded-lg px-2 py-1.5 text-left text-xs transition-colors hover:bg-muted"
+                className="w-full px-2 py-1.5 text-left text-xs transition-colors hover:bg-muted"
               >
                 Preview
               </button>
@@ -7779,7 +7779,7 @@ function App() {
                     });
                   }
                 }}
-                className="w-full rounded-lg px-2 py-1.5 text-left text-xs transition-colors hover:bg-muted"
+                className="w-full px-2 py-1.5 text-left text-xs transition-colors hover:bg-muted"
               >
                 Checkout
               </button>
@@ -7799,7 +7799,7 @@ function App() {
                     }
                   }
                 }}
-                className="w-full rounded-lg px-2 py-1.5 text-left text-xs transition-colors hover:bg-muted"
+                className="w-full px-2 py-1.5 text-left text-xs transition-colors hover:bg-muted"
               >
                 Copy stash message
               </button>
@@ -7814,7 +7814,7 @@ function App() {
                     });
                   }
                 }}
-                className="w-full rounded-lg px-2 py-1.5 text-left text-xs transition-colors hover:bg-muted"
+                className="w-full px-2 py-1.5 text-left text-xs transition-colors hover:bg-muted"
               >
                 Checkout
               </button>
@@ -7834,7 +7834,7 @@ function App() {
                     }
                   }
                 }}
-                className="w-full rounded-lg px-2 py-1.5 text-left text-xs text-red-600 transition-colors hover:bg-red-50 dark:text-red-400 dark:hover:bg-red-900/20"
+                className="w-full px-2 py-1.5 text-left text-xs text-red-600 transition-colors hover:bg-red-50 dark:text-red-400 dark:hover:bg-red-900/20"
               >
                 Delete
               </button>
@@ -7855,7 +7855,7 @@ function App() {
                     });
                   }
                 }}
-                className="w-full rounded-lg px-2 py-1.5 text-left text-xs transition-colors hover:bg-muted"
+                className="w-full px-2 py-1.5 text-left text-xs transition-colors hover:bg-muted"
               >
                 Checkout
               </button>
@@ -7870,7 +7870,7 @@ function App() {
                     });
                   }
                 }}
-                className="w-full rounded-lg px-2 py-1.5 text-left text-xs text-red-600 transition-colors hover:bg-red-50 dark:text-red-400 dark:hover:bg-red-900/20"
+                className="w-full px-2 py-1.5 text-left text-xs text-red-600 transition-colors hover:bg-red-50 dark:text-red-400 dark:hover:bg-red-900/20"
               >
                 Delete
               </button>

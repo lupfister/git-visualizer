@@ -774,11 +774,33 @@ body.popover-window #root {
 }
 
 .context-menu-panel {
+  --menu-outer-radius: 0.375rem;
+  --menu-padding: 0.25rem;
+  --menu-inner-radius: max(0px, calc(var(--menu-outer-radius) - var(--menu-padding)));
   display: flex !important;
   flex-direction: column !important;
+}
+
+.context-menu-panel[data-outer-radius='md'] {
+  --menu-outer-radius: 0.375rem;
 }
 
 .context-menu-panel button {
   white-space: nowrap !important;
   width: auto !important;
+  border-radius: 0 !important;
+}
+
+.context-menu-panel button:first-child {
+  border-top-left-radius: var(--menu-inner-radius) !important;
+  border-top-right-radius: var(--menu-inner-radius) !important;
+}
+
+.context-menu-panel button:last-child {
+  border-bottom-left-radius: var(--menu-inner-radius) !important;
+  border-bottom-right-radius: var(--menu-inner-radius) !important;
+}
+
+.context-menu-panel button:only-child {
+  border-radius: var(--menu-inner-radius) !important;
 }
