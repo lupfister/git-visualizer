@@ -49,7 +49,11 @@ import { classifyFingerprintDiff, parseRepoFingerprint, withRepoFingerprintDirty
 import { buildGraphDeltaOutcomes, fetchRepoGraphDelta } from './externalGraphSync';
 import { isNetworkAvailable } from './isNetworkAvailable';
 import { syncRemoteRepo } from './remoteRepoSync';
-import { formatWorktreeSyncSignature, formatWorktreeSessionLayoutSignature } from './worktreeSignature';
+import {
+  formatWorktreeLayoutSignature,
+  formatWorktreeSyncSignature,
+  formatWorktreeSessionLayoutSignature,
+} from './worktreeSignature';
 import { canApplyActiveRepoSnapshot } from './activeRepoGuard';
 import {
   shouldBlockIncomingSnapshotApply as shouldBlockIncomingSnapshotApplyGuard,
@@ -2299,6 +2303,9 @@ function App() {
     next: RepoVisualSnapshot,
   ): boolean {
     if ((previous?.worktrees.length ?? 0) === 0 && next.worktrees.length === 0) return false;
+    if (formatWorktreeLayoutSignature(previous?.worktrees ?? []) !== formatWorktreeLayoutSignature(next.worktrees)) {
+      return true;
+    }
     const prevRef = previous?.checkedOutRef;
     const nextRef = next.checkedOutRef;
     if (!prevRef || !nextRef) return next.worktrees.length > 0;
@@ -7033,17 +7040,11 @@ function App() {
       }
     }
 
-    // Resolve commit SHA to branch name if it is the head of a branch
-    // Also resolve HEAD/WORKING_TREE to the current branch name if attached
+    // Resolve synthetic current-worktree targets, but preserve explicit commit SHAs.
     let resolvedTarget = branchOrCommitInput;
     if (resolvedTarget === 'HEAD' || resolvedTarget === 'WORKING_TREE' || (resolvedTarget && resolvedTarget.startsWith('WORKING_TREE:'))) {
       if (checkedOutRef?.branchName) {
         resolvedTarget = checkedOutRef.branchName;
-      }
-    } else if (resolvedTarget && /^[0-9a-fA-F]{7,40}$/.test(resolvedTarget)) {
-      const matchingBranch = branches.find((b) => shaMatches(b.headSha, resolvedTarget));
-      if (matchingBranch) {
-        resolvedTarget = matchingBranch.name;
       }
     }
 

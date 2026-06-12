@@ -12,6 +12,17 @@ export function formatWorktreeSyncSignature(worktrees: WorktreeInfo[]): string {
     .join('|');
 }
 
+/** Layout topology only; excludes dirty state because that is rendered on the canvas. */
+export function formatWorktreeLayoutSignature(worktrees: WorktreeInfo[]): string {
+  return worktrees
+    .map(
+      (worktree) =>
+        `${worktree.path}:${worktree.headSha}:${worktree.parentSha ?? ''}:${worktree.branchName ?? ''}:${worktree.isCurrent ? '1' : '0'}`,
+    )
+    .sort()
+    .join('|');
+}
+
 /** Layout cache input — anchor geometry only; dirty is visual-only on the canvas. */
 export function formatWorktreeSessionLayoutSignature(sessions: WorktreeSession[]): string {
   return sessions

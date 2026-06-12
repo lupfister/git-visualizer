@@ -2793,27 +2793,6 @@ export function projectVisibility(
     node.row = Math.max(1, Math.round(override.row));
     node.column = Math.max(0, Math.round(override.column));
   }
-  const worktreeNodesByParentVisualId = new Map<string, Node[]>();
-  for (const node of renderNodes) {
-    if (!isWorktreeGraphNode(node.commit)) continue;
-    if (getNodePositionOverride(nodePositionOverrides, node.commit)) continue;
-    const parentSha = actualWorktreeParentSha(node.commit);
-    if (!parentSha) continue;
-    const parentNode = projectedNodeForSha(parentSha, node.commit.branchName);
-    if (!parentNode || parentNode.commit.visualId === node.commit.visualId) continue;
-    const siblings = worktreeNodesByParentVisualId.get(parentNode.commit.visualId) ?? [];
-    siblings.push(node);
-    worktreeNodesByParentVisualId.set(parentNode.commit.visualId, siblings);
-  }
-  for (const [parentVisualId, worktreeNodes] of worktreeNodesByParentVisualId) {
-    const parentNode = projectedNodeByVisualId.get(parentVisualId);
-    if (!parentNode) continue;
-    worktreeNodes.sort((left, right) => left.commit.visualId.localeCompare(right.commit.visualId));
-    worktreeNodes.forEach((node, index) => {
-      node.row = parentNode.row + 1;
-      node.column = parentNode.column + 1 + index;
-    });
-  }
   for (const node of renderNodes) {
     columnByCommitVisualId.set(node.commit.visualId, node.column);
   }
