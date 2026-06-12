@@ -10,7 +10,6 @@ import {
 } from 'react';
 import { invoke } from '../../src/timedInvoke';
 import { getCurrentWindow } from '@tauri-apps/api/window';
-import { open } from '@tauri-apps/plugin-dialog';
 import type { BranchCommitPreview } from '../../types';
 import {
   CARD_HEIGHT,
@@ -57,6 +56,7 @@ import {
   selectedRemovableWorktreeSessions,
   dirtyWorktreeSessions,
   selectedUncommittedSessions,
+  worktreeStableKey,
   type WorktreeSession,
 } from '../../lib/worktreeSessions';
 import type { WorktreeInfo } from '../../types';
@@ -284,6 +284,18 @@ export default function BranchGridMap({
   const handleCreateNewWorktreeChange = useCallback((value: boolean) => {
     setCreateNewWorktree(value);
     localStorage.setItem('git-visualizer:new-branch-create-worktree', String(value));
+  }, []);
+  const [newWorktreeName, setNewWorktreeName] = useState('');
+  const [isWorktreeNameManuallyEdited, setIsWorktreeNameManuallyEdited] = useState(false);
+  const handleNewBranchNameChange = useCallback((value: string) => {
+    setNewBranchName(value);
+    if (!isWorktreeNameManuallyEdited) {
+      setNewWorktreeName(value.replace(/[^a-zA-Z0-9._-]/g, '_'));
+    }
+  }, [isWorktreeNameManuallyEdited]);
+  const handleNewWorktreeNameChange = useCallback((value: string) => {
+    setNewWorktreeName(value);
+    setIsWorktreeNameManuallyEdited(true);
   }, []);
   const [localManuallyOpenedClumps, setLocalManuallyOpenedClumps] = useState<Set<string>>(() => new Set());
   const [localManuallyClosedClumps, setLocalManuallyClosedClumps] = useState<Set<string>>(() => new Set());
@@ -757,6 +769,10 @@ export default function BranchGridMap({
     return renderNodes.find((node) => node.commit.id === selectedSha) ?? null;
   }, [renderNodes, selectedVisibleCommitShas]);
 
+  const isSelectedWorktree = selectedPreviewNode != null && (
+    isWorkingTreeCommitId(selectedPreviewNode.commit.id) ||
+    selectedPreviewNode.commit.kind === 'uncommitted'
+  );
   const newBranchCreateMode = selectedVisibleCommitShas.length === 1 ? 'from-selected-node' : 'new-root';
   const selectedNodeContextText = useMemo(() => {
     if (selectedVisibleCommitShas.length !== 1 || !selectedPreviewNode) return null;
@@ -1931,18 +1947,16 @@ export default function BranchGridMap({
     if (!trimmed) return;
 
     let worktreePath: string | null = null;
-    if (createNewWorktree) {
-      const parentDir = await open({
-        directory: true,
-        multiple: false,
-        title: 'Select parent directory for the new worktree',
-        defaultPath: currentRepoPath ?? undefined,
-      });
-      if (!parentDir) return;
-
-      const folderName = window.prompt("Enter name for the new worktree folder:", trimmed.replace(/[^a-zA-Z0-9-_]/g, '-'));
+    if (createNewWorktree && !isSelectedWorktree) {
+      const folderName = newWorktreeName.trim();
       if (!folderName) return;
-      worktreePath = `${parentDir}/${folderName.trim()}`;
+
+      const homeDir = await invoke<string>('get_home_dir');
+      const repoName = currentRepoPath?.split(/[/\\]/).pop() || 'repo';
+      const repoHash = worktreeStableKey(currentRepoPath || '');
+      const repoFolderName = `${repoName}-${repoHash}`;
+      const branchFolderName = folderName.replace(/[^a-zA-Z0-9._-]/g, '_');
+      worktreePath = `${homeDir}/.git-visualizer/worktrees/${repoFolderName}/${branchFolderName}`;
     }
 
     if (newBranchCreateMode === 'new-root') {
@@ -1958,10 +1972,13 @@ export default function BranchGridMap({
     }
     setNewBranchDialogOpen(false);
     setNewBranchName('');
+    setNewWorktreeName('');
+    setIsWorktreeNameManuallyEdited(false);
     setSelectedCommitShas([]);
     setMergeTargetCommitSha(null);
   }, [
     newBranchName,
+    newWorktreeName,
     createNewWorktree,
     currentRepoPath,
     newBranchCreateMode,
@@ -1970,7 +1987,8 @@ export default function BranchGridMap({
     selectedVisibleCommitShas,
     checkedOutRef?.headSha,
     setSelectedCommitShas,
-    setMergeTargetCommitSha
+    setMergeTargetCommitSha,
+    isSelectedWorktree,
   ]);
 
   const mapHudVisible =
@@ -2319,13 +2337,21 @@ export default function BranchGridMap({
         deletableSelectionCount={deletableSelectionCount}
         newBranchDialogOpen={newBranchDialogOpen}
         newBranchName={newBranchName}
-        onNewBranchNameChange={setNewBranchName}
-        onNewBranchDialogClose={() => setNewBranchDialogOpen(false)}
+        onNewBranchNameChange={handleNewBranchNameChange}
+        onNewBranchDialogClose={() => {
+          setNewBranchDialogOpen(false);
+          setNewBranchName('');
+          setNewWorktreeName('');
+          setIsWorktreeNameManuallyEdited(false);
+        }}
         onNewBranchConfirm={() => void confirmCreateBranchFromSelection()}
         createBranchFromNodeInProgress={createBranchFromNodeInProgress}
         createNewWorktree={createNewWorktree}
         onCreateNewWorktreeChange={handleCreateNewWorktreeChange}
+        newWorktreeName={newWorktreeName}
+        onNewWorktreeNameChange={handleNewWorktreeNameChange}
         selectedNodeContextText={selectedNodeContextText}
+        isWorktreeSelected={isSelectedWorktree}
         checkoutPickerOpen={checkoutPickerOpen}
         checkoutPickerSummary={checkoutPickerTarget?.summary ?? ''}
         checkoutPickerWorktrees={checkoutPickerWorktrees}

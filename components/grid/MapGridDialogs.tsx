@@ -25,7 +25,10 @@ type Props = {
   createBranchFromNodeInProgress: boolean;
   createNewWorktree: boolean;
   onCreateNewWorktreeChange: (value: boolean) => void;
+  newWorktreeName?: string;
+  onNewWorktreeNameChange?: (value: string) => void;
   selectedNodeContextText: string | null;
+  isWorktreeSelected?: boolean;
   checkoutPickerOpen: boolean;
   checkoutPickerSummary: string;
   checkoutPickerWorktrees: Array<{ path: string; label: string; detail: string; session: WorktreeSession }>;
@@ -57,7 +60,10 @@ export default function MapGridDialogs({
   createBranchFromNodeInProgress,
   createNewWorktree,
   onCreateNewWorktreeChange,
+  newWorktreeName = '',
+  onNewWorktreeNameChange,
   selectedNodeContextText,
+  isWorktreeSelected,
   checkoutPickerOpen,
   checkoutPickerSummary,
   checkoutPickerWorktrees,
@@ -225,17 +231,33 @@ export default function MapGridDialogs({
               className="mt-3 w-full rounded-lg border border-border bg-background px-3 py-2 text-sm text-foreground placeholder:text-muted-foreground focus:outline-none"
             />
 
-            <label className="mt-4 flex items-center gap-2 cursor-pointer select-none">
-              <input
-                type="checkbox"
-                checked={createNewWorktree}
-                onChange={(event) => onCreateNewWorktreeChange(event.target.checked)}
-                className="h-4 w-4 rounded border-border bg-background text-primary focus:ring-primary/20 accent-primary"
-              />
-              <span className="text-xs text-foreground font-medium">
-                Create a new worktree with this branch
-              </span>
-            </label>
+            {!isWorktreeSelected && (
+              <label className="mt-4 flex items-center gap-2 cursor-pointer select-none">
+                <input
+                  type="checkbox"
+                  checked={createNewWorktree}
+                  onChange={(event) => onCreateNewWorktreeChange(event.target.checked)}
+                  className="h-4 w-4 rounded border-border bg-background text-primary focus:ring-primary/20 accent-primary"
+                />
+                <span className="text-xs text-foreground font-medium">
+                  Create a new worktree with this branch
+                </span>
+              </label>
+            )}
+
+            {!isWorktreeSelected && createNewWorktree && (
+              <div className="mt-4">
+                <p className="text-[10px] uppercase tracking-wide text-muted-foreground font-medium">
+                  Worktree Folder Name
+                </p>
+                <input
+                  value={newWorktreeName}
+                  onChange={(event) => onNewWorktreeNameChange?.(event.target.value)}
+                  placeholder="my-worktree-folder"
+                  className="mt-1.5 w-full rounded-lg border border-border bg-background px-3 py-2 text-sm text-foreground placeholder:text-muted-foreground focus:outline-none"
+                />
+              </div>
+            )}
 
             <div className="mt-4 flex items-center justify-end gap-2">
               <button
@@ -250,6 +272,7 @@ export default function MapGridDialogs({
                 onClick={onNewBranchConfirm}
                 disabled={
                   !newBranchName.trim() ||
+                  (createNewWorktree && !isWorktreeSelected && !newWorktreeName.trim()) ||
                   createBranchFromNodeInProgress
                 }
                 className={cn(
@@ -267,3 +290,4 @@ export default function MapGridDialogs({
     </>
   );
 }
+

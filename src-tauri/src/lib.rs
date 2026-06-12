@@ -4756,6 +4756,7 @@ async fn generate_stash_message(
     .map_err(|e| format!("Stash message task failed: {e}"))?
 }
 
+
 #[tauri::command(rename_all = "camelCase")]
 async fn apply_stash_restore(
     repo_path: String,

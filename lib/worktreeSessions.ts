@@ -34,6 +34,43 @@ const NON_CURRENT_ACCENT_CYCLE: WorktreeSessionAccentToken[] = [
 
 export const LEGACY_WORKING_TREE_ID = 'WORKING_TREE';
 
+const ESOTERIC_NAMES = [
+  // Stones & Rocks
+  'obsidian', 'basalt', 'travertine', 'porphyry', 'slate', 'quartzite',
+  'schist', 'gneiss', 'granite', 'marble', 'shale', 'limestone',
+  'sandstone', 'breccia', 'diorite', 'gabbro', 'rhyolite', 'pumice',
+  'pegmatite', 'soapstone', 'tuff', 'hornfels', 'novaculite', 'siltstone',
+  // Minerals & Crystals
+  'lapis', 'onyx', 'serpentine', 'alabaster', 'malachite', 'selenite',
+  'jasper', 'hematite', 'agate', 'sardonyx', 'feldspar', 'fluorite',
+  'chalcedony', 'chert', 'sodalite', 'carnelian', 'quartz', 'amethyst',
+  'citrine', 'aventurine', 'opal', 'garnet', 'topaz', 'zircon',
+  'olivine', 'pyroxene', 'mica', 'calcite', 'dolomite', 'gypsum',
+  'pyrite', 'beryl', 'tourmaline', 'emerald', 'sapphire', 'ruby',
+  'turquoise', 'jadeite', 'nephrite', 'alexandrite', 'spinel', 'tanzanite',
+  'apatite', 'talc', 'sphene', 'larimar', 'prehnite', 'apophyllite',
+  'amazonite', 'labradorite', 'moonstone', 'sunstone', 'rhodonite',
+  'dioptase', 'azurite', 'chrysocolla', 'variscite', 'wavellite',
+  'kyanite', 'staurolite', 'epidote', 'zoisite', 'axinite',
+  // Tiling & Architectural layouts
+  'sectile', 'tessera', 'cosmatesque', 'mosaic', 'tessellation',
+  'chevron', 'herringbone', 'ashlar', 'arabesque', 'windmill',
+  'basketweave', 'pinwheel', 'hopscotch', 'versailles', 'ledgerstone',
+  'matrix', 'signinum', 'opus', 'spicatum', 'quadratum', 'reticulatum',
+  'incertum', 'testaceum', 'mixtum', 'vittatum', 'alexandrinum',
+  'scutulatum', 'vermiculatum', 'musivum', 'tessellatum'
+];
+
+export const generateEsotericWorktreeName = (existingNames?: Set<string>): string => {
+  const filterSet = existingNames ?? new Set<string>();
+  const available = ESOTERIC_NAMES.filter(name => !filterSet.has(name.toLowerCase()));
+  if (available.length > 0) {
+    return available[Math.floor(Math.random() * available.length)];
+  }
+  const base = ESOTERIC_NAMES[Math.floor(Math.random() * ESOTERIC_NAMES.length)];
+  return `${base}${Math.floor(Math.random() * 1000)}`;
+};
+
 export const worktreeStableKey = (path: string): string => {
   const normalized = normalizeRepoPathForCompare(path).toLowerCase();
   let hash = 2166136261;

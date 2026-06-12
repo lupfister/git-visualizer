@@ -72,6 +72,7 @@ import {
   shaMatches,
   workingTreeIdForPath,
   worktreeStableKey,
+  generateEsotericWorktreeName,
 } from '../lib/worktreeSessions';
 import { deriveRepoVisualState } from './repoVisualState';
 import { setMapGridBackgroundActivity } from '../components/grid/mapGridBackgroundActivity';
@@ -375,6 +376,11 @@ function App() {
   const [previewedNodeId, setPreviewedNodeId] = useState<string | null>(null);
   const [terminalSessions, setTerminalSessions] = useState<TerminalSession[]>([]);
   const [activeTerminalId, setActiveTerminalId] = useState<string | null>(null);
+  const [worktreePromptOpen, setWorktreePromptOpen] = useState(false);
+  const [worktreePromptProjectPath, setWorktreePromptProjectPath] = useState('');
+  const [worktreePromptBranchOrCommit, setWorktreePromptBranchOrCommit] = useState('');
+  const [worktreePromptBranchOrCommitEditable, setWorktreePromptBranchOrCommitEditable] = useState(false);
+  const [worktreePromptFolderName, setWorktreePromptFolderName] = useState('');
   const lastActiveTerminalIdByWorktreePathRef = useRef<Map<string, string>>(new Map());
   const [terminalPanelPlacement, setTerminalPanelPlacement] = useState<TerminalPanelPlacement>('right');
   // scrollRequest.seq increments on each click so the same branch re-triggers the effect
@@ -6999,23 +7005,55 @@ function App() {
   const blockMapDisplay = !mapReadyForDisplay || mapPresentationState !== 'ready';
   const blockMapInteraction = mapLoading || loading;
 
-  const handleCreateWorktree = useCallback(async (projectPath: string, branchOrCommitInput?: string, worktreePathInput?: string) => {
-    let branchOrCommit = branchOrCommitInput;
-    if (branchOrCommit === undefined) {
-      const answer = window.prompt("Enter branch or commit to checkout in the new worktree (leave empty for HEAD):", "");
-      if (answer === null) return;
-      branchOrCommit = answer.trim();
+  const handleCreateWorktree = useCallback((projectPath: string, branchOrCommitInput?: string) => {
+    setWorktreePromptProjectPath(projectPath);
+    setWorktreePromptOpen(true);
+
+    const existingNames = new Set<string>();
+    for (const b of branches) {
+      existingNames.add(b.name.toLowerCase());
+    }
+    for (const w of sortedWorktrees) {
+      const name = w.path.split(/[/\\]/).pop();
+      if (name) {
+        existingNames.add(name.toLowerCase());
+      }
     }
 
-    let worktreePath = worktreePathInput;
-    if (!worktreePath) {
-      const homeDir = await invoke<string>('get_home_dir');
-      const repoName = projectPath.split(/[/\\]/).pop() || 'repo';
-      const repoHash = worktreeStableKey(projectPath);
-      const repoFolderName = `${repoName}-${repoHash}`;
-      const branchFolderName = (branchOrCommit || 'HEAD').replace(/[^a-zA-Z0-9._-]/g, '_');
-      worktreePath = `${homeDir}/.git-visualizer/worktrees/${repoFolderName}/${branchFolderName}`;
+    let defaultName = '';
+
+    if (branchOrCommitInput === undefined) {
+      setWorktreePromptBranchOrCommit('');
+      setWorktreePromptBranchOrCommitEditable(true);
+      defaultName = generateEsotericWorktreeName(existingNames);
+    } else {
+      setWorktreePromptBranchOrCommit(branchOrCommitInput);
+      setWorktreePromptBranchOrCommitEditable(false);
+      const cleaned = branchOrCommitInput.replace(/[^a-zA-Z0-9._-]/g, '_') || 'HEAD';
+      if (cleaned === 'HEAD' || /^[0-9a-fA-F]{7,40}$/.test(cleaned)) {
+        defaultName = generateEsotericWorktreeName(existingNames);
+      } else {
+        defaultName = cleaned;
+      }
     }
+
+    setWorktreePromptFolderName(defaultName);
+  }, [branches, sortedWorktrees]);
+
+  const confirmCreateWorktreePrompt = useCallback(async () => {
+    const projectPath = worktreePromptProjectPath;
+    const branchOrCommit = worktreePromptBranchOrCommit.trim();
+    const folderName = worktreePromptFolderName.trim();
+    if (!folderName) return;
+
+    setWorktreePromptOpen(false);
+
+    const homeDir = await invoke<string>('get_home_dir');
+    const repoName = projectPath.split(/[/\\]/).pop() || 'repo';
+    const repoHash = worktreeStableKey(projectPath);
+    const repoFolderName = `${repoName}-${repoHash}`;
+    const branchFolderName = folderName.replace(/[^a-zA-Z0-9._-]/g, '_');
+    const worktreePath = `${homeDir}/.git-visualizer/worktrees/${repoFolderName}/${branchFolderName}`;
 
     const project = projectCards.find((p) => sameRepoPath(p.path, projectPath));
     const branch = project?.branches.find((b) => b.name === branchOrCommit);
@@ -7095,11 +7133,10 @@ function App() {
           };
         });
       }
-      const errText = e instanceof Error ? e.message : String(e);
-      setError(errText);
-      console.error('Failed to create worktree:', errText);
+      const message = e instanceof Error ? e.message : String(e);
+      console.error('Failed to create worktree:', message);
     }
-  }, [projectCards, repoPath]);
+  }, [projectCards, repoPath, worktreePromptProjectPath, worktreePromptBranchOrCommit, worktreePromptFolderName]);
 
   const handleDeleteWorktree = useCallback(async (projectPath: string, worktreePath: string) => {
     const confirm = window.confirm(`Are you sure you want to delete the worktree at ${worktreePath}?`);
@@ -7767,6 +7804,71 @@ function App() {
           )}
         </div>
       ) : null}
+
+      {worktreePromptOpen && (
+        <div className="absolute inset-0 z-[9999] flex items-center justify-center bg-background/70 p-4 backdrop-blur-sm" onClick={() => setWorktreePromptOpen(false)}>
+          <div className="w-full max-w-sm rounded-2xl border border-border bg-background p-4 shadow-lg" onClick={(event) => event.stopPropagation()}>
+            <p className="text-sm font-medium text-foreground">Create new worktree</p>
+            
+            {worktreePromptBranchOrCommitEditable ? (
+              <div className="mt-3">
+                <p className="text-[10px] uppercase tracking-wide text-muted-foreground font-medium">
+                  Branch or Commit (leave empty for HEAD)
+                </p>
+                <input
+                  value={worktreePromptBranchOrCommit}
+                  onChange={(event) => {
+                    const val = event.target.value;
+                    setWorktreePromptBranchOrCommit(val);
+                    setWorktreePromptFolderName(val.trim().replace(/[^a-zA-Z0-9._-]/g, '_') || 'HEAD');
+                  }}
+                  placeholder="main"
+                  className="mt-1.5 w-full rounded-lg border border-border bg-background px-3 py-2 text-sm text-foreground placeholder:text-muted-foreground focus:outline-none select-text"
+                />
+              </div>
+            ) : (
+              <div className="mt-3">
+                <p className="text-[10px] uppercase tracking-wide text-muted-foreground font-medium">
+                  Target Branch/Commit
+                </p>
+                <p className="mt-1 text-xs text-foreground font-semibold">
+                  {worktreePromptBranchOrCommit || 'HEAD'}
+                </p>
+              </div>
+            )}
+
+            <div className="mt-4">
+              <p className="text-[10px] uppercase tracking-wide text-muted-foreground font-medium">
+                Worktree Folder Name
+              </p>
+              <input
+                value={worktreePromptFolderName}
+                onChange={(event) => setWorktreePromptFolderName(event.target.value)}
+                placeholder="my-worktree-folder"
+                className="mt-1.5 w-full rounded-lg border border-border bg-background px-3 py-2 text-sm text-foreground placeholder:text-muted-foreground focus:outline-none select-text"
+              />
+            </div>
+
+            <div className="mt-4 flex items-center justify-end gap-2">
+              <button
+                type="button"
+                onClick={() => setWorktreePromptOpen(false)}
+                className="rounded-lg border border-border bg-background px-3 py-1.5 text-xs font-medium text-foreground transition-colors hover:bg-muted"
+              >
+                Cancel
+              </button>
+              <button
+                type="button"
+                onClick={() => void confirmCreateWorktreePrompt()}
+                disabled={!worktreePromptFolderName.trim()}
+                className="rounded-lg border border-border bg-background px-3 py-1.5 text-xs font-medium text-foreground transition-colors hover:bg-muted disabled:cursor-not-allowed disabled:opacity-50"
+              >
+                Create
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 }

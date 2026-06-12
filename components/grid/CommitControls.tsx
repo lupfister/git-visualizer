@@ -202,25 +202,39 @@ export default function CommitControls({
       <div className="pointer-events-auto flex w-fit max-w-full flex-nowrap items-center justify-start gap-[9px]">
         {/* STATE 1: Nothing selected */}
         {isSelectionEmpty && (
-          <button
-            type="button"
-            onClick={() => void onPushAllBranches?.()}
-            disabled={pushInProgress}
-            className={controlClassName}
-          >
-            <ToolbarActionContent
-              icon="push-all"
-              label="Push All"
-              loading={pushInProgress}
-            />
-          </button>
+          <>
+            <button
+              type="button"
+              onClick={() => void onPushAllBranches?.()}
+              disabled={pushInProgress}
+              className={controlClassName}
+            >
+              <ToolbarActionContent
+                icon="push-all"
+                label="Push All"
+                loading={pushInProgress}
+              />
+            </button>
+            <button
+              type="button"
+              onClick={() => setNewBranchDialogOpen(true)}
+              disabled={createBranchFromNodeInProgress}
+              className={cn(controlClassName, 'pointer-events-auto relative z-10 !bg-background !border-border hover:!bg-muted')}
+            >
+              <ToolbarActionContent
+                icon="branch"
+                label="Branch"
+                loading={createBranchFromNodeInProgress}
+              />
+            </button>
+          </>
         )}
 
         {/* STATE 2: Selected Worktree */}
         {!isSelectionEmpty && isSelectedWorktree && (
           <>
             {/* Commit Actions Split-Button Dropdown */}
-            <div className="relative inline-flex h-7 items-stretch rounded-md border border-border bg-background">
+            <div className="pointer-events-auto relative z-10 inline-flex h-7 items-stretch rounded-md border border-border bg-background">
               <button
                 type="button"
                 onClick={() => void runCommitAction(commitAction)}
@@ -317,7 +331,7 @@ export default function CommitControls({
             </button>
 
             {/* Preview/Terminal Split-Button Dropdown */}
-            <div className="relative inline-flex h-7 items-stretch rounded-md border border-border bg-background">
+            <div className="pointer-events-auto relative z-10 inline-flex h-7 items-stretch rounded-md border border-border bg-background">
               <button
                 type="button"
                 onClick={() => void runPreviewAction(previewAction)}
@@ -371,7 +385,7 @@ export default function CommitControls({
 
         {/* STATE 3: Selected Stash / Placeholder Branch Node */}
         {!isSelectionEmpty && isSelectedStashOrPlaceholder && (
-          <div className="relative inline-flex h-7 items-stretch rounded-md border border-border bg-background">
+          <div className="pointer-events-auto relative z-10 inline-flex h-7 items-stretch rounded-md border border-border bg-background">
             <button
               type="button"
               onClick={() => void runCheckoutAction(checkoutAction)}
@@ -462,7 +476,7 @@ export default function CommitControls({
             )}
 
             {/* Checkout Actions Split-Button Dropdown */}
-            <div className="relative inline-flex h-7 items-stretch rounded-md border border-border bg-background">
+            <div className="pointer-events-auto relative z-10 inline-flex h-7 items-stretch rounded-md border border-border bg-background">
               <button
                 type="button"
                 onClick={() => void runCheckoutAction(checkoutAction)}

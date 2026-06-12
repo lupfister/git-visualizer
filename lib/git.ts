@@ -145,3 +145,8 @@ export async function overhaulCreateBranch(
 ): Promise<CheckedOutRef> {
   return invoke('overhaul_create_branch', { repoPath, branchName, targetNodeId, worktreePath });
 }
+
+export async function suggestWorktreeName(repoPath: string): Promise<string> {
+  return invoke('suggest_worktree_name', { repoPath });
+}
+

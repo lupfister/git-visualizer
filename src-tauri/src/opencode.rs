@@ -876,3 +876,4 @@ pub fn validate_generated_message(message: &str, label: &str) -> Result<(), Stri
     }
     Ok(())
 }
+
