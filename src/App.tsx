@@ -5359,31 +5359,38 @@ function App() {
     }
   }
 
-  async function handleCreateBranchFromNode(nodeId: string, branchName: string) {
+  async function handleCreateBranchFromNode(nodeId: string, branchName: string, worktreePath?: string | null) {
     if (!repoPath || createBranchFromNodeInProgress) return;
     setCreateBranchFromNodeInProgress(true);
     setCommitSwitchFeedback(null);
     try {
       beginRepoMutation();
-      const stashMatch = /^STASH:(\d+)$/.exec(nodeId);
-      if (stashMatch) {
-        const stashIndex = parseInt(stashMatch[1], 10);
-        await invoke<CheckedOutRef>('move_stash_to_new_branch', {
-          repoPath,
-          stashIndex,
-          branchName,
+      
+      const checkedOutRef = await invoke<CheckedOutRef>('overhaul_create_branch', {
+        repoPath,
+        branchName,
+        targetNodeId: nodeId,
+        worktreePath: worktreePath || null,
+      });
+
+      if (worktreePath) {
+        // Retrieve updated worktree list
+        const updatedWorktrees = await invoke<WorktreeInfo[]>('list_worktrees', { repoPath }).catch(
+          () => [] as WorktreeInfo[],
+        );
+        setWorktrees(updatedWorktrees);
+        await finalizeRepoMutation(repoPath, outcomeFromWorktreeSync(updatedWorktrees), { kind: 'fullRefresh', layoutTopologyChanged: true });
+        setCommitSwitchFeedback({
+          kind: 'success',
+          message: `Created branch "${branchName}" in new worktree at ${worktreePath}`,
         });
       } else {
-        await invoke<CheckedOutRef>('create_branch_from_uncommitted', {
-          repoPath,
-          branchName,
+        await finalizeRepoMutation(repoPath, outcomeFromCheckout(checkedOutRef), { kind: 'fullRefresh', layoutTopologyChanged: true });
+        setCommitSwitchFeedback({
+          kind: 'success',
+          message: `Moved to new branch "${branchName}"`,
         });
       }
-      await finalizeRepoMutation(repoPath, { kind: 'fullRefresh', layoutTopologyChanged: true });
-      setCommitSwitchFeedback({
-        kind: 'success',
-        message: `Moved to new branch "${branchName}"`,
-      });
     } catch (e) {
       endRepoMutation();
       const message = e instanceof Error ? e.message : String(e);
@@ -5394,22 +5401,40 @@ function App() {
     }
   }
 
-  async function handleCreateRootBranch(branchName: string) {
+  async function handleCreateRootBranch(branchName: string, worktreePath?: string | null) {
     if (!repoPath || createBranchFromNodeInProgress) return;
     setCreateBranchFromNodeInProgress(true);
     setCommitSwitchFeedback(null);
     try {
       beginRepoMutation();
-      await invoke<CheckedOutRef>('create_root_branch', {
+      
+      const checkedOutRef = await invoke<CheckedOutRef>('overhaul_create_branch', {
         repoPath,
         branchName,
+        targetNodeId: '',
+        worktreePath: worktreePath || null,
       });
-      await finalizeRepoMutation(repoPath, { kind: 'fullRefresh', layoutTopologyChanged: true });
-      setCommitSwitchFeedback({
-        kind: 'success',
-        message: `Created new root branch "${branchName}"`,
-      });
+
+      if (worktreePath) {
+        // Retrieve updated worktree list
+        const updatedWorktrees = await invoke<WorktreeInfo[]>('list_worktrees', { repoPath }).catch(
+          () => [] as WorktreeInfo[],
+        );
+        setWorktrees(updatedWorktrees);
+        await finalizeRepoMutation(repoPath, outcomeFromWorktreeSync(updatedWorktrees), { kind: 'fullRefresh', layoutTopologyChanged: true });
+        setCommitSwitchFeedback({
+          kind: 'success',
+          message: `Created root branch "${branchName}" in new worktree at ${worktreePath}`,
+        });
+      } else {
+        await finalizeRepoMutation(repoPath, outcomeFromCheckout(checkedOutRef), { kind: 'fullRefresh', layoutTopologyChanged: true });
+        setCommitSwitchFeedback({
+          kind: 'success',
+          message: `Created new root branch "${branchName}"`,
+        });
+      }
     } catch (e) {
+      endRepoMutation();
       const message = e instanceof Error ? e.message : String(e);
       setCommitSwitchFeedback({ kind: 'error', message });
       console.error('Failed to create root branch:', message);
@@ -7161,7 +7186,7 @@ function App() {
         <div className="relative flex h-full min-h-0 flex-1 overflow-hidden">
           <div
             ref={sidebarShellRef}
-            className="relative z-[60] flex h-full min-h-0 flex-none overflow-visible"
+            className="relative z-[60] flex h-full min-h-0 flex-none overflow-visible border-r border-border"
             style={{ width: isSidebarCollapsed ? 64 : sidebarWidthPx }}
           >
             <button
@@ -7629,7 +7654,6 @@ function App() {
                     void handlePreviewNode({
                       kind: 'commit',
                       sha: contextMenu.commitSha,
-                      branchName: contextMenu.branchName,
                     }, contextMenu.commitSha);
                   }
                 }}

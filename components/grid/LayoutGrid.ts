@@ -86,8 +86,8 @@ export type BranchGridViewProps = {
   commitDisabled?: boolean;
   onStageAllChanges?: () => Promise<boolean> | Promise<void> | boolean | void;
   stageInProgress?: boolean;
-  onCreateBranchFromNode?: (nodeId: string, branchName: string) => Promise<void>;
-  onCreateRootBranch?: (branchName: string) => Promise<void>;
+  onCreateBranchFromNode?: (nodeId: string, branchName: string, worktreePath?: string | null) => Promise<void>;
+  onCreateRootBranch?: (branchName: string, worktreePath?: string | null) => Promise<void>;
   createBranchFromNodeInProgress?: boolean;
   onMoveNodeBackToBranch?: (targetBranchName: string) => Promise<void>;
   isDebugOpen?: boolean;

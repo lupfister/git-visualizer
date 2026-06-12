@@ -1,5 +1,5 @@
 import { invoke } from '../src/timedInvoke';
-import type { Branch, MergeNode, WorktreeInfo } from '../types';
+import type { Branch, CheckedOutRef, MergeNode, WorktreeInfo } from '../types';
 
 export interface RepoInfo {
   name: string;
@@ -135,4 +135,13 @@ export async function addWorktree(
   branchOrCommit: string | null
 ): Promise<WorktreeInfo> {
   return invoke('add_worktree', { repoPath, worktreePath, branchOrCommit });
+}
+
+export async function overhaulCreateBranch(
+  repoPath: string,
+  branchName: string,
+  targetNodeId: string,
+  worktreePath: string | null
+): Promise<CheckedOutRef> {
+  return invoke('overhaul_create_branch', { repoPath, branchName, targetNodeId, worktreePath });
 }

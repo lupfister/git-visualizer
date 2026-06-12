@@ -4813,6 +4813,80 @@ fn create_root_branch(repo_path: String, branch_name: String) -> Result<CheckedO
     git::get_checked_out_ref(path).map_err(|e| e.to_string())
 }
 
+#[tauri::command(rename_all = "camelCase")]
+async fn overhaul_create_branch(
+    repo_path: String,
+    branch_name: String,
+    target_node_id: String,
+    worktree_path: Option<String>,
+) -> Result<CheckedOutRef, String> {
+    run_blocking(move || {
+        let repo = Path::new(&repo_path);
+        
+        if target_node_id.is_empty() {
+            // Root branch
+            if let Some(wt_path) = worktree_path {
+                git::cli::run(repo, &["worktree", "add", "--orphan", &wt_path, &branch_name])
+                    .map_err(|e| e.to_string())?;
+            } else {
+                git::create_root_branch(repo, &branch_name).map_err(|e| e.to_string())?;
+            }
+        } else if let Some(stash_idx_str) = target_node_id.strip_prefix("STASH:") {
+            // From stash
+            let stash_index: u32 = stash_idx_str.parse().map_err(|_| "Invalid stash index".to_string())?;
+            let stash_ref = format!("stash@{{{stash_index}}}");
+            let base_sha = git::cli::run(repo, &["rev-parse", &format!("{stash_ref}^1")])
+                .map_err(|e| e.to_string())?;
+            let base_sha = base_sha.trim();
+            
+            if let Some(wt_path) = worktree_path {
+                git::cli::run(repo, &["worktree", "add", "-b", &branch_name, &wt_path, base_sha])
+                    .map_err(|e| e.to_string())?;
+                
+                let wt_dir = Path::new(&wt_path);
+                git::cli::run(wt_dir, &["stash", "apply", &stash_ref]).map_err(|e| e.to_string())?;
+                git::cli::run(wt_dir, &["stash", "drop", &stash_ref]).map_err(|e| e.to_string())?;
+            } else {
+                git::move_stash_to_new_branch(repo, stash_index, &branch_name).map_err(|e| e.to_string())?;
+            }
+        } else if target_node_id == "WORKING_TREE" || target_node_id.starts_with("WORKING_TREE:") {
+            // From uncommitted changes
+            if let Some(wt_path) = worktree_path {
+                let temp_stash_msg = format!("git-visualizer-temp-worktree-{}", branch_name);
+                git::stash_push(repo, true, &temp_stash_msg).map_err(|e| e.to_string())?;
+                
+                if let Err(e) = git::cli::run(repo, &["worktree", "add", "-b", &branch_name, &wt_path]) {
+                    // Try to pop/restore stash if worktree creation fails
+                    let _ = git::cli::run(repo, &["stash", "pop"]);
+                    return Err(e.to_string());
+                }
+                
+                let wt_dir = Path::new(&wt_path);
+                if let Err(e) = git::cli::run(wt_dir, &["stash", "apply", "stash@{0}"]) {
+                    let _ = git::cli::run(wt_dir, &["stash", "drop", "stash@{0}"]);
+                    return Err(format!("Worktree created but failed to apply uncommitted changes: {}", e));
+                }
+                if let Err(e) = git::cli::run(wt_dir, &["stash", "drop", "stash@{0}"]) {
+                    return Err(format!("Worktree created and changes applied, but failed to drop temporary stash: {}", e));
+                }
+            } else {
+                git::create_branch_from_uncommitted(repo, &branch_name).map_err(|e| e.to_string())?;
+            }
+        } else {
+            // From normal commit
+            if let Some(wt_path) = worktree_path {
+                git::cli::run(repo, &["worktree", "add", "-b", &branch_name, &wt_path, &target_node_id])
+                    .map_err(|e| e.to_string())?;
+            } else {
+                git::cli::run(repo, &["checkout", "-b", &branch_name, &target_node_id]).map_err(|e| e.to_string())?;
+            }
+        }
+        
+        git::get_checked_out_ref(repo).map_err(|e| e.to_string())
+    })
+    .await
+}
+
 #[tauri::command]
 fn start_window_drag(window: tauri::WebviewWindow) -> Result<(), String> {
     window.start_dragging().map_err(|e| e.to_string())
@@ -8528,6 +8602,7 @@ pub fn run() {
             create_branch_from_uncommitted,
             move_stash_to_new_branch,
             create_root_branch,
+            overhaul_create_branch,
             push_branch,
             push_current_branch,
             push_all_unpushed_branches,

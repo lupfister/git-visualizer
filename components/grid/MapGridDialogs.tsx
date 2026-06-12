@@ -19,14 +19,13 @@ type Props = {
   deletableSelectionCount: number;
   newBranchDialogOpen: boolean;
   newBranchName: string;
-  newBranchCreateMode: 'from-selected-node' | 'new-root';
   onNewBranchNameChange: (value: string) => void;
-  onNewBranchCreateModeChange: (mode: 'from-selected-node' | 'new-root') => void;
   onNewBranchDialogClose: () => void;
   onNewBranchConfirm: () => void;
-  selectedCommitCanCreateBranch: boolean;
-  currentCheckedOutCommitCanCreateBranch: boolean;
   createBranchFromNodeInProgress: boolean;
+  createNewWorktree: boolean;
+  onCreateNewWorktreeChange: (value: boolean) => void;
+  selectedNodeContextText: string | null;
   checkoutPickerOpen: boolean;
   checkoutPickerSummary: string;
   checkoutPickerWorktrees: Array<{ path: string; label: string; detail: string; session: WorktreeSession }>;
@@ -52,14 +51,13 @@ export default function MapGridDialogs({
   deletableSelectionCount,
   newBranchDialogOpen,
   newBranchName,
-  newBranchCreateMode,
   onNewBranchNameChange,
-  onNewBranchCreateModeChange,
   onNewBranchDialogClose,
   onNewBranchConfirm,
-  selectedCommitCanCreateBranch,
-  currentCheckedOutCommitCanCreateBranch,
   createBranchFromNodeInProgress,
+  createNewWorktree,
+  onCreateNewWorktreeChange,
+  selectedNodeContextText,
   checkoutPickerOpen,
   checkoutPickerSummary,
   checkoutPickerWorktrees,
@@ -212,48 +210,33 @@ export default function MapGridDialogs({
       {newBranchDialogOpen ? (
         <div className="absolute inset-0 z-[80] flex items-center justify-center bg-background/70 p-4 backdrop-blur-sm" onClick={onNewBranchDialogClose}>
           <div className="w-full max-w-sm rounded-2xl border border-border bg-background p-4" onClick={(event) => event.stopPropagation()}>
-            <p className="text-sm font-medium text-foreground">Create branch</p>
-            <div className="mt-3 inline-flex items-center rounded-lg border border-border bg-muted/30 p-1">
-              <button
-                type="button"
-                onClick={() => onNewBranchCreateModeChange('from-selected-node')}
-                className={cn(
-                  'rounded-md px-2.5 py-1 text-xs font-medium transition-colors',
-                  newBranchCreateMode === 'from-selected-node'
-                    ? 'bg-background text-foreground'
-                    : 'text-muted-foreground hover:bg-muted hover:text-foreground',
-                )}
-              >
-                From selection
-              </button>
-              <button
-                type="button"
-                onClick={() => onNewBranchCreateModeChange('new-root')}
-                className={cn(
-                  'rounded-md px-2.5 py-1 text-xs font-medium transition-colors',
-                  newBranchCreateMode === 'new-root'
-                    ? 'bg-background text-foreground'
-                    : 'text-muted-foreground hover:bg-muted hover:text-foreground',
-                )}
-              >
-                New root
-              </button>
-            </div>
-            {newBranchCreateMode === 'from-selected-node' ? (
-              <p className="mt-2 text-xs text-muted-foreground">
-                Creates from selected uncommitted changes or stash node.
-              </p>
-            ) : (
-              <p className="mt-2 text-xs text-muted-foreground">
-                Creates an orphan branch with unrelated history.
-              </p>
-            )}
+            <p className="text-sm font-medium text-foreground">
+              {selectedNodeContextText ? 'Create branch from selection' : 'Create new root branch'}
+            </p>
+            
+            <p className="mt-2 text-xs text-muted-foreground">
+              {selectedNodeContextText || 'Creates an orphan branch with unrelated history.'}
+            </p>
+
             <input
               value={newBranchName}
               onChange={(event) => onNewBranchNameChange(event.target.value)}
               placeholder="feature/my-changes"
               className="mt-3 w-full rounded-lg border border-border bg-background px-3 py-2 text-sm text-foreground placeholder:text-muted-foreground focus:outline-none"
             />
+
+            <label className="mt-4 flex items-center gap-2 cursor-pointer select-none">
+              <input
+                type="checkbox"
+                checked={createNewWorktree}
+                onChange={(event) => onCreateNewWorktreeChange(event.target.checked)}
+                className="h-4 w-4 rounded border-border bg-background text-primary focus:ring-primary/20 accent-primary"
+              />
+              <span className="text-xs text-foreground font-medium">
+                Create a new worktree with this branch
+              </span>
+            </label>
+
             <div className="mt-4 flex items-center justify-end gap-2">
               <button
                 type="button"
@@ -267,12 +250,7 @@ export default function MapGridDialogs({
                 onClick={onNewBranchConfirm}
                 disabled={
                   !newBranchName.trim() ||
-                  createBranchFromNodeInProgress ||
-                  (
-                    newBranchCreateMode === 'from-selected-node' &&
-                    !selectedCommitCanCreateBranch &&
-                    !currentCheckedOutCommitCanCreateBranch
-                  )
+                  createBranchFromNodeInProgress
                 }
                 className={cn(
                   'inline-flex items-center rounded-lg border border-border bg-background px-3 py-1.5 text-xs font-medium text-foreground transition-colors hover:bg-muted',

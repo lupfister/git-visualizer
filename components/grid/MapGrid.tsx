@@ -10,6 +10,7 @@ import {
 } from 'react';
 import { invoke } from '../../src/timedInvoke';
 import { getCurrentWindow } from '@tauri-apps/api/window';
+import { open } from '@tauri-apps/plugin-dialog';
 import type { BranchCommitPreview } from '../../types';
 import {
   CARD_HEIGHT,
@@ -273,9 +274,14 @@ export default function BranchGridMap({
   const [checkoutPickerSelectedPath, setCheckoutPickerSelectedPath] = useState<string | null>(null);
   const [newBranchDialogOpen, setNewBranchDialogOpen] = useState(false);
   const [newBranchName, setNewBranchName] = useState('');
-  const [newBranchCreateMode, setNewBranchCreateMode] = useState<'from-selected-node' | 'new-root'>(
-    'from-selected-node',
-  );
+  const [createNewWorktree, setCreateNewWorktree] = useState<boolean>(() => {
+    const stored = localStorage.getItem('git-visualizer:new-branch-create-worktree');
+    return stored === null ? true : stored === 'true';
+  });
+  const handleCreateNewWorktreeChange = useCallback((value: boolean) => {
+    setCreateNewWorktree(value);
+    localStorage.setItem('git-visualizer:new-branch-create-worktree', String(value));
+  }, []);
   const [localManuallyOpenedClumps, setLocalManuallyOpenedClumps] = useState<Set<string>>(() => new Set());
   const [localManuallyClosedClumps, setLocalManuallyClosedClumps] = useState<Set<string>>(() => new Set());
   const [localNodePositionOverrides, setLocalNodePositionOverrides] = useState<NodePositionOverrides>({});
@@ -747,6 +753,21 @@ export default function BranchGridMap({
     const selectedSha = selectedVisibleCommitShas[0];
     return renderNodes.find((node) => node.commit.id === selectedSha) ?? null;
   }, [renderNodes, selectedVisibleCommitShas]);
+
+  const newBranchCreateMode = selectedVisibleCommitShas.length === 1 ? 'from-selected-node' : 'new-root';
+  const selectedNodeContextText = useMemo(() => {
+    if (selectedVisibleCommitShas.length !== 1 || !selectedPreviewNode) return null;
+    const commit = selectedPreviewNode.commit;
+    if (isWorkingTreeCommitId(commit.id) || commit.kind === 'uncommitted') {
+      return 'Stems from HEAD, carrying over uncommitted changes.';
+    }
+    if (commit.id.startsWith('STASH:') || commit.kind === 'stash') {
+      return 'Stems from stash base commit. Stash will be applied and dropped.';
+    }
+    const shortSha = commit.id.slice(0, 7);
+    const msg = commit.message.length > 50 ? `${commit.message.substring(0, 50)}...` : commit.message;
+    return `Stems from commit ${shortSha} ("${msg}").`;
+  }, [selectedVisibleCommitShas, selectedPreviewNode]);
 
   const selectedPreviewTarget = useMemo((): { target: PreviewTarget; nodeId: string } | null => {
     if (!selectedPreviewNode) return null;
@@ -1905,50 +1926,49 @@ export default function BranchGridMap({
   const confirmCreateBranchFromSelection = useCallback(async () => {
     const trimmed = newBranchName.trim();
     if (!trimmed) return;
+
+    let worktreePath: string | null = null;
+    if (createNewWorktree) {
+      const parentDir = await open({
+        directory: true,
+        multiple: false,
+        title: 'Select parent directory for the new worktree',
+        defaultPath: currentRepoPath ?? undefined,
+      });
+      if (!parentDir) return;
+
+      const folderName = window.prompt("Enter name for the new worktree folder:", trimmed.replace(/[^a-zA-Z0-9-_]/g, '-'));
+      if (!folderName) return;
+      worktreePath = `${parentDir}/${folderName.trim()}`;
+    }
+
     if (newBranchCreateMode === 'new-root') {
       if (!onCreateRootBranch) return;
-      await onCreateRootBranch(trimmed);
+      await onCreateRootBranch(trimmed, worktreePath);
     } else {
       if (!onCreateBranchFromNode) return;
       const target = selectedVisibleCommitShas.length === 1
         ? selectedVisibleCommitShas[0]
         : checkedOutRef?.headSha ?? null;
       if (!target) return;
-      if (
-        !(
-          isWorkingTreeCommitId(target) ||
-          target.startsWith('STASH:') ||
-          target === checkedOutRef?.headSha
-        )
-      ) return;
-      await onCreateBranchFromNode(target, trimmed);
+      await onCreateBranchFromNode(target, trimmed, worktreePath);
     }
     setNewBranchDialogOpen(false);
     setNewBranchName('');
-    setNewBranchCreateMode('from-selected-node');
     setSelectedCommitShas([]);
     setMergeTargetCommitSha(null);
-  }, [checkedOutRef?.headSha, newBranchCreateMode, newBranchName, onCreateBranchFromNode, onCreateRootBranch, selectedVisibleCommitShas]);
-
-  const checkedOutCommitCanCreateBranch = Boolean(checkedOutRef?.headSha);
-  const currentCheckedOutCommitCanCreateBranch =
-    selectedVisibleCommitShas.length === 0 && checkedOutCommitCanCreateBranch;
-  const selectedCommitCanCreateBranch =
-    (selectedVisibleCommitShas.length === 1 &&
-      (isWorkingTreeCommitId(selectedVisibleCommitShas[0]) || selectedVisibleCommitShas[0].startsWith('STASH:'))) ||
-    currentCheckedOutCommitCanCreateBranch;
-  const canCreateRootBranch = Boolean(onCreateRootBranch);
-
-  useEffect(() => {
-    if (!newBranchDialogOpen) return;
-    if (!selectedCommitCanCreateBranch && !currentCheckedOutCommitCanCreateBranch && canCreateRootBranch) {
-      setNewBranchCreateMode('new-root');
-      return;
-    }
-    if (selectedCommitCanCreateBranch || currentCheckedOutCommitCanCreateBranch) {
-      setNewBranchCreateMode('from-selected-node');
-    }
-  }, [canCreateRootBranch, currentCheckedOutCommitCanCreateBranch, newBranchDialogOpen, selectedCommitCanCreateBranch]);
+  }, [
+    newBranchName,
+    createNewWorktree,
+    currentRepoPath,
+    newBranchCreateMode,
+    onCreateRootBranch,
+    onCreateBranchFromNode,
+    selectedVisibleCommitShas,
+    checkedOutRef?.headSha,
+    setSelectedCommitShas,
+    setMergeTargetCommitSha
+  ]);
 
   const mapHudVisible =
     Boolean(gridHudProps)
@@ -2006,14 +2026,14 @@ export default function BranchGridMap({
 
   if (showLoadingTiles) {
     return (
-      <div className="relative flex h-full min-h-0 flex-col overflow-hidden border-l border-border bg-background">
+      <div className="relative flex h-full min-h-0 flex-col overflow-hidden bg-background">
         <MapGridLoadingState />
       </div>
     );
   }
 
   return (
-    <div className="mapgrid-viewport relative flex h-full min-h-0 flex-col overflow-hidden border-l border-border bg-background select-none">
+    <div className="mapgrid-viewport relative flex h-full min-h-0 flex-col overflow-hidden bg-background select-none">
       <MapGridDebugPanel
         isOpen={isDebugOpen}
         onClose={() => onDebugClose?.()}
@@ -2289,14 +2309,13 @@ export default function BranchGridMap({
         deletableSelectionCount={deletableSelectionCount}
         newBranchDialogOpen={newBranchDialogOpen}
         newBranchName={newBranchName}
-        newBranchCreateMode={newBranchCreateMode}
         onNewBranchNameChange={setNewBranchName}
-        onNewBranchCreateModeChange={setNewBranchCreateMode}
         onNewBranchDialogClose={() => setNewBranchDialogOpen(false)}
         onNewBranchConfirm={() => void confirmCreateBranchFromSelection()}
-        selectedCommitCanCreateBranch={selectedCommitCanCreateBranch}
-        currentCheckedOutCommitCanCreateBranch={currentCheckedOutCommitCanCreateBranch}
         createBranchFromNodeInProgress={createBranchFromNodeInProgress}
+        createNewWorktree={createNewWorktree}
+        onCreateNewWorktreeChange={handleCreateNewWorktreeChange}
+        selectedNodeContextText={selectedNodeContextText}
         checkoutPickerOpen={checkoutPickerOpen}
         checkoutPickerSummary={checkoutPickerTarget?.summary ?? ''}
         checkoutPickerWorktrees={checkoutPickerWorktrees}

@@ -1036,7 +1036,7 @@ export default function DenseBranchSidebar({
               aria-label={`New worktree for ${project.name}`}
               title="New worktree"
             >
-              <WorktreePlusIcon className="h-4 w-4 shrink-0" />
+              <Plus className="h-3.5 w-3.5 shrink-0" />
             </button>
           ) : null}
         </div>
@@ -1109,9 +1109,11 @@ export default function DenseBranchSidebar({
             type="button"
             onClick={onAddProject}
             disabled={projectLoading}
-            className="group flex h-7 w-full items-center gap-1 rounded-lg px-1 text-sm text-foreground transition-colors hover:bg-muted disabled:opacity-50"
+            className="group flex h-7 w-full items-center rounded-lg text-sm text-foreground transition-colors hover:bg-muted disabled:opacity-50"
           >
-            <Plus className="h-4 w-4 shrink-0" />
+            <span className="inline-flex h-7 w-7 shrink-0 items-center justify-center">
+              <Plus className="h-4 w-4 shrink-0" />
+            </span>
             <span>New Project</span>
           </button>
         </div>
@@ -1183,19 +1185,6 @@ export default function DenseBranchSidebar({
         );
       })() : null}
     </aside>
-  );
-}
-
-function WorktreePlusIcon({ className }: { className?: string }) {
-  return (
-    <svg width="16" height="16" viewBox="0 0 16 16" fill="none" xmlns="http://www.w3.org/2000/svg" className={className}>
-      <path d="M3 2V14" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" />
-      <circle cx="3" cy="5" r="1" fill="currentColor" />
-      <path d="M3 9C5 9 6 10 6 12V13" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" />
-      <rect x="8" y="10" width="5" height="4" rx="0.5" stroke="currentColor" strokeWidth="1.5" />
-      <path d="M8 11.5H13" stroke="currentColor" strokeWidth="1.5" />
-      <path d="M10 4H14M12 2V6" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" />
-    </svg>
   );
 }
 
