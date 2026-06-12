@@ -614,6 +614,13 @@ body.popover-window #root {
   mask-image: url('/icon-branch.svg');
 }
 
+.toolbar-mask-icon--terminal {
+  width: 14px;
+  height: 14px;
+  -webkit-mask-image: url('/icon-terminal.svg');
+  mask-image: url('/icon-terminal.svg');
+}
+
 @keyframes toolbar-action-shimmer {
   0% {
     background-position: 200% 0;

@@ -63,7 +63,9 @@ export type BranchGridViewProps = {
   onMergeRefsIntoBranch?: (sourceRefs: string[], targetBranch: string) => Promise<void> | void;
   mergeInProgress?: boolean;
   onPushAllBranches?: () => Promise<void> | void;
-  onPushCurrentBranch?: () => Promise<void> | void;
+  onPushCurrentBranch?: (targetPath?: string) => Promise<void> | void;
+  onCreateTerminal?: (projectPath: string, worktreePath: string) => void;
+  onCreateWorktree?: (projectPath: string, branchOrCommit?: string) => void;
   onPushCommitTargets?: (targets: Array<{ branchName: string; targetSha: string }>) => Promise<void> | void;
   pushInProgress?: boolean;
   onDeleteSelection?: (targets: {

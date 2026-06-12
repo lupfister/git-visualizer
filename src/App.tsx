@@ -5554,16 +5554,17 @@ function App() {
     }
   }
 
-  async function handlePushCurrentBranch() {
-    if (!repoPath || pushInProgress) return;
+  async function handlePushCurrentBranch(targetPath?: string) {
+    const activePath = targetPath || repoPath;
+    if (!activePath || pushInProgress) return;
     setCommitSwitchFeedback(null);
     setPushInProgress(true);
     try {
       beginRepoMutation();
       const pushed = await invoke<{ branchName: string }>('push_current_branch', {
-        repoPath,
+        repoPath: activePath,
       });
-      await finalizeRepoMutation(repoPath, outcomeFromPush([pushed.branchName]));
+      await finalizeRepoMutation(activePath, outcomeFromPush([pushed.branchName]));
       setCommitSwitchFeedback({
         kind: 'success',
         message: `Pushed ${pushed.branchName}`,
@@ -5576,11 +5577,12 @@ function App() {
           'Push was rejected (non-fast-forward).\n\nOK: pull --rebase then retry push\nCancel: pull --no-rebase then retry push',
         );
         try {
-          const branchName = checkedOutRef?.branchName;
+          const ref = await invoke<CheckedOutRef>('get_checked_out_ref', { repoPath: activePath });
+          const branchName = ref.branchName;
           if (!branchName) throw new Error('Cannot resolve current branch for pull.');
-          await invoke('pull_branch_with_strategy', { repoPath, branchName, rebase: useRebase });
-          const pushed = await invoke<{ branchName: string }>('push_current_branch', { repoPath });
-          await finalizeRepoMutation(repoPath, { kind: 'fullRefresh', layoutTopologyChanged: true });
+          await invoke('pull_branch_with_strategy', { repoPath: activePath, branchName, rebase: useRebase });
+          const pushed = await invoke<{ branchName: string }>('push_current_branch', { repoPath: activePath });
+          await finalizeRepoMutation(activePath, { kind: 'fullRefresh', layoutTopologyChanged: true });
           setCommitSwitchFeedback({
             kind: 'success',
             message: `Pulled (${useRebase ? 'rebase' : 'merge'}) and pushed ${pushed.branchName}`,
@@ -7326,6 +7328,8 @@ function App() {
                 stageInProgress={stageInProgress}
                 onCreateBranchFromNode={handleCreateBranchFromNode}
                 onCreateRootBranch={handleCreateRootBranch}
+                onCreateTerminal={handleCreateTerminal}
+                onCreateWorktree={handleCreateWorktree}
                 createBranchFromNodeInProgress={createBranchFromNodeInProgress}
                 isMutationBusy={isMutationBusy}
                 isDebugOpen={isGridDebugOpen}

@@ -204,6 +204,7 @@ export default function BranchGridMap({
   onMergeRefsIntoBranch,
   mergeInProgress = false,
   onPushAllBranches,
+  onPushCurrentBranch,
   onPushCommitTargets,
   pushInProgress = false,
   onDeleteSelection,
@@ -221,6 +222,8 @@ export default function BranchGridMap({
   stageInProgress = false,
   onCreateBranchFromNode,
   onCreateRootBranch,
+  onCreateTerminal,
+  onCreateWorktree,
   createBranchFromNodeInProgress = false,
   isDebugOpen = false,
   onDebugClose,
@@ -2073,6 +2076,7 @@ export default function BranchGridMap({
                   onStageAllChanges={onStageAllChanges ? () => void onStageAllChanges() : undefined}
                   onStashLocalChanges={onStashLocalChanges}
                   onPushAllBranches={onPushAllBranches}
+                  onPushCurrentBranch={onPushCurrentBranch}
                   onPushCommitTargets={onPushCommitTargets}
                   onPreviewSelectedNode={selectedPreviewTarget && onPreviewNode ? () => onPreviewNode(selectedPreviewTarget.target, selectedPreviewTarget.nodeId) : undefined}
                   previewInProgress={previewInProgress}
@@ -2088,6 +2092,12 @@ export default function BranchGridMap({
                   setNewBranchDialogOpen={setNewBranchDialogOpen}
                   dirtyWorktreePaths={dirtyWorktreePaths}
                   selectedDirtyWorktreePaths={selectedDirtyWorktreePaths}
+                  selectedPreviewNode={selectedPreviewNode}
+                  worktreeSessions={worktreeSessions}
+                  currentRepoPath={currentRepoPath}
+                  onCommitClick={onCommitClick}
+                  onCreateTerminal={onCreateTerminal}
+                  onCreateWorktree={onCreateWorktree}
                   hideMergeControls
                 />
               </div>

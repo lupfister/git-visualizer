@@ -44,7 +44,9 @@ interface Props {
   onMergeRefsIntoBranch?: (sourceRefs: string[], targetBranch: string) => Promise<void> | void;
   mergeInProgress?: boolean;
   onPushAllBranches?: () => Promise<void> | void;
-  onPushCurrentBranch?: () => Promise<void> | void;
+  onPushCurrentBranch?: (targetPath?: string) => Promise<void> | void;
+  onCreateTerminal?: (projectPath: string, worktreePath: string) => void;
+  onCreateWorktree?: (projectPath: string, branchOrCommit?: string) => void;
   onPushCommitTargets?: (targets: Array<{ branchName: string; targetSha: string }>) => Promise<void> | void;
   pushInProgress?: boolean;
   onDeleteSelection?: (targets: {
@@ -168,6 +170,8 @@ export default function BranchGridMapView({
   stageInProgress = false,
   onCreateBranchFromNode,
   onCreateRootBranch,
+  onCreateTerminal,
+  onCreateWorktree,
   createBranchFromNodeInProgress = false,
   isMutationBusy = false,
   onMoveNodeBackToBranch,
@@ -255,6 +259,8 @@ export default function BranchGridMapView({
             stageInProgress={stageInProgress}
             onCreateBranchFromNode={onCreateBranchFromNode}
             onCreateRootBranch={onCreateRootBranch}
+            onCreateTerminal={onCreateTerminal}
+            onCreateWorktree={onCreateWorktree}
             createBranchFromNodeInProgress={createBranchFromNodeInProgress}
             isMutationBusy={isMutationBusy}
             onMoveNodeBackToBranch={onMoveNodeBackToBranch}
@@ -324,6 +330,8 @@ export default function BranchGridMapView({
             onMapReadyForDisplay={onMapReadyForDisplay}
             nodePositionOverrides={nodePositionOverrides}
             onNodePositionOverridesChange={onNodePositionOverridesChange}
+            onCreateTerminal={onCreateTerminal}
+            onCreateWorktree={onCreateWorktree}
             worktreeDraftByWorkingTreeId={worktreeDraftByWorkingTreeId}
             onNodeDoubleClick={onNodeDoubleClick}
             onShowContextMenu={onShowContextMenu}

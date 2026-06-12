@@ -1,6 +1,6 @@
 import { cn } from './mapGridUtils';
 
-export type ToolbarMaskIcon = 'commit' | 'push-branch' | 'push-selected' | 'push-all' | 'stash' | 'preview' | 'branch';
+export type ToolbarMaskIcon = 'commit' | 'push-branch' | 'push-selected' | 'push-all' | 'stash' | 'preview' | 'branch' | 'terminal';
 
 type Props = {
   icon: ToolbarMaskIcon;
