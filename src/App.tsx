@@ -20,7 +20,7 @@ import { hydrateBranchGridLayoutModel, serializeBranchGridLayoutModel } from '..
 import { buildGraphLayoutFingerprint, hashCommitShaList } from '../components/grid/graphLayoutFingerprint';
 import { useBranchGridLayoutFromRevision } from '../components/grid/useBranchGridLayoutFromRevision';
 import { layoutModelHasWorkingTree } from '../components/grid/workingTreeLayout';
-import type { Branch, BranchCommitPreview, BranchPromptMeta, CheckedOutRef, CommitMutationData, DeleteSelectionMutationData, DirectCommit, GitHubAuthStatus, GitHubInfo, GitStashEntry, MergeNode, OpenPR, RepoMutationOutcome, RepoVisualSnapshot, StashPushMutationData, StashRestoreMutationData, TerminalSession, WorktreeInfo } from '../types';
+import type { Branch, BranchCommitPreview, BranchPromptMeta, CheckedOutRef, CommitMutationData, DeleteSelectionMutationData, DirectCommit, GitHubAuthStatus, GitHubInfo, GitStashEntry, MergeNode, OpenPR, RepoMutationOutcome, RepoVisualSnapshot, StashPushMutationData, StashRestoreMutationData, TerminalSession, WorktreeInfo, RepoQuickState } from '../types';
 import {
   checkedOutRefWithDirtyFromQuickState,
   mergeCheckedOutRefWithQuickState,
@@ -71,6 +71,7 @@ import {
   resolveTerminalSessionFocusId,
   shaMatches,
   workingTreeIdForPath,
+  worktreeStableKey,
 } from '../lib/worktreeSessions';
 import { deriveRepoVisualState } from './repoVisualState';
 import { setMapGridBackgroundActivity } from '../components/grid/mapGridBackgroundActivity';
@@ -173,12 +174,7 @@ type RepoRefreshFingerprint = {
   worktreeCount: number;
   stashCount: number;
 };
-type RepoQuickState = {
-  repoPath: string;
-  headSha: string;
-  upstreamSha?: string | null;
-  hasUncommittedChanges: boolean;
-};
+
 type RepoHeadState = {
   repoPath: string;
   headSha: string;
@@ -7013,17 +7009,12 @@ function App() {
 
     let worktreePath = worktreePathInput;
     if (!worktreePath) {
-      const parentDir = await open({
-        directory: true,
-        multiple: false,
-        title: 'Select parent directory for the new worktree',
-        defaultPath: projectPath,
-      });
-      if (!parentDir) return;
-
-      const folderName = window.prompt("Enter name for the new worktree folder:");
-      if (!folderName) return;
-      worktreePath = `${parentDir}/${folderName.trim()}`;
+      const homeDir = await invoke<string>('get_home_dir');
+      const repoName = projectPath.split(/[/\\]/).pop() || 'repo';
+      const repoHash = worktreeStableKey(projectPath);
+      const repoFolderName = `${repoName}-${repoHash}`;
+      const branchFolderName = (branchOrCommit || 'HEAD').replace(/[^a-zA-Z0-9._-]/g, '_');
+      worktreePath = `${homeDir}/.git-visualizer/worktrees/${repoFolderName}/${branchFolderName}`;
     }
 
     const project = projectCards.find((p) => sameRepoPath(p.path, projectPath));

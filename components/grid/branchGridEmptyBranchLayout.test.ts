@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
-import type { Branch, DirectCommit } from '../../types';
-import { ROW_GAP, ROW_HEIGHT, TOP_PADDING } from './LayoutGrid';
+import type { Branch, DirectCommit, BranchCommitPreview } from '../../types';
+import { ROW_GAP, ROW_HEIGHT, TOP_PADDING, type NodePositionOverrides } from './LayoutGrid';
 import { computeBranchGridLayout, GRID_LAYOUT_RENDER_ZOOM } from './branchGridLayoutModel';
 import { assignNodePositionOverride, getStableNodePositionKey } from './nodePositionOverrides';
 
@@ -267,7 +267,7 @@ describe('computeBranchGridLayout empty branch placeholders', () => {
         parentShas: [mainSha],
       },
     ];
-    const branchCommitPreviews = {
+    const branchCommitPreviews: Record<string, BranchCommitPreview[]> = {
       main: [],
       'Stash 1': [
         {
@@ -698,7 +698,7 @@ describe('computeBranchGridLayout empty branch placeholders', () => {
         collapsed.clusterKeyByCommitId.get(commit.visualId) === clusterKey
         && commit.visualId !== collapsed.leadByClusterKey.get(clusterKey!),
     )!;
-    const nodePositionOverrides = {};
+    const nodePositionOverrides: NodePositionOverrides = {};
     assignNodePositionOverride(nodePositionOverrides, overriddenMember, movedOrigin);
     nodePositionOverrides[getStableNodePositionKey(overriddenMember)] = {
       x: collapsedClumpNode.x,
@@ -1115,7 +1115,7 @@ describe('computeBranchGridLayout empty branch placeholders', () => {
         parentShas: [unpushedB],
       },
     ];
-    const branchCommitPreviews = {
+    const branchCommitPreviews: Record<string, BranchCommitPreview[]> = {
       main: [],
       feature: [],
       'Stash 1': [

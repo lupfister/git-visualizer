@@ -82,7 +82,7 @@ export function buildGraphDeltaOutcomes(
           message: commit.message,
           author: commit.author,
           date: commit.date,
-          parentSha: commit.parentSha,
+          parentSha: commit.parentSha ?? null,
           parentShas: commit.parentShas,
           checkedOutRef: delta.checkedOutRef,
         }),

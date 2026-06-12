@@ -24,9 +24,10 @@ const quick = (overrides: Partial<RepoQuickState> = {}): RepoQuickState => ({
 
 const snapshotWithHead = (headSha: string): RepoVisualSnapshot => ({
   path: '/repo',
+  name: 'repo',
   defaultBranch: 'main',
   checkedOutRef: baseRef({ headSha }),
-  branches: [{ name: 'main', headSha, commitsAhead: 0, unpushedCommits: 0, remoteSyncStatus: 'on-github', status: 'fresh', lastCommitDate: '', lastCommitAuthor: '' }],
+  branches: [{ name: 'main', headSha, commitsAhead: 0, commitsBehind: 0, unpushedCommits: 0, remoteSyncStatus: 'on-github', status: 'fresh', lastCommitDate: '', lastCommitAuthor: '' }],
   mergeNodes: [],
   directCommits: [{
     fullSha: headSha,
@@ -41,6 +42,7 @@ const snapshotWithHead = (headSha: string): RepoVisualSnapshot => ({
     kind: 'commit',
   }],
   unpushedDirectCommits: [],
+  mergeTargetBranchByCommitSha: {},
   branchCommitPreviews: { main: [{
     fullSha: headSha,
     sha: headSha.slice(0, 7),
@@ -58,6 +60,9 @@ const snapshotWithHead = (headSha: string): RepoVisualSnapshot => ({
   branchUniqueAheadCounts: {},
   worktrees: [],
   stashes: [],
+  loaded: true,
+  cacheSchemaVersion: 1,
+  updatedAtMs: 0,
 });
 
 describe('mergeCheckedOutRefWithQuickState', () => {

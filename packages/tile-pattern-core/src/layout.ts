@@ -11,8 +11,6 @@ import {
   TILE_SHAPE_GAP_FLOOR,
   TILE_SHAPE_GAP_RATIO,
   TILE_LUM_MIX_MAX,
-  TILE_PATTERN_DEFAULT_DISPLAY_ZOOM,
-  TILE_PATTERN_MIN_DISPLAY_ZOOM,
 } from './constants';
 import { createMulberry32, fnv1a32 } from './prng';
 import {
@@ -121,7 +119,7 @@ const pickTileShapeKind = (seed: string, col: number, row: number): TileShapeKin
 
 export type TileLumMixProfile = 'default' | 'bright';
 
-const clamp01 = (value: number): number => Math.max(0, Math.min(1, value));
+
 
 export {
   computeTileOmissionPresence,

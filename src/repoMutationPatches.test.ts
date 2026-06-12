@@ -331,7 +331,7 @@ describe('applyMutationPatch markDirty', () => {
   it('flags checked out ref and current worktree as dirty', () => {
     const next = applyMutationPatch(baseSnapshot(), {
       kind: 'markDirty',
-      layoutTopologyChanged: true,
+      layoutTopologyChanged: false,
       checkedOutRef: {
         branchName: 'feature',
         headSha: 'bbb2222',

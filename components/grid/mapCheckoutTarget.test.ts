@@ -5,6 +5,8 @@ import { parseMapCheckoutTarget } from './mapCheckoutTarget';
 const node = (id: string, branchName: string, kind?: string): Node => ({
   x: 0,
   y: 0,
+  row: 0,
+  column: 0,
   commit: {
     id,
     visualId: `${branchName}:${id}`,

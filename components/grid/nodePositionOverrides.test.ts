@@ -81,7 +81,6 @@ describe('node position override keys', () => {
       id: 'WORKING_TREE',
       visualId: 'main:WORKING_TREE',
       kind: 'uncommitted',
-      sha: 'uncommitted',
     });
     const overrides: NodePositionOverrides = {
       'stable:working-tree:current': { x: 999, y: 888 },

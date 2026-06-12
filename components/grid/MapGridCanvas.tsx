@@ -903,10 +903,14 @@ type Props = {
   currentRepoPath?: string;
   onShowContextMenu?: (
     event: React.MouseEvent,
-    type: 'project' | 'worktree' | 'worktree-plus',
+    type: 'project' | 'worktree' | 'worktree-plus' | 'commit' | 'stash' | 'empty-branch',
     projectPath: string,
     worktreePath?: string,
-    worktree?: WorktreeInfo
+    worktree?: WorktreeInfo,
+    commitSha?: string,
+    commitLabel?: string,
+    commitText?: string,
+    branchName?: string
   ) => void;
   orientation?: 'vertical' | 'horizontal';
   dragPreviewByNodeId?: Record<string, { x: number; y: number }>;

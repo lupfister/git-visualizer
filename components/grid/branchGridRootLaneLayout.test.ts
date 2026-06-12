@@ -13,7 +13,7 @@ const makeBranch = (name: string, headSha: string): Branch => ({
   lastCommitDate: '2024-06-02T12:00:00Z',
   lastCommitAuthor: 'test',
   status: 'fresh',
-  remoteSyncStatus: 'synced',
+  remoteSyncStatus: 'on-github',
   unpushedCommits: 0,
   headSha,
   parentBranch: 'main',
@@ -94,7 +94,7 @@ describe('computeBranchGridLayout root lane assignment', () => {
       isDebugOpen: false,
       gridSearchQuery: '',
       gridFocusSha: null,
-      checkedOutRef: { branchName: defaultBranch, sha: childOnA },
+      checkedOutRef: { branchName: defaultBranch, headSha: childOnA, hasUncommittedChanges: false },
       orientation: 'horizontal',
     });
 

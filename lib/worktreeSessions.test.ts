@@ -1,6 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import type { WorktreeInfo } from '../types';
-import type { Branch } from '../types';
+import type { WorktreeInfo, Branch, BranchCommitPreview } from '../types';
 import {
   buildWorktreeAccentByCommitId,
   buildWorktreeAccentLookups,
@@ -271,7 +270,7 @@ describe('worktreeSessions', () => {
       [baseWorktree({ path: '/repo/wt', branchName: 'feature', headSha: 'bbbbbbbbbbbb2222', isCurrent: false })],
       '/repo',
     );
-    const previews = {
+    const previews: Record<string, BranchCommitPreview[]> = {
       feature: [
         {
           fullSha: 'BRANCH_HEAD:feature:bbbbbbbbbbbb2222',

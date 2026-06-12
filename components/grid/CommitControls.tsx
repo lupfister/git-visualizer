@@ -305,13 +305,13 @@ export default function CommitControls({
             >
               <ToolbarActionContent
                 icon="branch"
-                label={`${(() => {
+                label={(() => {
                   const selectedSha = selectedPreviewNode.commit.id;
                   const selectedSession = worktreeSessions.find((s) => s.workingTreeId === selectedSha);
                   const rawName = selectedSession?.branchName || 'detached';
                   const maxLen = 20;
                   return rawName.length > maxLen ? `${rawName.substring(0, maxLen)}...` : rawName;
-                })()} +`}
+                })()}
                 loading={createBranchFromNodeInProgress}
               />
             </button>

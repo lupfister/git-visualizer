@@ -283,17 +283,19 @@ describe('worktreeDraftMessages', () => {
 });
 
 describe('worktreeDraftStorage', () => {
+  const storage = new Map<string, string>();
+
   beforeEach(() => {
+    storage.clear();
     vi.stubGlobal('localStorage', {
-      store: new Map<string, string>(),
       getItem(key: string) {
-        return this.store.get(key) ?? null;
+        return storage.get(key) ?? null;
       },
       setItem(key: string, value: string) {
-        this.store.set(key, value);
+        storage.set(key, value);
       },
       removeItem(key: string) {
-        this.store.delete(key);
+        storage.delete(key);
       },
     });
   });

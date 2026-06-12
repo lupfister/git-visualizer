@@ -160,19 +160,14 @@ export default function DenseBranchSidebar({
   activeTerminalId,
   onSelectProject,
   onAddProject,
-  onRemoveProject,
   onReorderProjects,
   onReorderWorktrees,
   onReorderTerminals,
-  onRevealProjectInFinder,
-  onResetProjectNodePositions,
   onSelectWorktree,
   onCreateTerminal,
   onSelectTerminal,
   onTerminateTerminal,
   onCreateWorktree,
-  onDeleteWorktree,
-  onPreviewWorktree,
   onShowContextMenu,
   onCloseContextMenu,
   projectLoading,
@@ -753,10 +748,7 @@ export default function DenseBranchSidebar({
     return terminalSessions.find((s) => s.id === draggingTerminalId) ?? null;
   }, [draggingTerminalId, terminalSessions]);
 
-  const draggingTerminalWorktree = useMemo(() => {
-    if (!draggingTerminal) return null;
-    return draggingTerminal.worktreePath;
-  }, [draggingTerminal]);
+
 
   const draggingTerminalProject = useMemo(() => {
     if (!draggingTerminal) return null;
@@ -973,12 +965,6 @@ export default function DenseBranchSidebar({
     const projectSessions = sessionsByProject.get(normalizeRepoPathForCompare(project.path).toLowerCase()) ?? [];
     const commitPreviews = commitPreviewSessions(projectSessions);
     const sortedWts = sortWorktreesForProject(project);
-    const worktreeAccentByPath = new Map(
-      buildWorktreeSessions(sortedWts, project.path, undefined, project.worktreeOrder).map((session) => [
-        normalizeRepoPathForCompare(session.path).toLowerCase(),
-        accentCssVars(session.accentToken),
-      ]),
-    );
 
     return (
       <div className={cn(hideLive && 'pointer-events-none opacity-0')}>

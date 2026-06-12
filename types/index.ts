@@ -28,6 +28,13 @@ export interface CheckedOutRef {
   hasUncommittedChanges: boolean;
 }
 
+export interface RepoQuickState {
+  repoPath: string;
+  headSha: string;
+  upstreamSha?: string | null;
+  hasUncommittedChanges: boolean;
+}
+
 /** One entry from `git stash list` (index 0 = stash@{0}, the newest). */
 export interface GitStashEntry {
   index: number;
@@ -138,7 +145,7 @@ export interface DirectCommit {
   sha: string;
   parentSha?: string | null;
   parentShas: string[];
-  childShas: string[];
+  childShas?: string[];
   clusterKey?: string | null;
   branch: string;
   message: string;
@@ -304,12 +311,12 @@ export type RepoMutationOutcome =
     }
   | {
       kind: 'discardDirty';
-      layoutTopologyChanged: true;
+      layoutTopologyChanged: false;
       checkedOutRef: CheckedOutRef;
     }
   | {
       kind: 'markDirty';
-      layoutTopologyChanged: true;
+      layoutTopologyChanged: false;
       checkedOutRef: CheckedOutRef;
     }
   | {
