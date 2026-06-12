@@ -160,6 +160,10 @@ fn metadata_path() -> Result<PathBuf, String> {
     Ok(host_root()?.join("sessions.json"))
 }
 
+fn pid_path() -> Result<PathBuf, String> {
+    Ok(host_root()?.join("host.pid"))
+}
+
 fn persist_metadata(sessions: &Sessions) {
     let Ok(path) = metadata_path() else { return };
     let Ok(guard) = sessions.lock() else { return };
@@ -218,6 +222,7 @@ fn restore_persisted_sessions(sessions: &Sessions) {
         metadata.has_recognized_output = false;
         let _ = spawn_session(metadata, sessions);
     }
+    persist_metadata(sessions);
 }
 
 fn exit_host_if_empty(sessions: &Sessions) {
@@ -673,10 +678,13 @@ fn terminal_process_label(command: &str) -> Option<(usize, String)> {
 fn handle_request(request: HostRequest, sessions: &Sessions) -> HostResponse {
     match request {
         HostRequest::List => {
-            let Ok(guard) = sessions.lock() else {
-                return HostResponse::error("Terminal session state is unavailable");
+            let sessions_list = {
+                let Ok(guard) = sessions.lock() else {
+                    return HostResponse::error("Terminal session state is unavailable");
+                };
+                guard.values().cloned().collect::<Vec<_>>()
             };
-            let mut values = guard.values().map(refresh_status).collect::<Vec<_>>();
+            let mut values = sessions_list.iter().map(refresh_status).collect::<Vec<_>>();
             values.sort_by(|left, right| left.id.cmp(&right.id));
             let mut response = HostResponse::ok();
             response.sessions = Some(values);
@@ -835,10 +843,12 @@ fn handle_request(request: HostRequest, sessions: &Sessions) -> HostResponse {
             let Some(session) = session else {
                 return HostResponse::error("Terminal session not found");
             };
-            if let Ok(mut child) = session.child.lock() {
-                let _ = child.kill();
-                let _ = child.wait();
-            }
+            thread::spawn(move || {
+                if let Ok(mut child) = session.child.lock() {
+                    let _ = child.kill();
+                    let _ = child.wait();
+                }
+            });
             persist_metadata(sessions);
             exit_host_if_empty(sessions);
             HostResponse::ok()
@@ -875,10 +885,12 @@ fn restart_session(
             .lock()
             .map_err(|_| "Terminal session state is unavailable".to_string())?;
         if let Some(session) = guard.remove(&id) {
-            if let Ok(mut child) = session.child.lock() {
-                let _ = child.kill();
-                let _ = child.wait();
-            }
+            thread::spawn(move || {
+                if let Ok(mut child) = session.child.lock() {
+                    let _ = child.kill();
+                    let _ = child.wait();
+                }
+            });
         }
     }
     spawn_session(metadata, sessions)
@@ -904,19 +916,77 @@ fn handle_connection(stream: UnixStream, sessions: Sessions) {
     }
 }
 
+fn kill_process_by_pid(pid: u32) {
+    #[cfg(unix)]
+    {
+        let _ = Command::new("kill")
+            .args(["-9", &pid.to_string()])
+            .status();
+    }
+    #[cfg(windows)]
+    {
+        let _ = Command::new("taskkill")
+            .args(["/F", "/PID", &pid.to_string()])
+            .status();
+    }
+}
+
+fn check_host_responsive(socket: &Path) -> bool {
+    let mut stream = match UnixStream::connect(socket) {
+        Ok(stream) => stream,
+        Err(_) => return false,
+    };
+    let _ = stream.set_write_timeout(Some(Duration::from_millis(500)));
+    let _ = stream.set_read_timeout(Some(Duration::from_millis(500)));
+    
+    let request = HostRequest::List;
+    let Ok(mut payload) = serde_json::to_vec(&request) else {
+        return false;
+    };
+    payload.push(b'\n');
+    
+    if stream.write_all(&payload).is_err() {
+        return false;
+    }
+    
+    let mut reader = BufReader::new(stream);
+    let mut raw = String::new();
+    if reader.read_line(&mut raw).is_err() {
+        return false;
+    }
+    
+    let Ok(response) = serde_json::from_str::<HostResponse>(&raw) else {
+        return false;
+    };
+    
+    response.ok
+}
+
 pub fn run_terminal_host() -> Result<(), String> {
     let root = host_root()?;
     fs::create_dir_all(&root)
         .map_err(|error| format!("Failed to create terminal host directory: {error}"))?;
     let socket = socket_path()?;
+    let pid_file = pid_path()?;
+    
     if socket.exists() {
-        if UnixStream::connect(&socket).is_ok() {
+        if check_host_responsive(&socket) {
             return Ok(());
         }
+        // Host is unresponsive or not running. Clean up.
+        if let Ok(pid_str) = fs::read_to_string(&pid_file) {
+            if let Ok(pid) = pid_str.trim().parse::<u32>() {
+                kill_process_by_pid(pid);
+            }
+        }
         let _ = fs::remove_file(&socket);
+        let _ = fs::remove_file(&pid_file);
     }
+    
     let listener = UnixListener::bind(&socket)
         .map_err(|error| format!("Failed to bind terminal host: {error}"))?;
+    let _ = fs::write(&pid_file, std::process::id().to_string());
+    
     let protocol_path = root.join("protocol_version");
     let _ = fs::write(&protocol_path, TERMINAL_HOST_PROTOCOL.to_string());
     let sessions: Sessions = Arc::new(Mutex::new(HashMap::new()));
@@ -958,35 +1028,81 @@ fn spawn_terminal_host_process(executable: &Path) -> Result<(), String> {
     Ok(())
 }
 
+fn spawn_and_wait_for_host() -> Result<UnixStream, String> {
+    let socket = socket_path()?;
+    let executable = std::env::current_exe().map_err(|error| error.to_string())?;
+    spawn_terminal_host_process(&executable)?;
+    let mut connected = None;
+    for _ in 0..40 {
+        thread::sleep(Duration::from_millis(50));
+        if let Ok(stream) = UnixStream::connect(&socket) {
+            connected = Some(stream);
+            break;
+        }
+    }
+    connected.ok_or_else(|| "Terminal host did not become available".to_string())
+}
+
 fn send_request(request: HostRequest) -> Result<HostResponse, String> {
     let socket = socket_path()?;
+    let pid_file = pid_path()?;
+    
+    let expected_pid = fs::read_to_string(&pid_file)
+        .ok()
+        .and_then(|s| s.trim().parse::<u32>().ok());
+    
     let connect = || UnixStream::connect(&socket);
+    
     let mut stream = match connect() {
         Ok(stream) => stream,
         Err(_) => {
-            let executable = std::env::current_exe().map_err(|error| error.to_string())?;
-            spawn_terminal_host_process(&executable)?;
-            let mut connected = None;
-            for _ in 0..40 {
-                thread::sleep(Duration::from_millis(50));
-                if let Ok(stream) = connect() {
-                    connected = Some(stream);
-                    break;
-                }
-            }
-            connected.ok_or_else(|| "Terminal host did not become available".to_string())?
+            spawn_and_wait_for_host()?
         }
     };
+    
+    let expected_pid = expected_pid.or_else(|| {
+        fs::read_to_string(&pid_file)
+            .ok()
+            .and_then(|s| s.trim().parse::<u32>().ok())
+    });
+    
+    let _ = stream.set_write_timeout(Some(Duration::from_secs(2)));
+    let _ = stream.set_read_timeout(Some(Duration::from_secs(2)));
+    
     let mut payload = serde_json::to_vec(&request).map_err(|error| error.to_string())?;
     payload.push(b'\n');
-    stream
-        .write_all(&payload)
-        .map_err(|error| error.to_string())?;
-    let mut reader = BufReader::new(stream);
+    
     let mut raw = String::new();
-    reader
-        .read_line(&mut raw)
-        .map_err(|error| error.to_string())?;
+    let mut communication_result = stream.write_all(&payload).and_then(|_| {
+        let mut reader = BufReader::new(stream);
+        reader.read_line(&mut raw)
+    });
+    
+    if communication_result.is_err() {
+        let current_pid = fs::read_to_string(&pid_file)
+            .ok()
+            .and_then(|s| s.trim().parse::<u32>().ok());
+            
+        if let (Some(exp), Some(cur)) = (expected_pid, current_pid) {
+            if exp == cur {
+                kill_process_by_pid(cur);
+                let _ = fs::remove_file(&socket);
+                let _ = fs::remove_file(&pid_file);
+            }
+        }
+        
+        let mut new_stream = spawn_and_wait_for_host()?;
+        let _ = new_stream.set_write_timeout(Some(Duration::from_secs(2)));
+        let _ = new_stream.set_read_timeout(Some(Duration::from_secs(2)));
+        
+        raw.clear();
+        communication_result = new_stream.write_all(&payload).and_then(|_| {
+            let mut reader = BufReader::new(new_stream);
+            reader.read_line(&mut raw)
+        });
+    }
+    
+    let _ = communication_result.map_err(|error| error.to_string())?;
     let response: HostResponse = serde_json::from_str(&raw).map_err(|error| error.to_string())?;
     if response.ok {
         Ok(response)
