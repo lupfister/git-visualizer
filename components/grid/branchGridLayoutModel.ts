@@ -2796,6 +2796,7 @@ export function projectVisibility(
   const worktreeNodesByParentVisualId = new Map<string, Node[]>();
   for (const node of renderNodes) {
     if (!isWorktreeGraphNode(node.commit)) continue;
+    if (getNodePositionOverride(nodePositionOverrides, node.commit)) continue;
     const parentSha = actualWorktreeParentSha(node.commit);
     if (!parentSha) continue;
     const parentNode = projectedNodeForSha(parentSha, node.commit.branchName);

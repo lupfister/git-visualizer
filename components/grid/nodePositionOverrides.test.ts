@@ -115,7 +115,7 @@ describe('node position override keys', () => {
     ).toEqual(['feature', 'main', 'cursor-sdk', 'main (local)']);
   });
 
-  it('moves working-tree drag position to new HEAD and clears worktree overrides on commit', () => {
+  it('preserves working-tree drag position across commit', () => {
     const overrides: NodePositionOverrides = {
       WORKING_TREE: { x: 100, y: 200 },
       'main:WORKING_TREE': { x: 100, y: 200 },
@@ -130,20 +130,12 @@ describe('node position override keys', () => {
       ['main', 'main (local)'],
     );
 
-    expect(getNodePositionOverride(migrated, { id: 'newsha1', visualId: 'main:newsha1' })).toEqual({
-      x: 100,
-      y: 200,
-    });
-    expect(getNodePositionOverride(migrated, { id: 'newsha1', visualId: 'main (local):newsha1' })).toEqual({
-      x: 100,
-      y: 200,
-    });
     expect(getNodePositionOverride(migrated, {
       id: 'WORKING_TREE',
       visualId: 'main:WORKING_TREE',
       kind: 'uncommitted',
-    })).toBeUndefined();
-    expect(migrated['stable:working-tree:current']).toBeUndefined();
+    })).toEqual({ x: 100, y: 200 });
+    expect(migrated['stable:working-tree:current']).toEqual({ x: 100, y: 200 });
     expect(migrated['stable:sha:oldhead']).toEqual({ x: 1, y: 2 });
   });
 
@@ -159,11 +151,15 @@ describe('node position override keys', () => {
       ['main', 'main (local)'],
     );
 
-    expect(getNodePositionOverride(migrated, { id: 'newsha1', visualId: 'main (local):newsha1' })).toEqual({
+    expect(getNodePositionOverride(migrated, {
+      id: LEGACY_WORKING_TREE_ID,
+      visualId: `main (local):${LEGACY_WORKING_TREE_ID}`,
+      kind: 'uncommitted',
+    })).toEqual({
       x: 50,
       y: 60,
     });
-    expect(migrated['main (local):WORKING_TREE']).toBeUndefined();
+    expect(migrated['main (local):WORKING_TREE']).toEqual({ x: 50, y: 60 });
   });
 
   it('does not migrate when the worktree was never dragged', () => {

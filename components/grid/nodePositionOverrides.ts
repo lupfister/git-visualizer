@@ -152,32 +152,27 @@ export const resolveWorktreePositionOverride = (
   return getNodePositionOverride(overrides, { id: workingTreeId, visualId: workingTreeId });
 };
 
-/**
- * After commit: when the working tree had a drag override, move that position onto the new
- * HEAD (including local-divergence lanes and collapsed-clump leads via stable:sha) and drop
- * worktree overrides so layout can re-pin the fresh working-tree tile beside HEAD.
- */
+/** Preserve a dragged working-tree anchor across commits. */
 export const migrateWorkingTreeOverrideToNewHead = (
   overrides: NodePositionOverrides,
-  newHeadSha: string,
+  _newHeadSha: string,
   workingTreeId: string,
   laneBranchNames: readonly string[],
 ): NodePositionOverrides => {
   const point = resolveWorktreePositionOverride(overrides, workingTreeId, laneBranchNames);
   if (!point) return overrides;
 
-  const next: NodePositionOverrides = {};
-  for (const [key, value] of Object.entries(overrides)) {
-    if (!isWorktreePositionOverrideKeyFor(key, workingTreeId)) {
-      next[key] = value;
-    }
-  }
+  const next: NodePositionOverrides = { ...overrides };
   const uniqueLaneNames = [...new Set(laneBranchNames.filter((name) => name.length > 0))];
   for (const branchName of uniqueLaneNames) {
-    assignNodePositionOverride(next, { id: newHeadSha, visualId: `${branchName}:${newHeadSha}` }, point);
+    assignNodePositionOverride(next, {
+      id: workingTreeId,
+      visualId: `${branchName}:${workingTreeId}`,
+      kind: 'uncommitted',
+    }, point);
   }
   if (uniqueLaneNames.length === 0) {
-    assignNodePositionOverride(next, { id: newHeadSha, visualId: newHeadSha }, point);
+    assignNodePositionOverride(next, { id: workingTreeId, visualId: workingTreeId, kind: 'uncommitted' }, point);
   }
   return next;
 };
