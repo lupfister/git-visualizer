@@ -18,6 +18,7 @@ import {
   readPersistedWorktreeFocusSha,
   resolveActiveWorktreeFocusSha,
   resolveTerminalSessionFocusId,
+  determineWorktreePromptDefaults,
 } from './worktreeSessions';
 
 const baseWorktree = (overrides: Partial<WorktreeInfo>): WorktreeInfo => ({
@@ -334,4 +335,56 @@ describe('worktreeSessions', () => {
     expect(nonCurrent[1]?.path).toBe('/repo/wt-b');
     expect(nonCurrent[1]?.accentToken).toBe('worktree-amber');
   });
+
+  describe('determineWorktreePromptDefaults', () => {
+    const branches: Branch[] = [
+      { name: 'main', headSha: 'aaaa' } as Branch,
+      { name: 'feature', headSha: 'bbbb' } as Branch,
+    ];
+
+    it('returns esoteric folder name and disables create branch when resolved target is undefined', () => {
+      const result = determineWorktreePromptDefaults(undefined, [], branches);
+      expect(result.defaultFolderName).toBeTruthy();
+      expect(result.defaultFolderName).not.toBe('main');
+      expect(result.createBranch).toBe(true);
+      expect(result.createBranchDisabled).toBe(true);
+    });
+
+    it('returns esoteric folder name and enables create branch toggle when resolved target is a SHA', () => {
+      const result = determineWorktreePromptDefaults('bbbbbbbbbbbb', [], branches);
+      expect(result.defaultFolderName).toBeTruthy();
+      expect(result.createBranch).toBe(true);
+      expect(result.createBranchDisabled).toBe(false);
+    });
+
+    it('returns branch name and defaults to checking out directly when branch is not checked out', () => {
+      const result = determineWorktreePromptDefaults('feature', [], branches);
+      expect(result.defaultFolderName).toBe('feature');
+      expect(result.createBranch).toBe(false);
+      expect(result.createBranchDisabled).toBe(false);
+    });
+
+    it('returns esoteric folder name and disables create branch when branch is already checked out', () => {
+      const sortedWorktrees: WorktreeInfo[] = [
+        baseWorktree({ path: '/repo', branchName: 'feature' }),
+      ];
+      const result = determineWorktreePromptDefaults('feature', sortedWorktrees, branches);
+      expect(result.defaultFolderName).toBeTruthy();
+      expect(result.defaultFolderName).not.toBe('feature');
+      expect(result.createBranch).toBe(true);
+      expect(result.createBranchDisabled).toBe(true);
+    });
+
+    it('returns esoteric folder name and enables create branch toggle when branch is not checked out but folder name conflicts', () => {
+      const sortedWorktrees: WorktreeInfo[] = [
+        baseWorktree({ path: '/repo/feature', branchName: 'main' }),
+      ];
+      const result = determineWorktreePromptDefaults('feature', sortedWorktrees, branches);
+      expect(result.defaultFolderName).toBeTruthy();
+      expect(result.defaultFolderName).not.toBe('feature');
+      expect(result.createBranch).toBe(false);
+      expect(result.createBranchDisabled).toBe(false);
+    });
+  });
 });
+

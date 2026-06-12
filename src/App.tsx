@@ -72,7 +72,7 @@ import {
   shaMatches,
   workingTreeIdForPath,
   worktreeStableKey,
-  generateEsotericWorktreeName,
+  determineWorktreePromptDefaults,
 } from '../lib/worktreeSessions';
 import { deriveRepoVisualState } from './repoVisualState';
 import { setMapGridBackgroundActivity } from '../components/grid/mapGridBackgroundActivity';
@@ -7038,43 +7038,23 @@ function App() {
       }
     }
 
-    let defaultName = '';
-
     if (resolvedTarget === undefined) {
       setWorktreePromptBranchOrCommit('');
       setWorktreePromptBranchOrCommitEditable(true);
-      defaultName = generateEsotericWorktreeName(existingNames);
-      setWorktreePromptCreateBranch(true);
-      setWorktreePromptCreateBranchDisabled(true);
     } else {
       setWorktreePromptBranchOrCommit(resolvedTarget);
       setWorktreePromptBranchOrCommitEditable(false);
-      const cleaned = resolvedTarget.replace(/[^a-zA-Z0-9._-]/g, '_') || 'HEAD';
-      
-      const isSha = /^[0-9a-fA-F]{7,40}$/.test(cleaned);
-      const isHead = cleaned === 'HEAD';
-
-      if (isHead || isSha) {
-        defaultName = generateEsotericWorktreeName(existingNames);
-        setWorktreePromptCreateBranch(true);
-        setWorktreePromptCreateBranchDisabled(false);
-      } else {
-        defaultName = cleaned;
-        // Check if the branch is already checked out in any worktree
-        const isBranchCheckedOut = sortedWorktrees.some(
-          (w) => w.branchName && w.branchName === resolvedTarget
-        );
-        if (isBranchCheckedOut) {
-          setWorktreePromptCreateBranch(true);
-          setWorktreePromptCreateBranchDisabled(true);
-        } else {
-          setWorktreePromptCreateBranch(false);
-          setWorktreePromptCreateBranchDisabled(false);
-        }
-      }
     }
 
-    setWorktreePromptFolderName(defaultName);
+    const { defaultFolderName, createBranch, createBranchDisabled } = determineWorktreePromptDefaults(
+      resolvedTarget,
+      sortedWorktrees,
+      branches,
+    );
+
+    setWorktreePromptFolderName(defaultFolderName);
+    setWorktreePromptCreateBranch(createBranch);
+    setWorktreePromptCreateBranchDisabled(createBranchDisabled);
   }, [branches, sortedWorktrees, checkedOutRef]);
 
   const confirmCreateWorktreePrompt = useCallback(async () => {
@@ -7846,7 +7826,7 @@ function App() {
 
       {worktreePromptOpen && (
         <div className="absolute inset-0 z-[9999] flex items-center justify-center bg-background/70 p-4 backdrop-blur-sm" onClick={() => setWorktreePromptOpen(false)}>
-          <div className="w-full max-w-sm rounded-2xl border border-border bg-background p-4 shadow-lg" onClick={(event) => event.stopPropagation()}>
+          <div className="w-full max-w-sm rounded-2xl border border-border bg-background p-4" onClick={(event) => event.stopPropagation()}>
             <p className="text-sm font-medium text-foreground">Create new worktree</p>
             
             {worktreePromptBranchOrCommitEditable ? (

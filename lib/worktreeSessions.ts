@@ -467,3 +467,79 @@ export const resolveBranchCheckoutAccent = (
   }
   return null;
 };
+
+export interface WorktreePromptDefaults {
+  defaultFolderName: string;
+  createBranch: boolean;
+  createBranchDisabled: boolean;
+}
+
+export const determineWorktreePromptDefaults = (
+  resolvedTarget: string | undefined,
+  sortedWorktrees: WorktreeInfo[],
+  branches: Branch[],
+): WorktreePromptDefaults => {
+  const existingNames = new Set<string>();
+  for (const b of branches) {
+    existingNames.add(b.name.toLowerCase());
+  }
+  for (const w of sortedWorktrees) {
+    const name = w.path.split(/[/\\]/).pop();
+    if (name) {
+      existingNames.add(name.toLowerCase());
+    }
+  }
+
+  if (resolvedTarget === undefined) {
+    return {
+      defaultFolderName: generateEsotericWorktreeName(existingNames),
+      createBranch: true,
+      createBranchDisabled: true,
+    };
+  }
+
+  const cleaned = resolvedTarget.replace(/[^a-zA-Z0-9._-]/g, '_') || 'HEAD';
+  const isSha = /^[0-9a-fA-F]{7,40}$/.test(cleaned);
+  const isHead = cleaned === 'HEAD';
+
+  if (isHead || isSha) {
+    return {
+      defaultFolderName: generateEsotericWorktreeName(existingNames),
+      createBranch: true,
+      createBranchDisabled: false,
+    };
+  }
+
+  // Check if the branch is already checked out in any worktree
+  const isBranchCheckedOut = sortedWorktrees.some(
+    (w) => w.branchName && w.branchName === resolvedTarget
+  );
+
+  // Check if there is already a worktree with the same folder name
+  const isNameConflict = sortedWorktrees.some((w) => {
+    const name = w.path.split(/[/\\]/).pop();
+    return name && name.toLowerCase() === cleaned.toLowerCase();
+  });
+
+  if (isBranchCheckedOut) {
+    return {
+      defaultFolderName: generateEsotericWorktreeName(existingNames),
+      createBranch: true,
+      createBranchDisabled: true,
+    };
+  }
+
+  if (isNameConflict) {
+    return {
+      defaultFolderName: generateEsotericWorktreeName(existingNames),
+      createBranch: false,
+      createBranchDisabled: false,
+    };
+  }
+
+  return {
+    defaultFolderName: cleaned,
+    createBranch: false,
+    createBranchDisabled: false,
+  };
+};
