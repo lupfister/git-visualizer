@@ -416,9 +416,7 @@ const MapGridCommitCard = memo(function MapGridCommitCard({
       )
     : isLocalUncommitted || isEmptyBranchNode
       ? ''
-      : !isClusterOpen && isClusterLead && clumpCount > 1
-        ? `${stashBodyMessage} +${clumpCount - 1}`
-        : stashBodyMessage;
+      : stashBodyMessage;
 
   const handleClick = (event: MouseEvent) => onCommitCardClick(event, node);
   const handlePointerDown = (event: React.PointerEvent<HTMLDivElement>) => onNodePointerDown(event, node);
@@ -439,12 +437,13 @@ const MapGridCommitCard = memo(function MapGridCommitCard({
     lineHeight: 1.25,
     ...cardTextStyle,
   };
+  const softInvZoom = 'calc(0.5 * (1 + var(--map-inv-zoom, 1)))';
   const scaledBodyInsetStyle: CSSProperties = {
-    padding: 'calc(0.5rem * var(--map-inv-zoom, 1)) calc(0.625rem * var(--map-inv-zoom, 1))',
+    padding: `calc(0.75rem * ${softInvZoom}) calc(0.9rem * ${softInvZoom})`,
   };
   const scaledMetaTopStyle: CSSProperties = {
-    paddingTop: 'calc(1.25rem * var(--map-inv-zoom, 1))',
-    gap: 'calc(1rem * var(--map-inv-zoom, 1))',
+    paddingTop: `calc(1.85rem * ${softInvZoom})`,
+    gap: `calc(1.5rem * ${softInvZoom})`,
   };
 
   const commitTileShapeCssVar = resolveWorktreeCommitTileShapeCssVar(
@@ -662,7 +661,7 @@ const MapGridCommitCard = memo(function MapGridCommitCard({
         className={cn("absolute left-0 z-30 w-full", selectedCommitTextClass)}
         style={{
           fontSize: 'calc(0.875rem * var(--map-inv-zoom, 1))',
-          top: 'calc(-1.1rem * var(--map-inv-zoom, 1))',
+          top: 'calc(-1.2rem * var(--map-inv-zoom, 1) - 0.4rem)',
           ...cardTextStyle,
         }}
       >
@@ -682,8 +681,7 @@ const MapGridCommitCard = memo(function MapGridCommitCard({
             ) : null}
             <div
               className={cn(
-                'min-w-0 flex-1 font-normal',
-                displayZoom <= 0.5 ? 'overflow-hidden text-ellipsis whitespace-nowrap' : 'break-words whitespace-normal',
+                'min-w-0 flex-1 font-normal overflow-hidden text-ellipsis whitespace-nowrap',
               )}
             >
               {headerLabel}
