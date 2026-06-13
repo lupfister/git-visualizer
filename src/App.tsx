@@ -2827,8 +2827,11 @@ function App() {
         noteSyncedAfterMutationOutcomes(normalizedPath, ...outcomes);
         schedulePostMutationGraphReconcile(normalizedPath);
       } else {
+        const hasBranchDeleteOutcome = outcomes.some((o) => o.kind === 'branchDelete');
         window.setTimeout(() => {
-          void invoke('persist_project_snapshot', { projectId: normalizedPath }).catch((error) => {
+          const persistArgs: Record<string, unknown> = { projectId: normalizedPath };
+          if (hasBranchDeleteOutcome) persistArgs.force = true;
+          void invoke('persist_project_snapshot', persistArgs).catch((error) => {
             console.warn('Background snapshot persist failed:', error);
           });
         }, PERSIST_SNAPSHOT_DEFER_MS);

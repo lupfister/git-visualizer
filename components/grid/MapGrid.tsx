@@ -2185,12 +2185,12 @@ export default function BranchGridMap({
             ) : null}
             {gridHudProps.commitSwitchFeedback ? (
               <div
-                className={`window-no-drag pointer-events-auto inline-flex h-7 items-center gap-2 rounded-md border px-2 text-[11px] transition-opacity duration-200 ${
+                className={`window-no-drag pointer-events-auto inline-flex h-7 items-center gap-2 rounded-md px-2 text-[11px] transition-opacity duration-200 ${
                   gridHudProps.isCommitSwitchFeedbackVisible ? 'opacity-100' : 'opacity-0'
                 } ${
                   gridHudProps.commitSwitchFeedback.kind === 'error'
-                    ? 'border-red-500/25 bg-red-50/95 text-red-600 dark:border-red-900/30 dark:bg-red-900/20 dark:text-red-400'
-                    : 'border-blue-500/25 bg-blue-50/95 text-blue-600 dark:border-blue-900/30 dark:bg-blue-900/20 dark:text-blue-400'
+                    ? 'bg-red-50/95 text-red-600 dark:bg-red-900/20 dark:text-red-400'
+                    : 'bg-blue-50/95 text-blue-600 dark:bg-blue-900/20 dark:text-blue-400'
                 }`}
                 title={gridHudProps.commitSwitchFeedback.message}
               >
