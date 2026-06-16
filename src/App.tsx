@@ -2775,14 +2775,26 @@ function App() {
         : undefined;
 
       if (isCommit) {
-        const worktrees = await invoke<WorktreeInfo[]>('list_worktrees', { repoPath: normalizedPath }).catch(
-          () => [] as WorktreeInfo[],
-        );
-        snapshot = applyMutationPatch(snapshot, outcomeFromWorktreeSync(worktrees));
         protectPostCommitHead(
           normalizedPath,
-          snapshot.checkedOutRef?.headSha ?? commitOutcome?.commit.fullSha ?? null,
+          commitOutcome?.commit.checkedOutRef.headSha ?? commitOutcome?.commit.fullSha ?? null,
         );
+        await refreshRepoAfterMutationFull(normalizedPath, { immediate: true, forceApply: true });
+        autoFocusSyncKeyRef.current = null;
+        const latestSnapshot = getSnapshotForMutation(normalizedPath);
+        const focusSha = resolveActiveWorktreeFocusSha(
+          buildWorktreeSessions(latestSnapshot.worktrees, normalizedPath, latestSnapshot.checkedOutRef),
+          normalizedPath,
+        ) ?? commitOutcome?.commit.fullSha ?? null;
+        if (focusSha && !readHasSavedMapGridCamera(normalizedPath, mapGridOrientation)) {
+          setGridFocusSha(focusSha);
+          setGridSearchJumpToken((token) => token + 1);
+        }
+        schedulePostCommitQuickReconcile(normalizedPath);
+        markGitActivityHandled();
+        noteSyncedAfterMutationOutcomes(normalizedPath, ...outcomes);
+        schedulePostMutationGraphReconcile(normalizedPath);
+        return;
       }
 
       // Push uses optimistic patchPush; background reconcile refreshes metadata without blocking here.
