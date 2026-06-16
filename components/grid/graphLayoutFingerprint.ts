@@ -18,18 +18,20 @@ export const buildGraphLayoutFingerprint = (parts: {
   checkedOutHead: string;
   worktreeSessionSignature: string;
   branchRowsSignature: string;
+  branchPreviewsSignature: string;
   directCommitFingerprint: string;
   unpushedCommitFingerprint: string;
   mergeNodesSignature: string;
 }): string =>
   [
-    'layout-v15-fingerprint',
+    'layout-v16-fingerprint',
     parts.layoutEpoch,
     parts.defaultBranch,
     parts.checkedOutBranch,
     parts.checkedOutHead,
     parts.worktreeSessionSignature,
     parts.branchRowsSignature,
+    parts.branchPreviewsSignature,
     parts.directCommitFingerprint,
     parts.unpushedCommitFingerprint,
     parts.mergeNodesSignature,

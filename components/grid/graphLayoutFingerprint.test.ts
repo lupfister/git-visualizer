@@ -18,11 +18,12 @@ describe('graphLayoutFingerprint', () => {
       checkedOutHead: 'abc',
       worktreeSessionSignature: 'wt:0',
       branchRowsSignature: 'main:abc:1:0:',
+      branchPreviewsSignature: 'main:abc///commit/2026-01-01T00:00:00Z',
       directCommitFingerprint: '2:123',
       unpushedCommitFingerprint: '0:0',
       mergeNodesSignature: '',
     });
-    expect(fingerprint).toContain('layout-v15-fingerprint');
+    expect(fingerprint).toContain('layout-v16-fingerprint');
     expect(fingerprint).toContain('main');
   });
 });

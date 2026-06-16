@@ -6240,7 +6240,26 @@ function App() {
         checkedOutHead: visualCheckedOutRef?.headSha ?? '',
         worktreeSessionSignature: formatWorktreeSessionLayoutSignature(worktreeSessions),
         branchRowsSignature: branchesForLayout
-          .map((branch) => `${branch.name}:${branch.headSha}:${branch.commitsAhead}:${branch.commitsBehind}:${branch.parentBranch ?? ''}`)
+          .map((branch) => [
+            branch.name,
+            branch.headSha,
+            branch.commitsAhead,
+            branch.commitsBehind,
+            branch.parentBranch ?? '',
+            branch.createdFromSha ?? '',
+            branch.divergedFromSha ?? '',
+            branch.presidesFromSha ?? '',
+          ].join(':'))
+          .join('|'),
+        branchPreviewsSignature: Object.entries(enrichedBranchCommitPreviews)
+          .sort(([left], [right]) => left.localeCompare(right))
+          .map(([branchName, previews]) => `${branchName}:${previews.map((preview) => [
+            preview.fullSha,
+            preview.parentSha ?? '',
+            preview.parentShas?.join(',') ?? '',
+            preview.kind ?? '',
+            preview.date,
+          ].join('/')).join(',')}`)
           .join('|'),
         directCommitFingerprint: hashCommitShaList(enrichedDirectCommits),
         unpushedCommitFingerprint: hashCommitShaList(enrichedUnpushedDirectCommits),
