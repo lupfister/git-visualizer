@@ -139,7 +139,7 @@ function patchCommit(snapshot: RepoVisualSnapshot, commit: RepoMutationOutcome &
   };
 
   const linked = linkParentToChild(snapshot, parentShaValue, fullSha, branchName);
-  const directCommits = [...linked.directCommits, newDirectCommit];
+  const directCommits = [newDirectCommit, ...linked.directCommits];
 
   const newPreview: BranchCommitPreview = {
     fullSha,
@@ -154,7 +154,7 @@ function patchCommit(snapshot: RepoVisualSnapshot, commit: RepoMutationOutcome &
   };
 
   const branchCommitPreviews = { ...linked.branchCommitPreviews };
-  branchCommitPreviews[branchName] = [...(branchCommitPreviews[branchName] ?? []), newPreview];
+  branchCommitPreviews[branchName] = [newPreview, ...(branchCommitPreviews[branchName] ?? [])];
 
   const branches = snapshot.branches.map((branch) => {
     if (branch.name !== branchName) return branch;
@@ -169,10 +169,10 @@ function patchCommit(snapshot: RepoVisualSnapshot, commit: RepoMutationOutcome &
     } satisfies Branch;
   });
 
-  const unpushedDirectCommits = [...snapshot.unpushedDirectCommits, newDirectCommit];
+  const unpushedDirectCommits = [newDirectCommit, ...snapshot.unpushedDirectCommits];
   const unpushedCommitShasByBranch = {
     ...snapshot.unpushedCommitShasByBranch,
-    [branchName]: [...(snapshot.unpushedCommitShasByBranch[branchName] ?? []), fullSha],
+    [branchName]: [fullSha, ...(snapshot.unpushedCommitShasByBranch[branchName] ?? [])],
   };
 
   const branchUniqueAheadCounts = {
