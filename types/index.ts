@@ -236,6 +236,7 @@ export interface RepoVisualSnapshot {
 
 /** Metadata returned from commit_working_tree for optimistic graph patching. */
 export interface CommitMutationData {
+  worktreePath?: string;
   checkedOutRef: CheckedOutRef;
   branchName: string;
   fullSha: string;

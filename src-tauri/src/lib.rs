@@ -64,6 +64,7 @@ struct DeleteSelectionResult {
 #[derive(Serialize, Deserialize, Clone)]
 #[serde(rename_all = "camelCase")]
 struct CommitMutationResult {
+    worktree_path: String,
     checked_out_ref: CheckedOutRef,
     branch_name: String,
     full_sha: String,
@@ -4725,6 +4726,7 @@ async fn commit_working_tree(
             .collect();
         let parent_sha = parent_shas.first().cloned();
         Ok(CommitMutationResult {
+            worktree_path: repo_path,
             checked_out_ref,
             branch_name,
             full_sha: parts[0].to_string(),

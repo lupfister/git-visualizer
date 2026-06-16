@@ -285,6 +285,7 @@ describe('applyMutationPatch commit', () => {
       kind: 'commit',
       layoutTopologyChanged: true,
       commit: {
+        worktreePath: '/repo',
         checkedOutRef: {
           branchName: 'feature',
           headSha: 'ccc3333',
@@ -307,6 +308,63 @@ describe('applyMutationPatch commit', () => {
     expect(next.worktrees.find((worktree) => worktree.isCurrent)?.headSha).toBe('ccc3333');
     expect(next.branchCommitPreviews.feature?.some((commit) => commit.fullSha.startsWith('ccc3333'))).toBe(true);
     expect(next.branchCommitPreviews.main?.some((commit) => commit.fullSha.startsWith('ccc3333'))).toBe(false);
+  });
+
+  it('updates a committed linked worktree without moving the active checkout ref', () => {
+    const next = applyMutationPatch(baseSnapshot({
+      checkedOutRef: {
+        branchName: 'main',
+        headSha: 'aaa1111',
+        hasUncommittedChanges: false,
+      },
+      worktrees: [
+        {
+          path: '/repo',
+          pathExists: true,
+          headSha: 'aaa1111',
+          branchName: 'main',
+          parentSha: null,
+          isCurrent: true,
+          isPrunable: false,
+          hasUncommittedChanges: false,
+        },
+        {
+          path: '/repo-linked',
+          pathExists: true,
+          headSha: 'bbb2222',
+          branchName: 'feature',
+          parentSha: 'aaa1111',
+          isCurrent: false,
+          isPrunable: false,
+          hasUncommittedChanges: true,
+        },
+      ],
+    }), {
+      kind: 'commit',
+      layoutTopologyChanged: true,
+      commit: {
+        worktreePath: '/repo-linked',
+        checkedOutRef: {
+          branchName: 'feature',
+          headSha: 'ccc3333',
+          hasUncommittedChanges: false,
+          parentSha: 'bbb2222',
+        },
+        branchName: 'feature',
+        fullSha: 'ccc3333fullsha000000000000000000000000',
+        sha: 'ccc3333',
+        message: 'new linked commit',
+        author: 'dev',
+        date: '2024-01-05T00:00:00Z',
+        parentSha: 'bbb2222',
+        parentShas: ['bbb2222'],
+      },
+    });
+
+    expect(next.checkedOutRef?.headSha).toBe('aaa1111');
+    expect(next.worktrees.find((worktree) => worktree.path === '/repo')?.headSha).toBe('aaa1111');
+    expect(next.worktrees.find((worktree) => worktree.path === '/repo-linked')?.headSha).toBe('ccc3333');
+    expect(next.worktrees.find((worktree) => worktree.path === '/repo-linked')?.hasUncommittedChanges).toBe(false);
   });
 });
 

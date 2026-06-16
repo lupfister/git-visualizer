@@ -25,13 +25,25 @@ function clearWorktreeDirtyFlags(worktrees: WorktreeInfo[]): WorktreeInfo[] {
   );
 }
 
-function syncCurrentWorktreeFromCheckedOutRef(
+function normalizePathForCompare(path: string | null | undefined): string {
+  return (path ?? '').replace(/\/+$/, '');
+}
+
+function samePath(left: string | null | undefined, right: string | null | undefined): boolean {
+  const normalizedLeft = normalizePathForCompare(left);
+  const normalizedRight = normalizePathForCompare(right);
+  return normalizedLeft === normalizedRight || normalizedLeft.toLowerCase() === normalizedRight.toLowerCase();
+}
+
+function syncWorktreeFromCheckedOutRef(
   worktrees: WorktreeInfo[],
   checkedOutRef: CheckedOutRef | null | undefined,
+  worktreePath?: string | null,
 ): WorktreeInfo[] {
   if (!checkedOutRef) return worktrees;
   return worktrees.map((worktree) => {
-    if (!worktree.isCurrent) return worktree;
+    const matchesTarget = worktreePath ? samePath(worktree.path, worktreePath) : worktree.isCurrent;
+    if (!matchesTarget) return worktree;
     return {
       ...worktree,
       headSha: checkedOutRef.headSha,
@@ -106,8 +118,12 @@ function syncUnpushedDirectCommits(
 }
 
 function patchCommit(snapshot: RepoVisualSnapshot, commit: RepoMutationOutcome & { kind: 'commit' }): RepoVisualSnapshot {
-  const { branchName, fullSha, sha, message, author, date, parentSha, parentShas, checkedOutRef } = commit.commit;
+  const { branchName, fullSha, sha, message, author, date, parentSha, parentShas, checkedOutRef, worktreePath } = commit.commit;
   const parentShaValue = parentSha ?? parentShas[0] ?? null;
+  const committedCurrentWorktree = !worktreePath || snapshot.worktrees.some((worktree) =>
+    worktree.isCurrent && samePath(worktree.path, worktreePath),
+  );
+  const nextCheckedOutRef = committedCurrentWorktree ? checkedOutRef : snapshot.checkedOutRef;
 
   const newDirectCommit: DirectCommit = {
     fullSha,
@@ -169,23 +185,28 @@ function patchCommit(snapshot: RepoVisualSnapshot, commit: RepoMutationOutcome &
       isWorkingTreeCommitId(branch.headSha)
         ? {
             ...branch,
-            headSha: branch.name === branchName ? fullSha : (checkedOutRef.headSha || branch.headSha),
+            headSha: branch.name === branchName ? fullSha : (nextCheckedOutRef?.headSha || branch.headSha),
           }
         : branch
     ))
     : branches;
   return touchSnapshot({
     ...snapshot,
-    checkedOutRef,
+    checkedOutRef: nextCheckedOutRef,
     branches: cleanedBranches,
     directCommits,
     branchCommitPreviews,
     unpushedDirectCommits,
     unpushedCommitShasByBranch,
     branchUniqueAheadCounts,
-    worktrees: syncCurrentWorktreeFromCheckedOutRef(
-      clearWorktreeDirtyFlags(snapshot.worktrees),
+    worktrees: syncWorktreeFromCheckedOutRef(
+      snapshot.worktrees.map((worktree) =>
+        (worktreePath ? samePath(worktree.path, worktreePath) : worktree.isCurrent)
+          ? { ...worktree, hasUncommittedChanges: false }
+          : worktree,
+      ),
       checkedOutRef,
+      worktreePath,
     ),
   });
 }
@@ -200,7 +221,7 @@ function patchStashPush(
     ...snapshot,
     stashes,
     checkedOutRef: outcome.checkedOutRef,
-    worktrees: syncCurrentWorktreeFromCheckedOutRef(
+    worktrees: syncWorktreeFromCheckedOutRef(
       clearWorktreeDirtyFlags(snapshot.worktrees),
       outcome.checkedOutRef,
     ),
@@ -226,7 +247,7 @@ function patchStashRestore(
     ...snapshot,
     stashes,
     checkedOutRef: outcome.checkedOutRef,
-    worktrees: syncCurrentWorktreeFromCheckedOutRef(snapshot.worktrees, outcome.checkedOutRef),
+    worktrees: syncWorktreeFromCheckedOutRef(snapshot.worktrees, outcome.checkedOutRef),
   });
 }
 
@@ -330,7 +351,7 @@ function patchCheckout(
   return touchSnapshot({
     ...snapshot,
     checkedOutRef: outcome.checkedOutRef,
-    worktrees: syncCurrentWorktreeFromCheckedOutRef(snapshot.worktrees, outcome.checkedOutRef),
+    worktrees: syncWorktreeFromCheckedOutRef(snapshot.worktrees, outcome.checkedOutRef),
   });
 }
 
@@ -349,7 +370,7 @@ function patchDiscardDirty(
     checkedOutRef,
     branches,
     branchCommitPreviews: stripWorkingTreeFromPreviews(snapshot.branchCommitPreviews),
-    worktrees: syncCurrentWorktreeFromCheckedOutRef(
+    worktrees: syncWorktreeFromCheckedOutRef(
       clearWorktreeDirtyFlags(snapshot.worktrees),
       checkedOutRef,
     ),
@@ -363,7 +384,7 @@ function patchMarkDirty(
   return touchSnapshot({
     ...snapshot,
     checkedOutRef: outcome.checkedOutRef,
-    worktrees: syncCurrentWorktreeFromCheckedOutRef(snapshot.worktrees, outcome.checkedOutRef),
+    worktrees: syncWorktreeFromCheckedOutRef(snapshot.worktrees, outcome.checkedOutRef),
   });
 }
 
@@ -394,7 +415,7 @@ function patchUpstreamSync(
   return touchSnapshot({
     ...snapshot,
     checkedOutRef: outcome.checkedOutRef,
-    worktrees: syncCurrentWorktreeFromCheckedOutRef(snapshot.worktrees, outcome.checkedOutRef),
+    worktrees: syncWorktreeFromCheckedOutRef(snapshot.worktrees, outcome.checkedOutRef),
   });
 }
 
@@ -496,7 +517,7 @@ function patchBranchMetadataSync(
     checkedOutRef: outcome.checkedOutRef,
     laneByBranch,
     branchParentByName,
-    worktrees: syncCurrentWorktreeFromCheckedOutRef(snapshot.worktrees, outcome.checkedOutRef),
+    worktrees: syncWorktreeFromCheckedOutRef(snapshot.worktrees, outcome.checkedOutRef),
   });
 }
 
