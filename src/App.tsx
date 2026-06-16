@@ -11,10 +11,6 @@ import TerminalPanel, { type TerminalPanelPlacement } from '../components/Termin
 import { mapGridCameraStorageKey, readHasSavedMapGridCamera } from '../components/grid/useMapGridCamera';
 import DenseBranchSidebar from '../components/DenseBranchSidebar';
 import type { Node, NodePositionOverrides } from '../components/grid/LayoutGrid';
-import {
-  laneBranchNamesForPositionOverrides,
-  migrateWorkingTreeOverrideToNewHead,
-} from '../components/grid/nodePositionOverrides';
 import type { BranchGridLayoutModel } from '../components/grid/branchGridLayoutModel';
 import { hydrateBranchGridLayoutModel, serializeBranchGridLayoutModel } from '../components/grid/layoutSnapshot';
 import { buildGraphLayoutFingerprint, hashCommitShaList } from '../components/grid/graphLayoutFingerprint';
@@ -5170,27 +5166,7 @@ function App() {
     });
     if (commitResult.branchName && commitResult.fullSha) {
       const normalizedPath = normalizePath(worktreePath);
-      userDirtyNodePositionsRef.current.add(normalizedPath);
-      const worktreeSession = buildWorktreeSessions(sortedWorktrees, repoPath ?? undefined, ref, activeProject?.worktreeOrder).find((session) =>
-        sameRepoPath(session.path, normalizedPath),
-      );
-      const laneBranchNames = laneBranchNamesForPositionOverrides({
-        defaultBranch,
-        commitBranchName: commitResult.branchName,
-        checkedOutBranchName: ref.branchName,
-        extraBranchNames: worktreeSession?.branchName ? [worktreeSession.branchName] : [],
-      });
-      const migrated = migrateWorkingTreeOverrideToNewHead(
-        nodePositionOverridesByRepo[normalizedPath] ?? {},
-        commitResult.fullSha,
-        workingTreeIdForPath(normalizedPath, worktreeSession?.isCurrent ?? sameRepoPath(normalizedPath, repoPath)),
-        laneBranchNames,
-      );
-      persistRepoNodePositions(normalizedPath, migrated);
-      setNodePositionOverridesByRepo((previous) => ({
-        ...previous,
-        [normalizedPath]: migrated,
-      }));
+      userDirtyNodePositionsRef.current.delete(normalizedPath);
     }
     clearWorktreeDraftForPathRef.current(worktreePath);
     return commitResult;
