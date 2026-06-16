@@ -2653,6 +2653,8 @@ export function projectVisibility(
   }
   for (const child of renderNodes) {
     if (!isWorktreeGraphNode(child.commit)) continue;
+    const parentSha = actualWorktreeParentSha(child.commit);
+    if (parentSha && projectedNodeForSha(parentSha, child.commit.branchName)) continue;
     const visibleParent = [...(visibleByBranch.get(child.commit.branchName) ?? [])]
       .filter((candidate) => !isWorktreeGraphNode(candidate.commit) && candidate.commit.visualId !== child.commit.visualId)
       .sort(

@@ -757,4 +757,85 @@ describe('computeBranchGridLayout worktree nodes', () => {
     expect(alignedNode!.column).toBeGreaterThan(headNode!.column);
     expect(misalignedNode!.column).toBeGreaterThan(headNode!.column);
   });
+
+  it('does not push a worktree below a later visible node when its real parent resolves', () => {
+    const defaultBranch = 'main';
+    const worktreeParentSha = 'bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb';
+    const laterSha = 'cccccccccccccccccccccccccccccccccccccccc';
+    const branches = [makeBranch(defaultBranch, laterSha, 2)];
+    const directCommits: DirectCommit[] = [
+      {
+        fullSha: mainSha,
+        sha: mainSha.slice(0, 7),
+        branch: defaultBranch,
+        message: 'root',
+        author: 'test',
+        date: '2024-05-01T12:00:00Z',
+        parentSha: null,
+        parentShas: [],
+      },
+      {
+        fullSha: worktreeParentSha,
+        sha: worktreeParentSha.slice(0, 7),
+        branch: defaultBranch,
+        message: 'worktree parent',
+        author: 'test',
+        date: '2024-05-02T12:00:00Z',
+        parentSha: mainSha,
+        parentShas: [mainSha],
+      },
+      {
+        fullSha: laterSha,
+        sha: laterSha.slice(0, 7),
+        branch: defaultBranch,
+        message: 'later visible commit',
+        author: 'test',
+        date: '2024-06-01T12:00:00Z',
+        parentSha: worktreeParentSha,
+        parentShas: [worktreeParentSha],
+      },
+    ];
+    const sessions = buildWorktreeSessions(
+      [wt({ path: '/repo', branchName: defaultBranch, headSha: worktreeParentSha, isCurrent: true })],
+      '/repo',
+      { branchName: defaultBranch, headSha: worktreeParentSha, hasUncommittedChanges: true },
+    );
+    const worktreePreview: BranchCommitPreview = {
+      fullSha: sessions[0]!.workingTreeId,
+      sha: 'uncommitted',
+      parentSha: worktreeParentSha,
+      message: '',
+      author: 'You',
+      date: '2024-05-02T12:00:00Z',
+      kind: 'uncommitted',
+    };
+    const layout = computeBranchGridLayout({
+      branches,
+      mergeNodes: [],
+      directCommits,
+      unpushedDirectCommits: directCommits.slice(1),
+      defaultBranch,
+      branchCommitPreviews: { [defaultBranch]: [directCommits[1]!, directCommits[2]!, worktreePreview] },
+      branchParentByName: { [defaultBranch]: null },
+      branchUniqueAheadCounts: { [defaultBranch]: 2 },
+      unpushedCommitShasByBranch: { [defaultBranch]: [worktreeParentSha, laterSha] },
+      manuallyOpenedClumps: new Set(),
+      manuallyClosedClumps: new Set(),
+      isDebugOpen: false,
+      gridSearchQuery: '',
+      gridFocusSha: null,
+      checkedOutRef: { branchName: defaultBranch, headSha: worktreeParentSha, hasUncommittedChanges: true },
+      worktreeSessions: sessions,
+      orientation: 'horizontal',
+    });
+
+    const worktreeNode = layout.renderNodes.find((node) => node.commit.id === sessions[0]!.workingTreeId);
+    const parentNode = layout.renderNodes.find((node) => node.commit.id === worktreeParentSha);
+    const laterNode = layout.renderNodes.find((node) => node.commit.id === laterSha);
+    expect(worktreeNode).toBeDefined();
+    expect(parentNode).toBeDefined();
+    expect(laterNode).toBeDefined();
+    expect(worktreeNode!.row).toBe(parentNode!.row + 1);
+    expect(worktreeNode!.row).toBeLessThanOrEqual(laterNode!.row);
+  });
 });

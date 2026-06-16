@@ -2775,26 +2775,14 @@ function App() {
         : undefined;
 
       if (isCommit) {
+        const worktrees = await invoke<WorktreeInfo[]>('list_worktrees', { repoPath: normalizedPath }).catch(
+          () => [] as WorktreeInfo[],
+        );
+        snapshot = applyMutationPatch(snapshot, outcomeFromWorktreeSync(worktrees));
         protectPostCommitHead(
           normalizedPath,
-          commitOutcome?.commit.checkedOutRef.headSha ?? commitOutcome?.commit.fullSha ?? null,
+          snapshot.checkedOutRef?.headSha ?? commitOutcome?.commit.fullSha ?? null,
         );
-        await refreshRepoAfterMutationFull(normalizedPath, { immediate: true, forceApply: true });
-        autoFocusSyncKeyRef.current = null;
-        const latestSnapshot = getSnapshotForMutation(normalizedPath);
-        const focusSha = resolveActiveWorktreeFocusSha(
-          buildWorktreeSessions(latestSnapshot.worktrees, normalizedPath, latestSnapshot.checkedOutRef),
-          normalizedPath,
-        ) ?? commitOutcome?.commit.fullSha ?? null;
-        if (focusSha && !readHasSavedMapGridCamera(normalizedPath, mapGridOrientation)) {
-          setGridFocusSha(focusSha);
-          setGridSearchJumpToken((token) => token + 1);
-        }
-        schedulePostCommitQuickReconcile(normalizedPath);
-        markGitActivityHandled();
-        noteSyncedAfterMutationOutcomes(normalizedPath, ...outcomes);
-        schedulePostMutationGraphReconcile(normalizedPath);
-        return;
       }
 
       // Push uses optimistic patchPush; background reconcile refreshes metadata without blocking here.
@@ -6240,26 +6228,7 @@ function App() {
         checkedOutHead: visualCheckedOutRef?.headSha ?? '',
         worktreeSessionSignature: formatWorktreeSessionLayoutSignature(worktreeSessions),
         branchRowsSignature: branchesForLayout
-          .map((branch) => [
-            branch.name,
-            branch.headSha,
-            branch.commitsAhead,
-            branch.commitsBehind,
-            branch.parentBranch ?? '',
-            branch.createdFromSha ?? '',
-            branch.divergedFromSha ?? '',
-            branch.presidesFromSha ?? '',
-          ].join(':'))
-          .join('|'),
-        branchPreviewsSignature: Object.entries(enrichedBranchCommitPreviews)
-          .sort(([left], [right]) => left.localeCompare(right))
-          .map(([branchName, previews]) => `${branchName}:${previews.map((preview) => [
-            preview.fullSha,
-            preview.parentSha ?? '',
-            preview.parentShas?.join(',') ?? '',
-            preview.kind ?? '',
-            preview.date,
-          ].join('/')).join(',')}`)
+          .map((branch) => `${branch.name}:${branch.headSha}:${branch.commitsAhead}:${branch.commitsBehind}:${branch.parentBranch ?? ''}`)
           .join('|'),
         directCommitFingerprint: hashCommitShaList(enrichedDirectCommits),
         unpushedCommitFingerprint: hashCommitShaList(enrichedUnpushedDirectCommits),
