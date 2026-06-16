@@ -11,6 +11,7 @@ import TerminalPanel, { type TerminalPanelPlacement } from '../components/Termin
 import { mapGridCameraStorageKey, readHasSavedMapGridCamera } from '../components/grid/useMapGridCamera';
 import DenseBranchSidebar from '../components/DenseBranchSidebar';
 import type { Node, NodePositionOverrides } from '../components/grid/LayoutGrid';
+import { isWorktreePositionOverrideKeyFor } from '../components/grid/nodePositionOverrides';
 import type { BranchGridLayoutModel } from '../components/grid/branchGridLayoutModel';
 import { hydrateBranchGridLayoutModel, serializeBranchGridLayoutModel } from '../components/grid/layoutSnapshot';
 import { buildGraphLayoutFingerprint, hashCommitShaList } from '../components/grid/graphLayoutFingerprint';
@@ -516,6 +517,7 @@ function App() {
   const [remoteDefaultTipParentSha, setRemoteDefaultTipParentSha] = useState<string | null>(null);
   const [isRemoteTipHydrated, setIsRemoteTipHydrated] = useState(false);
   const [isGridDebugOpen, setIsGridDebugOpen] = useState(false);
+  const [softUpdateDebugEvents, setSoftUpdateDebugEvents] = useState<string[]>([]);
   const [sidebarWidthPx, setSidebarWidthPx] = useState(SIDEBAR_DEFAULT_WIDTH_PX);
   const [isSidebarCollapsed, setIsSidebarCollapsed] = useState(false);
   const autoFocusSyncKeyRef = useRef<string | null>(null);
@@ -622,6 +624,14 @@ function App() {
   const sortedWorktrees = useMemo(() => {
     return sortWorktrees(worktrees, activeProject?.worktreeOrder);
   }, [worktrees, activeProject?.worktreeOrder]);
+
+  function noteSoftUpdateDebug(label: string, details: Record<string, unknown> = {}) {
+    const now = new Date().toLocaleTimeString();
+    const body = Object.entries(details)
+      .map(([key, value]) => `${key}=${typeof value === 'string' ? value : JSON.stringify(value)}`)
+      .join(' ');
+    setSoftUpdateDebugEvents((previous) => [`${now} ${label}${body ? ` ${body}` : ''}`, ...previous].slice(0, 80));
+  }
   const persistGridClumps = (opened: RepoScopedClumpState, closed: RepoScopedClumpState) => {
     try {
       const serialized = {
@@ -2643,6 +2653,14 @@ function App() {
       : '';
     const nextUnpushedSignature = patched.unpushedDirectCommits.map((commit) => commit.fullSha).sort().join('|');
     const unpushedStateChanged = previousUnpushedSignature !== nextUnpushedSignature;
+    noteSoftUpdateDebug('applyPatchedSnapshot', {
+      path: normalizedPath.split('/').pop() ?? normalizedPath,
+      force,
+      layoutTopologyChanged,
+      needsLayoutRebuild,
+      skipLayoutRebuild: options?.skipLayoutRebuild === true,
+      worktreeSig: formatWorktreeLayoutSignature(patched.worktrees),
+    });
     upsertProjectSnapshot(normalizedPath, patched, { force });
     projectQuickStateRef.current = {
       ...projectQuickStateRef.current,
@@ -2774,6 +2792,17 @@ function App() {
         const worktrees = await invoke<WorktreeInfo[]>('list_worktrees', { repoPath: normalizedPath }).catch(
           () => [] as WorktreeInfo[],
         );
+        noteSoftUpdateDebug('post-commit worktree sync', {
+          count: worktrees.length,
+          worktrees: worktrees.map((worktree) => ({
+            path: normalizePath(worktree.path).split('/').pop() ?? worktree.path,
+            branch: worktree.branchName,
+            head: worktree.headSha.slice(0, 7),
+            parent: worktree.parentSha?.slice(0, 7) ?? 'none',
+            dirty: worktree.hasUncommittedChanges,
+            current: worktree.isCurrent,
+          })),
+        });
         snapshot = applyMutationPatch(snapshot, outcomeFromWorktreeSync(worktrees));
         protectPostCommitHead(
           normalizedPath,
@@ -2788,6 +2817,14 @@ function App() {
 
       const immediateApply = mutationOutcomeNeedsImmediateApply(outcomes);
       const patchApplyOptions = { force: true as const, previousSnapshot };
+      noteSoftUpdateDebug('apply mutation snapshot', {
+        kinds: outcomes.map((outcome) => outcome.kind).join(','),
+        immediate: immediateApply,
+        layoutTopologyChanged,
+        checkedOut: snapshot.checkedOutRef
+          ? `${snapshot.checkedOutRef.branchName ?? 'detached'}@${snapshot.checkedOutRef.headSha.slice(0, 7)} parent=${snapshot.checkedOutRef.parentSha?.slice(0, 7) ?? 'none'} dirty=${snapshot.checkedOutRef.hasUncommittedChanges}`
+          : 'none',
+      });
       if (immediateApply) {
         flushSync(() => {
           applyPatchedSnapshot(normalizedPath, snapshot, layoutTopologyChanged, patchApplyOptions);
@@ -5164,6 +5201,12 @@ function App() {
       repoPath: worktreePath,
       message: trimmed,
     });
+    noteSoftUpdateDebug('commit result', {
+      path: normalizePath(worktreePath),
+      branch: commitResult.branchName,
+      head: commitResult.fullSha.slice(0, 7),
+      parent: commitResult.parentSha?.slice(0, 7) ?? 'none',
+    });
     if (commitResult.branchName && commitResult.fullSha) {
       const normalizedPath = normalizePath(worktreePath);
       userDirtyNodePositionsRef.current.delete(normalizedPath);
@@ -6385,6 +6428,50 @@ function App() {
   useEffect(() => {
     lastResolvedLayoutModelRef.current = gridLayoutModelForView;
   }, [gridLayoutModelForView]);
+
+  const softUpdateDebugRows = useMemo(() => {
+    const normalizedRepoPath = repoPath ? normalizePath(repoPath) : '';
+    const overrides = normalizedRepoPath ? (nodePositionOverridesByRepo[normalizedRepoPath] ?? {}) : {};
+    const overrideKeys = Object.keys(overrides);
+    const rows: string[] = [
+      ...softUpdateDebugEvents,
+      '',
+      `repo=${normalizedRepoPath || 'none'}`,
+      `checkedOut=${visualCheckedOutRef ? `${visualCheckedOutRef.branchName ?? 'detached'}@${visualCheckedOutRef.headSha.slice(0, 7)} parent=${visualCheckedOutRef.parentSha?.slice(0, 7) ?? 'none'} dirty=${visualCheckedOutRef.hasUncommittedChanges}` : 'none'}`,
+      `layoutSignature=${graphLayoutSignature.slice(0, 96)}`,
+      `nodeOverrides=${overrideKeys.length ? overrideKeys.join(', ') : 'none'}`,
+    ];
+
+    for (const session of worktreeSessions) {
+      const rendered = gridLayoutModelForView.renderNodes.find((node) => node.commit.id === session.workingTreeId);
+      const matchingPreviews = Object.entries(enrichedBranchCommitPreviews)
+        .flatMap(([branchName, previews]) =>
+          previews
+            .filter((preview) => preview.fullSha === session.workingTreeId)
+            .map((preview) => `${branchName}:parent=${preview.parentSha?.slice(0, 7) ?? 'none'} date=${preview.date}`),
+        );
+      const sessionOverrideKeys = overrideKeys.filter((key) => isWorktreePositionOverrideKeyFor(key, session.workingTreeId));
+      rows.push(
+        '',
+        `worktree ${session.workingTreeId}`,
+        `  path=${session.path}`,
+        `  branch=${session.branchName ?? 'detached'} head=${session.headSha.slice(0, 7)} parent=${session.parentSha?.slice(0, 7) ?? 'none'} dirty=${session.hasUncommittedChanges} current=${session.isCurrent}`,
+        `  rendered=${rendered ? `branch=${rendered.commit.branchName} row=${rendered.row} column=${rendered.column} x=${Math.round(rendered.x)} y=${Math.round(rendered.y)} parent=${rendered.commit.parentSha?.slice(0, 7) ?? 'none'}` : 'missing'}`,
+        `  preview=${matchingPreviews.length ? matchingPreviews.join(' | ') : 'none'}`,
+        `  overrideKeys=${sessionOverrideKeys.length ? sessionOverrideKeys.join(', ') : 'none'}`,
+      );
+    }
+    return rows;
+  }, [
+    enrichedBranchCommitPreviews,
+    graphLayoutSignature,
+    gridLayoutModelForView,
+    nodePositionOverridesByRepo,
+    repoPath,
+    softUpdateDebugEvents,
+    visualCheckedOutRef,
+    worktreeSessions,
+  ]);
   useEffect(() => {
     if (!repoPath || !sharedGridLayoutCacheKey) return;
     const hasGraphSourceData =
@@ -7405,6 +7492,7 @@ function App() {
                 isMutationBusy={isMutationBusy}
                 isDebugOpen={isGridDebugOpen}
                 onDebugClose={() => setIsGridDebugOpen(false)}
+                debugRows={softUpdateDebugRows}
                 onInteractionChange={setIsMapInteracting}
                 onPreviewNode={handlePreviewNode}
                 previewInProgress={previewInProgress}

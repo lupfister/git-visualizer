@@ -11,6 +11,7 @@ type Props = {
   mapGridCullViewportInsetScreenPx: number;
   debugRows: string[];
   branchDebugRows: string[];
+  softUpdateRows?: string[];
   connectorDecisions: Array<{
     rendered: boolean;
     kind: 'branch' | 'ancestry' | 'merge';
@@ -33,6 +34,7 @@ export default function MapGridDebugPanel({
   mapGridCullViewportInsetScreenPx,
   debugRows,
   branchDebugRows,
+  softUpdateRows = [],
   connectorDecisions,
 }: Props) {
   return (
@@ -59,6 +61,9 @@ export default function MapGridDebugPanel({
                 `Rendered nodes: ${renderedNodeCount} / ${totalNodeCount}`,
                 `Rendered merge connectors: ${renderedMergeConnectorCount} / ${totalMergeConnectorCount}`,
                 `Rendered connectors: ${renderedConnectorCount} / ${totalConnectorCount}`,
+                '',
+                'Soft update trace:',
+                ...softUpdateRows,
                 '',
                 ...debugRows,
                 ...branchDebugRows,

@@ -24,7 +24,7 @@ import {
   type NodePositionOverrides,
   type Node,
 } from './LayoutGrid';
-import { GitMerge } from 'lucide-react';
+import { Bug, GitMerge } from 'lucide-react';
 import type { PreviewTarget } from '../../lib/git';
 import { GRID_LAYOUT_RENDER_ZOOM } from './branchGridLayoutModel';
 import type { BranchGridLayoutModel } from './branchGridLayoutModel';
@@ -149,6 +149,7 @@ type Props = BranchGridViewProps & {
   isSyncing?: boolean;
   isDebugOpen?: boolean;
   onDebugClose?: () => void;
+  debugRows?: string[];
   gridHudProps?: {
     githubAuthStatus: { ghAvailable: boolean; authenticated: boolean } | null;
     githubAuthLoading: boolean;
@@ -229,6 +230,7 @@ export default function BranchGridMap({
   createBranchFromNodeInProgress = false,
   isDebugOpen = false,
   onDebugClose,
+  debugRows: softUpdateDebugRows = [],
   orientation = 'horizontal',
   branchCommitPreviews = {},
   branchParentByName: _branchParentByName = {},
@@ -2089,6 +2091,7 @@ export default function BranchGridMap({
         mapGridCullViewportInsetScreenPx={MAP_GRID_CULL_VIEWPORT_INSET_SCREEN_PX}
         debugRows={resolvedLayoutModel.debugRows}
         branchDebugRows={resolvedLayoutModel.branchDebugRows}
+        softUpdateRows={softUpdateDebugRows}
         connectorDecisions={connectorDecisions}
       />
       {gridHudProps ? (
@@ -2154,6 +2157,15 @@ export default function BranchGridMap({
                     }}
                   />
                 ) : null}
+                <button
+                  type="button"
+                  onClick={() => gridHudProps.setIsGridDebugOpen((open) => !open)}
+                  className="inline-flex h-9 shrink-0 items-center gap-2 rounded-lg border border-border/60 bg-background/95 px-3 text-xs font-medium text-muted-foreground shadow-sm transition-colors hover:bg-muted hover:text-foreground"
+                  title="Toggle grid debug"
+                >
+                  <Bug className="h-4 w-4 shrink-0" />
+                  Debug
+                </button>
               </div>
             </div>
           </div>

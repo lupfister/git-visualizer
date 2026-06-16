@@ -76,6 +76,7 @@ interface Props {
   onMoveNodeBackToBranch?: (targetBranchName: string) => Promise<void>;
   isDebugOpen?: boolean;
   onDebugClose?: () => void;
+  debugRows?: string[];
   orientation?: OrientationMode;
   onInteractionChange?: (isInteracting: boolean) => void;
   onPreviewNode?: (target: PreviewTarget, nodeId: string) => Promise<void> | void;
@@ -179,6 +180,7 @@ export default function BranchGridMapView({
   onMoveNodeBackToBranch,
   isDebugOpen = false,
   onDebugClose,
+  debugRows,
   orientation = 'horizontal',
   onInteractionChange,
   onPreviewNode,
@@ -269,6 +271,7 @@ export default function BranchGridMapView({
             onMoveNodeBackToBranch={onMoveNodeBackToBranch}
             isDebugOpen={isDebugOpen}
             onDebugClose={onDebugClose}
+            debugRows={debugRows}
             orientation={orientation}
             onInteractionChange={onInteractionChange}
             onPreviewNode={onPreviewNode}
@@ -326,6 +329,7 @@ export default function BranchGridMapView({
             layoutModel={layoutModel}
             isDebugOpen={isDebugOpen}
             onDebugClose={onDebugClose}
+            debugRows={debugRows}
             orientation={orientation}
             gridHudProps={gridHudProps}
             blockMapInteraction={blockMapInteraction}
