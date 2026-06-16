@@ -305,6 +305,8 @@ describe('applyMutationPatch commit', () => {
     expect(next.branches.find((branch) => branch.name === 'feature')?.headSha.startsWith('ccc3333')).toBe(true);
     expect(next.unpushedCommitShasByBranch.feature).toContain('ccc3333fullsha000000000000000000000000');
     expect(next.worktrees.find((worktree) => worktree.isCurrent)?.headSha).toBe('ccc3333');
+    expect(next.branchCommitPreviews.feature?.some((commit) => commit.fullSha.startsWith('ccc3333'))).toBe(true);
+    expect(next.branchCommitPreviews.main?.some((commit) => commit.fullSha.startsWith('ccc3333'))).toBe(false);
   });
 });
 

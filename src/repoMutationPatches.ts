@@ -139,12 +139,6 @@ function patchCommit(snapshot: RepoVisualSnapshot, commit: RepoMutationOutcome &
 
   const branchCommitPreviews = { ...linked.branchCommitPreviews };
   branchCommitPreviews[branchName] = [...(branchCommitPreviews[branchName] ?? []), newPreview];
-  if (branchName !== snapshot.defaultBranch) {
-    const defaultPreviews = branchCommitPreviews[snapshot.defaultBranch] ?? [];
-    if (!defaultPreviews.some((preview) => preview.fullSha === fullSha)) {
-      branchCommitPreviews[snapshot.defaultBranch] = [...defaultPreviews, newPreview];
-    }
-  }
 
   const branches = snapshot.branches.map((branch) => {
     if (branch.name !== branchName) return branch;
