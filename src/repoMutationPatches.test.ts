@@ -311,6 +311,45 @@ describe('applyMutationPatch commit', () => {
     expect(next.branchCommitPreviews.main?.some((commit) => commit.fullSha.startsWith('ccc3333'))).toBe(false);
   });
 
+  it('reorders branches by last commit date after a soft commit like hard refresh', () => {
+    const next = applyMutationPatch(baseSnapshot({
+      branches: [
+        {
+          ...baseSnapshot().branches[0]!,
+          name: 'newer',
+          headSha: 'ddd4444',
+          lastCommitDate: '2024-01-10T00:00:00Z',
+        },
+        {
+          ...baseSnapshot().branches[1]!,
+          name: 'feature',
+          lastCommitDate: '2024-01-02T00:00:00Z',
+        },
+      ],
+    }), {
+      kind: 'commit',
+      layoutTopologyChanged: true,
+      commit: {
+        worktreePath: '/repo',
+        checkedOutRef: {
+          branchName: 'feature',
+          headSha: 'ccc3333',
+          hasUncommittedChanges: false,
+        },
+        branchName: 'feature',
+        fullSha: 'ccc3333fullsha000000000000000000000000',
+        sha: 'ccc3333',
+        message: 'new commit',
+        author: 'dev',
+        date: '2024-01-11T00:00:00Z',
+        parentSha: 'bbb2222',
+        parentShas: ['bbb2222'],
+      },
+    });
+
+    expect(next.branches.map((branch) => branch.name)).toEqual(['feature', 'newer']);
+  });
+
   it('updates a committed linked worktree without moving the active checkout ref', () => {
     const next = applyMutationPatch(baseSnapshot({
       checkedOutRef: {

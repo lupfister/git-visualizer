@@ -167,7 +167,7 @@ function patchCommit(snapshot: RepoVisualSnapshot, commit: RepoMutationOutcome &
       unpushedCommits: branch.unpushedCommits + 1,
       remoteSyncStatus: branch.remoteSyncStatus === 'local-only' ? 'local-only' : 'unpushed',
     } satisfies Branch;
-  });
+  }).sort((left, right) => right.lastCommitDate.localeCompare(left.lastCommitDate));
 
   const unpushedDirectCommits = [newDirectCommit, ...snapshot.unpushedDirectCommits];
   const unpushedCommitShasByBranch = {
