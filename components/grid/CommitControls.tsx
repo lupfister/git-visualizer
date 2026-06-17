@@ -3,7 +3,7 @@ import { parseMapCheckoutTarget } from './mapCheckoutTarget';
 import type { Node } from './LayoutGrid';
 import ToolbarActionContent from './ToolbarActionContent';
 import { ChevronDown } from 'lucide-react';
-import { useEffect, useRef, useState } from 'react';
+import { useEffect, useRef, useState, memo } from 'react';
 import { cn } from './mapGridUtils';
 
 type PushTarget = {
@@ -60,7 +60,7 @@ type Props = {
   onCreateWorktree?: (projectPath: string, branchOrCommit?: string) => void;
 };
 
-export default function CommitControls({
+function CommitControls({
   selectedVisibleCommitShas,
   commitInProgress,
   stashInProgress,
@@ -74,6 +74,7 @@ export default function CommitControls({
   onPreviewSelectedNode,
   previewInProgress = false,
   selectedPushTargets,
+  selectedPushLabel,
   onWriteCommit,
   setNewBranchDialogOpen,
   selectedDirtyWorktreePaths = [],
@@ -144,6 +145,38 @@ export default function CommitControls({
     selectedPreviewNode.commit.kind === 'branch-created' ||
     selectedPreviewNode.commit.id.startsWith('BRANCH_HEAD:')
   );
+
+  const selectedSession = selectedPreviewNode
+    ? worktreeSessions.find((s) => s.workingTreeId === selectedPreviewNode.commit.id)
+    : null;
+  const isDirtyWorktree = selectedSession?.hasUncommittedChanges ?? false;
+
+  const isUnpushedCommit = selectedPreviewNode != null &&
+    !isSelectedWorktree &&
+    !isSelectedStashOrPlaceholder &&
+    !selectedPreviewNode.commit.isRemote;
+
+  const hasPushTargets = selectedPushTargets.length > 0;
+  const showPush = hasPushTargets || isUnpushedCommit;
+  const pushTargets = hasPushTargets
+    ? selectedPushTargets.map((target) => ({
+        branchName: target.branchName,
+        targetSha: target.targetSha,
+      }))
+    : selectedPreviewNode
+    ? [
+        {
+          branchName: selectedPreviewNode.commit.branchName,
+          targetSha: selectedPreviewNode.commit.id,
+        },
+      ]
+    : [];
+
+  const pushLabel = hasPushTargets
+    ? selectedPushLabel
+    : selectedPreviewNode
+    ? `Push ${selectedPreviewNode.commit.id.slice(0, 7)} on ${selectedPreviewNode.commit.branchName}`
+    : 'Push';
 
   // Action execution wrappers
   const runCommitAction = async (action: 'commit' | 'commit-push' | 'stash') => {
@@ -234,81 +267,83 @@ export default function CommitControls({
         {!isSelectionEmpty && isSelectedWorktree && (
           <>
             {/* Commit Actions Split-Button Dropdown */}
-            <div className="pointer-events-auto relative z-10 inline-flex h-7 items-stretch rounded-md border border-border bg-background">
-              <button
-                type="button"
-                onClick={() => void runCommitAction(commitAction)}
-                disabled={commitInProgress || stashInProgress}
-                className={cn(controlClassName, 'h-full rounded-r-none border-0 bg-transparent pr-1 hover:bg-muted')}
-              >
-                {commitAction === 'commit' && (
-                  <ToolbarActionContent icon="commit" label="Commit" loading={commitInProgress} />
+            {isDirtyWorktree && (
+              <div className="pointer-events-auto relative z-10 inline-flex h-7 items-stretch rounded-md border border-border bg-background">
+                <button
+                  type="button"
+                  onClick={() => void runCommitAction(commitAction)}
+                  disabled={commitInProgress || stashInProgress}
+                  className={cn(controlClassName, 'h-full rounded-r-none border-0 bg-transparent pr-1 hover:bg-muted')}
+                >
+                  {commitAction === 'commit' && (
+                    <ToolbarActionContent icon="commit" label="Commit" loading={commitInProgress} />
+                  )}
+                  {commitAction === 'commit-push' && (
+                    <ToolbarActionContent icon="push-branch" label="Commit & Push" loading={commitInProgress || pushInProgress} />
+                  )}
+                  {commitAction === 'stash' && (
+                    <ToolbarActionContent icon="stash" label="Stash" loading={stashInProgress} />
+                  )}
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setActiveDropdown((curr) => (curr === 'commit' ? null : 'commit'))}
+                  className={cn(controlClassName, 'h-full rounded-l-none border-0 bg-transparent pl-1 hover:bg-muted')}
+                >
+                  <ChevronDown className="h-4 w-4 shrink-0 text-foreground" />
+                </button>
+                {activeDropdown === 'commit' && (
+                  <div className="context-menu-panel absolute left-[-1px] top-full z-[70] mt-2 inline-flex w-max min-w-0 flex-col overflow-hidden rounded-md border border-border bg-background p-1" data-outer-radius="md">
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setCommitAction('commit');
+                        localStorage.setItem('git-visualizer:last-commit-action', 'commit');
+                        setActiveDropdown(null);
+                        void runCommitAction('commit');
+                      }}
+                      className={menuButtonClassName(true, commitInProgress)}
+                    >
+                      <ToolbarActionContent icon="commit" label="Commit" loading={commitInProgress} iconClassName="mr-1.5" />
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setCommitAction('commit-push');
+                        localStorage.setItem('git-visualizer:last-commit-action', 'commit-push');
+                        setActiveDropdown(null);
+                        void runCommitAction('commit-push');
+                      }}
+                      className={menuButtonClassName(true, commitInProgress || pushInProgress)}
+                    >
+                      <ToolbarActionContent icon="push-branch" label="Commit & Push" loading={commitInProgress || pushInProgress} iconClassName="mr-1.5" />
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setCommitAction('stash');
+                        localStorage.setItem('git-visualizer:last-commit-action', 'stash');
+                        setActiveDropdown(null);
+                        void runCommitAction('stash');
+                      }}
+                      className={menuButtonClassName(true, stashInProgress)}
+                    >
+                      <ToolbarActionContent icon="stash" label="Stash" loading={stashInProgress} iconClassName="mr-1.5" />
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setActiveDropdown(null);
+                        onWriteCommit?.();
+                      }}
+                      className={menuButtonClassName(true, false)}
+                    >
+                      <ToolbarActionContent icon="commit" label="Edit Message" iconClassName="mr-1.5" />
+                    </button>
+                  </div>
                 )}
-                {commitAction === 'commit-push' && (
-                  <ToolbarActionContent icon="push-branch" label="Commit & Push" loading={commitInProgress || pushInProgress} />
-                )}
-                {commitAction === 'stash' && (
-                  <ToolbarActionContent icon="stash" label="Stash" loading={stashInProgress} />
-                )}
-              </button>
-              <button
-                type="button"
-                onClick={() => setActiveDropdown((curr) => (curr === 'commit' ? null : 'commit'))}
-                className={cn(controlClassName, 'h-full rounded-l-none border-0 bg-transparent pl-1 hover:bg-muted')}
-              >
-                <ChevronDown className="h-4 w-4 shrink-0 text-foreground" />
-              </button>
-              {activeDropdown === 'commit' && (
-                <div className="context-menu-panel absolute left-[-1px] top-full z-[70] mt-2 inline-flex w-max min-w-0 flex-col overflow-hidden rounded-md border border-border bg-background p-1" data-outer-radius="md">
-                  <button
-                    type="button"
-                    onClick={() => {
-                      setCommitAction('commit');
-                      localStorage.setItem('git-visualizer:last-commit-action', 'commit');
-                      setActiveDropdown(null);
-                      void runCommitAction('commit');
-                    }}
-                    className={menuButtonClassName(true, commitInProgress)}
-                  >
-                    <ToolbarActionContent icon="commit" label="Commit" loading={commitInProgress} iconClassName="mr-1.5" />
-                  </button>
-                  <button
-                    type="button"
-                    onClick={() => {
-                      setCommitAction('commit-push');
-                      localStorage.setItem('git-visualizer:last-commit-action', 'commit-push');
-                      setActiveDropdown(null);
-                      void runCommitAction('commit-push');
-                    }}
-                    className={menuButtonClassName(true, commitInProgress || pushInProgress)}
-                  >
-                    <ToolbarActionContent icon="push-branch" label="Commit & Push" loading={commitInProgress || pushInProgress} iconClassName="mr-1.5" />
-                  </button>
-                  <button
-                    type="button"
-                    onClick={() => {
-                      setCommitAction('stash');
-                      localStorage.setItem('git-visualizer:last-commit-action', 'stash');
-                      setActiveDropdown(null);
-                      void runCommitAction('stash');
-                    }}
-                    className={menuButtonClassName(true, stashInProgress)}
-                  >
-                    <ToolbarActionContent icon="stash" label="Stash" loading={stashInProgress} iconClassName="mr-1.5" />
-                  </button>
-                  <button
-                    type="button"
-                    onClick={() => {
-                      setActiveDropdown(null);
-                      onWriteCommit?.();
-                    }}
-                    className={menuButtonClassName(true, false)}
-                  >
-                    <ToolbarActionContent icon="commit" label="Edit Message" iconClassName="mr-1.5" />
-                  </button>
-                </div>
-              )}
-            </div>
+              </div>
+            )}
 
             {/* Create Branch Button */}
             <button
@@ -452,24 +487,19 @@ export default function CommitControls({
               />
             </button>
 
-            {/* Push Selected Button */}
-            {selectedPushTargets.length > 0 && (
+            {/* Push Button */}
+            {showPush && (
               <button
                 type="button"
                 onClick={() => {
-                  void onPushCommitTargets?.(
-                    selectedPushTargets.map((target) => ({
-                      branchName: target.branchName,
-                      targetSha: target.targetSha,
-                    })),
-                  );
+                  void onPushCommitTargets?.(pushTargets);
                 }}
                 disabled={pushInProgress}
                 className={cn(controlClassName, 'pointer-events-auto relative z-10 !border-border !bg-background hover:!bg-muted')}
               >
                 <ToolbarActionContent
                   icon="push-selected"
-                  label="Push Selected"
+                  label={pushLabel}
                   loading={pushInProgress}
                 />
               </button>
@@ -530,3 +560,5 @@ export default function CommitControls({
     </div>
   );
 }
+
+export default memo(CommitControls);

@@ -651,6 +651,14 @@ export default function BranchGridMap({
     return m;
   }, [renderNodes]);
 
+  const nodeByCommitId = useMemo(() => {
+    const m = new Map<string, Node>();
+    for (const node of renderNodes) {
+      m.set(node.commit.id, node);
+    }
+    return m;
+  }, [renderNodes]);
+
   const commitCullSpatialIndex = useMemo(
     () => buildCommitCullSpatialIndex(renderNodes),
     [renderNodes],
@@ -741,8 +749,10 @@ export default function BranchGridMap({
   }, [branches, branchCommitPreviews, directCommits]);
   const handlePointerReleaseNoMarquee = useCallback(() => {
     void interactionIdleTimeoutRef.current;
-    flushCameraReactTick();
-  }, [flushCameraReactTick, interactionIdleTimeoutRef]);
+    if (isCameraMovingRef.current || isMarqueeSelectingRef.current) {
+      flushCameraReactTick();
+    }
+  }, [flushCameraReactTick, isCameraMovingRef, isMarqueeSelectingRef, interactionIdleTimeoutRef]);
   const {
     isMarqueeSelecting,
     marqueeRect,
@@ -764,12 +774,14 @@ export default function BranchGridMap({
     () => selectedCommitShas.filter((sha) => selectableCommitShaSet.has(sha)),
     [selectedCommitShas, selectableCommitShaSet],
   );
+  const selectedVisibleCommitShasRef = useRef(selectedVisibleCommitShas);
+  selectedVisibleCommitShasRef.current = selectedVisibleCommitShas;
 
   const selectedPreviewNode = useMemo(() => {
     if (selectedVisibleCommitShas.length !== 1) return null;
     const selectedSha = selectedVisibleCommitShas[0];
-    return renderNodes.find((node) => node.commit.id === selectedSha) ?? null;
-  }, [renderNodes, selectedVisibleCommitShas]);
+    return nodeByCommitId.get(selectedSha) ?? null;
+  }, [nodeByCommitId, selectedVisibleCommitShas]);
 
   const isSelectedWorktree = selectedPreviewNode != null && (
     isWorkingTreeCommitId(selectedPreviewNode.commit.id) ||
@@ -1815,7 +1827,7 @@ export default function BranchGridMap({
       const currentOverride = getNodePositionOverride(nodePositionOverrides, node.commit);
       const baseX = isPixelNodePositionOverride(currentOverride) ? currentOverride.x : node.x;
       const baseY = isPixelNodePositionOverride(currentOverride) ? currentOverride.y : node.y;
-      const selectedCommitShaSet = new Set(selectedVisibleCommitShas);
+      const selectedCommitShaSet = new Set(selectedVisibleCommitShasRef.current);
       const shouldDragSelection = selectedCommitShaSet.size > 1 && selectedCommitShaSet.has(node.commit.id);
       const groupNodes = (shouldDragSelection
         ? renderNodes.filter((renderNode) => selectedCommitShaSet.has(renderNode.commit.id))
@@ -1846,7 +1858,7 @@ export default function BranchGridMap({
         pendingY: baseY,
       };
     },
-    [laneFromY, nodePositionOverrides, renderNodes, selectedVisibleCommitShas],
+    [laneFromY, nodePositionOverrides, renderNodes],
   );
 
   const handleNodePointerMove = useCallback(
@@ -2065,6 +2077,16 @@ export default function BranchGridMap({
     return () => window.cancelAnimationFrame(rafId);
   }, [allCommits.length, isLoading, blockMapInteraction, mapReadyEpoch, onMapReadyForDisplay]);
 
+  const handleStageAllChanges = useMemo(() => {
+    if (!onStageAllChanges) return undefined;
+    return () => void onStageAllChanges();
+  }, [onStageAllChanges]);
+
+  const handlePreviewSelectedNode = useMemo(() => {
+    if (!selectedPreviewTarget || !onPreviewNode) return undefined;
+    return () => onPreviewNode(selectedPreviewTarget.target, selectedPreviewTarget.nodeId);
+  }, [selectedPreviewTarget, onPreviewNode]);
+
   const hasUsableMap = allCommits.length > 0;
   const showLoadingTiles = !hasUsableMap && (isLoading || blockMapInteraction);
 
@@ -2115,12 +2137,12 @@ export default function BranchGridMap({
                   createBranchFromNodeInProgress={createBranchFromNodeInProgress}
                   onCommitLocalChanges={onCommitLocalChanges}
                   onAutoCommitLocalChanges={onAutoCommitLocalChanges}
-                  onStageAllChanges={onStageAllChanges ? () => void onStageAllChanges() : undefined}
+                  onStageAllChanges={handleStageAllChanges}
                   onStashLocalChanges={onStashLocalChanges}
                   onPushAllBranches={onPushAllBranches}
                   onPushCurrentBranch={onPushCurrentBranch}
                   onPushCommitTargets={onPushCommitTargets}
-                  onPreviewSelectedNode={selectedPreviewTarget && onPreviewNode ? () => onPreviewNode(selectedPreviewTarget.target, selectedPreviewTarget.nodeId) : undefined}
+                  onPreviewSelectedNode={handlePreviewSelectedNode}
                   previewInProgress={previewInProgress}
                   onMergeRefsIntoBranch={onMergeRefsIntoBranch}
                   selectedPushTargets={selectedPushTargets}

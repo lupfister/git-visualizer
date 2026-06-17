@@ -43,6 +43,9 @@ export function useMapGridSelection({
   const [selectedCommitShas, setSelectedCommitShas] = useState<string[]>([]);
   const [mergeTargetCommitSha, setMergeTargetCommitSha] = useState<string | null>(null);
 
+  const selectedCommitShasRef = useRef(selectedCommitShas);
+  selectedCommitShasRef.current = selectedCommitShas;
+
   const collectCommitSelectionFromMarquee = useCallback(
     (rect: { left: number; top: number; width: number; height: number }): string[] => {
       const viewport = scrollContainerRef.current;
@@ -88,10 +91,10 @@ export function useMapGridSelection({
       additive: event.metaKey || event.ctrlKey,
     };
     marqueeMovedRef.current = false;
-    marqueeBaseSelectionRef.current = event.metaKey || event.ctrlKey ? selectedCommitShas : [];
+    marqueeBaseSelectionRef.current = event.metaKey || event.ctrlKey ? selectedCommitShasRef.current : [];
     setIsMarqueeSelecting(true);
     setMarqueeRect({ left: startX, top: startY, width: 0, height: 0 });
-  }, [scrollContainerRef, selectedCommitShas]);
+  }, [scrollContainerRef]);
 
   useEffect(() => {
     const handleMove = (event: globalThis.MouseEvent) => {

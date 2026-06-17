@@ -144,7 +144,7 @@ type CommitCardProps = {
   cardLeft: number;
   cardTop: number;
   displayZoom: number;
-  selectedShaSet: Set<string>;
+  isSelectedCommit: boolean;
   normalizedSearchQuery: string;
   matchingNodeIds: Set<string>;
   focusedCommitId: string | null;
@@ -197,12 +197,59 @@ type CommitCardProps = {
   registerCameraTarget: (element: HTMLElement | SVGElement, layout?: MapGridCameraTargetLayout) => () => void;
 };
 
+function areCommitCardPropsEqual(prev: Readonly<CommitCardProps>, next: Readonly<CommitCardProps>): boolean {
+  const prevIds = prev.previewedWorktreeNodeIds;
+  const nextIds = next.previewedWorktreeNodeIds;
+  const previewedWorktreeNodeIdsEqual =
+    prevIds === nextIds ||
+    (prevIds && nextIds && prevIds.length === nextIds.length && prevIds.every((v, i) => v === nextIds[i]));
+
+  return (
+    prev.node === next.node &&
+    prev.cardLeft === next.cardLeft &&
+    prev.cardTop === next.cardTop &&
+    prev.displayZoom === next.displayZoom &&
+    prev.isSelectedCommit === next.isSelectedCommit &&
+    prev.normalizedSearchQuery === next.normalizedSearchQuery &&
+    prev.matchingNodeIds === next.matchingNodeIds &&
+    prev.focusedCommitId === next.focusedCommitId &&
+    prev.manuallyOpenedClumps === next.manuallyOpenedClumps &&
+    prev.renderedOpenClumps === next.renderedOpenClumps &&
+    prev.manuallyClosedClumps === next.manuallyClosedClumps &&
+    prev.defaultCollapsedClumps === next.defaultCollapsedClumps &&
+    prev.leadByClusterKey === next.leadByClusterKey &&
+    prev.firstByClusterKey === next.firstByClusterKey &&
+    prev.clusterKeyByCommitId === next.clusterKeyByCommitId &&
+    prev.clusterCounts === next.clusterCounts &&
+    prev.commitIdsWithRenderedAncestry === next.commitIdsWithRenderedAncestry &&
+    prev.nodeWarnings === next.nodeWarnings &&
+    prev.unpushedCommitShasSetByBranch === next.unpushedCommitShasSetByBranch &&
+    prev.remoteCommitShas === next.remoteCommitShas &&
+    prev.worktreeAccentByCommitId === next.worktreeAccentByCommitId &&
+    prev.worktreeSessions === next.worktreeSessions &&
+    prev.worktreeDraftByWorkingTreeId === next.worktreeDraftByWorkingTreeId &&
+    prev.previewedNodeId === next.previewedNodeId &&
+    previewedWorktreeNodeIdsEqual &&
+    prev.terminalCountByWorkingTreeId === next.terminalCountByWorkingTreeId &&
+    prev.worktrees === next.worktrees &&
+    prev.currentRepoPath === next.currentRepoPath &&
+    prev.suppressSearchMatchScale === next.suppressSearchMatchScale &&
+    prev.suspendTileAnimations === next.suspendTileAnimations &&
+    prev.animateClumpEntry === next.animateClumpEntry &&
+    prev.animateClumpExit === next.animateClumpExit &&
+    prev.clumpAnimationIndex === next.clumpAnimationIndex &&
+    prev.clumpExitAnimationIndex === next.clumpExitAnimationIndex &&
+    prev.reduceMotion === next.reduceMotion &&
+    prev.commitInProgress === next.commitInProgress
+  );
+}
+
 const MapGridCommitCard = memo(function MapGridCommitCard({
   node,
   cardLeft,
   cardTop,
   displayZoom,
-  selectedShaSet,
+  isSelectedCommit,
   normalizedSearchQuery,
   matchingNodeIds,
   focusedCommitId,
@@ -315,7 +362,6 @@ const MapGridCommitCard = memo(function MapGridCommitCard({
   const hasRenderedAncestry = commitIdsWithRenderedAncestry.has(commitId);
   const nodeWarningsForCard = nodeWarnings.get(commitId) ?? [];
   const showDataShapeError = nodeWarningsForCard.length > 0 && !hasRenderedAncestry;
-  const isSelectedCommit = selectedShaSet.has(commitId);
   const isPreviewedWorktreeCommit = previewedWorktreeNodeIds.includes(commitId);
   const isPreviewedCommit = previewedNodeId === visualId || previewedNodeId === commitId || isPreviewedWorktreeCommit;
   const terminalCount = terminalCountByWorkingTreeId[commitId] ?? 0;
@@ -821,7 +867,7 @@ const MapGridCommitCard = memo(function MapGridCommitCard({
       </div>
     </MapGridCommitWrapper>
   );
-});
+}, areCommitCardPropsEqual);
 
 type RenderConnector = {
   id: string;
@@ -1402,7 +1448,7 @@ const MapGridCanvas = memo(function MapGridCanvas({
                 cardLeft={cardLeft}
                 cardTop={cardTop}
                 displayZoom={displayZoom}
-                selectedShaSet={selectedShaSet}
+                isSelectedCommit={selectedShaSet.has(node.commit.id)}
                 normalizedSearchQuery={normalizedSearchQuery}
                 matchingNodeIds={matchingNodeIds}
                 focusedCommitId={focusedCommitId}
