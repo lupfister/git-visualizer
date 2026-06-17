@@ -202,7 +202,7 @@ function areCommitCardPropsEqual(prev: Readonly<CommitCardProps>, next: Readonly
   const nextIds = next.previewedWorktreeNodeIds;
   const previewedWorktreeNodeIdsEqual =
     prevIds === nextIds ||
-    (prevIds && nextIds && prevIds.length === nextIds.length && prevIds.every((v, i) => v === nextIds[i]));
+    Boolean(prevIds && nextIds && prevIds.length === nextIds.length && prevIds.every((v, i) => v === nextIds[i]));
 
   return (
     prev.node === next.node &&

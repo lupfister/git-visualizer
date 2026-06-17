@@ -256,6 +256,13 @@ function patchPush(snapshot: RepoVisualSnapshot, outcome: RepoMutationOutcome & 
   const branches = snapshot.branches.map((branch) =>
     pushed.has(branch.name) ? patchBranchForPush(branch) : branch,
   );
+  const checkedOutRef = snapshot.checkedOutRef && pushed.has(snapshot.checkedOutRef.branchName ?? '')
+    ? {
+        ...snapshot.checkedOutRef,
+        parentSha: branches.find((branch) => branch.name === snapshot.checkedOutRef?.branchName)?.headSha
+          ?? snapshot.checkedOutRef.headSha,
+      }
+    : snapshot.checkedOutRef;
 
   const unpushedCommitShasByBranch = { ...snapshot.unpushedCommitShasByBranch };
   for (const branchName of outcome.pushedBranchNames) {
@@ -282,6 +289,8 @@ function patchPush(snapshot: RepoVisualSnapshot, outcome: RepoMutationOutcome & 
     branches,
     unpushedCommitShasByBranch,
     unpushedDirectCommits,
+    checkedOutRef,
+    worktrees: syncWorktreeFromCheckedOutRef(snapshot.worktrees, checkedOutRef),
   });
 }
 

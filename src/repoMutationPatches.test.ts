@@ -152,6 +152,33 @@ describe('applyMutationPatch push', () => {
     expect(next.branchUniqueAheadCounts.feature).toBe(1);
   });
 
+  it('advances current branch upstream parent to head after push', () => {
+    const next = applyMutationPatch(
+      baseSnapshot({
+        checkedOutRef: {
+          branchName: 'feature',
+          headSha: 'bbb2222',
+          parentSha: 'aaa1111',
+          hasUncommittedChanges: false,
+        },
+        worktrees: [{
+          path: '/repo',
+          pathExists: true,
+          headSha: 'bbb2222',
+          branchName: 'feature',
+          parentSha: 'aaa1111',
+          isCurrent: true,
+          isPrunable: false,
+          hasUncommittedChanges: false,
+        }],
+      }),
+      outcomeFromPush(['feature']),
+    );
+
+    expect(next.checkedOutRef?.parentSha).toBe('bbb2222');
+    expect(next.worktrees.find((worktree) => worktree.isCurrent)?.parentSha).toBe('bbb2222');
+  });
+
   it('clears unpushed commits on pushed branches when sha map was stale', () => {
     const next = applyMutationPatch(
       baseSnapshot({
