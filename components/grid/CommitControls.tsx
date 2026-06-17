@@ -39,7 +39,6 @@ type Props = {
   previewInProgress?: boolean;
   onMergeRefsIntoBranch?: (sourceRefs: string[], targetBranch: string) => Promise<void> | void;
   selectedPushTargets: PushTarget[];
-  selectedPushLabel: string;
   pushableRemoteBranchCount: number;
   selectedCommitTargetOption: SelectedCommitTargetOption;
   mergeInProgress: boolean;
@@ -74,7 +73,7 @@ function CommitControls({
   onPreviewSelectedNode,
   previewInProgress = false,
   selectedPushTargets,
-  selectedPushLabel,
+  pushableRemoteBranchCount,
   onWriteCommit,
   setNewBranchDialogOpen,
   selectedDirtyWorktreePaths = [],
@@ -151,32 +150,13 @@ function CommitControls({
     : null;
   const isDirtyWorktree = selectedSession?.hasUncommittedChanges ?? false;
 
-  const isUnpushedCommit = selectedPreviewNode != null &&
-    !isSelectedWorktree &&
-    !isSelectedStashOrPlaceholder &&
-    !selectedPreviewNode.commit.isRemote;
+  const showPush = selectedPushTargets.length > 0;
+  const pushTargets = selectedPushTargets.map((target) => ({
+    branchName: target.branchName,
+    targetSha: target.targetSha,
+  }));
 
-  const hasPushTargets = selectedPushTargets.length > 0;
-  const showPush = hasPushTargets || isUnpushedCommit;
-  const pushTargets = hasPushTargets
-    ? selectedPushTargets.map((target) => ({
-        branchName: target.branchName,
-        targetSha: target.targetSha,
-      }))
-    : selectedPreviewNode
-    ? [
-        {
-          branchName: selectedPreviewNode.commit.branchName,
-          targetSha: selectedPreviewNode.commit.id,
-        },
-      ]
-    : [];
-
-  const pushLabel = hasPushTargets
-    ? selectedPushLabel
-    : selectedPreviewNode
-    ? `Push ${selectedPreviewNode.commit.id.slice(0, 7)} on ${selectedPreviewNode.commit.branchName}`
-    : 'Push';
+  const pushLabel = 'Push Selected...';
 
   // Action execution wrappers
   const runCommitAction = async (action: 'commit' | 'commit-push' | 'stash') => {
@@ -236,18 +216,20 @@ function CommitControls({
         {/* STATE 1: Nothing selected */}
         {isSelectionEmpty && (
           <>
-            <button
-              type="button"
-              onClick={() => void onPushAllBranches?.()}
-              disabled={pushInProgress}
-              className={controlClassName}
-            >
-              <ToolbarActionContent
-                icon="push-all"
-                label="Push All"
-                loading={pushInProgress}
-              />
-            </button>
+            {pushableRemoteBranchCount > 0 && (
+              <button
+                type="button"
+                onClick={() => void onPushAllBranches?.()}
+                disabled={pushInProgress}
+                className={controlClassName}
+              >
+                <ToolbarActionContent
+                  icon="push-all"
+                  label="Push All"
+                  loading={pushInProgress}
+                />
+              </button>
+            )}
             <button
               type="button"
               onClick={() => setNewBranchDialogOpen(true)}
@@ -256,7 +238,7 @@ function CommitControls({
             >
               <ToolbarActionContent
                 icon="branch"
-                label="Branch"
+                label="New Root Branch..."
                 loading={createBranchFromNodeInProgress}
               />
             </button>

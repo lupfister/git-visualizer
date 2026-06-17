@@ -24,7 +24,7 @@ import {
   type NodePositionOverrides,
   type Node,
 } from './LayoutGrid';
-import { Bug, GitMerge } from 'lucide-react';
+import { GitMerge } from 'lucide-react';
 import type { PreviewTarget } from '../../lib/git';
 import { GRID_LAYOUT_RENDER_ZOOM } from './branchGridLayoutModel';
 import type { BranchGridLayoutModel } from './branchGridLayoutModel';
@@ -1045,11 +1045,6 @@ export default function BranchGridMap({
     ...selectedStashIndices.map((idx) => `Stash ${idx + 1}`),
   ];
   const pushableRemoteBranchCount = pushableBranchByName.size;
-  const selectedPushLabel = selectedPushTargets.length === 1
-    ? selectedPushTargets[0].commitCount > 1
-      ? `Push ${selectedPushTargets[0].commitCount} commits on ${selectedPushTargets[0].branchName}`
-      : `Push ${selectedPushTargets[0].targetSha.slice(0, 7)} on ${selectedPushTargets[0].branchName}`
-    : `Push ${selectedPushTargets.length} selected ranges`;
 
   const handleHeaderPointerDown = useCallback((event: React.PointerEvent<HTMLElement>) => {
     const target = event.target as HTMLElement | null;
@@ -2146,7 +2141,6 @@ export default function BranchGridMap({
                   previewInProgress={previewInProgress}
                   onMergeRefsIntoBranch={onMergeRefsIntoBranch}
                   selectedPushTargets={selectedPushTargets}
-                  selectedPushLabel={selectedPushLabel}
                   pushableRemoteBranchCount={pushableRemoteBranchCount}
                   selectedCommitTargetOption={selectedCommitTargetOption}
                   mergeInProgress={mergeInProgress}
@@ -2179,15 +2173,6 @@ export default function BranchGridMap({
                     }}
                   />
                 ) : null}
-                <button
-                  type="button"
-                  onClick={() => gridHudProps.setIsGridDebugOpen((open) => !open)}
-                  className="inline-flex h-9 shrink-0 items-center gap-2 rounded-lg border border-border/60 bg-background/95 px-3 text-xs font-medium text-muted-foreground shadow-sm transition-colors hover:bg-muted hover:text-foreground"
-                  title="Toggle grid debug"
-                >
-                  <Bug className="h-4 w-4 shrink-0" />
-                  Debug
-                </button>
               </div>
             </div>
           </div>
