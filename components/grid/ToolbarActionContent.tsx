@@ -18,7 +18,7 @@ export default function ToolbarActionContent({
   iconClassName,
 }: Props) {
   return (
-    <span className="inline-flex items-center gap-1.5">
+    <span className="inline-flex min-w-0 items-center gap-1.5 whitespace-nowrap">
       <span
         aria-hidden
         className={cn(
@@ -29,7 +29,7 @@ export default function ToolbarActionContent({
         )}
       />
       {!compactLabels && label ? (
-        <span className={cn(loading && 'toolbar-action-shimmer__text')}>{label}</span>
+        <span className={cn('min-w-0 truncate', loading && 'toolbar-action-shimmer__text')}>{label}</span>
       ) : null}
     </span>
   );
