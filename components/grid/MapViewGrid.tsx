@@ -160,6 +160,7 @@ export default function BranchGridMapView({
   onPushCommitTargets,
   pushInProgress = false,
   onDeleteSelection,
+  deleteInProgress = false,
   worktrees = [],
   currentRepoPath,
   onStashLocalChanges,
@@ -302,9 +303,13 @@ export default function BranchGridMapView({
             mergeNodes={mergeNodes}
             directCommits={directCommits}
             unpushedDirectCommits={unpushedDirectCommits}
-            isLoading={isLoading}
-            isSyncing={isSyncing}
+            unpushedCommitShasByBranch={unpushedCommitShasByBranch}
+            openPRs={openPRs}
             defaultBranch={defaultBranch}
+            onCommitClick={onCommitClick}
+            onNodeDoubleClick={onNodeDoubleClick}
+            onLoadMore={onLoadMore}
+            branchPromptMeta={branchPromptMeta}
             branchCommitPreviews={branchCommitPreviews}
             branchParentByName={branchParentByName}
             branchUniqueAheadCounts={branchUniqueAheadCounts}
@@ -312,10 +317,46 @@ export default function BranchGridMapView({
             gridSearchJumpToken={gridSearchJumpToken}
             gridSearchJumpDirection={gridSearchJumpDirection}
             gridFocusSha={gridFocusSha}
-            checkedOutRef={checkedOutRef}
             onGridSearchResultCountChange={onGridSearchResultCountChange}
             onGridSearchResultIndexChange={onGridSearchResultIndexChange}
             onGridSearchFocusChange={onGridSearchFocusChange}
+            staleBranches={staleBranches}
+            isLoading={isLoading}
+            isSyncing={isSyncing}
+            scrollRequest={scrollRequest}
+            focusedErrorBranch={focusedErrorBranch}
+            checkedOutRef={checkedOutRef}
+            mapTopInsetPx={mapTopInsetPx}
+            onMergeRefsIntoBranch={onMergeRefsIntoBranch}
+            mergeInProgress={mergeInProgress}
+            onPushAllBranches={onPushAllBranches}
+            onPushCurrentBranch={onPushCurrentBranch}
+            onPushCommitTargets={onPushCommitTargets}
+            pushInProgress={pushInProgress}
+            onDeleteSelection={onDeleteSelection}
+            deleteInProgress={deleteInProgress}
+            worktrees={worktrees}
+            currentRepoPath={currentRepoPath}
+            onStashLocalChanges={onStashLocalChanges}
+            stashInProgress={stashInProgress}
+            stashDisabled={stashDisabled}
+            onCommitLocalChanges={onCommitLocalChanges}
+            onAutoCommitLocalChanges={onAutoCommitLocalChanges}
+            commitInProgress={commitInProgress}
+            commitDisabled={commitDisabled}
+            onStageAllChanges={onStageAllChanges}
+            stageInProgress={stageInProgress}
+            onCreateBranchFromNode={onCreateBranchFromNode}
+            onCreateRootBranch={onCreateRootBranch}
+            onCreateTerminal={onCreateTerminal}
+            onCreateWorktree={onCreateWorktree}
+            createBranchFromNodeInProgress={createBranchFromNodeInProgress}
+            isMutationBusy={isMutationBusy}
+            onMoveNodeBackToBranch={onMoveNodeBackToBranch}
+            isDebugOpen={isDebugOpen}
+            onDebugClose={onDebugClose}
+            debugRows={debugRows}
+            orientation={orientation}
             onInteractionChange={onInteractionChange}
             onPreviewNode={onPreviewNode}
             previewInProgress={previewInProgress}
@@ -327,10 +368,6 @@ export default function BranchGridMapView({
             setManuallyOpenedClumps={setManuallyOpenedClumps}
             setManuallyClosedClumps={setManuallyClosedClumps}
             layoutModel={layoutModel}
-            isDebugOpen={isDebugOpen}
-            onDebugClose={onDebugClose}
-            debugRows={debugRows}
-            orientation={orientation}
             gridHudProps={gridHudProps}
             blockMapInteraction={blockMapInteraction}
             blockMapDisplay={blockMapDisplay}
@@ -338,10 +375,7 @@ export default function BranchGridMapView({
             onMapReadyForDisplay={onMapReadyForDisplay}
             nodePositionOverrides={nodePositionOverrides}
             onNodePositionOverridesChange={onNodePositionOverridesChange}
-            onCreateTerminal={onCreateTerminal}
-            onCreateWorktree={onCreateWorktree}
             worktreeDraftByWorkingTreeId={worktreeDraftByWorkingTreeId}
-            onNodeDoubleClick={onNodeDoubleClick}
             onShowContextMenu={onShowContextMenu}
           />
         </div>

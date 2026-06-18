@@ -38,6 +38,7 @@ import {
   isCommitUnpushedOnBranch,
   formatRemoteCommitHeaderLabel,
   formatWorktreeNodeHeaderLabel,
+  worktreeSessionDisplayName,
 } from './mapGridUtils';
 
 import type { ConnectorFace, Node, NodePositionOverrides } from './LayoutGrid';
@@ -730,7 +731,7 @@ const MapGridCommitCard = memo(function MapGridCommitCard({
             className="flex min-w-0 flex-1 items-center"
             style={{ gap: 'calc(2px * var(--map-inv-zoom, 1))' }}
           >
-            {isPreviewedCommit ? (
+            {isPreviewedCommit && !isLocalUncommitted ? (
               <PreviewIcon
                 aria-label="Preview running"
                 className="h-[1em] w-[1em] shrink-0"
@@ -748,7 +749,13 @@ const MapGridCommitCard = memo(function MapGridCommitCard({
             className="flex shrink-0 items-center"
             style={{ gap: 'calc(2px * var(--map-inv-zoom, 1))' }}
           >
-            {terminalCount > 0 ? (
+            {isLocalUncommitted && isPreviewedCommit ? (
+              <PreviewIcon
+                aria-label="Preview running"
+                className="h-[1em] w-[1em] shrink-0"
+              />
+            ) : null}
+            {!isLocalUncommitted && terminalCount > 0 ? (
               <span
                 aria-label={`${terminalCount} running terminal${terminalCount === 1 ? '' : 's'}`}
                 className="inline-flex items-center font-normal leading-none"
@@ -853,13 +860,29 @@ const MapGridCommitCard = memo(function MapGridCommitCard({
                 className={cn('pointer-events-auto select-none font-normal', selectedCommitTextClass)}
                 style={scaledTextStyle}
               >
-                @{node.commit.author}
+                {isLocalUncommitted && uncommittedSession ? (
+                  worktreeSessionDisplayName(uncommittedSession)
+                ) : (
+                  `@${node.commit.author}`
+                )}
               </div>
               <div
                 className={cn('pointer-events-auto select-none font-normal', selectedCommitTextClass)}
                 style={scaledTextStyle}
               >
-                {COMMIT_DATE_FORMATTER.format(new Date(node.commit.date))}
+                {isLocalUncommitted ? (
+                  terminalCount > 0 ? (
+                    <span
+                      aria-label={`${terminalCount} running terminal${terminalCount === 1 ? '' : 's'}`}
+                      className="inline-flex items-center font-normal leading-none"
+                    >
+                      {terminalCount > 1 ? terminalCount : null}
+                      <TerminalIcon className="h-[1em] w-[1em] shrink-0 ml-[0.15em]" />
+                    </span>
+                  ) : null
+                ) : (
+                  COMMIT_DATE_FORMATTER.format(new Date(node.commit.date))
+                )}
               </div>
             </div>
           ) : null}

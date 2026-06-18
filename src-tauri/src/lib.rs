@@ -594,6 +594,14 @@ fn open_visual_cache_connection() -> Result<Connection, String> {
         );
         CREATE INDEX IF NOT EXISTS idx_project_snapshot_active
             ON project_snapshot(project_id, is_active, snapshot_version DESC);
+        CREATE TABLE IF NOT EXISTS deleted_remote_branches (
+            repo_path TEXT NOT NULL,
+            branch_name TEXT NOT NULL,
+            remote_ref TEXT NOT NULL,
+            sha TEXT NOT NULL,
+            deleted_at_ms INTEGER NOT NULL,
+            PRIMARY KEY (repo_path, branch_name, remote_ref)
+        );
         ",
     )
     .map_err(|e| format!("Failed to initialize cache schema: {e}"))?;
@@ -1393,11 +1401,61 @@ fn compute_repo_visual_snapshot(repo_path: &str) -> Result<RepoVisualSnapshot, S
     let mut local_branch_names: HashSet<String> =
         branches.iter().map(|branch| branch.name.clone()).collect();
     local_branch_names.insert(default_branch.clone());
-    let mut remote_only_branches = Vec::new();
-    for (branch_name, remote_head) in
-        git::list_origin_branch_heads(path).map_err(|e| e.to_string())?
+
+    // Load deleted remote branches for filtering
+    let normalized_repo_path = normalize_repo_path_id(repo_path);
+    let mut deleted_remote_refs = HashSet::<(String, String, String)>::new();
+    if let Ok(conn) = open_visual_cache_connection() {
+        if let Ok(mut stmt) = conn.prepare("SELECT branch_name, remote_ref, sha FROM deleted_remote_branches WHERE repo_path = ?1") {
+            if let Ok(rows) = stmt.query_map(params![normalized_repo_path], |row| {
+                Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?, row.get::<_, String>(2)?))
+            }) {
+                for r in rows.flatten() {
+                    deleted_remote_refs.insert(r);
+                }
+            }
+        }
+    }
+
+    let origin_branch_heads = git::list_origin_branch_heads(path).map_err(|e| e.to_string())?;
+
+    // Cleanup database: remove deleted_remote_branches entries that are no longer present on the remote at all
     {
+        let mut active_remote_refs = HashSet::<String>::new();
+        for (branch_name, _) in &origin_branch_heads {
+            active_remote_refs.insert(format!("refs/remotes/origin/{branch_name}"));
+        }
+        let stale_refs = if let Ok(conn) = open_visual_cache_connection() {
+            if let Ok(mut stmt) = conn.prepare("SELECT remote_ref FROM deleted_remote_branches WHERE repo_path = ?1") {
+                if let Ok(rows) = stmt.query_map(params![normalized_repo_path], |row| row.get::<_, String>(0)) {
+                    rows.flatten().filter(|r| !active_remote_refs.contains(r)).collect::<Vec<String>>()
+                } else {
+                    Vec::new()
+                }
+            } else {
+                Vec::new()
+            }
+        } else {
+            Vec::new()
+        };
+
+        if !stale_refs.is_empty() {
+            if let Ok(mut conn) = open_visual_cache_connection() {
+                if let Ok(tx) = conn.transaction() {
+                    for r in stale_refs {
+                        let _ = tx.execute("DELETE FROM deleted_remote_branches WHERE repo_path = ?1 AND remote_ref = ?2", params![normalized_repo_path, r]);
+                    }
+                    let _ = tx.commit();
+                }
+            }
+        }
+    }
+
+    let mut remote_only_branches = Vec::new();
+    for (branch_name, remote_head) in origin_branch_heads {
         let upstream_ref = format!("origin/{branch_name}");
+        let upstream_full_ref = format!("refs/remotes/origin/{branch_name}");
+
         if local_branch_names.contains(&branch_name) {
             git::merge_upstream_ahead_commits(
                 path,
@@ -1408,6 +1466,12 @@ fn compute_repo_visual_snapshot(repo_path: &str) -> Result<RepoVisualSnapshot, S
             .map_err(|e| e.to_string())?;
             continue;
         }
+
+        // Filter out if this remote-only branch was previously deleted by the user at this commit SHA
+        if deleted_remote_refs.contains(&(branch_name.clone(), upstream_full_ref.clone(), remote_head.clone())) {
+            continue;
+        }
+
         git::merge_remote_only_branch_commits(
             path,
             &default_branch,
@@ -5061,9 +5125,11 @@ fn delete_selected_elements(
 
     for branch_name in &unique_branch_names {
         let local_ref = format!("refs/heads/{}", branch_name);
-        let has_local = git::cli::run(path, &["show-ref", "--verify", "--quiet", &local_ref]).is_ok();
+        let show_ref_res = git::cli::run(path, &["show-ref", "--verify", "--quiet", &local_ref]);
+        let has_local = show_ref_res.is_ok();
         if has_local {
-            git::cli::run(path, &["branch", "-D", branch_name]).map_err(|e| e.to_string())?;
+            let delete_res = git::cli::run(path, &["branch", "-D", branch_name]);
+            delete_res.map_err(|e| e.to_string())?;
         }
 
         if let Ok(output) = git::cli::run(path, &["for-each-ref", "--format=%(refname)", "refs/remotes"]) {
@@ -5072,9 +5138,34 @@ fn delete_selected_elements(
                 if ref_name.starts_with("refs/remotes/") {
                     let stripped = &ref_name["refs/remotes/".len()..];
                     if let Some(slash_idx) = stripped.find('/') {
+                        let remote_name = &stripped[..slash_idx];
                         let remote_branch_name = &stripped[slash_idx + 1..];
                         if remote_branch_name == branch_name {
-                            let _ = git::cli::run(path, &["update-ref", "-d", ref_name]);
+                            // Resolve current SHA of this remote-tracking ref
+                            let sha = if let Ok(rev_output) = git::cli::run(path, &["rev-parse", ref_name]) {
+                                rev_output.trim().to_string()
+                            } else {
+                                String::new()
+                            };
+
+                            // Persist deleted remote branch metadata in database
+                            if !sha.is_empty() {
+                                let normalized_repo_path = normalize_repo_path_id(&repo_path);
+                                let now_ms = Utc::now().timestamp_millis();
+                                if let Ok(conn) = open_visual_cache_connection() {
+                                    let _ = conn.execute(
+                                        "INSERT OR REPLACE INTO deleted_remote_branches (repo_path, branch_name, remote_ref, sha, deleted_at_ms)
+                                         VALUES (?1, ?2, ?3, ?4, ?5)",
+                                        params![normalized_repo_path, branch_name, ref_name, sha, now_ms],
+                                    );
+                                }
+                            }
+
+                            // Push the deletion to the remote repository (ignores failure if offline/no permissions)
+                            let _ = git::cli::run(path, &["push", remote_name, "--delete", branch_name]);
+
+                            let del_ref_res = git::cli::run(path, &["update-ref", "-d", ref_name]);
+                            del_ref_res.map_err(|e| e.to_string())?;
                         }
                     }
                 }
@@ -8946,5 +9037,42 @@ mod snapshot_remote_branch_tests {
                 .unwrap_or(0)
                 >= 1
         );
+    }
+
+    #[test]
+    fn test_deleted_remote_branches_db_roundtrip() {
+        let repo_path = "/path/to/test/repo".to_string();
+        let normalized = super::normalize_repo_path_id(&repo_path);
+        let branch_name = "test-branch-name";
+        let remote_ref = "refs/remotes/origin/test-branch-name";
+        let sha = "1234567890abcdef1234567890abcdef12345678";
+        let now = chrono::Utc::now().timestamp_millis();
+
+        let conn = super::open_visual_cache_connection().unwrap();
+        // Insert
+        let insert_res = conn.execute(
+            "INSERT OR REPLACE INTO deleted_remote_branches (repo_path, branch_name, remote_ref, sha, deleted_at_ms)
+             VALUES (?1, ?2, ?3, ?4, ?5)",
+            rusqlite::params![normalized, branch_name, remote_ref, sha, now],
+        );
+        assert!(insert_res.is_ok());
+
+        // Select and verify
+        let mut stmt = conn.prepare("SELECT branch_name, remote_ref, sha FROM deleted_remote_branches WHERE repo_path = ?1").unwrap();
+        let mut rows = stmt.query_map(rusqlite::params![normalized], |row| {
+            Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?, row.get::<_, String>(2)?))
+        }).unwrap();
+        
+        let first = rows.next().unwrap().unwrap();
+        assert_eq!(first.0, branch_name);
+        assert_eq!(first.1, remote_ref);
+        assert_eq!(first.2, sha);
+
+        // Cleanup
+        let delete_res = conn.execute(
+            "DELETE FROM deleted_remote_branches WHERE repo_path = ?1 AND remote_ref = ?2",
+            rusqlite::params![normalized, remote_ref],
+        );
+        assert!(delete_res.is_ok());
     }
 }

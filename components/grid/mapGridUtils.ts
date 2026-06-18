@@ -598,9 +598,7 @@ export const formatWorktreeNodeHeaderLabel = (
     isCurrent: boolean;
   },
 ): string => {
-  const name = worktreeSessionDisplayName(session);
-  const branch = session.branchName ?? 'detached';
-  return `${name} • ${branch}`;
+  return session.branchName ?? 'detached';
 };
 
 export const REMOTE_COMMIT_SOURCE_LABEL = 'Origin';

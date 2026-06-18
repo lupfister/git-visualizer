@@ -2,7 +2,7 @@ import { describe, expect, it } from 'vitest';
 import { formatRemoteCommitHeaderLabel, formatWorktreeNodeHeaderLabel } from './mapGridUtils';
 
 describe('formatWorktreeNodeHeaderLabel', () => {
-  it('uses worktree folder name and branch when clean', () => {
+  it('uses branch name when clean', () => {
     expect(
       formatWorktreeNodeHeaderLabel({
         path: '/repo/.worktrees/feature-wt',
@@ -10,7 +10,7 @@ describe('formatWorktreeNodeHeaderLabel', () => {
         hasUncommittedChanges: false,
         isCurrent: false,
       }),
-    ).toBe('feature-wt • cursor-sdk');
+    ).toBe('cursor-sdk');
   });
 
   it('keeps branch label unchanged when dirty', () => {
@@ -21,7 +21,7 @@ describe('formatWorktreeNodeHeaderLabel', () => {
         hasUncommittedChanges: true,
         isCurrent: false,
       }),
-    ).toBe('feature-wt • cursor-sdk');
+    ).toBe('cursor-sdk');
   });
 
   it('shows detached when session has no branch ref', () => {
@@ -32,10 +32,10 @@ describe('formatWorktreeNodeHeaderLabel', () => {
         hasUncommittedChanges: false,
         isCurrent: false,
       }),
-    ).toBe('test1 • detached');
+    ).toBe('detached');
   });
 
-  it('labels the primary checkout as Primary', () => {
+  it('labels the primary checkout with its branch name', () => {
     expect(
       formatWorktreeNodeHeaderLabel({
         path: '/Users/luca/cursor/git-visualizer',
@@ -43,7 +43,7 @@ describe('formatWorktreeNodeHeaderLabel', () => {
         hasUncommittedChanges: false,
         isCurrent: true,
       }),
-    ).toBe('Primary • main');
+    ).toBe('main');
   });
 });
 
