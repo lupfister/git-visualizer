@@ -6,6 +6,7 @@ import {
   outcomeFromPush,
   outcomeFromStashDrop,
   outcomeFromStashDrops,
+  outcomeFromStashPush,
 } from './repoMutationPatches';
 
 function baseSnapshot(overrides: Partial<RepoVisualSnapshot> = {}): RepoVisualSnapshot {
@@ -137,6 +138,63 @@ describe('applyMutationPatch stashDrop', () => {
   it('removes multiple stashes and reindexes', () => {
     const next = applyMutationPatch(baseSnapshot(), outcomeFromStashDrops([1, 0]));
     expect(next.stashes).toHaveLength(0);
+  });
+});
+
+describe('applyMutationPatch stashPush', () => {
+  it('clears only the target worktree and preserves the active checkout for linked worktrees', () => {
+    const next = applyMutationPatch(
+      baseSnapshot({
+        checkedOutRef: {
+          branchName: 'main',
+          headSha: 'aaa1111',
+          parentSha: null,
+          hasUncommittedChanges: false,
+        },
+        worktrees: [
+          {
+            path: '/repo',
+            pathExists: true,
+            headSha: 'aaa1111',
+            branchName: 'main',
+            parentSha: null,
+            isCurrent: true,
+            isPrunable: false,
+            hasUncommittedChanges: false,
+          },
+          {
+            path: '/repo-linked',
+            pathExists: true,
+            headSha: 'bbb2222',
+            branchName: 'feature',
+            parentSha: 'aaa1111',
+            isCurrent: false,
+            isPrunable: false,
+            hasUncommittedChanges: true,
+          },
+        ],
+      }),
+      outcomeFromStashPush({
+        worktreePath: '/repo-linked',
+        stash: {
+          index: 0,
+          baseSha: 'bbb2222',
+          createdAt: '2024-01-03T00:00:00Z',
+          message: 'linked stash',
+        },
+        checkedOutRef: {
+          branchName: 'feature',
+          headSha: 'bbb2222',
+          parentSha: 'aaa1111',
+          hasUncommittedChanges: false,
+        },
+      }),
+    );
+
+    expect(next.stashes[0]?.message).toBe('linked stash');
+    expect(next.checkedOutRef?.branchName).toBe('main');
+    expect(next.worktrees.find((worktree) => worktree.path === '/repo')?.hasUncommittedChanges).toBe(false);
+    expect(next.worktrees.find((worktree) => worktree.path === '/repo-linked')?.hasUncommittedChanges).toBe(false);
   });
 });
 

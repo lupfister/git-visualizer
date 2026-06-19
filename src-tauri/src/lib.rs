@@ -79,6 +79,7 @@ struct CommitMutationResult {
 #[derive(Serialize, Deserialize, Clone)]
 #[serde(rename_all = "camelCase")]
 struct StashPushResult {
+    worktree_path: String,
     stash: git::GitStashEntry,
     checked_out_ref: CheckedOutRef,
 }
@@ -4743,6 +4744,7 @@ async fn stash_push(
             .ok_or_else(|| "Stash push succeeded but stash@{0} was not found.".to_string())?;
         let checked_out_ref = git::get_checked_out_ref(path).map_err(|e| e.to_string())?;
         Ok(StashPushResult {
+            worktree_path: repo_path,
             stash,
             checked_out_ref,
         })

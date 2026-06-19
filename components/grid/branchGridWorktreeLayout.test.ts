@@ -838,4 +838,62 @@ describe('computeBranchGridLayout worktree nodes', () => {
     expect(worktreeNode!.row).toBe(parentNode!.row + 1);
     expect(worktreeNode!.row).toBeLessThanOrEqual(laterNode!.row);
   });
+
+  it('does not mark broken ancestry when a worktree head is not visible but the lane has a fallback parent', () => {
+    const defaultBranch = 'main';
+    const hiddenHeadSha = 'dddddddddddddddddddddddddddddddddddddddd';
+    const branches = [makeBranch(defaultBranch, hiddenHeadSha, 1)];
+    const directCommits: DirectCommit[] = [
+      {
+        fullSha: mainSha,
+        sha: mainSha.slice(0, 7),
+        branch: defaultBranch,
+        message: 'visible fallback',
+        author: 'test',
+        date: '2024-05-01T12:00:00Z',
+        parentSha: null,
+        parentShas: [],
+      },
+    ];
+    const sessions = buildWorktreeSessions(
+      [wt({ path: '/repo', branchName: defaultBranch, headSha: hiddenHeadSha, isCurrent: true })],
+      '/repo',
+      { branchName: defaultBranch, headSha: hiddenHeadSha, hasUncommittedChanges: true },
+    );
+    const worktreePreview: BranchCommitPreview = {
+      fullSha: sessions[0]!.workingTreeId,
+      sha: 'uncommitted',
+      parentSha: hiddenHeadSha,
+      message: '',
+      author: 'You',
+      date: '2024-05-02T12:00:00Z',
+      kind: 'uncommitted',
+    };
+    const layout = computeBranchGridLayout({
+      branches,
+      mergeNodes: [],
+      directCommits,
+      unpushedDirectCommits: [],
+      defaultBranch,
+      branchCommitPreviews: { [defaultBranch]: [worktreePreview] },
+      branchParentByName: { [defaultBranch]: null },
+      branchUniqueAheadCounts: { [defaultBranch]: 1 },
+      manuallyOpenedClumps: new Set(),
+      manuallyClosedClumps: new Set(),
+      isDebugOpen: false,
+      gridSearchQuery: '',
+      gridFocusSha: null,
+      checkedOutRef: { branchName: defaultBranch, headSha: hiddenHeadSha, hasUncommittedChanges: true },
+      worktreeSessions: sessions,
+      orientation: 'horizontal',
+    });
+
+    const worktreeId = sessions[0]!.workingTreeId;
+    const worktreeVisualId = layout.renderNodes.find((node) => node.commit.id === worktreeId)?.commit.visualId;
+    const fallbackVisualId = layout.renderNodes.find((node) => node.commit.id === mainSha)?.commit.visualId;
+    expect(layout.nodeWarnings.get(worktreeId)).toBeUndefined();
+    expect(layout.connectors.some((connector) =>
+      connector.fromCommitVisualId === fallbackVisualId && connector.toCommitVisualId === worktreeVisualId
+    )).toBe(true);
+  });
 });

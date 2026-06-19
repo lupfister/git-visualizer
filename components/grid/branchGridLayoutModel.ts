@@ -3256,10 +3256,19 @@ export function projectVisibility(
     if (!childNode) continue;
     const parentSha = actualWorktreeParentSha(commit);
     if (!parentSha) continue;
-    const parentNode =
+    let parentNode =
       (isWorktreeGraphNode(commit) ? latestOpenClumpNodeForSha(parentSha, commit.branchName) : null)
       ?? nodeForConnectorTipSha(parentSha, commit.branchName)
       ?? resolveParentNode(parentSha, commit.branchName);
+    if (!parentNode && isWorktreeGraphNode(commit)) {
+      parentNode = [...(visibleByBranch.get(commit.branchName) ?? [])]
+        .filter((candidate) => !isWorktreeGraphNode(candidate.commit) && candidate.commit.visualId !== childNode.commit.visualId)
+        .sort(
+          (left, right) =>
+            safeTimeMs(right.commit.date) - safeTimeMs(left.commit.date)
+            || right.commit.visualId.localeCompare(left.commit.visualId),
+        )[0] ?? null;
+    }
     if (!parentNode) {
       const parentClusterKey =
         clusterKeyByCommitId.get(`${commit.branchName}:${parentSha}`) ?? clusterKeyByCommitId.get(parentSha);

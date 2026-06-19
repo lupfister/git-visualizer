@@ -157,8 +157,6 @@ type CommitCardProps = {
   firstByClusterKey: Map<string, string>;
   clusterKeyByCommitId: Map<string, string>;
   clusterCounts: Map<string, number>;
-  commitIdsWithRenderedAncestry: Set<string>;
-  nodeWarnings: Map<string, string[]>;
   unpushedCommitShasSetByBranch: Map<string, Set<string>>;
   remoteCommitShas: Set<string>;
   worktreeAccentByCommitId: Map<string, WorktreeAccentToken>;
@@ -222,8 +220,6 @@ function areCommitCardPropsEqual(prev: Readonly<CommitCardProps>, next: Readonly
     prev.firstByClusterKey === next.firstByClusterKey &&
     prev.clusterKeyByCommitId === next.clusterKeyByCommitId &&
     prev.clusterCounts === next.clusterCounts &&
-    prev.commitIdsWithRenderedAncestry === next.commitIdsWithRenderedAncestry &&
-    prev.nodeWarnings === next.nodeWarnings &&
     prev.unpushedCommitShasSetByBranch === next.unpushedCommitShasSetByBranch &&
     prev.remoteCommitShas === next.remoteCommitShas &&
     prev.worktreeAccentByCommitId === next.worktreeAccentByCommitId &&
@@ -262,8 +258,6 @@ const MapGridCommitCard = memo(function MapGridCommitCard({
   firstByClusterKey,
   clusterKeyByCommitId,
   clusterCounts,
-  commitIdsWithRenderedAncestry,
-  nodeWarnings,
   unpushedCommitShasSetByBranch,
   remoteCommitShas,
   worktreeAccentByCommitId,
@@ -360,9 +354,6 @@ const MapGridCommitCard = memo(function MapGridCommitCard({
         ? firstByClusterKey.get(clusterKey) === visualId
         : isClusterLead
       : false;
-  const hasRenderedAncestry = commitIdsWithRenderedAncestry.has(commitId);
-  const nodeWarningsForCard = nodeWarnings.get(commitId) ?? [];
-  const showDataShapeError = nodeWarningsForCard.length > 0 && !hasRenderedAncestry;
   const isPreviewedWorktreeCommit = previewedWorktreeNodeIds.includes(commitId);
   const isPreviewedCommit = previewedNodeId === visualId || previewedNodeId === commitId || isPreviewedWorktreeCommit;
   const terminalCount = terminalCountByWorkingTreeId[commitId] ?? 0;
@@ -387,7 +378,6 @@ const MapGridCommitCard = memo(function MapGridCommitCard({
   const isFocused = focusedCommitId === commitId;
   const isSearchActive = !!normalizedSearchQuery;
   const isSearchMatch = isSearchActive && matchingNodeIds.has(commitId);
-  const warningsTitle = nodeWarningsForCard.join('\n');
   const stashIndexMatch = /^STASH:(\d+)$/.exec(node.commit.id);
   const stashHeaderLabel = stashIndexMatch ? `Stash ${Number.parseInt(stashIndexMatch[1], 10) + 1}` : null;
   const stashBodyMessage = isStashedCommit
@@ -843,16 +833,6 @@ const MapGridCommitCard = memo(function MapGridCommitCard({
             >
               {bodyContent}
             </div>
-            <div className="mt-3 flex flex-wrap items-center gap-1.5">
-              {showDataShapeError ? (
-                <span
-                  className="inline-flex items-center gap-1 rounded-lg border border-red-500/25 bg-red-50 px-2 py-0.5 text-sm font-medium uppercase tracking-wide text-foreground dark:bg-red-900/20 dark:text-foreground"
-                  title={warningsTitle}
-                >
-                  Broken ancestry
-                </span>
-              ) : null}
-            </div>
           </div>
           {displayZoom > 0.5 ? (
             <div className="mt-auto flex items-end justify-between" style={scaledMetaTopStyle}>
@@ -958,8 +938,6 @@ type Props = {
   firstByClusterKey: Map<string, string>;
   clusterKeyByCommitId: Map<string, string>;
   clusterCounts: Map<string, number>;
-  commitIdsWithRenderedAncestry: Set<string>;
-  nodeWarnings: Map<string, string[]>;
   commitCornerRadiusPx: number;
   lineStrokeWidth: number;
   connectors: Array<{ id: string; fromX: number; fromY: number; toX: number; toY: number; zIndex: number; fromFace?: ConnectorFace; toFace?: ConnectorFace }>;
@@ -1047,8 +1025,6 @@ const MapGridCanvas = memo(function MapGridCanvas({
   firstByClusterKey,
   clusterKeyByCommitId,
   clusterCounts,
-  commitIdsWithRenderedAncestry,
-  nodeWarnings,
   commitCornerRadiusPx,
   lineStrokeWidth,
   connectors,
@@ -1483,8 +1459,6 @@ const MapGridCanvas = memo(function MapGridCanvas({
                 firstByClusterKey={firstByClusterKey}
                 clusterKeyByCommitId={clusterKeyByCommitId}
                 clusterCounts={clusterCounts}
-                commitIdsWithRenderedAncestry={commitIdsWithRenderedAncestry}
-                nodeWarnings={nodeWarnings}
                 unpushedCommitShasSetByBranch={unpushedCommitShasSetByBranch}
                 remoteCommitShas={remoteCommitShas}
                 worktreeAccentByCommitId={worktreeAccentByCommitId}

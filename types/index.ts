@@ -249,6 +249,7 @@ export interface CommitMutationData {
 }
 
 export interface StashPushMutationData {
+  worktreePath?: string;
   stash: GitStashEntry;
   checkedOutRef: CheckedOutRef;
 }
@@ -278,6 +279,7 @@ export type RepoMutationOutcome =
   | {
       kind: 'stashPush';
       layoutTopologyChanged: true;
+      worktreePath?: string;
       stash: GitStashEntry;
       checkedOutRef: CheckedOutRef;
     }

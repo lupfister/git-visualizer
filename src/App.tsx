@@ -2816,7 +2816,11 @@ function App() {
       if (!isCommit && !isPush && applyGeneration !== repoMutationGenerationRef.current) return;
 
       const immediateApply = mutationOutcomeNeedsImmediateApply(outcomes);
-      const patchApplyOptions = { force: true as const, previousSnapshot };
+      const patchApplyOptions = {
+        force: true as const,
+        previousSnapshot,
+        skipLayoutRebuild: outcomes.every((outcome) => outcome.kind === 'stashPush' || outcome.kind === 'stashSync'),
+      };
       noteSoftUpdateDebug('apply mutation snapshot', {
         kinds: outcomes.map((outcome) => outcome.kind).join(','),
         immediate: immediateApply,

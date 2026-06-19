@@ -215,15 +215,25 @@ function patchStashPush(
   snapshot: RepoVisualSnapshot,
   outcome: RepoMutationOutcome & { kind: 'stashPush' },
 ): RepoVisualSnapshot {
+  const { worktreePath, checkedOutRef } = outcome;
+  const stashedCurrentWorktree = !worktreePath || snapshot.worktrees.some((worktree) =>
+    worktree.isCurrent && samePath(worktree.path, worktreePath),
+  );
+  const nextCheckedOutRef = stashedCurrentWorktree ? checkedOutRef : snapshot.checkedOutRef;
   const reindexed = snapshot.stashes.map((stash) => ({ ...stash, index: stash.index + 1 }));
   const stashes = [{ ...outcome.stash, index: 0 }, ...reindexed];
   return touchSnapshot({
     ...snapshot,
     stashes,
-    checkedOutRef: outcome.checkedOutRef,
+    checkedOutRef: nextCheckedOutRef,
     worktrees: syncWorktreeFromCheckedOutRef(
-      clearWorktreeDirtyFlags(snapshot.worktrees),
-      outcome.checkedOutRef,
+      snapshot.worktrees.map((worktree) =>
+        (worktreePath ? samePath(worktree.path, worktreePath) : worktree.isCurrent)
+          ? { ...worktree, hasUncommittedChanges: false }
+          : worktree,
+      ),
+      checkedOutRef,
+      worktreePath,
     ),
   });
 }
@@ -584,6 +594,7 @@ export function outcomeFromStashPush(data: import('../types').StashPushMutationD
   return {
     kind: 'stashPush',
     layoutTopologyChanged: true,
+    worktreePath: data.worktreePath,
     stash: data.stash,
     checkedOutRef: data.checkedOutRef,
   };

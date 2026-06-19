@@ -536,8 +536,6 @@ export default function BranchGridMap({
     connectors,
     mergeConnectors,
     connectorDecisions,
-    nodeWarnings,
-    commitIdsWithRenderedAncestry,
   } = resolvedLayoutModel;
 
   const worktreeSearchLabelsByCommitId = useMemo(() => {
@@ -2315,8 +2313,6 @@ export default function BranchGridMap({
           firstByClusterKey={firstByClusterKey}
           clusterKeyByCommitId={clusterKeyByCommitId}
           clusterCounts={clusterCounts}
-          commitIdsWithRenderedAncestry={commitIdsWithRenderedAncestry}
-          nodeWarnings={nodeWarnings}
           commitCornerRadiusPx={commitCornerRadiusPx}
           lineStrokeWidth={lineStrokeWidth}
           connectors={connectorsForView}
