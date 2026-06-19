@@ -1931,7 +1931,7 @@ export function computeBaseLayout(input: BranchGridLayoutInput): BaseLayoutModel
   const nodeRectForConnectorClearance = (node: Node) => ({
     left: node.x - connectorClearancePaddingPx,
     right: node.x + CARD_WIDTH + connectorClearancePaddingPx,
-    top: node.y - connectorClearancePaddingPx,
+    top: node.y - CARD_BODY_TOP_OFFSET - connectorClearancePaddingPx,
     bottom: node.y + CARD_HEIGHT + connectorClearancePaddingPx,
   });
   const segmentIntersectsNodeRect = (
@@ -2020,39 +2020,93 @@ export function computeBaseLayout(input: BranchGridLayoutInput): BaseLayoutModel
     return preferred ?? renderNodes.find((node) => shasMatch(node.commit.id, sha)) ?? null;
   };
   const renderedConnectorPairs = (): Array<{
+    id: string;
     sourceNode: Node;
     targetNode: Node;
     intersects: (sourceNode: Node, targetNode: Node, blocker: Node) => boolean;
   }> => {
     const pairs: Array<{
+      id: string;
       sourceNode: Node;
       targetNode: Node;
       intersects: (sourceNode: Node, targetNode: Node, blocker: Node) => boolean;
     }> = [];
     const seen = new Set<string>();
+    const pushPair = (
+      id: string,
+      sourceNode: Node | null,
+      targetNode: Node | null,
+      intersects: (sourceNode: Node, targetNode: Node, blocker: Node) => boolean,
+    ) => {
+      if (!sourceNode || !targetNode || sourceNode.commit.visualId === targetNode.commit.visualId) return;
+      if (seen.has(id)) return;
+      seen.add(id);
+      pairs.push({ id, sourceNode, targetNode, intersects });
+    };
+    for (const branch of branches) {
+      if (branch.name === defaultBranch) continue;
+      const branchBaseCommit = branchBaseCommitByName.get(branch.name);
+      if (!branchBaseCommit) continue;
+      const receivingCommit = branchReceivingCommitByName.get(branch.name) ?? branchBaseCommit;
+      const parentSha = receivingCommit.parentSha ?? branchStartParentShaByName.get(branch.name) ?? null;
+      if (!parentSha) continue;
+      const sourceNode = renderedNodeForSha(parentSha, resolveBranchStartParentName(branch));
+      const targetNode = renderedNodeForSha(receivingCommit.id, branch.name);
+      pushPair(
+        `branch:${sourceNode?.commit.visualId ?? parentSha}->${targetNode?.commit.visualId ?? receivingCommit.id}`,
+        sourceNode,
+        targetNode,
+        (source, target, blocker) => parentChildConnectorIntersectsNode(true, source, target, blocker),
+      );
+    }
     for (const childNode of renderNodes) {
       const parentNode =
         renderedNodeForSha(childNode.commit.parentSha, childNode.commit.branchName)
         ?? renderedNodeForSha(childNode.commit.parentSha);
-      if (!parentNode || parentNode.commit.visualId === childNode.commit.visualId) continue;
-      const key = `${parentNode.commit.visualId}->${childNode.commit.visualId}`;
-      if (seen.has(key)) continue;
-      seen.add(key);
-      pairs.push({
-        sourceNode: parentNode,
-        targetNode: childNode,
-        intersects: (sourceNode, targetNode, blocker) =>
+      pushPair(
+        `ancestry:${parentNode?.commit.visualId ?? childNode.commit.parentSha ?? 'missing'}->${childNode.commit.visualId}`,
+        parentNode,
+        childNode,
+        (sourceNode, targetNode, blocker) =>
           parentChildConnectorIntersectsNode(false, sourceNode, targetNode, blocker),
-      });
+      );
     }
     for (const destination of mergeDestinations) {
       const sourceNode = renderedNodeForSha(destination.sourceCommitSha, destination.sourceBranchName);
       const targetNode = renderedNodeForSha(destination.targetCommitSha, destination.targetBranchName);
-      if (!sourceNode || !targetNode || sourceNode.commit.visualId === targetNode.commit.visualId) continue;
-      const key = `merge:${sourceNode.commit.visualId}->${targetNode.commit.visualId}`;
-      if (seen.has(key)) continue;
-      seen.add(key);
-      pairs.push({ sourceNode, targetNode, intersects: mergeConnectorIntersectsNode });
+      pushPair(
+        `merge:${sourceNode?.commit.visualId ?? destination.sourceCommitSha}->${targetNode?.commit.visualId ?? destination.targetCommitSha}`,
+        sourceNode,
+        targetNode,
+        mergeConnectorIntersectsNode,
+      );
+    }
+    const nodesByBranchForChains = new Map<string, Node[]>();
+    for (const node of renderNodes) {
+      const list = nodesByBranchForChains.get(node.commit.branchName) ?? [];
+      list.push(node);
+      nodesByBranchForChains.set(node.commit.branchName, list);
+    }
+    for (const [branchName, branchNodes] of nodesByBranchForChains.entries()) {
+      if (branchNodes.length < 2) continue;
+      const orderedBranchNodes = [...branchNodes].sort((a, b) => {
+        if (a.row !== b.row) return a.row - b.row;
+        return safeTimeMs(a.commit.date) - safeTimeMs(b.commit.date)
+          || a.commit.id.localeCompare(b.commit.id);
+      });
+      for (let index = 1; index < orderedBranchNodes.length; index += 1) {
+        const sourceNode = orderedBranchNodes[index - 1]!;
+        const targetNode = orderedBranchNodes[index]!;
+        if (targetNode.commit.parentSha && renderedNodeForSha(targetNode.commit.parentSha, targetNode.commit.branchName)) {
+          continue;
+        }
+        pushPair(
+          `chain:${branchName}:${sourceNode.commit.visualId}->${targetNode.commit.visualId}`,
+          sourceNode,
+          targetNode,
+          (source, target, blocker) => parentChildConnectorIntersectsNode(false, source, target, blocker),
+        );
+      }
     }
     return pairs;
   };
@@ -2063,7 +2117,7 @@ export function computeBaseLayout(input: BranchGridLayoutInput): BaseLayoutModel
     const pairs = renderedConnectorPairs().sort((left, right) => {
       if (left.sourceNode.row !== right.sourceNode.row) return left.sourceNode.row - right.sourceNode.row;
       if (left.targetNode.row !== right.targetNode.row) return left.targetNode.row - right.targetNode.row;
-      return left.targetNode.commit.visualId.localeCompare(right.targetNode.commit.visualId);
+      return left.id.localeCompare(right.id);
     });
     
     // Temporarily compute coordinates for intersection checks
