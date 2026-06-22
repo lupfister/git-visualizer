@@ -21,6 +21,7 @@ import {
   TOP_PADDING,
   type BranchGridViewProps,
   type ConnectorFace,
+  type Connector,
   type NodePositionOverrides,
   type Node,
 } from './LayoutGrid';
@@ -104,6 +105,43 @@ function pruneVisibleNodesTowardTarget(prev: Set<string>, target: Set<string>, m
   for (const id of target) next.add(id);
   return next;
 }
+
+const serializeDebugNode = (node: Node | null | undefined) => {
+  if (!node) return null;
+  return {
+    id: node.commit.id,
+    visualId: node.commit.visualId,
+    branchName: node.commit.branchName,
+    kind: node.commit.kind ?? null,
+    message: node.commit.message,
+    date: node.commit.date,
+    parentSha: node.commit.parentSha ?? null,
+    parentShas: node.commit.parentShas ?? [],
+    row: node.row,
+    column: node.column,
+    x: node.x,
+    y: node.y,
+  };
+};
+
+const serializeDebugConnector = (connector: Connector, nodeByVisualId: Map<string, Node>) => {
+  const parent = connector.fromCommitVisualId ? nodeByVisualId.get(connector.fromCommitVisualId) : null;
+  const child = connector.toCommitVisualId ? nodeByVisualId.get(connector.toCommitVisualId) : null;
+  return {
+    id: connector.id,
+    edgeKind: connector.connectorEdgeKind ?? null,
+    fromCommitVisualId: connector.fromCommitVisualId ?? null,
+    toCommitVisualId: connector.toCommitVisualId ?? null,
+    from: parent ? serializeDebugNode(parent) : null,
+    to: child ? serializeDebugNode(child) : null,
+    rowDelta: parent && child ? child.row - parent.row : null,
+    columnDelta: parent && child ? child.column - parent.column : null,
+    fromX: connector.fromX,
+    fromY: connector.fromY,
+    toX: connector.toX,
+    toY: connector.toY,
+  };
+};
 
 function MapGridLoadingState() {
   return <MapGridLoadingTiles />;
@@ -780,6 +818,72 @@ export default function BranchGridMap({
     const selectedSha = selectedVisibleCommitShas[0];
     return nodeByCommitId.get(selectedSha) ?? null;
   }, [nodeByCommitId, selectedVisibleCommitShas]);
+
+  const layoutDebugJson = useMemo(() => {
+    const nodeByVisualId = new Map(renderNodes.map((node) => [node.commit.visualId, node] as const));
+    const selectedIds = new Set(selectedVisibleCommitShas);
+    const worktreeIds = new Set(worktreeSessions.map((session) => session.workingTreeId));
+    const interestingNodeIds = new Set<string>([...selectedIds, ...worktreeIds]);
+    const interestingNodes = renderNodes.filter((node) => (
+      interestingNodeIds.has(node.commit.id)
+      || isWorkingTreeCommitId(node.commit.id)
+      || node.commit.kind === 'uncommitted'
+    ));
+    const interestingVisualIds = new Set(interestingNodes.map((node) => node.commit.visualId));
+    const allConnectorsForDebug = [...connectorsForView, ...mergeConnectorsForView];
+    const relatedConnectors = allConnectorsForDebug.filter((connector) => (
+      (connector.fromCommitVisualId && interestingVisualIds.has(connector.fromCommitVisualId))
+      || (connector.toCommitVisualId && interestingVisualIds.has(connector.toCommitVisualId))
+    ));
+    const violatedConnectors = allConnectorsForDebug.filter((connector) => {
+      if (!connector.fromCommitVisualId || !connector.toCommitVisualId) return false;
+      const parent = nodeByVisualId.get(connector.fromCommitVisualId);
+      const child = nodeByVisualId.get(connector.toCommitVisualId);
+      return Boolean(parent && child && (child.row <= parent.row || child.column <= parent.column));
+    });
+    const overrideEntries = Object.entries(nodePositionOverrides)
+      .filter(([key]) => (
+        [...interestingNodeIds].some((id) => key.includes(id)) ||
+        [...interestingVisualIds].some((visualId) => key.includes(visualId))
+      ));
+
+    return JSON.stringify({
+      generatedAt: new Date().toISOString(),
+      repoPath: currentRepoPath ?? null,
+      orientation,
+      selectedCommitShas: selectedVisibleCommitShas,
+      checkedOutRef,
+      worktreeSessions,
+      selectedNode: serializeDebugNode(selectedPreviewNode),
+      interestingNodes: interestingNodes.map(serializeDebugNode),
+      relatedConnectors: relatedConnectors.map((connector) => serializeDebugConnector(connector, nodeByVisualId)),
+      violatedConnectors: violatedConnectors.map((connector) => serializeDebugConnector(connector, nodeByVisualId)),
+      nodePositionOverrides: Object.fromEntries(overrideEntries),
+      visibleBounds: visibleBoundsRef.current,
+      layoutCounts: {
+        allCommits: allCommits.length,
+        layoutNodes: layoutNodes.length,
+        renderNodes: renderNodes.length,
+        connectors: connectorsForView.length,
+        mergeConnectors: mergeConnectorsForView.length,
+      },
+      warnings: Object.fromEntries(resolvedLayoutModel.nodeWarnings),
+    }, null, 2);
+  }, [
+    allCommits.length,
+    checkedOutRef,
+    connectorsForView,
+    currentRepoPath,
+    layoutNodes.length,
+    mergeConnectorsForView,
+    nodePositionOverrides,
+    orientation,
+    renderNodes,
+    resolvedLayoutModel.nodeWarnings,
+    selectedPreviewNode,
+    selectedVisibleCommitShas,
+    worktreeSessions,
+  ]);
 
   const isSelectedWorktree = selectedPreviewNode != null && (
     isWorkingTreeCommitId(selectedPreviewNode.commit.id) ||
@@ -2107,6 +2211,7 @@ export default function BranchGridMap({
         debugRows={resolvedLayoutModel.debugRows}
         branchDebugRows={resolvedLayoutModel.branchDebugRows}
         softUpdateRows={softUpdateDebugRows}
+        layoutDebugJson={layoutDebugJson}
         connectorDecisions={connectorDecisions}
       />
       {gridHudProps ? (
@@ -2171,6 +2276,13 @@ export default function BranchGridMap({
                     }}
                   />
                 ) : null}
+                <button
+                  type="button"
+                  onClick={() => gridHudProps.setIsGridDebugOpen((open) => !open)}
+                  className="inline-flex h-7 items-center rounded-md border border-border/60 bg-background/95 px-2 text-[11px] font-medium text-muted-foreground transition-colors hover:bg-muted hover:text-foreground"
+                >
+                  Debug
+                </button>
               </div>
             </div>
           </div>

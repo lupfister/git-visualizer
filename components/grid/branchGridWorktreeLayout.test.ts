@@ -185,6 +185,81 @@ describe('computeBranchGridLayout worktree nodes', () => {
     expect(mergeOutgoing).toHaveLength(0);
   });
 
+  it('keeps a worktree after its visible parent even with a stale position override', () => {
+    const defaultBranch = 'main';
+    const parentDate = '2024-06-01T12:00:00Z';
+    const branches = [
+      makeBranch(defaultBranch, tipSha, 1),
+      makeBranch('lapis', tipSha, 0),
+    ];
+    const directCommits: DirectCommit[] = [
+      {
+        fullSha: mainSha,
+        sha: mainSha.slice(0, 7),
+        branch: defaultBranch,
+        message: 'root',
+        author: 'test',
+        date: '2024-05-01T12:00:00Z',
+        parentSha: null,
+        parentShas: [],
+      },
+      {
+        fullSha: tipSha,
+        sha: tipSha.slice(0, 7),
+        branch: defaultBranch,
+        message: 'auto-expand-sidebar',
+        author: 'test',
+        date: parentDate,
+        parentSha: mainSha,
+        parentShas: [mainSha],
+      },
+    ];
+    const sessions = buildWorktreeSessions(
+      [wt({ path: '/repo/.worktrees/lapis', branchName: 'lapis', headSha: tipSha })],
+      '/repo',
+    );
+    const worktreePreview: BranchCommitPreview = {
+      fullSha: sessions[0]!.workingTreeId,
+      sha: 'uncommitted',
+      parentSha: tipSha,
+      message: '',
+      author: 'You',
+      date: parentDate,
+      kind: 'uncommitted',
+    };
+    const layout = computeBranchGridLayout({
+      branches,
+      mergeNodes: [],
+      directCommits,
+      unpushedDirectCommits: [],
+      defaultBranch,
+      branchCommitPreviews: {
+        main: [directCommits[1]!],
+        lapis: [worktreePreview],
+      },
+      branchParentByName: { main: null, lapis: defaultBranch },
+      branchUniqueAheadCounts: { main: 1, lapis: 0 },
+      manuallyOpenedClumps: new Set(),
+      manuallyClosedClumps: new Set(),
+      isDebugOpen: false,
+      gridSearchQuery: '',
+      gridFocusSha: null,
+      checkedOutRef: null,
+      worktreeSessions: sessions,
+      orientation: 'horizontal',
+      nodePositionOverrides: {
+        [sessions[0]!.workingTreeId]: { row: 1, column: 0 },
+      },
+    });
+
+    const parentNode = layout.renderNodes.find((node) => node.commit.id === tipSha);
+    const worktreeNode = layout.renderNodes.find((node) => node.commit.id === sessions[0]!.workingTreeId);
+    expect(parentNode).toBeDefined();
+    expect(worktreeNode).toBeDefined();
+    expect(worktreeNode!.row).toBeGreaterThan(parentNode!.row);
+    expect(worktreeNode!.column).toBeGreaterThan(parentNode!.column);
+  });
+
   it('steps the primary worktree one timeline slot right when it shares the parent lane', () => {
     const defaultBranch = 'main';
     const parentDate = '2024-06-01T12:00:00Z';
