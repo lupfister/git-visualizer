@@ -2759,79 +2759,109 @@ export function projectVisibility(
       (canonicalSubtreeRankByVisualId.get(left.commit.visualId) ?? Number.MAX_SAFE_INTEGER)
       - (canonicalSubtreeRankByVisualId.get(right.commit.visualId) ?? Number.MAX_SAFE_INTEGER),
   );
-  const reservedCorridorKey = (row: number, column: number): string => `${row}:${column}`;
-  const buildReservedConnectorCells = (): Map<string, Array<ReadonlySet<string>>> => {
-    const reserved = new Map<string, Array<ReadonlySet<string>>>();
-    const reserve = (row: number, column: number, allowedVisualIds: ReadonlySet<string>) => {
-      const key = reservedCorridorKey(row, column);
-      const entries = reserved.get(key) ?? [];
-      entries.push(allowedVisualIds);
-      reserved.set(key, entries);
+  const syncProjectedCoordinates = (): void => {
+    const projectedMaxRow = Math.max(0, ...renderNodes.map((node) => node.row));
+    syncRenderNodeTimelineCoordinates(
+      renderNodes,
+      isHorizontal,
+      projectedMaxRow,
+      0,
+      zoomAwareTimelinePitch,
+      zoomAwareLanePitch,
+      () => false,
+    );
+  };
+  const setProjectedNodeColumn = (node: Node, column: number): void => {
+    node.column = column;
+    if (isHorizontal) {
+      node.x = LEFT_PADDING + (node.row - 1) * zoomAwareTimelinePitch;
+      node.y = TOP_PADDING + column * zoomAwareLanePitch;
+      return;
+    }
+    const projectedMaxRow = Math.max(0, ...renderNodes.map((candidate) => candidate.row));
+    node.x = LEFT_PADDING + column * COLUMN_WIDTH;
+    node.y = TOP_PADDING + (projectedMaxRow - node.row) * zoomAwareTimelinePitch;
+  };
+  const projectedConnectorIntersectsNode = (
+    parentNode: Node,
+    childNode: Node,
+    blocker: Node,
+  ): boolean => {
+    const anchors = computeParentChildConnectorAnchors(
+      isHorizontal,
+      parentNode.commit.branchName !== childNode.commit.branchName,
+      parentNode,
+      childNode,
+    );
+    const points = getMapGridConnectorPolyline(
+      anchors.fromX,
+      anchors.fromY,
+      anchors.toX,
+      anchors.toY,
+      anchors.fromFace,
+      anchors.toFace,
+    );
+    const rect = {
+      left: blocker.x,
+      right: blocker.x + CARD_WIDTH,
+      top: blocker.y - CARD_BODY_TOP_OFFSET,
+      bottom: blocker.y + CARD_HEIGHT,
     };
-
-    for (const edge of canonicalEdges) {
-      const minRow = Math.min(edge.parent.row, edge.child.row);
-      const maxRow = Math.max(edge.parent.row, edge.child.row);
-      const minColumn = Math.min(edge.parent.column, edge.child.column);
-      const maxColumn = Math.max(edge.parent.column, edge.child.column);
-      const allowed = new Set([edge.parent.commit.visualId, edge.child.commit.visualId]);
-      if (edge.parent.commit.branchName !== edge.child.commit.branchName) {
-        for (let column = minColumn + 1; column < maxColumn; column += 1) {
-          reserve(edge.parent.row, column, allowed);
-        }
+    for (let index = 1; index < points.length; index += 1) {
+      const start = points[index - 1]!;
+      const end = points[index]!;
+      const minX = Math.min(start.x, end.x);
+      const maxX = Math.max(start.x, end.x);
+      const minY = Math.min(start.y, end.y);
+      const maxY = Math.max(start.y, end.y);
+      if (Math.abs(start.x - end.x) < 0.5) {
+        if (start.x >= rect.left && start.x <= rect.right && maxY >= rect.top && minY <= rect.bottom) return true;
+        continue;
       }
-      for (let row = minRow + 1; row < maxRow; row += 1) {
-        reserve(row, edge.child.column, allowed);
+      if (Math.abs(start.y - end.y) < 0.5) {
+        if (start.y >= rect.top && start.y <= rect.bottom && maxX >= rect.left && minX <= rect.right) return true;
+        continue;
       }
-      if (
-        edge.parent.commit.branchName !== edge.child.commit.branchName &&
-        edge.parent.row !== edge.child.row &&
-        edge.parent.column !== edge.child.column
-      ) {
-        reserve(edge.parent.row, edge.child.column, allowed);
-      }
+      if (maxX >= rect.left && minX <= rect.right && maxY >= rect.top && minY <= rect.bottom) return true;
     }
-    return reserved;
+    return false;
   };
-  const reservedFanoutBlocksNode = (
-    reserved: Map<string, Array<ReadonlySet<string>>>,
-    node: Node,
-  ): boolean => {
+  const nodeBlockedByRenderedConnectorAtColumn = (node: Node, column: number): boolean => {
     if (node.commit.kind === 'stash' || node.commit.id.startsWith('STASH:')) return false;
-    const entries = reserved.get(reservedCorridorKey(node.row, node.column));
-    if (!entries) return false;
-    return entries.some((allowedVisualIds) => !allowedVisualIds.has(node.commit.visualId));
+    const previousColumn = node.column;
+    const previousX = node.x;
+    const previousY = node.y;
+    node.column = column;
+    setProjectedNodeColumn(node, column);
+    const blocked = canonicalEdges.some((edge) => {
+      if (edge.parent.commit.visualId === node.commit.visualId) return false;
+      if (edge.child.commit.visualId === node.commit.visualId) return false;
+      return projectedConnectorIntersectsNode(edge.parent, edge.child, node);
+    });
+    node.column = previousColumn;
+    node.x = previousX;
+    node.y = previousY;
+    return blocked;
   };
-  const advanceNodePastReservedConnectorCells = (
-    reserved: Map<string, Array<ReadonlySet<string>>>,
-    node: Node,
-  ): boolean => {
-    let changed = false;
-    while (reservedFanoutBlocksNode(reserved, node)) {
-      node.row += 1;
-      changed = true;
-    }
-    return changed;
+  const requiredColumnForNode = (node: Node): number => {
+    const incoming = incomingByVisualId.get(node.commit.visualId) ?? [];
+    if (incoming.length === 0) return 0;
+    return Math.max(...incoming.map((edge) => edge.parent.column + 1));
   };
   for (let pass = 0; !hasLogicalNodePositionOverrides && pass < renderNodes.length * 2; pass += 1) {
     let changed = false;
-    const reservedFanoutCells = buildReservedConnectorCells();
     for (const node of canonicalOrder) {
       const incoming = incomingByVisualId.get(node.commit.visualId) ?? [];
       if (incoming.length === 0) continue;
       const requiredRow = Math.max(
         ...incoming.map((edge) => edge.parent.row + (edge.sharesTimelineColumn ? 0 : 1)),
       );
-      const requiredColumn = Math.max(...incoming.map((edge) => edge.parent.column + 1));
       if (node.row < requiredRow) {
         node.row = requiredRow;
         changed = true;
       }
-      if (node.column < requiredColumn) {
-        node.column = requiredColumn;
-        changed = true;
-      }
     }
+    syncProjectedCoordinates();
     for (const children of childrenByVisualId.values()) {
       children.sort(
         (left, right) =>
@@ -2840,12 +2870,16 @@ export function projectVisibility(
       );
       const usedByRow = new Map<number, Set<number>>();
       for (const child of children) {
-        if (advanceNodePastReservedConnectorCells(reservedFanoutCells, child)) {
-          changed = true;
-        }
         const used = usedByRow.get(child.row) ?? new Set<number>();
-        while (used.has(child.column)) {
-          child.column += 1;
+        let column = Math.max(requiredColumnForNode(child), 0);
+        while (
+          used.has(column)
+          || nodeBlockedByRenderedConnectorAtColumn(child, column)
+        ) {
+          column += 1;
+        }
+        if (child.column !== column) {
+          setProjectedNodeColumn(child, column);
           changed = true;
         }
         used.add(child.column);
@@ -2854,18 +2888,16 @@ export function projectVisibility(
     }
     const occupied = new Set<string>();
     for (const node of nodesByCanonicalSubtreeRank) {
-      let moved = true;
-      while (moved) {
-        moved = false;
-        if (advanceNodePastReservedConnectorCells(reservedFanoutCells, node)) {
-          changed = true;
-          moved = true;
-        }
-        if (occupied.has(`${node.row}:${node.column}`)) {
-          node.column += 1;
-          changed = true;
-          moved = true;
-        }
+      let column = Math.max(requiredColumnForNode(node), 0);
+      while (
+        occupied.has(`${node.row}:${column}`)
+        || nodeBlockedByRenderedConnectorAtColumn(node, column)
+      ) {
+        column += 1;
+      }
+      if (node.column !== column) {
+        setProjectedNodeColumn(node, column);
+        changed = true;
       }
       occupied.add(`${node.row}:${node.column}`);
     }
@@ -2911,6 +2943,12 @@ export function projectVisibility(
       node.row -= minSolvedRow;
       node.column -= minSolvedColumn;
     }
+    compactVisibleLaneColumns(
+      renderNodes,
+      columnByCommitVisualId,
+      isHorizontal,
+      zoomAwareLanePitch,
+    );
   }
   for (const node of renderNodes) {
     const override = getNodePositionOverride(nodePositionOverrides, node.commit);
