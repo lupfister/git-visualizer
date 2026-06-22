@@ -2759,8 +2759,63 @@ export function projectVisibility(
       (canonicalSubtreeRankByVisualId.get(left.commit.visualId) ?? Number.MAX_SAFE_INTEGER)
       - (canonicalSubtreeRankByVisualId.get(right.commit.visualId) ?? Number.MAX_SAFE_INTEGER),
   );
+  const reservedCorridorKey = (row: number, column: number): string => `${row}:${column}`;
+  const buildReservedConnectorCells = (): Map<string, Array<ReadonlySet<string>>> => {
+    const reserved = new Map<string, Array<ReadonlySet<string>>>();
+    const reserve = (row: number, column: number, allowedVisualIds: ReadonlySet<string>) => {
+      const key = reservedCorridorKey(row, column);
+      const entries = reserved.get(key) ?? [];
+      entries.push(allowedVisualIds);
+      reserved.set(key, entries);
+    };
+
+    for (const edge of canonicalEdges) {
+      const minRow = Math.min(edge.parent.row, edge.child.row);
+      const maxRow = Math.max(edge.parent.row, edge.child.row);
+      const minColumn = Math.min(edge.parent.column, edge.child.column);
+      const maxColumn = Math.max(edge.parent.column, edge.child.column);
+      const allowed = new Set([edge.parent.commit.visualId, edge.child.commit.visualId]);
+      if (edge.parent.commit.branchName !== edge.child.commit.branchName) {
+        for (let column = minColumn + 1; column < maxColumn; column += 1) {
+          reserve(edge.parent.row, column, allowed);
+        }
+      }
+      for (let row = minRow + 1; row < maxRow; row += 1) {
+        reserve(row, edge.child.column, allowed);
+      }
+      if (
+        edge.parent.commit.branchName !== edge.child.commit.branchName &&
+        edge.parent.row !== edge.child.row &&
+        edge.parent.column !== edge.child.column
+      ) {
+        reserve(edge.parent.row, edge.child.column, allowed);
+      }
+    }
+    return reserved;
+  };
+  const reservedFanoutBlocksNode = (
+    reserved: Map<string, Array<ReadonlySet<string>>>,
+    node: Node,
+  ): boolean => {
+    if (node.commit.kind === 'stash' || node.commit.id.startsWith('STASH:')) return false;
+    const entries = reserved.get(reservedCorridorKey(node.row, node.column));
+    if (!entries) return false;
+    return entries.some((allowedVisualIds) => !allowedVisualIds.has(node.commit.visualId));
+  };
+  const advanceNodePastReservedConnectorCells = (
+    reserved: Map<string, Array<ReadonlySet<string>>>,
+    node: Node,
+  ): boolean => {
+    let changed = false;
+    while (reservedFanoutBlocksNode(reserved, node)) {
+      node.row += 1;
+      changed = true;
+    }
+    return changed;
+  };
   for (let pass = 0; !hasLogicalNodePositionOverrides && pass < renderNodes.length * 2; pass += 1) {
     let changed = false;
+    const reservedFanoutCells = buildReservedConnectorCells();
     for (const node of canonicalOrder) {
       const incoming = incomingByVisualId.get(node.commit.visualId) ?? [];
       if (incoming.length === 0) continue;
@@ -2783,20 +2838,34 @@ export function projectVisibility(
           (canonicalSubtreeRankByVisualId.get(left.commit.visualId) ?? Number.MAX_SAFE_INTEGER)
           - (canonicalSubtreeRankByVisualId.get(right.commit.visualId) ?? Number.MAX_SAFE_INTEGER),
       );
-      const used = new Set<number>();
+      const usedByRow = new Map<number, Set<number>>();
       for (const child of children) {
+        if (advanceNodePastReservedConnectorCells(reservedFanoutCells, child)) {
+          changed = true;
+        }
+        const used = usedByRow.get(child.row) ?? new Set<number>();
         while (used.has(child.column)) {
           child.column += 1;
           changed = true;
         }
         used.add(child.column);
+        usedByRow.set(child.row, used);
       }
     }
     const occupied = new Set<string>();
     for (const node of nodesByCanonicalSubtreeRank) {
-      while (occupied.has(`${node.row}:${node.column}`)) {
-        node.column += 1;
-        changed = true;
+      let moved = true;
+      while (moved) {
+        moved = false;
+        if (advanceNodePastReservedConnectorCells(reservedFanoutCells, node)) {
+          changed = true;
+          moved = true;
+        }
+        if (occupied.has(`${node.row}:${node.column}`)) {
+          node.column += 1;
+          changed = true;
+          moved = true;
+        }
       }
       occupied.add(`${node.row}:${node.column}`);
     }
