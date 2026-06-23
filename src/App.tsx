@@ -11,7 +11,12 @@ import TerminalPanel, { type TerminalPanelPlacement } from '../components/Termin
 import { mapGridCameraStorageKey, readHasSavedMapGridCamera } from '../components/grid/useMapGridCamera';
 import DenseBranchSidebar from '../components/DenseBranchSidebar';
 import type { Node, NodePositionOverrides } from '../components/grid/LayoutGrid';
-import { isWorktreePositionOverrideKeyFor } from '../components/grid/nodePositionOverrides';
+import {
+  assignNodePositionOverride,
+  getNodePositionOverride,
+  isWorktreePositionOverrideKeyFor,
+  laneBranchNamesForPositionOverrides,
+} from '../components/grid/nodePositionOverrides';
 import type { BranchGridLayoutModel } from '../components/grid/branchGridLayoutModel';
 import { hydrateBranchGridLayoutModel, serializeBranchGridLayoutModel } from '../components/grid/layoutSnapshot';
 import { buildGraphLayoutFingerprint, hashCommitShaList } from '../components/grid/graphLayoutFingerprint';
@@ -5227,8 +5232,9 @@ function App() {
       parent: commitResult.parentSha?.slice(0, 7) ?? 'none',
     });
     if (commitResult.branchName && commitResult.fullSha) {
-      const normalizedPath = normalizePath(worktreePath);
-      userDirtyNodePositionsRef.current.delete(normalizedPath);
+      flushSync(() => {
+        migrateCommittedWorktreeNodePosition(commitResult);
+      });
     }
     clearWorktreeDraftForPathRef.current(worktreePath);
     return commitResult;
@@ -6158,6 +6164,62 @@ function App() {
     () => buildWorktreeSessions(sortedWorktrees, repoPath ?? undefined, visualCheckedOutRef ?? checkedOutRef, activeProject?.worktreeOrder),
     [sortedWorktrees, repoPath, visualCheckedOutRef, checkedOutRef],
   );
+
+  const migrateCommittedWorktreeNodePosition = useCallback((commit: CommitMutationData) => {
+    const normalizedRepoPath = repoPath ? normalizePath(repoPath) : '';
+    const normalizedWorktreePath = normalizePath(commit.worktreePath ?? '');
+    if (!normalizedRepoPath || !normalizedWorktreePath) return;
+    const session = worktreeSessions.find((candidate) => sameRepoPath(candidate.path, normalizedWorktreePath));
+    if (!session) return;
+
+    const laneBranchNames = laneBranchNamesForPositionOverrides({
+      defaultBranch,
+      commitBranchName: commit.branchName,
+      checkedOutBranchName: checkedOutRef?.branchName,
+      extraBranchNames: branches.map((branch) => branch.name),
+    });
+
+    let migratedOverrides: NodePositionOverrides | null = null;
+    setNodePositionOverridesByRepo((previous) => {
+      const current = previous[normalizedRepoPath] ?? {};
+      const sourceOverride =
+        laneBranchNames
+          .map((branchName) =>
+            getNodePositionOverride(current, {
+              id: session.workingTreeId,
+              visualId: `${branchName}:${session.workingTreeId}`,
+              kind: 'uncommitted',
+            }),
+          )
+          .find((override) => override != null)
+        ?? getNodePositionOverride(current, {
+          id: session.workingTreeId,
+          visualId: session.workingTreeId,
+          kind: 'uncommitted',
+        });
+      if (!sourceOverride) return previous;
+
+      const nextForRepo = { ...current };
+      for (const branchName of laneBranchNames) {
+        assignNodePositionOverride(nextForRepo, {
+          id: commit.fullSha,
+          visualId: `${branchName}:${commit.fullSha}`,
+          kind: 'commit',
+          parentSha: commit.parentSha,
+        }, sourceOverride);
+      }
+      migratedOverrides = nextForRepo;
+      return {
+        ...previous,
+        [normalizedRepoPath]: nextForRepo,
+      };
+    });
+
+    if (migratedOverrides) {
+      userDirtyNodePositionsRef.current.add(normalizedRepoPath);
+      persistRepoNodePositions(normalizedRepoPath, migratedOverrides);
+    }
+  }, [branches, checkedOutRef?.branchName, defaultBranch, persistRepoNodePositions, repoPath, worktreeSessions]);
 
   const {
     draftsByWorkingTreeId: worktreeDraftByWorkingTreeId,
