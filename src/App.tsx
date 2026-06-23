@@ -5102,8 +5102,7 @@ function App() {
         const stashResult = await invoke<StashPushMutationData>('stash_push', {
           repoPath: effectiveRepoPath,
           includeUntracked: true,
-          message: preparedStashMessage
-            ?? (await invoke<string>('generate_stash_message', { repoPath: effectiveRepoPath })).trim(),
+          message: preparedStashMessage ?? '',
         });
         clearWorktreeDraftForPathRef.current(effectiveRepoPath);
         checkoutOutcomes.push(outcomeFromStashPush(stashResult));
@@ -5147,8 +5146,7 @@ function App() {
     const stashResult = await invoke<StashPushMutationData>('stash_push', {
       repoPath: worktreePath,
       includeUntracked: true,
-      message: preparedStashMessage
-        ?? (await invoke<string>('generate_stash_message', { repoPath: worktreePath })).trim(),
+      message: preparedStashMessage ?? '',
     });
     clearWorktreeDraftForPathRef.current(worktreePath);
     return stashResult;
@@ -7215,11 +7213,22 @@ function App() {
       const updatedWorktrees = await invoke<WorktreeInfo[]>('list_worktrees', { repoPath: projectPath }).catch(
         () => [] as WorktreeInfo[],
       );
+      const movedStashIndex = /^stash@\{(\d+)\}$/.exec(branchOrCommit)?.[1];
+      const stashDropOutcome = movedStashIndex != null
+        ? outcomeFromStashDrops([parseInt(movedStashIndex, 10)])
+        : null;
 
       if (sameRepoPath(projectPath, repoPath)) {
         setWorktrees(updatedWorktrees);
-        await finalizeRepoMutation(projectPath, outcomeFromWorktreeSync(updatedWorktrees));
+        await finalizeRepoMutation(
+          projectPath,
+          outcomeFromWorktreeSync(updatedWorktrees),
+          ...(stashDropOutcome ? [stashDropOutcome] : []),
+        );
       } else {
+        const updatedStashes = movedStashIndex != null
+          ? await invoke<GitStashEntry[]>('list_stashes', { repoPath: projectPath }).catch(() => null)
+          : null;
         setProjectSnapshots((prev) => {
           const snapshot = prev[projectPath];
           if (!snapshot) return prev;
@@ -7228,6 +7237,7 @@ function App() {
             [projectPath]: {
               ...snapshot,
               worktrees: updatedWorktrees,
+              stashes: updatedStashes ?? snapshot.stashes,
             },
           };
         });
@@ -7477,7 +7487,7 @@ function App() {
                 gridSearchJumpDirection={gridSearchJumpDirection}
                 gridFocusSha={gridFocusSha}
                 isLoading={mapLoading || loading}
-                isSyncing={isMutationBusy || projectTreeLoading}
+                isSyncing={projectTreeLoading}
                 blockMapDisplay={blockMapDisplay}
                 blockMapInteraction={blockMapInteraction}
                 mapReadyEpoch={mapSwitchEpoch}

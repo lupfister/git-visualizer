@@ -138,9 +138,11 @@ function CommitControls({
     isWorkingTreeCommitId(selectedPreviewNode.commit.id) ||
     selectedPreviewNode.commit.kind === 'uncommitted'
   );
-  const isSelectedStashOrPlaceholder = selectedPreviewNode != null && (
+  const isSelectedStash = selectedPreviewNode != null && (
     selectedPreviewNode.commit.id.startsWith('STASH:') ||
-    selectedPreviewNode.commit.kind === 'stash' ||
+    selectedPreviewNode.commit.kind === 'stash'
+  );
+  const isSelectedStashOrPlaceholder = selectedPreviewNode != null && (
     selectedPreviewNode.commit.kind === 'branch-created' ||
     selectedPreviewNode.commit.id.startsWith('BRANCH_HEAD:')
   );
@@ -456,21 +458,23 @@ function CommitControls({
         {!isSelectionEmpty && !isSelectedWorktree && !isSelectedStashOrPlaceholder && (
           <>
             {/* Preview Button */}
-            <button
-              type="button"
-              onClick={() => void onPreviewSelectedNode?.()}
-              disabled={previewInProgress}
-              className={cn(controlClassName, 'pointer-events-auto relative z-10 !border-border !bg-background hover:!bg-muted')}
-            >
-              <ToolbarActionContent
-                icon="preview"
-                label="Preview"
-                loading={previewInProgress}
-              />
-            </button>
+            {!isSelectedStash && (
+              <button
+                type="button"
+                onClick={() => void onPreviewSelectedNode?.()}
+                disabled={previewInProgress}
+                className={cn(controlClassName, 'pointer-events-auto relative z-10 !border-border !bg-background hover:!bg-muted')}
+              >
+                <ToolbarActionContent
+                  icon="preview"
+                  label="Preview"
+                  loading={previewInProgress}
+                />
+              </button>
+            )}
 
             {/* Push Button */}
-            {showPush && (
+            {showPush && !isSelectedStash && (
               <button
                 type="button"
                 onClick={() => {

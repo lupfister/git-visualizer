@@ -501,12 +501,21 @@ export const determineWorktreePromptDefaults = (
   const cleaned = resolvedTarget.replace(/[^a-zA-Z0-9._-]/g, '_') || 'HEAD';
   const isSha = /^[0-9a-fA-F]{7,40}$/.test(cleaned);
   const isHead = cleaned === 'HEAD';
+  const isStashRef = /^stash@\{\d+\}$/.test(resolvedTarget);
 
   if (isHead || isSha) {
     return {
       defaultFolderName: generateEsotericWorktreeName(existingNames),
       createBranch: true,
       createBranchDisabled: false,
+    };
+  }
+
+  if (isStashRef) {
+    return {
+      defaultFolderName: generateEsotericWorktreeName(existingNames),
+      createBranch: true,
+      createBranchDisabled: true,
     };
   }
 

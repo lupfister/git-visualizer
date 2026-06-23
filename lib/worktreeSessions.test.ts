@@ -357,6 +357,14 @@ describe('worktreeSessions', () => {
       expect(result.createBranchDisabled).toBe(false);
     });
 
+    it('requires creating a branch when resolved target is a stash ref', () => {
+      const result = determineWorktreePromptDefaults('stash@{0}', [], branches);
+      expect(result.defaultFolderName).toBeTruthy();
+      expect(result.defaultFolderName).not.toBe('stash__0_');
+      expect(result.createBranch).toBe(true);
+      expect(result.createBranchDisabled).toBe(true);
+    });
+
     it('returns branch name and defaults to checking out directly when branch is not checked out', () => {
       const result = determineWorktreePromptDefaults('feature', [], branches);
       expect(result.defaultFolderName).toBe('feature');
@@ -387,4 +395,3 @@ describe('worktreeSessions', () => {
     });
   });
 });
-

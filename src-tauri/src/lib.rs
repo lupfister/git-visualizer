@@ -3266,6 +3266,33 @@ async fn add_worktree(
 ) -> Result<git::WorktreeInfo, String> {
     run_blocking(move || {
         let repo = Path::new(&repo_path);
+        let branch_ref = branch_or_commit.as_deref().unwrap_or("").trim();
+        if let Some(stash_ref_body) = branch_ref.strip_prefix("stash@{").and_then(|value| value.strip_suffix('}')) {
+            let stash_index: u32 = stash_ref_body
+                .parse()
+                .map_err(|_| "Invalid stash index".to_string())?;
+            let new_branch = new_branch_name.as_deref().unwrap_or("").trim();
+            if new_branch.is_empty() {
+                return Err("Creating a worktree from a stash requires a new branch name.".to_string());
+            }
+            let stash_ref = format!("stash@{{{stash_index}}}");
+            let base_sha = git::cli::run(repo, &["rev-parse", &format!("{stash_ref}^1")])
+                .map_err(|e| e.to_string())?;
+            let base_sha = base_sha.trim();
+            git::cli::run(repo, &["worktree", "add", "-b", new_branch, &worktree_path, base_sha])
+                .map_err(|e| e.to_string())?;
+            let wt_dir = Path::new(&worktree_path);
+            if let Err(e) = git::cli::run(wt_dir, &["stash", "apply", &stash_ref]) {
+                let _ = git::cli::run(repo, &["worktree", "remove", "--force", &worktree_path]);
+                return Err(e.to_string());
+            }
+            git::cli::run(wt_dir, &["stash", "drop", &stash_ref]).map_err(|e| e.to_string())?;
+            let worktrees = git::list_worktrees(repo).map_err(|e| e.to_string())?;
+            let new_wt = worktrees.into_iter().find(|wt| wt.path == worktree_path)
+                .ok_or_else(|| "Worktree was created but not found in list".to_string())?;
+            return Ok(new_wt);
+        }
+
         let mut args: Vec<&str> = vec!["worktree", "add"];
         
         let new_branch = new_branch_name.as_deref().unwrap_or("").trim();
@@ -3276,7 +3303,6 @@ async fn add_worktree(
         
         args.push(&worktree_path);
         
-        let branch_ref = branch_or_commit.as_deref().unwrap_or("").trim();
         if !branch_ref.is_empty() {
             args.push(branch_ref);
         }
