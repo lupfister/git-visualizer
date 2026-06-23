@@ -2841,10 +2841,16 @@ function App() {
       });
       if (immediateApply) {
         flushSync(() => {
+          for (const outcome of outcomes) {
+            if (outcome.kind === 'commit') migrateCommittedWorktreeNodePosition(outcome.commit);
+          }
           applyPatchedSnapshot(normalizedPath, snapshot, layoutTopologyChanged, patchApplyOptions);
         });
       } else {
         startTransition(() => {
+          for (const outcome of outcomes) {
+            if (outcome.kind === 'commit') migrateCommittedWorktreeNodePosition(outcome.commit);
+          }
           applyPatchedSnapshot(normalizedPath, snapshot, layoutTopologyChanged, patchApplyOptions);
         });
       }
@@ -5231,11 +5237,6 @@ function App() {
       head: commitResult.fullSha.slice(0, 7),
       parent: commitResult.parentSha?.slice(0, 7) ?? 'none',
     });
-    if (commitResult.branchName && commitResult.fullSha) {
-      flushSync(() => {
-        migrateCommittedWorktreeNodePosition(commitResult);
-      });
-    }
     clearWorktreeDraftForPathRef.current(worktreePath);
     return commitResult;
   }
