@@ -5,6 +5,7 @@ import { assignNodePositionOverride } from './nodePositionOverrides';
 import {
   inferLayoutIndicesFromOverride,
   propagateOverrideRelativeLayout,
+  resolveOverrideAwareNodeCollisions,
 } from './overrideLayoutPropagation';
 
 const commit = (overrides: Partial<VisualCommit> = {}): VisualCommit => ({
@@ -70,5 +71,28 @@ describe('overrideLayoutPropagation', () => {
     expect(parentNode.row).toBe(4);
     expect(childNode.row).toBe(2);
     expect(childNode.column).toBe(0);
+  });
+
+  it('moves unpinned nodes out of overridden node slots', () => {
+    const pinned = commit({ id: 'pinned', visualId: 'main:pinned' });
+    const newWorktree = commit({
+      id: 'WORKTREE:/repo/worktree',
+      visualId: 'feature:WORKTREE:/repo/worktree',
+      branchName: 'feature',
+      kind: 'uncommitted',
+    });
+    const pinnedNode = nodeFor(pinned, 4, 2);
+    const worktreeNode = nodeFor(newWorktree, 4, 2);
+    const overrides = {};
+    assignNodePositionOverride(overrides, pinned, { row: 4, column: 2 });
+
+    resolveOverrideAwareNodeCollisions({
+      renderNodes: [worktreeNode, pinnedNode],
+      overrides,
+    });
+
+    expect(pinnedNode.column).toBe(2);
+    expect(worktreeNode.row).toBe(4);
+    expect(worktreeNode.column).toBe(3);
   });
 });

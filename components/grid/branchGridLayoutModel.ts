@@ -37,6 +37,7 @@ import { computeMergeConnectorAnchors, computeParentChildConnectorAnchors } from
 import { getMapGridConnectorPolyline } from './gridPathUtils';
 import { deriveAllClumpsFromOwners, syncClumpCoordinatesToRenderNodes } from './clumpLayout';
 import { getNodePositionOverride, migrateNodePositionOverridesForCommits } from './nodePositionOverrides';
+import { resolveOverrideAwareNodeCollisions } from './overrideLayoutPropagation';
 
 /** Sync with MapGrid GRID_RENDER_ZOOM — row pitch is authored in this render space. */
 export const GRID_LAYOUT_RENDER_ZOOM = 2.25;
@@ -2948,6 +2949,7 @@ export function projectVisibility(
     node.row = Math.max(1, Math.round(override.row));
     node.column = Math.max(0, Math.round(override.column));
   }
+  resolveOverrideAwareNodeCollisions({ renderNodes, overrides: nodePositionOverrides });
 
   for (let pass = 0; !hasLogicalNodePositionOverrides && pass < renderNodes.length; pass += 1) {
     let changed = false;
@@ -2969,6 +2971,7 @@ export function projectVisibility(
     }
     if (!changed) break;
   }
+  resolveOverrideAwareNodeCollisions({ renderNodes, overrides: nodePositionOverrides });
 
   for (const node of renderNodes) {
     allRowByVisualId.set(node.commit.visualId, node.row);

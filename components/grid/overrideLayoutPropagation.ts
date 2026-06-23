@@ -82,3 +82,37 @@ export const propagateOverrideRelativeLayout = ({
     node.column = indices.column;
   }
 };
+
+export const resolveOverrideAwareNodeCollisions = ({
+  renderNodes,
+  overrides,
+}: {
+  renderNodes: Node[];
+  overrides: NodePositionOverrides;
+}): void => {
+  if (renderNodes.length <= 1) return;
+
+  const occupied = new Set<string>();
+  const hasOverride = (node: Node): boolean => Boolean(getNodePositionOverride(overrides, node.commit));
+  const keyFor = (row: number, column: number): string => `${row}:${column}`;
+  const orderedNodes = [...renderNodes].sort((left, right) => {
+    const leftPinned = hasOverride(left);
+    const rightPinned = hasOverride(right);
+    if (leftPinned !== rightPinned) return leftPinned ? -1 : 1;
+    if (left.row !== right.row) return left.row - right.row;
+    if (left.column !== right.column) return left.column - right.column;
+    return left.commit.visualId.localeCompare(right.commit.visualId);
+  });
+
+  for (const node of orderedNodes) {
+    if (hasOverride(node)) {
+      occupied.add(keyFor(node.row, node.column));
+      continue;
+    }
+
+    let column = node.column;
+    while (occupied.has(keyFor(node.row, column))) column += 1;
+    node.column = column;
+    occupied.add(keyFor(node.row, column));
+  }
+};
