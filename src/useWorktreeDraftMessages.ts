@@ -60,6 +60,7 @@ type UseWorktreeDraftMessagesResult = {
   getPreparedCommitMessage: (worktreePath: string) => string | null;
   getPreparedStashMessage: (worktreePath: string) => string | null;
   waitForPreparedCommitMessage: (worktreePath: string) => Promise<string | null>;
+  seedDraftForPath: (worktreePath: string, message: string) => void;
   clearDraftForPath: (worktreePath: string) => void;
 };
 
@@ -123,6 +124,28 @@ export const useWorktreeDraftMessages = ({
       delete next[normalizedPath];
       return next;
     });
+  }, [clearDebounceTimer]);
+
+  const seedDraftForPath = useCallback((worktreePath: string, message: string) => {
+    const normalizedPath = normalizeWorktreePath(worktreePath);
+    const trimmed = message.trim();
+    if (!normalizedPath || !trimmed) return;
+    clearDebounceTimer(normalizedPath);
+    generationTokenRef.current.set(normalizedPath, (generationTokenRef.current.get(normalizedPath) ?? 0) + 1);
+    inFlightRef.current.delete(normalizedPath);
+    const entry: WorktreeDraftEntry = {
+      status: 'ready',
+      commitMessage: trimmed,
+      stashMessage: trimmed,
+      summaryFingerprint: '',
+      messageFingerprint: '',
+      fallbackLabel: trimmed,
+    };
+    writePersistedWorktreeDraft(normalizedPath, entry);
+    setDraftsByPath((previous) => ({
+      ...previous,
+      [normalizedPath]: entry,
+    }));
   }, [clearDebounceTimer]);
 
   const runDraftGeneration = useCallback(async (normalizedPath: string, summaryFingerprint: string) => {
@@ -570,6 +593,7 @@ export const useWorktreeDraftMessages = ({
     getPreparedCommitMessage,
     getPreparedStashMessage,
     waitForPreparedCommitMessage,
+    seedDraftForPath,
     clearDraftForPath,
   };
 };

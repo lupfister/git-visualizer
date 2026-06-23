@@ -65,6 +65,12 @@ export function branchRefDigestFromSnapshot(snapshot: RepoVisualSnapshot): strin
   return lines.sort().join('|');
 }
 
+function stashDigestFromSnapshot(snapshot: RepoVisualSnapshot): string {
+  return snapshot.stashes
+    .map((stash) => `${stash.index}:${stash.baseSha}:${stash.message}`)
+    .join('|');
+}
+
 export function isRepoSnapshotBehindPeek(
   snapshot: RepoVisualSnapshot,
   peek: RepoSyncPeekLike,
@@ -82,6 +88,8 @@ export function isRepoSnapshotBehindPeek(
   }
   const worktreeSig = formatWorktreeSyncSignature(snapshot.worktrees);
   if (parsed.worktreeSig && worktreeSig && parsed.worktreeSig !== worktreeSig) return true;
+  const stashSig = stashDigestFromSnapshot(snapshot);
+  if (parsed.stashSig && parsed.stashSig !== stashSig) return true;
   const liveUnpushedCount = String(snapshot.unpushedDirectCommits.length);
   if (parsed.headUnpushedCount !== liveUnpushedCount) return true;
   return false;

@@ -575,6 +575,7 @@ function App() {
     async () => null,
   );
   const getPreparedStashMessageRef = useRef<(worktreePath: string) => string | null>(() => null);
+  const seedWorktreeDraftForPathRef = useRef<(worktreePath: string, message: string) => void>(() => {});
   const clearWorktreeDraftForPathRef = useRef<(worktreePath: string) => void>(() => {});
   /** Optimistic commit HEAD — blocks stale quick-state / DB refresh from regressing the checkout tip. */
   const postCommitProtectedHeadShaRef = useRef<Record<string, string>>({});
@@ -2783,16 +2784,17 @@ function App() {
       }
       const layoutTopologyChanged = outcomes.some((outcome) => outcome.layoutTopologyChanged);
       const isCommit = outcomes.some((outcome) => outcome.kind === 'commit');
+      const isStashPush = outcomes.some((outcome) => outcome.kind === 'stashPush');
       const isPush = outcomes.some((outcome) => outcome.kind === 'push');
       const commitOutcome = isCommit
         ? outcomes.find((outcome): outcome is RepoMutationOutcome & { kind: 'commit' } => outcome.kind === 'commit')
         : undefined;
 
-      if (isCommit) {
+      if (isCommit || isStashPush) {
         const worktrees = await invoke<WorktreeInfo[]>('list_worktrees', { repoPath: normalizedPath }).catch(
           () => [] as WorktreeInfo[],
         );
-        noteSoftUpdateDebug('post-commit worktree sync', {
+        noteSoftUpdateDebug(isCommit ? 'post-commit worktree sync' : 'post-stash worktree sync', {
           count: worktrees.length,
           worktrees: worktrees.map((worktree) => ({
             path: normalizePath(worktree.path).split('/').pop() ?? worktree.path,
@@ -2804,6 +2806,9 @@ function App() {
           })),
         });
         snapshot = applyMutationPatch(snapshot, outcomeFromWorktreeSync(worktrees));
+      }
+
+      if (isCommit) {
         protectPostCommitHead(
           normalizedPath,
           snapshot.checkedOutRef?.headSha ?? commitOutcome?.commit.fullSha ?? null,
@@ -2813,13 +2818,13 @@ function App() {
       // Push uses optimistic patchPush; background reconcile refreshes metadata without blocking here.
 
       await yieldToPaint();
-      if (!isCommit && !isPush && applyGeneration !== repoMutationGenerationRef.current) return;
+      if (!isCommit && !isPush && !isStashPush && applyGeneration !== repoMutationGenerationRef.current) return;
 
       const immediateApply = mutationOutcomeNeedsImmediateApply(outcomes);
       const patchApplyOptions = {
         force: true as const,
         previousSnapshot,
-        skipLayoutRebuild: outcomes.every((outcome) => outcome.kind === 'stashPush' || outcome.kind === 'stashSync'),
+        skipLayoutRebuild: outcomes.every((outcome) => outcome.kind === 'stashSync'),
       };
       noteSoftUpdateDebug('apply mutation snapshot', {
         kinds: outcomes.map((outcome) => outcome.kind).join(','),
@@ -2839,7 +2844,7 @@ function App() {
         });
       }
 
-      if (isCommit || isPush) {
+      if (isCommit || isPush || isStashPush) {
         if (isCommit) {
           autoFocusSyncKeyRef.current = null;
           const focusSha = resolveActiveWorktreeFocusSha(
@@ -2854,6 +2859,8 @@ function App() {
         }
         if (isCommit) {
           markGitActivityHandled();
+        } else if (isStashPush) {
+          markGitActivityHandled();
         } else {
           void fetchRepoSyncPeek(normalizedPath).then((postPushPeek) => {
             if (postPushPeek && !isActiveUiBehindPeek(normalizedPath, postPushPeek)) {
@@ -2862,7 +2869,15 @@ function App() {
           }).catch(() => undefined);
         }
         noteSyncedAfterMutationOutcomes(normalizedPath, ...outcomes);
-        schedulePostMutationGraphReconcile(normalizedPath);
+        if (!isStashPush) {
+          schedulePostMutationGraphReconcile(normalizedPath);
+        } else {
+          window.setTimeout(() => {
+            void invoke('persist_project_snapshot', { projectId: normalizedPath }).catch((error) => {
+              console.warn('Background snapshot persist failed:', error);
+            });
+          }, PERSIST_SNAPSHOT_DEFER_MS);
+        }
       } else {
         const hasBranchDeleteOutcome = outcomes.some((o) => o.kind === 'branchDelete');
         window.setTimeout(() => {
@@ -5053,11 +5068,13 @@ function App() {
       try {
         beginRepoMutation();
         const stashIndex = parseInt(stashRestore[1], 10);
+        const restoredStashMessage = stashes.find((stash) => stash.index === stashIndex)?.message.trim() ?? '';
         const result = await invoke<StashRestoreMutationData>('apply_stash_restore', {
           repoPath: effectiveRepoPath,
           stashIndex,
         });
         await finishCheckoutMutation([outcomeFromStashRestore(result)]);
+        seedWorktreeDraftForPathRef.current(effectiveRepoPath, restoredStashMessage);
         const label = `Stash ${stashIndex + 1}`;
         setCommitSwitchFeedback({
           kind: 'success',
@@ -6149,6 +6166,7 @@ function App() {
     getPreparedCommitMessage,
     getPreparedStashMessage,
     waitForPreparedCommitMessage,
+    seedDraftForPath,
     clearDraftForPath,
   } = useWorktreeDraftMessages({
     worktreeSessions,
@@ -6162,6 +6180,7 @@ function App() {
   getPreparedCommitMessageRef.current = getPreparedCommitMessage;
   waitForPreparedCommitMessageRef.current = waitForPreparedCommitMessage;
   getPreparedStashMessageRef.current = getPreparedStashMessage;
+  seedWorktreeDraftForPathRef.current = seedDraftForPath;
   clearWorktreeDraftForPathRef.current = clearDraftForPath;
 
   const focusCameraOnActiveWorktree = useCallback(() => {

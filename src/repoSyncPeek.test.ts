@@ -94,7 +94,7 @@ function peekFor(snapshotValue: RepoVisualSnapshot, overrides: Partial<ReturnTyp
     dirty: snapshotValue.checkedOutRef?.hasUncommittedChanges ? '1' : '0',
     branchRefDigest: branchHeadDigestFromSnapshot(snapshotValue),
     worktreeSig: formatWorktreeSyncSignature(snapshotValue.worktrees),
-    stashSig: '',
+    stashSig: snapshotValue.stashes.map((stash) => `${stash.index}:${stash.baseSha}:${stash.message}`).join('|'),
     headUnpushedCount: String(snapshotValue.unpushedDirectCommits.length),
     remoteHeadsDigest: 'remote-a',
     ...overrides,
@@ -153,6 +153,16 @@ describe('isRepoSnapshotBehindPeek', () => {
       worktrees: [{ ...current.worktrees[0], hasUncommittedChanges: false }],
     });
     expect(isRepoSnapshotBehindPeek(current, peekFor(cleanWorktree))).toBe(true);
+  });
+
+  it('treats stash list changes as behind', () => {
+    const current = snapshot({
+      checkedOutRef: { branchName: 'main', headSha: baseSha, parentSha: null, hasUncommittedChanges: false },
+      worktrees: [{ ...snapshot().worktrees[0], hasUncommittedChanges: false }],
+    });
+    expect(isRepoSnapshotBehindPeek(current, peekFor(current, {
+      stashSig: `0:${baseSha}:WIP local changes`,
+    }))).toBe(true);
   });
 
   it('does not report behind when snapshot matches peek', () => {
