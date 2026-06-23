@@ -8,9 +8,11 @@ type RootLayoutProps = {
   children: ReactNode;
 };
 
+const DIALKIT_PANEL_TITLE = 'Git Visualizer';
+
 /** Registers at least one DialKit panel; DialRoot renders nothing until a panel exists. */
 const DialKitBootstrap = () => {
-  useDialKit('Git Visualizer', {
+  useDialKit(DIALKIT_PANEL_TITLE, {
     preview: [1, 0, 1],
   });
   return null;
