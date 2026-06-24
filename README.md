@@ -1,4 +1,4 @@
-# Git Visualizer
+# Git Visualizer - Test Worktree
 
 A native desktop app for exploring local git repositories as a spatial branch map. Open one or more repos, pan across commits and branches, manage worktrees and stashes, and run everyday git operations directly from the canvas.
 
