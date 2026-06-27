@@ -704,9 +704,7 @@ export default function BranchGridMap({
     [renderNodes],
   );
 
-  useLayoutEffect(() => {
-    hasCullRunRef.current = false;
-  }, [renderNodes]);
+
 
   const visibleRenderNodes = useMemo(() => {
     return renderNodes.filter((node) => {
@@ -1758,6 +1756,15 @@ export default function BranchGridMap({
     panEpoch,
     viewportClientSize,
   ]);
+
+  useLayoutEffect(() => {
+    hasCullRunRef.current = false;
+    if (spatialCullRafRef.current != null) {
+      window.cancelAnimationFrame(spatialCullRafRef.current);
+      spatialCullRafRef.current = null;
+    }
+    applyVisibleNodeCull();
+  }, [renderNodes, applyVisibleNodeCull]);
 
   useEffect(() => {
     if (isCameraMovingRef.current) return;
