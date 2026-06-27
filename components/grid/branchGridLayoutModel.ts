@@ -996,6 +996,7 @@ export function computeBaseLayout(input: BranchGridLayoutInput): BaseLayoutModel
     };
     let previousBoundaryKind: string | null = null;
     let previousAuthor: string | null = null;
+    let previousIsSquash = false;
     for (const commit of ordered) {
       const isHiddenSyntheticChild = commit.kind === 'branch-created' || commit.kind === 'stash';
       const isBoundary = boundaryShaByCommitId.has(commit.visualId);
@@ -1012,9 +1013,12 @@ export function computeBaseLayout(input: BranchGridLayoutInput): BaseLayoutModel
       if (isMergeCommit) {
         currentKey = null;
       }
+      const isSquash = /squash commit/i.test(commit.message || '');
       const boundaryKind = clusterBoundaryKind(commit);
       const shouldReset = 
         !currentKey || 
+        previousIsSquash ||
+        isSquash ||
         (previousBoundaryKind != null && (
           previousBoundaryKind === 'uncommitted' || boundaryKind === 'uncommitted' ||
           previousBoundaryKind === 'stash' || boundaryKind === 'stash' ||
@@ -1040,6 +1044,7 @@ export function computeBaseLayout(input: BranchGridLayoutInput): BaseLayoutModel
       }
       previousBoundaryKind = boundaryKind;
       previousAuthor = commit.author;
+      previousIsSquash = isSquash;
     }
     const leadPriority = (commit: VisualCommit): number => {
       if (commit.kind === 'uncommitted') return 3;
