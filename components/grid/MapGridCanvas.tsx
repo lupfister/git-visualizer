@@ -826,7 +826,7 @@ const MapGridCommitCard = memo(function MapGridCommitCard({
               className={cn(
                 'pointer-events-auto max-w-[38rem] select-none font-normal tracking-tight text-foreground',
                 selectedCommitTextClass,
-                displayZoom <= 0.5 ? 'overflow-hidden text-ellipsis whitespace-nowrap' : 'break-words whitespace-normal',
+                displayZoom <= 0.5 ? 'overflow-hidden text-ellipsis whitespace-nowrap' : 'break-words whitespace-pre-line',
               )}
               style={scaledBodyTextStyle}
               aria-label={isDirtyWorktreeNode ? displayLabel : undefined}
