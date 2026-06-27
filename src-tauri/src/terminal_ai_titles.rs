@@ -12,7 +12,7 @@ use std::{
 use crate::opencode;
 use crate::terminal_host::{
     self, compute_output_fingerprint, extract_output_tail_for_ai, output_has_meaningful_content,
-    TerminalSession, OUTPUT_IDLE, AI_TITLE_TICK,
+    TerminalSession, AI_TITLE_TICK, OUTPUT_IDLE,
 };
 
 struct SessionTrack {
@@ -80,18 +80,19 @@ fn maybe_generate_for_session(session: TerminalSession) {
     }
 
     let process_hint = process_hint_from_session(&refreshed);
-    let fingerprint =
-        compute_output_fingerprint(output_bytes, process_hint.as_deref());
+    let fingerprint = compute_output_fingerprint(output_bytes, process_hint.as_deref());
 
     let idle_ok = {
         let Ok(mut guard) = tracks().lock() else {
             return;
         };
-        let track = guard.entry(session.id.clone()).or_insert_with(|| SessionTrack {
-            last_fingerprint: fingerprint.clone(),
-            last_change: Instant::now(),
-            in_flight: AtomicBool::new(false),
-        });
+        let track = guard
+            .entry(session.id.clone())
+            .or_insert_with(|| SessionTrack {
+                last_fingerprint: fingerprint.clone(),
+                last_change: Instant::now(),
+                in_flight: AtomicBool::new(false),
+            });
         if track.last_fingerprint != fingerprint {
             track.last_fingerprint = fingerprint.clone();
             track.last_change = Instant::now();
@@ -136,11 +137,8 @@ fn maybe_generate_for_session(session: TerminalSession) {
         );
 
         if let Ok(title) = result {
-            let _ = terminal_host::set_session_ai_label(
-                session_id.clone(),
-                title,
-                fingerprint.clone(),
-            );
+            let _ =
+                terminal_host::set_session_ai_label(session_id.clone(), title, fingerprint.clone());
         }
 
         if let Ok(guard) = tracks().lock() {

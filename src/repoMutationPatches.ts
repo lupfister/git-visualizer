@@ -1,5 +1,5 @@
 import { stripWorkingTreeFromPreviews } from '../lib/injectWorktreeUncommitted';
-import { isWorkingTreeCommitId } from '../lib/worktreeSessions';
+import { isWorkingTreeCommitId, workingTreeIdForPath } from '../lib/worktreeSessions';
 import type {
   Branch,
   BranchCommitPreview,
@@ -100,11 +100,13 @@ function linkParentToChild(
   return { directCommits, branchCommitPreviews };
 }
 
-function patchBranchForPush(branch: Branch): Branch {
+function patchBranchForPush(branch: Branch, remainingCount?: number): Branch {
   return {
     ...branch,
-    unpushedCommits: 0,
-    remoteSyncStatus: branch.remoteSyncStatus === 'local-only' ? 'local-only' : 'on-github',
+    unpushedCommits: remainingCount !== undefined ? remainingCount : 0,
+    remoteSyncStatus: branch.remoteSyncStatus === 'local-only'
+      ? (remainingCount !== undefined && remainingCount === branch.unpushedCommits ? 'local-only' : 'on-github')
+      : 'on-github',
     status: branch.status === 'unknown' ? 'unknown' : 'fresh',
   };
 }
@@ -117,9 +119,31 @@ function syncUnpushedDirectCommits(
   return unpushedDirectCommits.filter((commit) => allowedShas.has(commit.fullSha));
 }
 
+function stripCommitWorktreePreview(
+  previewsByBranch: Record<string, BranchCommitPreview[]>,
+  workingTreeId: string | null,
+): Record<string, BranchCommitPreview[]> {
+  if (!workingTreeId) return previewsByBranch;
+  let changed = false;
+  const next: Record<string, BranchCommitPreview[]> = {};
+  for (const [branchName, previews] of Object.entries(previewsByBranch)) {
+    const filtered = previews.filter((preview) => preview.fullSha !== workingTreeId);
+    if (filtered.length !== previews.length) changed = true;
+    if (filtered.length > 0) next[branchName] = filtered;
+  }
+  return changed ? next : previewsByBranch;
+}
+
 function patchCommit(snapshot: RepoVisualSnapshot, commit: RepoMutationOutcome & { kind: 'commit' }): RepoVisualSnapshot {
   const { branchName, fullSha, sha, message, author, date, parentSha, parentShas, checkedOutRef, worktreePath } = commit.commit;
   const parentShaValue = parentSha ?? parentShas[0] ?? null;
+  const committedWorktree = worktreePath
+    ? snapshot.worktrees.find((worktree) => samePath(worktree.path, worktreePath))
+    : snapshot.worktrees.find((worktree) => worktree.isCurrent);
+  const committedWorkingTreeId =
+    committedWorktree?.hasUncommittedChanges === true
+      ? workingTreeIdForPath(committedWorktree.path, committedWorktree.isCurrent)
+      : null;
   const committedCurrentWorktree = !worktreePath || snapshot.worktrees.some((worktree) =>
     worktree.isCurrent && samePath(worktree.path, worktreePath),
   );
@@ -153,7 +177,7 @@ function patchCommit(snapshot: RepoVisualSnapshot, commit: RepoMutationOutcome &
     kind: 'commit',
   };
 
-  const branchCommitPreviews = { ...linked.branchCommitPreviews };
+  const branchCommitPreviews = { ...stripCommitWorktreePreview(linked.branchCommitPreviews, committedWorkingTreeId) };
   branchCommitPreviews[branchName] = [newPreview, ...(branchCommitPreviews[branchName] ?? [])];
 
   const branches = snapshot.branches.map((branch) => {
@@ -263,9 +287,39 @@ function patchStashRestore(
 
 function patchPush(snapshot: RepoVisualSnapshot, outcome: RepoMutationOutcome & { kind: 'push' }): RepoVisualSnapshot {
   const pushed = new Set(outcome.pushedBranchNames);
-  const branches = snapshot.branches.map((branch) =>
-    pushed.has(branch.name) ? patchBranchForPush(branch) : branch,
+  const targetMap = new Map<string, string | undefined>(
+    outcome.targets?.map((t) => [t.branchName, t.targetSha])
   );
+
+  const unpushedCommitShasByBranch = { ...snapshot.unpushedCommitShasByBranch };
+  const branchRemainingCount = new Map<string, number>();
+
+  for (const branchName of outcome.pushedBranchNames) {
+    const shas = snapshot.unpushedCommitShasByBranch[branchName] ?? [];
+    const targetSha = targetMap.get(branchName);
+
+    if (targetSha) {
+      const idx = shas.indexOf(targetSha);
+      if (idx !== -1) {
+        // Commits before targetSha (newer commits) remain unpushed.
+        // Commits at targetSha and after (older commits) are pushed.
+        const remaining = shas.slice(0, idx);
+        unpushedCommitShasByBranch[branchName] = remaining;
+        branchRemainingCount.set(branchName, remaining.length);
+      } else {
+        unpushedCommitShasByBranch[branchName] = [];
+        branchRemainingCount.set(branchName, 0);
+      }
+    } else {
+      unpushedCommitShasByBranch[branchName] = [];
+      branchRemainingCount.set(branchName, 0);
+    }
+  }
+
+  const branches = snapshot.branches.map((branch) =>
+    pushed.has(branch.name) ? patchBranchForPush(branch, branchRemainingCount.get(branch.name)) : branch,
+  );
+
   const checkedOutRef = snapshot.checkedOutRef && pushed.has(snapshot.checkedOutRef.branchName ?? '')
     ? {
         ...snapshot.checkedOutRef,
@@ -274,15 +328,14 @@ function patchPush(snapshot: RepoVisualSnapshot, outcome: RepoMutationOutcome & 
       }
     : snapshot.checkedOutRef;
 
-  const unpushedCommitShasByBranch = { ...snapshot.unpushedCommitShasByBranch };
-  for (const branchName of outcome.pushedBranchNames) {
-    unpushedCommitShasByBranch[branchName] = [];
-  }
-
   const pushedShas = new Set<string>();
   for (const branchName of outcome.pushedBranchNames) {
-    for (const sha of snapshot.unpushedCommitShasByBranch[branchName] ?? []) {
-      pushedShas.add(sha);
+    const originalShas = snapshot.unpushedCommitShasByBranch[branchName] ?? [];
+    const remainingShas = new Set(unpushedCommitShasByBranch[branchName] ?? []);
+    for (const sha of originalShas) {
+      if (!remainingShas.has(sha)) {
+        pushedShas.add(sha);
+      }
     }
   }
 
@@ -625,11 +678,15 @@ export function outcomeFromStashRestore(data: import('../types').StashRestoreMut
   };
 }
 
-export function outcomeFromPush(pushedBranchNames: string[]): RepoMutationOutcome {
+export function outcomeFromPush(
+  pushedBranchNames: string[],
+  targets?: Array<{ branchName: string; targetSha?: string }>
+): RepoMutationOutcome {
   return {
     kind: 'push',
     layoutTopologyChanged: false,
     pushedBranchNames,
+    targets,
   };
 }
 

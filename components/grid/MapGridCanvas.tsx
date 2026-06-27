@@ -1305,6 +1305,32 @@ const MapGridCanvas = memo(function MapGridCanvas({
     return ids;
   }, [clusterKeyByCommitId, renderedOpenClumps, visibleRenderNodes]);
 
+  const collapsedClumpVisualIds = useMemo(() => {
+    const ids = new Set<string>();
+    for (const node of visibleRenderNodes) {
+      const clusterKey = clusterKeyByCommitId.get(node.commit.visualId);
+      if (!clusterKey) continue;
+      const count = clusterCounts.get(clusterKey) ?? 1;
+      if (count <= 1) continue;
+      const isOpen =
+        renderedOpenClumps.has(clusterKey) ||
+        manuallyOpenedClumps.has(clusterKey) ||
+        (!defaultCollapsedClumps.has(clusterKey) && !manuallyClosedClumps.has(clusterKey));
+      if (!isOpen) {
+        ids.add(node.commit.visualId);
+      }
+    }
+    return ids;
+  }, [
+    clusterKeyByCommitId,
+    clusterCounts,
+    renderedOpenClumps,
+    manuallyOpenedClumps,
+    defaultCollapsedClumps,
+    manuallyClosedClumps,
+    visibleRenderNodes,
+  ]);
+
   const cardSlotAssignments = useMemo(() => {
     const viewportW = viewportClientSize?.width ?? 0;
     const viewportH = viewportClientSize?.height ?? 0;
@@ -1324,6 +1350,7 @@ const MapGridCanvas = memo(function MapGridCanvas({
       centerY,
       panStable ? stickyCardSlotOrderRef.current : [],
       projectedClumpVisualIds,
+      collapsedClumpVisualIds,
     );
 
     if (panStable) {
@@ -1341,6 +1368,7 @@ const MapGridCanvas = memo(function MapGridCanvas({
     dragPreviewByNodeId,
     nodePositionOverrides,
     projectedClumpVisualIds,
+    collapsedClumpVisualIds,
     renderedCameraRef,
     isCameraMovingRef,
   ]);
@@ -1506,14 +1534,14 @@ function TerminalIcon({ className, style }: { className?: string; style?: React.
       <path
         d="M10.7272 2.33331H3.27208C2.10812 2.33331 1.16455 3.27688 1.16455 4.44084V9.55912C1.16455 10.7231 2.10812 11.6666 3.27208 11.6666H10.7272C11.8911 11.6666 12.8347 10.7231 12.8347 9.55912V4.44084C12.8347 3.27688 11.8911 2.33331 10.7272 2.33331Z"
         stroke="currentColor"
-        strokeWidth="1.2"
+        strokeWidth="1"
         strokeLinecap="round"
         strokeLinejoin="round"
       />
       <path
         d="M3.79736 5.01288L5.78446 6.99998L3.79736 8.98707M7.44037 8.98707H10.0898"
         stroke="currentColor"
-        strokeWidth="1.2"
+        strokeWidth="1"
         strokeLinecap="round"
         strokeLinejoin="round"
       />
@@ -1533,7 +1561,7 @@ function PreviewIcon({ className, style }: { className?: string; style?: React.C
       <path
         d="M4.21449 11.4349L10.8684 7.76319C11.4716 7.43033 11.4713 6.56324 10.8679 6.23073L4.21404 2.56418C3.63088 2.24284 2.91675 2.6647 2.91675 3.33053L2.91675 10.6688C2.91675 11.3348 3.63132 11.7567 4.21449 11.4349Z"
         stroke="currentColor"
-        strokeWidth="1.2"
+        strokeWidth="1"
         strokeLinecap="round"
         strokeLinejoin="round"
       />

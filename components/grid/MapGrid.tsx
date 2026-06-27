@@ -82,6 +82,8 @@ import {
   visibleCommitIdSetEquals,
   worktreeSessionDisplayName,
   worktreeShortLabel,
+  shasMatch,
+  isCommitUnpushedOnBranch,
 } from './mapGridUtils';
 import type { ViewportContentBounds } from './mapGridUtils';
 
@@ -248,6 +250,8 @@ export default function BranchGridMap({
   onPushCurrentBranch,
   onPushCommitTargets,
   pushInProgress = false,
+  onSquashCommitRange,
+  squashInProgress = false,
   onDeleteSelection,
   deleteInProgress = false,
   worktrees = [],
@@ -987,10 +991,22 @@ export default function BranchGridMap({
 
   const pushableBranchByName = useMemo(() => {
     const entries = [
-      ...(checkedOutBranchName === defaultBranch
-        ? [{ name: defaultBranch, headSha: checkedOutHeadSha ?? '', unpushedCommits: unpushedDirectCommits.length, remoteSyncStatus: 'unpushed' as const }]
+      ...((unpushedDirectCommits.length > 0 || checkedOutBranchName === defaultBranch)
+        ? [{
+            name: defaultBranch,
+            headSha: checkedOutBranchName === defaultBranch ? (checkedOutHeadSha ?? '') : '',
+            unpushedCommits: unpushedDirectCommits.length,
+            remoteSyncStatus: 'unpushed' as const,
+          }]
         : []),
-      ...branches,
+      ...branches.map((branch) => {
+        const set = unpushedCommitShasSetByBranch.get(branch.name);
+        const unpushedCommitsCount = set && set.size > 0 ? set.size : branch.unpushedCommits;
+        return {
+          ...branch,
+          unpushedCommits: unpushedCommitsCount,
+        };
+      }),
     ]
       .filter(
         (branch) =>
@@ -1000,16 +1016,76 @@ export default function BranchGridMap({
       )
       .map((branch) => [branch.name, branch] as const);
     return new Map(entries);
-  }, [branches, checkedOutBranchName, checkedOutHeadSha, defaultBranch, unpushedDirectCommits.length]);
+  }, [branches, checkedOutBranchName, checkedOutHeadSha, defaultBranch, unpushedDirectCommits.length, unpushedCommitShasSetByBranch]);
 
   const selectedPushTargets = useMemo(() => {
-    const resolvePushBranch = (targetSha: string): string | null => {
-      const candidates = branchCandidatesForCommit(targetSha).filter((branchName) => pushableBranchByName.has(branchName));
-      if (candidates.length === 0) return null;
-      if (candidates.length === 1) return candidates[0];
-      if (checkedOutBranchName && candidates.includes(checkedOutBranchName)) return checkedOutBranchName;
-      return candidates.find((name) => name !== defaultBranch) ?? candidates[0];
+    // Check if the selected node represents a stash or worktree placeholder (not pushable)
+    const selectedNode = selectedVisibleCommitShas.length === 1 ? nodeByCommitId.get(selectedVisibleCommitShas[0]) : null;
+    const isSelectedStash = selectedNode != null && (
+      selectedNode.commit.id.startsWith('STASH:') ||
+      selectedNode.commit.kind === 'stash'
+    );
+    const isSelectedWorktree = selectedNode != null && (
+      isWorkingTreeCommitId(selectedNode.commit.id) ||
+      selectedNode.commit.kind === 'uncommitted'
+    );
+    const isSelectedPlaceholder = selectedNode != null && (
+      selectedNode.commit.kind === 'branch-created' ||
+      selectedNode.commit.id.startsWith('BRANCH_HEAD:')
+    );
+
+    if (isSelectedStash || isSelectedWorktree || isSelectedPlaceholder) {
+      return [];
+    }
+
+    const getPushableBranch = (sha: string): { name: string; unpushedCommits: number } | null => {
+      let candidates = branchCandidatesForCommit(sha);
+      if (candidates.length === 0 && selectedNode?.commit.branchName) {
+        candidates = [selectedNode.commit.branchName];
+      }
+
+      const pushableCandidates = candidates
+        .map((name) => {
+          if (name === defaultBranch) {
+            const isDirectUnpushed = unpushedDirectCommits.some((c) => shasMatch(c.fullSha, sha));
+            const hasUnpushedShas = unpushedCommitShasSetByBranch.get(defaultBranch)?.has(sha);
+            if (isDirectUnpushed || hasUnpushedShas) {
+              const count = unpushedCommitShasSetByBranch.get(defaultBranch)?.size || unpushedDirectCommits.length || 1;
+              return { name, unpushedCommits: count };
+            }
+            return null;
+          }
+
+          const branchObj = pushableBranchByName.get(name) || branches.find((b) => b.name === name);
+          const unpushedSet = unpushedCommitShasSetByBranch.get(name);
+          const isCommitUnpushed = unpushedSet?.has(sha) || isCommitUnpushedOnBranch(sha, name, unpushedCommitShasSetByBranch);
+
+          if (isCommitUnpushed) {
+            const count = unpushedSet?.size || branchObj?.unpushedCommits || 1;
+            return { name, unpushedCommits: count };
+          }
+
+          if (branchObj && branchObj.remoteSyncStatus === 'local-only') {
+            return { name, unpushedCommits: branchObj.unpushedCommits || 1 };
+          }
+
+          return null;
+        })
+        .filter((item): item is { name: string; unpushedCommits: number } => item !== null);
+
+      if (pushableCandidates.length === 0) return null;
+
+      if (checkedOutBranchName) {
+        const checkedOut = pushableCandidates.find((c) => c.name === checkedOutBranchName);
+        if (checkedOut) return checkedOut;
+      }
+
+      const nonDefault = pushableCandidates.find((c) => c.name !== defaultBranch);
+      if (nonDefault) return nonDefault;
+
+      return pushableCandidates[0];
     };
+
     const commitPreviewListForBranch = (branchName: string): BranchCommitPreview[] => {
       if (branchName === defaultBranch) {
         return unpushedDirectCommits.map((commit) => ({
@@ -1024,34 +1100,166 @@ export default function BranchGridMap({
       }
       return branchCommitPreviews[branchName] ?? [];
     };
+
     const map = new Map<string, { branchName: string; targetSha: string; targetIndex: number; commitCount: number }>();
     for (const sha of selectedVisibleCommitShas) {
-      const targetBranch = resolvePushBranch(sha);
-      if (!targetBranch) continue;
-      const branch = pushableBranchByName.get(targetBranch);
-      if (!branch) continue;
-      const unpushedPreviews = commitPreviewListForBranch(targetBranch).slice(0, branch.unpushedCommits);
-      const targetIndex = unpushedPreviews.findIndex((commit) => commit.fullSha === sha);
-      if (targetIndex === -1) continue;
-      const existing = map.get(targetBranch);
-      if (!existing || targetIndex < existing.targetIndex) {
-        map.set(targetBranch, {
-          branchName: targetBranch,
-          targetSha: sha,
-          targetIndex,
-          commitCount: unpushedPreviews.length - targetIndex,
-        });
+      const pushableBranch = getPushableBranch(sha);
+      if (!pushableBranch) continue;
+
+      const branchName = pushableBranch.name;
+      const unpushedCommitsCount = pushableBranch.unpushedCommits;
+      const previews = commitPreviewListForBranch(branchName);
+
+      const targetIndex = previews.findIndex((commit) => shasMatch(commit.fullSha, sha));
+      if (targetIndex !== -1) {
+        const commitCount = previews.length - targetIndex;
+        const existing = map.get(branchName);
+        if (!existing || targetIndex < existing.targetIndex) {
+          map.set(branchName, {
+            branchName,
+            targetSha: sha,
+            targetIndex,
+            commitCount,
+          });
+        }
+      } else {
+        const existing = map.get(branchName);
+        if (!existing) {
+          map.set(branchName, {
+            branchName,
+            targetSha: sha,
+            targetIndex: 0,
+            commitCount: unpushedCommitsCount || 1,
+          });
+        }
       }
     }
     return Array.from(map.values());
   }, [
     selectedVisibleCommitShas,
+    nodeByCommitId,
     branchCandidatesForCommit,
+    unpushedDirectCommits,
+    unpushedCommitShasSetByBranch,
     pushableBranchByName,
+    branches,
     checkedOutBranchName,
     defaultBranch,
-    unpushedDirectCommits,
     branchCommitPreviews,
+    selectedPreviewNode,
+  ]);
+
+  const selectedSquashTarget = useMemo((): { branchName: string; commitShas: string[] } | null => {
+    if (!onSquashCommitRange) return null;
+
+    if (selectedVisibleCommitShas.length >= 2) {
+      const selectedNodes = selectedVisibleCommitShas
+        .map((sha) => nodeByCommitId.get(sha))
+        .filter((node): node is Node => node != null);
+      if (selectedNodes.length !== selectedVisibleCommitShas.length) return null;
+      if (selectedNodes.some((node) => (
+        node.commit.kind === 'branch-created' ||
+        node.commit.kind === 'uncommitted' ||
+        node.commit.kind === 'stash' ||
+        node.commit.id.startsWith('BRANCH_HEAD:') ||
+        node.commit.id.startsWith('STASH:') ||
+        isWorkingTreeCommitId(node.commit.id) ||
+        node.commit.isRemote
+      ))) return null;
+      const branchName = selectedNodes[0]?.commit.branchName;
+      if (!branchName || selectedNodes.some((node) => node.commit.branchName !== branchName)) return null;
+      const branchPreviews = branchName === defaultBranch
+        ? directCommits.map((commit) => ({
+            fullSha: commit.fullSha,
+            parentSha: commit.parentSha ?? null,
+          }))
+        : (branchCommitPreviews[branchName] ?? [])
+            .filter((commit) => commit.kind !== 'branch-created' && commit.kind !== 'uncommitted' && commit.kind !== 'stash')
+            .map((commit) => ({
+              fullSha: commit.fullSha,
+              parentSha: commit.parentSha ?? null,
+            }));
+      const selectedSet = new Set(selectedVisibleCommitShas);
+      const selectedPreviews = branchPreviews.filter((commit) => selectedSet.has(commit.fullSha));
+      if (selectedPreviews.length !== selectedVisibleCommitShas.length) return null;
+      const indexes = selectedPreviews
+        .map((commit) => branchPreviews.findIndex((candidate) => candidate.fullSha === commit.fullSha))
+        .sort((a, b) => a - b);
+      if (indexes.some((index) => index < 0)) return null;
+      for (let index = 1; index < indexes.length; index += 1) {
+        if (indexes[index] !== indexes[index - 1]! + 1) return null;
+      }
+      const ordered = indexes.map((index) => branchPreviews[index]!.fullSha);
+      return { branchName, commitShas: ordered };
+    }
+
+    if (selectedVisibleCommitShas.length === 1) {
+      const selectedSha = selectedVisibleCommitShas[0];
+      const selectedNode = nodeByCommitId.get(selectedSha);
+      if (!selectedNode) return null;
+
+      let realSha = selectedNode.commit.id;
+      let isBranchHead = false;
+      if (realSha.startsWith('BRANCH_HEAD:')) {
+        isBranchHead = true;
+        const parts = realSha.split(':');
+        realSha = parts[parts.length - 1];
+      }
+
+      if (
+        selectedNode.commit.kind === 'branch-created' ||
+        selectedNode.commit.kind === 'uncommitted' ||
+        selectedNode.commit.kind === 'stash' ||
+        (!isBranchHead && selectedNode.commit.id.startsWith('BRANCH_HEAD:')) ||
+        selectedNode.commit.id.startsWith('STASH:') ||
+        isWorkingTreeCommitId(selectedNode.commit.id) ||
+        selectedNode.commit.isRemote
+      ) return null;
+
+      const branchName = selectedNode.commit.branchName;
+      if (!branchName) return null;
+
+      const clusterKeys = resolvedLayoutModel.clusterKeyBySha.get(realSha) ?? [];
+      const clusterKey = clusterKeys[0];
+      if (!clusterKey) return null;
+
+      const count = resolvedLayoutModel.clusterCounts.get(clusterKey) ?? 1;
+      if (count < 2) return null;
+
+      const clumpCommits = resolvedLayoutModel.allCommits.filter((commit) => {
+        const keys = resolvedLayoutModel.clusterKeyBySha.get(commit.id) ?? [];
+        return keys.includes(clusterKey);
+      });
+
+      const validCommits = clumpCommits.filter((commit) => 
+        commit.kind !== 'branch-created' && 
+        commit.kind !== 'uncommitted' && 
+        commit.kind !== 'stash'
+      );
+
+      if (validCommits.length < 2) return null;
+
+      const safeTime = (dStr: string) => {
+        const t = new Date(dStr).getTime();
+        return Number.isFinite(t) ? t : 0;
+      };
+
+      const ordered = [...validCommits]
+        .sort((a, b) => safeTime(a.date) - safeTime(b.date))
+        .map((commit) => commit.id);
+
+      return { branchName, commitShas: ordered };
+    }
+
+    return null;
+  }, [
+    onSquashCommitRange,
+    selectedVisibleCommitShas,
+    nodeByCommitId,
+    defaultBranch,
+    directCommits,
+    branchCommitPreviews,
+    resolvedLayoutModel,
   ]);
 
   const selectedStashIndices = useMemo(
@@ -1151,6 +1359,10 @@ export default function BranchGridMap({
   const handleHeaderPointerDown = useCallback((event: React.PointerEvent<HTMLElement>) => {
     const target = event.target as HTMLElement | null;
     if (target?.closest('.window-no-drag, input, textarea, select, button, [contenteditable="true"]')) {
+      return;
+    }
+    if (event.detail >= 2) {
+      void getCurrentWindow().toggleMaximize();
       return;
     }
     void getCurrentWindow().startDragging();
@@ -1348,15 +1560,15 @@ export default function BranchGridMap({
     flushCameraReactTick({ urgent: true });
   }, [connectorCullScopeKey, syncVisibleBoundsFromCamera, flushCameraReactTick]);
 
-  const emitInteractionChange = useCallback(() => {
-    const next = isCameraMovingRef.current || isMarqueeSelectingRef.current;
+  const emitInteractionState = useCallback((next: boolean, reason: 'pan/zoom' | 'marquee' | 'idle') => {
     if (lastInteractionEmittedRef.current === next) return;
     lastInteractionEmittedRef.current = next;
+    console.debug('[map-interaction] state changed', { active: next, reason });
     setMapGridBackgroundActivity(
       'map-interaction',
       'Map interaction',
       next,
-      next ? (isCameraMovingRef.current ? 'pan/zoom' : 'marquee') : 'idle',
+      reason,
     );
     onInteractionChange?.(next);
   }, [onInteractionChange]);
@@ -1366,16 +1578,18 @@ export default function BranchGridMap({
       if (active) {
         panAdmissionPendingRef.current.clear();
       }
-      emitInteractionChange();
+      const next = active || isMarqueeSelectingRef.current;
+      emitInteractionState(next, next ? (active ? 'pan/zoom' : 'marquee') : 'idle');
     },
-    [emitInteractionChange],
+    [emitInteractionState],
   );
 
   onPanActiveChangeRef.current = handlePanActiveChange;
 
   useEffect(() => {
-    emitInteractionChange();
-  }, [isMarqueeSelecting, emitInteractionChange]);
+    const next = isCameraMovingRef.current || isMarqueeSelectingRef.current;
+    emitInteractionState(next, next ? (isCameraMovingRef.current ? 'pan/zoom' : 'marquee') : 'idle');
+  }, [isMarqueeSelecting, emitInteractionState]);
 
   const cullConnectorPath = useCallback(
     (connector: { id: string; fromX: number; fromY: number; toX: number; toY: number; fromFace?: ConnectorFace; toFace?: ConnectorFace }): boolean => {
@@ -2240,10 +2454,13 @@ export default function BranchGridMap({
                   onPushAllBranches={onPushAllBranches}
                   onPushCurrentBranch={onPushCurrentBranch}
                   onPushCommitTargets={onPushCommitTargets}
+                  onSquashCommitRange={onSquashCommitRange}
                   onPreviewSelectedNode={handlePreviewSelectedNode}
                   previewInProgress={previewInProgress}
                   onMergeRefsIntoBranch={onMergeRefsIntoBranch}
                   selectedPushTargets={selectedPushTargets}
+                  selectedSquashTarget={selectedSquashTarget}
+                  squashInProgress={squashInProgress}
                   pushableRemoteBranchCount={pushableRemoteBranchCount}
                   selectedCommitTargetOption={selectedCommitTargetOption}
                   mergeInProgress={mergeInProgress}
@@ -2276,13 +2493,6 @@ export default function BranchGridMap({
                     }}
                   />
                 ) : null}
-                <button
-                  type="button"
-                  onClick={() => gridHudProps.setIsGridDebugOpen((open) => !open)}
-                  className="inline-flex h-7 items-center rounded-md border border-border/60 bg-background/95 px-2 text-[11px] font-medium text-muted-foreground transition-colors hover:bg-muted hover:text-foreground"
-                >
-                  Debug
-                </button>
               </div>
             </div>
           </div>
@@ -2318,8 +2528,8 @@ export default function BranchGridMap({
                   gridHudProps.isCommitSwitchFeedbackVisible ? 'opacity-100' : 'opacity-0'
                 } ${
                   gridHudProps.commitSwitchFeedback.kind === 'error'
-                    ? 'bg-red-50/95 text-red-600 dark:bg-red-900/20 dark:text-red-400'
-                    : 'bg-blue-50/95 text-blue-600 dark:bg-blue-900/20 dark:text-blue-400'
+                    ? 'bg-[var(--destructive-bg)] text-red-600'
+                    : 'bg-[var(--info-bg)] text-blue-600'
                 }`}
                 title={gridHudProps.commitSwitchFeedback.message}
               >
@@ -2387,7 +2597,7 @@ export default function BranchGridMap({
               disabled={selectedCommitTargetOption.sources.length === 0 || mergeInProgress}
               className="inline-flex h-7 items-center rounded-md border border-border bg-background px-2 text-[11px] font-medium text-foreground transition-colors hover:bg-muted hover:text-foreground disabled:cursor-not-allowed disabled:opacity-50"
             >
-              <GitMerge className="mr-1.5 h-3.5 w-3.5 shrink-0" />
+              <GitMerge strokeWidth={1} className="mr-1.5 h-4 w-4 shrink-0" />
               {mergeInProgress ? 'Merging...' : 'Confirm'}
             </button>
           </div>

@@ -26,7 +26,6 @@ Core ideas:
 - `components/grid/useBranchGridLayoutFromRevision.ts` — layout computation hook
 - `components/DenseBranchSidebar.tsx` — multi-project sidebar
 - `src/repoVisualState.ts` — derived visual state from git data
-- `src/orchestratedRepoSync.ts` — coordinated refresh pipeline
 - `src-tauri/src/lib.rs` — Tauri commands, watchers, SQLite
 - `lib/git.ts` — frontend invoke wrappers for git commands
 - `types/index.ts` — shared TypeScript types

@@ -723,6 +723,259 @@ describe('computeBranchGridLayout empty branch placeholders', () => {
     expect(movedLeadNode.y).toBeGreaterThan(movedFirstNode.y);
   });
 
+  it('keeps sibling clump lanes stable when another clump opens', () => {
+    const defaultBranch = 'main';
+    const primaryA = '1111111111111111111111111111111111111111';
+    const primaryB = '2222222222222222222222222222222222222222';
+    const primaryC = '3333333333333333333333333333333333333333';
+    const siblingA = '4444444444444444444444444444444444444444';
+    const siblingB = '5555555555555555555555555555555555555555';
+    const branches = [
+      makeBranch(defaultBranch, tipSha, 1),
+      makeBranch('primary', primaryC, 3, defaultBranch),
+      makeBranch('sibling', siblingB, 2, defaultBranch),
+    ];
+    const baseInput = {
+      branches,
+      mergeNodes: [],
+      directCommits: [
+        {
+          fullSha: mainSha,
+          sha: mainSha.slice(0, 7),
+          branch: defaultBranch,
+          message: 'root',
+          author: 'test',
+          date: '2024-05-01T12:00:00Z',
+          parentSha: null,
+          parentShas: [],
+        },
+        {
+          fullSha: tipSha,
+          sha: tipSha.slice(0, 7),
+          branch: defaultBranch,
+          message: 'tip',
+          author: 'test',
+          date: '2024-06-01T12:00:00Z',
+          parentSha: mainSha,
+          parentShas: [mainSha],
+        },
+      ],
+      unpushedDirectCommits: [
+        {
+          fullSha: primaryA,
+          sha: primaryA.slice(0, 7),
+          branch: 'primary',
+          message: 'primary first',
+          author: 'test',
+          date: '2024-06-02T10:00:00Z',
+          parentSha: tipSha,
+          parentShas: [tipSha],
+        },
+        {
+          fullSha: primaryB,
+          sha: primaryB.slice(0, 7),
+          branch: 'primary',
+          message: 'primary second',
+          author: 'test',
+          date: '2024-06-02T11:00:00Z',
+          parentSha: primaryA,
+          parentShas: [primaryA],
+        },
+        {
+          fullSha: primaryC,
+          sha: primaryC.slice(0, 7),
+          branch: 'primary',
+          message: 'primary tip',
+          author: 'test',
+          date: '2024-06-02T12:00:00Z',
+          parentSha: primaryB,
+          parentShas: [primaryB],
+        },
+        {
+          fullSha: siblingA,
+          sha: siblingA.slice(0, 7),
+          branch: 'sibling',
+          message: 'sibling first',
+          author: 'test',
+          date: '2024-06-02T09:30:00Z',
+          parentSha: tipSha,
+          parentShas: [tipSha],
+        },
+        {
+          fullSha: siblingB,
+          sha: siblingB.slice(0, 7),
+          branch: 'sibling',
+          message: 'sibling tip',
+          author: 'test',
+          date: '2024-06-02T13:00:00Z',
+          parentSha: siblingA,
+          parentShas: [siblingA],
+        },
+      ],
+      unpushedCommitShasByBranch: {
+        primary: [primaryA, primaryB, primaryC],
+        sibling: [siblingA, siblingB],
+      },
+      defaultBranch,
+      branchCommitPreviews: { main: [], primary: [], sibling: [] },
+      branchParentByName: { main: null, primary: 'main', sibling: 'main' },
+      branchUniqueAheadCounts: { main: 1, primary: 3, sibling: 2 },
+      manuallyClosedClumps: new Set<string>(),
+      isDebugOpen: false,
+      gridSearchQuery: '',
+      gridFocusSha: null,
+      checkedOutRef: null,
+      orientation: 'horizontal' as const,
+    };
+    const closed = computeBranchGridLayout({
+      ...baseInput,
+      manuallyOpenedClumps: new Set<string>(),
+    });
+    const primaryClusterKey = closed.clusterKeyByCommitId.get(`primary:${primaryC}`);
+    const siblingClusterKey = closed.clusterKeyByCommitId.get(`sibling:${siblingB}`);
+    expect(primaryClusterKey).toBeDefined();
+    expect(siblingClusterKey).toBeDefined();
+    const closedSiblingNode = closed.renderNodes.find(
+      (node) => closed.clusterKeyByCommitId.get(node.commit.visualId) === siblingClusterKey,
+    );
+    expect(closedSiblingNode).toBeDefined();
+
+    const opened = computeBranchGridLayout({
+      ...baseInput,
+      manuallyOpenedClumps: new Set([primaryClusterKey!]),
+    });
+    const openedSiblingNode = opened.renderNodes.find(
+      (node) => opened.clusterKeyByCommitId.get(node.commit.visualId) === siblingClusterKey,
+    );
+    expect(openedSiblingNode).toBeDefined();
+    expect(openedSiblingNode!.column).toBe(closedSiblingNode!.column);
+  });
+
+  it('does not let an opened clump member predate and reorder a sibling clump', () => {
+    const defaultBranch = 'main';
+    const primaryA = '1111111111111111111111111111111111111111';
+    const primaryB = '2222222222222222222222222222222222222222';
+    const siblingA = '3333333333333333333333333333333333333333';
+    const siblingB = '4444444444444444444444444444444444444444';
+    const branches = [
+      makeBranch(defaultBranch, tipSha, 1),
+      makeBranch('primary', primaryB, 2, defaultBranch),
+      makeBranch('sibling', siblingB, 2, defaultBranch),
+    ];
+    const baseInput = {
+      branches,
+      mergeNodes: [],
+      directCommits: [
+        {
+          fullSha: mainSha,
+          sha: mainSha.slice(0, 7),
+          branch: defaultBranch,
+          message: 'root',
+          author: 'test',
+          date: '2024-05-01T12:00:00Z',
+          parentSha: null,
+          parentShas: [],
+        },
+        {
+          fullSha: tipSha,
+          sha: tipSha.slice(0, 7),
+          branch: defaultBranch,
+          message: 'tip',
+          author: 'test',
+          date: '2024-06-01T12:00:00Z',
+          parentSha: mainSha,
+          parentShas: [mainSha],
+        },
+      ],
+      unpushedDirectCommits: [
+        {
+          fullSha: primaryA,
+          sha: primaryA.slice(0, 7),
+          branch: 'primary',
+          message: 'primary early',
+          author: 'test',
+          date: '2024-06-02T09:00:00Z',
+          parentSha: tipSha,
+          parentShas: [tipSha],
+        },
+        {
+          fullSha: primaryB,
+          sha: primaryB.slice(0, 7),
+          branch: 'primary',
+          message: 'primary late tip',
+          author: 'test',
+          date: '2024-06-02T14:00:00Z',
+          parentSha: primaryA,
+          parentShas: [primaryA],
+        },
+        {
+          fullSha: siblingA,
+          sha: siblingA.slice(0, 7),
+          branch: 'sibling',
+          message: 'sibling middle',
+          author: 'test',
+          date: '2024-06-02T11:00:00Z',
+          parentSha: tipSha,
+          parentShas: [tipSha],
+        },
+        {
+          fullSha: siblingB,
+          sha: siblingB.slice(0, 7),
+          branch: 'sibling',
+          message: 'sibling middle tip',
+          author: 'test',
+          date: '2024-06-02T12:00:00Z',
+          parentSha: siblingA,
+          parentShas: [siblingA],
+        },
+      ],
+      unpushedCommitShasByBranch: {
+        primary: [primaryA, primaryB],
+        sibling: [siblingA, siblingB],
+      },
+      defaultBranch,
+      branchCommitPreviews: { main: [], primary: [], sibling: [] },
+      branchParentByName: { main: null, primary: 'main', sibling: 'main' },
+      branchUniqueAheadCounts: { main: 1, primary: 2, sibling: 2 },
+      manuallyClosedClumps: new Set<string>(),
+      isDebugOpen: false,
+      gridSearchQuery: '',
+      gridFocusSha: null,
+      checkedOutRef: null,
+      orientation: 'horizontal' as const,
+    };
+    const closed = computeBranchGridLayout({
+      ...baseInput,
+      manuallyOpenedClumps: new Set<string>(),
+    });
+    const primaryClusterKey = closed.clusterKeyByCommitId.get(`primary:${primaryB}`);
+    const siblingClusterKey = closed.clusterKeyByCommitId.get(`sibling:${siblingB}`);
+    expect(primaryClusterKey).toBeDefined();
+    expect(siblingClusterKey).toBeDefined();
+    const closedPrimaryNode = closed.renderNodes.find(
+      (node) => closed.clusterKeyByCommitId.get(node.commit.visualId) === primaryClusterKey,
+    );
+    const closedSiblingNode = closed.renderNodes.find(
+      (node) => closed.clusterKeyByCommitId.get(node.commit.visualId) === siblingClusterKey,
+    );
+    expect(closedPrimaryNode).toBeDefined();
+    expect(closedSiblingNode).toBeDefined();
+
+    const opened = computeBranchGridLayout({
+      ...baseInput,
+      manuallyOpenedClumps: new Set([primaryClusterKey!]),
+    });
+    const openedPrimaryLead = opened.renderNodes.find((node) => node.commit.visualId === `primary:${primaryB}`);
+    const openedSiblingNode = opened.renderNodes.find(
+      (node) => opened.clusterKeyByCommitId.get(node.commit.visualId) === siblingClusterKey,
+    );
+    expect(openedPrimaryLead).toBeDefined();
+    expect(openedSiblingNode).toBeDefined();
+    expect(openedPrimaryLead!.column > openedSiblingNode!.column).toBe(
+      closedPrimaryNode!.column > closedSiblingNode!.column,
+    );
+  });
+
   it('keeps collapsed clump on a single lane column', () => {
     const defaultBranch = 'main';
     const unpushedA = 'cccccccccccccccccccccccccccccccccccccccc';
@@ -814,6 +1067,133 @@ describe('computeBranchGridLayout empty branch placeholders', () => {
       (node) => layout.clusterKeyByCommitId.get(node.commit.visualId) === clusterKey,
     )).toHaveLength(1);
     expect(layout.leadByClusterKey.get(clusterKey!)).toBe(clumpNode!.commit.visualId);
+  });
+
+  it('keeps a collapsed clump override when a new commit becomes the lead', () => {
+    const defaultBranch = 'main';
+    const unpushedA = 'cccccccccccccccccccccccccccccccccccccccc';
+    const unpushedB = 'dddddddddddddddddddddddddddddddddddddddd';
+    const unpushedC = 'eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee';
+    const unpushedD = 'ffffffffffffffffffffffffffffffffffffffff';
+    const directCommits: DirectCommit[] = [
+      {
+        fullSha: mainSha,
+        sha: mainSha.slice(0, 7),
+        branch: defaultBranch,
+        message: 'root',
+        author: 'test',
+        date: '2024-05-01T12:00:00Z',
+        parentSha: null,
+        parentShas: [],
+      },
+      {
+        fullSha: tipSha,
+        sha: tipSha.slice(0, 7),
+        branch: defaultBranch,
+        message: 'tip',
+        author: 'test',
+        date: '2024-06-02T12:00:00Z',
+        parentSha: mainSha,
+        parentShas: [mainSha],
+      },
+    ];
+    const clumpCommits: DirectCommit[] = [
+      {
+        fullSha: unpushedA,
+        sha: unpushedA.slice(0, 7),
+        branch: 'feature',
+        message: 'first',
+        author: 'test',
+        date: '2024-06-03T10:00:00Z',
+        parentSha: tipSha,
+        parentShas: [tipSha],
+      },
+      {
+        fullSha: unpushedB,
+        sha: unpushedB.slice(0, 7),
+        branch: 'feature',
+        message: 'second',
+        author: 'test',
+        date: '2024-06-03T11:00:00Z',
+        parentSha: unpushedA,
+        parentShas: [unpushedA],
+      },
+      {
+        fullSha: unpushedC,
+        sha: unpushedC.slice(0, 7),
+        branch: 'feature',
+        message: 'third',
+        author: 'test',
+        date: '2024-06-03T12:00:00Z',
+        parentSha: unpushedB,
+        parentShas: [unpushedB],
+      },
+    ];
+    const baseInput = {
+      mergeNodes: [],
+      directCommits,
+      defaultBranch,
+      branchCommitPreviews: { main: [], feature: [] },
+      branchParentByName: { main: null, feature: 'main' },
+      manuallyClosedClumps: new Set<string>(),
+      manuallyOpenedClumps: new Set<string>(),
+      isDebugOpen: false,
+      gridSearchQuery: '',
+      gridFocusSha: null,
+      checkedOutRef: null,
+      orientation: 'horizontal' as const,
+    };
+    const before = computeBranchGridLayout({
+      ...baseInput,
+      branches: [
+        makeBranch(defaultBranch, tipSha, 1),
+        makeBranch('feature', unpushedC, 3, defaultBranch),
+      ],
+      unpushedDirectCommits: clumpCommits,
+      unpushedCommitShasByBranch: { feature: [unpushedA, unpushedB, unpushedC] },
+      branchUniqueAheadCounts: { main: 1, feature: 3 },
+    });
+    const clusterKey = [...before.clusterCounts.entries()].find(([, count]) => count > 1)?.[0];
+    expect(clusterKey).toBeDefined();
+    const oldClumpNode = before.renderNodes.find(
+      (node) => before.clusterKeyByCommitId.get(node.commit.visualId) === clusterKey,
+    )!;
+    expect(oldClumpNode.commit.id).toBe(unpushedC);
+    const movedPosition = { row: oldClumpNode.row + 5, column: oldClumpNode.column + 4 };
+    const nodePositionOverrides: NodePositionOverrides = {};
+    assignNodePositionOverride(nodePositionOverrides, oldClumpNode.commit, movedPosition);
+
+    const after = computeBranchGridLayout({
+      ...baseInput,
+      branches: [
+        makeBranch(defaultBranch, tipSha, 1),
+        makeBranch('feature', unpushedD, 4, defaultBranch),
+      ],
+      unpushedDirectCommits: [
+        ...clumpCommits,
+        {
+          fullSha: unpushedD,
+          sha: unpushedD.slice(0, 7),
+          branch: 'feature',
+          message: 'fourth',
+          author: 'test',
+          date: '2024-06-03T13:00:00Z',
+          parentSha: unpushedC,
+          parentShas: [unpushedC],
+        },
+      ],
+      unpushedCommitShasByBranch: { feature: [unpushedA, unpushedB, unpushedC, unpushedD] },
+      branchUniqueAheadCounts: { main: 1, feature: 4 },
+      nodePositionOverrides,
+    });
+    const afterClusterKey = after.clusterKeyByCommitId.get(`feature:${unpushedD}`);
+    expect(afterClusterKey).toBeDefined();
+    const newClumpNode = after.renderNodes.find(
+      (node) => after.clusterKeyByCommitId.get(node.commit.visualId) === afterClusterKey,
+    )!;
+    expect(newClumpNode.commit.id).toBe(unpushedD);
+    expect(newClumpNode.row).toBe(movedPosition.row);
+    expect(newClumpNode.column).toBe(movedPosition.column);
   });
 
   it('keeps incoming ancestry connector to collapsed clump lead from outside parent', () => {

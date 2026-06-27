@@ -108,7 +108,8 @@ export default function MapGridDialogs({
                 className="inline-flex items-center rounded-lg border border-border bg-background px-3 py-1.5 text-xs font-medium text-foreground transition-colors hover:bg-muted disabled:cursor-not-allowed disabled:opacity-50"
               >
                 <GitCommitHorizontal
-                  className={cn('mr-1.5 h-3.5 w-3.5 shrink-0', commitInProgress && 'toolbar-action-shimmer__lucide')}
+                  strokeWidth={1}
+                  className={cn('mr-1.5 h-4 w-4 shrink-0', commitInProgress && 'toolbar-action-shimmer__lucide')}
                 />
                 <span className={cn(commitInProgress && 'toolbar-action-shimmer__text')}>Commit</span>
               </button>
@@ -140,7 +141,7 @@ export default function MapGridDialogs({
                 type="button"
                 onClick={onDeleteConfirm}
                 disabled={deletableSelectionCount === 0 || deleteInProgress}
-                className="rounded-lg bg-red-50 px-3 py-1.5 text-xs font-medium text-red-600 transition-colors hover:bg-red-50/80 disabled:cursor-not-allowed disabled:opacity-50 dark:bg-red-900/20 dark:text-red-400 dark:hover:bg-red-900/30"
+                className="rounded-lg bg-[var(--destructive-bg)] px-3 py-1.5 text-xs font-medium text-red-600 transition-colors hover:bg-[var(--destructive-bg-hover)] disabled:cursor-not-allowed disabled:opacity-50"
               >
                 {deleteInProgress ? 'Deleting...' : 'Delete'}
               </button>
@@ -280,7 +281,7 @@ export default function MapGridDialogs({
                   'disabled:cursor-not-allowed disabled:opacity-50',
                 )}
               >
-                <GitBranchPlus className="mr-1.5 h-3.5 w-3.5 shrink-0" />
+                <GitBranchPlus strokeWidth={1} className="mr-1.5 h-4 w-4 shrink-0" />
                 {createBranchFromNodeInProgress ? 'Creating...' : 'Create'}
               </button>
             </div>
@@ -290,4 +291,3 @@ export default function MapGridDialogs({
     </>
   );
 }
-

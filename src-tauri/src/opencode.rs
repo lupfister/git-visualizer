@@ -36,6 +36,15 @@ Rules:\n\
 - High-level purpose only — never list files, paths, or per-hunk details\n\
 - No preamble, explanation, quotes, markdown, or trailing colon\n";
 
+const SQUASH_TITLE_PROMPT: &str = "\
+You write git squash commit messages.\n\
+\n\
+Rules:\n\
+- Output a clear commit title (at most 72 characters) on the first line.\n\
+- Add a blank line, followed by a bulleted list or a few short paragraphs summarizing the logical changes and combined intent of all squashed commits.\n\
+- High-level purpose only — do not list trivial files, paths, or boilerplate.\n\
+- No preamble, explanation, quotes, or markdown code blocks.\n";
+
 const TERMINAL_TITLE_PROMPT: &str = "\
 You write short terminal session titles only.\n\
 \n\
@@ -69,7 +78,10 @@ fn compose_terminal_title_prompt(
     previous_title: Option<&str>,
 ) -> String {
     let mut prompt = TERMINAL_TITLE_PROMPT.to_string();
-    if let Some(hint) = process_hint.map(str::trim).filter(|value| !value.is_empty()) {
+    if let Some(hint) = process_hint
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+    {
         prompt.push_str("\nForeground process: ");
         prompt.push_str(hint);
         prompt.push('\n');
@@ -141,7 +153,13 @@ fn opencode_missing_message() -> String {
 fn parse_opencode_version(raw: &str) -> Option<(u32, u32, u32)> {
     let digits: Vec<u32> = raw
         .split('.')
-        .filter_map(|part| part.chars().take_while(|ch| ch.is_ascii_digit()).collect::<String>().parse().ok())
+        .filter_map(|part| {
+            part.chars()
+                .take_while(|ch| ch.is_ascii_digit())
+                .collect::<String>()
+                .parse()
+                .ok()
+        })
         .collect();
     match digits.as_slice() {
         [major, minor, patch] => Some((*major, *minor, *patch)),
@@ -332,12 +350,7 @@ fn strip_meta_prefix(text: &str) -> String {
 }
 
 pub fn is_unacceptable_message(text: &str) -> bool {
-    is_unacceptable_message_with_limits(
-        text,
-        MIN_MESSAGE_LEN,
-        MAX_MESSAGE_CHARS,
-        MAX_MESSAGE_WORDS,
-    )
+    is_unacceptable_message_with_limits(text, MIN_MESSAGE_LEN, MAX_MESSAGE_CHARS, MAX_MESSAGE_WORDS)
 }
 
 pub fn is_unacceptable_terminal_message(text: &str) -> bool {
@@ -755,16 +768,17 @@ fn generate_title_with_retries(
     let mut refreshed = false;
 
     loop {
-        let attempt_error = match try_title_models(&binary, repo_path, &models, |binary, repo_path, model| {
-            run_opencode_for_title(binary, repo_path, command, model, &prompt)
-        }) {
-            Ok(raw) => match sanitize_title(&raw, empty_label) {
-                Ok(message) if !is_unacceptable_message(&message) => return Ok(message),
-                Ok(_) => format!("OpenCode returned meta text instead of a {empty_label}."),
+        let attempt_error =
+            match try_title_models(&binary, repo_path, &models, |binary, repo_path, model| {
+                run_opencode_for_title(binary, repo_path, command, model, &prompt)
+            }) {
+                Ok(raw) => match sanitize_title(&raw, empty_label) {
+                    Ok(message) if !is_unacceptable_message(&message) => return Ok(message),
+                    Ok(_) => format!("OpenCode returned meta text instead of a {empty_label}."),
+                    Err(err) => err,
+                },
                 Err(err) => err,
-            },
-            Err(err) => err,
-        };
+            };
 
         if !refreshed {
             refreshed = true;
@@ -811,6 +825,46 @@ pub fn generate_stash_message(
     )
 }
 
+pub fn generate_squash_message(repo: &Path, summary: &str) -> Result<String, String> {
+    let repo_path = repo
+        .to_str()
+        .ok_or_else(|| "Repository path is not valid UTF-8.".to_string())?;
+
+    if summary.trim().is_empty() {
+        return Err("No commits to describe.".to_string());
+    }
+
+    let binary = resolve_opencode_binary()?;
+    let prompt = compose_title_prompt(SQUASH_TITLE_PROMPT, summary, None);
+    let mut models = resolve_title_models(&binary, false)?;
+    let mut refreshed = false;
+
+    loop {
+        let attempt_error =
+            match try_title_models(&binary, repo_path, &models, |binary, repo_path, model| {
+                run_opencode_prompt(binary, repo_path, model, &prompt)
+            }) {
+                Ok(raw) => match sanitize_squash_message(&raw) {
+                    Ok(message) if !is_unacceptable_squash_message(&message) => return Ok(message),
+                    Ok(_) => "OpenCode returned meta text instead of a squash message.".to_string(),
+                    Err(err) => err,
+                },
+                Err(err) => err,
+            };
+
+        if !refreshed {
+            refreshed = true;
+            models = resolve_title_models(&binary, true)?;
+            continue;
+        }
+
+        return Err(format!(
+            "Failed to generate a squash message after trying {} model(s). {attempt_error}",
+            models.len().min(MAX_TITLE_MODEL_ATTEMPTS)
+        ));
+    }
+}
+
 fn generate_terminal_title_with_retries(
     repo: &Path,
     summary: &str,
@@ -831,16 +885,19 @@ fn generate_terminal_title_with_retries(
     let mut refreshed = false;
 
     loop {
-        let attempt_error = match try_title_models(&binary, repo_path, &models, |binary, repo_path, model| {
-            run_opencode_prompt(binary, repo_path, model, &prompt)
-        }) {
-            Ok(raw) => match sanitize_terminal_title(&raw, "terminal title") {
-                Ok(message) if !is_unacceptable_terminal_message(&message) => return Ok(message),
-                Ok(_) => "OpenCode returned meta text instead of a terminal title.".to_string(),
+        let attempt_error =
+            match try_title_models(&binary, repo_path, &models, |binary, repo_path, model| {
+                run_opencode_prompt(binary, repo_path, model, &prompt)
+            }) {
+                Ok(raw) => match sanitize_terminal_title(&raw, "terminal title") {
+                    Ok(message) if !is_unacceptable_terminal_message(&message) => {
+                        return Ok(message)
+                    }
+                    Ok(_) => "OpenCode returned meta text instead of a terminal title.".to_string(),
+                    Err(err) => err,
+                },
                 Err(err) => err,
-            },
-            Err(err) => err,
-        };
+            };
 
         if !refreshed {
             refreshed = true;
@@ -869,11 +926,52 @@ pub fn validate_generated_message(message: &str, label: &str) -> Result<(), Stri
     if trimmed.is_empty() {
         return Err(format!("{label} cannot be empty."));
     }
-    if is_unacceptable_message(trimmed) {
-        return Err(format!(
-            "{label} is too long or looks like AI preamble. Use Write commit or try again."
-        ));
+    if label == "Squash message" {
+        if is_unacceptable_squash_message(trimmed) {
+            return Err(format!(
+                "{label} is invalid or looks like AI preamble. Try again."
+            ));
+        }
+    } else {
+        if is_unacceptable_message(trimmed) {
+            return Err(format!(
+                "{label} is too long or looks like AI preamble. Use Write commit or try again."
+            ));
+        }
     }
     Ok(())
 }
 
+pub fn is_unacceptable_squash_message(text: &str) -> bool {
+    let trimmed = text.trim();
+    if trimmed.len() < 6 || trimmed.len() > 1200 {
+        return true;
+    }
+    if trimmed.split_whitespace().count() > 200 {
+        return true;
+    }
+    let lower = trimmed.to_lowercase();
+    const MARKERS: &[&str] = &[
+        "returned empty",
+        "returned this",
+        "failed to generate",
+        "generation task",
+    ];
+    MARKERS.iter().any(|marker| lower.contains(marker))
+}
+
+pub fn sanitize_squash_message(raw: &str) -> Result<String, String> {
+    let cleaned = strip_ansi(raw)
+        .replace("```", "")
+        .replace("\"", "")
+        .replace("'", "")
+        .trim()
+        .to_string();
+    if cleaned.is_empty() {
+        return Err("OpenCode returned an empty squash message.".to_string());
+    }
+    if is_unacceptable_squash_message(&cleaned) {
+        return Err("OpenCode returned unacceptable squash message.".to_string());
+    }
+    Ok(cleaned)
+}

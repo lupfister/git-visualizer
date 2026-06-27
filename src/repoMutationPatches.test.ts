@@ -1,4 +1,5 @@
 import { describe, expect, it } from 'vitest';
+import { workingTreeIdForPath } from '../lib/worktreeSessions';
 import type { RepoVisualSnapshot } from '../types';
 import {
   applyMutationPatch,
@@ -249,6 +250,43 @@ describe('applyMutationPatch push', () => {
     );
     expect(next.unpushedDirectCommits).toHaveLength(0);
   });
+
+  it('partially clears unpushed commits on pushed branches when targetSha is provided', () => {
+    const base = baseSnapshot({
+      unpushedCommitShasByBranch: {
+        feature: ['sha_new', 'sha_target', 'sha_old'],
+      },
+      unpushedDirectCommits: [
+        { fullSha: 'sha_new', sha: 'sha_new', parentSha: 'sha_target', parentShas: ['sha_target'], message: 'new', author: 'a', date: 'd', branch: 'feature', kind: 'commit', isRemote: false },
+        { fullSha: 'sha_target', sha: 'sha_target', parentSha: 'sha_old', parentShas: ['sha_old'], message: 'target', author: 'a', date: 'd', branch: 'feature', kind: 'commit', isRemote: false },
+        { fullSha: 'sha_old', sha: 'sha_old', parentSha: 'sha_base', parentShas: ['sha_base'], message: 'old', author: 'a', date: 'd', branch: 'feature', kind: 'commit', isRemote: false },
+      ],
+      branches: [
+        {
+          name: 'feature',
+          headSha: 'sha_new',
+          unpushedCommits: 3,
+          remoteSyncStatus: 'local-only',
+          status: 'fresh',
+          commitsAhead: 3,
+          commitsBehind: 0,
+        } as any,
+      ],
+    });
+
+    const next = applyMutationPatch(
+      base,
+      outcomeFromPush(['feature'], [{ branchName: 'feature', targetSha: 'sha_target' }]),
+    );
+
+    const feature = next.branches.find((branch) => branch.name === 'feature');
+    expect(feature?.unpushedCommits).toBe(1);
+    expect(feature?.remoteSyncStatus).toBe('on-github');
+    expect(next.unpushedCommitShasByBranch.feature).toEqual(['sha_new']);
+    expect(next.unpushedDirectCommits).toHaveLength(1);
+    expect(next.unpushedDirectCommits[0].fullSha).toBe('sha_new');
+  });
+
 });
 
 describe('applyMutationPatch branchMetadataSync', () => {
@@ -490,6 +528,64 @@ describe('applyMutationPatch commit', () => {
     expect(next.worktrees.find((worktree) => worktree.path === '/repo')?.headSha).toBe('aaa1111');
     expect(next.worktrees.find((worktree) => worktree.path === '/repo-linked')?.headSha).toBe('ccc3333');
     expect(next.worktrees.find((worktree) => worktree.path === '/repo-linked')?.hasUncommittedChanges).toBe(false);
+  });
+
+  it('removes the committed worktree pseudo preview from the optimistic graph', () => {
+    const workingTreeId = workingTreeIdForPath('/repo-linked', false);
+    const next = applyMutationPatch(baseSnapshot({
+      worktrees: [
+        {
+          path: '/repo-linked',
+          pathExists: true,
+          headSha: 'bbb2222',
+          branchName: 'feature',
+          parentSha: 'aaa1111',
+          isCurrent: false,
+          isPrunable: false,
+          hasUncommittedChanges: true,
+        },
+      ],
+      branchCommitPreviews: {
+        ...baseSnapshot().branchCommitPreviews,
+        feature: [
+          {
+            fullSha: workingTreeId,
+            sha: 'uncommitted',
+            parentSha: 'bbb2222',
+            parentShas: ['bbb2222'],
+            childShas: [],
+            message: '',
+            author: 'You',
+            date: '2024-01-02T00:00:00Z',
+            kind: 'uncommitted',
+          },
+          ...(baseSnapshot().branchCommitPreviews.feature ?? []),
+        ],
+      },
+    }), {
+      kind: 'commit',
+      layoutTopologyChanged: true,
+      commit: {
+        worktreePath: '/repo-linked',
+        checkedOutRef: {
+          branchName: 'feature',
+          headSha: 'ccc3333',
+          hasUncommittedChanges: false,
+          parentSha: 'bbb2222',
+        },
+        branchName: 'feature',
+        fullSha: 'ccc3333fullsha000000000000000000000000',
+        sha: 'ccc3333',
+        message: 'new linked commit',
+        author: 'dev',
+        date: '2024-01-05T00:00:00Z',
+        parentSha: 'bbb2222',
+        parentShas: ['bbb2222'],
+      },
+    });
+
+    expect(next.branchCommitPreviews.feature?.map((commit) => commit.fullSha)).not.toContain(workingTreeId);
+    expect(next.branchCommitPreviews.feature?.[0]?.fullSha).toBe('ccc3333fullsha000000000000000000000000');
   });
 });
 

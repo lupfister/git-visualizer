@@ -1,7 +1,7 @@
 use portable_pty::{native_pty_system, CommandBuilder, MasterPty, PtySize};
 use serde::{Deserialize, Serialize};
 use std::{
-    collections::{HashMap, hash_map::DefaultHasher},
+    collections::{hash_map::DefaultHasher, HashMap},
     fs,
     hash::{Hash, Hasher},
     io::{BufRead, BufReader, Read, Write},
@@ -66,11 +66,25 @@ pub struct TerminalSession {
 #[serde(tag = "action", rename_all = "camelCase")]
 enum HostRequest {
     List,
-    Create { session: TerminalSession },
-    Read { id: String },
-    Write { id: String, data: String },
-    Resize { id: String, cols: u16, rows: u16 },
-    SetLabel { id: String, label: String },
+    Create {
+        session: TerminalSession,
+    },
+    Read {
+        id: String,
+    },
+    Write {
+        id: String,
+        data: String,
+    },
+    Resize {
+        id: String,
+        cols: u16,
+        rows: u16,
+    },
+    SetLabel {
+        id: String,
+        label: String,
+    },
     SetAiLabel {
         id: String,
         ai_label: String,
@@ -82,8 +96,13 @@ enum HostRequest {
         target_id: String,
         target_kind: String,
     },
-    Restart { id: String, command: String },
-    Terminate { id: String },
+    Restart {
+        id: String,
+        command: String,
+    },
+    Terminate {
+        id: String,
+    },
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -226,10 +245,7 @@ fn restore_persisted_sessions(sessions: &Sessions) {
 }
 
 fn exit_host_if_empty(sessions: &Sessions) {
-    let is_empty = sessions
-        .lock()
-        .ok()
-        .is_some_and(|guard| guard.is_empty());
+    let is_empty = sessions.lock().ok().is_some_and(|guard| guard.is_empty());
     if !is_empty {
         return;
     }
@@ -450,7 +466,6 @@ fn session_process_info(session: &Arc<LiveSession>, exited: bool) -> Option<(usi
     detect_foreground_command(process_id)
 }
 
-
 fn session_has_recognized_output(session: &Arc<LiveSession>) -> bool {
     session
         .output_activity
@@ -460,10 +475,7 @@ fn session_has_recognized_output(session: &Arc<LiveSession>) -> bool {
 }
 
 fn is_cli_agent_process(name: &str) -> bool {
-    matches!(
-        name,
-        "OpenCode" | "Claude" | "Codex" | "Gemini" | "Aider"
-    )
+    matches!(name, "OpenCode" | "Claude" | "Codex" | "Gemini" | "Aider")
 }
 
 fn stable_process_name(session: &Arc<LiveSession>, detected: Option<String>) -> Option<String> {
@@ -538,8 +550,7 @@ fn refresh_output_active(
             return activity.settled;
         }
         // CLI agents often pause between tokens — stay active while the agent process runs.
-        if process_name.is_some_and(is_cli_agent_process)
-            && session_has_recognized_output(session)
+        if process_name.is_some_and(is_cli_agent_process) && session_has_recognized_output(session)
         {
             return activity.settled;
         }
@@ -575,16 +586,12 @@ fn refresh_status(session: &Arc<LiveSession>) -> TerminalSession {
     let process_info = session_process_info(session, exited);
     let detected_process = process_info.as_ref().map(|(_, name)| name.clone());
     let process_name = stable_process_name(session, detected_process);
-    let current_fingerprint =
-        compute_output_fingerprint(&output_bytes, process_name.as_deref());
+    let current_fingerprint = compute_output_fingerprint(&output_bytes, process_name.as_deref());
 
     let mut response_metadata = metadata.clone();
     if response_metadata.kind == "shell" {
-        response_metadata.label = merge_display_label(
-            &metadata,
-            process_name.clone(),
-            &current_fingerprint,
-        );
+        response_metadata.label =
+            merge_display_label(&metadata, process_name.clone(), &current_fingerprint);
     } else if response_metadata.kind == "preview" {
         response_metadata.preview_url =
             crate::git::detect_localhost_url(&String::from_utf8_lossy(&output_bytes));
@@ -919,9 +926,7 @@ fn handle_connection(stream: UnixStream, sessions: Sessions) {
 fn kill_process_by_pid(pid: u32) {
     #[cfg(unix)]
     {
-        let _ = Command::new("kill")
-            .args(["-9", &pid.to_string()])
-            .status();
+        let _ = Command::new("kill").args(["-9", &pid.to_string()]).status();
     }
     #[cfg(windows)]
     {
@@ -938,27 +943,27 @@ fn check_host_responsive(socket: &Path) -> bool {
     };
     let _ = stream.set_write_timeout(Some(Duration::from_millis(500)));
     let _ = stream.set_read_timeout(Some(Duration::from_millis(500)));
-    
+
     let request = HostRequest::List;
     let Ok(mut payload) = serde_json::to_vec(&request) else {
         return false;
     };
     payload.push(b'\n');
-    
+
     if stream.write_all(&payload).is_err() {
         return false;
     }
-    
+
     let mut reader = BufReader::new(stream);
     let mut raw = String::new();
     if reader.read_line(&mut raw).is_err() {
         return false;
     }
-    
+
     let Ok(response) = serde_json::from_str::<HostResponse>(&raw) else {
         return false;
     };
-    
+
     response.ok
 }
 
@@ -968,7 +973,7 @@ pub fn run_terminal_host() -> Result<(), String> {
         .map_err(|error| format!("Failed to create terminal host directory: {error}"))?;
     let socket = socket_path()?;
     let pid_file = pid_path()?;
-    
+
     if socket.exists() {
         if check_host_responsive(&socket) {
             return Ok(());
@@ -982,11 +987,11 @@ pub fn run_terminal_host() -> Result<(), String> {
         let _ = fs::remove_file(&socket);
         let _ = fs::remove_file(&pid_file);
     }
-    
+
     let listener = UnixListener::bind(&socket)
         .map_err(|error| format!("Failed to bind terminal host: {error}"))?;
     let _ = fs::write(&pid_file, std::process::id().to_string());
-    
+
     let protocol_path = root.join("protocol_version");
     let _ = fs::write(&protocol_path, TERMINAL_HOST_PROTOCOL.to_string());
     let sessions: Sessions = Arc::new(Mutex::new(HashMap::new()));
@@ -1046,43 +1051,41 @@ fn spawn_and_wait_for_host() -> Result<UnixStream, String> {
 fn send_request(request: HostRequest) -> Result<HostResponse, String> {
     let socket = socket_path()?;
     let pid_file = pid_path()?;
-    
+
     let expected_pid = fs::read_to_string(&pid_file)
         .ok()
         .and_then(|s| s.trim().parse::<u32>().ok());
-    
+
     let connect = || UnixStream::connect(&socket);
-    
+
     let mut stream = match connect() {
         Ok(stream) => stream,
-        Err(_) => {
-            spawn_and_wait_for_host()?
-        }
+        Err(_) => spawn_and_wait_for_host()?,
     };
-    
+
     let expected_pid = expected_pid.or_else(|| {
         fs::read_to_string(&pid_file)
             .ok()
             .and_then(|s| s.trim().parse::<u32>().ok())
     });
-    
+
     let _ = stream.set_write_timeout(Some(Duration::from_secs(2)));
     let _ = stream.set_read_timeout(Some(Duration::from_secs(2)));
-    
+
     let mut payload = serde_json::to_vec(&request).map_err(|error| error.to_string())?;
     payload.push(b'\n');
-    
+
     let mut raw = String::new();
     let mut communication_result = stream.write_all(&payload).and_then(|_| {
         let mut reader = BufReader::new(stream);
         reader.read_line(&mut raw)
     });
-    
+
     if communication_result.is_err() {
         let current_pid = fs::read_to_string(&pid_file)
             .ok()
             .and_then(|s| s.trim().parse::<u32>().ok());
-            
+
         if let (Some(exp), Some(cur)) = (expected_pid, current_pid) {
             if exp == cur {
                 kill_process_by_pid(cur);
@@ -1090,18 +1093,18 @@ fn send_request(request: HostRequest) -> Result<HostResponse, String> {
                 let _ = fs::remove_file(&pid_file);
             }
         }
-        
+
         let mut new_stream = spawn_and_wait_for_host()?;
         let _ = new_stream.set_write_timeout(Some(Duration::from_secs(2)));
         let _ = new_stream.set_read_timeout(Some(Duration::from_secs(2)));
-        
+
         raw.clear();
         communication_result = new_stream.write_all(&payload).and_then(|_| {
             let mut reader = BufReader::new(new_stream);
             reader.read_line(&mut raw)
         });
     }
-    
+
     let _ = communication_result.map_err(|error| error.to_string())?;
     let response: HostResponse = serde_json::from_str(&raw).map_err(|error| error.to_string())?;
     if response.ok {
@@ -1300,11 +1303,7 @@ mod tests {
             output_active: false,
             has_recognized_output: false,
         };
-        let merged = merge_display_label(
-            &metadata,
-            Some("OpenCode".to_string()),
-            "abc123",
-        );
+        let merged = merge_display_label(&metadata, Some("OpenCode".to_string()), "abc123");
         assert_eq!(merged, "Run test suite");
     }
 
@@ -1314,10 +1313,7 @@ mod tests {
             interim_display_label(Some("OpenCode"), "Terminal 1"),
             "OpenCode 1",
         );
-        assert_eq!(
-            interim_display_label(Some("pnpm"), "Terminal 2"),
-            "pnpm 2",
-        );
+        assert_eq!(interim_display_label(Some("pnpm"), "Terminal 2"), "pnpm 2",);
         assert_eq!(interim_display_label(None, "Terminal 1"), "Terminal 1");
     }
 
@@ -1359,11 +1355,7 @@ mod tests {
             output_active: false,
             has_recognized_output: false,
         };
-        let merged = merge_display_label(
-            &metadata,
-            Some("pnpm".to_string()),
-            "new",
-        );
+        let merged = merge_display_label(&metadata, Some("pnpm".to_string()), "new");
         assert_eq!(merged, "Old task");
     }
 }

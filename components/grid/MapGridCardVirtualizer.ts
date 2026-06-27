@@ -34,6 +34,7 @@ const resolveCardPosition = (
   dragPreviewByNodeId: DragPreviewByVisualId,
   nodePositionOverrides: NodePositionOverrides,
   ignorePersistedOverrideVisualIds?: ReadonlySet<string>,
+  collapsedClumpVisualIds?: ReadonlySet<string>,
 ): { cardLeft: number; cardTop: number } => {
   const dragPreview = dragPreviewByNodeId[node.commit.visualId];
   if (isPixelNodePositionOverride(dragPreview)) {
@@ -44,6 +45,9 @@ const resolveCardPosition = (
   }
   const persisted = getNodePositionOverride(nodePositionOverrides, node.commit);
   if (isPixelNodePositionOverride(persisted)) {
+    if (persisted.isMigratedWorktree && collapsedClumpVisualIds?.has(node.commit.visualId)) {
+      return { cardLeft: node.x, cardTop: node.y };
+    }
     return { cardLeft: persisted.x, cardTop: persisted.y };
   }
   return { cardLeft: node.x, cardTop: node.y };
@@ -66,6 +70,7 @@ export function buildMapGridCardSlotAssignments(
   viewportCenterY: number,
   stickyVisualIdOrder: readonly string[] = [],
   ignorePersistedOverrideVisualIds?: ReadonlySet<string>,
+  collapsedClumpVisualIds?: ReadonlySet<string>,
 ): MapGridCardSlotAssignment[] {
   if (visibleNodes.length === 0 || slotCount <= 0) {
     return [];
@@ -81,6 +86,7 @@ export function buildMapGridCardSlotAssignments(
       dragPreviewByNodeId,
       nodePositionOverrides,
       ignorePersistedOverrideVisualIds,
+      collapsedClumpVisualIds,
     );
     if (!Number.isFinite(cardLeft) || !Number.isFinite(cardTop)) return;
     assignments.push({ node, cardLeft, cardTop });
@@ -103,6 +109,7 @@ export function buildMapGridCardSlotAssignments(
         dragPreviewByNodeId,
         nodePositionOverrides,
         ignorePersistedOverrideVisualIds,
+        collapsedClumpVisualIds,
       );
       return {
         node,

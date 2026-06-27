@@ -86,14 +86,17 @@ export const propagateOverrideRelativeLayout = ({
 export const resolveOverrideAwareNodeCollisions = ({
   renderNodes,
   overrides,
+  isPinnedNode,
 }: {
   renderNodes: Node[];
   overrides: NodePositionOverrides;
+  isPinnedNode?: (node: Node) => boolean;
 }): void => {
   if (renderNodes.length <= 1) return;
 
   const occupied = new Set<string>();
-  const hasOverride = (node: Node): boolean => Boolean(getNodePositionOverride(overrides, node.commit));
+  const hasOverride = (node: Node): boolean =>
+    Boolean(getNodePositionOverride(overrides, node.commit)) || Boolean(isPinnedNode?.(node));
   const keyFor = (row: number, column: number): string => `${row}:${column}`;
   const orderedNodes = [...renderNodes].sort((left, right) => {
     const leftPinned = hasOverride(left);

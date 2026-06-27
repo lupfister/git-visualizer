@@ -35,10 +35,13 @@ type Props = {
   onPushAllBranches?: () => Promise<void> | void;
   onPushCurrentBranch?: (targetPath?: string) => Promise<void> | void;
   onPushCommitTargets?: (targets: Array<{ branchName: string; targetSha: string }>) => Promise<void> | void;
+  onSquashCommitRange?: (target: { branchName: string; commitShas: string[] }) => Promise<void> | void;
   onPreviewSelectedNode?: () => Promise<void> | void;
   previewInProgress?: boolean;
   onMergeRefsIntoBranch?: (sourceRefs: string[], targetBranch: string) => Promise<void> | void;
   selectedPushTargets: PushTarget[];
+  selectedSquashTarget?: { branchName: string; commitShas: string[] } | null;
+  squashInProgress?: boolean;
   pushableRemoteBranchCount: number;
   selectedCommitTargetOption: SelectedCommitTargetOption;
   mergeInProgress: boolean;
@@ -70,9 +73,12 @@ function CommitControls({
   onPushAllBranches,
   onPushCurrentBranch,
   onPushCommitTargets,
+  onSquashCommitRange,
   onPreviewSelectedNode,
   previewInProgress = false,
   selectedPushTargets,
+  selectedSquashTarget = null,
+  squashInProgress = false,
   pushableRemoteBranchCount,
   onWriteCommit,
   setNewBranchDialogOpen,
@@ -90,7 +96,7 @@ function CommitControls({
 
   // Original buttons styling tokens
   const controlClassName =
-    'inline-flex h-7 items-center rounded-md border border-border bg-background px-2 text-[11px] font-medium text-foreground transition-colors hover:bg-muted hover:text-foreground disabled:cursor-not-allowed disabled:opacity-50';
+    'inline-flex h-7 items-center rounded-md border border-border bg-background px-2 text-[11px] font-medium text-foreground transition-colors hover:bg-muted hover:text-foreground disabled:cursor-not-allowed disabled:text-muted-foreground disabled:hover:bg-background';
 
   const menuButtonClassName = (enabled: boolean, loading: boolean) =>
     cn(
@@ -133,7 +139,8 @@ function CommitControls({
   }, []);
 
   // Determine selection type state
-  const isSelectionEmpty = selectedVisibleCommitShas.length === 0 || !selectedPreviewNode;
+  const isSelectionEmpty = selectedVisibleCommitShas.length === 0;
+  const hasSingleSelectedNode = selectedPreviewNode != null;
   const isSelectedWorktree = selectedPreviewNode != null && (
     isWorkingTreeCommitId(selectedPreviewNode.commit.id) ||
     selectedPreviewNode.commit.kind === 'uncommitted'
@@ -153,10 +160,14 @@ function CommitControls({
   const isDirtyWorktree = selectedSession?.hasUncommittedChanges ?? false;
 
   const showPush = selectedPushTargets.length > 0;
+  const showSquash = selectedSquashTarget != null;
   const pushTargets = selectedPushTargets.map((target) => ({
     branchName: target.branchName,
     targetSha: target.targetSha,
   }));
+  const selectedPushCommitCount = selectedPushTargets.reduce((sum, target) => sum + Math.max(0, target.commitCount), 0);
+  const pushSelectionIcon = selectedPushCommitCount === 1 ? 'push-single' : 'push-multiple';
+  const pushAllIcon = pushableRemoteBranchCount === 1 ? 'push-single' : 'push-multiple';
 
   const pushLabel = 'Push Selected...';
 
@@ -226,7 +237,7 @@ function CommitControls({
                 className={controlClassName}
               >
                 <ToolbarActionContent
-                  icon="push-all"
+                  icon={pushAllIcon}
                   label="Push All"
                   loading={pushInProgress}
                 />
@@ -239,7 +250,7 @@ function CommitControls({
               className={cn(controlClassName, 'pointer-events-auto relative z-10 !bg-background !border-border hover:!bg-muted')}
             >
               <ToolbarActionContent
-                icon="branch"
+                icon="branch-new-root"
                 label="New Root Branch..."
                 loading={createBranchFromNodeInProgress}
               />
@@ -263,7 +274,7 @@ function CommitControls({
                     <ToolbarActionContent icon="commit" label="Commit" loading={commitInProgress} />
                   )}
                   {commitAction === 'commit-push' && (
-                    <ToolbarActionContent icon="push-branch" label="Commit & Push" loading={commitInProgress || pushInProgress} />
+                    <ToolbarActionContent icon="push-single" label="Commit & Push" loading={commitInProgress || pushInProgress} />
                   )}
                   {commitAction === 'stash' && (
                     <ToolbarActionContent icon="stash" label="Stash" loading={stashInProgress} />
@@ -274,7 +285,7 @@ function CommitControls({
                   onClick={() => setActiveDropdown((curr) => (curr === 'commit' ? null : 'commit'))}
                   className={cn(controlClassName, 'h-full rounded-l-none border-0 bg-transparent pl-1 hover:bg-muted')}
                 >
-                  <ChevronDown className="h-4 w-4 shrink-0 text-foreground" />
+                  <ChevronDown strokeWidth={1.875} className="h-4 w-4 shrink-0 text-foreground" />
                 </button>
                 {activeDropdown === 'commit' && (
                   <div className="context-menu-panel absolute left-[-1px] top-full z-[70] mt-2 inline-flex w-max min-w-0 flex-col overflow-hidden rounded-md border border-border bg-background p-1" data-outer-radius="md">
@@ -300,7 +311,7 @@ function CommitControls({
                       }}
                       className={menuButtonClassName(true, commitInProgress || pushInProgress)}
                     >
-                      <ToolbarActionContent icon="push-branch" label="Commit & Push" loading={commitInProgress || pushInProgress} iconClassName="mr-1.5" />
+                      <ToolbarActionContent icon="push-single" label="Commit & Push" loading={commitInProgress || pushInProgress} iconClassName="mr-1.5" />
                     </button>
                     <button
                       type="button"
@@ -337,7 +348,7 @@ function CommitControls({
               className={cn(controlClassName, 'pointer-events-auto relative z-10 !bg-background !border-border hover:!bg-muted')}
             >
               <ToolbarActionContent
-                icon="branch"
+                icon="branch-new"
                 label={(() => {
                   const selectedSha = selectedPreviewNode.commit.id;
                   const selectedSession = worktreeSessions.find((s) => s.workingTreeId === selectedSha);
@@ -368,7 +379,7 @@ function CommitControls({
                 onClick={() => setActiveDropdown((curr) => (curr === 'preview' ? null : 'preview'))}
                 className={cn(controlClassName, 'h-full rounded-l-none border-0 bg-transparent pl-1 hover:bg-muted')}
               >
-                <ChevronDown className="h-4 w-4 shrink-0 text-foreground" />
+                <ChevronDown strokeWidth={1.875} className="h-4 w-4 shrink-0 text-foreground" />
               </button>
               {activeDropdown === 'preview' && (
                 <div className="context-menu-panel absolute left-[-1px] top-full z-[70] mt-2 inline-flex w-max min-w-0 flex-col overflow-hidden rounded-md border border-border bg-background p-1" data-outer-radius="md">
@@ -404,94 +415,7 @@ function CommitControls({
 
         {/* STATE 3: Selected Stash / Placeholder Branch Node */}
         {!isSelectionEmpty && isSelectedStashOrPlaceholder && (
-          <div className="pointer-events-auto relative z-10 inline-flex h-7 items-stretch rounded-md border border-border bg-background">
-            <button
-              type="button"
-              onClick={() => void runCheckoutAction(checkoutAction)}
-              className={cn(controlClassName, 'h-full rounded-r-none border-0 bg-transparent pr-1 hover:bg-muted')}
-            >
-              {checkoutAction === 'checkout' ? (
-                <ToolbarActionContent icon="commit" label="Checkout" />
-              ) : (
-                <ToolbarActionContent icon="branch" label="New Worktree" />
-              )}
-            </button>
-            <button
-              type="button"
-              onClick={() => setActiveDropdown((curr) => (curr === 'checkout' ? null : 'checkout'))}
-              className={cn(controlClassName, 'h-full rounded-l-none border-0 bg-transparent pl-1 hover:bg-muted')}
-            >
-              <ChevronDown className="h-4 w-4 shrink-0 text-foreground" />
-            </button>
-            {activeDropdown === 'checkout' && (
-              <div className="context-menu-panel absolute left-[-1px] top-full z-[70] mt-2 inline-flex w-max min-w-0 flex-col overflow-hidden rounded-md border border-border bg-background p-1" data-outer-radius="md">
-                <button
-                  type="button"
-                  onClick={() => {
-                    setCheckoutAction('checkout');
-                    localStorage.setItem('git-visualizer:last-checkout-action', 'checkout');
-                    setActiveDropdown(null);
-                    void runCheckoutAction('checkout');
-                  }}
-                  className={menuButtonClassName(true, false)}
-                >
-                  <ToolbarActionContent icon="commit" label="Checkout" iconClassName="mr-1.5" />
-                </button>
-                <button
-                  type="button"
-                  onClick={() => {
-                    setCheckoutAction('new-worktree');
-                    localStorage.setItem('git-visualizer:last-checkout-action', 'new-worktree');
-                    setActiveDropdown(null);
-                    void runCheckoutAction('new-worktree');
-                  }}
-                  className={menuButtonClassName(true, false)}
-                >
-                  <ToolbarActionContent icon="branch" label="New Worktree" iconClassName="mr-1.5" />
-                </button>
-              </div>
-            )}
-          </div>
-        )}
-
-        {/* STATE 4: Selected Commit Node */}
-        {!isSelectionEmpty && !isSelectedWorktree && !isSelectedStashOrPlaceholder && (
           <>
-            {/* Preview Button */}
-            {!isSelectedStash && (
-              <button
-                type="button"
-                onClick={() => void onPreviewSelectedNode?.()}
-                disabled={previewInProgress}
-                className={cn(controlClassName, 'pointer-events-auto relative z-10 !border-border !bg-background hover:!bg-muted')}
-              >
-                <ToolbarActionContent
-                  icon="preview"
-                  label="Preview"
-                  loading={previewInProgress}
-                />
-              </button>
-            )}
-
-            {/* Push Button */}
-            {showPush && !isSelectedStash && (
-              <button
-                type="button"
-                onClick={() => {
-                  void onPushCommitTargets?.(pushTargets);
-                }}
-                disabled={pushInProgress}
-                className={cn(controlClassName, 'pointer-events-auto relative z-10 !border-border !bg-background hover:!bg-muted')}
-              >
-                <ToolbarActionContent
-                  icon="push-selected"
-                  label={pushLabel}
-                  loading={pushInProgress}
-                />
-              </button>
-            )}
-
-            {/* Checkout Actions Split-Button Dropdown */}
             <div className="pointer-events-auto relative z-10 inline-flex h-7 items-stretch rounded-md border border-border bg-background">
               <button
                 type="button"
@@ -501,7 +425,7 @@ function CommitControls({
                 {checkoutAction === 'checkout' ? (
                   <ToolbarActionContent icon="commit" label="Checkout" />
                 ) : (
-                  <ToolbarActionContent icon="branch" label="New Worktree" />
+                  <ToolbarActionContent icon="new-worktree" label="New Worktree" />
                 )}
               </button>
               <button
@@ -509,7 +433,7 @@ function CommitControls({
                 onClick={() => setActiveDropdown((curr) => (curr === 'checkout' ? null : 'checkout'))}
                 className={cn(controlClassName, 'h-full rounded-l-none border-0 bg-transparent pl-1 hover:bg-muted')}
               >
-                <ChevronDown className="h-4 w-4 shrink-0 text-foreground" />
+                <ChevronDown strokeWidth={1.875} className="h-4 w-4 shrink-0 text-foreground" />
               </button>
               {activeDropdown === 'checkout' && (
                 <div className="context-menu-panel absolute left-[-1px] top-full z-[70] mt-2 inline-flex w-max min-w-0 flex-col overflow-hidden rounded-md border border-border bg-background p-1" data-outer-radius="md">
@@ -535,11 +459,119 @@ function CommitControls({
                     }}
                     className={menuButtonClassName(true, false)}
                   >
-                    <ToolbarActionContent icon="branch" label="New Worktree" iconClassName="mr-1.5" />
+                    <ToolbarActionContent icon="new-worktree" label="New Worktree" iconClassName="mr-1.5" />
                   </button>
                 </div>
               )}
             </div>
+          </>
+        )}
+
+        {/* STATE 4: Selected Commit Node */}
+        {!isSelectionEmpty && !isSelectedWorktree && !isSelectedStashOrPlaceholder && (
+          <>
+            {/* Preview Button */}
+            {hasSingleSelectedNode && !isSelectedStash && (
+              <button
+                type="button"
+                onClick={() => void onPreviewSelectedNode?.()}
+                disabled={previewInProgress}
+                className={cn(controlClassName, 'pointer-events-auto relative z-10 !border-border !bg-background hover:!bg-muted')}
+              >
+                <ToolbarActionContent
+                  icon="preview"
+                  label="Preview"
+                  loading={previewInProgress}
+                />
+              </button>
+            )}
+
+            {/* Push Button */}
+            {showPush && !isSelectedStash && (
+              <button
+                type="button"
+                onClick={() => {
+                  void onPushCommitTargets?.(pushTargets);
+                }}
+                disabled={pushInProgress}
+                className={cn(controlClassName, 'pointer-events-auto relative z-10 !border-border !bg-background hover:!bg-muted')}
+              >
+                <ToolbarActionContent
+                  icon={pushSelectionIcon}
+                  label={pushLabel}
+                  loading={pushInProgress}
+                />
+              </button>
+            )}
+
+            {showSquash && !isSelectedStash && (
+              <button
+                type="button"
+                onClick={() => {
+                  if (selectedSquashTarget) void onSquashCommitRange?.(selectedSquashTarget);
+                }}
+                disabled={squashInProgress}
+                className={cn(controlClassName, 'pointer-events-auto relative z-10 !border-border !bg-background hover:!bg-muted')}
+              >
+                <ToolbarActionContent
+                  icon="commit"
+                  label="Squash"
+                  loading={squashInProgress}
+                />
+              </button>
+            )}
+
+            {/* Checkout Actions Split-Button Dropdown */}
+            {hasSingleSelectedNode && (
+              <div className="pointer-events-auto relative z-10 inline-flex h-7 items-stretch rounded-md border border-border bg-background">
+                <button
+                  type="button"
+                  onClick={() => void runCheckoutAction(checkoutAction)}
+                  className={cn(controlClassName, 'h-full rounded-r-none border-0 bg-transparent pr-1 hover:bg-muted')}
+                >
+                  {checkoutAction === 'checkout' ? (
+                    <ToolbarActionContent icon="commit" label="Checkout" />
+                  ) : (
+                    <ToolbarActionContent icon="new-worktree" label="New Worktree" />
+                  )}
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setActiveDropdown((curr) => (curr === 'checkout' ? null : 'checkout'))}
+                  className={cn(controlClassName, 'h-full rounded-l-none border-0 bg-transparent pl-1 hover:bg-muted')}
+                >
+                  <ChevronDown strokeWidth={1.875} className="h-4 w-4 shrink-0 text-foreground" />
+                </button>
+                {activeDropdown === 'checkout' && (
+                  <div className="context-menu-panel absolute left-[-1px] top-full z-[70] mt-2 inline-flex w-max min-w-0 flex-col overflow-hidden rounded-md border border-border bg-background p-1" data-outer-radius="md">
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setCheckoutAction('checkout');
+                        localStorage.setItem('git-visualizer:last-checkout-action', 'checkout');
+                        setActiveDropdown(null);
+                        void runCheckoutAction('checkout');
+                      }}
+                      className={menuButtonClassName(true, false)}
+                    >
+                      <ToolbarActionContent icon="commit" label="Checkout" iconClassName="mr-1.5" />
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setCheckoutAction('new-worktree');
+                        localStorage.setItem('git-visualizer:last-checkout-action', 'new-worktree');
+                        setActiveDropdown(null);
+                        void runCheckoutAction('new-worktree');
+                      }}
+                      className={menuButtonClassName(true, false)}
+                    >
+                      <ToolbarActionContent icon="new-worktree" label="New Worktree" iconClassName="mr-1.5" />
+                    </button>
+                  </div>
+                )}
+              </div>
+            )}
           </>
         )}
       </div>

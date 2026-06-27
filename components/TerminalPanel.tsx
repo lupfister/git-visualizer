@@ -315,9 +315,9 @@ export default function TerminalPanel({
           title={isBottom ? 'Move to right panel' : 'Move to bottom panel'}
         >
           {isBottom ? (
-            <PanelRight className="h-3.5 w-3.5 shrink-0" />
+            <PanelRight strokeWidth={1} className="h-4 w-4 shrink-0" />
           ) : (
-            <PanelBottom className="h-3.5 w-3.5 shrink-0" />
+            <PanelBottom strokeWidth={1} className="h-4 w-4 shrink-0" />
           )}
         </button>
         <button
@@ -327,7 +327,7 @@ export default function TerminalPanel({
           aria-label="Terminate terminal"
           title="Terminate terminal"
         >
-          <Trash2 className="h-3.5 w-3.5 shrink-0" />
+          <Trash2 strokeWidth={1} className="h-4 w-4 shrink-0" />
         </button>
         <button
           type="button"
@@ -337,9 +337,9 @@ export default function TerminalPanel({
           title="Hide terminal panel"
         >
           {isBottom ? (
-            <PanelBottomClose className="h-3.5 w-3.5 shrink-0" />
+            <PanelBottomClose strokeWidth={1} className="h-4 w-4 shrink-0" />
           ) : (
-            <PanelRightClose className="h-3.5 w-3.5 shrink-0" />
+            <PanelRightClose strokeWidth={1} className="h-4 w-4 shrink-0" />
           )}
         </button>
       </header>

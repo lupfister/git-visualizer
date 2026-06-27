@@ -19,6 +19,7 @@ import {
   resolveActiveWorktreeFocusSha,
   resolveTerminalSessionFocusId,
   determineWorktreePromptDefaults,
+  NON_CURRENT_ACCENT_CYCLE,
 } from './worktreeSessions';
 
 const baseWorktree = (overrides: Partial<WorktreeInfo>): WorktreeInfo => ({
@@ -53,7 +54,7 @@ describe('worktreeSessions', () => {
     vi.unstubAllGlobals();
   });
 
-  it('assigns checked accent to current worktree and worktree-violet to first other', () => {
+  it('assigns checked accent to current worktree and a stable accent to the other', () => {
     const sessions = buildWorktreeSessions(
       [
         baseWorktree({ path: '/repo/wt-b', headSha: 'bbbbbbbbbbbb', branchName: 'feature', isCurrent: false }),
@@ -64,7 +65,51 @@ describe('worktreeSessions', () => {
     const current = sessions.find((session) => session.isCurrent);
     const other = sessions.find((session) => !session.isCurrent);
     expect(current?.accentToken).toBe('checked');
-    expect(other?.accentToken).toBe('worktree-violet');
+    expect(NON_CURRENT_ACCENT_CYCLE).toContain(other?.accentToken);
+  });
+
+  it('assigns stable accents to worktrees based on their paths, independent of order or other worktrees', () => {
+    // Session wt-b alone
+    const sessions1 = buildWorktreeSessions(
+      [
+        baseWorktree({ path: '/repo/wt-b', headSha: 'bbbbbbbbbbbb', branchName: 'feature', isCurrent: false }),
+        baseWorktree({ path: '/repo', headSha: 'aaaaaaaaaaaa', branchName: 'main', isCurrent: true }),
+      ],
+      '/repo'
+    );
+    const wtBToken1 = sessions1.find(s => s.path === '/repo/wt-b')!.accentToken;
+
+    // Session wt-b along with another session wt-c
+    const sessions2 = buildWorktreeSessions(
+      [
+        baseWorktree({ path: '/repo/wt-c', headSha: 'cccccccccccc', branchName: 'other', isCurrent: false }),
+        baseWorktree({ path: '/repo/wt-b', headSha: 'bbbbbbbbbbbb', branchName: 'feature', isCurrent: false }),
+        baseWorktree({ path: '/repo', headSha: 'aaaaaaaaaaaa', branchName: 'main', isCurrent: true }),
+      ],
+      '/repo'
+    );
+    const wtBToken2 = sessions2.find(s => s.path === '/repo/wt-b')!.accentToken;
+
+    expect(wtBToken1).toBe(wtBToken2);
+  });
+
+  it('assigns distinct colors to active non-current worktrees and persists them', () => {
+    const sessions = buildWorktreeSessions(
+      [
+        baseWorktree({ path: '/repo/wt-b', headSha: 'bbbbbbbbbbbb', branchName: 'feature1', isCurrent: false }),
+        baseWorktree({ path: '/repo/wt-c', headSha: 'cccccccccccc', branchName: 'feature2', isCurrent: false }),
+        baseWorktree({ path: '/repo/wt-d', headSha: 'dddddddddddd', branchName: 'feature3', isCurrent: false }),
+        baseWorktree({ path: '/repo', headSha: 'aaaaaaaaaaaa', branchName: 'main', isCurrent: true }),
+      ],
+      '/repo',
+    );
+    const tokens = sessions.filter(s => !s.isCurrent).map(s => s.accentToken);
+
+    // There are 3 non-current worktrees, so they should all have different colors
+    expect(new Set(tokens).size).toBe(3);
+
+    // None of them should be 'checked'
+    expect(tokens).not.toContain('checked');
   });
 
   it('resolves active worktree focus from persistence then current session', () => {
@@ -192,8 +237,9 @@ describe('worktreeSessions', () => {
       '/repo',
     );
     const lookups = buildWorktreeAccentLookups(sessions);
+    const featureAccent = sessions.find((s) => s.path === '/repo/wt-b')!.accentToken;
     expect(resolveBranchCheckoutAccent('main', 'aaaaaaaaaaaa', lookups)).toBe('checked');
-    expect(resolveBranchCheckoutAccent('feature', 'bbbbbbbbbbbb', lookups)).toBe('worktree-violet');
+    expect(resolveBranchCheckoutAccent('feature', 'bbbbbbbbbbbb', lookups)).toBe(featureAccent);
     expect(resolveBranchCheckoutAccent('other', undefined, lookups)).toBeNull();
   });
 
@@ -207,8 +253,9 @@ describe('worktreeSessions', () => {
       '/repo',
     );
     const map = buildWorktreeAccentByCommitId(sessions, [`BRANCH_HEAD:cursor-sdk:${headSha}`]);
+    const cursorSdkSession = sessions.find((session) => session.branchName === 'cursor-sdk')!;
     expect(map.get(`BRANCH_HEAD:cursor-sdk:${headSha}`)).toBeUndefined();
-    expect(map.get(sessions.find((session) => session.branchName === 'cursor-sdk')!.workingTreeId)).toBe('worktree-violet');
+    expect(map.get(cursorSdkSession.workingTreeId)).toBe(cursorSdkSession.accentToken);
     expect(map.get('WORKING_TREE')).toBe('checked');
   });
 
@@ -318,8 +365,8 @@ describe('worktreeSessions', () => {
     expect(map.get('WORKING_TREE')).toBe('checked');
   });
 
-  it('respects worktreeOrder when building worktree sessions and assigning accents', () => {
-    const sessions = buildWorktreeSessions(
+  it('respects worktreeOrder when building worktree sessions', () => {
+    const sessions1 = buildWorktreeSessions(
       [
         baseWorktree({ path: '/repo/wt-c', headSha: 'cccccccccccc', branchName: 'wt-c', isCurrent: false }),
         baseWorktree({ path: '/repo/wt-b', headSha: 'bbbbbbbbbbbb', branchName: 'wt-b', isCurrent: false }),
@@ -329,11 +376,29 @@ describe('worktreeSessions', () => {
       null,
       ['/repo/wt-c', '/repo/wt-b']
     );
-    const nonCurrent = sessions.filter((s) => !s.isCurrent);
-    expect(nonCurrent[0]?.path).toBe('/repo/wt-c');
-    expect(nonCurrent[0]?.accentToken).toBe('worktree-violet');
-    expect(nonCurrent[1]?.path).toBe('/repo/wt-b');
-    expect(nonCurrent[1]?.accentToken).toBe('worktree-amber');
+    const nonCurrent1 = sessions1.filter((s) => !s.isCurrent);
+    expect(nonCurrent1[0]?.path).toBe('/repo/wt-c');
+    expect(nonCurrent1[1]?.path).toBe('/repo/wt-b');
+
+    // Also assert that accents match the stable hashes of those paths
+    const sessions2 = buildWorktreeSessions(
+      [
+        baseWorktree({ path: '/repo/wt-c', headSha: 'cccccccccccc', branchName: 'wt-c', isCurrent: false }),
+        baseWorktree({ path: '/repo/wt-b', headSha: 'bbbbbbbbbbbb', branchName: 'wt-b', isCurrent: false }),
+        baseWorktree({ path: '/repo', headSha: 'aaaaaaaaaaaa', branchName: 'main', isCurrent: true }),
+      ],
+      '/repo',
+      null,
+      ['/repo/wt-b', '/repo/wt-c']
+    );
+    const nonCurrent2 = sessions2.filter((s) => !s.isCurrent);
+    // Even when order is flipped, the accent tokens stay stable and attached to their respective paths
+    const sessionWtCOrder1 = nonCurrent1.find(s => s.path === '/repo/wt-c')!;
+    const sessionWtCOrder2 = nonCurrent2.find(s => s.path === '/repo/wt-c')!;
+    const sessionWtBOrder1 = nonCurrent1.find(s => s.path === '/repo/wt-b')!;
+    const sessionWtBOrder2 = nonCurrent2.find(s => s.path === '/repo/wt-b')!;
+    expect(sessionWtCOrder1.accentToken).toBe(sessionWtCOrder2.accentToken);
+    expect(sessionWtBOrder1.accentToken).toBe(sessionWtBOrder2.accentToken);
   });
 
   describe('determineWorktreePromptDefaults', () => {

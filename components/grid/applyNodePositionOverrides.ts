@@ -1,9 +1,5 @@
-import { COLUMN_WIDTH, type Node, type NodePositionOverrides, type VisualCommit } from './LayoutGrid';
+import type { Node, NodePositionOverrides, VisualCommit } from './LayoutGrid';
 import { getNodePositionOverride } from './nodePositionOverrides';
-import {
-  layoutIndicesForOverride,
-  type OverrideLayoutMetrics,
-} from './overrideLayoutPropagation';
 
 export type ApplyNodePositionOverridesInput = {
   renderNodes: Node[];
@@ -21,9 +17,20 @@ export type ApplyNodePositionOverridesInput = {
 
 type ClusterDragAnchor = { node: Node };
 
+const layoutIndicesForLogicalOverride = (
+  override: NodePositionOverrides[string],
+): { row: number; column: number } | null => {
+  if (!Number.isFinite(override?.row) || !Number.isFinite(override?.column)) return null;
+  return {
+    row: Math.max(1, Math.round(override.row!)),
+    column: Math.max(0, Math.round(override.column!)),
+  };
+};
+
 /**
  * Applies persisted drag positions. Collapsed clumps inherit the override from the member
  * on the highest timeline row (newest in layout order); non-lead members offset from the lead.
+ * Returns the visual ids whose position came from a direct or inherited override.
  */
 export const applyNodePositionOverrides = ({
   renderNodes,
@@ -33,29 +40,38 @@ export const applyNodePositionOverrides = ({
   rowByVisualId,
   overrides,
   isHorizontal,
-  zoomAwareTimelinePitch,
-  timelineRowLeadOffset = 0,
-  zoomAwareLanePitch = COLUMN_WIDTH,
-  maxResolvedRow = 0,
-}: ApplyNodePositionOverridesInput): void => {
-  const layoutMetrics: OverrideLayoutMetrics = {
-    isHorizontal,
-    timelineRowLeadOffset,
-    zoomAwareTimelinePitch,
-    zoomAwareLanePitch,
-    maxResolvedRow: Math.max(
-      maxResolvedRow,
-      ...renderNodes.map((node) => node.row),
-      1,
-    ),
+}: ApplyNodePositionOverridesInput): Set<string> => {
+  const pinnedNodeVisualIds = new Set<string>();
+  const bestOverrideByClusterKey = new Map<string, { override: NodePositionOverrides[string]; row: number }>();
+  const renderedCountByClusterKey = new Map<string, number>();
+  for (const node of renderNodes) {
+    const clusterKey = clusterKeyByCommitId.get(node.commit.visualId);
+    if (!clusterKey) continue;
+    renderedCountByClusterKey.set(clusterKey, (renderedCountByClusterKey.get(clusterKey) ?? 0) + 1);
+  }
+
+  const clusterCounts = new Map<string, number>();
+  for (const commit of allCommitsWithClusters) {
+    const clusterKey = clusterKeyByCommitId.get(commit.visualId);
+    if (clusterKey) {
+      clusterCounts.set(clusterKey, (clusterCounts.get(clusterKey) ?? 0) + 1);
+    }
+  }
+
+  const isClusterCollapsed = (clusterKey: string): boolean => {
+    const count = clusterCounts.get(clusterKey) ?? 0;
+    const rendered = renderedCountByClusterKey.get(clusterKey) ?? 0;
+    return count > 1 && rendered === 1;
   };
 
-  const bestOverrideByClusterKey = new Map<string, { override: NodePositionOverrides[string]; row: number }>();
   for (const commit of allCommitsWithClusters) {
     const clusterKey = clusterKeyByCommitId.get(commit.visualId);
     if (!clusterKey) continue;
     const override = getNodePositionOverride(overrides, commit);
     if (!override) continue;
+    if (override.isMigratedWorktree && isClusterCollapsed(clusterKey)) {
+      continue;
+    }
     const row = rowByVisualId.get(commit.visualId) ?? 0;
     const current = bestOverrideByClusterKey.get(clusterKey);
     if (!current || row > current.row) {
@@ -68,34 +84,49 @@ export const applyNodePositionOverrides = ({
     const clusterKey = clusterKeyByCommitId.get(node.commit.visualId);
     if (!clusterKey) continue;
     if (leadByClusterKey.get(clusterKey) !== node.commit.visualId) continue;
-    const directOverride = getNodePositionOverride(overrides, node.commit);
+    let directOverride = getNodePositionOverride(overrides, node.commit);
+    if (directOverride?.isMigratedWorktree && isClusterCollapsed(clusterKey)) {
+      directOverride = undefined;
+    }
     if (directOverride) {
-      const indices = layoutIndicesForOverride(directOverride, layoutMetrics);
+      const indices = layoutIndicesForLogicalOverride(directOverride);
+      if (!indices) continue;
       node.row = indices.row;
       node.column = indices.column;
       clusterDragAnchorByKey.set(clusterKey, { node });
+      pinnedNodeVisualIds.add(node.commit.visualId);
       continue;
     }
     const inherited = bestOverrideByClusterKey.get(clusterKey);
+    if ((renderedCountByClusterKey.get(clusterKey) ?? 0) > 1) continue;
     if (!inherited) continue;
-    const indices = layoutIndicesForOverride(inherited.override, layoutMetrics);
+    const indices = layoutIndicesForLogicalOverride(inherited.override);
+    if (!indices) continue;
     node.row = indices.row;
     node.column = indices.column;
     clusterDragAnchorByKey.set(clusterKey, { node });
+    pinnedNodeVisualIds.add(node.commit.visualId);
   }
 
   for (const node of renderNodes) {
-    const override = getNodePositionOverride(overrides, node.commit);
+    const clusterKey = clusterKeyByCommitId.get(node.commit.visualId);
+    let override = getNodePositionOverride(overrides, node.commit);
+    if (override?.isMigratedWorktree && clusterKey && isClusterCollapsed(clusterKey)) {
+      override = undefined;
+    }
     if (override) {
-      const indices = layoutIndicesForOverride(override, layoutMetrics);
+      const indices = layoutIndicesForLogicalOverride(override);
+      if (!indices) continue;
       node.row = indices.row;
       node.column = indices.column;
+      pinnedNodeVisualIds.add(node.commit.visualId);
       continue;
     }
-    const clusterKey = clusterKeyByCommitId.get(node.commit.visualId);
     const anchor = clusterKey ? clusterDragAnchorByKey.get(clusterKey) : null;
     if (!anchor) continue;
     if (isHorizontal) node.row = Math.max(node.row, anchor.node.row);
     else node.column = Math.max(node.column, anchor.node.column);
   }
+
+  return pinnedNodeVisualIds;
 };

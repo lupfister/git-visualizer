@@ -50,6 +50,8 @@ interface Props {
   onCreateWorktree?: (projectPath: string, branchOrCommit?: string) => void;
   onPushCommitTargets?: (targets: Array<{ branchName: string; targetSha: string }>) => Promise<void> | void;
   pushInProgress?: boolean;
+  onSquashCommitRange?: (target: { branchName: string; commitShas: string[] }) => Promise<void> | void;
+  squashInProgress?: boolean;
   onDeleteSelection?: (targets: {
     branchNames: string[];
     discardUncommittedChanges: boolean;
@@ -159,6 +161,8 @@ export default function BranchGridMapView({
   onPushCurrentBranch,
   onPushCommitTargets,
   pushInProgress = false,
+  onSquashCommitRange,
+  squashInProgress = false,
   onDeleteSelection,
   deleteInProgress = false,
   worktrees = [],
@@ -251,6 +255,8 @@ export default function BranchGridMapView({
             onPushCurrentBranch={onPushCurrentBranch}
             onPushCommitTargets={onPushCommitTargets}
             pushInProgress={pushInProgress}
+            onSquashCommitRange={onSquashCommitRange}
+            squashInProgress={squashInProgress}
             onDeleteSelection={onDeleteSelection}
             worktrees={worktrees}
             currentRepoPath={currentRepoPath}

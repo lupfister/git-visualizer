@@ -567,6 +567,90 @@ describe('computeBranchGridLayout worktree nodes', () => {
     expect(movedLatestNode!.column).toBe(Math.max(...movedClumpColumns));
   });
 
+  it('treats a cross-lane worktree attachment as a clump edge on the parent commit', () => {
+    const defaultBranch = 'main';
+    const olderSha = 'cccccccccccccccccccccccccccccccccccccccc';
+    const featureBranch = 'feature-worktree';
+    const branches = [
+      makeBranch(defaultBranch, tipSha, 2),
+      makeBranch(featureBranch, olderSha, 0),
+    ];
+    const directCommits: DirectCommit[] = [
+      {
+        fullSha: mainSha,
+        sha: mainSha.slice(0, 7),
+        branch: defaultBranch,
+        message: 'root',
+        author: 'test',
+        date: '2024-05-01T12:00:00Z',
+        parentSha: null,
+        parentShas: [],
+      },
+      {
+        fullSha: olderSha,
+        sha: olderSha.slice(0, 7),
+        branch: defaultBranch,
+        message: 'attached parent',
+        author: 'test',
+        date: '2024-05-15T12:00:00Z',
+        parentSha: mainSha,
+        parentShas: [mainSha],
+      },
+      {
+        fullSha: tipSha,
+        sha: tipSha.slice(0, 7),
+        branch: defaultBranch,
+        message: 'same author after attachment',
+        author: 'test',
+        date: '2024-06-01T12:00:00Z',
+        parentSha: olderSha,
+        parentShas: [olderSha],
+      },
+    ];
+    const sessions = buildWorktreeSessions(
+      [wt({ path: '/repo/.worktrees/feature', branchName: featureBranch, headSha: olderSha })],
+      '/repo',
+    );
+    const worktreePreview: BranchCommitPreview = {
+      fullSha: sessions[0]!.workingTreeId,
+      sha: 'uncommitted',
+      parentSha: olderSha,
+      message: '',
+      author: 'You',
+      date: '2024-05-15T12:00:00Z',
+      kind: 'uncommitted',
+    };
+
+    const layout = computeBranchGridLayout({
+      branches,
+      mergeNodes: [],
+      directCommits,
+      unpushedDirectCommits: directCommits.slice(1),
+      defaultBranch,
+      branchCommitPreviews: {
+        main: [directCommits[1]!, directCommits[2]!],
+        [featureBranch]: [worktreePreview],
+      },
+      branchParentByName: { main: null, [featureBranch]: defaultBranch },
+      branchUniqueAheadCounts: { main: 2, [featureBranch]: 0 },
+      unpushedCommitShasByBranch: { main: [olderSha, tipSha] },
+      manuallyOpenedClumps: new Set(),
+      manuallyClosedClumps: new Set(),
+      isDebugOpen: false,
+      gridSearchQuery: '',
+      gridFocusSha: null,
+      checkedOutRef: null,
+      worktreeSessions: sessions,
+      orientation: 'horizontal',
+    });
+
+    const parentClusterKey = layout.clusterKeyByCommitId.get(`${defaultBranch}:${olderSha}`);
+    const nextClusterKey = layout.clusterKeyByCommitId.get(`${defaultBranch}:${tipSha}`);
+    expect(parentClusterKey).toBeDefined();
+    expect(nextClusterKey).toBeDefined();
+    expect(parentClusterKey).not.toBe(nextClusterKey);
+  });
+
   it('keeps worktrees on distinct branch lanes when multiple sessions share the same HEAD parent', () => {
     const defaultBranch = 'main';
     const branchA = 'cursor/k716';

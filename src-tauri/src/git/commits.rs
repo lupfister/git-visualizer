@@ -323,8 +323,13 @@ pub fn get_all_repo_commits(
             }
             let key = (b_head.clone(), a_name.clone());
             if let Some(&dist) = first_parent_distance_by_commit_sha_and_branch.get(&key) {
-                let is_a_older = match (branch_created_dates.get(a_name), branch_created_dates.get(b_name)) {
-                    (Some(a_date), Some(b_date)) => a_date < b_date || (a_date == b_date && a_name < b_name),
+                let is_a_older = match (
+                    branch_created_dates.get(a_name),
+                    branch_created_dates.get(b_name),
+                ) {
+                    (Some(a_date), Some(b_date)) => {
+                        a_date < b_date || (a_date == b_date && a_name < b_name)
+                    }
                     _ => a_index < b_index,
                 };
                 if dist > 0 || (dist == 0 && is_a_older) {
@@ -528,8 +533,14 @@ pub fn get_all_repo_commits(
                         }
                         continue;
                     }
-                    let is_candidate_older = match (branch_created_dates.get(branch_name), branch_created_dates.get(best_branch_name)) {
-                        (Some(cand_date), Some(best_date)) => cand_date < best_date || (cand_date == best_date && branch_name < best_branch_name),
+                    let is_candidate_older = match (
+                        branch_created_dates.get(branch_name),
+                        branch_created_dates.get(best_branch_name),
+                    ) {
+                        (Some(cand_date), Some(best_date)) => {
+                            cand_date < best_date
+                                || (cand_date == best_date && branch_name < best_branch_name)
+                        }
                         _ => branch_index < *best_index,
                     };
                     if distance < *best_distance
@@ -587,13 +598,17 @@ fn assign_commit_branch(
         match first_parent_best_match {
             None => first_parent_best_match = Some((branch_name.as_str(), distance, branch_index)),
             Some((best_branch_name, best_distance, best_index)) => {
-                let is_candidate_older = match (branch_created_dates.get(branch_name), branch_created_dates.get(best_branch_name)) {
-                    (Some(cand_date), Some(best_date)) => cand_date < best_date || (cand_date == best_date && branch_name.as_str() < best_branch_name),
+                let is_candidate_older = match (
+                    branch_created_dates.get(branch_name),
+                    branch_created_dates.get(best_branch_name),
+                ) {
+                    (Some(cand_date), Some(best_date)) => {
+                        cand_date < best_date
+                            || (cand_date == best_date && branch_name.as_str() < best_branch_name)
+                    }
                     _ => branch_index < best_index,
                 };
-                if distance < best_distance
-                    || (distance == best_distance && is_candidate_older)
-                {
+                if distance < best_distance || (distance == best_distance && is_candidate_older) {
                     first_parent_best_match = Some((branch_name.as_str(), distance, branch_index));
                 }
             }
@@ -616,13 +631,17 @@ fn assign_commit_branch(
         match best_match {
             None => best_match = Some((branch_name.as_str(), distance, branch_index)),
             Some((best_branch_name, best_distance, best_index)) => {
-                let is_candidate_older = match (branch_created_dates.get(branch_name), branch_created_dates.get(best_branch_name)) {
-                    (Some(cand_date), Some(best_date)) => cand_date < best_date || (cand_date == best_date && branch_name.as_str() < best_branch_name),
+                let is_candidate_older = match (
+                    branch_created_dates.get(branch_name),
+                    branch_created_dates.get(best_branch_name),
+                ) {
+                    (Some(cand_date), Some(best_date)) => {
+                        cand_date < best_date
+                            || (cand_date == best_date && branch_name.as_str() < best_branch_name)
+                    }
                     _ => branch_index < best_index,
                 };
-                if distance < best_distance
-                    || (distance == best_distance && is_candidate_older)
-                {
+                if distance < best_distance || (distance == best_distance && is_candidate_older) {
                     best_match = Some((branch_name.as_str(), distance, branch_index));
                 }
             }
@@ -1171,8 +1190,9 @@ mod remote_merge_tests {
         let default_branch = "main";
         let branch_name = "cursor/commit-app-previews-7896";
         let upstream_ref = format!("origin/{branch_name}");
-        let mut commits = get_all_repo_commits(&repo, default_branch, &[], &HashMap::new(), &HashMap::new())
-            .expect("local commits");
+        let mut commits =
+            get_all_repo_commits(&repo, default_branch, &[], &HashMap::new(), &HashMap::new())
+                .expect("local commits");
 
         merge_remote_only_branch_commits(
             &repo,

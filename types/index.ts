@@ -298,6 +298,7 @@ export type RepoMutationOutcome =
       kind: 'push';
       layoutTopologyChanged: false;
       pushedBranchNames: string[];
+      targets?: Array<{ branchName: string; targetSha?: string }>;
     }
   | {
       kind: 'branchDelete';

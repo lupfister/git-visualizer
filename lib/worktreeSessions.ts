@@ -6,10 +6,22 @@ export type WorktreeCurrentAccentToken = 'checked';
 
 /** Non-current linked worktrees — never uses blue (`select` / `remote`). */
 export type WorktreeSessionAccentToken =
-  | 'worktree-violet'
+  | 'worktree-rose'
+  | 'worktree-salmon'
+  | 'worktree-terracotta'
   | 'worktree-amber'
+  | 'worktree-olive'
+  | 'worktree-lime'
+  | 'worktree-sage'
+  | 'worktree-green'
   | 'worktree-emerald'
-  | 'worktree-rose';
+  | 'worktree-teal'
+  | 'worktree-cyan'
+  | 'worktree-blue'
+  | 'worktree-indigo'
+  | 'worktree-violet'
+  | 'worktree-purple'
+  | 'worktree-mauve';
 
 export type WorktreeAccentToken = WorktreeCurrentAccentToken | WorktreeSessionAccentToken;
 
@@ -25,11 +37,23 @@ export interface WorktreeSession {
   workingTreeId: string;
 }
 
-const NON_CURRENT_ACCENT_CYCLE: WorktreeSessionAccentToken[] = [
-  'worktree-violet',
-  'worktree-amber',
-  'worktree-emerald',
+export const NON_CURRENT_ACCENT_CYCLE: WorktreeSessionAccentToken[] = [
   'worktree-rose',
+  'worktree-salmon',
+  'worktree-terracotta',
+  'worktree-amber',
+  'worktree-olive',
+  'worktree-lime',
+  'worktree-sage',
+  'worktree-green',
+  'worktree-emerald',
+  'worktree-teal',
+  'worktree-cyan',
+  'worktree-blue',
+  'worktree-indigo',
+  'worktree-violet',
+  'worktree-purple',
+  'worktree-mauve',
 ];
 
 export const LEGACY_WORKING_TREE_ID = 'WORKING_TREE';
@@ -71,14 +95,18 @@ export const generateEsotericWorktreeName = (existingNames?: Set<string>): strin
   return `${base}${Math.floor(Math.random() * 1000)}`;
 };
 
-export const worktreeStableKey = (path: string): string => {
+export const worktreeStableHash = (path: string): number => {
   const normalized = normalizeRepoPathForCompare(path).toLowerCase();
   let hash = 2166136261;
   for (let index = 0; index < normalized.length; index += 1) {
     hash ^= normalized.charCodeAt(index);
     hash = Math.imul(hash, 16777619);
   }
-  return (hash >>> 0).toString(36);
+  return hash >>> 0;
+};
+
+export const worktreeStableKey = (path: string): string => {
+  return worktreeStableHash(path).toString(36);
 };
 
 export const workingTreeIdForPath = (path: string, isCurrent: boolean): string => {
@@ -218,6 +246,29 @@ export const accentCssVars = (token: WorktreeAccentToken): { fg: string; muted: 
 
 const isUsableWorktree = (worktree: WorktreeInfo): boolean => worktree.pathExists !== false;
 
+const WORKTREE_COLORS_STORAGE_KEY = 'git-visualizer:worktree-colors';
+
+const readPersistedWorktreeColors = (): Record<string, WorktreeSessionAccentToken> => {
+  const storage = worktreeFocusStorage();
+  if (!storage) return {};
+  try {
+    const raw = storage.getItem(WORKTREE_COLORS_STORAGE_KEY);
+    return raw ? JSON.parse(raw) : {};
+  } catch {
+    return {};
+  }
+};
+
+const writePersistedWorktreeColors = (colors: Record<string, WorktreeSessionAccentToken>): void => {
+  const storage = worktreeFocusStorage();
+  if (!storage) return;
+  try {
+    storage.setItem(WORKTREE_COLORS_STORAGE_KEY, JSON.stringify(colors));
+  } catch {
+    // ignore storage failures
+  }
+};
+
 const assignAccentTokens = (
   sessions: Omit<WorktreeSession, 'accentToken' | 'workingTreeId'>[],
   worktreeOrder?: string[],
@@ -239,7 +290,6 @@ const assignAccentTokens = (
     others.sort((left, right) => normalizeRepoPathForCompare(left.path).localeCompare(normalizeRepoPathForCompare(right.path)));
   }
 
-  let nonCurrentIndex = 0;
   const withAccents: WorktreeSession[] = [];
 
   for (const session of current) {
@@ -250,13 +300,47 @@ const assignAccentTokens = (
     });
   }
 
+  const persistedColors = readPersistedWorktreeColors();
+  let updated = false;
+
+  // Track colors currently in use by any active non-current worktree in this set
+  const activeTakenColors = new Set<WorktreeSessionAccentToken>();
   for (const session of others) {
+    const normPath = normalizeRepoPathForCompare(session.path).toLowerCase();
+    const token = persistedColors[normPath];
+    if (token && NON_CURRENT_ACCENT_CYCLE.includes(token)) {
+      activeTakenColors.add(token);
+    }
+  }
+
+  for (const session of others) {
+    const normPath = normalizeRepoPathForCompare(session.path).toLowerCase();
+    let token = persistedColors[normPath];
+
+    if (!token || !NON_CURRENT_ACCENT_CYCLE.includes(token)) {
+      // Find the first available color in the cycle not taken by other active worktrees
+      const availableColor = NON_CURRENT_ACCENT_CYCLE.find((c) => !activeTakenColors.has(c));
+      if (availableColor) {
+        token = availableColor;
+      } else {
+        // Fallback if all 4 colors are already in use by active worktrees
+        const stableHash = worktreeStableHash(session.path);
+        token = NON_CURRENT_ACCENT_CYCLE[stableHash % NON_CURRENT_ACCENT_CYCLE.length]!;
+      }
+      persistedColors[normPath] = token;
+      activeTakenColors.add(token);
+      updated = true;
+    }
+
     withAccents.push({
       ...session,
-      accentToken: NON_CURRENT_ACCENT_CYCLE[nonCurrentIndex % NON_CURRENT_ACCENT_CYCLE.length]!,
+      accentToken: token,
       workingTreeId: workingTreeIdForPath(session.path, false),
     });
-    nonCurrentIndex += 1;
+  }
+
+  if (updated) {
+    writePersistedWorktreeColors(persistedColors);
   }
 
   return withAccents;

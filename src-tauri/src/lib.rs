@@ -1,9 +1,9 @@
 mod git;
 mod github;
-mod repo_git_gate;
 #[cfg(target_os = "macos")]
 mod macos_traffic_lights;
 mod opencode;
+mod repo_git_gate;
 mod terminal_ai_titles;
 mod terminal_host;
 
@@ -59,6 +59,20 @@ struct DeleteSelectionResult {
     deleted_branches: Vec<String>,
     discarded_uncommitted_changes: bool,
     checked_out_ref: Option<CheckedOutRef>,
+}
+
+#[derive(serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+struct RemoveWorktreeResult {
+    deleted_branch: Option<String>,
+}
+
+#[derive(serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+struct SquashCommitRangeResult {
+    branch_name: String,
+    squashed_sha: String,
+    commit_count: usize,
 }
 
 #[derive(Serialize, Deserialize, Clone)]
@@ -148,7 +162,8 @@ struct RepoWatcherActivity {
     last_worktree_event_epoch: AtomicU64,
 }
 
-static WATCHER_ACTIVITY: OnceLock<Mutex<HashMap<String, std::sync::Arc<RepoWatcherActivity>>>> = OnceLock::new();
+static WATCHER_ACTIVITY: OnceLock<Mutex<HashMap<String, std::sync::Arc<RepoWatcherActivity>>>> =
+    OnceLock::new();
 
 fn increment_watcher_activity(repo_path: &str, is_git: bool) {
     let normalized = normalize_repo_path_id(repo_path);
@@ -165,7 +180,9 @@ fn increment_watcher_activity(repo_path: &str, is_git: bool) {
     if is_git {
         entry.last_git_event_epoch.fetch_add(1, Ordering::Relaxed);
     } else {
-        entry.last_worktree_event_epoch.fetch_add(1, Ordering::Relaxed);
+        entry
+            .last_worktree_event_epoch
+            .fetch_add(1, Ordering::Relaxed);
     }
 }
 
@@ -332,6 +349,22 @@ struct RepoHeadState {
     repo_path: String,
     head_sha: String,
     upstream_sha: Option<String>,
+}
+
+#[derive(Serialize, Deserialize, Clone)]
+#[serde(rename_all = "camelCase")]
+struct RepoSyncWorktreeDirty {
+    path: String,
+    has_uncommitted_changes: bool,
+}
+
+#[derive(Serialize, Deserialize, Clone)]
+#[serde(rename_all = "camelCase")]
+struct RepoSyncTokens {
+    repo_path: String,
+    dirty_token: String,
+    graph_token: String,
+    dirty_worktrees: Vec<RepoSyncWorktreeDirty>,
 }
 
 #[derive(Serialize, Deserialize, Clone)]
@@ -1004,10 +1037,7 @@ fn fingerprint_unchanged_via_probe(
     Ok(probe_lite_matches_fingerprint(probe, stored_fp))
 }
 
-fn fingerprint_patch_via_probe(
-    stored_fp: &str,
-    probe: &RepoChangeProbe,
-) -> Option<String> {
+fn fingerprint_patch_via_probe(stored_fp: &str, probe: &RepoChangeProbe) -> Option<String> {
     let parts: Vec<&str> = stored_fp.split("@@").collect();
     if parts.len() < 7 {
         return None;
@@ -1030,7 +1060,11 @@ fn fingerprint_patch_via_probe(
     let upstream_part = parts[2];
     let branch_ref_sig = parts[4];
 
-    let has_uncommitted_changes = if probe.has_uncommitted_changes { "1" } else { "0" };
+    let has_uncommitted_changes = if probe.has_uncommitted_changes {
+        "1"
+    } else {
+        "0"
+    };
     let worktree_sig = &probe.worktree_sig;
     let stash_sig = &probe.stash_sig;
 
@@ -1046,7 +1080,9 @@ fn fingerprint_patch_via_probe(
     ))
 }
 
-fn compute_repo_fingerprint_inner(repo_path: &str) -> Result<(String, RepoRefreshFingerprint), String> {
+fn compute_repo_fingerprint_inner(
+    repo_path: &str,
+) -> Result<(String, RepoRefreshFingerprint), String> {
     let path = Path::new(repo_path);
     let default_branch = git::get_default_branch(path).map_err(|e| e.to_string())?;
     let branches = git::list_branches(path, &default_branch).map_err(|e| e.to_string())?;
@@ -1381,10 +1417,16 @@ fn compute_repo_visual_snapshot(repo_path: &str) -> Result<RepoVisualSnapshot, S
         .collect();
     let mut branch_created_dates = HashMap::<String, String>::new();
     for branch in &branches {
-        let date = branch.created_date.as_ref().unwrap_or(&branch.last_commit_date).clone();
+        let date = branch
+            .created_date
+            .as_ref()
+            .unwrap_or(&branch.last_commit_date)
+            .clone();
         branch_created_dates.insert(branch.name.clone(), date);
     }
-    if let Ok(default_date_output) = git::cli::run(path, &["show", "-s", "--format=%cI", &default_branch]) {
+    if let Ok(default_date_output) =
+        git::cli::run(path, &["show", "-s", "--format=%cI", &default_branch])
+    {
         let default_date = default_date_output.trim().to_string();
         if !default_date.is_empty() {
             branch_created_dates.insert(default_branch.clone(), default_date);
@@ -1407,9 +1449,15 @@ fn compute_repo_visual_snapshot(repo_path: &str) -> Result<RepoVisualSnapshot, S
     let normalized_repo_path = normalize_repo_path_id(repo_path);
     let mut deleted_remote_refs = HashSet::<(String, String, String)>::new();
     if let Ok(conn) = open_visual_cache_connection() {
-        if let Ok(mut stmt) = conn.prepare("SELECT branch_name, remote_ref, sha FROM deleted_remote_branches WHERE repo_path = ?1") {
+        if let Ok(mut stmt) = conn.prepare(
+            "SELECT branch_name, remote_ref, sha FROM deleted_remote_branches WHERE repo_path = ?1",
+        ) {
             if let Ok(rows) = stmt.query_map(params![normalized_repo_path], |row| {
-                Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?, row.get::<_, String>(2)?))
+                Ok((
+                    row.get::<_, String>(0)?,
+                    row.get::<_, String>(1)?,
+                    row.get::<_, String>(2)?,
+                ))
             }) {
                 for r in rows.flatten() {
                     deleted_remote_refs.insert(r);
@@ -1427,9 +1475,15 @@ fn compute_repo_visual_snapshot(repo_path: &str) -> Result<RepoVisualSnapshot, S
             active_remote_refs.insert(format!("refs/remotes/origin/{branch_name}"));
         }
         let stale_refs = if let Ok(conn) = open_visual_cache_connection() {
-            if let Ok(mut stmt) = conn.prepare("SELECT remote_ref FROM deleted_remote_branches WHERE repo_path = ?1") {
-                if let Ok(rows) = stmt.query_map(params![normalized_repo_path], |row| row.get::<_, String>(0)) {
-                    rows.flatten().filter(|r| !active_remote_refs.contains(r)).collect::<Vec<String>>()
+            if let Ok(mut stmt) =
+                conn.prepare("SELECT remote_ref FROM deleted_remote_branches WHERE repo_path = ?1")
+            {
+                if let Ok(rows) =
+                    stmt.query_map(params![normalized_repo_path], |row| row.get::<_, String>(0))
+                {
+                    rows.flatten()
+                        .filter(|r| !active_remote_refs.contains(r))
+                        .collect::<Vec<String>>()
                 } else {
                     Vec::new()
                 }
@@ -1469,7 +1523,11 @@ fn compute_repo_visual_snapshot(repo_path: &str) -> Result<RepoVisualSnapshot, S
         }
 
         // Filter out if this remote-only branch was previously deleted by the user at this commit SHA
-        if deleted_remote_refs.contains(&(branch_name.clone(), upstream_full_ref.clone(), remote_head.clone())) {
+        if deleted_remote_refs.contains(&(
+            branch_name.clone(),
+            upstream_full_ref.clone(),
+            remote_head.clone(),
+        )) {
             continue;
         }
 
@@ -1724,27 +1782,38 @@ fn compute_repo_visual_snapshot(repo_path: &str) -> Result<RepoVisualSnapshot, S
 #[tauri::command]
 fn watch_repo(repo_path: String, app: tauri::AppHandle) -> Result<(), String> {
     let repo_root = Path::new(&repo_path);
-    let git_dir_hint = repo_root.join(".git");
-    let resolved_git_dir = git::cli::run(repo_root, &["rev-parse", "--absolute-git-dir"])
-        .ok()
-        .map(|value| value.trim().to_string())
-        .filter(|value| !value.is_empty())
-        .map(PathBuf::from)
-        .filter(|path| path.exists())
-        .or_else(|| git_dir_hint.exists().then_some(git_dir_hint.clone()));
-    let resolved_git_common_dir = git::cli::run(repo_root, &["rev-parse", "--git-common-dir"])
-        .ok()
-        .map(|value| value.trim().to_string())
-        .filter(|value| !value.is_empty())
-        .map(|value| {
-            let path = PathBuf::from(value);
-            if path.is_absolute() {
-                path
-            } else {
-                repo_root.join(path)
-            }
-        })
-        .filter(|path| path.exists());
+    let repo_root_canonical = repo_root
+        .canonicalize()
+        .unwrap_or_else(|_| repo_root.to_path_buf());
+    let git_dir_hint = repo_root_canonical.join(".git");
+    let resolved_git_dir =
+        git::cli::run(&repo_root_canonical, &["rev-parse", "--absolute-git-dir"])
+            .ok()
+            .map(|value| value.trim().to_string())
+            .filter(|value| !value.is_empty())
+            .map(PathBuf::from)
+            .map(|path| path.canonicalize().unwrap_or(path))
+            .filter(|path| path.exists())
+            .or_else(|| {
+                git_dir_hint
+                    .exists()
+                    .then(|| git_dir_hint.canonicalize().unwrap_or(git_dir_hint.clone()))
+            });
+    let resolved_git_common_dir =
+        git::cli::run(&repo_root_canonical, &["rev-parse", "--git-common-dir"])
+            .ok()
+            .map(|value| value.trim().to_string())
+            .filter(|value| !value.is_empty())
+            .map(|value| {
+                let path = PathBuf::from(value);
+                if path.is_absolute() {
+                    path
+                } else {
+                    repo_root_canonical.join(path)
+                }
+            })
+            .map(|path| path.canonicalize().unwrap_or(path))
+            .filter(|path| path.exists());
     let Some(primary_git_dir) = resolved_git_dir else {
         return Ok(());
     };
@@ -1760,20 +1829,21 @@ fn watch_repo(repo_path: String, app: tauri::AppHandle) -> Result<(), String> {
         }
     }
 
-    let linked_worktree_roots: Vec<PathBuf> = git::list_worktrees(repo_root)
+    let linked_worktree_roots: Vec<PathBuf> = git::list_worktrees(&repo_root_canonical)
         .unwrap_or_default()
         .into_iter()
         .filter(|wt| wt.path_exists)
         .map(|wt| PathBuf::from(wt.path))
         .filter(|path| path.exists())
-        .filter(|path| !worktree_watch_roots_same(repo_root, path))
+        .map(|path| path.canonicalize().unwrap_or(path))
+        .filter(|path| !worktree_watch_roots_same(&repo_root_canonical, path))
         .collect();
 
     let (tx, rx) = std::sync::mpsc::channel();
     let (worktree_signal_tx, worktree_signal_rx) = std::sync::mpsc::channel::<()>();
     let mut watcher = notify::recommended_watcher(tx).map_err(|e| e.to_string())?;
 
-    let _ = watcher.watch(repo_root, RecursiveMode::Recursive);
+    let _ = watcher.watch(&repo_root_canonical, RecursiveMode::Recursive);
     let _ = watcher.watch(&primary_git_dir, RecursiveMode::Recursive);
     if let Some(common_dir) = resolved_git_common_dir.as_ref() {
         if common_dir != &primary_git_dir {
@@ -1792,7 +1862,7 @@ fn watch_repo(repo_path: String, app: tauri::AppHandle) -> Result<(), String> {
         }
     }
     let repo_path_for_events = normalized_repo_path.clone();
-    let repo_root_for_events = repo_root.to_path_buf();
+    let repo_root_for_events = repo_root_canonical.clone();
     let linked_worktree_roots_for_events = linked_worktree_roots.clone();
     let app_for_worktree_debounce = app.clone();
     let repo_path_for_worktree_debounce = repo_path_for_events.clone();
@@ -1863,11 +1933,7 @@ fn watch_repo(repo_path: String, app: tauri::AppHandle) -> Result<(), String> {
     std::thread::spawn(move || {
         for res in rx {
             if let Ok(event) = res {
-                if matches!(
-                    event.kind,
-                    notify::EventKind::Access(_)
-                        | notify::EventKind::Modify(notify::event::ModifyKind::Metadata(_))
-                ) {
+                if matches!(event.kind, notify::EventKind::Access(_)) {
                     continue;
                 }
 
@@ -1879,9 +1945,21 @@ fn watch_repo(repo_path: String, app: tauri::AppHandle) -> Result<(), String> {
                         continue;
                     }
 
-                    let is_git_internal = git_roots.iter().any(|root| p.starts_with(root));
+                    let p_canonical = p.canonicalize().unwrap_or_else(|_| p.clone());
+                    let is_git_internal =
+                        git_roots.iter().any(|root| p_canonical.starts_with(root));
+
+                    // Ignore metadata changes (e.g. timestamps/permissions) unless they occur within the .git directory (e.g. refs, HEAD)
+                    if matches!(
+                        event.kind,
+                        notify::EventKind::Modify(notify::event::ModifyKind::Metadata(_))
+                    ) && !is_git_internal
+                    {
+                        continue;
+                    }
+
                     if is_git_internal {
-                        let path_str = p.to_string_lossy();
+                        let path_str = p_canonical.to_string_lossy();
                         let is_index_path = path_str.ends_with("/index")
                             || path_str.ends_with("\\index")
                             || path_str.ends_with("index.lock");
@@ -1913,10 +1991,10 @@ fn watch_repo(repo_path: String, app: tauri::AppHandle) -> Result<(), String> {
                         continue;
                     }
 
-                    let in_worktree = p.starts_with(&repo_root_for_events)
+                    let in_worktree = p_canonical.starts_with(&repo_root_for_events)
                         || linked_worktree_roots_for_events
                             .iter()
-                            .any(|root| p.starts_with(root));
+                            .any(|root| p_canonical.starts_with(root));
                     if in_worktree {
                         has_worktree_file_change = true;
                     }
@@ -2516,55 +2594,6 @@ fn get_repo_refresh_fingerprint(repo_path: String) -> Result<RepoRefreshFingerpr
     Ok(fingerprint)
 }
 
-#[derive(Serialize)]
-#[serde(rename_all = "camelCase")]
-struct RepoSyncPeek {
-    repo_path: String,
-    signature: String,
-}
-
-fn compute_repo_sync_peek_inner(
-    repo_path: &str,
-    unchanged_against: Option<&str>,
-) -> Result<RepoSyncPeek, String> {
-    if let Some(stored) = unchanged_against {
-        if let Some(cached) = repo_git_gate::cached_probe(repo_path) {
-            if cached.signature == stored {
-                return Ok(RepoSyncPeek {
-                    repo_path: repo_path.to_string(),
-                    signature: cached.signature,
-                });
-            }
-        }
-    }
-    let probe = if let Some(cached) = repo_git_gate::cached_probe(repo_path) {
-        cached
-    } else {
-        compute_repo_change_probe_inner(repo_path)?
-    };
-    if let Some(stored) = unchanged_against {
-        if probe.signature == stored {
-            return Ok(RepoSyncPeek {
-                repo_path: repo_path.to_string(),
-                signature: probe.signature,
-            });
-        }
-    }
-    Ok(RepoSyncPeek {
-        repo_path: repo_path.to_string(),
-        signature: probe.signature,
-    })
-}
-
-fn compute_repo_sync_peek(
-    repo_path: &str,
-    unchanged_against: Option<&str>,
-) -> Result<RepoSyncPeek, String> {
-    repo_git_gate::with_repo_git_lock(repo_path, || {
-        compute_repo_sync_peek_inner(repo_path, unchanged_against)
-    })
-}
-
 #[derive(serde::Serialize)]
 #[serde(rename_all = "camelCase")]
 struct RepoWatcherActivityEpochs {
@@ -2592,107 +2621,6 @@ fn get_repo_watcher_epochs(repo_path: String) -> Result<RepoWatcherActivityEpoch
     }
 }
 
-fn compute_fast_fs_signature(repo_path: &str) -> String {
-    let repo_root = Path::new(repo_path);
-    let git_dir_hint = repo_root.join(".git");
-    let git_dir = if git_dir_hint.is_file() {
-        if let Ok(content) = std::fs::read_to_string(&git_dir_hint) {
-            if let Some(path_str) = content.strip_prefix("gitdir: ") {
-                let trimmed = path_str.trim();
-                let p = PathBuf::from(trimmed);
-                if p.is_absolute() {
-                    p
-                } else {
-                    repo_root.join(p)
-                }
-            } else {
-                git_dir_hint
-            }
-        } else {
-            git_dir_hint
-        }
-    } else {
-        git_dir_hint
-    };
-
-    if !git_dir.exists() {
-        return String::new();
-    }
-
-    let mut parts = Vec::new();
-
-    let check_file = |path: PathBuf, label: &str, parts: &mut Vec<String>| {
-        if let Ok(metadata) = std::fs::metadata(&path) {
-            if let Ok(modified) = metadata.modified() {
-                if let Ok(duration) = modified.duration_since(std::time::SystemTime::UNIX_EPOCH) {
-                    parts.push(format!("{}:{}:{}", label, duration.as_millis(), metadata.len()));
-                }
-            }
-        }
-    };
-
-    check_file(git_dir.join("HEAD"), "HEAD", &mut parts);
-    check_file(git_dir.join("index"), "index", &mut parts);
-    check_file(git_dir.join("packed-refs"), "packed-refs", &mut parts);
-    check_file(git_dir.join("refs/stash"), "stash", &mut parts);
-
-    let heads_dir = git_dir.join("refs/heads");
-    if heads_dir.is_dir() {
-        let mut entries = Vec::new();
-        let mut stack = vec![heads_dir];
-        while let Some(dir) = stack.pop() {
-            if let Ok(read_dir) = std::fs::read_dir(dir) {
-                for entry in read_dir.flatten() {
-                    let path = entry.path();
-                    if path.is_dir() {
-                        stack.push(path);
-                    } else if path.is_file() {
-                        if let Ok(metadata) = entry.metadata() {
-                            if let Ok(modified) = metadata.modified() {
-                                if let Ok(duration) = modified.duration_since(std::time::SystemTime::UNIX_EPOCH) {
-                                    let rel_path = path.to_string_lossy().to_string();
-                                    entries.push(format!("{}:{}:{}", rel_path, duration.as_millis(), metadata.len()));
-                                }
-                            }
-                        }
-                    }
-                }
-            }
-        }
-        entries.sort();
-        parts.extend(entries);
-    }
-
-    parts.join("|")
-}
-
-#[tauri::command(rename_all = "camelCase")]
-fn get_repo_fast_signature(repo_path: String) -> Result<String, String> {
-    Ok(compute_fast_fs_signature(&repo_path))
-}
-
-#[tauri::command(rename_all = "camelCase")]
-async fn get_repo_sync_peek(
-    repo_path: String,
-    unchanged_against: Option<String>,
-) -> Result<RepoSyncPeek, String> {
-    run_blocking(move || {
-        compute_repo_sync_peek(
-            &repo_path,
-            unchanged_against.as_deref(),
-        )
-    })
-    .await
-}
-
-#[tauri::command(rename_all = "camelCase")]
-async fn get_repo_live_fingerprint(repo_path: String) -> Result<String, String> {
-    run_blocking(move || {
-        compute_repo_fingerprint_inner(&repo_path).map(|(fingerprint, _)| fingerprint)
-    })
-    .await
-}
-
 fn metadata_stamp(path: &Path) -> String {
     std::fs::metadata(path)
         .ok()
@@ -2703,31 +2631,117 @@ fn metadata_stamp(path: &Path) -> String {
 }
 
 #[tauri::command(rename_all = "camelCase")]
-async fn get_repo_change_token(repo_path: String) -> Result<String, String> {
+async fn get_repo_sync_tokens(repo_path: String) -> Result<RepoSyncTokens, String> {
     run_blocking(move || {
         let path = Path::new(&repo_path);
         let git_dir = git::cli::run(path, &["rev-parse", "--absolute-git-dir"])
             .map_err(|error| error.to_string())?;
         let git_dir = PathBuf::from(git_dir.trim());
+        let common_dir = git::cli::run(path, &["rev-parse", "--git-common-dir"])
+            .ok()
+            .map(|value| value.trim().to_string())
+            .filter(|value| !value.is_empty())
+            .map(|value| {
+                let candidate = PathBuf::from(value);
+                if candidate.is_absolute() {
+                    candidate
+                } else {
+                    path.join(candidate)
+                }
+            })
+            .unwrap_or_else(|| git_dir.clone());
         let head = git::cli::run(path, &["rev-parse", "HEAD"])
-            .map_err(|error| error.to_string())?;
-        let refs = git::cli::run(path, &["for-each-ref", "--format=%(refname):%(objectname)", "refs/heads", "refs/remotes", "refs/stash"])
-            .map_err(|error| error.to_string())?;
-        let key = normalize_repo_path_id(&repo_path);
-        let watcher_generation = {
-            let mut states = REPO_CHANGE_STATE
-                .get_or_init(|| Mutex::new(HashMap::new()))
-                .lock()
-                .expect("repo change state mutex poisoned");
-            states.entry(key).or_default().generation
-        };
-        Ok(format!(
-            "{}@@{}@@{}@@{}",
-            head.trim(),
+            .map_err(|error| error.to_string())?
+            .trim()
+            .to_string();
+        let refs = git::cli::run(
+            path,
+            &[
+                "for-each-ref",
+                "--sort=refname",
+                "--format=%(refname):%(objectname)",
+                "refs/heads",
+                "refs/remotes",
+                "refs/stash",
+            ],
+        )
+        .map_err(|error| error.to_string())?;
+        let mut worktrees = git::list_worktrees(path).map_err(|error| error.to_string())?;
+        worktrees.sort_by(|left, right| left.path.cmp(&right.path));
+
+        // Sync the file watcher with any new worktrees that exist
+        let normalized_repo_path = normalize_repo_path_id(&repo_path);
+        let path_canonical = path.canonicalize().unwrap_or_else(|_| path.to_path_buf());
+        if let Some(lock) = WATCHER_STATE.get() {
+            if let Ok(mut map) = lock.lock() {
+                if let Some(watcher) = map.get_mut(&normalized_repo_path) {
+                    for worktree in &worktrees {
+                        if worktree.path_exists {
+                            let wt_path = Path::new(&worktree.path);
+                            let wt_path_canonical = wt_path
+                                .canonicalize()
+                                .unwrap_or_else(|_| wt_path.to_path_buf());
+                            if wt_path_canonical.exists()
+                                && !worktree_watch_roots_same(&path_canonical, &wt_path_canonical)
+                            {
+                                let _ = watcher.watch(&wt_path_canonical, RecursiveMode::Recursive);
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        let dirty_worktrees: Vec<RepoSyncWorktreeDirty> = worktrees
+            .iter()
+            .map(|worktree| RepoSyncWorktreeDirty {
+                path: worktree.path.clone(),
+                has_uncommitted_changes: worktree.has_uncommitted_changes,
+            })
+            .collect();
+        let dirty_token = dirty_worktrees
+            .iter()
+            .map(|worktree| {
+                format!(
+                    "{}:{}",
+                    worktree.path,
+                    if worktree.has_uncommitted_changes {
+                        "1"
+                    } else {
+                        "0"
+                    },
+                )
+            })
+            .collect::<Vec<_>>()
+            .join("|");
+        let worktree_graph = worktrees
+            .iter()
+            .map(|worktree| {
+                format!(
+                    "{}:{}:{}:{}:{}:{}",
+                    worktree.path,
+                    worktree.head_sha,
+                    worktree.branch_name.as_deref().unwrap_or(""),
+                    worktree.parent_sha.as_deref().unwrap_or(""),
+                    if worktree.path_exists { "1" } else { "0" },
+                    if worktree.is_prunable { "1" } else { "0" },
+                )
+            })
+            .collect::<Vec<_>>()
+            .join("|");
+        let graph_token = format!(
+            "head={}@@refs={}@@packed={}@@worktrees={}",
+            head,
             refs.trim(),
-            metadata_stamp(&git_dir.join("index")),
-            watcher_generation,
-        ))
+            metadata_stamp(&common_dir.join("packed-refs")),
+            worktree_graph,
+        );
+        Ok(RepoSyncTokens {
+            repo_path: normalize_repo_path_id(&repo_path),
+            dirty_token,
+            graph_token,
+            dirty_worktrees,
+        })
     })
     .await
 }
@@ -2915,7 +2929,8 @@ fn get_repo_graph_delta_inner(
         {
             if let Some(entry) = stored_entry {
                 if let Some(partial) = git::branch_from_ref_sig_entry(&name, entry) {
-                    let current_entry = format!("{}:{}", partial.name, branch_ref_entry_sig(&partial));
+                    let current_entry =
+                        format!("{}:{}", partial.name, branch_ref_entry_sig(&partial));
                     if stored_entry.map(String::as_str) == Some(current_entry.as_str()) {
                         partial
                     } else {
@@ -3131,14 +3146,13 @@ fn get_commit_subject(repo_path: String, sha: String) -> Result<Option<String>, 
 
 #[tauri::command(rename_all = "camelCase")]
 fn check_network_available() -> bool {
-    let hosts = [
-        ("github.com", 443u16),
-        ("1.1.1.1", 53),
-        ("8.8.8.8", 53),
-    ];
+    let hosts = [("github.com", 443u16), ("1.1.1.1", 53), ("8.8.8.8", 53)];
     let timeout = StdDuration::from_secs(2);
     hosts.iter().any(|(host, port)| {
-        let addr = (*host, *port).to_socket_addrs().ok().and_then(|mut a| a.next());
+        let addr = (*host, *port)
+            .to_socket_addrs()
+            .ok()
+            .and_then(|mut a| a.next());
         match addr {
             Some(ref a) => TcpStream::connect_timeout(a, timeout).is_ok(),
             None => false,
@@ -3267,20 +3281,35 @@ async fn add_worktree(
     run_blocking(move || {
         let repo = Path::new(&repo_path);
         let branch_ref = branch_or_commit.as_deref().unwrap_or("").trim();
-        if let Some(stash_ref_body) = branch_ref.strip_prefix("stash@{").and_then(|value| value.strip_suffix('}')) {
+        if let Some(stash_ref_body) = branch_ref
+            .strip_prefix("stash@{")
+            .and_then(|value| value.strip_suffix('}'))
+        {
             let stash_index: u32 = stash_ref_body
                 .parse()
                 .map_err(|_| "Invalid stash index".to_string())?;
             let new_branch = new_branch_name.as_deref().unwrap_or("").trim();
             if new_branch.is_empty() {
-                return Err("Creating a worktree from a stash requires a new branch name.".to_string());
+                return Err(
+                    "Creating a worktree from a stash requires a new branch name.".to_string(),
+                );
             }
             let stash_ref = format!("stash@{{{stash_index}}}");
             let base_sha = git::cli::run(repo, &["rev-parse", &format!("{stash_ref}^1")])
                 .map_err(|e| e.to_string())?;
             let base_sha = base_sha.trim();
-            git::cli::run(repo, &["worktree", "add", "-b", new_branch, &worktree_path, base_sha])
-                .map_err(|e| e.to_string())?;
+            git::cli::run(
+                repo,
+                &[
+                    "worktree",
+                    "add",
+                    "-b",
+                    new_branch,
+                    &worktree_path,
+                    base_sha,
+                ],
+            )
+            .map_err(|e| e.to_string())?;
             let wt_dir = Path::new(&worktree_path);
             if let Err(e) = git::cli::run(wt_dir, &["stash", "apply", &stash_ref]) {
                 let _ = git::cli::run(repo, &["worktree", "remove", "--force", &worktree_path]);
@@ -3288,29 +3317,33 @@ async fn add_worktree(
             }
             git::cli::run(wt_dir, &["stash", "drop", &stash_ref]).map_err(|e| e.to_string())?;
             let worktrees = git::list_worktrees(repo).map_err(|e| e.to_string())?;
-            let new_wt = worktrees.into_iter().find(|wt| wt.path == worktree_path)
+            let new_wt = worktrees
+                .into_iter()
+                .find(|wt| wt.path == worktree_path)
                 .ok_or_else(|| "Worktree was created but not found in list".to_string())?;
             return Ok(new_wt);
         }
 
         let mut args: Vec<&str> = vec!["worktree", "add"];
-        
+
         let new_branch = new_branch_name.as_deref().unwrap_or("").trim();
         if !new_branch.is_empty() {
             args.push("-b");
             args.push(new_branch);
         }
-        
+
         args.push(&worktree_path);
-        
+
         if !branch_ref.is_empty() {
             args.push(branch_ref);
         }
-        
+
         git::cli::run(repo, &args).map_err(|e| e.to_string())?;
-        
+
         let worktrees = git::list_worktrees(repo).map_err(|e| e.to_string())?;
-        let new_wt = worktrees.into_iter().find(|wt| wt.path == worktree_path)
+        let new_wt = worktrees
+            .into_iter()
+            .find(|wt| wt.path == worktree_path)
             .ok_or_else(|| "Worktree was created but not found in list".to_string())?;
         Ok(new_wt)
     })
@@ -3353,7 +3386,12 @@ async fn save_terminal_attachment(
         let extension = Path::new(&file_name)
             .extension()
             .and_then(|value| value.to_str())
-            .filter(|value| value.len() <= 12 && value.chars().all(|character| character.is_ascii_alphanumeric()))
+            .filter(|value| {
+                value.len() <= 12
+                    && value
+                        .chars()
+                        .all(|character| character.is_ascii_alphanumeric())
+            })
             .map(str::to_ascii_lowercase)
             .or_else(|| match mime_type.as_str() {
                 "image/png" => Some("png".to_string()),
@@ -3371,18 +3409,26 @@ async fn save_terminal_attachment(
             .and_then(|value| value.to_str())
             .unwrap_or("attachment")
             .chars()
-            .map(|character| if character.is_ascii_alphanumeric() || matches!(character, '-' | '_') { character } else { '-' })
+            .map(|character| {
+                if character.is_ascii_alphanumeric() || matches!(character, '-' | '_') {
+                    character
+                } else {
+                    '-'
+                }
+            })
             .collect::<String>();
         let timestamp = SystemTime::now()
             .duration_since(UNIX_EPOCH)
             .unwrap_or_default()
             .as_millis();
-        let path = directory.join(format!("{}-{}.{}", stem.trim_matches('-'), timestamp, extension));
-        let data = base64::Engine::decode(
-            &base64::engine::general_purpose::STANDARD,
-            data_base64,
-        )
-        .map_err(|error| format!("Failed to decode terminal attachment: {error}"))?;
+        let path = directory.join(format!(
+            "{}-{}.{}",
+            stem.trim_matches('-'),
+            timestamp,
+            extension
+        ));
+        let data = base64::Engine::decode(&base64::engine::general_purpose::STANDARD, data_base64)
+            .map_err(|error| format!("Failed to decode terminal attachment: {error}"))?;
         fs::write(&path, data)
             .map_err(|error| format!("Failed to save terminal attachment: {error}"))?;
         Ok(path.to_string_lossy().to_string())
@@ -3518,7 +3564,8 @@ async fn activate_preview_target(
             };
         }
 
-        let app_name = app_name.filter(|value| !value.trim().is_empty())
+        let app_name = app_name
+            .filter(|value| !value.trim().is_empty())
             .ok_or_else(|| "Preview target is not ready yet".to_string())?;
         activate_preview_app(&app_name)
     })
@@ -3729,11 +3776,16 @@ fn activate_native_preview_for_path(worktree_path: &Path) -> Result<(), String> 
         }
     }
     let cwd_by_pid = lsof_paths_for_pids(&candidates, "cwd");
-    let pid = candidates.into_iter().find(|pid| {
-        cwd_by_pid.get(pid).is_some_and(|paths| {
-            paths.iter().any(|path| path == worktree_path || path.starts_with(worktree_path))
+    let pid = candidates
+        .into_iter()
+        .find(|pid| {
+            cwd_by_pid.get(pid).is_some_and(|paths| {
+                paths
+                    .iter()
+                    .any(|path| path == worktree_path || path.starts_with(worktree_path))
+            })
         })
-    }).ok_or_else(|| "Tauri preview app is not ready yet".to_string())?;
+        .ok_or_else(|| "Tauri preview app is not ready yet".to_string())?;
     activate_preview_pid(pid)
 }
 
@@ -4546,6 +4598,49 @@ fn list_local_branch_names(repo: &Path) -> Result<Vec<String>, String> {
         .collect())
 }
 
+fn branch_has_unique_commits(repo: &Path, branch: &str) -> Result<bool, String> {
+    let local_ref = format!("refs/heads/{branch}");
+    if git::cli::run(repo, &["show-ref", "--verify", "--quiet", &local_ref]).is_err() {
+        return Ok(false);
+    }
+
+    let output = git::cli::run(
+        repo,
+        &["for-each-ref", "--format=%(refname)", "refs/heads/"],
+    )
+    .map_err(|e| e.to_string())?;
+    let mut args = vec![
+        "rev-list".to_string(),
+        "--count".to_string(),
+        branch.to_string(),
+        "--not".to_string(),
+    ];
+    for line in output.lines() {
+        let ref_name = line.trim();
+        if ref_name.is_empty() || ref_name == local_ref {
+            continue;
+        }
+        args.push(ref_name.to_string());
+    }
+
+    let arg_refs: Vec<&str> = args.iter().map(|arg| arg.as_str()).collect();
+    let unique_count = git::cli::run(repo, &arg_refs)
+        .map_err(|e| e.to_string())?
+        .trim()
+        .parse::<i32>()
+        .unwrap_or(0);
+    Ok(unique_count > 0)
+}
+
+fn delete_local_branch_if_exists(repo: &Path, branch_name: &str) -> Result<bool, String> {
+    let local_ref = format!("refs/heads/{branch_name}");
+    if git::cli::run(repo, &["show-ref", "--verify", "--quiet", &local_ref]).is_err() {
+        return Ok(false);
+    }
+    git::cli::run(repo, &["branch", "-D", branch_name]).map_err(|e| e.to_string())?;
+    Ok(true)
+}
+
 /// Whether a local branch should be included in push-all (matches list_branches unpushed filter).
 fn branch_needs_push(repo: &Path, branch: &str, default_branch: &str) -> bool {
     if let Some(compare_ref) = get_branch_compare_ref(repo, branch) {
@@ -4880,7 +4975,6 @@ async fn generate_stash_message(
     .map_err(|e| format!("Stash message task failed: {e}"))?
 }
 
-
 #[tauri::command(rename_all = "camelCase")]
 async fn apply_stash_restore(
     repo_path: String,
@@ -4947,7 +5041,7 @@ async fn overhaul_create_branch(
 ) -> Result<CheckedOutRef, String> {
     run_blocking(move || {
         let repo = Path::new(&repo_path);
-        
+
         if target_node_id.is_empty() {
             // Root branch
             if let Some(wt_path) = worktree_path {
@@ -4963,11 +5057,11 @@ async fn overhaul_create_branch(
             let base_sha = git::cli::run(repo, &["rev-parse", &format!("{stash_ref}^1")])
                 .map_err(|e| e.to_string())?;
             let base_sha = base_sha.trim();
-            
+
             if let Some(wt_path) = worktree_path {
                 git::cli::run(repo, &["worktree", "add", "-b", &branch_name, &wt_path, base_sha])
                     .map_err(|e| e.to_string())?;
-                
+
                 let wt_dir = Path::new(&wt_path);
                 git::cli::run(wt_dir, &["stash", "apply", &stash_ref]).map_err(|e| e.to_string())?;
                 git::cli::run(wt_dir, &["stash", "drop", &stash_ref]).map_err(|e| e.to_string())?;
@@ -4979,13 +5073,13 @@ async fn overhaul_create_branch(
             if let Some(wt_path) = worktree_path {
                 let temp_stash_msg = format!("git-visualizer-temp-worktree-{}", branch_name);
                 git::stash_push(repo, true, &temp_stash_msg).map_err(|e| e.to_string())?;
-                
+
                 if let Err(e) = git::cli::run(repo, &["worktree", "add", "-b", &branch_name, &wt_path]) {
                     // Try to pop/restore stash if worktree creation fails
                     let _ = git::cli::run(repo, &["stash", "pop"]);
                     return Err(e.to_string());
                 }
-                
+
                 let wt_dir = Path::new(&wt_path);
                 if let Err(e) = git::cli::run(wt_dir, &["stash", "apply", "stash@{0}"]) {
                     let _ = git::cli::run(wt_dir, &["stash", "drop", "stash@{0}"]);
@@ -5006,7 +5100,7 @@ async fn overhaul_create_branch(
                 git::cli::run(repo, &["checkout", "-b", &branch_name, &target_node_id]).map_err(|e| e.to_string())?;
             }
         }
-        
+
         git::get_checked_out_ref(repo).map_err(|e| e.to_string())
     })
     .await
@@ -5015,6 +5109,11 @@ async fn overhaul_create_branch(
 #[tauri::command]
 fn start_window_drag(window: tauri::WebviewWindow) -> Result<(), String> {
     window.start_dragging().map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+fn set_window_resizable(window: tauri::WebviewWindow, resizable: bool) -> Result<(), String> {
+    window.set_resizable(resizable).map_err(|e| e.to_string())
 }
 
 #[tauri::command(rename_all = "camelCase")]
@@ -5160,7 +5259,10 @@ fn delete_selected_elements(
             delete_res.map_err(|e| e.to_string())?;
         }
 
-        if let Ok(output) = git::cli::run(path, &["for-each-ref", "--format=%(refname)", "refs/remotes"]) {
+        if let Ok(output) = git::cli::run(
+            path,
+            &["for-each-ref", "--format=%(refname)", "refs/remotes"],
+        ) {
             for ref_line in output.lines() {
                 let ref_name = ref_line.trim();
                 if ref_name.starts_with("refs/remotes/") {
@@ -5170,7 +5272,9 @@ fn delete_selected_elements(
                         let remote_branch_name = &stripped[slash_idx + 1..];
                         if remote_branch_name == branch_name {
                             // Resolve current SHA of this remote-tracking ref
-                            let sha = if let Ok(rev_output) = git::cli::run(path, &["rev-parse", ref_name]) {
+                            let sha = if let Ok(rev_output) =
+                                git::cli::run(path, &["rev-parse", ref_name])
+                            {
                                 rev_output.trim().to_string()
                             } else {
                                 String::new()
@@ -5190,7 +5294,10 @@ fn delete_selected_elements(
                             }
 
                             // Push the deletion to the remote repository (ignores failure if offline/no permissions)
-                            let _ = git::cli::run(path, &["push", remote_name, "--delete", branch_name]);
+                            let _ = git::cli::run(
+                                path,
+                                &["push", remote_name, "--delete", branch_name],
+                            );
 
                             let del_ref_res = git::cli::run(path, &["update-ref", "-d", ref_name]);
                             del_ref_res.map_err(|e| e.to_string())?;
@@ -5208,6 +5315,51 @@ fn delete_selected_elements(
         discarded_uncommitted_changes: discard_uncommitted_changes,
         checked_out_ref: git::get_checked_out_ref(path).ok(),
     })
+}
+
+#[tauri::command(rename_all = "camelCase")]
+fn remove_worktree_and_empty_branch(
+    repo_path: String,
+    worktree_path: String,
+    force: bool,
+) -> Result<RemoveWorktreeResult, String> {
+    let path = Path::new(&repo_path);
+    let default_branch = git::get_default_branch(path).map_err(|e| e.to_string())?;
+    let worktree = git::list_worktrees(path)
+        .map_err(|e| e.to_string())?
+        .into_iter()
+        .find(|worktree| {
+            normalize_repo_path_id(&worktree.path) == normalize_repo_path_id(&worktree_path)
+        });
+    let branch_name = worktree
+        .as_ref()
+        .and_then(|worktree| worktree.branch_name.clone())
+        .filter(|branch_name| branch_name != &default_branch);
+
+    let should_delete_branch = branch_name
+        .as_deref()
+        .map(|branch_name| {
+            branch_has_unique_commits(path, branch_name).map(|has_unique| !has_unique)
+        })
+        .transpose()?
+        .unwrap_or(false);
+
+    git::remove_git_worktree(path, &worktree_path, force).map_err(|e| e.to_string())?;
+
+    let deleted_branch = if should_delete_branch {
+        match branch_name.as_deref() {
+            Some(branch_name) if delete_local_branch_if_exists(path, branch_name)? => {
+                Some(branch_name.to_string())
+            }
+            _ => None,
+        }
+    } else {
+        None
+    };
+
+    let _ = git::cli::run(path, &["worktree", "prune"]);
+
+    Ok(RemoveWorktreeResult { deleted_branch })
 }
 
 #[tauri::command(rename_all = "camelCase")]
@@ -5236,6 +5388,156 @@ fn merge_ref_into_branch(
     git::cli::run(path, &["merge", "--no-ff", "--no-edit", &source_ref])
         .map_err(|e| e.to_string())?;
     git::get_checked_out_ref(path).map_err(|e| e.to_string())
+}
+
+fn git_first_line(repo: &Path, args: &[&str]) -> Result<String, String> {
+    git::cli::run(repo, args)
+        .map_err(|e| e.to_string())?
+        .lines()
+        .next()
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(str::to_string)
+        .ok_or_else(|| format!("Git command returned no output: git {}", args.join(" ")))
+}
+
+fn restore_branch_after_failed_squash(repo: &Path, branch_name: &str, original_head: &str) {
+    let _ = git::cli::run(repo, &["cherry-pick", "--abort"]);
+    let _ = git::cli::run(repo, &["reset", "--hard", original_head]);
+    let _ = git::cli::run(repo, &["branch", "-f", branch_name, original_head]);
+}
+
+#[tauri::command(rename_all = "camelCase")]
+async fn squash_commit_range(
+    repo_path: String,
+    branch_name: String,
+    commit_shas: Vec<String>,
+) -> Result<SquashCommitRangeResult, String> {
+    run_blocking(move || {
+        let repo = Path::new(&repo_path);
+        let branch_name = branch_name.trim().to_string();
+        if branch_name.is_empty() {
+            return Err("Select commits on a named branch to squash.".to_string());
+        }
+
+        let mut selected = Vec::<String>::new();
+        let mut seen = HashSet::<String>::new();
+        for sha in commit_shas {
+            let trimmed = sha.trim();
+            if trimmed.is_empty() {
+                continue;
+            }
+            let full = git_first_line(repo, &["rev-parse", &format!("{trimmed}^{{commit}}")])?;
+            if seen.insert(full.clone()) {
+                selected.push(full);
+            }
+        }
+        if selected.len() < 2 {
+            return Err("Select at least two adjacent commits to squash.".to_string());
+        }
+
+        let status = git::cli::run(repo, &["status", "--porcelain"]).map_err(|e| e.to_string())?;
+        if !status.trim().is_empty() {
+            return Err("Commit or stash local changes before squashing commits.".to_string());
+        }
+
+        let branch_ref = format!("refs/heads/{branch_name}");
+        git::cli::run(repo, &["show-ref", "--verify", "--quiet", &branch_ref])
+            .map_err(|_| format!("Branch \"{branch_name}\" does not exist locally."))?;
+        let original_head = git_first_line(repo, &["rev-parse", &branch_name])?;
+
+        let rev_list_output = git::cli::run(
+            repo,
+            &["rev-list", "--first-parent", "--reverse", &branch_name],
+        )
+        .map_err(|e| e.to_string())?;
+        let branch_chain: Vec<String> = rev_list_output
+            .lines()
+            .map(str::trim)
+            .filter(|line| !line.is_empty())
+            .map(str::to_string)
+            .collect();
+        let selected_set: HashSet<&str> = selected.iter().map(|sha| sha.as_str()).collect();
+        let mut selected_indexes: Vec<usize> = branch_chain
+            .iter()
+            .enumerate()
+            .filter_map(|(index, sha)| selected_set.contains(sha.as_str()).then_some(index))
+            .collect();
+        if selected_indexes.len() != selected.len() {
+            return Err(
+                "Selected commits must all belong to the selected branch first-parent history."
+                    .to_string(),
+            );
+        }
+        selected_indexes.sort_unstable();
+        for pair in selected_indexes.windows(2) {
+            if pair[1] != pair[0] + 1 {
+                return Err("Selected commits must be adjacent on the same branch.".to_string());
+            }
+        }
+
+        let oldest = branch_chain[selected_indexes[0]].clone();
+        let newest = branch_chain[*selected_indexes.last().unwrap()].clone();
+        let base = git_first_line(repo, &["rev-parse", &format!("{oldest}^")])?;
+        let descendants: Vec<String> = branch_chain
+            .iter()
+            .skip(selected_indexes.last().unwrap() + 1)
+            .cloned()
+            .collect();
+
+        let commits_output = git::cli::run(
+            repo,
+            &[
+                "log",
+                "--reverse",
+                "--format=%h %s",
+                &format!("{base}..{newest}"),
+            ],
+        )
+        .map_err(|e| e.to_string())?;
+        let diff_stat =
+            git::cli::run(repo, &["diff", "--stat", &base, &newest]).unwrap_or_default();
+        let summary = format!(
+            "Squash {} adjacent commits on branch \"{}\".\n\nCommits:\n{}\n\nDiff stat:\n{}",
+            selected.len(),
+            branch_name,
+            commits_output.trim(),
+            diff_stat.trim(),
+        );
+        let message = opencode::generate_squash_message(repo, &summary)
+            .map_err(|e| format!("Failed to generate squash message with OpenCode: {e}"))?;
+        opencode::validate_generated_message(&message, "Squash message")?;
+
+        git::cli::run(repo, &["checkout", &branch_name]).map_err(|e| e.to_string())?;
+        let result = (|| -> Result<SquashCommitRangeResult, String> {
+            git::cli::run(repo, &["reset", "--hard", &newest]).map_err(|e| e.to_string())?;
+            git::cli::run(repo, &["reset", "--soft", &base]).map_err(|e| e.to_string())?;
+            git::cli::run(repo, &["commit", "-m", &message]).map_err(|e| e.to_string())?;
+            let squashed_sha = git_first_line(repo, &["rev-parse", "HEAD"])?;
+            for descendant in descendants {
+                git::cli::run(repo, &["cherry-pick", &descendant]).map_err(|e| e.to_string())?;
+            }
+            Ok(SquashCommitRangeResult {
+                branch_name: branch_name.clone(),
+                squashed_sha,
+                commit_count: selected.len(),
+            })
+        })();
+
+        match result {
+            Ok(result) => {
+                record_repo_change(repo_path.as_str(), REPO_CHANGE_GRAPH | REPO_CHANGE_LOCAL);
+                Ok(result)
+            }
+            Err(error) => {
+                restore_branch_after_failed_squash(repo, &branch_name, &original_head);
+                Err(format!(
+                    "Failed to squash commits; branch was restored. {error}"
+                ))
+            }
+        }
+    })
+    .await
 }
 
 #[tauri::command]
@@ -6181,10 +6483,16 @@ fn get_all_repo_commits(repo_path: String) -> Result<Vec<DirectCommit>, String> 
         .collect();
     let mut branch_created_dates = HashMap::<String, String>::new();
     for branch in &branches {
-        let date = branch.created_date.as_ref().unwrap_or(&branch.last_commit_date).clone();
+        let date = branch
+            .created_date
+            .as_ref()
+            .unwrap_or(&branch.last_commit_date)
+            .clone();
         branch_created_dates.insert(branch.name.clone(), date);
     }
-    if let Ok(default_date_output) = git::cli::run(path, &["show", "-s", "--format=%cI", &default_branch]) {
+    if let Ok(default_date_output) =
+        git::cli::run(path, &["show", "-s", "--format=%cI", &default_branch])
+    {
         let default_date = default_date_output.trim().to_string();
         if !default_date.is_empty() {
             branch_created_dates.insert(default_branch.clone(), default_date);
@@ -8724,7 +9032,9 @@ pub fn run() {
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
+            set_main_window_opacity,
             start_window_drag,
+            set_window_resizable,
             get_branches,
             get_repo_visual_snapshot,
             add_project_and_ingest,
@@ -8742,9 +9052,7 @@ pub fn run() {
             get_repo_quick_state,
             get_repo_dirty_state,
             get_repo_head_state,
-            get_repo_sync_peek,
-            get_repo_live_fingerprint,
-            get_repo_change_token,
+            get_repo_sync_tokens,
             get_repo_change_signal,
             get_repo_graph_delta,
             get_repo_refresh_fingerprint,
@@ -8801,8 +9109,10 @@ pub fn run() {
             push_all_unpushed_branches,
             pull_branch_with_strategy,
             delete_selected_elements,
+            remove_worktree_and_empty_branch,
             merge_branches,
             merge_ref_into_branch,
+            squash_commit_range,
             get_repo_info,
             get_github_info,
             get_github_auth_status,
@@ -8834,7 +9144,6 @@ pub fn run() {
             reveal_in_finder,
             watch_repo,
             get_repo_watcher_epochs,
-            get_repo_fast_signature,
             check_network_available,
         ])
         .build(tauri::generate_context!())
@@ -8847,6 +9156,23 @@ pub fn run() {
                 schedule_stop_all_preview_processes();
             }
         });
+}
+
+#[tauri::command]
+fn set_main_window_opacity(app: tauri::AppHandle, alpha: f64) -> Result<(), String> {
+    #[cfg(target_os = "macos")]
+    {
+        let window = app
+            .get_webview_window("main")
+            .ok_or_else(|| "main window not found".to_string())?;
+        return macos_traffic_lights::set_window_opacity(&window, alpha);
+    }
+
+    #[cfg(not(target_os = "macos"))]
+    {
+        let _ = (app, alpha);
+        Ok(())
+    }
 }
 
 static PENDING_OPEN_REPO: OnceLock<Mutex<Option<OpenRepoEventPayload>>> = OnceLock::new();
@@ -8963,16 +9289,53 @@ mod preview_log_tests {
 #[cfg(test)]
 mod snapshot_remote_branch_tests {
     use super::compute_repo_visual_snapshot;
+    use std::fs;
     use std::path::PathBuf;
+    use std::process::Command;
+
+    fn run_git(repo: &PathBuf, args: &[&str]) {
+        let output = Command::new("git")
+            .arg("-C")
+            .arg(repo)
+            .args(args)
+            .output()
+            .expect("run git");
+        assert!(
+            output.status.success(),
+            "git {:?} failed: {}",
+            args,
+            String::from_utf8_lossy(&output.stderr)
+        );
+    }
 
     #[test]
-    fn test_change_token_updates() {
-        let repo = "/Users/luca/cursor/git-visualizer".to_string();
-        let token1 = tauri::async_runtime::block_on(super::get_repo_change_token(repo.clone())).unwrap();
-        // Record a change!
-        super::record_repo_change(&repo, super::REPO_CHANGE_LOCAL);
-        let token2 = tauri::async_runtime::block_on(super::get_repo_change_token(repo.clone())).unwrap();
-        assert_ne!(token1, token2);
+    fn repo_sync_tokens_split_dirty_and_graph_changes() {
+        let repo = std::env::temp_dir().join(format!("gv-token-test-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&repo);
+        fs::create_dir_all(&repo).expect("create repo");
+        run_git(&repo, &["init"]);
+        run_git(&repo, &["config", "user.email", "test@example.com"]);
+        run_git(&repo, &["config", "user.name", "Test User"]);
+        fs::write(repo.join("file.txt"), "one\n").expect("write initial file");
+        run_git(&repo, &["add", "file.txt"]);
+        run_git(&repo, &["commit", "-m", "initial"]);
+
+        let repo_path = repo.to_string_lossy().to_string();
+        let clean = tauri::async_runtime::block_on(super::get_repo_sync_tokens(repo_path.clone()))
+            .expect("clean tokens");
+        fs::write(repo.join("file.txt"), "two\n").expect("dirty file");
+        let dirty = tauri::async_runtime::block_on(super::get_repo_sync_tokens(repo_path.clone()))
+            .expect("dirty tokens");
+        assert_ne!(clean.dirty_token, dirty.dirty_token);
+        assert_eq!(clean.graph_token, dirty.graph_token);
+
+        run_git(&repo, &["add", "file.txt"]);
+        run_git(&repo, &["commit", "-m", "change"]);
+        let committed = tauri::async_runtime::block_on(super::get_repo_sync_tokens(repo_path))
+            .expect("committed tokens");
+        assert_ne!(dirty.graph_token, committed.graph_token);
+
+        let _ = fs::remove_dir_all(&repo);
     }
 
     fn repo_root() -> PathBuf {
@@ -8986,11 +9349,7 @@ mod snapshot_remote_branch_tests {
         let branch_name = "cursor/commit-app-previews-7896";
         if crate::git::cli::run(
             &repo,
-            &[
-                "rev-parse",
-                "--verify",
-                &format!("origin/{branch_name}"),
-            ],
+            &["rev-parse", "--verify", &format!("origin/{branch_name}")],
         )
         .is_err()
         {
@@ -9023,10 +9382,7 @@ mod snapshot_remote_branch_tests {
 
         let expected_sha = crate::git::cli::run(
             &repo,
-            &[
-                "rev-parse",
-                "origin/cursor/commit-app-previews-7896",
-            ],
+            &["rev-parse", "origin/cursor/commit-app-previews-7896"],
         )
         .expect("rev-parse origin head")
         .trim()
@@ -9087,10 +9443,16 @@ mod snapshot_remote_branch_tests {
 
         // Select and verify
         let mut stmt = conn.prepare("SELECT branch_name, remote_ref, sha FROM deleted_remote_branches WHERE repo_path = ?1").unwrap();
-        let mut rows = stmt.query_map(rusqlite::params![normalized], |row| {
-            Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?, row.get::<_, String>(2)?))
-        }).unwrap();
-        
+        let mut rows = stmt
+            .query_map(rusqlite::params![normalized], |row| {
+                Ok((
+                    row.get::<_, String>(0)?,
+                    row.get::<_, String>(1)?,
+                    row.get::<_, String>(2)?,
+                ))
+            })
+            .unwrap();
+
         let first = rows.next().unwrap().unwrap();
         assert_eq!(first.0, branch_name);
         assert_eq!(first.1, remote_ref);

@@ -1,3 +1,5 @@
+import { Copy } from 'lucide-react';
+
 type Props = {
   isOpen: boolean;
   onClose: () => void;
@@ -58,8 +60,9 @@ export default function MapGridDebugPanel({
                 type="button"
                 onClick={() => void copyLayoutDebugJson()}
                 disabled={!layoutDebugJson}
-                className="rounded-lg border border-border/50 bg-muted/30 px-2.5 py-1 text-xs font-medium text-muted-foreground transition-colors hover:bg-muted hover:text-foreground disabled:cursor-not-allowed disabled:opacity-50"
+                className="inline-flex items-center gap-1.5 rounded-lg border border-border/50 bg-muted/30 px-2.5 py-1 text-xs font-medium text-muted-foreground transition-colors hover:bg-muted hover:text-foreground disabled:cursor-not-allowed disabled:opacity-50"
               >
+                <Copy className="h-3 w-3 shrink-0" />
                 Copy layout JSON
               </button>
               <button

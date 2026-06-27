@@ -22,7 +22,22 @@ const SHIMMER_BAND_WIDTH_PX = 1600;
 const SHIMMER_FADE_TAIL_PX = 800;
 /** Extra luminance mixed toward white at the peak of the shimmer band. */
 const SHIMMER_PEAK_LUM_MIX = 0.55;
+const RIPPLE_PULSE_MS = 950;
+const RIPPLE_BAND_WIDTH_PX = 20;
+const RIPPLE_PEAK_LUM_MIX = 0.52;
+/**
+ * Total period of one burst sequence. Rings fire at the offsets below, then
+ * there is silence until the next burst begins.
+ */
+const RIPPLE_CYCLE_MS = 1200;
+/** Launch times (ms into cycle) for each ring — gaps grow progressively. */
+const RIPPLE_RING_OFFSETS_MS = [0, 240, 560] as const;
 const MIN_VIEWPORT_PX = 64;
+
+type MapGridLoadingTilesProps = {
+  shimmer?: boolean;
+  rippleActive?: boolean;
+};
 
 type LoadingPatch = {
   patchCol: number;
@@ -121,11 +136,90 @@ const shimmerBoostAt = (
   return Math.pow(Math.cos((fadeT * Math.PI) / 2), 0.8);
 };
 
+const rippleBoostAt = (
+  cellCx: number,
+  cellCy: number,
+  viewportWidth: number,
+  viewportHeight: number,
+  /** Elapsed ms since *this ring* launched — caller ensures [0, RIPPLE_PULSE_MS). */
+  ringT: number,
+): number => {
+  const dx = cellCx - viewportWidth / 2;
+  const dy = cellCy - viewportHeight / 2;
+  const distance = Math.sqrt(dx * dx + dy * dy);
+  const maxDistance = Math.sqrt((viewportWidth / 2) ** 2 + (viewportHeight / 2) ** 2) + RIPPLE_BAND_WIDTH_PX;
+  const travel = (ringT / RIPPLE_PULSE_MS) * maxDistance;
+  const delta = Math.abs(distance - travel);
+  if (delta > RIPPLE_BAND_WIDTH_PX) {
+    return 0;
+  }
+  const t = 1 - delta / RIPPLE_BAND_WIDTH_PX;
+  return t * t * (3 - 2 * t);
+};
+
+/** Sum contributions from all progressively-staggered rings within the current burst cycle. */
+const allRipplesBoostAt = (
+  cellCx: number,
+  cellCy: number,
+  viewportWidth: number,
+  viewportHeight: number,
+  rippleElapsedMs: number,
+): number => {
+  // Position within the current cycle [0, RIPPLE_CYCLE_MS).
+  const cycleT = rippleElapsedMs % RIPPLE_CYCLE_MS;
+  let total = 0;
+  for (const offset of RIPPLE_RING_OFFSETS_MS) {
+    const ringT = cycleT - offset;
+    if (ringT <= 0 || ringT >= RIPPLE_PULSE_MS) continue;
+    total += rippleBoostAt(cellCx, cellCy, viewportWidth, viewportHeight, ringT);
+  }
+  return Math.min(1, total);
+};
+
+type DrainState = { frozenCycleT: number; startedAtMs: number };
+
+/**
+ * Drain-mode ripple: cycleT is frozen at deactivation so no new rings launch.
+ * Only rings that were already in-flight keep advancing until they exit.
+ */
+const drainRipplesBoostAt = (
+  cellCx: number,
+  cellCy: number,
+  viewportWidth: number,
+  viewportHeight: number,
+  { frozenCycleT, startedAtMs }: DrainState,
+): number => {
+  const drainElapsed = performance.now() - startedAtMs;
+  let total = 0;
+  for (const offset of RIPPLE_RING_OFFSETS_MS) {
+    const ringTAtFreeze = frozenCycleT - offset;
+    if (ringTAtFreeze <= 0) continue;          // wasn't launched yet — don't start it
+    const ringT = ringTAtFreeze + drainElapsed;
+    if (ringT >= RIPPLE_PULSE_MS) continue;    // already exited the viewport
+    total += rippleBoostAt(cellCx, cellCy, viewportWidth, viewportHeight, ringT);
+  }
+  return Math.min(1, total);
+};
+
+/** Returns true while any frozen ring is still inside the viewport. */
+const isDrainActive = (drain: DrainState): boolean => {
+  const drainElapsed = performance.now() - drain.startedAtMs;
+  for (const offset of RIPPLE_RING_OFFSETS_MS) {
+    const ringTAtFreeze = drain.frozenCycleT - offset;
+    if (ringTAtFreeze <= 0) continue;
+    if (ringTAtFreeze + drainElapsed < RIPPLE_PULSE_MS) return true;
+  }
+  return false;
+};
+
 const applyLoadingTileOpacities = (
   paintedCells: PaintedLoadingCell[],
   shapeRefsByKey: Map<string, SVGCircleElement | SVGPathElement>,
   shimmerSpanPx: number,
+  viewportWidth: number,
+  viewportHeight: number,
   timeMs: number | null,
+  options: { shimmer: boolean; rippleElapsedMs: number | null; drainState: DrainState | null },
 ): void => {
   for (const painted of paintedCells) {
     const basePresence = isTileOmittedAt(
@@ -150,11 +244,16 @@ const applyLoadingTileOpacities = (
     shape.removeAttribute('display');
     shape.setAttribute('fill-opacity', String(basePresence));
 
-    const boost =
-      timeMs == null
-        ? 0
-        : shimmerBoostAt(painted.globalCx, painted.globalCy, shimmerSpanPx, timeMs);
-    const highlightMix = Math.min(1, painted.baseLumMix + boost * SHIMMER_PEAK_LUM_MIX);
+    const shimmerBoost =
+      options.shimmer && timeMs != null
+        ? shimmerBoostAt(painted.globalCx, painted.globalCy, shimmerSpanPx, timeMs) * SHIMMER_PEAK_LUM_MIX
+        : 0;
+    const rippleBoost = options.rippleElapsedMs != null
+      ? allRipplesBoostAt(painted.globalCx, painted.globalCy, viewportWidth, viewportHeight, options.rippleElapsedMs) * RIPPLE_PEAK_LUM_MIX
+      : options.drainState != null
+      ? drainRipplesBoostAt(painted.globalCx, painted.globalCy, viewportWidth, viewportHeight, options.drainState) * RIPPLE_PEAK_LUM_MIX
+      : 0;
+    const highlightMix = Math.min(1, painted.baseLumMix + shimmerBoost + rippleBoost);
     shape.setAttribute('fill', lumMixToFillCss(LOADING_SHAPE_FILL, highlightMix));
   }
 };
@@ -202,14 +301,25 @@ const renderPatchCellShape = (
   );
 };
 
-export default function MapGridLoadingTiles() {
+export default function MapGridLoadingTiles({
+  shimmer = true,
+  rippleActive = false,
+}: MapGridLoadingTilesProps) {
   const containerRef = useRef<HTMLDivElement | null>(null);
   const [viewportSize, setViewportSize] = useState<{ width: number; height: number } | null>(null);
   const shapeRefsByKey = useRef(new Map<string, SVGCircleElement | SVGPathElement>());
   const paintedCellsRef = useRef<PaintedLoadingCell[]>([]);
   const shimmerSpanPxRef = useRef(1);
   const animStartMsRef = useRef(0);
+  const rippleStartMsRef = useRef<number | null>(null);
   const animRafRef = useRef<number | null>(null);
+  // Ref mirrors so the RAF tick always reads the latest prop without stale closures.
+  const shimmerRef = useRef(shimmer);
+  shimmerRef.current = shimmer;
+  const rippleActiveRef = useRef(rippleActive);
+  rippleActiveRef.current = rippleActive;
+  // Frozen cycle position + start time set on hover-out; null while hovering or fully stopped.
+  const rippleDrainStateRef = useRef<DrainState | null>(null);
 
   useLayoutEffect(() => {
     const container = containerRef.current;
@@ -292,31 +402,64 @@ export default function MapGridLoadingTiles() {
   }, [patches, patternClipId]);
 
   const paintTiles = (timeMs: number | null) => {
-    if (shapeRefsByKey.current.size === 0 || paintedCellsRef.current.length === 0) {
+    if (shapeRefsByKey.current.size === 0 || paintedCellsRef.current.length === 0 || !viewportSize) {
       return;
     }
+    const rippleElapsedMs =
+      rippleActive && rippleStartMsRef.current != null && timeMs != null
+        ? timeMs - (rippleStartMsRef.current - animStartMsRef.current)
+        : null;
     applyLoadingTileOpacities(
       paintedCellsRef.current,
       shapeRefsByKey.current,
       shimmerSpanPxRef.current,
+      viewportSize.width,
+      viewportSize.height,
       timeMs,
+      { shimmer, rippleElapsedMs, drainState: rippleActive ? null : rippleDrainStateRef.current },
     );
   };
 
   useLayoutEffect(() => {
     paintTiles(null);
-  }, [tileShapes]);
+  // rippleActive intentionally omitted: the drain RAF handles the visual exit when
+  // hovering stops. Keeping it here would clobber the drain with a resting-state
+  // paint in the same synchronous frame, before drain useEffects can run.
+  }, [tileShapes, shimmer, viewportSize]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  // Track rising/falling edges of rippleActive to manage rippleStartMsRef and drain state.
+  const prevRippleActiveRef = useRef(false);
+  useEffect(() => {
+    if (rippleActive && !prevRippleActiveRef.current) {
+      // Rising edge: fresh hover — start the ripple clock, clear any drain.
+      rippleStartMsRef.current = performance.now();
+      rippleDrainStateRef.current = null;
+    } else if (!rippleActive && prevRippleActiveRef.current) {
+      // Falling edge: freeze the cycle position so no new rings launch,
+      // but let the currently in-flight rings finish expanding.
+      const now = performance.now();
+      const rippleElapsed = rippleStartMsRef.current != null ? now - rippleStartMsRef.current : 0;
+      rippleDrainStateRef.current = {
+        frozenCycleT: rippleElapsed % RIPPLE_CYCLE_MS,
+        startedAtMs: now,
+      };
+      // Keep rippleStartMsRef alive — no longer needed for drain but harmless.
+    }
+    prevRippleActiveRef.current = rippleActive;
+  }, [rippleActive]);
 
   useEffect(() => {
-    if (patches.length === 0) {
-      return;
-    }
-
-    if (typeof window === 'undefined') {
-      return;
-    }
-
+    if (patches.length === 0) return;
+    if (typeof window === 'undefined') return;
     if (window.matchMedia('(prefers-reduced-motion: reduce)').matches) {
+      paintTiles(null);
+      return;
+    }
+
+    // Don't start a loop if there's genuinely nothing to animate right now.
+    const needsLoop =
+      shimmerRef.current || rippleActiveRef.current || rippleDrainStateRef.current != null;
+    if (!needsLoop) {
       paintTiles(null);
       return;
     }
@@ -324,7 +467,20 @@ export default function MapGridLoadingTiles() {
     animStartMsRef.current = performance.now();
 
     const tick = (now: number) => {
-      paintTiles(now - animStartMsRef.current);
+      const elapsed = now - animStartMsRef.current;
+      paintTiles(elapsed);
+
+      // Self-stop when shimmer is off, ripple is inactive, and all frozen rings have exited.
+      const draining =
+        rippleDrainStateRef.current != null && isDrainActive(rippleDrainStateRef.current);
+      if (!shimmerRef.current && !rippleActiveRef.current && !draining) {
+        rippleDrainStateRef.current = null;
+        rippleStartMsRef.current = null;
+        paintTiles(null);
+        animRafRef.current = null;
+        return;
+      }
+
       animRafRef.current = requestAnimationFrame(tick);
     };
 
@@ -336,7 +492,10 @@ export default function MapGridLoadingTiles() {
         animRafRef.current = null;
       }
     };
-  }, [patches]);
+  // Narrowed deps: shimmer/rippleActive are read via refs inside the tick.
+  // The effect only rebuilds when patches or viewport change (geometry rebuild),
+  // or when shimmer/rippleActive go from off→on (to kick-start the loop).
+  }, [patches, shimmer, rippleActive, viewportSize]);
 
   if (!viewportSize || patches.length === 0) {
     return (

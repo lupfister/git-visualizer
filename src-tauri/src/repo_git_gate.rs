@@ -40,9 +40,7 @@ where
     let (mutex, cvar) = &*permits;
     let mut available = mutex.lock().expect("git permit mutex poisoned");
     while *available == 0 {
-        available = cvar
-            .wait(available)
-            .expect("git permit condvar poisoned");
+        available = cvar.wait(available).expect("git permit condvar poisoned");
     }
     *available -= 1;
     drop(available);

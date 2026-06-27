@@ -125,10 +125,6 @@ export async function getRepoWatcherEpochs(repoPath: string): Promise<RepoWatche
   return invoke('get_repo_watcher_epochs', { repoPath });
 }
 
-export async function getRepoFastSignature(repoPath: string): Promise<string> {
-  return invoke('get_repo_fast_signature', { repoPath });
-}
-
 export async function addWorktree(
   repoPath: string,
   worktreePath: string,

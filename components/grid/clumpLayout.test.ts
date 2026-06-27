@@ -22,8 +22,8 @@ describe('clumpLayout', () => {
     expect(clumpLaneSpan(3, true)).toBe(3);
   });
 
-  it('reserves one lane in the column pass', () => {
-    expect(clumpLayoutReservationSpan(3)).toBe(1);
+  it('reserves the full lane footprint in the column pass', () => {
+    expect(clumpLayoutReservationSpan(3)).toBe(3);
   });
 
   it('keeps open clump columns on the owner until render expansion', () => {

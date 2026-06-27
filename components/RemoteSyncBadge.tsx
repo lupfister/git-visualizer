@@ -7,11 +7,11 @@ const REMOTE_SYNC_CONFIG: Record<RemoteSyncStatus, { label: string; className: s
   },
   unpushed: {
     label: 'Unpushed',
-    className: 'bg-red-50 dark:bg-red-900/20 text-red-600 dark:text-red-400',
+    className: 'bg-[var(--destructive-bg)] text-red-600',
   },
   'on-github': {
     label: 'On GitHub',
-    className: 'bg-blue-50 dark:bg-blue-900/20 text-blue-600 dark:text-blue-400',
+    className: 'bg-[var(--info-bg)] text-blue-600',
   },
 };
 

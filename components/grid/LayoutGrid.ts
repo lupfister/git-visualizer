@@ -69,6 +69,8 @@ export type BranchGridViewProps = {
   onCreateWorktree?: (projectPath: string, branchOrCommit?: string) => void;
   onPushCommitTargets?: (targets: Array<{ branchName: string; targetSha: string }>) => Promise<void> | void;
   pushInProgress?: boolean;
+  onSquashCommitRange?: (target: { branchName: string; commitShas: string[] }) => Promise<void> | void;
+  squashInProgress?: boolean;
   onDeleteSelection?: (targets: {
     branchNames: string[];
     discardUncommittedChanges: boolean;
@@ -105,8 +107,8 @@ export type BranchGridViewProps = {
 };
 
 export type NodePositionOverride =
-  | { row: number; column: number; x?: never; y?: never }
-  | { x: number; y: number; row?: never; column?: never };
+  | { row: number; column: number; x?: never; y?: never; isMigratedWorktree?: boolean }
+  | { x: number; y: number; row?: never; column?: never; isMigratedWorktree?: boolean };
 export type NodePositionOverrides = Record<string, NodePositionOverride>;
 
 export type CommitItem = {

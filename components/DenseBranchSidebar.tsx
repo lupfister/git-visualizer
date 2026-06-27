@@ -1,9 +1,11 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import type { CSSProperties, PointerEvent as ReactPointerEvent } from 'react';
 import { ChevronRight, Plus, Trash2 } from 'lucide-react';
+import { ToolbarSvgIcon } from './grid/ToolbarActionContent';
 import type { Branch, BranchCommitPreview, TerminalSession, WorktreeInfo } from '../types';
 import { accentCssVars, buildWorktreeSessions, workingTreeIdForPath } from '../lib/worktreeSessions';
 import { cn, normalizeRepoPathForCompare, worktreeDisplayName } from './grid/mapGridUtils';
+import { Tooltip } from './Tooltip';
 
 const EXPANDED_WORKTREES_KEY = 'git-visualizer:expanded-worktrees';
 const EXPANDED_PROJECTS_KEY = 'git-visualizer:expanded-projects';
@@ -826,32 +828,33 @@ export default function DenseBranchSidebar({
     );
 
     const plusButton = ghostMode ? null : (
-      <button
-        type="button"
-        disabled={!worktree.pathExists}
-        onClick={(event) => {
-          event.stopPropagation();
-          const hasPreview = rawSessions.some(
-            (session) => session.kind === 'preview' && session.status === 'running'
-          );
-          if (hasPreview) {
-            void (async () => {
-              await onCreateTerminal(project.path, worktree.path);
-              expandWorktree(key);
-            })();
-          } else {
-            showContextMenu(event, 'worktree-plus', project.path, worktree.path, worktree);
-          }
-        }}
-        className={cn(
-          "inline-flex h-7 w-7 shrink-0 items-center justify-center rounded-lg opacity-0 transition-all group-hover/row:opacity-100 disabled:cursor-not-allowed disabled:opacity-30",
-          accent ? "hover:brightness-75" : "text-muted-foreground hover:text-foreground"
-        )}
-        aria-label={`Actions in ${label}`}
-        title="New terminal or preview"
-      >
-        <Plus className="h-3.5 w-3.5 shrink-0" />
-      </button>
+      <Tooltip label="New terminal or preview" side="top">
+        <button
+          type="button"
+          disabled={!worktree.pathExists}
+          onClick={(event) => {
+            event.stopPropagation();
+            const hasPreview = rawSessions.some(
+              (session) => session.kind === 'preview' && session.status === 'running'
+            );
+            if (hasPreview) {
+              void (async () => {
+                await onCreateTerminal(project.path, worktree.path);
+                expandWorktree(key);
+              })();
+            } else {
+              showContextMenu(event, 'worktree-plus', project.path, worktree.path, worktree);
+            }
+          }}
+          className={cn(
+            "inline-flex h-7 w-7 shrink-0 items-center justify-center rounded-lg opacity-0 transition-all group-hover/row:opacity-100 disabled:cursor-not-allowed disabled:opacity-30",
+            accent ? "hover:brightness-75" : "text-muted-foreground hover:text-foreground"
+          )}
+          aria-label={`Actions in ${label}`}
+        >
+          <Plus strokeWidth={1.875} className="h-4 w-4 shrink-0" />
+        </button>
+      </Tooltip>
     );
 
     return (
@@ -889,7 +892,7 @@ export default function DenseBranchSidebar({
               aria-label={`${expanded ? 'Collapse' : 'Expand'} ${label}`}
               tabIndex={ghostMode ? -1 : undefined}
             >
-              <ChevronRight className={cn('h-3.5 w-3.5 shrink-0 transition-transform duration-200', expanded && 'rotate-90')} />
+              <ChevronRight strokeWidth={2.1} className={cn('h-4 w-4 shrink-0 transition-transform duration-200', expanded && 'rotate-90')} />
             </button>
             <span className="min-w-0 flex-1 truncate text-sm">{label} · {refLabel}</span>
             {plusButton}
@@ -1004,27 +1007,12 @@ export default function DenseBranchSidebar({
             tabIndex={ghostMode ? -1 : undefined}
           >
             {isExpanded ? (
-              <ProjectOpenIcon className="h-4 w-4 shrink-0" />
+              <ToolbarSvgIcon icon="project-open" className="text-current" />
             ) : (
-              <ProjectClosedIcon className="h-4 w-4 shrink-0" />
+              <ToolbarSvgIcon icon="project-closed" className="text-current" />
             )}
           </button>
-          <span className="min-w-0 flex-1 truncate text-sm font-medium">{project.name}</span>
-          {!ghostMode ? (
-            <button
-              type="button"
-              onPointerDown={(event) => event.stopPropagation()}
-              onClick={(event) => {
-                event.stopPropagation();
-                void onCreateWorktree?.(project.path);
-              }}
-              className="window-no-drag inline-flex h-7 w-7 shrink-0 items-center justify-center rounded-lg opacity-0 transition-colors group-hover:opacity-100 text-muted-foreground hover:text-foreground"
-              aria-label={`New worktree for ${project.name}`}
-              title="New worktree"
-            >
-              <Plus className="h-3.5 w-3.5 shrink-0" />
-            </button>
-          ) : null}
+          <span className="min-w-0 flex-1 truncate text-sm">{project.name}</span>
         </div>
         {isExpanded ? (
           <div className="mt-1 space-y-1">
@@ -1086,7 +1074,7 @@ export default function DenseBranchSidebar({
       <header data-tauri-drag-region className="absolute inset-x-0 top-0 h-12" />
       <div className={cn('flex h-full min-h-0 flex-col', collapsed && 'pointer-events-none opacity-0')}>
         {projectError ? (
-          <p className="mx-2 mb-2 rounded-xl border border-red-50 bg-red-50 px-3 py-2 text-xs text-red-600 dark:border-red-900/20 dark:bg-red-900/20 dark:text-red-400">
+          <p className="mx-2 mb-2 rounded-xl border border-[var(--destructive-bg)] bg-[var(--destructive-bg)] px-3 py-2 text-xs text-red-600">
             {projectError}
           </p>
         ) : null}
@@ -1098,9 +1086,9 @@ export default function DenseBranchSidebar({
             className="group flex h-7 w-full items-center rounded-lg text-sm text-foreground transition-colors hover:bg-muted disabled:opacity-50"
           >
             <span className="inline-flex h-7 w-7 shrink-0 items-center justify-center">
-              <Plus className="h-4 w-4 shrink-0" />
+              <Plus strokeWidth={1.875} className="h-4 w-4 shrink-0" />
             </span>
-            <span>New Project</span>
+            <span>Add project</span>
           </button>
         </div>
         <div ref={scrollBodyRef} className="sidebar-scrollbar min-h-0 flex-1 space-y-3 overflow-y-auto px-2">
@@ -1315,7 +1303,7 @@ function TerminalRow({
         <span
           className={cn(
             'inline-flex shrink-0 items-center justify-center',
-            alignWithProjectRow ? 'h-7 w-7' : 'h-3.5 w-3.5',
+            alignWithProjectRow ? 'h-7 w-7' : 'h-4 w-4',
           )}
         >
           {pulseVisible ? (
@@ -1329,7 +1317,7 @@ function TerminalRow({
               )}
             />
           ) : (
-            <Icon className="h-3.5 w-3.5 shrink-0" />
+            <Icon className="h-4 w-4 shrink-0" />
           )}
         </span>
         <span className={cn('min-w-0 flex-1 truncate', pulseVisible && 'terminal-row-shimmer__text')}>
@@ -1382,44 +1370,27 @@ function TerminalRow({
         </div>
       )}
       {!ghostMode && onTerminate ? (
-        <button
-          type="button"
-          onPointerDown={(event) => event.stopPropagation()}
-          onClick={(event) => {
-            event.stopPropagation();
-            void onTerminate(session.id);
-          }}
-          className={cn(
-            'absolute right-0 top-0 inline-flex h-7 w-7 shrink-0 items-center justify-center rounded-lg opacity-0 transition-opacity duration-150 group-hover/terminal:opacity-100',
-            accent
-              ? 'text-[var(--worktree-fg)]'
-              : 'text-muted-foreground',
-          )}
-          aria-label="Terminate session"
-          title="Terminate session"
-        >
-          <Trash2 className="h-3.5 w-3.5 shrink-0" />
-        </button>
+        <Tooltip label="Terminate session" side="top">
+          <button
+            type="button"
+            onPointerDown={(event) => event.stopPropagation()}
+            onClick={(event) => {
+              event.stopPropagation();
+              void onTerminate(session.id);
+            }}
+            className={cn(
+              'inline-flex h-7 w-7 shrink-0 items-center justify-center rounded-lg opacity-0 transition-opacity duration-150 group-hover/terminal:opacity-100',
+              accent
+                ? 'text-[var(--worktree-fg)]'
+                : 'text-muted-foreground',
+            )}
+            aria-label="Terminate session"
+          >
+            <Trash2 strokeWidth={1} className="h-4 w-4 shrink-0" />
+          </button>
+        </Tooltip>
       ) : null}
     </div>
-  );
-}
-
-function ProjectClosedIcon({ className }: { className?: string }) {
-  return (
-    <svg width="24" height="24" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg" className={className}>
-      <path d="M4 7C4 5.89543 4.89543 5 6 5H9C9.64911 5 10.2807 5.21053 10.8 5.6L11.2 5.9C11.7193 6.28947 12.3509 6.5 13 6.5H18C19.1046 6.5 20 7.39543 20 8.5V17C20 18.1046 19.1046 19 18 19H6C4.89543 19 4 18.1046 4 17V7Z" stroke="currentColor" strokeWidth="1.5"/>
-      <path d="M4 10.5L12.4211 10.5L20 10.5" stroke="currentColor" strokeWidth="1.5"/>
-    </svg>
-  );
-}
-
-function ProjectOpenIcon({ className }: { className?: string }) {
-  return (
-    <svg width="24" height="24" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg" className={className}>
-      <path d="M11.7031 19H5.97457C4.96341 19 4.11131 18.2453 3.9892 17.2415L2.77269 7.24152C2.62773 6.04996 3.5577 5 4.75805 5H7C7.64911 5 8.28071 5.21053 8.8 5.6L9.2 5.9C9.71929 6.28947 10.3509 6.5 11 6.5H16.2369C17.2445 6.5 18.0947 7.24955 18.2211 8.2492L18.4938 10.4062" stroke="currentColor" strokeWidth="1.5"/>
-      <path d="M5.21532 12.0419C5.42789 11.1385 6.23405 10.5 7.16215 10.5H19.8105C20.7133 10.5 21.38 11.3419 21.1733 12.2207L19.9409 17.4581C19.7284 18.3615 18.9222 19 17.9941 19H6.10333C4.81363 19 3.8611 17.7973 4.1565 16.5419L5.21532 12.0419Z" stroke="currentColor" strokeWidth="1.5"/>
-    </svg>
   );
 }
 
@@ -1435,14 +1406,14 @@ function TerminalIcon({ className, style }: { className?: string; style?: React.
       <path
         d="M10.7272 2.33331H3.27208C2.10812 2.33331 1.16455 3.27688 1.16455 4.44084V9.55912C1.16455 10.7231 2.10812 11.6666 3.27208 11.6666H10.7272C11.8911 11.6666 12.8347 10.7231 12.8347 9.55912V4.44084C12.8347 3.27688 11.8911 2.33331 10.7272 2.33331Z"
         stroke="currentColor"
-        strokeWidth="1.2"
+        strokeWidth="1"
         strokeLinecap="round"
         strokeLinejoin="round"
       />
       <path
         d="M3.79736 5.01288L5.78446 6.99998L3.79736 8.98707M7.44037 8.98707H10.0898"
         stroke="currentColor"
-        strokeWidth="1.2"
+        strokeWidth="1"
         strokeLinecap="round"
         strokeLinejoin="round"
       />
@@ -1462,7 +1433,7 @@ function PreviewIcon({ className, style }: { className?: string; style?: React.C
       <path
         d="M4.21449 11.4349L10.8684 7.76319C11.4716 7.43033 11.4713 6.56324 10.8679 6.23073L4.21404 2.56418C3.63088 2.24284 2.91675 2.6647 2.91675 3.33053L2.91675 10.6688C2.91675 11.3348 3.63132 11.7567 4.21449 11.4349Z"
         stroke="currentColor"
-        strokeWidth="1.2"
+        strokeWidth="1"
         strokeLinecap="round"
         strokeLinejoin="round"
       />

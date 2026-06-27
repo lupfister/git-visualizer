@@ -22,7 +22,7 @@ export const isMultiClump = (
  * Lanes reserved in the column pass. A clump lays out as a single virtual node;
  * opening it inserts member columns later in the render pass.
  */
-export const clumpLayoutReservationSpan = (_count: number): number => 1;
+export const clumpLayoutReservationSpan = (count: number): number => Math.max(1, count);
 
 export const clumpLaneSpan = (count: number, isOpen: boolean): number => (isOpen ? count : 1);
 

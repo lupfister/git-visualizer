@@ -41,8 +41,7 @@ describe('applyNodePositionOverrides', () => {
     assignNodePositionOverride(overrides, member, { row: 4, column: 2 });
 
     const leadNode = nodeFor(lead, 1, 0);
-    const memberNode = nodeFor(member, 3, 0);
-    const renderNodes = [leadNode, memberNode];
+    const renderNodes = [leadNode];
 
     applyNodePositionOverrides({
       renderNodes,
@@ -59,7 +58,43 @@ describe('applyNodePositionOverrides', () => {
 
     expect(leadNode.row).toBe(4);
     expect(leadNode.column).toBe(2);
-    expect(memberNode.row).toBe(4);
-    expect(memberNode.column).toBe(2);
+  });
+
+  it('ignores overrides with isMigratedWorktree: true if the clump is collapsed', () => {
+    const lead = commit({ id: 'lead', visualId: 'main:lead' });
+    const member = commit({ id: 'member', visualId: 'main:member' });
+    const clusterKey = 'main:cluster';
+    const clusterKeyByCommitId = new Map([
+      [lead.visualId, clusterKey],
+      [member.visualId, clusterKey],
+    ]);
+    const leadByClusterKey = new Map([[clusterKey, lead.visualId]]);
+    const rowByVisualId = new Map([
+      [lead.visualId, 1],
+      [member.visualId, 3],
+    ]);
+    const overrides = {};
+    assignNodePositionOverride(overrides, lead, { row: 4, column: 2, isMigratedWorktree: true });
+
+    // Collapsed clump: only 1 node in the cluster (the lead) is rendered
+    const leadNode = nodeFor(lead, 1, 0);
+    const renderNodes = [leadNode];
+
+    applyNodePositionOverrides({
+      renderNodes,
+      allCommitsWithClusters: [lead, member],
+      clusterKeyByCommitId,
+      leadByClusterKey,
+      rowByVisualId,
+      overrides,
+      isHorizontal: false,
+      zoomAwareTimelinePitch: 40,
+      zoomAwareLanePitch: 120,
+      maxResolvedRow: 3,
+    });
+
+    // Since the override is a migrated worktree override and the clump is collapsed, it is ignored
+    expect(leadNode.row).toBe(1);
+    expect(leadNode.column).toBe(0);
   });
 });

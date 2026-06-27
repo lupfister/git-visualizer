@@ -65,6 +65,22 @@ pub fn reapply_for_window<R: Runtime>(window: &WebviewWindow<R>) {
     });
 }
 
+pub fn set_window_opacity<R: Runtime>(window: &WebviewWindow<R>, alpha: f64) -> Result<(), String> {
+    let clamped_alpha = alpha.clamp(0.0, 1.0);
+    window
+        .with_webview(move |webview| {
+            let ns_window = webview.ns_window().cast::<NSWindow>();
+            if ns_window.is_null() {
+                return;
+            }
+
+            unsafe {
+                (&*ns_window).setAlphaValue(clamped_alpha);
+            }
+        })
+        .map_err(|error| format!("Failed to set window opacity: {error}"))
+}
+
 fn should_reapply_now() -> bool {
     static LAST_REAPPLY_MS: AtomicU64 = AtomicU64::new(0);
 

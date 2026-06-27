@@ -231,13 +231,22 @@ pub fn list_branches(repo: &Path, default_branch: &str) -> Result<Vec<Branch>, G
     );
     let output = cli::run(
         repo,
-        &["for-each-ref", "refs/heads/", &format!("--format={}", format_str)],
+        &[
+            "for-each-ref",
+            "refs/heads/",
+            &format!("--format={}", format_str),
+        ],
     )?;
 
     let remote_refs_output = cli::run(
         repo,
-        &["for-each-ref", "refs/remotes/", "--format=%(refname:short)|%(objectname)"],
-    ).unwrap_or_default();
+        &[
+            "for-each-ref",
+            "refs/remotes/",
+            "--format=%(refname:short)|%(objectname)",
+        ],
+    )
+    .unwrap_or_default();
     let mut remote_shas_by_name = HashMap::new();
     for line in remote_refs_output.lines() {
         let line = line.trim();
@@ -354,7 +363,8 @@ pub fn list_branches(repo: &Path, default_branch: &str) -> Result<Vec<Branch>, G
             &head_sha,
             &default_head_sha,
             &mut cache.date_cache,
-        ).unwrap_or((None, None));
+        )
+        .unwrap_or((None, None));
 
         let branch = Branch {
             name,
@@ -373,7 +383,8 @@ pub fn list_branches(repo: &Path, default_branch: &str) -> Result<Vec<Branch>, G
             diverged_from_date,
         };
 
-        if !is_fast_forward_merged_into_base(&branch, &default_first_parent_shas, &default_head_sha) {
+        if !is_fast_forward_merged_into_base(&branch, &default_first_parent_shas, &default_head_sha)
+        {
             branches.push(branch);
         }
     }
@@ -545,10 +556,11 @@ pub fn get_branch_info_for_name(
     name: &str,
     default_branch: &str,
 ) -> Result<Branch, GitError> {
-    get_branch_info(repo, name, default_branch)
-        .or_else(|_| build_branch_fallback(repo, name, default_branch).ok_or(GitError::CommandFailed(
-            format!("Failed to resolve branch metadata for {name}"),
+    get_branch_info(repo, name, default_branch).or_else(|_| {
+        build_branch_fallback(repo, name, default_branch).ok_or(GitError::CommandFailed(format!(
+            "Failed to resolve branch metadata for {name}"
         )))
+    })
 }
 
 /// Lightweight local branch listing: one `for-each-ref` call, name + head SHA only.
@@ -795,10 +807,11 @@ fn infer_branch_parents(
             if let (Some(default_name), Some(default_sha)) =
                 (default_parent_name.clone(), default_head_sha.clone())
             {
-                let has_shared_history = get_merge_base_sha_cached(repo, &default_sha, &branch.head_sha, cache)
-                    .ok()
-                    .flatten()
-                    .is_some();
+                let has_shared_history =
+                    get_merge_base_sha_cached(repo, &default_sha, &branch.head_sha, cache)
+                        .ok()
+                        .flatten()
+                        .is_some();
                 if has_shared_history {
                     parent_name = Some(default_name);
                 }
@@ -888,7 +901,9 @@ fn infer_branch_parents(
 
             if has_cycle {
                 branch.parent_branch = Some(default_parent.clone());
-                if let Ok((sha, date)) = get_fork_point_cached(repo, &branch.name, &default_parent, cache) {
+                if let Ok((sha, date)) =
+                    get_fork_point_cached(repo, &branch.name, &default_parent, cache)
+                {
                     branch.diverged_from_sha = sha;
                     branch.diverged_from_date = date;
                 }
@@ -1007,7 +1022,8 @@ fn infer_parent_by_merge_base(
             continue;
         }
 
-        let Ok(merge_base_sha) = get_merge_base_sha_cached(repo, &candidate.head_sha, &branch.head_sha, cache)
+        let Ok(merge_base_sha) =
+            get_merge_base_sha_cached(repo, &candidate.head_sha, &branch.head_sha, cache)
         else {
             continue;
         };
@@ -1025,7 +1041,8 @@ fn infer_parent_by_merge_base(
         }
 
         let candidate_distance_from_base =
-            commit_distance_cached(repo, &merge_base_sha, &candidate.head_sha, cache).unwrap_or(i32::MAX);
+            commit_distance_cached(repo, &merge_base_sha, &candidate.head_sha, cache)
+                .unwrap_or(i32::MAX);
 
         match &best_by_branch_point {
             None => {
@@ -1438,7 +1455,6 @@ pub fn try_fast_forward_pull(repo: &Path) -> Result<bool, GitError> {
         Err(error) => Err(error),
     }
 }
-
 
 pub fn list_origin_branch_heads(repo: &Path) -> Result<Vec<(String, String)>, GitError> {
     let output = cli::run(

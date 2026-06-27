@@ -51,15 +51,43 @@
   --select-muted: #E5F2FF;
   --remote-muted: #F2ECFD;
   /* Linked worktree sessions (non-current); not blue — reserved for selection/remote UI */
-  --worktree-violet: #7C3AED;
-  --worktree-violet-muted: #EDE9FE;
-  --worktree-amber: #D97706;
-  --worktree-amber-muted: #FEF3C7;
-  --worktree-emerald: #059669;
-  --worktree-emerald-muted: #D1FAE5;
-  --worktree-rose: #E11D48;
-  --worktree-rose-muted: #FFE4E6;
+  --worktree-rose: #CF6E7E;
+  --worktree-rose-muted: #F9EDEF;
+  --worktree-salmon: #CF7565;
+  --worktree-salmon-muted: #F9EEEB;
+  --worktree-terracotta: #CA7A5C;
+  --worktree-terracotta-muted: #F8ECE8;
+  --worktree-amber: #E28B00;
+  --worktree-amber-muted: #FFF3DB;
+  --worktree-olive: #A19342;
+  --worktree-olive-muted: #FAF7DF;
+  --worktree-lime: #8CA65B;
+  --worktree-lime-muted: #F3FAF1;
+  --worktree-sage: #799E6C;
+  --worktree-sage-muted: #EDF4EC;
+  --worktree-green: #62A478;
+  --worktree-green-muted: #EBF5EE;
+  --worktree-emerald: #509F7C;
+  --worktree-emerald-muted: #E7FAF0;
+  --worktree-teal: #4FA2A6;
+  --worktree-teal-muted: #E7FAFB;
+  --worktree-cyan: #5C9DC0;
+  --worktree-cyan-muted: #EBF4FA;
+  --worktree-blue: #6E8BB8;
+  --worktree-blue-muted: #EDF2FA;
+  --worktree-indigo: #7C83C0;
+  --worktree-indigo-muted: #EEEFF9;
+  --worktree-violet: #927EC4;
+  --worktree-violet-muted: #F2EEF9;
+  --worktree-purple: #9E76A3;
+  --worktree-purple-muted: #F7EEF8;
+  --worktree-mauve: #A6749A;
+  --worktree-mauve-muted: #F6EDF3;
   --destructive: #DC2626;
+  --destructive-bg: #FADEDF;
+  --destructive-bg-hover: #F8D1D3;
+  --info-bg: #D6EBFE;
+  --info-bg-hover: #B5DCFD;
   --font-sans: system-ui, -apple-system, sans-serif;
   --font-space-grotesk: 'Space Grotesk', system-ui, -apple-system, sans-serif;
 }
@@ -77,15 +105,43 @@
   --color-checked-muted: var(--checked-muted);
   --color-select-muted: var(--select-muted);
   --color-remote-muted: var(--remote-muted);
-  --color-worktree-violet: var(--worktree-violet);
-  --color-worktree-violet-muted: var(--worktree-violet-muted);
-  --color-worktree-amber: var(--worktree-amber);
-  --color-worktree-amber-muted: var(--worktree-amber-muted);
-  --color-worktree-emerald: var(--worktree-emerald);
-  --color-worktree-emerald-muted: var(--worktree-emerald-muted);
   --color-worktree-rose: var(--worktree-rose);
   --color-worktree-rose-muted: var(--worktree-rose-muted);
+  --color-worktree-salmon: var(--worktree-salmon);
+  --color-worktree-salmon-muted: var(--worktree-salmon-muted);
+  --color-worktree-terracotta: var(--worktree-terracotta);
+  --color-worktree-terracotta-muted: var(--worktree-terracotta-muted);
+  --color-worktree-amber: var(--worktree-amber);
+  --color-worktree-amber-muted: var(--worktree-amber-muted);
+  --color-worktree-olive: var(--worktree-olive);
+  --color-worktree-olive-muted: var(--worktree-olive-muted);
+  --color-worktree-lime: var(--worktree-lime);
+  --color-worktree-lime-muted: var(--worktree-lime-muted);
+  --color-worktree-sage: var(--worktree-sage);
+  --color-worktree-sage-muted: var(--worktree-sage-muted);
+  --color-worktree-green: var(--worktree-green);
+  --color-worktree-green-muted: var(--worktree-green-muted);
+  --color-worktree-emerald: var(--worktree-emerald);
+  --color-worktree-emerald-muted: var(--worktree-emerald-muted);
+  --color-worktree-teal: var(--worktree-teal);
+  --color-worktree-teal-muted: var(--worktree-teal-muted);
+  --color-worktree-cyan: var(--worktree-cyan);
+  --color-worktree-cyan-muted: var(--worktree-cyan-muted);
+  --color-worktree-blue: var(--worktree-blue);
+  --color-worktree-blue-muted: var(--worktree-blue-muted);
+  --color-worktree-indigo: var(--worktree-indigo);
+  --color-worktree-indigo-muted: var(--worktree-indigo-muted);
+  --color-worktree-violet: var(--worktree-violet);
+  --color-worktree-violet-muted: var(--worktree-violet-muted);
+  --color-worktree-purple: var(--worktree-purple);
+  --color-worktree-purple-muted: var(--worktree-purple-muted);
+  --color-worktree-mauve: var(--worktree-mauve);
+  --color-worktree-mauve-muted: var(--worktree-mauve-muted);
   --color-destructive: var(--destructive);
+  --color-destructive-bg: var(--destructive-bg);
+  --color-destructive-bg-hover: var(--destructive-bg-hover);
+  --color-info-bg: var(--info-bg);
+  --color-info-bg-hover: var(--info-bg-hover);
   --font-sans: var(--font-sans);
   --font-space-grotesk: var(--font-space-grotesk);
 }
@@ -580,19 +636,14 @@ body.popover-window #root {
   mask-image: url('/icon-commit.svg');
 }
 
-.toolbar-mask-icon--push-branch {
-  -webkit-mask-image: url('/icon-pushBranch.svg');
-  mask-image: url('/icon-pushBranch.svg');
+.toolbar-mask-icon--push-single {
+  -webkit-mask-image: url('/icon-pushSingle.svg');
+  mask-image: url('/icon-pushSingle.svg');
 }
 
-.toolbar-mask-icon--push-selected {
-  -webkit-mask-image: url('/icon-pushSelected.svg');
-  mask-image: url('/icon-pushSelected.svg');
-}
-
-.toolbar-mask-icon--push-all {
-  -webkit-mask-image: url('/icon-pushAll.svg');
-  mask-image: url('/icon-pushAll.svg');
+.toolbar-mask-icon--push-multiple {
+  -webkit-mask-image: url('/icon-pushMultiple.svg');
+  mask-image: url('/icon-pushMultiple.svg');
 }
 
 .toolbar-mask-icon--stash {
@@ -601,22 +652,26 @@ body.popover-window #root {
 }
 
 .toolbar-mask-icon--preview {
-  width: 14px;
-  height: 14px;
   -webkit-mask-image: url('/icon-preview.svg');
   mask-image: url('/icon-preview.svg');
 }
 
-.toolbar-mask-icon--branch {
-  width: 14px;
-  height: 14px;
-  -webkit-mask-image: url('/icon-branch.svg');
-  mask-image: url('/icon-branch.svg');
+.toolbar-mask-icon--branch-new-root {
+  -webkit-mask-image: url('/icon-branchNewRoot.svg');
+  mask-image: url('/icon-branchNewRoot.svg');
+}
+
+.toolbar-mask-icon--branch-new {
+  -webkit-mask-image: url('/icon-branchNew.svg');
+  mask-image: url('/icon-branchNew.svg');
+}
+
+.toolbar-mask-icon--new-worktree {
+  -webkit-mask-image: url('/icon-newWorktree.svg');
+  mask-image: url('/icon-newWorktree.svg');
 }
 
 .toolbar-mask-icon--terminal {
-  width: 14px;
-  height: 14px;
   -webkit-mask-image: url('/icon-terminal.svg');
   mask-image: url('/icon-terminal.svg');
 }
@@ -735,8 +790,8 @@ body.popover-window #root {
 
 .terminal-row-shimmer__icon {
   display: inline-block;
-  width: 14px;
-  height: 14px;
+  width: 16px;
+  height: 16px;
   background-color: currentColor;
   -webkit-mask-position: center;
   -webkit-mask-repeat: no-repeat;

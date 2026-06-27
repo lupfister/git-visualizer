@@ -67,6 +67,12 @@ describe('shouldRejectRegressionFromProtectedHead', () => {
 });
 
 describe('shouldBlockIncomingSnapshotApply', () => {
+  it('blocks an incoming snapshot that is missing the guarded post-commit head', () => {
+    const live = snapshotWithHead('layout-overhaul-1', guardSha);
+    const incoming = snapshotWithHead('layout-overhaul-1', olderSha);
+    expect(shouldBlockIncomingSnapshotApply(live, incoming, guardSha)).toBe(true);
+  });
+
   it('does not block a merge snapshot that advances main while guarding a feature tip', () => {
     const live = snapshotWithHead('layout-overhaul-1', guardSha);
     const incoming = snapshotWithHead('main', mergeSha, [guardSha]);
