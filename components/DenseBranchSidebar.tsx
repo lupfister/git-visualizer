@@ -852,7 +852,7 @@ export default function DenseBranchSidebar({
           )}
           aria-label={`Actions in ${label}`}
         >
-          <Plus strokeWidth={1.875} className="h-4 w-4 shrink-0" />
+          <Plus strokeWidth={1.5} className="h-4 w-4 shrink-0" />
         </button>
       </Tooltip>
     );
@@ -892,7 +892,7 @@ export default function DenseBranchSidebar({
               aria-label={`${expanded ? 'Collapse' : 'Expand'} ${label}`}
               tabIndex={ghostMode ? -1 : undefined}
             >
-              <ChevronRight strokeWidth={2.1} className={cn('h-4 w-4 shrink-0 transition-transform duration-200', expanded && 'rotate-90')} />
+              <ChevronRight strokeWidth={1.5} className={cn('h-4 w-4 shrink-0 transition-transform duration-200', expanded && 'rotate-90')} />
             </button>
             <span className="min-w-0 flex-1 truncate text-sm">{label} · {refLabel}</span>
             {plusButton}
@@ -1086,7 +1086,7 @@ export default function DenseBranchSidebar({
             className="group flex h-7 w-full items-center rounded-lg text-sm text-foreground transition-colors hover:bg-muted disabled:opacity-50"
           >
             <span className="inline-flex h-7 w-7 shrink-0 items-center justify-center">
-              <Plus strokeWidth={1.875} className="h-4 w-4 shrink-0" />
+              <Plus strokeWidth={1.5} className="h-4 w-4 shrink-0" />
             </span>
             <span>Add project</span>
           </button>
@@ -1397,21 +1397,21 @@ function TerminalRow({
 function TerminalIcon({ className, style }: { className?: string; style?: React.CSSProperties }) {
   return (
     <svg
-      viewBox="0 0 14 14"
+      viewBox="0 0 16 16"
       fill="none"
       xmlns="http://www.w3.org/2000/svg"
       className={className}
       style={style}
     >
       <path
-        d="M10.7272 2.33331H3.27208C2.10812 2.33331 1.16455 3.27688 1.16455 4.44084V9.55912C1.16455 10.7231 2.10812 11.6666 3.27208 11.6666H10.7272C11.8911 11.6666 12.8347 10.7231 12.8347 9.55912V4.44084C12.8347 3.27688 11.8911 2.33331 10.7272 2.33331Z"
+        d="M12.5 3.5H3.5C2.4 3.5 1.5 4.4 1.5 5.5V10.5C1.5 11.6 2.4 12.5 3.5 12.5H12.5C13.6 12.5 14.5 11.6 14.5 10.5V5.5C14.5 4.4 13.6 3.5 12.5 3.5Z"
         stroke="currentColor"
         strokeWidth="1"
         strokeLinecap="round"
         strokeLinejoin="round"
       />
       <path
-        d="M3.79736 5.01288L5.78446 6.99998L3.79736 8.98707M7.44037 8.98707H10.0898"
+        d="M4.5 6L6.5 8L4.5 10M8 10H11.5"
         stroke="currentColor"
         strokeWidth="1"
         strokeLinecap="round"
@@ -1424,14 +1424,14 @@ function TerminalIcon({ className, style }: { className?: string; style?: React.
 function PreviewIcon({ className, style }: { className?: string; style?: React.CSSProperties }) {
   return (
     <svg
-      viewBox="0 0 14 14"
+      viewBox="0 0 16 16"
       fill="none"
       xmlns="http://www.w3.org/2000/svg"
       className={className}
       style={style}
     >
       <path
-        d="M4.21449 11.4349L10.8684 7.76319C11.4716 7.43033 11.4713 6.56324 10.8679 6.23073L4.21404 2.56418C3.63088 2.24284 2.91675 2.6647 2.91675 3.33053L2.91675 10.6688C2.91675 11.3348 3.63132 11.7567 4.21449 11.4349Z"
+        d="M5 5.5C5 4.7 5.8 4.2 6.5 4.6L10.5 7.2C11.2 7.6 11.2 8.4 10.5 8.8L6.5 11.4C5.8 11.8 5 11.3 5 10.5V5.5Z"
         stroke="currentColor"
         strokeWidth="1"
         strokeLinecap="round"

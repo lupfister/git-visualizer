@@ -54,6 +54,12 @@ const ICON_STROKE_WIDTH_BY_NAME: Partial<Record<ToolbarMaskIcon, string>> = {
   'branch-new': '1',
   'new-worktree': '1',
   terminal: '1',
+  commit: '1',
+  stash: '1',
+  'project-open': '1',
+  'project-closed': '1',
+  preview: '1',
+  'project-new': '1',
 };
 
 const normalizeSvgMarkup = (icon: ToolbarMaskIcon, svg: string) => {

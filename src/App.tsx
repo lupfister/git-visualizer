@@ -6354,9 +6354,9 @@ function finalizeProjectSwitchSnapshot(path: string, snapshot: RepoVisualSnapsho
               onClick={() => setIsSidebarCollapsed((value) => !value)}
             >
               {isSidebarCollapsed ? (
-                <PanelLeftOpen strokeWidth={1.875} className="h-4 w-4 shrink-0" />
+                <PanelLeftOpen strokeWidth={1.5} className="h-4 w-4 shrink-0" />
               ) : (
-                <PanelLeftClose strokeWidth={1.875} className="h-4 w-4 shrink-0" />
+                <PanelLeftClose strokeWidth={1.5} className="h-4 w-4 shrink-0" />
               )}
             </button>
             <DenseBranchSidebar
