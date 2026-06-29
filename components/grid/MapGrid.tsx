@@ -488,8 +488,15 @@ export default function BranchGridMap({
     session: WorktreeSession;
   }> => {
     const normalizedCurrent = currentRepoPath ? normalizeRepoPathForCompare(currentRepoPath) : null;
+    const dirtyPaths = new Set(
+      dirtyWorktreeSessions(worktreeSessions).map((s) => normalizeRepoPathForCompare(s.path).toLowerCase())
+    );
     return worktrees
       .filter((worktree) => worktree.pathExists !== false)
+      .filter((worktree) => {
+        const norm = normalizeRepoPathForCompare(worktree.path).toLowerCase();
+        return !dirtyPaths.has(norm);
+      })
       .map((worktree) => {
         const normalizedPath = normalizeRepoPathForCompare(worktree.path);
         const session = worktreeSessions.find((entry) => entry.path === worktree.path)
@@ -1913,17 +1920,11 @@ export default function BranchGridMap({
         setMergeTargetCommitSha((current) => (current === commitSha ? null : commitSha));
       }
 
-      const isRegularCommit =
-        !isWorkingTreeCommitId(commitSha) &&
-        node.commit.kind !== 'uncommitted' &&
-        node.commit.kind !== 'stash' &&
-        !commitSha.startsWith('STASH:') &&
-        node.commit.kind !== 'branch-created' &&
-        !commitSha.startsWith('BRANCH_HEAD:');
+
 
       const isDoubleClick = event.detail >= 2;
       const isCmdOrCtrl = event.metaKey || event.ctrlKey;
-      const shouldCheckout = isCmdOrCtrl || (isDoubleClick && !isRegularCommit);
+      const shouldCheckout = isCmdOrCtrl;
 
       if (isDoubleClick) {
         onNodeDoubleClick?.(node);
@@ -1965,6 +1966,36 @@ export default function BranchGridMap({
     setCheckoutPickerTarget(null);
     setCheckoutPickerSelectedPath(null);
   }, [checkoutPickerSelectedPath, checkoutPickerTarget, onCommitClick]);
+
+  const handleCommitControlsCheckout = useCallback(
+    async (target: { commitSha: string; branchName?: string; worktreePath: string }) => {
+      if (!onCommitClick) return;
+
+      if (checkoutPickerWorktrees.length <= 1) {
+        const onlyPath = checkoutPickerWorktrees[0]?.path ?? currentRepoPath;
+        if (!onlyPath) return;
+        await onCommitClick({
+          ...target,
+          worktreePath: onlyPath,
+        });
+        return;
+      }
+
+      const defaultPath =
+        checkoutPickerWorktrees.find((entry) => entry.session.isCurrent)?.path
+        ?? checkoutPickerWorktrees[0]?.path
+        ?? null;
+      const targetFromNode = selectedPreviewNode ? parseMapCheckoutTarget(selectedPreviewNode) : null;
+      setCheckoutPickerTarget({
+        commitSha: target.commitSha,
+        branchName: target.branchName,
+        summary: targetFromNode?.summary ?? '',
+      });
+      setCheckoutPickerSelectedPath(defaultPath);
+      setCheckoutPickerOpen(true);
+    },
+    [checkoutPickerWorktrees, currentRepoPath, onCommitClick, selectedPreviewNode],
+  );
 
   const clampDragOverridesToTopology = useCallback(
     (
@@ -2480,7 +2511,7 @@ export default function BranchGridMap({
                   selectedPreviewNode={selectedPreviewNode}
                   worktreeSessions={worktreeSessions}
                   currentRepoPath={currentRepoPath}
-                  onCommitClick={onCommitClick}
+                  onCommitClick={handleCommitControlsCheckout}
                   onCreateTerminal={onCreateTerminal}
                   onCreateWorktree={onCreateWorktree}
                   hideMergeControls

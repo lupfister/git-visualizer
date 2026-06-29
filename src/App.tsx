@@ -1797,99 +1797,10 @@ function quickStateFromSnapshot(path: string, snapshot: RepoVisualSnapshot): Rep
     })();
   };
 
-  async function fetchAllMergeNodes(path: string, branch: string): Promise<MergeNode[]> {
-    const perPage = 100;
-    const all: MergeNode[] = [];
-    let page = 0;
 
-    while (true) {
-      const result = await invoke<{ nodes: MergeNode[]; hasMore: boolean }>('get_merge_nodes', {
-        repoPath: path,
-        branch,
-        page,
-        perPage,
-      });
 
-      all.push(...result.nodes);
-      if (!result.hasMore || result.nodes.length === 0) break;
-      page += 1;
-    }
 
-    return all;
-  }
 
-  async function fetchAllMergeNodesForBranches(path: string, branchList: Branch[], defaultBranchName: string): Promise<MergeNode[]> {
-    const normalizedBranchNames = Array.from(new Set([defaultBranchName, ...branchList.map((branch) => branch.name)].filter((branchName) => !!branchName)));
-    if (normalizedBranchNames.length === 0) return [];
-    const branchMergeLists = await Promise.all(
-      normalizedBranchNames.map((branchName) => fetchAllMergeNodes(path, branchName).catch(() => [])),
-    );
-    const dedupedByMergeAndTarget = new Map<string, MergeNode>();
-    for (const list of branchMergeLists) {
-      for (const node of list) {
-        const dedupeKey = `${node.targetCommitSha}:${node.targetBranch}`;
-        if (!dedupedByMergeAndTarget.has(dedupeKey)) {
-          dedupedByMergeAndTarget.set(dedupeKey, node);
-        }
-      }
-    }
-    return Array.from(dedupedByMergeAndTarget.values());
-  }
-
-  async function refreshRepoGitState(
-    path: string,
-    resolvedDefaultBranch?: string,
-    options?: {
-      includeMergeNodes?: boolean;
-      includeUnpushedShaMap?: boolean;
-      includeWorktrees?: boolean;
-      includeStashes?: boolean;
-      skipCheckedOutRef?: boolean;
-    },
-  ) {
-    const branchDef = resolvedDefaultBranch ?? defaultBranch;
-    const includeMergeNodes = options?.includeMergeNodes ?? true;
-    const includeUnpushedShaMap = options?.includeUnpushedShaMap ?? true;
-    const includeWorktrees = options?.includeWorktrees ?? true;
-    const includeStashes = options?.includeStashes ?? true;
-    const [branchList, directResult, unpushedDirectResult, confirmedCheckedOutRef, worktreeList, stashList] = await Promise.all([
-      invoke<Branch[]>('get_branches', { repoPath: path }),
-      invoke<DirectCommit[]>('get_all_repo_commits', { repoPath: path }),
-      invoke<DirectCommit[]>('get_unpushed_direct_commits', {
-        repoPath: path,
-        branch: branchDef,
-      }).catch(() => []),
-      invoke<CheckedOutRef>('get_checked_out_ref', {
-        repoPath: path,
-      }).catch(() => null),
-      includeWorktrees ? invoke<WorktreeInfo[]>('list_worktrees', { repoPath: path }).catch(() => []) : Promise.resolve(worktrees),
-      includeStashes ? invoke<GitStashEntry[]>('list_stashes', { repoPath: path }).catch(() => []) : Promise.resolve(stashes),
-    ]);
-    const nodes = includeMergeNodes ? await fetchAllMergeNodesForBranches(path, branchList, branchDef) : mergeNodes;
-    const unpushedShaEntries = includeUnpushedShaMap
-      ? await Promise.all(
-          [branchDef, ...branchList.map((branch) => branch.name)].map(async (branchName) => {
-            const shas = await invoke<string[]>('get_branch_unpushed_commit_shas', {
-              repoPath: path,
-              branch: branchName,
-            }).catch(() => []);
-            return [branchName, shas] as const;
-          }),
-        )
-      : Object.entries(unpushedCommitShasByBranch);
-    startTransition(() => {
-      setBranches(branchList);
-      setMergeNodes(nodes);
-      setDirectCommits(directResult);
-      setUnpushedDirectCommits(unpushedDirectResult);
-      setUnpushedCommitShasByBranch(Object.fromEntries(unpushedShaEntries));
-      if (!options?.skipCheckedOutRef) {
-        setCheckedOutRef(confirmedCheckedOutRef);
-      }
-      setWorktrees(worktreeList);
-      setStashes(stashList);
-    });
-  }
 
   function beginRepoMutation() {
     repoMutationGenerationRef.current += 1;
@@ -2783,60 +2694,7 @@ function finalizeProjectSwitchSnapshot(path: string, snapshot: RepoVisualSnapsho
     setMapPresentationState(nextState);
   }
 
-  async function handleSwitchToWorktree(targetPath: string) {
-    const switchEpoch = beginMapSwitch();
-    let hasError = false;
-    setCommitSwitchFeedback(null);
-    setMapLoading(true);
-    isRepoSwitchingRef.current = true;
-    try {
-      const normalizedTarget = normalizePath(targetPath);
-      if (!normalizedTarget) throw new Error('Invalid worktree path');
-      const cachedSnapshot = projectSnapshots[normalizedTarget];
-      if (cachedSnapshot?.loaded) {
-        await loadNodePositionsForRepo(normalizedTarget);
-        const reconciledSnapshot = await resolveSnapshotForProjectSwitch(normalizedTarget);
-        applySnapshotToActiveState(normalizedTarget, reconciledSnapshot, {
-          force: true,
-          allowIncomingDirty: true,
-          allowProjectSwitch: true,
-          needsLayoutRebuild: true,
-        });
-        finalizeProjectSwitchSnapshot(normalizedTarget, reconciledSnapshot);
-        void fetchGitHubData(normalizedTarget);
-        setCommitSwitchFeedback({
-          kind: 'success',
-          message: `Now targeting worktree at ${targetPath}`,
-        });
-        return;
-      }
 
-      const [info, def] = await Promise.all([
-        invoke<{ name: string; path: string }>('get_repo_info', { repoPath: normalizedTarget }),
-        invoke<string>('get_default_branch', { repoPath: normalizedTarget }),
-      ]);
-      await loadNodePositionsForRepo(normalizedTarget);
-      setRepoName(info.name);
-      setDefaultBranch(def);
-      setRepoPath(normalizedTarget);
-      await refreshRepoGitState(normalizedTarget, def);
-      void fetchGitHubData(normalizedTarget);
-      setCommitSwitchFeedback({
-        kind: 'success',
-        message: `Now targeting worktree at ${targetPath}`,
-      });
-    } catch (e) {
-      hasError = true;
-      const message = e instanceof Error ? e.message : String(e);
-      setCommitSwitchFeedback({
-        kind: 'error',
-        message,
-      });
-      console.error('Failed to switch worktree:', message);
-    } finally {
-      finishMapSwitch(switchEpoch, hasError ? 'error' : 'ready');
-    }
-  }
 
   function applySnapshotToActiveState(
     path: string,
@@ -3836,12 +3694,15 @@ function finalizeProjectSwitchSnapshot(path: string, snapshot: RepoVisualSnapsho
     };
 
     const effectiveRepoPath = target.worktreePath;
-    const shouldSwitchAppToTarget = !pathsProbablyEqual(effectiveRepoPath, repoPath);
+    const isOtherWorktree = !pathsProbablyEqual(effectiveRepoPath, repoPath);
 
     const finishCheckoutMutation = async (outcomes: RepoMutationOutcome[]) => {
-      if (shouldSwitchAppToTarget) {
-        endRepoMutation();
-        await handleSwitchToWorktree(effectiveRepoPath);
+      if (isOtherWorktree) {
+        if (repoPath) {
+          await finalizeRepoMutation(repoPath, { kind: 'fullRefresh', layoutTopologyChanged: true });
+        } else {
+          endRepoMutation();
+        }
         return;
       }
       await finalizeRepoMutation(effectiveRepoPath, ...outcomes);

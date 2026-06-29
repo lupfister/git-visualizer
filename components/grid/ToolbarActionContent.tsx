@@ -65,17 +65,17 @@ const ICON_STROKE_WIDTH_BY_NAME: Partial<Record<ToolbarMaskIcon, string>> = {
 const normalizeSvgMarkup = (icon: ToolbarMaskIcon, svg: string) => {
   const strokeWidth = ICON_STROKE_WIDTH_BY_NAME[icon] ?? '1.25';
   return svg
-    .replaceAll(/stroke="black"/g, 'stroke="currentColor"')
-    .replaceAll(/fill="black"/g, 'fill="currentColor"')
-    .replaceAll(/stroke-width="1.5"/g, `stroke-width="${strokeWidth}"`)
-    .replaceAll(/stroke-width="1"/g, `stroke-width="${strokeWidth}"`)
-    .replaceAll(/(<path\b[^>]*\bstroke="currentColor"(?![^>]*\bstroke-width=)[^>]*)(\/?>)/g, `$1 stroke-width="${strokeWidth}"$2`)
-    .replaceAll(/(<line\b[^>]*\bstroke="currentColor"(?![^>]*\bstroke-width=)[^>]*)(\/?>)/g, `$1 stroke-width="${strokeWidth}"$2`)
-    .replaceAll(/(<polyline\b[^>]*\bstroke="currentColor"(?![^>]*\bstroke-width=)[^>]*)(\/?>)/g, `$1 stroke-width="${strokeWidth}"$2`)
-    .replaceAll(/(<polygon\b[^>]*\bstroke="currentColor"(?![^>]*\bstroke-width=)[^>]*)(\/?>)/g, `$1 stroke-width="${strokeWidth}"$2`)
-    .replaceAll(/(<rect\b[^>]*\bstroke="currentColor"(?![^>]*\bstroke-width=)[^>]*)(\/?>)/g, `$1 stroke-width="${strokeWidth}"$2`)
-    .replaceAll(/(<circle\b[^>]*\bstroke="currentColor"(?![^>]*\bstroke-width=)[^>]*)(\/?>)/g, `$1 stroke-width="${strokeWidth}"$2`)
-    .replaceAll(/(<ellipse\b[^>]*\bstroke="currentColor"(?![^>]*\bstroke-width=)[^>]*)(\/?>)/g, `$1 stroke-width="${strokeWidth}"$2`);
+    .replace(/stroke="black"/g, 'stroke="currentColor"')
+    .replace(/fill="black"/g, 'fill="currentColor"')
+    .replace(/stroke-width="1.5"/g, `stroke-width="${strokeWidth}"`)
+    .replace(/stroke-width="1"/g, `stroke-width="${strokeWidth}"`)
+    .replace(/(<path\b[^>]*\bstroke="currentColor"(?![^>]*\bstroke-width=)[^>]*)(\/?>)/g, `$1 stroke-width="${strokeWidth}"$2`)
+    .replace(/(<line\b[^>]*\bstroke="currentColor"(?![^>]*\bstroke-width=)[^>]*)(\/?>)/g, `$1 stroke-width="${strokeWidth}"$2`)
+    .replace(/(<polyline\b[^>]*\bstroke="currentColor"(?![^>]*\bstroke-width=)[^>]*)(\/?>)/g, `$1 stroke-width="${strokeWidth}"$2`)
+    .replace(/(<polygon\b[^>]*\bstroke="currentColor"(?![^>]*\bstroke-width=)[^>]*)(\/?>)/g, `$1 stroke-width="${strokeWidth}"$2`)
+    .replace(/(<rect\b[^>]*\bstroke="currentColor"(?![^>]*\bstroke-width=)[^>]*)(\/?>)/g, `$1 stroke-width="${strokeWidth}"$2`)
+    .replace(/(<circle\b[^>]*\bstroke="currentColor"(?![^>]*\bstroke-width=)[^>]*)(\/?>)/g, `$1 stroke-width="${strokeWidth}"$2`)
+    .replace(/(<ellipse\b[^>]*\bstroke="currentColor"(?![^>]*\bstroke-width=)[^>]*)(\/?>)/g, `$1 stroke-width="${strokeWidth}"$2`);
 };
 
 function ToolbarSvgIcon({ icon, className }: { icon: ToolbarMaskIcon; className?: string }) {

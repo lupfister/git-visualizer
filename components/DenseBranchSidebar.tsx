@@ -169,7 +169,7 @@ export default function DenseBranchSidebar({
   onCreateTerminal,
   onSelectTerminal,
   onTerminateTerminal,
-  onCreateWorktree,
+  onCreateWorktree: _onCreateWorktree,
   onShowContextMenu,
   onCloseContextMenu,
   projectLoading,
