@@ -29,7 +29,7 @@ const RIPPLE_PEAK_LUM_MIX = 0.52;
  * Total period of one burst sequence. Rings fire at the offsets below, then
  * there is silence until the next burst begins.
  */
-const RIPPLE_CYCLE_MS = 1200;
+const RIPPLE_CYCLE_MS = 2400;
 /** Launch times (ms into cycle) for each ring — gaps grow progressively. */
 const RIPPLE_RING_OFFSETS_MS = [0, 240, 560] as const;
 const MIN_VIEWPORT_PX = 64;
