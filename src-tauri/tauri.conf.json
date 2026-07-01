@@ -30,7 +30,7 @@
           "y": 25
         },
         "hiddenTitle": true,
-        "visible": true,
+        "visible": false,
         "alwaysOnTop": false,
         "skipTaskbar": false
       }

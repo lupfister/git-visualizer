@@ -12,6 +12,8 @@ pub fn run_terminal_host() -> Result<(), String> {
 }
 
 use tauri::{Emitter, Manager};
+#[cfg(not(any(target_os = "android", target_os = "ios")))]
+use tauri_plugin_window_state::{StateFlags, WindowExt};
 
 use chrono::{DateTime, Duration, Utc};
 use git::{Branch, CheckedOutRef, DirectCommit, MergeNode};
@@ -8995,7 +8997,10 @@ pub fn run() {
             {
                 app.set_activation_policy(tauri::ActivationPolicy::Regular);
                 if let Some(window) = app.get_webview_window("main") {
+                    #[cfg(not(any(target_os = "android", target_os = "ios")))]
+                    let _ = window.restore_state(StateFlags::all());
                     macos_traffic_lights::install(&window);
+                    let _ = window.show();
                 }
                 let shortcut = Shortcut::new(Some(Modifiers::ALT), Code::KeyM);
                 app.global_shortcut()
