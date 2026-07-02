@@ -8,7 +8,7 @@ importers:
 
   .:
     dependencies:
-      '@git-visualizer/tile-pattern-core':
+      '@cobble/tile-pattern-core':
         specifier: workspace:*
         version: link:packages/tile-pattern-core
       '@tauri-apps/api':
@@ -84,10 +84,10 @@ importers:
 
   apps/pattern-studio:
     dependencies:
-      '@git-visualizer/tile-pattern-core':
+      '@cobble/tile-pattern-core':
         specifier: workspace:*
         version: link:../../packages/tile-pattern-core
-      '@git-visualizer/tile-pattern-export':
+      '@cobble/tile-pattern-export':
         specifier: workspace:*
         version: link:../../packages/tile-pattern-export
       react:
@@ -130,7 +130,7 @@ importers:
 
   packages/tile-pattern-export:
     dependencies:
-      '@git-visualizer/tile-pattern-core':
+      '@cobble/tile-pattern-core':
         specifier: workspace:*
         version: link:../tile-pattern-core
     devDependencies:

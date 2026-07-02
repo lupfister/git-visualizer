@@ -569,7 +569,7 @@ fn visual_cache_db_path() -> Result<PathBuf, String> {
         .or_else(dirs::cache_dir)
         .ok_or_else(|| "Could not determine local data directory".to_string())?;
     Ok(base_dir
-        .join("git-visualizer")
+        .join("cobble")
         .join("repo-visual-cache.sqlite3"))
 }
 
@@ -577,7 +577,7 @@ fn preview_worktree_storage_root() -> Result<PathBuf, String> {
     let base_dir = dirs::data_local_dir()
         .or_else(dirs::cache_dir)
         .ok_or_else(|| "Could not determine local data directory".to_string())?;
-    Ok(base_dir.join("git-visualizer").join("preview-worktrees"))
+    Ok(base_dir.join("cobble").join("preview-worktrees"))
 }
 
 fn open_visual_cache_connection() -> Result<Connection, String> {
@@ -3382,7 +3382,7 @@ async fn save_terminal_attachment(
         let base = dirs::data_local_dir()
             .or_else(dirs::cache_dir)
             .ok_or_else(|| "Unable to resolve terminal attachment directory".to_string())?;
-        let directory = base.join("git-visualizer").join("terminal-attachments");
+        let directory = base.join("cobble").join("terminal-attachments");
         fs::create_dir_all(&directory)
             .map_err(|error| format!("Failed to create terminal attachment directory: {error}"))?;
         let extension = Path::new(&file_name)
@@ -5073,7 +5073,7 @@ async fn overhaul_create_branch(
         } else if target_node_id == "WORKING_TREE" || target_node_id.starts_with("WORKING_TREE:") {
             // From uncommitted changes
             if let Some(wt_path) = worktree_path {
-                let temp_stash_msg = format!("git-visualizer-temp-worktree-{}", branch_name);
+                let temp_stash_msg = format!("cobble-temp-worktree-{}", branch_name);
                 git::stash_push(repo, true, &temp_stash_msg).map_err(|e| e.to_string())?;
 
                 if let Err(e) = git::cli::run(repo, &["worktree", "add", "-b", &branch_name, &wt_path]) {

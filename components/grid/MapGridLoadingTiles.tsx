@@ -8,7 +8,7 @@ import {
   TILE_PATTERN_DEFAULT_DISPLAY_ZOOM,
   type TileCellSpec,
   type TileGridLayout,
-} from '@git-visualizer/tile-pattern-core';
+} from '@cobble/tile-pattern-core';
 import { useEffect, useLayoutEffect, useMemo, useRef, useState, type ReactNode } from 'react';
 import { CARD_HEIGHT, CARD_WIDTH } from './LayoutGrid';
 

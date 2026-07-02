@@ -10,8 +10,8 @@
     "typecheck": "tsc --noEmit"
   },
   "dependencies": {
-    "@git-visualizer/tile-pattern-core": "workspace:*",
-    "@git-visualizer/tile-pattern-export": "workspace:*",
+    "@cobble/tile-pattern-core": "workspace:*",
+    "@cobble/tile-pattern-export": "workspace:*",
     "react": "^19.0.0",
     "react-dom": "^19.0.0"
   },

@@ -1,4 +1,4 @@
-import type { TilePatternColorPresetId } from '@git-visualizer/tile-pattern-core';
+import type { TilePatternColorPresetId } from '@cobble/tile-pattern-core';
 
 export type StudioUrlState = {
   seed: string;

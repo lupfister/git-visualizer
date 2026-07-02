@@ -168,7 +168,7 @@ fn host_root() -> Result<PathBuf, String> {
     let base = dirs::data_local_dir()
         .or_else(dirs::cache_dir)
         .ok_or_else(|| "Unable to resolve terminal host data directory".to_string())?;
-    Ok(base.join("git-visualizer").join("terminal-host"))
+    Ok(base.join("cobble").join("terminal-host"))
 }
 
 fn socket_path() -> Result<PathBuf, String> {

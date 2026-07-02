@@ -47,7 +47,7 @@ import { getNodePositionOverride } from './nodePositionOverrides';
 import {
   TILE_DEFAULT_OMISSION_RATE,
   TILE_UNCOMMITTED_OMISSION_RATE,
-} from '@git-visualizer/tile-pattern-core';
+} from '@cobble/tile-pattern-core';
 import { CommitNodeTilePattern, type CommitNodeTilePatternHandle } from './CommitNodeTilePattern';
 
 const EMPTY_NODE_POSITION_OVERRIDES: NodePositionOverrides = {};
@@ -381,7 +381,7 @@ const MapGridCommitCard = memo(function MapGridCommitCard({
   const stashIndexMatch = /^STASH:(\d+)$/.exec(node.commit.id);
   const stashHeaderLabel = stashIndexMatch ? `Stash ${Number.parseInt(stashIndexMatch[1], 10) + 1}` : null;
   const stashBodyMessage = isStashedCommit
-    ? (node.commit.message.trim() && node.commit.message.trim() !== 'git-visualizer'
+    ? (node.commit.message.trim() && node.commit.message.trim() !== 'cobble'
         ? node.commit.message
         : 'Stashed changes')
     : node.commit.message;

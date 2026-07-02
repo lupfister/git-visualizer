@@ -262,7 +262,7 @@ fn ensure_preview_worktree(repo: &Path, preview_path: &Path, sha: &str) -> Resul
             "worktree",
             "lock",
             "--reason",
-            "git-visualizer managed preview",
+            "cobble managed preview",
             &preview_arg,
         ],
     )

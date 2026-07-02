@@ -1,5 +1,5 @@
 {
-  "name": "@git-visualizer/tile-pattern-core",
+  "name": "@cobble/tile-pattern-core",
   "version": "0.1.0",
   "private": true,
   "type": "module",

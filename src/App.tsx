@@ -103,8 +103,8 @@ import {
   terminalSessionMetadataEqual,
 } from '../lib/terminal';
 
-const PROJECTS_STORAGE_KEY = 'git-visualizer:projects';
-const ACTIVE_PROJECT_STORAGE_KEY = 'git-visualizer:active-project';
+const PROJECTS_STORAGE_KEY = 'cobble:projects';
+const ACTIVE_PROJECT_STORAGE_KEY = 'cobble:active-project';
 const MAX_PROJECTS = 12;
 type OpenRepoEventPayload = {
   path: string;
@@ -116,11 +116,11 @@ type GitActivityEventPayload = {
 };
 const COMMIT_SWITCH_FEEDBACK_VISIBLE_MS = 1400;
 const COMMIT_SWITCH_FEEDBACK_FADE_MS = 180;
-const SIDEBAR_WIDTH_STORAGE_KEY = 'git-visualizer:sidebar-width';
-const SIDEBAR_COLLAPSED_STORAGE_KEY = 'git-visualizer:sidebar-collapsed';
-const TERMINAL_PANEL_PLACEMENT_STORAGE_KEY = 'git-visualizer:terminal-panel-placement';
-const GRID_CLUMPS_STORAGE_KEY = 'git-visualizer:grid-clumps';
-const NODE_POSITIONS_STORAGE_KEY_PREFIX = 'git-visualizer:node-positions:v2:';
+const SIDEBAR_WIDTH_STORAGE_KEY = 'cobble:sidebar-width';
+const SIDEBAR_COLLAPSED_STORAGE_KEY = 'cobble:sidebar-collapsed';
+const TERMINAL_PANEL_PLACEMENT_STORAGE_KEY = 'cobble:terminal-panel-placement';
+const GRID_CLUMPS_STORAGE_KEY = 'cobble:grid-clumps';
+const NODE_POSITIONS_STORAGE_KEY_PREFIX = 'cobble:node-positions:v2:';
 const SIDEBAR_DEFAULT_WIDTH_PX = 360;
 const SIDEBAR_MIN_WIDTH_PX = 180;
 const SIDEBAR_MAX_WIDTH_PX = 360;
@@ -5907,7 +5907,7 @@ function finalizeProjectSwitchSnapshot(path: string, snapshot: RepoVisualSnapsho
     const repoHash = worktreeStableKey(projectPath);
     const repoFolderName = `${repoName}-${repoHash}`;
     const branchFolderName = folderName.replace(/[^a-zA-Z0-9._-]/g, '_');
-    const worktreePath = `${homeDir}/.git-visualizer/worktrees/${repoFolderName}/${branchFolderName}`;
+    const worktreePath = `${homeDir}/.cobble/worktrees/${repoFolderName}/${branchFolderName}`;
 
     const project = projectCards.find((p) => sameRepoPath(p.path, projectPath));
     const branch = project?.branches.find((b) => b.name === branchOrCommit);

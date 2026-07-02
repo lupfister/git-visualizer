@@ -1,5 +1,5 @@
 {
-  "name": "@git-visualizer/tile-pattern-export",
+  "name": "@cobble/tile-pattern-export",
   "version": "0.1.0",
   "private": true,
   "type": "module",
@@ -12,7 +12,7 @@
     "typecheck": "tsc --noEmit"
   },
   "dependencies": {
-    "@git-visualizer/tile-pattern-core": "workspace:*"
+    "@cobble/tile-pattern-core": "workspace:*"
   },
   "devDependencies": {
     "typescript": "^5"

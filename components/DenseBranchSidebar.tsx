@@ -7,8 +7,8 @@ import { accentCssVars, buildWorktreeSessions, workingTreeIdForPath } from '../l
 import { cn, normalizeRepoPathForCompare, worktreeDisplayName } from './grid/mapGridUtils';
 import { Tooltip } from './Tooltip';
 
-const EXPANDED_WORKTREES_KEY = 'git-visualizer:expanded-worktrees';
-const EXPANDED_PROJECTS_KEY = 'git-visualizer:expanded-projects';
+const EXPANDED_WORKTREES_KEY = 'cobble:expanded-worktrees';
+const EXPANDED_PROJECTS_KEY = 'cobble:expanded-projects';
 
 const projectExpansionKey = (path: string): string =>
   normalizeRepoPathForCompare(path).toLowerCase();

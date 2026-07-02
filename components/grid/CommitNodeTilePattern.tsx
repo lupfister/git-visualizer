@@ -11,7 +11,7 @@ import {
   type TileCellSpec,
   type TileGridLayout,
   type TileOmissionSampler,
-} from '@git-visualizer/tile-pattern-core';
+} from '@cobble/tile-pattern-core';
 import {
   forwardRef,
   memo,
@@ -651,4 +651,4 @@ export const CommitNodeTilePattern = memo(
   tilePatternPropsEqual,
 );
 
-export { COMMIT_CARD_WIDTH, COMMIT_CARD_HEIGHT } from '@git-visualizer/tile-pattern-core';
+export { COMMIT_CARD_WIDTH, COMMIT_CARD_HEIGHT } from '@cobble/tile-pattern-core';

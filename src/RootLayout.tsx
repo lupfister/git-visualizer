@@ -10,13 +10,13 @@ type RootLayoutProps = {
 
 /** Registers at least one DialKit panel; DialRoot renders nothing until a panel exists. */
 const DialKitBootstrap = () => {
-  useDialKit('Git Visualizer', {
+  useDialKit('Cobble', {
     preview: [1, 0, 1],
   });
   return null;
 };
 
-const VISIBILITY_KEY = 'git-visualizer.chrome-ui-hidden';
+const VISIBILITY_KEY = 'cobble.chrome-ui-hidden';
 
 const RootLayout = ({ children }: RootLayoutProps) => {
   const [uiHidden, setUiHidden] = useState(false);

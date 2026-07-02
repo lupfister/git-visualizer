@@ -318,6 +318,31 @@ dependencies = [
 ]
 
 [[package]]
+name = "cobble"
+version = "0.1.0"
+dependencies = [
+ "base64 0.22.1",
+ "chrono",
+ "core-graphics",
+ "dirs",
+ "notify",
+ "objc2",
+ "objc2-app-kit",
+ "portable-pty",
+ "rusqlite",
+ "serde",
+ "serde_json",
+ "tauri",
+ "tauri-build",
+ "tauri-plugin-dialog",
+ "tauri-plugin-global-shortcut",
+ "tauri-plugin-macos-fps",
+ "tauri-plugin-window-state",
+ "thiserror 2.0.18",
+ "ureq",
+]
+
+[[package]]
 name = "combine"
 version = "4.6.7"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1105,31 +1130,6 @@ dependencies = [
  "libc",
  "system-deps",
  "winapi",
-]
-
-[[package]]
-name = "git-visualizer"
-version = "0.1.0"
-dependencies = [
- "base64 0.22.1",
- "chrono",
- "core-graphics",
- "dirs",
- "notify",
- "objc2",
- "objc2-app-kit",
- "portable-pty",
- "rusqlite",
- "serde",
- "serde_json",
- "tauri",
- "tauri-build",
- "tauri-plugin-dialog",
- "tauri-plugin-global-shortcut",
- "tauri-plugin-macos-fps",
- "tauri-plugin-window-state",
- "thiserror 2.0.18",
- "ureq",
 ]
 
 [[package]]

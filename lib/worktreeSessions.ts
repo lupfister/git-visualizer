@@ -143,7 +143,7 @@ export const currentSessionWorkingTreeId = (sessions: WorktreeSession[]): string
   return current?.workingTreeId ?? LEGACY_WORKING_TREE_ID;
 };
 
-const LAST_WORKTREE_FOCUS_STORAGE_PREFIX = 'git-visualizer:last-worktree-focus:';
+const LAST_WORKTREE_FOCUS_STORAGE_PREFIX = 'cobble:last-worktree-focus:';
 
 export const lastWorktreeFocusStorageKey = (repoPath: string): string =>
   `${LAST_WORKTREE_FOCUS_STORAGE_PREFIX}${normalizeRepoPathForCompare(repoPath)}`;
@@ -246,7 +246,7 @@ export const accentCssVars = (token: WorktreeAccentToken): { fg: string; muted: 
 
 const isUsableWorktree = (worktree: WorktreeInfo): boolean => worktree.pathExists !== false;
 
-const WORKTREE_COLORS_STORAGE_KEY = 'git-visualizer:worktree-colors';
+const WORKTREE_COLORS_STORAGE_KEY = 'cobble:worktree-colors';
 
 const readPersistedWorktreeColors = (): Record<string, WorktreeSessionAccentToken> => {
   const storage = worktreeFocusStorage();

@@ -9,8 +9,8 @@ import { cn } from './grid/mapGridUtils';
 
 export type TerminalPanelPlacement = 'right' | 'bottom';
 
-const TERMINAL_PANEL_WIDTH_STORAGE_KEY = 'git-visualizer:terminal-panel-width';
-const TERMINAL_PANEL_HEIGHT_STORAGE_KEY = 'git-visualizer:terminal-panel-height';
+const TERMINAL_PANEL_WIDTH_STORAGE_KEY = 'cobble:terminal-panel-width';
+const TERMINAL_PANEL_HEIGHT_STORAGE_KEY = 'cobble:terminal-panel-height';
 const DEFAULT_TERMINAL_PANEL_WIDTH = 560;
 const DEFAULT_TERMINAL_PANEL_HEIGHT = 280;
 

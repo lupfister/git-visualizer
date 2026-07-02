@@ -1,8 +1,8 @@
-# git-visualizer — Project Rules
+# cobble — Project Rules
 
 ## Goal & vibe
 
-Git Visualizer is a **native desktop app** for exploring local git repos as a spatial branch map. The experience should feel calm, precise, and fast — refined minimalism with subtle depth, not a generic git GUI.
+Cobble is a **native desktop app** for exploring local git repos as a spatial branch map. The experience should feel calm, precise, and fast — refined minimalism with subtle depth, not a generic git GUI.
 
 Core ideas:
 - The **branch grid map** is the primary interface; sidebar and dialogs support it, not the other way around

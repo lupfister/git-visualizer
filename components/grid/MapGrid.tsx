@@ -172,7 +172,7 @@ function nodePositionOverridesEqual(left: NodePositionOverrides, right: NodePosi
   return true;
 }
 
-const NODE_POSITIONS_STORAGE_KEY_PREFIX = 'git-visualizer:node-positions:';
+const NODE_POSITIONS_STORAGE_KEY_PREFIX = 'cobble:node-positions:';
 const SEARCH_FOCUS_PAN_CLEAR_THRESHOLD_PX = 48;
 const EMPTY_SOLVED_POSITION_OVERRIDES: NodePositionOverrides = {};
 
@@ -324,12 +324,12 @@ export default function BranchGridMap({
   const [newBranchDialogOpen, setNewBranchDialogOpen] = useState(false);
   const [newBranchName, setNewBranchName] = useState('');
   const [createNewWorktree, setCreateNewWorktree] = useState<boolean>(() => {
-    const stored = localStorage.getItem('git-visualizer:new-branch-create-worktree');
+    const stored = localStorage.getItem('cobble:new-branch-create-worktree');
     return stored === null ? true : stored === 'true';
   });
   const handleCreateNewWorktreeChange = useCallback((value: boolean) => {
     setCreateNewWorktree(value);
-    localStorage.setItem('git-visualizer:new-branch-create-worktree', String(value));
+    localStorage.setItem('cobble:new-branch-create-worktree', String(value));
   }, []);
   const [newWorktreeName, setNewWorktreeName] = useState('');
   const [isWorktreeNameManuallyEdited, setIsWorktreeNameManuallyEdited] = useState(false);
@@ -2339,7 +2339,7 @@ export default function BranchGridMap({
       const repoHash = worktreeStableKey(currentRepoPath || '');
       const repoFolderName = `${repoName}-${repoHash}`;
       const branchFolderName = folderName.replace(/[^a-zA-Z0-9._-]/g, '_');
-      worktreePath = `${homeDir}/.git-visualizer/worktrees/${repoFolderName}/${branchFolderName}`;
+      worktreePath = `${homeDir}/.cobble/worktrees/${repoFolderName}/${branchFolderName}`;
     }
 
     if (newBranchCreateMode === 'new-root') {

@@ -695,7 +695,7 @@ mod branch_assignment_tests {
             .expect("system time before unix epoch")
             .as_nanos();
         let path = std::env::temp_dir().join(format!(
-            "git-visualizer-branch-assignment-{}-{suffix}",
+            "cobble-branch-assignment-{}-{suffix}",
             std::process::id()
         ));
         fs::create_dir_all(&path).expect("create temp repo");

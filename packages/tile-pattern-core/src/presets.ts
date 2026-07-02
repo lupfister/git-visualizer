@@ -60,7 +60,7 @@ export const TILE_PATTERN_ASPECT_PRESETS: AspectRatioPreset[] = [
   { id: '9:16', label: '9:16', width: 1080, height: 1920 },
 ];
 
-/** Map preset CSS var names to color presets (git-visualizer commit cards). */
+/** Map preset CSS var names to color presets (cobble commit cards). */
 export const COMMIT_TILE_CSS_VAR_PRESETS: Record<
   string,
   TilePatternColorPresetId

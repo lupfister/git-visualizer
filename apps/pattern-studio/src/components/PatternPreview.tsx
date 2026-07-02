@@ -1,4 +1,4 @@
-import type { TilePatternScene } from '@git-visualizer/tile-pattern-core';
+import type { TilePatternScene } from '@cobble/tile-pattern-core';
 
 type PatternPreviewProps = {
   scene: TilePatternScene;

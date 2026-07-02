@@ -4,7 +4,7 @@ import { computeBranchGridLayout } from '../components/grid/branchGridLayoutMode
 import { injectWorktreeUncommittedPreviews } from './injectWorktreeUncommitted';
 import { buildWorktreeSessions, isWorktreeLaneBranchName } from './worktreeSessions';
 
-/** Reproduces git-visualizer/test1 detached at 452ea41 while main is at tip. */
+/** Reproduces cobble/test1 detached at 452ea41 while main is at tip. */
 describe('detached worktree test1', () => {
   const headSha = '452ea418bde4f57d834b0ef5b2be8ef79389d24b';
   const tipSha = '2a5578755c1632b2d63650b0ddfa4851de37759f';
@@ -12,7 +12,7 @@ describe('detached worktree test1', () => {
 
   const worktrees: WorktreeInfo[] = [
     {
-      path: '/Users/luca/cursor/git-visualizer',
+      path: '/Users/luca/cursor/cobble',
       pathExists: true,
       headSha: tipSha,
       branchName: 'main',
@@ -22,7 +22,7 @@ describe('detached worktree test1', () => {
       hasUncommittedChanges: false,
     },
     {
-      path: '/Users/luca/cursor/git-visualizer/test1',
+      path: '/Users/luca/cursor/cobble/test1',
       pathExists: true,
       headSha,
       branchName: null,
@@ -69,7 +69,7 @@ describe('detached worktree test1', () => {
   }];
 
   it('injects detached worktree on a dedicated Worktree lane, not only on main', () => {
-    const sessions = buildWorktreeSessions(worktrees, '/Users/luca/cursor/git-visualizer');
+    const sessions = buildWorktreeSessions(worktrees, '/Users/luca/cursor/cobble');
     const test1Session = sessions.find((session) => session.path.endsWith('/test1'));
     expect(test1Session?.branchName).toBeNull();
 

@@ -3,7 +3,7 @@ import {
   MAX_EXPORT_EDGE_PX,
   TILE_PATTERN_ASPECT_PRESETS,
   type AspectRatioPresetId,
-} from '@git-visualizer/tile-pattern-core';
+} from '@cobble/tile-pattern-core';
 import { cn } from '../lib/cn';
 
 type SizeControlsProps = {

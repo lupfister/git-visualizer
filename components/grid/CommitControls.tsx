@@ -108,19 +108,19 @@ function CommitControls({
 
   // Recency states persisted to Local Storage
   const [commitAction, setCommitAction] = useState<'commit' | 'commit-push' | 'stash'>(() => {
-    const saved = localStorage.getItem('git-visualizer:last-commit-action');
+    const saved = localStorage.getItem('cobble:last-commit-action');
     if (saved === 'commit' || saved === 'commit-push' || saved === 'stash') return saved;
     return 'commit';
   });
 
   const [previewAction, setPreviewAction] = useState<'preview' | 'terminal'>(() => {
-    const saved = localStorage.getItem('git-visualizer:last-preview-action');
+    const saved = localStorage.getItem('cobble:last-preview-action');
     if (saved === 'preview' || saved === 'terminal') return saved;
     return 'preview';
   });
 
   const [checkoutAction, setCheckoutAction] = useState<'checkout' | 'new-worktree'>(() => {
-    const saved = localStorage.getItem('git-visualizer:last-checkout-action');
+    const saved = localStorage.getItem('cobble:last-checkout-action');
     if (saved === 'checkout' || saved === 'new-worktree') return saved;
     return 'checkout';
   });
@@ -293,7 +293,7 @@ function CommitControls({
                       type="button"
                       onClick={() => {
                         setCommitAction('commit');
-                        localStorage.setItem('git-visualizer:last-commit-action', 'commit');
+                        localStorage.setItem('cobble:last-commit-action', 'commit');
                         setActiveDropdown(null);
                         void runCommitAction('commit');
                       }}
@@ -305,7 +305,7 @@ function CommitControls({
                       type="button"
                       onClick={() => {
                         setCommitAction('commit-push');
-                        localStorage.setItem('git-visualizer:last-commit-action', 'commit-push');
+                        localStorage.setItem('cobble:last-commit-action', 'commit-push');
                         setActiveDropdown(null);
                         void runCommitAction('commit-push');
                       }}
@@ -317,7 +317,7 @@ function CommitControls({
                       type="button"
                       onClick={() => {
                         setCommitAction('stash');
-                        localStorage.setItem('git-visualizer:last-commit-action', 'stash');
+                        localStorage.setItem('cobble:last-commit-action', 'stash');
                         setActiveDropdown(null);
                         void runCommitAction('stash');
                       }}
@@ -387,7 +387,7 @@ function CommitControls({
                     type="button"
                     onClick={() => {
                       setPreviewAction('preview');
-                      localStorage.setItem('git-visualizer:last-preview-action', 'preview');
+                      localStorage.setItem('cobble:last-preview-action', 'preview');
                       setActiveDropdown(null);
                       void runPreviewAction('preview');
                     }}
@@ -399,7 +399,7 @@ function CommitControls({
                     type="button"
                     onClick={() => {
                       setPreviewAction('terminal');
-                      localStorage.setItem('git-visualizer:last-preview-action', 'terminal');
+                      localStorage.setItem('cobble:last-preview-action', 'terminal');
                       setActiveDropdown(null);
                       void runPreviewAction('terminal');
                     }}
@@ -441,7 +441,7 @@ function CommitControls({
                     type="button"
                     onClick={() => {
                       setCheckoutAction('checkout');
-                      localStorage.setItem('git-visualizer:last-checkout-action', 'checkout');
+                      localStorage.setItem('cobble:last-checkout-action', 'checkout');
                       setActiveDropdown(null);
                       void runCheckoutAction('checkout');
                     }}
@@ -453,7 +453,7 @@ function CommitControls({
                     type="button"
                     onClick={() => {
                       setCheckoutAction('new-worktree');
-                      localStorage.setItem('git-visualizer:last-checkout-action', 'new-worktree');
+                      localStorage.setItem('cobble:last-checkout-action', 'new-worktree');
                       setActiveDropdown(null);
                       void runCheckoutAction('new-worktree');
                     }}
@@ -548,7 +548,7 @@ function CommitControls({
                       type="button"
                       onClick={() => {
                         setCheckoutAction('checkout');
-                        localStorage.setItem('git-visualizer:last-checkout-action', 'checkout');
+                        localStorage.setItem('cobble:last-checkout-action', 'checkout');
                         setActiveDropdown(null);
                         void runCheckoutAction('checkout');
                       }}
@@ -560,7 +560,7 @@ function CommitControls({
                       type="button"
                       onClick={() => {
                         setCheckoutAction('new-worktree');
-                        localStorage.setItem('git-visualizer:last-checkout-action', 'new-worktree');
+                        localStorage.setItem('cobble:last-checkout-action', 'new-worktree');
                         setActiveDropdown(null);
                         void runCheckoutAction('new-worktree');
                       }}

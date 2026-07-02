@@ -38,7 +38,7 @@ describe('formatWorktreeNodeHeaderLabel', () => {
   it('labels the primary checkout with its branch name', () => {
     expect(
       formatWorktreeNodeHeaderLabel({
-        path: '/Users/luca/cursor/git-visualizer',
+        path: '/Users/luca/cursor/cobble',
         branchName: 'main',
         hasUncommittedChanges: false,
         isCurrent: true,

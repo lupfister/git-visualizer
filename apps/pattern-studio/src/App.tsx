@@ -5,12 +5,12 @@ import {
   TILE_PATTERN_MIN_DISPLAY_ZOOM,
   buildTilePatternScene,
   type TilePatternColorPresetId,
-} from '@git-visualizer/tile-pattern-core';
+} from '@cobble/tile-pattern-core';
 import {
   buildExportFilename,
   downloadPng,
   downloadSvg,
-} from '@git-visualizer/tile-pattern-export';
+} from '@cobble/tile-pattern-export';
 import { PatternPreview } from './components/PatternPreview';
 import { SizeControls } from './components/SizeControls';
 import { cn } from './lib/cn';

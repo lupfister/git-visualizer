@@ -81,7 +81,7 @@ pub fn list_stashes(repo: &Path) -> Result<Vec<GitStashEntry>, GitError> {
 pub fn stash_push(repo: &Path, include_untracked: bool, message: &str) -> Result<(), GitError> {
     let trimmed = message.trim();
     let stash_message = if trimmed.is_empty() {
-        "git-visualizer"
+        "cobble"
     } else {
         trimmed
     };

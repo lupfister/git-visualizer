@@ -1,5 +1,5 @@
 {
-  "name": "git-visualizer",
+  "name": "cobble",
   "version": "0.1.0",
   "private": true,
   "type": "module",
@@ -8,9 +8,9 @@
     "dev:studio": "pnpm --filter pattern-studio dev",
     "build": "tsc && vite build",
     "build:studio": "pnpm --filter pattern-studio build",
-    "build:packages": "pnpm --filter @git-visualizer/tile-pattern-core run typecheck && pnpm --filter @git-visualizer/tile-pattern-export run typecheck",
+    "build:packages": "pnpm --filter @cobble/tile-pattern-core run typecheck && pnpm --filter @cobble/tile-pattern-export run typecheck",
     "test": "vitest run",
-    "test:packages": "pnpm --filter @git-visualizer/tile-pattern-core test",
+    "test:packages": "pnpm --filter @cobble/tile-pattern-core test",
     "preview": "vite preview",
     "tauri": "node scripts/tauri-dev.mjs"
   },
@@ -20,7 +20,7 @@
     ]
   },
   "dependencies": {
-    "@git-visualizer/tile-pattern-core": "workspace:*",
+    "@cobble/tile-pattern-core": "workspace:*",
     "@tauri-apps/api": "^2",
     "@tauri-apps/plugin-dialog": "^2",
     "@xterm/addon-fit": "^0.11.0",

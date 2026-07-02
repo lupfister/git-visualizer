@@ -2,7 +2,7 @@ import type { ConnectorPathCacheInput } from './mapGridConnectorPathCache';
 import { connectorGeometryCacheKey } from './mapGridConnectorPathCache';
 
 export const CONNECTOR_PATH_PERSISTENCE_VERSION = 1;
-const DB_NAME = 'git-visualizer-map-grid';
+const DB_NAME = 'cobble-map-grid';
 const STORE_NAME = 'connector-path-cache';
 
 export type PersistedConnectorPathBlob = {

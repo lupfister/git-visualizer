@@ -28,7 +28,7 @@ type Params = {
 };
 
 export type MapGridCameraState = { panX: number; panY: number; zoom: number };
-const CAMERA_STORAGE_KEY_PREFIX = 'git-visualizer:map-grid-camera:';
+const CAMERA_STORAGE_KEY_PREFIX = 'cobble:map-grid-camera:';
 const CAMERA_MAX_ABS_PAN_PX = 200_000;
 
 export function mapGridCameraStorageKey(scopeKey: string): string {

@@ -1,6 +1,6 @@
 import type { WorktreeDraftEntry } from './worktreeDraftMessages';
 
-const STORAGE_PREFIX = 'git-visualizer:worktree-draft:';
+const STORAGE_PREFIX = 'cobble:worktree-draft:';
 const STORAGE_SCHEMA_VERSION = 1;
 
 export type PersistedWorktreeDraft = WorktreeDraftEntry & {

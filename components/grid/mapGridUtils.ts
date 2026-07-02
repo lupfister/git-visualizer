@@ -106,7 +106,7 @@ export function buildMapGridCommitOutlinePath(
 }
 
 /** Persisted flag for cubic “loose cable” connectors on the branch map (`localStorage`). */
-export const GRID_LOOSE_CABLE_STORAGE_KEY = 'git-visualizer-loose-cable-connectors';
+export const GRID_LOOSE_CABLE_STORAGE_KEY = 'cobble-loose-cable-connectors';
 const COMMIT_CULL_CELL_W = CARD_WIDTH + 48;
 
 export type ViewportContentBounds = { left: number; top: number; right: number; bottom: number };
