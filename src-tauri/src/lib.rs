@@ -568,9 +568,7 @@ fn visual_cache_db_path() -> Result<PathBuf, String> {
     let base_dir = dirs::data_local_dir()
         .or_else(dirs::cache_dir)
         .ok_or_else(|| "Could not determine local data directory".to_string())?;
-    Ok(base_dir
-        .join("cobble")
-        .join("repo-visual-cache.sqlite3"))
+    Ok(base_dir.join("cobble").join("repo-visual-cache.sqlite3"))
 }
 
 fn preview_worktree_storage_root() -> Result<PathBuf, String> {

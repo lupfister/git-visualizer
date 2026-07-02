@@ -81,7 +81,7 @@ pub fn list_worktrees(repo: &Path) -> Result<Vec<WorktreeInfo>, GitError> {
         if partial.path.is_empty() {
             continue;
         }
-        if is_cobble_preview_worktree(&partial.path) {
+        if is_managed_preview_worktree(&partial.path) {
             continue;
         }
         let Some(head_sha) = partial.head_sha.filter(|h| !h.is_empty()) else {
@@ -118,9 +118,9 @@ pub fn list_worktrees(repo: &Path) -> Result<Vec<WorktreeInfo>, GitError> {
     Ok(result)
 }
 
-fn is_cobble_preview_worktree(path: &str) -> bool {
+fn is_managed_preview_worktree(path: &str) -> bool {
     let normalized = path.replace('\\', "/");
-    let marker = "/cobble/preview-worktrees/";
+    let marker = "/preview-worktrees/";
     normalized.contains(marker)
         && (normalized.ends_with("/preview") || normalized.ends_with("/worktree"))
 }
@@ -166,7 +166,7 @@ pub fn remove_worktree(repo: &Path, worktree_path: &str, force: bool) -> Result<
 
 #[cfg(test)]
 mod tests {
-    use super::{is_cobble_preview_worktree, worktree_has_uncommitted_changes};
+    use super::{is_managed_preview_worktree, worktree_has_uncommitted_changes};
     use std::process::Command;
 
     #[test]
@@ -185,14 +185,15 @@ mod tests {
 
     #[test]
     fn detects_managed_preview_worktree_paths() {
-        assert!(is_cobble_preview_worktree(
+        assert!(is_managed_preview_worktree(
             "/Users/luca/Library/Application Support/cobble/preview-worktrees/abc123/preview"
         ));
-        assert!(is_cobble_preview_worktree(
+        assert!(is_managed_preview_worktree(
+            "/Users/luca/Library/Application Support/git-visualizer/preview-worktrees/abc123/preview"
+        ));
+        assert!(is_managed_preview_worktree(
             "/Users/luca/Library/Application Support/cobble/preview-worktrees/abc123/worktree"
         ));
-        assert!(!is_cobble_preview_worktree(
-            "/Users/luca/cursor/cobble"
-        ));
+        assert!(!is_managed_preview_worktree("/Users/luca/cursor/cobble"));
     }
 }

@@ -5,6 +5,7 @@ import CobblePlusIcon from './CobblePlusIcon';
 import { ToolbarSvgIcon } from './grid/ToolbarActionContent';
 import type { Branch, BranchCommitPreview, TerminalSession, WorktreeInfo } from '../types';
 import { accentCssVars, buildWorktreeSessions, workingTreeIdForPath } from '../lib/worktreeSessions';
+import { visibleWorktrees } from '../lib/worktreePaths';
 import { cn, normalizeRepoPathForCompare, worktreeDisplayName } from './grid/mapGridUtils';
 import { Tooltip } from './Tooltip';
 
@@ -446,9 +447,10 @@ export default function DenseBranchSidebar({
 
   const sortWorktreesForProject = useCallback((project: SidebarProject): WorktreeInfo[] => {
     const order = project.worktreeOrder;
-    if (!order || order.length === 0) return project.worktrees;
+    const displayWorktrees = visibleWorktrees(project.worktrees);
+    if (!order || order.length === 0) return displayWorktrees;
     const orderMap = new Map(order.map((path, idx) => [normalizeRepoPathForCompare(path).toLowerCase(), idx]));
-    return [...project.worktrees].sort((left, right) => {
+    return [...displayWorktrees].sort((left, right) => {
       const leftKey = normalizeRepoPathForCompare(left.path).toLowerCase();
       const rightKey = normalizeRepoPathForCompare(right.path).toLowerCase();
       const leftIdx = orderMap.has(leftKey) ? orderMap.get(leftKey)! : Infinity;

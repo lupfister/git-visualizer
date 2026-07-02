@@ -31,6 +31,7 @@ import {
   snapshotContainsCommitSha,
   type MergeCheckedOutRefOptions,
 } from './reconcileCheckedOutHead';
+import { visibleWorktrees } from '../lib/worktreePaths';
 import {
   applyMutationPatch,
   outcomeFromCheckout,
@@ -210,9 +211,10 @@ function sameRepoPath(left: string | null | undefined, right: string | null | un
 }
 
 function sortWorktrees(worktrees: WorktreeInfo[], order?: string[]): WorktreeInfo[] {
-  if (!order || order.length === 0) return worktrees;
+  const displayWorktrees = visibleWorktrees(worktrees);
+  if (!order || order.length === 0) return displayWorktrees;
   const orderMap = new Map(order.map((path, idx) => [normalizePath(path).toLowerCase(), idx]));
-  return [...worktrees].sort((left, right) => {
+  return [...displayWorktrees].sort((left, right) => {
     const leftPath = normalizePath(left.path).toLowerCase();
     const rightPath = normalizePath(right.path).toLowerCase();
     const leftIdx = orderMap.has(leftPath) ? orderMap.get(leftPath)! : Infinity;
@@ -367,15 +369,17 @@ function App() {
   const [mapPresentationState, setMapPresentationState] = useState<MapPresentationState>('loading');
   const [pendingInitialProjectPath, setPendingInitialProjectPath] = useState<string | null>(null);
   const [isEmptyAddProjectHovered, setIsEmptyAddProjectHovered] = useState(false);
+  const [projectsHydrated, setProjectsHydrated] = useState(false);
 
   // Lock window resizing while in the empty-project state.
   useEffect(() => {
+    if (!projectsHydrated) return;
     if (projects.length > 0) return;
     void invoke('set_window_resizable', { resizable: false });
     return () => {
       void invoke('set_window_resizable', { resizable: true });
     };
-  }, [projects.length]);
+  }, [projects.length, projectsHydrated]);
 
   const [error, setError] = useState<string | null>(null);
   const [previewSetupOpen, setPreviewSetupOpen] = useState(false);
@@ -586,6 +590,7 @@ function App() {
   const hasAttemptedAutoRestoreRef = useRef(false);
   const loadRepoInFlightPathRef = useRef<string | null>(null);
   const suppressNextProjectWindowResizeRef = useRef(false);
+  const hasPreparedInitialWindowRef = useRef(false);
   /** Cancels stale in-flight `get_repo_node_positions` results when a newer load starts. */
   const loadNodePositionsSeqRef = useRef(0);
   const loadingProjectSnapshotsRef = useRef<Set<string>>(new Set());
@@ -611,7 +616,6 @@ function App() {
   const [hydratedLayoutKey, setHydratedLayoutKey] = useState<string | null>(null);
   /** Bumped when the working tree becomes clean so layout cache keys and MapGrid fully refresh. */
   const [layoutEpoch, setLayoutEpoch] = useState(0);
-  const [projectsHydrated, setProjectsHydrated] = useState(false);
   const activeRepoScopedKey = repoPath ?? '__no-repo__';
   const activeProject = useMemo(() => {
     return repoPath ? projects.find((project) => sameRepoPath(project.path, repoPath)) ?? null : null;
@@ -620,9 +624,10 @@ function App() {
     return sortWorktrees(worktrees, activeProject?.worktreeOrder);
   }, [worktrees, activeProject?.worktreeOrder]);
 
-  const resizeProjectWindow = useCallback(async (hasProjects: boolean) => {
+  const resizeProjectWindow = useCallback(async (hasProjects: boolean, options: { reveal?: boolean } = {}) => {
     const nextMinSize = hasProjects ? ACTIVE_PROJECT_MIN_SIZE : EMPTY_PROJECT_MIN_SIZE;
     const windowRef = getCurrentWindow();
+    const isInitialPreparation = !hasPreparedInitialWindowRef.current;
     const fadeWindowOpacity = async (from: number, to: number) => {
       for (let step = 0; step <= WINDOW_OPACITY_FADE_STEPS; step += 1) {
         const progress = easeInOutSine(step / WINDOW_OPACITY_FADE_STEPS);
@@ -663,7 +668,9 @@ function App() {
       });
 
       if (!hasProjects) {
-        await fadeWindowOpacity(1, 0);
+        if (!isInitialPreparation) {
+          await fadeWindowOpacity(1, 0);
+        }
         await windowRef.setMinSize(new LogicalSize(nextMinSize.width, nextMinSize.height));
         const nextFrame = frameForSize(nextMinSize);
         await Promise.all([
@@ -671,7 +678,15 @@ function App() {
           windowRef.setSize(new LogicalSize(nextFrame.width, nextFrame.height)),
         ]);
         await new Promise<void>((resolve) => window.requestAnimationFrame(() => resolve()));
-        await fadeWindowOpacity(0, 1);
+        if (options.reveal) {
+          await windowRef.show();
+        }
+        hasPreparedInitialWindowRef.current = true;
+        if (!isInitialPreparation) {
+          await fadeWindowOpacity(0, 1);
+        } else {
+          await setWindowOpacity(1);
+        }
         return;
       }
 
@@ -686,12 +701,28 @@ function App() {
         ]);
         await windowRef.setMinSize(new LogicalSize(nextMinSize.width, nextMinSize.height));
         await new Promise<void>((resolve) => window.requestAnimationFrame(() => resolve()));
-        await fadeWindowOpacity(0, 1);
+        if (options.reveal) {
+          await windowRef.show();
+        }
+        hasPreparedInitialWindowRef.current = true;
+        if (!isInitialPreparation) {
+          await fadeWindowOpacity(0, 1);
+        } else {
+          await setWindowOpacity(1);
+        }
         return;
       }
       await windowRef.setMinSize(new LogicalSize(nextMinSize.width, nextMinSize.height));
+      if (options.reveal) {
+        await windowRef.show();
+      }
+      hasPreparedInitialWindowRef.current = true;
       await setWindowOpacity(1);
     } catch (error) {
+      if (options.reveal) {
+        await windowRef.show().catch(() => undefined);
+      }
+      hasPreparedInitialWindowRef.current = true;
       await setWindowOpacity(1);
       console.warn('Failed to update window minimum size:', error);
     }
@@ -703,7 +734,7 @@ function App() {
       suppressNextProjectWindowResizeRef.current = false;
       return;
     }
-    void resizeProjectWindow(projects.length > 0);
+    void resizeProjectWindow(projects.length > 0, { reveal: !hasPreparedInitialWindowRef.current });
   }, [projects.length, projectsHydrated, resizeProjectWindow]);
 
   useEffect(() => {
@@ -6121,7 +6152,11 @@ function finalizeProjectSwitchSnapshot(path: string, snapshot: RepoVisualSnapsho
     }
   }, [repoPath, worktrees, projectSnapshots, defaultBranch, refreshProjectSnapshotFromGit]);
 
-  if (projectsHydrated && projects.length === 0) {
+  if (!projectsHydrated) {
+    return <div className="h-screen min-h-0 overflow-hidden bg-background text-foreground" />;
+  }
+
+  if (projects.length === 0) {
     return (
       <div
         className="window-drag-region relative h-screen min-h-0 overflow-hidden bg-background text-foreground"
