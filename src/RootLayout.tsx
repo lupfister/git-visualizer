@@ -19,10 +19,10 @@ const DialKitBootstrap = () => {
 const VISIBILITY_KEY = 'cobble.chrome-ui-hidden';
 
 const RootLayout = ({ children }: RootLayoutProps) => {
-  const [uiHidden, setUiHidden] = useState(false);
+  const [uiHidden, setUiHidden] = useState(() => window.localStorage.getItem(VISIBILITY_KEY) !== 'false');
 
   useEffect(() => {
-    setUiHidden(window.localStorage.getItem(VISIBILITY_KEY) === 'true');
+    setUiHidden(window.localStorage.getItem(VISIBILITY_KEY) !== 'false');
   }, []);
 
   useEffect(() => {

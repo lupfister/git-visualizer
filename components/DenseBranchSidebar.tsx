@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import type { CSSProperties, PointerEvent as ReactPointerEvent } from 'react';
 import { ChevronRight, Plus, Trash2 } from 'lucide-react';
+import CobblePlusIcon from './CobblePlusIcon';
 import { ToolbarSvgIcon } from './grid/ToolbarActionContent';
 import type { Branch, BranchCommitPreview, TerminalSession, WorktreeInfo } from '../types';
 import { accentCssVars, buildWorktreeSessions, workingTreeIdForPath } from '../lib/worktreeSessions';
@@ -1086,7 +1087,7 @@ export default function DenseBranchSidebar({
             className="group flex h-7 w-full items-center rounded-lg text-sm text-foreground transition-colors hover:bg-muted disabled:opacity-50"
           >
             <span className="inline-flex h-7 w-7 shrink-0 items-center justify-center">
-              <Plus strokeWidth={1.5} className="h-4 w-4 shrink-0" />
+              <CobblePlusIcon />
             </span>
             <span>Add project</span>
           </button>

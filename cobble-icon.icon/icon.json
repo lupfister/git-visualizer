@@ -20,7 +20,22 @@
       "layers" : [
         {
           "fill" : {
-            "solid" : "display-p3:0.54450,0.55000,0.54450,1.00000"
+            "solid" : "display-p3:0.19800,0.20000,0.19800,1.00000"
+          },
+          "image-name" : "Cobble-logo.svg",
+          "name" : "Cobble-logo",
+          "opacity" : 0.2,
+          "position" : {
+            "scale" : 12,
+            "translation-in-points" : [
+              0,
+              0
+            ]
+          }
+        },
+        {
+          "fill" : {
+            "solid" : "display-p3:0.69300,0.70000,0.69300,1.00000"
           },
           "glass" : true,
           "image-name" : "node1.svg",
@@ -30,13 +45,13 @@
             "scale" : 20,
             "translation-in-points" : [
               0.0009999999999763531,
-              -440.0576866225565
+              -430.0576866225565
             ]
           }
         },
         {
           "fill" : {
-            "solid" : "display-p3:0.54450,0.55000,0.54450,1.00000"
+            "solid" : "display-p3:0.69300,0.70000,0.69300,1.00000"
           },
           "glass" : true,
           "image-name" : "node1.svg",
@@ -45,22 +60,7 @@
           "position" : {
             "scale" : 20,
             "translation-in-points" : [
-              544.620407387418,
-              0
-            ]
-          }
-        },
-        {
-          "fill" : {
-            "solid" : "display-p3:0.39600,0.40000,0.39600,1.00000"
-          },
-          "image-name" : "Cobble-logo.svg",
-          "name" : "Cobble-logo",
-          "opacity" : 0.2,
-          "position" : {
-            "scale" : 12,
-            "translation-in-points" : [
-              0,
+              538.620407387418,
               0
             ]
           }

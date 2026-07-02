@@ -5,10 +5,11 @@ import { invoke } from './timedInvoke';
 import { listen } from '@tauri-apps/api/event';
 import { getCurrentWindow, LogicalPosition, LogicalSize } from '@tauri-apps/api/window';
 import { open } from '@tauri-apps/plugin-dialog';
-import { PanelLeftClose, PanelLeftOpen, Plus } from 'lucide-react';
+import { PanelLeftClose, PanelLeftOpen } from 'lucide-react';
 import BranchGridMapView from '../components/grid/MapViewGrid';
 import MapGridLoadingTiles from '../components/grid/MapGridLoadingTiles';
 import TerminalPanel, { type TerminalPanelPlacement } from '../components/TerminalPanel';
+import CobblePlusIcon from '../components/CobblePlusIcon';
 import { mapGridCameraStorageKey, readHasSavedMapGridCamera } from '../components/grid/useMapGridCamera';
 import DenseBranchSidebar from '../components/DenseBranchSidebar';
 import type { Node, NodePositionOverrides } from '../components/grid/LayoutGrid';
@@ -6182,7 +6183,7 @@ function finalizeProjectSwitchSnapshot(path: string, snapshot: RepoVisualSnapsho
           <div className="pointer-events-none absolute inset-0 z-10 flex items-center justify-center">
             <div className="flex h-7 items-center rounded-lg pr-3 text-sm text-foreground">
               <span className="inline-flex h-7 w-7 shrink-0 items-center justify-center">
-                <Plus strokeWidth={1} className="h-4 w-4 shrink-0" />
+                <CobblePlusIcon />
               </span>
               <span>Add project</span>
             </div>
