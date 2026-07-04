@@ -4856,8 +4856,14 @@ async fn stash_push(
 ) -> Result<StashPushResult, String> {
     run_blocking(move || {
         let path = Path::new(&repo_path);
-        opencode::validate_generated_message(&message, "Stash message")?;
-        git::stash_push(path, include_untracked, &message).map_err(|e| e.to_string())?;
+        let stash_message = message.trim();
+        let stash_message = if stash_message.is_empty() {
+            "cobble"
+        } else {
+            stash_message
+        };
+        opencode::validate_generated_message(stash_message, "Stash message")?;
+        git::stash_push(path, include_untracked, stash_message).map_err(|e| e.to_string())?;
         let stashes = git::list_stashes(path).map_err(|e| e.to_string())?;
         let stash = stashes
             .into_iter()

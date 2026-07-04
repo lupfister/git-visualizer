@@ -1,3 +1,4 @@
+use std::env;
 use std::io::Read;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
@@ -122,28 +123,60 @@ pub fn redact_terminal_secrets(text: &str) -> String {
 }
 
 fn resolve_opencode_binary() -> Result<PathBuf, String> {
+    if let Ok(path) = env::var("OPENCODE")
+        .or_else(|_| env::var("OPENCODE_BIN"))
+        .map(PathBuf::from)
+    {
+        if path.is_file() {
+            return Ok(path);
+        }
+    }
+
     let probe = if cfg!(windows) {
         Command::new("where").arg("opencode").output()
     } else {
         Command::new("which").arg("opencode").output()
     };
 
-    match probe {
-        Ok(output) if output.status.success() => {
+    if let Ok(output) = probe {
+        if output.status.success() {
             let path = String::from_utf8_lossy(&output.stdout)
                 .lines()
                 .next()
                 .unwrap_or("")
                 .trim()
                 .to_string();
-            if path.is_empty() {
-                Err(opencode_missing_message())
-            } else {
-                Ok(PathBuf::from(path))
+            if !path.is_empty() {
+                return Ok(PathBuf::from(path));
             }
         }
-        _ => Err(opencode_missing_message()),
     }
+
+    for path in opencode_binary_candidates() {
+        if path.is_file() {
+            return Ok(path);
+        }
+    }
+
+    Err(opencode_missing_message())
+}
+
+fn opencode_binary_candidates() -> Vec<PathBuf> {
+    let mut paths = vec![
+        PathBuf::from("/opt/homebrew/bin/opencode"),
+        PathBuf::from("/usr/local/bin/opencode"),
+        PathBuf::from("/usr/bin/opencode"),
+    ];
+    if let Some(home) = env::var_os("HOME") {
+        let home = PathBuf::from(home);
+        paths.extend([
+            home.join(".npm-global/bin/opencode"),
+            home.join(".local/bin/opencode"),
+            home.join(".bun/bin/opencode"),
+            home.join("Library/pnpm/opencode"),
+        ]);
+    }
+    paths
 }
 
 fn opencode_missing_message() -> String {
