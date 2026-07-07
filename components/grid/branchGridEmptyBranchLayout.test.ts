@@ -22,6 +22,73 @@ const makeBranch = (name: string, headSha: string, commitsAhead: number, parentB
 });
 
 describe('computeBranchGridLayout empty branch placeholders', () => {
+  it('does not render inherited stale previews on a newer branch', () => {
+    const mainSha = 'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa';
+    const branchASha = 'bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb';
+    const directCommits: DirectCommit[] = [
+      {
+        fullSha: mainSha,
+        sha: mainSha.slice(0, 7),
+        parentSha: null,
+        parentShas: [],
+        childShas: [branchASha],
+        clusterKey: null,
+        branch: 'main',
+        message: 'Base',
+        author: 'Test',
+        date: '2024-01-01T00:00:00Z',
+      },
+      {
+        fullSha: branchASha,
+        sha: branchASha.slice(0, 7),
+        parentSha: mainSha,
+        parentShas: [mainSha],
+        childShas: [],
+        clusterKey: null,
+        branch: 'branch-a',
+        message: 'Branch A work',
+        author: 'Test',
+        date: '2024-01-02T00:00:00Z',
+      },
+    ];
+    const branches: Branch[] = [
+      makeBranch('branch-a', branchASha, 1, 'main'),
+      makeBranch('branch-b', branchASha, 0, 'branch-a'),
+    ];
+    branches[0]!.divergedFromSha = mainSha;
+    branches[1]!.divergedFromSha = branchASha;
+
+    const layout = computeBranchGridLayout({
+      branches,
+      mergeNodes: [],
+      directCommits,
+      unpushedDirectCommits: [],
+      defaultBranch: 'main',
+      branchCommitPreviews: {
+        main: [],
+        'branch-a': [{
+          ...directCommits[1]!,
+          kind: 'commit',
+        }],
+        'branch-b': [{
+          ...directCommits[1]!,
+          kind: 'commit',
+        }],
+      },
+      branchParentByName: { 'branch-a': 'main', 'branch-b': 'branch-a' },
+      branchUniqueAheadCounts: { main: 1, 'branch-a': 1, 'branch-b': 0 },
+      manuallyOpenedClumps: new Set(),
+      manuallyClosedClumps: new Set(),
+      isDebugOpen: false,
+      gridSearchQuery: '',
+      gridFocusSha: null,
+      checkedOutRef: null,
+    });
+
+    expect(layout.renderNodes.some((node) => node.commit.visualId === `branch-a:${branchASha}`)).toBe(true);
+    expect(layout.renderNodes.some((node) => node.commit.visualId === `branch-b:${branchASha}`)).toBe(false);
+  });
+
   it('ignores stale branch previews when branch has no unique commits', () => {
     const defaultBranch = 'main';
     const branches = [

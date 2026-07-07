@@ -1,11 +1,11 @@
-/** Cheap rolling hash over commit SHAs — O(n), no sort. */
-export const hashCommitShaList = (commits: ReadonlyArray<{ fullSha: string }>): string => {
+/** Cheap rolling hash over commit identity and ownership — O(n), no sort. */
+export const hashCommitShaList = (commits: ReadonlyArray<{ fullSha: string; branch?: string }>): string => {
   if (commits.length === 0) return '0:0';
   let hash = commits.length;
   for (const commit of commits) {
-    const sha = commit.fullSha;
-    for (let index = 0; index < sha.length; index += 1) {
-      hash = (Math.imul(hash, 31) + sha.charCodeAt(index)) | 0;
+    const key = `${commit.branch ?? ''}:${commit.fullSha}`;
+    for (let index = 0; index < key.length; index += 1) {
+      hash = (Math.imul(hash, 31) + key.charCodeAt(index)) | 0;
     }
   }
   return `${commits.length}:${hash >>> 0}`;

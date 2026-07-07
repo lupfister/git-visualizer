@@ -417,7 +417,8 @@ function laneCommitsForBranch(
 ): CommitItem[] {
   const branchPreviews = renderableBranchPreviews(branch.name, branchUniqueAheadCounts, branchCommitPreviews);
   let commits = sortByDateThenSha(branchPreviews.map((commit) => toCommit(branch.name, commit)));
-  if (commits.length === 0) {
+  const hasExplicitUniqueCount = Object.prototype.hasOwnProperty.call(branchUniqueAheadCounts, branch.name);
+  if (commits.length === 0 && !hasExplicitUniqueCount) {
     commits = sortByDateThenSha(
       sortedConcreteBranchPreviews(branch.name, branchCommitPreviews).map((commit) => toCommit(branch.name, commit)),
     );
@@ -430,6 +431,31 @@ function laneCommitsForBranch(
     );
   }
   return commits;
+}
+
+function exclusiveBranchCommitPreviews(
+  branchCommitPreviews: Record<string, BranchCommitPreview[]>,
+  directCommits: DirectCommit[],
+): Record<string, BranchCommitPreview[]> {
+  const ownerBySha = new Map<string, string>();
+  for (const commit of directCommits) {
+    ownerBySha.set(commit.fullSha, commit.branch);
+    ownerBySha.set(commit.sha, commit.branch);
+  }
+  if (ownerBySha.size === 0) return branchCommitPreviews;
+
+  let changed = false;
+  const next: Record<string, BranchCommitPreview[]> = {};
+  for (const [branchName, previews] of Object.entries(branchCommitPreviews)) {
+    const filtered = previews.filter((preview) => {
+      if (preview.kind && preview.kind !== 'commit') return true;
+      const owner = ownerBySha.get(preview.fullSha) ?? ownerBySha.get(preview.sha) ?? null;
+      return owner == null || owner === branchName;
+    });
+    if (filtered.length !== previews.length) changed = true;
+    next[branchName] = filtered;
+  }
+  return changed ? next : branchCommitPreviews;
 }
 
 function buildEmptyBranchLaneCommit(
@@ -567,7 +593,7 @@ export function computeBaseLayout(input: BranchGridLayoutInput): BaseLayoutModel
     unpushedDirectCommits,
     unpushedCommitShasByBranch: _unpushedCommitShasByBranch = {},
     defaultBranch,
-    branchCommitPreviews,
+    branchCommitPreviews: rawBranchCommitPreviews,
     branchParentByName = {},
     branchUniqueAheadCounts,
     isDebugOpen,
@@ -577,6 +603,7 @@ export function computeBaseLayout(input: BranchGridLayoutInput): BaseLayoutModel
     nodePositionOverrides = {},
   } = input;
   const isHorizontal = orientation === 'horizontal';
+  const branchCommitPreviews = exclusiveBranchCommitPreviews(rawBranchCommitPreviews, directCommits);
 
   const branchByName = new Map(branches.map((branch) => [branch.name, branch]));
 

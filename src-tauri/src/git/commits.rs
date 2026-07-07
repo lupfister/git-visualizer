@@ -322,7 +322,7 @@ pub fn get_all_repo_commits(
                 continue;
             }
             let key = (b_head.clone(), a_name.clone());
-            if let Some(&dist) = first_parent_distance_by_commit_sha_and_branch.get(&key) {
+            if first_parent_distance_by_commit_sha_and_branch.contains_key(&key) {
                 let is_a_older = match (
                     branch_created_dates.get(a_name),
                     branch_created_dates.get(b_name),
@@ -332,7 +332,7 @@ pub fn get_all_repo_commits(
                     }
                     _ => a_index < b_index,
                 };
-                if dist > 0 || (dist == 0 && is_a_older) {
+                if is_a_older {
                     disabled_branches.insert(b_name.clone());
                     break;
                 }
@@ -398,16 +398,23 @@ pub fn get_all_repo_commits(
 
     // Enforce branch ownership boundaries: a branch can only own commits that are
     // descendants of (or equal to) that branch's child/root commit on its first-parent line.
-    let branch_by_commit_sha: HashMap<String, String> = commits
-        .iter()
-        .map(|commit| (commit.full_sha.clone(), commit.branch.clone()))
-        .collect();
     let first_parent_by_sha: HashMap<String, String> = commit_parent_shas_by_sha
         .iter()
         .filter_map(|(sha, parents)| parents.first().map(|parent| (sha.clone(), parent.clone())))
         .collect();
+    let is_branch_older = |a_name: &str, a_index: usize, b_name: &str, b_index: usize| -> bool {
+        match (
+            branch_created_dates.get(a_name),
+            branch_created_dates.get(b_name),
+        ) {
+            (Some(a_date), Some(b_date)) => {
+                a_date < b_date || (a_date == b_date && a_name < b_name)
+            }
+            _ => a_index < b_index,
+        }
+    };
     let mut child_sha_by_branch = HashMap::<String, String>::new();
-    for branch_name in &branch_order {
+    for (branch_index, branch_name) in branch_order.iter().enumerate() {
         if branch_name == default_branch {
             continue;
         }
@@ -420,13 +427,20 @@ pub fn get_all_repo_commits(
                 child_sha_by_branch.insert(branch_name.clone(), cursor.clone());
                 break;
             };
-            let parent_branch = branch_by_commit_sha.get(&parent_sha);
-            if parent_branch == Some(branch_name) {
-                cursor = parent_sha;
-                continue;
+            let parent_reached_by_older_branch = branch_order
+                .iter()
+                .enumerate()
+                .any(|(other_index, other_name)| {
+                    other_name != branch_name
+                        && is_branch_older(other_name, other_index, branch_name, branch_index)
+                        && first_parent_distance_by_commit_sha_and_branch
+                            .contains_key(&(parent_sha.clone(), other_name.clone()))
+                });
+            if parent_reached_by_older_branch {
+                child_sha_by_branch.insert(branch_name.clone(), cursor.clone());
+                break;
             }
-            child_sha_by_branch.insert(branch_name.clone(), cursor.clone());
-            break;
+            cursor = parent_sha;
         }
     }
     let mut descendant_cache = HashMap::<(String, String), bool>::new();
@@ -486,7 +500,16 @@ pub fn get_all_repo_commits(
             distance_by_commit_sha_and_branch
                 .contains_key(&(commit.full_sha.clone(), commit.branch.clone()))
         };
-        if current_branch_reachable && commit.branch != default_branch {
+        if current_branch_reachable
+            && commit.branch != default_branch
+            && !disabled_branches.contains(&commit.branch)
+            && branch_accepts_commit(
+                &commit.branch,
+                &commit.full_sha,
+                &child_sha_by_branch,
+                &mut is_descendant_or_equal,
+            )
+        {
             continue;
         }
         if branch_accepts_commit(
@@ -499,6 +522,9 @@ pub fn get_all_repo_commits(
         }
         let mut best_match: Option<(String, usize, usize, bool)> = None;
         for (branch_index, branch_name) in branch_order.iter().enumerate() {
+            if disabled_branches.contains(branch_name) {
+                continue;
+            }
             if !branch_accepts_commit(
                 branch_name,
                 &commit.full_sha,
@@ -581,8 +607,9 @@ fn assign_commit_branch(
         return default_branch.to_string();
     }
 
-    // Prefer first-parent ownership to avoid second-parent merge edges
-    // pulling feature commits onto unrelated branches (especially default/main).
+    // Prefer the oldest first-parent owner. Descendant branches can reach parent
+    // commits, but those commits still belong to the branch where they first
+    // appeared; child branches only own commits their parents cannot reach.
     let mut first_parent_best_match: Option<(&str, usize, usize)> = None;
     for (branch_index, branch_name) in branch_order.iter().enumerate() {
         if disabled_branches.contains(branch_name) {
@@ -608,7 +635,7 @@ fn assign_commit_branch(
                     }
                     _ => branch_index < best_index,
                 };
-                if distance < best_distance || (distance == best_distance && is_candidate_older) {
+                if is_candidate_older || (!is_candidate_older && distance < best_distance) {
                     first_parent_best_match = Some((branch_name.as_str(), distance, branch_index));
                 }
             }
@@ -802,6 +829,80 @@ mod branch_assignment_tests {
             .find(|commit| commit.full_sha == nested_sha)
             .expect("nested commit is reachable");
         assert_eq!(nested_commit.branch, "main");
+    }
+
+    #[test]
+    fn new_branch_from_existing_branch_does_not_own_parent_commits() {
+        let repo = new_repo();
+        commit_file(&repo.path, "main.txt", "base", "base");
+        run_git(&repo.path, &["checkout", "-b", "branch-a"]);
+        let a_sha = commit_file(&repo.path, "a.txt", "a", "branch A work");
+        run_git(&repo.path, &["checkout", "-b", "branch-b"]);
+        let mut branch_dates = HashMap::new();
+        branch_dates.insert("main".to_string(), "2024-01-01T00:00:00Z".to_string());
+        branch_dates.insert("branch-a".to_string(), "2024-01-02T00:00:00Z".to_string());
+        branch_dates.insert("branch-b".to_string(), "2024-01-03T00:00:00Z".to_string());
+
+        let commits = get_all_repo_commits(
+            &repo.path,
+            "main",
+            &[
+                "main".to_string(),
+                "branch-a".to_string(),
+                "branch-b".to_string(),
+            ],
+            &branch_dates,
+            &HashMap::new(),
+        )
+        .expect("load commits");
+
+        let a_commit = commits
+            .iter()
+            .find(|commit| commit.full_sha == a_sha)
+            .expect("branch A commit is reachable");
+        assert_eq!(a_commit.branch, "branch-a");
+        assert!(
+            commits.iter().all(|commit| commit.branch != "branch-b"),
+            "branch-b should not own inherited branch-a commits"
+        );
+    }
+
+    #[test]
+    fn child_branch_only_owns_commits_after_branch_point() {
+        let repo = new_repo();
+        commit_file(&repo.path, "main.txt", "base", "base");
+        run_git(&repo.path, &["checkout", "-b", "branch-a"]);
+        let a_sha = commit_file(&repo.path, "a.txt", "a", "branch A work");
+        run_git(&repo.path, &["checkout", "-b", "branch-b"]);
+        let b_sha = commit_file(&repo.path, "b.txt", "b", "branch B work");
+        let mut branch_dates = HashMap::new();
+        branch_dates.insert("main".to_string(), "2024-01-01T00:00:00Z".to_string());
+        branch_dates.insert("branch-a".to_string(), "2024-01-02T00:00:00Z".to_string());
+        branch_dates.insert("branch-b".to_string(), "2024-01-03T00:00:00Z".to_string());
+
+        let commits = get_all_repo_commits(
+            &repo.path,
+            "main",
+            &[
+                "main".to_string(),
+                "branch-a".to_string(),
+                "branch-b".to_string(),
+            ],
+            &branch_dates,
+            &HashMap::new(),
+        )
+        .expect("load commits");
+
+        let a_commit = commits
+            .iter()
+            .find(|commit| commit.full_sha == a_sha)
+            .expect("branch A commit is reachable");
+        let b_commit = commits
+            .iter()
+            .find(|commit| commit.full_sha == b_sha)
+            .expect("branch B commit is reachable");
+        assert_eq!(a_commit.branch, "branch-a");
+        assert_eq!(b_commit.branch, "branch-b");
     }
 }
 

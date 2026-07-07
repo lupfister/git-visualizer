@@ -259,7 +259,7 @@ function makeLayoutCacheKey(
   nodePositionOverrides: NodePositionOverrides = {},
 ): string {
   return [
-    'layout-v10-final-clump-expansion',
+    'layout-v11-branch-owner-fingerprint',
     path,
     'horizontal',
     setSignature(manuallyOpenedClumps),
@@ -287,8 +287,8 @@ function getRepoVisualSnapshotSignature(snapshot: RepoVisualSnapshot): string {
       branch.lastCommitDate,
     ].join(':')).join('|'),
     snapshot.mergeNodes.map((node) => [node.fullSha, node.targetBranch, node.targetCommitSha].join(':')).join('|'),
-    snapshot.directCommits.map((commit) => commit.fullSha).join('|'),
-    snapshot.unpushedDirectCommits.map((commit) => commit.fullSha).join('|'),
+    snapshot.directCommits.map((commit) => `${commit.branch}:${commit.fullSha}`).join('|'),
+    snapshot.unpushedDirectCommits.map((commit) => `${commit.branch}:${commit.fullSha}`).join('|'),
     snapshot.checkedOutRef
       ? [
           snapshot.checkedOutRef.branchName ?? '',
@@ -3484,6 +3484,13 @@ function finalizeProjectSwitchSnapshot(path: string, snapshot: RepoVisualSnapsho
     branchMetaLoadKeyRef.current = branchMetaLoadKey;
     const nextCommitPreviews: Record<string, BranchCommitPreview[]> = {};
     const nextUniqueAheadCounts: Record<string, number> = {};
+    const directOwnerBySha = new Map<string, string>();
+    for (const commit of directCommits) {
+      directOwnerBySha.set(commit.fullSha, commit.branch);
+      directOwnerBySha.set(commit.sha, commit.branch);
+    }
+    const previewOwner = (preview: BranchCommitPreview): string | null =>
+      directOwnerBySha.get(preview.fullSha) ?? directOwnerBySha.get(preview.sha) ?? null;
     for (const branch of branches) {
       if (branch.name === defaultBranch) continue;
       const previewsFromDirect = directCommits
@@ -3499,18 +3506,17 @@ function finalizeProjectSwitchSnapshot(path: string, snapshot: RepoVisualSnapsho
           isRemote: commit.isRemote ?? false,
         }));
       const preservedPreviews = (latestBranchCommitPreviewsRef.current[branch.name] ?? []).filter(
-        (preview) =>
-          preview.kind !== 'branch-created'
-          && (preview.isRemote || branch.remoteSyncStatus === 'on-github')
-          && !previewsFromDirect.some((candidate) => candidate.fullSha === preview.fullSha),
+        (preview) => {
+          const owner = previewOwner(preview);
+          return preview.kind !== 'branch-created'
+            && (owner == null || owner === branch.name)
+            && (preview.isRemote || branch.remoteSyncStatus === 'on-github')
+            && !previewsFromDirect.some((candidate) => candidate.fullSha === preview.fullSha);
+        },
       );
       const mergedPreviews = [...previewsFromDirect, ...preservedPreviews];
       nextCommitPreviews[branch.name] = mergedPreviews;
-      nextUniqueAheadCounts[branch.name] = Math.max(
-        mergedPreviews.length,
-        branch.remoteSyncStatus === 'on-github' ? Math.max(1, branch.commitsAhead) : 0,
-        branchUniqueAheadCounts[branch.name] ?? 0,
-      );
+      nextUniqueAheadCounts[branch.name] = mergedPreviews.length;
     }
 
     const commitBranchesBySha = new Map<string, Set<string>>();
