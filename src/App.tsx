@@ -1503,6 +1503,9 @@ function quickStateFromSnapshot(path: string, snapshot: RepoVisualSnapshot): Rep
         try {
           const parsed = JSON.parse(payloadJson);
           const hydrated = hydrateBranchGridLayoutModel(parsed);
+          if (snapshot.branches.length > 0 && (hydrated.allCommits.length === 0 || hydrated.renderNodes.length === 0)) {
+            return;
+          }
           layoutModelCacheRef.current.set(layoutKey, hydrated);
           persistedLayoutKeysRef.current.add(layoutKey);
           return;
@@ -1532,6 +1535,12 @@ function quickStateFromSnapshot(path: string, snapshot: RepoVisualSnapshot): Rep
         orientation: mapGridOrientation,
       });
       const computedLayoutModel = computedState.sharedGridLayoutModel;
+      if (
+        (snapshot.branches.length > 0 || snapshot.directCommits.length > 0 || snapshot.unpushedDirectCommits.length > 0) &&
+        (computedLayoutModel.allCommits.length === 0 || computedLayoutModel.renderNodes.length === 0)
+      ) {
+        return;
+      }
       layoutModelCacheRef.current.set(layoutKey, computedLayoutModel);
       persistedLayoutKeysRef.current.add(layoutKey);
       const serialized = JSON.stringify(serializeBranchGridLayoutModel(computedLayoutModel));
@@ -2723,6 +2732,9 @@ function finalizeProjectSwitchSnapshot(path: string, snapshot: RepoVisualSnapsho
     if (epoch !== mapSwitchEpochRef.current) return;
     setMapLoading(false);
     isRepoSwitchingRef.current = false;
+    if (nextState === 'ready') {
+      setMapReadyForDisplay(true);
+    }
     setMapPresentationState(nextState);
   }
 
@@ -5277,7 +5289,10 @@ function finalizeProjectSwitchSnapshot(path: string, snapshot: RepoVisualSnapsho
       layoutRevisionForView.branchesForLayout.length > 0 ||
       layoutRevisionForView.enrichedDirectCommits.length > 0 ||
       layoutRevisionForView.enrichedUnpushedDirectCommits.length > 0;
-    if (hasGraphSourceData && sharedGridLayoutModel.allCommits.length === 0) return;
+    if (
+      hasGraphSourceData &&
+      (sharedGridLayoutModel.allCommits.length === 0 || sharedGridLayoutModel.renderNodes.length === 0)
+    ) return;
     const normalizedRepoPath = normalizePath(repoPath);
     if (normalizedRepoPath && isPostCommitProtectionActive(normalizedRepoPath)) return;
     layoutModelCacheRef.current.set(sharedGridLayoutCacheKey, sharedGridLayoutModel);

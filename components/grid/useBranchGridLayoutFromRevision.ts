@@ -89,10 +89,15 @@ const resolveCachedLayoutModel = (
     || revision.enrichedUnpushedDirectCommits.length > 0;
   const hydratedLooksEmptyButShouldNot =
     Boolean(hydratedLayoutModel)
-    && (hydratedLayoutModel?.allCommits.length ?? 0) === 0
+    && (
+      (hydratedLayoutModel?.allCommits.length ?? 0) === 0
+      || (hydratedLayoutModel?.renderNodes.length ?? 0) === 0
+    )
     && hasGraphSourceData;
   const layoutLooksEmptyButShouldNot = (model: BranchGridLayoutModel | null): boolean =>
-    Boolean(model) && (model?.allCommits.length ?? 0) === 0 && hasGraphSourceData;
+    Boolean(model)
+    && ((model?.allCommits.length ?? 0) === 0 || (model?.renderNodes.length ?? 0) === 0)
+    && hasGraphSourceData;
   const hydratedHasWorkingTree = layoutModelHasWorkingTree(hydratedLayoutModel);
   const canReuseHydratedLayout = hydratedHasWorkingTree === hasWorktreeNodes;
 

@@ -2415,8 +2415,7 @@ export default function BranchGridMap({
   void [openPRs, onLoadMore, view, staleBranches, isLoading, scrollRequest, focusedErrorBranch, mapTopInsetPx, visibleNodesBySha, freshCopyBranchNames];
 
   useLayoutEffect(() => {
-    if (isLoading) return;
-    if (blockMapInteraction) return;
+    if (renderNodes.length === 0) return;
     if (lastReadyEpochReportedRef.current === mapReadyEpoch) return;
     const rafId = window.requestAnimationFrame(() => {
       if (lastReadyEpochReportedRef.current === mapReadyEpoch) return;
@@ -2424,7 +2423,7 @@ export default function BranchGridMap({
       onMapReadyForDisplay?.(mapReadyEpoch);
     });
     return () => window.cancelAnimationFrame(rafId);
-  }, [allCommits.length, isLoading, blockMapInteraction, mapReadyEpoch, onMapReadyForDisplay]);
+  }, [mapReadyEpoch, onMapReadyForDisplay, renderNodes.length]);
 
   const handleStageAllChanges = useMemo(() => {
     if (!onStageAllChanges) return undefined;
@@ -2436,7 +2435,7 @@ export default function BranchGridMap({
     return () => onPreviewNode(selectedPreviewTarget.target, selectedPreviewTarget.nodeId);
   }, [selectedPreviewTarget, onPreviewNode]);
 
-  const hasUsableMap = allCommits.length > 0;
+  const hasUsableMap = renderNodes.length > 0;
   const showLoadingTiles = !hasUsableMap && (isLoading || blockMapInteraction);
 
   if (showLoadingTiles) {
