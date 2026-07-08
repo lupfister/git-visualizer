@@ -253,8 +253,10 @@ export const useBranchGridLayoutFromRevision = (params: {
     };
 
     if (worker) {
+      let didResolve = false;
       const handleMessage = (event: MessageEvent<BranchGridLayoutWorkerResponse>) => {
         if (event.data.jobId !== jobId) return;
+        didResolve = true;
         if (!event.data.ok) {
           console.warn('branch grid layout worker failed:', event.data.error);
           applyModel(computeBranchGridLayoutWithPerf(layoutInput));
@@ -263,12 +265,19 @@ export const useBranchGridLayoutFromRevision = (params: {
         applyModel(hydrateBranchGridLayoutModel(event.data.serialized));
       };
       worker.addEventListener('message', handleMessage);
+      const fallbackId = window.setTimeout(() => {
+        if (didResolve || jobId !== jobIdRef.current) return;
+        didResolve = true;
+        worker.removeEventListener('message', handleMessage);
+        applyModel(computeBranchGridLayoutWithPerf(layoutInput));
+      }, 1200);
       const request: BranchGridLayoutWorkerRequest = {
         jobId,
         input: toWorkerBranchGridLayoutInput(layoutInput),
       };
       worker.postMessage(request);
       return () => {
+        window.clearTimeout(fallbackId);
         worker.removeEventListener('message', handleMessage);
       };
     }

@@ -2657,22 +2657,7 @@ async function reconcileSnapshotForProjectSwitch(
       if (localRaw) {
         const localSnapshot = JSON.parse(localRaw) as RepoVisualSnapshot;
         if (localSnapshot?.loaded) {
-          const quickState = await invoke<RepoQuickState>('get_repo_quick_state', { repoPath: normalizedPath }).catch(() => null);
-          if (
-            quickState &&
-            localSnapshot.checkedOutRef?.headSha === quickState.headSha &&
-            localSnapshot.checkedOutRef?.hasUncommittedChanges === quickState.hasUncommittedChanges
-          ) {
-            console.log('[optimistic-cache] matches quick state for', normalizedPath);
-            return reconcileSnapshotForProjectSwitch(normalizedPath, localSnapshot);
-          } else {
-            console.log('[optimistic-cache] quick state mismatch or missing for', normalizedPath, {
-              localHead: localSnapshot.checkedOutRef?.headSha,
-              quickHead: quickState?.headSha,
-              localDirty: localSnapshot.checkedOutRef?.hasUncommittedChanges,
-              quickDirty: quickState?.hasUncommittedChanges,
-            });
-          }
+          return reconcileSnapshotForProjectSwitch(normalizedPath, localSnapshot);
         }
       }
     } catch (e) {
@@ -2870,6 +2855,17 @@ function finalizeProjectSwitchSnapshot(path: string, snapshot: RepoVisualSnapsho
     setMapLoading(true);
     setLoading(true);
     setError(null);
+    const switchFallbackId = window.setTimeout(() => {
+      if (requestId !== loadRepoRequestIdRef.current) return;
+      setMapReadyForDisplay(true);
+      setMapLoading(false);
+      setLoading(false);
+      isRepoSwitchingRef.current = false;
+      setMapPresentationState('ready');
+      if (sameRepoPath(loadRepoInFlightPathRef.current, normalizedPath)) {
+        loadRepoInFlightPathRef.current = null;
+      }
+    }, 2500);
     await yieldToPaint();
     if (requestId !== loadRepoRequestIdRef.current) {
       if (sameRepoPath(loadRepoInFlightPathRef.current, normalizedPath)) loadRepoInFlightPathRef.current = null;
@@ -2930,6 +2926,7 @@ function finalizeProjectSwitchSnapshot(path: string, snapshot: RepoVisualSnapsho
         setLoading(false);
         finishMapSwitch(switchEpoch, 'error');
       } finally {
+        window.clearTimeout(switchFallbackId);
         if (sameRepoPath(loadRepoInFlightPathRef.current, normalizedPath)) loadRepoInFlightPathRef.current = null;
       }
       return;
@@ -3001,6 +2998,7 @@ function finalizeProjectSwitchSnapshot(path: string, snapshot: RepoVisualSnapsho
       setRepoPath(null);
       setLoading(false);
     } finally {
+      window.clearTimeout(switchFallbackId);
       if (sameRepoPath(loadRepoInFlightPathRef.current, normalizedPath)) loadRepoInFlightPathRef.current = null;
       if (requestId !== loadRepoRequestIdRef.current) return;
       finishMapSwitch(switchEpoch, hasError ? 'error' : 'ready');
