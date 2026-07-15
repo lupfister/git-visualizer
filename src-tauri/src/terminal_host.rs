@@ -290,6 +290,7 @@ fn spawn_session(
         command.args(["-lc", &metadata.command]);
     }
     command.cwd(&metadata.worktree_path);
+    augment_path_for_subprocess(&mut command);
     command.env("TERM", "xterm-256color");
     command.env("BROWSER", "none");
     command.env("NO_OPEN", "1");
@@ -1004,14 +1005,18 @@ pub fn run_terminal_host() -> Result<(), String> {
 }
 
 fn augment_path_for_subprocess(command: &mut Command) {
-    if std::env::var_os("PATH").is_some() {
-        return;
-    }
-    if let Ok(output) = Command::new("zsh").args(["-lc", "echo -n $PATH"]).output() {
+    if let Ok(output) = Command::new("zsh")
+        .args(["-lic", "printf %s \"$PATH\""])
+        .output()
+    {
         if output.status.success() {
+            let path = String::from_utf8_lossy(&output.stdout).trim().to_string();
+            if path.is_empty() {
+                return;
+            }
             command.env(
                 "PATH",
-                String::from_utf8_lossy(&output.stdout).trim().to_string(),
+                path,
             );
         }
     }

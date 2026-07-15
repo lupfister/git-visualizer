@@ -5641,6 +5641,10 @@ function finalizeProjectSwitchSnapshot(path: string, snapshot: RepoVisualSnapsho
       }
     } catch (error) {
       console.warn('Preview failed:', error);
+      setPreviewedNodeId(null);
+      setPreviewedWorktreeNodeIds((current) => target.kind === 'worktree'
+        ? current.filter((id) => id !== target.workingTreeId)
+        : current);
     } finally {
       setPreviewInProgress(false);
     }

@@ -4097,6 +4097,7 @@ fn shell_command(
 ) -> Result<std::process::Command, String> {
     let mut cmd = std::process::Command::new("zsh");
     cmd.args(["-lc", command]);
+    augment_path_for_subprocess(&mut cmd);
     cmd.current_dir(cwd)
         .env("BROWSER", "none")
         .env("NO_OPEN", "1")
@@ -4119,6 +4120,23 @@ fn shell_command(
         cmd.process_group(0);
     }
     Ok(cmd)
+}
+
+/// Finder-launched macOS apps do not inherit the user's interactive shell PATH.
+/// Preview commands commonly rely on tools installed by nvm, Homebrew, or a
+/// package-manager shim, so use the user's login/interactive shell to resolve it.
+fn augment_path_for_subprocess(command: &mut std::process::Command) {
+    if let Ok(output) = std::process::Command::new("zsh")
+        .args(["-lic", "printf %s \"$PATH\""])
+        .output()
+    {
+        if output.status.success() {
+            let path = String::from_utf8_lossy(&output.stdout).trim().to_string();
+            if !path.is_empty() {
+                command.env("PATH", path);
+            }
+        }
+    }
 }
 
 fn run_preview_step_to_log(
