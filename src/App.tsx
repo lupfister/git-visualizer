@@ -89,6 +89,7 @@ import {
 } from './repoSyncTokens';
 import {
   detectProjectPreviewDefaults,
+  previewDependenciesNeedInstall,
   preparePreviewTarget,
   type PreviewTarget,
   type ProjectPreviewConfig,
@@ -5485,7 +5486,11 @@ function finalizeProjectSwitchSnapshot(path: string, snapshot: RepoVisualSnapsho
             dependencyFilesChanged: false,
           }
         : await preparePreviewTarget(repoPath, target);
-      const command = prepared.dependencyFilesChanged && config.installCommand.trim()
+      const installNeeded = await previewDependenciesNeedInstall(
+        prepared.previewPath,
+        prepared.dependencyFilesChanged,
+      );
+      const command = installNeeded && config.installCommand.trim()
         ? `${config.installCommand.trim()} && ${config.runCommand.trim()}`
         : config.runCommand.trim();
       const targetId = target.kind === 'commit' ? target.sha : target.workingTreeId;
@@ -5717,16 +5722,23 @@ function finalizeProjectSwitchSnapshot(path: string, snapshot: RepoVisualSnapsho
 
   useEffect(() => {
     let disposed = false;
-    const refresh = () => {
-      if (isMapInteractingRef.current || repoMutationInFlightRef.current) return;
-      void listTerminalSessions().then((sessions) => {
+    let refreshInFlight = false;
+    const refresh = async () => {
+      if (refreshInFlight || isMapInteractingRef.current || repoMutationInFlightRef.current) return;
+      refreshInFlight = true;
+      try {
+        const sessions = await listTerminalSessions();
         if (!disposed) {
           setTerminalSessions((current) => terminalSessionsEqual(current, sessions) ? current : sessions);
         }
-      }).catch(() => undefined);
+      } catch {
+        // A missed status poll must not disturb running terminal or preview sessions.
+      } finally {
+        refreshInFlight = false;
+      }
     };
-    refresh();
-    const interval = window.setInterval(refresh, 500);
+    void refresh();
+    const interval = window.setInterval(() => void refresh(), 500);
     return () => {
       disposed = true;
       window.clearInterval(interval);

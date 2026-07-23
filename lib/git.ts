@@ -84,6 +84,13 @@ export async function preparePreviewTarget(
   return invoke('prepare_preview_target', { repoPath, target });
 }
 
+export async function previewDependenciesNeedInstall(
+  previewPath: string,
+  dependencyFilesChanged: boolean,
+): Promise<boolean> {
+  return invoke('preview_dependencies_need_install', { previewPath, dependencyFilesChanged });
+}
+
 export async function detectProjectPreviewDefaults(repoPath: string): Promise<Omit<ProjectPreviewConfig, 'lastConfirmedAt'>> {
   return invoke('detect_project_preview_defaults', { repoPath });
 }
@@ -146,4 +153,3 @@ export async function overhaulCreateBranch(
 export async function suggestWorktreeName(repoPath: string): Promise<string> {
   return invoke('suggest_worktree_name', { repoPath });
 }
-

@@ -3,6 +3,7 @@ import type { ReactNode } from 'react';
 import { Agentation } from 'agentation';
 import { DialRoot, useDialKit } from 'dialkit';
 import 'dialkit/styles.css';
+import { useAutoUpdater } from './useAutoUpdater';
 
 type RootLayoutProps = {
   children: ReactNode;
@@ -19,6 +20,7 @@ const DialKitBootstrap = () => {
 const VISIBILITY_KEY = 'cobble.chrome-ui-hidden';
 
 const RootLayout = ({ children }: RootLayoutProps) => {
+  useAutoUpdater();
   const [uiHidden, setUiHidden] = useState(() => window.localStorage.getItem(VISIBILITY_KEY) !== 'false');
 
   useEffect(() => {

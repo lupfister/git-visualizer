@@ -10,6 +10,15 @@ fn is_no_merge_base_error(error: &GitError) -> bool {
     }
 }
 
+fn is_unknown_for_each_ref_field_error(error: &GitError) -> bool {
+    match error {
+        GitError::CommandFailed(message) => {
+            message.contains("unknown field name") && message.contains("ahead-behind")
+        }
+        _ => false,
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Branch {
@@ -226,17 +235,34 @@ pub fn list_branches(repo: &Path, default_branch: &str) -> Result<Vec<Branch>, G
         .unwrap_or_default();
 
     let format_str = format!(
-        "%(refname:short)|%(objectname)|%(committerdate:iso-strict)|%(authorname)|%(upstream:short)|%(ahead-behind:refs/heads/{})|%(upstream:track,nobracket)",
+        "%(refname:short)|%(objectname)|%(committerdate:iso-strict)|%(authorname)|%(upstream:short)|%(ahead-behind:{})|%(upstream:track,nobracket)",
         default_branch
     );
-    let output = cli::run(
+    let fallback_format_str =
+        "%(refname:short)|%(objectname)|%(committerdate:iso-strict)|%(authorname)|%(upstream:short)|%(upstream:track,nobracket)";
+    let mut has_bulk_ahead_behind = true;
+    let output = match cli::run(
         repo,
         &[
             "for-each-ref",
             "refs/heads/",
             &format!("--format={}", format_str),
         ],
-    )?;
+    ) {
+        Ok(output) => output,
+        Err(error) if is_unknown_for_each_ref_field_error(&error) => {
+            has_bulk_ahead_behind = false;
+            cli::run(
+                repo,
+                &[
+                    "for-each-ref",
+                    "refs/heads/",
+                    &format!("--format={}", fallback_format_str),
+                ],
+            )?
+        }
+        Err(error) => return Err(error),
+    };
 
     let remote_refs_output = cli::run(
         repo,
@@ -275,7 +301,8 @@ pub fn list_branches(repo: &Path, default_branch: &str) -> Result<Vec<Branch>, G
         }
 
         let parts: Vec<&str> = line.split('|').collect();
-        if parts.len() < 7 {
+        let expected_parts = if has_bulk_ahead_behind { 7 } else { 6 };
+        if parts.len() < expected_parts {
             continue;
         }
 
@@ -288,18 +315,30 @@ pub fn list_branches(repo: &Path, default_branch: &str) -> Result<Vec<Branch>, G
         let last_commit_date = parts[2].trim().to_string();
         let last_commit_author = parts[3].trim().to_string();
         let upstream = parts[4].trim().to_string();
-        let ahead_behind_str = parts[5].trim();
-        let upstream_track = parts[6].trim();
+        let ahead_behind_str = if has_bulk_ahead_behind {
+            parts[5].trim()
+        } else {
+            ""
+        };
+        let upstream_track = if has_bulk_ahead_behind {
+            parts[6].trim()
+        } else {
+            parts[5].trim()
+        };
 
-        let mut commits_ahead = 0;
-        let mut commits_behind = 0;
-        if !ahead_behind_str.is_empty() {
+        let (commits_ahead, commits_behind) = if has_bulk_ahead_behind {
             let ab_parts: Vec<&str> = ahead_behind_str.split_whitespace().collect();
             if ab_parts.len() == 2 {
-                commits_ahead = ab_parts[0].parse().unwrap_or(0);
-                commits_behind = ab_parts[1].parse().unwrap_or(0);
+                (
+                    ab_parts[0].parse().unwrap_or(0),
+                    ab_parts[1].parse().unwrap_or(0),
+                )
+            } else {
+                (0, 0)
             }
-        }
+        } else {
+            get_ahead_behind(repo, &name, default_branch).unwrap_or((0, 0))
+        };
 
         let mut unpushed_commits = 0;
         if !upstream_track.is_empty() {
@@ -660,7 +699,7 @@ fn parse_branch_head_lines(output: &str) -> Vec<(String, String)> {
 mod branch_head_tests {
     use super::{
         branch_from_ref_sig_entry, branch_head_digest_from_ref_sig, format_branch_head_digest,
-        parse_branch_head_lines,
+        is_unknown_for_each_ref_field_error, parse_branch_head_lines, GitError,
     };
 
     #[test]
@@ -696,6 +735,27 @@ mod branch_head_tests {
             ("main".to_string(), "aaa".to_string()),
         ]);
         assert_eq!(digest, "feature:bbb|main:aaa");
+    }
+
+    #[test]
+    fn detects_unsupported_bulk_ahead_behind_formatter() {
+        let error = GitError::CommandFailed(
+            "fatal: unknown field name: ahead-behind:refs/heads/main".to_string(),
+        );
+
+        assert!(is_unknown_for_each_ref_field_error(&error));
+    }
+
+    #[test]
+    fn does_not_treat_other_for_each_ref_errors_as_formatter_support() {
+        let missing_ref =
+            GitError::CommandFailed("fatal: failed to find 'refs/heads/main'".to_string());
+        let unrelated_field = GitError::CommandFailed(
+            "fatal: unknown field name: committerdate:iso-strict".to_string(),
+        );
+
+        assert!(!is_unknown_for_each_ref_field_error(&missing_ref));
+        assert!(!is_unknown_for_each_ref_field_error(&unrelated_field));
     }
 }
 

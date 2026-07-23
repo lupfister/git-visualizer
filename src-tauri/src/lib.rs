@@ -3363,6 +3363,20 @@ async fn prepare_preview_target(
     .await
 }
 
+#[tauri::command(rename_all = "camelCase")]
+async fn preview_dependencies_need_install(
+    preview_path: String,
+    dependency_files_changed: bool,
+) -> Result<bool, String> {
+    run_blocking(move || {
+        Ok(git::preview_path_needs_install(
+            Path::new(&preview_path),
+            dependency_files_changed,
+        ))
+    })
+    .await
+}
+
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
 struct TerminalReadResult {
@@ -3906,11 +3920,6 @@ fn stop_all_preview_processes() {
         terminate_preview_process(&mut process.child);
         let _ = process.child.wait();
     }
-    if let Ok(sessions) = terminal_host::list_sessions() {
-        for session in sessions {
-            let _ = terminal_host::terminate_session(session.id);
-        }
-    }
 }
 
 fn schedule_stop_all_preview_processes() {
@@ -4097,7 +4106,9 @@ fn shell_command(
 ) -> Result<std::process::Command, String> {
     let mut cmd = std::process::Command::new("zsh");
     cmd.args(["-lc", command]);
-    augment_path_for_subprocess(&mut cmd);
+    if let Some(path) = user_shell_path() {
+        cmd.env("PATH", path);
+    }
     cmd.current_dir(cwd)
         .env("BROWSER", "none")
         .env("NO_OPEN", "1")
@@ -4125,7 +4136,7 @@ fn shell_command(
 /// Finder-launched macOS apps do not inherit the user's interactive shell PATH.
 /// Preview commands commonly rely on tools installed by nvm, Homebrew, or a
 /// package-manager shim, so use the user's login/interactive shell to resolve it.
-fn augment_path_for_subprocess(command: &mut std::process::Command) {
+fn user_shell_path() -> Option<String> {
     if let Ok(output) = std::process::Command::new("zsh")
         .args(["-lic", "printf %s \"$PATH\""])
         .output()
@@ -4133,10 +4144,11 @@ fn augment_path_for_subprocess(command: &mut std::process::Command) {
         if output.status.success() {
             let path = String::from_utf8_lossy(&output.stdout).trim().to_string();
             if !path.is_empty() {
-                command.env("PATH", path);
+                return Some(path);
             }
         }
     }
+    None
 }
 
 fn run_preview_step_to_log(
@@ -9000,7 +9012,14 @@ fn detect_repo_from_frontmost_process() -> Option<OpenRepoEventPayload> {
 pub fn run() {
     let builder = tauri::Builder::default()
         .plugin(tauri_plugin_global_shortcut::Builder::new().build())
-        .plugin(tauri_plugin_dialog::init());
+        .plugin(tauri_plugin_dialog::init())
+        .plugin(tauri_plugin_process::init())
+        .plugin(tauri_plugin_updater::Builder::new().build())
+        .on_menu_event(|app, event| {
+            if event.id().as_ref() == "check_for_updates" {
+                let _ = app.emit("cobble://check-for-updates", ());
+            }
+        });
     #[cfg(not(any(target_os = "android", target_os = "ios")))]
     let builder = builder.plugin(tauri_plugin_window_state::Builder::default().build());
     #[cfg(target_os = "macos")]
@@ -9015,6 +9034,20 @@ pub fn run() {
         })
         .setup(|app| {
             terminal_ai_titles::start_terminal_ai_title_loop();
+            if let Some(menu) = app.menu() {
+                if let Some(tauri::menu::MenuItemKind::Submenu(app_menu)) =
+                    menu.items()?.into_iter().next()
+                {
+                    let check_for_updates = tauri::menu::MenuItem::with_id(
+                        app,
+                        "check_for_updates",
+                        "Check for Updates…",
+                        true,
+                        None::<&str>,
+                    )?;
+                    app_menu.insert(&check_for_updates, 1)?;
+                }
+            }
             #[cfg(target_os = "macos")]
             {
                 app.set_activation_policy(tauri::ActivationPolicy::Regular);
@@ -9098,6 +9131,7 @@ pub fn run() {
             remove_worktree,
             add_worktree,
             prepare_preview_target,
+            preview_dependencies_need_install,
             save_terminal_attachment,
             list_terminal_sessions,
             create_terminal_session,

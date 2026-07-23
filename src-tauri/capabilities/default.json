@@ -11,6 +11,9 @@
     "core:window:allow-set-position",
     "core:window:allow-toggle-maximize",
     "dialog:allow-open",
+    "dialog:allow-message",
+    "process:allow-restart",
+    "updater:default",
     "window-state:default"
   ]
 }

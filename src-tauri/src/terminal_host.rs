@@ -230,9 +230,6 @@ fn restore_persisted_sessions(sessions: &Sessions) {
         if metadata.status != "running" || metadata.id.is_empty() {
             continue;
         }
-        if metadata.kind != "shell" {
-            continue;
-        }
         if !PathBuf::from(&metadata.worktree_path).exists() {
             continue;
         }
@@ -290,7 +287,9 @@ fn spawn_session(
         command.args(["-lc", &metadata.command]);
     }
     command.cwd(&metadata.worktree_path);
-    augment_path_for_subprocess(&mut command);
+    if let Some(path) = user_shell_path() {
+        command.env("PATH", path);
+    }
     command.env("TERM", "xterm-256color");
     command.env("BROWSER", "none");
     command.env("NO_OPEN", "1");
@@ -893,12 +892,10 @@ fn restart_session(
             .lock()
             .map_err(|_| "Terminal session state is unavailable".to_string())?;
         if let Some(session) = guard.remove(&id) {
-            thread::spawn(move || {
-                if let Ok(mut child) = session.child.lock() {
-                    let _ = child.kill();
-                    let _ = child.wait();
-                }
-            });
+            if let Ok(mut child) = session.child.lock() {
+                let _ = child.kill();
+                let _ = child.wait();
+            }
         }
     }
     spawn_session(metadata, sessions)
@@ -1004,22 +1001,19 @@ pub fn run_terminal_host() -> Result<(), String> {
     Ok(())
 }
 
-fn augment_path_for_subprocess(command: &mut Command) {
+fn user_shell_path() -> Option<String> {
     if let Ok(output) = Command::new("zsh")
         .args(["-lic", "printf %s \"$PATH\""])
         .output()
     {
         if output.status.success() {
             let path = String::from_utf8_lossy(&output.stdout).trim().to_string();
-            if path.is_empty() {
-                return;
+            if !path.is_empty() {
+                return Some(path);
             }
-            command.env(
-                "PATH",
-                path,
-            );
         }
     }
+    None
 }
 
 fn spawn_terminal_host_process(executable: &Path) -> Result<(), String> {
@@ -1029,7 +1023,9 @@ fn spawn_terminal_host_process(executable: &Path) -> Result<(), String> {
         .stdin(Stdio::null())
         .stdout(Stdio::null())
         .stderr(Stdio::null());
-    augment_path_for_subprocess(&mut command);
+    if let Some(path) = user_shell_path() {
+        command.env("PATH", path);
+    }
     #[cfg(unix)]
     command.process_group(0);
     command
@@ -1055,11 +1051,6 @@ fn spawn_and_wait_for_host() -> Result<UnixStream, String> {
 
 fn send_request(request: HostRequest) -> Result<HostResponse, String> {
     let socket = socket_path()?;
-    let pid_file = pid_path()?;
-
-    let expected_pid = fs::read_to_string(&pid_file)
-        .ok()
-        .and_then(|s| s.trim().parse::<u32>().ok());
 
     let connect = || UnixStream::connect(&socket);
 
@@ -1068,46 +1059,26 @@ fn send_request(request: HostRequest) -> Result<HostResponse, String> {
         Err(_) => spawn_and_wait_for_host()?,
     };
 
-    let expected_pid = expected_pid.or_else(|| {
-        fs::read_to_string(&pid_file)
-            .ok()
-            .and_then(|s| s.trim().parse::<u32>().ok())
-    });
-
-    let _ = stream.set_write_timeout(Some(Duration::from_secs(2)));
-    let _ = stream.set_read_timeout(Some(Duration::from_secs(2)));
+    let _ = stream.set_write_timeout(Some(Duration::from_secs(5)));
+    let _ = stream.set_read_timeout(Some(Duration::from_secs(5)));
 
     let mut payload = serde_json::to_vec(&request).map_err(|error| error.to_string())?;
     payload.push(b'\n');
 
     let mut raw = String::new();
-    let mut communication_result = stream.write_all(&payload).and_then(|_| {
+    let communication_result = stream.write_all(&payload).and_then(|_| {
         let mut reader = BufReader::new(stream);
         reader.read_line(&mut raw)
     });
 
     if communication_result.is_err() {
-        let current_pid = fs::read_to_string(&pid_file)
-            .ok()
-            .and_then(|s| s.trim().parse::<u32>().ok());
-
-        if let (Some(exp), Some(cur)) = (expected_pid, current_pid) {
-            if exp == cur {
-                kill_process_by_pid(cur);
-                let _ = fs::remove_file(&socket);
-                let _ = fs::remove_file(&pid_file);
-            }
-        }
-
-        let mut new_stream = spawn_and_wait_for_host()?;
-        let _ = new_stream.set_write_timeout(Some(Duration::from_secs(2)));
-        let _ = new_stream.set_read_timeout(Some(Duration::from_secs(2)));
-
-        raw.clear();
-        communication_result = new_stream.write_all(&payload).and_then(|_| {
-            let mut reader = BufReader::new(new_stream);
-            reader.read_line(&mut raw)
-        });
+        // The host owns every PTY. Never kill it because one request timed out:
+        // status polling can briefly be slow while inspecting several sessions.
+        // A later request will reconnect or replace the host if it actually exited.
+        return Err(communication_result
+            .err()
+            .map(|error| error.to_string())
+            .unwrap_or_else(|| "Terminal host request failed".to_string()));
     }
 
     let _ = communication_result.map_err(|error| error.to_string())?;

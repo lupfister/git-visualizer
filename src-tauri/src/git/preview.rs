@@ -410,13 +410,14 @@ pub fn should_run_install(
     preview_path: &Path,
     dependency_files_changed: bool,
 ) -> bool {
-    dependency_files_changed
-        || !install_marker_path(storage_root, repo).exists()
-        || preview_needs_javascript_install(preview_path)
+    !install_marker_path(storage_root, repo).exists()
+        || preview_path_needs_install(preview_path, dependency_files_changed)
 }
 
-fn preview_needs_javascript_install(preview_path: &Path) -> bool {
-    preview_path.join("package.json").exists() && !preview_path.join("node_modules").exists()
+pub fn preview_path_needs_install(preview_path: &Path, dependency_files_changed: bool) -> bool {
+    dependency_files_changed
+        || (preview_path.join("package.json").exists()
+            && !preview_path.join("node_modules").exists())
 }
 
 pub fn mark_install_success(storage_root: &Path, repo: &Path) -> Result<(), GitError> {
@@ -589,7 +590,7 @@ fn git_run_with_stdin(repo: &Path, args: &[&str], stdin: &[u8]) -> Result<(), Gi
 mod tests {
     use super::{
         detect_localhost_url, get_active_preview_target, mark_install_success,
-        prepare_preview_target, should_run_install, PreviewTarget,
+        prepare_preview_target, preview_path_needs_install, should_run_install, PreviewTarget,
     };
     use std::{fs, path::Path, process::Command};
 
@@ -890,5 +891,13 @@ mod tests {
             &repo.root,
             true
         ));
+    }
+
+    #[test]
+    fn javascript_worktree_needs_first_install() {
+        let repo = TestRepo::new("worktree-first-install");
+        assert!(preview_path_needs_install(&repo.root, false));
+        fs::create_dir_all(repo.root.join("node_modules")).expect("create node_modules");
+        assert!(!preview_path_needs_install(&repo.root, false));
     }
 }
