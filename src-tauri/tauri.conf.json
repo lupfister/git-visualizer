@@ -59,7 +59,7 @@
   },
   "plugins": {
     "updater": {
-      "pubkey": "dW50cnVzdGVkIGNvbW1lbnQ6IG1pbmlzaWduIHB1YmxpYyBrZXk6IDdEN0MzREYxQzI5NDQ5QTgKUldTb1NaVEM4VDE4ZmZPQUc4R1A5ajl2aGcxVWJ3OEZVM1lTdWFZQ0VWVlV2dEJrUTZtR3NpQmcK",
+      "pubkey": "dW50cnVzdGVkIGNvbW1lbnQ6IG1pbmlzaWduIHB1YmxpYyBrZXk6IDY5NEUyN0FERjFGMUJBMUEKUldRYXV2SHhyU2RPYVczWUhsdDMxdHVLdkVPaEtNV2Q4OW5kRnR4ZEdaV0F1RlFTQlhla2IvdmEK",
       "endpoints": [
         "https://github.com/lupfister/git-visualizer/releases/latest/download/latest.json"
       ]
