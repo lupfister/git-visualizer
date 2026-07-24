@@ -5,6 +5,7 @@ import ToolbarActionContent from './ToolbarActionContent';
 import { ChevronDown } from 'lucide-react';
 import { useEffect, useRef, useState, memo } from 'react';
 import { cn } from './mapGridUtils';
+import type { WorktreeDraftDisplay } from '../../src/worktreeDraftMessages';
 
 type PushTarget = {
   branchName: string;
@@ -49,6 +50,8 @@ type Props = {
   setMergeTargetCommitSha: (sha: string | null) => void;
   onWriteCommit?: () => void;
   setNewBranchDialogOpen: (open: boolean) => void;
+  onCreateGeneratedBranch?: (worktreePath: string, branchName: string) => Promise<void>;
+  worktreeDraftByWorkingTreeId?: ReadonlyMap<string, WorktreeDraftDisplay>;
   hideMergeControls?: boolean;
   dirtyWorktreePaths?: string[];
   selectedDirtyWorktreePaths?: string[];
@@ -82,6 +85,8 @@ function CommitControls({
   pushableRemoteBranchCount,
   onWriteCommit,
   setNewBranchDialogOpen,
+  onCreateGeneratedBranch,
+  worktreeDraftByWorkingTreeId,
   selectedDirtyWorktreePaths = [],
 
   selectedPreviewNode,
@@ -118,6 +123,14 @@ function CommitControls({
     if (saved === 'preview' || saved === 'terminal') return saved;
     return 'preview';
   });
+
+  const selectedWorktreeSession = selectedPreviewNode
+    ? worktreeSessions.find((session) => session.workingTreeId === selectedPreviewNode.commit.id)
+    : undefined;
+  const generatedBranchName = selectedWorktreeSession?.hasUncommittedChanges
+    ? worktreeDraftByWorkingTreeId?.get(selectedWorktreeSession.workingTreeId)?.branchName?.trim() ?? ''
+    : '';
+  const usesGeneratedBranchAction = Boolean(selectedWorktreeSession?.hasUncommittedChanges);
 
   const [checkoutAction, setCheckoutAction] = useState<'checkout' | 'new-worktree'>(() => {
     const saved = localStorage.getItem('cobble:last-checkout-action');
@@ -343,16 +356,25 @@ function CommitControls({
             {/* Create Branch Button */}
             <button
               type="button"
-              onClick={() => setNewBranchDialogOpen(true)}
-              disabled={createBranchFromNodeInProgress}
+              onClick={() => {
+                if (usesGeneratedBranchAction && selectedWorktreeSession && generatedBranchName) {
+                  void onCreateGeneratedBranch?.(selectedWorktreeSession.path, generatedBranchName);
+                  return;
+                }
+                setNewBranchDialogOpen(true);
+              }}
+              disabled={
+                createBranchFromNodeInProgress
+                || (usesGeneratedBranchAction && (!generatedBranchName || !onCreateGeneratedBranch))
+              }
               className={cn(controlClassName, 'pointer-events-auto relative z-10 !bg-background !border-border hover:!bg-muted')}
             >
               <ToolbarActionContent
                 icon="branch-new"
                 label={(() => {
-                  const selectedSha = selectedPreviewNode.commit.id;
-                  const selectedSession = worktreeSessions.find((s) => s.workingTreeId === selectedSha);
-                  const rawName = selectedSession?.branchName || 'detached';
+                  const rawName = usesGeneratedBranchAction
+                    ? generatedBranchName || 'Building'
+                    : selectedWorktreeSession?.branchName || 'detached';
                   const maxLen = 20;
                   return rawName.length > maxLen ? `${rawName.substring(0, maxLen)}...` : rawName;
                 })()}

@@ -1,7 +1,7 @@
 import type { WorktreeDraftEntry } from './worktreeDraftMessages';
 
 const STORAGE_PREFIX = 'cobble:worktree-draft:';
-const STORAGE_SCHEMA_VERSION = 1;
+const STORAGE_SCHEMA_VERSION = 2;
 
 export type PersistedWorktreeDraft = WorktreeDraftEntry & {
   updatedAt: number;
@@ -25,6 +25,7 @@ const isWorktreeDraftEntry = (value: unknown): value is WorktreeDraftEntry => {
   return (
     typeof entry.status === 'string'
     && typeof entry.commitMessage === 'string'
+    && typeof entry.branchName === 'string'
     && typeof entry.stashMessage === 'string'
     && typeof entry.summaryFingerprint === 'string'
     && typeof entry.fallbackLabel === 'string'
@@ -44,6 +45,7 @@ export const readPersistedWorktreeDraft = (normalizedPath: string): WorktreeDraf
     return {
       status: parsed.status,
       commitMessage: parsed.commitMessage,
+      branchName: parsed.branchName,
       stashMessage: parsed.stashMessage,
       summaryFingerprint: parsed.summaryFingerprint,
       messageFingerprint: parsed.messageFingerprint,

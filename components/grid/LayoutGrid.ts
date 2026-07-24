@@ -92,6 +92,7 @@ export type BranchGridViewProps = {
   onStageAllChanges?: () => Promise<boolean> | Promise<void> | boolean | void;
   stageInProgress?: boolean;
   onCreateBranchFromNode?: (nodeId: string, branchName: string, worktreePath?: string | null) => Promise<void>;
+  onCreateGeneratedBranch?: (worktreePath: string, branchName: string) => Promise<void>;
   onCreateRootBranch?: (branchName: string, worktreePath?: string | null) => Promise<void>;
   createBranchFromNodeInProgress?: boolean;
   onMoveNodeBackToBranch?: (targetBranchName: string) => Promise<void>;

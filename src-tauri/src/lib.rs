@@ -94,6 +94,13 @@ struct CommitMutationResult {
 
 #[derive(Serialize, Deserialize, Clone)]
 #[serde(rename_all = "camelCase")]
+struct GeneratedCommitDraftResult {
+    commit_message: String,
+    branch_name: String,
+}
+
+#[derive(Serialize, Deserialize, Clone)]
+#[serde(rename_all = "camelCase")]
 struct StashPushResult {
     worktree_path: String,
     stash: git::GitStashEntry,
@@ -4773,33 +4780,6 @@ fn push_branch_ref(repo: &Path, branch: &str, target_sha: Option<&str>) -> Resul
     Ok(())
 }
 
-fn branch_name_from_commit_message(message: &str) -> String {
-    let subject = message.lines().next().unwrap_or(message);
-    let mut name = String::new();
-    let mut previous_was_separator = false;
-
-    for ch in subject.chars().flat_map(char::to_lowercase) {
-        if ch.is_ascii_alphanumeric() {
-            name.push(ch);
-            previous_was_separator = false;
-        } else if !previous_was_separator && !name.is_empty() {
-            name.push('-');
-            previous_was_separator = true;
-        }
-
-        if name.len() >= 48 {
-            break;
-        }
-    }
-
-    let trimmed = name.trim_matches('-').to_string();
-    if trimmed.is_empty() {
-        "changes".to_string()
-    } else {
-        trimmed
-    }
-}
-
 fn local_branch_exists(repo: &Path, branch_name: &str) -> bool {
     git::cli::run(
         repo,
@@ -4826,6 +4806,16 @@ fn unique_local_branch_name(repo: &Path, base_name: &str) -> String {
     }
 
     format!("{base_name}-{}", Utc::now().timestamp())
+}
+
+fn validate_generated_branch_name(repo: &Path, branch_name: &str) -> Result<(), String> {
+    let trimmed = branch_name.trim();
+    if trimmed.is_empty() || trimmed != branch_name {
+        return Err("Generated branch name is empty or malformed.".to_string());
+    }
+    git::cli::run(repo, &["check-ref-format", "--branch", trimmed])
+        .map(|_| ())
+        .map_err(|_| format!("Invalid generated branch name: {trimmed}"))
 }
 
 #[tauri::command(rename_all = "camelCase")]
@@ -4913,6 +4903,7 @@ async fn stash_push(
 async fn commit_working_tree(
     repo_path: String,
     message: String,
+    generated_branch_name: Option<String>,
 ) -> Result<CommitMutationResult, String> {
     run_blocking(move || {
         let path = Path::new(&repo_path);
@@ -4920,8 +4911,16 @@ async fn commit_working_tree(
         opencode::validate_generated_message(trimmed, "Commit message")?;
         let before_commit_ref = git::get_checked_out_ref(path).map_err(|e| e.to_string())?;
         if before_commit_ref.branch_name.is_none() {
-            let branch_name =
-                unique_local_branch_name(path, &branch_name_from_commit_message(trimmed));
+            let generated_branch_name = generated_branch_name
+                .as_deref()
+                .map(str::trim)
+                .filter(|value| !value.is_empty())
+                .ok_or_else(|| {
+                    "A generated branch name is required when committing from detached HEAD."
+                        .to_string()
+                })?;
+            validate_generated_branch_name(path, generated_branch_name)?;
+            let branch_name = unique_local_branch_name(path, generated_branch_name);
             git::cli::run(path, &["checkout", "-b", &branch_name]).map_err(|e| e.to_string())?;
         }
         git::commit_working_tree(path, trimmed).map_err(|e| e.to_string())?;
@@ -4977,7 +4976,7 @@ async fn get_working_tree_summary(repo_path: String) -> Result<String, String> {
 async fn generate_commit_message(
     repo_path: String,
     previous_message: Option<String>,
-) -> Result<String, String> {
+) -> Result<GeneratedCommitDraftResult, String> {
     let path = repo_path.clone();
     tauri::async_runtime::spawn_blocking(move || {
         let repo = Path::new(&path);
@@ -4986,10 +4985,30 @@ async fn generate_commit_message(
             .as_deref()
             .map(str::trim)
             .filter(|value| !value.is_empty());
-        opencode::generate_commit_message(repo, &summary, previous)
+        let draft = opencode::generate_commit_draft(repo, &summary, previous)?;
+        Ok(GeneratedCommitDraftResult {
+            commit_message: draft.commit_message,
+            branch_name: unique_local_branch_name(repo, &draft.branch_name),
+        })
     })
     .await
     .map_err(|e| format!("Commit message task failed: {e}"))?
+}
+
+#[tauri::command(rename_all = "camelCase")]
+async fn create_generated_branch(
+    repo_path: String,
+    branch_name: String,
+) -> Result<CheckedOutRef, String> {
+    run_blocking(move || {
+        let path = Path::new(&repo_path);
+        let trimmed = branch_name.trim();
+        validate_generated_branch_name(path, trimmed)?;
+        let unique_name = unique_local_branch_name(path, trimmed);
+        git::cli::run(path, &["checkout", "-b", &unique_name]).map_err(|e| e.to_string())?;
+        git::get_checked_out_ref(path).map_err(|e| e.to_string())
+    })
+    .await
 }
 
 #[tauri::command(rename_all = "camelCase")]
@@ -9158,6 +9177,7 @@ pub fn run() {
             get_working_tree_summary,
             generate_commit_message,
             generate_stash_message,
+            create_generated_branch,
             stage_working_tree,
             apply_stash_restore,
             stash_drop,

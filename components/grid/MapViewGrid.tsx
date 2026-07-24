@@ -72,6 +72,7 @@ interface Props {
   onStageAllChanges?: () => Promise<boolean> | Promise<void> | boolean | void;
   stageInProgress?: boolean;
   onCreateBranchFromNode?: (nodeId: string, branchName: string, worktreePath?: string | null) => Promise<void>;
+  onCreateGeneratedBranch?: (worktreePath: string, branchName: string) => Promise<void>;
   onCreateRootBranch?: (branchName: string, worktreePath?: string | null) => Promise<void>;
   createBranchFromNodeInProgress?: boolean;
   isMutationBusy?: boolean;
@@ -177,6 +178,7 @@ export default function BranchGridMapView({
   onStageAllChanges,
   stageInProgress = false,
   onCreateBranchFromNode,
+  onCreateGeneratedBranch,
   onCreateRootBranch,
   onCreateTerminal,
   onCreateWorktree,
@@ -270,6 +272,7 @@ export default function BranchGridMapView({
             onStageAllChanges={onStageAllChanges}
             stageInProgress={stageInProgress}
             onCreateBranchFromNode={onCreateBranchFromNode}
+            onCreateGeneratedBranch={onCreateGeneratedBranch}
             onCreateRootBranch={onCreateRootBranch}
             onCreateTerminal={onCreateTerminal}
             onCreateWorktree={onCreateWorktree}
@@ -353,6 +356,7 @@ export default function BranchGridMapView({
             onStageAllChanges={onStageAllChanges}
             stageInProgress={stageInProgress}
             onCreateBranchFromNode={onCreateBranchFromNode}
+            onCreateGeneratedBranch={onCreateGeneratedBranch}
             onCreateRootBranch={onCreateRootBranch}
             onCreateTerminal={onCreateTerminal}
             onCreateWorktree={onCreateWorktree}

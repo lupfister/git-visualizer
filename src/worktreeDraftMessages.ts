@@ -16,6 +16,7 @@ export type WorktreeDraftStatus = 'idle' | 'pending' | 'ready' | 'error';
 export type WorktreeDraftEntry = {
   status: WorktreeDraftStatus;
   commitMessage: string;
+  branchName?: string;
   stashMessage: string;
   /** Fingerprint of the current working tree (from git summary). */
   summaryFingerprint: string;
@@ -27,6 +28,7 @@ export type WorktreeDraftEntry = {
 export type WorktreeDraftDisplay = {
   status: WorktreeDraftStatus;
   message: string;
+  branchName?: string;
   fallbackLabel: string;
 };
 
@@ -146,6 +148,7 @@ export const hasAiCommitMessageReady = (entry: WorktreeDraftEntry | undefined): 
   !!entry
   && entry.status === 'ready'
   && entry.commitMessage.trim().length > 0
+  && (entry.branchName?.trim().length ?? 0) > 0
   && entry.messageFingerprint === entry.summaryFingerprint;
 
 /** AI commit title only — not the git-derived fallback used while Building. */
@@ -164,6 +167,16 @@ export const resolvePreparedCommitMessage = (entry: WorktreeDraftEntry | undefin
   return null;
 };
 
+export const resolvePreparedBranchName = (entry: WorktreeDraftEntry | undefined): string | null => {
+  if (!entry) return null;
+  const branchName = entry.branchName?.trim() ?? '';
+  const messageMatchesTree = entry.messageFingerprint === entry.summaryFingerprint;
+  if (branchName && messageMatchesTree && (entry.status === 'ready' || entry.status === 'pending')) {
+    return branchName;
+  }
+  return null;
+};
+
 export const resolvePreparedStashMessage = (entry: WorktreeDraftEntry | undefined): string | null => {
   if (!entry) return null;
   const aiMessage = (entry.stashMessage || entry.commitMessage).trim();
@@ -178,7 +191,7 @@ export const draftNeedsRegeneration = (entry: WorktreeDraftEntry | undefined): b
   if (!entry) return true;
   if (entry.messageFingerprint !== entry.summaryFingerprint) return true;
   if (entry.status === 'error') return true;
-  if (entry.status === 'ready' && entry.commitMessage.trim()) return false;
+  if (entry.status === 'ready' && entry.commitMessage.trim() && entry.branchName?.trim()) return false;
   return entry.status !== 'ready';
 };
 
@@ -228,6 +241,7 @@ export const buildWorktreeDraftDisplayMap = (
     map.set(workingTreeId, {
       status: entry?.status ?? 'pending',
       message: entry?.commitMessage.trim() ?? '',
+      branchName: resolvePreparedBranchName(entry) ?? '',
       fallbackLabel: entry?.fallbackLabel.trim() || DEFAULT_DIRTY_WORKTREE_FALLBACK,
     });
   }
@@ -252,6 +266,7 @@ export const applyWorktreeDraftMessagesToPreviews = (
       const message = draft ? resolveWorktreeDraftDisplayLabel({
         status: draft.status,
         message: draft.commitMessage.trim(),
+        branchName: draft.branchName?.trim() ?? '',
         fallbackLabel: draft.fallbackLabel,
       }) : '';
       if (message === preview.message.trim()) return preview;

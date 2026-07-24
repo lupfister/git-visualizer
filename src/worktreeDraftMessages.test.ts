@@ -8,6 +8,7 @@ import {
   formatWorktreeSummaryFallback,
   hashWorktreeSummary,
   normalizeSummaryForFingerprint,
+  resolvePreparedBranchName,
   resolvePreparedCommitMessage,
   resolvePreparedStashMessage,
   resolvePreviousCommitTitleForRegeneration,
@@ -140,6 +141,7 @@ describe('worktreeDraftMessages', () => {
     expect(draftNeedsRegeneration({
       status: 'ready',
       commitMessage: 'Add feature',
+      branchName: 'add-feature',
       stashMessage: 'WIP feature',
       summaryFingerprint: 'abc',
       messageFingerprint: 'abc',
@@ -159,11 +161,21 @@ describe('worktreeDraftMessages', () => {
     expect(hasAiCommitMessageReady({
       status: 'ready',
       commitMessage: 'Add feature',
+      branchName: 'add-feature',
       stashMessage: 'WIP',
       summaryFingerprint: 'abc',
       messageFingerprint: 'abc',
       fallbackLabel: 'Update foo.ts',
     })).toBe(true);
+    expect(hasAiCommitMessageReady({
+      status: 'ready',
+      commitMessage: 'Add feature',
+      branchName: '',
+      stashMessage: 'WIP',
+      summaryFingerprint: 'abc',
+      messageFingerprint: 'abc',
+      fallbackLabel: 'Update foo.ts',
+    })).toBe(false);
     expect(resolveAiCommitMessageForCommit({
       status: 'pending',
       commitMessage: '',
@@ -175,6 +187,7 @@ describe('worktreeDraftMessages', () => {
     expect(resolveAiCommitMessageForCommit({
       status: 'ready',
       commitMessage: 'Add feature',
+      branchName: 'add-feature',
       stashMessage: 'WIP',
       summaryFingerprint: 'new',
       messageFingerprint: 'old',
@@ -197,9 +210,17 @@ describe('worktreeDraftMessages', () => {
       ...pending,
       status: 'ready',
       commitMessage: 'Add feature',
+      branchName: 'add-feature',
       stashMessage: 'WIP feature',
       messageFingerprint: 'abc',
     })).toBe('Add feature');
+    expect(resolvePreparedBranchName({
+      ...pending,
+      status: 'ready',
+      commitMessage: 'Add feature',
+      branchName: 'add-feature',
+      messageFingerprint: 'abc',
+    })).toBe('add-feature');
     expect(resolvePreparedCommitMessage({
       status: 'pending',
       commitMessage: 'Old title',
@@ -219,8 +240,28 @@ describe('worktreeDraftMessages', () => {
     expect(map.get('WORKING_TREE:abc')).toEqual({
       status: 'pending',
       message: '',
+      branchName: '',
       fallbackLabel: 'Uncommitted changes',
     });
+  });
+
+  it('does not expose a stale branch name while regeneration is pending', () => {
+    const map = buildWorktreeDraftDisplayMap(
+      {
+        '/repo/wt-a': {
+          status: 'pending',
+          commitMessage: 'Old title',
+          branchName: 'old-branch-name',
+          stashMessage: 'Old stash',
+          summaryFingerprint: 'new',
+          messageFingerprint: 'old',
+          fallbackLabel: 'Update foo.ts',
+        },
+      },
+      { 'WORKING_TREE:abc': '/repo/wt-a' },
+      ['WORKING_TREE:abc'],
+    );
+    expect(map.get('WORKING_TREE:abc')?.branchName).toBe('');
   });
 
   it('applies ready draft messages to uncommitted previews', () => {
@@ -241,6 +282,7 @@ describe('worktreeDraftMessages', () => {
         '/repo/wt-a': {
           status: 'ready',
           commitMessage: 'Draft title',
+          branchName: 'draft-title',
           stashMessage: 'Draft stash',
           summaryFingerprint: 'abc',
           messageFingerprint: 'abc',
@@ -308,6 +350,7 @@ describe('worktreeDraftStorage', () => {
     const entry = {
       status: 'ready' as const,
       commitMessage: 'Add feature',
+      branchName: 'add-feature',
       stashMessage: 'WIP feature',
       summaryFingerprint: 'abc123',
       messageFingerprint: 'abc123',

@@ -20,13 +20,15 @@ const MAX_TITLE_MODEL_ATTEMPTS: usize = 8;
 const OPENCODE_MIN_VERSION: (u32, u32, u32) = (1, 16, 0);
 
 const COMMIT_TITLE_PROMPT: &str = "\
-You write git commit titles only.\n\
+You write git commit titles and branch names only.\n\
 \n\
 Rules:\n\
-- Output exactly one line, at most 72 characters\n\
-- Imperative mood (Fix, Add, Remove, …)\n\
-- High-level purpose only — never list files, paths, or per-hunk details\n\
-- No preamble, explanation, quotes, markdown, or trailing colon\n";
+- Output exactly two lines in this format:\n\
+  COMMIT: <imperative commit title, at most 72 characters>\n\
+  BRANCH: <concise lowercase kebab-case branch name, at most 48 characters>\n\
+- Describe the same high-level purpose in both values without deriving the branch name from the commit title\n\
+- Never list files, paths, or per-hunk details\n\
+- No preamble, explanation, quotes, markdown, or trailing punctuation\n";
 
 const STASH_TITLE_PROMPT: &str = "\
 You write git stash titles only.\n\
@@ -71,6 +73,56 @@ fn compose_title_prompt(base: &str, summary: &str, previous_title: Option<&str>)
     prompt.push_str("\nChanges:\n");
     prompt.push_str(&truncate_summary(summary));
     prompt
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct GeneratedCommitDraft {
+    pub commit_message: String,
+    pub branch_name: String,
+}
+
+fn sanitize_branch_name(raw: &str) -> Result<String, String> {
+    let name = strip_markdown(raw).trim().to_string();
+    let valid_length = (3..=48).contains(&name.len());
+    let valid_edges = name
+        .chars()
+        .next()
+        .is_some_and(|ch| ch.is_ascii_lowercase() || ch.is_ascii_digit())
+        && name
+            .chars()
+            .last()
+            .is_some_and(|ch| ch.is_ascii_lowercase() || ch.is_ascii_digit());
+    let valid_chars = name
+        .chars()
+        .all(|ch| ch.is_ascii_lowercase() || ch.is_ascii_digit() || ch == '-');
+    if !valid_length || !valid_edges || !valid_chars || name.contains("--") {
+        return Err("OpenCode returned an invalid branch name.".to_string());
+    }
+    Ok(name)
+}
+
+fn sanitize_commit_draft(raw: &str) -> Result<GeneratedCommitDraft, String> {
+    let cleaned = strip_ansi(raw);
+    let mut commit_message = None;
+    let mut branch_name = None;
+    for line in cleaned.lines() {
+        let stripped = strip_markdown(line);
+        if let Some(value) = stripped.strip_prefix("COMMIT:") {
+            commit_message = Some(sanitize_title(value.trim(), "commit message")?);
+        } else if let Some(value) = stripped.strip_prefix("BRANCH:") {
+            branch_name = Some(sanitize_branch_name(value.trim())?);
+        }
+    }
+    let commit_message =
+        commit_message.ok_or_else(|| "OpenCode returned no commit message.".to_string())?;
+    if is_unacceptable_message(&commit_message) {
+        return Err("OpenCode returned meta text instead of a commit message.".to_string());
+    }
+    let branch_name = branch_name.ok_or_else(|| "OpenCode returned no branch name.".to_string())?;
+    Ok(GeneratedCommitDraft {
+        commit_message,
+        branch_name,
+    })
 }
 
 fn compose_terminal_title_prompt(
@@ -543,8 +595,8 @@ fn sanitize_title_with_limits(
 mod tests {
     use super::{
         is_unacceptable_message, is_unacceptable_terminal_message, parse_models_from_output,
-        parse_opencode_version, rank_title_model, redact_terminal_secrets, sanitize_terminal_title,
-        sanitize_title, sort_title_models, version_at_least,
+        parse_opencode_version, rank_title_model, redact_terminal_secrets, sanitize_commit_draft,
+        sanitize_terminal_title, sanitize_title, sort_title_models, version_at_least,
     };
 
     #[test]
@@ -565,6 +617,24 @@ mod tests {
         let message =
             sanitize_title("Fix unpushed commit detection", "commit message").expect("ok");
         assert_eq!(message, "Fix unpushed commit detection");
+    }
+
+    #[test]
+    fn parses_commit_message_and_branch_name() {
+        let draft = sanitize_commit_draft(
+            "COMMIT: Add generated branch names\nBRANCH: generate-branch-names",
+        )
+        .expect("valid draft");
+        assert_eq!(draft.commit_message, "Add generated branch names");
+        assert_eq!(draft.branch_name, "generate-branch-names");
+    }
+
+    #[test]
+    fn rejects_invalid_generated_branch_name() {
+        assert!(sanitize_commit_draft(
+            "COMMIT: Add generated branch names\nBRANCH: feature/generated-name",
+        )
+        .is_err());
     }
 
     #[test]
@@ -826,20 +896,46 @@ fn generate_title_with_retries(
     }
 }
 
-pub fn generate_commit_message(
+pub fn generate_commit_draft(
     repo: &Path,
     summary: &str,
     previous_title: Option<&str>,
-) -> Result<String, String> {
-    generate_title_with_retries(
-        repo,
-        summary,
-        "commit",
-        COMMIT_TITLE_PROMPT,
-        previous_title,
-        "commit message",
-        "commit message",
-    )
+) -> Result<GeneratedCommitDraft, String> {
+    let repo_path = repo
+        .to_str()
+        .ok_or_else(|| "Repository path is not valid UTF-8.".to_string())?;
+    if summary.trim().is_empty() {
+        return Err("No local changes to describe.".to_string());
+    }
+
+    let binary = resolve_opencode_binary()?;
+    let prompt = compose_title_prompt(COMMIT_TITLE_PROMPT, summary, previous_title);
+    let mut models = resolve_title_models(&binary, false)?;
+    let mut refreshed = false;
+
+    loop {
+        let attempt_error =
+            match try_title_models(&binary, repo_path, &models, |binary, repo_path, model| {
+                run_opencode_prompt(binary, repo_path, model, &prompt)
+            }) {
+                Ok(raw) => match sanitize_commit_draft(&raw) {
+                    Ok(draft) => return Ok(draft),
+                    Err(err) => err,
+                },
+                Err(err) => err,
+            };
+
+        if !refreshed {
+            refreshed = true;
+            models = resolve_title_models(&binary, true)?;
+            continue;
+        }
+
+        return Err(format!(
+            "Failed to generate a commit draft after trying {} model(s). {attempt_error}",
+            models.len().min(MAX_TITLE_MODEL_ATTEMPTS)
+        ));
+    }
 }
 
 pub fn generate_stash_message(

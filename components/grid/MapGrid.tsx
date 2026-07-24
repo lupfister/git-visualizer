@@ -266,6 +266,7 @@ export default function BranchGridMap({
   onStageAllChanges,
   stageInProgress = false,
   onCreateBranchFromNode,
+  onCreateGeneratedBranch,
   onCreateRootBranch,
   onCreateTerminal,
   onCreateWorktree,
@@ -2505,6 +2506,8 @@ export default function BranchGridMap({
                   setMergeTargetCommitSha={setMergeTargetCommitSha}
                   onWriteCommit={handleOpenWriteCommit}
                   setNewBranchDialogOpen={setNewBranchDialogOpen}
+                  onCreateGeneratedBranch={onCreateGeneratedBranch}
+                  worktreeDraftByWorkingTreeId={worktreeDraftByWorkingTreeId}
                   dirtyWorktreePaths={dirtyWorktreePaths}
                   selectedDirtyWorktreePaths={selectedDirtyWorktreePaths}
                   selectedPreviewNode={selectedPreviewNode}

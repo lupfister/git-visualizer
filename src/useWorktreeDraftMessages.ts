@@ -10,6 +10,7 @@ import {
   resolvePreviousCommitTitleForRegeneration,
   resolvePreviousStashTitleForRegeneration,
   resolvePreparedCommitMessage,
+  resolvePreparedBranchName,
   resolvePreparedStashMessage,
   WORKTREE_DRAFT_DEBOUNCE_MS,
   hasAiCommitMessageReady,
@@ -58,8 +59,10 @@ type UseWorktreeDraftMessagesResult = {
   draftsByWorkingTreeId: ReadonlyMap<string, WorktreeDraftDisplay>;
   pathByWorkingTreeId: Readonly<Record<string, string>>;
   getPreparedCommitMessage: (worktreePath: string) => string | null;
+  getPreparedBranchName: (worktreePath: string) => string | null;
   getPreparedStashMessage: (worktreePath: string) => string | null;
   waitForPreparedCommitMessage: (worktreePath: string) => Promise<string | null>;
+  waitForPreparedBranchName: (worktreePath: string) => Promise<string | null>;
   seedDraftForPath: (worktreePath: string, message: string) => void;
   clearDraftForPath: (worktreePath: string) => void;
 };
@@ -136,6 +139,7 @@ export const useWorktreeDraftMessages = ({
     const entry: WorktreeDraftEntry = {
       status: 'ready',
       commitMessage: trimmed,
+      branchName: '',
       stashMessage: trimmed,
       summaryFingerprint: '',
       messageFingerprint: '',
@@ -184,6 +188,7 @@ export const useWorktreeDraftMessages = ({
     setDraftsByPath((previous) => {
       const latest = previous[normalizedPath];
       const preservedCommit = latest?.commitMessage.trim() || existing?.commitMessage.trim() || '';
+      const preservedBranch = latest?.branchName?.trim() || existing?.branchName?.trim() || '';
       const preservedStash = latest?.stashMessage.trim() || existing?.stashMessage.trim() || '';
       const keepReady = latest?.status === 'ready' && Boolean(preservedCommit);
       return {
@@ -191,6 +196,7 @@ export const useWorktreeDraftMessages = ({
         [normalizedPath]: {
           status: keepReady ? 'ready' : 'pending',
           commitMessage: preservedCommit,
+          branchName: preservedBranch,
           stashMessage: preservedStash,
           summaryFingerprint,
           messageFingerprint: latest?.messageFingerprint ?? existing?.messageFingerprint ?? '',
@@ -201,7 +207,7 @@ export const useWorktreeDraftMessages = ({
 
     try {
       const previousCommit = resolvePreviousCommitTitleForRegeneration(existing);
-      const commitSettled = await invoke<string>('generate_commit_message', {
+      const commitSettled = await invoke<{ commitMessage: string; branchName: string }>('generate_commit_message', {
         repoPath: normalizedPath,
         previousMessage: previousCommit ?? null,
       }).then(
@@ -211,12 +217,13 @@ export const useWorktreeDraftMessages = ({
 
       if (generation !== generationTokenRef.current.get(normalizedPath)) return;
 
-      const trimmedCommit = commitSettled.status === 'fulfilled' ? commitSettled.value.trim() : '';
+      const trimmedCommit = commitSettled.status === 'fulfilled' ? commitSettled.value.commitMessage.trim() : '';
+      const trimmedBranch = commitSettled.status === 'fulfilled' ? commitSettled.value.branchName.trim() : '';
       if (import.meta.env.DEV && commitSettled.status === 'rejected') {
         console.warn('[worktree-draft] commit title failed', normalizedPath, commitSettled.reason);
       }
       const latest = draftsByPathRef.current[normalizedPath];
-      if (!trimmedCommit) {
+      if (!trimmedCommit || !trimmedBranch) {
         setDraftsByPath((previous) => {
           const current = previous[normalizedPath];
           return {
@@ -224,6 +231,7 @@ export const useWorktreeDraftMessages = ({
             [normalizedPath]: {
               status: 'error',
               commitMessage: current?.commitMessage ?? existing?.commitMessage ?? '',
+              branchName: current?.branchName ?? existing?.branchName ?? '',
               stashMessage: current?.stashMessage ?? existing?.stashMessage ?? '',
               summaryFingerprint,
               messageFingerprint: current?.messageFingerprint ?? existing?.messageFingerprint ?? '',
@@ -241,6 +249,7 @@ export const useWorktreeDraftMessages = ({
           [normalizedPath]: {
             status: 'ready',
             commitMessage: trimmedCommit,
+            branchName: trimmedBranch,
             stashMessage: current?.stashMessage.trim() || existing?.stashMessage.trim() || trimmedCommit,
             summaryFingerprint,
             messageFingerprint: summaryFingerprint,
@@ -285,6 +294,7 @@ export const useWorktreeDraftMessages = ({
           [normalizedPath]: {
             status: 'error',
             commitMessage: current?.commitMessage ?? existing?.commitMessage ?? '',
+            branchName: current?.branchName ?? existing?.branchName ?? '',
             stashMessage: current?.stashMessage ?? existing?.stashMessage ?? '',
             summaryFingerprint,
             messageFingerprint: current?.messageFingerprint ?? existing?.messageFingerprint ?? '',
@@ -328,6 +338,7 @@ export const useWorktreeDraftMessages = ({
       [normalizedPath]: {
         status: 'pending',
         commitMessage: existing?.commitMessage ?? '',
+        branchName: existing?.branchName ?? '',
         stashMessage: existing?.stashMessage ?? '',
         summaryFingerprint: fingerprint,
         messageFingerprint: existing?.messageFingerprint ?? '',
@@ -374,6 +385,12 @@ export const useWorktreeDraftMessages = ({
 
     return readReady();
   }, [clearDebounceTimer, kickDraftGenerationForCommit]);
+
+  const waitForPreparedBranchName = useCallback(async (worktreePath: string): Promise<string | null> => {
+    const message = await waitForPreparedCommitMessage(worktreePath);
+    if (!message) return null;
+    return resolvePreparedBranchName(findDraftEntry(draftsByPathRef.current, worktreePath));
+  }, [waitForPreparedCommitMessage]);
 
   const maybeScheduleDraftGeneration = useCallback((
     normalizedPath: string,
@@ -428,6 +445,7 @@ export const useWorktreeDraftMessages = ({
             ? 'pending'
             : (existing?.status ?? 'pending'),
         commitMessage: existing?.commitMessage ?? '',
+        branchName: existing?.branchName ?? '',
         stashMessage: existing?.stashMessage ?? '',
         summaryFingerprint: fingerprint,
         messageFingerprint: existing?.messageFingerprint ?? '',
@@ -438,6 +456,7 @@ export const useWorktreeDraftMessages = ({
         && existing.fallbackLabel === nextEntry.fallbackLabel
         && existing.status === nextEntry.status
         && existing.commitMessage === nextEntry.commitMessage
+        && existing.branchName === nextEntry.branchName
         && existing.stashMessage === nextEntry.stashMessage
         && existing.summaryFingerprint === nextEntry.summaryFingerprint
         && existing.messageFingerprint === nextEntry.messageFingerprint
@@ -582,6 +601,10 @@ export const useWorktreeDraftMessages = ({
     return resolvePreparedCommitMessage(findDraftEntry(draftsByPathRef.current, worktreePath));
   }, []);
 
+  const getPreparedBranchName = useCallback((worktreePath: string): string | null => {
+    return resolvePreparedBranchName(findDraftEntry(draftsByPathRef.current, worktreePath));
+  }, []);
+
   const getPreparedStashMessage = useCallback((worktreePath: string): string | null => {
     return resolvePreparedStashMessage(findDraftEntry(draftsByPathRef.current, worktreePath));
   }, []);
@@ -591,8 +614,10 @@ export const useWorktreeDraftMessages = ({
     draftsByWorkingTreeId,
     pathByWorkingTreeId,
     getPreparedCommitMessage,
+    getPreparedBranchName,
     getPreparedStashMessage,
     waitForPreparedCommitMessage,
+    waitForPreparedBranchName,
     seedDraftForPath,
     clearDraftForPath,
   };

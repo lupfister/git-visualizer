@@ -569,6 +569,9 @@ function App() {
   const waitForPreparedCommitMessageRef = useRef<(worktreePath: string) => Promise<string | null>>(
     async () => null,
   );
+  const waitForPreparedBranchNameRef = useRef<(worktreePath: string) => Promise<string | null>>(
+    async () => null,
+  );
   const getPreparedStashMessageRef = useRef<(worktreePath: string) => string | null>(() => null);
   const seedWorktreeDraftForPathRef = useRef<(worktreePath: string, message: string) => void>(() => {});
   const clearWorktreeDraftForPathRef = useRef<(worktreePath: string) => void>(() => {});
@@ -3906,13 +3909,18 @@ function finalizeProjectSwitchSnapshot(path: string, snapshot: RepoVisualSnapsho
     }
   }
 
-  async function commitWorktreeAtPath(worktreePath: string, trimmed: string): Promise<CommitMutationData | null> {
+  async function commitWorktreeAtPath(
+    worktreePath: string,
+    trimmed: string,
+    generatedBranchName: string | null = null,
+  ): Promise<CommitMutationData | null> {
     const ref = await invoke<CheckedOutRef>('get_checked_out_ref', { repoPath: worktreePath });
     if (!ref.hasUncommittedChanges) return null;
 
     const commitResult = await invoke<CommitMutationData>('commit_working_tree', {
       repoPath: worktreePath,
       message: trimmed,
+      generatedBranchName,
     });
     noteSoftUpdateDebug('commit result', {
       path: normalizePath(worktreePath),
@@ -3952,12 +3960,31 @@ function finalizeProjectSwitchSnapshot(path: string, snapshot: RepoVisualSnapsho
     setCommitSwitchFeedback(null);
     setCommitInProgress(true);
     try {
+      const branchNamesByPath = new Map<string, string>();
+      for (const worktreePath of uniquePaths) {
+        const ref = await invoke<CheckedOutRef>('get_checked_out_ref', { repoPath: worktreePath });
+        if (ref.branchName) continue;
+        const branchName = await waitForPreparedBranchNameRef.current(worktreePath);
+        if (!branchName) {
+          setCommitSwitchFeedback({
+            kind: 'error',
+            message: 'Branch name is still generating. Try again in a moment.',
+          });
+          return false;
+        }
+        branchNamesByPath.set(worktreePath, branchName);
+      }
+
       beginRepoMutation();
       const mutationOutcomes: RepoMutationOutcome[] = [];
       let committedCount = 0;
 
       for (const worktreePath of uniquePaths) {
-        const commitResult = await commitWorktreeAtPath(worktreePath, trimmed);
+        const commitResult = await commitWorktreeAtPath(
+          worktreePath,
+          trimmed,
+          branchNamesByPath.get(worktreePath) ?? null,
+        );
         if (!commitResult) continue;
         mutationOutcomes.push(outcomeFromCommitData(commitResult));
         committedCount += 1;
@@ -4015,6 +4042,7 @@ function finalizeProjectSwitchSnapshot(path: string, snapshot: RepoVisualSnapsho
     setCommitInProgress(true);
     try {
       const messagesByPath = new Map<string, string>();
+      const branchNamesByPath = new Map<string, string>();
       for (const worktreePath of uniquePaths) {
         const ref = await invoke<CheckedOutRef>('get_checked_out_ref', { repoPath: worktreePath });
         if (!ref.hasUncommittedChanges) continue;
@@ -4028,6 +4056,17 @@ function finalizeProjectSwitchSnapshot(path: string, snapshot: RepoVisualSnapsho
           return false;
         }
         messagesByPath.set(worktreePath, message);
+        if (!ref.branchName) {
+          const branchName = await waitForPreparedBranchNameRef.current(worktreePath);
+          if (!branchName) {
+            setCommitSwitchFeedback({
+              kind: 'error',
+              message: 'Branch name is still generating. Try again in a moment.',
+            });
+            return false;
+          }
+          branchNamesByPath.set(worktreePath, branchName);
+        }
       }
 
       if (messagesByPath.size === 0) {
@@ -4046,7 +4085,11 @@ function finalizeProjectSwitchSnapshot(path: string, snapshot: RepoVisualSnapsho
         const message = messagesByPath.get(worktreePath);
         if (!message) continue;
 
-        const commitResult = await commitWorktreeAtPath(worktreePath, message);
+        const commitResult = await commitWorktreeAtPath(
+          worktreePath,
+          message,
+          branchNamesByPath.get(worktreePath) ?? null,
+        );
         if (!commitResult) continue;
         mutationOutcomes.push(outcomeFromCommitData(commitResult));
         committedCount += 1;
@@ -4146,6 +4189,41 @@ function finalizeProjectSwitchSnapshot(path: string, snapshot: RepoVisualSnapsho
       const message = e instanceof Error ? e.message : String(e);
       setCommitSwitchFeedback({ kind: 'error', message });
       console.error('Failed to create branch from node:', message);
+    } finally {
+      setCreateBranchFromNodeInProgress(false);
+    }
+  }
+
+  async function handleCreateGeneratedBranch(worktreePath: string, branchName: string) {
+    if (!repoPath || createBranchFromNodeInProgress) return;
+    setCreateBranchFromNodeInProgress(true);
+    setCommitSwitchFeedback(null);
+    try {
+      beginRepoMutation();
+      const checkedOutRef = await invoke<CheckedOutRef>('create_generated_branch', {
+        repoPath: worktreePath,
+        branchName,
+      });
+      const updatedWorktrees = await invoke<WorktreeInfo[]>('list_worktrees', { repoPath });
+      setWorktrees(updatedWorktrees);
+      const outcomes = [outcomeFromWorktreeSync(updatedWorktrees)];
+      if (sameRepoPath(worktreePath, repoPath)) {
+        outcomes.push(outcomeFromCheckout(checkedOutRef));
+      }
+      await finalizeRepoMutation(
+        repoPath,
+        ...outcomes,
+        { kind: 'fullRefresh', layoutTopologyChanged: true },
+      );
+      setCommitSwitchFeedback({
+        kind: 'success',
+        message: `Moved to new branch "${checkedOutRef.branchName ?? branchName}"`,
+      });
+    } catch (e) {
+      endRepoMutation();
+      const message = e instanceof Error ? e.message : String(e);
+      setCommitSwitchFeedback({ kind: 'error', message });
+      console.error('Failed to create generated branch:', message);
     } finally {
       setCreateBranchFromNodeInProgress(false);
     }
@@ -4953,6 +5031,7 @@ function finalizeProjectSwitchSnapshot(path: string, snapshot: RepoVisualSnapsho
     getPreparedCommitMessage,
     getPreparedStashMessage,
     waitForPreparedCommitMessage,
+    waitForPreparedBranchName,
     seedDraftForPath,
     clearDraftForPath,
   } = useWorktreeDraftMessages({
@@ -4966,6 +5045,7 @@ function finalizeProjectSwitchSnapshot(path: string, snapshot: RepoVisualSnapsho
 
   getPreparedCommitMessageRef.current = getPreparedCommitMessage;
   waitForPreparedCommitMessageRef.current = waitForPreparedCommitMessage;
+  waitForPreparedBranchNameRef.current = waitForPreparedBranchName;
   getPreparedStashMessageRef.current = getPreparedStashMessage;
   seedWorktreeDraftForPathRef.current = seedDraftForPath;
   clearWorktreeDraftForPathRef.current = clearDraftForPath;
@@ -6418,6 +6498,7 @@ function finalizeProjectSwitchSnapshot(path: string, snapshot: RepoVisualSnapsho
                 onStageAllChanges={handleStageAllChanges}
                 stageInProgress={stageInProgress}
                 onCreateBranchFromNode={handleCreateBranchFromNode}
+                onCreateGeneratedBranch={handleCreateGeneratedBranch}
                 onCreateRootBranch={handleCreateRootBranch}
                 onCreateTerminal={handleCreateTerminal}
                 onCreateWorktree={handleCreateWorktree}
