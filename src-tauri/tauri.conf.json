@@ -61,7 +61,7 @@
     "updater": {
       "pubkey": "dW50cnVzdGVkIGNvbW1lbnQ6IG1pbmlzaWduIHB1YmxpYyBrZXk6IDY5NEUyN0FERjFGMUJBMUEKUldRYXV2SHhyU2RPYVczWUhsdDMxdHVLdkVPaEtNV2Q4OW5kRnR4ZEdaV0F1RlFTQlhla2IvdmEK",
       "endpoints": [
-        "https://github.com/lupfister/git-visualizer/releases/latest/download/latest.json"
+        "https://github.com/lupfister/cobble/releases/latest/download/latest.json"
       ]
     }
   }

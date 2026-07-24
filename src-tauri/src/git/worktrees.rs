@@ -189,7 +189,7 @@ mod tests {
             "/Users/luca/Library/Application Support/cobble/preview-worktrees/abc123/preview"
         ));
         assert!(is_managed_preview_worktree(
-            "/Users/luca/Library/Application Support/git-visualizer/preview-worktrees/abc123/preview"
+            "/Users/luca/Library/Application Support/cobble/preview-worktrees/abc123/preview"
         ));
         assert!(is_managed_preview_worktree(
             "/Users/luca/Library/Application Support/cobble/preview-worktrees/abc123/worktree"
